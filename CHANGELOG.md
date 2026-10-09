@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **Antiderivatives through `tan(x/2)` and `tan(a·x + b)` carry a `floor`
+  term** that makes them continuous (see *Fixed*), and `c·atan(tan w)`
+  becomes `c·w`: `∫ dx/(2 + cos x)` is `2/√3·atan(tan(x/2)/√3) +
+  2π/√3·⌊x/(2π) + 1/2⌋`.  Some rational `RootSum`s are written over the
+  roots of their denominator factor (`ln(x − ρ)`).  `integrate_definite`
+  refuses a closed form that adaptive quadrature contradicts
+  (`ComputationFailed`) instead of returning it.
+- **`together`, `expand_trig`, `trig_combine`, `simplify`, `trigsimp` and
+  `fu` return `nan`** for more inputs that are undefined at every point
+  (see *Fixed*).
+
+### Fixed
+
+- **Antiderivatives through `tan(x/2)` and `tan(a·x + b)` jumped where the
+  integrand is continuous**, so `F(b) − F(a)` across a pole of the
+  substitution was wrong; the integrator's own check (`F′ = f` at sample
+  points) cannot see a jump.  `∫ dx/(2 + cos x)` was `2/√3·atan(tan(x/2)/√3)`,
+  which drops by `2π/√3` at every odd multiple of π (`F(4) − F(3)` =
+  −2.7125, mpmath `quad` 0.9151); `∫ tan x/(tan x + 2) dx` ended in
+  `atan(tan x)/5` (`F(2) − F(1)` = 0.8586 for 1.4869).  Both substitutions
+  now add `J·⌊w/π + 1/2⌋`, `J = G(+∞) − G(−∞)` computed exactly from the
+  antiderivative in the new variable (the correction SymPy's
+  `Integral.doit` makes; Jeffrey and Rich, *ACM TOMS* 20, 1994), and write
+  `c·atan(tan w)` as `c·w`: `∫ tan x/(tan x + 2) dx` = `x/5 − 2/5·ln|tan x +
+  2| + 1/5·ln(tan²x + 1)`, SymPy's form.  `RootSum`s with log arguments of
+  degree ≥ 2 crossed the cut of `ln` (`∫₀¹ (x² + 1)³/((x² + 1)⁴ + 32x⁴) dx`
+  was −0.53; it is 0.53): the sum now runs over the roots of the
+  denominator factor.  Continuity hunter (4,200 integrands, `F(b) − F(a)`
+  against quadrature): 1,441 jumps → 346, the rest with symbolic
+  parameters (`∫ dx/(a + b·cos x)`, whose jump depends on whether `a > |b|`;
+  SymPy 1.14's answers jump there too) or a `RootSum` with real roots
+  (`∫ dx/(2·sin⁵x + 1)`).  Rubi unchanged: 23,915 verified, 0 wrong.
+- **`together`, `expand_trig` and `trig_combine` gave a value for `0/0`
+  at every point**: a numerator the route's identities make 0 over a
+  denominator zero by an identity of its functions dropped the denominator
+  with it (`0·d⁻¹ = 0`): `together((x/(x + 1) + 1/(x + 1) − 1)/(tan x·cos x
+  − sin x))` was `0`, `expand_trig((x + 1)·(cos 2x − cos²x + sin²x)/(sin²x
+  + cos²x − 1))` and `trig_combine((x + 1)·(sin 2x − 2·sin x·cos
+  x)/(cosh²x − sinh²x − 1))` were `0`; all are `nan`, as `ratsimp`,
+  `expand`, `simplify` give (SymPy 1.14: `0`; deliberately different).
+  `simplify(exp(1/(tan x·cos x − sin x))·(exp(x/2)² − exp(x)))` was `0`; it
+  is `exp(zoo)·0 = nan`.  Rewrite-route hunter (70,000 cases over 30
+  routes, real and complex points, assumptions): 0 wrong values before and
+  after, 127 route disagreements → 0; undefined-expression hunter:
+  `together` 499 wrong → 324, `expand_trig` 45 → 18 (the rest `s/s = 1`
+  and like terms over one zero denominator, as `ratsimp` and SymPy).
+- `GenPoly::try_div_rem` could loop forever over a coefficient domain
+  whose arithmetic gave up (a step that does not cancel the leading
+  term); it now fails.
+
 ## [0.37.0] - 2026-10-09
 
 The integrator finds 65% more antiderivatives of the Rubi test suite

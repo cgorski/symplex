@@ -14,8 +14,25 @@ use crate::base::numeric::Q;
 use crate::base::walk;
 use rustc_hash::FxHashMap;
 
-/// Apply trig product-to-sum and double-angle identities.
+/// Apply trig product-to-sum and double-angle identities (the public
+/// `trig_combine`): [`trig_combine_raw`], keeping the value of an
+/// expression with a denominator that vanishes identically
+/// ([`undefined_if_vanishing_denominator_dropped`](crate::simplify::identically_zero::undefined_if_vanishing_denominator_dropped)).
+/// Up to 0.37 `trig_combine((x + 1)·(sin 2x − 2·sin x·cos x)/(cosh²x −
+/// sinh²x − 1))` was `0` (the double-angle formula makes the numerator 0,
+/// and `0` over anything is `0`); it is `nan`, `0/0` for every `x`, as
+/// `trigsimp` and `simplify` give.
 pub(crate) fn trig_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let result = trig_combine_raw(arena, expr);
+    crate::simplify::identically_zero::undefined_if_vanishing_denominator_dropped(
+        arena, expr, result,
+    )
+    .unwrap_or(result)
+}
+
+/// Apply trig product-to-sum and double-angle identities, with no test of
+/// vanishing denominators (for `trigsimp` and `fu`, which make their own).
+pub(crate) fn trig_combine_raw(arena: &mut Arena, expr: ExprId) -> ExprId {
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
 

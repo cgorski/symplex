@@ -575,6 +575,14 @@ impl<C: Field> GenPoly<C> {
                 }
             }
             rem.normalize();
+            // Each step must cancel the leading term.  In a field whose
+            // arithmetic gave up (a coefficient domain abandoned under a
+            // budget answers 0 to everything) it does not, and the loop
+            // ran forever (found by the 0.37 integration work, guarded
+            // there only); now the division fails.
+            if rem.degree().is_some_and(|d| d >= r_deg) {
+                return None;
+            }
         }
 
         let mut q = GenPoly {

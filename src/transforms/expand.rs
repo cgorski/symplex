@@ -702,15 +702,15 @@ fn expand_pass(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
             // Trig functions with the `trig` hint.
             ExprNode::Sin(inner) if opts.trig => {
                 let rebuilt = rebuild_unary_expanded(arena, id, inner, &cache, Arena::sin);
-                crate::simplify::trig_expand::expand_trig(arena, rebuilt)
+                crate::simplify::trig_expand::expand_trig_raw(arena, rebuilt)
             }
             ExprNode::Cos(inner) if opts.trig => {
                 let rebuilt = rebuild_unary_expanded(arena, id, inner, &cache, Arena::cos);
-                crate::simplify::trig_expand::expand_trig(arena, rebuilt)
+                crate::simplify::trig_expand::expand_trig_raw(arena, rebuilt)
             }
             ExprNode::Tan(inner) if opts.trig => {
                 let rebuilt = rebuild_unary_expanded(arena, id, inner, &cache, Arena::tan);
-                crate::simplify::trig_expand::expand_trig(arena, rebuilt)
+                crate::simplify::trig_expand::expand_trig_raw(arena, rebuilt)
             }
             // Add: expand each child, then re-add.
             ExprNode::Add(ref children) => {

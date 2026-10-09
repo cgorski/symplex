@@ -27,7 +27,7 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
@@ -994,6 +994,21 @@ pub(crate) fn together(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// No common factors are cancelled; use `ratsimp` for that.  The walk is
 /// iterative (post-order with a cache).
 pub(crate) fn fraction_parts(arena: &mut Arena, expr: ExprId) -> (ExprId, ExprId) {
+    fraction_parts_tracked(arena, expr, &mut Vec::new())
+}
+
+/// [`fraction_parts`], also collecting in `cancelled` the denominator of
+/// every quotient met on the way whose numerator cancelled to a structural
+/// 0 (`(x/(x + 1) + 1/(x + 1) − 1)/s` is `(0, (x + 1)·s)`), paired with its
+/// node, and the base of a negative non-integer power multiplied by such a
+/// 0 (`0·s^(−1/2)`).  Such a quotient leaves no trace in the combined
+/// fraction (`0` over anything is `0`), though it is `0/0` wherever its
+/// denominator is 0.
+fn fraction_parts_tracked(
+    arena: &mut Arena,
+    expr: ExprId,
+    cancelled: &mut Vec<(ExprId, ExprId)>,
+) -> (ExprId, ExprId) {
     let one = arena.one;
     let order = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, (ExprId, ExprId)> = FxHashMap::default();
@@ -1067,9 +1082,84 @@ pub(crate) fn fraction_parts(arena: &mut Arena, expr: ExprId) -> (ExprId, ExprId
             }
             _ => (id, one),
         };
+        if arena.is_zero_structural(parts.0) {
+            if parts.1 != one {
+                cancelled.push((id, parts.1));
+            }
+            // A negative non-integer power is opaque here (a factor of the
+            // numerator): `0·s^(−1/2)` drops it as well.
+            if let ExprNode::Mul(children) = arena.node(id) {
+                for &c in children.iter() {
+                    if let ExprNode::Pow(b, e) = *arena.node(c)
+                        && arena
+                            .as_num(e)
+                            .is_some_and(|q| q.is_negative() && !q.is_integer())
+                    {
+                        cancelled.push((id, b));
+                    }
+                }
+            }
+        }
         cache.insert(id, parts);
     }
     lookup(&cache, expr)
+}
+
+/// The nodes of the rational skeleton of `expr`: those reached from it
+/// through sums, products, negations and integer powers (not function
+/// arguments, nor the bases of other powers).  An explicit stack.
+fn rational_skeleton(arena: &Arena, expr: ExprId) -> FxHashSet<ExprId> {
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack = vec![expr];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Add(children) | ExprNode::Mul(children) => stack.extend(children.iter()),
+            ExprNode::Neg(child) => stack.push(*child),
+            ExprNode::Pow(base, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()) => {
+                stack.push(*base);
+            }
+            _ => {}
+        }
+    }
+    seen
+}
+
+/// Is some factor of `d` identically 0: as a polynomial in its generators
+/// ([`vanishes_identically`]), or, when it holds a function or a radical,
+/// by an identity of its functions
+/// ([`Arena::vanishes_by_identity`]: `tan x·cos x − sin x`, `cosh²x −
+/// sinh²x − 1`).
+fn has_vanishing_factor(arena: &mut Arena, d: ExprId) -> bool {
+    let factors: Vec<ExprId> = match arena.node(d) {
+        ExprNode::Mul(children) => children.to_vec(),
+        _ => vec![d],
+    };
+    factors.into_iter().any(|f| {
+        let base = match *arena.node(f) {
+            ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(|q| q.is_integer()) => b,
+            _ => f,
+        };
+        if arena.node(base).is_atom() {
+            return arena.is_zero_structural(base);
+        }
+        if vanishes_identically(arena, base) {
+            return true;
+        }
+        let transcendental = walk::post_order_ids(arena, base).into_iter().any(|id| {
+            !matches!(
+                arena.node(id),
+                ExprNode::Num(_)
+                    | ExprNode::Symbol(_)
+                    | ExprNode::Add(_)
+                    | ExprNode::Mul(_)
+                    | ExprNode::Neg(_)
+            ) && !matches!(arena.node(id), ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()))
+        });
+        transcendental && arena.vanishes_by_identity(base)
+    })
 }
 
 /// Deep [`together`]: `fraction_parts` rebuilt as a single quotient.
@@ -1093,17 +1183,43 @@ pub(crate) fn fraction_parts(arena: &mut Arena, expr: ExprId) -> (ExprId, ExprId
 /// − x² − 2x)` was returned unchanged and `x + 1/(x·(x + 1) − x² − x)`
 /// became `(x·(x·(x + 1) − x² − x) + 1)/(x·(x + 1) − x² − x)`, while
 /// `ratsimp` gave `nan` and `zoo`.
+///
+/// So does a quotient whose numerator cancels to 0 over a denominator that
+/// vanishes identically, by an identity of its functions or as a
+/// polynomial: `0/0` anywhere in the rational skeleton is `nan` for every
+/// value of the variables, while the combined fraction keeps no trace of
+/// it.  Up to 0.37 `together((x/(x + 1) + 1/(x + 1) − 1)/(tan x·cos x −
+/// sin x))` was `0`, and `together((cos x + 2)·(x² + 1) − (x/(x − 1) +
+/// x·(−x/(x − 1) + 1))/(cos 2x − cos²x + sin²x))` was `(x² + 1)·(cos x +
+/// 2)`, as `ratsimp`, `expand` and `simplify` give `nan`.  Only the
+/// denominators of cancelled quotients are tested (rare), one certified
+/// evaluation each when they hold a function.  Likewise a numerator with a
+/// factor that vanishes by an identity over a denominator that is 0 is
+/// `0/0`: `together(((x/(x + 1) + 1/(x + 1) − 1)/(tan x·cos x − sin
+/// x))⁻¹)` was `zoo`.
 pub(crate) fn together_deep(arena: &mut Arena, expr: ExprId) -> ExprId {
-    let (n, d) = fraction_parts(arena, expr);
+    let mut cancelled = Vec::new();
+    let (n, d) = fraction_parts_tracked(arena, expr, &mut cancelled);
+    if !cancelled.is_empty() {
+        let skeleton = rational_skeleton(arena, expr);
+        let mut tested: FxHashSet<ExprId> = FxHashSet::default();
+        for (node, den) in cancelled {
+            if skeleton.contains(&node) && tested.insert(den) && has_vanishing_factor(arena, den) {
+                return arena.nan;
+            }
+        }
+    }
     if d == arena.one {
         return n;
     }
     if arena.is_zero_structural(d) {
-        if !arena.is_zero_structural(n) && expands_to_zero(arena, n) {
+        if !arena.is_zero_structural(n)
+            && (expands_to_zero(arena, n) || has_vanishing_factor(arena, n))
+        {
             return arena.nan;
         }
     } else if vanishes_identically(arena, d) {
-        if expands_to_zero(arena, n) {
+        if expands_to_zero(arena, n) || has_vanishing_factor(arena, n) {
             return arena.nan;
         }
         let zero = arena.zero;

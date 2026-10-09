@@ -208,7 +208,73 @@ pub fn integrate_definite(
             reason: "result still depends on the integration variable".into(),
         });
     }
+    if contradicted_by_quadrature(arena, f, x, a, b, result) {
+        return Err(failed(
+            "the closed form disagrees with adaptive quadrature (an antiderivative that jumps inside the interval?)",
+        ));
+    }
     Ok(result)
+}
+
+/// Does adaptive quadrature contradict the closed form `value` of `∫ₐᵇ f dx`
+/// with confidence?  Only for a parameter-free `f` that compiles, finite
+/// real bounds, a real `value` and a quadrature that converges: then a
+/// difference beyond `10⁻⁶·max(1, |Q|)` and 100 error estimates is a
+/// wrong closed form — an antiderivative that jumps where `f` is
+/// continuous, which the FTC splitting does not see when the jump is not
+/// at a breakpoint of a node it knows (up to 0.37 `∫₀¹ (x² + 1)³/((x² +
+/// 1)⁴ + 32x⁴) dx` was −0.53 for 0.53: a `RootSum` of logarithms whose
+/// arguments cross the cut at `x = 0`).  Anything else (no compiled form,
+/// a complex value, a quadrature that does not converge, a `DiracDelta`,
+/// which samples as 0) says nothing.
+fn contradicted_by_quadrature(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    a: ExprId,
+    b: ExprId,
+    value: ExprId,
+) -> bool {
+    if walk::free_symbols(arena, f).iter().any(|&s| s != x)
+        || contains_node(arena, f, |n| matches!(n, ExprNode::DiracDelta(..)))
+    {
+        return false;
+    }
+    let (Ok(lo), Ok(hi), Ok(v)) = (
+        evalf::evalf_f64(arena, a),
+        evalf::evalf_f64(arena, b),
+        evalf::evalf_f64(arena, value),
+    ) else {
+        return false;
+    };
+    if !(lo.is_finite() && hi.is_finite() && v.is_finite()) {
+        return false;
+    }
+    let ExprNode::Symbol(sid) = *arena.node(x) else {
+        return false;
+    };
+    let name = arena.symbol_name(sid).to_string();
+    let Ok(func) = crate::output::lambdify::compile(arena, f, &[&name]) else {
+        return false;
+    };
+    let g = |t: f64| func(&[t]);
+    let Ok(q) = quadrature(&g, lo, hi, &QuadOpts::default()) else {
+        return false;
+    };
+    if !(q.value.is_finite() && q.error.is_finite()) {
+        return false;
+    }
+    let tol = (1e-6 * q.value.abs().max(1.0)).max(100.0 * q.error);
+    let contradicted = (v - q.value).abs() > tol;
+    if contradicted {
+        tracing::debug!(
+            closed_form = v,
+            quadrature = q.value,
+            error = q.error,
+            "integrate_definite: closed form contradicted by quadrature"
+        );
+    }
+    contradicted
 }
 
 /// `eval`, except that expressions containing a `Piecewise` are left
@@ -4942,6 +5008,45 @@ mod tests {
             .unwrap()
             .value;
         assert!((v - 2.0).abs() < 1e-8, "{v}");
+    }
+
+    /// The guard of `integrate_definite`: `∫₃⁴ dx/(2 + cos x)` is
+    /// 0.9150785657603947 (mpmath `quad`); `−2.7125201627080`, what
+    /// `F(4) − F(3)` gave for 0.37's `2/√3·atan(tan(x/2)/√3)`, is refused,
+    /// the right value accepted, and a parameter or a complex value says
+    /// nothing.
+    #[test]
+    fn quadrature_contradicts_a_jumping_antiderivative() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let cos_x = a.cos(x);
+        let two = a.int(2);
+        let den = a.add(&[two, cos_x]);
+        let minus_one = a.int(-1);
+        let f = a.pow(den, minus_one);
+        let (three, four) = (a.int(3), a.int(4));
+        let wrong = a.num_ratio(Ratio::new(
+            BigInt::from(-27_125_201_627_i64),
+            BigInt::from(10_000_000_000_i64),
+        ));
+        let right = a.num_ratio(Ratio::new(
+            BigInt::from(9_150_785_657_604_i64),
+            BigInt::from(10_000_000_000_000_i64),
+        ));
+        assert!(contradicted_by_quadrature(&mut a, f, x, three, four, wrong));
+        assert!(!contradicted_by_quadrature(
+            &mut a, f, x, three, four, right
+        ));
+        let p = sym(&mut a, "p");
+        let g = a.mul(&[p, f]);
+        assert!(!contradicted_by_quadrature(
+            &mut a, g, x, three, four, wrong
+        ));
+        let i = a.i_unit();
+        let complex = a.add(&[right, i]);
+        assert!(!contradicted_by_quadrature(
+            &mut a, f, x, three, four, complex
+        ));
     }
 
     #[test]

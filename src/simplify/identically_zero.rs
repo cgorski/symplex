@@ -541,6 +541,64 @@ fn vanishing_among(
     crate::simplify::ratsimp::ratsimp_vanishing(arena, expr, &vanishing)
 }
 
+/// The value of `expr` when `result`, a rewrite of it by identities of its
+/// functions, lost a denominator that vanishes identically by such an
+/// identity: `None` when it lost none (the common case).
+///
+/// An identity that turns a numerator into 0 (`cos 2x − cos²x + sin²x`
+/// by the double-angle formula) drops its denominator with it (`0·d⁻¹ =
+/// 0`), though `0/d` is `0/0` for every value of the variables when `d`
+/// vanishes identically (`sin²x + cos²x − 1`): the value is then that of
+/// [`undefined_by_vanishing_denominator`](crate::simplify::simplify_engine::undefined_by_vanishing_denominator),
+/// as `simplify`, `trigsimp` and `fu` find it before they rewrite.  For
+/// the rewrites that do not run that test first (`expand_trig`,
+/// `trig_combine`): only the denominators of `expr` that hold a sum and a
+/// function and are missing from `result` are tested, one certified
+/// evaluation each.
+pub(crate) fn undefined_if_vanishing_denominator_dropped(
+    arena: &mut Arena,
+    expr: ExprId,
+    result: ExprId,
+) -> Option<ExprId> {
+    if result == expr || nested() {
+        return None;
+    }
+    let mut before: Vec<ExprId> = Vec::new();
+    for p in structural_powers(arena, expr) {
+        if p.negative
+            && !before.contains(&p.base)
+            && may_vanish_by_identity(arena, p.base)
+            && walk::post_order_ids(arena, p.base)
+                .into_iter()
+                .any(|id| matches!(arena.node(id), ExprNode::Add(_)))
+        {
+            before.push(p.base);
+        }
+    }
+    if before.is_empty() {
+        return None;
+    }
+    let after: FxHashSet<ExprId> = structural_powers(arena, result)
+        .into_iter()
+        .filter(|p| p.negative)
+        .map(|p| p.base)
+        .collect();
+    let dropped: Vec<ExprId> = before.into_iter().filter(|b| !after.contains(b)).collect();
+    let undefined = walk::post_order_ids(arena, result).into_iter().any(|id| {
+        matches!(
+            arena.node(id),
+            ExprNode::NaN | ExprNode::ComplexInfinity | ExprNode::Infinity | ExprNode::NegInfinity
+        )
+    });
+    if dropped.is_empty() || undefined {
+        return None;
+    }
+    if !dropped.into_iter().any(|b| vanishes_by_identity(arena, b)) {
+        return None;
+    }
+    crate::simplify::simplify_engine::undefined_by_vanishing_denominator(arena, expr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

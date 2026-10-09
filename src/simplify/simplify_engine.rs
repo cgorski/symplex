@@ -345,7 +345,7 @@ pub(crate) fn smart_simplify_traced(
     if flags.has_trig {
         let rules = crate::transforms::pattern::basic_rules(arena);
         let s5_eval = crate::transforms::eval::eval(arena, expr);
-        let s5_trig = crate::simplify::trig_expand::expand_trig(arena, s5_eval);
+        let s5_trig = crate::simplify::trig_expand::expand_trig_raw(arena, s5_eval);
         let s5_eval2 = crate::transforms::eval::eval(arena, s5_trig);
         let (s5, steps) = crate::transforms::pattern::apply_rules(arena, s5_eval2, &rules);
         best.consider(arena, s5, "eval+trig_expand+rules", steps);
@@ -692,6 +692,17 @@ fn undefined_skeleton(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
 /// xy/(x² + x))/(tan x·cos x − sin x))))` was `1`; both are `nan`.  One
 /// pass bottom-up over the tree; an argument is tested only when it holds a
 /// negative power.
+///
+/// An argument that is `zoo` at every point (`1/s` for a denominator `s`
+/// zero by an identity, [`identically_zero::vanishing_by_identity`](crate::simplify::identically_zero::vanishing_by_identity))
+/// is replaced by `zoo` when the function stands in a product beside a
+/// factor that may vanish identically (the residue test of
+/// [`may_vanish_identically_as_factor`](crate::base::canon::may_vanish_identically_as_factor)):
+/// `exp(zoo) = nan`, and `nan·0` is `nan`, not the `0` every strategy
+/// finds once `eval` has made the factor 0.  Up to 0.37
+/// `simplify(exp(1/(tan x·cos x − sin x))·(exp(x/2)² − exp(x)))` was `0`
+/// (`expand`: `nan`).  The numeric identity test runs only for such
+/// arguments.
 fn undefined_argument(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
     let order = walk::post_order_ids(arena, expr);
     let mut with_denominator: FxHashSet<ExprId> = FxHashSet::default();
@@ -700,6 +711,27 @@ fn undefined_argument(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
         let own = matches!(node, ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(Signed::is_negative));
         if own || node.children().iter().any(|c| with_denominator.contains(c)) {
             with_denominator.insert(id);
+        }
+    }
+    // The nodes under a product with a factor that may vanish identically
+    // and another factor holding a negative power.
+    let mut beside_zero: FxHashSet<ExprId> = FxHashSet::default();
+    for &id in &order {
+        let ExprNode::Mul(children) = arena.node(id) else {
+            continue;
+        };
+        let children = children.clone();
+        if !children.iter().any(|c| with_denominator.contains(c))
+            || !children
+                .iter()
+                .any(|&c| crate::base::canon::may_vanish_identically_as_factor(arena, c))
+        {
+            continue;
+        }
+        for c in children {
+            if with_denominator.contains(&c) {
+                beside_zero.extend(walk::post_order_ids(arena, c));
+            }
         }
     }
     let structural = |arena: &Arena, id: ExprId| match arena.node(id) {
@@ -714,12 +746,18 @@ fn undefined_argument(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
             continue;
         }
         for c in arena.node(id).children() {
-            if with_denominator.contains(&c)
-                && !arena.node(c).is_atom()
-                && tested.insert(c)
-                && vanishing_denominator_or_identity(arena, c) == Some(arena.nan)
-            {
+            if !with_denominator.contains(&c) || arena.node(c).is_atom() || !tested.insert(c) {
+                continue;
+            }
+            let value = vanishing_denominator_or_identity(arena, c);
+            if value == Some(arena.nan) {
                 cache.insert(c, arena.nan);
+            } else if beside_zero.contains(&id)
+                && let Some(v) = value
+                    .or_else(|| crate::simplify::identically_zero::vanishing_by_identity(arena, c))
+                && (v == arena.nan || v == arena.complex_infinity)
+            {
+                cache.insert(c, v);
             }
         }
     }
@@ -728,7 +766,7 @@ fn undefined_argument(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
     }
     tracing::debug!(
         arguments = cache.len(),
-        "simplify: a function argument is 0/0 at every point"
+        "simplify: a function argument is 0/0 or zoo at every point"
     );
     for &id in &order {
         if cache.contains_key(&id) {

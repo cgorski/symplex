@@ -19,11 +19,41 @@ use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 
+/// Expand trigonometric functions with composite arguments (the public
+/// `expand_trig`): [`expand_trig_raw`], keeping the value of an expression
+/// with a denominator that vanishes identically.
+///
+/// The addition formulas can turn a numerator into 0 (`cos 2x − cos²x +
+/// sin²x`, `sin 2x − 2·sin x·cos x`), and `0` times the negative power of a
+/// denominator is `0`: the denominator disappears.  When one that
+/// disappeared vanishes identically by an identity of its functions
+/// (`sin²x + cos²x − 1`, `eˣ·e⁻ˣ − 1`), the expression is `0/0` for
+/// every `x`, and its value is that of
+/// [`undefined_by_vanishing_denominator`](crate::simplify::simplify_engine::undefined_by_vanishing_denominator),
+/// as for `trigsimp` and `fu`
+/// ([`undefined_if_vanishing_denominator_dropped`](crate::simplify::identically_zero::undefined_if_vanishing_denominator_dropped)).
+/// Up to 0.37 `expand_trig((x + 1)·(cos 2x − cos²x + sin²x)/(sin²x +
+/// cos²x − 1))` was `0` and `expand_trig(cos x + 2 + (sin 2x − 2·sin
+/// x·cos x)/(eˣ·e⁻ˣ − 1))` was `cos x + 2`; both are `nan` (SymPy 1.14:
+/// `x + 1` and `nan`).  Only denominators with a sum and a function in
+/// them that are not in the result are tested, one certified evaluation
+/// each.
+pub(crate) fn expand_trig(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let result = expand_trig_raw(arena, expr);
+    crate::simplify::identically_zero::undefined_if_vanishing_denominator_dropped(
+        arena, expr, result,
+    )
+    .unwrap_or(result)
+}
+
 /// Expand trigonometric functions with composite arguments.
 ///
 /// Walks the expression bottom-up and applies addition formulas
-/// to `sin` and `cos` nodes whose arguments are `Add` nodes.
-pub(crate) fn expand_trig(arena: &mut Arena, expr: ExprId) -> ExprId {
+/// to `sin` and `cos` nodes whose arguments are `Add` nodes.  No test of
+/// vanishing denominators: for callers that make their own
+/// ([`trigsimp`](crate::simplify::trigsimp), [`fu`](crate::simplify::fu),
+/// `simplify`, `expand`).
+pub(crate) fn expand_trig_raw(arena: &mut Arena, expr: ExprId) -> ExprId {
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache = rustc_hash::FxHashMap::default();
 
@@ -176,7 +206,7 @@ fn integer_multiple(arena: &Arena, inner: ExprId) -> Option<(i64, ExprId)> {
 /// minutes).  The argument `x` itself is expanded first, so `sin(2(a+b))`
 /// still opens fully.
 fn de_moivre(arena: &mut Arena, n: i64, arg: ExprId, odd_powers: bool) -> ExprId {
-    let arg = expand_trig(arena, arg);
+    let arg = expand_trig_raw(arena, arg);
     let sin_x = arena.sin(arg);
     let cos_x = arena.cos(arg);
     let mut binom = BigInt::one(); // C(n, k), updated incrementally

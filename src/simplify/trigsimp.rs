@@ -154,7 +154,7 @@ fn replace_cos2_with_1_minus_sin2(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// Apply trig_combine (product-to-sum, double-angle) then eval + simplify.
 fn strategy_trig_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
     let evaled = crate::transforms::eval::eval(arena, expr);
-    let combined = crate::simplify::trig_combine::trig_combine(arena, evaled);
+    let combined = crate::simplify::trig_combine::trig_combine_raw(arena, evaled);
     let evaled2 = crate::transforms::eval::eval(arena, combined);
     let rules = crate::transforms::pattern::basic_rules(arena);
     let (result, _) = crate::transforms::pattern::apply_rules(arena, evaled2, &rules);
@@ -167,7 +167,7 @@ fn strategy_trig_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// eval + pattern simplify.
 fn strategy_expand_trig_then_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     let evaled = crate::transforms::eval::eval(arena, expr);
-    let expanded = crate::simplify::trig_expand::expand_trig(arena, evaled);
+    let expanded = crate::simplify::trig_expand::expand_trig_raw(arena, evaled);
     let evaled2 = crate::transforms::eval::eval(arena, expanded);
     let rules = crate::transforms::pattern::basic_rules(arena);
     let (result, _) = crate::transforms::pattern::apply_rules(arena, evaled2, &rules);

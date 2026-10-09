@@ -706,7 +706,19 @@ pub(super) fn integrate_rational_function(
                                     min_poly_degree = ?min_poly.degree(),
                                     "try_risch_rational: emitting RootSum for algebraic factor"
                                 );
-                                terms.push(root_sum_term(arena, var, min_poly, s));
+                                let linear = s.degree().is_some_and(|k| k >= 2).then(|| {
+                                    linear_root_sum_term(
+                                        arena,
+                                        var,
+                                        min_poly,
+                                        &hr.h_numer,
+                                        &hr.h_denom,
+                                    )
+                                });
+                                match linear.flatten() {
+                                    Some(term) => terms.push(term),
+                                    None => terms.push(root_sum_term(arena, var, min_poly, s)),
+                                }
                             }
                             (None, None) => {}
                         }
@@ -806,6 +818,59 @@ fn admits_substitution(n: &Poly, d: &Poly) -> bool {
         }
         true
     })
+}
+
+/// Largest degree of the denominator factor [`linear_root_sum_term`]
+/// sums over.
+const MAX_LINEAR_ROOT_SUM_DEGREE: usize = 24;
+
+/// `RootSum(d_q, ρ ↦ r(ρ)·ln(x − ρ))`: the logarithmic part
+/// `Σ_{q(α)=0} α·ln(S(α, x))` of the algebraic factor `q` written over the
+/// roots `ρ` of the factor `d_q` of the square-free denominator `d` whose
+/// residues `r(ρ) = a(ρ)/d′(ρ)` are the roots of `q` (`d_q = gcd(d,
+/// q(r))` with `r = a·d′⁻¹ mod d`, `r` reduced mod `d_q`).  For the factors
+/// whose log argument `S(α, x)` has degree ≥ 2 in `x`: for a non-real `α`,
+/// `S(α, x)` crosses the cut of `ln` on the real line, and the sum jumped
+/// where the integrand is continuous — `∫ (x² + 1)³/((x² + 1)⁴ + 32x⁴) dx`
+/// was `RootSum(12288t⁴ + 128t² + 1, t ↦ t·ln(x² + (3072t³ + 32t)·x − 1))`,
+/// which drops by twice the integral's value at `x = 0` (`∫₀¹` came out
+/// −0.53 for 0.53).  `ln(x − ρ)` with a non-real `ρ` does not reach the cut
+/// for real `x` (Bronstein, *Symbolic Integration I*, §2.8 on the real
+/// forms of the logarithmic part).  `None` when `d_q` has a real root (a
+/// pole of the integrand, where `ln(x − ρ)` would be complex on one side)
+/// or is too large.
+fn linear_root_sum_term(
+    arena: &mut Arena,
+    var: ExprId,
+    q: &Poly,
+    a: &Poly,
+    d: &Poly,
+) -> Option<ExprId> {
+    let eg = Poly::extended_gcd(&d.derivative(), d);
+    if eg.gcd.degree() != Some(0) {
+        return None;
+    }
+    let r = (a * &eg.x).rem(d);
+    let mut q_of_r = Poly::zero();
+    for c in q.coeffs().iter().rev() {
+        q_of_r = (&(&q_of_r * &r) + &Poly::constant(c.clone())).rem(d);
+    }
+    let d_q = Poly::gcd(d, &q_of_r);
+    let deg = d_q.degree()?;
+    if !(2..=MAX_LINEAR_ROOT_SUM_DEGREE).contains(&deg) {
+        return None;
+    }
+    if crate::poly::sturm::SturmChain::new(&d_q).count_real_roots() != 0 {
+        return None;
+    }
+    let r_q = r.rem(&d_q);
+    let s = arena.symbol("__rs_t");
+    let d_q_expr = crate::poly::polybridge::poly_to_expr(arena, &d_q, s);
+    let r_q_expr = crate::poly::polybridge::poly_to_expr(arena, &r_q, s);
+    let lin = arena.sub(var, s);
+    let ln = arena.ln(lin);
+    let body = arena.mul(&[r_q_expr, ln]);
+    Some(arena.intern(ExprNode::RootSum(d_q_expr, body, s)))
 }
 
 /// `RootSum(q, t ↦ t·ln(S(t, x)))`, i.e. `Σ_{q(α)=0} α·ln(S(α, x))`: the

@@ -1508,13 +1508,46 @@ fn try_weierstrass_substitution(
         return None;
     }
 
-    // Substitute back: t → tan(var/2)
+    // Substitute back, t → tan(var/2), continuously across var = π + 2kπ
+    // (up to 0.37 `∫ dx/(2 + cos x)` was `2/√3·atan(tan(x/2)/√3)`, which
+    // drops by 2π/√3 there; definite integrals taken from it were wrong).
     let half = arena.rational(1, 2);
     let half_var = arena.mul(&[half, var]);
-    let tan_half = arena.tan(half_var);
-    let result = arena.subs_structural(integral_t, t, tan_half);
+    match crate::transforms::trig_integ::continuous_through_tan(
+        arena, integral_t, t, t_sym, half_var,
+    ) {
+        Some(result) => Some(result),
+        None if jump_kept_undecided(arena, integral_t, t_sym) => {
+            tracing::debug!("weierstrass: the jump at x = π is not decided; uncorrected form");
+            let tan_half = arena.tan(half_var);
+            let back = arena.subs_structural(integral_t, t, tan_half);
+            Some(crate::transforms::trig_integ::atan_tan_terms_to_argument(
+                arena, back, half_var,
+            ))
+        }
+        None => {
+            tracing::debug!("weierstrass: the jump of G(tan(x/2)) at x = π is not decided");
+            None
+        }
+    }
+}
 
-    Some(result)
+/// May an antiderivative `G(tan w)` (`g` = `G(t)`, `t` the substitution's
+/// symbol) whose jump `G(+∞) − G(−∞)` at the poles of `tan w` is not
+/// decided be returned uncorrected, continuous only between those poles?
+/// Yes when `G` has parameters — the jump depends on their values and on
+/// the sides of the cuts their logarithms approach (`∫ dx/(a + b·cos x)`;
+/// SymPy and Rubi answer such integrands so too, and refusing them lost
+/// 435 answers of the Rubi suite) — or a `RootSum`, whose jump needs the
+/// half-plane of every root (`∫ dx/(1 + sin⁵x)`).  Any other undecided
+/// jump makes the substitution refuse.
+fn jump_kept_undecided(arena: &Arena, g: ExprId, t_sym: SymbolId) -> bool {
+    crate::base::walk::free_symbols(arena, g)
+        .iter()
+        .any(|&s| !matches!(arena.node(s), ExprNode::Symbol(sid) if *sid == t_sym))
+        || crate::base::walk::post_order_ids(arena, g)
+            .iter()
+            .any(|&id| matches!(arena.node(id), ExprNode::RootSum(..)))
 }
 
 /// Normalise a rational expression in `var` with nested fractions into a
@@ -3665,11 +3698,78 @@ fn try_u_substitution(
 
             // G(u) — substitute var back to u(x)
             let antideriv = arena.subs_structural(g_integrated, var, u_expr);
+            let antideriv = match continuous_through_tan_of_u(
+                arena,
+                g_integrated,
+                antideriv,
+                u_expr,
+                var,
+                var_sym,
+            ) {
+                Some(continuous) => continuous,
+                None if jump_kept_undecided(arena, g_integrated, var_sym) => {
+                    match tan_argument_of(arena, u_expr, var_sym) {
+                        Some(w) => crate::transforms::trig_integ::atan_tan_terms_to_argument(
+                            arena, antideriv, w,
+                        ),
+                        None => antideriv,
+                    }
+                }
+                None => continue,
+            };
             tracing::debug!("u-substitution succeeded");
             return Some(arena.mul(&[coeff, antideriv]));
         }
     }
     None
+}
+
+/// The back-substituted `antideriv = G(u(x))` of a u-substitution, made
+/// continuous across the poles of a `tan w` through which `u` depends on
+/// `x` ([`crate::transforms::trig_integ::add_tan_floor`]).  `g` is `G` in
+/// `var` (the stand-in for `u`).  Up to 0.37 `∫ tan x/(tan x + 2) dx` was
+/// `… + 1/5·atan(tan x)`, which drops by `π/5` at every `x = π/2 + kπ`.
+///
+/// `antideriv` unchanged when `u` has no `tan` of `var`; `None` (the
+/// candidate is not used) when `u` depends on `var` otherwise than through
+/// one `tan w`, or the jump `G(U(+∞)) − G(U(−∞))` of `G(U(s))`, `u = U(tan w)`,
+/// is not decided.
+fn continuous_through_tan_of_u(
+    arena: &mut Arena,
+    g: ExprId,
+    antideriv: ExprId,
+    u_expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let Some(w) = tan_argument_of(arena, u_expr, var_sym) else {
+        return Some(antideriv);
+    };
+    let tan_w = arena.tan(w);
+    let s = arena.symbol("__tan_s");
+    let ExprNode::Symbol(s_sym) = *arena.node(s) else {
+        return None;
+    };
+    let u_of_s = arena.subs_structural(u_expr, tan_w, s);
+    if contains_var(arena, u_of_s, var_sym) {
+        return None;
+    }
+    let h = arena.subs_structural(g, var, u_of_s);
+    let jump = crate::transforms::trig_integ::infinity_jump(arena, h, s, s_sym)?;
+    Some(crate::transforms::trig_integ::add_tan_floor(
+        arena, antideriv, w, jump,
+    ))
+}
+
+/// The argument `w` of the first `tan w` (with `w` depending on `var`) in
+/// `u` (post-order).
+fn tan_argument_of(arena: &Arena, u: ExprId, var_sym: SymbolId) -> Option<ExprId> {
+    crate::base::walk::post_order_ids(arena, u)
+        .into_iter()
+        .find_map(|id| match *arena.node(id) {
+            ExprNode::Tan(w) if contains_var(arena, w, var_sym) => Some(w),
+            _ => None,
+        })
 }
 
 /// Does `var` occur in `q` outside the arguments of its trigonometric and

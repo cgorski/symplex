@@ -11,6 +11,8 @@ mod v34_audit;
 mod v34_beyond;
 #[path = "v34/v34_codegen.rs"]
 mod v34_codegen;
+#[path = "v34/v34_continuity.rs"]
+mod v34_continuity;
 #[path = "v34/v34_eval.rs"]
 mod v34_eval;
 #[path = "v34/v34_evalf.rs"]
@@ -21,6 +23,8 @@ mod v34_integrate;
 mod v34_limits;
 #[path = "v34/v34_poly_speed.rs"]
 mod v34_poly_speed;
+#[path = "v34/v34_rewrites.rs"]
+mod v34_rewrites;
 #[path = "v34/v34_rubi.rs"]
 mod v34_rubi;
 #[path = "v34/v34_slow.rs"]

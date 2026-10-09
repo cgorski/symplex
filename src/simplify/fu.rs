@@ -412,7 +412,7 @@ fn tr7(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// `sin(a)·cos(b) → [sin(a+b) + sin(a-b)]/2`, etc.
 /// Delegates to the existing [`trig_combine`](crate::simplify::trig_combine) module.
 fn tr8(arena: &mut Arena, expr: ExprId) -> ExprId {
-    crate::simplify::trig_combine::trig_combine(arena, expr)
+    crate::simplify::trig_combine::trig_combine_raw(arena, expr)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -744,7 +744,7 @@ fn try_cos_addition_formula(arena: &mut Arena, term1: ExprId, term2: ExprId) -> 
 ///
 /// Delegates to the existing [`expand_trig`](crate::simplify::trig_expand) module.
 fn tr11(arena: &mut Arena, expr: ExprId) -> ExprId {
-    crate::simplify::trig_expand::expand_trig(arena, expr)
+    crate::simplify::trig_expand::expand_trig_raw(arena, expr)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

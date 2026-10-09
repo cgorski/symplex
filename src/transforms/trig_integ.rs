@@ -852,6 +852,576 @@ pub(crate) fn try_trig_power_integral(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Continuity across the poles of a tangent substitution
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The limit of an antiderivative `G(t)` at one end of the real line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EndValue {
+    /// A finite limit.
+    Finite(ExprId),
+    /// `|G(t)| → ∞`: the integrand is not integrable at that end.
+    Infinite,
+}
+
+/// `(degree, leading coefficient)` of `p` as a polynomial in `t` with
+/// `t`-free coefficients, the leading coefficient proved non-zero or, with
+/// free parameters, not structurally zero (a generic value of them, as for
+/// the limit engine); `None` when `p` is no such polynomial, is zero, or a
+/// constant leading coefficient is not decided.
+fn leading_term(arena: &mut Arena, p: ExprId, t: ExprId) -> Option<(usize, ExprId)> {
+    let mut coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, p, t)?;
+    while let Some(&lc) = coeffs.last() {
+        match crate::poly::algebraic::is_zero_checked(arena, lc) {
+            Some(true) => {
+                coeffs.pop();
+            }
+            Some(false) => return Some((coeffs.len() - 1, lc)),
+            None if !crate::base::walk::free_symbols(arena, lc).is_empty()
+                && !arena.is_zero_structural(lc) =>
+            {
+                return Some((coeffs.len() - 1, lc));
+            }
+            None => return None,
+        }
+    }
+    None
+}
+
+/// Where a non-zero constant `z` lies, for the end values of `ln` and
+/// `atan`: by its value, or (with free parameters) by the declared
+/// assumptions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Placement {
+    /// On the positive real axis.
+    Positive,
+    /// On the negative real axis (the cut of `ln`).
+    Negative,
+    /// Off the real axis, with the sign of its real part (0: on the
+    /// imaginary axis) and whether `|Im z| ≥ 1` there.
+    Complex { re_sign: i8, im_at_least_one: bool },
+}
+
+fn placement(arena: &mut Arena, z: ExprId) -> Option<Placement> {
+    if let Ok(v) = crate::transforms::evalf::evalf_complex64(arena, z) {
+        let scale = v.norm();
+        if !scale.is_finite() || scale == 0.0 {
+            return None;
+        }
+        let tol = 1e-9 * scale;
+        if v.im.abs() <= tol {
+            return Some(if v.re > 0.0 {
+                Placement::Positive
+            } else {
+                Placement::Negative
+            });
+        }
+        let re_sign = if v.re > tol {
+            1
+        } else if v.re < -tol {
+            -1
+        } else {
+            0
+        };
+        if re_sign == 0 && (v.im.abs() - 1.0).abs() <= 1e-9 {
+            return None;
+        }
+        return Some(Placement::Complex {
+            re_sign,
+            im_at_least_one: v.im.abs() >= 1.0,
+        });
+    }
+    let mut facts = crate::base::assumptions::AssumptionCache::new();
+    if facts.query(arena, z, crate::base::assumptions::Props::POSITIVE) == Some(true) {
+        Some(Placement::Positive)
+    } else if facts.query(arena, z, crate::base::assumptions::Props::NEGATIVE) == Some(true) {
+        Some(Placement::Negative)
+    } else {
+        None
+    }
+}
+
+/// A rational function `r` of `t` near `t = ±∞`: `r ~ c·tᵈ`, as
+/// `(d, c·(±1)ᵈ)` — the degree and the coefficient of `|t|ᵈ` at the end
+/// `positive` picks.  `None` when `r` is not a quotient of polynomials in
+/// `t` with decided leading coefficients.
+fn rational_end(arena: &mut Arena, r: ExprId, t: ExprId, positive: bool) -> Option<(i64, ExprId)> {
+    let (num, den) = arena.as_numer_denom_expr(r);
+    let (dn, ln) = leading_term(arena, num, t)?;
+    let (dd, ld) = leading_term(arena, den, t)?;
+    let d = i64::try_from(dn).ok()? - i64::try_from(dd).ok()?;
+    let mut lead = arena.div(ln, ld);
+    if !positive && d % 2 != 0 {
+        lead = arena.neg(lead);
+    }
+    Some((d, crate::transforms::eval::eval(arena, lead)))
+}
+
+/// The limit of `ln(p(t)) − d·ln|t|` (principal `ln`) at the end where
+/// `p(t) ~ lead·|t|ᵈ`.  `ln(lead)` when `lead` is off the cut (the negative
+/// reals).  On the cut it depends on the side from which `p(t)` approaches
+/// it: the sign of `Im p(t)`, that of the highest-degree non-real
+/// coefficient `cₖ` of `p` (times `(±1)ᵏ`) — `ln(lead) = ln|lead| + iπ` from
+/// above or when `p(t)` is real there, `ln(lead) − 2πi` from below
+/// (`ln(t + i√3) → ln|t| + iπ` and `ln(t − i√3) → ln|t| − iπ` as `t → −∞`).
+/// `None` when that is not decided or `p` has a non-constant denominator.
+fn log_end(
+    arena: &mut Arena,
+    p: ExprId,
+    t: ExprId,
+    lead: ExprId,
+    positive: bool,
+) -> Option<ExprId> {
+    let principal = arena.ln(lead);
+    match placement(arena, lead)? {
+        Placement::Negative => {}
+        _ => return Some(principal),
+    }
+    let (num, den) = arena.as_numer_denom_expr(p);
+    if contains_var_id(arena, den, t) {
+        return None;
+    }
+    let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, num, t)?;
+    let mut reals = crate::base::assumptions::AssumptionCache::new();
+    for (k, &c) in coeffs.iter().enumerate().rev() {
+        let c = arena.div(c, den);
+        let c = crate::transforms::eval::eval(arena, c);
+        if crate::transforms::realness::constant_realness_as_declared(arena, c, 30, &mut reals)
+            == Some(true)
+        {
+            continue;
+        }
+        let z = crate::transforms::evalf::evalf_complex64(arena, c).ok()?;
+        let im = z.im.abs();
+        if im.is_nan() || im <= 1e-12 * z.norm().max(1.0) {
+            return None;
+        }
+        let above = (z.im > 0.0) == (positive || k % 2 == 0);
+        if above {
+            return Some(principal);
+        }
+        let two_pi_i = {
+            let two = arena.int(2);
+            let pi = arena.pi();
+            let i = arena.i_unit();
+            arena.mul(&[two, pi, i])
+        };
+        return Some(arena.sub(principal, two_pi_i));
+    }
+    Some(principal)
+}
+
+/// Does `e` contain the symbol `t` (free)?
+fn contains_var_id(arena: &Arena, e: ExprId, t: ExprId) -> bool {
+    match *arena.node(t) {
+        ExprNode::Symbol(sid) => contains_var(arena, e, sid),
+        _ => true,
+    }
+}
+
+/// The limit of `g` as `t → +∞` (`positive`) or `t → −∞`, for the forms
+/// the rational integrator writes: a rational function of `t`, constants
+/// times `ln(p)`, `ln|p|` and `atan(p)` with `p` rational in `t` (the
+/// divergent `d·ln|t|` parts of the logarithms must cancel), and other
+/// terms whose limit the limit engine finds finite.  `None` when a term is
+/// of another form or a sign or leading coefficient is not decided.
+///
+/// The limit engine alone does not do: it leaves `ln(t + i√3) − ln(t − i√3)`
+/// at `t → −∞` unevaluated (the answer, `2πi`, depends on the sides of the
+/// cut from which the two arguments approach it).
+pub(crate) fn end_value(
+    arena: &mut Arena,
+    g: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+    positive: bool,
+) -> Option<EndValue> {
+    let terms = additive_terms(arena, g, t_sym);
+    let mut rational: Vec<ExprId> = Vec::new();
+    let mut finite: Vec<ExprId> = Vec::new();
+    let mut log_rate: Vec<ExprId> = Vec::new();
+    for term in terms {
+        if !contains_var(arena, term, t_sym) {
+            finite.push(term);
+            continue;
+        }
+        let (c, h) = match arena.node(term).clone() {
+            ExprNode::Mul(children) => {
+                let (dep, consts): (Vec<ExprId>, Vec<ExprId>) = children
+                    .iter()
+                    .partition(|&&k| contains_var(arena, k, t_sym));
+                let c = arena.mul(&consts);
+                let h = if dep.len() == 1 {
+                    dep[0]
+                } else {
+                    arena.mul(&dep)
+                };
+                (c, h)
+            }
+            ExprNode::Neg(inner) => (arena.int(-1), inner),
+            _ => (arena.one, term),
+        };
+        match arena.node(h).clone() {
+            ExprNode::Ln(arg) => {
+                let (p, absolute) = match arena.node(arg) {
+                    ExprNode::Abs(inner) => (*inner, true),
+                    _ => (arg, false),
+                };
+                let (d, lead) = rational_end(arena, p, t, positive)?;
+                if d != 0 {
+                    let d_id = arena.int(d);
+                    log_rate.push(arena.mul(&[c, d_id]));
+                }
+                let value = if absolute {
+                    let a = arena.abs(lead);
+                    arena.ln(a)
+                } else {
+                    log_end(arena, p, t, lead, positive)?
+                };
+                finite.push(arena.mul(&[c, value]));
+            }
+            ExprNode::Atan(q) => {
+                let (d, lead) = rational_end(arena, q, t, positive)?;
+                let value = match d.cmp(&0) {
+                    // `atan(z) → ±π/2` as `|z| → ∞` with `Re z ≷ 0`.
+                    std::cmp::Ordering::Greater => {
+                        let sign = match placement(arena, lead)? {
+                            Placement::Positive => 1,
+                            Placement::Negative => -1,
+                            Placement::Complex { re_sign: 0, .. } => return None,
+                            Placement::Complex { re_sign, .. } => i64::from(re_sign),
+                        };
+                        let half = arena.rational(sign, 2);
+                        let pi = arena.pi();
+                        arena.mul(&[half, pi])
+                    }
+                    // A limit on the cut (`iy`, `|y| ≥ 1`) is not followed.
+                    std::cmp::Ordering::Equal => match placement(arena, lead)? {
+                        Placement::Complex {
+                            re_sign: 0,
+                            im_at_least_one: true,
+                        } => return None,
+                        _ => arena.atan(lead),
+                    },
+                    std::cmp::Ordering::Less => arena.zero,
+                };
+                finite.push(arena.mul(&[c, value]));
+            }
+            ExprNode::RootSum(p, body, s) => {
+                let (rate, value) = root_sum_end(arena, p, body, s, t, t_sym, positive)?;
+                log_rate.push(arena.mul(&[c, rate]));
+                finite.push(arena.mul(&[c, value]));
+            }
+            _ if rational_end(arena, h, t, positive).is_some() => rational.push(term),
+            _ => {
+                let point = if positive {
+                    arena.infinity()
+                } else {
+                    arena.neg_infinity()
+                };
+                let v = arena.limit_expr(term, t, point).ok()?;
+                let v = crate::transforms::eval::eval(arena, v);
+                if contains_var(arena, v, t_sym)
+                    || crate::base::walk::has_unevaluated(arena, v)
+                    || crate::transforms::evalf::evalf_complex64(arena, v)
+                        .ok()
+                        .is_none_or(|z| !z.re.is_finite() || !z.im.is_finite())
+                {
+                    return None;
+                }
+                finite.push(v);
+            }
+        }
+    }
+    if !rational.is_empty() {
+        let r = arena.add(&rational);
+        let (d, lead) = rational_end(arena, r, t, positive)?;
+        match d.cmp(&0) {
+            std::cmp::Ordering::Greater => return Some(EndValue::Infinite),
+            std::cmp::Ordering::Equal => finite.push(lead),
+            std::cmp::Ordering::Less => {}
+        }
+    }
+    if !log_rate.is_empty() {
+        let rate = arena.add(&log_rate);
+        let rate = crate::transforms::eval::eval(arena, rate);
+        match crate::poly::algebraic::is_zero_checked(arena, rate) {
+            Some(true) => {}
+            Some(false) => return Some(EndValue::Infinite),
+            None => return None,
+        }
+    }
+    let value = arena.add(&finite);
+    Some(EndValue::Finite(crate::transforms::eval::eval(
+        arena, value,
+    )))
+}
+
+/// The terms of `g` as a sum, with every product `c·(u₁ + … + uₖ)` whose
+/// only `t`-dependent factor is a sum distributed (`(−3)^(−1/2)·(ln(t − i√3)
+/// − ln(t + i√3))`), at most [`MAX_DISTRIBUTED_TERMS`] of them.
+fn additive_terms(arena: &mut Arena, g: ExprId, t_sym: SymbolId) -> Vec<ExprId> {
+    let mut out: Vec<ExprId> = Vec::new();
+    let mut work: Vec<ExprId> = vec![g];
+    while let Some(e) = work.pop() {
+        match arena.node(e).clone() {
+            ExprNode::Add(children)
+                if out.len() + work.len() + children.len() <= MAX_DISTRIBUTED_TERMS =>
+            {
+                work.extend(children.iter().copied());
+            }
+            ExprNode::Mul(children) => {
+                let dependent: Vec<usize> = (0..children.len())
+                    .filter(|&k| contains_var(arena, children[k], t_sym))
+                    .collect();
+                let sum = match dependent.as_slice() {
+                    [k] => match arena.node(children[*k]) {
+                        ExprNode::Add(parts) => Some((*k, parts.to_vec())),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match sum {
+                    Some((k, parts))
+                        if out.len() + work.len() + parts.len() <= MAX_DISTRIBUTED_TERMS =>
+                    {
+                        let mut rest: Vec<ExprId> = children.to_vec();
+                        rest.remove(k);
+                        let c = arena.mul(&rest);
+                        for part in parts {
+                            work.push(arena.mul(&[c, part]));
+                        }
+                    }
+                    _ => out.push(e),
+                }
+            }
+            _ => out.push(e),
+        }
+    }
+    out
+}
+
+/// Most terms [`additive_terms`] writes out.
+const MAX_DISTRIBUTED_TERMS: usize = 256;
+
+/// `Σ_{p(ρ)=0} c(ρ)·ln(t + β(ρ))` (`body` = `c(s)·ln(t + β(s))`, `p ∈ ℚ[s]`
+/// without real roots) near `t = ±∞`: `(Σ c(ρ), value)` with the sum
+/// `≈ Σ c(ρ)·ln|t| + value`.  `ln(t + β) → ln t` at `+∞`; at `−∞`,
+/// `t + β` approaches the cut from above where `Im β > 0`, so
+/// `ln(t + β) − ln|t| → iπ·sign(Im β)`: value `iπ·Σ c(ρ)·sign(Im β(ρ))`,
+/// written as a `RootSum` (the sum over the roots in one half-plane has no
+/// simpler exact form in general).  The `RootSum`s of the rational
+/// integrator have `c(ρ)` the residue at the pole `−β(ρ)` of a real
+/// rational function, so `β(ρ)` is not real where `ρ` is not.
+fn root_sum_end(
+    arena: &mut Arena,
+    p: ExprId,
+    body: ExprId,
+    s: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+    positive: bool,
+) -> Option<(ExprId, ExprId)> {
+    let p_poly = crate::poly::polybridge::expr_to_poly(arena, p, s)?;
+    if p_poly.degree().is_none_or(|d| d == 0)
+        || crate::poly::sturm::SturmChain::new(&p_poly).count_real_roots() != 0
+    {
+        return None;
+    }
+    let ExprNode::Mul(children) = arena.node(body).clone() else {
+        return None;
+    };
+    let logs: Vec<usize> = (0..children.len())
+        .filter(|&k| contains_var(arena, children[k], t_sym))
+        .collect();
+    let [k] = logs.as_slice() else {
+        return None;
+    };
+    let ExprNode::Ln(arg) = *arena.node(children[*k]) else {
+        return None;
+    };
+    let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, arg, t)?;
+    let [beta, one] = coeffs.as_slice() else {
+        return None;
+    };
+    if *one != arena.one || contains_var(arena, *beta, t_sym) {
+        return None;
+    }
+    let beta = *beta;
+    let mut rest: Vec<ExprId> = children.to_vec();
+    rest.remove(*k);
+    let c = arena.mul(&rest);
+    let rate = arena.intern(ExprNode::RootSum(p, c, s));
+    if positive {
+        return Some((rate, arena.zero));
+    }
+    let im_beta = arena.im(beta);
+    let sign_im = arena.sign(im_beta);
+    let signed = arena.mul(&[c, sign_im]);
+    let sum = arena.intern(ExprNode::RootSum(p, signed, s));
+    let i = arena.i_unit();
+    let pi = arena.pi();
+    Some((rate, arena.mul(&[i, pi, sum])))
+}
+
+/// The jump `J = G(+∞) − G(−∞)` of an antiderivative `G(t)` of a rational
+/// function of `t` (or of a function of `t` whose end values
+/// [`end_value`] finds): `Some(0)` when `G` is infinite at an end (the
+/// integrand is not integrable there, so nothing is to be made continuous),
+/// `None` when an end value is not decided.
+///
+/// A parameter that is not declared real may be complex (decision D4), and
+/// then the end values of `ln(t + a)` depend on the side of the cut from
+/// which `t + a` approaches it: `None` at once (on the Rubi suite the
+/// attempt cost seconds on large parametric answers and decided none).
+pub(crate) fn infinity_jump(
+    arena: &mut Arena,
+    g: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+) -> Option<ExprId> {
+    let undeclared = crate::base::walk::free_symbols(arena, g)
+        .into_iter()
+        .any(|s| match *arena.node(s) {
+            ExprNode::Symbol(sid) => {
+                sid != t_sym && !crate::transforms::realness::symbol_declared_real(arena, sid)
+            }
+            _ => true,
+        });
+    if undeclared {
+        return None;
+    }
+    let plus = end_value(arena, g, t, t_sym, true)?;
+    let minus = end_value(arena, g, t, t_sym, false)?;
+    match (plus, minus) {
+        (EndValue::Finite(p), EndValue::Finite(m)) => {
+            let j = arena.sub(p, m);
+            Some(crate::transforms::eval::eval(arena, j))
+        }
+        _ => Some(arena.zero),
+    }
+}
+
+/// `G(tan w)` made continuous across the poles of `tan w`, for an
+/// antiderivative `G(t)` (in the symbol `t`) of the integrand after the
+/// substitution `t = tan w`, `w` real for real `x` (any real continuous
+/// function of `x`; the half-angle substitution has `w = x/2`).
+///
+/// Where `w` crosses `π/2 + kπ` upwards, `tan w` passes from `+∞` to
+/// `−∞`, and `G(tan w)` from `G(+∞)` to `G(−∞)`: it drops by
+/// `J = G(+∞) − G(−∞)` ([`infinity_jump`]) wherever the integrand is
+/// continuous there.  `⌊w/π + 1/2⌋` rises by 1 at exactly those points (and
+/// falls by 1 where `w` crosses them downwards, where `G(tan w)` rises), so
+/// `G(tan w) + J·⌊w/π + 1/2⌋` is continuous; it is the old answer on
+/// `−π/2 < w < π/2` and has the same derivative (`floor′ = 0`).  This is
+/// the correction of D. J. Jeffrey and A. D. Rich, "The evaluation of
+/// trigonometric integrals avoiding spurious discontinuities" (ACM TOMS 20,
+/// 1994) and of SymPy's `Integral.doit`, which adds
+/// `sign(c)·π·⌊(w − π/2)/π⌋` to an `atan(c·tan w + d)` (a constant away).
+///
+/// A term `c·atan(tan w)` is written `c·w − c·π·⌊w/π + 1/2⌋`, which it equals
+/// for real `w`; with the correction the floors then often cancel
+/// (`∫ tan x/(tan x + 2) dx` is `x/5 − 2/5·ln|tan x + 2| + 1/5·ln(tan²x + 1)`,
+/// as SymPy writes it).
+///
+/// `None` when `J` is not decided (the caller then has no continuous
+/// answer).
+pub(crate) fn continuous_through_tan(
+    arena: &mut Arena,
+    g: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+    w: ExprId,
+) -> Option<ExprId> {
+    let jump = infinity_jump(arena, g, t, t_sym)?;
+    let tan_w = arena.tan(w);
+    let back = arena.subs_structural(g, t, tan_w);
+    Some(add_tan_floor(arena, back, w, jump))
+}
+
+/// `big_f + jump·⌊w/π + 1/2⌋`, with every term `c·atan(tan w)` of `big_f`
+/// written `c·w − c·π·⌊w/π + 1/2⌋` (so that the floors combine).
+pub(crate) fn add_tan_floor(arena: &mut Arena, big_f: ExprId, w: ExprId, jump: ExprId) -> ExprId {
+    let pi = arena.pi();
+    let (mut kept, atan_coeffs) = split_atan_tan_terms(arena, big_f, w);
+    let mut floor_coeff: Vec<ExprId> = vec![jump];
+    for c in atan_coeffs {
+        let minus_one = arena.int(-1);
+        floor_coeff.push(arena.mul(&[minus_one, c, pi]));
+    }
+    let coeff = arena.add(&floor_coeff);
+    let coeff = crate::transforms::eval::eval(arena, coeff);
+    if crate::poly::algebraic::is_zero_checked(arena, coeff) != Some(true) {
+        let minus_one = arena.int(-1);
+        let inv_pi = arena.pow(pi, minus_one);
+        let w_over_pi = arena.mul(&[w, inv_pi]);
+        let half = arena.rational(1, 2);
+        let arg = arena.add(&[w_over_pi, half]);
+        let fl = arena.floor(arg);
+        kept.push(arena.mul(&[coeff, fl]));
+    }
+    arena.add(&kept)
+}
+
+/// `big_f` with every term `c·atan(tan w)` written `c·w`, which differs
+/// from it by a constant between consecutive poles of `tan w` and has no
+/// jumps (`atan(tan w) = w − π·⌊w/π + 1/2⌋` for real `w`).  For the
+/// answers whose jump at those poles is not decided otherwise.
+pub(crate) fn atan_tan_terms_to_argument(arena: &mut Arena, big_f: ExprId, w: ExprId) -> ExprId {
+    let (kept, atan_coeffs) = split_atan_tan_terms(arena, big_f, w);
+    if atan_coeffs.is_empty() {
+        return big_f;
+    }
+    arena.add(&kept)
+}
+
+/// The terms of `big_f`, each `c·atan(tan w)` (with `c` free of the
+/// symbols of `w`) replaced by `c·w`, and the coefficients `c` of those.
+fn split_atan_tan_terms(arena: &mut Arena, big_f: ExprId, w: ExprId) -> (Vec<ExprId>, Vec<ExprId>) {
+    let tan_w = arena.tan(w);
+    let atan_tan_w = arena.atan(tan_w);
+    let terms: Vec<ExprId> = match arena.node(big_f) {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![big_f],
+    };
+    let mut kept: Vec<ExprId> = Vec::with_capacity(terms.len() + 1);
+    let mut coeffs: Vec<ExprId> = Vec::new();
+    for term in terms {
+        let c = if term == atan_tan_w {
+            Some(arena.one)
+        } else if let ExprNode::Mul(children) = arena.node(term).clone()
+            && children.iter().filter(|&&k| k == atan_tan_w).count() == 1
+        {
+            let rest: Vec<ExprId> = children
+                .iter()
+                .copied()
+                .filter(|&k| k != atan_tan_w)
+                .collect();
+            Some(arena.mul(&rest))
+        } else {
+            None
+        };
+        match c {
+            Some(c) if !free_symbols_meet(arena, c, w) => {
+                kept.push(arena.mul(&[c, w]));
+                coeffs.push(c);
+            }
+            _ => kept.push(term),
+        }
+    }
+    (kept, coeffs)
+}
+
+/// Does `c` contain a free symbol of `w` (so that it is not constant in
+/// the variable of `w`)?
+fn free_symbols_meet(arena: &Arena, c: ExprId, w: ExprId) -> bool {
+    let of_w = crate::base::walk::free_symbols(arena, w);
+    crate::base::walk::free_symbols(arena, c)
+        .iter()
+        .any(|s| of_w.contains(s))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -859,6 +1429,105 @@ pub(crate) fn try_trig_power_integral(
 mod tests {
     use super::*;
     use crate::base::arena::Arena;
+
+    /// `G(+∞) − G(−∞)` of `g` (in `t`), printed; `None` when undecided.
+    fn jump_of(g: &str) -> Option<String> {
+        let ctx = crate::api::context::Context::new();
+        let g = ctx.parse(g).unwrap().id();
+        ctx.with_arena_mut(|a| {
+            let t = a.symbol("t");
+            let ExprNode::Symbol(t_sym) = *a.node(t) else {
+                unreachable!()
+            };
+            infinity_jump(a, g, t, t_sym).map(|j| a.display(j).to_string())
+        })
+    }
+
+    #[test]
+    fn jumps_at_infinity_of_rational_antiderivatives() {
+        // atan: ±π/2 by the sign of the leading coefficient.
+        assert_eq!(
+            jump_of("2/3*sqrt(3)*atan(1/3*sqrt(3)*t)").as_deref(),
+            Some("2/3*sqrt(3)*pi")
+        );
+        assert_eq!(
+            jump_of("1/4*sqrt(2)*(2*atan(1/4*sqrt(2)*(t^3 + 7*t)) + 2*atan(1/4*sqrt(2)*t))")
+                .as_deref(),
+            Some("sqrt(2)*pi")
+        );
+        // The ln|·| parts cancel at both ends.
+        assert_eq!(
+            jump_of("-2/5*ln(abs(t + 2)) + 1/5*ln(t^2 + 1) + 1/5*atan(t)").as_deref(),
+            Some("1/5*pi")
+        );
+        // ln(t + i√3) − ln(t − i√3) → 2πi at −∞ (the limit engine leaves
+        // it unevaluated): J = (−3)^(−1/2)·(−2πi) = −2π/√3.
+        let j = jump_of("(-3)^(-1/2)*(-ln(sqrt(3)*I + t) + ln(-sqrt(3)*I + t))").unwrap();
+        let ctx = crate::api::context::Context::new();
+        let v = ctx.parse(&j).unwrap().eval_complex64().unwrap();
+        let want = 2.0 * std::f64::consts::PI / 3f64.sqrt();
+        assert!(
+            (v.re - want).abs() < 1e-14 && v.im.abs() < 1e-14,
+            "{j} = {v}"
+        );
+        // Infinite at an end: the integrand is not integrable there.
+        assert_eq!(jump_of("t").as_deref(), Some("0"));
+        assert_eq!(jump_of("ln(abs(t))").as_deref(), Some("0"));
+        // A free parameter that is not declared real: undecided.
+        assert_eq!(jump_of("atan(t/a)"), None);
+    }
+
+    #[test]
+    fn jump_of_a_root_sum_over_one_half_plane() {
+        // Σ_{ρ⁴ = −1} −ρ/4·ln(t − ρ) = ∫ dt/(t⁴ + 1): J = ∫_ℝ = π/√2.
+        let mut a = Arena::new();
+        let t = a.symbol("t");
+        let s = a.symbol("s");
+        let ExprNode::Symbol(t_sym) = *a.node(t) else {
+            unreachable!()
+        };
+        let four = a.int(4);
+        let s4 = a.pow(s, four);
+        let one = a.one;
+        let p = a.add(&[s4, one]);
+        let t_minus_s = a.sub(t, s);
+        let ln = a.ln(t_minus_s);
+        let quarter = a.rational(-1, 4);
+        let body = a.mul(&[quarter, s, ln]);
+        let g = a.intern(ExprNode::RootSum(p, body, s));
+        let j = infinity_jump(&mut a, g, t, t_sym).unwrap();
+        let v = crate::transforms::evalf::evalf_complex64(&a, j).unwrap();
+        let want = std::f64::consts::PI / 2f64.sqrt();
+        assert!(
+            (v.re - want).abs() < 1e-14 && v.im.abs() < 1e-14,
+            "{} = {v}",
+            a.display(j)
+        );
+    }
+
+    #[test]
+    fn atan_tan_terms_become_the_argument() {
+        let ctx = crate::api::context::Context::new();
+        let f = ctx
+            .parse("-2/5*ln(abs(tan(x) + 2)) + 1/5*atan(tan(x))")
+            .unwrap()
+            .id();
+        let (with_floor, plain) = ctx.with_arena_mut(|a| {
+            let x = a.symbol("x");
+            let pi = a.pi();
+            let fifth = a.rational(1, 5);
+            let jump = a.mul(&[fifth, pi]);
+            let with_floor = add_tan_floor(a, f, x, jump);
+            let plain = atan_tan_terms_to_argument(a, f, x);
+            (
+                a.display(with_floor).to_string(),
+                a.display(plain).to_string(),
+            )
+        });
+        // The jump π/5 cancels the floor of atan(tan x) = x − π·⌊x/π + 1/2⌋.
+        assert_eq!(with_floor, "1/5*x - 2/5*ln(abs(tan(x) + 2))");
+        assert_eq!(plain, "1/5*x - 2/5*ln(abs(tan(x) + 2))");
+    }
 
     // ------------------------------------------------------------------
     // sin^n integration
