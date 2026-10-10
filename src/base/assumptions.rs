@@ -1654,6 +1654,24 @@ impl AssumptionCache {
             a.known_true |= Props::NONNEGATIVE | Props::REAL;
         }
 
+        // nonzero finite real^even integer → positive; negative^odd integer
+        // → negative (SymPy `Pow._eval_is_extended_positive`/`_negative`).
+        // Up to 0.39 `a²` was of unknown sign for a negative `a`, so the
+        // poles `±√(−a²)` of `1/(x² + a²)` were "undecided" against an
+        // interval of integration.
+        let finite_nonzero_real = base_a.query(Props::REAL) == Some(true)
+            && base_a.query(Props::NONZERO) == Some(true)
+            && base_a.query(Props::FINITE) == Some(true);
+        if finite_nonzero_real && exp_a.query(Props::EVEN) == Some(true) {
+            a.known_true |= Props::POSITIVE | Props::NONZERO | Props::REAL;
+        }
+        if base_a.query(Props::NEGATIVE) == Some(true)
+            && base_a.query(Props::FINITE) == Some(true)
+            && exp_a.query(Props::ODD) == Some(true)
+        {
+            a.known_true |= Props::NEGATIVE | Props::NONZERO | Props::REAL;
+        }
+
         // real_base^integer_exp → real (wherever defined)
         if base_a.query(Props::REAL) == Some(true) && exp_a.query(Props::INTEGER) == Some(true) {
             a.known_true |= Props::REAL;

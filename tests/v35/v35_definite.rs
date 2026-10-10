@@ -169,6 +169,25 @@ fn cosine_denominators_with_a_parametric_constant_part() {
     }
 }
 
+/// Refused before: `∫₋₁¹ dx/(x² + a²)` with `a` declared negative.  The
+/// assumption system did not know that `a²` is positive for a non-zero
+/// real `a` (only non-negative), so the poles `±√(−a²)` were "undecided"
+/// against the interval.  The value is `2·atan(1/|a|)/|a|`; mpmath at
+/// a = −3: quad(1/(x² + 9), [−1, 1]) = 0.214500369597761462267603076239.
+#[test]
+fn square_of_a_negative_parameter_is_positive() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol_with("a", &[Assumption::Negative]).unwrap();
+    assert_eq!(a.powi(2).is_positive(), Some(true));
+    assert_eq!(a.powi(3).is_negative(), Some(true));
+    let v = (1 / (x.powi(2) + a.powi(2)))
+        .try_integrate_definite(&x, &ctx.int(-1), &ctx.int(1))
+        .unwrap();
+    let at = value(&v.subs(&a, &ctx.int(-3)));
+    assert!((at - 0.214_500_369_597_761_46).abs() < 1e-14, "{v} = {at}");
+}
+
 /// The steps of `floor`/`ceiling` of a non-linear argument were not
 /// located, and with no `|·|`/sign/H argument to watch the incomplete scan
 /// passed: the single piece was resolved at its midpoint.  `∫₀² a·floor(x²)

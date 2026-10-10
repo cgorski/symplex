@@ -38,6 +38,11 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   parametric constant part integrate (they were refused: the table wanted
   a two-term denominator, and the non-real zeros `acos(−b − 1)` were
   "undecided" against the interval).
+- The assumption system knows that an even power of a non-zero real is
+  positive and an odd power of a negative is negative (SymPy the same):
+  `a²` for a negative `a` was of unknown sign, and `∫₋₁¹ dx/(x² + a²)` was
+  refused ("cannot decide whether the singular point √(−a²) lies inside
+  the interval").
 
 ## [0.39.0] - 2026-10-10
 
