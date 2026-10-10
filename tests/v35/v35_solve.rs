@@ -436,3 +436,18 @@ fn constant_base_exponentials_reach_lambert_w() {
         &[(0.457822373232055, 0.0), (3.313178380475635, 0.0)]
     ));
 }
+
+/// `solve_as_set` of an equation the solver cannot solve is a condition set
+/// (the set is not known), not the empty set.  Before: `(x − cos x)` gave
+/// `EmptySet` although `x ≈ 0.7390851332` solves it (mpmath:
+/// `findroot(lambda t: t - cos(t), 1)`).  SymPy 1.14: `solveset(x - cos(x),
+/// x)` → `ConditionSet(x, Eq(x - cos(x), 0), Complexes)`.  A provably
+/// unsatisfiable equation is still empty (`exp(x) = 0`).
+#[test]
+fn an_unsolved_equation_is_a_condition_set_not_the_empty_set() {
+    let ctx = symplex::prelude::Context::new();
+    let x = ctx.symbol("x");
+    let s = format!("{}", (&x - &x.cos()).solve_as_set(&x));
+    assert!(s.starts_with("ConditionSet"), "{s}");
+    assert_eq!(format!("{}", x.exp().solve_as_set(&x)), "EmptySet");
+}

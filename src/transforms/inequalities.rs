@@ -129,17 +129,28 @@ pub(crate) fn solve_inequality(
 /// Solve `expr = 0`, returning the solution set as an `ExprId`.
 ///
 /// - Identity `0 = 0` → `UniversalSet`
-/// - Contradiction / no roots found → `EmptySet`
-/// - Otherwise a `FiniteSet` of the roots
+/// - Provably no solution → `EmptySet`
+/// - Roots found → a `FiniteSet` of them (the roots `solve` returns: for a
+///   periodic equation the principal ones)
+/// - No root found, or the solver could not decide → `ConditionSet(x, Eq(expr,
+///   0))`: the set is not known.  Before 0.39 it was `EmptySet`, a claim
+///   that there is no solution: `(x − cos x).solve_as_set(x)` (`x ≈ 0.739`
+///   solves it) and `x⁵ − x − 1` (five roots, none in radicals).
 pub(crate) fn solveset(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     use crate::transforms::solve::SolveOutcome;
+    let unknown = |arena: &mut Arena| {
+        let zero = arena.zero;
+        let cond = arena.eq_(expr, zero);
+        arena.intern(ExprNode::ConditionSet(var, cond))
+    };
     match crate::transforms::solve::solve_classified(arena, expr, var) {
         SolveOutcome::Identity => arena.universal_set,
-        SolveOutcome::NoSolution(_) | SolveOutcome::Unresolved(_) => arena.empty_set,
+        SolveOutcome::NoSolution(_) => arena.empty_set,
+        SolveOutcome::Unresolved(_) => unknown(arena),
         SolveOutcome::Solutions(solutions) => {
             let root_ids: Vec<ExprId> = solutions.into_iter().map(|s| s.value).collect();
             if root_ids.is_empty() {
-                arena.empty_set
+                unknown(arena)
             } else {
                 arena.finite_set(&root_ids)
             }

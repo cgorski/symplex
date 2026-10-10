@@ -21,6 +21,15 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   5π/3 + 2nπ`).  `reduce_inequalities` returns a condition set for an
   unbounded periodic equation.  Logarithms of Gaussian rationals in
   solutions are folded (`exp(ix) = i` → `π/2`; it was `−ln(I)·I`).
+- **`solve_as_set` returns `ConditionSet(x, Eq(f, 0))`** when no root was
+  found or the solver could not decide, instead of `EmptySet` (a claim
+  that there is no solution): `(x − cos x).solve_as_set(x)` (`x ≈ 0.739`
+  solves it; SymPy `ConditionSet(x, Eq(x - cos(x), 0), Complexes)`).  A
+  provably unsatisfiable equation is still `EmptySet`.
+- **`eval` folds `ln` of complex constants with a special argument**:
+  `ln(i)` = `iπ/2`, `ln(1 + i)` = `ln √2 + iπ/4`, `ln(1/2 + √3·i/2)` =
+  `iπ/3`, `ln(−√3/2 − i/2)` = `−5iπ/6` (SymPy 1.14 the same; they stayed
+  `ln(…)`).
 
 ### Added
 

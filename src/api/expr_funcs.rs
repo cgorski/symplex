@@ -3491,10 +3491,16 @@ impl Expr<Numeric> {
     /// This is a set-valued variant of [`solve`](Ex::solve) — instead of
     /// returning a `Vec<Ex>`, it returns a `SetEx`:
     ///
-    /// - a `FiniteSet` of the roots when they can be found,
+    /// - a `FiniteSet` of the roots [`solve`](Ex::solve) finds — for a
+    ///   periodic equation its principal solutions, as `solve` returns them
+    ///   (`sin(x) = 1/2` gives `{π/6, 5π/6}`; the families are
+    ///   [`solve_general`](Ex::solve_general)'s),
     /// - `UniversalSet` when the equation is the identity `0 = 0`,
-    /// - `EmptySet` when the equation is provably unsatisfiable or no
-    ///   roots were found.
+    /// - `EmptySet` when the equation is provably unsatisfiable,
+    /// - `ConditionSet(x, Eq(self, 0))` when no root was found or the
+    ///   solver could not decide: the set is not known.  Before 0.39 this
+    ///   was `EmptySet`, which claims there is no solution:
+    ///   `(x − cos x).solve_as_set(x)` (`x ≈ 0.739` solves it).
     ///
     /// # Examples
     ///
@@ -3510,6 +3516,9 @@ impl Expr<Numeric> {
     /// assert!(!s.contains("EmptySet"), "solve_as_set: {s}");
     /// assert_eq!(format!("{}", ctx.int(0).solve_as_set(&x)), "UniversalSet");
     /// assert_eq!(format!("{}", ctx.int(1).solve_as_set(&x)), "EmptySet");
+    /// // Not solved in closed form: the set is not known, not empty.
+    /// let s = format!("{}", (&x - &x.cos()).solve_as_set(&x));
+    /// assert!(s.starts_with("ConditionSet"), "{s}");
     /// ```
     pub fn solve_as_set(&self, var: &Ex) -> SetEx {
         let var_id = self.checked_id(var);

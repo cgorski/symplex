@@ -2882,7 +2882,67 @@ fn eval_ln(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
 
-    None
+    ln_of_special_complex(arena, inner)
+}
+
+/// `Log z = ln|z| + i·Arg z` for a constant `z = a + b·i` (`b ≠ 0`, exact
+/// parts built from rationals and square roots) whose argument is a
+/// rational multiple of π the special-angle table knows (`tan(Arg z)` = 1,
+/// `√3`, `2 − √3`, …; for `a = 0` it is `±π/2`).  SymPy folds these:
+/// `log(I)` → `I*pi/2`, `log(1 + I)` → `log(sqrt(2)) + I*pi/4`, `log(1/2 +
+/// sqrt(3)*I/2)` → `I*pi/3`.  Before 0.39 they stayed `ln(…)`, and `solve`
+/// returned `exp(ix) = i` as `−ln(I)·I`.
+fn ln_of_special_complex(arena: &mut Arena, z: ExprId) -> Option<ExprId> {
+    if crate::base::complex::is_real_node(arena, z)
+        || !crate::base::walk::free_symbols(arena, z).is_empty()
+    {
+        return None;
+    }
+    let parts = crate::base::complex::decompose(arena, z);
+    if !parts.exact || arena.is_zero_structural(parts.im) {
+        return None;
+    }
+    let (re, im) = (eval(arena, parts.re), eval(arena, parts.im));
+    let tower =
+        |arena: &Arena, v: ExprId| arena.as_num(v).is_some() || is_square_root_tower(arena, v);
+    if !tower(arena, re) || !tower(arena, im) {
+        return None;
+    }
+    let im_sign = crate::poly::algebraic::sign_checked(arena, im)?;
+    // `q·π`, the angle of `|b|/|a|` in [0, π/2].
+    let (re_sign, q) = if arena.is_zero_structural(re) {
+        (0, Ratio::new(BigInt::from(1), BigInt::from(2)))
+    } else {
+        let re_sign = crate::poly::algebraic::sign_checked(arena, re)?;
+        let ratio = arena.div(im, re);
+        let ratio = eval(arena, ratio);
+        let q = match arena.as_num(ratio) {
+            // Niven: a rational tangent of a rational multiple of π is 0 or ±1.
+            Some(r) if r.abs().is_one() => Ratio::new(BigInt::from(1), BigInt::from(4)),
+            Some(_) => return None,
+            None => special_angle_of(arena, ratio, SpecialTable::Tan)?.1,
+        };
+        (re_sign, q)
+    };
+    if im_sign == 0 || (re_sign != 0 && q.is_zero()) {
+        return None;
+    }
+    let pi_q = if re_sign >= 0 { q } else { Ratio::one() - q };
+    let arg = if im_sign > 0 { pi_q } else { -pi_q };
+    let i_arg = {
+        let t = pi_times(arena, arg);
+        arena.mul(&[arena.i_unit, t])
+    };
+    // `ln|z| = ln √(a² + b²)`.
+    let two = arena.int(2);
+    let (re2, im2) = (arena.pow(re, two), arena.pow(im, two));
+    let m2 = arena.add(&[re2, im2]);
+    let half = arena.rational(1, 2);
+    let modulus = arena.pow(m2, half);
+    let modulus = eval(arena, modulus);
+    let ln_abs = arena.ln(modulus);
+    let out = arena.add(&[ln_abs, i_arg]);
+    Some(eval(arena, out))
 }
 
 /// `(e^f)^g = e^(f·g)` on the principal branch?  Always for an integer
