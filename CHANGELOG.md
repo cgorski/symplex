@@ -8,7 +8,22 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
-### Breaking (behaviour; no signature changed)
+## [0.40.0] - 2026-10-10
+
+Six areas hunted with independent oracles, every wrong class fixed at
+the root: integral transforms and definite integrals (38 wrong definite
+integrals at real and complex parameters → 0; a Laplace transform that
+was not analytic in `s`), number theory and combinatorial numbers (50
+hangs and a process abort → 0), statistics (moment generating functions
+beyond their domain and moments beyond a heavy tail's order were finite
+wrong numbers: `Exponential(1).mgf(2)` was `−1`), polynomial algebra
+(`solve_system_ex` answered "no solution" for solvable systems;
+multivariate factorizations left products whole), and solution sets:
+`solve_as_set` now returns the whole solution set, with periodic
+families as image sets (`sin x = 0` was `{0, π}`, now `{nπ : n ∈ ℤ}`).
+Rubi stays at 28,713 verified, 0 wrong.
+
+### Breaking (behaviour; the public `ExprTree` enum gained a variant)
 
 - **Definite integrals whose table value needs a real parameter refuse
   it when the parameter is not declared real** (an unassumed parameter
@@ -169,8 +184,42 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `continued_fraction_reduce_periodic` 4.4 s → 84 µs on a period of 116
   (no factorisation of the gcd); `is_mersenne_prime` reads the known
   exponents below 6.5·10⁷ (`p = 44497` took 18 s).
-- `Binomial(1000, 167/716).sf(0)` over 10 s → 5 ms (an exact integer
+`Binomial(1000, 167/716).sf(0)` over 10 s → 5 ms (an exact integer
   recurrence).
+
+### Measured
+
+- `tests/v35/` (0.39–0.40): 9 files, 74 tests.  nextest 13,832 tests (14
+  skipped), doctests 1,322.
+- Rubi harness: 28,713 verified, 73 real_verified, 0 wrong, 0 undecided, 0
+  timeouts (unchanged).  Self-test: 55,475 verified, 0 wrong, 742
+  undecided.  `--negative-params`: 73 real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.39.0: one major change, the new
+  variant `ExprTree::ImageSet` (`enum_variant_added`).
+- Hunters (before → after): definite integrals at real and complex
+  parameters (1,600) 38 wrong → 0; antiderivatives at complex parameters
+  (400) 15 wrong → 2 (both integrate across a pole of the integrand);
+  Laplace (300) 7 wrong → 0; number theory (16 generators × 300) 3 wrong,
+  2 panics, 50 hangs, 1 abort → 0, SymPy oracle cases (23,797) 1
+  documented deviation (`factorint(0)`) as before; combinatorial
+  expressions against SymPy: refusals 81 → 24, no evaluated output
+  changed; statistics numeric (1,000 seeds) wrong 50 → 37 (all re-checked
+  as oracle artifacts or the pre-existing density at a support end),
+  refused 557 → 197, hangs 13 → 0, symbolic wrong 251 → 8; polynomial
+  algebra (25 generators × 300) wrong or incomplete 409 → 0, hangs 2 → 0;
+  solution sets (617) wrong 385 → 0.  No hunter or oracle exceeded its
+  memory cap after the guards described in the hand-off.
+- Fuzzing: the Fuzz workflow on the release code (12 targets × 600 s on
+  CI) was green on all 12.  Locally all 12 targets ran together with a
+  10-second and a 2.5 GB limit (`fuzz_simplify` and `fuzz_integrate` 15
+  minutes, the others 10): `fuzz_numdist` 19,965,510 inputs,
+  `fuzz_refine` 14,072,047, `fuzz_lambertw` 2,984,403, `fuzz_parser`
+  1,851,202, `fuzz_eigenvects` 290,216, `fuzz_exact_matrix` 240,746,
+  `fuzz_evalf` 104,679, `fuzz_calculus` 53,188, `fuzz_roundtrip` 45,441,
+  `fuzz_poly` 42,449, `fuzz_simplify` 25,180, `fuzz_integrate` 9,190: 0
+  crashes, 0 timeouts, 0 out-of-memory.
 
 ## [0.39.0] - 2026-10-10
 
