@@ -40,6 +40,25 @@ fn assert_cdf_on_support(rv: &RandomVariable, v: &Ex, expected: &Ex, label: &str
     assert_exact(&on_support, expected, label);
 }
 
+/// 0.40: `RandomVariable::mgf` puts the closed form on its domain (a
+/// `Piecewise` in a symbolic `t`, `+∞` from the abscissa of convergence
+/// on); the family's analytic expression is what SymPy's
+/// `moment_generating_function(X)(t)` returns, and what these tests pinned
+/// as the mgf for every `t` up to 0.39.
+fn assert_mgf(rv: &RandomVariable, t: &Ex, expected: &Ex, beyond: &Ex, label: &str) {
+    let closed = rv
+        .distribution()
+        .family()
+        .mgf(t)
+        .unwrap_or_else(|| panic!("{label}: no closed-form mgf"));
+    assert_exact(&closed, expected, label);
+    assert_eq!(
+        rv.mgf(beyond),
+        rv.context().infinity(),
+        "{label}: E[e^(tX)] diverges at t = {beyond}"
+    );
+}
+
 fn assert_close(actual: &Ex, expected: f64, label: &str) {
     let v = actual
         .eval_f64()
@@ -145,7 +164,13 @@ fn exponential_rate_3() {
     assert_exact(&x.skewness(), &ctx.int(2), "skewness");
     assert_exact(&x.kurtosis(), &ctx.int(9), "kurtosis");
     assert_cdf_on_support(&x, &v, &(ctx.one() - (-3 * &v).exp()), "cdf");
-    assert_exact(&x.mgf(&t), &(ctx.int(3) / (ctx.int(3) - &t)), "mgf");
+    assert_mgf(
+        &x,
+        &t,
+        &(ctx.int(3) / (ctx.int(3) - &t)),
+        &ctx.int(3),
+        "mgf",
+    );
     assert_exact(
         &x.quantile(&p).unwrap(),
         &(-(ctx.one() - &p).ln() / 3),
@@ -263,7 +288,13 @@ fn gamma_shape_3_scale_2() {
         &(ctx.one() - 5 * (-ctx.int(2)).exp()),
         "cdf(4)",
     );
-    assert_exact(&g.mgf(&t), &(ctx.one() - 2 * &t).powi(-3), "mgf");
+    assert_mgf(
+        &g,
+        &t,
+        &(ctx.one() - 2 * &t).powi(-3),
+        &ctx.rational(1, 2),
+        "mgf",
+    );
     assert!(
         g.quantile(&ctx.rational(1, 2)).is_none(),
         "no closed quantile"
@@ -318,7 +349,13 @@ fn chi_squared_4_dof() {
     assert_cdf_on_support(&c, &v, &(ctx.one() - (&v / 2 + 1) * (-&v / 2).exp()), "cdf");
     let two_over_e = 2 * (-ctx.one()).exp();
     assert_exact(&c.cdf(&ctx.int(2)), &(ctx.one() - &two_over_e), "cdf(2)");
-    assert_exact(&c.mgf(&t), &(ctx.one() - 2 * &t).powi(-2), "mgf");
+    assert_mgf(
+        &c,
+        &t,
+        &(ctx.one() - 2 * &t).powi(-2),
+        &ctx.rational(1, 2),
+        "mgf",
+    );
     assert!(
         c.quantile(&ctx.rational(1, 2)).is_none(),
         "no closed quantile"
@@ -418,16 +455,13 @@ fn cauchy_1_2_has_cdf_and_quantile_but_no_moments() {
     assert!(c.distribution().family().mean().is_none());
     assert!(c.distribution().family().variance().is_none());
     assert!(c.distribution().family().raw_moment(1).is_none());
-    // The generic route hands back the divergent integral unevaluated…
-    let mean = c.mean();
-    assert!(
-        mean.has_unevaluated(),
-        "E[X] must not be a number, got `{mean}`"
-    );
-    assert!(
-        c.variance().has_unevaluated(),
-        "Var[X] must not be a number"
-    );
+    // 0.40: the family's tail orders (1 on both sides) make the mean and
+    // the variance undefined (NaN) and E[X²] infinite, where the generic
+    // route handed back the divergent integral unevaluated (scipy:
+    // `cauchy.stats(moments='mv')` = (nan, nan))…
+    assert_eq!(c.mean(), ctx.nan(), "E[X] undefined");
+    assert_eq!(c.variance(), ctx.nan(), "Var[X] undefined");
+    assert_eq!(c.moment(2), ctx.infinity(), "E[X²] = +∞");
     // …and `try_integrate_definite` names the reason.
     let integrand = &s * c.density(&s);
     assert!(matches!(
@@ -454,7 +488,16 @@ fn cauchy_1_2_has_cdf_and_quantile_but_no_moments() {
         "P(Ca > 3)",
     );
     assert_exact(&total_mass(&c), &ctx.one(), "∫ density");
-    assert!(c.mgf(&ctx.symbol("t")).has_unevaluated(), "no mgf");
+    // 0.40: E[e^{tX}] is finite at t = 0 only (it was the integral).
+    let t = ctx.symbol("t");
+    assert_eq!(
+        c.mgf(&t),
+        Ex::piecewise(&[
+            (&ctx.one(), &t.eq_expr(&ctx.zero())),
+            (&ctx.infinity(), &ctx.bool_true())
+        ]),
+        "mgf"
+    );
 }
 
 // ── Laplace ──────────────────────────────────────────────────────────────
@@ -487,7 +530,13 @@ fn laplace_1_2() {
         "cdf(3)",
     );
     assert_exact(&l.cdf(&ctx.int(-1)).simplify(), &half_e, "cdf(−1)");
-    assert_exact(&l.mgf(&t), &(t.exp() / (ctx.one() - 4 * t.powi(2))), "mgf");
+    assert_mgf(
+        &l,
+        &t,
+        &(t.exp() / (ctx.one() - 4 * t.powi(2))),
+        &ctx.rational(-1, 2),
+        "mgf",
+    );
     // quantile(0.3) = 1 + 2 ln(0.6)  (below the median, sign = −1).
     assert_exact(
         &l.quantile(&ctx.rational(3, 10)).unwrap().simplify(),
@@ -547,9 +596,11 @@ fn logistic_1_2() {
         &(ctx.one() / ((ctx.rational(1, 2) - &v / 2).exp() + 1)),
         "cdf",
     );
-    assert_exact(
-        &l.mgf(&t),
+    assert_mgf(
+        &l,
+        &t,
         &(t.exp() * (ctx.one() - 2 * &t).beta(&(2 * &t + 1))),
+        &ctx.rational(1, 2),
         "mgf",
     );
     // μ + s ln(p/(1−p)) is SymPy's 1 − 2 log(−1 + 1/p); the log identity is
@@ -681,15 +732,13 @@ fn student_t_5_cdf_closes_by_integration_for_odd_dof() {
     assert_close(&c1, 0.818391266175439, "cdf(1) by integration");
 }
 
+/// 0.40: `+∞` through the family's tail orders; up to 0.39 the divergent
+/// integral stayed unevaluated (the test's old name).
 #[test]
-fn student_t_5_sixth_moment_stays_an_unevaluated_integral() {
+fn student_t_5_sixth_moment_is_infinite() {
     let ctx = Context::new();
     let t5 = RandomVariable::new(&ctx, "T", Distribution::student_t(ctx.int(5)));
-    let m6 = t5.moment(6);
-    assert!(
-        m6.has_unevaluated(),
-        "E[X⁶] must not be a number, got `{m6}`"
-    );
+    assert_eq!(t5.moment(6), ctx.infinity(), "E[X⁶] diverges for ν = 5");
 }
 
 #[test]
@@ -794,7 +843,8 @@ fn pareto_xm_1_alpha_3() {
         pa.distribution().family().raw_moment(3).is_none(),
         "E[X³] does not exist for α = 3"
     );
-    assert!(pa.moment(3).has_unevaluated(), "E[X³] must not be a number");
+    // 0.40: +∞ (it was the divergent integral, unevaluated).
+    assert_eq!(pa.moment(3), ctx.infinity(), "E[X³] = +∞");
     assert_cdf_on_support(&pa, &v, &(ctx.one() - v.powi(-3)), "cdf");
     assert_exact(&pa.cdf(&ctx.int(2)), &ctx.rational(7, 8), "cdf(2)");
     assert_exact(

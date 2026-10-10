@@ -16,84 +16,67 @@
 //! ```
 //!
 //! The exact evaluator's `bernoulli(n)` (`eval::exact_bernoulli`) takes its
-//! even numbers from here too: one implementation of the recurrence.
+//! even numbers from here too.  Since 0.40 the algorithm lives in
+//! `base::bernoulli`, which every layer reaches (`ntheory::bernoulli`,
+//! series and summation used the rational recurrence until then): one
+//! implementation and one cache.
 
-use num_bigint::BigInt;
-use num_rational::Ratio;
-use num_traits::{One, Zero};
-use parking_lot::Mutex;
+use astro_float::{BigFloat, Consts, RoundingMode};
 
+use crate::base::errors::SymplexError;
 use crate::base::numeric::Q;
 
-/// `B₂, B₄, …, B₂ₙ` computed so far.
-static CACHE: Mutex<Vec<Q>> = Mutex::new(Vec::new());
-
-/// The tangent numbers `T₁ … Tₙ` (Brent–Harvey, Algorithm TangentNumbers).
-fn tangent_numbers(n: usize) -> Vec<BigInt> {
-    let mut t: Vec<BigInt> = vec![BigInt::zero(); n + 1];
-    if n == 0 {
-        return t;
-    }
-    t[1] = BigInt::one();
-    for k in 2..=n {
-        t[k] = &t[k - 1] * BigInt::from(k - 1);
-    }
-    for k in 2..=n {
-        for j in k..=n {
-            let v = &t[j - 1] * BigInt::from(j - k) + &t[j] * BigInt::from(j - k + 2);
-            t[j] = v;
-        }
-    }
-    t
+/// `B₂ₖ` for `k ≥ 1` (`B₀ = 1` for `k = 0`), from the tangent numbers
+/// ([`crate::base::bernoulli::even`]).
+pub(crate) fn even(k: usize) -> Q {
+    crate::base::bernoulli::even(k)
 }
 
-/// `B₂ₖ` for `k ≥ 1` (`B₀ = 1` for `k = 0`).
-pub(crate) fn even(k: usize) -> Q {
-    if k == 0 {
-        return Q::one();
+/// The Bernoulli function `B(s) = −s·ζ(1 − s)` of a real `s` (SymPy's
+/// `bernoulli(s)` off the integers, which `evalf`s it so: `bernoulli(1/2)
+/// = 0.730177…`, `bernoulli(−1) = ζ(2)`).  It is the integer `Bₙ` at
+/// `n ≥ 2` and `n = 0`; at `s = 1` it is `+1/2`, and the exact `−1/2` of
+/// this crate's convention is returned instead, as `eval` folds it.
+/// (Before 0.40 `evalf` had no routine for `bernoulli`.)
+pub(super) fn bernoulli_function(
+    s: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if s.is_nan() || s.is_inf() {
+        return Err(SymplexError::Unevaluable {
+            reason: "bernoulli of a non-finite argument".into(),
+        });
     }
-    let mut cache = CACHE.lock();
-    if cache.len() < k {
-        // Recomputed from scratch (the algorithm is in place), for at least
-        // twice as many numbers as before, so that the work stays `O(n²)`.
-        let n = k.max(2 * cache.len()).max(32);
-        let t = tangent_numbers(n);
-        let mut out = Vec::with_capacity(n);
-        for (i, tk) in t.iter().enumerate().skip(1) {
-            let two_k = 2 * i;
-            let p = BigInt::one() << two_k;
-            let den = &p * (&p - BigInt::one());
-            let mut num = tk * BigInt::from(two_k);
-            if i % 2 == 0 {
-                num = -num;
-            }
-            out.push(Ratio::new(num, den));
-        }
-        *cache = out;
+    if s.is_zero() {
+        return Ok(BigFloat::from_i32(1, prec));
     }
-    cache[k - 1].clone()
+    if *s == BigFloat::from_i32(1, 64) {
+        return Ok(BigFloat::from_i32(-1, prec).div(&BigFloat::from_i32(2, prec), prec, rm));
+    }
+    // `1 − s` exactly: next to `s = 0` the pole of `ζ` at 1 is cancelled
+    // by the factor `s`, both relative to `s`.
+    let wp = prec + 32;
+    let one_minus_s = BigFloat::from_i32(1, 64).sub(s, super::exact_bits(s, wp), rm);
+    let zeta = super::arb_zeta(&one_minus_s, wp, rm, cc)?;
+    let r = s.mul(&zeta, wp, rm).neg();
+    Ok(super::round_to(r, prec, rm))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_bigint::BigInt;
+    use num_rational::Ratio;
 
-    /// The first even Bernoulli numbers, and agreement with the rational
-    /// recurrence of `base::bernoulli` up to `B₁₂₀`.
+    /// The first even Bernoulli numbers.
     #[test]
-    fn matches_the_rational_recurrence() {
+    fn first_values() {
         let q = |n: i64, d: i64| Ratio::new(BigInt::from(n), BigInt::from(d));
         assert_eq!(even(1), q(1, 6));
         assert_eq!(even(2), q(-1, 30));
         assert_eq!(even(3), q(1, 42));
         assert_eq!(even(6), q(691, -2730));
-        for k in 1..=60 {
-            assert_eq!(
-                even(k),
-                crate::base::bernoulli::bernoulli(2 * k),
-                "B_{}",
-                2 * k
-            );
-        }
     }
 }

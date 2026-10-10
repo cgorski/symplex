@@ -215,8 +215,19 @@ pub fn linear_diophantine_n(
 /// Fundamental (smallest positive) solution of the Pell equation
 /// `x² − D·y² = 1`, via the continued fraction of `√D`.
 ///
+/// With the period `(a₁, …, a_L)` of `√D = [a₀; (a₁, …, a_L)]`, the
+/// convergent `h/k` of `[a₀; a₁, …, a_{L−1}]` satisfies `h² − D·k² =
+/// (−1)^L` and is the fundamental solution of its equation; for odd `L`
+/// the solution of `+1` is its square `(h² + D·k², 2hk)`.  The convergent
+/// is a product of the matrices `[[aᵢ, 1], [1, 0]]`, taken as a balanced
+/// product tree.  (Up to 0.39 every convergent was tested against the
+/// equation, quadratic in the solution's size: `pell(999999937)`, a
+/// 26,700-digit solution, took 14 s.)
+///
 /// Returns `None` if `D ≤ 0` or `D` is a perfect square (no non-trivial
-/// solutions).
+/// solutions), and — a refusal — when the period is longer than
+/// [`continued_fraction_periodic`](crate::ntheory::continued_fraction_periodic)
+/// expands (`2²¹` terms; `D` beyond about `10¹²`).
 ///
 /// # Examples
 ///
@@ -235,29 +246,72 @@ pub fn pell(d: impl Into<BigInt>) -> Option<(BigInt, BigInt)> {
     if !d.is_positive() {
         return None;
     }
-    let a0 = d.sqrt();
-    if &a0 * &a0 == d {
+    let (h, k, odd) = pell_unit(&d)?;
+    if odd {
+        // (h + k√D)² solves the +1 equation.
+        Some((&h * &h + &d * &k * &k, BigInt::from(2) * &h * &k))
+    } else {
+        Some((h, k))
+    }
+}
+
+/// `(h, k, L odd)`: the fundamental solution of `h² − D·k² = (−1)^L`,
+/// `L` the period length of `√D` — the convergent of the continued
+/// fraction just before the end of the first period.  `None` for `D ≤ 0`,
+/// a square `D`, or a period beyond the expansion bound.
+fn pell_unit(d: &BigInt) -> Option<(BigInt, BigInt, bool)> {
+    if !d.is_positive() {
         return None;
     }
-    // Walk the continued fraction convergents of √D; the first convergent
-    // h/k with h² − D k² = 1 is the fundamental solution.
-    let (mut h_prev, mut h) = (BigInt::one(), a0.clone()); // h_{-1}, h_0
-    let (mut k_prev, mut k) = (BigInt::zero(), BigInt::one()); // k_{-1}, k_0
-    let mut m = BigInt::zero();
-    let mut dd = BigInt::one();
-    let mut a = a0.clone();
-    loop {
-        if &h * &h - &d * &k * &k == BigInt::one() {
-            return Some((h, k));
+    let cf = ntheory::continued_fraction_periodic(d.clone())?;
+    let (last, head) = cf.period.split_last()?;
+    debug_assert_eq!(*last, &cf.pre_period[0] * 2);
+    let mut terms = cf.pre_period;
+    terms.extend_from_slice(head);
+    let (h, k) = convergent_by_product_tree(&terms)?;
+    Some((h, k, cf.period.len() % 2 == 1))
+}
+
+/// The last convergent `h/k` of `[t₀; t₁, …, tₙ]` (non-empty): the first
+/// column of `∏ [[tᵢ, 1], [1, 0]]`, multiplied as a balanced tree so that
+/// the cost is a few products at the size of the result.
+fn convergent_by_product_tree(terms: &[BigInt]) -> Option<(BigInt, BigInt)> {
+    type M = [BigInt; 4]; // [[a, b], [c, d]] row by row
+    let mul = |x: &M, y: &M| -> M {
+        [
+            &x[0] * &y[0] + &x[1] * &y[2],
+            &x[0] * &y[1] + &x[1] * &y[3],
+            &x[2] * &y[0] + &x[3] * &y[2],
+            &x[2] * &y[1] + &x[3] * &y[3],
+        ]
+    };
+    // Leaves of 32 terms, multiplied out in turn (the numbers are still
+    // small there): a period of 2²¹ terms does not hold 2²³ `BigInt`s.
+    let mut level: Vec<M> = terms
+        .chunks(32)
+        .map(|chunk| {
+            let mut acc: M = [BigInt::one(), BigInt::zero(), BigInt::zero(), BigInt::one()];
+            for t in chunk {
+                // acc·[[t, 1], [1, 0]] = [[a·t + b, a], [c·t + d, c]]
+                let [a, b, c, d] = acc;
+                acc = [&a * t + b, a, &c * t + d, c];
+            }
+            acc
+        })
+        .collect();
+    while level.len() > 1 {
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            next.push(match pair {
+                [x, y] => mul(x, y),
+                [x] => x.clone(),
+                _ => continue,
+            });
         }
-        m = &dd * &a - &m;
-        dd = (&d - &m * &m) / &dd;
-        a = (&a0 + &m) / &dd;
-        let h_next = &a * &h + &h_prev;
-        let k_next = &a * &k + &k_prev;
-        h_prev = std::mem::replace(&mut h, h_next);
-        k_prev = std::mem::replace(&mut k, k_next);
+        level = next;
     }
+    let [h, _, k, _] = level.pop()?;
+    Some((h, k))
 }
 
 /// The first `count` positive solutions of `x² − D·y² = 1`, generated from
@@ -297,7 +351,8 @@ pub fn pell_solutions(d: impl Into<BigInt>, count: usize) -> Vec<(BigInt, BigInt
 
 /// Fundamental solution of the negative Pell equation `x² − D·y² = −1`, if
 /// one exists (it does iff the continued-fraction period of `√D` has odd
-/// length).
+/// length): the convergent just before the end of the first period (see
+/// [`pell`], whose bound on the period applies too).
 ///
 /// # Examples
 ///
@@ -311,29 +366,11 @@ pub fn pell_solutions(d: impl Into<BigInt>, count: usize) -> Vec<(BigInt, BigInt
 /// ```
 pub fn pell_negative(d: impl Into<BigInt>) -> Option<(BigInt, BigInt)> {
     let d: BigInt = d.into();
-    if !d.is_positive() {
-        return None;
+    // The convergent just before the end of the first period.
+    match pell_unit(&d)? {
+        (h, k, true) => Some((h, k)),
+        (_, _, false) => None,
     }
-    let a0 = d.sqrt();
-    if &a0 * &a0 == d {
-        return None;
-    }
-    let cf = ntheory::continued_fraction_periodic(d.clone())?;
-    if cf.period.len() % 2 == 0 {
-        return None;
-    }
-    // The convergent just before the end of the first period gives the
-    // solution: walk convergents and test.
-    let mut terms = cf.pre_period;
-    terms.extend(cf.period.iter().cloned());
-    let neg_one = -BigInt::one();
-    for c in ntheory::continued_fraction_convergents(&terms) {
-        let (h, k) = (c.numer().clone(), c.denom().clone());
-        if &h * &h - &d * &k * &k == neg_one {
-            return Some((h, k));
-        }
-    }
-    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -529,9 +566,12 @@ pub fn pythagorean_triples(limit: u64) -> Vec<(u64, u64, u64)> {
 /// round-robin (shortest-path) dynamic program over residues modulo the
 /// smallest element, which needs `O(min · k)` time and `O(min)` memory.
 /// Returns `None` if the set is empty, contains a non-positive value, or
-/// has `gcd > 1` (infinitely many non-representable integers), or if the
-/// smallest element exceeds `10⁷` (memory cap).  Sets containing `1` give
-/// `Some(-1)`.
+/// has `gcd > 1` (infinitely many non-representable integers), if the
+/// smallest element exceeds `10⁷` (memory cap), or — two elements near
+/// `2⁶⁴` — if `ab − a − b` is beyond `i128::MAX` (up to 0.39 the product
+/// wrapped: `frobenius_number(&[u64::MAX, u64::MAX − 1])` was
+/// `Some(−92233720368547758075)` in a release build, a panic in a debug
+/// build).  Sets containing `1` give `Some(-1)`.
 ///
 /// # Examples
 ///
@@ -542,6 +582,8 @@ pub fn pythagorean_triples(limit: u64) -> Vec<(u64, u64, u64)> {
 /// assert_eq!(frobenius_number(&[6, 9, 20]), Some(43));   // McNuggets
 /// assert_eq!(frobenius_number(&[2, 4]), None);
 /// assert_eq!(frobenius_number(&[1, 7]), Some(-1));
+/// // (2⁶⁴ − 1)(2⁶⁴ − 2) − (2⁶⁴ − 1) − (2⁶⁴ − 2) does not fit in an i128
+/// assert_eq!(frobenius_number(&[u64::MAX, u64::MAX - 1]), None);
 /// ```
 pub fn frobenius_number(values: &[u64]) -> Option<i128> {
     if values.is_empty() || values.contains(&0) {
@@ -560,7 +602,10 @@ pub fn frobenius_number(values: &[u64]) -> Option<i128> {
         return Some(-1);
     }
     if vals.len() == 2 {
-        return Some(vals[0] as i128 * vals[1] as i128 - vals[0] as i128 - vals[1] as i128);
+        let (a, b) = (u128::from(vals[0]), u128::from(vals[1]));
+        // a, b ≥ 2 coprime: ab − a − b = (a − 1)(b − 1) − 1 ≥ 0.
+        let value = (a - 1).checked_mul(b - 1)? - 1;
+        return i128::try_from(value).ok();
     }
     let a = vals[0];
     if a > 10_000_000 {
@@ -700,6 +745,35 @@ mod tests {
                 assert!(ntheory::is_square(d));
             }
         }
+    }
+
+    /// The product tree of the period gives the first convergent that
+    /// solves the equation (the convergent walk of 0.39), for periods
+    /// across the 32-term leaves.
+    #[test]
+    fn pell_matches_the_convergent_walk() {
+        let mut longest = 0;
+        for d in 2..3000i64 {
+            let cf = ntheory::continued_fraction_periodic(d).unwrap();
+            longest = longest.max(cf.period.len());
+            let mut terms = cf.pre_period;
+            terms.extend(cf.period.iter().cloned());
+            terms.extend(cf.period.iter().cloned());
+            let mut first = [None, None]; // +1, −1
+            for c in ntheory::continued_fraction_convergents(&terms) {
+                let (h, k) = (c.numer().clone(), c.denom().clone());
+                let v = &h * &h - bi(d) * &k * &k;
+                for (slot, want) in first.iter_mut().zip([1, -1]) {
+                    if slot.is_none() && v == bi(want) {
+                        *slot = Some((h.clone(), k.clone()));
+                    }
+                }
+            }
+            let [plus, minus] = first;
+            assert_eq!(pell(d), plus, "D = {d}");
+            assert_eq!(pell_negative(d), minus, "D = {d}");
+        }
+        assert!(longest > 64, "{longest}");
     }
 
     #[test]

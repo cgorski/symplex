@@ -18,10 +18,13 @@
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 
 use std::cmp::Ordering;
 
-use super::family::{Distribution, Family, Sampler, family_boilerplate, sign_of};
+use super::family::{
+    Distribution, Family, Sampler, TailOrders, family_boilerplate, fresh_index, sign_of,
+};
 use super::sample::{self, Rng};
 use super::support::Support;
 
@@ -94,12 +97,37 @@ fn ln_ratio(x: &Ex, x_m: &Ex) -> Ex {
     x.context().int(2) * ((x - x_m) / (x + x_m)).atanh()
 }
 
-/// Does a moment that exists only for `param > bound` exist?  `false` only
-/// when `param − bound` is *known* to be non-positive (a numeric parameter
-/// that fails the condition); a symbolic parameter is the caller's promise
-/// and the closed form is returned.
+/// Does a moment that exists only for `param > bound` have a formula to
+/// return?  `false` only when `param − bound` is *known* to be
+/// non-positive (a numeric parameter that fails the condition); for a
+/// symbolic parameter the formula is returned, and [`Distribution`]'s
+/// moments put it under the condition through [`Family::tail_orders`].
 fn exceeds(param: &Ex, bound: u32) -> bool {
     (param - i64::from(bound)).is_positive() != Some(false)
+}
+
+/// `value` for a `t` known not to be `0`; `1` at `t = 0`; for a `t` that
+/// may be either, the `Piecewise` of both (a characteristic function
+/// whose closed form is `0/0` or `0·∞` at the origin, as SymPy writes
+/// the logistic's).
+fn one_at_zero(t: &Ex, value: Ex) -> Ex {
+    let ctx = t.context();
+    match t.is_zero() {
+        Some(false) => value,
+        Some(true) => ctx.one(),
+        None if t.free_symbols().is_empty() && sign_of(t).is_some() => value,
+        None => Ex::piecewise(&[
+            (&value, &t.ne_expr(&ctx.zero())),
+            (&ctx.one(), &ctx.bool_true()),
+        ]),
+    }
+}
+
+/// `(−∞, 0]`: the moment generating function of a variable whose right
+/// tail is heavier than every exponential (log-normal, Pareto, F, Weibull
+/// with shape below 1) is finite for `t ≤ 0` only.
+fn heavy_right_tail(ctx: &Context) -> Interval<Ex> {
+    Interval::left_open(ctx.neg_infinity(), ctx.zero())
 }
 
 /// `E[Xⁿ]` for a distribution symmetric about `mean` whose even central
@@ -334,6 +362,14 @@ impl Family for Exponential {
         Some(&self.rate / (&self.rate - t))
     }
 
+    // t < λ
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        Some(Interval::open(
+            self.context().neg_infinity(),
+            self.rate.clone(),
+        ))
+    }
+
     // −ln(1 − p) / λ
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         Some(-(self.context().one() - p).ln() / &self.rate)
@@ -405,6 +441,12 @@ impl Family for Gamma {
         Some((self.context().one() - &self.scale * t).pow(&(-&self.shape)))
     }
 
+    // t < 1/θ
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        let ctx = self.context();
+        Some(Interval::open(ctx.neg_infinity(), ctx.one() / &self.scale))
+    }
+
     // k + ln θ + ln Γ(k) + (1 − k) ψ(k)
     fn entropy(&self) -> Option<Ex> {
         let ctx = self.context();
@@ -473,6 +515,10 @@ impl Family for ChiSquared {
 
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         self.as_gamma().mgf(t)
+    }
+
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        self.as_gamma().mgf_domain()
     }
 
     fn entropy(&self) -> Option<Ex> {
@@ -550,6 +596,24 @@ impl Family for Beta {
                 .betainc_regularized(&self.beta, &self.alpha, &ctx.zero())
                 .eval(),
         )
+    }
+
+    // ₁F₁(α; α+β; t) = Σ_k Γ(α+k) Γ(α+β) / (Γ(α) Γ(α+β+k)) tᵏ/k!
+    // (SymPy: `hyper((alpha,), (alpha + beta,), t)`), written as the series:
+    // its term ratio is rational in k, so `evalf` sums it to any precision
+    // with an error bound, for real and complex t alike.  The generic
+    // ∫₀¹ e^{tx} f(x) dx it replaces evaluated by f64 quadrature, which an
+    // endpoint singularity (β < 1) left wrong in the 8th digit:
+    // Beta(5, ½).mgf(1/10) was 1.0952385480, true 1.0952385618.
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let k = fresh_index(&ctx, &[t, &self.alpha, &self.beta]);
+        let s = &self.alpha + &self.beta;
+        let term = (&self.alpha + &k).gamma() * s.gamma()
+            / (self.alpha.gamma() * (&s + &k).gamma())
+            * t.pow(&k)
+            / k.factorial();
+        Some(Ex::symbolic_sum(&term, &k, &ctx.zero(), &ctx.infinity()))
     }
 
     // ln B(α, β) − (α−1) ψ(α) − (β−1) ψ(β) + (α+β−2) ψ(α+β)
@@ -650,6 +714,24 @@ impl Family for Cauchy {
         Some(&self.location + &self.scale * (ctx.pi() * (p - ctx.rational(1, 2))).tan())
     }
 
+    // No moments: the density decays like |x|^{−2} in both tails.
+    fn tail_orders(&self) -> Option<TailOrders> {
+        Some(TailOrders::both(self.context().one()))
+    }
+
+    // Both tails are heavier than every exponential: finite at t = 0 only.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        Some(Interval::point(self.context().zero()))
+    }
+
+    // e^{ix₀t − γ|t|} (SymPy: `exp(x0*I*t - gamma*Abs(t))`).  Through the
+    // generic route E[e^{itX}] stayed an integral whose integrand (with
+    // `i` in it) does not compile for quadrature.
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some((ctx.i_unit() * &self.location * t - &self.scale * t.abs()).exp())
+    }
+
     // ln(4πγ)
     fn entropy(&self) -> Option<Ex> {
         let ctx = self.context();
@@ -722,6 +804,12 @@ impl Family for Laplace {
     // e^{μt} / (1 − b²t²)
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         Some((&self.mean * t).exp() / (self.context().one() - self.scale.powi(2) * t.powi(2)))
+    }
+
+    // |t| < 1/b
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        let r = self.context().one() / &self.scale;
+        Some(Interval::open(-&r, r))
     }
 
     // μ − b sign(p − ½) ln(1 − 2|p − ½|)
@@ -801,6 +889,23 @@ impl Family for Logistic {
         let ctx = self.context();
         let st = &self.scale * t;
         Some((&self.mean * t).exp() * (ctx.one() - &st).beta(&(ctx.one() + &st)))
+    }
+
+    // |t| < 1/s
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        let r = self.context().one() / &self.scale;
+        Some(Interval::open(-&r, r))
+    }
+
+    // e^{iμt} πst / sinh(πst) (1 at t = 0; SymPy's
+    // `LogisticDistribution._characteristic_function`): the mgf at it,
+    // with B(1 − ist, 1 + ist) = Γ(1 − ist) Γ(1 + ist) = πst / sinh(πst)
+    // (reflection), since `evalf` has no beta function of complex
+    // arguments and the continued mgf did not evaluate.
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let pst = ctx.pi() * &self.scale * t;
+        Some((ctx.i_unit() * &self.mean * t).exp() * one_at_zero(t, &pst / pst.sinh()))
     }
 
     // μ + s ln(p/(1 − p))
@@ -889,6 +994,10 @@ impl Family for LogNormal {
         Some((&self.mu + &self.sigma * ctx.int(2).sqrt() * (ctx.int(2) * p - 1).erfinv()).exp())
     }
 
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        Some(heavy_right_tail(&self.context()))
+    }
+
     // μ + ½ ln(2πeσ²)
     fn entropy(&self) -> Option<Ex> {
         let ctx = self.context();
@@ -947,6 +1056,29 @@ impl Family for StudentT {
             acc *= ctx.int(i64::from(2 * i - 1)) / (&self.dof - i64::from(2 * i));
         }
         Some(acc.simplify())
+    }
+
+    // The density decays like |x|^{−ν−1` in both tails.
+    fn tail_orders(&self) -> Option<TailOrders> {
+        Some(TailOrders::both(self.dof.clone()))
+    }
+
+    // Both tails are polynomial: finite at t = 0 only.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        Some(Interval::point(self.context().zero()))
+    }
+
+    // K_{ν/2}(√ν|t|) (√ν|t|)^{ν/2} / (Γ(ν/2) 2^{ν/2−1}) for t ≠ 0 (the
+    // Bessel form; SymPy's `StudentTDistribution._characteristic_function`),
+    // 1 at t = 0, where the form is 0·∞.  The generic E[e^{itX}] stayed an
+    // integral whose integrand (with `i` in it) does not compile.
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half_nu = &self.dof / ctx.int(2);
+        let u = self.dof.sqrt() * t.abs();
+        let bessel = u.bessel_k(&half_nu) * u.pow(&half_nu)
+            / (half_nu.gamma() * ctx.int(2).pow(&(&half_nu - 1)));
+        Some(one_at_zero(t, bessel))
     }
 
     // F(t) = 1 − ½ I_{ν/(t²+ν)}(ν/2, ½) for t ≥ 0 and ½ I_{ν/(t²+ν)}(ν/2, ½)
@@ -1063,6 +1195,36 @@ impl Family for FDistribution {
         )
     }
 
+    // The density decays like x^{−d₂/2−1} to the right.
+    fn tail_orders(&self) -> Option<TailOrders> {
+        Some(TailOrders::right(
+            (&self.d2 / self.context().int(2)).simplify(),
+        ))
+    }
+
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        Some(heavy_right_tail(&self.context()))
+    }
+
+    // ln(d₂/d₁) + ln B(a, b) − (a−1) ψ(a) − (b+1) ψ(b) + (a+b) ψ(a+b),
+    // a = d₁/2, b = d₂/2: X = (d₂/d₁) Y with Y = B/(1 − B) beta-prime,
+    // B ~ Beta(a, b), E[ln Y] = ψ(a) − ψ(b), E[ln(1 + Y)] = ψ(a+b) − ψ(b)
+    // (scipy's `f.entropy` is the same expression).  The generic −E[ln f]
+    // stayed an integral that quadrature did not converge on for a small
+    // d₁.
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        let a = &self.d1 / ctx.int(2);
+        let b = &self.d2 / ctx.int(2);
+        let s = &a + &b;
+        Some(
+            (&self.d2 / &self.d1).ln() + a.beta(&b).ln()
+                - (&a - 1) * a.digamma()
+                - (&b + 1) * b.digamma()
+                + &s * s.digamma(),
+        )
+    }
+
     // I_{d₁x/(d₁x + d₂)}(d₁/2, d₂/2)
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         let ctx = self.context();
@@ -1168,6 +1330,20 @@ impl Family for Weibull {
         Some(&self.scale * (-(ctx.one() - p).ln()).pow(&(ctx.one() / &self.shape)))
     }
 
+    // The tail e^{−(x/λ)ᵏ}: heavier than every exponential for k < 1
+    // (t ≤ 0), the exponential's t < 1/λ at k = 1, lighter for k > 1 (all
+    // t).  A shape of undecided place relative to 1 gives no domain.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        let ctx = self.context();
+        match sign_of(&(&self.shape - 1)) {
+            Some(Ordering::Less) => Some(heavy_right_tail(&ctx)),
+            Some(Ordering::Equal) => {
+                Some(Interval::open(ctx.neg_infinity(), ctx.one() / &self.scale))
+            }
+            _ => None,
+        }
+    }
+
     // γ(1 − 1/k) + ln(λ/k) + 1
     fn entropy(&self) -> Option<Ex> {
         let ctx = self.context();
@@ -1218,6 +1394,15 @@ impl Family for Pareto {
         exceeds(&self.shape, n).then(|| {
             (&self.shape * self.scale.powi(i64::from(n)) / (&self.shape - &n_ex)).simplify()
         })
+    }
+
+    // The density decays like x^{−α−1} to the right.
+    fn tail_orders(&self) -> Option<TailOrders> {
+        Some(TailOrders::right(self.shape.clone()))
+    }
+
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        Some(heavy_right_tail(&self.context()))
     }
 
     // 1 − (x_m/x)^α
@@ -1275,6 +1460,28 @@ impl Triangular {
         (&self.hi - &self.mode).is_zero() == Some(true)
     }
 
+    /// A closed form whose general expression `inside` (for `a < c < b`)
+    /// is `0/0` with the mode at an end: `inside` where the mode is known
+    /// to be inside, else the `Piecewise` of `at_lo` on `c = a`, `at_hi` on
+    /// `c = b` and `inside` elsewhere.  Up to 0.39 a symbolic mode got
+    /// `inside` alone, which is NaN once `c = a` is substituted
+    /// (`Triangular(a, b, c)` with `c → a` had no third moment, skewness,
+    /// kurtosis or mgf).  The caller handles a mode known to be at an end.
+    fn by_mode(&self, inside: Ex, at_lo: impl FnOnce() -> Ex, at_hi: impl FnOnce() -> Ex) -> Ex {
+        let off_lo = (&self.mode - &self.lo).is_zero() == Some(false);
+        let off_hi = (&self.hi - &self.mode).is_zero() == Some(false);
+        if off_lo && off_hi {
+            return inside;
+        }
+        let ctx = self.context();
+        let (lo_form, hi_form) = (at_lo(), at_hi());
+        Ex::piecewise(&[
+            (&lo_form, &self.mode.eq_expr(&self.lo)),
+            (&hi_form, &self.mode.eq_expr(&self.hi)),
+            (&inside, &ctx.bool_true()),
+        ])
+    }
+
     /// `2(x−a)/((b−a)(c−a))` on `[a, c]` and `2(b−x)/((b−a)(b−c))` on
     /// `(c, b]`: the piece that applies, or the `Piecewise` of both.
     fn two_pieces(&self, x: &Ex, rising: Ex, falling: Ex) -> Ex {
@@ -1321,7 +1528,11 @@ impl Family for Triangular {
 
     // 2 [aⁿ⁺²(b−c) − bⁿ⁺²(a−c) + cⁿ⁺²(a−b)] / ((n+1)(n+2)(a−b)(a−c)(b−c));
     // 0/0 with the mode at an end, where the generic integration of the
-    // single linear piece is exact.
+    // single linear piece is exact.  A mode not known to be inside or at
+    // an end gets the `Piecewise` with the end forms
+    // 2/(b−a)² [b(bⁿ⁺¹ − aⁿ⁺¹)/(n+1) − (bⁿ⁺² − aⁿ⁺²)/(n+2)] (c = a) and
+    // 2/(b−a)² [(bⁿ⁺² − aⁿ⁺²)/(n+2) − a(bⁿ⁺¹ − aⁿ⁺¹)/(n+1)] (c = b),
+    // ∫ xⁿ of the one linear piece.
     fn raw_moment(&self, n: u32) -> Option<Ex> {
         if self.mode_at_lo() || self.mode_at_hi() {
             return None;
@@ -1331,7 +1542,15 @@ impl Family for Triangular {
         let e = i64::from(n) + 2;
         let num = ctx.int(2) * (a.powi(e) * (b - c) - b.powi(e) * (a - c) + c.powi(e) * (a - b));
         let den = ctx.int(e - 1) * ctx.int(e) * (a - b) * (a - c) * (b - c);
-        Some((num / den).simplify())
+        let inside = (num / den).simplify();
+        let scale = || ctx.int(2) / (b - a).powi(2);
+        let p1 = || (b.powi(e - 1) - a.powi(e - 1)) / ctx.int(e - 1);
+        let p2 = || (b.powi(e) - a.powi(e)) / ctx.int(e);
+        Some(self.by_mode(
+            inside,
+            || (scale() * (b * p1() - p2())).simplify(),
+            || (scale() * (p2() - a * p1())).simplify(),
+        ))
     }
 
     // (x−a)²/((b−a)(c−a)) on [a, c], 1 − (b−x)²/((b−a)(b−c)) on (c, b]
@@ -1389,7 +1608,15 @@ impl Family for Triangular {
         let num = ctx.int(2)
             * ((b - c) * (a * t).exp() - (b - a) * (c * t).exp() + (c - a) * (b * t).exp());
         let den = (b - a) * (c - a) * (b - c) * t.powi(2);
-        Some(num / den)
+        let at_lo = || {
+            ctx.int(2) * ((b * t).exp() - (a * t).exp() - &width * t * (a * t).exp())
+                / (width.powi(2) * t.powi(2))
+        };
+        let at_hi = || {
+            ctx.int(2) * (&width * t * (b * t).exp() - (b * t).exp() + (a * t).exp())
+                / (width.powi(2) * t.powi(2))
+        };
+        Some(self.by_mode(num / den, at_lo, at_hi))
     }
 
     // a + √(p(b−a)(c−a)) for p < (c−a)/(b−a), else b − √((1−p)(b−a)(b−c))

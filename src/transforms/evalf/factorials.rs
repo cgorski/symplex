@@ -132,6 +132,13 @@ pub(super) fn gamma_ratio(
         regular_num.push(exact_sum(&int(1), &j.neg(), prec, rm));
         regular_den.push(exact_sum(&int(1), &i.neg(), prec, rm));
     }
+    // Γ(1) = Γ(2) = 1: such factors drop out.  (Their logarithm is exactly
+    // 0, which `arb_log_gamma` cannot certify to any relative precision: up
+    // to 0.39 `rf(1/2, 1/2) = 1/√π`, `ff(3/2, 1/2)` and `C(−1, −1) = 1` were
+    // refused with `PrecisionExhausted`.)
+    let unit = |x: &BigFloat| x.cmp(&int(1)) == Some(0) || x.cmp(&int(2)) == Some(0);
+    regular_num.retain(|x| !unit(x));
+    regular_den.retain(|x| !unit(x));
     for x in regular_num.iter().chain(&regular_den) {
         sign *= gamma_sign(x);
     }
@@ -242,6 +249,131 @@ pub(super) fn binomial_meets_pole(
     let k1 = exact_sum(k, &int(1), prec, rm);
     let nk1 = exact_sum(&n1, &k.neg(), prec, rm);
     is_npint(&n1) || is_npint(&k1) || is_npint(&nk1)
+}
+
+/// The Catalan function `C(x) = Γ(2x + 1)/(Γ(x + 1)·Γ(x + 2))` for real
+/// `x` (SymPy's `catalan`, which `evalf`s it this way: `catalan(1/2) =
+/// 8/(3π) = 0.848826…`).  At the negative integers the quotient is
+/// `0/0`-like with unequal rates (`Γ(2x + 1)` meets its pole twice as fast)
+/// and continuous: the limits `C(−1) = −1/2`, `C(n) = 0` for `n ≤ −2`;
+/// the negative half-integers are poles.  (Before 0.40 `evalf` had no
+/// routine for `catalan` at all.)
+pub(super) fn catalan(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || x.is_inf() {
+        return Err(unevaluable("catalan of a non-finite argument"));
+    }
+    if is_npint(x) && !x.is_zero() {
+        return Ok(if x.cmp(&int(-1)) == Some(0) {
+            int(-1).div(&int(2), prec, rm)
+        } else {
+            BigFloat::new(prec)
+        });
+    }
+    let numerator = exact_sum(&exact_sum(x, x, prec, rm), &int(1), prec, rm);
+    if is_npint(&numerator) {
+        return Err(unevaluable(
+            "catalan has a pole at a negative half-integer (the value is infinite)",
+        ));
+    }
+    let x1 = exact_sum(x, &int(1), prec, rm);
+    let x2 = exact_sum(x, &int(2), prec, rm);
+    gamma_ratio(&[numerator], &[x1, x2], prec, rm, cc)
+}
+
+/// `cos(πx)` to full relative precision: `x = k + f` with `k` the nearest
+/// integer and `|f| ≤ 1/2` (both exact), `cos(πx) = (−1)ᵏ·sin(π(1/2 − |f|))`,
+/// exactly 0 at the half-integers.  (The `cos` of a rounded `πx` has an
+/// absolute error of `2^{(bits of x) − wp}`, all of the value next to a
+/// half-integer.)
+fn cos_pi(x: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+    let half = BigFloat::from_f64(0.5, 64);
+    let mut k = x.floor();
+    let mut f = exact_sum(x, &k.neg(), wp, rm);
+    if f.cmp(&half).is_some_and(|c| c > 0) {
+        f = exact_sum(&f, &int(-1), wp, rm);
+        k = exact_sum(&k, &int(1), wp, rm);
+    }
+    let g = exact_sum(&half, &f.abs().neg(), wp, rm);
+    let s = if g.is_zero() {
+        BigFloat::new(wp)
+    } else {
+        cc.pi(wp, rm).clone().mul(&g, wp, rm).sin(wp, rm, cc)
+    };
+    if is_even(&k) { s } else { s.neg() }
+}
+
+/// The Fibonacci (`lucas = false`) or Lucas function of a real `x`, as
+/// SymPy extends them off the integers: `F(x) = (φˣ − cos(πx)·φ⁻ˣ)/√5`,
+/// `L(x) = φˣ + cos(πx)·φ⁻ˣ` (`fibonacci(1/2) = 0.568864…`; before 0.40
+/// `evalf` had no routine for either).  The two terms cancel near the
+/// zeros (`F(0) = 0`); the loss is measured and the sum redone with as
+/// many more bits, up to the cancellation cap.  `x·ln φ` is formed at the
+/// bits of `x`'s integer part on top, and `cos(πx)` by [`cos_pi`] (with a
+/// rounded `πx`, `fibonacci(−2097153/2)` — the tiny `φˣ/√5`, the cosine
+/// being 0 — came out near `±10²¹⁸⁰⁰⁰`).
+pub(super) fn fibonacci(
+    x: &BigFloat,
+    lucas: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || x.is_inf() {
+        return Err(unevaluable("fibonacci of a non-finite argument"));
+    }
+    let int_bits = x
+        .exponent()
+        .map_or(0, |e| usize::try_from(e).unwrap_or(0))
+        .min(1 << 20);
+    let cap = super::cancellation_cap(prec);
+    let mut extra = 32 + int_bits;
+    loop {
+        let wp = prec + extra;
+        let sqrt5 = int(5).sqrt(wp, rm);
+        let phi = int(1).add(&sqrt5, wp, rm).div(&int(2), wp, rm);
+        let t = x.mul(&phi.ln(wp, rm, cc), wp, rm);
+        let up = t.exp(wp, rm, cc);
+        let down = t.neg().exp(wp, rm, cc);
+        if up.is_inf() || up.is_nan() || down.is_inf() || down.is_nan() {
+            return Err(unevaluable(
+                "fibonacci of this argument is beyond the floating-point exponent range",
+            ));
+        }
+        let cosine = cos_pi(x, wp, rm, cc);
+        let tail = cosine.mul(&down, wp, rm);
+        let sum = if lucas {
+            up.add(&tail, wp, rm)
+        } else {
+            up.sub(&tail, wp, rm)
+        };
+        // A zero tail (the cosine at a half-integer) has no exponent to
+        // compare: the sum is `up` exactly.
+        let top = [&up, &tail]
+            .into_iter()
+            .filter(|v| !v.is_zero())
+            .filter_map(|v| v.exponent())
+            .max()
+            .unwrap_or(0);
+        let lost = match sum.exponent() {
+            Some(e) if !sum.is_zero() => {
+                usize::try_from(i64::from(top) - i64::from(e)).unwrap_or(0)
+            }
+            _ => wp,
+        };
+        if lost + 16 <= extra {
+            let value = if lucas { sum } else { sum.div(&sqrt5, wp, rm) };
+            return Ok(super::round_to(value, prec, rm));
+        }
+        if extra >= cap {
+            return Err(super::special_exhausted(prec));
+        }
+        extra = (lost + 32).max(2 * extra).min(cap);
+    }
 }
 
 /// `H(z) = ψ(z + 1) + γ` for real `z` (poles at the negative integers).

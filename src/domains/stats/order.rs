@@ -38,9 +38,10 @@ use std::fmt;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::{Interval, IntervalKind};
 
 use super::data::binomial_q;
-use super::family::{Distribution, Family, Sampler, family_boilerplate};
+use super::family::{Distribution, Family, Sampler, TailOrders, family_boilerplate};
 use super::sample::Rng;
 use super::support::{Kind, Support, is_neg_inf, is_pos_inf};
 
@@ -201,6 +202,47 @@ impl Family for OrderStatistic {
             self.parent_sf(x)
                 .betainc_regularized(&(n - &k + 1), &k, &ctx.zero()),
         )
+    }
+
+    // The tails of X_(k): P(X_(k) > x) ~ C(n, k−1) S(x)^{n−k+1} and
+    // P(X_(k) ≤ x) ~ C(n, k) F(x)^k, so a parent's exponential rate scales
+    // by n − k + 1 on the right and by k on the left (a heavy tail, end 0,
+    // stays heavy).  A scaled finite end is taken as closed: whether the
+    // order statistic's mgf is finite exactly there depends on the
+    // parent's polynomial factor (the minimum of two Gamma(1/10) has a
+    // finite mgf at t = 2/θ), so that one point keeps the integral.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        let d = self.inner.family().mgf_domain()?;
+        let (n, k) = self.nk();
+        let m = &n - &k + 1;
+        let scale = |v: Ex, factor: &Ex, open: bool| -> (Ex, bool) {
+            if is_pos_inf(&v) || is_neg_inf(&v) || v.is_zero() == Some(true) {
+                (v, open)
+            } else {
+                ((factor * v).simplify(), false)
+            }
+        };
+        let (lower, lo_open) = scale(d.lower, &k, d.kind.lower_open());
+        let (upper, hi_open) = scale(d.upper, &m, d.kind.upper_open());
+        Some(Interval {
+            lower,
+            upper,
+            kind: IntervalKind::from_open_ends(lo_open, hi_open),
+        })
+    }
+
+    // The same tails scale the parent's orders: S(x)^{n−k+1} with
+    // S(x) ~ x^{−r} has order (n−k+1)·r on the right, F(x)^k order k·r on
+    // the left (the maximum of two Cauchy variables has a left tail of
+    // order 2 and no mean only from the right).
+    fn tail_orders(&self) -> Option<TailOrders> {
+        let parent = self.inner.family().tail_orders()?;
+        let (n, k) = self.nk();
+        let m = &n - &k + 1;
+        Some(TailOrders {
+            left: parent.left.map(|r| (&k * r).simplify()),
+            right: parent.right.map(|r| (m * r).simplify()),
+        })
     }
 
     // n draws from the parent, sorted; the k-th smallest.

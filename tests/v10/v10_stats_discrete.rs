@@ -337,10 +337,14 @@ fn geometric_cdf_and_mgf() {
     );
     assert_eq!(y.cdf(&ctx.int(0)), ctx.int(0));
     assert_eq!(y.cdf(&ctx.int(2)), ctx.rational(7, 16));
+    // 0.40: the closed form is the family's; `mgf` puts it on its region
+    // of convergence t < −ln(3/4) (+∞ beyond, where p eᵗ/(1 − (1−p)eᵗ)
+    // turns negative), and was the closed form for every t up to 0.39.
     assert_eq!(
-        y.mgf(&t),
-        ctx.rational(1, 4) * t.exp() / (ctx.one() - ctx.rational(3, 4) * t.exp())
+        y.distribution().family().mgf(&t),
+        Some(ctx.rational(1, 4) * t.exp() / (ctx.one() - ctx.rational(3, 4) * t.exp()))
     );
+    assert_eq!(y.mgf(&ctx.one()), ctx.infinity());
     // ln(5/4) is inside the region of convergence (t < −ln(3/4)).
     assert_eq!(y.mgf(&ctx.rational(5, 4).ln()).simplify(), ctx.int(5));
 }

@@ -8,7 +8,11 @@ mod v35_definite;
 mod v35_eval;
 #[path = "v35/v35_integrate_speed.rs"]
 mod v35_integrate_speed;
+#[path = "v35/v35_ntheory.rs"]
+mod v35_ntheory;
 #[path = "v35/v35_solve.rs"]
 mod v35_solve;
+#[path = "v35/v35_stats.rs"]
+mod v35_stats;
 #[path = "v35/v35_transforms.rs"]
 mod v35_transforms;

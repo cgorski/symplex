@@ -1,9 +1,9 @@
 //! Bernoulli number computation and caching.
 //!
 //! Provides exact rational Bernoulli numbers B_0, B_1, B_2, ...
-//! computed via the recurrence relation and cached for reuse across
-//! evaluations. Bernoulli numbers are the foundation for the Stirling
-//! series used in arbitrary-precision Gamma function evaluation.
+//! computed from the tangent numbers (Brent–Harvey) and cached for reuse
+//! across evaluations. Bernoulli numbers are the foundation for the
+//! Stirling series used in arbitrary-precision Gamma function evaluation.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -12,55 +12,81 @@ use parking_lot::Mutex;
 
 use crate::base::numeric::Q;
 
-/// Global cache of Bernoulli numbers as exact rationals.
-/// Lazily computed on demand via the standard recurrence.
+/// Global cache of the even Bernoulli numbers `B₂, B₄, …, B₂ₙ`.
 static BERNOULLI_CACHE: Mutex<Vec<Q>> = Mutex::new(Vec::new());
 
-/// Return B_n (the n-th Bernoulli number) as an exact rational.
+/// Return B_n (the n-th Bernoulli number) as an exact rational, with
+/// `B₁ = −1/2`.
 ///
-/// Uses the recurrence: B_0 = 1, and for n ≥ 1:
-///   B_n = -1/(n+1) · Σ_{k=0}^{n-1} C(n+1, k) · B_k
-///
-/// Odd Bernoulli numbers beyond B_1 are zero and are returned
-/// immediately without computation. Results are cached globally.
-/// Thread-safe via `Mutex`.
+/// Odd Bernoulli numbers beyond B_1 are zero.  The even ones come from the
+/// tangent numbers ([`even`]).  Results are cached globally; thread-safe
+/// via `Mutex`.
 #[must_use]
 pub(crate) fn bernoulli(n: usize) -> Q {
-    let mut cache = BERNOULLI_CACHE.lock();
-
-    // Extend cache if needed.
-    while cache.len() <= n {
-        let m = cache.len();
-        if m == 0 {
-            cache.push(Ratio::one()); // B_0 = 1
-            continue;
-        }
-        if m == 1 {
-            // B_1 = -1/2
-            cache.push(Ratio::new(BigInt::from(-1), BigInt::from(2)));
-            continue;
-        }
-        // B_{odd} = 0 for odd indices ≥ 3.
-        if m >= 3 && m % 2 == 1 {
-            cache.push(Ratio::zero());
-            continue;
-        }
-
-        // Recurrence: B_m = -1/(m+1) · Σ_{k=0}^{m-1} C(m+1, k) · B_k
-        let mut sum = Ratio::zero();
-        let mut binom: Q = Ratio::one(); // C(m+1, 0) = 1
-        for k in 0..m {
-            sum += &binom * &cache[k];
-            // C(m+1, k+1) = C(m+1, k) · (m+1-k) / (k+1)
-            binom = binom * Ratio::from_integer(BigInt::from(m + 1 - k))
-                / Ratio::from_integer(BigInt::from(k + 1));
-        }
-        let result = -sum / Ratio::from_integer(BigInt::from(m + 1));
-        tracing::trace!(index = m, value = %result, "bernoulli: computed");
-        cache.push(result);
+    match n {
+        0 => Ratio::one(),
+        1 => Ratio::new(BigInt::from(-1), BigInt::from(2)),
+        _ if n % 2 == 1 => Ratio::zero(),
+        _ => even(n / 2),
     }
+}
 
-    cache[n].clone()
+/// The tangent numbers `T₁ = 1, T₂ = 2, T₃ = 16, …, Tₙ` (`T₀ = 0` in
+/// slot 0): Brent and Harvey, "Fast computation of Bernoulli, Tangent and
+/// Secant numbers" (2011), Algorithm TangentNumbers — `O(n²)` updates by
+/// small factors, in place.
+fn tangent_numbers(n: usize) -> Vec<BigInt> {
+    let mut t: Vec<BigInt> = vec![BigInt::zero(); n + 1];
+    if n == 0 {
+        return t;
+    }
+    t[1] = BigInt::one();
+    for k in 2..=n {
+        t[k] = &t[k - 1] * BigInt::from(k - 1);
+    }
+    for k in 2..=n {
+        for j in k..=n {
+            let v = &t[j - 1] * BigInt::from(j - k) + &t[j] * BigInt::from(j - k + 2);
+            t[j] = v;
+        }
+    }
+    t
+}
+
+/// `B₂ₖ` for `k ≥ 1` (`B₀ = 1` for `k = 0`), from the tangent numbers:
+/// `B₂ₖ = (−1)^(k−1) · 2k · Tₖ / (2^(2k) · (2^(2k) − 1))`.
+///
+/// Up to 0.39 this module summed the rational recurrence `B_m = −Σ
+/// C(m+1, k)·B_k/(m+1)`, a gcd per term: `ntheory::bernoulli(1000)` took
+/// 9 s.  The values are the same.
+#[must_use]
+pub(crate) fn even(k: usize) -> Q {
+    if k == 0 {
+        return Q::one();
+    }
+    let mut cache = BERNOULLI_CACHE.lock();
+    if cache.len() < k {
+        // Recomputed from scratch (the algorithm is in place), for at least
+        // a quarter more numbers than before: a run of growing requests
+        // costs a constant factor over the last one, and no request more
+        // than about twice its own cost (the work is cubic in `n`).
+        let n = k.max(cache.len() + cache.len() / 4).max(32);
+        let t = tangent_numbers(n);
+        let mut out = Vec::with_capacity(n);
+        for (i, tk) in t.iter().enumerate().skip(1) {
+            let two_k = 2 * i;
+            let p = BigInt::one() << two_k;
+            let den = &p * (&p - BigInt::one());
+            let mut num = tk * BigInt::from(two_k);
+            if i.is_multiple_of(2) {
+                num = -num;
+            }
+            out.push(Ratio::new(num, den));
+        }
+        tracing::trace!(count = n, "bernoulli: tangent numbers computed");
+        *cache = out;
+    }
+    cache[k - 1].clone()
 }
 
 #[cfg(test)]
@@ -180,6 +206,27 @@ mod tests {
             &BigInt::from(66),
             "B_50 denominator should be 66"
         );
+    }
+
+    /// The tangent-number values equal the rational recurrence
+    /// `B_m = −Σ_{k<m} C(m+1, k)·B_k/(m+1)` (the algorithm of this module up
+    /// to 0.39) through `B₃₀₀`.
+    #[test]
+    fn tangent_numbers_match_the_rational_recurrence() {
+        let mut b: Vec<Q> = vec![Ratio::one()];
+        for m in 1..=300usize {
+            let mut sum = Ratio::zero();
+            let mut binom: Q = Ratio::one();
+            for (k, bk) in b.iter().enumerate() {
+                sum += &binom * bk;
+                binom = binom * Ratio::from_integer(BigInt::from(m + 1 - k))
+                    / Ratio::from_integer(BigInt::from(k + 1));
+            }
+            b.push(-sum / Ratio::from_integer(BigInt::from(m + 1)));
+        }
+        for (m, bm) in b.iter().enumerate() {
+            assert_eq!(bernoulli(m), *bm, "B_{m}");
+        }
     }
 
     #[test]

@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::api::context::Context;
-use crate::api::expr::Ex;
+use crate::api::expr::{BoolEx, Ex};
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
@@ -25,6 +25,160 @@ use super::support::{Kind, Piece, Support, is_neg_inf, is_pos_inf};
 
 /// A closure producing one `f64` sample per call.
 pub type Sampler = Box<dyn FnMut(&mut Rng) -> f64 + Send>;
+
+/// The orders of a distribution's heavy tails ([`Family::tail_orders`]):
+/// `E[|X|ⁿ; X < 0]` is finite exactly for `n < left`, `E[|X|ⁿ; X > 0]`
+/// exactly for `n < right` — a tail that decays like `|x|^{−r−1}` has
+/// order `r`.  `None`: that tail has every moment (it is bounded, or
+/// lighter than every power).
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::Distribution;
+///
+/// let ctx = Context::new();
+/// let p = Distribution::pareto(ctx.int(1), ctx.rational(3, 2));
+/// let orders = p.family().tail_orders().unwrap();
+/// assert_eq!(orders.left, None);
+/// assert_eq!(orders.right, Some(ctx.rational(3, 2)));
+/// assert_eq!(p.variance(), ctx.infinity()); // E[X²] diverges
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct TailOrders {
+    /// The order of the tail towards `−∞`.
+    pub left: Option<Ex>,
+    /// The order of the tail towards `+∞`.
+    pub right: Option<Ex>,
+}
+
+impl TailOrders {
+    /// Both tails of order `r` (a symmetric family).
+    pub fn both(r: Ex) -> Self {
+        TailOrders {
+            left: Some(r.clone()),
+            right: Some(r),
+        }
+    }
+
+    /// A right tail of order `r` (a family bounded below).
+    pub fn right(r: Ex) -> Self {
+        TailOrders {
+            left: None,
+            right: Some(r),
+        }
+    }
+}
+
+/// A condition on the parameters: decided when they are numeric, else a
+/// relation to put in a `Piecewise`.
+#[derive(Clone)]
+enum Cond {
+    Known(bool),
+    Open(BoolEx),
+}
+
+impl Cond {
+    fn and(self, other: Cond) -> Cond {
+        match (self, other) {
+            (Cond::Known(false), _) | (_, Cond::Known(false)) => Cond::Known(false),
+            (Cond::Known(true), c) | (c, Cond::Known(true)) => c,
+            (Cond::Open(a), Cond::Open(b)) if a == b => Cond::Open(a),
+            (Cond::Open(a), Cond::Open(b)) => Cond::Open(a.and(&b)),
+        }
+    }
+
+    fn or(self, other: Cond) -> Cond {
+        match (self, other) {
+            (Cond::Known(true), _) | (_, Cond::Known(true)) => Cond::Known(true),
+            (Cond::Known(false), c) | (c, Cond::Known(false)) => c,
+            (Cond::Open(a), Cond::Open(b)) if a == b => Cond::Open(a),
+            (Cond::Open(a), Cond::Open(b)) => Cond::Open(a.or(&b)),
+        }
+    }
+
+    fn not(self) -> Cond {
+        match self {
+            Cond::Known(b) => Cond::Known(!b),
+            Cond::Open(c) => Cond::Open(c.not()),
+        }
+    }
+}
+
+/// A value computed only if its branch is taken.
+type Lazy<'a> = Box<dyn FnOnce() -> Ex + 'a>;
+
+/// The value of the first branch whose condition holds: the value itself
+/// when the conditions decide, else the `Piecewise` over the undecided ones
+/// (a condition already tried is dropped, as it cannot hold later).  The
+/// last branch should be `Known(true)`; without one the remaining
+/// undecided branches end in `otherwise`.
+fn first_of(ctx: &Context, branches: Vec<(Cond, Lazy<'_>)>, otherwise: Ex) -> Ex {
+    let mut open: Vec<(Ex, BoolEx)> = Vec::new();
+    for (cond, value) in branches {
+        match cond {
+            Cond::Known(false) => {}
+            Cond::Known(true) => {
+                let v = value();
+                if open.is_empty() {
+                    return v;
+                }
+                open.push((v, ctx.bool_true()));
+                return piecewise_of(&open);
+            }
+            Cond::Open(c) => {
+                if open.iter().all(|(_, seen)| *seen != c) {
+                    open.push((value(), c));
+                }
+            }
+        }
+    }
+    if open.is_empty() {
+        return otherwise;
+    }
+    open.push((otherwise, ctx.bool_true()));
+    piecewise_of(&open)
+}
+
+fn piecewise_of(pairs: &[(Ex, BoolEx)]) -> Ex {
+    let refs: Vec<(&Ex, &BoolEx)> = pairs.iter().map(|(v, c)| (v, c)).collect();
+    Ex::piecewise(&refs)
+}
+
+/// `order > n` (`E|X|ⁿ` finite in a tail of that order; always, for a
+/// tail with every moment).
+fn order_exceeds(ctx: &Context, order: Option<&Ex>, n: u32) -> Cond {
+    let Some(r) = order else {
+        return Cond::Known(true);
+    };
+    let n_ex = ctx.int(i64::from(n));
+    match sign_of(&(r - &n_ex)) {
+        Some(Ordering::Greater) => Cond::Known(true),
+        Some(_) => Cond::Known(false),
+        None => Cond::Open(r.gt(&n_ex)),
+    }
+}
+
+/// The degree of `g` as a polynomial in `x` (with `x`-free coefficients)
+/// and its leading coefficient; `None` when `g` is not one.
+fn polynomial_lead(g: &Ex, x: &Ex) -> Option<(u32, Ex)> {
+    let poly = Poly::new(&g.expand(), &[x])?;
+    let mut best: Option<(u32, Ex)> = None;
+    for (exps, coeff) in poly.terms() {
+        let n = *exps.first()?;
+        if best.as_ref().is_none_or(|(d, _)| n > *d) {
+            best = Some((n, coeff));
+        }
+    }
+    best
+}
+
+/// Is `e` a known non-finite constant (`±∞`, `zoo`, NaN)?
+fn is_non_finite(ctx: &Context, e: &Ex) -> bool {
+    *e == ctx.infinity()
+        || *e == ctx.neg_infinity()
+        || *e == ctx.complex_infinity()
+        || *e == ctx.nan()
+}
 
 /// A tail probability below this (`2⁻³²`) is far: see
 /// [`Distribution::tail_of`].
@@ -273,6 +427,60 @@ pub(crate) fn sign_of(e: &Ex) -> Option<Ordering> {
     })
 }
 
+/// Does the interval contain the real number `t`?  Decided by
+/// [`sign_of`] against each finite end; `None` when a comparison is not
+/// (a symbolic `t` or end).
+pub(crate) fn interval_contains(iv: &Interval<Ex>, t: &Ex) -> Option<bool> {
+    let side = |infinite: bool, diff: Ex, open: bool| -> Option<bool> {
+        if infinite {
+            return Some(true);
+        }
+        match sign_of(&diff)? {
+            Ordering::Greater => Some(true),
+            Ordering::Equal => Some(!open),
+            Ordering::Less => Some(false),
+        }
+    };
+    let lower = side(is_neg_inf(&iv.lower), t - &iv.lower, iv.kind.lower_open());
+    let upper = side(is_pos_inf(&iv.upper), &iv.upper - t, iv.kind.upper_open());
+    match (lower, upper) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (Some(true), Some(true)) => Some(true),
+        _ => None,
+    }
+}
+
+/// `t ∈ iv` as a condition (`lo < t ∧ t < hi`, `≤` at a closed end, an
+/// infinite end dropped).
+pub(crate) fn interval_condition(
+    iv: &Interval<Ex>,
+    t: &Ex,
+    ctx: &Context,
+) -> crate::api::expr::BoolEx {
+    if iv.kind == crate::base::interval::IntervalKind::Closed && iv.lower == iv.upper {
+        return t.eq_expr(&iv.lower);
+    }
+    let lower = (!is_neg_inf(&iv.lower)).then(|| {
+        if iv.kind.lower_open() {
+            t.gt(&iv.lower)
+        } else {
+            t.ge(&iv.lower)
+        }
+    });
+    let upper = (!is_pos_inf(&iv.upper)).then(|| {
+        if iv.kind.upper_open() {
+            t.lt(&iv.upper)
+        } else {
+            t.le(&iv.upper)
+        }
+    });
+    match (lower, upper) {
+        (Some(l), Some(u)) => l.and(&u),
+        (Some(c), None) | (None, Some(c)) => c,
+        (None, None) => ctx.bool_true(),
+    }
+}
+
 /// An end of a support piece as an `f64` (`±∞` for the infinities).
 fn lattice_end(e: &Ex) -> Result<f64, SymplexError> {
     if is_neg_inf(e) {
@@ -331,6 +539,18 @@ pub trait Family: Any + Send + Sync + fmt::Debug {
         None
     }
 
+    /// The orders of the family's heavy tails, beyond which its moments
+    /// do not exist: `ν` on both sides for a Student t, `1` on both sides
+    /// for a Cauchy, `α` on the right for a Pareto, `d₂/2` on the right
+    /// for an F.  The closed forms [`mean`](Family::mean),
+    /// [`variance`](Family::variance) and [`raw_moment`](Family::raw_moment)
+    /// of such a family are the formulas valid below the orders (`None`
+    /// for numeric parameters beyond them); [`Distribution`]'s moments
+    /// apply the orders.  `None` (the default): every moment exists.
+    fn tail_orders(&self) -> Option<TailOrders> {
+        None
+    }
+
     /// Closed-form `P(X ≤ x)` for `x` in the support, in its classic form
     /// (`½ + ½ erf(z/√2)` for a normal): the form of a symbolic CDF and of
     /// the mass of an interval around the median.
@@ -360,8 +580,35 @@ pub trait Family: Any + Send + Sync + fmt::Debug {
         None
     }
 
-    /// Closed-form moment generating function `E[e^{tX}]`.
+    /// Closed-form moment generating function `E[e^{tX}]`: the analytic
+    /// expression, equal to the expectation for real `t` in
+    /// [`mgf_domain`](Family::mgf_domain) (and, continued to the strip of
+    /// complex `t` whose real part lies there, the characteristic function
+    /// at `t = is`).  Outside the domain the expectation is `+∞` whatever
+    /// the expression continues to: [`Distribution::mgf`] applies the
+    /// domain.
     fn mgf(&self, _t: &Ex) -> Option<Ex> {
+        None
+    }
+
+    /// The real `t` at which `E[e^{tX}]` is finite, with its ends'
+    /// openness: `(−∞, λ)` for an exponential, `(−∞, 0]` for a log-normal
+    /// (a right tail heavier than every exponential), `[0, 0]` for a
+    /// Cauchy.  [`Distribution::mgf`] answers `+∞` outside it, where the
+    /// closed form continues to a finite number (`λ/(λ − t)` is `−1` at
+    /// `t = 2λ`) and the integral of a heavy tail evaluates by quadrature
+    /// to a finite one.  `None` (the default): finite for every real `t`,
+    /// or not known.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        None
+    }
+
+    /// Closed-form characteristic function `E[e^{itX}]` for real `t`,
+    /// for a family whose [`mgf`](Family::mgf) has no closed form to
+    /// continue to the imaginary axis (`e^{ix₀t − γ|t|}` for a Cauchy).
+    /// `None` (the default): [`Distribution::characteristic_function`]
+    /// takes `mgf(it)` when there is a closed mgf, else the expectation.
+    fn characteristic_function(&self, _t: &Ex) -> Option<Ex> {
         None
     }
 
@@ -525,6 +772,21 @@ pub(crate) fn fresh_symbol(ctx: &Context, prefix: &str, avoid: &[&Ex]) -> Ex {
     }
 }
 
+/// A summation index (`_k`, `_k1`, …; declared a non-negative integer)
+/// that occurs in none of `avoid`.
+pub(crate) fn fresh_index(ctx: &Context, avoid: &[&Ex]) -> Ex {
+    let plain = fresh_symbol(ctx, "k", avoid);
+    let name = plain.to_string();
+    ctx.symbol_with(
+        &name,
+        &[
+            crate::base::assumptions::Assumption::Integer,
+            crate::base::assumptions::Assumption::NonNegative,
+        ],
+    )
+    .unwrap_or(plain)
+}
+
 fn not_implemented(msg: impl Into<String>) -> SymplexError {
     SymplexError::NotImplemented(msg.into())
 }
@@ -609,28 +871,134 @@ impl Distribution {
 
     // ── Moments ────────────────────────────────────────────────────────
 
+    // The moments below respect the family's [`Family::tail_orders`]: a
+    // moment whose integral diverges is `+∞` or `−∞` when it diverges in
+    // one tail, undefined (NaN) when an odd one diverges in both; a central
+    // moment needs the mean, and is undefined when both tails lack it (a
+    // Cauchy's variance) — but `+∞` when one tail makes the mean infinite
+    // (a Pareto's variance for α ≤ 1, scipy's convention).  Parameters that
+    // do not decide the orders get the `Piecewise` of the cases.  Up to
+    // 0.39 the closed form answered for every symbolic parameter (the
+    // variance of `StudentT(ν)` was `ν/(ν − 2)`, `−¼` at `ν = 2/5`), and a
+    // numeric one beyond the order got the divergent integral, unevaluated.
+
+    /// The tail orders, if any (both `None` taken as no order).
+    fn orders(&self) -> Option<TailOrders> {
+        self.0
+            .tail_orders()
+            .filter(|o| o.left.is_some() || o.right.is_some())
+    }
+
+    /// `E|X|ⁿ < ∞` in the left and in the right tail.
+    fn finite_in_tails(&self, orders: &TailOrders, n: u32) -> (Cond, Cond) {
+        let ctx = self.context();
+        (
+            order_exceeds(&ctx, orders.left.as_ref(), n),
+            order_exceeds(&ctx, orders.right.as_ref(), n),
+        )
+    }
+
+    /// `E[h(X)]` for an `h` of degree `n` whose leading coefficient has
+    /// the sign `sign` (`±1`): `closed` where `E|X|ⁿ` is finite in both
+    /// tails, else the divergence — `sign·∞` from the right tail alone,
+    /// `sign·(−1)ⁿ·∞` from the left alone, and from both `sign·∞` for an
+    /// even `n`, NaN for an odd one.
+    fn by_tails(&self, n: u32, sign: i64, closed: Lazy<'_>) -> Ex {
+        let Some(orders) = self.orders() else {
+            return closed();
+        };
+        let (left, right) = self.finite_in_tails(&orders, n);
+        let (mut branches, both) = self.divergence(&orders, n, sign);
+        branches.insert(0, (left.and(right), closed));
+        first_of(&self.context(), branches, both)
+    }
+
+    /// The branches of [`by_tails`](Self::by_tails) past the first: the
+    /// value from the right tail alone (where the left is finite), from the
+    /// left alone, and the value when both diverge.
+    fn divergence(&self, orders: &TailOrders, n: u32, sign: i64) -> (Vec<(Cond, Lazy<'_>)>, Ex) {
+        let ctx = self.context();
+        let (left, right) = self.finite_in_tails(orders, n);
+        let inf = |s: i64| {
+            if s > 0 {
+                ctx.infinity()
+            } else {
+                ctx.neg_infinity()
+            }
+        };
+        let from_right = inf(sign);
+        let from_left = inf(if n.is_multiple_of(2) { sign } else { -sign });
+        let both = if n.is_multiple_of(2) {
+            inf(sign)
+        } else {
+            ctx.nan()
+        };
+        let branches: Vec<(Cond, Lazy<'_>)> = vec![
+            (left, Box::new(move || from_right)),
+            (right, Box::new(move || from_left)),
+        ];
+        (branches, both)
+    }
+
     /// `E[X]`: the closed form when the family has one, otherwise the
-    /// integral / sum of `x·f(x)` over the support (which may stay
-    /// unevaluated, or be a divergent integral, for a family without a
-    /// mean).  SymPy: `E(X)`.
+    /// integral / sum of `x·f(x)` over the support; `±∞` or undefined
+    /// (NaN) beyond the family's [`tail_orders`](Family::tail_orders).
+    /// SymPy: `E(X)` (which returns the integral beyond them, or raises).
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::Distribution;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(Distribution::pareto(ctx.int(1), ctx.rational(1, 2)).mean(), ctx.infinity());
+    /// assert_eq!(Distribution::cauchy(ctx.int(0), ctx.int(1)).mean(), ctx.nan());
+    /// let nu = ctx.symbol_with("nu", &[Assumption::Positive])?;
+    /// let t = Distribution::student_t(nu.clone());
+    /// assert_eq!(t.mean().subs(&nu, &ctx.rational(1, 2)).eval(), ctx.nan());
+    /// assert_eq!(t.mean().subs(&nu, &ctx.int(3)).eval(), ctx.zero());
+    /// # Ok::<(), SymplexError>(())
+    /// ```
     pub fn mean(&self) -> Ex {
+        self.by_tails(1, 1, Box::new(|| self.mean_plain()))
+    }
+
+    /// The mean as the closed form or the expectation, the tails unchecked.
+    fn mean_plain(&self) -> Ex {
         match self.0.mean() {
             Some(m) => m,
             None => {
                 let x = self.fresh_var("x", &[]);
-                self.expectation(&x, &x)
+                self.expectation_plain(&x, &x)
             }
         }
     }
 
-    /// `Var[X]`: the closed form, else `E[X²] − E[X]²`.  SymPy:
-    /// `variance(X)`.
+    /// `Var[X]`: the closed form, else `E[X²] − E[X]²`; `+∞` where `E[X²]`
+    /// diverges, undefined (NaN) where the mean is (both tails of order at
+    /// most 1).  SymPy: `variance(X)`.
     pub fn variance(&self) -> Ex {
+        let closed: Lazy<'_> = Box::new(|| self.variance_plain());
+        let Some(orders) = self.orders() else {
+            return closed();
+        };
+        let ctx = self.context();
+        let (l2, r2) = self.finite_in_tails(&orders, 2);
+        let (l1, r1) = self.finite_in_tails(&orders, 1);
+        let inf = ctx.infinity();
+        first_of(
+            &ctx,
+            vec![(l2.and(r2), closed), (l1.or(r1), Box::new(move || inf))],
+            ctx.nan(),
+        )
+    }
+
+    /// The variance, the tails unchecked.
+    fn variance_plain(&self) -> Ex {
         match self.0.variance() {
             Some(v) => v,
             None => {
-                let m = self.mean();
-                (self.moment(2) - m.powi(2)).simplify()
+                let m = self.mean_plain();
+                (self.moment_plain(2) - m.powi(2)).simplify()
             }
         }
     }
@@ -641,11 +1009,17 @@ impl Distribution {
     }
 
     /// The `n`-th raw moment `E[Xⁿ]`: the closed form, else the
-    /// expectation of `xⁿ`.  SymPy: `moment(X, n)`.
+    /// expectation of `xⁿ`; `±∞` or undefined (NaN) beyond the family's
+    /// [`tail_orders`](Family::tail_orders).  SymPy: `moment(X, n)`.
     pub fn moment(&self, n: u32) -> Ex {
         if n == 0 {
             return self.context().one();
         }
+        self.by_tails(n, 1, Box::new(move || self.moment_plain(n)))
+    }
+
+    /// The raw moment, the tails unchecked.
+    fn moment_plain(&self, n: u32) -> Ex {
         match self.0.raw_moment(n) {
             Some(m) => m,
             None => {
@@ -656,21 +1030,99 @@ impl Distribution {
         }
     }
 
-    /// The `n`-th central moment `E[(X − μ)ⁿ]`.  SymPy: `cmoment(X, n)`.
+    /// The `n`-th central moment `E[(X − μ)ⁿ]`; beyond the family's
+    /// [`tail_orders`](Family::tail_orders) the divergence of `E[Xⁿ]`, or
+    /// undefined (NaN) when the mean is.  SymPy: `cmoment(X, n)`.
     pub fn central_moment(&self, n: u32) -> Ex {
-        let mu = self.mean();
+        let ctx = self.context();
+        if n == 0 {
+            return ctx.one();
+        }
+        let closed: Lazy<'_> = Box::new(move || self.central_moment_plain(n));
+        let Some(orders) = self.orders() else {
+            return closed();
+        };
+        let (ln, rn) = self.finite_in_tails(&orders, n);
+        let (l1, r1) = self.finite_in_tails(&orders, 1);
+        let no_mean = l1.not().and(r1.not());
+        if n == 1 {
+            return first_of(&ctx, vec![(ln.and(rn), closed)], ctx.nan());
+        }
+        let nan = ctx.nan();
+        let (divergent, both) = self.divergence(&orders, n, 1);
+        let mut branches: Vec<(Cond, Lazy<'_>)> =
+            vec![(ln.and(rn), closed), (no_mean, Box::new(move || nan))];
+        branches.extend(divergent);
+        first_of(&ctx, branches, both)
+    }
+
+    /// The central moment, the tails unchecked — except that a raw moment
+    /// that evaluated to `±∞` or NaN (a mixture's, a transformed
+    /// variable's) gives its divergence rather than `∞ − ∞`.
+    fn central_moment_plain(&self, n: u32) -> Ex {
+        let ctx = self.context();
+        let mu = self.mean_plain();
+        if is_non_finite(&ctx, &mu) {
+            return ctx.nan();
+        }
+        if n >= 2 {
+            let raw = self.moment_plain(n);
+            if is_non_finite(&ctx, &raw) {
+                return if n.is_multiple_of(2) && raw != ctx.nan() {
+                    ctx.infinity()
+                } else {
+                    raw
+                };
+            }
+        }
         let x = self.fresh_var("x", &[&mu]);
-        self.expectation(&(&x - mu).powi(i64::from(n)), &x)
+        self.expectation_plain(&(&x - mu).powi(i64::from(n)), &x)
     }
 
-    /// Skewness `E[(X − μ)³] / σ³`.  SymPy: `skewness(X)`.
+    /// Skewness `E[(X − μ)³] / σ³`: `±∞` where the third moment diverges
+    /// in one tail and the variance is finite, undefined (NaN) otherwise
+    /// beyond the tail orders.  SymPy: `skewness(X)`.
     pub fn skewness(&self) -> Ex {
-        (self.central_moment(3) / self.std().powi(3)).simplify()
+        let closed: Lazy<'_> = Box::new(|| {
+            (self.central_moment_plain(3) / self.variance_plain().sqrt().powi(3)).simplify()
+        });
+        let Some(orders) = self.orders() else {
+            return closed();
+        };
+        let ctx = self.context();
+        let (l3, r3) = self.finite_in_tails(&orders, 3);
+        let (l2, r2) = self.finite_in_tails(&orders, 2);
+        let var_finite = l2.and(r2);
+        let (inf, neg_inf) = (ctx.infinity(), ctx.neg_infinity());
+        first_of(
+            &ctx,
+            vec![
+                (l3.clone().and(r3.clone()), closed),
+                (var_finite.clone().and(l3), Box::new(move || inf)),
+                (var_finite.and(r3), Box::new(move || neg_inf)),
+            ],
+            ctx.nan(),
+        )
     }
 
-    /// Kurtosis `E[(X − μ)⁴] / σ⁴` (not excess).  SymPy: `kurtosis(X)`.
+    /// Kurtosis `E[(X − μ)⁴] / σ⁴` (not excess): `+∞` where the fourth
+    /// moment diverges and the variance is finite, undefined (NaN) where
+    /// the variance diverges too.  SymPy: `kurtosis(X)`.
     pub fn kurtosis(&self) -> Ex {
-        (self.central_moment(4) / self.variance().powi(2)).simplify()
+        let closed: Lazy<'_> =
+            Box::new(|| (self.central_moment_plain(4) / self.variance_plain().powi(2)).simplify());
+        let Some(orders) = self.orders() else {
+            return closed();
+        };
+        let ctx = self.context();
+        let (l4, r4) = self.finite_in_tails(&orders, 4);
+        let (l2, r2) = self.finite_in_tails(&orders, 2);
+        let inf = ctx.infinity();
+        first_of(
+            &ctx,
+            vec![(l4.and(r4), closed), (l2.and(r2), Box::new(move || inf))],
+            ctx.nan(),
+        )
     }
 
     // ── Distribution functions ─────────────────────────────────────────
@@ -984,28 +1436,117 @@ impl Distribution {
     }
 
     /// Moment generating function `E[e^{tX}]` in `t`: the closed form,
-    /// else the expectation.  SymPy: `moment_generating_function(X)(t)`.
+    /// else the expectation, on the family's
+    /// [`mgf_domain`](Family::mgf_domain) — and `+∞` outside it, for a real
+    /// `t` known to lie there.  A `t` whose place cannot be decided (a
+    /// symbol, taken to be real) gets the `Piecewise` of both.  A numeric
+    /// non-real `t` is placed by its real part: the closed form continued
+    /// inside the strip, undefined (NaN) outside it, where the integral
+    /// does not converge.  `E[e^{0·X}] = 1` (a uniform's closed form is
+    /// `0/0` there).  SymPy: `moment_generating_function(X)(t)`, which
+    /// returns the closed form alone.
+    ///
+    /// Up to 0.39 the closed form answered for every `t`: an exponential's
+    /// `λ/(λ − t)` was `−1` at `t = 2λ`, and the integral of a log-normal's
+    /// heavy right tail evaluated by quadrature to a finite number.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::Distribution;
+    ///
+    /// let ctx = Context::new();
+    /// let e = Distribution::exponential(ctx.int(1));
+    /// assert_eq!(e.mgf(&ctx.rational(1, 2)), ctx.int(2));
+    /// assert_eq!(e.mgf(&ctx.int(2)), ctx.infinity());           // E[e^{2X}] diverges
+    /// let ln = Distribution::log_normal(ctx.int(0), ctx.int(1));
+    /// assert_eq!(ln.mgf(&ctx.rational(1, 10)), ctx.infinity());
+    /// ```
     pub fn mgf(&self, t: &Ex) -> Ex {
-        match self.0.mgf(t) {
-            Some(m) => m,
-            None => {
-                let x = self.fresh_var("x", &[t]);
-                self.expectation(&(t * &x).exp(), &x)
+        let ctx = self.context();
+        if t.is_zero() == Some(true) {
+            return ctx.one();
+        }
+        let domain = self.0.mgf_domain();
+        // The point that decides: `t`, or the real part of a numeric
+        // non-real `t` (whose place outside the strip leaves the integral
+        // without a value rather than infinite).
+        let mut at = t.clone();
+        let mut outside = ctx.infinity();
+        if domain.is_some() && t.free_symbols().is_empty() && t.is_real() != Some(true) {
+            let (re, im) = t.as_real_imag();
+            if sign_of(&im).is_some_and(|o| o != Ordering::Equal) {
+                at = re;
+                outside = ctx.nan();
             }
+        }
+        let inside = domain.as_ref().map(|d| interval_contains(d, &at));
+        if inside == Some(Some(false)) {
+            return outside;
+        }
+        // A domain that is the point 0 alone (a Cauchy's) has the value 1
+        // there and nothing to integrate.
+        let only_zero = domain
+            .as_ref()
+            .is_some_and(|d| d.lower.is_zero() == Some(true) && d.upper.is_zero() == Some(true));
+        let value = if only_zero {
+            ctx.one()
+        } else {
+            match self.0.mgf(t) {
+                Some(m) => m,
+                None => {
+                    let x = self.fresh_var("x", &[t]);
+                    self.expectation(&(t * &x).exp(), &x)
+                }
+            }
+        };
+        match domain {
+            Some(d) if inside == Some(None) => {
+                let cond = interval_condition(&d, &at, &ctx);
+                Ex::piecewise(&[(&value, &cond), (&outside, &ctx.bool_true())])
+            }
+            _ => value,
         }
     }
 
-    /// Characteristic function `E[e^{itX}]` in `t`.  SymPy:
+    /// Characteristic function `E[e^{itX}]` in `t`: the family's closed
+    /// form ([`Family::characteristic_function`]), else its closed moment
+    /// generating function continued to `it`, else the expectation — taken
+    /// as `E[cos tX] + i·E[sin tX]` when `E[e^{itX}]` stays an integral, so
+    /// that a numeric `t` evaluates by real quadrature (an integrand with
+    /// `i` in it does not compile).  SymPy:
     /// `characteristic_function(X)(t)`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::Distribution;
+    ///
+    /// let ctx = Context::new();
+    /// let c = Distribution::cauchy(ctx.int(0), ctx.int(1));
+    /// // e^{−|t|}
+    /// assert!((c.characteristic_function(&ctx.int(2)).eval_f64()? - (-2f64).exp()).abs() < 1e-15);
+    /// # Ok::<(), SymplexError>(())
+    /// ```
     pub fn characteristic_function(&self, t: &Ex) -> Ex {
-        let it = self.context().i_unit() * t;
-        match self.0.mgf(&it) {
-            Some(m) => m,
-            None => {
-                let x = self.fresh_var("x", &[t]);
-                self.expectation(&(&it * &x).exp(), &x)
-            }
+        let ctx = self.context();
+        if t.is_zero() == Some(true) {
+            return ctx.one();
         }
+        if let Some(c) = self.0.characteristic_function(t) {
+            return c;
+        }
+        let it = ctx.i_unit() * t;
+        if let Some(m) = self.0.mgf(&it) {
+            return m;
+        }
+        let x = self.fresh_var("x", &[t]);
+        let direct = self.expectation(&(&it * &x).exp(), &x);
+        if !direct.has_unevaluated() {
+            return direct;
+        }
+        let tx = t * &x;
+        let re = self.expectation(&tx.cos(), &x);
+        let im = self.expectation(&tx.sin(), &x);
+        re + ctx.i_unit() * im
     }
 
     /// Quantile function (inverse CDF) at `p`, when the family has a
@@ -1755,8 +2296,35 @@ impl Distribution {
     /// (continuous) or summed (discrete) over the support.  The result may
     /// contain an unevaluated `Integral` or `Sum` when the crate's
     /// integrator cannot close the form — check with
-    /// [`has_unevaluated`](Ex::has_unevaluated).  SymPy: `E(expr)`.
+    /// [`has_unevaluated`](Ex::has_unevaluated).  A polynomial whose
+    /// degree reaches the family's [`tail_orders`](Family::tail_orders) has
+    /// the divergence of its leading term (`E[X² − X] = +∞` for a Cauchy).
+    /// SymPy: `E(expr)`.
     pub fn expectation(&self, g: &Ex, x: &Ex) -> Ex {
+        if let Some(orders) = self.orders()
+            && let Some((degree, lead)) = polynomial_lead(g, x)
+            && degree > 0
+        {
+            let (l, r) = self.finite_in_tails(&orders, degree);
+            if !matches!(l.and(r), Cond::Known(true)) {
+                return match sign_of(&lead) {
+                    Some(Ordering::Greater) => {
+                        self.by_tails(degree, 1, Box::new(|| self.expectation_plain(g, x)))
+                    }
+                    Some(Ordering::Less) => {
+                        self.by_tails(degree, -1, Box::new(|| self.expectation_plain(g, x)))
+                    }
+                    // A coefficient of unknown sign: the integral itself.
+                    _ => self.integrate_over(&(g * self.0.density(x)), x, &self.support()),
+                };
+            }
+        }
+        self.expectation_plain(g, x)
+    }
+
+    /// `E[g(X)]`, the tails unchecked: through the raw moments for a
+    /// polynomial, else the integral or sum.
+    fn expectation_plain(&self, g: &Ex, x: &Ex) -> Ex {
         if let Some(by_moments) = self.expectation_by_moments(g, x) {
             return by_moments;
         }

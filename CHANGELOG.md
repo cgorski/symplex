@@ -21,8 +21,73 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   resolving the whole interval at its midpoint: `∫₀² a·floor(x²) dx` was
   `2a` (it is `(5 − √2 − √3)·a`), `∫₀^∞ floor(x)·e^{−x} dx` was `1` (it is
   `1/(e − 1)`).  Linear arguments on finite intervals still integrate.
+- **Statistics: moments and generating functions are the true values.**
+  A moment generating function beyond its abscissa of convergence is
+  `+∞` (`Exponential(1).mgf(2)` was `−1`, `Gamma(2, 1).mgf(2)` was `1`,
+  `Laplace(0, 1).mgf(2)` was `−1/3`, `Geometric(1/2).mgf(1)` was `−3.78`;
+  SymPy 1.14 gives the same wrong values), `NaN` for a complex `t` outside
+  the strip, a `Piecewise` for a symbolic `t`; a moment beyond a heavy
+  tail's order is `±∞` or undefined (`NaN`), with a `Piecewise` of the
+  cases for symbolic parameters (the variance of `StudentT(ν)` at `ν =
+  2/5` was `−1/4`, the mean of `Pareto(1, 1/2)` was `−1`).  This holds for
+  `mean`, `variance`, `std`, `moment`, `central_moment`, `skewness`,
+  `kurtosis` and polynomial expectations, through `aX + b`, truncation,
+  mixtures and order statistics.  New `Family::tail_orders`,
+  `Family::mgf_domain`, `Family::characteristic_function` and
+  `stats::TailOrders`.
+- **Number theory refuses instead of hanging or aborting** (each bound is
+  documented on the function): `sqrt_mod_all` and `polynomial_congruence`
+  return an empty list beyond `2²²` roots (and `polynomial_congruence`
+  beyond `2¹⁴` recursion nodes) — the new `try_sqrt_mod_all` and
+  `try_polynomial_congruence` report that as an `Err`; `sqrt_mod` and
+  `nthroot_mod` return `None` in the documented work-bound cases;
+  `discrete_log`'s baby-step table is `2²¹` entries (was `5·10⁷`);
+  `continued_fraction_periodic`, `pell` and `pell_negative` return `None`
+  for a period of more than `2²¹` terms; `bernoulli` and `euler_number`
+  return `None` for an even `n > 4096` (`bernoulli(1000)` took 9 s, now
+  0.05 s); `harmonic` returns `None` for `n > 2¹⁸`; `multinomial` for `n`
+  beyond `u64` or a result of more than `2³²` bits; `factorint_bounded`
+  leaves a remainder over 2,048 bits in the cofactor without a primality
+  test; `divisor_count` saturates at `usize::MAX`; `frobenius_number`
+  returns `None` beyond `i128` (it wrapped to a negative number).
+
+### Added
+
+- `ntheory::try_sqrt_mod_all`, `ntheory::try_polynomial_congruence`;
+  `prime(n)` up to `π(10¹²)` (`prime(10⁸)` = 2038074743 in 11 ms; every `n
+  > 10⁷` was refused).  `eval` of `fibonacci`/`lucas` at negative indices,
+  of `catalan` off the non-negative integers (`catalan(−1)` = `−1/2`,
+  `catalan(−1/2)` = `zoo`), `euler_number(−1)` = `π/2`, and `binomial`
+  with `n` beyond `u64` (`binomial(10²⁰, 2)` stayed unevaluated);
+  numerical `catalan`, `fibonacci`, `lucas` and `bernoulli` off the
+  integers (SymPy 1.14's values).  Closed-form characteristic functions
+  (Cauchy, Student t, logistic, `aX + b`, mixtures; the others by `E[cos
+  tX] + i·E[sin tX]`; they were refused), the beta mgf as a Kummer series
+  (quadrature lost 8 digits at its endpoint singularity), closed
+  geometric and F entropies, an exact binomial `cdf`/`sf`.
 
 ### Fixed
+
+- **Number theory, Diophantine equations and combinatorial numbers
+  hunted** (generators × 300 seeds against brute force and exact
+  identities, 23,797 SymPy oracle cases): before, 3 wrong, 2 panics, 50
+  hangs and one process abort on the allocation; now 0.
+  `is_quad_residue(0, p⁴⁰)` was `false`; `sqrt_mod(0, 2¹⁰⁰)` and
+  `polynomial_congruence((x − 19)², 2·10³²)` aborted the process (they
+  listed `2⁵⁰` roots); `nthroot_mod(0, 5, 2³⁷)` hung; `discrete_log` with
+  a base sharing a factor with `n > 10⁶` was `None` (it is solvable);
+  `n_order` modulo the square of a 28-digit prime hung (it factored `φ(n)`
+  whole); `binomial(−1, 2⁶⁴)` was `0` (it is `1`); `rf(1/2, 1/2)` and
+  `binomial(−1, −1)` raised `PrecisionExhausted`; `divisor_count(primorial(70))`
+  overflowed; `sqrt_mod(49, ∏ odd primes < 200)` was `None` (it is 7).
+- **Statistics hunted** (21 families and the wrappers, numeric and
+  symbolic parameters, against scipy and mpmath at 50 digits): numeric
+  wrong 50 → 37 (every remaining one re-checked: scipy clamps a quantile
+  or `quadosc` is wrong, or a density at a support endpoint is `NaN`, as
+  before), refused 557 → 197, hangs 13 → 0; symbolic wrong 251 → 8,
+  refused 277 → 99.  A triangular distribution with a symbolic mode at an
+  end had `NaN` moments and mgf (`0/0`); `Binomial(1000, 167/716).sf(0)`
+  and the binomial entropy at `n = 1000` took over 10 s.
 
 - **Integral transforms and definite integrals hunted** (forward and
   inverse Laplace, Fourier, Mellin, Z, residues, Fourier series, definite
@@ -43,6 +108,22 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `a²` for a negative `a` was of unknown sign, and `∫₋₁¹ dx/(x² + a²)` was
   refused ("cannot decide whether the singular point √(−a²) lies inside
   the interval").
+
+### Changed (performance)
+
+- Bernoulli and Euler numbers from the tangent and secant numbers
+  (Brent–Harvey): `bernoulli(1000)` 9 s → 0.05 s.  Binomials by Kummer's
+  prime-power product: `catalan(300000)` 16 s → 9 ms.  `harmonic(2¹⁸)` 14
+  s → 1.4 s by binary splitting.  Stirling numbers, derangements and
+  multinomials without the quadratic recurrences (`stirling2(100000,
+  50)` over 20 s → 1.8 s, debug build).
+- `pell(999999937)` (a 26,659-digit solution) 14 s → 23 ms (the
+  convergent by a product tree instead of testing every convergent);
+  `continued_fraction_reduce_periodic` 4.4 s → 84 µs on a period of 116
+  (no factorisation of the gcd); `is_mersenne_prime` reads the known
+  exponents below 6.5·10⁷ (`p = 44497` took 18 s).
+- `Binomial(1000, 167/716).sf(0)` over 10 s → 5 ms (an exact integer
+  recurrence).
 
 ## [0.39.0] - 2026-10-10
 

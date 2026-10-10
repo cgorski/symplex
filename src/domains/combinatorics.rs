@@ -139,8 +139,34 @@ fn stirling2_u64(n: u64, k: u64) -> BigInt {
         return BigInt::from(n) * BigInt::from(n - 1) / BigInt::from(2);
     }
 
-    // General case: build triangle row by row.
-    // Only need two rows at a time: O(k) space, O(n*k) time.
+    // General case: S(n, k) = (1/k!)·Σⱼ (−1)^(k−j)·C(k, j)·jⁿ (DLMF
+    // 26.8.6), k powers and one exact division, in the memory of the
+    // result.  Up to 0.39 the triangle S(i, j), j ≤ k, was built row by
+    // row: n·k big additions and a row of k values of up to the result's
+    // size (`stirling2(100000, 50)` ran for minutes).  The guard of
+    // `stirling2` keeps n below 2³² for k ≥ 3.
+    let Ok(exponent) = u32::try_from(n) else {
+        return stirling2_by_rows(n, k);
+    };
+    let mut sum = BigInt::zero();
+    let mut binom = BigInt::one(); // C(k, j)
+    for j in 0..=k {
+        if j > 0 {
+            binom = binom * BigInt::from(k - j + 1) / BigInt::from(j);
+        }
+        let term = &binom * BigInt::from(j).pow(exponent);
+        if (k - j).is_multiple_of(2) {
+            sum += term;
+        } else {
+            sum -= term;
+        }
+    }
+    sum / crate::base::combinatorics::factorial(k)
+}
+
+/// `S(n, k)` from the triangle `S(i, j) = j·S(i−1, j) + S(i−1, j−1)`, row
+/// by row (`O(n·k)` additions).
+fn stirling2_by_rows(n: u64, k: u64) -> BigInt {
     let n = n as usize;
     let k = k as usize;
 
@@ -231,16 +257,30 @@ fn stirling1_u64(n: u64, k: u64) -> BigInt {
         return -(BigInt::from(n) * BigInt::from(n - 1) / BigInt::from(2));
     }
     if k == 1 {
-        // s(n, 1) = (-1)^{n-1} * (n-1)!
-        let mut fact = BigInt::one();
-        for i in 1..n {
-            fact *= BigInt::from(i);
-        }
+        // s(n, 1) = (-1)^{n-1} * (n-1)!, by binary splitting (up to 0.39 a
+        // running product: `stirling1(10⁶, 1)` ran for minutes).
+        let fact = crate::base::combinatorics::factorial(n - 1);
         if (n - 1).is_multiple_of(2) {
             return fact;
         } else {
             return -fact;
         }
+    }
+
+    // The tree's top products cost about k·log₂ n times the triangle's
+    // additions per row; it wins for a small k and a large n.
+    let log2_n = u64::from(64 - n.leading_zeros());
+    if k <= STIRLING1_PRODUCT_MAX_K && 4 * k * log2_n <= n {
+        // s(n, k) is the coefficient of xᵏ in x(x − 1)⋯(x − n + 1), that is
+        // of xᵏ⁻¹ in (x − 1)⋯(x − n + 1): a product tree of polynomials cut
+        // at degree k − 1, the work of a few factorials.  (Up to 0.39 the
+        // triangle below ran for every k: `stirling1(100000, 3)`, n·k big
+        // additions, took minutes.)
+        let k = k as usize;
+        return falling_product_low(1, n - 1, k - 1)
+            .get(k - 1)
+            .cloned()
+            .unwrap_or_default();
     }
 
     // General case: build triangle row by row.
@@ -260,6 +300,45 @@ fn stirling1_u64(n: u64, k: u64) -> BigInt {
     }
 
     prev[k].clone()
+}
+
+/// Largest `k` for which [`stirling1`] multiplies out the falling
+/// factorial (each product of the tree costs `O(k²)` multiplications, the
+/// triangle `O(n·k)` additions in all).
+const STIRLING1_PRODUCT_MAX_K: u64 = 64;
+
+/// The coefficients of `x⁰, …, xᵈ` (lowest first) of `∏_{i=lo}^{hi} (x − i)`,
+/// by halves (depth `log₂(hi − lo)`).
+fn falling_product_low(lo: u64, hi: u64, d: usize) -> Vec<BigInt> {
+    const LEAF: u64 = 16;
+    if hi < lo {
+        return vec![BigInt::one()];
+    }
+    if hi - lo < LEAF {
+        let mut c = vec![BigInt::one()];
+        for i in lo..=hi {
+            // c · (x − i), cut at degree d
+            let mut next = vec![BigInt::zero(); (c.len() + 1).min(d + 1)];
+            for (j, cj) in c.iter().enumerate() {
+                next[j] -= cj * i;
+                if j < d {
+                    next[j + 1] += cj;
+                }
+            }
+            c = next;
+        }
+        return c;
+    }
+    let mid = lo + (hi - lo) / 2;
+    let a = falling_product_low(lo, mid, d);
+    let b = falling_product_low(mid + 1, hi, d);
+    let mut out = vec![BigInt::zero(); (a.len() + b.len() - 1).min(d + 1)];
+    for (i, ai) in a.iter().enumerate() {
+        for (j, bj) in b.iter().enumerate().take(d + 1 - i.min(d + 1)) {
+            out[i + j] += ai * bj;
+        }
+    }
+    out
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -558,14 +637,36 @@ pub fn derangements(n: impl Into<BigInt>) -> Option<BigInt> {
     if too_large(log2_factorial_lower(n) - 2.0) {
         return None;
     }
-    let mut a = BigInt::one(); // !0
-    let mut b = BigInt::zero(); // !1
-    for i in 2..=n {
-        let next = BigInt::from(i - 1) * (&a + &b);
-        a = b;
-        b = next;
+    // !n = n·!(n−1) + (−1)ⁿ from !0 = 1: the composition of the maps
+    // x ↦ i·x + (−1)ⁱ, i = 1, …, n, by binary splitting.  Up to 0.39 the
+    // recurrence ran term by term, quadratic in the size of the result
+    // (`derangements(200000)` ran for minutes).
+    let (p, q) = derangement_maps(1, n);
+    Some(p + q)
+}
+
+/// The composition `x ↦ p·x + q` of `x ↦ i·x + (−1)ⁱ` for `i = lo, …, hi`
+/// (applied in that order), by halves: depth `log₂(hi − lo)`.
+fn derangement_maps(lo: u64, hi: u64) -> (BigInt, BigInt) {
+    const LEAF: u64 = 16;
+    if hi - lo < LEAF {
+        let (mut p, mut q) = (BigInt::one(), BigInt::zero());
+        for i in lo..=hi {
+            p *= i;
+            q *= i;
+            if i.is_multiple_of(2) {
+                q += 1u32;
+            } else {
+                q -= 1u32;
+            }
+        }
+        return (p, q);
     }
-    Some(b)
+    let mid = lo + (hi - lo) / 2;
+    let (p_lo, q_lo) = derangement_maps(lo, mid);
+    let (p_hi, q_hi) = derangement_maps(mid + 1, hi);
+    // x ↦ p_hi·(p_lo·x + q_lo) + q_hi
+    (&p_hi * p_lo, p_hi * q_lo + q_hi)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -579,6 +680,48 @@ mod tests {
 
     fn bi(n: i64) -> BigInt {
         BigInt::from(n)
+    }
+
+    /// The closed forms and product trees that replaced the recurrences of
+    /// 0.39 give the recurrences' values, across their thresholds.
+    #[test]
+    fn fast_algorithms_match_the_recurrences() {
+        // Triangles of S(n, k) and s(n, k) up to n = 300.
+        let size = 300usize;
+        let (mut s2, mut s1) = (vec![bi(1)], vec![bi(1)]);
+        for i in 1..=size {
+            let (mut n2, mut n1) = (vec![bi(0); i + 1], vec![bi(0); i + 1]);
+            for j in 1..=i {
+                let (p2, p1) = (
+                    s2.get(j).cloned().unwrap_or_default(),
+                    s1.get(j).cloned().unwrap_or_default(),
+                );
+                n2[j] = BigInt::from(j) * p2 + &s2[j - 1];
+                n1[j] = -BigInt::from(i - 1) * p1 + &s1[j - 1];
+            }
+            if i == size || i == 40 {
+                for j in 0..=i {
+                    let (n, k) = (i as u64, j as u64);
+                    assert_eq!(stirling2(n, k), Some(n2[j].clone()), "S({n}, {k})");
+                    assert_eq!(stirling1(n, k), Some(n1[j].clone()), "s({n}, {k})");
+                }
+            }
+            (s2, s1) = (n2, n1);
+        }
+        assert_eq!(stirling2_by_rows(300, 77), stirling2_u64(300, 77));
+        // !n = (n − 1)(!(n−1) + !(n−2))
+        let (mut a, mut b) = (bi(1), bi(0));
+        for n in 2..=200u64 {
+            let next = BigInt::from(n - 1) * (&a + &b);
+            (a, b) = (b, next);
+            assert_eq!(derangements(n), Some(b.clone()), "!{n}");
+        }
+        // multinomial = n!/∏ kᵢ!
+        let f = |m: u64| crate::base::combinatorics::factorial(m);
+        assert_eq!(
+            multinomial(1000, &[300u64, 0, 500, 200]),
+            Some(f(1000) / (f(300) * f(500) * f(200)))
+        );
     }
 
     // ── Stirling2: known values ─────────────────────────────────────

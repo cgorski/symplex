@@ -12,7 +12,7 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
 
-use super::family::{Distribution, Family, Sampler, family_boilerplate};
+use super::family::{Distribution, Family, Sampler, TailOrders, family_boilerplate};
 use super::sample::Rng;
 use super::support::{Kind, Piece, Support, is_neg_inf, is_pos_inf};
 
@@ -112,6 +112,44 @@ impl Family for Truncated {
             self.inner.sf_on_support(hi)
         };
         Some(((self.inner.sf_on_support(x) - s_hi) / &self.mass).simplify())
+    }
+
+    // The inner domain, with an end freed where the truncation bounds the
+    // support on that side (a bounded tail has every exponential moment);
+    // an unbounded side keeps the inner tail, since the region is a finite
+    // union of intervals and contains a whole neighbourhood of that infinity.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        let d = self.inner.family().mgf_domain()?;
+        let clipped = self.clipped();
+        let iv = clipped.as_interval()?;
+        let ctx = self.context();
+        let (lo_free, hi_free) = (!is_neg_inf(&iv.lower), !is_pos_inf(&iv.upper));
+        if lo_free && hi_free {
+            return None;
+        }
+        let lower = if lo_free { ctx.neg_infinity() } else { d.lower };
+        let upper = if hi_free { ctx.infinity() } else { d.upper };
+        let kind = d
+            .kind
+            .with_lower_open(lo_free || d.kind.lower_open())
+            .with_upper_open(hi_free || d.kind.upper_open());
+        Some(Interval { lower, upper, kind })
+    }
+
+    // The inner tails that the region leaves unbounded.
+    fn tail_orders(&self) -> Option<TailOrders> {
+        let inner = self.inner.family().tail_orders()?;
+        let clipped = self.clipped();
+        let reaches = |inf: fn(&Ex) -> bool, lower: bool| {
+            clipped.pieces().iter().any(|p| match p {
+                Piece::Interval(iv) => inf(if lower { &iv.lower } else { &iv.upper }),
+                Piece::Point(_) => false,
+            })
+        };
+        Some(TailOrders {
+            left: inner.left.filter(|_| reaches(is_neg_inf, true)),
+            right: inner.right.filter(|_| reaches(is_pos_inf, false)),
+        })
     }
 
     // Q(F(lo⁻) + p·mass) when the inner family has both closed forms.
@@ -381,6 +419,50 @@ impl Family for Affine {
     // e^{bt} M_X(at)
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         Some((&self.b * t).exp() * self.inner.family().mgf(&(&self.a * t))?)
+    }
+
+    // The inner tails, swapped for a < 0.
+    fn tail_orders(&self) -> Option<TailOrders> {
+        let inner = self.inner.family().tail_orders()?;
+        Some(if self.increasing {
+            inner
+        } else {
+            TailOrders {
+                left: inner.right,
+                right: inner.left,
+            }
+        })
+    }
+
+    // {t : at ∈ D_X} = D_X / a, its ends swapped for a < 0.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        let d = self.inner.family().mgf_domain()?;
+        let ctx = self.context();
+        let map_end = |v: &Ex| {
+            if is_pos_inf(v) || is_neg_inf(v) {
+                if is_pos_inf(v) == self.increasing {
+                    ctx.infinity()
+                } else {
+                    ctx.neg_infinity()
+                }
+            } else {
+                (v / &self.a).simplify()
+            }
+        };
+        let image = d.as_ref().map(map_end);
+        Some(if self.increasing {
+            image
+        } else {
+            image.reversed()
+        })
+    }
+
+    // e^{ibt} φ_X(at), through the inner distribution's own route.
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(
+            (ctx.i_unit() * &self.b * t).exp() * self.inner.characteristic_function(&(&self.a * t)),
+        )
     }
 
     fn quantile(&self, p: &Ex) -> Option<Ex> {
@@ -670,6 +752,58 @@ impl Family for Mixture {
         let mut acc = self.ctx().zero();
         for (w, d) in &self.components {
             acc += w * d.family().mgf(t)?;
+        }
+        Some(acc.simplify())
+    }
+
+    // Each side the heaviest component's: the smaller order (a symbolic
+    // `Min` when two cannot be compared).  Each weight is taken to be
+    // positive.
+    fn tail_orders(&self) -> Option<TailOrders> {
+        let ctx = self.ctx();
+        let heavier = |a: Option<Ex>, b: Option<Ex>| match (a, b) {
+            (None, o) | (o, None) => o,
+            (Some(a), Some(b)) => Some(match super::family::sign_of(&(&a - &b)) {
+                Some(std::cmp::Ordering::Greater) => b,
+                Some(_) => a,
+                None => Ex::min_of(&ctx, [a, b]),
+            }),
+        };
+        let mut acc = TailOrders {
+            left: None,
+            right: None,
+        };
+        for (_, d) in &self.components {
+            if let Some(o) = d.family().tail_orders() {
+                acc.left = heavier(acc.left, o.left);
+                acc.right = heavier(acc.right, o.right);
+            }
+        }
+        (acc.left.is_some() || acc.right.is_some()).then_some(acc)
+    }
+
+    // The intersection of the components' domains (each weight is taken to
+    // be positive; [`intersect_domains`]); `None` when no component
+    // restricts `t`.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        let mut acc: Option<Interval<Ex>> = None;
+        for (_, d) in &self.components {
+            let Some(dom) = d.family().mgf_domain() else {
+                continue;
+            };
+            acc = Some(match acc {
+                None => dom,
+                Some(cur) => intersect_domains(cur, dom)?,
+            });
+        }
+        acc
+    }
+
+    // Σ wᵢ φᵢ(t): each component through its own route.
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let mut acc = self.ctx().zero();
+        for (w, d) in &self.components {
+            acc += w * d.characteristic_function(t);
         }
         Some(acc.simplify())
     }
@@ -1083,6 +1217,62 @@ impl Distribution {
             components: components.to_vec(),
         }))
     }
+}
+
+/// The intersection of two moment-generating-function domains (both
+/// contain `0`): the larger lower end and the smaller upper end, each with
+/// the openness of the end it came from (open if both ends agree and either
+/// is open).  Two ends that cannot be compared (symbolic rates) and are
+/// equally open give the symbolic `Min`/`Max`; `None` when their openness
+/// differs.
+fn intersect_domains(a: Interval<Ex>, b: Interval<Ex>) -> Option<Interval<Ex>> {
+    use std::cmp::Ordering;
+    // `pick(x, y, x_open, y_open, upper)`: the tighter end and its openness.
+    let pick = |x: Ex, y: Ex, x_open: bool, y_open: bool, upper: bool| -> Option<(Ex, bool)> {
+        let infinite = |v: &Ex| if upper { is_pos_inf(v) } else { is_neg_inf(v) };
+        if infinite(&x) {
+            return Some((y, y_open));
+        }
+        if infinite(&y) {
+            return Some((x, x_open));
+        }
+        let Some(ord) = super::family::sign_of(&(&x - &y)) else {
+            if x_open != y_open {
+                return None;
+            }
+            let ctx = x.context();
+            let end = if upper {
+                Ex::min_of(&ctx, [x, y])
+            } else {
+                Ex::max_of(&ctx, [x, y])
+            };
+            return Some((end, x_open));
+        };
+        Some(match (ord, upper) {
+            (Ordering::Equal, _) => (x, x_open || y_open),
+            (Ordering::Less, true) | (Ordering::Greater, false) => (x, x_open),
+            _ => (y, y_open),
+        })
+    };
+    let (lower, lo_open) = pick(
+        a.lower,
+        b.lower,
+        a.kind.lower_open(),
+        b.kind.lower_open(),
+        false,
+    )?;
+    let (upper, hi_open) = pick(
+        a.upper,
+        b.upper,
+        a.kind.upper_open(),
+        b.kind.upper_open(),
+        true,
+    )?;
+    Some(Interval {
+        lower,
+        upper,
+        kind: IntervalKind::from_open_ends(lo_open, hi_open),
+    })
 }
 
 /// The branches of an even shape that land inside `support` everywhere

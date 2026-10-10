@@ -7906,7 +7906,12 @@ fn eval_lib_fn(
         | LibFn::BetaInc
         | LibFn::BetaIncRegularized => eval_special_09(f, args, cache, prec, rm, cc),
         LibFn::PolyLog => eval_polylog(args, cache, prec, rm, cc),
-        LibFn::RisingFactorial | LibFn::FallingFactorial | LibFn::Harmonic => {
+        LibFn::RisingFactorial
+        | LibFn::FallingFactorial
+        | LibFn::Harmonic
+        | LibFn::Catalan
+        | LibFn::Fibonacci
+        | LibFn::Lucas => {
             let v = real_args(f.name(), args, cache)?;
             debug!(prec, name = f.name(), "evalf: Gamma quotient / digamma");
             let r = match f {
@@ -7914,16 +7919,21 @@ fn eval_lib_fn(
                 LibFn::FallingFactorial => {
                     factorials::falling_factorial(&v[0], &v[1], prec, rm, cc)?
                 }
+                LibFn::Catalan => factorials::catalan(&v[0], prec, rm, cc)?,
+                LibFn::Fibonacci => factorials::fibonacci(&v[0], false, prec, rm, cc)?,
+                LibFn::Lucas => factorials::fibonacci(&v[0], true, prec, rm, cc)?,
                 _ => factorials::harmonic(&v[0], prec, rm, cc)?,
             };
             Ok((r, BigFloat::new(prec)))
         }
+        LibFn::Bernoulli => {
+            let v = real_args(f.name(), args, cache)?;
+            debug!(prec, "evalf: bernoulli(s) = −s·ζ(1 − s)");
+            let r = bernoulli::bernoulli_function(&v[0], prec, rm, cc)?;
+            Ok((r, BigFloat::new(prec)))
+        }
         LibFn::Factorial2
         | LibFn::Subfactorial
-        | LibFn::Fibonacci
-        | LibFn::Lucas
-        | LibFn::Bernoulli
-        | LibFn::Catalan
         | LibFn::Bell
         | LibFn::EulerNumber
         | LibFn::Stirling1

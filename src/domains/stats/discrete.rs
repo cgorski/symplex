@@ -18,11 +18,12 @@ use num_traits::{One, Zero};
 use crate::api::context::Context;
 use crate::api::expr::{BoolEx, Ex};
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::base::numeric::Q;
 use crate::domains::combinatorics::stirling2;
 
 use super::continuous::{one_minus_exp_neg, sampler_positive};
-use super::family::{Distribution, Family, Sampler, family_boilerplate, fresh_symbol};
+use super::family::{Distribution, Family, Sampler, family_boilerplate, fresh_index, fresh_symbol};
 use super::sample::{self, Rng};
 use super::support::Support;
 
@@ -146,6 +147,19 @@ fn moment_from_mgf(mgf: impl Fn(&Ex) -> Option<Ex>, n: u32, ctx: &Context) -> Op
     }
     let at_zero = m.subs(&t, &ctx.zero()).simplify();
     (!at_zero.has_unevaluated() && !at_zero.contains(&t)).then_some(at_zero)
+}
+
+/// `t < −ln(1 − p)`: where `(1−p) eᵗ < 1`, so that the geometric tail
+/// `Σ ((1−p) eᵗ)ᵏ` of a geometric or negative binomial mgf converges;
+/// `None` (every `t`) for `p = 1`.  Outside it the closed forms continue
+/// to a negative or complex number (`Geometric(½).mgf(1)` was `−3.78`).
+fn geometric_tail_domain(p: &Ex) -> Option<Interval<Ex>> {
+    let ctx = p.context();
+    let q = ctx.one() - p;
+    if q.is_zero() == Some(true) {
+        return None;
+    }
+    Some(Interval::open(ctx.neg_infinity(), -q.ln()))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -362,6 +376,46 @@ impl Family for Binomial {
         Some((self.context().one() - &self.p + &self.p * t.exp()).pow(&self.n))
     }
 
+    // −Σ_k P(k) ln P(k), left as the finite `Sum` for a symbolic n or a
+    // numeric one above 64 (0 at p ∈ {0, 1}): the generic route sums the
+    // n + 1 terms exactly and merges their logarithms, which took 0.7 s at
+    // n = 100 and more than 10 s at n = 1000; `evalf` sums the `Sum` term
+    // by term (up to its range limit of 10⁴ terms).  Below 64, the generic
+    // exact value.
+    fn entropy(&self) -> Option<Ex> {
+        if numeric(&self.n).is_some_and(|n| n <= Q::from_integer(64.into())) {
+            return None;
+        }
+        let ctx = self.context();
+        if numeric(&self.p).is_some_and(|p| p.is_zero() || p.is_one()) {
+            return Some(ctx.zero());
+        }
+        // ln P(k) = ln C(n, k) + k ln p + (n − k) ln(1 − p), so that no term
+        // forms the exact rational pᵏ (1−p)ⁿ⁻ᵏ (thousands of digits):
+        // 1 s at n = 1000 in a debug build, where the product form took 40.
+        let k = fresh_index(&ctx, &[&self.n, &self.p]);
+        let q = ctx.one() - &self.p;
+        let ln_pk = self.n.binomial(&k).ln() + &k * self.p.ln() + (&self.n - &k) * q.ln();
+        Some(Ex::symbolic_sum(
+            &(-ln_pk.exp() * &ln_pk),
+            &k,
+            &ctx.zero(),
+            &self.n,
+        ))
+    }
+
+    // Σ_{j=0}^{⌊k⌋} C(n, j) pʲ (1−p)ⁿ⁻ʲ for a numeric n, p and k with p
+    // rational, exactly ([`binomial_mass`]); otherwise the generic route
+    // (the sum by `summation`).
+    fn cdf(&self, k: &Ex) -> Option<Ex> {
+        let (n, p, k) = self.numeric_at(k)?;
+        if k < 0 {
+            return Some(self.context().zero());
+        }
+        let to = u64::try_from(k).ok()?.min(n);
+        Some(self.context().from_ratio(binomial_mass(n, &p, 0, to)?))
+    }
+
     // Σ_{j=⌊k⌋+1}^{n} C(n, j) pʲ (1−p)ⁿ⁻ʲ: the upper sum itself, a sum of
     // positive terms (SymPy's finite `BinomialDistribution` sums its table
     // the same way; scipy's `binom._sf` is `bdtrc`).  The generic route
@@ -369,8 +423,22 @@ impl Family for Binomial {
     // difference for any other: Binomial(1000, 1/e).sf(990) was 0.  Not
     // the incomplete beta I_p(k+1, n−k), which `eval` expands, for integer
     // parameters, into a polynomial in p with alternating coefficients.
+    // A numeric n, k and rational p take the exact term recurrence
+    // ([`binomial_mass`]).
     fn sf(&self, k: &Ex) -> Option<Ex> {
         let ctx = self.context();
+        if let Some((n, p, k)) = self.numeric_at(k) {
+            if k < 0 {
+                return Some(ctx.one());
+            }
+            let from = u64::try_from(k).ok()?.saturating_add(1);
+            if from > n {
+                return Some(ctx.zero());
+            }
+            if let Some(mass) = binomial_mass(n, &p, from, n) {
+                return Some(ctx.from_ratio(mass));
+            }
+        }
         let t = fresh_symbol(&ctx, "j", &[k, &self.n, &self.p]);
         // `⌊k⌋ + 1` folded for a numeric k (an unevaluated `floor` makes the
         // summation look for a closed form).
@@ -380,6 +448,70 @@ impl Family for Binomial {
                 .accumulate(&self.density(&t), &t, &from, &self.n),
         )
     }
+}
+
+impl Binomial {
+    /// `n`, `p` and `⌊k⌋` when all three are numeric, `n` a
+    /// non-negative integer and `p` a rational in `[0, 1]`.
+    fn numeric_at(&self, k: &Ex) -> Option<(u64, Q, i64)> {
+        let n = numeric(&self.n)?;
+        let p = numeric(&self.p)?;
+        let k = numeric(k)?;
+        if !n.is_integer() || p < Q::zero() || p > Q::one() {
+            return None;
+        }
+        let n = u64::try_from(n.to_integer()).ok()?;
+        let k = i64::try_from(k.floor().to_integer()).ok()?;
+        Some((n, p, k))
+    }
+}
+
+/// Work allowed to [`binomial_mass`], in bit operations: steps times the
+/// size of a term (about 0.1 s in a release build).
+const BINOMIAL_MASS_BUDGET: u64 = 1 << 32;
+
+/// `Σ_{j=a}^{b} C(n, j) pʲ (1−p)ⁿ⁻ʲ` exactly, for an integer `n`, a
+/// rational `p = P/D ∈ [0, 1]` and `a ≤ b ≤ n`: the integer terms
+/// `T_j = C(n, j) Pʲ Qⁿ⁻ʲ` (`Q = D − P`) by the recurrence
+/// `T_{j+1} = T_j·(n − j)·P / ((j + 1)·Q)` — each step a product and an
+/// exact quotient by small factors — over the one denominator `Dⁿ`.  The
+/// generic summation added the rational terms one at a time, with a
+/// common denominator that grows at each, and took more than 10 s for
+/// `Binomial(1000, 167/716).sf(0)`.  `None` past
+/// [`BINOMIAL_MASS_BUDGET`].
+fn binomial_mass(n: u64, p: &Q, a: u64, b: u64) -> Option<Q> {
+    use num_bigint::BigInt;
+    if a > b || b > n {
+        return Some(Q::zero());
+    }
+    let d = p.denom().clone();
+    let big_p = p.numer().clone();
+    let big_q = &d - &big_p;
+    if big_p.is_zero() {
+        return Some(if a == 0 { Q::one() } else { Q::zero() });
+    }
+    if big_q.is_zero() {
+        return Some(if b == n { Q::one() } else { Q::zero() });
+    }
+    let size = n.saturating_mul(d.bits().max(1));
+    if (b - a + 1).saturating_mul(size) > BINOMIAL_MASS_BUDGET
+        || a.saturating_mul(size) > BINOMIAL_MASS_BUDGET
+    {
+        return None;
+    }
+    let exp = |e: u64| u32::try_from(e).ok();
+    // C(n, a), then T_a.
+    let mut choose = BigInt::one();
+    for i in 0..a {
+        choose = choose * BigInt::from(n - i) / BigInt::from(i + 1);
+    }
+    let mut term = choose * big_p.pow(exp(a)?) * big_q.pow(exp(n - a)?);
+    let mut acc = term.clone();
+    for j in a..b {
+        term = term * BigInt::from(n - j) * &big_p / (BigInt::from(j + 1) * &big_q);
+        acc += &term;
+    }
+    Some(Q::new(acc, d.pow(exp(n)?)))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -515,6 +647,22 @@ impl Family for Geometric {
         Some(&self.p * t.exp() / (ctx.one() - (ctx.one() - &self.p) * t.exp()))
     }
 
+    // (1−p) eᵗ < 1, i.e. t < −ln(1−p); every t for p = 1.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        geometric_tail_domain(&self.p)
+    }
+
+    // (−(1−p) ln(1−p) − p ln p) / p (scipy's `geom.entropy`; 0 for p = 1).
+    // The generic −E[ln f] stayed an infinite sum `evalf` cannot bound.
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        let q = ctx.one() - &self.p;
+        if q.is_zero() == Some(true) {
+            return Some(ctx.zero());
+        }
+        Some((-(&q * q.ln()) - &self.p * self.p.ln()) / &self.p)
+    }
+
     // Inverse transform in closed form: `⌊ln U / ln(1−p)⌋` counts the
     // failures before the first success (`P(≥ j) = (1−p)ʲ`), so the trial
     // count is one more.  `U ∈ (0, 1]`; `p = 1` gives `ln 0 = −∞` in the
@@ -573,6 +721,11 @@ impl Family for NegativeBinomial {
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         let ctx = self.context();
         Some((&self.p / (ctx.one() - (ctx.one() - &self.p) * t.exp())).pow(&self.r))
+    }
+
+    // t < −ln(1−p), as for the geometric tail.
+    fn mgf_domain(&self) -> Option<Interval<Ex>> {
+        geometric_tail_domain(&self.p)
     }
 
     // P(X > k) = I_{1−p}(⌊k⌋ + 1, r) (from P(X ≤ k) = I_p(r, k + 1)), for

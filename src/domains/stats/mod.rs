@@ -49,6 +49,13 @@
 //!   (`aX + b`), [`Transformed`] (`g(X)` by the change-of-variables
 //!   formula) and [`Mixture`] wrap other distributions and transport their
 //!   closed forms exactly where the transport is exact.
+//! * Moments and generating functions are the true values, not formulas
+//!   continued past their validity: a moment whose integral diverges is
+//!   `±∞` (from one heavy tail) or undefined (NaN), by the family's
+//!   [`Family::tail_orders`]; the moment generating function is `+∞`
+//!   beyond its abscissa of convergence ([`Family::mgf_domain`]).  A
+//!   symbolic parameter or argument that does not decide the case gets
+//!   the `Piecewise` of the cases, as the CDF at a symbolic point does.
 //! * Parameters are expressions: rational parameters give exact rational
 //!   answers, symbolic parameters give symbolic answers (`E[X] = μ`).
 //!   Parameter *validity* (`σ > 0`, `0 ≤ p ≤ 1`) is the caller's promise
@@ -130,7 +137,7 @@ mod wrappers;
 
 pub use continuous::*;
 pub use discrete::*;
-pub use family::{Distribution, Family, Sampler, same_family};
+pub use family::{Distribution, Family, Sampler, TailOrders, same_family};
 pub use hypothesis::PValue;
 pub use joint::*;
 pub use regression::{LikelihoodFit, WaldFit};

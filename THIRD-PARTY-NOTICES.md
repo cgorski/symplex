@@ -67,6 +67,9 @@ their documentation:
 | `src/domains/matrix_decomp.rs` (`qr` of a rank-deficient matrix: `Q` from the independent columns, `R = QᴴA` in echelon form) | `_QRdecomposition_optional` in `sympy/matrices/decompositions.py` | G. H. Golub, C. F. Van Loan, *Matrix Computations*, 4th ed., §5.2 |
 | `src/domains/matrix_decomp.rs` (`jordan_function`: powers and square roots of defective matrices by Jordan blocks) | `_matrix_pow_by_jordan_blocks` in `sympy/matrices/matrixbase.py` | N. J. Higham, *Functions of Matrices* (SIAM 2008), §1.2 |
 | `src/domains/matrix.rs` (`symbolic_factor_roots`: eigenvalues from the factorisation over ℚ[symbols]; `pinv` with conjugate transposes) | `roots` (`factor_list` branch) in `sympy/polys/polyroots.py`; `_pinv_full_rank`, `_pinv_rank_decomposition` in `sympy/matrices/inverse.py` | — |
+| `src/domains/ntheory.rs` (`totient_with_factors`, `order_with_factors`: `φ(n)` factored from the factorisations of the `p − 1`, for `n_order`, `is_primitive_root`, `primitive_root`, `discrete_log`) | `n_order` in `sympy/ntheory/residue_ntheory.py` | Lagrange's theorem: the order divides `φ(n) = ∏ p^{k−1}(p − 1)` |
+| `src/domains/ntheory.rs` (`prime` beyond `10⁷`, `nth_prime_by_counting`: `π(x)` at an estimate `x` of the `n`-th prime, then the primes counted from `x`) | `prime` in `sympy/ntheory/generate.py` | M. Cipolla, "La determinazione assintotica dell'n-imo numero primo", *Rend. Accad. Sci. Fis. Mat. Napoli* (3) 8 (1902) 132–166 |
+| `src/domains/ntheory.rs` (`is_mersenne_prime`: the known exponents, and every exponent below `6.5·10⁷` settled) | `MERSENNE_PRIME_EXPONENTS`, `is_mersenne_prime` in `sympy/ntheory/primetest.py` | GIMPS (mersenne.org) milestones; the Lucas–Lehmer test |
 
 To the extent any of these is a derivative of SymPy, SymPy's licence
 applies to that part, and its notice is reproduced here as clause (a)

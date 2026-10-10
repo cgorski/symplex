@@ -1564,17 +1564,31 @@ fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
         }
         return guarded_num(arena, falling / Ratio::from_integer(fact));
     }
-    let n_u64: u64 = nr.to_integer().try_into().ok()?;
-    let k_u64: u64 = kr.to_integer().try_into().ok()?;
-    // C(n, j) ≥ (n/j)^j for j = min(k, n − k): within the digit guard.
-    if k_u64 <= n_u64 {
-        let j = k_u64.min(n_u64 - k_u64) as f64;
-        if j >= 1.0 && beyond_digit_guard(arena, j * (n_u64 as f64 / j).log10()) {
-            return None;
-        }
+    let (n_big, k_big) = (nr.to_integer(), kr.to_integer());
+    if k_big > n_big {
+        // 0 ≤ n < k (SymPy: `binomial(1, 2) == 0`).
+        return Some(arena.zero);
     }
-    // `binomial` gives 0 for 0 ≤ n < k (SymPy: `binomial(1, 2) == 0`).
-    let result = crate::base::combinatorics::binomial(n_u64, k_u64);
+    // C(n, j) ≥ (n/j)^j for j = min(k, n − k): within the digit guard.
+    // (An `n` beyond `u64` with a small `j` folds too: before 0.40
+    // `binomial(10²⁰, 2)` stayed unevaluated.)
+    let j_big = (&n_big - &k_big).min(k_big.clone());
+    let j: u64 = j_big.try_into().ok()?;
+    let n_f = n_big.to_f64().unwrap_or(f64::INFINITY);
+    if j >= 1 && beyond_digit_guard(arena, j as f64 * (n_f / j as f64).log10()) {
+        return None;
+    }
+    let result = match (u64::try_from(&n_big), u64::try_from(&k_big)) {
+        (Ok(n_u64), Ok(k_u64)) => crate::base::combinatorics::binomial(n_u64, k_u64),
+        _ => {
+            // n(n − 1)⋯(n − j + 1)/j!
+            let mut numer = BigInt::one();
+            for i in 0..j {
+                numer *= &n_big - BigInt::from(i);
+            }
+            numer / crate::base::combinatorics::factorial(j)
+        }
+    };
     guarded_num(arena, Ratio::from_integer(result))
 }
 
@@ -2081,50 +2095,36 @@ fn eval_falling_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Opti
     exact_factorial_power(arena, &xr, n, -1)
 }
 
-/// Fibonacci number F(n) using iterative computation.
-/// F(0) = 0, F(1) = 1, F(n) = F(n-1) + F(n-2).  Within the digit guard:
-/// `Fₙ ≥ φ^(n−2)`.
-fn eval_fibonacci(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let n = nonneg_int_arg(arena, inner)?;
-    if beyond_digit_guard(arena, (n as f64 - 2.0) * LOG10_PHI) {
+/// An integer argument that fits in an `i64`.
+fn int_arg(arena: &Arena, id: ExprId) -> Option<i64> {
+    let r = arena.as_num(id)?;
+    if !r.is_integer() {
         return None;
     }
-    let result = if n == 0 {
-        BigInt::from(0)
-    } else {
-        let mut a = BigInt::from(0);
-        let mut b = BigInt::from(1);
-        for _ in 1..n {
-            let tmp = &a + &b;
-            a = b;
-            b = tmp;
-        }
-        b
-    };
-    guarded_int(arena, result)
+    r.to_integer().try_into().ok()
 }
 
-/// Lucas number L(n) using iterative computation.
-/// L(0) = 2, L(1) = 1, L(n) = L(n-1) + L(n-2).  Within the digit guard:
-/// `Lₙ ≥ φ^(n−1)`.
-fn eval_lucas(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let n = nonneg_int_arg(arena, inner)?;
-    if beyond_digit_guard(arena, (n as f64 - 1.0) * LOG10_PHI) {
+/// Fibonacci number `F(n)` for any integer `n` (`F(−n) = (−1)^{n+1}·F(n)`,
+/// SymPy: `fibonacci(−5) = 5`; before 0.40 a negative index stayed
+/// unevaluated), by fast doubling ([`crate::base::combinatorics::fibonacci`]).
+/// Within the digit guard: `|Fₙ| ≥ φ^(|n|−2)`.
+fn eval_fibonacci(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let n = int_arg(arena, inner)?;
+    if beyond_digit_guard(arena, (n.unsigned_abs() as f64 - 2.0) * LOG10_PHI) {
         return None;
     }
-    let result = if n == 0 {
-        BigInt::from(2)
-    } else {
-        let mut a = BigInt::from(2);
-        let mut b = BigInt::from(1);
-        for _ in 1..n {
-            let tmp = &a + &b;
-            a = b;
-            b = tmp;
-        }
-        b
-    };
-    guarded_int(arena, result)
+    guarded_int(arena, crate::base::combinatorics::fibonacci(i128::from(n)))
+}
+
+/// Lucas number `L(n)` for any integer `n` (`L(−n) = (−1)ⁿ·L(n)`, SymPy:
+/// `lucas(−3) = −4`; before 0.40 a negative index stayed unevaluated).
+/// Within the digit guard: `|Lₙ| ≥ φ^(|n|−1)`.
+fn eval_lucas(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let n = int_arg(arena, inner)?;
+    if beyond_digit_guard(arena, (n.unsigned_abs() as f64 - 1.0) * LOG10_PHI) {
+        return None;
+    }
+    guarded_int(arena, crate::base::combinatorics::lucas(i128::from(n)))
 }
 
 /// The Bernoulli number `Bₙ` exactly, or `None` beyond the digit guard.
@@ -2214,7 +2214,28 @@ fn eval_harmonic(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
 /// Catalan number C(n) = (2n)! / ((n+1)! * n!).  Within the digit guard:
 /// `Cₙ ≥ 4ⁿ/((2n + 1)(n + 1))`.
+///
+/// Off the non-negative integers `C(x) = Γ(2x + 1)/(Γ(x + 1)·Γ(x + 2))`,
+/// whose limits along the integers SymPy takes: `C(−1) = −1/2`, `C(n) = 0`
+/// for `n ≤ −2`, and a pole (`zoo`) at the negative half-integers, where
+/// only the numerator meets one.  (Before 0.40 all of these stayed
+/// unevaluated.)
 fn eval_catalan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if let Some(r) = arena.as_num(inner)
+        && r.is_negative()
+    {
+        if r.is_integer() {
+            return Some(if r.to_integer() == BigInt::from(-1) {
+                arena.rational(-1, 2)
+            } else {
+                arena.zero
+            });
+        }
+        if *r.denom() == BigInt::from(2) {
+            return Some(arena.complex_infinity);
+        }
+        return None;
+    }
     let n = nonneg_int_arg(arena, inner)?;
     let nf = n as f64;
     if beyond_digit_guard(
@@ -2339,7 +2360,20 @@ fn eval_bell(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 ///
 /// Within the digit guard: `|Eₙ| = 2^(n+2)·n!·β(n+1)/π^(n+1)` with the
 /// Dirichlet beta `β(s) ≥ 1 − 3^(−s) ≥ 2/3`.
+///
+/// `E₋₁ = π/2`: SymPy extends `Eₛ = 2^(s+1)·(ζ(−s, 1/2) − 2^(s+1)·ζ(−s, 3/4))`
+/// off the non-negative integers, and at `s = −1` the poles of the two
+/// Hurwitz zetas cancel to `ψ(3/4) − ψ(1/2) + ln 2 = π/2` (SymPy:
+/// `euler(−1) = pi/2`; before 0.40 it stayed unevaluated).
 fn eval_euler_number(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if arena
+        .as_num(inner)
+        .is_some_and(|r| r.is_integer() && r.to_integer() == BigInt::from(-1))
+    {
+        let half = arena.rational(1, 2);
+        let pi = arena.pi;
+        return Some(arena.mul(&[half, pi]));
+    }
     let n = nonneg_int_arg(arena, inner)?;
     // Odd Euler numbers are 0
     if n % 2 == 1 {
@@ -2353,29 +2387,10 @@ fn eval_euler_number(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if n >= 2 && beyond_digit_guard(arena, lower) {
         return None;
     }
-    // Build table of E(0), E(2), E(4), ..., E(n)
-    let half = (n / 2) as usize;
-    let mut e_vals: Vec<BigInt> = Vec::with_capacity(half + 1);
-    e_vals.push(BigInt::from(1)); // E(0) = 1
-    for m_half in 1..=half {
-        let m = (m_half * 2) as u64; // the actual index
-        // E(m) = -sum_{k=0,2,...,m-2} C(m, k) * E(k)
-        let mut sum = BigInt::from(0);
-        let mut binom = BigInt::from(1); // C(m, 0)
-        for (k_half, e_val) in e_vals[..m_half].iter().enumerate() {
-            let k = (k_half * 2) as u64;
-            sum += &binom * e_val;
-            // Advance binom from C(m, k) to C(m, k+2)
-            // C(m, k+1) = C(m, k) * (m-k) / (k+1)
-            // C(m, k+2) = C(m, k+1) * (m-k-1) / (k+2)
-            binom *= BigInt::from(m - k);
-            binom /= BigInt::from(k + 1);
-            binom *= BigInt::from(m - k - 1);
-            binom /= BigInt::from(k + 2);
-        }
-        e_vals.push(-sum);
-    }
-    let result = e_vals.pop()?;
+    // The secant numbers (Brent–Harvey) behind `ntheory::euler_number`,
+    // bounded here by the digit guard alone; before 0.40 a recurrence over
+    // binomials, products of big numbers: 0.47 s for `E₁₈₀₀`.
+    let result = crate::base::combinatorics::euler_even(usize::try_from(n / 2).ok()?);
     guarded_int(arena, result)
 }
 
