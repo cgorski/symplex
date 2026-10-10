@@ -3408,7 +3408,8 @@ fn beta_has_pole(a: &Q, b: &Q) -> bool {
 /// `I_{−n} = I_n`; before 0.30 `J_{−3}(0)` stayed), `zoo` for a negative
 /// non-integer `ν` (`J_ν(z) ~ (z/2)^ν/Γ(ν + 1)`), as SymPy's
 /// `besselj.eval`/`besseli.eval`, `Y_ν(0)` and `K_ν(0)` infinite (`−∞`/`∞`
-/// for `ν = 0`, `zoo` otherwise, as SymPy's `bessely.eval`/`besselk.eval`),
+/// for `ν = 0`, `zoo` otherwise, as SymPy's `bessely.eval`/`besselk.eval`)
+/// except `Y_ν(0) = 0` at a negative half-integer `ν` (where SymPy is wrong),
 /// `erfi(0)`, `erfinv(0)`, `erfinv(±1) = ±∞`, `erfcinv(1) = 0`,
 /// `erfcinv(0) = ∞`, `erfcinv(2) = −∞`, `Shi(0)`, `Chi(0) = zoo`,
 /// `S(0) = C(0) = 0`, `K(1) = zoo`, `Li_s(0) = 0`, and `nan` for a `nan`
@@ -3459,6 +3460,15 @@ fn lib_function_value(
             Folded::ComplexInfinity
         }
         LibFn::BesselY if is(1, 0) && num(0)?.is_zero() => Folded::NegInfinity,
+        // Y_{−n−1/2} = (−1)ⁿ J_{n+1/2} (`cos νπ = 0` drops J_ν from
+        // `Y_ν = (J_ν cos νπ − J_{−ν})/sin νπ`) vanishes at 0: mpmath
+        // `bessely(-0.5, 0)` = 0, `bessely(-1.5, 1e-20)` = −2.66·10⁻³¹.
+        // Before 0.41 `zoo`, as SymPy 1.14's `bessely(-1/2, 0)`.
+        LibFn::BesselY
+            if is(1, 0) && num(0)?.is_negative() && num(0)?.denom() == &BigInt::from(2) =>
+        {
+            Folded::int(0)
+        }
         LibFn::BesselK if is(1, 0) && num(0)?.is_zero() => Folded::Infinity,
         LibFn::BesselY | LibFn::BesselK if is(1, 0) && num(0).is_some() => Folded::ComplexInfinity,
         LibFn::Erfi | LibFn::ErfInv | LibFn::Shi | LibFn::FresnelS | LibFn::FresnelC

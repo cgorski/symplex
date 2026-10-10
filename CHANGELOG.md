@@ -26,6 +26,15 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `[1, 2]` returned `π/2`, as SciPy's `brentq` does); `trapezoid` refuses
   unsorted or NaN abscissae (`xs = ys = [0, 2, 1]` gave `0.5`; numpy
   computes the same signed sum).
+- `li(exp(x))` folds to `Ei(x)` only when `Im x ∈ (−π, π]` is known (a real
+  `x`, or a constant in the strip): `li(exp(4i))` was `Ei(4i)` (−0.141 +
+  3.329i; it is 0.352 − 3.287i), and `li(exp(x))` for an unassumed `x`
+  stays unevaluated.  Orders between real expressions whose difference is
+  a rational number are decided by `eval` (`x + 1 > x` is `True` for a real
+  `x`; `Piecewise((π, tanh 1 < tanh 1), (0, True))` gave `π`).
+- The assumption system makes fewer claims about expressions that may be
+  infinite (see Fixed); every changed answer went from a decision to
+  `None`.
 
 ### Fixed
 
@@ -63,6 +72,32 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `scipy.constants`.  Hunters: brent 41 wrong → 7, bisect 49 → 5 (the
   rest: a pole closer to the bracket end than `xtol`, documented),
   trapezoid 239 → 0.
+- **Assumption system hunted** (40,000 random expressions with random
+  assumption sets; every claimed property checked at admissible points
+  with certified evaluation, SymPy's `ask` as a second opinion): 129
+  wrong claims → 0.  Rules that hold only for finite operands fired for
+  infinite ones: `|oo·x|`, and `|y|`, `re y` for an extended-real or
+  infinite `y`, were real; `sinh`, `cosh`, `tanh` and the inverse trig and
+  hyperbolic functions were finite whatever their argument; `b^r` for `b >
+  0` was positive for an infinite `b` (`oo^(2x)` is 0 at `x = −1`), `u^oo`
+  was real, `ln p` and `ln Γ(p)` were real at `p = +oo`.  `polygamma(n, x)`
+  was real for any order (`polygamma(i, 2) = 1.0747 + 1.9380i`); `Γ(n)`,
+  `ψ(n)` at a non-positive integer `n` and `ln z`, `1/z` for `z` declared
+  zero (a pole for every allowed value) were real and finite.  An
+  unassumed symbol is still a finite complex number.  Querying or
+  building an expression a few thousand levels deep overflowed the stack
+  (`exp(exp(…))` 10⁴ deep aborted the process); the assumption cache is
+  filled without recursion now.
+- **Exact special values hunted** (91,300 applications at special
+  arguments against mpmath at 50 digits and SymPy 1.14): 119 wrong → 26
+  (12 checked mpmath artifacts at poles and cuts, 15 representation
+  issues outside `eval`, listed in the hand-off): `li(e^y)` (above);
+  `bessely(−n − 1/2, 0)` was `zoo` (it is 0, `Y` at a negative half-integer
+  order being `±J`; SymPy has the same mistake); `airyaiprime(−∞)` and
+  `airybiprime(−∞)` were 0 (they oscillate with growing amplitude);
+  `KroneckerDelta(nan, nan)` was 1 and `polygamma` with a `nan` argument
+  stayed unevaluated (both `nan` now); `|−e^π|`, `polylog(1, e^{iπ/3})`,
+  `elliptic_f(−π/2, m)`, `expint(0, x)` needed a second `eval`.
 
 ### Changed (performance)
 

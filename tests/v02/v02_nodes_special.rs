@@ -68,7 +68,11 @@ fn ci_ei_li_exact_values() {
     assert!(ctx.zero().li().is_zero_structural());
     assert_eq!(ctx.one().li(), ctx.neg_infinity());
     assert_eq!(ctx.infinity().li(), ctx.infinity());
-    assert_eq!(x.exp().li(), x.ei(), "li(e^x) = Ei(x)");
+    // `li(e^x) = Ei(x)` needs `Im x ∈ (−π, π]` (0.41: a complex `x` keeps
+    // `li(e^x)`; mpmath `li(exp(4j))` ≠ `ei(4j)`).
+    let t = ctx.symbol_with("t", &[Assumption::Real]).unwrap();
+    assert_eq!(t.exp().li(), t.ei(), "li(e^t) = Ei(t)");
+    assert_eq!(format!("{}", x.exp().li()), "li(exp(x))");
     assert_eq!(ctx.e().li(), ctx.one().ei());
     assert_eq!(format!("{}", x.ci()), "Ci(x)");
     assert_eq!(format!("{}", x.ei()), "Ei(x)");

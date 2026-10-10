@@ -408,7 +408,9 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     } else {
                         arena.bool_false
                     }
-                } else if let Some(holds) = order_against_zero(arena, na, nb, true) {
+                } else if let Some(holds) = order_against_zero(arena, na, nb, true)
+                    .or_else(|| order_by_difference(arena, na, nb, true))
+                {
                     if holds {
                         arena.bool_true
                     } else {
@@ -429,7 +431,9 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     } else {
                         arena.bool_false
                     }
-                } else if let Some(holds) = order_against_zero(arena, na, nb, false) {
+                } else if let Some(holds) = order_against_zero(arena, na, nb, false)
+                    .or_else(|| order_by_difference(arena, na, nb, false))
+                {
                     if holds {
                         arena.bool_true
                     } else {
@@ -1158,6 +1162,31 @@ fn order_against_zero(arena: &Arena, a: ExprId, b: ExprId, strict: bool) -> Opti
     }
 }
 
+/// `a > b` (`strict`) or `a ≥ b` for real `a`, `b` (by their assumptions)
+/// whose canonical difference `a − b` is a rational number: `tanh 1 > tanh 1`
+/// is false, `tanh 1 ≥ tanh 1` and `π + 1 > π` true.  `None` otherwise
+/// (`∞ − ∞` is `nan`, not a number).
+///
+/// Before 0.41 such a relation stayed for `evalf`, which decided `a > a`
+/// true: `Piecewise((π, tanh 1 < tanh 1), (0, True))` evaluated to `π`
+/// (SymPy 1.14: `0`).
+fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) -> Option<bool> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let mut cache = AssumptionCache::new();
+    if cache.query(arena, a, Props::REAL) != Some(true)
+        || cache.query(arena, b, Props::REAL) != Some(true)
+    {
+        return None;
+    }
+    let d = arena.sub(a, b);
+    let q = arena.as_num(d)?.clone();
+    Some(if strict {
+        q.is_positive()
+    } else {
+        !q.is_negative()
+    })
+}
+
 /// LogGamma(n) for positive integer n → ln((n-1)!)
 fn eval_log_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     let r = arena.as_num(inner)?.clone();
@@ -1681,6 +1710,14 @@ pub(crate) fn eval_ei(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 
 /// Exact values of the logarithmic integral:
 /// `li(0) = 0`, `li(1) = −∞`, `li(∞) = ∞`, `li(e) = Ei(1)`, `li(eʸ) = Ei(y)`.
+///
+/// `li z = Ei(Log z)` on all of ℂ (mpmath's and SymPy's definition), so
+/// `li(eʸ) = Ei(y)` exactly when `Log eʸ = y`, i.e. `Im y ∈ (−π, π]`
+/// ([`log_exp_is_identity`]): a real `y`, or a constant inside the strip.
+/// Before 0.41 it was applied to every `y`: `li(e^{4i})` became `Ei(4i)`
+/// (mpmath `li(exp(4j))` = `0.352018… − 3.287491…j`, `ei(4j)` =
+/// `−0.140981… + 3.328999…j`), and `li(eˣ)` became `Ei(x)` for a complex
+/// symbol `x`.
 pub(crate) fn eval_li(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         return Some(arena.zero);
@@ -1697,10 +1734,37 @@ pub(crate) fn eval_li(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.e_const {
         return Some(arena.ei(arena.one));
     }
-    if let ExprNode::Exp(y) = arena.node(x).clone() {
+    if let ExprNode::Exp(y) = arena.node(x).clone()
+        && log_exp_is_identity(arena, y)
+    {
         return Some(arena.ei(y));
     }
     None
+}
+
+/// Is `Log(eʸ) = y`, i.e. `Im y ∈ (−π, π]`?  `true` for a `y` real by its
+/// assumptions, and for a constant whose exact imaginary part is `0`, `π`,
+/// or certified (16 digits) strictly inside `(−π, π)` with a relative
+/// margin of `10⁻⁹`; `false` when not known (a complex symbol, an
+/// imaginary part too close to `±π` to decide cheaply).
+fn log_exp_is_identity(arena: &mut Arena, y: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if AssumptionCache::new().query(arena, y, Props::REAL) == Some(true) {
+        return true;
+    }
+    if !walk::free_symbols(arena, y).is_empty() {
+        return false;
+    }
+    let parts = crate::base::complex::decompose(arena, y);
+    if !parts.exact {
+        return false;
+    }
+    let im = eval(arena, parts.im);
+    if im == arena.pi || arena.is_zero_structural(im) {
+        return true;
+    }
+    crate::transforms::evalf::evalf_f64(arena, im)
+        .is_ok_and(|v| v.is_finite() && v.abs() < std::f64::consts::PI * (1.0 - 1e-9))
 }
 
 /// Largest even argument for which `ζ(2k)` is expanded into an exact
@@ -1833,6 +1897,9 @@ pub(crate) fn eval_digamma(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 ///   `ψ⁽ⁿ⁾(x+1) = ψ⁽ⁿ⁾(x) + (−1)ⁿ n!/x^{n+1}`
 /// * poles at non-positive integers → `z∞`
 pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
+    if n == arena.nan || x == arena.nan {
+        return Some(arena.nan);
+    }
     let nr = arena.as_num(n)?.clone();
     if !nr.is_integer() || nr.is_negative() {
         return None;
@@ -1919,8 +1986,13 @@ pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<
 }
 
 /// Exact values of the Kronecker delta: `δᵢᵢ = 1`; `δᵢⱼ = 0` whenever
-/// `i − j` canonicalises to a non-zero number.
+/// `i − j` canonicalises to a non-zero number; `nan` with a `nan` index (as
+/// every function of `nan`; before 0.41 `δ(nan, nan)` was `1`, a value for
+/// an undefined comparison — SymPy 1.14 leaves `KroneckerDelta(nan, nan)`).
 pub(crate) fn eval_kronecker_delta(arena: &mut Arena, i: ExprId, j: ExprId) -> Option<ExprId> {
+    if i == arena.nan || j == arena.nan {
+        return Some(arena.nan);
+    }
     if i == j {
         return Some(arena.one);
     }
@@ -3109,6 +3181,15 @@ fn eval_abs(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
             let half = arena.rational(1, 2);
             return Some(arena.pow(sum, half));
         }
+    }
+
+    // `|c·t| = |c|·|t|` for a rational `c`: the canonical `Abs` takes the
+    // coefficient out, and the rules above apply to `t` (before 0.41
+    // `eval(|−e^π|)` stopped at `|e^π|`, which a second `eval` folded).
+    let (coeff, term) = arena.as_coeff_term(inner);
+    if term != inner && !coeff.is_zero() && !coeff.is_one() {
+        let t = eval_abs(arena, term)?;
+        return Some(arena.make_coeff_term(coeff.abs(), t));
     }
 
     None
@@ -4344,7 +4425,8 @@ fn eval_expint(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
     if n == arena.zero {
         let neg_x = arena.neg(x);
         let e = arena.exp(neg_x);
-        return Some(arena.div(e, x));
+        let v = arena.div(e, x);
+        return Some(eval(arena, v));
     }
     if x == arena.zero
         && let Some(r) = as_ratio(arena, n)
@@ -4641,7 +4723,7 @@ fn eval_polylog(arena: &mut Arena, s: ExprId, z: ExprId) -> Option<ExprId> {
     }
     if s == arena.one {
         let one_minus_z = arena.sub(arena.one, z);
-        let l = arena.ln(one_minus_z);
+        let l = eval_ln(arena, one_minus_z).unwrap_or_else(|| arena.ln(one_minus_z));
         return Some(arena.neg(l));
     }
     if s == arena.zero {
@@ -4732,6 +4814,12 @@ fn eval_dirichlet_eta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
 }
 
 /// Airy functions at `0` and `±∞`.
+///
+/// At `−∞` only `Ai` and `Bi` tend to `0` (`Ai(−x) ~ x^(−1/4)·sin(⅔x^(3/2) +
+/// π/4)/√π`); their derivatives oscillate with the growing amplitude
+/// `x^(1/4)/√π` (DLMF 9.7.10, 9.7.12) and have no limit, so `Ai′(−∞)` and
+/// `Bi′(−∞)` stay (SymPy 1.14 leaves `airyaiprime(-oo)`; its
+/// `airybiprime(-oo)` → 0 is wrong).  Before 0.41 both folded to `0`.
 fn eval_airy(arena: &mut Arena, f: LibFn, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         let three = arena.int(3);
@@ -4773,7 +4861,7 @@ fn eval_airy(arena: &mut Arena, f: LibFn, x: ExprId) -> Option<ExprId> {
             _ => arena.infinity,
         });
     }
-    if x == arena.neg_infinity {
+    if x == arena.neg_infinity && matches!(f, LibFn::AiryAi | LibFn::AiryBi) {
         return Some(arena.zero);
     }
     None
@@ -4832,7 +4920,8 @@ fn eval_elliptic_f(arena: &mut Arena, phi: ExprId, m: ExprId) -> Option<ExprId> 
         );
     }
     if let Some(y) = as_negated_general(arena, phi) {
-        let e = apply_named(arena, LibFn::EllipticF, &[y, m]);
+        let e = eval_elliptic_f(arena, y, m)
+            .unwrap_or_else(|| apply_named(arena, LibFn::EllipticF, &[y, m]));
         return Some(arena.neg(e));
     }
     None
@@ -6200,10 +6289,22 @@ mod tests {
         assert_eq!(a.ei(a.neg_infinity), a.zero);
         assert_eq!(a.li(a.zero), a.zero);
         assert_eq!(a.li(a.one), a.neg_infinity);
+        // li(e^t) = Ei(t) needs Im t ∈ (−π, π]: a real t, not a complex x
+        // (mpmath li(exp(4j)) ≠ ei(4j)).
+        let t = sym(&mut a, "t");
+        let ExprNode::Symbol(sid) = *a.node(t) else {
+            panic!("symbol expected")
+        };
+        let mut real = a.symbol_assumptions(sid);
+        real.assert_true(crate::base::assumptions::Props::REAL);
+        a.set_symbol_assumptions(sid, real);
+        let et = a.exp(t);
+        let li_et = a.li(et);
+        let ei_t = a.ei(t);
+        assert_eq!(li_et, ei_t);
         let ex = a.exp(x);
         let li_ex = a.li(ex);
-        let ei_x = a.ei(x);
-        assert_eq!(li_ex, ei_x);
+        assert!(matches!(a.node(li_ex), ExprNode::Li(_)));
         // eval() refolds after substitution
         let si_x = a.si(x);
         let sub = a.subs_structural(si_x, x, a.zero);

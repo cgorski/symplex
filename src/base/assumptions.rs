@@ -1161,7 +1161,12 @@ impl AssumptionCache {
             return Some(val);
         }
 
-        // Compute from the expression structure.
+        // Compute from the expression structure: first every uncached node
+        // below `id` that `compute(id)` reaches, children before parents
+        // and with an explicit stack, so that `compute` finds each child
+        // cached and the native stack does not grow with the depth of the
+        // expression.
+        self.prime(arena, id);
         let assumptions = self.compute(arena, id);
 
         // Cache and return.
@@ -1170,10 +1175,43 @@ impl AssumptionCache {
         entry.query(prop)
     }
 
+    /// Compute, bottom-up and without recursion, every node below `root`
+    /// whose assumptions `compute(root)` asks for and that is not cached.
+    ///
+    /// Up to 0.40 `compute` recursed into the children, so a query on an
+    /// expression a few thousand levels deep overflowed the stack of the
+    /// calling thread (`exp(exp(…(x)))` of depth 2,000 in a thread with
+    /// the default 2 MiB stack, debug build; building `exp` of depth 10⁴ on
+    /// an 8 MiB main thread, since canonicalisation queries assumptions),
+    /// which aborts the process.
+    fn prime(&mut self, arena: &Arena, root: ExprId) {
+        if self.cache.contains_key(&root) {
+            return;
+        }
+        let mut stack: Vec<(ExprId, bool)> = vec![(root, false)];
+        while let Some((id, expanded)) = stack.pop() {
+            if self.cache.contains_key(&id) {
+                continue;
+            }
+            if expanded {
+                self.compute(arena, id);
+                continue;
+            }
+            stack.push((id, true));
+            for child in queried_children(arena.node(id)) {
+                if !self.cache.contains_key(&child) {
+                    stack.push((child, false));
+                }
+            }
+        }
+    }
+
     /// Compute assumptions for an expression from its structure.
     ///
     /// This is the equivalent of SymPy's `_eval_is_*` methods, but
-    /// dispatched via a single match on the node type.
+    /// dispatched via a single match on the node type.  The handlers ask
+    /// for the assumptions of [`queried_children`] (computed beforehand by
+    /// [`prime`](Self::prime), so the calls below are cache hits).
     fn compute(&mut self, arena: &Arena, id: ExprId) -> Assumptions {
         // Check cache first to avoid recomputation.
         if let Some(cached) = self.cache.get(&id) {
@@ -1213,11 +1251,30 @@ impl AssumptionCache {
             // ── 0.2 additions: named constants, complex-analysis nodes, specials ──
             ExprNode::EulerGamma | ExprNode::Catalan => compute_positive_real_constant(),
             ExprNode::GoldenRatio => compute_golden_ratio(),
-            ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Arg(_) => compute_real_valued(),
+            ExprNode::Re(inner) | ExprNode::Im(inner) => self.compute_re_im(arena, inner),
+            ExprNode::Arg(_) => compute_real_valued(),
             ExprNode::Conjugate(inner) => self.compute_conjugate(arena, inner),
             ExprNode::KroneckerDelta(..) => compute_kronecker_delta(),
             ExprNode::Floor(inner) | ExprNode::Ceiling(inner) | ExprNode::Sign(inner) => {
                 self.compute_real_to_integer(arena, inner)
+            }
+            // At a pole for every allowed value of the argument (`Γ(n)`,
+            // `ψ(n)`, `ln Γ(n)`, `ψ⁽ᵏ⁾(n)` for an integer `n ≤ 0`; `Ei 0`,
+            // `Ci 0`; `ln 0` in `compute_ln`): `zoo` or `±oo` (SymPy
+            // `gamma(-2)` → `zoo`), nowhere real or finite, which up to 0.40
+            // these were called.
+            ExprNode::Gamma(inner)
+            | ExprNode::Digamma(inner)
+            | ExprNode::LogGamma(inner)
+            | ExprNode::Polygamma(_, inner)
+                if self.is_nonpositive_integer(arena, inner) =>
+            {
+                Assumptions::default()
+            }
+            ExprNode::Ei(inner) | ExprNode::Ci(inner)
+                if self.compute(arena, inner).query(Props::ZERO) == Some(true) =>
+            {
+                Assumptions::default()
             }
             ExprNode::Gamma(inner)
             | ExprNode::Digamma(inner)
@@ -1230,7 +1287,7 @@ impl AssumptionCache {
             ExprNode::LogGamma(inner) | ExprNode::Ci(inner) | ExprNode::Li(inner) => {
                 self.compute_positive_to_real(arena, inner)
             }
-            ExprNode::Polygamma(_, x) => self.compute_positive_to_real(arena, x),
+            ExprNode::Polygamma(n, x) => self.compute_polygamma(arena, n, x),
             ExprNode::Atan2(a, b) => self.compute_all_real_to_real(arena, &[a, b]),
             ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
                 self.compute_all_real_to_real(arena, args)
@@ -1627,6 +1684,13 @@ impl AssumptionCache {
         let base_a = self.compute(arena, base);
         let exp_a = self.compute(arena, exp);
 
+        // `0^e` for `e < 0` is `zoo` wherever it is taken (`x⁻¹` for `x`
+        // declared zero was rational, real and finite up to 0.40).
+        if base_a.query(Props::ZERO) == Some(true) && exp_a.query(Props::NEGATIVE) == Some(true) {
+            a.known_true |= Props::COMMUTATIVE;
+            return a;
+        }
+
         // If base and exp are both complex → result is complex.
         if base_a.query(Props::COMPLEX) == Some(true) && exp_a.query(Props::COMPLEX) == Some(true) {
             a.known_true |= Props::COMPLEX;
@@ -1637,16 +1701,26 @@ impl AssumptionCache {
             a.known_true |= Props::COMPLEX;
         }
 
-        // positive_base^real_exp → positive, real
+        // positive_base^real_exp → positive, real; for an infinite base only
+        // ≥ 0 (`oo^r` is `oo`, 1 or 0).  Up to 0.40 also positive and real
+        // there: `oo^(2x)` for a real `x` (0 at `x = −1`), `p²` for a `p`
+        // declared positive and infinite (`+oo`).
         if base_a.query(Props::POSITIVE) == Some(true) && exp_a.query(Props::REAL) == Some(true) {
-            a.known_true |= Props::POSITIVE | Props::REAL;
+            a.known_true |= Props::NONNEGATIVE;
+            if !self.may_be_infinite(arena, base) {
+                a.known_true |= Props::POSITIVE | Props::REAL;
+            }
         }
 
-        // nonneg_base^positive_exp → nonneg
+        // nonneg_base^positive_exp → nonneg (`x^oo` too); real when both
+        // are finite (`2^oo` is `oo`).
         if base_a.query(Props::NONNEGATIVE) == Some(true)
             && exp_a.query(Props::POSITIVE) == Some(true)
         {
-            a.known_true |= Props::NONNEGATIVE | Props::REAL;
+            a.known_true |= Props::NONNEGATIVE;
+            if !self.may_be_infinite(arena, base) && !self.may_be_infinite(arena, exp) {
+                a.known_true |= Props::REAL;
+            }
         }
 
         // real_base^even_integer → nonneg
@@ -1709,11 +1783,18 @@ impl AssumptionCache {
         let was_nonneg = a.query(Props::NONNEGATIVE);
         let was_nonpos = a.query(Props::NONPOSITIVE);
 
-        // Clear sign bits and re-set them flipped.
-        a.known_true
-            .remove(Props::POSITIVE | Props::NEGATIVE | Props::NONNEGATIVE | Props::NONPOSITIVE);
-        a.known_false
-            .remove(Props::POSITIVE | Props::NEGATIVE | Props::NONNEGATIVE | Props::NONPOSITIVE);
+        // Clear sign bits and re-set them flipped.  Primality does not carry
+        // over either: `−p` is not prime for a prime `p` (`prime` implies
+        // `positive`, so copying it made `−p` both signs), and `−n` is
+        // prime for the non-prime `n = −2`.
+        let signs = Props::POSITIVE
+            | Props::NEGATIVE
+            | Props::NONNEGATIVE
+            | Props::NONPOSITIVE
+            | Props::PRIME
+            | Props::COMPOSITE;
+        a.known_true.remove(signs);
+        a.known_false.remove(signs);
 
         if was_positive == Some(true) {
             a.known_true |= Props::NEGATIVE;
@@ -1788,9 +1869,20 @@ impl AssumptionCache {
         let mut a = Assumptions::default();
         let inner_a = self.compute(arena, inner);
 
-        // ln(positive) → real
+        // `ln 0 = zoo` (SymPy `log(0)`); complex and finite up to 0.40 for
+        // an argument declared zero.
+        if inner_a.query(Props::ZERO) == Some(true) {
+            a.known_true |= Props::COMMUTATIVE;
+            return a;
+        }
+
+        // ln(positive) → real; extended real only if the argument may be
+        // infinite (`ln oo = oo`, which up to 0.40 was called real).
         if inner_a.query(Props::POSITIVE) == Some(true) {
-            a.known_true |= Props::REAL;
+            a.known_true |= Props::EXTENDED_REAL;
+            if !self.may_be_infinite(arena, inner) {
+                a.known_true |= Props::REAL;
+            }
         }
 
         if inner_a.query(Props::COMPLEX) == Some(true) {
@@ -1811,8 +1903,12 @@ impl AssumptionCache {
         let mut a = Assumptions::default();
         let inner_a = self.compute(arena, inner);
 
-        // abs(anything) → nonneg, real
-        a.known_true |= Props::NONNEGATIVE | Props::REAL;
+        // abs(anything) → nonneg (extended real); real unless the argument
+        // may be infinite (`|oo·x| = oo`, called real up to 0.40).
+        a.known_true |= Props::NONNEGATIVE;
+        if !self.may_be_infinite(arena, inner) {
+            a.known_true |= Props::REAL;
+        }
 
         if inner_a.query(Props::ZERO) == Some(true) {
             a.known_true |= Props::ZERO;
@@ -1838,9 +1934,14 @@ impl AssumptionCache {
     fn compute_hyp_odd(&mut self, arena: &Arena, id: ExprId, inner: ExprId) -> Assumptions {
         // sinh, tanh, asinh: real → real.  atanh: real only on (−1, 1)
         // (atanh 2 = 0.549… − (π/2)i).  Complex → complex.
+        // Finite for a finite argument (away from the poles of `tanh`,
+        // `atanh`): `sinh oo = oo`; up to 0.40 finite whatever the argument.
         let inner_a = self.compute(arena, inner);
         let mut a = Assumptions::default();
-        a.known_true |= Props::COMMUTATIVE | Props::FINITE;
+        a.known_true |= Props::COMMUTATIVE;
+        if !self.may_be_infinite(arena, inner) {
+            a.known_true |= Props::FINITE;
+        }
         let real = inner_a.query(Props::REAL) == Some(true)
             && (!matches!(arena.node(id), ExprNode::Atanh(_))
                 || self.known_in_unit_interval(arena, inner, false));
@@ -1855,10 +1956,14 @@ impl AssumptionCache {
     }
 
     fn compute_cosh(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
-        // cosh: real → real, positive (cosh(x) >= 1 for real x)
+        // cosh: real → real, positive (cosh(x) >= 1 for real x); finite for
+        // a finite argument (`cosh oo = oo`).
         let inner_a = self.compute(arena, inner);
         let mut a = Assumptions::default();
-        a.known_true |= Props::COMMUTATIVE | Props::FINITE;
+        a.known_true |= Props::COMMUTATIVE;
+        if !self.may_be_infinite(arena, inner) {
+            a.known_true |= Props::FINITE;
+        }
         if inner_a.query(Props::REAL) == Some(true) {
             a.known_true |= Props::REAL | Props::POSITIVE;
         }
@@ -1873,9 +1978,13 @@ impl AssumptionCache {
         // atan: real → real.  asin, acos: real only on [−1, 1]
         // (asin 4 = π/2 − 2.06…i); acos is then non-negative.  Before 0.23
         // every real argument counted, which let `refine` drop |asin(4)|.
+        // Finite for a finite argument (`asin oo = −oo·i`).
         let inner_a = self.compute(arena, inner);
         let mut a = Assumptions::default();
-        a.known_true |= Props::COMMUTATIVE | Props::FINITE;
+        a.known_true |= Props::COMMUTATIVE;
+        if !self.may_be_infinite(arena, inner) {
+            a.known_true |= Props::FINITE;
+        }
         let is_atan = matches!(arena.node(id), ExprNode::Atan(_));
         if inner_a.query(Props::REAL) == Some(true)
             && (is_atan || self.known_in_unit_interval(arena, inner, true))
@@ -1896,9 +2005,13 @@ impl AssumptionCache {
         // acosh: real and non-negative exactly on [1, ∞); for 0 < x < 1 it is
         // i·acos x (acosh(1/64) = 1.555…i), which the positive-argument rule
         // of 0.22 called real.
+        // Finite for a finite argument (`acosh oo = oo`).
         let inner_a = self.compute(arena, inner);
         let mut a = Assumptions::default();
-        a.known_true |= Props::COMMUTATIVE | Props::FINITE;
+        a.known_true |= Props::COMMUTATIVE;
+        if !self.may_be_infinite(arena, inner) {
+            a.known_true |= Props::FINITE;
+        }
         if inner_a.query(Props::REAL) == Some(true) {
             a.known_true |= Props::COMPLEX;
             if self.known_at_least_one(arena, inner) {
@@ -1910,6 +2023,62 @@ impl AssumptionCache {
         }
         a.forward_chain();
         a
+    }
+
+    /// Can `e` be infinite at a point that its symbols' declarations allow,
+    /// away from a pole?  Only when `e` contains `oo`, `-oo` or `zoo`, or a
+    /// symbol [declared possibly infinite](symbol_may_be_infinite): an
+    /// undeclared symbol is a finite complex number (decision D4).  A
+    /// subtree known finite is not entered.  Iterative; reads the cache
+    /// only (the handlers call it after computing the operand).
+    ///
+    /// The rules that read "`|z|` is real", "`sinh z` is finite", "`b^r` is
+    /// positive for `b > 0`" hold for finite operands only; up to 0.40 they
+    /// also fired for infinite ones (`|oo·x|`, `sinh y` for an
+    /// `ExtendedReal` `y`, `oo^(2x)` for a real `x`, which is 0 at `x = −1`).
+    fn may_be_infinite(&self, arena: &Arena, e: ExprId) -> bool {
+        if self
+            .cache
+            .get(&e)
+            .is_some_and(|a| a.query(Props::FINITE) == Some(true))
+        {
+            return false;
+        }
+        let mut stack = vec![e];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let cached = self.cache.get(&id);
+            if cached.is_some_and(|a| a.query(Props::FINITE) == Some(true)) {
+                continue;
+            }
+            if cached.is_some_and(|a| a.query(Props::INFINITE) == Some(true)) {
+                return true;
+            }
+            match arena.node(id) {
+                ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
+                    return true;
+                }
+                ExprNode::Symbol(sid) => {
+                    let a = cached
+                        .copied()
+                        .unwrap_or_else(|| compute_symbol(arena, *sid));
+                    if symbol_may_be_infinite(&a) {
+                        return true;
+                    }
+                }
+                node => node.for_each_child(|c| stack.push(c)),
+            }
+        }
+        false
+    }
+
+    /// Is `e` known to be an integer `≤ 0` (a pole of `Γ`)?
+    fn is_nonpositive_integer(&mut self, arena: &Arena, e: ExprId) -> bool {
+        let a = self.compute(arena, e);
+        a.query(Props::INTEGER) == Some(true) && a.query(Props::NONPOSITIVE) == Some(true)
     }
 
     /// Is the real `e` known to lie in `[−1, 1]` (`closed`) or `(−1, 1)`?
@@ -1988,17 +2157,50 @@ impl AssumptionCache {
         a
     }
 
-    /// Functions that are real on the positive reals (`ln Γ`, `Ci`, `li`, `ψ⁽ⁿ⁾`).
+    /// Functions that are real on the positive reals (`ln Γ`, `Ci`, `li`):
+    /// on the finite ones (`ln Γ(oo) = oo`, called real up to 0.40).
     fn compute_positive_to_real(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
         let inner_a = self.compute(arena, inner);
         let mut a = Assumptions::default();
         a.known_true |= Props::COMMUTATIVE;
-        if inner_a.query(Props::POSITIVE) == Some(true) {
+        if inner_a.query(Props::POSITIVE) == Some(true) && !self.may_be_infinite(arena, inner) {
             a.known_true |= Props::REAL;
         }
         if inner_a.query(Props::COMPLEX) == Some(true) {
             a.known_true |= Props::COMPLEX;
         }
+        a.forward_chain();
+        a
+    }
+
+    /// `ψ⁽ⁿ⁾(x)`: real for a real order `n` and a finite positive `x`.  Up to
+    /// 0.40 the order was not looked at: `polygamma(i, 2)` (SymPy's
+    /// generalised polygamma, `1.0747 + 1.9380i`) was called real.
+    fn compute_polygamma(&mut self, arena: &Arena, n: ExprId, x: ExprId) -> Assumptions {
+        let n_real = self.compute(arena, n).query(Props::REAL) == Some(true);
+        let x_a = self.compute(arena, x);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE;
+        if n_real && x_a.query(Props::POSITIVE) == Some(true) && !self.may_be_infinite(arena, x) {
+            a.known_true |= Props::REAL;
+        }
+        if x_a.query(Props::COMPLEX) == Some(true) {
+            a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
+    /// `re z`, `im z`: real for a finite `z`, extended real always (`re oo =
+    /// oo`, called real up to 0.40).
+    fn compute_re_im(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        self.compute(arena, inner);
+        if !self.may_be_infinite(arena, inner) {
+            return compute_real_valued();
+        }
+        let mut a = Assumptions::default();
+        a.known_true |= Props::EXTENDED_REAL | Props::COMMUTATIVE;
+        a.known_false |= Props::IMAGINARY;
         a.forward_chain();
         a
     }
@@ -2072,6 +2274,69 @@ impl AssumptionCache {
         self.cache
             .extend(self.declared.iter().map(|(&k, &v)| (k, v)));
     }
+}
+
+/// The children of `node` whose assumptions [`AssumptionCache::compute`]
+/// asks for (its dispatch, mirrored), in the order the handler reads them.
+/// A child missing here is still computed, by a recursive call.
+fn queried_children(node: &ExprNode) -> smallvec::SmallVec<[ExprId; 6]> {
+    use smallvec::smallvec;
+    match node {
+        ExprNode::Add(args) | ExprNode::Mul(args) => args.clone(),
+        ExprNode::Min(args) | ExprNode::Max(args) => args.iter().copied().collect(),
+        ExprNode::Pow(a, b) | ExprNode::Polygamma(a, b) | ExprNode::Atan2(a, b) => {
+            smallvec![*a, *b]
+        }
+        ExprNode::DefiniteIntegral(body, _, lo, hi) => smallvec![*body, *lo, *hi],
+        ExprNode::Neg(x)
+        | ExprNode::Sin(x)
+        | ExprNode::Cos(x)
+        | ExprNode::Tan(x)
+        | ExprNode::Exp(x)
+        | ExprNode::Ln(x)
+        | ExprNode::Abs(x)
+        | ExprNode::Sinh(x)
+        | ExprNode::Tanh(x)
+        | ExprNode::Asinh(x)
+        | ExprNode::Atanh(x)
+        | ExprNode::Cosh(x)
+        | ExprNode::Asin(x)
+        | ExprNode::Acos(x)
+        | ExprNode::Atan(x)
+        | ExprNode::Acosh(x)
+        | ExprNode::Re(x)
+        | ExprNode::Im(x)
+        | ExprNode::Conjugate(x)
+        | ExprNode::Floor(x)
+        | ExprNode::Ceiling(x)
+        | ExprNode::Sign(x)
+        | ExprNode::Gamma(x)
+        | ExprNode::Digamma(x)
+        | ExprNode::Erf(x)
+        | ExprNode::Erfc(x)
+        | ExprNode::Heaviside(x)
+        | ExprNode::Si(x)
+        | ExprNode::Ei(x)
+        | ExprNode::Zeta(x)
+        | ExprNode::LogGamma(x)
+        | ExprNode::Ci(x)
+        | ExprNode::Li(x) => smallvec![*x],
+        _ => smallvec::SmallVec::new(),
+    }
+}
+
+/// Is a symbol with the stored set `a` declared so that it may be
+/// infinite?  Only a declaration that admits `±oo`/`zoo` does:
+/// `Infinite`, `NotFinite`, `NotComplex`, or `ExtendedReal` without a
+/// finiteness.  A symbol without such a declaration is a complex number
+/// (decision D4), finite, even though its `finite` stays unknown as in
+/// SymPy.
+fn symbol_may_be_infinite(a: &Assumptions) -> bool {
+    a.query(Props::FINITE) != Some(true)
+        && (a.query(Props::INFINITE) == Some(true)
+            || a.query(Props::FINITE) == Some(false)
+            || a.query(Props::COMPLEX) == Some(false)
+            || a.query(Props::EXTENDED_REAL) == Some(true))
 }
 
 /// `γ` and `G`: positive real constants whose (ir)rationality is unproven.
@@ -3271,5 +3536,26 @@ mod tests {
         // so check the assumption on that result.
         let prod = arena.mul(&[arena.i_unit, arena.i_unit]);
         assert_eq!(cache.query(&arena, prod, Props::REAL), Some(true));
+    }
+
+    /// A raw `Neg(p)` of a prime `p` copied `prime` (which implies
+    /// `positive`) next to the flipped sign, a contradictory set: `−p` was
+    /// "prime" (`−2` is not, SymPy `Integer(-2).is_prime` → `False`).
+    /// Canonical construction folds `Neg` into `Mul(−1, …)`; the handler is
+    /// still reachable through `intern`.
+    #[test]
+    fn neg_of_prime_is_not_prime() {
+        let mut arena = Arena::new();
+        let mut cache = AssumptionCache::new();
+        let p = arena.symbol("p_neg_prime");
+        let ExprNode::Symbol(sid) = *arena.node(p) else {
+            unreachable!()
+        };
+        arena.set_symbol_assumptions(sid, Assumptions::default().with(Assumption::Prime));
+        let neg = arena.intern(ExprNode::Neg(p));
+        assert_eq!(cache.query(&arena, neg, Props::NEGATIVE), Some(true));
+        assert_eq!(cache.query(&arena, neg, Props::PRIME), None);
+        assert_eq!(cache.query(&arena, neg, Props::POSITIVE), Some(false));
+        assert_eq!(cache.query(&arena, neg, Props::INTEGER), Some(true));
     }
 }

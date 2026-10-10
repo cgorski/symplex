@@ -4,6 +4,8 @@
 
 #[path = "v35/v35_applied.rs"]
 mod v35_applied;
+#[path = "v35/v35_assumptions.rs"]
+mod v35_assumptions;
 #[path = "v35/v35_definite.rs"]
 mod v35_definite;
 #[path = "v35/v35_diff.rs"]
@@ -22,6 +24,8 @@ mod v35_poly;
 mod v35_sets;
 #[path = "v35/v35_solve.rs"]
 mod v35_solve;
+#[path = "v35/v35_special.rs"]
+mod v35_special;
 #[path = "v35/v35_stats.rs"]
 mod v35_stats;
 #[path = "v35/v35_transforms.rs"]
