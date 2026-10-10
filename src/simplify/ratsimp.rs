@@ -306,7 +306,7 @@ fn vanishing_bases(
             }
         }
     }
-    let values = crate::base::canon::everywhere_values_given(arena, &generators, &argument_zeros);
+    let values = crate::base::canon::everywhere_values(arena, &generators, &argument_zeros);
     for (&g, value) in generators.iter().zip(values) {
         if value == Everywhere::Undefined {
             vanishing.insert(g, Vanishing::Undefined);
