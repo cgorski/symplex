@@ -1421,7 +1421,25 @@ fn real_roots_set(arena: &mut Arena, roots: &[ExprId]) -> ExprId {
     arena.finite_set(&keep)
 }
 
+/// An equation atom with periodic solution families: its set stands as the
+/// exact `{var | expr = 0}` until bounds from the other conditions allow
+/// listing the members ([`resolve_periodic`]).
+struct PeriodicAtom {
+    /// The `ConditionSet` node standing for the solution set.
+    set: ExprId,
+    /// The equation `expr = 0`.
+    expr: ExprId,
+    /// Its general-solve candidates.
+    cands: crate::transforms::solve::PeriodicCandidates,
+}
+
 /// Convert one relational atom in `var` to its solution set.
+///
+/// An equation with periodic solutions (`sin x = 0`) becomes
+/// `{var | sin x = 0}`, recorded in `periodic`: its principal solutions
+/// `{0, π}` are not its solution set.  Before 0.39 they were, and
+/// `sin(x) = 0 ∧ −4 < x < 4` gave `{0, π}` without `−π` (SymPy's
+/// `reduce_inequalities` gives the same wrong set).
 fn atom_to_set(
     arena: &mut Arena,
     lhs: ExprId,
@@ -1429,6 +1447,7 @@ fn atom_to_set(
     rel: crate::transforms::inequalities::Relation,
     is_eq: bool,
     var: ExprId,
+    periodic: &mut Vec<PeriodicAtom>,
 ) -> Result<ExprId, SymplexError> {
     use crate::transforms::inequalities::Relation;
 
@@ -1460,6 +1479,19 @@ fn atom_to_set(
     }
 
     if is_eq {
+        if crate::poly::polybridge::expr_to_poly(arena, d, var).is_none()
+            && let Some(cands) = crate::transforms::solve::periodic_candidates(arena, d, var)
+        {
+            let zero = arena.zero;
+            let cond = arena.eq_(d, zero);
+            let set = arena.intern(ExprNode::ConditionSet(var, cond));
+            periodic.push(PeriodicAtom {
+                set,
+                expr: d,
+                cands,
+            });
+            return Ok(set);
+        }
         let sols = crate::transforms::solve::solve(arena, d, var);
         let roots: Vec<ExprId> = sols.into_iter().map(|s| s.value).collect();
         // No root is an answer for a rational function (the solver finds
@@ -1513,8 +1545,20 @@ pub(crate) fn reduce_inequalities(
         });
     }
 
-    let mut sets: Vec<ExprId> = Vec::with_capacity(conds.len());
-    for &cond in conds {
+    // Top-level conjunctions are split into their conjuncts (the same
+    // conjunction), so that the bounds of a window `a < x ∧ x < b` given in
+    // one condition reach the periodic equations ([`resolve_periodic`]).
+    let mut flat: Vec<ExprId> = Vec::with_capacity(conds.len());
+    let mut pending: Vec<ExprId> = conds.iter().rev().copied().collect();
+    while let Some(c) = pending.pop() {
+        match arena.node(c) {
+            ExprNode::And(ch) => pending.extend(ch.iter().rev().copied()),
+            _ => flat.push(c),
+        }
+    }
+    let mut sets: Vec<ExprId> = Vec::with_capacity(flat.len());
+    let mut periodic: Vec<PeriodicAtom> = Vec::new();
+    for &cond in &flat {
         // Post-order over the boolean structure; a node is visited with
         // the parity of the `Not`s above it (`negated`).
         let mut order: Vec<(ExprId, bool)> = Vec::new();
@@ -1547,16 +1591,24 @@ pub(crate) fn reduce_inequalities(
             let s = match (arena.node(id).clone(), negated) {
                 (ExprNode::BoolTrue, false) | (ExprNode::BoolFalse, true) => arena.universal_set,
                 (ExprNode::BoolFalse, false) | (ExprNode::BoolTrue, true) => arena.empty_set,
-                (ExprNode::Gt(a, b), false) => atom_to_set(arena, a, b, Relation::Gt, false, var)?,
-                (ExprNode::Gt(a, b), true) => atom_to_set(arena, b, a, Relation::Ge, false, var)?,
-                (ExprNode::Ge(a, b), false) => atom_to_set(arena, a, b, Relation::Ge, false, var)?,
-                (ExprNode::Ge(a, b), true) => atom_to_set(arena, b, a, Relation::Gt, false, var)?,
+                (ExprNode::Gt(a, b), false) => {
+                    atom_to_set(arena, a, b, Relation::Gt, false, var, &mut periodic)?
+                }
+                (ExprNode::Gt(a, b), true) => {
+                    atom_to_set(arena, b, a, Relation::Ge, false, var, &mut periodic)?
+                }
+                (ExprNode::Ge(a, b), false) => {
+                    atom_to_set(arena, a, b, Relation::Ge, false, var, &mut periodic)?
+                }
+                (ExprNode::Ge(a, b), true) => {
+                    atom_to_set(arena, b, a, Relation::Gt, false, var, &mut periodic)?
+                }
                 (ExprNode::Eq_(a, b), false) | (ExprNode::Ne(a, b), true) => {
-                    atom_to_set(arena, a, b, Relation::Ge, true, var)?
+                    atom_to_set(arena, a, b, Relation::Ge, true, var, &mut periodic)?
                 }
                 (ExprNode::Ne(a, b), false) | (ExprNode::Eq_(a, b), true) => {
-                    let above = atom_to_set(arena, a, b, Relation::Gt, false, var)?;
-                    let below = atom_to_set(arena, b, a, Relation::Gt, false, var)?;
+                    let above = atom_to_set(arena, a, b, Relation::Gt, false, var, &mut periodic)?;
+                    let below = atom_to_set(arena, b, a, Relation::Gt, false, var, &mut periodic)?;
                     arena.set_union(&[above, below])
                 }
                 (ExprNode::And(ch), _) | (ExprNode::Or(ch), _) => {
@@ -1594,8 +1646,150 @@ pub(crate) fn reduce_inequalities(
         }
     }
 
+    if !periodic.is_empty() {
+        resolve_periodic(arena, &mut sets, &periodic, var);
+    }
     let combined = arena.set_intersection(&sets);
     Ok(simplify_set(arena, combined))
+}
+
+/// Most members of one family listed in a bounded window.
+const MAX_PERIODIC_MEMBERS: f64 = 10_000.0;
+
+/// Replace the `{var | expr = 0}` sets of periodic equations by the finite
+/// set of their solutions in the bounded hull of the conditions that do not
+/// involve them.  The conditions only combine sets by union and
+/// intersection (negations are pushed to the atoms), so cutting each
+/// periodic set to that hull leaves the conjunction unchanged.  Every
+/// member listed is checked against the equation, so a pole on a family
+/// (`0` in `2nπ` for `sin(x)/x = 0`) is left out.  Without such a hull the
+/// sets stay as they are, exact.
+fn resolve_periodic(
+    arena: &mut Arena,
+    sets: &mut [ExprId],
+    periodic: &[PeriodicAtom],
+    var: ExprId,
+) {
+    let bounding: Vec<ExprId> = sets
+        .iter()
+        .copied()
+        .filter(|&s| {
+            !periodic
+                .iter()
+                .any(|p| crate::base::walk::contains(arena, s, p.set))
+        })
+        .collect();
+    if bounding.is_empty() {
+        return;
+    }
+    let hull = arena.set_intersection(&bounding);
+    let hull = simplify_set(arena, hull);
+    let (Some(lo), Some(hi)) = (inf(arena, hull), sup(arena, hull)) else {
+        return;
+    };
+    let (Some(lo), Some(hi)) = (approx_real_f64(arena, lo), approx_real_f64(arena, hi)) else {
+        return;
+    };
+    if !lo.is_finite() || !hi.is_finite() {
+        return;
+    }
+    for atom in periodic {
+        let Some(points) = periodic_points_in(arena, atom, var, lo, hi) else {
+            continue;
+        };
+        let finite = real_roots_set(arena, &points);
+        for s in sets.iter_mut() {
+            *s = arena.subs_structural(*s, atom.set, finite);
+        }
+    }
+}
+
+/// The members of the periodic atom's families (and its other candidates)
+/// within `[lo, hi]` (numerically, with a margin; exact bounds come from
+/// the intersection) that are not certainly non-solutions.  `None` when a
+/// family cannot be located numerically or has too many members there.
+fn periodic_points_in(
+    arena: &mut Arena,
+    atom: &PeriodicAtom,
+    var: ExprId,
+    lo: f64,
+    hi: f64,
+) -> Option<Vec<ExprId>> {
+    let n = atom.cands.param;
+    let mut points: Vec<ExprId> = Vec::new();
+    let push = |arena: &mut Arena, p: ExprId, points: &mut Vec<ExprId>| {
+        if !points.contains(&p)
+            && !crate::transforms::solve::certainly_not_a_root(arena, atom.expr, var, p)
+        {
+            points.push(p);
+        }
+    };
+    for &p in &atom.cands.plain {
+        push(arena, p, &mut points);
+    }
+    let margin = 1e-9 * (1.0 + lo.abs().max(hi.abs()));
+    for &fam in &atom.cands.families {
+        let member = |arena: &mut Arena, k: i64| -> ExprId {
+            let kk = arena.int(k);
+            let m = crate::transforms::subs::subs(arena, fam, n, kk);
+            crate::transforms::eval::eval(arena, m)
+        };
+        let s0 = member(arena, 0);
+        let s1 = member(arena, 1);
+        let (s0f, s0i) = approx_complex_f64(arena, s0)?;
+        let (s1f, s1i) = approx_complex_f64(arena, s1)?;
+        let (step, step_i) = (s1f - s0f, s1i - s0i);
+        if step_i.abs() > 1e-12 * (1.0 + step.abs()) {
+            // members off the real line (but for at most one)
+            if s0i.abs() <= 1e-12 * (1.0 + s0f.abs()) {
+                push(arena, s0, &mut points);
+            }
+            continue;
+        }
+        if s0i.abs() > 1e-12 * (1.0 + s0f.abs()) {
+            continue;
+        }
+        if step == 0.0 {
+            push(arena, s0, &mut points);
+            continue;
+        }
+        let (k1, k2) = ((lo - margin - s0f) / step, (hi + margin - s0f) / step);
+        let (k_lo, k_hi) = (k1.min(k2).floor() - 1.0, k1.max(k2).ceil() + 1.0);
+        if !k_lo.is_finite() || !k_hi.is_finite() || k_hi - k_lo > MAX_PERIODIC_MEMBERS {
+            return None;
+        }
+        for k in (k_lo as i64)..=(k_hi as i64) {
+            let m = member(arena, k);
+            let (mf, _) = approx_complex_f64(arena, m)?;
+            if mf >= lo - margin && mf <= hi + margin {
+                push(arena, m, &mut points);
+            }
+        }
+    }
+    Some(points)
+}
+
+/// A 16-digit approximation of a constant as `(re, im)`.
+fn approx_complex_f64(arena: &mut Arena, e: ExprId) -> Option<(f64, f64)> {
+    let (re, im) = crate::base::complex::as_real_imag(arena, e);
+    let re = crate::transforms::eval::eval(arena, re);
+    let im = crate::transforms::eval::eval(arena, im);
+    Some((approx_real_f64(arena, re)?, approx_real_f64(arena, im)?))
+}
+
+/// A 16-digit approximation of a real constant (`±∞` for the infinities).
+fn approx_real_f64(arena: &mut Arena, e: ExprId) -> Option<f64> {
+    if e == arena.infinity {
+        return Some(f64::INFINITY);
+    }
+    if e == arena.neg_infinity {
+        return Some(f64::NEG_INFINITY);
+    }
+    if let Some(r) = arena.as_num(e) {
+        return num_traits::ToPrimitive::to_f64(r);
+    }
+    let s = crate::transforms::evalf::evalf(arena, e, 17).ok()?;
+    s.trim().parse::<f64>().ok()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

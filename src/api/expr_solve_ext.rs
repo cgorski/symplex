@@ -342,11 +342,17 @@ impl Ex {
     /// (`sin²x − sin x = 0`) are supported.  Non-periodic equations return
     /// the same solutions as `solve` with an empty parameter list.
     ///
+    /// Every member of every family solves the equation.  When some members
+    /// of a family are not solutions (poles), the family is split into
+    /// sub-families of a multiple period if the equation is periodic
+    /// (`sin 3x/sin x = 0`: `π/3, 2π/3, 4π/3, 5π/3 + 2nπ`), and refused
+    /// otherwise (`sin(x)/x = 0`: the family `2nπ` would contain `0`).
+    ///
     /// # Errors
     ///
     /// Same as [`solve`](Ex::solve): `InfiniteSolutions` for identities,
     /// `NoSolution` for contradictions, `ComputationFailed` when nothing
-    /// applies.
+    /// applies or a family mixes solutions and non-solutions (above).
     ///
     /// # Examples
     ///
@@ -421,6 +427,12 @@ impl Ex {
             }
             crate::transforms::solve::SolveOutcome::NoSolution(reason) => {
                 Err(SymplexError::NoSolution {
+                    operation: "solve_general",
+                    reason,
+                })
+            }
+            crate::transforms::solve::SolveOutcome::Unresolved(reason) => {
+                Err(SymplexError::ComputationFailed {
                     operation: "solve_general",
                     reason,
                 })

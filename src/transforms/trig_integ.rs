@@ -870,6 +870,25 @@ pub(crate) enum EndValue {
 /// the limit engine); `None` when `p` is no such polynomial, is zero, or a
 /// constant leading coefficient is not decided.
 fn leading_term(arena: &mut Arena, p: ExprId, t: ExprId) -> Option<(usize, ExprId)> {
+    let key = (std::ptr::from_ref::<Arena>(arena) as usize, p, t);
+    if let Some(found) = JUMP_MEMO.with(|m| {
+        m.borrow()
+            .as_ref()
+            .and_then(|m| m.leading.get(&key).copied())
+    }) {
+        return found;
+    }
+    let lead = leading_term_uncached(arena, p, t);
+    JUMP_MEMO.with(|m| {
+        if let Some(m) = m.borrow_mut().as_mut() {
+            m.leading.insert(key, lead);
+        }
+    });
+    lead
+}
+
+/// [`leading_term`] without the memo.
+fn leading_term_uncached(arena: &mut Arena, p: ExprId, t: ExprId) -> Option<(usize, ExprId)> {
     let mut coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, p, t)?;
     while let Some(&lc) = coeffs.last() {
         match crate::poly::algebraic::is_zero_checked(arena, lc) {
@@ -1066,6 +1085,88 @@ fn log_end(
         return Some(arena.add(&[principal, correction]));
     }
     Some(principal)
+}
+
+/// What a jump at the poles of `tan w` depends on besides the arena's
+/// expressions: which of [`infinity_jump`] and
+/// [`infinity_jump_real_parameters`] took it, and the setting of
+/// [`ASSUME_REAL_PARAMETERS`] on entry (the latter sets it itself).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct JumpKey {
+    arena: usize,
+    real_parameters: bool,
+    assumed_real: bool,
+    g: ExprId,
+    t: ExprId,
+}
+
+/// The memo of a [`JumpMemo`]: jumps, and the leading terms of
+/// [`leading_term`] (by arena, polynomial and variable).
+#[derive(Default)]
+struct JumpMemoMaps {
+    jumps: rustc_hash::FxHashMap<JumpKey, Option<ExprId>>,
+    leading: rustc_hash::FxHashMap<(usize, ExprId, ExprId), Option<(usize, ExprId)>>,
+}
+
+thread_local! {
+    /// Set while a [`JumpMemo`] is alive.
+    static JUMP_MEMO: std::cell::RefCell<Option<JumpMemoMaps>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// While alive (the outermost `integrate` call holds one), the jumps of
+/// [`infinity_jump`] and [`infinity_jump_real_parameters`] and the leading
+/// terms behind them are remembered: functions of the arena's (immutable,
+/// hash-consed) expressions and the flags in [`JumpKey`] alone.  One
+/// integration meets the same `G(t)` again and again — every degenerate
+/// case of the parameters and every group of a numerator re-runs the
+/// trigonometric substitution that produced it — and the two ends of one
+/// jump the same polynomials: `∫ (A + B·sin u)/((a + a·sin u)²·(c + d·sin
+/// u)³) du` took the leading terms of the same ten polynomials 16 times
+/// each, 8.8 of its 9 s (0.38).  Cleared when the outermost call ends, so
+/// no entry outlives its arena.
+pub(crate) struct JumpMemo(bool);
+
+impl JumpMemo {
+    /// Start remembering, unless an enclosing guard already does.
+    pub(crate) fn enter() -> Self {
+        JUMP_MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            let owner = m.is_none();
+            if owner {
+                *m = Some(JumpMemoMaps::default());
+            }
+            JumpMemo(owner)
+        })
+    }
+}
+
+impl Drop for JumpMemo {
+    fn drop(&mut self) {
+        if self.0 {
+            let _ = JUMP_MEMO.try_with(|m| {
+                if let Ok(mut m) = m.try_borrow_mut() {
+                    *m = None;
+                }
+            });
+        }
+    }
+}
+
+/// The jump of `key`, remembered while a [`JumpMemo`] is alive.
+fn memoized_jump(key: JumpKey, compute: impl FnOnce() -> Option<ExprId>) -> Option<ExprId> {
+    if let Some(found) =
+        JUMP_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.jumps.get(&key).copied()))
+    {
+        return found;
+    }
+    let jump = compute();
+    JUMP_MEMO.with(|m| {
+        if let Some(m) = m.borrow_mut().as_mut() {
+            m.jumps.insert(key, jump);
+        }
+    });
+    jump
 }
 
 /// Is `c` a constant with free parameters, all of them declared real (so
@@ -1319,6 +1420,26 @@ pub(crate) fn infinity_jump_real_parameters(
     t: ExprId,
     t_sym: SymbolId,
 ) -> Option<ExprId> {
+    // The parameters count as real whatever the caller's setting.
+    let key = JumpKey {
+        arena: std::ptr::from_ref::<Arena>(arena) as usize,
+        real_parameters: true,
+        assumed_real: true,
+        g,
+        t,
+    };
+    memoized_jump(key, || {
+        infinity_jump_real_parameters_uncached(arena, g, t, t_sym)
+    })
+}
+
+/// [`infinity_jump_real_parameters`] without the memo.
+fn infinity_jump_real_parameters_uncached(
+    arena: &mut Arena,
+    g: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+) -> Option<ExprId> {
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -1372,6 +1493,11 @@ pub(crate) fn end_value(
     let mut finite: Vec<ExprId> = Vec::new();
     let mut log_rate: Vec<ExprId> = Vec::new();
     for term in terms {
+        // A term this large is not followed: see [`MAX_END_TERM_NODES`].
+        if crate::base::walk::post_order_ids(arena, term).len() > MAX_END_TERM_NODES {
+            tracing::debug!("end_value: a term too large to follow to the end");
+            return None;
+        }
         if !contains_var(arena, term, t_sym) {
             finite.push(term);
             continue;
@@ -1519,6 +1645,17 @@ pub(crate) fn end_value(
         arena, value,
     )))
 }
+
+/// The largest term (distinct nodes) whose end value [`end_value`] follows.
+/// On the Rubi suite (0.38) every term it decided, or handed to the limit
+/// engine and saw refused, had at most 243 nodes, and the limit engine's
+/// calls took about a second in all; the terms beyond were the Euler
+/// substitution's answers for the `(a + i·a·tan u)^(m/2)·(c − i·c·tan
+/// u)^(n/2)` family, single products of 13,826 nodes on which the limit
+/// engine worked for 10 s before its work budget ran out — the integration
+/// timed out.  Such a term leaves the end value undecided at once, as the
+/// exhausted budget did.
+const MAX_END_TERM_NODES: usize = 2_000;
 
 /// The terms of `g` as a sum, with every product `c·(u₁ + … + uₖ)` whose
 /// only `t`-dependent factor is a sum distributed (`(−3)^(−1/2)·(ln(t − i√3)
@@ -1673,6 +1810,23 @@ fn root_sum_end(
 /// which `t + a` approaches it: `None` at once (on the Rubi suite the
 /// attempt cost seconds on large parametric answers and decided none).
 pub(crate) fn infinity_jump(
+    arena: &mut Arena,
+    g: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+) -> Option<ExprId> {
+    let key = JumpKey {
+        arena: std::ptr::from_ref::<Arena>(arena) as usize,
+        real_parameters: false,
+        assumed_real: ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get),
+        g,
+        t,
+    };
+    memoized_jump(key, || infinity_jump_uncached(arena, g, t, t_sym))
+}
+
+/// [`infinity_jump`] without the memo.
+fn infinity_jump_uncached(
     arena: &mut Arena,
     g: ExprId,
     t: ExprId,

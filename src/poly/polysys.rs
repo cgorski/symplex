@@ -773,8 +773,9 @@ fn solve_triangular_symbolic(
                     chosen = Some((cand, s));
                     break;
                 }
-                crate::transforms::solve::SolveOutcome::Solutions(_) => continue,
-                crate::transforms::solve::SolveOutcome::Identity => continue,
+                crate::transforms::solve::SolveOutcome::Solutions(_)
+                | crate::transforms::solve::SolveOutcome::Identity
+                | crate::transforms::solve::SolveOutcome::Unresolved(_) => continue,
                 crate::transforms::solve::SolveOutcome::NoSolution(_) => return vec![],
             }
         }

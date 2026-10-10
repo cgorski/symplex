@@ -6,6 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **`solve` refuses (`ComputationFailed`) instead of returning
+  `NoSolution`** when every principal candidate is a pole but another
+  branch solves the equation (`tan(x)/x`: `π` solves it); `solve` and
+  `solve_general` refuse an equation that a substitution turns into an
+  identity; `solve` returns `NoSolution` when every root of the numerator
+  is a pole (`(x² − 1)/(x − 1) = 2`; it was refused).  `solve_general`
+  refuses a family with members that are not solutions, and splits a
+  periodic one into sub-families (`sin 3x/sin x = 0`: `π/3, 2π/3, 4π/3,
+  5π/3 + 2nπ`).  `reduce_inequalities` returns a condition set for an
+  unbounded periodic equation.  Logarithms of Gaussian rationals in
+  solutions are folded (`exp(ix) = i` → `π/2`; it was `−ln(I)·I`).
+
+### Added
+
+- **`solve` handles radicals**: of a linear expression (`√(x + 1) = x − 1`
+  → `[3]`, the extraneous root rejected), one or two square roots of
+  polynomials (`√(x + 5) + √x = 3` → `[4/9]`), `a^x` Lambert forms (`2^x =
+  3x`: both real roots; SymPy 1.14 gives one), and polynomials with
+  symbolic coefficients that factor over ℤ[x, parameters]; radical
+  inequalities follow (`√(x + 1) ≥ x − 1` → `[−1, 3]`).
+
+### Fixed
+
+- **Equation solving and inequalities hunted** (15 generators × 2,000
+  seeds, every answer substituted back with certified evaluation,
+  completeness against constructed roots and numeric root scans): 2,025
+  wrong → 0, refusals 2,857 → 2,123.  `solve(tan(x)/x)` claimed "no
+  solution" when every principal candidate was a pole; `solve_general`
+  returned families containing poles (`sin(x)/x`: `2nπ` with `0`);
+  `x^(3/2) = i` also returned `−1` (`(−1)^(3/2) = −i`; the principal sector
+  is now decided exactly); rational equations returned poles when
+  numerator and denominator share an irrational root or a parameter
+  (`(x² − a²)/(x − a)` gave `±√(a²)`, SymPy `[−a]`; `(x⁴ − 2x³ − 3x² + 7x −
+  2)/(x³ − 3x + 1)` gave 2 and the three poles) — common factors are now
+  divided out by gcd over ℚ[x, parameters]; `reduce_inequalities` took the
+  principal solutions of a periodic equation for all of them (`sin x = 0 ∧
+  −4 < x < 4` was `{0, π}`, missing `−π`; SymPy has the same bug); `sin x/cos
+  x − tan x = 0` (true wherever defined) gave `[π]`.
+
+### Changed (performance; results unchanged)
+
+- **The integrator's self-check evaluates `F′` on its own**: the
+  difference `F′ − f` of a right answer is a true zero, which `evalf`
+  settles only by re-evaluating all of `F′` at its zero-search cap; `F′`
+  and `f` certified to 30 digits decide the point unless their distance
+  lies near the tolerance (then `F′ − f` is evaluated as before).  The
+  check was half of the integration time of the trigonometric chapters.
+- **One integration remembers what its degenerate cases repeat**: the
+  jumps at the poles of `tan w` and the leading terms behind them, the
+  normalised substitution integrands, the u-substitution's variation
+  tests, and the parameter values whose re-integration failed: `∫ (A +
+  B·sin u)/((a + a·sin u)²·(c + d·sin u)³)` 10.2 s → 1.4 s.  A term of more
+  than 2,000 nodes no longer goes to the limit engine for the jump of an
+  answer through `tan w` (on the Rubi suite every term it followed had at
+  most 243 nodes; one entry timed out there after 10 s).
+- Rubi `--check` (12 jobs, loaded machine): wall 76–86 s → 49–51 s, CPU
+  888–981 s → 561–578 s, 0 timeouts (was 1); every answer byte-identical.
+
 ## [0.38.0] - 2026-10-09
 
 Antiderivatives are now continuous where the integrand is: answers

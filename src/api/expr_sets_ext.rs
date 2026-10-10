@@ -463,6 +463,11 @@ impl Expr<SetValued> {
     /// inequality solver (sign charts) and equation solver, then combined
     /// with set algebra.  The conditions are conjoined.
     ///
+    /// An equation with periodic solution families (`sin x = 0`) stands as
+    /// the condition set `{x | sin x = 0}`, and becomes the finite set of
+    /// its solutions where the other conditions bound `x` (`sin x = 0 ∧
+    /// −4 < x < 4` is `{−π, 0, π}`).
+    ///
     /// # Errors
     ///
     /// * `InvalidArgument` — `var` is not a symbol, `conds` is empty, or a

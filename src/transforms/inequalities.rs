@@ -135,7 +135,7 @@ pub(crate) fn solveset(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     use crate::transforms::solve::SolveOutcome;
     match crate::transforms::solve::solve_classified(arena, expr, var) {
         SolveOutcome::Identity => arena.universal_set,
-        SolveOutcome::NoSolution(_) => arena.empty_set,
+        SolveOutcome::NoSolution(_) | SolveOutcome::Unresolved(_) => arena.empty_set,
         SolveOutcome::Solutions(solutions) => {
             let root_ids: Vec<ExprId> = solutions.into_iter().map(|s| s.value).collect();
             if root_ids.is_empty() {
@@ -558,6 +558,10 @@ fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, Symp
         SolveOutcome::NoSolution(_) => Ok(RootSet::Finite(Vec::new())),
         SolveOutcome::Solutions(s) if s.is_empty() => Err(failed(format!(
             "could not find the zeros of {}",
+            arena.display(e)
+        ))),
+        SolveOutcome::Unresolved(reason) => Err(failed(format!(
+            "could not find the zeros of {}: {reason}",
             arena.display(e)
         ))),
         SolveOutcome::Solutions(s) => {

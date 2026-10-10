@@ -50,6 +50,9 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
         tracing::debug!("integrate: nesting limit reached");
         return arena.intern(ExprNode::Integral(expr, var));
     }
+    // The outermost call remembers the jumps at the poles of `tan w` for
+    // all the substitutions and degenerate cases below it.
+    let _jumps = crate::transforms::trig_integ::JumpMemo::enter();
     stage!(arena, "integrate", expr, integrate_impl(arena, expr, var))
 }
 
@@ -88,6 +91,8 @@ impl IntegrateCall {
             ARENA_BUDGET_START.with(|s| s.set(arena.node_count()));
             INTEGRATE_MEMO.with(|m| m.borrow_mut().clear());
             VERDICT_MEMO.with(|m| m.borrow_mut().clear());
+            CLEARED_MEMO.with(|m| m.borrow_mut().clear());
+            VARIES_MEMO.with(|m| m.borrow_mut().clear());
         }
         IntegrateCall { outermost, depth }
     }
@@ -103,6 +108,16 @@ impl Drop for IntegrateCall {
                 }
             });
             let _ = VERDICT_MEMO.try_with(|m| {
+                if let Ok(mut m) = m.try_borrow_mut() {
+                    m.clear();
+                }
+            });
+            let _ = CLEARED_MEMO.try_with(|m| {
+                if let Ok(mut m) = m.try_borrow_mut() {
+                    m.clear();
+                }
+            });
+            let _ = VARIES_MEMO.try_with(|m| {
                 if let Ok(mut m) = m.try_borrow_mut() {
                     m.clear();
                 }
@@ -2887,7 +2902,36 @@ fn jump_kept_undecided(arena: &Arena, g: ExprId, t_sym: SymbolId) -> bool {
 /// powers (e.g. `2/((1+t²)(2 + (1−t²)/(1+t²)))`) are combined bottom-up
 /// first, then the whole expression is split into numerator/denominator
 /// and cancelled.
+///
+/// Inside an `integrate` call the result is remembered until the outermost
+/// call ends ([`CLEARED_MEMO`]).
 pub(crate) fn clear_nested_fractions(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    let inside = NODE_BUDGET_DEPTH.with(std::cell::Cell::get) > 0;
+    let key = (std::ptr::from_ref::<Arena>(arena) as usize, expr, var);
+    if inside && let Some(found) = CLEARED_MEMO.with(|m| m.borrow().get(&key).copied()) {
+        return found;
+    }
+    let cleared = clear_nested_fractions_uncached(arena, expr, var);
+    if inside {
+        CLEARED_MEMO.with(|m| m.borrow_mut().insert(key, cleared));
+    }
+    cleared
+}
+
+thread_local! {
+    /// [`clear_nested_fractions`] during the current top-level `integrate`
+    /// (cleared with [`INTEGRATE_MEMO`]), by (arena, expression, variable).
+    /// The trigonometric substitutions normalise the same pieces again for
+    /// every degenerate case of the parameters and every group of a
+    /// numerator: `∫ (A + B·sec u + C·sec²u)/(a + b·sec u)⁴ du` made 116
+    /// such calls (1.4 s, multiplying out numerators such as `(t² + 1)⁷·…`)
+    /// on inputs whose distinct ones took 0.16 s (0.38).
+    static CLEARED_MEMO: std::cell::RefCell<FxHashMap<(usize, ExprId, ExprId), ExprId>> =
+        std::cell::RefCell::new(FxHashMap::default());
+}
+
+/// [`clear_nested_fractions`] without the memo.
+fn clear_nested_fractions_uncached(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     let mut current = expr;
     // Bottom-up: combine every inner sum over a common denominator.
     for _ in 0..16 {
@@ -5184,7 +5228,35 @@ const VARIES_POINTS: [(i64, i64); 2] = [(3, 7), (5, 11)];
 /// constant in 1 of 9,500 calls on a sample of the Rubi suite (0.31;
 /// `sin 2x/(8 sin x cos x) = 1/4`), while taking 50 % of the time of the
 /// integrands that stay unevaluated.
+///
+/// Inside an `integrate` call the answer is remembered until the outermost
+/// call ends ([`VARIES_MEMO`]).
 fn varies_numerically(arena: &mut Arena, q: ExprId, var: ExprId) -> bool {
+    let inside = NODE_BUDGET_DEPTH.with(std::cell::Cell::get) > 0;
+    let key = (std::ptr::from_ref::<Arena>(arena) as usize, q, var);
+    if inside && let Some(found) = VARIES_MEMO.with(|m| m.borrow().get(&key).copied()) {
+        return found;
+    }
+    let varies = varies_numerically_uncached(arena, q, var);
+    if inside {
+        VARIES_MEMO.with(|m| m.borrow_mut().insert(key, varies));
+    }
+    varies
+}
+
+thread_local! {
+    /// [`varies_numerically`] during the current top-level `integrate`
+    /// (cleared with [`INTEGRATE_MEMO`]), by (arena, quotient, variable).
+    /// The u-substitution meets the same quotients for every degenerate
+    /// case of the parameters and every depth it is retried at: on the Rubi
+    /// suite's 4.5.4.2 (0.38) its 45,000 tests took 6.5 s, a fifth of the
+    /// integration time, and 24,700 of them were repeats.
+    static VARIES_MEMO: std::cell::RefCell<FxHashMap<(usize, ExprId, ExprId), bool>> =
+        std::cell::RefCell::new(FxHashMap::default());
+}
+
+/// [`varies_numerically`] without the memo.
+fn varies_numerically_uncached(arena: &mut Arena, q: ExprId, var: ExprId) -> bool {
     let mut params: Vec<(String, ExprId)> = Vec::new();
     for s in crate::base::walk::free_symbols(arena, q) {
         if s == var {
@@ -7769,6 +7841,12 @@ fn try_piecewise_wrap(
     let mut wrapped = result;
     // The handled pairs with the denominator they came from.
     let mut handled_by_denom: Vec<(ExprId, ExprId, ExprId)> = Vec::new();
+    // The `(parameter, value)` cases whose re-integration found no closed
+    // form.  The same case met again through another denominator (`a = b`
+    // from `a − b` and from `a² − b²`) is the same integrand in the same
+    // context and fails again (on the Rubi suite's 4.5.4.2, 3,852 of 8,948
+    // failed cases were such repeats; 0.38).
+    let mut failed: Vec<(ExprId, ExprId)> = Vec::new();
 
     for denom in &denoms {
         let denom_syms = crate::base::walk::free_symbols(arena, *denom);
@@ -7814,6 +7892,7 @@ fn try_piecewise_wrap(
                 if handled
                     .iter()
                     .any(|&(p, v)| p == *sym_expr && v == degen_val)
+                    || failed.contains(&(*sym_expr, degen_val))
                 {
                     continue;
                 }
@@ -7882,6 +7961,7 @@ fn try_piecewise_wrap(
                 // undefined at the degenerate value) made the whole answer
                 // unevaluated (0.31, the parametric-rational hunt).
                 if crate::base::walk::has_unevaluated(arena, degen_result) {
+                    failed.push((*sym_expr, degen_val));
                     continue;
                 }
 
@@ -8452,6 +8532,14 @@ const FTC_CHECK_DIGITS: u32 = 30;
 /// Tolerance on `|F′(x₀) − f(x₀)| / max(1, |f(x₀)|)` at [`FTC_CHECK_DIGITS`].
 const FTC_CHECK_REL_TOL: f64 = 1e-20;
 
+/// How far from the tolerance the distance of the separately evaluated
+/// `F′(x₀)` and `f(x₀)` must lie to decide a point of [`ftc_point`] without
+/// evaluating `F′ − f` as one expression.  Both values are certified to
+/// [`FTC_CHECK_DIGITS`] digits, ten orders of magnitude below the
+/// tolerance, so any factor above 1 is safe; this one leaves room for the
+/// `f64` rounding of the distance and of the tolerance.
+const FTC_DECISIVE_FACTOR: f64 = 16.0;
+
 /// What [`check_antiderivative`] found out about a candidate `F` for `∫ f`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FtcVerdict {
@@ -8707,10 +8795,12 @@ fn value_satisfies(
 /// [`FTC_RETRY_POINTS`].
 ///
 /// At each point `f` is evaluated first; a point where it does not
-/// evaluate says nothing.  Then `F′ − f` is evaluated as one expression
-/// (its exact cancellation to 0 is what `evalf`'s zero detection is built
-/// for) and, if that fails, `F′` on its own.  `|F′ − f| ≤ tol·max(1, |f|)`
-/// is an agreement, real or complex; a larger difference is
+/// evaluate says nothing.  Then `F′` on its own, which decides the point
+/// when its distance from `f` is clear of the tolerance (see
+/// [`ftc_point`]); otherwise `F′ − f` is evaluated as one expression (its
+/// exact cancellation to 0 is what `evalf`'s zero detection is built for).
+/// `|F′ − f| ≤ tol·max(1, |f|)` is an agreement, real or complex; a larger
+/// difference is
 /// [`FtcVerdict::Wrong`] where `f` is real and no evidence where it is
 /// complex (the real-variable convention: `ln|x|` for `∫ dx/x` differs
 /// from `1/x` for `x < 0` only in a complex continuation, and the
@@ -9016,12 +9106,40 @@ fn ftc_point(
     let Some(f_abs) = crate::transforms::evalf::abs_to_f64(&f_val).filter(|v| v.is_finite()) else {
         return FtcPoint::IntegrandUnevaluable;
     };
+    let f_real = crate::transforms::evalf::is_real_to_digits(&f_val, FTC_CHECK_DIGITS);
+    let tol = FTC_CHECK_REL_TOL * f_abs.max(1.0);
+
+    // `F′` on its own first.  Both values are certified to
+    // [`FTC_CHECK_DIGITS`] digits, so their distance is `|F′ − f|` to within
+    // `10⁻³⁰·(|F′| + |f|)`, far below the tolerance: a distance clear of it
+    // by [`FTC_DECISIVE_FACTOR`] either way decides the point as `F′ − f`
+    // evaluated as one expression would.  That expression is a true zero
+    // for a right answer, which `evalf` can only settle by re-evaluating
+    // the whole of `F′` at up to two and a half times the working precision
+    // (the zero search to its cap), where `F′` alone settles in one pass:
+    // up to 0.38 those re-evaluations were half of the integrator's time on
+    // the Rubi suite's trigonometric chapters.  A distance near the
+    // tolerance, or an `F′` that does not evaluate on its own, still goes
+    // to the residual.
+    let d_at = crate::transforms::subs::subs(arena, d_big_f, var, point);
+    let d_val = numeric_value(arena, d_at);
+    if let Some(d) = &d_val
+        && let Some(gap) = crate::transforms::evalf::distance_to_f64(d, &f_val)
+        && !gap.is_nan()
+    {
+        if gap * FTC_DECISIVE_FACTOR <= tol {
+            return FtcPoint::Agrees { f_real };
+        }
+        if gap >= tol * FTC_DECISIVE_FACTOR {
+            return FtcPoint::Differs { f_real };
+        }
+    }
+
     let r_at = crate::transforms::subs::subs(arena, residual, var, point);
     let gap = match residual_abs(arena, r_at) {
         Some(gap) => gap,
         None => {
-            let d_at = crate::transforms::subs::subs(arena, d_big_f, var, point);
-            let Some(d_val) = numeric_value(arena, d_at) else {
+            let Some(d_val) = d_val else {
                 return FtcPoint::DerivativeUnevaluable;
             };
             match crate::transforms::evalf::distance_to_f64(&d_val, &f_val) {
@@ -9030,8 +9148,7 @@ fn ftc_point(
             }
         }
     };
-    let f_real = crate::transforms::evalf::is_real_to_digits(&f_val, FTC_CHECK_DIGITS);
-    if gap <= FTC_CHECK_REL_TOL * f_abs.max(1.0) {
+    if gap <= tol {
         FtcPoint::Agrees { f_real }
     } else {
         FtcPoint::Differs { f_real }

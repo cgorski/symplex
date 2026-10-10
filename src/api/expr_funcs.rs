@@ -3112,8 +3112,12 @@ impl Expr<Numeric> {
     /// that field (Cardano, and Ferrari or Descartes–Euler as SymPy's
     /// `roots_quartic`: `x³ + √2·x + i` has three radical roots), and
     /// transcendental equations (`exp`, `ln`, trig, hyperbolic, `|·|`,
-    /// change of variable, Lambert W).  For periodic functions only the
-    /// principal branches are returned — use
+    /// change of variable, Lambert W, also through `a^x = exp(x·ln a)`),
+    /// radicals of one linear expression or square roots of one or two
+    /// polynomials (`√(x + 1) = x − 1` gives `[3]`: candidates of the
+    /// squared equation that fail are dropped), and polynomials with
+    /// symbolic coefficients that factor over `ℤ[x, parameters]`.  For
+    /// periodic functions only the principal branches are returned — use
     /// [`solve_general`](Ex::solve_general) for full solution families.
     ///
     /// Polynomials are first factored exactly over ℤ, so a constant
@@ -3136,7 +3140,10 @@ impl Expr<Numeric> {
     ///   that field) — the two reasons say which.  A polynomial over that
     ///   field is not answered with the roots of some of its factors only:
     ///   `(x² + i)·(x⁵ − √2·x − 1)` is refused ("7 distinct roots, of which
-    ///   2 were found"; SymPy returns the two).
+    ///   2 were found"; SymPy returns the two).  Also when every
+    ///   principal-branch candidate fails (a pole) but another member of
+    ///   its periodic family solves the equation: `tan(x)/x = 0` (`0` is a
+    ///   pole, `π` a root) — not `NoSolution`.
     ///
     /// `Ok(vec![])` is reserved for genuine equations whose roots could
     /// not be found in the searched domain.
@@ -3275,6 +3282,13 @@ impl Expr<Numeric> {
             crate::transforms::solve::SolveOutcome::NoSolution(reason) => {
                 drop(inner);
                 Err(SymplexError::NoSolution {
+                    operation: "solve",
+                    reason,
+                })
+            }
+            crate::transforms::solve::SolveOutcome::Unresolved(reason) => {
+                drop(inner);
+                Err(SymplexError::ComputationFailed {
                     operation: "solve",
                     reason,
                 })
