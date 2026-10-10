@@ -198,7 +198,8 @@ fn diff_node(
         | ExprNode::FiniteSet(_)
         | ExprNode::SetUnion(_)
         | ExprNode::SetIntersection(_)
-        | ExprNode::SetComplement(..) => arena.zero,
+        | ExprNode::SetComplement(..)
+        | ExprNode::ImageSet(..) => arena.zero,
 
         // Piecewise: differentiate each value piece, keep conditions
         ExprNode::Piecewise(ref pairs) => {

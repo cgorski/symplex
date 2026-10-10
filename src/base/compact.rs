@@ -270,6 +270,7 @@ fn remap_node(
         ExprNode::RootOf(a, b, c) => ExprNode::RootOf(m(a), m(b), m(c)),
         ExprNode::ConditionSet(a, b) => ExprNode::ConditionSet(m(a), m(b)),
         ExprNode::Subs(a, b, c) => ExprNode::Subs(m(a), m(b), m(c)),
+        ExprNode::ImageSet(a, b) => ExprNode::ImageSet(m(a), m(b)),
 
         // ── Unary nodes ──────────────────────────────────────────────────
         ExprNode::Neg(x) => ExprNode::Neg(m(x)),

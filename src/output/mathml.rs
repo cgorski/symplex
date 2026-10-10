@@ -861,6 +861,12 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
                 child(var)?,
                 child(cond)?
             )),
+            // { body | n ∈ ℤ }
+            ExprNode::ImageSet(var, body) => mrow(&format!(
+                "<mo>{{</mo>{}<mo>|</mo>{}<mo>&#x2208;</mo><mi mathvariant=\"double-struck\">Z</mi><mo>}}</mo>",
+                child(body)?,
+                child(var)?
+            )),
 
             // No standard presentation: internal CAS forms.
             ExprNode::Series(..)

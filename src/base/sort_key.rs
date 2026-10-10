@@ -135,7 +135,7 @@ const RANK_SUBS: u8 = 165;
 const RANK_CONSTANT: u8 = 170;
 
 /// Rank byte for set-valued nodes (EmptySet, UniversalSet, Interval, FiniteSet,
-/// SetUnion, SetIntersection, SetComplement).
+/// SetUnion, SetIntersection, SetComplement, ImageSet).
 const RANK_SET: u8 = 190;
 
 /// Rank byte for special sentinel values
@@ -222,6 +222,7 @@ const SET_FINITE_SET: u8 = 3;
 const SET_UNION: u8 = 4;
 const SET_INTERSECTION: u8 = 5;
 const SET_COMPLEMENT: u8 = 6;
+const SET_IMAGE: u8 = 7;
 
 // ---------------------------------------------------------------------------
 // SortKey
@@ -897,6 +898,14 @@ pub fn compute_sort_key(
             key.push(SET_COMPLEMENT);
             key.extend(get_key(*a).as_bytes());
             key.extend(get_key(*b).as_bytes());
+        }
+
+        // The bound variable last: it only breaks ties.
+        ExprNode::ImageSet(var, body) => {
+            key.push(RANK_SET);
+            key.push(SET_IMAGE);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*var).as_bytes());
         }
 
         // -- formal analysis nodes -------------------------------------------

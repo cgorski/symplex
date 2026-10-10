@@ -1,5 +1,6 @@
 pub(crate) mod algebraic;
 pub(crate) mod dense;
+pub(crate) mod factor_hensel;
 pub mod factor_zassenhaus;
 pub mod generic;
 pub mod groebner;
@@ -13,6 +14,7 @@ pub mod ratfn;
 pub(crate) mod roots;
 pub(crate) mod sturm;
 pub mod traits;
+pub(crate) mod zerodim;
 pub(crate) mod zpoly;
 
 // Re-export the type alias and ℚ-specific free function.

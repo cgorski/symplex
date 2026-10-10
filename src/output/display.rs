@@ -140,7 +140,8 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Subs(_, _, _)
         | ExprNode::DSolve(_, _, _)
         | ExprNode::RootSum(_, _, _)
-        | ExprNode::ConditionSet(_, _) => PREC_ATOM,
+        | ExprNode::ConditionSet(_, _)
+        | ExprNode::ImageSet(_, _) => PREC_ATOM,
         ExprNode::Or(_) => 10,
         ExprNode::And(_) => 15,
         ExprNode::Gt(_, _) | ExprNode::Ge(_, _) | ExprNode::Eq_(_, _) | ExprNode::Ne(_, _) => 20,
@@ -798,6 +799,15 @@ fn expand_expr(
             stack.push(WorkItem::Lit(", "));
             stack.push(WorkItem::Expr(var, 0));
             stack.push(WorkItem::Lit("ConditionSet("));
+        }
+
+        // ── ImageSet (SymPy's form, which parses back) ──────────────
+        ExprNode::ImageSet(var, body) => {
+            stack.push(WorkItem::Lit("), Integers)"));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit("ImageSet(Lambda("));
         }
 
         // ── Boolean atoms ──────────────────────────────────────────

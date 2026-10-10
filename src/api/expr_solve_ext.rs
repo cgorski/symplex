@@ -346,7 +346,14 @@ impl Ex {
     /// of a family are not solutions (poles), the family is split into
     /// sub-families of a multiple period if the equation is periodic
     /// (`sin 3x/sin x = 0`: `π/3, 2π/3, 4π/3, 5π/3 + 2nπ`), and refused
-    /// otherwise (`sin(x)/x = 0`: the family `2nπ` would contain `0`).
+    /// otherwise (`sin(x)/x = 0`: the family `2nπ` would contain `0`;
+    /// [`solve_as_set`](Ex::solve_as_set) gives `{n·π} \ {0}`).
+    ///
+    /// The poles of a `tan` (or `tanh`) at which the expression is 0 are
+    /// solutions, as the evaluator and SymPy's `solveset` have it: `1/tan(x)
+    /// = 0` at `π/2 + 2nπ, −π/2 + 2nπ`, `cos(2x/3)/(tan(x/2) − 2) = 0` also
+    /// at `π + 4nπ, −π + 4nπ`.  Before 0.40 the first was "no solution" and
+    /// the second lacked them (also in [`solve`](Ex::solve)).
     ///
     /// # Errors
     ///

@@ -3486,21 +3486,37 @@ impl Expr<Numeric> {
         }
     }
 
-    /// Solve `self = 0`, returning solutions as a set.
+    /// Solve `self = 0`, returning the solution set (SymPy: `solveset`).
     ///
-    /// This is a set-valued variant of [`solve`](Ex::solve) — instead of
-    /// returning a `Vec<Ex>`, it returns a `SetEx`:
+    /// The set is exactly the solutions over the declared domain of `var`
+    /// — ℂ for a plain symbol, ℝ for one declared real — or a
+    /// `ConditionSet` when it is not known.  It is:
     ///
-    /// - a `FiniteSet` of the roots [`solve`](Ex::solve) finds — for a
-    ///   periodic equation its principal solutions, as `solve` returns them
-    ///   (`sin(x) = 1/2` gives `{π/6, 5π/6}`; the families are
-    ///   [`solve_general`](Ex::solve_general)'s),
+    /// - for an algebraic equation (`var` only in sums, products and powers
+    ///   with numeric exponents), the `FiniteSet` of the roots
+    ///   [`solve`](Ex::solve) finds (all complex roots of a polynomial);
+    /// - otherwise the general solution of
+    ///   [`solve_general`](Ex::solve_general) as a set: a finite set united
+    ///   with an image set `{f(n) : n ∈ ℤ}` for each periodic family,
+    ///   printed `ImageSet(Lambda(_n, f), Integers)` as in SymPy
+    ///   ([`image_set`](Ex::image_set)).  Families are merged into the
+    ///   coarsest lattices (`sin x = 0`: `{n·π}` rather than `2nπ ∪ 2nπ +
+    ///   π`), and the zeros of polynomial denominators on a family are taken
+    ///   out (`sin(x)/x`: `{n·π} \ {0}`).  Over ℂ the real-variable
+    ///   conventions of `solve` are dropped: `exp(x) = 1` is `{2nπi}`,
+    ///   `sin(x) = 2` the families `asin 2 + 2nπ`, `π − asin 2 + 2nπ`, and
+    ///   `|x| = 1` (a circle) or `x·eˣ = 1` (every branch of Lambert W) are
+    ///   not solved;
     /// - `UniversalSet` when the equation is the identity `0 = 0`,
     /// - `EmptySet` when the equation is provably unsatisfiable,
     /// - `ConditionSet(x, Eq(self, 0))` when no root was found or the
     ///   solver could not decide: the set is not known.  Before 0.39 this
     ///   was `EmptySet`, which claims there is no solution:
     ///   `(x − cos x).solve_as_set(x)` (`x ≈ 0.739` solves it).
+    ///
+    /// Before 0.40 a periodic equation gave its principal solutions as a
+    /// finite set (`sin(x)` gave `{0, π}`, `sin(x)/x` `{π}`, `exp(x) − 1`
+    /// `{0}`, `sin(x) − 2` `EmptySet`), a claim that there were no others.
     ///
     /// # Examples
     ///
@@ -3510,12 +3526,15 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let poly = &x.powi(2) - &x * 5 + 6;
-    /// let result = poly.solve_as_set(&x);
-    /// let s = format!("{result}");
-    /// // Should contain {2, 3} or similar
-    /// assert!(!s.contains("EmptySet"), "solve_as_set: {s}");
+    /// assert_eq!(format!("{}", poly.solve_as_set(&x)), "{2, 3}");
     /// assert_eq!(format!("{}", ctx.int(0).solve_as_set(&x)), "UniversalSet");
     /// assert_eq!(format!("{}", ctx.int(1).solve_as_set(&x)), "EmptySet");
+    /// // Periodic: every solution, as image sets of the integers.
+    /// let sin = x.sin().solve_as_set(&x);
+    /// assert_eq!(format!("{sin}"), "ImageSet(Lambda(_n, _n*pi), Integers)");
+    /// assert_eq!(sin.contains(&(ctx.pi() * 7)), Some(true));
+    /// let sinc = (&x.sin() / &x).solve_as_set(&x);
+    /// assert_eq!(format!("{sinc}"), "ImageSet(Lambda(_n, _n*pi), Integers) \\ {0}");
     /// // Not solved in closed form: the set is not known, not empty.
     /// let s = format!("{}", (&x - &x.cos()).solve_as_set(&x));
     /// assert!(s.starts_with("ConditionSet"), "{s}");

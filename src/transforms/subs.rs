@@ -19,7 +19,8 @@
 //!
 //! **Binders.**  Only *free* occurrences are replaced.  A node of the
 //! binder table ([`crate::base::walk::binder`]: `Sum`, `Product_`,
-//! `DefiniteIntegral`, `RootSum`, `ConditionSet`, a univariate `RootOf`,
+//! `DefiniteIntegral`, `RootSum`, `ConditionSet`, `ImageSet` (rebuilt in
+//! canonical form), a univariate `RootOf`,
 //! `Limit`, `Residue`, the Laplace transforms) binds its variable in some
 //! operands, so substitution is the capture-avoiding one of the λ-calculus:
 //!
@@ -640,6 +641,11 @@ fn subs_scoped(
                     let (scoped, outer) = operands(b, *inner);
                     if *var == b.var && scoped == b.scoped && outer == b.outer {
                         id
+                    } else if let (ExprNode::ImageSet(..), &[body]) = (arena.node(id), &scoped[..])
+                    {
+                        // Back to the canonical form (`2nπ + a` at `a = 3π` is
+                        // `2nπ + π`, at `a`-free steps `{f}` when `n` is gone).
+                        crate::transforms::sets::image_set(arena, *var, body)
                     } else {
                         crate::base::walk::rebuild_binder(arena, id, *var, &scoped, &outer)
                     }

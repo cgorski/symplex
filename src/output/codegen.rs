@@ -284,6 +284,7 @@ pub(crate) fn binds_variable(node: &ExprNode) -> bool {
             | ExprNode::Series(..)
             | ExprNode::Subs(..)
             | ExprNode::ConditionSet(..)
+            | ExprNode::ImageSet(..)
             | ExprNode::LaplaceTransform(..)
             | ExprNode::InverseLaplaceTransform(..)
             | ExprNode::Residue(..)
@@ -1640,7 +1641,8 @@ fn expr_to_rust_cse(
         | ExprNode::FiniteSet(_)
         | ExprNode::SetUnion(_)
         | ExprNode::SetIntersection(_)
-        | ExprNode::SetComplement(_, _) => Err(SymplexError::NotImplemented(
+        | ExprNode::SetComplement(_, _)
+        | ExprNode::ImageSet(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for set-valued expressions".to_string(),
         )),
     }

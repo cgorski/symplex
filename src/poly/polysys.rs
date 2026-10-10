@@ -115,28 +115,41 @@ fn solve_triangular(
 
     let last_var = num_vars - 1;
 
-    // Find a polynomial that is univariate in the last variable.
-    // In lex order, such a polynomial involves only x_{last_var}.
-    let univariate = basis.iter().find(|p| {
-        !p.is_zero()
-            && p.terms().all(|(exp, _)| {
+    // The polynomials that involve only x_{last_var}: a value of x_{last_var}
+    // must be a common root of all of them, i.e. a root of their gcd, and a
+    // non-zero constant (left by an earlier substitution) means this branch
+    // has no solution.  Before, the roots of the first such polynomial were
+    // taken alone: `x² − 1, y² − 1, (x − 1)(y − 1)` gave the non-solution
+    // `(−1, −1)` (at `y = −1` the lex basis holds `x² − 1` and `−2x + 2`).
+    let mut common: Option<crate::poly::Poly> = None;
+    for p in basis {
+        if p.is_zero()
+            || !p.terms().all(|(exp, _)| {
                 exp.iter()
                     .enumerate()
                     .all(|(i, &e)| i == last_var || e == 0)
             })
-    });
-
-    let univariate = match univariate {
-        Some(u) => u,
-        None => {
-            return Err(format!(
-                "no univariate polynomial found in variable {last_var} for back-substitution"
-            ));
+        {
+            continue;
         }
+        let u = univariate_in(p, last_var);
+        if u.degree() == Some(0) {
+            return Ok(vec![]);
+        }
+        common = Some(match common {
+            None => u,
+            Some(g) => crate::poly::Poly::gcd(&g, &u),
+        });
+    }
+
+    let Some(univariate) = common else {
+        return Err(format!(
+            "no univariate polynomial found in variable {last_var} for back-substitution"
+        ));
     };
 
     // Find rational roots of the univariate polynomial
-    let roots = rational_roots_of_univariate(univariate, last_var);
+    let roots = rational_roots_of_poly(&univariate);
 
     let mut all_solutions = Vec::new();
 
@@ -175,24 +188,15 @@ fn solve_triangular(
     Ok(all_solutions)
 }
 
-/// Extract rational roots from a multivariate polynomial that is known to be
-/// univariate in `var_idx` (all other variables have exponent 0).
-fn rational_roots_of_univariate(poly: &MultiPoly<Lex>, var_idx: usize) -> Vec<Ratio<BigInt>> {
-    // Determine the maximum degree in var_idx
-    let mut max_deg: u32 = 0;
-    for (exp, _) in poly.terms() {
-        max_deg = max_deg.max(exp[var_idx]);
-    }
-
-    // Build a coefficient vector indexed by degree (ascending)
+/// A multivariate polynomial that only involves `var_idx`, as a dense
+/// univariate polynomial.
+fn univariate_in(poly: &MultiPoly<Lex>, var_idx: usize) -> crate::poly::Poly {
+    let max_deg = poly.terms().map(|(exp, _)| exp[var_idx]).max().unwrap_or(0);
     let mut coeffs = vec![Ratio::<BigInt>::zero(); max_deg as usize + 1];
     for (exp, coeff) in poly.terms() {
-        let deg = exp[var_idx] as usize;
-        coeffs[deg] = coeffs[deg].clone() + coeff.clone();
+        coeffs[exp[var_idx] as usize] += coeff;
     }
-
-    let uni = crate::poly::Poly::from_coeffs(coeffs);
-    rational_roots_of_poly(&uni)
+    crate::poly::Poly::from_coeffs(coeffs)
 }
 
 /// Find all rational roots of a univariate polynomial: the linear factors
@@ -339,16 +343,15 @@ fn convert_node_multi(
             if !exp_val.is_integer() {
                 return None;
             }
-            let n: i64 = exp_val.to_integer().try_into().ok()?;
-            if n < 0 {
+            let n: u32 = exp_val.to_integer().try_into().ok()?;
+            // The degree cap of the univariate conversion: `x^1000000000`
+            // was a billion multiplications (`solve_system_ex` hung).
+            let cap = crate::poly::polybridge::MAX_EXPR_POLY_DEGREE;
+            let base_degree = base_poly.total_degree().unwrap_or(0) as usize;
+            if n as usize > cap || base_degree.checked_mul(n as usize)? > cap {
                 return None;
             }
-
-            let mut result = MultiPoly::from_int(num_vars, 1);
-            for _ in 0..n {
-                result = result.mul(base_poly);
-            }
-            Some(result)
+            base_poly.try_pow(n)
         }
 
         // Neg: negate the child polynomial.
@@ -374,6 +377,19 @@ fn convert_node_multi(
 /// process repeats for the next variable — so **algebraic** (not just
 /// rational) solutions are found.  Every value is simplified.
 ///
+/// The result is complete: the number of distinct complex solutions is
+/// computed exactly (the dimension of the quotient algebra of the radical
+/// ideal) and compared with the tuples found.  When back-substitution
+/// falls short — a fibre polynomial with algebraic coefficients that the
+/// univariate solver cannot solve, or a solution it cannot verify — every
+/// solution is taken from the rational univariate representation instead:
+/// one coordinate (or a small integer combination of them) is
+/// `RootOf(q, k)` for the irreducible factors `q` of its eliminant, and the
+/// other coordinates are polynomials in it.  Before 0.39 such solutions
+/// were dropped silently (`y² = 2, x³ + yx + 1 = 0` gave no solution).
+/// Systems of more than 512 solutions (counted with multiplicity) are not
+/// certified this way.
+///
 /// Linear systems are delegated to [`linsolve`].
 ///
 /// # Arguments
@@ -394,6 +410,11 @@ fn convert_node_multi(
 /// - [`SymplexError::InfiniteSolutions`] if the ideal is
 ///   positive-dimensional (infinitely many solutions), e.g. an
 ///   under-determined system.
+/// - [`SymplexError::ComputationFailed`] if the system has more than 2048
+///   solutions counted with multiplicity, or (not observed) no separating
+///   linear form is found for the univariate representation.
+///   Powers above the 10,000th of a variable make an equation
+///   non-polynomial for this routine, as for the univariate conversions.
 ///
 /// # Example
 ///
@@ -494,12 +515,27 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
             reason: "ideal is positive-dimensional: infinitely many solutions".into(),
         });
     }
+    // More solutions than can be written out: `x¹⁰⁰⁰⁰⁰ = 1, y = 1` ran out of
+    // memory (the FGLM matrices are `D × D`).
+    if groebner::standard_monomial_count(&grevlex_gb, num_vars, MAX_SYSTEM_SOLUTIONS).is_none() {
+        return Err(SymplexError::ComputationFailed {
+            operation: "solve_system_ex",
+            reason: format!(
+                "the system has more than {MAX_SYSTEM_SOLUTIONS} solutions counted with multiplicity"
+            ),
+        });
+    }
 
     // Lex basis for triangular back-substitution.
     let lex_gb = groebner::groebner_basis_lex(&nonzero);
     if lex_gb.is_empty() {
         return Ok(vec![]);
     }
+
+    // The number of distinct complex solutions, exactly: the dimension of
+    // the quotient by the radical (`zerodim`).  It certifies that the
+    // back-substitution below found every solution.
+    let radical = crate::poly::zerodim::Radical::new(&grevlex_gb);
 
     let solutions = {
         let mut guard = first.inner.write();
@@ -518,10 +554,47 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
             .copied()
             .filter(|&id| !arena.is_zero_structural(id))
             .collect();
-        candidates
-            .into_iter()
-            .filter(|sol| tuple_satisfies_all(arena, &checks, &var_ids, sol) == Some(true))
-            .collect::<Vec<_>>()
+        let mut verified: Vec<Vec<ExprId>> = Vec::new();
+        for sol in candidates {
+            if !verified.contains(&sol)
+                && tuple_satisfies_all(arena, &checks, &var_ids, &sol) == Some(true)
+            {
+                verified.push(sol);
+            }
+        }
+        match &radical {
+            // Back-substitution misses solutions when a fibre polynomial has
+            // algebraic coefficients the univariate solver cannot handle
+            // (`y² = 2, x³ + yx + 1 = 0` gave no solution at all), and drops
+            // a true solution it cannot verify.  Every solution is then
+            // given by the rational univariate representation instead,
+            // exact by construction (`RootOf` of an irreducible factor of the
+            // eliminant of a separating linear form).
+            Some(rad) if verified.len() != rad.distinct() => {
+                let Some(all) = univariate_solutions(arena, rad, &var_ids) else {
+                    return Err(SymplexError::ComputationFailed {
+                        operation: "solve_system_ex",
+                        reason: format!(
+                            "the system has {} distinct solutions, but only {} could be \
+                             expressed and no separating linear form was found",
+                            rad.distinct(),
+                            verified.len()
+                        ),
+                    });
+                };
+                if all
+                    .iter()
+                    .any(|sol| tuple_satisfies_all(arena, &checks, &var_ids, sol) == Some(false))
+                {
+                    return Err(SymplexError::ComputationFailed {
+                        operation: "solve_system_ex",
+                        reason: "the univariate representation failed its check".into(),
+                    });
+                }
+                all
+            }
+            _ => verified,
+        }
     };
 
     // Wrap and simplify.
@@ -534,6 +607,55 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
         })
         .collect();
     Ok(result)
+}
+
+/// Largest number of solutions, counted with multiplicity (the dimension
+/// of the quotient algebra), that [`solve_system_ex`] writes out.
+const MAX_SYSTEM_SOLUTIONS: usize = 2048;
+
+/// Every solution of the zero-dimensional system whose radical is `rad`,
+/// from its rational univariate representation `xᵢ = gᵢ(t)`, `μ(t) = 0`:
+/// for each irreducible factor `q` of `μ` over ℤ, a rational root gives
+/// rational coordinates, and otherwise each `RootOf(q, k)` (bound in the
+/// separating variable, or the last one for a linear combination) gives
+/// the coordinates `gᵢ mod q` at that root.  `None`
+/// if no separating linear form was found.
+fn univariate_solutions(
+    arena: &mut Arena,
+    rad: &crate::poly::zerodim::Radical,
+    var_ids: &[ExprId],
+) -> Option<Vec<Vec<ExprId>>> {
+    let (mu, coords, single) = rad.univariate_representation()?;
+    // `RootOf` binds the separating variable itself when there is one.
+    let bound = match single {
+        Some(j) => *var_ids.get(j)?,
+        None => *var_ids.last()?,
+    };
+    let (_, factors) = mu.factor_over_z();
+    let mut out = Vec::with_capacity(rad.distinct());
+    for (q, _) in factors {
+        let d = q.degree()?;
+        if d == 1 {
+            let t = -q.coeff(0) / q.coeff(1);
+            out.push(coords.iter().map(|g| arena.num_ratio(g.eval(&t))).collect());
+            continue;
+        }
+        let q_expr = crate::poly::polybridge::poly_to_expr(arena, &q, bound);
+        let reduced: Vec<crate::poly::Poly> = coords.iter().map(|g| g.rem(&q)).collect();
+        for k in 0..d {
+            let idx = arena.int(k as i64);
+            let root = arena.intern(ExprNode::RootOf(q_expr, bound, idx));
+            let vals: Vec<ExprId> = reduced
+                .iter()
+                .map(|g| {
+                    let ge = crate::poly::polybridge::poly_to_expr(arena, g, bound);
+                    crate::transforms::subs::subs(arena, ge, bound, root)
+                })
+                .collect();
+            out.push(vals);
+        }
+    }
+    (out.len() == rad.distinct()).then_some(out)
 }
 
 /// Verify that `vals` (one value per entry of `vars`) satisfies every

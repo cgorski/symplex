@@ -162,7 +162,8 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 |-------|---------|
 | `solve(f, x)` | `f.solve(&x)` → `Result<Vec<Ex>>`; identities are `Err(InfiniteSolutions)`, contradictions `Err(NoSolution)` |
 | `solve(f, x)` (ignoring errors) | `f.solve_or_empty(&x)` → `Vec<Ex>` |
-| `solveset(sin(x) - 1/2, x)` (with `ImageSet`) | `f.solve_general(&x)?` → `GeneralSolution { solutions, parameters }` |
+| `solveset(sin(x) - 1/2, x)` (with `ImageSet`) | `f.solve_as_set(&x)` → `SetEx` with `ImageSet(Lambda(_n, …), Integers)` (or the families as expressions: `f.solve_general(&x)?` → `GeneralSolution { solutions, parameters }`) |
+| `ImageSet(Lambda(n, f), S.Integers)` | `f.image_set(&n)?` → `SetEx` (`contains`, `intersection(…).simplify()`) |
 | `solveset(f > 0, x)` | `f.solve_gt(&x)` → `SetEx` |
 | `solveset(f >= 0, x)` | `f.solve_ge(&x)` → `SetEx` |
 | `reduce_inequalities([x > 0, x <= 5], x)` | `reduce_inequalities(&[x.gt(&zero), x.le(&five)], &x)?` → `SetEx` |

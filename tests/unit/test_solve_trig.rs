@@ -208,13 +208,17 @@ fn solve_sin_2x_eq_one_verify() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// sin(x) = 2 → empty (|c| > 1, no real solutions)
+// sin(x) = 2 → empty for a real x (|c| > 1); over ℂ the families
+// asin(2) + 2nπ, π − asin(2) + 2nπ (SymPy 1.14 `solveset(sin(x) - 2, x)`;
+// before 0.40 `solve_as_set` gave `EmptySet` for a plain symbol too)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn solve_sin_x_eq_two_empty() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    let x = ctx
+        .symbol_with("x", &[symplex::assumptions::Assumption::Real])
+        .unwrap();
     let two = ctx.int(2);
     let expr = &x.sin() - &two;
 
@@ -225,12 +229,20 @@ fn solve_sin_x_eq_two_empty() {
         s.contains("EmptySet") || s.contains("{}") || s == "∅",
         "sin(x)=2 should yield empty set, got: {s}"
     );
+
+    let z = ctx.symbol("z");
+    let over_c = (&z.sin() - &two).solve_as_set(&z);
+    let s = format!("{over_c}");
+    assert!(s.contains("asin(2)"), "sin(z)=2 over C: {s}");
+    assert_eq!(over_c.contains(&two.asin()), Some(true), "{s}");
 }
 
 #[test]
 fn solve_cos_x_eq_minus_two_empty() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    let x = ctx
+        .symbol_with("x", &[symplex::assumptions::Assumption::Real])
+        .unwrap();
     let neg_two = ctx.int(-2);
     let expr = &x.cos() - &neg_two;
 
@@ -241,6 +253,11 @@ fn solve_cos_x_eq_minus_two_empty() {
         s.contains("EmptySet") || s.contains("{}") || s == "∅",
         "cos(x)=-2 should yield empty set, got: {s}"
     );
+
+    let z = ctx.symbol("z");
+    let over_c = (&z.cos() - &neg_two).solve_as_set(&z);
+    let s = format!("{over_c}");
+    assert!(s.contains("acos(-2)"), "cos(z)=-2 over C: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -261,11 +278,12 @@ fn solve_exp_x_eq_one() {
         !s.contains("EmptySet"),
         "exp(x)=1 should have a solution: {s}"
     );
-    // ln(1) = 0, so the solution should be {0} or {ln(1)}.
-    assert!(
-        s.contains('0') || s.contains("ln"),
-        "exp(x)=1 solution should be 0 or ln(1): {s}"
-    );
+    // ln(1) = 0 is a solution; over ℂ so is every 2nπi (since 0.40 the set
+    // is `ImageSet(Lambda(_n, 2*_n*pi*I), Integers)`, SymPy 1.14's
+    // `solveset(exp(x) - 1, x)`).
+    assert_eq!(set.contains(&ctx.int(0)), Some(true), "{s}");
+    let two_pi_i = ctx.int(2) * ctx.pi() * ctx.i_unit();
+    assert_eq!(set.contains(&two_pi_i), Some(true), "{s}");
 }
 
 #[test]

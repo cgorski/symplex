@@ -140,6 +140,59 @@ pub(crate) fn solve_general(
     solve_impl(arena, expr, var, Some(param))
 }
 
+thread_local! {
+    /// Set while [`solve_general_over_c`] runs: the variable takes its
+    /// declared domain (ℂ for a plain symbol) in [`real_for_real_var`]
+    /// rather than the real line, and the Lambert W strategy (its real
+    /// branches only) is skipped for a variable not known to be real.
+    static COMPLEX_VARIABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Restores the previous [`COMPLEX_VARIABLE`] on drop.
+struct ComplexVariableGuard(bool);
+
+impl Drop for ComplexVariableGuard {
+    fn drop(&mut self) {
+        let previous = self.0;
+        COMPLEX_VARIABLE.with(|c| c.set(previous));
+    }
+}
+
+/// [`solve_general`] with `var` ranging over its declared domain, ℂ for a
+/// plain symbol, for a complete solution *set* (`Ex::solve_as_set`).
+///
+/// [`solve`] and [`solve_general`] take the variable of a transcendental
+/// inversion to be real: `sin(f) = 2`, `exp(f) = −1`, `cosh(f) = 1/2` have
+/// no solution and `exp(f) = c` the one branch `f = ln c` when `f` is real
+/// for a real `var`, and `x·eˣ = c` the real branches of Lambert W.  Here
+/// those hold only for a variable declared real: `exp(x) = 1` gives the
+/// family `2nπi`, `sin(x) = 2` the families `asin 2 + 2nπ`, `π − asin 2 +
+/// 2nπ`, `|x| = 1` (a circle) and `x·eˣ = 1` (the branches `W_k(1)`) are
+/// not solved.
+pub(crate) fn solve_general_over_c(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    param: ExprId,
+) -> SolveOutcome {
+    let previous = COMPLEX_VARIABLE.with(|c| c.replace(true));
+    let _restore = ComplexVariableGuard(previous);
+    solve_general(arena, expr, var, param)
+}
+
+/// Is `var` treated as complex: under [`solve_general_over_c`] and not
+/// declared real?
+fn variable_may_be_nonreal(arena: &Arena, var: ExprId) -> bool {
+    use crate::base::assumptions::Props;
+    if !COMPLEX_VARIABLE.with(std::cell::Cell::get) {
+        return false;
+    }
+    match *arena.node(var) {
+        ExprNode::Symbol(sid) => arena.symbol_assumptions(sid).query(Props::REAL) != Some(true),
+        _ => true,
+    }
+}
+
 /// Shared implementation of [`solve_classified`] and [`solve_general`].
 fn solve_impl(
     arena: &mut Arena,
@@ -150,10 +203,16 @@ fn solve_impl(
     match solve_raw(arena, expr, var, period) {
         SolveOutcome::Solutions(s) => {
             let had_candidates = !s.is_empty();
-            let s = match drop_certain_non_roots(arena, expr, var, s, period) {
+            let mut s = match drop_certain_non_roots(arena, expr, var, s, period) {
                 Ok(s) => s,
                 Err(reason) => return SolveOutcome::Unresolved(reason),
             };
+            if had_candidates {
+                match tangent_pole_roots(arena, expr, var, period) {
+                    Ok(extra) => s.extend(extra),
+                    Err(reason) => return SolveOutcome::Unresolved(reason),
+                }
+            }
             if had_candidates && s.is_empty() {
                 // The principal candidates all fail; a member of a periodic
                 // family through them may not (`tan(x)/x = 0`: `0` is a
@@ -170,8 +229,61 @@ fn solve_impl(
             }
             finalize_solutions(arena, s)
         }
+        // `1/tan(x) = 0` holds at the poles of `tan` (before 0.40: "no
+        // solution", from `tan x = 1/0`).
+        SolveOutcome::NoSolution(reason) => match tangent_pole_roots(arena, expr, var, period) {
+            Ok(extra) if !extra.is_empty() => finalize_solutions(arena, extra),
+            Ok(_) => SolveOutcome::NoSolution(reason),
+            Err(reason) => SolveOutcome::Unresolved(reason),
+        },
         other => other,
     }
+}
+
+/// The roots of `expr = 0` at the poles of a `tan u` in it, where `expr`
+/// is 0 (`g/(tan u − c)` with `g` finite: `1/(−tan x − 2)` at `x = π/2`,
+/// which the evaluator, the limit and SymPy's `solveset` all make 0; and
+/// `1/tan x`, i.e. `cot x`, at `π/2`; likewise for `tanh`).  Some solving
+/// paths found them (`tan(−x) − 2`), others did not (`−tan(x) − 2`): before 0.40
+/// `solve_general((cos(2x/3) − 1/4)/(−tan x − 2))` lacked `π/2 + nπ` and
+/// `solve(1/tan(x))` was "no solution".  The candidates solve `cos u = 0`
+/// (in families when `period` is given) and are checked against `expr` as
+/// [`solve_impl`] checks its own; `Err` when a family of them mixes roots
+/// and non-roots.  Empty when `expr` has no `tan` of `var`.
+fn tangent_pole_roots(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    period: Option<ExprId>,
+) -> Result<Vec<Solution>, String> {
+    // tan u has its poles at cos u = 0, tanh u at cosh u = 0 (u = iπ/2 + nπi)
+    let denominators: Vec<ExprId> = crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .filter_map(|id| match *arena.node(id) {
+            ExprNode::Tan(u) if expr_contains_var(arena, u, var) => Some((u, false)),
+            ExprNode::Tanh(u) if expr_contains_var(arena, u, var) => Some((u, true)),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|(u, hyperbolic)| {
+            if hyperbolic {
+                arena.cosh(u)
+            } else {
+                arena.cos(u)
+            }
+        })
+        .collect();
+    let mut out: Vec<Solution> = Vec::new();
+    for c in denominators {
+        let SolveOutcome::Solutions(candidates) = solve_raw(arena, c, var, period) else {
+            continue;
+        };
+        out.extend(drop_certain_non_roots(
+            arena, expr, var, candidates, period,
+        )?);
+    }
+    Ok(out)
 }
 
 /// `Unresolved`, naming a root, when the principal candidates of
@@ -871,6 +983,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
         _ => None,
     };
     if let Some(var_sym) = var_sym_opt
+        && !variable_may_be_nonreal(arena, var)
         && let Some(solutions) = try_solve_lambert(arena, expr, var, var_sym)
         && !solutions.is_empty()
     {
@@ -1255,15 +1368,25 @@ fn try_solve_binomial_rational(arena: &mut Arena, poly: &Poly) -> Option<Vec<Sol
 /// 0.31 they were applied to any argument, and `exp(i·x) = −1` (solved by
 /// `x = π`), `cos(i·x) = 2` (`x = ±acosh 2`), `exp(√x) = −1` (`x = −π²`)
 /// were reported to have no solution.
+///
+/// Under [`solve_general_over_c`] `var` ranges over its declared domain
+/// (ℂ for a plain symbol) instead: `exp(x)` is not real, and the range
+/// restrictions and the single real branch of `exp` do not apply.
 fn real_for_real_var(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
+    let complex_var = COMPLEX_VARIABLE.with(std::cell::Cell::get);
     let mut cache = AssumptionCache::new();
     for s in crate::base::walk::free_symbols(arena, e) {
         let ExprNode::Symbol(sid) = *arena.node(s) else {
             continue;
         };
         let declared = arena.symbol_assumptions(sid);
-        if s == var || declared == Assumptions::default() {
+        let take_real = if s == var {
+            !complex_var
+        } else {
+            declared == Assumptions::default()
+        };
+        if take_real {
             let mut real = declared;
             real.known_true |= Props::REAL;
             if !real.is_contradictory() {

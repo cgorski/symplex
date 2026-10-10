@@ -1308,6 +1308,7 @@ impl<'a> Emitter<'a> {
             ExprNode::SetUnion(_) => return Err(self.unsupported("SetUnion")),
             ExprNode::SetIntersection(_) => return Err(self.unsupported("SetIntersection")),
             ExprNode::SetComplement(_, _) => return Err(self.unsupported("SetComplement")),
+            ExprNode::ImageSet(_, _) => return Err(self.unsupported("ImageSet")),
         }
         Ok(())
     }

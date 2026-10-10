@@ -504,7 +504,8 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::FiniteSet(_)
             | crate::base::node::ExprNode::SetUnion(_)
             | crate::base::node::ExprNode::SetIntersection(_)
-            | crate::base::node::ExprNode::SetComplement(_, _) => ExprType::Set,
+            | crate::base::node::ExprNode::SetComplement(_, _)
+            | crate::base::node::ExprNode::ImageSet(_, _) => ExprType::Set,
             // `RootOf`/`RootSum` are complete algebraic values, not pending
             // computations (consistent with `has_unevaluated`, which does not
             // report them): a constant when the polynomial has numeric
@@ -539,7 +540,7 @@ impl<S: Sort> Expr<S> {
     ///
     /// A bound variable is not free: the index of a `Sum` or `Product`,
     /// the variable of a definite `Integral`, a `Limit`, a `ConditionSet`,
-    /// a `RootSum`, a `RootOf` or a `Subs`, is left alone (the limits of a
+    /// an `ImageSet`, a `RootSum`, a `RootOf` or a `Subs`, is left alone (the limits of a
     /// `Sum` are substituted).  An application of an undefined function is
     /// the exception: replacing `f(x)` defines `f`, so it is also replaced
     /// where `x` is bound (`Subs(Derivative(f(x), x), x, 0).subs(f(x),

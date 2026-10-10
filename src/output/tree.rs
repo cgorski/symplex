@@ -562,6 +562,15 @@ pub enum ExprTree {
         /// The point `var` is set to.
         point: Box<ExprTree>,
     },
+    /// Image of the integers `{body : var ∈ ℤ}`: SymPy's
+    /// `ImageSet(Lambda(var, body), Integers)`, e.g. the solutions `n·π` of
+    /// `sin x = 0`.
+    ImageSet {
+        /// The bound integer variable.
+        var: Box<ExprTree>,
+        /// The expression in `var`.
+        body: Box<ExprTree>,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -879,6 +888,10 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             body: Box::new(expr_to_tree(arena, body)),
             var: Box::new(expr_to_tree(arena, var)),
             point: Box::new(expr_to_tree(arena, point)),
+        },
+        ExprNode::ImageSet(var, body) => ExprTree::ImageSet {
+            var: Box::new(expr_to_tree(arena, var)),
+            body: Box::new(expr_to_tree(arena, body)),
         },
     }
 }
@@ -1313,6 +1326,11 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let p = tree_to_expr(arena, point);
             crate::transforms::subs::subs(arena, b, v, p)
         }
+        ExprTree::ImageSet { var, body } => {
+            let v = tree_to_expr(arena, var);
+            let b = tree_to_expr(arena, body);
+            arena.intern(ExprNode::ImageSet(v, b))
+        }
     }
 }
 
@@ -1508,6 +1526,9 @@ impl ExprTree {
             ExprTree::Subs { body, var, point } => {
                 ("Subs".to_string(), Some(vec![body, var, point]))
             }
+            // `ImageSet(Lambda(var, body), Integers)`: the rest of the head is
+            // `srepr_trailing`.
+            ExprTree::ImageSet { var, body } => two("ImageSet(Lambda", var, body),
         }
     }
 
@@ -1518,6 +1539,7 @@ impl ExprTree {
             ExprTree::Interval { flags, .. } => {
                 Some(format!(", {}, {}", flags & 0x01 != 0, flags & 0x02 != 0))
             }
+            ExprTree::ImageSet { .. } => Some("), Integers".to_string()),
             _ => None,
         }
     }
@@ -1603,6 +1625,7 @@ impl ExprTree {
                     if flags & 0x01 != 0 { '(' } else { '[' },
                     if flags & 0x02 != 0 { ')' } else { ']' }
                 ),
+                ExprTree::ImageSet { .. } => "ImageSet".to_string(),
                 _ => head,
             };
             nodes.push(format!(

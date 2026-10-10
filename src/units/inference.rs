@@ -374,7 +374,8 @@ fn infer_in_arena(arena: &Arena, root: ExprId, dims: &DimMap) -> Result<ConstDim
             | ExprNode::SetUnion(_)
             | ExprNode::SetIntersection(_)
             | ExprNode::SetComplement(..)
-            | ExprNode::ConditionSet(..) => dimensionless,
+            | ExprNode::ConditionSet(..)
+            | ExprNode::ImageSet(..) => dimensionless,
             // Every other function (sin, exp, ln, floor, Γ, f(x), …): its
             // arguments must be dimensionless.
             other => {

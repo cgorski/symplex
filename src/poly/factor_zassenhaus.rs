@@ -342,8 +342,14 @@ fn factor_squarefree_z_checked(f: &ZPoly) -> (Vec<ZPoly>, bool) {
 /// irreducible over ℚ.
 ///
 /// Returns `None` for the zero polynomial and for constants (irreducibility
-/// is undefined there).  A polynomial that is not primitive is judged by
-/// its primitive part, so `2x + 2` counts as irreducible.
+/// is undefined there), and when irreducibility cannot be certified: the
+/// recombination budget of Berlekamp–Zassenhaus ran out before every
+/// subset of the modular factors was excluded (before, the unsplit
+/// polynomial was reported irreducible: `SD₅(x)·SD₅(x + 1)`, the product
+/// of two Swinnerton-Dyer polynomials of degree 32, which splits into 32
+/// quadratics modulo every prime, was `Some(true)`).  A polynomial that
+/// is not primitive is judged by its primitive part, so `2x + 2` counts as
+/// irreducible.
 ///
 /// # Examples
 ///
@@ -364,8 +370,12 @@ pub fn is_irreducible_z(f: &Poly) -> Option<bool> {
     if f.is_zero() || f.is_constant() {
         return None;
     }
-    let factors = factor_zassenhaus(f);
-    Some(factors.len() == 1 && factors[0].1 == 1)
+    let (_, factors, complete) = factor_zassenhaus_checked(f);
+    let single = factors.len() == 1 && factors[0].1 == 1;
+    if single && !complete {
+        return None;
+    }
+    Some(single)
 }
 
 /// Factor a polynomial over the prime field `GF(p)`.
@@ -436,14 +446,17 @@ pub fn factor_mod_p(f: &Poly, p: u64) -> Option<ModPFactorization> {
 // Multivariate factorization via Kronecker substitution
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Factor a multivariate polynomial over ℤ by Kronecker substitution.
+/// Factor a multivariate polynomial over ℤ by Kronecker substitution, or
+/// by evaluation and Hensel lifting when the Kronecker image is too large.
 ///
 /// Returns `Some((content, factors))` with `f = content · ∏ gᵢ^mᵢ`, every
 /// `gᵢ` a primitive integer polynomial with positive leading coefficient
 /// (in the monomial order `O`), sorted for determinism.  Returns `None` if
-/// the polynomial is too large for the method (see
-/// [`MAX_KRONECKER_SUBSTITUTION_DEGREE`]) or if the result could not be
-/// verified — a result is never returned without being multiplied back.
+/// both methods give up (the Hensel route bounds its evaluation points and
+/// recombination subsets) or if the result could not be verified — a
+/// result is never returned without being multiplied back.  Before 0.39
+/// every polynomial whose Kronecker image exceeded
+/// [`MAX_KRONECKER_SUBSTITUTION_DEGREE`] gave `None`.
 ///
 /// # Algorithm
 ///
@@ -455,6 +468,12 @@ pub fn factor_mod_p(f: &Poly, p: u64) -> Option<ModPFactorization> {
 ///    factors (with multiplicity) into subsets whose products map back to
 ///    genuine divisors of `f` (checked by exact multivariate division).
 ///    All variable orderings are tried, cheapest first.
+/// 4. Beyond that degree: content and square-free decomposition in a main
+///    variable, a univariate image at an integer point, Hensel lifting of
+///    its factors over ℚ in the ideal of the point, and recombination of
+///    the lifted factors (Musser 1975, Wang 1978; see SymPy's
+///    `dmp_zz_wang`).  The same route refines a Kronecker cofactor left
+///    by an exhausted regrouping budget.
 ///
 /// # Examples
 ///
@@ -525,7 +544,14 @@ pub fn factor_multivariate<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<MultiFact
             }
         }
         _ => {
-            let found = kronecker_factor_all_orders(&prim)?;
+            // Kronecker substitution while its univariate image is small;
+            // evaluation and Hensel lifting beyond (before, such inputs were
+            // not factored at all: `factor_list` of `(x²z + 5xz + 8z − 4)·
+            // (7x²y + 8yz − z − 9)²·…` was the input as one factor).
+            let found = match kronecker_factor_all_orders(&prim) {
+                Some(found) => found,
+                None => super::factor_hensel::factor_primitive(&prim)?,
+            };
             for g in found {
                 match factors.iter_mut().find(|(h, _)| *h == g) {
                     Some(entry) => entry.1 += 1,
@@ -671,8 +697,14 @@ fn kronecker_factor_with_order<O: MonomialOrd>(
     }
 
     if remaining.total_degree().unwrap_or(0) > 0 {
-        // Could not be regrouped completely (budget) — keep the cofactor.
-        found.push(normalize_sign(remaining.primitive_part_q()));
+        // Could not be regrouped completely (budget): the cofactor may be
+        // reducible, so it is factored by Hensel lifting (kept whole only
+        // if that gives up too).
+        let cofactor = normalize_sign(remaining.primitive_part_q());
+        match super::factor_hensel::factor_primitive(&cofactor) {
+            Some(parts) => found.extend(parts),
+            None => found.push(cofactor),
+        }
     }
     Some(found)
 }

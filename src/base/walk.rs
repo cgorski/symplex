@@ -632,6 +632,16 @@ pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
                 arena.intern(ExprNode::ConditionSet(na, nb))
             }
         }
+
+        ExprNode::ImageSet(a, b) => {
+            let na = get(a);
+            let nb = get(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.intern(ExprNode::ImageSet(na, nb))
+            }
+        }
     }
 }
 
@@ -711,6 +721,7 @@ pub(crate) struct Binder {
 /// | `DefiniteIntegral(body, var, lo, hi)`  | `var`  | `body`        | `lo`, `hi` |
 /// | `RootSum(poly, body, var)`             | `var`  | `poly`, `body`| —          |
 /// | `ConditionSet(var, cond)`              | `var`  | `cond`        | —          |
+/// | `ImageSet(var, body)`                  | `var`  | `body`        | —          |
 /// | `RootOf(poly, var, idx)`               | `var`  | `poly`        | `idx`      |
 /// | `Limit(body, var, point)`              | `var`  | `body`        | `point`    |
 /// | `Residue(body, var, point)`            | `var`  | `body`        | `point`    |
@@ -747,7 +758,9 @@ pub(crate) fn binder(arena: &Arena, id: ExprId) -> Option<Binder> {
             Some(b(var, &[body], &[lo, hi]))
         }
         ExprNode::RootSum(poly, body, var) if is_symbol(var) => Some(b(var, &[poly, body], &[])),
-        ExprNode::ConditionSet(var, cond) if is_symbol(var) => Some(b(var, &[cond], &[])),
+        ExprNode::ConditionSet(var, cond) | ExprNode::ImageSet(var, cond) if is_symbol(var) => {
+            Some(b(var, &[cond], &[]))
+        }
         ExprNode::RootOf(poly, var, idx) if is_symbol(var) => Some(b(var, &[poly], &[idx])),
         ExprNode::Limit(body, var, point)
         | ExprNode::Residue(body, var, point)
@@ -786,6 +799,7 @@ pub(crate) fn rebuild_binder(
         }
         (ExprNode::RootSum(..), &[poly, body], &[]) => ExprNode::RootSum(poly, body, var),
         (ExprNode::ConditionSet(..), &[cond], &[]) => ExprNode::ConditionSet(var, cond),
+        (ExprNode::ImageSet(..), &[body], &[]) => ExprNode::ImageSet(var, body),
         (ExprNode::RootOf(..), &[poly], &[idx]) => ExprNode::RootOf(poly, var, idx),
         (ExprNode::Subs(..), &[body], &[point]) => return subs_node(arena, body, var, point),
         (ExprNode::Limit(..), &[body], &[point]) => ExprNode::Limit(body, var, point),
@@ -885,6 +899,7 @@ fn var_operand(node: &ExprNode) -> Option<ExprId> {
         | ExprNode::RootSum(_, _, v)
         | ExprNode::DSolve(_, _, v)
         | ExprNode::ConditionSet(v, _)
+        | ExprNode::ImageSet(v, _)
         | ExprNode::RootOf(_, v, _)
         | ExprNode::Limit(_, v, _)
         | ExprNode::Residue(_, v, _)

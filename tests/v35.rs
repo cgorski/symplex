@@ -10,6 +10,10 @@ mod v35_eval;
 mod v35_integrate_speed;
 #[path = "v35/v35_ntheory.rs"]
 mod v35_ntheory;
+#[path = "v35/v35_poly.rs"]
+mod v35_poly;
+#[path = "v35/v35_sets.rs"]
+mod v35_sets;
 #[path = "v35/v35_solve.rs"]
 mod v35_solve;
 #[path = "v35/v35_stats.rs"]

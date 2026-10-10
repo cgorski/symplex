@@ -871,7 +871,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | Numeric integration | Adaptive G7/K15 quadrature | via mpmath (more algorithms) |
 | Summation | Faulhaber, Gosper, telescoping, binomial, p-series, power-series recognition | + Zeilberger, hypergeometric closed forms (broader) |
 | Polynomial solving | Through quartic + `RootOf`; `real_roots` as ordered `RootOf`s | Through quartic + `CRootOf` |
-| General solutions | `solve_general` (periodic families) | `solveset` with `ImageSet` |
+| General solutions | `solve_general` (periodic families); `solve_as_set` with image sets | `solveset` with `ImageSet` |
 | Linear systems | `linsolve` (unique / parametric / inconsistent, symbolic) | `linsolve` (similar) |
 | Polynomial systems | Gröbner + FGLM, algebraic solutions; `Ex::groebner`/`reduce_modulo` | Gröbner, more strategies |
 | Polynomial algebra | `Poly` with symbolic coefficients, `MultiPoly` over ℚ, resultants/discriminants (also with symbolic coefficients), `gcd_all`, `factor_mod` over GF(p), `minimal_polynomial` | `Poly` with domains, algebraic extensions, `primitive_element` (broader) |
@@ -891,7 +891,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | ODE solving | 16 classes, IVPs, systems | More classes, hints, series solutions |
 | Recurrences | Linear constant-coefficient, first-order | `rsolve` (poly/rational/hyper) |
 | Transforms | Laplace, Fourier (3 conventions), Mellin (with strip), Z, Fourier series; discrete: convolutions, NTT, Walsh–Hadamard, Möbius | Broader tables, Hankel, cosine/sine; `discrete` (+ float FFT) |
-| Sets & logic | Interval algebra, three-valued queries, NNF/CNF/DNF, DPLL; `parse_bool` | Richer set types (`ImageSet`, `ConditionSet`), `satisfiable` models |
+| Sets & logic | Interval algebra, `ImageSet` over ℤ, `ConditionSet`, three-valued queries, NNF/CNF/DNF, DPLL; `parse_bool` | Richer set types (`ImageSet` over any set, `ProductSet`, …), `satisfiable` models |
 | Number theory | rho/ECM, BPSW, `sqrt_mod`, `nthroot_mod` (any modulus), `polynomial_congruence`, dlog, CRT, Pell, two/four squares, continued fractions, Carmichael/amicable | Broader (quadratic forms, general Diophantine) |
 | Combinatorics | Stirling, Bell, partitions, derangements, multinomial | Broader (permutation groups, etc.) |
 | Special functions | Γ family (incl. incomplete), ψ⁽ⁿ⁾, erf/erfi/erfinv, B, W, Bessel, Airy, elliptic K/E/F/Π, `expint`, Si/Ci/Shi/Chi/Ei/li, Fresnel, polylog/η/ζ, classical + associated orthogonal polynomials — all arbitrary precision | Many more (hypergeometric, Meijer G, Mathieu, …) |

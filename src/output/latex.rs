@@ -108,6 +108,36 @@ fn symbol_to_latex(name: &str) -> String {
     name.to_string()
 }
 
+/// The LaTeX of the bound variable and of the body of an image set.  The
+/// canonical bound variable `_n` (a dummy, as SymPy's `Dummy('n')`) is
+/// written `n` (`_n_1` as `n_{1}`) rather than as a subscript of nothing,
+/// unless another symbol of the body would render the same.
+fn image_set_latex_parts(arena: &Arena, var: ExprId, body: ExprId) -> (String, String) {
+    let var_tex = latex_to_string(arena, var);
+    let body_tex = latex_to_string(arena, body);
+    let ExprNode::Symbol(sid) = *arena.node(var) else {
+        return (var_tex, body_tex);
+    };
+    let name = arena.symbol_name(sid);
+    let plain = name.trim_start_matches('_');
+    if plain.is_empty() || plain.len() == name.len() {
+        return (var_tex, body_tex);
+    }
+    let plain_tex = symbol_to_latex(plain);
+    let clash = crate::base::walk::free_symbols(arena, body)
+        .into_iter()
+        .filter(|&s| s != var)
+        .any(|s| {
+            let t = latex_to_string(arena, s);
+            t.contains(&var_tex) || t == plain_tex
+        });
+    if clash {
+        return (var_tex, body_tex);
+    }
+    let body_tex = body_tex.replace(&var_tex, &plain_tex);
+    (plain_tex, body_tex)
+}
+
 /// If `name` is a Greek letter, return `\name`; otherwise None.
 fn greek_base(name: &str) -> Option<String> {
     for &g in GREEK_LETTERS {
@@ -1086,6 +1116,16 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
             stack.push(LatexItem::Expr(condition));
             stack.push(LatexItem::Lit(r" \mid "));
             stack.push(LatexItem::Expr(var));
+            stack.push(LatexItem::Lit(r"\left\{"));
+        }
+
+        // ── ImageSet: \left\{body \mid var \in \mathbb{Z}\right\} (SymPy's) ──
+        ExprNode::ImageSet(var, body) => {
+            let (var_tex, body_tex) = image_set_latex_parts(arena, var, body);
+            stack.push(LatexItem::Lit(r" \in \mathbb{Z}\right\}"));
+            stack.push(LatexItem::Owned(var_tex));
+            stack.push(LatexItem::Lit(r"\; \middle|\; "));
+            stack.push(LatexItem::Owned(body_tex));
             stack.push(LatexItem::Lit(r"\left\{"));
         }
 

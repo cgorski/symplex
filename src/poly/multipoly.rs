@@ -1315,7 +1315,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     }
 
     /// The coefficient of `v^k` as a polynomial in the other variables.
-    fn coeff_in(&self, v: usize, k: u32) -> Self {
+    pub(crate) fn coeff_in(&self, v: usize, k: u32) -> Self {
         let mut out = Self::zero(self.num_vars);
         for (e, c) in self.terms() {
             if e[v] == k {
@@ -1347,6 +1347,12 @@ impl<O: MonomialOrd> MultiPoly<O> {
             // The content divides every coefficient; unreachable.
             None => (Self::from_int(self.num_vars, 1), self.clone()),
         }
+    }
+
+    /// [`content_in`](Self::content_in) as named fields.
+    pub(crate) fn split_content_in(&self, v: usize) -> ContentSplit<O> {
+        let (content, primitive) = self.content_in(v);
+        ContentSplit { content, primitive }
     }
 
     /// Pseudo-remainder of `self` by `b` in the variable `v`:
@@ -1393,6 +1399,14 @@ impl<O: MonomialOrd> MultiPoly<O> {
             None => prod,
         }
     }
+}
+
+/// The content of a polynomial with respect to one variable (the gcd over
+/// ℤ of its coefficients, a polynomial in the other variables) and the
+/// primitive part, `polynomial = content · primitive`.
+pub(crate) struct ContentSplit<O: MonomialOrd> {
+    pub(crate) content: MultiPoly<O>,
+    pub(crate) primitive: MultiPoly<O>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

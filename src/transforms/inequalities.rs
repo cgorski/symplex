@@ -130,8 +130,14 @@ pub(crate) fn solve_inequality(
 ///
 /// - Identity `0 = 0` → `UniversalSet`
 /// - Provably no solution → `EmptySet`
-/// - Roots found → a `FiniteSet` of them (the roots `solve` returns: for a
-///   periodic equation the principal ones)
+/// - An algebraic equation (`var` only in sums, products and powers with
+///   numeric exponents) → the `FiniteSet` of the roots `solve` returns
+/// - Any other equation → its general solution ([`general_solution_set`]),
+///   over the declared domain of `var` (ℂ for a plain symbol): the union
+///   of a finite set and image sets `{f(n) : n ∈ ℤ}` for the periodic
+///   families (`sin x = 0`: `{n·π : n ∈ ℤ}`; before 0.40 the principal
+///   solutions `{0, π}`, which claimed there were no others), a family
+///   minus the poles on it (`sin(x)/x`: `{n·π} \ {0}`)
 /// - No root found, or the solver could not decide → `ConditionSet(x, Eq(expr,
 ///   0))`: the set is not known.  Before 0.39 it was `EmptySet`, a claim
 ///   that there is no solution: `(x − cos x).solve_as_set(x)` (`x ≈ 0.739`
@@ -143,6 +149,9 @@ pub(crate) fn solveset(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
         let cond = arena.eq_(expr, zero);
         arena.intern(ExprNode::ConditionSet(var, cond))
     };
+    if !is_algebraic_in(arena, expr, var) && walk::has_free_var(arena, expr, var) {
+        return general_solution_set(arena, expr, var, true).unwrap_or_else(|| unknown(arena));
+    }
     match crate::transforms::solve::solve_classified(arena, expr, var) {
         SolveOutcome::Identity => arena.universal_set,
         SolveOutcome::NoSolution(_) => arena.empty_set,
@@ -156,6 +165,177 @@ pub(crate) fn solveset(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             }
         }
     }
+}
+
+/// Does `var` occur in `expr` only in sums, products and powers with a
+/// numeric exponent (a radical of a rational function)?
+fn is_algebraic_in(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    let mut stack = vec![expr];
+    let mut seen: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || !walk::has_free_var(arena, id, var) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Symbol(_) => {}
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
+            ExprNode::Neg(a) => stack.push(*a),
+            ExprNode::Pow(b, e) if arena.as_num(*e).is_some() => stack.push(*b),
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// The solution set of `expr = 0` from its general solution: over the
+/// declared domain of `var` (ℂ for a plain symbol) when `over_c`
+/// ([`solve_general_over_c`](crate::transforms::solve::solve_general_over_c)),
+/// with the real-variable conventions of `solve_general` otherwise:
+/// the finite set of the solutions free of the integer parameter united
+/// with the image set of each family, simplified (families merged:
+/// `2nπ ∪ 2nπ + π = nπ`).  Every member of a family solves the equation
+/// (`solve_general` checks them).
+///
+/// When a family also holds poles of a polynomial denominator, which no
+/// family over all integers can exclude (`sin(x)/x = 0`: `2nπ` holds `0`),
+/// `expr = g·∏ qᵢ^(−kᵢ)` is split: the set of `g = 0` minus the zeros of
+/// the `qᵢ` that are in it, `{nπ} \ {0}`, as SymPy's `solveset` removes
+/// the zeros of denominators.  `None` (unknown) when nothing is found or
+/// the general solve refuses otherwise.
+pub(crate) fn general_solution_set(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    over_c: bool,
+) -> Option<ExprId> {
+    use crate::transforms::solve::SolveOutcome;
+    match general_solve_set(arena, expr, var, over_c) {
+        Some(GeneralSet::Set(s)) => Some(s),
+        Some(GeneralSet::Refused) => {
+            let (g, denominators) = split_polynomial_denominators(arena, expr, var)?;
+            let Some(GeneralSet::Set(g_set)) = general_solve_set(arena, g, var, over_c) else {
+                return None;
+            };
+            let mut poles: Vec<ExprId> = Vec::new();
+            for q in denominators {
+                match crate::transforms::solve::solve_classified(arena, q, var) {
+                    SolveOutcome::Solutions(s) if !s.is_empty() => {
+                        poles.extend(s.into_iter().map(|s| s.value));
+                    }
+                    SolveOutcome::NoSolution(_) => {}
+                    _ => return None,
+                }
+            }
+            let mut excluded = Vec::new();
+            for p in poles {
+                match crate::transforms::sets::set_contains(arena, g_set, p) {
+                    // written as the set writes its member (`π`, not `√(π²)`)
+                    Some(true) => excluded
+                        .push(crate::transforms::sets::member_form(arena, g_set, p).unwrap_or(p)),
+                    Some(false) => {}
+                    None => return None,
+                }
+            }
+            if excluded.is_empty() {
+                return Some(g_set);
+            }
+            let excluded = arena.finite_set(&excluded);
+            let set = arena.set_complement(g_set, excluded);
+            Some(crate::transforms::sets::simplify_set(arena, set))
+        }
+        None => None,
+    }
+}
+
+/// Outcome of [`general_solve_set`].
+enum GeneralSet {
+    /// The solution set.
+    Set(ExprId),
+    /// The general solve refused (a family mixing solutions and poles).
+    Refused,
+}
+
+/// The general solution of `expr = 0` as a set (see
+/// [`general_solution_set`]); `None` when nothing was found.
+fn general_solve_set(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    over_c: bool,
+) -> Option<GeneralSet> {
+    use crate::transforms::solve::SolveOutcome;
+    let scope = arena.finite_set(&[expr, var]);
+    let zero = arena.zero;
+    let n = crate::transforms::sets::image_param(arena, zero, scope);
+    let outcome = if over_c {
+        crate::transforms::solve::solve_general_over_c(arena, expr, var, n)
+    } else {
+        crate::transforms::solve::solve_general(arena, expr, var, n)
+    };
+    match outcome {
+        SolveOutcome::Identity => Some(GeneralSet::Set(arena.universal_set)),
+        SolveOutcome::NoSolution(_) => Some(GeneralSet::Set(arena.empty_set)),
+        SolveOutcome::Unresolved(_) => Some(GeneralSet::Refused),
+        SolveOutcome::Solutions(sols) if sols.is_empty() => None,
+        SolveOutcome::Solutions(sols) => {
+            let mut plain: Vec<ExprId> = Vec::new();
+            let mut parts: Vec<ExprId> = Vec::new();
+            for s in sols {
+                let v = crate::transforms::eval::eval(arena, s.value);
+                if walk::has_free_var(arena, v, n) {
+                    parts.push(crate::transforms::sets::image_set(arena, n, v));
+                } else {
+                    plain.push(v);
+                }
+            }
+            if !plain.is_empty() {
+                parts.push(arena.finite_set(&plain));
+            }
+            let union = arena.set_union(&parts);
+            Some(GeneralSet::Set(crate::transforms::sets::simplify_set(
+                arena, union,
+            )))
+        }
+    }
+}
+
+/// Is `e` a polynomial in `var`, with coefficients free of it (`x − 10π`)?
+fn is_polynomial_in(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
+    if crate::poly::polybridge::expr_to_poly(arena, e, var).is_some() {
+        return true;
+    }
+    crate::transforms::solve::symbolic_poly_coeffs(arena, e, var)
+        .is_some_and(|cs| cs.iter().all(|&c| !walk::has_free_var(arena, c, var)))
+}
+
+/// `expr = g·∏ qᵢ^(−kᵢ)` with polynomials `qᵢ` in `var`: `(g, [qᵢ])`, or
+/// `None` when `expr` is not a product with such a factor.
+fn split_polynomial_denominators(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+) -> Option<(ExprId, Vec<ExprId>)> {
+    let ExprNode::Mul(factors) = arena.node(expr).clone() else {
+        return None;
+    };
+    let mut keep: Vec<ExprId> = Vec::new();
+    let mut denominators: Vec<ExprId> = Vec::new();
+    for f in factors {
+        if let ExprNode::Pow(base, e) = *arena.node(f)
+            && arena.as_num(e).is_some_and(|r| r.is_negative())
+            && walk::has_free_var(arena, base, var)
+            && is_polynomial_in(arena, base, var)
+        {
+            denominators.push(base);
+        } else {
+            keep.push(f);
+        }
+    }
+    if denominators.is_empty() || keep.is_empty() {
+        return None;
+    }
+    let g = arena.mul(&keep);
+    Some((g, denominators))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

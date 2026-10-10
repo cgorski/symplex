@@ -86,6 +86,46 @@ fn main() {
 }
 ```
 
+## Solution sets
+
+`solve_as_set` returns the solution set itself (SymPy's `solveset`): a
+finite set for an algebraic equation, and for any other equation the
+union of a finite set and *image sets* `{f(n) : n ∈ ℤ}` — SymPy's
+`ImageSet(Lambda(n, f), Integers)` — for the periodic families.  Families
+are merged (`2nπ ∪ 2nπ + π = nπ`), poles on a family are removed
+(`sin(x)/x`), and a plain symbol ranges over ℂ (`exp(x) = 1` is solved by
+every `2nπi`; declare the variable real for the real solution set).  An
+equation that cannot be solved is a `ConditionSet`, never a partial list.
+Before 0.40 the periodic sets were the principal solutions only
+(`sin(x)` gave `{0, pi}`).
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x);
+    println!("{}", x.sin().solve_as_set(&x));          // ImageSet(Lambda(_n, _n*pi), Integers)
+    println!("{}", (&x.sin() / &x).solve_as_set(&x)); // ImageSet(Lambda(_n, _n*pi), Integers) \ {0}
+    println!("{}", (&x.exp() - 1).solve_as_set(&x));  // ImageSet(Lambda(_n, 2*_n*pi*I), Integers)
+    let sols = (&x.sin() - &ctx.rational(1, 2)).solve_as_set(&x);
+    assert_eq!(sols.contains(&(ctx.pi() * 13 / 6)), Some(true));
+    let window = ctx.interval(&ctx.int(0), &ctx.int(7), IntervalKind::Closed);
+    println!("{}", sols.intersection(&window).simplify()); // {1/6*pi, 13/6*pi, 5/6*pi}
+    // An image set by hand: {2nπ : n ∈ ℤ}
+    let n = ctx.symbol("n");
+    let evens = (2 * &n * ctx.pi()).image_set(&n).unwrap();
+    assert_eq!(evens.contains(&ctx.int(1)), Some(false));
+}
+```
+
+Membership solves `f(n) = x` for an integer `n` (exactly, by the
+assumptions for symbolic values, or by a certified evaluation), and the
+intersection with a bounded interval lists the members.
+`reduce_inequalities` uses the same image sets on the real line: `sin x =
+0` alone is `ImageSet(Lambda(_n, _n*pi), Integers)`, with `−4 < x < 4` it is
+`{0, -pi, pi}`.
+
 ## Linear systems
 
 `linsolve(&eqs, &vars)` accepts `Ex` (meaning `expr = 0`) or `Equation` values, allows symbolic coefficients, and returns a `LinearSolution`:

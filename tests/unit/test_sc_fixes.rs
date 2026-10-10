@@ -201,7 +201,8 @@ fn sin_equation_branches_are_distinct() {
 fn sin_equation_zero_via_solveset() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    // sin(x) = 0 → solveset should find at least x = 0
+    // sin(x) = 0 → solveset should find at least x = 0 (since 0.40 the
+    // whole family {n·π : n ∈ ℤ}, which does not print a `0`).
     let eq = x.sin();
     let result = eq.solve_as_set(&x);
     let s = format!("{result}");
@@ -209,8 +210,9 @@ fn sin_equation_zero_via_solveset() {
         !s.contains("EmptySet"),
         "sin(x) = 0 via solveset should not be empty: {s}"
     );
-    assert!(
-        s.contains("0"),
+    assert_eq!(
+        result.contains(&ctx.int(0)),
+        Some(true),
         "sin(x) = 0 should include 0 among roots: {s}"
     );
 }

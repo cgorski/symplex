@@ -266,7 +266,8 @@ fn convert_node(
         | ExprNode::FiniteSet(_)
         | ExprNode::SetUnion(_)
         | ExprNode::SetIntersection(_)
-        | ExprNode::SetComplement(_, _) => None,
+        | ExprNode::SetComplement(_, _)
+        | ExprNode::ImageSet(_, _) => None,
 
         // Formal/unevaluated nodes are not polynomial.
         ExprNode::Limit(_, _, _)
@@ -444,11 +445,15 @@ pub(crate) fn expr_to_multipoly(
                     return None;
                 }
                 let n: u32 = exp_val.to_integer().try_into().ok()?;
-                let mut acc = MultiPoly::from_int(nv, 1);
-                for _ in 0..n {
-                    acc = acc.mul(base_poly);
+                // The degree cap of `expr_to_poly`: `x^1000000000` was a
+                // billion multiplications (`groebner` hung on it).
+                let base_degree = base_poly.total_degree().unwrap_or(0);
+                if n as usize > MAX_EXPR_POLY_DEGREE
+                    || (base_degree as usize).checked_mul(n as usize)? > MAX_EXPR_POLY_DEGREE
+                {
+                    return None;
                 }
-                acc
+                base_poly.try_pow(n)?
             }
             ExprNode::Neg(inner) => cache.get(inner)?.neg(),
             _ => return None,

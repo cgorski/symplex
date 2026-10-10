@@ -427,6 +427,50 @@ fn standard_monomials<O: MonomialOrd>(basis: &[MultiPoly<O>], num_vars: usize) -
     staircase
 }
 
+/// The number of standard monomials of a zero-dimensional ideal (the
+/// dimension of the quotient algebra, its solutions counted with
+/// multiplicity), or `None` once it exceeds `limit` — without enumerating
+/// a staircase of `10⁸` monomials for `x¹⁰⁰⁰⁰, y¹⁰⁰⁰⁰`.
+pub(crate) fn standard_monomial_count<O: MonomialOrd>(
+    basis: &[MultiPoly<O>],
+    num_vars: usize,
+    limit: usize,
+) -> Option<usize> {
+    let leading: Vec<Vec<u32>> = basis
+        .iter()
+        .filter_map(|p| p.leading_monomial().map(|m| m.to_vec()))
+        .collect();
+    let mut count = 0usize;
+    let mut queue: VecDeque<Vec<u32>> = VecDeque::new();
+    queue.push_back(vec![0u32; num_vars]);
+    let mut visited: HashSet<Vec<u32>> = HashSet::new();
+    while let Some(mono) = queue.pop_front() {
+        if !visited.insert(mono.clone()) {
+            continue;
+        }
+        if leading.iter().any(|lm| monomial_divides(lm, &mono)) {
+            continue;
+        }
+        count += 1;
+        if count > limit {
+            return None;
+        }
+        for var in 0..num_vars {
+            let mut next = mono.clone();
+            next[var] += 1;
+            if !visited.contains(&next) {
+                queue.push_back(next);
+            }
+        }
+    }
+    Some(count)
+}
+
+/// Largest quotient dimension [`groebner_basis_lex`] converts by FGLM,
+/// whose multiplication matrices are dense `D × D`: beyond it the lex basis
+/// is computed by Buchberger from the grevlex basis.
+const MAX_FGLM_DIMENSION: usize = 1024;
+
 /// Convert a reduced Gröbner basis from ordering `From` to ordering `To` using FGLM.
 ///
 /// Only works for zero-dimensional ideals (finitely many solutions).
@@ -781,14 +825,33 @@ pub fn groebner_basis_lex(polys: &[MultiPoly<GrevLex>]) -> Vec<MultiPoly<Lex>> {
     if grevlex_gb.is_empty() {
         return vec![];
     }
+    // The unit ideal has the reduced basis [1] in every order.  It is not
+    // zero-dimensional for FGLM, and Buchberger in lex order took minutes
+    // to rediscover it (4 polynomials of degree 4 in x, y, z whose grevlex
+    // basis is [1] in 0.6 s).
+    if let Some(one) = grevlex_gb.iter().find(|p| p.total_degree() == Some(0)) {
+        return vec![MultiPoly::constant(one.num_vars(), Ratio::one())];
+    }
 
-    // Try FGLM first
-    if let Some(lex_gb) = fglm::<GrevLex, Lex>(&grevlex_gb) {
+    // Try FGLM first, unless its dense D × D matrices are too large: the
+    // lex basis of `x⁶⁰ − 1, y⁶⁰ − 1` (D = 3600, already a lex basis) took
+    // over a minute and 2 GB.
+    let nv = grevlex_gb[0].num_vars();
+    let small = is_zero_dimensional(&grevlex_gb)
+        && standard_monomial_count(&grevlex_gb, nv, MAX_FGLM_DIMENSION).is_some();
+    if small && let Some(lex_gb) = fglm::<GrevLex, Lex>(&grevlex_gb) {
         return lex_gb;
     }
 
-    // Fallback: convert to lex and compute directly
-    let lex_polys: Vec<MultiPoly<Lex>> = polys.iter().map(|p| p.convert_order()).collect();
+    // Otherwise Buchberger in lex order: from the grevlex basis when the
+    // ideal is zero-dimensional (it generates the same ideal and is often
+    // close to a lex basis), from the input otherwise.
+    let seed: &[MultiPoly<GrevLex>] = if is_zero_dimensional(&grevlex_gb) {
+        &grevlex_gb
+    } else {
+        polys
+    };
+    let lex_polys: Vec<MultiPoly<Lex>> = seed.iter().map(|p| p.convert_order()).collect();
     groebner_basis(&lex_polys)
 }
 

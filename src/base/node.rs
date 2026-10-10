@@ -91,7 +91,8 @@ impl fmt::Debug for CtxId {
 /// * **Algebraic answers** – `RootOf`, `RootSum` (complete closed-form
 ///   descriptions of polynomial roots; *not* unevaluated).
 /// * **Sets** – `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`,
-///   `SetComplement`.
+///   `SetComplement`, `ImageSet` (the image of the integers under a
+///   function: periodic solution families).
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ExprNode {
     // -- atoms ---------------------------------------------------------------
@@ -445,6 +446,18 @@ pub enum ExprNode {
     /// symbol, and `diff` for a partial derivative of an undefined function
     /// in an argument that is not a lone symbol (`∂f/∂u` at `u = x²`).
     Subs(ExprId, ExprId, ExprId),
+
+    // -- image of the integers (declared after `Subs`: appending keeps the
+    //    discriminants, hence the hashes, of every older variant) ----------
+    /// Image set over the integers: `ImageSet(var, body)` is
+    /// `{body(var) : var ∈ ℤ}`, SymPy's `ImageSet(Lambda(var, body),
+    /// Integers)`.
+    ///
+    /// `var` (a `Symbol`) is bound in `body`.  The periodic solution
+    /// families of an equation are image sets: `sin x = 0` has the solution
+    /// set `{n·π : n ∈ ℤ}`.  A complete answer, not an unevaluated form;
+    /// `transforms::sets::image_set` builds the canonical form.
+    ImageSet(ExprId, ExprId),
 }
 
 /// Interval flag: left endpoint is open (excluded).
@@ -520,7 +533,8 @@ impl ExprNode {
             | ExprNode::Derivative(a, b)
             | ExprNode::Integral(a, b)
             | ExprNode::SetComplement(a, b)
-            | ExprNode::ConditionSet(a, b) => {
+            | ExprNode::ConditionSet(a, b)
+            | ExprNode::ImageSet(a, b) => {
                 smallvec![*a, *b]
             }
 
@@ -665,7 +679,8 @@ impl ExprNode {
             | ExprNode::Derivative(a, b)
             | ExprNode::Integral(a, b)
             | ExprNode::SetComplement(a, b)
-            | ExprNode::ConditionSet(a, b) => {
+            | ExprNode::ConditionSet(a, b)
+            | ExprNode::ImageSet(a, b) => {
                 f(*a);
                 f(*b);
             }
@@ -792,7 +807,8 @@ impl ExprNode {
             | ExprNode::Integral(..)
             | ExprNode::SetComplement(..)
             | ExprNode::Interval(..)
-            | ExprNode::ConditionSet(..) => 2,
+            | ExprNode::ConditionSet(..)
+            | ExprNode::ImageSet(..) => 2,
             ExprNode::Limit(..)
             | ExprNode::LaplaceTransform(..)
             | ExprNode::InverseLaplaceTransform(..)
@@ -894,6 +910,7 @@ impl ExprNode {
                 | ExprNode::SetUnion(_)
                 | ExprNode::SetIntersection(_)
                 | ExprNode::SetComplement(..)
+                | ExprNode::ImageSet(..)
         )
     }
 }
@@ -1083,6 +1100,9 @@ impl fmt::Debug for ExprNode {
                 .field(var)
                 .field(point)
                 .finish(),
+            ExprNode::ImageSet(var, body) => {
+                f.debug_tuple("ImageSet").field(var).field(body).finish()
+            }
         }
     }
 }

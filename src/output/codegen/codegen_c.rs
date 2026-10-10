@@ -669,7 +669,8 @@ impl<'a> CEmitter<'a> {
             | ExprNode::FiniteSet(_)
             | ExprNode::SetUnion(_)
             | ExprNode::SetIntersection(_)
-            | ExprNode::SetComplement(_, _) => return Err(self.unsupported("set expression")),
+            | ExprNode::SetComplement(_, _)
+            | ExprNode::ImageSet(_, _) => return Err(self.unsupported("set expression")),
         }
         Ok(())
     }

@@ -416,6 +416,7 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     // call_2
     "rootof",
     "conditionset",
+    "imageset",
     "integral",
     "derivative",
     "atan2",
@@ -1284,6 +1285,9 @@ impl<'a> Parser<'a> {
         if name_lower == "piecewise" {
             return self.parse_piecewise(arena);
         }
+        if name_lower == "imageset" {
+            return self.parse_image_set(arena, name);
+        }
         let mut args: Vec<ExprId> = vec![self.parse_expr(arena, 0)?];
 
         // `Sum(body, k=lo..hi)` / `Product(body, k=lo..hi)` — the display form.
@@ -1414,6 +1418,47 @@ impl<'a> Parser<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// `ImageSet(Lambda(var, body), Integers)` — the display form — after
+    /// the opening parenthesis: the image of the integers under
+    /// `var ↦ body`, in canonical form (`transforms::sets::image_set`; the
+    /// display of a canonical image set reads back as itself).  Only the
+    /// integers are a base set.
+    fn parse_image_set(&mut self, arena: &mut Arena, name: &str) -> Result<ExprId, ParseError> {
+        let keyword = |tok: &Token, word: &str| matches!(tok, Token::Ident(k) if k.eq_ignore_ascii_case(word));
+        if !keyword(&self.current, "lambda") {
+            return Err(self.error(format!(
+                "'{name}' takes 'Lambda(var, expr), Integers', got {:?}",
+                self.current
+            )));
+        }
+        self.advance()?;
+        self.expect(&Token::LParen)?;
+        if let Token::Ident(v) = &self.current {
+            crate::transforms::sets::predeclare_image_param(arena, v);
+        }
+        let var = self.parse_expr(arena, 0)?;
+        self.bound_symbol(arena, name, var)?;
+        self.expect(&Token::Comma)?;
+        let body = self.parse_expr(arena, 0)?;
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::Comma)?;
+        if !keyword(&self.current, "integers") {
+            return Err(self.error(format!(
+                "the base set of '{name}' must be 'Integers', got {:?}",
+                self.current
+            )));
+        }
+        self.advance()?;
+        self.expect(&Token::RParen)?;
+        if is_bool_node(arena, body) {
+            return Err(self.error(format!(
+                "the expression of '{name}' must be numeric, but '{}' is a Boolean expression",
+                arena.display(body)
+            )));
+        }
+        Ok(crate::transforms::sets::image_set(arena, var, body))
     }
 
     /// The variable operand `var` of the binder `name` must be a symbol.
@@ -2859,6 +2904,8 @@ mod tests {
                 format!("{name}(x, y, z, w)"),
                 // `Piecewise(value if condition, …)`
                 format!("{name}(x if True)"),
+                // `ImageSet(Lambda(n, f), Integers)`
+                format!("{name}(Lambda(x, x), Integers)"),
             ]
             .iter()
             .any(|s| parse(&ctx, s).is_ok());

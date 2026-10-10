@@ -283,7 +283,8 @@ fn decompose_node(
         | ExprNode::SetUnion(_)
         | ExprNode::SetIntersection(_)
         | ExprNode::SetComplement(..)
-        | ExprNode::ConditionSet(..) => real_parts(arena, id),
+        | ExprNode::ConditionSet(..)
+        | ExprNode::ImageSet(..) => real_parts(arena, id),
 
         // ── Symbols: pure-imaginary assumption → (0, −i·x); otherwise opaque.
         ExprNode::Symbol(_) => {

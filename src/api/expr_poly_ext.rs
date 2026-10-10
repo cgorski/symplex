@@ -152,7 +152,9 @@ impl Expr<Numeric> {
     ///
     /// With one free symbol this is [`factor`](Self::factor) in that symbol;
     /// with two to four symbols the polynomial is factored as a multivariate
-    /// polynomial (Kronecker substitution).  Expressions that are not
+    /// polynomial (Kronecker substitution, and evaluation with Hensel
+    /// lifting when the Kronecker image would exceed degree 96 — before
+    /// 0.39 such polynomials were returned unfactored).  Expressions that are not
     /// polynomial, have no free symbols, or are already irreducible are
     /// returned unchanged.
     ///
@@ -179,7 +181,11 @@ impl Expr<Numeric> {
     /// Factor over ℤ and return the pieces: `(content, [(factor, mult), …])`
     /// with `self = content · ∏ factorᵢ^multᵢ`.
     ///
-    /// Non-polynomial or constant input yields `(1, [(self, 1)])`.
+    /// Non-polynomial or constant input yields `(1, [(self, 1)])`.  The
+    /// product identity always holds; every factor is irreducible except
+    /// when the recombination budget of Berlekamp–Zassenhaus runs out (see
+    /// [`is_irreducible`](Self::is_irreducible), which then returns
+    /// `None`).
     ///
     /// # Examples
     ///
@@ -382,8 +388,13 @@ impl Expr<Numeric> {
 
     /// Is `self` irreducible over ℚ as a polynomial in `var`?
     ///
-    /// Returns `None` for non-polynomial or constant input.  Non-unit
-    /// content is ignored (`2x + 2` is irreducible).
+    /// Returns `None` for non-polynomial or constant input, and when
+    /// irreducibility cannot be certified because the recombination budget
+    /// of Berlekamp–Zassenhaus ran out (a polynomial with very many small
+    /// factors modulo every prime, such as a product of two Swinnerton-Dyer
+    /// polynomials of degree 32; before 0.39 such a product was reported
+    /// irreducible).  Non-unit content is ignored (`2x + 2` is
+    /// irreducible).
     ///
     /// # Examples
     ///

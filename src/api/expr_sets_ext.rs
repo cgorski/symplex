@@ -141,7 +141,8 @@ impl Expr<SetValued> {
     ///
     /// Three-valued: `Some(true)` / `Some(false)` when membership can be
     /// decided (numeric elements in evaluable sets, exact differences such
-    /// as `x ∈ [x, x + 1]`, substitution into `ConditionSet`s), `None`
+    /// as `x ∈ [x, x + 1]`, substitution into `ConditionSet`s, an integer
+    /// parameter value for an image set: `2π ∈ {2nπ : n ∈ ℤ}`, `1 ∉`), `None`
     /// otherwise — never a guess.
     ///
     /// For the structural "appears as a sub-expression" check, use
@@ -906,6 +907,54 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn is_in(&self, set: &SetEx) -> Option<bool> {
         set.contains(self)
+    }
+
+    /// The image of the integers under `var ↦ self`: the set `{self : var ∈
+    /// ℤ}` (SymPy: `ImageSet(Lambda(var, self), S.Integers)`), the form of
+    /// the periodic solution families of [`solve_as_set`](Ex::solve_as_set).
+    ///
+    /// The result is canonical: the bound variable is `_n` (declared
+    /// integer), and a family `a·var + b` linear in `var` has `a` with a
+    /// positive coefficient and the rational multiples of `a` in `b`
+    /// reduced into `[0, a)` (`−2·n·π + 5π/2` is `2·_n·π + π/2`).  An
+    /// expression free of `var` gives the finite set `{self}`.  It prints
+    /// as `ImageSet(Lambda(_n, body), Integers)`, which parses back.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` when `var` is not a symbol.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let n = ctx.symbol("n");
+    /// let evens = (2 * &n * ctx.pi()).image_set(&n).unwrap(); // {2nπ : n ∈ ℤ}
+    /// assert_eq!(format!("{evens}"), "ImageSet(Lambda(_n, 2*_n*pi), Integers)");
+    /// assert_eq!(evens.contains(&(4 * ctx.pi())), Some(true));
+    /// assert_eq!(evens.contains(&ctx.int(1)), Some(false));
+    /// let window = ctx.interval(&ctx.int(-7), &ctx.int(7), IntervalKind::Closed);
+    /// assert_eq!(format!("{}", evens.intersection(&window).simplify()), "{0, -2*pi, 2*pi}");
+    /// ```
+    pub fn image_set(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let var_id = self.checked_id(var);
+        let is_symbol = matches!(
+            self.inner.read().arena.node(var_id),
+            crate::base::node::ExprNode::Symbol(_)
+        );
+        if !is_symbol {
+            return Err(SymplexError::InvalidArgument {
+                operation: "image_set",
+                reason: format!("the parameter must be a symbol, got {var}"),
+            });
+        }
+        let id = {
+            let mut inner = self.inner.write();
+            crate::transforms::sets::image_set(&mut inner.arena, var_id, self.raw_id())
+        };
+        Ok(self.wrap_as::<SetValued>(id))
     }
 
     /// Simplify every `Piecewise` node in this expression.

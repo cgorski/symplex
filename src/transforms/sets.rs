@@ -3,8 +3,11 @@
 //! Sets in symplex are subsets of the real line built from the set nodes in
 //! `ExprNode`: `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`,
 //! `SetComplement` (relative complement `A \ B`), `EmptySet`,
-//! `UniversalSet` (identified with ℝ for the purposes of this module) and
-//! `ConditionSet`.
+//! `UniversalSet` (identified with ℝ for the purposes of this module),
+//! `ConditionSet` and `ImageSet` (the image `{f(n) : n ∈ ℤ}` of the
+//! integers: periodic solution families, see [Image sets](#image-sets)).
+//! Finite sets may hold non-real elements (the roots `±i` of `x² + 1`);
+//! intervals are real.
 //!
 //! Construction is structural — `[0, 2] ∩ [1, 3]` is stored as a
 //! `SetIntersection` node.  This module provides the *evaluator*:
@@ -24,6 +27,36 @@
 //!
 //! All queries are three-valued (`Option<bool>`): `None` means "cannot be
 //! decided", never "false".
+//!
+//! # Image sets
+//!
+//! `ImageSet(n, f)` is `{f(n) : n ∈ ℤ}`, SymPy's `ImageSet(Lambda(n, f),
+//! Integers)` (`sympy/sets/fancysets.py`).  `image_set` builds the
+//! canonical form: the bound variable is `_n` (declared integer; `_n_1`, …
+//! when `_n` is free in `f` or declared otherwise), and a family linear in
+//! `n`, `a·n + b`, has `a` with a positive coefficient (`n ↦ −n`) and the
+//! part of `b` that is a rational multiple `k·a` reduced to `0 ≤ k < 1`, as
+//! SymPy's `_set_function` for the integers reduces `b mod a`
+//! (`sets/handlers/functions.py`).  Simplification
+//! (`resolve_image_sets`, before the normal form):
+//!
+//! * a union merges families of commensurable steps into the coarsest
+//!   lattices (`2nπ ∪ 2nπ + π = nπ`; SymPy keeps both) and drops the
+//!   elements of finite sets that are members (`{0} ∪ nπ = nπ`);
+//! * an intersection with a bounded set lists the members of each family
+//!   in its hull (`nπ ∩ [−4, 4] = {−π, 0, π}`, SymPy's `ImageSet ∩
+//!   Interval` handler), one with a finite set keeps its members, one with
+//!   the real line keeps the real members of a family with a non-real step
+//!   (`2nπi ∩ ℝ = {0}`);
+//! * `A \ {p, …}` forgets the points that are not members of `A`.
+//!
+//! Membership (`image_set_contains`) solves `f(n) = x` for `n` and asks
+//! whether the solution is an integer: exactly for a rational, by the
+//! assumptions for a symbolic one, and for a constant by a certified
+//! evaluation (not within `10⁻⁹` of an integer: not a member; within it:
+//! the member at the nearest integer is compared with `x` exactly or to a
+//! certified digit), as SymPy's `ImageSet._contains` solves over the base
+//! set.
 //!
 //! The public entry points are the methods on
 //! [`SetEx`](crate::expr::SetEx); everything in this module takes
@@ -835,6 +868,7 @@ pub(crate) fn simplify_set(arena: &mut Arena, set: ExprId) -> ExprId {
     if set == arena.universal_set || set == arena.empty_set {
         return set;
     }
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     match ev.vals.get(&set) {
         Some(v) => setval_to_expr(arena, &ev.table, v),
@@ -993,6 +1027,7 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
                     None
                 }
             }
+            ExprNode::ImageSet(var, body) => image_set_contains(arena, var, body, elem_ev),
             _ => None,
         };
         memo.insert(id, r);
@@ -1051,6 +1086,8 @@ fn structural_is_empty(
             match arena.node(id) {
                 ExprNode::EmptySet => Some(true),
                 ExprNode::UniversalSet => Some(false),
+                // The image of the (non-empty) integers.
+                ExprNode::ImageSet(..) => Some(false),
                 ExprNode::FiniteSet(elems) => Some(elems.is_empty()),
                 ExprNode::SetUnion(children) => {
                     let mut acc = Some(true);
@@ -1089,12 +1126,14 @@ fn structural_is_empty(
 
 /// Is the set empty?
 pub(crate) fn is_empty(arena: &mut Arena, set: ExprId) -> Option<bool> {
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     structural_is_empty(arena, &ev.vals, set)
 }
 
 /// Is the set the whole real line?
 pub(crate) fn is_full(arena: &mut Arena, set: ExprId) -> Option<bool> {
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     match ev.vals.get(&set)? {
         SetVal::Exact(rs) => Some(rs.is_full()),
@@ -1123,6 +1162,16 @@ pub(crate) fn is_subset(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool>
     {
         return Some(true);
     }
+    // {…} ⊆ B with image sets in B: element by element.
+    if let ExprNode::FiniteSet(xa) = arena.node(a).clone()
+        && contains_image_set(arena, b)
+    {
+        let mut acc = Some(true);
+        for e in xa {
+            acc = and3(acc, set_contains(arena, b, e));
+        }
+        return acc;
+    }
     // Exact non-empty A ⊆ structural B: decide only if B is the empty set.
     if let Some(ea) = va.exact()
         && !ea.is_empty()
@@ -1135,6 +1184,10 @@ pub(crate) fn is_subset(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool>
 
 /// Is `a ∩ b = ∅`?
 pub(crate) fn is_disjoint(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool> {
+    if contains_image_set(arena, a) || contains_image_set(arena, b) {
+        let both = arena.set_intersection(&[a, b]);
+        return is_empty(arena, both);
+    }
     let ev = evaluate(arena, &[a, b], &[]);
     let va = ev.vals.get(&a)?;
     let vb = ev.vals.get(&b)?;
@@ -1154,6 +1207,7 @@ pub(crate) fn is_disjoint(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<boo
 /// Greatest lower bound (`-∞` for sets unbounded below); `None` if the
 /// set is empty or cannot be evaluated.
 pub(crate) fn inf(arena: &mut Arena, set: ExprId) -> Option<ExprId> {
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     let rs = ev.vals.get(&set)?.exact()?;
     let p = rs.inf()?;
@@ -1163,6 +1217,7 @@ pub(crate) fn inf(arena: &mut Arena, set: ExprId) -> Option<ExprId> {
 /// Least upper bound (`∞` for sets unbounded above); `None` if the set
 /// is empty or cannot be evaluated.
 pub(crate) fn sup(arena: &mut Arena, set: ExprId) -> Option<ExprId> {
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     let rs = ev.vals.get(&set)?.exact()?;
     let p = rs.sup()?;
@@ -1171,6 +1226,7 @@ pub(crate) fn sup(arena: &mut Arena, set: ExprId) -> Option<ExprId> {
 
 /// Lebesgue measure (total length) of the set; `∞` when unbounded.
 pub(crate) fn measure(arena: &mut Arena, set: ExprId) -> Option<ExprId> {
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     let rs = ev.vals.get(&set)?.exact()?.clone();
     let mut terms: Vec<ExprId> = Vec::new();
@@ -1195,6 +1251,7 @@ pub(crate) fn measure(arena: &mut Arena, set: ExprId) -> Option<ExprId> {
 
 /// Apply a `RankSet → RankSet` topological operation and re-emit.
 fn topo_op(arena: &mut Arena, set: ExprId, f: impl Fn(&RankSet) -> RankSet) -> Option<ExprId> {
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     let rs = ev.vals.get(&set)?.exact()?;
     let out = f(rs);
@@ -1244,6 +1301,7 @@ pub(crate) fn is_closed(arena: &mut Arena, set: ExprId) -> Option<bool> {
 /// The normal form as intervals (isolated points appear as `[p, p]`), or
 /// `None` if the set cannot be fully evaluated.
 pub(crate) fn as_intervals(arena: &mut Arena, set: ExprId) -> Option<Vec<Interval<ExprId>>> {
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     let rs = ev.vals.get(&set)?.exact()?;
     Some(
@@ -1257,6 +1315,7 @@ pub(crate) fn as_intervals(arena: &mut Arena, set: ExprId) -> Option<Vec<Interva
 /// The elements of a finite set (possibly symbolic), or `None` if the set
 /// is not known to be finite.
 pub(crate) fn as_finite_set(arena: &mut Arena, set: ExprId) -> Option<Vec<ExprId>> {
+    let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     match ev.vals.get(&set)? {
         SetVal::Exact(rs) => {
@@ -1375,6 +1434,29 @@ pub(crate) fn to_condition(
                 mk_and(arena, &[ca, ncb])
             }
             ExprNode::ConditionSet(v, cond) => crate::transforms::subs::subs(arena, cond, v, var),
+            // var = a·n + b for an integer n  ⇔  sin(π·(var − b)/a) = 0 (the zeros of
+            // sin(πt) are the integers t, in ℂ too).
+            ExprNode::ImageSet(n, body) => match image_linear_parts(arena, n, body) {
+                Some(Lattice { step: a, offset: b }) => {
+                    let d = arena.sub(var, b);
+                    let t = arena.div(d, a);
+                    let pi = arena.pi;
+                    let arg = arena.mul(&[pi, t]);
+                    let s = arena.sin(arg);
+                    let zero = arena.zero;
+                    arena.eq_(s, zero)
+                }
+                None => {
+                    return Err(SymplexError::InvalidArgument {
+                        operation: "to_condition",
+                        reason: format!(
+                            "membership in the image set {} has no closed condition (the family is not linear in {})",
+                            arena.display(id),
+                            arena.display(n)
+                        ),
+                    });
+                }
+            },
             other => {
                 return Err(SymplexError::InvalidArgument {
                     operation: "to_condition",
@@ -1390,6 +1472,926 @@ pub(crate) fn to_condition(
             operation: "to_condition",
             reason: "empty set expression".into(),
         })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Image sets over the integers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Most members of one family listed in a bounded window (as for
+/// [`MAX_PERIODIC_MEMBERS`]).
+const MAX_IMAGE_MEMBERS: f64 = 10_000.0;
+
+/// Largest common period, in units of the finest step, over which the
+/// families of one class of a union are merged ([`merge_union_parts`]).
+const MAX_MERGE_RESIDUES: i64 = 4096;
+
+/// Distance from the nearest integer below which a parameter value is
+/// checked exactly rather than declared a non-integer.
+const NEAR_INTEGER: f64 = 1e-9;
+
+/// The assumptions of the canonical bound variable of an image set.
+fn integer_declared() -> crate::base::assumptions::Assumptions {
+    use crate::base::assumptions::{Assumption, Assumptions};
+    let mut declared = Assumptions::default().with(Assumption::Integer);
+    declared.normalize_declared();
+    declared
+}
+
+/// The canonical bound variable of `{body : var ∈ ℤ}`: the first of `_n`,
+/// `_n_1`, … that is declared integer (created so when new) and is not free
+/// in `body` but as `var` itself.  A user's `_n` with other assumptions is
+/// skipped.
+pub(crate) fn image_param(arena: &mut Arena, var: ExprId, body: ExprId) -> ExprId {
+    let declared = integer_declared();
+    let mut k = 0usize;
+    loop {
+        let name = if k == 0 {
+            "_n".to_owned()
+        } else {
+            format!("_n_{k}")
+        };
+        k += 1;
+        match arena.symbols.get(&name) {
+            None => {
+                let s = arena.symbol(&name);
+                if let ExprNode::Symbol(sid) = *arena.node(s) {
+                    arena.set_symbol_assumptions(sid, declared);
+                }
+                return s;
+            }
+            Some(sid) if arena.symbol_assumptions(sid) == declared => {
+                let s = arena.intern(ExprNode::Symbol(sid));
+                if s == var || !crate::base::walk::has_free_var(arena, body, s) {
+                    return s;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+/// Declare `name` integer when it is a canonical bound-variable name (`_n`,
+/// `_n_1`, …) not yet in use, so that the printed form of an image set
+/// parses back to itself in a new context.
+pub(crate) fn predeclare_image_param(arena: &mut Arena, name: &str) {
+    let canonical = name == "_n"
+        || name
+            .strip_prefix("_n_")
+            .is_some_and(|k| !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()));
+    if canonical && arena.symbols.get(name).is_none() {
+        let s = arena.symbol(name);
+        if let ExprNode::Symbol(sid) = *arena.node(s) {
+            arena.set_symbol_assumptions(sid, integer_declared());
+        }
+    }
+}
+
+/// A family `{step·n + offset : n ∈ ℤ}` linear in its parameter.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Lattice {
+    /// The step `a` (nonzero).
+    pub(crate) step: ExprId,
+    /// The offset `b`.
+    pub(crate) offset: ExprId,
+}
+
+/// `body = a·var + b` with `a ≠ 0` and `a`, `b` free of `var`: the step
+/// and offset of a family linear in its parameter.
+pub(crate) fn image_linear_parts(arena: &mut Arena, var: ExprId, body: ExprId) -> Option<Lattice> {
+    use crate::base::walk;
+    use crate::transforms::eval::eval;
+    if !walk::has_free_var(arena, body, var) {
+        return None;
+    }
+    let a = crate::transforms::diff::diff(arena, body, var);
+    let a = eval(arena, a);
+    if a == arena.zero || walk::has_free_var(arena, a, var) || walk::has_unevaluated(arena, a) {
+        return None;
+    }
+    let zero = arena.zero;
+    let b = crate::transforms::subs::subs(arena, body, var, zero);
+    let b = eval(arena, b);
+    if walk::has_free_var(arena, b, var) || walk::has_unevaluated(arena, b) {
+        return None;
+    }
+    let av = arena.mul(&[a, var]);
+    let lin = arena.add(&[av, b]);
+    let d = arena.sub(body, lin);
+    let d = crate::transforms::expand::expand(arena, d);
+    let d = eval(arena, d);
+    (d == arena.zero).then_some(Lattice { step: a, offset: b })
+}
+
+/// The canonical step and offset of `{a·n + b : n ∈ ℤ}`: `a` with a
+/// positive numeric coefficient (`n ↦ −n`), and the terms of `b` that are
+/// rational multiples of `a`, summed to `k·a`, reduced to `0 ≤ k < 1`.
+fn reduce_lattice(arena: &mut Arena, a: ExprId, b: ExprId) -> Lattice {
+    use crate::transforms::eval::eval;
+    let (c, t) = arena.as_coeff_term(a);
+    let a = if c.is_negative() {
+        arena.make_coeff_term(-c, t)
+    } else {
+        a
+    };
+    let terms: Vec<ExprId> = match arena.node(b) {
+        ExprNode::Add(ch) => ch.to_vec(),
+        _ => vec![b],
+    };
+    let mut k = Q::zero();
+    let mut rest: Vec<ExprId> = Vec::with_capacity(terms.len() + 1);
+    for term in terms {
+        let r = arena.div(term, a);
+        let r = eval(arena, r);
+        match arena.as_num(r) {
+            Some(q) => k += q,
+            None => rest.push(term),
+        }
+    }
+    let k = &k - k.floor();
+    if !k.is_zero() {
+        rest.push(arena.make_coeff_term(k, a));
+    }
+    let b = if rest.is_empty() {
+        arena.zero
+    } else {
+        arena.add(&rest)
+    };
+    Lattice {
+        step: a,
+        offset: eval(arena, b),
+    }
+}
+
+/// The canonical image set `{body : var ∈ ℤ}` (see [Image sets](#image-sets)):
+/// `{body}` when `body` does not depend on `var`.  A `var` that is not a
+/// symbol is malformed and interned as it is.
+pub(crate) fn image_set(arena: &mut Arena, var: ExprId, body: ExprId) -> ExprId {
+    use crate::transforms::eval::eval;
+    if !matches!(arena.node(var), ExprNode::Symbol(_)) {
+        return arena.intern(ExprNode::ImageSet(var, body));
+    }
+    let body = eval(arena, body);
+    if !crate::base::walk::has_free_var(arena, body, var) {
+        return arena.finite_set(&[body]);
+    }
+    let n = image_param(arena, var, body);
+    let body = if n == var {
+        body
+    } else {
+        let b = crate::transforms::subs::subs(arena, body, var, n);
+        eval(arena, b)
+    };
+    let body = match image_linear_parts(arena, n, body) {
+        Some(Lattice { step, offset }) => {
+            let Lattice { step: a, offset: b } = reduce_lattice(arena, step, offset);
+            let an = arena.mul(&[a, n]);
+            let s = arena.add(&[an, b]);
+            eval(arena, s)
+        }
+        None => body,
+    };
+    arena.intern(ExprNode::ImageSet(n, body))
+}
+
+/// Does the set expression `set` contain an `ImageSet` node?
+pub(crate) fn contains_image_set(arena: &Arena, set: ExprId) -> bool {
+    let mut stack = vec![set];
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::ImageSet(..) => return true,
+            ExprNode::SetUnion(ch) | ExprNode::SetIntersection(ch) => stack.extend(ch.iter()),
+            ExprNode::SetComplement(a, b) => {
+                stack.push(*a);
+                stack.push(*b);
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Is `elem` = `body` at `var = k` (an integer node)?  Exactly, or by a
+/// certified digit of the difference; `None` when that cannot be decided.
+fn member_at(
+    arena: &mut Arena,
+    var: ExprId,
+    body: ExprId,
+    elem: ExprId,
+    k: ExprId,
+) -> Option<bool> {
+    let m = crate::transforms::subs::subs(arena, body, var, k);
+    let m = crate::transforms::eval::eval(arena, m);
+    same_value(arena, elem, m)
+}
+
+/// Are the expressions `p` and `q` equal?  Exactly (structurally after
+/// evaluation), by a certified digit of `p − q`, or by an identity when
+/// the difference is zero to the digits reached (`√(π²) = π`); `None`
+/// when undecided.
+fn same_value(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<bool> {
+    use crate::transforms::eval::eval;
+    use crate::transforms::evalf::{Settled, ZeroSearch};
+    if p == q {
+        return Some(true);
+    }
+    let d = arena.sub(p, q);
+    let d = eval(arena, d);
+    if d == arena.zero {
+        return Some(true);
+    }
+    if !crate::base::walk::free_symbols(arena, d).is_empty()
+        || crate::base::walk::has_unevaluated(arena, d)
+    {
+        return None;
+    }
+    match crate::transforms::evalf::evalf_settled(arena, d, 20, ZeroSearch::Deep) {
+        Ok((z, Settled::Certified)) if !(z.0.is_zero() && z.1.is_zero()) => Some(false),
+        // Zero to the digits reached: exactly 0 by an identity (`√(π²) − π`)?
+        Ok(_) => arena.vanishes_by_identity(d).then_some(true),
+        Err(_) => None,
+    }
+}
+
+/// Is the parameter value `t` an integer?  Exactly for a rational, by the
+/// assumptions for an expression with free symbols, and for a constant by
+/// a certified approximation: farther than [`NEAR_INTEGER`] from every
+/// integer (or off the real line) it is not one; otherwise `at(k)` decides
+/// at the nearest integer `k`.
+fn integer_test(
+    arena: &mut Arena,
+    t: ExprId,
+    at: impl FnOnce(&mut Arena, ExprId) -> Option<bool>,
+) -> Option<bool> {
+    use crate::base::walk;
+    if let Some(q) = arena.as_num(t) {
+        return Some(q.is_integer());
+    }
+    if matches!(
+        arena.node(t),
+        ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
+    ) || walk::has_unevaluated(arena, t)
+    {
+        return None;
+    }
+    if !walk::free_symbols(arena, t).is_empty() {
+        let mut cache = crate::base::assumptions::AssumptionCache::new();
+        return cache.query(arena, t, crate::base::assumptions::Props::INTEGER);
+    }
+    let z = crate::transforms::evalf::evalf_complex64(arena, t).ok()?;
+    if !z.re.is_finite() || !z.im.is_finite() {
+        return None;
+    }
+    let scale = 1.0 + z.re.abs();
+    if z.im.abs() > NEAR_INTEGER * scale {
+        return Some(false);
+    }
+    if z.re.abs() > 1e12 {
+        return None;
+    }
+    let k = z.re.round();
+    if (z.re - k).abs() > NEAR_INTEGER * scale {
+        return Some(false);
+    }
+    let k = arena.int(k as i64);
+    at(arena, k)
+}
+
+/// Is `elem` in `{body : var ∈ ℤ}`?  For a family linear in `var`, `elem =
+/// a·var + b` at `var = (elem − b)/a`, which must be an integer
+/// ([`integer_test`]).  Otherwise `body = elem` is solved for `var`: a member
+/// when a solution is an integer; not one when the equation is polynomial
+/// in `var` (so the solutions are all of them) and none is.  `None` when
+/// undecided.
+pub(crate) fn image_set_contains(
+    arena: &mut Arena,
+    var: ExprId,
+    body: ExprId,
+    elem: ExprId,
+) -> Option<bool> {
+    use crate::transforms::eval::eval;
+    if !matches!(arena.node(var), ExprNode::Symbol(_)) {
+        return None;
+    }
+    if matches!(
+        arena.node(elem),
+        ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
+    ) {
+        return Some(false);
+    }
+    if crate::base::walk::has_unevaluated(arena, elem) || arena.node(elem).is_set_node() {
+        return None;
+    }
+    if !crate::base::walk::has_free_var(arena, body, var) {
+        let zero = arena.zero;
+        return member_at(arena, var, body, elem, zero);
+    }
+    if let Some(Lattice { step: a, offset: b }) = image_linear_parts(arena, var, body) {
+        let d = arena.sub(elem, b);
+        let t = arena.div(d, a);
+        let t = eval(arena, t);
+        return integer_test(arena, t, |arena, k| member_at(arena, var, body, elem, k));
+    }
+    use crate::transforms::solve::SolveOutcome;
+    let eq = arena.sub(body, elem);
+    let eq = eval(arena, eq);
+    match crate::transforms::solve::solve_classified(arena, eq, var) {
+        SolveOutcome::Identity => Some(true),
+        SolveOutcome::NoSolution(_) => Some(false),
+        SolveOutcome::Unresolved(_) => None,
+        SolveOutcome::Solutions(sols) => {
+            let complete =
+                !sols.is_empty() && crate::poly::polybridge::expr_to_poly(arena, eq, var).is_some();
+            let mut undecided = !complete;
+            for s in sols {
+                match integer_test(arena, s.value, |arena, k| {
+                    member_at(arena, var, body, elem, k)
+                }) {
+                    Some(true) => return Some(true),
+                    Some(false) => {}
+                    None => undecided = true,
+                }
+            }
+            if undecided { None } else { Some(false) }
+        }
+    }
+}
+
+/// The member of `set` (a union of finite sets and image sets) that equals
+/// `p`, written as `set` writes it: `π` for `√(π²)` in `{n·π}`.  `None`
+/// when `p` is not found to be a member.
+pub(crate) fn member_form(arena: &mut Arena, set: ExprId, p: ExprId) -> Option<ExprId> {
+    use crate::transforms::eval::eval;
+    let parts: Vec<ExprId> = match arena.node(set) {
+        ExprNode::SetUnion(ch) => ch.to_vec(),
+        _ => vec![set],
+    };
+    for part in parts {
+        match arena.node(part).clone() {
+            ExprNode::FiniteSet(elems) => {
+                for e in elems {
+                    if same_value(arena, e, p) == Some(true) {
+                        return Some(e);
+                    }
+                }
+            }
+            ExprNode::ImageSet(var, body) => {
+                let Some(Lattice { step: a, offset: b }) = image_linear_parts(arena, var, body)
+                else {
+                    continue;
+                };
+                let d = arena.sub(p, b);
+                let t = arena.div(d, a);
+                let t = eval(arena, t);
+                let found = std::cell::Cell::new(None);
+                let member = integer_test(arena, t, |arena, k| {
+                    let r = member_at(arena, var, body, p, k);
+                    found.set(Some(k));
+                    r
+                });
+                if member == Some(true) {
+                    let k = found.get().unwrap_or(t);
+                    let m = crate::transforms::subs::subs(arena, body, var, k);
+                    return Some(eval(arena, m));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The real members of the family `{body : var ∈ ℤ}` in `[lo, hi]`
+/// (numerically, with a margin: the exact ends are decided by the
+/// intersection they are cut to).  `None` when the family is not linear,
+/// cannot be located numerically, or has more than [`MAX_IMAGE_MEMBERS`]
+/// members there.  A family with a non-real step has at most one real
+/// member; one with a real step and a non-real offset none.
+fn image_set_points_in(
+    arena: &mut Arena,
+    var: ExprId,
+    body: ExprId,
+    lo: f64,
+    hi: f64,
+) -> Option<Vec<ExprId>> {
+    use crate::transforms::eval::eval;
+    let Lattice { step: a, offset: b } = image_linear_parts(arena, var, body)?;
+    let member = |arena: &mut Arena, k: i64| -> ExprId {
+        let kk = arena.int(k);
+        let m = crate::transforms::subs::subs(arena, body, var, kk);
+        eval(arena, m)
+    };
+    let real_family = image_set_is_real(arena, var, body) == Some(true);
+    let (a_re, a_im) = crate::base::complex::as_real_imag(arena, a);
+    let a_im = eval(arena, a_im);
+    let (b_re, b_im) = crate::base::complex::as_real_imag(arena, b);
+    let b_im = eval(arena, b_im);
+    let (a_re, b_re, a_im, b_im) = if real_family {
+        (a, b, arena.zero, arena.zero)
+    } else {
+        (a_re, b_re, a_im, b_im)
+    };
+    let in_window = |x: f64| {
+        let margin = 1e-9 * (1.0 + lo.abs().max(hi.abs()));
+        x >= lo - margin && x <= hi + margin
+    };
+    if a_im != arena.zero {
+        // Im(a·k + b) = 0 at k = −Im b / Im a.
+        let (Some(ai), Some(bi)) = (approx_real_f64(arena, a_im), approx_real_f64(arena, b_im))
+        else {
+            return None;
+        };
+        if ai == 0.0 || !ai.is_finite() || !bi.is_finite() {
+            return None;
+        }
+        let kf = -bi / ai;
+        if kf.abs() > 1e12 {
+            return None;
+        }
+        let k = kf.round();
+        if (kf - k).abs() > NEAR_INTEGER * (1.0 + kf.abs()) {
+            return Some(Vec::new());
+        }
+        let m = member(arena, k as i64);
+        let (m_re, m_im) = crate::base::complex::as_real_imag(arena, m);
+        let m_im = eval(arena, m_im);
+        if m_im != arena.zero {
+            return match is_nonzero_constant(arena, m_im) {
+                Some(true) => Some(Vec::new()),
+                _ => None,
+            };
+        }
+        let m_re = eval(arena, m_re);
+        let x = approx_real_f64(arena, m_re)?;
+        return Some(if in_window(x) { vec![m_re] } else { Vec::new() });
+    }
+    if b_im != arena.zero {
+        return match is_nonzero_constant(arena, b_im) {
+            Some(true) => Some(Vec::new()),
+            _ => None,
+        };
+    }
+    let a_re = eval(arena, a_re);
+    let b_re = eval(arena, b_re);
+    let step = approx_real_f64(arena, a_re)?;
+    let s0 = approx_real_f64(arena, b_re)?;
+    if step == 0.0 || !step.is_finite() || !s0.is_finite() || !lo.is_finite() || !hi.is_finite() {
+        return None;
+    }
+    let margin = 1e-9 * (1.0 + lo.abs().max(hi.abs()));
+    let (k1, k2) = ((lo - margin - s0) / step, (hi + margin - s0) / step);
+    let (k_lo, k_hi) = (k1.min(k2).floor() - 1.0, k1.max(k2).ceil() + 1.0);
+    if !k_lo.is_finite() || !k_hi.is_finite() || k_hi - k_lo > MAX_IMAGE_MEMBERS {
+        return None;
+    }
+    let mut points = Vec::new();
+    for k in (k_lo as i64)..=(k_hi as i64) {
+        let m = member(arena, k);
+        let x = approx_real_f64(arena, m)?;
+        if in_window(x) {
+            points.push(m);
+        }
+    }
+    Some(points)
+}
+
+/// Is the constant `e` certainly nonzero (`Some(true)`), certainly zero
+/// (`Some(false)`), or undecided?
+fn is_nonzero_constant(arena: &mut Arena, e: ExprId) -> Option<bool> {
+    use crate::transforms::evalf::{Settled, ZeroSearch};
+    if e == arena.zero {
+        return Some(false);
+    }
+    if !crate::base::walk::free_symbols(arena, e).is_empty()
+        || crate::base::walk::has_unevaluated(arena, e)
+    {
+        return None;
+    }
+    match crate::transforms::evalf::evalf_settled(arena, e, 20, ZeroSearch::Deep) {
+        Ok((z, Settled::Certified)) => Some(!(z.0.is_zero() && z.1.is_zero())),
+        Ok((_, Settled::ZeroToPrecision)) | Err(_) => None,
+    }
+}
+
+/// A linear family of a union, relative to the first family of its class:
+/// step `q·a₀` and offset `b₀ + o·a₀` with rationals `q > 0`, `o`.
+struct ClassMember {
+    q: Q,
+    o: Q,
+}
+
+/// A class of commensurable linear families of a union: base step `a₀`
+/// and offset `b₀`, bound variable `var`.
+struct LatticeClass {
+    a0: ExprId,
+    b0: ExprId,
+    var: ExprId,
+    members: Vec<ClassMember>,
+    /// The original image-set nodes (returned unchanged when not merged).
+    nodes: Vec<ExprId>,
+}
+
+/// The divisors of `p > 0`, ascending.
+fn divisors(p: i64) -> Vec<i64> {
+    let mut small = Vec::new();
+    let mut large = Vec::new();
+    let mut d = 1i64;
+    while d * d <= p {
+        if p % d == 0 {
+            small.push(d);
+            if d * d != p {
+                large.push(p / d);
+            }
+        }
+        d += 1;
+    }
+    small.extend(large.into_iter().rev());
+    small
+}
+
+/// The union of the families of `class` in the coarsest lattices: with
+/// every step and offset over a common denominator `M` (steps `Qᵢ/M·a₀`,
+/// offsets `b₀ + Oᵢ/M·a₀`), the union is `b₀ + a₀/M·R` for the set `R` of
+/// residues modulo `P = lcm(Qᵢ)` covered by the classes `Oᵢ mod Qᵢ`; each
+/// residue class `c mod d` (`d | P` ascending) inside `R` becomes one family
+/// `a₀·d/M·n + b₀ + a₀·c/M`.  `None` when `P` exceeds [`MAX_MERGE_RESIDUES`].
+fn merge_class(arena: &mut Arena, class: &LatticeClass) -> Option<Vec<ExprId>> {
+    use num_integer::Integer;
+    let mut m = num_bigint::BigInt::from(1);
+    for cm in &class.members {
+        m = m.lcm(cm.q.denom()).lcm(cm.o.denom());
+    }
+    let scale = Q::from_integer(m.clone());
+    let mut steps: Vec<i64> = Vec::with_capacity(class.members.len());
+    let mut offsets: Vec<i64> = Vec::with_capacity(class.members.len());
+    for cm in &class.members {
+        let qi = (&cm.q * &scale).to_integer().to_i64()?;
+        let oi = (&cm.o * &scale).to_integer().to_i64()?;
+        if qi <= 0 {
+            return None;
+        }
+        steps.push(qi);
+        offsets.push(oi);
+    }
+    let mut p: i64 = 1;
+    for &qi in &steps {
+        p = p.lcm(&qi);
+        if p > MAX_MERGE_RESIDUES {
+            return None;
+        }
+    }
+    let pu = usize::try_from(p).ok()?;
+    let mut covered_by_family = vec![false; pu];
+    for (&qi, &oi) in steps.iter().zip(&offsets) {
+        let mut r = oi.rem_euclid(qi);
+        while r < p {
+            covered_by_family[r as usize] = true;
+            r += qi;
+        }
+    }
+    let mut emitted = vec![false; pu];
+    let mut out = Vec::new();
+    let m_id = arena.big_int(m);
+    for d in divisors(p) {
+        for c in 0..d {
+            let class_residues = (c..p).step_by(d as usize);
+            let all_in = class_residues
+                .clone()
+                .all(|r| covered_by_family[r as usize]);
+            let any_new = class_residues.clone().any(|r| !emitted[r as usize]);
+            if !all_in || !any_new {
+                continue;
+            }
+            for r in class_residues {
+                emitted[r as usize] = true;
+            }
+            // a₀·d/M·n + b₀ + a₀·c/M
+            let d_id = arena.int(d);
+            let c_id = arena.int(c);
+            let one = arena.one;
+            let inv_m = arena.div(one, m_id);
+            let step = arena.mul(&[class.a0, d_id, inv_m]);
+            let shift = arena.mul(&[class.a0, c_id, inv_m]);
+            let sn = arena.mul(&[step, class.var]);
+            let body = arena.add(&[sn, class.b0, shift]);
+            out.push(image_set(arena, class.var, body));
+        }
+    }
+    Some(out)
+}
+
+/// The parts of a union with its image sets merged: commensurable linear
+/// families combine into the coarsest lattices ([`merge_class`]), and the
+/// elements of finite sets that are members of an image set of the union
+/// are dropped.
+fn merge_union_parts(arena: &mut Arena, parts: &[ExprId]) -> Vec<ExprId> {
+    use crate::transforms::eval::eval;
+    let mut classes: Vec<LatticeClass> = Vec::new();
+    let mut others: Vec<ExprId> = Vec::new();
+    for &p in parts {
+        let ExprNode::ImageSet(var, body) = *arena.node(p) else {
+            others.push(p);
+            continue;
+        };
+        let Some(Lattice { step: a, offset: b }) = image_linear_parts(arena, var, body) else {
+            classes.push(LatticeClass {
+                a0: arena.zero,
+                b0: arena.zero,
+                var,
+                members: Vec::new(),
+                nodes: vec![p],
+            });
+            continue;
+        };
+        let mut placed = false;
+        for class in classes.iter_mut() {
+            if class.members.is_empty() {
+                continue;
+            }
+            let q = arena.div(a, class.a0);
+            let q = eval(arena, q);
+            let Some(q) = arena.as_num(q).cloned() else {
+                continue;
+            };
+            let db = arena.sub(b, class.b0);
+            let o = arena.div(db, class.a0);
+            let o = eval(arena, o);
+            let Some(o) = arena.as_num(o).cloned() else {
+                continue;
+            };
+            class.members.push(ClassMember { q: q.abs(), o });
+            class.nodes.push(p);
+            placed = true;
+            break;
+        }
+        if !placed {
+            classes.push(LatticeClass {
+                a0: a,
+                b0: b,
+                var,
+                members: vec![ClassMember {
+                    q: Q::from_integer(1.into()),
+                    o: Q::zero(),
+                }],
+                nodes: vec![p],
+            });
+        }
+    }
+    let mut merged: Vec<ExprId> = Vec::new();
+    for class in &classes {
+        if class.nodes.len() < 2 {
+            merged.extend(class.nodes.iter().copied());
+            continue;
+        }
+        match merge_class(arena, class) {
+            Some(fams) => merged.extend(fams),
+            None => merged.extend(class.nodes.iter().copied()),
+        }
+    }
+    if merged.is_empty() {
+        return parts.to_vec();
+    }
+    // Drop the elements of finite sets that are members of a family.
+    let mut out = merged.clone();
+    for o in others {
+        let ExprNode::FiniteSet(elems) = arena.node(o).clone() else {
+            out.push(o);
+            continue;
+        };
+        let mut kept: Vec<ExprId> = Vec::with_capacity(elems.len());
+        for e in elems {
+            let mut member = false;
+            for &f in &merged {
+                if let ExprNode::ImageSet(v, body) = *arena.node(f)
+                    && image_set_contains(arena, v, body, e) == Some(true)
+                {
+                    member = true;
+                    break;
+                }
+            }
+            if !member {
+                kept.push(e);
+            }
+        }
+        if !kept.is_empty() {
+            out.push(arena.finite_set(&kept));
+        }
+    }
+    out
+}
+
+/// Replace every `ImageSet` node of `set` (a set expression intersected
+/// with a set whose hull is `[lo, hi]`) by the finite set of its members in
+/// that window; one whose members cannot be listed stays.  Valid because
+/// membership of a point of the window in `set` depends only on its
+/// membership in the image sets.
+fn cut_image_sets(arena: &mut Arena, set: ExprId, lo: f64, hi: f64) -> ExprId {
+    let mut out = set;
+    for id in crate::base::walk::post_order_ids(arena, set) {
+        let ExprNode::ImageSet(var, body) = *arena.node(id) else {
+            continue;
+        };
+        if let Some(points) = image_set_points_in(arena, var, body, lo, hi) {
+            let finite = arena.finite_set(&points);
+            out = arena.subs_structural(out, id, finite);
+        }
+    }
+    out
+}
+
+/// Replace the image sets of `set` (intersected with the real line) whose
+/// families have a non-real step or offset by their real members.
+fn real_image_sets(arena: &mut Arena, set: ExprId) -> ExprId {
+    let mut out = set;
+    for id in crate::base::walk::post_order_ids(arena, set) {
+        let ExprNode::ImageSet(var, body) = *arena.node(id) else {
+            continue;
+        };
+        if image_set_is_real(arena, var, body) == Some(true) {
+            continue;
+        }
+        if let Some(points) =
+            image_set_points_in(arena, var, body, f64::NEG_INFINITY, f64::INFINITY)
+        {
+            let finite = arena.finite_set(&points);
+            out = arena.subs_structural(out, id, finite);
+        }
+    }
+    out
+}
+
+/// Is every member of the linear family `{body : var ∈ ℤ}` real (real step
+/// and offset)?
+fn image_set_is_real(arena: &mut Arena, var: ExprId, body: ExprId) -> Option<bool> {
+    let Lattice { step: a, offset: b } = image_linear_parts(arena, var, body)?;
+    // exactly by the assumptions, else by a certified evaluation (an
+    // unassumed parameter is complex)
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    let ra = crate::transforms::realness::constant_realness_as_declared(arena, a, 20, &mut cache);
+    let rb = crate::transforms::realness::constant_realness_as_declared(arena, b, 20, &mut cache);
+    match (ra, rb) {
+        (Some(true), Some(true)) => Some(true),
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        _ => None,
+    }
+}
+
+/// `⋂ parts` where some parts contain image sets (see [Image sets](#image-sets)).
+fn intersect_image_parts(arena: &mut Arena, parts: &[ExprId]) -> ExprId {
+    let (img, plain): (Vec<ExprId>, Vec<ExprId>) =
+        parts.iter().partition(|&&p| contains_image_set(arena, p));
+    if img.is_empty() || plain.is_empty() {
+        return arena.set_intersection(parts);
+    }
+    let hull = arena.set_intersection(&plain);
+    let hull = simplify_set(arena, hull);
+    if hull == arena.empty_set {
+        return hull;
+    }
+    let img_set = arena.set_intersection(&img);
+    // A finite set: its members.
+    if let ExprNode::FiniteSet(elems) = arena.node(hull).clone() {
+        let mut kept = Vec::with_capacity(elems.len());
+        let mut decided = true;
+        for e in elems {
+            match set_contains(arena, img_set, e) {
+                Some(true) => kept.push(e),
+                Some(false) => {}
+                None => {
+                    decided = false;
+                    break;
+                }
+            }
+        }
+        if decided {
+            return arena.finite_set(&kept);
+        }
+    }
+    let (lo, hi) = match (inf(arena, hull), sup(arena, hull)) {
+        (Some(lo), Some(hi)) => (approx_real_f64(arena, lo), approx_real_f64(arena, hi)),
+        _ => (None, None),
+    };
+    let (Some(lo), Some(hi)) = (lo, hi) else {
+        return arena.set_intersection(&[hull, img_set]);
+    };
+    let cut = if lo.is_finite() && hi.is_finite() {
+        cut_image_sets(arena, img_set, lo, hi)
+    } else {
+        real_image_sets(arena, img_set)
+    };
+    // The real line adds nothing to sets of real families.
+    let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
+    let full = arena.interval(ninf, pinf, INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN);
+    if hull == full && all_real_image_parts(arena, cut) {
+        return cut;
+    }
+    arena.set_intersection(&[hull, cut])
+}
+
+/// Is `set` an image set of a real family, or a union of such and of
+/// finite sets of real numbers?
+fn all_real_image_parts(arena: &mut Arena, set: ExprId) -> bool {
+    let parts: Vec<ExprId> = match arena.node(set) {
+        ExprNode::SetUnion(ch) => ch.to_vec(),
+        _ => vec![set],
+    };
+    parts.into_iter().all(|p| match arena.node(p).clone() {
+        ExprNode::ImageSet(v, b) => image_set_is_real(arena, v, b) == Some(true),
+        ExprNode::FiniteSet(elems) => elems.iter().all(|&e| numeric_value(arena, e).is_some()),
+        ExprNode::EmptySet => true,
+        _ => false,
+    })
+}
+
+/// Is every member of the set expression `set` known to be real (intervals,
+/// finite sets of real numbers, image sets of real families)?
+fn all_members_real(arena: &mut Arena, set: ExprId) -> bool {
+    // bottom-up over the set structure (post-order from `collect`)
+    let (order, _) = collect(arena, &[set]);
+    let mut real: FxHashMap<ExprId, bool> = FxHashMap::default();
+    for &id in &order {
+        let get =
+            |real: &FxHashMap<ExprId, bool>, c: ExprId| real.get(&c).copied().unwrap_or(false);
+        let r = match arena.node(id).clone() {
+            ExprNode::EmptySet | ExprNode::Interval(..) => true,
+            ExprNode::SetUnion(ch) => ch.iter().all(|&c| get(&real, c)),
+            // an intersection with a real set is real
+            ExprNode::SetIntersection(ch) => ch.iter().any(|&c| get(&real, c)),
+            // `A \ B` is real when `A` is
+            ExprNode::SetComplement(a, _) => get(&real, a),
+            ExprNode::FiniteSet(elems) => elems.iter().all(|&e| numeric_value(arena, e).is_some()),
+            ExprNode::ImageSet(v, b) => image_set_is_real(arena, v, b) == Some(true),
+            _ => false,
+        };
+        real.insert(id, r);
+    }
+    real.get(&set).copied().unwrap_or(false)
+}
+
+/// `a \ b` where `a` contains image sets: the points of a finite `b` that
+/// are not members of `a` are dropped.
+fn complement_image_parts(arena: &mut Arena, a: ExprId, b: ExprId) -> ExprId {
+    if let ExprNode::FiniteSet(elems) = arena.node(b).clone()
+        && contains_image_set(arena, a)
+    {
+        let mut kept = Vec::with_capacity(elems.len());
+        for e in elems {
+            if set_contains(arena, a, e) != Some(false) {
+                kept.push(e);
+            }
+        }
+        if kept.is_empty() {
+            return a;
+        }
+        let b = arena.finite_set(&kept);
+        return arena.set_complement(a, b);
+    }
+    arena.set_complement(a, b)
+}
+
+/// Simplify the image sets of a set expression before its normal form is
+/// taken (see [Image sets](#image-sets)): bottom-up over the set structure,
+/// each image set is made canonical, each union merges its families, each
+/// intersection cuts its image sets to the hull of its other operands, and
+/// each complement drops the excluded points that are not members.
+/// Returns `set` when it has no image set.
+pub(crate) fn resolve_image_sets(arena: &mut Arena, set: ExprId) -> ExprId {
+    if !contains_image_set(arena, set) {
+        return set;
+    }
+    let (order, _) = collect(arena, &[set]);
+    let mut memo: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for &id in &order {
+        let get = |memo: &FxHashMap<ExprId, ExprId>, c: ExprId| memo.get(&c).copied().unwrap_or(c);
+        let new = match arena.node(id).clone() {
+            ExprNode::ImageSet(v, b) => image_set(arena, v, b),
+            ExprNode::SetUnion(ch) => {
+                let parts: Vec<ExprId> = ch.iter().map(|&c| get(&memo, c)).collect();
+                let flat = arena.set_union(&parts);
+                let flat: Vec<ExprId> = match arena.node(flat) {
+                    ExprNode::SetUnion(ch) => ch.to_vec(),
+                    _ => vec![flat],
+                };
+                let merged = merge_union_parts(arena, &flat);
+                arena.set_union(&merged)
+            }
+            ExprNode::SetIntersection(ch) => {
+                let parts: Vec<ExprId> = ch.iter().map(|&c| get(&memo, c)).collect();
+                intersect_image_parts(arena, &parts)
+            }
+            ExprNode::SetComplement(a, b) => {
+                let (a, b) = (get(&memo, a), get(&memo, b));
+                complement_image_parts(arena, a, b)
+            }
+            _ => id,
+        };
+        memo.insert(id, new);
+    }
+    memo.get(&set).copied().unwrap_or(set)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1479,6 +2481,24 @@ fn atom_to_set(
     }
 
     if is_eq {
+        // The exact solution set as image sets, cut to the real line, when
+        // the general solution has periodic families.
+        if crate::poly::polybridge::expr_to_poly(arena, d, var).is_none()
+            && let Some(set) =
+                crate::transforms::inequalities::general_solution_set(arena, d, var, false)
+            && !crate::base::walk::has_unevaluated(arena, set)
+            && contains_image_set(arena, set)
+        {
+            let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
+            let reals = arena.interval(ninf, pinf, INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN);
+            let real = arena.set_intersection(&[set, reals]);
+            let real = simplify_set(arena, real);
+            // Families not known to be real (`2nπ + asin(a)` for a parameter
+            // `a`) take the condition-set path: the normal form drops `∩ ℝ`.
+            if all_members_real(arena, real) {
+                return Ok(real);
+            }
+        }
         if crate::poly::polybridge::expr_to_poly(arena, d, var).is_none()
             && let Some(cands) = crate::transforms::solve::periodic_candidates(arena, d, var)
         {
@@ -1492,7 +2512,12 @@ fn atom_to_set(
             });
             return Ok(set);
         }
-        let sols = crate::transforms::solve::solve(arena, d, var);
+        // A provable contradiction (`cos x = −2`, `x/sin x = 0`: every root a
+        // pole) has no solution; before 0.40 it was "could not solve".
+        let sols = match crate::transforms::solve::solve_classified(arena, d, var) {
+            crate::transforms::solve::SolveOutcome::NoSolution(_) => return Ok(arena.empty_set),
+            outcome => outcome.into_solutions(),
+        };
         let roots: Vec<ExprId> = sols.into_iter().map(|s| s.value).collect();
         // No root is an answer for a rational function (the solver finds
         // every root of a polynomial numerator); before 0.30 only for a
@@ -2193,5 +3218,70 @@ mod tests {
         let cond = arena.gt(y, zero);
         assert!(reduce_inequalities(&mut arena, &[cond], x).is_err());
         assert!(reduce_inequalities(&mut arena, &[cond], zero).is_err());
+    }
+
+    /// `{a·n + b}` over ℤ: the canonical form is a fixed point of
+    /// `image_set`, with a positive step and the offset in `[0, step)`.
+    #[test]
+    fn image_set_canonical_form_is_a_fixed_point() {
+        let mut arena = Arena::new();
+        let k = arena.symbol("k");
+        let pi = arena.pi;
+        // −2kπ + 5π/2  →  2·_n·π + π/2
+        let m2 = arena.int(-2);
+        let step = arena.mul(&[m2, k, pi]);
+        let five_halves = arena.rational(5, 2);
+        let off = arena.mul(&[five_halves, pi]);
+        let body = arena.add(&[step, off]);
+        let s = image_set(&mut arena, k, body);
+        assert_eq!(
+            display(&arena, s),
+            "ImageSet(Lambda(_n, 2*_n*pi + 1/2*pi), Integers)"
+        );
+        let ExprNode::ImageSet(n, b) = *arena.node(s) else {
+            panic!("{}", display(&arena, s));
+        };
+        assert_eq!(image_set(&mut arena, n, b), s);
+        // the integers themselves: k + 7 → _n
+        let seven = arena.int(7);
+        let shifted = arena.add(&[k, seven]);
+        let z = image_set(&mut arena, k, shifted);
+        assert_eq!(display(&arena, z), "ImageSet(Lambda(_n, _n), Integers)");
+    }
+
+    /// A union of families merges by residues: `2nπ`, `2nπ + π/2`, `2nπ +
+    /// π`, `2nπ + 3π/2` is `nπ/2`; `2nπ`, `2nπ + π`, `2nπ + π/2` is `nπ ∪
+    /// 2nπ + π/2`.
+    #[test]
+    fn unions_of_families_merge_into_coarser_lattices() {
+        let mut arena = Arena::new();
+        let n = arena.symbol("n");
+        let pi = arena.pi;
+        let two = arena.int(2);
+        let two_pi_n = arena.mul(&[two, pi, n]);
+        let fam = |arena: &mut Arena, p: i64, q: i64| {
+            let r = arena.rational(p, q);
+            let off = arena.mul(&[r, pi]);
+            let body = arena.add(&[two_pi_n, off]);
+            image_set(arena, n, body)
+        };
+        let all: Vec<ExprId> = [(0, 1), (1, 2), (1, 1), (3, 2)]
+            .iter()
+            .map(|&(p, q)| fam(&mut arena, p, q))
+            .collect();
+        let u = arena.set_union(&all);
+        let u = simplify_set(&mut arena, u);
+        assert_eq!(
+            display(&arena, u),
+            "ImageSet(Lambda(_n, 1/2*_n*pi), Integers)"
+        );
+        let three = [all[0], all[2], all[1]];
+        let u = arena.set_union(&three);
+        let u = simplify_set(&mut arena, u);
+        assert_eq!(
+            display(&arena, u),
+            "ImageSet(Lambda(_n, _n*pi), Integers) ∪ ImageSet(Lambda(_n, 2*_n*pi + 1/2*pi), Integers)"
+        );
+        assert_eq!(divisors(12), vec![1, 2, 3, 4, 6, 12]);
     }
 }

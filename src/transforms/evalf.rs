@@ -3522,7 +3522,8 @@ fn eval_node(
         | ExprNode::FiniteSet(_)
         | ExprNode::SetUnion(_)
         | ExprNode::SetIntersection(_)
-        | ExprNode::SetComplement(_, _) => Err(SymplexError::Unevaluable {
+        | ExprNode::SetComplement(_, _)
+        | ExprNode::ImageSet(_, _) => Err(SymplexError::Unevaluable {
             reason: "set-valued expressions cannot be numerically evaluated".into(),
         }),
 

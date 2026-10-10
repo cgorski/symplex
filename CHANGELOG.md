@@ -50,6 +50,29 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   leaves a remainder over 2,048 bits in the cofactor without a primality
   test; `divisor_count` saturates at `usize::MAX`; `frobenius_number`
   returns `None` beyond `i128` (it wrapped to a negative number).
+- **`solve_as_set` returns the whole solution set over the variable's
+  domain** (ℂ for a plain symbol), with periodic families as image sets
+  (new `ExprNode::ImageSet`, `ExprTree::ImageSet`, `Ex::image_set`; SymPy's
+  `ImageSet(Lambda(_n, f), Integers)`, merged into the coarsest lattice,
+  poles removed): `sin x` was `{0, π}` and is `{nπ}`; `sin(x)/x` was `{π}`
+  and is `{nπ} \ {0}`; `exp(x) − 1` was `{0}` and is `{2nπi}`; `sin(x) − 2`
+  was `EmptySet` and is `{asin 2 + 2nπ} ∪ {π − asin 2 + 2nπ}`; `|x| − 1`
+  and `x·eˣ − 1` are `ConditionSet`s for a complex `x` (a circle; one
+  value per branch of `W`).  A variable declared real keeps the real
+  sets.  Image sets support membership (`2π ∈ {nπ}`), intersection with
+  intervals, finite sets and ℝ, unions, complements and the display/parse
+  round trip.  **API:** the public `ExprTree` enum (serde trees) gained
+  the variant `ImageSet { var, body }`; an exhaustive `match` on it needs
+  a new arm (`cargo semver-checks`: `enum_variant_added`).  `reduce_inequalities` returns image sets for unbounded
+  periodic equations (was a `ConditionSet`) and `EmptySet` for provable
+  contradictions (`cos x = −2` was an error).  `solve` and `solve_general`
+  include the zeros at the poles of `tan`/`tanh` (`1/tan x` was "no
+  solution"; `cos(2x/3)/(tan(x/2) − 2)` lacked `π + 2nπ`).
+- `solve_system_ex` refuses systems with more than 2,048 solutions
+  (counted with multiplicity) and powers above 10,000 (they exhausted
+  memory or hung); `groebner` gives `InvalidArgument` and `gcd_all`/
+  `lcm_all` `None` for such powers; `is_irreducible` returns `None` when
+  irreducibility cannot be certified.
 
 ### Added
 
@@ -88,6 +111,26 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   refused 277 → 99.  A triangular distribution with a symbolic mode at an
   end had `NaN` moments and mgf (`0/0`); `Binomial(1000, 167/716).sf(0)`
   and the binomial entropy at `n = 1000` took over 10 s.
+- **Polynomial algebra hunted** (25 generators × 300 seeds against exact
+  identities, SymPy 1.14 and an independent count of distinct
+  solutions): `solve_system_ex` returned `[]` — "no solution" — for
+  solvable systems whose back-substitution meets algebraic coefficients
+  (`y² = 2, x³ + yx + 1 = 0` has 6 solutions; 99 of 300 such systems), and
+  dropped candidates it could not verify: it now certifies the number of
+  distinct solutions and, when back-substitution falls short, gives every
+  solution with `RootOf` coordinates (a rational univariate
+  representation); `solve_polynomial_system` returned non-solutions
+  (`(−1, −1)` for `x² − 1, y² − 1, (x − 1)(y − 1)`; 74 of 600 systems);
+  `is_irreducible` reported `SD₅(x)·SD₅(x + 1)` (a product of two
+  Swinnerton-Dyer polynomials) irreducible; multivariate `factor_all`/
+  `factor_list_all` left reducible polynomials whole beyond the Kronecker
+  degree bound (235 of 900 random products; now factored by evaluation
+  and Hensel lifting, Musser 1975 / Geddes–Czapor–Labahn ch. 6); lex
+  `groebner` of a unit ideal took 55 s, of `x⁶⁰ − 1, y⁶⁰ − 1` over a
+  minute and 2 GB.
+- **Solution sets hunted** (617 cases: members `n = −3..3` substituted
+  back with certified evaluation, real root scans, known complex roots,
+  membership): 385 wrong (incomplete) → 0.
 
 - **Integral transforms and definite integrals hunted** (forward and
   inverse Laplace, Fourier, Mellin, Z, residues, Fourier series, definite

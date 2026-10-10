@@ -1131,7 +1131,8 @@ fn opaque_node_name(node: &ExprNode) -> Option<&'static str> {
         | ExprNode::FiniteSet(_)
         | ExprNode::SetUnion(_)
         | ExprNode::SetIntersection(_)
-        | ExprNode::SetComplement(..) => "a set",
+        | ExprNode::SetComplement(..)
+        | ExprNode::ImageSet(..) => "a set",
         _ => return None,
     })
 }
@@ -1277,7 +1278,8 @@ fn node_period(
         | ExprNode::FiniteSet(_)
         | ExprNode::SetUnion(_)
         | ExprNode::SetIntersection(_)
-        | ExprNode::SetComplement(..) => None,
+        | ExprNode::SetComplement(..)
+        | ExprNode::ImageSet(..) => None,
 
         // Any other function of periodic arguments is periodic with the
         // lcm of their periods (`Add`, `Neg`, `exp`, `ln`, `sinh`, …).
