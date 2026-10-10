@@ -8,6 +8,20 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-10-10
+
+Equation solving and inequalities were hunted: a hunter that
+substitutes every answer back and checks it against constructed roots
+found 2,025 wrong results, none now — `solve` claimed
+"no solution" for `tan(x)/x`, returned poles of rational equations,
+families of solutions that contained poles, and `reduce_inequalities`
+used only the principal solutions of periodic equations.  `solve` now
+handles radical equations and `a^x` Lambert forms, and `solve_as_set`
+no longer claims an empty set when it merely found nothing.  The
+integrator is about a third faster on the Rubi suite (wall 76–86 s →
+49–58 s, CPU ~930 s → ~590 s, 0 timeouts) with every answer
+byte-identical.
+
 ### Breaking (behaviour; no signature changed)
 
 - **`solve` refuses (`ComputationFailed`) instead of returning
@@ -76,6 +90,33 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   most 243 nodes; one entry timed out there after 10 s).
 - Rubi `--check` (12 jobs, loaded machine): wall 76–86 s → 49–51 s, CPU
   888–981 s → 561–578 s, 0 timeouts (was 1); every answer byte-identical.
+
+### Measured
+
+- `tests/v35/` (0.39): 3 files, 17 tests.  nextest 13,766 tests (14
+  skipped), doctests 1,314.
+- Rubi harness: 28,713 verified, 73 real_verified, 0 wrong, 0 undecided, 0
+  timeouts (0.38: 1 timeout); wall 49–58 s with 12 jobs (0.38: 77–86 s),
+  CPU ~560–590 s (0.38: ~890–980 s).  Self-test: 55,475 verified, 0 wrong,
+  742 undecided (unchanged).  `--negative-params`: 73 real_verified, 0
+  wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.38.0: no semver update required.
+- Hunters (before → after): equation solving and inequalities (15
+  generators × 2,000 seeds) 2,025 wrong → 0, refusals 2,857 → 2,123;
+  antiderivative continuity (8,000 integrands) identical before and after
+  the speed work, 0 jumps; the `fuzz_integrate` corpus replays in 467 s
+  (was 559 s) with identical answers.
+- Fuzzing: a nightly-equivalent run on the release code (12 targets ×
+  600 s on CI) was green on all 12 targets.  Locally all 12 targets ran
+  together with a 10-second limit (`fuzz_simplify` and `fuzz_integrate` 15
+  minutes, the others 10): `fuzz_refine` 12,236,479 inputs, `fuzz_numdist`
+  11,964,375, `fuzz_lambertw` 2,638,441, `fuzz_parser` 1,426,016,
+  `fuzz_eigenvects` 238,147, `fuzz_exact_matrix` 216,538, `fuzz_evalf`
+  94,543, `fuzz_calculus` 44,635, `fuzz_roundtrip` 43,799, `fuzz_poly`
+  33,794, `fuzz_simplify` 21,027, `fuzz_integrate` 12,297: 0 crashes, 0
+  timeouts, 0 out-of-memory.
 
 ## [0.38.0] - 2026-10-09
 
