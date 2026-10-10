@@ -6688,7 +6688,49 @@ fn mobius_core(
     tracing::debug!(integrand_t = %arena.display(integrand), "integrate: Möbius radical substitution");
     let res = integrate_nested_generic(arena, integrand, t)?;
     let res = analytic_logs(arena, res, t_sym)?;
+    let res = logs_off_the_cut_at(arena, res, t, t_of_x, var);
     Some(arena.subs_structural(res, t, t_of_x))
+}
+
+/// `g` with every `ln(p(t))` whose argument is a negative number at
+/// `t₀ = t(0)` (the image of `x = 0`, when that is a number) written
+/// `ln(−p(t))`: the same derivative, and continuous where the path `t(x)`
+/// passes `t₀`.  `analytic_logs` writes the `ln|t − 1|` of `∫ dt/(1 − t²)`
+/// as `ln(t − 1)`, whose argument at `t = 0` is on the cut: for
+/// `∫ dx/√(x² + a)` (`t = x/√(x² + a)`, `t(0) = 0`) the answer jumped by
+/// `iπ` at `x = 0` for every non-real `a` and for real `a < 0` (where the
+/// integrand is imaginary on `|x| < √−a`); on the real path of a real
+/// integrand only a constant changes.
+fn logs_off_the_cut_at(
+    arena: &mut Arena,
+    g: ExprId,
+    t: ExprId,
+    t_of_x: ExprId,
+    var: ExprId,
+) -> ExprId {
+    let zero = arena.zero;
+    let t0 = arena.subs_structural(t_of_x, var, zero);
+    let t0 = crate::transforms::eval::eval(arena, t0);
+    if arena.as_num(t0).is_none() {
+        return g;
+    }
+    let mut out = g;
+    for id in crate::base::walk::post_order_ids(arena, g) {
+        let ExprNode::Ln(p) = *arena.node(id) else {
+            continue;
+        };
+        if !crate::base::walk::contains(arena, p, t) {
+            continue;
+        }
+        let at = arena.subs_structural(p, t, t0);
+        let at = crate::transforms::eval::eval(arena, at);
+        if arena.as_num(at).is_some_and(|v| v.is_negative()) {
+            let minus_p = arena.neg(p);
+            let flipped = arena.ln(minus_p);
+            out = arena.subs_structural(out, id, flipped);
+        }
+    }
+    out
 }
 
 /// `∫ f` with every `e^{k·atanh(u)}` (`k` rational) written

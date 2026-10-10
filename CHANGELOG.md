@@ -8,6 +8,37 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour; no signature changed)
+
+- **Definite integrals whose table value needs a real parameter refuse
+  it when the parameter is not declared real** (an unassumed parameter
+  may be complex, decision D4): `∫₀^∞ sin(bx)/x dx` was `(π/2)·sign b`,
+  `∫₀^∞ sin²(bx)/x² dx` was `π|b|/2`, `∫₀^∞ e^{−ax} sin(bx) dx` was
+  `b/(a² + b²)` — all diverge for `b = 1 + i`.  Declare `b` real for the
+  classical values.
+- **`integrate_definite` refuses a `floor`/`ceiling` whose steps it cannot
+  locate** (a non-linear argument, or an infinite interval) instead of
+  resolving the whole interval at its midpoint: `∫₀² a·floor(x²) dx` was
+  `2a` (it is `(5 − √2 − √3)·a`), `∫₀^∞ floor(x)·e^{−x} dx` was `1` (it is
+  `1/(e − 1)`).  Linear arguments on finite intervals still integrate.
+
+### Fixed
+
+- **Integral transforms and definite integrals hunted** (forward and
+  inverse Laplace, Fourier, Mellin, Z, residues, Fourier series, definite
+  integrals with parameters, every answer against mpmath quadrature at
+  random real and complex parameter values): `L{(e^{−2t} − e^{−3t})/t}` was
+  `ln|s + 3| − ln|s + 2|`, not analytic in `s` (wrong imaginary part off
+  the real axis; now `ln(s + 3) − ln(s + 2)`); `∫ dx/(a + tan x)` jumped by
+  `2πi/(a² + 1)` at every pole of `tan x` when `Im a < 0` (the continuity
+  correction of 0.38 took the side of the cut as for real `a`); `∫ dx/√(x²
+  + a)` jumped by `iπ` at `x = 0` for non-real `a` and real `a < 0`; the
+  table and floor errors above.
+- `∫₀^{2π} dx/(b + 1 + cos x)` (`b > 0`) and similar integrals with a
+  parametric constant part integrate (they were refused: the table wanted
+  a two-term denominator, and the non-real zeros `acos(−b − 1)` were
+  "undecided" against the interval).
+
 ## [0.39.0] - 2026-10-10
 
 Equation solving and inequalities were hunted: a hunter that

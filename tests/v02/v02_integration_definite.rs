@@ -681,8 +681,16 @@ fn table_dirichlet_and_sinc() {
         &ctx.infinity(),
         pi / 2.0,
     );
-    // symbolic a: (π/2) sign(a)
-    let a = ctx.symbol("a");
+    // symbolic real a: (π/2) sign(a).  An unassumed `a` may be complex (D4),
+    // where the integral diverges: refused since 0.40 (this test pinned the
+    // value `(π/2) sign(a)` for an unassumed `a` before).
+    let free = ctx.symbol("b");
+    assert!(
+        (&(&free * &x).sin() / &x)
+            .try_integrate_definite(&x, &ctx.int(0), &ctx.infinity())
+            .is_err()
+    );
+    let a = ctx.symbol_with("a", &[Assumption::Real]).unwrap();
     let v = (&(&a * &x).sin() / &x)
         .try_integrate_definite(&x, &ctx.int(0), &ctx.infinity())
         .unwrap();

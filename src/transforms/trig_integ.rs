@@ -1000,54 +1000,63 @@ fn log_end(
     positive: bool,
 ) -> Option<ExprId> {
     let principal = arena.ln(lead);
-    match placement(arena, lead) {
-        Some(Placement::Negative) => {}
+    let assumed = ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get);
+    // A leading coefficient of undecided place, rational in parameters
+    // not declared real (real parameters assumed): the end is on the cut
+    // exactly where `lead` is a negative real, where the principal `ln`
+    // gives `ln|lead| + iπ`; elsewhere `ln(lead)` is the end value.
+    let parametric_lead = match placement(arena, lead) {
+        Some(Placement::Negative) => false,
         Some(_) => return Some(principal),
-        // A real leading coefficient of undecided sign (real parameters
-        // assumed): with every coefficient of `p` real, `p(t)` is real at
-        // the end, on the cut exactly when `lead < 0`, where the principal
-        // `ln` gives `ln|p(t)| + iπ` as it gives `ln|lead| + iπ`; so the
-        // end value is `ln(lead)` for either sign.
-        None if ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get)
-            && rational_in_parameters(arena, lead) =>
-        {
-            let (num, den) = arena.as_numer_denom_expr(p);
-            if contains_var_id(arena, den, t) || !rational_in_parameters(arena, den) {
-                return None;
-            }
-            let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, num, t)?;
-            return coeffs
-                .iter()
-                .all(|&k| rational_in_parameters(arena, k))
-                .then_some(principal);
-        }
+        None if assumed && rational_in_parameters(arena, lead) => true,
         None => return None,
-    }
+    };
     let (num, den) = arena.as_numer_denom_expr(p);
-    if contains_var_id(arena, den, t) {
+    if contains_var_id(arena, den, t) || (parametric_lead && !rational_in_parameters(arena, den)) {
         return None;
     }
     let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, num, t)?;
+    // The side of the cut is that of the first non-zero `(±1)ᵏ·Im cₖ`,
+    // highest degree first: `signs` holds `sign((±1)ᵏ·Im cₖ)` of the
+    // coefficients whose imaginary part depends on the parameters' values,
+    // `side` the side of the first coefficient known not to be real.
+    //
+    // With real parameters assumed, a coefficient rational in parameters
+    // not declared real used to count as real: right for real values, but
+    // the jump `J·⌊w/π + 1/2⌋` of `∫ dx/(a + tan x)` then had the wrong
+    // sign for `Im a < 0` and the answer jumped by `2πi/(a² + 1)` at every
+    // pole of `tan x` (0.38–0.39).  Its `sign(Im c)` is 0 for real values,
+    // so they keep their answer.
     let mut reals = crate::base::assumptions::AssumptionCache::new();
-    let mut undecided: Option<(usize, ExprId)> = None;
+    let mut signs: Vec<ExprId> = Vec::new();
+    let mut declared_undecided = false;
+    let mut side: Option<i64> = None;
     for (k, &c) in coeffs.iter().enumerate().rev() {
         let c = arena.div(c, den);
         let c = crate::transforms::eval::eval(arena, c);
-        match crate::transforms::realness::constant_realness_as_declared(arena, c, 30, &mut reals) {
+        let flip = !(positive || k % 2 == 0);
+        let symbolic = match crate::transforms::realness::constant_realness_as_declared(
+            arena, c, 30, &mut reals,
+        ) {
             Some(true) => continue,
-            None if ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get)
-                && rational_in_parameters(arena, c) =>
-            {
-                continue;
+            None if assumed && rational_in_parameters(arena, c) => true,
+            _ if parametric_lead => return None,
+            // A coefficient real or not by the values of declared-real
+            // parameters (`√(b² − a²)/(a − b)`): one is followed.
+            None if !declared_undecided && only_real_parameters(arena, c) => {
+                declared_undecided = true;
+                true
             }
-            None if undecided.is_none() && only_real_parameters(arena, c) => {
-                undecided = Some((k, c));
-                continue;
-            }
-            None if undecided.is_some() => return None,
-            _ => {}
+            None if declared_undecided => return None,
+            _ => false,
+        };
+        if symbolic {
+            let im = arena.im(c);
+            let im = if flip { arena.neg(im) } else { im };
+            signs.push(arena.sign(im));
+            continue;
         }
-        if undecided.is_some() {
+        if declared_undecided {
             return None;
         }
         let z = crate::transforms::evalf::evalf_complex64(arena, c).ok()?;
@@ -1055,36 +1064,49 @@ fn log_end(
         if im.is_nan() || im <= 1e-12 * z.norm().max(1.0) {
             return None;
         }
-        let above = (z.im > 0.0) == (positive || k % 2 == 0);
-        if above {
-            return Some(principal);
-        }
-        let two_pi_i = {
-            let two = arena.int(2);
-            let pi = arena.pi();
-            let i = arena.i_unit();
-            arena.mul(&[two, pi, i])
-        };
-        return Some(arena.sub(principal, two_pi_i));
+        side = Some(if (z.im > 0.0) != flip { 1 } else { -1 });
+        break;
     }
-    if let Some((k, c)) = undecided {
-        let im = arena.im(c);
-        let im = if positive || k % 2 == 0 {
-            im
-        } else {
-            arena.neg(im)
-        };
-        let sg = arena.sign(im);
+    // S = s₁ + (1 − s₁²)·(s₂ + (1 − s₂²)·(… + side)): the first non-zero
+    // sign, or the decided side, or 0 (`p(t)` real: on the cut, `+iπ`).
+    let mut s_total = arena.int(side.unwrap_or(0));
+    for &sg in signs.iter().rev() {
+        let one = arena.one;
         let two = arena.int(2);
         let sg_sq = arena.pow(sg, two);
         let minus_sq = arena.neg(sg_sq);
-        let shift = arena.add(&[sg, minus_sq]);
-        let i = arena.i_unit();
-        let pi = arena.pi();
-        let correction = arena.mul(&[i, pi, shift]);
-        return Some(arena.add(&[principal, correction]));
+        let rest_weight = arena.add(&[one, minus_sq]);
+        let rest = arena.mul(&[rest_weight, s_total]);
+        s_total = arena.add(&[sg, rest]);
     }
-    Some(principal)
+    // From below (`S = −1`) the limit is `ln(lead) − 2πi`: `iπ·(S − S²)`.
+    let two = arena.int(2);
+    let s_sq = arena.pow(s_total, two);
+    let minus_sq = arena.neg(s_sq);
+    let shift = arena.add(&[s_total, minus_sq]);
+    if arena.is_zero_structural(shift) {
+        return Some(principal);
+    }
+    let i = arena.i_unit();
+    let pi = arena.pi();
+    let mut parts = vec![i, pi, shift];
+    if parametric_lead {
+        // [lead < 0] = ½·(1 − sign(re lead))·(1 − sign(im lead)²).
+        let one = arena.one;
+        let half = arena.rational(1, 2);
+        let re = arena.re(lead);
+        let re_sign = arena.sign(re);
+        let minus_re = arena.neg(re_sign);
+        let left = arena.add(&[one, minus_re]);
+        let im = arena.im(lead);
+        let im_sign = arena.sign(im);
+        let im_sq = arena.pow(im_sign, two);
+        let minus_im = arena.neg(im_sq);
+        let real_axis = arena.add(&[one, minus_im]);
+        parts.extend([half, left, real_axis]);
+    }
+    let correction = arena.mul(&parts);
+    Some(arena.add(&[principal, correction]))
 }
 
 /// What a jump at the poles of `tan w` depends on besides the arena's
@@ -1405,10 +1427,15 @@ pub(crate) fn plain_logs(arena: &mut Arena, g: ExprId, t_sym: SymbolId, all: boo
 }
 
 /// [`infinity_jump`] with every parameter taken for real: `J` as a function
-/// of the parameters (with `sign(·)`, `sign(im(·))` where the end values
-/// depend on them) that is exact for real values of them.  For other values
-/// `J·⌊w/π + 1/2⌋` is still locally constant, so the answer stays an
-/// antiderivative; without it the answer jumps for every value (the Rubi
+/// of the parameters (with `sign(·)`, `sign(im(·))`, `sign(re(·))` where
+/// the end values depend on them) that is exact for real values of them,
+/// and, where the end values are those of `ln` of polynomials and of `atan`
+/// with rational-in-parameter coefficients, for complex values too (the
+/// side of the cut is read off `sign(im(·))` of the coefficients; up to
+/// 0.39 it was taken as for real values, and `∫ dx/(a + tan x)` jumped at
+/// every pole of `tan x` for `Im a < 0`).  Elsewhere `J·⌊w/π + 1/2⌋` is
+/// still locally constant, so the answer stays an antiderivative; without
+/// it the answer jumps for every value (the Rubi
 /// suite's `∫ dx/(a + b·sin(c + d·x))` at `a = 6/5`, `b = 3/4` dropped by
 /// `2π/(d·√(a² − b²))` at every pole of `tan(u/2)`).  An `atan` end with a
 /// leading coefficient of undecided sign is followed only when that
@@ -1560,17 +1587,30 @@ pub(crate) fn end_value(
                             // parameters (where it is 0 the term is not
                             // defined: it divides by that coefficient).
                             None if only_real_parameters(arena, lead)
-                                && (crate::transforms::realness::constant_realness_as_declared(
+                                && crate::transforms::realness::constant_realness_as_declared(
                                     arena,
                                     lead,
                                     30,
                                     &mut crate::base::assumptions::AssumptionCache::new(),
-                                ) == Some(true)
-                                    || (ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get)
-                                        && rational_in_parameters(arena, lead))) =>
+                                ) == Some(true) =>
                             {
                                 let half = arena.rational(1, 2);
                                 let sign = sign_of_real(arena, lead);
+                                arena.mul(&[half, pi, sign])
+                            }
+                            // Real parameters assumed, `lead` rational in
+                            // parameters not declared real: `±π/2` by the
+                            // sign of `Re lead`, which is that of `lead` for
+                            // real values (`sign(lead)` is not real for the
+                            // others).
+                            None if ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get)
+                                && only_real_parameters(arena, lead)
+                                && rational_in_parameters(arena, lead) =>
+                            {
+                                let half = arena.rational(1, 2);
+                                let re = arena.re(lead);
+                                let re = crate::transforms::eval::eval(arena, re);
+                                let sign = sign_of_real(arena, re);
                                 arena.mul(&[half, pi, sign])
                             }
                             None => return None,

@@ -11,12 +11,15 @@
 //! 1. **Bounds.** `a = b` gives `0`; `a > b` swaps the bounds and negates.
 //! 2. **Special integrands.** `DiracDelta`, `Heaviside`, `Abs`, `Sign`,
 //!    `Piecewise`, `Floor`/`Ceiling` are eliminated first by truncating or
-//!    splitting the interval so that every remaining piece is smooth.
+//!    splitting the interval so that every remaining piece is smooth (the
+//!    integral is refused when a step cannot be located, e.g. `floor` of
+//!    a non-linear argument or on an infinite interval).
 //! 3. **Known-value table.** Classical improper integrals (Gaussian, Gamma,
 //!    Beta, Dirichlet, Wallis, Fresnel, Bose–Einstein, …) are matched
-//!    structurally with symbolic parameters; any positivity conditions
-//!    are checked through the assumption system and the entry is skipped
-//!    when they cannot be established.
+//!    structurally with symbolic parameters; any positivity (or realness:
+//!    an unassumed parameter may be complex) conditions are checked
+//!    through the assumption system and the entry is skipped when they
+//!    cannot be established.
 //! 4. **Breakpoints.** Poles, `ln` zeros, `tan` poles, branch points of
 //!    fractional powers and inverse-trig domain edges of the integrand are
 //!    located with the breakpoint scanner in `calculus_util`.  Interior points
@@ -551,6 +554,17 @@ fn is_positive(arena: &mut Arena, id: ExprId) -> bool {
     sign_of(arena, id) == Some(Ordering::Greater)
 }
 
+/// Is `id` provably real?  An unassumed parameter may be complex
+/// (decision D4), so a table entry whose value needs a real coefficient
+/// (`∫₀^∞ sin(bx)/x dx = (π/2) sign b` diverges for `Im b ≠ 0`) must ask.
+fn is_real(arena: &mut Arena, id: ExprId) -> bool {
+    if sign_of(arena, id).is_some() {
+        return true;
+    }
+    let mut cache = AssumptionCache::new();
+    cache.query(arena, id, Props::REAL) == Some(true)
+}
+
 /// Does the tree contain `∞`, `−∞`, `zoo` or `NaN`, or a `ln(0)` /
 /// `0⁻ⁿ` sub-term that `eval` leaves in place?
 fn has_bad_atom(arena: &Arena, root: ExprId) -> bool {
@@ -765,6 +779,61 @@ fn split_at_breakpoints(
     build_pieces(arena, &scan, a, b)
 }
 
+/// Is the parametric point `p` non-real for every value the assumptions
+/// allow?  `r·acos(g) + c` and `r·asin(g) + c` (`r ≠ 0` rational, `c` a
+/// real constant) with `g > 1` or `g < −1` provable: the zeros of `b + 1 +
+/// cos x` for `b > 0`, `acos(−b − 1)` and its translates, are off the real
+/// line, and `∫₀^{2π} dx/(b + 1 + cos x)` was refused because their place
+/// relative to the interval was "undecided".
+fn provably_off_the_real_line(arena: &mut Arena, p: ExprId) -> bool {
+    let mut core: Option<ExprId> = None;
+    let terms: Vec<ExprId> = match arena.node(p) {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![p],
+    };
+    for term in terms {
+        if walk::free_symbols(arena, term).is_empty() {
+            if point_value(arena, term).is_none() {
+                return false;
+            }
+            continue;
+        }
+        if core.is_some() {
+            return false;
+        }
+        let factors = factors_of(arena, term);
+        let mut inverse_trig = None;
+        for f in factors {
+            if let Some(r) = arena.as_num(f) {
+                if r.is_zero() {
+                    return false;
+                }
+                continue;
+            }
+            if inverse_trig.is_some() {
+                return false;
+            }
+            inverse_trig = Some(f);
+        }
+        core = inverse_trig;
+    }
+    let Some(core) = core else {
+        return false;
+    };
+    let (ExprNode::Acos(g) | ExprNode::Asin(g)) = *arena.node(core) else {
+        return false;
+    };
+    let one = arena.one();
+    let above = arena.sub(g, one);
+    let above = safe_eval(arena, above);
+    if sign_of(arena, above) == Some(Ordering::Greater) {
+        return true;
+    }
+    let below = arena.add(&[g, one]);
+    let below = safe_eval(arena, below);
+    sign_of(arena, below) == Some(Ordering::Less)
+}
+
 /// Sample grid on `[lo, hi]` (infinite ends mapped through `t/(1−t)`).
 fn guard_grid(lo: f64, hi: f64) -> Vec<f64> {
     let n = GUARD_SAMPLES;
@@ -796,6 +865,9 @@ fn build_pieces(
     let mut interior: Vec<(ExprId, Option<f64>)> = Vec::new();
 
     for bp in &scan.points {
+        if bp.value.is_none() && provably_off_the_real_line(arena, bp.point) {
+            continue;
+        }
         match position_in(arena, bp.point, a, b) {
             Position::Below | Position::Above => {}
             Position::AtLower => lo_sing = true,
@@ -2670,6 +2742,17 @@ fn split_piecewise_like(
         }
         _ => {}
     }
+    // The guard watches the arguments of |·|, sign and H only: the steps of
+    // floor/ceiling and the boundaries of Piecewise conditions count only
+    // where the scan itself located all of them.  Up to 0.39 an incomplete
+    // scan of `floor(x²)` (a non-linear argument) passed with an empty
+    // watch list, the one piece was resolved at its midpoint, and
+    // `∫₀² a·floor(x²) dx` came out as `2a` (it is `(5 − √2 − √3)·a`).
+    if !steps_located(arena, f, x, finite_scan_range(range)) {
+        return Err(failed(
+            "could not locate every step of floor, ceiling or a Piecewise condition inside the interval",
+        ));
+    }
 
     // Singularities other than sign changes of those arguments are handled
     // downstream.
@@ -2725,6 +2808,32 @@ fn split_piecewise_like(
     }
     let s = arena.add(&total);
     Ok(safe_eval(arena, s))
+}
+
+/// Did the breakpoint scan locate every step of the `floor`/`ceiling` nodes
+/// and every boundary of the `Piecewise` conditions of `f` depending on
+/// `x` (the breakpoints [`sign_changes_explained`] does not check)?
+fn steps_located(arena: &mut Arena, f: ExprId, x: ExprId, range: Option<Interval<f64>>) -> bool {
+    let mut probes: Vec<ExprId> = Vec::new();
+    for id in walk::post_order_ids(arena, f) {
+        match arena.node(id) {
+            ExprNode::Floor(g) | ExprNode::Ceiling(g) if walk::contains(arena, *g, x) => {
+                probes.push(id);
+            }
+            ExprNode::Piecewise(pairs) => {
+                for &(_, cond) in pairs.iter() {
+                    if walk::contains(arena, cond, x) {
+                        probes.push(cond);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    probes.into_iter().all(|p| {
+        let s = calculus_util::scan_breakpoints(arena, p, x, range);
+        s.complete && !s.opaque
+    })
 }
 
 /// The `x`-dependent arguments of the `|·|`, `sign` and `Heaviside` nodes
@@ -3481,6 +3590,10 @@ fn entry_exp_linear(arena: &mut Arena, h: &HalfLine, x: ExprId) -> Option<ExprId
         return None;
     }
     let bcoef = pure_linear_coeff(arena, targ, x)?;
+    // e^{−ax} sin(bx) converges only for a > |Im b|: ask for a real b.
+    if !is_real(arena, bcoef) {
+        return None;
+    }
     if arena.is_zero_structural(h.p) {
         let a2 = arena.mul(&[a, a]);
         let b2 = arena.mul(&[bcoef, bcoef]);
@@ -3598,6 +3711,10 @@ fn entry_trig_over_power(arena: &mut Arena, h: &HalfLine, x: ExprId) -> Option<E
     }
     let (kind, targ, n) = s.trig[0].clone();
     let bcoef = pure_linear_coeff(arena, targ, x)?;
+    // sin(bx) grows like e^{|Im b| x}: every entry needs a real b.
+    if !is_real(arena, bcoef) {
+        return None;
+    }
     let two = Ratio::from_integer(BigInt::from(2));
     let pi = arena.pi();
     let half = arena.rational(1, 2);
@@ -4288,14 +4405,22 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: IntervalShape) -
     if s.trig.is_empty() && s.recip.len() == 1 {
         let (base, m) = s.recip[0].clone();
         let terms: Vec<ExprId> = match arena.node(base).clone() {
-            ExprNode::Add(ch) if ch.len() == 2 => ch.to_vec(),
+            ExprNode::Add(ch) if ch.len() >= 2 => ch.to_vec(),
             _ => return None,
         };
-        let mut a_c: Option<ExprId> = None;
+        // The constant part may be a sum (`b + 1 + cos x`).
+        let free: Vec<ExprId> = terms
+            .iter()
+            .copied()
+            .filter(|&t| !walk::contains(arena, t, x))
+            .collect();
+        if free.is_empty() || terms.len() - free.len() != 1 {
+            return None;
+        }
+        let a_c: Option<ExprId> = Some(arena.add(&free));
         let mut b_c: Option<(ExprId, Trig)> = None;
         for t in terms {
             if !walk::contains(arena, t, x) {
-                a_c = Some(t);
                 continue;
             }
             let (coeff, d) = factorize(arena, t, x);

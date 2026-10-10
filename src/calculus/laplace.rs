@@ -991,6 +991,7 @@ fn try_divide_by_t(
     };
     if let Ok(integral) = crate::calculus::definite::integrate_definite(arena, big_g_u, u, s, inf)
         && ok(arena, integral)
+        && let Some(integral) = continue_analytically(arena, integral, s)
     {
         return Ok(Some(integral));
     }
@@ -1009,11 +1010,77 @@ fn try_divide_by_t(
     let at_s = crate::transforms::subs::subs(arena, anti, u, s);
     let r = arena.sub(at_inf, at_s);
     let r = crate::transforms::eval::eval(arena, r);
-    if ok(arena, r) {
-        Ok(Some(r))
-    } else {
-        Err(fail("∫_s^∞ F(u) du has no closed form"))
+    if !ok(arena, r) {
+        return Err(fail("∫_s^∞ F(u) du has no closed form"));
     }
+    continue_analytically(arena, r, s).map(Some).ok_or_else(|| {
+        fail("∫_s^∞ F(u) du: the antiderivative is not analytic in s (abs, sign, …)")
+    })
+}
+
+/// The analytic continuation of `r`, a value of `∫_s^∞ F(u) du` computed
+/// with a real-variable antiderivative, from real `s → +∞` to the
+/// half-plane of convergence — or `None` when that cannot be read off.
+///
+/// A Laplace transform is analytic in `s`, so `ln|s + 2|` (the real
+/// antiderivative of `1/(u + 2)` at `u = s`) is only its restriction to
+/// real `s > −2`: for `s = 1 + i` the transform of `(e^{−2t} − e^{−3t})/t`
+/// is `ln((s + 3)/(s + 2))`, not `ln|s + 3| − ln|s + 2|` (wrong imaginary
+/// part before 0.40).  Every `|w(s)|` with `w` a real polynomial of degree
+/// ≤ 2 equals `±w(s)` for large real `s` (the sign of the leading
+/// coefficient); the principal `ln`/`√` of such a `w` is analytic to the
+/// right of its roots (the arguments of at most two factors `s − rᵢ` sum
+/// to less than π in modulus there), and the roots are singularities of
+/// `F`, so the replacement is the transform on its half-plane.  Any other
+/// non-analytic node in `s` (`sign`, `H`, `re`, `arg`, `floor`, …) or a
+/// higher-degree `|w|` is refused.
+fn continue_analytically(arena: &mut Arena, r: ExprId, s: ExprId) -> Option<ExprId> {
+    let mut stack = vec![r];
+    let mut seen = rustc_hash::FxHashSet::default();
+    let mut replacements: Vec<(ExprId, ExprId)> = Vec::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || !contains_var(arena, id, s) {
+            continue;
+        }
+        match arena.node(id).clone() {
+            ExprNode::Abs(w) => {
+                let coeffs = crate::calculus::calculus_util::poly_coeffs_symbolic(arena, w, s)?;
+                if coeffs.len() < 2 || coeffs.len() > 3 {
+                    return None;
+                }
+                let mut cache = crate::base::assumptions::AssumptionCache::new();
+                for &c in &coeffs {
+                    if cache.query(arena, c, crate::base::assumptions::Props::REAL) != Some(true) {
+                        return None;
+                    }
+                }
+                let lead = *coeffs.last()?;
+                let rep = match param_sign(arena, lead)? {
+                    1 => w,
+                    -1 => arena.neg(w),
+                    _ => return None,
+                };
+                replacements.push((id, rep));
+            }
+            ExprNode::Sign(_)
+            | ExprNode::Heaviside(_)
+            | ExprNode::Re(_)
+            | ExprNode::Im(_)
+            | ExprNode::Arg(_)
+            | ExprNode::Conjugate(_)
+            | ExprNode::Floor(_)
+            | ExprNode::Ceiling(_)
+            | ExprNode::Min(_)
+            | ExprNode::Max(_)
+            | ExprNode::Piecewise(_) => return None,
+            node => node.for_each_child(|c| stack.push(c)),
+        }
+    }
+    if replacements.is_empty() {
+        return Some(r);
+    }
+    let out = crate::transforms::subs::subs_map(arena, r, &replacements);
+    Some(crate::transforms::eval::eval(arena, out))
 }
 
 // ─── Time-shift rule ─────────────────────────────────────────────────────────────────────────
