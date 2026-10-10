@@ -285,10 +285,13 @@ fn piecewise_decides_only_certified_conditions() {
     // A rational gap is decided exactly by `eval` since 0.41 (the two
     // sides differ by a rational number), whatever its size.
     assert_eq!(near("10^(-200)").eval_decimal(20).unwrap(), "1");
-    // An irrational gap beyond what twice the working precision plus 256
-    // bits resolves is refused.
+    // An irrational gap is pursued as the zero of a difference is, to the
+    // end of the zero search (1,024 bits past the working precision; up to
+    // 0.41 the search stopped at twice the working precision plus 256 bits
+    // and `π·10⁻²⁰⁰` was refused), and refused beyond it.
+    assert_eq!(near("pi*10^(-200)").eval_decimal(20).unwrap(), "1");
     assert!(matches!(
-        near("pi*10^(-200)").eval_decimal(20),
+        near("pi*10^(-400)").eval_decimal(20),
         Err(SymplexError::PrecisionExhausted { .. })
     ));
     // Clear decisions are unaffected.

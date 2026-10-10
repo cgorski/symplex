@@ -203,16 +203,38 @@ fn fcosh(arena: &mut Arena, x: ExprId) -> ExprId {
 }
 
 /// Complex product `(a + bi)(c + di)`.
+///
+/// A part that is structurally 0 is absent, not a factor: `(0 + 1i)(∞ + 0i)
+/// = i·∞` has real part 0, not `0·∞ = nan` (up to 0.40 `re(i·∞)` and
+/// `re(∞·x)` were `nan`; SymPy: `re(oo*I)` → 0, `re(oo*x)` → `oo*re(x)`).
 fn cmul(arena: &mut Arena, a: ExprId, b: ExprId, c: ExprId, d: ExprId) -> (ExprId, ExprId) {
-    let ac = arena.mul(&[a, c]);
-    let bd = arena.mul(&[b, d]);
-    let ad = arena.mul(&[a, d]);
-    let bc = arena.mul(&[b, c]);
+    let zero = arena.zero;
+    let mut product = |u: ExprId, v: ExprId| {
+        if u == zero || v == zero {
+            zero
+        } else {
+            arena.mul(&[u, v])
+        }
+    };
+    let ac = product(a, c);
+    let bd = product(b, d);
+    let ad = product(a, d);
+    let bc = product(b, c);
     (arena.sub(ac, bd), arena.add(&[ad, bc]))
 }
 
-/// Complex reciprocal `1/(a + bi) = (a − bi)/(a² + b²)`.
+/// Complex reciprocal `1/(a + bi) = (a − bi)/(a² + b²)`; `1/a` and `−i/b`
+/// when a part is structurally 0 (`a/a²` is `∞·∞⁻² = nan` for `a = ∞`).
 fn cinv(arena: &mut Arena, a: ExprId, b: ExprId) -> (ExprId, ExprId) {
+    if b == arena.zero {
+        let minus_one = arena.neg_one;
+        return (arena.pow(a, minus_one), arena.zero);
+    }
+    if a == arena.zero {
+        let minus_one = arena.neg_one;
+        let inv = arena.pow(b, minus_one);
+        return (arena.zero, arena.neg(inv));
+    }
     let two = arena.int(2);
     let a2 = arena.pow(a, two);
     let b2 = arena.pow(b, two);

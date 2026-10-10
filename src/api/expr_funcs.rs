@@ -312,97 +312,93 @@ impl Expr<Numeric> {
     }
 
     // ── Reciprocal trig / hyperbolic convenience methods ───────────
+    //
+    // No dedicated nodes: quotients and reciprocals, with the values those
+    // lose taken first (`acot(0) = π/2`, `coth(±∞) = ±1`, `cot(∓i·∞) =
+    // ±i`; see `output::parse::reciprocal_function`).
+
+    /// The reciprocal function `name` (see the comment above) of `self`.
+    fn reciprocal_function(&self, name: &str) -> Ex {
+        let id = {
+            let mut inner = self.inner.write();
+            crate::output::parse::reciprocal_function(&mut inner.arena, name, self.raw_id())
+        };
+        self.wrap(id)
+    }
 
     /// Secant: `sec(x) = 1/cos(x)`.
     #[must_use]
     pub fn sec(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        &one / &self.cos()
+        self.reciprocal_function("sec")
     }
 
     /// Cosecant: `csc(x) = 1/sin(x)`.
     #[must_use]
     pub fn csc(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        &one / &self.sin()
+        self.reciprocal_function("csc")
     }
 
-    /// Cotangent: `cot(x) = cos(x)/sin(x)`.
+    /// Cotangent: `cot(x) = cos(x)/sin(x)`, with `cot(∓i·∞) = ±i`.
     #[must_use]
     pub fn cot(&self) -> Ex {
-        &self.cos() / &self.sin()
+        self.reciprocal_function("cot")
     }
 
-    /// Inverse cotangent: `acot(x) = atan(1/x)`.
+    /// Inverse cotangent: `acot(x) = atan(1/x)`, with `acot(0) = π/2`.
     #[must_use]
     pub fn acot(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        (&one / self).atan()
+        self.reciprocal_function("acot")
     }
 
     /// Inverse secant: `asec(x) = acos(1/x)`.
     #[must_use]
     pub fn asec(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        (&one / self).acos()
+        self.reciprocal_function("asec")
     }
 
     /// Inverse cosecant: `acsc(x) = asin(1/x)`.
     #[must_use]
     pub fn acsc(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        (&one / self).asin()
+        self.reciprocal_function("acsc")
     }
 
-    /// Hyperbolic cotangent: `coth(x) = cosh(x)/sinh(x)`.
+    /// Hyperbolic cotangent: `coth(x) = cosh(x)/sinh(x)`, with `coth(±∞) =
+    /// ±1`.
     #[must_use]
     pub fn coth(&self) -> Ex {
-        &self.cosh() / &self.sinh()
+        self.reciprocal_function("coth")
     }
 
     /// Hyperbolic secant: `sech(x) = 1/cosh(x)`.
     #[must_use]
     pub fn sech(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        &one / &self.cosh()
+        self.reciprocal_function("sech")
     }
 
     /// Hyperbolic cosecant: `csch(x) = 1/sinh(x)`.
     #[must_use]
     pub fn csch(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        &one / &self.sinh()
+        self.reciprocal_function("csch")
     }
 
-    /// Inverse hyperbolic cotangent: `acoth(x) = atanh(1/x)`.
+    /// Inverse hyperbolic cotangent: `acoth(x) = atanh(1/x)`, with
+    /// `acoth(0) = iπ/2`.
     #[must_use]
     pub fn acoth(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        (&one / self).atanh()
+        self.reciprocal_function("acoth")
     }
 
-    /// Inverse hyperbolic secant: `asech(x) = acosh(1/x)`.
+    /// Inverse hyperbolic secant: `asech(x) = acosh(1/x)`, with `asech(0) =
+    /// ∞`.
     #[must_use]
     pub fn asech(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        (&one / self).acosh()
+        self.reciprocal_function("asech")
     }
 
     /// Inverse hyperbolic cosecant: `acsch(x) = asinh(1/x)`.
     #[must_use]
     pub fn acsch(&self) -> Ex {
-        let one_id = self.inner.read().arena.one();
-        let one = self.wrap(one_id);
-        (&one / self).asinh()
+        self.reciprocal_function("acsch")
     }
 
     /// Cardinal sine: `sinc(x) = sin(x)/x`, with `sinc(0) = 1` (requires limit).

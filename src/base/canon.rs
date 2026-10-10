@@ -13,8 +13,12 @@
 //! 4. Remaining terms sorted by [`SortKey`](crate::base::sort_key::SortKey).
 //! 5. Zero-coefficient terms dropped.
 //! 6. `NaN` propagation: any `NaN` term ⟹ result is `NaN`.
-//! 7. Infinities absorb finite terms; a directed infinity `x·∞` whose
-//!    coefficients cancel is `NaN` (see [`add_directed_infinities`]).
+//! 7. `zoo` absorbs every finite term; `±∞` (and a directed infinity of
+//!    real direction) only the real ones, `∞ + i` stays a sum, whose
+//!    negative powers are 0 (see [`infinity_plus_terms`], [`canon_pow`]); a
+//!    directed infinity `x·∞` whose coefficients cancel is `NaN` (see
+//!    [`add_directed_infinities`]), and so are cancelling like terms of an
+//!    infinite sum ([`cancels_infinite_terms`]).
 //!
 //! ## Mul
 //!
@@ -189,20 +193,33 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         return arena.nan;
     }
 
-    // A directed infinity `x·∞` is an infinite term too.
-    if terms.keys().any(|&k| is_directed_infinity(arena, k)) {
-        return add_directed_infinities(arena, &terms, has_pos_inf, has_neg_inf, has_zoo);
+    if !merged.is_empty() && cancels_infinite_terms(arena, &terms, &merged) {
+        tracing::debug!("canon_add: like infinite terms cancel → nan");
+        return arena.nan;
     }
 
-    // Handle infinities: if we saw oo / -oo / zoo, they dominate finite terms.
-    if has_pos_inf {
-        return arena.infinity;
+    // A directed infinity `x·∞` is an infinite term too.
+    if terms.keys().any(|&k| is_directed_infinity(arena, k)) {
+        let infinities = Infinities {
+            pos: has_pos_inf,
+            neg: has_neg_inf,
+            zoo: has_zoo,
+        };
+        return add_directed_infinities(arena, &terms, &constant, infinities);
     }
-    if has_neg_inf {
-        return arena.neg_infinity;
-    }
+
+    // `zoo` absorbs every finite term; `±∞` the real ones only (see
+    // `infinity_plus_terms`).
     if has_zoo {
         return arena.complex_infinity;
+    }
+    if has_pos_inf || has_neg_inf {
+        let inf = if has_pos_inf {
+            arena.infinity
+        } else {
+            arena.neg_infinity
+        };
+        return infinity_plus_terms(arena, &terms, &constant, &[inf], true);
     }
 
     if !merged.is_empty() && merges_undefined_terms(arena, &merged) {
@@ -328,12 +345,24 @@ fn has_identically_infinite_term(arena: &mut Arena, terms: &FxHashMap<ExprId, Q>
         .any(|t| term_infinite_or_undefined(arena, &mut memo, t))
 }
 
+/// The bare infinities a sum holds.
+#[derive(Clone, Copy)]
+struct Infinities {
+    pos: bool,
+    neg: bool,
+    zoo: bool,
+}
+
 /// The sum of collected `terms` (coefficient per key) of which at least one
 /// is a directed infinity `x·∞` (see [`directed_infinity`]), plus the bare
-/// infinities seen.  A symbol is finite, so `x·∞` is `nan` (at `x = 0`) or
-/// infinite in the direction of `x`:
+/// infinities seen and the rational `constant`.  A symbol is finite, so
+/// `x·∞` is `nan` (at `x = 0`) or infinite in the direction of `x`:
 ///
-/// * finite terms are absorbed (`x·∞ + 1 = x·∞`), as by a bare `±∞`;
+/// * a finite term stays unless it is real and some infinite term has a
+///   real direction ([`infinity_plus_terms`]): `x·∞ + 1` is `1 + i·∞` at
+///   `x = i`, whose real part is 1 (SymPy keeps `oo*x + 1` and `1 + oo*I`);
+///   up to 0.40 every finite term was absorbed, `π/2 + i·∞` was `i·∞` and
+///   `cos(π/2 + i·∞)` became `cos(i·∞) = ∞` (the limit is `−i·∞`);
 /// * a directed infinity whose coefficients cancel is `nan`
 ///   (`x·∞ − x·∞`; SymPy `oo*x - oo*x` → nan); other coefficients keep only
 ///   their sign (`x·∞ + x·∞ = x·∞`);
@@ -344,14 +373,14 @@ fn has_identically_infinite_term(arena: &mut Arena, terms: &FxHashMap<ExprId, Q>
 fn add_directed_infinities(
     arena: &mut Arena,
     terms: &FxHashMap<ExprId, Q>,
-    has_pos_inf: bool,
-    has_neg_inf: bool,
-    has_zoo: bool,
+    constant: &Q,
+    infinities: Infinities,
 ) -> ExprId {
-    if has_zoo {
+    if infinities.zoo {
         return arena.nan;
     }
     let mut out: SmallVec<[ExprId; 6]> = SmallVec::new();
+    let mut real_direction = infinities.pos || infinities.neg;
     for (&key, c) in terms {
         if !is_directed_infinity(arena, key) {
             continue;
@@ -360,14 +389,51 @@ fn add_directed_infinities(
             tracing::debug!("canon_add: directed infinities cancel → nan");
             return arena.nan;
         }
+        real_direction |= has_real_direction(arena, key);
         // `canon_mul` keeps only the sign of the coefficient.
         out.push(arena.make_coeff_term(c.clone(), key));
     }
-    if has_pos_inf {
+    if infinities.pos {
         out.push(arena.infinity);
     }
-    if has_neg_inf {
+    if infinities.neg {
         out.push(arena.neg_infinity);
+    }
+    infinity_plus_terms(arena, terms, constant, &out, real_direction)
+}
+
+/// The sum of the `infinite` terms of a sum (`±∞`, directed infinities;
+/// at least one) and those of its finite terms — the rational `constant`
+/// and the collected `terms` that are not directed infinities — that are
+/// not absorbed.  With `absorb_real` (some infinite term is `±∞` or has a
+/// real direction) a term known to be real is absorbed (`∞ + π = ∞`, `x·∞ +
+/// 1 = x·∞` for a real `x`); every other finite term stays: `∞ + i` is not
+/// `∞`, its imaginary part is 1 and `atanh(∞ + i) = iπ/2` while `atanh(∞)
+/// = −iπ/2` (SymPy's `Add.flatten` absorbs only real terms into `oo`: `oo +
+/// I` and `oo + x` stay).  Up to 0.40 every finite term was absorbed: `oo +
+/// I` was `oo`, so `im(oo + I)` was 0, `oo + I` claimed positive and real.
+fn infinity_plus_terms(
+    arena: &mut Arena,
+    terms: &FxHashMap<ExprId, Q>,
+    constant: &Q,
+    infinite: &[ExprId],
+    absorb_real: bool,
+) -> ExprId {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let mut out: SmallVec<[ExprId; 6]> = SmallVec::from_slice(infinite);
+    if !absorb_real && !constant.is_zero() {
+        let nid = arena.intern_num(constant.clone());
+        out.push(arena.intern(ExprNode::Num(nid)));
+    }
+    let mut cache = AssumptionCache::new();
+    for (&key, c) in terms {
+        if c.is_zero() || is_directed_infinity(arena, key) {
+            continue;
+        }
+        if absorb_real && cache.query(arena, key, Props::REAL) == Some(true) {
+            continue;
+        }
+        out.push(arena.make_coeff_term(c.clone(), key));
     }
     if out.len() == 1 {
         return out[0];
@@ -376,10 +442,67 @@ fn add_directed_infinities(
     let result = arena.intern(ExprNode::Add(out));
     debug_assert!(
         verify_canonical_shallow(arena, result).is_empty(),
-        "canon_add: non-canonical sum of directed infinities: {:?}",
+        "canon_add: non-canonical sum with an infinite term: {:?}",
         verify_canonical_shallow(arena, result)
     );
     result
+}
+
+/// Is the direction of the directed infinity `key` (its factors other than
+/// `∞`) known to be real?  Then it is `±∞` (or `nan`) at every point.
+fn has_real_direction(arena: &Arena, key: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let ExprNode::Mul(children) = arena.node(key) else {
+        return false;
+    };
+    let mut cache = AssumptionCache::new();
+    children.iter().all(|&c| {
+        c == arena.infinity
+            || arena.as_num(c).is_some()
+            || cache.query(arena, c, Props::REAL) == Some(true)
+    })
+}
+
+/// Is `id` a sum with exactly one infinite term — `±∞` or a directed
+/// infinity `x·∞` — beside finite ones (`∞ + i`, `1 + i·∞`)?  Its magnitude
+/// is infinite at every point where it is defined, so its reciprocal is 0
+/// ([`canon_pow`]) and like terms of it cannot cancel to 0
+/// ([`cancels_infinite_terms`]).
+pub(crate) fn is_infinite_sum(arena: &Arena, id: ExprId) -> bool {
+    let ExprNode::Add(children) = arena.node(id) else {
+        return false;
+    };
+    let mut infinite = 0usize;
+    for &c in children.iter() {
+        match arena.node(c) {
+            ExprNode::Infinity | ExprNode::NegInfinity => infinite += 1,
+            ExprNode::ComplexInfinity | ExprNode::NaN => return false,
+            _ if is_directed_infinity(arena, c) => infinite += 1,
+            _ => {}
+        }
+    }
+    infinite == 1
+}
+
+/// Did like terms of a sum whose key holds an infinite sum factor
+/// ([`is_infinite_sum`], or a positive power of one) cancel?  `y·(∞ + i) −
+/// y·(∞ + i)` is `∞ − ∞ = nan`, not 0.  Only the `merged` keys (those that
+/// collected two or more terms) whose coefficient became 0 are looked at.
+fn cancels_infinite_terms(arena: &Arena, terms: &FxHashMap<ExprId, Q>, merged: &[ExprId]) -> bool {
+    merged.iter().any(|key| {
+        terms.get(key).is_some_and(Zero::is_zero) && {
+            let factors: &[ExprId] = match arena.node(*key) {
+                ExprNode::Mul(children) => children,
+                _ => std::slice::from_ref(key),
+            };
+            factors.iter().any(|&f| match *arena.node(f) {
+                ExprNode::Pow(b, e) => {
+                    arena.as_num(e).is_some_and(Signed::is_positive) && is_infinite_sum(arena, b)
+                }
+                _ => is_infinite_sum(arena, f),
+            })
+        }
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2091,6 +2214,17 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return arena.nan;
     }
 
+    // A sum with one infinite term beside finite ones (`∞ + i`) has an
+    // infinite magnitude: its negative powers are 0 (SymPy: `1/(oo + I)` →
+    // 0), its zeroth power is `nan` like `∞⁰`.  So `B·B⁻¹` is `B·0 = nan`,
+    // never the `1` of a finite base.
+    if let Some(e) = arena.as_num(exp)
+        && !e.is_positive()
+        && is_infinite_sum(arena, base)
+    {
+        return if e.is_zero() { arena.nan } else { arena.zero };
+    }
+
     // x^0 → 1, except for indeterminate forms ∞^0, (-∞)^0, zoo^0.
     if exp == arena.zero {
         if base == arena.infinity || base == arena.neg_infinity || base == arena.complex_infinity {
@@ -2780,8 +2914,24 @@ enum Folded {
     NegInfinity,
     /// The directed infinity `−i·∞` (`true`) or `i·∞` (`false`).
     ImaginaryInfinity(bool),
+    /// `d·∞ + q·π·u + r` for the direction `d`, with `u = i` when `d` is
+    /// real and `u = 1` when it is imaginary: the finite part of an infinite
+    /// value that a bare infinity would lose (`asin(∞) = π/2 − i·∞`,
+    /// `ln(−∞) = ∞ + iπ`, `erfc(i·∞) = 1 − i·∞`).
+    InfinitePlus(InfDir, Q, Q),
+    /// A value already built (a directed infinity `e^c·∞`).
+    Built(ExprId),
     ComplexInfinity,
     NaN,
+}
+
+/// The direction of `±∞` or `±i·∞`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InfDir {
+    Pos,
+    Neg,
+    PosImag,
+    NegImag,
 }
 
 impl Folded {
@@ -2807,6 +2957,9 @@ enum Arg {
     NegInfinity,
     /// `−i·∞` (`true`) or `i·∞` (`false`).
     ImaginaryInfinity(bool),
+    /// A sum of `±∞` or `±i·∞` and finite terms (the second field, at
+    /// least one; [`is_infinite_sum`]): `∞ + i`, `π/2 + i·∞`.
+    InfinitePlus(InfDir, SmallVec<[ExprId; 4]>),
     ComplexInfinity,
     NaN,
     Other,
@@ -2849,8 +3002,144 @@ fn classify_arg(arena: &Arena, id: ExprId) -> Arg {
                 _ => Arg::Other,
             }
         }
+        ExprNode::Add(children) if is_infinite_sum(arena, id) => {
+            let mut direction = None;
+            let mut finite: SmallVec<[ExprId; 4]> = SmallVec::new();
+            for &c in children.iter() {
+                let d = match *arena.node(c) {
+                    ExprNode::Infinity => Some(InfDir::Pos),
+                    ExprNode::NegInfinity => Some(InfDir::Neg),
+                    _ if is_directed_infinity(arena, c) => match classify_arg(arena, c) {
+                        Arg::ImaginaryInfinity(neg) => Some(if neg {
+                            InfDir::NegImag
+                        } else {
+                            InfDir::PosImag
+                        }),
+                        // `x·∞ + 1`: no table entry.
+                        _ => return Arg::Other,
+                    },
+                    _ => None,
+                };
+                match d {
+                    Some(d) => direction = Some(d),
+                    None => finite.push(c),
+                }
+            }
+            match direction {
+                Some(d) => Arg::InfinitePlus(d, finite),
+                None => Arg::Other,
+            }
+        }
         _ => Arg::Other,
     }
+}
+
+/// An argument `±∞`, `±i·∞`, or a sum of one of them and finite terms
+/// `c` (`∞ + i`, `π/2 − i·∞`): see [`infinite_argument`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InfiniteArgument {
+    /// The infinite term is `±i·∞` (else `±∞`).
+    pub(crate) imaginary: bool,
+    /// The infinite term is `−∞` or `−i·∞`.
+    pub(crate) negative: bool,
+    /// The sign of the finite part across the direction — of `Im c` for
+    /// `±∞ + c`, of `Re c` for `c ± i·∞`; `Some(Equal)` for a bare
+    /// infinity, `None` when unknown.
+    pub(crate) side: Option<Ordering>,
+}
+
+/// The direction of an infinite argument and the side of it its finite
+/// part lies on ([`InfiniteArgument`]), which picks the side of a branch cut
+/// along the direction (`atanh(∞ + i) = iπ/2`, `atanh(∞) = −iπ/2`).  The
+/// reciprocal functions built from quotients (`cot = cos/sin`, `coth =
+/// cosh/sinh`) take their limits there before dividing: the quotient of
+/// the two infinities is `nan`.
+pub(crate) fn infinite_argument(arena: &Arena, id: ExprId) -> Option<InfiniteArgument> {
+    let (d, side) = match classify_arg(arena, id) {
+        Arg::Infinity => (InfDir::Pos, Some(Ordering::Equal)),
+        Arg::NegInfinity => (InfDir::Neg, Some(Ordering::Equal)),
+        Arg::ImaginaryInfinity(neg) => (
+            if neg {
+                InfDir::NegImag
+            } else {
+                InfDir::PosImag
+            },
+            Some(Ordering::Equal),
+        ),
+        Arg::InfinitePlus(d, c) => {
+            let imaginary = matches!(d, InfDir::Pos | InfDir::Neg);
+            (d, finite_part_sign(arena, &c, imaginary))
+        }
+        _ => return None,
+    };
+    Some(InfiniteArgument {
+        imaginary: matches!(d, InfDir::PosImag | InfDir::NegImag),
+        negative: matches!(d, InfDir::Neg | InfDir::NegImag),
+        side,
+    })
+}
+
+/// The sign of the real (`imaginary == false`) or imaginary part of the
+/// sum of the finite `terms`, when every term's contribution is known: a
+/// real term of known sign, `i` times a product of factors of known sign.
+/// `Some(Equal)` when the part is 0.
+fn finite_part_sign(arena: &Arena, terms: &[ExprId], imaginary: bool) -> Option<Ordering> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let mut cache = AssumptionCache::new();
+    let mut total = Ordering::Equal;
+    for &t in terms {
+        let factors: &[ExprId] = match arena.node(t) {
+            ExprNode::Mul(children) => children,
+            _ => std::slice::from_ref(&t),
+        };
+        let i_count = factors.iter().filter(|&&f| f == arena.i_unit).count();
+        let (re_sign, im_sign) = if i_count == 1 {
+            let mut sign = Ordering::Greater;
+            for &f in factors.iter().filter(|&&f| f != arena.i_unit) {
+                let s = match arena.as_num(f) {
+                    Some(q) => q.cmp(&Q::zero()),
+                    None => known_sign(arena, f)?,
+                };
+                if s == Ordering::Less {
+                    sign = sign.reverse();
+                }
+            }
+            (Ordering::Equal, sign)
+        } else if cache.query(arena, t, Props::REAL) == Some(true) {
+            let s = match arena.as_num(t) {
+                Some(q) => q.cmp(&Q::zero()),
+                None => known_sign(arena, t)?,
+            };
+            (s, Ordering::Equal)
+        } else {
+            return None;
+        };
+        let s = if imaginary { im_sign } else { re_sign };
+        match (total, s) {
+            (_, Ordering::Equal) => {}
+            (Ordering::Equal, s) => total = s,
+            (t, s) if t != s => return None,
+            _ => {}
+        }
+    }
+    Some(total)
+}
+
+/// `outer·exp(inner·c)·∞` for the sum `c` of the finite `terms` of an
+/// infinite argument: the directed infinity of `e^(∞ + c) = e^c·∞` and of
+/// the trigonometric and hyperbolic functions built from it (`cos(c + i·∞)
+/// = e^(−ic)·∞`).
+fn exp_direction(arena: &mut Arena, terms: &[ExprId], inner: ExprId, outer: ExprId) -> Folded {
+    let c = canon_add(arena, terms);
+    let scaled = canon_mul(arena, &[inner, c]);
+    let e = arena.exp(scaled);
+    let inf = arena.infinity;
+    Folded::Built(canon_mul(arena, &[outer, e, inf]))
+}
+
+/// `sign·π·q`-style helper: `q` if `s` is `Greater`, `−q` if `Less`.
+fn signed(s: Ordering, q: Q) -> Q {
+    if s == Ordering::Less { -q } else { q }
 }
 
 /// `q` when `id` is an inverse trigonometric function at a point where its
@@ -2993,6 +3282,9 @@ fn is_nonpositive_int(q: &Q) -> bool {
 /// `Γ`, `n!`, `C(n, k)` and `B(a, b)` (numbers that can be huge) are left
 /// to `eval`, which bounds them by the digit guard of exact results.
 pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
+    if let ExprNode::Min(args) | ExprNode::Max(args) = node {
+        return fold_min_max(arena, args, matches!(node, ExprNode::Min(_)));
+    }
     // |c| = c for the positive constants π, e, γ, G, φ (`abs(π)` stayed an
     // atom and hid `sin(|π|/2) = 1` from the tables).
     if let ExprNode::Abs(a) = *node
@@ -3068,10 +3360,26 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
         // acos(oo*I) → pi/2 - oo*I, asinh(oo*I) → oo, acosh(oo*I) →
         // oo + I*pi/2, erf(oo*I) → oo*I, erfc(oo*I) → -oo*I, sign(oo*I) → I;
         // a finite term next to an infinite one is absorbed).
+        //
+        // At `c ± i·∞` and `±∞ + c` for a finite `c` (a sum the canonical
+        // arithmetic keeps since 0.41, see `infinity_plus_terms`) the
+        // functions take the limits along `c + i·t`, `±t + c` (mpmath at
+        // t = 10²⁰, 10⁴⁰, 10⁸⁰): `sin(c + i·∞) = i·e^(−ic)·∞`,
+        // `cos(c ± i·∞) = e^(∓ic)·∞` (`cos(π/2 + i·∞) = −i·∞`; SymPy:
+        // nan), `e^(∞ + c) = e^c·∞` (SymPy: `exp(oo + I)` → `oo*exp(I)`),
+        // `tanh(±∞ + c) = ±1`, `ln(c ± i·∞) = ∞ ± iπ/2`.
         ExprNode::Sin(a) => match classify_arg(arena, a) {
             Arg::Rational(q) if q.is_zero() => Folded::int(0),
             Arg::PiMultiple(q) => sin_pi(&q)?,
             Arg::ImaginaryInfinity(neg) => Folded::ImaginaryInfinity(neg),
+            Arg::InfinitePlus(InfDir::PosImag, c) => {
+                let (minus_i, i) = (canon_neg(arena, arena.i_unit), arena.i_unit);
+                exp_direction(arena, &c, minus_i, i)
+            }
+            Arg::InfinitePlus(InfDir::NegImag, c) => {
+                let (minus_i, i) = (canon_neg(arena, arena.i_unit), arena.i_unit);
+                exp_direction(arena, &c, i, minus_i)
+            }
             Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
             _ => return None,
         },
@@ -3079,6 +3387,15 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             Arg::Rational(q) if q.is_zero() => Folded::int(1),
             Arg::PiMultiple(q) => cos_pi(&q)?,
             Arg::ImaginaryInfinity(_) => Folded::Infinity,
+            Arg::InfinitePlus(d @ (InfDir::PosImag | InfDir::NegImag), c) => {
+                let i = arena.i_unit;
+                let inner = if d == InfDir::PosImag {
+                    canon_neg(arena, i)
+                } else {
+                    i
+                };
+                exp_direction(arena, &c, inner, arena.one)
+            }
             Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
             _ => return None,
         },
@@ -3088,10 +3405,15 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             Arg::ImaginaryInfinity(neg) => {
                 Folded::Imaginary(if neg { -Q::one() } else { Q::one() })
             }
+            Arg::InfinitePlus(InfDir::PosImag, _) => Folded::Imaginary(Q::one()),
+            Arg::InfinitePlus(InfDir::NegImag, _) => Folded::Imaginary(-Q::one()),
             Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
             _ => return None,
         },
         ExprNode::Exp(a) => match classify_arg(arena, a) {
+            Arg::InfinitePlus(InfDir::Pos, c) => exp_direction(arena, &c, arena.one, arena.one),
+            Arg::InfinitePlus(InfDir::Neg, _) => Folded::int(0),
+            Arg::InfinitePlus(_, _) => Folded::NaN,
             Arg::Rational(q) if q.is_zero() => Folded::int(1),
             // e^{iπk/2} = i^k: 1, i, −1, −i.
             Arg::ImaginaryPiMultiple(q) => match in_units(&mod_rational(&q, 2), 2)? {
@@ -3106,11 +3428,26 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             Arg::ImaginaryInfinity(_) | Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
             _ => return None,
         },
+        // ln(−∞) = ∞ + iπ, ln(±i·∞) = ∞ ± iπ/2 (mpmath `log(-1e20)` =
+        // 46.05… + 3.14…j; SymPy: `log(-oo)` → oo, which loses the
+        // imaginary part; up to 0.40 symplex too); ln(−∞ + c) = ∞ ± iπ by
+        // the side of the cut `c` puts it on.
         ExprNode::Ln(a) => match classify_arg(arena, a) {
             Arg::Rational(q) if q.is_zero() => Folded::ComplexInfinity,
             Arg::Rational(q) if q.is_one() => Folded::int(0),
             Arg::E => Folded::int(1),
-            Arg::Infinity | Arg::NegInfinity | Arg::ImaginaryInfinity(_) => Folded::Infinity,
+            Arg::Infinity | Arg::InfinitePlus(InfDir::Pos, _) => Folded::Infinity,
+            Arg::NegInfinity => Folded::InfinitePlus(InfDir::Pos, Q::one(), Q::zero()),
+            Arg::InfinitePlus(InfDir::Neg, c) => match finite_part_sign(arena, &c, true)? {
+                Ordering::Equal => return None,
+                s => Folded::InfinitePlus(InfDir::Pos, signed(s, Q::one()), Q::zero()),
+            },
+            Arg::ImaginaryInfinity(true) | Arg::InfinitePlus(InfDir::NegImag, _) => {
+                Folded::InfinitePlus(InfDir::Pos, Q::new((-1).into(), 2.into()), Q::zero())
+            }
+            Arg::ImaginaryInfinity(false) | Arg::InfinitePlus(InfDir::PosImag, _) => {
+                Folded::InfinitePlus(InfDir::Pos, Q::new(1.into(), 2.into()), Q::zero())
+            }
             Arg::ComplexInfinity => Folded::ComplexInfinity,
             Arg::NaN => Folded::NaN,
             _ => return None,
@@ -3121,6 +3458,11 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             Arg::ImaginaryPiMultiple(q) => times_i(sin_pi(&q)?)?,
             Arg::Infinity => Folded::Infinity,
             Arg::NegInfinity => Folded::NegInfinity,
+            // sinh(±∞ + c) = ±e^(±c)·∞.
+            Arg::InfinitePlus(InfDir::Pos, c) => exp_direction(arena, &c, arena.one, arena.one),
+            Arg::InfinitePlus(InfDir::Neg, c) => {
+                exp_direction(arena, &c, arena.neg_one, arena.neg_one)
+            }
             Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
             _ => return None,
         },
@@ -3129,6 +3471,9 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             // cosh(iπq) = cos(πq).
             Arg::ImaginaryPiMultiple(q) => cos_pi(&q)?,
             Arg::Infinity | Arg::NegInfinity => Folded::Infinity,
+            // cosh(±∞ + c) = e^(±c)·∞.
+            Arg::InfinitePlus(InfDir::Pos, c) => exp_direction(arena, &c, arena.one, arena.one),
+            Arg::InfinitePlus(InfDir::Neg, c) => exp_direction(arena, &c, arena.neg_one, arena.one),
             Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
             _ => return None,
         },
@@ -3136,29 +3481,75 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             Arg::Rational(q) if q.is_zero() => Folded::int(0),
             // tanh(iπq) = i·tan(πq).
             Arg::ImaginaryPiMultiple(q) => times_i(tan_pi(&q)?)?,
-            Arg::Infinity => Folded::int(1),
-            Arg::NegInfinity => Folded::int(-1),
+            Arg::Infinity | Arg::InfinitePlus(InfDir::Pos, _) => Folded::int(1),
+            Arg::NegInfinity | Arg::InfinitePlus(InfDir::Neg, _) => Folded::int(-1),
             Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
             _ => return None,
         },
-        // SymPy: asin(oo) → -oo*I, asin(-oo) → oo*I, acos(oo) → oo*I,
-        // acos(-oo) → -oo*I, atan(I) → oo*I, atan(-I) → -oo*I (before 0.30
-        // the hunts recorded them as `zoo`, without their direction).
+        // SymPy: atan(I) → oo*I, atan(-I) → -oo*I, acos(oo) → oo*I (before
+        // 0.30 the hunts recorded them as `zoo`, without their direction).
+        // On the cuts the values are the limits along them, SymPy's
+        // numerical convention (`N(asin(10**20))` = 1.5707… − 46.74…i):
+        // asin(±∞) = ±π/2 ∓ i·∞, acos(−∞) = π − i·∞, acos(±i·∞) = π/2 ∓
+        // i·∞ (SymPy: `asin(oo)` → -oo*I, `acos(-oo)` → -oo*I, dropping the
+        // real part; up to 0.40 symplex too); off them the side decides:
+        // asin(±∞ + c) = ±π/2 + sign(Im c)·i·∞, asin(c ± i·∞) = ±i·∞.
         ExprNode::Asin(a) => match classify_arg(arena, a) {
             Arg::Rational(q) if q.is_zero() => Folded::int(0),
-            Arg::Infinity => Folded::ImaginaryInfinity(true),
-            Arg::NegInfinity => Folded::ImaginaryInfinity(false),
+            Arg::Infinity => {
+                Folded::InfinitePlus(InfDir::NegImag, Q::new(1.into(), 2.into()), Q::zero())
+            }
+            Arg::NegInfinity => {
+                Folded::InfinitePlus(InfDir::PosImag, Q::new((-1).into(), 2.into()), Q::zero())
+            }
+            Arg::InfinitePlus(d @ (InfDir::Pos | InfDir::Neg), c) => {
+                let half = Q::new(if d == InfDir::Pos { 1 } else { -1 }.into(), 2.into());
+                match finite_part_sign(arena, &c, true)? {
+                    Ordering::Greater => Folded::InfinitePlus(InfDir::PosImag, half, Q::zero()),
+                    Ordering::Less => Folded::InfinitePlus(InfDir::NegImag, half, Q::zero()),
+                    Ordering::Equal => return None,
+                }
+            }
             Arg::ImaginaryInfinity(neg) => Folded::ImaginaryInfinity(neg),
+            Arg::InfinitePlus(d, _) => Folded::ImaginaryInfinity(d == InfDir::NegImag),
             Arg::ComplexInfinity => Folded::ComplexInfinity,
             Arg::NaN => Folded::NaN,
             _ => return None,
         },
+        // acos = π/2 − asin.
         ExprNode::Acos(a) => match classify_arg(arena, a) {
             Arg::Rational(q) if q.is_one() => Folded::int(0),
             Arg::Infinity => Folded::ImaginaryInfinity(false),
-            Arg::NegInfinity => Folded::ImaginaryInfinity(true),
+            Arg::NegInfinity => Folded::InfinitePlus(InfDir::NegImag, Q::one(), Q::zero()),
+            Arg::InfinitePlus(d @ (InfDir::Pos | InfDir::Neg), c) => {
+                let q = if d == InfDir::Pos {
+                    Q::zero()
+                } else {
+                    Q::one()
+                };
+                match finite_part_sign(arena, &c, true)? {
+                    Ordering::Greater => Folded::InfinitePlus(InfDir::NegImag, q, Q::zero()),
+                    Ordering::Less => Folded::InfinitePlus(InfDir::PosImag, q, Q::zero()),
+                    Ordering::Equal => return None,
+                }
+            }
             // π/2 ∓ i∞.
-            Arg::ImaginaryInfinity(neg) => Folded::ImaginaryInfinity(!neg),
+            Arg::ImaginaryInfinity(neg) => {
+                let d = if neg {
+                    InfDir::PosImag
+                } else {
+                    InfDir::NegImag
+                };
+                Folded::InfinitePlus(d, Q::new(1.into(), 2.into()), Q::zero())
+            }
+            Arg::InfinitePlus(d, _) => {
+                let d = if d == InfDir::NegImag {
+                    InfDir::PosImag
+                } else {
+                    InfDir::NegImag
+                };
+                Folded::InfinitePlus(d, Q::new(1.into(), 2.into()), Q::zero())
+            }
             Arg::ComplexInfinity => Folded::ComplexInfinity,
             Arg::NaN => Folded::NaN,
             _ => return None,
@@ -3176,16 +3567,51 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             Arg::Rational(q) if q.is_zero() => Folded::int(0),
             Arg::Infinity => Folded::Infinity,
             Arg::NegInfinity => Folded::NegInfinity,
-            Arg::ImaginaryInfinity(true) => Folded::NegInfinity,
-            Arg::ImaginaryInfinity(false) => Folded::Infinity,
+            Arg::InfinitePlus(InfDir::Pos, _) => Folded::Infinity,
+            Arg::InfinitePlus(InfDir::Neg, _) => Folded::NegInfinity,
+            // asinh(±i·∞) = ±∞ ± iπ/2 (SymPy's `N(asinh(10**20*I))` = 46.74… +
+            // 1.5707…i; SymPy and up to 0.40 symplex: ±∞); off the cut the
+            // sign of `Re c` picks the side: asinh(c + i·∞) = ±∞ + iπ/2.
+            Arg::ImaginaryInfinity(neg) => {
+                let (d, q) = if neg {
+                    (InfDir::Neg, Q::new((-1).into(), 2.into()))
+                } else {
+                    (InfDir::Pos, Q::new(1.into(), 2.into()))
+                };
+                Folded::InfinitePlus(d, q, Q::zero())
+            }
+            Arg::InfinitePlus(d, c) => {
+                let up = d == InfDir::PosImag;
+                let q = Q::new(if up { 1 } else { -1 }.into(), 2.into());
+                let real = match finite_part_sign(arena, &c, false)? {
+                    Ordering::Greater => InfDir::Pos,
+                    Ordering::Less => InfDir::Neg,
+                    Ordering::Equal if up => InfDir::Pos,
+                    Ordering::Equal => InfDir::Neg,
+                };
+                Folded::InfinitePlus(real, q, Q::zero())
+            }
             Arg::ComplexInfinity => Folded::ComplexInfinity,
             Arg::NaN => Folded::NaN,
             _ => return None,
         },
+        // acosh(−∞) = ∞ + iπ, acosh(±i·∞) = ∞ ± iπ/2 (SymPy: `acosh(-oo)`
+        // → oo, `acosh(oo*I)` → oo + I*pi/2; up to 0.40 symplex: ∞ for
+        // all), acosh(−∞ + c) = ∞ ± iπ by the sign of `Im c`.
         ExprNode::Acosh(a) => match classify_arg(arena, a) {
             Arg::Rational(q) if q.is_one() => Folded::int(0),
-            // ∞ ± iπ/2 at ±i∞.
-            Arg::Infinity | Arg::NegInfinity | Arg::ImaginaryInfinity(_) => Folded::Infinity,
+            Arg::Infinity | Arg::InfinitePlus(InfDir::Pos, _) => Folded::Infinity,
+            Arg::NegInfinity => Folded::InfinitePlus(InfDir::Pos, Q::one(), Q::zero()),
+            Arg::InfinitePlus(InfDir::Neg, c) => match finite_part_sign(arena, &c, true)? {
+                Ordering::Equal => return None,
+                s => Folded::InfinitePlus(InfDir::Pos, signed(s, Q::one()), Q::zero()),
+            },
+            Arg::ImaginaryInfinity(true) | Arg::InfinitePlus(InfDir::NegImag, _) => {
+                Folded::InfinitePlus(InfDir::Pos, Q::new((-1).into(), 2.into()), Q::zero())
+            }
+            Arg::ImaginaryInfinity(false) | Arg::InfinitePlus(InfDir::PosImag, _) => {
+                Folded::InfinitePlus(InfDir::Pos, Q::new(1.into(), 2.into()), Q::zero())
+            }
             Arg::ComplexInfinity => Folded::ComplexInfinity,
             Arg::NaN => Folded::NaN,
             _ => return None,
@@ -3227,18 +3653,26 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
         },
         ExprNode::Erf(a) => match classify_arg(arena, a) {
             Arg::Rational(q) if q.is_zero() => Folded::int(0),
-            Arg::Infinity => Folded::int(1),
-            Arg::NegInfinity => Folded::int(-1),
+            Arg::Infinity | Arg::InfinitePlus(InfDir::Pos, _) => Folded::int(1),
+            Arg::NegInfinity | Arg::InfinitePlus(InfDir::Neg, _) => Folded::int(-1),
             Arg::ImaginaryInfinity(neg) => Folded::ImaginaryInfinity(neg),
             Arg::NaN => Folded::NaN,
             _ => return None,
         },
         ExprNode::Erfc(a) => match classify_arg(arena, a) {
             Arg::Rational(q) if q.is_zero() => Folded::int(1),
-            Arg::Infinity => Folded::int(0),
-            Arg::NegInfinity => Folded::int(2),
-            // 1 ∓ i∞.
-            Arg::ImaginaryInfinity(neg) => Folded::ImaginaryInfinity(!neg),
+            Arg::Infinity | Arg::InfinitePlus(InfDir::Pos, _) => Folded::int(0),
+            Arg::NegInfinity | Arg::InfinitePlus(InfDir::Neg, _) => Folded::int(2),
+            // erfc(±i·∞) = 1 ∓ i·∞ (`erfc(iy) = 1 − i·erfi(y)`; SymPy and up
+            // to 0.40 symplex: ∓i·∞, real part lost).
+            Arg::ImaginaryInfinity(neg) => {
+                let d = if neg {
+                    InfDir::PosImag
+                } else {
+                    InfDir::NegImag
+                };
+                Folded::InfinitePlus(d, Q::zero(), Q::one())
+            }
             Arg::NaN => Folded::NaN,
             _ => return None,
         },
@@ -3283,6 +3717,8 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
         ExprNode::Abs(a) => match classify_arg(arena, a) {
             Arg::Rational(q) => Folded::Rational(q.abs()),
             Arg::Infinity | Arg::NegInfinity | Arg::ComplexInfinity => Folded::Infinity,
+            // |∞ + i| = ∞ (SymPy: `Abs(oo + I)` → oo).
+            Arg::InfinitePlus(_, _) => Folded::Infinity,
             Arg::NaN => Folded::NaN,
             _ => return None,
         },
@@ -3293,6 +3729,11 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             Arg::ImaginaryInfinity(neg) => {
                 Folded::Imaginary(if neg { -Q::one() } else { Q::one() })
             }
+            // sign(z) = z/|z| → the direction of the infinite term.
+            Arg::InfinitePlus(InfDir::Pos, _) => Folded::int(1),
+            Arg::InfinitePlus(InfDir::Neg, _) => Folded::int(-1),
+            Arg::InfinitePlus(InfDir::PosImag, _) => Folded::Imaginary(Q::one()),
+            Arg::InfinitePlus(InfDir::NegImag, _) => Folded::Imaginary(-Q::one()),
             Arg::NaN => Folded::NaN,
             _ => return None,
         },
@@ -3360,9 +3801,118 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
             let direction = if neg { canon_neg(arena, i) } else { i };
             canon_mul(arena, &[direction, arena.infinity])
         }
+        Folded::InfinitePlus(d, q, r) => {
+            let i = arena.i_unit;
+            let mut terms: SmallVec<[ExprId; 3]> = SmallVec::new();
+            terms.push(match d {
+                InfDir::Pos => arena.infinity,
+                InfDir::Neg => arena.neg_infinity,
+                InfDir::PosImag => canon_mul(arena, &[i, arena.infinity]),
+                InfDir::NegImag => canon_mul(arena, &[arena.neg_one, i, arena.infinity]),
+            });
+            if !q.is_zero() {
+                let nid = arena.intern_num(q);
+                let c = arena.intern(ExprNode::Num(nid));
+                let pi = arena.pi;
+                terms.push(if matches!(d, InfDir::Pos | InfDir::Neg) {
+                    canon_mul(arena, &[c, pi, i])
+                } else {
+                    canon_mul(arena, &[c, pi])
+                });
+            }
+            if !r.is_zero() {
+                let nid = arena.intern_num(r);
+                terms.push(arena.intern(ExprNode::Num(nid)));
+            }
+            canon_add(arena, &terms)
+        }
+        Folded::Built(id) => id,
         Folded::ComplexInfinity => arena.complex_infinity,
         Folded::NaN => arena.nan,
     })
+}
+
+/// `Min`/`Max` of numbers and infinities fold when they are built, as
+/// SymPy's: the rational arguments are replaced by their least (greatest),
+/// `+∞` is dropped from a `Min` and `−∞` from a `Max` (identities), `−∞`
+/// absorbs a `Min` and `+∞` a `Max` whose other arguments are real, `nan`
+/// and `zoo` make `nan`, and a single remaining argument is the value: `Min(0, 10)
+/// = 0`, `Max(3, 0, x) = Max(3, x)`, `Min(∞, x) = x`.  Up to 0.40 `Min(0,
+/// 10)` stayed a node until `eval`, and the zero it hid let `ln(x·Min(0,
+/// 10))` pass for finite and `0·∞`-like products for 0.  `None` when
+/// nothing changes.
+fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if args.is_empty() {
+        return None;
+    }
+    let (identity, absorbing) = if is_min {
+        (arena.infinity, arena.neg_infinity)
+    } else {
+        (arena.neg_infinity, arena.infinity)
+    };
+    let mut best: Option<(usize, Q)> = None;
+    let mut kept: SmallVec<[ExprId; 4]> = SmallVec::new();
+    let mut changed = false;
+    let mut has_absorbing = false;
+    for &a in args {
+        // `zoo` has no order (SymPy: "The argument 'zoo' is not comparable").
+        if a == arena.nan || a == arena.complex_infinity {
+            return Some(arena.nan);
+        }
+        if a == identity {
+            changed = true;
+            continue;
+        }
+        if a == absorbing {
+            has_absorbing = true;
+            continue;
+        }
+        if let Some(q) = arena.as_num(a) {
+            match &mut best {
+                Some((_, b)) => {
+                    changed = true;
+                    if (is_min && q < b) || (!is_min && q > b) {
+                        *b = q.clone();
+                    }
+                }
+                None => {
+                    best = Some((kept.len(), q.clone()));
+                    kept.push(a);
+                }
+            }
+            continue;
+        }
+        if kept.contains(&a) {
+            changed = true;
+            continue;
+        }
+        kept.push(a);
+    }
+    if has_absorbing {
+        let mut cache = AssumptionCache::new();
+        let all_real = kept
+            .iter()
+            .all(|&a| cache.query(arena, a, Props::REAL) == Some(true));
+        if all_real {
+            return Some(absorbing);
+        }
+        kept.push(absorbing);
+    }
+    if let Some((idx, q)) = best {
+        let nid = arena.intern_num(q);
+        kept[idx] = arena.intern(ExprNode::Num(nid));
+    }
+    match kept.len() {
+        0 => Some(identity),
+        1 => Some(kept[0]),
+        _ if changed => Some(arena.intern(if is_min {
+            ExprNode::Min(kept)
+        } else {
+            ExprNode::Max(kept)
+        })),
+        _ => None,
+    }
 }
 
 /// Is `a` one of the positive real constants `π`, `e`, `γ`, `G`, `φ`?
@@ -3986,12 +4536,21 @@ mod tests {
         assert_eq!(result, a.nan);
     }
 
+    /// `∞` absorbs the real finite terms only (SymPy's `Add.flatten`): `∞ +
+    /// x` for an unassumed `x` is `∞ + i` at `x = i` and stays a sum (up to
+    /// 0.40 it was `∞`, which this test pinned).
     #[test]
     fn add_oo_plus_finite_is_oo() {
         let mut a = Arena::new();
         let x = s(&mut a, "x");
         let result = a.add(&[a.infinity, x]);
-        assert_eq!(result, a.infinity);
+        assert!(
+            matches!(a.node(result), ExprNode::Add(ch) if ch.contains(&a.infinity) && ch.contains(&x))
+        );
+        let three = a.int(3);
+        assert_eq!(a.add(&[a.infinity, three]), a.infinity);
+        let pi = a.pi;
+        assert_eq!(a.add(&[a.neg_infinity, pi]), a.neg_infinity);
     }
 
     // ── Mul canonicalization ────────────────────────────────────────────

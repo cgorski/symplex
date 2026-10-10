@@ -137,6 +137,19 @@ fn fold_rel(arena: &mut Arena, rel: Rel) -> ExprId {
     if mask == ALL {
         return arena.bool_true;
     }
+    // `nan` equals nothing, itself included, and has no order (SymPy 1.14:
+    // `Eq(nan, nan)` is `False`, `nan < 1` raises).  Up to 0.41 `nan ==
+    // nan` was folded `True` as a relation of a node with itself.
+    if matches!(arena.node(a), ExprNode::NaN) || matches!(arena.node(b), ExprNode::NaN) {
+        return match mask {
+            EQ => arena.bool_false,
+            m if m == LT | GT => arena.bool_true,
+            GT => arena.gt(a, b),
+            LT => arena.gt(b, a),
+            m if m == GT | EQ => arena.ge(a, b),
+            _ => arena.ge(b, a),
+        };
+    }
     if let Some(o) = crate::transforms::sets::cmp_exprs(arena, a, b) {
         let bit = match o {
             std::cmp::Ordering::Less => LT,
@@ -1300,35 +1313,257 @@ fn search_rec(
     None
 }
 
+/// The assumptions that restrict a symbol's value on the real line (sign,
+/// integrality, rationality, …), or that it is not a real variable at all
+/// (imaginary, infinite).
+const RESTRICTING: Props = Props::POSITIVE
+    .union(Props::NEGATIVE)
+    .union(Props::NONNEGATIVE)
+    .union(Props::NONPOSITIVE)
+    .union(Props::ZERO)
+    .union(Props::NONZERO)
+    .union(Props::INTEGER)
+    .union(Props::RATIONAL)
+    .union(Props::IRRATIONAL)
+    .union(Props::ALGEBRAIC)
+    .union(Props::TRANSCENDENTAL)
+    .union(Props::EVEN)
+    .union(Props::ODD)
+    .union(Props::PRIME)
+    .union(Props::COMPOSITE)
+    .union(Props::IMAGINARY)
+    .union(Props::INFINITE);
+
 /// Does the symbol range over all of ℝ, i.e. carry no assumption that
-/// restricts its value (sign, integrality, rationality, …)?
+/// restricts its value (sign, integrality, rationality, …)?  Not being
+/// imaginary or infinite does not: those are what `Real` itself implies,
+/// and up to 0.41 a symbol declared `Real` was taken for a restricted one
+/// (`x > 1 → x > 0` was undecided for a real `x`, a tautology for a
+/// symbol without assumptions).
 fn symbol_is_free(arena: &Arena, sym: ExprId) -> bool {
-    const RESTRICTING: Props = Props::POSITIVE
-        .union(Props::NEGATIVE)
-        .union(Props::NONNEGATIVE)
-        .union(Props::NONPOSITIVE)
-        .union(Props::ZERO)
-        .union(Props::NONZERO)
-        .union(Props::INTEGER)
-        .union(Props::RATIONAL)
-        .union(Props::IRRATIONAL)
-        .union(Props::ALGEBRAIC)
-        .union(Props::TRANSCENDENTAL)
-        .union(Props::EVEN)
-        .union(Props::ODD)
-        .union(Props::PRIME)
-        .union(Props::COMPOSITE)
-        .union(Props::IMAGINARY)
-        .union(Props::INFINITE);
     match arena.node(sym) {
         ExprNode::Symbol(sid) => {
             let a = arena.symbol_assumptions(*sid);
             !a.known_true.intersects(RESTRICTING)
-                && !a.known_false.intersects(RESTRICTING)
+                && !a
+                    .known_false
+                    .intersects(RESTRICTING - Props::IMAGINARY - Props::INFINITE)
                 && a.query(Props::REAL) != Some(false)
         }
         _ => false,
     }
+}
+
+/// The values on the real line a symbol with restricting assumptions
+/// takes, for the exact univariate decision ([`univariate_status`]).
+enum Domain {
+    /// A union of intervals (a half-line, `ℝ ∖ {0}`, `{0}`, …).
+    Reals(ExprId),
+    /// The integers in the set with every declared parity, primality and
+    /// sign property ([`integer_admissible`]).
+    Integers(ExprId, crate::base::assumptions::Assumptions),
+}
+
+/// The [`Domain`] of a symbol whose restricting assumptions are signs
+/// (true or false), zero, nonzero, or integrality with parity and
+/// primality; `None` for any other restriction (rational, irrational,
+/// algebraic, …: not a union of intervals or of integers in one), for a
+/// symbol that is not a real variable, and for a non-symbol.
+fn restricted_domain(arena: &mut Arena, sym: ExprId) -> Option<Domain> {
+    use crate::base::node::{INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
+    let ExprNode::Symbol(sid) = arena.node(sym) else {
+        return None;
+    };
+    let a = arena.symbol_assumptions(*sid);
+    if a.query(Props::REAL) == Some(false)
+        || a.known_true.intersects(Props::IMAGINARY | Props::INFINITE)
+    {
+        return None;
+    }
+    let parity = Props::EVEN | Props::ODD | Props::PRIME | Props::COMPOSITE;
+    let kind = Props::RATIONAL | Props::IRRATIONAL | Props::ALGEBRAIC | Props::TRANSCENDENTAL;
+    let integer = a.query(Props::INTEGER) == Some(true);
+    // An integer is rational and algebraic, which restricts it no further;
+    // its parity and primality are decided per integer.
+    let unsupported = if integer {
+        a.known_true
+            .intersects(Props::IRRATIONAL | Props::TRANSCENDENTAL)
+            || a.known_false.intersects(Props::RATIONAL | Props::ALGEBRAIC)
+    } else {
+        a.known_true.intersects(kind | parity)
+            || a.known_false.intersects(kind | parity | Props::INTEGER)
+    };
+    if unsupported {
+        return None;
+    }
+    let (zero, inf, ninf) = (arena.zero, arena.infinity, arena.neg_infinity);
+    let open = INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN;
+    let holds = |p: Props| a.query(p) == Some(true);
+    let fails = |p: Props| a.query(p) == Some(false);
+    let mut parts: Vec<ExprId> = Vec::new();
+    if holds(Props::POSITIVE) || fails(Props::NONPOSITIVE) {
+        parts.push(arena.interval(zero, inf, open));
+    }
+    if holds(Props::NEGATIVE) || fails(Props::NONNEGATIVE) {
+        parts.push(arena.interval(ninf, zero, open));
+    }
+    if holds(Props::NONNEGATIVE) || fails(Props::NEGATIVE) {
+        parts.push(arena.interval(zero, inf, INTERVAL_RIGHT_OPEN));
+    }
+    if holds(Props::NONPOSITIVE) || fails(Props::POSITIVE) {
+        parts.push(arena.interval(ninf, zero, INTERVAL_LEFT_OPEN));
+    }
+    if holds(Props::ZERO) || fails(Props::NONZERO) {
+        parts.push(arena.finite_set(&[zero]));
+    }
+    if holds(Props::NONZERO) || fails(Props::ZERO) {
+        let below = arena.interval(ninf, zero, open);
+        let above = arena.interval(zero, inf, open);
+        parts.push(arena.set_union(&[below, above]));
+    }
+    let set = match parts.len() {
+        0 => arena.universal_set,
+        _ => {
+            let meet = arena.set_intersection(&parts);
+            crate::transforms::sets::simplify_set(arena, meet)
+        }
+    };
+    Some(if integer {
+        Domain::Integers(set, a)
+    } else {
+        Domain::Reals(set)
+    })
+}
+
+/// Is `n` a prime?
+fn is_small_prime(n: i64) -> bool {
+    n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| n % d != 0)
+}
+
+/// Does the integer `n` have every property declared of the symbol (true
+/// or false) that an integer decides: zero, sign, parity, prime, composite?
+fn integer_admissible(a: &crate::base::assumptions::Assumptions, n: i64) -> bool {
+    [
+        (Props::ZERO, n == 0),
+        (Props::NONZERO, n != 0),
+        (Props::POSITIVE, n > 0),
+        (Props::NEGATIVE, n < 0),
+        (Props::NONNEGATIVE, n >= 0),
+        (Props::NONPOSITIVE, n <= 0),
+        (Props::EVEN, n % 2 == 0),
+        (Props::ODD, n % 2 != 0),
+        (Props::PRIME, is_small_prime(n)),
+        (Props::COMPOSITE, n > 1 && !is_small_prime(n)),
+    ]
+    .into_iter()
+    .all(|(p, holds)| a.query(p).is_none_or(|v| v == holds))
+}
+
+/// Largest magnitude of an interval end that [`holds_admissible_integer`]
+/// takes.
+const MAX_INTEGER_END: i64 = 1 << 40;
+/// Largest number of integers of an interval it enumerates.
+const MAX_INTEGERS_ENUMERATED: i64 = 4096;
+/// Largest magnitude of the integers it tests for primality (by trial
+/// division).
+const MAX_PRIMALITY_TESTED: i64 = 1 << 20;
+
+/// The integer of an interval end: the least integer in the interval for
+/// its lower end, the largest for its upper end (`Ok(None)` for an
+/// infinite end); `Err(())` when the end is not compared exactly with the
+/// integers next to it, or is too large.
+fn integer_end(arena: &mut Arena, end: ExprId, open: bool, upper: bool) -> Result<Option<i64>, ()> {
+    use std::cmp::Ordering;
+    if end == arena.infinity || end == arena.neg_infinity {
+        return Ok(None);
+    }
+    let f = crate::transforms::evalf::eval_const_f64(arena, end).ok_or(())?;
+    if !f.is_finite() || f.abs() > MAX_INTEGER_END as f64 {
+        return Err(());
+    }
+    // `n = ⌊end⌋`, confirmed by exact comparisons with `n` and `n + 1`.
+    let n = f.floor() as i64;
+    let (n, at) = [n - 1, n, n + 1]
+        .into_iter()
+        .find_map(|n| {
+            let lo = arena.int(n);
+            let hi = arena.int(n + 1);
+            let ge = crate::transforms::sets::cmp_exprs(arena, end, lo)?;
+            let lt = crate::transforms::sets::cmp_exprs(arena, end, hi)?;
+            (ge != Ordering::Less && lt == Ordering::Less).then_some((n, ge == Ordering::Equal))
+        })
+        .ok_or(())?;
+    Ok(Some(match (upper, at, open) {
+        // the largest integer `≤ end` (`< end` when open)
+        (true, true, true) => n - 1,
+        (true, _, _) => n,
+        // the least integer `≥ end` (`> end` when open)
+        (false, true, false) => n,
+        (false, _, _) => n + 1,
+    }))
+}
+
+/// Does the set (exact, as intervals) hold an integer with every declared
+/// property of `a`?  `None` when an end is not compared exactly, or an
+/// interval holds too many integers to enumerate while a primality
+/// property is declared.
+fn holds_admissible_integer(
+    arena: &mut Arena,
+    set: ExprId,
+    a: &crate::base::assumptions::Assumptions,
+) -> Option<bool> {
+    let intervals = crate::transforms::sets::as_intervals(arena, set)?;
+    // The admissible integers are, above 2 and below −2, either none or
+    // infinitely many (sign and parity are periodic there, and there are
+    // infinitely many primes and composites of either parity but 2): a
+    // window far out decides which.  1000003 is a prime.
+    const FAR: i64 = 1_000_000;
+    let unbounded_above = (FAR..FAR + 16).any(|n| integer_admissible(a, n));
+    let unbounded_below = (-FAR - 16..-FAR).any(|n| integer_admissible(a, n));
+    let primality = a.query(Props::PRIME).is_some() || a.query(Props::COMPOSITE).is_some();
+    for iv in intervals {
+        let lo = integer_end(arena, iv.lower, iv.kind.lower_open(), false).ok()?;
+        let hi = integer_end(arena, iv.upper, iv.kind.upper_open(), true).ok()?;
+        if (hi.is_none() && unbounded_above) || (lo.is_none() && unbounded_below) {
+            return Some(true);
+        }
+        // Every admissible integer of an unbounded end lies in a bounded
+        // range: primes and composites above 1, a finite set within ±2.
+        let lo = lo.unwrap_or(if unbounded_below {
+            -MAX_INTEGER_END
+        } else {
+            -2
+        });
+        let hi = hi.unwrap_or(if unbounded_above { MAX_INTEGER_END } else { 2 });
+        if lo > hi {
+            continue;
+        }
+        if primality && lo.abs().max(hi.abs()) > MAX_PRIMALITY_TESTED {
+            return None;
+        }
+        if hi - lo >= MAX_INTEGERS_ENUMERATED {
+            // Without primality, admissibility is a matter of sign and
+            // parity: the ends of the range and the integers around 0 show
+            // every admissible kind it holds.  Primes are not enumerated
+            // that far.
+            if primality {
+                return None;
+            }
+            let near_zero = (-2..=2).filter(|n| (lo..=hi).contains(n));
+            if (lo..lo + 4)
+                .chain(hi - 3..=hi)
+                .chain(near_zero)
+                .any(|n| integer_admissible(a, n))
+            {
+                return Some(true);
+            }
+            continue;
+        }
+        if (lo..=hi).any(|n| integer_admissible(a, n)) {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 /// Are the relational pairs mutually independent and unconstrained?
@@ -1364,16 +1599,119 @@ fn single_variable(arena: &Arena, root: ExprId) -> Option<ExprId> {
     Some(syms[0])
 }
 
+/// `root` with every equation (`=`, `≠`) whose sides are equal as
+/// polynomials (`(x + 1)² = x² + 2x + 1`) replaced by `True` (`False`);
+/// `None` when the sides of one are equal as rational functions with a
+/// denominator in the symbols (`(x² − 1)/(x − 1) = x + 1` fails at `x =
+/// 1`, where it is not defined).  The inequality solver takes the solver's
+/// "every value" of such an equation for "no root": the solution set of
+/// `(x + 1)² = x² + 2x + 1` came out empty (SymPy 1.14: `Reals`), so up to
+/// 0.41 the formula was decided a contradiction and not satisfiable.
+fn without_identity_equations(arena: &mut Arena, root: ExprId) -> Option<ExprId> {
+    let mut done: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for id in bool_post_order(arena, root) {
+        let get = |c: &ExprId| done.get(c).copied().unwrap_or(*c);
+        let new = match arena.node(id).clone() {
+            ExprNode::And(ch) => {
+                let kids: SmallVec<[ExprId; 6]> = ch.iter().map(get).collect();
+                if kids[..] == ch[..] {
+                    id
+                } else {
+                    arena.and(&kids)
+                }
+            }
+            ExprNode::Or(ch) => {
+                let kids: SmallVec<[ExprId; 6]> = ch.iter().map(get).collect();
+                if kids[..] == ch[..] {
+                    id
+                } else {
+                    arena.or(&kids)
+                }
+            }
+            ExprNode::Not(x) => {
+                let k = get(&x);
+                if k == x { id } else { arena.not(k) }
+            }
+            ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+                let equation = matches!(arena.node(id), ExprNode::Eq_(..));
+                // The numerator multiplied out is 0.
+                let d = arena.sub(a, b);
+                let (n, den) = crate::poly::polybridge::fraction_parts(arena, d);
+                let expanded = crate::transforms::expand::expand(arena, n);
+                let expanded = crate::transforms::eval::eval(arena, expanded);
+                if !arena.is_zero_structural(expanded) {
+                    id
+                } else if arena
+                    .as_num(den)
+                    .is_some_and(|q| !num_traits::Zero::is_zero(q))
+                {
+                    if equation {
+                        arena.bool_true
+                    } else {
+                        arena.bool_false
+                    }
+                } else {
+                    return None;
+                }
+            }
+            _ => id,
+        };
+        done.insert(id, new);
+    }
+    Some(done.get(&root).copied().unwrap_or(root))
+}
+
 /// Exact decision via the inequality solver for univariate formulas.
 /// Returns `(is_empty, is_full)` of the solution set when it is exact.
+///
+/// A symbol with restricting assumptions ranges over its [`Domain`]: the
+/// solution set over ℝ is intersected with it (`is_empty`: no value of
+/// the domain satisfies the formula; `is_full`: every value does).  Up to
+/// 0.41 such a symbol was refused: `x > 1 → x > 0` for a positive or an
+/// integer `x`, `x > 1/2 ∧ x < 3/2 ∧ x ≠ 1` (no integer) for an integer
+/// one were undecided.
 fn univariate_status(arena: &mut Arena, root: ExprId) -> Option<(bool, bool)> {
-    let var = single_variable(arena, root)?;
-    let set = crate::transforms::sets::reduce_inequalities(arena, &[root], var).ok()?;
-    let empty = crate::transforms::sets::is_empty(arena, set)?;
-    let full = crate::transforms::sets::is_full(arena, set)?;
-    // Only trust the answer when the set is exactly known.
-    crate::transforms::sets::as_intervals(arena, set)?;
-    Some((empty, full))
+    use crate::transforms::sets;
+    let root = without_identity_equations(arena, root)?;
+    let syms = crate::base::walk::free_symbols(arena, root);
+    if syms.is_empty() {
+        // Every atom was such an equation.
+        let s = simplify_bool(arena, root);
+        return (s == arena.bool_true || s == arena.bool_false)
+            .then(|| (s == arena.bool_false, s == arena.bool_true));
+    }
+    if let Some(var) = single_variable(arena, root) {
+        let set = sets::reduce_inequalities(arena, &[root], var).ok()?;
+        let empty = sets::is_empty(arena, set)?;
+        let full = sets::is_full(arena, set)?;
+        // Only trust the answer when the set is exactly known.
+        sets::as_intervals(arena, set)?;
+        return Some((empty, full));
+    }
+    let [var] = syms[..] else {
+        return None;
+    };
+    let domain = restricted_domain(arena, var)?;
+    let set = sets::reduce_inequalities(arena, &[root], var).ok()?;
+    sets::as_intervals(arena, set)?;
+    let (Domain::Reals(d) | Domain::Integers(d, _)) = domain;
+    let meet = arena.set_intersection(&[d, set]);
+    let inside = sets::simplify_set(arena, meet);
+    let outside = sets::set_difference(arena, d, set);
+    // Both exactly known as intervals.
+    sets::as_intervals(arena, inside)?;
+    sets::as_intervals(arena, outside)?;
+    match domain {
+        Domain::Reals(_) => Some((
+            sets::is_empty(arena, inside)?,
+            sets::is_empty(arena, outside)?,
+        )),
+        Domain::Integers(_, a) => {
+            let some_inside = holds_admissible_integer(arena, inside, &a)?;
+            let some_outside = holds_admissible_integer(arena, outside, &a)?;
+            Some((!some_inside, !some_outside))
+        }
+    }
 }
 
 /// Is the formula true under every assignment?

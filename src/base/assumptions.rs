@@ -1438,8 +1438,19 @@ impl AssumptionCache {
         let mut all_nonpos = true;
         let mut any_negative = false;
 
+        // One infinite term beside finite ones (`∞ + i`, which the canonical
+        // sum keeps since 0.41): the sum is infinite.
+        let mut infinite_terms = 0usize;
+        let mut others_finite = true;
+
         for &child in args.iter() {
             let child_a = self.compute(arena, child);
+
+            if child_a.query(Props::INFINITE) == Some(true) {
+                infinite_terms += 1;
+            } else if child_a.query(Props::FINITE) != Some(true) {
+                others_finite = false;
+            }
 
             if child_a.query(Props::INTEGER) != Some(true) {
                 all_integer = false;
@@ -1488,6 +1499,9 @@ impl AssumptionCache {
         }
         if all_finite {
             a.known_true |= Props::FINITE;
+        }
+        if infinite_terms == 1 && others_finite {
+            a.known_false |= Props::FINITE;
         }
         if all_commutative {
             a.known_true |= Props::COMMUTATIVE;

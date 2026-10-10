@@ -239,11 +239,15 @@ fn add_oo_minus_oo_still_nan() {
     assert_eq!(format!("{result}"), "nan", "oo + (-oo) should be nan");
 }
 
+/// `oo` absorbs a real finite term; an unassumed `x` may be complex, so
+/// `oo + x` stays a sum since 0.41 (SymPy keeps `x + oo`; `oo + I` is not
+/// `oo`).
 #[test]
 fn add_oo_plus_finite_still_oo() {
     let ctx = Context::new();
     let oo = ctx.infinity();
     let x = ctx.symbol("x");
-    let result = &oo + &x;
-    assert_eq!(format!("{result}"), "oo", "oo + x should be oo");
+    assert_eq!(format!("{}", &oo + &x), "x + oo");
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
+    assert_eq!(format!("{}", &oo + &r), "oo", "oo + real should be oo");
 }

@@ -148,7 +148,12 @@ fn canonical_zero_and_infinity_paths_look_below_the_first_level() {
     assert_eq!(parse("0/(x+y*(1/(x+1)+1/(x+2)))"), "0");
     assert_eq!(parse("0*(1/(x+1)+2)^2"), "0");
     assert_eq!(parse("oo+x*oo"), "x*oo + oo");
-    assert_eq!(parse("oo+y*(1/(x+1)+1/(x+2))"), "oo");
+    // Since 0.41 `oo` absorbs real terms only (SymPy's `Add.flatten`): the
+    // term is `1.5·i` at `x = 0`, `y = i` (this line pinned `oo` before).
+    assert_eq!(
+        parse("oo+y*(1/(x+1)+1/(x+2))"),
+        "y*(1/(x + 1) + 1/(x + 2)) + oo"
+    );
 }
 
 /// Before: `y²/s + 3y/s` for `s = sin 2x − 2·sin x·cos x`, which is `zoo +

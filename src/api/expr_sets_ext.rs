@@ -721,8 +721,11 @@ impl Expr<Boolean> {
     /// counter-example is trusted only when the atoms are independent
     /// (each relational is linear in its own symbol).  If neither applies
     /// and every atom is a relational in one common free symbol, the
-    /// question is decided exactly through the inequality solver.
-    /// Otherwise `None`.
+    /// question is decided exactly through the inequality solver, on the
+    /// values the symbol's assumptions allow: all of ℝ (no assumption, or
+    /// `Real`), a sign or nonzero condition, or the integers with a sign,
+    /// parity or primality.  An equation whose sides are equal as rational
+    /// functions is left to the propositional answer.  Otherwise `None`.
     ///
     /// Declared assumptions are respected: relationals they decide are
     /// folded first, and symbols carrying restricting assumptions are not
@@ -743,6 +746,10 @@ impl Expr<Boolean> {
     /// // with an assumption, t > 0 holds everywhere t is defined:
     /// let t = ctx.symbol_with("t", &[Assumption::Positive]).unwrap();
     /// assert_eq!(t.gt(&ctx.int(0)).is_tautology(), Some(true));
+    /// // no integer lies strictly between 1/2 and 3/2 but 1:
+    /// let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
+    /// let between = n.gt(&ctx.rational(1, 2)).and(&n.lt(&ctx.rational(3, 2)));
+    /// assert_eq!(between.and(&n.ne_expr(&ctx.int(1))).is_contradiction(), Some(true));
     /// ```
     #[must_use]
     pub fn is_tautology(&self) -> Option<bool> {

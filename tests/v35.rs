@@ -6,12 +6,16 @@
 mod v35_applied;
 #[path = "v35/v35_assumptions.rs"]
 mod v35_assumptions;
+#[path = "v35/v35_decisions.rs"]
+mod v35_decisions;
 #[path = "v35/v35_definite.rs"]
 mod v35_definite;
 #[path = "v35/v35_diff.rs"]
 mod v35_diff;
 #[path = "v35/v35_eval.rs"]
 mod v35_eval;
+#[path = "v35/v35_infinity.rs"]
+mod v35_infinity;
 #[path = "v35/v35_integrate_speed.rs"]
 mod v35_integrate_speed;
 #[path = "v35/v35_ntheory.rs"]

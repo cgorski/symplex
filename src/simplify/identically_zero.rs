@@ -172,21 +172,61 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// Is `n` a prime (a positive integer with exactly two divisors)?
+fn small_prime(n: i64) -> bool {
+    n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| n % d != 0)
+}
+
+/// Does the integer `n` have every property declared of the symbol (true
+/// or false) among those an integer decides: zero, sign, parity, prime,
+/// composite?
+fn integer_admissible(props: &crate::base::assumptions::Assumptions, n: i64) -> bool {
+    [
+        (Props::ZERO, n == 0),
+        (Props::NONZERO, n != 0),
+        (Props::POSITIVE, n > 0),
+        (Props::NEGATIVE, n < 0),
+        (Props::NONNEGATIVE, n >= 0),
+        (Props::NONPOSITIVE, n <= 0),
+        (Props::EVEN, n % 2 == 0),
+        (Props::ODD, n % 2 != 0),
+        (Props::PRIME, small_prime(n)),
+        (Props::COMPOSITE, n > 1 && !small_prime(n)),
+    ]
+    .into_iter()
+    .all(|(p, holds)| props.query(p).is_none_or(|v| v == holds))
+}
+
 /// The value of the symbol `sym` at sample point `k`: an exact rational,
-/// integer or Gaussian rational consistent with its declared assumptions.
-/// A symbol without assumptions lies off the real axis, in the right
-/// half-plane at `k = 0` and in the left one at `k = 1`, where also
-/// `|Re| > π/2` and `|Im| > π`: outside the strips where `atan(tan x) =
-/// x`, `ln(e^x) = x` and `ln(x²) = 2·ln x` hold, so that those
-/// near-identities show a nonzero value at once.
-fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> ExprId {
+/// integer or Gaussian rational consistent with its declared assumptions
+/// (times `√2` or `e` for an irrational or transcendental symbol); `None`
+/// when no finite number is (an infinite symbol).  A symbol without
+/// assumptions lies off the real axis, in the right half-plane at `k = 0`
+/// and in the left one at `k = 1`, where also `|Re| > π/2` and `|Im| > π`:
+/// outside the strips where `atan(tan x) = x`, `ln(e^x) = x` and `ln(x²) =
+/// 2·ln x` hold, so that those near-identities show a nonzero value at
+/// once.
+///
+/// Every declared property holds at the sample: a zero found at a point
+/// the symbol cannot take proves nothing, and a nonzero value there
+/// hides an identity.  Up to 0.41 an even prime took the values 3, 5, 7,
+/// 11 and a composite 2, 3, 5: `((x + 1)² − x² − 2x − 1)/((−1)ⁿ − 1 +
+/// sin²x + cos²x − 1)` with `n` even and prime (`n = 2`, the denominator
+/// is 0) was `ratsimp`ed and `simplify`d to `0` (it is `nan`, as for an
+/// even `n`).  An integer keeps its former value when that one is
+/// admissible, else takes the first admissible of `±1, ±2, …`.
+fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
     let props = match arena.node(sym) {
         ExprNode::Symbol(sid) => arena.symbol_assumptions(*sid),
         _ => crate::base::assumptions::Assumptions::default(),
     };
     let has = |p: Props| props.query(p) == Some(true);
+    let lacks = |p: Props| props.query(p) == Some(false);
+    if has(Props::INFINITE) || lacks(Props::FINITE) || lacks(Props::COMPLEX) {
+        return None;
+    }
     if has(Props::ZERO) {
-        return arena.zero;
+        return Some(arena.zero);
     }
     let h = mix(u64::from(sym.0) ^ k.wrapping_mul(0xD6E8_FEB8_6659_FD93));
     let pick = |table: &[i64], salt: u32| table[((h >> salt) % table.len() as u64) as usize];
@@ -207,23 +247,52 @@ fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> ExprId {
         } else {
             pick(&[2, 3, 4, 5], 0)
         };
-        return arena.int(sign * n);
+        let n = sign * n;
+        if integer_admissible(&props, n) {
+            return Some(arena.int(n));
+        }
+        // The first few admissible integers by magnitude (the sign of the
+        // sample point first), one of them by the hash.
+        let admissible: Vec<i64> = (1..=64i64)
+            .flat_map(|m| [sign * m, -sign * m])
+            .filter(|&m| integer_admissible(&props, m))
+            .take(4)
+            .collect();
+        return (!admissible.is_empty())
+            .then(|| arena.int(admissible[(h % admissible.len() as u64) as usize]));
     }
     let far = !k.is_multiple_of(2);
-    let magnitude = if far {
-        arena.rational(sign * pick(&[9, 10, 11, 13], 8), 4)
+    let (num, den) = if far {
+        (sign * pick(&[9, 10, 11, 13], 8), 4)
     } else {
-        arena.rational(
+        (
             sign * pick(&[7, 9, 11, 13, 17, 19], 8),
             pick(&[5, 6, 7, 8], 16),
         )
     };
-    if has(Props::REAL) {
-        return magnitude;
+    // `7/7 = 1` for a symbol that is not an integer: `13/14`.
+    let (num, den) = if lacks(Props::INTEGER) && num % den == 0 {
+        (2 * num - sign, 2 * den)
+    } else {
+        (num, den)
+    };
+    let mut magnitude = arena.rational(num, den);
+    // An irrational or transcendental value: `e` times the rational (`√2`
+    // times it when it is algebraic).
+    if has(Props::TRANSCENDENTAL) || lacks(Props::ALGEBRAIC) {
+        let e = arena.e_const();
+        magnitude = arena.mul(&[magnitude, e]);
+    } else if has(Props::IRRATIONAL) || (lacks(Props::RATIONAL) && has(Props::REAL)) {
+        let two = arena.int(2);
+        let root = arena.sqrt(two);
+        magnitude = arena.mul(&[magnitude, root]);
+    }
+    if has(Props::REAL) || has(Props::EXTENDED_REAL) {
+        return Some(magnitude);
     }
     let i = arena.i_unit();
     if has(Props::IMAGINARY) {
-        return arena.mul(&[magnitude, i]);
+        return Some(arena.mul(&[magnitude, i]));
     }
     let im_sign = if (h >> 40) & 1 == 0 { 1 } else { -1 };
     let im = if far {
@@ -232,7 +301,7 @@ fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> ExprId {
         arena.rational(im_sign * pick(&[3, 5, 7, 9], 24), pick(&[4, 5, 7], 32))
     };
     let im = arena.mul(&[im, i]);
-    arena.add(&[magnitude, im])
+    Some(arena.add(&[magnitude, im]))
 }
 
 /// Evaluate `e` at the sample points ([`sample_value`] for each free
@@ -243,10 +312,14 @@ fn sample(arena: &mut Arena, e: ExprId) -> Sampled {
     let points = if syms.is_empty() { 1 } else { SAMPLE_POINTS };
     let mut zero = false;
     for k in 0..points {
-        let pairs: Vec<(ExprId, ExprId)> = syms
+        let pairs: Option<Vec<(ExprId, ExprId)>> = syms
             .iter()
-            .map(|&s| (s, sample_value(arena, s, k)))
+            .map(|&s| sample_value(arena, s, k).map(|v| (s, v)))
             .collect();
+        // A symbol that takes no finite value: nothing to sample.
+        let Some(pairs) = pairs else {
+            return Sampled::Unknown;
+        };
         let at = crate::transforms::subs::subs_map(arena, e, &pairs);
         if let Some(r) = arena.as_num(at) {
             if r.is_zero() {
@@ -658,10 +731,58 @@ mod tests {
         let mut inner = n.inner.write();
         let arena = &mut inner.arena;
         for point in 0..SAMPLE_POINTS {
-            let v = sample_value(arena, n.raw_id(), point);
+            let v = sample_value(arena, n.raw_id(), point).unwrap();
             assert!(arena.as_num(v).is_some_and(|q| q.is_negative()));
-            let v = sample_value(arena, k.raw_id(), point);
+            let v = sample_value(arena, k.raw_id(), point).unwrap();
             assert!(arena.as_num(v).is_some_and(|q| q.is_integer()));
+        }
+    }
+
+    /// Every declared property holds at the sample points (up to 0.41 an
+    /// even prime was sampled at 3, 5, 7, 11, a composite at 2, 3, 5, an
+    /// irrational symbol at rationals).
+    #[test]
+    fn sample_points_are_admissible() {
+        use crate::base::assumptions::Assumption as A;
+        let ctx = crate::api::context::Context::new();
+        let integer_cases: [(&str, &[A], &[i64]); 6] = [
+            ("a", &[A::Even, A::Prime], &[2]),
+            ("b", &[A::Composite], &[4, 6, 8, 9, 10, 12, 14, 15, 16]),
+            ("c", &[A::Odd, A::Composite], &[9, 15, 21, 25, 27, 33]),
+            ("d", &[A::Even, A::Composite], &[4, 6, 8, 10, 12]),
+            ("e", &[A::Prime], &[2, 3, 5, 7, 11, 13]),
+            ("f", &[A::Even, A::Negative], &[-2, -4, -6, -8]),
+        ];
+        for (name, asm, allowed) in integer_cases {
+            let s = ctx.symbol_with(name, asm).unwrap();
+            let mut inner = s.inner.write();
+            let arena = &mut inner.arena;
+            for point in 0..SAMPLE_POINTS {
+                let v = sample_value(arena, s.raw_id(), point).unwrap();
+                let q = arena.as_num(v).unwrap().clone();
+                assert!(
+                    allowed
+                        .iter()
+                        .any(|&m| q == Q::from_integer(BigInt::from(m))),
+                    "{name}: {q}"
+                );
+            }
+        }
+        let irr = ctx.symbol_with("g", &[A::Irrational]).unwrap();
+        let inf = ctx.symbol_with("h", &[A::Infinite]).unwrap();
+        let noninteger = ctx.symbol_with("j", &[A::Rational, A::NotInteger]).unwrap();
+        let mut inner = irr.inner.write();
+        let arena = &mut inner.arena;
+        for point in 0..SAMPLE_POINTS {
+            let v = sample_value(arena, irr.raw_id(), point).unwrap();
+            assert!(
+                arena.as_num(v).is_none(),
+                "irrational sample {}",
+                arena.display(v)
+            );
+            assert_eq!(sample_value(arena, inf.raw_id(), point), None);
+            let v = sample_value(arena, noninteger.raw_id(), point).unwrap();
+            assert!(arena.as_num(v).is_some_and(|q| !q.is_integer()));
         }
     }
 }

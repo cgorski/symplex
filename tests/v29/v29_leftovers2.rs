@@ -104,7 +104,9 @@ fn directed_infinities_keep_the_direction_of_their_factors() {
 fn sums_and_powers_of_directed_infinities() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    assert_eq!(show(&p(&ctx, "x*oo + 1")), "x*oo");
+    // Since 0.41 `±oo` absorbs only real finite terms, and `x·oo` (`x`
+    // complex) has no known direction: `x*oo + 1` stays, as in SymPy.
+    assert_eq!(show(&p(&ctx, "x*oo + 1")), "x*oo + 1");
     let s = p(&ctx, "x*oo + oo");
     assert_eq!(&p(&ctx, &show(&s)), &s);
     assert_eq!(show(&s.subs(&x, &ctx.int(-1))), "nan");
@@ -143,10 +145,12 @@ fn inverse_functions_at_their_infinite_points_are_directed() {
     for (s, want) in [
         ("atan(I)", "I*oo"),
         ("atan(-I)", "-I*oo"),
-        ("asin(oo)", "-I*oo"),
-        ("asin(-oo)", "I*oo"),
+        // The finite real parts are kept since 0.41 (mpmath: `asin(10³⁰)` =
+        // 1.5707963267949 − 69.77j, `acos(−10³⁰)` = π − 69.77j).
+        ("asin(oo)", "-I*oo + 1/2*pi"),
+        ("asin(-oo)", "-1/2*pi + I*oo"),
         ("acos(oo)", "I*oo"),
-        ("acos(-oo)", "-I*oo"),
+        ("acos(-oo)", "-I*oo + pi"),
         ("sqrt(-oo)", "I*oo"),
         ("(-oo)^(3/2)", "-I*oo"),
         ("(-oo)^(1/3)", "cbrt(-1)*oo"),
@@ -155,7 +159,7 @@ fn inverse_functions_at_their_infinite_points_are_directed() {
     }
     // Every path that builds the application folds it.
     assert_eq!(show(&x.atan().subs(&x, &ctx.i_unit())), "I*oo");
-    assert_eq!(show(&x.asin().subs(&x, &ctx.infinity())), "-I*oo");
+    assert_eq!(show(&x.asin().subs(&x, &ctx.infinity())), "-I*oo + 1/2*pi");
 }
 
 /// The elementary functions at `±i·∞` (were their values at `zoo`: `nan`
@@ -165,8 +169,9 @@ fn inverse_functions_at_their_infinite_points_are_directed() {
 /// `tan(-oo*I)` → -I, `exp(oo*I)` → nan, `log(oo*I)` → oo, `asinh(oo*I)` →
 /// oo, `asinh(-oo*I)` → -oo, `acosh(oo*I)` → `oo + I*pi/2`, `acos(oo*I)` →
 /// `pi/2 - oo*I`, `erf(oo*I)` → `oo*I`, `erfc(oo*I)` → `-oo*I`,
-/// `Abs(oo*I)` → oo, `sign(-oo*I)` → -I (a finite term next to an infinite
-/// one is absorbed in symplex).
+/// `Abs(oo*I)` → oo, `sign(-oo*I)` → -I.  Since 0.41 symplex keeps the
+/// finite imaginary parts SymPy drops (mpmath: `log(10²⁰·i)` = 46.05 +
+/// 1.5708i, `asinh(10²⁰·i)` = 46.74 + 1.5708i, `erfc(10²⁰·i)` = 1 − ∞i).
 #[test]
 fn elementary_functions_at_imaginary_infinity() {
     let ctx = Context::new();
@@ -176,13 +181,13 @@ fn elementary_functions_at_imaginary_infinity() {
         ("tan(I*oo)", "I"),
         ("tan(-I*oo)", "-I"),
         ("exp(I*oo)", "nan"),
-        ("ln(I*oo)", "oo"),
-        ("asinh(I*oo)", "oo"),
-        ("asinh(-I*oo)", "-oo"),
-        ("acosh(I*oo)", "oo"),
-        ("acos(I*oo)", "-I*oo"),
+        ("ln(I*oo)", "1/2*pi*I + oo"),
+        ("asinh(I*oo)", "1/2*pi*I + oo"),
+        ("asinh(-I*oo)", "-1/2*pi*I - oo"),
+        ("acosh(I*oo)", "1/2*pi*I + oo"),
+        ("acos(I*oo)", "-I*oo + 1/2*pi"),
         ("erf(I*oo)", "I*oo"),
-        ("erfc(I*oo)", "-I*oo"),
+        ("erfc(I*oo)", "-I*oo + 1"),
         ("abs(I*oo)", "oo"),
         ("sign(-I*oo)", "-I"),
     ] {

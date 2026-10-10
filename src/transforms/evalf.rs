@@ -445,7 +445,7 @@ fn evaluate_tree_full(
         };
         match evaluated {
             Ok((mut value, mut e)) => {
-                if precision_limited(arena.node(id), &value, e, &cache, &errs)
+                if precision_limited(&evaluation_arguments(arena, id), &value, e, &cache, &errs)
                     || (e.is_unknown() && tainted_child())
                 {
                     limited = true;
@@ -1173,7 +1173,7 @@ fn note_cross_terms(
 /// resolves it.  (See [`evaluate_adaptive`], which pursues such a value as
 /// it pursues a root that is zero to the working precision.)
 fn precision_limited(
-    node: &ExprNode,
+    arguments: &[ExprId],
     value: &Complex,
     e: accuracy::Bound,
     cache: &FxHashMap<ExprId, Complex>,
@@ -1184,7 +1184,7 @@ fn precision_limited(
         return false;
     }
     let mut inexact = false;
-    for c in node.children() {
+    for &c in arguments {
         let (Some(v), Some(b)) = (cache.get(&c), errs.get(&c)) else {
             continue;
         };
@@ -1194,6 +1194,43 @@ fn precision_limited(
         inexact |= !b.is_exact();
     }
     inexact
+}
+
+/// The arguments whose precision the value of node `id` depends on (see
+/// [`precision_limited`]): its children, and for a `Piecewise` the
+/// operands of the relations in its conditions, which are not evaluated as
+/// nodes of their own.  So a condition at its threshold — decided only to
+/// the working precision, the branch value then without a bound — is
+/// pursued as the zero of a difference is.  Up to 0.41 it stopped at the
+/// cap of the digits: `Piecewise((1, sin(13/5)² + cos(13/5)² ≥ 1 +
+/// 10⁻²⁰⁰), (0, True))` was refused at 30 digits (it is 0).
+fn evaluation_arguments(arena: &Arena, id: ExprId) -> smallvec::SmallVec<[ExprId; 6]> {
+    let node = arena.node(id);
+    let ExprNode::Piecewise(pairs) = node else {
+        return node.children();
+    };
+    let mut out: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
+    let mut stack: Vec<ExprId> = Vec::new();
+    for &(value, cond) in pairs {
+        out.push(value);
+        stack.push(cond);
+    }
+    let mut seen: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    while let Some(c) = stack.pop() {
+        if !seen.insert(c) {
+            continue;
+        }
+        match arena.node(c) {
+            ExprNode::And(ks) | ExprNode::Or(ks) => stack.extend(ks.iter().copied()),
+            ExprNode::Not(k) => stack.push(*k),
+            ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+                out.push(*a);
+                out.push(*b);
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The error of a node whose value `value` has an infinite part although
@@ -3977,6 +4014,17 @@ fn eval_product(
     Ok(accuracy::mul_with_bound(&parts, prec, rm))
 }
 
+/// An operand of a relation without a value in the cache of `evalf`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Special {
+    /// `+∞` (`1`) or `−∞` (`−1`).
+    Infinity(i8),
+    /// `zoo`.
+    ComplexInfinity,
+    /// `nan`.
+    NaN,
+}
+
 /// A condition decided from the values of its operands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Decision {
@@ -3999,8 +4047,10 @@ struct Decision {
 /// whose imaginary parts are only within their error of 0 (they may not be
 /// real).  `And`/`Or`/`Not` combine decisions; a certain `false`
 /// operand decides an `And` (a certain `true` an `Or`) whatever the others.
-/// `None` when an operand is missing from the cache (free symbol, complex
-/// value in an order, unsupported node).
+/// An operand `±∞`, `zoo` or `nan` is compared by kind (`−∞ < x < +∞`
+/// for a finite real `x`; `nan` equals nothing; orders with `zoo` or `nan`
+/// are undecided, as SymPy raises).  `None` when an operand is missing from
+/// the cache (free symbol, complex value in an order, unsupported node).
 fn decide_condition(
     arena: &Arena,
     cond: ExprId,
@@ -4034,7 +4084,65 @@ fn decide_condition(
     let away_from_zero = |d: &Complex, e: accuracy::ErrExp| {
         !accuracy::is_unknown(e) && !accuracy::contains_zero(d, e)
     };
+    // `±∞`, `zoo` and `nan` have no value in the cache: their relations
+    // with each other and with a finite (real) value are decided by kind.
+    // Up to 0.41 every such relation was undecided: `Piecewise((1, exp(1000)
+    // < ∞), (0, True))` was refused (SymPy 1.14: `1`).
+    let special = |a: &ExprId| -> Option<Special> {
+        match arena.node(*a) {
+            ExprNode::Infinity => Some(Special::Infinity(1)),
+            ExprNode::NegInfinity => Some(Special::Infinity(-1)),
+            ExprNode::ComplexInfinity => Some(Special::ComplexInfinity),
+            ExprNode::NaN => Some(Special::NaN),
+            _ => None,
+        }
+    };
+    // A finite value of the cache: `Some(true)` when it is real (exactly),
+    // `Some(false)` when it may not be.
+    let finite_real = |a: &ExprId| -> Option<bool> {
+        let v = cache.get(a)?;
+        let finite = !(v.0.is_inf() || v.0.is_nan() || v.1.is_inf() || v.1.is_nan());
+        finite.then(|| v.1.is_zero() && accuracy::exactly_real(v, bound_of(a)))
+    };
+    let certainly = |value: bool| Decision {
+        value,
+        certain: true,
+    };
+    let order_special = |a: &ExprId, b: &ExprId, strict: bool| -> Option<Decision> {
+        // `−∞ < finite real < +∞`; `zoo`, `nan` and complex values have no
+        // order (SymPy raises).
+        let tier = |x: &ExprId| -> Option<i8> {
+            match special(x) {
+                Some(Special::Infinity(s)) => Some(s),
+                Some(_) => None,
+                None => finite_real(x)?.then_some(0),
+            }
+        };
+        let (ta, tb) = (tier(a)?, tier(b)?);
+        Some(certainly(match ta.cmp(&tb) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Equal => !strict,
+            std::cmp::Ordering::Less => false,
+        }))
+    };
+    let equal_special = |a: &ExprId, b: &ExprId| -> Option<Decision> {
+        // `nan` equals nothing (SymPy: `Eq(nan, nan)` is False); an
+        // infinity only itself.
+        let (sa, sb) = (special(a), special(b));
+        if sa == Some(Special::NaN) || sb == Some(Special::NaN) {
+            return Some(certainly(false));
+        }
+        match (sa, sb) {
+            (Some(x), Some(y)) => Some(certainly(x == y)),
+            (Some(_), None) => finite_real(b).map(|_| certainly(false)),
+            (None, Some(_)) => finite_real(a).map(|_| certainly(false)),
+            (None, None) => None,
+        }
+    };
     let order = |a: &ExprId, b: &ExprId, strict: bool| -> Option<Decision> {
+        if special(a).is_some() || special(b).is_some() {
+            return order_special(a, b, strict);
+        }
         let (av, bv) = (cache.get(a)?, cache.get(b)?);
         if !(av.1.is_zero() && bv.1.is_zero()) {
             return None;
@@ -4042,13 +4150,19 @@ fn decide_condition(
         let real =
             accuracy::exactly_real(av, bound_of(a)) && accuracy::exactly_real(bv, bound_of(b));
         let (d, e, exact) = difference(a, b)?;
-        let value = d.0.is_positive() || (!strict && d.0.is_zero());
+        // Strictly: astro-float's `is_positive` holds for `+0`, the
+        // difference of an operand with itself (up to 0.41 `besselj(1, 2) >
+        // besselj(1, 2)` was decided true, and certain).
+        let value = bf_strictly_positive(&d.0) || (!strict && d.0.is_zero());
         Some(Decision {
             value,
             certain: exact || (real && away_from_zero(&d, e)),
         })
     };
     let equal = |a: &ExprId, b: &ExprId| -> Option<Decision> {
+        if special(a).is_some() || special(b).is_some() {
+            return equal_special(a, b);
+        }
         let (d, e, exact) = difference(a, b)?;
         let value = d.0.is_zero() && d.1.is_zero();
         Some(Decision {

@@ -307,30 +307,37 @@ fn finite_plus_negative_infinity_is_negative_infinity() {
     );
 }
 
+// `±oo` absorbs a *real* finite term (SymPy's `Add.flatten`: `oo + r` → oo
+// for a real `r`, `oo + x` stays for an unassumed `x`, which may be `i`).
+// Up to 0.40 these two tests used an unassumed `x` and pinned `oo`.
 #[test]
 fn positive_infinity_plus_symbol_is_infinity() {
     let ctx = Context::new();
     let inf = ctx.infinity();
-    let x = ctx.symbol("x");
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let result = &inf + &x;
     assert_eq!(
         format!("{result}"),
         "oo",
-        "oo + x should be oo (infinity dominates finite terms), got: {result}"
+        "oo + x should be oo for a real x (infinity dominates finite terms), got: {result}"
     );
+    let z = ctx.symbol("z");
+    assert_eq!(format!("{}", &inf + &z), "z + oo");
 }
 
 #[test]
 fn negative_infinity_plus_symbol_is_negative_infinity() {
     let ctx = Context::new();
     let neg_inf = ctx.neg_infinity();
-    let x = ctx.symbol("x");
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let result = &neg_inf + &x;
     assert_eq!(
         format!("{result}"),
         "-oo",
-        "(-oo) + x should be -oo (neg-infinity dominates finite terms), got: {result}"
+        "(-oo) + x should be -oo for a real x (neg-infinity dominates finite terms), got: {result}"
     );
+    let z = ctx.symbol("z");
+    assert_eq!(format!("{}", &neg_inf + &z), "z - oo");
 }
 
 #[test]

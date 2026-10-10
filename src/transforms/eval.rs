@@ -669,6 +669,8 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     } else {
                         id
                     }
+                } else if let Some(m) = extremum_of_real_constants(arena, &new, true) {
+                    m
                 } else if new[..] == children[..] {
                     id
                 } else {
@@ -693,6 +695,8 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     } else {
                         id
                     }
+                } else if let Some(m) = extremum_of_real_constants(arena, &new, false) {
+                    m
                 } else if new[..] == children[..] {
                     id
                 } else {
@@ -3306,8 +3310,20 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     } // atan(0) = 0
     // atan(±∞) = ±π/2 (SymPy: `atan(oo)` → pi/2).  Before 0.30 it stayed,
     // and `evalf` refused it (an infinite argument).
-    if inner == arena.infinity || inner == arena.neg_infinity {
-        let half = arena.rational(if inner == arena.infinity { 1 } else { -1 }, 2);
+    // At `±∞ + c` too (any finite `c`), and at `c ± i·∞` it is ±π/2 by the
+    // half plane, `sign(Re c)·π/2`, SymPy's `atan(±oo*I) = ±pi/2` on the
+    // cut (mpmath `atan(mpc(-1, 1e20))` = −1.5707…).
+    if let Some(inf) = crate::base::canon::infinite_argument(arena, inner) {
+        let positive = if inf.imaginary {
+            match inf.side? {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => !inf.negative,
+            }
+        } else {
+            !inf.negative
+        };
+        let half = arena.rational(if positive { 1 } else { -1 }, 2);
         return Some(arena.mul(&[half, arena.pi]));
     }
     if inner == arena.one {
@@ -3526,6 +3542,9 @@ fn special_angle_of(arena: &mut Arena, v: ExprId, table: SpecialTable) -> Option
 /// When both arguments are numeric rationals, returns an exact symbolic
 /// result.  Returns `None` when no simplification is possible.
 pub(crate) fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<ExprId> {
+    if let Some(angle) = eval_atan2_infinite(arena, y, x) {
+        return Some(angle);
+    }
     // Clone numeric values up-front so we can use arena mutably below.
     let y_val = arena.as_num(y).cloned();
     let x_val = arena.as_num(x).cloned();
@@ -3578,6 +3597,77 @@ pub(crate) fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<Expr
         }
         _ => eval_atan2_special(arena, y, x),
     }
+}
+
+/// The least (`min`) or greatest of the symbol-free real constants `args`
+/// (`Min(π, 3) = 3`, `Max(√2, 3/2) = 3/2`; SymPy compares them the same
+/// way), each comparison decided by the certified sign of a difference
+/// ([`Arena::sign_of_real_constant`]).  `None` when an argument is not such
+/// a constant or a comparison is not decided (equal values included).
+fn extremum_of_real_constants(arena: &mut Arena, args: &[ExprId], min: bool) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if args.len() < 2 || args.len() > 8 {
+        return None;
+    }
+    let mut cache = AssumptionCache::new();
+    for &a in args {
+        if cache.query(arena, a, Props::REAL) != Some(true)
+            || !crate::base::walk::free_symbols(arena, a).is_empty()
+        {
+            return None;
+        }
+    }
+    let mut best = args[0];
+    for &a in &args[1..] {
+        let d = arena.sub(a, best);
+        let s = arena.sign_of_real_constant(d)?;
+        if (min && s == std::cmp::Ordering::Less) || (!min && s == std::cmp::Ordering::Greater) {
+            best = a;
+        }
+    }
+    Some(best)
+}
+
+/// `atan2(y, x)` with one argument `±∞` and the other real and finite (as
+/// SymPy: `atan2(1, oo)` → 0, `atan2(-1, -oo)` → -pi, `atan2(0, -oo)` →
+/// pi, `atan2(oo, 1)` → pi/2): the limit of the angle.  `arg(∞ + i)` is
+/// `atan2(1, ∞) = 0`.  Both infinite, or the other's sign unknown: `None`.
+fn eval_atan2_infinite(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use std::cmp::Ordering;
+    let is_inf = |arena: &Arena, id: ExprId| id == arena.infinity || id == arena.neg_infinity;
+    if is_inf(arena, y) == is_inf(arena, x) {
+        return None;
+    }
+    let finite = if is_inf(arena, y) { x } else { y };
+    let mut cache = AssumptionCache::new();
+    if cache.query(arena, finite, Props::REAL) != Some(true) {
+        return None;
+    }
+    let sign = if let Some(q) = arena.as_num(finite) {
+        q.cmp(&Q::zero())
+    } else if cache.query(arena, finite, Props::POSITIVE) == Some(true) {
+        Ordering::Greater
+    } else if cache.query(arena, finite, Props::NEGATIVE) == Some(true) {
+        Ordering::Less
+    } else if cache.query(arena, finite, Props::ZERO) == Some(true) {
+        Ordering::Equal
+    } else {
+        arena.sign_of_real_constant(finite)?
+    };
+    let angle: Q = if is_inf(arena, x) {
+        if x == arena.infinity {
+            Q::zero()
+        } else if sign == Ordering::Less {
+            -Q::one()
+        } else {
+            Q::one()
+        }
+    } else {
+        let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+        if y == arena.infinity { half } else { -half }
+    };
+    Some(pi_times(arena, angle))
 }
 
 /// `atan2(y, x)` for real square-root towers (at least one irrational) whose
@@ -3689,8 +3779,22 @@ fn eval_atanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // principal value is `atanh(x) = acoth(x) ∓ iπ/2` for `±x > 1` (mpmath:
     // `atanh(2)` = 0.549… − 1.5708…j; SymPy: `atanh(oo)` → -I*pi/2).
     // Before 0.30 it stayed, and `evalf` refused it.
-    if inner == arena.infinity || inner == arena.neg_infinity {
-        let half = arena.rational(if inner == arena.infinity { -1 } else { 1 }, 2);
+    //
+    // Off the real axis the side decides: atanh(z) → sign(Im z)·iπ/2 as |z|
+    // grows, so atanh(±∞ + c) = sign(Im c)·iπ/2 and atanh(c ± i·∞) = ±iπ/2
+    // (mpmath `atanh(mpc(1e20, 1))` = 1.0e-20 + 1.5707…j).  Up to 0.40 `∞ +
+    // i` was `∞` and `atanh(∞ + i)` was −iπ/2.
+    if let Some(inf) = crate::base::canon::infinite_argument(arena, inner) {
+        let positive = if inf.imaginary {
+            !inf.negative
+        } else {
+            match inf.side? {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => inf.negative,
+            }
+        };
+        let half = arena.rational(if positive { 1 } else { -1 }, 2);
         return Some(arena.mul(&[half, arena.i_unit, arena.pi]));
     }
     None

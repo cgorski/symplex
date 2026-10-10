@@ -1334,8 +1334,12 @@ fn g21_arithmetic_with_infinity() {
 
     // inf + x
     let r1 = &inf + &x;
-    // oo + x absorbs the finite symbol (SymPy: oo + x = oo).
-    assert_eq!(r1, inf, "inf + x = {r1}");
+    // oo absorbs a real finite term only (SymPy: oo + x = x + oo for an
+    // unassumed x, oo + r = oo for a real r); up to 0.40 this line pinned
+    // `oo + x = oo`, wrong at x = i.
+    assert_eq!(format!("{r1}"), "x + oo", "inf + x = {r1}");
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
+    assert_eq!(&inf + &r, inf);
 
     // inf * 2 = oo
     let r2 = &inf * 2;

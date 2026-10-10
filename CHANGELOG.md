@@ -35,6 +35,21 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - The assumption system makes fewer claims about expressions that may be
   infinite (see Fixed); every changed answer went from a decision to
   `None`.
+- **`±oo` absorbs only the real finite terms of a sum** (SymPy's
+  `Add.flatten`): `oo + I`, `oo + x` (unassumed `x`), `x·oo + 1`, `1 + I·oo`
+  and `π/2 + I·oo` stay sums (they were `oo`, `oo`, `x·oo`, `I·oo`, `I·oo`);
+  `zoo` still absorbs every finite term; `1/(oo + I) = 0`.  Values at
+  infinities keep their finite parts, which SymPy drops: `ln(I·oo) = oo +
+  iπ/2`, `asinh(I·oo) = oo + iπ/2`, `asin(oo) = π/2 − I·oo`, `ln(−oo) = oo
+  + iπ`, `erfc(I·oo) = 1 − I·oo` (mpmath at `10²⁰`, `10⁴⁰`, `10⁸⁰`).
+  `Min`/`Max` of numbers fold when built (`Min(0, 10) = 0`; `Min(nan, 1)`
+  is `nan`).
+- `is_tautology`, `is_contradiction` and `satisfiable` decide formulas in
+  symbols declared real, signed, nonzero or integer (with parity or
+  primality) on their domain (refusals 5,225 → 2,314 of 33,000 checks);
+  `Eq(nan, nan)` is `False`; some `Piecewise` evaluations that were
+  refused return a value (conditions with `±∞`, conditions at their
+  threshold).
 
 ### Fixed
 
@@ -98,6 +113,27 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `KroneckerDelta(nan, nan)` was 1 and `polygamma` with a `nan` argument
   stayed unevaluated (both `nan` now); `|−e^π|`, `polylog(1, e^{iπ/3})`,
   `elliptic_f(−π/2, m)`, `expint(0, x)` needed a second `eval`.
+- **Infinities hunted** (3,000 expressions combining `oo`, `−oo`, `zoo`,
+  `I·oo`, `nan` with finite constants through every operation and
+  function, against mpmath limits along paths and SymPy): 100 wrong → 6
+  (one real, listed in the hand-off; five oracle artifacts or SymPy
+  conventions).  `im(oo + I)` was 0, `atanh(oo + I)` was `−iπ/2` (it is
+  `+iπ/2`), `cos(π/2 + I·oo)` was `oo` (it is `−I·oo`), `re(oo·x)` and
+  `re(I·oo)` were `nan` (`0·∞` in the complex splitting); the reciprocal
+  functions were built from their reciprocals before their special
+  points: `acot(0)` was `atan(zoo)` (it is `π/2`), `coth(±oo)` and
+  `cot(−I·oo)` were `nan` (`±1`, `I`), `asech(0)` was `zoo` (`oo`).
+- **Decision procedures hunted** (relations between constants equal by
+  identities or nearly equal, `Piecewise`, Boolean formulas, zero tests;
+  mpmath at 400 digits, truth tables, SymPy): `evalf` decided `a > a`
+  true (astro-float's `is_positive` accepts `+0`):
+  `Piecewise((1, besselj(1, 2) > besselj(1, 2)), (0, True))` was `1`; zero
+  tests sampled symbols outside their declarations (an even prime at 3,
+  5, 7, 11, a composite at 2, 3, 5): `simplify` of `0/((−1)ⁿ − 1 + …)` with
+  `n` an even prime was `0` (it is `nan`); `Eq(nan, nan)` simplified to
+  `True`; polynomial identities as equations (`Eq((x + 1)², x² + 2x + 1)`)
+  were contradictions for `is_tautology` and `satisfiable`.  Constant
+  relations: 140 wrong → 0; identities 4 → 0.
 
 ### Changed (performance)
 

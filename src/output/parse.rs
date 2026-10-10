@@ -470,6 +470,83 @@ fn declared_function(arena: &Arena, name: &str) -> Option<SymbolId> {
     (0..arena.node_count()).rev().any(headed).then_some(sid)
 }
 
+/// The reciprocal trigonometric and hyperbolic functions and their inverses
+/// (`name` lower case: `cot`, `sec`, `csc`, `coth`, `sech`, `csch`, `acot`,
+/// `asec`, `acsc`, `acoth`, `asech`, `acsch`; anything else is returned
+/// unchanged), which have no node of their own: `cot x = cos x/sin x`,
+/// `sec x = 1/cos x`, `acot x = atan(1/x)`, `acoth x = atanh(1/x)`, … (the
+/// principal definitions; `asec(x).rewrite(acos)` → `acos(1/x)` in SymPy).
+/// [`Ex::cot`](crate::api::expr::Ex::cot) & co. build the same forms.
+///
+/// The values the quotient or the reciprocal loses are taken first, as
+/// SymPy's `acot.eval` & co.: `acot(0) = π/2` (the quotient form is
+/// `atan(zoo)`), `acoth(0) = iπ/2`, `asech(0) = ∞`, `coth(±∞ + c) = ±1`
+/// and `cot(c ± i·∞) = ∓i` for a finite `c` (the quotients of two
+/// infinities are `nan`).  Up to 0.40 `acot(0)` was `atan(zoo)`, `coth(∞)`
+/// and `cot(−i·∞)` were `nan`.  A value substituted later into the
+/// quotient form (`cot(x)` at `x = −i·∞`) is still `nan`.
+pub(crate) fn reciprocal_function(arena: &mut Arena, name: &str, arg: ExprId) -> ExprId {
+    use crate::base::canon::infinite_argument;
+    let one = arena.one;
+    let infinite = infinite_argument(arena, arg);
+    match name {
+        "cot" => {
+            if let Some(inf) = infinite.filter(|inf| inf.imaginary) {
+                let i = arena.i_unit;
+                return if inf.negative { i } else { arena.neg(i) };
+            }
+            let c = arena.cos(arg);
+            let s = arena.sin(arg);
+            arena.div(c, s)
+        }
+        "sec" => {
+            let c = arena.cos(arg);
+            arena.div(one, c)
+        }
+        "csc" => {
+            let s = arena.sin(arg);
+            arena.div(one, s)
+        }
+        "coth" => {
+            if let Some(inf) = infinite.filter(|inf| !inf.imaginary) {
+                return if inf.negative { arena.neg_one } else { one };
+            }
+            let c = arena.cosh(arg);
+            let s = arena.sinh(arg);
+            arena.div(c, s)
+        }
+        "sech" => {
+            let c = arena.cosh(arg);
+            arena.div(one, c)
+        }
+        "csch" => {
+            let s = arena.sinh(arg);
+            arena.div(one, s)
+        }
+        "acot" if arg == arena.zero => {
+            let half = arena.rational(1, 2);
+            arena.mul(&[half, arena.pi])
+        }
+        "acoth" if arg == arena.zero => {
+            let half = arena.rational(1, 2);
+            arena.mul(&[half, arena.pi, arena.i_unit])
+        }
+        "asech" if arg == arena.zero => arena.infinity,
+        "acot" | "asec" | "acsc" | "acoth" | "asech" | "acsch" => {
+            let inv = arena.div(one, arg);
+            match name {
+                "acot" => arena.atan(inv),
+                "asec" => arena.acos(inv),
+                "acsc" => arena.asin(inv),
+                "acoth" => arena.atanh(inv),
+                "asech" => arena.acosh(inv),
+                _ => arena.asinh(inv),
+            }
+        }
+        _ => arg,
+    }
+}
+
 /// Textbook one-argument functions that [`parse_implicit`] applies without
 /// parentheses (`sin x`).  Deliberately excludes short names that are also
 /// common variables (`re`, `im`, `arg`, `li`, `w`, `zeta`, `chi`, …).
@@ -1769,61 +1846,17 @@ impl<'a> Parser<'a> {
             "factorial" => Ok(arena.intern(crate::base::node::ExprNode::Factorial(arg))),
             "digamma" => Ok(arena.intern(crate::base::node::ExprNode::Digamma(arg))),
             "loggamma" => Ok(arena.intern(crate::base::node::ExprNode::LogGamma(arg))),
-            // Reciprocal trig / hyperbolic functions (no dedicated nodes;
-            // the same forms `Ex::cot` & co. build).
-            "cot" => {
-                let c = arena.cos(arg);
-                let s = arena.sin(arg);
-                Ok(arena.div(c, s))
+            // Reciprocal trig / hyperbolic functions and their inverses (no
+            // dedicated nodes; the same forms `Ex::cot` & co. build).
+            "cot" | "sec" | "csc" | "coth" | "sech" | "csch" => {
+                Ok(reciprocal_function(arena, name_lower, arg))
             }
-            "sec" => {
-                let c = arena.cos(arg);
-                Ok(arena.div(arena.one, c))
-            }
-            "csc" => {
-                let s = arena.sin(arg);
-                Ok(arena.div(arena.one, s))
-            }
-            "coth" => {
-                let c = arena.cosh(arg);
-                let s = arena.sinh(arg);
-                Ok(arena.div(c, s))
-            }
-            "sech" => {
-                let c = arena.cosh(arg);
-                Ok(arena.div(arena.one, c))
-            }
-            "csch" => {
-                let s = arena.sinh(arg);
-                Ok(arena.div(arena.one, s))
-            }
-            "acot" | "arccot" => {
-                let inv = arena.div(arena.one, arg);
-                Ok(arena.atan(inv))
-            }
-            // The other inverse reciprocal functions, by SymPy's principal
-            // definitions (`asec(x).rewrite(acos)` → `acos(1/x)`, …); before
-            // 0.31 they did not parse.
-            "asec" | "arcsec" => {
-                let inv = arena.div(arena.one, arg);
-                Ok(arena.acos(inv))
-            }
-            "acsc" | "arccsc" => {
-                let inv = arena.div(arena.one, arg);
-                Ok(arena.asin(inv))
-            }
-            "acoth" | "arccoth" => {
-                let inv = arena.div(arena.one, arg);
-                Ok(arena.atanh(inv))
-            }
-            "asech" | "arcsech" => {
-                let inv = arena.div(arena.one, arg);
-                Ok(arena.acosh(inv))
-            }
-            "acsch" | "arccsch" => {
-                let inv = arena.div(arena.one, arg);
-                Ok(arena.asinh(inv))
-            }
+            "acot" | "arccot" => Ok(reciprocal_function(arena, "acot", arg)),
+            "asec" | "arcsec" => Ok(reciprocal_function(arena, "asec", arg)),
+            "acsc" | "arccsc" => Ok(reciprocal_function(arena, "acsc", arg)),
+            "acoth" | "arccoth" => Ok(reciprocal_function(arena, "acoth", arg)),
+            "asech" | "arcsech" => Ok(reciprocal_function(arena, "asech", arg)),
+            "acsch" | "arccsch" => Ok(reciprocal_function(arena, "acsch", arg)),
             // Complex analysis
             "re" => Ok(arena.re(arg)),
             "im" => Ok(arena.im(arg)),
