@@ -29,6 +29,45 @@ fn poly_coeffs_symbolic(expr: &Ex, var: &Ex) -> Option<Vec<Ex>> {
     Some(ids.into_iter().map(|id| expr.wrap(id)).collect())
 }
 
+/// Roots of `p`, a polynomial in `var`, repeated with multiplicity (SymPy's
+/// `roots(…, multiple=True)`, which `TransferFunction.poles()` uses).
+///
+/// They are the eigenvalues of the companion matrix of `p`, so they agree
+/// with [`StateSpace::poles`] of the realisation.  When `p` is not a
+/// polynomial in `var`, or the eigenvalue solver does not find every root,
+/// the distinct roots of the solver are returned.
+fn roots_with_multiplicity(p: &Ex, var: &Ex) -> Vec<Ex> {
+    if let Some(mut c) = poly_coeffs_symbolic(p, var) {
+        while c.len() > 1 && c.last().is_some_and(is_exact_zero) {
+            c.pop();
+        }
+        let n = c.len() - 1;
+        if n == 0 {
+            // A nonzero constant has no roots; the zero polynomial is left
+            // to the solver.
+            if !c.first().is_some_and(is_exact_zero) {
+                return Vec::new();
+            }
+        } else {
+            let ctx = p.context();
+            let lead = &c[n];
+            let companion = Matrix::from_fn(n, n, |i, j| {
+                if i + 1 < n {
+                    if j == i + 1 { ctx.one() } else { ctx.zero() }
+                } else {
+                    (-(&c[j] / lead)).eval()
+                }
+            });
+            if let Ok(ev) = companion.and_then(|m| m.eigenvals())
+                && ev.len() == n
+            {
+                return ev;
+            }
+        }
+    }
+    p.solve_or_empty(var)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // State-Space Model
 // ═══════════════════════════════════════════════════════════════════════════
@@ -312,11 +351,16 @@ impl StateSpace {
     /// Returns `Some(true)` if all poles are in the open left half-plane.
     /// Returns `Some(false)` if any pole can be shown to have non-negative real part.
     /// Returns `None` if stability cannot be determined symbolically.
+    ///
+    /// Numeric poles are decided by certified evaluation.  When some pole
+    /// is symbolic (or not found), the Routh–Hurwitz test
+    /// [`is_routh_stable`] decides from the coefficients of `det(sI − A)`,
+    /// as SymPy's `get_asymptotic_stability_conditions` does: `A =
+    /// [[−k, 1], [0, −k − 1]]` with `k > 0` is stable (before 0.41 every
+    /// symbolic pole gave `None`).
     pub fn is_stable(&self) -> Option<bool> {
         let poles = self.poles();
-        if poles.len() < self.num_states() {
-            return None; // not all eigenvalues found
-        }
+        let mut undecided = poles.len() < self.num_states();
         for pole in &poles {
             // Try real evaluation first
             if let Ok(val) = pole.eval_f64() {
@@ -328,10 +372,17 @@ impl StateSpace {
                     return Some(false);
                 }
             } else {
-                return None; // Can't determine
+                undecided = true;
             }
         }
-        Some(true)
+        if !undecided {
+            return Some(true);
+        }
+        let s = self.a.fresh_symbol("s");
+        let cp = self.try_char_poly(&s).ok()?.expand();
+        let mut coeffs = poly_coeffs_symbolic(&cp, &s)?;
+        coeffs.reverse();
+        is_routh_stable(&coeffs)
     }
 
     /// Discretize using zero-order hold (ZOH).
@@ -357,17 +408,15 @@ impl StateSpace {
         let a_dt = self.a.scale(dt);
         let exp_a_dt = a_dt.exp_series(order)?;
 
-        // Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
+        // Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B, the term
+        // Aᵏ⁻¹·dtᵏ/k! built from the previous one (an `i64` k! overflowed
+        // and panicked for order > 20 before 0.41).
         let ctx = self.ctx();
-        let ident = Matrix::identity(&ctx, n)?;
-        let mut b_sum = ident.scale(dt);
-        let mut a_power = ident.clone();
+        let mut term = Matrix::identity(&ctx, n)?.scale(dt);
+        let mut b_sum = term.clone();
         for k in 2..=order {
-            a_power = a_power.matmul(&self.a)?;
-            let factorial: i64 = (1..=k as i64).product();
-            let coeff = self.ctx().rational(1, factorial);
-            let dt_power = dt.powi(k as i64);
-            let term = a_power.scale(&(&coeff * &dt_power));
+            let step = dt * &ctx.rational(1, i64::try_from(k).unwrap_or(i64::MAX));
+            term = term.matmul(&self.a)?.scale(&step);
             b_sum = b_sum.add(&term)?;
         }
         let b_d = b_sum.matmul(&self.b)?;
@@ -571,39 +620,109 @@ impl TransferFunction {
         Self::new(build_poly(num_coeffs), build_poly(den_coeffs), var.clone())
     }
 
-    /// Poles: roots of the denominator polynomial.
+    /// Poles: roots of the denominator polynomial, repeated with
+    /// multiplicity (as SymPy's `TransferFunction.poles()`; common factors
+    /// with the numerator are **not** cancelled).
     ///
+    /// `1/(s + 1)²` has the poles `[−1, −1]`.  (Before 0.41 every
+    /// repeated pole was listed once, unlike [`StateSpace::poles`].)
     /// Returns an empty vector if the solver cannot find the roots.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
+    /// let g = TransferFunction::new(ctx.int(1), (&s + 1).powi(2), s.clone());
+    /// assert_eq!(g.poles(), vec![ctx.int(-1), ctx.int(-1)]);
+    /// ```
     pub fn poles(&self) -> Vec<Ex> {
-        self.den.solve_or_empty(&self.var)
+        roots_with_multiplicity(&self.den, &self.var)
     }
 
-    /// Zeros: roots of the numerator polynomial.
+    /// Zeros: roots of the numerator polynomial, repeated with
+    /// multiplicity (as SymPy's `TransferFunction.zeros()`).
     ///
     /// Returns an empty vector if the solver cannot find the roots.
     pub fn zeros(&self) -> Vec<Ex> {
-        self.num.solve_or_empty(&self.var)
+        roots_with_multiplicity(&self.num, &self.var)
     }
 
-    /// DC gain: G(0) = num(0) / den(0).
+    /// DC gain: `lim_{s→0} G(s)` (SymPy: `limit(G, s, 0)`).
     ///
-    /// Evaluates the transfer function at s = 0, giving the
-    /// steady-state gain for a step input.
+    /// The steady-state gain for a step input: `num(0)/den(0)`, complex
+    /// infinity `zoo` for a pole at the origin, and for a pole-zero
+    /// cancellation at the origin (`num(0) = den(0) = 0`) the ratio of the
+    /// lowest-order coefficients.  (Before 0.41 the cancellation gave
+    /// `num(0)/den(0) = 0/0 = nan`: `s/(s² + s)` had DC gain `nan`, not 1.)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
+    /// let g = TransferFunction::from_coeffs(&[0, 1], &[0, 1, 1], &s); // s/(s² + s)
+    /// assert_eq!(g.dc_gain(), ctx.int(1));
+    /// ```
     pub fn dc_gain(&self) -> Ex {
-        let zero = self.ctx().int(0);
+        let ctx = self.ctx();
+        let zero = ctx.int(0);
         let num_0 = self.num.subs(&self.var, &zero).eval();
         let den_0 = self.den.subs(&self.var, &zero).eval();
-        &num_0 / &den_0
+        if !(is_exact_zero(&num_0) && is_exact_zero(&den_0)) {
+            return &num_0 / &den_0;
+        }
+        // 0/0: cancel the common power of s through the lowest-order
+        // nonzero coefficients.
+        if let (Some(n), Some(d)) = (
+            poly_coeffs_symbolic(&self.num, &self.var),
+            poly_coeffs_symbolic(&self.den, &self.var),
+        ) {
+            let order = |c: &[Ex]| c.iter().position(|e| !is_exact_zero(e));
+            return match (order(&n), order(&d)) {
+                (None, Some(_)) => zero, // G = 0
+                (Some(i), Some(j)) if i > j => zero,
+                (Some(i), Some(j)) if i < j => ctx.complex_infinity(),
+                (Some(i), Some(j)) => (&n[i] / &d[j]).eval(),
+                (_, None) => ctx.nan(), // zero denominator
+            };
+        }
+        (&self.num / &self.den).limit(&self.var, &zero)
+    }
+
+    /// `other`'s numerator and denominator in `self`'s Laplace variable.
+    ///
+    /// Each transfer function is a function of its own variable, so an
+    /// `other` written in `p` is renamed to `s` before the two are combined
+    /// (before 0.41 the `p` stayed in the result as a constant).
+    fn other_in_var(&self, other: &TransferFunction) -> (Ex, Ex) {
+        if other.var == self.var {
+            (other.num.clone(), other.den.clone())
+        } else {
+            (
+                other.num.subs(&other.var, &self.var),
+                other.den.subs(&other.var, &self.var),
+            )
+        }
     }
 
     /// Series connection: G₁(s) · G₂(s).
     ///
     /// The series (cascade) connection multiplies the transfer functions:
     /// G_series = G₁ · G₂ = (num₁·num₂) / (den₁·den₂)
+    ///
+    /// The result is in `self`'s Laplace variable; if `other` uses another
+    /// one it is renamed (as for [`parallel`](Self::parallel) and
+    /// [`feedback_with`](Self::feedback_with)).
     pub fn series(&self, other: &TransferFunction) -> TransferFunction {
+        let (num2, den2) = self.other_in_var(other);
         TransferFunction {
-            num: &self.num * &other.num,
-            den: &self.den * &other.den,
+            num: &self.num * &num2,
+            den: &self.den * &den2,
             var: self.var.clone(),
         }
     }
@@ -613,9 +732,10 @@ impl TransferFunction {
     /// The parallel connection adds the transfer functions:
     /// G_parallel = (num₁·den₂ + num₂·den₁) / (den₁·den₂)
     pub fn parallel(&self, other: &TransferFunction) -> TransferFunction {
+        let (num2, den2) = self.other_in_var(other);
         TransferFunction {
-            num: &(&self.num * &other.den) + &(&other.num * &self.den),
-            den: &self.den * &other.den,
+            num: &(&self.num * &den2) + &(&num2 * &self.den),
+            den: &self.den * &den2,
             var: self.var.clone(),
         }
     }
@@ -637,9 +757,10 @@ impl TransferFunction {
     /// The closed-loop transfer function with feedback element H(s):
     /// G_cl = (num_G · den_H) / (den_G · den_H + num_G · num_H)
     pub fn feedback_with(&self, h: &TransferFunction) -> TransferFunction {
+        let (h_num, h_den) = self.other_in_var(h);
         TransferFunction {
-            num: &self.num * &h.den,
-            den: &(&self.den * &h.den) + &(&self.num * &h.num),
+            num: &self.num * &h_den,
+            den: &(&self.den * &h_den) + &(&self.num * &h_num),
             var: self.var.clone(),
         }
     }
@@ -949,11 +1070,33 @@ fn routh_table(coeffs: &[Ex]) -> Result<RouthTable, SymplexError> {
 /// means a root with non-negative real part), or `None` if stability cannot
 /// be determined symbolically.  Leading zero coefficients are ignored; an
 /// empty or all-zero coefficient list is `Some(false)`.
+///
+/// A coefficient that is provably zero or of the opposite sign to the
+/// leading one is `Some(false)` before the table is consulted (a Hurwitz
+/// polynomial has all its coefficients of one sign); this decides symbolic
+/// coefficients whose table entries are undecidable: `s³ + (k − 1)·s² −
+/// k·s + 1` with `k > 0` (before 0.41 `None`: the sign of `k − 1` is
+/// unknown).
 pub fn is_routh_stable(coeffs: &[Ex]) -> Option<bool> {
     // The only errors are an empty or zero coefficient list: not stable.
     let Ok(table) = routh_table(coeffs) else {
         return Some(false);
     };
+    // Necessary condition: a Hurwitz polynomial has all its coefficients
+    // nonzero and of the leading coefficient's sign (see above).
+    let mut nonzero = coeffs.iter().skip_while(|c| is_exact_zero(c));
+    if let Some(lead) = nonzero.next()
+        && crate::domains::matrix::ex_is_zero(lead) == Some(false)
+        && let Some(lead_positive) = crate::domains::matrix::ex_is_positive(lead)
+    {
+        for c in nonzero {
+            let wrong_sign = crate::domains::matrix::ex_is_positive(c) == Some(!lead_positive)
+                && crate::domains::matrix::ex_is_zero(c) == Some(false);
+            if is_exact_zero(c) || wrong_sign {
+                return Some(false);
+            }
+        }
+    }
     if table.degenerate {
         return Some(false);
     }

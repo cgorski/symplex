@@ -2949,18 +2949,19 @@ fn solve_wrt_constant_no_crash() {
     assert!(result.is_err(), "solve(x+1, 2) = {result:?}");
 }
 
-/// Diff wrt a constant (not a variable) — should just return 0.
+/// Diff wrt a constant (not a variable) is not a panic.  Up to 0.40 it was
+/// `0`; a derivative with respect to a number is not defined (SymPy 1.14
+/// refuses a non-differentiable variable), so it stays the formal
+/// `Derivative`, which `try_diff` reports.
 #[test]
-fn diff_wrt_constant_returns_zero() {
+fn diff_wrt_constant_is_a_formal_derivative() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let two = ctx.int(2);
     let expr = x.powi(2);
     let result = expr.diff(&two);
-    let s = format!("{result}");
-    eprintln!("d/d(2) x^2 = {s}");
-    // Differentiating wrt a constant should give 0
-    assert_eq!(s, "0", "d/d(constant) should be 0, got: {s}");
+    assert!(result.has_unevaluated(), "d/d(2) x^2 = {result}");
+    assert!(expr.try_diff(&two).is_err());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

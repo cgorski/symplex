@@ -20,6 +20,52 @@ use typenum::operator_aliases::{Diff, Sum};
 
 use super::dim::Dim;
 use super::qty::Qty;
+use crate::prelude::Ex;
+
+/// The symbol a quantity variable is measured in, with `dv/ds`, when the
+/// variable is not itself a symbol: a unit conversion of one symbol
+/// (`Time::minutes(τ)` is `60·τ`, `Temperature::from_celsius(ϑ)` is
+/// `ϑ + 273.15`).  `None` for a bare symbol, a constant, or several
+/// symbols.
+fn measured_symbol(var: &Ex) -> Option<(Ex, Ex)> {
+    if is_symbol(var) {
+        return None;
+    }
+    let [s] = <[Ex; 1]>::try_from(var.free_symbols()).ok()?;
+    let dv = var.diff(&s);
+    (!dv.is_zero_structural()).then_some((s, dv))
+}
+
+fn is_symbol(e: &Ex) -> bool {
+    matches!(
+        e.inner.read().arena.node(e.raw_id()),
+        crate::base::node::ExprNode::Symbol(_)
+    )
+}
+
+/// `d expr / d var` for a quantity variable: the ordinary derivative for a
+/// symbol, the chain rule `(d expr/ds) / (dv/ds)` for a variable that is a
+/// function of one symbol `s`, else the unevaluated `Derivative(expr, var)`
+/// (differentiating with respect to a non-symbol used to give `0`).
+pub(crate) fn diff_wrt_quantity(expr: &Ex, var: &Ex) -> Ex {
+    if is_symbol(var) {
+        return expr.diff(var);
+    }
+    match measured_symbol(var) {
+        Some((s, dv)) => expr.diff(&s) / &dv,
+        None => expr.formal_diff(var),
+    }
+}
+
+/// `∫ expr d var` for a quantity variable: substitution `∫ expr·(dv/ds) ds`
+/// for a variable that is a function of one symbol `s` (integrating with
+/// respect to a non-symbol used to stay unevaluated).
+pub(crate) fn integrate_wrt_quantity(expr: &Ex, var: &Ex) -> Ex {
+    match measured_symbol(var) {
+        Some((s, dv)) => (expr * &dv).integrate(&s),
+        None => expr.integrate(var),
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // diff_qty — symbolic differentiation with dimension tracking
@@ -29,6 +75,11 @@ use super::qty::Qty;
 ///
 /// The output dimension is the quotient of the two input dimensions:
 /// `D_expr / D_var` (exponents are subtracted).
+///
+/// The variable may be a unit conversion of one symbol — `Time::minutes(τ)`
+/// is `60·τ` seconds — and the derivative is then taken by the chain rule,
+/// `(d expr/dτ) / 60`; a variable with several symbols gives the
+/// unevaluated `Derivative(expr, var)`.
 ///
 /// # Type-level mechanics
 ///
@@ -69,7 +120,7 @@ where
     N1x: ops::Sub<N2x>,
     J1: ops::Sub<J2>,
 {
-    Qty::from_ex(expr.inner().diff(var.inner()))
+    Qty::from_ex(diff_wrt_quantity(expr.inner(), var.inner()))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -80,6 +131,9 @@ where
 ///
 /// The output dimension is the product of the two input dimensions:
 /// `D_expr × D_var` (exponents are added).
+///
+/// A variable that is a unit conversion of one symbol (`Length::kilometers(ξ)`
+/// is `1000·ξ` metres) is integrated by substitution: `∫ expr·1000 dξ`.
 ///
 /// # Type-level mechanics
 ///
@@ -120,7 +174,7 @@ where
     N1x: ops::Add<N2x>,
     J1: ops::Add<J2>,
 {
-    Qty::from_ex(expr.inner().integrate(var.inner()))
+    Qty::from_ex(integrate_wrt_quantity(expr.inner(), var.inner()))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

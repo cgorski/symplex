@@ -123,13 +123,17 @@ impl core::fmt::Display for ConstDim {
 /// | Mul                         | Dimensions multiply (exponents add)                         |
 /// | Pow(base, p/q)              | Exponent dimensionless; every exponent of `base` times `p/q` must be whole (`√(k/m)` is a frequency) |
 /// | Neg, abs, re, im, conj      | Same dimension as the argument                              |
-/// | sign, Heaviside             | Any argument; dimensionless                                 |
+/// | sign, Heaviside, arg        | Any argument; dimensionless                                 |
 /// | DiracDelta(a)               | `1 / dim(a)`                                                |
 /// | atan2(y, x), relations      | Operands of one dimension; dimensionless                    |
 /// | sin, exp, ln, floor, …      | Argument must be dimensionless; result is dimensionless     |
 /// | Derivative(f, x)            | `dim(f) / dim(x)`                                           |
 /// | Integral(f, x), ∫ₐᵇ f dx    | `dim(f) × dim(x)` (bounds of the dimension of `x`)          |
 /// | Sum(f, k, a, b), Limit, Subs| `dim(f)` (index and bounds dimensionless)                   |
+/// | Product(f, k, a, b)         | `dim(f)^(b − a + 1)` for constant integer bounds             |
+/// | Series(f, x, x₀, n)         | `dim(f)` (`x₀` of the dimension of `x`)                       |
+/// | Residue(f, z, z₀)           | `dim(f) × dim(z)`                                            |
+/// | LaplaceTransform(f, t, s)   | `dim(f) × dim(t)` with `dim(s) = 1/dim(t)`; the inverse transform `dim(F) × dim(s)` |
 ///
 /// Exponents that leave the range of `i8` are an error (they used to
 /// overflow: a panic in debug builds, a wrapped dimension in release).
@@ -306,7 +310,8 @@ fn infer_in_arena(arena: &Arena, root: ExprId, dims: &DimMap) -> Result<ConstDim
             | ExprNode::Re(a)
             | ExprNode::Im(a)
             | ExprNode::Conjugate(a) => get(a)?,
-            ExprNode::Sign(a) | ExprNode::Heaviside(a) => {
+            // The argument (phase) of a quantity is dimensionless, like its sign.
+            ExprNode::Sign(a) | ExprNode::Heaviside(a) | ExprNode::Arg(a) => {
                 get(a)?;
                 dimensionless
             }
@@ -345,9 +350,61 @@ fn infer_in_arena(arena: &Arena, root: ExprId, dims: &DimMap) -> Result<ConstDim
                 }
                 get(f)?
             }
+            ExprNode::Product_(f, k, lo, hi) => {
+                for c in [k, lo, hi] {
+                    let d = get(c)?;
+                    if !d.eq(dimensionless) {
+                        return Err(format!(
+                            "Product index and bounds must be dimensionless, got {d}"
+                        ));
+                    }
+                }
+                let df = get(f)?;
+                if df.eq(dimensionless) {
+                    dimensionless
+                } else {
+                    // ∏_{k=lo}^{hi} f has dim(f)^(hi − lo + 1).
+                    let count = exponent_value(arena, *hi)
+                        .zip(exponent_value(arena, *lo))
+                        .map(|(h, l)| h - l + Q::one())
+                        .filter(|n| n.is_integer() && *n >= Q::from_integer(0.into()))
+                        .ok_or_else(|| {
+                            format!("Product of a dimensioned factor ({df}) over a symbolic range")
+                        })?;
+                    dim_pow(df, &count)?
+                }
+            }
             ExprNode::Limit(f, x, point) => {
                 same(&[*x, *point], "a limit point")?;
                 get(f)?
+            }
+            ExprNode::Series(f, x, point, order) => {
+                same(&[*x, *point], "a series expansion point")?;
+                let d = get(order)?;
+                if !d.eq(dimensionless) {
+                    return Err(format!("Series order must be dimensionless, got {d}"));
+                }
+                get(f)?
+            }
+            ExprNode::Residue(f, z, point) => {
+                same(&[*z, *point], "a residue point")?;
+                dim_mul(get(f)?, get(z)?)?
+            }
+            // ∫₀^∞ f(t)·e^{−st} dt: dim(f)·dim(t), with s of dimension 1/t
+            // (st is an exponent).  The inverse transform divides again.
+            ExprNode::LaplaceTransform(f, t, s) | ExprNode::InverseLaplaceTransform(f, s, t) => {
+                let (dt, ds) = (get(t)?, get(s)?);
+                if !dim_mul(dt, ds)?.eq(dimensionless) {
+                    return Err(format!(
+                        "Laplace variables must have reciprocal dimensions, got {dt} and {ds}"
+                    ));
+                }
+                let wrt = if matches!(node, ExprNode::LaplaceTransform(..)) {
+                    dt
+                } else {
+                    ds
+                };
+                dim_mul(get(f)?, wrt)?
             }
             ExprNode::Subs(f, x, value) => {
                 same(&[*x, *value], "a substitution")?;

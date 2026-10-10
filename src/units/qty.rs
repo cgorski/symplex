@@ -194,14 +194,18 @@ impl<D> Qty<D> {
     // ── Calculus (returns raw Ex — user wraps in correct output type) ──
 
     /// Differentiate with respect to a variable. Returns raw `Ex`.
-    /// Wrap the result in the appropriate output dimension type.
+    /// Wrap the result in the appropriate output dimension type.  A
+    /// variable that is a unit conversion of one symbol (`Time::minutes(τ)`)
+    /// is handled by the chain rule, as in [`diff_qty`](super::diff_qty).
     pub fn diff(&self, var: &impl AsRef<Ex>) -> Ex {
-        self.inner.diff(var.as_ref())
+        super::calculus::diff_wrt_quantity(&self.inner, var.as_ref())
     }
 
-    /// Integrate with respect to a variable. Returns raw `Ex`.
+    /// Integrate with respect to a variable. Returns raw `Ex`.  A converted
+    /// variable is integrated by substitution, as in
+    /// [`integrate_qty`](super::integrate_qty).
     pub fn integrate(&self, var: &impl AsRef<Ex>) -> Ex {
-        self.inner.integrate(var.as_ref())
+        super::calculus::integrate_wrt_quantity(&self.inner, var.as_ref())
     }
 
     // ── Queries (dimension-independent) ──

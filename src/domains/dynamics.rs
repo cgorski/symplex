@@ -20,6 +20,89 @@ fn invalid(operation: &'static str, reason: String) -> SymplexError {
     SymplexError::invalid_argument(operation, reason)
 }
 
+/// Fresh symbols standing in for the coordinates, velocities and
+/// accelerations that are not plain symbols, such as `q̇ = q.formal_diff(t)`.
+///
+/// The Lagrangian formalism differentiates with respect to `qᵢ`, `q̇ᵢ` and
+/// `q̈ᵢ` as independent variables, and [`Ex::diff`] differentiates with
+/// respect to symbols only (with respect to `Derivative(q, t)` it gives 0).
+/// Every function of this module therefore works on the expressions with
+/// such variables replaced by stand-ins ([`hide`](Self::hide)) and maps the
+/// results back ([`show`](Self::show)).  Before 0.41 `euler_lagrange` of the
+/// pendulum `T = ½ml²q̇²` with `q̇ = Derivative(q, t)` returned
+/// `glm·sin q − ml²·q̇·Derivative(q̇, q)` (no `ml²q̈`) and its mass matrix
+/// was `[[0]]`.
+struct StandIns {
+    /// `(variable, stand-in)` for the variables that are not symbols.
+    pairs: Vec<(Ex, Ex)>,
+}
+
+impl StandIns {
+    /// Stand-ins for the non-symbols among `vars`, with reserved-looking
+    /// names (`__gc`, `__gc_1`, …) absent from `vars` and `exprs`.
+    fn new(vars: &[&Ex], exprs: &[&Ex]) -> Self {
+        let mut pairs: Vec<(Ex, Ex)> = Vec::new();
+        let mut k = 0usize;
+        for v in vars {
+            if v.expr_type() == crate::api::expr::ExprType::Symbol
+                || pairs.iter().any(|(o, _)| o == *v)
+            {
+                continue;
+            }
+            let ctx = v.context();
+            let fresh = loop {
+                let name = if k == 0 {
+                    "__gc".to_string()
+                } else {
+                    format!("__gc_{k}")
+                };
+                k += 1;
+                let sym = ctx.symbol(&name);
+                if !vars.iter().chain(exprs).any(|e| e.contains(&sym)) {
+                    break sym;
+                }
+            };
+            pairs.push(((*v).clone(), fresh));
+        }
+        StandIns { pairs }
+    }
+
+    fn hide(&self, e: &Ex) -> Ex {
+        if self.pairs.is_empty() {
+            return e.clone();
+        }
+        let map: Vec<(&Ex, &Ex)> = self.pairs.iter().map(|(o, s)| (o, s)).collect();
+        e.subs_map(&map)
+    }
+
+    fn show(&self, e: &Ex) -> Ex {
+        if self.pairs.is_empty() {
+            return e.clone();
+        }
+        let map: Vec<(&Ex, &Ex)> = self.pairs.iter().map(|(o, s)| (s, o)).collect();
+        e.subs_map(&map)
+    }
+
+    /// The stand-in of `v` (`v` itself when it is a symbol).
+    fn var(&self, v: &Ex) -> Ex {
+        self.pairs
+            .iter()
+            .find(|(o, _)| o == v)
+            .map_or_else(|| v.clone(), |(_, s)| s.clone())
+    }
+
+    fn vars(&self, vs: &[&Ex]) -> Vec<Ex> {
+        vs.iter().map(|v| self.var(v)).collect()
+    }
+}
+
+fn coord_vars<'a>(coords: &[GeneralizedCoordinate<'a>]) -> Vec<&'a Ex> {
+    coords
+        .iter()
+        .flat_map(|c| [c.q, c.q_dot, c.q_ddot])
+        .collect()
+}
+
 /// One generalized coordinate `qᵢ` together with its velocity `q̇ᵢ` and
 /// acceleration `q̈ᵢ`.
 ///
@@ -85,6 +168,26 @@ pub struct GeneralizedCoordinate<'a> {
 /// assert!((val - 7.0).abs() < 1e-12);
 /// ```
 pub fn total_time_derivative(expr: &Ex, coords: &[GeneralizedCoordinate<'_>]) -> Ex {
+    let st = StandIns::new(&coord_vars(coords), &[expr]);
+    if st.pairs.is_empty() {
+        return total_time_derivative_symbols(expr, coords);
+    }
+    let hidden: Vec<[Ex; 3]> = coords
+        .iter()
+        .map(|c| [st.var(c.q), st.var(c.q_dot), st.var(c.q_ddot)])
+        .collect();
+    let hidden_coords: Vec<GeneralizedCoordinate<'_>> = hidden
+        .iter()
+        .map(|[q, q_dot, q_ddot]| GeneralizedCoordinate { q, q_dot, q_ddot })
+        .collect();
+    st.show(&total_time_derivative_symbols(
+        &st.hide(expr),
+        &hidden_coords,
+    ))
+}
+
+/// [`total_time_derivative`] for coordinates that are all symbols.
+fn total_time_derivative_symbols(expr: &Ex, coords: &[GeneralizedCoordinate<'_>]) -> Ex {
     // d/dt f = Σᵢ (∂f/∂qᵢ)·q̇ᵢ + Σᵢ (∂f/∂q̇ᵢ)·q̈ᵢ
     let mut result = expr.context().int(0);
 
@@ -144,6 +247,34 @@ pub fn euler_lagrange(
     potential_energy: &Ex,
     coords: &[GeneralizedCoordinate<'_>],
 ) -> Vec<Ex> {
+    let st = StandIns::new(&coord_vars(coords), &[kinetic_energy, potential_energy]);
+    if st.pairs.is_empty() {
+        return euler_lagrange_symbols(kinetic_energy, potential_energy, coords);
+    }
+    let hidden: Vec<[Ex; 3]> = coords
+        .iter()
+        .map(|c| [st.var(c.q), st.var(c.q_dot), st.var(c.q_ddot)])
+        .collect();
+    let hidden_coords: Vec<GeneralizedCoordinate<'_>> = hidden
+        .iter()
+        .map(|[q, q_dot, q_ddot]| GeneralizedCoordinate { q, q_dot, q_ddot })
+        .collect();
+    euler_lagrange_symbols(
+        &st.hide(kinetic_energy),
+        &st.hide(potential_energy),
+        &hidden_coords,
+    )
+    .iter()
+    .map(|e| st.show(e))
+    .collect()
+}
+
+/// [`euler_lagrange`] for coordinates that are all symbols.
+fn euler_lagrange_symbols(
+    kinetic_energy: &Ex,
+    potential_energy: &Ex,
+    coords: &[GeneralizedCoordinate<'_>],
+) -> Vec<Ex> {
     let lagrangian = kinetic_energy - potential_energy;
     let mut equations = Vec::with_capacity(coords.len());
 
@@ -152,7 +283,7 @@ pub fn euler_lagrange(
         let dl_dqi_dot = lagrangian.diff(coord.q_dot);
 
         // d/dt(∂L/∂q̇ᵢ)
-        let dt_dl_dqi_dot = total_time_derivative(&dl_dqi_dot, coords);
+        let dt_dl_dqi_dot = total_time_derivative_symbols(&dl_dqi_dot, coords);
 
         // ∂L/∂qᵢ
         let dl_dqi = lagrangian.diff(coord.q);
@@ -204,13 +335,16 @@ pub fn mass_matrix(kinetic_energy: &Ex, qdot_vars: &[&Ex]) -> Result<Matrix, Sym
             "need at least one velocity variable".into(),
         ));
     }
+    let st = StandIns::new(qdot_vars, &[kinetic_energy]);
+    let t = st.hide(kinetic_energy);
+    let qd = st.vars(qdot_vars);
     let n = qdot_vars.len();
     let mut rows = Vec::with_capacity(n);
     for i in 0..n {
         let mut row = Vec::with_capacity(n);
         for j in 0..n {
             // M_ij = ∂²T / ∂q̇ᵢ∂q̇ⱼ
-            let m_ij = kinetic_energy.diff(qdot_vars[i]).diff(qdot_vars[j]);
+            let m_ij = st.show(&t.diff(&qd[i]).diff(&qd[j]));
             row.push(m_ij);
         }
         rows.push(row);
@@ -271,6 +405,10 @@ pub fn christoffel_symbols(
     }
 
     let half = q_vars[0].context().rational(1, 2);
+    let entries: Vec<&Ex> = mass_mat.iter().collect();
+    let st = StandIns::new(q_vars, &entries);
+    let q = st.vars(q_vars);
+    let m = Matrix::from_fn_unchecked(n, n, |i, j| st.hide(mass_mat.get(i, j)));
 
     let mut result = Vec::with_capacity(n);
     for i in 0..n {
@@ -279,12 +417,12 @@ pub fn christoffel_symbols(
             let mut row = Vec::with_capacity(n);
             for k in 0..n {
                 // Γᵢⱼₖ = ½(∂Mᵢⱼ/∂qₖ + ∂Mᵢₖ/∂qⱼ - ∂Mⱼₖ/∂qᵢ)
-                let dm_ij_dqk = mass_mat.get(i, j).diff(q_vars[k]);
-                let dm_ik_dqj = mass_mat.get(i, k).diff(q_vars[j]);
-                let dm_jk_dqi = mass_mat.get(j, k).diff(q_vars[i]);
+                let dm_ij_dqk = m.get(i, j).diff(&q[k]);
+                let dm_ik_dqj = m.get(i, k).diff(&q[j]);
+                let dm_jk_dqi = m.get(j, k).diff(&q[i]);
 
                 let gamma = &half * &(&(&dm_ij_dqk + &dm_ik_dqj) - &dm_jk_dqi);
-                row.push(gamma);
+                row.push(st.show(&gamma));
             }
             plane.push(row);
         }
@@ -393,9 +531,11 @@ pub fn coriolis_matrix(
 /// assert_eq!(gv.len(), 1);
 /// ```
 pub fn gravity_vector(potential_energy: &Ex, q_vars: &[&Ex]) -> Vec<Ex> {
-    q_vars
+    let st = StandIns::new(q_vars, &[potential_energy]);
+    let v = st.hide(potential_energy);
+    st.vars(q_vars)
         .iter()
-        .map(|qi| potential_energy.diff(qi).eval())
+        .map(|qi| st.show(&v.diff(qi)).eval())
         .collect()
 }
 
@@ -485,6 +625,47 @@ pub struct ManipulatorEquation {
 /// assert_eq!(eq.gravity.len(), 1);
 /// ```
 pub fn manipulator_equation(
+    kinetic_energy: &Ex,
+    potential_energy: &Ex,
+    q_vars: &[&Ex],
+    qdot_vars: &[&Ex],
+) -> Result<ManipulatorEquation, SymplexError> {
+    const OP: &str = "dynamics::manipulator_equation";
+    if q_vars.len() != qdot_vars.len() {
+        return Err(invalid(
+            OP,
+            format!(
+                "q_vars and qdot_vars must have the same length, got {} and {}",
+                q_vars.len(),
+                qdot_vars.len()
+            ),
+        ));
+    }
+    let all: Vec<&Ex> = q_vars.iter().chain(qdot_vars).copied().collect();
+    let st = StandIns::new(&all, &[kinetic_energy, potential_energy]);
+    if st.pairs.is_empty() {
+        return manipulator_equation_symbols(kinetic_energy, potential_energy, q_vars, qdot_vars);
+    }
+    let q = st.vars(q_vars);
+    let qd = st.vars(qdot_vars);
+    let qr: Vec<&Ex> = q.iter().collect();
+    let qdr: Vec<&Ex> = qd.iter().collect();
+    let me = manipulator_equation_symbols(
+        &st.hide(kinetic_energy),
+        &st.hide(potential_energy),
+        &qr,
+        &qdr,
+    )?;
+    Ok(ManipulatorEquation {
+        mass: me.mass.map(|e| st.show(e)),
+        coriolis: me.coriolis.map(|e| st.show(e)),
+        gravity: me.gravity.iter().map(|e| st.show(e)).collect(),
+    })
+}
+
+/// [`manipulator_equation`] for coordinates and velocities that are all
+/// symbols.
+fn manipulator_equation_symbols(
     kinetic_energy: &Ex,
     potential_energy: &Ex,
     q_vars: &[&Ex],

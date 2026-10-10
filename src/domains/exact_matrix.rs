@@ -1277,6 +1277,124 @@ impl ZMatrix {
         (h, u, pivots)
     }
 
+    /// Row-HNF without the transform, `(H, pivot columns)`, in polynomial
+    /// time: the eliminating [`row_hnf`](Self::row_hnf) lets intermediate
+    /// entries grow exponentially (a random 40×40 matrix with entries in
+    /// `[−9, 9]` ran for minutes), while every entry here stays below a
+    /// multiple `D` of the lattice determinant.  `H` is unique, so both give
+    /// the same matrix.
+    ///
+    /// A fraction-free elimination finds the pivot columns `P`, independent
+    /// rows `S` and `D = |det A[S, P]|`; the columns `P` of `A` span a
+    /// full-rank lattice whose HNF `T` is computed modulo `D` (Cohen,
+    /// Algorithm 2.4.8, as in SymPy's `_hermite_normal_form_modulo_D`); the
+    /// other columns follow from `T` because a lattice vector is determined
+    /// by its pivot coordinates: `H[:, j] = T·A[S, P]⁻¹·A[S, j]`.
+    fn row_hnf_modular(&self) -> (ZMatrix, Vec<usize>) {
+        let (m, n) = (self.nrows, self.ncols);
+        let (pivots, rows, d) = self.rank_profile();
+        let r = pivots.len();
+        let mut h = ZMatrix::zeros_unchecked(m, n);
+        if r == 0 {
+            return (h, pivots);
+        }
+        // Columns P of A as an m × r matrix of rank r, reversed and
+        // transposed into the column convention of Algorithm 2.4.8:
+        // a[i][j] = A[j][P[r − 1 − i]] (r × m, rank r).
+        let a: Vec<Vec<BigInt>> = (0..r)
+            .map(|i| {
+                (0..m)
+                    .map(|j| self.data[j * n + pivots[r - 1 - i]].clone())
+                    .collect()
+            })
+            .collect();
+        let w = hnf_columns_modulo(a, &d);
+        // Back to the row convention: T[i][j] = W[r − 1 − j][r − 1 − i].
+        let t = |i: usize, j: usize| &w[r - 1 - j][r - 1 - i];
+        for i in 0..r {
+            for (j, &c) in pivots.iter().enumerate() {
+                h.data[i * n + c] = t(i, j).clone();
+            }
+        }
+        if r < n {
+            let others: Vec<usize> = (0..n).filter(|c| !pivots.contains(c)).collect();
+            let a_sp = QMatrix::from_fn_unchecked(r, r, |i, j| {
+                Ratio::from_integer(self.data[rows[i] * n + pivots[j]].clone())
+            });
+            let a_so = QMatrix::from_fn_unchecked(r, others.len(), |i, j| {
+                Ratio::from_integer(self.data[rows[i] * n + others[j]].clone())
+            });
+            let Ok(y) = a_sp.solve(&a_so) else {
+                return self.row_hnf_fallback();
+            };
+            // y = y_num / den over one common denominator, so T·y is an
+            // integer product and one exact division per entry.
+            let den = y.data.iter().fold(BigInt::one(), |l, v| l.lcm(v.denom()));
+            let y_num: Vec<BigInt> = y
+                .data
+                .iter()
+                .map(|v| v.numer() * (&den / v.denom()))
+                .collect();
+            let no = others.len();
+            for i in 0..r {
+                for (jj, &c) in others.iter().enumerate() {
+                    let s =
+                        (0..r).fold(BigInt::zero(), |acc, k| acc + t(i, k) * &y_num[k * no + jj]);
+                    let (v, rem) = s.div_rem(&den);
+                    if !rem.is_zero() {
+                        return self.row_hnf_fallback();
+                    }
+                    h.data[i * n + c] = v;
+                }
+            }
+        }
+        (h, pivots)
+    }
+
+    /// [`row_hnf`](Self::row_hnf) without `U`, for the impossible case that
+    /// the modular path finds an inconsistency.
+    fn row_hnf_fallback(&self) -> (ZMatrix, Vec<usize>) {
+        let (h, _, p) = self.row_hnf();
+        (h, p)
+    }
+
+    /// Fraction-free (Bareiss) elimination with row exchanges: the column
+    /// rank profile `P`, original indices `S` of rows whose restriction to
+    /// `P` is nonsingular, and `|det A[S, P]|` (`1` for rank zero).  Every
+    /// intermediate entry is a minor of `A`.
+    fn rank_profile(&self) -> (Vec<usize>, Vec<usize>, BigInt) {
+        let (m, n) = (self.nrows, self.ncols);
+        let mut a: Vec<Vec<BigInt>> = self.to_rows();
+        let mut orig: Vec<usize> = (0..m).collect();
+        let mut prev = BigInt::one();
+        let (mut pivots, mut rows) = (Vec::new(), Vec::new());
+        let mut r = 0usize;
+        for c in 0..n {
+            if r == m {
+                break;
+            }
+            let Some(p) = (r..m).find(|&i| !a[i][c].is_zero()) else {
+                continue;
+            };
+            a.swap(r, p);
+            orig.swap(r, p);
+            let (top, bottom) = a.split_at_mut(r + 1);
+            let pivot_row = &top[r];
+            for row in bottom.iter_mut() {
+                for j in c + 1..n {
+                    let v = (&row[j] * &pivot_row[c] - &row[c] * &pivot_row[j]) / &prev;
+                    row[j] = v;
+                }
+                row[c] = BigInt::zero();
+            }
+            prev = pivot_row[c].clone();
+            pivots.push(c);
+            rows.push(orig[r]);
+            r += 1;
+        }
+        (pivots, rows, prev.abs())
+    }
+
     /// Row-style Hermite normal form `H = U·A` (`U` unimodular).
     ///
     /// `H` is in row echelon form with positive pivots, every entry above a
@@ -1293,7 +1411,7 @@ impl ZMatrix {
     /// assert_eq!(a.hermite_normal_form(), ZMatrix::from_i64(&[&[1, 2], &[0, 0]]).unwrap());
     /// ```
     pub fn hermite_normal_form(&self) -> ZMatrix {
-        self.row_hnf().0
+        self.row_hnf_modular().0
     }
 
     /// Row-style Hermite normal form with its transform:
@@ -1325,7 +1443,7 @@ impl ZMatrix {
         let reversed = ZMatrix::from_fn_unchecked(m, self.ncols, |i, j| {
             self.data[(m - 1 - i) * self.ncols + j].clone()
         });
-        let (h, _, _) = reversed.transpose().row_hnf();
+        let (h, _) = reversed.transpose().row_hnf_modular();
         let ht = h.transpose();
         let (r, c) = (ht.nrows, ht.ncols);
         ZMatrix::from_fn_unchecked(r, c, |i, j| ht.data[(r - 1 - i) * c + (c - 1 - j)].clone())
@@ -1411,7 +1529,11 @@ impl ZMatrix {
     /// assert_eq!(a.smith_normal_form(), ZMatrix::from_i64(&[&[1, 0], &[0, 6]]).unwrap());
     /// ```
     pub fn smith_normal_form(&self) -> ZMatrix {
-        self.smith().0
+        // S is unique and H = U·A is row-equivalent to A, so reduce the
+        // HNF, whose entries are bounded by the lattice determinant: on A
+        // itself the elimination's entries grow exponentially (a random
+        // 40×40 matrix with entries in [−9, 9] took 30 s).
+        self.row_hnf_modular().0.smith().0
     }
 
     /// Smith normal form with transforms [`SmithNormalForm`]`{ s, u, v }`,
@@ -1444,7 +1566,7 @@ impl ZMatrix {
         let Ok(aug) = ZMatrix::hstack(&[&at, &eye]) else {
             return Vec::new();
         };
-        let (h, _, pivots) = aug.row_hnf();
+        let (h, pivots) = aug.row_hnf_modular();
         let rank = pivots.iter().filter(|&&c| c < m).count();
         (rank..n)
             // `h.row(i)[m..]` has the `n` ≥ 1 entries of the `I` block.
@@ -1458,8 +1580,10 @@ impl ZMatrix {
         if !self.is_square() {
             return false;
         }
-        let (h, _, pivots) = self.row_hnf();
-        pivots.len() == self.nrows && (0..self.nrows).all(|i| h.data[i * self.ncols + i].is_one())
+        // The HNF of a square matrix has the pivots on the diagonal and
+        // their product is |det|: unimodular ⇔ every pivot is 1 ⇔ |det| = 1.
+        let (pivots, _, d) = self.rank_profile();
+        pivots.len() == self.nrows && d.is_one()
     }
 
     /// Index `[ℤᵐ : A·ℤⁿ]` of the lattice spanned by the columns
@@ -1470,7 +1594,7 @@ impl ZMatrix {
     /// [`SymplexError::InvalidArgument`] if `A` does not have full row rank
     /// (the index would be infinite).
     pub fn lattice_determinant(&self) -> Result<BigInt, SymplexError> {
-        let (h, _, pivots) = self.transpose().row_hnf();
+        let (h, pivots) = self.transpose().row_hnf_modular();
         if pivots.len() != self.nrows {
             return Err(invalid(
                 "lattice_determinant",
@@ -1488,6 +1612,92 @@ impl ZMatrix {
             .map(|(i, &c)| h.data[i * h.ncols + c].clone())
             .product())
     }
+}
+
+/// `x·a + y·b = g = gcd(a, b) ≥ 0` with `y = 0` (and `x = ±1`) when `a | b`
+/// — SymPy's `_gcdex`, which Algorithm 2.4.8 relies on.
+fn hnf_gcdex(a: &BigInt, b: &BigInt) -> num_integer::ExtendedGcd<BigInt> {
+    if !a.is_zero() && (b % a).is_zero() {
+        let x = if a.is_negative() {
+            -BigInt::one()
+        } else {
+            BigInt::one()
+        };
+        return num_integer::ExtendedGcd {
+            gcd: a.abs(),
+            x,
+            y: BigInt::zero(),
+        };
+    }
+    let e = gcdex(a.clone(), b.clone());
+    if e.gcd.is_negative() {
+        num_integer::ExtendedGcd {
+            gcd: -e.gcd,
+            x: -e.x,
+            y: -e.y,
+        }
+    } else {
+        e
+    }
+}
+
+/// The residue of `v` modulo `r > 0` in `(−r/2, r/2]` (SymPy's
+/// `symmetric_residue`).
+fn symmetric_residue(v: &BigInt, r: &BigInt) -> BigInt {
+    let v = v.mod_floor(r);
+    if v <= r / 2 { v } else { v - r }
+}
+
+/// Column-style HNF modulo `d` of an `m × n` integer matrix of rank `m`,
+/// `d` a positive multiple of the determinant of its column lattice:
+/// the `m × m` upper-triangular `W` with positive pivots and every entry
+/// right of a pivot in `[0, pivot)`.  Cohen, *A Course in Computational
+/// Algebraic Number Theory*, Algorithm 2.4.8, following SymPy's
+/// `_hermite_normal_form_modulo_D` (`sympy/polys/matrices/normalforms.py`,
+/// BSD-3-Clause).  Entries stay in `(−d/2, d/2]`.
+fn hnf_columns_modulo(mut a: Vec<Vec<BigInt>>, d: &BigInt) -> Vec<Vec<BigInt>> {
+    let m = a.len();
+    let n = a.first().map_or(0, Vec::len);
+    let mut w = vec![vec![BigInt::zero(); m]; m];
+    let mut modulus = d.clone();
+    let mut k = n;
+    for i in (0..m).rev() {
+        k -= 1;
+        for j in (0..k).rev() {
+            if a[i][j].is_zero() {
+                continue;
+            }
+            let num_integer::ExtendedGcd { gcd: g, x: u, y: v } = hnf_gcdex(&a[i][k], &a[i][j]);
+            let (r, s) = (&a[i][k] / &g, &a[i][j] / &g);
+            // (col k, col j) ← (u·col k + v·col j, −s·col k + r·col j) mod R
+            for row in a.iter_mut() {
+                let (ek, ej) = (row[k].clone(), row[j].clone());
+                row[k] = symmetric_residue(&(&u * &ek + &v * &ej), &modulus);
+                row[j] = symmetric_residue(&(&r * &ej - &s * &ek), &modulus);
+            }
+        }
+        if a[i][k].is_zero() {
+            a[i][k] = modulus.clone();
+        }
+        let num_integer::ExtendedGcd { gcd: g, x: u, .. } = hnf_gcdex(&a[i][k], &modulus);
+        for (ii, wrow) in w.iter_mut().enumerate() {
+            wrow[i] = (&u * &a[ii][k]).mod_floor(&modulus);
+        }
+        if w[i][i].is_zero() {
+            w[i][i] = modulus.clone();
+        }
+        for j in i + 1..m {
+            let q = w[i][j].div_floor(&w[i][i]);
+            if !q.is_zero() {
+                for wrow in w.iter_mut() {
+                    let t = &q * &wrow[i];
+                    wrow[j] -= t;
+                }
+            }
+        }
+        modulus /= &g;
+    }
+    w
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2951,6 +3161,42 @@ mod tests {
             assert!(u.is_unimodular());
             assert_eq!((&u * &a).hermite_normal_form(), h);
         }
+    }
+
+    /// The modular HNF (H only) equals the eliminating one (with U) on
+    /// tall, wide, square and rank-deficient matrices.
+    #[test]
+    fn modular_hnf_matches_the_eliminating_hnf() {
+        for (n, m, seed) in [
+            (4, 5, 1u64),
+            (5, 4, 2),
+            (6, 6, 3),
+            (1, 5, 4),
+            (5, 1, 5),
+            (3, 7, 6),
+        ] {
+            let mut a = random_z(n, m, seed);
+            for variant in 0..3 {
+                if variant == 1 && n > 1 {
+                    // last row = sum of the others: rank deficient
+                    for j in 0..m {
+                        let s: BigInt = (0..n - 1).map(|i| a.get(i, j).clone()).sum();
+                        a[(n - 1, j)] = s;
+                    }
+                }
+                if variant == 2 {
+                    for i in 0..n {
+                        a[(i, 0)] = BigInt::zero();
+                    }
+                }
+                let (h, pivots) = a.row_hnf_modular();
+                let (h_old, _, pivots_old) = a.row_hnf();
+                assert_eq!(h, h_old, "{a:?}");
+                assert_eq!(pivots, pivots_old);
+            }
+        }
+        let zero = ZMatrix::zeros(3, 4).unwrap();
+        assert_eq!(zero.row_hnf_modular().0, zero);
     }
 
     #[test]

@@ -194,11 +194,17 @@ macro_rules! define_quantity {
             // ── Calculus — returns raw Ex ──────────────────────────────
 
             /// Differentiate with respect to a variable. Returns raw Ex.
-            /// Wrap result in the correct output type: `Acceleration::from_ex(v.diff(&t))`
-            pub fn diff(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Ex { self.0.diff(var.as_ref()) }
+            /// Wrap result in the correct output type: `Acceleration::from_ex(v.diff(&t))`.
+            /// A converted variable (`Time::minutes(τ)`) is handled by the chain rule.
+            pub fn diff(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Ex {
+                $crate::units::calculus::diff_wrt_quantity(&self.0, var.as_ref())
+            }
 
-            /// Integrate with respect to a variable. Returns raw Ex.
-            pub fn integrate(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Ex { self.0.integrate(var.as_ref()) }
+            /// Integrate with respect to a variable. Returns raw Ex.  A converted
+            /// variable is integrated by substitution.
+            pub fn integrate(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Ex {
+                $crate::units::calculus::integrate_wrt_quantity(&self.0, var.as_ref())
+            }
 
             // ── Queries ───────────────────────────────────────────────
 

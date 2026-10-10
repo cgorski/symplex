@@ -8,6 +8,70 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour)
+
+- **`Ex::diff` with a variable that is not a symbol** no longer returns
+  `0`.  As in SymPy, an application of an undefined function `f(x)` or a
+  formal derivative of one is differentiated with respect to as an
+  independent variable (`d/df(x) (f(x)³ + x·f(x)) = 3f(x)² + x`; velocities
+  are independent of their coordinates: `d/df (f·f′ + x·f″) = f′`);
+  anything else (`2x`, `x + 1`, `sin x`, a number) gives the formal
+  `Derivative(self, var)`, which `try_diff` reports as an error (SymPy:
+  "Can't calculate derivative wrt 2*x").  `(x²).diff(&(2x))` was `0`.
+- `TransferFunction::poles`/`zeros` list repeated roots with their
+  multiplicity (`1/(s + 1)²` → `[−1, −1]`, as SymPy).
+  `Quaternion::from_rotation_matrix` refuses a matrix of determinant `−1`
+  (a reflection; it returned a non-unit quaternion).
+- `brent_root` and `bisect` refuse a sign change through a pole (`tan` on
+  `[1, 2]` returned `π/2`, as SciPy's `brentq` does); `trapezoid` refuses
+  unsorted or NaN abscissae (`xs = ys = [0, 2, 1]` gave `0.5`; numpy
+  computes the same signed sum).
+
+### Fixed
+
+- **Control, quaternions, vector calculus and dynamics hunted** (never
+  before; against SymPy's `physics.control`, `Quaternion`, `sympy.vector`
+  and `LagrangesMethod`, scipy.signal and scipy's `Rotation`):
+  `TransferFunction` `dc_gain` was `nan` at a pole-zero cancellation at
+  the origin (`s/(s² + s)`: now `1`); `series`/`parallel`/`feedback_with`
+  kept the other transfer function's Laplace variable as a constant
+  (`1/s · 1/(p + 2)` was `1/(s(p + 2))`); `discretize_zoh` panicked above
+  order 20 (an `i64` factorial); `StateSpace::is_stable` and
+  `is_routh_stable` decide symbolic cases by Routh–Hurwitz and the sign
+  condition; `Quaternion::pow` of a real quaternion (`0²` was `nan`),
+  `to_euler` at gimbal lock (`PrecisionExhausted`), `slerp(q, q, t)`
+  (`nan`); line integrals substituted the curve one component at a time
+  (a parameter named like a coordinate gave `24π` instead of `64π³/3 +
+  8π`) and left `Subs(Integral…)` (247 of 400 refused → 9);
+  `is_conservative`/`is_irrotational`/`is_solenoidal` refute a field at a
+  point where its curl is a certified nonzero (193 of 200 rotational
+  fields gave `None`); `scalar_potential` failed on `Piecewise`
+  antiderivatives; every `dynamics` function silently differentiated
+  velocities given as `Derivative(q, t)` as `0` (the pendulum equation
+  lost its `ml²q̈` term; 1,095 wrong of 3,410 → 0).  Hunters: control 301
+  wrong and 104 panics → 0, quaternions 354 wrong → 0, dynamics 1,095 → 0.
+- **Root finding, fitting, lattice normal forms and units hunted**:
+  `brent_root`/`bisect` returned `±∞` for brackets reaching `±f64::MAX`
+  (an overflowing midpoint), gave up on multiple roots and with `xtol =
+  rtol = 0` (they end at two adjacent floats now); `poly_fit`/`linear_fit`
+  fit on abscissae mapped to `[−1, 1]` and expand back exactly (a
+  timestamp slope was off by 9·10⁻¹⁰ relative; offset cubics were refused
+  as "fewer distinct abscissae"); unit calculus with respect to a
+  converted variable was `0` (`d(τ²)/d(Time::minutes(τ))`; now `τ/30`);
+  `infer_dimension` handles `arg`, products, series, residues and Laplace
+  transforms.  All 64 conversion factors and constants agree with
+  `scipy.constants`.  Hunters: brent 41 wrong → 7, bisect 49 → 5 (the
+  rest: a pole closer to the bracket end than `xtol`, documented),
+  trapezoid 239 → 0.
+
+### Changed (performance)
+
+- The Hermite and Smith normal forms without transforms,
+  `integer_nullspace` and `lattice_determinant` work modulo a multiple of
+  the determinant (Cohen, Algorithm 2.4.8, as SymPy's
+  `_hermite_normal_form_modulo_D`): a 40×40 HNF took over 300 s and now
+  takes 0.1 s, a 40×40 Smith form 32 s → 0.11 s; results unchanged.
+
 ## [0.40.0] - 2026-10-10
 
 Six areas hunted with independent oracles, every wrong class fixed at

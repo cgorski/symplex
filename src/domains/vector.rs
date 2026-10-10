@@ -381,7 +381,51 @@ pub fn is_conservative(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
     let Ok(c) = curl(field, vars) else {
         return Some(false);
     };
-    all3(c.iter().map(ex_is_zero))
+    all3(c.iter().map(|e| identically_zero(e, vars)))
+}
+
+/// Is the field component `e` identically zero as a function of `vars`?
+/// Three-valued.
+///
+/// [`ex_is_zero`] asks whether `e` vanishes for *every* value of its
+/// symbols, so it cannot refute a component such as `x·sin x − cos x`,
+/// which is zero at some points: a point of `vars` (only those are
+/// substituted) where `e` is a certified nonzero finite constant proves
+/// that `e` is not identically zero.  (Before 0.41 `is_conservative` and
+/// `is_solenoidal` returned `None` for such fields: 193 of 200 random
+/// rotational fields.)
+fn identically_zero(e: &Ex, vars: &[&Ex]) -> Option<bool> {
+    let decided = ex_is_zero(e);
+    if decided.is_some() {
+        return decided;
+    }
+    let ctx = e.context();
+    const POINTS: [[(i64, i64); 3]; 3] = [
+        [(1, 3), (2, 7), (5, 11)],
+        [(7, 5), (-3, 4), (9, 7)],
+        [(-2, 9), (11, 6), (-5, 13)],
+    ];
+    for point in POINTS {
+        let values: Vec<Ex> = (0..vars.len())
+            .map(|i| {
+                let (n, d) = point[i % 3];
+                ctx.rational(n + i as i64 / 3, d)
+            })
+            .collect();
+        let pairs: Vec<(&Ex, &Ex)> = vars.iter().copied().zip(values.iter()).collect();
+        let at = e.subs_map(&pairs).eval();
+        if !at.free_symbols().is_empty() {
+            return None; // depends on parameters: leave it undecided
+        }
+        if at
+            .eval_complex64()
+            .is_ok_and(|z| z.re.is_finite() && z.im.is_finite() && z.norm() > 0.0)
+            && ex_is_zero(&at) == Some(false)
+        {
+            return Some(false);
+        }
+    }
+    None
 }
 
 /// Alias of [`is_conservative`] (irrotational ⇔ curl-free).
@@ -393,14 +437,19 @@ pub fn is_irrotational(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
 /// [`is_conservative`]: `Some(false)` for a field that is not an `n×1`
 /// column with `n == vars.len()`.
 pub fn is_solenoidal(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
-    divergence(field, vars).map_or(Some(false), |d| ex_is_zero(&d))
+    divergence(field, vars).map_or(Some(false), |d| identically_zero(&d, vars))
 }
 
 /// Scalar potential `φ` with `∇φ = F` for a conservative Cartesian field.
 ///
 /// Works in any dimension.  The potential is built by successive
 /// integration: `φ = ∫F₁ dx₁ + ∫(F₂ − ∂φ₁/∂x₂) dx₂ + …`, and the result is
-/// verified by re-differentiation.  The additive constant is zero.
+/// verified by re-differentiation.  The additive constant is zero.  An
+/// antiderivative that splits on a parameter (`∫ x·cos(xy) dx`, a
+/// `Piecewise` on `y ≠ 0`) contributes its generic branch, as the
+/// potential is generic in the other coordinates anyway (before 0.41 the
+/// `Piecewise` made the next integration fail: `∇(sin(xy))` had no
+/// potential).
 ///
 /// # Errors
 ///
@@ -451,6 +500,10 @@ pub fn scalar_potential(field: &Matrix, vars: &[&Ex]) -> Result<Ex, SymplexError
                 operation: "scalar_potential",
                 reason: format!("could not integrate component {i} ({residual}): {e}"),
             })?;
+        let anti = generic_branches(&anti, var).ok_or_else(|| SymplexError::ComputationFailed {
+            operation: "scalar_potential",
+            reason: format!("the antiderivative of component {i} is piecewise in {var}: {anti}"),
+        })?;
         phi = (&phi + &anti).expand();
     }
     // Verify ∇φ = F; a mismatch means the field is not conservative.
@@ -471,17 +524,111 @@ pub fn scalar_potential(field: &Matrix, vars: &[&Ex]) -> Result<Ex, SymplexError
     Ok(phi)
 }
 
+/// `e` with every `Piecewise` whose first condition is free of `var`
+/// (a condition on the other coordinates, `y ≠ 0`) replaced by its first,
+/// generic branch; `None` if a `Piecewise` in `var` remains.  Iterative
+/// (post-order), no recursion over the expression tree.
+fn generic_branches(e: &Ex, var: &Ex) -> Option<Ex> {
+    use crate::base::node::ExprNode;
+    use crate::base::walk;
+    let var_id = e.checked_id(var);
+    let mut inner = e.inner.write();
+    let arena = &mut inner.arena;
+    let root = e.raw_id();
+    let post = walk::post_order_ids(arena, root);
+    let mut cache: rustc_hash::FxHashMap<_, _> = rustc_hash::FxHashMap::default();
+    for &id in &post {
+        let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(rebuilt).clone() {
+            ExprNode::Piecewise(pairs) => {
+                let &(value, cond) = pairs.first()?;
+                if walk::contains(arena, cond, var_id) {
+                    return None;
+                }
+                value
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    let r = cache.get(&root).copied().unwrap_or(root);
+    let r = crate::transforms::eval::eval(arena, r);
+    drop(inner);
+    Some(e.wrap(r))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Line integrals
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Evaluate `∫ₐᵇ g dt` via an antiderivative and substitution.
+/// `∫ₐᵇ g dt` by the definite integrator ([`Ex::integrate_definite`]):
+/// an antiderivative with a jump in `[a, b]` is handled there, and an
+/// integral without a closed form stays a `DefiniteIntegral` node that
+/// evaluates numerically.  (Before 0.41 this was `F(b) − F(a)` of the
+/// indefinite integral, which left unevaluable `Subs(Integral(…))` forms.)
 ///
-/// Kept local (rather than calling `Ex::definite_integral`) so this module
-/// is independent of the definite-integration API surface.
-fn definite(g: &Ex, t: &Ex, a: &Ex, b: &Ex) -> Ex {
-    let anti = g.integrate(t);
-    (&anti.subs(t, b) - &anti.subs(t, a)).eval()
+/// With a symbolic bound the definite integrator may leave a closed-form
+/// integral unevaluated (`∫₀ᵀ √(4t² + 1) dt`); then `F(b) − F(a)` of a
+/// closed-form antiderivative is used, as before.
+///
+/// `t` is the real stand-in of [`real_parameter`]; an integral left
+/// unevaluated is shown in the caller's parameter `t_user`.
+fn definite(g: &Ex, t: &Ex, t_user: &Ex, a: &Ex, b: &Ex) -> Ex {
+    let d = g.integrate_definite(t, a, b);
+    if d.has_unevaluated() && !(a.is_constant() && b.is_constant()) {
+        let anti = g.integrate(t);
+        if !anti.has_unevaluated() {
+            return (&anti.subs(t, b) - &anti.subs(t, a)).eval();
+        }
+    }
+    if d.is_definite_integral() && t != t_user {
+        return g.subs(t, t_user).definite_integral_node(t_user, a, b);
+    }
+    d
+}
+
+/// The curve parameter as a real symbol: `t` itself when it is declared
+/// real, otherwise a fresh real stand-in.  The parameter runs over the
+/// real interval `[a, b]`, and a complex `t` keeps the speed
+/// `√(cos²t)` from becoming `|cos t|` (before 0.41 the arc length of
+/// `(sin t, 0)` over `[0, π]` stayed an unevaluated integral).
+///
+/// The stand-in has a reserved-looking name (`__t`, `__t_1`, …: the first
+/// one absent from `avoid`), so repeated calls reuse it.
+fn real_parameter(t: &Ex, avoid: &[&Ex]) -> Ex {
+    if t.is_real() == Some(true) {
+        return t.clone();
+    }
+    let ctx = t.context();
+    let real = crate::base::assumptions::Assumptions::default()
+        .with(crate::base::assumptions::Assumption::Real);
+    let mut k = 0usize;
+    loop {
+        let name = if k == 0 {
+            "__t".to_string()
+        } else {
+            format!("__t_{k}")
+        };
+        let plain = ctx.symbol(&name);
+        if !avoid.iter().any(|e| e.contains(&plain)) {
+            match plain.is_real() {
+                Some(true) => return plain,
+                None => return ctx.declare_symbol(&name, real),
+                Some(false) => {} // declared non-real elsewhere: skip it
+            }
+        }
+        k += 1;
+    }
+}
+
+/// `e` on the curve: every variable replaced by its curve component
+/// simultaneously, so a curve parametrised by one of the coordinates
+/// (`t = y`) is not substituted twice.  (Before 0.41 the replacements
+/// were made one after the other: the curve `(y, 2y)` with parameter `y`
+/// became `(2y, 2y)`.)
+fn on_curve(e: &Ex, vars: &[&Ex], curve: &[Ex]) -> Ex {
+    let pairs: Vec<(&Ex, &Ex)> = vars.iter().copied().zip(curve.iter()).collect();
+    e.subs_map(&pairs)
 }
 
 /// Scalar line integral `∫_C f ds = ∫ₐᵇ f(r(t)) ‖r′(t)‖ dt`.
@@ -527,14 +674,17 @@ pub fn line_integral_scalar(
         ));
     }
     let ctx = t.context();
-    let mut f_on_curve = f.clone();
+    let f_on_curve = on_curve(f, vars, curve);
+    let mut avoid: Vec<&Ex> = vec![&f_on_curve, a, b];
+    avoid.extend(curve.iter());
+    let tr = real_parameter(t, &avoid);
+    let f_on_curve = f_on_curve.subs(t, &tr);
     let mut speed_sq = ctx.zero();
-    for (v, c) in vars.iter().zip(curve.iter()) {
-        f_on_curve = f_on_curve.subs(v, c);
-        speed_sq += c.diff(t).powi(2);
+    for c in curve {
+        speed_sq += c.diff(t).subs(t, &tr).powi(2);
     }
     let integrand = (&f_on_curve * &speed_sq.simplify().sqrt()).simplify();
-    Ok(definite(&integrand, t, a, b))
+    Ok(definite(&integrand, &tr, t, a, b))
 }
 
 /// Vector line integral (work) `∫_C F·dr = ∫ₐᵇ F(r(t)) · r′(t) dt`.
@@ -584,13 +734,11 @@ pub fn line_integral_vector(
     let ctx = t.context();
     let mut integrand = ctx.zero();
     for (i, c) in curve.iter().enumerate() {
-        let mut fi = field.get(i, 0).clone();
-        for (v, cc) in vars.iter().zip(curve.iter()) {
-            fi = fi.subs(v, cc);
-        }
+        let fi = on_curve(field.get(i, 0), vars, curve);
         integrand += &fi * &c.diff(t);
     }
-    Ok(definite(&integrand.simplify(), t, a, b))
+    let tr = real_parameter(t, &[&integrand, a, b]);
+    Ok(definite(&integrand.subs(t, &tr).simplify(), &tr, t, a, b))
 }
 
 #[cfg(test)]

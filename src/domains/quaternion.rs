@@ -332,8 +332,11 @@ impl Quaternion {
     ///
     /// # Errors
     ///
-    /// - [`SymplexError::InvalidArgument`] if `r` is not 3×3 or is provably
-    ///   not orthogonal.
+    /// - [`SymplexError::InvalidArgument`] if `r` is not 3×3, is provably
+    ///   not orthogonal, or has a determinant provably different from 1 (an
+    ///   improper rotation such as the reflection `diag(1, 1, −1)`, which no
+    ///   quaternion represents; before 0.41 it came back as the non-unit
+    ///   quaternion `(√2/2, 0, 0, 0)`).
     /// - [`SymplexError::ComputationFailed`] if the matrix is symbolic and
     ///   `1 + tr R` is provably non-positive (trace branch unusable).
     ///
@@ -368,9 +371,23 @@ impl Quaternion {
         let two = ctx.int(2);
         let four = ctx.int(4);
         let tr = r.trace()?;
+        let improper = || {
+            Err(invalid(
+                "Quaternion::from_rotation_matrix",
+                "matrix is not a rotation (det R ≠ 1): an improper rotation has no quaternion",
+            ))
+        };
 
         let numeric = r.eval_f64().ok();
         if let Some(v) = numeric {
+            // det R = ±1 for an orthogonal R: decided exactly when the
+            // floating-point value is not 1.
+            let det_f = v[0][0] * (v[1][1] * v[2][2] - v[1][2] * v[2][1])
+                - v[0][1] * (v[1][0] * v[2][2] - v[1][2] * v[2][0])
+                + v[0][2] * (v[1][0] * v[2][1] - v[1][1] * v[2][0]);
+            if (det_f - 1.0).abs() > 1e-9 && ex_is_zero(&(&r.det()? - &one)) == Some(false) {
+                return improper();
+            }
             // Shepperd: pick the branch with the largest diagonal quantity.
             let t = v[0][0] + v[1][1] + v[2][2];
             let cands = [t, v[0][0], v[1][1], v[2][2]];
@@ -436,6 +453,9 @@ impl Quaternion {
             return Ok(q);
         }
 
+        if ex_is_zero(&(&r.det()? + &one)) == Some(true) {
+            return improper();
+        }
         let one_plus_tr = (&one + &tr).simplify();
         if ex_is_positive(&one_plus_tr) == Some(false) {
             return Err(failed(
@@ -592,12 +612,35 @@ impl Quaternion {
     /// ```
     pub fn to_euler(&self, convention: EulerConvention) -> (Ex, Ex, Ex) {
         let r = self.to_rotation_matrix();
-        let e = |i: usize, j: usize| r.get(i, j).clone();
+        let zero = self.context().int(0);
+        // A constant entry that is provably zero becomes an exact `0`:
+        // `atan2(y, x)` jumps at `y = 0` for `x < 0`, so an unrecognised
+        // zero `y` there could be neither folded nor evaluated (before 0.41
+        // the XYZ angles of `(π/4, −π/2, −3π/4)` gave `φ = atan2(0̃, −1)`,
+        // whose `eval_f64` failed with `PrecisionExhausted`).
+        // (Only entries whose `f64` value is 0 or unavailable are tested.)
+        let entries: Vec<Vec<Ex>> = (0..3)
+            .map(|i| {
+                (0..3)
+                    .map(|j| {
+                        let v = r.get(i, j);
+                        let maybe_zero = v.is_constant()
+                            && !v.is_zero_structural()
+                            && v.eval_f64().map_or(true, |f| f == 0.0);
+                        if maybe_zero && ex_is_zero(v) == Some(true) {
+                            zero.clone()
+                        } else {
+                            v.clone()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let e = |i: usize, j: usize| entries[i][j].clone();
         let hyp = |a: Ex, b: Ex| (a.powi(2) + b.powi(2)).sqrt();
         // Gimbal lock: the two entries fixing the middle angle's cosine
         // (ZYX/XYZ) or sine (ZXZ) vanish, and with them both atan2 pairs.
         let locked = |a: Ex, b: Ex| ex_is_zero(&a) == Some(true) && ex_is_zero(&b) == Some(true);
-        let zero = self.context().int(0);
         let (phi, theta, psi) = match convention {
             // R = Rz(φ)·Ry(θ)·Rx(ψ); at cos θ = 0 with ψ = 0:
             // R₀₁ = −sin φ, R₁₁ = cos φ.
@@ -690,8 +733,10 @@ impl Quaternion {
     ///
     /// * Both quaternions must be unit (otherwise `q₀·q₁` leaves `[−1, 1]`
     ///   and `acos` is complex).
-    /// * `q₀ ≠ ±q₁` (otherwise `sin Ω = 0`); for `q₀ = q₁` the result is
-    ///   `0/0` — check with [`equals`](Self::equals) first.
+    /// * `q₀ ≠ −q₁` (otherwise `sin Ω = 0` and every great circle through
+    ///   them is a geodesic: the result is `0/0`).  For `q₀·q₁` provably
+    ///   `1` (`q₀ = q₁`) the constant path `q₀` is returned (before 0.41
+    ///   `0/0` as well).
     /// * No shortest-path sign flip is applied: if `q₀·q₁ < 0` the
     ///   interpolation takes the long way round; negate one input to
     ///   avoid that.
@@ -713,7 +758,11 @@ impl Quaternion {
     /// ```
     pub fn slerp(&self, other: &Quaternion, t: &Ex) -> Quaternion {
         let one = t.context().int(1);
-        let omega = self.dot(other).acos();
+        let dot = self.dot(other);
+        if ex_is_zero(&(&dot - &one)) == Some(true) {
+            return self.clone();
+        }
+        let omega = dot.acos();
         let sin_omega = omega.sin();
         let a = &(&(&one - t) * &omega).sin() / &sin_omega;
         let b = &(t * &omega).sin() / &sin_omega;
@@ -785,7 +834,10 @@ impl Quaternion {
     /// Symbolic power `qᵗ = exp(t · ln q)`.
     ///
     /// For a unit rotation quaternion this scales the rotation angle by
-    /// `t` about the same axis.  Components are simplified.
+    /// `t` about the same axis.  Components are simplified.  A quaternion
+    /// with a structurally zero vector part is a real number `w` and gets
+    /// the real power `(wᵗ, 0, 0, 0)` (principal branch for `w < 0`):
+    /// `0² = 0` (before 0.41 `exp(2·ln 0)` gave `nan`).
     ///
     /// # Examples
     ///
@@ -800,6 +852,16 @@ impl Quaternion {
     /// assert!((q2.z.eval_f64().unwrap() - 1.0).abs() < 1e-12);
     /// ```
     pub fn pow(&self, t: &Ex) -> Quaternion {
+        let v_sq = &self.x.powi(2) + &self.y.powi(2) + &self.z.powi(2);
+        if v_sq.is_zero_structural() {
+            let zero = self.context().int(0);
+            return Quaternion::new(
+                self.w.pow(t).eval().simplify(),
+                zero.clone(),
+                zero.clone(),
+                zero,
+            );
+        }
         self.ln().scale(t).exp().eval().simplify()
     }
 

@@ -156,6 +156,70 @@ fn check_root_opts(op: &'static str, opts: &RootOpts) -> Result<(), SymplexError
     Ok(())
 }
 
+/// Position of a finite `x` in the ascending order of all finite `f64`
+/// values (`−0.0` and `0.0` share position `0`), so that consecutive
+/// floats have consecutive positions.
+fn float_position(x: f64) -> i64 {
+    // Reinterpreting the bits: the sign bit makes negative values negative.
+    let bits = x.to_bits() as i64;
+    if bits < 0 { -(bits & i64::MAX) } else { bits }
+}
+
+/// The `f64` at a position of [`float_position`].
+fn float_at_position(k: i64) -> f64 {
+    if k < 0 {
+        f64::from_bits(k.unsigned_abs() | (1 << 63))
+    } else {
+        f64::from_bits(k.unsigned_abs())
+    }
+}
+
+/// No `f64` lies strictly between `x` and `y`.
+fn adjacent_floats(x: f64, y: f64) -> bool {
+    (i128::from(float_position(x)) - i128::from(float_position(y))).abs() <= 1
+}
+
+/// The float halfway between `x` and `y` in the order of representable
+/// numbers (not in value): bisecting with it splits the floats of the
+/// bracket in two, so any finite bracket shrinks to two adjacent floats
+/// within 64 steps, where halving the width would need over a thousand
+/// for `[−10³⁰⁰, 10³⁰⁰]`.
+fn float_midpoint(x: f64, y: f64) -> f64 {
+    let (p, q) = (i128::from(float_position(x)), i128::from(float_position(y)));
+    // |p − q| < 2⁶⁴, so the midpoint position is an i64.
+    float_at_position(i64::try_from(p.min(q) + (p - q).abs() / 2).unwrap_or(0))
+}
+
+/// `x + (y − x)/2` — the arithmetic midpoint used by the bisection steps —
+/// computed without overflowing when `y − x` exceeds `f64::MAX`.
+fn arithmetic_midpoint(x: f64, y: f64) -> f64 {
+    let m = x + 0.5 * (y - x);
+    if m.is_finite() { m } else { 0.5 * x + 0.5 * y }
+}
+
+/// Can `steps` halvings bring `width` down to `tol`?  (`width·2^(−steps)
+/// ≤ tol`, exact in binary.)
+fn halvings_suffice(width: f64, tol: f64, steps: usize) -> bool {
+    let steps = i32::try_from(steps.min(2_000)).unwrap_or(2_000);
+    width * 0.5_f64.powi(steps) <= tol
+}
+
+/// The error for a bracket whose sign change is a pole or another
+/// discontinuity: `|f|` near the sign change exceeds `|f|` at both ends of
+/// the starting bracket, which no root of a continuous function allows
+/// (`|f|` vanishes at the root and is at most `L·tol` within the final
+/// bracket).  `tan x` on `[1, 2]` changes sign at `π/2` and has no root.
+fn singular_sign_change(op: &'static str, x: f64, fx: f64, f_ends: f64) -> SymplexError {
+    failed(
+        op,
+        format!(
+            "f changes sign near x = {x} but |f| there ({:.3e}) exceeds |f| at both ends of the \
+             bracket ({f_ends:.3e}): a pole or another discontinuity, not a root",
+            fx.abs()
+        ),
+    )
+}
+
 /// Validate a root bracket.  `Ok(Some(x))` when an endpoint is an exact
 /// zero, `Ok(None)` for a proper sign change.
 fn check_bracket(
@@ -194,7 +258,20 @@ fn check_bracket(
 /// step and bisection, so convergence is superlinear on smooth functions
 /// while never being slower than bisection.  The bracket must satisfy
 /// `f(a)·f(b) < 0`; an exact zero at an endpoint is returned immediately.
-/// The result is within `xtol + rtol·|x|` of a sign change of `f`.
+/// The result is within `xtol + rtol·|x|` of a sign change of `f` (or one
+/// of two adjacent floats enclosing it, when the tolerance is finer than
+/// the float spacing, e.g. `xtol = rtol = 0`), and `|f|` there is no larger
+/// than at `a` or `b` — a sign change where `|f|` grows is a pole, not a
+/// root (only a pole closer to `a` or `b` than the tolerance passes for
+/// one).
+///
+/// When the remaining iterations would only just suffice for bisection —
+/// a multiple root such as `(x − r)³`, on which interpolation creeps —
+/// the method bisects, so such brackets still converge within
+/// [`RootOpts::max_iter`]; when not even that can reach the tolerance (as
+/// for `xtol = rtol = 0`) it splits the representable floats of the
+/// bracket in half instead of its width, which ends at two adjacent floats
+/// within 64 steps.
 ///
 /// # Errors
 ///
@@ -202,8 +279,9 @@ fn check_bracket(
 ///   there is not finite, if `f(a)` and `f(b)` have the same sign, or if the
 ///   tolerances are negative.
 /// * [`SymplexError::ComputationFailed`] if `f` returns a non-finite value
-///   inside the bracket or the tolerance is not met within
-///   [`RootOpts::max_iter`] iterations.
+///   inside the bracket, if the sign change is a pole or another
+///   discontinuity (`|f|` grows towards it: `tan x` on `[1, 2]`), or if the
+///   tolerance is not met within [`RootOpts::max_iter`] iterations.
 ///
 /// # Examples
 ///
@@ -215,6 +293,9 @@ fn check_bracket(
 ///
 /// // No sign change → error, not a bogus answer.
 /// assert!(brent_root(|x| x * x + 1.0, -1.0, 1.0, &RootOpts::default()).is_err());
+///
+/// // tan changes sign at its pole π/2, which is not a root.
+/// assert!(brent_root(f64::tan, 1.0, 2.0, &RootOpts::default()).is_err());
 /// ```
 pub fn brent_root(
     f: impl Fn(f64) -> f64,
@@ -230,13 +311,15 @@ pub fn brent_root(
     if let Some(root) = check_bracket(OP, a, b, fa, fb)? {
         return Ok(root);
     }
+    let f_ends = fa.abs().max(fb.abs());
     // Invariant: `b` is the best iterate, `c` brackets the root with `b`,
     // `a` is the previous iterate; `d` is the last step, `e` the one before.
     let mut c = a;
     let mut fc = fa;
     let mut d = b - a;
     let mut e = d;
-    for _ in 0..opts.max_iter {
+    // `max_iter` steps, each followed by the convergence test.
+    for iteration in 0..=opts.max_iter {
         if (fb > 0.0) == (fc > 0.0) {
             c = a;
             fc = fa;
@@ -252,11 +335,40 @@ pub fn brent_root(
             fc = fa;
         }
         let tol1 = 0.5 * (opts.xtol + opts.rtol * b.abs());
-        let xm = 0.5 * (c - b);
-        if xm.abs() <= tol1 || fb == 0.0 {
+        let xm = {
+            let h = 0.5 * (c - b);
+            if h.is_finite() { h } else { 0.5 * c - 0.5 * b }
+        };
+        if xm.abs() <= tol1 || fb == 0.0 || adjacent_floats(b, c) {
+            if fb.abs() > f_ends {
+                return Err(singular_sign_change(OP, b, fb, f_ends));
+            }
             return Ok(b);
         }
-        if e.abs() >= tol1 && fa.abs() > fb.abs() {
+        if iteration == opts.max_iter {
+            break;
+        }
+        // Bisect when bisection alone would need about every remaining
+        // iteration (interpolation creeps on multiple roots); split the
+        // floats rather than the width when halving the width cannot
+        // finish in time.
+        let remaining = opts.max_iter - iteration;
+        let width = 2.0 * xm.abs();
+        let tol_far = opts.xtol + opts.rtol * b.abs().max(c.abs());
+        let tol_near = opts.xtol + opts.rtol * b.abs().min(c.abs());
+        // The next iterate when it is the float midpoint (set directly:
+        // `b + (m − b)` loses `m` when `|m| ≪ |b|`).
+        let mut float_step = None;
+        if !halvings_suffice(width, tol_far, remaining.saturating_sub(2)) {
+            if halvings_suffice(width, tol_near, remaining - 1) {
+                d = xm;
+            } else {
+                let m = float_midpoint(b, c);
+                float_step = Some(m);
+                d = m - b;
+            }
+            e = d;
+        } else if e.abs() >= tol1 && fa.abs() > fb.abs() {
             // Try interpolation: secant if only two points, else inverse
             // quadratic through (a, fa), (b, fb), (c, fc).
             let s = fb / fa;
@@ -289,7 +401,17 @@ pub fn brent_root(
         }
         a = b;
         fa = fb;
-        b += if d.abs() > tol1 { d } else { tol1.copysign(xm) };
+        let step = if d.abs() > tol1 { d } else { tol1.copysign(xm) };
+        b = if let Some(m) = float_step {
+            m
+        } else if b + step == b {
+            // A step below the float spacing (a tolerance finer than the
+            // spacing at `b`): move to the neighbouring float towards `c`.
+            let k = float_position(b);
+            float_at_position(if c > b { k + 1 } else { k - 1 })
+        } else {
+            b + step
+        };
         fb = f(b);
         if !fb.is_finite() {
             return Err(failed(OP, format!("f({b}) = {fb} is not finite")));
@@ -310,9 +432,16 @@ pub fn brent_root(
 /// Find a root of `f` in the bracket `[a, b]` by bisection.
 ///
 /// Linear convergence (one bit per iteration), but bullet-proof: only the
-/// sign of `f` is used.  The same bracket rules and error conditions as
-/// [`brent_root`] apply.  With the default `max_iter = 100` the method can
-/// resolve any bracket down to the default tolerance.
+/// sign of `f` is used.  The same bracket rules, result guarantees and
+/// error conditions as [`brent_root`] apply.  Each step halves the width,
+/// unless halving cannot reach the tolerance within the remaining
+/// iterations even at the larger end of the bracket (always the case for
+/// `xtol = rtol = 0`): then it halves the *set of floats* in the bracket,
+/// which ends at two adjacent floats within 64 steps.  Halving `[0, 2]`
+/// down to the default tolerance takes 40 steps; a bracket spanning many
+/// orders of magnitude around a small root (`[−10³⁰⁰, 10³⁰⁰]` for a
+/// root at 3 takes ~1000 halvings) needs a larger [`RootOpts::max_iter`]
+/// or [`brent_root`].
 ///
 /// # Examples
 ///
@@ -321,6 +450,11 @@ pub fn brent_root(
 ///
 /// let r = bisect(|x| x * x - 2.0, 0.0, 2.0, &RootOpts::default()).unwrap();
 /// assert!((r - 2f64.sqrt()).abs() < 1e-11);
+///
+/// // The closest pair of floats around √2 (no tolerance).
+/// let exact = RootOpts { xtol: 0.0, rtol: 0.0, ..RootOpts::default() };
+/// let r = bisect(|x| x * x - 2.0, 0.0, 2.0, &exact).unwrap();
+/// assert!((r - 2f64.sqrt()).abs() <= f64::EPSILON); // within one ulp
 /// ```
 pub fn bisect(
     f: impl Fn(f64) -> f64,
@@ -335,9 +469,31 @@ pub fn bisect(
     if let Some(root) = check_bracket(OP, a, b, fa, fb)? {
         return Ok(root);
     }
-    let (mut lo, mut hi, mut flo) = (a, b, fa);
-    for _ in 0..opts.max_iter {
-        let mid = lo + 0.5 * (hi - lo);
+    let f_ends = fa.abs().max(fb.abs());
+    let (mut lo, mut hi, mut flo, mut fhi) = (a, b, fa, fb);
+    // Halve the width while that can still reach the tolerance, else split
+    // the floats of the bracket.  Until the first float split the test is
+    // the necessary condition for halving to succeed (so a bracket that
+    // halving can resolve is halved throughout); after it, halving must
+    // succeed with a step to spare even at the smaller end's tolerance.
+    let mut splitting_floats = false;
+    for iteration in 0..opts.max_iter {
+        let remaining = opts.max_iter - iteration;
+        let width = (hi - lo).abs();
+        let halve = if splitting_floats {
+            let tol_near = opts.xtol + opts.rtol * lo.abs().min(hi.abs());
+            halvings_suffice(width, tol_near, remaining - 1)
+        } else {
+            // (slack for the rounding of the computed midpoints)
+            let tol_far = (opts.xtol + opts.rtol * lo.abs().max(hi.abs())) * (1.0 + 1e-6);
+            halvings_suffice(width, tol_far, remaining)
+        };
+        let mid = if halve {
+            arithmetic_midpoint(lo, hi)
+        } else {
+            splitting_floats = true;
+            float_midpoint(lo, hi)
+        };
         let fm = f(mid);
         if !fm.is_finite() {
             return Err(failed(OP, format!("f({mid}) = {fm} is not finite")));
@@ -350,10 +506,26 @@ pub fn bisect(
             flo = fm;
         } else {
             hi = mid;
+            fhi = fm;
         }
-        let mid = lo + 0.5 * (hi - lo);
-        if (hi - lo).abs() <= opts.xtol + opts.rtol * mid.abs() {
-            return Ok(mid);
+        let mid = arithmetic_midpoint(lo, hi);
+        let within_tol = (hi - lo).abs() <= opts.xtol + opts.rtol * mid.abs();
+        if within_tol || adjacent_floats(lo, hi) {
+            if flo.abs().min(fhi.abs()) > f_ends {
+                return Err(singular_sign_change(
+                    OP,
+                    mid,
+                    flo.abs().min(fhi.abs()),
+                    f_ends,
+                ));
+            }
+            return Ok(if within_tol {
+                mid
+            } else if flo.abs() <= fhi.abs() {
+                lo
+            } else {
+                hi
+            });
         }
     }
     Err(failed(
@@ -1434,9 +1606,15 @@ fn argmin(values: &[f64]) -> usize {
 ///
 /// Returns the coefficients in **ascending** degree, `[c₀, c₁, …, c_d]`,
 /// so that `ys[i] ≈ c₀ + c₁·xs[i] + … + c_d·xs[i]^d` (evaluate with
-/// [`eval_poly`]).  The Vandermonde matrix is column-scaled and factored
-/// by Householder QR, which is backward stable; the normal equations are
-/// never formed.  With `degree + 1 == xs.len()` the fit interpolates.
+/// [`eval_poly`]).  The abscissae are first mapped onto `[−1, 1]`
+/// (`t = (x − centre)/half-width`), where the Vandermonde matrix is well
+/// conditioned; it is column-scaled and factored by Householder QR, which
+/// is backward stable (the normal equations are never formed), and the
+/// polynomial in `t` is expanded back into powers of `x` exactly over ℚ
+/// before rounding each coefficient once.  So data far from the origin —
+/// timestamps, `x ≈ 10⁷ ± 1` — fit as accurately as the monomial
+/// coefficients can be represented.  With `degree + 1 == xs.len()` the fit
+/// interpolates.
 ///
 /// # Errors
 ///
@@ -1444,7 +1622,8 @@ fn argmin(values: &[f64]) -> usize {
 /// `degree >= xs.len()`, or any sample is not finite;
 /// [`SymplexError::ComputationFailed`] if the Vandermonde matrix is
 /// numerically rank deficient (fewer than `degree + 1` distinct
-/// abscissae).
+/// abscissae, or a degree too high for their spacing), or a coefficient
+/// overflows `f64`.
 ///
 /// # Examples
 ///
@@ -1485,7 +1664,45 @@ pub fn poly_fit(xs: &[f64], ys: &[f64], degree: usize) -> Result<Vec<f64>, Sympl
         return Err(invalid(OP, "all samples must be finite".into()));
     }
     let ncols = degree + 1;
-    let mut a: Vec<Vec<f64>> = xs
+    let rank_deficient = || {
+        failed(
+            OP,
+            format!(
+                "Vandermonde matrix is numerically rank deficient: fewer than {ncols} distinct \
+                 abscissae, or degree {degree} is too high for their spacing"
+            ),
+        )
+    };
+    // Map the abscissae onto [−1, 1]: t = (x − centre) / half.  In the
+    // powers of x itself the columns of an offset sample (x ≈ 10⁷ ± 1)
+    // are nearly parallel, and the fitted values lost up to half their
+    // digits.
+    let (x_min, x_max) = xs
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &x| {
+            (lo.min(x), hi.max(x))
+        });
+    let width = x_max - x_min;
+    let (centre, half) = if width.is_finite() {
+        // A subnormal width may halve to zero; then scale by the width.
+        let half = if 0.5 * width > 0.0 {
+            0.5 * width
+        } else {
+            width
+        };
+        (x_min + 0.5 * width, half)
+    } else {
+        (0.5 * x_min + 0.5 * x_max, 0.5 * x_max - 0.5 * x_min)
+    };
+    if half == 0.0 {
+        // One distinct abscissa carries only a constant.
+        if degree > 0 {
+            return Err(rank_deficient());
+        }
+        return Ok(vec![ys.iter().sum::<f64>() / m as f64]);
+    }
+    let ts: Vec<f64> = xs.iter().map(|&x| (x - centre) / half).collect();
+    let mut a: Vec<Vec<f64>> = ts
         .iter()
         .map(|&x| {
             let mut p = 1.0;
@@ -1510,16 +1727,39 @@ pub fn poly_fit(xs: &[f64], ys: &[f64], degree: usize) -> Result<Vec<f64>, Sympl
             }
         }
     }
-    let c =
-        dense_f64::lstsq_householder(&dense_f64::flatten(&a), m, ncols, ys).ok_or_else(|| {
-            failed(
-                OP,
-                format!(
-                    "Vandermonde matrix is rank deficient: fewer than {ncols} distinct abscissae"
-                ),
-            )
-        })?;
-    Ok(c.iter().zip(&scale).map(|(c, s)| c / s).collect())
+    let q = dense_f64::lstsq_householder(&dense_f64::flatten(&a), m, ncols, ys)
+        .ok_or_else(rank_deficient)?;
+    let q: Vec<f64> = q.iter().zip(&scale).map(|(c, s)| c / s).collect();
+    // Expand q((x − centre)/half) in powers of x exactly, then round once:
+    // c_j = Σ_{k ≥ j} q_k·C(k, j)·(−centre)^(k−j) / half^k.
+    let exact = |v: f64| Ratio::<BigInt>::from_float(v).unwrap_or_else(Ratio::zero);
+    let (neg_centre, inv_half) = (-exact(centre), exact(half).recip());
+    let mut coeffs = vec![Ratio::<BigInt>::zero(); ncols];
+    let mut inv_half_k = Ratio::<BigInt>::one();
+    for (k, &qk) in q.iter().enumerate() {
+        // q_k·(x − centre)^k / half^k, by the binomial theorem.
+        let lead = exact(qk) * &inv_half_k;
+        let mut binom = BigInt::one();
+        let mut centre_pow = Ratio::<BigInt>::one();
+        for j in (0..=k).rev() {
+            coeffs[j] += &lead * Ratio::from_integer(binom.clone()) * &centre_pow;
+            // C(k, j−1) = C(k, j)·j / (k − j + 1)
+            binom = binom * BigInt::from(j) / BigInt::from(k - j + 1);
+            centre_pow *= &neg_centre;
+        }
+        inv_half_k *= &inv_half;
+    }
+    let out: Vec<f64> = coeffs
+        .iter()
+        .map(|c| num_traits::ToPrimitive::to_f64(c).unwrap_or(f64::NAN))
+        .collect();
+    if out.iter().any(|c| !c.is_finite()) {
+        return Err(failed(
+            OP,
+            format!("a coefficient of the fitted polynomial overflows f64: {out:?}"),
+        ));
+    }
+    Ok(out)
 }
 
 /// Exact least-squares polynomial fit over ℚ.
@@ -1682,11 +1922,19 @@ pub fn linear_fit(xs: &[f64], ys: &[f64]) -> Result<LinearFit, SymplexError> {
 /// Trapezoidal-rule integral of the samples `ys` at abscissae `xs`.
 ///
 /// `Σ ½·(xs[i+1] − xs[i])·(ys[i] + ys[i+1])`; fewer than two samples give
-/// `0`.  The abscissae need not be evenly spaced.
+/// `0`.  The abscissae need not be evenly spaced, and a repeated abscissa
+/// is a jump of the sampled function (the zero-width panel adds nothing).
+/// They must be sorted, ascending (the integral from the first to the last
+/// abscissa) or descending (its negative, `∫_b^a = −∫_a^b`): for unsorted
+/// abscissae the sum is the integral along a path that doubles back, not
+/// the integral of the samples (`xs = [0, 2, 1]`, `ys = xs` gives `0.5`,
+/// not `2`), so it is refused.
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if the slices differ in length.
+/// [`SymplexError::InvalidArgument`] if the slices differ in length or the
+/// abscissae are neither non-decreasing nor non-increasing (this includes
+/// a `NaN` abscissa).
 ///
 /// # Examples
 ///
@@ -1696,8 +1944,19 @@ pub fn linear_fit(xs: &[f64], ys: &[f64]) -> Result<LinearFit, SymplexError> {
 /// let xs: Vec<f64> = (0..=1000).map(|i| i as f64 / 1000.0).collect();
 /// let ys: Vec<f64> = xs.iter().map(|x| x * x).collect();
 /// assert!((trapezoid(&ys, &xs).unwrap() - 1.0 / 3.0).abs() < 1e-6);
+///
+/// // Unsorted samples are refused rather than integrated along a zigzag.
+/// assert!(trapezoid(&[0.0, 2.0, 1.0], &[0.0, 2.0, 1.0]).is_err());
 /// ```
 pub fn trapezoid(ys: &[f64], xs: &[f64]) -> Result<f64, SymplexError> {
+    let ascending = xs.windows(2).all(|w| w[0] <= w[1]);
+    let descending = xs.windows(2).all(|w| w[0] >= w[1]);
+    if !ascending && !descending {
+        return Err(invalid(
+            "trapezoid",
+            "the abscissae must be sorted (ascending or descending) and not NaN".into(),
+        ));
+    }
     if ys.len() != xs.len() {
         return Err(invalid(
             "trapezoid",

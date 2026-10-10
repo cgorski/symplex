@@ -12,6 +12,7 @@ use crate::api::expr::{BoolEx, Ex, Expr, Numeric, SetEx, SetValued};
 use crate::base::assumptions::{Assumption, Props};
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
+use crate::base::node::ExprNode;
 
 /// Ascending coefficients of `expr` as a polynomial in `var`, allowing
 /// arbitrary `var`-free symbolic coefficients.  The zero polynomial is the
@@ -26,6 +27,39 @@ pub(crate) fn symbolic_coeffs_of(
         return Some(vec![]);
     }
     Some(coeffs)
+}
+
+/// `d expr / d var` for `var` an application of an undefined function or
+/// a formal derivative of one (SymPy's `_diff_wrt` variables): `var` and
+/// every other formal derivative containing it (`f′(x)`, `f″(x)` for `var =
+/// f(x)`) are replaced by fresh symbols at once, the derivative taken with
+/// respect to `var`'s symbol, and everything put back — so a velocity is
+/// independent of its coordinate, as in SymPy and Lagrangian mechanics:
+/// `d/df (f·f′ + x·f″) = f′`.
+fn diff_wrt_function_value(
+    arena: &mut crate::base::arena::Arena,
+    expr: crate::base::node::ExprId,
+    var: crate::base::node::ExprId,
+) -> crate::base::node::ExprId {
+    let mut avoid = vec![expr, var];
+    let dummy = crate::transforms::subs::fresh_symbol(arena, "_xi", &avoid);
+    avoid.push(dummy);
+    let mut forward = vec![(var, dummy)];
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        if id != var
+            && matches!(arena.node(id), ExprNode::Derivative(..))
+            && crate::base::walk::contains(arena, id, var)
+        {
+            let stand_in = crate::transforms::subs::fresh_symbol(arena, "_eta", &avoid);
+            avoid.push(stand_in);
+            forward.push((id, stand_in));
+        }
+    }
+    // Outermost first: a derivative inside a protected one is not reached.
+    let replaced = arena.subs_map_structural(expr, &forward);
+    let derivative = arena.diff_wrt(replaced, dummy);
+    let back: Vec<_> = forward.iter().map(|&(old, new)| (new, old)).collect();
+    arena.subs_map_structural(derivative, &back)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1376,6 +1410,15 @@ impl Expr<Numeric> {
     /// `var` should be a symbol expression (created via `ctx.symbol()`).
     /// If `var` does not appear in the expression, the result is zero.
     ///
+    /// As in SymPy, `var` may also be an application of an undefined
+    /// function, `f(x)`, or a formal derivative of one, `Derivative(f(x),
+    /// x)`: the derivative treats it as an independent variable
+    /// (`d/df(x) (f(x)³ + x·f(x)) = 3f(x)² + x`).  Any other `var` (`2x`, `x
+    /// + 1`, `sin x`) gives the formal `Derivative(self, var)`, which
+    /// [`try_diff`](Self::try_diff) reports as an error (SymPy: "Can't
+    /// calculate derivative wrt 2*x").  Up to 0.40 every non-symbol `var`
+    /// gave `0`: `(x²).diff(&(2x))` was `0`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1391,7 +1434,19 @@ impl Expr<Numeric> {
     pub fn diff(&self, var: &Ex) -> Ex {
         let var_id = self.checked_id(var);
         let _span = debug_span!("diff", expr = ?self.raw_id(), var = ?var_id).entered();
-        let id = self.inner.write().arena.diff_wrt(self.raw_id(), var_id);
+        let mut inner = self.inner.write();
+        let arena = &mut inner.arena;
+        let id = match arena.node(var_id).clone() {
+            ExprNode::Symbol(_) => arena.diff_wrt(self.raw_id(), var_id),
+            ExprNode::Apply(f, _) if arena.lib_fn(f).is_none() => {
+                diff_wrt_function_value(arena, self.raw_id(), var_id)
+            }
+            ExprNode::Derivative(body, _) if matches!(arena.node(body), ExprNode::Apply(f, _) if arena.lib_fn(*f).is_none()) => {
+                diff_wrt_function_value(arena, self.raw_id(), var_id)
+            }
+            _ => arena.formal_diff(self.raw_id(), var_id),
+        };
+        drop(inner);
         self.wrap(id)
     }
 
