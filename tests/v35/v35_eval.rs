@@ -1,4 +1,5 @@
-//! Exact evaluation (`eval`) of constants.
+//! Exact evaluation (`eval`) of constants, and expressions undefined at
+//! every point.
 
 use symplex::prelude::*;
 
@@ -31,5 +32,30 @@ fn logarithms_of_special_complex_constants_fold() {
     }
     for s in ["ln(2 + I)", "ln(x + I)"] {
         assert_eq!(parse(&ctx, s).eval(), parse(&ctx, s), "{s}");
+    }
+}
+
+/// `0·sin(1/d)` with `d` zero by an identity of its functions is `0·nan`:
+/// `tan x·cos x − sin x = 0` wherever it is defined, so `sin(1/d) =
+/// sin(zoo)` has no value at any point.  Before, `ratsimp` multiplied the
+/// zero factor `x·(x + 2) − x² − 2x` out and gave `0` (`simplify` and
+/// `expand` gave `nan`); SymPy 1.14 `ratsimp` gives `0` (symplex keeps `0/0`
+/// and `0·nan` undefined, deliberately different).  A factor whose argument
+/// has an ordinary pole still cancels to `0`.
+#[test]
+fn ratsimp_keeps_zero_times_a_function_of_a_pole_by_identity_undefined() {
+    let ctx = Context::new();
+    for s in [
+        "sin(1/(tan(x)*cos(x) - sin(x)))*(x*(x + 2) - x^2 - 2*x)",
+        "exp(1/(cosh(x)^2 - sinh(x)^2 - 1))*(x*(x + 3) - x^2 - 3*x)",
+        "sin(1/(sin(x)^2 + cos(x)^2 - 1))*(x*(x + 2) - x^2 - 2*x)*y",
+    ] {
+        assert_eq!(parse(&ctx, s).ratsimp(), ctx.nan(), "{s}");
+    }
+    for s in [
+        "sin(1/(x + 1))*(x*(x + 2) - x^2 - 2*x)",
+        "sin(1/(tan(x)*cos(x) + sin(x)))*(x*(x + 2) - x^2 - 2*x)",
+    ] {
+        assert_eq!(parse(&ctx, s).ratsimp(), ctx.int(0), "{s}");
     }
 }

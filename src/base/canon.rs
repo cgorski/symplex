@@ -729,7 +729,22 @@ fn everywhere(arena: &mut Arena, root: ExprId, memo: &mut EverywhereMemo) -> Eve
 /// undetected); `Zero` and `Infinite` may be `nan` where a zero the tests
 /// do not see (`sin²x + cos²x − 1`) meets them.
 pub(crate) fn everywhere_values(arena: &mut Arena, ids: &[ExprId]) -> SmallVec<[Everywhere; 4]> {
+    everywhere_values_given(arena, ids, &[])
+}
+
+/// [`everywhere_values`] with `zero_bases` known to vanish identically —
+/// by an identity of their functions that the residue test of
+/// [`factor_vanishes`] does not see (`tan x·cos x − sin x`), decided by the
+/// caller: their negative powers are `zoo`.
+pub(crate) fn everywhere_values_given(
+    arena: &mut Arena,
+    ids: &[ExprId],
+    zero_bases: &[ExprId],
+) -> SmallVec<[Everywhere; 4]> {
     let mut memo = EverywhereMemo::default();
+    for &b in zero_bases {
+        memo.vanishes.insert(b, true);
+    }
     ids.iter()
         .map(|&id| everywhere(arena, id, &mut memo))
         .collect()

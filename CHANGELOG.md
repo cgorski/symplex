@@ -131,6 +131,10 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - **Solution sets hunted** (617 cases: members `n = −3..3` substituted
   back with certified evaluation, real root scans, known complex roots,
   membership): 385 wrong (incomplete) → 0.
+- `ratsimp` of a zero factor times a function whose argument has a pole
+  by an identity of its functions is `nan` (`0·sin(zoo)`):
+  `ratsimp(sin(1/(tan x·cos x − sin x))·(x·(x + 2) − x² − 2x))` was `0`
+  (`simplify` and `expand` gave `nan`; SymPy 1.14 gives `0`).
 
 - **Integral transforms and definite integrals hunted** (forward and
   inverse Laplace, Fourier, Mellin, Z, residues, Fourier series, definite

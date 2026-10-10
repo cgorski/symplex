@@ -274,7 +274,39 @@ fn vanishing_bases(
             vanishing.insert(power, v);
         }
     }
-    let values = crate::base::canon::everywhere_values(arena, &generators);
+    // With a zero in the skeleton, a generator whose argument has a pole by
+    // an identity of its functions makes `0·nan`: up to 0.39
+    // `ratsimp(sin(1/(tan x·cos x − sin x))·(x·(x + 2) − x² − 2x))` was `0`
+    // (`sin(zoo)·0 = nan`; `simplify` and `expand` gave `nan`).  The bases
+    // of the negative powers inside the generators get the identity test
+    // only then.
+    let zero_in_skeleton = something_vanishes
+        || decided.values().any(|&zero| zero)
+        || has_zero_factor(arena, &products);
+    let mut argument_zeros: Vec<ExprId> = Vec::new();
+    if zero_in_skeleton {
+        let mut inner: Vec<ExprId> = Vec::new();
+        for &g in &generators {
+            for id in walk::post_order_ids(arena, g) {
+                if let ExprNode::Pow(b, e) = arena.node(id)
+                    && arena.as_num(*e).is_some_and(|q| q.is_negative())
+                    && !inner.contains(b)
+                    && may_vanish_by_identity(arena, *b)
+                {
+                    inner.push(*b);
+                }
+            }
+        }
+        for b in inner {
+            if decided.get(&b) == Some(&true)
+                || (by_identity.insert(b)
+                    && crate::simplify::identically_zero::vanishes_by_identity(arena, b))
+            {
+                argument_zeros.push(b);
+            }
+        }
+    }
+    let values = crate::base::canon::everywhere_values_given(arena, &generators, &argument_zeros);
     for (&g, value) in generators.iter().zip(values) {
         if value == Everywhere::Undefined {
             vanishing.insert(g, Vanishing::Undefined);
@@ -306,7 +338,18 @@ fn identity_bases(
     if bases.is_empty() || something_vanishes {
         return bases;
     }
-    let zero_factor = products.iter().any(|&p| {
+    if has_zero_factor(arena, products) {
+        bases
+    } else {
+        Vec::new()
+    }
+}
+
+/// Has one of the `products` a factor (not a negative power) that may
+/// vanish identically by the residue test
+/// ([`may_vanish_identically_as_factor`](crate::base::canon::may_vanish_identically_as_factor))?
+fn has_zero_factor(arena: &Arena, products: &[ExprId]) -> bool {
+    products.iter().any(|&p| {
         let ExprNode::Mul(children) = arena.node(p) else {
             return false;
         };
@@ -319,8 +362,7 @@ fn identity_bases(
                 && !arena.node(c).is_atom()
                 && crate::base::canon::may_vanish_identically_as_factor(arena, c)
         })
-    });
-    if zero_factor { bases } else { Vec::new() }
+    })
 }
 
 /// Could `d` vanish identically other than as a rational function of its
