@@ -8,6 +8,20 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-10-10
+
+Six more areas hunted, the first four never before: control systems,
+quaternions, vector calculus and multibody dynamics (the Lagrangian
+functions differentiated velocities given as `Derivative(q, t)` as `0`;
+quaternions came out of reflection matrices), root finding and fitting
+(`brent_root` returned a pole of `tan` as a root), the assumption system
+(129 wrong claims about expressions that may be infinite → 0), exact
+special values (`li(exp(4i))` was `Ei(4i)`), infinities (`oo + I` was
+`oo`, so `im(oo + I)` was 0) and decision procedures (`a > a` was true
+when the difference evaluated to `+0`).  `Ex::diff` with respect to
+something other than a symbol no longer returns `0`.  Rubi stays at
+28,713 verified, 0 wrong.
+
 ### Breaking (behaviour)
 
 - **`Ex::diff` with a variable that is not a symbol** no longer returns
@@ -142,6 +156,35 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   the determinant (Cohen, Algorithm 2.4.8, as SymPy's
   `_hermite_normal_form_modulo_D`): a 40×40 HNF took over 300 s and now
   takes 0.1 s, a 40×40 Smith form 32 s → 0.11 s; results unchanged.
+
+### Measured
+
+- `tests/v35/` (0.39–0.41): 16 files, 128 tests.  nextest 13,889 tests (14
+  skipped), doctests 1,324.
+- Rubi harness: 28,713 verified, 73 real_verified, 0 wrong, 0 undecided, 0
+  timeouts (unchanged).  Self-test: 55,475 verified, 0 wrong, 742
+  undecided.  `--negative-params`: 73 real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.40.0: no semver update required.
+- Hunters (before → after): control 301 wrong and 104 panics → 0;
+  quaternions 354 wrong → 0; dynamics 1,095 wrong → 0; vector line
+  integrals 247 refused → 9; root finding (6,000 seeds) brent 41 wrong →
+  7, bisect 49 → 5, trapezoid 239 → 0; assumptions (40,000 expressions)
+  129 wrong claims → 0; special values (91,300 applications) 119 wrong →
+  26 (checked artifacts or outside `eval`); infinities (3,000) 100 wrong →
+  6; decisions: constant relations (39,000 checks) 140 wrong → 0,
+  identities 4 → 0, Boolean refusals 5,225 → 2,314.  No hunter or oracle
+  reached its memory cap.
+- Fuzzing: the Fuzz workflow on the release code (12 targets × 600 s on
+  CI) was green on all 12.  Locally all 12 targets ran together with a
+  10-second and a 2.5 GB limit (`fuzz_simplify` and `fuzz_integrate` 15
+  minutes, the others 10): `fuzz_numdist` 18,914,168 inputs,
+  `fuzz_refine` 13,041,101, `fuzz_lambertw` 2,871,826, `fuzz_parser`
+  1,693,662, `fuzz_eigenvects` 271,614, `fuzz_exact_matrix` 236,194,
+  `fuzz_evalf` 114,381, `fuzz_calculus` 51,846, `fuzz_poly` 38,581,
+  `fuzz_roundtrip` 31,778, `fuzz_simplify` 23,162, `fuzz_integrate` 7,369:
+  0 crashes, 0 timeouts, 0 out-of-memory.
 
 ## [0.40.0] - 2026-10-10
 
