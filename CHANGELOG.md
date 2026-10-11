@@ -8,6 +8,20 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-11
+
+Solvers now answer over the declared domain of the unknown: for a
+positive `x`, `x² − 4 = 0` gave `[2, −2]` and `x = 0` gave `[0]`; for an
+integer `m`, `2m − 3 = 0` gave `[3/2]` (a hunter over 6,000 problems
+found 3,428 such answers, none now).  Definite integrals evaluate to any
+number of digits by tanh-sinh quadrature, and `eval_f64` of an integral
+with an endpoint singularity no longer claims digits it does not have
+(`∫₀¹ dx/√(1 − x)` was 1.9999999898808887).  Trigonometric values at
+SymPy's rational multiples of π are radicals (`cos(π/5) = (1 + √5)/4`),
+and `cancel`, `partial_fractions` and `factor` work with symbolic
+parameters, sums of fractions and algebraic numbers.  Rubi stays at
+28,807 verified, 0 wrong.
+
 ### Breaking (behaviour)
 
 - **Solvers answer over the declared domain of the unknown** (SymPy's
@@ -85,6 +99,31 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   refused 5,694 → 29.
 - Rational functions and factoring hunted (5,996 cases against SymPy):
   refusals 4,725 → 0, wrong 0 before and after.
+
+### Measured
+
+- `tests/v35/` (0.39–0.43): 22 files, 192 tests.  nextest 13,964 tests
+  (14 skipped), doctests 1,327.
+- Rubi harness: 28,807 verified, 73 real_verified, 0 wrong, 0 undecided, 0
+  timeouts (unchanged).  Self-test: 55,488 verified, 0 wrong, 729
+  undecided.  `--negative-params`: 73 real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.42.0: no semver update required.
+- Hunters (before → after): solutions and assumptions (6,000) 3,428 wrong
+  → 0 confirmed; special trigonometric values (8,000) refused 1,872 → 57,
+  wrong 144 → 0; rational functions and factoring (5,996) refused 4,725 →
+  0; definite integrals at 10–60 digits (6,000) refused 5,694 → 29, `f64`
+  wrong 7 → 0.  No hunter or oracle reached its memory cap.
+- Fuzzing: the Fuzz workflow on the release code (12 targets × 600 s on
+  CI) was green on all 12.  Locally all 12 targets ran together with a
+  10-second and a 2.5 GB limit (`fuzz_simplify` and `fuzz_integrate` 15
+  minutes, the others 10): `fuzz_numdist` 19,183,467 inputs,
+  `fuzz_refine` 12,815,446, `fuzz_lambertw` 2,982,381, `fuzz_parser`
+  1,539,698, `fuzz_eigenvects` 286,221, `fuzz_exact_matrix` 234,980,
+  `fuzz_evalf` 108,202, `fuzz_calculus` 51,521, `fuzz_poly` 40,346,
+  `fuzz_roundtrip` 24,193, `fuzz_simplify` 23,651, `fuzz_integrate` 4,837:
+  0 crashes, 0 timeouts, 0 out-of-memory.
 
 - **Solutions and assumptions hunted** (6,000 equations, inequalities,
   systems and parametric integrals with assumed unknowns and parameters;
