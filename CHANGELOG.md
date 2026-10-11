@@ -67,6 +67,45 @@ class).  Rubi: 28,713 → 28,807 verified, still 0 wrong.
   number through its certified minimal polynomial (`√(3 + 2√2) = 1 + √2`;
   constant relations 1,440 wrong → 0 against mpmath at 400 digits);
   identities solved as "no solution" (494 → 0).
+- `LambertW` next to the branch point at high precision: `W(−1/e +
+  13/400000000)` evaluated to 16 and 30 digits but not to 60 ("Halley
+  iteration did not converge": the iteration asked for steps below the
+  working precision including the bits spent on the ill-conditioning
+  near `−1/e`, which rounding never allows).  Found by the Fuzz workflow
+  on the release candidate.
+
+### Measured
+
+- `tests/v35/` (0.39–0.42): 18 files, 142 tests.  nextest 13,902 tests (14
+  skipped), doctests 1,324.
+- Rubi harness: 28,807 verified (0.41: 28,713; tangent chapters 4.3.1.2,
+  4.3.2.1, 4.3.3.1 and 4.3.7 gained 94), 73 real_verified, 0 wrong, 0
+  undecided, 0 timeouts.  Self-test: 55,488 verified (was 55,475), 0
+  wrong, 729 undecided (was 742).  `--negative-params`: 73 real_verified,
+  0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.41.0: no semver update required.
+- Hunters (before → after): complex limits (3,000) wrong 545 → 0,
+  refused 671 → 317; the session-9 limit, branch-cut, series and
+  log-series hunters identical; `0/0` candidates (21,000) 1,076 → 0,
+  wider families (21,000) 1,679 → 133 (all `|m| − m·sign m`, an identity
+  not proved zero, as in SymPy); constant relations (15,000) 1,440 → 0;
+  solver identities (12,000) 494 → 0; products with infinities (2,000)
+  734 → 0.  No hunter or oracle reached its memory cap.
+- Fuzzing: the Fuzz workflow on `5adf35c` found the `LambertW` failure
+  above in `fuzz_evalf` (the other 11 targets green); after the fix the
+  workflow ran again on the release code (12 targets × 600 s): green on
+  all 12.
+  Locally all 12 targets ran together with a 10-second and a 2.5 GB limit
+  (`fuzz_simplify` and `fuzz_integrate` 15 minutes, the others 10):
+  `fuzz_numdist` 18,286,947 inputs, `fuzz_refine` 12,361,816,
+  `fuzz_lambertw` 2,827,451, `fuzz_parser` 1,584,753, `fuzz_eigenvects`
+  271,752, `fuzz_exact_matrix` 227,405, `fuzz_evalf` 99,008,
+  `fuzz_calculus` 45,740, `fuzz_poly` 38,416, `fuzz_roundtrip` 22,956,
+  `fuzz_simplify` 21,247, `fuzz_integrate` 8,050: 0 crashes, 0 timeouts, 0
+  out-of-memory; `fuzz_evalf` again alone for 10 minutes after the fix:
+  119,968 inputs, 0 crashes, 0 timeouts.
 
 ## [0.41.0] - 2026-10-10
 
