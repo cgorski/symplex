@@ -448,7 +448,9 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Eq_(a, b) => {
                 let na = cache.get(&a).copied().unwrap_or(a);
                 let nb = cache.get(&b).copied().unwrap_or(b);
-                if let Some(equal) = gaussian_equal(arena, na, nb) {
+                if let Some(equal) =
+                    gaussian_equal(arena, na, nb).or_else(|| equal_by_difference(arena, na, nb))
+                {
                     if equal {
                         arena.bool_true
                     } else {
@@ -463,7 +465,9 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Ne(a, b) => {
                 let na = cache.get(&a).copied().unwrap_or(a);
                 let nb = cache.get(&b).copied().unwrap_or(b);
-                if let Some(equal) = gaussian_equal(arena, na, nb) {
+                if let Some(equal) =
+                    gaussian_equal(arena, na, nb).or_else(|| equal_by_difference(arena, na, nb))
+                {
                     if equal {
                         arena.bool_false
                     } else {
@@ -1174,21 +1178,142 @@ fn order_against_zero(arena: &Arena, a: ExprId, b: ExprId, strict: bool) -> Opti
 /// Before 0.41 such a relation stayed for `evalf`, which decided `a > a`
 /// true: `Piecewise((π, tanh 1 < tanh 1), (0, True))` evaluated to `π`
 /// (SymPy 1.14: `0`).
+///
+/// A constant difference that is an algebraic number is decided by its
+/// minimal polynomial ([`algebraic_rational_value`]) and, when irrational,
+/// by its certified sign: `√(5 − 2√6) ≥ √3 − √2` is true (the two are
+/// equal; `evalf` refused it before 0.42).
 fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) -> Option<bool> {
-    use crate::base::assumptions::{AssumptionCache, Props};
-    let mut cache = AssumptionCache::new();
-    if cache.query(arena, a, Props::REAL) != Some(true)
-        || cache.query(arena, b, Props::REAL) != Some(true)
-    {
+    let d = arena.sub(a, b);
+    let rational = arena.as_num(d).cloned();
+    if rational.is_none() && !walk::free_symbols(arena, d).is_empty() {
         return None;
     }
-    let d = arena.sub(a, b);
-    let q = arena.as_num(d)?.clone();
+    if !known_real(arena, a) || !known_real(arena, b) {
+        return None;
+    }
+    let q = match rational {
+        Some(q) => q,
+        None => match algebraic_rational_value(arena, d)? {
+            Some(q) => q,
+            // Irrational, so nonzero: the certified sign decides.
+            None => {
+                return Some(arena.sign_of_real_constant(d)? == std::cmp::Ordering::Greater);
+            }
+        },
+    };
     Some(if strict {
         q.is_positive()
     } else {
         !q.is_negative()
     })
+}
+
+/// Is `x` real: by its assumptions, or, for a constant they leave open
+/// (`√(5 − 2√6)`), by a certified evaluation without imaginary part?
+fn known_real(arena: &Arena, x: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+    match AssumptionCache::new().query(arena, x, Props::REAL) {
+        Some(real) => real,
+        None => {
+            walk::free_symbols(arena, x).is_empty()
+                && matches!(
+                    evalf_settled(arena, x, 16, ZeroSearch::Cap),
+                    Ok((z, Settled::Certified)) if z.1.is_zero()
+                )
+        }
+    }
+}
+
+/// `a = b` decided by the difference `a − b`: 0 or a nonzero Gaussian
+/// rational in canonical form (`airyai(18/7) + 3 − 10⁻¹⁵⁰ ≠ 3 +
+/// airyai(18/7)`, `x + 1 ≠ x`), or a constant algebraic number that its
+/// minimal polynomial decides ([`algebraic_rational_value`]: `√(3 + 2√2) =
+/// 1 + √2`).  `None` otherwise.
+///
+/// Up to 0.41 only two Gaussian rationals were compared, and both relations
+/// stayed for `evalf`, which decides an inequality numerically but cannot
+/// certify an equality (it refused `√(3 + 2√2) = 1 + √2`; SymPy 1.14:
+/// `True`, by `minimal_polynomial` in `Expr.equals`).
+fn equal_by_difference(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool> {
+    // Numbers only: no difference of sets, truth values or relations.
+    let non_scalar = |id: ExprId| {
+        let node = arena.node(id);
+        node.is_set_node()
+            || matches!(
+                node,
+                ExprNode::BoolTrue
+                    | ExprNode::BoolFalse
+                    | ExprNode::Gt(..)
+                    | ExprNode::Ge(..)
+                    | ExprNode::Eq_(..)
+                    | ExprNode::Ne(..)
+                    | ExprNode::And(_)
+                    | ExprNode::Or(_)
+                    | ExprNode::Not(_)
+            )
+    };
+    if non_scalar(a) || non_scalar(b) {
+        return None;
+    }
+    let d = arena.sub(a, b);
+    if let Some((re, im)) = gaussian_rational(arena, d) {
+        return Some(re.is_zero() && im.is_zero());
+    }
+    if !walk::free_symbols(arena, d).is_empty() {
+        return None;
+    }
+    match algebraic_rational_value(arena, d)? {
+        Some(q) => Some(q.is_zero()),
+        None => Some(false),
+    }
+}
+
+/// The constant algebraic number `d` as a rational, by its minimal
+/// polynomial over ℚ: `Some(Some(q))` when the polynomial is linear,
+/// `Some(None)` when `d` is irrational (so not 0).  The polynomial is
+/// certified (`minimal_polynomial` returns a factor only when it is the one
+/// irreducible factor of the resultant that vanishes at the 320-bit value
+/// of `d`; two candidates, a tiny nonzero `d` among them, give `None`).
+/// `None` as well when `d` is not small ([`small_algebraic`]).
+fn algebraic_rational_value(arena: &mut Arena, d: ExprId) -> Option<Option<Q>> {
+    if !small_algebraic(arena, d) {
+        return None;
+    }
+    let mp = crate::poly::algebraic::minimal_polynomial(arena, d)?;
+    match mp.degree()? {
+        1 => Some(Some(-mp.coeff(0) / mp.coeff(1))),
+        _ => Some(None),
+    }
+}
+
+/// Is `d` built from rationals, `i`, `φ` and rational powers by sums and
+/// products, in at most 160 nodes, with the product of the orders of its
+/// roots (a bound on the degree of its minimal polynomial) at most 64?  The
+/// bounds keep the resultants of [`algebraic_rational_value`] small.
+fn small_algebraic(arena: &Arena, d: ExprId) -> bool {
+    let order = walk::post_order_ids(arena, d);
+    if order.len() > 160 {
+        return false;
+    }
+    let mut degree: u64 = 1;
+    for &id in &order {
+        let factor = match arena.node(id) {
+            ExprNode::Num(_) | ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => 1,
+            ExprNode::ImaginaryUnit | ExprNode::GoldenRatio => 2,
+            ExprNode::Pow(_, e) => match arena.as_num(*e) {
+                Some(q) => q.denom().to_u64().unwrap_or(u64::MAX),
+                None => return false,
+            },
+            _ => return false,
+        };
+        degree = degree.saturating_mul(factor);
+        if degree > 64 {
+            return false;
+        }
+    }
+    true
 }
 
 /// LogGamma(n) for positive integer n → ln((n-1)!)

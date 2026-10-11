@@ -3829,9 +3829,7 @@ fn taylor_by_differentiation(
 /// A finite, fully evaluated constant (no `±∞`, `zoo`, `NaN`, hidden
 /// singularity such as `ln 0`, unevaluated node, or occurrence of `var`).
 fn is_finite_constant(arena: &Arena, value: ExprId, var: ExprId) -> bool {
-    value != arena.infinity
-        && value != arena.neg_infinity
-        && crate::calculus::limit::is_valid_limit_value(arena, value, var)
+    crate::calculus::limit::is_finite_limit_value(arena, value, var)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

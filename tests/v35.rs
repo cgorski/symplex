@@ -14,10 +14,14 @@ mod v35_definite;
 mod v35_diff;
 #[path = "v35/v35_eval.rs"]
 mod v35_eval;
+#[path = "v35/v35_folds.rs"]
+mod v35_folds;
 #[path = "v35/v35_infinity.rs"]
 mod v35_infinity;
 #[path = "v35/v35_integrate_speed.rs"]
 mod v35_integrate_speed;
+#[path = "v35/v35_limits.rs"]
+mod v35_limits;
 #[path = "v35/v35_ntheory.rs"]
 mod v35_ntheory;
 #[path = "v35/v35_numeric.rs"]

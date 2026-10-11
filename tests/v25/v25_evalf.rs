@@ -69,6 +69,10 @@ fn dividing_by_a_cancelled_difference_is_refused() {
     // Rubi's antiderivative of cot(x)/ln(e^(sin x)) divides by
     // sin x − ln(e^(sin x)) ≡ 0; its derivative at x = 13/4 used to evaluate
     // to −64 at every precision, a false "wrong" in the harness self-test.
+    // Since 0.42 `ln(e^(sin(13/4)))` is `sin(13/4)` when built (a real
+    // exponent, SymPy's `log.eval`), the denominator is the exact 0 and the
+    // value `nan`, refused as such (`Unevaluable`) rather than for want of
+    // precision.
     let x = ctx.symbol("x");
     let big_f = ctx
         .parse("-ln(sin(x))/(-ln(exp(sin(x))) + sin(x)) + ln(ln(exp(sin(x))))/(-ln(exp(sin(x))) + sin(x))")
@@ -79,7 +83,10 @@ fn dividing_by_a_cancelled_difference_is_refused() {
             .subs(&x, &ctx.rational(p.0, p.1))
             .eval_decimal(30);
         assert!(
-            matches!(r, Err(SymplexError::PrecisionExhausted { .. })),
+            matches!(
+                r,
+                Err(SymplexError::PrecisionExhausted { .. } | SymplexError::Unevaluable { .. })
+            ),
             "x = {}/{}: {r:?}",
             p.0,
             p.1

@@ -8,6 +8,66 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-10-11
+
+Two classes of silent wrong answers removed.  Limits of complex-valued
+functions dropped finite imaginary parts and claimed real directions,
+and took the wrong side of a branch cut at infinity: `limit(atanh(x +
+i), x, oo)` was `−iπ/2` (it is `+iπ/2`), `limit(ln(−x), x, oo)` was `oo`
+(it is `oo + iπ`) — a hunter over 3,000 such limits found 545 wrong
+answers, none now.  And expressions that are `0/0` came out `0` when
+the zero in the denominator followed from assumptions (`sin(πn)` for an
+integer `n`) or an identity: functions and powers whose value follows
+from the assumptions on their symbols now fold when built, as in SymPy
+(5,423 wrong → 141 across five hunters, none of the rest in this
+class).  Rubi: 28,713 → 28,807 verified, still 0 wrong.
+
+### Breaking (behaviour)
+
+- **Limits of complex-valued functions keep finite imaginary parts and
+  directions**, written as `subs` writes values at infinities (`oo + I·b`,
+  `I·oo + a`, `c·oo`): `limit(x − I, x, oo)` is `oo − I` (was `oo`),
+  `ln(−x) → oo + iπ`, `e^{x+2i} → e^{2i}·oo`, `I·x → I·oo` (was refused);
+  `limit(x + a, x, oo)` with an unassumed `a` is `a + oo`.  An infinite
+  limit whose imaginary part cannot be determined is refused (`Γ(x − z)`
+  for a complex `z` was `oo`).
+- **Functions and powers whose value follows from the assumptions on
+  their symbols fold when built** (SymPy's `eval` rules): `sin(πn) = 0`
+  and `cos(πn) = (−1)ⁿ` for an integer `n`, `cos(πm/2) = 0` and `(−1)ᵐ =
+  −1` for an odd `m`, `exp(2πin) = 1`, shifts by periods (`sin(x + 2πn) =
+  sin x`), `|p| = p`, `sign(p) = 1`, `√(p²) = p`, `√(r²) = |r|`, `|r|² = r²`,
+  `Max(p, 0) = p` (dominated arguments dropped), `⌊n⌋ = n`, `Heaviside(p)
+  = 1`, `ln(eʳ) = r` (real `r`), `(√2)^(1/2) = 2^(1/4)`.  Unassumed symbols
+  are untouched.  Orders between non-real values stay unevaluated (`i·π >
+  ln(−1)` was `False`; SymPy raises).  `reduce_inequalities`/`solve_as_set`
+  of an equation true everywhere give its domain (`Eq((x + 1)², x² + 2x +
+  1)` was `EmptySet`; `Eq((x² − 1)/(x − 1), x + 1)` is `ℝ \ {1}`).
+
+### Fixed
+
+- **Complex limits hunted** (3,000 functions with complex offsets at `±∞`
+  and one-sided points; mpmath along the path at 60+ digits, SymPy as a
+  second opinion): 545 wrong → 0, refusals 671 → 317.  Gruntz took `ln c
+  = ln|c| + iπ` for a negative leading coefficient whatever the side of
+  the cut: `atanh(x + i)` was `−iπ/2`, `ln(−x − i) − ln x` was `iπ` (it is
+  `−iπ`), `acosh(x + 1 − i) − ln x` at `−∞` was `ln 2` (it is `ln 2 −
+  2πi`); real directions were claimed for complex growth:
+  `sign(cosh(ln x + i))` was 1 (it is `e^i`), `exp(x² + iπ)` was `oo` (it
+  is `−oo`), `tanh(sinh(x − 3i) + 1 − i)` was 1 (it is `−1`); the sum rule
+  dropped constant offsets; a reciprocal of a disguised zero was taken as
+  finite.
+- **0/0 that came out 0, and decisions on constants** (21,000 `0/0`
+  candidates, 15,000 constant relations, 12,000 solver identities, 2,000
+  products with infinities): `ratsimp`/`simplify`/`expand` of `((x + 1)² −
+  x² − 2x − 1)/sin(πn)` was `0` (it is `nan`; 1,076 wrong → 0);
+  `0/(sin²x + cos²x − 1)` was `0`; a product of 0 and a function not known
+  finite at an infinite argument was `0` (`Max(0, 2/oo)·cosh((1 + i)·oo −
+  3/2)`; 734 → 0); `Eq`/`Ne` of constants compared only Gaussian rationals
+  — they are decided by the difference now, a rational or an algebraic
+  number through its certified minimal polynomial (`√(3 + 2√2) = 1 + √2`;
+  constant relations 1,440 wrong → 0 against mpmath at 400 digits);
+  identities solved as "no solution" (494 → 0).
+
 ## [0.41.0] - 2026-10-10
 
 Six more areas hunted, the first four never before: control systems,

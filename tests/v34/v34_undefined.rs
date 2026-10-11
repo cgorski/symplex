@@ -291,11 +291,15 @@ fn identity_tests_never_evaluate_costly_parts() {
 /// What SymPy does too stays as it was: `T/T = 1` and like terms collected
 /// over a `T` that is zero only by an identity of its functions (the
 /// canonical form tests identities of `exp` and radicals, and constants,
-/// not those of `sin` and `cos` in a symbol); `0/T` for such a `T` is `0`.
+/// not those of `sin` and `cos` in a symbol).  `0/T` for such a `T` was `0`
+/// as SymPy's; since 0.42 the `0·T⁻¹` path of the canonical product tests
+/// `T` for an identity (a numerator that is 0 by the assumptions now folds
+/// when it is built, before `simplify` could see the `0/0`), and `0/T` is
+/// `nan`, its value at every point (see `v35_folds`).
 ///
 /// Oracle: SymPy 1.14, with `T = sin(x)**2 + cos(x)**2 - 1`: `T/T` → `1`,
-/// `2/T + 3/T` → `5/T`, `0/T` → `0`; `ratsimp(1/(x/s + 1/s))` → `s/(x +
-/// 1)`.
+/// `2/T + 3/T` → `5/T` (`0/T` → `0`, which symplex no longer follows);
+/// `ratsimp(1/(x/s + 1/s))` → `s/(x + 1)`.
 #[test]
 fn what_sympy_also_does_is_unchanged() {
     let t = "(sin(x)^2+cos(x)^2-1)";
@@ -304,7 +308,7 @@ fn what_sympy_also_does_is_unchanged() {
         parse(&format!("2/{t}+3/{t}")),
         "5/(sin(x)^2 + cos(x)^2 - 1)"
     );
-    assert_eq!(parse(&format!("0/{t}")), "0");
+    assert_eq!(parse(&format!("0/{t}")), "nan");
     let ctx = Context::new();
     let s = "(sin(2*x)-2*sin(x)*cos(x))";
     assert_eq!(

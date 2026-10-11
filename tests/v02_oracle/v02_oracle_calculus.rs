@@ -261,6 +261,13 @@ fn one_sided_limit(ctx: &Context, fx: &Fixture) -> Status {
         Direction::Right
     };
     match f.try_limit_dir(&x, &pt, dir) {
+        // SymPy's `limit` drops the finite imaginary part of an infinite
+        // limit (`log(x)` at `0⁻` → `-oo`); symplex keeps it since 0.42
+        // (`-oo + I*pi`, as `subs` writes values at infinities; mpmath
+        // `log(−10⁻⁴⁰)` = −92.1 + 3.14159i): compare the real parts.
+        Ok(r) if matches!(expected, Num::PosInf | Num::NegInf) && r != r.re() => {
+            compare_constant(ctx, &r.re(), &expected, TOLERANCE)
+        }
         Ok(r) => compare_constant(ctx, &r, &expected, TOLERANCE),
         Err(e) => Status::NotImplemented(format!("{e}")),
     }

@@ -196,7 +196,11 @@ fn rule_ln_exp_stays_for_unassumed_symbol() {
 fn rule_ln_exp_trace_for_real() {
     let ctx = Context::new();
     let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
-    assert_trace_contains_rule!(x.exp().ln(), "ln_exp");
+    // 0.42: `ln(eˣ) = x` for a real `x` holds when the logarithm is built
+    // (as SymPy's `log.eval`), before `simplify` and its rule see it.
+    assert_eq!(format!("{}", x.exp().ln()), "x");
+    let y = ctx.symbol("y");
+    assert_trace_empty!(y.exp().ln());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -250,7 +254,11 @@ fn rule_sqrt_sq_trace() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
     let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
-    assert_trace_contains_rule!(x.powi(2).sqrt(), "sqrt_sq");
+    // 0.42: `√(x²) = |x|` for a real `x` holds when the power is built (as
+    // SymPy's `Pow._eval_power`), before `simplify` and its rule see it.
+    assert_eq!(format!("{}", x.powi(2).sqrt()), "abs(x)");
+    let y = ctx.symbol("y");
+    assert_trace_empty!(y.powi(2).sqrt());
 }
 
 #[test]

@@ -156,11 +156,16 @@ fn fold_rel(arena: &mut Arena, rel: Rel) -> ExprId {
             std::cmp::Ordering::Equal => EQ,
             std::cmp::Ordering::Greater => GT,
         };
-        return if mask & bit != 0 {
-            arena.bool_true
-        } else {
-            arena.bool_false
-        };
+        let order = mask != EQ && mask != LT | GT;
+        let mut cache = AssumptionCache::new();
+        if !(order && (known_nonreal(arena, &mut cache, a) || known_nonreal(arena, &mut cache, b)))
+        {
+            return if mask & bit != 0 {
+                arena.bool_true
+            } else {
+                arena.bool_false
+            };
+        }
     }
     match mask {
         GT => arena.gt(a, b),
@@ -170,6 +175,34 @@ fn fold_rel(arena: &mut Arena, rel: Rel) -> ExprId {
         m if m == LT | EQ => arena.ge(b, a),
         _ => arena.ne_(a, b),
     }
+}
+
+/// Is `e` known not to be an extended real number: by the assumptions
+/// (`i·π`, `ln(−1)`), or for a constant by a certified evaluation whose
+/// imaginary part is not 0 (`e^i`)?  An order between such values has no
+/// meaning (SymPy 1.14 raises "Invalid comparison of non-real"), so a
+/// relation between them stays: up to 0.41 `i·π > ln(−1)` was folded to
+/// `False`, `i·π ≥ ln(−1)` and `i·π < ln(−1) + 1` to `True`, from the
+/// order of their real difference.  Asked only of a relation about to be
+/// decided.
+fn known_nonreal(arena: &Arena, cache: &mut AssumptionCache, e: ExprId) -> bool {
+    use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+    if cache.query(arena, e, Props::EXTENDED_REAL) == Some(false)
+        || cache.query(arena, e, Props::IMAGINARY) == Some(true)
+        || (cache.query(arena, e, Props::REAL) == Some(false)
+            && cache.query(arena, e, Props::FINITE) == Some(true))
+    {
+        return true;
+    }
+    if cache.query(arena, e, Props::REAL) == Some(true)
+        || !crate::base::walk::free_symbols(arena, e).is_empty()
+    {
+        return false;
+    }
+    matches!(
+        evalf_settled(arena, e, 16, ZeroSearch::Cap),
+        Ok((z, Settled::Certified)) if !z.1.is_zero()
+    )
 }
 
 /// Negate a literal (an atom or the negation of an atom).
@@ -1882,12 +1915,25 @@ pub(crate) fn eval_bool(
                     ExprNode::Eq_(..) => (Props::ZERO, Props::NONZERO),
                     _ => (Props::NONZERO, Props::ZERO),
                 };
-                if assumptions.query(&*arena, d, yes) == Some(true) {
-                    t
+                let order = matches!(arena.node(id), ExprNode::Gt(..) | ExprNode::Ge(..));
+                let decided = if assumptions.query(&*arena, d, yes) == Some(true) {
+                    Some(t)
                 } else if assumptions.query(&*arena, d, no) == Some(true) {
-                    f
+                    Some(f)
                 } else {
-                    id
+                    None
+                };
+                match decided {
+                    // No order between non-real values (see `known_nonreal`).
+                    Some(_)
+                        if order
+                            && (known_nonreal(arena, assumptions, a)
+                                || known_nonreal(arena, assumptions, b)) =>
+                    {
+                        id
+                    }
+                    Some(v) => v,
+                    None => id,
                 }
             }
             ExprNode::And(ch) => {

@@ -2045,6 +2045,8 @@ mod tests {
         let g = a.pow(neg_s2, half);
         let rg = expand(&mut a, g);
         assert_ne!(rg, g);
-        assert_eq!(display(&a, rg), "sqrt(sqrt(2))*I");
+        // `(√2)^(1/2)` is built as `2^(1/4)` since 0.42 (a power of a
+        // positive base folds, as in SymPy).
+        assert_eq!(display(&a, rg), "2^(1/4)*I");
     }
 }

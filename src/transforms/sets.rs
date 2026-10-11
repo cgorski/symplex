@@ -2512,23 +2512,49 @@ fn atom_to_set(
             });
             return Ok(set);
         }
+        // Every value where `d` is defined solves `d = 0` when the solver
+        // finds an identity or `d` is a rational function with the zero
+        // numerator: the set is that of `d ≥ 0` (`d` is 0 wherever it is
+        // defined), which leaves out the poles (`(x² − 1)/(x − 1) = x + 1`
+        // holds on ℝ \ {1}).  Up to 0.41 both were read as an empty list of
+        // roots and the set was `EmptySet` (SymPy 1.14: `Reals`, and
+        // `Union(Interval.open(-oo, 1), Interval.open(1, oo))` for the
+        // quotient).
+        let identity = |arena: &mut Arena| {
+            crate::transforms::inequalities::solve_inequality(arena, d, var, Relation::Ge).map_err(
+                |e| SymplexError::ComputationFailed {
+                    operation: "reduce_inequalities",
+                    reason: format!("could not find the domain of an identity: {e}"),
+                },
+            )
+        };
         // A provable contradiction (`cos x = −2`, `x/sin x = 0`: every root a
         // pole) has no solution; before 0.40 it was "could not solve".
         let sols = match crate::transforms::solve::solve_classified(arena, d, var) {
             crate::transforms::solve::SolveOutcome::NoSolution(_) => return Ok(arena.empty_set),
+            crate::transforms::solve::SolveOutcome::Identity => return identity(arena),
             outcome => outcome.into_solutions(),
         };
         let roots: Vec<ExprId> = sols.into_iter().map(|s| s.value).collect();
         // No root is an answer for a rational function (the solver finds
         // every root of a polynomial numerator); before 0.30 only for a
-        // polynomial, so `−1/(x² + 7x + 12) = 0` was an error.
+        // polynomial, so `−1/(x² + 7x + 12) = 0` was an error.  `None`: not
+        // a rational function; `Some(true)`: one with the zero numerator.
         let rational = {
             let combined = crate::poly::polybridge::together(arena, d);
             let (n, den) = crate::poly::polybridge::as_numer_denom(arena, combined);
-            crate::poly::polybridge::expr_to_poly(arena, n, var).is_some()
-                && crate::poly::polybridge::expr_to_poly(arena, den, var).is_some()
+            match (
+                crate::poly::polybridge::expr_to_poly(arena, n, var),
+                crate::poly::polybridge::expr_to_poly(arena, den, var),
+            ) {
+                (Some(pn), Some(_)) => Some(pn.is_zero()),
+                _ => None,
+            }
         };
-        if roots.is_empty() && !rational {
+        if rational == Some(true) {
+            return identity(arena);
+        }
+        if roots.is_empty() && rational.is_none() {
             return Err(SymplexError::ComputationFailed {
                 operation: "reduce_inequalities",
                 reason: "could not solve the equation".into(),

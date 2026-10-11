@@ -218,6 +218,13 @@ fn real_parameter_of_undecided_sign() {
 /// parameters (Rubi's antiderivative plus the floor term), and no branch for
 /// a non-real degenerate value of a real parameter (`a = ±i√2`, where 0.37
 /// nested two unreachable cases).
+///
+/// Since 0.42 `√(b²)` is `b` for a positive `b` when it is built, so the
+/// solver gives the degenerate value `a = 0` of `√(a² + ab)` exactly (it
+/// was `(√(b²) − b)/2`, whose case did not integrate) and the answer
+/// carries its branch — unreachable for a positive `a`, as the `b = −a` one
+/// already was: the degenerate cases do not consult the sign assumptions of
+/// the parameters (a follow-up in `integrate.rs`).  The value is unchanged.
 #[test]
 fn forms_with_declared_parameters() {
     let ctx = Context::new();
@@ -227,7 +234,7 @@ fn forms_with_declared_parameters() {
     let got = ctx.parse("1/(a + b*sin(x)^2)").unwrap().integrate(&x);
     assert_eq!(
         got.to_string(),
-        "Piecewise(atan((a + b)*tan(x)/sqrt(a^2 + a*b))/sqrt(a^2 + a*b) + floor(x/pi + 1/2)*pi/sqrt(a^2 + a*b) if b != -a, tan(x)/a if True)"
+        "Piecewise(Piecewise(atan((a + b)*tan(x)/sqrt(a^2 + a*b))/sqrt(a^2 + a*b) + floor(x/pi + 1/2)*pi/sqrt(a^2 + a*b) if b != -a, tan(x)/a if True) if a != 0, -cos(x)/(b*sin(x)) if True)"
     );
     let ctx = Context::new();
     let x = ctx.symbol("x");

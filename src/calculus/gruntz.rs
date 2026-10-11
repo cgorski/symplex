@@ -660,7 +660,19 @@ fn sign_of_constant(
     arena: &mut Arena,
     e: ExprId,
 ) -> Result<i32, crate::base::errors::SymplexError> {
-    match crate::calculus::limit::const_sign(arena, e) {
+    let sign = crate::calculus::limit::const_sign(arena, e).or_else(|| {
+        // A real constant written with `i` (the leading coefficient of an
+        // imaginary part `(f − f̄)/(2i)`: `(a + bi)·i + (−a + bi)·i = −2b`).
+        if !crate::base::walk::contains(arena, e, arena.i_unit()) {
+            return None;
+        }
+        let x = crate::transforms::expand::expand(arena, e);
+        let x = crate::transforms::eval::eval(arena, x);
+        (x != e && !crate::base::walk::contains(arena, x, arena.i_unit()))
+            .then(|| crate::calculus::limit::const_sign(arena, x))
+            .flatten()
+    });
+    match sign {
         Some(s) => Ok(s),
         None => Err(crate::base::errors::SymplexError::ComputationFailed {
             operation: "gruntz::sign_of_constant",
@@ -817,6 +829,43 @@ fn mrv(
                         return mrv(arena, split, x, depth + 1, budget);
                     }
                 }
+            }
+
+            // The representative `ω = e^{−g}` must be positive (`ω → 0⁺`): a
+            // constant non-real term of the exponent made it complex, and
+            // `e^{x − i}·|√x − 3i|` had the leading coefficient 1 (its limit
+            // was `oo`; it is `e^{−i}·oo`).  Constant terms come out as
+            // `e^a·(cos b + i·sin b)` when the varying part is real.
+            let split = if li_is_inf
+                && crate::base::walk::contains(arena, arg, arena.i_unit())
+                && !eventually_real(arena, arg, x, depth + 1, budget)
+            {
+                let terms: Vec<ExprId> = match arena.node(arg) {
+                    ExprNode::Add(cs) => cs.to_vec(),
+                    _ => vec![arg],
+                };
+                let (consts, deps): (Vec<ExprId>, Vec<ExprId>) = terms
+                    .into_iter()
+                    .partition(|&t| !crate::base::walk::contains(arena, t, x));
+                let d = arena.add(&deps);
+                let c = arena.add(&consts);
+                let p = crate::base::complex::decompose(arena, c);
+                (!consts.is_empty() && p.exact && eventually_real(arena, d, x, depth + 1, budget))
+                    .then_some((d, p))
+            } else {
+                None
+            };
+            if let Some((d, p)) = split {
+                let re = crate::transforms::eval::eval(arena, p.re);
+                let im = crate::transforms::eval::eval(arena, p.im);
+                let real = arena.add(&[d, re]);
+                let e_real = arena.exp(real);
+                let cos = arena.cos(im);
+                let sin = arena.sin(im);
+                let i_sin = arena.mul(&[arena.i_unit(), sin]);
+                let phase = arena.add(&[cos, i_sin]);
+                let split = arena.mul(&[e_real, phase]);
+                return mrv(arena, split, x, depth + 1, budget);
             }
 
             if li_is_inf {
@@ -1538,8 +1587,9 @@ fn leadterm(
             // limit only for a real base (a complex one may approach from
             // below the cut: `√(u² + 1)` inside `asinh u` for
             // `u = atanh(1 − x) → iπ/2`).
+            // The same for a base tending to `0` or `∞` along the negative
+            // axis (`resolve_negative_leading` continues those it can).
             if arena.as_num(exp).is_none_or(|r| !r.is_integer())
-                && arena.is_zero_structural(e_b)
                 && crate::calculus::limit::const_sign(arena, c_b) == Some(-1)
                 && !crate::calculus::limit::inner_known_real(arena, base)
             {
@@ -1719,14 +1769,18 @@ fn leadterm(
             let e_eval = crate::transforms::eval::eval(arena, e_arg);
             // ln at a point of its cut (the negative reals) is the limit only
             // along the cut: `ln(−1 − i/x) → −iπ`, not `ln(−1) = iπ`.
-            if arena.is_zero_structural(e_eval)
-                && crate::calculus::limit::on_branch_cut(
+            // So is `ln(c·ωᵉ)` with `c < 0` for `e ≠ 0` (see
+            // `resolve_negative_leading`): `ln(−x − i)` is `ln x − iπ`.
+            let on_cut = if arena.is_zero_structural(e_eval) {
+                crate::calculus::limit::on_branch_cut(
                     arena,
                     crate::calculus::limit::BranchCut::NegativeReals,
                     c_arg,
                 )
-                && !crate::calculus::limit::inner_known_real(arena, arg)
-            {
+            } else {
+                crate::calculus::limit::const_sign(arena, c_arg) == Some(-1)
+            };
+            if on_cut && !crate::calculus::limit::inner_known_real(arena, arg) {
                 return Err(crate::base::errors::SymplexError::ComputationFailed {
                     operation: "gruntz::leadterm",
                     reason: "a non-real argument approaches the branch cut of ln".into(),
@@ -2173,6 +2227,44 @@ fn unary_leadterm(
         ExprNode::LambertW(_) if pos => {
             let ln_inner = arena.ln(inner);
             leadterm(arena, ln_inner, w, logw, x, depth + 1, budget)
+        }
+        // `asin`, `acos` of a real argument along the infinite ends of their
+        // cut, by the principal values there (mpmath `asin(10²⁰)` = π/2 −
+        // 46.74i): `asin u = π/2 − i·acosh u` (`u → +∞`), `−π/2 + i·acosh(−u)`
+        // (`u → −∞`), `acos u = π/2 − asin u`, with `acosh v = ln(v +
+        // √(v + 1)·√(v − 1))`.  (A non-real argument is continued by
+        // `resolve_branch_cut` first.)  Before, `asin(x) + i·ln x` at `∞` was
+        // refused (it is `π/2 − i·ln 2`).
+        ExprNode::Asin(_) | ExprNode::Acos(_)
+            if s != 0 && crate::calculus::limit::inner_known_real(arena, inner) =>
+        {
+            let v = if pos { inner } else { arena.neg(inner) };
+            let one = arena.one();
+            let vp = arena.add(&[v, one]);
+            let vm = arena.sub(v, one);
+            let rp = arena.sqrt(vp);
+            let rm = arena.sqrt(vm);
+            let root = arena.mul(&[rp, rm]);
+            let sum = arena.add(&[v, root]);
+            let ach = arena.ln(sum);
+            let i = arena.i_unit();
+            let pi = arena.pi();
+            let half = arena.rational(1, 2);
+            let half_pi = arena.mul(&[half, pi]);
+            let i_ach = arena.mul(&[i, ach]);
+            let asin = if pos {
+                arena.sub(half_pi, i_ach)
+            } else {
+                let nh = arena.neg(half_pi);
+                arena.add(&[nh, i_ach])
+            };
+            let g = if matches!(template, ExprNode::Asin(_)) {
+                asin
+            } else {
+                arena.sub(half_pi, asin)
+            };
+            let g = crate::transforms::eval::eval(arena, g);
+            leadterm(arena, g, w, logw, x, depth + 1, budget)
         }
         _ => unbounded(),
     }
@@ -2752,6 +2844,7 @@ fn needs_tractable_rewrite(arena: &Arena, e: ExprId, x: ExprId) -> bool {
                 | ExprNode::Piecewise(_)
                 | ExprNode::Min(_)
                 | ExprNode::Max(_)
+                | ExprNode::Atan2(..)
         ) {
             return true;
         }
@@ -2894,7 +2987,129 @@ fn rewrite_tractable(
             break;
         }
     }
-    Ok(e)
+    resolve_negative_leading(arena, e, x, depth, budget)
+}
+
+/// `ln u` or a fractional power `u^r` whose argument `u` is not real and
+/// has a negative real leading coefficient while it tends to `−∞` or `0`
+/// (`1 − x − i`, `−1/x + i/x²`), continued across the cut from the side
+/// `u` approaches from: `ln u = ln(−u) ± iπ`, `u^r = (−u)^r·e^{±iπr}` with
+/// the eventual sign of `Im u` ([`cut_side`]; `+` for a real `u`, on the
+/// cut).  The leading term `c·ωᵉ` with `c < 0` keeps no side, and
+/// `leadterm` took the principal `ln c = ln|c| + iπ` from both sides:
+/// `limit(ln(−x − i) − ln x, x, ∞)` was `iπ` (it is `−iπ`; mpmath
+/// `log(−10²⁰ − i)`), and `atanh(x + i)`, rewritten as
+/// `(ln(1 + x + i) − ln(1 − x − i))/2`, tended to `−iπ/2` (it is `+iπ/2`).
+/// (`resolve_branch_cut` handles arguments tending to a finite point of
+/// a cut.)  `Err` when the side is undecided.
+fn resolve_negative_leading(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<ExprId, crate::base::errors::SymplexError> {
+    let candidate = |arena: &Arena, id: ExprId| -> Option<ExprId> {
+        let u = match *arena.node(id) {
+            ExprNode::Ln(u) => u,
+            ExprNode::Pow(u, r) if arena.as_num(r).is_some_and(|q| !q.is_integer()) => u,
+            _ => return None,
+        };
+        (crate::base::walk::contains(arena, u, x) && may_leave_reals(arena, u)).then_some(u)
+    };
+    let post = crate::base::walk::post_order_ids(arena, e);
+    if !post.iter().any(|&id| candidate(arena, id).is_some()) {
+        return Ok(e);
+    }
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        if !crate::base::walk::contains(arena, id, x) {
+            cache.insert(id, id);
+            continue;
+        }
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match candidate(arena, rebuilt) {
+            Some(u) => match negative_leading_side(arena, u, x, depth, budget)? {
+                Some(side) => {
+                    let i_pi = arena.mul(&[arena.i_unit(), arena.pi()]);
+                    let shift = if side >= 0 { i_pi } else { arena.neg(i_pi) };
+                    let neg_u = arena.neg(u);
+                    match arena.node(rebuilt).clone() {
+                        ExprNode::Pow(_, r) => {
+                            let p = arena.pow(neg_u, r);
+                            let phase = arena.mul(&[shift, r]);
+                            let rot = arena.exp(phase);
+                            arena.mul(&[p, rot])
+                        }
+                        _ => {
+                            let ln = arena.ln(neg_u);
+                            arena.add(&[ln, shift])
+                        }
+                    }
+                }
+                None => rebuilt,
+            },
+            None => rebuilt,
+        };
+        changed |= new != rebuilt;
+        cache.insert(id, new);
+    }
+    if !changed {
+        return Ok(e);
+    }
+    let result = cache.get(&e).copied().unwrap_or(e);
+    let result = crate::transforms::eval::eval(arena, result);
+    tracing::debug!(
+        rewritten = %arena.display(result).to_string(),
+        "gruntz: ln/power of a non-real argument with a negative leading term continued"
+    );
+    Ok(result)
+}
+
+/// The side for [`resolve_negative_leading`]: `Some(s)` (the eventual sign
+/// of `Im u`, `0` on the cut) when `u` is not eventually real, its leading
+/// coefficient is a negative real number and `u → −∞` or `u → 0`; `None`
+/// when the function needs no continuation; `Err` for an undecided side.
+fn negative_leading_side(
+    arena: &mut Arena,
+    u: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<Option<i32>, crate::base::errors::SymplexError> {
+    if eventually_real(arena, u, x, depth + 1, budget) {
+        return Ok(None);
+    }
+    match sign_at_inf(arena, u, x, depth + 1, budget) {
+        Ok(-1) => {}
+        Err(e) if is_budget_error(&e) => return Err(e),
+        _ => return Ok(None),
+    }
+    let l = match limitinf(arena, u, x, depth + 1, budget) {
+        Ok(l) => l,
+        Err(e) if is_budget_error(&e) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    if l != arena.neg_infinity() && !arena.is_zero_structural(l) {
+        return Ok(None);
+    }
+    let zero = arena.zero();
+    match cut_side(
+        arena,
+        u,
+        zero,
+        crate::calculus::limit::BranchCut::NegativeReals,
+        x,
+        depth,
+        budget,
+    ) {
+        Some(s) => Ok(Some(s)),
+        None => Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::resolve_negative_leading",
+            reason: "a non-real argument approaches the cut of ln from an undecided side".into(),
+        }),
+    }
 }
 
 /// Most passes of [`rewrite_tractable`]: one more after each pass that
@@ -3114,6 +3329,31 @@ fn rewrite_tractable_pass(
                 Ok(s) if s != 0 => arena.zero(),
                 _ => rebuilt,
             },
+            // `atan2(a, b)` of real arguments (the argument of a complex
+            // number in the decomposition `cut_side` uses) by the eventual
+            // signs: `atan(a/b)` for `b > 0`, `atan(a/b) ± π` for `b < 0`.
+            ExprNode::Atan2(a, b)
+                if eventually_real(arena, a, x, depth + 1, budget)
+                    && eventually_real(arena, b, x, depth + 1, budget) =>
+            {
+                let sb = sign_at_inf(arena, b, x, depth + 1, budget);
+                let sa = sign_at_inf(arena, a, x, depth + 1, budget);
+                let pi = arena.pi();
+                let ratio = arena.div(a, b);
+                let at = arena.atan(ratio);
+                match (sb, sa) {
+                    (Ok(1), _) => at,
+                    (Ok(-1), Ok(1)) => arena.add(&[at, pi]),
+                    (Ok(-1), Ok(0)) => pi,
+                    (Ok(-1), Ok(-1)) => arena.sub(at, pi),
+                    (Ok(0), Ok(s)) if s != 0 => {
+                        let half = arena.rational(s as i64, 2);
+                        arena.mul(&[half, pi])
+                    }
+                    (Err(e), _) | (_, Err(e)) if is_budget_error(&e) => return Err(e),
+                    _ => rebuilt,
+                }
+            }
             ExprNode::Floor(u) | ExprNode::Ceiling(u) => {
                 let is_floor = matches!(node, ExprNode::Floor(_));
                 match limitinf(arena, u, x, depth + 1, budget) {
@@ -3581,14 +3821,26 @@ fn resolve_branch_cut(
         return Ok(None);
     }
     let acosh = matches!(node, ExprNode::Acosh(_));
+    let beyond_one = matches!(node, ExprNode::Asin(_) | ExprNode::Acos(_));
     let real = eventually_real(arena, arg, x, depth + 1, budget);
-    if real && !acosh {
+    if real && !acosh && !beyond_one {
         return Ok(None);
     }
     let Ok(l) = limitinf(arena, arg, x, depth + 1, budget) else {
         return Ok(None);
     };
-    if is_infinite(arena, l) || !crate::calculus::limit::on_branch_cut(arena, cut, l) {
+    if real && beyond_one && !is_infinite(arena, l) {
+        return Ok(None);
+    }
+    // `asin`, `acos` of an argument tending to `±∞`: along (or beside) the
+    // infinite ends of the cut, where the leading terms are unbounded
+    // (`asin(x + i) = π/2 + i·acosh(x + i)`; before, "unbounded function of
+    // a divergent argument").  (`atanh`, `acosh` are written as logarithms,
+    // whose side `resolve_negative_leading` decides.)
+    let infinite_end = beyond_one && (l == arena.infinity() || l == arena.neg_infinity());
+    if !infinite_end
+        && (is_infinite(arena, l) || !crate::calculus::limit::on_branch_cut(arena, cut, l))
+    {
         return Ok(None);
     }
     let undecided = || crate::base::errors::SymplexError::ComputationFailed {
@@ -3600,7 +3852,9 @@ fn resolve_branch_cut(
     let side = if real && cut != BranchCut::ImaginaryAxis {
         0
     } else {
-        cut_side(arena, arg, l, cut, x, depth, budget).ok_or_else(undecided)?
+        // The side of a real infinite end: the sign of `Im arg` itself.
+        let base = if infinite_end { arena.zero() } else { l };
+        cut_side(arena, arg, base, cut, x, depth, budget).ok_or_else(undecided)?
     };
     // Along the cut of `acosh` to its branch point `−1`: from which end.
     let along = if acosh && side == 0 {
@@ -3640,7 +3894,21 @@ fn cut_side(
     let d = arena.sub(u, l);
     let d = crate::transforms::eval::eval(arena, d);
     let imaginary_axis = cut == crate::calculus::limit::BranchCut::ImaginaryAxis;
-    let parts = crate::base::complex::decompose(arena, d);
+    let mut parts = crate::base::complex::decompose(arena, d);
+    if !parts.exact
+        && let Some(d2) = continue_real_on_cut(arena, d, x, depth + 1, budget)
+        && d2 != d
+    {
+        // `√(1 − x)` is opaque to the decomposition, `i·√(x − 1)` is not
+        // (and `√(1 − x)·√(−1 − x) = −√(x − 1)·√(x + 1)` is real).
+        if !imaginary_axis && eventually_real(arena, d2, x, depth + 1, budget) {
+            return Some(0);
+        }
+        let p2 = crate::base::complex::decompose(arena, d2);
+        if p2.exact {
+            parts = p2;
+        }
+    }
     if !parts.exact {
         // `Re ln(2 − x)` is opaque to the decomposition: the leading term
         // `c·ωᵉ` of `u − l` decides when `c` is a constant off the line
@@ -3696,6 +3964,100 @@ fn cut_side(
         return Some(0);
     }
     sign_at_inf(arena, p, x, depth + 1, budget).ok()
+}
+
+/// `e` with every function whose argument is eventually real and lies on
+/// the function's branch cut written by its principal value off the cut
+/// ([`continuation_across_cut`] from the cut itself: `ln u = ln(−u) + iπ`,
+/// `u^r = (−u)^r·e^{iπr}`, `acosh u = acosh(−u) + iπ` below `−1`, `asin u
+/// = π/2 − i·acosh u` beyond `1`, …): the same values, but the complex
+/// decomposition sees through them and conjugation commutes with every
+/// function left.  `None` when a continuation is not known.
+///
+/// [`continuation_across_cut`]: crate::calculus::limit::continuation_across_cut
+fn continue_real_on_cut(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Option<ExprId> {
+    use crate::calculus::limit::BranchCut;
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for &id in &post {
+        if !crate::base::walk::contains(arena, id, x) {
+            cache.insert(id, id);
+            continue;
+        }
+        let r = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match crate::calculus::limit::branch_cut_of(arena, r) {
+            Some((u, cut))
+                if cut != BranchCut::ImaginaryAxis
+                    && crate::base::walk::contains(arena, u, x)
+                    && eventually_real(arena, u, x, depth + 1, budget)
+                    && !real_off_cut(arena, u, cut, x, depth, budget) =>
+            {
+                let l = limitinf(arena, u, x, depth + 1, budget).ok()?;
+                let along = if is_infinite(arena, l) {
+                    0
+                } else {
+                    let d = arena.sub(u, l);
+                    sign_at_inf(arena, d, x, depth + 1, budget).unwrap_or(0)
+                };
+                crate::calculus::limit::continuation_across_cut(arena, r, l, 0, along)?
+            }
+            _ => r,
+        };
+        cache.insert(id, new);
+    }
+    let result = cache.get(&e).copied().unwrap_or(e);
+    Some(crate::transforms::eval::eval(arena, result))
+}
+
+/// Is the eventually real `u` eventually off the branch cut `cut` (by the
+/// eventual sign of its distance to the cut)?
+fn real_off_cut(
+    arena: &mut Arena,
+    u: ExprId,
+    cut: crate::calculus::limit::BranchCut,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> bool {
+    use crate::calculus::limit::BranchCut;
+    let one = arena.one();
+    let d = match cut {
+        BranchCut::None | BranchCut::ImaginaryAxis => return true,
+        BranchCut::NegativeReals => u,
+        BranchCut::BelowOne => arena.sub(u, one),
+        BranchCut::AboveOne => arena.sub(one, u),
+        BranchCut::BeyondOne => {
+            let two = arena.int(2);
+            let u2 = arena.pow(u, two);
+            arena.sub(one, u2)
+        }
+        BranchCut::BelowMinusInvE => {
+            let m1 = arena.neg_one();
+            let inv_e = arena.exp(m1);
+            arena.add(&[u, inv_e])
+        }
+    };
+    matches!(sign_at_inf(arena, d, x, depth + 1, budget), Ok(1))
+}
+
+/// [`continue_real_on_cut`] for the positive variable `x → ∞`, with a
+/// budget of its own.
+pub(crate) fn continue_real_on_cut_at_inf(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+) -> Option<ExprId> {
+    let mut budget = Budget::new();
+    continue_real_on_cut(arena, e, x, 0, &mut budget)
 }
 
 /// Is `e` real for all sufficiently large `x` (`x` itself is real and
@@ -3771,6 +4133,20 @@ fn eventually_real(
                 }
             }
             _ => false,
+        };
+        // A real constant the rules above do not see (`cosh(acos 4)`),
+        // certified numerically (an unassumed symbol is complex).
+        let v = v || {
+            !crate::base::walk::contains(arena, id, x)
+                && !matches!(arena.node(id), ExprNode::Symbol(_))
+                && !crate::base::walk::contains(arena, id, arena.i_unit())
+                && crate::base::walk::free_symbols(arena, id).is_empty()
+                && {
+                    let mut reals = crate::base::assumptions::AssumptionCache::new();
+                    crate::transforms::realness::constant_realness_as_declared(
+                        arena, id, 20, &mut reals,
+                    ) == Some(true)
+                }
         };
         real.insert(id, v);
     }
@@ -3866,6 +4242,21 @@ pub(crate) fn limit_pos_inf(
     let r = validate_result(arena, r, x)?;
     // `e^{½ ln 2 + ½ ln π}` (from Stirling's constant) is `√2·√π`.
     Ok(simplify_exp_log(arena, r))
+}
+
+/// Is `e` real for all sufficiently large values of the positive variable
+/// `x` ([`eventually_real`], with a budget of its own)?
+pub(crate) fn eventually_real_at_inf(arena: &mut Arena, e: ExprId, x: ExprId) -> bool {
+    let mut budget = Budget::new();
+    eventually_real(arena, e, x, 0, &mut budget)
+}
+
+/// The eventual sign of `e` as the positive variable `x → ∞`
+/// ([`sign_at_inf`]: the sign of the leading coefficient, so `−1` for
+/// `−x + i`), with a budget of its own; `None` when undecided.
+pub(crate) fn eventual_sign_at_inf(arena: &mut Arena, e: ExprId, x: ExprId) -> Option<i32> {
+    let mut budget = Budget::new();
+    sign_at_inf(arena, e, x, 0, &mut budget).ok()
 }
 
 /// Compute `lim(z → z0) e` using the Gruntz algorithm.

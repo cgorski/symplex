@@ -580,23 +580,223 @@ fn zero_times_rest<'a>(
             node if outside && application_arguments(arena, node).is_some() => {
                 applications.push(id);
             }
+            // `0·s = nan` for a symbol declared infinite (SymPy:
+            // `Symbol('s', infinite=True)*0` → nan).
+            ExprNode::Symbol(_) if outside && symbol_is_infinite(arena, id) => {
+                return arena.nan;
+            }
             _ => {}
         }
     }
     let mut memo = EverywhereMemo::default();
     for d in denominators {
-        if memo.zero_or_undefined(arena, d) {
+        if memo.zero_or_undefined(arena, d) || vanishes_by_function_identity(arena, d) {
             tracing::debug!("canon_mul: 0 over an identically zero or undefined denominator → nan");
             return arena.nan;
         }
     }
     for f in applications {
-        if memo.infinite_or_undefined(arena, f) {
+        if memo.infinite_or_undefined(arena, f) || not_finite_at_infinity(arena, f) {
             tracing::debug!("canon_mul: 0 times a function undefined at every point → nan");
             return arena.nan;
         }
     }
     arena.zero
+}
+
+/// Does a sum of the denominator `d` ([`zero_candidate_sums`]) vanish by an
+/// identity of its functions (`sin²x + cos²x − 1`), confirmed by
+/// [`Arena::vanishes_by_identity`] (certified samples, then an exact
+/// reduction)?  Asked only on the `0·d⁻¹` path of [`zero_times_rest`] and
+/// only for a sum with a function in it that the residue test cannot tell
+/// from 0 ([`Arena::may_vanish_identically`]) — the multiplied-out
+/// confirmation of [`sum_vanishes_identically`] does not relate `sin` and
+/// `cos`.  Since 0.42 a numerator that is 0 for the assumptions folds when
+/// it is built (`⌈n⌉ − n` for an integer `n`), before `simplify` could see
+/// the `0/0`: `(⌈n⌉ − n)/(sin²x + cos²x − 1)` would have been 0 (SymPy
+/// 1.14: 0); it is `nan`.  Not nested in another such confirmation.
+fn vanishes_by_function_identity(arena: &mut Arena, d: ExprId) -> bool {
+    let candidates: SmallVec<[ExprId; 4]> = zero_candidate_sums(arena, d)
+        .into_iter()
+        .filter(|&s| {
+            matches!(arena.node(s), ExprNode::Add(_))
+                && may_vanish_by_identity(arena, s)
+                && arena.may_vanish_identically(s)
+                && !arena.may_have_vanishing_denominator(s)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return false;
+    }
+    let Some(_guard) = VanishingCheckGuard::enter() else {
+        return false;
+    };
+    candidates
+        .into_iter()
+        .any(|s| arena.vanishes_by_identity(s))
+}
+
+fn symbol_is_infinite(arena: &Arena, id: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    AssumptionCache::new().query(arena, id, Props::INFINITE) == Some(true)
+}
+
+/// The complex rational `a + b·i` that `id` is: a number, `i`, `q·i`, or a
+/// sum of them (the direction of a directed infinity, `(1 + i)·∞`).
+fn gaussian_value(arena: &Arena, id: ExprId) -> Option<(Q, Q)> {
+    let term = |t: ExprId| -> Option<(Q, Q)> {
+        if let Some(q) = arena.as_num(t) {
+            return Some((q.clone(), Q::zero()));
+        }
+        if t == arena.i_unit {
+            return Some((Q::zero(), Q::one()));
+        }
+        match arena.node(t) {
+            ExprNode::Mul(cs) => match **cs {
+                [c, u] if u == arena.i_unit => Some((Q::zero(), arena.as_num(c)?.clone())),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    match arena.node(id) {
+        ExprNode::Add(terms) => {
+            let (mut re, mut im) = (Q::zero(), Q::zero());
+            for &t in terms.iter() {
+                let (a, b) = term(t)?;
+                re = q_add(&re, &a);
+                im = q_add(&im, &b);
+            }
+            Some((re, im))
+        }
+        _ => term(id),
+    }
+}
+
+/// The direction `(a, b)` of an argument that is infinite in the direction
+/// `a + b·i` with rational `a`, `b`: `±∞`, a directed infinity `c·∞` of
+/// a Gaussian rational `c`, or a sum of one of them and finite terms (which
+/// do not change the growth of the functions [`not_finite_at_infinity`]
+/// looks at).  `None` for every other argument, among them a direction of
+/// unknown value (`x·∞`).
+fn infinite_direction(arena: &Arena, arg: ExprId) -> Option<(Q, Q)> {
+    let direction = |t: ExprId| -> Option<(Q, Q)> {
+        match arena.node(t) {
+            ExprNode::Infinity => Some((Q::one(), Q::zero())),
+            ExprNode::NegInfinity => Some((-Q::one(), Q::zero())),
+            ExprNode::Mul(cs) if cs.contains(&arena.infinity) => {
+                let (mut re, mut im) = (Q::one(), Q::zero());
+                for &c in cs.iter().filter(|&&c| c != arena.infinity) {
+                    let (a, b) = gaussian_value(arena, c)?;
+                    (re, im) = (
+                        q_add(&q_mul(&re, &a), &-q_mul(&im, &b)),
+                        q_add(&q_mul(&re, &b), &q_mul(&im, &a)),
+                    );
+                }
+                Some((re, im))
+            }
+            _ => None,
+        }
+    };
+    match arena.node(arg) {
+        ExprNode::Add(terms) => {
+            let mut found = None;
+            for &t in terms.iter() {
+                if let Some(d) = direction(t) {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(d);
+                } else if crate::base::walk::contains(arena, t, arena.infinity)
+                    || crate::base::walk::contains(arena, t, arena.neg_infinity)
+                {
+                    return None;
+                }
+            }
+            found
+        }
+        _ => direction(arg),
+    }
+}
+
+/// Is the elementary function application `f`, at an argument with an
+/// infinite term, not known finite?  Then `0·f` is `nan` (or is `0·∞`)
+/// rather than 0.  Up to 0.41 every application left unevaluated counted
+/// as finite: `Max(0, 2/∞)·cosh((1 + i)·∞ − 3/2)` was 0, where the cosine
+/// grows without bound (SymPy 1.14: `cosh(3/2 - oo*(1 + I)).is_finite` is
+/// False and the product `nan`).  By the direction `a + b·i` of the
+/// infinite term: `e^z`, `cosh`, `sinh` grow for `a ≠ 0` (`e^z` tends to 0
+/// for `a < 0`) and stay bounded on the imaginary axis; `sin`, `cos` grow
+/// for `b ≠ 0` and are bounded on the real axis; `tan` (`tanh`) has a
+/// finite limit off the real (imaginary) axis and poles along it; `|z|`,
+/// `ln`, the inverse sine and cosine functions and `⌊·⌋`, `⌈·⌉` grow;
+/// `atan`, `atanh` and `sign` stay bounded; `erf`/`erfc` tend to constants
+/// for `|a| ≥ |b|` and grow otherwise; `Γ(z)` and `z!` grow for `a > 0`,
+/// tend to 0 for `a = 0` and for `a < 0`, `b ≠ 0`, and meet the poles for
+/// `a < 0`, `b = 0`.  A direction of unknown value (`x·∞`) is not known
+/// finite.  Any other function (`ln Γ`, the library functions) keeps
+/// counting as finite unless the assumptions say otherwise.
+fn not_finite_at_infinity(arena: &Arena, f: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let (inf, ninf) = (arena.infinity, arena.neg_infinity);
+    let elementary = match *arena.node(f) {
+        ExprNode::Exp(a)
+        | ExprNode::Cosh(a)
+        | ExprNode::Sinh(a)
+        | ExprNode::Sin(a)
+        | ExprNode::Cos(a)
+        | ExprNode::Tan(a)
+        | ExprNode::Tanh(a)
+        | ExprNode::Abs(a)
+        | ExprNode::Ln(a)
+        | ExprNode::Asin(a)
+        | ExprNode::Acos(a)
+        | ExprNode::Asinh(a)
+        | ExprNode::Acosh(a)
+        | ExprNode::Floor(a)
+        | ExprNode::Ceiling(a)
+        | ExprNode::Erf(a)
+        | ExprNode::Erfc(a)
+        | ExprNode::Gamma(a)
+        | ExprNode::Factorial(a) => Some(a),
+        _ => None,
+    };
+    let Some(a) = elementary else {
+        let infinite_argument = application_arguments(arena, arena.node(f)).is_some_and(|args| {
+            args.iter().any(|&a| {
+                crate::base::walk::contains(arena, a, inf)
+                    || crate::base::walk::contains(arena, a, ninf)
+            })
+        });
+        return infinite_argument
+            && AssumptionCache::new().query(arena, f, Props::FINITE) == Some(false);
+    };
+    if !crate::base::walk::contains(arena, a, inf) && !crate::base::walk::contains(arena, a, ninf) {
+        return false;
+    }
+    if AssumptionCache::new().query(arena, f, Props::FINITE) == Some(true) {
+        return false;
+    }
+    let Some((re, im)) = infinite_direction(arena, a) else {
+        return true;
+    };
+    let bounded = match *arena.node(f) {
+        ExprNode::Exp(_) => !re.is_positive(),
+        ExprNode::Cosh(_) | ExprNode::Sinh(_) => re.is_zero(),
+        ExprNode::Sin(_) | ExprNode::Cos(_) => im.is_zero(),
+        ExprNode::Tan(_) => !im.is_zero(),
+        ExprNode::Tanh(_) => !re.is_zero(),
+        ExprNode::Erf(_) | ExprNode::Erfc(_) => re.abs() >= im.abs(),
+        // Stirling: |Γ(z)| grows for Re z → +∞ and tends to 0 along the
+        // imaginary axis and off the real axis to the left (by the
+        // reflection formula); along the negative real axis it meets the
+        // poles.
+        ExprNode::Gamma(_) | ExprNode::Factorial(_) => {
+            re.is_zero() || (re.is_negative() && !im.is_zero())
+        }
+        _ => false,
+    };
+    !bounded
 }
 
 /// What a subexpression is at every point, as far as the rare paths of the
@@ -2378,6 +2578,12 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return result;
     }
 
+    // Values under the assumptions on symbols (`(−1)^m = −1` for an odd
+    // `m`, `√(p²) = p`, `|r|² = r²`; see [`assumed_power`]).
+    if let Some(value) = assumed_power(arena, base, exp) {
+        return value;
+    }
+
     let result = arena.intern(ExprNode::Pow(base, exp));
     #[cfg(debug_assertions)]
     {
@@ -3281,7 +3487,16 @@ fn is_nonpositive_int(q: &Q) -> bool {
 /// functions (`J_ν(0)`, `erfinv(±1)`, …).  The positive-integer values of
 /// `Γ`, `n!`, `C(n, k)` and `B(a, b)` (numbers that can be huge) are left
 /// to `eval`, which bounds them by the digit guard of exact results.
+///
+/// Then the values that follow from the assumptions on the symbols of the
+/// argument ([`assumed_value`]): `sin(nπ) = 0` for an integer `n`, `|p| =
+/// p` for a positive `p`, …
 pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
+    canon_function_exact(arena, node).or_else(|| assumed_value(arena, node))
+}
+
+/// The exact tables of [`canon_function`].
+fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
     if let ExprNode::Min(args) | ExprNode::Max(args) = node {
         return fold_min_max(arena, args, matches!(node, ExprNode::Min(_)));
     }
@@ -3832,6 +4047,493 @@ pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprI
     })
 }
 
+// ── Values under the assumptions on symbols ──────────────────────────────────
+//
+// SymPy's `eval` classmethods fold an application whose value follows from
+// the assumptions on the symbols of its argument when it is built:
+// `sin(pi*n)` is 0 for an integer `n` (`trigonometric.py`, `sin.eval`:
+// `if pi_coeff.is_integer`), `exp(2*pi*I*n)` is 1 (`exp.eval`), `(-1)**m`
+// is −1 for an odd `m` (`Pow.eval`), `Abs(p)` is `p` and `sign(p)` is 1 for
+// a positive `p`, `sqrt(p**2)` is `p` (`Pow._eval_power`), `Abs(r)**2` is
+// `r**2` for a real `r` (`Abs._eval_power`), `Max(p, 0)` is `p`
+// (`miscellaneous.py`).  Up to 0.41 symplex kept them all, so the zero they
+// stand for was invisible to the canonical arithmetic and to the zero
+// tests: `((x + 1)² − x² − 2x − 1)/sin(πn)` was simplified to 0, where
+// SymPy (and symplex now) builds `0·zoo = nan`.
+
+/// The parity of an integer-valued `e` (`Some(true)` odd, `Some(false)`
+/// even): a number, a term the assumptions decide (`n` odd, `2n` even), or
+/// a sum of such terms (`2n + 1` odd), which the assumption system leaves
+/// undecided.  One level: the terms of a canonical sum are not sums.
+fn parity(
+    arena: &Arena,
+    cache: &mut crate::base::assumptions::AssumptionCache,
+    e: ExprId,
+) -> Option<bool> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use num_integer::Integer;
+    let one_term = |cache: &mut AssumptionCache, t: ExprId| -> Option<bool> {
+        if let Some(q) = arena.as_num(t) {
+            return q.is_integer().then(|| q.numer().is_odd());
+        }
+        if cache.query(arena, t, Props::ODD) == Some(true) {
+            return Some(true);
+        }
+        if cache.query(arena, t, Props::EVEN) == Some(true) {
+            return Some(false);
+        }
+        None
+    };
+    match arena.node(e) {
+        ExprNode::Add(terms) => {
+            let mut odd = false;
+            for &t in terms.iter() {
+                odd ^= one_term(cache, t)?;
+            }
+            Some(odd)
+        }
+        _ => one_term(cache, e),
+    }
+}
+
+/// Is `e` known `≥ 0` (`> 0` when `strict`; `≤ 0`, `< 0` when `upper`):
+/// by the assumptions, or as a number plus terms of known sign whose bounds
+/// decide (a positive integer is at least 1), as SymPy's `_monotonic_sign`:
+/// `j − 1 ≥ 0` for a positive integer `j`, which the assumption system
+/// leaves open.  One level: the terms of a canonical sum are not sums.
+fn known_sign_by_bounds(
+    arena: &Arena,
+    cache: &mut crate::base::assumptions::AssumptionCache,
+    e: ExprId,
+    strict: bool,
+    upper: bool,
+) -> bool {
+    use crate::base::assumptions::Props;
+    let (sign, weak, unit) = if upper {
+        (Props::NEGATIVE, Props::NONPOSITIVE, -Q::one())
+    } else {
+        (Props::POSITIVE, Props::NONNEGATIVE, Q::one())
+    };
+    if cache.query(arena, e, if strict { sign } else { weak }) == Some(true) {
+        return true;
+    }
+    let ExprNode::Add(terms) = arena.node(e) else {
+        return false;
+    };
+    let Some(c) = arena.as_num(terms[0]) else {
+        return false;
+    };
+    // The bound of the sum (towards 0 from the side of `sign`), and whether
+    // a term keeps it from being attained.
+    let mut bound = c.clone();
+    let mut gap = false;
+    for &t in &terms[1..] {
+        if cache.query(arena, t, sign) == Some(true) {
+            if cache.query(arena, t, Props::INTEGER) == Some(true) {
+                bound = q_add(&bound, &unit);
+            } else {
+                gap = true;
+            }
+        } else if cache.query(arena, t, weak) != Some(true) {
+            return false;
+        }
+    }
+    let bound = if upper { -bound } else { bound };
+    bound.is_positive() || (bound.is_zero() && (gap || !strict))
+}
+
+/// `q·c` with the number distributed over a sum, also over the sum in a
+/// product `k·S` (`2·(n + ½)/1 = 2n + 1`, `½·(2n + 1) − ½` stays a
+/// product), so that [`parity`] reads it term by term.
+fn scaled(arena: &mut Arena, q: &Q, c: ExprId) -> ExprId {
+    let (k, rest) = arena.as_coeff_term(c);
+    let k = q_mul(q, &k);
+    if let ExprNode::Add(terms) = arena.node(rest).clone() {
+        let parts: SmallVec<[ExprId; 6]> = terms
+            .iter()
+            .map(|&t| {
+                let (kt, r) = arena.as_coeff_term(t);
+                arena.make_coeff_term(q_mul(&k, &kt), r)
+            })
+            .collect();
+        return canon_add(arena, &parts);
+    }
+    arena.make_coeff_term(k, rest)
+}
+
+/// The coefficient `c` of an argument `c·π` (`c·π·i` when `imaginary`)
+/// with a symbolic `c`: a product with the factor `π` (and `i`) and a
+/// non-numeric factor beside them, as SymPy's `_pi_coeff`; the number is
+/// distributed over a sum ([`scaled`]: `π·(2n + 1)/2` has `c = n + ½`).
+/// `None` for every other argument (a numeric multiple of `π` is the
+/// business of the tables).
+fn symbolic_pi_coefficient(arena: &mut Arena, a: ExprId, imaginary: bool) -> Option<ExprId> {
+    let ExprNode::Mul(children) = arena.node(a) else {
+        return None;
+    };
+    let (pi, i) = (arena.pi, arena.i_unit);
+    if children.iter().filter(|&&c| c == pi).count() != 1
+        || children.iter().filter(|&&c| c == i).count() != usize::from(imaginary)
+    {
+        return None;
+    }
+    let rest: SmallVec<[ExprId; 4]> = children
+        .iter()
+        .copied()
+        .filter(|&c| c != pi && c != i)
+        .collect();
+    if rest.iter().all(|&c| arena.as_num(c).is_some()) {
+        return None;
+    }
+    let c = canon_mul(arena, &rest);
+    Some(scaled(arena, &Q::one(), c))
+}
+
+/// Where `c·π` lies for the trigonometric functions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PiPoint {
+    /// `c` an integer: `sin` and `tan` vanish, `cos = (−1)^c`.
+    Integer,
+    /// `c` an odd multiple of `½`: `cos` vanishes, `sin = (−1)^(c − ½)`,
+    /// `tan` has a pole.
+    HalfOdd,
+}
+
+fn pi_point(arena: &mut Arena, c: ExprId) -> Option<PiPoint> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let mut cache = AssumptionCache::new();
+    if cache.query(arena, c, Props::INTEGER) == Some(true) {
+        return Some(PiPoint::Integer);
+    }
+    // By the parity of `2c`: odd is a half-odd `c`, even an integer one that
+    // the assumptions do not see (`k/2` for an even `k`).
+    let two_c = scaled(arena, &Q::from_integer(BigInt::from(2)), c);
+    parity(arena, &mut cache, two_c).map(|odd| {
+        if odd {
+            PiPoint::HalfOdd
+        } else {
+            PiPoint::Integer
+        }
+    })
+}
+
+/// `sin`, `cos` or `tan` (`f` = 0, 1, 2) at `c·π` for a `c` at `point`.
+fn trig_at_pi_point(arena: &mut Arena, f: u8, point: PiPoint, c: ExprId) -> ExprId {
+    match (f, point) {
+        (0 | 2, PiPoint::Integer) | (1, PiPoint::HalfOdd) => arena.zero,
+        (1, PiPoint::Integer) => canon_pow(arena, arena.neg_one, c),
+        (0, PiPoint::HalfOdd) => {
+            let minus_half = arena.rational(-1, 2);
+            let e = canon_add(arena, &[c, minus_half]);
+            canon_pow(arena, arena.neg_one, e)
+        }
+        _ => arena.complex_infinity,
+    }
+}
+
+/// The value of an application that follows from the assumptions on the
+/// symbols of its argument (see the section comment): `sin`/`cos`/`tan` at
+/// `c·π` for an integer or half-odd `c`, `sinh`/`cosh`/`tanh` at `c·π·i`
+/// likewise (`sinh(i·x) = i·sin x`, `cosh(i·x) = cos x`, `tanh(i·x) =
+/// i·tan x`), `e^(c·π·i)` for `c` or `c + ½` of known parity (`1`, `−1`,
+/// `∓i`), `|x| = ±x` for an `x` of known sign, `sign x` for an `x` known
+/// positive, negative or zero, `⌊n⌋ = ⌈n⌉ = n` for an integer `n`.  `None`
+/// otherwise (cheaply for every other node: [`canon_function`] asks for
+/// each node it interns).
+fn assumed_value(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    match *node {
+        ExprNode::Sin(a) | ExprNode::Cos(a) | ExprNode::Tan(a) => {
+            let f = match node {
+                ExprNode::Sin(_) => 0,
+                ExprNode::Cos(_) => 1,
+                _ => 2,
+            };
+            if let Some(c) = symbolic_pi_coefficient(arena, a, false) {
+                let point = pi_point(arena, c)?;
+                return Some(trig_at_pi_point(arena, f, point, c));
+            }
+            shifted_by_periods(arena, f, a, false)
+        }
+        ExprNode::Sinh(a) | ExprNode::Cosh(a) | ExprNode::Tanh(a) => {
+            let f = match node {
+                ExprNode::Sinh(_) => 0,
+                ExprNode::Cosh(_) => 1,
+                _ => 2,
+            };
+            let Some(c) = symbolic_pi_coefficient(arena, a, true) else {
+                return shifted_by_periods(arena, f, a, true);
+            };
+            let point = pi_point(arena, c)?;
+            Some(match f {
+                1 => trig_at_pi_point(arena, 1, point, c),
+                _ => {
+                    let v = trig_at_pi_point(arena, f, point, c);
+                    canon_mul(arena, &[arena.i_unit, v])
+                }
+            })
+        }
+        ExprNode::Exp(a) => {
+            let Some(c) = symbolic_pi_coefficient(arena, a, true) else {
+                return exp_shifted_by_periods(arena, a);
+            };
+            let mut cache = AssumptionCache::new();
+            if let Some(odd) = parity(arena, &mut cache, c) {
+                return Some(if odd { arena.neg_one } else { arena.one });
+            }
+            let half = arena.rational(1, 2);
+            let shifted = canon_add(arena, &[c, half]);
+            let odd = parity(arena, &mut cache, shifted)?;
+            let i = arena.i_unit;
+            Some(if odd { i } else { canon_neg(arena, i) })
+        }
+        // ln(e^r) = r for a real r (SymPy's `log.eval`).
+        ExprNode::Ln(a) => match *arena.node(a) {
+            ExprNode::Exp(r)
+                if AssumptionCache::new().query(arena, r, Props::REAL) == Some(true) =>
+            {
+                Some(r)
+            }
+            _ => None,
+        },
+        ExprNode::Abs(a) => {
+            let mut cache = AssumptionCache::new();
+            if known_sign_by_bounds(arena, &mut cache, a, false, false) {
+                Some(a)
+            } else if known_sign_by_bounds(arena, &mut cache, a, false, true) {
+                Some(canon_neg(arena, a))
+            } else if cache.query(arena, a, Props::IMAGINARY) == Some(true) {
+                // |i·y| = ±y for a real `y` of known sign (SymPy: `Abs(I*p)` → `p`).
+                let minus_i = canon_neg(arena, arena.i_unit);
+                let y = canon_mul(arena, &[minus_i, a]);
+                if cache.query(arena, y, Props::NONNEGATIVE) == Some(true) {
+                    Some(y)
+                } else if cache.query(arena, y, Props::NONPOSITIVE) == Some(true) {
+                    Some(canon_neg(arena, y))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        ExprNode::Sign(a) => {
+            let mut cache = AssumptionCache::new();
+            if known_sign_by_bounds(arena, &mut cache, a, true, false) {
+                Some(arena.one)
+            } else if known_sign_by_bounds(arena, &mut cache, a, true, true) {
+                Some(arena.neg_one)
+            } else if cache.query(arena, a, Props::ZERO) == Some(true) {
+                Some(arena.zero)
+            } else if cache.query(arena, a, Props::IMAGINARY) == Some(true) {
+                // sign(i·y) = ±i (SymPy: `sign(I*p)` → `I`).
+                let minus_i = canon_neg(arena, arena.i_unit);
+                let y = canon_mul(arena, &[minus_i, a]);
+                if cache.query(arena, y, Props::POSITIVE) == Some(true) {
+                    Some(arena.i_unit)
+                } else if cache.query(arena, y, Props::NEGATIVE) == Some(true) {
+                    Some(canon_neg(arena, arena.i_unit))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        // H(p) = 1, H(q) = 0 for a positive `p`, a negative `q`; δ(x) = 0 for
+        // a real `x ≠ 0` (SymPy's `Heaviside.eval`, `DiracDelta.eval`).
+        ExprNode::Heaviside(a) => {
+            let mut cache = AssumptionCache::new();
+            if known_sign_by_bounds(arena, &mut cache, a, true, false) {
+                Some(arena.one)
+            } else if known_sign_by_bounds(arena, &mut cache, a, true, true) {
+                Some(arena.zero)
+            } else {
+                None
+            }
+        }
+        ExprNode::DiracDelta(a) => {
+            let mut cache = AssumptionCache::new();
+            (cache.query(arena, a, Props::REAL) == Some(true)
+                && cache.query(arena, a, Props::NONZERO) == Some(true))
+            .then_some(arena.zero)
+        }
+        // atan2(0, p) = 0 for a positive `p`.
+        ExprNode::Atan2(y, x) => (y == arena.zero
+            && AssumptionCache::new().query(arena, x, Props::POSITIVE) == Some(true))
+        .then_some(arena.zero),
+        ExprNode::Floor(a) | ExprNode::Ceiling(a) => {
+            let mut cache = AssumptionCache::new();
+            if cache.query(arena, a, Props::INTEGER) == Some(true) {
+                return Some(a);
+            }
+            // ⌊n + q⌋ = n + ⌊q⌋ for integer terms `n` and a number `q`
+            // (SymPy: `floor(n + 1/2)` → `n`).
+            let ExprNode::Add(terms) = arena.node(a).clone() else {
+                return None;
+            };
+            let q = arena.as_num(terms[0])?.clone();
+            if terms[1..]
+                .iter()
+                .any(|&t| cache.query(arena, t, Props::INTEGER) != Some(true))
+            {
+                return None;
+            }
+            let r = if matches!(node, ExprNode::Floor(_)) {
+                q.floor()
+            } else {
+                q.ceil()
+            };
+            let nid = arena.intern_num(r);
+            let mut parts: SmallVec<[ExprId; 6]> = terms[1..].iter().copied().collect();
+            parts.push(arena.intern(ExprNode::Num(nid)));
+            Some(canon_add(arena, &parts))
+        }
+        _ => None,
+    }
+}
+
+/// `sin`, `cos`, `tan` (`f` = 0, 1, 2) at a sum with terms `c·π` of an
+/// integer `c` — `sinh`, `cosh`, `tanh` at terms `c·π·i` when `imaginary`
+/// — shifted by those periods, as SymPy's `_peeloff_pi`: `sin(x + 2πn) =
+/// sin x`, `cos(x + πm) = −cos x` for an odd `m`, `cos(x + πn) = (−1)ⁿ·cos
+/// x`, `tan(x + πn) = tan x`.  `None` without such a term.
+fn shifted_by_periods(arena: &mut Arena, f: u8, a: ExprId, imaginary: bool) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let ExprNode::Add(terms) = arena.node(a).clone() else {
+        return None;
+    };
+    let mut cache = AssumptionCache::new();
+    let mut periods: SmallVec<[ExprId; 2]> = SmallVec::new();
+    let mut rest: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for &t in terms.iter() {
+        match symbolic_pi_coefficient(arena, t, imaginary) {
+            Some(c) if cache.query(arena, c, Props::INTEGER) == Some(true) => periods.push(c),
+            _ => rest.push(t),
+        }
+    }
+    if periods.is_empty() {
+        return None;
+    }
+    let k = canon_add(arena, &periods);
+    let rest = canon_add(arena, &rest);
+    let g = arena.intern(match (f, imaginary) {
+        (0, false) => ExprNode::Sin(rest),
+        (1, false) => ExprNode::Cos(rest),
+        (_, false) => ExprNode::Tan(rest),
+        (0, true) => ExprNode::Sinh(rest),
+        (1, true) => ExprNode::Cosh(rest),
+        (_, true) => ExprNode::Tanh(rest),
+    });
+    if f == 2 {
+        return Some(g);
+    }
+    Some(match parity(arena, &mut cache, k) {
+        Some(false) => g,
+        Some(true) => canon_neg(arena, g),
+        None => {
+            let sign = canon_pow(arena, arena.neg_one, k);
+            canon_mul(arena, &[sign, g])
+        }
+    })
+}
+
+/// `e^(w + c·π·i)` for terms `c·π·i` of known parity: `e^(x + 2πin) =
+/// eˣ`, `e^(x + iπm) = −eˣ` for an odd `m` (SymPy's `exp.eval` of a sum).
+/// `None` without such a term.
+fn exp_shifted_by_periods(arena: &mut Arena, a: ExprId) -> Option<ExprId> {
+    let ExprNode::Add(terms) = arena.node(a).clone() else {
+        return None;
+    };
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    let mut odd = false;
+    let mut rest: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for &t in terms.iter() {
+        match symbolic_pi_coefficient(arena, t, true).and_then(|c| parity(arena, &mut cache, c)) {
+            Some(o) => odd ^= o,
+            None => rest.push(t),
+        }
+    }
+    if rest.len() == terms.len() {
+        return None;
+    }
+    let rest = canon_add(arena, &rest);
+    let e = arena.intern(ExprNode::Exp(rest));
+    Some(if odd { canon_neg(arena, e) } else { e })
+}
+
+/// A power whose value follows from the assumptions on the symbols of its
+/// base and exponent (see the section comment): `(−1)^e = ±1` for an `e` of
+/// known parity, `((−1)^a)^k = (−1)^(a·k)` for an integer `k` (valid for
+/// every `a`: `z^k` is single-valued), `|r|^(2j) = r^(2j)` for a real `r`,
+/// `(b^f)^e = b^(f·e)` for a non-negative `b` and numbers `f`, `e`, and
+/// `(b^(2j))^e = |b|^(2j·e)` for a real `b` (`√(r²) = |r|`, `√(p²) = p`).
+fn assumed_power(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use num_integer::Integer;
+    if base == arena.neg_one && arena.as_num(exp).is_none() {
+        let mut cache = AssumptionCache::new();
+        if let Some(odd) = parity(arena, &mut cache, exp) {
+            return Some(if odd { arena.neg_one } else { arena.one });
+        }
+        // (−1)^(c + t) = (−1)^c·(−1)^t for an integer number `c` and an
+        // integer `t` (SymPy: `(-1)**(n + 1)` → `-(-1)**n`).
+        let ExprNode::Add(terms) = arena.node(exp).clone() else {
+            return None;
+        };
+        let c = arena.as_num(terms[0])?.clone();
+        if !c.is_integer() {
+            return None;
+        }
+        let t = canon_add(arena, &terms[1..]);
+        if cache.query(arena, t, Props::INTEGER) != Some(true) {
+            return None;
+        }
+        let unit = canon_pow(arena, base, t);
+        return Some(if c.numer().is_odd() {
+            canon_neg(arena, unit)
+        } else {
+            unit
+        });
+    }
+    let e = arena.as_num(exp)?.clone();
+    match arena.node(base).clone() {
+        // (e^f)^k for an integer `k` when e^(k·f) folds: `(e^(iπn))² = 1`.
+        ExprNode::Exp(f) if e.is_integer() => {
+            let product = canon_mul(arena, &[f, exp]);
+            let product = scaled(arena, &Q::one(), product);
+            assumed_value(arena, &ExprNode::Exp(product))
+        }
+        ExprNode::Pow(b, a) if b == arena.neg_one && e.is_integer() => {
+            let product = canon_mul(arena, &[a, exp]);
+            let product = scaled(arena, &Q::one(), product);
+            Some(canon_pow(arena, b, product))
+        }
+        ExprNode::Abs(r) if e.is_integer() && e.numer().is_even() => {
+            let mut cache = AssumptionCache::new();
+            (cache.query(arena, r, Props::REAL) == Some(true)).then(|| canon_pow(arena, r, exp))
+        }
+        ExprNode::Pow(b, f) if !e.is_integer() => {
+            let fq = arena.as_num(f)?.clone();
+            let mut cache = AssumptionCache::new();
+            let b = if known_sign_by_bounds(arena, &mut cache, b, false, false) {
+                b
+            } else if fq.is_integer()
+                && fq.numer().is_even()
+                && cache.query(arena, b, Props::REAL) == Some(true)
+            {
+                arena.abs(b)
+            } else {
+                return None;
+            };
+            let nid = arena.intern_num(q_mul(&fq, &e));
+            let product = arena.intern(ExprNode::Num(nid));
+            Some(canon_pow(arena, b, product))
+        }
+        _ => None,
+    }
+}
+
 /// `Min`/`Max` of numbers and infinities fold when they are built, as
 /// SymPy's: the rational arguments are replaced by their least (greatest),
 /// `+∞` is dropped from a `Min` and `−∞` from a `Max` (identities), `−∞`
@@ -3903,6 +4605,9 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
         let nid = arena.intern_num(q);
         kept[idx] = arena.intern(ExprNode::Num(nid));
     }
+    if drop_dominated(arena, &mut kept, is_min) {
+        changed = true;
+    }
     match kept.len() {
         0 => Some(identity),
         1 => Some(kept[0]),
@@ -3913,6 +4618,50 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
         })),
         _ => None,
     }
+}
+
+/// Drop the arguments of a `Min` (`Max`) that another one is known to be at
+/// most (at least) by the assumptions on their difference, as SymPy's
+/// `MinMaxBase._collapse_arguments`/`_is_connected`: `Max(p, 0) = p` and
+/// `Min(p, 0) = 0` for a positive `p`, `Min(q, q + 1) = q`.  Only real
+/// arguments (SymPy rejects the others) and at most eight of them, with a
+/// symbol among them (numbers were merged before).  `true` when an
+/// argument was dropped.
+fn drop_dominated(arena: &mut Arena, kept: &mut SmallVec<[ExprId; 4]>, is_min: bool) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if kept.len() < 2 || kept.len() > 8 || kept.iter().all(|&a| arena.as_num(a).is_some()) {
+        return false;
+    }
+    let mut cache = AssumptionCache::new();
+    if !kept
+        .iter()
+        .all(|&a| cache.query(arena, a, Props::REAL) == Some(true))
+    {
+        return false;
+    }
+    // `a` dominates `b` when `a − b ≥ 0` for a `Max`, `≤ 0` for a `Min`.
+    let mut dropped = vec![false; kept.len()];
+    for i in 0..kept.len() {
+        for j in 0..kept.len() {
+            if i == j || dropped[i] || dropped[j] {
+                continue;
+            }
+            let minus_b = canon_neg(arena, kept[j]);
+            let d = canon_add(arena, &[kept[i], minus_b]);
+            if known_sign_by_bounds(arena, &mut cache, d, false, is_min) {
+                dropped[j] = true;
+            }
+        }
+    }
+    if !dropped.contains(&true) {
+        return false;
+    }
+    let mut k = 0;
+    kept.retain(|_| {
+        k += 1;
+        !dropped[k - 1]
+    });
+    true
 }
 
 /// Is `a` one of the positive real constants `π`, `e`, `γ`, `G`, `φ`?
