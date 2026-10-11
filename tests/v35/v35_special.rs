@@ -154,3 +154,31 @@ fn order_of_real_constants_with_a_rational_difference_is_decided() {
         assert_eq!(e.eval(), e, "{s}");
     }
 }
+
+/// `W(−1/e + 13/400000000)` evaluated to 16 and 30 digits but not to 60:
+/// near the branch point `|1 + W| ≈ √(2e·δ)` and `w·eʷ − z` resolves `w`
+/// only to `2^−wp/|1 + w|`, yet Halley's iteration asked for steps below
+/// the full working precision, which rounding noise never allows
+/// ("LambertW: Halley iteration did not converge"; found by the Fuzz
+/// workflow, `fuzz_evalf`, 2026-10-11).  mpmath 1.3.0 at 110 digits:
+/// `lambertw(-1/e + mpf(13)/400000000)` =
+/// −0.99957971578817323433083624152681507889258065917548542277284974585994…,
+/// `lambertw(-1/e + mpf(10)**-30)` = −0.99999999999999766835601840287760882434957719315273…
+#[test]
+fn lambert_w_next_to_the_branch_point_at_high_precision() {
+    let ctx = Context::new();
+    let near = parse(&ctx, "lambertw(-exp(-1) + 13/400000000)");
+    assert_eq!(
+        near.eval_decimal(60).unwrap(),
+        "-0.99957971578817323433083624152681507889258065917548542277285"
+    );
+    assert_eq!(
+        near.eval_decimal(100).unwrap(),
+        "-0.9995797157881732343308362415268150788925806591754854227728497458599444190826052472193176208024820608"
+    );
+    let nearer = parse(&ctx, "lambertw(-exp(-1) + 10^(-30))");
+    assert_eq!(
+        nearer.eval_decimal(50).unwrap(),
+        "-0.99999999999999766835601840287760882434957719315273"
+    );
+}

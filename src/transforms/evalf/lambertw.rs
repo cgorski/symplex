@@ -156,7 +156,11 @@ pub(super) fn lambert_w(
     let magz = accuracy::mag(z).unwrap_or(0);
     let near_bp = magz < 1 && accuracy::lg_abs(&delta) < (0.05f64).log2();
     let k_bits = 64 - k.unsigned_abs().leading_zeros() as usize;
-    let wp = prec + 24 + k_bits + if near_bp { cancel / 2 + 16 } else { 0 };
+    // Near the branch point `|1 + W| ≈ √(2e·|δ|)`, so `w·eʷ − z` resolves
+    // `w` only to about `2^−wp/|1 + w|`: the extra working bits pay for
+    // that conditioning, and Halley's steps cannot get below it.
+    let conditioning = if near_bp { cancel / 2 + 16 } else { 0 };
+    let wp = prec + 24 + k_bits + conditioning;
     let tol = (wp - 5) as i64;
 
     // The branch point is on the boundary of `W₀` (both sides), of `W₋₁`
@@ -173,7 +177,12 @@ pub(super) fn lambert_w(
     } else {
         asymptotic_start(z, k, magz, wp, rm, cc)
     };
-    let w = halley(z, start, tol, wp, rm, cc)?;
+    // Up to 0.41 the iteration asked for steps below `2^−tol` including the
+    // conditioning bits, which rounding noise near `−1/e` never allows:
+    // `W(−1/e + 13/400000000)` to 60 digits did not converge (the series
+    // alone settles it at fewer digits).
+    let halley_tol = tol - conditioning as i64;
+    let w = halley(z, start, halley_tol, wp, rm, cc)?;
     Ok(finish(w, real_value, prec, rm))
 }
 
