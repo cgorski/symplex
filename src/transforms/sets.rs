@@ -1016,15 +1016,20 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
                 let ib = memo.get(&b).copied().flatten();
                 and3(ia, ib.map(|x| !x))
             }
+            // `{x | cond}` for `x` in its declared domain: up to 0.42 a
+            // value outside it was a member when it met the condition
+            // (`−7 ∈ {x | x³ − 9x < 0}` for a prime `x`).
             ExprNode::ConditionSet(var, cond) => {
                 let c = crate::transforms::subs::subs(arena, cond, var, elem_ev);
                 let c = crate::transforms::logic::simplify_bool(arena, c);
-                if c == arena.bool_true {
-                    Some(true)
-                } else if c == arena.bool_false {
+                if c == arena.bool_false {
                     Some(false)
                 } else {
-                    None
+                    match crate::transforms::solve::assumptions_hold(arena, var, elem_ev) {
+                        Some(false) => Some(false),
+                        Some(true) if c == arena.bool_true => Some(true),
+                        _ => None,
+                    }
                 }
             }
             ExprNode::ImageSet(var, body) => image_set_contains(arena, var, body, elem_ev),
@@ -2395,6 +2400,259 @@ pub(crate) fn resolve_image_sets(arena: &mut Arena, set: ExprId) -> ExprId {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Declared domains
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The declared domain of a variable as a set ([`declared_domain_set`]).
+pub(crate) enum DeclaredDomain {
+    /// No restriction (within the line, for `real_line`).
+    Unrestricted,
+    /// The domain.
+    Set(ExprId),
+    /// A restriction no set expression writes (rational, prime, imaginary,
+    /// …).
+    Unsupported,
+}
+
+/// The declared domain of the symbol `var` as a set: unions of intervals
+/// for the signs (`(0, ∞)` for positive, `ℝ \ {0}` for a real nonzero, …),
+/// the integers `{n : n ∈ ℤ}` (even `{2n}`, odd `{2n + 1}`) intersected with
+/// them, and `ℂ \ {0}` for a nonzero symbol not declared real.  With
+/// `real_line` the domain within ℝ (for inequalities: `ℝ` itself is no
+/// restriction there, and a nonzero symbol ranges over `ℝ \ {0}`).
+pub(crate) fn declared_domain_set(
+    arena: &mut Arena,
+    var: ExprId,
+    real_line: bool,
+) -> DeclaredDomain {
+    declared_domain_set_with(arena, var, real_line, false)
+}
+
+/// [`declared_domain_set`]; with `primes_as_integers` a prime or composite
+/// symbol ranges over the integers of its signs (the primality is then
+/// left to the caller).
+fn declared_domain_set_with(
+    arena: &mut Arena,
+    var: ExprId,
+    real_line: bool,
+    primes_as_integers: bool,
+) -> DeclaredDomain {
+    use crate::base::assumptions::Props;
+    let Some(a) = crate::transforms::solve::declared_domain(arena, var) else {
+        return DeclaredDomain::Unrestricted;
+    };
+    if a.query(Props::REAL) == Some(false) || a.known_true.intersects(Props::IMAGINARY) {
+        return DeclaredDomain::Unsupported;
+    }
+    let integer = a.query(Props::INTEGER) == Some(true);
+    let kind = Props::RATIONAL | Props::IRRATIONAL | Props::ALGEBRAIC | Props::TRANSCENDENTAL;
+    let unsupported = if integer {
+        a.known_true
+            .intersects(Props::IRRATIONAL | Props::TRANSCENDENTAL)
+            || a.known_false.intersects(Props::RATIONAL | Props::ALGEBRAIC)
+            || (!primes_as_integers
+                && (a.query(Props::PRIME).is_some() || a.query(Props::COMPOSITE).is_some()))
+    } else {
+        let parity = Props::EVEN | Props::ODD | Props::PRIME | Props::COMPOSITE;
+        a.known_true.intersects(kind | parity)
+            || a.known_false.intersects(kind | parity | Props::INTEGER)
+    };
+    if unsupported {
+        return DeclaredDomain::Unsupported;
+    }
+    let real = a.query(Props::REAL) == Some(true) || real_line;
+    let (zero, inf, ninf) = (arena.zero, arena.infinity, arena.neg_infinity);
+    let open = INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN;
+    let holds = |p: Props| a.query(p) == Some(true);
+    let fails = |p: Props| a.query(p) == Some(false);
+    let mut parts: Vec<ExprId> = Vec::new();
+    if holds(Props::POSITIVE) || (real && fails(Props::NONPOSITIVE)) {
+        parts.push(arena.interval(zero, inf, open));
+    }
+    if holds(Props::NEGATIVE) || (real && fails(Props::NONNEGATIVE)) {
+        parts.push(arena.interval(ninf, zero, open));
+    }
+    if holds(Props::NONNEGATIVE) || (real && fails(Props::NEGATIVE)) {
+        parts.push(arena.interval(zero, inf, INTERVAL_RIGHT_OPEN));
+    }
+    if holds(Props::NONPOSITIVE) || (real && fails(Props::POSITIVE)) {
+        parts.push(arena.interval(ninf, zero, INTERVAL_LEFT_OPEN));
+    }
+    if holds(Props::ZERO) || fails(Props::NONZERO) {
+        parts.push(arena.finite_set(&[zero]));
+    }
+    // `≠ 0` beyond the signs (and odd integers): the set without `0`, as
+    // a complement (an intersection with `(−∞, 0) ∪ (0, ∞)` would print
+    // as `A ∩ B ∪ C`).
+    let strict = holds(Props::POSITIVE) || holds(Props::NEGATIVE) || holds(Props::ODD);
+    let nonzero = (holds(Props::NONZERO) || fails(Props::ZERO)) && !strict;
+    let origin = arena.finite_set(&[zero]);
+    if integer {
+        let scope = arena.finite_set(&[var]);
+        let n = image_param(arena, zero, scope);
+        let body = if holds(Props::EVEN) {
+            let two = arena.int(2);
+            arena.mul(&[two, n])
+        } else if holds(Props::ODD) {
+            let two = arena.int(2);
+            let two_n = arena.mul(&[two, n]);
+            let one = arena.one;
+            arena.add(&[two_n, one])
+        } else {
+            n
+        };
+        let lattice = image_set(arena, n, body);
+        parts.push(if nonzero {
+            arena.set_complement(lattice, origin)
+        } else {
+            lattice
+        });
+    } else if nonzero {
+        let all = if real {
+            arena.interval(ninf, inf, open)
+        } else {
+            arena.universal_set
+        };
+        parts.push(arena.set_complement(all, origin));
+    } else if a.query(Props::REAL) == Some(true) && parts.is_empty() && !real_line {
+        parts.push(arena.interval(ninf, inf, open));
+    }
+    if parts.is_empty() {
+        return DeclaredDomain::Unrestricted;
+    }
+    let meet = arena.set_intersection(&parts);
+    DeclaredDomain::Set(simplify_set(arena, meet))
+}
+
+/// The solution set `set` of an equation in `var` restricted to the
+/// declared domain of `var`: the elements of its finite parts that
+/// certainly violate an assumption of `var` are dropped, those that
+/// satisfy them all are kept, and the rest (undecided elements, image
+/// sets) is intersected with [`declared_domain_set`] — `{−√a, √a} ∩ (0, ∞)`
+/// for a positive `x` and a plain `a`, `{nπ : n ∈ ℤ} ∩ (0, ∞)`, as SymPy's
+/// `solveset` intersects with its domain.  For a domain no set writes
+/// (rational, prime, …) the undecided elements are kept and a set with
+/// image sets is not known (`None`).  `UniversalSet` (an identity) becomes
+/// the domain.
+pub(crate) fn restrict_set_to_domain(
+    arena: &mut Arena,
+    var: ExprId,
+    set: ExprId,
+) -> Option<ExprId> {
+    use crate::transforms::solve::assumptions_hold;
+    let domain = declared_domain_set(arena, var, false);
+    if matches!(domain, DeclaredDomain::Unrestricted) {
+        return Some(set);
+    }
+    if set == arena.universal_set {
+        return Some(match domain {
+            DeclaredDomain::Set(d) => d,
+            _ => set,
+        });
+    }
+    let parts: Vec<ExprId> = match arena.node(set) {
+        ExprNode::SetUnion(ch) => ch.to_vec(),
+        _ => vec![set],
+    };
+    let mut decided: Vec<ExprId> = Vec::new();
+    let mut decided_sets: Vec<ExprId> = Vec::new();
+    let mut undecided: Vec<ExprId> = Vec::new();
+    let mut rest: Vec<ExprId> = Vec::new();
+    for p in parts {
+        match arena.node(p).clone() {
+            ExprNode::FiniteSet(elems) => {
+                for e in elems {
+                    match assumptions_hold(arena, var, e) {
+                        Some(true) => decided.push(e),
+                        Some(false) => {}
+                        None => undecided.push(e),
+                    }
+                }
+            }
+            ExprNode::EmptySet => {}
+            // A family: all, none or one of its members, or without `0`
+            // (`{nπ} \ {0}`); otherwise cut by the domain below.
+            ExprNode::ImageSet(n, body) => {
+                use crate::transforms::solve::{FamilyInDomain, family_in_domain};
+                match family_in_domain(arena, var, body, n, n) {
+                    FamilyInDomain::All => decided_sets.push(p),
+                    FamilyInDomain::Empty => {}
+                    FamilyInDomain::Point(m) => decided.push(m),
+                    FamilyInDomain::Rays(rays) if rays.len() == 2 => {
+                        let origin = arena.finite_set(&[arena.zero]);
+                        decided_sets.push(arena.set_complement(p, origin));
+                    }
+                    FamilyInDomain::Rays(_) | FamilyInDomain::Undecided => rest.push(p),
+                }
+            }
+            _ => rest.push(p),
+        }
+    }
+    let mut out = vec![arena.finite_set(&decided)];
+    out.extend(decided_sets);
+    match domain {
+        DeclaredDomain::Set(d) => {
+            if !undecided.is_empty() {
+                rest.push(arena.finite_set(&undecided));
+            }
+            // part by part, as SymPy writes `⋃ (Aᵢ ∩ D)`
+            for p in rest {
+                let meet = arena.set_intersection(&[p, d]);
+                out.push(simplify_set(arena, meet));
+            }
+        }
+        _ => {
+            if !rest.is_empty() {
+                return None;
+            }
+            out.push(arena.finite_set(&undecided));
+        }
+    }
+    let union = arena.set_union(&out);
+    Some(simplify_set(arena, union))
+}
+
+/// A set of real numbers (an inequality's solution in `var`) intersected
+/// with the declared domain of `var` within ℝ ([`declared_domain_set`]
+/// with `real_line`); `None` for a domain no set writes.
+pub(crate) fn restrict_real_set_to_domain(
+    arena: &mut Arena,
+    var: ExprId,
+    set: ExprId,
+) -> Option<ExprId> {
+    match declared_domain_set(arena, var, true) {
+        DeclaredDomain::Unrestricted => Some(set),
+        DeclaredDomain::Set(d) => {
+            let meet = arena.set_intersection(&[set, d]);
+            Some(simplify_set(arena, meet))
+        }
+        DeclaredDomain::Unsupported => {
+            // A prime (composite) symbol: the integers of a bounded set,
+            // each tested.
+            let DeclaredDomain::Set(d) = declared_domain_set_with(arena, var, true, true) else {
+                return None;
+            };
+            let meet = arena.set_intersection(&[set, d]);
+            let meet = simplify_set(arena, meet);
+            let elems = match arena.node(meet).clone() {
+                ExprNode::FiniteSet(elems) => elems.to_vec(),
+                ExprNode::EmptySet => return Some(meet),
+                _ => return None,
+            };
+            let mut kept = Vec::with_capacity(elems.len());
+            for e in elems {
+                match crate::transforms::solve::assumptions_hold(arena, var, e) {
+                    Some(true) => kept.push(e),
+                    Some(false) => {}
+                    None => return None,
+                }
+            }
+            Some(arena.finite_set(&kept))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // reduce_inequalities
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2521,12 +2779,16 @@ fn atom_to_set(
         // `Union(Interval.open(-oo, 1), Interval.open(1, oo))` for the
         // quotient).
         let identity = |arena: &mut Arena| {
-            crate::transforms::inequalities::solve_inequality(arena, d, var, Relation::Ge).map_err(
-                |e| SymplexError::ComputationFailed {
-                    operation: "reduce_inequalities",
-                    reason: format!("could not find the domain of an identity: {e}"),
-                },
+            crate::transforms::inequalities::solve_inequality_over_reals(
+                arena,
+                d,
+                var,
+                Relation::Ge,
             )
+            .map_err(|e| SymplexError::ComputationFailed {
+                operation: "reduce_inequalities",
+                reason: format!("could not find the domain of an identity: {e}"),
+            })
         };
         // A provable contradiction (`cos x = −2`, `x/sin x = 0`: every root a
         // pole) has no solution; before 0.40 it was "could not solve".
@@ -2563,7 +2825,7 @@ fn atom_to_set(
         return Ok(real_roots_set(arena, &roots));
     }
 
-    crate::transforms::inequalities::solve_inequality(arena, d, var, rel).map_err(|e| {
+    crate::transforms::inequalities::solve_inequality_over_reals(arena, d, var, rel).map_err(|e| {
         SymplexError::ComputationFailed {
             operation: "reduce_inequalities",
             reason: format!("could not solve inequality: {e}"),

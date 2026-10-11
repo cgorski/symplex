@@ -92,8 +92,31 @@ const MAX_BRANCH_PASSES: usize = 8;
 ///
 /// The result is a union of intervals (and possibly isolated points for
 /// non-strict inequalities) that encodes the solution set on the real
-/// line, restricted to the natural real domain of `expr`.
+/// line, restricted to the natural real domain of `expr` and to the
+/// declared domain of `var`
+/// ([`restrict_real_set_to_domain`](crate::transforms::sets::restrict_real_set_to_domain)):
+/// `x² − 4 < 0` is `(0, 2)` for a positive `x` and `{−1, 0, 1}` for an
+/// integer one.  Up to 0.42 the assumptions of `var` were ignored
+/// (`(−2, 2)` for both).  An error for a domain no set writes (rational,
+/// prime, …).
 pub(crate) fn solve_inequality(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    rel: Relation,
+) -> Result<ExprId, SymplexError> {
+    let set = solve_inequality_over_reals(arena, expr, var, rel)?;
+    crate::transforms::sets::restrict_real_set_to_domain(arena, var, set).ok_or_else(|| {
+        failed(
+            "the declared domain of the variable is not a union of intervals or of integers in one"
+                .into(),
+        )
+    })
+}
+
+/// [`solve_inequality`] over the whole real line, whatever the declared
+/// domain of `var`.
+pub(crate) fn solve_inequality_over_reals(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
@@ -142,7 +165,26 @@ pub(crate) fn solve_inequality(
 ///   0))`: the set is not known.  Before 0.39 it was `EmptySet`, a claim
 ///   that there is no solution: `(x − cos x).solve_as_set(x)` (`x ≈ 0.739`
 ///   solves it) and `x⁵ − x − 1` (five roots, none in radicals).
+///
+/// The set is restricted to the declared domain of `var`
+/// ([`restrict_set_to_domain`](crate::transforms::sets::restrict_set_to_domain)):
+/// for a positive `x`, `x² − 4` gives `{2}` and `sin x` the image set
+/// `{nπ}` intersected with `(0, ∞)`.  Up to 0.42 the assumptions of `var`
+/// other than realness were ignored (`{−2, 2}`).
 pub(crate) fn solveset(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    let set = solveset_over_all_values(arena, expr, var);
+    if walk::has_unevaluated(arena, set) {
+        return set;
+    }
+    crate::transforms::sets::restrict_set_to_domain(arena, var, set).unwrap_or_else(|| {
+        let zero = arena.zero;
+        let cond = arena.eq_(expr, zero);
+        arena.intern(ExprNode::ConditionSet(var, cond))
+    })
+}
+
+/// [`solveset`] before the restriction to the declared domain of `var`.
+fn solveset_over_all_values(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     use crate::transforms::solve::SolveOutcome;
     let unknown = |arena: &mut Arena| {
         let zero = arena.zero;

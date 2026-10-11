@@ -1128,6 +1128,52 @@ fn split_bases(
     (positive, negative)
 }
 
+/// `r·sign(r) → |r|` among the collected `bases` of a product (both factors
+/// to the power 1), for a real `r`: `r·sign(r) = r²/|r| = |r|` for `r ≠ 0`,
+/// and `0` at `r = 0`.  For a non-real `r` the product is `r²/|r| ≠ |r|`, so
+/// the assumptions must say real.  Before 0.43 the product stayed, and
+/// `|m| − m·sign(m)` was a hidden zero: `ratsimp(((x + 1)² − x² − 2x −
+/// 1)/(|m| − m·sign(m)))` gave 0 for a real `m` (the value is `0/0 =
+/// nan`; SymPy keeps `Abs(m) - m*sign(m)` and `simplify` gives 0).  Only a
+/// factor `|r|` that is a single base is produced (`|m − 1|`); an `r` whose
+/// modulus takes a coefficient out is left.
+fn fold_real_times_sign(arena: &mut Arena, bases: &mut FxHashMap<ExprId, SmallVec<[ExprId; 4]>>) {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let one = arena.one;
+    let pairs: SmallVec<[ExprId; 2]> = bases
+        .iter()
+        .filter_map(|(&b, exps)| match *arena.node(b) {
+            ExprNode::Sign(r)
+                if exps.as_slice() == [one]
+                    && bases.get(&r).is_some_and(|e| e.as_slice() == [one]) =>
+            {
+                Some(b)
+            }
+            _ => None,
+        })
+        .collect();
+    if pairs.is_empty() {
+        return;
+    }
+    let mut cache = AssumptionCache::new();
+    for s in pairs {
+        let ExprNode::Sign(r) = *arena.node(s) else {
+            continue;
+        };
+        if cache.query(arena, r, Props::REAL) != Some(true) {
+            continue;
+        }
+        let modulus = arena.abs(r);
+        if matches!(arena.node(modulus), ExprNode::Mul(_) | ExprNode::Num(_)) {
+            continue;
+        }
+        bases.remove(&s);
+        bases.remove(&r);
+        let (base, exp) = arena.as_base_exp(modulus);
+        bases.entry(base).or_default().push(exp);
+    }
+}
+
 /// Build a canonical `Mul` node from the given factors.
 ///
 /// Uses an explicit stack for flattening and an [`FxHashMap`] for
@@ -1236,6 +1282,8 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         tracing::debug!("canon_mul: s·s⁻¹ with s identically 0 → nan");
         return arena.nan;
     }
+
+    fold_real_times_sign(arena, &mut bases);
 
     // Build the combined factors.
     let mut factors: SmallVec<[(ExprId, ExprId); 8]> = SmallVec::new();
@@ -3383,6 +3431,203 @@ fn inverse_trig_pi_multiple(arena: &Arena, id: ExprId) -> Option<Q> {
     })
 }
 
+/// `sign`, `|·|` and `arg` of a directed infinity and of an exponential,
+/// which only depend on a direction:
+///
+/// - `|c·∞| = ∞` and `sign(c·∞) = sign(c)` for factors `c` known to be
+///   non-zero (SymPy: `Abs(exp(I)*oo)` → `oo`, `sign(exp(I)*oo)` →
+///   `sign(exp(I))`);
+/// - `sign(e^z) = e^(i·Im z)` (`|e^z| = e^(Re z)`): `sign(e^i) = e^i`,
+///   `sign(e^x) = 1` for a real `x` (SymPy keeps `sign(exp(I))`, whose
+///   value this is);
+/// - `arg(e^(a + ic)) = c − 2πk` for real `a` and a real constant `c`, `k`
+///   the integer putting it in `(−π, π]` (SymPy: `arg(exp(4*I))` → `4 -
+///   2*pi`), decided by certified signs; `None` when they are not.
+///
+/// Before 0.43 all of these stayed (`arg(exp(2i))` too), and `sign(e^i·∞)`
+/// was not the direction of `e^i·∞`.
+fn sign_abs_arg_of_directions(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
+    match *node {
+        ExprNode::Abs(a) => {
+            nonzero_factors_of_directed_infinity(arena, a)?;
+            Some(arena.infinity)
+        }
+        ExprNode::Sign(a) => {
+            if let Some(factors) = nonzero_factors_of_directed_infinity(arena, a) {
+                let c = canon_mul(arena, &factors);
+                return Some(arena.sign(c));
+            }
+            let ExprNode::Exp(z) = *arena.node(a) else {
+                return None;
+            };
+            let (real, imaginary) = split_real_imaginary_terms(arena, z)?;
+            if imaginary.is_empty() {
+                return Some(arena.one);
+            }
+            if real.is_empty() {
+                return Some(a);
+            }
+            let c = canon_add(arena, &imaginary);
+            let i = arena.i_unit;
+            let ic = canon_mul(arena, &[i, c]);
+            Some(arena.exp(ic))
+        }
+        ExprNode::Arg(a) => {
+            let ExprNode::Exp(z) = *arena.node(a) else {
+                return None;
+            };
+            let (_, imaginary) = split_real_imaginary_terms(arena, z)?;
+            if imaginary.is_empty() {
+                return None;
+            }
+            let c = canon_add(arena, &imaginary);
+            principal_angle(arena, c)
+        }
+        _ => None,
+    }
+}
+
+/// The factors other than `∞` of the directed infinity `a` (`Mul([…, ∞])`),
+/// when each is known to be non-zero (then finite: an infinite factor would
+/// have been absorbed).
+fn nonzero_factors_of_directed_infinity(arena: &Arena, a: ExprId) -> Option<SmallVec<[ExprId; 4]>> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let ExprNode::Mul(children) = arena.node(a) else {
+        return None;
+    };
+    if !children.contains(&arena.infinity) {
+        return None;
+    }
+    let mut cache = AssumptionCache::new();
+    let factors: SmallVec<[ExprId; 4]> = children
+        .iter()
+        .copied()
+        .filter(|&c| c != arena.infinity)
+        .collect();
+    factors
+        .iter()
+        .all(|&c| {
+            arena.as_num(c).is_some_and(|q| !q.is_zero())
+                || is_nonzero_gaussian_rational(arena, c)
+                || cache.query(arena, c, Props::NONZERO) == Some(true)
+        })
+        .then_some(factors)
+}
+
+/// Is `x` the product of `i` and real factors (`i`, `(14/3)·i`, `r·i` for a
+/// real symbol `r`)?
+fn is_real_times_i(arena: &Arena, x: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if x == arena.i_unit {
+        return true;
+    }
+    let ExprNode::Mul(children) = arena.node(x) else {
+        return false;
+    };
+    let mut cache = AssumptionCache::new();
+    children.iter().filter(|&&c| c == arena.i_unit).count() == 1
+        && children.iter().all(|&c| {
+            c == arena.i_unit
+                || arena.as_num(c).is_some()
+                || cache.query(arena, c, Props::REAL) == Some(true)
+        })
+}
+
+/// Is `c` a canonical `a + b·i` with rational `a`, `b` and `b ≠ 0` (so
+/// `c ≠ 0`: the assumption engine leaves `1 + i` open)?
+fn is_nonzero_gaussian_rational(arena: &Arena, c: ExprId) -> bool {
+    let imaginary = |t: ExprId| {
+        t == arena.i_unit
+            || matches!(arena.node(t), ExprNode::Mul(ch)
+                if ch.len() == 2 && arena.as_num(ch[0]).is_some() && ch[1] == arena.i_unit)
+    };
+    match arena.node(c) {
+        ExprNode::Add(terms) => {
+            terms.len() == 2
+                && ((arena.as_num(terms[0]).is_some() && imaginary(terms[1]))
+                    || (imaginary(terms[0]) && arena.as_num(terms[1]).is_some()))
+        }
+        _ => imaginary(c),
+    }
+}
+
+/// The terms of `z` split into real ones and the coefficients `c` of the
+/// pure imaginary ones `i·c` (`c` real); `None` if a term is neither.
+#[allow(clippy::type_complexity)]
+fn split_real_imaginary_terms(
+    arena: &mut Arena,
+    z: ExprId,
+) -> Option<(SmallVec<[ExprId; 4]>, SmallVec<[ExprId; 4]>)> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let terms: SmallVec<[ExprId; 4]> = match arena.node(z) {
+        ExprNode::Add(children) => children.iter().copied().collect(),
+        _ => smallvec![z],
+    };
+    let mut cache = AssumptionCache::new();
+    let (mut real, mut imaginary) = (SmallVec::new(), SmallVec::new());
+    for t in terms {
+        if t == arena.i_unit {
+            imaginary.push(arena.one);
+            continue;
+        }
+        if let ExprNode::Mul(children) = arena.node(t)
+            && children.iter().filter(|&&c| c == arena.i_unit).count() == 1
+        {
+            let rest: SmallVec<[ExprId; 4]> = children
+                .iter()
+                .copied()
+                .filter(|&c| c != arena.i_unit)
+                .collect();
+            let c = canon_mul(arena, &rest);
+            if cache.query(arena, c, Props::REAL) != Some(true) {
+                return None;
+            }
+            imaginary.push(c);
+        } else if cache.query(arena, t, Props::REAL) == Some(true) {
+            real.push(t);
+        } else {
+            return None;
+        }
+    }
+    Some((real, imaginary))
+}
+
+/// `c − 2πk ∈ (−π, π]` for a real symbol-free constant `c`: `k` from a
+/// 20-digit value of `(c − π)/(2π)`, confirmed by the certified signs of
+/// `c − 2πk ± π`; `None` when a sign is not certified (or `|k|` is huge).
+fn principal_angle(arena: &mut Arena, c: ExprId) -> Option<ExprId> {
+    if !crate::base::walk::free_symbols(arena, c).is_empty() {
+        return None;
+    }
+    let pi = arena.pi;
+    let minus_pi = canon_neg(arena, pi);
+    let shifted = canon_add(arena, &[c, minus_pi]);
+    let two_pi_inv = {
+        let two = arena.int(2);
+        let two_pi = canon_mul(arena, &[two, pi]);
+        let neg_one = arena.neg_one;
+        canon_pow(arena, two_pi, neg_one)
+    };
+    let turns = canon_mul(arena, &[shifted, two_pi_inv]);
+    let estimate: f64 = arena.evalf_expr(turns, 20).ok()?.trim().parse().ok()?;
+    if !estimate.is_finite() || estimate.abs() > 1e12 {
+        return None;
+    }
+    let k = estimate.ceil() as i64;
+    let reduced = if k == 0 {
+        c
+    } else {
+        let factor = arena.int(-2 * k);
+        let shift = canon_mul(arena, &[factor, pi]);
+        canon_add(arena, &[c, shift])
+    };
+    let above = canon_add(arena, &[reduced, pi]);
+    let below = canon_add(arena, &[reduced, minus_pi]);
+    (arena.sign_of_real_constant(above)? == Ordering::Greater
+        && arena.sign_of_real_constant(below)? == Ordering::Less)
+        .then_some(reduced)
+}
+
 /// `q mod m` in `[0, m)` for `m > 0`: `(a mod b·m)/b` for `q = a/b`, in
 /// lowest terms as `q` is (`gcd(a mod b·m, b) = gcd(a, b)`).  Integer
 /// arithmetic, linear in the size of `a`: the `Ratio` operators reduce
@@ -3500,6 +3745,9 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
     if let ExprNode::Min(args) | ExprNode::Max(args) = node {
         return fold_min_max(arena, args, matches!(node, ExprNode::Min(_)));
     }
+    if let Some(v) = sign_abs_arg_of_directions(arena, node) {
+        return Some(v);
+    }
     // |c| = c for the positive constants π, e, γ, G, φ (`abs(π)` stayed an
     // atom and hid `sin(|π|/2) = 1` from the tables).
     if let ExprNode::Abs(a) = *node
@@ -3524,7 +3772,12 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
                     || matches!(classify_arg(arena, b), Arg::ImaginaryMultiple(q) if (-&q).is_one());
                 unit_base && arena.as_num(e).is_some()
             }
-            ExprNode::Exp(x) => matches!(classify_arg(arena, x), Arg::ImaginaryPiMultiple(_)),
+            // |e^{ic}| = 1 for a real c (SymPy: `Abs(sqrt(2)*exp(14*I/3))`
+            // → `sqrt(2)`; before 0.43 only for c a rational multiple of π).
+            ExprNode::Exp(x) => {
+                matches!(classify_arg(arena, x), Arg::ImaginaryPiMultiple(_))
+                    || is_real_times_i(arena, x)
+            }
             _ => false,
         };
         let is_positive = |c: ExprId| match *arena.node(c) {

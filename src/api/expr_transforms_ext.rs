@@ -410,7 +410,8 @@ impl Expr<Numeric> {
         let sf = (s * self).ratsimp();
         let (_, den) = sf.as_numer_denom();
         if den.is_polynomial(s) && !den.free_symbols().is_empty() {
-            let poles = den.solve_or_empty(s);
+            // every pole, whatever the declared domain of `s`
+            let poles = den.solve_over_all_values(s).unwrap_or_default();
             if poles.is_empty() {
                 return Err(SymplexError::ComputationFailed {
                     operation: "laplace_final_value",

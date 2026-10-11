@@ -290,8 +290,17 @@ fn piecewise_decides_only_certified_conditions() {
     // 0.41 the search stopped at twice the working precision plus 256 bits
     // and `π·10⁻²⁰⁰` was refused), and refused beyond it.
     assert_eq!(near("pi*10^(-200)").eval_decimal(20).unwrap(), "1");
+    // Since 0.43 `eval` decides an order whose difference is a constant
+    // with a certified sign (here exactly `π·10⁻⁴⁰⁰`), at any size.
+    assert_eq!(near("pi*10^(-400)").eval_decimal(20).unwrap(), "1");
+    // When the cancellation is hidden from the canonical form
+    // (`exp(ln 2/2)` is `√2`), the condition reaches `evalf`, which
+    // refuses a gap beyond its zero search.
+    let hidden = ctx.parse("exp(ln(2)/2) + pi*10^(-400)").unwrap();
+    let cond = hidden.lt(&r2);
+    let pw = Ex::piecewise(&[(&zero, &cond), (&one, &t)]);
     assert!(matches!(
-        near("pi*10^(-400)").eval_decimal(20),
+        pw.eval_decimal(20),
         Err(SymplexError::PrecisionExhausted { .. })
     ));
     // Clear decisions are unaffected.

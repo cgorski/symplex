@@ -1255,7 +1255,7 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::SetUnion(ref sets) => {
             let sets = sets.clone();
             for (i, &set) in sets.iter().enumerate().rev() {
-                stack.push(LatexItem::Expr(set));
+                push_latex_set_operand(arena, set, stack);
                 if i > 0 {
                     stack.push(LatexItem::Lit(r" \cup "));
                 }
@@ -1265,7 +1265,7 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::SetIntersection(ref sets) => {
             let sets = sets.clone();
             for (i, &set) in sets.iter().enumerate().rev() {
-                stack.push(LatexItem::Expr(set));
+                push_latex_set_operand(arena, set, stack);
                 if i > 0 {
                     stack.push(LatexItem::Lit(r" \cap "));
                 }
@@ -1273,10 +1273,25 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         }
 
         ExprNode::SetComplement(a, b) => {
-            stack.push(LatexItem::Expr(b));
+            push_latex_set_operand(arena, b, stack);
             stack.push(LatexItem::Lit(r" \setminus "));
-            stack.push(LatexItem::Expr(a));
+            push_latex_set_operand(arena, a, stack);
         }
+    }
+}
+
+/// Push an operand of `\cup`, `\cap` or `\setminus`, in parentheses when it
+/// is itself one of them (as in the plain-text display).
+fn push_latex_set_operand(arena: &Arena, set: ExprId, stack: &mut Vec<LatexItem>) {
+    if matches!(
+        arena.node(set),
+        ExprNode::SetUnion(_) | ExprNode::SetIntersection(_) | ExprNode::SetComplement(..)
+    ) {
+        stack.push(LatexItem::Lit(r"\right)"));
+        stack.push(LatexItem::Expr(set));
+        stack.push(LatexItem::Lit(r"\left("));
+    } else {
+        stack.push(LatexItem::Expr(set));
     }
 }
 

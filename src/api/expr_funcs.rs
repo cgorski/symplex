@@ -3176,6 +3176,15 @@ impl Expr<Numeric> {
     /// whatever its multiplicity, and `RootOf` placeholders only ever refer
     /// to an irreducible factor of degree ≥ 5.
     ///
+    /// The roots are those in the declared domain of `var`, as SymPy's
+    /// `solve` checks the assumptions of the symbol: a root that certainly
+    /// violates one (by the assumption system, or for a constant by a
+    /// certified evaluation) is left out — for a positive `x`, `x² − 4`
+    /// gives `[2]` and `x + 3` gives `[]`; for an integer `m`, `2m − 3`
+    /// gives `[]` — and a root whose membership is not decided is kept
+    /// (`x − a` for a plain `a`).  Up to 0.42 the assumptions of `var` were
+    /// ignored (`[2, −2]`, `[−3]`, `[3/2]`).
+    ///
     /// # Errors
     ///
     /// - [`SymplexError::InfiniteSolutions`] when the equation reduces to
@@ -3194,10 +3203,13 @@ impl Expr<Numeric> {
     ///   2 were found"; SymPy returns the two).  Also when every
     ///   principal-branch candidate fails (a pole) but another member of
     ///   its periodic family solves the equation: `tan(x)/x = 0` (`0` is a
-    ///   pole, `π` a root) — not `NoSolution`.
+    ///   pole, `π` a root) — not `NoSolution`.  Likewise when every
+    ///   principal-branch solution is outside the declared domain of `var`
+    ///   but another member of its family is in it (`sin x = 1/2` for a
+    ///   negative `x`: `π/6` and `5π/6` are not negative, `−7π/6` is).
     ///
     /// `Ok(vec![])` is reserved for genuine equations whose roots could
-    /// not be found in the searched domain.
+    /// not be found in the searched domain (the declared domain of `var`).
     ///
     /// # Examples
     ///
@@ -3222,6 +3234,32 @@ impl Expr<Numeric> {
     /// ));
     /// ```
     pub fn solve(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
+        let roots = self.solve_over_all_values(var)?;
+        let var_id = self.checked_id(var);
+        let ids: Vec<crate::base::node::ExprId> =
+            roots.iter().map(|r| self.checked_id(r)).collect();
+        let kept = {
+            let mut inner = self.inner.write();
+            crate::transforms::solve::restrict_to_domain(
+                &mut inner.arena,
+                self.raw_id(),
+                var_id,
+                ids,
+            )
+        };
+        match kept {
+            Ok(ids) => Ok(ids.into_iter().map(|id| self.wrap(id)).collect()),
+            Err(reason) => Err(SymplexError::ComputationFailed {
+                operation: "solve",
+                reason,
+            }),
+        }
+    }
+
+    /// [`solve`](Ex::solve) without the restriction to the declared domain
+    /// of `var`: for the crate's pole searches (`s` declared positive in a
+    /// Laplace transform still has the poles of `F(s)` at negative `s`).
+    pub(crate) fn solve_over_all_values(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
         let var_id = self.checked_id(var);
         let _span = debug_span!("solve", expr = ?self.raw_id(), var = ?var_id).entered();
         let mut inner = self.inner.write();
@@ -3540,8 +3578,18 @@ impl Expr<Numeric> {
     /// Solve `self = 0`, returning the solution set (SymPy: `solveset`).
     ///
     /// The set is exactly the solutions over the declared domain of `var`
-    /// — ℂ for a plain symbol, ℝ for one declared real — or a
-    /// `ConditionSet` when it is not known.  It is:
+    /// — ℂ for a plain symbol, ℝ for one declared real, `(0, ∞)` for a
+    /// positive one, the integers for an integer one, … — or a
+    /// `ConditionSet` when it is not known.  Members that certainly violate
+    /// an assumption of `var` are left out (for a positive `x`, `x² − 4`
+    /// gives `{2}`; up to 0.42 `{−2, 2}`), a family is cut to its members
+    /// in the domain when that is decided (`sin x = 0`: `{0}` for an integer
+    /// `x`, `{nπ} \ {0}` for a nonzero one) and intersected with the domain
+    /// otherwise (`(0, ∞) ∩ {nπ}`, as SymPy's `solveset(sin(x), x,
+    /// Interval.open(0, oo))`), and so are members whose membership is not
+    /// decided (`x² = a` for a plain `a`: `{√a} ∩ (0, ∞)`, as `−√a` is never
+    /// positive).  For a domain no set writes (rational, prime, …) such
+    /// members are kept.  It is:
     ///
     /// - for an algebraic equation (`var` only in sums, products and powers
     ///   with numeric exponents), the `FiniteSet` of the roots
@@ -3646,6 +3694,37 @@ impl Expr<Numeric> {
     /// assert!(r.abs() < 1e-8);
     /// ```
     pub fn solve_numeric(
+        &self,
+        var: &Ex,
+        initial_guess: f64,
+        max_iterations: usize,
+        tolerance: f64,
+    ) -> Result<f64, SymplexError> {
+        let root = self.solve_numeric_any(var, initial_guess, max_iterations, tolerance)?;
+        // A root outside the declared domain of `var` is not a solution
+        // (as for `solve`): up to 0.42 `(x² − 4).solve_numeric(&x, −1.0, …)`
+        // returned `−2` for a positive `x`.
+        let declared = {
+            let inner = var.inner.read();
+            crate::transforms::solve::declared_domain(&inner.arena, var.raw_id())
+        };
+        if let Some(why) =
+            declared.and_then(|a| crate::api::expr_solve_ext::numeric_violation(&a, root))
+        {
+            return Err(SymplexError::ComputationFailed {
+                operation: "solve_numeric",
+                reason: format!(
+                    "Newton's method converged to {var} = {root}, which is not {why} as \
+                     declared; try another starting point"
+                ),
+            });
+        }
+        Ok(root)
+    }
+
+    /// [`solve_numeric`](Self::solve_numeric) without the check of the
+    /// declared domain of `var`.
+    fn solve_numeric_any(
         &self,
         var: &Ex,
         initial_guess: f64,

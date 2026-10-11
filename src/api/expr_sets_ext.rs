@@ -469,11 +469,17 @@ impl Expr<SetValued> {
     /// its solutions where the other conditions bound `x` (`sin x = 0 ∧
     /// −4 < x < 4` is `{−π, 0, π}`).
     ///
+    /// The set is intersected with the declared domain of `var`: `x² > 4`
+    /// is `(2, ∞)` for a positive `x`, `x² < 4` is `{−1, 0, 1}` for an
+    /// integer one.  Up to 0.42 the assumptions of `var` were ignored.
+    ///
     /// # Errors
     ///
     /// * `InvalidArgument` — `var` is not a symbol, `conds` is empty, or a
     ///   condition contains a non-relational atom / does not involve `var`.
-    /// * `ComputationFailed` — an atom could not be solved.
+    /// * `ComputationFailed` — an atom could not be solved, or the declared
+    ///   domain of `var` is not a union of intervals or of integers in one
+    ///   (rational, prime, …).
     ///
     /// # Examples
     ///
@@ -498,7 +504,16 @@ impl Expr<SetValued> {
         let cond_ids: Vec<ExprId> = conds.iter().map(|c| first.checked_id(c)).collect();
         let id = {
             let mut inner = first.inner.write();
-            crate::transforms::sets::reduce_inequalities(&mut inner.arena, &cond_ids, var_id)?
+            let arena = &mut inner.arena;
+            let set = crate::transforms::sets::reduce_inequalities(arena, &cond_ids, var_id)?;
+            crate::transforms::sets::restrict_real_set_to_domain(arena, var_id, set).ok_or_else(
+                || SymplexError::ComputationFailed {
+                    operation: "reduce_inequalities",
+                    reason: "the declared domain of the variable is not a union of intervals \
+                             or of integers in one"
+                        .into(),
+                },
+            )?
         };
         Ok(first.wrap_as::<SetValued>(id))
     }

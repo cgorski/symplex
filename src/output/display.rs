@@ -77,6 +77,28 @@ fn num_base_needs_parens(arena: &Arena, id: ExprId) -> bool {
     }
 }
 
+/// Is `node` a union, intersection or complement of sets?
+fn is_set_operation(node: &ExprNode) -> bool {
+    matches!(
+        node,
+        ExprNode::SetUnion(_) | ExprNode::SetIntersection(_) | ExprNode::SetComplement(..)
+    )
+}
+
+/// Push an operand of `∪`, `∩` or `\`, in parentheses when it is itself
+/// one of them: up to 0.42 `([−5, −1] ∪ [1, 5]) ∩ ImageSet(…)` printed as
+/// `[-5, -1] ∪ [1, 5] ∩ ImageSet(…)`, which reads as if `−5` were a
+/// member.
+fn push_set_operand(arena: &Arena, set: ExprId, stack: &mut Vec<WorkItem>) {
+    if is_set_operation(arena.node(set)) {
+        stack.push(WorkItem::Lit(")"));
+        stack.push(WorkItem::Expr(set, 0));
+        stack.push(WorkItem::Lit("("));
+    } else {
+        stack.push(WorkItem::Expr(set, 0));
+    }
+}
+
 /// Return the precedence of a node.
 fn prec_of(node: &ExprNode) -> u8 {
     match node {
@@ -910,7 +932,7 @@ fn expand_expr(
         // ── Set union ──────────────────────────────────────────────
         ExprNode::SetUnion(ref sets) => {
             for (i, &set) in sets.iter().enumerate().rev() {
-                stack.push(WorkItem::Expr(set, 0));
+                push_set_operand(arena, set, stack);
                 if i > 0 {
                     stack.push(WorkItem::Lit(" ∪ "));
                 }
@@ -920,7 +942,7 @@ fn expand_expr(
         // ── Set intersection ───────────────────────────────────────
         ExprNode::SetIntersection(ref sets) => {
             for (i, &set) in sets.iter().enumerate().rev() {
-                stack.push(WorkItem::Expr(set, 0));
+                push_set_operand(arena, set, stack);
                 if i > 0 {
                     stack.push(WorkItem::Lit(" ∩ "));
                 }
@@ -929,9 +951,9 @@ fn expand_expr(
 
         // ── Set complement ─────────────────────────────────────────
         ExprNode::SetComplement(a, b) => {
-            stack.push(WorkItem::Expr(b, 0));
+            push_set_operand(arena, b, stack);
             stack.push(WorkItem::Lit(" \\ "));
-            stack.push(WorkItem::Expr(a, 0));
+            push_set_operand(arena, a, stack);
         }
     }
 

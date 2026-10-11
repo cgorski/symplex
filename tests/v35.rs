@@ -12,6 +12,8 @@ mod v35_decisions;
 mod v35_definite;
 #[path = "v35/v35_diff.rs"]
 mod v35_diff;
+#[path = "v35/v35_domains.rs"]
+mod v35_domains;
 #[path = "v35/v35_eval.rs"]
 mod v35_eval;
 #[path = "v35/v35_folds.rs"]
@@ -38,3 +40,5 @@ mod v35_special;
 mod v35_stats;
 #[path = "v35/v35_transforms.rs"]
 mod v35_transforms;
+#[path = "v35/v35_trig_values.rs"]
+mod v35_trig_values;

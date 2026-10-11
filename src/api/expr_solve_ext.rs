@@ -17,7 +17,7 @@ use crate::api::expr::Ex;
 use crate::base::assumptions::Assumption;
 use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
-use crate::base::node::SymbolId;
+use crate::base::node::{ExprId, SymbolId};
 use crate::domains::matrix::Matrix;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -146,6 +146,12 @@ impl LinearSolution {
 /// [`LinearSolution::Unique`], and contradictory systems return
 /// [`LinearSolution::Inconsistent`].
 ///
+/// Like SymPy's `linsolve` this is the linear algebra of the system over
+/// the field of the parameters: the declared assumptions of the unknowns
+/// are not checked (`Inconsistent` means the equations contradict each
+/// other).  [`solve_system_ex`](crate::polysys::solve_system_ex), like
+/// SymPy's `solve`, keeps only the solutions in the declared domains.
+///
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] if `eqs` or `vars` is empty, or an
@@ -270,13 +276,17 @@ pub struct GeneralSolution {
     /// symbols in `parameters`; non-periodic solutions do not.
     pub solutions: Vec<Ex>,
     /// Fresh integer-assumed parameter symbols (`n`, `n1`, …) that appear
-    /// in `solutions`.  Empty when no periodic family was produced.
+    /// in `solutions`, then (for a variable with a declared domain) the
+    /// fresh nonnegative integer parameter (`k`, `k1`, …) of the families
+    /// cut to rays by the domain.  Empty when no periodic family was
+    /// produced.
     pub parameters: Vec<Ex>,
 }
 
 impl GeneralSolution {
     /// Substitute a concrete integer for every parameter, giving one
-    /// representative of each family.
+    /// representative of each family (a member of the solution set for
+    /// `k ≥ 0` when a parameter is declared nonnegative).
     #[must_use]
     pub fn instance(&self, k: i64) -> Vec<Ex> {
         self.solutions
@@ -349,6 +359,16 @@ impl Ex {
     /// otherwise (`sin(x)/x = 0`: the family `2nπ` would contain `0`;
     /// [`solve_as_set`](Ex::solve_as_set) gives `{n·π} \ {0}`).
     ///
+    /// The solutions are those in the declared domain of `var`: a value that
+    /// certainly violates one of its assumptions is left out, as in
+    /// [`solve`](Ex::solve), and each family is cut to its members in the
+    /// domain — all, none, one, or rays in a fresh nonnegative integer
+    /// parameter `k` (for a positive `x`, `sin x = 0` gives `2kπ + 2π` and
+    /// `2kπ + π`; for a nonzero `x`, `2nπ` without `0` is `2kπ + 2π` and
+    /// `−2kπ − 2π`; for an integer `x`, `nπ` is `0`).  A family whose
+    /// members in the domain are not decided is refused.  Up to 0.42 the
+    /// families ranged over all integers whatever the assumptions.
+    ///
     /// The poles of a `tan` (or `tanh`) at which the expression is 0 are
     /// solutions, as the evaluator and SymPy's `solveset` have it: `1/tan(x)
     /// = 0` at `π/2 + 2nπ, −π/2 + 2nπ`, `cos(2x/3)/(tan(x/2) − 2) = 0` also
@@ -359,7 +379,8 @@ impl Ex {
     ///
     /// Same as [`solve`](Ex::solve): `InfiniteSolutions` for identities,
     /// `NoSolution` for contradictions, `ComputationFailed` when nothing
-    /// applies or a family mixes solutions and non-solutions (above).
+    /// applies, a family mixes solutions and non-solutions, or its members
+    /// in the declared domain of `var` are not decided (above).
     ///
     /// # Examples
     ///
@@ -418,10 +439,17 @@ impl Ex {
                     .into_iter()
                     .map(|s| self.wrap(s.value).eval())
                     .collect();
+                let (solutions, ray_param) = self.general_in_domain(var, solutions, &param)?;
                 let uses_param = solutions.iter().any(|s| s.contains(&param));
+                let mut parameters = if uses_param { vec![param] } else { Vec::new() };
+                if let Some(k) = ray_param
+                    && solutions.iter().any(|s| s.contains(&k))
+                {
+                    parameters.push(k);
+                }
                 Ok(GeneralSolution {
                     solutions,
-                    parameters: if uses_param { vec![param] } else { Vec::new() },
+                    parameters,
                 })
             }
             crate::transforms::solve::SolveOutcome::Identity => {
@@ -445,6 +473,77 @@ impl Ex {
                 })
             }
         }
+    }
+}
+
+impl Ex {
+    /// The general solutions `solutions` of `self = 0` restricted to the
+    /// declared domain of `var`: the solutions free of `param` that
+    /// certainly violate an assumption of `var` are dropped, and each family
+    /// is cut to its members in the domain (all, none, one, or rays
+    /// `f(n₀ ± k)` in a fresh nonnegative integer parameter `k`, returned
+    /// second) — refused when that is not decided.
+    fn general_in_domain(
+        &self,
+        var: &Ex,
+        solutions: Vec<Ex>,
+        param: &Ex,
+    ) -> Result<(Vec<Ex>, Option<Ex>), SymplexError> {
+        use crate::transforms::solve::{FamilyInDomain, assumptions_hold, family_in_domain};
+        let var_id = self.checked_id(var);
+        let restricted = {
+            let inner = self.inner.read();
+            crate::transforms::solve::declared_domain(&inner.arena, var_id).is_some()
+        };
+        if !restricted {
+            return Ok((solutions, None));
+        }
+        let parts: Vec<(ExprId, bool)> = solutions
+            .iter()
+            .map(|s| (self.checked_id(s), s.contains(param)))
+            .collect();
+        let k = parts.iter().any(|&(_, fam)| fam).then(|| {
+            fresh_symbol(
+                &self.context(),
+                "k",
+                &[Assumption::Integer, Assumption::NonNegative],
+            )
+        });
+        let param_id = self.checked_id(param);
+        let k_id = k.as_ref().map(|k| self.checked_id(k));
+        let mut kept: Vec<ExprId> = Vec::with_capacity(parts.len());
+        {
+            let mut inner = self.inner.write();
+            let arena = &mut inner.arena;
+            for (id, is_family) in parts {
+                match (is_family, k_id) {
+                    (true, Some(k_id)) => match family_in_domain(arena, var_id, id, param_id, k_id)
+                    {
+                        FamilyInDomain::All => kept.push(id),
+                        FamilyInDomain::Empty => {}
+                        FamilyInDomain::Point(m) => kept.push(m),
+                        FamilyInDomain::Rays(rays) => kept.extend(rays),
+                        FamilyInDomain::Undecided => {
+                            let shown = arena.display(id).to_string();
+                            let name = arena.display(var_id).to_string();
+                            return Err(SymplexError::ComputationFailed {
+                                operation: "solve_general",
+                                reason: format!(
+                                    "the members of the family {shown} in the declared domain of \
+                                     {name} are not decided"
+                                ),
+                            });
+                        }
+                    },
+                    _ => {
+                        if assumptions_hold(arena, var_id, id) != Some(false) {
+                            kept.push(id);
+                        }
+                    }
+                }
+            }
+        }
+        Ok((kept.into_iter().map(|id| self.wrap(id)).collect(), k))
     }
 }
 
@@ -573,9 +672,74 @@ pub fn solve_numeric_system(eqs: &[Ex], vars: &[Ex], x0: &[f64]) -> Result<Vec<f
 ///   `x0` has the wrong length.
 /// - [`SymplexError::ComputationFailed`] if the Jacobian becomes singular
 ///   or the iteration does not converge within `max_iter` steps; the
-///   message reports the final residual norm and iterate.
+///   message reports the final residual norm and iterate.  Also when the
+///   point it converges to is certainly outside the declared domain of an
+///   unknown (a negative value for a positive symbol, a value at a
+///   distance above `10⁻⁶` from the integers for an integer one, …): up
+///   to 0.42 that point was returned (`x² = 4` from `x₀ = −1` gave `−2` for
+///   a positive `x`).
 #[allow(dead_code)] // public API; reachable once re-exported from lib.rs
 pub fn solve_numeric_system_with(
+    eqs: &[Ex],
+    vars: &[Ex],
+    x0: &[f64],
+    opts: &NewtonOpts,
+) -> Result<Vec<f64>, SymplexError> {
+    let x = newton_system(eqs, vars, x0, opts)?;
+    for (v, &value) in vars.iter().zip(&x) {
+        let declared = {
+            let inner = v.inner.read();
+            crate::transforms::solve::declared_domain(&inner.arena, v.raw_id())
+        };
+        if let Some(why) = declared.and_then(|a| numeric_violation(&a, value)) {
+            return Err(SymplexError::ComputationFailed {
+                operation: "solve_numeric_system",
+                reason: format!(
+                    "Newton's method converged to {v} = {value}, which is not {why} as \
+                     declared; try another starting point"
+                ),
+            });
+        }
+    }
+    Ok(x)
+}
+
+/// The declared property a computed `f64` value certainly lacks (beyond a
+/// relative tolerance of `10⁻⁹` for signs, `10⁻⁶` for integrality), if any.
+pub(crate) fn numeric_violation(
+    a: &crate::base::assumptions::Assumptions,
+    v: f64,
+) -> Option<&'static str> {
+    use crate::base::assumptions::Props;
+    let holds = |p: Props| a.query(p) == Some(true);
+    let tol = 1e-9 * v.abs().max(1.0);
+    let r = v.round();
+    let off_integer = (v - r).abs() > 1e-6 * v.abs().max(1.0);
+    let r_int = (r.abs() < 9.0e15).then_some(r as i64);
+    let is_prime = |n: i64| n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| n % d != 0);
+    if holds(Props::POSITIVE) && v < -tol {
+        Some("positive")
+    } else if holds(Props::NEGATIVE) && v > tol {
+        Some("negative")
+    } else if holds(Props::NONNEGATIVE) && v < -tol {
+        Some("nonnegative")
+    } else if holds(Props::NONPOSITIVE) && v > tol {
+        Some("nonpositive")
+    } else if holds(Props::INTEGER) && off_integer {
+        Some("an integer")
+    } else if holds(Props::EVEN) && r_int.is_some_and(|n| n % 2 != 0) {
+        Some("even")
+    } else if holds(Props::ODD) && r_int.is_some_and(|n| n % 2 == 0) {
+        Some("odd")
+    } else if holds(Props::PRIME) && r_int.is_some_and(|n| n.abs() < 1 << 40 && !is_prime(n)) {
+        Some("prime")
+    } else {
+        None
+    }
+}
+
+/// The Newton iteration of [`solve_numeric_system_with`].
+fn newton_system(
     eqs: &[Ex],
     vars: &[Ex],
     x0: &[f64],

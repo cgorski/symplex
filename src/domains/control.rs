@@ -65,7 +65,8 @@ fn roots_with_multiplicity(p: &Ex, var: &Ex) -> Vec<Ex> {
             }
         }
     }
-    p.solve_or_empty(var)
+    // every root, whatever the declared domain of `var`
+    p.solve_over_all_values(var).unwrap_or_default()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

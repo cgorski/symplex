@@ -538,7 +538,15 @@ fn connective(
             out.push_str(&format!("<mo>{op}</mo>"));
         }
         let xml = cached(cache, c)?;
-        if matches!(arena.node(c), ExprNode::And(_) | ExprNode::Or(_)) {
+        // A nested connective is bracketed: `(A ∪ B) ∩ C`, `(p ∧ q) ∨ r`.
+        if matches!(
+            arena.node(c),
+            ExprNode::And(_)
+                | ExprNode::Or(_)
+                | ExprNode::SetUnion(_)
+                | ExprNode::SetIntersection(_)
+                | ExprNode::SetComplement(..)
+        ) {
             out.push_str(&paren(&xml));
         } else {
             out.push_str(&xml);
@@ -855,7 +863,24 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
             }
             ExprNode::SetUnion(sets) => connective(arena, "&#x222A;", sets, &cache)?,
             ExprNode::SetIntersection(sets) => connective(arena, "&#x2229;", sets, &cache)?,
-            ExprNode::SetComplement(a, b) => relation(&child(a)?, "&#x2216;", &child(b)?),
+            ExprNode::SetComplement(a, b) => {
+                let operand = |s: ExprId| -> Result<String, SymplexError> {
+                    let xml = child(&s)?;
+                    Ok(
+                        if matches!(
+                            arena.node(s),
+                            ExprNode::SetUnion(_)
+                                | ExprNode::SetIntersection(_)
+                                | ExprNode::SetComplement(..)
+                        ) {
+                            paren(&xml)
+                        } else {
+                            xml
+                        },
+                    )
+                };
+                relation(&operand(*a)?, "&#x2216;", &operand(*b)?)
+            }
             ExprNode::ConditionSet(var, cond) => mrow(&format!(
                 "<mo>{{</mo>{}<mo>|</mo>{}<mo>}}</mo>",
                 child(var)?,

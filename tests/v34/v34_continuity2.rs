@@ -219,12 +219,10 @@ fn real_parameter_of_undecided_sign() {
 /// a non-real degenerate value of a real parameter (`a = ±i√2`, where 0.37
 /// nested two unreachable cases).
 ///
-/// Since 0.42 `√(b²)` is `b` for a positive `b` when it is built, so the
-/// solver gives the degenerate value `a = 0` of `√(a² + ab)` exactly (it
-/// was `(√(b²) − b)/2`, whose case did not integrate) and the answer
-/// carries its branch — unreachable for a positive `a`, as the `b = −a` one
-/// already was: the degenerate cases do not consult the sign assumptions of
-/// the parameters (a follow-up in `integrate.rs`).  The value is unchanged.
+/// In 0.42 the answer carried the branches `a = 0` and `b = −a`, unreachable
+/// for positive `a`, `b`: the degenerate cases did not consult the
+/// assumptions of the parameters.  Since 0.43 they do, and the answer is
+/// the generic one alone.  The value is unchanged.
 #[test]
 fn forms_with_declared_parameters() {
     let ctx = Context::new();
@@ -234,7 +232,7 @@ fn forms_with_declared_parameters() {
     let got = ctx.parse("1/(a + b*sin(x)^2)").unwrap().integrate(&x);
     assert_eq!(
         got.to_string(),
-        "Piecewise(Piecewise(atan((a + b)*tan(x)/sqrt(a^2 + a*b))/sqrt(a^2 + a*b) + floor(x/pi + 1/2)*pi/sqrt(a^2 + a*b) if b != -a, tan(x)/a if True) if a != 0, -cos(x)/(b*sin(x)) if True)"
+        "atan((a + b)*tan(x)/sqrt(a^2 + a*b))/sqrt(a^2 + a*b) + floor(x/pi + 1/2)*pi/sqrt(a^2 + a*b)"
     );
     let ctx = Context::new();
     let x = ctx.symbol("x");

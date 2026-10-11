@@ -7965,6 +7965,15 @@ fn try_piecewise_wrap(
                 if nonreal_value_of_real_symbol(arena, *sym_expr, degen_val) {
                     continue;
                 }
+                // Nor for a value the other assumptions of the parameter
+                // exclude: `a = 0` and `b = −a` for positive `a`, `b` in
+                // `∫ dx/(a + b·sin²x)` (0.42 carried both unreachable
+                // branches).  An undecided value keeps its branch.
+                if crate::transforms::solve::assumptions_hold(arena, *sym_expr, degen_val)
+                    == Some(false)
+                {
+                    continue;
+                }
 
                 // Filter: skip if substituting this value makes the original
                 // integrand singular (these are poles of the problem, not

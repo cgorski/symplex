@@ -8,6 +8,57 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour)
+
+- **Solvers answer over the declared domain of the unknown** (SymPy's
+  `check_assumptions` in `solve`): `solve`, `solve_general`,
+  `solve_as_set`, `solve_system_ex`, the inequality solvers,
+  `reduce_inequalities`, `solve_numeric` and `solve_numeric_system` drop
+  candidates that certainly violate an assumption of the unknown.  For a
+  positive `x`: `x = 0` gave `[0]`, `x² − 4 = 0` gave `[2, −2]`, `x + 3 = 0`
+  gave `[−3]`, `(x² − 4).solve_as_set(&x)` was `{−2, 2}`; for an integer
+  `m`, `2m − 3 = 0` gave `[3/2]`.  Membership is decided by the
+  assumption system, certified evaluation and minimal polynomials;
+  undecided candidates are kept.  Periodic families are cut to the
+  domain (rays in a nonnegative parameter `k` appended to
+  `GeneralSolution.parameters`; `{nπ} ∩ (0, ∞)` as a set), inequalities
+  are intersected with it, and `solve` refuses (pointing to
+  `solve_general`) when every principal solution of a periodic equation
+  lies outside the domain but other members do not (`x < 0`: `sin x =
+  1/2`; SymPy answers `[]`, wrongly).  Integration drops degenerate-
+  parameter branches the parameters cannot reach: `∫ dx/(x² + a)` with `a`
+  positive is `atan(x/√a)/√a` (it carried an `a = 0` case).  `linsolve`
+  and `ctx.solve_system` stay pure linear algebra, as SymPy's `linsolve`.
+- **Trigonometric values at rational multiples of π in radicals**, at
+  SymPy's denominators: `sin`/`cos`/`sec`/`csc` at `n ∈ {5, 8, 10, 12, 15,
+  20, 24, 30, 40, 60, 120}`, `tan`/`cot` also at `{16, 48, 80, 240}`, and
+  the hyperbolic functions at `i·kπ/n` (`cos(π/5) = 1/4 + √5/4`, `tan(π/8)
+  = √2 − 1`, `cot(π/8) = 1 + √2`; `cos(π/7)` stays).  Square roots of
+  differences are written over a positive radicand (`sin(π/5) =
+  √5/(4·√(√5/8 + 5/8))`; SymPy `√(5/8 − √5/8)`) so that they are known
+  real.  `asin(sin x)`, `acos(cos x)`, `atan(tan x)` fold at rational
+  multiples of π.  `r·sign(r) = |r|` for a real `r`; `sign`, `|·|` and
+  `arg` of directions and exponentials fold (`sign(e^i·∞) = e^i`, `|e^i·∞|
+  = ∞`, `arg(e^{4i}) = 4 − 2π`).
+
+### Fixed
+
+- **Solutions and assumptions hunted** (6,000 equations, inequalities,
+  systems and parametric integrals with assumed unknowns and parameters;
+  every answer substituted back and checked against the declarations;
+  SymPy as a second opinion): 3,428 wrong → 0 confirmed.  Also: a
+  `ConditionSet` member ignored the variable's domain (`−7 ∈ {x | x² − 30
+  > 0}` for a prime `x` was true).
+- **Special trigonometric values and leftovers hunted** (8,000 cases
+  against mpmath at 60 digits and SymPy): refusals 1,872 → 57, wrong 144
+  → 0 (`ratsimp` of `0/(|m| − m·sign(m))` with `m` real was `0`; it is
+  `nan`).  Equalities between the new radicals are decided by a certified
+  non-zero value or an exact zero test in a tower of square roots
+  (`Eq(sin(π/12), (√6 − √2)/4)` is `True`).
+- A union, intersection or complement nested in another is bracketed in
+  the display, LaTeX and MathML: `([−5, −1] ∪ [1, 5]) ∩ S` printed as
+  `[-5, -1] ∪ [1, 5] ∩ S`, which reads as if `−5` were in the set.
+
 ## [0.42.0] - 2026-10-11
 
 Two classes of silent wrong answers removed.  Limits of complex-valued

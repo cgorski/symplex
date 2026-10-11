@@ -72,8 +72,12 @@ fn integrals_over_the_roots_of_x8_plus_1_are_compact() {
 }
 
 /// The residues of `xᵏ/(x⁵ + 1)` lie in `ℚ(ζ₁₀)`: the answer is written with
-/// `cos(π/5)` (or `√5` where that is smaller) instead of the quartic
-/// formula's `√(1 − (−1/4·√5 − 1/4)²)` (about 490 → 245 characters).
+/// `cos(π/5)`, `sin(π/5)` (or `√5` where that is smaller) instead of the
+/// quartic formula's `√(1 − (−1/4·√5 − 1/4)²)` (about 490 → 245
+/// characters).  Since 0.43 `eval` gives those values in radicals
+/// (`cos(π/5)` → `1/4 + √5/4`, `cos(π/10)` → `√(5/8 + √5/8)`), so the
+/// answer has no `cos(π/5)` left and is 307 characters (this test pinned the
+/// unevaluated `cos(1/5*pi)` and 300).
 ///
 /// mpmath (dps 30): `quad(lambda t: 1/(t**5 + 1), [0, 1])` →
 /// `0.88831357265178863804075522702`.
@@ -84,8 +88,8 @@ fn integral_over_the_roots_of_x5_plus_1_uses_cos_pi_over_5() {
     let f = p(&ctx, "1/(x^5 + 1)");
     let big_f = f.integrate(&x);
     let shown = big_f.to_string();
-    assert!(shown.len() < 300, "{} bytes: {shown}", shown.len());
-    assert!(shown.contains("cos(1/5*pi)"), "{shown}");
+    assert!(shown.len() < 340, "{} bytes: {shown}", shown.len());
+    assert!(shown.contains("sqrt(1/8*sqrt(5) + 5/8)"), "{shown}");
     assert_integral(&ctx, &f, &big_f, &x, 0.88831357265178863804075522702);
 }
 

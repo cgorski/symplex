@@ -433,3 +433,25 @@ fn reduce_inequalities_with_image_sets() {
     assert_eq!(solve("cos(x) == -2").to_string(), "EmptySet");
     assert_eq!(solve("x/sin(x) == 0").to_string(), "EmptySet");
 }
+
+/// A union, intersection or complement that is an operand of another one
+/// is bracketed in the display, LaTeX and MathML.  Up to 0.42
+/// `([−5, −1] ∪ [1, 5]) ∩ {7}` printed as `[-5, -1] ∪ [1, 5] ∩ {7}`, which
+/// reads as `[−5, −1] ∪ ([1, 5] ∩ {7})` — as if `−5` were a member (found
+/// by the solver-domain hunt, which printed such sets).
+#[test]
+fn nested_set_operations_are_bracketed() {
+    let ctx = Context::new();
+    let closed = symplex::IntervalKind::Closed;
+    let left = ctx.interval(&ctx.int(-5), &ctx.int(-1), closed);
+    let right = ctx.interval(&ctx.int(1), &ctx.int(5), closed);
+    let both = left.union(&right);
+    let s = both.intersection(&ctx.finite_set(&[ctx.int(7)]));
+    assert_eq!(s.to_string(), "{7} ∩ ([-5, -1] ∪ [1, 5])");
+    let latex = s.to_latex();
+    assert!(latex.contains(r"\cap \left("), "{latex}");
+    let mathml = s.to_mathml().unwrap();
+    assert!(mathml.contains("<mo>(</mo>"), "{mathml}");
+    // A single operation is unchanged.
+    assert_eq!(both.to_string(), "[-5, -1] ∪ [1, 5]");
+}

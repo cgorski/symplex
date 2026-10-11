@@ -256,10 +256,10 @@ fn arctangent_only_for_real_quadratics() {
     let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let x = ctx.symbol("x");
     let big_f = (x.powi(2) + &a).powi(-1).integrate(&x);
-    assert_eq!(
-        big_f.to_string(),
-        "Piecewise(atan(x/sqrt(a))/sqrt(a) if a != 0, -1/x if True)"
-    );
+    // Since 0.43 the degenerate case `a = 0` is dropped: a positive `a`
+    // cannot reach it (it was `Piecewise(atan(x/√a)/√a if a != 0, −1/x if
+    // True)`).
+    assert_eq!(big_f.to_string(), "atan(x/sqrt(a))/sqrt(a)");
     let ctx = Context::new();
     let a = ctx.symbol_with("a", &[Assumption::Real]).unwrap();
     let x = ctx.symbol("x");

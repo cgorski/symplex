@@ -392,6 +392,13 @@ fn convert_node_multi(
 ///
 /// Linear systems are delegated to [`linsolve`].
 ///
+/// The solutions are those in the declared domains of the variables, as
+/// SymPy's `solve` checks the assumptions of each symbol: a tuple with a
+/// coordinate that certainly violates an assumption of its variable is
+/// left out (`x, y` positive: `x² + y² = 2, y = x` gives `(1, 1)` only),
+/// one whose membership is not decided is kept.  Up to 0.42 the
+/// assumptions were ignored (`(1, 1), (−1, −1)`).
+///
 /// # Arguments
 ///
 /// * `eqs` — slice of symbolic expressions, each treated as `expr = 0`.
@@ -438,6 +445,37 @@ fn convert_node_multi(
 /// }
 /// ```
 pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
+    let all = solve_system_over_all_values(eqs, vars)?;
+    let Some(first) = eqs.first() else {
+        return Ok(all);
+    };
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| first.checked_id(v)).collect();
+    let tuples: Vec<Vec<ExprId>> = all
+        .iter()
+        .map(|t| t.iter().map(|c| first.checked_id(c)).collect())
+        .collect();
+    let keep: Vec<bool> = {
+        let mut guard = first.inner.write();
+        let arena = &mut guard.arena;
+        tuples
+            .iter()
+            .map(|t| {
+                t.iter().zip(&var_ids).all(|(&c, &v)| {
+                    crate::transforms::solve::assumptions_hold(arena, v, c) != Some(false)
+                })
+            })
+            .collect()
+    };
+    Ok(all
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(t, k)| k.then_some(t))
+        .collect())
+}
+
+/// [`solve_system_ex`] without the restriction to the declared domains of
+/// the variables.
+fn solve_system_over_all_values(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
     if eqs.is_empty() || vars.is_empty() {
         return Ok(vec![vec![]]);
     }

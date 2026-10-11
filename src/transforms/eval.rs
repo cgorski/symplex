@@ -24,6 +24,13 @@
 //! - `tan(0)` → `0`
 //! - `tan(π/4)` → `1`
 //! - `tan(3π/4)` → `-1`
+//! - `cos(π/5)` → `1/4 + √5/4`, `sin(π/12)` → `−√2/4 + √6/4`, `tan(π/8)` →
+//!   `−1 + √2`, `cot(π/8)` → `1 + √2`: `sin`, `cos` (so `sec`, `csc`) at
+//!   `kπ/n` for `n ∈ {5, 8, 10, 12, 15, 20, 24, 30, 40, 60, 120}`, `tan`
+//!   and `cot` also at `n ∈ {16, 48, 80, 240}`, in square roots — the
+//!   denominators and normal forms of SymPy's `cos.eval`/`tan.eval`/
+//!   `cot.eval` (see `cos_pi_radical`); `cos(π/7)` stays.  The hyperbolic
+//!   functions at `i·kπ/n` likewise (`cosh(iπ/5) = cos(π/5)`).
 //! - `exp(0)` → `1`
 //! - `exp(1)` → `E`
 //! - `ln(1)` → `0`
@@ -45,7 +52,9 @@
 //! - `acos(√2/2)` → `π/4`, `asin(√(2+√3)/2)` → `5π/12`, `atan(2 − √3)` →
 //!   `π/12`, `atan2(√3/2, 1/2)` → `π/3`: the inverse functions of
 //!   `±cos(kπ/n)` and `±tan(kπ/n)`, `n ∈ {1, 2, 3, 4, 5, 6, 8, 10, 12}`, in
-//!   any radical form (see `special_angle_of`)
+//!   any radical form (see `special_angle_of`); `asin(sin(7π/102))` →
+//!   `7π/102`, `acos(cos(14π/9))` → `4π/9` at the angles that stay
+//!   unevaluated (see `inverse_of_trig_at_pi_multiple`)
 //!
 //! # Design
 //!
@@ -328,14 +337,18 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
             ExprNode::Mul(ref children) => {
-                let new: smallvec::SmallVec<[ExprId; 6]> = children
-                    .iter()
-                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                    .collect();
-                if new == *children {
-                    id
+                if let Some(folded) = eval_cot_quotients(arena, children, &cache) {
+                    folded
                 } else {
-                    arena.mul(&new)
+                    let new: smallvec::SmallVec<[ExprId; 6]> = children
+                        .iter()
+                        .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                        .collect();
+                    if new == *children {
+                        id
+                    } else {
+                        arena.mul(&new)
+                    }
                 }
             }
             ExprNode::Pow(base, exp) => {
@@ -1194,13 +1207,23 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
     }
     let q = match rational {
         Some(q) => q,
-        None => match algebraic_rational_value(arena, d)? {
-            Some(q) => q,
-            // Irrational, so nonzero: the certified sign decides.
-            None => {
-                return Some(arena.sign_of_real_constant(d)? == std::cmp::Ordering::Greater);
+        None => {
+            // A certified nonzero value decides at once (the minimal
+            // polynomial of a long radical can take seconds).
+            if let Some(s) = arena.sign_of_real_constant(d) {
+                return Some(s == std::cmp::Ordering::Greater);
             }
-        },
+            if sqrt_tower_is_zero(arena, d) {
+                return Some(!strict);
+            }
+            match algebraic_rational_value(arena, d)? {
+                Some(q) => q,
+                // Irrational, so nonzero: the certified sign decides.
+                None => {
+                    return Some(arena.sign_of_real_constant(d)? == std::cmp::Ordering::Greater);
+                }
+            }
+        }
     };
     Some(if strict {
         q.is_positive()
@@ -1264,6 +1287,15 @@ fn equal_by_difference(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool> 
     if !walk::free_symbols(arena, d).is_empty() {
         return None;
     }
+    // A certified nonzero value decides at once, before the minimal
+    // polynomial: `tan(79π/40)·cos(79π/40) = sin(79π/40) + 1/448` took 25 s
+    // there once the values were radicals.
+    if constant_is_nonzero(arena, d) {
+        return Some(false);
+    }
+    if sqrt_tower_is_zero(arena, d) {
+        return Some(true);
+    }
     match algebraic_rational_value(arena, d)? {
         Some(q) => Some(q.is_zero()),
         None => Some(false),
@@ -1290,8 +1322,10 @@ fn algebraic_rational_value(arena: &mut Arena, d: ExprId) -> Option<Option<Q>> {
 
 /// Is `d` built from rationals, `i`, `φ` and rational powers by sums and
 /// products, in at most 160 nodes, with the product of the orders of its
-/// roots (a bound on the degree of its minimal polynomial) at most 64?  The
-/// bounds keep the resultants of [`algebraic_rational_value`] small.
+/// roots (a bound on the degree of its minimal polynomial) at most 64, and
+/// no intermediate resultant above [`MAX_RESULTANT_DEGREE`]
+/// ([`largest_resultant_degree`])?  The bounds keep the resultants of
+/// [`algebraic_rational_value`] small.
 fn small_algebraic(arena: &Arena, d: ExprId) -> bool {
     let order = walk::post_order_ids(arena, d);
     if order.len() > 160 {
@@ -1313,7 +1347,422 @@ fn small_algebraic(arena: &Arena, d: ExprId) -> bool {
             return false;
         }
     }
-    true
+    largest_resultant_degree(arena, &order) <= MAX_RESULTANT_DEGREE
+}
+
+/// The largest resultant [`algebraic_rational_value`] lets
+/// `minimal_polynomial` compute (see [`largest_resultant_degree`]).
+const MAX_RESULTANT_DEGREE: u64 = 64;
+
+/// An upper bound on the degree of the largest resultant
+/// `minimal_polynomial` forms on the nodes `order` (a post-order of a
+/// [`small_algebraic`] expression): it composes sums and products one
+/// operand at a time, by a resultant of degree `deg a · deg b` that is only
+/// then factored, and `a^(p/q)` by one of degree `q · deg a`; a minimal
+/// polynomial's degree is at most the product of the orders of the distinct
+/// radicals in its expression.  The final degree alone does not bound the
+/// work: `sin(7π/60)² + cos(7π/60)² − 1` has degree at most 16 but
+/// resultants of degree 256 (23 s in a debug build once the values were
+/// radicals).
+fn largest_resultant_degree(arena: &Arena, order: &[ExprId]) -> u64 {
+    // The distinct radicals `(base, order)` of each node.
+    type Radicals = smallvec::SmallVec<[(ExprId, u64); 8]>;
+    fn field_degree(r: &Radicals) -> u64 {
+        r.iter().fold(1u64, |d, &(_, k)| d.saturating_mul(k))
+    }
+    fn union(a: &mut Radicals, b: &Radicals) {
+        for &x in b {
+            if !a.contains(&x) {
+                a.push(x);
+            }
+        }
+    }
+    let mut radicals: FxHashMap<ExprId, Radicals> = FxHashMap::default();
+    let mut worst = 1u64;
+    for &id in order {
+        let mut own = Radicals::new();
+        match arena.node(id) {
+            ExprNode::ImaginaryUnit | ExprNode::GoldenRatio => own.push((id, 2)),
+            ExprNode::Neg(a) => {
+                if let Some(r) = radicals.get(a) {
+                    own = r.clone();
+                }
+            }
+            ExprNode::Pow(b, e) => {
+                let inner = radicals.get(b).cloned().unwrap_or_default();
+                let q = arena
+                    .as_num(*e)
+                    .and_then(|q| q.denom().to_u64())
+                    .unwrap_or(u64::MAX);
+                own = inner;
+                if q > 1 {
+                    worst = worst.max(q.saturating_mul(field_degree(&own)));
+                    if !own.contains(&(*b, q)) {
+                        own.push((*b, q));
+                    }
+                }
+            }
+            ExprNode::Add(cs) | ExprNode::Mul(cs) => {
+                let mut first = true;
+                for c in cs.iter() {
+                    let Some(r) = radicals.get(c).filter(|r| !r.is_empty()) else {
+                        continue;
+                    };
+                    if !first {
+                        worst = worst.max(field_degree(&own).saturating_mul(field_degree(r)));
+                    }
+                    first = false;
+                    union(&mut own, r);
+                }
+            }
+            _ => {}
+        }
+        radicals.insert(id, own);
+    }
+    worst
+}
+
+// ── Exact zero test in a tower of real quadratic extensions ─────────────────
+//
+// The values of `sin`, `cos`, `tan` at the denominators of
+// [`COS_PI_DENOMINATORS`] are square-root towers (`√(√5/8 + 5/8)`, `1/(√6/4
+// − √2/4)`), and an identity between them (`sin²x + cos²x = 1` at `x =
+// 7π/60`) is a zero that `minimal_polynomial` finds only through
+// resultants of degree up to 256 (23 s in a debug build).  Here the
+// constant is computed exactly in `ℚ(t₁, …, tₖ)`, `tᵢ² = rᵢ` with `rᵢ` in
+// the tower below: an element has `2ᵏ` rational coordinates (the
+// monomials in the `tᵢ`), a product costs about `4ᵏ` rational products.
+// Sending each `tᵢ` to the positive root `√rᵢ` is a ring homomorphism to
+// ℝ, so an element computed as 0 has the value 0, whatever relations the
+// generators satisfy.  Relations are what make the zero visible
+// (`√(1/2 − √2/4) = (√2 − 1)·√(1/2 + √2/4)`), so a new radicand is first
+// tried as a square in the tower ([`SqrtTower::sqrt`], every root verified
+// by squaring it) and its root taken with the sign of its certified value;
+// only otherwise is it a new generator.
+
+/// The most generators a [`SqrtTower`] takes.
+const SQRT_TOWER_MAX_GENERATORS: usize = 7;
+
+/// A tower `ℚ(t₁, …, tₖ)` of quadratic extensions (see the section
+/// comment).  An element at level `k` is a vector of `2ᵏ` coordinates: the
+/// first half the part without `tₖ`, the second half the coefficient of
+/// `tₖ`, recursively.
+struct SqrtTower {
+    /// `rᵢ = tᵢ²`, an element of level `i`.
+    radicands: Vec<Vec<Q>>,
+    /// The real radical `√b` each generator stands for.
+    roots: Vec<ExprId>,
+}
+
+fn tower_add(x: &[Q], y: &[Q]) -> Vec<Q> {
+    x.iter().zip(y).map(|(a, b)| a + b).collect()
+}
+
+fn tower_sub(x: &[Q], y: &[Q]) -> Vec<Q> {
+    x.iter().zip(y).map(|(a, b)| a - b).collect()
+}
+
+fn tower_is_zero(x: &[Q]) -> bool {
+    x.iter().all(Zero::is_zero)
+}
+
+/// `x` as an element of level `k ≥` its own (zero coordinates for the new
+/// monomials).
+fn tower_pad(x: &[Q], k: usize) -> Vec<Q> {
+    let mut v = x.to_vec();
+    v.resize(1 << k, Q::zero());
+    v
+}
+
+/// The square root of a non-negative rational, when rational.
+fn rational_sqrt(q: &Q) -> Option<Q> {
+    if q.is_negative() {
+        return None;
+    }
+    let (n, d) = (q.numer().sqrt(), q.denom().sqrt());
+    (&n * &n == *q.numer() && &d * &d == *q.denom()).then(|| Ratio::new(n, d))
+}
+
+impl SqrtTower {
+    fn level(&self) -> usize {
+        self.radicands.len()
+    }
+
+    /// `x·y` at level `k`: `(x₀ + x₁t)(y₀ + y₁t) = x₀y₀ + x₁y₁·r +
+    /// ((x₀ + x₁)(y₀ + y₁) − x₀y₀ − x₁y₁)·t`.  The recursion is on the
+    /// level (at most [`SQRT_TOWER_MAX_GENERATORS`] deep).
+    fn mul(&self, x: &[Q], y: &[Q], k: usize) -> Vec<Q> {
+        if k == 0 {
+            return vec![&x[0] * &y[0]];
+        }
+        if tower_is_zero(x) || tower_is_zero(y) {
+            return vec![Q::zero(); 1 << k];
+        }
+        let h = 1 << (k - 1);
+        let (x0, x1) = x.split_at(h);
+        let (y0, y1) = y.split_at(h);
+        let p = self.mul(x0, y0, k - 1);
+        let q = self.mul(x1, y1, k - 1);
+        let s = self.mul(&tower_add(x0, x1), &tower_add(y0, y1), k - 1);
+        let qr = self.mul(&q, &self.radicands[k - 1], k - 1);
+        let mut out = tower_add(&p, &qr);
+        out.extend(tower_sub(&tower_sub(&s, &p), &q));
+        out
+    }
+
+    /// `1/x` at level `k`, by `1/(x₀ + x₁t) = (x₀ − x₁t)/(x₀² − x₁²r)`;
+    /// `None` when a norm on the way is 0.
+    fn inverse(&self, x: &[Q], k: usize) -> Option<Vec<Q>> {
+        if k == 0 {
+            return (!x[0].is_zero()).then(|| vec![x[0].recip()]);
+        }
+        let h = 1 << (k - 1);
+        let (x0, x1) = x.split_at(h);
+        let x1_sq = self.mul(x1, x1, k - 1);
+        let norm = tower_sub(
+            &self.mul(x0, x0, k - 1),
+            &self.mul(&x1_sq, &self.radicands[k - 1], k - 1),
+        );
+        let inv = self.inverse(&norm, k - 1)?;
+        let mut out = self.mul(x0, &inv, k - 1);
+        out.extend(self.mul(x1, &inv, k - 1).into_iter().map(|c| -c));
+        Some(out)
+    }
+
+    /// `xⁿ` at level `k` (`|n| ≤ 64`).
+    fn pow(&self, x: &[Q], n: i64, k: usize) -> Option<Vec<Q>> {
+        if n.unsigned_abs() > 64 {
+            return None;
+        }
+        let mut base = if n < 0 {
+            self.inverse(x, k)?
+        } else {
+            x.to_vec()
+        };
+        let mut out = tower_pad(&[Q::one()], k);
+        let mut e = n.unsigned_abs();
+        while e > 0 {
+            if e & 1 == 1 {
+                out = self.mul(&out, &base, k);
+            }
+            e >>= 1;
+            if e > 0 {
+                base = self.mul(&base, &base, k);
+            }
+        }
+        Some(out)
+    }
+
+    /// A square root of `x` in the tower of level `k`, when it has one
+    /// there; every candidate is verified by squaring.  For `x = a + b·t`:
+    /// `√a` or `√(a/r)·t` when `b = 0`, else `c + d·t` with `c² = (a ±
+    /// √(a² − b²r))/2`, `d = b/(2c)`.
+    fn sqrt(&self, x: &[Q], k: usize) -> Option<Vec<Q>> {
+        if tower_is_zero(x) {
+            return Some(vec![Q::zero(); 1 << k]);
+        }
+        if k == 0 {
+            return rational_sqrt(&x[0]).map(|r| vec![r]);
+        }
+        let h = 1 << (k - 1);
+        let (a, b) = x.split_at(h);
+        let zero = vec![Q::zero(); h];
+        let mut candidates: Vec<Vec<Q>> = Vec::new();
+        if tower_is_zero(b) {
+            if let Some(c) = self.sqrt(a, k - 1) {
+                candidates.push([c, zero.clone()].concat());
+            } else if let Some(r_inv) = self.inverse(&self.radicands[k - 1], k - 1)
+                && let Some(d) = self.sqrt(&self.mul(a, &r_inv, k - 1), k - 1)
+            {
+                candidates.push([zero.clone(), d].concat());
+            }
+        } else {
+            let b_sq = self.mul(b, b, k - 1);
+            let norm = tower_sub(
+                &self.mul(a, a, k - 1),
+                &self.mul(&b_sq, &self.radicands[k - 1], k - 1),
+            );
+            let s = self.sqrt(&norm, k - 1)?;
+            let half = tower_pad(&[Ratio::new(BigInt::from(1), BigInt::from(2))], k - 1);
+            for c_sq in [tower_add(a, &s), tower_sub(a, &s)] {
+                let c_sq = self.mul(&c_sq, &half, k - 1);
+                let Some(c) = self.sqrt(&c_sq, k - 1) else {
+                    continue;
+                };
+                let two_c = tower_add(&c, &c);
+                let Some(inv) = self.inverse(&two_c, k - 1) else {
+                    continue;
+                };
+                let d = self.mul(b, &inv, k - 1);
+                candidates.push([c, d].concat());
+            }
+        }
+        candidates.into_iter().find(|c| self.mul(c, c, k) == x)
+    }
+
+    /// The arena constant of the element `x` of level `k`.
+    fn to_expr(&self, arena: &mut Arena, x: &[Q], k: usize) -> ExprId {
+        let mut terms: smallvec::SmallVec<[ExprId; 8]> = smallvec::SmallVec::new();
+        for (m, c) in x.iter().enumerate().take(1 << k) {
+            if c.is_zero() {
+                continue;
+            }
+            let mut factors: smallvec::SmallVec<[ExprId; 8]> =
+                smallvec::smallvec![arena.num_ratio(c.clone())];
+            for (i, &root) in self.roots.iter().enumerate() {
+                if m & (1 << i) != 0 {
+                    factors.push(root);
+                }
+            }
+            terms.push(arena.mul(&factors));
+        }
+        arena.add(&terms)
+    }
+}
+
+/// Is the constant `d` (rationals, `φ`, `+ − ×`, integer powers and square
+/// roots of positive values) exactly 0 by [`SqrtTower`] arithmetic?  `false`
+/// means not shown (anything else in `d`, a negative or undecided radicand,
+/// more than [`SQRT_TOWER_MAX_GENERATORS`] independent radicals, more than
+/// 400 nodes, a zero divisor).
+fn sqrt_tower_is_zero(arena: &mut Arena, d: ExprId) -> bool {
+    let order = walk::post_order_ids(arena, d);
+    if order.len() > 400
+        || !order.iter().any(|&id| {
+            matches!(arena.node(id), ExprNode::Pow(_, e)
+                if arena.as_num(*e).is_some_and(|q| *q.denom() == BigInt::from(2)))
+        })
+    {
+        return false;
+    }
+    let mut tower = SqrtTower {
+        radicands: Vec::new(),
+        roots: Vec::new(),
+    };
+    let mut values: FxHashMap<ExprId, Vec<Q>> = FxHashMap::default();
+    // `√b` as an element, by the arena node `b`.
+    let mut sqrt_of: FxHashMap<ExprId, Vec<Q>> = FxHashMap::default();
+    let half = arena.rational(1, 2);
+    for &id in &order {
+        let node = arena.node(id).clone();
+        let value = match node {
+            ExprNode::Num(n) => tower_pad(&[arena.num(n).clone()], tower.level()),
+            ExprNode::Neg(a) => {
+                let Some(v) = values.get(&a) else {
+                    return false;
+                };
+                tower_pad(v, tower.level())
+                    .into_iter()
+                    .map(|c| -c)
+                    .collect()
+            }
+            ExprNode::Add(cs) => {
+                let k = tower.level();
+                let mut acc = tower_pad(&[], k);
+                for c in cs.iter() {
+                    let Some(v) = values.get(c) else {
+                        return false;
+                    };
+                    acc = tower_add(&acc, &tower_pad(v, k));
+                }
+                acc
+            }
+            ExprNode::Mul(cs) => {
+                let k = tower.level();
+                let mut acc = tower_pad(&[Q::one()], k);
+                for c in cs.iter() {
+                    let Some(v) = values.get(c) else {
+                        return false;
+                    };
+                    acc = tower.mul(&acc, &tower_pad(v, k), k);
+                }
+                acc
+            }
+            ExprNode::GoldenRatio | ExprNode::Pow(..) => {
+                // φ = 1/2 + √5/2; b^(p/q) for q ∈ {1, 2}.
+                let (b, p, root) = match node {
+                    ExprNode::Pow(b, e) => {
+                        let Some(q) = arena.as_num(e) else {
+                            return false;
+                        };
+                        let Some(p) = q.numer().to_i64() else {
+                            return false;
+                        };
+                        match q.denom().to_i64() {
+                            Some(1) => (b, p, false),
+                            Some(2) => (b, p, true),
+                            _ => return false,
+                        }
+                    }
+                    _ => (arena.int(5), 1, true),
+                };
+                let base = if root {
+                    if let Some(r) = sqrt_of.get(&b) {
+                        r.clone()
+                    } else {
+                        let k = tower.level();
+                        let radicand = match values.get(&b) {
+                            Some(v) => tower_pad(v, k),
+                            None => match arena.as_num(b) {
+                                Some(q) => tower_pad(std::slice::from_ref(q), k),
+                                None => return false,
+                            },
+                        };
+                        let r = if tower_is_zero(&radicand) {
+                            radicand
+                        } else {
+                            if arena.sign_of_real_constant(b) != Some(std::cmp::Ordering::Greater) {
+                                return false;
+                            }
+                            match tower.sqrt(&radicand, k) {
+                                Some(s) => {
+                                    let e = tower.to_expr(arena, &s, k);
+                                    match arena.sign_of_real_constant(e) {
+                                        Some(std::cmp::Ordering::Greater) => s,
+                                        Some(std::cmp::Ordering::Less) => {
+                                            s.into_iter().map(|c| -c).collect()
+                                        }
+                                        _ => return false,
+                                    }
+                                }
+                                None if k < SQRT_TOWER_MAX_GENERATORS => {
+                                    tower.radicands.push(radicand);
+                                    let root_node = arena.pow(b, half);
+                                    tower.roots.push(root_node);
+                                    let mut t = tower_pad(&[], k + 1);
+                                    t[1 << k] = Q::one();
+                                    t
+                                }
+                                None => return false,
+                            }
+                        };
+                        sqrt_of.insert(b, r.clone());
+                        r
+                    }
+                } else {
+                    match values.get(&b) {
+                        Some(v) => v.clone(),
+                        None => return false,
+                    }
+                };
+                let k = tower.level();
+                let base = tower_pad(&base, k);
+                let powered = match tower.pow(&base, p, k) {
+                    Some(v) => v,
+                    None => return false,
+                };
+                if matches!(node, ExprNode::GoldenRatio) {
+                    let h = tower_pad(&[Ratio::new(BigInt::from(1), BigInt::from(2))], k);
+                    tower.mul(&tower_add(&powered, &tower_pad(&[Q::one()], k)), &h, k)
+                } else {
+                    powered
+                }
+            }
+            _ => return false,
+        };
+        values.insert(id, value);
+    }
+    values.get(&d).is_some_and(|v| tower_is_zero(v))
 }
 
 /// LogGamma(n) for positive integer n → ln((n-1)!)
@@ -2651,10 +3100,11 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     let coeff = as_pi_multiple(arena, inner)?;
-    // Every value below is at a denominator dividing 12, which the
-    // reductions keep (see `denominator_divides`).
-    if !denominator_divides(&coeff, 12) {
-        return None;
+    // Every value below is at a denominator dividing 4 or 6, which the
+    // reductions keep (see `denominator_divides`); the others SymPy
+    // evaluates are in radicals ([`sin_pi_radical`]).
+    if !is_classical_denominator(&coeff) {
+        return sin_pi_radical(arena, &coeff);
     }
 
     // Reduce modulo 2 (sin has period 2π).
@@ -2764,8 +3214,8 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     let coeff = as_pi_multiple(arena, inner)?;
-    if !denominator_divides(&coeff, 12) {
-        return None;
+    if !is_classical_denominator(&coeff) {
+        return cos_pi_radical(arena, &coeff);
     }
 
     let two: Q = Ratio::from_integer(2.into());
@@ -2869,8 +3319,8 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     let coeff = as_pi_multiple(arena, inner)?;
-    if !denominator_divides(&coeff, 12) {
-        return None;
+    if !is_classical_denominator(&coeff) {
+        return tan_pi_radical(arena, &coeff);
     }
 
     let one_ratio: Q = Ratio::one();
@@ -2923,6 +3373,375 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
+// ── sin, cos, tan and cot at rational multiples of π, in radicals ───────────
+//
+// SymPy 1.14's `cos.eval` (and `sin.eval`, which reduces to it, and so
+// `sec`/`csc`) gives `cos(pπ/n)` in square roots for exactly the
+// denominators `n` of [`COS_PI_DENOMINATORS`]: the classical ones (`n | 4`,
+// `n | 6`), `n = 5` (Chebyshev polynomials of `cos(π/5) = (1 + √5)/4`),
+// `n = 8, 10` (half angles), and `n = 12, 15, 20, 24, 30, 40, 60, 120`
+// (`cos(x − y)` for the pairs of its `_table2`, `pπ/12 = pπ/3 − pπ/4`, …).
+// `tan.eval` and `cot.eval` add twice those through the half-angle formula
+// (`n = 16, 48, 80, 240`).  Other denominators (`cos(π/7)`, `cos(π/16)`)
+// stay, as there; `.rewrite(sqrt)` (Fermat primes, `n = 17`, `257`, …) is
+// not automatic in SymPy and not done here.  The values are built by
+// SymPy's formulas through the canonical arithmetic, so they come out in
+// its normal forms (`cos(π/15)` = `−1/8 + √5/8 + √3·√(√5/8 + 5/8)/2`),
+// except for the square roots of differences ([`sqrt_of_surd`]: `sin(π/5)`
+// is `√5/(4·√(√5/8 + 5/8))`, SymPy's `sqrt(5/8 - sqrt(5)/8)`).
+// Before 0.43 only the classical denominators were evaluated, and an
+// equality like `sin(π/12) = (√6 − √2)/4` was left undecided.
+
+/// The denominators `n` at which SymPy's `cos.eval`/`sin.eval` evaluate
+/// `cos(pπ/n)`, `sin(pπ/n)` (`gcd(p, n) = 1`).
+const COS_PI_DENOMINATORS: [i64; 16] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 24, 30, 40, 60, 120];
+
+/// The denominators at which SymPy's `tan.eval`/`cot.eval` evaluate: those
+/// of [`COS_PI_DENOMINATORS`] and, by `tan(x/2) = (1 − cos x)/sin x`, twice
+/// them.
+const TAN_PI_DENOMINATORS: [i64; 20] = [
+    1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80, 120, 240,
+];
+
+/// Is the denominator of `q` one of the classical `1, 2, 3, 4, 6`, whose
+/// values the explicit tables of [`eval_sin`], [`eval_cos`] and [`eval_tan`]
+/// give?
+fn is_classical_denominator(q: &Q) -> bool {
+    denominator_divides(q, 4) || denominator_divides(q, 6)
+}
+
+/// The denominator of `q` when it is one of `denominators`.
+fn listed_denominator(q: &Q, denominators: &[i64]) -> Option<i64> {
+    let n = q.denom().to_i64()?;
+    denominators.contains(&n).then_some(n)
+}
+
+/// `q mod m` (`m > 0`) as a multiple of `1/n`, `n` the denominator of `q`.
+fn numerator_mod(q: &Q, m: i64) -> Option<i64> {
+    use num_integer::Integer;
+    q.numer().mod_floor(&(q.denom() * BigInt::from(m))).to_i64()
+}
+
+/// `cos(q·π)` in radicals at the denominators of [`COS_PI_DENOMINATORS`]
+/// (SymPy's `cos.eval`); `None` at any other.
+fn cos_pi_radical(arena: &mut Arena, q: &Q) -> Option<ExprId> {
+    let n = listed_denominator(q, &COS_PI_DENOMINATORS)?;
+    let p = numerator_mod(q, 2)?;
+    Some(cos_pi_reduced(arena, p, n))
+}
+
+/// `sin(q·π) = cos((q − 1/2)·π)`: the denominator of `q − 1/2` is in
+/// [`COS_PI_DENOMINATORS`] exactly when that of `q` is (`n` and `2n` for an
+/// odd `n` of the list, `n` and `n/2` for an even one).
+fn sin_pi_radical(arena: &mut Arena, q: &Q) -> Option<ExprId> {
+    listed_denominator(q, &COS_PI_DENOMINATORS)?;
+    let shifted = q - Ratio::new(BigInt::from(1), BigInt::from(2));
+    cos_pi_radical(arena, &shifted)
+}
+
+/// `cos(pπ/n)` for `0 ≤ p < 2n`, `p/n` in lowest terms and `n` in
+/// [`COS_PI_DENOMINATORS`].  The recursion is on the denominator (at most
+/// two reflections, then `n` falls to a proper divisor of the table: depth
+/// ≤ 12 for `n = 120`).
+fn cos_pi_reduced(arena: &mut Arena, p: i64, n: i64) -> ExprId {
+    // cos x = −cos(x − π) on (π, 2π), cos x = −cos(π − x) on (π/2, π].
+    if p > n {
+        let v = cos_pi_reduced(arena, p - n, n);
+        return arena.neg(v);
+    }
+    if 2 * p > n {
+        let v = cos_pi_reduced(arena, n - p, n);
+        return arena.neg(v);
+    }
+    let sqrt_of = |arena: &mut Arena, k: i64| {
+        let k = arena.int(k);
+        let half = arena.rational(1, 2);
+        arena.pow(k, half)
+    };
+    // 0 ≤ p/n ≤ 1/2.
+    match n {
+        1 => arena.one,
+        2 => arena.zero,
+        3 => arena.rational(1, 2),
+        4 | 6 => {
+            let r = sqrt_of(arena, if n == 4 { 2 } else { 3 });
+            let half = arena.rational(1, 2);
+            arena.mul(&[half, r])
+        }
+        // T_p((1 + √5)/4) expanded: (1 + √5)/4, (√5 − 1)/4.
+        5 => {
+            let r5 = sqrt_of(arena, 5);
+            let quarter = arena.rational(1, 4);
+            let a = arena.rational(if p == 1 { 1 } else { -1 }, 4);
+            let b = arena.mul(&[quarter, r5]);
+            arena.add(&[a, b])
+        }
+        // √((1 + cos 2x)/2), positive on [0, π/2]: √(1/2 ± √2/4) at π/8,
+        // 3π/8 and √(5/8 ± √5/8) at π/10, 3π/10 (see `sqrt_of_surd`).
+        8 | 10 => {
+            let r = |p: i64, n: i64| Ratio::new(BigInt::from(p), BigInt::from(n));
+            let (a, b, c) = if n == 8 {
+                (r(1, 2), r(1, 4), 2)
+            } else {
+                (r(5, 8), r(1, 8), 5)
+            };
+            // cos 2x = cos(pπ/(n/2)) is positive exactly when 4p < n.
+            let b = if 4 * p < n { b } else { -b };
+            sqrt_of_surd(arena, a, b, c)
+        }
+        // cos(x − y) = cos x·cos y + cos(π/2 − x)·cos(π/2 − y) for
+        // x = pπ/a, y = pπ/b, 1/n = 1/a − 1/b.
+        _ => {
+            let (a, b) = match n {
+                12 => (3, 4),
+                15 => (6, 10),
+                20 => (4, 5),
+                24 => (6, 8),
+                30 => (5, 6),
+                40 => (8, 10),
+                60 => (20, 30),
+                _ => (40, 60),
+            };
+            let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+            let x = Ratio::new(BigInt::from(p), BigInt::from(a));
+            let y = Ratio::new(BigInt::from(p), BigInt::from(b));
+            let cos_of = |arena: &mut Arena, r: Q| {
+                // Every argument here has a listed denominator (a divisor of
+                // `a` or `b`, or twice an odd one).
+                cos_pi_radical(arena, &r).unwrap_or_else(|| {
+                    let angle = pi_times(arena, r);
+                    arena.cos(angle)
+                })
+            };
+            let (cx, cy) = (cos_of(arena, x.clone()), cos_of(arena, y.clone()));
+            let (sx, sy) = (cos_of(arena, &half - x), cos_of(arena, &half - y));
+            let first = arena.mul(&[cx, cy]);
+            let second = arena.mul(&[sx, sy]);
+            arena.add(&[first, second])
+        }
+    }
+}
+
+/// `√(a + b·√c)` for rationals `a > |b|·√c`, an integer `c > 1`: as it
+/// reads when `b > 0`, and as `√(a² − b²c)/√(a − b·√c)` when `b < 0`
+/// (SymPy prints `sqrt(1/2 - sqrt(2)/4)`; here `√2/4/√(√2/4 + 1/2)`).  The
+/// radicand of a square root then is a sum of positive terms, which the
+/// assumptions see is positive — so the value is known real, `re`/`im`/
+/// `|·|` of it decompose (the integrals over the roots of `x⁸ + 1` stay
+/// compact), and the root is the same as its partner's (`sin(π/8)` and
+/// `cos(π/8)` share `√(√2/4 + 1/2)`), which keeps the zero tests of
+/// identities between them small.
+fn sqrt_of_surd(arena: &mut Arena, a: Q, b: Q, c: i64) -> ExprId {
+    let half = arena.rational(1, 2);
+    let c_id = arena.int(c);
+    let root_c = arena.pow(c_id, half);
+    let positive = |arena: &mut Arena, b: Q| {
+        let (a_id, b_id) = (arena.num_ratio(a.clone()), arena.num_ratio(b));
+        let b_root = arena.mul(&[b_id, root_c]);
+        arena.add(&[a_id, b_root])
+    };
+    if !b.is_negative() {
+        let radicand = positive(arena, b);
+        return arena.pow(radicand, half);
+    }
+    let norm = &a * &a - &b * &b * Ratio::from_integer(BigInt::from(c));
+    let norm_id = arena.num_ratio(norm);
+    let numerator = arena.pow(norm_id, half);
+    let conjugate = positive(arena, -b);
+    let minus_half = arena.rational(-1, 2);
+    let denominator = arena.pow(conjugate, minus_half);
+    arena.mul(&[numerator, denominator])
+}
+
+/// `tan(q·π)` in radicals at the denominators of [`TAN_PI_DENOMINATORS`]
+/// (SymPy's `tan.eval`); `None` at any other.  The classical denominators
+/// are [`eval_tan`]'s.
+fn tan_pi_radical(arena: &mut Arena, q: &Q) -> Option<ExprId> {
+    let n = listed_denominator(q, &TAN_PI_DENOMINATORS)?;
+    let p = numerator_mod(q, 1)?;
+    if p == 0 {
+        return Some(arena.zero);
+    }
+    if is_classical_denominator(q) {
+        let angle = pi_times(arena, q.clone());
+        return eval_tan(arena, angle);
+    }
+    let r = |p: i64, n: i64| Ratio::new(BigInt::from(p), BigInt::from(n));
+    match n {
+        // SymPy's `table10`: √(1 ∓ 2√5/5), √(5 ∓ 2√5) at π/10, π/5, 3π/10,
+        // 2π/5 (the differences as in [`sqrt_of_surd`]).
+        5 | 10 => {
+            let k = 10 * p / n;
+            let (k, sign) = if k > 5 { (10 - k, -1) } else { (k, 1) };
+            let (a, b) = match k {
+                1 => (r(1, 1), r(-2, 5)),
+                2 => (r(5, 1), r(-2, 1)),
+                3 => (r(1, 1), r(2, 5)),
+                _ => (r(5, 1), r(2, 1)),
+            };
+            let v = sqrt_of_surd(arena, a, b, 5);
+            Some(if sign < 0 { arena.neg(v) } else { v })
+        }
+        // A rational tangent of a non-classical angle does not exist
+        // (Niven), so 15 is the only odd denominator left: tan(x − y) for
+        // x = pπ/6, y = pπ/10.
+        15 => {
+            let ta = tan_pi_radical(arena, &r(p, 6))?;
+            let tb = tan_pi_radical(arena, &r(p, 10))?;
+            let num = arena.sub(ta, tb);
+            let prod = arena.mul(&[ta, tb]);
+            let den = arena.add(&[arena.one, prod]);
+            Some(arena.div(num, den))
+        }
+        // tan(x/2) = 1/sin x − cos x/sin x, x = 2pπ/n.
+        _ => {
+            let x = r(2 * p, n);
+            let c = cos_pi_radical(arena, &x)?;
+            let s = sin_pi_radical(arena, &x)?;
+            if arena.is_zero_structural(s) {
+                return Some(arena.complex_infinity);
+            }
+            let inv_s = arena.pow(s, arena.neg_one);
+            let c_over_s = arena.mul(&[c, inv_s]);
+            Some(arena.sub(inv_s, c_over_s))
+        }
+    }
+}
+
+/// `cot(q·π)` in radicals at the non-classical denominators of
+/// [`TAN_PI_DENOMINATORS`] (SymPy's `cot.eval`): `cot` is the quotient
+/// `cos/sin` here, which [`eval_cot_quotients`] folds whole, so that
+/// `cot(π/8)` is SymPy's `1 + √2` (not `√(√2/4 + 1/2)/√(1/2 − √2/4)`) and
+/// `cot(π/16)` is evaluated as `tan(π/16)` is.
+fn cot_pi_radical(arena: &mut Arena, q: &Q) -> Option<ExprId> {
+    let n = listed_denominator(q, &TAN_PI_DENOMINATORS)?;
+    if is_classical_denominator(q) {
+        return None;
+    }
+    let p = numerator_mod(q, 1)?;
+    let r = |p: i64, n: i64| Ratio::new(BigInt::from(p), BigInt::from(n));
+    match n {
+        // cot x = tan(π/2 − x).
+        5 | 10 => tan_pi_radical(arena, &(r(1, 2) - r(p, n))),
+        // cot(x − y) = (1 + cot x·cot y)/(cot y − cot x), x = pπ/6, y = pπ/10.
+        15 => {
+            let ca = cot_pi_classical_or_radical(arena, &r(p, 6))?;
+            let cb = cot_pi_classical_or_radical(arena, &r(p, 10))?;
+            let prod = arena.mul(&[ca, cb]);
+            let num = arena.add(&[arena.one, prod]);
+            let den = arena.sub(cb, ca);
+            Some(arena.div(num, den))
+        }
+        // cot(x/2) = 1/sin x + cos x/sin x, x = 2pπ/n.
+        _ => {
+            let x = r(2 * p, n);
+            let c = cos_pi_radical(arena, &x)?;
+            let s = sin_pi_radical(arena, &x)?;
+            if arena.is_zero_structural(s) {
+                return Some(arena.complex_infinity);
+            }
+            let inv_s = arena.pow(s, arena.neg_one);
+            let c_over_s = arena.mul(&[c, inv_s]);
+            Some(arena.add(&[inv_s, c_over_s]))
+        }
+    }
+}
+
+/// `cot(q·π)` at any denominator of [`TAN_PI_DENOMINATORS`]: `1/tan` at the
+/// classical ones (`cot(π/6) = √3`, `cot(π/3) = √3/3`).
+fn cot_pi_classical_or_radical(arena: &mut Arena, q: &Q) -> Option<ExprId> {
+    if is_classical_denominator(q) {
+        let angle = pi_times(arena, q.clone());
+        let t = eval_tan(arena, angle)?;
+        if arena.is_zero_structural(t) {
+            return Some(arena.complex_infinity);
+        }
+        return Some(arena.pow(t, arena.neg_one));
+    }
+    cot_pi_radical(arena, q)
+}
+
+/// `cos(u)^k·sin(u)^(−k)` → `cot(u)^k` and `cosh(u)^k·sinh(u)^(−k)` →
+/// `coth(u)^k = (−i·cot(u/i))^k` (`k ≥ 1`) among the factors `children` of a
+/// product, for `u = qπ` (`u = i·qπ`) with `q` at a non-classical
+/// denominator of [`TAN_PI_DENOMINATORS`]: `cot` and `coth` are these
+/// quotients, and the quotient of the separately evaluated `cos` and `sin`
+/// is not SymPy's `cot.eval` form (or not evaluated at all: `cos(π/16)` and
+/// `sin(π/16)` are not, `cot(π/16)` is).  `None` when no pair folds.  The
+/// arguments are compared after evaluation (`cache`).
+fn eval_cot_quotients(
+    arena: &mut Arena,
+    children: &[ExprId],
+    cache: &FxHashMap<ExprId, ExprId>,
+) -> Option<ExprId> {
+    // (argument, hyperbolic, integer exponent) of a factor `f(u)^k`, `f`
+    // one of cos, sin, cosh, sinh.
+    let factor = |arena: &Arena, c: ExprId| -> Option<(ExprId, bool, bool, i64)> {
+        let (b, k) = match *arena.node(c) {
+            ExprNode::Pow(b, e) => {
+                let e = arena.as_num(e)?;
+                if !e.is_integer() {
+                    return None;
+                }
+                (b, e.to_integer().to_i64()?)
+            }
+            _ => (c, 1),
+        };
+        let (u, hyperbolic, cosine) = match *arena.node(b) {
+            ExprNode::Cos(u) => (u, false, true),
+            ExprNode::Sin(u) => (u, false, false),
+            ExprNode::Cosh(u) => (u, true, true),
+            ExprNode::Sinh(u) => (u, true, false),
+            _ => return None,
+        };
+        Some((cache.get(&u).copied().unwrap_or(u), hyperbolic, cosine, k))
+    };
+    if children.len() < 2 || !children.iter().any(|&c| factor(arena, c).is_some()) {
+        return None;
+    }
+    let mut used = vec![false; children.len()];
+    let mut values: smallvec::SmallVec<[ExprId; 4]> = smallvec::SmallVec::new();
+    for i in 0..children.len() {
+        let Some((u, hyperbolic, true, k)) = factor(arena, children[i]) else {
+            continue;
+        };
+        if k < 1 || used[i] {
+            continue;
+        }
+        let partner = (0..children.len()).find(|&j| {
+            !used[j] && j != i && factor(arena, children[j]) == Some((u, hyperbolic, false, -k))
+        });
+        let Some(j) = partner else { continue };
+        let q = if hyperbolic {
+            as_imaginary_pi_multiple(arena, u)
+        } else {
+            as_pi_multiple(arena, u)
+        };
+        let Some(cot) = q.and_then(|q| cot_pi_radical(arena, &q)) else {
+            continue;
+        };
+        let value = if hyperbolic {
+            let minus_i = arena.neg(arena.i_unit);
+            arena.mul(&[minus_i, cot])
+        } else {
+            cot
+        };
+        let kk = arena.int(k);
+        values.push(arena.pow(value, kk));
+        used[i] = true;
+        used[j] = true;
+    }
+    if values.is_empty() {
+        return None;
+    }
+    for (c, u) in children.iter().zip(&used) {
+        if !u {
+            values.push(cache.get(c).copied().unwrap_or(*c));
+        }
+    }
+    Some(arena.mul(&values))
+}
+
 /// Evaluate `exp(inner)` for known special values.
 fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // exp(0) = 1
@@ -2947,7 +3766,12 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
     // Euler's formula: exp(i*k*π) = cos(kπ) + i*sin(kπ)
     // Detect if inner is i * (something that's a π-multiple)
-    if let Some(pi_coeff) = as_imaginary_pi_multiple(arena, inner) {
+    // Only at the classical denominators (`e^{iπ/4} = (1 + i)·√2/2`):
+    // SymPy keeps `exp(I*pi/5)`, and the radical values of `cos`/`sin` at
+    // the other denominators would only make it longer.
+    if let Some(pi_coeff) = as_imaginary_pi_multiple(arena, inner)
+        && is_classical_denominator(&pi_coeff)
+    {
         // We have exp(i * coeff * π)
         // = cos(coeff*π) + i*sin(coeff*π)
         // Build the angle as coeff*π and evaluate sin/cos
@@ -3391,6 +4215,9 @@ fn eval_asin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
             return Some(arena.mul(&[neg_sixth, arena.pi]));
         }
     }
+    if let Some(v) = inverse_of_trig_at_pi_multiple(arena, inner, InverseTrig::Asin) {
+        return Some(v);
+    }
     // asin(v) = π/2 − acos(v) = s·(1/2 − q)·π for |v| = cos(qπ).
     let (s, q) = special_angle_of(arena, inner, SpecialTable::Cos)?;
     let half = Ratio::new(BigInt::from(1), BigInt::from(2));
@@ -3422,6 +4249,9 @@ fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
             let two_thirds = arena.rational(2, 3);
             return Some(arena.mul(&[two_thirds, arena.pi]));
         }
+    }
+    if let Some(v) = inverse_of_trig_at_pi_multiple(arena, inner, InverseTrig::Acos) {
+        return Some(v);
     }
     // acos(±cos(qπ)) = qπ or (1 − q)π (principal range [0, π]).
     let (s, q) = special_angle_of(arena, inner, SpecialTable::Cos)?;
@@ -3461,9 +4291,109 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let neg_quarter = arena.rational(-1, 4);
         return Some(arena.mul(&[neg_quarter, arena.pi]));
     }
+    if let Some(v) = inverse_of_trig_at_pi_multiple(arena, inner, InverseTrig::Atan) {
+        return Some(v);
+    }
     // atan(±tan(qπ)) = ±qπ (principal range (−π/2, π/2)).
     let (s, q) = special_angle_of(arena, inner, SpecialTable::Tan)?;
     Some(pi_times(arena, q * s))
+}
+
+/// Which inverse function [`inverse_of_trig_at_pi_multiple`] applies.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InverseTrig {
+    Asin,
+    Acos,
+    Atan,
+}
+
+/// The principal value of `asin`, `acos` or `atan` at `sin(qπ)`, `cos(qπ)`
+/// or (for `atan`) `tan(qπ)` with `q` rational, an application `eval` kept
+/// (`q` off SymPy's denominators): `asin(sin(7π/102)) = 7π/102`,
+/// `acos(cos(14π/9)) = 4π/9`, `asin(cos(49π/85)) = −13π/170`,
+/// `atan(tan(−34π/43)) = 9π/43` — SymPy's `asin.eval`, `acos.eval`,
+/// `atan.eval` rules for a trigonometric argument (there for any comparable
+/// angle, here for rational multiples of `π`, exactly).  Before 0.43 they
+/// stayed.
+fn inverse_of_trig_at_pi_multiple(
+    arena: &mut Arena,
+    inner: ExprId,
+    which: InverseTrig,
+) -> Option<ExprId> {
+    // `cot` is `cos/sin` or `1/tan` here (`acot(tan x) = atan(1/tan x)`):
+    // atan(cot(qπ)) = atan(tan((1/2 − q)π)).
+    let cot_argument = |arena: &Arena| -> Option<ExprId> {
+        match arena.node(inner) {
+            ExprNode::Pow(b, e) if *e == arena.neg_one => match *arena.node(*b) {
+                ExprNode::Tan(u) => Some(u),
+                _ => None,
+            },
+            ExprNode::Mul(cs) if cs.len() == 2 => {
+                let (c, s) = (arena.node(cs[0]), arena.node(cs[1]));
+                match (c, s) {
+                    (ExprNode::Cos(u), ExprNode::Pow(b, e))
+                    | (ExprNode::Pow(b, e), ExprNode::Cos(u))
+                        if *e == arena.neg_one
+                            && matches!(*arena.node(*b), ExprNode::Sin(v) if v == *u) =>
+                    {
+                        Some(*u)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+    let (u, f, cot) = match *arena.node(inner) {
+        ExprNode::Sin(u) => (u, InverseTrig::Asin, false),
+        ExprNode::Cos(u) => (u, InverseTrig::Acos, false),
+        ExprNode::Tan(u) if which == InverseTrig::Atan => (u, InverseTrig::Atan, false),
+        _ if which == InverseTrig::Atan => (cot_argument(arena)?, InverseTrig::Atan, true),
+        _ => return None,
+    };
+    let q = as_pi_multiple(arena, u)?;
+    let q = if cot {
+        Ratio::new(BigInt::from(1), BigInt::from(2)) - q
+    } else {
+        q
+    };
+    let one = Q::one();
+    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+    // asin(sin(qπ)) in [−π/2, π/2] and acos(cos(qπ)) in [0, π], in units of π.
+    let asin_of_sin = |q: &Q| {
+        let mut r = mod_positive(q, &Ratio::from_integer(BigInt::from(2)));
+        if r > one {
+            r = &one - r;
+        }
+        if r > half {
+            r = &one - r;
+        } else if r < -half.clone() {
+            r = -&one - r;
+        }
+        r
+    };
+    let acos_of_cos = |q: &Q| {
+        let two = Ratio::from_integer(BigInt::from(2));
+        let r = mod_positive(q, &two);
+        if r > one { two - r } else { r }
+    };
+    let r = match (which, f) {
+        (InverseTrig::Atan, InverseTrig::Atan) => {
+            let r = mod_positive(&q, &one);
+            // A pole of `tan` (only reached through `cot`, at a zero of `sin`).
+            if r == half {
+                return None;
+            }
+            if r > half { r - &one } else { r }
+        }
+        (InverseTrig::Asin, InverseTrig::Asin) => asin_of_sin(&q),
+        (InverseTrig::Acos, InverseTrig::Acos) => acos_of_cos(&q),
+        // asin(x) + acos(x) = π/2.
+        (InverseTrig::Asin, InverseTrig::Acos) => &half - acos_of_cos(&q),
+        (InverseTrig::Acos, InverseTrig::Asin) => &half - asin_of_sin(&q),
+        _ => return None,
+    };
+    Some(pi_times(arena, r))
 }
 
 /// `r·π` as a canonical node.
@@ -3854,7 +4784,13 @@ fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.zero {
         return Some(arena.zero);
     } // sinh(0) = 0
-    None
+    // sinh(i·qπ) = i·sin(qπ) where that evaluates (SymPy's `sinh.eval`:
+    // `sinh(I*pi/8)` → `I*sqrt(1/2 - sqrt(2)/4)`); before 0.43 only the
+    // rational values folded (in the canonical constructor).
+    let q = as_imaginary_pi_multiple(arena, inner)?;
+    let angle = pi_times(arena, q);
+    let s = eval_sin(arena, angle)?;
+    Some(arena.mul(&[arena.i_unit, s]))
 }
 
 fn eval_cosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -3866,7 +4802,10 @@ fn eval_cosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.zero {
         return Some(arena.one);
     } // cosh(0) = 1
-    None
+    // cosh(i·qπ) = cos(qπ) (SymPy: `cosh(I*pi/5)` → `1/4 + sqrt(5)/4`).
+    let q = as_imaginary_pi_multiple(arena, inner)?;
+    let angle = pi_times(arena, q);
+    eval_cos(arena, angle)
 }
 
 fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -3879,7 +4818,11 @@ fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.zero {
         return Some(arena.zero);
     } // tanh(0) = 0
-    None
+    // tanh(i·qπ) = i·tan(qπ) (SymPy: `tanh(I*pi/12)` → `I*(2 - sqrt(3))`).
+    let q = as_imaginary_pi_multiple(arena, inner)?;
+    let angle = pi_times(arena, q);
+    let t = eval_tan(arena, angle)?;
+    Some(arena.mul(&[arena.i_unit, t]))
 }
 
 fn eval_asinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -4007,13 +4950,14 @@ fn mod_positive(a: &Q, m: &Q) -> Q {
     result
 }
 
-/// Does the denominator of `q` (in lowest terms) divide `n`?  The special
-/// values of `sin`, `cos` and `tan` at `q·π` are all at denominators
-/// dividing 12, and the period and quadrant reductions (`q mod 2`, `1 − q`,
-/// `q − 1`, `2 − q`) keep the denominator, so any other `q` has none:
-/// returning early spares the reductions, each a few gcds and an interned
-/// number at the full size of `q` (`simplify(sin(qπ)² + cos(qπ)²)` for a
-/// 5,000-digit `q` took 4 s, through hundreds of such evaluations).
+/// Does the denominator of `q` (in lowest terms) divide `n`?  The explicit
+/// special values of `sin`, `cos` and `tan` at `q·π` are all at
+/// denominators dividing 4 or 6 (the others are at the few denominators of
+/// [`COS_PI_DENOMINATORS`]), and the period and quadrant reductions (`q mod
+/// 2`, `1 − q`, `q − 1`, `2 − q`) keep the denominator, so any other `q` has
+/// none: returning early spares the reductions, each a few gcds and an
+/// interned number at the full size of `q` (`simplify(sin(qπ)² + cos(qπ)²)`
+/// for a 5,000-digit `q` took 4 s, through hundreds of such evaluations).
 fn denominator_divides(q: &Q, n: u32) -> bool {
     q.denom()
         .to_u32()
