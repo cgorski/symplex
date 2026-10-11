@@ -12,9 +12,16 @@
 //!    [`crate::poly::factor_zassenhaus`]).
 //! 2. Otherwise, if the expression is a polynomial in a handful of symbols,
 //!    convert it to a [`MultiPoly`](crate::poly::multipoly::MultiPoly) and
-//!    factor by Kronecker substitution
-//!    ([`factor_multivariate`]).
+//!    factor by Kronecker substitution or Hensel lifting
+//!    ([`factor_multivariate_many`]).  As in SymPy's `factor`, a
+//!    polynomial whose coefficients hold the imaginary unit is factored
+//!    over `ℚ(i)`, and other constants (`√2`, `π`) are generators like the
+//!    symbols (`√2·x + √2 = √2·(x + 1)`).
 //! 3. Convert the factors back to expressions and build the product.
+//!
+//! [`factor_extension`] factors over an algebraic number field `ℚ(α)`
+//! (SymPy's `factor(f, extension=…)`) by Trager's norm method
+//! ([`numfield`]).
 //!
 //! Every factorization is verified by multiplying back before it is
 //! returned; expressions that are not polynomial are returned unchanged.
@@ -26,24 +33,61 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::poly::Poly;
-use crate::poly::factor_zassenhaus::factor_multivariate;
+use crate::poly::factor_zassenhaus::{factor_multivariate, factor_multivariate_many};
+use crate::poly::numfield::{self, AlgNum, ExtField, KPoly};
 use crate::poly::polybridge;
+use crate::poly::traits::Ring;
 
-/// Maximum number of distinct symbols handled by the multivariate path.
+/// Number of symbols up to which the multivariate path converts with
+/// `expr_to_multipoly` and factors by Kronecker substitution first (the
+/// route of every release up to 0.42, kept as is).  Beyond it (up to 0.42
+/// such polynomials were returned unchanged) the conversion has a size
+/// budget and the factorization goes to Hensel lifting directly, within
+/// the cost budget of
+/// [`factor_multivariate_many`].
 const MAX_MULTIVARIATE_SYMBOLS: usize = 4;
 
-/// Rational content plus `(factor expression, multiplicity)` pairs.
-type FactorParts = (Q, Vec<(ExprId, u32)>);
+/// Content (a number: rational, or algebraic over an extension) plus
+/// `(factor expression, multiplicity)` pairs.
+type FactorParts = (ExprId, Vec<(ExprId, u32)>);
+
+/// Which inputs the multivariate path accepts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// The route of the internal callers (the solvers, `dsolve`), kept as
+    /// it was up to 0.42 so that their outputs do not change: rational
+    /// coefficients, at most [`MAX_MULTIVARIATE_SYMBOLS`] symbols.
+    Internal,
+    /// The public methods: also more symbols (Hensel lifting) and constant
+    /// coefficients (`ℚ(i)`, constant generators; see
+    /// [`factor_with_constants`]).
+    Public,
+}
 
 /// Factor a polynomial expression in `var` into a product of irreducible
-/// factors over ℤ.
+/// factors over ℤ (the internal route: rational coefficients, at most four
+/// symbols; see [`factor_public`]).
 ///
 /// Returns the expression unchanged if it is not polynomial in `var`, if it
 /// is constant in `var`, or if it is already irreducible with unit content.
 pub(crate) fn factor(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    match factor_parts(arena, expr, Some(var)) {
-        Some((content, factors)) if is_nontrivial(&content, &factors) => {
-            build_factored_expr(arena, &content, &factors)
+    match factor_parts(arena, expr, Some(var), Route::Internal) {
+        Some((content, factors)) if is_nontrivial(arena, content, &factors) => {
+            build_factored_expr(arena, content, &factors)
+        }
+        _ => expr,
+    }
+}
+
+/// `Ex::factor`: [`factor`], and beyond it more than four symbols (Hensel
+/// lifting) and constant coefficients as SymPy's `factor` takes them:
+/// over `ℚ(i)` when `i` is the only constant, other constants as
+/// generators (`√2·x² + √2·x = √2·x·(x + 1)`).  Up to 0.42 these were
+/// returned unchanged.
+pub(crate) fn factor_public(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    match factor_parts(arena, expr, Some(var), Route::Public) {
+        Some((content, factors)) if is_nontrivial(arena, content, &factors) => {
+            build_factored_expr(arena, content, &factors)
         }
         _ => expr,
     }
@@ -53,13 +97,14 @@ pub(crate) fn factor(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
 /// free symbols.
 ///
 /// With exactly one free symbol this is [`factor`] in that symbol; with
-/// two to four symbols the multivariate path is used.  Expressions with
-/// no free symbols, too many symbols, or non-polynomial structure are
-/// returned unchanged.
+/// two or more symbols the multivariate path is used (beyond four symbols
+/// by Hensel lifting within a cost budget; up to 0.42 such expressions
+/// were returned unchanged).  Expressions with no free symbols, beyond the
+/// budget, or with non-polynomial structure are returned unchanged.
 pub(crate) fn factor_auto(arena: &mut Arena, expr: ExprId) -> ExprId {
-    match factor_parts(arena, expr, None) {
-        Some((content, factors)) if is_nontrivial(&content, &factors) => {
-            build_factored_expr(arena, &content, &factors)
+    match factor_parts(arena, expr, None, Route::Public) {
+        Some((content, factors)) if is_nontrivial(arena, content, &factors) => {
+            build_factored_expr(arena, content, &factors)
         }
         _ => expr,
     }
@@ -70,28 +115,42 @@ pub(crate) fn factor_auto(arena: &mut Arena, expr: ExprId) -> ExprId {
 ///
 /// If `var` is `None` the variables are inferred as in [`factor_auto`].
 /// For inputs that cannot be factored (non-polynomial, constant, …) the
-/// result is `(1, [(expr, 1)])`.
+/// result is `(1, [(expr, 1)])`.  The internal route (see
+/// [`factor_list_public`]).
 pub(crate) fn factor_list(
     arena: &mut Arena,
     expr: ExprId,
     var: Option<ExprId>,
 ) -> (ExprId, Vec<(ExprId, u32)>) {
-    match factor_parts(arena, expr, var) {
-        Some((content, factors)) => {
-            let content_id = {
-                let nid = arena.intern_num(content);
-                arena.intern(ExprNode::Num(nid))
-            };
-            (content_id, factors)
-        }
+    match factor_parts(arena, expr, var, Route::Internal) {
+        Some((content, factors)) => (content, factors),
         None => (arena.one, vec![(expr, 1)]),
     }
 }
 
-/// Shared driver: returns the rational content and the irreducible factors
-/// (as expressions) or `None` if the expression is not a non-constant
+/// `Ex::factor_list` / `Ex::factor_list_all`: [`factor_list`] with the
+/// inputs of [`factor_public`]; the content may be an algebraic number
+/// (`2·i` for `2ix + 2`).
+pub(crate) fn factor_list_public(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: Option<ExprId>,
+) -> (ExprId, Vec<(ExprId, u32)>) {
+    match factor_parts(arena, expr, var, Route::Public) {
+        Some((content, factors)) => (content, factors),
+        None => (arena.one, vec![(expr, 1)]),
+    }
+}
+
+/// Shared driver: returns the content and the irreducible factors (as
+/// expressions) or `None` if the expression is not a non-constant
 /// polynomial in the chosen variable(s).
-fn factor_parts(arena: &mut Arena, expr: ExprId, var: Option<ExprId>) -> Option<FactorParts> {
+fn factor_parts(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: Option<ExprId>,
+    route: Route,
+) -> Option<FactorParts> {
     let mut syms = walk::free_symbols(arena, expr);
     syms.sort_by_key(|id| id.0);
     syms.dedup();
@@ -104,18 +163,81 @@ fn factor_parts(arena: &mut Arena, expr: ExprId, var: Option<ExprId>) -> Option<
             if !syms.contains(&v) {
                 return None;
             }
-            factor_multi(arena, expr, &syms)
+            match route {
+                Route::Internal => factor_multi_internal(arena, expr, &syms),
+                Route::Public => factor_with_constants(arena, expr, &syms, Some(v)),
+            }
         }
         None => match syms.len() {
             0 => None,
             1 => {
                 let v = syms[0];
-                let poly = polybridge::expr_to_poly(arena, expr, v)?;
-                factor_univariate(arena, &poly, v)
+                match (polybridge::expr_to_poly(arena, expr, v), route) {
+                    (Some(poly), _) => factor_univariate(arena, &poly, v),
+                    (None, Route::Internal) => None,
+                    (None, Route::Public) => factor_with_constants(arena, expr, &syms, Some(v)),
+                }
             }
-            _ => factor_multi(arena, expr, &syms),
+            _ => match route {
+                Route::Internal => factor_multi_internal(arena, expr, &syms),
+                Route::Public => factor_with_constants(arena, expr, &syms, None),
+            },
         },
     }
+}
+
+/// The multivariate path of the internal route (unchanged since 0.39).
+fn factor_multi_internal(arena: &mut Arena, expr: ExprId, syms: &[ExprId]) -> Option<FactorParts> {
+    if syms.len() > MAX_MULTIVARIATE_SYMBOLS {
+        return None;
+    }
+    factor_multi(arena, expr, syms)
+}
+
+/// The multivariate path, with SymPy's default domain for coefficients
+/// that are not rational: a univariate polynomial (in `var`) whose only
+/// other generator is `i` is factored over `ℚ(i)` (SymPy's `ZZ_I`); other
+/// constant generators (`√2`, `π`, `e`, and `i` beside them) become
+/// variables of the multivariate factorization, as SymPy's generators.
+/// Generators that hold a symbol (`sin x`, `√y`) are refused as before.
+fn factor_with_constants(
+    arena: &mut Arena,
+    expr: ExprId,
+    syms: &[ExprId],
+    var: Option<ExprId>,
+) -> Option<FactorParts> {
+    let gens = numfield::generators(arena, &[expr]);
+    let constants: Vec<ExprId> = gens
+        .into_iter()
+        .filter(|&g| !matches!(arena.node(g), ExprNode::Symbol(_)))
+        .collect();
+    if constants.is_empty() {
+        return factor_multi(arena, expr, syms);
+    }
+    if walk::has_unevaluated(arena, expr)
+        || constants.iter().any(|&g| {
+            !walk::free_symbols(arena, g).is_empty()
+                || matches!(
+                    arena.node(g),
+                    ExprNode::Infinity
+                        | ExprNode::NegInfinity
+                        | ExprNode::ComplexInfinity
+                        | ExprNode::NaN
+                )
+        })
+    {
+        return None;
+    }
+    let i = arena.i_unit();
+    if let (Some(v), [only]) = (var, constants.as_slice())
+        && *only == i
+        && syms.len() == 1
+    {
+        return factor_gaussian_default(arena, expr, v);
+    }
+    let mut vars: Vec<ExprId> = syms.to_vec();
+    vars.extend(constants);
+    factor_multi(arena, expr, &vars)
 }
 
 fn factor_univariate(arena: &mut Arena, poly: &Poly, var: ExprId) -> Option<FactorParts> {
@@ -127,38 +249,148 @@ fn factor_univariate(arena: &mut Arena, poly: &Poly, var: ExprId) -> Option<Fact
         .iter()
         .map(|(f, m)| (polybridge::poly_to_expr(arena, f, var), *m))
         .collect();
-    Some((content, factor_ids))
+    Some((arena.num_ratio(content), factor_ids))
 }
 
 fn factor_multi(arena: &mut Arena, expr: ExprId, syms: &[ExprId]) -> Option<FactorParts> {
-    if syms.len() < 2 || syms.len() > MAX_MULTIVARIATE_SYMBOLS {
+    if syms.len() < 2 {
         return None;
     }
-    let mp = polybridge::expr_to_multipoly(arena, expr, syms)?;
-    if mp.is_zero() || mp.total_degree().unwrap_or(0) == 0 {
-        return None;
-    }
-    let (content, factors) = factor_multivariate(&mp)?;
+    let (content, factors) = if syms.len() <= MAX_MULTIVARIATE_SYMBOLS {
+        let mp = polybridge::expr_to_multipoly(arena, expr, syms)?;
+        if mp.is_zero() || mp.total_degree().unwrap_or(0) == 0 {
+            return None;
+        }
+        factor_multivariate(&mp)?
+    } else {
+        let mp = crate::poly::paramfield::to_multipoly(arena, expr, syms)?;
+        if mp.is_zero() || mp.total_degree().unwrap_or(0) == 0 {
+            return None;
+        }
+        factor_multivariate_many(&mp)?
+    };
     let factor_ids = factors
         .iter()
         .map(|(f, m)| (polybridge::multipoly_to_expr(arena, f, syms), *m))
         .collect();
-    Some((content, factor_ids))
+    Some((arena.num_ratio(content), factor_ids))
+}
+
+/// SymPy's default for a polynomial with Gaussian coefficients: a factor
+/// common to all terms is taken out first (SymPy's `factor` runs
+/// `together`, whose `gcd_terms` extracts it), and when what remains has
+/// rational coefficients it is factored over ℚ (`i·x² + 9i = i·(x² + 9)`);
+/// otherwise over `ℚ(i)` (`x² + 2ix − 1 = (x + i)²`).
+fn factor_gaussian_default(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<FactorParts> {
+    let i = arena.i_unit();
+    let mut ef = ExtField::for_atoms(arena, &[i])?;
+    let f = ef.kpoly_of(arena, expr, var)?;
+    let lc = f.leading_coeff()?.clone();
+    let monic = f.make_monic();
+    let rational: Option<Vec<Q>> = monic
+        .coeffs()
+        .iter()
+        .map(|c| c.as_rational().cloned())
+        .collect();
+    if let Some(coeffs) = rational {
+        let rational = Poly::from_coeffs(coeffs);
+        let (content, factors) = rational.factor_over_z();
+        let content = Ring::mul(&lc, &AlgNum::Rat(content));
+        let factor_ids = factors
+            .iter()
+            .map(|(g, m)| (polybridge::poly_to_expr(arena, g, var), *m))
+            .collect();
+        return Some((ef.element_to_expr(arena, &content), factor_ids));
+    }
+    factor_over_extension(arena, expr, var, &[])
+}
+
+/// Factor `expr`, a polynomial in `var` with algebraic coefficients, over
+/// the field generated by the algebraic numbers of its coefficients and of
+/// `extension` (SymPy's `factor(f, extension=[…])`), by Trager's norm
+/// method.  The factors are made monic and then scaled to coefficients in
+/// `ℤ[α]` with no common integer factor (`x² − 1/2 = (2x − √2)(2x + √2)/4`,
+/// SymPy's form).  `None` when the field cannot be built (an atom that is
+/// not a recognised algebraic number, a degree above
+/// [`MAX_FIELD_DEGREE`](numfield::MAX_FIELD_DEGREE)), the expression is not
+/// such a polynomial, or a budget is exceeded.
+fn factor_over_extension(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    extension: &[ExprId],
+) -> Option<FactorParts> {
+    // The algebraic numbers of the coefficients once multiplied out (as
+    // SymPy builds its domain), and those of `extension`.
+    let expanded = crate::transforms::expand::expand(arena, expr);
+    let gens = numfield::generators(arena, &[expanded]);
+    let mut atoms: Vec<ExprId> = Vec::new();
+    for g in gens.into_iter().chain(extension.iter().copied()) {
+        if g == var || atoms.contains(&g) || arena.as_num(g).is_some() {
+            continue;
+        }
+        if walk::contains(arena, g, var) {
+            return None;
+        }
+        atoms.push(g);
+    }
+    if atoms.is_empty() {
+        let poly = polybridge::expr_to_poly(arena, expanded, var)?;
+        return factor_univariate(arena, &poly, var);
+    }
+    let mut ef = ExtField::for_atoms(arena, &atoms)?;
+    let f = ef.kpoly_of(arena, expr, var)?;
+    let fac = ef.field.factor(&f)?;
+    if !fac.complete {
+        tracing::warn!("factor_extension: a norm factorization was not certified complete");
+    }
+    let mut content = fac.lc.clone();
+    let mut factors: Vec<(ExprId, u32)> = Vec::with_capacity(fac.factors.len());
+    for (h, m) in &fac.factors {
+        let lq = ef.primitive_scale(h);
+        let h2: KPoly = h.scale(&AlgNum::Rat(lq.clone()));
+        let lm = Ring::pow_usize(&lq, *m as usize);
+        content = Ring::mul(&content, &AlgNum::Rat(<Q as One>::one() / lm));
+        factors.push((ef.kpoly_to_expr(arena, &h2, var), *m));
+    }
+    let content_id = ef.element_to_expr(arena, &content);
+    Some((content_id, factors))
+}
+
+/// [`factor`] over the algebraic number field generated by `extension`
+/// together with the algebraic numbers in the coefficients (SymPy's
+/// `factor(f, x, extension=…)`; an empty `extension` is SymPy's
+/// `extension=True`).  Returns `expr` unchanged when it is not such a
+/// polynomial in `var`, when it is irreducible over that field, or beyond
+/// the budgets of [`factor_over_extension`].
+pub(crate) fn factor_extension(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    extension: &[ExprId],
+) -> ExprId {
+    match factor_over_extension(arena, expr, var, extension) {
+        Some((content, factors)) if is_nontrivial(arena, content, &factors) => {
+            build_factored_expr(arena, content, &factors)
+        }
+        _ => expr,
+    }
 }
 
 /// A factorization is worth reporting if it has more than one factor, a
 /// repeated factor, or a non-unit content.
-fn is_nontrivial(content: &Q, factors: &[(ExprId, u32)]) -> bool {
-    factors.len() > 1 || factors.iter().any(|(_, m)| *m > 1) || !content.is_one()
+fn is_nontrivial(arena: &Arena, content: ExprId, factors: &[(ExprId, u32)]) -> bool {
+    factors.len() > 1
+        || factors.iter().any(|(_, m)| *m > 1)
+        || !arena.as_num(content).is_some_and(One::is_one)
 }
 
 /// Build `content · ∏ factor^mult` as an expression.
-fn build_factored_expr(arena: &mut Arena, content: &Q, factors: &[(ExprId, u32)]) -> ExprId {
+fn build_factored_expr(arena: &mut Arena, content: ExprId, factors: &[(ExprId, u32)]) -> ExprId {
     let mut parts: Vec<ExprId> = Vec::with_capacity(factors.len() + 1);
 
-    if !content.is_one() {
-        let nid = arena.intern_num(content.clone());
-        parts.push(arena.intern(ExprNode::Num(nid)));
+    if !arena.as_num(content).is_some_and(One::is_one) {
+        parts.push(content);
     }
 
     for &(fexpr, mult) in factors {

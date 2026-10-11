@@ -495,6 +495,53 @@ pub fn factor_mod_p(f: &Poly, p: u64) -> Option<ModPFactorization> {
 /// ```
 #[must_use]
 pub fn factor_multivariate<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<MultiFactorization<O>> {
+    factor_multivariate_route(f, true)
+}
+
+/// Most variables for which [`factor_multivariate_many`] tries the
+/// Kronecker substitution (it tries every order of the variables).
+pub(crate) const MAX_KRONECKER_VARIABLES: usize = 4;
+
+/// Largest number of terms of an input to [`factor_multivariate_many`]
+/// with more than [`MAX_KRONECKER_VARIABLES`] variables.
+const MAX_MANY_VARIABLE_TERMS: usize = 2_000;
+
+/// Largest total degree of such an input.
+const MAX_MANY_VARIABLE_DEGREE: u32 = 40;
+
+/// Largest number of variables of such an input.
+const MAX_MANY_VARIABLES: usize = 16;
+
+/// [`factor_multivariate`] for any number of variables: up to
+/// [`MAX_KRONECKER_VARIABLES`] variables present it is that function;
+/// beyond, the Kronecker substitution (all orders of the variables) is
+/// skipped and the polynomial goes to evaluation and Hensel lifting
+/// directly, within a cost budget on the input (at most 2,000 terms,
+/// total degree 40, 16 variables; `None` beyond, or when the lifting gives
+/// up).  The result is verified by multiplying back, as there.
+#[must_use]
+pub(crate) fn factor_multivariate_many<O: MonomialOrd>(
+    f: &MultiPoly<O>,
+) -> Option<MultiFactorization<O>> {
+    let present = f.variables_present().len();
+    if present <= MAX_KRONECKER_VARIABLES {
+        return factor_multivariate_route(f, true);
+    }
+    if present > MAX_MANY_VARIABLES
+        || f.num_terms() > MAX_MANY_VARIABLE_TERMS
+        || f.total_degree().unwrap_or(0) > MAX_MANY_VARIABLE_DEGREE
+    {
+        return None;
+    }
+    factor_multivariate_route(f, false)
+}
+
+/// The body of [`factor_multivariate`]; `kronecker`: try the Kronecker
+/// substitution before Hensel lifting.
+fn factor_multivariate_route<O: MonomialOrd>(
+    f: &MultiPoly<O>,
+    kronecker: bool,
+) -> Option<MultiFactorization<O>> {
     let nv = f.num_vars();
     if f.is_zero() {
         return Some((Ratio::zero(), vec![]));
@@ -548,7 +595,12 @@ pub fn factor_multivariate<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<MultiFact
             // evaluation and Hensel lifting beyond (before, such inputs were
             // not factored at all: `factor_list` of `(x²z + 5xz + 8z − 4)·
             // (7x²y + 8yz − z − 9)²·…` was the input as one factor).
-            let found = match kronecker_factor_all_orders(&prim) {
+            let kron = if kronecker {
+                kronecker_factor_all_orders(&prim)
+            } else {
+                None
+            };
+            let found = match kron {
                 Some(found) => found,
                 None => super::factor_hensel::factor_primitive(&prim)?,
             };

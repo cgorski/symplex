@@ -5,7 +5,7 @@ use tracing::debug_span;
 use crate::api::expr::{Ex, Expr, Numeric};
 use crate::base::errors::SymplexError;
 use crate::base::node::ExprNode;
-use crate::calculus::definite::{self, QuadOpts, QuadResult};
+use crate::calculus::definite::{self, QuadOpts, QuadResult, QuadRule};
 
 impl Expr<Numeric> {
     /// Compute the definite integral `∫_lo^hi self dvar`.
@@ -276,7 +276,9 @@ impl Expr<Numeric> {
     /// * [`SymplexError::FreeSymbol`] — another free symbol is present,
     /// * [`SymplexError::NotImplemented`] — the integrand contains a node
     ///   that cannot be compiled to `f64` code,
-    /// * [`SymplexError::Unevaluable`] — a bound is not a real number,
+    /// * [`SymplexError::Unevaluable`] — a bound is not a real number, or the
+    ///   integrand contains `DiracDelta` of `var` (a distribution, 0 at every
+    ///   point a quadrature samples; before 0.43 `∫₋₁¹ δ(x) dx` was `0`),
     /// * [`SymplexError::ComputationFailed`] — the quadrature did not reach
     ///   the requested accuracy (e.g. a divergent integral).
     ///
@@ -395,6 +397,22 @@ impl Expr<Numeric> {
             }
         }
 
+        // `DiracDelta` compiles to 0 at every point: its integral is not a
+        // sum of values.  Before 0.43 `∫₋₁¹ δ(x) dx` came out `0`.
+        if crate::base::walk::post_order_ids(arena, evaled)
+            .iter()
+            .any(|&id| {
+                matches!(arena.node(id), ExprNode::DiracDelta(inner)
+                if crate::base::walk::contains(arena, *inner, var_id))
+            })
+        {
+            return Err(SymplexError::Unevaluable {
+                reason: "a definite integral of DiracDelta of the integration variable has no \
+                         numerical value (integrate it symbolically)"
+                    .into(),
+            });
+        }
+
         let func = crate::output::lambdify::compile(arena, evaled, &[&var_name]).map_err(|e| {
             SymplexError::NotImplemented(format!(
                 "integrand {} cannot be compiled for numeric quadrature: {e}",
@@ -405,6 +423,95 @@ impl Expr<Numeric> {
 
         let f = |t: f64| func(&[t]);
         definite::quadrature(&f, a, b, opts)
+    }
+
+    /// Numerically integrate `self` in `var` from the first of `points` to
+    /// the last, split at the points in between, to `digits` correct
+    /// significant digits — mpmath's `quad(f, [a, p₁, …, b])` with
+    /// symplex's certification.  The bounds may be expressions or `±∞`.
+    ///
+    /// Each piece is an unevaluated definite integral evaluated as
+    /// [`eval_decimal`](Self::eval_decimal) evaluates one: by
+    /// arbitrary-precision quadrature with `rule` (tanh-sinh by default; see
+    /// [`QuadRule`]), its own breakpoints split off, two successive levels
+    /// required to agree to the working precision, and only the digits the
+    /// resulting bound covers printed.  Supply the points where the
+    /// integrand is not smooth when the breakpoint scanner cannot find them.
+    ///
+    /// # Errors
+    ///
+    /// * [`SymplexError::InvalidArgument`] — fewer than two points, or `var`
+    ///   is not a symbol,
+    /// * as [`eval_decimal`](Self::eval_decimal): a free symbol other than
+    ///   `var`, [`SymplexError::PrecisionExhausted`] when the digits cannot
+    ///   be certified, [`SymplexError::ComputationFailed`] when the
+    ///   quadrature does not converge (a divergent integral, an oscillating
+    ///   integrand on an infinite range).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::definite::QuadRule;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // ∫₀¹ x^(−9/10) dx = 10: an endpoint singularity at full precision.
+    /// let f = x.pow(&ctx.rational(-9, 10));
+    /// let v = f.integrate_numeric_decimal(&x, &[&ctx.int(0), &ctx.int(1)], 30, QuadRule::TanhSinh);
+    /// assert_eq!(v.unwrap(), "10");
+    /// // ∫₀² |x − 1| dx = 1, the kink supplied.
+    /// let g = (&x - 1).abs();
+    /// let pts = [&ctx.int(0), &ctx.int(1), &ctx.int(2)];
+    /// assert_eq!(g.integrate_numeric_decimal(&x, &pts, 20, QuadRule::default()).unwrap(), "1");
+    /// ```
+    pub fn integrate_numeric_decimal(
+        &self,
+        var: &Ex,
+        points: &[&Ex],
+        digits: u32,
+        rule: QuadRule,
+    ) -> Result<String, SymplexError> {
+        let _span =
+            debug_span!("integrate_numeric_decimal", expr = ?self.raw_id(), digits).entered();
+        if points.len() < 2 {
+            return Err(SymplexError::InvalidArgument {
+                operation: "integrate_numeric_decimal",
+                reason: "at least two points (the bounds) are required".into(),
+            });
+        }
+        {
+            let var_id = self.checked_id(var);
+            let inner = self.inner.read();
+            if !matches!(inner.arena.node(var_id), ExprNode::Symbol(_)) {
+                return Err(SymplexError::InvalidArgument {
+                    operation: "integrate_numeric_decimal",
+                    reason: "integration variable must be a symbol".into(),
+                });
+            }
+        }
+        let mut total: Option<Ex> = None;
+        for w in points.windows(2) {
+            let piece = self.definite_integral_node(var, w[0], w[1]);
+            total = Some(match total {
+                None => piece,
+                Some(t) => &t + &piece,
+            });
+        }
+        let Some(total) = total else {
+            return Err(SymplexError::InvalidArgument {
+                operation: "integrate_numeric_decimal",
+                reason: "at least two points (the bounds) are required".into(),
+            });
+        };
+        let evaled = total.eval();
+        let guard = evaled.inner.read();
+        crate::transforms::evalf::evalf_quadrature(
+            &guard.arena,
+            evaled.raw_id(),
+            digits,
+            rule == QuadRule::GaussLegendre,
+        )
     }
 
     /// Residue of `self` at `var = ∞`, defined as

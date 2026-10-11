@@ -30,6 +30,10 @@ mod v35_ntheory;
 mod v35_numeric;
 #[path = "v35/v35_poly.rs"]
 mod v35_poly;
+#[path = "v35/v35_quadrature.rs"]
+mod v35_quadrature;
+#[path = "v35/v35_rational.rs"]
+mod v35_rational;
 #[path = "v35/v35_sets.rs"]
 mod v35_sets;
 #[path = "v35/v35_solve.rs"]

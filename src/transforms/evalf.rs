@@ -42,14 +42,21 @@
 //! # Definite integrals
 //!
 //! An unevaluated `DefiniteIntegral(body, var, lo, hi)` node is evaluated
-//! by compiling `body` to an `f64` function and running the adaptive
-//! Gauss–Kronrod quadrature from [`crate::calculus::definite`].  Its error
-//! bound is the quadrature's own estimate plus the rounding of the `f64`
-//! integrand values (see `eval_definite_integral`), so digits beyond it
-//! are refused ([`SymplexError::PrecisionExhausted`]); requests for more
-//! than [`QUADRATURE_MAX_DIGITS`] digits are refused up front with
-//! [`SymplexError::NotImplemented`].  `Ex::eval_f64` serves such an
-//! expression when [`QUADRATURE_F64_DIGITS`] digits are certified.
+//! at any precision by tanh-sinh quadrature over `BigFloat` (`quad`, after
+//! mpmath's `quad`), the body evaluated at each node by this module's own
+//! node evaluator with its error bounds, interior breakpoints split off and
+//! infinite ranges mapped; its bound is the difference of the last two
+//! levels plus the truncated tail and the rounding of the values (see
+//! `quad` for what that certifies), and digits beyond it are refused
+//! ([`SymplexError::PrecisionExhausted`]).  At the lowest working precision
+//! the cheaper `f64` adaptive Gauss–Kronrod quadrature from
+//! [`crate::calculus::definite`] is tried first and served when it resolves
+//! the integral to [`QUADRATURE_F64_DIGITS`] digits (`Ex::eval_f64`'s
+//! request; see `eval_definite_integral`).  Before 0.43 that was the only
+//! route: more than 16 digits were refused with
+//! [`SymplexError::NotImplemented`], and an endpoint singularity left its
+//! bound wrong (`∫₀¹ dx/√(1 − x)` was `1.9999999898808887` with a bound of
+//! `2·10⁻⁹`).
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -80,6 +87,7 @@ mod hypsum;
 mod lambertw;
 mod loggamma;
 mod polylog;
+mod quad;
 mod sensitivity;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -88,11 +96,6 @@ mod sensitivity;
 
 /// A complex number represented as (real_part, imaginary_part).
 use crate::base::bigcomplex::Complex;
-
-/// Largest number of decimal digits for which an expression containing a
-/// `DefiniteIntegral` is evaluated (by `f64` quadrature) instead of
-/// refused.  `Ex::eval_f64` requests exactly this many.
-pub(crate) const QUADRATURE_MAX_DIGITS: u32 = 16;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public entry point
@@ -186,16 +189,6 @@ fn evalf_with(
         }
     }
 
-    // Definite integrals are evaluated by `f64` quadrature; refuse rather
-    // than print digits that are not there.
-    if digits > QUADRATURE_MAX_DIGITS && contains_definite_integral(arena, expr) {
-        return Err(SymplexError::NotImplemented(format!(
-            "arbitrary-precision evaluation of a definite integral is not implemented \
-             ({digits} digits requested, at most {QUADRATURE_MAX_DIGITS} available from \
-             f64 Gauss–Kronrod quadrature); use eval_f64 or integrate_definite"
-        )));
-    }
-
     let rm = RoundingMode::ToEven;
     let mut cc = Consts::new().map_err(|e| {
         SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
@@ -216,6 +209,19 @@ fn evalf_with(
         Adaptive::Hidden { below_range: true } => Err(hidden_error()),
         Adaptive::Hidden { below_range: false } => Err(hidden_deep_error(digits)),
     }
+}
+
+/// [`evalf`] with every definite integral evaluated by the quadrature rule
+/// the caller chose: Gauss–Legendre when `gauss_legendre`, tanh-sinh
+/// otherwise (`Ex::integrate_numeric_decimal`).
+pub(crate) fn evalf_quadrature(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+    gauss_legendre: bool,
+) -> Result<String, SymplexError> {
+    let _rule = quad::RuleGuard::set(gauss_legendre);
+    evalf(arena, expr, digits)
 }
 
 /// The working precision behind `digits` decimal digits: `3.4` bits per
@@ -1454,7 +1460,7 @@ fn eval_node_with_error(
             eval_rootsum(arena, *poly, *body, *sumvar, prec, rm, cc)?
         }
         ExprNode::DefiniteIntegral(body, var, lo, hi) => {
-            eval_definite_integral(arena, *body, *var, *lo, *hi, cache, errs, prec)?
+            eval_definite_integral(arena, *body, *var, *lo, *hi, cache, errs, prec, rm, cc)?
         }
         node if inverse_identity(arena, node, cache, errs, prec, rm).is_some() => {
             let u = inverse_identity(arena, node, cache, errs, prec, rm).unwrap_or(id);
@@ -1963,12 +1969,19 @@ fn evaluate_adaptive(
     let prec0 = working_precision(digits);
     let max_prec = arena.config.max_evalf_precision as usize;
     let cap = (2 * prec0).max(prec0 + 256).min(max_prec).max(prec0);
+    let post_order = walk::post_order_ids(arena, expr);
+    // A definite integral is a quadrature at every precision: its search
+    // ends at the cap, and a zero ball within the digits is 0 at once (see
+    // below).
+    let integral = post_order
+        .iter()
+        .any(|&id| matches!(arena.node(id), ExprNode::DefiniteIntegral(..)));
     let deep = match search {
         ZeroSearch::Cap => cap,
+        _ if integral => cap,
         ZeroSearch::Deep | ZeroSearch::Number => (prec0 + ZERO_SEARCH_BITS).min(max_prec).max(cap),
     };
     let needed = i64::from(digits) * 3322 / 1000 + 4;
-    let post_order = walk::post_order_ids(arena, expr);
     let mut prec = prec0;
     // The previous evaluation: the magnitude of its value and its error
     // bound, both absolute (`log₂`), and its precision.
@@ -2093,6 +2106,20 @@ fn evaluate_adaptive(
         // `exp(exp(2ix))`, truly `1.000263649 + 0.000207495i`) cancels about
         // 3,400 bits and was `0` with a ball of radius `2²²²⁷` at 1,152 bits.
         let small_zero = zero_ball && lift(err) <= -(needed as f64);
+        // An expression with a definite integral whose ball contains 0 and is
+        // within the requested digits in absolute terms is 0 to them at once:
+        // its value lies within `2^err ≤ 2^−needed` of 0, and a deeper search
+        // is a quadrature at every step.  Before 0.43 an integral equal to 0
+        // (`∫₀^{2π} −(1 − 2 sin t)·cos(2t + 4 cos t) dt`) was refused.
+        if integral
+            && known
+            && beyond.is_none()
+            && accuracy::contains_zero(&value, err)
+            && err <= -(needed as f64)
+        {
+            debug!(prec, err, "evalf: an integral is zero to the digits");
+            return Ok(Adaptive::Settled(c_zero(prec0), Settled::ZeroToPrecision));
+        }
         let wide_zero = zero_ball && !small_zero;
         // Past the cap only a value that is noise, or whose bound falls with
         // the precision (the precision it needs is then predictable), is
@@ -2101,7 +2128,7 @@ fn evaluate_adaptive(
         // needs about 560 bits at 16 digits, past the cap of 384.)
         let converging = known && ball_shrinking && previous.is_some();
         let pursue = (noise || converging || limited) && !accuracy::is_underflow(err);
-        let limit = if wide_zero && search != ZeroSearch::Cap {
+        let limit = if wide_zero && search != ZeroSearch::Cap && !integral {
             max_prec.max(deep)
         } else if pursue || prec > cap {
             deep
@@ -3674,21 +3701,332 @@ const QUADRATURE_ROUNDING_FACTOR: f64 = 16.0;
 
 /// Decimal digits served by [`evalf_complex64`] (`eval_f64`,
 /// `eval_complex64`) for an expression containing a definite integral: the
-/// `f64` Gauss–Kronrod estimate is returned when its error bound certifies
-/// this many digits.  The quadrature seldom certifies the 16 digits of the
-/// rest of the `f64` route (its own rounding floor is `50ε` per segment),
-/// and before 0.29 it was served at a tolerance of `10⁻¹⁰`, accepted up to
+/// cheap `f64` Gauss–Kronrod estimate is returned when its error bound
+/// certifies this many digits (it seldom certifies the 16 of the rest of the
+/// `f64` route: its own rounding floor is `50ε` per segment); otherwise the
+/// arbitrary-precision quadrature serves it, to every digit of the `f64`.
+/// Before 0.29 it was served at a tolerance of `10⁻¹⁰`, accepted up to
 /// `10⁻⁷`, with no check at all.
 pub(crate) const QUADRATURE_F64_DIGITS: u32 = 8;
 
+/// The highest working precision at which a definite integral is tried by
+/// `f64` quadrature first: `evalf`'s minimum, the precision of every
+/// request up to 18 digits.
+const QUADRATURE_F64_MAX_PREC: usize = 128;
+
+/// `∫_lo^hi body d(var)` with an error bound.
+///
+/// At the lowest working precision ([`QUADRATURE_F64_MAX_PREC`]) the `f64`
+/// adaptive Gauss–Kronrod quadrature is tried first
+/// ([`eval_definite_integral_f64`]) and its value served when it resolves
+/// the integral to [`QUADRATURE_F64_DIGITS`] digits: `Ex::eval_f64` of a
+/// smooth integrand stays a matter of microseconds.  Anything else — more
+/// digits, an endpoint singularity the `f64` bisection cannot resolve, an
+/// integrand the `f64` compiler does not support — goes to the
+/// arbitrary-precision tanh-sinh quadrature (`quad`): the body and the
+/// bounds are copied into a private arena (the bounds re-evaluated at every
+/// precision a node needs; one that depends on an enclosing bound variable
+/// keeps its cached value), interior breakpoints are located there by the
+/// definite integrator's scanner, and the pieces are integrated to
+/// `2^−(prec − 48)·∫|f|`.  At the lowest precision, on `[0, ∞)`, `(−∞, 0]`
+/// and the whole line (where its nodes keep their distance to the finite
+/// end), the `f64` quadrature under the endpoint-smoothing substitution
+/// (its raw error estimates resolved) is the fallback when the
+/// arbitrary-precision one fails or certifies less — an oscillating tail
+/// tanh-sinh does not resolve, `∫₀^∞ sin x·e^{−√x}/(2√x) dx` — and the
+/// latter then gets a quarter of its work.  The DiracDelta of the variable is refused: 0 at every node,
+/// its integral is no sum of values (before 0.43 `∫₋₁¹ δ(x) dx` was `0`).
+/// Before 0.43 an integral was refused beyond 16
+/// digits, an endpoint singularity was certified to 8 or 9 digits with a
+/// bound its error exceeded (`∫₀¹ x⁴e^{x/10}/(√(1 − x)·B(5, ½)) dx`,
+/// mpmath `1.0952385618059876`, was `1.0952385480452327` from `eval_f64`
+/// with a bound below `10⁻⁹`), `∫₀¹ x^(−9/10) dx` did not converge, and
+/// an integral equal to 0 was refused.
+#[allow(clippy::too_many_arguments)]
+fn eval_definite_integral(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
+    if !matches!(arena.node(var), ExprNode::Symbol(_)) {
+        return Err(SymplexError::Unevaluable {
+            reason: "integration variable of a definite integral must be a symbol".into(),
+        });
+    }
+    // `DiracDelta` is 0 at every node a quadrature can sample: its integral
+    // is not a sum of values.
+    if walk::post_order_ids(arena, body).iter().any(|&id| {
+        matches!(arena.node(id), ExprNode::DiracDelta(inner) if walk::contains(arena, *inner, var))
+    }) {
+        return Err(SymplexError::Unevaluable {
+            reason: "a definite integral of DiracDelta of the integration variable has no \
+                     numerical value (integrate it symbolically)"
+                .into(),
+        });
+    }
+    if prec > QUADRATURE_F64_MAX_PREC {
+        return eval_definite_integral_bigfloat(
+            arena, body, var, lo, hi, cache, errs, prec, rm, cc, false,
+        );
+    }
+    let f64_at = |smoothing| {
+        eval_definite_integral_f64(arena, body, var, lo, hi, cache, errs, prec, smoothing)
+    };
+    if let Some(served) = f64_at(false)? {
+        return Ok(served);
+    }
+    // An endpoint singularity the plain bisection cannot resolve: the
+    // arbitrary-precision quadrature, unless it fails or certifies less than
+    // the smoothed `f64` one (an oscillating tail it does not resolve,
+    // `∫₀^∞ sin x·e^{−√x}/√x dx`), with less work when the latter exists.
+    let fallback = f64_at(true)?;
+    let big = eval_definite_integral_bigfloat(
+        arena,
+        body,
+        var,
+        lo,
+        hi,
+        cache,
+        errs,
+        prec,
+        rm,
+        cc,
+        fallback.is_some(),
+    );
+    match (big, fallback) {
+        (Ok(b), Some(f)) if b.1.joint() > f.1.joint() => Ok(f),
+        (Ok(b), _) => Ok(b),
+        (Err(_), Some(f)) => Ok(f),
+        (Err(e), None) => Err(e),
+    }
+}
+
+/// A bound of a definite integral for `quad`: `None` for `±∞` (with its
+/// sign), otherwise a finite end in the private arena `pa`.
+fn quadrature_end(
+    arena: &Arena,
+    id: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    pa: &mut Arena,
+    map: &mut FxHashMap<ExprId, ExprId>,
+) -> Result<Result<quad::End, bool>, SymplexError> {
+    match arena.node(id) {
+        ExprNode::Infinity => return Ok(Err(true)),
+        ExprNode::NegInfinity => return Ok(Err(false)),
+        ExprNode::Num(n) => return Ok(Ok(quad::End::Rational(arena.num(*n).clone()))),
+        _ => {}
+    }
+    if walk::free_symbols(arena, id).is_empty() {
+        let p = crate::base::compact::transfer_subtree(arena, pa, id, map);
+        return Ok(Ok(quad::End::Expr(p)));
+    }
+    // A bound that depends on an enclosing bound variable: its cached value.
+    let v = get_cached(cache, id)?;
+    let b = errs.get(&id).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+    if b.is_unknown() || !accuracy::exact_zero(&v.1, b.im) || v.0.is_inf() || v.0.is_nan() {
+        return Err(SymplexError::Unevaluable {
+            reason: "integration bounds of a definite integral must be real".into(),
+        });
+    }
+    Ok(Ok(quad::End::Value(v.0.clone(), b.re)))
+}
+
+/// The arbitrary-precision route of [`eval_definite_integral`].
+#[allow(clippy::too_many_arguments)]
+fn eval_definite_integral_bigfloat(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+    light: bool,
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
+    debug!(
+        prec,
+        light, "evalf: DefiniteIntegral — tanh-sinh quadrature"
+    );
+    let key = quad::memo_key(arena, body, var, lo, hi);
+    if let Some(recalled) = quad::recall(&key, prec) {
+        debug!(
+            prec,
+            "evalf: a quadrature that did not converge at a lower precision"
+        );
+        let (value, err, real) = recalled?;
+        return Ok(quadrature_value(value, err, real, prec));
+    }
+    let mut pa = Arena::with_config(arena.config.clone());
+    let mut map: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let body_p = crate::base::compact::transfer_subtree(arena, &mut pa, body, &mut map);
+    let var_p = crate::base::compact::transfer_subtree(arena, &mut pa, var, &mut map);
+    let lo_e = quadrature_end(arena, lo, cache, errs, &mut pa, &mut map)?;
+    let hi_e = quadrature_end(arena, hi, cache, errs, &mut pa, &mut map)?;
+    let exact_zero = || Ok((c_zero(prec), accuracy::Bound::EXACT));
+    let probe = prec + 32;
+    let mut q = quad::Quad::new(&pa, body_p, var_p, Vec::new(), prec, rm);
+    // The range from below to above (`None`: −∞ below, +∞ above), and
+    // whether it was reversed.
+    let (lo_e, hi_e, negate) = match (lo_e, hi_e) {
+        (Err(a), Err(b)) if a == b => return exact_zero(),
+        (Err(false), Err(_)) => (None, None, false),
+        (Err(_), Err(_)) => (None, None, true),
+        (Ok(a), Err(true)) => (Some(a), None, false),
+        (Err(false), Ok(b)) => (None, Some(b), false),
+        (Err(true), Ok(b)) => (Some(b), None, true),
+        (Ok(a), Err(false)) => (None, Some(a), true),
+        (Ok(a), Ok(b)) => {
+            if quad::same_end(&a, &b) {
+                return exact_zero();
+            }
+            let (av, _) = q.end_value(&a, probe, cc)?;
+            let (bv, _) = q.end_value(&b, probe, cc)?;
+            match av.cmp(&bv) {
+                Some(c) if c < 0 => (Some(a), Some(b), false),
+                Some(c) if c > 0 => (Some(b), Some(a), true),
+                // Equal to the precision: no value yet.
+                _ => return Ok((c_zero(prec), accuracy::Bound::UNKNOWN)),
+            }
+        }
+    };
+    let mut f64_of = |e: &Option<quad::End>, inf: f64| -> Result<f64, SymplexError> {
+        match e {
+            Some(e) => bigfloat_to_f64_rounded(&q.end_value(e, probe, cc)?.0, rm),
+            None => Ok(inf),
+        }
+    };
+    let lo_f = f64_of(&lo_e, f64::NEG_INFINITY)?;
+    let hi_f = f64_of(&hi_e, f64::INFINITY)?;
+    drop(q);
+    // Interior breakpoints, located in the private arena.
+    let points: Vec<quad::End> = quadrature_breakpoints(&mut pa, body_p, var_p, lo_f, hi_f)
+        .into_iter()
+        .map(|(p, _)| match pa.as_num(p) {
+            Some(r) => quad::End::Rational(r.clone()),
+            None => quad::End::Expr(p),
+        })
+        .collect();
+    debug!(
+        lo_f,
+        hi_f,
+        breakpoints = points.len(),
+        "evalf: quadrature pieces"
+    );
+    // The body shifted to each bound and breakpoint `e` other than 0,
+    // `body(e ± x)`: the nodes next to `e` are placed at their distance from
+    // it, which an algebraic or logarithmic singularity at `e` then sees
+    // exactly (`(x − 1/3)^(−9/10)` becomes `x^(−9/10)`) instead of through a
+    // cancellation that needs ten times the precision.
+    let mut variants: Vec<(quad::End, bool, ExprId)> = Vec::new();
+    let mut shift = |pa: &mut Arena, e: &quad::End, plus: bool| {
+        let anchor = match e {
+            quad::End::Rational(q) if !q.is_zero() => pa.num_ratio(q.clone()),
+            quad::End::Expr(id) => *id,
+            _ => return,
+        };
+        let moved = if plus {
+            pa.add(&[anchor, var_p])
+        } else {
+            pa.sub(anchor, var_p)
+        };
+        let shifted = crate::transforms::subs::subs(pa, body_p, var_p, moved);
+        variants.push((e.clone(), plus, shifted));
+    };
+    if let Some(a) = &lo_e {
+        shift(&mut pa, a, true);
+    }
+    if let Some(b) = &hi_e {
+        shift(&mut pa, b, false);
+    }
+    for p in &points {
+        shift(&mut pa, p, false);
+        shift(&mut pa, p, true);
+    }
+    let pieces = quad::pieces(lo_e, hi_e, points);
+    let mut q = quad::Quad::new(&pa, body_p, var_p, variants, prec, rm);
+    if light {
+        q.lighten();
+    }
+    let out = match q.run(pieces, cc) {
+        Ok(out) => out,
+        Err(e) => {
+            if !light && quad::is_node_failure(&e) {
+                quad::remember(key, prec, Err(duplicate_error(&e)));
+            }
+            return Err(e);
+        }
+    };
+    let value = if negate { c_neg(&out.value) } else { out.value };
+    if !light && !out.converged && out.discretisation {
+        quad::remember(key, prec, Ok((value.clone(), out.err, out.real)));
+    }
+    debug!(
+        err = out.err,
+        out.real, out.converged, "evalf: DefiniteIntegral evaluated"
+    );
+    Ok(quadrature_value(value, out.err, out.real, prec))
+}
+
+/// A quadrature's sum `value` with the error bound `2^err` as a node value
+/// at `prec` bits: real when every integrand value was.  A sum of exact
+/// zeros is no proof of an exact zero: its bound is `2^(−4·prec)`.
+fn quadrature_value(
+    mut value: Complex,
+    err: accuracy::ErrExp,
+    real: bool,
+    prec: usize,
+) -> (Complex, accuracy::Bound) {
+    let err = if accuracy::is_exact(err) {
+        -(4.0 * prec as f64)
+    } else {
+        err
+    };
+    if real {
+        value.1 = BigFloat::new(prec);
+    }
+    let bound = accuracy::Bound {
+        re: err,
+        im: if real { accuracy::EXACT } else { err },
+    };
+    (value, bound)
+}
+
+/// The interior breakpoints of `body` in `(lo, hi)` for `quad`, from the
+/// definite integrator's breakpoint scan.
+fn quadrature_breakpoints(
+    pa: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: f64,
+    hi: f64,
+) -> Vec<(ExprId, f64)> {
+    crate::calculus::definite::quadrature_breakpoints(pa, body, var, lo, hi)
+}
+
 /// `∫_lo^hi body d(var)` by adaptive `f64` Gauss–Kronrod quadrature
-/// ([`crate::calculus::definite::quadrature`]), with an honest error bound.
+/// (`quadrature_resolved` of the definite integrator), with an honest error
+/// bound, when it resolves the integral to [`QUADRATURE_F64_DIGITS`] digits;
+/// `None` otherwise (the arbitrary-precision quadrature takes over).
 ///
 /// The body is compiled to a stack-VM function of the integration variable
 /// (no arena mutation) and the bounds come from the cache (`±∞` allowed).
 /// The quadrature is asked for the accuracy the working precision wants,
 /// down to `10⁻¹³` relative (below that it only runs into its own
-/// rounding floor).  The reported bound is the sum of
+/// rounding floor).  Only plain bisection is used, and only a run whose
+/// every segment was resolved is served: the endpoint-smoothing retry of
+/// `quadrature` gives no bound at an algebraic endpoint singularity.  The
+/// reported bound is the sum of
 ///
 /// * the Gauss–Kronrod error estimate,
 /// * the rounding of the `f64` integrand values,
@@ -3702,10 +4040,9 @@ pub(crate) const QUADRATURE_F64_DIGITS: u32 = 8;
 /// have.  Before 0.29 the result was trusted to the working precision less
 /// 16 bits: `eval_decimal(16)` of `∫₀¹ xˣ dx` printed
 /// `0.7834305107121128` (mpmath: `0.78343051071213441…`), three wrong
-/// digits.  A quadrature whose estimate is far above the default tolerance
-/// (`10⁻⁷` relative) is taken as divergent, as before.
+/// digits.
 #[allow(clippy::too_many_arguments)]
-fn eval_definite_integral(
+fn eval_definite_integral_f64(
     arena: &Arena,
     body: ExprId,
     var: ExprId,
@@ -3714,24 +4051,34 @@ fn eval_definite_integral(
     cache: &FxHashMap<ExprId, Complex>,
     errs: &ErrMap,
     prec: usize,
-) -> Result<(Complex, accuracy::Bound), SymplexError> {
-    use crate::calculus::definite::{QuadOpts, QuadResult, quadrature};
+    smoothing: bool,
+) -> Result<Option<(Complex, accuracy::Bound)>, SymplexError> {
+    use crate::calculus::definite::{QuadOpts, QuadResult, quadrature, quadrature_resolved};
     debug!("evalf: DefiniteIntegral — f64 Gauss–Kronrod quadrature");
     let var_name = match arena.node(var) {
         ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
-        _ => {
-            return Err(SymplexError::Unevaluable {
-                reason: "integration variable of a definite integral must be a symbol".into(),
-            });
-        }
+        _ => return Ok(None),
     };
-    let (a, a_err) = definite_bound_f64(arena, cache, errs, lo)?;
-    let (b, b_err) = definite_bound_f64(arena, cache, errs, hi)?;
-    let func = crate::output::lambdify::compile_raw(arena, body, &[&var_name]).map_err(|e| {
-        SymplexError::Unevaluable {
-            reason: format!("definite integral body cannot be compiled for quadrature: {e}"),
-        }
-    })?;
+    let (Ok((a, a_err)), Ok((b, b_err))) = (
+        definite_bound_f64(arena, cache, errs, lo),
+        definite_bound_f64(arena, cache, errs, hi),
+    ) else {
+        return Ok(None);
+    };
+    // The smoothed run is trusted only where its nodes keep their distance
+    // to a finite end, which in `f64` they do next to 0 alone (see
+    // `quadrature_resolved`): on `[0, ∞)`, `(−∞, 0]` and the whole line.
+    let half_lines = (a == 0.0 && b == f64::INFINITY)
+        || (a == f64::NEG_INFINITY && b == 0.0)
+        || (a == 0.0 && b == f64::NEG_INFINITY)
+        || (a == f64::INFINITY && b == 0.0)
+        || (a.is_infinite() && b.is_infinite());
+    if smoothing && (!half_lines || a_err != 0.0 || b_err != 0.0) {
+        return Ok(None);
+    }
+    let Ok(func) = crate::output::lambdify::compile_raw(arena, body, &[&var_name]) else {
+        return Ok(None);
+    };
     let peak = std::cell::Cell::new(0.0f64);
     let f = |t: f64| {
         let v = func(&[t]);
@@ -3765,43 +4112,31 @@ fn eval_definite_integral(
         },
         ..default
     };
-    let QuadResult { value, error } = quadrature(&f, a, b, &opts)?;
-    let tol = default.abs_tol.max(default.rel_tol * value.abs());
-    // A NaN estimate is not converged either.
-    let converged = error <= 1e3 * tol;
-    if !converged {
-        return Err(SymplexError::ComputationFailed {
-            operation: "evalf",
-            reason: format!(
-                "quadrature of the definite integral did not converge: estimate {value} \
-                 with error {error:e} (integral may diverge)"
-            ),
-        });
-    }
+    let Ok(Some(QuadResult { value, error })) = quadrature_resolved(&f, a, b, &opts, smoothing)
+    else {
+        return Ok(None);
+    };
     let rounding = QUADRATURE_ROUNDING_FACTOR * f64::EPSILON * l1.max(value.abs());
     let endpoints = (a_err + b_err) * peak.get();
     let total = error + rounding + endpoints;
     debug!(
         value,
-        error, rounding, endpoints, "evalf: DefiniteIntegral evaluated"
+        error, rounding, endpoints, "evalf: DefiniteIntegral evaluated in f64"
     );
-    if !value.is_finite() || !total.is_finite() {
-        return Ok((
-            (BigFloat::from_f64(value, prec), BigFloat::new(prec)),
-            accuracy::Bound::UNKNOWN,
-        ));
+    // Served only when it certifies the digits of `eval_f64`; a zero bound
+    // (a zero integrand at every node) is no proof of an exact zero.
+    let needed = f64::from(QUADRATURE_F64_DIGITS) * 3.322 + 4.0;
+    if !value.is_finite()
+        || !total.is_finite()
+        || total <= 0.0
+        || total > value.abs() * (-needed).exp2()
+    {
+        return Ok(None);
     }
-    // A zero bound (a zero integrand at every node) is no proof of an
-    // exact zero: the smallest subnormal.
-    let e = if total > 0.0 {
-        total.log2() + 1e-12
-    } else {
-        -1074.0
-    };
-    Ok((
+    Ok(Some((
         (BigFloat::from_f64(value, prec), BigFloat::new(prec)),
-        accuracy::Bound::real(e),
-    ))
+        accuracy::Bound::real(total.log2() + 1e-12),
+    )))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

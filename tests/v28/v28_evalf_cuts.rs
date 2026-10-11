@@ -517,7 +517,9 @@ fn damped_cosine(ctx: &Context) -> Ex {
 /// `∫₀¹⁰ cos(200x)·e⁻ˣ dx` `2.521090543419162e-5` (four wrong).  The bound
 /// is now the quadrature's error estimate plus the rounding of the `f64`
 /// integrand values (`∝ ∫|f|`, so the cancelling oscillation counts), and
-/// digits beyond it are refused.
+/// digits beyond it are not taken from it.  Since 0.43 they come from the
+/// arbitrary-precision quadrature (before, 16 digits were refused with
+/// `PrecisionExhausted`).
 #[test]
 fn definite_integrals_print_only_certified_digits() {
     let ctx = Context::new();
@@ -526,13 +528,10 @@ fn definite_integrals_print_only_certified_digits() {
     // mpmath: mp.dps=50; quad(lambda x: cos(200*x)*exp(-x), linspace(0, 10, 400))
     //         = 2.52109054341912827206351e-5
     assert_eq!(damped_cosine(&ctx).eval_decimal(8).unwrap(), "2.5210905e-5");
-    for (name, e) in [("x^x", x_to_the_x(&ctx)), ("cos", damped_cosine(&ctx))] {
-        let r = e.eval_decimal(16);
-        assert!(
-            matches!(r, Err(SymplexError::PrecisionExhausted { .. })),
-            "{name} at 16 digits: {r:?}"
-        );
-    }
+    assert_eq!(
+        x_to_the_x(&ctx).eval_decimal(16).unwrap(),
+        "0.7834305107121344"
+    );
     // mpmath: mp.dps=50; quad(lambda x: sin(1/x), linspace(mpf(1)/1000, 1, 200))
     //         = 0.504066497877487051711602
     let x = ctx.symbol("x");

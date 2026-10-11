@@ -490,18 +490,21 @@ fn eval_f64_with_symbolic_bound_after_substitution() {
     assert!((v - 0.783_430_510_712_134_5).abs() < 1e-8, "got {v}");
 }
 
+/// Since 0.43 a definite integral is evaluated at any precision
+/// (arbitrary-precision tanh-sinh quadrature); before, `eval_decimal(30)`
+/// was `NotImplemented` (at most 16 digits from `f64` quadrature).  mpmath:
+/// `mp.dps = 60; quad(lambda x: x**x, [0, 1])` =
+/// 0.783430510712134407059264386526975469407681990146930958255418.
 #[test]
-fn eval_decimal_beyond_f64_is_not_implemented() {
+fn eval_decimal_beyond_f64_is_arbitrary_precision() {
     let (ctx, x) = ctx_x();
     let node = x
         .pow(&x)
         .definite_integral_node(&x, &ctx.int(0), &ctx.int(1));
-    match node.eval_decimal(30) {
-        Err(SymplexError::NotImplemented(msg)) => {
-            assert!(msg.contains("definite integral"), "got {msg}");
-        }
-        other => panic!("expected NotImplemented, got {other:?}"),
-    }
+    assert_eq!(
+        node.eval_decimal(30).unwrap(),
+        "0.783430510712134407059264386527"
+    );
     // At f64 precision the quadrature result is served.
     let s = node.eval_decimal(10).unwrap();
     assert!(s.starts_with("0.78343051"), "got {s}");

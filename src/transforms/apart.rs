@@ -1467,6 +1467,354 @@ pub(crate) fn hermite_reduce_factor(
     Some((rational_numer_acc, rational_denom, current_numer, f.clone()))
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// The public entry: sums of fractions and symbolic parameters
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Largest degree in the variable of a denominator decomposed over
+/// `ℚ(parameters)`.
+const MAX_PARAM_DENOM_DEGREE: u32 = 16;
+
+/// Largest number of parameters of such a decomposition.
+const MAX_PARAMS: usize = 5;
+
+/// `Ex::partial_fractions`: [`apart`] when it changes the expression;
+/// otherwise the expression is combined over a common denominator
+/// ([`together_deep`](polybridge::together_deep): a sum of fractions has
+/// no denominator for `apart` to split) and decomposed again, over
+/// `ℚ(parameters)` when the coefficients hold free symbols other than `var`
+/// ([`apart_params`]).  A combined sum that cannot be split further comes
+/// back combined, as SymPy's `apart` returns it; anything else that cannot
+/// be decomposed comes back unchanged.  Internal callers (integration,
+/// limits, summation) keep [`apart`].
+///
+/// Before 0.43 `1/(x − 1) + 1/((x − 1)(x + 1))` and every expression with a
+/// parameter (`(a − 9)/((3x + 4)(2x − 3)²)`, `1/((x − a)(x − b))`) were
+/// returned unchanged.
+pub(crate) fn apart_full(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    let r = apart(arena, expr, var);
+    if r != expr || crate::base::walk::has_unevaluated(arena, expr) {
+        return r;
+    }
+    let t = polybridge::together_deep(arena, expr);
+    if t == arena.nan {
+        return t;
+    }
+    if t == arena.complex_infinity {
+        return expr;
+    }
+    if t != expr {
+        let r = apart(arena, t, var);
+        if r != t {
+            return r;
+        }
+    }
+    if let Some(r) = apart_params(arena, t, var) {
+        return r;
+    }
+    if let Some(r) = apart_algebraic(arena, t, var) {
+        return r;
+    }
+    if t != expr && rational_in(arena, t, var) {
+        return t;
+    }
+    expr
+}
+
+/// Is `expr` rational in `var`: does no generator of its numerator and
+/// denominator other than `var` itself depend on `var`?
+fn rational_in(arena: &mut Arena, expr: ExprId, var: ExprId) -> bool {
+    let (n, d) = polybridge::fraction_parts(arena, expr);
+    crate::poly::numfield::generators(arena, &[n, d])
+        .into_iter()
+        .all(|g| g == var || !crate::base::walk::contains(arena, g, var))
+}
+
+/// Partial fractions over `ℚ(y)` for an expression rational in `var` with
+/// free symbols `y` as parameters, following SymPy's `apart` (the
+/// denominator factored over `ℤ[var, y]`, which by Gauss's lemma is its
+/// factorization over `ℚ(y)[var]`; the numerators by the extended
+/// Euclidean algorithm rather than undetermined coefficients).  The
+/// result is generic in the parameters, as SymPy's: valid wherever the
+/// parameter polynomials in its denominators do not vanish.  `None` when
+/// there is no parameter, nothing to split, or beyond the size budget.
+fn apart_params(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    use crate::poly::multipoly::{GrevLex, Lex, MultiPoly};
+    use crate::poly::paramfield::{self, PFrac, PPoly, Params};
+    use crate::poly::traits::Field;
+    type MPoly = MultiPoly<GrevLex>;
+
+    let rv = paramfield::rational_in_var(arena, expr, var, Params::Symbols)?;
+    let nv = rv.vars.len();
+    if nv > MAX_PARAMS + 1 {
+        return None;
+    }
+    let (mut p, mut q) = (rv.numer, rv.denom);
+    let dq = q.degree_in(0);
+    if dq == 0 || dq > MAX_PARAM_DENOM_DEGREE {
+        return None;
+    }
+    let g = MPoly::gcd(&p, &q);
+    if g.total_degree().unwrap_or(0) > 0 {
+        p = p.div_exact(&g)?;
+        q = q.div_exact(&g)?;
+    }
+    if p.is_zero() {
+        return Some(arena.zero);
+    }
+    if q.degree_in(0) == 0 {
+        // The denominator cancelled to a parameter polynomial.
+        return None;
+    }
+    let (_, factors) = crate::poly::factor_zassenhaus::factor_multivariate_many(&q)?;
+    // The factors in `var`, with a positive leading coefficient in `var`.
+    let mut xf: Vec<(MPoly, u32)> = Vec::new();
+    for (f, e) in factors {
+        if f.degree_in(0) == 0 {
+            continue;
+        }
+        let lc: MultiPoly<Lex> = f.coeff_in(0, f.degree_in(0)).convert_order();
+        let f = if lc
+            .leading_coeff()
+            .is_some_and(num_traits::Signed::is_negative)
+        {
+            f.neg()
+        } else {
+            f
+        };
+        xf.push((f, e));
+    }
+    if xf.is_empty() {
+        return None;
+    }
+    let mut prod = MPoly::from_int(nv, 1);
+    for (f, e) in &xf {
+        prod = prod.mul(&f.pow(*e));
+    }
+    // The part of the denominator free of `var`.
+    let cden = q.div_exact(&prod)?;
+    let pp = paramfield::to_ppoly(&p);
+    let qq = paramfield::to_ppoly(&q);
+    let (quot, rem) = pp.try_div_rem(&qq)?;
+    if xf.len() == 1 && xf[0].1 == 1 && quot.is_zero() {
+        return None;
+    }
+    let rem = rem.scale(&PFrac::from_poly(&cden).inv());
+    let fs: Vec<(PPoly, u32)> = xf
+        .iter()
+        .map(|(f, e)| (paramfield::to_ppoly(f), *e))
+        .collect();
+    let terms = decompose_generic(&rem, &fs)?;
+    if !paramfield::ppoly_size_ok(&quot)
+        || terms.iter().any(|(n, _, _)| !paramfield::ppoly_size_ok(n))
+    {
+        return None;
+    }
+
+    let mut out: Vec<ExprId> = Vec::with_capacity(terms.len() + 1);
+    for (n, i, k) in &terms {
+        let paramfield::PolyFraction {
+            numer: num,
+            denom: c,
+        } = paramfield::ppoly_over_common_denominator(n, nv);
+        let fe = crate::poly::polybridge::multipoly_to_expr(arena, &xf[*i].0, &rv.vars);
+        let fk = if *k == 1 {
+            fe
+        } else {
+            let e = arena.int(i64::from(*k));
+            arena.pow(fe, e)
+        };
+        // R = r·prim/c with a rational r and an integer-primitive `prim`
+        // whose lexicographically leading coefficient is positive.
+        let (num, den) = match c.as_constant() {
+            Some(cq) => (num.scale(&(Ratio::one() / cq)), fk),
+            None => {
+                let ce = paramfield::factored_expr(arena, &c, &rv.vars);
+                (num, arena.mul(&[ce, fk]))
+            }
+        };
+        let mut prim = num.primitive_part_q();
+        let lex: MultiPoly<Lex> = prim.convert_order();
+        if lex
+            .leading_coeff()
+            .is_some_and(num_traits::Signed::is_negative)
+        {
+            prim = prim.neg();
+        }
+        let ratio = match (num.leading_coeff(), prim.leading_coeff()) {
+            (Some(a), Some(b)) => a / b,
+            _ => Ratio::one(),
+        };
+        let pe = crate::poly::polybridge::multipoly_to_expr(arena, &prim, &rv.vars);
+        let re = arena.num_ratio(ratio);
+        let ne = arena.mul(&[re, pe]);
+        out.push(arena.div(ne, den));
+    }
+    if !quot.is_zero() {
+        let paramfield::PolyFraction {
+            numer: num,
+            denom: c,
+        } = paramfield::ppoly_over_common_denominator(&quot, nv);
+        out.push(paramfield::quotient_expr(arena, &num, &c, &rv.vars));
+    }
+    Some(match out.len() {
+        0 => arena.zero,
+        1 => out[0],
+        _ => arena.add(&out),
+    })
+}
+
+/// Partial fractions of an expression rational in `var` whose coefficients
+/// hold algebraic numbers (`√2`, `i`, `∛2`) and no symbol, over the number
+/// field `ℚ(α)` they generate: the denominator is factored there by
+/// Trager's method ([`numfield`](crate::poly::numfield)) and the numerators
+/// computed exactly in it, as SymPy's `apart` does (its default is
+/// `extension=True`: `apart(sqrt(2)/(x**2 - 2), x)` splits `x² − 2`).
+/// `None` when there is nothing to split, or beyond the budgets.
+/// (Without algebraic numbers in the coefficients the denominator is
+/// factored over ℚ, by [`apart`].)
+fn apart_algebraic(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    use crate::poly::generic::GenPoly;
+    use crate::poly::numfield::{self, AlgNum, ExtField, KPoly};
+    use crate::poly::traits::Field;
+
+    let (n, d) = polybridge::fraction_parts(arena, expr);
+    let gens = numfield::generators(arena, &[n, d]);
+    let atoms: Vec<ExprId> = gens.into_iter().filter(|&g| g != var).collect();
+    if atoms.is_empty()
+        || atoms
+            .iter()
+            .any(|&g| !crate::base::walk::free_symbols(arena, g).is_empty())
+    {
+        return None;
+    }
+    // The field of the coefficients once multiplied out, as SymPy builds
+    // its domain: `(x − 2i)²(x + 2i)²` is `x⁴ + 8x² + 16`, over ℚ.
+    let n = crate::transforms::expand::expand(arena, n);
+    let d = crate::transforms::expand::expand(arena, d);
+    let atoms: Vec<ExprId> = numfield::generators(arena, &[n, d])
+        .into_iter()
+        .filter(|&g| g != var)
+        .collect();
+    if atoms.is_empty() {
+        let p = polybridge::expr_to_poly(arena, n, var)?;
+        let q = polybridge::expr_to_poly(arena, d, var)?;
+        if q.is_zero() {
+            return None;
+        }
+        let pe = polybridge::poly_to_expr(arena, &p, var);
+        let qe = polybridge::poly_to_expr(arena, &q, var);
+        let rational = arena.div(pe, qe);
+        return Some(apart(arena, rational, var));
+    }
+    let mut ef = ExtField::for_atoms(arena, &atoms)?;
+    let p = ef.kpoly_of(arena, n, var)?;
+    let q = ef.kpoly_of(arena, d, var)?;
+    let dq = q.degree()?;
+    if dq == 0 || dq > MAX_PARAM_DENOM_DEGREE as usize {
+        return None;
+    }
+    // The irreducible factors of the denominator over K, scaled to
+    // coefficients in ℤ[α], with their expressions.
+    let mut fs: Vec<(KPoly, u32, ExprId)> = Vec::new();
+    let fac = ef.field.factor(&q)?;
+    for (h, m) in &fac.factors {
+        let h2 = h.scale(&AlgNum::Rat(ef.primitive_scale(h)));
+        let he = ef.kpoly_to_expr(arena, &h2, var);
+        fs.push((h2, *m, he));
+    }
+    if fs.is_empty() {
+        return None;
+    }
+    let mut prod = KPoly::one();
+    for (f, m, _) in &fs {
+        prod = prod.mul(&f.pow(*m as usize));
+    }
+    // The part of the denominator free of `var`, an element of K.
+    let (c, r) = q.try_div_rem(&prod)?;
+    if !r.is_zero() || c.degree() != Some(0) {
+        return None;
+    }
+    let c = c.coeff(0);
+    let (quot, rem) = p.try_div_rem(&q)?;
+    if fs.len() == 1 && fs[0].1 == 1 && quot.is_zero() {
+        return None;
+    }
+    let rem = rem.scale(&c.inv());
+    let factor_list: Vec<(GenPoly<AlgNum>, u32)> =
+        fs.iter().map(|(f, m, _)| (f.clone(), *m)).collect();
+    let terms = decompose_generic(&rem, &factor_list)?;
+    let mut out: Vec<ExprId> = Vec::with_capacity(terms.len() + 1);
+    for (r, idx, k) in &terms {
+        let re = ef.kpoly_to_expr(arena, r, var);
+        let fe = fs[*idx].2;
+        let den = if *k == 1 {
+            fe
+        } else {
+            let e = arena.int(i64::from(*k));
+            arena.pow(fe, e)
+        };
+        out.push(arena.div(re, den));
+    }
+    if !quot.is_zero() {
+        out.push(ef.kpoly_to_expr(arena, &quot, var));
+    }
+    Some(match out.len() {
+        0 => arena.zero,
+        1 => out[0],
+        _ => arena.add(&out),
+    })
+}
+
+/// [`decompose_poly_fraction`] over any coefficient field: `numer / ∏ fᵢ^eᵢ`
+/// (pairwise coprime `fᵢ`, `deg numer < deg ∏ fᵢ^eᵢ`) as terms
+/// `(R, i, k)` standing for `R / fᵢ^k` with `deg R < deg fᵢ`.  `None` if
+/// two factors are not coprime.
+fn decompose_generic<C: crate::poly::traits::Field>(
+    numer: &crate::poly::generic::GenPoly<C>,
+    factors: &[(crate::poly::generic::GenPoly<C>, u32)],
+) -> Option<Vec<(crate::poly::generic::GenPoly<C>, usize, u32)>> {
+    use crate::poly::generic::GenPoly;
+    let mut out = Vec::new();
+    let mut cur = numer.clone();
+    for (idx, (f, e)) in factors.iter().enumerate() {
+        if cur.is_zero() {
+            break;
+        }
+        let d1 = f.pow(*e as usize);
+        let (num_i, rest_numer) = if idx + 1 == factors.len() {
+            (cur.clone(), GenPoly::zero())
+        } else {
+            let mut d2 = GenPoly::one();
+            for (g, k) in &factors[idx + 1..] {
+                d2 = d2.mul(&g.pow(*k as usize));
+            }
+            // s·d1 + t·d2 = 1:  cur/(d1·d2) = cur·t/d1 + cur·s/d2.
+            let eg = GenPoly::extended_gcd(&d1, &d2);
+            if eg.gcd.degree() != Some(0) {
+                return None;
+            }
+            let r1 = cur.mul(&eg.y).try_div_rem(&d1)?.1;
+            let r2 = cur.mul(&eg.x).try_div_rem(&d2)?.1;
+            (r1, r2)
+        };
+        // num_i / f^e = Σ_k R_k / f^k by repeated division.
+        let mut remaining = num_i;
+        for k in (1..=*e).rev() {
+            if remaining.is_zero() {
+                break;
+            }
+            let (q, r) = remaining.try_div_rem(f)?;
+            if !r.is_zero() {
+                out.push((r, idx, k));
+            }
+            remaining = q;
+        }
+        cur = rest_numer;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

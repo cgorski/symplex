@@ -40,8 +40,51 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   multiples of π.  `r·sign(r) = |r|` for a real `r`; `sign`, `|·|` and
   `arg` of directions and exponentials fold (`sign(e^i·∞) = e^i`, `|e^i·∞|
   = ∞`, `arg(e^{4i}) = 4 − 2π`).
+- `factor`, `factor_list` and `factor_all` follow SymPy's default domains
+  for constant coefficients: ℚ(i) when `i` is the only constant
+  (`I·(x² + 9)` keeps `x² + 9`), other constants as generators; the
+  content of `factor_list` can be irrational (`2·I`).  `cancel` and
+  `partial_fractions` of a sum return it combined when nothing more can
+  be done.  `eval_f64` of an integral with an endpoint singularity is
+  slower (20–400 ms) and now correct; integrals equal to 0 print `0`;
+  integrands containing `DiracDelta` are refused by the numerical
+  evaluation (they gave 0).
+
+### Added
+
+- **Arbitrary-precision definite integrals**: `eval_decimal(d)` of an
+  unevaluated `Integral(f, x, a, b)` uses tanh-sinh quadrature over
+  `BigFloat` (after mpmath's `quad`), evaluating `f` with `evalf`'s error
+  bounds: any number of digits (beyond 16 they were refused), algebraic
+  and logarithmic endpoint singularities at full precision (`∫₀¹ x^(−9/10)
+  dx = 10`; mpmath at 50 digits gets 6 of them), infinite ranges, interior
+  breakpoints, Gauss–Legendre and bisection for oscillation.  Digits are
+  served when two successive levels agree to `2^−(p−48)·∫|f|` with the
+  truncated tail and every rounding accounted, otherwise refused.  New
+  `Ex::integrate_numeric_decimal(var, points, digits, QuadRule)`.
+- **Rational functions over parameters and number fields**: `cancel` and
+  `partial_fractions` combine sums of fractions (`1/(x − 1) + 1/((x −
+  1)(x + 1))` → `−1/(2(x + 1)) + 3/(2(x − 1))`), work over ℚ(parameters)
+  (`(x² − a²)/(x − a)` → `a + x`; `(a − 9)/((3x + 4)(2x − 3)²)`
+  decomposed) and over number fields (`(x² − 2)/(x − √2)` → `x + √2`;
+  `√2/(x² − 2)` split).  New `Ex::factor_extension(var, &[ext])`
+  (Trager's norm method; `x² − 2√2x + 2` → `(x − √2)²`, `x⁸ − 2` over
+  ℚ(2^(1/8)) into 5 factors).  `factor_all` handles more than four symbols
+  by Hensel lifting within a budget (`(a + b)(c + d + f)` was refused).
 
 ### Fixed
+
+- **`eval_f64` of an integral with an endpoint singularity claimed digits
+  it did not have**: `∫₀¹ dx/√(1 − x)` was 1.9999999898808887 (bound
+  2·10⁻⁹), the Beta(5, ½) moment 1.0952385480 against 1.0952385618 (the
+  `f64` endpoint smoothing cannot place nodes closer than an ulp to the
+  end, and its error estimate cannot see the cut-off).  `∫ x^(−9/10)` on
+  `[0, 1]` was refused as divergent; an integral equal to 0 was refused;
+  `∫₋₁¹ δ(x) dx` evaluated to 0 (also in `integrate_numeric`).  Hunter
+  (6,000 integrals at 10–60 digits against mpmath): `f64` wrong 7 → 0,
+  refused 5,694 → 29.
+- Rational functions and factoring hunted (5,996 cases against SymPy):
+  refusals 4,725 → 0, wrong 0 before and after.
 
 - **Solutions and assumptions hunted** (6,000 equations, inequalities,
   systems and parametric integrals with assumed unknowns and parameters;

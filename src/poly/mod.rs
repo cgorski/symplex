@@ -8,6 +8,8 @@ pub(crate) mod interp;
 pub(crate) mod modgcd;
 pub mod modpoly;
 pub mod multipoly;
+pub(crate) mod numfield;
+pub(crate) mod paramfield;
 pub(crate) mod polybridge;
 pub mod polysys;
 pub mod ratfn;

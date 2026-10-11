@@ -2699,10 +2699,24 @@ impl Expr<Numeric> {
     ///
     /// Decomposes the expression into numerator and denominator,
     /// converts both to univariate polynomials in `var`, divides out
-    /// their GCD, and rebuilds the expression.
+    /// their GCD, and rebuilds the expression.  Like SymPy's `cancel`,
+    /// common factors are removed even where they make the input `0/0`
+    /// (`(x² − 1)/(x − 1)` is `x + 1`, also at `x = 1`).
     ///
-    /// Returns the expression unchanged if it is not a rational
-    /// function in `var` or if there is no common factor.
+    /// Since 0.43 (before, these were returned unchanged):
+    /// - a sum, or nested fractions, is first combined over a common
+    ///   denominator (`1/(x − 1) + 1/((x − 1)(x + 1))` → `(x + 2)/(x² − 1)`,
+    ///   SymPy's result), and comes back combined when nothing cancels;
+    /// - other symbols, constants and functions are independent
+    ///   indeterminates, as in SymPy's `cancel` (`(x² − a²)/(x − a)` →
+    ///   `a + x`, `(x·sin x + x)/x` → `sin x + 1`);
+    /// - when the only other constants are algebraic numbers, the gcd is
+    ///   taken over the number field they generate (`(x² − 2)/(x − √2)` →
+    ///   `x + √2`, `(x² + 1)/(x − i)` → `x + i`; SymPy needs
+    ///   `extension=` for the first).
+    ///
+    /// Returns the expression unchanged if there is no common factor (a
+    /// single quotient keeps its form).
     ///
     /// # Examples
     ///
@@ -2715,12 +2729,21 @@ impl Expr<Numeric> {
     /// let expr = (&x.powi(2) - 1) / (&x - 1);
     /// let cancelled = expr.cancel(&x);
     /// assert_eq!(format!("{cancelled}"), "x + 1");
+    /// // A parameter, and a sum of fractions.
+    /// let a = ctx.symbol("a");
+    /// let e = (x.powi(2) - a.powi(2)) / (&x - &a);
+    /// assert_eq!(e.cancel(&x).to_string(), "a + x");
+    /// let s = 1 / (&x - 1) + 1 / ((&x - 1) * (&x + 1));
+    /// assert_eq!(s.cancel(&x).to_string(), "(x + 2)/(x^2 - 1)");
     /// ```
     #[must_use = "returns the cancelled form; does not modify in place"]
     pub fn cancel(&self, var: &Ex) -> Ex {
         let var_id = self.checked_id(var);
         let _span = debug_span!("cancel", expr = ?self.raw_id(), var = ?var_id).entered();
-        let id = self.inner.write().arena.cancel_expr(self.raw_id(), var_id);
+        let id = {
+            let mut inner = self.inner.write();
+            crate::poly::paramfield::cancel_full(&mut inner.arena, self.raw_id(), var_id)
+        };
         self.wrap(id)
     }
 
@@ -2794,6 +2817,20 @@ impl Expr<Numeric> {
     /// Returns the expression unchanged if it's not a rational function
     /// or if the denominator cannot be factored.
     ///
+    /// Since 0.43 (before, these were returned unchanged), as SymPy's
+    /// `apart`:
+    /// - a sum of fractions is combined first (`1/(x − 1) + 1/((x − 1)(x +
+    ///   1))` → `−1/(2(x + 1)) + 3/(2(x − 1))`); a sum that cannot be split
+    ///   further comes back combined;
+    /// - other symbols are parameters: the decomposition is over
+    ///   `ℚ(parameters)`, with the denominator factored over
+    ///   `ℤ[var, parameters]` (`1/((x − a)(x − b))` →
+    ///   `−1/((a − b)(x − b)) + 1/((a − b)(x − a))`); the result holds
+    ///   wherever its parameter denominators do not vanish;
+    /// - algebraic numbers in the coefficients extend the field: the
+    ///   denominator is factored over the number field they generate
+    ///   (`√2/(x² − 2)` → `−1/(2(x + √2)) + 1/(2(x − √2))`).
+    ///
     /// # Examples
     ///
     /// ```
@@ -2810,7 +2847,10 @@ impl Expr<Numeric> {
     #[must_use = "returns the decomposed form; does not modify in place"]
     pub fn partial_fractions(&self, var: &Ex) -> Ex {
         let var_id = self.checked_id(var);
-        let id = self.inner.write().arena.apart_expr(self.raw_id(), var_id);
+        let id = {
+            let mut inner = self.inner.write();
+            crate::transforms::apart::apart_full(&mut inner.arena, self.raw_id(), var_id)
+        };
         self.wrap(id)
     }
 
@@ -2821,6 +2861,14 @@ impl Expr<Numeric> {
     ///
     /// Returns the expression unchanged if it is not polynomial in `var`
     /// or if no rational roots can be found.
+    ///
+    /// Constants in the coefficients are taken as SymPy's `factor` takes
+    /// them (since 0.43; before, such polynomials were returned unchanged):
+    /// when `i` is the only one the polynomial is factored over `ℚ(i)`
+    /// (`x² + 2ix − 1 = (x + i)²`), other constants are generators like
+    /// further variables (`√2·x² + √2·x = √2·x·(x + 1)`).  Factoring over
+    /// a field such as `ℚ(√2)` is
+    /// [`factor_extension`](Self::factor_extension).
     ///
     /// # Examples
     ///
@@ -2839,7 +2887,10 @@ impl Expr<Numeric> {
     pub fn factor(&self, var: &Ex) -> Ex {
         let var_id = self.checked_id(var);
         let _span = debug_span!("factor", expr = ?self.raw_id(), var = ?var_id).entered();
-        let id = self.inner.write().arena.factor_expr(self.raw_id(), var_id);
+        let id = {
+            let mut inner = self.inner.write();
+            crate::simplify::factor::factor_public(&mut inner.arena, self.raw_id(), var_id)
+        };
         self.wrap(id)
     }
 
