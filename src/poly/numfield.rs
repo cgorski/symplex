@@ -273,6 +273,11 @@ impl NumberField {
         AlgNum::reduce(Poly::x(), &self.m)
     }
 
+    /// The (monic) minimal polynomial `m` of `α`.
+    pub(crate) fn modulus(&self) -> &Poly {
+        &self.m
+    }
+
     /// A polynomial over ℚ as a polynomial over `K`.
     pub(crate) fn lift(&self, f: &Poly) -> KPoly {
         KPoly::from_coeffs(f.coeffs().iter().map(|c| AlgNum::Rat(c.clone())).collect())
@@ -706,9 +711,33 @@ impl ExtField {
         None
     }
 
+    /// The expressions `bᵢ` of the basis of `K` over ℚ in which elements are
+    /// written ([`element_to_expr`](Self::element_to_expr)), with the matrix
+    /// taking the coefficients of an element in `1, α, …, α^{d−1}` to its
+    /// coordinates in it (`None`: the identity, the `bᵢ` being the powers
+    /// of `α`).
+    pub(crate) fn written_basis(&self, arena: &mut Arena) -> (Vec<ExprId>, Option<Vec<Vec<Q>>>) {
+        if let Some(b) = &self.basis {
+            return (b.exprs.clone(), Some(b.inv.clone()));
+        }
+        let d = self.field.degree();
+        let mut exprs = Vec::with_capacity(d);
+        for j in 0..d {
+            exprs.push(match j {
+                0 => arena.one,
+                1 => self.alpha,
+                _ => {
+                    let e = arena.int(j as i64);
+                    arena.pow(self.alpha, e)
+                }
+            });
+        }
+        (exprs, None)
+    }
+
     /// The value in `K` of an algebraic atom, located (and remembered) on
     /// first use.
-    fn atom_value(&mut self, arena: &mut Arena, atom: ExprId) -> Option<AlgNum> {
+    pub(crate) fn atom_value(&mut self, arena: &mut Arena, atom: ExprId) -> Option<AlgNum> {
         if let Some(v) = self.atoms.get(&atom) {
             return Some(v.clone());
         }

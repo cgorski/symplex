@@ -8,6 +8,160 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour)
+
+- `exp(k·ln z) = z^k` also for a symbolic `z` known to be nonzero
+  (`exp(2·ln p)` → `p²`, `exp(ln p + ln x)` → `p·x` for a positive `p` and
+  a nonzero `x`; SymPy folds it for every `z`).  In 0.44 only constants
+  folded (the Gruntz rewrite mishandled the fold before 0.44).
+- `Ex::solve` refuses a constant root that is 0 to every precision but not
+  decided (it was returned); real solution sets of non-linear families
+  print as `(-oo, oo) ∩ ImageSet(…)`; polynomials over number fields with
+  an irreducible factor of degree ≥ 5 return `RootOf`s instead of an
+  error.
+- `sign` of a constant that is exactly zero without being written 0 is
+  `0` (`sign(cos(π/16) − √(2 + √(2 + √2))/2)` stayed).
+
+### Added
+
+- **`evalf` of the exponential integrals, incomplete gamma, Bessel, Airy
+  and Fresnel functions and `binomial` at complex arguments** (refused
+  before: `Ei(1 + i)`, "Ei of complex argument not yet supported in
+  evalf"), and at negative real arguments where the value is complex
+  (`expint(1, −1) = −Ei(1) − iπ`, `li(−2)`, `besselk(0, −2)`), on the
+  principal branch from above as mpmath and SymPy.  Series with proven
+  tails; asymptotic expansions with proven remainders (Olver's for `K_ν`,
+  a ray-integral bound for `Γ(a, z)`).  Sums of conjugate pairs are
+  exactly real (`Ei(1 + i) + Ei(1 − i)`).  Hunter (2,400 results, 15–50
+  digits, mpmath at two precisions): evaluated 498 → 2,394, refused 1,896
+  → 0, wrong 0; a second hunter of hard cases (inexact parts, near cuts
+  and zeros, orders −80…120, `|z|` from 10⁻⁴⁰ to 3·10³) 2,960 evaluated,
+  0 wrong.
+- **`ζ(s)` far up the critical strip** by the Riemann–Siegel formula with
+  Arias de Reyna's error bounds (mpmath's `rs_zeta`): `ζ(1/2 + 10⁶i)`
+  refused → 30 ms, `ζ(1/2 + 4·10⁵i)` 1 s → 54 ms, up to `|t| ≈ 6·10¹⁰`.
+  `erf`, `erfc`, `erfi` of large complex arguments by the asymptotic
+  expansion of `erfc` (`erf(30 + 31i)` exhausted the precision);
+  `erfinv(1 − 10⁻¹⁰⁰⁰)` from the exact complement (exhausted the
+  precision).
+- **Special-function antiderivatives at algebraic points**: `∫ R(x)·f(a·x +
+  b) dx` for `f` = `exp`, `sin`, `cos`, `sinh`, `cosh` and a rational `R`
+  whose denominator has a factor irreducible over ℚ of degree ≥ 2:
+  partial fractions over ℚ, poles of higher order lowered as Hermite's
+  reduction does, then each simple fraction summed over the roots of its
+  factor (residues `A·g′⁻¹ mod g`, Bronstein's full partial fractions), in
+  radicals or as a `RootSum`: `∫ e^{2x}/(x² − 2) = √2/4·(e^{2√2}·Ei(2x −
+  2√2) − e^{−2√2}·Ei(2x + 2√2))`, `∫ eˣ/(x² + 1)` (`Ei` at `x ± i`, now
+  that those evaluate), `∫ sin x/(x² − 2)`, `∫ eˣ/((x + 1)(x³ − 3x² +
+  1))`, `∫ exp(tan t) dt`.  `∫ ln(a·x + b)·R(x) dx` by Hermite's reduction
+  and `∫ ln u/(u − c) = ln u·ln(1 − u/c) + Li₂(u/c)`: `∫ ln x/(x² + 1)`,
+  `∫ ln(2x + 1)/(x − 3)`, `∫ ln x/(x⁵ − x + 1)`.  All unevaluated in
+  0.44 (SymPy 1.14 leaves the `exp`/`sin` examples too).  Hunter (800
+  integrands, mpmath: derivative, quadrature, complex points): closed
+  forms 19 → 328 before `Ei` at complex points evaluated, wrong 0, jumps 0.
+- **`partial_fractions` with parameters and radicals together**, over
+  `ℚ(y)(α)`: `a/((x − √2)(x + 1))` → `(a√2 − a)/(x − √2) + (a −
+  a√2)/(x + 1)` (returned unchanged before, as by SymPy's default
+  `apart`).
+- **Equations with algebraic coefficients are solved over their number
+  field**: a substituted polynomial in `tan(x/2)`, `eˣ` or `cos x` is
+  factored over ℚ(√3, ∛2, …) (Trager) and solved by the quadratic formula,
+  Cardano (trigonometric form for three real roots), `t²`-factors or the
+  norm, every root verified.  `sin 4x = √3·sin x` gave `[π]` in 0.43 and
+  was refused in 0.44; its real principal solutions are now `−π/6`, `0`,
+  `π/6`, `π` (with four complex `2·atan(…)` for an unassumed `x`; SymPy
+  `[0, pi]`).  `(x − ∛2)(x − i)²`
+  and `x⁵ + √2·x + 1` (`RootOf`s of the norm) are solved.
+- **Lambert forms with a power in the exponent**: `x·e^{x²} = c` →
+  `c·exp(−W(2c²)/2)` (SymPy's form), `x·e^{−x²} = 1/4` (both real
+  branches), `x²·e^{√x/2} = 2`, `(x² + 1)·e^{x²} = 3`, `x·ln²x = c`, `x⁴ =
+  2^{x²}`; refused before.  Hunter (5,000 equations; substitution,
+  SymPy `solveset`, a real-root scan): refused 1,642 → 318, wrong 4 → 0.
+- **Exact decisions between trigonometric values and radicals**: `eval`
+  and Boolean `simplify` decide `Eq`/`Ne`/orders between constants built
+  from `sin`, `cos`, `tan` at any rational multiple of π, `i`, `(−1)^q`,
+  nested radicals and Cardano roots, exactly in the cyclotomic field
+  ℚ(ζ_N) with the radicals adjoined (zero test by norms, certified values
+  choosing the vanishing conjugate): `Eq(cos(π/16), √(2 + √(2 + √2))/2)`,
+  `cos(π/7)·cos(2π/7)·cos(4π/7) = −1/8`, `cos(π/14) = √((1 + cos(π/7))/2)`,
+  Gauss's `cos(2π/17)` and `2cos(2π/7)` against Cardano's formula stayed
+  relations (SymPy `simplify`: `True`).  Hunter (6,000 relations, SymPy
+  `evalf` at 100 digits): decided 1,789 → 2,937, undecided equalities 897
+  → 13, 0 wrong.
+- **General symbolic quartic eigenvalues** (SymPy's `roots_quartic`):
+  Ferrari's formulas, or Descartes–Euler when the resolvent has a root
+  rational in the symbols, checked at sample points of the symbols;
+  eigenvectors, `diagonalize`, `StateSpace`/`TransferFunction` `poles`
+  follow (refused in 0.44).  Hunter (1,157 matrices and transfer
+  functions, numpy as oracle): correct 516 → 943, refusals 641 → 214, 0
+  wrong.
+
+### Fixed
+
+- **Wrong solutions on the boundary of the domain**: `W_k(y·e^y) = y` is
+  recognised exactly, so `2·2ˣ + 4x − 2 = 0` for a positive `x` no longer
+  returns `1/2 − W(√2·ln(2)/2)/ln 2` (which is 0); a root that is 0 to
+  every precision is refused rather than returned.  `solve_as_set(sin(x²)
+  − 1/2)` for a real `x` contained `i·√(11π/6)` (non-linear families were
+  taken for arithmetic progressions, `ℝ ∩` was dropped around image sets,
+  and intervals never excluded a non-real number; SymPy has the same
+  wrong set).  `x·e^{x²} − c > 0`: a far sample point no longer costs
+  seconds.
+- **The error bound of `ζ`, `η`, `ψ⁽ᵐ⁾`, `Γ`, `B` and complex-order
+  `polylog` at an inexact argument** dropped the argument's error once its
+  radius fell below 2⁻¹⁰⁷⁴ (`ζ(√2/2 + 200000i)` was printed without a
+  bound on `ζ′`, after 20 s; now 22 ms).
+- `matrix_sqrt`/`matrix_log` of a real (non-Hermitian) matrix with a
+  negative eigenvalue in Cardano form (`[[3, 1 + √2, 2], [3, −2, √2/2],
+  [√2/2, −2, √3]]`) returned entries that did not evaluate
+  (`PrecisionExhausted`): the eigenvalue is proved real (its conjugate is
+  an eigenvalue and no other lies near it).  Hunter: refusals 55 → 3
+  (singular).
+- **Limits that hung or were refused after seconds** (0.43 and 0.44
+  compared on the fuzz corpora, the Rubi suite and the limit hunters):
+  `x/(acosh(c + i·x) − acosh(c))` at `0±` for `c` = `±2i`, `i/2`, `acosh
+  0` hung (16 hunter cases; 0.43 answered them in 0.3 s, 0.44 took more
+  than 45 s each in a debug build; now 0.3 s): of a product whose factors
+  tend to `0` and `∞` the limit of the infinite factor was completed by
+  its imaginary part, which vanishes identically here (`acosh(iy) = asinh
+  y + iπ/2`), and the Gruntz algorithm expanded it at growing precision.
+  A product uses only the directions of its infinite factors, which are
+  now taken without that search (`Γ(−2 + ix)·ix` at `0`: 0.14 s → 2 ms).
+  `lim_{x→π} (atanh(xˣ) − atanh(π^π))/(cos(xˣ) − cos(π^π))` was refused
+  after 4 s ("maximum recursion depth exceeded"); it is `1/((π^{2π} −
+  1)·sin(π^π))` (mpmath; SymPy says it does not exist), found in 0.4 s: an
+  argument real near the point (`xˣ` at `π`) stays on the cut of `atanh`,
+  where the principal values are continuous (realness was asked for
+  every real `x`); `ln π + 1` has a known sign (`1/(cos xˣ − cos π^π)`
+  at `π⁺` was refused; it is `∞`); and the Gruntz test for an expression
+  vanishing to a positive order tries a short expansion before ten terms.
+
+### Changed (performance)
+
+- Rational functions over ℚ are no longer integrated by parts: the
+  algebraic remainder of `∫ dx/(x⁵ + x + 2)` went 8 levels deep through by
+  parts and sum distribution before giving up (same answers): 0.59 → 0.20
+  s; `∫ ln(x + x⁻³ − 1)` 0.49 → 0.18 s, `∫ x³/(x⁴ − x³ + 1)` 0.50 → 0.18
+  s (release CPU).
+- An integrand free of the variable gets no degenerate parameter cases:
+  `∫ (cosh⁴(a + bx) − sinh⁴(a + bx))/(cosh⁴(a + bx) + sinh⁴(a + bx)) dx`
+  wrapped its `b = 0` branch in 8 nested cases `a ≠ −ln(RootOf(…))` where
+  the integrand is undefined (Rubi 6.7.1 #1052: 6 ms in 0.43, 0.2 s in
+  0.44).
+
+### Measured
+
+- `tests/v35/` (0.39–0.45): 41 files, 372 tests.  nextest 14,152 tests
+  (14 skipped), doctests 1,327.
+- Rubi harness: 29,529 verified (0.44: 29,525), 91 real_verified, 0
+  wrong.  Self-test: 56,013 verified (was 55,624), 0 wrong, 204
+  undecided (was 593).  `--negative-params`: 91 real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- Speed against 0.43 (every fuzz corpus unit replayed in both releases):
+  total CPU within ±20 % per target (`fuzz_parser` +19 %, `fuzz_poly`
+  +19 %, `fuzz_roundtrip` −11 %); Rubi CPU 619 s → 612 s with 6 jobs.
+
 ## [0.44.0] - 2026-10-12
 
 Thirteen areas hunted by five agents at a time.  Silent wrong answers

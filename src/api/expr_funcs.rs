@@ -3247,12 +3247,15 @@ impl Expr<Numeric> {
     ///   as `exp(x) = 0` or `sin(x) = 2` (no real solution).
     /// - [`SymplexError::ComputationFailed`] when the expression is not
     ///   polynomial in `var` and no transcendental strategy applies, or is a
-    ///   polynomial whose roots are not found in closed form (a coefficient
-    ///   outside `ℚ(√p…, i)`, an irreducible factor of degree above 4 over
-    ///   that field) — the two reasons say which.  A polynomial over that
-    ///   field is not answered with the roots of some of its factors only:
-    ///   `(x² + i)·(x⁵ − √2·x − 1)` is refused ("7 distinct roots, of which
-    ///   2 were found"; SymPy returns the two).  Also when every
+    ///   polynomial whose roots are not all found (coefficients generating a
+    ///   number field too large to factor over, an irreducible factor whose
+    ///   roots cannot be told apart from those of its conjugates) — the two
+    ///   reasons say which.  A polynomial is not answered with the roots of
+    ///   some of its factors only ("7 distinct roots, of which 2 were
+    ///   found").  Since 0.45 polynomials over number fields are factored
+    ///   over them (Trager): `(x² + i)·(x⁵ − √2·x − 1)` has its 7 roots (the
+    ///   quintic's as `RootOf`s of its norm; it was refused, SymPy returns 2),
+    ///   `(x − ∛2)·(x − i)²` its 2.  Also when every
     ///   principal-branch candidate fails (a pole) but another member of
     ///   its periodic family solves the equation: `tan(x)/x = 0` (`0` is a
     ///   pole, `π` a root) — not `NoSolution`.  Likewise when every

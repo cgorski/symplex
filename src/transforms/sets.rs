@@ -731,6 +731,9 @@ fn eval_node(
         ExprNode::SetIntersection(children) => {
             let mut exact: Option<RankSet> = None;
             let mut opaque: Vec<ExprId> = Vec::new();
+            let line_child = children
+                .iter()
+                .any(|&c| matches!(arena.node(c), ExprNode::Interval(..)));
             for c in children {
                 match vals.get(&c) {
                     Some(SetVal::Exact(rs)) => {
@@ -748,7 +751,17 @@ fn eval_node(
                 Some(e) if opaque.is_empty() => SetVal::Exact(e),
                 Some(e) => {
                     let mut parts = Vec::with_capacity(opaque.len() + 1);
-                    if !e.is_full() {
+                    // The real line adds nothing to sets of real numbers,
+                    // but it cuts an image set whose members are not all
+                    // real (`√(2nπ + π/6)` is imaginary for `n < 0`): before
+                    // 0.45 `ℝ ∩ {√(2nπ + π/6)}` lost its `ℝ`, and the solution
+                    // set of `sin(x²) = 1/2` for a real `x` held `i·√(11π/6)`.
+                    let keep_line = e.is_full()
+                        && line_child
+                        && opaque
+                            .iter()
+                            .any(|&p| contains_image_set(arena, p) && !all_members_real(arena, p));
+                    if !e.is_full() || keep_line {
                         parts.push(rankset_to_expr(arena, table, &e));
                     }
                     parts.extend(opaque);
@@ -950,6 +963,11 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
                         Some(false)
                     } else if rs.is_full() && is_known_real(arena, elem_ev) {
                         Some(true)
+                    } else if matches!(arena.node(id), ExprNode::Interval(..))
+                        && certainly_nonreal(arena, elem_ev)
+                    {
+                        // an interval holds real numbers only
+                        Some(false)
                     } else {
                         None
                     }
@@ -1038,6 +1056,16 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
         memo.insert(id, r);
     }
     memo.get(&set).copied().flatten()
+}
+
+/// Is the constant `id` certainly not real (a certified evaluation)?
+fn certainly_nonreal(arena: &mut Arena, id: ExprId) -> bool {
+    if !crate::base::walk::free_symbols(arena, id).is_empty() {
+        return false;
+    }
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    crate::transforms::realness::constant_realness_as_declared(arena, id, 20, &mut cache)
+        == Some(false)
 }
 
 fn is_known_real(arena: &Arena, id: ExprId) -> bool {
@@ -2312,6 +2340,25 @@ fn all_real_image_parts(arena: &mut Arena, set: ExprId) -> bool {
     })
 }
 
+/// Does `set` hold an intersection of the whole real line with image sets
+/// (`ℝ ∩ {2nπ + asin(a)}`, families whose members are not all known to
+/// be real, which the normal form keeps cut by the line)?
+fn line_cuts_a_family(arena: &Arena, set: ExprId) -> bool {
+    let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
+    let is_line = |c: ExprId| match *arena.node(c) {
+        ExprNode::Interval(a, b, _) => a == ninf && b == pinf,
+        _ => false,
+    };
+    crate::base::walk::post_order_ids(arena, set)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::SetIntersection(ch) => {
+                ch.iter().any(|&c| is_line(c)) && ch.iter().any(|&c| contains_image_set(arena, c))
+            }
+            _ => false,
+        })
+}
+
 /// Is every member of the set expression `set` known to be real (intervals,
 /// finite sets of real numbers, image sets of real families)?
 fn all_members_real(arena: &mut Arena, set: ExprId) -> bool {
@@ -2752,8 +2799,9 @@ fn atom_to_set(
             let real = arena.set_intersection(&[set, reals]);
             let real = simplify_set(arena, real);
             // Families not known to be real (`2nπ + asin(a)` for a parameter
-            // `a`) take the condition-set path: the normal form drops `∩ ℝ`.
-            if all_members_real(arena, real) {
+            // `a`) take the condition-set path: the normal form keeps them
+            // as `ℝ ∩ {…}`.
+            if all_members_real(arena, real) && !line_cuts_a_family(arena, real) {
                 return Ok(real);
             }
         }

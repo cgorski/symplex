@@ -258,9 +258,10 @@ fn tangent_of_multiple_angles() {
 /// (degree above 2 over `ℚ(√p)`), and `sin 4x = √3·sin x` (in `t =
 /// tan(x/2)` a degree-9 polynomial over `ℚ(√3)`) gave `[π]` and the set
 /// `{2nπ + π}`, without `0` (`sin 0 = 0`) and the roots `±acos(…)`; likewise
-/// `sin 3x = √2·sin x`.  Wrong before 0.44; now refused as incomplete
-/// (SymPy 1.14 `solveset(sin(4*x) - sqrt(3)*sin(x), x, S.Reals)` contains
-/// `{2nπ}`).
+/// `sin 3x = √2·sin x`.  Wrong before 0.44; refused as incomplete in 0.44;
+/// since 0.45 the polynomial is solved over `ℚ(√p)` and the roots are all
+/// there (SymPy 1.14 `solveset(sin(4*x) - sqrt(3)*sin(x), x, S.Reals)`
+/// contains `{2nπ}`; the full answers are pinned in `v35_solve2`).
 #[test]
 fn incomplete_substituted_polynomial_is_refused() {
     let ctx = Context::new();
@@ -268,13 +269,11 @@ fn incomplete_substituted_polynomial_is_refused() {
     for src in ["sin(4*x) - sqrt(3)*sin(x)", "sin(3*x) - sqrt(2)*sin(x)"] {
         let e = parse(&ctx, src);
         assert_root(&e, &x, &ctx.int(0));
-        assert!(
-            matches!(e.solve(&x), Err(SymplexError::ComputationFailed { .. })),
-            "{src}: {:?}",
-            e.solve(&x)
-        );
+        let got = e.solve(&x).unwrap_or_else(|err| panic!("{src}: {err}"));
+        assert!(got.iter().any(|r| r.is_zero_structural()), "{src}: {got:?}");
+        assert!(got.len() >= 4, "{src}: {got:?}");
         let set = e.solve_as_set(&x);
-        assert_ne!(set.contains(&ctx.int(0)), Some(false), "{src}: {set}");
+        assert_eq!(set.contains(&ctx.int(0)), Some(true), "{src}: {set}");
     }
 }
 

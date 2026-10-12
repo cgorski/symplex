@@ -1266,8 +1266,11 @@ fn mathml_of_formal_laplace_transform_and_integral_nodes() {
             "<mrow><mi mathvariant=\"script\">L</mi><mo>&#x2061;</mo><mrow><mo>{{</mo>{body}<mo>}}</mo></mrow></mrow>"
         )
     );
-    let int = t.tan().exp().integrate(&t);
+    // `∫ exp(tan t) dt` has a closed form since 0.45 (`Ei` at `tan t ± i`);
+    // `∫ sin(sin t) dt` has none.
+    let int = t.sin().sin().integrate(&t);
     assert!(int.has_unevaluated());
+    let body = mathml_apply("<mi>sin</mi>", &mathml_apply("<mi>sin</mi>", "<mi>t</mi>"));
     assert_eq!(
         mathml_body(&int),
         format!("<mrow><mo>&#x222B;</mo>{body}<mi>d</mi><mi>t</mi></mrow>")

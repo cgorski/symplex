@@ -33,6 +33,10 @@
 //! converge — is mpmath's `_hurwitz_em` (`mpmath/functions/zeta.py`, BSD),
 //! with the remainder bound in place of its size test.
 //!
+//! * `ζ(s)` far up the critical strip (`abs(t) > 500·wp` or `abs(t) ≥ 10⁵`):
+//!   the Riemann–Siegel formula with Arias de Reyna's bounds (`rszeta.rs`,
+//!   since 0.45), about `√(t/2π)` terms instead of `t/2π`; where its
+//!   conditions fail, the sum below.
 //! * `ζ(s) = ζ(s, 1)` for `σ ≥ 0`; left of 0 the functional equation
 //!   `ζ(s) = 2^s π^(s−1) sin(πs/2) Γ(1−s) ζ(1−s)` (DLMF 25.4.1), the factors
 //!   but `sin` as one exponential of `s ln 2 + (s − 1) ln π + ln Γ(1 − s)`
@@ -82,6 +86,9 @@ const LOG2_HALF_PI: f64 = 0.651_496_129_472_318_8;
 
 /// Most terms summed directly (`ζ(s)` for `abs(Im s)` up to about `5·10⁵`).
 const MAX_TERMS: usize = 100_000;
+
+/// Most terms of the derivative bound summed one by one (`zeta_ball`).
+const DIRECT_BALL_TERMS: usize = 100_000;
 
 /// Largest order of `ψ⁽ᵐ⁾` at a non-real argument (as for a real one,
 /// beyond which `eval` leaves it to `polygamma_large`).
@@ -636,7 +643,7 @@ fn digamma_em(
 /// cancellation (largest term over the value) measured and made up up to
 /// `cancellation_cap`; the value rounded to `prec + 16` bits, its error below
 /// `2^−(prec+12)` of its modulus.
-fn with_loss(
+pub(super) fn with_loss(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
@@ -684,6 +691,22 @@ pub(super) fn zeta_complex(
 /// functional equation left of 0.
 fn zeta_at(s: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Result<Sum, SymplexError> {
     let one = (BigFloat::from_i32(1, 64), BigFloat::new(64));
+    // Far up the critical strip the Riemann–Siegel formula (`rszeta.rs`;
+    // mpmath's criterion `abs(t) > 500·wp`, `10·abs(σ) < wp`, and from `abs(t)
+    // = 10⁵` on, where Euler–Maclaurin needs `abs(t)/(2π)` terms): its
+    // absolute error is below `2^−wp`, the scale of the value 1.
+    if let (Some(sig), Some(t)) = (to_f64(&s.0), to_f64(&s.1)) {
+        let (t, w) = (t.abs(), wp as f64);
+        if (t > 500.0 * w || t >= 1.0e5)
+            && 10.0 * sig.abs() < w.max(t.sqrt())
+            && let Some(v) = super::rszeta::zeta_rs(s, wp + 4, rm, cc)?
+        {
+            return Ok(Sum {
+                value: v,
+                largest: 0.0,
+            });
+        }
+    }
     if !s.0.is_negative() || s.0.is_zero() {
         return hurwitz(s, &one, wp, rm, cc);
     }
@@ -935,21 +958,26 @@ pub(super) fn beta_bound(
     let db = lsum(pb, pab);
     let mut d = f64::NEG_INFINITY;
     if ra > 0.0 {
-        d = lsum(d, da + ra.log2());
+        d = lsum(d, da + log2_radius(ba));
     }
     if rb > 0.0 {
-        d = lsum(d, db + rb.log2());
+        d = lsum(d, db + log2_radius(bb));
     }
     // |B(u) − B(z)| ≤ |B|·(e^t − 1), t the bound on |Δ ln B|.
-    let t = d.exp2();
-    if !(t.is_finite() && t < 1.0) {
+    if !(d.is_finite() && d < 0.0) {
         return Bound::UNKNOWN;
     }
-    Bound::both(accuracy::lsum(own, lv + t.exp_m1().log2() + 1.0 + 1e-9))
+    Bound::both(accuracy::lsum(own, lv + log2_expm1_exp2(d) + 1.0 + 1e-9))
 }
 
 /// `(x, y, r)`: the argument's parts in `f64` and its radius (`0` when exact),
-/// `None` when the bound is unknown or beyond `f64`.
+/// `None` when the bound is unknown or beyond `f64`.  A radius below the
+/// `f64` range is taken as the smallest positive `f64` for the geometric
+/// tests (a negligible overestimate there); the error itself is formed from
+/// the exponent ([`log2_radius`]).  Before 0.45 it underflowed to 0, which
+/// stands for an exact argument, and past 1,074 bits the argument's error
+/// was dropped (`ζ(√2/2 + 200000i)` was "certified" at 1,162 bits without a
+/// bound on `ζ′`).
 fn ball(z: &Complex, bz: Bound) -> Option<(f64, f64, f64)> {
     if bz.is_unknown() {
         return None;
@@ -957,25 +985,44 @@ fn ball(z: &Complex, bz: Bound) -> Option<(f64, f64, f64)> {
     let r = if bz.is_exact() {
         0.0
     } else {
-        bz.joint().exp2()
+        bz.joint().exp2().max(f64::MIN_POSITIVE)
     };
     Some((to_f64(&z.0)?, to_f64(&z.1)?, r))
 }
 
-/// The node's own error `2^−(prec+12)·abs(v)` plus twice `r` times the
-/// derivative bound `2^d`.
-fn finish(v: &Complex, prec: usize, r: f64, d: Option<f64>) -> Bound {
+/// `log₂` of the radius of a known bound (`−∞` when exact).
+fn log2_radius(bz: Bound) -> f64 {
+    if bz.is_exact() {
+        f64::NEG_INFINITY
+    } else {
+        bz.joint()
+    }
+}
+
+/// The node's own error `2^−(prec+12)·abs(v)` plus twice the radius `2^lr`
+/// times the derivative bound `2^d`.
+fn finish(v: &Complex, prec: usize, lr: f64, d: Option<f64>) -> Bound {
     let lv = accuracy::lg_abs(v);
     if !lv.is_finite() {
         return Bound::UNKNOWN;
     }
     let own = lv - prec as f64 - 12.0;
-    if r == 0.0 {
+    if lr == f64::NEG_INFINITY {
         return Bound::both(own);
     }
     match d {
-        Some(d) if d.is_finite() => Bound::both(accuracy::lsum(own, d + r.log2() + 1.0)),
+        Some(d) if d.is_finite() => Bound::both(accuracy::lsum(own, d + lr + 1.0)),
         _ => Bound::UNKNOWN,
+    }
+}
+
+/// `log₂(e^(2^l) − 1)` for `l < 0`, also far below the `f64` range of `2^l`.
+fn log2_expm1_exp2(l: f64) -> f64 {
+    if l < -30.0 {
+        // e^x − 1 = x(1 + x/2 + …) < x·e^x, x < 2^−30.
+        l + 1e-9
+    } else {
+        l.exp2().exp_m1().log2()
     }
 }
 
@@ -989,7 +1036,7 @@ pub(super) fn zeta_bound(s: &Complex, bs: Bound, v: &Complex, prec: usize) -> Bo
     } else {
         zeta_ball(x, y, r).map(|(_, d)| d)
     };
-    finish(v, prec, r, d)
+    finish(v, prec, log2_radius(bs), d)
 }
 
 /// The error bound of `η(s)` (value `v`) for a non-real `s ± bs`:
@@ -1006,7 +1053,7 @@ pub(super) fn eta_bound(s: &Complex, bs: Bound, v: &Complex, prec: usize) -> Bou
             lsum(LN2.log2() + p2 + lz, lsum(0.0, p2) + ld)
         })
     };
-    finish(v, prec, r, d)
+    finish(v, prec, log2_radius(bs), d)
 }
 
 /// The error bound of `ψ⁽ᵐ⁾(z)` (value `v`; `ψ` for `m = 0`) for a non-real
@@ -1021,7 +1068,7 @@ pub(super) fn polygamma_bound(m: u32, z: &Complex, bz: Bound, v: &Complex, prec:
         let p = f64::from(m) + 2.0;
         pole_sum(x, y, r, p).map(|s| s + log2_factorial(u64::from(m) + 1))
     };
-    finish(v, prec, r, d)
+    finish(v, prec, log2_radius(bz), d)
 }
 
 /// The error bound of `Γ(z)` (value `v`) for a non-real `z ± bz`:
@@ -1042,16 +1089,16 @@ pub(super) fn gamma_bound(z: &Complex, bz: Bound, v: &Complex, prec: usize) -> B
     let Some(lpsi) = super::loggamma::log2_psi_bound(x, y, r) else {
         return Bound::UNKNOWN;
     };
-    let pr = lpsi.exp2() * r;
-    if !(pr.is_finite() && pr < 1.0) {
+    let lpr = lpsi + log2_radius(bz);
+    if !(lpr.is_finite() && lpr < 0.0) {
         return Bound::UNKNOWN;
     }
-    let change = lv + pr.exp_m1().log2() + 1e-9;
+    let change = lv + log2_expm1_exp2(lpr) + 1e-9;
     Bound::both(accuracy::lsum(own, change + 1.0))
 }
 
 /// `log₂ n!`.
-fn log2_factorial(n: u64) -> f64 {
+pub(super) fn log2_factorial(n: u64) -> f64 {
     if n <= 64 {
         return (2..=n).map(|k| (k as f64).log2()).sum();
     }
@@ -1093,8 +1140,11 @@ fn pole_sum(x: f64, y: f64, r: f64, p: f64) -> Option<f64> {
 /// `log₂` of upper bounds on `abs(ζ(u))` and `abs(ζ′(u))` over `abs(u − s) ≤ r`, `s
 /// = x + iy`, from the Euler–Maclaurin formula at `N = ⌈abs(s) + r⌉ + 2`
 /// differentiated term by term (see the module documentation).  `None` when
-/// the ball comes within eight radii of the pole at 1, or `N` is beyond
-/// [`MAX_TERMS`].
+/// the ball comes within eight radii of the pole at 1.  Beyond
+/// [`DIRECT_BALL_TERMS`] the partial sums are bounded in closed form (since
+/// 0.45; before, `N` beyond [`MAX_TERMS`] had no bound): `Σ_{1≤k<N} k^(−σ′) ≤
+/// [σ′ ≥ 0] + ∫_1^N x^(−σ′) dx` (monotone terms) and `Σ ln k·k^(−σ′) ≤ ln N·Σ
+/// k^(−σ′)`.
 fn zeta_ball(x: f64, y: f64, r: f64) -> Option<(f64, f64)> {
     let big_x = x.hypot(y) + r; // abs(u) ≤ X
     let sig = x - r; // Re u ≥ σ′
@@ -1103,29 +1153,46 @@ fn zeta_ball(x: f64, y: f64, r: f64) -> Option<(f64, f64)> {
         return None;
     }
     let n = big_x.ceil() + 2.0;
-    if n > MAX_TERMS as f64 {
+    if n > 1.0e15 {
         return None;
     }
     let ln_n = n.ln();
     let lg_n = n.log2();
-    // Σ_{k<N} k^(−σ′) and Σ ln k·k^(−σ′), scaled by the largest k^(−σ′).
-    let shift = if sig < 0.0 {
-        -sig * (n - 1.0).log2()
+    let (mut lz, mut ld) = if n > DIRECT_BALL_TERMS as f64 {
+        // log₂ ∫_1^N x^(−σ′) dx, then the sums.
+        let e = 1.0 - sig;
+        let li = if e.abs() < 1e-9 {
+            ln_n.log2()
+        } else if e > 0.0 {
+            // (N^e − 1)/e
+            e * lg_n + (-(-e * lg_n).exp2()).ln_1p() * LOG2E - e.log2()
+        } else {
+            // (1 − N^e)/(−e)
+            (-(e * lg_n).exp2()).ln_1p() * LOG2E - (-e).log2()
+        };
+        let lz = if sig >= 0.0 { lsum(0.0, li) } else { li };
+        (lz, lz + ln_n.log2())
     } else {
-        0.0
-    };
-    let (mut zs, mut ds) = (0.0f64, 0.0f64);
-    for k in 1..n as usize {
-        let kf = k as f64;
-        let t = (-sig * kf.log2() - shift).exp2();
-        zs += t;
-        ds += t * kf.ln();
-    }
-    let mut lz = zs.log2() + shift;
-    let mut ld = if ds > 0.0 {
-        ds.log2() + shift
-    } else {
-        f64::NEG_INFINITY
+        // Σ_{k<N} k^(−σ′) and Σ ln k·k^(−σ′), scaled by the largest k^(−σ′).
+        let shift = if sig < 0.0 {
+            -sig * (n - 1.0).log2()
+        } else {
+            0.0
+        };
+        let (mut zs, mut ds) = (0.0f64, 0.0f64);
+        for k in 1..n as usize {
+            let kf = k as f64;
+            let t = (-sig * kf.log2() - shift).exp2();
+            zs += t;
+            ds += t * kf.ln();
+        }
+        let lz = zs.log2() + shift;
+        let ld = if ds > 0.0 {
+            ds.log2() + shift
+        } else {
+            f64::NEG_INFINITY
+        };
+        (lz, ld)
     };
     // w^(1−u)/(u − 1) and its derivative.
     let l1 = (1.0 - sig) * lg_n;

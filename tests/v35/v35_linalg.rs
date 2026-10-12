@@ -199,11 +199,15 @@ fn symbolic_cubic_without_assumptions() {
 /// `numpy.roots([1, 0, 3/7, 0, 1])` = `±0.62678317 ± 0.77919372i`, at `x =
 /// −5`: `±2.18890106, ±0.45685025`.
 ///
-/// The general symbolic quartic stays refused: Ferrari's roots take square
-/// roots of numbers that are exactly negative real wherever the quartic has
-/// complex roots, with imaginary parts that cancel only exactly, so they do
-/// not evaluate there (`λ⁴ + (1 − x)λ³ − xλ² − 2λ + 2x − 1` below, SymPy
-/// `factor(charpoly)`).
+/// The general symbolic quartic (`λ⁴ + (1 − x)λ³ − xλ² − 2λ + 2x − 1`
+/// below, SymPy `factor(charpoly)`) was refused up to 0.44: Ferrari's roots
+/// take square roots of numbers that are exactly negative real wherever the
+/// quartic has complex roots, with imaginary parts that cancel only
+/// exactly, so they did not evaluate there.  Since `eval` decides the
+/// realness of such constants exactly they do (this test pinned the
+/// refusal); numpy `eigvals` at `x = 3/7`: `−0.85698881 ± 0.9399965i`,
+/// `−0.07265539`, `1.21520445`; at `x = −5`: `−5.0097433`, `−1.01128472 ±
+/// 1.05085467i`, `1.03231274`.
 #[test]
 fn symbolic_biquadratic_eigenvalues_and_the_general_quartic() {
     let ctx = Context::new();
@@ -244,8 +248,28 @@ fn symbolic_biquadratic_eigenvalues_and_the_general_quartic() {
         vec![o(), ctx.int(2), z(), ctx.int(-1)],
     ])
     .unwrap();
-    let err = general.eigenvals().unwrap_err().to_string();
-    assert!(err.contains("general quartic"), "{err}");
+    let ev = general.eigenvals().unwrap();
+    assert_values(
+        &sorted_values(&ev, &[(&x, &xv)]),
+        &[
+            (-0.85698881, -0.9399965),
+            (-0.85698881, 0.9399965),
+            (-0.07265539, 0.0),
+            (1.21520445, 0.0),
+        ],
+        "general quartic at x = 3/7",
+    );
+    assert_values(
+        &sorted_values(&ev, &[(&x, &xw)]),
+        &[
+            (-5.0097433, 0.0),
+            (-1.01128472, -1.05085467),
+            (-1.01128472, 1.05085467),
+            (1.03231274, 0.0),
+        ],
+        "general quartic at x = -5",
+    );
+    assert_eigenpairs(&general, &[(&x, &xv)], "general quartic at x = 3/7");
 }
 
 /// A 4×4 matrix similar to `diag(C, 3)` with `C` a symbolic 3×3 block of

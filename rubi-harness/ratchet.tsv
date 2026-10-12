@@ -3,10 +3,10 @@
 # count rises above max_wrong_panic.  Regenerate with `--update`.
 path	min_verified	max_wrong_panic
 0 Independent test suites/Apostol Problems.mac	158	0
-0 Independent test suites/Bondarenko Problems.mac	6	0
+0 Independent test suites/Bondarenko Problems.mac	7	0
 0 Independent test suites/Bronstein Problems.mac	7	0
 0 Independent test suites/Charlwood Problems.mac	7	0
-0 Independent test suites/Hearn Problems.mac	233	0
+0 Independent test suites/Hearn Problems.mac	234	0
 0 Independent test suites/Hebisch Problems.mac	2	0
 0 Independent test suites/Jeffrey Problems.mac	9	0
 0 Independent test suites/Moses Problems.mac	108	0
@@ -58,7 +58,7 @@ path	min_verified	max_wrong_panic
 2 Exponentials/2.2 (c+d x)^m (F^(g (e+f x)))^n (a+b (F^(g (e+f x)))^n)^p.mac	9	0
 2 Exponentials/2.3 Exponential functions.mac	136	0
 3 Logarithms/3.1.2 (d x)^m (a+b log(c x^n))^p.mac	93	0
-3 Logarithms/3.1.4 (f x)^m (d+e x^r)^q (a+b log(c x^n))^p.mac	132	0
+3 Logarithms/3.1.4 (f x)^m (d+e x^r)^q (a+b log(c x^n))^p.mac	134	0
 3 Logarithms/3.1.5 u (a+b log(c x^n))^p.mac	0	0
 3 Logarithms/3.2.1 (f+g x)^m (A+B log(e ((a+b x) over (c+d x))^n))^p.mac	51	0
 3 Logarithms/3.2.2 (f+g x)^m (h+i x)^q (A+B log(e ((a+b x) over (c+d x))^n))^p.mac	14	0

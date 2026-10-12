@@ -551,20 +551,30 @@ fn vanishes_to_positive_order(
     let f = combine_exponentials(arena, f, w);
     budget.charge_size(arena, f).ok()?;
     let l = log_omega_symbol(arena);
-    let ts = crate::calculus::series::expand_leading(arena, f, w, 10, l).ok()?;
-    if ts.known() <= 0 {
+    // Is a coefficient below the precision of `ts` non-zero?
+    let nonzero_below_known = |arena: &mut Arena, ts: &crate::calculus::series::TSeries| {
+        (ts.shift()..ts.known()).any(|e| {
+            let c = ts.coefficient(arena, e);
+            if arena.is_zero_structural(c) {
+                return false;
+            }
+            let c = with_logw(arena, c, l, logw);
+            let settled = settle_constant(arena, c);
+            !arena.is_zero_structural(settled) && !is_rational_zero(arena, settled)
+        })
+    };
+    // A short expansion first: the usual answer, a non-zero coefficient,
+    // shows there at a fraction of the cost of ten terms (those of
+    // `atanh(xˣ)` and `cos(xˣ)` near `x = π`, large constants in `π^π`,
+    // took 3 s of `lim_{x→π⁺} (atanh(xˣ) − atanh(π^π))/(cos(xˣ) − cos(π^π))`).
+    if let Ok(short) = crate::calculus::series::expand_leading(arena, f, w, 3, l)
+        && nonzero_below_known(arena, &short)
+    {
         return None;
     }
-    for e in ts.shift()..ts.known() {
-        let c = ts.coefficient(arena, e);
-        if arena.is_zero_structural(c) {
-            continue;
-        }
-        let c = with_logw(arena, c, l, logw);
-        let settled = settle_constant(arena, c);
-        if !arena.is_zero_structural(settled) && !is_rational_zero(arena, settled) {
-            return None;
-        }
+    let ts = crate::calculus::series::expand_leading(arena, f, w, 10, l).ok()?;
+    if ts.known() <= 0 || nonzero_below_known(arena, &ts) {
+        return None;
     }
     Some(ts.known())
 }

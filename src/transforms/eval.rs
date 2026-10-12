@@ -71,6 +71,8 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
 
+mod cyclotomic;
+
 /// Evaluate known special values in an expression.
 ///
 /// Walks the expression bottom-up and replaces function applications
@@ -1230,12 +1232,16 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
             if sqrt_tower_is_zero(arena, d) {
                 return Some(!strict);
             }
-            match algebraic_rational_value(arena, d)? {
-                Some(q) => q,
+            match algebraic_rational_value(arena, d) {
+                Some(Some(q)) => q,
                 // Irrational, so nonzero: the certified sign decides.
-                None => {
+                Some(None) => {
                     return Some(certified_real_sign(arena, d)? == std::cmp::Ordering::Greater);
                 }
+                // Trigonometric values at rational multiples of π (and
+                // radicals over them): an exact zero is `a = b`; a nonzero
+                // difference whose sign no evaluation certified stays.
+                None => return cyclotomic::is_zero(arena, d)?.then_some(!strict),
             }
         }
     };
@@ -1267,7 +1273,11 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
 /// the real root of a cubic written by Cardano's formula, whose complex
 /// cube roots cancel only exactly, is real (up to 0.44 it was undecided,
 /// and `√λ`, `ln λ` of such a negative eigenvalue were refused by `evalf`
-/// as `PrecisionExhausted` on the cut).
+/// as `PrecisionExhausted` on the cut).  Beyond the reach of the minimal
+/// polynomial (a root by Ferrari's formula, a radical over trigonometric
+/// values) `x − x̄` is tested for zero exactly in `ℚ(ζ)[radicals]`
+/// ([`cyclotomic::is_real`]): up to 0.44 the eigenvalues of a 4×4 matrix
+/// with a parameter did not evaluate where the quartic has complex roots.
 ///
 /// The zero search stops at the cap of the evaluation (twice the digits
 /// plus 256 bits): searching deeper only certifies a smaller nonzero part,
@@ -1296,7 +1306,7 @@ fn known_real(arena: &mut Arena, x: ExprId) -> bool {
                 {
                     return z.0.is_zero() && z.1.is_zero();
                 }
-                algebraic_is_real(arena, x)
+                algebraic_is_real(arena, x) || cyclotomic::is_real(arena, x) == Some(true)
             })
         }
     }
@@ -1464,9 +1474,12 @@ fn equal_by_difference(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool> 
     if sqrt_tower_is_zero(arena, d) {
         return Some(true);
     }
-    match algebraic_rational_value(arena, d)? {
-        Some(q) => Some(q.is_zero()),
-        None => Some(false),
+    match algebraic_rational_value(arena, d) {
+        Some(Some(q)) => Some(q.is_zero()),
+        Some(None) => Some(false),
+        // Trigonometric values at rational multiples of π, roots of unity
+        // and radicals over them, exactly in `ℚ(ζ)[radicals]`.
+        None => cyclotomic::is_zero(arena, d),
     }
 }
 
@@ -4052,26 +4065,22 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
-/// `z^k` for a term `t = k·ln z` of an exponent, `z ≠ 0` a constant and `k`
-/// a finite real constant (a product of real constant factors, as SymPy's
-/// `exp.eval` asks of the cofactor of its one `log`): `exp(k·Log z) = z^k`
-/// is the definition of the principal power.  So `exp(2·ln 10) = 100`,
-/// `exp(−ln(2)·3/2) = √2/4`, `exp(2·ln(√2)) = 2`, `exp(π·ln 2) = 2^π`,
-/// `exp(ln(2 + i)/2) = √(2 + i)`; a symbolic or non-real `k` stays
-/// (`exp(x·ln 2)`, `exp(i·ln 2)`, as in SymPy).  Up to 0.43 all stayed.
-///
-/// A symbolic `z` stays too (SymPy: `exp(2*log(x))` → `x**2`): the Gruntz
-/// rewrite builds `exp(−ln(1/ω))` for its dummy `ω` and, given `ω`
-/// instead, finds `lim Γ(x + 1)/(x·Γ(x))` at `∞` to be 0 (it is 1).
+/// `z^k` for a term `t = k·ln z` of an exponent, `z ≠ 0` (a constant, or
+/// nonzero by the assumptions) and `k` a finite real constant (a product of
+/// real constant factors, as SymPy's `exp.eval` asks of the cofactor of its
+/// one `log`): `exp(k·Log z) = z^k` is the definition of the principal
+/// power.  So `exp(2·ln 10) = 100`, `exp(−ln(2)·3/2) = √2/4`, `exp(2·ln(√2))
+/// = 2`, `exp(π·ln 2) = 2^π`, `exp(ln(2 + i)/2) = √(2 + i)`, `exp(2·ln x) =
+/// x²` for a nonzero `x`; a symbolic or non-real `k` stays (`exp(x·ln 2)`,
+/// `exp(i·ln 2)`, as in SymPy).  Up to 0.43 all stayed, and in 0.44 a
+/// symbolic `z` stayed (the Gruntz rewrite then mishandled `exp(−ln(1/ω))`
+/// folding to `ω`, fixed in 0.44).
 fn log_multiple_power(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
     let children = match arena.node(t).clone() {
         ExprNode::Mul(children) => children,
         // A bare `ln z` in a sum (`exp(ln 2 + ln 3) = 6`).
-        ExprNode::Ln(z) => {
-            return (walk::free_symbols(arena, z).is_empty() && constant_is_nonzero(arena, z))
-                .then_some(z);
-        }
+        ExprNode::Ln(z) => return constant_is_nonzero(arena, z).then_some(z),
         _ => return None,
     };
     let mut log_arg = None;
@@ -4084,7 +4093,7 @@ fn log_multiple_power(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
         }
     }
     let z = log_arg?;
-    if !walk::free_symbols(arena, z).is_empty() || !constant_is_nonzero(arena, z) {
+    if !constant_is_nonzero(arena, z) {
         return None;
     }
     let k = arena.mul(&coeffs);
@@ -4097,23 +4106,25 @@ fn log_multiple_power(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
     Some(arena.pow(z, k))
 }
 
-/// Is the constant (symbol-free) `w` provably non-zero: by the assumption
-/// engine, or by a certified 16-digit value whose error ball excludes 0?
+/// Is `w` provably non-zero: by the assumption engine, or, for a constant
+/// (symbol-free) `w`, by a certified 16-digit value whose error ball
+/// excludes 0?
 fn constant_is_nonzero(arena: &Arena, w: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     if AssumptionCache::new().query(arena, w, Props::NONZERO) == Some(true) {
         return true;
     }
-    matches!(
+    walk::free_symbols(arena, w).is_empty()
+        && matches!(
         crate::transforms::evalf::evalf_settled(
             arena,
             w,
             16,
             crate::transforms::evalf::ZeroSearch::Cap
         ),
-        Ok((ref z, crate::transforms::evalf::Settled::Certified))
-            if !(z.0.is_zero() && z.1.is_zero())
-    )
+            Ok((ref z, crate::transforms::evalf::Settled::Certified))
+                if !(z.0.is_zero() && z.1.is_zero())
+        )
 }
 
 /// Check if `id` is of the form `i * k * π` for some rational `k`.
@@ -4623,9 +4634,20 @@ fn eval_sign(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // A real constant of certified sign (SymPy: `sign(1 - sqrt(2))` → -1);
     // up to 0.44 only rationals folded, and `sign(λ)` of a negative root
     // by Cardano's formula stayed though `λ < 0` was decided.
-    match real_constant_sign(arena, inner)? {
-        std::cmp::Ordering::Greater => Some(arena.one),
-        _ => Some(arena.neg_one),
+    match real_constant_sign(arena, inner) {
+        Some(std::cmp::Ordering::Greater) => Some(arena.one),
+        Some(_) => Some(arena.neg_one),
+        // A constant that is exactly 0 without being written 0: `sign(cos(π/16)
+        // − √(2 + √(2 + √2))/2)` stayed up to 0.44.  The exact tests run
+        // only for a value that is 0 to the precision of the evaluation.
+        None if walk::free_symbols(arena, inner).is_empty()
+            && !constant_is_nonzero(arena, inner)
+            && (sqrt_tower_is_zero(arena, inner)
+                || cyclotomic::is_zero(arena, inner) == Some(true)) =>
+        {
+            Some(arena.zero)
+        }
+        None => None,
     }
 }
 

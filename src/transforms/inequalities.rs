@@ -1398,8 +1398,15 @@ fn pow10_inv(k: usize) -> Q {
     Ratio::new(BigInt::one(), num_traits::pow(BigInt::from(10), k))
 }
 
-/// Is the imaginary part negligible relative to `max(1, |re|)`?
+/// Is the imaginary part negligible relative to `max(1, |re|)`?  A zero
+/// imaginary part is decided without arithmetic: the real part of a value
+/// at a far sample point has hundreds of thousands of digits
+/// (`1001·exp(1001²)` for `x·e^(x²) − 1 > 0`), and the product below took
+/// seconds of `gcd` on it.
 fn is_negligible_imaginary(p: &ParsedComplex) -> bool {
+    if p.im.is_zero() {
+        return true;
+    }
     let scale = p.re.abs().max(Ratio::one());
     p.im.abs() <= scale * pow10_inv(NONREAL_EXP)
 }

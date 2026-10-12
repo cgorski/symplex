@@ -1117,13 +1117,13 @@ pub(super) fn complex_order_bound(
             return Bound::UNKNOWN;
         }
         if rp >= 0.75 {
-            if rz > 0.0 {
+            if !bz.is_exact() {
                 match complex_z_change(s, z, bz, rm, cc) {
                     Some(c) => total = accuracy::lsum(total, c),
                     None => return Bound::UNKNOWN,
                 }
             }
-            if rs > 0.0 {
+            if !bs.is_exact() {
                 match complex_s_change(s, bs.joint(), z, v, rm, cc) {
                     Some(c) => total = accuracy::lsum(total, c),
                     None => return Bound::UNKNOWN,
@@ -1137,11 +1137,13 @@ pub(super) fn complex_order_bound(
         ) else {
             return Bound::UNKNOWN;
         };
-        if rz > 0.0 {
-            total = accuracy::lsum(total, (dz * rz).log2() + 1.0);
+        // In log₂: a radius below the `f64` range underflows to 0, and before
+        // 0.45 the argument's error was then dropped past 1,074 bits.
+        if !bz.is_exact() {
+            total = accuracy::lsum(total, dz.log2() + bz.joint() + 1.0);
         }
-        if rs > 0.0 {
-            total = accuracy::lsum(total, (ds * rs).log2() + 1.0);
+        if !bs.is_exact() {
+            total = accuracy::lsum(total, ds.log2() + bs.joint() + 1.0);
         }
     }
 

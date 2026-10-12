@@ -19,7 +19,16 @@
 //! z = −i·erf(iz)`.  The loss to cancellation (the largest term over the
 //! value; for `erfc` with `Re z` large, the bits of `erf` against 1) is
 //! measured and made up as in `polylog.rs`, up to `cancellation_cap`;
-//! arguments with `abs(z)² > 10⁵` are refused.
+//! arguments with `abs(z)² > 10⁵` are refused by the series.
+//!
+//! Where it converges to the working precision, the asymptotic expansion
+//! `erfc z = Γ(1/2, z²)/√π ~ e^(−z²)/(z√π)·Σ (−1)^m (1/2)_m z^(−2m)` (DLMF
+//! 7.11.2, 7.12.1) for `Re z > 0` takes over (`erf` is odd, `erfc(−z) = 2 −
+//! erfc z`), stopped by the remainder bound of `cexpint.rs` (the first
+//! neglected term for `abs(ph z) ≤ π/4`, as DLMF 7.12(i), and a proven
+//! factor beyond): before 0.45 `erf(30 + 31i)` exhausted the precision.
+//! The Fresnel integrals of a non-real argument come from `erf` (DLMF
+//! 7.5.9).
 //!
 //! The node's bound is its own `2^−(prec+12)` relative plus twice the radius
 //! times the derivative over the ball: `abs(erf′(u)) = (2/√π)·e^(−Re u²) ≤
@@ -66,7 +75,12 @@ fn add_term(sum: &mut (Complex, f64), t: &Complex, wp: usize, rm: RoundingMode) 
 
 /// `erf z` at working precision `wp` (see the module documentation), with
 /// `log₂` of the largest term (times the factor in front).
-fn erf_at(z: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Result<Sum, SymplexError> {
+pub(super) fn erf_at(
+    z: &Complex,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Sum, SymplexError> {
     let (Some(x), Some(y)) = (to_f64(&z.0), to_f64(&z.1)) else {
         return Err(super::unevaluable("erf argument beyond f64"));
     };
@@ -145,6 +159,81 @@ fn erf_at(z: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Result<S
     })
 }
 
+/// `erfc s` for `Re s > 0` (or `s` on the positive imaginary axis) by the
+/// asymptotic expansion of `Γ(1/2, s²)/√π` (DLMF 7.11.2, 7.12.1) with the
+/// remainder bound of `cexpint.rs`, at working precision `wp`, or `None`
+/// where it does not reach `2^−wp`.
+fn erfc_asymptotic(s: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Option<Sum> {
+    let (x, y) = (to_f64(&s.0)?, to_f64(&s.1)?);
+    let a2 = x * x + y * y;
+    // Γ(1/2, w) moves by about abs(Δw) relative: abs(s)² more bits for s².
+    let p = wp + super::magnitude_bits(a2) + 8;
+    let w = c_mul(s, s, p, rm);
+    let half = (BigFloat::from_f64(0.5, 64), BigFloat::new(64));
+    let g = super::cexpint::upper_asymptotic(&half, &w, wp + 2, rm, cc)?;
+    let sqrt_pi = cc.pi(p, rm).clone().sqrt(p, rm);
+    Some(Sum {
+        value: (
+            g.value.0.div(&sqrt_pi, p, rm),
+            g.value.1.div(&sqrt_pi, p, rm),
+        ),
+        largest: g.largest - 0.82,
+    })
+}
+
+/// `erf z` by [`erfc_asymptotic`] at `±z` (`erf` is odd), or `None`.
+pub(super) fn erf_asymptotic(
+    z: &Complex,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<Sum> {
+    let right = (z.0.is_positive() && !z.0.is_zero()) || (z.0.is_zero() && !z.1.is_negative());
+    let s = if right { z.clone() } else { c_neg(z) };
+    let e = erfc_asymptotic(&s, wp, rm, cc)?;
+    let v = c_sub(&c_one(wp + 8), &e.value, wp + 8, rm);
+    Some(Sum {
+        value: if right { v } else { c_neg(&v) },
+        largest: e.largest.max(0.0),
+    })
+}
+
+/// `erf`, `erfc` or `erfi` of `z` at working precision `wp`: the asymptotic
+/// expansion where it converges (refused or slow before 0.45: `erf(30 +
+/// 31i)` exhausted the precision), the power series otherwise.
+fn family_at(
+    kind: Kind,
+    arg: &Complex,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(Complex, f64), SymplexError> {
+    if kind == Kind::Erfc {
+        // erfc z directly for Re z > 0, 2 − erfc(−z) otherwise.
+        let right = arg.0.is_positive() && !arg.0.is_zero();
+        let s = if right { arg.clone() } else { c_neg(arg) };
+        if let Some(e) = erfc_asymptotic(&s, wp, rm, cc) {
+            if right {
+                return Ok((e.value, e.largest));
+            }
+            let two = (BigFloat::from_i32(2, 64), BigFloat::new(64));
+            return Ok((c_sub(&two, &e.value, wp + 8, rm), e.largest.max(1.0)));
+        }
+    } else if let Some(e) = erf_asymptotic(arg, wp, rm, cc) {
+        return Ok(match kind {
+            // −i·erf(iz) = (Im, −Re).
+            Kind::Erfi => ((e.value.1.clone(), e.value.0.neg()), e.largest),
+            _ => (e.value, e.largest),
+        });
+    }
+    let s = erf_at(arg, wp, rm, cc)?;
+    Ok(match kind {
+        Kind::Erf => (s.value, s.largest),
+        Kind::Erfc => (c_sub(&c_one(wp), &s.value, wp, rm), s.largest.max(0.0)),
+        Kind::Erfi => ((s.value.1.clone(), s.value.0.neg()), s.largest),
+    })
+}
+
 /// `erf`, `erfc` or `erfi` of a non-real `z`, rounded to `prec + 16` bits,
 /// its error below `2^−(prec+12)` of its modulus.
 pub(super) fn erf_family(
@@ -166,13 +255,8 @@ pub(super) fn erf_family(
     let mut extra = 32 + accuracy::ceil_log2(prec) as usize;
     loop {
         let wp = prec + extra;
-        let s = erf_at(&arg, wp, rm, cc).map_err(super::requested_at(prec))?;
-        let (value, largest) = match kind {
-            Kind::Erf => (s.value, s.largest),
-            Kind::Erfc => (c_sub(&c_one(wp), &s.value, wp, rm), s.largest.max(0.0)),
-            // −i·erf(iz) = (Im, −Re).
-            Kind::Erfi => ((s.value.1.clone(), s.value.0.neg()), s.largest),
-        };
+        let (value, largest) =
+            family_at(kind, &arg, wp, rm, cc).map_err(super::requested_at(prec))?;
         let lv = accuracy::lg_abs(&value);
         let lost = if lv.is_finite() && largest.is_finite() {
             ((largest - lv).max(0.0).ceil() as usize).min(cap + 1)
@@ -187,6 +271,75 @@ pub(super) fn erf_family(
         }
         extra = (lost + 40).max(2 * extra).min(cap);
     }
+}
+
+/// The Fresnel integral `S(z)` (`want_s`) or `C(z)` of a non-real `z`, from
+/// `C(z) ± iS(z) = ((1 ± i)/2)·erf(ζ±)`, `ζ± = (√π/2)(1 ∓ i)z` (DLMF 7.5.9),
+/// the loss to cancellation made up as for `erf`; rounded to `prec + 16`
+/// bits, its error below `2^−(prec+12)` of its modulus.  (Refused before
+/// 0.45: "fresnels of complex argument not yet supported in evalf".)
+pub(super) fn fresnel(
+    want_s: bool,
+    z: &Complex,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    if [&z.0, &z.1].iter().any(|x| x.is_nan() || x.is_inf()) {
+        return Err(super::unevaluable(
+            "Fresnel integral of special float value",
+        ));
+    }
+    tracing::debug!(
+        prec,
+        want_s,
+        "evalf: Fresnel integral at a complex argument"
+    );
+    super::zeta::with_loss(prec, rm, cc, &mut |wp, cc| {
+        let (Some(x), Some(y)) = (to_f64(&z.0), to_f64(&z.1)) else {
+            return Err(super::unevaluable("Fresnel argument beyond f64"));
+        };
+        // erf′(ζ)·Δζ is up to abs(ζ)² times erf's own scale: as many guard
+        // bits for the rounding of ζ.
+        let a2 = (x * x + y * y) * std::f64::consts::PI / 2.0;
+        let p = wp + super::magnitude_bits(a2) + 8;
+        let c = cc
+            .pi(p, rm)
+            .clone()
+            .sqrt(p, rm)
+            .div(&BigFloat::from_i32(2, 64), p, rm);
+        // (1 − i)z = (x + y) + i(y − x), (1 + i)z = (x − y) + i(x + y).
+        let s = z.0.add(&z.1, p, rm);
+        let d = z.1.sub(&z.0, p, rm);
+        let zeta1 = (s.mul(&c, p, rm), d.mul(&c, p, rm));
+        let zeta2 = (d.neg().mul(&c, p, rm), s.mul(&c, p, rm));
+        let e1 = match erf_asymptotic(&zeta1, wp, rm, cc) {
+            Some(e) => e,
+            None => erf_at(&zeta1, wp, rm, cc)?,
+        };
+        let e2 = match erf_asymptotic(&zeta2, wp, rm, cc) {
+            Some(e) => e,
+            None => erf_at(&zeta2, wp, rm, cc)?,
+        };
+        // A = C + iS = ((1 + i)/2)·erf(ζ₁), B = C − iS = ((1 − i)/2)·erf(ζ₂).
+        let half = BigFloat::from_f64(0.5, 64);
+        let one_i = (half.clone(), half.clone());
+        let one_mi = (half.clone(), half.neg());
+        let a = c_mul(&one_i, &e1.value, wp, rm);
+        let b = c_mul(&one_mi, &e2.value, wp, rm);
+        let v = if want_s {
+            // S = (A − B)/(2i) = −i(A − B)/2.
+            let d = c_sub(&a, &b, wp, rm);
+            (d.1.mul(&half, wp, rm), d.0.neg().mul(&half, wp, rm))
+        } else {
+            let s = c_add(&a, &b, wp, rm);
+            (s.0.mul(&half, wp, rm), s.1.mul(&half, wp, rm))
+        };
+        Ok(Sum {
+            value: v,
+            largest: e1.largest.max(e2.largest),
+        })
+    })
 }
 
 /// The error bound of `erf`, `erfc` or `erfi` (value `v`) at a non-real `z ±

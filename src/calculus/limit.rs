@@ -788,6 +788,23 @@ fn limit_val(
     dir: Direction,
     depth: usize,
 ) -> Result<LimVal, SymplexError> {
+    limit_val_parts(arena, expr, var, point, dir, depth, true)
+}
+
+/// [`limit_val`]; without `perpendicular`, an infinity on an axis found by
+/// the Gruntz algorithm (or the polynomial-degree fallback at `±∞`) is
+/// returned weak, without the search for its perpendicular component
+/// ([`with_imaginary_part`]), for a caller that uses only its direction
+/// (the factors of [`product_of_limits`]).
+fn limit_val_parts(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    dir: Direction,
+    depth: usize,
+    perpendicular: bool,
+) -> Result<LimVal, SymplexError> {
     // ── Constant expression ─────────────────────────────────────────
     if !crate::base::walk::contains(arena, expr, var) {
         let v = crate::transforms::eval::eval(arena, expr);
@@ -802,7 +819,7 @@ fn limit_val(
 
     if point == arena.infinity() || point == arena.neg_infinity() {
         let positive = point == arena.infinity();
-        return limit_at_infinity_dir(arena, expr, var, positive, depth);
+        return limit_at_infinity_dir(arena, expr, var, positive, depth, perpendicular);
     }
 
     if point == arena.nan() || point == arena.complex_infinity() {
@@ -830,7 +847,7 @@ fn limit_val(
     match dir {
         Direction::Right | Direction::Left => {
             let right = dir == Direction::Right;
-            match one_sided_gruntz(arena, expr, var, point, right, depth) {
+            match one_sided_gruntz(arena, expr, var, point, right, depth, perpendicular) {
                 Ok(v) => Ok(v),
                 Err(e) => {
                     if directional {
@@ -847,8 +864,8 @@ fn limit_val(
             }
         }
         Direction::Both => {
-            let r = one_sided_gruntz(arena, expr, var, point, true, depth);
-            let l = one_sided_gruntz(arena, expr, var, point, false, depth);
+            let r = one_sided_gruntz(arena, expr, var, point, true, depth, perpendicular);
+            let l = one_sided_gruntz(arena, expr, var, point, false, depth, perpendicular);
             match (r, l) {
                 (Ok(r), Ok(l)) => {
                     if same_value(arena, r.value, l.value) {
@@ -1432,7 +1449,11 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
             }
         }
         ExprNode::Ln(inner) => {
-            let r = arena.as_num(inner).cloned()?;
+            // `ln π + 1` was of unknown sign (the leading coefficient
+            // `−1/(π^π·(ln π + 1)·sin π^π)` of `1/(cos xˣ − cos π^π)` at `π⁺`).
+            let Some(r) = arena.as_num(inner).cloned() else {
+                return assumption_sign(arena, e).or_else(|| numeric_sign(arena, e));
+            };
             if !r.is_positive() {
                 return None;
             }
@@ -2098,6 +2119,11 @@ fn try_compose(
     let inner_limit = |arena: &mut Arena, inner: ExprId| -> Option<LimVal> {
         limit_val(arena, inner, var, point, dir, depth + 1).ok()
     };
+    // The limit of a factor of a product, an infinite one without its
+    // perpendicular part (see `product_of_limits`).
+    let factor_limit = |arena: &mut Arena, inner: ExprId| -> Option<LimVal> {
+        limit_val_parts(arena, inner, var, point, dir, depth + 1, false).ok()
+    };
 
     match node {
         // ── Linear combinations with a single var-dependent part ──
@@ -2130,7 +2156,7 @@ fn try_compose(
         ExprNode::Mul(ref children) => {
             let (consts, deps) = split_by_var(arena, children, var);
             if deps.len() > 1 {
-                return product_of_limits(arena, expr, &consts, &deps, &ap, &inner_limit);
+                return product_of_limits(arena, expr, &consts, &deps, &ap, &factor_limit);
             }
             if deps.len() != 1 || consts.is_empty() {
                 return None;
@@ -2533,7 +2559,7 @@ fn try_compose(
                     // On the cut of `ln Γ` or `W` (see `limit_on_branch_cut`):
                     // `ln Γ(−5/2 − ix) → ln Γ(−5/2) + 6πi` from `x > 0`.
                     if let Some((_, cut)) = branch_cut_of(arena, expr)
-                        && limit_on_branch_cut(arena, cut, l, a)
+                        && limit_on_branch_cut(arena, cut, l, a, &ap)
                     {
                         return None;
                     }
@@ -2748,13 +2774,24 @@ fn sum_of_limits(
 /// real: the product of their limits when none of them is 0 while another
 /// is infinite, with the directions multiplied (`|1/(x − 1)|·sinh(1/(x − 1) +
 /// i)` at `1⁻` tends to `−e^{−i}·oo`; it was `oo`).
+///
+/// The perpendicular part of an infinite factor is never used: `deps` has
+/// two factors at least, so an infinite one meets another infinite one
+/// (only the directions multiply) or a varying finite one (whose approach
+/// leaves the perpendicular part unknown, see below).  So the factors'
+/// limits come from `factor_limit`, which does not complete it
+/// ([`limit_val_parts`]).  That search was paid for nothing, even where the
+/// product is a `0·∞` left to the Gruntz algorithm: `x/(acosh(2i + ix) −
+/// acosh(2i))` at `0⁺` spent minutes on `Im(1/(acosh(2i + ix) −
+/// acosh(2i)))`, which vanishes identically (`acosh(iy) = asinh y + iπ/2`),
+/// and `Γ(−2 + ix)·ix` 0.1 s on the imaginary part of `Γ(−2 + ix) → i·∞`.
 fn product_of_limits(
     arena: &mut Arena,
     expr: ExprId,
     consts: &[ExprId],
     deps: &[ExprId],
     ap: &Approach,
-    inner_limit: &dyn Fn(&mut Arena, ExprId) -> Option<LimVal>,
+    factor_limit: &dyn Fn(&mut Arena, ExprId) -> Option<LimVal>,
 ) -> Option<Result<LimVal, SymplexError>> {
     if eventually_real(arena, expr, ap) {
         return None;
@@ -2763,7 +2800,7 @@ fn product_of_limits(
     let mut infinite: Vec<Infinite> = Vec::new();
     let mut varying = false;
     for &d in deps {
-        let l = inner_limit(arena, d)?;
+        let l = factor_limit(arena, d)?;
         match kind_of(arena, l)? {
             Kind::Finite(v) => {
                 finite.push(v);
@@ -2839,7 +2876,7 @@ fn unary_with_asymptotes(
     match kind_of(arena, l)? {
         Kind::Finite(l) => {
             let v = build(arena, l);
-            if limit_on_branch_cut(arena, cut, l, inner) {
+            if limit_on_branch_cut(arena, cut, l, inner, ap) {
                 return None;
             }
             finite_result(arena, v, ap.var)
@@ -2858,10 +2895,25 @@ fn unary_with_asymptotes(
 /// and `lim asinh(atanh(1 − x))` is `−acosh(π/2) + iπ/2`, not the value
 /// `asinh(iπ/2) = acosh(π/2) + iπ/2` on the cut.  Such limits are left to
 /// the one-sided analysis.
-fn limit_on_branch_cut(arena: &mut Arena, cut: BranchCut, l: ExprId, g: ExprId) -> bool {
+///
+/// Real near the point is enough (`xˣ` at `x = π` inside `atanh(xˣ)`, real
+/// there although not for every real `x`): the one-sided analysis took 2 s
+/// for `lim atanh(xˣ)` (a debug build), and `lim_{x→π} (atanh(xˣ) −
+/// atanh(π^π))/(cos(xˣ) − cos(π^π))` exceeded its recursion depth.
+fn limit_on_branch_cut(
+    arena: &mut Arena,
+    cut: BranchCut,
+    l: ExprId,
+    g: ExprId,
+    ap: &Approach,
+) -> bool {
     match cut {
         BranchCut::ImaginaryAxis => on_branch_cut(arena, cut, l),
-        _ => on_branch_cut(arena, cut, l) && !inner_known_real(arena, g),
+        _ => {
+            on_branch_cut(arena, cut, l)
+                && !inner_known_real(arena, g)
+                && !eventually_real(arena, g, ap)
+        }
     }
 }
 
@@ -3249,7 +3301,9 @@ pub(crate) fn inner_known_real(arena: &Arena, g: ExprId) -> bool {
 // (c) One-sided limits via Gruntz
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// `lim_{x → a^±} f(x)` via the substitution `x = a ± 1/w`, `w → +∞`.
+/// `lim_{x → a^±} f(x)` via the substitution `x = a ± 1/w`, `w → +∞`;
+/// an infinity on an axis completed by its perpendicular part when
+/// `perpendicular` (see [`limit_val_parts`]).
 fn one_sided_gruntz(
     arena: &mut Arena,
     expr: ExprId,
@@ -3257,6 +3311,7 @@ fn one_sided_gruntz(
     point: ExprId,
     right: bool,
     depth: usize,
+    perpendicular: bool,
 ) -> Result<LimVal, SymplexError> {
     // w → +∞ along the reals: declared positive, like Gruntz's own variable.
     let w = arena.positive_symbol(LIM_DUMMY);
@@ -3288,6 +3343,12 @@ fn one_sided_gruntz(
 
     let r = crate::calculus::gruntz::limit_pos_inf(arena, e, w)?;
     if is_valid_limit_value(arena, r, var) && !crate::base::walk::contains(arena, r, w) {
+        if !perpendicular && is_axis_infinity(arena, r) {
+            return Ok(LimVal {
+                value: r,
+                weak: true,
+            });
+        }
         with_imaginary_part(arena, e, w, r, depth)
     } else {
         Err(fail(format!(
@@ -3333,8 +3394,14 @@ fn analytic_fallback(
 /// from the right and `0` from the left (`ln` jumps by `2πi` across the
 /// cut; SymPy: `limit(…, x, 0, '-')` → `0`), and L'Hôpital's rule gave
 /// `2i` from both sides.  An argument that is real for real `var` stays
-/// on one side of the cut (`ln(x − 3)` at `x = 1`).
+/// on one side of the cut (`ln(x − 3)` at `x = 1`), and so does one real
+/// near the point (`xˣ` at `x = π`).
 fn meets_branch_cut_off_axis(arena: &mut Arena, expr: ExprId, var: ExprId, point: ExprId) -> bool {
+    let ap = Approach {
+        var,
+        point,
+        dir: Direction::Both,
+    };
     for id in crate::base::walk::post_order_ids(arena, expr) {
         let Some((arg, cut)) = branch_cut_of(arena, id) else {
             continue;
@@ -3344,7 +3411,7 @@ fn meets_branch_cut_off_axis(arena: &mut Arena, expr: ExprId, var: ExprId, point
         }
         let at = crate::transforms::subs::subs(arena, arg, var, point);
         let at = crate::transforms::eval::eval(arena, at);
-        if on_branch_cut(arena, cut, at) {
+        if on_branch_cut(arena, cut, at) && !eventually_real(arena, arg, &ap) {
             return true;
         }
     }
@@ -3436,6 +3503,7 @@ fn limit_at_infinity_dir(
     var: ExprId,
     positive: bool,
     depth: usize,
+    perpendicular: bool,
 ) -> Result<LimVal, SymplexError> {
     let point = if positive {
         arena.infinity()
@@ -3497,8 +3565,14 @@ fn limit_at_infinity_dir(
     tracing::debug!("limit: at infinity, trying Gruntz algorithm");
     let t = arena.positive_symbol("__lim_t");
     let along = if positive { t } else { arena.neg(t) };
+    let weak = |arena: &Arena, value: ExprId| {
+        (!perpendicular && is_axis_infinity(arena, value)).then_some(LimVal { value, weak: true })
+    };
     let gruntz_err = match crate::calculus::gruntz::gruntz(arena, expr, var, point) {
         Ok(result) if is_valid_limit_value(arena, result, var) => {
+            if let Some(v) = weak(arena, result) {
+                return Ok(v);
+            }
             let e = crate::transforms::subs::subs(arena, expr, var, along);
             let e = crate::transforms::eval::eval(arena, e);
             return with_imaginary_part(arena, e, t, result, depth);
@@ -3511,6 +3585,9 @@ fn limit_at_infinity_dir(
     tracing::debug!("limit: Gruntz failed, falling back to polynomial degree analysis");
     match limit_at_infinity(arena, expr, var, positive) {
         Ok(r) if is_valid_limit_value(arena, r, var) => {
+            if let Some(v) = weak(arena, r) {
+                return Ok(v);
+            }
             let e = crate::transforms::subs::subs(arena, expr, var, along);
             let e = crate::transforms::eval::eval(arena, e);
             with_imaginary_part(arena, e, t, r, depth).map_err(|_| gruntz_err)
@@ -3659,6 +3736,20 @@ fn with_imaginary_part(
         }
     }
     Err(undetermined())
+}
+
+/// Is `v` an infinity on an axis, `±∞` or `±i·∞` (whose perpendicular
+/// part [`with_imaginary_part`] searches)?
+fn is_axis_infinity(arena: &Arena, v: ExprId) -> bool {
+    if v == arena.infinity() || v == arena.neg_infinity() {
+        return true;
+    }
+    let i = arena.i_unit();
+    let oo = arena.infinity();
+    matches!(arena.node(v), ExprNode::Mul(cs)
+        if cs.contains(&oo)
+            && cs.contains(&i)
+            && cs.iter().all(|&c| c == oo || c == i || c == arena.neg_one()))
 }
 
 /// `Some(true)` for an infinity `d·∞` along the positive imaginary axis

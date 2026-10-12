@@ -280,12 +280,20 @@ fn bessel_k_of_a_large_order() {
 /// Before: `(x/2)^ν` of a negative `x` was taken as `|x/2|^ν`, a real
 /// number: `besselj(−1/2, −1)` was `0.431…` (mpmath: `besselj(-mpf(1)/2,
 /// -1) = (0.0 - 0.4310988680183760795205209672985334000881j)`, dps 40).
-/// A non-integer order at a negative argument is refused (complex).
+/// A non-integer order at a negative argument was then refused (complex);
+/// since 0.45 it is the complex value on the principal branch, from above
+/// (mpmath `besselj(mpf(1)/3, mpc(-2,0))` = `0.2214699090742881061252112 +
+/// 0.3835971348643265396366244i`, dps 40 and 60).
 #[test]
 fn bessel_j_of_a_negative_argument_and_fractional_order_is_not_real() {
     let ctx = Context::new();
-    refused(&ctx, "besselj(-1/2, -1)", 16);
-    refused(&ctx, "besselj(1/3, -2)", 16);
+    check(&ctx, "besselj(-1/2, -1)", 16, "-0.4310988680183761*i");
+    check(
+        &ctx,
+        "besselj(1/3, -2)",
+        16,
+        "0.2214699090742881 + 0.3835971348643265*i",
+    );
 }
 
 // ── Phases of asymptotic expansions ─────────────────────────────────────────

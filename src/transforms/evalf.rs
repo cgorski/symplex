@@ -82,8 +82,11 @@ pub(crate) mod bernoulli;
 mod bessel_debye;
 mod bessel_order;
 mod bessel_recur;
+mod cbessel;
 mod cerf;
+mod cexpint;
 mod conjugate;
+mod cspecial;
 mod emsum;
 mod exact;
 mod extended;
@@ -93,6 +96,7 @@ mod lambertw;
 mod loggamma;
 mod polylog;
 mod quad;
+mod rszeta;
 mod sensitivity;
 mod zeta;
 
@@ -1441,6 +1445,13 @@ fn eval_node_with_error(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<(Complex, accuracy::Bound), SymplexError> {
+    // `erfinv`, `erfcinv` next to the ends of their domains, from the exact
+    // complement of the argument (`cspecial.rs`; refused before 0.45).
+    if let Some(r) = cspecial::inverse_erf_end(arena, arena.node(id), cache, errs, prec, rm, cc) {
+        let (value, err) = r?;
+        let err = accuracy::reported(&value, err, prec);
+        return Ok((value, err));
+    }
     let (value, err) = match arena.node(id) {
         ExprNode::Add(children) | ExprNode::Mul(children) => {
             let mut parts: Vec<(&Complex, accuracy::Bound)> = Vec::with_capacity(children.len());
@@ -1549,6 +1560,24 @@ fn eval_node_with_error(
                 }
                 ZetaFamily::Erf(kind) => cerf::erf_bound(kind, z, bz, &value, prec),
             };
+            (value, err)
+        }
+        // The special functions of `cspecial.rs` at non-real arguments (or
+        // real ones where the value is not real) report their own bounds.
+        node if cspecial::classify(arena, node, cache).is_some() => {
+            let Some((f, args)) = cspecial::classify(arena, node, cache) else {
+                return Err(unevaluable("special function lost its arguments"));
+            };
+            let value = match eval_node(arena, id, cache, prec, rm, cc) {
+                Ok(value) => value,
+                // A domain error at 0 for an argument only 0 to the working
+                // precision (as in the arm below).
+                Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache, errs) => {
+                    return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
+                }
+                Err(e) => return Err(e),
+            };
+            let err = cspecial::bound(arena, id, f, &args, &value, cache, errs, prec, rm, cc);
             (value, err)
         }
         ExprNode::Beta(a, b)
@@ -2799,6 +2828,16 @@ fn eval_node(
     cc: &mut Consts,
 ) -> Result<Complex, SymplexError> {
     let node = arena.node(id);
+
+    // Special functions at non-real arguments, and at real ones where the
+    // value is not real (`cspecial.rs`; refused before 0.45).
+    if let Some((f, args)) = cspecial::classify(arena, node, cache) {
+        let vals = args
+            .iter()
+            .map(|a| get_cached(cache, *a))
+            .collect::<Result<Vec<_>, _>>()?;
+        return cspecial::eval(f, &vals, prec, rm, cc);
+    }
 
     match node {
         // ── Atoms ──────────────────────────────────────────────────

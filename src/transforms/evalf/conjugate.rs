@@ -21,10 +21,17 @@
 //! * `conj(bⁿ) = (conj b)ⁿ` for an integer `n`, and `conj(f(z)) =
 //!   f(conj z)` for `exp`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, and
 //!   (since 0.44, evaluated at non-real arguments) `ζ`, `Γ`, `ψ`, `ψ⁽ᵐ⁾`, `x!`,
-//!   `B`, `erf`, `erfc`;
+//!   `B`, `erf`, `erfc`, and (since 0.45) the entire `Si`, `Shi`, `erfi`,
+//!   Airy and Fresnel functions and the meromorphic `binomial` (`conj f(a,
+//!   b) = f(conj a, conj b)` with every argument conjugated);
 //! * for `ln`, `√`, other powers and the inverse functions only when the
 //!   argument is certainly off the function's branch cut, where the
 //!   principal branch breaks the symmetry (`conj √−1 = −i ≠ √(conj −1)`);
+//!   likewise (since 0.45) `Ei`, `Ci`, `Chi`, `E_n`, `Γ(a, z)`, `γ(a, z)`,
+//!   `Y_ν`, `K_ν` off the cut `(−∞, 0]` of their last argument, `J_ν`, `I_ν`
+//!   off it unless the order is an exact integer (they are entire then), and
+//!   `li` off `(−∞, 1]` (`Ci(−2) = Ci(2) + iπ` is not the conjugate of
+//!   `Ci(conj(−2))`);
 //! * a node whose value is exactly real is its own conjugate; any other node
 //!   gets a signature no other node can match.
 //!
@@ -41,6 +48,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 use super::accuracy::{self, Bound};
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::Complex;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
@@ -113,6 +121,17 @@ fn off_negative_axis(z: &Complex, b: Bound) -> bool {
     certainly_nonzero(&z.1, b.im) || (z.0.is_positive() && certainly_nonzero(&z.0, b.re))
 }
 
+/// Is `z ± b` certainly off the cut `(−∞, 1]` (of `li`)?
+fn off_below_one(z: &Complex, b: Bound) -> bool {
+    if certainly_nonzero(&z.1, b.im) {
+        return true;
+    }
+    let one = BigFloat::from_i32(1, 64);
+    let p = z.0.mantissa_max_bit_len().unwrap_or(64) + 64;
+    let d = z.0.sub(&one, p, astro_float::RoundingMode::ToEven);
+    d.is_positive() && certainly_nonzero(&d, b.re)
+}
+
 impl Sigs {
     pub(super) fn new() -> Sigs {
         Sigs::default()
@@ -152,6 +171,17 @@ impl Sigs {
             cache
                 .get(c)
                 .is_some_and(|v| off_negative_axis(v, child_bound(c)))
+        };
+        let off_cut_one = |c: &ExprId| {
+            cache
+                .get(c)
+                .is_some_and(|v| off_below_one(v, child_bound(c)))
+        };
+        // An exact integer (the order of `J_ν`, `I_ν`, entire then).
+        let exact_integer = |c: &ExprId| {
+            cache.get(c).is_some_and(|v| {
+                child_bound(c).is_exact() && v.1.is_zero() && (v.0.is_zero() || v.0.is_int())
+            })
         };
         let across_nonzero = |c: &ExprId, imaginary_axis: bool| {
             cache.get(c).is_some_and(|v| {
@@ -229,6 +259,42 @@ impl Sigs {
                 | ExprNode::Beta(..)
                 | ExprNode::Erf(_)
                 | ExprNode::Erfc(_) => true,
+                // Entire or meromorphic and real on the real axis (0.45):
+                // `cspecial.rs` evaluates them at non-real arguments.
+                ExprNode::Si(_) | ExprNode::Binomial(..) => true,
+                // Off their cuts (0.45).
+                ExprNode::Ei(c) | ExprNode::Ci(c) => off_cut(c),
+                ExprNode::Li(c) => off_cut_one(c),
+                ExprNode::Apply(sid, args) => match (arena.lib_fn(*sid), args.len()) {
+                    (
+                        Some(
+                            LibFn::Shi
+                            | LibFn::Erfi
+                            | LibFn::AiryAi
+                            | LibFn::AiryBi
+                            | LibFn::AiryAiPrime
+                            | LibFn::AiryBiPrime
+                            | LibFn::FresnelS
+                            | LibFn::FresnelC,
+                        ),
+                        1,
+                    ) => true,
+                    (Some(LibFn::Chi), 1) => off_cut(&args[0]),
+                    (
+                        Some(
+                            LibFn::ExpInt
+                            | LibFn::UpperGamma
+                            | LibFn::LowerGamma
+                            | LibFn::BesselY
+                            | LibFn::BesselK,
+                        ),
+                        2,
+                    ) => off_cut(&args[1]),
+                    (Some(LibFn::BesselJ | LibFn::BesselI), 2) => {
+                        exact_integer(&args[0]) || off_cut(&args[1])
+                    }
+                    _ => false,
+                },
                 ExprNode::Asin(c) | ExprNode::Acos(c) | ExprNode::Atanh(c) | ExprNode::Acosh(c) => {
                     across_nonzero(c, false)
                 }

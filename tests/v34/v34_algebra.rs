@@ -31,9 +31,13 @@ fn mat(ctx: &Context, rows: Rows<'_>) -> Matrix {
 /// ± 0.070695986873045i`, `0.75874495677599 ± 1.070695986873045i`; `±i`,
 /// `±0.404404995193889 − 0.725202721660379i`, `1.450405443320758i`; `1`
 /// (double), `−0.573634552759303`, `0.286817276379651 ± 1.288800222091314i`.
-/// A factor of degree 5 over the field is reported instead of a partial
+/// A factor of degree 5 over the field was reported instead of a partial
 /// list: `(x² + i)·(x⁵ − √2·x − 1)` (SymPy returns the two roots of `x² + i`
-/// alone).
+/// alone); since 0.45 the quintic is solved through its norm over ℚ (five
+/// `RootOf`s of `x¹⁰ − 2x⁵ − 2x² + 1`) and all seven roots come back —
+/// mpmath `polyroots([1, 0, 0, 0, -sqrt(2), -1])`: 1.22233206044003,
+/// −0.758684211806651 ± 0.205962195318201i, 0.147518181586635 ±
+/// 1.14104809461863i; and `±(1 − i)/√2`.
 #[test]
 fn solve_of_a_product_over_an_algebraic_field_has_every_root() {
     let ctx = Context::new();
@@ -82,22 +86,31 @@ fn solve_of_a_product_over_an_algebraic_field_has_every_root() {
             pool.swap_remove(k);
         }
     }
-    let err = ctx
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    let want = [
+        (1.22233206044003, 0.0),
+        (-0.758684211806651, 0.205962195318201),
+        (-0.758684211806651, -0.205962195318201),
+        (0.147518181586635, 1.14104809461863),
+        (0.147518181586635, -1.14104809461863),
+        (h, -h),
+        (-h, h),
+    ];
+    let roots = ctx
         .parse("(x^2 + I)*(x^5 - sqrt(2)*x - 1)")
         .unwrap()
         .solve(&x)
-        .unwrap_err();
-    assert!(
-        matches!(err, SymplexError::ComputationFailed { .. }),
-        "{err:?}"
-    );
-    // The quintic factor is not solved, so the product is solved as a
-    // whole, which fails: no partial list of the two roots of `x² + i`.
-    assert!(
-        err.to_string()
-            .contains("roots were not found in closed form"),
-        "{err}"
-    );
+        .unwrap();
+    assert_eq!(roots.len(), want.len(), "{roots:?}");
+    for (a, b) in want {
+        assert!(
+            roots.iter().any(|r| {
+                let z = r.eval_complex64().unwrap();
+                (z.re - a).abs() < 1e-12 && (z.im - b).abs() < 1e-12
+            }),
+            "{a} + {b}i not among {roots:?}"
+        );
+    }
 }
 
 fn assert_entries(m: &Matrix, want: &Matrix, what: &str) {

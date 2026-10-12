@@ -63,18 +63,18 @@ fn dot_vec(a: &[Ex], b: &[Ex], hermitian: bool) -> Ex {
 }
 
 /// `√λ` on the principal branch, as `i·√(−λ)` for a negative eigenvalue
-/// of a Hermitian matrix (see [`negative_real_eigenvalue`]).
-fn principal_sqrt(lam: &Ex, real_spectrum: bool) -> Ex {
-    match negative_real_eigenvalue(lam, real_spectrum) {
+/// in Cardano form (see [`RealAxis::negative`]).
+fn principal_sqrt(lam: &Ex, axis: &RealAxis<'_>) -> Ex {
+    match axis.negative(lam) {
         Some(minus) => &lam.context().i_unit() * &minus.sqrt(),
         None => lam.sqrt(),
     }
 }
 
 /// `ln λ` on the principal branch, as `ln(−λ) + iπ` for a negative
-/// eigenvalue of a Hermitian matrix (see [`negative_real_eigenvalue`]).
-fn principal_ln(lam: &Ex, real_spectrum: bool) -> Ex {
-    match negative_real_eigenvalue(lam, real_spectrum) {
+/// eigenvalue in Cardano form (see [`RealAxis::negative`]).
+fn principal_ln(lam: &Ex, axis: &RealAxis<'_>) -> Ex {
+    match axis.negative(lam) {
         Some(minus) => {
             let ctx = lam.context();
             minus.ln() + &ctx.i_unit() * &ctx.pi()
@@ -133,20 +133,71 @@ impl Matrix {
     }
 }
 
-/// `−λ` for an eigenvalue `λ` known to be real (`real_spectrum`: the
-/// matrix is Hermitian) that is negative and in Cardano form, so that
-/// `matrix_sqrt` / `matrix_log` can take the principal values
-/// `√λ = i·√(−λ)` and `ln λ = ln(−λ) + iπ`.  Written `√λ`, such a
-/// radicand is exactly real but its imaginary part cancels only
-/// numerically, so it sits on the branch cut with the sign of rounding
-/// noise and does not evaluate: before 0.38 every entry of `√A` of such a
-/// 3×3 Hermitian matrix over `ℚ(√2, √3, i)` was unevaluable.
-fn negative_real_eigenvalue(lam: &Ex, real_spectrum: bool) -> Option<Ex> {
-    if !real_spectrum || !crate::domains::matrix::has_nested_higher_root(lam) {
-        return None;
+/// The eigenvalues of a matrix that lie exactly on the negative real axis
+/// while written with complex radicals (Cardano's formula in the *casus
+/// irreducibilis*), for the principal `√λ = i·√(−λ)` and `ln λ = ln(−λ) +
+/// iπ` of `matrix_sqrt` / `matrix_log`.  Written `√λ`, such a radicand is
+/// exactly real but its imaginary part cancels only numerically, so it sits
+/// on the branch cut with the sign of rounding noise and does not evaluate.
+struct RealAxis<'a> {
+    matrix: &'a Matrix,
+    /// The matrix is Hermitian: its eigenvalues are real.
+    hermitian: bool,
+    /// Its entries are real: its characteristic polynomial is.
+    real: bool,
+    /// The certified values of its distinct eigenvalues (computed once,
+    /// when a real matrix has a candidate).
+    values: std::cell::OnceCell<Option<Vec<num_complex::Complex64>>>,
+}
+
+impl<'a> RealAxis<'a> {
+    fn of(matrix: &'a Matrix) -> Self {
+        let hermitian = matrix.is_hermitian() == Some(true);
+        let real = !hermitian && matrix.iter().all(|e| e.is_real() == Some(true));
+        Self {
+            matrix,
+            hermitian,
+            real,
+            values: std::cell::OnceCell::new(),
+        }
     }
-    let z = lam.eval_complex64().ok()?;
-    (z.re < 0.0 && z.im.abs() <= 1e-9 * z.re.abs()).then(|| (-lam).eval())
+
+    /// `−λ` for an eigenvalue `λ` in Cardano form whose value is negative
+    /// and real: known real for a Hermitian matrix; for a real matrix, `λ̄`
+    /// is an eigenvalue too (a root of the real characteristic
+    /// polynomial), so `λ` is real when no other eigenvalue lies near `λ̄`
+    /// (certified 16-digit values: `λ̄` is within `10⁻⁹·|λ|` of `λ`, every
+    /// other eigenvalue farther than `10⁻⁶·(1 + |λ|)` from it).  Before
+    /// 0.38 every entry of `√A` of such a 3×3 Hermitian matrix over `ℚ(√2,
+    /// √3, i)` was unevaluable, and up to 0.44 those of a real non-Hermitian
+    /// one (`[[3, 1 + √2, 2], [3, −2, √2/2], [√2/2, −2, √3]]`).
+    fn negative(&self, lam: &Ex) -> Option<Ex> {
+        if !(self.hermitian || self.real) || !crate::domains::matrix::has_nested_higher_root(lam) {
+            return None;
+        }
+        let z = lam.eval_complex64().ok()?;
+        if !(z.re < 0.0 && z.im.abs() <= 1e-9 * z.re.abs()) {
+            return None;
+        }
+        if !self.hermitian {
+            let values = self.values.get_or_init(|| {
+                let pairs = self.matrix.eigenvals_with_multiplicity().ok()?;
+                pairs
+                    .iter()
+                    .map(|(v, _)| v.eval_complex64().ok())
+                    .collect::<Option<Vec<_>>>()
+            });
+            let near = values
+                .as_ref()?
+                .iter()
+                .filter(|w| (**w - z.conj()).norm() <= 1e-6 * (1.0 + z.norm()))
+                .count();
+            if near != 1 {
+                return None;
+            }
+        }
+        Some((-lam).eval())
+    }
 }
 
 fn dependent_error(op: &'static str, j: usize) -> SymplexError {
@@ -1032,9 +1083,9 @@ impl Matrix {
     /// ```
     pub fn matrix_sqrt(&self) -> Result<Matrix, SymplexError> {
         let op = "matrix_sqrt";
-        let real_spectrum = self.is_hermitian() == Some(true);
+        let axis = RealAxis::of(self);
         if let Some(m) =
-            self.radical_spectrum_function(op, &|l| principal_sqrt(l, real_spectrum), false, true)?
+            self.radical_spectrum_function(op, &|l| principal_sqrt(l, &axis), false, true)?
         {
             return Ok(m);
         }
@@ -1044,7 +1095,7 @@ impl Matrix {
                 let ctx = self.context();
                 return self.jordan_function(op, &|lam, k| {
                     if k == 0 {
-                        return Ok(lam.sqrt());
+                        return Ok(principal_sqrt(lam, &axis));
                     }
                     if ex_is_zero(lam) == Some(true) {
                         return Err(failed(
@@ -1058,17 +1109,17 @@ impl Matrix {
                         binom = binom * (Q::new(1.into(), 2.into()) - Q::from_integer(i.into()))
                             / Q::from_integer((i + 1).into());
                     }
-                    Ok(&(&ctx.from_ratio(binom) * &lam.sqrt()) / &lam.powi(k as i64))
+                    Ok(&(&ctx.from_ratio(binom) * &principal_sqrt(lam, &axis)) / &lam.powi(k as i64))
                 });
             }
             Err(e) if is_swell(&e) => {
-                return self.sylvester_or(op, e, &|l| principal_sqrt(l, real_spectrum));
+                return self.sylvester_or(op, e, &|l| principal_sqrt(l, &axis));
             }
             Err(e) => return Err(failed(op, format!("requires a diagonalizable matrix: {e}"))),
         };
         let sd = d.map_indexed(|i, j, e| {
             if i == j {
-                principal_sqrt(e, real_spectrum)
+                principal_sqrt(e, &axis)
             } else {
                 e.clone()
             }
@@ -1076,7 +1127,7 @@ impl Matrix {
         let p_inv = match p.inv() {
             Ok(pi) => pi,
             Err(e) if is_swell(&e) => {
-                return self.sylvester_or(op, e, &|l| principal_sqrt(l, real_spectrum));
+                return self.sylvester_or(op, e, &|l| principal_sqrt(l, &axis));
             }
             Err(e) => return Err(e),
         };
@@ -1128,16 +1179,13 @@ impl Matrix {
                 ),
             ));
         }
-        let real_spectrum = self.is_hermitian() == Some(true);
-        if let Some(m) = self.radical_spectrum_function(
-            "matrix_log",
-            &|l| principal_ln(l, real_spectrum),
-            true,
-            true,
-        )? {
+        let axis = RealAxis::of(self);
+        if let Some(m) =
+            self.radical_spectrum_function("matrix_log", &|l| principal_ln(l, &axis), true, true)?
+        {
             return Ok(m);
         }
-        match self.matrix_log_jordan(real_spectrum) {
+        match self.matrix_log_jordan(&axis) {
             Err(e) if is_swell(&e) => {
                 if ex_is_zero(&self.det()?) == Some(true) {
                     return Err(failed(
@@ -1145,14 +1193,14 @@ impl Matrix {
                         "matrix is singular (eigenvalue 0); the logarithm does not exist",
                     ));
                 }
-                self.sylvester_or("matrix_log", e, &|l| principal_ln(l, real_spectrum))
+                self.sylvester_or("matrix_log", e, &|l| principal_ln(l, &axis))
             }
             r => r,
         }
     }
 
     /// [`matrix_log`](Self::matrix_log) through the Jordan form.
-    fn matrix_log_jordan(&self, real_spectrum: bool) -> Result<Matrix, SymplexError> {
+    fn matrix_log_jordan(&self, axis: &RealAxis<'_>) -> Result<Matrix, SymplexError> {
         let n = self.nrows();
         let ctx = self.context();
         let JordanForm { p, j } = self.jordan_form().map_err(|e| match e {
@@ -1182,7 +1230,7 @@ impl Matrix {
                     "matrix is singular (eigenvalue 0); the logarithm does not exist",
                 ));
             }
-            let ln_lambda = principal_ln(&lambda, real_spectrum);
+            let ln_lambda = principal_ln(&lambda, axis);
             for i in 0..block_size {
                 log_j[col + i][col + i] = ln_lambda.clone();
                 for d in 1..(block_size - i) {

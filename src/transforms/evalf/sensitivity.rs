@@ -1122,9 +1122,12 @@ fn beta_shape(
 /// The change of node `id`'s value when child `child` (value `v`, error
 /// radius `2^e`) moves by `δ = max(2^e, 4 ulps)`: node re-evaluated at the
 /// working precision, the difference scaled back to `2^e` and doubled;
-/// `None` when the node evaluates on neither side.
+/// `None` when the node evaluates on neither side.  (Also the sensitivity of
+/// the special functions at non-real arguments to an argument without a
+/// closed-form derivative, `cspecial.rs`: moving the real part of an
+/// analytic function's argument measures its derivative.)
 #[allow(clippy::too_many_arguments)]
-fn numeric_change(
+pub(super) fn numeric_change(
     arena: &Arena,
     id: ExprId,
     child: ExprId,

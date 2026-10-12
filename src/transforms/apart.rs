@@ -258,6 +258,30 @@ fn decompose_poly_fraction(numer: &Poly, factors: &[(Poly, u32)]) -> Vec<(Poly, 
     result
 }
 
+/// One term `numer/factor^power` of a partial fraction decomposition over ℚ
+/// (`deg numer < deg factor`).
+pub(crate) struct PartialFraction {
+    pub(crate) numer: Poly,
+    pub(crate) factor: Poly,
+    pub(crate) power: u32,
+}
+
+/// The partial fractions of `numer / ∏ fᵢ^eᵢ` over ℚ (pairwise coprime `fᵢ`,
+/// `deg numer < deg ∏ fᵢ^eᵢ`), by [`decompose_poly_fraction`].
+pub(crate) fn partial_fractions_over_q(
+    numer: &Poly,
+    factors: &[(Poly, u32)],
+) -> Vec<PartialFraction> {
+    decompose_poly_fraction(numer, factors)
+        .into_iter()
+        .map(|(numer, factor, power)| PartialFraction {
+            numer,
+            factor,
+            power,
+        })
+        .collect()
+}
+
 /// Decompose `numer / factor^power` into terms `R_k / factor^k`
 /// for `k = 1, …, power` via repeated polynomial division.
 fn decompose_single_factor(numer: &Poly, factor: &Poly, power: u32) -> Vec<(Poly, Poly, u32)> {
@@ -1515,6 +1539,9 @@ pub(crate) fn apart_full(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId
     if let Some(r) = apart_algebraic(arena, t, var) {
         return r;
     }
+    if let Some(r) = apart_param_algebraic(arena, t, var) {
+        return r;
+    }
     if t != expr && rational_in(arena, t, var) {
         return t;
     }
@@ -1758,6 +1785,179 @@ fn apart_algebraic(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprI
     }
     if !quot.is_zero() {
         out.push(ef.kpoly_to_expr(arena, &quot, var));
+    }
+    Some(match out.len() {
+        0 => arena.zero,
+        1 => out[0],
+        _ => arena.add(&out),
+    })
+}
+
+/// Partial fractions over `ℚ(y)(α)` of an expression rational in `var`
+/// whose coefficients hold parameters (free symbols) and algebraic numbers
+/// together (`a/((x − √2)(x + 1))`), which neither [`apart_params`] nor
+/// [`apart_algebraic`] takes.  The denominator is factored as written: a
+/// factor free of the parameters over `ℚ(α)` (Trager's method), one free of
+/// the algebraic numbers over `ℤ[var, y]`, any other kept whole; equal
+/// factors are merged, and the numerators come from the extended Euclidean
+/// algorithm over `ℚ(y)(α)` ([`decompose_generic`]).  SymPy's default
+/// `apart` leaves `a/((x − √2)(x + 1))` unchanged and `apart(…, full=True)`
+/// splits it over the roots; so did 0.44 (unchanged).  The result is generic
+/// in the parameters, as [`apart_params`]'.  `None` when the factors are not
+/// pairwise coprime, there is nothing to split, or beyond the budgets.
+fn apart_param_algebraic(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    use crate::poly::multipoly::{GrevLex, Lex, MultiPoly};
+    use crate::poly::numfield::{self, AlgNum};
+    use crate::poly::paramfield::{self, PAPoly, ParamAlgField};
+    use crate::poly::traits::Field;
+
+    let (n, d) = polybridge::fraction_parts(arena, expr);
+    let mut params: Vec<ExprId> = Vec::new();
+    let mut atoms: Vec<ExprId> = Vec::new();
+    for g in numfield::generators(arena, &[n, d]) {
+        if g == var {
+            continue;
+        }
+        if matches!(arena.node(g), ExprNode::Symbol(_)) {
+            params.push(g);
+        } else if crate::base::walk::free_symbols(arena, g).is_empty() {
+            atoms.push(g);
+        } else {
+            return None;
+        }
+    }
+    if params.is_empty() || atoms.is_empty() || params.len() > MAX_PARAMS {
+        return None;
+    }
+    params.sort_by(|a, b| {
+        arena
+            .sort_key(*a)
+            .cmp(arena.sort_key(*b))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let mut field = ParamAlgField::new(arena, var, &params, &atoms)?;
+    let p = field.poly_of(arena, n)?;
+    let q = field.poly_of(arena, d)?;
+    let dq = q.degree()?;
+    if dq == 0 || dq > MAX_PARAM_DENOM_DEGREE as usize {
+        return None;
+    }
+    // The factors of the denominator as written.
+    let written: Vec<(ExprId, u32)> = {
+        let children: Vec<ExprId> = match arena.node(d) {
+            ExprNode::Mul(ch) => ch.to_vec(),
+            _ => vec![d],
+        };
+        children
+            .into_iter()
+            .map(|c| match *arena.node(c) {
+                ExprNode::Pow(b, e) => match arena
+                    .as_num(e)
+                    .filter(|k| k.is_integer() && num_traits::Signed::is_positive(*k))
+                    .and_then(|k| u32::try_from(k.to_integer()).ok())
+                {
+                    Some(k) => (b, k),
+                    None => (c, 1),
+                },
+                _ => (c, 1),
+            })
+            .collect()
+    };
+    let mut fs: Vec<(PAPoly, u32, ExprId)> = Vec::new();
+    for (b, k) in written {
+        if !crate::base::walk::contains(arena, b, var) {
+            continue;
+        }
+        let syms = crate::base::walk::free_symbols(arena, b);
+        let has_param = syms.iter().any(|&s| s != var);
+        let has_atom = numfield::generators(arena, &[b])
+            .into_iter()
+            .any(|g| g != var && !matches!(arena.node(g), ExprNode::Symbol(_)));
+        let mut found: Vec<(PAPoly, u32, ExprId)> = Vec::new();
+        if !has_param {
+            let mut over_k = Vec::new();
+            {
+                let ef = field.ext();
+                let kp = ef.kpoly_of(arena, b, var)?;
+                let fac = ef.field.factor(&kp)?;
+                for (h, m) in &fac.factors {
+                    let h2 = h.scale(&AlgNum::Rat(ef.primitive_scale(h)));
+                    let he = ef.kpoly_to_expr(arena, &h2, var);
+                    over_k.push((h2, m.checked_mul(k)?, he));
+                }
+            }
+            for (h2, m, he) in over_k {
+                found.push((field.lift_kpoly(&h2), m, he));
+            }
+        } else if !has_atom {
+            let mp: MultiPoly<GrevLex> = paramfield::to_multipoly(arena, b, field.vars())?;
+            let (_, factors) = crate::poly::factor_zassenhaus::factor_multivariate_many(&mp)?;
+            for (f, e) in factors {
+                if f.degree_in(0) == 0 {
+                    continue;
+                }
+                let lc: MultiPoly<Lex> = f.coeff_in(0, f.degree_in(0)).convert_order();
+                let f = if lc
+                    .leading_coeff()
+                    .is_some_and(num_traits::Signed::is_negative)
+                {
+                    f.neg()
+                } else {
+                    f
+                };
+                let fe = crate::poly::polybridge::multipoly_to_expr(arena, &f, field.vars());
+                found.push((field.lift_multipoly(&f), e.checked_mul(k)?, fe));
+            }
+        } else {
+            found.push((field.poly_of(arena, b)?, k, b));
+        }
+        for (f, m, fe) in found {
+            let monic = f.make_monic();
+            match fs.iter_mut().find(|(g, _, _)| g.make_monic() == monic) {
+                Some(entry) => entry.1 = entry.1.checked_add(m)?,
+                None => fs.push((f, m, fe)),
+            }
+        }
+    }
+    if fs.is_empty() {
+        return None;
+    }
+    let mut prod = PAPoly::one();
+    for (f, m, _) in &fs {
+        prod = prod.mul(&f.pow(*m as usize));
+    }
+    // The part of the denominator free of `var`, an element of the field.
+    let (c, r) = q.try_div_rem(&prod)?;
+    if !r.is_zero() || c.degree() != Some(0) {
+        return None;
+    }
+    let c = c.coeff(0);
+    let (quot, rem) = p.try_div_rem(&q)?;
+    if fs.len() == 1 && fs[0].1 == 1 && quot.is_zero() {
+        return None;
+    }
+    let rem = rem.scale(&c.inv());
+    let factor_list: Vec<(PAPoly, u32)> = fs.iter().map(|(f, m, _)| (f.clone(), *m)).collect();
+    let terms = decompose_generic(&rem, &factor_list)?;
+    if !paramfield::papoly_size_ok(&quot)
+        || terms.iter().any(|(t, _, _)| !paramfield::papoly_size_ok(t))
+    {
+        return None;
+    }
+    let mut out: Vec<ExprId> = Vec::with_capacity(terms.len() + 1);
+    for (r, idx, k) in &terms {
+        let re = field.poly_to_expr(arena, r);
+        let fe = fs[*idx].2;
+        let den = if *k == 1 {
+            fe
+        } else {
+            let e = arena.int(i64::from(*k));
+            arena.pow(fe, e)
+        };
+        out.push(arena.div(re, den));
+    }
+    if !quot.is_zero() {
+        out.push(field.poly_to_expr(arena, &quot));
     }
     Some(match out.len() {
         0 => arena.zero,

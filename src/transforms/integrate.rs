@@ -3546,6 +3546,19 @@ fn integrate_node_uncached(
                 return wrap_with_constants(arena, result, &constants);
             }
 
+            // ── ln(a·x + b)·R(x) with a factor of the denominator irreducible
+            // of degree ≥ 2: before by parts, whose `v` (Ferrari's roots of a
+            // quartic) only feeds nested attempts that cannot succeed (3.4 s
+            // of 4.3 s for `ln(−x)·(−x² + 2x − 2)/(x⁴ − x² + 2x + 1)`).
+            if let Some(result) = stage!(
+                arena,
+                "log_times_rational",
+                expr,
+                try_log_times_rational(arena, &dependent, var, var_sym, depth, true)
+            ) {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
             // ── Integration by parts: ∫ u·dv = u·v - ∫ v·du ───────────
             // Try when there are exactly 2 dependent factors:
             // one that's a by-parts candidate (u), and one that's directly
@@ -3714,6 +3727,14 @@ fn integrate_node_uncached(
                 return result;
             }
             if let Some(result) = try_dilog_integral(arena, &dependent, var, var_sym) {
+                return wrap_with_constants(arena, result, &constants);
+            }
+            if let Some(result) = stage!(
+                arena,
+                "log_times_rational",
+                expr,
+                try_log_times_rational(arena, &dependent, var, var_sym, depth, false)
+            ) {
                 return wrap_with_constants(arena, result, &constants);
             }
 
@@ -7486,13 +7507,16 @@ fn try_by_parts_poly_times_pair(
     var_sym: SymbolId,
     depth: usize,
 ) -> Option<ExprId> {
+    if rational_product(arena, dependent, var_sym) {
+        return None;
+    }
     let idx = dependent
         .iter()
         .position(|&d| is_polynomial_in(arena, d, var, var_sym))?;
     let u = dependent[idx];
     let dv = remaining_product(arena, dependent, idx);
     let v = integrate_node(arena, dv, var, var_sym, depth - 1);
-    if crate::base::walk::has_unevaluated(arena, v) {
+    if crate::base::walk::has_unevaluated(arena, v) || has_root_sum_of_var(arena, v, var_sym) {
         return None;
     }
     let du = crate::transforms::diff::diff(arena, u, var);
@@ -7559,10 +7583,58 @@ fn by_parts_cycle(
     Cycle::Solved(arena.div(uv, one_plus_c))
 }
 
+/// Is the product of the factors `dependent` a rational function of the
+/// variable over ℚ (sums, products and integer powers of the variable and
+/// of rational numbers) with a denominator (a polynomial is not the
+/// rational integrator's)?  Then by parts is no strategy: Hermite's reduction
+/// and Rothstein–Trager are complete there, and by parts takes `u` = a
+/// polynomial factor and `dv` = the reciprocal of the rest, whose `v`
+/// (logarithms, arctangents, a `RootSum` or the explicit roots of a
+/// quartic) leaves `∫ v·du` harder than the integrand.  Up to 0.44 the
+/// algebraic remainder `(−x³/6 + …)/(x⁴ − x³ + x² − x + 2)` of
+/// `∫ dx/(x⁵ + x + 2)`, which `try_risch_rational` hands to the heuristic
+/// integrator, went down 8 levels of by parts and sum distribution before
+/// it gave up (0.5 s of its 0.57 s), for the same final answer.  (With
+/// parameters by parts still runs: the rational integrator over `ℚ(a, …)`
+/// leaves products such as `(a + b·x)ᵐ·(c + d·x)ⁿ` to it.)
+fn rational_product(arena: &Arena, dependent: &[ExprId], var_sym: SymbolId) -> bool {
+    let has_denominator = dependent.iter().any(|&d| {
+        matches!(arena.node(d), ExprNode::Pow(b, e)
+            if arena.as_num(*e).is_some_and(|q| q.is_integer() && q.is_negative())
+                && contains_var(arena, *b, var_sym))
+    });
+    has_denominator
+        && dependent.iter().all(|&d| {
+            crate::base::walk::post_order_ids(arena, d)
+                .into_iter()
+                .all(|id| match arena.node(id) {
+                    ExprNode::Num(_) | ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => {
+                        true
+                    }
+                    ExprNode::Pow(_, e) => arena.as_num(*e).is_some_and(|q| q.is_integer()),
+                    ExprNode::Symbol(s) => *s == var_sym,
+                    _ => false,
+                })
+        })
+}
+
+/// Does `e` hold a `RootSum` that depends on the variable?  As a by-parts
+/// `v` it leaves `∫ v·du` with no route (see [`integrate_impl`]: every
+/// strategy would take the `ln(x − t)` of its body for a function of `x`
+/// alone).
+fn has_root_sum_of_var(arena: &Arena, e: ExprId, var_sym: SymbolId) -> bool {
+    crate::base::walk::post_order_ids(arena, e)
+        .iter()
+        .any(|&id| {
+            matches!(arena.node(id), ExprNode::RootSum(..)) && contains_var(arena, id, var_sym)
+        })
+}
+
 /// Integration by parts for a product of two dependent factors, one a
 /// by-parts candidate `u` (a polynomial, a logarithm or an inverse
 /// trigonometric function) and the other `dv` with a closed form:
-/// `∫ u·dv = u·v − ∫ v·du`.  The LIATE-preferred ordering is tried first.
+/// `∫ u·dv = u·v − ∫ v·du`.  The LIATE-preferred ordering is tried first;
+/// never for a rational function ([`rational_product`]).
 fn try_by_parts_pair(
     arena: &mut Arena,
     dependent: &[ExprId],
@@ -7570,6 +7642,9 @@ fn try_by_parts_pair(
     var_sym: SymbolId,
     depth: usize,
 ) -> Option<ExprId> {
+    if rational_product(arena, dependent, var_sym) {
+        return None;
+    }
     let orderings = {
         let r0 = liate_rank(arena, dependent[0], var, var_sym);
         let r1 = liate_rank(arena, dependent[1], var, var_sym);
@@ -7597,6 +7672,9 @@ fn try_by_parts_pair(
         if crate::base::walk::has_unevaluated(arena, v) {
             tracing::trace!("by-parts: v = ∫dv has unevaluated nodes, skipping this ordering");
             continue; // dv not integrable
+        }
+        if has_root_sum_of_var(arena, v, var_sym) {
+            continue;
         }
 
         // Compute du = d(u)/dx
@@ -8224,6 +8302,15 @@ fn try_piecewise_wrap(
     if GENERIC_ONLY.with(std::cell::Cell::get) {
         return result;
     }
+    // An integrand free of the variable has the antiderivative `c·x`: where
+    // a denominator of `c` vanishes the integrand itself is undefined, and
+    // there is no degenerate case to integrate.  In 0.44 the branch `b = 0`
+    // of `∫ (cosh⁴(a + bx) − sinh⁴(a + bx))/(cosh⁴(a + bx) + sinh⁴(a + bx))`
+    // was wrapped in 8 nested cases `a ≠ −ln(RootOf(t⁸ + 6t⁴ + 1, k))` (Rubi
+    // 6.7.1 #1052: 6 ms in 0.43, 0.2 s in 0.44).
+    if !contains_var(arena, original_integrand, var_sym) {
+        return result;
+    }
 
     // A result that is already such a case analysis — from the wrap of a
     // nested `integrate`, as a substitution re-enters the pipeline — keeps
@@ -8801,7 +8888,10 @@ fn linear_special_power(
 /// `∫ e^{12x}/x dx` stayed unevaluated (SymPy: `Ei(12·x)`) and with it 52
 /// Riccati equations of the ODE solver, as did `∫ e^{2x}/(x + 1)`,
 /// `∫ eˣ/x²`, `∫ sin(3x)/x`.  For a rate `α` that may vanish, the cases
-/// `α = 0` come with the answer ([`vanishing_parameter_values`]).
+/// `α = 0` come with the answer ([`vanishing_parameter_values`]).  A
+/// denominator with a factor irreducible over ℚ of degree ≥ 2 goes to
+/// [`special_over_rational_factors`] (up to 0.44 `∫ e^{2x}/(x² − 2) dx`,
+/// `∫ sin x/(x² − 2) dx` stayed unevaluated).
 ///
 /// The arguments `κ·ℓ` vanish only at the root of `ℓ`, a pole of the term,
 /// so the branch cuts of `Ei`, `Ci`, `Chi` on the negative axis are met
@@ -8846,6 +8936,7 @@ fn try_special_function_integral(
     };
     let mut poly_terms: SmallVec<[ExprId; 4]> = SmallVec::new();
     let mut pieces: SmallVec<[ExprId; 6]> = SmallVec::new();
+    let mut linear = true;
     for t in terms {
         if !contains_var(arena, t, var_sym) || is_polynomial_in(arena, t, var, var_sym) {
             poly_terms.push(t);
@@ -8855,17 +8946,13 @@ fn try_special_function_integral(
             Some((c, dep)) => (arena.mul(&c), dep),
             None => (arena.one, t),
         };
-        let ExprNode::Pow(ell, e) = *arena.node(dep) else {
-            return None;
+        let Some((ell, k, gamma, delta)) = linear_power_parts(arena, dep, var, var_sym) else {
+            linear = false;
+            break;
         };
-        let k = arena
-            .as_num(e)
-            .filter(|q| q.is_integer() && q.is_negative())?;
-        let k = i64::try_from(-k.to_integer()).ok()?;
         if k > MAX_SPECIAL_ORDER {
             return None;
         }
-        let (gamma, delta) = symbolic_linear_coeff_of(arena, ell, var, var_sym)?;
         let kappa = arena.div(alpha, gamma);
         let kappa = crate::transforms::eval::eval(arena, kappa);
         let shift = arena.mul(&[kappa, delta]);
@@ -8876,6 +8963,22 @@ fn try_special_function_integral(
         let j = linear_special_power(arena, fam, big_l, ell, kappa, w, beta_shifted, k);
         let c_over_gamma = arena.div(c, gamma);
         pieces.push(arena.mul(&[c_over_gamma, j]));
+    }
+    if !linear {
+        // A factor irreducible over ℚ of degree ≥ 2 (`x² − 2`, `x³ + x + 1`):
+        // the partial fractions over ℚ, each summed over the roots.
+        let special = LinearSpecialArg {
+            fam,
+            big_l,
+            alpha,
+            beta,
+        };
+        let over_q = special_over_rational_factors(arena, &special, r, var)?;
+        pieces = SmallVec::from_slice(&[over_q.proper]);
+        poly_terms.clear();
+        if !arena.is_zero_structural(over_q.polynomial) {
+            poly_terms.push(over_q.polynomial);
+        }
     }
     if !poly_terms.is_empty() {
         // P·f(L) as a sum of monomials times f(L) (`expand` of the product
@@ -8901,7 +9004,483 @@ fn try_special_function_integral(
     let mut all: SmallVec<[ExprId; 6]> = constants.iter().copied().collect();
     all.extend(dependent.iter().copied());
     let integrand = arena.mul(&all);
+    // A sum over non-real roots cannot be checked while `Ei`, `Ci`, `Si`,
+    // `Chi`, `Shi` of complex arguments do not evaluate: a refused candidate
+    // leaves the later routes their chance.
+    if !linear && candidate_rejected(arena, integrand, generic, var, var_sym) {
+        return None;
+    }
     with_parameter_cases(arena, generic, integrand, &cases, var, var_sym, depth)
+}
+
+/// `(ℓ, k, γ, δ)` when `dep` is `ℓ⁻ᵏ` for an integer `k ≥ 1` and a linear
+/// `ℓ = γ·x + δ`.
+fn linear_power_parts(
+    arena: &mut Arena,
+    dep: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<(ExprId, i64, ExprId, ExprId)> {
+    let ExprNode::Pow(ell, e) = *arena.node(dep) else {
+        return None;
+    };
+    let k = arena
+        .as_num(e)
+        .filter(|q| q.is_integer() && q.is_negative())?;
+    let k = i64::try_from(-k.to_integer()).ok()?;
+    let (gamma, delta) = symbolic_linear_coeff_of(arena, ell, var, var_sym)?;
+    Some((ell, k, gamma, delta))
+}
+
+/// The function `f` of a [`try_special_function_integral`] integrand and its
+/// linear argument `L = α·x + β`.
+struct LinearSpecialArg {
+    fam: LinearSpecial,
+    /// `L` itself.
+    big_l: ExprId,
+    alpha: ExprId,
+    beta: ExprId,
+}
+
+/// What [`special_over_rational_factors`] makes of `∫ f(L)·R(x) dx`.
+struct SpecialOverQ {
+    /// The antiderivative for the proper part of `R`.
+    proper: ExprId,
+    /// The polynomial part of `R`, whose product with `f(L)` the caller
+    /// integrates.
+    polynomial: ExprId,
+}
+
+/// Largest degree of the denominator of `R` in
+/// [`special_over_rational_factors`] and [`try_log_times_rational`].
+const MAX_SPECIAL_DENOM_DEGREE: usize = 24;
+
+/// Largest degree (in the variable, numerator and denominator together, as
+/// written) of a rational function that [`rational_over_q`] multiplies out.
+const MAX_RATIONAL_DEGREE: u64 = 64;
+
+/// A bound on the degree in `var` of the rational expression `e` multiplied
+/// out (the degrees of the factors added, of the terms maximised, of a
+/// power multiplied by its exponent, whatever its sign); `None` for a
+/// power with a non-integer exponent.
+fn rational_degree_bound(arena: &Arena, e: ExprId, var: ExprId) -> Option<u64> {
+    let mut deg: FxHashMap<ExprId, u64> = FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let d = if id == var {
+            1
+        } else {
+            match arena.node(id) {
+                ExprNode::Add(ch) => ch.iter().map(|c| deg.get(c).copied().unwrap_or(0)).max()?,
+                ExprNode::Mul(ch) => ch.iter().try_fold(0u64, |acc, c| {
+                    acc.checked_add(deg.get(c).copied().unwrap_or(0))
+                })?,
+                ExprNode::Neg(c) => deg.get(c).copied().unwrap_or(0),
+                ExprNode::Pow(b, k) => {
+                    let k = arena.as_num(*k).filter(|q| q.is_integer())?;
+                    let k = u64::try_from(k.to_integer().magnitude()).ok()?;
+                    deg.get(b).copied().unwrap_or(0).checked_mul(k)?
+                }
+                _ => 0,
+            }
+        };
+        deg.insert(id, d);
+    }
+    deg.get(&e).copied()
+}
+
+/// `r` as `N/D` with `N, D ∈ ℚ[x]` and `D` not constant; `None` when a
+/// coefficient is not rational or the degree is larger than
+/// [`MAX_RATIONAL_DEGREE`].
+fn rational_over_q(arena: &mut Arena, r: ExprId, var: ExprId) -> Option<(Poly, Poly)> {
+    if rational_degree_bound(arena, r, var)? > MAX_RATIONAL_DEGREE {
+        return None;
+    }
+    let (n, d) = crate::poly::polybridge::as_numer_denom(arena, r);
+    let n = crate::transforms::expand::expand(arena, n);
+    let n = crate::transforms::eval::eval(arena, n);
+    let d = crate::transforms::expand::expand(arena, d);
+    let d = crate::transforms::eval::eval(arena, d);
+    let p = crate::poly::polybridge::expr_to_poly(arena, n, var)?;
+    let q = crate::poly::polybridge::expr_to_poly(arena, d, var)?;
+    (q.degree()? >= 1).then_some((p, q))
+}
+
+/// `∫ f(L)·R(x) dx` for `R ∈ ℚ(x)` whose denominator has a factor
+/// irreducible over ℚ of degree ≥ 2, from the partial fractions `A/gᵏ` of
+/// its proper part over ℚ (`deg A < deg g`):
+///
+/// - a linear `g` as in [`try_special_function_integral`];
+/// - otherwise the poles of order `k ≥ 2` reduced first
+///   ([`reduce_special_poles`]: terms `f(L)·S` with `S ∈ ℚ(x)`, and simple
+///   poles left), then every simple fraction `M/g` split over the roots `ρ`
+///   of `g`: `M/g = Σ_ρ r(ρ)/(x − ρ)` with the residue `r = M·g′⁻¹ mod g`
+///   (the first step of Bronstein's full partial fraction decomposition,
+///   SymPy's `apart_list_full_decomposition`), and `∫ f(L)/(x − ρ)` an `Ei`,
+///   `Si`/`Ci` or `Shi`/`Chi` of `α·(x − ρ)` ([`linear_special_base`]),
+///   summed over the roots in radicals or as a `RootSum`
+///   ([`factor_roots`]).
+///
+/// The two terms of a pair of conjugate roots are conjugate on the real
+/// line, and each is continuous there: `α·(x − ρ)` never meets the cut of
+/// `Ei`, `Ci`, `Chi` (the negative axis) for a non-real `ρ`, and for a real
+/// one only at `x = ρ`, a pole of the integrand.  `None` for coefficients
+/// outside ℚ, a pole of order `k ≥ 2` with an irrational `α`, or beyond the
+/// budgets.
+fn special_over_rational_factors(
+    arena: &mut Arena,
+    special: &LinearSpecialArg,
+    r: ExprId,
+    var: ExprId,
+) -> Option<SpecialOverQ> {
+    let (numer, denom) = rational_over_q(arena, r, var)?;
+    if denom.degree()? > MAX_SPECIAL_DENOM_DEGREE {
+        return None;
+    }
+    let (quotient, remainder) = numer.div_rem(&denom);
+    let polynomial = crate::poly::polybridge::poly_to_expr(arena, &quotient, var);
+    let (content, factors) = denom.factor_over_z();
+    if content.is_zero() {
+        return None;
+    }
+    let scaled = remainder.scale(&(Q::one() / content));
+    let mut pieces: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for term in crate::transforms::apart::partial_fractions_over_q(&scaled, &factors) {
+        let (a, g, k) = (term.numer, term.factor, term.power);
+        if a.is_zero() {
+            continue;
+        }
+        if i64::from(k) > MAX_SPECIAL_ORDER {
+            return None;
+        }
+        let piece = if g.degree() == Some(1) {
+            linear_factor_special(arena, special, &a, &g, k, var)
+        } else {
+            special_over_irreducible(arena, special, &a, &g, k, var)?
+        };
+        pieces.push(piece);
+    }
+    let proper = match pieces.len() {
+        0 => arena.zero,
+        1 => pieces[0],
+        _ => arena.add(&pieces),
+    };
+    Some(SpecialOverQ { proper, polynomial })
+}
+
+/// `∫ f(L)·a/gᵏ dx` for a constant `a` and a linear `g = g₁·x + g₀`:
+/// `a/g₁ᵏ·∫ f(L)·ℓ⁻ᵏ dℓ` with `ℓ = x + g₀/g₁` ([`linear_special_power`]).
+fn linear_factor_special(
+    arena: &mut Arena,
+    special: &LinearSpecialArg,
+    a: &Poly,
+    g: &Poly,
+    k: u32,
+    var: ExprId,
+) -> ExprId {
+    let g1 = g.coeff(1);
+    let mut c = a.coeff(0);
+    for _ in 0..k {
+        c /= &g1;
+    }
+    let delta = arena.num_ratio(g.coeff(0) / &g1);
+    let ell = arena.add(&[var, delta]);
+    let kappa = special.alpha;
+    let shift = arena.mul(&[kappa, delta]);
+    let beta_shifted = arena.sub(special.beta, shift);
+    let beta_shifted = crate::transforms::eval::eval(arena, beta_shifted);
+    let w = arena.mul(&[kappa, ell]);
+    let w = crate::transforms::expand::expand(arena, w);
+    let j = linear_special_power(
+        arena,
+        special.fam,
+        special.big_l,
+        ell,
+        kappa,
+        w,
+        beta_shifted,
+        i64::from(k),
+    );
+    let c = arena.num_ratio(c);
+    arena.mul(&[c, j])
+}
+
+/// The functions met in `∫ f(L)·R(x) dx` by parts: `[(f, 0, s)]` for
+/// `f = exp` (`f′ = s·f`), else `[(f, 1, s), (g, 0, s′)]` (`sin`/`cos`,
+/// `sinh`/`cosh`): each with the index of the function its derivative is
+/// a multiple of, and the sign of that multiple (`f′(L) = s·α·g(L)`).
+fn special_closure(fam: LinearSpecial) -> SmallVec<[(LinearSpecial, usize, i64); 2]> {
+    let (g, s) = fam.derivative();
+    if g == fam {
+        SmallVec::from_slice(&[(fam, 0, s)])
+    } else {
+        let (_, s2) = g.derivative();
+        SmallVec::from_slice(&[(fam, 1, s), (g, 0, s2)])
+    }
+}
+
+/// `∫ Σⱼ Fⱼ(L)·Mⱼ/g dx` with simple poles only, and the part `Σⱼ Fⱼ(L)·Bⱼ/gᵏ⁻¹`
+/// of the antiderivative taken off before ([`reduce_special_poles`]).
+struct PoleReduction {
+    /// The numerators `Bⱼ` over `gᵏ⁻¹`.
+    boundary: Vec<Poly>,
+    /// The numerators `Mⱼ` over `g` (`deg Mⱼ < deg g`).
+    simple: Vec<Poly>,
+}
+
+/// `g′⁻¹ mod g` for a square-free `g`.
+fn inverse_derivative_mod(g: &Poly) -> Option<Poly> {
+    let eg = Poly::extended_gcd(&g.derivative(), g);
+    if eg.gcd.degree() != Some(0) {
+        return None;
+    }
+    let c = eg.gcd.coeff(0);
+    Some(eg.x.scale(&(Q::one() / c)).rem(g))
+}
+
+/// The order of the poles of `∫ Σⱼ Fⱼ(L)·Nⱼ/gᵏ dx` lowered to 1 (`g`
+/// square-free, `k ≥ 2`, `deg Nⱼ < k·deg g`, `F` the [`special_closure`]
+/// with `Fᵢ′ = sᵢ·α·F_{p(i)}`, `α` rational), as Hermite's reduction does for
+/// rational functions: with `Sⱼ = Bⱼ/g^{m−1}`,
+/// `(Σⱼ Fⱼ·Sⱼ)′ = Σⱼ Fⱼ·(Sⱼ′ + Σ_{p(i)=j} sᵢ·α·Sᵢ)`, whose part of order `m`
+/// is `−(m − 1)·Bⱼ·g′/gᵐ`; `Bⱼ = −Nⱼ·((m − 1)·g′)⁻¹ mod g` cancels the
+/// order `m` of the integrand, and the rest is of order `m − 1`.
+fn reduce_special_poles(
+    g: &Poly,
+    k: u32,
+    mut numer: Vec<Poly>,
+    closure: &[(LinearSpecial, usize, i64)],
+    alpha: &Q,
+) -> Option<PoleReduction> {
+    let inv = inverse_derivative_mod(g)?;
+    let gp = g.derivative();
+    let n = closure.len();
+    let mut boundary = vec![Poly::zero(); n];
+    for m in (2..=k).rev() {
+        let m1 = Q::from_integer((m - 1).into());
+        let b: Vec<Poly> = numer
+            .iter()
+            .map(|nj| (&nj.rem(g) * &inv).scale(&(-Q::one() / &m1)).rem(g))
+            .collect();
+        let g_pow = g.pow((k - m) as usize);
+        let mut next = Vec::with_capacity(n);
+        for j in 0..n {
+            boundary[j] = &boundary[j] + &(&b[j] * &g_pow);
+            let top = &numer[j] + &(&b[j] * &gp).scale(&m1);
+            let (q, rem) = top.div_rem(g);
+            if !rem.is_zero() {
+                return None;
+            }
+            let mut cross = b[j].derivative();
+            for (i, &(_, p, s)) in closure.iter().enumerate() {
+                if p == j {
+                    let si = alpha * Q::from_integer(s.into());
+                    cross = &cross + &b[i].scale(&si);
+                }
+            }
+            next.push(&q - &cross);
+        }
+        numer = next;
+    }
+    Some(PoleReduction {
+        boundary,
+        simple: numer,
+    })
+}
+
+/// `∫ f(L)·a/gᵏ dx` for `g` irreducible over ℚ of degree ≥ 2 (see
+/// [`special_over_rational_factors`]).
+fn special_over_irreducible(
+    arena: &mut Arena,
+    special: &LinearSpecialArg,
+    a: &Poly,
+    g: &Poly,
+    k: u32,
+    var: ExprId,
+) -> Option<ExprId> {
+    let closure = special_closure(special.fam);
+    let mut numer = vec![Poly::zero(); closure.len()];
+    numer[0] = a.clone();
+    let reduced = if k == 1 {
+        PoleReduction {
+            boundary: vec![Poly::zero(); closure.len()],
+            simple: numer,
+        }
+    } else {
+        let alpha = arena.as_num(special.alpha)?.clone();
+        reduce_special_poles(g, k, numer, &closure, &alpha)?
+    };
+    let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
+    if k >= 2 {
+        let g_expr = crate::poly::polybridge::poly_to_expr(arena, g, var);
+        let den = if k == 2 {
+            g_expr
+        } else {
+            let e = arena.int(i64::from(k) - 1);
+            arena.pow(g_expr, e)
+        };
+        for (b, &(f, _, _)) in reduced.boundary.iter().zip(closure.iter()) {
+            if b.is_zero() {
+                continue;
+            }
+            let b_expr = crate::poly::polybridge::poly_to_expr(arena, b, var);
+            let s = arena.div(b_expr, den);
+            let f_l = f.apply(arena, special.big_l);
+            terms.push(arena.mul(&[s, f_l]));
+        }
+    }
+    let inv = inverse_derivative_mod(g)?;
+    let residues: Vec<Poly> = reduced.simple.iter().map(|m| (m * &inv).rem(g)).collect();
+    if residues.iter().any(|r| !r.is_zero()) {
+        let roots = factor_roots(arena, g, var)?;
+        let sum = sum_over_roots(arena, g, &roots, |arena, rho| {
+            let x_minus = arena.sub(var, rho);
+            let w = arena.mul(&[special.alpha, x_minus]);
+            let w = crate::transforms::expand::expand(arena, w);
+            let shift = arena.mul(&[special.alpha, rho]);
+            let beta = arena.add(&[special.beta, shift]);
+            let beta = crate::transforms::eval::eval(arena, beta);
+            let mut parts: SmallVec<[ExprId; 2]> = SmallVec::new();
+            for (r, &(f, _, _)) in residues.iter().zip(closure.iter()) {
+                if r.is_zero() {
+                    continue;
+                }
+                let c = residue_at(arena, r, rho);
+                let base = linear_special_base(arena, f, w, beta);
+                parts.push(arena.mul(&[c, base]));
+            }
+            arena.add(&parts)
+        });
+        terms.push(sum);
+    }
+    Some(match terms.len() {
+        0 => arena.zero,
+        1 => terms[0],
+        _ => arena.add(&terms),
+    })
+}
+
+/// `r(ρ)` for a polynomial `r ∈ ℚ[t]`, multiplied out when that is no
+/// larger (`u·ρ + v` with `ρ = p ± √q` collects to `u·p + v ± u·√q`, and
+/// `ρ²` with `ρ = (1 + i)/√2` is `i`; Cardano's roots multiplied out are
+/// larger).
+fn residue_at(arena: &mut Arena, r: &Poly, rho: ExprId) -> ExprId {
+    let e = crate::poly::polybridge::poly_to_expr(arena, r, rho);
+    let e = crate::transforms::eval::eval(arena, e);
+    if matches!(arena.node(rho), ExprNode::Symbol(_)) {
+        return e;
+    }
+    let expanded = crate::transforms::expand::expand(arena, e);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    let size = |arena: &Arena, id: ExprId| crate::base::walk::post_order_ids(arena, id).len();
+    if size(arena, expanded) <= size(arena, e) {
+        expanded
+    } else {
+        e
+    }
+}
+
+/// Largest degree of an irreducible factor whose roots [`factor_roots`]
+/// asks `solve` for (the quadratic formula, Cardano, Ferrari).
+const MAX_EXPLICIT_ROOT_DEGREE: usize = 4;
+
+/// Largest root (nodes written out) that [`factor_roots`] uses explicitly;
+/// Ferrari's roots of a general quartic are far larger and stay implicit
+/// (with them, `∫ ln(−x)·(−x² + 2x − 2)/(x⁴ − x² + 2x + 1) dx` was a 16 KB
+/// answer).
+const MAX_EXPLICIT_ROOT_SIZE: usize = 48;
+
+/// The number of nodes of `e` written out as a tree, counted up to `cap`.
+fn written_size(arena: &Arena, e: ExprId, cap: usize) -> usize {
+    let mut size: FxHashMap<ExprId, usize> = FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let mut s: usize = 1;
+        arena
+            .node(id)
+            .for_each_child(|c| s = s.saturating_add(size.get(&c).copied().unwrap_or(1)));
+        size.insert(id, s.min(cap.saturating_add(1)));
+    }
+    size.get(&e).copied().unwrap_or(1)
+}
+
+/// Largest degree of an irreducible factor summed over in a `RootSum`.
+const MAX_ROOT_SUM_DEGREE: usize = 16;
+
+/// How the roots of an irreducible factor of a denominator appear in an
+/// antiderivative.
+enum FactorRoots {
+    /// Every root in radicals, from `solve`.
+    Explicit(Vec<ExprId>),
+    /// A `RootSum` over the factor.
+    Implicit,
+}
+
+/// The roots of `g` (irreducible over ℚ, degree ≥ 2): explicit when `solve`
+/// writes every one of them in radicals of at most
+/// [`MAX_EXPLICIT_ROOT_SIZE`] nodes, and the real ones without `i` (Cardano's
+/// formula writes the three real roots of `x³ − 3x² + 1` with complex cube
+/// roots, whose rounded imaginary parts would decide the side of the cut of
+/// `Ei` and `Ci` at every point); otherwise implicit, up to
+/// [`MAX_ROOT_SUM_DEGREE`] (a `RootSum` is evaluated at its certified roots,
+/// the real ones exactly real).
+fn factor_roots(arena: &mut Arena, g: &Poly, var: ExprId) -> Option<FactorRoots> {
+    let deg = g.degree()?;
+    if deg > MAX_ROOT_SUM_DEGREE {
+        return None;
+    }
+    if deg <= MAX_EXPLICIT_ROOT_DEGREE {
+        let g_expr = crate::poly::polybridge::poly_to_expr(arena, g, var);
+        let roots: Vec<ExprId> = crate::transforms::solve::solve(arena, g_expr, var)
+            .into_iter()
+            .map(|s| s.value)
+            .collect();
+        let small = roots.iter().all(|&r| {
+            let ids = crate::base::walk::post_order_ids(arena, r);
+            written_size(arena, r, MAX_EXPLICIT_ROOT_SIZE) <= MAX_EXPLICIT_ROOT_SIZE
+                && !ids.iter().any(|&id| {
+                    id == var
+                        || matches!(
+                            arena.node(id),
+                            ExprNode::RootOf(..) | ExprNode::Symbol(_) | ExprNode::Integral(..)
+                        )
+                })
+        });
+        let written_real = roots
+            .iter()
+            .filter(|&&r| {
+                !crate::base::walk::post_order_ids(arena, r)
+                    .iter()
+                    .any(|&id| matches!(arena.node(id), ExprNode::ImaginaryUnit))
+            })
+            .count();
+        if roots.len() == deg
+            && small
+            && written_real == crate::poly::sturm::SturmChain::new(g).count_real_roots()
+        {
+            return Some(FactorRoots::Explicit(roots));
+        }
+    }
+    Some(FactorRoots::Implicit)
+}
+
+/// `Σ_{g(ρ)=0} body(ρ)`: the explicit sum, or `RootSum(g(t), t ↦ body(t))`.
+fn sum_over_roots(
+    arena: &mut Arena,
+    g: &Poly,
+    roots: &FactorRoots,
+    mut body: impl FnMut(&mut Arena, ExprId) -> ExprId,
+) -> ExprId {
+    match roots {
+        FactorRoots::Explicit(rs) => {
+            let terms: SmallVec<[ExprId; 4]> = rs.iter().map(|&rho| body(arena, rho)).collect();
+            arena.add(&terms)
+        }
+        FactorRoots::Implicit => {
+            let t = arena.symbol("__rs_t");
+            let b = body(arena, t);
+            let g_t = crate::poly::polybridge::poly_to_expr(arena, g, t);
+            arena.intern(ExprNode::RootSum(g_t, b, t))
+        }
+    }
 }
 
 /// `∫ ln(ℓ)⁻ⁿ dx` for `ℓ = α·x + β` and an integer `1 ≤ n ≤`
@@ -9406,6 +9985,147 @@ fn try_dilog_integral(
         }
     }
     None
+}
+
+/// `Li₂(z)`, the `polylog(2, z)` node.
+fn dilog(arena: &mut Arena, z: ExprId) -> ExprId {
+    let sid = arena
+        .symbols
+        .intern(crate::base::libfn::LibFn::PolyLog.name());
+    let two = arena.int(2);
+    arena.intern(ExprNode::Apply(sid, [two, z].into_iter().collect()))
+}
+
+/// `∫ ln(L)·R(x) dx` for a linear `L = a·x + b` (`a`, `b` rational) and
+/// `R ∈ ℚ(x)` with a non-constant denominator.  Hermite's reduction
+/// `∫ R = g + ∫ h` (`g` rational, `h = M/D` proper with `D` square-free)
+/// gives by parts `ln(L)·g − ∫ a·g/L dx + ∫ ln(L)·h dx`: the middle integral
+/// is rational, and `h = Σ_ρ r(ρ)/(x − ρ)` over the roots of `D` (residues
+/// `r = M·D′⁻¹ mod D` on each irreducible factor, summed as in
+/// [`special_over_rational_factors`]) with
+/// `∫ ln(L)/(x − ρ) dx = ln(L)·ln(1 − L/c) + Li₂(L/c)` for `c = a·ρ + b ≠ 0`
+/// (`u = L` turns it into `∫ ln(u)/(u − c) du`) and `ln(L)²/2` for `c = 0`.
+/// By parts alone (`u = ln L`) leaves `∫ ln(1 − L/c)/L`, and up to 0.44
+/// `∫ ln(x)/(x² − 2) dx`, `∫ ln(2x + 1)/(x − 3) dx` stayed unevaluated.
+/// With `nonlinear_only` (the call before by parts) only when the
+/// denominator of `h` has a factor of degree ≥ 2: over linear factors by
+/// parts may meet [`try_dilog_integral`] and keeps its turn.
+///
+/// The integrand is real for `L > 0`.  There the terms of a non-real `c`
+/// never meet the cuts of `ln(1 − z)` and `Li₂(z)` (`z = L/c` is real only for
+/// a real `c`), and a pair of conjugate roots gives conjugate terms; for a
+/// real `c > 0` both cuts start at `L = c`, a pole of the integrand, beyond
+/// which their imaginary parts `π·ln L` and `−π·ln(L/c)` add up to a constant.
+fn try_log_times_rational(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+    nonlinear_only: bool,
+) -> Option<ExprId> {
+    if depth < 2 {
+        return None;
+    }
+    let idx = dependent
+        .iter()
+        .position(|&d| matches!(arena.node(d), ExprNode::Ln(_)))?;
+    let ln_l = dependent[idx];
+    let ExprNode::Ln(ell) = *arena.node(ln_l) else {
+        return None;
+    };
+    let lp = crate::poly::polybridge::expr_to_poly(arena, ell, var)?;
+    if lp.degree() != Some(1) {
+        return None;
+    }
+    let (a, b) = (lp.coeff(1), lp.coeff(0));
+    let rest = remaining_product(arena, dependent, idx);
+    if !is_rational_in(arena, rest, var_sym) {
+        return None;
+    }
+    let (numer, denom) = rational_over_q(arena, rest, var)?;
+    if denom.degree()? > MAX_SPECIAL_DENOM_DEGREE {
+        return None;
+    }
+    let hr = crate::calculus::risch::hermite::hermite_reduce(&numer, &denom)?;
+    if hr.h_numer.is_zero() {
+        // Elementary: by parts' business.
+        return None;
+    }
+    let (content, factors) = hr.h_denom.factor_over_z();
+    if content.is_zero()
+        || (nonlinear_only
+            && factors
+                .iter()
+                .all(|(g, _)| g.degree().is_none_or(|d| d < 2)))
+    {
+        return None;
+    }
+    let mut terms: SmallVec<[ExprId; 6]> = SmallVec::new();
+    if !hr.g_numer.is_zero() {
+        let gn = crate::poly::polybridge::poly_to_expr(arena, &hr.g_numer, var);
+        let gd = crate::poly::polybridge::poly_to_expr(arena, &hr.g_denom, var);
+        let g = arena.div(gn, gd);
+        terms.push(arena.mul(&[ln_l, g]));
+        let a_e = arena.num_ratio(a.clone());
+        let minus_one = arena.int(-1);
+        let inv_l = arena.pow(ell, minus_one);
+        let dv = arena.mul(&[a_e, g, inv_l]);
+        let dv = crate::transforms::eval::eval(arena, dv);
+        let v = integrate_node(arena, dv, var, var_sym, depth - 1);
+        if crate::base::walk::has_unevaluated(arena, v) {
+            return None;
+        }
+        terms.push(arena.neg(v));
+    }
+    let scaled = hr.h_numer.scale(&(Q::one() / content));
+    for term in crate::transforms::apart::partial_fractions_over_q(&scaled, &factors) {
+        let (m, g, k) = (term.numer, term.factor, term.power);
+        if m.is_zero() {
+            continue;
+        }
+        if k != 1 {
+            return None;
+        }
+        let inv = inverse_derivative_mod(&g)?;
+        let r = (&m * &inv).rem(&g);
+        let roots = if g.degree() == Some(1) {
+            let rho = arena.num_ratio(-(g.coeff(0) / g.coeff(1)));
+            FactorRoots::Explicit(vec![rho])
+        } else {
+            factor_roots(arena, &g, var)?
+        };
+        let sum = sum_over_roots(arena, &g, &roots, |arena, rho| {
+            let res = residue_at(arena, &r, rho);
+            let a_e = arena.num_ratio(a.clone());
+            let b_e = arena.num_ratio(b.clone());
+            let a_rho = arena.mul(&[a_e, rho]);
+            let c = arena.add(&[a_rho, b_e]);
+            let c = crate::transforms::eval::eval(arena, c);
+            let term = if arena.is_zero_structural(c) {
+                let two = arena.int(2);
+                let sq = arena.pow(ln_l, two);
+                let half = arena.rational(1, 2);
+                arena.mul(&[half, sq])
+            } else {
+                let z = arena.div(ell, c);
+                let z = crate::transforms::eval::eval(arena, z);
+                let one = arena.one;
+                let one_minus = arena.sub(one, z);
+                let one_minus = crate::transforms::eval::eval(arena, one_minus);
+                let ln2 = arena.ln(one_minus);
+                let product = arena.mul(&[ln_l, ln2]);
+                let li = dilog(arena, z);
+                arena.add(&[product, li])
+            };
+            arena.mul(&[res, term])
+        });
+        terms.push(sum);
+    }
+    tracing::debug!("integrate: a logarithm times a rational function, by its residues");
+    let big_f = arena.add(&terms);
+    let product = arena.mul(dependent);
+    (!candidate_rejected(arena, product, big_f, var, var_sym)).then_some(big_f)
 }
 
 /// Does `h` contain a logarithm, exponential, trigonometric or hyperbolic

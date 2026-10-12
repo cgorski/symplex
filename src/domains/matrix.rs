@@ -2510,9 +2510,9 @@ impl Matrix {
     /// cubic factor is solved by Cardano's formulas as SymPy's `roots_cubic`
     /// (a generic formula, as SymPy's: `0/0` at values of the symbols where
     /// the depressed cubic's `p` vanishes and `q` has one sign), a quartic
-    /// one when it needs only square
-    /// roots and the cubic (biquadratic, quasi-symmetric, a zero root); the
-    /// general symbolic quartic and higher degrees are refused.  A characteristic polynomial with
+    /// one as SymPy's `roots_quartic` (Ferrari's formulas in general, also
+    /// generic: `0/0` where the depressed quartic's linear coefficient
+    /// vanishes; refused up to 0.44); higher degrees are refused.  A characteristic polynomial with
     /// coefficients in `ℚ(√p₁, …, i)` (algebraic entries) is split into
     /// square-free factors over that field and by the factors of their norms
     /// over `ℚ`; the pieces of degree ≤ 3 are solved by the quadratic
@@ -2664,8 +2664,8 @@ impl Matrix {
             return Err(failed(
                 "eigenvals",
                 "could not solve the characteristic polynomial: it has an irreducible factor \
-                 with symbolic coefficients of degree above 4, or a general quartic one \
-                 (whose radical roots do not evaluate where it has complex roots)",
+                 with symbolic coefficients of degree above 4 (or a quartic one whose radical \
+                 roots did not check at sample values of the symbols)",
             ));
         }
         if total < n {
@@ -4367,17 +4367,21 @@ fn parametric_normal(e: &Ex) -> Ex {
 /// of unknown sign it is generic, as SymPy's, and fails (`0/0`) only where
 /// `p = 0` and `q < 0`.
 ///
-/// Quartic: the cases of SymPy's `roots_quartic` that need only square
-/// roots and the cubic — `x·(cubic)`, quasi-symmetric (`(c/a)² = d`),
-/// biquadratic and `y·(cubic)` after depressing.  The general case is
-/// `None` (refused): Ferrari's roots `(±w − t·√(−(3e + 2y ± 2f/w)))/2 −
-/// a/4` take square roots of quantities that are exactly negative real
+/// Quartic: SymPy's `roots_quartic` — `x·(cubic)`, quasi-symmetric (`(c/a)²
+/// = d`), biquadratic and `y·(cubic)` after depressing; Descartes–Euler
+/// when the resolvent has a root rational in the symbols
+/// ([`resolvent_rational_root`], square roots only); otherwise Ferrari
+/// ([`ferrari_roots`]).  Ferrari's roots `(±w − t·√(−(3e + 2y ± 2f/w)))/2
+/// − a/4` take square roots of quantities that are exactly negative real
 /// numbers wherever the quartic has a pair of complex-conjugate roots at
-/// real values of the symbols (`(r − r̄)²`), and whose imaginary parts
-/// cancel only exactly (the resolvent root `y` comes from Cardano's formula
-/// with complex cube roots) — the roots, and everything computed from them,
-/// would not evaluate there.  SymPy returns them anyway (its `evalf` takes
-/// the rounding noise for a sign).
+/// real values of the symbols (`(r − r̄)²`), whose imaginary parts cancel
+/// only exactly (the resolvent root `y` comes from Cardano's formula with
+/// complex cube roots).  Up to 0.44 they were refused, as they would not
+/// evaluate there; since `eval` decides the realness of such constants
+/// exactly (`x − x̄ = 0` in `ℚ(ζ)[radicals]`), `√` of a negative one is
+/// `i·√(−·)` after a substitution and the roots evaluate.  The four roots
+/// are checked at a few rational points of the symbols
+/// ([`quartic_roots_verified`]).
 ///
 /// The square roots of the radicands are any square roots (the formulas
 /// hold for both signs as long as `w ≠ 0`), so perfect squares are pulled
@@ -4530,8 +4534,153 @@ fn parametric_quartic_roots(a: &Ex, b: &Ex, c: &Ex, d: &Ex) -> Option<Vec<Ex>> {
         ys.insert(0, ctx.zero());
         return Some(ys.into_iter().map(shift).collect());
     }
-    // The general quartic (Ferrari) is refused: see `parametric_radical_roots`.
-    None
+    let roots = match resolvent_rational_root(&e, &f, &g) {
+        // Descartes–Euler (SymPy's `_roots_quartic_euler`): `±√R ∓ √(A ±
+        // B)` with `A = −R − e/2`, `B = −f·√R/(4R)` — square roots only.
+        // Either sign of `√R` swaps the two pairs, and both signs of the
+        // other roots are taken: the set is the same for every branch.
+        Some(r) => {
+            let c1 = quadratic_sqrt(&r);
+            let bb = &(&-&f * &c1) / &(&r * &ctx.int(4));
+            let aa = parametric_normal(&(&-&r - &(&e * &qn(1, 2))));
+            let c2 = (&aa + &bb).sqrt();
+            let c3 = (&aa - &bb).sqrt();
+            vec![
+                shift(&c1 - &c2),
+                shift(&-&c1 - &c3),
+                shift(&-&c1 + &c3),
+                shift(&c1 + &c2),
+            ]
+        }
+        None => ferrari_roots(&e, &f, &g).into_iter().map(shift).collect(),
+    };
+    quartic_roots_verified(&[d.clone(), c.clone(), b.clone(), a.clone()], &roots).then_some(roots)
+}
+
+/// A root `R ≠ 0` of the Descartes–Euler resolvent `64R³ + 32e·R² + (4e²
+/// − 16g)·R − f²` of `y⁴ + e·y² + f·y + g` that is a rational function of
+/// the symbols (a linear factor over `ℚ(symbols)`), in normal form; `None`
+/// when it has none.  SymPy takes only rational roots, so a symbolic
+/// quartic goes to Ferrari there.
+fn resolvent_rational_root(e: &Ex, f: &Ex, g: &Ex) -> Option<Ex> {
+    let ctx = e.context();
+    let r = ctx.symbol("__descartes_euler_r");
+    let poly = &(&(&(&r.powi(3) * &ctx.int(64)) + &(&(e * &r.powi(2)) * &ctx.int(32)))
+        + &(&(&(&e.powi(2) * &ctx.int(4)) - &(g * &ctx.int(16))) * &r))
+        - &f.powi(2);
+    let (_, factors) = poly.expand().factor_list_all();
+    factors.iter().find_map(|(h, _)| {
+        let cs = h.coeffs(&r)?;
+        if cs.len() != 2 || !provably_nonzero(&cs[1]) {
+            return None;
+        }
+        let root = parametric_normal(&(-&(&cs[0] / &cs[1])));
+        provably_nonzero(&root).then_some(root)
+    })
+}
+
+/// The roots of the depressed `y⁴ + e·y² + f·y + g` by Ferrari's method as
+/// SymPy's `roots_quartic` writes it: a root `y₀ = −5e/6 + z` of the
+/// resolvent (`z³ + p·z + q = 0`, `p = −e²/12 − g`, `q = −e³/108 + e·g/3
+/// − f²/8`, by Cardano's formula as in [`parametric_cubic_roots`]), `w =
+/// √(e + 2y₀)`, and the roots `(s·w − t·√(−(3e + 2y₀ + 2s·f/w)))/2` for
+/// `s, t = ±1`.  The formulas hold for every choice of the roots as long as
+/// `w ≠ 0` (true wherever `f ≠ 0`: `w` is the sum of two of the roots, and
+/// a pairing summing to 0 makes the quartic biquadratic) and the cube root
+/// is not 0: generic, as SymPy's, failing (`0/0`) only where `f = 0` or, for
+/// `q` of unknown sign, where `p = 0` and `q > 0`.
+fn ferrari_roots(e: &Ex, f: &Ex, g: &Ex) -> Vec<Ex> {
+    let ctx = e.context();
+    let qn = |n: i64, d: i64| ctx.rational(n, d);
+    let zero = |x: &Ex| ex_is_zero(x) == Some(true);
+    let ee = e.powi(2);
+    let p = parametric_normal(&(&(&ee * &qn(-1, 12)) - g));
+    let q = parametric_normal(
+        &(&(&(&ee * e) * &qn(-1, 108)) + &(&(&(e * g) * &qn(1, 3)) - &(&f.powi(2) * &qn(1, 8)))),
+    );
+    let five_e_6 = parametric_normal(&(e * &qn(-5, 6)));
+    let z = if zero(&p) {
+        // z³ = −q
+        if q.is_positive() == Some(true) {
+            -q.cbrt()
+        } else {
+            (-&q).eval().cbrt()
+        }
+    } else {
+        let rad = parametric_normal(&(&(&q.powi(2) * &qn(1, 4)) + &(&p.powi(3) * &qn(1, 27))));
+        let s = quadratic_sqrt(&rad);
+        let half_q = &q * &qn(1, 2);
+        let u = if q.is_negative() == Some(true) {
+            (&s - &half_q).cbrt()
+        } else {
+            -(&half_q + &s).cbrt()
+        };
+        &u - &(&p / &(&u * &ctx.int(3)))
+    };
+    let y = &five_e_6 + &z;
+    let two = ctx.int(2);
+    let w = (e + &(&y * &two)).sqrt();
+    let arg1 = &(e * &ctx.int(3)) + &(&y * &two);
+    let arg2 = &(f * &two) / &w;
+    let mut out = Vec::with_capacity(4);
+    for s in [-1i64, 1] {
+        let sw = &w * &ctx.int(s);
+        let root = (-(&arg1 + &(&arg2 * &ctx.int(s)))).sqrt();
+        for t in [-1i64, 1] {
+            out.push(&(&sw - &(&root * &ctx.int(t))) / &two);
+        }
+    }
+    out
+}
+
+/// Are `roots` the four roots of the monic `x⁴ + a·x³ + b·x² + c·x + d`
+/// (`coeffs = [d, c, b, a]`, symbolic) at one of a few rational points of
+/// its symbols: certified complex values, each a root to 10⁻⁸ of the scale
+/// of the polynomial there, and pairwise apart (so that together they are
+/// all four roots)?  A point where a value does not evaluate (a radicand
+/// on its branch cut that no realness proof settles) or the roots meet is
+/// skipped.  A guard against a wrong formula, not a proof for every point.
+fn quartic_roots_verified(coeffs: &[Ex], roots: &[Ex]) -> bool {
+    let ctx = roots[0].context();
+    let syms = {
+        let mut all: Vec<Ex> = Vec::new();
+        for e in coeffs.iter().chain(roots) {
+            for s in e.free_symbols() {
+                if !all.contains(&s) {
+                    all.push(s);
+                }
+            }
+        }
+        all
+    };
+    (0..3i64).any(|k| {
+        let vals: Vec<Ex> = (0..syms.len() as i64)
+            .map(|i| ctx.rational(31 + 17 * i + 7 * k, 11 + 4 * k + 3 * i))
+            .collect();
+        let subs: Vec<(&Ex, &Ex)> = syms.iter().zip(vals.iter()).collect();
+        let Ok(c) = coeffs
+            .iter()
+            .map(|e| e.subs_map(&subs).eval_complex64())
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        let Ok(z) = roots
+            .iter()
+            .map(|e| e.subs_map(&subs).eval_complex64())
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        let scale = c.iter().map(|x| x.norm()).fold(1.0f64, f64::max);
+        let radius = 1.0 + scale;
+        let at = |x: num_complex::Complex64| (((x + c[3]) * x + c[2]) * x + c[1]) * x + c[0];
+        let roots_ok = z
+            .iter()
+            .all(|&x| at(x).norm() <= 1e-8 * scale * radius.powi(4).max(1.0));
+        let apart = (0..4).all(|i| ((i + 1)..4).all(|j| (z[i] - z[j]).norm() > 1e-6 * radius));
+        roots_ok && apart
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

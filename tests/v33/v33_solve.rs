@@ -191,12 +191,15 @@ fn a_four_by_four_algebraic_matrix_has_its_eigenvalues() {
 
 /// A polynomial whose roots are not found says so; a non-polynomial
 /// equation keeps its message.  Before, both said "not polynomial".
+/// (`x⁵ + √2·x + 1`, the first example here, is solved since 0.45 through
+/// its norm over ℚ; `∛2` and `√3·i` generate a field of degree 12, beyond
+/// the number-field factorization.)
 #[test]
 fn the_error_tells_a_polynomial_from_a_non_polynomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     for (s, want) in [
-        ("x^5 + sqrt(2)*x + 1", "polynomial of degree 5"),
+        ("x^5 + 2^(1/3)*x + sqrt(3)*I", "polynomial of degree 5"),
         ("x^3 + pi*x + 1", "polynomial of degree 3"),
         ("exp(x) + x^3 + sqrt(2)", "not polynomial"),
     ] {

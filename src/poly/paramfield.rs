@@ -517,6 +517,421 @@ pub(crate) fn quotient_expr(arena: &mut Arena, p: &MPoly, q: &MPoly, vars: &[Exp
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// The field ℚ(y₁, …, yₖ)(α)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// An element of `ℚ(y)(α) = ℚ(y)[t]/(m(t))`, `m` the minimal polynomial
+/// of an algebraic number `α` over ℚ (irreducible over `ℚ(y)` too: the `y`
+/// are transcendental): an element of `ℚ(y)`, or a polynomial in `t` over
+/// `ℚ(y)` of degree `1 ≤ deg < deg m` reduced modulo the `m` it carries, as
+/// [`AlgNum`] is over ℚ.
+#[derive(Clone, Debug)]
+pub(crate) enum PAlg {
+    /// An element of `ℚ(y)`.
+    Base(PFrac),
+    /// `p(α)` with `p` of degree at least 1, reduced modulo `m`.
+    Elt(PPoly, std::sync::Arc<PPoly>),
+}
+
+impl PAlg {
+    /// `p(α)` reduced modulo `m`.
+    fn reduce(p: PPoly, m: &std::sync::Arc<PPoly>) -> Self {
+        let r = if p.degree().unwrap_or(0) >= m.degree().unwrap_or(0) {
+            p.rem(m)
+        } else {
+            p
+        };
+        match r.degree() {
+            None => PAlg::Base(PFrac::zero()),
+            Some(0) => PAlg::Base(r.coeff(0)),
+            Some(_) => PAlg::Elt(r, std::sync::Arc::clone(m)),
+        }
+    }
+
+    /// The coefficients in `ℚ(y)` of `1, α, …, α^{d−1}`.
+    fn coefficients(&self, d: usize) -> Vec<PFrac> {
+        match self {
+            PAlg::Base(c) => {
+                let mut v = vec![PFrac::zero(); d.max(1)];
+                v[0] = c.clone();
+                v
+            }
+            PAlg::Elt(p, _) => (0..d.max(1)).map(|j| p.coeff(j)).collect(),
+        }
+    }
+
+    fn size_ok(&self) -> bool {
+        match self {
+            PAlg::Base(c) => c.size_ok(),
+            PAlg::Elt(p, _) => ppoly_size_ok(p),
+        }
+    }
+}
+
+impl PartialEq for PAlg {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (PAlg::Base(a), PAlg::Base(b)) => a == b,
+            (PAlg::Elt(p, _), PAlg::Elt(q, _)) => p == q,
+            _ => false,
+        }
+    }
+}
+
+impl Ring for PAlg {
+    fn zero() -> Self {
+        PAlg::Base(PFrac::zero())
+    }
+
+    fn one() -> Self {
+        PAlg::Base(PFrac::one())
+    }
+
+    fn is_zero(&self) -> bool {
+        matches!(self, PAlg::Base(c) if c.is_zero())
+    }
+
+    fn is_one(&self) -> bool {
+        matches!(self, PAlg::Base(c) if c.is_one())
+    }
+
+    fn add(&self, rhs: &Self) -> Self {
+        match (self, rhs) {
+            (PAlg::Base(a), PAlg::Base(b)) => PAlg::Base(Ring::add(a, b)),
+            (PAlg::Base(a), PAlg::Elt(p, m)) | (PAlg::Elt(p, m), PAlg::Base(a)) => {
+                PAlg::Elt(p.add(&PPoly::constant(a.clone())), std::sync::Arc::clone(m))
+            }
+            (PAlg::Elt(p, m), PAlg::Elt(q, _)) => PAlg::reduce(p.add(q), m),
+        }
+    }
+
+    fn sub(&self, rhs: &Self) -> Self {
+        Ring::add(self, &Ring::neg(rhs))
+    }
+
+    fn mul(&self, rhs: &Self) -> Self {
+        match (self, rhs) {
+            (PAlg::Base(a), PAlg::Base(b)) => PAlg::Base(Ring::mul(a, b)),
+            (PAlg::Base(a), PAlg::Elt(p, m)) | (PAlg::Elt(p, m), PAlg::Base(a)) => {
+                if a.is_zero() {
+                    PAlg::zero()
+                } else {
+                    PAlg::Elt(p.scale(a), std::sync::Arc::clone(m))
+                }
+            }
+            (PAlg::Elt(p, m), PAlg::Elt(q, _)) => PAlg::reduce(p.mul(q), m),
+        }
+    }
+
+    fn neg(&self) -> Self {
+        match self {
+            PAlg::Base(a) => PAlg::Base(Ring::neg(a)),
+            PAlg::Elt(p, m) => PAlg::Elt(p.neg(), std::sync::Arc::clone(m)),
+        }
+    }
+}
+
+impl EuclideanDomain for PAlg {
+    fn div_rem(&self, other: &Self) -> (Self, Self) {
+        if other.is_zero() {
+            return (Self::zero(), self.clone());
+        }
+        (Field::div(self, other), Self::zero())
+    }
+}
+
+impl Field for PAlg {
+    fn div(&self, other: &Self) -> Self {
+        Ring::mul(self, &other.inv())
+    }
+
+    /// `1/a` by the extended gcd of `a(t)` and `m(t)` over `ℚ(y)`; the zero
+    /// element (never inverted here) gives `0`.
+    fn inv(&self) -> Self {
+        match self {
+            PAlg::Base(a) => PAlg::Base(a.inv()),
+            PAlg::Elt(p, m) => {
+                let e = PPoly::extended_gcd(p, m);
+                if e.gcd.degree() != Some(0) {
+                    return PAlg::zero();
+                }
+                let g = e.gcd.coeff(0).inv();
+                PAlg::reduce(e.x.scale(&g), m)
+            }
+        }
+    }
+}
+
+/// A polynomial in the main variable over `ℚ(y)(α)`.
+pub(crate) type PAPoly = GenPoly<PAlg>;
+
+/// Is every coefficient of `f` within the size budget?
+pub(crate) fn papoly_size_ok(f: &PAPoly) -> bool {
+    f.coeffs().iter().all(PAlg::size_ok)
+}
+
+/// Largest degree in the main variable of a [`PAPoly`] built from an
+/// expression.
+const MAX_PAPOLY_DEGREE: usize = 60;
+
+/// The field `ℚ(y₁, …, yₖ)(α)` of the coefficients of an expression rational
+/// in a variable whose other generators are the free symbols `yⱼ` and
+/// algebraic numbers generating `ℚ(α)` ([`ExtField`]), with the bridge from
+/// and to expressions.
+pub(crate) struct ParamAlgField {
+    ext: ExtField,
+    modulus: std::sync::Arc<PPoly>,
+    /// `[var, y₁, …, yₖ]`, the variables of the coefficient polynomials
+    /// (the main variable with exponent 0, as in [`to_ppoly`]).
+    vars: Vec<ExprId>,
+}
+
+impl ParamAlgField {
+    /// The field of the parameters `params` (free symbols) and the algebraic
+    /// numbers `atoms` (at least one); `None` when the atoms do not generate
+    /// a number field ([`ExtField::for_atoms`]).
+    pub(crate) fn new(
+        arena: &mut Arena,
+        var: ExprId,
+        params: &[ExprId],
+        atoms: &[ExprId],
+    ) -> Option<Self> {
+        let ext = ExtField::for_atoms(arena, atoms)?;
+        let m = ext.field.modulus();
+        let mp = PPoly::from_coeffs(m.coeffs().iter().map(|c| PFrac::Rat(c.clone())).collect());
+        let mut vars = vec![var];
+        vars.extend_from_slice(params);
+        Some(ParamAlgField {
+            ext,
+            modulus: std::sync::Arc::new(mp),
+            vars,
+        })
+    }
+
+    fn nv(&self) -> usize {
+        self.vars.len()
+    }
+
+    /// An element of `ℚ(α)` in the field.
+    fn element(&self, a: &AlgNum) -> PAlg {
+        match a {
+            AlgNum::Rat(q) => PAlg::Base(PFrac::Rat(q.clone())),
+            AlgNum::Elt(p, _) => PAlg::reduce(
+                PPoly::from_coeffs(p.coeffs().iter().map(|c| PFrac::Rat(c.clone())).collect()),
+                &self.modulus,
+            ),
+        }
+    }
+
+    /// A polynomial over `ℚ(α)` in the field.
+    pub(crate) fn lift_kpoly(&self, f: &KPoly) -> PAPoly {
+        PAPoly::from_coeffs(f.coeffs().iter().map(|c| self.element(c)).collect())
+    }
+
+    /// A polynomial over `ℚ[var, y]` in the field.
+    pub(crate) fn lift_multipoly(&self, f: &MPoly) -> PAPoly {
+        PAPoly::from_coeffs(
+            to_ppoly(f)
+                .coeffs()
+                .iter()
+                .map(|c| PAlg::Base(c.clone()))
+                .collect(),
+        )
+    }
+
+    /// The variables `[var, y₁, …, yₖ]`.
+    pub(crate) fn vars(&self) -> &[ExprId] {
+        &self.vars
+    }
+
+    /// The number field of the algebraic numbers.
+    pub(crate) fn ext(&mut self) -> &mut ExtField {
+        &mut self.ext
+    }
+
+    /// `expr`, a polynomial in `var` whose coefficients are built from
+    /// rationals, the parameters and the algebraic numbers of the field
+    /// (a negative power only of a nonzero constant), as a [`PAPoly`];
+    /// `None` for anything else or beyond the size budget.  Iterative
+    /// post-order walk.
+    pub(crate) fn poly_of(&mut self, arena: &mut Arena, expr: ExprId) -> Option<PAPoly> {
+        let nv = self.nv();
+        let var = self.vars[0];
+        let index: FxHashMap<ExprId, usize> = self
+            .vars
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(i, &v)| (v, i))
+            .collect();
+        let mut cache: FxHashMap<ExprId, PAPoly> = FxHashMap::default();
+        for id in walk::post_order_ids(arena, expr) {
+            if cache.contains_key(&id) {
+                continue;
+            }
+            let value = if id == var {
+                PAPoly::x()
+            } else if let Some(&i) = index.get(&id) {
+                PAPoly::constant(PAlg::Base(PFrac::from_poly(&MPoly::var(nv, i))))
+            } else {
+                match arena.node(id).clone() {
+                    ExprNode::Num(nid) => {
+                        PAPoly::constant(PAlg::Base(PFrac::Rat(arena.num(nid).clone())))
+                    }
+                    ExprNode::Add(ch) => {
+                        let mut acc = PAPoly::zero();
+                        for c in ch.iter() {
+                            acc = acc.add(cache.get(c)?);
+                        }
+                        acc
+                    }
+                    ExprNode::Mul(ch) => {
+                        let mut acc = PAPoly::one();
+                        for c in ch.iter() {
+                            acc = acc.mul(cache.get(c)?);
+                            if acc.degree().unwrap_or(0) > MAX_PAPOLY_DEGREE {
+                                return None;
+                            }
+                        }
+                        acc
+                    }
+                    ExprNode::Neg(inner) => cache.get(&inner)?.neg(),
+                    ExprNode::Pow(base, e) if arena.as_num(e).is_some_and(|q| q.is_integer()) => {
+                        let k = arena.as_num(e)?.to_integer();
+                        let b = cache.get(&base)?.clone();
+                        let n = usize::try_from(k.abs()).ok()?;
+                        let deg = b.degree().unwrap_or(0);
+                        if n > MAX_PAPOLY_DEGREE || deg.checked_mul(n)? > MAX_PAPOLY_DEGREE {
+                            return None;
+                        }
+                        if k.is_negative() {
+                            if deg != 0 || b.is_zero() {
+                                return None;
+                            }
+                            PAPoly::constant(b.coeff(0).inv()).pow(n)
+                        } else {
+                            b.pow(n)
+                        }
+                    }
+                    _ => match self.ext.atom_value(arena, id) {
+                        Some(v) => PAPoly::constant(self.element(&v)),
+                        // Children of generators are visited too; a parent
+                        // that needs them fails above.
+                        None => continue,
+                    },
+                }
+            };
+            if !papoly_size_ok(&value) {
+                return None;
+            }
+            cache.insert(id, value);
+        }
+        cache.remove(&expr)
+    }
+
+    /// The expression of `f` over a common denominator in the parameters:
+    /// `(Σᵢ Nᵢ·bᵢ)/c` with `Nᵢ ∈ ℚ[var, y]`, `c ∈ ℚ[y]` (factored) and the
+    /// `bᵢ` the basis of `ℚ(α)` its elements are written in
+    /// ([`ExtField::written_basis`]).
+    pub(crate) fn poly_to_expr(&self, arena: &mut Arena, f: &PAPoly) -> ExprId {
+        let nv = self.nv();
+        let d = self.ext.field.degree();
+        // The coefficients of αʲ as polynomials in `var` over ℚ(y).
+        let per_power: Vec<PPoly> = (0..d)
+            .map(|j| {
+                PPoly::from_coeffs(
+                    f.coeffs()
+                        .iter()
+                        .map(|c| c.coefficients(d)[j].clone())
+                        .collect(),
+                )
+            })
+            .collect();
+        let parts: Vec<PolyFraction> = per_power
+            .iter()
+            .map(|p| ppoly_over_common_denominator(p, nv))
+            .collect();
+        let mut c = MPoly::from_int(nv, 1);
+        for p in &parts {
+            if !p.numer.is_zero() {
+                c = MPoly::lcm(&c, &p.denom);
+            }
+        }
+        let numers: Vec<MPoly> = parts
+            .iter()
+            .map(|p| match c.div_exact(&p.denom) {
+                Some(m) => p.numer.mul(&m),
+                None => MPoly::zero(nv),
+            })
+            .collect();
+        let (basis, transform) = self.ext.written_basis(arena);
+        let mut coords: Vec<MPoly> = match &transform {
+            Some(inv) => inv
+                .iter()
+                .map(|row| {
+                    let mut acc = MPoly::zero(nv);
+                    for (q, n) in row.iter().zip(&numers) {
+                        if !Zero::is_zero(q) {
+                            acc = acc.add(&n.scale(q));
+                        }
+                    }
+                    acc
+                })
+                .collect(),
+            None => numers,
+        };
+        // Integer coefficients without a common factor, and a denominator
+        // whose lexicographically leading coefficient is positive.
+        let mut scale = Q::from_integer(c.clear_denominators().0);
+        for n in &coords {
+            if !n.is_zero() {
+                scale = Q::from_integer(scale.numer().lcm(&n.clear_denominators().0));
+            }
+        }
+        let mut g = c.scale(&scale).integer_content();
+        for n in &coords {
+            if !n.is_zero() {
+                g = g.gcd(&n.scale(&scale).integer_content());
+            }
+        }
+        if !Zero::is_zero(&g) {
+            scale /= Q::from_integer(g);
+        }
+        let lex: MultiPoly<Lex> = c.convert_order();
+        if lex.leading_coeff().is_some_and(Signed::is_negative) {
+            scale = -scale;
+        }
+        let c = c.scale(&scale);
+        for n in &mut coords {
+            *n = n.scale(&scale);
+        }
+        let mut terms: Vec<ExprId> = Vec::new();
+        for (n, &b) in coords.iter().zip(&basis) {
+            if n.is_zero() {
+                continue;
+            }
+            let ne = multipoly_to_expr(arena, n, &self.vars);
+            terms.push(arena.mul(&[ne, b]));
+        }
+        let numer = match terms.len() {
+            0 => arena.zero,
+            1 => terms[0],
+            _ => arena.add(&terms),
+        };
+        match c.as_constant() {
+            Some(q) => {
+                let inv = arena.num_ratio(qone() / q);
+                arena.mul(&[inv, numer])
+            }
+            None => {
+                let ce = factored_expr(arena, &c, &self.vars);
+                arena.div(numer, ce)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // cancel
 // ═══════════════════════════════════════════════════════════════════════════
 
