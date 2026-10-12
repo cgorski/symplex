@@ -128,10 +128,10 @@ fn a_huge_term_does_not_go_to_the_limit_engine() {
 /// quartic factor goes to the heuristic integrator, which meets Ferrari's
 /// radicals at every step.  In 0.44 before the release, `eval` proved the
 /// sign of each radicand again at every pass (a deep zero search and a
-/// minimal polynomial), and the CI Fuzz workflow timed out on `∫ 1/(x⁵ + x
-/// + 2) dx` (`fuzz_roundtrip`, 0.54 s → 5.8 s) and `∫ ln(x + x⁻³ − 1) dx`
-/// (`fuzz_integrate`, 0.45 s → 4.0 s); the proofs are now made once per
-/// context (0.70 s, 0.53 s).
+/// minimal polynomial), and the CI Fuzz workflow timed out on
+/// `∫ 1/(x⁵ + x + 2) dx` (`fuzz_roundtrip`, 0.54 s → 5.8 s) and
+/// `∫ ln(x + x⁻³ − 1) dx` (`fuzz_integrate`, 0.45 s → 4.0 s); the proofs
+/// are now made once per context (0.70 s, 0.53 s).
 #[test]
 fn ferrari_radicands_are_decided_once() {
     integrate_within("1/(x^5 + x + 2)", Duration::from_secs(20), true);
