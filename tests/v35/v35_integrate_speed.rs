@@ -111,12 +111,15 @@ fn the_jump_of_one_antiderivative_is_taken_once() {
 /// term over 2,000 nodes now leaves the jump undecided at once (on the Rubi
 /// suite every term followed had at most 243).  The members that reach
 /// that bound take seconds even in a release build; this smaller one (0.13
-/// s → 0.06 s) keeps the family's time and its unevaluated answer in view.
+/// s → 0.06 s) keeps the family's time in view.  Since 0.44 it integrates
+/// (the limit engine decides the leading terms it refused before; the
+/// integrand has a non-integrable singularity at every pole of `tan x`,
+/// so there is no jump to correct), checked by differentiation.
 #[test]
 fn a_huge_term_does_not_go_to_the_limit_engine() {
     integrate_within(
         "(a + I*a*tan(x))^(3/2)*(A + B*tan(x))*(c - I*c*tan(x))^(5/2)",
         Duration::from_secs(10),
-        false,
+        true,
     );
 }

@@ -329,7 +329,13 @@ fn table(ctx: &Context, x: &Ex) -> Vec<(&'static str, Ex, Rel, &'static str)> {
             Rel::Le,
             "[-acosh(2), acosh(2)]",
         ),
-        ("sinh(x) - 1 > 0", x.sinh() - 1, Rel::Gt, "(asinh(1), oo)"),
+        // `asinh(1)` folds to `ln(1 + √2)` since 0.44 (SymPy 1.14 the same).
+        (
+            "sinh(x) - 1 > 0",
+            x.sinh() - 1,
+            Rel::Gt,
+            "(ln(sqrt(2) + 1), oo)",
+        ),
         (
             "exp(-x^2) - 1/2 >= 0",
             (-x.powi(2)).exp() - ctx.rational(1, 2),

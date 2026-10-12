@@ -242,9 +242,10 @@ fn continued_fraction_reduce_periodic_of_a_long_period() {
 }
 
 /// `harmonic`, `bernoulli` and `euler_number` have work bounds (`n ≤ 2¹⁸`,
-/// even `n ≤ 4096`) instead of running for minutes, and their values are
-/// unchanged.  SymPy 1.14: `harmonic(30)` = 9304682830147/2329089562800;
-/// `harmonic(700)` is checked against the term-by-term sum.
+/// even `n ≤ 30000`; 4096 until 0.43, see `v35_evalf_sums`) instead of
+/// running for minutes, and their values are unchanged.  SymPy 1.14:
+/// `harmonic(30)` = 9304682830147/2329089562800; `harmonic(700)` is checked
+/// against the term-by-term sum.
 #[test]
 fn harmonic_bernoulli_and_euler_numbers() {
     let q = |n: &str, d: &str| BigRational::new(big(n), big(d));
@@ -254,9 +255,9 @@ fn harmonic_bernoulli_and_euler_numbers() {
         .fold(BigRational::zero(), |acc, t| acc + t);
     assert_eq!(nt::harmonic(700), Some(sum));
     assert_eq!(nt::harmonic((1i64 << 18) + 1), None);
-    assert_eq!(nt::bernoulli(4098), None);
+    assert_eq!(nt::bernoulli(30_002), None);
     assert_eq!(nt::bernoulli(4097), Some(BigRational::zero()));
-    assert_eq!(nt::euler_number(4098), None);
+    assert_eq!(nt::euler_number(30_002), None);
     assert_eq!(nt::euler_number(4097), Some(b(0)));
     // SymPy 1.14: bernoulli(60), euler(20).
     assert_eq!(

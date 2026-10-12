@@ -533,16 +533,17 @@ fn polygamma_of_large_order() {
 }
 
 /// A node evalf has no routine for says so, at the root and below it.
-/// (`euler_number(1/2)`; until 0.40 the example was `catalan(1/2)`, which
-/// evaluates now: SymPy 1.14 `catalan(1/2).evalf()` = 0.848826…)
+/// (`bell(1/2)`; until 0.40 the example was `catalan(1/2)`, and until 0.44
+/// `euler_number(1/2)`, which evaluate now: SymPy 1.14
+/// `catalan(1/2).evalf()` = 0.848826…, `euler(1/2).evalf()` = 0.550359…)
 #[test]
 fn unsupported_nodes_say_so() {
     let ctx = Context::new();
-    for s in ["euler_number(1/2)", "euler_number(1/2) + 1"] {
+    for s in ["bell(1/2)", "bell(1/2) + 1"] {
         match dec(&ctx, s, 20) {
             Err(SymplexError::Unevaluable { reason }) => {
                 assert!(
-                    reason.contains("no numerical routine for 'euler_number'"),
+                    reason.contains("no numerical routine for 'bell'"),
                     "{s}: {reason}"
                 );
             }

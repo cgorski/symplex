@@ -307,6 +307,40 @@ fn direction_axis(arena: &mut Arena, d: ExprId) -> Option<Axis> {
     })
 }
 
+/// The signs (`−1`, `0`, `1`) of the real and imaginary parts of a
+/// constant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PartSigns {
+    pub(crate) re: i32,
+    pub(crate) im: i32,
+}
+
+/// The signs of the real and imaginary parts of a constant `d`, when both
+/// are certified (the direction of Gruntz's directed infinities,
+/// `gruntz::directed_infinity`).
+pub(crate) fn direction_signs(arena: &mut Arena, d: ExprId) -> Option<PartSigns> {
+    if let Some((re, im)) = const_parts(arena, d)
+        && let (Some(re), Some(im)) = (const_sign(arena, re), const_sign(arena, im))
+    {
+        return Some(PartSigns { re, im });
+    }
+    // Off both axes by its certified digits (`−(−1)^{4/3}`, which the exact
+    // decomposition does not see through): both parts clearly non-zero (a
+    // part negligible next to the other is `0.0` in `evalf_complex64`).
+    if !crate::base::walk::free_symbols(arena, d).is_empty()
+        || crate::base::walk::has_unevaluated(arena, d)
+    {
+        return None;
+    }
+    let z = crate::transforms::evalf::evalf_complex64(arena, d).ok()?;
+    let tiny = 1e-12 * z.norm();
+    let sign = |v: f64| if v > 0.0 { 1 } else { -1 };
+    (z.norm().is_finite() && z.re.abs() > tiny && z.im.abs() > tiny).then(|| PartSigns {
+        re: sign(z.re),
+        im: sign(z.im),
+    })
+}
+
 /// The kind of a computed limit value (`None` for a malformed one).
 fn kind_of(arena: &mut Arena, lv: LimVal) -> Option<Kind> {
     let v = lv.value;
@@ -448,6 +482,24 @@ fn eventually_real(arena: &mut Arena, g: ExprId, ap: &Approach) -> bool {
         }
     }
     true
+}
+
+/// The eventual sign of `g` near the limit point along the approach (the
+/// same from every side approached), `None` when undecided.
+fn eventual_sign_along(arena: &mut Arena, g: ExprId, ap: &Approach) -> Option<i32> {
+    let t = arena.positive_symbol("__lim_r");
+    let mut sign = None;
+    for &right in approach_sides(ap.dir) {
+        let sub = approach_substitute(arena, ap, t, right);
+        let e = crate::transforms::subs::subs(arena, g, ap.var, sub);
+        let e = crate::transforms::eval::eval(arena, e);
+        let s = crate::calculus::gruntz::eventual_sign_at_inf(arena, e, t)?;
+        if sign.is_some_and(|p| p != s) {
+            return None;
+        }
+        sign = Some(s);
+    }
+    sign
 }
 
 /// The imaginary part of a constant offset, when exactly known.
@@ -888,6 +940,18 @@ fn contains_hidden_singularity(arena: &Arena, root: ExprId) -> bool {
                 Some(r) if r.is_positive() => {}
                 _ => return true,
             },
+            // `Eₙ(0)` is infinite for `n ≤ 1` (`expint(1, 0)` was taken for
+            // the finite limit of `expint(1, x)` at `0`).
+            ExprNode::Apply(f, args)
+                if args.len() == 2
+                    && arena.lib_fn(*f) == Some(crate::base::libfn::LibFn::ExpInt)
+                    && arena.is_zero_structural(args[1])
+                    && arena
+                        .as_num(args[0])
+                        .is_some_and(|n| *n <= Q::from_integer(BigInt::from(1))) =>
+            {
+                return true;
+            }
             _ => {}
         }
         node.for_each_child(|c| stack.push(c));
@@ -1116,6 +1180,30 @@ pub(crate) fn safe_substitute(
             ExprNode::Gamma(a) | ExprNode::Digamma(a) => {
                 let av = val_of(arena, &values, a);
                 if is_nonpositive_integer(arena, av) {
+                    return None;
+                }
+            }
+            // `li 0 = 0` is the limit only from the right: on the cut
+            // `(−∞, 0)` `li` takes its values from above, `li(−ε) → iπ`
+            // (mpmath).  Before, `li(−x)` at `0⁺` was `0`.
+            ExprNode::Li(a) => {
+                let av = val_of(arena, &values, a);
+                if is_zero_value(arena, av) {
+                    return None;
+                }
+            }
+            // `Eₙ(z)` at `z = 0`: a pole for `n ≤ 1` (logarithmic for `n = 1`).
+            ExprNode::Apply(f, ref args)
+                if args.len() == 2
+                    && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::ExpInt) =>
+            {
+                let zv = val_of(arena, &values, args[1]);
+                let nv = val_of(arena, &values, args[0]);
+                if is_zero_value(arena, zv)
+                    && arena
+                        .as_num(nv)
+                        .is_none_or(|n| *n <= Q::from_integer(BigInt::from(1)))
+                {
                     return None;
                 }
             }
@@ -2251,6 +2339,27 @@ fn try_compose(
                 Kind::Infinite(inf) => ln_of_infinite(arena, inf, a, &ap),
             }
         }
+        // `li` at its branch point `0`: `li u = Ei(ln u) → 0` from the
+        // positive reals, `iπ` along the cut `(−∞, 0)`, where `li` takes
+        // its values from above (mpmath `li(−10⁻⁴⁰) = 1.1·10⁻⁴² +
+        // 3.14159i`).  A non-real approach is left to Gruntz.
+        ExprNode::Li(a) => {
+            let l = inner_limit(arena, a)?;
+            let Kind::Finite(l) = kind_of(arena, l)? else {
+                return None;
+            };
+            if !is_zero_value(arena, l) || !eventually_real(arena, a, &ap) {
+                return None;
+            }
+            match eventual_sign_along(arena, a, &ap)? {
+                1 => exact_result(arena.zero()),
+                -1 => {
+                    let v = arena.mul(&[arena.i_unit(), arena.pi()]);
+                    exact_result(crate::transforms::eval::eval(arena, v))
+                }
+                _ => None,
+            }
+        }
         ExprNode::Atan(a) => unary_with_asymptotes(
             arena,
             &node,
@@ -3031,9 +3140,28 @@ pub(crate) fn continuation_across_cut(
             arena.add(&[c, shift])
         }
         // `ln Γ(u) = ln((−1)ⁿ⁺¹Γ(u)) ∓ (n + 1)iπ` for `−n − 1 < l < −n`
-        // (`−` above or on the cut): `(−1)ⁿ⁺¹Γ(l) > 0` there.
+        // (`−` above or on the cut): `(−1)ⁿ⁺¹Γ(l) > 0` there.  At a pole
+        // `l = −m` reached along the cut, `u` lies in `(−m − 1, −m)` from
+        // below and in `(−m, −m + 1)` from above (`ln Γ(−x) → ∞ − iπ` at
+        // `0⁺`; before, its imaginary part was not determined).
         ExprNode::LogGamma(_) => {
-            let n = floor_of_negated(arena, l)?;
+            let n = match floor_of_negated(arena, l) {
+                Some(n) => n,
+                None if side == 0 => {
+                    use num_traits::ToPrimitive;
+                    let m = arena
+                        .as_num(l)
+                        .filter(|r| r.is_integer() && !r.is_positive())?
+                        .to_integer()
+                        .to_i64()?;
+                    match along {
+                        a if a < 0 => -m,
+                        a if a > 0 && m < 0 => -m - 1,
+                        _ => return None,
+                    }
+                }
+                None => return None,
+            };
             let g = arena.gamma(u);
             let g = if n % 2 == 0 { arena.neg(g) } else { g };
             let ln = arena.ln(g);
@@ -3041,6 +3169,21 @@ pub(crate) fn continuation_across_cut(
             let shift = arena.mul(&[k, i_pi]);
             let shift = signed(arena, -pick(1), shift);
             arena.add(&[ln, shift])
+        }
+        // `E₁(u) = −Ei(−u) ∓ iπ` (`−` above or on the cut; DLMF §6.2, with
+        // `Ei` continuous across the positive reals): mpmath `e1(−1) =
+        // −1.895 − iπ = −Ei(1) − iπ`.
+        ExprNode::Apply(f, ref args)
+            if args.len() == 2
+                && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::ExpInt)
+                && arena
+                    .as_num(args[0])
+                    .is_some_and(|n| *n == Q::from_integer(BigInt::from(1))) =>
+        {
+            let ei = arena.ei(neg_u);
+            let nei = arena.neg(ei);
+            let shift = signed(arena, -pick(1), i_pi);
+            arena.add(&[nei, shift])
         }
         _ => return None,
     };
@@ -3390,13 +3533,46 @@ fn with_imaginary_part(
     value: ExprId,
     depth: usize,
 ) -> Result<LimVal, SymplexError> {
+    let undetermined = || fail("the imaginary part of an infinite limit could not be determined");
     if value != arena.infinity() && value != arena.neg_infinity() {
+        if let Some(up) = imaginary_axis_infinity(arena, value) {
+            // `±i·∞` (an imaginary leading coefficient): `∓i·e → +∞`, whose
+            // imaginary part is `∓Re e`; the value turned back by `±i`.
+            if depth >= MAX_COMPOSE_DEPTH {
+                return Err(undetermined());
+            }
+            let i = arena.i_unit();
+            let ni = arena.neg(i);
+            let (to_real, back) = if up { (ni, i) } else { (i, ni) };
+            let turned = arena.mul(&[to_real, e]);
+            let turned = crate::transforms::eval::eval(arena, turned);
+            let oo = arena.infinity();
+            let r = with_imaginary_part(arena, turned, t, oo, depth + 1)?;
+            let Some(Kind::Infinite(inf)) = kind_of(arena, r) else {
+                return Err(undetermined());
+            };
+            return scale_inf(arena, inf, back)
+                .and_then(|inf| infinite_value(arena, inf, t))
+                .ok_or_else(undetermined);
+        }
+        // A directed infinity `d·∞`: its direction tidied.
+        if is_infinite_form(arena, value)
+            && let Some((d, o)) = split_infinite(arena, value)
+            && arena.is_zero_structural(o)
+        {
+            let tidy = tidy_phases(arena, d);
+            if tidy == d {
+                return Ok(LimVal::exact(value));
+            }
+            let oo = arena.infinity();
+            let v = arena.mul(&[tidy, oo]);
+            return Ok(LimVal::exact(crate::transforms::eval::eval(arena, v)));
+        }
         return Ok(LimVal::exact(tidy_phases(arena, value)));
     }
     if crate::calculus::gruntz::eventually_real_at_inf(arena, e, t) {
         return Ok(LimVal::exact(value));
     }
-    let undetermined = || fail("the imaginary part of an infinite limit could not be determined");
     if depth >= MAX_COMPOSE_DEPTH {
         return Err(undetermined());
     }
@@ -3483,6 +3659,22 @@ fn with_imaginary_part(
         }
     }
     Err(undetermined())
+}
+
+/// `Some(true)` for an infinity `d·∞` along the positive imaginary axis
+/// (`i·∞`), `Some(false)` along the negative one, `None` otherwise.
+fn imaginary_axis_infinity(arena: &mut Arena, v: ExprId) -> Option<bool> {
+    if !is_infinite_form(arena, v) {
+        return None;
+    }
+    let (d, o) = split_infinite(arena, v)?;
+    if !arena.is_zero_structural(o) {
+        return None;
+    }
+    match direction_signs(arena, d)? {
+        PartSigns { re: 0, im } if im != 0 => Some(im > 0),
+        _ => None,
+    }
 }
 
 /// A finite value from the Gruntz algorithm with the phases `cos b + i·sin b`

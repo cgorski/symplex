@@ -96,11 +96,12 @@ fn assert_solves(
 /// message now.  A real constant sharing a non-real part with another one
 /// was split by CSE around the shared `atanh(9)` and compiled to NaN:
 /// `|atanh(9)| + |atanh(9) + 1|·x` at `x = 1` is 3.49906996579188119022…
-/// (mpmath: `abs(atanh(9)) + abs(atanh(9) + 1)`).
+/// (mpmath: `abs(atanh(9)) + abs(atanh(9) + 1)`).  (`acosh(1/3)`: since
+/// 0.44 `acosh(1/2)` evaluates to `iπ/3`.)
 #[test]
 fn compile_refuses_constants_that_are_not_real() {
     let ctx = Context::new();
-    for bad in ["atanh(9)*x", "asin(2) + x", "x*acosh(1/2)"] {
+    for bad in ["atanh(9)*x", "asin(2) + x", "x*acosh(1/3)"] {
         let e = ctx.parse(bad).unwrap();
         let err = e.compile(&["x"]).expect_err(bad);
         assert!(err.to_string().contains("is not real"), "{bad}: {err}");
@@ -333,6 +334,25 @@ fn homogeneous_and_integrating_factor_quotients() {
             "{text}: {sol}"
         );
         let f = ctx.parse(rhs).unwrap();
+        // Since 0.44 an implicit solution with several roots in `y` is
+        // returned as its families (`x² + xy + y² = C1` gives
+        // `y = −x/2 ± √(4C1 − 3x²)/2`, SymPy's `±x·√(C1·x − 1)` for the
+        // second); each is checked by substitution at points, over ℂ.
+        if !sol.contains(&y) {
+            let e = ode(&ctx, text);
+            for fam in e.solve_ode_all(&y, &x).unwrap() {
+                let resid = &fam.diff(&x) - &f.subs(&y, &fam);
+                for px in [(1, 3), (7, 5)] {
+                    let r = resid
+                        .subs(&x, &ctx.rational(px.0, px.1))
+                        .subs(&ctx.symbol("C1"), &ctx.rational(2, 3))
+                        .eval_complex64()
+                        .unwrap();
+                    assert!(r.norm() < 1e-12, "{text}: {fam}: {r}");
+                }
+            }
+            continue;
+        }
         let relation = &sol.diff(&x) + &(&sol.diff(&y) * &f);
         for (px, py) in [((1, 3), (5, 2)), ((7, 5), (1, 3))] {
             let v = relation

@@ -1204,6 +1204,25 @@ fn inversion(
     Ok(sum)
 }
 
+/// `ζ(σ, a)` for a real `σ ≠ 1` and a real `0 < a ≤ 1` at working precision
+/// `wp` (see [`hurwitz`]): the value and `log₂` of the largest term summed,
+/// which bounds its absolute error by a few units of `2^(largest − wp)`.  The
+/// caller measures the cancellation (`largest` against the value) and
+/// repeats with more bits.
+pub(super) fn hurwitz_real(
+    sigma: &BigFloat,
+    a: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(BigFloat, f64), SymplexError> {
+    if *sigma == BigFloat::from_i32(1, 64) {
+        return Err(super::unevaluable("Hurwitz zeta: pole at order 1"));
+    }
+    let sum = hurwitz(sigma, &(a.clone(), BigFloat::new(wp)), wp, rm, cc)?;
+    Ok((sum.value.0, sum.largest))
+}
+
 /// The Hurwitz zeta function `ζ(σ, a)` for a real `σ ≠ 1` and `0 < Re a ≤
 /// 1` by Euler–Maclaurin (see the module documentation).
 fn hurwitz(

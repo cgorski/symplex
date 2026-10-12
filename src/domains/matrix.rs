@@ -735,6 +735,52 @@ fn has_root_of(e: &Ex) -> bool {
     false
 }
 
+/// Is `e` an eigenvalue in radicals of a symbolic cubic or quartic
+/// ([`parametric_radical_roots`]): free symbols under a root of index ≥ 3
+/// or under a nested square root?
+fn is_parametric_radical(e: &Ex) -> bool {
+    !e.free_symbols().is_empty() && (has_nested_higher_root(e) || is_nested_radical(e))
+}
+
+/// Does `e` contain Cardano's cube root `∛(… + √R)` of the symbols — a root
+/// of index ≥ 3 whose radicand holds a radical and a free symbol?  Those are
+/// the eigenvalues whose real values (*casus irreducibilis*) come out of
+/// complex cube roots, imaginary parts cancelling only exactly; a binomial's
+/// `∛p·ωᵏ` is not one.
+fn has_parametric_cardano_root(e: &Ex) -> bool {
+    use crate::base::node::ExprNode;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    let radical = |id| {
+        matches!(arena.node(id), ExprNode::Pow(_, x)
+            if arena.as_num(*x).is_some_and(|r| !r.is_integer()))
+    };
+    let mut stack = vec![e.raw_id()];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let ExprNode::Pow(base, exp) = arena.node(id)
+            && arena
+                .as_num(*exp)
+                .is_some_and(|r| *r.denom() > BigInt::from(2))
+            && arena.as_num(*base).is_none()
+        {
+            let below = crate::base::walk::post_order_ids(arena, *base);
+            if below.iter().any(|&j| radical(j))
+                && below
+                    .iter()
+                    .any(|&j| matches!(arena.node(j), ExprNode::Symbol(_)))
+            {
+                return true;
+            }
+        }
+        stack.extend(arena.node(id).children());
+    }
+    false
+}
+
 /// Does `e` contain a root of index ≥ 3 of a non-rational radicand (the
 /// cube roots of Cardano's formulas over `ℚ(√p…, i)`)?
 pub(crate) fn has_nested_higher_root(e: &Ex) -> bool {
@@ -2459,7 +2505,14 @@ impl Matrix {
     /// (The general Cardano/Ferrari formulas produce nested complex cube
     /// roots that make eigenvectors and `P⁻¹` swell exponentially.)  For
     /// 1×1 and 2×2 matrices with symbolic entries the closed-form
-    /// (quadratic) formula is used.  A characteristic polynomial with
+    /// (quadratic) formula is used.  A larger symbolic matrix has its
+    /// characteristic polynomial factored over `ℚ[symbols]`; an irreducible
+    /// cubic factor is solved by Cardano's formulas as SymPy's `roots_cubic`
+    /// (a generic formula, as SymPy's: `0/0` at values of the symbols where
+    /// the depressed cubic's `p` vanishes and `q` has one sign), a quartic
+    /// one when it needs only square
+    /// roots and the cubic (biquadratic, quasi-symmetric, a zero root); the
+    /// general symbolic quartic and higher degrees are refused.  A characteristic polynomial with
     /// coefficients in `ℚ(√p₁, …, i)` (algebraic entries) is split into
     /// square-free factors over that field and by the factors of their norms
     /// over `ℚ`; the pieces of degree ≤ 3 are solved by the quadratic
@@ -2592,11 +2645,27 @@ impl Matrix {
             total = n;
         }
 
+        // An irreducible cubic or quartic with symbolic coefficients: in
+        // radicals, as SymPy's `roots(…, cubics=True, quartics=True)`
+        // (generic formulas, see `parametric_radical_roots`).  Before 0.44
+        // every symbolic 3×3 or 4×4 matrix whose characteristic polynomial
+        // did not factor was refused ("could not solve the characteristic
+        // polynomial"), and so were its poles, eigenvectors and `exp`.
+        if total < n
+            && symbolic
+            && (3..=4).contains(&n)
+            && let Some(roots) = squarefree_parametric_roots(&cp, &coeffs, lam)
+        {
+            pairs = roots.into_iter().map(|r| (r, 1)).collect();
+            total = n;
+        }
+
         if pairs.is_empty() {
             return Err(failed(
                 "eigenvals",
-                "could not solve the characteristic polynomial; \
-                 symbolic matrices larger than 2×2 need a factorable characteristic polynomial",
+                "could not solve the characteristic polynomial: it has an irreducible factor \
+                 with symbolic coefficients of degree above 4, or a general quartic one \
+                 (whose radical roots do not evaluate where it has complex roots)",
             ));
         }
         if total < n {
@@ -2713,6 +2782,31 @@ impl Matrix {
                             crate::domains::linalg::algebraic_eigenvectors(&self.rows, cp, eigenval)
                         })
                     };
+                    // A simple eigenvalue in radicals of a symbolic
+                    // cubic/quartic: a column of adj(λI − A).
+                    // (The elimination below cannot decide its pivots in
+                    // such a `λ` and takes minutes trying: no answer then.)
+                    let exact = match exact {
+                        None if n >= 3 && *alg_mult == 1 && is_parametric_radical(eigenval) => {
+                            if charpoly.is_none() {
+                                charpoly = self.char_poly_coeffs().ok();
+                            }
+                            let v = charpoly
+                                .as_deref()
+                                .and_then(|cp| self.adjugate_eigenvector(cp, eigenval));
+                            match v {
+                                Some(v) => Some(vec![v]),
+                                None => {
+                                    return Err(failed(
+                                        "eigenvects",
+                                        "no column of adj(λI − A) was proven nonzero for an \
+                                         eigenvalue in radicals of the symbols",
+                                    ));
+                                }
+                            }
+                        }
+                        other => other,
+                    };
                     match exact {
                         Some(vs) => vs
                             .into_iter()
@@ -2746,6 +2840,76 @@ impl Matrix {
             result.push((self.hide_dummy(eigenval, &lam), *alg_mult, vecs));
         }
         Ok(result)
+    }
+
+    /// The eigenvector of a simple eigenvalue `lam` as a column of
+    /// `adj(λI − A)`: `(λI − A)·adj(λI − A) = det(λI − A)·I = 0`, and at a
+    /// simple eigenvalue the adjugate has rank 1, so every nonzero column is
+    /// an eigenvector.  The adjugate is `Σⱼ Nⱼ·λ^(n−1−j)` with `N₀ = I`,
+    /// `Nⱼ = A·Nⱼ₋₁ + cₙ₋ⱼ·I` (Faddeev–LeVerrier, as
+    /// [`sylvester_function`](Self::sylvester_function)), so each entry is a
+    /// polynomial in `λ` of degree below `n` with coefficients rational in
+    /// the entries — no zero test on an expression in `λ` is needed, only
+    /// one that some entry of the chosen column is not the zero function
+    /// ([`radical_nonzero_by_value`]: certified values at rational points).
+    ///
+    /// This is what an eigenvalue in Cardano/Ferrari radicals of a symbolic
+    /// matrix needs: the pivots of `A − λI` in such a `λ` are undecidable by
+    /// the elimination's zero tests.  `charpoly` is
+    /// [`char_poly_coeffs`](Self::char_poly_coeffs).  `None` when no column
+    /// is proven nonzero.
+    fn adjugate_eigenvector(&self, charpoly: &[Ex], lam: &Ex) -> Option<Vec<Ex>> {
+        let n = self.nrows;
+        if charpoly.len() != n + 1 {
+            return None;
+        }
+        let ctx = self.ctx();
+        // Monic det(tI − A) = (−1)ⁿ·det(A − tI), ascending.
+        let sign = ctx.int(if n.is_multiple_of(2) { 1 } else { -1 });
+        let c: Vec<Ex> = charpoly
+            .iter()
+            .map(|x| parametric_normal(&(x * &sign)))
+            .collect();
+        let eye = Matrix::identity_unchecked(&ctx, n);
+        let mut ns: Vec<Matrix> = vec![eye.clone()];
+        for j in 1..n {
+            let next = self
+                .matmul(&ns[j - 1])
+                .ok()?
+                .add(&eye.scale(&c[n - j]))
+                .ok()?;
+            budget_check(next.iter(), "eigenvects").ok()?;
+            ns.push(next.map(parametric_normal));
+        }
+        let lam_pows: Vec<Ex> = (0..n).map(|k| lam.powi(k as i64)).collect();
+        let mut best: Option<(usize, Vec<Ex>)> = None;
+        for s in 0..n {
+            // Entry r: Σⱼ Nⱼ[r][s]·λ^(n−1−j).
+            let col: Vec<Ex> = (0..n)
+                .map(|r| {
+                    let terms = ns.iter().enumerate().filter_map(|(j, nj)| {
+                        let coef = &nj.rows[r][s];
+                        (!coef.is_zero_structural()).then(|| {
+                            let k = n - 1 - j;
+                            if k == 0 {
+                                coef.clone()
+                            } else {
+                                coef * &lam_pows[k]
+                            }
+                        })
+                    });
+                    Ex::sum_of(&ctx, terms)
+                })
+                .collect();
+            let size: usize = col.iter().map(Ex::count_ops).sum();
+            if best.as_ref().is_some_and(|(b, _)| *b <= size) {
+                continue;
+            }
+            if col.iter().any(radical_nonzero_by_value) {
+                best = Some((size, col));
+            }
+        }
+        best.map(|(_, v)| v)
     }
 
     /// Is the matrix diagonalizable (three-valued)?
@@ -3162,14 +3326,18 @@ impl Matrix {
 
     fn matrix_exp_impl(&self, t: Option<&Ex>) -> Result<Matrix, SymplexError> {
         self.require_square("matrix_exp")?;
+        let f = |l: &Ex| match t {
+            Some(t) => (l * t).exp(),
+            None => l.exp(),
+        };
+        if let Some(m) = self.radical_spectrum_function("matrix_exp", &f, false, false)? {
+            return Ok(match t {
+                Some(t) => m.map(|e| collect_exponents(e, t)),
+                None => m,
+            });
+        }
         match self.matrix_exp_jordan(t) {
-            Err(e) if is_swell(&e) => {
-                let f = |l: &Ex| match t {
-                    Some(t) => (l * t).exp(),
-                    None => l.exp(),
-                };
-                self.sylvester_function("matrix_exp", &f)?.ok_or(e)
-            }
+            Err(e) if is_swell(&e) => self.sylvester_function("matrix_exp", &f)?.ok_or(e),
             r => r,
         }
     }
@@ -3189,8 +3357,68 @@ impl Matrix {
         op: &'static str,
         f: &dyn Fn(&Ex) -> Ex,
     ) -> Result<Option<Matrix>, SymplexError> {
-        let n = self.nrows;
         let pairs = self.eigenvals_with_multiplicity()?;
+        self.sylvester_with(op, f, &pairs)
+    }
+
+    /// `f(A)` by Sylvester's formula straight away when the eigenvalues are
+    /// distinct and some are Cardano/Ferrari radicals (a root of index ≥ 3
+    /// of a non-rational radicand, or a nested radical of the symbols): the
+    /// eigenvector route `P·f(J)·P⁻¹` then needs `det P`, whose expansion in
+    /// such radicals is exponential — before 0.44 `matrix_exp` of a 4×4
+    /// Hermitian matrix over `ℚ(√2, √3, i)` with an irreducible quartic
+    /// characteristic polynomial ran for minutes.  `Ok(None)` otherwise (also
+    /// when the eigenvalues are not found: the caller's route reports that).
+    /// With `nonsingular`, also `Ok(None)` when an eigenvalue is zero (the
+    /// logarithm: the caller's route reports the singular matrix).
+    ///
+    /// With `branch_cut` (`√`, `ln`) an eigenvalue with Cardano's cube root
+    /// of the symbols ([`has_parametric_cardano_root`]) is refused: at a real
+    /// value of the symbols where such an eigenvalue is a negative real
+    /// number (three real roots, *casus irreducibilis*) its imaginary part
+    /// cancels only exactly, so `√λ` sits on the cut and no evaluation
+    /// decides its branch — every entry of the result would be unevaluable
+    /// there.
+    pub(crate) fn radical_spectrum_function(
+        &self,
+        op: &'static str,
+        f: &dyn Fn(&Ex) -> Ex,
+        nonsingular: bool,
+        branch_cut: bool,
+    ) -> Result<Option<Matrix>, SymplexError> {
+        if !self.is_square() || self.nrows < 3 || self.as_qmatrix().is_some() {
+            return Ok(None);
+        }
+        let Ok(pairs) = self.eigenvals_with_multiplicity() else {
+            return Ok(None);
+        };
+        if branch_cut && pairs.iter().any(|(l, _)| has_parametric_cardano_root(l)) {
+            return Err(failed(
+                op,
+                "the eigenvalues are roots of an irreducible symbolic cubic or quartic \
+                 (Cardano/Ferrari radicals), whose principal branch is not decidable where \
+                 they are real; substitute values for the symbols first",
+            ));
+        }
+        if !pairs
+            .iter()
+            .any(|(l, _)| has_nested_higher_root(l) || is_parametric_radical(l))
+            || (nonsingular && !pairs.iter().all(|(l, _)| radical_nonzero_by_value(l)))
+        {
+            return Ok(None);
+        }
+        self.sylvester_with(op, f, &pairs)
+    }
+
+    /// [`sylvester_function`](Self::sylvester_function) with the eigenvalues
+    /// already computed.
+    fn sylvester_with(
+        &self,
+        op: &'static str,
+        f: &dyn Fn(&Ex) -> Ex,
+        pairs: &[(Ex, usize)],
+    ) -> Result<Option<Matrix>, SymplexError> {
+        let n = self.nrows;
         if pairs.len() != n || pairs.iter().any(|(_, m)| *m != 1) {
             return Ok(None);
         }
@@ -3218,7 +3446,7 @@ impl Matrix {
             ns.push(next.map(|e| tidy(e.clone())));
         }
         let mut out: Vec<Vec<Ex>> = vec![vec![ctx.zero(); n]; n];
-        for (l, _) in &pairs {
+        for (l, _) in pairs {
             // Horner: p′(λ) = Σ k·c_k·λ^(k−1), and Σⱼ Nⱼ[r][s]·λ^(n−1−j).
             let mut dp = &c[n] * &ctx.int(n as i64);
             for k in (1..n).rev() {
@@ -3625,11 +3853,22 @@ impl Matrix {
             .map_err(|e| reop(e, "condition_number"))?;
         let ctx = self.ctx();
         let numeric = sv.iter().all(|v| v.eval_f64().is_ok());
+        // A singular value in Cardano radicals (a symbolic 3×3 or 4×4 Gram
+        // matrix) is real, but its imaginary part cancels only exactly, so
+        // `max`/`min` would not evaluate ("min requires real arguments");
+        // `re(σ) = σ` makes them evaluable.
+        let real = |v: &Ex| {
+            if has_nested_higher_root(v) {
+                v.re()
+            } else {
+                v.clone()
+            }
+        };
         let (max, min) = match (sv.first(), sv.last()) {
             (Some(first), Some(last)) if numeric => (first.clone(), last.clone()),
             _ => (
-                Ex::max_of(&ctx, sv.iter().cloned()),
-                Ex::min_of(&ctx, sv.iter().cloned()),
+                Ex::max_of(&ctx, sv.iter().map(real)),
+                Ex::min_of(&ctx, sv.iter().map(real)),
             ),
         };
         if ex_is_zero(&min) == Some(true) {
@@ -3894,6 +4133,12 @@ fn rational_sqrt_q(q: &Q) -> Option<Q> {
 /// which is what makes `eigenvects` / `matrix_exp` of e.g. `[[0, −ω], [ω,
 /// 0]]` work without sign assumptions on `ω`.  Falls back to `disc.sqrt()`.
 fn quadratic_sqrt(disc: &Ex) -> Ex {
+    quadratic_sqrt_with(disc, true)
+}
+
+/// [`quadratic_sqrt`], trying [`square_root_by_parts`] for a non-real
+/// `disc` when `by_parts` (which calls this without it: depth ≤ 2).
+fn quadratic_sqrt_with(disc: &Ex, by_parts: bool) -> Ex {
     use crate::base::node::ExprNode;
     use num_traits::{Signed, Zero};
     let ctx = disc.context();
@@ -3914,11 +4159,26 @@ fn quadratic_sqrt(disc: &Ex) -> Ex {
         return (&re + &(&ctx.i_unit() * &im)).eval();
     }
     // A root in ℚ(radicals, i) found by denesting, checked exactly.
+    // (`sqrtdenest` may hand back the nested root itself, which passes the
+    // check; a non-real radicand is then denested by its parts.  A check
+    // that expands to a structural `0` has no generators, so the tower's
+    // zero test leaves it undecided: before 0.44 `√(24 + 16√2) = 4 + 2√2`
+    // was found and then dropped.)
     let denested = disc.sqrt().sqrtdenest();
-    if crate::domains::linalg::algebraic_function_is_zero(&(&denested.powi(2) - disc).expand())
-        == Some(true)
+    let check = (&denested.powi(2) - disc).expand();
+    if (check.is_zero_structural()
+        || crate::domains::linalg::algebraic_function_is_zero(&check) == Some(true))
         && crate::domains::linalg::algebraic_function_is_zero(&denested).is_some()
     {
+        // A radical of a non-real base (`√(2p²·i)` is built as `p·√2·√i`
+        // since 0.44, when factors known non-negative come out of a root)
+        // is denested by its parts too: `p + p·i`.
+        if by_parts
+            && (is_nested_radical(&denested) || has_radical_of_nonreal_base(&denested))
+            && let Some(r) = square_root_by_parts(disc)
+        {
+            return r;
+        }
         return denested;
     }
     let strip_abs = |e: &Ex| {
@@ -3937,7 +4197,113 @@ fn quadratic_sqrt(disc: &Ex) -> Ex {
             return (&factor * &root).eval();
         }
     }
-    square_root_by_factoring(disc).unwrap_or_else(|| disc.sqrt())
+
+    square_root_by_factoring(disc)
+        .or_else(|| by_parts.then(|| square_root_by_parts(disc)).flatten())
+        .unwrap_or_else(|| disc.sqrt())
+}
+
+/// `r` with `r² = disc` for a non-real `disc = a + b·i` with real parts
+/// `a`, `b` whose modulus `s = √(a² + b²)` has a square root without a
+/// nested radical: `√((s + a)/2) ± i·√((s − a)/2)` (each square root by
+/// [`quadratic_sqrt`]), checked exactly; `None` when no such `r` is found.
+/// Before 0.44 `√(1 + 2√2·i)` (which is `√2 + i`) and `√(2p²·i)` (`p +
+/// p·i`) stayed nested, so the eigenvalues of `[[3i + 2√2, −2i − 2√2],
+/// [3i + 3√2, −2i − 3√2]]` (`i` and `−√2`) and of a matrix with the
+/// eigenvalues `p·i` and `−p` (`p > 0`) came out of the quadratic formula
+/// as radicals whose value lies on the negative real axis only up to an
+/// imaginary part that no evaluation can prove zero: `matrix_sqrt` and
+/// `matrix_log` returned entries that do not evaluate.
+fn square_root_by_parts(disc: &Ex) -> Option<Ex> {
+    use crate::base::node::ExprNode;
+    let (a, b) = disc.as_real_imag();
+    if b.is_zero_structural() {
+        return None;
+    }
+    // Unknown parts (`re(x)` of a symbol of unknown realness) give nothing.
+    let opaque = |e: &Ex| {
+        let inner = e.inner.read();
+        crate::base::walk::post_order_ids(&inner.arena, e.raw_id())
+            .into_iter()
+            .any(|id| {
+                matches!(
+                    inner.arena.node(id),
+                    ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Conjugate(_) | ExprNode::Abs(_)
+                )
+            })
+    };
+    if opaque(&a) || opaque(&b) {
+        return None;
+    }
+    let (a, b) = (a.expand(), b.expand());
+    let s2 = (&a.powi(2) + &b.powi(2)).expand();
+    let s = quadratic_sqrt_with(&s2, false);
+
+    if is_nested_radical(&s) {
+        return None;
+    }
+    let half = disc.context().rational(1, 2);
+    let re = quadratic_sqrt_with(&(&(&s + &a) * &half).expand(), false);
+    let im = quadratic_sqrt_with(&(&(&s - &a) * &half).expand(), false);
+    if is_nested_radical(&re) || is_nested_radical(&im) {
+        return None;
+    }
+    let i = disc.context().i_unit();
+    for sign in [1i64, -1] {
+        let r = (&re + &(&(&i * &im) * &disc.context().int(sign))).eval();
+        let check = (&r.powi(2) - disc).expand();
+
+        if check.is_zero_structural()
+            || crate::domains::linalg::algebraic_function_is_zero(&check) == Some(true)
+        {
+            return Some(r);
+        }
+    }
+    None
+}
+
+/// Does `e` contain a radical whose radicand contains `i` (`√i`)?
+fn has_radical_of_nonreal_base(e: &Ex) -> bool {
+    use crate::base::node::ExprNode;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    crate::base::walk::post_order_ids(arena, e.raw_id())
+        .into_iter()
+        .any(|id| {
+            matches!(arena.node(id), ExprNode::Pow(base, x)
+                if arena.as_num(*x).is_some_and(|r| !r.is_integer())
+                    && crate::base::walk::post_order_ids(arena, *base)
+                        .into_iter()
+                        .any(|b| matches!(arena.node(b), ExprNode::ImaginaryUnit)))
+        })
+}
+
+/// Does `e` contain a radical whose radicand contains a radical?
+fn is_nested_radical(e: &Ex) -> bool {
+    use crate::base::node::ExprNode;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    let radical = |id| {
+        matches!(arena.node(id), ExprNode::Pow(_, x)
+            if arena.as_num(*x).is_some_and(|r| !r.is_integer()))
+    };
+    let mut stack = vec![e.raw_id()];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let ExprNode::Pow(base, _) = arena.node(id)
+            && radical(id)
+            && crate::base::walk::post_order_ids(arena, *base)
+                .into_iter()
+                .any(radical)
+        {
+            return true;
+        }
+        stack.extend(arena.node(id).children());
+    }
+    false
 }
 
 /// `r` with `r² = disc` for a polynomial `disc` in the symbols that is
@@ -3971,6 +4337,201 @@ fn square_root_by_factoring(disc: &Ex) -> Option<Ex> {
         .expand()
         .is_zero_structural()
         .then_some(root)
+}
+
+/// A coefficient of [`parametric_radical_roots`] in normal form: a rational
+/// function of the symbols by `ratsimp`, anything else (radicals) expanded.
+fn parametric_normal(e: &Ex) -> Ex {
+    if has_radical(e) || has_root_of(e) {
+        e.expand()
+    } else {
+        e.ratsimp()
+    }
+}
+
+/// The roots of the cubic or quartic `Σ coeffs[k]·λᵏ` (ascending) whose
+/// coefficients have free symbols, in radicals: SymPy's `roots_cubic` and
+/// `roots_quartic` (`polys/polyroots.py`, the forms `roots(f, cubics=True,
+/// quartics=True)` returns for a symbolic cubic or quartic and which
+/// `Matrix.eigenvals` returns).  Every case test is exact (a rational
+/// function of the symbols that vanishes identically): the degenerate shapes
+/// (`x·(…)`, `p = 0`, `q = 0`, the quasi-symmetric and biquadratic quartics)
+/// get their own short forms.
+///
+/// Cubic `x³ + a·x² + b·x + c`, depressed by `x = y − a/3` to `y³ + p·y + q`:
+/// the roots are `ωᵏ·w − ω̄ᵏ·p/(3w) − a/3` (`ω = −1/2 + √3·i/2`) with
+/// `w = ∛(−q/2 + √R)` when `q` is known to be negative and `w = −∛(q/2 + √R)`
+/// otherwise, `R = q²/4 + p³/27` — SymPy's two branches (its `C =
+/// ∛((D₁ + √(D₁² − 4D₀³))/2)` is `−3w`).  For `q` of known sign (with any
+/// `p`) `w ≠ 0`, so the formula holds for every value of the symbols; for `q`
+/// of unknown sign it is generic, as SymPy's, and fails (`0/0`) only where
+/// `p = 0` and `q < 0`.
+///
+/// Quartic: the cases of SymPy's `roots_quartic` that need only square
+/// roots and the cubic — `x·(cubic)`, quasi-symmetric (`(c/a)² = d`),
+/// biquadratic and `y·(cubic)` after depressing.  The general case is
+/// `None` (refused): Ferrari's roots `(±w − t·√(−(3e + 2y ± 2f/w)))/2 −
+/// a/4` take square roots of quantities that are exactly negative real
+/// numbers wherever the quartic has a pair of complex-conjugate roots at
+/// real values of the symbols (`(r − r̄)²`), and whose imaginary parts
+/// cancel only exactly (the resolvent root `y` comes from Cardano's formula
+/// with complex cube roots) — the roots, and everything computed from them,
+/// would not evaluate there.  SymPy returns them anyway (its `evalf` takes
+/// the rounding noise for a sign).
+///
+/// The square roots of the radicands are any square roots (the formulas
+/// hold for both signs as long as `w ≠ 0`), so perfect squares are pulled
+/// out ([`quadratic_sqrt`]).  `None` when the leading coefficient is not
+/// provably nonzero or the degree is not 3 or 4.
+fn parametric_radical_roots(coeffs: &[Ex]) -> Option<Vec<Ex>> {
+    let deg = coeffs.len().checked_sub(1)?;
+    if !(3..=4).contains(&deg) || !provably_nonzero(&coeffs[deg]) {
+        return None;
+    }
+    let lead = &coeffs[deg];
+    let monic: Vec<Ex> = coeffs[..deg]
+        .iter()
+        .map(|c| parametric_normal(&(c / lead)))
+        .collect();
+    if deg == 3 {
+        parametric_cubic_roots(&monic[2], &monic[1], &monic[0])
+    } else {
+        parametric_quartic_roots(&monic[3], &monic[2], &monic[1], &monic[0])
+    }
+}
+
+/// The cube roots of unity `1, −1/2 + √3·i/2, −1/2 − √3·i/2`.
+fn cube_roots_of_unity(ctx: &Context) -> [Ex; 3] {
+    let coeff = &(&ctx.int(3).sqrt() * &ctx.i_unit()) / &ctx.int(2);
+    let half = ctx.rational(-1, 2);
+    [ctx.one(), &half + &coeff, &half - &coeff]
+}
+
+/// The two (or one double) roots of `x² + b·x + c` by [`low_degree_roots`],
+/// repeated by multiplicity.
+fn monic_quadratic_roots(c: &Ex, b: &Ex) -> Vec<Ex> {
+    let ctx = c.context();
+    low_degree_roots(&[c.clone(), b.clone(), ctx.one()])
+        .into_iter()
+        .flat_map(|(v, m)| std::iter::repeat_n(v, m))
+        .collect()
+}
+
+/// [`parametric_radical_roots`] of `x³ + a·x² + b·x + c`.
+fn parametric_cubic_roots(a: &Ex, b: &Ex, c: &Ex) -> Option<Vec<Ex>> {
+    let ctx = a.context();
+    let zero = |e: &Ex| ex_is_zero(e) == Some(true);
+    if zero(c) {
+        // x·(x² + a·x + b)
+        let mut r = monic_quadratic_roots(b, a);
+        if r.len() != 2 {
+            return None;
+        }
+        r.insert(1, ctx.zero());
+        return Some(r);
+    }
+    let q3 = |n: i64, d: i64| ctx.rational(n, d);
+    let p = parametric_normal(&(b - &(&a.powi(2) * &q3(1, 3))));
+    let q = parametric_normal(&(&(c - &(&(a * b) * &q3(1, 3))) + &(&a.powi(3) * &q3(2, 27))));
+    let aon3 = parametric_normal(&(a * &q3(1, 3)));
+    let omega = cube_roots_of_unity(&ctx);
+    if zero(&p) {
+        if zero(&q) {
+            return Some(vec![(-&aon3).eval(); 3]);
+        }
+        // y³ = −q: any cube root of −q times the cube roots of unity.
+        let w = if q.is_positive() == Some(true) {
+            -q.cbrt()
+        } else {
+            (-&q).eval().cbrt()
+        };
+        return Some(omega.iter().map(|u| (&(u * &w) - &aon3).eval()).collect());
+    }
+    if zero(&q) {
+        // y·(y² + p)
+        let s = quadratic_sqrt(&parametric_normal(&-&p));
+        return Some(vec![
+            (&s - &aon3).eval(),
+            (-&aon3).eval(),
+            (&(-&s) - &aon3).eval(),
+        ]);
+    }
+    let r = parametric_normal(&(&(&q.powi(2) * &q3(1, 4)) + &(&p.powi(3) * &q3(1, 27))));
+    let s = quadratic_sqrt(&r);
+    let half_q = &q * &q3(1, 2);
+    let w = if q.is_negative() == Some(true) {
+        (&s - &half_q).cbrt()
+    } else {
+        -(&half_q + &s).cbrt()
+    };
+    let pw = &p / &(&w * &ctx.int(3));
+    Some(
+        (0..3)
+            .map(|k| {
+                let conj = &omega[(3 - k) % 3];
+                (&(&(&omega[k] * &w) - &(conj * &pw)) - &aon3).eval()
+            })
+            .collect(),
+    )
+}
+
+/// [`parametric_radical_roots`] of `x⁴ + a·x³ + b·x² + c·x + d`.
+fn parametric_quartic_roots(a: &Ex, b: &Ex, c: &Ex, d: &Ex) -> Option<Vec<Ex>> {
+    let ctx = a.context();
+    let zero = |e: &Ex| ex_is_zero(e) == Some(true);
+    let qn = |n: i64, dd: i64| ctx.rational(n, dd);
+    if zero(d) {
+        // x·(x³ + a·x² + b·x + c)
+        let mut r = parametric_cubic_roots(a, b, c)?;
+        r.insert(0, ctx.zero());
+        return Some(r);
+    }
+    if !zero(a) {
+        // Quasi-symmetric: (c/a)² = d.  z = x + m/x with m = c/a solves
+        // z² + a·z + b − 2m = 0, then x² − z·x + m = 0.
+        let m = parametric_normal(&(c / a));
+        if zero(&parametric_normal(&(&m.powi(2) - d))) {
+            let zs = monic_quadratic_roots(&parametric_normal(&(b - &(&m * &ctx.int(2)))), a);
+            if zs.len() != 2 {
+                return None;
+            }
+            let mut out = Vec::with_capacity(4);
+            for z in &zs {
+                let r = monic_quadratic_roots(&m, &(-z).eval());
+                if r.len() != 2 {
+                    return None;
+                }
+                out.extend(r);
+            }
+            return Some(out);
+        }
+    }
+    // Depressed y⁴ + e·y² + f·y + g with x = y − a/4.
+    let a2 = a.powi(2);
+    let e = parametric_normal(&(b - &(&a2 * &qn(3, 8))));
+    let f = parametric_normal(&(c + &(a * &(&(&a2 * &qn(1, 8)) - &(b * &qn(1, 2))))));
+    let aon4 = parametric_normal(&(a * &qn(1, 4)));
+    let g = parametric_normal(
+        &(d - &(&aon4 * &(&(a * &(&(&a2 * &qn(3, 64)) - &(b * &qn(1, 4)))) + c))),
+    );
+    let shift = |y: Ex| (&y - &aon4).eval();
+    if zero(&f) {
+        // Biquadratic: y² = t for the roots t of t² + e·t + g.
+        let ts = monic_quadratic_roots(&g, &e);
+        if ts.len() != 2 {
+            return None;
+        }
+        let (y1, y2) = (ts[0].sqrt(), ts[1].sqrt());
+        return Some(vec![shift(-&y1), shift(-&y2), shift(y1), shift(y2)]);
+    }
+    if zero(&g) {
+        // y·(y³ + e·y + f)
+        let mut ys = parametric_cubic_roots(&ctx.zero(), &e, &f)?;
+        ys.insert(0, ctx.zero());
+        return Some(ys.into_iter().map(shift).collect());
+    }
+    // The general quartic (Ferrari) is refused: see `parametric_radical_roots`.
+    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5595,9 +6156,16 @@ fn symbolic_factor_roots(cp: &Ex, lam: &Ex) -> Option<Vec<(Ex, usize)>> {
     let mut out: Vec<(Ex, usize)> = Vec::new();
     for (f, m) in &factors {
         let coeffs = f.coeffs(lam)?;
+        let parametric = coeffs.iter().any(|c| !c.free_symbols().is_empty());
         let roots = match coeffs.len() {
             0 | 1 => continue,
             2 | 3 => low_degree_roots(&coeffs),
+            // An irreducible symbolic cubic or quartic factor: in radicals
+            // (before 0.44 its roots were missing from the result).
+            4 | 5 if parametric => match parametric_radical_roots(&coeffs) {
+                Some(rs) => rs.into_iter().map(|r| (r, 1)).collect(),
+                None => eigvals_with_multiplicity(&f.expand(), lam),
+            },
             _ => eigvals_with_multiplicity(&f.expand(), lam),
         };
         for (r, k) in roots {
@@ -5605,6 +6173,18 @@ fn symbolic_factor_roots(cp: &Ex, lam: &Ex) -> Option<Vec<(Ex, usize)>> {
         }
     }
     Some(out)
+}
+
+/// [`parametric_radical_roots`] of the characteristic polynomial `cp` in
+/// `lam` (ascending coefficients `coeffs`) when it is square-free: its
+/// discriminant is provably not the zero function (the roots are then
+/// distinct for generic values of the symbols, each of multiplicity 1).
+fn squarefree_parametric_roots(cp: &Ex, coeffs: &[Ex], lam: &Ex) -> Option<Vec<Ex>> {
+    let disc = cp.discriminant_symbolic(lam)?;
+    if !provably_nonzero(&parametric_normal(&disc)) {
+        return None;
+    }
+    parametric_radical_roots(coeffs)
 }
 
 /// `RootOf(poly, var, index)` — the `index`-th root (Aberth ordering: by
@@ -5931,6 +6511,37 @@ fn provably_nonzero(e: &Ex) -> bool {
             .collect();
         let subs: Vec<(&Ex, &Ex)> = syms.iter().zip(vals.iter()).collect();
         constant_is_zero(&e.subs_map(&subs)) == Some(false)
+    })
+}
+
+/// [`provably_nonzero`] for an expression in Cardano/Ferrari radicals of
+/// its symbols, by evaluation only: nonzero digits of `e` at one of a few
+/// rational points of its symbols prove `e ≢ 0`.  A value that does not
+/// evaluate there proves nothing; the exact fallback of [`constant_is_zero`]
+/// (the minimal polynomial of the value) is skipped — for such radicals it
+/// is a Zassenhaus factorization of enormous degree (minutes for one entry
+/// of an eigenvector of a symbolic 4×4 matrix).
+fn radical_nonzero_by_value(e: &Ex) -> bool {
+    if e.is_zero_structural() {
+        return false;
+    }
+    if e.expr_type() == ExprType::Number {
+        return true;
+    }
+    if let Some(b) = rational_function_is_zero(e) {
+        return !b;
+    }
+    let syms = e.free_symbols();
+    if has_root_of(e) {
+        return false;
+    }
+    let ctx = e.context();
+    (0..3i64).any(|k| {
+        let vals: Vec<Ex> = (0..syms.len() as i64)
+            .map(|i| ctx.rational(31 + 17 * i + 7 * k, 11 + 4 * k + 3 * i))
+            .collect();
+        let subs: Vec<(&Ex, &Ex)> = syms.iter().zip(vals.iter()).collect();
+        matches!(e.subs_map(&subs).eval_decimal(12), Ok(s) if s != "0")
     })
 }
 

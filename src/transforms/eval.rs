@@ -1234,17 +1234,40 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
 
 /// Is `x` real: by its assumptions, or, for a constant they leave open
 /// (`√(5 − 2√6)`), by a certified evaluation without imaginary part?
-fn known_real(arena: &Arena, x: ExprId) -> bool {
+///
+/// The numerical half evaluates `im(x)` on its own
+/// ([`constant_realness_as_declared`](crate::transforms::realness::constant_realness_as_declared)):
+/// a certified value of `x` whose imaginary part shows as 0 proves
+/// nothing, since an imaginary part below the relative precision of the
+/// whole value is not shown — `−1 − i·(e^{10⁻³⁰} − 1 − 10⁻³⁰)` (imaginary
+/// part `−5·10⁻⁶¹`) passed for a negative real, and `ln` of it folded to
+/// `ln(…) + iπ` on the wrong side of the cut (it is `−iπ + …`).
+///
+/// `im(x)` must be a certified exact 0 (`Settled::Certified`): one that
+/// is only 0 to the precision of the zero search may hide a smaller part
+/// (`sin²1 + cos²1 − 1` is exactly 0, but no evaluation proves it, and the
+/// side of the cut stays undecided, as `evalf` leaves it).
+fn known_real(arena: &mut Arena, x: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
     match AssumptionCache::new().query(arena, x, Props::REAL) {
         Some(real) => real,
         None => {
-            walk::free_symbols(arena, x).is_empty()
-                && matches!(
-                    evalf_settled(arena, x, 16, ZeroSearch::Cap),
-                    Ok((z, Settled::Certified)) if z.1.is_zero()
-                )
+            if !walk::free_symbols(arena, x).is_empty() {
+                return false;
+            }
+            let im = arena.im(x);
+            let im = eval(arena, im);
+            if arena.is_zero_structural(im) {
+                return true;
+            }
+            if walk::has_unevaluated(arena, im) {
+                return false;
+            }
+            matches!(
+                evalf_settled(arena, im, 16, ZeroSearch::Deep),
+                Ok((z, Settled::Certified)) if z.0.is_zero() && z.1.is_zero()
+            )
         }
     }
 }
@@ -3763,6 +3786,10 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     {
         return Some(w);
     }
+    // exp(k·ln z) = z^k, the principal power by definition.
+    if let Some(power) = log_multiple_power(arena, inner) {
+        return Some(power);
+    }
 
     // Euler's formula: exp(i*k*π) = cos(kπ) + i*sin(kπ)
     // Detect if inner is i * (something that's a π-multiple)
@@ -3822,9 +3849,72 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
                 return Some(arena.mul(&[unit, rest_exp]));
             }
         }
+        // exp(Σ kⱼ·ln zⱼ + w) = ∏ zⱼ^kⱼ · exp(w) for constants `zⱼ`, as SymPy's
+        // `exp.eval` splits a sum (`exp(x + 2*log(3))` → `9*exp(x)`,
+        // `exp(log(-8)/3)` → `2*exp(I*pi/3)`): `exp(a + b) = exp(a)·exp(b)` on
+        // all of ℂ.  (Not for a symbolic `zⱼ`: see [`log_multiple_power`].)
+        let mut powers: smallvec::SmallVec<[ExprId; 4]> = smallvec::SmallVec::new();
+        let mut rest: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
+        for &t in &terms {
+            match log_multiple_power(arena, t) {
+                Some(p) => powers.push(p),
+                None => rest.push(t),
+            }
+        }
+        if !powers.is_empty() {
+            let rest = arena.add(&rest);
+            let rest_exp = eval_exp(arena, rest).unwrap_or_else(|| arena.exp(rest));
+            powers.push(rest_exp);
+            return Some(arena.mul(&powers));
+        }
     }
 
     None
+}
+
+/// `z^k` for a term `t = k·ln z` of an exponent, `z ≠ 0` a constant and `k`
+/// a finite real constant (a product of real constant factors, as SymPy's
+/// `exp.eval` asks of the cofactor of its one `log`): `exp(k·Log z) = z^k`
+/// is the definition of the principal power.  So `exp(2·ln 10) = 100`,
+/// `exp(−ln(2)·3/2) = √2/4`, `exp(2·ln(√2)) = 2`, `exp(π·ln 2) = 2^π`,
+/// `exp(ln(2 + i)/2) = √(2 + i)`; a symbolic or non-real `k` stays
+/// (`exp(x·ln 2)`, `exp(i·ln 2)`, as in SymPy).  Up to 0.43 all stayed.
+///
+/// A symbolic `z` stays too (SymPy: `exp(2*log(x))` → `x**2`): the Gruntz
+/// rewrite builds `exp(−ln(1/ω))` for its dummy `ω` and, given `ω`
+/// instead, finds `lim Γ(x + 1)/(x·Γ(x))` at `∞` to be 0 (it is 1).
+fn log_multiple_power(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let children = match arena.node(t).clone() {
+        ExprNode::Mul(children) => children,
+        // A bare `ln z` in a sum (`exp(ln 2 + ln 3) = 6`).
+        ExprNode::Ln(z) => {
+            return (walk::free_symbols(arena, z).is_empty() && constant_is_nonzero(arena, z))
+                .then_some(z);
+        }
+        _ => return None,
+    };
+    let mut log_arg = None;
+    let mut coeffs: smallvec::SmallVec<[ExprId; 4]> = smallvec::SmallVec::new();
+    for &c in &children {
+        match *arena.node(c) {
+            ExprNode::Ln(z) if log_arg.is_none() => log_arg = Some(z),
+            ExprNode::Ln(_) => return None,
+            _ => coeffs.push(c),
+        }
+    }
+    let z = log_arg?;
+    if !walk::free_symbols(arena, z).is_empty() || !constant_is_nonzero(arena, z) {
+        return None;
+    }
+    let k = arena.mul(&coeffs);
+    if !walk::free_symbols(arena, k).is_empty()
+        || AssumptionCache::new().query(arena, k, Props::FINITE) != Some(true)
+        || !known_real(arena, k)
+    {
+        return None;
+    }
+    Some(arena.pow(z, k))
 }
 
 /// Is the constant (symbol-free) `w` provably non-zero: by the assumption
@@ -3922,7 +4012,94 @@ fn eval_ln(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
 
+    if let ExprNode::Exp(y) = *arena.node(inner)
+        && let Some(v) = ln_of_exp(arena, y)
+    {
+        return Some(v);
+    }
+
+    // ln w = ln(−w) + iπ for any negative real constant `w`, as for the
+    // rationals above (SymPy's `log.eval`: `log(-E)` → 1 + I*pi, `log(1 -
+    // sqrt(2))` → `log(-1 + sqrt(2)) + I*pi`).  Up to 0.43 they stayed.
+    if arena.as_num(inner).is_none() && constant_is_negative(arena, inner) {
+        let w = arena.neg(inner);
+        let ln_w = eval_ln(arena, w).unwrap_or_else(|| arena.ln(w));
+        let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
+        return Some(arena.add(&[ln_w, i_pi]));
+    }
+
     ln_of_special_complex(arena, inner)
+}
+
+/// Is the finite constant `w` negative: by the assumptions, or by a
+/// certified 16-digit value that is real with a negative real part?
+fn constant_is_negative(arena: &mut Arena, w: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+    if !walk::free_symbols(arena, w).is_empty() {
+        return false;
+    }
+    let mut cache = AssumptionCache::new();
+    if cache.query(arena, w, Props::FINITE) == Some(false) {
+        return false;
+    }
+    match cache.query(arena, w, Props::NEGATIVE) {
+        Some(negative) => negative && cache.query(arena, w, Props::FINITE) == Some(true),
+        None => {
+            known_real(arena, w)
+                && matches!(
+                    evalf_settled(arena, w, 16, ZeroSearch::Cap),
+                    Ok((z, Settled::Certified)) if z.1.is_zero() && z.0.is_negative()
+                )
+        }
+    }
+}
+
+/// `Log(e^y) = y − 2πik` for a constant `y`, with the integer `k` that puts
+/// the imaginary part in `(−π, π]` (SymPy's `log.eval`: `log(exp(5*I))` →
+/// `-2*I*pi + 5*I`, `log(exp(2 + 3*I))` → `2 + 3*I`): exactly for an
+/// imaginary part `q·π`, else by a 16-digit value away from the odd
+/// multiples of `π`.  A real `y` folds when built.  Up to 0.43 they stayed.
+fn ln_of_exp(arena: &mut Arena, y: ExprId) -> Option<ExprId> {
+    if !walk::free_symbols(arena, y).is_empty() {
+        return None;
+    }
+    if log_exp_is_identity(arena, y) {
+        return Some(y);
+    }
+    let parts = crate::base::complex::decompose(arena, y);
+    if !parts.exact {
+        return None;
+    }
+    let im = eval(arena, parts.im);
+    let turns = if let Some(q) = as_pi_multiple(arena, im) {
+        // q − r for the r ∈ (−1, 1] with q ≡ r (mod 2), in units of 2π.
+        let two = Ratio::from_integer(BigInt::from(2));
+        let shifted = mod_positive(&(q.clone() + Ratio::one()), &two);
+        let r = if shifted.is_zero() {
+            Ratio::one()
+        } else {
+            shifted - Ratio::one()
+        };
+        (q - r) / two
+    } else {
+        let v = crate::transforms::evalf::evalf_f64(arena, im).ok()?;
+        let tau = 2.0 * std::f64::consts::PI;
+        if !v.is_finite() || v.abs() > 1e6 {
+            return None;
+        }
+        let k = (v / tau).round();
+        if (v - k * tau).abs() >= std::f64::consts::PI * (1.0 - 1e-9) {
+            return None;
+        }
+        Ratio::from_integer(BigInt::from(k as i64))
+    };
+    if turns.is_zero() {
+        return Some(y);
+    }
+    let shift = pi_times(arena, turns * Ratio::from_integer(BigInt::from(-2)));
+    let i_shift = arena.mul(&[arena.i_unit, shift]);
+    Some(arena.add(&[y, i_shift]))
 }
 
 /// `Log z = ln|z| + i·Arg z` for a constant `z = a + b·i` (`b ≠ 0`, exact
@@ -4218,6 +4395,12 @@ fn eval_asin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if let Some(v) = inverse_of_trig_at_pi_multiple(arena, inner, InverseTrig::Asin) {
         return Some(v);
     }
+    // asin(i·c) = i·asinh(c) on all of ℂ (SymPy's `asin.eval`): asin(±i) =
+    // ±i·ln(1 + √2), and `acsc(±i) = asin(∓i)`.  Up to 0.43 they stayed.
+    if let Some(c) = imaginary_real_cofactor(arena, inner) {
+        let v = eval_asinh(arena, c)?;
+        return Some(arena.mul(&[arena.i_unit, v]));
+    }
     // asin(v) = π/2 − acos(v) = s·(1/2 − q)·π for |v| = cos(qπ).
     let (s, q) = special_angle_of(arena, inner, SpecialTable::Cos)?;
     let half = Ratio::new(BigInt::from(1), BigInt::from(2));
@@ -4252,6 +4435,15 @@ fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
     if let Some(v) = inverse_of_trig_at_pi_multiple(arena, inner, InverseTrig::Acos) {
         return Some(v);
+    }
+    // acos(i·c) = π/2 − i·asinh(c) (`acos = π/2 − asin`; SymPy: `acos(I)` →
+    // pi/2 - I*log(1 + sqrt(2))), and `asec(±i) = acos(∓i)`.
+    if let Some(c) = imaginary_real_cofactor(arena, inner) {
+        let v = eval_asinh(arena, c)?;
+        let i_v = arena.mul(&[arena.i_unit, v]);
+        let minus_i_v = arena.neg(i_v);
+        let quarter_turn = half_pi(arena);
+        return Some(arena.add(&[quarter_turn, minus_i_v]));
     }
     // acos(±cos(qπ)) = qπ or (1 − q)π (principal range [0, π]).
     let (s, q) = special_angle_of(arena, inner, SpecialTable::Cos)?;
@@ -4825,18 +5017,97 @@ fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     Some(arena.mul(&[arena.i_unit, t]))
 }
 
+/// `c` for an argument `i·c` with `c` a real constant (`c = 1` for `i`
+/// itself, `−1` for `−i`): the argument of the identities between the
+/// inverse trigonometric and hyperbolic functions on the imaginary axis.
+fn imaginary_real_cofactor(arena: &mut Arena, z: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let c = if z == arena.i_unit {
+        arena.one
+    } else {
+        as_pure_imaginary(arena, z)?
+    };
+    (walk::free_symbols(arena, c).is_empty()
+        && AssumptionCache::new().query(arena, c, Props::REAL) == Some(true))
+    .then_some(c)
+}
+
+/// `ln(1 + √2) = asinh(1)`.
+fn ln_one_plus_sqrt2(arena: &mut Arena) -> ExprId {
+    let two = arena.int(2);
+    let sqrt2 = arena.sqrt(two);
+    let sum = arena.add(&[arena.one, sqrt2]);
+    arena.ln(sum)
+}
+
+/// The special values of `asinh`, SymPy's `asinh.eval`: `asinh(±1) =
+/// ±ln(1 + √2)` and `asinh(i·c) = i·asin(c)` for a real constant `c` whose
+/// `asin` folds (`asinh(±i) = ±iπ/2`, `asinh(i√3/2) = iπ/3`); the identity
+/// holds on all of ℂ (`asinh z = ln(z + √(1 + z²))`, `asin z = −i·ln(iz +
+/// √(1 − z²))`).  Through `acsch(z) = asinh(1/z)` they give `acsch(±1)` and
+/// `acsch(±i) = ∓iπ/2`.  Up to 0.43 only `asinh(0)` folded.
 fn eval_asinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.zero {
         return Some(arena.zero);
     } // asinh(0) = 0
-    None
+    if inner == arena.one || inner == arena.neg_one {
+        let v = ln_one_plus_sqrt2(arena);
+        return Some(if inner == arena.one { v } else { arena.neg(v) });
+    }
+    // asinh(sinh z) = z for a real constant z (SymPy: `asinh(sinh(3))` → 3).
+    if let ExprNode::Sinh(z) = *arena.node(inner)
+        && walk::free_symbols(arena, z).is_empty()
+        && known_real(arena, z)
+    {
+        return Some(z);
+    }
+    let c = imaginary_real_cofactor(arena, inner)?;
+    let v = eval_asin(arena, c)?;
+    Some(arena.mul(&[arena.i_unit, v]))
 }
 
+/// The special values of `acosh` (SymPy's `acosh.eval` and its table):
+/// `acosh(x) = i·acos(x)` for a real `x ∈ [−1, 1]` whose `acos` folds
+/// (`acosh(0) = iπ/2`, `acosh(−1) = iπ`, `acosh(−1/2) = 2iπ/3`), and
+/// `acosh(i·c) = asinh(|c|) + sign(c)·iπ/2` for a real `c` whose `asinh`
+/// folds (`acosh(±i) = ln(1 + √2) ± iπ/2`), both on the principal branch
+/// `acosh z = ln(z + √(z + 1)·√(z − 1))` (mpmath: `acosh(0.5)` = 1.0471…j,
+/// `acosh(-2j)` = 1.4436… − 1.5707…j).  Through `asech(z) = acosh(1/z)`
+/// they give `asech(−1) = iπ`, `asech(2) = iπ/3`, `asech(±∞) = iπ/2`.  Up
+/// to 0.43 only `acosh(1)` folded, and `series(tanh(acosh(x)), x, 0, 3)`
+/// kept `tanh(acosh(0))`, a pole, in its coefficients.
 fn eval_acosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.one {
         return Some(arena.zero);
     } // acosh(1) = 0
-    None
+    // acosh(cosh z) = |z| for a real constant z (SymPy: `acosh(cosh(-2))` → 2).
+    if let ExprNode::Cosh(z) = *arena.node(inner)
+        && walk::free_symbols(arena, z).is_empty()
+        && known_real(arena, z)
+    {
+        let a = arena.abs(z);
+        return Some(eval_abs(arena, z).unwrap_or(a));
+    }
+    if known_real(arena, inner) {
+        // `acos` folds only to `qπ` with `q ∈ [0, 1]`, so `x = cos(qπ)` is
+        // in [−1, 1]; anything else is left alone.
+        let v = eval_acos(arena, inner)?;
+        let q = as_pi_multiple(arena, v)?;
+        if q.is_negative() || q > Ratio::one() {
+            return None;
+        }
+        return Some(arena.mul(&[arena.i_unit, v]));
+    }
+    let c = imaginary_real_cofactor(arena, inner)?;
+    let r = arena.as_num(c)?.clone();
+    if r.is_zero() {
+        return None;
+    }
+    let abs_c = arena.num_ratio(r.abs());
+    let s = eval_asinh(arena, abs_c)?;
+    let half = arena.rational(if r.is_positive() { 1 } else { -1 }, 2);
+    let i_half_pi = arena.mul(&[half, arena.i_unit, arena.pi]);
+    Some(arena.add(&[s, i_half_pi]))
 }
 
 fn eval_atanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -4865,7 +5136,19 @@ fn eval_atanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let half = arena.rational(if positive { 1 } else { -1 }, 2);
         return Some(arena.mul(&[half, arena.i_unit, arena.pi]));
     }
-    None
+    // atanh(tanh z) = z for a real constant z (SymPy: `atanh(tanh(1))` → 1).
+    if let ExprNode::Tanh(z) = *arena.node(inner)
+        && walk::free_symbols(arena, z).is_empty()
+        && known_real(arena, z)
+    {
+        return Some(z);
+    }
+    // atanh(i·c) = i·atan(c) on all of ℂ (SymPy's `atanh.eval`): `atanh(±i)
+    // = ±iπ/4`, `atanh(i√3) = iπ/3`, and through `acoth(z) = atanh(1/z)`,
+    // `acoth(±i) = ∓iπ/4`.  Up to 0.43 they stayed.
+    let c = imaginary_real_cofactor(arena, inner)?;
+    let v = eval_atan(arena, c)?;
+    Some(arena.mul(&[arena.i_unit, v]))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

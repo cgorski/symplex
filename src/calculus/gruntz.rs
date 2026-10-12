@@ -49,6 +49,18 @@ const MAX_WORK: u32 = 20_000;
 /// size-proportional charge.
 const SERIES_COST: u32 = 25;
 
+/// Work the failed last resorts of one top-level Gruntz invocation may
+/// spend in all ([`Budget::resort`]).
+const MAX_RESORT_WORK: u32 = 5_000;
+
+/// Largest denominator of a fractional power of `ω` that
+/// [`leadterm_last_resort`] ramifies (`ω = u^q`).
+const MAX_RAMIFICATION: i64 = 30;
+
+/// Largest order (in `u`) of a ramified expansion in
+/// [`leadterm_last_resort`].
+const MAX_RAMIFIED_ORDER: i64 = 60;
+
 /// Largest expression *tree* (nodes with multiplicity) the series-based
 /// fallbacks will expand. Nested function series substituted into each
 /// other grow exponentially; beyond this size a single `expand` can take
@@ -73,6 +85,10 @@ const MAX_TREE_SIZE: usize = 4_000;
 pub(crate) struct Budget {
     dummies: u32,
     work: u32,
+    /// Work spent by failed last resorts ([`leadterm_last_resort`]), which
+    /// is given back to `work` so that a refusal there leaves the rest of
+    /// the computation as it was; bounded by [`MAX_RESORT_WORK`].
+    resort: u32,
 }
 
 impl Budget {
@@ -80,6 +96,7 @@ impl Budget {
         Self {
             dummies: 0,
             work: 0,
+            resort: 0,
         }
     }
 
@@ -265,6 +282,153 @@ fn leadterm_by_tseries(
         operation: "gruntz::leadterm",
         reason: "the series expansion has no non-zero term within its precision".into(),
     })
+}
+
+/// Gruntz's last resort for the leading term `(c, e)` of `f ≈ c·ω^e`, once
+/// [`leadterm`] has failed: the truncated Laurent engine with the
+/// expansions a series makes beside cuts, at branch points and at infinity
+/// ([`expand_leading_last_resort`](crate::calculus::series::expand_leading_last_resort):
+/// `atan(1/ω) = π/2 − ω + …`, `ln Γ(−ω) = −ln ω − iπ + …`), and with
+/// the fractional powers of `ω` ramified: `ω = u^q` for the least common
+/// denominator `q` of their exponents, so that a Puiseux series in `ω` is
+/// a Laurent series in `u` (`(e^{ω^{1/3}} − 1)/ω = u⁻² + u⁻¹/2 + …`,
+/// leading exponent `−2/3`).  The engine tracks its precision, so a
+/// cancellation deeper than the truncation is never taken for a leading
+/// term.  Before, `k·(e^{k^{−1/3}} − 1)` and `k·(π/2 − atan k)` at `∞`
+/// were refused ("leading coefficients cancel"; SymPy: `oo`, `1`).
+///
+/// A failure gives its work back to the budget (counting it in
+/// [`Budget::resort`] instead), so a refusal here changes nothing else.
+fn leadterm_last_resort(
+    arena: &mut Arena,
+    budget: &mut Budget,
+    f: ExprId,
+    w: ExprId,
+    logw: ExprId,
+) -> Result<(ExprId, ExprId), crate::base::errors::SymplexError> {
+    let refused = || crate::base::errors::SymplexError::ComputationFailed {
+        operation: "gruntz::leadterm",
+        reason: "the last-resort series expansion found no leading term".into(),
+    };
+    if budget.resort > MAX_RESORT_WORK {
+        return Err(refused());
+    }
+    let before = budget.work;
+    let r = last_resort_series(arena, budget, f, w, logw);
+    if let Err(e) = &r {
+        tracing::debug!(f = %arena.display(f), error = %e, "gruntz::leadterm_last_resort failed");
+        let spent = budget.work.saturating_sub(before);
+        budget.resort = budget.resort.saturating_add(spent);
+        budget.work = before;
+    }
+    r.map_err(|_| refused())
+}
+
+/// The expansion of [`leadterm_last_resort`].
+fn last_resort_series(
+    arena: &mut Arena,
+    budget: &mut Budget,
+    f: ExprId,
+    w: ExprId,
+    logw: ExprId,
+) -> Result<(ExprId, ExprId), crate::base::errors::SymplexError> {
+    let f = combine_exponentials(arena, f, w);
+    budget.charge_size(arena, f)?;
+    let q = ramification_index(arena, f, w);
+    let (g, var, log_var) = if q == 1 {
+        (f, w, logw)
+    } else {
+        // `u > 0`, so that `(u^q)^{p/q} = u^p` (as `ω → 0⁺` is positive).
+        let u = fresh_positive_dummy(arena, budget);
+        let qe = arena.int(q);
+        let uq = arena.pow(u, qe);
+        let g = crate::transforms::subs::subs(arena, f, w, uq);
+        let g = crate::transforms::eval::eval(arena, g);
+        let lv = arena.div(logw, qe);
+        let lv = crate::transforms::eval::eval(arena, lv);
+        (g, u, lv)
+    };
+    // The orders of the first attempt (`ω⁴`, `ω¹⁰`), after a cheap one in
+    // `u`; a long expansion costs more of the budget.
+    let orders = if q == 1 {
+        [4, 10, 10]
+    } else {
+        [8, 4 * q, 10 * q]
+    };
+    let mut tried = 0;
+    for order in orders {
+        let order = order.min(MAX_RAMIFIED_ORDER);
+        if order <= tried {
+            continue;
+        }
+        tried = order;
+        budget.tick(SERIES_COST.saturating_mul(u32::try_from(order / 10).unwrap_or(1).max(1)))?;
+        budget.charge_size(arena, g)?;
+        // A short expansion may not reach a sub-expression's leading term
+        // (`acos(1 − u¹⁰)`): the next order decides.
+        let ts = crate::calculus::series::expand_leading_last_resort(arena, g, var, order, log_var);
+        tracing::trace!(g = %arena.display(g), q, order, ok = ts.is_ok(), "gruntz::last_resort_series");
+        let Ok(ts) = ts else {
+            continue;
+        };
+        for e in ts.shift()..ts.known() {
+            let c = ts.coefficient(arena, e);
+            tracing::trace!(e, c = %arena.display(c), "gruntz::last_resort_series coefficient");
+            if arena.is_zero_structural(c) {
+                continue;
+            }
+            let c = settle_constant(arena, c);
+            if arena.is_zero_structural(c) || is_rational_zero(arena, c) {
+                continue;
+            }
+            if crate::base::walk::contains(arena, c, var) || contains_singular_atom(arena, c) {
+                break;
+            }
+            tracing::debug!(f = %arena.display(f), c = %arena.display(c), e, q, "gruntz::leadterm_last_resort");
+            return Ok((c, arena.rational(e, q)));
+        }
+    }
+    Err(crate::base::errors::SymplexError::ComputationFailed {
+        operation: "gruntz::leadterm",
+        reason: "the series expansion has no non-zero term within its precision".into(),
+    })
+}
+
+/// The least common denominator of the fractional exponents of the powers
+/// in `f` whose base depends on `w`, times 2 when the series of a function
+/// of `f` at a branch point has half-integer powers of a `w`-dependent
+/// argument (`acos(−1 + s) = π − √(2s) + …`, `acosh`, `asin`, `W` at
+/// `−1/e`, which the engine expands only when `s` has an even valuation);
+/// `1` when there are none, or when it exceeds [`MAX_RAMIFICATION`].
+fn ramification_index(arena: &Arena, f: ExprId, w: ExprId) -> i64 {
+    let mut q = 1i64;
+    for id in crate::base::walk::post_order_ids(arena, f) {
+        let d = match *arena.node(id) {
+            ExprNode::Asin(a) | ExprNode::Acos(a) | ExprNode::Acosh(a) | ExprNode::LambertW(a)
+                if crate::base::walk::contains(arena, a, w) =>
+            {
+                2
+            }
+            ExprNode::Pow(b, g) => {
+                let Some(r) = arena.as_num(g) else {
+                    continue;
+                };
+                if r.is_integer() || !crate::base::walk::contains(arena, b, w) {
+                    continue;
+                }
+                let Some(d) = r.denom().to_i64() else {
+                    return 1;
+                };
+                d
+            }
+            _ => continue,
+        };
+        q = num_integer::Integer::lcm(&q, &d);
+        if q > MAX_RAMIFICATION {
+            return 1;
+        }
+    }
+    q
 }
 
 /// `e^a·e^b → e^{a+b}` in every product of `f` with two or more
@@ -2658,16 +2822,22 @@ fn mrv_leadterm(
     let logw_display = arena.display(logw).to_string();
     tracing::debug!(rewritten_f = %f_display, w = %w_display, logw = %logw_display, "gruntz::mrv_leadterm: Step 4 — extracting leading term from rewritten expression");
 
-    // Step 4: Extract leading term
+    // Step 4: Extract leading term (by the expansions of a series as a last
+    // resort, see `leadterm_last_resort`).
     let (c0, e0) = match leadterm(arena, f, w, logw, x, depth + 1, budget) {
         Ok(r) => r,
-        Err(err) if limit_only && !is_budget_error(&err) => {
-            match vanishes_to_positive_order(arena, budget, f, w, logw) {
+        Err(err) if is_budget_error(&err) => return Err(err),
+        Err(err) => {
+            let vanishes = if limit_only {
+                vanishes_to_positive_order(arena, budget, f, w, logw)
+            } else {
+                None
+            };
+            match vanishes {
                 Some(k) => (arena.zero(), arena.int(k)),
-                None => return Err(err),
+                None => leadterm_last_resort(arena, budget, f, w, logw).map_err(|_| err)?,
             }
         }
-        Err(err) => return Err(err),
     };
 
     let c0_display = arena.display(c0).to_string();
@@ -2682,13 +2852,32 @@ fn mrv_leadterm(
     Ok((c0, e0))
 }
 
-/// Compute `lim(x→∞) e` using the Gruntz algorithm.
+/// Compute `lim(x→∞) e` using the Gruntz algorithm: a finite value or
+/// `±∞` (see [`limitinf_directed`] for the limit as a value).
 pub(crate) fn limitinf(
     arena: &mut Arena,
     e: ExprId,
     x: ExprId,
     depth: usize,
     budget: &mut Budget,
+) -> Result<ExprId, crate::base::errors::SymplexError> {
+    limitinf_directed(arena, e, x, depth, budget, false)
+}
+
+/// [`limitinf`]; with `directed` (the limit itself, not a step of the
+/// algorithm) an infinite limit whose leading coefficient is not real is
+/// the directed infinity of [`directed_infinity`] (`d·∞`, or `±i·∞`),
+/// where it was refused ("cannot determine the sign of 1 + I" for
+/// `x + i·x`).  The steps of the algorithm (comparisons, the limits of
+/// exponents and arguments) keep asking for finite or real infinite
+/// values: `e^{(1 + i)x}` has no limit.
+fn limitinf_directed(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+    directed: bool,
 ) -> Result<ExprId, crate::base::errors::SymplexError> {
     if depth > MAX_DEPTH {
         tracing::warn!(depth, "gruntz::limitinf: max recursion depth exceeded");
@@ -2780,7 +2969,13 @@ pub(crate) fn limitinf(
             Ok(arena.zero())
         }
         s if s < 0 => {
-            let c0_sign = sign_at_inf(arena, c0, x, depth + 1, budget)?;
+            let c0_sign = match sign_at_inf(arena, c0, x, depth + 1, budget) {
+                Ok(s) => s,
+                Err(err) if directed && !is_budget_error(&err) => {
+                    return directed_infinity(arena, c0, x, depth + 1, budget).ok_or(err);
+                }
+                Err(err) => return Err(err),
+            };
             tracing::info!(c0_sign, "gruntz::limitinf: e0 < 0 → limit is ±∞");
             if c0_sign > 0 {
                 Ok(arena.infinity())
@@ -2795,9 +2990,62 @@ pub(crate) fn limitinf(
         }
         _ => {
             tracing::debug!("gruntz::limitinf: e0 = 0 → recursing on coefficient c0");
-            limitinf(arena, c0, x, depth + 1, budget)
+            limitinf_directed(arena, c0, x, depth + 1, budget, directed)
         }
     }
+}
+
+/// The infinite limit of `f ≈ c₀·ω^{e₀}` (`e₀ < 0`, `ω → 0⁺`) for a
+/// leading coefficient `c₀` whose sign [`sign_at_inf`] cannot give because
+/// it is not real: `f/|f| → d/|d|` for the constant `d` reached by
+/// following leading coefficients (`c₀ ≈ c₁·ω₁^{e₁}`, `ω₁ > 0`, …), as
+/// `sign_at_inf` does for a real `c₀`.  The value is written as limits are
+/// (see `limit.rs`): `±∞` and `±i·∞` on the axes (the caller completes
+/// the perpendicular component), `d·∞` off them (`x + i·x → (1 + i)·∞`,
+/// `e^{x − i} − eˣ → (e^{−i} − 1)·∞`; SymPy: `oo*sign(1 + I)`).  `None`
+/// when `d` is not a constant whose real and imaginary parts have certified
+/// signs, not both zero.
+fn directed_infinity(
+    arena: &mut Arena,
+    c0: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Option<ExprId> {
+    let mut d = crate::transforms::eval::eval(arena, c0);
+    let mut depth = depth;
+    while crate::base::walk::contains(arena, d, x) {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        let (c, _) = mrv_leadterm(arena, d, x, depth + 1, budget, false).ok()?;
+        if contains_foreign_dummy(arena, c, x) || arena.is_zero_structural(c) {
+            return None;
+        }
+        d = crate::transforms::eval::eval(arena, c);
+        depth += 1;
+    }
+    if !crate::base::walk::free_symbols(arena, d).is_empty()
+        || crate::base::walk::has_unevaluated(arena, d)
+        || contains_singular_atom(arena, d)
+    {
+        return None;
+    }
+    let signs = crate::calculus::limit::direction_signs(arena, d)?;
+    let oo = arena.infinity();
+    let i = arena.i_unit();
+    let v = match (signs.re, signs.im) {
+        (0, 0) => return None,
+        (1, 0) => oo,
+        (_, 0) => arena.neg_infinity(),
+        (0, s) => {
+            let unit = if s > 0 { i } else { arena.neg(i) };
+            arena.mul(&[unit, oo])
+        }
+        _ => arena.mul(&[d, oo]),
+    };
+    tracing::debug!(direction = %arena.display(d), value = %arena.display(v), "gruntz::directed_infinity");
+    Some(crate::transforms::eval::eval(arena, v))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3246,6 +3494,15 @@ fn rewrite_tractable_pass(
             ExprNode::Ei(u) | ExprNode::Li(u) => match limitinf(arena, u, x, depth + 1, budget) {
                 Ok(l) if l == arena.infinity() => {
                     asymptotic_rewrite(arena, &node, u, true).unwrap_or(rebuilt)
+                }
+                // `li u = Ei(ln u)` (principal branches; on the cut `(−∞, 0)`
+                // both take the values from above) at the branch point `0`,
+                // where `ln u → −∞` and the rule for `Ei` applies (in the next
+                // pass): `li(−x) → iπ` at `0⁺`, `li x → 0`.
+                Ok(l) if matches!(node, ExprNode::Li(_)) && arena.is_zero_structural(l) => {
+                    continued = true;
+                    let lu = arena.ln(u);
+                    arena.ei(lu)
                 }
                 Ok(l) if l == arena.neg_infinity() => {
                     if eventually_real(arena, u, x, depth + 1, budget) {
@@ -4066,7 +4323,9 @@ pub(crate) fn continue_real_on_cut_at_inf(
 /// `atan`, `asinh`, `|·|`, `sign` of real arguments; `b^n` for an integer
 /// `n`, `b^g` and `ln b` for an eventually positive real `b`; `asin`, `acos`,
 /// `atanh` of a real `u` with `1 − u²` eventually positive, `acosh u` with
-/// `u − 1` eventually positive.  Anything else is not known to be real.
+/// `u − 1` eventually positive; `Γ`, `ψ`, `x!`, `ζ`, `Si`, `Ei` of a real
+/// argument, `ln Γ`, `Ci`, `li` of an eventually positive one.  Anything
+/// else is not known to be real.
 ///
 /// The sign-based rewrites of [`rewrite_tractable`] are valid for real
 /// arguments only.
@@ -4131,6 +4390,21 @@ fn eventually_real(
                     let d = arena.sub(u, one);
                     matches!(sign_at_inf(arena, d, x, depth + 1, budget), Ok(1))
                 }
+            }
+            // Real on the reals: `Γ`, `ψ`, `x!`, `ζ`, `Si`, and `Ei` (whose
+            // principal value on its cut, the negative reals, is the mean of
+            // its two sides); on the positive reals: `ln Γ`, `Ci`, and `li`
+            // (on `(0, 1)` also the mean of its sides).  Before, `li(1 + x)`
+            // at `0⁻` (real, `−∞`) was refused: the imaginary part of its
+            // infinite limit was not determined.
+            ExprNode::Gamma(a)
+            | ExprNode::Digamma(a)
+            | ExprNode::Factorial(a)
+            | ExprNode::Zeta(a)
+            | ExprNode::Si(a)
+            | ExprNode::Ei(a) => r(a),
+            ExprNode::LogGamma(a) | ExprNode::Ci(a) | ExprNode::Li(a) => {
+                r(a) && matches!(sign_at_inf(arena, a, x, depth + 1, budget), Ok(1))
             }
             _ => false,
         };
@@ -4238,7 +4512,7 @@ pub(crate) fn limit_pos_inf(
     x: ExprId,
 ) -> Result<ExprId, crate::base::errors::SymplexError> {
     let mut budget = Budget::new();
-    let r = limitinf(arena, e, x, 0, &mut budget)?;
+    let r = limitinf_directed(arena, e, x, 0, &mut budget, true)?;
     let r = validate_result(arena, r, x)?;
     // `e^{½ ln 2 + ½ ln π}` (from Stirling's constant) is `√2·√π`.
     Ok(simplify_exp_log(arena, r))
@@ -4288,7 +4562,7 @@ fn gruntz_with_budget(
         let x = fresh_positive_dummy(arena, budget);
         let e_sub = crate::transforms::subs::subs(arena, e, z, x);
         let e_sub = crate::transforms::eval::eval(arena, e_sub);
-        let r = limitinf(arena, e_sub, x, 0, budget)?;
+        let r = limitinf_directed(arena, e_sub, x, 0, budget, true)?;
         let r = validate_result(arena, r, x)?;
         let r = simplify_exp_log(arena, r);
         return validate_result(arena, r, z);
@@ -4299,7 +4573,7 @@ fn gruntz_with_budget(
         let x = fresh_positive_dummy(arena, budget);
         let neg_x = arena.neg(x);
         let e_sub = crate::transforms::subs::subs(arena, e, z, neg_x);
-        let r = limitinf(arena, e_sub, x, 0, budget)?;
+        let r = limitinf_directed(arena, e_sub, x, 0, budget, true)?;
         let r = validate_result(arena, r, x)?;
         let r = simplify_exp_log(arena, r);
         return validate_result(arena, r, z);
@@ -4325,7 +4599,7 @@ fn gruntz_with_budget(
 
     let simplified_display = arena.display(e_simplified).to_string();
     tracing::debug!(simplified = %simplified_display, "gruntz: finite-point expression simplified, calling limitinf");
-    let r = limitinf(arena, e_simplified, x, 0, budget)?;
+    let r = limitinf_directed(arena, e_simplified, x, 0, budget, true)?;
     let r = validate_result(arena, r, x)?;
     let r = simplify_exp_log(arena, r);
     validate_result(arena, r, z)
@@ -4758,6 +5032,7 @@ mod tests {
         let mut budget = Budget {
             dummies: 0,
             work: MAX_WORK,
+            resort: 0,
         };
         let err = gruntz_with_budget(&mut a, e, x, inf, &mut budget).unwrap_err();
         assert!(err.to_string().contains("budget"), "{err}");

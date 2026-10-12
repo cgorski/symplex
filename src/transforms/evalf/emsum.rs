@@ -40,6 +40,17 @@
 //! error estimate from the size of the last correction; here the formula is
 //! applied to the powers `x^(−j)` only, where its remainder has a proven bound,
 //! and every step is bounded.
+//!
+//! An infinite product `∏_{k ≥ a} f(k)` of a rational `f = A/B` with `deg A =
+//! deg B`, equal leading coefficients and `deg(A − B) ≤ deg B − 2` (so that
+//! `Σ |f(k) − 1|` converges) is the exact product of its factors below `N`
+//! times `exp(Σ_{k ≥ N} ln f(k))`.  Beyond the roots of `A` and `B`, `ln f`
+//! has the Laurent expansion `Σ_{j ≥ 2} cⱼ x^(−j)` obtained from that of the
+//! rational logarithmic derivative `g = f′/f = (A′B − AB′)/(AB) = Σ eⱼ
+//! x^(−j)`, `cⱼ = −eⱼ₊₁/j`, and `Σ_{k ≥ N} ln f(k) = Σⱼ cⱼ·ζ(j, N)` as above;
+//! Cauchy's estimate for `g` gives `|cⱼ| ≤ max_{|x|=R} |g|·R^(j+1)/j`, the
+//! truncation bound above with an extra factor `R`.  (SymPy's `Product`
+//! evaluates `exp(Sum(log(f)))` the same way, by its Euler–Maclaurin sum.)
 
 use astro_float::{BigFloat, RoundingMode};
 use num_bigint::BigInt;
@@ -342,6 +353,243 @@ fn sum_rational(
     Ok(((value, BigFloat::new(prec)), Bound::real(err.exponent())))
 }
 
+/// A summand `C·(−1)^(εk)·(a·k + b)^(−s)`: the `k`-free factors `C`, the
+/// sign and alternation, rationals `a > 0` and `b`, and a rational `s` that
+/// is not an integer (an integer power is a rational summand).
+pub(super) struct PowerSummand {
+    pub(super) consts: Vec<ExprId>,
+    negate: bool,
+    alt: bool,
+    a: Q,
+    b: Q,
+    s: Q,
+}
+
+/// The summand `body` as a [`PowerSummand`] (`None` when it is not one, or
+/// the series diverges: `s ≤ 1`, or `s ≤ 0` when it alternates).
+pub(super) fn power_summand(arena: &Arena, body: ExprId, var: ExprId) -> Option<PowerSummand> {
+    let mut root = body;
+    let mut negate = false;
+    while let ExprNode::Neg(c) = arena.node(root) {
+        negate = !negate;
+        root = *c;
+    }
+    let factors: Vec<ExprId> = match arena.node(root) {
+        ExprNode::Mul(children) => children.to_vec(),
+        _ => vec![root],
+    };
+    let mut consts = Vec::new();
+    let mut alt = false;
+    let mut power: Option<(Q, Q, Q)> = None;
+    for f in factors {
+        if !walk::post_order_ids(arena, f).contains(&var) {
+            consts.push(f);
+            continue;
+        }
+        let ExprNode::Pow(base, e) = arena.node(f) else {
+            return None;
+        };
+        if arena.as_num(*base).is_some_and(|q| *q == -Q::one()) {
+            // (−1)^(m·k + c), integers m, c.
+            let ep = crate::poly::polybridge::expr_to_poly(arena, *e, var)?;
+            if ep.degree()? > 1 || ep.coeffs().iter().any(|c| !c.is_integer()) {
+                return None;
+            }
+            alt ^= ep.coeff(1).to_integer().is_odd();
+            negate ^= ep.coeff(0).to_integer().is_odd();
+            continue;
+        }
+        let r = arena.as_num(*e)?;
+        if r.is_integer() || power.is_some() {
+            return None;
+        }
+        let bp = crate::poly::polybridge::expr_to_poly(arena, *base, var)?;
+        if bp.degree()? != 1 || !bp.coeff(1).is_positive() {
+            return None;
+        }
+        power = Some((bp.coeff(1), bp.coeff(0), -r.clone()));
+    }
+    let (a, b, s) = power?;
+    let converges = if alt { s.is_positive() } else { s > Q::one() };
+    converges.then_some(PowerSummand {
+        consts,
+        negate,
+        alt,
+        a,
+        b,
+        s,
+    })
+}
+
+/// `Σ_{k ≥ lo}` of a [`PowerSummand`] whose constant factors have the values
+/// `consts`: with `x = lo + b/a > 0`,
+///
+/// ```text
+/// Σ (a k + b)^(−s) = a^(−s)·ζ(s, x),
+/// Σ (−1)^k (a k + b)^(−s) = (−1)^lo·a^(−s)·2^(−s)·(ζ(s, x/2) − ζ(s, (x + 1)/2))
+/// ```
+///
+/// (DLMF 25.11.1, and the alternating sum split by parity), the Hurwitz
+/// zeta function by Euler–Maclaurin (`polylog::hurwitz_real`), whose error
+/// is a few units of `2^(largest − wp)` per term summed.  Before 0.44 such
+/// sums, which `eval` leaves as they are (`Σ k^(−5/2)`, `Σ (−1)^k/√(k + 1)`),
+/// were refused.
+pub(super) fn power_sum(
+    p: &PowerSummand,
+    consts: &[(Complex, Bound)],
+    lo: &BigInt,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut astro_float::Consts,
+) -> Result<(Complex, Bound), SymplexError> {
+    let x = Q::from_integer(lo.clone()) + &p.b / &p.a;
+    if !x.is_positive() {
+        return Err(unevaluable(
+            "infinite sum: the power's base vanishes or is negative in the range".into(),
+        ));
+    }
+    let sf = crate::base::numeric::ratio_to_f64(&p.s).unwrap_or(f64::INFINITY);
+    if sf.abs() > 1e5 {
+        return Err(unevaluable(
+            "infinite sum: a power beyond 10^5 is not summed numerically".into(),
+        ));
+    }
+    let wp = prec + 64 + super::magnitude_bits(sf.abs() + 1.0);
+    let s = ratio_to_bigfloat(&p.s, wp, rm);
+    let (sum, largest) = if p.alt {
+        let half = Q::new(BigInt::one(), BigInt::from(2));
+        let x1 = ratio_to_bigfloat(&(&x * &half), wp, rm);
+        let x2 = ratio_to_bigfloat(&((&x + Q::one()) * &half), wp, rm);
+        let (h1, l1) = super::polylog::hurwitz_real(&s, &x1, wp, rm, cc)?;
+        let (h2, l2) = super::polylog::hurwitz_real(&s, &x2, wp, rm, cc)?;
+        let two_s = super::bf_pow(&BigFloat::from_i32(2, 64), &s.neg(), wp, rm, cc);
+        let v = h1.sub(&h2, wp, rm).mul(&two_s, wp, rm);
+        let v = if lo.is_odd() { v.neg() } else { v };
+        (v, l1.max(l2) - sf)
+    } else {
+        let xb = ratio_to_bigfloat(&x, wp, rm);
+        super::polylog::hurwitz_real(&s, &xb, wp, rm, cc)?
+    };
+    let scale = super::bf_pow(&ratio_to_bigfloat(&p.a, wp, rm), &s.neg(), wp, rm, cc);
+    let ls = accuracy::part_lg(&scale);
+    let value = sum.mul(&scale, wp, rm);
+    let value = if p.negate { value.neg() } else { value };
+    // Up to `5·wp + 3|s| + 100` terms, each rounded with a relative error of
+    // `(|s|·ln(x + N) + 4)·2^(−wp)`; a^(−s) and the products a few more.
+    let terms = 5.0 * wp as f64 + 3.0 * sf.abs() + 100.0;
+    let xf = crate::base::numeric::ratio_to_f64(&x).unwrap_or(f64::INFINITY);
+    let per_term = sf.abs() * (xf + terms).ln() + 4.0;
+    let e = largest + ls - wp as f64 + 8.0 + (terms * per_term).log2();
+    if !e.is_finite() {
+        return Ok(((value, BigFloat::new(prec)), Bound::UNKNOWN));
+    }
+    let mut parts: Vec<(&Complex, Bound)> = consts.iter().map(|(v, b)| (v, *b)).collect();
+    let summed = (value, BigFloat::new(prec));
+    parts.push((&summed, Bound::real(e)));
+    Ok(accuracy::mul_with_bound(&parts, prec, rm))
+}
+
+/// `∏_{k ≥ lo} body` when the factor is a rational function of the index
+/// tending to 1 like `k^(−2)` or faster (see the module documentation):
+/// `None` when it is not rational; [`SymplexError::Divergent`] when the
+/// product does not converge (to a nonzero limit), [`SymplexError::Unevaluable`]
+/// for a pole in the range.  Before 0.44 every infinite product was refused.
+pub(super) fn rational_product(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: &BigInt,
+    prec: usize,
+) -> Option<Result<(Complex, Bound), SymplexError>> {
+    let r = rational_summand(arena, body, var)?;
+    if r.alt {
+        return None;
+    }
+    Some(product_rational(arena, body, &r, lo, prec))
+}
+
+fn product_rational(
+    arena: &Arena,
+    body: ExprId,
+    r: &Rational,
+    lo: &BigInt,
+    prec: usize,
+) -> Result<(Complex, Bound), SymplexError> {
+    let wp = prec + 64;
+    let rm = RoundingMode::ToEven;
+    let diverges = |why: &str| SymplexError::Divergent {
+        operation: "evalf",
+        reason: format!(
+            "the infinite product of `{}` diverges: {why}",
+            arena.display(body)
+        ),
+    };
+    let (a, b) = (&r.num, &r.den);
+    if a.is_zero() {
+        return Ok(((BigFloat::new(prec), BigFloat::new(prec)), Bound::EXACT));
+    }
+    let (da, db) = (a.degree().unwrap_or(0), b.degree().unwrap_or(0));
+    if da != db || a.coeff(da) != b.coeff(db) {
+        return Err(diverges("its factors do not tend to 1"));
+    }
+    let diff = a.sub(b);
+    if diff.is_zero() {
+        // Every factor is 1 (A = B: no pole either).
+        return Ok((
+            (BigFloat::from_i32(1, prec), BigFloat::new(prec)),
+            Bound::EXACT,
+        ));
+    }
+    if diff.degree().unwrap_or(0) + 2 > db {
+        return Err(diverges("its factors tend to 1 only like 1 + c/k"));
+    }
+    // g = f′/f = (A′B − AB′)/(AB), and N beyond the roots of A and B.
+    let gn = a.derivative().mul(b).sub(&a.mul(&b.derivative()));
+    let gd = a.mul(b);
+    let n = cut_point(&gd, lo, wp)?;
+    // The factors below N exactly.
+    let (ai, bi) = integer_coefficients(a, b);
+    let (mut num, mut den) = (BigInt::one(), BigInt::one());
+    let mut k = lo.clone();
+    while k < n {
+        let bk = eval_int(&bi, &k);
+        if bk.is_zero() {
+            return Err(unevaluable(format!(
+                "infinite product: the factor has a pole at k = {k}"
+            )));
+        }
+        let ak = eval_int(&ai, &k);
+        if ak.is_zero() {
+            // A zero factor; the rest converges.
+            return Ok(((BigFloat::new(prec), BigFloat::new(prec)), Bound::EXACT));
+        }
+        num *= ak;
+        den *= bk;
+        k += 1;
+    }
+    let head = ratio_to_bigfloat(&Q::new(num, den), wp, rm);
+    let (tail, tail_err) = if gn.is_zero() {
+        (BigFloat::new(wp), ErrSum::new())
+    } else {
+        zeta_tail_with(&gn, &gd, &n, wp, true)?
+    };
+    // head·e^tail: the head and e^tail round once each (and the product);
+    // an error δ of the tail moves e^tail by at most e^δ − 1 ≤ 2δ relative.
+    let mut cc = astro_float::Consts::new()
+        .map_err(|e| unevaluable(format!("astro-float constants: {e:?}")))?;
+    let value = head.mul(&tail.exp(wp, rm, &mut cc), wp, rm);
+    let delta = tail_err
+        .0
+        .mul(&BigFloat::from_i32(2, 64), 64, RoundingMode::Up);
+    let mut rel = ErrSum::new();
+    rel.add(&delta);
+    rel.add(&pow2(3 - wp as i64));
+    let mut err = ErrSum::new();
+    err.add(&value.abs().mul(&rel.0, 64, RoundingMode::Up));
+    tracing::debug!(err = err.exponent(), "evalf: rational infinite product");
+    Ok(((value, BigFloat::new(prec)), Bound::real(err.exponent())))
+}
+
 /// An integer `R ≥ 4` with `|bᵢ| ≤ |bₙ|·(R/4)^(n−i)` for the integer
 /// coefficients `b` of degree `n`: every root has modulus below `R/2`
 /// (Fujiwara), and on `|x| = R`, `|B(x)| ≥ ⅔·|bₙ|·Rⁿ`.
@@ -497,15 +745,31 @@ fn zeta_tail(
     n: &BigInt,
     wp: usize,
 ) -> Result<(BigFloat, ErrSum), SymplexError> {
+    zeta_tail_with(num, den, n, wp, false)
+}
+
+/// [`zeta_tail`] of `A/B`, or (`log`) of the function `h` with `h′ = A/B`
+/// and `h(∞) = 0` (`ln f` for the logarithmic derivative `A/B` of a
+/// rational `f → 1`): the coefficient of `x^(−j)` in `h` is `−eⱼ₊₁/j` for
+/// the coefficients `e` of `A/B`, which must decay like `x^(−3)`.
+fn zeta_tail_with(
+    num: &Poly,
+    den: &Poly,
+    n: &BigInt,
+    wp: usize,
+    log: bool,
+) -> Result<(BigFloat, ErrSum), SymplexError> {
     let rm = RoundingMode::ToEven;
     let (a, b) = integer_coefficients(num, den);
-    if a.is_empty() || b.len() < a.len() + 2 {
+    let decay = if log { 3 } else { 2 };
+    if a.is_empty() || b.len() < a.len() + decay {
         return Err(unevaluable(
             "infinite sum: the tail's term does not decay like k^(−2)".into(),
         ));
     }
     let (deg_a, deg_b) = (a.len() - 1, b.len() - 1);
-    let d = deg_b - deg_a;
+    // The first power of the expansion summed: x^(−d).
+    let d = deg_b - deg_a - usize::from(log);
     let r = root_radius(&b);
     // max_{|x| = R} |A/B| ≤ Σ|αᵢ|Rⁱ / (⅔·|bₙ|·Rⁿ).
     let a_plus: BigInt = a
@@ -515,8 +779,10 @@ fn zeta_tail(
         .sum();
     let b_minus = b[deg_b].abs() * r.pow(u32::try_from(deg_b).unwrap_or(u32::MAX)) * 2;
     let lg = |x: &BigInt| x.bits() as f64; // ≥ log₂ x ≥ bits − 1 for x ≥ 1
-    // log₂(3·A⁺/(2|bₙ|Rⁿ)) = log₂(3·A⁺/b_minus) with b_minus = 2|bₙ|Rⁿ·2/2.
-    let log_max_f = lg(&a_plus) - (lg(&b_minus) - 1.0) + 3f64.log2();
+    // log₂(3·A⁺/(2|bₙ|Rⁿ)) = log₂(3·A⁺/b_minus) with b_minus = 2|bₙ|Rⁿ·2/2;
+    // for `h`, |cⱼ| ≤ max|A/B|·R^(j+1)/j: one more factor R.
+    let log_max_f =
+        lg(&a_plus) - (lg(&b_minus) - 1.0) + 3f64.log2() + if log { lg(&r) } else { 0.0 };
     let log_ratio = lg(&r) - (lg(n) - 1.0); // ≥ log₂(R/N)
     let nf = n.to_f64().unwrap_or(f64::INFINITY);
 
@@ -621,8 +887,12 @@ fn zeta_tail(
                     "infinite sum: the Euler–Maclaurin series did not converge".into(),
                 ));
             };
-            let cj =
+            let mut cj =
                 bigint_to_bigfloat(ci, wp).div(&bigint_to_bigfloat(&beta0_pow[i + 1], wp), wp, rm);
+            if log {
+                // −eⱼ₊₁/j: one more rounding, which the count below covers.
+                cj = cj.div(&BigFloat::from_u64(j as u64, 64), wp, rm).neg();
+            }
             let term = cj.mul(&zeta, wp, rm);
             total = total.add(&term, wp, rm);
             // |cⱼ|·(remainder + roundings of ζ) + rounding of cⱼ·ζ and of the

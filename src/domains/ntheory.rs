@@ -4057,9 +4057,11 @@ pub fn lucas(n: impl Into<BigInt>) -> BigInt {
 
 /// Bernoulli number `Bₙ` as an exact rational, with the convention
 /// `B₁ = −1/2`.  Returns `None` for negative `n`, and — a work bound —
-/// for an even `n > 4096`: the tangent-number algorithm behind it costs
-/// `O(n³)` bit operations (about 2 s at the bound; up to 0.39 the rational
-/// recurrence took 9 s for `B₁₀₀₀` and minutes beyond).
+/// for an even `n > 30000`.  Below `B₅₁₂` the numbers come from the
+/// tangent numbers (cached); from there, each from `2·n!·ζ(n)/(2π)ⁿ` to
+/// the precision that fixes its numerator, with the denominator of von
+/// Staudt–Clausen, as mpmath's `bernfrac` computes it.  Up to 0.43 an
+/// `n > 4096` was refused (the table costs `O(n³)` bit operations).
 ///
 /// # Examples
 ///
@@ -4084,17 +4086,19 @@ pub fn bernoulli(n: impl Into<BigInt>) -> Option<Q> {
     if n > MAX_BERNOULLI_EULER_N && n.is_multiple_of(2) {
         return None;
     }
-    Some(crate::base::bernoulli::bernoulli(n))
+    Some(crate::base::bernoulli::bernoulli_single(n))
 }
 
 /// Largest even index for which [`bernoulli`] and [`euler_number`]
-/// compute the value.
-const MAX_BERNOULLI_EULER_N: usize = 1 << 12;
+/// compute the value (a numerator of about 330,000 bits; see
+/// `v35_evalf_sums` for the times).
+const MAX_BERNOULLI_EULER_N: usize = 30_000;
 
 /// Euler (secant) number `Eₙ`: `E₀ = 1, E₂ = −1, E₄ = 5, E₆ = −61, …`;
 /// odd indices are zero.  Returns `None` for negative `n`, and — a work
-/// bound, as for [`bernoulli`] — for an even `n > 4096` (about 2 s at
-/// the bound).
+/// bound, as for [`bernoulli`] — for an even `n > 30000`.  Beyond `E₅₁₂`
+/// the value is `2·n!·(2/π)^(n+1)·β(n + 1)` (Dirichlet's `β`) to the
+/// precision that fixes the integer; up to 0.43 an `n > 4096` was refused.
 ///
 /// # Examples
 ///
@@ -4122,6 +4126,9 @@ pub fn euler_number(n: impl Into<BigInt>) -> Option<BigInt> {
     }
     // Up to 0.39 this summed `−Σ C(2m, 2k)·E₂ₖ` with every binomial built
     // from scratch (`euler_number(1000)`: 1.5 s).
+    if n > crate::base::bernoulli::EXACT_EULER_N {
+        return crate::base::bernoulli::euler_by_beta(n);
+    }
     Some(crate::base::combinatorics::euler_even(n / 2))
 }
 

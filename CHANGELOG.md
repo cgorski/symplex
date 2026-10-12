@@ -8,8 +8,78 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Added
+
+- **Eigenvalues of symbolic 3×3 and 4×4 matrices in radicals** (SymPy's
+  `roots_cubic`): an irreducible symbolic cubic characteristic polynomial
+  is solved by Cardano's formulas (`[[2, k+1, k−1], [2, −k−3, k+1], [−k−3,
+  k−1, 2]]` with `k > 0` was refused), and so are the quartics that need
+  only square roots and the cubic; eigenvectors are columns of `adj(λI −
+  A)`; `diagonalize`, `jordan_form`, `matrix_exp`, `matrix_pow_symbolic`,
+  `singular_values`, `condition_number` and `StateSpace`/`TransferFunction`
+  `poles` follow.  The general symbolic quartic stays refused (its
+  Ferrari radicals would not evaluate where the roots are complex).
+  Hunter (1,400 matrices, 56,053 operations): refusals 1,922 → 952, hangs
+  30 → 0, wrong 0.
+- **ODEs refuse far less** (3,200 equations, residuals verified
+  numerically, SymPy as oracle): refusals 544 → 220, hangs 2 → 0.
+  Characteristic polynomials with irreducible factors of degree ≥ 3 get
+  Cardano's radicals or a real `RootOf` system (`y‴ + y″ + 2y = 0` was
+  refused), with exact initial-value fits; implicit solutions are solved
+  for `y` (`y′ = y² − 1`, `y′·y″ = 1`); new methods: `y′ = F(ax + by + c)`
+  (`y′ = (y − x)²` was refused), linear coefficients, reduction of order ≥
+  3, solving for the highest derivative, Riccati equations with rational
+  particular solutions (SymPy's `1st_rational_riccati`, after Vo), formal
+  integrals for linear equations; real bases for declared-positive
+  parameters (`y″ + a·y = 0`).
+- **`evalf` of sums, products and the zeta/Bernoulli family**: infinite
+  sums of a hypergeometric or exponential term times factors of
+  polynomial growth are summed against a dominating series with a proven
+  bound (`Poisson(7/2).entropy()` = 2.015172522512972; it was refused, as
+  were negative-binomial entropies); infinite products of rational
+  factors and of `1 + a(k)` evaluate (every infinite product was
+  refused); sums of non-integer powers of a linear term are Hurwitz zeta
+  values; `euler_number(s)` off the integers (`euler(1/2)` =
+  0.550359…); `ntheory::bernoulli` and `euler_number` up to `n = 30000` by
+  the zeta method (mpmath's `bernfrac`; `B₄₀₉₆` 44 s → 0.14 s).  Hunter:
+  refusals 1,672 → 234, wrong digits 3 → 0.
+- **Limits**: leading terms that are fractional-power series in Gruntz's
+  comparison variable (`k·(e^{k^{−1/3}} − 1) → ∞`, `k·(π/2 − atan k) → 1`,
+  `(W(x − 1/e) + 1)/√x → √(2e)`; SymPy gives `∞` for the last); complex
+  leading coefficients give directed infinities (`x + i·x → (1 + i)·∞`,
+  `e^{x−i} − eˣ → (e^{−i} − 1)·∞`); one-sided values at poles and cuts
+  (`ln Γ(x)` at `0⁻` → `∞ − iπ`, `li(1 + x)` at `0⁻` → `−∞`); `series`
+  expands `ln Γ` at its poles and `E₁` at 0.  Hunter (5,000 limits):
+  wrong 59 → 0, refusals 1,633 → 69.
+- **Exact values** of the inverse trigonometric and hyperbolic functions
+  at 0, ±1, ±i and the infinities (`acosh(0) = iπ/2`, `asinh(1) = ln(1 +
+  √2)`, `asech(i∞) = −iπ/2`); `exp(k·ln z) = z^k` for constant `z`
+  (`exp(2·ln 10) = 100`); `ln(e^w)` moved into the principal strip; `ln`
+  of negative real constants (`ln(−e) = 1 + iπ`); non-negative factors
+  leave radicals (`√(4b²) = 2|b|` for real `b`); `subs` into the quotient
+  forms of `cot`/`coth`/`acot`/`asech`/… at infinite or zero points
+  (`coth(x)` at `x = ∞` was `nan`).
+
 ### Fixed
 
+- **Wrong values** found by these hunts: `li(x)` at `0⁻` was `0` (it is
+  `iπ`; SymPy gives 0 too) and `E₁(x)` at 0 was the pole value
+  `expint(1, 0)`; `asech` at the infinities took the wrong side of the cut
+  of `acosh` (23 hunter cases); `zeta(s)` next to a trivial zero at an
+  exactly representable argument was wrong from about the 33rd of 40
+  digits (`zeta(−2 − 2⁻¹⁵⁰)`); `y′ = 1 + sin y` returned the non-solutions
+  `y = ±π`; odd-root Bernoulli equations missed their negative real
+  family; a cubic factor of a 4×4 characteristic polynomial dropped its
+  roots from `eigenvals`.
+- `eval`'s realness test for constants accepted a value whose imaginary
+  part lay below the relative precision of the whole (it read a certified
+  value with a zero imaginary part as real): with `ln` of negative
+  constants folding, `ln(−1 − i·(e^{10⁻³⁰} − 1 − 10⁻³⁰))` came out
+  `ln(…) + iπ`, the wrong side of the cut (it is `−iπ + …`).  The
+  imaginary part is now evaluated on its own and must be a certified 0.
+- `simplify` proves `Eq(cos(5π/8), 2cos²(5π/16) − 1)` again and gives
+  `sin(π/24)` for `tan(π/24)·cos(π/24)` (0.43 regressions: the radical
+  forms of `eval` lost the size comparison).
 - **Summation and products respect declared assumptions and principal
   branches** (9,000 sums and products against exact partial sums and
   mpmath `nsum`/`nprod` at 40 digits): wrong 90 → 0, unreachable branches

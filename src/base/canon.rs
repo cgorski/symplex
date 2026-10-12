@@ -3333,6 +3333,107 @@ pub(crate) fn infinite_argument(arena: &Arena, id: ExprId) -> Option<InfiniteArg
     })
 }
 
+/// The reciprocal trigonometric and hyperbolic functions and their inverses
+/// (`name` lower case: `cot`, `sec`, `csc`, `coth`, `sech`, `csch`, `acot`,
+/// `asec`, `acsc`, `acoth`, `asech`, `acsch`; anything else is returned
+/// unchanged), which have no node of their own: `cot x = cos x/sin x`,
+/// `sec x = 1/cos x`, `acot x = atan(1/x)`, `acoth x = atanh(1/x)`, … (the
+/// principal definitions; `asec(x).rewrite(acos)` → `acos(1/x)` in SymPy).
+/// The parser, [`Ex::cot`](crate::api::expr::Ex::cot) & co. build them here.
+///
+/// The values the quotient or the reciprocal loses are taken first, as
+/// SymPy's `acot.eval` & co.: `acot(0) = π/2` (the quotient form is
+/// `atan(zoo)`), `acoth(0) = iπ/2`, `asech(0) = ∞`, `coth(±∞ + c) = ±1`
+/// and `cot(c ± i·∞) = ∓i` for a finite `c` (the quotients of two
+/// infinities are `nan`), and `asech` at the infinities (below).  Up to
+/// 0.40 `acot(0)` was `atan(zoo)`, `coth(∞)` and `cot(−i·∞)` were `nan`.
+/// `subs` rebuilds the quotient forms through this function when the
+/// substituted argument is such a point (`coth(x)` at `x = ∞` is `1`;
+/// up to 0.43 it was `nan`).
+pub(crate) fn reciprocal_function(arena: &mut Arena, name: &str, arg: ExprId) -> ExprId {
+    let one = arena.one;
+    let infinite = infinite_argument(arena, arg);
+    match name {
+        "cot" => {
+            if let Some(inf) = infinite.filter(|inf| inf.imaginary) {
+                let i = arena.i_unit;
+                return if inf.negative { i } else { arena.neg(i) };
+            }
+            let c = arena.cos(arg);
+            let s = arena.sin(arg);
+            arena.div(c, s)
+        }
+        "sec" => {
+            let c = arena.cos(arg);
+            arena.div(one, c)
+        }
+        "csc" => {
+            let s = arena.sin(arg);
+            arena.div(one, s)
+        }
+        "coth" => {
+            if let Some(inf) = infinite.filter(|inf| !inf.imaginary) {
+                return if inf.negative { arena.neg_one } else { one };
+            }
+            let c = arena.cosh(arg);
+            let s = arena.sinh(arg);
+            arena.div(c, s)
+        }
+        "sech" => {
+            let c = arena.cosh(arg);
+            arena.div(one, c)
+        }
+        "csch" => {
+            let s = arena.sinh(arg);
+            arena.div(one, s)
+        }
+        "acot" if arg == arena.zero => {
+            let half = arena.rational(1, 2);
+            arena.mul(&[half, arena.pi])
+        }
+        "acoth" if arg == arena.zero => {
+            let half = arena.rational(1, 2);
+            arena.mul(&[half, arena.pi, arena.i_unit])
+        }
+        "asech" if arg == arena.zero => arena.infinity,
+        // asech(z) = acosh(w), w = 1/z → 0, on the cut (−∞, 1) of `acosh`:
+        // iπ/2 from above and on it, −iπ/2 from below (`acosh(ε ∓ iδ)` →
+        // ∓iπ/2).  So asech(±∞) = iπ/2, asech(±i·∞) = ∓iπ/2 (SymPy's
+        // `_asech_table`), asech(±∞ + c) = ∓sign(Im c)·iπ/2 for `Im c ≠ 0`;
+        // `zoo` and an unknown side have no single limit (`nan`).  Up to 0.43
+        // all were `acosh(0)` (whose value is iπ/2).
+        "asech" if arg == arena.complex_infinity => arena.nan,
+        "asech" if infinite.is_some() => {
+            let upper = infinite.and_then(|inf| {
+                if inf.imaginary {
+                    Some(inf.negative)
+                } else {
+                    inf.side.map(|s| s != Ordering::Greater)
+                }
+            });
+            match upper {
+                Some(up) => {
+                    let half = arena.rational(if up { 1 } else { -1 }, 2);
+                    arena.mul(&[half, arena.pi, arena.i_unit])
+                }
+                None => arena.nan,
+            }
+        }
+        "acot" | "asec" | "acsc" | "acoth" | "asech" | "acsch" => {
+            let inv = arena.div(one, arg);
+            match name {
+                "acot" => arena.atan(inv),
+                "asec" => arena.acos(inv),
+                "acsc" => arena.asin(inv),
+                "acoth" => arena.atanh(inv),
+                "asech" => arena.acosh(inv),
+                _ => arena.asinh(inv),
+            }
+        }
+        _ => arg,
+    }
+}
+
 /// The sign of the real (`imaginary == false`) or imaginary part of the
 /// sum of the finite `terms`, when every term's contribution is known: a
 /// real term of known sign, `i` times a product of factors of known sign.
@@ -4783,8 +4884,75 @@ fn assumed_power(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId>
             let product = arena.intern(ExprNode::Num(nid));
             Some(canon_pow(arena, b, product))
         }
+        ExprNode::Mul(children) if !e.is_integer() => assumed_mul_power(arena, &children, exp, &e),
         _ => None,
     }
+}
+
+/// `(c·∏ fⱼ)^e` for a non-integer rational `e` when some factor `f = b^k`
+/// is non-negative by the assumptions (`b ≥ 0`, or `b` real and `k` even)
+/// and `k·e` is an integer, so its root disappears: those factors come out
+/// with the coefficient's magnitude, `(A·B)^e = A^e·B^e` for `A ≥ 0` on
+/// the principal branch (`arg(A·B) = arg B`).  `√(4b²) = 2|b|`, `√(8r²x) =
+/// 2√2·|r|·√x`, `√(−9p²) = 3ip` (SymPy's `Pow._eval_expand_power_base`, run
+/// by `Mul._eval_power`, which takes out every non-negative factor).  A
+/// product with no such factor is left alone (`√(4x)`, `√(4x²)` for an
+/// unassumed `x`).  Up to 0.43 only a lone `√(r²) = |r|` folded.
+fn assumed_mul_power(arena: &mut Arena, children: &[ExprId], exp: ExprId, e: &Q) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use num_integer::Integer;
+    let mut cache = AssumptionCache::new();
+    let mut comes_out = |arena: &Arena, f: ExprId| -> bool {
+        let ExprNode::Pow(b, k) = *arena.node(f) else {
+            return false;
+        };
+        let Some(kq) = arena.as_num(k) else {
+            return false;
+        };
+        q_mul(kq, e).is_integer()
+            && (known_sign_by_bounds(arena, &mut cache, b, false, false)
+                || (kq.is_integer()
+                    && kq.numer().is_even()
+                    && cache.query(arena, b, Props::REAL) == Some(true)))
+    };
+    let mut out: SmallVec<[ExprId; 6]> = SmallVec::new();
+    let mut kept: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for &f in children {
+        if comes_out(arena, f) {
+            out.push(f);
+        } else {
+            kept.push(f);
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    let mut values: SmallVec<[ExprId; 6]> = out.iter().map(|&f| canon_pow(arena, f, exp)).collect();
+    // The coefficient's magnitude comes out too; its sign stays inside.
+    if let Some(&first) = kept.first()
+        && let Some(c) = arena.as_num(first).cloned()
+    {
+        let magnitude = c.abs();
+        if !magnitude.is_one() {
+            let m = arena.intern_num(magnitude);
+            let m = arena.intern(ExprNode::Num(m));
+            values.push(canon_pow(arena, m, exp));
+            if c.is_negative() {
+                kept[0] = arena.neg_one;
+            } else {
+                kept.remove(0);
+            }
+        }
+    }
+    if !kept.is_empty() {
+        let rest = if kept.len() == 1 {
+            kept[0]
+        } else {
+            canon_mul(arena, &kept)
+        };
+        values.push(canon_pow(arena, rest, exp));
+    }
+    Some(canon_mul(arena, &values))
 }
 
 /// `Min`/`Max` of numbers and infinities fold when they are built, as

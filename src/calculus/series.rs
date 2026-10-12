@@ -171,6 +171,7 @@ pub(crate) fn series(
         limits: true,
         partial: false,
         cut_widened: false,
+        last_resort: false,
     };
     series_with_pole_retry(arena, expr, var, point, order, mode)
 }
@@ -204,6 +205,7 @@ pub(crate) fn series_dir(
             limits: true,
             partial: false,
             cut_widened: false,
+            last_resort: false,
         },
         Direction::Left => Mode {
             side: Side::Below,
@@ -211,6 +213,7 @@ pub(crate) fn series_dir(
             limits: true,
             partial: false,
             cut_widened: false,
+            last_resort: false,
         },
     };
     let err = match series_with_pole_retry(arena, expr, var, point, order, mode) {
@@ -274,6 +277,7 @@ fn puiseux_series(
         limits: true,
         partial: false,
         cut_widened: false,
+        last_resort: false,
     };
     let tau_order = order
         .checked_mul(q)
@@ -663,6 +667,7 @@ pub(crate) fn laurent_series(
         limits: false,
         partial: false,
         cut_widened: false,
+        last_resort: false,
     };
     let series = |arena: &mut Arena, e: ExprId, order: u32| {
         if matches!(
@@ -1287,11 +1292,25 @@ struct Mode {
     /// as every argument did before 0.44 (`li(1 + x)` for `x → 0⁻`, whose
     /// `Ei(ln(1 + x))` has the argument `ln(1 + x)` on the cut).
     cut_widened: bool,
+    /// Gruntz's last resort for a leading term ([`expand_leading_last_resort`],
+    /// `limits` off): the expansions beside cuts, at branch points and at
+    /// infinity that a series makes since 0.44 ([`Mode::full_rules`]), which
+    /// Gruntz's first attempt leaves out to keep the leading terms of 0.43.
+    last_resort: bool,
 }
 
 impl Mode {
     fn with_side(self, side: Side) -> Self {
         Mode { side, ..self }
+    }
+
+    /// The expansions beside cuts, at branch points and at infinity of 0.44
+    /// (inverse functions at infinity, `ln Γ` and `ln` of a series whose
+    /// leading coefficient is off the positive reals, the side of a cut
+    /// taken by a non-real argument, …): in a series, and in Gruntz's last
+    /// resort.
+    fn full_rules(self) -> bool {
+        self.limits || self.last_resort
     }
 }
 
@@ -1348,6 +1367,7 @@ pub(crate) fn expand_meromorphic(
             limits: false,
             partial: false,
             cut_widened: false,
+            last_resort: false,
         },
     )
 }
@@ -1376,6 +1396,7 @@ pub(crate) fn expand_log_extended(
             limits,
             partial: false,
             cut_widened: false,
+            last_resort: false,
         },
     )
 }
@@ -1403,6 +1424,35 @@ pub(crate) fn expand_leading(
             limits: false,
             partial: true,
             cut_widened: false,
+            last_resort: false,
+        },
+    )
+}
+
+/// [`expand_leading`] with the expansions of a series beside cuts, at
+/// branch points and at infinity ([`Mode::full_rules`]): Gruntz's last
+/// resort for a leading term the rules of 0.43 do not find
+/// (`atan(1/ω) = π/2 − ω + …`, `ln Γ(−ω) = −ln ω − iπ + …`).
+/// The differentiation fallback still takes no limits.
+pub(crate) fn expand_leading_last_resort(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: i64,
+    log_var: ExprId,
+) -> Result<TSeries, SymplexError> {
+    expand_with_mode(
+        arena,
+        expr,
+        var,
+        order,
+        Mode {
+            side: Side::Above,
+            log_var: Some(log_var),
+            limits: false,
+            partial: true,
+            cut_widened: false,
+            last_resort: true,
         },
     )
 }
@@ -1790,7 +1840,7 @@ fn compose_at_constant(
         if side == Some(0) && !stays_on_line(arena, arg, u0, var, imaginary_axis, mode) {
             side = None;
         }
-        match side.and_then(|s| cut_jump(arena, id, u0, s, mode.limits)) {
+        match side.and_then(|s| cut_jump(arena, id, u0, s, mode.full_rules())) {
             Some(j) => jump = Some(j),
             None => return Some(None),
         }
@@ -1821,7 +1871,7 @@ fn compose_at_constant(
             || crate::transforms::pattern::tree_size_capped(arena, f, MAX_FALLBACK_SIZE + 1)
                 > MAX_FALLBACK_SIZE
         {
-            if k > 0 && mode.limits && matches!(arena.node(id), ExprNode::Zeta(_)) {
+            if k > 0 && mode.full_rules() && matches!(arena.node(id), ExprNode::Zeta(_)) {
                 let v_w = w.leading_exponent(arena).unwrap_or(1).max(1);
                 exact_below = Some(v_w.saturating_mul(k as i64));
                 break;
@@ -2037,8 +2087,9 @@ fn series_cut_side(
 /// `(−n − 1, −n)`; `W`: `F` above (below: none).  `None` where no form is
 /// known (`W` below its cut, `polylog`, …) or at a branch point.
 ///
-/// The forms added in 0.44 only with `extended` (a series; Gruntz's leading
-/// terms keep the forms of 0.43): `F` on the side the principal value is
+/// The forms added in 0.44 only with `extended` (a series, and Gruntz's last
+/// resort [`Mode::full_rules`]; its first attempt at a leading term keeps
+/// the forms of 0.43): `F` on the side the principal value is
 /// continuous with (mpmath's values on the cut) — above for `W`, `Kν`,
 /// `Yν`, `Eₙ`, `Γ(−n, ·)`, `li` on `(−∞, 0)`, below for `Liₛ`, `K(m)`,
 /// `E(m)` on `(1, ∞)` — and the jumps `li`: `F ± iπ` on `(0, 1)`, `E₁`:
@@ -2346,7 +2397,7 @@ fn structural_series(
         ExprNode::Sign(a) => return sign_series(arena, &child(cache, a)?, side, false),
         ExprNode::Heaviside(a) => return sign_series(arena, &child(cache, a)?, side, true),
         ExprNode::Apply(f, ref args)
-            if mode.limits
+            if mode.full_rules()
                 && args.len() == 2
                 && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::PolyLog)
                 && !walk::contains(arena, args[0], var) =>
@@ -2395,6 +2446,14 @@ fn structural_series(
                     Some(crate::base::libfn::LibFn::Shi | crate::base::libfn::LibFn::Chi)
                 ) || matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC)))
                 || PowerAsymptotic::from_name(arena.symbol_name(f)).is_some() =>
+        {
+            return special_series(arena, &node, var, mode, cache);
+        }
+        ExprNode::Apply(f, ref args)
+            if mode.full_rules()
+                && args.len() == 2
+                && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::ExpInt)
+                && is_one_const(arena, args[0]) =>
         {
             return special_series(arena, &node, var, mode, cache);
         }
@@ -3090,8 +3149,8 @@ fn inverse_at_branch_point(
                     return Err(Obstruction::CutUndecided);
                 }
                 false
-            } else if !mode.limits {
-                // Gruntz's leading terms keep the rule of 0.43.
+            } else if !mode.full_rules() {
+                // Gruntz's first attempt keeps the rule of 0.43.
                 return Err(Obstruction::NoExpansion);
             } else {
                 match series_cut_side(arena, &s, false, mode) {
@@ -3187,8 +3246,9 @@ fn inverse_at_infinity(
     let Some(l) = mode.log_var else {
         return Ok(None);
     };
-    // A series only: Gruntz's leading terms keep the rules of 0.43.
-    if mode.side == Side::Both || !mode.limits {
+    // A series, or Gruntz's last resort: its first attempt keeps the rules
+    // of 0.43.
+    if mode.side == Side::Both || !mode.full_rules() {
         return Ok(None);
     }
     let u = u.clone().normalized(arena);
@@ -3347,7 +3407,7 @@ fn lambertw_at_branch_point(
     arg: Option<(ExprId, ExprId)>,
 ) -> Result<Option<TSeries>, Obstruction> {
     let u = u.clone().normalized(arena);
-    if !mode.limits || u.shift < 0 || u.coeffs.is_empty() {
+    if !mode.full_rules() || u.shift < 0 || u.coeffs.is_empty() {
         return Ok(None);
     }
     let u0 = u.coeff_at(arena, 0);
@@ -3602,9 +3662,9 @@ fn apply_ln(
         if walk::contains(arena, c, l) {
             return Err(Obstruction::Unknown);
         }
-        // Gruntz's leading terms (no limits) keep the rule of 0.43: a real
-        // `c` of known sign, with a real `w` when negative.
-        if !mode.limits {
+        // Gruntz's first attempt at a leading term keeps the rule of 0.43: a
+        // real `c` of known sign, with a real `w` when negative.
+        if !mode.full_rules() {
             match constant_sign(arena, c) {
                 Some(true) => {}
                 Some(false) if a.coeffs.iter().all(|&co| is_known_real(arena, co)) => {}
@@ -4017,10 +4077,10 @@ fn pole_to_plus_infinity(arena: &mut Arena, a: &TSeries, mode: Mode) -> Option<(
     Some((inv, -v))
 }
 
-/// [`off_negative_reals`] in a series, `c > 0` in Gruntz's leading terms
-/// (the rule of 0.43 there).
+/// [`off_negative_reals`] in a series (and Gruntz's last resort), `c > 0`
+/// in Gruntz's first attempt at a leading term (the rule of 0.43 there).
 fn stirling_direction(arena: &mut Arena, c: ExprId, mode: Mode) -> bool {
-    if mode.limits {
+    if mode.full_rules() {
         off_negative_reals(arena, c)
     } else {
         constant_sign(arena, c) == Some(true)
@@ -4252,9 +4312,30 @@ fn special_series(
             let Some((u0, _)) = split_regular(arena, &a)? else {
                 return unknown;
             };
-            if !arena.is_zero_structural(u0) {
-                return unknown;
-            }
+            // At a pole `−n` (a series, and Gruntz's last resort):
+            // `ln Γ(−n + w) = ln Γ(1 + w) − ln w − Σ_{k=1}^{n} ln(w − k)`, the
+            // recurrence `ln Γ(z + 1) = ln Γ(z) + ln z` with principal
+            // logarithms, which holds off the cut and, with the values from
+            // above, on it (`ln Γ(−½) = ln Γ(½) − ln(−½)`, mpmath); every
+            // `ln` takes the side of the one `w`.  Before, `ln Γ(x − 1)` had
+            // no expansion at `0`.
+            let n = if arena.is_zero_structural(u0) {
+                0
+            } else {
+                match nonpositive_integer(arena, u0) {
+                    Some(n) if mode.full_rules() && n <= MAX_POLE_SHIFT => n,
+                    _ => return unknown,
+                }
+            };
+            let (a, a_expr) = if n == 0 {
+                (a, a_expr)
+            } else {
+                let ne = arena.int(n);
+                let c = constant_like(arena, ne, &a);
+                let shifted = TSeries::add(arena, &a, &c);
+                let e = arena.add(&[a_expr, ne]);
+                (shifted, eval::eval(arena, e))
+            };
             // ln Γ(a) = ln Γ(1 + a) − ln a for a → 0: `ln Γ(1 + a)` is analytic
             // at 0, so both sides have the cut `(−∞, 0)` of `ln a` there and
             // agree on it (the principal values are the limits from above,
@@ -4268,15 +4349,29 @@ fn special_series(
                 return Err(Obstruction::NoExpansion);
             };
             let c = a_n.coeff_at(arena, lead);
-            // Gruntz's leading terms keep the rule of 0.43 (`c > 0`).
-            if mode.log_var.is_none() || (!mode.limits && constant_sign(arena, c) != Some(true)) {
+            // Gruntz's first attempt keeps the rule of 0.43 (`c > 0`).
+            if mode.log_var.is_none()
+                || (!mode.full_rules() && constant_sign(arena, c) != Some(true))
+            {
                 return Err(Obstruction::NoExpansion);
             }
             let ln_a =
                 apply_ln(arena, &a_n, mode, Some((a_expr, var))).map_err(definite_obstruction)?;
             let lg = ln_gamma_one_plus(arena, &a_n);
             let nl = TSeries::neg(arena, &ln_a);
-            Ok(TSeries::add(arena, &lg, &nl))
+            let mut acc = TSeries::add(arena, &lg, &nl);
+            for k in 1..=n {
+                let mk = arena.int(-k);
+                let c = constant_like(arena, mk, &a_n);
+                let wk = TSeries::add(arena, &a_n, &c);
+                let e = arena.add(&[a_expr, mk]);
+                let e = eval::eval(arena, e);
+                let ln_k =
+                    apply_ln(arena, &wk, mode, Some((e, var))).map_err(definite_obstruction)?;
+                let nk = TSeries::neg(arena, &ln_k);
+                acc = TSeries::add(arena, &acc, &nk);
+            }
+            Ok(acc)
         }
         ExprNode::Si(a_expr) | ExprNode::Ei(a_expr) | ExprNode::Ci(a_expr) => {
             let a = child(cache, a_expr)?;
@@ -4379,19 +4474,23 @@ fn special_series(
             Ok(s)
         }
         ExprNode::Apply(f, ref args) => {
-            let kind = match arena.lib_fn(f) {
-                Some(LibFn::Shi) => IntegralKind::Shi,
-                Some(LibFn::Chi) => IntegralKind::Chi,
+            let (kind, z) = match (arena.lib_fn(f), args.as_slice()) {
+                (Some(LibFn::Shi), &[z]) => (IntegralKind::Shi, z),
+                (Some(LibFn::Chi), &[z]) => (IntegralKind::Chi, z),
+                // `E₁` (a series, and Gruntz's last resort).
+                (Some(LibFn::ExpInt), &[n, z]) if mode.full_rules() && is_one_const(arena, n) => {
+                    (IntegralKind::E1, z)
+                }
                 _ => return unknown,
             };
-            let a = child(cache, args[0])?;
+            let a = child(cache, z)?;
             let Some((u0, _)) = split_regular(arena, &a)? else {
                 return unknown;
             };
             if !arena.is_zero_structural(u0) {
                 return unknown;
             }
-            integral_at_zero(arena, kind, &a, mode, Some((args[0], var)))
+            integral_at_zero(arena, kind, &a, mode, Some((z, var)))
         }
         ExprNode::Li(a_expr) => {
             let a = child(cache, a_expr)?;
@@ -4621,6 +4720,8 @@ enum IntegralKind {
     Ei,
     Ci,
     Chi,
+    /// `E₁ = expint(1, ·)`.
+    E1,
 }
 
 /// `Si`, `Shi` (entire), `Ei(a) = γ + ln|a| + Σ aᵏ/(k·k!)`,
@@ -4635,6 +4736,12 @@ enum IntegralKind {
 /// approaching the negative reals from below gives `Ei − iπ` ([`cut_below`];
 /// before, `Ei(x + 2i·x³)` for `x → 0⁻` was `γ + ln(−x)`, it is that `−
 /// iπ`).  `arg` is the expression of `a` and the variable.
+///
+/// `E₁(a) = −γ − ln a − Σ (−a)ᵏ/(k·k!)` (DLMF 6.6.2) with the principal
+/// `ln` of the actual argument, whose value on the cut is mpmath's `E₁`
+/// there (`e1(−1) = −1.895 − iπ`, the value from above).  Before,
+/// `expint(1, x)` had no expansion at `0`, and its limit there was the pole
+/// value `expint(1, 0)`.
 fn integral_at_zero(
     arena: &mut Arena,
     kind: IntegralKind,
@@ -4662,8 +4769,15 @@ fn integral_at_zero(
             IntegralKind::Ei if k > 0 => Q::one() / (kq * fact),
             IntegralKind::Ci if k > 0 && !odd => alt / (kq * fact),
             IntegralKind::Chi if k > 0 && !odd => Q::one() / (kq * fact),
+            IntegralKind::E1 if odd => Q::one() / (kq * fact),
+            IntegralKind::E1 if k > 0 => -Q::one() / (kq * fact),
             IntegralKind::Ei | IntegralKind::Ci | IntegralKind::Chi if k == 0 => {
                 return ar.euler_gamma;
+            }
+            IntegralKind::E1 => {
+                let g = ar.euler_gamma;
+                let ng = ar.neg(g);
+                return eval::eval(ar, ng);
             }
             _ => Q::zero(),
         };
@@ -4676,10 +4790,10 @@ fn integral_at_zero(
     if mode.log_var.is_none() {
         return Err(Obstruction::NoExpansion);
     }
-    // (A non-real argument of `Ei` is expanded in a series only; Gruntz's
-    // leading terms keep refusing it, as in 0.43.)
+    // (A non-real argument of `Ei` is expanded in a series and Gruntz's last
+    // resort only; its first attempt keeps refusing it, as in 0.43.)
     let real = a.coeffs.iter().all(|&c| is_known_real(arena, c));
-    let log_arg = if kind == IntegralKind::Ei && (real || !mode.limits) {
+    let log_arg = if kind == IntegralKind::Ei && (real || !mode.full_rules()) {
         // A real argument: `ln|a|` — unless a term beyond the precision
         // makes it non-real.
         if real
@@ -4693,6 +4807,10 @@ fn integral_at_zero(
         a
     };
     let ln = apply_ln(arena, &log_arg, mode, arg).map_err(definite_obstruction)?;
+    if kind == IntegralKind::E1 {
+        let ln = TSeries::neg(arena, &ln);
+        return Ok(TSeries::add(arena, &series, &ln));
+    }
     Ok(TSeries::add(arena, &series, &ln))
 }
 

@@ -117,6 +117,10 @@ struct ExprFlags {
     has_gamma: bool,
     /// Expression contains `Pow` with exponent 1/2 (square root) — gates radsimp strategy.
     has_sqrt: bool,
+    /// Expression contains `sin`, `cos` or `tan` at a rational multiple of
+    /// `π`, which `eval` may write in radicals — gates the trigonometric
+    /// strategies on the unevaluated expression.
+    has_pi_multiple_trig: bool,
 }
 
 /// Compute expression flags in a single tree walk.
@@ -138,16 +142,19 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
         has_factorial: false,
         has_gamma: false,
         has_sqrt: false,
+        has_pi_multiple_trig: false,
     };
 
     for &id in &post_order {
         match arena.node(id) {
-            ExprNode::Sin(_)
-            | ExprNode::Cos(_)
-            | ExprNode::Tan(_)
-            | ExprNode::Asin(_)
-            | ExprNode::Acos(_)
-            | ExprNode::Atan(_) => {
+            ExprNode::Sin(u) | ExprNode::Cos(u) | ExprNode::Tan(u) => {
+                flags.has_trig = true;
+                let pi = arena.pi;
+                flags.has_pi_multiple_trig |= *u == pi
+                    || matches!(arena.node(*u), ExprNode::Mul(f)
+                        if f.len() == 2 && f[1] == pi && arena.as_num(f[0]).is_some());
+            }
+            ExprNode::Asin(_) | ExprNode::Acos(_) | ExprNode::Atan(_) => {
                 flags.has_trig = true;
             }
             ExprNode::Sinh(_)
@@ -240,6 +247,31 @@ impl Best {
             self.steps = steps;
         }
     }
+}
+
+/// The least common denominator `L` of the rational multiples of `π` that
+/// `sin`, `cos` and `tan` take in `expr` (strategy 5e writes `π = L·θ`),
+/// when it is at most 720.
+fn common_angle_denominator(arena: &Arena, expr: ExprId) -> Option<i64> {
+    use num_integer::Integer;
+    use num_traits::ToPrimitive;
+    let mut l: i64 = 1;
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        let (ExprNode::Sin(u) | ExprNode::Cos(u) | ExprNode::Tan(u)) = *arena.node(id) else {
+            continue;
+        };
+        let q = match arena.node(u) {
+            ExprNode::Mul(f) if f.len() == 2 && f[1] == arena.pi => arena.as_num(f[0]),
+            _ => None,
+        };
+        if let Some(q) = q {
+            l = l.lcm(&q.denom().to_i64()?);
+            if l > 720 {
+                return None;
+            }
+        }
+    }
+    Some(l)
 }
 
 /// Try multiple simplification strategies and return the "simplest" result.
@@ -388,7 +420,49 @@ pub(crate) fn smart_simplify_traced(
         let s5d_eval = crate::transforms::eval::eval(arena, expr);
         let (s5d_rules, steps) = crate::transforms::pattern::apply_rules(arena, s5d_eval, &rules);
         let s5d = crate::transforms::eval::eval(arena, s5d_rules);
-        best.consider(arena, s5d, "eval+trig_identities", steps);
+        best.consider(arena, s5d, "eval+trig_identities", steps.clone());
+        // The identities' result before that `eval`: since 0.43 `eval` writes
+        // `cos(5π/8)` (from `2·cos²(5π/16) − 1`) as a longer radical, which
+        // lost to the input, and `Eq(cos(5π/8), 2·cos²(5π/16) − 1)` no longer
+        // simplified to `True` (0.42 did).
+        best.consider(arena, s5d_rules, "eval+trig_identities(unevaluated)", steps);
+    }
+
+    // Strategy 5e: Fu and the trigonometric identities with `π` written as
+    // `L·θ` for a fresh symbol `θ` (`L` the common denominator of the
+    // angles), substituted back afterwards: an identity valid for every `θ`
+    // holds at `θ = π/L`.  `eval` (which Fu runs too) writes `sin`, `cos`,
+    // `tan` at SymPy's denominators in radicals (0.43), after which no
+    // identity applies: up to 0.43 `simplify(tan(π/24)·cos(π/24))` stayed
+    // instead of `sin(π/24)` (0.42).  Only for a finite value: at a pole
+    // the identities would give a value to `∞·0`.
+    if flags.has_pi_multiple_trig
+        && s1 != expr
+        && !crate::base::walk::post_order_ids(arena, s1)
+            .into_iter()
+            .any(|id| {
+                matches!(
+                    arena.node(id),
+                    ExprNode::NaN
+                        | ExprNode::ComplexInfinity
+                        | ExprNode::Infinity
+                        | ExprNode::NegInfinity
+                )
+            })
+        && let Some(l) = common_angle_denominator(arena, expr)
+    {
+        let theta = crate::transforms::subs::fresh_symbol(arena, "_theta", &[expr]);
+        let l = arena.int(l);
+        let l_theta = arena.mul(&[l, theta]);
+        let back = arena.div(arena.pi, l);
+        let angled = crate::transforms::subs::subs(arena, expr, arena.pi, l_theta);
+        let s5e_fu = crate::simplify::fu::fu(arena, angled);
+        let s5e_fu = crate::transforms::subs::subs(arena, s5e_fu, theta, back);
+        best.consider(arena, s5e_fu, "fu(pi as angle)", Vec::new());
+        let rules = crate::simplify::trigsimp::trig_identity_rules(arena);
+        let (s5e_rules, _) = crate::transforms::pattern::apply_rules(arena, angled, &rules);
+        let s5e_rules = crate::transforms::subs::subs(arena, s5e_rules, theta, back);
+        best.consider(arena, s5e_rules, "trig_identities(pi as angle)", Vec::new());
     }
 
     // Strategy 6: eval → logcombine → simplify (only if has Ln nodes)

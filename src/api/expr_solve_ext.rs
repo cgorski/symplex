@@ -897,7 +897,13 @@ impl Ex {
     /// a family `yₚ + Σ Cᵢ·φᵢ(x)` whose translate `yₚ + Σ Cᵢ·φᵢ(x − x₀)`
     /// still solves the equation (constant coefficients) is fitted in that
     /// form: `y″ + y = 0`, `y(1) = 1`, `y′(1) = 2` gives
-    /// `cos(x − 1) + 2·sin(x − 1)`.
+    /// `cos(x − 1) + 2·sin(x − 1)`; a Cauchy–Euler family with `x₀ > 0` in
+    /// the form `φᵢ(x/x₀)` (`cos(ln(3x))` for `x₀ = 1/3`).  A
+    /// constant-coefficient equation whose characteristic polynomial is
+    /// square-free with roots in Cardano's radicals or `RootOf`
+    /// (`y‴ + y″ + 2y = 0`, `y⁽⁵⁾ − y′ + y = 0`) with the conditions
+    /// `y(x₀), …, y⁽ⁿ⁻¹⁾(x₀)` is fitted exactly by the Lagrange form of the
+    /// inverse Vandermonde matrix.
     ///
     /// # Errors
     ///
@@ -939,6 +945,11 @@ impl Ex {
         }
         let (families, constants) = self.ode_families(func, var, "solve_ode_ivp")?;
         let accept = |candidate: &Ex| ode_holds_at(self, candidate, func, var, ics);
+        if let Some(sol) = linear_cc_lagrange_ivp(self, func, var, ics)
+            && accept(&sol)
+        {
+            return Ok(sol);
+        }
         let mut last_error: Option<SymplexError> = None;
         for general in &families {
             if let Some(shifted) = translated_family(self, general, &constants, func, var, ics)
@@ -1101,13 +1112,87 @@ fn translated_family(
     if all_rational {
         return None;
     }
+    // A Cauchy–Euler equation maps homogeneous solutions to homogeneous
+    // solutions under `x → x/x₀`: the conditions at `x₀ > 0` then meet
+    // `φᵢ(1)` and its derivatives (`ln 1 = 0`) instead of `cos(ln(1/3))`, …
+    // (the fourth-order `x⁴y⁗ + 2x³y‴ − 2xy′ + 4y = 0` with conditions at
+    // `1/3` took 7 s).
+    if x0
+        .as_rational()
+        .is_some_and(|q| num_traits::Signed::is_positive(&q))
+        && is_cauchy_euler(ode, func, var)
+    {
+        let scale = var / x0;
+        let mut scaled = particular;
+        for (c, phi) in present.iter().zip(&modes) {
+            scaled = &scaled + &(*c * &phi.subs(var, &scale));
+        }
+        return Some(scaled);
+    }
     let shift = var - x0;
     let mut shifted = particular;
     for (c, phi) in present.iter().zip(&modes) {
         shifted = &shifted + &(*c * &phi.subs(var, &shift));
     }
-    ode.check_ode_solution(&shifted, func, var)
+    // A linear equation with coefficients free of `var` maps homogeneous
+    // solutions to homogeneous solutions under translation: no check
+    // needed (it failed on Cardano's roots of `r³ + r² + 2`, and the
+    // untranslated fit at `x₀ = 1/3` took 27 s).
+    (is_linear_autonomous(ode, func, var) || ode.check_ode_solution(&shifted, func, var))
         .then_some(shifted)
+}
+
+/// Is the ODE `ode = 0` a Cauchy–Euler equation (see
+/// [`crate::calculus::ode::is_cauchy_euler`])?
+fn is_cauchy_euler(ode: &Ex, func: &Ex, var: &Ex) -> bool {
+    let func_id = ode.checked_id(func);
+    let var_id = ode.checked_id(var);
+    let mut inner = ode.inner.write();
+    crate::calculus::ode::is_cauchy_euler(&mut inner.arena, ode.raw_id(), func_id, var_id)
+}
+
+/// Is the ODE `ode = 0` linear in `func` with coefficients free of `var`
+/// (see [`crate::calculus::ode::is_linear_autonomous`])?
+fn is_linear_autonomous(ode: &Ex, func: &Ex, var: &Ex) -> bool {
+    let func_id = ode.checked_id(func);
+    let var_id = ode.checked_id(var);
+    let mut inner = ode.inner.write();
+    crate::calculus::ode::is_linear_autonomous(&mut inner.arena, ode.raw_id(), func_id, var_id)
+}
+
+/// [`crate::calculus::ode::linear_cc_ivp_lagrange`] for conditions on
+/// `y, y′, …, y⁽ⁿ⁻¹⁾` (each once) at one point: the exact fit of a
+/// constant-coefficient family whose modes have Cardano or `RootOf`
+/// exponents.  `None` when the conditions or the equation have another
+/// shape.
+fn linear_cc_lagrange_ivp(ode: &Ex, func: &Ex, var: &Ex, ics: &[InitialCondition]) -> Option<Ex> {
+    let x0 = &ics.first()?.x;
+    if ics.iter().any(|ic| ic.x != *x0) {
+        return None;
+    }
+    let mut values: Vec<Option<&Ex>> = vec![None; ics.len()];
+    for ic in ics {
+        let slot = values.get_mut(ic.order)?;
+        if slot.replace(&ic.value).is_some() {
+            return None;
+        }
+    }
+    let values: Vec<&Ex> = values.into_iter().collect::<Option<_>>()?;
+    let func_id = ode.checked_id(func);
+    let var_id = ode.checked_id(var);
+    let x0_id = ode.checked_id(x0);
+    let value_ids: Vec<_> = values.iter().map(|v| ode.checked_id(v)).collect();
+    let mut inner = ode.inner.write();
+    let sol = crate::calculus::ode::linear_cc_ivp_lagrange(
+        &mut inner.arena,
+        ode.raw_id(),
+        func_id,
+        var_id,
+        x0_id,
+        &value_ids,
+    )?;
+    drop(inner);
+    Some(ode.wrap(sol))
 }
 
 /// Does `candidate` satisfy the ODE `ode = 0` (in `func(var)`) at the points

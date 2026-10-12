@@ -169,10 +169,14 @@ fn infinite_hypergeometric_sums_evaluate() {
     assert_eq!(s.eval_f64().unwrap(), 0.567_209_351_351_013_7);
 }
 
-/// A divergent sum is an error, not a number; a sum whose term is neither
-/// hypergeometric nor rational has no rigorous bound here and is refused.
-/// (Polynomially convergent rational terms, refused here before, are
-/// summed by Euler–Maclaurin: `v28_evalf_cuts`.)
+/// A divergent sum is an error, not a number; a polynomially convergent
+/// sum whose term is neither hypergeometric nor rational has no rigorous
+/// bound here and is refused.  (Polynomially convergent rational terms,
+/// refused here before, are summed by Euler–Maclaurin: `v28_evalf_cuts`;
+/// and since 0.44 a hypergeometric term of geometric decay times a bounded
+/// factor is summed against a dominating series: `Σ sin(k)/2^k`, refused
+/// until then, is `Im 1/(1 − e^i/2) = 2 sin 1/(5 − 4 cos 1)` =
+/// 0.592837620697942…, see `v35_evalf_sums`.)
 #[test]
 fn divergent_and_non_hypergeometric_sums_are_refused() {
     let ctx = Context::new();
@@ -192,12 +196,18 @@ fn divergent_and_non_hypergeometric_sums_are_refused() {
         );
     }
     {
-        let s = sum(k.sin() / ctx.int(2).pow(&k));
+        let s = sum(k.sin() / (k.powi(2) + ctx.one()));
         assert!(
             matches!(s.eval_f64(), Err(SymplexError::Unevaluable { .. })),
             "{s}: {:?}",
             s.eval_f64()
         );
+    }
+    {
+        let s = sum(k.sin() / ctx.int(2).pow(&k));
+        let want = 2.0 * 1f64.sin() / (5.0 - 4.0 * 1f64.cos());
+        let got = s.eval_f64().unwrap();
+        assert!((got - want).abs() < 1e-15, "{s}: {got} vs {want}");
     }
 }
 
@@ -294,9 +304,12 @@ fn piecewise_decides_only_certified_conditions() {
     // with a certified sign (here exactly `π·10⁻⁴⁰⁰`), at any size.
     assert_eq!(near("pi*10^(-400)").eval_decimal(20).unwrap(), "1");
     // When the cancellation is hidden from the canonical form
-    // (`exp(ln 2/2)` is `√2`), the condition reaches `evalf`, which
-    // refuses a gap beyond its zero search.
-    let hidden = ctx.parse("exp(ln(2)/2) + pi*10^(-400)").unwrap();
+    // (`(sin²1 + cos²1)·√2` is `√2`; `exp(ln 2/2)` served here until it
+    // folded in 0.44), the condition reaches `evalf`, which refuses a gap
+    // beyond its zero search.
+    let hidden = ctx
+        .parse("(sin(1)^2 + cos(1)^2)*sqrt(2) + pi*10^(-400)")
+        .unwrap();
     let cond = hidden.lt(&r2);
     let pw = Ex::piecewise(&[(&zero, &cond), (&one, &t)]);
     assert!(matches!(

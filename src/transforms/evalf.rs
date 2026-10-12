@@ -4293,10 +4293,27 @@ fn eval_sum(
             debug!("evalf: Sum — infinite sum of a rational term");
             return result;
         }
+        if let Some(p) = emsum::power_summand(arena, body, var) {
+            debug!("evalf: Sum — a power of a linear term: Hurwitz zeta");
+            let mut consts = Vec::with_capacity(p.consts.len());
+            for &c in &p.consts {
+                let order = walk::post_order_ids(arena, c);
+                consts.push(evaluate_at_integer(
+                    arena, c, &order, var, &lo_i, prec, rm, cc,
+                )?);
+            }
+            return emsum::power_sum(&p, &consts, &lo_i, prec, rm, cc);
+        }
         debug!("evalf: Sum — infinite hypergeometric series");
-        let mut term =
-            |k: &BigInt, p: usize| evaluate_at_integer(arena, body, &post_order, var, k, p, rm, cc);
-        return hypsum::infinite_sum(arena, body, var, &lo_i, prec, rm, &mut term);
+        let mut orders: FxHashMap<ExprId, Vec<ExprId>> = FxHashMap::default();
+        orders.insert(body, post_order);
+        let mut part = |id: ExprId, k: &BigInt, p: usize| {
+            let order = orders
+                .entry(id)
+                .or_insert_with(|| walk::post_order_ids(arena, id));
+            evaluate_at_integer(arena, id, order, var, k, p, rm, cc)
+        };
+        return hypsum::infinite_sum(arena, body, var, &lo_i, prec, rm, &mut part);
     }
     let hi_i = range_bound(arena, cache, hi, "Sum", rm)?;
     let terms = range_terms(&lo_i, &hi_i, "Sum")?;
@@ -4312,7 +4329,11 @@ fn eval_sum(
 }
 
 /// `∏_{var = lo}^{hi} body` over a finite range of at most
-/// [`MAX_RANGE_TERMS`] terms, bounded as a product of its terms.
+/// [`MAX_RANGE_TERMS`] terms, bounded as a product of its terms; `hi = ∞`
+/// for a rational factor tending to 1 fast enough (`emsum`), or `1 + a(k)`
+/// with `a` a hypergeometric term of geometric decay times factors of
+/// polynomial growth (`hypsum`).  Up to 0.43 every infinite product was
+/// refused ("cannot evaluate infinity": `∏ (1 + 1/k²)`, `∏ (1 − 2^(−k))`).
 #[allow(clippy::too_many_arguments)]
 fn eval_product(
     arena: &Arena,
@@ -4325,7 +4346,35 @@ fn eval_product(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<(Complex, accuracy::Bound), SymplexError> {
+    if matches!(arena.node(lo), ExprNode::NegInfinity) {
+        return Err(unevaluable(
+            "a Product from −∞ is not evaluated numerically",
+        ));
+    }
     let lo_i = range_bound(arena, cache, lo, "Product", rm)?;
+    if matches!(arena.node(hi), ExprNode::Infinity) {
+        if let Some(result) = emsum::rational_product(arena, body, var, &lo_i, prec) {
+            debug!("evalf: Product — infinite product of a rational factor");
+            return result;
+        }
+        let mut orders: FxHashMap<ExprId, Vec<ExprId>> = FxHashMap::default();
+        let mut part = |id: ExprId, k: &BigInt, p: usize| {
+            let order = orders
+                .entry(id)
+                .or_insert_with(|| walk::post_order_ids(arena, id));
+            evaluate_at_integer(arena, id, order, var, k, p, rm, cc)
+        };
+        if let Some(result) =
+            hypsum::dominated_product(arena, body, var, &lo_i, prec, rm, &mut part)
+        {
+            return result;
+        }
+        return Err(unevaluable(format!(
+            "infinite product of `{}`: the factor is neither rational nor 1 plus a \
+             term of geometric decay, so no error bound is available",
+            arena.display(body)
+        )));
+    }
     let hi_i = range_bound(arena, cache, hi, "Product", rm)?;
     let terms = range_terms(&lo_i, &hi_i, "Product")?;
     let post_order = walk::post_order_ids(arena, body);
@@ -7241,9 +7290,13 @@ fn arb_zeta(
             reason: "zeta(1) is a pole".into(),
         });
     }
-    let wp = prec + 32;
+    let mut wp = prec + 32;
 
     if s.is_negative() {
+        // `2^s`, `π^(s−1)` and `Γ(1 − s)` come from exponentials of
+        // arguments of about `|s|·ln|s|`, whose absolute error is their
+        // relative one: as many guard bits.
+        wp += magnitude_bits(s_f64.abs() * (s_f64.abs().ln().max(0.0) + 2.0));
         // Trivial zeros.
         let s_round = s_f64.round();
         if (s_f64 - s_round).abs() < 1e-14 && (s_round as i64) % 2 == 0 {
@@ -7275,8 +7328,11 @@ fn arb_zeta(
         let two_pow_s = bf_pow(&two, &sw, wp, rm, cc);
         let s_minus_1 = sw.sub(&one, wp, rm);
         let pi_pow = bf_pow(&pi, &s_minus_1, wp, rm, cc);
-        let half_pi_s = pi.mul(&sw, wp, rm).div(&two, wp, rm);
-        let sin_term = half_pi_s.sin(wp, rm, cc);
+        // sin(πs/2) = (−1)ⁿ·sin(πd) for s/2 = n + d, `d` exact: next to a
+        // trivial zero `sin` of a rounded `πs/2` lost `log₂(1/|d|)` bits
+        // (up to 0.43 `zeta(−2 − 2⁻¹⁵⁰)` at 40 digits was wrong from its
+        // 33rd digit, `zeta(−70 − 2⁻¹³⁷)` from its 35th).
+        let sin_term = sin_half_pi(s, wp, rm, cc);
         let gamma_term = arb_gamma_real(&one_minus_s, wp, rm, cc)?;
         let zeta_term = arb_zeta_borwein(&one_minus_s, wp, rm, cc)?;
         let r = two_pow_s
@@ -7289,6 +7345,26 @@ fn arb_zeta(
 
     let r = arb_zeta_borwein(s, wp, rm, cc)?;
     Ok(round_to(r, prec, rm))
+}
+
+/// `sin(πs/2)` to `wp` bits relative for a finite real `s`: with `s/2 = n + d`,
+/// `n` the nearest integer and `d` formed exactly, `(−1)ⁿ·sin(πd)` — exactly 0
+/// at the even integers, and relative to `d` next to them.
+fn sin_half_pi(s: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+    let exact = exact_bits(s, wp);
+    let half = s.div(&BigFloat::from_i32(2, 64), exact, rm);
+    let n = half.add(&BigFloat::from_f64(0.5, 64), exact, rm).floor();
+    let d = half.sub(&n, exact, rm);
+    if d.is_zero() {
+        return BigFloat::new(wp);
+    }
+    let pi = cc.pi(wp + 8, rm).clone();
+    let v = pi.mul(&d, wp + 8, rm).sin(wp + 8, rm, cc);
+    let odd = !n
+        .div(&BigFloat::from_i32(2, 64), exact, rm)
+        .fract()
+        .is_zero();
+    round_to(if odd { v.neg() } else { v }, wp, rm)
 }
 
 /// Borwein's Algorithm 2 for `ζ(s)`, real `s > 0`, `s ≠ 1`:
@@ -8382,10 +8458,15 @@ fn eval_lib_fn(
             let r = bernoulli::bernoulli_function(&v[0], prec, rm, cc)?;
             Ok((r, BigFloat::new(prec)))
         }
+        LibFn::EulerNumber => {
+            let v = real_args(f.name(), args, cache)?;
+            debug!(prec, "evalf: euler(s) by Hurwitz zeta functions");
+            let r = bernoulli::euler_function(&v[0], prec, rm, cc)?;
+            Ok((r, BigFloat::new(prec)))
+        }
         LibFn::Factorial2
         | LibFn::Subfactorial
         | LibFn::Bell
-        | LibFn::EulerNumber
         | LibFn::Stirling1
         | LibFn::Stirling2
         | LibFn::PartitionCount => Err(unevaluable(format!(

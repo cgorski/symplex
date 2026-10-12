@@ -662,7 +662,8 @@ fn subs_scoped(
                         Some(point) => at_point(arena, node, plan.var, point, differentiate),
                     }
                 }
-                None => crate::base::walk::rebuild_with(arena, id, &|c| get(c, sc)),
+                None => reciprocal_at_special_point(arena, id, &|c| get(c, sc))
+                    .unwrap_or_else(|| crate::base::walk::rebuild_with(arena, id, &|c| get(c, sc))),
             };
             let rebuilt = rewritten(arena, &scopes, sc, rebuilt);
             cache.insert((id, sc), rebuilt);
@@ -670,6 +671,187 @@ fn subs_scoped(
     }
 
     cache.get(&(expr, top)).copied().unwrap_or(expr)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Reciprocal functions at special points
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The node `id`, whose operands are rebuilt by `get`, when it holds the
+/// quotient form of a reciprocal function (see
+/// [`crate::base::canon::reciprocal_function`]) whose substituted argument
+/// is a point where that form loses the value, rebuilt through
+/// `reciprocal_function`: `cot u = cos u·sin(u)⁻¹` and `coth u =
+/// cosh u·sinh(u)⁻¹` (and their powers, quotients and products with
+/// other factors) at an infinite `u`, whose operands are `∞·0` (`coth(x)`
+/// at `x = ∞` is `1`, `x·cot(x)` at `x = i·∞` is `∞`, `1/coth(x)` at `x =
+/// −∞` is `−1`); `acot u = atan(u⁻¹)`, `acoth u = atanh(u⁻¹)`, `asech u =
+/// acosh(u⁻¹)` (and `asec`, `acsc`, `acsch`) at `u = 0` or an infinite `u`,
+/// where `u⁻¹` is `zoo` or a `0` without its side (`acot(x)` at `x = 0` is
+/// `π/2`, `asech(x)` at `x = i·∞` is `−iπ/2`).  `None` (rebuild as usual)
+/// anywhere else.  Up to 0.43 these substitutions gave `nan`, `atan(zoo)`,
+/// `acosh(0)`.
+fn reciprocal_at_special_point(
+    arena: &mut Arena,
+    id: ExprId,
+    get: &dyn Fn(ExprId) -> ExprId,
+) -> Option<ExprId> {
+    use num_traits::{Signed, Zero};
+    let (name, a) = match arena.node(id).clone() {
+        ExprNode::Mul(children) => return reciprocal_quotients(arena, &children, get),
+        ExprNode::Atan(a) => ("acot", a),
+        ExprNode::Atanh(a) => ("acoth", a),
+        ExprNode::Acosh(a) => ("asech", a),
+        ExprNode::Acos(a) => ("asec", a),
+        ExprNode::Asin(a) => ("acsc", a),
+        ExprNode::Asinh(a) => ("acsch", a),
+        _ => return None,
+    };
+    // `a = c·∏ bⱼ^kⱼ` with every `kⱼ < 0`: the argument is `u = a⁻¹ =
+    // c⁻¹·∏ bⱼ^(−kⱼ)`, rebuilt from the substituted bases.
+    let factors: SmallVec<[ExprId; 4]> = match arena.node(a) {
+        ExprNode::Mul(f) => f.iter().copied().collect(),
+        _ => smallvec::smallvec![a],
+    };
+    let mut u_factors: SmallVec<[ExprId; 4]> = SmallVec::new();
+    // Does the canonical `u` keep the side of the infinite substituted
+    // bases: a base to the first power, or one on an axis (`(i·∞)² = −∞`)?
+    // `(∞ + i)²` is `∞`, which has lost it.
+    let mut side_kept = true;
+    for (i, &f) in factors.iter().enumerate() {
+        if i == 0
+            && let Some(c) = arena.as_num(f)
+        {
+            if c.is_zero() {
+                return None;
+            }
+            let inv = arena.num_ratio(c.recip());
+            u_factors.push(inv);
+            continue;
+        }
+        let ExprNode::Pow(b, k) = *arena.node(f) else {
+            return None;
+        };
+        let negative = arena.as_num(k).is_some_and(|q| q.is_negative());
+        if !negative {
+            return None;
+        }
+        let nb = get(b);
+        side_kept &= k == arena.neg_one
+            || crate::base::canon::infinite_argument(arena, nb)
+                .is_none_or(|inf| inf.side == Some(std::cmp::Ordering::Equal));
+        let nk = arena.neg(k);
+        u_factors.push(arena.pow(nb, nk));
+    }
+    let u = arena.mul(&u_factors);
+    // At an infinite `u` only `asech` has a value the reciprocal loses (the
+    // others are `0` or `π/2` from every side, as their quotient forms
+    // give), and it depends on the side of `u`: unknown, it is `nan`.  (The
+    // rebuilt `u⁻¹` is `0` for an infinite `u` the canonical form does not
+    // classify, `(∞ + i)²`.)
+    let infinite_u = crate::base::canon::infinite_argument(arena, u);
+    if name == "asech" && u != arena.zero && (infinite_u.is_some() || get(a) == arena.zero) {
+        return Some(if side_kept && infinite_u.is_some() {
+            crate::base::canon::reciprocal_function(arena, name, u)
+        } else {
+            arena.nan
+        });
+    }
+    let special = u == arena.zero || u == arena.complex_infinity;
+    special.then(|| crate::base::canon::reciprocal_function(arena, name, u))
+}
+
+/// [`reciprocal_at_special_point`] for a product: the factors `cos(u)^a`
+/// and `sin(u)^b` (`cosh`, `sinh`) with integer exponents of opposite
+/// signs hold `cot(u)^(±m)`, `m = min(|a|, |b|)`; at an infinite
+/// substituted `u` where `reciprocal_function` gives `cot`/`coth` a value,
+/// that power replaces them, the rest of the exponents stay.
+fn reciprocal_quotients(
+    arena: &mut Arena,
+    children: &[ExprId],
+    get: &dyn Fn(ExprId) -> ExprId,
+) -> Option<ExprId> {
+    use num_traits::ToPrimitive;
+    // (argument, hyperbolic, the cos factor (index, exponent), the sin one).
+    type Pair = (ExprId, bool, Option<(usize, i64)>, Option<(usize, i64)>);
+    let mut pairs: SmallVec<[Pair; 2]> = SmallVec::new();
+    for (i, &f) in children.iter().enumerate() {
+        let (base, k) = match *arena.node(f) {
+            ExprNode::Pow(b, k) => match arena
+                .as_num(k)
+                .filter(|q| q.is_integer())
+                .and_then(|q| q.to_integer().to_i64())
+            {
+                Some(k) => (b, k),
+                None => continue,
+            },
+            _ => (f, 1),
+        };
+        let (u, hyperbolic, is_cos) = match *arena.node(base) {
+            ExprNode::Cos(u) => (u, false, true),
+            ExprNode::Sin(u) => (u, false, false),
+            ExprNode::Cosh(u) => (u, true, true),
+            ExprNode::Sinh(u) => (u, true, false),
+            _ => continue,
+        };
+        let slot = match pairs.iter().position(|p| p.0 == u && p.1 == hyperbolic) {
+            Some(j) => j,
+            None => {
+                pairs.push((u, hyperbolic, None, None));
+                pairs.len() - 1
+            }
+        };
+        if is_cos {
+            pairs[slot].2 = Some((i, k));
+        } else {
+            pairs[slot].3 = Some((i, k));
+        }
+    }
+    let mut replaced: SmallVec<[usize; 4]> = SmallVec::new();
+    let mut out: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for &(u, hyperbolic, cos, sin) in &pairs {
+        let (Some((ic, a)), Some((is, b))) = (cos, sin) else {
+            continue;
+        };
+        if (a > 0) == (b > 0) {
+            continue;
+        }
+        let nu = get(u);
+        if crate::base::canon::infinite_argument(arena, nu).is_none() {
+            continue;
+        }
+        let (c, s) = if hyperbolic {
+            (arena.cosh(nu), arena.sinh(nu))
+        } else {
+            (arena.cos(nu), arena.sin(nu))
+        };
+        let quotient = arena.div(c, s);
+        let name = if hyperbolic { "coth" } else { "cot" };
+        let value = crate::base::canon::reciprocal_function(arena, name, nu);
+        if value == quotient {
+            continue;
+        }
+        let m = a.abs().min(b.abs());
+        let sm = if a > 0 { m } else { -m };
+        // The residual exponents may be 0, which must not meet an infinite
+        // `cos u` (`∞⁰` is `nan`).
+        for (base, k) in [(value, sm), (c, a - sm), (s, b + sm)] {
+            if k != 0 {
+                let k = arena.int(k);
+                out.push(arena.pow(base, k));
+            }
+        }
+        replaced.extend([ic, is]);
+    }
+    if replaced.is_empty() {
+        return None;
+    }
+    for (i, &f) in children.iter().enumerate() {
+        if !replaced.contains(&i) {
+            out.push(get(f));
+        }
+    }
+    Some(arena.mul(&out))
 }
 
 /// The variable-slot node `node` (a function of the symbol `var`)

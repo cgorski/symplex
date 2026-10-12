@@ -957,6 +957,9 @@ impl Matrix {
     /// ```
     pub fn matrix_pow_symbolic(&self, n: &Ex) -> Result<Matrix, SymplexError> {
         let op = "matrix_pow_symbolic";
+        if let Some(m) = self.radical_spectrum_function(op, &|l| l.pow(n), false, false)? {
+            return Ok(m);
+        }
         let Diagonalization { p, d } = match self.diagonalize() {
             Ok(dg) => dg,
             Err(e) if not_diagonalizable(&e) => {
@@ -1030,6 +1033,11 @@ impl Matrix {
     pub fn matrix_sqrt(&self) -> Result<Matrix, SymplexError> {
         let op = "matrix_sqrt";
         let real_spectrum = self.is_hermitian() == Some(true);
+        if let Some(m) =
+            self.radical_spectrum_function(op, &|l| principal_sqrt(l, real_spectrum), false, true)?
+        {
+            return Ok(m);
+        }
         let Diagonalization { p, d } = match self.diagonalize() {
             Ok(dg) => dg,
             Err(e) if not_diagonalizable(&e) => {
@@ -1121,6 +1129,14 @@ impl Matrix {
             ));
         }
         let real_spectrum = self.is_hermitian() == Some(true);
+        if let Some(m) = self.radical_spectrum_function(
+            "matrix_log",
+            &|l| principal_ln(l, real_spectrum),
+            true,
+            true,
+        )? {
+            return Ok(m);
+        }
         match self.matrix_log_jordan(real_spectrum) {
             Err(e) if is_swell(&e) => {
                 if ex_is_zero(&self.det()?) == Some(true) {

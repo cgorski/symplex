@@ -16,6 +16,10 @@ mod v35_diff;
 mod v35_domains;
 #[path = "v35/v35_eval.rs"]
 mod v35_eval;
+#[path = "v35/v35_eval2.rs"]
+mod v35_eval2;
+#[path = "v35/v35_evalf_sums.rs"]
+mod v35_evalf_sums;
 #[path = "v35/v35_folds.rs"]
 mod v35_folds;
 #[path = "v35/v35_infinity.rs"]
@@ -24,12 +28,18 @@ mod v35_infinity;
 mod v35_integrate_speed;
 #[path = "v35/v35_limits.rs"]
 mod v35_limits;
+#[path = "v35/v35_limits2.rs"]
+mod v35_limits2;
+#[path = "v35/v35_linalg.rs"]
+mod v35_linalg;
 #[path = "v35/v35_ntheory.rs"]
 mod v35_ntheory;
 #[path = "v35/v35_numeric.rs"]
 mod v35_numeric;
 #[path = "v35/v35_numint.rs"]
 mod v35_numint;
+#[path = "v35/v35_ode.rs"]
+mod v35_ode;
 #[path = "v35/v35_poly.rs"]
 mod v35_poly;
 #[path = "v35/v35_quadrature.rs"]
