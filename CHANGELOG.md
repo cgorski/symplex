@@ -8,6 +8,24 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-12
+
+Decisions that agree with each other, statistics without silent errors,
+integrals and transforms by residues.  `eval`, `equals`, the `is_*`
+queries, `sign` and `solve` now give the same answer about the same
+constant (a hunter over 7,800 constants: 513 wrong decisions and 8,916
+contradictory ones → 0; sums of arctangents decided exactly).
+Statistics: mixtures with overlapping supports counted the overlap twice,
+odd powers of variables with negative values took complex roots, and
+divergent expectations came out finite — all wrong without a warning,
+now right.  Improper integrals of rational functions times `cos`, `sin`
+or `ln` are found by residues and keyhole contours, and Fourier, Mellin,
+Laplace and z-transforms of rational functions are closed forms (2,375 of
+4,000 hunter cases, up from 1,326; 0 wrong).  ODEs gain the Green's
+function method (`y″ + y = eˣ/x`) and recurrences trigonometric forcing —
+both refused by SymPy.  Plots no longer join curves across undefined
+gaps.  Rubi: 29,529 verified, 0 wrong.
+
 ### Breaking (behaviour)
 
 - The assumption queries of constants decide what `eval` decides:
@@ -151,7 +169,20 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - Rubi harness: 29,529 verified, 91 real_verified, 0 wrong; self-test
   56,013 / 0 wrong / 204 undecided; `--negative-params` 91 / 0 wrong.
 - Byte identity of the LP paths and the s42 Lean certificates:
-  identical.
+  identical (on aarch64 and on x86-64).
+- `cargo semver-checks` against 0.45.0: no semver update required.
+- MSRV 1.93 (`cargo check --all-targets`, all crates): passes after a
+  fix (an `if let` match guard in `laplace.rs`).
+- Fuzzing: the Fuzz workflow on the release code (12 targets × 600 s on
+  CI) was green on all 12.  The local campaign moved to a 64-core x86-64 machine:
+  all 12 targets together, two forks each, a 10-second and a 4 GB limit
+  (`fuzz_simplify` and `fuzz_integrate` 15 minutes, the others 10):
+  `fuzz_numdist` 96,975,130 inputs, `fuzz_refine` 18,317,147,
+  `fuzz_lambertw` 3,508,447, `fuzz_parser` 1,855,814, `fuzz_exact_matrix`
+  232,626, `fuzz_eigenvects` 218,247, `fuzz_evalf` 78,309,
+  `fuzz_calculus` 45,012, `fuzz_roundtrip` 37,317, `fuzz_poly` 31,231,
+  `fuzz_simplify` 14,539, `fuzz_integrate` 8,453: 0 crashes, 0 timeouts,
+  0 out-of-memory.
 
 ## [0.45.0] - 2026-10-12
 
