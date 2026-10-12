@@ -1220,6 +1220,12 @@ fn forward(
         return Ok(r);
     }
 
+    // ── Rational functions by residues (before the product rules, whose
+    //    `t·f(t) → iF′(ω)` would differentiate the steps of `F`) ──
+    if let Some(r) = forward_rational(arena, expr, t, w) {
+        return Ok(r);
+    }
+
     // ── Products ──
     if let ExprNode::Mul(children) = &node {
         let kids: Vec<ExprId> = children.iter().copied().collect();
@@ -1246,6 +1252,117 @@ fn forward(
         OP,
         format!("no transform rule applies to {}", arena.display(expr)),
     ))
+}
+
+/// `F(ω) = ∫ R(t) e^{−iωt} dt` for a rational `R = N/D` over ℚ with
+/// `deg D ≥ deg N + 1` and no real poles, by residues
+/// ([`residue::rational_residue_sum`](crate::calculus::residue::rational_residue_sum)):
+/// for `ω < 0` the contour closes upwards, `U(ω) = 2πi Σ_{Im ρ > 0}
+/// Res(R(z) e^{−iωz})`; for `ω > 0` downwards, `L(ω) = −2πi Σ_{Im ρ < 0}
+/// Res(…)`.  Simple real poles are allowed: the transform is then the
+/// principal value, with `±πi Σ_{ρ real} Res` added (`1/(t(t² + 1))` →
+/// `−iπ sign(ω)(1 − e^{−|ω|})`).  So `F = H(−ω)·U(ω) + H(ω)·L(ω)`, whose value `(U + L)/2` at
+/// `ω = 0` (with `H(0) = ½`) is the integral for `deg D ≥ deg N + 2` and
+/// its principal value otherwise.  An even `R` has `U(ω) = L(−ω)`, so `F =
+/// L(|ω|)`, and an odd one `F = sign(ω)·L(|ω|)`; there `L` is written
+/// with real functions of `ω > 0` when the real/imaginary split is exact.
+///
+/// Before 0.46 every rational function without a table entry was refused,
+/// down to `1/(t² + 1)` (`π e^{−|ω|}`) and `1/(t⁴ + 1)`; SymPy:
+/// `fourier_transform(1/(t**2 + 1), t, w)` = `pi*exp(-2*pi*|w|)` (ordinary
+/// frequency).
+fn forward_rational(arena: &mut Arena, expr: ExprId, t: ExprId, w: ExprId) -> Option<ExprId> {
+    use crate::calculus::residue::{self, PolePlace};
+    let r = residue::rational_over_q(arena, expr, t)?;
+    if r.degree_gap() < 1 {
+        return None;
+    }
+    // Real poles must be simple: the transform is then the principal value
+    // (`1/t → −iπ sign ω`), with half residues on the axis.
+    let (_, sqf) = r.denom.sqf_list();
+    if sqf.iter().any(|(p, m)| {
+        *m > 1
+            && p.degree().is_some_and(|d| d > 0)
+            && crate::poly::sturm::SturmChain::new(p).count_real_roots() > 0
+    }) {
+        return None;
+    }
+    let pi = arena.pi();
+    let i = arena.i_unit();
+    let two = arena.int(2);
+    // L(p) for a positive dummy p, then written in w.
+    let p = arena.positive_symbol("__ft_pos_w");
+    let lower_at = |arena: &mut Arena, freq: ExprId| -> Option<ExprId> {
+        let neg_i = arena.neg(i);
+        let arg = arena.mul(&[neg_i, freq, t]);
+        let weight = arena.exp(arg);
+        let s = residue::rational_residue_sum(arena, &r, weight, t, |q| q == PolePlace::Lower)?;
+        let on_axis =
+            residue::rational_residue_sum(arena, &r, weight, t, |q| q == PolePlace::Real)?;
+        let full = arena.mul(&[two, s]);
+        let s = arena.add(&[full, on_axis]);
+        let neg_one = arena.neg_one();
+        let v = arena.mul(&[neg_one, pi, i, s]);
+        Some(crate::transforms::eval::eval(arena, v))
+    };
+    let realified = |arena: &mut Arena, v: ExprId| -> ExprId {
+        let parts = crate::base::complex::decompose(arena, v);
+        if !parts.exact {
+            return v;
+        }
+        let im = crate::transforms::eval::eval(arena, parts.im);
+        let re = crate::transforms::eval::eval(arena, parts.re);
+        let opaque = crate::base::walk::post_order_ids(arena, re)
+            .into_iter()
+            .chain(crate::base::walk::post_order_ids(arena, im))
+            .any(|id| {
+                matches!(
+                    arena.node(id),
+                    ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Conjugate(_) | ExprNode::Arg(_)
+                )
+            });
+        if opaque {
+            return v;
+        }
+        let i_im = arena.mul(&[i, im]);
+        let s = arena.add(&[re, i_im]);
+        crate::transforms::eval::eval(arena, s)
+    };
+    match r.parity() {
+        Some(even) => {
+            let l = lower_at(arena, p)?;
+            let l = realified(arena, l);
+            let abs_w = arena.abs(w);
+            let l = crate::transforms::subs::subs(arena, l, p, abs_w);
+            let v = if even {
+                l
+            } else {
+                let sg = arena.sign(w);
+                arena.mul(&[sg, l])
+            };
+            Some(crate::transforms::eval::eval(arena, v))
+        }
+        None => {
+            let neg_i = arena.neg(i);
+            let arg = arena.mul(&[neg_i, w, t]);
+            let weight = arena.exp(arg);
+            let up =
+                residue::rational_residue_sum(arena, &r, weight, t, |q| q == PolePlace::Upper)?;
+            let on_axis =
+                residue::rational_residue_sum(arena, &r, weight, t, |q| q == PolePlace::Real)?;
+            let full = arena.mul(&[two, up]);
+            let up = arena.add(&[full, on_axis]);
+            let up = arena.mul(&[pi, i, up]);
+            let low = lower_at(arena, w)?;
+            let neg_w = arena.neg(w);
+            let h_up = arena.heaviside(neg_w);
+            let h_low = arena.heaviside(w);
+            let a = arena.mul(&[h_up, up]);
+            let b = arena.mul(&[h_low, low]);
+            let v = arena.add(&[a, b]);
+            Some(crate::transforms::eval::eval(arena, v))
+        }
+    }
 }
 
 /// Table entries for a single function node.

@@ -782,6 +782,42 @@ fn decompose_node(
             }
         }
 
+        // ── acosh(i·v) = asinh|v| + i·sgn(v)·π/2 for a real v ≠ 0: on the
+        //    imaginary axis acosh is analytic (`z ± 1` stay off the cuts of
+        //    `acosh z = ln(z + √(z + 1)·√(z − 1))`; mpmath: acosh(2i) =
+        //    1.44363547517881 + 1.5707963267949i = asinh 2 + iπ/2, acosh(−2i) =
+        //    asinh 2 − iπ/2).  The sign of `v` from the assumptions, else, for
+        //    a constant, from its certified value.  Up to 0.45 opaque: the
+        //    limit of `1/(acosh(2i + ix) − acosh(2i))` at `0⁺` took 12.6 s to
+        //    find `∞`, its Gruntz expansion of `Im(1/D)` being identically 0.
+        ExprNode::Acosh(inner) => {
+            let p = child_parts(arena, cache, inner);
+            if !p.exact || p.re != arena.zero || p.im == arena.zero {
+                return opaque(arena, id);
+            }
+            let sign = if assumptions.query(arena, p.im, Props::POSITIVE) == Some(true) {
+                Some(std::cmp::Ordering::Greater)
+            } else if assumptions.query(arena, p.im, Props::NEGATIVE) == Some(true) {
+                Some(std::cmp::Ordering::Less)
+            } else if walk::free_symbols(arena, p.im).is_empty() {
+                crate::transforms::eval::certified_real_sign(arena, p.im)
+            } else {
+                None
+            };
+            let (v, sign) = match sign {
+                Some(std::cmp::Ordering::Greater) => (p.im, arena.one),
+                Some(std::cmp::Ordering::Less) => (arena.neg(p.im), arena.neg_one),
+                _ => return opaque(arena, id),
+            };
+            let half = arena.rational(1, 2);
+            let pi = arena.pi;
+            Parts {
+                re: arena.asinh(v),
+                im: arena.mul(&[sign, half, pi]),
+                exact: true,
+            }
+        }
+
         // ── conjugate(w): (re w, −im w)
         ExprNode::Conjugate(inner) => {
             let p = child_parts(arena, cache, inner);

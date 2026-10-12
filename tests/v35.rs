@@ -6,10 +6,14 @@
 mod v35_applied;
 #[path = "v35/v35_assumptions.rs"]
 mod v35_assumptions;
+#[path = "v35/v35_consistency.rs"]
+mod v35_consistency;
 #[path = "v35/v35_decisions.rs"]
 mod v35_decisions;
 #[path = "v35/v35_definite.rs"]
 mod v35_definite;
+#[path = "v35/v35_definite2.rs"]
+mod v35_definite2;
 #[path = "v35/v35_diff.rs"]
 mod v35_diff;
 #[path = "v35/v35_domains.rs"]
@@ -56,6 +60,8 @@ mod v35_numeric;
 mod v35_numint;
 #[path = "v35/v35_ode.rs"]
 mod v35_ode;
+#[path = "v35/v35_ode2.rs"]
+mod v35_ode2;
 #[path = "v35/v35_poly.rs"]
 mod v35_poly;
 #[path = "v35/v35_quadrature.rs"]
@@ -74,8 +80,12 @@ mod v35_solve2;
 mod v35_special;
 #[path = "v35/v35_speed.rs"]
 mod v35_speed;
+#[path = "v35/v35_speed2.rs"]
+mod v35_speed2;
 #[path = "v35/v35_stats.rs"]
 mod v35_stats;
+#[path = "v35/v35_stats2.rs"]
+mod v35_stats2;
 #[path = "v35/v35_sums.rs"]
 mod v35_sums;
 #[path = "v35/v35_transcendental.rs"]
@@ -84,3 +94,5 @@ mod v35_transcendental;
 mod v35_transforms;
 #[path = "v35/v35_trig_values.rs"]
 mod v35_trig_values;
+#[path = "v35/v35_units.rs"]
+mod v35_units;

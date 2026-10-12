@@ -25,7 +25,12 @@
 //! - **nth-order linear constant-coefficient:** `Σ a_k y^(k) = g(x)` for any
 //!   order via the characteristic polynomial (repeated roots → `x^k e^{rx}`,
 //!   complex pairs → `e^{ax}(cos bx, sin bx)`), with undetermined coefficients
-//!   for `poly × exp × {sin, cos}` forcing (resonance handled); roots of an
+//!   for `poly × exp × {sin, cos}` forcing (resonance handled; irrational
+//!   rates and frequencies such as `e^{√2·x}`, `cos(√3·x/2)` in exact
+//!   arithmetic, `sinh`/`cosh` as exponentials); other forcing terms by the
+//!   Green's function `∫ G(x − t)·g(t) dt` with complex exponentials when
+//!   the characteristic polynomial's factors have degree ≤ 2 (`y″ + y =
+//!   eˣ/x` → `Ei((1 ∓ i)x)`, `y‴ − y′ = 1/x`); roots of an
 //!   irreducible factor of degree ≥ 3 in Cardano's radicals with real and
 //!   imaginary parts (`y‴ + y″ + 2y = 0`), or as `RootOf` with
 //!   `e^{x·re(RootOf(…))}·cos(x·im(RootOf(…)))` (SymPy's real fundamental
@@ -433,6 +438,10 @@ fn dsolve_as_given(
     attempt!(try_variation_of_parameters(
         arena, expr, func, var, func_sym, var_sym
     ));
+
+    // Type 1d': any order ≤ 6, roots of degree ≤ 2: Green's function
+    // (complex exponentials) for forcing outside undetermined coefficients.
+    attempt!(try_linear_cc_green(arena, expr, func, var, func_sym));
 
     // Type 1f: Clairaut: y = x·y' + f(y')
     attempt!(try_clairaut(arena, expr, func, var, func_sym, var_sym));
@@ -1560,7 +1569,7 @@ fn try_first_order_linear(
         arena.mul(&[neg_f, exp_ax])
     };
     let integrand = crate::transforms::eval::eval(arena, integrand);
-    let integral = crate::transforms::integrate::integrate(arena, integrand, var);
+    let integral = integrate_forms(arena, integrand, var);
 
     let c1 = arena.symbol("C1");
     let inner = arena.add(&[integral, c1]);
@@ -3323,7 +3332,115 @@ fn integrate_forms(arena: &mut Arena, e: ExprId, var: ExprId) -> ExprId {
             return r;
         }
     }
+    if let Some(r) = integrate_trig_as_exp(arena, merged, var) {
+        return r;
+    }
     first
+}
+
+/// `∫ e d(var)` with `sin`/`cos` of linear arguments written as complex
+/// exponentials (and the result's complex exponentials back as
+/// `cos + i·sin`): `∫ eˣ·cos x/x dx = (Ei((1 + i)x) + Ei((1 − i)x))/2`,
+/// which the integrator does not find in the trigonometric form (the
+/// linear equation `y′ + y = cos x/x` was left with a formal integral).
+/// `None` when `e` has no such factor, has other trigonometric functions,
+/// or the exponential form does not integrate either.
+fn integrate_trig_as_exp(arena: &mut Arena, e: ExprId, var: ExprId) -> Option<ExprId> {
+    let mut has_circular = false;
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        match arena.node(id).clone() {
+            ExprNode::Sin(a) | ExprNode::Cos(a) => {
+                let c = crate::transforms::solve::symbolic_poly_coeffs(arena, a, var)?;
+                if c.len() > 2 {
+                    return None;
+                }
+                has_circular = true;
+            }
+            ExprNode::Tan(_) => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    if !has_circular {
+        return None;
+    }
+    let x = crate::simplify::rewrite::rewrite_as_exp(arena, e);
+    let x = crate::transforms::expand::expand(arena, x);
+    let x = crate::transforms::eval::eval(arena, x);
+    let x = crate::simplify::powsimp::powsimp(arena, x);
+    let x = crate::transforms::eval::eval(arena, x);
+    let r = crate::transforms::integrate::integrate(arena, x, var);
+    if integral_failed(arena, r) {
+        return None;
+    }
+    let r = complex_exp_as_trig(arena, r, var);
+    let r = crate::transforms::expand::expand(arena, r);
+    Some(crate::transforms::eval::eval(arena, r))
+}
+
+/// `e^{(a + i·b)·x + c + i·d} → e^{a·x + c}·(cos(b·x + d) + i·sin(b·x + d))`
+/// for every exponential whose argument is linear in `var` with constant
+/// coefficients (real parts `a`, `c` and imaginary parts `b`, `d` from
+/// [`real_imag_parts`]); other exponentials, and constant ones, are kept
+/// (`rewrite_as_trig` turned the constant `e^{−1 − i}` into
+/// `cos(i − 1) + i·sin(i − 1)`).
+fn complex_exp_as_trig(arena: &mut Arena, e: ExprId, var: ExprId) -> ExprId {
+    let i_unit = arena.i_unit;
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match *arena.node(rebuilt) {
+            ExprNode::Exp(arg)
+                if contains_sym_id(arena, arg, var)
+                    && crate::base::walk::contains(arena, arg, i_unit) =>
+            {
+                exp_linear_as_trig(arena, arg, var).unwrap_or(rebuilt)
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    let out = cache.get(&e).copied().unwrap_or(e);
+    crate::transforms::eval::eval(arena, out)
+}
+
+/// The rewrite of [`complex_exp_as_trig`] for one exponential `e^{arg}`.
+fn exp_linear_as_trig(arena: &mut Arena, arg: ExprId, var: ExprId) -> Option<ExprId> {
+    let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, arg, var)?;
+    if coeffs.len() != 2 {
+        return None;
+    }
+    let mut re = Vec::with_capacity(2);
+    let mut im = Vec::with_capacity(2);
+    for (k, &c) in coeffs.iter().enumerate() {
+        if !crate::base::walk::free_symbols(arena, c).is_empty() {
+            return None;
+        }
+        let (r, i) = real_imag_parts(arena, c);
+        if !real_radical_form(arena, r) || !real_radical_form(arena, i) {
+            return None;
+        }
+        let (r, i) = if k == 1 {
+            (arena.mul(&[r, var]), arena.mul(&[i, var]))
+        } else {
+            (r, i)
+        };
+        re.push(r);
+        im.push(i);
+    }
+    let re = arena.add(&re);
+    let re = crate::transforms::eval::eval(arena, re);
+    let im = arena.add(&im);
+    let im = crate::transforms::eval::eval(arena, im);
+    let envelope = arena.exp(re);
+    let cos = arena.cos(im);
+    let sin = arena.sin(im);
+    let i_unit = arena.i_unit;
+    let i_sin = arena.mul(&[i_unit, sin]);
+    let osc = arena.add(&[cos, i_sin]);
+    Some(arena.mul(&[envelope, osc]))
 }
 
 /// Is `e` zero as a rational function of its symbols and opaque
@@ -4138,11 +4255,50 @@ fn try_euler_cauchy_n(
     func_sym: SymbolId,
     var_sym: SymbolId,
 ) -> Option<OdeResult> {
+    let euler = euler_operator(arena, expr, func, var, func_sym, 3)?;
+    euler_cauchy_by_exp(arena, &euler.coeffs, &euler.forcing, var, var_sym)
+}
+
+/// A Cauchy–Euler equation `Σₖ aₖ·xᵏ·y⁽ᵏ⁾ + g(x) = 0` after `x = eᵗ`:
+/// `Σⱼ coeffsⱼ·Y⁽ʲ⁾(t) + g = 0`.
+struct EulerOperator {
+    /// The coefficients of `Dʲ` (`D = d/dt`) of `Σ aₖ·D(D − 1)⋯(D − k + 1)`.
+    coeffs: Vec<Q>,
+    /// The forcing terms (in `x`).
+    forcing: Vec<ExprId>,
+}
+
+/// The signed Stirling numbers of the first kind `s(k, j)`, `j ≤ k`: the
+/// coefficients of `D(D − 1)⋯(D − k + 1) = Σⱼ s(k, j)·Dʲ`.
+fn falling_operator(k: usize) -> Vec<Q> {
+    let mut falling = vec![Q::from_integer(1.into())];
+    for i in 0..k {
+        let shift = Q::from_integer((i as i64).into());
+        let mut next = vec![Q::from_integer(0.into()); falling.len() + 1];
+        for (j, v) in falling.iter().enumerate() {
+            next[j + 1] += v;
+            next[j] -= v * &shift;
+        }
+        falling = next;
+    }
+    falling
+}
+
+/// Recognise a Cauchy–Euler equation of order `≥ min_order` with rational
+/// `aₖ` (see [`EulerOperator`]).
+fn euler_operator(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    min_order: usize,
+) -> Option<EulerOperator> {
     let chain = derivative_chain(arena, func, var);
     let order = (1..chain.len())
         .rev()
         .find(|&k| expr_contains(arena, expr, chain[k]))?;
-    if order < 3 {
+    if order < min_order {
         return None;
     }
     let ExprNode::Add(children) = arena.node(expr).clone() else {
@@ -4189,23 +4345,124 @@ fn try_euler_cauchy_n(
     }
     // Σₖ aₖ·D(D − 1)⋯(D − k + 1) as coefficients of Dʲ.
     let mut cd = vec![Q::from_integer(0.into()); order + 1];
-    let mut falling = vec![Q::from_integer(1.into())];
     for (k, ak) in a.iter().enumerate() {
-        if k > 0 {
-            // falling ← falling·(D − (k − 1))
-            let shift = Q::from_integer(((k - 1) as i64).into());
-            let mut next = vec![Q::from_integer(0.into()); falling.len() + 1];
-            for (j, v) in falling.iter().enumerate() {
-                next[j + 1] += v;
-                next[j] -= v * &shift;
-            }
-            falling = next;
-        }
-        for (j, v) in falling.iter().enumerate() {
+        for (j, v) in falling_operator(k).iter().enumerate() {
             cd[j] += ak * v;
         }
     }
-    euler_cauchy_by_exp(arena, &cd, &forcing, var, var_sym)
+    Some(EulerOperator {
+        coeffs: cd,
+        forcing,
+    })
+}
+
+/// [`linear_cc_ivp_lagrange`] for a Cauchy–Euler equation with all
+/// conditions at one point `x₀ > 0`: with `x = x₀·eᵗ` the equation is
+/// `Σ cdⱼ·Y⁽ʲ⁾(t) + g(x₀eᵗ) = 0` and the conditions become
+/// `Y⁽ʲ⁾(0) = Wⱼ` through `x₀ᵏ·y⁽ᵏ⁾(x₀) = Σⱼ s(k, j)·Wⱼ`; the
+/// constant-coefficient fit, mapped back by `t = ln(x/x₀)`.  The generic fit
+/// over `RootOf(m⁴ + m + 1, k)` took 5 s (debug build) for
+/// `x⁴y⁗ + 6x³y‴ + 7x²y″ + 2xy′ + y = x²`.
+fn euler_ivp_lagrange(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    x0: ExprId,
+    values: &[ExprId],
+) -> Option<ExprId> {
+    let ExprNode::Symbol(func_sym) = *arena.node(func) else {
+        return None;
+    };
+    let ExprNode::Symbol(var_sym) = *arena.node(var) else {
+        return None;
+    };
+    if !is_real_constant(arena, x0)
+        || !crate::transforms::evalf::evalf_complex64(arena, x0).is_ok_and(|z| z.re > 0.0)
+    {
+        return None;
+    }
+    let euler = euler_operator(arena, expr, func, var, func_sym, 2)?;
+    let n = euler.coeffs.len() - 1;
+    if values.len() != n {
+        return None;
+    }
+    let t = arena.symbol("__t_euler_ivp");
+    let big_y = arena.symbol("__Y_euler_ivp");
+    // Σ cdⱼ·Y⁽ʲ⁾ + g(x₀·eᵗ)
+    let mut parts = Vec::with_capacity(n + 1 + euler.forcing.len());
+    let mut d = big_y;
+    for (j, c) in euler.coeffs.iter().enumerate() {
+        if j > 0 {
+            d = arena.intern(ExprNode::Derivative(d, t));
+        }
+        if !num_traits::Zero::is_zero(c) {
+            let c = ode_ratio_to_expr(arena, c);
+            parts.push(arena.mul(&[c, d]));
+        }
+    }
+    let ln_x = arena.ln(var);
+    let ln_x0 = arena.ln(x0);
+    let ln_shifted = arena.add(&[ln_x0, t]);
+    for &f in &euler.forcing {
+        let g = crate::transforms::subs::subs(arena, f, ln_x, ln_shifted);
+        let post = crate::base::walk::post_order_ids(arena, g);
+        let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+        for &id in &post {
+            let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+            let new = match *arena.node(rebuilt) {
+                ExprNode::Pow(b, e) if b == var && !contains_sym(arena, e, var_sym) => {
+                    let scale = arena.pow(x0, e);
+                    let et = arena.mul(&[e, t]);
+                    let growth = arena.exp(et);
+                    arena.mul(&[scale, growth])
+                }
+                _ => rebuilt,
+            };
+            cache.insert(id, new);
+        }
+        let g = cache.get(&g).copied().unwrap_or(g);
+        let exp_t = arena.exp(t);
+        let x_of_t = arena.mul(&[x0, exp_t]);
+        let g = crate::transforms::subs::subs(arena, g, var, x_of_t);
+        let g = crate::transforms::eval::eval(arena, g);
+        let g = crate::transforms::expand::expand(arena, g);
+        let g = crate::transforms::eval::eval(arena, g);
+        if contains_sym(arena, g, var_sym) {
+            return None;
+        }
+        parts.push(g);
+    }
+    let ode_t = arena.add(&parts);
+    let ode_t = crate::transforms::eval::eval(arena, ode_t);
+    // W_k = x₀ᵏ·vₖ − Σ_{j<k} s(k, j)·Wⱼ
+    let mut w: Vec<ExprId> = Vec::with_capacity(n);
+    for (k, &v) in values.iter().enumerate() {
+        let kk = arena.int(i64::try_from(k).ok()?);
+        let x0k = arena.pow(x0, kk);
+        let mut acc = vec![arena.mul(&[x0k, v])];
+        for (j, s) in falling_operator(k).iter().enumerate().take(k) {
+            if num_traits::Zero::is_zero(s) {
+                continue;
+            }
+            let c = ode_ratio_to_expr(arena, &-s.clone());
+            acc.push(arena.mul(&[c, w[j]]));
+        }
+        let wk = arena.add(&acc);
+        w.push(crate::transforms::eval::eval(arena, wk));
+    }
+    let zero = arena.zero;
+    let sol_t = linear_cc_ivp_lagrange(arena, ode_t, big_y, t, zero, &w)?;
+    // t = ln(x/x₀)
+    let ratio = arena.div(var, x0);
+    let back = arena.ln(ratio);
+    let sol = crate::transforms::subs::subs(arena, sol_t, t, back);
+    let sol = crate::transforms::eval::eval(arena, sol);
+    let sol = exp_log_to_power(arena, sol);
+    if contains_sym(arena, sol, func_sym) || crate::base::walk::contains(arena, sol, t) {
+        return None;
+    }
+    Some(sol)
 }
 
 /// `Σⱼ cdⱼ·Y⁽ʲ⁾(t) + Σ forcing(x = eᵗ) = 0` solved and mapped back to `x`
@@ -4240,8 +4497,24 @@ fn euler_cauchy_by_exp(
         parts.push(arena.mul(&[c_id, d]));
     }
     for &f in forcing {
-        // ln x = t first (x > 0), then x = eᵗ.
+        // ln x = t first (x > 0), then xᵖ = e^{p·t} (`√x` became
+        // `(eᵗ)^(1/2)`, which is not `e^{t/2}` for complex `t`, and the
+        // forcing was not recognised), then x = eᵗ.
         let g = crate::transforms::subs::subs(arena, f, ln_x, t);
+        let post = crate::base::walk::post_order_ids(arena, g);
+        let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+        for &id in &post {
+            let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+            let new = match *arena.node(rebuilt) {
+                ExprNode::Pow(b, e) if b == var && !contains_sym(arena, e, var_sym) => {
+                    let et = arena.mul(&[e, t]);
+                    arena.exp(et)
+                }
+                _ => rebuilt,
+            };
+            cache.insert(id, new);
+        }
+        let g = cache.get(&g).copied().unwrap_or(g);
         let g = crate::transforms::subs::subs(arena, g, var, exp_t);
         parts.push(crate::transforms::eval::eval(arena, g));
     }
@@ -4427,6 +4700,216 @@ fn try_variation_of_parameters(
     Some(OdeResult {
         solution,
         constants: homo.constants,
+        branches: Vec::new(),
+    })
+}
+
+/// Highest order [`try_linear_cc_green`] handles (one antiderivative per
+/// root and multiplicity).
+const MAX_GREEN_ORDER: usize = 6;
+
+/// A root of a characteristic polynomial for [`try_linear_cc_green`]: its
+/// multiplicity `mult` and the cofactor `p(s)/(s − root)^mult` (an
+/// expression in `s`).
+struct GreenRoot {
+    root: ExprId,
+    mult: usize,
+    cofactor: ExprId,
+}
+
+/// The roots of the rational polynomial `p` with their cofactors, when
+/// every irreducible factor of `p` over ℚ has degree 1 or 2 (rational
+/// roots, real quadratic surds, complex quadratic pairs); `None` otherwise.
+fn green_roots(arena: &mut Arena, p: &crate::poly::Poly, s: ExprId) -> Option<Vec<GreenRoot>> {
+    let (content, factors) = p.factor_over_z();
+    let factor_exprs: Vec<ExprId> = factors
+        .iter()
+        .map(|(g, _)| crate::poly::polybridge::poly_to_expr(arena, g, s))
+        .collect();
+    let mut out = Vec::new();
+    for (fi, (g, mult)) in factors.iter().enumerate() {
+        let mult = *mult as usize;
+        let lead = g.leading_coeff()?.clone();
+        let roots: Vec<ExprId> = match g.degree()? {
+            1 => vec![ode_ratio_to_expr(arena, &(-g.coeff(0) / &lead))],
+            2 => {
+                let (a, b, c) = (lead.clone(), g.coeff(1), g.coeff(0));
+                let disc = &b * &b - Q::from_integer(4.into()) * &a * &c;
+                let half = Q::new(1.into(), 2.into());
+                let mag = ode_ratio_to_expr(arena, &disc.abs());
+                let half_id = ode_ratio_to_expr(arena, &half);
+                let sqrt = arena.pow(mag, half_id);
+                let sqrt = if disc.is_negative() {
+                    let i_unit = arena.i_unit;
+                    arena.mul(&[i_unit, sqrt])
+                } else {
+                    sqrt
+                };
+                let two_a = ode_ratio_to_expr(arena, &(Q::from_integer(2.into()) * &a));
+                let neg_b = ode_ratio_to_expr(arena, &(-b));
+                let neg_sqrt = arena.neg(sqrt);
+                [sqrt, neg_sqrt]
+                    .into_iter()
+                    .map(|d| {
+                        let num = arena.add(&[neg_b, d]);
+                        let r = arena.div(num, two_a);
+                        let r = crate::transforms::expand::expand(arena, r);
+                        crate::transforms::eval::eval(arena, r)
+                    })
+                    .collect()
+            }
+            _ => return None,
+        };
+        for (ri, &root) in roots.iter().enumerate() {
+            // p(s)/(s − r)^m = content · lead^m · (s − r′)^m · Π_{other} h(s)^{m_h}
+            let mut parts = vec![ode_ratio_to_expr(arena, &content)];
+            let m_id = arena.int(i64::try_from(mult).ok()?);
+            let lead_id = ode_ratio_to_expr(arena, &lead);
+            parts.push(arena.pow(lead_id, m_id));
+            if roots.len() == 2 {
+                let other = roots[1 - ri];
+                let lin = arena.sub(s, other);
+                parts.push(arena.pow(lin, m_id));
+            }
+            for (hi, (_, mh)) in factors.iter().enumerate() {
+                if hi != fi {
+                    let e = arena.int(i64::from(*mh));
+                    parts.push(arena.pow(factor_exprs[hi], e));
+                }
+            }
+            let cofactor = arena.mul(&parts);
+            out.push(GreenRoot {
+                root,
+                mult,
+                cofactor,
+            });
+        }
+    }
+    Some(out)
+}
+
+/// `Σ aₖ·y⁽ᵏ⁾ = g(x)` with rational `aₖ` (order `2 ≤ n ≤ 6`) and a forcing
+/// term outside undetermined coefficients, by the Green's function of
+/// `p(D)`: with `1/p(s) = Σ_r Σ_{j≤m_r} A_{r,j}/(s − r)ʲ`,
+/// `yₚ(x) = Σ A_{r,j}/(j−1)! · ∫ˣ (x − t)^{j−1}·e^{r(x−t)}·g(t) dt`, the
+/// binomial expansion of `(x − t)^{j−1}` leaving the antiderivatives
+/// `∫ tⁱ·e^{−rt}·g(t) dt` (trigonometric and hyperbolic functions in `g`
+/// written as exponentials).  The roots are those of factors of degree ≤ 2
+/// over ℚ, complex ones as complex exponentials: `y″ + y = eˣ/x` gets
+/// `Ei((1 ∓ i)x)` (a real function written with `i`), `y‴ − y′ = 1/x` gets
+/// `ln x`, `Ei(±x)`.  Before, variation of parameters was only tried for
+/// order 2 and with the real basis (`∫ eˣ sin x/x dx` is not found), and
+/// these equations were refused.  The homogeneous part is the real basis of
+/// [`homogeneous_basis_cc`].
+fn try_linear_cc_green(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+) -> Option<OdeResult> {
+    let ode = extract_linear_cc(arena, expr, func, var, func_sym)?;
+    let n = ode.coeffs.len() - 1;
+    if !(2..=MAX_GREEN_ORDER).contains(&n) || ode.forcing.is_empty() {
+        return None;
+    }
+    let p = crate::poly::Poly::from_coeffs(ode.coeffs.clone());
+    let s = arena.symbol("__s_green");
+    let roots = green_roots(arena, &p, s)?;
+    let basis = homogeneous_basis_cc(arena, &ode.coeffs, var)?;
+    if basis.len() != n {
+        return None;
+    }
+    // g = −(forcing terms), circular and hyperbolic functions as exponentials
+    let g = {
+        let f = arena.add(&ode.forcing);
+        let neg = arena.neg(f);
+        let g = crate::simplify::rewrite::rewrite_as_exp(arena, neg);
+        crate::transforms::eval::eval(arena, g)
+    };
+    let mut particular = Vec::new();
+    for gr in &roots {
+        // F_i = ∫ xⁱ·e^{−rx}·g dx, i < m
+        let neg_r = arena.neg(gr.root);
+        let neg_rx = arena.mul(&[neg_r, var]);
+        let decay = arena.exp(neg_rx);
+        let mut antiderivatives = Vec::with_capacity(gr.mult);
+        for i in 0..gr.mult {
+            let xi = arena.int(i64::try_from(i).ok()?);
+            let xi = arena.pow(var, xi);
+            let integrand = arena.mul(&[xi, decay, g]);
+            let integrand = crate::transforms::expand::expand(arena, integrand);
+            let integrand = crate::transforms::eval::eval(arena, integrand);
+            let f = integrate_forms(arena, integrand, var);
+            if integral_failed(arena, f) {
+                return None;
+            }
+            antiderivatives.push(f);
+        }
+        let rx = arena.mul(&[gr.root, var]);
+        let growth = arena.exp(rx);
+        // A_{r,j} = (1/(m−j)!)·[d^{m−j}/ds^{m−j} 1/cofactor](r)
+        let mut inv = {
+            let m1 = arena.int(-1);
+            arena.pow(gr.cofactor, m1)
+        };
+        let mut derivs = vec![inv];
+        for _ in 1..gr.mult {
+            inv = crate::transforms::diff::diff(arena, inv, s);
+            derivs.push(inv);
+        }
+        for j in 1..=gr.mult {
+            let k = gr.mult - j;
+            let at = crate::transforms::subs::subs(arena, derivs[k], s, gr.root);
+            let fact = ode_ratio_to_expr(arena, &falling_factorial_rat(k, k));
+            let a = arena.div(at, fact);
+            let a = crate::transforms::expand::expand(arena, a);
+            let a = crate::transforms::eval::eval(arena, a);
+            if arena.is_zero_structural(a) {
+                continue;
+            }
+            // Σ_i C(j−1, i)·x^{j−1−i}·(−1)^i·F_i
+            let mut inner = Vec::with_capacity(j);
+            for (i, &fi) in antiderivatives.iter().enumerate().take(j) {
+                let mut c = Q::from_integer(binomial((j - 1) as u64, i as u64));
+                if i % 2 == 1 {
+                    c = -c;
+                }
+                let c = ode_ratio_to_expr(arena, &c);
+                let xp = arena.int(i64::try_from(j - 1 - i).ok()?);
+                let xp = arena.pow(var, xp);
+                inner.push(arena.mul(&[c, xp, fi]));
+            }
+            let inner = arena.add(&inner);
+            let jf = ode_ratio_to_expr(arena, &falling_factorial_rat(j - 1, j - 1));
+            let term = arena.mul(&[a, growth, inner]);
+            particular.push(arena.div(term, jf));
+        }
+    }
+    // Products of exponentials merged, complex exponentials as cos + i·sin
+    // (the imaginary parts of the elementary terms then cancel).
+    let y_p = arena.add(&particular);
+    let y_p = crate::simplify::powsimp::powsimp(arena, y_p);
+    let y_p = crate::transforms::eval::eval(arena, y_p);
+    let y_p = complex_exp_as_trig(arena, y_p, var);
+    let y_p = crate::transforms::expand::expand(arena, y_p);
+    let y_p = crate::transforms::eval::eval(arena, y_p);
+    if crate::base::walk::has_unevaluated(arena, y_p) {
+        return None;
+    }
+    let mut constants = Vec::with_capacity(n);
+    let mut terms = Vec::with_capacity(n + 1);
+    for (i, &b) in basis.iter().enumerate() {
+        let c = arena.symbol(&format!("C{}", i + 1));
+        constants.push(c);
+        terms.push(arena.mul(&[c, b]));
+    }
+    terms.push(y_p);
+    let solution = arena.add(&terms);
+    let solution = crate::transforms::eval::eval(arena, solution);
+    Some(OdeResult {
+        solution,
+        constants,
         branches: Vec::new(),
     })
 }
@@ -4761,6 +5244,454 @@ fn particular_for_group(
     Some(crate::transforms::eval::eval(arena, y_p))
 }
 
+/// A forcing term `c·x^d·e^{ax}·{1 | cos(bx) | sin(bx)}` whose constants
+/// `c`, `a`, `b` are real numbers that are not all rational (`e^{√2·x}`,
+/// `e^{x/2}·cos(√3·x/2)`), for [`particular_for_group_sym`].
+struct SymForcingTerm {
+    coeff: ExprId,
+    degree: usize,
+    a: ExprId,
+    b: ExprId,
+    kind: TrigKind,
+}
+
+/// Is `e` a real constant: free of symbols and of `i`, with a finite real
+/// value?
+fn is_real_constant(arena: &Arena, e: ExprId) -> bool {
+    crate::base::walk::free_symbols(arena, e).is_empty()
+        && real_radical_form(arena, e)
+        && crate::transforms::evalf::evalf_complex64(arena, e)
+            .is_ok_and(|z| z.re.is_finite() && z.im == 0.0)
+}
+
+/// `(rate, offset)` with `e = rate·var + offset`, both real constants.
+fn linear_real_constants(arena: &mut Arena, e: ExprId, var: ExprId) -> Option<(ExprId, ExprId)> {
+    let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, e, var)?;
+    if coeffs.len() != 2 || !coeffs.iter().all(|&c| is_real_constant(arena, c)) {
+        return None;
+    }
+    Some((coeffs[1], coeffs[0]))
+}
+
+/// [`parse_forcing_term`] with real constant (not necessarily rational)
+/// coefficient, rates and frequency.  A phase-free `cos`/`sin`; an offset
+/// in the exponent goes into the coefficient.
+fn parse_forcing_term_sym(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<SymForcingTerm> {
+    let factors: Vec<ExprId> = match arena.node(term).clone() {
+        ExprNode::Mul(c) => c.to_vec(),
+        ExprNode::Neg(inner) => vec![arena.neg_one, inner],
+        _ => vec![term],
+    };
+    let mut coeff = vec![];
+    let mut degree = 0usize;
+    let (mut a, mut b) = (arena.zero, arena.zero);
+    let mut kind = TrigKind::None;
+    let mut seen_exp = false;
+    for f in factors {
+        if f == var {
+            degree += 1;
+            continue;
+        }
+        if !contains_sym_id(arena, f, var) {
+            if !is_real_constant(arena, f) {
+                return None;
+            }
+            coeff.push(f);
+            continue;
+        }
+        match arena.node(f).clone() {
+            ExprNode::Pow(base, exp) if base == var => {
+                let n = arena.as_num(exp)?.clone();
+                if !n.is_integer() || n.is_negative() {
+                    return None;
+                }
+                degree += usize::try_from(n.to_integer()).ok()?;
+            }
+            ExprNode::Exp(inner) if !seen_exp => {
+                let (rate, offset) = linear_real_constants(arena, inner, var)?;
+                seen_exp = true;
+                a = rate;
+                if !arena.is_zero_structural(offset) {
+                    coeff.push(arena.exp(offset));
+                }
+            }
+            // b^(k·x + m) = e^{(k·x + m)·ln b} for a constant b > 0 (`2ˣ`)
+            ExprNode::Pow(base, exp)
+                if !seen_exp
+                    && !contains_sym_id(arena, base, var)
+                    && is_real_constant(arena, base)
+                    && crate::transforms::evalf::evalf_complex64(arena, base)
+                        .is_ok_and(|z| z.re > 0.0) =>
+            {
+                let (k, m) = linear_real_constants(arena, exp, var)?;
+                let ln_b = arena.ln(base);
+                let rate = arena.mul(&[k, ln_b]);
+                seen_exp = true;
+                a = crate::transforms::eval::eval(arena, rate);
+                if !arena.is_zero_structural(m) {
+                    coeff.push(arena.pow(base, m));
+                }
+            }
+            ExprNode::Sin(inner) | ExprNode::Cos(inner) if kind == TrigKind::None => {
+                let (freq, offset) = linear_real_constants(arena, inner, var)?;
+                if !arena.is_zero_structural(offset) {
+                    return None;
+                }
+                let negative = crate::transforms::evalf::evalf_complex64(arena, freq)
+                    .ok()
+                    .filter(|z| z.re != 0.0)?
+                    .re
+                    < 0.0;
+                let is_sin = matches!(arena.node(f), ExprNode::Sin(_));
+                kind = if is_sin { TrigKind::Sin } else { TrigKind::Cos };
+                b = if negative { arena.neg(freq) } else { freq };
+                b = crate::transforms::eval::eval(arena, b);
+                if negative && is_sin {
+                    coeff.push(arena.neg_one);
+                }
+            }
+            _ => return None,
+        }
+    }
+    let coeff = arena.mul(&coeff);
+    Some(SymForcingTerm {
+        coeff: crate::transforms::eval::eval(arena, coeff),
+        degree,
+        a: crate::transforms::eval::eval(arena, a),
+        b,
+        kind,
+    })
+}
+
+/// Does `e` contain the expression `var` (a symbol)?
+fn contains_sym_id(arena: &Arena, e: ExprId, var: ExprId) -> bool {
+    match arena.node(var) {
+        ExprNode::Symbol(s) => contains_sym(arena, e, *s),
+        _ => true,
+    }
+}
+
+/// A complex number `re + i·im` with real constant parts, for
+/// [`particular_for_group_sym`] (the symbolic counterpart of [`CQ`]).
+#[derive(Clone, Copy)]
+struct CEx {
+    re: ExprId,
+    im: ExprId,
+}
+
+impl CEx {
+    fn norm(arena: &mut Arena, re: ExprId, im: ExprId) -> CEx {
+        let mut parts = [re, im];
+        for p in &mut parts {
+            let e = crate::transforms::expand::expand(arena, *p);
+            *p = crate::transforms::eval::eval(arena, e);
+        }
+        CEx {
+            re: parts[0],
+            im: parts[1],
+        }
+    }
+    fn add(self, arena: &mut Arena, o: CEx) -> CEx {
+        let re = arena.add(&[self.re, o.re]);
+        let im = arena.add(&[self.im, o.im]);
+        CEx::norm(arena, re, im)
+    }
+    fn sub(self, arena: &mut Arena, o: CEx) -> CEx {
+        let re = arena.sub(self.re, o.re);
+        let im = arena.sub(self.im, o.im);
+        CEx::norm(arena, re, im)
+    }
+    fn mul(self, arena: &mut Arena, o: CEx) -> CEx {
+        let rr = arena.mul(&[self.re, o.re]);
+        let ii = arena.mul(&[self.im, o.im]);
+        let ri = arena.mul(&[self.re, o.im]);
+        let ir = arena.mul(&[self.im, o.re]);
+        let re = arena.sub(rr, ii);
+        let im = arena.add(&[ri, ir]);
+        CEx::norm(arena, re, im)
+    }
+    fn scale(self, arena: &mut Arena, r: &Q) -> CEx {
+        let r = ode_ratio_to_expr(arena, r);
+        let re = arena.mul(&[r, self.re]);
+        let im = arena.mul(&[r, self.im]);
+        CEx::norm(arena, re, im)
+    }
+    fn div(self, arena: &mut Arena, o: CEx) -> CEx {
+        // (x + iy)/(u + iv) = ((xu + yv) + i(yu − xv))/(u² + v²)
+        let two = arena.int(2);
+        let u2 = arena.pow(o.re, two);
+        let v2 = arena.pow(o.im, two);
+        let d = arena.add(&[u2, v2]);
+        let d = crate::transforms::expand::expand(arena, d);
+        let d = crate::transforms::eval::eval(arena, d);
+        let xu = arena.mul(&[self.re, o.re]);
+        let yv = arena.mul(&[self.im, o.im]);
+        let yu = arena.mul(&[self.im, o.re]);
+        let xv = arena.mul(&[self.re, o.im]);
+        let re = arena.add(&[xu, yv]);
+        let im = arena.sub(yu, xv);
+        let mut parts = [re, im];
+        for p in &mut parts {
+            let e = crate::transforms::expand::expand(arena, *p);
+            let e = crate::transforms::eval::eval(arena, e);
+            let q = arena.div(e, d);
+            *p = crate::simplify::radsimp::rationalize_denom(arena, q);
+        }
+        CEx::norm(arena, parts[0], parts[1])
+    }
+    /// `Some(true)` for an exact zero, `Some(false)` for a value certainly
+    /// away from zero, `None` when undecided (not structurally zero but
+    /// numerically tiny).
+    fn is_zero(self, arena: &Arena) -> Option<bool> {
+        if arena.is_zero_structural(self.re) && arena.is_zero_structural(self.im) {
+            return Some(true);
+        }
+        let re = crate::transforms::evalf::evalf_complex64(arena, self.re).ok()?;
+        let im = crate::transforms::evalf::evalf_complex64(arena, self.im).ok()?;
+        (re.norm().max(im.norm()) > 1e-8).then_some(false)
+    }
+}
+
+/// [`particular_for_group`] for real constant `a`, `b` and polynomial
+/// coefficients `q` that are not all rational: the same exponential shift
+/// with `λ = a + b·i` in exact arithmetic on real constants ([`CEx`]); the
+/// vanishing of `p⁽ʲ⁾(λ)` (resonance: `e^{√2·x}` against the root `√2` of
+/// `r⁴ − 2`) must be decided exactly, or the term is refused.
+fn particular_for_group_sym(
+    arena: &mut Arena,
+    p: &[Q],
+    q: &[ExprId],
+    a: ExprId,
+    b: ExprId,
+    kind: TrigKind,
+    var: ExprId,
+) -> Option<ExprId> {
+    let lambda = CEx { re: a, im: b };
+    let zero = CEx {
+        re: arena.zero,
+        im: arena.zero,
+    };
+    let n = p.len() - 1;
+    // c_j = Σ_{k≥j} C(k, j)·a_k·λ^{k−j}
+    let mut c = Vec::with_capacity(n + 1);
+    for j in 0..=n {
+        let mut acc = zero;
+        let mut lambda_pow = CEx {
+            re: arena.one,
+            im: arena.zero,
+        };
+        for (k, a_k) in p.iter().enumerate().skip(j) {
+            let coef = a_k * Q::from_integer(binomial(k as u64, j as u64));
+            let term = lambda_pow.scale(arena, &coef);
+            acc = acc.add(arena, term);
+            lambda_pow = lambda_pow.mul(arena, lambda);
+        }
+        c.push(acc);
+    }
+    let mut s = None;
+    for (j, cj) in c.iter().enumerate() {
+        if !cj.is_zero(arena)? {
+            s = Some(j);
+            break;
+        }
+    }
+    let s = s?;
+    let d = q.len().checked_sub(1)?;
+    let m = d + s;
+    let mut w = vec![zero; m + 1];
+    for k in (0..=d).rev() {
+        let mut rhs = CEx {
+            re: q[k],
+            im: arena.zero,
+        };
+        for j in (s + 1)..=n {
+            if k + j > m {
+                continue;
+            }
+            let t = c[j]
+                .mul(arena, w[k + j])
+                .scale(arena, &falling_factorial_rat(k + j, j));
+            rhs = rhs.sub(arena, t);
+        }
+        let lead = c[s].scale(arena, &falling_factorial_rat(k + s, s));
+        w[k + s] = rhs.div(arena, lead);
+    }
+    let poly = |arena: &mut Arena, parts: &[ExprId]| -> ExprId {
+        let mut terms = Vec::with_capacity(parts.len());
+        for (k, &ck) in parts.iter().enumerate() {
+            let e = arena.int(k as i64);
+            let xk = arena.pow(var, e);
+            terms.push(arena.mul(&[ck, xk]));
+        }
+        let sum = arena.add(&terms);
+        crate::transforms::eval::eval(arena, sum)
+    };
+    // each coefficient as one reduced fraction (`(ln²2 + 3)/(ln²2 + 3)²` came
+    // out unreduced for the rate `ln 2` of `2ˣ`)
+    let reduce = |arena: &mut Arena, e: ExprId| -> ExprId {
+        if arena.as_num(e).is_some() {
+            return e;
+        }
+        let r = crate::simplify::ratsimp::ratsimp(arena, e);
+        let r = crate::transforms::eval::eval(arena, r);
+        let size = |arena: &Arena, x: ExprId| {
+            crate::transforms::pattern::tree_size_capped(arena, x, 10_000)
+        };
+        if size(arena, r) <= size(arena, e) {
+            r
+        } else {
+            e
+        }
+    };
+    let wr: Vec<ExprId> = w.iter().map(|z| reduce(arena, z.re)).collect();
+    let wi: Vec<ExprId> = w.iter().map(|z| reduce(arena, z.im)).collect();
+    let wr_x = poly(arena, &wr);
+    let wi_x = poly(arena, &wi);
+    let ax = arena.mul(&[a, var]);
+    let exp_ax = arena.exp(ax);
+    let body = match kind {
+        TrigKind::None => wr_x,
+        TrigKind::Cos | TrigKind::Sin => {
+            let bx = arena.mul(&[b, var]);
+            let cos_bx = arena.cos(bx);
+            let sin_bx = arena.sin(bx);
+            if kind == TrigKind::Cos {
+                let t1 = arena.mul(&[wr_x, cos_bx]);
+                let t2 = arena.mul(&[wi_x, sin_bx]);
+                arena.sub(t1, t2)
+            } else {
+                let t1 = arena.mul(&[wr_x, sin_bx]);
+                let t2 = arena.mul(&[wi_x, cos_bx]);
+                arena.add(&[t1, t2])
+            }
+        }
+    };
+    let y_p = arena.mul(&[exp_ax, body]);
+    let y_p = crate::transforms::expand::expand(arena, y_p);
+    Some(crate::transforms::eval::eval(arena, y_p))
+}
+
+/// `sinh u → (eᵘ − e⁻ᵘ)/2`, `cosh u → (eᵘ + e⁻ᵘ)/2`, then expanded:
+/// the forcing terms of undetermined coefficients (`y‴ − 2y = sinh x` was
+/// refused, its forcing not being of the form `xᵈ·e^{ax}·cos/sin`).
+/// `None` when `terms` have no hyperbolic function.
+fn hyperbolic_forcing_as_exp(arena: &mut Arena, terms: &[ExprId]) -> Option<Vec<ExprId>> {
+    let has_hyperbolic = |arena: &Arena, e: ExprId| {
+        crate::base::walk::post_order_ids(arena, e)
+            .iter()
+            .any(|&id| matches!(arena.node(id), ExprNode::Sinh(_) | ExprNode::Cosh(_)))
+    };
+    if !terms.iter().any(|&t| has_hyperbolic(arena, t)) {
+        return None;
+    }
+    let sum = arena.add(terms);
+    let post = crate::base::walk::post_order_ids(arena, sum);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(rebuilt).clone() {
+            ExprNode::Sinh(u) | ExprNode::Cosh(u) => {
+                let is_sinh = matches!(arena.node(rebuilt), ExprNode::Sinh(_));
+                let pos = arena.exp(u);
+                let neg_u = arena.neg(u);
+                let neg = arena.exp(neg_u);
+                let neg = if is_sinh { arena.neg(neg) } else { neg };
+                let s = arena.add(&[pos, neg]);
+                let half = ode_ratio_to_expr(arena, &Q::new(1.into(), 2.into()));
+                arena.mul(&[half, s])
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    let out = cache.get(&sum).copied().unwrap_or(sum);
+    let out = crate::transforms::expand::expand(arena, out);
+    let out = crate::transforms::eval::eval(arena, out);
+    Some(match arena.node(out) {
+        ExprNode::Add(c) => c.to_vec(),
+        _ if arena.is_zero_structural(out) => Vec::new(),
+        _ => vec![out],
+    })
+}
+
+/// Pairs `c·r·e^{kx} ± c·r·e^{−kx}` (rational `c`, `k > 0`, the same rest
+/// `r`) of the sum `e` written back as `2c·r·cosh(kx)`, `2c·r·sinh(kx)`:
+/// the particular solution for a hyperbolic forcing term, found after
+/// [`hyperbolic_forcing_as_exp`] (`y″ = sinh x` gives `sinh x` again, not
+/// `eˣ/2 − e⁻ˣ/2`).
+fn exp_pairs_as_hyperbolic(arena: &mut Arena, e: ExprId, var: ExprId) -> ExprId {
+    let terms: Vec<ExprId> = match arena.node(e) {
+        ExprNode::Add(c) => c.to_vec(),
+        _ => return e,
+    };
+    // (rate k, coefficient c, rest r) of `c·r·e^{kx}`
+    let mut parsed: Vec<Option<(Q, Q, ExprId)>> = Vec::with_capacity(terms.len());
+    for &t in &terms {
+        let (c, body) = arena.as_coeff_term(t);
+        let factors: Vec<ExprId> = match arena.node(body) {
+            ExprNode::Mul(fs) => fs.to_vec(),
+            _ => vec![body],
+        };
+        let mut rate = None;
+        let mut rest = Vec::with_capacity(factors.len());
+        for f in factors {
+            match *arena.node(f) {
+                ExprNode::Exp(arg) if rate.is_none() => {
+                    match extract_linear_numeric(arena, arg, var) {
+                        Some((k, c0))
+                            if num_traits::Zero::is_zero(&c0) && !num_traits::Zero::is_zero(&k) =>
+                        {
+                            rate = Some(k)
+                        }
+                        _ => rest.push(f),
+                    }
+                }
+                _ => rest.push(f),
+            }
+        }
+        parsed.push(rate.map(|k| (k, c, arena.mul(&rest))));
+    }
+    let mut used = vec![false; terms.len()];
+    let mut out = Vec::with_capacity(terms.len());
+    for i in 0..terms.len() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        let Some((k, c, rest)) = parsed[i].clone() else {
+            out.push(terms[i]);
+            continue;
+        };
+        let partner = (0..terms.len()).find(|&j| {
+            !used[j]
+                && parsed[j].as_ref().is_some_and(|(k2, c2, r2)| {
+                    *k2 == -k.clone() && *r2 == rest && (*c2 == c || *c2 == -c.clone())
+                })
+        });
+        let Some(j) = partner else {
+            out.push(terms[i]);
+            continue;
+        };
+        used[j] = true;
+        let Some((_, c2, _)) = parsed[j].clone() else {
+            continue;
+        };
+        // c·e^{kx} + c2·e^{−kx} with |k| written as the positive rate
+        let (pos_c, neg_c) = if k.is_positive() { (c, c2) } else { (c2, c) };
+        let rate = ode_ratio_to_expr(arena, &k.abs());
+        let arg = arena.mul(&[rate, var]);
+        let (func, scale) = if pos_c == neg_c {
+            (arena.cosh(arg), pos_c)
+        } else {
+            (arena.sinh(arg), pos_c)
+        };
+        let two_c = ode_ratio_to_expr(arena, &(Q::from_integer(2.into()) * scale));
+        out.push(arena.mul(&[two_c, rest, func]));
+    }
+    let sum = arena.add(&out);
+    crate::transforms::eval::eval(arena, sum)
+}
+
 /// `n·(n-1)·…·(n-j+1)` as a rational.
 fn falling_factorial_rat(n: usize, j: usize) -> Q {
     let mut r = Q::from_integer(1.into());
@@ -4960,6 +5891,36 @@ fn radical_char_roots(
 /// by [`is_real_radical`]; `cos(−a) → cos(a)`, `sin(−a) → −sin(a)` for a
 /// negative rational multiple `−a` of `π`.
 fn real_imag_parts(arena: &mut Arena, z: ExprId) -> (ExprId, ExprId) {
+    // √u of a negative real radical u is i·√(−u) (principal branch):
+    // `as_real_imag` leaves `re(√(√5/2 − 3/2))`, so the biquadratic
+    // `r⁴ + 3r² + 1` fell back to `RootOf`.
+    let z = {
+        let post = crate::base::walk::post_order_ids(arena, z);
+        let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+        for &id in &post {
+            let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+            let new = match *arena.node(rebuilt) {
+                ExprNode::Pow(b, e)
+                    if arena
+                        .as_num(e)
+                        .is_some_and(|q| *q == Q::new(1.into(), 2.into()))
+                        && is_real_radical(arena, b)
+                        && crate::transforms::evalf::evalf_complex64(arena, b)
+                            .is_ok_and(|v| v.re < -1e-12) =>
+                {
+                    let neg_b = arena.neg(b);
+                    let neg_b = crate::transforms::eval::eval(arena, neg_b);
+                    let root = arena.pow(neg_b, e);
+                    let i_unit = arena.i_unit;
+                    arena.mul(&[i_unit, root])
+                }
+                _ => rebuilt,
+            };
+            cache.insert(id, new);
+        }
+        let z = cache.get(&z).copied().unwrap_or(z);
+        crate::transforms::eval::eval(arena, z)
+    };
     let (re, im) = arena.as_real_imag_expr(z);
     let mut parts = [re, im];
     for part in &mut parts {
@@ -5258,7 +6219,9 @@ pub(crate) fn linear_cc_ivp_lagrange(
     let ExprNode::Symbol(func_sym) = *arena.node(func) else {
         return None;
     };
-    let ode = extract_linear_cc(arena, expr, func, var, func_sym)?;
+    let Some(ode) = extract_linear_cc(arena, expr, func, var, func_sym) else {
+        return euler_ivp_lagrange(arena, expr, func, var, x0, values);
+    };
     let n = ode.coeffs.len() - 1;
     if n < 2 || values.len() != n {
         return None;
@@ -5418,10 +6381,46 @@ fn try_nth_order_linear_const_coeff(
     }
     tracing::debug!(order = n, "ode: nth-order linear constant-coefficient");
 
-    // Forcing: L[y] = -g(x).  Parse and group by (a, b, kind).
+    // Forcing: L[y] = -g(x).  Parse and group by (a, b, kind); hyperbolic
+    // functions as exponentials, terms with irrational constants apart.
+    let hyperbolic = hyperbolic_forcing_as_exp(arena, &ode.forcing);
+    let had_hyperbolic = hyperbolic.is_some();
+    let mut forcing = hyperbolic.unwrap_or(ode.forcing);
+    // A product of sums (`(x + ln 2)·eˣ`) is parsed term by term.
+    if forcing.iter().any(|&t| {
+        parse_forcing_term(arena, t, var).is_none()
+            && parse_forcing_term_sym(arena, t, var).is_none()
+    }) {
+        let sum = arena.add(&forcing);
+        let sum = crate::transforms::expand::expand(arena, sum);
+        let sum = crate::transforms::eval::eval(arena, sum);
+        forcing = match arena.node(sum) {
+            ExprNode::Add(c) => c.to_vec(),
+            _ => vec![sum],
+        };
+    }
     let mut groups: Vec<((Q, Q, TrigKind), Vec<Q>)> = Vec::new();
-    for &term in &ode.forcing {
-        let ft = parse_forcing_term(arena, term, var)?;
+    let mut sym_groups: Vec<((ExprId, ExprId, TrigKind), Vec<ExprId>)> = Vec::new();
+    for &term in &forcing {
+        let Some(ft) = parse_forcing_term(arena, term, var) else {
+            let ft = parse_forcing_term_sym(arena, term, var)?;
+            let key = (ft.a, ft.b, ft.kind);
+            let index = match sym_groups.iter().position(|(k, _)| *k == key) {
+                Some(i) => i,
+                None => {
+                    sym_groups.push((key, Vec::new()));
+                    sym_groups.len() - 1
+                }
+            };
+            let entry = &mut sym_groups[index].1;
+            if entry.len() <= ft.degree {
+                entry.resize(ft.degree + 1, arena.zero);
+            }
+            // move to the right-hand side
+            let slot = arena.sub(entry[ft.degree], ft.coeff);
+            entry[ft.degree] = crate::transforms::eval::eval(arena, slot);
+            continue;
+        };
         let key = (ft.a.clone(), ft.b.clone(), ft.kind);
         let entry = match groups.iter_mut().find(|(k, _)| *k == key) {
             Some(e) => e,
@@ -5447,13 +6446,28 @@ fn try_nth_order_linear_const_coeff(
         constants.push(c);
         terms.push(arena.mul(&[c, b]));
     }
+    let mut particular = Vec::with_capacity(groups.len() + sym_groups.len());
     for ((a, b, kind), q) in &groups {
         if q.iter().all(Zero::is_zero) {
             continue;
         }
         let y_p = particular_for_group(arena, &ode.coeffs, q, a, b, *kind, var)?;
-        terms.push(y_p);
+        particular.push(y_p);
     }
+    for ((a, b, kind), q) in &sym_groups {
+        if q.iter().all(|&c| arena.is_zero_structural(c)) {
+            continue;
+        }
+        let y_p = particular_for_group_sym(arena, &ode.coeffs, q, *a, *b, *kind, var)?;
+        particular.push(y_p);
+    }
+    if had_hyperbolic && !particular.is_empty() {
+        let y_p = arena.add(&particular);
+        let y_p = crate::transforms::expand::expand(arena, y_p);
+        let y_p = crate::transforms::eval::eval(arena, y_p);
+        particular = vec![exp_pairs_as_hyperbolic(arena, y_p, var)];
+    }
+    terms.extend(particular);
     let solution = arena.add(&terms);
     let solution = crate::transforms::eval::eval(arena, solution);
     Some(OdeResult {
@@ -7259,6 +8273,21 @@ fn trig_normal_form_is_zero(arena: &mut Arena, r: ExprId) -> bool {
 /// assert_eq!(sol.len(), 2);
 /// ```
 pub fn solve_ode_system(a_matrix: &Matrix, t_var: &Ex) -> Option<Vec<Ex>> {
+    solve_ode_system_with_form(a_matrix, t_var).map(|(sol, _)| sol)
+}
+
+/// Is the general solution of [`solve_ode_system_with_form`] `e^{At}·c`
+/// (`c = (C1, …, Cn)`, so `x(0) = c`) or a sum of eigenmodes?
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SystemForm {
+    /// `e^{At}·c`: diagonal `A` or the exact matrix exponential.
+    ExpTimesConstants,
+    /// `Σ Cᵢ·(modeᵢ)` from the eigenvectors.
+    Modes,
+}
+
+/// [`solve_ode_system`] together with the shape of the solution.
+fn solve_ode_system_with_form(a_matrix: &Matrix, t_var: &Ex) -> Option<(Vec<Ex>, SystemForm)> {
     let n = a_matrix.nrows();
     if !a_matrix.is_square() || n == 0 {
         return None;
@@ -7275,16 +8304,19 @@ pub fn solve_ode_system(a_matrix: &Matrix, t_var: &Ex) -> Option<Vec<Ex>> {
 
     // Special case: diagonal matrix → exact closed-form per component
     if ode_system_is_diagonal(a_matrix, n) {
-        return Some(solve_ode_system_diagonal(a_matrix, t_var, n));
+        return Some((
+            solve_ode_system_diagonal(a_matrix, t_var, n),
+            SystemForm::ExpTimesConstants,
+        ));
     }
 
     // Try eigenvalue-based exact solution
     if let Some(sol) = solve_ode_system_eigen(a_matrix, t_var, n) {
-        return Some(sol);
+        return Some((sol, SystemForm::Modes));
     }
 
     // Otherwise the exact matrix exponential.
-    solve_ode_system_expm(a_matrix, t_var, n)
+    solve_ode_system_expm(a_matrix, t_var, n).map(|sol| (sol, SystemForm::ExpTimesConstants))
 }
 
 /// Solve the initial-value problem `dx/dt = A·x`, `x(0) = x0`.
@@ -7292,6 +8324,11 @@ pub fn solve_ode_system(a_matrix: &Matrix, t_var: &Ex) -> Option<Vec<Ex>> {
 /// Computes the general solution with [`solve_ode_system`], evaluates it
 /// at `t = 0`, and determines the constants `C1, …, Cn` from the linear
 /// system `x(0) = x0` via [`linsolve`](crate::api::expr_solve_ext::linsolve).
+/// When the general solution is `e^{At}·c` (a diagonal `A`, or the exact
+/// matrix exponential, e.g. for eigenvalues that are `RootOf`s of an
+/// irreducible quartic) the solution is `e^{At}·x0` directly: elimination
+/// over the `RootOf` entries did not finish (4×4 matrices with irreducible
+/// characteristic polynomials hung).
 ///
 /// # Errors
 ///
@@ -7332,13 +8369,28 @@ pub fn solve_ode_system_ivp(
             reason: format!("expected {n} initial values, got {}", x0.len()),
         });
     }
-    let general =
-        solve_ode_system(a_matrix, t_var).ok_or_else(|| SymplexError::ComputationFailed {
+    let (general, form) = solve_ode_system_with_form(a_matrix, t_var).ok_or_else(|| {
+        SymplexError::ComputationFailed {
             operation: "solve_ode_system_ivp",
             reason: "could not solve the homogeneous system".into(),
-        })?;
+        }
+    })?;
     let ctx = t_var.context();
     let constants: Vec<Ex> = (1..=n).map(|i| ctx.symbol(&format!("C{i}"))).collect();
+    if form == SystemForm::ExpTimesConstants {
+        let pairs: Vec<(&Ex, &Ex)> = constants.iter().zip(x0).collect();
+        return Ok(general
+            .iter()
+            .map(|g| {
+                let e = g.subs_map(&pairs).eval();
+                let rootof = {
+                    let inner = e.inner.read();
+                    has_rootof(&inner.arena, e.raw_id())
+                };
+                if rootof { e } else { e.simplify() }
+            })
+            .collect());
+    }
     let zero = ctx.int(0);
     let eqs: Vec<Ex> = general
         .iter()
@@ -7420,10 +8472,18 @@ pub fn solve_ode_system_nonhomogeneous(
     let b_col = Matrix::col_vector(b_vec.to_vec()).ok()?;
     let integrand_matrix = exp_neg_at.matmul(&b_col).ok()?.eval();
 
-    // Integrate each component w.r.t. t
+    // Integrate each component w.r.t. t (in the equivalent forms of
+    // [`integrate_forms`]: `e^{−2t}·cos 2t·cos t/t` integrates with the
+    // cosines written as exponentials, to `Ei` at complex points).
     let mut integrated = Vec::with_capacity(n);
     for i in 0..n {
-        integrated.push(integrand_matrix.get(i, 0).integrate(t_var).eval());
+        let entry = integrand_matrix.get(i, 0);
+        let t_id = entry.checked_id(t_var);
+        let id = {
+            let mut inner = entry.inner.write();
+            integrate_forms(&mut inner.arena, entry.raw_id(), t_id)
+        };
+        integrated.push(entry.wrap(id).eval());
     }
     let integrated_col = Matrix::col_vector(integrated).ok()?;
 

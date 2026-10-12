@@ -1428,6 +1428,16 @@ impl Family for Pareto {
         Some(&self.scale * (ctx.one() - p).pow(&(-(ctx.one() / &self.shape))))
     }
 
+    // α (−i x_m t)^α Γ(−α, −i x_m t) for real t ≠ 0 (Wikipedia "Pareto
+    // distribution"; the contour of ∫ e^{itx} x^{−α−1} dx rotated onto
+    // the imaginary axis).  The generic E[cos] + i E[sin] left oscillatory
+    // integrals of a heavy tail that quadrature refused for small α.
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let z = -(self.context().i_unit() * &self.scale * t);
+        let value = &self.shape * z.pow(&self.shape) * z.uppergamma(&(-&self.shape));
+        Some(one_at_zero(t, value))
+    }
+
     // ln(x_m/α) + 1/α + 1
     fn entropy(&self) -> Option<Ex> {
         let ctx = self.context();

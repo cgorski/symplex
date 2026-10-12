@@ -53,9 +53,10 @@ fn format_f64(v: f64) -> String {
 }
 
 /// Escape a value for CSV output. If the value contains a comma, quote, or
-/// newline, wrap it in double quotes and escape internal quotes by doubling.
+/// line break (`\n` or `\r`), wrap it in double quotes and escape internal
+/// quotes by doubling.
 fn csv_escape(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
+    if value.contains([',', '"', '\n', '\r']) {
         let escaped = value.replace('"', "\"\"");
         format!("\"{}\"", escaped)
     } else {
@@ -203,34 +204,48 @@ impl DataTable {
         out
     }
 
-    /// Export as TSV (tab-separated) string.
+    /// Export as TSV (tab-separated) string.  A tab, line break or
+    /// backslash inside a cell is written `\t`, `\n`, `\r`, `\\` (the
+    /// usual TSV escapes; up to 0.45 it was written raw and shifted the
+    /// columns or split the row).
     ///
     /// ```
     /// use symplex::data_export::DataTable;
     ///
     /// let t = DataTable::from_points("x", "y", &[(1.0, 2.0)]);
     /// assert_eq!(t.to_tsv(), "x\ty\n1\t2\n");
+    /// let odd = DataTable::new(vec!["a\tb".into()], vec![vec!["1\n2".into()]]);
+    /// assert_eq!(odd.to_tsv(), "a\\tb\n1\\n2\n");
     /// ```
     pub fn to_tsv(&self) -> String {
+        let line = |cells: &[String]| -> String {
+            cells
+                .iter()
+                .map(|c| tsv_escape(c))
+                .collect::<Vec<_>>()
+                .join("\t")
+        };
         let mut out = String::new();
-        out.push_str(&self.headers.join("\t"));
+        out.push_str(&line(&self.headers));
         out.push('\n');
         for row in &self.rows {
-            out.push_str(&row.join("\t"));
+            out.push_str(&line(row));
             out.push('\n');
         }
         out
     }
 
     /// Export as a JSON array of objects (one object per row, keyed by
-    /// header).  Cells that parse as numbers are emitted as JSON numbers,
-    /// everything else as strings.
+    /// header).  Cells that are JSON number literals are emitted as JSON
+    /// numbers, the non-finite cells `NaN` / `Inf` / `-Inf` as `null` (JSON
+    /// has no such numbers; up to 0.45 they were emitted bare, which no
+    /// JSON parser accepts), everything else as strings.
     ///
     /// ```
     /// use symplex::data_export::DataTable;
     ///
-    /// let t = DataTable::from_points("x", "y", &[(1.0, 2.5)]);
-    /// assert_eq!(t.to_json(), "[\n  {\"x\": 1, \"y\": 2.5}\n]");
+    /// let t = DataTable::from_points("x", "y", &[(1.0, 2.5), (2.0, f64::NAN)]);
+    /// assert_eq!(t.to_json(), "[\n  {\"x\": 1, \"y\": 2.5},\n  {\"x\": 2, \"y\": null}\n]");
     /// ```
     pub fn to_json(&self) -> String {
         let mut out = String::new();
@@ -242,10 +257,10 @@ impl DataTable {
                 let value = row.get(j).map(|s| s.as_str()).unwrap_or("");
                 // Escape the header for JSON string
                 let escaped_header = json_escape_string(header);
-                // Try to parse as a number; if it succeeds, emit without quotes
-                if let Ok(_n) = value.parse::<f64>() {
-                    // Use the value as-is (it's a valid number literal)
+                if is_json_number(value) {
                     fields.push(format!("\"{}\": {}", escaped_header, value));
+                } else if value.parse::<f64>().is_ok_and(|v| !v.is_finite()) {
+                    fields.push(format!("\"{}\": null", escaped_header));
                 } else {
                     let escaped_value = json_escape_string(value);
                     fields.push(format!("\"{}\": \"{}\"", escaped_header, escaped_value));
@@ -263,6 +278,8 @@ impl DataTable {
     }
 
     /// Export as a GitHub-flavoured Markdown table with aligned columns.
+    /// A `|` inside a cell is written `\|` and a line break as a space (up
+    /// to 0.45 both were written raw and broke the table).
     ///
     /// ```
     /// use symplex::data_export::DataTable;
@@ -273,10 +290,16 @@ impl DataTable {
     /// assert!(md.contains("| 1   | 2   |"));
     /// ```
     pub fn to_markdown(&self) -> String {
+        let headers: Vec<String> = self.headers.iter().map(|h| markdown_escape(h)).collect();
+        let rows: Vec<Vec<String>> = self
+            .rows
+            .iter()
+            .map(|r| r.iter().map(|c| markdown_escape(c)).collect())
+            .collect();
         // Compute column widths
-        let ncols = self.headers.len();
-        let mut widths: Vec<usize> = self.headers.iter().map(|h| h.len()).collect();
-        for row in &self.rows {
+        let ncols = headers.len();
+        let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+        for row in &rows {
             for (j, cell) in row.iter().enumerate() {
                 if j < ncols {
                     widths[j] = widths[j].max(cell.len());
@@ -293,7 +316,7 @@ impl DataTable {
         let mut out = String::new();
         // Header row
         out.push('|');
-        for (j, header) in self.headers.iter().enumerate() {
+        for (j, header) in headers.iter().enumerate() {
             out.push_str(&format!(" {:width$} |", header, width = widths[j]));
         }
         out.push('\n');
@@ -304,7 +327,7 @@ impl DataTable {
         }
         out.push('\n');
         // Data rows
-        for row in &self.rows {
+        for row in &rows {
             out.push('|');
             for (j, w) in widths.iter().enumerate().take(ncols) {
                 let cell = row.get(j).map(|s| s.as_str()).unwrap_or("");
@@ -349,7 +372,9 @@ impl DataTable {
     }
 
     /// Export as a LaTeX `tabular` environment (booktabs rules; headers in
-    /// math mode; `_` and `%` escaped).
+    /// math mode with `_ % & # $` escaped; data cells in text mode with
+    /// every special character escaped — up to 0.45 only `_` and `%` were,
+    /// so a cell `a&b` added a column and `50$` opened math mode).
     ///
     /// ```
     /// use symplex::data_export::DataTable;
@@ -377,7 +402,7 @@ impl DataTable {
         out.push_str("\\midrule\n");
         // Data rows
         for row in &self.rows {
-            let cells: Vec<String> = row.iter().map(|c| latex_escape(c)).collect();
+            let cells: Vec<String> = row.iter().map(|c| latex_text_escape(c)).collect();
             out.push_str(&cells.join(" & "));
             out.push_str(" \\\\\n");
         }
@@ -397,6 +422,56 @@ impl DataTable {
     }
 }
 
+/// Is `s` a number literal in JSON's grammar (`-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`)?
+/// Rust's `f64` parser also takes `NaN`, `inf`, `+1`, `.5`, `1.` and `007`,
+/// none of which is JSON.
+fn is_json_number(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while *i < b.len() && b[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        *i > start
+    };
+    if b.first() == Some(&b'-') {
+        i += 1;
+    }
+    match b.get(i) {
+        Some(b'0') => i += 1,
+        Some(c) if c.is_ascii_digit() => {
+            digits(&mut i);
+        }
+        _ => return false,
+    }
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(b.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    i == b.len()
+}
+
+/// A JSON value for an `f64`: the number, or `null` when it is not finite.
+fn json_f64(v: f64) -> String {
+    if v.is_finite() {
+        format_f64(v)
+    } else {
+        "null".to_string()
+    }
+}
+
 /// Escape special HTML characters.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -405,9 +480,61 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Minimal LaTeX escaping — escape underscores and percent signs.
+/// LaTeX escaping for a header in math mode: the characters that end the
+/// cell, the row or the math (`& % # $`) and `_` (kept from 0.45: `x_1`
+/// prints as written).
 fn latex_escape(s: &str) -> String {
-    s.replace('%', "\\%").replace('_', "\\_")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '%' | '_' | '&' | '#' | '$' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// LaTeX escaping for text-mode cells: every special character.
+fn latex_text_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '%' | '_' | '&' | '#' | '$' | '{' | '}' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\\' => out.push_str("\\textbackslash{}"),
+            '~' => out.push_str("\\textasciitilde{}"),
+            '^' => out.push_str("\\textasciicircum{}"),
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// A Markdown table cell: `|` escaped, line breaks as spaces.
+fn markdown_escape(s: &str) -> String {
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
+/// A TSV cell: backslash, tab and line breaks as `\\`, `\t`, `\n`, `\r`.
+fn tsv_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Escape a string for JSON output (handle backslashes, quotes, etc.).
@@ -474,15 +601,18 @@ impl FreqResponseData {
     }
 
     /// Export as a JSON array of `{omega_rad_s, magnitude_dB, phase_deg}`
-    /// objects.  Missing entries in a shorter vector are emitted as `NaN`.
+    /// objects.  Missing entries in a shorter vector and non-finite values
+    /// are emitted as `null` (up to 0.45 as a bare `NaN` / `Inf`, which is
+    /// not JSON).
     ///
     /// ```
     /// use symplex::data_export::FreqResponseData;
     ///
-    /// let fr = FreqResponseData::new(vec![1.0], vec![-3.0], vec![-45.0]);
+    /// let fr = FreqResponseData::new(vec![1.0, 2.0], vec![-3.0, f64::NEG_INFINITY], vec![-45.0]);
     /// assert_eq!(
     ///     fr.to_json(),
-    ///     "[\n  {\"omega_rad_s\": 1, \"magnitude_dB\": -3, \"phase_deg\": -45}\n]"
+    ///     "[\n  {\"omega_rad_s\": 1, \"magnitude_dB\": -3, \"phase_deg\": -45},\n  \
+    ///      {\"omega_rad_s\": 2, \"magnitude_dB\": null, \"phase_deg\": null}\n]"
     /// );
     /// ```
     pub fn to_json(&self) -> String {
@@ -495,9 +625,9 @@ impl FreqResponseData {
             let phase = self.phase_deg.get(i).copied().unwrap_or(f64::NAN);
             out.push_str(&format!(
                 "  {{\"omega_rad_s\": {}, \"magnitude_dB\": {}, \"phase_deg\": {}}}",
-                format_f64(freq),
-                format_f64(mag),
-                format_f64(phase)
+                json_f64(freq),
+                json_f64(mag),
+                json_f64(phase)
             ));
             if i + 1 < n {
                 out.push(',');
@@ -669,6 +799,82 @@ mod tests {
         assert!(csv.contains("1,0,0\n"));
         assert!(csv.contains("10,-3,-45\n"));
         assert!(csv.contains("100,-20,-90\n"));
+    }
+
+    /// JSON has no `NaN` / `Infinity` literals: non-finite cells become
+    /// `null`, and cells that Rust parses as `f64` but JSON does not
+    /// (`.5`, `+1`, `1.`, `007`, `inf`) are strings.  Before, `NaN`, `Inf`
+    /// and those cells were emitted bare (`json.loads` rejects them).
+    #[test]
+    fn json_has_no_bare_non_finite_or_non_json_numbers() {
+        let t = DataTable::from_points(
+            "x",
+            "y",
+            &[(1.0, f64::NAN), (2.0, f64::INFINITY), (3.0, -f64::INFINITY)],
+        );
+        assert_eq!(
+            t.to_json(),
+            "[\n  {\"x\": 1, \"y\": null},\n  {\"x\": 2, \"y\": null},\n  {\"x\": 3, \"y\": null}\n]"
+        );
+        let t = DataTable::new(
+            vec!["a".into()],
+            vec![
+                vec![".5".into()],
+                vec!["+1".into()],
+                vec!["1.".into()],
+                vec!["007".into()],
+                vec!["-0.25e-3".into()],
+                vec!["1.500000e8".into()],
+            ],
+        );
+        assert_eq!(
+            t.to_json(),
+            "[\n  {\"a\": \".5\"},\n  {\"a\": \"+1\"},\n  {\"a\": \"1.\"},\n  {\"a\": \"007\"},\n  \
+             {\"a\": -0.25e-3},\n  {\"a\": 1.500000e8}\n]"
+        );
+        let fr = FreqResponseData::new(vec![1.0, 2.0], vec![f64::NAN], vec![]);
+        assert!(!fr.to_json().contains("NaN"));
+        assert_eq!(fr.to_json().matches("null").count(), 4);
+    }
+
+    /// Cells with the formats' own syntax stay inside their cell: a `|`
+    /// in Markdown, `&`/`$`/`{` in LaTeX, a tab in TSV, a `\r` in CSV
+    /// (before: raw, so the row grew a column or split).
+    #[test]
+    fn special_characters_stay_in_their_cell() {
+        let t = DataTable::new(
+            vec!["a|b".into(), "c&d".into()],
+            vec![
+                vec!["x|y".into(), "50$ & {2}~\\".into()],
+                vec!["1\r\n2".into(), "t\tu".into()],
+            ],
+        );
+        let md = t.to_markdown();
+        assert!(md.starts_with("| a\\|b | c&d "), "{md}");
+        for line in md.lines().filter(|l| !l.starts_with("|-")) {
+            assert_eq!(line.matches(" |").count(), 2, "{line}");
+        }
+        let tex = t.to_latex();
+        assert!(tex.contains("$a|b$ & $c\\&d$ \\\\"), "{tex}");
+        assert!(
+            tex.contains("x|y & 50\\$ \\& \\{2\\}\\textasciitilde{}\\textbackslash{} \\\\"),
+            "{tex}"
+        );
+        assert_eq!(t.to_tsv().lines().count(), 3);
+        assert!(t.to_tsv().contains("1\\r\\n2\tt\\tu"));
+        assert!(t.to_csv().contains("\"1\r\n2\""));
+    }
+
+    #[test]
+    fn json_number_grammar() {
+        for ok in ["0", "-0", "12", "1.5", "1e5", "1E+5", "-2.25e-10"] {
+            assert!(is_json_number(ok), "{ok}");
+        }
+        for bad in [
+            "", "-", "+1", ".5", "1.", "01", "1e", "1e+", "NaN", "inf", "0x10", "1 ",
+        ] {
+            assert!(!is_json_number(bad), "{bad}");
+        }
     }
 
     #[test]

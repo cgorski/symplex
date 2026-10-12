@@ -475,9 +475,12 @@ fn push_trig_zeros(
     } else {
         (t_hi, t_lo)
     };
-    let k_min = ((t_min - offset) / std::f64::consts::PI).floor() as i64 - 1;
-    let k_max = ((t_max - offset) / std::f64::consts::PI).ceil() as i64 + 1;
-    if k_max - k_min > 10_000 {
+    // `as i64` saturates for a huge range (`[−10³⁰⁰, 10³⁰⁰]`); the bounds and
+    // their difference saturate too (up to 0.45 they overflowed: a panic in
+    // debug builds, a wrapped count in release).
+    let k_min = (((t_min - offset) / std::f64::consts::PI).floor() as i64).saturating_sub(1);
+    let k_max = (((t_max - offset) / std::f64::consts::PI).ceil() as i64).saturating_add(1);
+    if k_max.saturating_sub(k_min) > 10_000 {
         return Some(false);
     }
     // Build exact symbolic points: x = ((offset_frac + k)·π − β)/α.

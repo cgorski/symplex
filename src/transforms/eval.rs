@@ -71,6 +71,7 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
 
+mod atan_sum;
 mod cyclotomic;
 
 /// Evaluate known special values in an expression.
@@ -160,7 +161,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             }
             ExprNode::Sign(inner) => {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
-                if let Some(result) = eval_sign(arena, ni) {
+                if let Some(result) = eval_sign(arena, ni, inner) {
                     result
                 } else if ni == inner {
                     id
@@ -250,7 +251,8 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             }
             ExprNode::Im(inner) => {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
-                arena.im(ni)
+                let v = arena.im(ni);
+                zero_real_lambert_parts(arena, v)
             }
             ExprNode::Conjugate(inner) => {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
@@ -425,7 +427,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let na = cache.get(&a).copied().unwrap_or(a);
                 let nb = cache.get(&b).copied().unwrap_or(b);
                 let kind = RelationKind::of(arena.node(id));
-                if let Some(holds) = relation_truth(arena, kind, na, nb) {
+                if let Some(holds) = relation_truth(arena, kind, na, nb, (a, b)) {
                     if holds {
                         arena.bool_true
                     } else {
@@ -1121,8 +1123,17 @@ impl RelationKind {
 /// the assumptions ([`order_against_zero`]); an order or an equality by the
 /// difference `a − b` (a rational, a certified sign, the square-root tower
 /// zero test, the minimal polynomial: [`order_by_difference`],
-/// [`equal_by_difference`]).  `None` when undecided.
-fn relation_truth(arena: &mut Arena, kind: RelationKind, a: ExprId, b: ExprId) -> Option<bool> {
+/// [`equal_by_difference`]).  `None` when undecided.  `orig` are the
+/// operands before evaluation, whose difference the exact zero tests also
+/// try ([`Difference`]).
+fn relation_truth(
+    arena: &mut Arena,
+    kind: RelationKind,
+    a: ExprId,
+    b: ExprId,
+    orig: (ExprId, ExprId),
+) -> Option<bool> {
+    let d = Difference { a, b, orig };
     match kind {
         RelationKind::Gt | RelationKind::Ge => {
             let strict = kind == RelationKind::Gt;
@@ -1130,12 +1141,34 @@ fn relation_truth(arena: &mut Arena, kind: RelationKind, a: ExprId, b: ExprId) -
                 return Some(if strict { ra > rb } else { ra >= rb });
             }
             order_against_zero(arena, a, b, strict)
-                .or_else(|| order_by_difference(arena, a, b, strict))
+                .or_else(|| order_by_difference(arena, d, strict))
         }
         RelationKind::Eq | RelationKind::Ne => {
-            let equal = gaussian_equal(arena, a, b).or_else(|| equal_by_difference(arena, a, b))?;
+            let equal = gaussian_equal(arena, a, b).or_else(|| equal_by_difference(arena, d))?;
             Some(equal == (kind == RelationKind::Eq))
         }
+    }
+}
+
+/// The operands `a`, `b` of a relation after evaluation, and `orig` before:
+/// the exact zero tests try `a − b`, then the difference of the original
+/// operands, where the trigonometric values are not yet radicals — the
+/// cyclotomic test decides `cos(13π/16)·tan(23π/12)·cos(23π/12) =
+/// −√(…)·sin(23π/12)` on the original form, not once `tan(23π/12)` is `√3 −
+/// 2` and the cosine `(√6 + √2)/4` (radicals it takes as independent
+/// generators).
+#[derive(Clone, Copy)]
+struct Difference {
+    a: ExprId,
+    b: ExprId,
+    orig: (ExprId, ExprId),
+}
+
+impl Difference {
+    /// The difference of the original operands, when they differ from the
+    /// evaluated ones.
+    fn original(self, arena: &mut Arena) -> Option<ExprId> {
+        (self.orig != (self.a, self.b)).then(|| arena.sub(self.orig.0, self.orig.1))
     }
 }
 
@@ -1153,9 +1186,9 @@ pub(crate) fn decide_relation(arena: &mut Arena, rel: ExprId) -> Option<bool> {
         _ => return None,
     };
     let kind = RelationKind::of(arena.node(rel));
-    let a = eval(arena, a);
-    let b = eval(arena, b);
-    relation_truth(arena, kind, a, b)
+    let ea = eval(arena, a);
+    let eb = eval(arena, b);
+    relation_truth(arena, kind, ea, eb, (a, b))
 }
 
 /// `a > 0`, `0 > b` (`strict`) or `a ≥ 0`, `0 ≥ b` for a constant (free of
@@ -1211,7 +1244,8 @@ fn order_against_zero(arena: &Arena, a: ExprId, b: ExprId, strict: bool) -> Opti
 /// minimal polynomial ([`algebraic_rational_value`]) and, when irrational,
 /// by its certified sign: `√(5 − 2√6) ≥ √3 − √2` is true (the two are
 /// equal; `evalf` refused it before 0.42).
-fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) -> Option<bool> {
+fn order_by_difference(arena: &mut Arena, diff: Difference, strict: bool) -> Option<bool> {
+    let (a, b) = (diff.a, diff.b);
     let d = arena.sub(a, b);
     let rational = arena.as_num(d).cloned();
     if rational.is_none() && !walk::free_symbols(arena, d).is_empty() {
@@ -1229,6 +1263,11 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
             if let Some(s) = certified_real_sign(arena, d) {
                 return Some(s == std::cmp::Ordering::Greater);
             }
+            // Arctangents of rationals: `atan(1/2) + atan(1/3) ≥ π/4`.
+            let d = atan_sum::without_zero_atan_part(arena, d);
+            if let Some(zero) = atan_sum::is_zero(arena, d) {
+                return zero.then_some(!strict);
+            }
             if sqrt_tower_is_zero(arena, d) {
                 return Some(!strict);
             }
@@ -1241,7 +1280,13 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
                 // Trigonometric values at rational multiples of π (and
                 // radicals over them): an exact zero is `a = b`; a nonzero
                 // difference whose sign no evaluation certified stays.
-                None => return cyclotomic::is_zero(arena, d)?.then_some(!strict),
+                None => {
+                    let zero = cyclotomic::is_zero(arena, d).or_else(|| {
+                        let original = diff.original(arena)?;
+                        exact_zero_test(arena, original)
+                    })?;
+                    return zero.then_some(!strict);
+                }
             }
         }
     };
@@ -1437,7 +1482,8 @@ pub(crate) fn certified_real_sign(arena: &Arena, x: ExprId) -> Option<std::cmp::
 /// stayed for `evalf`, which decides an inequality numerically but cannot
 /// certify an equality (it refused `√(3 + 2√2) = 1 + √2`; SymPy 1.14:
 /// `True`, by `minimal_polynomial` in `Expr.equals`).
-fn equal_by_difference(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool> {
+fn equal_by_difference(arena: &mut Arena, diff: Difference) -> Option<bool> {
+    let (a, b) = (diff.a, diff.b);
     // Numbers only: no difference of sets, truth values or relations.
     let non_scalar = |id: ExprId| {
         let node = arena.node(id);
@@ -1471,14 +1517,49 @@ fn equal_by_difference(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool> 
     if constant_is_nonzero(arena, d) {
         return Some(false);
     }
+    exact_zero_test(arena, d).or_else(|| {
+        let original = diff.original(arena)?;
+        exact_zero_test(arena, original)
+    })
+}
+
+/// Is the constant `d` zero, as `eval` decides `Eq(d, 0)`?  `Some(false)`
+/// when a certified 16-digit value excludes 0, else the exact tests of
+/// [`exact_zero_test`] on `eval(d)`, then on `d`; `None` when nothing
+/// decides (or `d` has symbols).  The zero test of `eval` of `Eq`/`Ne`
+/// ([`equal_by_difference`]), of [`eval_sign`] and of the assumption
+/// queries of constants ([`constant_facts`]).
+pub(crate) fn constant_zero_decision(arena: &mut Arena, d: ExprId) -> Option<bool> {
+    if !walk::free_symbols(arena, d).is_empty() {
+        return None;
+    }
+    if constant_is_nonzero(arena, d) {
+        return Some(false);
+    }
+    let v = eval(arena, d);
+    if arena.is_zero_structural(v) {
+        return Some(true);
+    }
+    exact_zero_test(arena, v).or_else(|| (v != d).then(|| exact_zero_test(arena, d)).flatten())
+}
+
+/// The exact zero tests of a symbol-free constant `d` whose certified value
+/// did not exclude 0: sums of arctangents of rationals and multiples of π
+/// ([`atan_sum::is_zero`]), the square-root tower, the minimal polynomial,
+/// and trigonometric values at rational multiples of π, roots of unity and
+/// radicals over them, exactly in `ℚ(ζ)[radicals]` ([`cyclotomic::is_zero`]).
+fn exact_zero_test(arena: &mut Arena, d: ExprId) -> Option<bool> {
+    // An arctangent part that is 0 by itself leaves the rest to decide.
+    let d = atan_sum::without_zero_atan_part(arena, d);
+    if let Some(zero) = atan_sum::is_zero(arena, d) {
+        return Some(zero);
+    }
     if sqrt_tower_is_zero(arena, d) {
         return Some(true);
     }
     match algebraic_rational_value(arena, d) {
         Some(Some(q)) => Some(q.is_zero()),
         Some(None) => Some(false),
-        // Trigonometric values at rational multiples of π, roots of unity
-        // and radicals over them, exactly in `ℚ(ζ)[radicals]`.
         None => cyclotomic::is_zero(arena, d),
     }
 }
@@ -2125,6 +2206,64 @@ fn eval_lambertw(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
+/// `v` (an imaginary part) with every `im(W_k(a))` that is 0 replaced by 0:
+/// `W₀(a)` is real for a real constant `a ≥ −1/e`, `W₋₁(a)` for `−1/e ≤ a <
+/// 0` (certified signs of `a + 1/e` and `a`).  Up to 0.45 these stayed, and
+/// the realness of `W₋₁(−ln(2)/(5·⁵√2)) + ln(2)/5` was not known, so its
+/// sign was not decided though its difference from 0 was.
+fn zero_real_lambert_parts(arena: &mut Arena, v: ExprId) -> ExprId {
+    let targets: Vec<ExprId> = walk::post_order_ids(arena, v)
+        .into_iter()
+        .filter(|&id| matches!(*arena.node(id), ExprNode::Im(w) if lambert_real_argument(arena, w).is_some()))
+        .collect();
+    let mut out = v;
+    for t in targets {
+        let ExprNode::Im(w) = *arena.node(t) else {
+            continue;
+        };
+        if lambert_value_is_real(arena, w) {
+            let zero = arena.zero;
+            out = crate::transforms::subs::subs(arena, out, t, zero);
+        }
+    }
+    out
+}
+
+/// `(a, branch)` for `w = W₀(a)` or `W₋₁(a)` with a symbol-free `a`.
+fn lambert_real_argument(arena: &Arena, w: ExprId) -> Option<(ExprId, LambertRealBranch)> {
+    match arena.node(w) {
+        ExprNode::LambertW(a) => Some((*a, LambertRealBranch::Principal)),
+        ExprNode::Apply(f, args) if arena.lib_fn(*f) == Some(LibFn::LambertW) => match args[..] {
+            [a, k] if arena.as_num(k).is_some_and(|q| *q == -Q::one()) => {
+                Some((a, LambertRealBranch::MinusOne))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+    .filter(|&(a, _)| walk::free_symbols(arena, a).is_empty())
+}
+
+/// Is `w = W_k(a)` real: `a` real with `a + 1/e ≥ 0` (`W₀`), and `a < 0`
+/// as well for `W₋₁`, by certified signs?  (`a = −1/e` exactly is `W =
+/// −1`, which `eval` writes as such.)
+fn lambert_value_is_real(arena: &mut Arena, w: ExprId) -> bool {
+    let Some((a, branch)) = lambert_real_argument(arena, w) else {
+        return false;
+    };
+    if !known_real(arena, a) {
+        return false;
+    }
+    let neg_one = arena.neg_one;
+    let inv_e = arena.exp(neg_one);
+    let shifted = arena.add(&[a, inv_e]);
+    if certified_real_sign(arena, shifted) != Some(std::cmp::Ordering::Greater) {
+        return false;
+    }
+    branch == LambertRealBranch::Principal
+        || certified_real_sign(arena, a) == Some(std::cmp::Ordering::Less)
+}
+
 /// The two branches of Lambert's W that are real on part of the real axis:
 /// `W₀` (values `≥ −1`) and `W₋₁` (values `≤ −1`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2133,12 +2272,128 @@ enum LambertRealBranch {
     MinusOne,
 }
 
+/// The exact real `y` with `y·e^y = x` on `branch` (`y ≥ −1` for `W₀`, `y ≤
+/// −1` for `W₋₁`, the ranges on which `y ↦ y·e^y` is injective, so that
+/// `W_k(x) = y`): the visible forms of [`lambert_visible_fixed_point`], then
+/// for a constant `x` a factor `exp(c)` whose cofactor is the real `c`
+/// (`W(√2·e^{√2}) = √2`), or a factor `ln m` (`m` a positive rational) with
+/// `y = r·ln m`, `e^y = m^r` (`r` rational, read off the value of `W_k(x)`,
+/// then verified exactly): `W(√2·ln(2)/2) = ln(2)/2`, `W(−2·ln(5/2)/5) =
+/// −ln(5/2)`, `W₋₁(−3√2·ln(2)/8) = −3·ln(2)/2`.  The branch is the
+/// certified sign of `y + 1`: `W₋₁(−2·ln(5/2)/5)` is not `−ln(5/2) > −1`
+/// and stays.
+///
+/// Up to 0.45 only rational `c` and integer `t`, `p` in `t·p^t·ln p` were
+/// recognised: `W(√2·ln(2)/2)` stayed, a value no evaluation tells from
+/// `ln(2)/2`, and the solver recognised `W_k(y·e^y) = y` for its own
+/// candidates only.
+fn lambert_fixed_point(arena: &mut Arena, x: ExprId, branch: LambertRealBranch) -> Option<ExprId> {
+    if let Some(y) = lambert_visible_fixed_point(arena, x, branch) {
+        return Some(y);
+    }
+    if !walk::free_symbols(arena, x).is_empty() {
+        return None;
+    }
+    let ExprNode::Mul(factors) = arena.node(x).clone() else {
+        return None;
+    };
+    // y·e^y with e^y written `exp(y)`.
+    for &f in &factors {
+        if let ExprNode::Exp(c) = *arena.node(f) {
+            let rest = arena.div(x, f);
+            if rest == c && known_real(arena, c) {
+                return lambert_on_branch(arena, c, branch);
+            }
+        }
+    }
+    // y = r·ln m, e^y = m^r.
+    for &f in &factors {
+        let ExprNode::Ln(m) = *arena.node(f) else {
+            continue;
+        };
+        let Some(ln_m) = arena
+            .as_num(m)
+            .filter(|q| q.is_positive() && !q.is_one())
+            .and_then(|q| Some(q.to_f64()?.ln()))
+            .filter(|l| l.is_finite() && *l != 0.0)
+        else {
+            continue;
+        };
+        let w = match branch {
+            LambertRealBranch::Principal => arena.lambertw(x),
+            LambertRealBranch::MinusOne => {
+                let k = arena.neg_one;
+                arena.lambertw_branch(x, k)
+            }
+        };
+        let Ok(value) = crate::transforms::evalf::evalf_complex64(arena, w) else {
+            continue;
+        };
+        if !value.re.is_finite() || value.im.abs() > 1e-12 * value.re.abs().max(1.0) {
+            continue;
+        }
+        let Some(r) = small_rational_near(value.re / ln_m, LAMBERT_MAX_DENOMINATOR) else {
+            continue;
+        };
+        let r = arena.num_ratio(r);
+        let y = arena.mul(&[r, f]);
+        let e_y = arena.pow(m, r);
+        let product = arena.mul(&[y, e_y]);
+        let exact = product == x || {
+            let d = arena.sub(product, x);
+            constant_zero_decision(arena, d) == Some(true)
+        };
+        if exact {
+            return lambert_on_branch(arena, y, branch);
+        }
+    }
+    None
+}
+
+/// Largest denominator of the rational `r` in `W_k(r·ln m·m^r) = r·ln m`
+/// that [`lambert_fixed_point`] reads off a value.
+const LAMBERT_MAX_DENOMINATOR: i64 = 24;
+
+/// The rational with denominator at most `max_den` within `10⁻¹⁰`
+/// (relative) of `x`, the one with the least denominator.
+fn small_rational_near(x: f64, max_den: i64) -> Option<Q> {
+    if !x.is_finite() || x.abs() > 1e9 {
+        return None;
+    }
+    (1..=max_den).find_map(|q| {
+        let p = (x * q as f64).round();
+        ((p / q as f64 - x).abs() <= 1e-10 * x.abs().max(1.0))
+            .then(|| Q::new(BigInt::from(p as i64), BigInt::from(q)))
+    })
+}
+
+/// `y` when the real constant `y` lies on `branch` of `W` (`y + 1 ≥ 0` for
+/// `W₀`, `≤ 0` for `W₋₁`, by its certified sign); `None` otherwise.
+fn lambert_on_branch(arena: &mut Arena, y: ExprId, branch: LambertRealBranch) -> Option<ExprId> {
+    let one = arena.one;
+    let y_plus_one = arena.add(&[y, one]);
+    let sign = if arena.is_zero_structural(y_plus_one) {
+        std::cmp::Ordering::Equal
+    } else {
+        certified_real_sign(arena, y_plus_one)?
+    };
+    let on_branch = match branch {
+        LambertRealBranch::Principal => sign.is_ge(),
+        LambertRealBranch::MinusOne => sign.is_le(),
+    };
+    on_branch.then_some(y)
+}
+
 /// The exact `w` with `w·e^w = x` on `branch` (`w ≥ −1` for `W₀`, `w ≤ −1`
 /// for `W₋₁`), when `x` is visibly of that form: `c·exp(c)` for a rational
 /// `c` (`W₋₁(−2e⁻²) = −2`, `W₀(3e³) = 3`), or `t·p^t·ln p` for an integer
 /// `p ≥ 2` and a small integer `t` (`w = t·ln p`: `W₀(−ln(2)/2) = −ln 2`,
 /// `W₋₁(−ln(2)/2) = −2·ln 2`, `W₀(3·ln 3) = ln 3`).
-fn lambert_fixed_point(arena: &mut Arena, x: ExprId, branch: LambertRealBranch) -> Option<ExprId> {
+fn lambert_visible_fixed_point(
+    arena: &mut Arena,
+    x: ExprId,
+    branch: LambertRealBranch,
+) -> Option<ExprId> {
     let on_branch = |w_plus_one: std::cmp::Ordering| match branch {
         LambertRealBranch::Principal => w_plus_one.is_ge(),
         LambertRealBranch::MinusOne => w_plus_one.is_le(),
@@ -4618,7 +4873,9 @@ fn is_arithmetic_constant(arena: &Arena, id: ExprId) -> bool {
         })
 }
 
-fn eval_sign(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+/// `sign(inner)` for the evaluated argument `inner` (`original` before
+/// evaluation, which the exact zero tests also try, see [`Difference`]).
+fn eval_sign(arena: &mut Arena, inner: ExprId, original: ExprId) -> Option<ExprId> {
     if let Some(r) = arena.as_num(inner) {
         use num_traits::{Signed, Zero};
         if r.is_positive() {
@@ -4639,15 +4896,19 @@ fn eval_sign(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         Some(_) => Some(arena.neg_one),
         // A constant that is exactly 0 without being written 0: `sign(cos(π/16)
         // − √(2 + √(2 + √2))/2)` stayed up to 0.44.  The exact tests run
-        // only for a value that is 0 to the precision of the evaluation.
-        None if walk::free_symbols(arena, inner).is_empty()
-            && !constant_is_nonzero(arena, inner)
-            && (sqrt_tower_is_zero(arena, inner)
-                || cyclotomic::is_zero(arena, inner) == Some(true)) =>
-        {
-            Some(arena.zero)
+        // only for a value that is 0 to the precision of the evaluation; they
+        // are those of `Eq(inner, 0)` ([`constant_zero_decision`]): up to
+        // 0.45 the minimal polynomial and the arctangent sums were missing
+        // here, and `sign(atan(1/2) + atan(1/3) − π/4)` stayed.
+        None => {
+            let zero = match constant_zero_decision(arena, inner) {
+                None if original != inner && walk::free_symbols(arena, original).is_empty() => {
+                    exact_zero_test(arena, original)
+                }
+                decided => decided,
+            };
+            (zero == Some(true)).then_some(arena.zero)
         }
-        None => None,
     }
 }
 
@@ -4657,14 +4918,152 @@ fn eval_sign(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 /// ([`certified_real_sign`]); `None` otherwise.
 fn real_constant_sign(arena: &mut Arena, x: ExprId) -> Option<std::cmp::Ordering> {
     use crate::base::assumptions::{AssumptionCache, Props};
+    // A certified value is finite: finiteness the assumptions do not know
+    // (`W₋₁(−ln(2)/(5·⁵√2))`) does not keep the sign open (up to 0.45
+    // `sign` stayed there while `eval` decided `x < 0`).
     if !walk::free_symbols(arena, x).is_empty()
-        || AssumptionCache::new().query(arena, x, Props::FINITE) != Some(true)
+        || AssumptionCache::new().query(arena, x, Props::FINITE) == Some(false)
     {
         return None;
     }
     // The value first: realness may take a minimal polynomial.
     let sign = certified_real_sign(arena, x)?;
     known_real(arena, x).then_some(sign)
+}
+
+/// What [`constant_facts`] found about a symbol-free constant, memoised in
+/// [`Arena::constant_facts`] under one key per class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConstantClass {
+    /// Real (by [`known_real`]) with a certified positive value.
+    Positive,
+    /// Real with a certified negative value.
+    Negative,
+    /// Exactly 0 ([`exact_zero_test`]).
+    Zero,
+    /// A certified nonzero imaginary part.
+    NonReal,
+    /// Real and not 0 (an exact test), sign not decided.
+    NonzeroReal,
+    /// Not 0 (a certified nonzero value, or an exact test), realness not
+    /// decided.
+    Nonzero,
+    /// Real, nothing else decided.
+    Real,
+    /// Nothing decided.
+    Unknown,
+}
+
+impl ConstantClass {
+    const ALL: [Self; 8] = [
+        Self::Positive,
+        Self::Negative,
+        Self::Zero,
+        Self::NonReal,
+        Self::NonzeroReal,
+        Self::Nonzero,
+        Self::Real,
+        Self::Unknown,
+    ];
+
+    /// The key of the class in [`Arena::constant_facts`] (after
+    /// [`FACT_REAL`] and [`FACT_NEGATIVE`]).
+    fn key(self) -> u8 {
+        2 + self as u8
+    }
+}
+
+/// The class of the symbol-free constant `x`, decided on its evaluated form
+/// `v = eval(x)` as `eval` decides relations (`W(√3·e^{√3}) − √3` is `0`):
+/// the certified 16-digit value of `v` first (a nonzero imaginary part, or
+/// a nonzero real part and realness by [`known_real`]), the exact zero
+/// tests of `Eq(v, 0)` when the value is 0 to its precision.  Memoised per
+/// arena.
+fn constant_class(arena: &mut Arena, x: ExprId) -> ConstantClass {
+    use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+    if let Some(&c) = ConstantClass::ALL
+        .iter()
+        .find(|c| arena.constant_facts.contains_key(&(x, c.key())))
+    {
+        return c;
+    }
+    let v = eval(arena, x);
+    let class = if arena.is_zero_structural(v) {
+        ConstantClass::Zero
+    } else {
+        let value = evalf_settled(arena, v, 16, ZeroSearch::Cap);
+        let (nonzero, nonreal) = match &value {
+            Ok((z, Settled::Certified)) => (!(z.0.is_zero() && z.1.is_zero()), !z.1.is_zero()),
+            _ => (false, false),
+        };
+        if nonreal {
+            ConstantClass::NonReal
+        } else if nonzero {
+            match (known_real(arena, v), value) {
+                (true, Ok((z, _))) if z.0.is_negative() => ConstantClass::Negative,
+                (true, _) => ConstantClass::Positive,
+                (false, _) => ConstantClass::Nonzero,
+            }
+        } else {
+            let real = known_real(arena, v);
+            let zero = exact_zero_test(arena, v)
+                .or_else(|| (v != x).then(|| exact_zero_test(arena, x)).flatten());
+            match (zero, real) {
+                (Some(true), _) => ConstantClass::Zero,
+                (Some(false), true) => ConstantClass::NonzeroReal,
+                (Some(false), false) => ConstantClass::Nonzero,
+                (None, true) => ConstantClass::Real,
+                (None, false) => ConstantClass::Unknown,
+            }
+        }
+    };
+    arena.constant_facts.insert((x, class.key()), true);
+    class
+}
+
+/// The sign, zero and realness facts `eval` decides about the symbol-free
+/// constant `x` (empty for an expression with symbols or one known not to
+/// be finite): what the assumption queries of the API add to the
+/// structural rules of [`AssumptionCache`](crate::base::assumptions::AssumptionCache)
+/// for constants, so that `cos(π/16).is_positive()` agrees with `eval` of
+/// `cos(π/16) > 0` (both `True`; the query was `None` up to 0.45), and
+/// `(cos(π/16) − √(2 + √(2 + √2))/2).is_zero()` with `Eq` and `sign`.
+///
+/// A certified 16-digit value decides the sign of a constant real by
+/// [`known_real`] and shows a nonzero imaginary part; a value 0 to its
+/// precision goes to the exact zero tests of `Eq(x, 0)`
+/// ([`exact_zero_test`]).  The work is memoised per arena
+/// ([`constant_class`], [`Arena::constant_facts`]) and nothing recurses
+/// over `x`; the structural cache is left alone, so a query answers the
+/// same whatever was asked before.  The facts are closed under the
+/// implication rules.
+pub(crate) fn constant_facts(
+    arena: &mut Arena,
+    x: ExprId,
+) -> crate::base::assumptions::Assumptions {
+    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
+    let mut facts = Assumptions::default();
+    if !walk::free_symbols(arena, x).is_empty()
+        || AssumptionCache::new().query(arena, x, Props::FINITE) == Some(false)
+    {
+        return facts;
+    }
+    let class = constant_class(arena, x);
+    match class {
+        ConstantClass::Positive => facts.known_true |= Props::REAL | Props::POSITIVE,
+        ConstantClass::Negative => facts.known_true |= Props::REAL | Props::NEGATIVE,
+        ConstantClass::Zero => facts.known_true |= Props::ZERO,
+        ConstantClass::NonReal => {
+            facts.known_true |= Props::NONZERO | Props::COMPLEX;
+            facts.known_false |= Props::REAL | Props::EXTENDED_REAL;
+        }
+        ConstantClass::NonzeroReal => facts.known_true |= Props::NONZERO | Props::REAL,
+        ConstantClass::Nonzero => facts.known_true |= Props::NONZERO,
+        ConstantClass::Real => facts.known_true |= Props::REAL,
+        ConstantClass::Unknown => {}
+    }
+    facts.forward_chain();
+    facts
 }
 
 fn eval_asin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -6415,6 +6814,48 @@ fn lowergamma_closure_cancels_at(s: &Q, x_f: f64, ln_x: f64) -> bool {
     -ln_p / std::f64::consts::LN_2 > LOWERGAMMA_FOLD_MAX_LOSS_BITS
 }
 
+/// [`lowergamma_closure_cancels`] for an `x = re + i·im` off the positive
+/// axis (a complex or negative constant): the closed form's terms are
+/// at most `Γ(s)·max(1, e^{|x| − re})`, and for `|x| < (s + 1)/2` the power
+/// series `γ(s, x) = xˢe⁻ˣ/s · Σ xᵏ/((s + 1)⋯(s + k))` bounds `|γ(s, x)|`
+/// below by `|x|ˢe^{−re}/s · (s + 1 − 2|x|)/(s + 1 − |x|)`; the ratio is the
+/// loss.  Up to 0.45 only a real positive `x` was guarded: `γ(30, (−13/100 +
+/// 99i/100)/10¹¹)` folded into `29!·(1 − e^{−x}·Σ…)`, which lost 1,200 bits
+/// and was refused at 43 digits (`PrecisionExhausted`).
+fn lowergamma_closure_cancels_complex(s: &Q, re: f64, im: f64) -> bool {
+    let half_integer = s.denom() == &BigInt::from(2);
+    if !(s.is_integer() || half_integer)
+        || *s > Q::from_integer(BigInt::from(MAX_SPECIAL_EXPANSION))
+    {
+        return false;
+    }
+    let Some(s_f) = s.to_f64() else {
+        return false;
+    };
+    let rho = re.hypot(im);
+    if !rho.is_finite() || rho >= (s_f + 1.0) / 2.0 {
+        return false;
+    }
+    if rho == 0.0 {
+        // Below the range of `f64`: the series' first term is all there is.
+        return true;
+    }
+    // ln Γ(s + 1) for an integer or half-integer s ≤ MAX_SPECIAL_EXPANSION.
+    let mut ln_gamma = if s.is_integer() {
+        0.0
+    } else {
+        0.5 * std::f64::consts::PI.ln()
+    };
+    let mut k = if s.is_integer() { 2.0 } else { 0.5 };
+    while k <= s_f + 0.25 {
+        ln_gamma += f64::ln(k);
+        k += 1.0;
+    }
+    let loss = ln_gamma - s_f * rho.ln() + re + (rho - re).max(0.0)
+        - ((s_f + 1.0 - 2.0 * rho) / (s_f + 1.0 - rho)).ln();
+    loss / std::f64::consts::LN_2 > LOWERGAMMA_FOLD_MAX_LOSS_BITS
+}
+
 /// `γ(s, 0) = 0`, `γ(s, ∞) = Γ(s)`, closed forms for integer / half-integer `s > 0`.
 ///
 /// `γ(s, 0) = 0` holds only for `s > 0` (`∫₀ˣ t^{s−1} e^{−t} dt` diverges at
@@ -6441,9 +6882,21 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
         if lowergamma_closure_cancels(&r, &xr) {
             return None;
         }
-    } else if let Some(ln_x) = crate::transforms::evalf::ln_of_positive_constant(arena, x)
-        && r.to_f64().is_some_and(|s_f| ln_x < s_f.ln())
-        && lowergamma_closure_cancels_at(&r, ln_x.exp(), ln_x)
+        if !xr.is_positive()
+            && let Some(x_f) = xr.to_f64()
+            && lowergamma_closure_cancels_complex(&r, x_f, 0.0)
+        {
+            return None;
+        }
+    } else if let Some(ln_x) = crate::transforms::evalf::ln_of_positive_constant(arena, x) {
+        if r.to_f64().is_some_and(|s_f| ln_x < s_f.ln())
+            && lowergamma_closure_cancels_at(&r, ln_x.exp(), ln_x)
+        {
+            return None;
+        }
+    } else if walk::free_symbols(arena, x).is_empty()
+        && let Ok(z) = crate::transforms::evalf::evalf_complex64(arena, x)
+        && lowergamma_closure_cancels_complex(&r, z.re, z.im)
     {
         return None;
     }

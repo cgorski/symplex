@@ -326,22 +326,27 @@ fn lambert_values_on_the_domain_boundary() {
 /// A constant root whose sign no evaluation decides because it is `0` to
 /// every precision was returned for a positive unknown: `x − atan(1/2) −
 /// atan(1/3) + π/4` (`atan(1/2) + atan(1/3) = π/4`, Euler's identity, so
-/// the root is `0`) gave `[−π/4 + atan(1/2) + atan(1/3)]`.  Now refused,
-/// with the reason; the set keeps the undecided intersection.  Oracle: the
-/// identity `tan(atan(1/2) + atan(1/3)) = (1/2 + 1/3)/(1 − 1/6) = 1`.
+/// the root is `0`) gave `[−π/4 + atan(1/2) + atan(1/3)]`.  Refused in
+/// 0.45, with the reason; the set keeps the undecided intersection.  Now
+/// `eval` decides sums of arctangents of rationals exactly, and that root
+/// is `0`, not positive: no root (the set still keeps the intersection).  A member that no exact test decides (`sin²1 + cos²1 −
+/// 1`, 0 to every precision) is still refused.  Oracle: the identity
+/// `tan(atan(1/2) + atan(1/3)) = (1/2 + 1/3)/(1 − 1/6) = 1`.
 #[test]
 fn undecided_zero_member_is_refused() {
     let ctx = Context::new();
     let pos = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     let e = parse(&ctx, "x - atan(1/2) - atan(1/3) + pi/4");
-    match e.solve(&pos) {
+    assert!(e.solve(&pos).unwrap().is_empty());
+    let set = e.solve_as_set(&pos).to_string();
+    assert!(set.starts_with("(0, oo) ∩"), "{set}");
+    let undecided = parse(&ctx, "x - sin(1)^2 - cos(1)^2 + 1");
+    match undecided.solve(&pos) {
         Err(SymplexError::ComputationFailed { reason, .. }) => {
             assert!(reason.contains("cannot decide"), "{reason}");
         }
         other => panic!("{other:?}"),
     }
-    let set = e.solve_as_set(&pos).to_string();
-    assert!(set.starts_with("(0, oo) ∩"), "{set}");
 }
 
 /// An equation in `x²` only (beyond the single power and exponential of

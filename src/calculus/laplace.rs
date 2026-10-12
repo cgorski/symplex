@@ -103,7 +103,10 @@ pub(crate) fn laplace_transform(
     } else {
         expr
     };
-    do_forward(arena, expr, t, t_sym, s)
+    let f = do_forward(arena, expr, t, t_sym, s)?;
+    // Frequency differentiation of `e^{−ρs}E₁(−ρs)` (from a rational
+    // function) produces `E₀`, `E₋₁`, …, which have elementary forms.
+    Ok(elementary_expint(arena, f))
 }
 
 /// Heaviside steps of `f` read on `t > 0`, the only values the transform
@@ -186,10 +189,204 @@ fn do_forward(
         return ruled;
     }
     let rewritten = rewrite_for_table(arena, expr, t);
-    if rewritten == expr {
-        return ruled;
+    if rewritten != expr
+        && let Ok(v) = do_forward_rules(arena, rewritten, t, t_sym, s)
+    {
+        return Ok(v);
     }
-    do_forward_rules(arena, rewritten, t, t_sym, s).or(ruled)
+    match forward_rational(arena, expr, t, s).or_else(|| forward_rational_trig(arena, expr, t, s)) {
+        Some(v) => Ok(v),
+        None => ruled,
+    }
+}
+
+/// `L{R(t)·cos(bt)} = (F(s − ib) + F(s + ib))/2` and `L{R(t)·sin(bt)} =
+/// (F(s − ib) − F(s + ib))/(2i)` for a rational `R` over ℚ with `F = L{R}`
+/// from [`forward_rational`] and a real numeric `b` (the frequency shift by
+/// `±ib` keeps `Re s`, where `F` is analytic).  Before 0.46 `cos t/(t + 1)`
+/// and `sin t/(t + 1)` were refused; SymPy:
+/// `laplace_transform(sin(t)/(t + 1), t, s)` has no closed form either way
+/// (it returns a Meijer G), mpmath `quad` is the oracle.
+fn forward_rational_trig(arena: &mut Arena, expr: ExprId, t: ExprId, s: ExprId) -> Option<ExprId> {
+    let factors: Vec<ExprId> = match arena.node(expr) {
+        ExprNode::Mul(ch) => ch.to_vec(),
+        _ => return None,
+    };
+    let mut trig: Option<(bool, ExprId)> = None;
+    let mut rest: Vec<ExprId> = Vec::new();
+    for f in factors {
+        match arena.node(f).clone() {
+            ExprNode::Sin(arg) | ExprNode::Cos(arg) if contains_var(arena, arg, t) => {
+                if trig.is_some() {
+                    return None;
+                }
+                let (b, c) = linear_in(arena, arg, t)?;
+                if !arena.is_zero_structural(c) || arena.as_num(b).is_none() {
+                    return None;
+                }
+                trig = Some((matches!(arena.node(f), ExprNode::Sin(_)), b));
+            }
+            _ => rest.push(f),
+        }
+    }
+    let (is_sin, b) = trig?;
+    let r = arena.mul(&rest);
+    let f = forward_rational(arena, r, t, s)?;
+    let i = arena.i_unit();
+    let ib = arena.mul(&[i, b]);
+    let s_minus = arena.sub(s, ib);
+    let s_plus = arena.add(&[s, ib]);
+    let f_minus = crate::transforms::subs::subs(arena, f, s, s_minus);
+    let f_plus = crate::transforms::subs::subs(arena, f, s, s_plus);
+    let v = if is_sin {
+        let d = arena.sub(f_minus, f_plus);
+        let two = arena.int(2);
+        let two_i = arena.mul(&[two, i]);
+        arena.div(d, two_i)
+    } else {
+        let sum = arena.add(&[f_minus, f_plus]);
+        let half = arena.rational(1, 2);
+        arena.mul(&[half, sum])
+    };
+    Some(crate::transforms::eval::eval(arena, v))
+}
+
+/// `L{R}(s)` for a rational `R = N/D` over ℚ without a pole on `[0, ∞)`:
+/// the polynomial part term by term (`tᵏ → k!/s^{k+1}`) and the proper part
+/// as `Σ_ρ Res_{z=ρ} [R(z)·Gρ(z)]` over its poles
+/// ([`residue::rational_residue_sum_with`](crate::calculus::residue::rational_residue_sum_with)),
+/// where `Gρ(z) = L{1/(t − z)}(s)` near `ρ`: the residue at a pole of order
+/// `m` collects `cⱼ/(j−1)!·∂^{j−1}_z G` over the principal part `Σ cⱼ/(t −
+/// ρ)^j`, and `L{1/(t − ρ)^j} = ∂^{j−1}_ρ L{1/(t − ρ)}/(j − 1)!`.
+///
+/// `L{1/(t − ρ)}(s) = e^{−ρs} E₁(−ρs)` for real `s > 0` (the ray `ρ + u/s`,
+/// `u > 0`, is horizontal and misses the cut of `E₁`).  As a function of
+/// `s` that expression is analytic on `Re s > 0` exactly when `Re ρ ≤ 0`;
+/// for `Re ρ > 0` its cut, the ray `s ∈ ℝ₊/ρ`, enters the half-plane, and
+/// the continuation there is `e^{−ρs}(±iπ − Ei(ρs))` for `±Im ρ > 0`
+/// (`E₁(w) = −Ei(−w) ∓ iπ` for `±Im w > 0`; the cut of `Ei(ρs)` lies in
+/// `Re s < 0`).  So `L{1/(t + 1)} = e^s E₁(s)` and `L{1/(t² + 1)} =
+/// (e^{−is}E₁(−is) − e^{is}E₁(is))/(2i)`.  Before 0.46 every rational
+/// function with a pole off `0` was refused.  SymPy:
+/// `laplace_transform(1/(t + 1), t, s)` = `exp(s)*expint(1, s)`.
+fn forward_rational(arena: &mut Arena, expr: ExprId, t: ExprId, s: ExprId) -> Option<ExprId> {
+    use crate::calculus::residue::{self, PolePlace, RationalQ};
+    let r = residue::rational_over_q(arena, expr, t)?;
+    let (q, rem) = r.numer.div_rem(&r.denom);
+    let mut parts: Vec<ExprId> = Vec::new();
+    for (k, c) in q.coeffs().iter().enumerate() {
+        if c.is_zero() {
+            continue;
+        }
+        let fact = factorial(u64::try_from(k).ok()?);
+        let c = c * Ratio::from_integer(fact);
+        let c = arena.num_ratio(c);
+        let e = arena.int(-i64::try_from(k).ok()? - 1);
+        let sp = arena.pow(s, e);
+        parts.push(arena.mul(&[c, sp]));
+    }
+    if !rem.is_zero() {
+        let proper = RationalQ {
+            numer: rem,
+            denom: r.denom,
+        };
+        let bound = residue::pole_symbol(arena, s);
+        let z = arena.symbol("__laplace_pole");
+        let one = arena.one;
+        let sum = residue::rational_residue_sum_with(arena, &proper, z, bound, |arena, pole| {
+            let scale = pole.approx.norm().max(1.0);
+            let re = pole.approx.re;
+            if pole.place == PolePlace::Real && re > -1e-12 * scale {
+                // A pole on [0, ∞): the integral diverges.
+                return None;
+            }
+            let zs = arena.mul(&[z, s]);
+            let neg_zs = arena.neg(zs);
+            let damp = arena.exp(neg_zs);
+            let w = if re <= 1e-9 * scale {
+                let e1 = crate::transforms::eval::apply_named(
+                    arena,
+                    crate::base::libfn::LibFn::ExpInt,
+                    &[one, neg_zs],
+                );
+                arena.mul(&[damp, e1])
+            } else {
+                let pi = arena.pi();
+                let i = arena.i_unit();
+                let i_pi = arena.mul(&[i, pi]);
+                let i_pi = if pole.place == PolePlace::Upper {
+                    i_pi
+                } else {
+                    arena.neg(i_pi)
+                };
+                let ei = arena.ei(zs);
+                let inner = arena.sub(i_pi, ei);
+                arena.mul(&[damp, inner])
+            };
+            Some(Some(w))
+        })?;
+        parts.push(sum);
+    }
+    let v = arena.add(&parts);
+    let v = crate::transforms::eval::eval(arena, v);
+    let v = crate::simplify::powsimp::powsimp(arena, v);
+    Some(crate::transforms::eval::eval(arena, v))
+}
+
+/// `Eₙ(w)` for an integer `n ≤ 0` written out: `E₋ₖ(w) = ∫₁^∞ e^{−wt} tᵏ dt
+/// = k!·e^{−w} Σ_{j≤k} w^{j−k−1}/j!` (the derivatives of `E₁` at a pole of
+/// higher order; `E₋₁` has no numeric evaluation).
+fn elementary_expint(arena: &mut Arena, e: ExprId) -> ExprId {
+    use crate::base::libfn::LibFn;
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let has_low_order = post.iter().any(|&id| match arena.node(id) {
+        ExprNode::Apply(f, args) => {
+            arena.lib_fn(*f) == Some(LibFn::ExpInt)
+                && args.len() == 2
+                && arena
+                    .as_num(args[0])
+                    .is_some_and(|n| n.is_integer() && !n.is_positive())
+        }
+        _ => false,
+    });
+    if !has_low_order {
+        return e;
+    }
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(rebuilt).clone() {
+            ExprNode::Apply(f, args)
+                if arena.lib_fn(f) == Some(LibFn::ExpInt)
+                    && args.len() == 2
+                    && let Some(n) = arena.as_num(args[0]).cloned()
+                    && n.is_integer()
+                    && !n.is_positive()
+                    && let Ok(k) = u64::try_from(-n.to_integer())
+                    && k <= 16 =>
+            {
+                let w = args[1];
+                let neg_w = arena.neg(w);
+                let damp = arena.exp(neg_w);
+                let kf = factorial(k);
+                let mut terms = Vec::new();
+                for j in 0..=k {
+                    let c = Ratio::new(kf.clone(), factorial(j));
+                    let c = arena.num_ratio(c);
+                    let p = arena
+                        .int(i64::try_from(j).unwrap_or(0) - i64::try_from(k).unwrap_or(0) - 1);
+                    let wp = arena.pow(w, p);
+                    terms.push(arena.mul(&[c, wp]));
+                }
+                let s = arena.add(&terms);
+                arena.mul(&[damp, s])
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    let out = cache.get(&e).copied().unwrap_or(e);
+    crate::transforms::eval::eval(arena, out)
 }
 
 /// `f(t)` rewritten towards sums of `tⁿ·e^{at}·{1, sin bt, cos bt}`, the

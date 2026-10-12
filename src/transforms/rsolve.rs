@@ -7,7 +7,8 @@
 //!   constant coefficients.  Characteristic roots come from the univariate
 //!   solver (repeated roots → `nʲ·rⁿ`, complex pairs → `ρⁿ·cos(nθ)`,
 //!   `ρⁿ·sin(nθ)`), a particular solution is found by undetermined
-//!   coefficients for `poly(n)·bⁿ` forcing (resonance handled), and initial
+//!   coefficients for `poly(n)·bⁿ` and `poly(n)·bⁿ·cos(θn)`,
+//!   `poly(n)·bⁿ·sin(θn)` forcing (resonance handled), and initial
 //!   values are fitted with `linsolve`.
 //! - [`rsolve_first_order`] — `a(n+1) = p(n)·a(n) + q(n)` with variable
 //!   coefficients, via the product formula `a(n) = P(n)·(a₀ + Σ q(k)/P(k+1))`
@@ -38,11 +39,31 @@ use crate::base::errors::SymplexError;
 use crate::base::node::ExprNode;
 use crate::base::numeric::Q;
 
-/// A parsed forcing term `c · n^d · bⁿ`.
+/// A parsed forcing term `c · n^d · bⁿ · w(θn)` with `w` one of `1`,
+/// `cos`, `sin`.
 struct ForcingTerm {
     coeff: Ex,
     degree: usize,
     base: Ex,
+    wave: Wave,
+}
+
+/// The oscillating factor of a [`ForcingTerm`]: `cos(θ·n)` or `sin(θ·n)`
+/// (the angle `θ` free of `n`), or none.
+#[derive(Clone)]
+enum Wave {
+    None,
+    Cos(Ex),
+    Sin(Ex),
+}
+
+impl Wave {
+    fn angle(&self) -> Option<&Ex> {
+        match self {
+            Wave::None => None,
+            Wave::Cos(t) | Wave::Sin(t) => Some(t),
+        }
+    }
 }
 
 /// Name of the `k`-th arbitrary constant.
@@ -68,6 +89,7 @@ fn parse_forcing_term(term: &Ex, n: &Ex) -> Option<ForcingTerm> {
     let mut coeff = ctx.one();
     let mut degree = 0usize;
     let mut base: Option<Ex> = None;
+    let mut wave = Wave::None;
     for f in factors {
         if &f == n {
             degree += 1;
@@ -94,9 +116,6 @@ fn parse_forcing_term(term: &Ex, n: &Ex) -> Option<ForcingTerm> {
                     degree += usize::try_from(d.to_integer()).ok()?;
                 } else if !b.contains(n) {
                     // b^(k·n + m)
-                    if base.is_some() {
-                        return None;
-                    }
                     let coeffs = {
                         let mut inner = f.inner.write();
                         crate::transforms::solve::symbolic_poly_coeffs(
@@ -118,16 +137,13 @@ fn parse_forcing_term(term: &Ex, n: &Ex) -> Option<ForcingTerm> {
                     };
                     let bm = b.pow(&m).eval();
                     coeff = &coeff * &bm;
-                    base = Some(bk.eval());
+                    base = Some(times_base(base, bk.eval()));
                 } else {
                     return None;
                 }
             }
             ExprNode::Exp(arg) => {
                 // e^(k n + m)
-                if base.is_some() {
-                    return None;
-                }
                 let arg = f.wrap(arg);
                 let coeffs = {
                     let mut inner = f.inner.write();
@@ -143,7 +159,35 @@ fn parse_forcing_term(term: &Ex, n: &Ex) -> Option<ForcingTerm> {
                 let m = f.wrap(coeffs[0]);
                 let k = f.wrap(coeffs[1]);
                 coeff = &coeff * &m.exp().eval();
-                base = Some(k.exp().eval());
+                base = Some(times_base(base, k.exp().eval()));
+            }
+            ExprNode::Cos(arg) | ExprNode::Sin(arg) => {
+                // cos(θ·n), sin(θ·n) with a constant angle θ ≠ 0 (no phase)
+                if wave.angle().is_some() {
+                    return None;
+                }
+                let is_cos = matches!(node, ExprNode::Cos(_));
+                let arg = f.wrap(arg);
+                let coeffs = {
+                    let mut inner = f.inner.write();
+                    crate::transforms::solve::symbolic_poly_coeffs(
+                        &mut inner.arena,
+                        arg.raw_id(),
+                        n.raw_id(),
+                    )
+                }?;
+                if coeffs.len() != 2 || !f.wrap(coeffs[0]).eval().is_zero_structural() {
+                    return None;
+                }
+                let theta = f.wrap(coeffs[1]).eval();
+                if theta.is_zero_structural() || theta.contains(n) {
+                    return None;
+                }
+                wave = if is_cos {
+                    Wave::Cos(theta)
+                } else {
+                    Wave::Sin(theta)
+                };
             }
             _ => return None,
         }
@@ -152,7 +196,17 @@ fn parse_forcing_term(term: &Ex, n: &Ex) -> Option<ForcingTerm> {
         coeff: coeff.eval(),
         degree,
         base: base.unwrap_or_else(|| ctx.one()),
+        wave,
     })
+}
+
+/// The base of `b₁ⁿ·b₂ⁿ = (b₁·b₂)ⁿ` (`eval` writes `(−√2)ⁿ` as
+/// `(−1)ⁿ·√2ⁿ`, which was refused as an unsupported forcing term).
+fn times_base(base: Option<Ex>, factor: Ex) -> Ex {
+    match base {
+        None => factor,
+        Some(b) => (&b * &factor).eval(),
+    }
 }
 
 /// Build `n^j` (with `n^0 = 1`, `n^1 = n`).
@@ -898,6 +952,43 @@ fn fit_by_components(
     Some(pairs)
 }
 
+/// [`fit_by_components`] for data that are not all rational (a forcing term
+/// `sin(nπ/6)` makes `a(k) − yₚ(k)` lie in `ℚ(√3)`): the fit is linear in
+/// the data, so each constant is `Σₖ dataₖ·(its value for the k-th unit
+/// datum)`, with one rational fit per unit datum.  The global elimination
+/// over the roots and the data's field together did not finish
+/// (`a(n+4) − 2a(n) = 2 sin(nπ/6)` with four initial values hung).
+fn fit_by_components_linear(
+    coeffs: &[Q],
+    groups: &[RootGroup],
+    basis: &[BasisSeq],
+    constants: &[Ex],
+    data: &[Ex],
+    ctx: &crate::api::context::Context,
+) -> Option<Vec<(Ex, Ex)>> {
+    use num_traits::Zero;
+    let order = coeffs.len() - 1;
+    if data.len() != order {
+        return None;
+    }
+    let mut values: Vec<Ex> = vec![ctx.zero(); constants.len()];
+    for (k, datum) in data.iter().enumerate() {
+        if datum.is_zero_structural() {
+            continue;
+        }
+        let mut unit = vec![Q::zero(); order];
+        unit[k] = Q::from_integer(1.into());
+        let fit = fit_by_components(coeffs, groups, basis, constants, &unit, ctx)?;
+        for (slot, c) in values.iter_mut().zip(constants) {
+            let v = fit.iter().find(|(name, _)| name == c).map(|(_, v)| v)?;
+            if !v.is_zero_structural() {
+                *slot = &*slot + &(datum * v);
+            }
+        }
+    }
+    Some(constants.iter().cloned().zip(values).collect())
+}
+
 /// [`fit_by_components`] with only the first `ics.len() < k` initial
 /// values: the missing values become free parameters, named `C1, C2, …` in
 /// the result (`Cᵢ = a(len + i − 1)`).
@@ -1065,6 +1156,130 @@ fn particular_solution(
     }
 }
 
+/// The forcing terms with one exponential base `b` and one angle `θ`:
+/// `bⁿ·(Q_c(n)·cos(θn) + Q_s(n)·sin(θn))`, or `bⁿ·Q_c(n)` without an
+/// angle (`cos_part`, `sin_part` hold the coefficients of `Q_c`, `Q_s`).
+struct ForcingGroup {
+    base: Ex,
+    angle: Option<Ex>,
+    cos_part: Vec<Ex>,
+    sin_part: Vec<Ex>,
+}
+
+/// Particular solution for the forcing `bⁿ·(Q_c(n)·cos θn + Q_s(n)·sin θn)`
+/// by undetermined coefficients in real form: the trial
+/// `bⁿ·nˢ·(A(n)·cos θn + B(n)·sin θn)` with `deg A, deg B ≤ d` turns the
+/// recurrence, through `cos θ(n+k) = cos θn·cos kθ − sin θn·sin kθ` and
+/// `sin θ(n+k) = sin θn·cos kθ + cos θn·sin kθ`, into a linear system for
+/// the coefficients of `A` and `B`.  `s` is the multiplicity of `b·e^{iθ}`
+/// as a characteristic root (resonance); instead of deciding that equality
+/// (`e^{iπ/3}` against the solver's radicals), `s = 0, 1, …` are tried
+/// until the system is consistent — every solution of the system is a
+/// particular solution.  Before 0.46 `cos(nπ/2)`, `sin(nπ/6)` and
+/// `cos(nπ)` were refused as unsupported forcing terms.
+fn particular_solution_wave(
+    coeffs: &[Ex],
+    group: &ForcingGroup,
+    theta: &Ex,
+    n: &Ex,
+) -> Result<Ex, SymplexError> {
+    let ctx = n.context();
+    let order = coeffs.len() - 1;
+    let d = group.cos_part.len().max(group.sin_part.len()).max(1) - 1;
+    let q_of = |part: &[Ex]| -> Ex {
+        let mut acc = ctx.zero();
+        for (j, qj) in part.iter().enumerate() {
+            acc = &acc + &(qj * &n_pow(n, j));
+        }
+        acc
+    };
+    let (q_cos, q_sin) = (q_of(&group.cos_part), q_of(&group.sin_part));
+    let cos_k: Vec<Ex> = (0..=order)
+        .map(|k| (theta * k as i64).cos().eval())
+        .collect();
+    let sin_k: Vec<Ex> = (0..=order)
+        .map(|k| (theta * k as i64).sin().eval())
+        .collect();
+    let a_unknowns: Vec<Ex> = (0..=d).map(|j| ctx.symbol(&format!("__A{j}"))).collect();
+    let b_unknowns: Vec<Ex> = (0..=d).map(|j| ctx.symbol(&format!("__B{j}"))).collect();
+    let poly_at = |unknowns: &[Ex], shift: i64, s: usize| -> Ex {
+        let m = n + shift;
+        let mut acc = ctx.zero();
+        for (j, u) in unknowns.iter().enumerate() {
+            acc = &acc + &(u * &n_pow(&m, j));
+        }
+        &acc * &n_pow(&m, s)
+    };
+    let coefficients_in_n = |e: &Ex| -> Result<Vec<Ex>, SymplexError> {
+        let e = e.expand().eval();
+        let ids = {
+            let mut inner = ctx.inner.write();
+            crate::transforms::solve::symbolic_poly_coeffs(&mut inner.arena, e.raw_id(), n.raw_id())
+        }
+        .ok_or_else(|| SymplexError::ComputationFailed {
+            operation: "rsolve_linear",
+            reason: "forcing residual is not polynomial in n".into(),
+        })?;
+        Ok(ids
+            .into_iter()
+            .map(|id| e.wrap(id))
+            .filter(|c| !c.is_zero_structural())
+            .collect())
+    };
+    let mut unknowns = a_unknowns.clone();
+    unknowns.extend(b_unknowns.iter().cloned());
+    for s in 0..=order {
+        let mut cos_part = -&q_cos;
+        let mut sin_part = -&q_sin;
+        for (k, c) in coeffs.iter().enumerate() {
+            if c.is_zero_structural() {
+                continue;
+            }
+            let ck = (c * &group.base.powi(k as i64)).eval();
+            let pa = poly_at(&a_unknowns, k as i64, s);
+            let pb = poly_at(&b_unknowns, k as i64, s);
+            cos_part = &cos_part + &(&ck * &(&(&cos_k[k] * &pa) + &(&sin_k[k] * &pb)));
+            sin_part = &sin_part + &(&ck * &(&(&cos_k[k] * &pb) - &(&sin_k[k] * &pa)));
+        }
+        let mut eqs = coefficients_in_n(&cos_part)?;
+        eqs.extend(coefficients_in_n(&sin_part)?);
+        if eqs.is_empty() {
+            return Ok(ctx.zero());
+        }
+        let pairs = match linsolve(&eqs, &unknowns)? {
+            LinearSolution::Unique(pairs) => pairs,
+            LinearSolution::Parametric { solution, free } => solution
+                .into_iter()
+                .map(|(u, v)| {
+                    if free.contains(&u) {
+                        (u, ctx.zero())
+                    } else {
+                        (u, v)
+                    }
+                })
+                .chain(free.iter().map(|f| (f.clone(), ctx.zero())))
+                .collect(),
+            LinearSolution::Inconsistent => continue,
+        };
+        let n_theta = n * theta;
+        let mut sol = &(&poly_at(&a_unknowns, 0, s) * &n_theta.cos())
+            + &(&poly_at(&b_unknowns, 0, s) * &n_theta.sin());
+        let refs: Vec<(&Ex, &Ex)> = pairs.iter().map(|(u, v)| (u, v)).collect();
+        sol = sol.subs_map(&refs);
+        for u in &unknowns {
+            sol = sol.subs(u, &ctx.zero());
+        }
+        if !group.base.is_one_structural() {
+            sol = &sol * &group.base.pow(n);
+        }
+        return Ok(sol.eval().simplify());
+    }
+    Err(SymplexError::ComputationFailed {
+        operation: "rsolve_linear",
+        reason: "undetermined coefficients failed for the trigonometric forcing term".into(),
+    })
+}
+
 /// Solve the linear constant-coefficient recurrence
 ///
 /// `c₀·a(n) + c₁·a(n+1) + … + c_k·a(n+k) = f(n)`
@@ -1075,7 +1290,8 @@ fn particular_solution(
 ///
 /// - `coeffs` — `[c₀, c₁, …, c_k]`, rational constants, `c_k ≠ 0`.
 /// - `forcing` — optional `f(n)`, a sum of terms `c·n^d·bⁿ` (polynomials,
-///   exponentials and their products; `b^(n+m)`, `exp(k·n)` accepted).
+///   exponentials and their products; `b^(n+m)`, `exp(k·n)` accepted),
+///   optionally times `cos(θ·n)` or `sin(θ·n)` (`cos(nπ/2)`, `sin n`).
 /// - `n` — the index symbol.
 /// - `ics` — optional initial values `a(0), a(1), …` (at most `k`).
 ///   Constants not determined by `ics` remain as `C1, C2, …`.
@@ -1155,32 +1371,43 @@ pub fn rsolve_linear(
             } else {
                 vec![f.clone()]
             };
-            let mut groups: Vec<(Ex, Vec<Ex>)> = Vec::new();
+            let mut groups: Vec<ForcingGroup> = Vec::new();
             for t in &terms {
                 let ft =
                     parse_forcing_term(t, n).ok_or_else(|| SymplexError::ComputationFailed {
                         operation: "rsolve_linear",
                         reason: format!("unsupported forcing term: {t}"),
                     })?;
-                let entry = match groups.iter_mut().find(|(b, _)| *b == ft.base) {
-                    Some(e) => e,
+                let angle = ft.wave.angle().cloned();
+                let index = match groups
+                    .iter()
+                    .position(|g| g.base == ft.base && g.angle == angle)
+                {
+                    Some(i) => i,
                     None => {
-                        groups.push((ft.base.clone(), Vec::new()));
-                        groups
-                            .last_mut()
-                            .ok_or_else(|| SymplexError::ComputationFailed {
-                                operation: "rsolve_linear",
-                                reason: "internal grouping error".into(),
-                            })?
+                        groups.push(ForcingGroup {
+                            base: ft.base.clone(),
+                            angle,
+                            cos_part: Vec::new(),
+                            sin_part: Vec::new(),
+                        });
+                        groups.len() - 1
                     }
                 };
-                if entry.1.len() <= ft.degree {
-                    entry.1.resize(ft.degree + 1, ctx.zero());
+                let part = match ft.wave {
+                    Wave::Sin(_) => &mut groups[index].sin_part,
+                    Wave::None | Wave::Cos(_) => &mut groups[index].cos_part,
+                };
+                if part.len() <= ft.degree {
+                    part.resize(ft.degree + 1, ctx.zero());
                 }
-                entry.1[ft.degree] = (&entry.1[ft.degree] + &ft.coeff).eval();
+                part[ft.degree] = (&part[ft.degree] + &ft.coeff).eval();
             }
-            for (base, q) in &groups {
-                let yp = particular_solution(&coeffs, q, base, &roots, n)?;
+            for g in &groups {
+                let yp = match &g.angle {
+                    None => particular_solution(&coeffs, &g.cos_part, &g.base, &roots, n)?,
+                    Some(theta) => particular_solution_wave(&coeffs, g, theta, n)?,
+                };
                 general = &general + &yp;
                 particular = &particular + &yp;
             }
@@ -1208,9 +1435,27 @@ pub fn rsolve_linear(
         .enumerate()
         .map(|(k, v)| as_rational(&(v - &particular.subs_i64(n, k as i64).eval()).eval()))
         .collect();
-    if let (Some(rc), Some(initial)) = (rat_coeffs, initial)
-        && let Some(pairs) = fit_by_components(&rc, &groups, &basis, &constants, &initial, &ctx)
-    {
+    let pairs = match (&rat_coeffs, initial) {
+        (Some(rc), Some(initial)) => {
+            fit_by_components(rc, &groups, &basis, &constants, &initial, &ctx)
+        }
+        // Irrational data (a forcing term such as sin(nπ/6)), all initial
+        // values given: by linearity from rational unit fits.
+        (Some(rc), None) if ics.len() == order => {
+            let data: Vec<Ex> = ics
+                .iter()
+                .enumerate()
+                .map(|(k, v)| {
+                    (v - &particular.subs_i64(n, k as i64).eval())
+                        .expand()
+                        .eval()
+                })
+                .collect();
+            fit_by_components_linear(rc, &groups, &basis, &constants, &data, &ctx)
+        }
+        _ => None,
+    };
+    if let Some(pairs) = pairs {
         let mut sol = general.clone();
         for (c, v) in &pairs {
             sol = sol.subs(c, v);

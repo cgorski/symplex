@@ -128,6 +128,11 @@ fn do_forward(
         return Ok(result);
     }
 
+    // ── Geometric factors a^{cn+d}, e^{cn+d}, sinh/cosh, C(n + k, k), 1/(n + k) ──
+    if let Some(result) = try_normalized_forward(arena, expr, n_var, n_sym, z_var)? {
+        return Ok(result);
+    }
+
     // ── Piecewise sequences and delayed steps g(n)·u[n − k] ──
     if let Some(result) = try_piecewise_sequence(arena, expr, n_var, n_sym, z_var)? {
         return Ok(result);
@@ -723,6 +728,160 @@ fn try_extended_forward(
         }
         _ => Ok(None),
     }
+}
+
+/// Largest `k` of the `1/(n + k)` entry.
+const MAX_HARMONIC_SHIFT: i64 = 16;
+
+/// Forms the table matches only after rewriting, factor by factor:
+///
+/// * a geometric factor with an exponent linear in `n`, `a^{cn+d}` or
+///   `e^{cn+d}`, is `a^d·gⁿ` for a fresh symbol `g` that stands for `a^c`
+///   (substituted back into the transform), so `2^{−n}`, `n·3^{−n}`,
+///   `e^{−n}·cos n` and `2^{−n}·sin 2n` reach the `aⁿ` rules;
+/// * `sinh(cn + d)`, `cosh(cn + d)` are written with exponentials;
+/// * `C(c·n + b, k)` for an integer `k ≥ 0` is the polynomial
+///   `∏_{j<k} (cn + b − j)/k!`;
+/// * `1/(n + k)` (`1 ≤ k ≤` [`MAX_HARMONIC_SHIFT`]) is `z^k·(−ln(1 − 1/z) −
+///   Σ_{m<k} z^{−m}/m)` (`Σ_{n≥0} z^{−n}/(n + 1) = −z·ln(1 − 1/z)` for
+///   `|z| > 1`, where `1 − 1/z` stays in the right half-plane).
+///
+/// Before 0.46 `2^(−n)`, `n·3^(−n)`, `sinh n`, `C(n + 2, 2)` and `1/(n + 1)`
+/// were refused ("cannot transform").  SymPy has no z-transform; the
+/// values are the sums `Σ x[n] z^{−n}` (mpmath `nsum`).
+fn try_normalized_forward(
+    arena: &mut Arena,
+    expr: ExprId,
+    n_var: ExprId,
+    n_sym: SymbolId,
+    z_var: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let one = arena.one;
+    // 1/(n + k)
+    if let ExprNode::Pow(base, e) = arena.node(expr).clone()
+        && e == arena.neg_one
+        && let Some((a, b)) = linear_in(arena, base, n_var)
+        && a == one
+        && let Some(k) = arena.as_num(b).cloned()
+        && k.is_integer()
+        && let Ok(k) = i64::try_from(k.to_integer())
+        && (1..=MAX_HARMONIC_SHIFT).contains(&k)
+    {
+        let inv_z = arena.div(one, z_var);
+        let w = arena.sub(one, inv_z);
+        let ln = arena.ln(w);
+        let mut parts = vec![arena.neg(ln)];
+        for m in 1..k {
+            let neg_m = arena.int(-m);
+            let zm = arena.pow(z_var, neg_m);
+            let c = arena.rational(-1, m);
+            parts.push(arena.mul(&[c, zm]));
+        }
+        let s = arena.add(&parts);
+        let kk = arena.int(k);
+        let zk = arena.pow(z_var, kk);
+        let r = arena.mul(&[zk, s]);
+        return Ok(Some(crate::transforms::eval::eval(arena, r)));
+    }
+    let factors: Vec<ExprId> = match arena.node(expr) {
+        ExprNode::Mul(ch) => ch.to_vec(),
+        _ => vec![expr],
+    };
+    let mut changed = false;
+    let mut out: Vec<ExprId> = Vec::with_capacity(factors.len());
+    let mut bases: Vec<(ExprId, ExprId)> = Vec::new();
+    for f in factors {
+        if !contains_var(arena, f, n_var) {
+            out.push(f);
+            continue;
+        }
+        let geometric = match arena.node(f).clone() {
+            ExprNode::Pow(a, e) if e != n_var && !contains_var(arena, a, n_var) => {
+                linear_in(arena, e, n_var).map(|(c, d)| {
+                    let ac = arena.pow(a, c);
+                    let ad = arena.pow(a, d);
+                    (ac, ad)
+                })
+            }
+            ExprNode::Exp(e) => linear_in(arena, e, n_var).map(|(c, d)| {
+                let ec = arena.exp(c);
+                let ed = arena.exp(d);
+                (ec, ed)
+            }),
+            _ => None,
+        };
+        if let Some((value, constant)) = geometric {
+            let value = crate::transforms::eval::eval(arena, value);
+            if arena.is_zero_structural(value) {
+                return Ok(None);
+            }
+            // Named after the value: a nested call rewriting another
+            // factor never reuses the symbol for a different base.
+            let g = arena.symbol(&format!("__zt_geometric{}", value.0));
+            bases.push((g, value));
+            let gn = arena.pow(g, n_var);
+            out.push(arena.mul(&[constant, gn]));
+            changed = true;
+            continue;
+        }
+        match arena.node(f).clone() {
+            ExprNode::Sinh(e) | ExprNode::Cosh(e) if linear_in(arena, e, n_var).is_some() => {
+                let plus = arena.exp(e);
+                let neg_e = arena.neg(e);
+                let minus = arena.exp(neg_e);
+                let half = arena.rational(1, 2);
+                let diff = if matches!(arena.node(f), ExprNode::Sinh(_)) {
+                    arena.sub(plus, minus)
+                } else {
+                    arena.add(&[plus, minus])
+                };
+                out.push(arena.mul(&[half, diff]));
+                changed = true;
+            }
+            ExprNode::Binomial(top, k)
+                if top != n_var && linear_in(arena, top, n_var).is_some() =>
+            {
+                let Some(kq) = arena.as_num(k).cloned() else {
+                    return Ok(None);
+                };
+                if !kq.is_integer() || kq.is_negative() {
+                    return Ok(None);
+                }
+                let Ok(kk) = u32::try_from(kq.to_integer()) else {
+                    return Ok(None);
+                };
+                if kk > 32 {
+                    return Ok(None);
+                }
+                let mut terms = Vec::with_capacity(kk as usize + 1);
+                for j in 0..kk {
+                    let jj = arena.int(-i64::from(j));
+                    terms.push(arena.add(&[top, jj]));
+                }
+                let fact = crate::base::combinatorics::factorial(u64::from(kk));
+                let inv = arena.num_ratio(Ratio::new(BigInt::from(1), fact));
+                terms.push(inv);
+                let p = arena.mul(&terms);
+                out.push(crate::transforms::expand::expand(arena, p));
+                changed = true;
+            }
+            _ => out.push(f),
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    let rewritten = arena.mul(&out);
+    let rewritten = crate::transforms::expand::expand(arena, rewritten);
+    let rewritten = crate::transforms::eval::eval(arena, rewritten);
+    if rewritten == expr {
+        return Ok(None);
+    }
+    let mut x = do_forward(arena, rewritten, n_var, n_sym, z_var)?;
+    for (g, value) in bases {
+        x = crate::transforms::subs::subs(arena, x, g, value);
+    }
+    Ok(Some(crate::transforms::eval::eval(arena, x)))
 }
 
 /// `−z·dX/dz`, kept as a single fraction.

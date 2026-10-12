@@ -86,6 +86,13 @@ fn nice_num(x: f64, round: bool) -> f64 {
 /// Returns `(graph_min, graph_max, tick_step)`.
 fn nice_ticks(data_min: f64, data_max: f64, n_ticks: usize) -> (f64, f64, f64) {
     let range = data_max - data_min;
+    let steps = n_ticks.max(2) as f64 - 1.0;
+    // Even steps between the data ends, computed without forming the
+    // range (which overflows for data near ±1.8·10³⁰⁸).
+    let plain = || (data_min, data_max, data_max / steps - data_min / steps);
+    if !range.is_finite() {
+        return plain();
+    }
     if range.abs() < 1e-15 {
         // Degenerate: constant data — fabricate a range around the value
         let center = data_min;
@@ -97,12 +104,19 @@ fn nice_ticks(data_min: f64, data_max: f64, n_ticks: usize) -> (f64, f64, f64) {
         return (center - half, center + half, half);
     }
     let nice_range = nice_num(range, false);
-    let d = nice_num(nice_range / (n_ticks as f64 - 1.0), true);
+    let d = nice_num(nice_range / steps, true);
+    if !d.is_finite() {
+        return plain();
+    }
     if d.abs() < 1e-18 {
         return (data_min, data_max, range);
     }
     let graph_min = (data_min / d).floor() * d;
     let graph_max = (data_max / d).ceil() * d;
+    if !(graph_min.is_finite() && graph_max.is_finite() && (graph_max - graph_min).is_finite()) {
+        // Rounding outwards to a multiple of the step overflowed.
+        return plain();
+    }
     (graph_min, graph_max, d)
 }
 
@@ -164,22 +178,25 @@ pub(crate) fn svg_plot(series: &[(&[(f64, f64)], &str)], opts: &SvgPlotOptions) 
     let (gx_min, gx_max, dx) = nice_ticks(x_min, x_max, 8);
     let (gy_min, gy_max, dy) = nice_ticks(y_min, y_max, 6);
 
-    // ── 3. Affine transform helpers ────────────────────────────────
-    let x_range = gx_max - gx_min;
-    let y_range = gy_max - gy_min;
-    let sx = if x_range.abs() > 1e-18 {
-        plot_w / x_range
+    // ── 3. Affine transform helpers ────────────────────────────
+    // Differences of halves: `gx_max − gx_min` itself overflows for data
+    // of both signs near ±1.8·10³⁰⁸ (`exp(x)` on `[690, 720]` printed
+    // `NaN` coordinates up to 0.45).
+    let x_half_range = gx_max / 2.0 - gx_min / 2.0;
+    let y_half_range = gy_max / 2.0 - gy_min / 2.0;
+    let sx = if x_half_range.abs() > 5e-19 {
+        plot_w / x_half_range
     } else {
-        1.0
+        2.0
     };
-    let sy = if y_range.abs() > 1e-18 {
-        plot_h / y_range
+    let sy = if y_half_range.abs() > 5e-19 {
+        plot_h / y_half_range
     } else {
-        1.0
+        2.0
     };
 
-    let to_svg_x = |x: f64| -> f64 { margin + (x - gx_min) * sx };
-    let to_svg_y = |y: f64| -> f64 { margin + (gy_max - y) * sy };
+    let to_svg_x = |x: f64| -> f64 { margin + (x / 2.0 - gx_min / 2.0) * sx };
+    let to_svg_y = |y: f64| -> f64 { margin + (gy_max / 2.0 - y / 2.0) * sy };
 
     // ── 4. SVG header ──────────────────────────────────────────────
     let _ = writeln!(
@@ -691,6 +708,30 @@ mod tests {
     fn xml_escape_works() {
         assert_eq!(xml_escape("a<b>c"), "a&lt;b&gt;c");
         assert_eq!(xml_escape("a&b"), "a&amp;b");
+    }
+
+    /// Data spanning almost the whole `f64` range (`exp(x)` near 709.78,
+    /// both signs near 1.8·10³⁰⁸) gives finite coordinates and ticks.
+    /// Before, the tick range rounded up to `inf` and every polyline
+    /// coordinate was `NaN`.
+    #[test]
+    fn huge_data_gives_finite_coordinates() {
+        for pts in [
+            vec![
+                (690.0, 690f64.exp()),
+                (700.0, 700f64.exp()),
+                (709.7, 709.7f64.exp()),
+            ],
+            vec![(0.0, -1.7e308), (1.0, 1.7e308)],
+            vec![(-1.7e308, 0.0), (1.7e308, 1.0)],
+        ] {
+            let svg = svg_plot(&[(pts.as_slice(), "f")], &SvgPlotOptions::default());
+            assert!(!svg.contains("NaN") && !svg.contains("inf"), "{svg}");
+            let line = svg.lines().find(|l| l.contains("<polyline")).unwrap();
+            assert_eq!(line.matches(',').count(), pts.len());
+        }
+        let (lo, hi, d) = nice_ticks(-1.7e308, 1.7e308, 6);
+        assert!(lo.is_finite() && hi.is_finite() && d.is_finite() && d > 0.0);
     }
 
     #[test]

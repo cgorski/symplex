@@ -538,31 +538,71 @@ pub struct Transformed {
 }
 
 impl Transformed {
+    /// `h′(y)` for a branch `h`.  A real odd root `sign(u)·|u|^(1/n)`
+    /// differentiates to `sign(u)²/(n|u|^(1−1/n))`, 0/0 at `u = 0`;
+    /// `1/g′(h(y))` is the same slope with the pole showing.
+    fn branch_slope(&self, h: &Ex, odd_power: bool) -> Ex {
+        if odd_power {
+            (self.context().one() / self.map.diff(&self.var).subs(&self.var, h)).simplify()
+        } else {
+            h.diff(&self.image_var)
+        }
+    }
+
+    /// The inner values bounding `{g(X) ≤ y}`: `(None, Some(h(y)))` for
+    /// an increasing branch (`X ≤ h(y)`), `(Some(h(y)), None)` for a
+    /// decreasing one, both for the two branches of an even map; `None`
+    /// when a slope's sign is not decided.
+    fn event_ends(&self, y: &Ex) -> Option<(Option<Ex>, Option<Ex>)> {
+        let odd_power = odd_power_inverse(&self.map, &self.var, &self.image_var).is_some();
+        let (mut lower, mut upper) = (None, None);
+        for (h, _) in &self.branches {
+            let at = h.subs(&self.image_var, y);
+            let slot = if self.branch_derivative_sign(&self.branch_slope(h, odd_power))? {
+                &mut upper
+            } else {
+                &mut lower
+            };
+            if slot.replace(at).is_some() {
+                return None;
+            }
+        }
+        Some((lower, upper))
+    }
+
     /// `Some(true)` when `dh > 0` on the image, `Some(false)` when `dh < 0`,
     /// `None` when its sign cannot be decided at a sample interior point.
     fn branch_derivative_sign(&self, dh: &Ex) -> Option<bool> {
         let ctx = self.context();
         let iv = self.image.as_interval()?;
         let (lo, hi) = (&iv.lower, &iv.upper);
-        // A point strictly inside the image.
-        let probe = if is_neg_inf(lo) && is_pos_inf(hi) {
-            ctx.one()
+        // Points strictly inside the image; the next is tried where `dh`
+        // has no sign (`2x³ + 1` has its flat point at the first probe 1).
+        let probes = if is_neg_inf(lo) && is_pos_inf(hi) {
+            vec![ctx.one(), ctx.int(2), ctx.int(-1)]
         } else if is_neg_inf(lo) {
-            hi - ctx.one()
+            vec![hi - ctx.one(), hi - ctx.int(2), hi - ctx.rational(1, 2)]
         } else if is_pos_inf(hi) {
-            lo + ctx.one()
+            vec![lo + ctx.one(), lo + ctx.int(2), lo + ctx.rational(1, 2)]
         } else {
-            (lo + hi) / ctx.int(2)
+            let w = hi - lo;
+            vec![
+                lo + &w / ctx.int(2),
+                lo + &w / ctx.int(3),
+                lo + &w * ctx.rational(2, 3),
+            ]
         };
-        let at = dh.subs(&self.image_var, &probe).simplify();
-        match at.is_positive() {
-            Some(true) => Some(true),
-            Some(false) => match at.is_negative() {
-                Some(true) => Some(false),
-                _ => None,
-            },
-            None => None,
-        }
+        probes.iter().find_map(|probe| {
+            let at = dh.subs(&self.image_var, probe).simplify();
+            match at.is_positive() {
+                Some(true) => Some(true),
+                Some(false) => match at.is_negative() {
+                    Some(true) => Some(false),
+                    _ => None,
+                },
+                None => None,
+            }
+        })
     }
 }
 
@@ -595,9 +635,10 @@ impl Family for Transformed {
 
     fn density(&self, y: &Ex) -> Ex {
         let mut acc = self.context().zero();
+        let odd_power = odd_power_inverse(&self.map, &self.var, &self.image_var).is_some();
         for (h, _) in &self.branches {
             let h_y = h.subs(&self.image_var, y);
-            let dh = h.diff(&self.image_var);
+            let dh = self.branch_slope(h, odd_power);
             // Each branch is monotone on the image, so |h′| is h′ or −h′
             // throughout: decide the sign at an interior point of the image
             // instead of carrying `abs`.
@@ -609,6 +650,30 @@ impl Family for Transformed {
             acc += self.inner.density(&h_y) * signed.subs(&self.image_var, y);
         }
         acc.simplify()
+    }
+
+    // P(g(X) ≤ y) through the inner distribution function: F_X(h(y)) for
+    // an increasing branch, S_X(h(y)) for a decreasing one, and
+    // F_X(h₊(y)) − F_X(h₋(y)) for the two branches of an even map (the
+    // inner law is continuous, so the ends carry no mass).  Up to 0.45 the
+    // density was integrated: slow, refused by quadrature at a kink, and
+    // wrong with a complex inverse.
+    fn cdf(&self, y: &Ex) -> Option<Ex> {
+        match self.event_ends(y)? {
+            (None, Some(u)) => Some(self.inner.cdf(&u)),
+            (Some(l), None) => Some(self.inner.sf(&l)),
+            (Some(l), Some(u)) => Some(self.inner.cdf(&u) - self.inner.cdf(&l)),
+            (None, None) => None,
+        }
+    }
+
+    fn sf(&self, y: &Ex) -> Option<Ex> {
+        match self.event_ends(y)? {
+            (None, Some(u)) => Some(self.inner.sf(&u)),
+            (Some(l), None) => Some(self.inner.cdf(&l)),
+            (Some(l), Some(u)) => Some(self.inner.cdf(&l) + self.inner.sf(&u)),
+            (None, None) => None,
+        }
     }
 
     fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
@@ -670,11 +735,13 @@ impl Family for Mixture {
             .collect()
     }
 
-    // The union of the components' supports, as given (they may overlap;
-    // every query below sums per component, never integrates the union).
-    // A piece two components share is listed once: the generic routes
-    // that walk the pieces (`quantile_f64`, order statistics) read the
-    // mixture's own density at each, which already sums the components.
+    // The union of the components' supports, overlapping pieces merged
+    // (`[0, 2] ∪ [1, 3]` is `[0, 3]`) wherever their ends compare: the
+    // generic routes integrate the mixture's own density — which already
+    // sums the components — piece by piece, so an overlap was counted
+    // twice (up to 0.45 `E[cos X]`, the entropy and `E[X | X > ½]` of
+    // ½ U(0, 2) + ½ U(1, 3) were wrong).  Ends that do not compare
+    // (symbolic parameters) keep the pieces as given.
     fn support(&self) -> Support {
         let kind = self
             .components
@@ -682,12 +749,18 @@ impl Family for Mixture {
             .map_or(Kind::Continuous, |(_, d)| d.kind());
         let mut pieces: Vec<Piece> = Vec::new();
         for (_, d) in &self.components {
-            for piece in d.support().pieces() {
+            let s = if kind == Kind::Discrete {
+                d.support().normalize_lattice()
+            } else {
+                d.support()
+            };
+            for piece in s.pieces() {
                 if !pieces.contains(piece) {
                     pieces.push(piece.clone());
                 }
             }
         }
+        let pieces = merge_pieces(kind, &pieces).unwrap_or(pieces);
         Support::from_pieces(kind, pieces)
     }
 
@@ -870,6 +943,171 @@ impl Family for Mixture {
         }
         f.write_str(")")
     }
+}
+
+/// The real inverse of `g = a·(x + s)ⁿ + b` for an odd `n ≥ 3`:
+/// `real_root((y − b)/a, n) − s`.  `solve` gives the principal root
+/// `∛((y − b)/a) − s`, complex for negative `(y − b)/a`: up to 0.45
+/// the CDF of `X³` for a Student t, Cauchy or logistic `X` was off by `−1`
+/// (negative) and its density had the wrong sign below 0.
+fn odd_power_inverse(g: &Ex, x: &Ex, y: &Ex) -> Option<Ex> {
+    let poly = crate::api::poly_ex::Poly::try_new(&g.expand(), &[x]).ok()?;
+    let terms = poly.terms();
+    let n = terms.iter().filter_map(|(e, _)| e.first().copied()).max()?;
+    if n < 3 || n.is_multiple_of(2) {
+        return None;
+    }
+    let coeff = |k: u32| {
+        terms
+            .iter()
+            .find(|(e, _)| e.first() == Some(&k))
+            .map(|(_, c)| c.clone())
+    };
+    let ctx = g.context();
+    let a = coeff(n)?;
+    let s = coeff(n - 1).map_or_else(
+        || ctx.zero(),
+        |c| (c / (&a * ctx.int(i64::from(n)))).simplify(),
+    );
+    let b = g.subs(x, &(-&s)).simplify();
+    let shifted = &a * (x + &s).powi(i64::from(n)) + &b;
+    if (shifted - g).expand().simplify().is_zero() != Some(true) {
+        return None;
+    }
+    let root = ((y - &b) / &a).real_root(n).ok()?;
+    Some((root - s).simplify())
+}
+
+/// Does `h(g(x₀)) = x₀` hold at a few interior points of `(lo, hi)`?  Ends
+/// or values that do not evaluate leave the check undecided, taken as
+/// passing (the symbolic-parameter case).
+fn inverts_on_support(g: &Ex, x: &Ex, h: &Ex, y: &Ex, lo: &Ex, hi: &Ex) -> bool {
+    let ctx = g.context();
+    let r = |a, b| ctx.rational(a, b);
+    let probes: Vec<Ex> = match (is_neg_inf(lo), is_pos_inf(hi)) {
+        (true, true) => vec![r(-2, 1), r(-1, 2), r(1, 2), r(2, 1)],
+        (false, true) => vec![lo + r(1, 2), lo + r(2, 1)],
+        (true, false) => vec![hi - r(1, 2), hi - r(2, 1)],
+        (false, false) => vec![lo + (hi - lo) * r(1, 4), lo + (hi - lo) * r(3, 4)],
+    };
+    probes.iter().all(|x0| {
+        let Ok(x0v) = x0.eval_f64() else {
+            return true;
+        };
+        let back = h.subs(y, &g.subs(x, x0)).eval();
+        match back.eval_complex64() {
+            Ok(z) => {
+                let err = ((z.re - x0v).powi(2) + z.im.powi(2)).sqrt();
+                err <= 1e-9 * x0v.abs().max(1.0)
+            }
+            Err(_) => true,
+        }
+    })
+}
+
+/// `a < b`, `a = b` or `a > b` for interval ends (`±∞` included), when
+/// decidable.
+fn compare_ends(a: &Ex, b: &Ex) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let rank = |e: &Ex| {
+        if is_neg_inf(e) {
+            Some(-1)
+        } else if is_pos_inf(e) {
+            Some(1)
+        } else {
+            None
+        }
+    };
+    match (rank(a), rank(b)) {
+        (Some(x), Some(y)) => Some(x.cmp(&y)),
+        (Some(x), None) => Some(if x < 0 { Less } else { Greater }),
+        (None, Some(y)) => Some(if y < 0 { Greater } else { Less }),
+        (None, None) => match (a - b).is_zero() {
+            Some(true) => Some(Equal),
+            _ => super::family::sign_of(&(a - b)),
+        },
+    }
+}
+
+/// The pieces of a union made disjoint: intervals sorted and merged where
+/// they overlap (or touch at a closed end; on the integer lattice, where
+/// they are adjacent), listed values dropped when an interval covers them
+/// and kept once otherwise.  `None` when two ends do not compare.
+fn merge_pieces(kind: Kind, pieces: &[Piece]) -> Option<Vec<Piece>> {
+    use std::cmp::Ordering::{Greater, Less};
+    let mut ivs: Vec<Interval<Ex>> = Vec::new();
+    let mut points: Vec<Ex> = Vec::new();
+    for p in pieces {
+        match p {
+            Piece::Interval(iv) => ivs.push(iv.clone()),
+            Piece::Point(v) => points.push(v.clone()),
+        }
+    }
+    // Insertion sort by lower end (a handful of pieces), refusing an
+    // undecidable comparison.
+    let mut sorted: Vec<Interval<Ex>> = Vec::with_capacity(ivs.len());
+    for iv in ivs {
+        let mut at = sorted.len();
+        for (i, s) in sorted.iter().enumerate() {
+            if compare_ends(&iv.lower, &s.lower)? == Less {
+                at = i;
+                break;
+            }
+        }
+        sorted.insert(at, iv);
+    }
+    let ctx = pieces.first().map(|p| match p {
+        Piece::Interval(iv) => iv.lower.context(),
+        Piece::Point(v) => v.context(),
+    })?;
+    let mut merged: Vec<Interval<Ex>> = Vec::new();
+    for iv in sorted {
+        let Some(cur) = merged.last_mut() else {
+            merged.push(iv);
+            continue;
+        };
+        // Does `iv` start inside `cur` (or right after it on the lattice)?
+        let reach = if kind == Kind::Discrete && !is_pos_inf(&cur.upper) {
+            &cur.upper + ctx.one()
+        } else {
+            cur.upper.clone()
+        };
+        let joins = match compare_ends(&iv.lower, &reach)? {
+            Less => true,
+            Greater => false,
+            std::cmp::Ordering::Equal => {
+                kind == Kind::Discrete || !(iv.kind.lower_open() && cur.kind.upper_open())
+            }
+        };
+        if !joins {
+            merged.push(iv);
+            continue;
+        }
+        let (upper, upper_open) = match compare_ends(&iv.upper, &cur.upper)? {
+            Greater => (iv.upper.clone(), iv.kind.upper_open()),
+            Less => (cur.upper.clone(), cur.kind.upper_open()),
+            std::cmp::Ordering::Equal => (
+                cur.upper.clone(),
+                cur.kind.upper_open() && iv.kind.upper_open(),
+            ),
+        };
+        let lower_open = cur.kind.lower_open()
+            && (compare_ends(&iv.lower, &cur.lower)? != std::cmp::Ordering::Equal
+                || iv.kind.lower_open());
+        *cur = Interval::closed(cur.lower.clone(), upper)
+            .with_kind(IntervalKind::from_open_ends(lower_open, upper_open));
+    }
+    let mut out: Vec<Piece> = merged.iter().cloned().map(Piece::Interval).collect();
+    for v in points {
+        let covered = merged.iter().any(|iv| {
+            Support::from_pieces(kind, vec![Piece::Interval(iv.clone())]).contains(&v) == Some(true)
+        });
+        let listed = out.iter().any(|p| matches!(p, Piece::Point(w) if *w == v));
+        if !covered && !listed {
+            out.push(Piece::Point(v));
+        }
+    }
+    Some(out)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1095,19 +1333,37 @@ impl Distribution {
                 )));
             }
         };
-        let solutions = (g - &y).solve(x).map_err(|e| {
-            not_implemented(format!("transforming by `{g}`: no inverse found ({e})"))
-        })?;
+        let solved = (g - &y)
+            .solve(x)
+            .map_err(|e| not_implemented(format!("transforming by `{g}`: no inverse found ({e})")));
         // A strictly monotone real map has one real inverse; `solve` also
         // lists the complex roots of `x³ = y` (`ω·∛y`), which drop out.
         let i = ctx.i_unit();
-        let real: Vec<&Ex> = solutions.iter().filter(|h| !h.contains(&i)).collect();
-        let [h] = real.as_slice() else {
-            return Err(not_implemented(format!(
-                "transforming by `{g}`: the inverse is not a single branch"
-            )));
+        let principal = solved.and_then(|solutions| {
+            let real: Vec<&Ex> = solutions.iter().filter(|h| !h.contains(&i)).collect();
+            match real.as_slice() {
+                [h] => Ok((*h).clone()),
+                _ => Err(not_implemented(format!(
+                    "transforming by `{g}`: the inverse is not a single branch"
+                ))),
+            }
+        });
+        // The branch must invert g on the whole support: a principal odd
+        // root is complex where its argument is negative, and the real
+        // root takes over there.
+        let h = match principal {
+            Ok(h) if inverts_on_support(g, x, &h, &y, lo, hi) => h,
+            principal => match odd_power_inverse(g, x, &y) {
+                Some(h) if inverts_on_support(g, x, &h, &y, lo, hi) => h,
+                _ => {
+                    let h = principal?;
+                    return Err(not_implemented(format!(
+                        "transforming by `{g}`: the inverse `{h}` found is not real on all of {support}"
+                    )));
+                }
+            },
         };
-        let h = *h;
+        let h = &h;
         // The image's ends are one-sided limits of g at the support's ends
         // (finite ends included: `1/x` at 0⁺ is ∞).
         let glo = if is_neg_inf(lo) {

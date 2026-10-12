@@ -852,8 +852,74 @@ impl Distribution {
     /// mathematically; the returned expression is the formula on the
     /// support, so integrate it over [`support`](Self::support).  SymPy:
     /// `density(X)(x)`.
+    ///
+    /// At a finite end of a continuous support where the formula is
+    /// undefined (`0/0`, `0^(−½)`) the value is the one-sided limit from
+    /// inside the support, scipy's convention; up to 0.45 the log-normal
+    /// and F densities at 0 were NaN and the Gamma/Beta/Weibull ones with
+    /// shape below 1 were the complex infinity `zoo`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::Distribution;
+    ///
+    /// let ctx = Context::new();
+    /// let zero = ctx.int(0);
+    /// assert_eq!(Distribution::log_normal(ctx.int(0), ctx.int(1)).density(&zero), ctx.int(0));
+    /// assert_eq!(Distribution::f_distribution(ctx.int(1), ctx.int(5)).density(&zero), ctx.infinity());
+    /// let f2 = Distribution::f_distribution(ctx.int(2), ctx.int(5)).density(&zero);
+    /// assert!((f2.eval_f64()? - 1.0).abs() < 1e-15);
+    /// assert_eq!(Distribution::gamma(ctx.rational(1, 2), ctx.int(1)).density(&zero), ctx.infinity());
+    /// # Ok::<(), SymplexError>(())
+    /// ```
     pub fn density(&self, x: &Ex) -> Ex {
-        self.0.density(x)
+        let f = self.0.density(x);
+        self.density_at_end(x, &f).unwrap_or(f)
+    }
+
+    /// The one-sided limit of the density at `x` when `x` is a finite end
+    /// of a continuous support and the formula `f` is undefined there.
+    fn density_at_end(&self, x: &Ex, f: &Ex) -> Option<Ex> {
+        if !self.is_continuous() || !x.free_symbols().is_empty() {
+            return None;
+        }
+        let support = self.support();
+        // A finite end equal to `x`: structurally, as rationals, else decided.
+        let at = |end: &Ex| {
+            if is_neg_inf(end) || is_pos_inf(end) {
+                return false;
+            }
+            if end == x {
+                return true;
+            }
+            match (end.as_rational(), x.as_rational()) {
+                (Some(a), Some(b)) => a == b,
+                _ => (x - end).is_zero() == Some(true),
+            }
+        };
+        let from_right = support.pieces().iter().find_map(|p| match p {
+            Piece::Interval(iv) if at(&iv.lower) => Some(true),
+            Piece::Interval(iv) if at(&iv.upper) => Some(false),
+            _ => None,
+        })?;
+        let ctx = self.context();
+        let value = f.eval();
+        if value != ctx.nan() && value != ctx.complex_infinity() {
+            return None;
+        }
+        let t = self.fresh_var("t", &[x]);
+        let g = self.0.density(&t);
+        let lim = if from_right {
+            g.limit_right(&t, x)
+        } else {
+            g.limit_left(&t, x)
+        };
+        let defined = lim.free_symbols().is_empty()
+            && !lim.has_unevaluated()
+            && lim != ctx.nan()
+            && lim != ctx.complex_infinity()
+            && lim != ctx.neg_infinity();
+        defined.then_some(lim)
     }
 
     /// The parameters' expressions (for symbol-avoidance).
@@ -1219,7 +1285,36 @@ impl Distribution {
             Kind::Continuous => x.clone(),
             Kind::Discrete => x.floor().eval(),
         };
+        if let Some(complement) = self.long_lattice_sum_by_sf(x, &lo, &hi) {
+            return complement;
+        }
         support.accumulate(&dens, &t, &lo, &hi)
+    }
+
+    /// A lattice family with a closed survival function but no closed CDF
+    /// (`NegativeBinomial`) gets `1 − S(x)` instead of the exact sum of its
+    /// masses beyond 64 atoms when the masses are irrational (the sum grows
+    /// by one irrational term per atom) and beyond 4096 when they are
+    /// rational (a rational CDF, exact and fast up to there): up to 0.45
+    /// `NegativeBinomial(1/593, 793/870)` took 0.5 s for `P(X ≤ 200)` and
+    /// over 10 s for `P(X ≤ 1000)`, and a quantile past 10⁴ atoms was
+    /// refused ("Sum range too large").  `None` otherwise.
+    fn long_lattice_sum_by_sf(&self, x: &Ex, lo: &Ex, hi: &Ex) -> Option<Ex> {
+        use crate::base::numeric::Q;
+        if self.kind() != Kind::Discrete || !x.free_symbols().is_empty() {
+            return None;
+        }
+        let atoms = (hi - lo).as_rational()?;
+        if atoms < Q::from_integer(64.into()) {
+            return None;
+        }
+        if atoms < Q::from_integer(4096.into())
+            && self.0.density(lo).eval().is_rational() == Some(true)
+        {
+            return None;
+        }
+        let sf = self.0.sf(x)?;
+        Some(self.context().one() - sf)
     }
 
     /// `P(X < lo)` through the closed-form CDF, for the lower end `lo` of
@@ -2319,7 +2414,73 @@ impl Distribution {
                 };
             }
         }
+        if let Some(divergent) = self.divergence_by_growth(g, x) {
+            return divergent;
+        }
         self.expectation_plain(g, x)
+    }
+
+    /// `±∞` or NaN when `g` is not a polynomial and grows in a heavy tail
+    /// at least like `|x|^r`, `r` that tail's numeric order (`|g|/|x|^r`
+    /// has a positive or infinite limit there): `E[g(X)]` diverges.  The
+    /// sign is `g`'s at that end; two divergent tails of opposite signs give
+    /// NaN.  `None` when no tail is decided divergent.  Up to 0.45 such an
+    /// integral went to quadrature, which returned a finite number:
+    /// `E|X|` was `225.93` for a standard Cauchy and `E[√(1 + X²)]` for a
+    /// t(1) `226.37`.
+    fn divergence_by_growth(&self, g: &Ex, x: &Ex) -> Option<Ex> {
+        let orders = self.orders()?;
+        if !g.contains(x) || polynomial_lead(g, x).is_some() {
+            return None;
+        }
+        let ctx = self.context();
+        let support = self.support();
+        let iv = support.as_interval()?;
+        // Per end: `Some(None)` converges (or no tail), `Some(Some(s))`
+        // diverges with the sign `s` of `g` there (0: unknown), `None`
+        // undecided.
+        let tail = |order: Option<&Ex>, end: &Ex| -> Option<Option<i64>> {
+            if !(is_pos_inf(end) || is_neg_inf(end)) {
+                return Some(None);
+            }
+            // A tail with every moment: polynomial growth converges.
+            let r = order.cloned().unwrap_or_else(|| ctx.int(64));
+            if !r.free_symbols().is_empty() {
+                return None;
+            }
+            let growth = (g.abs() / x.abs().pow(&r)).limit(x, end);
+            if growth.is_zero() == Some(true) {
+                return Some(None);
+            }
+            let diverges = growth == ctx.infinity() || sign_of(&growth) == Some(Ordering::Greater);
+            if !diverges || order.is_none() {
+                return None;
+            }
+            let at_end = g.limit(x, end);
+            Some(Some(if at_end == ctx.infinity() {
+                1
+            } else if at_end == ctx.neg_infinity() {
+                -1
+            } else {
+                match sign_of(&at_end) {
+                    Some(Ordering::Greater) => 1,
+                    Some(Ordering::Less) => -1,
+                    _ => 0,
+                }
+            }))
+        };
+        let left = tail(orders.left.as_ref(), &iv.lower)?;
+        let right = tail(orders.right.as_ref(), &iv.upper)?;
+        let value = |s: i64| match s {
+            1 => ctx.infinity(),
+            -1 => ctx.neg_infinity(),
+            _ => ctx.nan(),
+        };
+        match (left, right) {
+            (None, None) => None,
+            (Some(s), None) | (None, Some(s)) => Some(value(s)),
+            (Some(a), Some(b)) => Some(if a == b { value(a) } else { ctx.nan() }),
+        }
     }
 
     /// `E[g(X)]`, the tails unchecked: through the raw moments for a

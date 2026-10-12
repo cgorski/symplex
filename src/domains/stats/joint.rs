@@ -170,6 +170,11 @@ pub fn expectation(vars: &[&RandomVariable], g: &Ex) -> Result<Ex, SymplexError>
         }
         return Ok(acc.simplify());
     }
+    // `e^L`, `cos L`, `sin L` of a linear `L`: products of the marginals'
+    // generating / characteristic functions.
+    if let Some(e) = exponential_of_linear(&ctx, &present, g) {
+        return Ok(e.simplify());
+    }
     // Route 2: integrate / sum out one variable at a time.  Variables in
     // which `g` is polynomial first (closed by moments), the rest after.
     let (poly_vars, other_vars): (Vec<&RandomVariable>, Vec<&RandomVariable>) = present
@@ -180,6 +185,59 @@ pub fn expectation(vars: &[&RandomVariable], g: &Ex) -> Result<Ex, SymplexError>
         acc = v.expectation(&acc);
     }
     Ok(acc.simplify())
+}
+
+/// `E[e^L]`, `E[cos L]`, `E[sin L]` for `L = c + Σ aᵢXᵢ` with `X`-free
+/// coefficients: `e^c Π Mᵢ(aᵢ)`, and the real and imaginary parts
+/// `(Z(1) ± Z(−1))/2` of `Z(s) = E[e^{isL}] = e^{isc} Π φᵢ(s aᵢ)`.  Up to
+/// 0.45 the variables were summed out one by one: `E[cos(X + Y)]` for two
+/// Poisson variables did not finish in 10 s.  `None` for another shape.
+fn exponential_of_linear(ctx: &Context, present: &[&RandomVariable], g: &Ex) -> Option<Ex> {
+    let [arg] = <[Ex; 1]>::try_from(g.args()).ok()?;
+    let kind = if arg.exp() == *g {
+        0
+    } else if arg.cos() == *g {
+        1
+    } else if arg.sin() == *g {
+        2
+    } else {
+        return None;
+    };
+    let symbols: Vec<&Ex> = present.iter().map(|v| v.symbol()).collect();
+    let poly = Poly::try_new(&arg.expand(), &symbols).ok()?;
+    let mut slopes: Vec<Ex> = vec![ctx.zero(); present.len()];
+    let mut constant = ctx.zero();
+    for (exps, coeff) in poly.terms() {
+        match exps.iter().sum::<u32>() {
+            0 => constant += coeff,
+            1 => {
+                let i = exps.iter().position(|&e| e == 1)?;
+                slopes[i] += coeff;
+            }
+            _ => return None,
+        }
+    }
+    if kind == 0 {
+        let mut acc = constant.exp();
+        for (v, a) in present.iter().zip(&slopes) {
+            acc *= v.mgf(a);
+        }
+        return Some(acc);
+    }
+    let i = ctx.i_unit();
+    let z = |s: i64| {
+        let mut acc = (&i * s * &constant).exp();
+        for (v, a) in present.iter().zip(&slopes) {
+            acc *= v.characteristic_function(&(a * s));
+        }
+        acc
+    };
+    let (plus, minus) = (z(1), z(-1));
+    Some(if kind == 1 {
+        (plus + minus) / ctx.int(2)
+    } else {
+        (plus - minus) / (ctx.int(2) * &i)
+    })
 }
 
 /// `Var[g] = E[g²] − E[g]²` for an expression `g` in independent variables.

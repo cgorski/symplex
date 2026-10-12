@@ -108,13 +108,15 @@ fn emit_series(
     }
 }
 
-/// Split a point slice into contiguous segments, breaking at NaN y-values.
+/// Split a point slice into contiguous segments, breaking at non-finite
+/// coordinates (`NaN` breaks and, since 0.46, infinities, which were
+/// printed as `inf` coordinates).
 fn split_on_nan(points: &[(f64, f64)]) -> Vec<Vec<(f64, f64)>> {
     let mut segments: Vec<Vec<(f64, f64)>> = Vec::new();
     let mut current: Vec<(f64, f64)> = Vec::new();
 
     for &(x, y) in points {
-        if y.is_nan() || x.is_nan() {
+        if !y.is_finite() || !x.is_finite() {
             if !current.is_empty() {
                 segments.push(std::mem::take(&mut current));
             }
@@ -129,16 +131,37 @@ fn split_on_nan(points: &[(f64, f64)]) -> Vec<Vec<(f64, f64)>> {
 }
 
 /// Format a coordinate value with reasonable precision.
-/// Integers get no decimal point; others get up to 6 significant decimals.
+///
+/// Integers below 10¹² get no decimal point; other values in
+/// `[10⁻³, 10¹²)` get up to 6 decimals (6 significant digits below 1);
+/// smaller and larger magnitudes get the shortest round-trip scientific
+/// notation (`1.5e-9`, `1.0000000000000001e15`), which PGFplots reads.
+/// Up to 0.45 every non-integer had 6 fixed decimals:
+/// values below `5·10⁻⁷` printed as `0` (`exp(−x)` on `[20, 30]` was
+/// a flat line at 0, the x-values of a range `[0, 10⁻⁶]` collapsed to
+/// two), and huge ones as 300-digit integers.
 fn fmt_coord(v: f64) -> String {
     if v == 0.0 {
         return "0".to_string();
     }
-    if (v - v.round()).abs() < 1e-10 && v.abs() < 1e12 {
+    if !v.is_finite() {
+        return format!("{v}");
+    }
+    let a = v.abs();
+    if (v - v.round()).abs() < 1e-10 && (1.0..1e12).contains(&a) {
         return format!("{:.0}", v);
     }
-    // Strip trailing zeros.
-    let s = format!("{:.6}", v);
+    if !(1e-3..1e12).contains(&a) {
+        return format!("{v:e}");
+    }
+    // Up to 6 significant decimals below 1, 6 decimals above; strip
+    // trailing zeros.
+    let decimals = if a < 1.0 {
+        (5 - a.log10().floor() as i32).clamp(6, 9) as usize
+    } else {
+        6
+    };
+    let s = format!("{:.*}", decimals, v);
     let s = s.trim_end_matches('0');
     let s = s.trim_end_matches('.');
     s.to_string()
@@ -249,6 +272,41 @@ mod tests {
     fn fmt_coord_decimals() {
         let s = fmt_coord(1.5);
         assert_eq!(s, "1.5");
+    }
+
+    /// Small and huge magnitudes keep their digits.  Before, 6 fixed
+    /// decimals printed `1.96e-9` (`exp(−20.05)`) as `0` and `1e300` as a
+    /// 301-digit integer; `0.000123456` lost three digits.
+    #[test]
+    fn fmt_coord_keeps_small_and_huge_values() {
+        assert_eq!(fmt_coord(1.9607927131212156e-9), "1.9607927131212156e-9");
+        assert_eq!(fmt_coord(-2.5e-7), "-2.5e-7");
+        assert_eq!(fmt_coord(1e300), "1e300");
+        assert_eq!(fmt_coord(1e15 + 0.125), "1.0000000000000001e15");
+        assert_eq!(fmt_coord(0.000123456), "1.23456e-4");
+        assert_eq!(fmt_coord(0.00512345678), "0.00512346");
+        assert_eq!(fmt_coord(0.5), "0.5");
+        assert_eq!(fmt_coord(-12.25), "-12.25");
+        for v in [
+            1.9607927131212156e-9,
+            3.5e-5,
+            0.00512345678,
+            1e300,
+            123456.75,
+        ] {
+            let back: f64 = fmt_coord(v).parse().unwrap();
+            assert!((back - v).abs() <= 1e-6 * v.abs(), "{v} -> {back}");
+        }
+    }
+
+    /// An infinite coordinate breaks the curve like `NaN` (it was printed
+    /// as `(1, inf)` inside the `\addplot`).
+    #[test]
+    fn infinite_coordinates_break_segments() {
+        let pts = vec![(0.0, 1.0), (1.0, f64::INFINITY), (2.0, 3.0), (3.0, 4.0)];
+        let output = tikz_plot(&[(&pts, "f")], None, None, None, false, false);
+        assert_eq!(output.matches("\\addplot[").count(), 2);
+        assert!(!output.contains("inf"));
     }
 
     #[test]

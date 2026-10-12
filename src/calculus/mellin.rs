@@ -679,10 +679,156 @@ fn forward(
         return Ok(r);
     }
 
+    // Rational functions by residues.
+    if let Some(r) = forward_rational(arena, expr, x, s) {
+        return Ok(r);
+    }
+    // Damped oscillations e^{−αx}·cos βx, e^{−αx}·sin βx.
+    if let Some(r) = forward_damped_trig(arena, expr, x, s) {
+        return Ok(r);
+    }
+
     Err(fail(
         OP,
         format!("no transform rule applies to {}", arena.display(expr)),
     ))
+}
+
+/// `M{e^{−αx} cos βx}(s) = Γ(s)·((α − iβ)^{−s} + (α + iβ)^{−s})/2` on `Re s > 0`
+/// and `M{e^{−αx} sin βx}(s) = Γ(s)·((α − iβ)^{−s} − (α + iβ)^{−s})/(2i)` on
+/// `Re s > −1`, for numbers `α > 0`, `β ≠ 0` (`M{e^{−cx}} = Γ(s)c^{−s}`
+/// holds for `Re c > 0` with the principal power).  Before 0.46
+/// `e^{−x}·sin x` was refused; SymPy: `mellin_transform(exp(-x)*sin(x), x,
+/// s)` = `2**(-s/2)*gamma(s)*sin(pi*s/4)` on `(-1, oo)`.
+fn forward_damped_trig(
+    arena: &mut Arena,
+    expr: ExprId,
+    x: ExprId,
+    s: ExprId,
+) -> Option<(ExprId, Strip)> {
+    let ExprNode::Mul(factors) = arena.node(expr).clone() else {
+        return None;
+    };
+    if factors.len() != 2 {
+        return None;
+    }
+    let mut alpha = None;
+    let mut trig = None;
+    for f in factors {
+        match arena.node(f).clone() {
+            ExprNode::Exp(arg) => {
+                let (a, b) = linear_in(arena, arg, x)?;
+                if !arena.is_zero_structural(b) {
+                    return None;
+                }
+                let neg = arena.neg(a);
+                alpha = Some(crate::transforms::eval::eval(arena, neg));
+            }
+            ExprNode::Sin(arg) | ExprNode::Cos(arg) => {
+                let (b, c) = linear_in(arena, arg, x)?;
+                if !arena.is_zero_structural(c) {
+                    return None;
+                }
+                trig = Some((matches!(arena.node(f), ExprNode::Sin(_)), b));
+            }
+            _ => return None,
+        }
+    }
+    let (alpha, (is_sin, beta)) = (alpha?, trig?);
+    let a = arena.as_num(alpha)?.clone();
+    if !num_traits::Signed::is_positive(&a)
+        || arena.as_num(beta).is_none_or(num_traits::Zero::is_zero)
+    {
+        return None;
+    }
+    let i = arena.i_unit();
+    let ib = arena.mul(&[i, beta]);
+    let minus = arena.sub(alpha, ib);
+    let plus = arena.add(&[alpha, ib]);
+    let neg_s = arena.neg(s);
+    let p_minus = arena.pow(minus, neg_s);
+    let p_plus = arena.pow(plus, neg_s);
+    let g = arena.gamma(s);
+    let (bracket, lower) = if is_sin {
+        let d = arena.sub(p_minus, p_plus);
+        let two = arena.int(2);
+        let two_i = arena.mul(&[two, i]);
+        (arena.div(d, two_i), arena.neg_one())
+    } else {
+        let sum = arena.add(&[p_minus, p_plus]);
+        let half = arena.rational(1, 2);
+        (arena.mul(&[half, sum]), arena.zero())
+    };
+    let v = arena.mul(&[g, bracket]);
+    let v = crate::transforms::eval::eval(arena, v);
+    Some((v, Strip::above(lower)))
+}
+
+/// `M{R}(s)` for a rational `R` over ℚ with no pole on `(0, ∞)`, by the
+/// keyhole contour: with `R = x^e·R̃`, `R̃(0)` finite and non-zero, `M{R}(s)
+/// = M{R̃}(s + e)` and `M{R̃}(σ) = π/sin(πσ) · Σ Res[(−z)^{σ−1} R̃(z)]` over
+/// all poles (principal power; `−z` is off the cut at every pole) on the
+/// strip `0 < Re σ < deg D̃ − deg Ñ`, i.e. `−e < Re s < deg D − deg N`.
+/// (`1/(1 + x)` gives `π/sin πs`; a double pole at `−1`, `1/(1 + x)²`, gives
+/// `π(1 − s)/sin πs = B(s, 2 − s)`.)  Before 0.46 only the binomial forms
+/// of the table were known: `1/(x² + x + 1)` and `1/((x + 1)(x + 2))` were
+/// refused.  SymPy: `mellin_transform(1/((x + 1)*(x + 2)), x, s)` =
+/// `(-2**s*pi/2 + pi)/sin(pi*s)` on `0 < re(s) < 2` — our sum over the poles
+/// `−1`, `−2` is `π(1 − 2^{s−1})/sin πs`.
+fn forward_rational(
+    arena: &mut Arena,
+    expr: ExprId,
+    x: ExprId,
+    s: ExprId,
+) -> Option<(ExprId, Strip)> {
+    use crate::calculus::residue::{self, RationalQ};
+    let r = residue::rational_over_q(arena, expr, x)?;
+    let gap = r.degree_gap();
+    let zeros = |p: &crate::poly::Poly| {
+        p.coeffs()
+            .iter()
+            .take_while(|c| num_traits::Zero::is_zero(*c))
+            .count()
+    };
+    let (n0, m0) = (zeros(&r.numer), zeros(&r.denom));
+    let strip_off = |p: &crate::poly::Poly, k: usize| {
+        crate::poly::Poly::from_coeffs(p.coeffs().get(k..).unwrap_or(&[]).to_vec())
+    };
+    let reduced = RationalQ {
+        numer: strip_off(&r.numer, n0),
+        denom: strip_off(&r.denom, m0),
+    };
+    let e = i64::try_from(n0).ok()? - i64::try_from(m0).ok()?;
+    if reduced.numer.is_zero() || reduced.degree_gap() < 1 || gap > i64::from(i32::MAX) {
+        return None;
+    }
+    // No pole on (0, ∞) (0 itself is not a root of the reduced denominator).
+    let bound = crate::poly::sturm::cauchy_bound(&reduced.denom);
+    let (_, sqf) = reduced.denom.sqf_list();
+    if sqf.iter().any(|(p, _)| {
+        p.degree().is_some_and(|d| d > 0)
+            && crate::poly::sturm::SturmChain::new(p)
+                .count_roots_in_closed(&num_rational::Ratio::from_integer(0.into()), &bound)
+                > 0
+    }) {
+        return None;
+    }
+    let e_id = arena.int(e);
+    let sigma = arena.add(&[s, e_id]);
+    let one = arena.one();
+    let sigma_m1 = arena.sub(sigma, one);
+    let neg_x = arena.neg(x);
+    let weight = arena.pow(neg_x, sigma_m1);
+    let sum = residue::rational_residue_sum(arena, &reduced, weight, x, |_| true)?;
+    let pi = arena.pi();
+    let pi_sigma = arena.mul(&[pi, sigma]);
+    let sine = arena.sin(pi_sigma);
+    let v = arena.mul(&[pi, sum]);
+    let v = arena.div(v, sine);
+    let v = crate::transforms::eval::eval(arena, v);
+    let lower = arena.int(-e);
+    let upper = arena.int(gap);
+    Some((v, Strip::between(lower, upper)))
 }
 
 fn forward_table(

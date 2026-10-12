@@ -430,6 +430,10 @@ pub(crate) struct ExtField {
     /// made of products of the atoms (`1, √2, √3, √6`), in which elements
     /// are written out (rather than as powers of `α = √2 + √3 + √6`).
     basis: Option<NiceBasis>,
+    /// When `α` is a combination of the atoms and `[K : ℚ]` the product of
+    /// their degrees: the ring in which [`ExtField::locate`] certifies the
+    /// values of those atoms without a zero test.
+    combination: Option<Combination>,
 }
 
 /// A basis of `K` over ℚ given by expressions, with the matrix taking the
@@ -438,6 +442,76 @@ pub(crate) struct ExtField {
 struct NiceBasis {
     exprs: Vec<ExprId>,
     inv: Vec<Vec<Q>>,
+}
+
+/// A primitive element `α = Σ kⱼ·βⱼ` of `K = ℚ(β₁, …, βₙ)` whose degree
+/// `[K : ℚ]` is the product of the degrees of the atoms `βⱼ`.  Then the
+/// ring `R = ℚ[u₁, …, uₙ]/(m₁(u₁), …, mₙ(uₙ))` (`mⱼ` the minimal
+/// polynomial of `βⱼ`) maps onto `K` by `uⱼ ↦ βⱼ` — onto `ℚ(β₁, …, βₙ)`,
+/// which contains `K` and has at most the dimension of `R`, which is
+/// `[K : ℚ]` — so the map is an isomorphism, and `g(α) = βᵢ` holds exactly
+/// when `g(Σ kⱼ·uⱼ) = uᵢ` in `R`: an identity of polynomials, with no
+/// numeric step and no minimal polynomial of `βᵢ − g(α)`.
+#[derive(Clone, Debug)]
+struct Combination {
+    atoms: Vec<ExprId>,
+    /// The monic minimal polynomials `mⱼ`.
+    mps: Vec<Poly>,
+    /// The integers `kⱼ`.
+    coeffs: Vec<i64>,
+}
+
+impl Combination {
+    /// Is `g(Σ kⱼ·uⱼ) = uᵢ` in `R`?  Elements of `R` are vectors over the
+    /// monomials `∏ uⱼ^eⱼ` (`eⱼ < deg mⱼ`, mixed-radix index `Σ eⱼ·sⱼ`).
+    fn is_atom(&self, g: &Poly, i: usize) -> bool {
+        let degs: Vec<usize> = self.mps.iter().map(|m| m.degree().unwrap_or(1)).collect();
+        let mut strides = Vec::with_capacity(degs.len());
+        let mut dim = 1usize;
+        for &d in &degs {
+            strides.push(dim);
+            dim *= d;
+        }
+        // `k·uⱼ·v` added to `out`; `uⱼ^d = −Σ_{k<d} mⱼ,ₖ·uⱼᵏ` (monic `mⱼ`).
+        let add_times_u = |out: &mut [Q], v: &[Q], j: usize, k: &Q| {
+            let (d, s) = (degs[j], strides[j]);
+            for (idx, x) in v.iter().enumerate() {
+                if Zero::is_zero(x) {
+                    continue;
+                }
+                let kx = x * k;
+                let e = (idx / s) % d;
+                if e + 1 < d {
+                    out[idx + s] += &kx;
+                } else {
+                    let base = idx - e * s;
+                    for (l, c) in self.mps[j].coeffs().iter().enumerate().take(d) {
+                        if !Zero::is_zero(c) {
+                            out[base + l * s] -= &kx * c;
+                        }
+                    }
+                }
+            }
+        };
+        let mut acc = vec![qzero(); dim];
+        for c in g.coeffs().iter().rev() {
+            let mut next = vec![qzero(); dim];
+            for (j, &k) in self.coeffs.iter().enumerate() {
+                if k != 0 {
+                    add_times_u(&mut next, &acc, j, &Q::from_integer(BigInt::from(k)));
+                }
+            }
+            next[0] += c;
+            acc = next;
+        }
+        let mut target = vec![qzero(); dim];
+        if degs[i] > 1 {
+            target[strides[i]] = qone();
+        } else {
+            target[0] = -self.mps[i].coeff(0);
+        }
+        acc == target
+    }
 }
 
 /// The coefficients of `a` in `1, α, …, α^{d−1}`.
@@ -551,21 +625,25 @@ impl ExtField {
         // Candidates: each atom (largest degree first), then combinations.
         let mut order: Vec<usize> = (0..uniq.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(uniq[i].1.degree().unwrap_or(0)));
-        let mut candidates: Vec<(ExprId, Option<Poly>)> = order
+        // (α, its minimal polynomial if known, the kⱼ of a combination).
+        let mut candidates: Vec<(ExprId, Option<Poly>, Option<Vec<i64>>)> = order
             .iter()
-            .map(|&i| (uniq[i].0, Some(uniq[i].1.clone())))
+            .map(|&i| (uniq[i].0, Some(uniq[i].1.clone()), None))
             .collect();
         if uniq.len() > 1 {
             for c in 1..=3i64 {
                 let mut terms = Vec::with_capacity(uniq.len());
+                let mut ks = Vec::with_capacity(uniq.len());
                 for (j, (a, _)) in uniq.iter().enumerate() {
-                    let k = arena.int(1 + (j as i64) * (c - 1));
+                    let kj = 1 + (j as i64) * (c - 1);
+                    let k = arena.int(kj);
                     terms.push(arena.mul(&[k, *a]));
+                    ks.push(kj);
                 }
-                candidates.push((arena.add(&terms), None));
+                candidates.push((arena.add(&terms), None, Some(ks)));
             }
         }
-        'cand: for (alpha, mp) in candidates {
+        'cand: for (alpha, mp, ks) in candidates {
             let mp = match mp {
                 Some(mp) => mp,
                 None => match algebraic_minpoly(arena, alpha) {
@@ -576,11 +654,21 @@ impl ExtField {
             let Some(field) = NumberField::new(&mp) else {
                 continue;
             };
+            let combination = ks.filter(|_| {
+                uniq.iter().try_fold(1usize, |acc, (_, m)| {
+                    acc.checked_mul(m.degree().unwrap_or(1))
+                }) == Some(field.degree())
+            });
             let mut ef = ExtField {
                 field,
                 alpha,
                 atoms: FxHashMap::default(),
                 basis: None,
+                combination: combination.map(|coeffs| Combination {
+                    atoms: uniq.iter().map(|(a, _)| *a).collect(),
+                    mps: uniq.iter().map(|(_, m)| m.clone()).collect(),
+                    coeffs,
+                }),
             };
             let generator = ef.field.generator();
             ef.atoms.insert(alpha, generator);
@@ -683,8 +771,18 @@ impl ExtField {
     }
 
     /// `β` (with minimal polynomial `mp`) as an element of `K`: the root of
-    /// `mp` in `K` whose expression differs from `β` by an exact zero
-    /// (`exact_is_zero`), `None` if `β ∉ K` or nothing is certified.
+    /// `mp` in `K` whose expression differs from `β` by an exact zero, `None`
+    /// if `β ∉ K` or nothing is certified.
+    ///
+    /// An atom of the [`Combination`] that `α` was built from is decided by
+    /// an identity in its ring.  Otherwise each root faces
+    /// [`is_zero_checked`](super::algebraic::is_zero_checked): a root whose
+    /// distance from `β` has a certified digit is another conjugate, and only
+    /// a difference that is zero to the precision of the evaluation takes the
+    /// exact test (the minimal polynomial of `β − g(α)`, of degree up to
+    /// `deg β·[K : ℚ]`, factored over ℤ).  Up to 0.45 every root took it:
+    /// `solve` of `(x − ∛2)·(x − 1 + i)²` expanded spent 0.21 s on three
+    /// such tests (`α = ∛2 + i`, the roots `∛2` and `±i`).
     fn locate(&self, arena: &mut Arena, beta: ExprId, mp: &Poly) -> Option<AlgNum> {
         let d = mp.degree()?;
         if d == 1 {
@@ -694,17 +792,24 @@ impl ExtField {
             return None;
         }
         let fac = self.field.factor(&self.field.lift(mp))?;
-        for (q, _) in &fac.factors {
-            if q.degree() != Some(1) {
-                continue;
-            }
+        let roots = fac.factors.iter().filter(|(q, _)| q.degree() == Some(1));
+        if let Some(comb) = &self.combination
+            && let Some(i) = comb.atoms.iter().position(|&a| a == beta)
+            && let Some(root) = roots
+                .clone()
+                .map(|(q, _)| Ring::neg(&q.coeff(0)))
+                .find(|root| comb.is_atom(&root.to_poly(), i))
+        {
+            return Some(root);
+        }
+        for (q, _) in roots {
             let root = Ring::neg(&q.coeff(0));
             let root_expr = self.element_to_expr(arena, &root);
             let diff = {
                 let neg = arena.neg(root_expr);
                 arena.add(&[beta, neg])
             };
-            if super::algebraic::exact_is_zero(arena, diff) == Some(true) {
+            if super::algebraic::is_zero_checked(arena, diff) == Some(true) {
                 return Some(root);
             }
         }

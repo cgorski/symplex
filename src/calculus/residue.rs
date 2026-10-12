@@ -41,13 +41,15 @@
 //! formal `Residue` node.
 
 use num_bigint::BigInt;
-use num_traits::One;
+use num_traits::{One, Signed, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::calculus::calculus_util;
+use crate::poly::Poly;
 use crate::transforms::{diff, eval, subs};
 
 /// Maximum pole order probed by the limit-based fallback.
@@ -464,6 +466,574 @@ fn residue_at_infinity_with(
     let r = residue_with(arena, h, t, zero, essential)?;
     let neg = arena.neg(r);
     Ok(eval::eval(arena, neg))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Residue sums of rational functions (contour integrals)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Where a pole lies relative to the real axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PolePlace {
+    /// `Im ρ > 0`.
+    Upper,
+    /// `Im ρ < 0`.
+    Lower,
+    /// `ρ` real.
+    Real,
+}
+
+/// A rational function `N/D` with `N, D ∈ ℚ[x]`, `D` not constant.
+pub(crate) struct RationalQ {
+    /// The numerator `N`.
+    pub(crate) numer: Poly,
+    /// The denominator `D`.
+    pub(crate) denom: Poly,
+}
+
+impl RationalQ {
+    /// `deg D − deg N` (`N = 0` counts as degree `−∞`, i.e. a large value).
+    pub(crate) fn degree_gap(&self) -> i64 {
+        let dd = self.denom.degree().map_or(0, |d| d as i64);
+        match self.numer.degree() {
+            Some(dn) => dd - dn as i64,
+            None => i64::MAX / 4,
+        }
+    }
+
+    /// Is `N/D` an even (`Some(true)`) or odd (`Some(false)`) function?
+    pub(crate) fn parity(&self) -> Option<bool> {
+        let par = |p: &Poly| -> Option<bool> {
+            let even = p.coeffs().iter().skip(1).step_by(2).all(Zero::is_zero);
+            let odd = p.coeffs().iter().step_by(2).all(Zero::is_zero);
+            match (even, odd) {
+                (true, _) => Some(true),
+                (false, true) => Some(false),
+                _ => None,
+            }
+        };
+        if self.numer.is_zero() {
+            return Some(true);
+        }
+        Some(par(&self.numer)? == par(&self.denom)?)
+    }
+}
+
+/// Largest total degree of a rational function [`rational_over_q`]
+/// expands (it guards `(x + 1)¹⁰⁰⁰` from being multiplied out).
+const MAX_RATIONAL_DEGREE: u64 = 40;
+
+/// A bound on the degree in `var` of the numerator and denominator of
+/// `e` (sums, products, integer powers); `None` above `u64` or for a
+/// non-integer power.
+fn rational_degree_bound(arena: &Arena, e: ExprId, var: ExprId) -> Option<u64> {
+    let mut deg: rustc_hash::FxHashMap<ExprId, u64> = rustc_hash::FxHashMap::default();
+    for id in walk::post_order_ids(arena, e) {
+        let d = if id == var {
+            1
+        } else {
+            match arena.node(id) {
+                ExprNode::Add(ch) => ch.iter().try_fold(0u64, |acc, c| {
+                    acc.checked_add(deg.get(c).copied().unwrap_or(0))
+                })?,
+                ExprNode::Mul(ch) => ch.iter().try_fold(0u64, |acc, c| {
+                    acc.checked_add(deg.get(c).copied().unwrap_or(0))
+                })?,
+                ExprNode::Neg(c) => deg.get(c).copied().unwrap_or(0),
+                ExprNode::Pow(b, k) => {
+                    let k = arena.as_num(*k).filter(|q| q.is_integer())?;
+                    let k = u64::try_from(k.to_integer().magnitude()).ok()?;
+                    deg.get(b).copied().unwrap_or(0).checked_mul(k)?
+                }
+                _ => 0,
+            }
+        };
+        deg.insert(id, d);
+    }
+    deg.get(&e).copied()
+}
+
+/// `r` as `N/D` with `N, D ∈ ℚ[x]` and `D` not constant (`None` for
+/// anything else, including symbolic coefficients and degrees above
+/// [`MAX_RATIONAL_DEGREE`]).
+pub(crate) fn rational_over_q(arena: &mut Arena, r: ExprId, var: ExprId) -> Option<RationalQ> {
+    if rational_degree_bound(arena, r, var)? > MAX_RATIONAL_DEGREE {
+        return None;
+    }
+    let (n, d) = crate::poly::polybridge::as_numer_denom(arena, r);
+    let n = crate::transforms::expand::expand(arena, n);
+    let n = eval::eval(arena, n);
+    let d = crate::transforms::expand::expand(arena, d);
+    let d = eval::eval(arena, d);
+    let numer = crate::poly::polybridge::expr_to_poly(arena, n, var)?;
+    let denom = crate::poly::polybridge::expr_to_poly(arena, d, var)?;
+    if denom.degree()? == 0 {
+        return None;
+    }
+    let g = Poly::gcd(&numer, &denom);
+    if g.degree().is_some_and(|k| k > 0) {
+        let numer = numer.div_rem(&g).0;
+        let denom = denom.div_rem(&g).0;
+        return Some(RationalQ { numer, denom });
+    }
+    Some(RationalQ { numer, denom })
+}
+
+/// One distinct pole `ρ` of a rational function: a root of the
+/// irreducible factor `factor` of the denominator `D = factor^mult ·
+/// cofactor`.
+struct RationalPole {
+    factor: Poly,
+    cofactor: Poly,
+    mult: usize,
+    place: PolePlace,
+    /// `ρ` written out: a rational, a quadratic surd, or `RootOf(factor, k)`.
+    root: ExprId,
+}
+
+/// Precision (bits) of the root balls that place the poles.
+const POLE_PREC: usize = 128;
+
+/// Largest degree of the denominator whose poles [`rational_poles`] places.
+const MAX_POLE_DEGREE: usize = 24;
+
+/// Every distinct pole of `1/D`, placed relative to the real axis.
+///
+/// `D` is factored over ℤ.  A linear factor has its rational root and an
+/// irreducible quadratic `a·x² + b·x + c` its two roots in radicals,
+/// `(−b ± √(b² − 4ac))/(2a)`, placed by the sign of the discriminant and of
+/// `a`.  The roots of a factor of degree ≥ 3 are `RootOf(factor, k)`,
+/// placed by the certified inclusion disks that `RootOf` is evaluated with
+/// (the same calls define the index order): a disk certified real, or one
+/// whose imaginary part exceeds its radius.  `None` when a disk is not
+/// certified, when the number of real disks differs from the Sturm count,
+/// or above [`MAX_POLE_DEGREE`].  `bound` is the variable of the `RootOf`
+/// polynomials.
+fn rational_poles(arena: &mut Arena, d: &Poly, bound: ExprId) -> Option<Vec<RationalPole>> {
+    if d.degree()? > MAX_POLE_DEGREE {
+        return None;
+    }
+    let (_, factors) = d.factor_over_z();
+    let mut out = Vec::new();
+    for (factor, mult) in &factors {
+        let deg = factor.degree()?;
+        if deg == 0 {
+            continue;
+        }
+        let mult = *mult as usize;
+        let cofactor = {
+            let (q, r) = d.div_rem(&factor.pow(mult));
+            if !r.is_zero() {
+                return None;
+            }
+            q
+        };
+        match deg {
+            1 => {
+                let rho = -factor.coeff(0) / factor.coeff(1);
+                let root = arena.num_ratio(rho);
+                out.push(RationalPole {
+                    factor: factor.clone(),
+                    cofactor,
+                    mult,
+                    place: PolePlace::Real,
+                    root,
+                });
+            }
+            2 => {
+                let (a, b, c) = (factor.coeff(2), factor.coeff(1), factor.coeff(0));
+                let disc = &b * &b - Q::from_integer(BigInt::from(4)) * &a * &c;
+                let two_a = Q::from_integer(BigInt::from(2)) * &a;
+                let centre = arena.num_ratio(-b / &two_a);
+                let real = disc.is_positive();
+                let r = arena.num_ratio(if real { disc.clone() } else { -disc.clone() });
+                let root_disc = arena.sqrt(r);
+                let half = arena.num_ratio(Q::one() / &two_a);
+                let offset = if real {
+                    arena.mul(&[half, root_disc])
+                } else {
+                    let i = arena.i_unit();
+                    arena.mul(&[half, root_disc, i])
+                };
+                for plus in [true, false] {
+                    let signed = if plus { offset } else { arena.neg(offset) };
+                    let root = arena.add(&[centre, signed]);
+                    let root = eval::eval(arena, root);
+                    let place = if real {
+                        PolePlace::Real
+                    } else if plus == two_a.is_positive() {
+                        PolePlace::Upper
+                    } else {
+                        PolePlace::Lower
+                    };
+                    out.push(RationalPole {
+                        factor: factor.clone(),
+                        cofactor: cofactor.clone(),
+                        mult,
+                        place,
+                        root,
+                    });
+                }
+            }
+            _ => {
+                let balls = crate::poly::roots::certified_roots(factor, POLE_PREC);
+                if balls.len() != deg
+                    || balls.iter().filter(|b| b.real).count()
+                        != crate::poly::sturm::SturmChain::new(factor).count_real_roots()
+                {
+                    return None;
+                }
+                let mut places = Vec::with_capacity(deg);
+                for ball in &balls {
+                    let radius = ball.radius.as_ref()?;
+                    places.push(if ball.real {
+                        PolePlace::Real
+                    } else if ball.value.1.abs().cmp(radius).unwrap_or(-1) > 0 {
+                        if ball.value.1.is_positive() {
+                            PolePlace::Upper
+                        } else {
+                            PolePlace::Lower
+                        }
+                    } else {
+                        return None;
+                    });
+                }
+                if let Some(explicit) = explicit_roots(arena, factor, bound, &places) {
+                    for (root, place) in explicit {
+                        out.push(RationalPole {
+                            factor: factor.clone(),
+                            cofactor: cofactor.clone(),
+                            mult,
+                            place,
+                            root,
+                        });
+                    }
+                    continue;
+                }
+                let g_expr = crate::poly::polybridge::poly_to_expr(arena, factor, bound);
+                for (k, &place) in places.iter().enumerate() {
+                    let idx = arena.int(i64::try_from(k).ok()?);
+                    let root = arena.intern(ExprNode::RootOf(g_expr, bound, idx));
+                    out.push(RationalPole {
+                        factor: factor.clone(),
+                        cofactor: cofactor.clone(),
+                        mult,
+                        place,
+                        root,
+                    });
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Largest irreducible factor whose roots [`explicit_roots`] asks `solve`
+/// for (Cardano, Ferrari).
+const MAX_EXPLICIT_ROOT_DEGREE: usize = 4;
+
+/// Largest root (nodes written out) used explicitly; others stay `RootOf`.
+const MAX_EXPLICIT_ROOT_SIZE: usize = 48;
+
+/// The roots of the irreducible `g` (degree 3 or 4) in radicals with
+/// their places, when `solve` writes every one of them in at most
+/// [`MAX_EXPLICIT_ROOT_SIZE`] nodes (`x⁴ + 1`: `±√2/2 ± i√2/2`).  Each root
+/// is placed by its numeric value, and the places must agree in number with
+/// the certified ones `certified` (which decide; a root whose imaginary
+/// part is too small to tell refuses).
+fn explicit_roots(
+    arena: &mut Arena,
+    g: &Poly,
+    bound: ExprId,
+    certified: &[PolePlace],
+) -> Option<Vec<(ExprId, PolePlace)>> {
+    let deg = g.degree()?;
+    if deg > MAX_EXPLICIT_ROOT_DEGREE {
+        return None;
+    }
+    let g_expr = crate::poly::polybridge::poly_to_expr(arena, g, bound);
+    let roots: Vec<ExprId> = crate::transforms::solve::solve(arena, g_expr, bound)
+        .into_iter()
+        .map(|s| s.value)
+        .collect();
+    if roots.len() != deg {
+        return None;
+    }
+    let mut out = Vec::with_capacity(deg);
+    for r in roots {
+        let ids = walk::post_order_ids(arena, r);
+        if ids.len() > MAX_EXPLICIT_ROOT_SIZE
+            || ids.iter().any(|&id| {
+                matches!(
+                    arena.node(id),
+                    ExprNode::RootOf(..) | ExprNode::Symbol(_) | ExprNode::RootSum(..)
+                )
+            })
+        {
+            return None;
+        }
+        let z = crate::transforms::evalf::evalf_complex64(arena, r).ok()?;
+        let scale = z.norm().max(1.0);
+        if !z.re.is_finite() || !z.im.is_finite() {
+            return None;
+        }
+        let place = if z.im.abs() <= 1e-12 * scale {
+            PolePlace::Real
+        } else if z.im.abs() > 1e-6 * scale {
+            if z.im > 0.0 {
+                PolePlace::Upper
+            } else {
+                PolePlace::Lower
+            }
+        } else {
+            return None;
+        };
+        out.push((r, place));
+    }
+    let count =
+        |v: &mut dyn Iterator<Item = PolePlace>, p: PolePlace| v.filter(|&q| q == p).count();
+    for p in [PolePlace::Upper, PolePlace::Lower, PolePlace::Real] {
+        if count(&mut out.iter().map(|e| e.1), p) != count(&mut certified.iter().copied(), p) {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// `a·b` in `ℚ[t]/(g)`.
+fn field_mul(a: &Poly, b: &Poly, g: &Poly) -> Poly {
+    a.mul(b).rem(g)
+}
+
+/// `a⁻¹` in `ℚ[t]/(g)` (`g` irreducible); `None` for `a ≡ 0`.
+fn field_inv(a: &Poly, g: &Poly) -> Option<Poly> {
+    let e = Poly::extended_gcd(a, g);
+    if e.gcd.degree() != Some(0) {
+        return None;
+    }
+    let c = e.gcd.coeff(0);
+    if c.is_zero() {
+        return None;
+    }
+    Some(e.x.scale(&(Q::one() / c)).rem(g))
+}
+
+/// The Taylor coefficients `p⁽ʲ⁾(t)/j!` (`j < count`) of `p(t + h)` in
+/// `h`, reduced modulo `g`.
+fn shifted_coeffs(p: &Poly, g: &Poly, count: usize) -> Vec<Poly> {
+    let mut out = Vec::with_capacity(count);
+    let mut der = p.clone();
+    let mut fact = Q::one();
+    for j in 0..count {
+        if j > 0 {
+            der = der.derivative();
+            fact *= Q::from_integer(BigInt::from(j));
+        }
+        out.push(der.scale(&(Q::one() / &fact)).rem(g));
+    }
+    out
+}
+
+/// Truncated product of two power series over `ℚ[t]/(g)`.
+fn series_mul(a: &[Poly], b: &[Poly], g: &Poly, order: usize) -> Vec<Poly> {
+    (0..order)
+        .map(|n| {
+            let mut acc = Poly::zero();
+            for k in 0..=n {
+                if let (Some(x), Some(y)) = (a.get(k), b.get(n - k)) {
+                    acc = acc.add(&field_mul(x, y, g));
+                }
+            }
+            acc.rem(g)
+        })
+        .collect()
+}
+
+/// Truncated reciprocal of a power series over `ℚ[t]/(g)`; `None` when
+/// the constant term is `0`.
+fn series_inv(a: &[Poly], g: &Poly, order: usize) -> Option<Vec<Poly>> {
+    let inv0 = field_inv(a.first()?, g)?;
+    let mut out: Vec<Poly> = vec![inv0.clone()];
+    for n in 1..order {
+        let mut acc = Poly::zero();
+        for k in 1..=n {
+            if let Some(x) = a.get(k) {
+                acc = acc.add(&field_mul(x, &out[n - k], g));
+            }
+        }
+        out.push(field_mul(&acc.neg(), &inv0, g));
+    }
+    Some(out)
+}
+
+/// The principal-part coefficients at a pole `ρ` of multiplicity `m` of
+/// `N/D`, `D = g^m·E`: the Taylor coefficients `A₀, …, A_{m−1}` of
+/// `A(h) = N(ρ + h)/(E(ρ + h)·G(h)^m)` with `g(ρ + h) = h·G(h)`, so that
+/// `N/D = Σ Aₗ h^{l−m} + O(1)`.  Each `Aₗ` is an element of `ℚ(ρ) =
+/// ℚ[t]/(g)`, written as a polynomial in `t` of degree `< deg g`.
+fn principal_part(numer: &Poly, pole: &RationalPole) -> Option<Vec<Poly>> {
+    let g = &pole.factor;
+    let m = pole.mult;
+    let n_s = shifted_coeffs(numer, g, m);
+    let e_s = shifted_coeffs(&pole.cofactor, g, m);
+    let g_s: Vec<Poly> = shifted_coeffs(g, g, m + 1).into_iter().skip(1).collect();
+    let mut denom = e_s;
+    for _ in 0..m {
+        denom = series_mul(&denom, &g_s, g, m);
+    }
+    let inv = series_inv(&denom, g, m)?;
+    Some(series_mul(&n_s, &inv, g, m))
+}
+
+/// `Σ Res_{z=ρ} [N(z)/D(z) · W(z)]` over the poles `ρ` of `N/D` whose
+/// place `select` accepts, for an analytic weight `W` (an expression in
+/// `z`, analytic at every selected pole; `e^{ikz}` for Fourier integrals,
+/// `(−z)^{s−1}` for Mellin's, `ln²(−z)` for a keyhole).
+///
+/// At a pole of multiplicity `m`, `Res = Σₗ Aₗ(ρ)·W^{(m−1−l)}(ρ)/(m−1−l)!`
+/// with the exact principal-part coefficients `Aₗ ∈ ℚ(ρ)`
+/// ([`principal_part`]) — at a simple pole `N(ρ)/D′(ρ)·W(ρ)`, reduced to a
+/// polynomial in `ρ` of degree below that of its minimal polynomial (`1/(2i)
+/// = −i/2`).  `None` when a pole cannot be placed ([`rational_poles`]).
+pub(crate) fn rational_residue_sum(
+    arena: &mut Arena,
+    r: &RationalQ,
+    weight: ExprId,
+    z: ExprId,
+    select: impl Fn(PolePlace) -> bool,
+) -> Option<ExprId> {
+    let bound = pole_symbol(arena, weight);
+    rational_residue_sum_with(arena, r, z, bound, |_, pole| {
+        Some(select(pole.place).then_some(weight))
+    })
+}
+
+/// What [`rational_residue_sum_with`] tells its weight callback about a
+/// pole.
+pub(crate) struct PoleView {
+    /// Where the pole lies relative to the real axis (certified).
+    pub(crate) place: PolePlace,
+    /// Its value to about 16 digits.
+    pub(crate) approx: num_complex::Complex64,
+}
+
+/// [`rational_residue_sum`] with a weight chosen per pole: `weight_for`
+/// returns `Some(Some(W))` to add `Res_ρ[N/D·W]`, `Some(None)` to skip the
+/// pole and `None` to give up.  `bound` names the variable of the `RootOf`
+/// nodes ([`pole_symbol`]).
+pub(crate) fn rational_residue_sum_with(
+    arena: &mut Arena,
+    r: &RationalQ,
+    z: ExprId,
+    bound: ExprId,
+    mut weight_for: impl FnMut(&mut Arena, &PoleView) -> Option<Option<ExprId>>,
+) -> Option<ExprId> {
+    let poles = rational_poles(arena, &r.denom, bound)?;
+    // W^{(j)}/j! as expressions in z, per weight.
+    let mut derivatives: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+    let mut terms: Vec<ExprId> = Vec::new();
+    for pole in &poles {
+        let approx = match crate::transforms::evalf::evalf_complex64(arena, pole.root) {
+            Ok(z) if z.re.is_finite() && z.im.is_finite() => z,
+            _ => return None,
+        };
+        let view = PoleView {
+            place: pole.place,
+            approx,
+        };
+        let Some(weight) = weight_for(arena, &view)? else {
+            continue;
+        };
+        let m = pole.mult;
+        let slot = match derivatives.iter().position(|(w, _)| *w == weight) {
+            Some(k) => k,
+            None => {
+                derivatives.push((weight, vec![eval::eval(arena, weight)]));
+                derivatives.len() - 1
+            }
+        };
+        while derivatives[slot].1.len() < m {
+            let j = derivatives[slot].1.len();
+            // d/dz of (W^{(j−1)}/(j−1)!) divided by j gives W^{(j)}/j!.
+            let prev = derivatives[slot].1[j - 1];
+            let d = diff::diff(arena, prev, z);
+            let jj = arena.int(i64::try_from(j).ok()?);
+            let d = arena.div(d, jj);
+            let d = eval::eval(arena, d);
+            derivatives[slot].1.push(d);
+        }
+        let a = principal_part(&r.numer, pole)?;
+        for (l, al) in a.iter().enumerate() {
+            if al.is_zero() {
+                continue;
+            }
+            let coeff = crate::poly::polybridge::poly_to_expr(arena, al, pole.root);
+            let w = subs::subs(arena, derivatives[slot].1[m - 1 - l], z, pole.root);
+            terms.push(arena.mul(&[coeff, w]));
+        }
+    }
+    let sum = arena.add(&terms);
+    Some(eval::eval(arena, sum))
+}
+
+/// The bound variable of the `RootOf` nodes of a residue sum: `r`, or a
+/// name not free in `weight`.
+pub(crate) fn pole_symbol(arena: &mut Arena, weight: ExprId) -> ExprId {
+    let free: Vec<String> = walk::free_symbols(arena, weight)
+        .into_iter()
+        .filter_map(|s| match arena.node(s) {
+            ExprNode::Symbol(sid) => Some(arena.symbol_name(*sid).to_string()),
+            _ => None,
+        })
+        .collect();
+    let name = ["r", "_r", "__r"]
+        .into_iter()
+        .find(|n| !free.iter().any(|f| f == n))
+        .unwrap_or("__r");
+    arena.symbol(name)
+}
+
+/// `∫_{−∞}^{∞} N(x)/D(x)·e^{ikx} dx` (principal value at simple real poles
+/// where the caller knows it to be the value) for a real `k` of known sign
+/// `k_positive` (or `k = 0` with `k_positive = None`), by Jordan's lemma:
+/// `2πi Σ_{Im ρ > 0} Res + πi Σ_{ρ real} Res` for `k > 0`, `−2πi Σ_{Im ρ < 0}
+/// Res − πi Σ_{ρ real} Res` for `k < 0` (`k = 0` closes upwards and needs
+/// `deg D ≥ deg N + 2`).  The integral converges for `deg D ≥ deg N + 1`
+/// when `k ≠ 0` and `D` has no real roots; real poles are the caller's
+/// business (half residues give the principal value, which is the value
+/// only where the integrand is bounded, as for `sin(kx)/x`).  `x` is the
+/// symbol of `N/D`, used as the variable of `e^{ikx}`.
+pub(crate) fn fourier_rational(
+    arena: &mut Arena,
+    r: &RationalQ,
+    k: ExprId,
+    k_positive: Option<bool>,
+    x: ExprId,
+) -> Option<ExprId> {
+    let gap = r.degree_gap();
+    if gap < 1 || (k_positive.is_none() && gap < 2) {
+        return None;
+    }
+    let i = arena.i_unit();
+    let ikx = arena.mul(&[i, k, x]);
+    let weight = arena.exp(ikx);
+    let weight = eval::eval(arena, weight);
+    let upward = k_positive.unwrap_or(true);
+    let off_axis = rational_residue_sum(arena, r, weight, x, |p| {
+        p == if upward {
+            PolePlace::Upper
+        } else {
+            PolePlace::Lower
+        }
+    })?;
+    let on_axis = rational_residue_sum(arena, r, weight, x, |p| p == PolePlace::Real)?;
+    let pi = arena.pi();
+    let sign = if upward { arena.one() } else { arena.neg_one() };
+    let two = arena.int(2);
+    let full = arena.mul(&[two, off_axis]);
+    let s = arena.add(&[full, on_axis]);
+    let v = arena.mul(&[sign, pi, i, s]);
+    Some(eval::eval(arena, v))
 }
 
 /// `v / n!`

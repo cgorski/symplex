@@ -234,31 +234,112 @@ impl ConstDim {
     }
 
     /// Multiply two dimension vectors (add exponents).
+    ///
+    /// An exponent beyond the `i8` range saturates at `±127`/`−128` (no
+    /// physical formula comes near it); use [`checked_mul`](Self::checked_mul)
+    /// to refuse instead.  Up to 0.45 it overflowed: a panic in debug
+    /// builds, a wrapped (wrong) dimension in release builds.
     #[inline]
     pub const fn mul(self, rhs: Self) -> Self {
         Self {
-            l: self.l + rhs.l,
-            m: self.m + rhs.m,
-            t: self.t + rhs.t,
-            i: self.i + rhs.i,
-            th: self.th + rhs.th,
-            n: self.n + rhs.n,
-            j: self.j + rhs.j,
+            l: self.l.saturating_add(rhs.l),
+            m: self.m.saturating_add(rhs.m),
+            t: self.t.saturating_add(rhs.t),
+            i: self.i.saturating_add(rhs.i),
+            th: self.th.saturating_add(rhs.th),
+            n: self.n.saturating_add(rhs.n),
+            j: self.j.saturating_add(rhs.j),
         }
     }
 
-    /// Divide two dimension vectors (subtract exponents).
+    /// Divide two dimension vectors (subtract exponents), saturating like
+    /// [`mul`](Self::mul); see [`checked_div`](Self::checked_div).
     #[inline]
     pub const fn div(self, rhs: Self) -> Self {
         Self {
-            l: self.l - rhs.l,
-            m: self.m - rhs.m,
-            t: self.t - rhs.t,
-            i: self.i - rhs.i,
-            th: self.th - rhs.th,
-            n: self.n - rhs.n,
-            j: self.j - rhs.j,
+            l: self.l.saturating_sub(rhs.l),
+            m: self.m.saturating_sub(rhs.m),
+            t: self.t.saturating_sub(rhs.t),
+            i: self.i.saturating_sub(rhs.i),
+            th: self.th.saturating_sub(rhs.th),
+            n: self.n.saturating_sub(rhs.n),
+            j: self.j.saturating_sub(rhs.j),
         }
+    }
+
+    /// [`mul`](Self::mul), or `None` when an exponent leaves the `i8` range.
+    ///
+    /// ```
+    /// use symplex::units::ConstDim;
+    ///
+    /// assert_eq!(ConstDim::MASS.checked_mul(ConstDim::ACCELERATION), Some(ConstDim::FORCE));
+    /// let big = ConstDim::LENGTH.pow(100);
+    /// assert_eq!(big.checked_mul(big), None);
+    /// assert_eq!(big.mul(big).l, 127); // saturates, never wraps
+    /// ```
+    #[inline]
+    pub const fn checked_mul(self, rhs: Self) -> Option<Self> {
+        let (a, b) = (self.exponents(), rhs.exponents());
+        let mut r = [0i8; 7];
+        let mut k = 0;
+        while k < 7 {
+            match a[k].checked_add(b[k]) {
+                Some(v) => r[k] = v,
+                None => return None,
+            }
+            k += 1;
+        }
+        Some(Self::from_exponents(r))
+    }
+
+    /// [`div`](Self::div), or `None` when an exponent leaves the `i8` range.
+    #[inline]
+    pub const fn checked_div(self, rhs: Self) -> Option<Self> {
+        let (a, b) = (self.exponents(), rhs.exponents());
+        let mut r = [0i8; 7];
+        let mut k = 0;
+        while k < 7 {
+            match a[k].checked_sub(b[k]) {
+                Some(v) => r[k] = v,
+                None => return None,
+            }
+            k += 1;
+        }
+        Some(Self::from_exponents(r))
+    }
+
+    /// [`pow`](Self::pow), or `None` when an exponent leaves the `i8` range.
+    ///
+    /// ```
+    /// use symplex::units::ConstDim;
+    ///
+    /// assert_eq!(ConstDim::LENGTH.checked_pow(3), Some(ConstDim::VOLUME));
+    /// assert_eq!(ConstDim::LENGTH.pow(100).checked_pow(2), None);
+    /// ```
+    #[inline]
+    pub const fn checked_pow(self, n: i8) -> Option<Self> {
+        let a = self.exponents();
+        let mut r = [0i8; 7];
+        let mut k = 0;
+        while k < 7 {
+            match a[k].checked_mul(n) {
+                Some(v) => r[k] = v,
+                None => return None,
+            }
+            k += 1;
+        }
+        Some(Self::from_exponents(r))
+    }
+
+    /// The exponents in the order L, M, T, I, Θ, N, J.
+    #[inline]
+    const fn exponents(self) -> [i8; 7] {
+        [self.l, self.m, self.t, self.i, self.th, self.n, self.j]
+    }
+
+    #[inline]
+    const fn from_exponents(e: [i8; 7]) -> Self {
+        Self::new(e[0], e[1], e[2], e[3], e[4], e[5], e[6])
     }
 
     /// Check equality of two dimension vectors (const-compatible).
@@ -273,17 +354,18 @@ impl ConstDim {
             && self.j == rhs.j
     }
 
-    /// Raise dimension to an integer power (multiply all exponents by `n`).
+    /// Raise dimension to an integer power (multiply all exponents by `n`),
+    /// saturating like [`mul`](Self::mul); see [`checked_pow`](Self::checked_pow).
     #[inline]
     pub const fn pow(self, n: i8) -> Self {
         Self {
-            l: self.l * n,
-            m: self.m * n,
-            t: self.t * n,
-            i: self.i * n,
-            th: self.th * n,
-            n: self.n * n,
-            j: self.j * n,
+            l: self.l.saturating_mul(n),
+            m: self.m.saturating_mul(n),
+            t: self.t.saturating_mul(n),
+            i: self.i.saturating_mul(n),
+            th: self.th.saturating_mul(n),
+            n: self.n.saturating_mul(n),
+            j: self.j.saturating_mul(n),
         }
     }
 

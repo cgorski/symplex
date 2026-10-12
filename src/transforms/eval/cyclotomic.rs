@@ -32,8 +32,10 @@
 //! its factors.  A nonzero norm proves `e ≠ 0`; a zero norm (decided the
 //! same way one level down) says that some conjugate `e(ω·s)` is 0, and
 //! certified values tell which: `e` is 0 when it is not certainly nonzero
-//! and every other conjugate is.  At the bottom the test is exact.  Nothing
-//! is guessed: whatever does not settle is `None`.
+//! and every other conjugate is, or when every coefficient of `e` over `s`
+//! is 0 one level down (two conjugates vanish when `s` lies in the field
+//! below).  At the bottom the test is exact.  Nothing is guessed: whatever
+//! does not settle is `None`.
 //!
 //! Quotients are numerator/denominator pairs; every denominator is proved
 //! nonzero by the same test.  Nothing here recurses over the expression (a
@@ -81,6 +83,8 @@ const MAX_NODES: usize = 400;
 const MAX_N: i64 = 4096;
 /// The largest integer exponent taken.
 const MAX_EXPONENT: u32 = 64;
+/// The most coefficient tests of one zero test ([`Tower::coefficients_vanish`]).
+const MAX_COEFFICIENT_TESTS: usize = 16;
 
 /// An element of `ℚ(ζ)`: its coordinates on `1, ζ, …, ζ^{φ(N)−1}`.
 type Base = Vec<Q>;
@@ -247,6 +251,9 @@ struct Tower {
     /// The complex conjugate of each generator that has one computed
     /// ([`Tower::conj_gen`]).
     conjugates: Vec<Option<Frac>>,
+    /// The coefficient tests [`Tower::coefficients_vanish`] may still run:
+    /// each branches the descent over the levels into one per coefficient.
+    coefficient_budget: usize,
 }
 
 /// A value `num/den` of the tower (`den` not 0: checked separately).
@@ -414,6 +421,29 @@ impl Tower {
         for k in 1..self.gens[level - 1].order {
             let other = self.element_expr(arena, e, level, k);
             if !super::constant_is_nonzero(arena, other) {
+                return self.coefficients_vanish(arena, e, level);
+            }
+        }
+        Some(true)
+    }
+
+    /// `Some(true)` when every coefficient `uⱼ` of `e = Σ uⱼ·sʲ` over the
+    /// top generator `s` of `level` has the value 0 (one level down), so
+    /// that `e` is 0 whatever `s` is; `None` otherwise.  For when two
+    /// conjugates `e(ωᵏ·s)` may vanish, which happens when `s` lies in the
+    /// field below (a radical the tower does not identify, such as
+    /// `√(21 + 4√5) = 1 + 2√5`): if they all vanish, every `uⱼ·sʲ` does
+    /// (Vandermonde).  Up to 0.45 such an element was undecided, and which
+    /// of two generators came on top decided it: `a − b` stayed undecided
+    /// where `b − a` was decided 0, and `a < b` was decided while `a > b`
+    /// was not.
+    fn coefficients_vanish(&mut self, arena: &mut Arena, e: &[Base], level: usize) -> Option<bool> {
+        self.coefficient_budget = self.coefficient_budget.checked_sub(1)?;
+        let h = self.dim(level - 1);
+        for j in 0..self.gens[level - 1].order {
+            let (start, end) = ((j * h).min(e.len()), ((j + 1) * h).min(e.len()));
+            let u = self.pad(&e[start..end], level - 1);
+            if !elem_is_zero(&u) && !self.value_is_zero(arena, &u, level - 1)? {
                 return None;
             }
         }
@@ -856,6 +886,7 @@ impl Walk {
                 gens: Vec::new(),
                 zeta_exprs: FxHashMap::default(),
                 conjugates: Vec::new(),
+                coefficient_budget: MAX_COEFFICIENT_TESTS,
             },
             values: FxHashMap::default(),
             roots: FxHashMap::default(),

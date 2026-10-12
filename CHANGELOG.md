@@ -8,6 +8,151 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour)
+
+- The assumption queries of constants decide what `eval` decides:
+  `cos(π/16).is_positive()` and `(cos(π/7) − 9/10).is_positive()` are
+  `Some(true)` (`None` in 0.45; SymPy `True`), `(cos(π/16) − √(2 + √(2 +
+  √2))/2).is_zero()` is `Some(true)`, by a certified value or, for a value
+  0 to its precision, by the exact zero tests (memoised per context; the
+  structural assumption cache is untouched).  `Ex::equals` asks `eval`'s
+  decision of `Eq` for constants (`(cos(π/16)² − (2 + √(2 + √2))/4)
+  .equals(0)`: `None` → `Some(true)`).
+- `W_k(y·e^y) = y` for every real `y = r·ln m` (`r`, `m` rational) and
+  `c·e^c` (real constant `c`), on the branch the sign of `y + 1` decides:
+  `lambertw(√2·ln(2)/2)` → `ln(2)/2`, `lambertw(−2·ln(5/2)/5)` →
+  `−ln(5/2)`, `W₋₁(−3√2·ln(2)/8)` → `−3·ln(2)/2` (they stayed, as in
+  SymPy).
+- `solve_general` refuses a constant member that is 0 to every precision
+  without being decided, as `solve` does, and both decide exact zeros:
+  `x − atan(1/2) − atan(1/3) + π/4` for a positive `x` has no root
+  (`solve_general` returned the member 0, `solve` refused; SymPy returns
+  the root 0, which is not positive).
+- Statistics: `Mixture::support()` merges overlapping pieces; densities
+  at a finite end of the support are the one-sided limit (log-normal and
+  F at 0 were `NaN`, Gamma/Beta/Weibull with shape below 1 `zoo`).
+  Exports: JSON writes `null` for NaN/∞, TSV escapes `\t`, `\n`, `\\`.
+  `ConstDim` arithmetic saturates (it panicked in debug builds and wrapped
+  in release); new `checked_mul`/`checked_div`/`checked_pow`.
+- `re`/`im` of `acosh(i·v)` for a real `v ≠ 0` are `asinh|v|` and
+  `sgn(v)·π/2` (opaque before; mpmath to 30 digits).
+
+### Added
+
+- **Sums of arctangents of rationals decided exactly** (the argument of
+  `∏(qᵢ + i·pᵢ)^{nᵢ}` in ℤ[i]): `Eq(atan(1/2) + atan(1/3), π/4)`, Machin's
+  formula, `atan(2) + atan(3) ≥ 3π/4`, also beside trigonometric radicals
+  (SymPy `equals`: `None`).
+- **Improper integrals by residues**: `∫_{−∞}^{∞} R(x)·cos kx dx` and
+  `R(x)·sin kx` for a rational `R` over ℚ and a real `k` of known sign
+  (Jordan's lemma; poles in radicals or `RootOf`, placed by certified root
+  balls, principal parts exact in ℚ(ρ)), half of it for an even or odd
+  integrand on `[0, ∞)`, a simple pole at 0 next to `sin` by its half
+  residue; `∫₀^∞ R(x)·ln x dx` by the keyhole contour and `∫_c^∞` by `x =
+  1/u`: `∫ cos 2x/(x² + 2) = πe^{−2√2}/√2`, `∫ cos x/(x² + 1)² = π/e`,
+  `∫₀^∞ sin x/(x(x² + 1)) = π(1 − e⁻¹)/2`, `∫₀^∞ ln x/((x + 1)(x + 2)) =
+  ln²2/2` (refused in 0.45).  Limits of `Si`, `Ci`, `Ei` at ±∞ along
+  horizontal lines and of `Ei` along complex rays.
+- **Transforms of rational functions**: Fourier (`1/(t² + 1)` →
+  `πe^{−|ω|}`; principal value at simple real poles), Mellin (with its
+  strip), Laplace (`L{1/(t + 1)} = eˢ·E₁(s)`, continued analytically for
+  poles with a positive real part; also `R(t)·cos bt`, `R(t)·sin bt`),
+  Mellin of `e^{−αx}·cos/sin βx`; z-transform of `a^{cn+d}`, `e^{cn+d}`,
+  `sinh n`, `C(n + 2, 2)`, `1/(n + k)` ("cannot transform 2^(−n)" before).
+  Hunter (4,000 integrals and transforms, mpmath at 30 digits and round
+  trips): closed forms 1,326 → 2,375, refused 1,456 → 491, wrong 0; all
+  261 divergent integrals reported divergent.
+- **ODEs by the Green's function**: linear constant-coefficient equations
+  of order ≤ 6 whose forcing is outside undetermined coefficients:
+  `y″ + y = eˣ/x` → `Ei((1 ∓ i)x)` terms, `y‴ − y′ = 1/x`, `y″ + y = sin
+  x/x` → `Si(2x)` (refused; SymPy 1.14 answers the first with Meijer
+  G-functions).  Undetermined coefficients with irrational rates,
+  hyperbolic and power forcing (`e^{√2x}`, `x·e^{√2x}` with exact
+  resonance, `cos(√2·x)`, `sinh x`, `2ˣ`; all refused).  Biquadratic
+  characteristic polynomials in radicals instead of `RootOf`; Cauchy–Euler
+  forcing `√x` (SymPy: `NotImplementedError`).
+- **`rsolve` with trigonometric forcing** `poly(n)·bⁿ·cos(θn)`,
+  `sin(θn)` (`cos(nπ/2)`, `2ⁿ·cos(nπ/3)`, `sin n`, resonance included;
+  SymPy 1.14 refuses them) and products of exponential bases (`(−√2)ⁿ`).
+  ODE/recurrence hunter (1,600 cases): refusals 115 → 3, hangs 10 → 0,
+  wrong 0.
+- Statistics: the Pareto characteristic function in closed form (with
+  the incomplete gamma at complex arguments); `E[e^L]`, `E[cos L]`,
+  `E[sin L]` of linear forms in independent variables from the marginal
+  generating functions (`E[cos(X + Y)]` of two Poissons hung).
+
+### Fixed
+
+- **Statistics, silent wrong values**: mixtures whose components'
+  supports overlap counted the overlap twice (`E[cos X]`, the entropy
+  and `E[X | X > ½]` of ½U(0, 2) + ½U(1, 3) were 0.0862, ln 4 and 71/28;
+  now 0.0522, 1.0397, 47/28; the variance of ⅓Gamma(2, 2) + ⅔Tri(2, 6,
+  2) was 14.03, it is 272/81); `X³` and other odd powers of a variable
+  with negative values took the complex cube root (the CDF of `X³` for
+  t(3) at 3 was −0.1225, it is 0.8775; Cauchy CDFs came out complex);
+  divergent expectations of non-polynomial functions were finite (`E|X −
+  1|` of a Cauchy was 225.93; now ∞).  Negative-binomial CDFs beyond 64
+  atoms by `1 − I_{1−p}(k + 1, r)` (`cdf(1000)` took over 10 s; a quantile
+  past 10⁴ atoms was refused).  Hunter: compositions wrong 50 → 0, hangs
+  35 → 0; families wrong 11 → 0.
+- **Plotting**: curves were joined across undefined gaps (`ln(x² − 1)`
+  across (−1, 1)); the sampling grid was unbounded (`sin(1000x)` on [0,
+  10⁶] asked for 3·10⁹ points; [−10³⁰⁰, 10³⁰⁰] panicked); TikZ printed
+  values below 5·10⁻⁷ as 0 and `inf` inside `\addplot`; SVG had NaN
+  coordinates near ±10³⁰⁸; JSON exports were invalid (bare NaN);
+  Markdown, LaTeX, TSV and CSV did not escape their special characters.
+  Hunter: wrong 401 → 6 (narrow spikes the sampling misses), hangs 12 →
+  0.
+- **Decisions that disagreed with each other** (hunter: 7,800 constants;
+  `eval` of `Eq`/`Ne`/orders, Boolean `simplify`, `equals`, `is_*`,
+  `sign`, `solve`; mpmath at 60 and 90 digits): wrong 513 → 0, undecided
+  59,104 → 3,255, partly decided questions 8,916 → 25.  The cyclotomic
+  zero test no longer depends on which side of a relation is written
+  first (`a < b` was decided where `a > b` stayed); `sign` uses the same
+  zero tests as `Eq`; `W₀`, `W₋₁` are real on their real ranges.
+- A definite integral whose antiderivative is complex at the endpoints
+  was refused (the test for a negligible imaginary part looked for `I` in
+  a value printed with `i`): `∫₀¹ x·sin 2x/(2(x² − x − 1)) dx`.  Complex
+  endpoint values are accepted, refused where a branch argument meets its
+  cut from off the axis; a non-real value of a real integral is refused;
+  the cuts of `polylog`, `Chi`, `Eₙ`, `Y_ν`, `K_ν` and the incomplete
+  gamma functions are checked along the path.
+- **Initial-value problems that hung**: 4×4 systems with irreducible
+  quartic characteristic polynomials (now `e^{At}·x₀`), recurrences whose
+  data lie in a number field (`a(n+4) − 2a(n) = 2 sin(nπ/6)`), Cauchy–Euler
+  equations with `RootOf` exponents (5 s → 0.25 s, debug).
+- `lowergamma(n, z)` at a small complex or negative `z` stays for `evalf`'s
+  series instead of a closed form losing up to 1,200 bits
+  (`lowergamma(30, (−13/100 + 99i/100)/10¹¹)` was `PrecisionExhausted` at
+  43 digits).
+- The limit of `1/(acosh(2i + ix) − acosh(2i))` at `0⁺` is `∞` in 23 ms
+  (12.6 s in 0.45, unevaluated in 0.43).
+
+### Changed (performance)
+
+- The Risch tower reads only the verdict of its Rothstein–Trager step
+  (the search for rational roots of a resultant of degree ≥ 2 never
+  decided it): `∫ (x + 1)/((x + √x)·ln x) dx` 39 → 11 ms, `∫ (x − 3)/((−x −
+  1)(√x − ln x)) dx` 67 → 14 ms (same answers, release CPU).
+- `solve` over number fields places each algebraic number in `ℚ(α)`
+  without an exact zero test when `α` is a sum of them of full degree, and
+  tests other candidate roots numerically first: `(x − ∛2)·(x − 1 + i)²`
+  expanded 0.22 s → 7 ms.
+- A product with `zoo` no longer evaluates `Γ`, `z!`, `eᶻ` or `bᶻ` to learn
+  whether it vanishes: the parser fuzz corpus 51 → 29 s of CPU (0.43: 40
+  s).
+- `integrate_definite` evaluates a closed form once for its realness and
+  quadrature checks (definite-integral hunter 48.7 s → 35.5 s).
+
+### Measured
+
+- `tests/v35/` (0.39–0.46): 47 files, 426 tests.  nextest 14,218 tests
+  (14 skipped), doctests 1,330.
+- Rubi harness: 29,529 verified, 91 real_verified, 0 wrong; self-test
+  56,013 / 0 wrong / 204 undecided; `--negative-params` 91 / 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+
 ## [0.45.0] - 2026-10-12
 
 Special functions at complex arguments, number fields in solving and

@@ -250,18 +250,41 @@ fn integrate_tower_poly(p: &GenPoly<RationalFn>) -> GenPoly<RationalFn> {
 ///
 /// `None` if `D` is zero.  The integrator passes the square-free
 /// denominator of a tower Hermite reduction, which is never zero; up to
-/// 0.28 this was a runtime `assert!`.
+/// 0.28 this was a runtime `assert!`.  The integrator reads only the
+/// verdict, [`tower_logarithmic_part_is_non_elementary`].
+#[cfg(test)]
 pub fn tower_logarithmic_part(
     a: &GenPoly<RationalFn>,
     d: &GenPoly<RationalFn>,
 ) -> Option<TowerLogPartResult> {
-    (!d.is_zero()).then(|| tower_logarithmic_part_nonzero(a, d))
+    (!d.is_zero()).then(|| tower_logarithmic_part_nonzero(a, d, true))
 }
 
-/// [`tower_logarithmic_part`] for a nonzero `d`.
+/// [`TowerLogPartResult::is_non_elementary`] of `tower_logarithmic_part`
+/// (the tests' entry point) alone, without its terms: `None` if `D` is
+/// zero.
+///
+/// Only a linear `D` or a resultant `R(z)` of degree 1 can show a
+/// non-constant root; for a resultant of higher degree the search for its
+/// constant roots among the small rationals (some 1,600 evaluations of
+/// `R` in `ℚ(x)`) collects terms but never sets the flag.  The Risch tower
+/// reads the flag only; that search took 4 ms per call and, behind the
+/// logarithmic substitution `x = eʷ` of 0.44, ran several times per
+/// integrand (`∫ (x + 1)/((x + √x)·ln x) dx`, unevaluated: 1 ms in 0.43,
+/// 39 ms in 0.45, 11 ms without the search; release builds).
+pub fn tower_logarithmic_part_is_non_elementary(
+    a: &GenPoly<RationalFn>,
+    d: &GenPoly<RationalFn>,
+) -> Option<bool> {
+    (!d.is_zero()).then(|| tower_logarithmic_part_nonzero(a, d, false).is_non_elementary)
+}
+
+/// `tower_logarithmic_part` for a nonzero `d`; with `search_roots` false,
+/// a resultant of degree ≥ 2 gives no terms.
 fn tower_logarithmic_part_nonzero(
     a: &GenPoly<RationalFn>,
     d: &GenPoly<RationalFn>,
+    search_roots: bool,
 ) -> TowerLogPartResult {
     if a.is_zero() {
         return TowerLogPartResult {
@@ -352,7 +375,7 @@ fn tower_logarithmic_part_nonzero(
                     argument: d.clone(),
                 });
             }
-        } else {
+        } else if search_roots {
             // For higher-degree R(z), try to find rational roots by
             // evaluating at small rationals p/q for small denominators.
             // This covers the common cases like ±1/2, ±1/3, ±2/3, etc.

@@ -2747,7 +2747,10 @@ fn mixture_of_different_supports_has_a_numeric_quantile() -> Result<(), SymplexE
             Distribution::uniform(ctx.int(2), ctx.int(3)),
         ),
     ])?;
-    assert_eq!(m.support().pieces().len(), 2);
+    // Since 0.46 the overlapping pieces ℝ and [2, 3] are merged into ℝ:
+    // the generic routes integrate the mixture's density piece by piece,
+    // and the overlap was counted twice (E[cos X], the entropy, …).
+    assert_eq!(m.support().pieces().len(), 1);
     assert_f64(m.quantile_f64(0.5)?, 2.0216084112108, "median");
     assert_f64(m.quantile_f64(0.2)?, -0.2533471031357997, "q(0.2)");
     assert_eq!(m.mean(), ctx.rational(5, 4));

@@ -20,6 +20,9 @@
 //!    an unassumed parameter may be complex) conditions are checked
 //!    through the assumption system and the entry is skipped when they
 //!    cannot be established.
+//!    Rational × `cos`/`sin` over the line (or an even/odd one over `[0, ∞)`)
+//!    and `ln x` × rational over `[0, ∞)` are summed over their poles
+//!    (Jordan's lemma, the keyhole contour).
 //! 4. **Breakpoints.** Poles, `ln` zeros, `tan` poles, branch points of
 //!    fractional powers and inverse-trig domain edges of the integrand are
 //!    located with the breakpoint scanner in `calculus_util`.  Interior points
@@ -64,6 +67,7 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::calculus::calculus_util::{self, BreakKind, BreakScan, Breakpoint, LinearCoeffs};
+use crate::calculus::residue;
 use crate::transforms::{eval, evalf, expand, subs};
 
 /// Maximum nesting of interval splits before giving up.
@@ -211,7 +215,19 @@ pub fn integrate_definite(
             reason: "result still depends on the integration variable".into(),
         });
     }
-    if contradicted_by_quadrature(arena, f, x, a, b, result) {
+    // One numeric value for both checks (a special-function closed form
+    // costs milliseconds to evaluate).
+    let numeric = if walk::free_symbols(arena, result).is_empty() {
+        evalf::evalf_complex64(arena, result).ok()
+    } else {
+        None
+    };
+    if non_real_for_real_integrand(arena, f, x, a, b, numeric) {
+        return Err(failed(
+            "the closed form is not real although the integrand is (an antiderivative that jumps along the path?)",
+        ));
+    }
+    if contradicted_by_quadrature(arena, f, x, a, b, numeric) {
         return Err(failed(
             "the closed form disagrees with adaptive quadrature (an antiderivative that jumps inside the interval?)",
         ));
@@ -242,18 +258,22 @@ fn contradicted_by_quadrature(
     x: ExprId,
     a: ExprId,
     b: ExprId,
-    value: ExprId,
+    value: Option<num_complex::Complex64>,
 ) -> bool {
     if walk::free_symbols(arena, f).iter().any(|&s| s != x)
         || contains_node(arena, f, |n| matches!(n, ExprNode::DiracDelta(..)))
     {
         return false;
     }
-    let (Ok(lo), Ok(hi), Ok(v)) = (
-        evalf::evalf_f64(arena, a),
-        evalf::evalf_f64(arena, b),
-        evalf::evalf_f64(arena, value),
-    ) else {
+    // The value as `evalf_f64` reads it: real when the imaginary part is
+    // below the 16th digit of the real part.
+    let Some(v) = value
+        .filter(|z| z.im == 0.0 || z.im.abs() <= 1e-16 * z.re.abs())
+        .map(|z| z.re)
+    else {
+        return false;
+    };
+    let (Ok(lo), Ok(hi)) = (evalf::evalf_f64(arena, a), evalf::evalf_f64(arena, b)) else {
         return false;
     };
     if !(lo.is_finite() && hi.is_finite() && v.is_finite()) {
@@ -387,9 +407,334 @@ fn integrate_ordered(
         return Ok(v);
     }
 
+    // ── Rational × trigonometric over ℝ by residues ─────────────────
+    if let Some(v) = rational_trig_by_residues(arena, f, x, a, b) {
+        return Ok(v);
+    }
+    // ── ln(x) × rational over [0, ∞) by the keyhole contour ──────────
+    if let Some(v) = rational_log_by_keyhole(arena, f, x, a, b) {
+        return Ok(v);
+    }
+
     // ── Breakpoint analysis → pieces ────────────────────────────────
     let pieces = split_at_breakpoints(arena, f, x, a, b)?;
-    integrate_pieces(arena, f, x, &pieces, depth)
+    let result = integrate_pieces(arena, f, x, &pieces, depth);
+    if matches!(result, Err(SymplexError::ComputationFailed { .. }))
+        && let Some(v) = log_rational_tail_inverted(arena, f, x, a, b, depth)
+    {
+        return Ok(v);
+    }
+    result
+}
+
+/// `f = c·ln(x)·R(x)` with `R` rational over ℚ: `(c, R)` (`c` the
+/// `x`-free factors).
+fn log_times_rational(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+) -> Option<(Vec<ExprId>, residue::RationalQ)> {
+    if !contains_node(arena, f, |n| matches!(n, ExprNode::Ln(_))) {
+        return None;
+    }
+    let (coeff, dep) = factorize(arena, f, x);
+    let mut found_log = false;
+    let mut rest: Vec<ExprId> = Vec::new();
+    for d in dep {
+        if matches!(arena.node(d), ExprNode::Ln(arg) if *arg == x) {
+            if found_log {
+                return None;
+            }
+            found_log = true;
+        } else {
+            rest.push(d);
+        }
+    }
+    if !found_log {
+        return None;
+    }
+    let rest = if rest.is_empty() {
+        arena.one()
+    } else {
+        arena.mul(&rest)
+    };
+    let r = residue::rational_over_q(arena, rest, x)?;
+    Some((coeff, r))
+}
+
+/// `∫₀^∞ R(x)·ln x dx = −½ Σ Res[R(z)·ln²(−z)]` over all poles of a
+/// rational `R` over ℚ that is finite on `[0, ∞)` with `deg D ≥ deg N +
+/// 2` (keyhole contour around `[0, ∞)`: on its two lips `ln(−z) = ln x ∓
+/// iπ`, and `(ln x − iπ)² − (ln x + iπ)² = −4iπ ln x`).  Shown as the real
+/// part when that is exact.  Before 0.46 only `ln x/(c x² + k)` was in the
+/// table; `∫₀^∞ ln x/(x² + x + 1) dx` (`0`) and `∫₀^∞ ln x/((x + 1)(x + 2))
+/// dx` (`ln² 2/2`) were refused, the antiderivatives having dilogarithms
+/// whose limits at `∞` were unknown.  SymPy:
+/// `integrate(log(x)/((x + 1)*(x + 2)), (x, 0, oo))` = `log(2)**2/2`.
+fn rational_log_by_keyhole(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    a: ExprId,
+    b: ExprId,
+) -> Option<ExprId> {
+    if classify_interval(arena, a, b) != IntervalShape::ZeroInf {
+        return None;
+    }
+    let (coeff, r) = log_times_rational(arena, f, x)?;
+    if r.degree_gap() < 2 || r.denom.coeff(0).is_zero() {
+        return None;
+    }
+    let bound = crate::poly::sturm::cauchy_bound(&r.denom);
+    let (_, sqf) = r.denom.sqf_list();
+    if sqf.iter().any(|(p, _)| {
+        p.degree().is_some_and(|d| d > 0)
+            && crate::poly::sturm::SturmChain::new(p).count_roots_in_closed(&Q::zero(), &bound) > 0
+    }) {
+        return None;
+    }
+    let neg_x = arena.neg(x);
+    let ln = arena.ln(neg_x);
+    let two = arena.int(2);
+    let weight = arena.pow(ln, two);
+    let sum = residue::rational_residue_sum(arena, &r, weight, x, |_| true)?;
+    let half = arena.rational(-1, 2);
+    let raw = arena.mul(&[half, sum]);
+    let raw = safe_eval(arena, raw);
+    let parts = crate::base::complex::decompose(arena, raw);
+    let mut value = raw;
+    if parts.exact {
+        let re = safe_eval(arena, parts.re);
+        if !contains_node(arena, re, |n| {
+            matches!(
+                n,
+                ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Conjugate(_) | ExprNode::Arg(_)
+            )
+        }) {
+            value = re;
+        }
+    }
+    Some(with_coeff(arena, &coeff, value))
+}
+
+/// `∫_c^∞ ln(x)·R(x) dx = −∫₀^{1/c} ln(u)·R(1/u)/u² du` (`x = 1/u`) for a
+/// rational `R` over ℚ and a positive rational `c`, when the direct route
+/// failed: the antiderivative's dilogarithms have unknown limits at `∞`,
+/// while at `u → 0⁺` they are continuous.  Before 0.46 `∫₁^∞ ln x/(x² + 4)
+/// dx` was refused.
+fn log_rational_tail_inverted(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    a: ExprId,
+    b: ExprId,
+    depth: usize,
+) -> Option<ExprId> {
+    if b != arena.infinity() {
+        return None;
+    }
+    let c = arena.as_num(a)?.clone();
+    if !c.is_positive() {
+        return None;
+    }
+    let (coeff, r) = log_times_rational(arena, f, x)?;
+    let gap = r.degree_gap();
+    if !(2..=64).contains(&gap) {
+        return None;
+    }
+    // R(1/u)/u² = u^{gap−2}·Ñ(u)/D̃(u) with the reversed polynomials.
+    let reversed = |p: &crate::poly::Poly| {
+        let mut c = p.coeffs().to_vec();
+        c.reverse();
+        crate::poly::Poly::from_coeffs(c)
+    };
+    let u = fresh_symbol(arena, "definv", depth);
+    let n_rev = crate::poly::polybridge::poly_to_expr(arena, &reversed(&r.numer), u);
+    let d_rev = crate::poly::polybridge::poly_to_expr(arena, &reversed(&r.denom), u);
+    let power = arena.int(gap - 2);
+    let u_pow = arena.pow(u, power);
+    let ln_u = arena.ln(u);
+    let ratio = arena.div(n_rev, d_rev);
+    let mut factors = coeff;
+    factors.extend([arena.neg_one(), ln_u, u_pow, ratio]);
+    let g = arena.mul(&factors);
+    let g = safe_eval(arena, g);
+    let zero = arena.zero();
+    let hi = arena.num_ratio(Q::one() / c);
+    let v = integrate_range(arena, g, u, zero, hi, depth + 1).ok()?;
+    (!walk::contains(arena, v, u)).then_some(v)
+}
+
+/// `∫_{−∞}^{∞} R(x)·cos(kx) dx` and `∫_{−∞}^{∞} R(x)·sin(kx) dx` for a
+/// rational `R` over ℚ and a real `k ≠ 0` of known sign (a number or a
+/// parameter declared positive or negative), by residues
+/// ([`residue::fourier_rational`]): with `J± = ∫ R(x) e^{±i|k|x} dx`
+/// (Jordan's lemma, closing in the upper and the lower half-plane),
+/// `∫ R cos = (J₊ + J₋)/2` and `∫ R sin = (J₊ − J₋)/(2i)`, shown as the real
+/// and imaginary parts of `J₊` when those can be written without `re`/`im`
+/// nodes.  Also `∫₀^∞` of an even `R·cos` or an odd `R·sin` (half the
+/// line), and sums of such terms.
+///
+/// The integral converges (conditionally for `deg D = deg N + 1`) when
+/// `deg D ≥ deg N + 1` and `D` has no real roots; `sin(kx)·R(x)` may have a
+/// simple pole of `R` at `x = 0`, where the integrand is bounded and the
+/// half residue of the principal value is its value (`∫ sin x/(x(x² + 1))
+/// dx = π(1 − e⁻¹)`).  Anything else (`None`) is left to the other routes,
+/// which also prove divergence.
+///
+/// Before 0.46 these were refused unless the half-line table matched: the
+/// antiderivatives have `Si`/`Ci` at the complex poles, whose limits at
+/// `±∞` the limit engine did not know (`∫_{−∞}^{∞} cos 2x/(x² + 2) dx`,
+/// `∫ cos x/(x⁴ + 1) dx`, `∫ x sin 3x/(x² + 4x + 13) dx`).  SymPy evaluates
+/// them with Meijer G-functions.
+fn rational_trig_by_residues(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    a: ExprId,
+    b: ExprId,
+) -> Option<ExprId> {
+    let half_line = match classify_interval(arena, a, b) {
+        IntervalShape::FullLine => false,
+        IntervalShape::ZeroInf => true,
+        _ => return None,
+    };
+    if !contains_node(arena, f, |n| {
+        matches!(n, ExprNode::Sin(_) | ExprNode::Cos(_))
+    }) || walk::post_order_ids(arena, f).len() > MAX_RESIDUE_INTEGRAND_NODES
+    {
+        return None;
+    }
+    let f = expand::expand(arena, f);
+    let f = safe_eval(arena, f);
+    let terms: Vec<ExprId> = match arena.node(f) {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![f],
+    };
+    if terms.len() > 16 {
+        return None;
+    }
+    let mut values = Vec::with_capacity(terms.len());
+    for t in terms {
+        values.push(rational_trig_term(arena, t, x, half_line)?);
+    }
+    let s = arena.add(&values);
+    Some(safe_eval(arena, s))
+}
+
+/// Largest integrand (distinct nodes) that [`rational_trig_by_residues`]
+/// expands.
+const MAX_RESIDUE_INTEGRAND_NODES: usize = 400;
+
+/// One term `c·R(x)·trig(kx)` of [`rational_trig_by_residues`].
+fn rational_trig_term(arena: &mut Arena, t: ExprId, x: ExprId, half_line: bool) -> Option<ExprId> {
+    let (coeff, dep) = factorize(arena, t, x);
+    let mut trig: Option<(Trig, ExprId)> = None;
+    let mut rest: Vec<ExprId> = Vec::new();
+    for d in dep {
+        match arena.node(d) {
+            ExprNode::Sin(arg) | ExprNode::Cos(arg) => {
+                if trig.is_some() {
+                    return None;
+                }
+                let kind = if matches!(arena.node(d), ExprNode::Sin(_)) {
+                    Trig::Sin
+                } else {
+                    Trig::Cos
+                };
+                trig = Some((kind, *arg));
+            }
+            _ => rest.push(d),
+        }
+    }
+    let (kind, arg) = trig?;
+    let k = pure_linear_coeff(arena, arg, x)?;
+    if !is_real(arena, k) {
+        return None;
+    }
+    let negative = match sign_of(arena, k)? {
+        Ordering::Greater => false,
+        Ordering::Less => true,
+        Ordering::Equal => return None,
+    };
+    let k_abs = if negative { arena.neg(k) } else { k };
+    let k_abs = safe_eval(arena, k_abs);
+    let rest = if rest.is_empty() {
+        arena.one()
+    } else {
+        arena.mul(&rest)
+    };
+    let r = residue::rational_over_q(arena, rest, x)?;
+    if r.degree_gap() < 1 {
+        return None;
+    }
+    // Real poles: none for cos; at most a simple one at 0 for sin.
+    let zero_mult = r.denom.coeffs().iter().take_while(|c| c.is_zero()).count();
+    let allowed = if kind == Trig::Sin { 1 } else { 0 };
+    if zero_mult > allowed {
+        return None;
+    }
+    let shifted = crate::poly::Poly::from_coeffs(r.denom.coeffs()[zero_mult..].to_vec());
+    let (_, sqf) = shifted.sqf_list();
+    if sqf.iter().any(|(p, _)| {
+        p.degree().is_some_and(|d| d > 0)
+            && crate::poly::sturm::SturmChain::new(p).count_real_roots() > 0
+    }) {
+        return None;
+    }
+    if half_line {
+        // ∫₀^∞ = ½ ∫_{−∞}^{∞} for an even integrand.
+        let want_even = kind == Trig::Cos;
+        if r.parity()? != want_even {
+            return None;
+        }
+    }
+    let neg_k = arena.neg(k_abs);
+    let neg_k = safe_eval(arena, neg_k);
+    let j_plus = residue::fourier_rational(arena, &r, k_abs, Some(true), x)?;
+    let j_minus = residue::fourier_rational(arena, &r, neg_k, Some(false), x)?;
+    let combined = match kind {
+        Trig::Cos => {
+            let s = arena.add(&[j_plus, j_minus]);
+            let half = arena.rational(1, 2);
+            arena.mul(&[half, s])
+        }
+        Trig::Sin => {
+            let d = arena.sub(j_plus, j_minus);
+            let i = arena.i_unit();
+            let two = arena.int(2);
+            let two_i = arena.mul(&[two, i]);
+            arena.div(d, two_i)
+        }
+    };
+    let combined = safe_eval(arena, combined);
+    // N/D has rational coefficients and k is real, so J₋ = conj(J₊): the
+    // value is re J₊ (cos) or im J₊ (sin), written out when exact.
+    let parts = crate::base::complex::decompose(arena, j_plus);
+    let mut value = combined;
+    if parts.exact {
+        let part = match kind {
+            Trig::Cos => parts.re,
+            Trig::Sin => parts.im,
+        };
+        let part = safe_eval(arena, part);
+        if !contains_node(arena, part, |n| {
+            matches!(
+                n,
+                ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Conjugate(_) | ExprNode::Arg(_)
+            )
+        }) {
+            value = part;
+        }
+    }
+    if negative && kind == Trig::Sin {
+        value = arena.neg(value);
+    }
+    if half_line {
+        let half = arena.rational(1, 2);
+        value = arena.mul(&[half, value]);
+    }
+    Some(with_coeff(arena, &coeff, value))
 }
 
 /// Integrate a constant `c` over `[a, b]`.
@@ -604,54 +949,71 @@ fn has_bad_atom(arena: &Arena, root: ExprId) -> bool {
 }
 
 /// Is `v` an acceptable finite value: free of `x`, of infinities, of
-/// unevaluated nodes, and (when constant) numerically finite and real?
+/// unevaluated nodes, and (when constant) numerically finite?
 fn is_finite_value(arena: &mut Arena, v: ExprId, x: ExprId) -> bool {
-    if walk::contains(arena, v, x) || has_bad_atom(arena, v) || walk::has_unevaluated(arena, v) {
-        return false;
-    }
-    if walk::free_symbols(arena, v).is_empty() && arena.as_num(v).is_none() {
-        // Constant: verify numerically (catches Γ(0), atan(zoo)-like junk,
-        // and complex values).
-        return match evalf::evalf(arena, v, 16) {
-            Ok(s) => match s.trim().parse::<f64>() {
-                Ok(f) => f.is_finite(),
-                Err(_) => {
-                    // Complex-valued constant: allowed only if the
-                    // imaginary part is negligible.
-                    is_effectively_real(&s)
-                }
-            },
-            Err(_) => false,
-        };
-    }
-    true
+    finite_value(arena, v, x).is_some()
 }
 
-/// Parse an `evalf` string of the form `a ± b*I` and check `|b| ≲ 0`.
-fn is_effectively_real(s: &str) -> bool {
-    let s = s.trim();
-    if !s.contains('I') {
+/// [`is_finite_value`] with the numeric value of a constant that is not a
+/// literal number: `None` when `v` is not a finite value, `Some(Some(z))`
+/// for such a constant, `Some(None)` otherwise.
+fn finite_value(arena: &mut Arena, v: ExprId, x: ExprId) -> Option<Option<num_complex::Complex64>> {
+    if walk::contains(arena, v, x) || has_bad_atom(arena, v) || walk::has_unevaluated(arena, v) {
+        return None;
+    }
+    if walk::free_symbols(arena, v).is_empty() && arena.as_num(v).is_none() {
+        // Constant: verify numerically (catches Γ(0), atan(zoo)-like junk).
+        // A complex value is a value: an antiderivative with `Ci`, `ln` or
+        // `Ei` of a negative argument is complex at each end and real only
+        // in the difference.  (Before 0.46 the test for a negligible
+        // imaginary part looked for `I` in a string printed with `i`, so
+        // every complex endpoint value was refused: `∫₀¹ x·sin 2x/(x² − x −
+        // 1) dx`, whose antiderivative has `Ci(2x − √5 − 1)`.)
+        return evalf::evalf_complex64(arena, v)
+            .ok()
+            .filter(|z| z.re.is_finite() && z.im.is_finite())
+            .map(Some);
+    }
+    Some(None)
+}
+
+/// Is the parameter-free closed form `value` of `∫ₐᵇ f dx` non-real while
+/// `f` is real on the interval?  The integrand is sampled (compiled, at
+/// the guard grid of [`guard_grid`]): when every sample is a finite real
+/// number, the integral is real, and a value with an imaginary part beyond
+/// `10⁻¹⁰·max(1, |value|)` comes from an antiderivative that is not
+/// continuous along the path.  The quadrature check
+/// ([`contradicted_by_quadrature`]) only sees real values.
+fn non_real_for_real_integrand(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    a: ExprId,
+    b: ExprId,
+    value: Option<num_complex::Complex64>,
+) -> bool {
+    if walk::free_symbols(arena, f).iter().any(|&s| s != x) {
         return false;
     }
-    // Find the split between real and imaginary parts.
-    let bytes = s.as_bytes();
-    let mut split = None;
-    for i in (1..bytes.len()).rev() {
-        if (bytes[i] == b'+' || bytes[i] == b'-') && bytes[i - 1] == b' ' {
-            split = Some(i);
-            break;
-        }
-    }
-    let Some(i) = split else {
+    let Some(z) = value else {
         return false;
     };
-    let im = s[i..].trim().trim_end_matches("*I").trim();
-    let im = im.trim_start_matches('+').trim();
-    let im_val: f64 = match im.replace(' ', "").parse::<f64>() {
-        Ok(v) => v,
-        Err(_) => return false,
+    if !z.im.is_finite() || z.im.abs() <= 1e-10 * z.norm().max(1.0) {
+        return false;
+    }
+    let (Some(lo), Some(hi)) = (point_value(arena, a), point_value(arena, b)) else {
+        return false;
     };
-    im_val.abs() < 1e-12
+    let ExprNode::Symbol(sid) = *arena.node(x) else {
+        return false;
+    };
+    let name = arena.symbol_name(sid).to_string();
+    let Ok(func) = crate::output::lambdify::compile(arena, f, &[&name]) else {
+        return false;
+    };
+    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    let samples: Vec<f64> = guard_grid(lo, hi).into_iter().step_by(8).collect();
+    !samples.is_empty() && samples.iter().all(|&t| func(&[t]).is_finite())
 }
 
 /// Fresh dummy symbol.
@@ -1317,8 +1679,11 @@ fn evaluate_antiderivative(
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Cut {
     /// The real axis below a bound: `ln`, non-integer powers, `arg`,
-    /// `loggamma`, `Ei`, `Ci`, `li` (0), `W` (−1/e), `acosh` (1).
+    /// `loggamma`, `Ei`, `Ci`, `Chi`, `Eₙ`, `Yν`, `Kν`, incomplete gamma,
+    /// `li` (0), `W` (−1/e), `acosh` (1).
     RealBelow(f64),
+    /// The real axis above a bound: `polylog(s, u)` (1).
+    RealAbove(f64),
     /// The real axis outside `[−1, 1]`: `asin`, `acos`, `atanh`.
     RealOutside,
     /// The imaginary axis outside `[−i, i]`: `atan`, `asinh`.
@@ -1352,6 +1717,27 @@ fn cut_arguments(arena: &Arena, anti: ExprId, x: ExprId) -> Vec<(ExprId, Cut)> {
                 Some((u, Cut::RealOutside))
             }
             ExprNode::Atan(u) | ExprNode::Asinh(u) => Some((u, Cut::ImaginaryOutside)),
+            // Before 0.46 the library functions were not looked at: the
+            // dilogarithms of `∫ ln(x)·R(x) dx` (cut `[1, ∞)`) and `Chi`, `Eₙ`
+            // were taken as continuous whatever their arguments did.
+            ExprNode::Apply(f, ref args) => {
+                use crate::base::libfn::LibFn;
+                match (arena.lib_fn(f), args.as_slice()) {
+                    (Some(LibFn::Chi), [u]) => Some((*u, Cut::RealBelow(0.0))),
+                    (
+                        Some(
+                            LibFn::ExpInt
+                            | LibFn::BesselY
+                            | LibFn::BesselK
+                            | LibFn::UpperGamma
+                            | LibFn::LowerGamma,
+                        ),
+                        [_, u],
+                    ) => Some((*u, Cut::RealBelow(0.0))),
+                    (Some(LibFn::PolyLog), [_, u]) => Some((*u, Cut::RealAbove(1.0))),
+                    _ => None,
+                }
+            }
             _ => None,
         };
         if let Some((u, cut)) = found
@@ -1458,7 +1844,14 @@ fn cut_crossing_excluded(
             return true;
         }
     }
-    if cut == Cut::RealBelow(0.0) && constant_multiple_of_real(arena, u, x, reals) {
+    // A line through 0 meets the real axis only at 0: the branch point of
+    // a cut `(−∞, 0]`, off a cut `[b, ∞)` with `b > 0`.
+    let through_origin_ok = match cut {
+        Cut::RealBelow(b) => b == 0.0,
+        Cut::RealAbove(b) => b > 0.0,
+        _ => false,
+    };
+    if through_origin_ok && constant_multiple_of_real(arena, u, x, reals) {
         return true;
     }
     calculus_util::linear_coeffs_exact(arena, u, x).is_some()
@@ -1562,6 +1955,7 @@ fn meets_axis_off_the_cut(
     };
     match cut {
         Cut::RealBelow(bound) => v >= bound,
+        Cut::RealAbove(bound) => v <= bound,
         Cut::RealOutside | Cut::ImaginaryOutside => v.abs() <= 1.0,
     }
 }
@@ -1612,6 +2006,7 @@ fn numeric_cut_crossing(
             let along = c0 + w * (c - c0);
             let on_cut = match cut {
                 Cut::RealBelow(bound) => along < bound,
+                Cut::RealAbove(bound) => along > bound,
                 Cut::RealOutside | Cut::ImaginaryOutside => along.abs() > 1.0,
             };
             if on_cut {
@@ -1878,7 +2273,14 @@ fn endpoint_value(
         // one-sided limit for elementary F).
         let v = subs::subs(arena, anti, x, c);
         let v = safe_eval(arena, v);
-        if is_finite_value(arena, v, x) && (!singular || !has_jump_node(arena, anti)) {
+        if let Some(numeric) = finite_value(arena, v, x)
+            && (!singular || !has_jump_node(arena, anti))
+        {
+            // A complex value at a point of a cut may be the principal
+            // value from the wrong side.
+            if numeric.is_some_and(|z| z.im != 0.0) && endpoint_on_a_cut(arena, anti, x, c) {
+                return None;
+            }
             return Some(Extended::Finite(v));
         }
         // One-sided limit: x = c ± 1/u, u → +∞.
@@ -1902,6 +2304,49 @@ fn endpoint_value(
     let g = subs::subs(arena, anti, x, neg_u);
     let g = safe_eval(arena, g);
     limit_pos_inf(arena, g, u)
+}
+
+/// Does a principal-branch argument `u` of `F` lie on its cut at the
+/// finite endpoint `c` while `u` leaves the cut's axis inside the
+/// interval?  Then `F(c)` (the principal value, the limit from one side of
+/// the cut) need not be the limit of `F` along the path, which may come
+/// from the other side, and the endpoint value is unknown.  Arguments that
+/// are real for real `x`, or whose imaginary part does not depend on `x`,
+/// run along the axis (on the cut or parallel to it) and are fine; so are
+/// arguments with parameters, which [`check_branch_cuts`] has vetted.
+fn endpoint_on_a_cut(arena: &mut Arena, anti: ExprId, x: ExprId, c: ExprId) -> bool {
+    let arguments = cut_arguments(arena, anti, x);
+    if arguments.is_empty() {
+        return false;
+    }
+    let mut reals = AssumptionCache::new();
+    for (u, cut) in arguments {
+        if real_for_real_x(arena, u, x, &mut reals)
+            || (cut != Cut::ImaginaryOutside
+                && imaginary_part_constant_polynomial(arena, u, x, &mut reals))
+        {
+            continue;
+        }
+        let at = subs::subs(arena, u, x, c);
+        let at = safe_eval(arena, at);
+        if !walk::free_symbols(arena, at).is_empty() {
+            continue;
+        }
+        let Ok(z) = evalf::evalf_complex64(arena, at) else {
+            return true;
+        };
+        let tiny = 1e-12 * z.norm().max(1.0);
+        let on_cut = match cut {
+            Cut::RealBelow(b) => z.im.abs() <= tiny && z.re < b,
+            Cut::RealAbove(b) => z.im.abs() <= tiny && z.re > b,
+            Cut::RealOutside => z.im.abs() <= tiny && z.re.abs() > 1.0,
+            Cut::ImaginaryOutside => z.re.abs() <= tiny && z.im.abs() > 1.0,
+        };
+        if on_cut {
+            return true;
+        }
+    }
+    false
 }
 
 /// `lim_{u → +∞} g(u)`: finite, `±∞`, or `None` when unknown.
@@ -1955,7 +2400,12 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<Extended<Exp
                 }
                 return None;
             }
-            if is_finite_value(arena, l, u) && numeric_limit_sanity(arena, g, u, l) {
+            // A complex limit would escape the numeric sanity check (it
+            // samples a compiled real function): only real ones are taken.
+            if is_finite_value(arena, l, u)
+                && calculus_util::expr_to_f64(arena, l).is_some()
+                && numeric_limit_sanity(arena, g, u, l)
+            {
                 return Some(Extended::Finite(l));
             }
         }
@@ -2339,12 +2789,175 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                         _ => LimVal::Unknown,
                     }
                 }
+                ExprNode::Si(inner) | ExprNode::Ci(inner) | ExprNode::Ei(inner) => {
+                    let kind = match node {
+                        ExprNode::Si(_) => SineIntegral::Si,
+                        ExprNode::Ci(_) => SineIntegral::Ci,
+                        _ => SineIntegral::Ei,
+                    };
+                    match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
+                        LimVal::Value(Extended::Finite(v)) => integral_function_at(arena, kind, v),
+                        // A complex slope leaves the argument's limit
+                        // unknown here; the linear form decides.
+                        _ => integral_function_at_infinity(arena, kind, inner, u),
+                    }
+                }
                 _ => LimVal::Unknown,
             }
         };
         vals.insert(id, v);
     }
     vals.get(&g).copied().unwrap_or(LimVal::Unknown)
+}
+
+/// The exponential and trigonometric integrals that
+/// [`compositional_limit`] knows at infinity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SineIntegral {
+    Si,
+    Ci,
+    Ei,
+}
+
+/// `Si(v)`, `Ci(v)`, `Ei(v)` as the limit of `f(w)` for `w → v`: `Si` is
+/// entire; `Ci` and `Ei` are continuous off their cut `(−∞, 0]`, so `v`
+/// must be provably positive or provably non-real (a parameter-free value
+/// whose imaginary part is not negligible).
+fn integral_function_at(arena: &mut Arena, kind: SineIntegral, v: ExprId) -> LimVal {
+    let off_cut = kind == SineIntegral::Si
+        || sign_of(arena, v) == Some(Ordering::Greater)
+        || (walk::free_symbols(arena, v).is_empty()
+            && evalf::evalf_complex64(arena, v)
+                .is_ok_and(|z| z.im.is_finite() && z.im.abs() > 1e-9 * z.norm().max(1.0)));
+    if !off_cut {
+        return LimVal::Unknown;
+    }
+    let r = match kind {
+        SineIntegral::Si => arena.si(v),
+        SineIntegral::Ci => arena.ci(v),
+        SineIntegral::Ei => arena.ei(v),
+    };
+    LimVal::Value(Extended::Finite(safe_eval(arena, r)))
+}
+
+/// The sign of `im c` for a constant `c`: `0` when `c` is provably real,
+/// otherwise from the assumptions on the imaginary part of the real/imaginary
+/// split, or numerically for a parameter-free `c` whose imaginary part is
+/// not negligible.
+fn imaginary_sign(arena: &mut Arena, c: ExprId) -> Option<Ordering> {
+    if is_real(arena, c) {
+        return Some(Ordering::Equal);
+    }
+    if walk::free_symbols(arena, c).is_empty() {
+        let z = evalf::evalf_complex64(arena, c).ok()?;
+        if !z.im.is_finite() || z.im.abs() <= 1e-9 * z.norm().max(1.0) {
+            return None;
+        }
+        return Some(if z.im > 0.0 {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        });
+    }
+    let parts = crate::base::complex::decompose(arena, c);
+    if !parts.exact {
+        return None;
+    }
+    let im = safe_eval(arena, parts.im);
+    sign_of(arena, im)
+}
+
+/// `lim_{u → ∞} f(αu + β)` for `f = Si, Ci, Ei`, a real slope `α ≠ 0` of
+/// known sign and a constant `β` (the argument runs to `±∞` along a
+/// horizontal line `im w = im β`): `Si → ±π/2`; `Ci → 0` at `+∞` and `±iπ`
+/// at `−∞` above/below the axis (`+iπ` on the cut itself, the principal
+/// value `Ci(−x) = Ci(x) + iπ`); `Ei → ±iπ` at `−∞` above/below the axis and
+/// `0` on it, `+∞` at `+∞` on the axis (a complex infinity off it:
+/// unknown).  Before 0.46 these were unknown here and in the limit engine,
+/// so `∫₀^∞ sin x/(x² + 1) dx` — an antiderivative with `Si(x ± i)`,
+/// `Ci(x ± i)` — was refused.  mpmath: `ci(-200+0.1j)` = `−0.0044 +
+/// 3.14135i`, `ei(-200-3j)` = `−iπ + O(10⁻⁸⁹)`.
+fn integral_function_at_infinity(
+    arena: &mut Arena,
+    kind: SineIntegral,
+    w: ExprId,
+    u: ExprId,
+) -> LimVal {
+    let Some(LinearCoeffs { slope, intercept }) = calculus_util::linear_coeffs_exact(arena, w, u)
+    else {
+        return LimVal::Unknown;
+    };
+    if walk::contains(arena, slope, u) || walk::contains(arena, intercept, u) {
+        return LimVal::Unknown;
+    }
+    if !is_real(arena, slope) {
+        // `Ei(w)` along a ray with `Re w` not growing and `Im w → ±∞`:
+        // `Ei(w) = −E₁(−w) ± iπ` there and `E₁(−w) → 0` (as for
+        // `e^{−x}·sin x` over rational functions, `Ei((−1 ± i)x + β)`).
+        if kind != SineIntegral::Ei {
+            return LimVal::Unknown;
+        }
+        let parts = crate::base::complex::decompose(arena, slope);
+        if !parts.exact {
+            return LimVal::Unknown;
+        }
+        let re = safe_eval(arena, parts.re);
+        let im = safe_eval(arena, parts.im);
+        let re_sign = sign_of(arena, re);
+        let im_sign = sign_of(arena, im);
+        return match (re_sign, im_sign) {
+            (
+                Some(Ordering::Less | Ordering::Equal),
+                Some(s @ (Ordering::Greater | Ordering::Less)),
+            ) => {
+                let pi = arena.pi();
+                let i = arena.i_unit();
+                let sg = arena.int(if s == Ordering::Greater { 1 } else { -1 });
+                let v = arena.mul(&[sg, i, pi]);
+                LimVal::Value(Extended::Finite(safe_eval(arena, v)))
+            }
+            _ => LimVal::Unknown,
+        };
+    }
+    let up = match sign_of(arena, slope) {
+        Some(Ordering::Greater) => true,
+        Some(Ordering::Less) => false,
+        _ => return LimVal::Unknown,
+    };
+    let pi = arena.pi();
+    let i = arena.i_unit();
+    let i_pi = arena.mul(&[i, pi]);
+    let finite =
+        |arena: &mut Arena, v: ExprId| LimVal::Value(Extended::Finite(safe_eval(arena, v)));
+    match (kind, up) {
+        (SineIntegral::Si, _) => {
+            let half = arena.rational(if up { 1 } else { -1 }, 2);
+            let v = arena.mul(&[half, pi]);
+            finite(arena, v)
+        }
+        (SineIntegral::Ci, true) => LimVal::Value(Extended::Finite(arena.zero())),
+        (SineIntegral::Ci, false) => match imaginary_sign(arena, intercept) {
+            Some(Ordering::Less) => {
+                let v = arena.neg(i_pi);
+                finite(arena, v)
+            }
+            Some(_) => finite(arena, i_pi),
+            None => LimVal::Unknown,
+        },
+        (SineIntegral::Ei, false) => match imaginary_sign(arena, intercept) {
+            Some(Ordering::Less) => {
+                let v = arena.neg(i_pi);
+                finite(arena, v)
+            }
+            Some(Ordering::Greater) => finite(arena, i_pi),
+            Some(Ordering::Equal) => LimVal::Value(Extended::Finite(arena.zero())),
+            None => LimVal::Unknown,
+        },
+        (SineIntegral::Ei, true) => match imaginary_sign(arena, intercept) {
+            Some(Ordering::Equal) => LimVal::Value(Extended::PosInf),
+            _ => LimVal::Unknown,
+        },
+    }
 }
 
 /// Limit of `base^exp` from the limits of its parts.
@@ -5822,6 +6435,8 @@ mod tests {
             BigInt::from(9_150_785_657_604_i64),
             BigInt::from(10_000_000_000_000_i64),
         ));
+        let num = |a: &mut Arena, e: ExprId| evalf::evalf_complex64(a, e).ok();
+        let (wrong, right) = (num(&mut a, wrong), num(&mut a, right));
         assert!(contradicted_by_quadrature(&mut a, f, x, three, four, wrong));
         assert!(!contradicted_by_quadrature(
             &mut a, f, x, three, four, right
@@ -5831,8 +6446,7 @@ mod tests {
         assert!(!contradicted_by_quadrature(
             &mut a, g, x, three, four, wrong
         ));
-        let i = a.i_unit();
-        let complex = a.add(&[right, i]);
+        let complex = right.map(|z| z + num_complex::Complex64::new(0.0, 1.0));
         assert!(!contradicted_by_quadrature(
             &mut a, f, x, three, four, complex
         ));

@@ -366,8 +366,12 @@ impl Ex {
     /// parameter `k` (for a positive `x`, `sin x = 0` gives `2kπ + 2π` and
     /// `2kπ + π`; for a nonzero `x`, `2nπ` without `0` is `2kπ + 2π` and
     /// `−2kπ − 2π`; for an integer `x`, `nπ` is `0`).  A family whose
-    /// members in the domain are not decided is refused.  Up to 0.42 the
-    /// families ranged over all integers whatever the assumptions.
+    /// members in the domain are not decided is refused, and so is a
+    /// constant member that is 0 to every precision without being decided,
+    /// as by [`solve`](Ex::solve) (one that is exactly 0, `atan(1/2) +
+    /// atan(1/3) − π/4`, is decided as 0; up to 0.45 both were kept).  Up
+    /// to 0.42 the families ranged over all integers whatever the
+    /// assumptions.
     ///
     /// The poles of a `tan` (or `tanh`) at which the expression is 0 are
     /// solutions, as the evaluator and SymPy's `solveset` have it: `1/tan(x)
@@ -489,7 +493,7 @@ impl Ex {
         solutions: Vec<Ex>,
         param: &Ex,
     ) -> Result<(Vec<Ex>, Option<Ex>), SymplexError> {
-        use crate::transforms::solve::{FamilyInDomain, assumptions_hold, family_in_domain};
+        use crate::transforms::solve::{FamilyInDomain, family_in_domain};
         let var_id = self.checked_id(var);
         let restricted = {
             let inner = self.inner.read();
@@ -535,9 +539,30 @@ impl Ex {
                             });
                         }
                     },
+                    // As `solve` does: a member that is exactly 0 is 0, and
+                    // one that is 0 to every precision without being
+                    // decided is refused (up to 0.45 it was kept: `x −
+                    // atan(1/2) − atan(1/3) + π/4` for a positive `x` gave
+                    // the member `atan(1/2) + atan(1/3) − π/4`, which is 0).
                     _ => {
-                        if assumptions_hold(arena, var_id, id) != Some(false) {
-                            kept.push(id);
+                        use crate::transforms::solve::retain_admissible;
+                        let admissible =
+                            retain_admissible(arena, var_id, vec![id]).or_else(|reason| {
+                                match exact_zero_members(arena, var_id, vec![id])[..] {
+                                    [zero] if zero != id => {
+                                        retain_admissible(arena, var_id, vec![zero])
+                                    }
+                                    _ => Err(reason),
+                                }
+                            });
+                        match admissible {
+                            Ok(admissible) => kept.extend(admissible),
+                            Err(reason) => {
+                                return Err(SymplexError::ComputationFailed {
+                                    operation: "solve_general",
+                                    reason,
+                                });
+                            }
                         }
                     }
                 }
@@ -545,6 +570,37 @@ impl Ex {
         }
         Ok((kept.into_iter().map(|id| self.wrap(id)).collect(), k))
     }
+}
+
+/// The solutions `ids` with each constant that is exactly 0 without being
+/// written 0 (`atan(1/2) + atan(1/3) − π/4`, `cos(π/16) − √(2 + √(2 +
+/// √2))/2`: the zero tests of `eval`,
+/// [`constant_zero_decision`](crate::transforms::eval::constant_zero_decision))
+/// replaced by `0`, which the declared domain of `var` decides.  Only a
+/// value whose `f64` evaluation is within `10⁻¹⁰` of 0 is tested.  The
+/// list unchanged for an unrestricted `var`.
+pub(crate) fn exact_zero_members(
+    arena: &mut crate::base::arena::Arena,
+    var: ExprId,
+    ids: Vec<ExprId>,
+) -> Vec<ExprId> {
+    if crate::transforms::solve::declared_domain(arena, var).is_none() {
+        return ids;
+    }
+    ids.into_iter()
+        .map(|id| {
+            let near_zero = crate::base::walk::free_symbols(arena, id).is_empty()
+                && !arena.is_zero_structural(id)
+                && crate::transforms::evalf::evalf_complex64(arena, id)
+                    .is_ok_and(|z| z.norm() < 1e-10);
+            if near_zero && crate::transforms::eval::constant_zero_decision(arena, id) == Some(true)
+            {
+                arena.zero
+            } else {
+                id
+            }
+        })
+        .collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

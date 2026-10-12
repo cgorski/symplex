@@ -56,16 +56,33 @@ fn jitter(x: f64, interval_width: f64) -> f64 {
     x + offset
 }
 
+/// The most initial grid points [`sample_compiled`] evaluates.  A plot is
+/// a few hundred pixels wide, so beyond this many points an oscillation
+/// cannot be resolved anyway; up to 0.45 the count was unbounded
+/// (`sin(1000x)` on `[0, 10⁶]` asked for 3·10⁹ points — a 50 GB
+/// allocation — and `sin(x)` on `[−10⁶, 10⁶]` for 6·10⁶, minutes of work).
+pub(crate) const MAX_GRID_POINTS: usize = 20_000;
+
+/// The most evaluations the adaptive refinement adds to the grid (the
+/// first segments get them: an aliased oscillation would otherwise take
+/// 2⁸ midpoints per segment — `sin(1000x)` on `[0, 10⁶]` produced 2.8·10⁶
+/// points in 8 s).
+const MAX_REFINE_EVALS: usize = 50_000;
+
 /// Estimate the minimum number of sample points based on oscillation frequency.
 ///
 /// Given a frequency in rad/s and a range `[lower, upper]`, returns the
 /// number of initial sample points needed for roughly 20 points per cycle
-/// (visual smoothness).
+/// (visual smoothness), between 64 and [`MAX_GRID_POINTS`].
 pub(crate) fn min_points_for_frequency(freq_rad_per_sec: f64, range: Interval<f64>) -> usize {
     let interval = range.width();
-    let cycles = freq_rad_per_sec * interval / (2.0 * PI);
-    let min = (cycles * 20.0) as usize;
-    min.max(64)
+    let cycles = freq_rad_per_sec.abs() * interval / (2.0 * PI);
+    let wanted = cycles * 20.0;
+    if wanted.is_nan() {
+        return 64;
+    }
+    // `as` saturates; the clamp bounds it on both sides.
+    (wanted as usize).clamp(64, MAX_GRID_POINTS)
 }
 
 /// Returns `true` if `x` is within `eps` of any value in `excluded`.
@@ -96,7 +113,7 @@ pub(crate) fn sample_compiled(
         ));
     }
 
-    let n = opts.min_points.max(2);
+    let n = opts.min_points.clamp(2, MAX_GRID_POINTS);
     let eps = interval * 1e-9;
 
     // ── Step 1: Generate initial grid ──────────────────────────────────
@@ -139,6 +156,7 @@ pub(crate) fn sample_compiled(
     let y_range = compute_y_range(&samples);
 
     let mut refined = Vec::with_capacity(samples.len() * 2);
+    let mut budget = MAX_REFINE_EVALS;
     if samples.len() >= 3 {
         // Process first point
         refined.push(samples[0]);
@@ -156,6 +174,7 @@ pub(crate) fn sample_compiled(
                 opts,
                 y_range,
                 eps,
+                &mut budget,
                 0,
             );
             refined.push(samples[i + 1]);
@@ -176,7 +195,19 @@ pub(crate) fn sample_compiled(
 
     // ── Step 3: Discontinuity detection ────────────────────────────────
     let mut asymptotes: Vec<f64> = Vec::new();
-    let final_points = detect_discontinuities(&refined, opts, &mut asymptotes);
+    let detected = detect_discontinuities(&refined, opts, &mut asymptotes);
+    // A sample where `f` was not finite, or a known singular point, lies
+    // between two plotted points: the curve must not be drawn across it.
+    // Up to 0.45 such samples were only dropped, so `log(x² − 1)` on
+    // `[−3, 3]` was drawn straight across the gap `(−1, 1)`.
+    let mut gaps: Vec<f64> = recorded_excluded
+        .iter()
+        .chain(excluded_points)
+        .copied()
+        .filter(|g| g.is_finite())
+        .collect();
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let final_points = break_at_gaps(&detected, &gaps);
 
     // Also add excluded_points that fall inside the range as asymptotes
     for &ex in excluded_points {
@@ -191,6 +222,30 @@ pub(crate) fn sample_compiled(
         asymptotes,
         excluded: recorded_excluded,
     })
+}
+
+/// Insert a `NaN` break between two consecutive finite points that have a
+/// gap point (sorted) strictly between them, unless a break is already
+/// there.
+fn break_at_gaps(points: &[(f64, f64)], gaps: &[f64]) -> Vec<(f64, f64)> {
+    if gaps.is_empty() {
+        return points.to_vec();
+    }
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(points.len() + 8);
+    let mut g = 0usize;
+    for (i, &p) in points.iter().enumerate() {
+        if i > 0 {
+            let prev = points[i - 1];
+            while g < gaps.len() && gaps[g] <= prev.0 {
+                g += 1;
+            }
+            if g < gaps.len() && gaps[g] < p.0 && prev.1.is_finite() && p.1.is_finite() {
+                out.push(((prev.0 + p.0) / 2.0, f64::NAN));
+            }
+        }
+        out.push(p);
+    }
+    out
 }
 
 /// Compute the absolute y-range of finite sample values.
@@ -220,6 +275,7 @@ fn adaptive_refine(
     opts: &SampleOptions,
     y_range: f64,
     eps: f64,
+    budget: &mut usize,
     depth: usize,
 ) {
     if depth >= opts.max_depth {
@@ -237,6 +293,7 @@ fn adaptive_refine(
         opts,
         y_range,
         eps,
+        budget,
         depth,
     );
 
@@ -251,6 +308,7 @@ fn adaptive_refine(
         opts,
         y_range,
         eps,
+        budget,
         depth,
     );
 }
@@ -266,9 +324,10 @@ fn refine_segment(
     opts: &SampleOptions,
     y_range: f64,
     eps: f64,
+    budget: &mut usize,
     depth: usize,
 ) {
-    if depth >= opts.max_depth {
+    if depth >= opts.max_depth || *budget == 0 {
         return;
     }
 
@@ -281,6 +340,7 @@ fn refine_segment(
         return;
     }
 
+    *budget -= 1;
     let ym = f(xm);
     if !ym.is_finite() {
         recorded_excluded.push(xm);
@@ -303,6 +363,7 @@ fn refine_segment(
             opts,
             y_range,
             eps,
+            budget,
             depth + 1,
         );
         out.push(pm);
@@ -317,6 +378,7 @@ fn refine_segment(
             opts,
             y_range,
             eps,
+            budget,
             depth + 1,
         );
     }
@@ -358,6 +420,8 @@ fn detect_discontinuities(
     };
 
     let threshold = opts.discontinuity_threshold * median_gradient.max(1e-10);
+    // Once, not per steep segment (quadratic in the point count before).
+    let half_y_range = compute_y_range(points) * 0.5;
 
     // Build output with NaN breaks at discontinuities
     let mut result: Vec<(f64, f64)> = Vec::with_capacity(points.len() + 10);
@@ -369,7 +433,7 @@ fn detect_discontinuities(
             let y1 = points[i].1;
             let y2 = points[i + 1].1;
             let sign_change = (y1 >= 0.0) != (y2 >= 0.0);
-            let large_jump = (y2 - y1).abs() > compute_y_range(points) * 0.5;
+            let large_jump = (y2 - y1).abs() > half_y_range;
 
             if sign_change || large_jump {
                 // Insert NaN break
@@ -416,5 +480,65 @@ mod tests {
     fn test_near_excluded() {
         assert!(near_excluded(1.0, &[1.0 + 1e-12], 1e-9));
         assert!(!near_excluded(1.0, &[2.0], 1e-9));
+    }
+
+    /// The grid is bounded: `sin(1000x)` on `[0, 10⁶]` asked for
+    /// 3.2·10⁹ points (an allocation of 50 GB) and an infinite frequency
+    /// saturated to `usize::MAX`.
+    #[test]
+    fn grid_size_is_bounded() {
+        let r = Interval::closed(0.0, 1e6);
+        assert_eq!(min_points_for_frequency(1000.0, r), MAX_GRID_POINTS);
+        assert_eq!(min_points_for_frequency(f64::INFINITY, r), MAX_GRID_POINTS);
+        assert_eq!(min_points_for_frequency(f64::NAN, r), 64);
+        assert_eq!(
+            min_points_for_frequency(-1000.0, Interval::closed(0.0, 1.0)),
+            3183
+        );
+        let opts = SampleOptions {
+            min_points: usize::MAX,
+            max_depth: 0,
+            ..Default::default()
+        };
+        let data = sample_compiled(&|x: f64| x, r, &[], &opts).unwrap();
+        assert!(data.points.len() <= MAX_GRID_POINTS);
+    }
+
+    /// Where `f` is not finite the polyline breaks: `ln(x² − 1)` on
+    /// `[−3, 3]` was drawn straight across `(−1, 1)` (the non-finite samples
+    /// were dropped, joining their neighbours).
+    #[test]
+    fn undefined_samples_break_the_curve() {
+        let f = |x: f64| (x * x - 1.0).ln();
+        let data = sample_compiled(
+            &f,
+            Interval::closed(-3.0, 3.0),
+            &[],
+            &SampleOptions::default(),
+        )
+        .unwrap();
+        for w in data.points.windows(2) {
+            if w[0].1.is_finite() && w[1].1.is_finite() {
+                let mid = (w[0].0 + w[1].0) / 2.0;
+                assert!(f(mid).is_finite(), "joined across ({}, {})", w[0].0, w[1].0);
+            }
+        }
+        assert!(data.points.iter().any(|p| p.1.is_nan()));
+    }
+
+    #[test]
+    fn break_at_gaps_inserts_one_break() {
+        let pts = [
+            (0.0, 1.0),
+            (1.0, 2.0),
+            (2.0, f64::NAN),
+            (3.0, 4.0),
+            (4.0, 5.0),
+        ];
+        let out = break_at_gaps(&pts, &[0.5, 0.6, 2.5, 3.5]);
+        let xs: Vec<f64> = out.iter().map(|p| p.0).collect();
+        assert_eq!(xs, vec![0.0, 0.5, 1.0, 2.0, 3.0, 3.5, 4.0]);
+        assert!(out[1].1.is_nan() && out[3].1.is_nan() && out[5].1.is_nan());
+        assert_eq!(break_at_gaps(&pts, &[]).len(), pts.len());
     }
 }

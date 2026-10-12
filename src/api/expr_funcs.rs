@@ -1080,14 +1080,12 @@ impl Expr<Numeric> {
     /// Query whether this expression is positive.
     ///
     /// Returns `Some(true)` if provably positive, `Some(false)` if
-    /// provably not positive, or `None` if unknown.
+    /// provably not positive, or `None` if unknown.  A constant is decided
+    /// as [`query`](Self::query) says: `cos(π/16)` is positive (SymPy
+    /// 1.14: `True`; `None` up to 0.45).
     #[must_use]
     pub fn is_positive(&self) -> Option<bool> {
-        let inner = self.inner.read();
-        inner
-            .assumptions
-            .lock()
-            .query(&inner.arena, self.raw_id(), Props::POSITIVE)
+        self.query(Props::POSITIVE)
     }
 
     /// Query whether this expression is zero.
@@ -1100,29 +1098,67 @@ impl Expr<Numeric> {
     /// nonzero, or `None` if unknown.
     #[must_use]
     pub fn is_zero(&self) -> Option<bool> {
-        let inner = self.inner.read();
         // Layer 1: structural.
-        if inner.arena.is_zero_structural(self.raw_id()) {
+        if self.inner.read().arena.is_zero_structural(self.raw_id()) {
             return Some(true);
         }
-        // Layer 2: assumption system.
-        inner
-            .assumptions
-            .lock()
-            .query(&inner.arena, self.raw_id(), Props::ZERO)
+        // Layer 2: assumption system (and, for a constant, its value).
+        self.query(Props::ZERO)
     }
 
     /// Query any mathematical property via [`Props`].
     ///
     /// Returns `Some(true)` if provably true, `Some(false)` if provably
     /// false, or `None` if unknown.
+    ///
+    /// The assumption system answers from the structure of the expression.
+    /// For a constant (no free symbols) the sign, zero and realness
+    /// properties it leaves open are decided as `eval` decides `x > 0`,
+    /// `Eq(x, 0)` and realness: by a certified value (`cos(π/7) − 9/10` is
+    /// positive), and, for a value that is 0 to its precision, by the exact
+    /// zero tests (`cos(π/16) − √(2 + √(2 + √2))/2` is zero, `atan(1/2) +
+    /// atan(1/3) − π/4` too).  Up to 0.45 these queries were `None` while
+    /// `eval` and `sign` decided the same constants (SymPy 1.14:
+    /// `cos(pi/16).is_positive` is `True`).
     #[must_use]
     pub fn query(&self, prop: Props) -> Option<bool> {
-        let inner = self.inner.read();
-        inner
-            .assumptions
-            .lock()
-            .query(&inner.arena, self.raw_id(), prop)
+        let known = {
+            let inner = self.inner.read();
+            inner
+                .assumptions
+                .lock()
+                .query(&inner.arena, self.raw_id(), prop)
+        };
+        if known.is_some() || !Self::VALUE_DECIDED.contains(prop) {
+            return known;
+        }
+        self.constant_facts().query(prop)
+    }
+
+    /// The properties [`query`](Self::query) decides for a constant from
+    /// its value when the structural rules leave them open.
+    const VALUE_DECIDED: Props = Props::REAL
+        .union(Props::EXTENDED_REAL)
+        .union(Props::POSITIVE)
+        .union(Props::NEGATIVE)
+        .union(Props::NONNEGATIVE)
+        .union(Props::NONPOSITIVE)
+        .union(Props::ZERO)
+        .union(Props::NONZERO);
+
+    /// The facts `eval` decides about this expression when it is a constant
+    /// ([`constant_facts`](crate::transforms::eval::constant_facts),
+    /// memoised per context); none for an expression with symbols.
+    fn constant_facts(&self) -> crate::base::assumptions::Assumptions {
+        let constant = {
+            let inner = self.inner.read();
+            crate::base::walk::free_symbols(&inner.arena, self.raw_id()).is_empty()
+        };
+        if !constant {
+            return crate::base::assumptions::Assumptions::default();
+        }
+        let mut inner = self.inner.write();
+        crate::transforms::eval::constant_facts(&mut inner.arena, self.raw_id())
     }
 
     /// Query whether this expression is negative.
@@ -1311,12 +1347,15 @@ impl Expr<Numeric> {
     ///
     /// * `Some(true)` — `self − other` is structurally zero, or becomes zero
     ///   after [`expand`](Self::expand) or [`simplify`](Self::simplify), or
-    ///   the assumption system proves the difference is zero.
+    ///   the assumption system proves the difference is zero; for constants
+    ///   (no free symbols), also when `eval` decides `Eq(self, other)`
+    ///   (`cos(π/16)² = (2 + √(2 + √2))/4`, `atan(1/2) + atan(1/3) = π/4`).
     /// * `Some(false)` — the difference (possibly after expand/simplify)
     ///   is a **nonzero rational constant**, the assumption system proves it
-    ///   nonzero (e.g. `x² + 1` for real `x`), or both sides are constants
-    ///   (no free symbols) whose 16-digit numeric values differ by more
-    ///   than `1e-9` relative.
+    ///   nonzero (e.g. `x² + 1` for real `x`), `eval` decides `Ne(self,
+    ///   other)` for constants (a certified value), or both sides are
+    ///   constants whose 16-digit numeric values differ by more than `1e-9`
+    ///   relative.
     /// * `None` — undetermined.  In particular `x.equals(&y)` for distinct
     ///   free symbols is `None`, not `Some(false)`; use
     ///   [`probably_equal`](Self::probably_equal) for a randomized test.
@@ -1346,6 +1385,14 @@ impl Expr<Numeric> {
         // Layer 2: compute self - other; zero ⇒ equal, nonzero literal ⇒ not.
         let diff = self - other;
         if let Some(known) = Self::equals_from_difference(&diff) {
+            return Some(known);
+        }
+
+        // Layer 2b: constants are decided as `eval` decides `Eq(self,
+        // other)` (a certified value, the square-root tower, the minimal
+        // polynomial, the cyclotomic field, arctangent sums), before the
+        // costlier rewriting below.
+        if let Some(known) = self.equals_by_eval(other, &diff) {
             return Some(known);
         }
 
@@ -1381,6 +1428,26 @@ impl Expr<Numeric> {
 
         // Could not determine equality.
         None
+    }
+
+    /// `self = other` as `eval` decides the relation `Eq(self, other)`, when
+    /// their difference `diff` is a constant; `None` otherwise.  Up to 0.45
+    /// `equals` never asked: `(cos(π/16)² − (2 + √(2 + √2))/4).equals(0)`
+    /// was `None` while `Eq(cos(π/16), √(2 + √(2 + √2))/2)` evaluated to
+    /// `True` (SymPy 1.14: `True`).
+    fn equals_by_eval(&self, other: &Ex, diff: &Ex) -> Option<bool> {
+        let other_id = self.checked_id(other);
+        let mut inner = self.inner.write();
+        let arena = &mut inner.arena;
+        if !crate::base::walk::free_symbols(arena, diff.raw_id()).is_empty() {
+            return None;
+        }
+        let rel = arena.eq_(self.raw_id(), other_id);
+        match arena.node(rel) {
+            ExprNode::BoolTrue => Some(true),
+            ExprNode::BoolFalse => Some(false),
+            _ => crate::transforms::eval::decide_relation(arena, rel),
+        }
     }
 
     /// `Some(true)` if `diff` is structurally zero, `Some(false)` if it is a
@@ -3295,12 +3362,33 @@ impl Expr<Numeric> {
             roots.iter().map(|r| self.checked_id(r)).collect();
         let kept = {
             let mut inner = self.inner.write();
-            crate::transforms::solve::restrict_to_domain(
-                &mut inner.arena,
+            let arena = &mut inner.arena;
+            match crate::transforms::solve::restrict_to_domain(
+                arena,
                 self.raw_id(),
                 var_id,
-                ids,
-            )
+                ids.clone(),
+            ) {
+                // A constant root that is 0 to every precision is refused
+                // unless it is exactly 0 without being written 0, which the
+                // domain then decides as 0 (`atan(1/2) + atan(1/3) − π/4` for
+                // a positive `x` was refused up to 0.45).
+                Err(reason) => {
+                    let zeroed =
+                        crate::api::expr_solve_ext::exact_zero_members(arena, var_id, ids.clone());
+                    if zeroed == ids {
+                        Err(reason)
+                    } else {
+                        crate::transforms::solve::restrict_to_domain(
+                            arena,
+                            self.raw_id(),
+                            var_id,
+                            zeroed,
+                        )
+                    }
+                }
+                kept => kept,
+            }
         };
         match kept {
             Ok(ids) => Ok(ids.into_iter().map(|id| self.wrap(id)).collect()),

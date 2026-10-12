@@ -2086,6 +2086,9 @@ pub(crate) fn constant_vanishes(arena: &mut Arena, f: ExprId) -> bool {
     if arena.node(f).is_atom() || vanishing_check_active() || !is_numeric_constant(arena, f) {
         return false;
     }
+    if nonzero_by_form(arena, f) {
+        return false;
+    }
     if AssumptionCache::new().query(arena, f, Props::NONZERO) == Some(true) {
         return false;
     }
@@ -2093,6 +2096,28 @@ pub(crate) fn constant_vanishes(arena: &mut Arena, f: ExprId) -> bool {
         return false;
     }
     arena.vanishes_by_identity(f)
+}
+
+/// Is the constant `f` nonzero by its form alone: `Γ(z)` and `z! = Γ(z +
+/// 1)` (`Γ` has no zeros), `eᶻ`, and a power `bᶻ` of such a constant or of
+/// a nonzero number (`e^{z·ln b}`), whatever the (finite) `z`?  The numeric
+/// test of [`constant_vanishes`] evaluated them: `((i!)!)!…` times `zoo`
+/// (38 nested factorials of complex numbers, a parser fuzz input) took 0.15
+/// s at rising precision once complex `Γ` evaluated (0.44), `33^{(i!)!…}`
+/// 0.05 s (release builds); 0.43 refused the evaluation at once.  A chain of
+/// bases, one step per node.
+fn nonzero_by_form(arena: &Arena, f: ExprId) -> bool {
+    let mut id = f;
+    loop {
+        match arena.node(id) {
+            ExprNode::Gamma(_) | ExprNode::Factorial(_) | ExprNode::Exp(_) => return true,
+            ExprNode::Pow(base, _) => match arena.as_num(*base) {
+                Some(q) => return !q.is_zero(),
+                None => id = *base,
+            },
+            _ => return false,
+        }
+    }
 }
 
 /// `f` with each of its costly parts — the outermost subexpressions that

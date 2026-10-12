@@ -29,7 +29,7 @@ use num_rational::Ratio;
 use super::RischResult;
 use super::rde::{self, RdeResult};
 use super::tower::{DifferentialExtension, ExtensionKind};
-use super::tower_integrate::{tower_hermite_reduce, tower_logarithmic_part};
+use super::tower_integrate::{tower_hermite_reduce, tower_logarithmic_part_is_non_elementary};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
@@ -186,10 +186,12 @@ fn try_tower_rational_path(
 
     // Tower Rothstein-Trager on the square-free remainder.
     if !hr.h_numer.is_zero() {
-        let Some(rt) = tower_logarithmic_part(&hr.h_numer, &hr.h_denom) else {
+        let Some(non_elementary) =
+            tower_logarithmic_part_is_non_elementary(&hr.h_numer, &hr.h_denom)
+        else {
             return RischResult::Failed("zero square-free denominator in tower path".into());
         };
-        if rt.is_non_elementary {
+        if non_elementary {
             return RischResult::NonElementary;
         }
     }
