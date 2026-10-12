@@ -355,17 +355,23 @@ fn elementary_expint(arena: &mut Arena, e: ExprId) -> ExprId {
     let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
     for &id in &post {
         let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
-        let new = match arena.node(rebuilt).clone() {
+        // `Eₙ(w)` with an integer `n = −k`, `0 ≤ k ≤ 16` (no `if let` match
+        // guards: they are newer than the MSRV).
+        let low_order = match arena.node(rebuilt) {
             ExprNode::Apply(f, args)
-                if arena.lib_fn(f) == Some(LibFn::ExpInt)
-                    && args.len() == 2
-                    && let Some(n) = arena.as_num(args[0]).cloned()
-                    && n.is_integer()
-                    && !n.is_positive()
-                    && let Ok(k) = u64::try_from(-n.to_integer())
-                    && k <= 16 =>
+                if arena.lib_fn(*f) == Some(LibFn::ExpInt) && args.len() == 2 =>
             {
-                let w = args[1];
+                arena
+                    .as_num(args[0])
+                    .filter(|n| n.is_integer() && !n.is_positive())
+                    .and_then(|n| u64::try_from(-n.to_integer()).ok())
+                    .filter(|&k| k <= 16)
+                    .map(|k| (args[1], k))
+            }
+            _ => None,
+        };
+        let new = match low_order {
+            Some((w, k)) => {
                 let neg_w = arena.neg(w);
                 let damp = arena.exp(neg_w);
                 let kf = factorial(k);
@@ -381,7 +387,7 @@ fn elementary_expint(arena: &mut Arena, e: ExprId) -> ExprId {
                 let s = arena.add(&terms);
                 arena.mul(&[damp, s])
             }
-            _ => rebuilt,
+            None => rebuilt,
         };
         cache.insert(id, new);
     }
