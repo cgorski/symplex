@@ -48,9 +48,16 @@ impl Expr<Numeric> {
     /// series, and a table of classical power series (`Σ xᵏ/k! = eˣ`, `sin`,
     /// `cos`, `atan`, …).
     ///
-    /// Convergence of a geometric series with a *symbolic* ratio cannot be
-    /// decided (there is no `|r| < 1` assumption), so `Σ_{k≥0} rᵏ` with
-    /// symbolic `r` stays unevaluated; numeric ratios are decided exactly.
+    /// Convergence of a geometric series with a *symbolic* ratio is decided
+    /// only when the declared assumptions bound its modulus (`Σ (1/(a + 1))ᵏ
+    /// = 1/a` for a positive `a`); otherwise `Σ_{k≥0} rᵏ` stays
+    /// unevaluated.  Numeric ratios are decided exactly.  Case splits
+    /// respect the declared assumptions too: `Σ_{k=0}^{n} (a + 1)ᵏ` for a
+    /// positive `a` has no `a + 1 = 1` branch.
+    ///
+    /// Concrete limits with `upper < lower` give the empty sum `0` (SymPy
+    /// uses Karr's convention, `Σ_{k=5}^{2} k = −7`); a closed form for a
+    /// symbolic upper limit `n` holds for `n ≥ lower − 1`.
     ///
     /// When no closed form is known the formal `Sum` node is returned.
     /// Sums that provably diverge to `±∞` evaluate to `oo` / `-oo`; for
@@ -163,7 +170,14 @@ impl Expr<Numeric> {
     /// rational functions whose numerator and denominator factor into
     /// linear factors over ℚ (`Π (1 − 1/k²) = (n+1)/(2n)`).  Infinite
     /// products are evaluated through the limit of the finite closed form
-    /// when that limit is exactly computable.
+    /// when that limit is exactly computable, and `Π b^{f(k)}` as
+    /// `b^{Σ f(k)}`.
+    ///
+    /// A non-integer power `Π f(k)^e` is `(Π f(k))^e` only where the
+    /// principal powers multiply: for factors positive over the range (and
+    /// negative ones, with the phase `((−1)^e)^count`: `Π_{k=1}^{n} √(−k) =
+    /// iⁿ·√(n!)`); with factors of both signs (`Π √(k − 3)`) the product
+    /// stays unevaluated.  An empty range (`upper < lower`) gives `1`.
     ///
     /// Returns the formal `Product` node when no closed form is known.
     ///
@@ -312,9 +326,11 @@ impl Expr<Numeric> {
     ///
     /// Internally substitutes `var = 1/t`, expands at `t → 0⁺`, and
     /// substitutes back; coefficients may contain `ln(var)` (Stirling's
-    /// series `ln Γ(x) = x ln x − x − ½ ln x + ½ ln 2π + 1/(12x) + …`).
-    /// Returns a formal `Series` node when the expansion cannot be
-    /// computed.
+    /// series `ln Γ(x) = x ln x − x − ½ ln x + ½ ln 2π + 1/(12x) + …`,
+    /// `asinh x = ln 2 + ln x + 1/(4x²) + …`), and a fractional power gives
+    /// a series in powers of `var^(−1/2)` or `var^(−1/3)` (`√(x + 1) = √x +
+    /// 1/(2√x) − …`).  Returns a formal `Series` node when the expansion
+    /// cannot be computed.
     ///
     /// # Examples
     ///

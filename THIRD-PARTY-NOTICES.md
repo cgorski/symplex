@@ -209,6 +209,13 @@ OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
 DAMAGE.
 ```
 
+**Implementations that follow QUADPACK's.**  QUADPACK is in the public
+domain; no licence applies.
+
+| symplex | follows | algorithm published in |
+|---|---|---|
+| `src/calculus/definite.rs` (`quadrature`: the 7/15-point Gauss–Kronrod rule and its error estimate; the map `x = e ± (1/u − 1)`, `u ∈ (0, ½]`, of the part of an infinite range beyond `e ± 1`) | `dqk15`, and the transformation `x = a + (1 − t)/t` of `dqagi`/`dqk15i` | R. Piessens, E. de Doncker-Kapenga, C. W. Überhuber, D. K. Kahaner, *QUADPACK: A Subroutine Package for Automatic Integration*, Springer (1983) |
+
 **Vendored test data.**  `rubi-harness/suite/` is an unmodified copy of the
 Rubi integration test suite in Maxima syntax
 (<https://github.com/RuleBasedIntegration/MaximaSyntaxTestSuite>, commit

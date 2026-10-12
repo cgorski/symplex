@@ -221,15 +221,21 @@ pub fn integrate_definite(
 
 /// Does adaptive quadrature contradict the closed form `value` of `∫ₐᵇ f dx`
 /// with confidence?  Only for a parameter-free `f` that compiles, finite
-/// real bounds, a real `value` and a quadrature that converges: then a
-/// difference beyond `10⁻⁶·max(1, |Q|)` and 100 error estimates is a
-/// wrong closed form — an antiderivative that jumps where `f` is
-/// continuous, which the FTC splitting does not see when the jump is not
-/// at a breakpoint of a node it knows (up to 0.37 `∫₀¹ (x² + 1)³/((x² +
-/// 1)⁴ + 32x⁴) dx` was −0.53 for 0.53: a `RootSum` of logarithms whose
-/// arguments cross the cut at `x = 0`).  Anything else (no compiled form,
-/// a complex value, a quadrature that does not converge, a `DiracDelta`,
-/// which samples as 0) says nothing.
+/// real bounds, a real `value` and a quadrature that converges with every
+/// segment resolved ([`quadrature_report`]): then a difference beyond
+/// `10⁻⁶·max(1, |Q|)` and 100 error estimates is a wrong closed form — an
+/// antiderivative that jumps where `f` is continuous, which the FTC
+/// splitting does not see when the jump is not at a breakpoint of a node it
+/// knows (up to 0.37 `∫₀¹ (x² + 1)³/((x² + 1)⁴ + 32x⁴) dx` was −0.53 for
+/// 0.53: a `RootSum` of logarithms whose arguments cross the cut at `x =
+/// 0`).  Anything else (no compiled form, a complex value, a quadrature
+/// that does not converge or leaves a segment unresolved next to a
+/// singularity, a `DiracDelta`, which samples as 0) says nothing.  Before
+/// 0.44 the quadrature's smoothing retry cut the integrand off next to a
+/// nonzero end and its estimate did not see it, so correct closed forms
+/// were refused: `∫₀¹ (1 − x)^(−9/10) dx = 10` (the quadrature said
+/// `9.77`), `∫₀¹ (1 − x)^(−99/100) dx = 100` (`31.5`), `∫₁² (x −
+/// 1)^(−9/10) dx = 10`.
 fn contradicted_by_quadrature(
     arena: &mut Arena,
     f: ExprId,
@@ -261,7 +267,7 @@ fn contradicted_by_quadrature(
         return false;
     };
     let g = |t: f64| func(&[t]);
-    let Ok(q) = quadrature(&g, lo, hi, &QuadOpts::default()) else {
+    let Ok((q, true)) = quadrature_report(&g, lo, hi, &QuadOpts::default()) else {
         return false;
     };
     if !(q.value.is_finite() && q.error.is_finite()) {
@@ -4551,7 +4557,15 @@ pub enum QuadRule {
 pub struct QuadResult {
     /// The estimate of the integral.
     pub value: f64,
-    /// Estimated absolute error of [`value`](Self::value).
+    /// Estimated absolute error of [`value`](Self::value): the sum of
+    /// QUADPACK's estimates of the segments, a heuristic (a feature no node
+    /// sees is not in it).  A segment the bisection cannot split — next to
+    /// a singularity at a nonzero end or interior point, which `f64` nodes
+    /// cannot approach closer than its rounding — counts at least its width
+    /// times the largest value at its nodes, which covers the mass the nodes
+    /// miss for `|x − c|^α` with `α` down to about `−0.99`.
+    /// `Ex::integrate_numeric_with` serves an arbitrary-precision value
+    /// instead when the estimate exceeds the tolerance.
     pub error: f64,
 }
 
@@ -4587,13 +4601,29 @@ const WG: [f64; 4] = [
     0.4179591836734694,
 ];
 
-/// One G7/K15 rule application on `[a, b]`.  Returns `(k15, err)`; `err`
-/// is `NaN` if the integrand was non-finite at a node.  The error estimate
-/// is QUADPACK's `resasc·min(1, (200·|K15 − G7|/resasc)^1.5)`, or with `raw`
-/// `|K15 − G7|` itself: the reduction (up to about 35-fold where `|K15 −
-/// G7|` is small next to `resasc`) assumes the integrand smooth on the
-/// segment, the Kronrod error far below the Gauss one.
-fn gk15_with(f: &dyn Fn(f64) -> f64, a: f64, b: f64, raw: bool) -> (f64, f64) {
+/// One G7/K15 rule application on `[a, b]`.  Returns `(k15, err, peak)`;
+/// `err` is `NaN` if the integrand was non-finite at a node.  The error
+/// estimate is QUADPACK's `resasc·min(1, (200·|K15 − G7|/resasc)^1.5)`, or
+/// with `raw` `|K15 − G7|` itself: the reduction (up to about 35-fold where
+/// `|K15 − G7|` is small next to `resasc`) assumes the integrand smooth on
+/// the segment, the Kronrod error far below the Gauss one.  The estimate is
+/// at least `50ε` times the result, and without `raw` times `resabs`, the
+/// rule applied to `|f|`, as in QUADPACK: the rounding of a sum that cancels
+/// is that of its terms (before 0.44 `∫₋₂⁻¹ sin(2x/3 + 1) dx`, exactly 0,
+/// was `3.9·10⁻¹⁷` with an estimate of `3·10⁻²³`).  The caller with
+/// `raw` (`evalf`) adds the rounding of the values over the range itself.
+/// Without `raw` the estimate also covers an end where the values grow like
+/// `|x − end|^α`, `α < −¾`, between the two outermost nodes: twice the mass
+/// between the outermost node and the end, `d₀|f₀|/(1 + α)`, extrapolated
+/// from them, and is infinite for a faster rise (`α ≤ −1`: a divergence, or
+/// an exponential the segment does not resolve, which is bisected until it
+/// does) (QUADPACK leaves that to its ε-algorithm; its estimate, the
+/// spread of the values, falls short of the error as `α → −1`: before 0.44
+/// `∫₀¹ x^(−19/20)·sin(x/4 + 2)/(1 + 5x²) dx` was `3.7·10⁻⁹` off with an
+/// estimate of `1.7·10⁻⁹`).  `peak` is `|b −
+/// a|·max|f|` over the nodes, the error of a segment the bisection cannot
+/// split ([`Floor`]).
+fn gk15_with(f: &dyn Fn(f64) -> f64, a: f64, b: f64, raw: bool) -> (f64, f64, f64) {
     let centre = 0.5 * (a + b);
     let half = 0.5 * (b - a);
     let fc = f(centre);
@@ -4627,8 +4657,9 @@ fn gk15_with(f: &dyn Fn(f64) -> f64, a: f64, b: f64, raw: bool) -> (f64, f64) {
         }
     }
     if nonfinite {
-        return (f64::NAN, f64::NAN);
+        return (f64::NAN, f64::NAN, f64::NAN);
     }
+    let peak = fv.iter().fold(0.0f64, |m, v| m.max(v.abs())) * (b - a).abs();
     let mean = 0.5 * k15;
     let mut resasc = WGK[7] * (fc - mean).abs();
     for j in 0..7 {
@@ -4640,23 +4671,65 @@ fn gk15_with(f: &dyn Fn(f64) -> f64, a: f64, b: f64, raw: bool) -> (f64, f64) {
     if !raw && resasc != 0.0 && err != 0.0 {
         err = resasc * (200.0 * err / resasc).powf(1.5).min(1.0);
     }
-    let resabs_floor = 50.0 * f64::EPSILON * result.abs();
+    let resabs = if raw {
+        result.abs()
+    } else {
+        let mut s = WGK[7] * fc.abs();
+        for j in 0..7 {
+            s += WGK[j] * (fv[j].abs() + fv[14 - j].abs());
+        }
+        s * half.abs()
+    };
+    let resabs_floor = 50.0 * f64::EPSILON * resabs;
     if resabs_floor > err {
         err = resabs_floor;
     }
-    (result, err)
+    if !raw {
+        // The outermost nodes lie at `(1 − XGK[0])` and `(1 − XGK[1])`
+        // half-widths from the end.  A rise faster than `|x − end|⁻¹` (a
+        // divergence, or an exponential the segment does not resolve, the
+        // tail of `sech(10⁴x)`) bounds nothing: the segment is bisected.
+        let ratio = (1.0 - XGK[1]) / (1.0 - XGK[0]);
+        let d0 = half.abs() * (1.0 - XGK[0]);
+        let tail = |f0: f64, f1: f64| -> f64 {
+            let growth = (f0 / f1).abs();
+            if f0 * f1 <= 0.0 || growth <= ratio.powf(0.75) {
+                return 0.0;
+            }
+            let alpha = -growth.ln() / ratio.ln();
+            if alpha <= -1.0 {
+                return f64::INFINITY;
+            }
+            2.0 * d0 * f0.abs() / (1.0 + alpha)
+        };
+        err = err.max(tail(fv[0], fv[1])).max(tail(fv[14], fv[13]));
+    }
+    (result, err, peak)
 }
 
 /// Adaptive Gauss–Kronrod quadrature of `f` over `[a, b]`.
 ///
-/// Infinite bounds are handled by the substitutions `x = a + t/(1−t)`,
-/// `x = b − t/(1−t)` and `x = t/(1−t²)`; endpoint singularities are
-/// absorbed by adaptive bisection (the rule never samples endpoints).
+/// Infinite bounds are handled by the substitutions `x = a + t/(1−t)` and
+/// `x = b − t/(1−t)` (the whole line split at 0); endpoint singularities
+/// are absorbed by adaptive bisection (the rule never samples endpoints)
+/// and, when that does not meet the tolerance, by a retry under an
+/// endpoint-smoothing substitution at the ends that `f64` nodes can
+/// approach: a finite end at 0 and an infinite end (see
+/// [`QuadResult::error`] for what the estimate covers).
 ///
-/// Returns the estimate and its error estimate as a [`QuadResult`].  If the
-/// integrand is non-finite on a vanishing interval (a non-integrable
-/// interior singularity) or the estimate is not a finite number,
-/// `Err(ComputationFailed)` is returned.
+/// Returns the estimate and its error estimate as a [`QuadResult`], also
+/// when the tolerance was not met.  If the integrand is non-finite on a
+/// vanishing interval (a non-integrable interior singularity) or the
+/// estimate is not a finite number, `Err(ComputationFailed)` is returned.
+///
+/// Before 0.44 the smoothing retry was applied to the whole range, so its
+/// nodes crowded towards a nonzero finite end (and towards the end of the
+/// map of an infinite range), which in `f64` they cannot approach closer
+/// than half an ulp: the integrand was cut off at `1 − x ≈ 2⁻⁵³` (at `x ≈
+/// 10¹⁶`) and the estimate did not see it.  `∫₀¹ dx/√(1 − x)` was
+/// `1.9999999898808887` with an estimate of `3·10⁻¹⁰`, and so was
+/// `∫₁^∞ x^(−3/2) dx`; `∫₀¹ log²(1 − x)/√(1 − x) dx` was `15.99998`
+/// (truly 16) with an estimate of `3·10⁻⁷`.
 ///
 /// ```
 /// use symplex::definite::{quadrature, QuadOpts};
@@ -4675,6 +4748,28 @@ pub fn quadrature(
     b: f64,
     opts: &QuadOpts,
 ) -> Result<QuadResult, SymplexError> {
+    quadrature_report(f, a, b, opts).map(|(r, _)| r)
+}
+
+/// [`quadrature`], and whether every segment was resolved: none left at the
+/// narrowest width the bisection can make, where the estimate of a segment
+/// is only `width·max|f|` (see [`QuadResult::error`]).
+///
+/// The plain bisection runs first, its segments too narrow when below
+/// `10⁻¹²` of their own position ([`Floor::Relative`]: next to an end at 0
+/// it goes as deep as `f64` allows).  When it is not resolved within the
+/// tolerance, the retry of [`smoothed_pieces`] runs, and the result with
+/// the smaller error estimate is kept.
+///
+/// # Errors
+///
+/// As [`quadrature`].
+pub(crate) fn quadrature_report(
+    f: &dyn Fn(f64) -> f64,
+    a: f64,
+    b: f64,
+    opts: &QuadOpts,
+) -> Result<(QuadResult, bool), SymplexError> {
     if a.is_nan() || b.is_nan() {
         return Err(SymplexError::InvalidArgument {
             operation: "integrate_numeric",
@@ -4682,28 +4777,87 @@ pub fn quadrature(
         });
     }
     if a == b {
-        return Ok(QuadResult {
-            value: 0.0,
-            error: 0.0,
-        });
+        return Ok((
+            QuadResult {
+                value: 0.0,
+                error: 0.0,
+            },
+            true,
+        ));
     }
     if a > b {
-        let r = quadrature(f, b, a, opts)?;
-        return Ok(QuadResult {
-            value: -r.value,
-            error: r.error,
-        });
+        let (r, resolved) = quadrature_report(f, b, a, opts)?;
+        return Ok((
+            QuadResult {
+                value: -r.value,
+                error: r.error,
+            },
+            resolved,
+        ));
     }
-    // Transform infinite ranges onto finite ones.
+    if a.is_infinite() && b.is_infinite() {
+        // Split at 0 so that each half must converge on its own: a single
+        // symmetric rule on t/(1−t²) would report ∫ x dx = 0 with zero
+        // error (a numeric principal value).
+        let half = QuadOpts {
+            max_subdivisions: opts.max_subdivisions.div_ceil(2),
+            ..*opts
+        };
+        let (left, l_ok) = quadrature_report(f, f64::NEG_INFINITY, 0.0, &half)?;
+        let (right, r_ok) = quadrature_report(f, 0.0, f64::INFINITY, &half)?;
+        return Ok((
+            QuadResult {
+                value: left.value + right.value,
+                error: left.error + right.error,
+            },
+            l_ok && r_ok,
+        ));
+    }
+    let plain = plain_report(f, a, b, opts, false, Floor::Relative(None));
+    if let Ok((r, true)) = &plain
+        && r.error <= opts.abs_tol.max(opts.rel_tol * r.value.abs())
+    {
+        return plain;
+    }
+    let Some(retry) = smoothed_pieces(f, a, b, opts, false) else {
+        return plain;
+    };
+    match (plain, retry) {
+        (Ok(p), Ok(m)) => Ok(if m.0.error < p.0.error { m } else { p }),
+        (Ok(p), Err(_)) => Ok(p),
+        (Err(_), Ok(m)) => Ok(m),
+        (Err(e), Err(_)) => Err(e),
+    }
+}
+
+/// The plain bisection of [`quadrature_report`] and [`quadrature_resolved`]
+/// on a finite or half-infinite range `a < b`: on `[a, b]` itself, or on
+/// `t ∈ [0, 1]` under `x = a + t/(1−t)` (`x = b − t/(1−t)`), the floor of
+/// [`Floor::Relative`] judged in `x` too.
+fn plain_report(
+    f: &dyn Fn(f64) -> f64,
+    a: f64,
+    b: f64,
+    opts: &QuadOpts,
+    raw: bool,
+    floor: Floor<'_>,
+) -> Result<(QuadResult, bool), SymplexError> {
+    let relative = matches!(floor, Floor::Relative(_));
     match (a.is_finite(), b.is_finite()) {
-        (true, true) => quadrature_finite_adaptive(f, a, b, opts),
+        (true, true) => quadrature_finite_report(f, a, b, opts, raw, floor),
         (true, false) => {
             // x = a + t/(1−t), t ∈ [0, 1), dx = dt/(1−t)²
             let g = move |t: f64| {
                 let om = 1.0 - t;
                 f(a + t / om) / (om * om)
             };
-            quadrature_finite_adaptive(&g, 0.0, 1.0, opts)
+            let x = move |t: f64| a + t / (1.0 - t);
+            let floor = if relative {
+                Floor::Relative(Some(&x))
+            } else {
+                floor
+            };
+            quadrature_finite_report(&g, 0.0, 1.0, opts, raw, floor)
         }
         (false, true) => {
             // x = b − t/(1−t)
@@ -4711,37 +4865,109 @@ pub fn quadrature(
                 let om = 1.0 - t;
                 f(b - t / om) / (om * om)
             };
-            quadrature_finite_adaptive(&g, 0.0, 1.0, opts)
-        }
-        (false, false) => {
-            // Split at 0 so that each half must converge on its own: a
-            // single symmetric rule on t/(1−t²) would report ∫ x dx = 0
-            // with zero error (a numeric principal value).
-            let half = QuadOpts {
-                max_subdivisions: opts.max_subdivisions.div_ceil(2),
-                ..*opts
+            let x = move |t: f64| b - t / (1.0 - t);
+            let floor = if relative {
+                Floor::Relative(Some(&x))
+            } else {
+                floor
             };
-            let left = quadrature(f, f64::NEG_INFINITY, 0.0, &half)?;
-            let right = quadrature(f, 0.0, f64::INFINITY, &half)?;
-            Ok(QuadResult {
-                value: left.value + right.value,
-                error: left.error + right.error,
-            })
+            quadrature_finite_report(&g, 0.0, 1.0, opts, raw, floor)
         }
+        (false, false) => Err(SymplexError::ComputationFailed {
+            operation: "integrate_numeric",
+            reason: "the whole real line is split at 0 before the bisection".into(),
+        }),
     }
+}
+
+/// The retry of [`quadrature_report`] (and of [`quadrature_resolved`] with
+/// `smoothing`): `[a, b]` split so that each end the `f64` nodes can
+/// approach — a finite end at 0, an infinite end — is the end at 0 of a
+/// piece in a variable of its own, integrated under the endpoint-smoothing
+/// substitution of [`smoothed`]; a nonzero finite end is left to plain
+/// bisection.  An infinite end becomes `u → 0⁺` under `x = e ± (1/u − 1)`
+/// on the piece beyond `e ± 1`, where the nodes keep their relative
+/// distance to it (under `x = e ± t/(1 − t)` they cannot come closer to `t =
+/// 1` than `2⁻⁵³`, which cuts the integrand off at `x ≈ 10¹⁶`).  `None` when
+/// no end is such (both finite and nonzero): the retry would be the plain
+/// bisection again.
+///
+/// The pieces share the tolerance and the subdivisions.
+fn smoothed_pieces(
+    f: &dyn Fn(f64) -> f64,
+    a: f64,
+    b: f64,
+    opts: &QuadOpts,
+    raw: bool,
+) -> Option<Result<(QuadResult, bool), SymplexError>> {
+    let share = QuadOpts {
+        rel_tol: 0.5 * opts.rel_tol,
+        abs_tol: 0.5 * opts.abs_tol,
+        max_subdivisions: opts.max_subdivisions.div_ceil(2),
+    };
+    // The floor judged in the piece's own variable too: where `s(t)`
+    // underflows, the end at 0 is cut off (beyond `x ≈ 10³⁰⁸` for an
+    // infinite end) and no estimate sees it.
+    let smooth = |g: &dyn Fn(f64) -> f64, h: f64| {
+        let s = smoothed(g, 0.0, h);
+        let position = move |t: f64| smoothing_map(0.0, h, t);
+        quadrature_finite_report(&s, 0.0, 1.0, &share, raw, Floor::Relative(Some(&position)))
+    };
+    let plain = |g: &dyn Fn(f64) -> f64, lo: f64, hi: f64, x: Option<&dyn Fn(f64) -> f64>| {
+        quadrature_finite_report(g, lo, hi, &share, raw, Floor::Relative(x))
+    };
+    let (first, second) = match (a.is_finite(), b.is_finite()) {
+        (true, true) if a == 0.0 => (smooth(f, 0.5 * b), plain(f, 0.5 * b, b, None)),
+        (true, true) if b == 0.0 => {
+            let mirrored = move |u: f64| f(-u);
+            (plain(f, a, 0.5 * a, None), smooth(&mirrored, -0.5 * a))
+        }
+        (true, false) | (false, true) => {
+            let (e, sign) = if a.is_finite() { (a, 1.0) } else { (b, -1.0) };
+            // [e, e ± 1]: x = e ± t/(1 − t), t ∈ [0, ½].
+            let near = move |t: f64| {
+                let om = 1.0 - t;
+                f(e + sign * (t / om)) / (om * om)
+            };
+            // Beyond e ± 1: x = e ± (1/u − 1), u ∈ (0, ½], dx = du/u².
+            let far = move |u: f64| f(e + sign * (1.0 / u - 1.0)) / u / u;
+            let x = move |t: f64| e + sign * (t / (1.0 - t));
+            let near_run = if e == 0.0 {
+                smooth(&near, 0.5)
+            } else {
+                plain(&near, 0.0, 0.5, Some(&x))
+            };
+            (near_run, smooth(&far, 0.5))
+        }
+        _ => return None,
+    };
+    Some(first.and_then(|(p, p_ok)| {
+        second.map(|(q, q_ok)| {
+            (
+                QuadResult {
+                    value: p.value + q.value,
+                    error: p.error + q.error,
+                },
+                p_ok && q_ok,
+            )
+        })
+    }))
 }
 
 /// [`quadrature`] for a caller that certifies digits with the result
 /// (`evalf`): `None` unless every segment was resolved — none left at the
 /// narrowest width the bisection can make, where the estimate of a segment
 /// next to a singularity is no bound — and with the raw error estimate
-/// `|K15 − G7|` of each segment ([`gk15_with`]).  Plain bisection, or with
-/// `smoothing` bisection under the endpoint-smoothing substitution of
-/// [`quadrature`] (on each finite range after the maps of infinite ones).
-/// The caller judges the error estimate, and when to trust the smoothed
-/// run: next to an endpoint `b ≠ 0` the node `b − (b − a)·s(t)` cannot come
-/// closer to `b` than half an ulp, so the computed integrand is wrong where
-/// a singularity at `b` matters and no estimate sees it.
+/// `|K15 − G7|` of each segment ([`gk15_with`]).  Plain bisection (its
+/// segments too narrow below `10⁻¹²` of the range, [`Floor::Range`]), or
+/// with `smoothing` the pieces of [`smoothed_pieces`], the endpoint-smoothing
+/// substitution at an end at 0 and an infinite end only (plain bisection
+/// when neither end is such).  The caller judges the error estimate: next
+/// to a nonzero end `b` no node comes closer to `b` than half an ulp, so the
+/// computed integrand is wrong where a singularity at `b` matters and no
+/// estimate sees it.  Before 0.44 the smoothed run on `[0, ∞)` crowded its
+/// nodes towards the end `t = 1` of `x = t/(1 − t)`, which cut the integrand
+/// off at `x ≈ 10¹⁶`.
 ///
 /// Before 0.43 `evalf` took [`quadrature`]'s estimate as a bound, and that
 /// is how it went wrong at an endpoint singularity:
@@ -4780,54 +5006,39 @@ pub(crate) fn quadrature_resolved(
             }),
         );
     }
-    let finite =
-        |g: &dyn Fn(f64) -> f64, lo: f64, hi: f64| -> Result<Option<QuadResult>, SymplexError> {
-            let run = if smoothing {
-                let s = smoothed(g, lo, hi);
-                quadrature_finite_report(&s, 0.0, 1.0, opts, true)
-            } else {
-                quadrature_finite_report(g, lo, hi, opts, true)
-            };
-            run.map(|(r, ok)| ok.then_some(r))
+    if a.is_infinite() && b.is_infinite() {
+        let half = QuadOpts {
+            max_subdivisions: opts.max_subdivisions.div_ceil(2),
+            ..*opts
         };
-    match (a.is_finite(), b.is_finite()) {
-        (true, true) => finite(f, a, b),
-        (true, false) => {
-            let g = move |t: f64| {
-                let om = 1.0 - t;
-                f(a + t / om) / (om * om)
-            };
-            finite(&g, 0.0, 1.0)
-        }
-        (false, true) => {
-            let g = move |t: f64| {
-                let om = 1.0 - t;
-                f(b - t / om) / (om * om)
-            };
-            finite(&g, 0.0, 1.0)
-        }
-        (false, false) => {
-            let half = QuadOpts {
-                max_subdivisions: opts.max_subdivisions.div_ceil(2),
-                ..*opts
-            };
-            let left = quadrature_resolved(f, f64::NEG_INFINITY, 0.0, &half, smoothing)?;
-            let right = quadrature_resolved(f, 0.0, f64::INFINITY, &half, smoothing)?;
-            Ok(left.zip(right).map(|(l, r)| QuadResult {
-                value: l.value + r.value,
-                error: l.error + r.error,
-            }))
-        }
+        let left = quadrature_resolved(f, f64::NEG_INFINITY, 0.0, &half, smoothing)?;
+        let right = quadrature_resolved(f, 0.0, f64::INFINITY, &half, smoothing)?;
+        return Ok(left.zip(right).map(|(l, r)| QuadResult {
+            value: l.value + r.value,
+            error: l.error + r.error,
+        }));
     }
+    let smoothed_run = if smoothing {
+        smoothed_pieces(f, a, b, opts, true)
+    } else {
+        None
+    };
+    let run = match smoothed_run {
+        Some(run) => run,
+        None => plain_report(f, a, b, opts, true, Floor::Range),
+    };
+    run.map(|(r, ok)| ok.then_some(r))
 }
 
 /// The interior breakpoints of `f` (in `x`) strictly inside `(lo, hi)` for
 /// numeric quadrature, sorted: the points the definite integrator's
 /// breakpoint scanner locates (poles, branch points of fractional powers
 /// and logarithms, `tan` poles, kinks of `|·|`, `sign`, `Heaviside`, steps
-/// and `Piecewise` boundaries), as a real constant expression and its `f64`
-/// value.  Points without a numeric value are skipped; an incomplete scan
-/// gives the points it found (the quadrature checks its own convergence).
+/// and `Piecewise` boundaries), and the centres of narrow peaks — the real
+/// parts of complex poles next to the range, … ([`peak_points`]) — as a
+/// real constant expression and its `f64` value.  Points without a numeric
+/// value are skipped; an incomplete scan gives the points it found (the
+/// quadrature checks its own convergence).
 pub(crate) fn quadrature_breakpoints(
     arena: &mut Arena,
     f: ExprId,
@@ -4849,43 +5060,272 @@ pub(crate) fn quadrature_breakpoints(
                 && walk::free_symbols(arena, p).is_empty()
         })
         .collect();
+    points.extend(
+        peak_points(arena, f, x, lo, hi)
+            .into_iter()
+            .filter(|&(_, v)| v - lo > margin(lo) && hi - v > margin(hi)),
+    );
     points.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
     points.dedup_by(|a, b| (a.1 - b.1).abs() <= 1e-14 * a.1.abs().max(1.0));
     points
 }
 
-/// Finite-interval driver: plain adaptive G7/K15 first; if that does not
-/// meet the tolerance (typically an algebraic or logarithmic endpoint
-/// singularity, where bisection alone is limited by `f64` resolution near
-/// the endpoint), retry under the endpoint-smoothing substitution
-/// `x = a + (b−a)·s(t)`, `s(t) = t³(10 − 15t + 6t²)` whose derivative
-/// vanishes quadratically at both ends, and keep the better estimate.
-fn quadrature_finite_adaptive(
+/// The centres of the narrow peaks of `f` in `(lo, hi)`, features a rule
+/// over the whole range may not see: the real parts of the complex poles
+/// next to the range — zeros off the real line of a polynomial raised to a
+/// negative power (degree 2 to [`MAX_POLE_SPLIT_DEGREE`]) —, the vertices
+/// of Gaussians `exp(a₂x² + a₁x + a₀)`, `a₂ < 0`, and the zeros of the
+/// linear arguments of `sech` (`cosh` under a negative power), whose half-width
+/// `w` (imaginary part, `1/√(2|a₂|)`) is below a tenth of the range (of
+/// `max(1, |centre|)` on an infinite one), each with `centre ± 10w` inside
+/// the range, as exact binary numbers.  A split there makes a narrow peak (`1/(1 + 10⁶(x − c)²)`, `exp(−10⁶(x − c)²)`,
+/// of width `10⁻³`) the end of two pieces, where the nodes crowd, instead
+/// of a feature between the nodes: before 0.44 `integrate_numeric` of
+/// `exp(−10⁶(x − 2/3)²)·(x + 1)²cos(4x/3)` on `[0, 2]` was `0` with an
+/// error estimate of 0 (truly `0.0031`), and the arbitrary-precision
+/// quadrature chased a Lorentzian of width `10⁻³` by bisection until its
+/// budget ran out at 54 digits.
+fn peak_points(arena: &mut Arena, f: ExprId, x: ExprId, lo: f64, hi: f64) -> Vec<(ExprId, f64)> {
+    /// The polynomial a peak is read from.
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Source {
+        /// A denominator: its complex zeros.
+        Pole,
+        /// A Gaussian's exponent `a₂x² + a₁x + a₀`.
+        Gaussian,
+        /// The argument `l₁x + l₀` of `cosh` under a negative power
+        /// (`sech(l₁x + l₀)` peaks at its zero, half-width `1/|l₁|`).
+        Sech,
+    }
+    let mut parts: Vec<(ExprId, Source)> = walk::post_order_ids(arena, f)
+        .into_iter()
+        .filter_map(|id| match *arena.node(id) {
+            ExprNode::Pow(base, exp)
+                if arena.as_num(exp).is_some_and(Signed::is_negative)
+                    && walk::contains(arena, base, x) =>
+            {
+                match *arena.node(base) {
+                    ExprNode::Cosh(arg) => Some((arg, Source::Sech)),
+                    _ => Some((base, Source::Pole)),
+                }
+            }
+            ExprNode::Exp(arg) if walk::contains(arena, arg, x) => Some((arg, Source::Gaussian)),
+            _ => None,
+        })
+        .collect();
+    parts.sort_unstable();
+    parts.dedup();
+    let narrow = |centre: f64, half_width: f64| {
+        let scale = if lo.is_finite() && hi.is_finite() {
+            hi - lo
+        } else {
+            centre.abs().max(1.0)
+        };
+        half_width != 0.0 && centre > lo && centre < hi && half_width.abs() < 0.1 * scale
+    };
+    // A peak at `c` of half-width `w` splits at `c` and at `c ± 10w`: the
+    // nodes of a piece ending at `c` stay at a distance from it (`0.0043`
+    // of its width for Gauss–Kronrod), where a Gaussian's values are 0 and
+    // nothing calls for a bisection; the piece `[c − 10w, c]` sees it.
+    let mut centres: Vec<f64> = Vec::new();
+    let mut push = |c: f64, w: f64| {
+        centres.extend(
+            [c - 10.0 * w.abs(), c, c + 10.0 * w.abs()]
+                .into_iter()
+                .filter(|&p| p > lo && p < hi),
+        );
+    };
+    for (part, source) in parts {
+        // Expanded only when small: `(x + 1)^5000 + 2` is not.
+        let max_degree = match source {
+            Source::Pole => MAX_POLE_SPLIT_DEGREE,
+            Source::Gaussian => 2,
+            Source::Sech => 1,
+        };
+        if !degree_bound(arena, part, x).is_some_and(|d| d <= max_degree) {
+            continue;
+        }
+        let Some(p) = crate::poly::polybridge::expr_to_poly(arena, part, x) else {
+            continue;
+        };
+        let degree = p.degree().unwrap_or(0);
+        let coeff = |k: usize| {
+            p.coeffs()
+                .get(k)
+                .and_then(crate::base::numeric::ratio_to_f64)
+        };
+        match source {
+            Source::Gaussian => {
+                let (Some(a1), Some(a2)) = (coeff(1), coeff(2)) else {
+                    continue;
+                };
+                let (c, w) = (-a1 / (2.0 * a2), (-2.0 * a2).sqrt().recip());
+                if degree == 2 && a2 < 0.0 && narrow(c, w) {
+                    push(c, w);
+                }
+            }
+            Source::Sech => {
+                let (Some(l0), Some(l1)) = (coeff(0), coeff(1)) else {
+                    continue;
+                };
+                let (c, w) = (-l0 / l1, l1.recip());
+                if degree == 1 && narrow(c, w) {
+                    push(c, w);
+                }
+            }
+            Source::Pole if (2..=MAX_POLE_SPLIT_DEGREE).contains(&degree) => {
+                for z in crate::poly::roots::nroots_f64(&p, 128) {
+                    if narrow(z.re, z.im) {
+                        push(z.re, z.im);
+                    }
+                }
+            }
+            Source::Pole => {}
+        }
+    }
+    centres
+        .into_iter()
+        .filter(|c| c.is_finite())
+        .filter_map(|c| {
+            crate::base::numeric::f64_to_ratio_exact(c).map(|q| (arena.num_ratio(q), c))
+        })
+        .collect()
+}
+
+/// The points at which `Ex::integrate_numeric_with` splits its `f64`
+/// quadrature of `f` over `(lo, hi)`, sorted: the [`peak_points`] (a
+/// structural scan, cheap), and when `f` has a kink or a step (`|·|`,
+/// `sign`, `Heaviside`, `floor`, `ceiling`, `min`, `max`, `Piecewise`) the
+/// breakpoints of [`quadrature_breakpoints`] — at an irrational point (`|sin
+/// x|` at `π`) the error estimate of the segment holding it understates its
+/// error (QUADPACK's reduction assumes a smooth integrand).  Interior
+/// singularities are left to the caller's arbitrary-precision fallback.
+pub(crate) fn quadrature_split_points(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    lo: f64,
+    hi: f64,
+) -> Vec<f64> {
+    let non_smooth = contains_node(arena, f, |n| {
+        matches!(
+            n,
+            ExprNode::Abs(_)
+                | ExprNode::Sign(_)
+                | ExprNode::Heaviside(_)
+                | ExprNode::Floor(_)
+                | ExprNode::Ceiling(_)
+                | ExprNode::Min(_)
+                | ExprNode::Max(_)
+                | ExprNode::Piecewise(_)
+        )
+    });
+    let mut points: Vec<f64> = if non_smooth {
+        quadrature_breakpoints(arena, f, x, lo, hi)
+            .into_iter()
+            .map(|(_, v)| v)
+            .collect()
+    } else {
+        let margin = |v: f64| 1e-12 * v.abs().max(1.0);
+        peak_points(arena, f, x, lo, hi)
+            .into_iter()
+            .map(|(_, v)| v)
+            .filter(|&v| v - lo > margin(lo) && hi - v > margin(hi))
+            .collect()
+    };
+    points.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    points.dedup_by(|a, b| (*a - *b).abs() <= 1e-14 * a.abs().max(1.0));
+    points
+}
+
+/// [`quadrature_report`] over `[a, b]` split at the sorted interior
+/// `points` (`a < b`): the sum of the pieces, each with an equal share of
+/// the absolute tolerance and of the subdivisions, and whether every piece
+/// was resolved.
+///
+/// # Errors
+///
+/// As [`quadrature`].
+pub(crate) fn quadrature_split(
     f: &dyn Fn(f64) -> f64,
     a: f64,
     b: f64,
+    points: &[f64],
     opts: &QuadOpts,
-) -> Result<QuadResult, SymplexError> {
-    let plain = quadrature_finite(f, a, b, opts);
-    if let Ok(r) = plain
-        && r.error <= opts.abs_tol.max(opts.rel_tol * r.value.abs())
-    {
-        return Ok(r);
+) -> Result<(QuadResult, bool), SymplexError> {
+    let inner: Vec<f64> = points.iter().copied().filter(|&p| a < p && p < b).collect();
+    if inner.is_empty() {
+        return quadrature_report(f, a, b, opts);
     }
-    let g = smoothed(f, a, b);
-    let mapped = quadrature_finite(&g, 0.0, 1.0, opts);
-    match (plain, mapped) {
-        (Ok(p), Ok(m)) => Ok(if m.error < p.error { m } else { p }),
-        (Ok(p), Err(_)) => Ok(p),
-        (Err(_), Ok(m)) => Ok(m),
-        (Err(e), Err(_)) => Err(e),
+    let n = inner.len() + 1;
+    let share = QuadOpts {
+        abs_tol: opts.abs_tol / n as f64,
+        max_subdivisions: opts.max_subdivisions.div_ceil(n).max(1),
+        ..*opts
+    };
+    let ends: Vec<f64> = std::iter::once(a)
+        .chain(inner)
+        .chain(std::iter::once(b))
+        .collect();
+    let mut total = QuadResult {
+        value: 0.0,
+        error: 0.0,
+    };
+    let mut resolved = true;
+    for w in ends.windows(2) {
+        let (r, ok) = quadrature_report(f, w[0], w[1], &share)?;
+        total.value += r.value;
+        total.error += r.error;
+        resolved &= ok;
     }
+    Ok((total, resolved))
+}
+
+/// The highest degree of a denominator whose complex zeros
+/// [`peak_points`] computes.
+const MAX_POLE_SPLIT_DEGREE: usize = 12;
+
+/// An upper bound on the degree of `e` as a polynomial in `x`, from its
+/// structure (sums, products, natural powers), without expanding it;
+/// `None` when `e` is not visibly a polynomial in `x`.
+fn degree_bound(arena: &Arena, e: ExprId, x: ExprId) -> Option<usize> {
+    let mut deg: FxHashMap<ExprId, usize> = FxHashMap::default();
+    for id in walk::post_order_ids(arena, e) {
+        let d = if id == x {
+            1
+        } else if !walk::contains(arena, id, x) {
+            0
+        } else {
+            match arena.node(id) {
+                ExprNode::Add(children) => children
+                    .iter()
+                    .map(|c| deg.get(c).copied())
+                    .try_fold(0usize, |m, d| d.map(|d| m.max(d)))?,
+                ExprNode::Mul(children) => children
+                    .iter()
+                    .map(|c| deg.get(c).copied())
+                    .try_fold(0usize, |s, d| d.map(|d| s.saturating_add(d)))?,
+                ExprNode::Pow(base, exp) => {
+                    let n = arena.as_num(*exp)?;
+                    if !n.is_integer() || n.is_negative() {
+                        return None;
+                    }
+                    let n = n.to_integer().to_usize()?;
+                    deg.get(base)?.saturating_mul(n)
+                }
+                _ => return None,
+            }
+        };
+        deg.insert(id, d);
+    }
+    deg.get(&e).copied()
 }
 
 /// `f` on `[a, b]` under the endpoint-smoothing substitution `x = a +
 /// (b−a)·s(t)`, `s(t) = t³(10 − 15t + 6t²)`, `t ∈ [0, 1]`: the integrand of
 /// the same integral over `[0, 1]`, whose derivative vanishes quadratically
-/// at both ends.
+/// at both ends.  The nodes crowd towards both ends, so it is used only on
+/// a piece whose singular end is at 0 ([`smoothed_pieces`]).
 fn smoothed<'a>(f: &'a dyn Fn(f64) -> f64, a: f64, b: f64) -> impl Fn(f64) -> f64 + 'a {
     let width = b - a;
     move |t: f64| {
@@ -4893,20 +5333,29 @@ fn smoothed<'a>(f: &'a dyn Fn(f64) -> f64, a: f64, b: f64) -> impl Fn(f64) -> f6
         if ds == 0.0 {
             return 0.0;
         }
-        // Evaluate the map from the nearer endpoint (s(1−t) = 1 − s(t)) so
-        // that x keeps full relative precision near both ends, and never
-        // lands exactly on an endpoint.
+        // Never exactly on an endpoint.
+        let x = smoothing_map(a, b, t);
         let x = if t <= 0.5 {
-            let s = t * t * t * (10.0 - 15.0 * t + 6.0 * t * t);
-            let x = a + width * s;
             if x <= a { a.next_up() } else { x }
+        } else if x >= b {
+            b.next_down()
         } else {
-            let r = 1.0 - t;
-            let s = r * r * r * (10.0 - 15.0 * r + 6.0 * r * r);
-            let x = b - width * s;
-            if x >= b { b.next_down() } else { x }
+            x
         };
         f(x) * width * ds
+    }
+}
+
+/// The map of [`smoothed`], `a + (b−a)·s(t)`, evaluated from the nearer end
+/// (`s(1−t) = 1 − s(t)`) so that `x` keeps full relative precision near
+/// both ends.
+fn smoothing_map(a: f64, b: f64, t: f64) -> f64 {
+    let width = b - a;
+    if t <= 0.5 {
+        a + width * (t * t * t * (10.0 - 15.0 * t + 6.0 * t * t))
+    } else {
+        let r = 1.0 - t;
+        b - width * (r * r * r * (10.0 - 15.0 * r + 6.0 * r * r))
     }
 }
 
@@ -4917,41 +5366,83 @@ struct Segment {
     b: f64,
     value: f64,
     err: f64,
+    /// `|b − a|·max|f|` over its nodes ([`gk15_with`]).
+    peak: f64,
 }
 
-/// Adaptive loop on a finite interval with a global error budget.
-fn quadrature_finite(
-    f: &dyn Fn(f64) -> f64,
-    a: f64,
-    b: f64,
-    opts: &QuadOpts,
-) -> Result<QuadResult, SymplexError> {
-    quadrature_finite_report(f, a, b, opts, false).map(|(r, _)| r)
+impl Segment {
+    fn new(a: f64, b: f64, (value, err, peak): (f64, f64, f64)) -> Segment {
+        Segment {
+            a,
+            b,
+            value: if value.is_finite() { value } else { 0.0 },
+            err: if err.is_finite() { err } else { f64::INFINITY },
+            peak: if peak.is_finite() {
+                peak
+            } else {
+                f64::INFINITY
+            },
+        }
+    }
 }
 
-/// [`quadrature_finite`], and whether every segment was resolved (none
-/// left at the narrowest width bisection can make).
+/// When a segment of the adaptive loop is too narrow to bisect: its Kronrod
+/// nodes would round onto each other or onto its ends.
+#[derive(Clone, Copy)]
+enum Floor<'a> {
+    /// Narrower than `10⁻¹²` of the range (of its largest end, of 1): the
+    /// plain bisection of [`quadrature_resolved`] (`evalf`).
+    Range,
+    /// Narrower than `10⁻¹²` of its own position — in the variable of the
+    /// loop, and in `x` through the map when one is given — or than
+    /// [`MIN_SEGMENT`]: towards an end at 0 the bisection goes as deep as
+    /// `f64` allows, towards a nonzero end (in `x`) no deeper than before.
+    Relative(Option<&'a dyn Fn(f64) -> f64>),
+}
+
+/// The narrowest segment [`Floor::Relative`] bisects: `10¹⁰` times the
+/// smallest normal `f64`, so that its nodes stay normal numbers.
+const MIN_SEGMENT: f64 = 1e10 * f64::MIN_POSITIVE;
+
+/// Adaptive loop on a finite interval with a global error budget: the
+/// estimate, and whether every segment was resolved (none left at the
+/// narrowest width bisection can make, [`Floor`]).  The error of a segment
+/// too narrow to bisect is at least its `peak`, `width·max|f|` at its
+/// nodes: next to a singularity its estimate misses the mass between its
+/// outermost node and its end, which `peak` covers for `|x − c|^α` with `α`
+/// down to about `−0.99` (`0.0043^α ≥ 1/(1 + α)`, `0.0043` the relative
+/// distance of the outermost Kronrod node to the end).
 fn quadrature_finite_report(
     f: &dyn Fn(f64) -> f64,
     a: f64,
     b: f64,
     opts: &QuadOpts,
     raw: bool,
+    floor: Floor<'_>,
 ) -> Result<(QuadResult, bool), SymplexError> {
     let nonfinite_err = |x: f64| SymplexError::ComputationFailed {
         operation: "integrate_numeric",
-        reason: format!("integrand is not finite near x = {x}"),
+        reason: format!("integrand is not finite near x = {x:e}"),
     };
     // Segments narrower than this cannot be bisected meaningfully: the
     // Kronrod nodes would round onto the endpoints in `f64`.
     let min_width = 1e-12 * (b - a).abs().max(a.abs()).max(b.abs()).max(1.0);
-    let (v0, e0) = gk15_with(f, a, b, raw);
-    let mut segments: Vec<Segment> = vec![Segment {
-        a,
-        b,
-        value: if v0.is_finite() { v0 } else { 0.0 },
-        err: if e0.is_finite() { e0 } else { f64::INFINITY },
-    }];
+    let too_narrow = |lo: f64, hi: f64| -> bool {
+        let width = (hi - lo).abs();
+        match floor {
+            Floor::Range => width < min_width,
+            Floor::Relative(map) => {
+                let narrow =
+                    |w: f64, l: f64, h: f64| w < MIN_SEGMENT || w < 1e-12 * l.abs().max(h.abs());
+                narrow(width, lo, hi)
+                    || map.is_some_and(|x| {
+                        let (xl, xh) = (x(lo), x(hi));
+                        xl.is_finite() && xh.is_finite() && narrow((xh - xl).abs(), xl, xh)
+                    })
+            }
+        }
+    };
+    let mut segments: Vec<Segment> = vec![Segment::new(a, b, gk15_with(f, a, b, raw))];
     let mut total_value = segments[0].value;
     let mut total_err = segments[0].err;
     // A segment that could not be bisected further.
@@ -4972,32 +5463,26 @@ fn quadrature_finite_report(
                 reason: "empty work queue".into(),
             })?;
         let worst = segments.swap_remove(idx);
-        if (worst.b - worst.a).abs() < min_width {
-            if !worst.err.is_finite() {
+        if too_narrow(worst.a, worst.b) {
+            if !worst.peak.is_finite() {
                 return Err(nonfinite_err(0.5 * (worst.a + worst.b)));
             }
-            // Cannot refine further; keep it as is.
-            segments.push(worst);
+            // Cannot refine further: its estimate is no bound next to a
+            // singularity, its `peak` is (a hundred of them for a rise
+            // faster than the outermost nodes can extrapolate).
+            let err = if worst.err.is_finite() {
+                worst.err.max(worst.peak)
+            } else {
+                100.0 * worst.peak
+            };
+            segments.push(Segment { err, ..worst });
             floor_hit = true;
+            total_err = segments.iter().map(|s| s.err).sum();
             break;
         }
         let mid = 0.5 * (worst.a + worst.b);
-        let (v1, e1) = gk15_with(f, worst.a, mid, raw);
-        let (v2, e2) = gk15_with(f, mid, worst.b, raw);
-        let s1 = Segment {
-            a: worst.a,
-            b: mid,
-            value: if v1.is_finite() { v1 } else { 0.0 },
-            err: if e1.is_finite() { e1 } else { f64::INFINITY },
-        };
-        let s2 = Segment {
-            a: mid,
-            b: worst.b,
-            value: if v2.is_finite() { v2 } else { 0.0 },
-            err: if e2.is_finite() { e2 } else { f64::INFINITY },
-        };
-        segments.push(s1);
-        segments.push(s2);
+        segments.push(Segment::new(worst.a, mid, gk15_with(f, worst.a, mid, raw)));
+        segments.push(Segment::new(mid, worst.b, gk15_with(f, mid, worst.b, raw)));
         total_value = segments.iter().map(|s| s.value).sum();
         total_err = segments.iter().map(|s| s.err).sum();
     }

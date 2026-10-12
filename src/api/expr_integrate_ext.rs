@@ -264,12 +264,22 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
-    /// Numerically integrate `self` over `[lo, hi]` with adaptive
-    /// Gauss–Kronrod (G7/K15) quadrature using the default [`QuadOpts`].
+    /// Numerically integrate `self` over `[lo, hi]` to the default
+    /// [`QuadOpts`] tolerance, `max(10⁻¹², 10⁻¹⁰·|value|)`: adaptive
+    /// Gauss–Kronrod (G7/K15) quadrature in `f64`, and where its error
+    /// estimate exceeds the tolerance the arbitrary-precision quadrature of
+    /// [`integrate_numeric_with`](Self::integrate_numeric_with).
     ///
     /// Infinite bounds are supported.  The integrand is compiled with
     /// [`compile`](Self::compile), so it must contain no free symbols other
     /// than `var` and only nodes the compiler supports.
+    ///
+    /// A value is returned only when its error estimate is within the
+    /// tolerance.  Before 0.44 an estimate up to 1000 times the tolerance
+    /// was accepted, and next to a singularity at a nonzero end the estimate
+    /// itself was too small: `∫₀¹ dx/√(1 − x)` was `1.9999999898808887`,
+    /// `∫₀¹ log²(1 − x)/√(1 − x) dx` `15.99998` (both now exact to the last
+    /// digit or two).
     ///
     /// # Errors
     ///
@@ -279,8 +289,8 @@ impl Expr<Numeric> {
     /// * [`SymplexError::Unevaluable`] — a bound is not a real number, or the
     ///   integrand contains `DiracDelta` of `var` (a distribution, 0 at every
     ///   point a quadrature samples; before 0.43 `∫₋₁¹ δ(x) dx` was `0`),
-    /// * [`SymplexError::ComputationFailed`] — the quadrature did not reach
-    ///   the requested accuracy (e.g. a divergent integral).
+    /// * [`SymplexError::ComputationFailed`] — neither quadrature reached
+    ///   the tolerance (e.g. a divergent integral).
     ///
     /// # Examples
     ///
@@ -309,7 +319,7 @@ impl Expr<Numeric> {
         let opts = QuadOpts::default();
         let QuadResult { value, error: err } = self.integrate_numeric_with(var, lo, hi, &opts)?;
         let tol = opts.abs_tol.max(opts.rel_tol * value.abs());
-        if err > 1e3 * tol {
+        if err > tol {
             return Err(SymplexError::ComputationFailed {
                 operation: "integrate_numeric",
                 reason: format!(
@@ -323,8 +333,33 @@ impl Expr<Numeric> {
     /// Numerically integrate with explicit [`QuadOpts`], returning the
     /// estimate and its error estimate as a [`QuadResult`].
     ///
-    /// The error estimate is returned even if the tolerance was not met
-    /// within `max_subdivisions`; check it before trusting the value.
+    /// The `f64` adaptive Gauss–Kronrod quadrature runs first (see
+    /// [`QuadResult::error`] for what its estimate covers), split at the
+    /// centres of narrow peaks — complex poles next to the range, narrow
+    /// Gaussians — and, for an integrand with a kink or a step (`|·|`,
+    /// `sign`, `Heaviside`, `floor`, `Piecewise`, …), at its breakpoints.
+    /// When its estimate exceeds the tolerance — an endpoint or interior singularity
+    /// the `f64` bisection cannot resolve, a tolerance beyond `f64` — the
+    /// integral is evaluated as [`integrate_numeric_decimal`](Self::integrate_numeric_decimal)
+    /// evaluates it (tanh-sinh quadrature over arbitrary-precision floats,
+    /// breakpoints split off, the bounds exact) to 17 certified digits, and
+    /// that value is returned with an error of two units in its last place
+    /// (`2⁻⁶⁰` for 0).  Otherwise the `f64` estimate is returned with its
+    /// error estimate even if the tolerance was not met; check it before
+    /// trusting the value.
+    ///
+    /// Before 0.44 the error estimate next to a singularity at a nonzero
+    /// end was 30 to 60 times smaller than the error: `∫₀¹ dx/√(1 − x)` was
+    /// `1.9999999898808887` with an estimate of `3.2·10⁻¹⁰`, the Beta moment
+    /// `∫₀¹ x⁴e^{x/10}/(√(1 − x)·B(5, ½)) dx` `1.0952385480452325` with
+    /// `4.4·10⁻¹⁰` (truly `1.0952385618059876`, mpmath); and a peak no node
+    /// saw was missed: `exp(−10⁶(x − 2/3)²)·(x + 1)²cos(4x/3)` on `[0, 2]`
+    /// integrated to `0` with an estimate of 0 (truly `0.0031`).
+    ///
+    /// # Errors
+    ///
+    /// As [`integrate_numeric`](Self::integrate_numeric), except that a
+    /// result short of the tolerance is returned with its estimate.
     ///
     /// # Examples
     ///
@@ -419,10 +454,51 @@ impl Expr<Numeric> {
                 arena.display(evaled)
             ))
         })?;
+        let (lo_f, hi_f) = if a <= b { (a, b) } else { (b, a) };
+        let points = definite::quadrature_split_points(arena, evaled, var_id, lo_f, hi_f);
         drop(inner);
 
         let f = |t: f64| func(&[t]);
-        definite::quadrature(&f, a, b, opts)
+        let report = if a <= b {
+            definite::quadrature_split(&f, a, b, &points, opts)
+        } else {
+            definite::quadrature_split(&f, b, a, &points, opts).map(|(r, ok)| {
+                (
+                    QuadResult {
+                        value: -r.value,
+                        ..r
+                    },
+                    ok,
+                )
+            })
+        };
+        if let Ok((r, _)) = &report
+            && r.error <= opts.abs_tol.max(opts.rel_tol * r.value.abs())
+        {
+            return Ok(*r);
+        }
+        if let Some(r) = self.certified_quadrature(var, lo, hi) {
+            return Ok(r);
+        }
+        report.map(|(r, _)| r)
+    }
+
+    /// `∫_lo^hi self dvar` by the arbitrary-precision quadrature of
+    /// [`integrate_numeric_decimal`](Self::integrate_numeric_decimal) to 17
+    /// digits, read as an `f64` with an error of two units in its last place
+    /// (`2⁻⁶⁰`, the radius `evalf` returns 0 within, for 0); `None` when it
+    /// fails or the value is not real.
+    fn certified_quadrature(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<QuadResult> {
+        let node = self.definite_integral_node(var, lo, hi).eval();
+        let printed = {
+            let guard = node.inner.read();
+            crate::transforms::evalf::evalf_quadrature(&guard.arena, node.raw_id(), 17, false)
+        };
+        let value: f64 = printed.ok()?.parse().ok()?;
+        value.is_finite().then(|| QuadResult {
+            value,
+            error: (2.0 * f64::EPSILON * value.abs()).max((-60f64).exp2()),
+        })
     }
 
     /// Numerically integrate `self` in `var` from the first of `points` to

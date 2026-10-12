@@ -63,10 +63,12 @@
 //!   central binomials for `asin`, `(−n)^{n−1}/n!` for `W`) rather than
 //!   repeated differentiation, so high orders stay fast.
 //! * `Γ`, `ψ`, `ψ⁽ᵐ⁾` at their poles, `ζ` at `1`, `ln Γ` and `ψ` at `+∞`
-//!   (Stirling), `Ei`, `Ci`, `Chi`, `li`, `Si`, `Shi`, `K₀`, `Y₀` at the
-//!   zeros of their arguments — closed forms at the points where
-//!   differentiation has nothing to evaluate (see *Special functions at
-//!   their singular points* below).
+//!   (Stirling), `Ei`, `Ci`, `Chi`, `li`, `Si`, `Shi`, `K₀`, `Y₀`, `Liₛ` at
+//!   the zeros of their arguments, `W` at `−1/e`, the inverse trigonometric
+//!   and hyperbolic functions at their branch points and of an argument
+//!   tending to infinity — closed forms at the points where differentiation
+//!   has nothing to evaluate (see *Special functions at their singular
+//!   points* below).
 //! * A function without such a rule of an argument `u = u₀ + w` with a
 //!   known expansion: `Σ f⁽ᵏ⁾(u₀)/k!·wᵏ` when `f` is analytic at the
 //!   constant `u₀` (SymPy's `Function._eval_nseries`; `w` may contain
@@ -100,6 +102,12 @@
 //! (`asinh 2 − ln(2 + √5)`) numerically as it forms
 //! ([`settle_constant`]): the valuation of a series, and so every division
 //! by it, depends on knowing which leading coefficients vanish.
+//!
+//! Likewise the side of a branch cut an argument approaches is decided by
+//! the first coefficient off the line of the cut; where every visible
+//! coefficient lies on it, the argument must be shown to stay there (be
+//! real) or the precision is widened until the side shows
+//! ([`Obstruction::CutUndecided`]): `ln(−1 − i·x⁶) = −iπ + …`.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -162,6 +170,7 @@ pub(crate) fn series(
         log_var: None,
         limits: true,
         partial: false,
+        cut_widened: false,
     };
     series_with_pole_retry(arena, expr, var, point, order, mode)
 }
@@ -194,12 +203,14 @@ pub(crate) fn series_dir(
             log_var: Some(arena.symbol(LOG_PLACEHOLDER)),
             limits: true,
             partial: false,
+            cut_widened: false,
         },
         Direction::Left => Mode {
             side: Side::Below,
             log_var: Some(arena.symbol(LOG_PLACEHOLDER)),
             limits: true,
             partial: false,
+            cut_widened: false,
         },
     };
     let err = match series_with_pole_retry(arena, expr, var, point, order, mode) {
@@ -262,6 +273,7 @@ fn puiseux_series(
         log_var: Some(arena.symbol(LOG_PLACEHOLDER)),
         limits: true,
         partial: false,
+        cut_widened: false,
     };
     let tau_order = order
         .checked_mul(q)
@@ -476,7 +488,10 @@ fn series_in_mode(
 /// Asymptotic expansion of `expr` as `var → +∞` (or `−∞` when `negative`),
 /// with all terms of exponent `< order` in `1/var`.
 ///
-/// Substitutes `var = ±1/t`, expands at `t = 0`, and substitutes back.
+/// Substitutes `var = ±1/t`, expands at `t = 0`, and substitutes back;
+/// where there is no expansion in integer powers of `1/var` and `expr` has
+/// a fractional power, in powers of `(±var)^(−1/2)` or `(±var)^(−1/3)`
+/// ([`puiseux_at_infinity`]).
 pub(crate) fn series_at_infinity(
     arena: &mut Arena,
     expr: ExprId,
@@ -487,6 +502,103 @@ pub(crate) fn series_at_infinity(
     if order == 0 {
         return Ok(arena.zero);
     }
+    let err = match series_at_infinity_integer(arena, expr, var, order, negative) {
+        Ok(s) => return Ok(s),
+        Err(e) => e,
+    };
+    if !matches!(arena.node(var), ExprNode::Symbol(_)) || !has_fractional_power(arena, expr, var) {
+        return Err(err);
+    }
+    for q in PUISEUX_RAMIFICATIONS {
+        if let Ok(s) = puiseux_at_infinity(arena, expr, var, order, negative, q) {
+            return Ok(s);
+        }
+    }
+    Err(err)
+}
+
+/// Does `expr` have a power with a non-integer rational exponent of a
+/// `var`-dependent base, or a function with a square-root branch point
+/// (`asin`, `acos`, `acosh`, `asinh`, `atan`, `W`) — the sources of a
+/// Puiseux expansion at infinity (`acosh(1 + 3/x) = √6·x^(−½) − …`)?
+/// (Without one, the ramified attempts of [`puiseux_at_infinity`] only
+/// repeat a failure at a higher order.)
+fn has_fractional_power(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| match *arena.node(id) {
+            ExprNode::Pow(b, e) => {
+                arena.as_num(e).is_some_and(|r| !r.is_integer()) && walk::contains(arena, b, var)
+            }
+            ExprNode::Asin(a)
+            | ExprNode::Acos(a)
+            | ExprNode::Acosh(a)
+            | ExprNode::Asinh(a)
+            | ExprNode::Atan(a)
+            | ExprNode::LambertW(a) => walk::contains(arena, a, var),
+            _ => false,
+        })
+}
+
+/// The expansion of `expr` as `var → ±∞` in powers of `(±var)^(−1/q)` (a
+/// Puiseux series at infinity, as SymPy gives: `√(x + 1) = √x + 1/(2√x) −
+/// …`), when there is none in integer powers of `1/var`: `var = ±τ^(−q)`,
+/// `τ → 0⁺`, expanded to order `q·order` in `τ`, and `τ = (±var)^(−1/q)`
+/// substituted back (`ln τ = −ln(±var)/q`), exact for `±var > 0`.  Before
+/// 0.44 such expansions were refused (`√x`, `√(x + 1)` at `+∞`; `√x = i·√(−x)`
+/// at `−∞`).
+fn puiseux_at_infinity(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: u32,
+    negative: bool,
+    q: u32,
+) -> Result<ExprId, SymplexError> {
+    let tau = arena.symbol(PUISEUX_PLACEHOLDER);
+    let mq = arena.int(-i64::from(q));
+    let tau_mq = arena.pow(tau, mq);
+    let x_of_tau = if negative { arena.neg(tau_mq) } else { tau_mq };
+    let in_tau = subs::subs(arena, expr, var, x_of_tau);
+    let tau_order = order
+        .checked_mul(q)
+        .ok_or(SymplexError::ComputationFailed {
+            operation: "series_at_infinity",
+            reason: "order too large for a Puiseux expansion".into(),
+        })?;
+    let log_t = arena.symbol(LOG_PLACEHOLDER);
+    let ts = expand_log_extended(arena, in_tau, tau, i64::from(tau_order), log_t, true)?;
+    let poly = ts.to_expr(arena, tau, i64::from(tau_order));
+    // τ = (±var)^(−1/q), ln τ = −ln(±var)/q.
+    let radicand = if negative { arena.neg(var) } else { var };
+    let radicand = eval::eval(arena, radicand);
+    let ln_rad = arena.ln(radicand);
+    let m_inv_q = arena.rational(-1, i64::from(q));
+    let ln_tau = arena.mul(&[ln_rad, m_inv_q]);
+    let poly = subs::subs(arena, poly, log_t, ln_tau);
+    let root = arena.pow(radicand, m_inv_q);
+    let back = subs::subs(arena, poly, tau, root);
+    let back = eval::eval(arena, back);
+    if walk::contains(arena, back, tau)
+        || contains_singular_atom(arena, back)
+        || walk::has_unevaluated(arena, back)
+    {
+        return Err(SymplexError::ComputationFailed {
+            operation: "series_at_infinity",
+            reason: "no Puiseux expansion at infinity found".into(),
+        });
+    }
+    Ok(back)
+}
+
+/// [`series_at_infinity`] in integer powers of `1/var`.
+fn series_at_infinity_integer(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: u32,
+    negative: bool,
+) -> Result<ExprId, SymplexError> {
     let t = arena.symbol("_t");
     let one = arena.one;
     let inv_t = arena.div(one, t);
@@ -550,6 +662,7 @@ pub(crate) fn laurent_series(
         log_var: None,
         limits: false,
         partial: false,
+        cut_widened: false,
     };
     let series = |arena: &mut Arena, e: ExprId, order: u32| {
         if matches!(
@@ -1168,6 +1281,12 @@ struct Mode {
     /// says how many): Gruntz only needs the leading term, and `ζ(1 + w)`
     /// is known only to `O(w)`.
     partial: bool,
+    /// The last precision-escalation round: an argument whose coefficients
+    /// are all real to this (widest) precision counts as moving along a cut
+    /// even where its reality is not shown ([`Obstruction::CutUndecided`]),
+    /// as every argument did before 0.44 (`li(1 + x)` for `x → 0⁻`, whose
+    /// `Ei(ln(1 + x))` has the argument `ln(1 + x)` on the cut).
+    cut_widened: bool,
 }
 
 impl Mode {
@@ -1198,6 +1317,13 @@ enum Obstruction {
     /// two log-extended one-sided expansions (see [`expand_with_mode`]).
     /// Without limits (a Laurent series) it is definite.
     Logarithmic,
+    /// The argument of a function with a branch cut tends to a point of the
+    /// cut with every visible coefficient along the cut, but is not shown to
+    /// stay on it: a term beyond the working precision may leave the cut to
+    /// either side, which decides the expansion (`ln(−1 − i·x⁶)` is `−iπ +
+    /// …`, not the value `iπ` on the cut).  The precision is widened; at the
+    /// widest it is a refusal.
+    CutUndecided,
 }
 
 /// [`expand_with_mode`] for a function that must be *meromorphic* at `0`
@@ -1221,6 +1347,7 @@ pub(crate) fn expand_meromorphic(
             log_var: None,
             limits: false,
             partial: false,
+            cut_widened: false,
         },
     )
 }
@@ -1248,6 +1375,7 @@ pub(crate) fn expand_log_extended(
             log_var: Some(log_var),
             limits,
             partial: false,
+            cut_widened: false,
         },
     )
 }
@@ -1274,6 +1402,7 @@ pub(crate) fn expand_leading(
             log_var: Some(log_var),
             limits: false,
             partial: true,
+            cut_widened: false,
         },
     )
 }
@@ -1394,8 +1523,12 @@ fn expand_from_side(
     let mut working = order.max(MIN_WORKING_ORDER);
     let mut last_err = None;
     let mut best: Option<TSeries> = None;
-    for _attempt in 0..MAX_PRECISION_ATTEMPTS {
+    for attempt in 0..MAX_PRECISION_ATTEMPTS {
         let mut hidden_valuation = false;
+        let mode = Mode {
+            cut_widened: attempt + 1 == MAX_PRECISION_ATTEMPTS,
+            ..mode
+        };
         match expand_with_precision(
             arena,
             expr,
@@ -1457,10 +1590,28 @@ fn expand_with_precision(
         } else if id == var {
             Some(TSeries::var(arena, n))
         } else {
-            match structural_series(arena, id, var, mode, &cache) {
+            match structural_series(arena, id, var, n, mode, &cache) {
                 Ok(s) => Some(s),
                 Err(Obstruction::Unknown) => {
-                    match compose_at_constant(arena, id, var, mode, &cache) {
+                    let mut undecided = false;
+                    let composed =
+                        compose_at_constant(arena, id, var, mode, &cache, &mut undecided);
+                    if undecided {
+                        *hidden_valuation = true;
+                        return Err(no_expansion_error(arena, id));
+                    }
+                    match composed {
+                        // A function with a cut refused at a point of it
+                        // (the side undecided, or no form on that side):
+                        // definite, as a structural refusal is.  Before,
+                        // the node only had no series, and the
+                        // differentiation fallback of an enclosing product
+                        // took the derivatives along the cut:
+                        // `Ei(3 + x²/2)·asin(a − x + i·x²)` (`a > 0`) was
+                        // `Ei(3)·asin a`, wrong for `a > 1`.
+                        Some(None) if branch_cut(arena, id, var).is_some() => {
+                            return Err(no_expansion_error(arena, id));
+                        }
                         Some(composed) => composed,
                         None if id == expr || fallbacks_used < MAX_FALLBACK_NODES => {
                             fallbacks_used += 1;
@@ -1478,6 +1629,10 @@ fn expand_with_precision(
                     return Err(no_expansion_error(arena, id));
                 }
                 Err(Obstruction::NoExpansion) => return Err(no_expansion_error(arena, id)),
+                Err(Obstruction::CutUndecided) => {
+                    *hidden_valuation = true;
+                    return Err(no_expansion_error(arena, id));
+                }
             }
         };
         if let Some(s) = &ts
@@ -1521,12 +1676,17 @@ const COMPOSE_PLACEHOLDER: &str = "__series_u";
 /// derivative singular there, `u₀` on a branch cut) and `w` has no
 /// logarithm: the fallback is tried as before.  `Some(None)` when `f` is
 /// not analytic at `u₀` and `w` contains `ln|x|`: no expansion of this form.
+///
+/// `undecided` is set when `u₀` is on the cut of `f` and every visible
+/// coefficient of `w` along it, but the argument is not shown to stay on
+/// the cut ([`Obstruction::CutUndecided`]).
 fn compose_at_constant(
     arena: &mut Arena,
     id: ExprId,
     var: ExprId,
     mode: Mode,
     cache: &FxHashMap<ExprId, Option<TSeries>>,
+    undecided: &mut bool,
 ) -> Option<Option<TSeries>> {
     if matches!(
         arena.node(id),
@@ -1580,14 +1740,48 @@ fn compose_at_constant(
     // expansion was refused.  Coefficients count as real when they are for
     // real values of their symbols (`ln|x|`, parameters).
     // A real `w` crosses a cut on the imaginary axis (`atan(2i + x)`).
+    // A `w` whose visible coefficients are all real moves along a real cut
+    // only if the argument is real: `Ci(−1 + x + i·x⁷)` leaves it beyond
+    // the precision, to a side that decides the constant term.
     let mut jump = None;
-    if let Some((_, cut)) = crate::calculus::limit::branch_cut_of(arena, id)
-        && crate::calculus::limit::on_branch_cut(arena, cut, u0)
-        && (cut == crate::calculus::limit::BranchCut::ImaginaryAxis
-            || !w
-                .coeffs
-                .iter()
-                .all(|&c| crate::calculus::limit::inner_known_real(arena, c)))
+    let w_real = w
+        .coeffs
+        .iter()
+        .all(|&c| crate::calculus::limit::inner_known_real(arena, c));
+    let cut = match branch_cut(arena, id, var) {
+        // A real constant with symbols (`a` declared positive) that may lie
+        // on a cut of the real axis, approached off the line: the side
+        // matters exactly when it is on the cut.  Before 0.44 it counted as
+        // off the cut, and `asin(a − x + i·x²)` (`a > 0`) was `asin a + …`
+        // from both sides, wrong for `a > 1`.
+        // (Undecided, it is harmless for an argument moving along the line,
+        // where the principal value is continuous.)
+        Some((_, cut))
+            if cut != crate::calculus::limit::BranchCut::ImaginaryAxis
+                && !walk::free_symbols(arena, u0).is_empty()
+                && is_known_real(arena, u0) =>
+        {
+            match symbolic_on_cut(arena, cut, u0) {
+                Some(true) => Some(cut),
+                Some(false) => None,
+                None if w_real => Some(cut),
+                None => return Some(None),
+            }
+        }
+        c => c
+            .map(|(_, cut)| cut)
+            .filter(|&cut| crate::calculus::limit::on_branch_cut(arena, cut, u0)),
+    };
+    if let Some(cut) = cut
+        && cut != crate::calculus::limit::BranchCut::ImaginaryAxis
+        && w_real
+        && !real_on_side(arena, arg, var, mode)
+    {
+        *undecided = true;
+        return Some(None);
+    }
+    if let Some(cut) = cut
+        && (cut == crate::calculus::limit::BranchCut::ImaginaryAxis || !w_real)
     {
         let imaginary_axis = cut == crate::calculus::limit::BranchCut::ImaginaryAxis;
         let mut side = series_cut_side(arena, &w, imaginary_axis, mode);
@@ -1596,7 +1790,7 @@ fn compose_at_constant(
         if side == Some(0) && !stays_on_line(arena, arg, u0, var, imaginary_axis, mode) {
             side = None;
         }
-        match side.and_then(|s| cut_jump(arena, id, u0, s)) {
+        match side.and_then(|s| cut_jump(arena, id, u0, s, mode.limits)) {
             Some(j) => jump = Some(j),
             None => return Some(None),
         }
@@ -1613,6 +1807,11 @@ fn compose_at_constant(
     }
     let mut coeffs = Vec::with_capacity(terms + 1);
     let mut factorial = Q::one();
+    // `ζ` is analytic wherever its value is finite, but its derivatives
+    // have no closed form: the series is then exact below the first one
+    // (`ζ(−2 − i + 2x)·atan(…)` to order 1 is `ζ(−2 − i)·atan(…)`; before
+    // 0.44 it was refused at any order).
+    let mut exact_below = None;
     for k in 0..=terms {
         if k > 0 {
             f = crate::transforms::diff::diff(arena, f, t);
@@ -1622,6 +1821,11 @@ fn compose_at_constant(
             || crate::transforms::pattern::tree_size_capped(arena, f, MAX_FALLBACK_SIZE + 1)
                 > MAX_FALLBACK_SIZE
         {
+            if k > 0 && mode.limits && matches!(arena.node(id), ExprNode::Zeta(_)) {
+                let v_w = w.leading_exponent(arena).unwrap_or(1).max(1);
+                exact_below = Some(v_w.saturating_mul(k as i64));
+                break;
+            }
             return refuse;
         }
         let Some(value) = crate::calculus::limit::safe_substitute(arena, f, t, u0) else {
@@ -1634,11 +1838,14 @@ fn compose_at_constant(
         let c = arena.mul(&[value, inv]);
         coeffs.push(eval::eval(arena, c));
     }
-    let composed = TSeries::compose(
+    let mut composed = TSeries::compose(
         arena,
         &|ar: &mut Arena, k: usize| coeffs.get(k).copied().unwrap_or(ar.zero),
         &w,
     );
+    if let Some(cap) = exact_below {
+        composed = composed.truncate_known(cap);
+    }
 
     Some(Some(match jump {
         Some((a, b)) => {
@@ -1694,6 +1901,80 @@ fn stays_on_line(
 
 /// A positive stand-in for `|var|` in [`stays_on_line`].
 const SIDE_PLACEHOLDER: &str = "__series_side";
+
+/// Is the real constant `u₀` with symbols on the cut `cut` of the real axis,
+/// as far as the assumptions on its symbols decide (`None`: undecided)?
+fn symbolic_on_cut(
+    arena: &mut Arena,
+    cut: crate::calculus::limit::BranchCut,
+    u0: ExprId,
+) -> Option<bool> {
+    use crate::calculus::limit::BranchCut;
+    // The sign of `u₀ + k`.
+    let sign = |arena: &mut Arena, k: ExprId| {
+        let s = arena.add(&[u0, k]);
+        let s = eval::eval(arena, s);
+        constant_sign(arena, s)
+    };
+    let one = arena.one;
+    let m_one = arena.neg_one;
+    match cut {
+        BranchCut::None | BranchCut::ImaginaryAxis => Some(false),
+        BranchCut::NegativeReals => constant_sign(arena, u0).map(|p| !p),
+        BranchCut::BelowOne => sign(arena, m_one).map(|p| !p),
+        BranchCut::AboveOne => sign(arena, m_one),
+        BranchCut::BeyondOne => match (sign(arena, m_one), sign(arena, one)) {
+            (Some(true), _) | (_, Some(false)) => Some(true),
+            (Some(false), Some(true)) => Some(false),
+            _ => None,
+        },
+        BranchCut::BelowMinusInvE => {
+            let e_inv = {
+                let e = arena.exp(m_one);
+                eval::eval(arena, e)
+            };
+            sign(arena, e_inv).map(|p| !p)
+        }
+    }
+}
+
+/// Is the expression `u` real for real values of `var` on the side(s) of
+/// the expansion — known real (its free symbols counted real, as
+/// [`inner_known_real`](crate::calculus::limit::inner_known_real) does), or
+/// with an imaginary part that vanishes ([`stays_on_line`])?  Decides
+/// whether an argument whose visible coefficients are all real stays on a
+/// cut of the real axis ([`Obstruction::CutUndecided`]).
+///
+/// In the last precision round ([`Mode::cut_widened`]) every argument is
+/// taken to be real: its coefficients are, to the widest precision.
+fn real_on_side(arena: &mut Arena, u: ExprId, var: ExprId, mode: Mode) -> bool {
+    if mode.cut_widened || crate::calculus::limit::inner_known_real(arena, u) {
+        return true;
+    }
+    let zero = arena.zero;
+    stays_on_line(arena, u, zero, var, false, mode)
+}
+
+/// [`branch_cut_of`](crate::calculus::limit::branch_cut_of), and the cut
+/// `(−∞, 0)` of a power `u^α` whose `var`-free exponent is not a number
+/// (`u^i`, `u^(1 + i)`, `u^π`, `u^a`): its principal value `e^{α·ln u}`
+/// jumps by `e^{−2πiα}` across the cut of `ln` unless `α` is an integer.
+/// Before, only numeric exponents had a cut here, and `(−2 − 3i·x)^i` had
+/// the expansion of the principal value from above on both sides (it is
+/// `e^{2π}` times that for `x > 0`, below the cut).
+fn branch_cut(
+    arena: &Arena,
+    id: ExprId,
+    var: ExprId,
+) -> Option<(ExprId, crate::calculus::limit::BranchCut)> {
+    if let ExprNode::Pow(base, exp) = *arena.node(id)
+        && arena.as_num(exp).is_none()
+        && !walk::contains(arena, exp, var)
+    {
+        return Some((base, crate::calculus::limit::BranchCut::NegativeReals));
+    }
+    crate::calculus::limit::branch_cut_of(arena, id)
+}
 
 /// The side of a branch cut from which `u₀ + w` leaves the point `u₀` of
 /// the cut: the sign of the component perpendicular to the cut (`Im`, or
@@ -1753,9 +2034,24 @@ fn series_cut_side(
 /// `−F` below `(−1, 1)`, `F − 2πi` below `(−∞, −1)`; `asinh`: `±iπ − F`;
 /// `atan`: `F ∓ π`; `Ei`: `F ± iπ` on either side (its value on the axis is
 /// the mean); `Ci`, `Chi`: `F − 2πi` below; `ln Γ`: `F + 2πi(n + 1)` below
-/// `(−n − 1, −n)`.  `None` where no form is known (`W`, `polylog`, …) or
-/// at a branch point.
-fn cut_jump(arena: &mut Arena, id: ExprId, u0: ExprId, side: i32) -> Option<(ExprId, ExprId)> {
+/// `(−n − 1, −n)`; `W`: `F` above (below: none).  `None` where no form is
+/// known (`W` below its cut, `polylog`, …) or at a branch point.
+///
+/// The forms added in 0.44 only with `extended` (a series; Gruntz's leading
+/// terms keep the forms of 0.43): `F` on the side the principal value is
+/// continuous with (mpmath's values on the cut) — above for `W`, `Kν`,
+/// `Yν`, `Eₙ`, `Γ(−n, ·)`, `li` on `(−∞, 0)`, below for `Liₛ`, `K(m)`,
+/// `E(m)` on `(1, ∞)` — and the jumps `li`: `F ± iπ` on `(0, 1)`, `E₁`:
+/// `F + 2πi` below, `Jν`, `Iν`, `γ(s, ·)` (non-integer `ν`, `s`):
+/// `e^{−2πiν}·F` below, `Γ(s, ·)`: `Γ(s)(1 − e^{−2πis}) + e^{−2πis}·F`
+/// below.
+fn cut_jump(
+    arena: &mut Arena,
+    id: ExprId,
+    u0: ExprId,
+    side: i32,
+    extended: bool,
+) -> Option<(ExprId, ExprId)> {
     use crate::base::libfn::LibFn;
     use crate::calculus::limit::const_sign;
     let zero = arena.zero;
@@ -1790,6 +2086,8 @@ fn cut_jump(arena: &mut Arena, id: ExprId, u0: ExprId, side: i32) -> Option<(Exp
             }
             let p = arena.mul(&[two_pi_i, alpha]);
             let p = neg(arena, p);
+            // `e^{−2πi(1 + i)} = e^{2π}` once the exponent is expanded.
+            let p = crate::transforms::expand::expand(arena, p);
             let e = arena.exp(p);
             (zero, eval::eval(arena, e))
         }
@@ -1841,6 +2139,14 @@ fn cut_jump(arena: &mut Arena, id: ExprId, u0: ExprId, side: i32) -> Option<(Exp
                 (if upper { i_pi } else { neg(arena, i_pi) }, m_one)
             }
         }
+        // `W₀` is continuous from above onto its cut `(−∞, −1/e)` (mpmath);
+        // below it is the conjugate branch, no form here.
+        ExprNode::LambertW(_) => {
+            if above && extended {
+                return identity;
+            }
+            return None;
+        }
         ExprNode::Ei(_) => (if above { i_pi } else { neg(arena, i_pi) }, one),
         ExprNode::Ci(_) => {
             if above {
@@ -1853,6 +2159,94 @@ fn cut_jump(arena: &mut Arena, id: ExprId, u0: ExprId, side: i32) -> Option<(Exp
                 return identity;
             }
             (neg(arena, two_pi_i), one)
+        }
+        // `li u = Ei(ln u)`: on `(0, 1)` the principal value is the mean of
+        // the two sides, as for `Ei` on the negative reals; on `(−∞, 0)` it
+        // is the limit from above (mpmath), with no form below.
+        ExprNode::Li(_) => {
+            if !extended {
+                return None;
+            }
+            if const_sign(arena, re)? < 0 {
+                if above {
+                    return identity;
+                }
+                return None;
+            }
+            let d = arena.sub(re, one);
+            let d = eval::eval(arena, d);
+            if const_sign(arena, d)? >= 0 {
+                return None;
+            }
+            (if above { i_pi } else { neg(arena, i_pi) }, one)
+        }
+        // The complete elliptic integrals and `Liₛ` take the limit from below
+        // on their cut `(1, ∞)` (mpmath), with no form above.
+        ExprNode::Apply(f, ref args)
+            if extended
+                && matches!(
+                    (arena.lib_fn(f), args.len()),
+                    (Some(LibFn::EllipticK | LibFn::EllipticE), 1) | (Some(LibFn::PolyLog), 2)
+                ) =>
+        {
+            if above {
+                return None;
+            }
+            return identity;
+        }
+        ExprNode::Apply(f, ref args) if args.len() == 2 && extended => {
+            let order = args[0];
+            let lib = arena.lib_fn(f)?;
+            // `Kν`, `Yν` (a logarithm of the argument) take the limit from
+            // above on the negative reals (mpmath), with no constant form
+            // below (the jump is a multiple of `Iν`, `Jν`).
+            if matches!(lib, LibFn::BesselK | LibFn::BesselY) {
+                if above {
+                    return identity;
+                }
+                return None;
+            }
+            let numeric = arena.as_num(order).cloned()?;
+            match lib {
+                // E₁(u) = −γ − ln u − Σ (−u)ᵏ/(k·k!): `F + 2πi` below; the
+                // other `Eₙ` take the limit from above too.
+                LibFn::ExpInt => {
+                    if above {
+                        return identity;
+                    }
+                    if !numeric.is_one() {
+                        return None;
+                    }
+                    (two_pi_i, one)
+                }
+                // `u^ν` times an entire function: `e^{−2πiν}·F` below.
+                LibFn::BesselJ | LibFn::BesselI | LibFn::LowerGamma if !numeric.is_integer() => {
+                    if above {
+                        return identity;
+                    }
+                    let p = arena.mul(&[two_pi_i, order]);
+                    let p = neg(arena, p);
+                    let e = arena.exp(p);
+                    (zero, eval::eval(arena, e))
+                }
+                // Γ(s, u) = Γ(s) − γ(s, u): `Γ(s)(1 − e^{−2πis}) + e^{−2πis}·F`.
+                LibFn::UpperGamma if !numeric.is_integer() => {
+                    if above {
+                        return identity;
+                    }
+                    let p = arena.mul(&[two_pi_i, order]);
+                    let p = neg(arena, p);
+                    let e = arena.exp(p);
+                    let e = eval::eval(arena, e);
+                    let g = arena.gamma(order);
+                    let ne = neg(arena, e);
+                    let one_minus = arena.add(&[one, ne]);
+                    (arena.mul(&[g, one_minus]), e)
+                }
+                // `Γ(−n, u)` (a logarithm of `u`): the limit from above.
+                LibFn::UpperGamma if above => return identity,
+                _ => return None,
+            }
         }
         ExprNode::LogGamma(_) => {
             if above {
@@ -1888,11 +2282,13 @@ fn child(cache: &FxHashMap<ExprId, Option<TSeries>>, id: ExprId) -> Result<TSeri
         .ok_or(Obstruction::Unknown)
 }
 
-/// Combine children's series according to the node type.
+/// Combine children's series according to the node type (`n`: the working
+/// precision).
 fn structural_series(
     arena: &mut Arena,
     id: ExprId,
     var: ExprId,
+    n: i64,
     mode: Mode,
     cache: &FxHashMap<ExprId, Option<TSeries>>,
 ) -> Result<TSeries, Obstruction> {
@@ -1938,17 +2334,43 @@ fn structural_series(
                     // closed-form coefficients instead of repeated products.
                 }
                 // Rational exponent: Puiseux expansions are refused.
-                return pow_rational(arena, &b, exp, side);
+                return pow_rational(arena, &b, exp, mode, Some((base, var)));
             }
             // b^e with var-dependent exponent: exp(e · ln b).
             let e = child(cache, exp)?;
-            let lnb = apply_ln(arena, &b, mode)?;
+            let lnb = apply_ln(arena, &b, mode, Some((base, var)))?;
             let prod = TSeries::mul(arena, &e, &lnb);
             apply_exp_like(arena, FnKind::Exp, &prod, mode)
         }
         ExprNode::Abs(a) => return abs_series(arena, &child(cache, a)?, side),
         ExprNode::Sign(a) => return sign_series(arena, &child(cache, a)?, side, false),
         ExprNode::Heaviside(a) => return sign_series(arena, &child(cache, a)?, side, true),
+        ExprNode::Apply(f, ref args)
+            if mode.limits
+                && args.len() == 2
+                && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::PolyLog)
+                && !walk::contains(arena, args[0], var) =>
+        {
+            // Liₛ(u) = Σ uᵏ/kˢ at a zero of `u` (before 0.44 the
+            // differentiation fallback met `Liₛ₋₁(t)/t` at `t = 0` and asked
+            // the limit engine for every derivative: `polylog(2, 2i·x + …)`
+            // did not return in 10 s).
+            let u = child(cache, args[1])?.normalized(arena);
+            if u.coeffs.is_empty() || u.shift < 1 {
+                return Err(Obstruction::Unknown);
+            }
+            let s = args[0];
+            let coefficient = move |ar: &mut Arena, k: usize| -> ExprId {
+                if k == 0 {
+                    return ar.zero;
+                }
+                let ke = ar.int(k as i64);
+                let ns = ar.neg(s);
+                let p = ar.pow(ke, ns);
+                eval::eval(ar, p)
+            };
+            return Ok(TSeries::compose(arena, &coefficient, &u));
+        }
         ExprNode::Apply(f, ref args) if args.len() == 2 && is_bessel(arena, f) => {
             let u = child(cache, args[1])?;
             if let Some(s) = log_bessel_series(arena, f, args[0], &u, var, mode)? {
@@ -1965,7 +2387,7 @@ fn structural_series(
         | ExprNode::Ci(_)
         | ExprNode::Si(_)
         | ExprNode::Li(_)
-        | ExprNode::Erfc(_) => return special_series(arena, &node, mode, cache),
+        | ExprNode::Erfc(_) => return special_series(arena, &node, var, mode, cache),
         ExprNode::Apply(f, ref args)
             if (args.len() == 1
                 && (matches!(
@@ -1974,58 +2396,95 @@ fn structural_series(
                 ) || matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC)))
                 || PowerAsymptotic::from_name(arena.symbol_name(f)).is_some() =>
         {
-            return special_series(arena, &node, mode, cache);
+            return special_series(arena, &node, var, mode, cache);
         }
-        ExprNode::Exp(a) => apply_exp_like(arena, FnKind::Exp, &child(cache, a)?, mode),
-        ExprNode::Sin(a) => apply_fn(arena, FnKind::Sin, &child(cache, a)?),
-        ExprNode::Cos(a) => apply_fn(arena, FnKind::Cos, &child(cache, a)?),
+        ExprNode::Exp(a) => {
+            let a = child(cache, a)?;
+            if decays_beyond_all_orders(arena, &a, mode) {
+                return Ok(TSeries::zero(arena, n));
+            }
+            apply_exp_like(arena, FnKind::Exp, &a, mode)
+        }
+        ExprNode::Sin(a) => apply_trig(arena, FnKind::Sin, &child(cache, a)?, mode),
+        ExprNode::Cos(a) => apply_trig(arena, FnKind::Cos, &child(cache, a)?, mode),
         ExprNode::Sinh(a) => apply_exp_like(arena, FnKind::Sinh, &child(cache, a)?, mode),
         ExprNode::Cosh(a) => apply_exp_like(arena, FnKind::Cosh, &child(cache, a)?, mode),
         ExprNode::Tan(a) => apply_fn(arena, FnKind::Tan, &child(cache, a)?),
-        ExprNode::Tanh(a) => apply_fn(arena, FnKind::Tanh, &child(cache, a)?),
+        ExprNode::Tanh(a) => {
+            let u = child(cache, a)?;
+            if let Some(s) = tanh_log_extended(arena, &u, mode) {
+                return Ok(s);
+            }
+            apply_fn(arena, FnKind::Tanh, &u)
+        }
         ExprNode::Atan(a) => {
             let u = child(cache, a)?;
-            if let Some(s) = inverse_at_branch_point(arena, InverseFn::Atan, &u, mode)? {
+            let arg = Some((a, var));
+            if let Some(s) = inverse_at_branch_point(arena, InverseFn::Atan, &u, mode, arg)? {
+                return Ok(s);
+            }
+            if let Some(s) = inverse_at_infinity(arena, InverseFn::Atan, &u, mode, arg)? {
                 return Ok(s);
             }
             apply_fn(arena, FnKind::Atan, &u)
         }
         ExprNode::Atanh(a) => {
             let u = child(cache, a)?;
-            if let Some(s) = inverse_at_branch_point(arena, InverseFn::Atanh, &u, mode)? {
+            let arg = Some((a, var));
+            if let Some(s) = inverse_at_branch_point(arena, InverseFn::Atanh, &u, mode, arg)? {
+                return Ok(s);
+            }
+            if let Some(s) = inverse_at_infinity(arena, InverseFn::Atanh, &u, mode, arg)? {
                 return Ok(s);
             }
             apply_fn(arena, FnKind::Atanh, &u)
         }
         ExprNode::Asin(a) => {
             let u = child(cache, a)?;
-            if let Some(s) = inverse_at_branch_point(arena, InverseFn::Asin, &u, mode)? {
+            let arg = Some((a, var));
+            if let Some(s) = inverse_at_branch_point(arena, InverseFn::Asin, &u, mode, arg)? {
+                return Ok(s);
+            }
+            if let Some(s) = inverse_at_infinity(arena, InverseFn::Asin, &u, mode, arg)? {
                 return Ok(s);
             }
             apply_fn(arena, FnKind::Asin, &u)
         }
         ExprNode::Asinh(a) => {
             let u = child(cache, a)?;
-            if let Some(s) = inverse_at_branch_point(arena, InverseFn::Asinh, &u, mode)? {
+            let arg = Some((a, var));
+            if let Some(s) = inverse_at_branch_point(arena, InverseFn::Asinh, &u, mode, arg)? {
+                return Ok(s);
+            }
+            if let Some(s) = inverse_at_infinity(arena, InverseFn::Asinh, &u, mode, arg)? {
                 return Ok(s);
             }
             apply_fn(arena, FnKind::Asinh, &u)
         }
         // Only their branch points have a structural rule; elsewhere the
         // differentiation fallback applies.
-        ExprNode::Acos(a) => {
+        ExprNode::Acos(a) | ExprNode::Acosh(a) => {
             let u = child(cache, a)?;
-            return inverse_at_branch_point(arena, InverseFn::Acos, &u, mode)?
-                .ok_or(Obstruction::Unknown);
-        }
-        ExprNode::Acosh(a) => {
-            let u = child(cache, a)?;
-            return inverse_at_branch_point(arena, InverseFn::Acosh, &u, mode)?
-                .ok_or(Obstruction::Unknown);
+            let kind = if matches!(node, ExprNode::Acos(_)) {
+                InverseFn::Acos
+            } else {
+                InverseFn::Acosh
+            };
+            let arg = Some((a, var));
+            if let Some(s) = inverse_at_branch_point(arena, kind, &u, mode, arg)? {
+                return Ok(s);
+            }
+            return inverse_at_infinity(arena, kind, &u, mode, arg)?.ok_or(Obstruction::Unknown);
         }
         ExprNode::Erf(a) => apply_fn(arena, FnKind::Erf, &child(cache, a)?),
-        ExprNode::LambertW(a) => apply_fn(arena, FnKind::LambertW, &child(cache, a)?),
-        ExprNode::Ln(a) => return apply_ln(arena, &child(cache, a)?, mode),
+        ExprNode::LambertW(a) => {
+            let u = child(cache, a)?;
+            if let Some(s) = lambertw_at_branch_point(arena, &u, mode, Some((a, var)))? {
+                return Ok(s);
+            }
+            apply_fn(arena, FnKind::LambertW, &u)
+        }
+        ExprNode::Ln(a) => return apply_ln(arena, &child(cache, a)?, mode, Some((a, var))),
         _ => None,
     };
     analytic.ok_or(Obstruction::Unknown)
@@ -2084,6 +2543,112 @@ fn apply_exp_like(arena: &mut Arena, kind: FnKind, a: &TSeries, mode: Mode) -> O
     let sum = TSeries::add(arena, &plus, &minus);
     let half = arena.rational(1, 2);
     Some(TSeries::scale(arena, &sum, half))
+}
+
+/// Does `e^a` vanish to every order as `var → 0` from the side(s) of the
+/// expansion: `a` has a pole whose leading term `c·var^v` (`v < 0`) has a
+/// real part tending to `−∞` there?  Then `|e^a| = e^{Re a}` decays faster
+/// than any power, and the real asymptotic expansion is `0` (the module
+/// contract: `exp(−1/x²)`).  Before, such a node fell to the
+/// differentiation fallback, which asks the limit engine for every
+/// derivative: `series(exp(ψ(−2 + √2·x²)), x, 0, 1)` did not return in
+/// 10 s (it is `0`; `ψ(−2 + w) = −1/w + …`).  Not for a Laurent series
+/// (`mode.limits` off), where it is an essential singularity, nor for a
+/// leading coefficient with `ln|var|` or a real part of unknown sign.
+fn decays_beyond_all_orders(arena: &mut Arena, a: &TSeries, mode: Mode) -> bool {
+    if !mode.limits {
+        return false;
+    }
+    let a = a.clone().normalized(arena);
+    let Some(v) = a.leading_exponent(arena) else {
+        return false;
+    };
+    if v >= 0 {
+        return false;
+    }
+    let c = a.coeff_at(arena, v);
+    if mode.log_var.is_some_and(|l| walk::contains(arena, c, l)) {
+        return false;
+    }
+    let re = arena.re(c);
+    let re = eval::eval(arena, re);
+    let Some(positive) = constant_sign(arena, re) else {
+        return false;
+    };
+    // `Re(c·var^v)` has the sign of `Re c` for `var > 0`, of `(−1)^v·Re c`
+    // for `var < 0`.
+    let odd = v % 2 != 0;
+    match mode.side {
+        Side::Above => !positive,
+        Side::Below => positive == odd,
+        Side::Both => !odd && !positive,
+    }
+}
+
+/// `sin` or `cos` of `a`.  In a log-extended expansion a constant term
+/// `u₀ = m·l + r` (`l = ln|var|`) with a real `m` gives the bounded
+/// coefficients `sin u₀`, `cos u₀` of [`apply_fn`] (`cos(ln x + x)`); with a
+/// non-real `m` they grow like a power of `var` (`cos(i·ln x) = cosh(ln x)`)
+/// and the terms of `apply_fn` would not be of the order they claim, so
+/// `sin u = (e^{iu} − e^{−iu})/(2i)`, `cos u = (e^{iu} + e^{−iu})/2` are
+/// taken through [`apply_exp_like`], which shifts by `|var|^{±im}` for an
+/// integer `im` and refuses otherwise.  Before 0.44, `cos(i·ln x + x)` for
+/// `x → 0⁺` was `cosh(ln x) − …` with terms `sinh(ln x)·xⁿ ≈ xⁿ⁻¹/2`
+/// dropped at order `n`.
+fn apply_trig(arena: &mut Arena, kind: FnKind, a: &TSeries, mode: Mode) -> Option<TSeries> {
+    if let Some(l) = mode.log_var {
+        let u0 = a.coeff_at(arena, 0);
+        if walk::contains(arena, u0, l) {
+            let m = crate::transforms::diff::diff(arena, u0, l);
+            let m = eval::eval(arena, m);
+            if !crate::calculus::limit::inner_known_real(arena, m) {
+                let i = arena.i_unit;
+                let iu = TSeries::scale(arena, a, i);
+                let niu = TSeries::neg(arena, &iu);
+                let p = apply_exp_like(arena, FnKind::Exp, &iu, mode)?;
+                let q = apply_exp_like(arena, FnKind::Exp, &niu, mode)?;
+                let (q, factor) = if kind == FnKind::Sin {
+                    let nq = TSeries::neg(arena, &q);
+                    // 1/(2i) = −i/2
+                    let m_half = arena.rational(-1, 2);
+                    let f = arena.mul(&[i, m_half]);
+                    (nq, eval::eval(arena, f))
+                } else {
+                    (q, arena.rational(1, 2))
+                };
+                let sum = TSeries::add(arena, &p, &q);
+                return Some(TSeries::scale(arena, &sum, factor));
+            }
+        }
+    }
+    apply_fn(arena, kind, a)
+}
+
+/// `tanh u = 1 − 2/(e^{2u} + 1)` for an argument whose constant term has
+/// `ln|var|` in a log-extended expansion (`u → ±∞` logarithmically), with
+/// `e^{2u}` from [`apply_exp_like`]: `tanh(ln Γ(x)) = 1 − 2x² + …` for
+/// `x → 0⁻`.  Before, such a node fell to the differentiation fallback,
+/// whose limits of ever larger derivatives (of `ln Γ`, `ψ`, `ψ⁽ᵐ⁾`) took
+/// seconds each.  `None` where the rule does not apply.
+fn tanh_log_extended(arena: &mut Arena, u: &TSeries, mode: Mode) -> Option<TSeries> {
+    if !mode.limits {
+        return None;
+    }
+    let l = mode.log_var?;
+    let u0 = u.coeff_at(arena, 0);
+    if !walk::contains(arena, u0, l) {
+        return None;
+    }
+    let two = arena.int(2);
+    let u2 = TSeries::scale(arena, u, two);
+    let e = apply_exp_like(arena, FnKind::Exp, &u2, mode)?;
+    let one = constant_like(arena, arena.one, &e);
+    let denom = TSeries::add(arena, &e, &one);
+    let inv = TSeries::inverse(arena, &denom)?;
+    let m_two = arena.int(-2);
+    let tail = TSeries::scale(arena, &inv, m_two);
+    let one = constant_like(arena, arena.one, &tail);
+    Some(TSeries::add(arena, &one, &tail))
 }
 
 fn is_bessel(arena: &Arena, f: crate::base::node::SymbolId) -> bool {
@@ -2405,12 +2970,17 @@ enum InverseFn {
 /// differentiation fallback, whose derivatives all diverge: it asked the
 /// limit engine for the limit of ever larger derivatives, once more for
 /// each pole-retry multiplier, and `series(asin(x³), x, 1, 4)` took 42 s
-/// before refusing (`fuzz_calculus` timed out on `asin(x²)`).
+/// before refusing (`fuzz_calculus` timed out on `asin(x³)`).
+///
+/// `arg` is the expression of `u` and the variable: where `s` tends to the
+/// cut of the square root or logarithm with real visible coefficients, it
+/// decides whether it stays on it ([`cut_below`]).
 fn inverse_at_branch_point(
     arena: &mut Arena,
     kind: InverseFn,
     u: &TSeries,
     mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
 ) -> Result<Option<TSeries>, Obstruction> {
     let u = u.clone().normalized(arena);
     if u.leading_exponent(arena).is_some_and(|v| v < 0) {
@@ -2436,6 +3006,13 @@ fn inverse_at_branch_point(
     };
     let mut u = u;
     u.set_constant(u0);
+    // The expression `c + k·u` of the series `s` built from `u`.
+    let shifted_arg = |arena: &mut Arena, c: ExprId, k: ExprId| {
+        arg.map(|(e, var)| {
+            let ke = arena.mul(&[k, e]);
+            (arena.add(&[c, ke]), var)
+        })
+    };
     match kind {
         InverseFn::Asin | InverseFn::Acos => {
             let at_plus = if u0 == one {
@@ -2453,7 +3030,9 @@ fn inverse_at_branch_point(
             };
             let c1 = TSeries::constant(arena, one, u.known);
             let s = TSeries::add(arena, &c1, &signed).normalized(arena);
-            let g = sqrt2s_times_f(arena, &s, false, mode.side)?;
+            let k = if at_plus { neg_one } else { one };
+            let s_arg = shifted_arg(arena, one, k);
+            let g = sqrt2s_times_f(arena, &s, false, mode, s_arg)?;
             let half_pi = {
                 let h = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(2)));
                 let p = arena.mul(&[arena.pi, h]);
@@ -2484,22 +3063,52 @@ fn inverse_at_branch_point(
                 return Ok(None);
             };
             // s = u ∓ 1.
-            let c = TSeries::constant(arena, if at_plus { neg_one } else { one }, u.known);
+            let shift = if at_plus { neg_one } else { one };
+            let c = TSeries::constant(arena, shift, u.known);
             let s = TSeries::add(arena, &u, &c).normalized(arena);
+            let s_arg = shifted_arg(arena, shift, one);
             if at_plus {
-                return sqrt2s_times_f(arena, &s, true, mode.side).map(Some);
+                return sqrt2s_times_f(arena, &s, true, mode, s_arg).map(Some);
             }
-            if !s.coeffs.iter().all(|&co| is_known_real(arena, co)) {
-                return Err(Obstruction::NoExpansion); // may cross the cut
-            }
-            let g = sqrt2s_times_f(arena, &s, false, mode.side)?;
+            // Near −1 the whole real line is the cut `(−∞, 1)` of `acosh`,
+            // onto which its principal value is continuous from above; the
+            // form `iπ − i√(2s)·F(s/2)` agrees with it there (`√` of a
+            // negative `s` is the value from above too), so in all the upper
+            // half-plane.  Below, `acosh` is the conjugate of its value at
+            // `ū`: `−(iπ − i√(2s)·F(s/2))` with the principal root of the
+            // actual `s`.  The side is that of the first non-real
+            // coefficient (before 0.44 a non-real `s` was refused; one with
+            // a non-real term beyond the precision took the value from
+            // above: `acosh(−1 − x − i·x⁷)` was `iπ + √(2x)` for `x → 0⁺`,
+            // it is `−iπ + √(2x)`).
+            let negate = if s.coeffs.iter().all(|&co| is_known_real(arena, co)) {
+                // Real visible coefficients: on the cut (or moving away from
+                // it), unless a term beyond the precision leaves it.
+                if let Some((e, var)) = s_arg
+                    && !real_on_side(arena, e, var, mode)
+                {
+                    return Err(Obstruction::CutUndecided);
+                }
+                false
+            } else if !mode.limits {
+                // Gruntz's leading terms keep the rule of 0.43.
+                return Err(Obstruction::NoExpansion);
+            } else {
+                match series_cut_side(arena, &s, false, mode) {
+                    Some(1) => false,
+                    Some(-1) => true,
+                    _ => return Err(Obstruction::NoExpansion),
+                }
+            };
+            let g = sqrt2s_times_f(arena, &s, false, mode, s_arg)?;
             let minus_i_g = TSeries::scale(arena, &g, neg_i);
             let i_pi = {
                 let p = arena.mul(&[i, arena.pi]);
                 eval::eval(arena, p)
             };
             let c = TSeries::constant(arena, i_pi, minus_i_g.known.max(u.known));
-            Ok(Some(TSeries::add(arena, &c, &minus_i_g)))
+            let r = TSeries::add(arena, &c, &minus_i_g);
+            Ok(Some(if negate { TSeries::neg(arena, &r) } else { r }))
         }
         InverseFn::Atanh => {
             if u0 != one && u0 != neg_one {
@@ -2516,8 +3125,10 @@ fn inverse_at_branch_point(
                 Obstruction::Unknown => Obstruction::NoExpansion,
                 other => other,
             };
-            let lp = apply_ln(arena, &one_plus, mode).map_err(definite)?;
-            let lm = apply_ln(arena, &one_minus, mode).map_err(definite)?;
+            let plus_arg = shifted_arg(arena, one, one);
+            let minus_arg = shifted_arg(arena, one, neg_one);
+            let lp = apply_ln(arena, &one_plus, mode, plus_arg).map_err(definite)?;
+            let lm = apply_ln(arena, &one_minus, mode, minus_arg).map_err(definite)?;
             let neg_lm = TSeries::neg(arena, &lm);
             let diff = TSeries::add(arena, &lp, &neg_lm);
             let half = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(2)));
@@ -2534,12 +3145,361 @@ fn inverse_at_branch_point(
             } else {
                 InverseFn::Atanh
             };
-            let Some(r) = inverse_at_branch_point(arena, inner, &iu, mode)? else {
+            let zero = arena.zero;
+            let i_arg = shifted_arg(arena, zero, i);
+            let Some(r) = inverse_at_branch_point(arena, inner, &iu, mode, i_arg)? else {
                 return Ok(None);
             };
             Ok(Some(TSeries::scale(arena, &r, neg_i)))
         }
     }
+}
+
+/// The inverse trigonometric and hyperbolic functions of an argument `u`
+/// that tends to infinity, in a log-extended (one-sided) expansion: at `±∞`, or at a
+/// pole of `u` (`asinh(1/x)` for `x → 0⁺`).  `Ok(None)` when the rule
+/// does not apply.  With `d` the direction of `u` (its leading coefficient,
+/// times the sign of `var^v` on the side):
+///
+/// * `asinh u = ln u + ln(1 + √(1 + u⁻²))` for `Re d > 0` (`u + √(u² + 1)
+///   = u·(1 + √(1 + u⁻²))` there), `−asinh(−u)` for `Re d < 0`;
+/// * `acosh u = ln(u·(1 + √(1 − u⁻²)))` in every direction (`√(u + 1)·
+///   √(u − 1) = u·√(1 − u⁻²)` for `|u| > 1`), the side of the cut of `ln`
+///   deciding near the negative reals ([`cut_below`]);
+/// * `asin u = −i·asinh(iu)` for `Im d ≠ 0`; for a real `d` on the cut
+///   `±(1, ∞)` of `asin`: `π/2 ∓ i·acosh u` (`d > 0`, the sign `−` on the
+///   cut and below it, `+` above), `−asin(−u)` for `d < 0`;
+/// * `acos u = π/2 − asin u`;
+/// * `atanh u = atanh(1/u) ± iπ/2` ([`atanh_at_infinity`]), `atan u = ±π/2 −
+///   atan(1/u)` for `Re d ≷ 0`, `−i·atanh(iu)` for an imaginary `d`.
+///
+/// The identities hold for the principal branches (SymPy's and mpmath's
+/// values on the cuts: `asin 2 = π/2 − i·acosh 2`, `acosh(−2) = acosh 2 +
+/// iπ`).  Before 0.44 these expansions were refused: `asinh x` at `+∞` is
+/// `ln 2 + ln x + 1/(4x²) + …`.
+fn inverse_at_infinity(
+    arena: &mut Arena,
+    kind: InverseFn,
+    u: &TSeries,
+    mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
+) -> Result<Option<TSeries>, Obstruction> {
+    let Some(l) = mode.log_var else {
+        return Ok(None);
+    };
+    // A series only: Gruntz's leading terms keep the rules of 0.43.
+    if mode.side == Side::Both || !mode.limits {
+        return Ok(None);
+    }
+    let u = u.clone().normalized(arena);
+    let Some(v) = u.leading_exponent(arena) else {
+        return Ok(None);
+    };
+    if v >= 0 {
+        return Ok(None);
+    }
+    let c = u.coeff_at(arena, v);
+    if walk::contains(arena, c, l) || !walk::free_symbols(arena, c).is_empty() {
+        return Ok(None);
+    }
+    let d = if mode.side == Side::Below && v % 2 != 0 {
+        let n = arena.neg(c);
+        eval::eval(arena, n)
+    } else {
+        c
+    };
+    let parts = crate::base::complex::decompose(arena, d);
+    if !parts.exact {
+        return Ok(None);
+    }
+    let re = eval::eval(arena, parts.re);
+    let im = eval::eval(arena, parts.im);
+    let (Some(re_sign), Some(im_sign)) = (
+        crate::calculus::limit::const_sign(arena, re),
+        crate::calculus::limit::const_sign(arena, im),
+    ) else {
+        return Ok(None);
+    };
+    let neg_arg = |arena: &mut Arena| {
+        arg.map(|(e, var)| {
+            let n = arena.neg(e);
+            (n, var)
+        })
+    };
+    let half_pi = {
+        let h = arena.rational(1, 2);
+        let p = arena.mul(&[h, arena.pi]);
+        eval::eval(arena, p)
+    };
+    match kind {
+        InverseFn::Asinh => {
+            if re_sign == 0 {
+                return Ok(None);
+            }
+            let n_arg = neg_arg(arena);
+            asinh_at_infinity(arena, &u, re_sign > 0, mode, arg, n_arg).map(Some)
+        }
+        InverseFn::Acosh => acosh_at_infinity(arena, &u, mode, arg).map(Some),
+        InverseFn::Atanh => atanh_at_infinity(arena, &u, re_sign, im_sign, mode, arg).map(Some),
+        // atan u = ±π/2 − atan(1/u) for `Re u ≷ 0` (the sum is locally
+        // constant off the cut on the imaginary axis); along that axis
+        // atan u = −i·atanh(iu).
+        InverseFn::Atan => {
+            if re_sign != 0 {
+                let inv = TSeries::inverse(arena, &u).ok_or(Obstruction::NoExpansion)?;
+                let a = apply_fn(arena, FnKind::Atan, &inv).ok_or(Obstruction::Unknown)?;
+                let c = {
+                    let h = arena.rational(i64::from(re_sign.signum()), 2);
+                    let p = arena.mul(&[h, arena.pi]);
+                    eval::eval(arena, p)
+                };
+                let c = constant_like(arena, c, &a);
+                let na = TSeries::neg(arena, &a);
+                return Ok(Some(TSeries::add(arena, &c, &na)));
+            }
+            // Re(i·d) = −Im d, Im(i·d) = Re d = 0.
+            let i = arena.i_unit;
+            let iu = TSeries::scale(arena, &u, i);
+            let i_arg = arg.map(|(e, var)| (arena.mul(&[i, e]), var));
+            let r = atanh_at_infinity(arena, &iu, -im_sign, 0, mode, i_arg)?;
+            let m_i = {
+                let n = arena.neg(i);
+                eval::eval(arena, n)
+            };
+            Ok(Some(TSeries::scale(arena, &r, m_i)))
+        }
+        InverseFn::Asin | InverseFn::Acos => {
+            let asin = if im_sign != 0 {
+                // asin u = −i·asinh(iu); Re(i·d) = −Im d.
+                let i = arena.i_unit;
+                let iu = TSeries::scale(arena, &u, i);
+                let i_arg = arg.map(|(e, var)| (arena.mul(&[i, e]), var));
+                let ni_arg = arg.map(|(e, var)| {
+                    let m = arena.mul(&[i, e]);
+                    (arena.neg(m), var)
+                });
+                let r = asinh_at_infinity(arena, &iu, im_sign < 0, mode, i_arg, ni_arg)?;
+                let m_i = {
+                    let n = arena.neg(i);
+                    eval::eval(arena, n)
+                };
+                TSeries::scale(arena, &r, m_i)
+            } else {
+                // On the cut: the side of `u` (`Im u` eventually), `0` along it.
+                let side = if u.coeffs.iter().all(|&co| is_known_real(arena, co)) {
+                    if let Some((e, var)) = arg
+                        && !real_on_side(arena, e, var, mode)
+                    {
+                        return Err(Obstruction::CutUndecided);
+                    }
+                    0
+                } else {
+                    series_cut_side(arena, &u, false, mode).ok_or(Obstruction::NoExpansion)?
+                };
+                // d > 0: π/2 ∓ i·acosh u; d < 0: −(π/2 ∓ i·acosh(−u)), the
+                // side of `−u` being the opposite one.
+                let positive = re_sign > 0;
+                let (base, base_arg, above) = if positive {
+                    (u.clone(), arg, side > 0)
+                } else {
+                    (TSeries::neg(arena, &u), neg_arg(arena), side < 0)
+                };
+                let ac = acosh_at_infinity(arena, &base, mode, base_arg)?;
+                let factor = if above {
+                    arena.i_unit
+                } else {
+                    arena.neg(arena.i_unit)
+                };
+                let factor = eval::eval(arena, factor);
+                let t = TSeries::scale(arena, &ac, factor);
+                let hp = constant_like(arena, half_pi, &t);
+                let r = TSeries::add(arena, &hp, &t);
+                if positive { r } else { TSeries::neg(arena, &r) }
+            };
+            if kind == InverseFn::Asin {
+                Ok(Some(asin))
+            } else {
+                let hp = constant_like(arena, half_pi, &asin);
+                let na = TSeries::neg(arena, &asin);
+                Ok(Some(TSeries::add(arena, &hp, &na)))
+            }
+        }
+    }
+}
+
+/// `W₀(u)` for `u → −1/e`, its branch point: `W₀ = Σ μₖ·pᵏ` with
+/// `p = √(2(1 + e·u))` (Corless, Gonnet, Hare, Jeffrey, Knuth, "On the
+/// Lambert W function", Adv. Comput. Math. 5 (1996), eq. (4.22)–(4.24):
+/// `μ₀ = −1`, `μ₁ = 1`, `μₖ = (k−1)/(k+1)·(μₖ₋₂/2 + αₖ₋₂/4) − αₖ/2 −
+/// μₖ₋₁/(k+1)`, `αₖ = Σ_{j=2}^{k−1} μⱼμₖ₊₁₋ⱼ`, `α₀ = 2`, `α₁ = −1`).
+/// With the principal root the identity holds on a whole neighbourhood of
+/// `−1/e`: the cut of `√(1 + e·u)` is that of `W₀`, `(−∞, −1/e)`, onto
+/// which both are continuous from above (`W₀(−1/e − δ) = −1 + i√(2eδ) + …`,
+/// mpmath).  The root is [`pow_rational`]'s: a Puiseux exponent is left to
+/// the ramified expansion of [`series_dir`] (`W(x)` for `x → −1/e⁺` is
+/// `−1 + √(2e)·√(x + 1/e) − …`), and the side of the cut decides as for
+/// `√`.  Before 0.44 these expansions were refused.  `Ok(None)` when `u`
+/// does not tend to `−1/e`.
+fn lambertw_at_branch_point(
+    arena: &mut Arena,
+    u: &TSeries,
+    mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
+) -> Result<Option<TSeries>, Obstruction> {
+    let u = u.clone().normalized(arena);
+    if !mode.limits || u.shift < 0 || u.coeffs.is_empty() {
+        return Ok(None);
+    }
+    let u0 = u.coeff_at(arena, 0);
+    let target = {
+        let m1 = arena.neg_one;
+        let e = arena.exp(m1);
+        let n = arena.neg(e);
+        eval::eval(arena, n)
+    };
+    if !equals_constant(arena, u0, target) {
+        return Ok(None);
+    }
+    // s = 1 + e·u, of valuation ≥ 1.
+    let e = {
+        let one = arena.one;
+        let e = arena.exp(one);
+        eval::eval(arena, e)
+    };
+    let mut w = u.clone();
+    w.set_constant(arena.zero);
+    let s = TSeries::scale(arena, &w, e).normalized(arena);
+    if s.coeffs.is_empty() {
+        return Err(Obstruction::NoExpansion);
+    }
+    let two = arena.int(2);
+    let two_s = TSeries::scale(arena, &s, two);
+    let s_arg = arg.map(|(ex, var)| {
+        let es = arena.mul(&[e, ex]);
+        let one = arena.one;
+        (arena.add(&[one, es]), var)
+    });
+    let half = arena.rational(1, 2);
+    let p = pow_rational(arena, &two_s, half, mode, s_arg)?;
+    let mu = lambertw_branch_coefficients(p.known.max(1) as usize + 2);
+    let mu_c = move |ar: &mut Arena, k: usize| match mu.get(k) {
+        Some(m) => rat_expr(ar, m.clone()),
+        None => ar.zero,
+    };
+    Ok(Some(TSeries::compose(arena, &mu_c, &p)))
+}
+
+/// The coefficients `μ₀ … μₙ₋₁` of [`lambertw_at_branch_point`]:
+/// `−1, 1, −1/3, 11/72, −43/540, 769/17280, …`.
+fn lambertw_branch_coefficients(n: usize) -> Vec<Q> {
+    let mut mu: Vec<Q> = vec![-Q::one(), Q::one()];
+    let mut alpha: Vec<Q> = vec![rat_i(2), -Q::one()];
+    for k in 2..n.max(2) {
+        let kq = rat_i(k as i64);
+        let a_k: Q = (2..k).map(|j| &mu[j] * &mu[k + 1 - j]).sum();
+        alpha.push(a_k.clone());
+        let m = (&kq - Q::one()) / (&kq + Q::one())
+            * (&mu[k - 2] / rat_i(2) + &alpha[k - 2] / rat_i(4))
+            - a_k / rat_i(2)
+            - &mu[k - 1] / (&kq + Q::one());
+        mu.push(m);
+    }
+    mu.truncate(n.max(2));
+    mu
+}
+
+/// `atanh u` for `u → ∞` in the direction with the signs `re_sign`,
+/// `im_sign` of its real and imaginary parts: `atanh(1/u) + σ·iπ/2`, the
+/// difference being locally constant off the cut `±(1, ∞)` — `σ` the sign
+/// of `Im u` there; along the cut that of the first non-real coefficient,
+/// and for a real `u` SymPy's value on the cut (`atanh 2 = atanh ½ − iπ/2`:
+/// `σ = −sign u`).  `arg` is the expression of `u`.
+fn atanh_at_infinity(
+    arena: &mut Arena,
+    u: &TSeries,
+    re_sign: i32,
+    im_sign: i32,
+    mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
+) -> Result<TSeries, Obstruction> {
+    let sigma = if im_sign != 0 {
+        im_sign.signum()
+    } else if u.coeffs.iter().all(|&c| is_known_real(arena, c)) {
+        if let Some((e, var)) = arg
+            && !real_on_side(arena, e, var, mode)
+        {
+            return Err(Obstruction::CutUndecided);
+        }
+        -re_sign.signum()
+    } else {
+        match series_cut_side(arena, u, false, mode) {
+            Some(s) if s != 0 => s.signum(),
+            _ => return Err(Obstruction::NoExpansion),
+        }
+    };
+    if sigma == 0 {
+        return Err(Obstruction::NoExpansion);
+    }
+    let inv = TSeries::inverse(arena, u).ok_or(Obstruction::NoExpansion)?;
+    let a = apply_fn(arena, FnKind::Atanh, &inv).ok_or(Obstruction::Unknown)?;
+    let c = {
+        let h = arena.rational(i64::from(sigma), 2);
+        let p = arena.mul(&[h, arena.i_unit, arena.pi]);
+        eval::eval(arena, p)
+    };
+    let c = constant_like(arena, c, &a);
+    Ok(TSeries::add(arena, &c, &a))
+}
+
+/// `asinh u` for `u → ∞` with `Re u > 0` (`positive`), else `−asinh(−u)`:
+/// `ln u + ln(1 + √(1 + u⁻²))` (see [`inverse_at_infinity`]); `arg` and
+/// `neg_arg` are the expressions of `u` and `−u`.
+fn asinh_at_infinity(
+    arena: &mut Arena,
+    u: &TSeries,
+    positive: bool,
+    mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
+    neg_arg: Option<(ExprId, ExprId)>,
+) -> Result<TSeries, Obstruction> {
+    let (s, s_arg) = if positive {
+        (u.clone(), arg)
+    } else {
+        (TSeries::neg(arena, u), neg_arg)
+    };
+    let inv = TSeries::inverse(arena, &s).ok_or(Obstruction::NoExpansion)?;
+    let z = TSeries::mul(arena, &inv, &inv);
+    let one = constant_like(arena, arena.one, &z);
+    let one_plus_z = TSeries::add(arena, &one, &z);
+    let half = arena.rational(1, 2);
+    let root = pow_rational(arena, &one_plus_z, half, mode, None)?;
+    let one = constant_like(arena, arena.one, &root);
+    let g = TSeries::add(arena, &one, &root);
+    let ln_g = apply_ln(arena, &g, mode, None)?;
+    let ln_s = apply_ln(arena, &s, mode, s_arg)?;
+    let r = TSeries::add(arena, &ln_s, &ln_g);
+    Ok(if positive { r } else { TSeries::neg(arena, &r) })
+}
+
+/// `acosh u = ln(u·(1 + √(1 − u⁻²)))` for `u → ∞` (see
+/// [`inverse_at_infinity`]); `arg` is the expression of `u`.
+fn acosh_at_infinity(
+    arena: &mut Arena,
+    u: &TSeries,
+    mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
+) -> Result<TSeries, Obstruction> {
+    let inv = TSeries::inverse(arena, u).ok_or(Obstruction::NoExpansion)?;
+    let z = TSeries::mul(arena, &inv, &inv);
+    let nz = TSeries::neg(arena, &z);
+    let one = constant_like(arena, arena.one, &nz);
+    let one_minus_z = TSeries::add(arena, &one, &nz);
+    let half = arena.rational(1, 2);
+    let root = pow_rational(arena, &one_minus_z, half, mode, None)?;
+    let one = constant_like(arena, arena.one, &root);
+    let g = TSeries::add(arena, &one, &root);
+    let p = TSeries::mul(arena, u, &g);
+    apply_ln(arena, &p, mode, arg)
 }
 
 /// Is the constant `c` equal to `target` (structurally, or as a hidden
@@ -2564,12 +3524,13 @@ fn sqrt2s_times_f(
     arena: &mut Arena,
     s: &TSeries,
     negate: bool,
-    side: Side,
+    mode: Mode,
+    s_arg: Option<(ExprId, ExprId)>,
 ) -> Result<TSeries, Obstruction> {
     let two = arena.int(2);
     let two_s = TSeries::scale(arena, s, two);
     let half_exp = arena.rational(1, 2);
-    let root = pow_rational(arena, &two_s, half_exp, side)?;
+    let root = pow_rational(arena, &two_s, half_exp, mode, s_arg)?;
     let factor = rat_expr(
         arena,
         Q::new(
@@ -2597,17 +3558,30 @@ fn sqrt2s_times_f(
 
 /// `ln(a)` — requires a non-zero constant term ([`Obstruction::Logarithmic`]
 /// otherwise), except in a log-extended expansion ([`Mode::log_var`]),
-/// where `a = c·var^v·(1 + …)` with `c` real of known sign and real visible
-/// coefficients gives `ln c + v·ln(var) + ln(1 + …)` (for `var > 0` the
-/// argument of `var^v` is 0, so no multiple of `2πi` is lost; for
-/// `var < 0` it is `ln((−1)^v·c) + v·ln(−var) + …`, the sign moved into
-/// the real constant).
+/// where `a = c·var^v·(1 + w)` gives `ln c + v·ln(var) + ln(1 + w)` (for
+/// `var > 0` the argument of `var^v` is 0, so no multiple of `2πi` is lost;
+/// for `var < 0` it is `ln((−1)^v·c) + v·ln(−var) + …`, the sign moved into
+/// the constant).  `c` may be any constant: one off the negative reals
+/// (`ln(i·x) = iπ/2 + ln x`), or a negative one, where the side of the cut
+/// `c·(1 + w)` approaches decides, as for a constant term on the cut
+/// ([`cut_below`]: `ln(−x − i·x²)` is `−iπ + ln x + …` for `x → 0⁺`).
+/// Before 0.44 only a real `c` of known sign with a real `w` (or a positive
+/// `c`) was accepted, and `ln(i·x)`, `ln(x + i)` at `−∞` were refused.
 ///
-/// A constant term on the cut (negative real) with a non-real correction is
-/// a definite [`Obstruction::NoExpansion`]: `ln(−1 + i·x)` tends to `iπ`
-/// from `x > 0` and to `−iπ` from `x < 0` (before, the series was
-/// `iπ − i·x + …` on both sides).
-fn apply_ln(arena: &mut Arena, a: &TSeries, mode: Mode) -> Result<TSeries, Obstruction> {
+/// A constant term on the cut (negative real) with a non-real correction
+/// takes the side of the cut it approaches from ([`cut_below`]); where the
+/// side differs between the two sides of the expansion it is a definite
+/// [`Obstruction::NoExpansion`]: `ln(−1 + i·x)` tends to `iπ` from `x > 0`
+/// and to `−iπ` from `x < 0` (before 0.32, the series was `iπ − i·x + …`
+/// on both sides).  `arg` is the expression of `a` and the variable, which
+/// decide whether an argument with real visible coefficients stays on the
+/// cut.
+fn apply_ln(
+    arena: &mut Arena,
+    a: &TSeries,
+    mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
+) -> Result<TSeries, Obstruction> {
     let mut a = a.clone().normalized(arena);
     let v = a.leading_exponent(arena).ok_or(Obstruction::Unknown)?;
     let mut log_shift = None;
@@ -2623,11 +3597,19 @@ fn apply_ln(arena: &mut Arena, a: &TSeries, mode: Mode) -> Result<TSeries, Obstr
         if mode.side == Side::Below && v % 2 != 0 {
             a = TSeries::neg(arena, &a);
         }
+        // `ln c` of a `c` with a logarithm would not be a polynomial in `l`.
         let c = a.coeff_at(arena, 0);
-        match constant_sign(arena, c) {
-            Some(true) => {}
-            Some(false) if a.coeffs.iter().all(|&co| is_known_real(arena, co)) => {}
-            _ => return Err(Obstruction::Unknown),
+        if walk::contains(arena, c, l) {
+            return Err(Obstruction::Unknown);
+        }
+        // Gruntz's leading terms (no limits) keep the rule of 0.43: a real
+        // `c` of known sign, with a real `w` when negative.
+        if !mode.limits {
+            match constant_sign(arena, c) {
+                Some(true) => {}
+                Some(false) if a.coeffs.iter().all(|&co| is_known_real(arena, co)) => {}
+                _ => return Err(Obstruction::Unknown),
+            }
         }
         let vl = {
             let ve = arena.int(v);
@@ -2639,16 +3621,7 @@ fn apply_ln(arena: &mut Arena, a: &TSeries, mode: Mode) -> Result<TSeries, Obstr
     let (u0, w) = a.split_constant(arena);
     // On the cut from below `ln` is `2πi` less than its principal value
     // there, which is the limit from above (SymPy's `log._eval_nseries`).
-    // (A non-real `w` whose visible terms are all real may leave the cut
-    // beyond the precision: undecided.)
-    let below = if approaches_cut(arena, u0, &w) {
-        match series_cut_side(arena, &w, false, mode) {
-            Some(s) if s != 0 => s < 0,
-            _ => return Err(Obstruction::NoExpansion),
-        }
-    } else {
-        false
-    };
+    let below = cut_below(arena, u0, &w, mode, arg)?;
     // ln(u0 + w) = ln u0 + ln(1 + w/u0)
     let inv_u0 = {
         let m1 = arena.neg_one;
@@ -2698,12 +3671,58 @@ pub(crate) fn ln_of_constant(arena: &mut Arena, c: ExprId) -> ExprId {
     eval::eval(arena, l)
 }
 
-/// Does `u0 + w` approach the negative real axis (the cut of `ln` and of
-/// fractional powers) with a correction `w` that is not known to be real?
-fn approaches_cut(arena: &mut Arena, u0: ExprId, w: &TSeries) -> bool {
-    is_known_real(arena, u0)
-        && constant_sign(arena, u0) == Some(false)
-        && !w.coeffs.iter().all(|&c| is_known_real(arena, c))
+/// Does `u₀ + w` (`w → 0`), the argument of `ln` or of a non-integer power,
+/// approach the cut `(−∞, 0)` from below, where the function is the
+/// continuation of its principal value from above (`ln u₀ − 2πi`,
+/// `e^{−2πiα}·u₀^α`)?
+///
+/// * `u₀` not known real (`1 + i`, a parameter without assumptions): no —
+///   off the cut, or the generic answer;
+/// * `u₀ > 0`: no;
+/// * `u₀ < 0` and a visible coefficient of `w` non-real: the side of the
+///   first one ([`series_cut_side`]); a definite
+///   [`Obstruction::NoExpansion`] where the two sides of a two-sided
+///   expansion differ (`ln(−1 + i·x)`);
+/// * `u₀` real of unknown sign (`a` declared real) and `w` non-real: a
+///   definite [`Obstruction::NoExpansion`] — for `a < 0` the side matters
+///   (before, the principal value from above was taken: `ln(a + i·x)` was
+///   `ln a + i·x/a + …` from both sides);
+/// * `u₀ ≤ 0` (or of unknown sign) and every visible coefficient of `w`
+///   real: along the cut, where the principal value is the limit from
+///   above — if the argument `arg` (expression, variable) is real on the
+///   side(s) of the expansion ([`real_on_side`]); otherwise a term beyond
+///   the precision may leave the cut ([`Obstruction::CutUndecided`]).
+///   Before, the visible coefficients decided alone: `ln(−1 − i·x⁶)` was
+///   `iπ` (it is `−iπ + i·x⁶ + …`).  Without `arg` (`None`) they do.
+fn cut_below(
+    arena: &mut Arena,
+    u0: ExprId,
+    w: &TSeries,
+    mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
+) -> Result<bool, Obstruction> {
+    if !is_known_real(arena, u0) {
+        return Ok(false);
+    }
+    let sign = constant_sign(arena, u0);
+    if sign == Some(true) {
+        return Ok(false);
+    }
+    if !w.coeffs.iter().all(|&c| is_known_real(arena, c)) {
+        if sign.is_none() {
+            return Err(Obstruction::NoExpansion);
+        }
+        return match series_cut_side(arena, w, false, mode) {
+            Some(s) if s != 0 => Ok(s < 0),
+            _ => Err(Obstruction::NoExpansion),
+        };
+    }
+    match arg {
+        Some((expr, var)) if !real_on_side(arena, expr, var, mode) => {
+            Err(Obstruction::CutUndecided)
+        }
+        _ => Ok(false),
+    }
 }
 
 /// `a^α` for a var-free non-integer exponent: `u0^α · Σ C(α,n) (w/u0)^n`.
@@ -2713,13 +3732,17 @@ fn approaches_cut(arena: &mut Arena, u0: ExprId, w: &TSeries) -> bool {
 /// when `v / denom(α)` is even (so that no `|x|` appears).  A genuine
 /// Puiseux series (`x^(5/2)`) or an `|x|` is a definite
 /// [`Obstruction::NoExpansion`]: the differentiation fallback would see only
-/// vanishing derivatives at low orders and return `0`.
+/// vanishing derivatives at low orders and return `0`.  The side of the cut
+/// `(−∞, 0)` a base tending to it approaches decides as for `ln`
+/// ([`cut_below`], with `arg` the expression of the base).
 fn pow_rational(
     arena: &mut Arena,
     a: &TSeries,
     alpha: ExprId,
-    side: Side,
+    mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
 ) -> Result<TSeries, Obstruction> {
+    let side = mode.side;
     let mut a = a.clone().normalized(arena);
     // No visible term: the valuation is hidden at this precision; fail
     // definitively so that the caller widens the window.
@@ -2743,21 +3766,11 @@ fn pow_rational(
     }
     let (u0, w) = a.split_constant(arena);
     // From below the cut `u^α = e^{−2πiα}` times its principal value there.
-    let below =
-        if arena.as_num(alpha).is_none_or(|r| !r.is_integer()) && approaches_cut(arena, u0, &w) {
-            let mode = Mode {
-                side,
-                log_var: None,
-                limits: false,
-                partial: false,
-            };
-            match series_cut_side(arena, &w, false, mode) {
-                Some(s) if s != 0 => s < 0,
-                _ => return Err(Obstruction::NoExpansion),
-            }
-        } else {
-            false
-        };
+    let below = if arena.as_num(alpha).is_none_or(|r| !r.is_integer()) {
+        cut_below(arena, u0, &w, mode, arg)?
+    } else {
+        false
+    };
     let inv_u0 = {
         let m1 = arena.neg_one;
         let p = arena.pow(u0, m1);
@@ -2976,10 +3989,10 @@ fn at_plus_infinity(arena: &mut Arena, a: &TSeries, mode: Mode) -> Option<(TSeri
         return None;
     }
     let c = a.coeff_at(arena, v);
-    if constant_sign(arena, c) != Some(true) {
+    if !stirling_direction(arena, c, mode) {
         return None;
     }
-    let ln_a = apply_ln(arena, &a, mode).ok()?;
+    let ln_a = apply_ln(arena, &a, mode, None).ok()?;
     let inv = TSeries::inverse(arena, &a)?;
     Some((ln_a, inv, -v))
 }
@@ -2993,11 +4006,45 @@ fn pole_to_plus_infinity(arena: &mut Arena, a: &TSeries, mode: Mode) -> Option<(
     }
     let a = a.clone().normalized(arena);
     let v = a.leading_exponent(arena)?;
-    if v >= 0 || constant_sign(arena, a.coeff_at(arena, v)) != Some(true) {
+    if v >= 0 {
+        return None;
+    }
+    let c = a.coeff_at(arena, v);
+    if !stirling_direction(arena, c, mode) {
         return None;
     }
     let inv = TSeries::inverse(arena, &a)?;
     Some((inv, -v))
+}
+
+/// [`off_negative_reals`] in a series, `c > 0` in Gruntz's leading terms
+/// (the rule of 0.43 there).
+fn stirling_direction(arena: &mut Arena, c: ExprId, mode: Mode) -> bool {
+    if mode.limits {
+        off_negative_reals(arena, c)
+    } else {
+        constant_sign(arena, c) == Some(true)
+    }
+}
+
+/// Is the constant `c` positive or certainly non-real, so that `c·t^{−p}`
+/// (`t → 0⁺`) tends to infinity in a sector `|arg| < π` where Stirling's
+/// series for `ln Γ`, `ψ`, `ψ⁽ᵐ⁾` holds (DLMF 5.11.1, 5.11.2, 5.15.8)?
+/// Before 0.44 only a positive `c` was accepted: `ψ(i·x)`, `ln Γ(x + i·x)`
+/// at `+∞` were refused.
+fn off_negative_reals(arena: &mut Arena, c: ExprId) -> bool {
+    if constant_sign(arena, c) == Some(true) {
+        return true;
+    }
+    if !walk::free_symbols(arena, c).is_empty() {
+        return false;
+    }
+    let parts = crate::base::complex::decompose(arena, c);
+    if !parts.exact {
+        return false;
+    }
+    let im = eval::eval(arena, parts.im);
+    crate::calculus::limit::const_sign(arena, im).is_some_and(|s| s != 0)
 }
 
 /// Number of terms `K` of an asymptotic series in `1/a` (valuation `p`) so
@@ -3036,6 +4083,7 @@ fn odd_even_sum(
 fn special_series(
     arena: &mut Arena,
     node: &ExprNode,
+    var: ExprId,
     mode: Mode,
     cache: &FxHashMap<ExprId, Option<TSeries>>,
 ) -> Result<TSeries, Obstruction> {
@@ -3168,8 +4216,8 @@ fn special_series(
             let g = TSeries::constant(arena, arena.euler_gamma, v);
             Ok(TSeries::add(arena, &inv, &g).truncate_known(v))
         }
-        ExprNode::LogGamma(a) => {
-            let a = child(cache, a)?;
+        ExprNode::LogGamma(a_expr) => {
+            let a = child(cache, a_expr)?;
             if let Some((ln_a, inv, p)) = at_plus_infinity(arena, &a, mode) {
                 // Stirling: (a − ½) ln a − a + ½ ln 2π + Σ B₂ₖ/(2k(2k−1) a^{2k−1})
                 let k_max = asymptotic_terms(a.known - a.shift, p);
@@ -3207,22 +4255,31 @@ fn special_series(
             if !arena.is_zero_structural(u0) {
                 return unknown;
             }
-            // ln Γ(a) = ln Γ(1 + a) − ln a for a → 0⁺.
+            // ln Γ(a) = ln Γ(1 + a) − ln a for a → 0: `ln Γ(1 + a)` is analytic
+            // at 0, so both sides have the cut `(−∞, 0)` of `ln a` there and
+            // agree on it (the principal values are the limits from above,
+            // `ln Γ(−½) = ln Γ(½) − ln(−½)`, mpmath), for an argument from any
+            // direction (`ln Γ(−x)` for `x → 0⁺` is `−ln x − iπ + γx + …`,
+            // `ln Γ(i·x)` is `−ln x − iπ/2 + …`).  Before 0.44 only a
+            // positive leading coefficient was accepted, so `ln Γ(x)` had an
+            // expansion for `x → 0⁻` but `ln Γ(−x)` none for `x → 0⁺`.
             let a_n = a.clone().normalized(arena);
-            let lead = a_n
-                .leading_exponent(arena)
-                .ok_or(Obstruction::NoExpansion)?;
+            let Some(lead) = a_n.leading_exponent(arena) else {
+                return Err(Obstruction::NoExpansion);
+            };
             let c = a_n.coeff_at(arena, lead);
-            if mode.log_var.is_none() || constant_sign(arena, c) != Some(true) {
+            // Gruntz's leading terms keep the rule of 0.43 (`c > 0`).
+            if mode.log_var.is_none() || (!mode.limits && constant_sign(arena, c) != Some(true)) {
                 return Err(Obstruction::NoExpansion);
             }
-            let ln_a = apply_ln(arena, &a_n, mode).map_err(|_| Obstruction::NoExpansion)?;
+            let ln_a =
+                apply_ln(arena, &a_n, mode, Some((a_expr, var))).map_err(definite_obstruction)?;
             let lg = ln_gamma_one_plus(arena, &a_n);
             let nl = TSeries::neg(arena, &ln_a);
             Ok(TSeries::add(arena, &lg, &nl))
         }
-        ExprNode::Si(a) | ExprNode::Ei(a) | ExprNode::Ci(a) => {
-            let a = child(cache, a)?;
+        ExprNode::Si(a_expr) | ExprNode::Ei(a_expr) | ExprNode::Ci(a_expr) => {
+            let a = child(cache, a_expr)?;
             let Some((u0, _)) = split_regular(arena, &a)? else {
                 return unknown;
             };
@@ -3234,7 +4291,7 @@ fn special_series(
                 ExprNode::Ei(_) => IntegralKind::Ei,
                 _ => IntegralKind::Ci,
             };
-            integral_at_zero(arena, kind, &a, mode)
+            integral_at_zero(arena, kind, &a, mode, Some((a_expr, var)))
         }
         ExprNode::Apply(f, ref args)
             if PowerAsymptotic::from_name(arena.symbol_name(f)).is_some() =>
@@ -3334,19 +4391,20 @@ fn special_series(
             if !arena.is_zero_structural(u0) {
                 return unknown;
             }
-            integral_at_zero(arena, kind, &a, mode)
+            integral_at_zero(arena, kind, &a, mode, Some((args[0], var)))
         }
-        ExprNode::Li(a) => {
-            let a = child(cache, a)?;
+        ExprNode::Li(a_expr) => {
+            let a = child(cache, a_expr)?;
             let Some((u0, _)) = split_regular(arena, &a)? else {
                 return unknown;
             };
             if !is_one_const(arena, u0) {
                 return unknown;
             }
-            // li(a) = Ei(ln a), ln a → 0.
-            let l = apply_ln(arena, &a, mode)?;
-            integral_at_zero(arena, IntegralKind::Ei, &l, mode)
+            // li(a) = Ei(ln a), ln a → 0 (real exactly where `a` is).
+            let l = apply_ln(arena, &a, mode, Some((a_expr, var)))?;
+            let ln_expr = arena.ln(a_expr);
+            integral_at_zero(arena, IntegralKind::Ei, &l, mode, Some((ln_expr, var)))
         }
         _ => unknown,
     }
@@ -3570,11 +4628,19 @@ enum IntegralKind {
 /// signs, for `a → 0` (DLMF 6.6.2, 6.6.5, 6.6.6; SymPy's `Ci(−x) = Ci(x) + iπ`
 /// is the principal `ln` of a negative `a`, and `Ei` of a real argument is
 /// real).  The logarithmic ones need a log-extended expansion.
+///
+/// For a non-real `a`, `Ei(a) = γ + ln a + Σ …` with the principal `ln` of
+/// the actual argument (mpmath's `ei(z) = γ + (ln z − ln(1/z))/2 + Σ …`):
+/// `Ei(i·x) = γ + ln x + iπ/2 + i·x + …` for `x → 0⁺`, and an argument
+/// approaching the negative reals from below gives `Ei − iπ` ([`cut_below`];
+/// before, `Ei(x + 2i·x³)` for `x → 0⁻` was `γ + ln(−x)`, it is that `−
+/// iπ`).  `arg` is the expression of `a` and the variable.
 fn integral_at_zero(
     arena: &mut Arena,
     kind: IntegralKind,
     a: &TSeries,
     mode: Mode,
+    arg: Option<(ExprId, ExprId)>,
 ) -> Result<TSeries, Obstruction> {
     let a = a.clone().normalized(arena);
     if a.coeffs.is_empty() {
@@ -3610,13 +4676,34 @@ fn integral_at_zero(
     if mode.log_var.is_none() {
         return Err(Obstruction::NoExpansion);
     }
-    let log_arg = if kind == IntegralKind::Ei {
+    // (A non-real argument of `Ei` is expanded in a series only; Gruntz's
+    // leading terms keep refusing it, as in 0.43.)
+    let real = a.coeffs.iter().all(|&c| is_known_real(arena, c));
+    let log_arg = if kind == IntegralKind::Ei && (real || !mode.limits) {
+        // A real argument: `ln|a|` — unless a term beyond the precision
+        // makes it non-real.
+        if real
+            && let Some((e, var)) = arg
+            && !real_on_side(arena, e, var, mode)
+        {
+            return Err(Obstruction::CutUndecided);
+        }
         abs_series(arena, &a, mode.side)?
     } else {
         a
     };
-    let ln = apply_ln(arena, &log_arg, mode).map_err(|_| Obstruction::NoExpansion)?;
+    let ln = apply_ln(arena, &log_arg, mode, arg).map_err(definite_obstruction)?;
     Ok(TSeries::add(arena, &series, &ln))
+}
+
+/// A failure that the differentiation fallback must not retry (see
+/// [`Obstruction::NoExpansion`]); [`Obstruction::CutUndecided`] stays, so
+/// that the precision is widened.
+fn definite_obstruction(e: Obstruction) -> Obstruction {
+    match e {
+        Obstruction::CutUndecided => Obstruction::CutUndecided,
+        _ => Obstruction::NoExpansion,
+    }
 }
 
 /// `K₀(u)` and `Y₀(u)` at a zero of `u` in a log-extended expansion (DLMF
@@ -3686,7 +4773,7 @@ fn log_bessel_series(
     };
     let i0 = TSeries::compose(arena, &bessel0, &u);
     let s = TSeries::compose(arena, &tail, &u);
-    let ln_u = apply_ln(arena, &u, mode).map_err(|_| Obstruction::NoExpansion)?;
+    let ln_u = apply_ln(arena, &u, mode, None).map_err(|_| Obstruction::NoExpansion)?;
     // ln(u/2) + γ
     let shift = {
         let two = arena.int(2);

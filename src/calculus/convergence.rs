@@ -83,14 +83,18 @@ fn test_convergence(arena: &mut Arena, body: ExprId, var: ExprId, absolute: bool
     if !matches!(arena.node(var), ExprNode::Symbol(_)) {
         return Convergence::Inconclusive;
     }
-    // 0. Constant terms.
+    // 0. Constant terms.  `Σ c` diverges only for a `c` known to be
+    //    nonzero: `Σ x` converges at `x = 0` (an unassumed `x` was reported
+    //    divergent before 0.44).
     if !walk::contains(arena, body, var) {
         let v = eval::eval(arena, body);
         trace!("convergence: body is constant w.r.t. var");
         return if arena.is_zero_structural(v) || arena.as_num(v).is_some_and(|r| r.is_zero()) {
             Convergence::Converges
-        } else {
+        } else if summation::const_nonzero(arena, v) {
             Convergence::Diverges
+        } else {
+            Convergence::Inconclusive
         };
     }
 
@@ -99,7 +103,8 @@ fn test_convergence(arena: &mut Arena, body: ExprId, var: ExprId, absolute: bool
         return c;
     }
 
-    // 2. Sums: term-wise.
+    // 2. Sums: term-wise.  When that is inconclusive the whole term may
+    //    still be decided below (`1 − cos(1/k)` by limit comparison).
     if let ExprNode::Add(ref terms) = arena.node(body).clone() {
         let terms: Vec<ExprId> = terms.to_vec();
         let mut convergent = 0usize;
@@ -108,16 +113,15 @@ fn test_convergence(arena: &mut Arena, body: ExprId, var: ExprId, absolute: bool
             match test_convergence(arena, t, var, absolute) {
                 Convergence::Converges => convergent += 1,
                 Convergence::Diverges => divergent += 1,
-                Convergence::Inconclusive => return Convergence::Inconclusive,
+                Convergence::Inconclusive => break,
             }
         }
-        if divergent == 0 {
+        if convergent == terms.len() {
             return Convergence::Converges;
         }
         if divergent == 1 && convergent == terms.len() - 1 {
             return Convergence::Diverges;
         }
-        return Convergence::Inconclusive;
     }
 
     // 3. Exact growth analysis.
@@ -133,12 +137,18 @@ fn test_convergence(arena: &mut Arena, body: ExprId, var: ExprId, absolute: bool
     }
 
     // 5. Bertrand series  c · k^a · ln(k)^b.
-    if let Some(c) = bertrand_test(arena, body, var) {
+    if let Some(c) = bertrand_test(arena, body, var, absolute) {
         return c;
     }
 
     // 6. Integral test for log-exp terms.
     if let Some(c) = integral_test(arena, body, var) {
+        return c;
+    }
+
+    // 7. Limit comparison with `1/k` and `1/k^p` (Hardy-field terms).
+    // (Such terms are eventually of one sign: absolute and plain agree.)
+    if let Some(c) = limit_comparison_test(arena, body, var) {
         return c;
     }
 
@@ -150,7 +160,17 @@ fn test_convergence(arena: &mut Arena, body: ExprId, var: ExprId, absolute: bool
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// `Σ c · (αk+β)^a · ln(α'k+β')^b` converges iff `a < −1`, or `a = −1` and `b < −1`.
-fn bertrand_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Convergence> {
+///
+/// With a `(−1)^k` factor the terms are eventually monotone in absolute
+/// value, so the alternating-series test decides: converges iff they tend
+/// to `0`, i.e. `a < 0`, or `a = 0` and `b < 0` (`Σ (−1)^k/ln k` was
+/// undecided; SymPy 1.14: `True`).  A divergence claim needs `c ≠ 0`.
+fn bertrand_test(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    absolute: bool,
+) -> Option<Convergence> {
     let factors: Vec<ExprId> = match arena.node(body) {
         ExprNode::Mul(ch) => ch.to_vec(),
         _ => vec![body],
@@ -158,11 +178,23 @@ fn bertrand_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Converg
     let mut a = Q::zero();
     let mut b = Q::zero();
     let mut saw_log = false;
+    let mut alternating = false;
+    let mut consts = Vec::new();
     for f in factors {
         if !walk::contains(arena, f, var) {
+            consts.push(f);
             continue;
         }
         let (base, exp) = arena.as_base_exp(f);
+        if arena.as_num(base).is_some_and(|r| *r == -Q::one()) {
+            // (−1)^(±k + c), c an integer
+            let (slope, c) = linear_in(arena, exp, var)?;
+            if !(slope.is_one() || slope == -Q::one()) || !c.is_integer() {
+                return None;
+            }
+            alternating = !alternating;
+            continue;
+        }
         let e = arena.as_num(exp).cloned()?;
         match arena.node(base).clone() {
             ExprNode::Ln(arg) => {
@@ -187,11 +219,20 @@ fn bertrand_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Converg
     }
     let minus_one = -Q::one();
     trace!("convergence: Bertrand series with a = {a}, b = {b}");
-    Some(if a < minus_one || (a == minus_one && b < minus_one) {
-        Convergence::Converges
+    let converges = if alternating && !absolute {
+        a.is_negative() || (a.is_zero() && b.is_negative())
     } else {
-        Convergence::Diverges
-    })
+        a < minus_one || (a == minus_one && b < minus_one)
+    };
+    if converges {
+        return Some(Convergence::Converges);
+    }
+    let c = match consts.len() {
+        0 => arena.one,
+        1 => consts[0],
+        _ => arena.mul(&consts),
+    };
+    summation::const_nonzero(arena, c).then_some(Convergence::Diverges)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -241,6 +282,10 @@ pub(crate) struct Growth {
     b_symbolic: bool,
     c: Q,
     alternating: bool,
+    /// The term may vanish identically for some parameter values (a
+    /// symbolic constant factor or geometric base not known to be nonzero):
+    /// `Σ x^k·k!` converges at `x = 0`, so it is not reported divergent.
+    may_vanish: bool,
 }
 
 impl Growth {
@@ -304,6 +349,14 @@ impl Growth {
     }
 
     fn decide(&self, absolute: bool) -> Convergence {
+        match self.decide_generic(absolute) {
+            Convergence::Diverges if self.may_vanish => Convergence::Inconclusive,
+            c => c,
+        }
+    }
+
+    /// [`decide`](Self::decide) for a term that does not vanish identically.
+    fn decide_generic(&self, absolute: bool) -> Convergence {
         if self.a.is_positive() {
             return Convergence::Diverges;
         }
@@ -429,7 +482,11 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
         b_symbolic: false,
         c: Q::zero(),
         alternating: shape.alternating,
+        may_vanish: false,
     };
+    if !walk::free_symbols(arena, shape.constant).is_empty() {
+        g.may_vanish = !summation::const_nonzero(arena, shape.constant);
+    }
     // Algebraic part.
     for (_, p) in &shape.lin_pows {
         g.c += p;
@@ -454,6 +511,9 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
             g.b_has_numeric = true;
         } else {
             g.b_symbolic = true;
+            if !summation::const_nonzero(arena, *base) {
+                g.may_vanish = true;
+            }
         }
     }
     // Factorials: ((αk+β)!)^e → a += eα, b += e(α ln α − α), c += e(β + 1/2).
@@ -478,6 +538,43 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
     Some(g)
 }
 
+/// Is `u` real for every integer value of `var`?  By the assumption
+/// system, with `var` replaced by a symbol declared integer (the summation
+/// index need not carry the assumption itself).
+fn real_at_integers(arena: &mut Arena, u: ExprId, var: ExprId) -> bool {
+    use crate::base::assumptions::{Assumption, AssumptionCache, Assumptions, Props};
+    let mut declared = Assumptions::default().with(Assumption::Integer);
+    declared.normalize_declared();
+    let mut i = 0usize;
+    let index = loop {
+        let name = if i == 0 {
+            "_i".to_owned()
+        } else {
+            format!("_i_{i}")
+        };
+        i += 1;
+        match arena.symbols.get(&name) {
+            None => {
+                let s = arena.symbol(&name);
+                if let ExprNode::Symbol(sid) = *arena.node(s) {
+                    arena.set_symbol_assumptions(sid, declared);
+                }
+                break s;
+            }
+            Some(sid) if arena.symbol_assumptions(sid) == declared => {
+                let s = arena.intern(ExprNode::Symbol(sid));
+                if !walk::contains(arena, u, s) {
+                    break s;
+                }
+            }
+            Some(_) => {}
+        }
+    };
+    let at_index = crate::transforms::subs::subs(arena, u, var, index);
+    let at_index = eval::eval(arena, at_index);
+    AssumptionCache::new().query(arena, at_index, Props::REAL) == Some(true)
+}
+
 fn numeric_abs(arena: &mut Arena, e: ExprId) -> Option<f64> {
     if !walk::free_symbols(arena, e).is_empty() {
         return None;
@@ -498,8 +595,13 @@ fn linear_in(arena: &Arena, e: ExprId, var: ExprId) -> Option<(Q, Q)> {
 // Bounded factors
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Remove `sin(·)` / `cos(·)` factors (bounded by 1 for real arguments).
-/// Returns `None` if there was nothing to strip.
+/// Remove `sin(·)` / `cos(·)` factors whose argument is real at every
+/// integer `var` (bounded by 1 there).  Returns `None` if there was
+/// nothing to strip.
+///
+/// A non-real argument is unbounded: `|sin((1 + i)k)| ~ e^k/2`, and before
+/// 0.44 `Σ sin((1 + i)k)/k²` was reported convergent, as was `Σ sin(xk)/k²`
+/// for a complex `x` (an unassumed symbol).
 fn strip_bounded_factors(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<ExprId> {
     let ExprNode::Mul(ref factors) = arena.node(body).clone() else {
         return None;
@@ -508,14 +610,18 @@ fn strip_bounded_factors(arena: &mut Arena, body: ExprId, var: ExprId) -> Option
     let mut kept = Vec::new();
     let mut stripped = false;
     for f in factors {
-        let bounded = match arena.node(f).clone() {
-            ExprNode::Sin(_) | ExprNode::Cos(_) => true,
-            ExprNode::Pow(base, exp) => {
-                matches!(arena.node(base), ExprNode::Sin(_) | ExprNode::Cos(_))
-                    && arena.as_num(exp).is_some_and(|r| r.is_positive())
-            }
-            _ => false,
+        let trig_arg = |arena: &Arena, e: ExprId| match *arena.node(e) {
+            ExprNode::Sin(u) | ExprNode::Cos(u) => Some(u),
+            _ => None,
         };
+        let arg = match arena.node(f).clone() {
+            ExprNode::Sin(u) | ExprNode::Cos(u) => Some(u),
+            ExprNode::Pow(base, exp) if arena.as_num(exp).is_some_and(|r| r.is_positive()) => {
+                trig_arg(arena, base)
+            }
+            _ => None,
+        };
+        let bounded = arg.is_some_and(|u| real_at_integers(arena, u, var));
         if bounded && walk::contains(arena, f, var) {
             stripped = true;
         } else {
@@ -606,6 +712,135 @@ fn integral_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Converg
     } else {
         None
     }
+}
+
+/// Largest term (in nodes) [`limit_comparison_test`] examines.
+const MAX_LIMIT_COMPARISON_NODES: usize = 60;
+
+/// Limit comparison for terms in a Hardy field (eventually monotone and of
+/// constant sign): `Σ a_k` diverges when `k·a_k` tends to a nonzero limit
+/// or to `±∞`, and converges absolutely when `k^p·a_k` stays bounded for
+/// some `p > 1`.  `Σ sin(1/k)` (diverges) and `Σ sin(1/k²)` (converges)
+/// were undecided (SymPy 1.14: `False`, `True`).  Both claims are
+/// cross-checked at `k = 10⁶`.
+fn limit_comparison_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Convergence> {
+    if walk::post_order_ids(arena, body).len() > MAX_LIMIT_COMPARISON_NODES
+        || !is_hardy_term(arena, body, var)
+    {
+        return None;
+    }
+    let inf = arena.infinity;
+    let k_times = arena.mul(&[var, body]);
+    let k_times = eval::eval(arena, k_times);
+    let l1 = crate::calculus::limit::limit(arena, k_times, var, inf).ok()?;
+    if l1 == arena.infinity || l1 == arena.neg_infinity {
+        let v = value_at(arena, k_times, var, 1_000_000)?;
+        let positive = l1 == arena.infinity;
+        return (v.abs() > 1.0 && (v > 0.0) == positive).then_some(Convergence::Diverges);
+    }
+    if !walk::free_symbols(arena, l1).is_empty() || walk::has_unevaluated(arena, l1) {
+        return None;
+    }
+    let l1v = crate::transforms::evalf::eval_const_f64(arena, l1)?;
+    if !l1v.is_finite() {
+        return None;
+    }
+    if l1v.abs() > 1e-12 {
+        let v = value_at(arena, k_times, var, 1_000_000)?;
+        return ((v - l1v).abs() <= 0.5 * l1v.abs()).then_some(Convergence::Diverges);
+    }
+    if !arena.is_zero_structural(l1) {
+        return None;
+    }
+    for (pn, pd) in [(2, 1), (3, 2), (5, 4), (11, 10)] {
+        let p = arena.rational(pn, pd);
+        let kp = arena.pow(var, p);
+        let scaled = arena.mul(&[kp, body]);
+        let scaled = eval::eval(arena, scaled);
+        let Ok(lp) = crate::calculus::limit::limit(arena, scaled, var, inf) else {
+            continue;
+        };
+        if lp == arena.infinity || lp == arena.neg_infinity {
+            continue;
+        }
+        if !walk::free_symbols(arena, lp).is_empty() || walk::has_unevaluated(arena, lp) {
+            return None;
+        }
+        let Some(lv) = crate::transforms::evalf::eval_const_f64(arena, lp) else {
+            continue;
+        };
+        if !lv.is_finite() {
+            continue;
+        }
+        let v = value_at(arena, scaled, var, 1_000_000)?;
+        return (v.abs() <= 2.0 * lv.abs() + 1.0).then_some(Convergence::Converges);
+    }
+    None
+}
+
+/// Is `e` built from `var`, numbers, `+`, `×`, rational powers, powers of
+/// positive rationals, `ln`, `exp`, `atan`, and `sin`, `cos`, `tan`,
+/// `asin`, `sinh`, `cosh`, `tanh`, `asinh`, `atanh` of arguments tending
+/// to `0` as `var → ∞`?  Such a function lies in a Hardy field (functions
+/// analytic at the limit of their argument preserve membership).
+fn is_hardy_term(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
+    let mut stack = vec![e];
+    let mut small_args = Vec::new();
+    while let Some(id) = stack.pop() {
+        if !walk::contains(arena, id, var) {
+            // a constant (`π/2`): no other symbols, real
+            if !walk::free_symbols(arena, id).is_empty()
+                || crate::base::assumptions::AssumptionCache::new().query(
+                    arena,
+                    id,
+                    crate::base::assumptions::Props::REAL,
+                ) != Some(true)
+            {
+                return false;
+            }
+            continue;
+        }
+        match arena.node(id).clone() {
+            ExprNode::Num(_) => {}
+            ExprNode::Symbol(_) => {
+                if id != var {
+                    return false;
+                }
+            }
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
+            ExprNode::Pow(b, x) => {
+                if arena.as_num(x).is_some() {
+                    stack.push(b);
+                } else if arena.as_num(b).is_some_and(|r| r.is_positive()) {
+                    stack.push(x);
+                } else {
+                    return false;
+                }
+            }
+            ExprNode::Ln(a) | ExprNode::Exp(a) | ExprNode::Neg(a) | ExprNode::Atan(a) => {
+                stack.push(a)
+            }
+            ExprNode::Sin(a)
+            | ExprNode::Cos(a)
+            | ExprNode::Tan(a)
+            | ExprNode::Asin(a)
+            | ExprNode::Sinh(a)
+            | ExprNode::Cosh(a)
+            | ExprNode::Tanh(a)
+            | ExprNode::Asinh(a)
+            | ExprNode::Atanh(a) => {
+                small_args.push(a);
+                stack.push(a);
+            }
+            _ => return false,
+        }
+    }
+    let inf = arena.infinity;
+    small_args.into_iter().all(|a| {
+        !walk::contains(arena, a, var)
+            || crate::calculus::limit::limit(arena, a, var, inf)
+                .is_ok_and(|l| arena.is_zero_structural(l))
+    })
 }
 
 fn value_at(arena: &mut Arena, e: ExprId, var: ExprId, n: i64) -> Option<f64> {

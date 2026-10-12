@@ -28,12 +28,16 @@ mod v35_limits;
 mod v35_ntheory;
 #[path = "v35/v35_numeric.rs"]
 mod v35_numeric;
+#[path = "v35/v35_numint.rs"]
+mod v35_numint;
 #[path = "v35/v35_poly.rs"]
 mod v35_poly;
 #[path = "v35/v35_quadrature.rs"]
 mod v35_quadrature;
 #[path = "v35/v35_rational.rs"]
 mod v35_rational;
+#[path = "v35/v35_series.rs"]
+mod v35_series;
 #[path = "v35/v35_sets.rs"]
 mod v35_sets;
 #[path = "v35/v35_solve.rs"]
@@ -42,6 +46,8 @@ mod v35_solve;
 mod v35_special;
 #[path = "v35/v35_stats.rs"]
 mod v35_stats;
+#[path = "v35/v35_sums.rs"]
+mod v35_sums;
 #[path = "v35/v35_transforms.rs"]
 mod v35_transforms;
 #[path = "v35/v35_trig_values.rs"]

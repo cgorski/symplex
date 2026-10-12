@@ -8,6 +8,56 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Summation and products respect declared assumptions and principal
+  branches** (9,000 sums and products against exact partial sums and
+  mpmath `nsum`/`nprod` at 40 digits): wrong 90 → 0, unreachable branches
+  232 → 0, hangs 13 → 0, refusals 2,987 → 672.  Case splits the
+  parameters cannot reach are dropped (`Σ_{k=0}^{n} k(−a)ᵏ` for a positive
+  `a` had a `−a = 1` branch; `Σ C(n, k)(−1)ᵏ` for a positive `n` had `n =
+  0`); `Π √(k − 3)` was `√(rising_factorial(−2, n))`, wrong in sign at `n
+  = 2` (a non-integer power is pulled out of a product only over positive
+  factors; `Π √(−k) = iⁿ√(n!)`; SymPy has the same flaw); `is_convergent`
+  called `Σ sin((1 + i)k)/k²` and `Σ sin(xk)/k²` (complex `x`) convergent
+  and `Σ xᵏ·k!` divergent (it converges at `x = 0`).  New closed forms:
+  alternating rational series, geometric series whose ratio is bounded
+  by assumptions or complex, shifted log series, `Σ C(2k, k)xᵏ`,
+  alternating binomial sums by cases, `Σ 1/(n + k) = H(2n) − H(n)`,
+  `Σ_{k≥m} 1/k² = ψ′(m)`, `Π b^{f(k)}`; convergence by the alternating
+  series test with logarithms and by limit comparison.  `Σ k^m·xᵏ` with a
+  symbolic ratio is fast (`k²⁰·xᵏ` took over 60 s).
+- **`integrate_numeric` and `integrate_numeric_with` no longer understate
+  their error** (1,600 integrals against mpmath at 40 digits: beyond the
+  tolerance 179 → 0, estimate below the true error 467 → 0, refusals 346
+  → 15).  Next to a singularity at a nonzero end the smoothing retry cut
+  the integrand off at `1 − x ≈ 2⁻⁵³` without seeing it: `∫₀¹ dx/√(1 −
+  x)` was 1.9999999898808887 with an estimate of `3·10⁻¹⁰`, `∫₀¹
+  ln²(1 − x)/√(1 − x) dx` was 15.99998.  Smoothing is used only where
+  `f64` nodes can approach the end, the far piece of an infinite range
+  uses QUADPACK's map, and an estimate beyond the tolerance is answered
+  by the arbitrary-precision quadrature (17 certified digits);
+  `integrate_numeric` returns a value only within its documented
+  tolerance (it accepted 1000×).  Narrow peaks (Lorentzian, Gaussian,
+  `sech`) and kinks are split off (a narrow Gaussian integrated to 0);
+  the rounding floor follows QUADPACK (`∫|f|`).  `integrate_definite` no
+  longer refuses correct closed forms against a cut-off quadrature
+  (`∫₀¹ (1 − x)^(−9/10) dx = 10`).  Slower on singular integrands (median
+  150–570 ms in a debug build); smooth ones unchanged.
+- **Series of complex-valued functions** (3,500 cases against mpmath
+  residuals): wrong 34 → 0, refusals 880 → 678, hangs 2 → 0.  Powers with
+  a non-numeric exponent next to their cut took the value from above on
+  both sides (`(−2 − 3i·x)^i` for `x → 0⁺` lacked the factor `e^{2π}`); an
+  imaginary part beyond the working precision did not decide the side
+  of a cut (`ln(−1 − i·x⁶) = −iπ + …` was `iπ`; 18 special-function cases
+  through the Puiseux route); a real parameter that may lie on a cut was
+  taken as off it (`asin(a − x + i·x²)` for `a > 0`; now refused);
+  `cos(i·ln x + x)` claimed a false remainder.  New expansions: `ln` of a
+  complex leading term, `Ei`/`Ci`/`ln Γ`/`ψ` of complex or negative
+  arguments, inverse trigonometric and hyperbolic functions at `±∞`,
+  Puiseux series at infinity, `W` at `−1/e`, one-sided expansions of
+  special functions beside their cuts.
+
 ## [0.43.0] - 2026-10-11
 
 Solvers now answer over the declared domain of the unknown: for a

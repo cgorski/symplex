@@ -30,8 +30,6 @@ pub(crate) fn eval_sum_symbolic(
     }
 }
 
-// Not yet called from `eval` (that file is owned elsewhere); see the doc below.
-#[allow(dead_code)]
 /// Attempt closed-form evaluation of `Π_{var=lower}^{upper} body`.
 ///
 /// Same contract as [`eval_sum_symbolic`]; called from the `Product_` arm of

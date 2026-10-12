@@ -1637,7 +1637,8 @@ impl Expr<Numeric> {
     /// SymPy); a function whose one-sided expansions differ (`exp(−1/x)`,
     /// `|x|`) or with a fractional-power or logarithmic singularity at the
     /// point has no two-sided expansion.  `point = ±∞` gives the expansion
-    /// in `1/var`, which may contain `ln var` (Stirling's series; see
+    /// in `1/var`, which may contain `ln var` (Stirling's series) or
+    /// fractional powers of `1/var` (`√(x + 1)`; see
     /// [`series_at_infinity`](Self::series_at_infinity)).  Elementary
     /// functions use closed-form coefficients, so high orders stay fast.
     /// When no such expansion exists or it cannot be established, a formal
