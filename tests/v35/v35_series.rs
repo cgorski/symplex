@@ -295,6 +295,10 @@ fn zeta_at_a_regular_point_to_low_order() {
 /// Oracle: mpmath `lambertw(−1/e + 10⁻⁸) = −1 + 2.3316…·10⁻⁴ − …`,
 /// `lambertw(−1/e − 10⁻⁸) = −1 + 2.3316…·10⁻⁴i + …`; residuals decay like
 /// the next order.
+///
+/// Changed in 0.45: the coefficient `√(−2e)` of the left series is
+/// `i·√2·e^(1/2)` (`eval` splits powers of negative constants; SymPy 1.14
+/// `sqrt(-2*E)` → `sqrt(2)*I*exp(1/2)`).
 #[test]
 fn lambert_w_at_its_branch_point() {
     let ctx = Context::new();
@@ -306,7 +310,8 @@ fn lambert_w_at_its_branch_point() {
     );
     let left = ser(&ctx, "LambertW(x)", "-exp(-1)", 2, L);
     assert!(
-        left.to_string().contains("sqrt(-2*E)*sqrt(-x - exp(-1))"),
+        left.to_string()
+            .contains("sqrt(2)*sqrt(-x - exp(-1))*exp(1/2)*I"),
         "{left}"
     );
     assert!(refused(&ctx, "LambertW(x)", "-exp(-1)", 2, B));

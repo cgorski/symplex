@@ -177,6 +177,13 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         // r.is_zero() — convention: Heaviside(0) = 1/2
                         arena.rational(1, 2)
                     }
+                } else if let Some(s) = real_constant_sign(arena, evaled) {
+                    // SymPy: `Heaviside(1 - sqrt(2))` → 0.
+                    if s == std::cmp::Ordering::Greater {
+                        arena.one
+                    } else {
+                        arena.zero
+                    }
                 } else if evaled == inner {
                     id
                 } else {
@@ -412,18 +419,11 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::BoolTrue | ExprNode::BoolFalse => id,
 
             // ── Relational operators ───────────────────────────────
-            ExprNode::Gt(a, b) => {
+            ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
                 let na = cache.get(&a).copied().unwrap_or(a);
                 let nb = cache.get(&b).copied().unwrap_or(b);
-                if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
-                    if ra > rb {
-                        arena.bool_true
-                    } else {
-                        arena.bool_false
-                    }
-                } else if let Some(holds) = order_against_zero(arena, na, nb, true)
-                    .or_else(|| order_by_difference(arena, na, nb, true))
-                {
+                let kind = RelationKind::of(arena.node(id));
+                if let Some(holds) = relation_truth(arena, kind, na, nb) {
                     if holds {
                         arena.bool_true
                     } else {
@@ -432,64 +432,12 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 } else if na == a && nb == b {
                     id
                 } else {
-                    arena.gt(na, nb)
-                }
-            }
-            ExprNode::Ge(a, b) => {
-                let na = cache.get(&a).copied().unwrap_or(a);
-                let nb = cache.get(&b).copied().unwrap_or(b);
-                if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
-                    if ra >= rb {
-                        arena.bool_true
-                    } else {
-                        arena.bool_false
+                    match kind {
+                        RelationKind::Gt => arena.gt(na, nb),
+                        RelationKind::Ge => arena.ge(na, nb),
+                        RelationKind::Eq => arena.eq_(na, nb),
+                        RelationKind::Ne => arena.ne_(na, nb),
                     }
-                } else if let Some(holds) = order_against_zero(arena, na, nb, false)
-                    .or_else(|| order_by_difference(arena, na, nb, false))
-                {
-                    if holds {
-                        arena.bool_true
-                    } else {
-                        arena.bool_false
-                    }
-                } else if na == a && nb == b {
-                    id
-                } else {
-                    arena.ge(na, nb)
-                }
-            }
-            ExprNode::Eq_(a, b) => {
-                let na = cache.get(&a).copied().unwrap_or(a);
-                let nb = cache.get(&b).copied().unwrap_or(b);
-                if let Some(equal) =
-                    gaussian_equal(arena, na, nb).or_else(|| equal_by_difference(arena, na, nb))
-                {
-                    if equal {
-                        arena.bool_true
-                    } else {
-                        arena.bool_false
-                    }
-                } else if na == a && nb == b {
-                    id
-                } else {
-                    arena.eq_(na, nb)
-                }
-            }
-            ExprNode::Ne(a, b) => {
-                let na = cache.get(&a).copied().unwrap_or(a);
-                let nb = cache.get(&b).copied().unwrap_or(b);
-                if let Some(equal) =
-                    gaussian_equal(arena, na, nb).or_else(|| equal_by_difference(arena, na, nb))
-                {
-                    if equal {
-                        arena.bool_false
-                    } else {
-                        arena.bool_true
-                    }
-                } else if na == a && nb == b {
-                    id
-                } else {
-                    arena.ne_(na, nb)
                 }
             }
 
@@ -1143,6 +1091,71 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
+/// The four relational node kinds (`a < b` is `Gt(b, a)`, `a ≤ b` is
+/// `Ge(b, a)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelationKind {
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
+impl RelationKind {
+    /// The kind of a relational node; `Ne` for anything else (callers match
+    /// the four relational nodes first).
+    fn of(node: &ExprNode) -> Self {
+        match node {
+            ExprNode::Gt(..) => Self::Gt,
+            ExprNode::Ge(..) => Self::Ge,
+            ExprNode::Eq_(..) => Self::Eq,
+            _ => Self::Ne,
+        }
+    }
+}
+
+/// The truth of the relation `kind` between the evaluated operands `a`,
+/// `b`, as `eval` decides it: two rationals compare; an order against 0 by
+/// the assumptions ([`order_against_zero`]); an order or an equality by the
+/// difference `a − b` (a rational, a certified sign, the square-root tower
+/// zero test, the minimal polynomial: [`order_by_difference`],
+/// [`equal_by_difference`]).  `None` when undecided.
+fn relation_truth(arena: &mut Arena, kind: RelationKind, a: ExprId, b: ExprId) -> Option<bool> {
+    match kind {
+        RelationKind::Gt | RelationKind::Ge => {
+            let strict = kind == RelationKind::Gt;
+            if let (Some(ra), Some(rb)) = (arena.as_num(a), arena.as_num(b)) {
+                return Some(if strict { ra > rb } else { ra >= rb });
+            }
+            order_against_zero(arena, a, b, strict)
+                .or_else(|| order_by_difference(arena, a, b, strict))
+        }
+        RelationKind::Eq | RelationKind::Ne => {
+            let equal = gaussian_equal(arena, a, b).or_else(|| equal_by_difference(arena, a, b))?;
+            Some(equal == (kind == RelationKind::Eq))
+        }
+    }
+}
+
+/// The truth of the relational node `rel` (`Gt`, `Ge`, `Eq_`, `Ne`) as
+/// [`eval`] decides it, after evaluating its two operands; `None` when
+/// `eval` leaves it a relation (or `rel` is not one).  For Boolean
+/// `simplify`, which must decide every relation `eval` decides
+/// (`Eq(cos(π/8), √(2 + √2)/2)`: `eval` gave `True` by the square-root
+/// tower, `simplify` kept the relation up to 0.44).
+pub(crate) fn decide_relation(arena: &mut Arena, rel: ExprId) -> Option<bool> {
+    let (a, b) = match *arena.node(rel) {
+        ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+            (a, b)
+        }
+        _ => return None,
+    };
+    let kind = RelationKind::of(arena.node(rel));
+    let a = eval(arena, a);
+    let b = eval(arena, b);
+    relation_truth(arena, kind, a, b)
+}
+
 /// `a > 0`, `0 > b` (`strict`) or `a ≥ 0`, `0 ≥ b` for a constant (free of
 /// symbols) `a` or `b` whose sign the assumption engine knows from its
 /// structure — `exp` of a real is positive, a square of a real is
@@ -1209,8 +1222,9 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
         Some(q) => q,
         None => {
             // A certified nonzero value decides at once (the minimal
-            // polynomial of a long radical can take seconds).
-            if let Some(s) = arena.sign_of_real_constant(d) {
+            // polynomial of a long radical can take seconds).  `d` is real:
+            // `a` and `b` are.
+            if let Some(s) = certified_real_sign(arena, d) {
                 return Some(s == std::cmp::Ordering::Greater);
             }
             if sqrt_tower_is_zero(arena, d) {
@@ -1220,7 +1234,7 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
                 Some(q) => q,
                 // Irrational, so nonzero: the certified sign decides.
                 None => {
-                    return Some(arena.sign_of_real_constant(d)? == std::cmp::Ordering::Greater);
+                    return Some(certified_real_sign(arena, d)? == std::cmp::Ordering::Greater);
                 }
             }
         }
@@ -1247,6 +1261,13 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
 /// is only 0 to the precision of the zero search may hide a smaller part
 /// (`sin²1 + cos²1 − 1` is exactly 0, but no evaluation proves it, and the
 /// side of the cut stays undecided, as `evalf` leaves it).
+///
+/// An algebraic `x` whose imaginary part is only 0 to the precision
+/// reached is decided by its minimal polynomial ([`algebraic_is_real`]):
+/// the real root of a cubic written by Cardano's formula, whose complex
+/// cube roots cancel only exactly, is real (up to 0.44 it was undecided,
+/// and `√λ`, `ln λ` of such a negative eigenvalue were refused by `evalf`
+/// as `PrecisionExhausted` on the cut).
 fn known_real(arena: &mut Arena, x: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
@@ -1261,14 +1282,104 @@ fn known_real(arena: &mut Arena, x: ExprId) -> bool {
             if arena.is_zero_structural(im) {
                 return true;
             }
-            if walk::has_unevaluated(arena, im) {
+            if !walk::has_unevaluated(arena, im)
+                && let Ok((z, Settled::Certified)) = evalf_settled(arena, im, 16, ZeroSearch::Deep)
+            {
+                return z.0.is_zero() && z.1.is_zero();
+            }
+            algebraic_is_real(arena, x)
+        }
+    }
+}
+
+/// Is the constant algebraic number `x` real, by its minimal polynomial
+/// `m` (small expressions only, see below)?  `m` is irreducible, so `x`
+/// is one of its roots; the roots get certified disjoint inclusion disks
+/// ([`crate::poly::roots::root_balls`], which also certifies a root real
+/// when the mirror image of its disk meets no other disk), and `x` its
+/// certified 30-digit value.  When the value's error disk meets exactly one
+/// root disk, `x` is that root, and real when the root is.  `false` when
+/// anything is not certified.
+///
+/// `x` is [`small_algebraic`], or a sum of such terms whose minimal
+/// polynomials have degrees of product at most [`MAX_RESULTANT_DEGREE`]
+/// ([`small_algebraic_sum`]).  The static bound of
+/// [`largest_resultant_degree`] counts the radicals of `ω·∛u` (`ω` a cube
+/// root of unity, `u` a quadratic complex number) as independent, and a
+/// root by Cardano's formula exceeds it, though its two terms have minimal
+/// polynomials of degree 6 and the resultant of the sum has degree 36 (70
+/// ms in a debug build).  The test runs only for a constant whose
+/// imaginary part the deep zero search left at 0 to its precision.
+fn algebraic_is_real(arena: &mut Arena, x: ExprId) -> bool {
+    use crate::base::bigcomplex::{c_abs, c_sub};
+    use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+    use astro_float::{BigFloat, RoundingMode};
+    if !small_algebraic(arena, x) && !small_algebraic_sum(arena, x) {
+        return false;
+    }
+    let Some(mp) = crate::poly::algebraic::minimal_polynomial(arena, x) else {
+        return false;
+    };
+    match mp.degree() {
+        Some(1) => return true,
+        Some(d) if (2..=64).contains(&d) => {}
+        _ => return false,
+    }
+    let Ok((z, Settled::Certified)) = evalf_settled(arena, x, 30, ZeroSearch::Cap) else {
+        return false;
+    };
+    const PREC: usize = 256;
+    let rm = RoundingMode::Up;
+    let roots = crate::poly::roots::rootof_roots(&mp, PREC);
+    let balls = crate::poly::roots::root_balls(&mp, &roots, PREC);
+    // The value carries 30 digits relative to its modulus: its error is
+    // below |z|·10⁻²⁸ (two digits of margin).
+    let margin = BigFloat::from_f64(1e-28, 64);
+    let eps = c_abs(&z, 64, rm).mul(&margin, 64, rm);
+    let mut meets = None;
+    for (k, ball) in balls.iter().enumerate() {
+        let Some(r) = &ball.radius else {
+            return false;
+        };
+        let d = c_abs(
+            &c_sub(&z, &ball.value, PREC, RoundingMode::ToEven),
+            64,
+            RoundingMode::Down,
+        );
+        // Reach of the two disks, enlarged by 2⁻³⁰ for the roundings.
+        let reach = r.add(&eps, 64, rm);
+        let reach = reach.add(&reach.mul(&BigFloat::from_f64(1e-9, 64), 64, rm), 64, rm);
+        if d.cmp(&reach).is_none_or(|o| o <= 0) {
+            if meets.is_some() {
                 return false;
             }
-            matches!(
-                evalf_settled(arena, im, 16, ZeroSearch::Deep),
-                Ok((z, Settled::Certified)) if z.0.is_zero() && z.1.is_zero()
-            )
+            meets = Some(k);
         }
+    }
+    meets.is_some_and(|k| balls[k].real)
+}
+
+/// The sign of the symbol-free constant `x`, which the caller knows to be
+/// real, from a certified 16-digit value (its error ball excludes 0);
+/// `None` when it does not settle or is not real to the digits.  The
+/// caller's realness proof matters: an imaginary part below the relative
+/// precision of the value is not shown (`−1 − i·(e^{10⁻³⁰} − 1 − 10⁻³⁰)`
+/// evaluates to `−1`).  [`Arena::sign_of_real_constant`] proves realness
+/// by the assumptions.
+pub(crate) fn certified_real_sign(arena: &Arena, x: ExprId) -> Option<std::cmp::Ordering> {
+    use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+    if !walk::free_symbols(arena, x).is_empty() {
+        return None;
+    }
+    match evalf_settled(arena, x, 16, ZeroSearch::Cap) {
+        Ok((z, Settled::Certified)) if z.1.is_zero() && !z.0.is_zero() => {
+            Some(if z.0.is_negative() {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            })
+        }
+        _ => None,
     }
 }
 
@@ -1376,6 +1487,39 @@ fn small_algebraic(arena: &Arena, d: ExprId) -> bool {
 /// The largest resultant [`algebraic_rational_value`] lets
 /// `minimal_polynomial` compute (see [`largest_resultant_degree`]).
 const MAX_RESULTANT_DEGREE: u64 = 64;
+
+/// Is `x` a sum of [`small_algebraic`] terms, in at most 160 nodes, whose
+/// minimal polynomials have degrees of product at most
+/// [`MAX_RESULTANT_DEGREE`]?  `minimal_polynomial` composes a sum term by
+/// term, by resultants of degree `deg(partial sum) · deg(term)`, so the
+/// product bounds every resultant it forms on `x` (the terms' own work is
+/// bounded by [`small_algebraic`]).
+fn small_algebraic_sum(arena: &mut Arena, x: ExprId) -> bool {
+    let ExprNode::Add(terms) = arena.node(x).clone() else {
+        return false;
+    };
+    if walk::post_order_ids(arena, x).len() > 160 {
+        return false;
+    }
+    let mut degree: usize = 1;
+    for t in terms {
+        if arena.as_num(t).is_some() {
+            continue;
+        }
+        if !small_algebraic(arena, t) {
+            return false;
+        }
+        let Some(d) = crate::poly::algebraic::minimal_polynomial(arena, t).and_then(|m| m.degree())
+        else {
+            return false;
+        };
+        degree = degree.saturating_mul(d);
+        if degree as u64 > MAX_RESULTANT_DEGREE {
+            return false;
+        }
+    }
+    true
+}
 
 /// An upper bound on the degree of the largest resultant
 /// `minimal_polynomial` forms on the nodes `order` (a post-order of a
@@ -1734,13 +1878,15 @@ fn sqrt_tower_is_zero(arena: &mut Arena, d: ExprId) -> bool {
                         let r = if tower_is_zero(&radicand) {
                             radicand
                         } else {
-                            if arena.sign_of_real_constant(b) != Some(std::cmp::Ordering::Greater) {
+                            // Tower elements are real (every radicand so far
+                            // was certified positive).
+                            if certified_real_sign(arena, b) != Some(std::cmp::Ordering::Greater) {
                                 return false;
                             }
                             match tower.sqrt(&radicand, k) {
                                 Some(s) => {
                                     let e = tower.to_expr(arena, &s, k);
-                                    match arena.sign_of_real_constant(e) {
+                                    match certified_real_sign(arena, e) {
                                         Some(std::cmp::Ordering::Greater) => s,
                                         Some(std::cmp::Ordering::Less) => {
                                             s.into_iter().map(|c| -c).collect()
@@ -4045,12 +4191,12 @@ fn constant_is_negative(arena: &mut Arena, w: ExprId) -> bool {
     }
     match cache.query(arena, w, Props::NEGATIVE) {
         Some(negative) => negative && cache.query(arena, w, Props::FINITE) == Some(true),
+        // The value first: realness may take a minimal polynomial.
         None => {
-            known_real(arena, w)
-                && matches!(
-                    evalf_settled(arena, w, 16, ZeroSearch::Cap),
-                    Ok((z, Settled::Certified)) if z.1.is_zero() && z.0.is_negative()
-                )
+            matches!(
+                evalf_settled(arena, w, 16, ZeroSearch::Cap),
+                Ok((z, Settled::Certified)) if z.1.is_zero() && z.0.is_negative()
+            ) && known_real(arena, w)
         }
     }
 }
@@ -4180,12 +4326,25 @@ fn exp_pow_merges(arena: &Arena, f: ExprId, g: ExprId) -> bool {
 /// the perfect `n`-th power factor of a positive base comes out
 /// ([`positive_root`]), and a negative base takes the principal branch.
 fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
+    if arena.as_num(base).is_none() {
+        return negative_constant_power(arena, base, exp);
+    }
     let base_r = arena.as_num(base)?.clone();
     let exp_r = arena.as_num(exp)?;
 
-    // exp must be 1/n for positive integer n ≥ 2
+    // (−r)^q = r^q·(−1)^q for a negative rational base and any non-integer
+    // rational q on the principal branch (arg(−r) = π), each factor in its
+    // normal form (SymPy: `(-8)**(7/3)` → `128*(-1)**(1/3)`, `(-8)**(-1/3)`
+    // → `-(-1)**(2/3)/2`).  Up to 0.44 only `(−r)^(1/n)` was split, and
+    // `(−8)^(7/3)` stayed.
     if !exp_r.numer().is_one() {
-        return None;
+        if exp_r.is_integer() || !base_r.is_negative() || base_r == -Q::one() {
+            return None;
+        }
+        let abs_id = arena.num_ratio(-base_r);
+        let magnitude = arena.pow(abs_id, exp);
+        let unit = arena.pow(arena.neg_one, exp);
+        return Some(arena.mul(&[magnitude, unit]));
     }
     let n: u32 = exp_r.denom().to_u32()?;
     if n < 2 {
@@ -4210,6 +4369,69 @@ fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId>
         return Some(arena.mul(&[abs_root, neg_one_root]));
     }
     positive_root(arena, &base_r, exp, n)
+}
+
+/// `w^q = (−w)^q·(−1)^q` for a negative real constant `w` that is not a
+/// rational and a non-integer rational `q`, on the principal branch
+/// (`arg w = π`):
+///
+/// * a product with a negative coefficient that the assumptions know
+///   negative, as SymPy's `Mul._eval_power` (`sqrt(-pi)` → `I*sqrt(pi)`,
+///   `(-pi)**(1/3)` → `(-1)**(1/3)*pi**(1/3)`);
+/// * a constant whose realness the assumptions leave open (it has non-real
+///   parts, as the real root of a cubic by Cardano's formula) and which is
+///   real ([`known_real`]: its minimal polynomial) and certified negative.
+///   `evalf` cannot take `√w` or `ln w` on the cut when the imaginary part
+///   of `w` cancels only exactly; `(−w)^q` it can.  Up to 0.44 `√λ` of
+///   such an eigenvalue was refused (`PrecisionExhausted`).
+///
+/// A real sum such as `1 − √2` keeps its power, as in SymPy.
+///
+/// A product with a rational coefficient `c`, `|c| ≠ 1`, whose rest
+/// `sgn(c)·z` is not known positive gives up its magnitude first, `(c·z)^q
+/// = |c|^q·(sgn(c)·z)^q` (scaling by `|c| > 0` keeps the argument):
+/// `(2i)^(7/3) = −4·∛2·∛i`, as SymPy writes it (`√(2π)` keeps its
+/// form).
+fn negative_constant_power(arena: &mut Arena, w: ExprId, exp: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if arena.as_num(exp)?.is_integer() || !walk::free_symbols(arena, w).is_empty() {
+        return None;
+    }
+    let mut cache = AssumptionCache::new();
+    if let ExprNode::Mul(cs) = arena.node(w)
+        && let Some(c) = cs.first().and_then(|&c| arena.as_num(c)).cloned()
+        && !c.abs().is_one()
+    {
+        let magnitude = arena.num_ratio(c.abs());
+        let rest = arena.div(w, magnitude);
+        if cache.query(arena, rest, Props::POSITIVE) == Some(true) {
+            return None;
+        }
+        let outer = arena.pow(magnitude, exp);
+        let inner =
+            negative_constant_power(arena, rest, exp).unwrap_or_else(|| arena.pow(rest, exp));
+        return Some(arena.mul(&[outer, inner]));
+    }
+
+    let negative = match arena.node(w) {
+        ExprNode::Mul(cs) => {
+            cs.first()
+                .is_some_and(|&c| arena.as_num(c).is_some_and(Signed::is_negative))
+                && cache.query(arena, w, Props::NEGATIVE) == Some(true)
+                && cache.query(arena, w, Props::FINITE) == Some(true)
+        }
+        ExprNode::Add(_) => {
+            cache.query(arena, w, Props::REAL).is_none() && constant_is_negative(arena, w)
+        }
+        _ => false,
+    };
+    if !negative {
+        return None;
+    }
+    let minus_w = arena.neg(w);
+    let magnitude = arena.pow(minus_w, exp);
+    let unit = arena.pow(arena.neg_one, exp);
+    Some(arena.mul(&[magnitude, unit]))
 }
 
 /// `r^(1/n)` (`exp` is the node `1/n`) for a non-negative rational `r`, when
@@ -4362,7 +4584,29 @@ fn eval_sign(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
             return Some(arena.zero);
         }
     }
-    None
+    // A real constant of certified sign (SymPy: `sign(1 - sqrt(2))` → -1);
+    // up to 0.44 only rationals folded, and `sign(λ)` of a negative root
+    // by Cardano's formula stayed though `λ < 0` was decided.
+    match real_constant_sign(arena, inner)? {
+        std::cmp::Ordering::Greater => Some(arena.one),
+        _ => Some(arena.neg_one),
+    }
+}
+
+/// The sign of the symbol-free constant `x` when it is real by
+/// [`known_real`] (the assumptions, a certified exact zero imaginary part,
+/// or its minimal polynomial) and its certified value settles nonzero
+/// ([`certified_real_sign`]); `None` otherwise.
+fn real_constant_sign(arena: &mut Arena, x: ExprId) -> Option<std::cmp::Ordering> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if !walk::free_symbols(arena, x).is_empty()
+        || AssumptionCache::new().query(arena, x, Props::FINITE) != Some(true)
+    {
+        return None;
+    }
+    // The value first: realness may take a minimal polynomial.
+    let sign = certified_real_sign(arena, x)?;
+    known_real(arena, x).then_some(sign)
 }
 
 fn eval_asin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -4858,16 +5102,23 @@ fn extremum_of_real_constants(arena: &mut Arena, args: &[ExprId], min: bool) -> 
     }
     let mut cache = AssumptionCache::new();
     for &a in args {
-        if cache.query(arena, a, Props::REAL) != Some(true)
-            || !crate::base::walk::free_symbols(arena, a).is_empty()
+        if !crate::base::walk::free_symbols(arena, a).is_empty()
+            || cache.query(arena, a, Props::FINITE) != Some(true)
         {
+            return None;
+        }
+    }
+    // Real by the assumptions, else by `known_real` (a root by Cardano's
+    // formula is, by its minimal polynomial; up to 0.44 `Max(λ, −4)` stayed).
+    for &a in args {
+        if cache.query(arena, a, Props::REAL) != Some(true) && !known_real(arena, a) {
             return None;
         }
     }
     let mut best = args[0];
     for &a in &args[1..] {
         let d = arena.sub(a, best);
-        let s = arena.sign_of_real_constant(d)?;
+        let s = certified_real_sign(arena, d)?;
         if (min && s == std::cmp::Ordering::Less) || (!min && s == std::cmp::Ordering::Greater) {
             best = a;
         }
@@ -6805,6 +7056,48 @@ mod tests {
 
     fn display(a: &Arena, id: ExprId) -> String {
         a.display(id).to_string()
+    }
+
+    /// Before (0.44): `sign_of_real_constant(−1 − i·(e^{10⁻³⁰} − 1 −
+    /// 10⁻³⁰))` was `Less`: the certified 16-digit value shows no
+    /// imaginary part (it is `−5·10⁻⁶¹`; mpmath `exp(mpf(10)**-30) - 1 -
+    /// mpf(10)**-30` = `5.0000000000000000000000000000016…e-61`).  Now the
+    /// constant must be real by the assumptions.
+    #[test]
+    fn sign_of_real_constant_needs_realness() {
+        let mut a = Arena::new();
+        let one = a.one;
+        let ten = a.int(10);
+        let minus_thirty = a.int(-30);
+        let h = a.pow(ten, minus_thirty);
+        let e = a.exp(h);
+        let neg_h = a.neg(h);
+        let neg_one = a.neg_one;
+        let hidden = a.add(&[e, neg_one, neg_h]);
+        let im = a.mul(&[a.i_unit, hidden]);
+        let neg_im = a.neg(im);
+        let z = a.add(&[a.neg_one, neg_im]);
+        assert_eq!(a.sign_of_real_constant(z), None, "{}", display(&a, z));
+        // Real constants keep their certified sign.
+        let ln2 = {
+            let two = a.int(2);
+            a.ln(two)
+        };
+        assert_eq!(
+            a.sign_of_real_constant(ln2),
+            Some(std::cmp::Ordering::Greater)
+        );
+        let sqrt2 = {
+            let two = a.int(2);
+            a.sqrt(two)
+        };
+        let d = a.sub(sqrt2, one);
+        assert_eq!(
+            a.sign_of_real_constant(d),
+            Some(std::cmp::Ordering::Greater)
+        );
+        let d = a.sub(one, sqrt2);
+        assert_eq!(a.sign_of_real_constant(d), Some(std::cmp::Ordering::Less));
     }
 
     // ── sin ──────────────────────────────────────────────────────────

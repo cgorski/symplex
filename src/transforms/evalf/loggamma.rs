@@ -306,7 +306,7 @@ pub(super) fn error_bound(z: &Complex, bz: Bound, v: &Complex, prec: usize) -> B
 /// π cot πu` with `|cot πu| ≤ cosh(πb)/max(2d, sinh(π|b|))`, `b = Im u` and
 /// `d` the distance to the nearest integer (`|sin πt| ≥ 2|t|` for `|t| ≤ ½`,
 /// `sinh(π|b|) ≥ π|b|`).
-fn log2_psi_bound(x: f64, y: f64, r: f64) -> Option<f64> {
+pub(super) fn log2_psi_bound(x: f64, y: f64, r: f64) -> Option<f64> {
     if !(r.is_finite() && r <= 0.125) {
         return None;
     }

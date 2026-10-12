@@ -2437,6 +2437,50 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
                 _ => arena.neg(arena.i_unit),
             };
         }
+        // (−1)^(i + r/d) = (−1)^i·(−1)^(r/d) with 0 < r < d: the
+        // exponent comes into (0, 1), as SymPy's `NegativeOne._eval_power`
+        // writes it (`(-1)**(59/3)` → `-(-1)**(2/3)`, `(-1)**(-1/3)` →
+        // `-(-1)**(2/3)`).  Exact on the principal branch, `(−1)^q =
+        // e^{iπq}` for every rational `q`.  Up to 0.44 the exponent stayed,
+        // and equal values had different forms (`(−1)^(−59/3)`, `(−1)^(1/3)`).
+        if !exp_r.is_integer() {
+            use num_integer::Integer;
+            let denom = denom.clone();
+            let (whole, rest) = numer.div_mod_floor(&denom);
+            if !whole.is_zero() {
+                let nid = arena.intern_num(Ratio::new(rest, denom));
+                let reduced = arena.intern(ExprNode::Num(nid));
+                let unit = canon_pow(arena, base, reduced);
+                return if whole.is_odd() {
+                    canon_neg(arena, unit)
+                } else {
+                    unit
+                };
+            }
+        }
+    }
+
+    // i^(2k + r) = (−1)^k·i^r with 0 < r < 2 for a non-integer rational
+    // exponent, as SymPy's `ImaginaryUnit._eval_power` (`I**(7/3)` →
+    // `-I**(1/3)`): `i^q = e^{iπq/2}` on the principal branch.
+    if base == arena.i_unit
+        && let Some(exp_r) = arena.as_num(exp)
+        && !exp_r.is_integer()
+    {
+        use num_integer::Integer;
+        let denom = exp_r.denom().clone();
+        let two_denom = &denom * BigInt::from(2);
+        let (half_turns, rest) = exp_r.numer().div_mod_floor(&two_denom);
+        if !half_turns.is_zero() {
+            let nid = arena.intern_num(Ratio::new(rest, denom));
+            let reduced = arena.intern(ExprNode::Num(nid));
+            let unit = canon_pow(arena, base, reduced);
+            return if half_turns.is_odd() {
+                canon_neg(arena, unit)
+            } else {
+                unit
+            };
+        }
     }
 
     // (-n)^(1/2) → i * sqrt(n) for negative numeric n

@@ -329,6 +329,9 @@ fn polylog_next_to_its_limit() {
 /// `(0.612640388900115358817932002617 - 0.0510321042589037241448767526801j)`,
 /// `polylog(mpc(mpf(5)/3,1), mpf(1)/2)` =
 /// `(0.570339795883659347916654308767 - 0.0776119881152776414877100509693j)`.
+/// Outside the disc it was refused ("not yet supported") until 0.45; mpmath
+/// `mp.dps=32`: `polylog(mpc(1.5,0.5), 2)` =
+/// `(1.2018348432242740219763366783893 - 1.9397098237644310193005761416166j)`.
 #[test]
 fn polylog_of_a_complex_order() {
     let ctx = Context::new();
@@ -344,6 +347,9 @@ fn polylog_of_a_complex_order() {
     ] {
         assert_eq!(dec(&ctx, src, 30).unwrap(), want, "{src}");
     }
-    // Outside the disc: still refused.
-    assert_refused(&ctx, "polylog(3/2 + I/2, 2)", "not yet supported");
+    // Outside the disc (the inversion formula, since 0.45).
+    assert_eq!(
+        dec(&ctx, "polylog(3/2 + I/2, 2)", 30).unwrap(),
+        "1.20183484322427402197633667839 - 1.93970982376443101930057614162*i"
+    );
 }

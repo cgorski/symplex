@@ -38,8 +38,11 @@
 //!
 //! Polynomial convergence of a rational term (`Σ 1/(k² + 1)`) is handled
 //! before this module, by Euler–Maclaurin with a proven remainder
-//! (`emsum.rs`); a polynomially convergent term of any other kind is
-//! refused ([`SymplexError::Unevaluable`]); divergent sums are
+//! (`emsum.rs`); a smooth term that is not hypergeometric (`ln k/k²`,
+//! `H_k/k³`) by its expansion at infinity (`asymsum.rs`, tried after the
+//! dominated series below; before 0.45 refused); a polynomially convergent
+//! term of any other kind is refused ([`SymplexError::Unevaluable`]);
+//! divergent sums are
 //! [`SymplexError::Divergent`].  A term that is not hypergeometric but a sum
 //! of hypergeometric terms of geometric decay times factors of polynomial
 //! growth (`λᵏ·ln(k!)/k!`, `ln(k)/2ᵏ`) is summed term by term against a
@@ -405,6 +408,11 @@ pub(super) fn infinite_sum(
 ) -> Result<(Complex, Bound), SymplexError> {
     let Some((p_ratio, q_ratio, constant)) = term_ratio(arena, body, var) else {
         if let Some(result) = dominated_sum(arena, body, var, lo, prec, rm, part) {
+            return result;
+        }
+        // A smooth term of polynomial decay: its expansion at infinity
+        // (`asymsum.rs`; before 0.45 refused).
+        if let Some(result) = super::asymsum::asymptotic_sum(arena, body, var, lo, prec, rm, part) {
             return result;
         }
         return Err(unevaluable(format!(

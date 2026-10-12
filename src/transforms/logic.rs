@@ -816,13 +816,25 @@ pub(crate) fn simplify_bool(arena: &mut Arena, root: ExprId) -> ExprId {
 /// Operands are simplified individually (memoised), which keeps the cost
 /// linear in the number of atoms instead of running the whole engine over
 /// a large boolean tree.
+///
+/// Every atom that `eval` decides is replaced by its truth value first,
+/// by `eval`'s own decision ([`decide_relation`]: the rational difference,
+/// the square-root tower, the minimal polynomial, the certified sign), and
+/// again after its operands are simplified.  Up to 0.44 the two sides
+/// were simplified separately and that decision never ran:
+/// `Eq(cos(π/8), √(2 + √2)/2).simplify()` stayed a relation while
+/// `eval` gave `True`.
+///
+/// [`decide_relation`]: crate::transforms::eval::decide_relation
 pub(crate) fn simplify_bool_full(arena: &mut Arena, root: ExprId) -> ExprId {
     use crate::simplify::simplify_engine::{SimplifyOpts, unified_simplify};
+    use crate::transforms::eval::decide_relation;
 
     let atoms_list = atoms(arena, root);
     let opts = SimplifyOpts::default();
     let mut operand_memo: FxHashMap<ExprId, ExprId> = FxHashMap::default();
     let mut pairs: Vec<(ExprId, ExprId)> = Vec::new();
+    let truth = |arena: &Arena, t: bool| if t { arena.bool_true } else { arena.bool_false };
     for atom in atoms_list {
         let (a, b) = match arena.node(atom) {
             ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
@@ -830,6 +842,10 @@ pub(crate) fn simplify_bool_full(arena: &mut Arena, root: ExprId) -> ExprId {
             }
             _ => continue,
         };
+        if let Some(t) = decide_relation(arena, atom) {
+            pairs.push((atom, truth(arena, t)));
+            continue;
+        }
         let mut simp = |arena: &mut Arena, e: ExprId| -> ExprId {
             if let Some(&s) = operand_memo.get(&e) {
                 return s;
@@ -848,6 +864,10 @@ pub(crate) fn simplify_bool_full(arena: &mut Arena, root: ExprId) -> ExprId {
             ExprNode::Ge(..) => arena.ge(na, nb),
             ExprNode::Eq_(..) => arena.eq_(na, nb),
             _ => arena.ne_(na, nb),
+        };
+        let new_atom = match decide_relation(arena, new_atom) {
+            Some(t) => truth(arena, t),
+            None => new_atom,
         };
         pairs.push((atom, new_atom));
     }

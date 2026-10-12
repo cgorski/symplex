@@ -259,6 +259,41 @@ fn small_int(arena: &Arena, id: ExprId) -> Option<i64> {
 /// multiplication.  Larger exponents stay as opaque `Re`/`Im` nodes.
 const MAX_EXPANDED_POWER: i64 = 32;
 
+/// The sign of the finite real nonzero `base` of a power: by the
+/// assumptions, else, for a symbol-free base whose decomposition `bp` is
+/// exact with imaginary part 0 (so the base is real), from its certified
+/// value.  `None` when unknown (or the base may be 0 or infinite).
+///
+/// A negative symbol-free sum (`−√5/2 − 1/2`) gives `None` as well: its
+/// powers keep opaque parts, by which `apart` recognises the imaginary
+/// roots `±√(−√5/2 − 1/2)` of `x⁴ + x² − 1` and builds their real
+/// quadratic term from both roots (`−√5/(5·(x² + √5/2 + 1/2))`); from
+/// explicit parts its residue route leaves the coefficient as `2√φ/(−4φ^(3/2)
+/// + 2√φ)`.
+fn real_base_sign(
+    arena: &mut Arena,
+    base: ExprId,
+    bp: &Parts,
+    assumptions: &mut AssumptionCache,
+) -> Option<std::cmp::Ordering> {
+    if assumptions.query(arena, base, Props::FINITE) != Some(true) {
+        return None;
+    }
+    let constant = walk::free_symbols(arena, base).is_empty();
+    let negative_ok = !(constant && matches!(arena.node(base), ExprNode::Add(_)));
+    if assumptions.query(arena, base, Props::POSITIVE) == Some(true) {
+        return Some(std::cmp::Ordering::Greater);
+    }
+    if assumptions.query(arena, base, Props::NEGATIVE) == Some(true) {
+        return negative_ok.then_some(std::cmp::Ordering::Less);
+    }
+    if bp.exact && bp.im == arena.zero && constant {
+        let sign = crate::transforms::eval::certified_real_sign(arena, base)?;
+        return (sign == std::cmp::Ordering::Greater || negative_ok).then_some(sign);
+    }
+    None
+}
+
 fn decompose_node(
     arena: &mut Arena,
     id: ExprId,
@@ -516,6 +551,44 @@ fn decompose_node(
                         exact: true,
                     };
                 }
+            }
+
+            // A real base of known sign under a real exponent `e`: `b^e` is
+            // real for `b > 0`, and `|b|^e·(cos πe + i·sin πe)` for `b < 0`
+            // on the principal branch (`arg b = π`).  The sign from the
+            // assumptions (`√(−p) = i·√p` for a positive `p`, `n^(1/3)` for
+            // a negative `n`), else, for a constant whose decomposition is
+            // real, from its certified value (`∛(28/27 − √87/9)` is real).
+            // As SymPy's `Pow.as_real_imag`; up to 0.44 both stayed opaque.
+            if ep.exact
+                && ep.im == arena.zero
+                && (arena.as_num(exp).is_some()
+                    || assumptions.query(arena, exp, Props::REAL) == Some(true))
+                && let Some(sign) = real_base_sign(arena, base, &bp, assumptions)
+            {
+                if sign == std::cmp::Ordering::Greater {
+                    return real_parts(arena, id);
+                }
+                let minus_base = arena.neg(base);
+                let magnitude = arena.pow(minus_base, exp);
+                let angle = arena.mul(&[exp, arena.pi]);
+                let c = fcos(arena, angle);
+                let s = fsin(arena, angle);
+                let c = crate::transforms::eval::eval(arena, c);
+                let s = crate::transforms::eval::eval(arena, s);
+                let zero = arena.zero;
+                let scaled = |arena: &mut Arena, t: ExprId| {
+                    if t == zero {
+                        zero
+                    } else {
+                        arena.mul(&[magnitude, t])
+                    }
+                };
+                return Parts {
+                    re: scaled(arena, c),
+                    im: scaled(arena, s),
+                    exact: true,
+                };
             }
 
             // Branch cuts (non-integer powers of possibly negative or

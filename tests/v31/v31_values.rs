@@ -173,8 +173,13 @@ fn a_nonzero_value_below_the_exponent_range_is_refused() {
 }
 
 /// A value that is 0, or only 0 to the precision reached, still prints as
-/// `0`; a tiny part next to a normal one is negligible; the sign of an
-/// underflow is still undecided.
+/// `0`; a tiny part next to a normal one is negligible.
+///
+/// Changed in 0.45: the sign of the underflow `erfc(10⁵)` is `1`, not a
+/// refusal: `evalf` certifies the underflow positive, and `eval` folds the
+/// sign of a real constant from its certified value (SymPy 1.14:
+/// `sign(erfc(10**5))` → 1; mpmath: `erfc(mpf(10)**5)` =
+/// 5.234880679754046e-4342944825 > 0).
 #[test]
 fn zeros_and_negligible_parts_are_unchanged_by_the_underflow_rule() {
     let ctx = Context::new();
@@ -187,8 +192,5 @@ fn zeros_and_negligible_parts_are_unchanged_by_the_underflow_rule() {
     );
     assert_eq!(dec("exp(-10^10) + 1").unwrap(), "1");
     assert_eq!(dec("1 + I*exp(-10^10)").unwrap(), "1");
-    assert!(matches!(
-        dec("sign(erfc(10^5))"),
-        Err(SymplexError::PrecisionExhausted { .. })
-    ));
+    assert_eq!(dec("sign(erfc(10^5))").unwrap(), "1");
 }

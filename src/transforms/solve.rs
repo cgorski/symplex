@@ -27,10 +27,17 @@
 //!   `unrad`), every candidate checked
 //! - **Symbolic coefficients:** polynomials factored over `ℤ[x, params]`
 //! - **Substitutions:** exponentials of one rate or a common base
-//!   (`eˣ + e⁻ˣ = 3`, `4ˣ − 5·2ˣ + 6 = 0`), trigonometric functions of
-//!   one angle by `t = tan(x/2)` (`sin x + cos x = 1`, `sin 2x = sin x`),
-//!   sums of logarithms (exponentiated, candidates checked)
-//! - **Lambert W:** mixed polynomial–exponential forms
+//!   (`eˣ + e⁻ˣ = 3`, `4ˣ − 5·2ˣ + 6 = 0`), hyperbolic functions through
+//!   exponentials (`sinh x + cosh x = 3`), trigonometric functions of one
+//!   angle by `t = tan(x/2)` (`sin x + cos x = 1`, `sin 2x = sin x`,
+//!   `tan 2x = tan x`), sums of logarithms and one logarithm of a
+//!   non-linear argument (exponentiated, candidates checked)
+//! - **Lambert W:** mixed polynomial–exponential and logarithmic forms
+//!   (`x·eˣ = c`, `eˣ = 2x + π`, `x·ln x = c`, `xˣ = c`), a power times
+//!   an exponential (`x² = 2ˣ`, `x²·eˣ = 3`, `(x + 1)·eˣ = 2`), powers
+//!   with a logarithm (`x²·ln x = 1`), every real branch (`W₀`, `W₋₁`)
+//! - **Polynomial denominators:** the numerator of `P(x)/Q(x)` for a
+//!   transcendental `P` (`ln(x)/x = 1/4`), its candidates checked
 //!
 //! # Design
 //!
@@ -857,6 +864,12 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
         if any_identity {
             return SolveOutcome::Identity;
         }
+        // Every factor with the variable has no solution (each one proved
+        // so): neither has the product (`(e^(x/2) + 1)·(e^(x/2) + 2)`; refused
+        // before 0.44).
+        if solutions.is_empty() && !unsolved {
+            return SolveOutcome::NoSolution("no factor of the product has a solution".into());
+        }
         if !solutions.is_empty() && !unsolved {
             // (Every root a pole: the whole product decides, below — a
             // principal root of a periodic factor is not all its roots.)
@@ -960,10 +973,24 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     // Step 4c: exponentials of one rate (`e^x + e^(−x) = 3`,
     // `4^x − 5·2^x + 6 = 0`), trigonometric functions of one angle
     // (`sin x + cos x = 1`, `sin 2x = sin x`), sums of logarithms.
-    if let Some(solutions) = try_exponential_substitution(arena, expr, var, period)
-        && !solutions.is_empty()
-    {
-        return SolveOutcome::Solutions(solutions);
+    for hyperbolic in [false, true] {
+        let outcome = if hyperbolic {
+            // Not after peeling proved there is no real solution (`cosh x =
+            // 1/2`), which the exponentials would answer with complex roots.
+            if domain_empty {
+                continue;
+            }
+            try_hyperbolic_substitution(arena, expr, var, period)
+        } else {
+            try_exponential_substitution(arena, expr, var, period)
+        };
+        match outcome {
+            Some(SolveOutcome::Solutions(solutions)) if !solutions.is_empty() => {
+                return SolveOutcome::Solutions(solutions);
+            }
+            Some(SolveOutcome::NoSolution(_)) => domain_empty = true,
+            _ => {}
+        }
     }
     if let Some(solutions) = try_half_angle_substitution(arena, expr, var, period)
         && !solutions.is_empty()
@@ -985,6 +1012,10 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     if let Some(var_sym) = var_sym_opt
         && !variable_may_be_nonreal(arena, var)
         && let Some(solutions) = try_solve_lambert(arena, expr, var, var_sym)
+            .filter(|s| !s.is_empty())
+            .or_else(|| try_solve_power_exp(arena, expr, var, period))
+            .filter(|s| !s.is_empty())
+            .or_else(|| try_lambert_power_log(arena, expr, var))
         && !solutions.is_empty()
     {
         return SolveOutcome::Solutions(solutions);
@@ -994,6 +1025,23 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
         return SolveOutcome::NoSolution(
             "equation has no real solutions (range restriction of exp/sin/cos/cosh/abs)".into(),
         );
+    }
+
+    // Step 6: the numerator over a polynomial denominator (`ln(x)/x = 1/4`
+    // as `ln x = x/4`, `(eˣ + 1/3)/x = 0` as `eˣ = −1/3`): every root of
+    // `expr` is one of the numerator, whose candidates `solve_impl` checks
+    // against `expr` (the poles are dropped), and a numerator without
+    // solutions proves `expr` has none.  The numerator has no polynomial
+    // denominator left, so this does not repeat.  Before 0.44 these were
+    // refused unless the whole was a product.
+    if let Some(num) = numerator_over_polynomial(arena, expr, var)
+        && numerator_over_polynomial(arena, num, var).is_none()
+    {
+        match solve_raw(arena, num, var, period) {
+            SolveOutcome::Solutions(s) if !s.is_empty() => return SolveOutcome::Solutions(s),
+            SolveOutcome::NoSolution(reason) => return SolveOutcome::NoSolution(reason),
+            _ => {}
+        }
     }
     SolveOutcome::Solutions(Vec::new())
 }
@@ -3645,12 +3693,18 @@ fn perfect_power_base(c: &Q) -> Option<(BigInt, i64)> {
 /// is peeled back.  SymPy: `solve(exp(x) + exp(-x) - 3)` →
 /// `[log(3/2 − √5/2), log(√5/2 + 3/2)]`, `solve(2**(2*x) - 5*2**x + 6)`
 /// → `[1, log(3)/log(2)]`; both were refused before 0.31.
+///
+/// `NoSolution` when the equation in `t` is a polynomial over ℚ (its roots
+/// all found) and no root has a real preimage (`eˣ + 3e^(x/2) + 2 = 0`:
+/// `t = −1, −2`, `exp` of a real argument is positive), as peeling proves
+/// `eˣ = −1` has no real solution; before 0.44 such equations were
+/// refused.
 fn try_exponential_substitution(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     period: Option<ExprId>,
-) -> Option<Vec<Solution>> {
+) -> Option<SolveOutcome> {
     let mut atoms: Vec<ExprId> = Vec::new();
     walk_var_atoms(arena, expr, var, |id| {
         let ok = match arena.node(id) {
@@ -3736,16 +3790,91 @@ fn try_exponential_substitution(
         }
     };
     let mut out: Vec<Solution> = Vec::new();
-    for ts in solutions_unless_identity(arena, sub, t)? {
-        if let Some(back) = solve_by_peeling(arena, generator, ts.value, var, period) {
-            for s in back {
-                if !out.iter().any(|o| o.value == s.value) {
-                    out.push(s);
+    let t_roots = solutions_unless_identity(arena, sub, t)?;
+    let mut all_without_preimage = !t_roots.is_empty();
+    for ts in t_roots {
+        match solve_by_peeling(arena, generator, ts.value, var, period) {
+            Some(back) => {
+                all_without_preimage &= back.is_empty();
+                for s in back {
+                    if !out.iter().any(|o| o.value == s.value) {
+                        out.push(s);
+                    }
                 }
             }
+            None => all_without_preimage = false,
         }
     }
-    Some(out)
+    if out.is_empty() && all_without_preimage {
+        let (num, _) = polybridge::fraction_parts(arena, sub);
+        let num = crate::transforms::expand::expand(arena, num);
+        let num = crate::transforms::eval::eval(arena, num);
+        if polybridge::expr_to_poly(arena, num, t).is_some() {
+            return Some(SolveOutcome::NoSolution(
+                "no root of the equation in the exponential has a real preimage (exp of a real argument is positive)"
+                    .into(),
+            ));
+        }
+    }
+    Some(SolveOutcome::Solutions(out))
+}
+
+/// Equations in `sinh`, `cosh`, `tanh` (and exponentials) of the variable:
+/// rewritten in exponentials (`sinh u = (eᵘ − e⁻ᵘ)/2`, …) and solved by
+/// [`try_exponential_substitution`]; the candidates are checked against the
+/// original equation.  SymPy: `solve(sinh(x) + cosh(x) - 3)` → `[log(3)]`,
+/// `solve(sinh(2*x) - sinh(x))` → `[0, -I*pi/3, I*pi/3, I*pi]`; both were
+/// refused before 0.44 (the single inversions `sinh x = 2`, `cosh x = 2`
+/// were solved).
+fn try_hyperbolic_substitution(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    period: Option<ExprId>,
+) -> Option<SolveOutcome> {
+    let mut hyperbolic = false;
+    walk_var_atoms(arena, expr, var, |id| match arena.node(id) {
+        ExprNode::Sinh(_) | ExprNode::Cosh(_) | ExprNode::Tanh(_) => {
+            hyperbolic = true;
+            true
+        }
+        ExprNode::Exp(_) => true,
+        ExprNode::Pow(b, _) => !expr_contains_var(arena, *b, var),
+        _ => false,
+    })?;
+    if !hyperbolic {
+        return None;
+    }
+    let rewritten = arena.rewrite_as_exp_expr(expr);
+    let rewritten = crate::transforms::eval::eval(arena, rewritten);
+    if rewritten == expr {
+        return None;
+    }
+    try_exponential_substitution(arena, rewritten, var, period)
+}
+
+/// The numerator of `expr` over a common denominator when that
+/// denominator is a polynomial in `var` and the numerator is not
+/// (`ln(x)/x − 1/4` → `4·ln x − x`): every root of `expr` is one of the
+/// numerator, and the callers check the numerator's roots against `expr`.
+fn numerator_over_polynomial(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    if !matches!(arena.node(expr), ExprNode::Add(_) | ExprNode::Mul(_)) {
+        return None;
+    }
+    let combined = polybridge::together(arena, expr);
+    let (num, den) = polybridge::as_numer_denom(arena, combined);
+    if !expr_contains_var(arena, den, var) || symbolic_poly_coeffs(arena, den, var).is_none() {
+        return None;
+    }
+    let num = crate::transforms::expand::expand(arena, num);
+    let num = crate::transforms::eval::eval(arena, num);
+    if num == expr
+        || !expr_contains_var(arena, num, var)
+        || polybridge::expr_to_poly(arena, num, var).is_some()
+    {
+        return None;
+    }
+    Some(num)
 }
 
 /// The solutions of the substituted equation `sub = 0` in `t`, or `None`
@@ -3762,10 +3891,41 @@ fn solutions_unless_identity(arena: &mut Arena, sub: ExprId, t: ExprId) -> Optio
     if arena.is_zero_structural(num) {
         return None;
     }
+    // (`together` leaves nested quotients: the whole combined fraction)
+    let (full_num, _) = polybridge::fraction_parts(arena, sub);
+    let full_num = crate::transforms::expand::expand(arena, full_num);
+    let full_num = crate::transforms::eval::eval(arena, full_num);
+    if !numerator_roots_complete(arena, full_num, t) {
+        return None;
+    }
     match solve_classified(arena, sub, t) {
         SolveOutcome::Identity => None,
         other => Some(other.into_solutions()),
     }
+}
+
+/// Does the solver find every root of the numerator `num` of a substituted
+/// equation in `t`?  Over ℚ always (exact factorisation; `RootOf` beyond
+/// degree 4), and for degree ≤ 2; otherwise (coefficients with radicals or
+/// parameters) only when it finds as many distinct roots as the degree.
+/// The solver returns the roots it finds of such a polynomial, which
+/// `Ex::solve` checks against the count of distinct roots, but a
+/// substitution took them as all its roots: before 0.44 `sin 4x = √3·sin x`
+/// (in `t = tan(x/2)` a degree-9 polynomial over ℚ(√3)) gave `[π]`, without
+/// the root `0` and the six others.  `true` when `num` is not a polynomial
+/// in `t` (nothing to count).
+fn numerator_roots_complete(arena: &mut Arena, num: ExprId, t: ExprId) -> bool {
+    if polybridge::expr_to_poly(arena, num, t).is_some() {
+        return true;
+    }
+    let Some(coeffs) = symbolic_poly_coeffs(arena, num, t) else {
+        return true;
+    };
+    let degree = coeffs.len().saturating_sub(1);
+    if degree <= 2 {
+        return true;
+    }
+    solve_classified(arena, num, t).into_solutions().len() >= degree
 }
 
 /// Largest power of the new unknown a substitution may create.
@@ -3816,7 +3976,22 @@ fn try_half_angle_substitution(
         return None;
     }
     let expanded = if multiple {
-        let e = arena.expand_trig_expr(expr);
+        // `tan(k·x)` as `sin(k·x)/cos(k·x)`, which `expand_trig` expands
+        // (it leaves `tan(2x)` alone): `tan 2x = tan x` was refused before
+        // 0.44.  Not as a rational function of `tan x`, which loses the
+        // roots at the poles of `tan x` (`tan 2x = 0` at `x = π/2`).
+        let mut e = expr;
+        for &id in &atoms {
+            if let ExprNode::Tan(arg) = *arena.node(id)
+                && arg != var
+            {
+                let s = arena.sin(arg);
+                let c = arena.cos(arg);
+                let q = arena.div(s, c);
+                e = arena.subs_structural(e, id, q);
+            }
+        }
+        let e = arena.expand_trig_expr(e);
         crate::transforms::eval::eval(arena, e)
     } else {
         expr
@@ -3893,7 +4068,9 @@ fn try_log_sum(
         _ => return None,
     };
     let mut factors: Vec<ExprId> = Vec::new();
+    let mut logs: Vec<ExprId> = Vec::new();
     let mut rest: Vec<ExprId> = Vec::new();
+    let mut var_rest: Vec<ExprId> = Vec::new();
     for term in terms {
         if !expr_contains_var(arena, term, var) {
             rest.push(term);
@@ -3909,15 +4086,40 @@ fn try_log_sum(
                 };
                 match (arena.as_num(k), arena.node(l)) {
                     (Some(_), ExprNode::Ln(f)) => (k, *f),
-                    _ => return None,
+                    _ => {
+                        var_rest.push(term);
+                        continue;
+                    }
                 }
             }
-            _ => return None,
+            _ => {
+                var_rest.push(term);
+                continue;
+            }
         };
         factors.push(arena.pow(f, c));
+        logs.push(f);
     }
-    if factors.len() < 2 {
-        return None;
+    if var_rest.is_empty() {
+        if factors.len() < 2 {
+            return None;
+        }
+    } else {
+        // One logarithm of a non-linear argument beside other terms in `x`
+        // (`ln(x²) = 3x` as `x² = e^(3x)`; SymPy `solve(log(x**2) - 3*x)`
+        // → `[-2*LambertW(-3/2)/3, -2*LambertW(3/2)/3]`, refused before
+        // 0.44).  A linear argument is left to the Lambert forms
+        // (`ln x = 2x + 1`), and the other terms must be free of logarithms
+        // of `x`.
+        let log_free = !var_rest.iter().any(|&r| {
+            crate::base::walk::post_order_ids(arena, r).into_iter().any(
+                |id| matches!(arena.node(id), ExprNode::Ln(a) if expr_contains_var(arena, *a, var)),
+            )
+        });
+        if factors.len() != 1 || !log_free || linear_rate(arena, logs[0], var).is_some() {
+            return None;
+        }
+        rest.extend(var_rest);
     }
     let lhs = arena.mul(&factors);
     let g = arena.add(&rest);
@@ -4133,8 +4335,10 @@ fn try_solve_lambert(
         // ── A*var*ln(B*var) + C*var + D = 0 ──────────────────────────
         //   B*var = e^t:  (t + C/A)·e^{t + C/A} = -(B·D/A)·e^{C/A}
         //   var = exp(W(-(B·D/A)·e^{C/A}) - C/A)/B
-        ((0, 0, 1, 0, 0), c) => {
-            let LambertLn { coeff: a, scale: b } = var_ln_terms[0];
+        ((0, 0, 1, 0, 0), c) if arena.is_zero_structural(var_ln_terms[0].shift) => {
+            let LambertLn {
+                coeff: a, scale: b, ..
+            } = var_ln_terms[0];
             let c_over_a = match c {
                 Some(c) => arena.div(c, a),
                 None => arena.zero,
@@ -4152,34 +4356,77 @@ fn try_solve_lambert(
                 })
                 .collect()
         }
-        // ── A*ln(B*var) + C*var + D = 0 ──────────────────────────────
-        //   var·e^{(C/A)·var} = e^{-D/A}/B
-        //   var = (A/C)·W((C/(A·B))·e^{-D/A})
+        // ── A*ln(B*var + E) + C*var + D = 0 ──────────────────────────
+        //   u = B·var + E:  A·ln u + C′·u + D′ = 0,  C′ = C/B,  D′ = D − C·E/B
+        //   u = (A/C′)·W((C′/A)·e^{-D′/A}),  var = (u − E)/B
+        //   (E = 0: var = (A/C)·W((C/(A·B))·e^{-D/A}); a shift E was
+        //   refused before 0.44: `ln(4x − 2) = 2x − 2`.)
         ((0, 0, 0, 1, 0), Some(c)) => {
-            let LambertLn { coeff: a, scale: b } = ln_terms[0];
-            let ab = arena.mul(&[a, b]);
-            let c_over_ab = arena.div(c, ab);
-            let a_over_c = arena.div(a, c);
-            let neg_d = arena.neg(d);
+            let LambertLn {
+                coeff: a,
+                scale: b,
+                shift: e,
+            } = ln_terms[0];
+            let c1 = arena.div(c, b);
+            let c1 = crate::transforms::eval::eval(arena, c1);
+            let ce = arena.mul(&[c1, e]);
+            let d1 = arena.sub(d, ce);
+            let c1_over_a = arena.div(c1, a);
+            let a_over_c1 = arena.div(a, c1);
+            let neg_d = arena.neg(d1);
             let neg_d_over_a = arena.div(neg_d, a);
             let exp_part = arena.exp(neg_d_over_a);
-            let w_arg = arena.mul(&[c_over_ab, exp_part]);
+            let w_arg = arena.mul(&[c1_over_a, exp_part]);
             lambert_branches(arena, w_arg)
                 .into_iter()
-                .map(|w| arena.mul(&[a_over_c, w]))
+                .map(|w| {
+                    let u = arena.mul(&[a_over_c1, w]);
+                    let shifted = arena.sub(u, e);
+                    arena.div(shifted, b)
+                })
                 .collect()
         }
         // ── A*var^var + D = 0 ────────────────────────────────────────
         //   var·ln(var) = ln(-D/A)  →  var = exp(W(ln(-D/A)))
+        //   Besides, the integers with n^n = r: n ≥ 2 exactly (`x^x = 27`:
+        //   `3`, not `exp(W(ln 27))`), the negative ones (`(−2)^(−2) = 1/4`,
+        //   `(−1)^(−1) = −1`, real values of x^x off the positive axis that no
+        //   real branch of W reaches; SymPy misses them), and `0` for
+        //   `r = 1` (`0⁰ = 1`, as SymPy's `[0, 1]`).
         ((0, 0, 0, 0, 1), None) => {
             let a = pow_terms[0];
             let neg_d = arena.neg(d);
             let r = arena.div(neg_d, a);
-            let ln_r = arena.ln(r);
-            lambert_branches(arena, ln_r)
-                .into_iter()
-                .map(|w| arena.exp(w))
-                .collect()
+            let r = crate::transforms::eval::eval(arena, r);
+            let q = arena.as_num(r).cloned();
+            let positive = q
+                .as_ref()
+                .filter(|q| q.is_integer() && q.is_positive())
+                .and_then(|q| self_power_root(&q.to_integer()))
+                .filter(|&n| n >= 2);
+            let mut sols: Vec<ExprId> = match positive {
+                Some(n) => vec![arena.int(i64::from(n))],
+                None => {
+                    let ln_r = arena.ln(r);
+                    lambert_branches(arena, ln_r)
+                        .into_iter()
+                        .map(|w| arena.exp(w))
+                        .collect()
+                }
+            };
+            if let Some(q) = q {
+                // (−m)^(−m) = (−1)^m/m^m
+                if q.numer().abs().is_one()
+                    && let Some(m) = self_power_root(q.denom())
+                    && (m % 2 == 0) == q.is_positive()
+                {
+                    sols.push(arena.int(-i64::from(m)));
+                }
+                if q.is_one() {
+                    sols.push(arena.zero);
+                }
+            }
+            sols
         }
         _ => return None,
     };
@@ -4193,6 +4440,183 @@ fn try_solve_lambert(
     )
 }
 
+/// Logarithmic Lambert forms in a power of the variable: `var` only in
+/// `ln(var)` and in powers `varⁿ` of one rational exponent `n ≠ 0, 1`
+/// (`x²·ln x = 1`, `ln(x)/x² = c`, `ln x = x³`).  With `u = xⁿ` and
+/// `ln x = ln(u)/n` (for `x > 0`; a negative `x` makes `ln x` non-real)
+/// they are forms of [`try_solve_lambert`] in `u`, and `x = u^(1/n)`;
+/// [`solve_impl`] checks the candidates.  A logarithm `ln(B·x)` of a
+/// constant multiple is first rescaled, `x = y/B`.  SymPy:
+/// `solve(x**2*log(x) - 1)` → `[exp(LambertW(2)/2)]`, `solve(x**5*log(2*x)
+/// - 3)` → `[exp(LambertW(480)/5)/2]`; refused before 0.44.
+fn try_lambert_power_log(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+    let logs: Vec<ExprId> = crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .filter_map(|id| match *arena.node(id) {
+            ExprNode::Ln(a) if expr_contains_var(arena, a, var) => Some(a),
+            _ => None,
+        })
+        .collect();
+    let [arg] = logs[..] else {
+        return None;
+    };
+    if arg == var {
+        return power_log_in(arena, expr, var);
+    }
+    let scale = extract_var_coeff_in_product(arena, arg, var)?;
+    // y = B·x: xⁿ = B⁻ⁿ·yⁿ for an integer n, or a positive B
+    let powers: Vec<(ExprId, Q)> = crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .filter_map(|id| match *arena.node(id) {
+            ExprNode::Pow(b, e) if b == var => arena.as_num(e).map(|q| (id, q.clone())),
+            _ => None,
+        })
+        .collect();
+    let [(pow_node, ref n)] = powers[..] else {
+        return None;
+    };
+    if !n.is_integer() && crate::poly::algebraic::sign_checked(arena, scale) != Some(1) {
+        return None;
+    }
+    let y = arena.symbol("__y_lambert");
+    let n_id = arena.num_ratio(n.clone());
+    let neg_n = arena.num_ratio(-n);
+    let y_n = arena.pow(y, n_id);
+    let b_neg_n = arena.pow(scale, neg_n);
+    let repl = arena.mul(&[b_neg_n, y_n]);
+    let ln_arg = arena.ln(arg);
+    let ln_y = arena.ln(y);
+    let scaled = arena.subs_structural(expr, pow_node, repl);
+    let scaled = arena.subs_structural(scaled, ln_arg, ln_y);
+    let scaled = crate::transforms::eval::eval(arena, scaled);
+    if expr_contains_var(arena, scaled, var) {
+        return None;
+    }
+    let sols = power_log_in(arena, scaled, y)?;
+    Some(
+        sols.into_iter()
+            .map(|s| {
+                let x = arena.div(s.value, scale);
+                Solution {
+                    value: crate::transforms::eval::eval(arena, x),
+                }
+            })
+            .collect(),
+    )
+}
+
+/// [`try_lambert_power_log`] for `ln(var)` itself.
+fn power_log_in(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+    let ln_x = arena.ln(var);
+    let mut power: Option<(ExprId, Q)> = None;
+    let mut has_log = false;
+    let mut stack = vec![expr];
+    let mut seen: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || !expr_contains_var(arena, id, var) {
+            continue;
+        }
+        if id == ln_x {
+            has_log = true;
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
+            ExprNode::Neg(b) => stack.push(*b),
+            ExprNode::Pow(b, e) if *b == var => {
+                let q = arena.as_num(*e)?.clone();
+                match &power {
+                    Some((p, _)) if *p != id => return None,
+                    _ => power = Some((id, q)),
+                }
+            }
+            _ => return None,
+        }
+    }
+    let (pow_node, n) = power?;
+    // n = −1 (`ln(x)/x = c`) is left to the numerator `ln x − c·x`, which
+    // gives SymPy's `−4·W(−1/4)` rather than the equal `exp(−W(−1/4))`.
+    if !has_log || n.is_zero() || n.is_one() || n == -Q::one() {
+        return None;
+    }
+    let u = arena.symbol("__u_lambert");
+    let ExprNode::Symbol(u_sym) = *arena.node(u) else {
+        return None;
+    };
+    let inv_n = arena.num_ratio(n.recip());
+    let ln_u = arena.ln(u);
+    let ln_u_over_n = arena.mul(&[inv_n, ln_u]);
+    let sub = arena.subs_structural(expr, pow_node, u);
+    let sub = arena.subs_structural(sub, ln_x, ln_u_over_n);
+    let sub = crate::transforms::eval::eval(arena, sub);
+    if expr_contains_var(arena, sub, var) {
+        return None;
+    }
+    let sols = try_solve_lambert(arena, sub, u, u_sym)?;
+    Some(
+        sols.into_iter()
+            .map(|s| {
+                // exp(v)^(1/n) = exp(v/n) for a real v (`exp(W(2)/2)`, as
+                // SymPy writes it, rather than `√(exp(W(2)))`)
+                let node = arena.node(s.value).clone();
+                let x = match node {
+                    ExprNode::Exp(v)
+                        if crate::base::walk::free_symbols(arena, v).is_empty()
+                            && crate::poly::algebraic::sign_checked(arena, v).is_some() =>
+                    {
+                        let w = arena.mul(&[inv_n, v]);
+                        arena.exp(w)
+                    }
+                    _ => arena.pow(s.value, inv_n),
+                };
+                Solution {
+                    value: crate::transforms::eval::eval(arena, x),
+                }
+            })
+            .collect(),
+    )
+}
+
+/// A product with several `exp` factors with them merged into one
+/// (`exp(−1)·exp(−3)` → `exp(−4)`, which the evaluator leaves apart).
+fn merge_exp_factors(arena: &mut Arena, e: ExprId) -> ExprId {
+    let ExprNode::Mul(factors) = arena.node(e).clone() else {
+        return e;
+    };
+    let mut args: Vec<ExprId> = Vec::new();
+    let mut rest: Vec<ExprId> = Vec::new();
+    for f in factors.iter() {
+        match *arena.node(*f) {
+            ExprNode::Exp(a) => args.push(a),
+            _ => rest.push(*f),
+        }
+    }
+    if args.len() < 2 {
+        return e;
+    }
+    let sum = arena.add(&args);
+    let sum = crate::transforms::eval::eval(arena, sum);
+    rest.push(arena.exp(sum));
+    let merged = arena.mul(&rest);
+    crate::transforms::eval::eval(arena, merged)
+}
+
+/// The integer `m ≥ 1` with `m^m = n`, if any.
+fn self_power_root(n: &BigInt) -> Option<u32> {
+    if !n.is_positive() {
+        return None;
+    }
+    for m in 1u32..=64 {
+        let p = num_traits::Pow::pow(BigInt::from(m), m);
+        match p.cmp(n) {
+            std::cmp::Ordering::Equal => return Some(m),
+            std::cmp::Ordering::Greater => return None,
+            std::cmp::Ordering::Less => {}
+        }
+    }
+    None
+}
+
 /// The Lambert W values `W_k(arg)` a Lambert solution takes: the principal
 /// branch, and `W₋₁(arg)` as well when `arg` is certainly in `(−1/e, 0)`,
 /// where both branches are real (SymPy's `_lambert` keeps `k = −1` only
@@ -4203,19 +4627,26 @@ fn try_solve_lambert(
 /// not enumerate.
 fn lambert_branches(arena: &mut Arena, arg: ExprId) -> Vec<ExprId> {
     let arg = crate::transforms::eval::eval(arena, arg);
-    let principal = arena.lambertw(arg);
-    let mut out = vec![principal];
+    let arg = merge_exp_factors(arena, arg);
     if crate::base::walk::free_symbols(arena, arg).is_empty()
         && crate::poly::algebraic::sign_checked(arena, arg) == Some(-1)
     {
         let neg_one = arena.neg_one;
         let inv_e = arena.exp(neg_one);
         let shifted = arena.add(&[arg, inv_e]);
-        if crate::poly::algebraic::sign_checked(arena, shifted) == Some(1) {
-            out.push(arena.lambertw_branch(arg, neg_one));
+        match crate::poly::algebraic::sign_checked(arena, shifted) {
+            Some(1) => {
+                let principal = arena.lambertw(arg);
+                return vec![principal, arena.lambertw_branch(arg, neg_one)];
+            }
+            // The branch point `−1/e` in a form the evaluator does not
+            // recognise (`−√(4·e⁻²)/2`): `W(−1/e) = −1` on both branches,
+            // rather than a `W` evaluated at its branch point.
+            Some(0) => return vec![neg_one],
+            _ => {}
         }
     }
-    out
+    vec![arena.lambertw(arg)]
 }
 
 /// `A·exp(B·var)` (and `A·var·exp(B·var)`): the coefficient `A` and the
@@ -4226,12 +4657,13 @@ struct LambertExp {
     rate: ExprId,
 }
 
-/// `A·ln(B·var)` (and `A·var·ln(B·var)`): the coefficient `A` and the
-/// scale `B`.
+/// `A·ln(B·var + E)` (and `A·var·ln(B·var + E)`): the coefficient `A`, the
+/// scale `B` and the shift `E`.
 #[derive(Clone, Copy)]
 struct LambertLn {
     coeff: ExprId,
     scale: ExprId,
+    shift: ExprId,
 }
 
 /// Classification of a single additive term for LambertW analysis.
@@ -4313,7 +4745,18 @@ fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option
     let class = match (has_var, exp_inner, ln_inner, pow_var_var) {
         (true, None, None, false) => LambertTermClass::Linear(coeff),
         (has_var, Some(inner), None, false) => {
-            let rate = extract_var_coeff_in_product(arena, inner, var)?;
+            // exp(B·var + c) = e^c·exp(B·var) (`2^(x + 3) = 8·2^x`; refused
+            // before 0.44)
+            let rate = match extract_var_coeff_in_product(arena, inner, var) {
+                Some(rate) => rate,
+                None => {
+                    let (rate, offset) = linear_rate(arena, inner, var)?;
+                    let e_offset = arena.exp(offset);
+                    coeff = arena.mul(&[coeff, e_offset]);
+                    coeff = crate::transforms::eval::eval(arena, coeff);
+                    rate
+                }
+            };
             let e = LambertExp { coeff, rate };
             if has_var {
                 LambertTermClass::VarExpVar(e)
@@ -4322,8 +4765,15 @@ fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option
             }
         }
         (has_var, None, Some(inner), false) => {
-            let scale = extract_var_coeff_in_product(arena, inner, var)?;
-            let l = LambertLn { coeff, scale };
+            let (scale, shift) = match extract_var_coeff_in_product(arena, inner, var) {
+                Some(scale) => (scale, arena.zero),
+                None => linear_rate(arena, inner, var)?,
+            };
+            let l = LambertLn {
+                coeff,
+                scale,
+                shift,
+            };
             if has_var {
                 LambertTermClass::VarLnVar(l)
             } else {
@@ -4334,6 +4784,450 @@ fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option
         _ => return None,
     };
     Some(class)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Lambert W: a power times an exponential
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Largest `|p|` of a power `u^p` (integer `p`) whose `p`-th roots
+/// [`try_solve_power_exp`] takes.
+const MAX_LAMBERT_POWER: u64 = 12;
+
+/// An additive term `K·L^a·e^(b·x)` of [`try_solve_power_exp`]: `L` the
+/// variable or a polynomial of degree 1 in it (`None` when `a = 0`), `a`
+/// rational, `K` and the rate `b` free of the variable (`b = 0` without an
+/// exponential).
+#[derive(Clone)]
+struct PowExpTerm {
+    coeff: ExprId,
+    base: Option<ExprId>,
+    power: Q,
+    rate: ExprId,
+}
+
+/// `b = content·L^m` with `L` of degree 1 in `var` (`var` itself, `2x + 1`,
+/// `x + a`), or a polynomial over ℚ whose square-free decomposition is one
+/// linear factor (`x² + 2x + 1 = (x + 1)²`).
+fn linear_power_base(arena: &mut Arena, b: ExprId, var: ExprId) -> Option<(ExprId, u32, Q)> {
+    if b == var {
+        return Some((var, 1, Q::one()));
+    }
+    if let Some(p) = polybridge::expr_to_poly(arena, b, var) {
+        match p.degree()? {
+            0 => return None,
+            1 => return Some((b, 1, Q::one())),
+            _ => {}
+        }
+        let (content, factors) = p.sqf_list();
+        let [(l, m)] = factors.as_slice() else {
+            return None;
+        };
+        if l.degree() != Some(1) {
+            return None;
+        }
+        let l_expr = polybridge::poly_to_expr(arena, l, var);
+        let l_expr = crate::transforms::eval::eval(arena, l_expr);
+        return Some((l_expr, *m, content));
+    }
+    linear_rate(arena, b, var)?;
+    Some((b, 1, Q::one()))
+}
+
+/// Split a term containing `var` as `K·L^a·e^(b·x)` ([`PowExpTerm`]):
+/// powers of the variable or of one linear polynomial, exponentials
+/// `exp(a·x + c)` and constant-base powers `c^(a·x + d)` (`c` positive or
+/// symbolic, as `exp((a·x + d)·ln c)`).  `None` for any other factor.
+fn pow_exp_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<PowExpTerm> {
+    let (term, negate) = match *arena.node(term) {
+        ExprNode::Neg(inner) => (inner, true),
+        _ => (term, false),
+    };
+    let factors: Vec<ExprId> = match arena.node(term) {
+        ExprNode::Mul(ch) => ch.to_vec(),
+        _ => vec![term],
+    };
+    let mut consts: Vec<ExprId> = Vec::new();
+    if negate {
+        consts.push(arena.neg_one);
+    }
+    let mut base: Option<ExprId> = None;
+    let mut power = Q::zero();
+    let mut rates: Vec<ExprId> = Vec::new();
+    for f in factors {
+        if !expr_contains_var(arena, f, var) {
+            consts.push(f);
+            continue;
+        }
+        let (b, e) = match arena.node(f).clone() {
+            ExprNode::Exp(arg) => {
+                let (a, c0) = linear_rate(arena, arg, var)?;
+                rates.push(a);
+                consts.push(arena.exp(c0));
+                continue;
+            }
+            ExprNode::Pow(c, e) if !expr_contains_var(arena, c, var) => {
+                let positive = if crate::base::walk::free_symbols(arena, c).is_empty() {
+                    crate::poly::algebraic::sign_checked(arena, c) == Some(1)
+                } else {
+                    true
+                };
+                if !positive {
+                    return None;
+                }
+                let (a, c0) = linear_rate(arena, e, var)?;
+                let ln_c = arena.ln(c);
+                let ln_c = crate::transforms::eval::eval(arena, ln_c);
+                rates.push(arena.mul(&[a, ln_c]));
+                consts.push(arena.pow(c, c0));
+                continue;
+            }
+            ExprNode::Pow(b, e) if !expr_contains_var(arena, e, var) => {
+                (b, arena.as_num(e)?.clone())
+            }
+            _ => (f, Q::one()),
+        };
+        let (l, m, content) = linear_power_base(arena, b, var)?;
+        // (c·L^m)^e = c^e·L^(m·e) for an integer e only (principal powers)
+        if (m != 1 || !content.is_one()) && !e.is_integer() {
+            return None;
+        }
+        match base {
+            Some(prev) if prev != l => return None,
+            _ => base = Some(l),
+        }
+        power += &e * Q::from_integer(BigInt::from(m));
+        if !content.is_one() {
+            let c_id = arena.num_ratio(content);
+            let e_id = arena.num_ratio(e);
+            consts.push(arena.pow(c_id, e_id));
+        }
+    }
+    let coeff = if consts.is_empty() {
+        arena.one
+    } else {
+        let k = arena.mul(&consts);
+        crate::transforms::eval::eval(arena, k)
+    };
+    let rate = if rates.is_empty() {
+        arena.zero
+    } else {
+        let r = arena.add(&rates);
+        crate::transforms::eval::eval(arena, r)
+    };
+    if power.is_zero() {
+        base = None;
+    }
+    Some(PowExpTerm {
+        coeff,
+        base,
+        power,
+        rate,
+    })
+}
+
+/// Merge the terms of one rate into one: `x·eˣ + eˣ = (x + 1)·eˣ`.  The
+/// terms of a rate must then be `Kᵢ·xⁿⁱ` (nonnegative integers `nᵢ`,
+/// rational ratios `Kᵢ/K₀`), and their polynomial `c·L^m` for one linear
+/// `L`; `None` otherwise.
+fn merge_by_rate(
+    arena: &mut Arena,
+    terms: Vec<PowExpTerm>,
+    var: ExprId,
+) -> Option<Vec<PowExpTerm>> {
+    let mut groups: Vec<Vec<PowExpTerm>> = Vec::new();
+    for t in terms {
+        match groups.iter_mut().find(|g| g[0].rate == t.rate) {
+            Some(g) => g.push(t),
+            None => groups.push(vec![t]),
+        }
+    }
+    let mut out = Vec::with_capacity(groups.len());
+    for mut g in groups {
+        if g.len() == 1 {
+            out.push(g.pop()?);
+            continue;
+        }
+        let k0 = g[0].coeff;
+        let rate = g[0].rate;
+        let mut p = Poly::zero();
+        for t in &g {
+            if t.base.is_some_and(|b| b != var) || !t.power.is_integer() || t.power.is_negative() {
+                return None;
+            }
+            let ratio = arena.div(t.coeff, k0);
+            let ratio = crate::transforms::eval::eval(arena, ratio);
+            let r = arena.as_num(ratio)?.clone();
+            let deg = num_traits::ToPrimitive::to_usize(&t.power.to_integer())?;
+            if deg > MAX_SUBSTITUTION_DEGREE as usize {
+                return None;
+            }
+            p = p.add(&Poly::monomial(r, deg));
+        }
+        let (content, factors) = p.sqf_list();
+        if content.is_zero() {
+            return None;
+        }
+        let content_id = arena.num_ratio(content);
+        let coeff = arena.mul(&[k0, content_id]);
+        let coeff = crate::transforms::eval::eval(arena, coeff);
+        match factors.as_slice() {
+            [] => out.push(PowExpTerm {
+                coeff,
+                base: None,
+                power: Q::zero(),
+                rate,
+            }),
+            [(l, m)] if l.degree() == Some(1) => {
+                let l_expr = polybridge::poly_to_expr(arena, l, var);
+                let l_expr = crate::transforms::eval::eval(arena, l_expr);
+                out.push(PowExpTerm {
+                    coeff,
+                    base: Some(l_expr),
+                    power: Q::from_integer(BigInt::from(*m)),
+                    rate,
+                });
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// The values `r` with `r^a = c` that [`try_solve_power_exp`] takes, for a
+/// rational `a = p/q`: for `q = 1` every real `|p|`-th root of `c` (or of
+/// `1/c` for `p < 0`) when `c` is a real constant with one (`±√c` for an
+/// even `p` and `c > 0`, the real root for an odd `p`), all `|p|` complex
+/// roots when it has none (`c < 0`, `p` even, or `c` not real), and `c^(1/p)`
+/// (with `−c^(1/p)` for an even `p`) for a symbolic `c`; for `q > 1` the
+/// principal `c^(1/a)`, the one positive value of a principal power.
+/// `None` beyond [`MAX_LAMBERT_POWER`].
+fn power_roots(arena: &mut Arena, c: ExprId, a: &Q) -> Option<Vec<ExprId>> {
+    if !a.denom().is_one() {
+        let inv = arena.num_ratio(a.recip());
+        let r = arena.pow(c, inv);
+        return Some(vec![crate::transforms::eval::eval(arena, r)]);
+    }
+    let p = num_traits::ToPrimitive::to_i64(a.numer())?;
+    let m = p.unsigned_abs();
+    if m == 0 || m > MAX_LAMBERT_POWER {
+        return None;
+    }
+    let target = if p < 0 {
+        let one = arena.one;
+        arena.div(one, c)
+    } else {
+        c
+    };
+    let target = crate::transforms::eval::eval(arena, target);
+    if m == 1 {
+        return Some(vec![target]);
+    }
+    let m_i64 = i64::try_from(m).ok()?;
+    let inv_m = arena.rational(1, m_i64);
+    let even = m % 2 == 0;
+    let constant = crate::base::walk::free_symbols(arena, target).is_empty();
+    let sign = if constant {
+        crate::poly::algebraic::sign_checked(arena, target)
+    } else {
+        None
+    };
+    let mut out = Vec::new();
+    match sign {
+        Some(1) => {
+            let r = positive_root(arena, target, m_i64);
+            out.push(r);
+            if even {
+                out.push(arena.neg(r));
+            }
+        }
+        Some(-1) if !even => {
+            let minus = arena.neg(target);
+            let minus = crate::transforms::eval::eval(arena, minus);
+            let r = positive_root(arena, minus, m_i64);
+            out.push(arena.neg(r));
+        }
+        Some(0) => return None,
+        _ if constant => {
+            let n = usize::try_from(m).ok()?;
+            out.extend(
+                binomial_roots(arena, target, n)
+                    .into_iter()
+                    .map(|s| s.value),
+            );
+        }
+        _ => {
+            let r = arena.pow(target, inv_m);
+            out.push(r);
+            if even {
+                out.push(arena.neg(r));
+            }
+        }
+    }
+    Some(
+        out.into_iter()
+            .map(|r| crate::transforms::eval::eval(arena, r))
+            .collect(),
+    )
+}
+
+/// `t^(1/m)` for a positive constant `t`, distributed over the factors of
+/// a product of positive constants (`(4·e⁻²)^(1/2) = 2·e⁻¹`, which the
+/// evaluator leaves as `√(4·e⁻²)`), `exp(u)^(1/m)` as `exp(u/m)`.
+fn positive_root(arena: &mut Arena, t: ExprId, m: i64) -> ExprId {
+    let inv_m = arena.rational(1, m);
+    let factors: Vec<ExprId> = match arena.node(t) {
+        ExprNode::Mul(ch) => ch.to_vec(),
+        _ => vec![t],
+    };
+    let mut parts: Vec<ExprId> = Vec::with_capacity(factors.len());
+    for f in factors {
+        if crate::poly::algebraic::sign_checked(arena, f) != Some(1) {
+            let r = arena.pow(t, inv_m);
+            return crate::transforms::eval::eval(arena, r);
+        }
+        let node = arena.node(f).clone();
+        parts.push(match node {
+            ExprNode::Exp(u) => {
+                let v = arena.mul(&[inv_m, u]);
+                arena.exp(v)
+            }
+            ExprNode::Pow(b, e) if crate::poly::algebraic::sign_checked(arena, b) == Some(1) => {
+                let v = arena.mul(&[inv_m, e]);
+                arena.pow(b, v)
+            }
+            _ => arena.pow(f, inv_m),
+        });
+    }
+    let r = arena.mul(&parts);
+    crate::transforms::eval::eval(arena, r)
+}
+
+/// Equations `K·L^a·e^(b·x) = c` and `K₁·L^a₁·e^(b₁·x) + K₂·L^a₂·e^(b₂·x) =
+/// 0` with `L` the variable or linear in it, `a` rational and `b ≠ 0` (an
+/// exponential `e^(b·x)` or a power `p^x = e^(x·ln p)`): `x² = 2ˣ`,
+/// `x²·eˣ = 3`, `xⁿ = c·eˣ`, `(x + 1)·eˣ = 2`, `√x = 2ˣ/4`, `x⁻²·eˣ = 3`.
+/// Terms of one rate are merged first (`x·eˣ + eˣ = (x + 1)·eˣ`).  With
+/// `u = L`, `u^a·e^(b′·u) = c′` gives `u·e^((b′/a)·u) = r` for each `r` with
+/// `r^a = c′` ([`power_roots`]: both `±√c′` of `x²·eˣ = c′`), and
+/// `u = (a/b′)·W_k((b′/a)·r)` on the branches of [`lambert_branches`] (SymPy's
+/// `_solve_lambert` and `_lambert`, `sympy/solvers/bivariate.py`, BSD, take
+/// the logarithm of both sides and the `p` roots of `t^p = e^(A)` the same
+/// way).  In the two-term form the root `L = 0` is a candidate as well when
+/// both powers are positive (`x²·eˣ = x³`).  Every candidate is checked
+/// against the equation by [`solve_impl`].
+///
+/// Before 0.44 these were refused: `solve(x² − 2ˣ)` (SymPy `[2, 4,
+/// −2·W(ln(2)/2)/ln 2]`), `solve(x²·eˣ − 3)` (SymPy `[2·W(−√3/2),
+/// 2·W(√3/2)]`), `solve(x³ − 3ˣ)`, `solve((x + 1)·eˣ − 2)`.
+fn try_solve_power_exp(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    period: Option<ExprId>,
+) -> Option<Vec<Solution>> {
+    let terms: Vec<ExprId> = match arena.node(expr) {
+        ExprNode::Add(ch) => ch.to_vec(),
+        _ => vec![expr],
+    };
+    let mut constants: Vec<ExprId> = Vec::new();
+    let mut parts: Vec<PowExpTerm> = Vec::new();
+    for t in terms {
+        if expr_contains_var(arena, t, var) {
+            parts.push(pow_exp_term(arena, t, var)?);
+        } else {
+            constants.push(t);
+        }
+    }
+    let parts = merge_by_rate(arena, parts, var)?;
+    let d = match constants.len() {
+        0 => arena.zero,
+        _ => {
+            let s = arena.add(&constants);
+            crate::transforms::eval::eval(arena, s)
+        }
+    };
+    let d_zero = arena.is_zero_structural(d);
+    // K·L^a·e^(b·x) = c, and the root L = 0 of the two-term form
+    let (k, base, a, b, c, root_of_base) = match (parts.as_slice(), d_zero) {
+        ([t], false) => (
+            t.coeff,
+            t.base,
+            t.power.clone(),
+            t.rate,
+            arena.neg(d),
+            false,
+        ),
+        ([t1, t2], true) => {
+            let base = match (t1.base, t2.base) {
+                (Some(p), Some(q)) if p != q => return None,
+                (p, q) => p.or(q),
+            };
+            let both_vanish = t1.power.is_positive() && t2.power.is_positive();
+            let rate = arena.sub(t1.rate, t2.rate);
+            let rate = crate::transforms::eval::eval(arena, rate);
+            let ratio = arena.div(t2.coeff, t1.coeff);
+            let c = arena.neg(ratio);
+            (arena.one, base, &t1.power - &t2.power, rate, c, both_vanish)
+        }
+        _ => return None,
+    };
+    let c = crate::transforms::eval::eval(arena, c);
+    let base = base?;
+    if arena.is_zero_structural(b) || arena.is_zero_structural(c) {
+        return None;
+    }
+    let (alpha, beta) = linear_rate(arena, base, var)?;
+    let root_of_base = root_of_base.then(|| {
+        let neg_beta = arena.neg(beta);
+        let x0 = arena.div(neg_beta, alpha);
+        crate::transforms::eval::eval(arena, x0)
+    });
+    if a.is_zero() {
+        // L^a·(K₁·e^(b₁·x) + K₂·e^(b₂·x)) = 0: e^(b·x) = c, and L = 0
+        // (`x²·2ˣ − x²/10`).
+        let bx = arena.mul(&[b, var]);
+        let generator = arena.exp(bx);
+        let mut out = solve_by_peeling(arena, generator, c, var, period)?;
+        if let Some(x0) = root_of_base
+            && !out.iter().any(|s| s.value == x0)
+        {
+            out.push(Solution { value: x0 });
+        }
+        return Some(out);
+    }
+    // u = L = α·x + β:  u^a·e^(b′·u) = c′,  b′ = b/α,  c′ = (c/K)·e^(b·β/α)
+    let b1 = arena.div(b, alpha);
+    let b1 = crate::transforms::eval::eval(arena, b1);
+    let shift = arena.mul(&[b, beta]);
+    let shift = arena.div(shift, alpha);
+    let e_shift = arena.exp(shift);
+    let c_over_k = arena.div(c, k);
+    let c1 = arena.mul(&[c_over_k, e_shift]);
+    let c1 = crate::transforms::eval::eval(arena, c1);
+    let a_id = arena.num_ratio(a.clone());
+    let b1_over_a = arena.div(b1, a_id);
+    let a_over_b1 = arena.div(a_id, b1);
+    let mut out: Vec<Solution> = Vec::new();
+    let mut push = |arena: &mut Arena, value: ExprId| {
+        let value = crate::transforms::eval::eval(arena, value);
+        if !out.iter().any(|s| s.value == value) {
+            out.push(Solution { value });
+        }
+    };
+    for r in power_roots(arena, c1, &a)? {
+        let arg = arena.mul(&[b1_over_a, r]);
+        for w in lambert_branches(arena, arg) {
+            let u = arena.mul(&[a_over_b1, w]);
+            let shifted = arena.sub(u, beta);
+            let x = arena.div(shifted, alpha);
+            push(arena, x);
+        }
+    }
+    if let Some(x0) = root_of_base {
+        push(arena, x0);
+    }
+    Some(out)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6297,9 +7191,10 @@ mod tests {
     }
 
     #[test]
-    fn solve_lambert_x_squared_exp_x_not_lambert() {
-        // x²·exp(x) - 1 = 0: NOT a LambertW pattern (x² instead of x).
-        // Solver should return empty gracefully.
+    fn solve_lambert_x_squared_exp_x() {
+        // x²·exp(x) - 1 = 0: x·e^(x/2) = ±1, x = 2·W(±1/2) (SymPy 1.14:
+        // `[2*LambertW(-1/2), 2*LambertW(1/2)]`; the first is complex).
+        // Refused (empty) before 0.44, when this test pinned that.
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let one = a.one;
@@ -6309,12 +7204,9 @@ mod tests {
         let x2_exp_x = a.mul(&[x2, exp_x]);
         let expr = a.sub(x2_exp_x, one);
         let solutions = solve(&mut a, expr, x);
-        // Should not panic; may return empty since it's not a recognized pattern
-        assert!(
-            solutions.is_empty(),
-            "x²·exp(x)=1 is not a simple LambertW pattern; got {} solutions",
-            solutions.len()
-        );
+        let mut got = solution_strings(&a, &solutions);
+        got.sort();
+        assert_eq!(got, ["2*W(-1/2)", "2*W(1/2)"]);
     }
 
     #[test]

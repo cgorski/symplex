@@ -172,8 +172,10 @@ fn next_to_an_integer_order_and_next_to_one() {
 /// defining series with a bound on its tail (`evalf/polylog.rs`,
 /// `polylog_complex_order`): mpmath `mp.dps=30` (and 60)
 /// `polylog(mpc(1.5, 0.5), 0.5)` = `(0.612640388900115358817932002617 -
-/// 0.0510321042589037241448767526801j)`.  Outside the disc it is still
-/// refused.
+/// 0.0510321042589037241448767526801j)`.  Outside the disc it was refused
+/// until 0.45, and is now the inversion formula with the Hurwitz function of
+/// a complex order: mpmath `mp.dps=32` `polylog(mpc(1.5,0.5), 2)` =
+/// `(1.2018348432242740219763366783893 - 1.9397098237644310193005761416166j)`.
 #[test]
 fn complex_order_is_refused() {
     let ctx = Context::new();
@@ -181,7 +183,10 @@ fn complex_order_is_refused() {
         dec(&ctx, "polylog(3/2 + I/2, 1/2)", 16).unwrap(),
         "0.6126403889001154 - 0.05103210425890372*i"
     );
-    assert!(dec(&ctx, "polylog(3/2 + I/2, 2)", 16).is_err());
+    assert_eq!(
+        dec(&ctx, "polylog(3/2 + I/2, 2)", 16).unwrap(),
+        "1.201834843224274 - 1.939709823764431*i"
+    );
 }
 
 // ── Matrix pivots at hidden algebraic zeros ─────────────────────────────────

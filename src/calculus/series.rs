@@ -1589,6 +1589,7 @@ fn expand_from_side(
             split,
         ) {
             Ok(ts) if ts.known >= order => return Ok(ts.truncate_known(order)),
+            Ok(ts) if mode.partial && leading_term_decided(arena, &ts) => return Ok(ts),
             Ok(ts) => {
                 // Precision was lost through poles; increase and retry.
                 working += order - ts.known + 1;
@@ -1612,6 +1613,39 @@ fn expand_from_side(
         operation: "series",
         reason: "could not reach the requested order (deep pole)".into(),
     }))
+}
+
+/// Does the partial expansion `ts` ([`Mode::partial`]: Gruntz's leading
+/// term) name its leading term — is the first coefficient within its
+/// precision that is not zero ([`settle_constant`]) a finite constant free
+/// of symbols?  Then that is the leading term of every expansion to a
+/// higher precision, whose coefficients below `ts.known` are the same, and
+/// the escalation stops.  (Before, an expansion that lost precision
+/// through a pole was repeated at a higher one although its leading term
+/// was in view: the second round of `(acos(u) − acos(π^π))/(sin(u) −
+/// sin(π^π))` (`u = (π + ω)^(π + ω)`) cost ten times the first.)
+/// A coefficient with symbols (`ln ω`, a parameter) or an infinity is left
+/// to the caller's tests, after the escalation, as before.
+fn leading_term_decided(arena: &mut Arena, ts: &TSeries) -> bool {
+    for &c in &ts.coeffs {
+        if arena.is_zero_structural(c) {
+            continue;
+        }
+        let c = settle_constant(arena, c);
+        if arena.is_zero_structural(c) {
+            continue;
+        }
+        return walk::free_symbols(arena, c).is_empty()
+            && [
+                arena.infinity,
+                arena.neg_infinity,
+                arena.complex_infinity,
+                arena.nan,
+            ]
+            .iter()
+            .all(|&s| !walk::contains(arena, c, s));
+    }
+    false
 }
 
 /// One pass of the engine at working precision `n`.  Sets `hidden_valuation`
@@ -1998,11 +2032,161 @@ fn symbolic_on_cut(
 /// In the last precision round ([`Mode::cut_widened`]) every argument is
 /// taken to be real: its coefficients are, to the widest precision.
 fn real_on_side(arena: &mut Arena, u: ExprId, var: ExprId, mode: Mode) -> bool {
-    if mode.cut_widened || crate::calculus::limit::inner_known_real(arena, u) {
+    if mode.cut_widened
+        || crate::calculus::limit::inner_known_real(arena, u)
+        || locally_real(arena, u, var, mode)
+    {
         return true;
     }
     let zero = arena.zero;
     stays_on_line(arena, u, zero, var, false, mode)
+}
+
+/// Is `u` real for real values of `var` near the expansion point on the
+/// side(s) of the expansion, as its structure shows?  `var`, real constants
+/// (free symbols counted real, as in [`real_on_side`]), sums, products,
+/// integer powers and the functions real on the real line (`exp`, `sin`,
+/// `atan`, `|·|`, …) of real arguments are; a logarithm or a non-integer
+/// power of a real base tending to a positive constant, `asin`, `acos`,
+/// `atanh` of a real argument tending into `(−1, 1)` and `acosh` of one
+/// tending above `1` are (the argument stays inside the interval where the
+/// function is real).  Anything else is not shown real.
+///
+/// [`stays_on_line`] asks for realness on the whole side, which a function
+/// real only near the point does not have: `acos x` (`x → 0⁺`) inside
+/// `acos(acos x)`, `ln(ω + π)` inside `acos((ω + π)^(ω + π))`.  Each such
+/// argument on a cut was undecided ([`Obstruction::CutUndecided`]) until
+/// the widest precision round took it as real anyway, after two expansions
+/// of the whole expression at growing precision: `lim_{x→π}(acos(xˣ) −
+/// acos(π^π))/(sin(xˣ) − sin(π^π))` took 50 s (the last round, at 28
+/// terms, multiplied out series whose coefficients are large constants in
+/// `π^π`), `lim_{x→0} acos(acos(acos x))/x²` 2 s.
+fn locally_real(arena: &mut Arena, u: ExprId, var: ExprId, mode: Mode) -> bool {
+    let zero = arena.zero;
+    // `a` tends to a real constant that `inside` accepts: its value at the
+    // point, where it is continuous (no jump function on the way).
+    let tends_into = |arena: &mut Arena, a: ExprId, inside: &dyn Fn(&mut Arena, ExprId) -> bool| {
+        if a == var {
+            return inside(arena, zero);
+        }
+        let jumps = walk::post_order_ids(arena, a).into_iter().any(|n| {
+            matches!(
+                arena.node(n),
+                ExprNode::Floor(_)
+                    | ExprNode::Ceiling(_)
+                    | ExprNode::Sign(_)
+                    | ExprNode::Heaviside(_)
+                    | ExprNode::Arg(_)
+                    | ExprNode::Piecewise(_)
+            )
+        });
+        if jumps {
+            return false;
+        }
+        let Some(v) = crate::calculus::limit::safe_substitute(arena, a, var, zero) else {
+            return false;
+        };
+        let v = eval::eval(arena, v);
+        !walk::contains(arena, v, var)
+            && mode.log_var.is_none_or(|l| !walk::contains(arena, v, l))
+            && crate::calculus::limit::is_finite_limit_value(arena, v, var)
+            && crate::calculus::limit::inner_known_real(arena, v)
+            && inside(arena, v)
+    };
+    let positive = |arena: &mut Arena, v: ExprId| constant_sign(arena, v) == Some(true);
+    let inside_unit = |arena: &mut Arena, v: ExprId| {
+        let one = arena.one;
+        let m_one = arena.neg_one;
+        let below = arena.sub(one, v);
+        let below = eval::eval(arena, below);
+        let above = arena.sub(v, m_one);
+        let above = eval::eval(arena, above);
+        constant_sign(arena, below) == Some(true) && constant_sign(arena, above) == Some(true)
+    };
+    let above_one = |arena: &mut Arena, v: ExprId| {
+        let one = arena.one;
+        let d = arena.sub(v, one);
+        let d = eval::eval(arena, d);
+        constant_sign(arena, d) == Some(true)
+    };
+    // The `var`-dependent nodes shown real so far (a node not shown real
+    // ends the walk).
+    let mut real: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    for id in walk::post_order_ids(arena, u) {
+        if real.contains(&id) || !walk::contains(arena, id, var) {
+            continue;
+        }
+        let is_real = if id == var {
+            true
+        } else {
+            let r = |arena: &Arena, c: ExprId| {
+                real.contains(&c)
+                    || (!walk::contains(arena, c, var)
+                        && crate::calculus::limit::inner_known_real(arena, c))
+            };
+            match arena.node(id).clone() {
+                ExprNode::Add(cs) | ExprNode::Mul(cs) => cs.iter().all(|&c| r(arena, c)),
+                ExprNode::Min(cs) | ExprNode::Max(cs) => cs.iter().all(|&c| r(arena, c)),
+                ExprNode::Atan2(a, b) | ExprNode::Beta(a, b) | ExprNode::Polygamma(a, b) => {
+                    r(arena, a) && r(arena, b)
+                }
+                ExprNode::Gamma(a)
+                | ExprNode::Digamma(a)
+                | ExprNode::Factorial(a)
+                | ExprNode::Zeta(a)
+                | ExprNode::Erf(a)
+                | ExprNode::Erfc(a)
+                | ExprNode::Si(a)
+                | ExprNode::Ei(a)
+                | ExprNode::Heaviside(a) => r(arena, a),
+                ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Arg(_) => true,
+                ExprNode::LogGamma(a) | ExprNode::Ci(a) | ExprNode::Li(a) => {
+                    r(arena, a)
+                        && ((a == var && mode.side == Side::Above)
+                            || tends_into(arena, a, &positive))
+                }
+                ExprNode::Neg(a)
+                | ExprNode::Exp(a)
+                | ExprNode::Sin(a)
+                | ExprNode::Cos(a)
+                | ExprNode::Tan(a)
+                | ExprNode::Atan(a)
+                | ExprNode::Sinh(a)
+                | ExprNode::Cosh(a)
+                | ExprNode::Tanh(a)
+                | ExprNode::Asinh(a)
+                | ExprNode::Sign(a)
+                | ExprNode::Floor(a)
+                | ExprNode::Ceiling(a) => r(arena, a),
+                ExprNode::Abs(_) => true,
+                ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(|q| q.is_integer()) => {
+                    r(arena, b)
+                }
+                // (`var` itself is positive from above.)
+                ExprNode::Pow(b, e) => {
+                    r(arena, b)
+                        && r(arena, e)
+                        && ((b == var && mode.side == Side::Above)
+                            || tends_into(arena, b, &positive))
+                }
+                ExprNode::Ln(a) => {
+                    r(arena, a)
+                        && ((a == var && mode.side == Side::Above)
+                            || tends_into(arena, a, &positive))
+                }
+                ExprNode::Asin(a) | ExprNode::Acos(a) | ExprNode::Atanh(a) => {
+                    r(arena, a) && tends_into(arena, a, &inside_unit)
+                }
+                ExprNode::Acosh(a) => r(arena, a) && tends_into(arena, a, &above_one),
+                _ => false,
+            }
+        };
+        if !is_real {
+            return false;
+        }
+        real.insert(id);
+    }
+    true
 }
 
 /// [`branch_cut_of`](crate::calculus::limit::branch_cut_of), and the cut
@@ -2553,7 +2737,10 @@ fn structural_series(
 /// [`Mode::log_var`]) a constant term `m·l + r` with an integer `m` gives
 /// `e^(m·l) = |var|^m` (`x^(x + 2) = x²·e^(x·ln x)`, `sinh(ln x) =
 /// (x − 1/x)/2`); any other dependence on `l` (`e^(l/2)`, `e^(l²)`) is
-/// refused: that coefficient would not be of lower order.
+/// refused: that coefficient would not be of lower order.  For Gruntz's
+/// leading term ([`Mode::partial`]) `u₀ = m·l + r` with `r = o(l)` is
+/// taken apart the same way ([`log_linear_part`]): `e^r` (`e^{−1/l}`) is of
+/// lower order.
 fn apply_exp_like(arena: &mut Arena, kind: FnKind, a: &TSeries, mode: Mode) -> Option<TSeries> {
     let Some(l) = mode.log_var else {
         return apply_fn(arena, kind, a);
@@ -2564,15 +2751,27 @@ fn apply_exp_like(arena: &mut Arena, kind: FnKind, a: &TSeries, mode: Mode) -> O
     }
     let m = crate::transforms::diff::diff(arena, u0, l);
     let m = eval::eval(arena, m);
-    let m = arena
-        .as_num(m)
-        .filter(|q| q.is_integer())?
-        .to_integer()
-        .to_i64()?;
-    let zero = arena.zero;
-    let r = subs::subs(arena, u0, l, zero);
-    let r = eval::eval(arena, r);
-    if walk::contains(arena, r, l) || m.abs() > MAX_INT_POWER {
+    let (m, r) = match arena.as_num(m).filter(|q| q.is_integer()) {
+        Some(q) => {
+            let m = q.to_integer().to_i64()?;
+            let zero = arena.zero;
+            let r = subs::subs(arena, u0, l, zero);
+            (m, eval::eval(arena, r))
+        }
+        // Gruntz's leading term: `u₀ = m·l + r` with `r = o(l)` (`e^{−1/l}`
+        // for `exp(1/ln x)` at `∞`), whose `e^r` is of a lower class than
+        // any power of `ω`, a coefficient as the log-extended expansion
+        // takes them.
+        None if mode.partial => {
+            let (q, r) = log_linear_part(arena, u0, l)?;
+            if !q.is_integer() {
+                return None;
+            }
+            (q.to_integer().to_i64()?, r)
+        }
+        None => return None,
+    };
+    if (walk::contains(arena, r, l) && !mode.partial) || m.abs() > MAX_INT_POWER {
         return None;
     }
     let mut b = a.clone();
@@ -2603,6 +2802,43 @@ fn apply_exp_like(arena: &mut Arena, kind: FnKind, a: &TSeries, mode: Mode) -> O
     let half = arena.rational(1, 2);
     Some(TSeries::scale(arena, &sum, half))
 }
+
+/// `(m, r)` with `u₀ = m·l + r`, `m` rational and `r = o(l)` as `l → −∞`
+/// (`l = ln|var|`, or Gruntz's `ln ω`), from the expansion of
+/// `t·u₀(l = 1/t)` as `t → 0⁻`, which must be `m + o(1)`: `u₀ = 3 − 2l + 1/l`
+/// gives `(−2, 3 + 1/l)`, a `u₀` that grows faster than `l` (`l²`) or
+/// whose expansion is out of reach (`√(−l)`, `ln(−l)`) none.
+fn log_linear_part(arena: &mut Arena, u0: ExprId, l: ExprId) -> Option<(Q, ExprId)> {
+    let t = arena.symbol(LOG_GROWTH_PLACEHOLDER);
+    let one = arena.one;
+    let inv_t = arena.div(one, t);
+    let g = subs::subs(arena, u0, l, inv_t);
+    let g = arena.mul(&[t, g]);
+    let g = eval::eval(arena, g);
+    let mode = Mode {
+        side: Side::Below,
+        log_var: None,
+        limits: false,
+        partial: false,
+        cut_widened: false,
+        last_resort: false,
+    };
+    let ts = expand_with_mode(arena, g, t, 1, mode).ok()?;
+    for e in ts.shift..0 {
+        let c = ts.coeff_at(arena, e);
+        if !arena.is_zero_structural(c) {
+            return None;
+        }
+    }
+    let m = arena.as_num(ts.coeff_at(arena, 0))?.clone();
+    let ml = rat_expr(arena, m.clone());
+    let ml = arena.mul(&[ml, l]);
+    let r = arena.sub(u0, ml);
+    Some((m, eval::eval(arena, r)))
+}
+
+/// Stand-in for `1/l` in [`log_linear_part`].
+const LOG_GROWTH_PLACEHOLDER: &str = "__series_lt";
 
 /// Does `e^a` vanish to every order as `var → 0` from the side(s) of the
 /// expansion: `a` has a pole whose leading term `c·var^v` (`v < 0`) has a
@@ -3268,16 +3504,17 @@ fn inverse_at_infinity(
     } else {
         c
     };
-    let parts = crate::base::complex::decompose(arena, d);
-    if !parts.exact {
-        return Ok(None);
-    }
-    let re = eval::eval(arena, parts.re);
-    let im = eval::eval(arena, parts.im);
-    let (Some(re_sign), Some(im_sign)) = (
-        crate::calculus::limit::const_sign(arena, re),
-        crate::calculus::limit::const_sign(arena, im),
-    ) else {
+    // The signs of the parts of `d`, from its exact decomposition or, where
+    // that does not see through it (`(−1)^(1/3)`, the root of
+    // `∛(−x⁻³)`), from its certified digits.  Before, such a direction
+    // was left to the differentiation fallback, which took the limits of
+    // ever larger derivatives: `−π/(2x³) + atan(∛(−x⁻³))/x³` from the
+    // right ran for minutes.
+    let Some(crate::calculus::limit::PartSigns {
+        re: re_sign,
+        im: im_sign,
+    }) = crate::calculus::limit::direction_signs(arena, d)
+    else {
         return Ok(None);
     };
     let neg_arg = |arena: &mut Arena| {

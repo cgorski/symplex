@@ -1904,21 +1904,22 @@ impl Arena {
     /// The sign of the real, symbol-free `expr` from a certified 16-digit
     /// value (its error ball excludes 0); `None` for anything else.  Used by
     /// canonical multiplication to orient `±∞` (`ln(2)·∞ = ∞`).
+    ///
+    /// `expr` must be real by the assumptions: a certified value whose
+    /// imaginary part shows as 0 proves nothing, since an imaginary part
+    /// below the relative precision of the whole value is not shown.  Up to
+    /// 0.44 `−1 − i·(e^{10⁻³⁰} − 1 − 10⁻³⁰)` (imaginary part `−5·10⁻⁶¹`)
+    /// had sign `−`, though no caller reached it with a non-real value
+    /// (they checked realness first).  Callers with another realness proof
+    /// use `eval::certified_real_sign`.
     pub(crate) fn sign_of_real_constant(&self, expr: ExprId) -> Option<std::cmp::Ordering> {
-        use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
-        if !crate::base::walk::free_symbols(self, expr).is_empty() {
+        use crate::base::assumptions::{AssumptionCache, Props};
+        if !crate::base::walk::free_symbols(self, expr).is_empty()
+            || AssumptionCache::new().query(self, expr, Props::REAL) != Some(true)
+        {
             return None;
         }
-        match evalf_settled(self, expr, 16, ZeroSearch::Cap) {
-            Ok((z, Settled::Certified)) if z.1.is_zero() && !z.0.is_zero() => {
-                Some(if z.0.is_negative() {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Greater
-                })
-            }
-            _ => None,
-        }
+        crate::transforms::eval::certified_real_sign(self, expr)
     }
 
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.

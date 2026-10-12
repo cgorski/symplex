@@ -343,16 +343,18 @@ fn ei_of_a_negative_argument() {
 /// Before: the zero of `airyai`, `erfc`, `besselk` below the exponent range
 /// was exact, and its sign `0`; the functions vanish at no rational point,
 /// so the zero is an underflow and the sign undecidable.
+///
+/// Changed in 0.45: `sign(erfc(10⁵))` is `1`.  `evalf` certifies the
+/// underflow of `erfc(10⁵)` positive, and `eval` folds the sign of a real
+/// constant from its certified value (SymPy 1.14: `sign(erfc(10**5))` → 1;
+/// mpmath: `erfc(mpf(10)**5)` = 5.234880679754046e-4342944825 > 0).
 #[test]
 fn an_underflowing_special_function_is_not_an_exact_zero() {
     let ctx = Context::new();
-    for s in [
-        "sign(airyai(10^10))",
-        "sign(erfc(10^5))",
-        "sign(besselk(0, 10^10))",
-    ] {
+    for s in ["sign(airyai(10^10))", "sign(besselk(0, 10^10))"] {
         refused(&ctx, s, 16);
     }
+    check(&ctx, "sign(erfc(10^5))", 16, "1");
     // Changed in 0.32: the value itself was `0`, a digit it does not have
     // (mpmath: mp.dps=30; erfc(mpf(10)**5) = 5.234880679754046e-4342944825);
     // a nonzero number below the exponent range is now refused.

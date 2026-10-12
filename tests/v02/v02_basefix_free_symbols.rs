@@ -85,9 +85,10 @@ fn symbol_free_outside_and_bound_inside_same_expression() {
 fn integral_and_derivative_variables_stay_free() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    // exp(exp(x)) has no elementary or special-function antiderivative in
-    // the tables → formal Integral.  (exp(x²) integrates to erfi since 0.9.)
-    let i = x.exp().exp().integrate(&x);
+    // sin(sin(x)) has no elementary or special-function antiderivative in
+    // the tables → formal Integral.  (exp(x²) integrates to erfi since 0.9,
+    // exp(exp(x)) to Ei(exp(x)) since 0.44.)
+    let i = x.sin().sin().integrate(&x);
     assert!(i.has_unevaluated(), "{i}");
     assert_eq!(i.free_symbols(), vec![x.clone()], "{i}");
     assert!(!i.is_constant());

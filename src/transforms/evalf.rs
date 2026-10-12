@@ -25,9 +25,12 @@
 //! of the term and the Hurwitz zeta function by Euler–Maclaurin, with a
 //! proven remainder (`emsum`); one of another hypergeometric term by its term
 //! ratio, with a rigorous bound on the tail (`hypsum`, after SymPy's
-//! `hypsum`).  A divergent sum is [`SymplexError::Divergent`]; a
-//! non-rational term that converges only polynomially, or a term that is
-//! not hypergeometric, is refused.
+//! `hypsum`); a smooth term that converges only polynomially (`ln k/k²`,
+//! `1/(k² + √2)`, `(−1)^k ln(k + 1)/(k + 1)`, `H_k/k³`) by its expansion
+//! at infinity with a Taylor-model remainder, summed against `Σ k^(−s)(ln
+//! k)^m` by Euler–Maclaurin or Euler–Boole (`asymsum`; refused before 0.45).
+//! A divergent sum is [`SymplexError::Divergent`]; any other term that is not
+//! hypergeometric is refused.
 //!
 //! # Error bounds and branch cuts
 //!
@@ -74,10 +77,12 @@ use crate::base::walk;
 use tracing::debug;
 
 mod accuracy;
+mod asymsum;
 pub(crate) mod bernoulli;
 mod bessel_debye;
 mod bessel_order;
 mod bessel_recur;
+mod cerf;
 mod conjugate;
 mod emsum;
 mod exact;
@@ -89,6 +94,7 @@ mod loggamma;
 mod polylog;
 mod quad;
 mod sensitivity;
+mod zeta;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Complex type
@@ -1497,6 +1503,70 @@ fn eval_node_with_error(
             let err = loggamma::error_bound(get_cached(cache, *c)?, bz, &value, prec);
             (value, err)
         }
+        // `ζ`, `η`, `ψ⁽ᵐ⁾`, `ψ`, `Γ` and `x!` of a non-real argument report their
+        // own bounds (`zeta.rs`; the sensitivity rules are for real
+        // arguments).
+        node if complex_zeta_family(arena, node, cache).is_some() => {
+            let (kind, c) =
+                complex_zeta_family(arena, node, cache).unwrap_or((ZetaFamily::Zeta, id));
+            let value = eval_node(arena, id, cache, prec, rm, cc)?;
+            let z = get_cached(cache, c)?;
+            let bz = errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let err = match kind {
+                ZetaFamily::Zeta => zeta::zeta_bound(z, bz, &value, prec),
+                ZetaFamily::Eta => zeta::eta_bound(z, bz, &value, prec),
+                ZetaFamily::Gamma => zeta::gamma_bound(z, bz, &value, prec),
+                ZetaFamily::Factorial => {
+                    let z1 = (
+                        z.0.add(&BigFloat::from_i32(1, 64), exact_bits(&z.0, prec), rm),
+                        z.1.clone(),
+                    );
+                    zeta::gamma_bound(&z1, bz, &value, prec)
+                }
+                ZetaFamily::Polygamma(order) => {
+                    let bn = errs
+                        .get(&order)
+                        .copied()
+                        .unwrap_or(accuracy::Bound::UNKNOWN);
+                    let m = get_cached(cache, order)
+                        .ok()
+                        .and_then(|v| bigfloat_to_f64_rounded(&v.0, rm).ok())
+                        .map_or(0.0, f64::round);
+                    // The order is discrete: within 2⁻⁴⁰ of its integer.
+                    if bn.is_unknown() || (!bn.is_exact() && bn.joint() > -40.0) {
+                        accuracy::Bound::UNKNOWN
+                    } else {
+                        zeta::polygamma_bound(m as u32, z, bz, &value, prec)
+                    }
+                }
+                ZetaFamily::Digamma => zeta::polygamma_bound(0, z, bz, &value, prec),
+                ZetaFamily::Harmonic => {
+                    let z1 = (
+                        z.0.add(&BigFloat::from_i32(1, 64), exact_bits(&z.0, prec), rm),
+                        z.1.clone(),
+                    );
+                    zeta::polygamma_bound(0, &z1, bz, &value, prec)
+                }
+                ZetaFamily::Erf(kind) => cerf::erf_bound(kind, z, bz, &value, prec),
+            };
+            (value, err)
+        }
+        ExprNode::Beta(a, b)
+            if cache.get(a).is_some_and(|v| !v.1.is_zero())
+                || cache.get(b).is_some_and(|v| !v.1.is_zero()) =>
+        {
+            let value = eval_node(arena, id, cache, prec, rm, cc)?;
+            let bound = |c: &ExprId| errs.get(c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let err = zeta::beta_bound(
+                get_cached(cache, *a)?,
+                bound(a),
+                get_cached(cache, *b)?,
+                bound(b),
+                &value,
+                prec,
+            );
+            (value, err)
+        }
         // `polylog` off the real interval [−1, 1] reports its own bound (the
         // sensitivity rules are for real arguments; `polylog.rs`).
         node @ ExprNode::Apply(_, args) if polylog::is_general(arena, node, cache) => {
@@ -1527,7 +1597,16 @@ fn eval_node_with_error(
         }
         // `polylog` of a complex order reports its own bound.
         node @ ExprNode::Apply(_, args) if polylog::is_complex_order(arena, node, cache) => {
-            let value = eval_node(arena, id, cache, prec, rm, cc)?;
+            let value = match eval_node(arena, id, cache, prec, rm, cc) {
+                Ok(value) => value,
+                // An argument that rounded onto 1 (as in the arm above).
+                Err(SymplexError::Unevaluable { .. })
+                    if rounded_onto_pole(arena, node, cache, errs) =>
+                {
+                    return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
+                }
+                Err(e) => return Err(e),
+            };
             let bound = |c: ExprId| errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
             let err = polylog::complex_order_bound(
                 get_cached(cache, args[0])?,
@@ -1536,6 +1615,8 @@ fn eval_node_with_error(
                 bound(args[1]),
                 &value,
                 prec,
+                rm,
+                cc,
             );
             (value, err)
         }
@@ -1581,6 +1662,59 @@ fn eval_node_with_error(
     };
     let err = accuracy::reported(&value, err, prec);
     Ok((value, err))
+}
+
+/// The functions of `zeta.rs` and `cerf.rs` at a non-real argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZetaFamily {
+    Zeta,
+    Eta,
+    Gamma,
+    Factorial,
+    Digamma,
+    Harmonic,
+    /// `polygamma(m, z)`, with the order's node.
+    Polygamma(ExprId),
+    Erf(cerf::Kind),
+}
+
+/// Is `node` one of the functions of `zeta.rs` (`ζ`, `η`, `Γ`, `x!`, `ψ`,
+/// `ψ⁽ᵐ⁾`, `harmonic`) or `cerf.rs` (`erf`, `erfc`, `erfi`) whose (last)
+/// argument has a non-real value in `cache`?  Which one, and that argument.
+fn complex_zeta_family(
+    arena: &Arena,
+    node: &ExprNode,
+    cache: &FxHashMap<ExprId, Complex>,
+) -> Option<(ZetaFamily, ExprId)> {
+    let (kind, c) = match node {
+        ExprNode::Zeta(c) => (ZetaFamily::Zeta, *c),
+        ExprNode::Gamma(c) => (ZetaFamily::Gamma, *c),
+        ExprNode::Factorial(c) => (ZetaFamily::Factorial, *c),
+        ExprNode::Digamma(c) => (ZetaFamily::Digamma, *c),
+        ExprNode::Polygamma(n, c) => (ZetaFamily::Polygamma(*n), *c),
+        ExprNode::Erf(c) => (ZetaFamily::Erf(cerf::Kind::Erf), *c),
+        ExprNode::Erfc(c) => (ZetaFamily::Erf(cerf::Kind::Erfc), *c),
+        ExprNode::Apply(sid, args)
+            if arena.lib_fn(*sid) == Some(LibFn::Erfi) && args.len() == 1 =>
+        {
+            (ZetaFamily::Erf(cerf::Kind::Erfi), args[0])
+        }
+        ExprNode::Apply(sid, args)
+            if arena.lib_fn(*sid) == Some(LibFn::DirichletEta) && args.len() == 1 =>
+        {
+            (ZetaFamily::Eta, args[0])
+        }
+        ExprNode::Apply(sid, args)
+            if arena.lib_fn(*sid) == Some(LibFn::Harmonic) && args.len() == 1 =>
+        {
+            (ZetaFamily::Harmonic, args[0])
+        }
+        _ => return None,
+    };
+    cache
+        .get(&c)
+        .is_some_and(|v| !v.1.is_zero())
+        .then_some((kind, c))
 }
 
 /// `f(g(u)) = u` for a function `f` and the principal branch `g` of its
@@ -2798,9 +2932,7 @@ fn eval_node(
         ExprNode::Zeta(inner) => {
             let val = get_cached(cache, *inner)?;
             if !val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "zeta of complex argument not yet supported in evalf".into(),
-                });
+                return zeta::zeta_complex(val, prec, rm, cc);
             }
             debug!(prec, "evalf: zeta via Borwein / functional equation");
             let r = arb_zeta(&val.0, prec, rm, cc)?;
@@ -2809,9 +2941,9 @@ fn eval_node(
         ExprNode::Polygamma(n_id, x_id) => {
             let n_val = get_cached(cache, *n_id)?;
             let x_val = get_cached(cache, *x_id)?;
-            if !n_val.1.is_zero() || !x_val.1.is_zero() {
+            if !n_val.1.is_zero() {
                 return Err(SymplexError::Unevaluable {
-                    reason: "polygamma of complex arguments not yet supported in evalf".into(),
+                    reason: "polygamma order must be a non-negative integer".into(),
                 });
             }
             let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
@@ -2820,6 +2952,16 @@ fn eval_node(
                 return Err(SymplexError::Unevaluable {
                     reason: "polygamma order must be a non-negative integer".into(),
                 });
+            }
+            // A non-real argument: the Hurwitz zeta function (`zeta.rs`;
+            // refused before 0.45).
+            if !x_val.1.is_zero() {
+                if n_round > f64::from(zeta::MAX_POLYGAMMA_ORDER) {
+                    return Err(unevaluable(
+                        "polygamma of an order beyond 10^4 at a complex argument not supported in evalf",
+                    ));
+                }
+                return zeta::polygamma_complex(n_round as u32, x_val, prec, rm, cc);
             }
             // A large order: `(−1)^{n+1}·n!·ζ(n + 1, x)` in log space (before
             // 0.30 refused beyond 10⁴, "order must be a non-negative integer",
@@ -2882,9 +3024,13 @@ fn eval_node(
         ExprNode::Factorial(x_id) => {
             let x_val = get_cached(cache, *x_id)?;
             if !x_val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "factorial of a complex argument not yet supported in evalf".into(),
-                });
+                let x1 = (
+                    x_val
+                        .0
+                        .add(&BigFloat::from_i32(1, 64), exact_bits(&x_val.0, prec), rm),
+                    x_val.1.clone(),
+                );
+                return zeta::gamma_complex(&x1, prec, rm, cc);
             }
             debug!(
                 prec,
@@ -2969,9 +3115,8 @@ fn eval_node(
         ExprNode::Gamma(inner) => {
             let val = get_cached(cache, *inner)?;
             if !val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Gamma of complex argument not yet supported in evalf".into(),
-                });
+                debug!(prec, "evalf: Gamma of a complex argument");
+                return zeta::gamma_complex(val, prec, rm, cc);
             }
             debug!(prec, "evalf: Gamma via Stirling series");
             let result = arb_gamma_real(&val.0, prec, rm, cc)?;
@@ -2995,9 +3140,7 @@ fn eval_node(
         ExprNode::Digamma(inner) => {
             let val = get_cached(cache, *inner)?;
             if !val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Digamma of complex argument not yet supported in evalf".into(),
-                });
+                return zeta::polygamma_complex(0, val, prec, rm, cc);
             }
             let result = arb_digamma(&val.0, prec, rm, cc)?;
             Ok((result, BigFloat::new(prec)))
@@ -3006,9 +3149,7 @@ fn eval_node(
         ExprNode::Erf(inner) => {
             let val = get_cached(cache, *inner)?;
             if !val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "erf of complex argument not yet supported in evalf".into(),
-                });
+                return cerf::erf_family(cerf::Kind::Erf, val, prec, rm, cc);
             }
             debug!(prec, "evalf: erf via arbitrary-precision series");
             let result = arb_erf(&val.0, prec, rm, cc)?;
@@ -3018,9 +3159,7 @@ fn eval_node(
         ExprNode::Erfc(inner) => {
             let val = get_cached(cache, *inner)?;
             if !val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "erfc of complex argument not yet supported in evalf".into(),
-                });
+                return cerf::erf_family(cerf::Kind::Erfc, val, prec, rm, cc);
             }
             debug!(prec, "evalf: erfc via arbitrary-precision series");
             let result = arb_erfc(&val.0, prec, rm, cc)?;
@@ -3033,9 +3172,8 @@ fn eval_node(
             let a_val = get_cached(cache, *a_id)?;
             let b_val = get_cached(cache, *b_id)?;
             if !a_val.1.is_zero() || !b_val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Beta of complex arguments not yet supported in evalf".into(),
-                });
+                debug!(prec, "evalf: Beta of complex arguments");
+                return zeta::beta_complex(a_val, b_val, prec, rm, cc);
             }
             // Beta(a,b) = Gamma(a)*Gamma(b)/Gamma(a+b) at arbitrary precision.
             debug!(prec, "evalf: Beta via arbitrary-precision Gamma");
@@ -8406,6 +8544,21 @@ fn eval_lib_fn(
         LibFn::ChebyshevU => eval_orthopoly(OrthoPoly::ChebyshevU, f, args, cache, prec, rm, cc),
         LibFn::Hermite => eval_orthopoly(OrthoPoly::Hermite, f, args, cache, prec, rm, cc),
         LibFn::Laguerre => eval_orthopoly(OrthoPoly::Laguerre, f, args, cache, prec, rm, cc),
+        // A non-real argument: `(1 − 2^(1−s))·ζ(s)` and `ψ(z + 1) + γ`
+        // (`zeta.rs`; refused before 0.45).
+        LibFn::DirichletEta
+            if args.len() == 1 && cache.get(&args[0]).is_some_and(|v| !v.1.is_zero()) =>
+        {
+            zeta::eta_complex(get_cached(cache, args[0])?, prec, rm, cc)
+        }
+        LibFn::Harmonic
+            if args.len() == 1 && cache.get(&args[0]).is_some_and(|v| !v.1.is_zero()) =>
+        {
+            zeta::harmonic_complex(get_cached(cache, args[0])?, prec, rm, cc)
+        }
+        LibFn::Erfi if args.len() == 1 && cache.get(&args[0]).is_some_and(|v| !v.1.is_zero()) => {
+            cerf::erf_family(cerf::Kind::Erfi, get_cached(cache, args[0])?, prec, rm, cc)
+        }
         LibFn::Erfi
         | LibFn::ErfInv
         | LibFn::ErfcInv

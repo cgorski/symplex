@@ -19,7 +19,9 @@
 //! * `conj(a + b) = conj a + conj b`, `conj(c·iᵏ·Π fⱼ) = c·(−1)ᵏ·iᵏ·Π conj fⱼ`
 //!   for a rational `c`;
 //! * `conj(bⁿ) = (conj b)ⁿ` for an integer `n`, and `conj(f(z)) =
-//!   f(conj z)` for `exp`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`;
+//!   f(conj z)` for `exp`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, and
+//!   (since 0.45, evaluated at non-real arguments) `ζ`, `Γ`, `ψ`, `ψ⁽ᵐ⁾`, `x!`,
+//!   `B`, `erf`, `erfc`;
 //! * for `ln`, `√`, other powers and the inverse functions only when the
 //!   argument is certainly off the function's branch cut, where the
 //!   principal branch breaks the symmetry (`conj √−1 = −i ≠ √(conj −1)`);
@@ -216,6 +218,17 @@ impl Sigs {
                 | ExprNode::Sinh(_)
                 | ExprNode::Cosh(_)
                 | ExprNode::Tanh(_) => true,
+                // Meromorphic and real on the real axis: `f(z̄) = conj f(z)`
+                // (evaluated at non-real arguments since 0.45, `zeta.rs`,
+                // `cerf.rs`; the order of `ψ⁽ᵐ⁾` is real).
+                ExprNode::Zeta(_)
+                | ExprNode::Gamma(_)
+                | ExprNode::Digamma(_)
+                | ExprNode::Polygamma(..)
+                | ExprNode::Factorial(_)
+                | ExprNode::Beta(..)
+                | ExprNode::Erf(_)
+                | ExprNode::Erfc(_) => true,
                 ExprNode::Asin(c) | ExprNode::Acos(c) | ExprNode::Atanh(c) | ExprNode::Acosh(c) => {
                     across_nonzero(c, false)
                 }

@@ -258,15 +258,17 @@ fn leadterm_by_tseries(
     logw: ExprId,
 ) -> Result<(ExprId, ExprId), crate::base::errors::SymplexError> {
     let f = combine_exponentials(arena, f, w);
+    let l = log_omega_symbol(arena);
     for order in [4i64, 10] {
         budget.tick(SERIES_COST)?;
         budget.charge_size(arena, f)?;
-        let ts = crate::calculus::series::expand_leading(arena, f, w, order, logw)?;
+        let ts = crate::calculus::series::expand_leading(arena, f, w, order, l)?;
         for e in ts.shift()..ts.known() {
             let c = ts.coefficient(arena, e);
             if arena.is_zero_structural(c) {
                 continue;
             }
+            let c = with_logw(arena, c, l, logw);
             let c = settle_constant(arena, c);
             if arena.is_zero_structural(c) || is_rational_zero(arena, c) {
                 continue;
@@ -282,6 +284,42 @@ fn leadterm_by_tseries(
         operation: "gruntz::leadterm",
         reason: "the series expansion has no non-zero term within its precision".into(),
     })
+}
+
+/// The symbol for `ln ω` in the expansions of the series engine (its
+/// `log_var`, SymPy's `logx`), declared negative as `ln ω` is for
+/// `ω → 0⁺`; [`with_logw`] puts Gruntz's `logw` (an expression in `x`,
+/// `−x` after a move up) in its place in a coefficient.
+///
+/// The engine recognises `ln ω` in a coefficient by this symbol: `e^{m·l +
+/// r} = ωᵐ·eʳ`, and no Taylor expansion of `f(u₀ + w)` about a `u₀` that
+/// grows like `ln ω`.  Given the expression `logw` itself it saw `ln ω`
+/// only where that expression stood literally, took `e^{−logw} = e^x` for a
+/// constant coefficient of `ω⁰` (it is `ω⁻¹`), and `Γ(x + 1)/Γ(x) − x`
+/// at `∞`, rewritten as `−x + e^{ln Γ(x + 1) − ln Γ(x)}`, came out `−∞`
+/// (it is `0`).
+const LOG_OMEGA: &str = "__gruntz_lnw";
+
+fn log_omega_symbol(arena: &mut Arena) -> ExprId {
+    let l = arena.symbol(LOG_OMEGA);
+    if let ExprNode::Symbol(sid) = *arena.node(l)
+        && arena.symbol_assumptions(sid) == crate::base::assumptions::Assumptions::default()
+    {
+        let mut a = crate::base::assumptions::Assumptions::default();
+        a.assert_true(crate::base::assumptions::Props::NEGATIVE);
+        a.forward_chain();
+        arena.set_symbol_assumptions(sid, a);
+    }
+    l
+}
+
+/// `c` with `logw` for the symbol `l` of [`log_omega_symbol`].
+fn with_logw(arena: &mut Arena, c: ExprId, l: ExprId, logw: ExprId) -> ExprId {
+    if !crate::base::walk::contains(arena, c, l) {
+        return c;
+    }
+    let r = crate::transforms::subs::subs(arena, c, l, logw);
+    crate::transforms::eval::eval(arena, r)
 }
 
 /// Gruntz's last resort for the leading term `(c, e)` of `f ≈ c·ω^e`, once
@@ -355,6 +393,8 @@ fn last_resort_series(
     } else {
         [8, 4 * q, 10 * q]
     };
+    // (`l` stands for `ln var`, which is `log_var`.)
+    let l = log_omega_symbol(arena);
     let mut tried = 0;
     for order in orders {
         let order = order.min(MAX_RAMIFIED_ORDER);
@@ -366,7 +406,7 @@ fn last_resort_series(
         budget.charge_size(arena, g)?;
         // A short expansion may not reach a sub-expression's leading term
         // (`acos(1 − u¹⁰)`): the next order decides.
-        let ts = crate::calculus::series::expand_leading_last_resort(arena, g, var, order, log_var);
+        let ts = crate::calculus::series::expand_leading_last_resort(arena, g, var, order, l);
         tracing::trace!(g = %arena.display(g), q, order, ok = ts.is_ok(), "gruntz::last_resort_series");
         let Ok(ts) = ts else {
             continue;
@@ -377,6 +417,7 @@ fn last_resort_series(
             if arena.is_zero_structural(c) {
                 continue;
             }
+            let c = with_logw(arena, c, l, log_var);
             let c = settle_constant(arena, c);
             if arena.is_zero_structural(c) || is_rational_zero(arena, c) {
                 continue;
@@ -509,7 +550,8 @@ fn vanishes_to_positive_order(
     budget.tick(SERIES_COST).ok()?;
     let f = combine_exponentials(arena, f, w);
     budget.charge_size(arena, f).ok()?;
-    let ts = crate::calculus::series::expand_leading(arena, f, w, 10, logw).ok()?;
+    let l = log_omega_symbol(arena);
+    let ts = crate::calculus::series::expand_leading(arena, f, w, 10, l).ok()?;
     if ts.known() <= 0 {
         return None;
     }
@@ -518,6 +560,7 @@ fn vanishes_to_positive_order(
         if arena.is_zero_structural(c) {
             continue;
         }
+        let c = with_logw(arena, c, l, logw);
         let settled = settle_constant(arena, c);
         if !arena.is_zero_structural(settled) && !is_rational_zero(arena, settled) {
             return None;
@@ -990,7 +1033,25 @@ fn mrv(
                         let xc = arena.pow(x, c);
                         let er = arena.exp(rest);
                         let split = arena.mul(&[xc, er]);
-                        return mrv(arena, split, x, depth + 1, budget);
+                        let evaluated = crate::transforms::eval::eval(arena, split);
+                        if crate::base::walk::contains(arena, evaluated, er)
+                            || !crate::base::walk::contains(arena, evaluated, e)
+                        {
+                            return mrv(arena, split, x, depth + 1, budget);
+                        }
+                        // Evaluation folded `e^{−c·ln x + …}` back into
+                        // `x^{−c}·e^{…}` (`exp(k·ln z) = z^k` for a
+                        // symbolic `z`), `e` itself again, and `mrv` of
+                        // the product would return here until the depth
+                        // ran out.  The two factors' sets instead, merged
+                        // as for a product: `x^c` in the class of `x`,
+                        // `e^{rest}` (`rest` finite) in that of `rest`.
+                        let (s1, r1) = mrv(arena, x, x, depth + 1, budget)?;
+                        let (s2, r2) = mrv(arena, rest, x, depth + 1, budget)?;
+                        let r1 = arena.pow(r1, c);
+                        let r2 = arena.exp(r2);
+                        let (s, a, b) = mrv_max1(arena, &s1, r1, &s2, r2, x, depth, budget)?;
+                        return Ok((s, arena.mul(&[a, b])));
                     }
                 }
             }
@@ -1908,6 +1969,13 @@ fn leadterm(
                     return Ok((arena.one(), arena.zero()));
                 }
                 if r.is_zero() {
+                    // arg = k·ln ω + a + o(1): e^arg = ωᵏ·eᵃ·(1 + o(1)).
+                    if let Some((k, a)) = log_w_part(arena, c_arg, logw, x, depth, budget)? {
+                        let coeff = arena.exp(a);
+                        let coeff = crate::transforms::eval::eval(arena, coeff);
+                        let nid = arena.intern_num(k);
+                        return Ok((coeff, arena.intern(ExprNode::Num(nid))));
+                    }
                     // arg → c_arg → exp(c_arg) as coefficient
                     let coeff = arena.exp(c_arg);
                     return Ok((crate::transforms::eval::eval(arena, coeff), arena.zero()));
@@ -2049,6 +2117,51 @@ fn leadterm(
             })
         }
     }
+}
+
+/// `(k, a)` with `c = k·ln ω + a`, `k` a non-zero rational and `a` of a
+/// lower comparability class than `ln ω` (`a/ln ω → 0`), for the leading
+/// coefficient `c` of an exponent (`ln ω` is the expression `logw` in `x`);
+/// `None` when `c` is itself of a lower class (`k = 0`, a constant `c`) or
+/// its ratio to `ln ω` has no such limit.
+///
+/// The leading coefficient of `e^g` is `e^c` only for such a lower-class
+/// `c`: `e^{k·ln ω}` is `ωᵏ`, a power of `ω`, which taken for a coefficient
+/// gave the leading term the wrong exponent.  The rewrite meets such an
+/// exponential once `exp(k·ln z) = z^k` is folded for its dummy:
+/// `exp(−ln(1/ω) + ln Γ(1/ω + 1) − ln Γ(1/ω))` becomes
+/// `ω·exp(ln Γ(1/ω + 1) − ln Γ(1/ω))`, whose second factor's exponent
+/// tends to infinity like `−ln ω` — and `lim Γ(x + 1)/(x·Γ(x))` at `∞`
+/// was `0` (it is `1`).  Without that fold, `x·e^{ln Γ(x) − ln Γ(x + 1)}`
+/// at `∞` (rewritten as `ω⁻¹·e^{ln Γ(1/ω) − ln Γ(1/ω + 1)}`) was `∞`
+/// (it is `1`).
+fn log_w_part(
+    arena: &mut Arena,
+    c: ExprId,
+    logw: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<Option<(Q, ExprId)>, crate::base::errors::SymplexError> {
+    if !crate::base::walk::contains(arena, c, x) || !crate::base::walk::contains(arena, logw, x) {
+        return Ok(None);
+    }
+    let ratio = arena.div(c, logw);
+    let k = match limitinf(arena, ratio, x, depth + 1, budget) {
+        Ok(k) => k,
+        Err(e) if is_budget_error(&e) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    let Some(kq) = arena.as_num(k).cloned() else {
+        return Ok(None);
+    };
+    if kq.is_zero() {
+        return Ok(None);
+    }
+    let k_logw = arena.mul(&[k, logw]);
+    let a = arena.sub(c, k_logw);
+    let a = crate::transforms::eval::eval(arena, a);
+    Ok(Some((kq, a)))
 }
 
 /// A real constant exponent of a leading term, for ordering: exact when

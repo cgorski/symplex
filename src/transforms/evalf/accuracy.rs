@@ -86,11 +86,14 @@
 //! |---|---|
 //! | finite `Sum` / `Product` | the terms' bounds (evaluated with the index bound exactly), as for `+` / `·`, plus the rounding of every partial result |
 //! | infinite `Sum` of a hypergeometric term | the first term's relative error carried by the recurrence, the recurrence's roundings, and a rigorous geometric bound on the tail (`hypsum.rs`) |
+//! | infinite `Sum` of a smooth term (`asymsum.rs`) | the terms below `N` as for a finite sum, the balls of the expansion's coefficients times the power sums, the Euler–Maclaurin (Euler–Boole) remainders, and the sum of the expansion's remainder |
+//! | `ζ`, `η`, `ψ`, `ψ⁽ᵐ⁾`, `harmonic`, `Γ`, `x!`, `B` at a non-real argument (`zeta.rs`) | the routine's own `2^(−prec−12)·abs(f)`, plus twice the radius times a bound on `abs(f′)` over the ball: the Euler–Maclaurin formula differentiated term by term for `ζ` (and `η`), `(m+1)!·Σ (abs(z + k) − r)^(−m−2)` for `ψ⁽ᵐ⁾`, `abs(Γ)·(e^(Ψr) − 1)` for `Γ` (`Ψ` the bound on `abs(ψ)` of `loggamma.rs`); unknown within eight radii of a pole |
 //! | `RootOf` | the radius of a certified inclusion disk of the root (`poly::roots::root_balls`), on both parts of a non-real root and on the real part of a root certified real (whose imaginary part is exactly 0); unknown when the disks do not isolate the roots |
 //! | `RootSum` | the body's bound at each root, the root bounded by its inclusion disk, as for `+` |
 //! | `Piecewise` | the chosen branch's bound when every condition up to it is decided with certainty (a comparison whose difference is outside its error ball, or of exact values); unknown otherwise, like `sign` at its threshold |
 //! | physical constants | their value's bound |
 //! | Lambert W, `W_k(z)` on every branch (`lambertw.rs`) | `2·abs(W′)·r` over the ball, `abs(W′) = abs(e^(−W)/(1 + W))`, while the first-order change is below a sixteenth of `min(1, abs(1 + W))`; unknown when the side of the branch's cut is undecidable |
+//! | `Li_s(z)` for a non-real `s` (`polylog.rs`) | its own error, and for `abs(z) + r < 3/4` the series' derivative bounds in `z` and `s`; beyond, `2·abs(Li_(s−1)(z)/z)·r` at 128 bits (grown over the ball as for a real order) and a forward difference in `s` |
 //! | `Li_s(z)` for a real `s` and `z` off `[−1, 1]` (`polylog.rs`) | the routine's own `2^(−prec−12)·abs(Li_s)` (every truncation bounded), plus `2·abs(Li_(s−1)(z)/z)·r` (at 128 bits, grown by `(1 − r/d)^(−max(1, abs(s − 2)))`, `d = abs(z − 1)`) and `2·abs(∂Li_s/∂s)·r_s` (a forward difference at 128 bits); unknown when `r > d/8` or the ball meets the cut `[1, ∞)` with an imaginary part only within its error of 0; the imaginary part is exact for an exactly real `z < −1` |
 //! | definite integrals (`f64` quadrature, see `evalf.rs`) | the Gauss–Kronrod error estimate plus the rounding of the `f64` integrand values times the length of the interval |
 //!
@@ -685,6 +688,13 @@ type Factor<'a> = (&'a BigFloat, f64);
 /// err(x)·err(y)` and three roundings (two products and their sum) at the
 /// largest magnitude involved — none when every factor is exact and the
 /// exact recomputation rounds nothing.
+///
+/// `abs(x)` in the propagated part is `log₂ abs(x)` rounded up by a hair
+/// ([`part_lg`]), not the binary exponent: before 0.45 it was `2^m ≥ abs(x)`
+/// with `2^(m−1) ≤ abs(x) < 2^m`, up to twice `abs(x)` for every factor in
+/// `[1, 2)`, so that the bound of a product of `n` factors near 1 grew like
+/// `2^n` (`Π_{k≤400} (1 + 1/(k² + 1/3))` lost 400 bits of its bound).  The
+/// roundings stay at the exponents (units in the last place).
 fn product_part(
     terms: [(Factor<'_>, Factor<'_>); 2],
     result: &BigFloat,
@@ -702,9 +712,9 @@ fn product_part(
         if (x.is_zero() && ex == f64::NEG_INFINITY) || (y.is_zero() && ey == f64::NEG_INFINITY) {
             continue;
         }
-        let (mx, my) = (lmag(x), lmag(y));
-        err = lsum(err, lsum(lsum(mx + ey, my + ex), ex + ey));
-        round = round.max(mx + my - p);
+        let (lx, ly) = (part_lg(x), part_lg(y));
+        err = lsum(err, lsum(lsum(lx + ey, ly + ex), ex + ey));
+        round = round.max(lmag(x) + lmag(y) - p);
         exact &= ex == f64::NEG_INFINITY && ey == f64::NEG_INFINITY;
         live.push((x, y));
     }
