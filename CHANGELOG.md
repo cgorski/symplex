@@ -8,6 +8,25 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-12
+
+Special functions at complex arguments, number fields in solving and
+integration, exact trigonometric decisions.  `evalf` evaluates the
+exponential integrals, incomplete gamma, Bessel, Airy and Fresnel
+functions at complex arguments with proven error bounds (hunter: 1,896
+refusals → 0, no wrong digit) and `ζ` far up the critical strip
+(Riemann–Siegel).  Equations and partial fractions work over number
+fields (`sin 4x = √3·sin x`, `apart` with parameters and radicals);
+antiderivatives use `Ei`, `Si`, `Ci` at irrational and complex points
+(`∫ eˣ/(x² + 1)`, `∫ e^{2x}/(x² − 2)`); `eval` decides equalities of
+trigonometric values in radicals exactly (`cos(π/16) = √(2 + √(2 +
+√2))/2`); symbolic 4×4 eigenvalues come by Ferrari's formulas.  Wrong
+answers removed: roots on the boundary of a declared domain (a root
+equal to 0 for a positive unknown), non-real members of real solution
+sets, an argument error dropped from the bounds of the ζ family.  Two
+limits that hung in 0.44 (a regression found by comparing 0.43 and 0.44
+on every fuzz corpus) answer in 0.3 s.  Rubi: 29,529 verified, 0 wrong.
+
 ### Breaking (behaviour)
 
 - `exp(k·ln z) = z^k` also for a symbolic `z` known to be nonzero
@@ -161,6 +180,17 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - Speed against 0.43 (every fuzz corpus unit replayed in both releases):
   total CPU within ±20 % per target (`fuzz_parser` +19 %, `fuzz_poly`
   +19 %, `fuzz_roundtrip` −11 %); Rubi CPU 619 s → 612 s with 6 jobs.
+- `cargo semver-checks` against 0.44.0: no semver update required.
+- Fuzzing: the Fuzz workflow on the release code (12 targets × 600 s on
+  CI) was green on all 12.  Locally all 12 targets ran together with a
+  10-second and a 2.5 GB limit (`fuzz_simplify` and `fuzz_integrate` 15
+  minutes, the others 10): `fuzz_numdist` 17,284,662 inputs,
+  `fuzz_refine` 11,767,508, `fuzz_lambertw` 2,802,388, `fuzz_parser`
+  920,646, `fuzz_eigenvects` 268,599, `fuzz_exact_matrix` 230,678,
+  `fuzz_evalf` 93,624, `fuzz_roundtrip` 60,451, `fuzz_calculus` 45,499,
+  `fuzz_poly` 28,573, `fuzz_integrate` 24,666 (6,230 in 0.44: its corpus
+  replays faster), `fuzz_simplify` 18,615: 0 crashes, 0 timeouts, 0
+  out-of-memory.
 
 ## [0.44.0] - 2026-10-12
 
