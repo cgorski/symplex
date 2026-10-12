@@ -8,6 +8,35 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-12
+
+Thirteen areas hunted by five agents at a time.  Silent wrong answers
+removed: summation case splits the parameters cannot reach and products
+of roots wrong in sign; `xˣ = c` missing its integer roots; limits like
+`x·exp(ln Γ(x) − ln Γ(x+1))` at ∞ (was ∞, it is 1); `integrate_numeric` returning 1.99999999 for
+`∫₀¹ dx/√(1 − x)` with a tiny error estimate (179 values beyond their
+tolerance, 467 understated estimates → 0); series and limits on the
+wrong side of branch cuts (`ln(−1 − i·x⁶)`, `li(x)` at `0⁻`); `asech` at
+the infinities; `ζ` next to its trivial zeros.  Needless refusals
+removed: eigenvalues of symbolic 3×3 matrices (Cardano), ODEs with
+irreducible characteristic polynomials and Riccati equations, Poisson
+and negative-binomial entropies, infinite products, `bernoulli(n)` up to
+30,000, limits whose leading terms cancel, Lambert-form equations
+(`x² = 2ˣ`), special-function antiderivatives (`∫ e^{12x}/x = Ei(12x)`,
+`∫ ln(1 − x)/x = −Li₂(x)`, Fresnel, `erf`), `evalf` of `ζ` and its
+relatives at complex arguments and of slowly converging sums.  A limit
+that took 111 s (found by the Fuzz workflow) takes 0.1 s.  Rubi: 28,807
+→ 29,525 verified, still 0 wrong.
+
+### Breaking (behaviour)
+
+- Canonical forms: `(−1)^q` and `i^q` reduce their exponent when built
+  (`(−1)^(59/3)` → `−(−1)^(2/3)`, `i^(7/3)` → `−i^(1/3)`, SymPy's
+  rules); `(−r)^(p/q)` of a negative constant splits off `(−1)^(p/q)`
+  (`√(−π)` → `i·√π`).  `sign`, `Heaviside`, `Min`/`Max` of real constants
+  fold.  `arena.sign_of_real_constant` gives a sign only for a constant
+  known real by the assumptions.
+
 ### Added
 
 - **Eigenvalues of symbolic 3×3 and 4×4 matrices in radicals** (SymPy's
@@ -112,8 +141,63 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `sech`) and kinks are split off (a narrow Gaussian integrated to 0);
   the rounding floor follows QUADPACK (`∫|f|`).  `integrate_definite` no
   longer refuses correct closed forms against a cut-off quadrature
-  (`∫₀¹ (1 − x)^(−9/10) dx = 10`).  Slower on singular integrands (median
+  `∫₀¹ (1 − x)^(−9/10) dx = 10`).  Slower on singular integrands (median
   150–570 ms in a debug build); smooth ones unchanged.
+- **A limit hang found by the Fuzz workflow**: `limit((acos(xˣ) −
+  acos(π^π))/(sin(xˣ) − sin(π^π)), x, π)` took 111 s (release; CI's
+  limit is 30 s), `limit(acos(acos(acos x))/x², x, 0)` 2 s: an argument on
+  a branch cut whose realness holds only near the point was undecided
+  until the widest precision round took it as real anyway (realness is
+  now shown locally), and Gruntz's expansions kept escalating precision
+  after the leading coefficient was a certified nonzero constant.  Now
+  0.1 s and 0.03 s, same answers.  `series_dir(−π/(2x³) + atan(∛(−x⁻³))/x³,
+  x, 0, 4, Right)` did not return.
+- **Wrong limit**: `x·exp(ln Γ(x) − ln Γ(x + 1))` at ∞ was `∞` (it is 1):
+  Gruntz took `e^c` for the leading coefficient of `e^g` when `c` grows
+  like `k·ln ω`, a power of `ω` in disguise; it also passed an expression
+  for `ln ω` the series engine could not recognise.
+- **Transcendental equations** (6,000 cases against a real-root scan):
+  refusals 3,508 → 286, wrong 18 → 1 (an older undecided case).  Lambert
+  W for a power times an exponential (`x² = 2ˣ` → `[2, 4, −2W(ln 2/2)/ln
+  2]`, `x²·eˣ = 3`, `(x + 1)·eˣ = 2`), shifted exponentials, logarithmic
+  forms (`x²·ln x = 1`, `ln(4x − 2) = 2x − 2`), every real branch (`W₀`,
+  `W₋₁`); equations over a polynomial denominator (`ln(x)/x = 1/4`);
+  `tan 2x = tan x` (→ `{nπ}`, poles excluded; SymPy's `solve` misses `π`);
+  combinations of hyperbolic functions.  Wrong: `xˣ = c` missed its
+  integer roots (`−1` for `c = −1`, `0` for `c = 1`, `−2` for `c = 1/4`);
+  `sin 4x = √3·sin x` gave `[π]` (some roots of a substituted polynomial
+  with radical coefficients; now refused).
+- **Antiderivatives with special functions** (6,000 integrands, derivative
+  and continuity against mpmath): refusals 5,089 → 163, wrong 0, jumps 0.
+  `∫ f(ax + b)·R(x)` with `f` = exp, sin, cos, sinh, cosh gives `Ei`,
+  `Si`/`Ci`, `Shi`/`Chi` (`∫ e^{12x}/x = Ei(12x)` was refused, and with it
+  52 Riccati equations); `∫ 1/ln(ax + b)ⁿ` (`li`); polynomials times
+  `e^q`, `sin q`, `cos q` for a quadratic `q` (`erf`/`erfi`, Fresnel);
+  `∫ x·erf x`; dilogarithms; the substitutions `x = eᵗ` and `u = eˣ`
+  (`∫ dy/√(2eʸ + 3)`, `∫ exp(eˣ) = Ei(eˣ)`); common factors of sums
+  (`∫ dv/(v·ln v − v)`).  Rubi +504 verified (3.1.4 logarithms 0 → 132).
+- **`evalf` at complex arguments**: `zeta`, `dirichlet_eta`, `polygamma`,
+  `digamma`, `harmonic`, `gamma`, `factorial`, `beta`, `erf`, `erfc`,
+  `erfi`, and `polylog` of a complex order at `|z| ≥ 3/4` (`zeta(1/2 + 14i)`
+  was refused); slowly converging sums of smooth terms (`Σ ln k/k²`, `Σ
+  H_k/k³`, `Σ (−1)ᵏ ln(k + 1)/(k + 1)`) from an expansion at infinity with
+  a proven truncation error (Euler–Maclaurin, Euler–Boole); the error
+  bound of long products over-counted by 2× per factor in [1, 2).
+  `Γ` of a complex argument whose value lies beyond the exponent range
+  (`|ln Γ| > 1.49·10⁹`) is refused at once: `fuzz_parser` found a text
+  holding `((5288046 + 9926/70^i)!)!` whose parse ran for minutes.
+  Hunter: refusals 1,834 → 136, wrong 0.
+- **Exact evaluation**: Boolean `simplify` decides every relation `eval`
+  decides (`Eq(cos(π/8), √(2 + √2)/2)` → `True`); `as_real_imag` splits
+  radicals of known sign (`∛(28/27 − √87/9)` is real); real algebraic
+  constants written with complex radicals are decided real by their
+  minimal polynomial (`√λ`, `ln λ` of a negative Cardano eigenvalue were
+  refused).  Hunter: refusals 403 → 0.  Each such proof is made once per
+  context and stops its zero search at the evaluation's cap: before the
+  release, the Fuzz workflow found `solve` of quartics and `∫ 1/(x⁵ + x +
+  2) dx` 4–10× slower than in 0.43 (every `eval` pass over Ferrari's
+  radicals proved their signs again); now within 20 % of 0.43, same
+  answers.
 - **Series of complex-valued functions** (3,500 cases against mpmath
   residuals): wrong 34 → 0, refusals 880 → 678, hangs 2 → 0.  Powers with
   a non-numeric exponent next to their cut took the value from above on
@@ -127,6 +211,44 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   arguments, inverse trigonometric and hyperbolic functions at `±∞`,
   Puiseux series at infinity, `W` at `−1/e`, one-sided expansions of
   special functions beside their cuts.
+
+### Measured
+
+- `tests/v35/` (0.39–0.44): 35 files, 318 tests.  nextest 14,096 tests
+  (14 skipped), doctests 1,327.
+- Rubi harness: 29,525 verified (0.43: 28,807), 91 real_verified (was
+  73), 0 wrong, 0 undecided, 0 timeouts.  Self-test: 55,624 verified (was
+  55,488), 0 wrong, 593 undecided (was 729).  `--negative-params`: 91
+  real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.43.0: no semver update required.
+- Hunters (before → after): sums and products (9,000) wrong 90 → 0,
+  unreachable branches 232 → 0, hangs 13 → 0, refusals 2,987 → 672;
+  numerical integration API (1,600) beyond tolerance 179 → 0,
+  understated estimates 467 → 0; series (3,500) wrong 34 → 0; limits
+  (5,000) wrong 59 → 0, refusals 1,633 → 69; exact values (13 families ×
+  4,000 seeds) wrong 23 → 0; ODEs (3,200) refusals 544 → 220; linear
+  algebra (56,053 operations) refusals 1,922 → 952, hangs 30 → 0; evalf of
+  sums (3,000) refusals 1,672 → 234, wrong digits 3 → 0; transcendental
+  equations (6,000) refusals 3,508 → 286, wrong 18 → 1; antiderivatives
+  (6,000) refusals 5,089 → 163; exact evaluation (4,000) refusals 403 →
+  0; complex evalf (2,400) refusals 1,834 → 136.  No hunter or oracle
+  reached its memory cap.
+- Fuzzing: on the code before the last fixes (`b702313`), a local
+  campaign found the `fuzz_parser` timeout above (`Γ` beyond the exponent
+  range), and the Fuzz workflow timeouts in `fuzz_roundtrip` and
+  `fuzz_integrate` and a `fuzz_poly` job cancelled at the 30-minute limit
+  (its corpus replayed 4× slower), all from the repeated realness
+  proofs above.  On the release code the Fuzz workflow (12 targets × 600
+  s on CI) was green on all 12.  Locally all 12 targets ran together with a
+  10-second and a 2.5 GB limit (`fuzz_simplify` and `fuzz_integrate` 15
+  minutes, the others 10): `fuzz_numdist` 18,273,833 inputs,
+  `fuzz_refine` 12,427,913, `fuzz_lambertw` 2,945,935, `fuzz_parser`
+  1,046,802, `fuzz_eigenvects` 283,918, `fuzz_exact_matrix` 236,891,
+  `fuzz_evalf` 92,510, `fuzz_calculus` 49,922, `fuzz_poly` 31,103,
+  `fuzz_roundtrip` 25,976, `fuzz_simplify` 20,681, `fuzz_integrate` 6,230:
+  0 crashes, 0 timeouts, 0 out-of-memory.
 
 ## [0.43.0] - 2026-10-11
 
