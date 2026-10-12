@@ -296,7 +296,7 @@ fn zeta_at_a_regular_point_to_low_order() {
 /// `lambertw(−1/e − 10⁻⁸) = −1 + 2.3316…·10⁻⁴i + …`; residuals decay like
 /// the next order.
 ///
-/// Changed in 0.45: the coefficient `√(−2e)` of the left series is
+/// Changed in 0.44: the coefficient `√(−2e)` of the left series is
 /// `i·√2·e^(1/2)` (`eval` splits powers of negative constants; SymPy 1.14
 /// `sqrt(-2*E)` → `sqrt(2)*I*exp(1/2)`).
 #[test]

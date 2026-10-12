@@ -86,6 +86,20 @@ pub struct Arena {
     /// Evaluation-time configuration (guards against runaway computation).
     pub(crate) config: EvalConfig,
 
+    /// Answers `eval` proved for symbol-free constants (realness, sign),
+    /// keyed by the expression and the question (`eval`'s `FACT_*` codes).
+    ///
+    /// A proof takes a certified evaluation, a deep zero search of the
+    /// imaginary part and a minimal polynomial, and every `eval` pass over
+    /// a radical by Cardano's or Ferrari's formula asks again: in 0.44
+    /// before this memo `∫ 1/(x⁵ + x + 2) dx` took 5.8 s instead of 0.5 s.
+    /// The answer depends only on the node and on [`EvalConfig`]
+    /// (assumptions do not reach a symbol-free constant), so the memo is
+    /// cleared when either can change ([`Self::config_mut`],
+    /// [`Self::set_symbol_assumptions`]); a warm entry is what a cold
+    /// proof returns.
+    pub(crate) constant_facts: FxHashMap<(ExprId, u8), bool>,
+
     // -- pre-interned constants (ExprId) ------------------------------------
     /// The integer zero (0).
     pub(crate) zero: ExprId,
@@ -174,6 +188,7 @@ impl Arena {
             num_dedup: FxHashMap::default(),
             symbols: SymbolTable::new(),
             config,
+            constant_facts: FxHashMap::default(),
             // Temporary placeholders — will be overwritten immediately below.
             zero: ExprId(0),
             one: ExprId(0),
@@ -352,6 +367,7 @@ impl Arena {
     /// Returns a mutable reference to the evaluation configuration.
     #[inline]
     pub fn config_mut(&mut self) -> &mut EvalConfig {
+        self.constant_facts.clear();
         &mut self.config
     }
 }
@@ -643,6 +659,7 @@ impl Arena {
             self.symbols.name(id)
         );
         if consistent {
+            self.constant_facts.clear();
             self.symbols.set_assumptions(id, a);
         }
     }

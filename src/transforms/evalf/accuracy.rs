@@ -690,7 +690,7 @@ type Factor<'a> = (&'a BigFloat, f64);
 /// exact recomputation rounds nothing.
 ///
 /// `abs(x)` in the propagated part is `log₂ abs(x)` rounded up by a hair
-/// ([`part_lg`]), not the binary exponent: before 0.45 it was `2^m ≥ abs(x)`
+/// ([`part_lg`]), not the binary exponent: before 0.44 it was `2^m ≥ abs(x)`
 /// with `2^(m−1) ≤ abs(x) < 2^m`, up to twice `abs(x)` for every factor in
 /// `[1, 2)`, so that the bound of a product of `n` factors near 1 grew like
 /// `2^n` (`Π_{k≤400} (1 + 1/(k² + 1/3))` lost 400 bits of its bound).  The

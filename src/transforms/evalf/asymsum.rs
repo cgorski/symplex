@@ -6,7 +6,7 @@
 //! powers, `ln`, `exp`, `sin`, `cos`, `atan` and `harmonic`, times `(−1)^k`
 //! at most — `ln k/k²`, `1/(k² + √2)`, `(−1)^k ln(k + 1)/(k + 1)`, `H_k/k³`,
 //! `(−1)^k/ln(k + 1)` — when its terms are neither hypergeometric nor
-//! dominated by a geometric series (`hypsum.rs`), nor rational (`emsum.rs`).  Before 0.45 such sums
+//! dominated by a geometric series (`hypsum.rs`), nor rational (`emsum.rs`).  Before 0.44 such sums
 //! were refused ("neither hypergeometric … nor a hypergeometric term times
 //! factors of polynomial growth").
 //!

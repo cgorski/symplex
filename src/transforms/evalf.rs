@@ -28,7 +28,7 @@
 //! `hypsum`); a smooth term that converges only polynomially (`ln k/k²`,
 //! `1/(k² + √2)`, `(−1)^k ln(k + 1)/(k + 1)`, `H_k/k³`) by its expansion
 //! at infinity with a Taylor-model remainder, summed against `Σ k^(−s)(ln
-//! k)^m` by Euler–Maclaurin or Euler–Boole (`asymsum`; refused before 0.45).
+//! k)^m` by Euler–Maclaurin or Euler–Boole (`asymsum`; refused before 0.44).
 //! A divergent sum is [`SymplexError::Divergent`]; any other term that is not
 //! hypergeometric is refused.
 //!
@@ -2954,7 +2954,7 @@ fn eval_node(
                 });
             }
             // A non-real argument: the Hurwitz zeta function (`zeta.rs`;
-            // refused before 0.45).
+            // refused before 0.44).
             if !x_val.1.is_zero() {
                 if n_round > f64::from(zeta::MAX_POLYGAMMA_ORDER) {
                     return Err(unevaluable(
@@ -8545,7 +8545,7 @@ fn eval_lib_fn(
         LibFn::Hermite => eval_orthopoly(OrthoPoly::Hermite, f, args, cache, prec, rm, cc),
         LibFn::Laguerre => eval_orthopoly(OrthoPoly::Laguerre, f, args, cache, prec, rm, cc),
         // A non-real argument: `(1 − 2^(1−s))·ζ(s)` and `ψ(z + 1) + γ`
-        // (`zeta.rs`; refused before 0.45).
+        // (`zeta.rs`; refused before 0.44).
         LibFn::DirichletEta
             if args.len() == 1 && cache.get(&args[0]).is_some_and(|v| !v.1.is_zero()) =>
         {

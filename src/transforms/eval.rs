@@ -1268,6 +1268,13 @@ fn order_by_difference(arena: &mut Arena, a: ExprId, b: ExprId, strict: bool) ->
 /// cube roots cancel only exactly, is real (up to 0.44 it was undecided,
 /// and `√λ`, `ln λ` of such a negative eigenvalue were refused by `evalf`
 /// as `PrecisionExhausted` on the cut).
+///
+/// The zero search stops at the cap of the evaluation (twice the digits
+/// plus 256 bits): searching deeper only certifies a smaller nonzero part,
+/// and `x` is then not real either — an exact zero shows at any precision,
+/// and one that cancels only exactly (the radicands of Ferrari's formula)
+/// shows at none.  Up to 0.44 a deep search (1024 bits more) ran in vain on
+/// every `eval` of a quartic's roots, and `solve` was ten times slower.
 fn known_real(arena: &mut Arena, x: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
@@ -1277,19 +1284,46 @@ fn known_real(arena: &mut Arena, x: ExprId) -> bool {
             if !walk::free_symbols(arena, x).is_empty() {
                 return false;
             }
-            let im = arena.im(x);
-            let im = eval(arena, im);
-            if arena.is_zero_structural(im) {
-                return true;
-            }
-            if !walk::has_unevaluated(arena, im)
-                && let Ok((z, Settled::Certified)) = evalf_settled(arena, im, 16, ZeroSearch::Deep)
-            {
-                return z.0.is_zero() && z.1.is_zero();
-            }
-            algebraic_is_real(arena, x)
+            constant_fact(arena, x, FACT_REAL, |arena| {
+                let im = arena.im(x);
+                let im = eval(arena, im);
+                if arena.is_zero_structural(im) {
+                    return true;
+                }
+                if !walk::has_unevaluated(arena, im)
+                    && let Ok((z, Settled::Certified)) =
+                        evalf_settled(arena, im, 16, ZeroSearch::Cap)
+                {
+                    return z.0.is_zero() && z.1.is_zero();
+                }
+                algebraic_is_real(arena, x)
+            })
         }
     }
+}
+
+/// [`known_real`] of a symbol-free constant (a key of
+/// [`Arena::constant_facts`]).
+const FACT_REAL: u8 = 0;
+/// [`constant_is_negative`] (a key of [`Arena::constant_facts`]).
+const FACT_NEGATIVE: u8 = 1;
+
+/// The answer `prove` gives for the symbol-free constant `x`, memoised in
+/// [`Arena::constant_facts`] under `fact`: the proofs evaluate, search for
+/// zeros and take minimal polynomials, and `eval` asks again on every pass
+/// over the same radicals.
+fn constant_fact(
+    arena: &mut Arena,
+    x: ExprId,
+    fact: u8,
+    prove: impl FnOnce(&mut Arena) -> bool,
+) -> bool {
+    if let Some(&known) = arena.constant_facts.get(&(x, fact)) {
+        return known;
+    }
+    let answer = prove(arena);
+    arena.constant_facts.insert((x, fact), answer);
+    answer
 }
 
 /// Is the constant algebraic number `x` real, by its minimal polynomial
@@ -1309,7 +1343,7 @@ fn known_real(arena: &mut Arena, x: ExprId) -> bool {
 /// root by Cardano's formula exceeds it, though its two terms have minimal
 /// polynomials of degree 6 and the resultant of the sum has degree 36 (70
 /// ms in a debug build).  The test runs only for a constant whose
-/// imaginary part the deep zero search left at 0 to its precision.
+/// imaginary part the zero search to the cap left at 0 to its precision.
 fn algebraic_is_real(arena: &mut Arena, x: ExprId) -> bool {
     use crate::base::bigcomplex::{c_abs, c_sub};
     use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
@@ -4185,20 +4219,22 @@ fn constant_is_negative(arena: &mut Arena, w: ExprId) -> bool {
     if !walk::free_symbols(arena, w).is_empty() {
         return false;
     }
-    let mut cache = AssumptionCache::new();
-    if cache.query(arena, w, Props::FINITE) == Some(false) {
-        return false;
-    }
-    match cache.query(arena, w, Props::NEGATIVE) {
-        Some(negative) => negative && cache.query(arena, w, Props::FINITE) == Some(true),
-        // The value first: realness may take a minimal polynomial.
-        None => {
-            matches!(
-                evalf_settled(arena, w, 16, ZeroSearch::Cap),
-                Ok((z, Settled::Certified)) if z.1.is_zero() && z.0.is_negative()
-            ) && known_real(arena, w)
+    constant_fact(arena, w, FACT_NEGATIVE, |arena| {
+        let mut cache = AssumptionCache::new();
+        if cache.query(arena, w, Props::FINITE) == Some(false) {
+            return false;
         }
-    }
+        match cache.query(arena, w, Props::NEGATIVE) {
+            Some(negative) => negative && cache.query(arena, w, Props::FINITE) == Some(true),
+            // The value first: realness may take a minimal polynomial.
+            None => {
+                matches!(
+                    evalf_settled(arena, w, 16, ZeroSearch::Cap),
+                    Ok((z, Settled::Certified)) if z.1.is_zero() && z.0.is_negative()
+                ) && known_real(arena, w)
+            }
+        }
+    })
 }
 
 /// `Log(e^y) = y − 2πik` for a constant `y`, with the integer `k` that puts

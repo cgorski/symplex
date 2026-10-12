@@ -1,7 +1,7 @@
 //! `ζ(s)`, `η(s)`, `ψ(z)`, `ψ⁽ᵐ⁾(z)` and `Γ(z)` at non-real arguments, and
 //! the error bounds of those nodes.  (The real routines are `arb_zeta`,
 //! `arb_dirichlet_eta`, `arb_digamma`, `arb_polygamma` and `arb_gamma_real`
-//! in `evalf.rs`.)  Before 0.45 every one of them refused a non-real
+//! in `evalf.rs`.)  Before 0.44 every one of them refused a non-real
 //! `zeta(1/2 + 14i)`, `polygamma(5, 5 + i)`, `gamma(1 + i)`,
 //! `dirichlet_eta(1/2 + i)`, `harmonic(1/2 + i)`, `beta(1 + i, 2)`.
 //!
@@ -817,7 +817,22 @@ pub(super) fn gamma_complex(
     }
     // The magnitude of ln Γ first (its absolute error is Γ's relative one).
     let rough = super::loggamma::loggamma_complex(z, 64, rm, cc)?;
+    // |Γ(z)| = e^{Re ln Γ}: a value beyond the exponent range is refused
+    // here, before `exp` is asked for it at a working precision that holds
+    // all the bits of `Im ln Γ` (that took minutes: `Γ` of a factorial with a
+    // 10⁵-digit modulus, found by `fuzz_parser`).
+    let limit = f64::from(astro_float::EXPONENT_MAX) * std::f64::consts::LN_2;
+    if to_f64(&rough.0).is_none_or(|re_lg| re_lg.abs() > limit) {
+        return Err(super::unevaluable(
+            "Gamma of a complex argument beyond the exponent range",
+        ));
+    }
     let size = accuracy::lg_abs(&rough).exp2() + 2.0;
+    if !size.is_finite() || size > limit {
+        return Err(super::unevaluable(
+            "Gamma of a complex argument beyond the exponent range",
+        ));
+    }
     let p = prec + 32 + super::magnitude_bits(size);
     let lg = super::loggamma::loggamma_complex(z, p, rm, cc)?;
     let v = super::c_exp(&lg, p, rm, cc);

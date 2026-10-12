@@ -1103,8 +1103,9 @@ fn api_model() {
     println!("\n--- The API Model ---");
     let ctx = Context::new();
     syms!(ctx; x);
-    // exp(x²) integrates to erfi since 0.9; exp(exp(x)) has no closed form.
-    let hard_expr = x.exp().exp();
+    // ∫ x^x dx has no elementary antiderivative (exp(x²) integrates to erfi
+    // since 0.9, exp(exp(x)) to Ei(exp(x)) since 0.44).
+    let hard_expr = x.pow(&x);
     let anti = hard_expr.integrate(&x);
     if anti.has_unevaluated() {
         println!("integration produced formal result: {anti}");

@@ -679,7 +679,7 @@ pub(super) fn is_complex_order(
 /// the loss to cancellation measured and made up as in [`polylog_general`].
 /// `Li_s(1) = ζ(s)` for `σ > 1`.  Rounded to `prec + 16` bits, its absolute
 /// error below `2^−(prec+12)·abs(Li_s(z))`.  Before 0.37 every complex order
-/// was refused (`polylog(3/2 + i/2, 1/2)`), and before 0.45 every `abs(z) ≥ 1`
+/// was refused (`polylog(3/2 + i/2, 1/2)`), and before 0.44 every `abs(z) ≥ 1`
 /// (`polylog(2 + i, 2)`, "not yet supported in evalf").
 pub(super) fn polylog_complex_order(
     s: &Complex,

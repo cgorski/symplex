@@ -1,4 +1,4 @@
-//! The speed of `limit` and `series` (0.45), and a Gruntz leading term
+//! The speed of `limit` and `series` (0.44), and a Gruntz leading term
 //! that depended on the form of `exp(−ln …)`.  The nightly `fuzz_calculus`
 //! run timed out (30 s) on a limit at `π` of inverse functions of `xˣ`, whose
 //! arguments approach a point of their cuts (`π^π > 1`): every expansion of

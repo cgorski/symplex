@@ -1,6 +1,6 @@
 //! `erf`, `erfc` and `erfi` at non-real arguments, and the error bounds of
 //! those nodes.  (The real routines are `arb_erf`, `arb_erfc` and `arb_erfi`
-//! in `evalf.rs`.)  Before 0.45 a non-real argument was refused: `erf(1 +
+//! in `evalf.rs`.)  Before 0.44 a non-real argument was refused: `erf(1 +
 //! i)`, "erf of complex argument not yet supported in evalf".
 //!
 //! `erf` is entire, and summed from one of its two power series (DLMF 7.6.1,

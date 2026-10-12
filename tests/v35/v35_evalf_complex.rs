@@ -1,5 +1,5 @@
 //! `evalf` of the zeta family at complex arguments, of slowly converging
-//! sums of smooth terms, and the bound of long products (0.45).  Reference
+//! sums of smooth terms, and the bound of long products (0.44).  Reference
 //! values: mpmath 1.3 (`python3 -c "from mpmath import *; mp.dps = 45;
 //! print(…)"`), each cited at its test.
 
@@ -419,5 +419,38 @@ fn long_products_keep_their_bound() {
         "Product(1 + 1/k^2, k, 1, 2000)",
         40,
         "3.674240790132966311333284121268216884977",
+    );
+}
+
+/// `Γ(z)` for a complex `z` whose `ln Γ` lies beyond the exponent range
+/// (about `1.49·10⁹`) is refused before `exp` is asked for it.
+/// `fuzz_parser` found the text below: parsing builds a product with `0`,
+/// whose finiteness test evaluates `((5288046 + 9926/70^i)!)!`, and
+/// `exp(ln Γ)` ran at a working precision holding every bit of `Im ln Γ`
+/// (over a minute; milliseconds now).  `Γ(10⁶ + 3i)` is still in range.
+/// mpmath `gamma(10**6 + 3j)` = `-6.7931874052667e+5565702 -
+/// 4.70580037779834e+5565702j`.
+#[test]
+fn gamma_beyond_the_exponent_range_is_refused_quickly() {
+    let ctx = Context::new();
+    let t = std::time::Instant::now();
+    let src = "3!e*bi2(vi/(05407/5*04890**01+9926/70**i)!!5014!0)6!iv!!0)6!iv";
+    assert!(symplex::parse::parse(&ctx, src).is_err());
+    for src in [
+        "factorial(factorial(5288046 + 9926/70^I))",
+        "gamma(10^8 + I)",
+    ] {
+        let r = ctx.parse(src).unwrap().eval_decimal(15);
+        assert!(
+            matches!(r, Err(SymplexError::Unevaluable { .. })),
+            "{src}: {r:?}"
+        );
+    }
+    assert!(t.elapsed().as_secs() < 20, "{:?}", t.elapsed());
+    starts_c(
+        "gamma(1000000 + 3*I)",
+        15,
+        "-6.7931874052667e5565702",
+        "-4.70580037779834e5565702",
     );
 }
