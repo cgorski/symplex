@@ -21,7 +21,7 @@
 //! | caller | context | entry point in `solve.rs` |
 //! |---|---|---|
 //! | `Ex::solve` (principal roots in the declared domain) | `SolveCx::principal(Domain::Complex)` | `solve_classified` |
-//! | the crate's root searches (integrate, limit, residues, ODEs, …), the equations of `reduce_inequalities` | `SolveCx::principal(Domain::Real)` | `solve`, `solve_classified_real`, `solve_with` |
+//! | the crate's root searches (integrate, limit, residues, ODEs, …), the equations of `reduce_inequalities` | `SolveCx::principal(Domain::Real)` | `known_real_roots`, `solve_classified_real`, `solutions` |
 //! | `Ex::solve_general`, `periodic_candidates` | `SolveCx::general(Domain::Real, n)` | `solve_general` |
 //! | `Ex::solve_as_set` | `SolveCx::general(Domain::Complex, n)` | `solve_general_over_c` |
 //!
@@ -40,19 +40,22 @@
 //! does not explain; each is a named method, so a call site says which one
 //! it relies on:
 //!
-//! - In a principal solve over the declared domain (`Ex::solve`) only the
-//!   range restrictions ([`SolveCx::range_restricted`]) honour the
-//!   declared domain; |·|, the |·| cases, Lambert W and the periodic
-//!   realness tests take the unknown real there
-//!   ([`SolveCx::real_for_real_var`], [`SolveCx::variable_may_be_nonreal`]),
-//!   and the families searched when every principal candidate fails take
-//!   it real too ([`SolveCx::families`]).
+//! - In a principal solve over the declared domain (`Ex::solve`) the range
+//!   restrictions ([`SolveCx::range_restricted`]) and |·| and the |·| cases
+//!   ([`SolveCx::real`], [`SolveCx::unknown_may_be_nonreal`], since 0.49)
+//!   honour the declared domain; Lambert W and the periodic realness tests
+//!   take the unknown real there ([`SolveCx::real_for_real_var`],
+//!   [`SolveCx::variable_may_be_nonreal`]), and the families searched when
+//!   every principal candidate fails take it real too
+//!   ([`SolveCx::families`]).
 //! - The split of two exponentials tests the realness of their exponent
 //!   difference only in such a solve ([`SolveCx::declared_principal`]).
 //! - Parameters (other symbols without assumptions) are taken real
 //!   ([`Params::Real`]).
-//! - The outcome side channel `PERIOD_CONFLICT` (a general solve that
-//!   nests periodic families) stays a thread-local of `solve.rs`.
+//!
+//! (A general solve that nests periodic families refuses with the outcome
+//! `Reason::NestedPeriods`, up to 0.48 the thread-local flag
+//! `PERIOD_CONFLICT`.)
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
@@ -230,6 +233,35 @@ impl SolveCx {
     /// reported to have no solution.)
     pub(crate) fn range_restricted(&self, arena: &mut Arena, f: ExprId, var: ExprId) -> bool {
         self.real_over(arena, f, var, self.unknown)
+    }
+
+    /// Is `f` certainly real for the unknown `var` in
+    /// [`unknown`](Self::unknown) (the other symbols per the context's
+    /// [`Params`])?  The test of the arms whose inversion holds for a real
+    /// argument only: `|f| = c` has the two solutions `f = ±c` for a real
+    /// `f`, while a complex `f` has modulus `c` on a whole curve (`|x| = 1`
+    /// for a plain `x`: the unit circle).  Up to 0.48 these arms took the
+    /// unknown real under `Ex::solve` ([`real_for_real_var`]), and `|x| = 1`
+    /// gave `[1, −1]`, `|eˣ| = 2` gave `[ln 2, iπ + ln 2]` (the solutions:
+    /// the line `Re x = ln 2`) as all the roots.
+    ///
+    /// [`real_for_real_var`]: Self::real_for_real_var
+    pub(crate) fn real(&self, arena: &mut Arena, f: ExprId, var: ExprId) -> bool {
+        self.real_over(arena, f, var, self.unknown)
+    }
+
+    /// Is `var` possibly non-real in [`unknown`](Self::unknown) (a plain
+    /// symbol under `Ex::solve`)?  The gate of the strategies that assume a
+    /// real unknown and honour the declared domain (the |·| cases).
+    pub(crate) fn unknown_may_be_nonreal(&self, arena: &Arena, var: ExprId) -> bool {
+        use crate::base::assumptions::Props;
+        if self.unknown.is_real() {
+            return false;
+        }
+        match *arena.node(var) {
+            ExprNode::Symbol(sid) => arena.symbol_assumptions(sid).query(Props::REAL) != Some(true),
+            _ => true,
+        }
     }
 
     /// Is `e` certainly real for the unknown `var` taken real, unless the

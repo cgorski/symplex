@@ -557,7 +557,7 @@ impl Context {
         let inf = inner.arena.infinity;
         let id = inner
             .arena
-            .interval(neg_inf, inf, crate::base::node::INTERVAL_BOTH_OPEN);
+            .interval(neg_inf, inf, crate::base::interval::IntervalKind::Open);
         drop(inner);
         self.make_set_ex(id)
     }
@@ -598,15 +598,8 @@ impl Context {
         end: &crate::api::expr::Ex,
         kind: crate::base::interval::IntervalKind,
     ) -> crate::api::expr::SetEx {
-        let mut flags: u8 = 0;
-        if kind.lower_open() {
-            flags |= crate::base::node::INTERVAL_LEFT_OPEN;
-        }
-        if kind.upper_open() {
-            flags |= crate::base::node::INTERVAL_RIGHT_OPEN;
-        }
         let (start, end) = (self.own_id(start), self.own_id(end));
-        let id = self.inner.write().arena.interval(start, end, flags);
+        let id = self.inner.write().arena.interval(start, end, kind);
         self.make_set_ex(id)
     }
 

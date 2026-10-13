@@ -36,6 +36,7 @@ use tracing::trace;
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::SignSet;
 use crate::base::walk;
 use crate::calculus::summation::{self, TermShape};
 use crate::poly::polybridge;
@@ -289,19 +290,27 @@ pub(crate) struct Growth {
 }
 
 impl Growth {
-    /// Sign of the exponential coefficient `b`: `Some(true)` positive,
-    /// `Some(false)` negative, `None` zero or unknown.
-    fn b_sign(&self) -> Option<Option<bool>> {
+    /// Sign of the exponential coefficient `b`: `ZERO`, `POSITIVE` or
+    /// `NEGATIVE`, `UNKNOWN` when undecided.  (Up to 0.48 an
+    /// `Option<Option<bool>>`.)
+    fn b_sign(&self) -> SignSet {
+        let sign_of = |positive: bool| {
+            if positive {
+                SignSet::POSITIVE
+            } else {
+                SignSet::NEGATIVE
+            }
+        };
         if self.b_symbolic {
-            return None;
+            return SignSet::UNKNOWN;
         }
         let logs_zero = self.b_logs.values().all(|q| q.is_zero());
         if !self.b_has_numeric {
             if logs_zero {
                 if self.b_rat.is_zero() {
-                    return Some(None);
+                    return SignSet::ZERO;
                 }
-                return Some(Some(self.b_rat.is_positive()));
+                return sign_of(self.b_rat.is_positive());
             }
             // {1} ∪ {ln p : p prime} is ℚ-linearly independent (Lindemann–
             // Weierstrass + unique factorisation), so b ≠ 0 here and its sign
@@ -310,7 +319,7 @@ impl Growth {
             for (p, q) in &self.b_logs {
                 v += q.to_f64().unwrap_or(0.0) * (*p as f64).ln();
             }
-            return Some(Some(v > 0.0));
+            return sign_of(v > 0.0);
         }
         // A transcendental constant base is involved: decide numerically
         // only when clearly away from zero.
@@ -319,9 +328,9 @@ impl Growth {
             v += q.to_f64().unwrap_or(0.0) * (*p as f64).ln();
         }
         if v.abs() < 1e-9 {
-            return None;
+            return SignSet::UNKNOWN;
         }
-        Some(Some(v > 0.0))
+        sign_of(v > 0.0)
     }
 
     /// Does `|a_k| → 0`?  `Some(false)` when `|a_k| → ∞`, `None` when the
@@ -333,10 +342,10 @@ impl Growth {
         if self.a.is_positive() {
             return Some(false);
         }
-        match self.b_sign()? {
-            Some(false) => Some(true),
-            Some(true) => Some(false),
-            None => {
+        match self.b_sign() {
+            SignSet::NEGATIVE => Some(true),
+            SignSet::POSITIVE => Some(false),
+            SignSet::ZERO => {
                 if self.c.is_negative() {
                     Some(true)
                 } else if self.c.is_positive() {
@@ -345,6 +354,7 @@ impl Growth {
                     None
                 }
             }
+            _ => None,
         }
     }
 
@@ -364,10 +374,10 @@ impl Growth {
             return Convergence::Converges;
         }
         match self.b_sign() {
-            None => return Convergence::Inconclusive,
-            Some(Some(true)) => return Convergence::Diverges,
-            Some(Some(false)) => return Convergence::Converges,
-            Some(None) => {}
+            SignSet::POSITIVE => return Convergence::Diverges,
+            SignSet::NEGATIVE => return Convergence::Converges,
+            SignSet::ZERO => {}
+            _ => return Convergence::Inconclusive,
         }
         // Purely algebraic decay/growth k^c.
         let minus_one = -Q::one();

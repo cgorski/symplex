@@ -782,10 +782,10 @@ fn heuristic_cannot_help(arena: &mut Arena, n: &Poly, d: &Poly, d_id: ExprId, va
     if d.degree().is_none_or(|deg| deg < 3) || admits_substitution(n, d) {
         return false;
     }
-    let roots = crate::transforms::solve::solve(arena, d_id, var);
+    let roots = crate::transforms::solve::known_real_roots(arena, d_id, var);
     !roots.is_empty()
-        && roots.iter().all(|s| {
-            crate::base::walk::post_order_ids(arena, s.value)
+        && roots.iter().all(|&s| {
+            crate::base::walk::post_order_ids(arena, s)
                 .iter()
                 .any(|&id| matches!(arena.node(id), ExprNode::RootOf(..)))
         })
@@ -1126,7 +1126,7 @@ mod tests {
         let term_3t = arena.mul(&[three, t]);
         let q_expr = arena.add(&[term_9t2, term_3t, one]);
 
-        let roots = crate::transforms::solve::solve(&mut arena, q_expr, t);
+        let roots = crate::transforms::solve::known_real_roots(&mut arena, q_expr, t);
         assert_eq!(
             roots.len(),
             2,
@@ -1139,7 +1139,7 @@ mod tests {
         let mut neg_im_found = false;
 
         for root in &roots {
-            let (re, im) = crate::base::complex::as_real_imag(&mut arena, root.value);
+            let (re, im) = crate::base::complex::as_real_imag(&mut arena, *root);
             let re = crate::transforms::eval::eval(&mut arena, re);
             let im = crate::transforms::eval::eval(&mut arena, im);
 
@@ -1164,10 +1164,7 @@ mod tests {
                     neg_im_found = true;
                 }
             } else {
-                panic!(
-                    "Could not evaluate root to f64: {}",
-                    display(&arena, root.value)
-                );
+                panic!("Could not evaluate root to f64: {}", display(&arena, *root));
             }
         }
 

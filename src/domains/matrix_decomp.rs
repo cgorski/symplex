@@ -28,7 +28,7 @@ use crate::base::numeric::Q;
 use crate::domains::decompositions::{Diagonalization, JordanForm, Ldl, Qr};
 use crate::domains::matrix::{
     Matrix, all3, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, is_swell, reop,
-    simplify_function_entry,
+    simplify_function_entry, swell_or,
 };
 
 /// Orthogonal basis vectors and the upper-triangular coefficient matrix
@@ -86,8 +86,7 @@ fn principal_ln(lam: &Ex, axis: &RealAxis<'_>) -> Ex {
 /// Did `diagonalize` fail because the matrix is defective (as opposed to
 /// eigenvalues not found or expression swell)?
 fn not_diagonalizable(e: &SymplexError) -> bool {
-    matches!(e, SymplexError::ComputationFailed { reason, .. }
-        if reason.starts_with("matrix is not diagonalizable"))
+    matches!(e, SymplexError::NotDiagonalizable { .. })
 }
 
 impl Matrix {
@@ -1203,13 +1202,10 @@ impl Matrix {
     fn matrix_log_jordan(&self, axis: &RealAxis<'_>) -> Result<Matrix, SymplexError> {
         let n = self.nrows();
         let ctx = self.context();
-        let JordanForm { p, j } = self.jordan_form().map_err(|e| match e {
-            SymplexError::ComputationFailed { reason, .. }
-                if reason.starts_with("expression swell") =>
-            {
-                failed("matrix_log", reason)
-            }
-            e => failed("matrix_log", format!("Jordan form unavailable ({e})")),
+        let JordanForm { p, j } = self.jordan_form().map_err(|e| {
+            swell_or("matrix_log", e, |e| {
+                failed("matrix_log", format!("Jordan form unavailable ({e})"))
+            })
         })?;
 
         let zero = ctx.zero();
@@ -1243,16 +1239,13 @@ impl Matrix {
             col += block_size;
         }
         let log_j = Matrix::new(log_j)?;
-        let p_inv = p.inv().map_err(|e| match e {
-            SymplexError::ComputationFailed { reason, .. }
-                if reason.starts_with("expression swell") =>
-            {
-                failed("matrix_log", reason)
-            }
-            _ => failed(
-                "matrix_log",
-                "eigenvector matrix is singular (internal inconsistency)",
-            ),
+        let p_inv = p.inv().map_err(|e| {
+            swell_or("matrix_log", e, |_| {
+                failed(
+                    "matrix_log",
+                    "eigenvector matrix is singular (internal inconsistency)",
+                )
+            })
         })?;
         let result = p.matmul(&log_j)?.matmul(&p_inv)?;
         budget_check(result.iter(), "matrix_log")?;
@@ -1268,7 +1261,7 @@ impl Matrix {
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if `seqs` is empty.
-    /// - [`SymplexError::ComputationFailed`] if the determinant exceeds
+    /// - [`SymplexError::ExpressionSwell`] if the determinant exceeds
     ///   [`EXPRESSION_BUDGET`](crate::matrix::EXPRESSION_BUDGET).
     ///
     /// # Examples

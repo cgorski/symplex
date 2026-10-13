@@ -234,9 +234,9 @@ pub(crate) fn group_constant_parts(
                 naive = if is_mul { naive * v } else { naive + v };
             }
             let group = if is_mul {
-                arena.intern(ExprNode::Mul(consts.iter().copied().collect()))
+                arena.make(ExprNode::Mul(consts.iter().copied().collect()))
             } else {
-                arena.intern(ExprNode::Add(consts.iter().copied().collect()))
+                arena.make(ExprNode::Add(consts.iter().copied().collect()))
             };
             if let Ok(v) = crate::transforms::evalf::evalf_f64(arena, group)
                 && v.is_finite()

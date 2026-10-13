@@ -31,7 +31,7 @@ use crate::api::expr::{Expr, Sort};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::libfn::LibFn;
-use crate::base::node::{ExprId, ExprNode, INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
+use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::output::common::{display_sort_key, is_neg_coeff_mul, is_neg_one_mul};
@@ -831,17 +831,9 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
             }
 
             // ── Sets ───────────────────────────────────────────────────
-            ExprNode::Interval(a, b, flags) => {
-                let left = if flags & INTERVAL_LEFT_OPEN != 0 {
-                    "("
-                } else {
-                    "["
-                };
-                let right = if flags & INTERVAL_RIGHT_OPEN != 0 {
-                    ")"
-                } else {
-                    "]"
-                };
+            ExprNode::Interval(a, b, kind) => {
+                let left = if kind.lower_open() { "(" } else { "[" };
+                let right = if kind.upper_open() { ")" } else { "]" };
                 mrow(&format!(
                     "{}{}{}{}{}",
                     mo(left),

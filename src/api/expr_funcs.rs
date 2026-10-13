@@ -1354,8 +1354,10 @@ impl Expr<Numeric> {
     ///   is a **nonzero rational constant**, the assumption system proves it
     ///   nonzero (e.g. `x² + 1` for real `x`), `eval` decides `Ne(self,
     ///   other)` for constants (a certified value), or both sides are
-    ///   constants whose 16-digit numeric values differ by more than `1e-9`
-    ///   relative.
+    ///   constants and a certified evaluation of their difference has a
+    ///   nonzero digit (an error ball that excludes 0).  Up to 0.48 two
+    ///   `f64` values more than `1e-9` apart (relative) sufficed, which is
+    ///   no proof.
     /// * `None` — undetermined.  In particular `x.equals(&y)` for distinct
     ///   free symbols is `None`, not `Some(false)`; use
     ///   [`probably_equal`](Self::probably_equal) for a randomized test.
@@ -1416,12 +1418,19 @@ impl Expr<Numeric> {
             return Some(false);
         }
 
-        // Layer 6: both sides are constants — compare 16-digit numeric values.
-        if simplified.is_constant()
-            && let (Ok(a), Ok(b)) = (self.eval_complex64(), other.eval_complex64())
-        {
-            let scale = 1.0_f64.max(a.norm()).max(b.norm());
-            if (a - b).norm() > 1e-9 * scale {
+        // Layer 6: both sides are constants — a certified value of the
+        // difference that excludes 0.
+        if simplified.is_constant() {
+            let inner = diff.inner.read();
+            let certified = crate::transforms::evalf::evalf_verdict(
+                &inner.arena,
+                diff.raw_id(),
+                16,
+                crate::transforms::evalf::ZeroSearch::Cap,
+            )
+            .ok()
+            .and_then(crate::base::truth::Verdict::proven);
+            if certified.is_some_and(|z| !(z.0.is_zero() && z.1.is_zero())) {
                 return Some(false);
             }
         }
@@ -3411,8 +3420,10 @@ impl Expr<Numeric> {
         let mut inner = self.inner.write();
         let outcome =
             crate::transforms::solve::solve_classified(&mut inner.arena, self.raw_id(), var_id);
-        match outcome {
-            crate::transforms::solve::SolveOutcome::Solutions(solutions) => {
+        use crate::transforms::solve::Refusal;
+        // (`Ok` of no roots: nothing found)
+        match crate::transforms::solve::roots_or_refusal(&inner.arena, outcome) {
+            Ok(solutions) => {
                 if !solutions.is_empty() {
                     // A polynomial with coefficients in `K = ℚ(√p…, i)` that the
                     // solver took factor by factor: a factor it could not
@@ -3436,10 +3447,7 @@ impl Expr<Numeric> {
                         None
                     };
                     drop(inner);
-                    let found: Vec<Ex> = solutions
-                        .into_iter()
-                        .map(|sol| self.wrap(sol.value))
-                        .collect();
+                    let found: Vec<Ex> = solutions.into_iter().map(|sol| self.wrap(sol)).collect();
                     if let Some(coeffs) = coeffs.filter(|cs| cs.len() >= 2) {
                         let coeffs: Vec<Ex> = coeffs.into_iter().map(|c| self.wrap(c)).collect();
                         if let Some(n) =
@@ -3505,7 +3513,7 @@ impl Expr<Numeric> {
                     ),
                 })
             }
-            crate::transforms::solve::SolveOutcome::Identity => {
+            Err(Refusal::Identity) => {
                 drop(inner);
                 Err(SymplexError::InfiniteSolutions {
                     operation: "solve",
@@ -3514,14 +3522,14 @@ impl Expr<Numeric> {
                     ),
                 })
             }
-            crate::transforms::solve::SolveOutcome::NoSolution(reason) => {
+            Err(Refusal::NoSolution(reason)) => {
                 drop(inner);
                 Err(SymplexError::NoSolution {
                     operation: "solve",
                     reason,
                 })
             }
-            crate::transforms::solve::SolveOutcome::Unresolved(reason) => {
+            Err(Refusal::Failed(reason)) => {
                 drop(inner);
                 Err(SymplexError::ComputationFailed {
                     operation: "solve",
@@ -4898,7 +4906,7 @@ impl Expr<Numeric> {
         let id = self.inner.write().arena.interval(
             self.raw_id(),
             end_id,
-            crate::base::node::INTERVAL_BOTH_CLOSED,
+            crate::base::interval::IntervalKind::Closed,
         );
         self.wrap_as(id)
     }
@@ -4921,7 +4929,7 @@ impl Expr<Numeric> {
         let id = self.inner.write().arena.interval(
             self.raw_id(),
             end_id,
-            crate::base::node::INTERVAL_BOTH_OPEN,
+            crate::base::interval::IntervalKind::Open,
         );
         self.wrap_as(id)
     }

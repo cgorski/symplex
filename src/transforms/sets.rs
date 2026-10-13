@@ -72,7 +72,7 @@ use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::extended::Extended;
 use crate::base::interval::{Interval, IntervalKind};
-use crate::base::node::{ExprId, ExprNode, INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
+use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
 /// Relative tolerance below which two floating-point endpoint
@@ -552,14 +552,7 @@ fn rankset_to_expr(arena: &mut Arena, table: &Table, rs: &RankSet) -> ExprId {
         } else {
             let lo = table.rep(arena, p.lower);
             let hi = table.rep(arena, p.upper);
-            let mut flags = 0u8;
-            if p.kind.lower_open() {
-                flags |= INTERVAL_LEFT_OPEN;
-            }
-            if p.kind.upper_open() {
-                flags |= INTERVAL_RIGHT_OPEN;
-            }
-            parts.push(arena.intern(ExprNode::Interval(lo, hi, flags)));
+            parts.push(arena.make(ExprNode::Interval(lo, hi, p.kind)));
         }
     }
     if !points.is_empty() {
@@ -568,6 +561,11 @@ fn rankset_to_expr(arena: &mut Arena, table: &Table, rs: &RankSet) -> ExprId {
     if parts.len() == 1 {
         parts[0]
     } else {
+        // Raw on purpose (allowlisted in `test_canonical_construction`):
+        // the canonical union orders its parts by sort key, which prints
+        // `(2, oo) ∪ (-oo, -2)`; the evaluator's results keep the pieces in
+        // ascending order.  Such a union is not `==` to the canonical one
+        // of the same parts (wave 3: an ascending canonical order).
         arena.intern(ExprNode::SetUnion(parts))
     }
 }
@@ -666,14 +664,9 @@ fn eval_node(
         ExprNode::EmptySet => SetVal::Exact(RankSet::empty()),
         ExprNode::UniversalSet => SetVal::Exact(RankSet::full()),
 
-        ExprNode::Interval(a, b, flags) => match (table.pos_of(a), table.pos_of(b)) {
+        ExprNode::Interval(a, b, kind) => match (table.pos_of(a), table.pos_of(b)) {
             (Some(lo), Some(hi)) => {
-                let piece = piece(
-                    lo,
-                    hi,
-                    flags & INTERVAL_LEFT_OPEN != 0,
-                    flags & INTERVAL_RIGHT_OPEN != 0,
-                );
+                let piece = piece(lo, hi, kind.lower_open(), kind.upper_open());
                 SetVal::Exact(RankSet::normalize(vec![piece]))
             }
             _ => {
@@ -684,7 +677,7 @@ fn eval_node(
                 if ea == a && eb == b {
                     SetVal::Sym(id)
                 } else {
-                    SetVal::Sym(arena.interval(ea, eb, flags))
+                    SetVal::Sym(arena.interval(ea, eb, kind))
                 }
             }
         },
@@ -997,17 +990,17 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
         let r = match arena.node(id).clone() {
             ExprNode::EmptySet => Some(false),
             ExprNode::UniversalSet => Some(true),
-            ExprNode::Interval(a, b, flags) => {
+            ExprNode::Interval(a, b, kind) => {
                 let lo = cmp_exprs(arena, a, elem_ev);
                 let hi = cmp_exprs(arena, elem_ev, b);
                 let l_ok = lo.map(|o| match o {
                     Ordering::Less => true,
-                    Ordering::Equal => flags & INTERVAL_LEFT_OPEN == 0,
+                    Ordering::Equal => !kind.lower_open(),
                     Ordering::Greater => false,
                 });
                 let h_ok = hi.map(|o| match o {
                     Ordering::Less => true,
-                    Ordering::Equal => flags & INTERVAL_RIGHT_OPEN == 0,
+                    Ordering::Equal => !kind.upper_open(),
                     Ordering::Greater => false,
                 });
                 and3(l_ok, h_ok)
@@ -1166,20 +1159,20 @@ fn is_known_real(arena: &Arena, id: ExprId) -> bool {
     }
 }
 
+/// Kleene `a ∧ b` on the `Option<bool>` of the membership tests
+/// ([`Truth::and`](crate::base::truth::Truth::and)).
 fn and3(a: Option<bool>, b: Option<bool>) -> Option<bool> {
-    match (a, b) {
-        (Some(false), _) | (_, Some(false)) => Some(false),
-        (Some(true), Some(true)) => Some(true),
-        _ => None,
-    }
+    crate::base::truth::Truth::from(a)
+        .and(crate::base::truth::Truth::from(b))
+        .to_option()
 }
 
+/// Kleene `a ∨ b` on the `Option<bool>` of the membership tests
+/// ([`Truth::or`](crate::base::truth::Truth::or)).
 fn or3(a: Option<bool>, b: Option<bool>) -> Option<bool> {
-    match (a, b) {
-        (Some(true), _) | (_, Some(true)) => Some(true),
-        (Some(false), Some(false)) => Some(false),
-        _ => None,
-    }
+    crate::base::truth::Truth::from(a)
+        .or(crate::base::truth::Truth::from(b))
+        .to_option()
 }
 
 /// Structural emptiness for sets that could not be evaluated exactly.
@@ -1509,17 +1502,17 @@ pub(crate) fn to_condition(
         let c = match arena.node(id).clone() {
             ExprNode::EmptySet => arena.bool_false,
             ExprNode::UniversalSet => arena.bool_true,
-            ExprNode::Interval(a, b, flags) => {
+            ExprNode::Interval(a, b, kind) => {
                 let mut conj: SmallVec<[ExprId; 2]> = SmallVec::new();
                 if a != arena.neg_infinity {
-                    conj.push(if flags & INTERVAL_LEFT_OPEN != 0 {
+                    conj.push(if kind.lower_open() {
                         arena.gt(var, a)
                     } else {
                         arena.ge(var, a)
                     });
                 }
                 if b != arena.infinity {
-                    conj.push(if flags & INTERVAL_RIGHT_OPEN != 0 {
+                    conj.push(if kind.upper_open() {
                         arena.gt(b, var)
                     } else {
                         arena.ge(b, var)
@@ -1566,12 +1559,12 @@ pub(crate) fn to_condition(
                 let t = arena.sub(d, s_fl);
                 let width = arena.sub(fam.hi, fam.lo);
                 let width = crate::transforms::eval::eval(arena, width);
-                let upper = if fam.flags & INTERVAL_RIGHT_OPEN != 0 {
+                let upper = if fam.kind.upper_open() {
                     arena.gt(width, t)
                 } else {
                     arena.ge(width, t)
                 };
-                if fam.flags & INTERVAL_LEFT_OPEN != 0 {
+                if fam.kind.lower_open() {
                     let zero = arena.zero;
                     let lower = arena.gt(t, zero);
                     mk_and(arena, &[lower, upper])
@@ -1780,8 +1773,8 @@ pub(crate) struct IntervalFamily {
     pub(crate) lo: ExprId,
     /// The upper end at `n = 0`.
     pub(crate) hi: ExprId,
-    /// The interval flags (`INTERVAL_LEFT_OPEN`, `INTERVAL_RIGHT_OPEN`).
-    pub(crate) flags: u8,
+    /// Which ends of the intervals belong to them.
+    pub(crate) kind: IntervalKind,
     /// The period (positive).
     pub(crate) step: ExprId,
 }
@@ -1793,7 +1786,7 @@ pub(crate) fn interval_family(
     var: ExprId,
     body: ExprId,
 ) -> Option<IntervalFamily> {
-    let ExprNode::Interval(a, b, flags) = *arena.node(body) else {
+    let ExprNode::Interval(a, b, kind) = *arena.node(body) else {
         return None;
     };
     let la = image_linear_parts(arena, var, a)?;
@@ -1806,7 +1799,7 @@ pub(crate) fn interval_family(
     Some(IntervalFamily {
         lo: la.offset,
         hi: lb.offset,
-        flags,
+        kind,
         step: la.step,
     })
 }
@@ -1818,7 +1811,7 @@ pub(crate) fn periodic_interval_set(
     arena: &mut Arena,
     lo: ExprId,
     hi: ExprId,
-    flags: u8,
+    kind: IntervalKind,
     period: ExprId,
 ) -> ExprId {
     let scope = arena.finite_set(&[lo, hi, period]);
@@ -1829,7 +1822,7 @@ pub(crate) fn periodic_interval_set(
     let a = crate::transforms::eval::eval(arena, a);
     let b = arena.add(&[hi, shift]);
     let b = crate::transforms::eval::eval(arena, b);
-    let body = arena.interval(a, b, flags);
+    let body = arena.interval(a, b, kind);
     arena.intern(ExprNode::ImageSet(n, body))
 }
 
@@ -1860,12 +1853,12 @@ fn interval_family_contains(arena: &mut Arena, fam: &IntervalFamily, elem: ExprI
         let b = crate::transforms::eval::eval(arena, b);
         let l_ok = cmp_exprs(arena, a, elem).map(|o| match o {
             Ordering::Less => true,
-            Ordering::Equal => fam.flags & INTERVAL_LEFT_OPEN == 0,
+            Ordering::Equal => !fam.kind.lower_open(),
             Ordering::Greater => false,
         });
         let h_ok = cmp_exprs(arena, elem, b).map(|o| match o {
             Ordering::Less => true,
-            Ordering::Equal => fam.flags & INTERVAL_RIGHT_OPEN == 0,
+            Ordering::Equal => !fam.kind.upper_open(),
             Ordering::Greater => false,
         });
         acc = or3(acc, and3(l_ok, h_ok));
@@ -1907,7 +1900,7 @@ fn interval_family_in(
         let a = crate::transforms::eval::eval(arena, a);
         let b = arena.add(&[fam.hi, shift]);
         let b = crate::transforms::eval::eval(arena, b);
-        out.push(arena.interval(a, b, fam.flags));
+        out.push(arena.interval(a, b, fam.kind));
     }
     Some(out)
 }
@@ -1921,7 +1914,7 @@ pub(crate) fn image_set(arena: &mut Arena, var: ExprId, body: ExprId) -> ExprId 
         return arena.intern(ExprNode::ImageSet(var, body));
     }
     // A family of intervals: its ends in the canonical parameter.
-    if let ExprNode::Interval(a, b, flags) = *arena.node(body) {
+    if let ExprNode::Interval(a, b, kind) = *arena.node(body) {
         if !crate::base::walk::has_free_var(arena, body, var) {
             return body;
         }
@@ -1935,7 +1928,7 @@ pub(crate) fn image_set(arena: &mut Arena, var: ExprId, body: ExprId) -> ExprId 
             )
         };
         let (a, b) = (eval(arena, a), eval(arena, b));
-        let body = arena.interval(a, b, flags);
+        let body = arena.interval(a, b, kind);
         return arena.intern(ExprNode::ImageSet(n, body));
     }
     let body = eval(arena, body);
@@ -2109,21 +2102,21 @@ pub(crate) fn image_set_contains(
         let t = eval(arena, t);
         return integer_test(arena, t, |arena, k| member_at(arena, var, body, elem, k));
     }
-    use crate::transforms::solve::SolveOutcome;
+    use crate::transforms::solve::{RootSet, Solutions};
     let eq = arena.sub(body, elem);
     let eq = eval(arena, eq);
-    match crate::transforms::solve::solve_classified(arena, eq, var) {
-        SolveOutcome::Identity => Some(true),
-        SolveOutcome::NoSolution(_) => Some(false),
-        SolveOutcome::Unresolved(_) => None,
-        SolveOutcome::Solutions(sols) => {
-            let complete =
-                !sols.is_empty() && crate::poly::polybridge::expr_to_poly(arena, eq, var).is_some();
+    let outcome = crate::transforms::solve::solve_classified(arena, eq, var);
+    match outcome {
+        Solutions::Complete(RootSet::All) => Some(true),
+        Solutions::Complete(RootSet::Empty(_)) => Some(false),
+        Solutions::Refused(_) => None,
+        found => {
+            // (Principal roots: every root only for a polynomial equation.)
+            let complete = matches!(found, Solutions::Complete(_))
+                && crate::poly::polybridge::expr_to_poly(arena, eq, var).is_some();
             let mut undecided = !complete;
-            for s in sols {
-                match integer_test(arena, s.value, |arena, k| {
-                    member_at(arena, var, body, elem, k)
-                }) {
+            for s in found.claimed_points() {
+                match integer_test(arena, s, |arena, k| member_at(arena, var, body, elem, k)) {
                     Some(true) => return Some(true),
                     Some(false) => {}
                     None => undecided = true,
@@ -2612,7 +2605,7 @@ fn intersect_image_parts(arena: &mut Arena, parts: &[ExprId]) -> ExprId {
     };
     // The real line adds nothing to sets of real families.
     let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
-    let full = arena.interval(ninf, pinf, INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN);
+    let full = arena.interval(ninf, pinf, IntervalKind::Open);
     if hull == full && all_real_image_parts(arena, cut) {
         return cut;
     }
@@ -2803,7 +2796,7 @@ fn declared_domain_set_with(
     }
     let real = a.query(Props::REAL) == Some(true) || real_line;
     let (zero, inf, ninf) = (arena.zero, arena.infinity, arena.neg_infinity);
-    let open = INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN;
+    let open = IntervalKind::Open;
     let holds = |p: Props| a.query(p) == Some(true);
     let fails = |p: Props| a.query(p) == Some(false);
     let mut parts: Vec<ExprId> = Vec::new();
@@ -2814,10 +2807,10 @@ fn declared_domain_set_with(
         parts.push(arena.interval(ninf, zero, open));
     }
     if holds(Props::NONNEGATIVE) || (real && fails(Props::NEGATIVE)) {
-        parts.push(arena.interval(zero, inf, INTERVAL_RIGHT_OPEN));
+        parts.push(arena.interval(zero, inf, IntervalKind::RightOpen));
     }
     if holds(Props::NONPOSITIVE) || (real && fails(Props::POSITIVE)) {
-        parts.push(arena.interval(ninf, zero, INTERVAL_LEFT_OPEN));
+        parts.push(arena.interval(ninf, zero, IntervalKind::LeftOpen));
     }
     if holds(Props::ZERO) || fails(Props::NONZERO) {
         parts.push(arena.finite_set(&[zero]));
@@ -3099,7 +3092,7 @@ fn atom_to_set(
                 Ok(Some(domain)) => Ok(domain),
                 Ok(None) => {
                     let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
-                    Ok(arena.interval(ninf, pinf, INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN))
+                    Ok(arena.interval(ninf, pinf, IntervalKind::Open))
                 }
                 Err(e) => Err(SymplexError::ComputationFailed {
                     operation: "reduce_inequalities",
@@ -3173,7 +3166,7 @@ fn atom_to_set_of_difference(
             && contains_image_set(arena, set)
         {
             let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
-            let reals = arena.interval(ninf, pinf, INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN);
+            let reals = arena.interval(ninf, pinf, IntervalKind::Open);
             let real = arena.set_intersection(&[set, reals]);
             let real = simplify_set(arena, real);
             // Families not known to be real (`2nπ + asin(a)` for a parameter
@@ -3219,12 +3212,22 @@ fn atom_to_set_of_difference(
         // A provable contradiction (`cos x = −2`, `x/sin x = 0`: every root a
         // pole) has no solution; before 0.40 it was "could not solve".  The
         // variable is real here: the range restrictions take it so.
-        let sols = match crate::transforms::solve::solve_classified_real(arena, d, var) {
-            crate::transforms::solve::SolveOutcome::NoSolution(_) => return Ok(arena.empty_set),
-            crate::transforms::solve::SolveOutcome::Identity => return identity(arena),
-            outcome => outcome.into_solutions(),
-        };
-        let roots: Vec<ExprId> = sols.into_iter().map(|s| s.value).collect();
+        // (Roots found, or none: the completeness test is below; a set
+        // needs every root, so a partial outcome is refused.)
+        use crate::transforms::solve::{RootSet, Solutions};
+        let roots: Vec<ExprId> =
+            match crate::transforms::solve::solve_classified_real(arena, d, var) {
+                Solutions::Complete(RootSet::Empty(_)) => return Ok(arena.empty_set),
+                Solutions::Complete(RootSet::All) => return identity(arena),
+                Solutions::Partial(..) => {
+                    return Err(SymplexError::ComputationFailed {
+                        operation: "reduce_inequalities",
+                        reason: "could not solve the equation (some of its roots were not found)"
+                            .into(),
+                    });
+                }
+                outcome => outcome.claimed_points(),
+            };
         // No root is an answer for a rational function (the solver finds
         // every root of a polynomial numerator); before 0.30 only for a
         // polynomial, so `−1/(x² + 7x + 12) = 0` was an error.  `None`: not
@@ -3539,16 +3542,16 @@ fn approx_real_f64(arena: &mut Arena, e: ExprId) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base::node::{INTERVAL_BOTH_CLOSED, INTERVAL_BOTH_OPEN};
+    use crate::base::interval::IntervalKind::{Closed, LeftOpen, Open};
 
     fn display(arena: &Arena, id: ExprId) -> String {
         arena.display(id).to_string()
     }
 
-    fn iv(arena: &mut Arena, a: i64, b: i64, flags: u8) -> ExprId {
+    fn iv(arena: &mut Arena, a: i64, b: i64, kind: IntervalKind) -> ExprId {
         let a = arena.int(a);
         let b = arena.int(b);
-        arena.interval(a, b, flags)
+        arena.interval(a, b, kind)
     }
 
     // ── RankSet unit tests ────────────────────────────────────────────
@@ -3664,8 +3667,8 @@ mod tests {
     #[test]
     fn simplify_intersection_of_intervals() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 2, INTERVAL_BOTH_CLOSED);
-        let b = iv(&mut arena, 1, 3, INTERVAL_BOTH_CLOSED);
+        let a = iv(&mut arena, 0, 2, Closed);
+        let b = iv(&mut arena, 1, 3, Closed);
         let i = arena.set_intersection(&[a, b]);
         let s = simplify_set(&mut arena, i);
         assert_eq!(display(&arena, s), "[1, 2]");
@@ -3674,8 +3677,8 @@ mod tests {
     #[test]
     fn simplify_union_merges_adjacent() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 1, INTERVAL_BOTH_CLOSED);
-        let b = iv(&mut arena, 1, 2, INTERVAL_BOTH_OPEN);
+        let a = iv(&mut arena, 0, 1, Closed);
+        let b = iv(&mut arena, 1, 2, Open);
         let u = arena.set_union(&[a, b]);
         let s = simplify_set(&mut arena, u);
         assert_eq!(display(&arena, s), "[0, 2)");
@@ -3687,10 +3690,10 @@ mod tests {
         let mut arena = Arena::new();
         let m2 = arena.int(-2);
         let p2 = arena.int(2);
-        let left = arena.interval(arena.neg_infinity, m2, INTERVAL_BOTH_OPEN);
-        let right = arena.interval(p2, arena.infinity, INTERVAL_BOTH_OPEN);
+        let left = arena.interval(arena.neg_infinity, m2, Open);
+        let right = arena.interval(p2, arena.infinity, Open);
         let u = arena.set_union(&[left, right]);
-        let box_ = iv(&mut arena, 0, 5, INTERVAL_BOTH_CLOSED);
+        let box_ = iv(&mut arena, 0, 5, Closed);
         let i = arena.set_intersection(&[u, box_]);
         let s = simplify_set(&mut arena, i);
         assert_eq!(display(&arena, s), "(2, 5]");
@@ -3699,7 +3702,7 @@ mod tests {
     #[test]
     fn simplify_points_absorbed_into_intervals() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 2, INTERVAL_BOTH_OPEN);
+        let a = iv(&mut arena, 0, 2, Open);
         let one = arena.int(1);
         let five = arena.int(5);
         let fs = arena.finite_set(&[one, five]);
@@ -3713,7 +3716,7 @@ mod tests {
         let mut arena = Arena::new();
         let x = arena.symbol("x");
         let one = arena.int(1);
-        let symbolic = arena.interval(x, one, INTERVAL_BOTH_CLOSED);
+        let symbolic = arena.interval(x, one, Closed);
         let empty = arena.empty_set;
         let u = arena.set_union(&[symbolic, empty]);
         assert_eq!(simplify_set(&mut arena, u), symbolic);
@@ -3732,7 +3735,7 @@ mod tests {
     #[test]
     fn simplify_complement_relative_to_reals() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 1, INTERVAL_BOTH_CLOSED);
+        let a = iv(&mut arena, 0, 1, Closed);
         let c = absolute_complement(&mut arena, a);
         assert_eq!(display(&arena, c), "(-oo, 0) ∪ (1, oo)");
     }
@@ -3743,7 +3746,7 @@ mod tests {
         let x = arena.symbol("x");
         let one = arena.int(1);
         let fs = arena.finite_set(&[x, one]);
-        let a = iv(&mut arena, 0, 2, INTERVAL_BOTH_CLOSED);
+        let a = iv(&mut arena, 0, 2, Closed);
         let u = arena.set_union(&[fs, a]);
         let s = simplify_set(&mut arena, u);
         let d = display(&arena, s);
@@ -3756,8 +3759,8 @@ mod tests {
         let three = arena.int(3);
         let four = arena.int(4);
         let pi = arena.pi;
-        let a = arena.interval(three, pi, INTERVAL_BOTH_CLOSED);
-        let b = arena.interval(pi, four, INTERVAL_BOTH_OPEN);
+        let a = arena.interval(three, pi, Closed);
+        let b = arena.interval(pi, four, Open);
         let u = arena.set_union(&[a, b]);
         let s = simplify_set(&mut arena, u);
         assert_eq!(display(&arena, s), "[3, 4)");
@@ -3766,7 +3769,7 @@ mod tests {
     #[test]
     fn membership_queries() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 1, INTERVAL_LEFT_OPEN);
+        let a = iv(&mut arena, 0, 1, LeftOpen);
         let zero = arena.zero;
         let one = arena.one;
         let half = arena.rational(1, 2);
@@ -3779,7 +3782,7 @@ mod tests {
         assert_eq!(set_contains(&mut arena, e, x), Some(false));
         // symbolic interval, exact difference
         let xp1 = arena.add(&[x, arena.one]);
-        let sym = arena.interval(x, xp1, INTERVAL_BOTH_CLOSED);
+        let sym = arena.interval(x, xp1, Closed);
         assert_eq!(set_contains(&mut arena, sym, x), Some(true));
         assert_eq!(set_contains(&mut arena, sym, xp1), Some(true));
         let two = arena.int(2);
@@ -3803,9 +3806,9 @@ mod tests {
     #[test]
     fn subset_disjoint_empty() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 1, INTERVAL_BOTH_CLOSED);
-        let b = iv(&mut arena, 0, 2, INTERVAL_BOTH_CLOSED);
-        let c = iv(&mut arena, 3, 4, INTERVAL_BOTH_CLOSED);
+        let a = iv(&mut arena, 0, 1, Closed);
+        let b = iv(&mut arena, 0, 2, Closed);
+        let c = iv(&mut arena, 3, 4, Closed);
         assert_eq!(is_subset(&mut arena, a, b), Some(true));
         assert_eq!(is_subset(&mut arena, b, a), Some(false));
         assert_eq!(is_disjoint(&mut arena, a, c), Some(true));
@@ -3815,7 +3818,7 @@ mod tests {
         assert_eq!(is_empty(&mut arena, e), Some(true));
         let x = arena.symbol("x");
         let one = arena.one;
-        let sym = arena.interval(x, one, INTERVAL_BOTH_CLOSED);
+        let sym = arena.interval(x, one, Closed);
         assert_eq!(is_empty(&mut arena, sym), None);
         assert_eq!(is_subset(&mut arena, sym, sym), Some(true));
     }
@@ -3823,8 +3826,8 @@ mod tests {
     #[test]
     fn inf_sup_measure() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 1, INTERVAL_BOTH_OPEN);
-        let b = iv(&mut arena, 2, 5, INTERVAL_BOTH_CLOSED);
+        let a = iv(&mut arena, 0, 1, Open);
+        let b = iv(&mut arena, 2, 5, Closed);
         let u = arena.set_union(&[a, b]);
         assert_eq!(inf(&mut arena, u), Some(arena.zero));
         assert_eq!(inf(&mut arena, u), Some(arena.zero));
@@ -3832,7 +3835,7 @@ mod tests {
         assert_eq!(sup(&mut arena, u), Some(five));
         let four = arena.int(4);
         assert_eq!(measure(&mut arena, u), Some(four));
-        let ray = arena.interval(arena.zero, arena.infinity, INTERVAL_BOTH_OPEN);
+        let ray = arena.interval(arena.zero, arena.infinity, Open);
         assert_eq!(measure(&mut arena, ray), Some(arena.infinity));
         assert_eq!(sup(&mut arena, ray), Some(arena.infinity));
         let e = arena.empty_set;
@@ -3843,7 +3846,7 @@ mod tests {
     #[test]
     fn topology_via_arena() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 1, INTERVAL_BOTH_OPEN);
+        let a = iv(&mut arena, 0, 1, Open);
         let c = closure(&mut arena, a).unwrap();
         assert_eq!(display(&arena, c), "[0, 1]");
         let i = interior(&mut arena, c).unwrap();
@@ -3858,7 +3861,7 @@ mod tests {
     #[test]
     fn accessors() {
         let mut arena = Arena::new();
-        let a = iv(&mut arena, 0, 1, INTERVAL_BOTH_OPEN);
+        let a = iv(&mut arena, 0, 1, Open);
         let three = arena.int(3);
         let fs = arena.finite_set(&[three]);
         let u = arena.set_union(&[a, fs]);
@@ -3874,7 +3877,7 @@ mod tests {
     fn condition_roundtrip() {
         let mut arena = Arena::new();
         let x = arena.symbol("x");
-        let a = iv(&mut arena, 0, 1, INTERVAL_LEFT_OPEN);
+        let a = iv(&mut arena, 0, 1, LeftOpen);
         let two = arena.int(2);
         let fs = arena.finite_set(&[two]);
         let u = arena.set_union(&[a, fs]);

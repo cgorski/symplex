@@ -117,12 +117,14 @@ use rustc_hash::FxHashMap;
 use crate::base::arena::Arena;
 use crate::base::assumptions::Props;
 use crate::base::bernoulli::bernoulli;
+use crate::base::budget::{BudgetKind, WorkScope};
 use crate::base::combinatorics::{binomial, factorial};
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::SignSet;
 use crate::base::walk;
-use crate::calculus::calculus_util::settle_constant;
+use crate::calculus::calculus_util::{ZeroTest, settle_constant};
 use crate::transforms::{eval, subs};
 
 /// Maximum number of sub-expressions expanded by differentiation before the
@@ -142,48 +144,24 @@ const MIN_WORKING_ORDER: i64 = 4;
 /// Number of precision-escalation rounds before giving up on a deep pole.
 const MAX_PRECISION_ATTEMPTS: usize = 3;
 
-/// Arena nodes one expansion of Gruntz's last resort
-/// ([`expand_leading_last_resort`]) may create before its compositions stop
-/// adding terms ([`NodeLimit`]).  The expansions that find a leading term
-/// there take tens of nodes; `sign(asin(asin(1 − u²)))` at order 20 built
-/// 238,000 (coefficients with `π⁸⁹·(1 − π²/4)^(−179/2)`, each tested for a
-/// hidden zero) in 21 s before it failed, and `series(sign(asin(asin(x))),
-/// x, 1, 3)` took 22 s to stay unevaluated (a CI Fuzz `fuzz_calculus`
-/// timeout, present since 0.43).
-const LAST_RESORT_NODES: usize = 20_000;
-
-thread_local! {
-    /// The arena size beyond which the expansion in progress adds no more
-    /// terms (`usize::MAX`: no limit); see [`NodeLimit`].
-    static NODE_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
-}
-
-/// A bound on the arena size for the expansions made while it lives (the
-/// tighter of it and an enclosing one).  [`TSeries::compose`] past it stops
-/// with the terms already exact, so the expansion knows fewer terms and the
-/// caller refuses rather than answers wrongly.
-struct NodeLimit {
-    prev: usize,
-}
-
-impl NodeLimit {
-    fn new(arena: &Arena, nodes: usize) -> Self {
-        let limit = arena.node_count().saturating_add(nodes);
-        let prev = NODE_LIMIT.with(|c| c.replace(c.get().min(limit)));
-        NodeLimit { prev }
-    }
-}
-
-impl Drop for NodeLimit {
-    fn drop(&mut self) {
-        NODE_LIMIT.with(|c| c.set(self.prev));
-    }
-}
-
-/// Has the arena passed the [`NodeLimit`] in force?
-fn over_node_limit(arena: &Arena) -> bool {
-    arena.node_count() > NODE_LIMIT.with(std::cell::Cell::get)
-}
+/// Interns one expansion of Gruntz's last resort
+/// ([`expand_leading_last_resort`]) may attempt before its compositions
+/// stop adding terms (a [`WorkScope`] of kind
+/// [`BudgetKind::SeriesExpansion`]: [`TSeries::compose`] past it stops with
+/// the terms already exact, so the expansion knows fewer terms and the
+/// caller refuses rather than answers wrongly).  The expansions that find a
+/// leading term there take tens of nodes; `sign(asin(asin(1 − u²)))` at
+/// order 20 built 238,000 (coefficients with `π⁸⁹·(1 − π²/4)^(−179/2)`,
+/// each tested for a hidden zero) in 21 s before it failed, and
+/// `series(sign(asin(asin(x))), x, 1, 3)` took 22 s to stay unevaluated (a
+/// CI Fuzz `fuzz_calculus` timeout, present since 0.43).  Up to 0.48 the
+/// limit was 20,000 nodes of arena *growth*, which a context that had seen
+/// the nodes before never reached: the same call repeated in one context
+/// took 0.70, 1.88, 4.01 … 15.47 s.  Calibration (0.49, fresh contexts):
+/// the growth limit cut that call's expansions after 176,000–357,000
+/// interns, and it takes 0.9 s at this cap (1.6 s at 300,000, 4.1 s at
+/// 600,000); on the golden corpus and the Rubi suite no output changes.
+const LAST_RESORT_WORK: u64 = 200_000;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Constants that vanish identically in their parameters
@@ -202,46 +180,52 @@ const PARAM_ZERO_DIGITS: u32 = 30;
 /// or a symbol-free function value that is zero (`cos` of a hidden `π/2`:
 /// `cos(π/(24π − 2) − 12π²/(24π − 2))`)?
 ///
-/// A symbol-free sum is [`settle_constant`]'s numerical test.  With
-/// parameters, a sum containing a transcendental function (a polynomial
-/// or rational sum is already canonical) is evaluated at two sample points
-/// chosen within the parameters' assumptions (integers for integer
-/// symbols, both signs for a real symbol of unknown sign, complex values
-/// for an unrestricted one): it vanishes identically when both samples
-/// are zero to the working precision.  This is SymPy's `equals` test; it
-/// is what decides that `z/(1 − √(1 + z)·sin²a − √(1 − z)·cos²a)` at `0⁺`
-/// has the denominator `(cos²a − sin²a)·z/2 + …`, not the non-zero
-/// constant `1 − sin²a − cos²a` (before: the limit was `0`).
-pub(crate) fn vanishes_identically(arena: &mut Arena, c: ExprId) -> bool {
+/// A symbol-free constant is decided by
+/// [`hidden_zero`](crate::calculus::calculus_util::hidden_zero) (exact or
+/// certified evidence only; a value that is 0 to the precision reached and
+/// not proved is `Unknown`, one without a value `False`: see
+/// [`zero_reading`](crate::calculus::calculus_util::zero_reading)).  With parameters, a sum containing a
+/// transcendental function (a polynomial or rational sum is already
+/// canonical) is evaluated at two sample points chosen within the
+/// parameters' assumptions (integers for integer symbols, both signs for a
+/// real symbol of unknown sign, complex values for an unrestricted one): a
+/// sample with a certified nonzero digit makes it `False`, and so does one
+/// at the sample points of
+/// [`nonzero_at_a_sample`](crate::simplify::identically_zero::nonzero_at_a_sample)
+/// when both of these are 0; otherwise the identity must be confirmed
+/// exactly
+/// ([`exactly_zero`](crate::calculus::calculus_util::exactly_zero),
+/// [`zero_by_identity`](crate::calculus::calculus_util::zero_by_identity))
+/// to be `True`, else it is `Unknown`.  This decides that `z/(1 − √(1 +
+/// z)·sin²a − √(1 − z)·cos²a)` at `0⁺` has the denominator `(cos²a −
+/// sin²a)·z/2 + …`, not the non-zero constant `1 − sin²a − cos²a` (before:
+/// the limit was `0`).  Up to 0.48 two samples zero to the working
+/// precision were taken for a proof (SymPy's `equals` test).
+///
+/// Any other constant with parameters — a non-sum, a sum without a
+/// transcendental node, one too large to sample, one with a sample that
+/// does not evaluate — is `False`: nonzero for generic values of its
+/// parameters, the generic-solution convention
+/// ([`ZeroTest::Nonzero`]).
+pub(crate) fn vanishes_identically(arena: &mut Arena, c: ExprId) -> crate::base::truth::Truth {
+    use crate::base::truth::Truth;
     if arena.is_zero_structural(c) {
-        return true;
+        return Truth::True;
     }
-    if arena.as_num(c).is_some() || walk::has_unevaluated(arena, c) {
-        return false;
+    if arena.as_num(c).is_some() {
+        return Truth::False;
     }
     let syms = walk::free_symbols(arena, c);
     if syms.is_empty() {
-        if crate::calculus::calculus_util::is_hidden_zero(arena, c) {
-            return true;
-        }
-        // A function value with real zeros at a symbolic constant.
-        if !matches!(
-            arena.node(c),
-            ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_) | ExprNode::Sinh(_)
-        ) || walk::post_order_ids(arena, c).len() > MAX_PARAM_ZERO_SIZE
-        {
-            return false;
-        }
-        return matches!(
-            crate::transforms::evalf::evalf_complex(arena, c, PARAM_ZERO_DIGITS),
-            Ok(z) if z.0.is_zero() && z.1.is_zero()
-        );
+        let verdict = crate::calculus::calculus_util::hidden_zero(arena, c);
+        return crate::calculus::calculus_util::zero_reading(verdict);
     }
-    if !matches!(arena.node(c), ExprNode::Add(_))
+    if walk::has_unevaluated(arena, c)
+        || !matches!(arena.node(c), ExprNode::Add(_))
         || walk::post_order_ids(arena, c).len() > MAX_PARAM_ZERO_SIZE
         || !has_transcendental_node(arena, c)
     {
-        return false;
+        return Truth::False;
     }
     for sample in 0..2 {
         let mut v = c;
@@ -254,31 +238,50 @@ pub(crate) fn vanishes_identically(arena: &mut Arena, c: ExprId) -> bool {
             continue;
         }
         if !walk::free_symbols(arena, v).is_empty() {
-            return false;
+            return Truth::False;
         }
-        match crate::transforms::evalf::evalf_complex(arena, v, PARAM_ZERO_DIGITS) {
-            Ok(z) if z.0.is_zero() && z.1.is_zero() => {}
-            _ => return false,
+        match crate::transforms::evalf::evalf_verdict(
+            arena,
+            v,
+            PARAM_ZERO_DIGITS,
+            crate::transforms::evalf::ZeroSearch::Cap,
+        ) {
+            Ok(z) if z.value.0.is_zero() && z.value.1.is_zero() => {}
+            _ => return Truth::False,
         }
     }
-    true
+    let rewritten = crate::calculus::calculus_util::exact_rewrites(arena, c);
+    if crate::calculus::calculus_util::exactly_zero(arena, c, rewritten)
+        || crate::calculus::calculus_util::zero_by_identity(arena, c, rewritten)
+    {
+        Truth::True
+    } else if crate::simplify::identically_zero::nonzero_at_a_sample(arena, c) {
+        // Zero at these two points only.
+        Truth::False
+    } else {
+        tracing::debug!(
+            c = %arena.display(c),
+            "vanishes_identically: zero at the samples, not proved"
+        );
+        Truth::Unknown
+    }
 }
 
-/// [`settle_constant`], and `0` for a constant that vanishes identically in
-/// its parameters ([`vanishes_identically`]).
-pub(crate) fn settle_parametric(arena: &mut Arena, c: ExprId) -> ExprId {
-    let v = settle_constant(arena, c);
-    let candidate = match arena.node(v) {
-        ExprNode::Add(_) => !walk::free_symbols(arena, v).is_empty(),
-        ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_) | ExprNode::Sinh(_) => {
-            walk::free_symbols(arena, v).is_empty()
-        }
-        _ => false,
+/// [`settle_constant`], and `Zero` for a constant that vanishes identically
+/// in its parameters ([`vanishes_identically`]); `Undecided` also for one
+/// that is 0 at the samples without an exact confirmation.
+pub(crate) fn settle_parametric(arena: &mut Arena, c: ExprId) -> ZeroTest {
+    let settled = settle_constant(arena, c);
+    let ZeroTest::Nonzero(v) = settled else {
+        return settled;
     };
-    if candidate && vanishes_identically(arena, v) {
-        arena.zero
-    } else {
-        v
+    if !matches!(arena.node(v), ExprNode::Add(_)) || walk::free_symbols(arena, v).is_empty() {
+        return settled;
+    }
+    match vanishes_identically(arena, v) {
+        crate::base::truth::Truth::True => ZeroTest::Zero,
+        crate::base::truth::Truth::False => settled,
+        crate::base::truth::Truth::Unknown => ZeroTest::Undecided(v),
     }
 }
 
@@ -1005,6 +1008,11 @@ pub(crate) struct TSeries {
     shift: i64,
     known: i64,
     coeffs: Vec<ExprId>,
+    /// `known` was cut short by a coefficient that is 0 to the precision
+    /// reached but proved neither 0 nor nonzero ([`ZeroTest::Undecided`]),
+    /// here or in an operand: a wider window computes the same coefficient,
+    /// so an expansion left without a known term is refused at once.
+    undecided: bool,
 }
 
 impl TSeries {
@@ -1029,6 +1037,7 @@ impl TSeries {
             shift: 0,
             known,
             coeffs: vec![arena.zero; known.max(0) as usize],
+            undecided: false,
         }
     }
 
@@ -1092,26 +1101,42 @@ impl TSeries {
         self
     }
 
+    /// `a + b`.  A coefficient that is 0 to the precision reached but not
+    /// proved either way ([`ZeroTest::Undecided`]) ends the known part:
+    /// the sum is exact only below its exponent (so it is never taken for
+    /// a leading coefficient, nor dropped).  Likewise in [`mul`](Self::mul)
+    /// and [`inverse`](Self::inverse).
     fn add(arena: &mut Arena, a: &TSeries, b: &TSeries) -> TSeries {
         let shift = a.shift.min(b.shift);
-        let known = a.known.min(b.known);
+        let mut known = a.known.min(b.known);
+        let mut undecided = a.undecided || b.undecided;
         let mut coeffs = Vec::with_capacity((known - shift).max(0) as usize);
+        let mut cut = None;
         for e in shift..known {
             let ca = a.coeff_at(arena, e);
             let cb = b.coeff_at(arena, e);
             let s = arena.add(&[ca, cb]);
-            coeffs.push(
-                if arena.is_zero_structural(ca) || arena.is_zero_structural(cb) {
-                    eval::eval(arena, s)
-                } else {
-                    settle_parametric(arena, s)
-                },
-            );
+            if arena.is_zero_structural(ca) || arena.is_zero_structural(cb) {
+                coeffs.push(eval::eval(arena, s));
+                continue;
+            }
+            match settle_parametric(arena, s) {
+                ZeroTest::Undecided(_) => {
+                    cut = Some(e);
+                    break;
+                }
+                settled => coeffs.push(settled.value(arena)),
+            }
+        }
+        if let Some(e) = cut {
+            known = e;
+            undecided = true;
         }
         TSeries {
             shift,
             known,
             coeffs,
+            undecided,
         }
     }
 
@@ -1128,6 +1153,7 @@ impl TSeries {
             shift: a.shift,
             known: a.known,
             coeffs,
+            undecided: a.undecided,
         }
     }
 
@@ -1140,7 +1166,8 @@ impl TSeries {
         let a = a.clone().normalized(arena);
         let b = b.clone().normalized(arena);
         let shift = a.shift + b.shift;
-        let known = (a.known + b.shift).min(b.known + a.shift);
+        let mut known = (a.known + b.shift).min(b.known + a.shift);
+        let mut undecided = a.undecided || b.undecided;
         let len = (known - shift).max(0) as usize;
         let mut coeffs = Vec::with_capacity(len);
         for idx in 0..len {
@@ -1164,7 +1191,14 @@ impl TSeries {
                 1 => eval::eval(arena, terms[0]),
                 _ => {
                     let s = arena.add(&terms);
-                    settle_parametric(arena, s)
+                    match settle_parametric(arena, s) {
+                        ZeroTest::Undecided(_) => {
+                            known = shift + idx as i64;
+                            undecided = true;
+                            break;
+                        }
+                        settled => settled.value(arena),
+                    }
                 }
             });
         }
@@ -1172,6 +1206,7 @@ impl TSeries {
             shift,
             known,
             coeffs,
+            undecided,
         }
     }
 
@@ -1180,7 +1215,8 @@ impl TSeries {
         let a = a.clone().normalized(arena);
         let v = a.leading_exponent(arena)?;
         let c0 = a.coeffs[0];
-        let rel_known = a.known - v; // relative precision of 1 + w
+        let mut rel_known = a.known - v; // relative precision of 1 + w
+        let mut undecided = a.undecided;
         // w_i = a_{v+i}/c0 for i ≥ 1
         let inv_c0 = {
             let m1 = arena.neg_one;
@@ -1211,7 +1247,14 @@ impl TSeries {
                 _ => arena.add(&terms),
             };
             let ns = arena.neg(s);
-            b.push(settle_parametric(arena, ns));
+            match settle_parametric(arena, ns) {
+                ZeroTest::Undecided(_) => {
+                    rel_known = n as i64;
+                    undecided = true;
+                    break;
+                }
+                settled => b.push(settled.value(arena)),
+            }
         }
         let coeffs = b
             .iter()
@@ -1224,6 +1267,7 @@ impl TSeries {
             shift: -v,
             known: -v + rel_known,
             coeffs,
+            undecided,
         })
     }
 
@@ -1272,6 +1316,7 @@ impl TSeries {
                 shift: known,
                 known,
                 coeffs: Vec::new(),
+                undecided: w.undecided,
             };
         }
         let mut acc = Self::constant(arena, arena.zero, known);
@@ -1286,7 +1331,7 @@ impl TSeries {
             if p.shift >= known || p.coeffs.is_empty() {
                 break;
             }
-            if over_node_limit(arena) {
+            if arena.work_exhausted(BudgetKind::SeriesExpansion) {
                 // The terms left have valuation ≥ `p.shift`: below it `acc`
                 // is exact.
                 return acc.truncate_known(p.shift);
@@ -1732,9 +1777,9 @@ pub(crate) fn expand_leading_last_resort(
     order: i64,
     log_var: ExprId,
 ) -> Result<TSeries, SymplexError> {
-    let _limit = NodeLimit::new(arena, LAST_RESORT_NODES);
+    let mut scope = WorkScope::enter(arena, BudgetKind::SeriesExpansion, LAST_RESORT_WORK);
     expand_with_mode(
-        arena,
+        &mut scope,
         expr,
         var,
         order,
@@ -1837,11 +1882,20 @@ fn expand_from_both_sides(
         let (a, b) = (above.coeff_at(arena, e), below.coeff_at(arena, e));
         if a != b {
             let d = arena.sub(a, b);
-            if !is_zero_const(arena, d) {
-                return Err(no_expansion(
-                    arena,
-                    "the expansions from the left and from the right differ",
-                ));
+            match is_zero_const(arena, d) {
+                crate::base::truth::Truth::True => {}
+                crate::base::truth::Truth::False => {
+                    return Err(no_expansion(
+                        arena,
+                        "the expansions from the left and from the right differ",
+                    ));
+                }
+                crate::base::truth::Truth::Unknown => {
+                    return Err(no_expansion(
+                        arena,
+                        "the expansions from the left and from the right are not shown to agree",
+                    ));
+                }
             }
         }
     }
@@ -1923,10 +1977,11 @@ fn leading_term_decided(arena: &mut Arena, ts: &TSeries) -> bool {
         if arena.is_zero_structural(c) {
             continue;
         }
-        let c = settle_parametric(arena, c);
-        if arena.is_zero_structural(c) {
-            continue;
-        }
+        let c = match settle_parametric(arena, c) {
+            ZeroTest::Zero => continue,
+            ZeroTest::Nonzero(c) => c,
+            ZeroTest::Undecided(_) => return false,
+        };
         return walk::free_symbols(arena, c).is_empty()
             && [
                 arena.infinity,
@@ -2015,6 +2070,17 @@ fn expand_with_precision(
             && id != expr
             && s.clone().normalized(arena).coeffs.is_empty()
         {
+            // No known term because a coefficient is undecided: a wider
+            // window would meet it again.
+            if s.undecided {
+                return Err(SymplexError::ComputationFailed {
+                    operation: "series",
+                    reason: format!(
+                        "cannot decide whether the leading coefficient of {} is 0",
+                        arena.display(id)
+                    ),
+                });
+            }
             *hidden_valuation = true;
         }
         cache.insert(id, ts);
@@ -2292,24 +2358,37 @@ fn symbolic_on_cut(
         let s = eval::eval(arena, s);
         constant_sign(arena, s)
     };
+    // On the cut when the sign is negative (positive), off it when it is
+    // positive (negative); undecided at the branch point (`ZERO`) too.
+    let below = |s: SignSet| match s {
+        SignSet::NEGATIVE => Some(true),
+        SignSet::POSITIVE => Some(false),
+        _ => None,
+    };
+    let above = |s: SignSet| below(s).map(|b| !b);
     let one = arena.one;
     let m_one = arena.neg_one;
     match cut {
         BranchCut::None | BranchCut::ImaginaryAxis => Some(false),
-        BranchCut::NegativeReals => constant_sign(arena, u0).map(|p| !p),
-        BranchCut::BelowOne => sign(arena, m_one).map(|p| !p),
-        BranchCut::AboveOne => sign(arena, m_one),
-        BranchCut::BeyondOne => match (sign(arena, m_one), sign(arena, one)) {
-            (Some(true), _) | (_, Some(false)) => Some(true),
-            (Some(false), Some(true)) => Some(false),
-            _ => None,
-        },
+        BranchCut::NegativeReals => below(constant_sign(arena, u0)),
+        BranchCut::BelowOne => below(sign(arena, m_one)),
+        BranchCut::AboveOne => above(sign(arena, m_one)),
+        BranchCut::BeyondOne => {
+            let (minus, plus) = (sign(arena, m_one), sign(arena, one));
+            if minus == SignSet::POSITIVE || plus == SignSet::NEGATIVE {
+                Some(true)
+            } else if minus == SignSet::NEGATIVE && plus == SignSet::POSITIVE {
+                Some(false)
+            } else {
+                None
+            }
+        }
         BranchCut::BelowMinusInvE => {
             let e_inv = {
                 let e = arena.exp(m_one);
                 eval::eval(arena, e)
             };
-            sign(arena, e_inv).map(|p| !p)
+            below(sign(arena, e_inv))
         }
     }
 }
@@ -2385,7 +2464,7 @@ fn locally_real(arena: &mut Arena, u: ExprId, var: ExprId, mode: Mode) -> bool {
             && crate::calculus::limit::inner_known_real(arena, v)
             && inside(arena, v)
     };
-    let positive = |arena: &mut Arena, v: ExprId| constant_sign(arena, v) == Some(true);
+    let positive = |arena: &mut Arena, v: ExprId| constant_sign(arena, v).is_positive().is_true();
     let inside_unit = |arena: &mut Arena, v: ExprId| {
         let one = arena.one;
         let m_one = arena.neg_one;
@@ -2393,13 +2472,14 @@ fn locally_real(arena: &mut Arena, u: ExprId, var: ExprId, mode: Mode) -> bool {
         let below = eval::eval(arena, below);
         let above = arena.sub(v, m_one);
         let above = eval::eval(arena, above);
-        constant_sign(arena, below) == Some(true) && constant_sign(arena, above) == Some(true)
+        constant_sign(arena, below).is_positive().is_true()
+            && constant_sign(arena, above).is_positive().is_true()
     };
     let above_one = |arena: &mut Arena, v: ExprId| {
         let one = arena.one;
         let d = arena.sub(v, one);
         let d = eval::eval(arena, d);
-        constant_sign(arena, d) == Some(true)
+        constant_sign(arena, d).is_positive().is_true()
     };
     // The `var`-dependent nodes shown real so far (a node not shown real
     // ends the walk).
@@ -3159,8 +3239,10 @@ fn decays_beyond_all_orders(arena: &mut Arena, a: &TSeries, mode: Mode) -> bool 
     }
     let re = arena.re(c);
     let re = eval::eval(arena, re);
-    let Some(positive) = constant_sign(arena, re) else {
-        return false;
+    let positive = match constant_sign(arena, re) {
+        SignSet::POSITIVE => true,
+        SignSet::NEGATIVE => false,
+        _ => return false,
     };
     // `Re(c·var^v)` has the sign of `Re c` for `var > 0`, of `(−1)^v·Re c`
     // for `var < 0`.
@@ -3325,12 +3407,16 @@ fn abs_series(arena: &mut Arena, g: &TSeries, side: Side) -> Result<TSeries, Obs
     // differentiating.
     let k = g.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
     let c = g.coeff_at(arena, k);
-    let Some(c_positive) = constant_sign(arena, c) else {
-        return Err(if k == 0 {
-            Obstruction::Unknown
-        } else {
-            Obstruction::NoExpansion
-        });
+    let c_positive = match constant_sign(arena, c) {
+        SignSet::POSITIVE => true,
+        SignSet::NEGATIVE => false,
+        _ => {
+            return Err(if k == 0 {
+                Obstruction::Unknown
+            } else {
+                Obstruction::NoExpansion
+            });
+        }
     };
     if !g.coeffs.iter().all(|&co| is_known_real(arena, co)) {
         return Err(Obstruction::NoExpansion);
@@ -3365,12 +3451,16 @@ fn sign_series(
     let c = g.coeff_at(arena, k);
     // A non-zero constant term of unknown sign: `sign(a + x)` is
     // `sign(a)` near 0, which the differentiation fallback finds.
-    let Some(c_positive) = constant_sign(arena, c) else {
-        return Err(if k == 0 {
-            Obstruction::Unknown
-        } else {
-            Obstruction::NoExpansion
-        });
+    let c_positive = match constant_sign(arena, c) {
+        SignSet::POSITIVE => true,
+        SignSet::NEGATIVE => false,
+        _ => {
+            return Err(if k == 0 {
+                Obstruction::Unknown
+            } else {
+                Obstruction::NoExpansion
+            });
+        }
     };
     if !g.coeffs.iter().all(|&co| is_known_real(arena, co)) {
         return Err(Obstruction::NoExpansion);
@@ -3389,29 +3479,33 @@ fn sign_series(
     Ok(TSeries::constant(arena, value, g.known.max(1)))
 }
 
-/// `Some(true)` if the var-free constant `c` is known positive, `Some(false)`
-/// if known negative, `None` if zero or of unknown sign.
-fn constant_sign(arena: &mut Arena, c: ExprId) -> Option<bool> {
+/// The sign of the var-free constant `c`: `POSITIVE` or `NEGATIVE` when it
+/// is known (by the assumptions, or a certified value), `ZERO` for the
+/// number 0, `UNKNOWN` otherwise.  (Up to 0.48 an `Option<bool>` whose
+/// `None` meant "zero or unknown".)
+fn constant_sign(arena: &mut Arena, c: ExprId) -> SignSet {
     if let Some(r) = arena.as_num(c) {
         return if r.is_zero() {
-            None
+            SignSet::ZERO
+        } else if r.is_positive() {
+            SignSet::POSITIVE
         } else {
-            Some(r.is_positive())
+            SignSet::NEGATIVE
         };
     }
     let mut cache = crate::base::assumptions::AssumptionCache::new();
     if cache.query(arena, c, Props::POSITIVE) == Some(true) {
-        return Some(true);
+        return SignSet::POSITIVE;
     }
     if cache.query(arena, c, Props::NEGATIVE) == Some(true) {
-        return Some(false);
+        return SignSet::NEGATIVE;
     }
     // A real constant the assumption system leaves open (`ln 3`,
     // `cos(3/2)`): its certified value decides.
     match crate::calculus::limit::const_sign(arena, c) {
-        Some(1) => Some(true),
-        Some(-1) => Some(false),
-        _ => None,
+        Some(1) => SignSet::POSITIVE,
+        Some(-1) => SignSet::NEGATIVE,
+        _ => SignSet::UNKNOWN,
     }
 }
 
@@ -3423,9 +3517,13 @@ fn is_known_real(arena: &Arena, c: ExprId) -> bool {
     }
 }
 
-fn is_zero_const(arena: &mut Arena, c: ExprId) -> bool {
-    let v = settle_parametric(arena, c);
-    arena.is_zero_structural(v) || arena.as_num(v).is_some_and(|r| r.is_zero())
+fn is_zero_const(arena: &mut Arena, c: ExprId) -> crate::base::truth::Truth {
+    match settle_parametric(arena, c) {
+        ZeroTest::Nonzero(v) if arena.as_num(v).is_some_and(|r| r.is_zero()) => {
+            crate::base::truth::Truth::True
+        }
+        settled => settled.is_zero(),
+    }
 }
 
 /// `f(a)` for an elementary `f` with known Maclaurin series.
@@ -3435,7 +3533,11 @@ fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
         return None; // essential singularity
     }
     let (u0, w) = a.split_constant(arena);
-    let u0_zero = is_zero_const(arena, u0);
+    let u0_zero = match is_zero_const(arena, u0) {
+        crate::base::truth::Truth::True => true,
+        crate::base::truth::Truth::False => false,
+        crate::base::truth::Truth::Unknown => return None,
+    };
     let compose = |arena: &mut Arena, k: FnKind, w: &TSeries| -> TSeries {
         TSeries::compose(
             arena,
@@ -3466,6 +3568,12 @@ fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
             let su = settle_parametric(arena, su);
             let cu = arena.cos(u0);
             let cu = settle_parametric(arena, cu);
+            let (ZeroTest::Zero | ZeroTest::Nonzero(_), ZeroTest::Zero | ZeroTest::Nonzero(_)) =
+                (su, cu)
+            else {
+                return None;
+            };
+            let (su, cu) = (su.value(arena), cu.value(arena));
             let (t1, t2) = if kind == FnKind::Sin {
                 // sin(u0 + w) = sin u0 cos w + cos u0 sin w
                 (
@@ -3589,9 +3697,20 @@ fn inverse_at_branch_point(
         InverseFn::Asinh | InverseFn::Atan => &[i, neg_i],
         _ => &[one, neg_one],
     };
-    let u0 = match targets.iter().find(|&&t| equals_constant(arena, u0, t)) {
-        Some(&t) => t,
-        None => return Ok(None),
+    let mut at_target = None;
+    for &t in targets {
+        match equals_constant(arena, u0, t) {
+            crate::base::truth::Truth::True => {
+                at_target = Some(t);
+                break;
+            }
+            crate::base::truth::Truth::False => {}
+            // Not shown to be a branch point, nor a regular point.
+            crate::base::truth::Truth::Unknown => return Err(Obstruction::NoExpansion),
+        }
+    }
+    let Some(u0) = at_target else {
+        return Ok(None);
     };
     let mut u = u;
     u.set_constant(u0);
@@ -3948,8 +4067,10 @@ fn lambertw_at_branch_point(
         let n = arena.neg(e);
         eval::eval(arena, n)
     };
-    if !equals_constant(arena, u0, target) {
-        return Ok(None);
+    match equals_constant(arena, u0, target) {
+        crate::base::truth::Truth::True => {}
+        crate::base::truth::Truth::False => return Ok(None),
+        crate::base::truth::Truth::Unknown => return Err(Obstruction::NoExpansion),
     }
     // s = 1 + e·u, of valuation ≥ 1.
     let e = {
@@ -4096,12 +4217,12 @@ fn acosh_at_infinity(
 /// Is the constant `c` equal to `target` (structurally, or as a hidden
 /// zero of `c − target`, see [`settle_constant`])?  A rational other than
 /// `target` is not.
-fn equals_constant(arena: &mut Arena, c: ExprId, target: ExprId) -> bool {
+fn equals_constant(arena: &mut Arena, c: ExprId, target: ExprId) -> crate::base::truth::Truth {
     if c == target {
-        return true;
+        return crate::base::truth::Truth::True;
     }
     if arena.as_num(c).is_some() || !walk::free_symbols(arena, c).is_empty() {
-        return false;
+        return crate::base::truth::Truth::False;
     }
     let d = arena.sub(c, target);
     is_zero_const(arena, d)
@@ -4197,8 +4318,8 @@ fn apply_ln(
         // real `c` of known sign, with a real `w` when negative.
         if !mode.full_rules() {
             match constant_sign(arena, c) {
-                Some(true) => {}
-                Some(false) if a.coeffs.iter().all(|&co| is_known_real(arena, co)) => {}
+                SignSet::POSITIVE => {}
+                SignSet::NEGATIVE if a.coeffs.iter().all(|&co| is_known_real(arena, co)) => {}
                 _ => return Err(Obstruction::Unknown),
             }
         }
@@ -4296,11 +4417,11 @@ fn cut_below(
         return Ok(false);
     }
     let sign = constant_sign(arena, u0);
-    if sign == Some(true) {
+    if sign == SignSet::POSITIVE {
         return Ok(false);
     }
     if !w.coeffs.iter().all(|&c| is_known_real(arena, c)) {
-        if sign.is_none() {
+        if sign != SignSet::NEGATIVE {
             return Err(Obstruction::NoExpansion);
         }
         return match series_cut_side(arena, w, false, mode) {
@@ -4410,12 +4531,14 @@ const MAX_POLE_SHIFT: i64 = 64;
 /// Head of Gruntz's internal `erfcx(z) = e^{z²} erfc(z)` for `z → +∞`
 /// (SymPy's `_erfs`), with the asymptotic series
 /// `(1/√π) Σ (−1)ᵏ (2k−1)!!/(2ᵏ z^{2k+1})` (DLMF 7.12.1).  It exists only
-/// inside a limit computation.
-pub(crate) const ERFCX_ASYMPTOTIC: &str = "__erfcx_asym";
+/// inside a limit computation.  The internal heads are named in the
+/// function table (`base/func.rs`), which reserves them: user input cannot
+/// build them.
+pub(crate) const ERFCX_ASYMPTOTIC: &str = crate::base::func::Func::ErfcxAsym.spec().name;
 
 /// Head of Gruntz's internal `e^{−z} Ei(z)` for `z → ±∞` (SymPy's
 /// `_eis`), with the asymptotic series `Σ k!/z^{k+1}` (DLMF 6.12.2).
-pub(crate) const EI_ASYMPTOTIC: &str = "__ei_asym";
+pub(crate) const EI_ASYMPTOTIC: &str = crate::base::func::Func::EiAsym.spec().name;
 
 /// Most terms of an asymptotic (Stirling-type) series.
 const MAX_ASYMPTOTIC_TERMS: i64 = 40;
@@ -4432,7 +4555,11 @@ fn split_regular(arena: &mut Arena, a: &TSeries) -> Result<Option<(ExprId, TSeri
         return Ok(None);
     }
     let (u0, w) = a.split_constant(arena);
-    Ok(Some((settle_constant(arena, u0), w)))
+    match settle_constant(arena, u0) {
+        // Not shown to be 0 or not: leave it to the general method.
+        ZeroTest::Undecided(_) => Ok(None),
+        settled => Ok(Some((settled.value(arena), w))),
+    }
 }
 
 /// `n` if the constant `u0` is the integer `−n ≤ 0`.
@@ -4614,7 +4741,7 @@ fn stirling_direction(arena: &mut Arena, c: ExprId, mode: Mode) -> bool {
     if mode.full_rules() {
         off_negative_reals(arena, c)
     } else {
-        constant_sign(arena, c) == Some(true)
+        constant_sign(arena, c).is_positive().is_true()
     }
 }
 
@@ -4624,7 +4751,7 @@ fn stirling_direction(arena: &mut Arena, c: ExprId, mode: Mode) -> bool {
 /// Before 0.44 only a positive `c` was accepted: `ψ(i·x)`, `ln Γ(x + i·x)`
 /// at `+∞` were refused.
 fn off_negative_reals(arena: &mut Arena, c: ExprId) -> bool {
-    if constant_sign(arena, c) == Some(true) {
+    if constant_sign(arena, c).is_positive().is_true() {
         return true;
     }
     if !walk::free_symbols(arena, c).is_empty() {
@@ -4882,7 +5009,7 @@ fn special_series(
             let c = a_n.coeff_at(arena, lead);
             // Gruntz's first attempt keeps the rule of 0.43 (`c > 0`).
             if mode.log_var.is_none()
-                || (!mode.full_rules() && constant_sign(arena, c) != Some(true))
+                || (!mode.full_rules() && !constant_sign(arena, c).is_positive().is_true())
             {
                 return Err(Obstruction::NoExpansion);
             }
@@ -4945,7 +5072,7 @@ fn special_series(
                 // is `f(c) + O(ωᴷ)`, its derivative being bounded away from
                 // the logarithmic singularity of `e^{−z} Ei z` at `0`.
                 let c0 = a.coeffs[0];
-                if erfcx || !is_zero_const(arena, c0) {
+                if erfcx || is_zero_const(arena, c0).is_false() {
                     let c = arena.intern(ExprNode::Apply(f, smallvec::smallvec![c0]));
                     return Ok(TSeries::constant(arena, c, a.known));
                 }
@@ -4954,8 +5081,8 @@ fn special_series(
             if v >= 0 || mode.side != Side::Above {
                 return unknown;
             }
-            let positive = constant_sign(arena, a.coeff_at(arena, v));
-            if positive != Some(true) && (erfcx || positive.is_none()) {
+            let sign = constant_sign(arena, a.coeff_at(arena, v));
+            if sign != SignSet::POSITIVE && (erfcx || sign != SignSet::NEGATIVE) {
                 return unknown;
             }
             let inv = TSeries::inverse(arena, &a).ok_or(Obstruction::NoExpansion)?;
@@ -5069,17 +5196,17 @@ pub(crate) enum PowerAsymptotic {
 }
 
 /// Head of [`PowerAsymptotic::Erfi`].
-pub(crate) const ERFIX_ASYMPTOTIC: &str = "__erfix2_asym";
+pub(crate) const ERFIX_ASYMPTOTIC: &str = crate::base::func::Func::Erfix2Asym.spec().name;
 /// Head of [`PowerAsymptotic::Erfc`].
-pub(crate) const ERFCX2_ASYMPTOTIC: &str = "__erfcx2_asym";
+pub(crate) const ERFCX2_ASYMPTOTIC: &str = crate::base::func::Func::Erfcx2Asym.spec().name;
 /// Head of [`PowerAsymptotic::BesselI`] (arguments `ν, z`).
-pub(crate) const BESSELI_ASYMPTOTIC: &str = "__besseli_asym";
+pub(crate) const BESSELI_ASYMPTOTIC: &str = crate::base::func::Func::BesselIAsym.spec().name;
 /// Head of [`PowerAsymptotic::BesselK`] (arguments `ν, z`).
-pub(crate) const BESSELK_ASYMPTOTIC: &str = "__besselk_asym";
+pub(crate) const BESSELK_ASYMPTOTIC: &str = crate::base::func::Func::BesselKAsym.spec().name;
 /// Head of [`PowerAsymptotic::UpperGamma`] (arguments `s, z`).
-pub(crate) const UPPERGAMMA_ASYMPTOTIC: &str = "__uppergamma_asym";
+pub(crate) const UPPERGAMMA_ASYMPTOTIC: &str = crate::base::func::Func::UpperGammaAsym.spec().name;
 /// Head of [`PowerAsymptotic::Zeta`].
-pub(crate) const ZETA_ASYMPTOTIC: &str = "__zeta_asym";
+pub(crate) const ZETA_ASYMPTOTIC: &str = crate::base::func::Func::ZetaAsym.spec().name;
 
 impl PowerAsymptotic {
     pub(crate) fn from_name(name: &str) -> Option<Self> {
@@ -5158,7 +5285,9 @@ fn power_asymptotic_series(
     }
     if v >= 0
         || mode.side != Side::Above
-        || constant_sign(arena, a.coeff_at(arena, v)) != Some(true)
+        || !constant_sign(arena, a.coeff_at(arena, v))
+            .is_positive()
+            .is_true()
     {
         return unknown;
     }
@@ -5389,7 +5518,10 @@ fn log_bessel_series(
     if k <= 0 {
         return Ok(None);
     }
-    if constant_sign(arena, u.coeff_at(arena, k)) != Some(true) {
+    if !constant_sign(arena, u.coeff_at(arena, k))
+        .is_positive()
+        .is_true()
+    {
         return Err(Obstruction::NoExpansion);
     }
     let alternate = !is_k;
@@ -5559,6 +5691,7 @@ fn taylor_by_differentiation(
         shift: 0,
         known: n,
         coeffs,
+        undecided: false,
     })
 }
 

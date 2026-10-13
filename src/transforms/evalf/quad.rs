@@ -85,10 +85,11 @@
 //! A node is a handful of `BigFloat` operations (computed once per
 //! quadrature and shared by all pieces) plus one evaluation of the
 //! variable-dependent part of the body; level `k` has about `9·2^(k−1)`
-//! nodes, at most [`MAX_EVALS`] evaluations in all and [`TIME_LIMIT`] of
-//! wall-clock time per working precision.  A quadrature that ran out of
-//! nodes is remembered ([`recall`]): `evalf`'s search at higher precisions
-//! gets its answer again at once.  Gauss–Legendre nodes (`O(n²)` operations
+//! nodes, at most [`MAX_EVALS`] evaluations in all per working precision
+//! (a deterministic [`Work`] budget: up to 0.48 there was also a 20 s
+//! wall-clock limit, so the answer depended on the speed of the machine).
+//! A quadrature that ran out of nodes is remembered ([`recall`]): `evalf`'s
+//! search at higher precisions gets its answer again at once.  Gauss–Legendre nodes (`O(n²)` operations
 //! each set) are cached per thread.
 
 use astro_float::{BigFloat, Consts, RoundingMode};
@@ -103,6 +104,7 @@ use super::{
 };
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::{Complex, c_add, c_sub, c_zero};
+use crate::base::budget::{BudgetKind, Work};
 use crate::base::errors::SymplexError;
 use crate::base::node::ExprId;
 use crate::base::walk;
@@ -129,8 +131,9 @@ const T_MIN_HALVES: u64 = 5;
 /// decayed by then belong to a divergent integral.
 const T_MAX_HALVES: u64 = 24;
 /// Most integrand evaluations for one integral (all pieces, refinements
-/// included).
-const MAX_EVALS: usize = 30_000;
+/// included): the [`Work`] budget of kind
+/// [`BudgetKind::QuadratureEvaluations`].
+const MAX_EVALS: u64 = 30_000;
 /// Most pieces (breakpoints and bisections).
 const MAX_PIECES: usize = 64;
 /// Deepest bisection of a piece.
@@ -150,10 +153,6 @@ const MIN_GL_DEGREE: u32 = 4;
 const GL_CACHE: usize = 8;
 /// Precisions kept in the integrand's constant cache.
 const MAX_PRECISIONS: usize = 24;
-/// Wall-clock limit of one quadrature (one working precision): the
-/// evaluation budget bounds the nodes, but an integrand of special functions
-/// at a thousand bits can take milliseconds a node.
-const TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The integrand
@@ -468,11 +467,8 @@ pub(super) struct Quad<'a> {
     /// The highest precision a node may be evaluated at.
     p_cap: usize,
     rm: RoundingMode,
-    evals_left: usize,
-    /// The evaluation budget `evals_left` started from.
-    evals_total: usize,
-    /// The integral is refused past this instant ([`TIME_LIMIT`]).
-    deadline: std::time::Instant,
+    /// The integrand evaluations left ([`MAX_EVALS`]).
+    work: Work,
     ends: FxHashMap<(ExprId, usize), (BigFloat, ErrExp)>,
     /// The tanh-sinh abscissae computed so far, by level and index (shared
     /// by both sides and all pieces).
@@ -507,21 +503,16 @@ impl<'a> Quad<'a> {
             pe,
             p_cap: (12 * pe + 1024).min(max.max(pe)),
             rm,
-            evals_left: MAX_EVALS,
-            evals_total: MAX_EVALS,
-            deadline: std::time::Instant::now() + TIME_LIMIT,
+            work: Work::new(BudgetKind::QuadratureEvaluations, MAX_EVALS),
             ends: FxHashMap::default(),
             nodes: FxHashMap::default(),
             abs_floor: accuracy::EXACT,
         }
     }
 
-    /// A quarter of the evaluations and an eighth of the time: a first try
-    /// that has a fallback.
+    /// A quarter of the evaluations: a first try that has a fallback.
     pub(super) fn lighten(&mut self) {
-        self.evals_left = MAX_EVALS / 4;
-        self.evals_total = MAX_EVALS / 4;
-        self.deadline = std::time::Instant::now() + TIME_LIMIT / 8;
+        self.work = Work::new(BudgetKind::QuadratureEvaluations, MAX_EVALS / 4);
     }
 
     /// The value of a finite endpoint at `p` bits and its error bound.
@@ -767,13 +758,7 @@ impl<'a> Quad<'a> {
         let psum = self.pe + SUM_GUARD;
         let mut p = self.pe;
         loop {
-            if self.evals_left == 0 {
-                return Err(not_converged("the evaluation budget was exhausted"));
-            }
-            if std::time::Instant::now() > self.deadline {
-                return Err(not_converged("the time limit was reached"));
-            }
-            self.evals_left -= 1;
+            self.work.charge(1, "evalf")?;
             let placed = self.place(piece, half, side, node, k, p, cc)?;
             let f = match placed.which.and_then(|i| self.variants.get_mut(i)) {
                 Some((_, _, g)) => g,
@@ -821,7 +806,7 @@ impl<'a> Quad<'a> {
     }
 
     /// Integrate one piece by tanh-sinh, levels 1 to at most [`MAX_LEVEL`].
-    fn piece(&mut self, piece: &Piece, cc: &mut Consts) -> Result<PieceOut, SymplexError> {
+    fn piece(&mut self, piece: &Piece, cc: &mut Consts) -> Result<PieceOut, QuadError> {
         let rm = self.rm;
         let psum = self.pe + SUM_GUARD;
         let pw = self.pe + NODE_GUARD;
@@ -858,7 +843,7 @@ impl<'a> Quad<'a> {
             let mut j = 1u64;
             loop {
                 if j > T_MAX_HALVES {
-                    return Err(not_converged(NOT_DECAYING));
+                    return Err(QuadError::NotDecaying);
                 }
                 let node = self.ts_node(j, 1, pw, cc);
                 let budget = accuracy::shift(l1, -((self.pe as f64) + 8.0));
@@ -910,7 +895,7 @@ impl<'a> Quad<'a> {
         let mut digits = 0.0f64;
         for k in 2..=MAX_LEVEL {
             let new_nodes: u64 = ends.iter().map(|&e| e << (k - 2)).sum();
-            if new_nodes as usize > self.evals_left {
+            if new_nodes > self.work.left() {
                 debug!(
                     k,
                     "quadrature: the next level exceeds the evaluation budget"
@@ -995,7 +980,7 @@ impl<'a> Quad<'a> {
             return false;
         };
         let next_cost: u64 = ends.iter().map(|&e| e << k.saturating_sub(1)).sum();
-        if next_cost as usize > self.evals_left {
+        if next_cost > self.work.left() {
             return true;
         }
         if k < 6 {
@@ -1095,7 +1080,7 @@ impl<'a> Quad<'a> {
         for m in 2..=MAX_GL_DEGREE {
             let nodes = self.gl_nodes(m, pw);
             let (ref list, node_rel) = *nodes;
-            if 2 * list.len() > self.evals_left {
+            if 2 * list.len() as u64 > self.work.left() {
                 break;
             }
             let mut sum = c_zero(psum);
@@ -1104,10 +1089,7 @@ impl<'a> Quad<'a> {
             let mut real = true;
             for (r, w) in list.iter() {
                 for sign in [false, true] {
-                    if self.evals_left == 0 {
-                        return Err(not_converged("the evaluation budget was exhausted"));
-                    }
-                    self.evals_left -= 1;
+                    self.work.charge(1, "evalf")?;
                     let s = if sign { r.neg() } else { r.clone() };
                     let (x, weight) = match upper {
                         None => (centre.add(&c.mul(&s, pw, rm), pe, rm), c.mul(w, pw, rm)),
@@ -1179,11 +1161,7 @@ impl<'a> Quad<'a> {
 
     /// Integrate over `pieces`, bisecting a finite piece that does not
     /// converge.
-    pub(super) fn run(
-        &mut self,
-        pieces: Vec<Piece>,
-        cc: &mut Consts,
-    ) -> Result<RunOut, SymplexError> {
+    pub(super) fn run(&mut self, pieces: Vec<Piece>, cc: &mut Consts) -> Result<RunOut, QuadError> {
         let rm = self.rm;
         let psum = self.pe + SUM_GUARD;
         let mut total = c_zero(psum);
@@ -1240,13 +1218,13 @@ impl<'a> Quad<'a> {
                 }
             }
             let Some(out) = best else {
-                return Err(internal("piece result"));
+                return Err(internal("piece result").into());
             };
             let bisect = !out.converged
                 && out.discretisation
                 && depth < MAX_DEPTH
                 && count < MAX_PIECES
-                && self.evals_left > self.evals_total / 8;
+                && self.work.left() > self.work.cap() / 8;
             if bisect {
                 let osc = ts_digits < 8.0;
                 count += 1;
@@ -1294,7 +1272,7 @@ impl<'a> Quad<'a> {
         }
         debug!(
             pieces = count,
-            evaluations = self.evals_total.saturating_sub(self.evals_left),
+            evaluations = self.work.spent(),
             nodes = self.nodes.len(),
             "quadrature: done"
         );
@@ -1494,15 +1472,18 @@ fn gauss_legendre(m: u32, pw: usize, rm: RoundingMode) -> (Vec<(BigFloat, BigFlo
 // Failures remembered across precisions
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// An integral by its arena (address and size) and node ids.
-pub(super) type MemoKey = [usize; 6];
+/// An integral by its arena ([`Arena::serial`]) and node ids.  Up to 0.48
+/// the arena was named by its address and node count, which a later arena
+/// on the same thread can have again (the golden harness's fresh context
+/// per case did): it would have read the earlier arena's failure.
+pub(super) type MemoKey = [u64; 5];
 
 /// A quadrature that did not converge for want of nodes, not of precision
 /// (see [`remember`]).
 struct Failure {
     key: MemoKey,
     prec: usize,
-    outcome: Result<(Complex, ErrExp, bool), SymplexError>,
+    outcome: Result<(Complex, ErrExp, bool), QuadError>,
 }
 
 thread_local! {
@@ -1513,8 +1494,8 @@ thread_local! {
 /// Failures kept.
 const MEMO_CAP: usize = 16;
 
-/// The key of `∫_lo^hi body d(var)` in `arena` (the arena does not change
-/// while `evalf` holds it).
+/// The key of `∫_lo^hi body d(var)` in `arena` (nodes are only appended,
+/// so the ids keep naming the same nodes).
 pub(super) fn memo_key(
     arena: &Arena,
     body: ExprId,
@@ -1523,12 +1504,11 @@ pub(super) fn memo_key(
     hi: ExprId,
 ) -> MemoKey {
     [
-        std::ptr::from_ref(arena) as usize,
-        arena.node_count(),
-        body.index() as usize,
-        var.index() as usize,
-        lo.index() as usize,
-        hi.index() as usize,
+        arena.serial(),
+        u64::from(body.index()),
+        u64::from(var.index()),
+        u64::from(lo.index()),
+        u64::from(hi.index()),
     ]
 }
 
@@ -1539,15 +1519,12 @@ pub(super) fn memo_key(
 pub(super) fn recall(
     key: &MemoKey,
     prec: usize,
-) -> Option<Result<(Complex, ErrExp, bool), SymplexError>> {
+) -> Option<Result<(Complex, ErrExp, bool), QuadError>> {
     FAILURES.with(|f| {
         f.borrow()
             .iter()
             .find(|e| e.key == *key && e.prec <= prec)
-            .map(|e| match &e.outcome {
-                Ok(v) => Ok(v.clone()),
-                Err(err) => Err(super::duplicate_error(err)),
-            })
+            .map(|e| e.outcome.clone())
     })
 }
 
@@ -1556,7 +1533,7 @@ pub(super) fn recall(
 pub(super) fn remember(
     key: MemoKey,
     prec: usize,
-    outcome: Result<(Complex, ErrExp, bool), SymplexError>,
+    outcome: Result<(Complex, ErrExp, bool), QuadError>,
 ) {
     FAILURES.with(|f| {
         let mut f = f.borrow_mut();
@@ -1568,18 +1545,64 @@ pub(super) fn remember(
     });
 }
 
-/// Is `e` a failure for want of nodes (a higher precision fails too), or a
-/// proof of divergence?
-pub(super) fn is_node_failure(e: &SymplexError) -> bool {
-    matches!(e, SymplexError::Divergent { .. })
-        || matches!(e, SymplexError::ComputationFailed { reason, .. }
-        if reason.contains(NOT_DECAYING) || reason.contains("budget") || reason.contains("time limit"))
+/// Why a quadrature gave no value.  The two causes `evalf` acts on — terms
+/// that do not decay, and a failure for want of nodes — are told apart by
+/// kind; up to 0.48 they were found by searching the message for
+/// [`NOT_DECAYING`], `"budget"` or `"time limit"`, so an integrand whose
+/// own error message mentioned a budget counted as one.
+#[derive(Clone, Debug)]
+pub(super) enum QuadError {
+    /// The terms do not decay towards an end of the range, or of a piece
+    /// at a breakpoint ([`NOT_DECAYING`]).
+    NotDecaying,
+    /// Any other failure (the evaluation budget is
+    /// [`SymplexError::BudgetExhausted`]).
+    Failed(SymplexError),
 }
 
-/// Is `e` the refusal of a quadrature whose terms do not decay towards an
-/// end — of the range, or of a piece at a breakpoint ([`NOT_DECAYING`])?
-pub(super) fn is_not_decaying(e: &SymplexError) -> bool {
-    matches!(e, SymplexError::ComputationFailed { reason, .. } if reason.contains(NOT_DECAYING))
+impl From<SymplexError> for QuadError {
+    fn from(e: SymplexError) -> Self {
+        QuadError::Failed(e)
+    }
+}
+
+impl From<QuadError> for SymplexError {
+    fn from(e: QuadError) -> Self {
+        match e {
+            QuadError::NotDecaying => not_converged(NOT_DECAYING),
+            QuadError::Failed(e) => e,
+        }
+    }
+}
+
+impl QuadError {
+    /// A failure for want of nodes (a higher precision fails too), or a
+    /// proof of divergence?
+    pub(super) fn is_node_failure(&self) -> bool {
+        matches!(
+            self,
+            QuadError::NotDecaying
+                | QuadError::Failed(
+                    SymplexError::Divergent { .. }
+                        | SymplexError::BudgetExhausted {
+                            kind: BudgetKind::QuadratureEvaluations,
+                            ..
+                        }
+                )
+        )
+    }
+
+    /// A refusal for want of a value that a proof of divergence may
+    /// replace (any but an evaluation error of the integrand)?
+    pub(super) fn may_diverge(&self) -> bool {
+        matches!(
+            self,
+            QuadError::NotDecaying
+                | QuadError::Failed(
+                    SymplexError::ComputationFailed { .. } | SymplexError::BudgetExhausted { .. }
+                )
+        )
+    }
 }
 
 #[cfg(test)]

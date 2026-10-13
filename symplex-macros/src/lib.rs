@@ -8,6 +8,7 @@
 //! This crate should not be used directly.  Instead, depend on `symplex`
 //! which re-exports these macros.
 
+mod node_shape;
 mod parse;
 
 use parse::{
@@ -20,6 +21,24 @@ use proc_macro2::Span;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::Ident;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #[derive(NodeShape)] (symplex-internal)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Generates the shape-dependent methods of symplex's expression node enum
+/// (children, child count, rebuilding with new children, remapping ids,
+/// the binder tables) from its declaration.  Internal to symplex: see
+/// the `node_shape` module of this crate for the field roles and the
+/// `#[binder(..)]`, `#[var_slot(..)]` and `#[payload]` attributes.
+#[doc(hidden)]
+#[proc_macro_derive(NodeShape, attributes(binder, var_slot, payload))]
+pub fn derive_node_shape(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    node_shape::derive(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // expr! macro

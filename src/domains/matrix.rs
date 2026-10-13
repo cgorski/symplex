@@ -132,6 +132,12 @@ pub(crate) fn reop(e: SymplexError, operation: &'static str) -> SymplexError {
     match e {
         SymplexError::ComputationFailed { reason, .. } => failed(operation, reason),
         SymplexError::InvalidArgument { reason, .. } => invalid(operation, reason),
+        SymplexError::ExpressionSwell { nodes, .. } => {
+            SymplexError::ExpressionSwell { operation, nodes }
+        }
+        SymplexError::NotDiagonalizable { reason, .. } => {
+            SymplexError::NotDiagonalizable { operation, reason }
+        }
         other => other,
     }
 }
@@ -807,8 +813,22 @@ pub(crate) fn has_nested_higher_root(e: &Ex) -> bool {
 
 /// Did an operation fail on [`EXPRESSION_BUDGET`]?
 pub(crate) fn is_swell(e: &SymplexError) -> bool {
-    matches!(e, SymplexError::ComputationFailed { reason, .. }
-        if reason.starts_with("expression swell"))
+    matches!(e, SymplexError::ExpressionSwell { .. })
+}
+
+/// `e` with the operation `operation` when it is an expression swell; the
+/// other errors through `otherwise`.
+pub(crate) fn swell_or(
+    operation: &'static str,
+    e: SymplexError,
+    otherwise: impl FnOnce(SymplexError) -> SymplexError,
+) -> SymplexError {
+    match e {
+        SymplexError::ExpressionSwell { nodes, .. } => {
+            SymplexError::ExpressionSwell { operation, nodes }
+        }
+        e => otherwise(e),
+    }
 }
 
 /// The final clean-up of an entry of `P·f(J)·P⁻¹` (`matrix_exp`,
@@ -855,17 +875,11 @@ pub(crate) fn ex_is_nonnegative(e: &Ex) -> Option<bool> {
     None
 }
 
-/// Combine three-valued results with logical AND (short-circuit on `false`).
+/// Combine three-valued results with logical AND (short-circuit on `false`):
+/// [`Truth::all`](crate::base::truth::Truth::all) on `Option<bool>`.
 pub(crate) fn all3(iter: impl IntoIterator<Item = Option<bool>>) -> Option<bool> {
-    let mut unknown = false;
-    for v in iter {
-        match v {
-            Some(false) => return Some(false),
-            None => unknown = true,
-            Some(true) => {}
-        }
-    }
-    if unknown { None } else { Some(true) }
+    crate::base::truth::Truth::all(iter.into_iter().map(crate::base::truth::Truth::from))
+        .to_option()
 }
 
 /// Square root of `e` with rational radicands rationalised: for a positive
@@ -912,7 +926,7 @@ pub(crate) fn tree_size_capped(e: &Ex, cap: usize) -> usize {
     count
 }
 
-/// Return `Err(ComputationFailed)` if the combined tree size of `entries`
+/// Return `Err(ExpressionSwell)` if the combined tree size of `entries`
 /// exceeds [`EXPRESSION_BUDGET`].
 pub(crate) fn budget_check<'a>(
     entries: impl IntoIterator<Item = &'a Ex>,
@@ -922,14 +936,10 @@ pub(crate) fn budget_check<'a>(
     for e in entries {
         total += tree_size_capped(e, EXPRESSION_BUDGET - total);
         if total > EXPRESSION_BUDGET {
-            return Err(failed(
+            return Err(SymplexError::ExpressionSwell {
                 operation,
-                format!(
-                    "expression swell: intermediate result exceeds the budget of \
-                     {EXPRESSION_BUDGET} expression nodes; simplify the input or \
-                     substitute numeric values first"
-                ),
-            ));
+                nodes: EXPRESSION_BUDGET,
+            });
         }
     }
     Ok(())
@@ -1663,7 +1673,7 @@ impl Matrix {
         Ok(())
     }
 
-    /// Return `Err(ComputationFailed)` if the entries together exceed
+    /// Return `Err(ExpressionSwell)` if the entries together exceed
     /// [`EXPRESSION_BUDGET`] tree nodes.
     fn check_budget(&self, operation: &'static str) -> Result<(), SymplexError> {
         budget_check(self.iter(), operation)
@@ -2239,9 +2249,9 @@ impl Matrix {
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] if the determinant is zero or
-    ///   the entries / intermediate results exceed [`EXPRESSION_BUDGET`]
-    ///   ("expression swell").
+    /// - [`SymplexError::ComputationFailed`] if the determinant is zero;
+    ///   [`SymplexError::ExpressionSwell`] if the entries / intermediate
+    ///   results exceed [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -2995,19 +3005,20 @@ impl Matrix {
         let mut total_vecs = 0usize;
         for (_, alg_mult, vecs) in &eigvs {
             if vecs.len() != *alg_mult {
-                return Err(failed(
-                    "diagonalize",
-                    "matrix is not diagonalizable: geometric multiplicity \
-                     does not equal algebraic multiplicity for all eigenvalues",
-                ));
+                return Err(SymplexError::NotDiagonalizable {
+                    operation: "diagonalize",
+                    reason: "geometric multiplicity does not equal algebraic multiplicity for \
+                             all eigenvalues"
+                        .into(),
+                });
             }
             total_vecs += vecs.len();
         }
         if total_vecs != n {
-            return Err(failed(
-                "diagonalize",
-                "matrix is not diagonalizable: insufficient eigenvectors found",
-            ));
+            return Err(SymplexError::NotDiagonalizable {
+                operation: "diagonalize",
+                reason: "insufficient eigenvectors found".into(),
+            });
         }
 
         let mut p_cols: Vec<&Matrix> = Vec::new();
@@ -3477,18 +3488,15 @@ impl Matrix {
         let n = self.nrows;
         let ctx = self.ctx();
 
-        let JordanForm { p, j } = self.jordan_form().map_err(|e| match e {
-            SymplexError::ComputationFailed { reason, .. }
-                if reason.starts_with("expression swell") =>
-            {
-                failed("matrix_exp", reason)
-            }
-            e => failed(
-                "matrix_exp",
-                format!(
-                    "Jordan form unavailable ({e}); use exp_series(order) for a truncated approximation"
-                ),
-            ),
+        let JordanForm { p, j } = self.jordan_form().map_err(|e| {
+            swell_or("matrix_exp", e, |e| {
+                failed(
+                    "matrix_exp",
+                    format!(
+                        "Jordan form unavailable ({e}); use exp_series(order) for a truncated approximation"
+                    ),
+                )
+            })
         })?;
 
         let mut exp_j_rows: Vec<Vec<Ex>> = vec![vec![self.ctx_zero(); n]; n];
@@ -3529,16 +3537,13 @@ impl Matrix {
         }
         let exp_j = Matrix::from_rows_unchecked(exp_j_rows);
 
-        let p_inv = p.inv().map_err(|e| match e {
-            SymplexError::ComputationFailed { reason, .. }
-                if reason.starts_with("expression swell") =>
-            {
-                failed("matrix_exp", reason)
-            }
-            _ => failed(
-                "matrix_exp",
-                "eigenvector matrix is singular (internal inconsistency)",
-            ),
+        let p_inv = p.inv().map_err(|e| {
+            swell_or("matrix_exp", e, |_| {
+                failed(
+                    "matrix_exp",
+                    "eigenvector matrix is singular (internal inconsistency)",
+                )
+            })
         })?;
         let result = p.matmul(&exp_j)?.matmul(&p_inv)?;
         result.check_budget("matrix_exp")?;
@@ -3606,8 +3611,8 @@ impl Matrix {
     ///
     /// [`SymplexError::ComputationFailed`] if a symbolic `AᵀA` is singular
     /// although the structural pivot search found full column rank
-    /// (simplify the entries first), or on expression swell beyond
-    /// [`EXPRESSION_BUDGET`].
+    /// (simplify the entries first); [`SymplexError::ExpressionSwell`] on
+    /// expression swell beyond [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -3634,19 +3639,16 @@ impl Matrix {
         }
         self.check_budget("pinv")?;
         let inv_err = |what: &'static str| {
-            move |e: SymplexError| match e {
-                SymplexError::ComputationFailed { reason, .. }
-                    if reason.starts_with("expression swell") =>
-                {
-                    failed("pinv", reason)
-                }
-                _ => failed(
-                    "pinv",
-                    format!(
-                        "{what} is singular: the columns are linearly dependent in a way the \
-                         structural pivot search did not detect; simplify the entries first"
-                    ),
-                ),
+            move |e: SymplexError| {
+                swell_or("pinv", e, |_| {
+                    failed(
+                        "pinv",
+                        format!(
+                            "{what} is singular: the columns are linearly dependent in a way the \
+                             structural pivot search did not detect; simplify the entries first"
+                        ),
+                    )
+                })
             }
         };
         let (r, pivots) = self.rref();
@@ -3902,7 +3904,7 @@ impl Matrix {
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] on expression swell beyond
+    /// - [`SymplexError::ExpressionSwell`] on expression swell beyond
     ///   [`EXPRESSION_BUDGET`].
     ///
     /// # Examples

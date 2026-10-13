@@ -899,17 +899,9 @@ fn expand_expr(
         ExprNode::UniversalSet => stack.push(WorkItem::Lit("UniversalSet")),
 
         // ── Interval ───────────────────────────────────────────────
-        ExprNode::Interval(a, b, flags) => {
-            let left = if flags & crate::base::node::INTERVAL_LEFT_OPEN != 0 {
-                "("
-            } else {
-                "["
-            };
-            let right = if flags & crate::base::node::INTERVAL_RIGHT_OPEN != 0 {
-                ")"
-            } else {
-                "]"
-            };
+        ExprNode::Interval(a, b, kind) => {
+            let left = if kind.lower_open() { "(" } else { "[" };
+            let right = if kind.upper_open() { ")" } else { "]" };
             stack.push(WorkItem::Owned(right.to_string()));
             stack.push(WorkItem::Expr(b, 0));
             stack.push(WorkItem::Lit(", "));

@@ -7,10 +7,10 @@
 /// [`Matrix::matrix_exp`] and [`Matrix::qr`], and (at a quarter of it) the
 /// closed forms of `rsolve`.
 ///
-/// When the budget is exceeded these return
-/// [`SymplexError::ComputationFailed`](crate::base::errors::SymplexError::ComputationFailed)
-/// whose reason starts with `"expression swell"` instead of running for an
-/// unbounded time.  The value is calibrated so that everything below it
+/// When the budget is exceeded the matrix operations return
+/// [`SymplexError::ExpressionSwell`](crate::base::errors::SymplexError::ExpressionSwell)
+/// (`rsolve`: `ComputationFailed` whose reason starts with `"expression
+/// swell"`) instead of running for an unbounded time.  The value is calibrated so that everything below it
 /// finishes in well under a minute: a fully symbolic 7×7 determinant (5040
 /// terms, ≈ 40 000 nodes) passes, an 8×8 one (≈ 360 000 nodes, many
 /// minutes) is rejected.
@@ -37,6 +37,7 @@
 /// let m = Matrix::new(vec![vec![e.clone(), ctx.int(1)], vec![ctx.int(1), e]]).unwrap();
 /// let err = m.inv().unwrap_err();
 /// assert!(err.to_string().contains("expression swell"), "{err}");
+/// assert!(matches!(err, symplex::errors::SymplexError::ExpressionSwell { .. }));
 /// ```
 pub const EXPRESSION_BUDGET: usize = 100_000;
 

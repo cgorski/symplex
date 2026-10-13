@@ -479,7 +479,7 @@ fn infinity_of_sign(arena: &Arena, positive: Option<bool>) -> Option<ExprId> {
 /// `Σ_{k=0}^{n} C(n, k)·(−1)^k` for a positive `n` the branch `n = 0`.
 pub(crate) fn equality_unreachable(arena: &mut Arena, lhs: ExprId, rhs: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
-    use crate::transforms::solve::{self, SolveOutcome};
+    use crate::transforms::solve;
     let d = arena.sub(lhs, rhs);
     let d = eval::eval(arena, d);
     let d = combine_fractions(arena, d);
@@ -509,17 +509,13 @@ pub(crate) fn equality_unreachable(arena: &mut Arena, lhs: ExprId, rhs: ExprId) 
         if !sym_poly_in(arena, num, s).is_some_and(|m| m.iter().any(|(deg, _)| *deg > 0)) {
             continue;
         }
-        match solve::solve_classified(arena, num, s) {
-            SolveOutcome::NoSolution(_) => return true,
-            SolveOutcome::Solutions(roots)
-                if !roots.is_empty()
-                    && roots
-                        .iter()
-                        .all(|r| solve::assumptions_hold(arena, s, r.value) == Some(false)) =>
-            {
-                return true;
-            }
-            _ => {}
+        // (no root, or every root violating the assumptions of `s`)
+        if let Some(roots) = solve::solve_classified(arena, num, s).points_if_complete()
+            && roots
+                .iter()
+                .all(|&r| solve::assumptions_hold(arena, s, r) == Some(false))
+        {
+            return true;
         }
     }
     false
@@ -661,10 +657,10 @@ fn pole_in_range(
     }
     let poly = crate::poly::polybridge::expr_to_poly(arena, den, var)?;
     let den_poly = poly_expr(arena, &poly, var);
-    let roots = crate::transforms::solve::solve(arena, den_poly, var);
+    let roots = crate::transforms::solve::known_real_roots(arena, den_poly, var);
     let pole = roots
         .iter()
-        .filter_map(|s| as_i64(arena, s.value))
+        .filter_map(|&s| as_i64(arena, s))
         .any(|k0| k0 >= lo && hi.is_none_or(|h| k0 <= h));
     if !pole {
         return None;
@@ -3261,10 +3257,12 @@ fn residue_sum_infinite(
         return None;
     }
     let d_expr = poly_expr(arena, &dp, var);
-    let roots = crate::transforms::solve::solve(arena, d_expr, var);
-    if roots.len() != dd {
-        return None;
-    }
+    let roots = match crate::transforms::solve::solve_classified_real(arena, d_expr, var)
+        .points_if_complete()
+    {
+        Some(roots) if roots.len() == dd => roots,
+        _ => return None,
+    };
     let n_expr = poly_expr(arena, &np, var);
     let dd_expr = poly_expr(arena, &dp.derivative(), var);
     let pi = arena.pi;
@@ -3272,7 +3270,7 @@ fn residue_sum_infinite(
     // odd), so each pair counts twice through one representative, the one
     // with a positive leading coefficient (`2i`, not `−2i`: eval keeps
     // `cosh(−2π)`).
-    let all: Vec<ExprId> = roots.iter().map(|r| eval::eval(arena, r.value)).collect();
+    let all: Vec<ExprId> = roots.iter().map(|&r| eval::eval(arena, r)).collect();
     let mut chosen: Vec<(ExprId, i64)> = Vec::with_capacity(dd);
     let mut used = vec![false; all.len()];
     for i in 0..all.len() {

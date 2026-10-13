@@ -27,7 +27,41 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   neither proved zero nor proved nonzero, the result is
   `Err(ComputationFailed)` ("cannot decide whether c is 0").  Up to 0.48 it
   was `Inconsistent` — also for `x + y = 1, x + y = 1 + k` with
-  `k = Γ(1/3)Γ(2/3) − 2π/√3`, which is 0 by the reflection formula.
+  `k = Γ(1/3)Γ(2/3) − 2π/√3`, which is 0 by the reflection formula.  A
+  right-hand side with symbols that is certified nonzero at a sample point
+  (`sin a`, `eᵃ + 1`) is not identically zero and keeps the
+  generic-solution answer `Inconsistent`, as a lone symbol `a` always did.
+- **`solve` reports partial answers as failures.**  `Ex::solve` and
+  `solve_general` returned the roots of the branches they could solve as if
+  they were all: `sin(x − x⁴)` lacked the four roots of `x⁴ − x + π`, an
+  identity such as `sin 4x − 2 sin 2x·cos 2x` (every `x` solves it) gave
+  `[π]`, and `|x| = 1` for a complex `x` (the unit circle) gave `[1, −1]`.
+  They now fail with `ComputationFailed` naming the roots found;
+  `solve_as_set` returns the found roots ∪ a `ConditionSet`.  Real
+  unknowns are unchanged.  Ten equations whose `NoSolution` was right only
+  because the old absolute-value split took a plain `x` as real (`|x − π| +
+  x = 0`) are refused until a complex-aware split exists.
+- **`conjugate` moves inside every function whose reflection rule holds**,
+  from one table shared with `evalf`: `conjugate(erfi(z))` →
+  `erfi(conjugate(z))`, likewise `Shi`, the Fresnel and Airy functions,
+  `dirichlet_eta`, `beta`, `binomial`, `x!`, `sign`, Bessel `J`/`I` of
+  integer order and the orthogonal polynomials; functions with a branch cut
+  (`ln`, the inverse functions, `Ei`, `Chi`, `polylog`, …) only when the
+  argument is known to be off the cut (`conjugate(log(2 + i))` →
+  `log(2 − i)`).  Up to 0.48 this was a list of 14 functions.
+- `Context::apply` refuses the reserved internal function names
+  (`__ei_asym`, …) and the parser no longer reads them: `ctx.apply("__ei_asym",
+  [x])` built the internal asymptotic helper (limit 0 at ∞).
+- **Errors are told apart by variant.**  `SymplexError` gains
+  `BudgetExhausted { operation, kind: BudgetKind }`, `ExpressionSwell {
+  operation, nodes }` and `NotDiagonalizable { operation, reason }` (same
+  messages as before): matrix operations return `ExpressionSwell` where they
+  returned `ComputationFailed` with a reason starting "expression swell",
+  `diagonalize` returns `NotDiagonalizable`, an exhausted quadrature
+  returns `BudgetExhausted`.
+- `ExprNode::Interval(a, b, IntervalKind)` replaces the `u8` flag byte
+  (reachable through `ExprView::node()`); the JSON `flags`, the sort order
+  and every printed form are unchanged.
 - `TransferFunction::poles`/`zeros` are empty when the roots are not all
   known (a non-polynomial numerator or denominator, an unsolved factor),
   never a subset: for `1/((s⁵ + a·s + 1)(s − 2))` they returned `[]` while
@@ -83,13 +117,58 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `[3, 2]` (now `EmptySet`).
 - **JSON input is canonical and checked:** a tree `{1, 1}` reads as `{1}`;
   a number with denominator 0 panicked inside `from_json` and a malformed
-  numerator was read as 0 — both are now errors.
+  numerator was read as 0 — both are now errors; an interval with `flags`
+  bits beyond the two documented ones built a node that printed `[0, 1]`
+  but was not `==` to `ctx.interval(0, 1, Closed)`.
+- **Limits and series prove the zeros they rely on.**  A constant that is
+  0 to the working precision is 0 only when an exact test confirms it
+  (identities used: the inverse functions as logarithms, `ln 16 = 4 ln 2`,
+  `Γ(p)Γ(1 − p) = π/sin πp`, Bessel recurrences, `√((a + 1)²) = a + 1` for
+  `a > 0`, …); an undecided leading coefficient ends the expansion.  Up to
+  0.48 the series of `coth(x + 1385)` was the constant `coth 1385` (it
+  dropped `−csch² 1385 ≈ −4.0·10⁻¹²⁰³`), `(25 − y/5)/besselj(−1/2,
+  elliptic_e(x))` at 0 was finite although `J_{−1/2}(π/2) = 0`, and
+  `1/(c(a) + x)` with a parametric constant `c(a)` that vanished at two
+  sample points had the series `1/x`.
+- `Ex::equals` answered `Some(false)` from two `f64` values 1e−9 apart; it
+  now needs a certified nonzero digit of the difference.  Linear algebra no
+  longer takes zero values at random sample points (Schwartz–Zippel) as a
+  proof of zero, and definite integrals decide `Piecewise` conditions
+  exactly or by certified signs (an `Eq` was `|f64| ≤ 10⁻¹²`).
+- **Budgets no longer depend on the context's history.**  The series
+  engine's last resort and `integrate` limited the *growth* of the arena,
+  which a context that had seen the nodes before never reached:
+  `series(sign(asin(asin(x))), x, 1, 3)` repeated in one context took
+  0.79, 2.10, 4.46, 7.81, 10.61 s (now 0.9 s every time).  Both count
+  interns attempted.
+- **`simplify` no longer leaks nodes:** each call built its rules on fresh
+  wild symbols from a process-global counter, 2,346 permanent nodes per
+  identical call.  Wilds are numbered per rule and per arena.
+- **Numerical quadrature no longer depends on machine speed:** the 20 s
+  wall-clock limit is gone (30,000 integrand evaluations is the limit), and
+  its memo of failures is keyed by an arena serial instead of an address
+  that a later arena on the same thread could reuse.
+- The library functions are known real on their real domains (`erfi(x)`,
+  `Shi(x)`, the Fresnel and Airy functions for real `x`; `Chi`, `bessely`,
+  `besselk`, `expint`, incomplete Γ for positive arguments; `besselj(n, x)`
+  for integer `n`; `W(x)` for `x ≥ 0`; `beta(x, y)`), which decides more
+  limits, derivatives and integrals (all 50 answered `is_real() == None`).
+- `conjugate(polygamma(x, z))` for a real non-integer order no longer
+  reflects across the cut `z ≤ 0` (`polygamma(1/2, −3/2) = −3.2325 −
+  1.0747i`, SymPy); evalf pairs conjugate `polylog`/`sign`/`dirichlet_eta`
+  terms (`log(−(polylog(2, 3+i) + polylog(2, 3−i)))` was refused).
+- The linear-ODE eigen route searched the printed text for `re(` (any
+  function name ending in "re" matched); it tests for `re`/`im` nodes.
 
 ### Added
 
 - `Context::from_json_any` → `AnyExpr { Num, Bool, Set }` (in the
   prelude): a serialized tree read with the sort of its root.
 - `TransferFunction::try_poles`/`try_zeros`.
+- `Quantity::try_is_zero`/`try_equals` (`Option<bool>`; the `bool`
+  versions mean "proved").
+- `SymplexError` is `Clone`; `BudgetKind` names what a deterministic work
+  budget counts.
 - `symplex::base::truth`: `Truth` (three-valued Kleene logic with no
   implicit reading of "unknown" as true or false), `SignSet` (the set of
   signs {< 0, 0, > 0, non-real} a finite value can have, with sign
@@ -137,6 +216,25 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
     arithmetic correctly rounded, its `Up`/`Down`/`ToZero`/`FromZero` modes
     directed (the documentation says "round half"), and `from_f64` halving
     subnormals (no symplex result affected; documented in the facade).
+- **Internal type architecture (refactor wave 2).**
+  - `#[derive(NodeShape)]` (doc-hidden, symplex-macros) generates the
+    shape methods of `ExprNode` (children, rebuilding, compaction remapping,
+    the binder tables) from its declaration — about 1,150 hand-written
+    lines replaced, checked against the 0.48 code over every variant.
+    `Arena::make` builds every rebuilt node through its variant's canonical
+    constructor; a ratchet forbids raw construction of those variants.
+  - The solvers return a `Solutions` outcome (`Complete`, `Partial`,
+    `Refused`, with `Empty`/`All`/`Points`/`Families` root sets) merged by
+    one `union`; the period-conflict thread-local and the collapsing
+    `into_solutions` are gone.
+  - Zero tests in limits and series return `Verdict<Truth>`; six
+    hand-written Kleene logics became `Truth`.
+  - The `Func` table gained the facets conjugation, real-on domain, parity,
+    poles and constant folding, read by `conjugate`, evalf and the
+    assumption system (one handler replaces three).
+  - `Work`/`WorkScope` deterministic budgets carried by the arena;
+    per-arena serials for memos; structured error variants instead of
+    message matching.
 
 - astro-float 0.9.5 → 0.9.6.  On 32-bit targets (wasm32) 0.9.5 used the
   64-bit word size in its decimal conversion, which silently corrupted

@@ -343,8 +343,11 @@ fn general_polynomial_has_no_parameters() {
 
 #[test]
 fn abs_equation_two_branches() {
+    // A real `x` (for a plain, complex `x` the solutions of `|x − 2| = 3`
+    // are a circle, and since 0.49 `solve` refuses instead of returning
+    // `−1, 5` as all of them).
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let e = &(&x - 2).abs() - 3;
     let roots = e.solve(&x).unwrap();
     assert_eq!(roots.len(), 2);

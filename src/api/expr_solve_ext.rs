@@ -423,8 +423,13 @@ impl Ex {
                 param_id,
             )
         };
+        let outcome = {
+            let inner = self.inner.read();
+            crate::transforms::solve::roots_or_refusal(&inner.arena, outcome)
+        };
+        // (`Ok` of no roots: nothing found)
         match outcome {
-            crate::transforms::solve::SolveOutcome::Solutions(solutions) => {
+            Ok(solutions) => {
                 if solutions.is_empty() {
                     let is_poly = {
                         let inner = self.inner.read();
@@ -442,10 +447,8 @@ impl Ex {
                         parameters: Vec::new(),
                     });
                 }
-                let solutions: Vec<Ex> = solutions
-                    .into_iter()
-                    .map(|s| self.wrap(s.value).eval())
-                    .collect();
+                let solutions: Vec<Ex> =
+                    solutions.into_iter().map(|s| self.wrap(s).eval()).collect();
                 let (solutions, ray_param) = self.general_in_domain(var, solutions, &param)?;
                 let uses_param = solutions.iter().any(|s| s.contains(&param));
                 let mut parameters = if uses_param { vec![param] } else { Vec::new() };
@@ -459,7 +462,7 @@ impl Ex {
                     parameters,
                 })
             }
-            crate::transforms::solve::SolveOutcome::Identity => {
+            Err(crate::transforms::solve::Refusal::Identity) => {
                 Err(SymplexError::InfiniteSolutions {
                     operation: "solve_general",
                     reason: format!(
@@ -467,13 +470,13 @@ impl Ex {
                     ),
                 })
             }
-            crate::transforms::solve::SolveOutcome::NoSolution(reason) => {
+            Err(crate::transforms::solve::Refusal::NoSolution(reason)) => {
                 Err(SymplexError::NoSolution {
                     operation: "solve_general",
                     reason,
                 })
             }
-            crate::transforms::solve::SolveOutcome::Unresolved(reason) => {
+            Err(crate::transforms::solve::Refusal::Failed(reason)) => {
                 Err(SymplexError::ComputationFailed {
                     operation: "solve_general",
                     reason,

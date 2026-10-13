@@ -53,7 +53,7 @@ use crate::base::errors::SymplexError;
 use crate::base::extended::Extended;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
-use crate::calculus::calculus_util::is_hidden_zero;
+use crate::calculus::calculus_util::hidden_zero;
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
 const MAX_LHOPITAL: usize = 5;
@@ -734,8 +734,8 @@ fn guard_degenerate_parameters(
     candidates.dedup();
     let mut values: Vec<ExprId> = Vec::new();
     for c in candidates {
-        for s in crate::transforms::solve::solve(arena, c, p) {
-            let v = crate::transforms::eval::eval(arena, s.value);
+        for s in crate::transforms::solve::known_real_roots(arena, c, p) {
+            let v = crate::transforms::eval::eval(arena, s);
             if crate::base::walk::free_symbols(arena, v).is_empty()
                 && is_finite_limit_value(arena, v, var)
                 && !values.contains(&v)
@@ -1214,7 +1214,9 @@ pub(crate) fn contains_dummy(arena: &Arena, root: ExprId) -> bool {
     false
 }
 
-/// Structural check whether two computed limit values agree.
+/// Do two computed limit values agree, provably (structurally, or by an
+/// exact or certified zero test of their difference, [`hidden_zero`])?
+/// `false` when they differ or that is not proved.
 fn same_value(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
     if a == b {
         return true;
@@ -1227,14 +1229,20 @@ fn same_value(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
     if let (Some(ra), Some(rb)) = (arena.as_num(a), arena.as_num(b)) {
         return ra == rb;
     }
+    let proved_zero = |arena: &mut Arena, d: ExprId| {
+        arena.is_zero_structural(d)
+            || hidden_zero(arena, d)
+                .truth_at_least(crate::base::truth::Evidence::Certified)
+                .is_true()
+    };
     let diff = arena.sub(a, b);
     let diff = crate::transforms::eval::eval(arena, diff);
-    if arena.is_zero_structural(diff) || is_hidden_zero(arena, diff) {
+    if proved_zero(arena, diff) {
         return true;
     }
     let simplified = crate::transforms::expand::expand(arena, diff);
     let simplified = crate::transforms::eval::eval(arena, simplified);
-    arena.is_zero_structural(simplified) || is_hidden_zero(arena, simplified)
+    proved_zero(arena, simplified)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1358,7 +1366,7 @@ pub(crate) fn safe_substitute(
             ExprNode::Piecewise(_) => return None,
             ExprNode::Ln(a) | ExprNode::LogGamma(a) => {
                 let av = val_of(arena, &values, a);
-                if is_zero_value(arena, av) || !is_definite_constant(arena, av) {
+                if !is_zero_value(arena, av).is_false() || !is_definite_constant(arena, av) {
                     return None;
                 }
                 if on_branch_cut(arena, BranchCut::NegativeReals, av) && !inner_known_real(arena, a)
@@ -1384,7 +1392,9 @@ pub(crate) fn safe_substitute(
                         crate::transforms::eval::eval(arena, minus),
                         crate::transforms::eval::eval(arena, plus),
                     );
-                    if is_zero_value(arena, minus) || is_zero_value(arena, plus) {
+                    if !is_zero_value(arena, minus).is_false()
+                        || !is_zero_value(arena, plus).is_false()
+                    {
                         return None;
                     }
                 }
@@ -1406,7 +1416,7 @@ pub(crate) fn safe_substitute(
             // (mpmath).  Before, `li(−x)` at `0⁺` was `0`.
             ExprNode::Li(a) => {
                 let av = val_of(arena, &values, a);
-                if is_zero_value(arena, av) {
+                if !is_zero_value(arena, av).is_false() {
                     return None;
                 }
             }
@@ -1417,7 +1427,7 @@ pub(crate) fn safe_substitute(
             {
                 let zv = val_of(arena, &values, args[1]);
                 let nv = val_of(arena, &values, args[0]);
-                if is_zero_value(arena, zv)
+                if !is_zero_value(arena, zv).is_false()
                     && arena
                         .as_num(nv)
                         .is_none_or(|n| *n <= Q::from_integer(BigInt::from(1)))
@@ -1438,15 +1448,16 @@ pub(crate) fn safe_substitute(
                 let av = val_of(arena, &values, a);
                 let c = arena.cos(av);
                 let c = crate::transforms::eval::eval(arena, c);
-                if is_zero_value(arena, c) {
+                if !is_zero_value(arena, c).is_false() {
                     return None;
                 }
             }
             ExprNode::Pow(b, e) => {
                 let bv = val_of(arena, &values, b);
                 let ev = val_of(arena, &values, e);
-                if is_zero_value(arena, bv) {
-                    // 0^e is continuous only for a definite positive exponent.
+                if !is_zero_value(arena, bv).is_false() {
+                    // 0^e is continuous only for a definite positive exponent
+                    // (and so is b^e at a base not proved nonzero).
                     match arena.as_num(ev) {
                         Some(r) if r.is_positive() => {}
                         _ => return None,
@@ -1530,18 +1541,25 @@ fn expansion_cost_estimate(arena: &Arena, e: ExprId) -> f64 {
 }
 
 /// Is the value `v` zero, structurally or as a sum of constants that
-/// cancels numerically (`asinh 2 − ln(2 + √5)`)?  A structural test let
-/// `x/(asinh(x + 2) − ln(2 + √5))` substitute to `0·(1/0) = 0` at `x = 0`.
-/// Also a constant that vanishes identically in its parameters
-/// (`1 − sin²a − cos²a`) or a function value at a hidden zero of the
-/// function (`cos(π/(24π − 2) − 12π²/(24π − 2))`, a `cos(−π/2)`):
+/// cancels without canonical forms seeing it (`asinh 2 − ln(2 + √5)`)?  A
+/// structural test let `x/(asinh(x + 2) − ln(2 + √5))` substitute to
+/// `0·(1/0) = 0` at `x = 0`.  Also a constant that vanishes identically in
+/// its parameters (`1 − sin²a − cos²a`) or a function value at a hidden
+/// zero of the function (`cos(π/(24π − 2) − 12π²/(24π − 2))`, a
+/// `cos(−π/2)`):
 /// [`vanishes_identically`](crate::calculus::series::vanishes_identically).
 /// Before, `z/(1 − sin²a − cos²a + z)` at `0` was `0` and `3·sec(x/3 −
 /// 4πx)` at `3π/(24π − 2)` the finite `3/cos(…)`.
-fn is_zero_value(arena: &mut Arena, v: ExprId) -> bool {
-    arena.is_zero_structural(v)
-        || is_hidden_zero(arena, v)
-        || crate::calculus::series::vanishes_identically(arena, v)
+///
+/// Three-valued: `Unknown` for a value that is 0 to the precision reached
+/// but not proved either way.  A continuity guard reads it as "may be 0"
+/// (`!is_false()`: no direct substitution), a claim of a zero needs
+/// `is_true()`.
+fn is_zero_value(arena: &mut Arena, v: ExprId) -> crate::base::truth::Truth {
+    if arena.is_zero_structural(v) {
+        return crate::base::truth::Truth::True;
+    }
+    crate::calculus::series::vanishes_identically(arena, v)
 }
 
 /// A "definite" constant: numeric, or a symbolic constant with a known sign.
@@ -2493,12 +2511,16 @@ fn try_compose(
                     // A zero in disguise counts (`−π/2 − asin(−2) + i·ln(2 + √3)`,
                     // the limit of `asin(−2 + ix) − asin(−2)` at `0⁺`: its
                     // reciprocal was a "finite" `1/0`).
-                    if is_zero_value(arena, l) {
+                    match is_zero_value(arena, l) {
                         // 0^k: continuous only for definite positive k.
-                        return match &k {
-                            Some(r) if r.is_positive() => exact_result(arena.zero()),
-                            _ => None,
-                        };
+                        crate::base::truth::Truth::True => {
+                            return match &k {
+                                Some(r) if r.is_positive() => exact_result(arena.zero()),
+                                _ => None,
+                            };
+                        }
+                        crate::base::truth::Truth::Unknown => return None,
+                        crate::base::truth::Truth::False => {}
                     }
                     let fractional = k.as_ref().is_none_or(|r| !r.is_integer());
                     let l_sign = const_sign(arena, l);
@@ -2646,7 +2668,7 @@ fn try_compose(
             let l = inner_limit(arena, a)?;
             match kind_of(arena, l)? {
                 Kind::Finite(l) => {
-                    if is_zero_value(arena, l) {
+                    if !is_zero_value(arena, l).is_false() {
                         return None; // ln 0: one-sided behaviour, leave to Gruntz
                     }
                     match const_sign(arena, l) {
@@ -2669,7 +2691,7 @@ fn try_compose(
             let Kind::Finite(l) = kind_of(arena, l)? else {
                 return None;
             };
-            if !is_zero_value(arena, l) || !eventually_real(arena, a, &ap) {
+            if !is_zero_value(arena, l).is_true() || !eventually_real(arena, a, &ap) {
                 return None;
             }
             match eventual_sign_along(arena, a, &ap)? {
@@ -3170,7 +3192,7 @@ fn sum_of_limits(
             };
             order = match kind_of(arena, lq)? {
                 Kind::Infinite(_) => Some(first),
-                Kind::Finite(l) if is_zero_value(arena, l) => Some(!first),
+                Kind::Finite(l) if is_zero_value(arena, l).is_true() => Some(!first),
                 Kind::Finite(_) => return None,
             };
             break;
@@ -4201,7 +4223,7 @@ fn with_imaginary_part(
                 let b = match const_parts(arena, b) {
                     Some((re, im))
                         if crate::base::walk::contains(arena, b, arena.i_unit())
-                            && is_zero_value(arena, im)
+                            && is_zero_value(arena, im).is_true()
                             && !crate::base::walk::contains(arena, re, arena.i_unit()) =>
                     {
                         re
@@ -4375,8 +4397,9 @@ fn tidy_phases(arena: &mut Arena, v: ExprId) -> ExprId {
 /// off the cuts): `asin z = −i·ln(iz + √(1 − z²))`, `acos z = π/2 − asin z`,
 /// `atan z = (i/2)(ln(1 − iz) − ln(1 + iz))`, `asinh z = ln(z + √(z² + 1))`,
 /// `acosh z = ln(z + √(z + 1)·√(z − 1))`, `atanh z = (ln(1 + z) − ln(1 −
-/// z))/2` — forms the complex decomposition sees through.
-fn inverse_functions_as_logs(arena: &mut Arena, e: ExprId) -> ExprId {
+/// z))/2` — forms the complex decomposition sees through, and the exact
+/// zero test of [`hidden_zero`] (Gruntz's tractable rewrite spells them so).
+pub(crate) fn inverse_functions_as_logs(arena: &mut Arena, e: ExprId) -> ExprId {
     let post = crate::base::walk::post_order_ids(arena, e);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
     let mut changed = false;

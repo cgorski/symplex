@@ -354,8 +354,11 @@ fn huge_tree(ctx: &Context) -> Ex {
     e
 }
 
+/// 0.49: an expression swell is its own variant (up to 0.48
+/// `ComputationFailed` whose reason started with "expression swell"; the
+/// message is unchanged).
 fn is_swell<T>(r: Result<T, SymplexError>) -> bool {
-    matches!(r, Err(SymplexError::ComputationFailed { reason, .. }) if reason.starts_with("expression swell"))
+    matches!(r, Err(SymplexError::ExpressionSwell { .. }))
 }
 
 #[test]
@@ -497,7 +500,12 @@ fn math_failures_are_computation_failed() {
     // one goes through the full-rank factorisation (SymPy: `(1/25)*[[1,2],[2,4]]`).
     let pinv = singular.pinv().unwrap();
     assert_eq!(pinv, matrix![ctx, [1 / 25, 2 / 25], [2 / 25, 4 / 25]]);
-    assert!(is_cf(matrix![ctx, [1, 1], [0, 1]].diagonalize()));
+    // 0.49: a defective matrix is `NotDiagonalizable` (up to 0.48
+    // `ComputationFailed` with the same message).
+    assert!(matches!(
+        matrix![ctx, [1, 1], [0, 1]].diagonalize(),
+        Err(SymplexError::NotDiagonalizable { .. })
+    ));
     assert!(is_cf(matrix![ctx, [1, 2], [2, 1]].cholesky()));
     // 0.38: a rank-deficient QR is SymPy's reduced one; the zero matrix fails.
     assert!(is_cf(matrix![ctx, [0, 0], [0, 0]].qr()));

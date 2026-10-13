@@ -861,10 +861,10 @@ pub fn compute_sort_key(
         }
 
         // -- set constructors ------------------------------------------------
-        ExprNode::Interval(start, end, flags) => {
+        ExprNode::Interval(start, end, kind) => {
             key.push(RANK_SET);
             key.push(SET_INTERVAL);
-            key.push(*flags);
+            key.push(kind.flag_bits());
             key.extend(get_key(*start).as_bytes());
             key.extend(get_key(*end).as_bytes());
         }

@@ -1158,7 +1158,9 @@ impl Context {
     ///
     /// # Errors
     ///
-    /// Returns [`SymplexError::InvalidArgument`] if `name` is empty.
+    /// Returns [`SymplexError::InvalidArgument`] if `name` is empty or
+    /// reserved: the heads of the limit engine's internal functions
+    /// (`__ei_asym`, …), which would take on their semantics.
     ///
     /// # Panics
     ///
@@ -1180,12 +1182,19 @@ impl Context {
     /// let g = ctx.apply("g", &[x.powi(2)]).unwrap();
     /// assert_eq!(format!("{}", g.diff(&x)), "2*x*Subs(Derivative(g(_xi), _xi), _xi, x^2)");
     /// assert!(ctx.apply("", &[&x]).is_err());
+    /// assert!(ctx.apply("__ei_asym", &[&x]).is_err());
     /// ```
     pub fn apply<T: AsRef<Ex>>(&self, name: &str, args: &[T]) -> Result<Ex, SymplexError> {
         if name.is_empty() {
             return Err(SymplexError::invalid_argument(
                 "Context::apply",
                 "function name cannot be empty",
+            ));
+        }
+        if crate::base::func::Func::is_internal_name(name) {
+            return Err(SymplexError::invalid_argument(
+                "Context::apply",
+                format!("function name '{name}' is reserved for internal use"),
             ));
         }
         let ids: SmallVec<[ExprId; 2]> = args.iter().map(|a| self.own_id(a.as_ref())).collect();

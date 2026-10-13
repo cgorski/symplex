@@ -450,7 +450,7 @@ pub(crate) fn log_to_real(
     // ── Step 1: Solve q(t) = 0 for complex roots ──────────────────
     let t_sym = arena.symbol("__lrt_t");
     let q_expr = crate::poly::polybridge::poly_to_expr(arena, q, t_sym);
-    let roots = crate::transforms::solve::solve(arena, q_expr, t_sym);
+    let roots = known_roots(arena, q_expr, t_sym);
 
     tracing::debug!(n_roots = roots.len(), "log_to_real: solved q(t) = 0");
 
@@ -1682,7 +1682,8 @@ pub(crate) fn numeric_rootsum_rational_body(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Try to expand a `RootSum(poly, body, sumvar)` into an explicit sum
-/// by finding the roots of the polynomial via [`solve`](crate::transforms::solve::solve).
+/// by finding the roots of the polynomial via
+/// [`known_real_roots`](crate::transforms::solve::known_real_roots).
 ///
 /// For degree ≤ 4 polynomials, `solve` produces exact radical roots
 /// (quadratic formula, Cardano, Ferrari).  Each root is substituted
@@ -1724,7 +1725,7 @@ pub(crate) fn rootsum_doit(
         return None;
     }
     // Solve the polynomial for roots.
-    let roots = crate::transforms::solve::solve(arena, poly_id, sumvar_id);
+    let roots = known_roots(arena, poly_id, sumvar_id);
 
     if roots.is_empty() {
         tracing::debug!("rootsum_doit: solve returned no roots, cannot expand");
@@ -1780,6 +1781,17 @@ pub(crate) fn rootsum_doit(
 
     tracing::debug!("rootsum_doit: expansion complete");
     Some(result)
+}
+
+/// The roots of the polynomial `p` in `t` the solver claims
+/// ([`known_real_roots`](crate::transforms::solve::known_real_roots): a
+/// polynomial over ℚ has them all, `RootOf`s beyond degree 4), as
+/// `Solution`s.
+fn known_roots(arena: &mut Arena, p: ExprId, t: ExprId) -> Vec<crate::transforms::solve::Solution> {
+    crate::transforms::solve::known_real_roots(arena, p, t)
+        .into_iter()
+        .map(|value| crate::transforms::solve::Solution { value })
+        .collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

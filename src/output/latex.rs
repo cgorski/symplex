@@ -1221,17 +1221,9 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::UniversalSet => stack.push(LatexItem::Lit(r"\mathbb{R}")),
 
         // ── Set constructors — fallback to Display ─────────────────
-        ExprNode::Interval(a, b, flags) => {
-            let left = if flags & crate::base::node::INTERVAL_LEFT_OPEN != 0 {
-                "("
-            } else {
-                "["
-            };
-            let right = if flags & crate::base::node::INTERVAL_RIGHT_OPEN != 0 {
-                ")"
-            } else {
-                "]"
-            };
+        ExprNode::Interval(a, b, kind) => {
+            let left = if kind.lower_open() { "(" } else { "[" };
+            let right = if kind.upper_open() { ")" } else { "]" };
             let a_latex = latex_to_string(arena, a);
             let b_latex = latex_to_string(arena, b);
             stack.push(LatexItem::Owned(format!(

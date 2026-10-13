@@ -41,6 +41,7 @@ use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 
 /// Trichotomy bit: `a < b`.
 const LT: u8 = 0b001;
@@ -1189,34 +1190,8 @@ impl Formula {
                     }
                 }
                 FNode::Atom(a, pos) => atoms[*a].map(|v| v == *pos),
-                FNode::And(ch) => {
-                    let mut acc = Some(true);
-                    for &c in ch {
-                        match vals[c] {
-                            Some(false) => {
-                                acc = Some(false);
-                                break;
-                            }
-                            None => acc = None,
-                            Some(true) => {}
-                        }
-                    }
-                    acc
-                }
-                FNode::Or(ch) => {
-                    let mut acc = Some(false);
-                    for &c in ch {
-                        match vals[c] {
-                            Some(true) => {
-                                acc = Some(true);
-                                break;
-                            }
-                            None => acc = None,
-                            Some(false) => {}
-                        }
-                    }
-                    acc
-                }
+                FNode::And(ch) => Truth::all(ch.iter().map(|&c| Truth::from(vals[c]))).to_option(),
+                FNode::Or(ch) => Truth::any(ch.iter().map(|&c| Truth::from(vals[c]))).to_option(),
             };
             vals.push(v);
         }
@@ -1423,7 +1398,7 @@ enum Domain {
 /// algebraic, …: not a union of intervals or of integers in one), for a
 /// symbol that is not a real variable, and for a non-symbol.
 fn restricted_domain(arena: &mut Arena, sym: ExprId) -> Option<Domain> {
-    use crate::base::node::{INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
+    use crate::base::interval::IntervalKind;
     let ExprNode::Symbol(sid) = arena.node(sym) else {
         return None;
     };
@@ -1450,7 +1425,7 @@ fn restricted_domain(arena: &mut Arena, sym: ExprId) -> Option<Domain> {
         return None;
     }
     let (zero, inf, ninf) = (arena.zero, arena.infinity, arena.neg_infinity);
-    let open = INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN;
+    let open = IntervalKind::Open;
     let holds = |p: Props| a.query(p) == Some(true);
     let fails = |p: Props| a.query(p) == Some(false);
     let mut parts: Vec<ExprId> = Vec::new();
@@ -1461,10 +1436,10 @@ fn restricted_domain(arena: &mut Arena, sym: ExprId) -> Option<Domain> {
         parts.push(arena.interval(ninf, zero, open));
     }
     if holds(Props::NONNEGATIVE) || fails(Props::NEGATIVE) {
-        parts.push(arena.interval(zero, inf, INTERVAL_RIGHT_OPEN));
+        parts.push(arena.interval(zero, inf, IntervalKind::RightOpen));
     }
     if holds(Props::NONPOSITIVE) || fails(Props::POSITIVE) {
-        parts.push(arena.interval(ninf, zero, INTERVAL_LEFT_OPEN));
+        parts.push(arena.interval(ninf, zero, IntervalKind::LeftOpen));
     }
     if holds(Props::ZERO) || fails(Props::NONZERO) {
         parts.push(arena.finite_set(&[zero]));

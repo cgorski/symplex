@@ -30,7 +30,7 @@ use smallvec::SmallVec;
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
-use crate::calculus::calculus_util::settle_constant;
+use crate::calculus::calculus_util::{ZeroTest, settle_constant};
 
 /// Maximum recursion depth for the Gruntz algorithm.  The depth grows with
 /// the nesting of the expression as well as with the algorithm's own
@@ -276,7 +276,7 @@ fn leadterm_by_tseries(
                 continue;
             }
             let c = with_logw(arena, c, l, logw);
-            let c = crate::calculus::series::settle_parametric(arena, c);
+            let c = settled_coefficient(arena, c)?;
             if arena.is_zero_structural(c) || is_rational_zero(arena, c) {
                 continue;
             }
@@ -462,7 +462,7 @@ fn last_resort_series(
                 continue;
             }
             let c = with_logw(arena, c, l, log_var);
-            let c = crate::calculus::series::settle_parametric(arena, c);
+            let c = settled_coefficient(arena, c)?;
             if arena.is_zero_structural(c) || is_rational_zero(arena, c) {
                 continue;
             }
@@ -578,6 +578,27 @@ fn is_rational_zero(arena: &mut Arena, c: ExprId) -> bool {
     arena.is_zero_structural(num)
 }
 
+/// A coefficient of a leading-term search after the zero test
+/// ([`settle_parametric`](crate::calculus::series::settle_parametric)):
+/// `0` when proved 0, the value when proved nonzero (or with parameters),
+/// an error when it is 0 to the precision reached and proved neither — it
+/// can be neither skipped nor taken for the leading term.
+fn settled_coefficient(
+    arena: &mut Arena,
+    c: ExprId,
+) -> Result<ExprId, crate::base::errors::SymplexError> {
+    match crate::calculus::series::settle_parametric(arena, c) {
+        ZeroTest::Undecided(v) => Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::leadterm",
+            reason: format!(
+                "cannot decide whether the coefficient {} is 0",
+                arena.display(v)
+            ),
+        }),
+        settled => Ok(settled.value(arena)),
+    }
+}
+
 /// `Some(K)` if the truncated Laurent engine shows `f = O(ωᴷ)` with
 /// `K > 0` — every coefficient below its precision `K` vanishes — although
 /// no leading term can be named (`ln Γ(z + 1) − ln Γ(z) − ln z`, which is
@@ -604,8 +625,12 @@ fn vanishes_to_positive_order(
                 return false;
             }
             let c = with_logw(arena, c, l, logw);
-            let settled = crate::calculus::series::settle_parametric(arena, c);
-            !arena.is_zero_structural(settled) && !is_rational_zero(arena, settled)
+            // An undecided coefficient is not shown to vanish.
+            match crate::calculus::series::settle_parametric(arena, c) {
+                ZeroTest::Zero => false,
+                ZeroTest::Nonzero(v) => !is_rational_zero(arena, v),
+                ZeroTest::Undecided(_) => true,
+            }
         })
     };
     // A short expansion first: the usual answer, a non-zero coefficient,
@@ -1630,10 +1655,11 @@ const MAX_HIDDEN_DENOMINATOR: i64 = 10_000;
 
 /// The rational `p/q` a symbolic constant `c` equals although no canonical
 /// form shows it (`ln 3/ln 27 = 1/3`), found from its continued fraction
-/// (denominators up to [`MAX_HIDDEN_DENOMINATOR`]) and confirmed by the
-/// numerical zero test of `c − p/q` (
-/// [`is_hidden_zero`](crate::calculus::calculus_util::is_hidden_zero): zero
-/// to about 80 digits relative to its terms).
+/// (denominators up to [`MAX_HIDDEN_DENOMINATOR`]) and confirmed by a
+/// proof that `c − p/q` is 0
+/// ([`hidden_zero`](crate::calculus::calculus_util::hidden_zero), exact or
+/// certified).  Up to 0.48 a zero to about 80 digits relative to its terms
+/// confirmed it.
 ///
 /// The exponent ratios of the rewrite must be exact: with `c = ln 3/ln 27`
 /// the powers `ω^{3c}` and `ω^{−1}` of `27^{ln n/ln 3 + 1}/n³` never
@@ -1672,7 +1698,9 @@ pub(crate) fn hidden_rational(arena: &mut Arena, c: ExprId) -> Option<ExprId> {
             let d = arena.sub(c, q);
             let d = crate::transforms::eval::eval(arena, d);
             return (arena.is_zero_structural(d)
-                || crate::calculus::calculus_util::is_hidden_zero(arena, d))
+                || crate::calculus::calculus_util::hidden_zero(arena, d)
+                    .truth_at_least(crate::base::truth::Evidence::Certified)
+                    .is_true())
             .then_some(q);
         }
         let frac = r - a as f64;
@@ -2078,8 +2106,7 @@ fn leadterm(
                 if !same && key.close_to(&min_key) {
                     // Numerically equal but not provably so: undecided.
                     let d = arena.sub(*e_id, leading_exp_id);
-                    let d = settle_constant(arena, d);
-                    if !arena.is_zero_structural(d) {
+                    if !matches!(settle_constant(arena, d), ZeroTest::Zero) {
                         return Err(crate::base::errors::SymplexError::ComputationFailed {
                             operation: "gruntz::leadterm",
                             reason: "exponents of leading terms too close to order".into(),
@@ -2094,9 +2121,9 @@ fn leadterm(
                 ExpKey::Exact(r) => r.clone(),
                 ExpKey::Approx(_) => {
                     // leadterm_add_by_series shifts by a rational exponent.
-                    let settled = settle_constant(arena, coeff_sum);
+                    // A coefficient not proved nonzero may cancel too.
                     let needs = crate::base::walk::contains(arena, coeff_sum, w)
-                        || arena.is_zero_structural(settled);
+                        || !matches!(settle_constant(arena, coeff_sum), ZeroTest::Nonzero(_));
                     if needs {
                         return Err(crate::base::errors::SymplexError::ComputationFailed {
                             operation: "gruntz::leadterm",
@@ -2110,7 +2137,7 @@ fn leadterm(
             // `ln(2 + √5)` of the tractable rewrite) cancel only
             // numerically; a structural test took their sum for the leading
             // coefficient (`lim_{x→0} x/(asinh(x + 2) − asinh 2)` was 0).
-            coeff_sum = crate::calculus::series::settle_parametric(arena, coeff_sum);
+            coeff_sum = settled_coefficient(arena, coeff_sum)?;
 
             // If the leading coefficients cancel to 0 OR the coefficient
             // still depends on w (meaning further decomposition is needed),
@@ -2237,8 +2264,20 @@ fn leadterm(
                 let coeff = crate::transforms::eval::eval(arena, coeff);
                 let one = arena.one();
                 let c_minus_one = arena.sub(c_arg, one);
-                let settled = settle_constant(arena, c_minus_one);
-                let c_is_one = arena.is_zero_structural(coeff) || arena.is_zero_structural(settled);
+                let c_is_one = arena.is_zero_structural(coeff)
+                    || match settle_constant(arena, c_minus_one) {
+                        ZeroTest::Zero => true,
+                        ZeroTest::Nonzero(_) => false,
+                        ZeroTest::Undecided(_) => {
+                            return Err(crate::base::errors::SymplexError::ComputationFailed {
+                                operation: "gruntz::leadterm",
+                                reason: format!(
+                                    "cannot decide whether {} is 1",
+                                    arena.display(c_arg)
+                                ),
+                            });
+                        }
+                    };
                 if !c_is_one {
                     return Ok((coeff, arena.zero()));
                 }
@@ -2659,7 +2698,7 @@ fn unary_leadterm(
         // before, the pole was the finite value `3/cos(…)`), or a value that
         // vanishes in the parameters, is a zero.
         let v = crate::transforms::eval::eval(arena, v);
-        let v = crate::calculus::series::settle_parametric(arena, v);
+        let v = settled_coefficient(arena, v)?;
         if is_infinite(arena, v) || v == arena.nan() {
             return Err(crate::base::errors::SymplexError::ComputationFailed {
                 operation: "gruntz::leadterm",
@@ -4861,7 +4900,10 @@ fn cut_side(
         let c = if crate::base::walk::contains(arena, c, x) {
             c
         } else {
-            settle_constant(arena, c)
+            match settle_constant(arena, c) {
+                ZeroTest::Undecided(_) => return None,
+                settled => settled.value(arena),
+            }
         };
         if arena.is_zero_structural(c) {
             // `u ≡ l` (as in `limitinf`): on the cut.

@@ -2778,7 +2778,7 @@ mod tests {
         let neg5 = a.int(-5);
         let neg5x = a.mul(&[neg5, x]);
         let poly = a.add(&[x2, neg5x, six]);
-        let roots = crate::transforms::solve::solve(&mut a, poly, x);
+        let roots = crate::transforms::solve::known_real_roots(&mut a, poly, x);
         assert_eq!(
             roots.len(),
             2,
@@ -2787,7 +2787,7 @@ mod tests {
         );
         let mut vals: Vec<f64> = roots
             .iter()
-            .filter_map(|r| crate::transforms::evalf::eval_const_f64(&mut a, r.value))
+            .filter_map(|&r| crate::transforms::evalf::eval_const_f64(&mut a, r))
             .collect();
         vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!(
@@ -2882,21 +2882,21 @@ mod tests {
         let two_x = a.mul(&[n2, x]);
         let eq2 = a.sub(two_x, y);
         // Solve eq1 for x: x = 3 - y
-        let roots_x = crate::transforms::solve::solve(&mut a, eq1, x);
+        let roots_x = crate::transforms::solve::known_real_roots(&mut a, eq1, x);
         if !roots_x.is_empty() {
-            let x_val = roots_x[0].value; // x = 3 - y
+            let x_val = roots_x[0]; // x = 3 - y
             // Sub into eq2: 2(3-y) - y = 0 → 6-3y = 0 → y = 2
             let eq2_sub = crate::transforms::subs::subs(&mut a, eq2, x, x_val);
             let eq2_sub = crate::transforms::eval::eval(&mut a, eq2_sub);
-            let roots_y = crate::transforms::solve::solve(&mut a, eq2_sub, y);
+            let roots_y = crate::transforms::solve::known_real_roots(&mut a, eq2_sub, y);
             if !roots_y.is_empty() {
-                let y_val = crate::transforms::evalf::eval_const_f64(&mut a, roots_y[0].value);
+                let y_val = crate::transforms::evalf::eval_const_f64(&mut a, roots_y[0]);
                 assert!(
                     y_val.is_some_and(|v| (v - 2.0).abs() < 1e-10),
                     "BUG: y should be 2, got {y_val:?}"
                 );
                 // Substitute back: x = 3 - 2 = 1
-                let x_final = crate::transforms::subs::subs(&mut a, x_val, y, roots_y[0].value);
+                let x_final = crate::transforms::subs::subs(&mut a, x_val, y, roots_y[0]);
                 let x_final = crate::transforms::eval::eval(&mut a, x_final);
                 let x_val_f64 = crate::transforms::evalf::eval_const_f64(&mut a, x_final);
                 assert!(

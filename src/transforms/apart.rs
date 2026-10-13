@@ -337,7 +337,11 @@ fn try_root_based_apart(
     let remainder_expr = polybridge::poly_to_expr(arena, remainder, var);
     let orig_frac = arena.div(remainder_expr, denom_expr);
 
-    let solutions = crate::transforms::solve::solve(arena, denom_expr, var);
+    let solutions: Vec<Solution> =
+        crate::transforms::solve::known_real_roots(arena, denom_expr, var)
+            .into_iter()
+            .map(|value| Solution { value })
+            .collect();
     if solutions.is_empty() {
         return assemble_with_quotient_expr(arena, var, orig_frac, quotient);
     }

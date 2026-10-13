@@ -942,20 +942,18 @@ fn solve_triangular_symbolic(
         // for the roots substituted so far (exactly or numerically) carries
         // no information about `last`: skip it and use the next one.
         univariate.sort_by_key(|(d, _)| *d);
-        let mut chosen: Option<(ExprId, Vec<crate::transforms::solve::Solution>)> = None;
+        let mut chosen: Option<(ExprId, Vec<ExprId>)> = None;
         for &(_, cand) in &univariate {
             if poly_vanishes_numerically(arena, cand, last) {
                 continue;
             }
-            match crate::transforms::solve::solve_classified(arena, cand, last) {
-                crate::transforms::solve::SolveOutcome::Solutions(s) if !s.is_empty() => {
-                    chosen = Some((cand, s));
-                    break;
-                }
-                crate::transforms::solve::SolveOutcome::Solutions(_)
-                | crate::transforms::solve::SolveOutcome::Identity
-                | crate::transforms::solve::SolveOutcome::Unresolved(_) => continue,
-                crate::transforms::solve::SolveOutcome::NoSolution(_) => return vec![],
+            let outcome = crate::transforms::solve::solve_classified(arena, cand, last);
+            if outcome.is_none_proved() {
+                return vec![];
+            }
+            if outcome.has_roots() {
+                chosen = Some((cand, outcome.claimed_points()));
+                break;
             }
         }
         let Some((pivot, roots)) = chosen else {
@@ -969,7 +967,7 @@ fn solve_triangular_symbolic(
                 .filter(|(_, p)| *p != pivot)
                 .map(|(_, p)| *p)
                 .collect();
-            if substitute_and_filter(arena, &others, last, root.value, &[]).is_none() {
+            if substitute_and_filter(arena, &others, last, root, &[]).is_none() {
                 continue;
             }
             let rest: Vec<ExprId> = polys
@@ -977,12 +975,11 @@ fn solve_triangular_symbolic(
                 .copied()
                 .filter(|p| !univariate.iter().any(|(_, u)| u == p))
                 .collect();
-            let Some(reduced) = substitute_and_filter(arena, &rest, last, root.value, earlier)
-            else {
+            let Some(reduced) = substitute_and_filter(arena, &rest, last, root, earlier) else {
                 continue;
             };
             for mut sub in solve_triangular_symbolic(arena, &reduced, earlier) {
-                sub.push(root.value);
+                sub.push(root);
                 all.push(sub);
             }
         }
@@ -992,15 +989,15 @@ fn solve_triangular_symbolic(
     if !with_last.is_empty() {
         // Solve for `last` with coefficients depending on earlier variables.
         with_last.sort_by_key(|(d, _)| *d);
-        let mut chosen: Option<(ExprId, Vec<crate::transforms::solve::Solution>)> = None;
+        let mut chosen: Option<(ExprId, Vec<ExprId>)> = None;
         for &(_, cand) in &with_last {
-            match crate::transforms::solve::solve_classified(arena, cand, last) {
-                crate::transforms::solve::SolveOutcome::Solutions(s) if !s.is_empty() => {
-                    chosen = Some((cand, s));
-                    break;
-                }
-                crate::transforms::solve::SolveOutcome::NoSolution(_) => return vec![],
-                _ => continue,
+            let outcome = crate::transforms::solve::solve_classified(arena, cand, last);
+            if outcome.is_none_proved() {
+                return vec![];
+            }
+            if outcome.has_roots() {
+                chosen = Some((cand, outcome.claimed_points()));
+                break;
             }
         }
         let Some((pivot, roots)) = chosen else {
@@ -1009,13 +1006,12 @@ fn solve_triangular_symbolic(
         let mut all = Vec::new();
         for root in roots {
             let rest: Vec<ExprId> = polys.iter().copied().filter(|&p| p != pivot).collect();
-            let Some(reduced) = substitute_and_filter(arena, &rest, last, root.value, earlier)
-            else {
+            let Some(reduced) = substitute_and_filter(arena, &rest, last, root, earlier) else {
                 continue;
             };
             for sub in solve_triangular_symbolic(arena, &reduced, earlier) {
                 // Back-substitute the earlier variables into the root.
-                let mut val = root.value;
+                let mut val = root;
                 for (i, &v) in earlier.iter().enumerate() {
                     val = crate::transforms::subs::subs(arena, val, v, sub[i]);
                 }

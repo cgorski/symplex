@@ -95,25 +95,29 @@ pub struct Pattern {
 // Arena extensions for pattern construction
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Counter for generating unique wild names / ids.
-static NEXT_WILD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Allocate a fresh, process-unique [`WildId`].
-pub(crate) fn fresh_wild_id() -> WildId {
-    WildId(NEXT_WILD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-}
-
 impl Arena {
     /// Create a new wild (pattern variable) symbol.
     ///
     /// Returns the `ExprId` of the wild symbol and its `WildId`.
-    /// The wild is represented as a regular symbol with a unique
-    /// internal name (e.g., `_w0`, `_w1`, ...).
+    /// The wild is represented as a regular symbol named from this
+    /// arena's counter (`_w0`, `_w1`, ... in every arena), so the names do
+    /// not depend on what other contexts of the process did.
     pub fn wild(&mut self) -> (ExprId, WildId) {
-        let wid = fresh_wild_id();
-        let name = format!("_w{}", wid.0);
-        let expr_id = self.symbol(&name);
-        (expr_id, wid)
+        let k = self.next_wild;
+        self.next_wild = k.wrapping_add(1);
+        self.wild_at(k)
+    }
+
+    /// The wild number `k` of a built-in rule: the symbol `_w{k}`, the
+    /// same node every time.  A wild only needs to differ from the other
+    /// wilds of its own pattern, so the rule sets `simplify` builds on
+    /// every call number theirs from 0.  Up to 0.48 every wild came from a
+    /// process-global counter: each `simplify()` of the same expression in
+    /// one context added 2,346 permanent nodes (the rules' fresh wilds and
+    /// the patterns built on them).
+    pub(crate) fn wild_at(&mut self, k: u32) -> (ExprId, WildId) {
+        let expr_id = self.symbol(&format!("_w{k}"));
+        (expr_id, WildId(k))
     }
 }
 
@@ -153,7 +157,7 @@ pub(crate) fn pattern_from_expr(
         if let ExprNode::Symbol(sid) = arena.node(id)
             && is_wild_symbol(arena, id)
         {
-            let wid = fresh_wild_id();
+            let wid = WildId(u32::try_from(wilds.len()).unwrap_or(u32::MAX));
             wilds.insert(id, wid);
             names.insert(wid, arena.symbol_name(*sid).to_string());
         }
@@ -1299,7 +1303,7 @@ fn subs_sum(arena: &mut Arena, node: ExprId, old: ExprId, new: ExprId) -> Option
 /// Returns the rule.  The pattern and template are interned in the
 /// given arena.
 pub(crate) fn rule_pythagorean(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
+    let (w_expr, w_id) = arena.wild_at(0);
     let two = arena.int(2);
 
     // Pattern: sin(w)^2 + cos(w)^2
@@ -1329,7 +1333,7 @@ fn unary_compose_rule(
     inner_fn: fn(&mut Arena, ExprId) -> ExprId,
     template_fn: fn(&mut Arena, ExprId) -> ExprId,
 ) -> Rule {
-    let (w_expr, w_id) = arena.wild();
+    let (w_expr, w_id) = arena.wild_at(0);
     let inner_w = inner_fn(arena, w_expr);
     let pattern_expr = outer_fn(arena, inner_w);
     let template = template_fn(arena, w_expr);
@@ -1357,7 +1361,7 @@ fn identity(_arena: &mut Arena, w: ExprId) -> ExprId {
 /// needs `w` known real (see [`condition_wild_real`]).  Before 0.23 it fired
 /// unless `w` was known *non*-real, i.e. for every unannotated symbol.
 fn rule_sqrt_sq(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
+    let (w_expr, w_id) = arena.wild_at(0);
     let two = arena.int(2);
     let half = arena.rational(1, 2);
     let w_sq = arena.pow(w_expr, two);
@@ -1377,7 +1381,7 @@ fn rule_sqrt_sq(arena: &mut Arena) -> Rule {
 
 /// Build the hyperbolic Pythagorean identity: `cosh(w)^2 - sinh(w)^2 → 1`.
 fn rule_cosh_sinh_identity(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
+    let (w_expr, w_id) = arena.wild_at(0);
     let two = arena.int(2);
     let sinh_w = arena.sinh(w_expr);
     let cosh_w = arena.cosh(w_expr);
@@ -1403,12 +1407,12 @@ fn rule_cosh_sinh_identity(arena: &mut Arena) -> Rule {
 /// In particular an integer **inner** exponent does not justify the
 /// rewrite: `(x^2)^(3/2) ≠ x^3` at `x = -2` (8 vs -8).
 fn rule_pow_pow(arena: &mut Arena) -> Rule {
-    // The three wilds are allocated in this order so that
+    // The three wilds are numbered in this order so that
     // `condition_pow_pow` can recover (base, inner, outer) by sorting the
-    // bindings on `WildId` (the counter is monotone).
-    let (w1_expr, w1_id) = arena.wild();
-    let (w2_expr, w2_id) = arena.wild();
-    let (w3_expr, w3_id) = arena.wild();
+    // bindings on `WildId`.
+    let (w1_expr, w1_id) = arena.wild_at(0);
+    let (w2_expr, w2_id) = arena.wild_at(1);
+    let (w3_expr, w3_id) = arena.wild_at(2);
     debug_assert!(w1_id.0 < w2_id.0 && w2_id.0 < w3_id.0);
 
     let inner_pow = arena.pow(w1_expr, w2_expr);
@@ -1503,7 +1507,7 @@ fn condition_pow_pow(arena: &Arena, subs: &Substitution) -> bool {
 /// sin(w) / cos(w) → tan(w)
 /// Canonical form of sin(x)/cos(x) is Mul([Sin(x), Pow(Cos(x), -1)])
 fn rule_sin_div_cos(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
+    let (w_expr, w_id) = arena.wild_at(0);
     let sin_w = arena.sin(w_expr);
     let cos_w = arena.cos(w_expr);
     let neg_one = arena.int(-1);
@@ -1521,7 +1525,7 @@ fn rule_sin_div_cos(arena: &mut Arena) -> Rule {
 
 /// cos(w) / sin(w) → 1/tan(w)  (i.e., Pow(tan(w), -1))
 fn rule_cos_div_sin(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
+    let (w_expr, w_id) = arena.wild_at(0);
     let cos_w = arena.cos(w_expr);
     let sin_w = arena.sin(w_expr);
     let neg_one = arena.int(-1);
@@ -1540,7 +1544,7 @@ fn rule_cos_div_sin(arena: &mut Arena) -> Rule {
 
 /// sinh(w) / cosh(w) → tanh(w)
 fn rule_sinh_div_cosh(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
+    let (w_expr, w_id) = arena.wild_at(0);
     let sinh_w = arena.sinh(w_expr);
     let cosh_w = arena.cosh(w_expr);
     let neg_one = arena.int(-1);
@@ -1558,8 +1562,8 @@ fn rule_sinh_div_cosh(arena: &mut Arena) -> Rule {
 
 /// exp(a) * exp(b) → exp(a + b)
 fn rule_exp_mul(arena: &mut Arena) -> Rule {
-    let (a_expr, a_id) = arena.wild();
-    let (b_expr, b_id) = arena.wild();
+    let (a_expr, a_id) = arena.wild_at(0);
+    let (b_expr, b_id) = arena.wild_at(1);
     let exp_a = arena.exp(a_expr);
     let exp_b = arena.exp(b_expr);
     let pattern_expr = arena.mul(&[exp_a, exp_b]);
@@ -1583,8 +1587,8 @@ fn rule_exp_mul(arena: &mut Arena) -> Rule {
 /// child is ln(something). For 3+ child Mul (like exp(2*x*ln(y))),
 /// the pattern system's strict positional matching won't fire.
 fn rule_exp_log_denest(arena: &mut Arena) -> Rule {
-    let (a_expr, a_id) = arena.wild();
-    let (b_expr, b_id) = arena.wild();
+    let (a_expr, a_id) = arena.wild_at(0);
+    let (b_expr, b_id) = arena.wild_at(1);
     let ln_b = arena.ln(b_expr);
     let product = arena.mul(&[a_expr, ln_b]);
     let pattern_expr = arena.exp(product);
@@ -1651,7 +1655,7 @@ fn condition_wild_real(arena: &Arena, subs: &Substitution) -> bool {
 
 /// `abs(w) → w` when `w` is a positive numeric literal.
 fn rule_abs_positive(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
+    let (w_expr, w_id) = arena.wild_at(0);
     let abs_w = arena.abs(w_expr);
 
     let mut wilds = FxHashMap::default();

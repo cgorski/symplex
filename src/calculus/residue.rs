@@ -406,12 +406,14 @@ fn nonzero_roots(arena: &mut Arena, polys: &[ExprId], t: ExprId) -> Option<Vec<E
     }
     let mut roots: Vec<ExprId> = Vec::new();
     let mut solve_all = |arena: &mut Arena, q: ExprId, degree: usize| -> Option<()> {
-        let found = crate::transforms::solve::solve(arena, q, t);
-        if found.len() != degree {
-            return None;
-        }
+        let found = match crate::transforms::solve::solve_classified_real(arena, q, t)
+            .points_if_complete()
+        {
+            Some(found) if found.len() == degree => found,
+            _ => return None,
+        };
         for s in found {
-            let v = eval::eval(arena, s.value);
+            let v = eval::eval(arena, s);
             if arena.is_zero_structural(v) || walk::contains(arena, v, t) {
                 return None;
             }
@@ -752,13 +754,12 @@ fn explicit_roots(
         return None;
     }
     let g_expr = crate::poly::polybridge::poly_to_expr(arena, g, bound);
-    let roots: Vec<ExprId> = crate::transforms::solve::solve(arena, g_expr, bound)
-        .into_iter()
-        .map(|s| s.value)
-        .collect();
-    if roots.len() != deg {
-        return None;
-    }
+    let roots = match crate::transforms::solve::solve_classified_real(arena, g_expr, bound)
+        .points_if_complete()
+    {
+        Some(roots) if roots.len() == deg => roots,
+        _ => return None,
+    };
     let mut out = Vec::with_capacity(deg);
     for r in roots {
         let ids = walk::post_order_ids(arena, r);

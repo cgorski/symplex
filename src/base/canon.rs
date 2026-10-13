@@ -5368,14 +5368,17 @@ fn lib_function_value(
 /// - If both endpoints are numeric and start == end:
 ///   - both closed → FiniteSet({start})
 ///   - any open → EmptySet
-pub(crate) fn canon_interval(arena: &mut Arena, start: ExprId, end: ExprId, flags: u8) -> ExprId {
-    use crate::base::node::{INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
-
+pub(crate) fn canon_interval(
+    arena: &mut Arena,
+    start: ExprId,
+    end: ExprId,
+    kind: crate::base::interval::IntervalKind,
+) -> ExprId {
     tracing::debug!(
         "canon_interval: start={:?}, end={:?}, flags={}",
         start,
         end,
-        flags
+        kind.flag_bits()
     );
 
     // Try to compare endpoints numerically.
@@ -5390,7 +5393,7 @@ pub(crate) fn canon_interval(arena: &mut Arena, start: ExprId, end: ExprId, flag
             }
             Ordering::Equal => {
                 // start == end
-                if flags & (INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN) != 0 {
+                if kind.lower_open() || kind.upper_open() {
                     // Any open endpoint on a point interval → empty
                     return arena.intern(ExprNode::EmptySet);
                 } else {
@@ -5404,7 +5407,7 @@ pub(crate) fn canon_interval(arena: &mut Arena, start: ExprId, end: ExprId, flag
         }
     }
 
-    arena.intern(ExprNode::Interval(start, end, flags))
+    arena.intern(ExprNode::Interval(start, end, kind))
 }
 
 /// Build a canonical `FiniteSet` node.

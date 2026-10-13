@@ -460,8 +460,13 @@ fn lib_fn_by_name(name_lower: &str) -> Option<LibFn> {
 /// it.  There is no separate registry — [`Context::apply`] interns the
 /// name as a symbol and the node — so a name also used as a variable
 /// (`ctx.symbol("f")`) is not a function by that alone.  A linear scan of
-/// the arena, made only for a call name no table knows.
+/// the arena, made only for a call name no table knows.  The reserved
+/// heads of the internal functions are never read, even when a limit
+/// computation left such a node in the arena.
 fn declared_function(arena: &Arena, name: &str) -> Option<SymbolId> {
+    if crate::base::func::Func::is_internal_name(name) {
+        return None;
+    }
     let sid = arena.symbols.get(name)?;
     let headed = |i: usize| {
         u32::try_from(i).is_ok_and(
@@ -1614,7 +1619,7 @@ impl<'a> Parser<'a> {
         {
             return Ok(arena.intern(ExprNode::Apply(sid, args.iter().copied().collect())));
         }
-        let hint = if lib.is_none() {
+        let hint = if lib.is_none() && !crate::base::func::Func::is_internal_name(name) {
             format!(
                 " (an undefined function parses once this context knows it: Context::apply(\"{name}\", …))"
             )

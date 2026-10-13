@@ -198,8 +198,8 @@ fn rule2(
     lhs: impl Fn(&mut Arena, ExprId, ExprId) -> ExprId,
     rhs: impl Fn(&mut Arena, ExprId, ExprId) -> ExprId,
 ) -> Rule {
-    let (a, wa) = arena.wild();
-    let (b, wb) = arena.wild();
+    let (a, wa) = arena.wild_at(0);
+    let (b, wb) = arena.wild_at(1);
     let root = lhs(arena, a, b);
     let template = rhs(arena, a, b);
     let mut wilds = rustc_hash::FxHashMap::default();
@@ -215,7 +215,7 @@ fn rule1(
     lhs: impl Fn(&mut Arena, ExprId) -> ExprId,
     rhs: impl Fn(&mut Arena, ExprId) -> ExprId,
 ) -> Rule {
-    let (a, wa) = arena.wild();
+    let (a, wa) = arena.wild_at(0);
     let root = lhs(arena, a);
     let template = rhs(arena, a);
     let mut wilds = rustc_hash::FxHashMap::default();

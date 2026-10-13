@@ -17,10 +17,9 @@
 //!    preserving structural sharing across multiple roots.
 
 use rustc_hash::FxHashMap;
-use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
-use crate::base::node::{ExprId, ExprNode};
+use crate::base::node::{ExprId, ExprNode, IdRemap, NumId, SymbolId};
 
 /// Transfer an expression subtree from `src` to `dst`, returning the
 /// new [`ExprId`] in `dst`.
@@ -135,8 +134,23 @@ fn transfer_node(
     old_id: ExprId,
     map: &mut FxHashMap<ExprId, ExprId>,
 ) -> ExprId {
-    let node = src.node(old_id).clone();
-    let new_node = remap_node(src, dst, &node, map);
+    let node = src.node(old_id);
+    // Post-order guarantees every declared child was transferred before its
+    // parent; a miss is an invariant violation, recovered by transferring
+    // the child's subtree on the spot (`Transfer::expr`).
+    #[cfg(debug_assertions)]
+    node.for_each_child(|c| {
+        debug_assert!(
+            map.contains_key(&c),
+            "compact: child not yet transferred — post-order invariant violated"
+        );
+    });
+    let new_node = node.remap_ids(&mut Transfer { src, dst, map });
+    // Preserve a symbol's mathematical assumptions (positive, real, etc.).
+    if let (ExprNode::Symbol(old_sid), ExprNode::Symbol(new_sid)) = (node, &new_node) {
+        let assumptions = src.symbol_assumptions(*old_sid);
+        dst.set_symbol_assumptions(*new_sid, assumptions);
+    }
     dst.intern(new_node)
 }
 
@@ -155,175 +169,29 @@ fn remap_id(
     }
 }
 
-/// Remap a node's children from old [`ExprId`]s to new [`ExprId`]s.
-///
-/// Also handles side-table references:
-/// - `Num` → re-intern the rational value in `dst`
-/// - `Symbol` → re-intern the name in `dst`'s symbol table, copy assumptions
-/// - `Apply` → re-intern the function name, remap arguments
-fn remap_node(
-    src: &Arena,
-    dst: &mut Arena,
-    node: &ExprNode,
-    map: &mut FxHashMap<ExprId, ExprId>,
-) -> ExprNode {
-    // Look up a remapped child ID.  Post-order guarantees every declared
-    // child was transferred before its parent; a miss is an invariant
-    // violation, recovered by transferring the child's subtree on the spot.
-    let mut m = |old: &ExprId| -> ExprId {
-        debug_assert!(
-            map.contains_key(old),
-            "compact: child not yet transferred — post-order invariant violated"
-        );
-        remap_id(src, dst, *old, map)
-    };
+/// The id maps of one transfer from `src` to `dst`, for
+/// [`ExprNode::remap_ids`]: expressions through the transfer `map` (on
+/// demand for a node not yet transferred), numbers and symbol names
+/// re-interned in `dst`'s side tables.
+struct Transfer<'a> {
+    src: &'a Arena,
+    dst: &'a mut Arena,
+    map: &'a mut FxHashMap<ExprId, ExprId>,
+}
 
-    match node {
-        // ── Atoms with side-table references ─────────────────────────────
-        ExprNode::Num(old_nid) => {
-            let value = src.num(*old_nid).clone();
-            let new_nid = dst.intern_num(value);
-            ExprNode::Num(new_nid)
-        }
+impl IdRemap for Transfer<'_> {
+    fn expr(&mut self, id: ExprId) -> ExprId {
+        remap_id(self.src, self.dst, id, self.map)
+    }
 
-        ExprNode::Symbol(old_sid) => {
-            let name = src.symbol_name(*old_sid).to_owned();
-            let new_sid = dst.symbols.intern(&name);
-            // Preserve mathematical assumptions (positive, real, etc.)
-            let assumptions = src.symbol_assumptions(*old_sid);
-            dst.set_symbol_assumptions(new_sid, assumptions);
-            ExprNode::Symbol(new_sid)
-        }
+    fn num(&mut self, id: NumId) -> NumId {
+        let value = self.src.num(id).clone();
+        self.dst.intern_num(value)
+    }
 
-        // ── Atoms without side-table references ──────────────────────────
-        ExprNode::Pi => ExprNode::Pi,
-        ExprNode::E => ExprNode::E,
-        ExprNode::ImaginaryUnit => ExprNode::ImaginaryUnit,
-        ExprNode::EulerGamma => ExprNode::EulerGamma,
-        ExprNode::Catalan => ExprNode::Catalan,
-        ExprNode::GoldenRatio => ExprNode::GoldenRatio,
-
-        ExprNode::PhysicalConstant(old_sid, old_value_id) => {
-            let name = src.symbol_name(*old_sid).to_owned();
-            let new_sid = dst.symbols.intern(&name);
-            let new_value_id = remap_id(src, dst, *old_value_id, map);
-            ExprNode::PhysicalConstant(new_sid, new_value_id)
-        }
-
-        ExprNode::Infinity => ExprNode::Infinity,
-        ExprNode::NegInfinity => ExprNode::NegInfinity,
-        ExprNode::ComplexInfinity => ExprNode::ComplexInfinity,
-        ExprNode::NaN => ExprNode::NaN,
-        ExprNode::BoolTrue => ExprNode::BoolTrue,
-        ExprNode::BoolFalse => ExprNode::BoolFalse,
-        ExprNode::EmptySet => ExprNode::EmptySet,
-        ExprNode::UniversalSet => ExprNode::UniversalSet,
-
-        // ── N-ary nodes ──────────────────────────────────────────────────
-        ExprNode::Add(children) => ExprNode::Add(children.iter().map(&mut m).collect()),
-        ExprNode::Mul(children) => ExprNode::Mul(children.iter().map(&mut m).collect()),
-        ExprNode::And(children) => ExprNode::And(children.iter().map(&mut m).collect()),
-        ExprNode::Or(children) => ExprNode::Or(children.iter().map(&mut m).collect()),
-        ExprNode::Min(children) => ExprNode::Min(children.iter().map(&mut m).collect()),
-        ExprNode::Max(children) => ExprNode::Max(children.iter().map(&mut m).collect()),
-        ExprNode::FiniteSet(children) => ExprNode::FiniteSet(children.iter().map(&mut m).collect()),
-        ExprNode::SetUnion(children) => ExprNode::SetUnion(children.iter().map(&mut m).collect()),
-        ExprNode::SetIntersection(children) => {
-            ExprNode::SetIntersection(children.iter().map(&mut m).collect())
-        }
-
-        // ── Binary nodes ─────────────────────────────────────────────────
-        ExprNode::Pow(a, b) => ExprNode::Pow(m(a), m(b)),
-        ExprNode::Binomial(a, b) => ExprNode::Binomial(m(a), m(b)),
-        ExprNode::Gt(a, b) => ExprNode::Gt(m(a), m(b)),
-        ExprNode::Ge(a, b) => ExprNode::Ge(m(a), m(b)),
-        ExprNode::Eq_(a, b) => ExprNode::Eq_(m(a), m(b)),
-        ExprNode::Ne(a, b) => ExprNode::Ne(m(a), m(b)),
-        ExprNode::Derivative(a, b) => ExprNode::Derivative(m(a), m(b)),
-        ExprNode::Integral(a, b) => ExprNode::Integral(m(a), m(b)),
-        ExprNode::Atan2(a, b) => ExprNode::Atan2(m(a), m(b)),
-        ExprNode::Beta(a, b) => ExprNode::Beta(m(a), m(b)),
-        ExprNode::Polygamma(a, b) => ExprNode::Polygamma(m(a), m(b)),
-        ExprNode::KroneckerDelta(a, b) => ExprNode::KroneckerDelta(m(a), m(b)),
-        ExprNode::SetComplement(a, b) => ExprNode::SetComplement(m(a), m(b)),
-
-        // ── Interval (binary + flags) ────────────────────────────────────
-        ExprNode::Interval(a, b, flags) => ExprNode::Interval(m(a), m(b), *flags),
-
-        // ── 4-child nodes ────────────────────────────────────────────────
-        ExprNode::Sum(body, var, lo, hi) => ExprNode::Sum(m(body), m(var), m(lo), m(hi)),
-        ExprNode::Product_(body, var, lo, hi) => ExprNode::Product_(m(body), m(var), m(lo), m(hi)),
-        ExprNode::DefiniteIntegral(body, var, lo, hi) => {
-            ExprNode::DefiniteIntegral(m(body), m(var), m(lo), m(hi))
-        }
-
-        // ── New formal/unevaluated nodes ─────────────────────────────────
-        ExprNode::Limit(a, b, c) => ExprNode::Limit(m(a), m(b), m(c)),
-        ExprNode::LaplaceTransform(a, b, c) => ExprNode::LaplaceTransform(m(a), m(b), m(c)),
-        ExprNode::InverseLaplaceTransform(a, b, c) => {
-            ExprNode::InverseLaplaceTransform(m(a), m(b), m(c))
-        }
-        ExprNode::Residue(a, b, c) => ExprNode::Residue(m(a), m(b), m(c)),
-        ExprNode::DSolve(a, b, c) => ExprNode::DSolve(m(a), m(b), m(c)),
-        ExprNode::RootSum(a, b, c) => ExprNode::RootSum(m(a), m(b), m(c)),
-        ExprNode::Series(a, b, c, d) => ExprNode::Series(m(a), m(b), m(c), m(d)),
-        ExprNode::RootOf(a, b, c) => ExprNode::RootOf(m(a), m(b), m(c)),
-        ExprNode::ConditionSet(a, b) => ExprNode::ConditionSet(m(a), m(b)),
-        ExprNode::Subs(a, b, c) => ExprNode::Subs(m(a), m(b), m(c)),
-        ExprNode::ImageSet(a, b) => ExprNode::ImageSet(m(a), m(b)),
-
-        // ── Unary nodes ──────────────────────────────────────────────────
-        ExprNode::Neg(x) => ExprNode::Neg(m(x)),
-        ExprNode::Sin(x) => ExprNode::Sin(m(x)),
-        ExprNode::Cos(x) => ExprNode::Cos(m(x)),
-        ExprNode::Tan(x) => ExprNode::Tan(m(x)),
-        ExprNode::Exp(x) => ExprNode::Exp(m(x)),
-        ExprNode::Ln(x) => ExprNode::Ln(m(x)),
-        ExprNode::Abs(x) => ExprNode::Abs(m(x)),
-        ExprNode::Asin(x) => ExprNode::Asin(m(x)),
-        ExprNode::Acos(x) => ExprNode::Acos(m(x)),
-        ExprNode::Atan(x) => ExprNode::Atan(m(x)),
-        ExprNode::Sinh(x) => ExprNode::Sinh(m(x)),
-        ExprNode::Cosh(x) => ExprNode::Cosh(m(x)),
-        ExprNode::Tanh(x) => ExprNode::Tanh(m(x)),
-        ExprNode::Asinh(x) => ExprNode::Asinh(m(x)),
-        ExprNode::Acosh(x) => ExprNode::Acosh(m(x)),
-        ExprNode::Atanh(x) => ExprNode::Atanh(m(x)),
-        ExprNode::Sign(x) => ExprNode::Sign(m(x)),
-        ExprNode::Factorial(x) => ExprNode::Factorial(m(x)),
-        ExprNode::Not(x) => ExprNode::Not(m(x)),
-        ExprNode::Floor(x) => ExprNode::Floor(m(x)),
-        ExprNode::Ceiling(x) => ExprNode::Ceiling(m(x)),
-        ExprNode::Gamma(x) => ExprNode::Gamma(m(x)),
-        ExprNode::LogGamma(x) => ExprNode::LogGamma(m(x)),
-        ExprNode::Digamma(x) => ExprNode::Digamma(m(x)),
-        ExprNode::Erf(x) => ExprNode::Erf(m(x)),
-        ExprNode::Erfc(x) => ExprNode::Erfc(m(x)),
-        ExprNode::LambertW(x) => ExprNode::LambertW(m(x)),
-        ExprNode::Heaviside(x) => ExprNode::Heaviside(m(x)),
-        ExprNode::DiracDelta(x) => ExprNode::DiracDelta(m(x)),
-        ExprNode::Re(x) => ExprNode::Re(m(x)),
-        ExprNode::Im(x) => ExprNode::Im(m(x)),
-        ExprNode::Conjugate(x) => ExprNode::Conjugate(m(x)),
-        ExprNode::Arg(x) => ExprNode::Arg(m(x)),
-        ExprNode::Si(x) => ExprNode::Si(m(x)),
-        ExprNode::Ci(x) => ExprNode::Ci(m(x)),
-        ExprNode::Ei(x) => ExprNode::Ei(m(x)),
-        ExprNode::Li(x) => ExprNode::Li(m(x)),
-        ExprNode::Zeta(x) => ExprNode::Zeta(m(x)),
-
-        // ── Piecewise ────────────────────────────────────────────────────
-        ExprNode::Piecewise(pairs) => {
-            ExprNode::Piecewise(pairs.iter().map(|(v, c)| (m(v), m(c))).collect())
-        }
-
-        // ── Apply (symbol name + args) ───────────────────────────────────
-        ExprNode::Apply(old_sid, args) => {
-            let new_args: SmallVec<[ExprId; 2]> = args.iter().map(&mut m).collect();
-            let name = src.symbol_name(*old_sid).to_owned();
-            let new_sid = dst.symbols.intern(&name);
-            ExprNode::Apply(new_sid, new_args)
-        }
+    fn symbol(&mut self, id: SymbolId) -> SymbolId {
+        let name = self.src.symbol_name(id).to_owned();
+        self.dst.symbols.intern(&name)
     }
 }
 

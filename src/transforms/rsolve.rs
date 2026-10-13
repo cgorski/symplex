@@ -396,16 +396,20 @@ fn characteristic_roots(coeffs: &[Ex], n: &Ex) -> Result<Vec<RootGroup>, Symplex
         }
         let sols = {
             let mut inner = ctx.inner.write();
-            crate::transforms::solve::solve(&mut inner.arena, f_expr, r.raw_id())
+            crate::transforms::solve::solve_classified_real(&mut inner.arena, f_expr, r.raw_id())
+                .points_if_complete()
         };
-        if sols.len() != degree {
-            return Err(SymplexError::ComputationFailed {
-                operation: "rsolve_linear",
-                reason: "could not find the characteristic roots".into(),
-            });
-        }
+        let sols = match sols {
+            Some(sols) if sols.len() == degree => sols,
+            _ => {
+                return Err(SymplexError::ComputationFailed {
+                    operation: "rsolve_linear",
+                    reason: "could not find the characteristic roots".into(),
+                });
+            }
+        };
         for s in sols {
-            let root = r.wrap(s.value).eval();
+            let root = r.wrap(s).eval();
             if root.has_unevaluated() {
                 return Err(SymplexError::ComputationFailed {
                     operation: "rsolve_linear",

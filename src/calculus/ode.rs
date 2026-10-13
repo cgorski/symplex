@@ -672,7 +672,7 @@ fn try_solve_for_highest_derivative(
     if !(3..=MAX_DERIVATIVE_ROOTS + 1).contains(&coeffs.len()) {
         return None;
     }
-    let roots = crate::transforms::solve::solve(arena, g, t);
+    let roots = known_roots(arena, g, t);
     if roots.is_empty() || roots.iter().any(|r| contains_sym(arena, r.value, t_sym)) {
         return None;
     }
@@ -1115,7 +1115,7 @@ fn try_second_order_const_coeff(
     let r_var_sq = arena.pow(r_var, two);
     let b_r = arena.mul(&[b_id, r_var]);
     let char_eq = arena.add(&[r_var_sq, b_r, c_id]);
-    let roots = crate::transforms::solve::solve(arena, char_eq, r_var);
+    let roots = known_roots(arena, char_eq, r_var);
 
     let c1 = arena.symbol("C1");
     let c2 = arena.symbol("C2");
@@ -1199,7 +1199,7 @@ fn solve_characteristic_equation(arena: &mut Arena, b: Q, c: Q, var: ExprId) -> 
     let r_var_sq = arena.pow(r_var, two);
     let b_r = arena.mul(&[b_id, r_var]);
     let char_eq = arena.add(&[r_var_sq, b_r, c_id]);
-    let roots = crate::transforms::solve::solve(arena, char_eq, r_var);
+    let roots = known_roots(arena, char_eq, r_var);
 
     let c1 = arena.symbol("C1");
     let c2 = arena.symbol("C2");
@@ -1806,7 +1806,7 @@ fn explicit_families(
     // are not solutions, from spurious roots of `−2/(tan(y/2) + 1) = x + C1`)
     // and is not refuted numerically.
     let explicit_roots = |arena: &mut Arena, e: ExprId| -> Option<Vec<ExprId>> {
-        let sols = crate::transforms::solve::solve(arena, e, func);
+        let sols = known_roots(arena, e, func);
         if sols.is_empty()
             || sols.len() > MAX_BRANCHES
             || sols.iter().any(|s| contains_sym(arena, s.value, func_sym))
@@ -2811,7 +2811,7 @@ fn try_exact_ode(
     // implicit here: a later method may find nicer families, and
     // [`dsolve`] takes them all in the end (`explicit_families`).
     let f_minus_c1 = arena.sub(potential, c1);
-    let solutions = crate::transforms::solve::solve(arena, f_minus_c1, func);
+    let solutions = known_roots(arena, f_minus_c1, func);
 
     if solutions.len() == 1 {
         return Some(OdeResult {
@@ -3105,7 +3105,7 @@ fn try_homogeneous_coefficient(
     let implicit = crate::transforms::eval::eval(arena, implicit);
 
     // Try to solve for y explicitly (several roots: see `try_exact_ode`).
-    let solutions = crate::transforms::solve::solve(arena, implicit, func);
+    let solutions = known_roots(arena, implicit, func);
     if solutions.len() == 1 {
         let sol = crate::transforms::eval::eval(arena, solutions[0].value);
         return Some(OdeResult {
@@ -3259,7 +3259,7 @@ fn try_nth_order_reducible(
     let implicit = crate::transforms::eval::eval(arena, implicit);
 
     // Try to solve explicitly for y (several roots: see `try_exact_ode`).
-    let solutions = crate::transforms::solve::solve(arena, implicit, func);
+    let solutions = known_roots(arena, implicit, func);
     if solutions.len() == 1 {
         let sol = crate::transforms::eval::eval(arena, solutions[0].value);
         let mut constants = p_result.constants;
@@ -4160,7 +4160,7 @@ fn try_euler_cauchy(
         let q_id = ode_ratio_to_expr(arena, &q);
         let p_r = arena.mul(&[p_id, r_var]);
         let char_eq = arena.add(&[r_sq, p_r, q_id]);
-        let roots = crate::transforms::solve::solve(arena, char_eq, r_var);
+        let roots = known_roots(arena, char_eq, r_var);
 
         if roots.len() >= 2 {
             let r1 = roots[0].value;
@@ -5799,13 +5799,12 @@ fn radical_char_roots(
 ) -> Option<Vec<CharRoot>> {
     let deg = f.degree()?;
     let f_expr = crate::poly::polybridge::poly_to_expr(arena, f, r_sym);
-    let sols: Vec<ExprId> = crate::transforms::solve::solve(arena, f_expr, r_sym)
-        .into_iter()
-        .map(|s| s.value)
-        .collect();
-    if sols.len() != deg {
-        return None;
-    }
+    let sols = match crate::transforms::solve::solve_classified_real(arena, f_expr, r_sym)
+        .points_if_complete()
+    {
+        Some(sols) if sols.len() == deg => sols,
+        _ => return None,
+    };
     let mut values = Vec::with_capacity(deg);
     for &s in &sols {
         if crate::base::walk::contains(arena, s, r_sym) || has_rootof(arena, s) {
@@ -6643,7 +6642,7 @@ fn try_linear_cc_symbolic(
                 let q = arena.div(*c0, *c1);
                 vec![arena.neg(q)]
             }
-            _ => crate::transforms::solve::solve(arena, f, r)
+            _ => known_roots(arena, f, r)
                 .into_iter()
                 .map(|s| s.value)
                 .collect(),
@@ -8590,8 +8589,17 @@ fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec
     let split = |e: &Ex| -> Option<(Ex, Ex)> {
         let (re, im) = e.as_real_imag();
         let (re, im) = (re.eval().simplify(), im.eval().simplify());
+        // Free of `I` and of unevaluated `re`/`im` nodes (up to 0.48 found
+        // by printing and searching for "re(" and "im(", which a function
+        // name ending in `re` or `im` also matched).
         let clean = |p: &Ex| {
-            !p.contains(&i_unit) && !p.to_string().contains("re(") && !p.to_string().contains("im(")
+            if p.contains(&i_unit) {
+                return false;
+            }
+            let inner = p.inner.read();
+            !crate::base::walk::post_order_ids(&inner.arena, p.raw_id())
+                .iter()
+                .any(|&id| matches!(inner.arena.node(id), ExprNode::Re(_) | ExprNode::Im(_)))
         };
         (clean(&re) && clean(&im)).then_some((re, im))
     };
@@ -8648,6 +8656,20 @@ fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec
         return None;
     }
     Some(solution.into_iter().map(|s| s.eval()).collect())
+}
+
+/// The roots of `e = 0` in `var` the solver claims
+/// ([`known_real_roots`](crate::transforms::solve::known_real_roots): none
+/// when it finds none), as `Solution`s.
+fn known_roots(
+    arena: &mut Arena,
+    e: ExprId,
+    var: ExprId,
+) -> Vec<crate::transforms::solve::Solution> {
+    crate::transforms::solve::known_real_roots(arena, e, var)
+        .into_iter()
+        .map(|value| crate::transforms::solve::Solution { value })
+        .collect()
 }
 
 #[cfg(test)]

@@ -54,6 +54,7 @@ use num_traits::{Signed, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
+use crate::base::func::{Constants, Func, Poles, RealOn};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1198,7 +1199,7 @@ impl AssumptionCache {
                 continue;
             }
             stack.push((id, true));
-            for child in queried_children(arena.node(id)) {
+            for child in queried_children(arena, arena.node(id)) {
                 if !self.cache.contains_key(&child) {
                     stack.push((child, false));
                 }
@@ -1258,46 +1259,18 @@ impl AssumptionCache {
             ExprNode::Floor(inner) | ExprNode::Ceiling(inner) | ExprNode::Sign(inner) => {
                 self.compute_real_to_integer(arena, inner)
             }
-            // At a pole for every allowed value of the argument (`Γ(n)`,
-            // `ψ(n)`, `ln Γ(n)`, `ψ⁽ᵏ⁾(n)` for an integer `n ≤ 0`; `Ei 0`,
-            // `Ci 0`; `ln 0` in `compute_ln`): `zoo` or `±oo` (SymPy
-            // `gamma(-2)` → `zoo`), nowhere real or finite, which up to 0.40
-            // these were called.
-            ExprNode::Gamma(inner)
-            | ExprNode::Digamma(inner)
-            | ExprNode::LogGamma(inner)
-            | ExprNode::Polygamma(_, inner)
-                if self.is_nonpositive_integer(arena, inner) =>
-            {
-                Assumptions::default()
-            }
-            ExprNode::Ei(inner) | ExprNode::Ci(inner)
-                if self.compute(arena, inner).query(Props::ZERO) == Some(true) =>
-            {
-                Assumptions::default()
-            }
-            ExprNode::Gamma(inner)
-            | ExprNode::Digamma(inner)
-            | ExprNode::Erf(inner)
-            | ExprNode::Erfc(inner)
-            | ExprNode::Heaviside(inner)
-            | ExprNode::Si(inner)
-            | ExprNode::Ei(inner)
-            | ExprNode::Zeta(inner) => self.compute_real_to_real(arena, inner),
-            ExprNode::LogGamma(inner) | ExprNode::Ci(inner) | ExprNode::Li(inner) => {
-                self.compute_positive_to_real(arena, inner)
-            }
-            ExprNode::Polygamma(n, x) => self.compute_polygamma(arena, n, x),
-            ExprNode::Atan2(a, b) => self.compute_all_real_to_real(arena, &[a, b]),
-            ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
-                self.compute_all_real_to_real(arena, args)
-            }
             // ∫ₐᵇ f dx is real when the integrand and both bounds are real
             // (convergence is not asserted here — only the codomain).
             ExprNode::DefiniteIntegral(body, _, lo, hi) => {
                 self.compute_all_real_to_real(arena, &[body, lo, hi])
             }
-            _ => Assumptions::default(), // Apply, Derivative, Integral, formal nodes, …
+            // Every other function by its table entry (`Γ`, `erf`, `Si`,
+            // `ln Γ`, `ψ⁽ᵐ⁾`, `min`, the library functions, …); a user
+            // function, `Derivative`, `Integral`, formal nodes: nothing.
+            _ => match node.func(arena) {
+                Some((f, args)) => self.compute_func(arena, f, &args),
+                None => Assumptions::default(),
+            },
         };
 
         // Close the handler's facts under the implication rules *before*
@@ -2156,53 +2129,137 @@ impl AssumptionCache {
         a
     }
 
-    /// Functions that map reals to reals (and complex to complex).
-    fn compute_real_to_real(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
-        let inner_a = self.compute(arena, inner);
+    /// A function by its entry in the function table: real on its
+    /// [`RealOn`] domain, finite complex where the variant says so, and
+    /// nothing at all where an argument is known to be at a pole
+    /// ([`Poles`]: `Γ(n)`, `ψ(n)`, `ln Γ(n)`, `ψ⁽ᵏ⁾(n)` for an integer
+    /// `n ≤ 0`, `Ei 0`, `Ci 0` are `zoo` or `±oo`, nowhere real or finite,
+    /// which up to 0.40 they were called).  The one handler of the special
+    /// functions without a handler of their own: up to 0.48 a hand list of
+    /// node variants, which the library functions were missing from
+    /// (`erfi(x)`, `Shi(x)`, `besselj(2, x)` for a real `x` were not known
+    /// real).
+    ///
+    /// Realness is claimed on finite arguments only (`ln Γ(oo) = oo`,
+    /// called real up to 0.40); a real order of `ψ⁽ⁿ⁾` is required
+    /// (`polygamma(i, 2)`, SymPy's generalised polygamma `1.0747 + 1.9380i`,
+    /// was called real up to 0.40).
+    ///
+    /// A function of constant arguments whose special values the
+    /// constructors do not all fold ([`Constants::Evaluated`]) gets no
+    /// claim: it is a number for evaluation to decide, and an unfolded
+    /// exact zero (`subfactorial(1)`, `bernoulli(7)`, `chebyshev_t(3, 0)`,
+    /// `rising_factorial(−3, 7)`, `B(1/2, −1/2)`) called real would let the
+    /// generic rules for `1/c` and for the poles of `Γ` and `B` treat a
+    /// hidden 0 as a nonzero real (`√2/subfactorial(1)` called real).
+    fn compute_func(&mut self, arena: &Arena, f: Func, args: &[ExprId]) -> Assumptions {
+        let spec = f.spec();
+        let Some((&last, init)) = args.split_last() else {
+            return Assumptions::default();
+        };
+        if !is_tabled(spec.real_on) || self.at_pole(arena, spec.poles, args) {
+            return Assumptions::default();
+        }
+        if spec.constants == Constants::Evaluated && args.iter().all(|&c| is_constant(arena, c)) {
+            return Assumptions::default();
+        }
+        let facts: smallvec::SmallVec<[Assumptions; 4]> =
+            args.iter().map(|&c| self.compute(arena, c)).collect();
+        let holds = |a: &Assumptions, p: Props| a.query(p) == Some(true);
+        let all = |p: Props| facts.iter().all(|a| holds(a, p));
+        let init_real = facts[..init.len()].iter().all(|a| holds(a, Props::REAL));
+        let last_a = facts[init.len()];
+        let (real, complex) = match spec.real_on {
+            RealOn::Reals => (all(Props::REAL), all(Props::COMPLEX)),
+            RealOn::RealLine => (all(Props::REAL), false),
+            RealOn::PositiveReals => (
+                init_real && holds(&last_a, Props::POSITIVE) && !self.may_be_infinite(arena, last),
+                holds(&last_a, Props::COMPLEX),
+            ),
+            RealOn::NonNegativeReals => (
+                init_real
+                    && holds(&last_a, Props::NONNEGATIVE)
+                    && !self.may_be_infinite(arena, last),
+                holds(&last_a, Props::COMPLEX),
+            ),
+            RealOn::BelowOne => (
+                init_real && holds(&last_a, Props::REAL) && self.known_below_one(arena, last),
+                holds(&last_a, Props::COMPLEX),
+            ),
+            RealOn::UnitInterval { closed } => (
+                all(Props::REAL) && self.known_in_unit_interval(arena, last, closed),
+                false,
+            ),
+            RealOn::Polynomial { degree } => {
+                let d = usize::from(degree);
+                let degree_ok = facts
+                    .get(d)
+                    .is_some_and(|a| holds(a, Props::INTEGER) && holds(a, Props::NONNEGATIVE));
+                let others =
+                    |p: Props| facts.iter().enumerate().all(|(i, a)| i == d || holds(a, p));
+                (
+                    degree_ok && others(Props::REAL),
+                    degree_ok && others(Props::COMPLEX),
+                )
+            }
+            RealOn::BesselOrder => {
+                let order = facts[0];
+                let integer_order = holds(&order, Props::INTEGER) && holds(&last_a, Props::REAL);
+                let positive_x = holds(&order, Props::REAL)
+                    && holds(&last_a, Props::POSITIVE)
+                    && !self.may_be_infinite(arena, last);
+                (
+                    args.len() == 2 && (integer_order || positive_x),
+                    all(Props::COMPLEX),
+                )
+            }
+            RealOn::NonNegativeIntegers => (all(Props::INTEGER) && all(Props::NONNEGATIVE), false),
+            RealOn::AtLeastOne
+            | RealOn::IntegerValued
+            | RealOn::Everywhere
+            | RealOn::Custom
+            | RealOn::Unclaimed => (false, false),
+        };
         let mut a = Assumptions::default();
         a.known_true |= Props::COMMUTATIVE;
-        if inner_a.query(Props::REAL) == Some(true) {
+        if real {
             a.known_true |= Props::REAL;
         }
-        if inner_a.query(Props::COMPLEX) == Some(true) {
+        // Where the poles are not located, no argument can be known off them.
+        if complex && spec.poles != Poles::Other {
             a.known_true |= Props::COMPLEX;
         }
         a.forward_chain();
         a
     }
 
-    /// Functions that are real on the positive reals (`ln Γ`, `Ci`, `li`):
-    /// on the finite ones (`ln Γ(oo) = oo`, called real up to 0.40).
-    fn compute_positive_to_real(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
-        let inner_a = self.compute(arena, inner);
-        let mut a = Assumptions::default();
-        a.known_true |= Props::COMMUTATIVE;
-        if inner_a.query(Props::POSITIVE) == Some(true) && !self.may_be_infinite(arena, inner) {
-            a.known_true |= Props::REAL;
+    /// Is an argument known to be at a pole of `poles`?
+    fn at_pole(&mut self, arena: &Arena, poles: Poles, args: &[ExprId]) -> bool {
+        let arg = |i: u8| args.get(usize::from(i)).copied();
+        match poles {
+            Poles::NonPositiveIntegers(which) => which
+                .iter()
+                .filter_map(|&i| arg(i))
+                .any(|c| self.is_nonpositive_integer(arena, c)),
+            Poles::Zero(i) => {
+                arg(i).is_some_and(|c| self.compute(arena, c).query(Props::ZERO) == Some(true))
+            }
+            Poles::One(i) => arg(i).is_some_and(|c| {
+                arena
+                    .as_num(c)
+                    .is_some_and(|q| *q == crate::base::numeric::qi(1))
+            }),
+            Poles::None | Poles::Other => false,
         }
-        if inner_a.query(Props::COMPLEX) == Some(true) {
-            a.known_true |= Props::COMPLEX;
-        }
-        a.forward_chain();
-        a
     }
 
-    /// `ψ⁽ⁿ⁾(x)`: real for a real order `n` and a finite positive `x`.  Up to
-    /// 0.40 the order was not looked at: `polygamma(i, 2)` (SymPy's
-    /// generalised polygamma, `1.0747 + 1.9380i`) was called real.
-    fn compute_polygamma(&mut self, arena: &Arena, n: ExprId, x: ExprId) -> Assumptions {
-        let n_real = self.compute(arena, n).query(Props::REAL) == Some(true);
-        let x_a = self.compute(arena, x);
-        let mut a = Assumptions::default();
-        a.known_true |= Props::COMMUTATIVE;
-        if n_real && x_a.query(Props::POSITIVE) == Some(true) && !self.may_be_infinite(arena, x) {
-            a.known_true |= Props::REAL;
+    /// Is the real `e` known to be below 1?  Known non-positive, or a
+    /// rational literal `< 1`.
+    fn known_below_one(&mut self, arena: &Arena, e: ExprId) -> bool {
+        if let Some(q) = arena.as_num(e) {
+            return *q < crate::base::numeric::qi(1);
         }
-        if x_a.query(Props::COMPLEX) == Some(true) {
-            a.known_true |= Props::COMPLEX;
-        }
-        a.forward_chain();
-        a
+        self.compute(arena, e).query(Props::NONPOSITIVE) == Some(true)
     }
 
     /// `re z`, `im z`: real for a finite `z`, extended real always (`re oo =
@@ -2290,17 +2347,53 @@ impl AssumptionCache {
     }
 }
 
+/// Is `e` free of symbols (a number, a constant, a function of them)?
+/// Iterative, stopping at the first symbol.
+fn is_constant(arena: &Arena, e: ExprId) -> bool {
+    let mut stack = vec![e];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Symbol(_) => return false,
+            node => node.for_each_child(|c| stack.push(c)),
+        }
+    }
+    true
+}
+
+/// Does [`AssumptionCache::compute_func`] claim anything for functions
+/// real on `real_on` (the variants it reads; the others have handlers of
+/// their own, or no claim)?
+fn is_tabled(real_on: RealOn) -> bool {
+    match real_on {
+        RealOn::Reals
+        | RealOn::RealLine
+        | RealOn::PositiveReals
+        | RealOn::NonNegativeReals
+        | RealOn::BelowOne
+        | RealOn::UnitInterval { .. }
+        | RealOn::Polynomial { .. }
+        | RealOn::BesselOrder
+        | RealOn::NonNegativeIntegers => true,
+        RealOn::AtLeastOne
+        | RealOn::IntegerValued
+        | RealOn::Everywhere
+        | RealOn::Custom
+        | RealOn::Unclaimed => false,
+    }
+}
+
 /// The children of `node` whose assumptions [`AssumptionCache::compute`]
 /// asks for (its dispatch, mirrored), in the order the handler reads them.
 /// A child missing here is still computed, by a recursive call.
-fn queried_children(node: &ExprNode) -> smallvec::SmallVec<[ExprId; 6]> {
+fn queried_children(arena: &Arena, node: &ExprNode) -> smallvec::SmallVec<[ExprId; 6]> {
     use smallvec::smallvec;
     match node {
         ExprNode::Add(args) | ExprNode::Mul(args) => args.clone(),
-        ExprNode::Min(args) | ExprNode::Max(args) => args.iter().copied().collect(),
-        ExprNode::Pow(a, b) | ExprNode::Polygamma(a, b) | ExprNode::Atan2(a, b) => {
-            smallvec![*a, *b]
-        }
+        ExprNode::Pow(a, b) => smallvec![*a, *b],
         ExprNode::DefiniteIntegral(body, _, lo, hi) => smallvec![*body, *lo, *hi],
         ExprNode::Neg(x)
         | ExprNode::Sin(x)
@@ -2323,19 +2416,12 @@ fn queried_children(node: &ExprNode) -> smallvec::SmallVec<[ExprId; 6]> {
         | ExprNode::Conjugate(x)
         | ExprNode::Floor(x)
         | ExprNode::Ceiling(x)
-        | ExprNode::Sign(x)
-        | ExprNode::Gamma(x)
-        | ExprNode::Digamma(x)
-        | ExprNode::Erf(x)
-        | ExprNode::Erfc(x)
-        | ExprNode::Heaviside(x)
-        | ExprNode::Si(x)
-        | ExprNode::Ei(x)
-        | ExprNode::Zeta(x)
-        | ExprNode::LogGamma(x)
-        | ExprNode::Ci(x)
-        | ExprNode::Li(x) => smallvec![*x],
-        _ => smallvec::SmallVec::new(),
+        | ExprNode::Sign(x) => smallvec![*x],
+        // The functions of the table (`compute_func`): every argument.
+        _ => match node.func(arena) {
+            Some((f, args)) if is_tabled(f.spec().real_on) => args.into_iter().collect(),
+            _ => smallvec::SmallVec::new(),
+        },
     }
 }
 

@@ -1,7 +1,32 @@
 //! Error types for symplex.
 
+use crate::base::budget::BudgetKind;
+
 /// Errors that can occur during symbolic computation.
-#[derive(Debug, thiserror::Error)]
+///
+/// Code that acts on a failure matches its variant, never its message:
+/// a budget that ran out is [`BudgetExhausted`](Self::BudgetExhausted), a
+/// matrix whose entries outgrew the expression budget is
+/// [`ExpressionSwell`](Self::ExpressionSwell), a matrix without a basis
+/// of eigenvectors is [`NotDiagonalizable`](Self::NotDiagonalizable).
+/// Up to 0.48 these were `ComputationFailed` with a reason the callers
+/// searched for `"budget"`, `"expression swell"` or `"not
+/// diagonalizable"`; the messages are unchanged.
+///
+/// ```
+/// use symplex::errors::SymplexError;
+/// use symplex::prelude::*;
+/// use symplex::matrix::Matrix;
+///
+/// let ctx = Context::new();
+/// let m = Matrix::from_i64(&ctx, &[&[1, 1], &[0, 1]]).unwrap();
+/// let err = m.diagonalize().unwrap_err();
+/// assert!(matches!(err, SymplexError::NotDiagonalizable { .. }));
+/// assert!(err.to_string().contains("matrix is not diagonalizable"));
+/// let copy = err.clone();
+/// assert_eq!(copy.to_string(), err.to_string());
+/// ```
+#[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SymplexError {
     /// Contradictory assumptions were specified for a symbol.
@@ -99,6 +124,42 @@ pub enum SymplexError {
         /// The operation that rejected its input.
         operation: &'static str,
         /// What was wrong with it.
+        reason: String,
+    },
+
+    /// A deterministic work budget ran out before the computation ended
+    /// (see [`BudgetKind`]).  The same input gives the same outcome on any
+    /// machine and in any context.
+    #[error("{operation} could not be computed: {}", kind.reason())]
+    BudgetExhausted {
+        /// The operation that stopped.
+        operation: &'static str,
+        /// Which budget ran out.
+        kind: BudgetKind,
+    },
+
+    /// Intermediate expressions outgrew the expression budget (`nodes`
+    /// tree nodes, [`EXPRESSION_BUDGET`](crate::config::EXPRESSION_BUDGET)
+    /// for the matrix operations).
+    #[error(
+        "{operation} could not be computed: expression swell: intermediate result exceeds the \
+         budget of {nodes} expression nodes; simplify the input or substitute numeric values \
+         first"
+    )]
+    ExpressionSwell {
+        /// The operation that stopped.
+        operation: &'static str,
+        /// The budget that was exceeded, in expression-tree nodes.
+        nodes: usize,
+    },
+
+    /// The matrix has no basis of eigenvectors (a Jordan block of size
+    /// greater than one), so it is not diagonalizable.
+    #[error("{operation} could not be computed: matrix is not diagonalizable: {reason}")]
+    NotDiagonalizable {
+        /// The operation that needed a diagonalization.
+        operation: &'static str,
+        /// How the eigenvectors fell short.
         reason: String,
     },
 }

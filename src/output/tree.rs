@@ -33,6 +33,7 @@ use num_rational::Ratio;
 use serde::{Deserialize, Serialize};
 
 use crate::base::arena::Arena;
+use crate::base::interval::IntervalKind;
 use crate::base::node::{ExprId, ExprNode};
 
 /// A serializable expression tree.
@@ -441,7 +442,8 @@ pub enum ExprTree {
         start: Box<ExprTree>,
         /// Right endpoint.
         end: Box<ExprTree>,
-        /// Bitfield: 0x01 = left open, 0x02 = right open.
+        /// Bitfield: 0x01 = left open, 0x02 = right open (other bits are
+        /// ignored when the tree is read back).
         flags: u8,
     },
     /// A finite set of elements {a, b, c, ...}.
@@ -820,10 +822,10 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         },
         ExprNode::EmptySet => ExprTree::EmptySet,
         ExprNode::UniversalSet => ExprTree::UniversalSet,
-        ExprNode::Interval(start, end, flags) => ExprTree::Interval {
+        ExprNode::Interval(start, end, kind) => ExprTree::Interval {
             start: Box::new(expr_to_tree(arena, start)),
             end: Box::new(expr_to_tree(arena, end)),
-            flags,
+            flags: kind.flag_bits(),
         },
         ExprNode::FiniteSet(elems) => ExprTree::FiniteSet {
             elements: elems.iter().map(|&e| expr_to_tree(arena, e)).collect(),
@@ -958,7 +960,7 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             }
             let r = Ratio::new(n, d);
             let nid = arena.intern_num(r);
-            arena.intern(ExprNode::Num(nid))
+            arena.make(ExprNode::Num(nid))
         }
         ExprTree::Symbol { name } => arena.symbol(name),
         ExprTree::Pi => arena.pi,
@@ -1160,12 +1162,12 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Min { args } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
                 args.iter().map(|a| tree_to_expr(arena, a)).collect();
-            arena.intern(ExprNode::Min(ids))
+            arena.make(ExprNode::Min(ids))
         }
         ExprTree::Max { args } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
                 args.iter().map(|a| tree_to_expr(arena, a)).collect();
-            arena.intern(ExprNode::Max(ids))
+            arena.make(ExprNode::Max(ids))
         }
         // `to_tree` writes the built-in `Factorial` / `Binomial` nodes as
         // `Apply` (as the parser reads them); map them back so the round
@@ -1189,17 +1191,17 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let sym_id = arena.symbols.intern(name);
             let arg_ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
             let sv: smallvec::SmallVec<[ExprId; 2]> = arg_ids.into_iter().collect();
-            arena.intern(ExprNode::Apply(sym_id, sv))
+            arena.make(ExprNode::Apply(sym_id, sv))
         }
         ExprTree::Derivative { body, var } => {
             let b = tree_to_expr(arena, body);
             let v = tree_to_expr(arena, var);
-            arena.intern(ExprNode::Derivative(b, v))
+            arena.make(ExprNode::Derivative(b, v))
         }
         ExprTree::Integral { body, var } => {
             let b = tree_to_expr(arena, body);
             let v = tree_to_expr(arena, var);
-            arena.intern(ExprNode::Integral(b, v))
+            arena.make(ExprNode::Integral(b, v))
         }
         ExprTree::DefiniteIntegral {
             body,
@@ -1223,7 +1225,7 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let v = tree_to_expr(arena, var);
             let lo = tree_to_expr(arena, lower);
             let hi = tree_to_expr(arena, upper);
-            arena.intern(ExprNode::Sum(b, v, lo, hi))
+            arena.make(ExprNode::Sum(b, v, lo, hi))
         }
         ExprTree::Product_ {
             body,
@@ -1235,7 +1237,7 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let v = tree_to_expr(arena, var);
             let lo = tree_to_expr(arena, lower);
             let hi = tree_to_expr(arena, upper);
-            arena.intern(ExprNode::Product_(b, v, lo, hi))
+            arena.make(ExprNode::Product_(b, v, lo, hi))
         }
         ExprTree::BoolTrue => arena.bool_true,
         ExprTree::BoolFalse => arena.bool_false,
@@ -1278,15 +1280,19 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
                 .collect();
             arena.piecewise(&pairs)
         }
-        ExprTree::EmptySet => arena.intern(ExprNode::EmptySet),
-        ExprTree::UniversalSet => arena.intern(ExprNode::UniversalSet),
+        ExprTree::EmptySet => arena.make(ExprNode::EmptySet),
+        ExprTree::UniversalSet => arena.make(ExprNode::UniversalSet),
         // The set constructors are canonical: a tree edited (or written by
         // hand) to `{1, 1}` or `[5, 3]` reads back as `{1}` or `∅`, `==` to
         // the set built directly.
         ExprTree::Interval { start, end, flags } => {
             let s = tree_to_expr(arena, start);
             let e = tree_to_expr(arena, end);
-            arena.interval(s, e, *flags)
+            arena.make(ExprNode::Interval(
+                s,
+                e,
+                IntervalKind::from_flag_bits(*flags),
+            ))
         }
         ExprTree::FiniteSet { elements } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
@@ -1312,7 +1318,7 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let b = tree_to_expr(arena, body);
             let v = tree_to_expr(arena, var);
             let p = tree_to_expr(arena, point);
-            arena.intern(ExprNode::Limit(b, v, p))
+            arena.make(ExprNode::Limit(b, v, p))
         }
         ExprTree::Series {
             body,
@@ -1324,25 +1330,25 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let v = tree_to_expr(arena, var);
             let p = tree_to_expr(arena, point);
             let o = tree_to_expr(arena, order);
-            arena.intern(ExprNode::Series(b, v, p, o))
+            arena.make(ExprNode::Series(b, v, p, o))
         }
         ExprTree::LaplaceTransform { body, t, s } => {
             let b = tree_to_expr(arena, body);
             let ti = tree_to_expr(arena, t);
             let si = tree_to_expr(arena, s);
-            arena.intern(ExprNode::LaplaceTransform(b, ti, si))
+            arena.make(ExprNode::LaplaceTransform(b, ti, si))
         }
         ExprTree::InverseLaplaceTransform { body, s, t } => {
             let b = tree_to_expr(arena, body);
             let si = tree_to_expr(arena, s);
             let ti = tree_to_expr(arena, t);
-            arena.intern(ExprNode::InverseLaplaceTransform(b, si, ti))
+            arena.make(ExprNode::InverseLaplaceTransform(b, si, ti))
         }
         ExprTree::Residue { body, var, point } => {
             let b = tree_to_expr(arena, body);
             let v = tree_to_expr(arena, var);
             let p = tree_to_expr(arena, point);
-            arena.intern(ExprNode::Residue(b, v, p))
+            arena.make(ExprNode::Residue(b, v, p))
         }
         ExprTree::RootOf { poly, var, index } => {
             let p = tree_to_expr(arena, poly);
@@ -1351,24 +1357,24 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
                 None => root_of_legacy_var(arena, p),
             };
             let i = tree_to_expr(arena, index);
-            arena.intern(ExprNode::RootOf(p, v, i))
+            arena.make(ExprNode::RootOf(p, v, i))
         }
         ExprTree::DSolve { expr, func, var } => {
             let e = tree_to_expr(arena, expr);
             let f = tree_to_expr(arena, func);
             let v = tree_to_expr(arena, var);
-            arena.intern(ExprNode::DSolve(e, f, v))
+            arena.make(ExprNode::DSolve(e, f, v))
         }
         ExprTree::RootSum { poly, body, sumvar } => {
             let p = tree_to_expr(arena, poly);
             let b = tree_to_expr(arena, body);
             let s = tree_to_expr(arena, sumvar);
-            arena.intern(ExprNode::RootSum(p, b, s))
+            arena.make(ExprNode::RootSum(p, b, s))
         }
         ExprTree::ConditionSet { var, condition } => {
             let v = tree_to_expr(arena, var);
             let c = tree_to_expr(arena, condition);
-            arena.intern(ExprNode::ConditionSet(v, c))
+            arena.make(ExprNode::ConditionSet(v, c))
         }
         ExprTree::Subs { body, var, point } => {
             let b = tree_to_expr(arena, body);
@@ -1379,7 +1385,7 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::ImageSet { var, body } => {
             let v = tree_to_expr(arena, var);
             let b = tree_to_expr(arena, body);
-            arena.intern(ExprNode::ImageSet(v, b))
+            arena.make(ExprNode::ImageSet(v, b))
         }
     }
 }
@@ -1587,7 +1593,8 @@ impl ExprTree {
     fn srepr_trailing(&self) -> Option<String> {
         match self {
             ExprTree::Interval { flags, .. } => {
-                Some(format!(", {}, {}", flags & 0x01 != 0, flags & 0x02 != 0))
+                let kind = IntervalKind::from_flag_bits(*flags);
+                Some(format!(", {}, {}", kind.lower_open(), kind.upper_open()))
             }
             ExprTree::ImageSet { .. } => Some("), Integers".to_string()),
             _ => None,
@@ -1670,11 +1677,14 @@ impl ExprTree {
             let id = nodes.len();
             let (head, children) = node.head_and_children();
             let label = match node {
-                ExprTree::Interval { flags, .. } => format!(
-                    "Interval('{}{}')",
-                    if flags & 0x01 != 0 { '(' } else { '[' },
-                    if flags & 0x02 != 0 { ')' } else { ']' }
-                ),
+                ExprTree::Interval { flags, .. } => {
+                    let kind = IntervalKind::from_flag_bits(*flags);
+                    format!(
+                        "Interval('{}{}')",
+                        if kind.lower_open() { '(' } else { '[' },
+                        if kind.upper_open() { ')' } else { ']' }
+                    )
+                }
                 ExprTree::ImageSet { .. } => "ImageSet".to_string(),
                 _ => head,
             };

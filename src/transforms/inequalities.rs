@@ -30,10 +30,8 @@ use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
-use crate::base::node::{
-    ExprId, ExprNode, INTERVAL_BOTH_CLOSED, INTERVAL_BOTH_OPEN, INTERVAL_LEFT_OPEN,
-    INTERVAL_RIGHT_OPEN,
-};
+use crate::base::interval::IntervalKind;
+use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
 
@@ -144,7 +142,7 @@ pub(crate) fn solve_inequality_over_reals(
             let ls = chain.leading_sign_of_original();
             let sign = ls.cmp(&0);
             return if rel.accepts(sign) {
-                Ok(arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN))
+                Ok(arena.interval(arena.neg_infinity, arena.infinity, IntervalKind::Open))
             } else {
                 Ok(arena.empty_set)
             };
@@ -337,7 +335,7 @@ fn solve_periodic_inequality(
         let all = sample_satisfies(arena, &branch, var, p, rel)?;
         let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
         return Ok(if all {
-            arena.interval(ninf, pinf, INTERVAL_BOTH_OPEN)
+            arena.interval(ninf, pinf, IntervalKind::Open)
         } else {
             arena.empty_set
         });
@@ -432,12 +430,12 @@ fn solve_periodic_inequality(
     };
     if (0..2 * k).all(included) {
         let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
-        return Ok(arena.interval(ninf, pinf, INTERVAL_BOTH_OPEN));
+        return Ok(arena.interval(ninf, pinf, IntervalKind::Open));
     }
     // Every arc in, some points out: the line without their families.
     if (0..k).all(|i| arc_in[i]) {
         let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
-        let line = arena.interval(ninf, pinf, INTERVAL_BOTH_OPEN);
+        let line = arena.interval(ninf, pinf, IntervalKind::Open);
         let mut holes: Vec<ExprId> = Vec::new();
         for (i, c) in points.iter().take(k).enumerate() {
             if !point_in[i] {
@@ -496,15 +494,9 @@ fn solve_periodic_inequality(
         let turns = num_traits::ToPrimitive::to_i64(&turns).unwrap_or(0);
         let lo = shifted(arena, points[lo_pt].id, period, lo_wraps - turns);
         let hi = shifted(arena, points[hi_pt].id, period, hi_wraps - turns);
-        let mut flags = INTERVAL_BOTH_CLOSED;
-        if lo_open {
-            flags |= INTERVAL_LEFT_OPEN;
-        }
-        if hi_open {
-            flags |= INTERVAL_RIGHT_OPEN;
-        }
+        let kind = IntervalKind::from_open_ends(lo_open, hi_open);
         parts.push(crate::transforms::sets::periodic_interval_set(
-            arena, lo, hi, flags, period,
+            arena, lo, hi, kind, period,
         ));
     }
     let union = arena.set_union(&parts);
@@ -544,26 +536,29 @@ fn periodic_zeros_in_period(
     period: ExprId,
     period_f: f64,
 ) -> Result<Option<Vec<ExprId>>, SymplexError> {
-    use crate::transforms::solve::SolveOutcome;
+    use crate::transforms::solve::{Reason, RootSet as Roots, Solutions};
     let scope = arena.finite_set(&[e, var]);
     let zero = arena.zero;
     let n = crate::transforms::sets::image_param(arena, zero, scope);
-    let sols = match crate::transforms::solve::solve_general(arena, e, var, n) {
-        SolveOutcome::Identity => return Ok(None),
-        SolveOutcome::NoSolution(_) => return Ok(Some(Vec::new())),
-        SolveOutcome::Unresolved(reason) => {
-            return Err(failed(format!(
-                "could not find the zeros of {}: {reason}",
-                arena.display(e)
-            )));
-        }
-        SolveOutcome::Solutions(s) if s.is_empty() => {
+    let outcome = crate::transforms::solve::solve_general(arena, e, var, n);
+    let sols = match outcome {
+        Solutions::Complete(Roots::All) => return Ok(None),
+        Solutions::Complete(Roots::Empty(_)) => return Ok(Some(Vec::new())),
+        complete @ Solutions::Complete(_) => complete.claimed_points(),
+        // every zero is needed: a partial outcome is refused
+        Solutions::Refused(Reason::NotFound) | Solutions::Partial(..) => {
             return Err(failed(format!(
                 "could not find the zeros of {}",
                 arena.display(e)
             )));
         }
-        SolveOutcome::Solutions(s) => s,
+        Solutions::Refused(reason) => {
+            return Err(failed(format!(
+                "could not find the zeros of {}: {}",
+                arena.display(e),
+                reason.text()
+            )));
+        }
     };
     let margin = 1e-12 * (1.0 + period_f);
     let mut out: Vec<ExprId> = Vec::new();
@@ -572,7 +567,7 @@ fn periodic_zeros_in_period(
         (z.re.is_finite() && z.im.is_finite()).then_some((z.re, z.im))
     };
     for s in sols {
-        let v = crate::transforms::eval::eval(arena, s.value);
+        let v = crate::transforms::eval::eval(arena, s);
         if walk::contains(arena, v, n) {
             let Some(crate::transforms::sets::Lattice { step, offset }) =
                 crate::transforms::sets::image_linear_parts(arena, n, v)
@@ -685,7 +680,6 @@ pub(crate) fn solveset(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
 
 /// [`solveset`] before the restriction to the declared domain of `var`.
 fn solveset_over_all_values(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    use crate::transforms::solve::SolveOutcome;
     let unknown = |arena: &mut Arena| {
         let zero = arena.zero;
         let cond = arena.eq_(expr, zero);
@@ -694,19 +688,9 @@ fn solveset_over_all_values(arena: &mut Arena, expr: ExprId, var: ExprId) -> Exp
     if !is_algebraic_in(arena, expr, var) && walk::has_free_var(arena, expr, var) {
         return general_solution_set(arena, expr, var, true).unwrap_or_else(|| unknown(arena));
     }
-    match crate::transforms::solve::solve_classified(arena, expr, var) {
-        SolveOutcome::Identity => arena.universal_set,
-        SolveOutcome::NoSolution(_) => arena.empty_set,
-        SolveOutcome::Unresolved(_) => unknown(arena),
-        SolveOutcome::Solutions(solutions) => {
-            let root_ids: Vec<ExprId> = solutions.into_iter().map(|s| s.value).collect();
-            if root_ids.is_empty() {
-                unknown(arena)
-            } else {
-                arena.finite_set(&root_ids)
-            }
-        }
-    }
+    // SymPy's convention: the set, the set ∪ ConditionSet when partial,
+    // the ConditionSet when refused.
+    crate::transforms::solve::solve_classified(arena, expr, var).into_set(arena, var, expr)
 }
 
 /// `expr rel 0` for an expression with non-real coefficients (`i`), which
@@ -886,7 +870,6 @@ pub(crate) fn general_solution_set(
     var: ExprId,
     over_c: bool,
 ) -> Option<ExprId> {
-    use crate::transforms::solve::SolveOutcome;
     match general_solve_set(arena, expr, var, over_c) {
         Some(GeneralSet::Set(s)) => Some(s),
         Some(GeneralSet::Refused) => {
@@ -894,15 +877,13 @@ pub(crate) fn general_solution_set(
             let Some(GeneralSet::Set(g_set)) = general_solve_set(arena, g, var, over_c) else {
                 return None;
             };
+            // every pole is needed: the zeros of each denominator, complete
             let mut poles: Vec<ExprId> = Vec::new();
             for q in denominators {
-                match crate::transforms::solve::solve_classified(arena, q, var) {
-                    SolveOutcome::Solutions(s) if !s.is_empty() => {
-                        poles.extend(s.into_iter().map(|s| s.value));
-                    }
-                    SolveOutcome::NoSolution(_) => {}
-                    _ => return None,
-                }
+                poles.extend(
+                    crate::transforms::solve::solve_classified(arena, q, var)
+                        .points_if_complete()?,
+                );
             }
             let mut excluded = Vec::new();
             for p in poles {
@@ -941,7 +922,7 @@ fn general_solve_set(
     var: ExprId,
     over_c: bool,
 ) -> Option<GeneralSet> {
-    use crate::transforms::solve::SolveOutcome;
+    use crate::transforms::solve::{Reason, Solutions};
     let scope = arena.finite_set(&[expr, var]);
     let zero = arena.zero;
     let n = crate::transforms::sets::image_param(arena, zero, scope);
@@ -951,28 +932,14 @@ fn general_solve_set(
         crate::transforms::solve::solve_general(arena, expr, var, n)
     };
     match outcome {
-        SolveOutcome::Identity => Some(GeneralSet::Set(arena.universal_set)),
-        SolveOutcome::NoSolution(_) => Some(GeneralSet::Set(arena.empty_set)),
-        SolveOutcome::Unresolved(_) => Some(GeneralSet::Refused),
-        SolveOutcome::Solutions(sols) if sols.is_empty() => None,
-        SolveOutcome::Solutions(sols) => {
-            let mut plain: Vec<ExprId> = Vec::new();
-            let mut parts: Vec<ExprId> = Vec::new();
-            for s in sols {
-                let v = crate::transforms::eval::eval(arena, s.value);
-                if walk::has_free_var(arena, v, n) {
-                    parts.push(crate::transforms::sets::image_set(arena, n, v));
-                } else {
-                    plain.push(v);
-                }
-            }
-            if !plain.is_empty() {
-                parts.push(arena.finite_set(&plain));
-            }
-            let union = arena.set_union(&parts);
-            Some(GeneralSet::Set(crate::transforms::sets::simplify_set(
-                arena, union,
-            )))
+        Solutions::Refused(Reason::NotFound) => None,
+        Solutions::Refused(_) => Some(GeneralSet::Refused),
+        // (the union with the condition set; `Solutions::into_set`)
+        partial @ Solutions::Partial(..) => {
+            Some(GeneralSet::Set(partial.into_set(arena, var, expr)))
+        }
+        complete @ Solutions::Complete(_) => {
+            Some(GeneralSet::Set(complete.into_set(arena, var, expr)))
         }
     }
 }
@@ -1241,14 +1208,8 @@ fn sign_chart(
         } else {
             (points[i].id, point_in[i])
         };
-        let mut flags = INTERVAL_BOTH_CLOSED;
-        if !lo_closed {
-            flags |= INTERVAL_LEFT_OPEN;
-        }
-        if !hi_closed {
-            flags |= INTERVAL_RIGHT_OPEN;
-        }
-        pieces.push(arena.interval(lo, hi, flags));
+        let kind = IntervalKind::from_open_ends(!lo_closed, !hi_closed);
+        pieces.push(arena.interval(lo, hi, kind));
     }
     for (i, c) in points.iter().enumerate() {
         if point_in[i] && !interval_in[i] && !interval_in[i + 1] {
@@ -1351,7 +1312,7 @@ fn numer_denom(arena: &mut Arena, e: ExprId) -> (ExprId, ExprId) {
 /// roots in the declared domain of `var`, `Ex::solve`'s, and got the real
 /// ones only because the inversions it reached took `var` real anyway.)
 fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, SymplexError> {
-    use crate::transforms::solve::{Domain, SolveCx, SolveOutcome};
+    use crate::transforms::solve::{Domain, Missing, Reason, Solutions, SolveCx};
 
     if !walk::contains(arena, e, var) {
         let ev = crate::transforms::eval::eval(arena, e);
@@ -1396,21 +1357,22 @@ fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, Symp
         if n_real == 0 {
             return Ok(RootSet::Finite(Vec::new()));
         }
-        let candidates = crate::transforms::solve::solve(arena, e, var);
+        // (Checked against the Sturm count below.)
+        let candidates = crate::transforms::solve::known_real_roots(arena, e, var);
         let mut reals: Vec<(ExprId, Q)> = Vec::new();
         for s in candidates {
-            match value_sign(arena, s.value) {
+            match value_sign(arena, s) {
                 ValueSign::NonReal | ValueSign::Undefined => continue,
                 _ => {}
             }
-            let Some(a) = approx_real(arena, s.value) else {
+            let Some(a) = approx_real(arena, s) else {
                 return Err(failed(format!(
                     "root {} cannot be evaluated numerically",
-                    arena.display(s.value)
+                    arena.display(s)
                 )));
             };
             if !reals.iter().any(|(_, b)| approx_same(&a, b)) {
-                reals.push((s.value, a));
+                reals.push((s, a));
             }
         }
         if reals.len() != n_real {
@@ -1425,30 +1387,39 @@ fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, Symp
         ));
     }
 
-    match crate::transforms::solve::solve_with(arena, e, var, &SolveCx::principal(Domain::Real)) {
-        SolveOutcome::Identity => Ok(RootSet::Everywhere),
-        SolveOutcome::NoSolution(_) => Ok(RootSet::Finite(Vec::new())),
-        SolveOutcome::Solutions(s) if s.is_empty() => Err(failed(format!(
-            "could not find the zeros of {}",
-            arena.display(e)
+    // A sign chart needs every zero: a partial outcome is an error.
+    let because = |reason: &Reason| match reason {
+        Reason::NotFound => String::new(),
+        other => format!(": {}", other.text()),
+    };
+    match crate::transforms::solve::solutions(arena, e, var, &SolveCx::principal(Domain::Real)) {
+        Solutions::Complete(crate::transforms::solve::RootSet::All) => Ok(RootSet::Everywhere),
+        Solutions::Complete(crate::transforms::solve::RootSet::Empty(_)) => {
+            Ok(RootSet::Finite(Vec::new()))
+        }
+        Solutions::Refused(reason) => Err(failed(format!(
+            "could not find the zeros of {}{}",
+            arena.display(e),
+            because(&reason)
         ))),
-        SolveOutcome::Unresolved(reason) => Err(failed(format!(
-            "could not find the zeros of {}: {reason}",
-            arena.display(e)
+        Solutions::Partial(_, Missing::Alternative(reason)) => Err(failed(format!(
+            "could not find all the zeros of {}{}",
+            arena.display(e),
+            because(&reason)
         ))),
-        SolveOutcome::Solutions(s) => {
+        complete @ Solutions::Complete(_) => {
             let mut out = Vec::new();
-            for sol in s {
-                match value_sign(arena, sol.value) {
+            for sol in complete.claimed_points() {
+                match value_sign(arena, sol) {
                     ValueSign::NonReal | ValueSign::Undefined => continue,
-                    ValueSign::Unknown if approx_real(arena, sol.value).is_none() => {
+                    ValueSign::Unknown if approx_real(arena, sol).is_none() => {
                         return Err(failed(format!(
                             "zero {} of {} cannot be located on the real line",
-                            arena.display(sol.value),
+                            arena.display(sol),
                             arena.display(e)
                         )));
                     }
-                    _ => out.push(sol.value),
+                    _ => out.push(sol),
                 }
             }
             Ok(RootSet::Finite(out))
@@ -2264,7 +2235,7 @@ fn try_solve_abs_inequality(
         return Some(match rel {
             Relation::Lt | Relation::Le => arena.empty_set,
             Relation::Gt | Relation::Ge => {
-                arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN)
+                arena.interval(arena.neg_infinity, arena.infinity, IntervalKind::Open)
             }
         });
     }
@@ -2285,16 +2256,16 @@ fn try_solve_abs_inequality(
     };
 
     Some(match rel {
-        Relation::Lt => arena.interval(lo, hi, INTERVAL_BOTH_OPEN),
-        Relation::Le => arena.interval(lo, hi, INTERVAL_BOTH_CLOSED),
+        Relation::Lt => arena.interval(lo, hi, IntervalKind::Open),
+        Relation::Le => arena.interval(lo, hi, IntervalKind::Closed),
         Relation::Gt => {
-            let left = arena.interval(arena.neg_infinity, lo, INTERVAL_BOTH_OPEN);
-            let right = arena.interval(hi, arena.infinity, INTERVAL_BOTH_OPEN);
+            let left = arena.interval(arena.neg_infinity, lo, IntervalKind::Open);
+            let right = arena.interval(hi, arena.infinity, IntervalKind::Open);
             arena.set_union(&[left, right])
         }
         Relation::Ge => {
-            let left = arena.interval(arena.neg_infinity, lo, INTERVAL_LEFT_OPEN);
-            let right = arena.interval(hi, arena.infinity, INTERVAL_RIGHT_OPEN);
+            let left = arena.interval(arena.neg_infinity, lo, IntervalKind::LeftOpen);
+            let right = arena.interval(hi, arena.infinity, IntervalKind::RightOpen);
             arena.set_union(&[left, right])
         }
     })

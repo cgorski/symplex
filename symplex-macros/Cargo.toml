@@ -16,6 +16,6 @@ categories = ["mathematics"]
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", default-features = false, features = ["parsing", "printing", "proc-macro", "derive", "full"] }
+syn = { version = "2", default-features = false, features = ["parsing", "printing", "proc-macro", "derive", "full", "clone-impls"] }
 quote = "1"
 proc-macro2 = "1"

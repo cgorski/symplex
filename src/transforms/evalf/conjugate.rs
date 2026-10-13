@@ -18,20 +18,21 @@
 //!
 //! * `conj(a + b) = conj a + conj b`, `conj(c·iᵏ·Π fⱼ) = c·(−1)ᵏ·iᵏ·Π conj fⱼ`
 //!   for a rational `c`;
-//! * `conj(bⁿ) = (conj b)ⁿ` for an integer `n`, and `conj(f(z)) =
-//!   f(conj z)` for `exp`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, and
-//!   (since 0.44, evaluated at non-real arguments) `ζ`, `Γ`, `ψ`, `ψ⁽ᵐ⁾`, `x!`,
-//!   `B`, `erf`, `erfc`, and (since 0.45) the entire `Si`, `Shi`, `erfi`,
-//!   Airy and Fresnel functions and the meromorphic `binomial` (`conj f(a,
-//!   b) = f(conj a, conj b)` with every argument conjugated);
-//! * for `ln`, `√`, other powers and the inverse functions only when the
-//!   argument is certainly off the function's branch cut, where the
-//!   principal branch breaks the symmetry (`conj √−1 = −i ≠ √(conj −1)`);
-//!   likewise (since 0.45) `Ei`, `Ci`, `Chi`, `E_n`, `Γ(a, z)`, `γ(a, z)`,
-//!   `Y_ν`, `K_ν` off the cut `(−∞, 0]` of their last argument, `J_ν`, `I_ν`
-//!   off it unless the order is an exact integer (they are entire then), and
-//!   `li` off `(−∞, 1]` (`Ci(−2) = Ci(2) + iπ` is not the conjugate of
-//!   `Ci(conj(−2))`);
+//! * `conj(bⁿ) = (conj b)ⁿ` for an integer `n`, and, for `√` and the other
+//!   powers, only when the base is certainly off the cut `(−∞, 0]`, where
+//!   the principal branch breaks the symmetry (`conj √−1 = −i ≠ √(conj
+//!   −1)`);
+//! * `conj f(z…) = f(conj z…)` (every argument conjugated) for a function
+//!   where the reflection rule of the function table holds for the
+//!   computed arguments ([`Func::spec`]`().conj`, shared with the symbolic
+//!   `conjugate`): everywhere for `exp`, the trigonometric and hyperbolic
+//!   functions, `ζ`, `Γ`, `ψ`, `x!`, `B`, `binomial`, `erf`, `erfc`, `Si`,
+//!   `Shi`, `erfi`, the Airy and Fresnel functions, …; for `ln`, the
+//!   inverse functions, `ln Γ`, `Ei`, `Ci`, `Chi`, `E_n`, `Γ(a, z)`,
+//!   `γ(a, z)`, `Y_ν`, `K_ν`, `li`, `polylog` only off the cut (`Ci(−2) =
+//!   Ci(2) + iπ` is not the conjugate of `Ci(conj(−2))`); for `J_ν`, `I_ν`,
+//!   `ψ⁽ᵐ⁾` also at an exact integer order (entire or meromorphic then);
+//!   up to 0.48 a list of its own here, which disagreed with `conjugate`'s;
 //! * a node whose value is exactly real is its own conjugate; any other node
 //!   gets a signature no other node can match.
 //!
@@ -39,6 +40,8 @@
 //! construction (up to a 64-bit hash collision, which the computed
 //! imaginary part — it must lie within its error of 0 — also guards
 //! against).
+//!
+//! [`Func::spec`]: crate::base::func::Func::spec
 
 use std::hash::{Hash, Hasher};
 
@@ -48,7 +51,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 use super::accuracy::{self, Bound};
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::Complex;
-use crate::base::libfn::LibFn;
+use crate::base::func::{Conj, CutLine};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
@@ -139,15 +142,42 @@ fn off_negative_axis(z: &Complex, b: Bound) -> bool {
     certainly_nonzero(&z.1, b.im) || (z.0.is_positive() && certainly_nonzero(&z.0, b.re))
 }
 
-/// Is `z ± b` certainly off the cut `(−∞, 1]` (of `li`)?
+/// `re z − 1`, exactly enough to decide its sign against the bound.
+fn re_minus_one(z: &Complex) -> BigFloat {
+    let one = BigFloat::from_i32(1, 64);
+    let p = z.0.mantissa_max_bit_len().unwrap_or(64) + 64;
+    z.0.sub(&one, p, astro_float::RoundingMode::ToEven)
+}
+
+/// Is `z ± b` certainly off the cut `(−∞, 1]` (of `li`, `acosh`)?
 fn off_below_one(z: &Complex, b: Bound) -> bool {
     if certainly_nonzero(&z.1, b.im) {
         return true;
     }
-    let one = BigFloat::from_i32(1, 64);
-    let p = z.0.mantissa_max_bit_len().unwrap_or(64) + 64;
-    let d = z.0.sub(&one, p, astro_float::RoundingMode::ToEven);
+    let d = re_minus_one(z);
     d.is_positive() && certainly_nonzero(&d, b.re)
+}
+
+/// Is `z ± b` certainly off the cut `[1, ∞)` (of `polylog`, `K`, `E`)?
+fn off_at_least_one(z: &Complex, b: Bound) -> bool {
+    if certainly_nonzero(&z.1, b.im) {
+        return true;
+    }
+    let d = re_minus_one(z);
+    d.is_negative() && certainly_nonzero(&d, b.re)
+}
+
+/// Is `z ± b` certainly off the cut `line`?  For the cuts
+/// `(−∞, −1] ∪ [1, ∞)` and `±i[1, ∞)` the test is the sufficient one these
+/// have had since 0.44: off the axis the cut lies on.
+fn off_cut_line(z: &Complex, b: Bound, line: CutLine) -> bool {
+    match line {
+        CutLine::NonPositiveReals => off_negative_axis(z, b),
+        CutLine::BelowOne => off_below_one(z, b),
+        CutLine::AtLeastOne => off_at_least_one(z, b),
+        CutLine::OutsideUnitInterval => certainly_nonzero(&z.1, b.im),
+        CutLine::ImaginaryOutsideUnit => certainly_nonzero(&z.0, b.re),
+    }
 }
 
 impl Sigs {
@@ -185,31 +215,33 @@ impl Sigs {
         let real = accuracy::exactly_real(value, bound);
         let unique = || hash_of((UNIQUE, id));
         let child_bound = |c: &ExprId| errs.get(c).copied().unwrap_or(Bound::UNKNOWN);
-        let off_cut = |c: &ExprId| {
+        let off_cut = |c: &ExprId, line: CutLine| {
             cache
                 .get(c)
-                .is_some_and(|v| off_negative_axis(v, child_bound(c)))
+                .is_some_and(|v| off_cut_line(v, child_bound(c), line))
         };
-        let off_cut_one = |c: &ExprId| {
-            cache
-                .get(c)
-                .is_some_and(|v| off_below_one(v, child_bound(c)))
-        };
-        // An exact integer (the order of `J_ν`, `I_ν`, entire then).
-        let exact_integer = |c: &ExprId| {
+        // An exact integer (`nonnegative`: `≥ 0`): the order of `J_ν`, `I_ν`,
+        // `ψ⁽ᵐ⁾`, the degree of a polynomial.
+        let exact_integer = |c: &ExprId, nonnegative: bool| {
             cache.get(c).is_some_and(|v| {
-                child_bound(c).is_exact() && v.1.is_zero() && (v.0.is_zero() || v.0.is_int())
+                child_bound(c).is_exact()
+                    && v.1.is_zero()
+                    && (v.0.is_zero() || (v.0.is_int() && (!nonnegative || v.0.is_positive())))
             })
         };
-        let across_nonzero = |c: &ExprId, imaginary_axis: bool| {
-            cache.get(c).is_some_and(|v| {
-                let b = child_bound(c);
-                if imaginary_axis {
-                    certainly_nonzero(&v.0, b.re)
-                } else {
-                    certainly_nonzero(&v.1, b.im)
+        // The table's rule for a function applied to `args`.
+        let reflects = |conj: Conj, args: &[ExprId]| {
+            let arg = |i: u8| args.get(usize::from(i));
+            match conj {
+                Conj::Entire => true,
+                Conj::OffCut(cut) => arg(cut.arg).is_some_and(|a| off_cut(a, cut.line)),
+                Conj::IntegerOrderOffCut { cut, nonnegative } => {
+                    arg(0).is_some_and(|n| exact_integer(n, nonnegative))
+                        || arg(cut.arg).is_some_and(|a| off_cut(a, cut.line))
                 }
-            })
+                Conj::Polynomial { degree } => arg(degree).is_some_and(|n| exact_integer(n, true)),
+                Conj::No => false,
+            }
         };
         let node = arena.node(id);
         // Monomials: numbers, i, products, negations.
@@ -257,67 +289,10 @@ impl Sigs {
             let symmetric = match node {
                 ExprNode::Add(_) => true,
                 ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()) => true,
-                // `loggamma(z̄) = conj(loggamma(z))` off its cut (−∞, 0], as `ln`.
-                ExprNode::Pow(b, _) | ExprNode::Ln(b) | ExprNode::LogGamma(b) => off_cut(b),
-                ExprNode::Exp(_)
-                | ExprNode::Sin(_)
-                | ExprNode::Cos(_)
-                | ExprNode::Tan(_)
-                | ExprNode::Sinh(_)
-                | ExprNode::Cosh(_)
-                | ExprNode::Tanh(_) => true,
-                // Meromorphic and real on the real axis: `f(z̄) = conj f(z)`
-                // (evaluated at non-real arguments since 0.44, `zeta.rs`,
-                // `cerf.rs`; the order of `ψ⁽ᵐ⁾` is real).
-                ExprNode::Zeta(_)
-                | ExprNode::Gamma(_)
-                | ExprNode::Digamma(_)
-                | ExprNode::Polygamma(..)
-                | ExprNode::Factorial(_)
-                | ExprNode::Beta(..)
-                | ExprNode::Erf(_)
-                | ExprNode::Erfc(_) => true,
-                // Entire or meromorphic and real on the real axis (0.45):
-                // `cspecial.rs` evaluates them at non-real arguments.
-                ExprNode::Si(_) | ExprNode::Binomial(..) => true,
-                // Off their cuts (0.45).
-                ExprNode::Ei(c) | ExprNode::Ci(c) => off_cut(c),
-                ExprNode::Li(c) => off_cut_one(c),
-                ExprNode::Apply(sid, args) => match (arena.lib_fn(*sid), args.len()) {
-                    (
-                        Some(
-                            LibFn::Shi
-                            | LibFn::Erfi
-                            | LibFn::AiryAi
-                            | LibFn::AiryBi
-                            | LibFn::AiryAiPrime
-                            | LibFn::AiryBiPrime
-                            | LibFn::FresnelS
-                            | LibFn::FresnelC,
-                        ),
-                        1,
-                    ) => true,
-                    (Some(LibFn::Chi), 1) => off_cut(&args[0]),
-                    (
-                        Some(
-                            LibFn::ExpInt
-                            | LibFn::UpperGamma
-                            | LibFn::LowerGamma
-                            | LibFn::BesselY
-                            | LibFn::BesselK,
-                        ),
-                        2,
-                    ) => off_cut(&args[1]),
-                    (Some(LibFn::BesselJ | LibFn::BesselI), 2) => {
-                        exact_integer(&args[0]) || off_cut(&args[1])
-                    }
-                    _ => false,
-                },
-                ExprNode::Asin(c) | ExprNode::Acos(c) | ExprNode::Atanh(c) | ExprNode::Acosh(c) => {
-                    across_nonzero(c, false)
-                }
-                ExprNode::Atan(c) | ExprNode::Asinh(c) => across_nonzero(c, true),
-                _ => false,
+                ExprNode::Pow(b, _) => off_cut(b, CutLine::NonPositiveReals),
+                _ => node
+                    .func(arena)
+                    .is_some_and(|(f, args)| reflects(f.spec().conj, &args)),
             };
             match child_sigs {
                 Some(cs) if symmetric => {

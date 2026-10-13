@@ -430,7 +430,7 @@ fn taylor_standin(arena: &mut Arena, f: ExprId, var: ExprId, point: ExprId, k: i
     for _ in 0..k {
         body = arena.intern(ExprNode::Derivative(body, var));
     }
-    let at = arena.intern(ExprNode::Subs(body, var, point));
+    let at = arena.make(ExprNode::Subs(body, var, point));
     if k <= 1 {
         return at;
     }

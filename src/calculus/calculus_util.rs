@@ -10,7 +10,8 @@
 use crate::base::arena::Arena;
 use crate::base::cast::integer_span;
 use crate::base::interval::Interval;
-use crate::base::node::{ExprId, ExprNode, INTERVAL_BOTH_OPEN, SymbolId};
+use crate::base::interval::IntervalKind;
+use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::walk;
 use crate::transforms::eval;
 use crate::transforms::evalf;
@@ -192,15 +193,14 @@ fn solve_ge_zero(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId>
 /// full real line (no restriction).
 #[allow(dead_code)]
 fn domain_exclude_zeros(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    let solutions = solve::solve(arena, expr, var);
+    let solutions = solve::known_real_roots(arena, expr, var);
     if solutions.is_empty() {
         // No zeros found → no restriction (denominator never zero for real x)
-        return arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN);
+        return arena.interval(arena.neg_infinity, arena.infinity, IntervalKind::Open);
     }
 
-    let root_ids: Vec<ExprId> = solutions.into_iter().map(|s| s.value).collect();
-    let roots_set = arena.finite_set(&root_ids);
-    let reals = arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN);
+    let roots_set = arena.finite_set(&solutions);
+    let reals = arena.interval(arena.neg_infinity, arena.infinity, IntervalKind::Open);
     arena.set_complement(reals, roots_set)
 }
 
@@ -348,7 +348,7 @@ fn push_zeros(
         return;
     }
 
-    let solutions = solve::solve(arena, g, var);
+    let solutions = solve::known_real_roots(arena, g, var);
     if solutions.is_empty() {
         // A polynomial with no real roots is fine (solve returns complex
         // roots explicitly).  Anything the solver silently gave up on is
@@ -359,7 +359,7 @@ fn push_zeros(
         return;
     }
     for s in solutions {
-        push_point(arena, s.value, kind, scan);
+        push_point(arena, s, kind, scan);
     }
 }
 
@@ -1429,93 +1429,861 @@ fn lcm_periods(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
 // Zero constants that canonicalisation does not see
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Digits at which [`is_hidden_zero`] evaluates a constant sum.
+/// Digits at which [`hidden_zero`] evaluates a constant.
 const HIDDEN_ZERO_DIGITS: u32 = 30;
 
-/// Is the evaluated constant `c` a sum that is zero although canonical
-/// forms do not cancel — two spellings of one number (`asinh 2` and
-/// `ln(2 + √5)`, which appear side by side once one of them has been
-/// rewritten or expanded), `sin²1 + cos²1 − 1`?
-///
-/// Only a sum free of symbols is examined (a product or function of
-/// non-zero factors is non-zero; with a free parameter nothing is decided
-/// here), and then by evaluation ([`hidden_zero_by_evaluation`]).
-///
-/// Series coefficients and Gruntz's leading coefficients must be decided
-/// this way: a structural test takes `asinh(2 + x) − ln(2 + √5)`'s constant
-/// term for a non-zero leading coefficient, and the series of
-/// `x/(asinh(x + 2) − ln(2 + √5))` became `x/0` (and `lim_{x→0}` of
-/// `x/(asinh(x + 2) − asinh 2)` became `0`, from Gruntz's `ln` rewrite).
-///
-/// A deliberate heuristic: a value that is still zero to the precision of
-/// the deep zero search counts as 0 (`Evidence::Approximate`).  The callers
-/// read `false` as "nonzero", which is a claim too, not a refusal, so the
-/// certified reading turns a true zero that no exact test proves into a
-/// wrong leading term: with it, `lim_{x→0} x/(asinh(x + 2) − asinh 2)`
-/// (`√5`) and `lim_{x→0⁻} x/(asin(2 + ix) − asin 2)` (`√3`) came out `0`,
-/// and 10 more tests of the suite failed alike.  Reading the evidence
-/// strictly needs callers that refuse on `Unknown`.  Before 0.49 the
-/// search stopped at the cap of the digits, and a value below about
-/// `10⁻⁸⁰` relative to its terms counted as 0: `c = e^{−10⁻¹⁵⁰} − 1`
-/// (`−10⁻¹⁵⁰`) made `lim_{x→∞} c·x` equal `0` (it is `−∞`).
-pub(crate) fn is_hidden_zero(arena: &Arena, c: ExprId) -> bool {
-    if !matches!(arena.node(c), ExprNode::Add(_)) || !walk::free_symbols(arena, c).is_empty() {
-        return false;
-    }
-    if walk::has_unevaluated(arena, c) {
-        return false;
-    }
-    hidden_zero_by_evaluation(arena, c)
-        .truth_at_least(crate::base::truth::Evidence::Approximate)
-        .is_true()
-}
+/// Largest constant (in nodes) the exact tests of [`hidden_zero`] rewrite.
+const MAX_EXACT_ZERO_SIZE: usize = 400;
 
-/// Is the symbol-free constant `c` zero, by evaluation to
-/// [`HIDDEN_ZERO_DIGITS`] digits, and on what evidence?
+/// Largest constant (in nodes) [`zero_by_identity`] simplifies.
+const MAX_IDENTITY_SIZE: usize = 150;
+
+/// Is the evaluated, symbol-free constant `c` zero — also when canonical
+/// forms do not cancel it: two spellings of one number (`asinh 2` and
+/// `ln(2 + √5)`, side by side once one of them has been rewritten or
+/// expanded), `sin²1 + cos²1 − 1`, `asin(sin 1) − 1`?  And on what
+/// evidence?
 ///
-/// A certified value decides (`Certified`: an exact 0, or a certified
-/// digit).  A value zero to the cap of the digits is pursued by the deep
-/// zero search of `evalf` (about 1,024 bits more), which certifies a tiny
-/// value hidden by cancellation (`e^{−10⁻¹⁵⁰} − 1`); one still zero there
-/// is `True` on `Approximate` evidence only.  A value `evalf` cannot settle
-/// (below the exponent range without a sign, an absorbed term) is
-/// `Unknown`.
-fn hidden_zero_by_evaluation(
-    arena: &Arena,
+/// - A number, or a product of powers of the named constants (`π`, `e`,
+///   `i`, …) and numbers, is decided by its canonical form (`Exact`): such
+///   a product is 0 only when canonical forms make it 0.
+/// - Otherwise the value is evaluated with certified digits: a certified
+///   digit is `False`, an exact 0 `True` (`Certified`).  A function value
+///   can vanish without a sum in sight (`sin(π·ln 8/ln 2)`).
+/// - A value zero to the cap of the digits must be shown to be 0 exactly
+///   ([`exactly_zero`]: minimal polynomials, exact rewrites, rational
+///   functions of the generators) — `True`, `Exact`.  Failing that, the
+///   deep zero search of `evalf` (about 1,024 bits more) certifies a tiny
+///   value hidden by cancellation (`e^{−10⁻¹⁵⁰} − 1`): `False`,
+///   `Certified`; then the costlier identities of
+///   [`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity)
+///   are tried.
+/// - A value still zero there is `True` on `Approximate` evidence only,
+///   which is no proof.  A constant with free symbols or an unevaluated
+///   part, or one `evalf` cannot evaluate (`legendre(3/2, e)`), is
+///   `Unknown`: there is no evidence either way (see
+///   [`ZeroTest::Nonzero`] for how the series engine reads that).
+///
+/// Series coefficients and Gruntz's leading coefficients are decided this
+/// way, and both readings of an unproved zero are claims: as "nonzero" it
+/// makes a vanishing leading coefficient a leading term (`lim_{x→0}
+/// x/(asinh(x + 2) − asinh 2)`, which is `√5`, was `0`, as was the series
+/// of `x/(asinh(x + 2) − ln(2 + √5))`: `x/0`); as "zero", up to 0.48, a
+/// value below about `10⁻⁸⁰` relative to its terms counted as 0: `c =
+/// e^{−10⁻¹⁵⁰} − 1` (`−10⁻¹⁵⁰`) made `lim_{x→∞} c·x` equal `0` (it is
+/// `−∞`).  Read the verdict with
+/// [`Verdict::proven`](crate::base::truth::Verdict::proven); a caller
+/// that meets `Unknown` tries its next method or refuses.
+pub(crate) fn hidden_zero(
+    arena: &mut Arena,
     c: ExprId,
 ) -> crate::base::truth::Verdict<crate::base::truth::Truth> {
     use crate::base::truth::{Evidence, Truth, Verdict};
+    if let Some(r) = arena.as_num(c) {
+        return Verdict::new(
+            Truth::from_bool(num_traits::Zero::is_zero(r)),
+            Evidence::Exact,
+        );
+    }
+    if !walk::free_symbols(arena, c).is_empty() || walk::has_unevaluated(arena, c) {
+        return Verdict::new(Truth::Unknown, Evidence::Approximate);
+    }
+    // `evalf` takes `δ(x)` for 0 everywhere, `δ(0)` included: no value,
+    // but `δ(a)` of a nonzero `a` is 0 ([`dirac_delta_off_zero`]).
+    if has_dirac_delta(arena, c) {
+        let rewritten = exact_rewrites(arena, c);
+        if exactly_zero(arena, c, rewritten) {
+            return Verdict::new(Truth::True, Evidence::Exact);
+        }
+        return Verdict::new(Truth::Unknown, Evidence::Approximate);
+    }
+    if walk::post_order_ids(arena, c).into_iter().all(|id| {
+        let node = arena.node(id);
+        node.is_atom()
+            || matches!(
+                node,
+                ExprNode::Mul(_) | ExprNode::Pow(..) | ExprNode::Neg(_)
+            )
+    }) {
+        return Verdict::new(Truth::False, Evidence::Exact);
+    }
     let certified = |z: &crate::base::bigcomplex::Complex| {
         Verdict::new(
             Truth::from_bool(z.0.is_zero() && z.1.is_zero()),
             Evidence::Certified,
         )
     };
-    let unsettled = Verdict::new(Truth::Unknown, Evidence::Approximate);
     let cap = evalf::evalf_verdict(arena, c, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap);
-    match cap.map(Verdict::proven) {
-        Ok(Some(z)) => certified(&z),
-        Ok(None) => {
-            match evalf::evalf_verdict(arena, c, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Deep) {
-                Ok(deep) => match deep.proven() {
-                    Some(z) => certified(&z),
-                    None => Verdict::new(Truth::True, Evidence::Approximate),
-                },
-                Err(_) => unsettled,
-            }
-        }
-        Err(_) => unsettled,
+    match cap.map(crate::base::truth::Verdict::proven) {
+        Ok(Some(z)) => return certified(&z),
+        Ok(None) => {}
+        Err(_) => return Verdict::new(Truth::Unknown, Evidence::Approximate),
+    }
+    let rewritten = exact_rewrites(arena, c);
+    if exactly_zero(arena, c, rewritten) {
+        return Verdict::new(Truth::True, Evidence::Exact);
+    }
+    if let Some(z) = evalf::evalf_verdict(arena, c, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Deep)
+        .ok()
+        .and_then(crate::base::truth::Verdict::proven)
+    {
+        return certified(&z);
+    }
+    if zero_by_identity(arena, c, rewritten) {
+        return Verdict::new(Truth::True, Evidence::Exact);
+    }
+    tracing::debug!(
+        c = %arena.display(c),
+        "hidden_zero: zero to the precision reached, not proved"
+    );
+    Verdict::new(Truth::True, Evidence::Approximate)
+}
+
+/// Is the constant `c` (`rewritten` by [`exact_rewrites`]) exactly 0, by a
+/// cheap exact method: the minimal polynomial of an algebraic number
+/// ([`exact_is_zero`](crate::poly::algebraic::exact_is_zero)), or a
+/// rational function of its generators that vanishes
+/// ([`vanishes_as_rational_function`](crate::simplify::ratsimp::vanishes_as_rational_function):
+/// a polynomial in `π` multiplied out), before and after the rewrites, and
+/// the minimal polynomial of `c` multiplied out.
+/// With free parameters, `true` means 0 for all their values.  Only a
+/// constant of at most [`MAX_EXACT_ZERO_SIZE`] nodes is tried.
+pub(crate) fn exactly_zero(arena: &mut Arena, c: ExprId, rewritten: ExprId) -> bool {
+    use crate::poly::algebraic::exact_is_zero;
+    if arena.is_zero_structural(rewritten) {
+        return true;
+    }
+    if walk::post_order_ids(arena, c).len() > MAX_EXACT_ZERO_SIZE {
+        return false;
+    }
+    let constant = walk::free_symbols(arena, c).is_empty();
+    if constant && exact_is_zero(arena, c) == Some(true) {
+        return true;
+    }
+    if crate::simplify::ratsimp::vanishes_as_rational_function(arena, c) {
+        return true;
+    }
+    // Multiplied out, the transcendental parts may cancel and leave an
+    // algebraic number (`(a − ζ(3))·i + (b + ζ(3))·i`, `a + b = 0`).
+    let expanded = crate::transforms::expand::expand(arena, c);
+    if arena.is_zero_structural(expanded)
+        || (constant && expanded != c && exact_is_zero(arena, expanded) == Some(true))
+    {
+        return true;
+    }
+    if rewritten == c {
+        return false;
+    }
+    (constant && exact_is_zero(arena, rewritten) == Some(true))
+        || crate::simplify::ratsimp::vanishes_as_rational_function(arena, rewritten)
+}
+
+/// The costlier exact test of a constant that [`exactly_zero`] did not
+/// decide: the identities of
+/// [`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity)
+/// (`sin²1 + cos²1 − 1` as a rational function of `e^i`, then `simplify`),
+/// of `c` and of its `rewritten` form, for a constant of at most
+/// [`MAX_IDENTITY_SIZE`] nodes.
+pub(crate) fn zero_by_identity(arena: &mut Arena, c: ExprId, rewritten: ExprId) -> bool {
+    if walk::post_order_ids(arena, c).len() > MAX_IDENTITY_SIZE {
+        return false;
+    }
+    crate::simplify::identically_zero::vanishes_by_identity(arena, c)
+        || (rewritten != c
+            && crate::simplify::identically_zero::vanishes_by_identity(arena, rewritten))
+}
+
+/// Largest prime factor [`ln_of_rational_in_primes`] divides out; a larger
+/// cofactor stays one logarithm.
+const MAX_LOG_PRIME: u64 = 1 << 20;
+
+/// `c` rewritten by identities that let canonical forms and the rational
+/// arithmetic of the generators see a zero, each exact where `c` is
+/// defined:
+///
+/// - `f(f⁻¹(z))` and its relatives, algebraic in `z` (`cos(asin z) =
+///   √(1 − z²)`, [`function_of_inverse`]);
+/// - `f⁻¹(f(a)) = a` for a real constant `a` in the principal range of
+///   `f⁻¹` (certified): `asin(sin 1) = 1` ([`inverse_of_value`]);
+///   `acosh(a) = i·acos(a)` for a real `a` in `(−1, 1)`
+///   ([`acosh_as_acos`]) and `asin(a) = π/2 − i·acosh(a)` for `a > 1`
+///   ([`asin_on_cut`]);
+/// - the inverse trigonometric and hyperbolic functions as logarithms of
+///   their principal values on all of ℂ
+///   ([`inverse_functions_as_logs`](crate::calculus::limit::inverse_functions_as_logs)),
+///   the spelling of Gruntz's tractable rewrite: `asinh 2 − ln(2 + √5)`
+///   becomes `0`;
+/// - the logarithm of a positive rational as a sum of logarithms of its
+///   prime factors, `ln 16 = 4·ln 2`, `ln(3/2) = ln 3 − ln 2`;
+/// - the square root of a polynomial with its nonnegative square factors
+///   taken out, `√(a² + 2a + 1) = a + 1` for `a > 0` ([`sqrt_of_squares`]);
+/// - `Γ(p)·Γ(1 − p) = π/sin(πp)` ([`gamma_reflection`]), `exp(a)·exp(b) =
+///   exp(a + b)` ([`exponentials_combined`]), Bessel functions of integer
+///   order and `Eₙ` of order `n ≤ 0` in a normal form
+///   ([`special_function_rewrite`]), `atan2(0, a)` for a real `a ≠ 0`,
+///   `δ(a) = 0` for `a ≠ 0` ([`dirac_delta_off_zero`]), a binomial
+///   coefficient that evaluates to exactly 0 ([`certified_zero_value`]);
+/// - a function argument with a quotient in it reduced as a rational
+///   function of its generators ([`ratsimp`](crate::simplify::ratsimp::ratsimp)):
+///   `cos((π − 12π²)/(24π − 2)) = cos(−π/2) = 0`.
+pub(crate) fn exact_rewrites(arena: &mut Arena, c: ExprId) -> ExprId {
+    if walk::post_order_ids(arena, c).len() > MAX_EXACT_ZERO_SIZE {
+        return c;
+    }
+    let r = compositions_pass(arena, c);
+    let r = exact_pass(arena, r);
+    let logs = crate::calculus::limit::inverse_functions_as_logs(arena, r);
+    if logs == r {
+        r
+    } else {
+        exact_pass(arena, logs)
     }
 }
 
-/// `c` after `eval`, with a hidden zero (see [`is_hidden_zero`]) replaced
-/// by `0`.
-pub(crate) fn settle_constant(arena: &mut Arena, c: ExprId) -> ExprId {
-    let v = eval::eval(arena, c);
-    if is_hidden_zero(arena, v) {
-        arena.zero
+/// The compositions of [`function_of_inverse`] rewritten, bottom-up (before
+/// [`exact_pass`] rewrites the inner function), then `eval`.
+fn compositions_pass(arena: &mut Arena, c: ExprId) -> ExprId {
+    let post = walk::post_order_ids(arena, c);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let r = walk::rebuild_with_cache(arena, id, &cache);
+        let node = arena.node(r).clone();
+        let new = match &node {
+            ExprNode::Sin(a)
+            | ExprNode::Cos(a)
+            | ExprNode::Tan(a)
+            | ExprNode::Sinh(a)
+            | ExprNode::Cosh(a)
+            | ExprNode::Tanh(a) => function_of_inverse(arena, &node, *a).unwrap_or(r),
+            _ => r,
+        };
+        changed |= new != r;
+        cache.insert(id, new);
+    }
+    if !changed {
+        return c;
+    }
+    let r = cache.get(&c).copied().unwrap_or(c);
+    eval::eval(arena, r)
+}
+
+/// One bottom-up pass of the rewrites of [`exact_rewrites`] other than the
+/// compositions and the logarithmic forms, then `eval`.  An explicit
+/// post-order walk.
+fn exact_pass(arena: &mut Arena, c: ExprId) -> ExprId {
+    use rustc_hash::{FxHashMap, FxHashSet};
+    let post = walk::post_order_ids(arena, c);
+    let mut arguments: FxHashSet<ExprId> = FxHashSet::default();
+    for &id in &post {
+        let node = arena.node(id);
+        if !node.is_atom()
+            && !matches!(
+                node,
+                ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Pow(..) | ExprNode::Neg(_)
+            )
+        {
+            node.for_each_child(|ch| {
+                arguments.insert(ch);
+            });
+        }
+    }
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let r = walk::rebuild_with_cache(arena, id, &cache);
+        let node = arena.node(r).clone();
+        let mut new = match &node {
+            ExprNode::Ln(a) => ln_of_rational_in_primes(arena, *a).unwrap_or(r),
+            ExprNode::Apply(f, args) if args.len() == 2 => {
+                special_function_rewrite(arena, *f, args[0], args[1]).unwrap_or(r)
+            }
+            ExprNode::Atan2(y, a) if arena.is_zero_structural(*y) => {
+                if real_constant_within(arena, *a, 0.0, f64::INFINITY) {
+                    arena.zero
+                } else if real_constant_within(arena, *a, f64::NEG_INFINITY, 0.0) {
+                    arena.pi()
+                } else {
+                    r
+                }
+            }
+            ExprNode::DiracDelta(a) => dirac_delta_off_zero(arena, *a).unwrap_or(r),
+            ExprNode::Abs(a) => {
+                if real_constant_within(arena, *a, 0.0, f64::INFINITY) {
+                    *a
+                } else if real_constant_within(arena, *a, f64::NEG_INFINITY, 0.0) {
+                    arena.neg(*a)
+                } else {
+                    r
+                }
+            }
+            ExprNode::Pow(m, q)
+                if matches!(arena.node(*m), ExprNode::Mul(_)) && arena.as_num(*q).is_some() =>
+            {
+                power_of_positive_product(arena, *m, *q).unwrap_or(r)
+            }
+            ExprNode::Binomial(..) => certified_zero_value(arena, r).unwrap_or(r),
+            ExprNode::Acosh(a) => inverse_of_value(arena, &node, *a)
+                .or_else(|| acosh_as_acos(arena, *a))
+                .unwrap_or(r),
+            ExprNode::Mul(fs) => gamma_reflection(arena, fs)
+                .or_else(|| exponentials_combined(arena, fs))
+                .unwrap_or(r),
+            ExprNode::Pow(b, e)
+                if matches!(arena.node(*b), ExprNode::Add(_))
+                    && arena.as_num(*e).is_some_and(|q| {
+                        *q == crate::base::numeric::Q::new(1.into(), 2.into())
+                    }) =>
+            {
+                sqrt_of_squares(arena, *b).unwrap_or(r)
+            }
+            ExprNode::Asin(a) => inverse_of_value(arena, &node, *a)
+                .or_else(|| asin_on_cut(arena, *a))
+                .unwrap_or(r),
+            ExprNode::Acos(a) | ExprNode::Atan(a) | ExprNode::Asinh(a) | ExprNode::Atanh(a) => {
+                inverse_of_value(arena, &node, *a).unwrap_or(r)
+            }
+            _ => r,
+        };
+        if arguments.contains(&id) && has_quotient(arena, new) {
+            new = crate::simplify::ratsimp::ratsimp(arena, new);
+        }
+        changed |= new != r;
+        cache.insert(id, new);
+    }
+    if !changed {
+        return c;
+    }
+    let r = cache.get(&c).copied().unwrap_or(c);
+    eval::eval(arena, r)
+}
+
+/// Does `c` contain `δ`?
+fn has_dirac_delta(arena: &Arena, c: ExprId) -> bool {
+    walk::post_order_ids(arena, c)
+        .into_iter()
+        .any(|id| matches!(arena.node(id), ExprNode::DiracDelta(_)))
+}
+
+/// `0` for `δ(a)` when `a` is not 0: a constant with a certified nonzero
+/// digit, or an expression in parameters that is nonzero at a sample point
+/// (`δ(y) = 0` for generic `y`, the generic-parameter reading of the limit
+/// and series engines).  `None` otherwise.
+fn dirac_delta_off_zero(arena: &mut Arena, a: ExprId) -> Option<ExprId> {
+    let nonzero = if walk::free_symbols(arena, a).is_empty() {
+        !has_dirac_delta(arena, a)
+            && evalf::evalf_verdict(arena, a, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap)
+                .ok()
+                .and_then(crate::base::truth::Verdict::proven)
+                .is_some_and(|z| !(z.0.is_zero() && z.1.is_zero()))
     } else {
-        v
+        crate::simplify::identically_zero::nonzero_at_a_sample(arena, a)
+    };
+    nonzero.then_some(arena.zero)
+}
+
+/// `0` for a symbol-free value `v` that a certified evaluation finds to be
+/// exactly 0 (`binomial(−2, −1)`).
+fn certified_zero_value(arena: &mut Arena, v: ExprId) -> Option<ExprId> {
+    if !walk::free_symbols(arena, v).is_empty() || has_dirac_delta(arena, v) {
+        return None;
+    }
+    let z = evalf::evalf_verdict(arena, v, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap)
+        .ok()?
+        .proven()?;
+    (z.0.is_zero() && z.1.is_zero()).then_some(arena.zero)
+}
+
+/// `(Π fᵢ)^q = Π fᵢ^q` when every factor `fᵢ` of the product `m` is a
+/// positive real constant (certified), as for positive reals:
+/// `√(3^(2/3)·e⁻²) = ∛3·e⁻¹`.  `None` otherwise.
+fn power_of_positive_product(arena: &mut Arena, m: ExprId, q: ExprId) -> Option<ExprId> {
+    let ExprNode::Mul(fs) = arena.node(m).clone() else {
+        return None;
+    };
+    let mut powers: Vec<ExprId> = Vec::with_capacity(fs.len());
+    for &f in &fs {
+        if !real_constant_within(arena, f, 0.0, f64::INFINITY) {
+            return None;
+        }
+        powers.push(arena.pow(f, q));
+    }
+    Some(arena.mul(&powers))
+}
+
+/// Largest order `|n|` [`special_function_rewrite`] reduces.
+const MAX_SPECIAL_ORDER: i64 = 20;
+
+/// Bessel functions of integer order and exponential integrals of
+/// non-positive integer order in a normal form, by identities on all of
+/// ℂ (DLMF 10.4.1, 10.11.1, 10.6.1; 10.27.1, 10.27.3, 10.29.1; 8.19.7 with
+/// 8.4.8): `Jₙ`, `Yₙ`, `Iₙ`, `Kₙ` of `|n| ≤` [`MAX_SPECIAL_ORDER`] through
+/// the orders 0 and 1 (`Jₙ`, `Iₙ` of an argument without a negative
+/// coefficient), and
+/// `E₋ₘ(z) = m!·e⁻ᶻ·Σₖ₌₀ᵐ zᵏ/k!/zᵐ⁺¹`.  So a combination the series
+/// engine builds from derivatives (`J₁′ = (J₀ − J₂)/2`) cancels
+/// structurally.  `None` for anything else.
+fn special_function_rewrite(
+    arena: &mut Arena,
+    f: crate::base::node::SymbolId,
+    order: ExprId,
+    z: ExprId,
+) -> Option<ExprId> {
+    use crate::base::libfn::LibFn;
+    use num_traits::ToPrimitive;
+    let lib = arena.lib_fn(f)?;
+    let n = arena
+        .as_num(order)
+        .filter(|q| q.is_integer())?
+        .to_integer()
+        .to_i64()?;
+    if n.abs() > MAX_SPECIAL_ORDER {
+        return None;
+    }
+    match lib {
+        LibFn::ExpInt if n <= 0 => {
+            let m = -n;
+            let mut terms: Vec<ExprId> = Vec::new();
+            let mut factorial = num_bigint::BigInt::from(1);
+            for k in 0..=m {
+                if k > 0 {
+                    factorial *= k;
+                }
+                let inv =
+                    arena.num_ratio(crate::base::numeric::Q::new(1.into(), factorial.clone()));
+                let k = arena.int(k);
+                let zk = arena.pow(z, k);
+                terms.push(arena.mul(&[inv, zk]));
+            }
+            let sum = arena.add(&terms);
+            let m_fact = arena.big_int(factorial);
+            let nz = arena.neg(z);
+            let e = arena.exp(nz);
+            let power = arena.int(-(m + 1));
+            let den = arena.pow(z, power);
+            Some(arena.mul(&[m_fact, e, sum, den]))
+        }
+        LibFn::BesselJ | LibFn::BesselI | LibFn::BesselY | LibFn::BesselK => {
+            // J, Y: Jₖ = 2(k − 1)/z·Jₖ₋₁ − Jₖ₋₂ and J₋ₙ = (−1)ⁿ Jₙ;
+            // I, K: Iₖ = Iₖ₋₂ − 2(k − 1)/z·Iₖ₋₁, Kₖ = Kₖ₋₂ + 2(k − 1)/z·Kₖ₋₁,
+            // I₋ₙ = Iₙ, K₋ₙ = Kₙ.
+            let bessel = matches!(lib, LibFn::BesselJ | LibFn::BesselY);
+            let mut sign = if n < 0 && bessel && n % 2 != 0 { -1 } else { 1 };
+            let n = n.abs();
+            let (coeff, _) = arena.as_coeff_term(z);
+            // Jₙ(−z) = (−1)ⁿ Jₙ(z), likewise Iₙ; not Yₙ, Kₙ (a cut on (−∞, 0]).
+            let entire = matches!(lib, LibFn::BesselJ | LibFn::BesselI);
+            let z = if entire && num_traits::Signed::is_negative(&coeff) {
+                if n % 2 != 0 {
+                    sign = -sign;
+                }
+                arena.neg(z)
+            } else {
+                z
+            };
+            let call = |arena: &mut Arena, k: i64| {
+                let k = arena.int(k);
+                arena.lib_apply(lib, &[k, z])
+            };
+            let (mut prev, mut cur) = (call(arena, 0), call(arena, 1));
+            if n == 0 {
+                cur = prev;
+            }
+            for k in 2..=n {
+                // Jₖ = 2(k − 1)/z·Jₖ₋₁ − Jₖ₋₂; Iₖ = Iₖ₋₂ − 2(k − 1)/z·Iₖ₋₁.
+                let c = arena.int(2 * (k - 1));
+                let m1 = arena.neg_one();
+                let zi = arena.pow(z, m1);
+                let t = arena.mul(&[c, zi, cur]);
+                let next = match lib {
+                    LibFn::BesselJ | LibFn::BesselY => arena.sub(t, prev),
+                    LibFn::BesselK => arena.add(&[prev, t]),
+                    _ => arena.sub(prev, t),
+                };
+                (prev, cur) = (cur, next);
+            }
+            let s = arena.int(sign);
+            Some(arena.mul(&[s, cur]))
+        }
+        _ => None,
+    }
+}
+
+/// The product of the factors `fs` with its exponentials `exp(a)`, `e`,
+/// `e^a` merged into one `exp(Σa)` (`exp(−1)·e = 1`, an identity on all of
+/// ℂ).  `None` when there are fewer than two.
+fn exponentials_combined(arena: &mut Arena, fs: &[ExprId]) -> Option<ExprId> {
+    let mut exponents: Vec<ExprId> = Vec::new();
+    let mut rest: Vec<ExprId> = Vec::new();
+    for &f in fs {
+        match *arena.node(f) {
+            ExprNode::Exp(a) => exponents.push(a),
+            ExprNode::E => exponents.push(arena.one()),
+            ExprNode::Pow(b, a) if b == arena.e_const => exponents.push(a),
+            _ => rest.push(f),
+        }
+    }
+    if exponents.len() < 2 {
+        return None;
+    }
+    let s = arena.add(&exponents);
+    let e = arena.exp(s);
+    rest.push(e);
+    Some(arena.mul(&rest))
+}
+
+/// The product of the factors `fs` with a pair `Γ(p)·Γ(q)`, `p + q = 1`,
+/// replaced by `π/sin(πp)` (the reflection formula, an identity wherever
+/// both sides are finite): `Γ(1/3)·Γ(2/3) = 2π/√3`.  `None` when there
+/// is no such pair.
+fn gamma_reflection(arena: &mut Arena, fs: &[ExprId]) -> Option<ExprId> {
+    let gammas: Vec<(usize, ExprId)> = fs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &f)| match arena.node(f) {
+            ExprNode::Gamma(a) => Some((i, *a)),
+            _ => None,
+        })
+        .collect();
+    for (j, &(i1, p)) in gammas.iter().enumerate() {
+        for &(i2, q) in &gammas[j + 1..] {
+            let s = arena.add(&[p, q]);
+            if eval::eval(arena, s) != arena.one() {
+                continue;
+            }
+            let mut rest: Vec<ExprId> = fs
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != i1 && i != i2)
+                .map(|(_, &f)| f)
+                .collect();
+            let pi = arena.pi();
+            let pi_p = arena.mul(&[pi, p]);
+            let sine = arena.sin(pi_p);
+            let m1 = arena.neg_one();
+            let cosecant = arena.pow(sine, m1);
+            rest.push(pi);
+            rest.push(cosecant);
+            return Some(arena.mul(&rest));
+        }
+    }
+    None
+}
+
+/// `√b` with the square factors of the polynomial `b` that are nonnegative
+/// (by the assumptions) taken out: `√(a² + 2a + 1) = a + 1` for `a > 0`
+/// (`√(f²·g) = f·√g` for `f ≥ 0`, the principal root).  `None` when no
+/// such factor exists or the content is not a positive rational.
+fn sqrt_of_squares(arena: &mut Arena, b: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let (content, factors) = crate::simplify::factor::factor_list(arena, b, None);
+    if factors.iter().all(|&(_, m)| m < 2)
+        || !arena
+            .as_num(content)
+            .is_some_and(num_traits::Signed::is_positive)
+    {
+        return None;
+    }
+    let mut cache = AssumptionCache::new();
+    let mut outside: Vec<ExprId> = Vec::new();
+    let mut inside: Vec<ExprId> = vec![content];
+    for (f, m) in factors {
+        if m >= 2 && cache.query(arena, f, Props::NONNEGATIVE) == Some(true) {
+            let half = arena.int(i64::from(m / 2));
+            let p = arena.pow(f, half);
+            outside.push(p);
+            if m % 2 == 1 {
+                inside.push(f);
+            }
+        } else {
+            let m = arena.int(i64::from(m));
+            let p = arena.pow(f, m);
+            inside.push(p);
+        }
+    }
+    if outside.is_empty() {
+        return None;
+    }
+    let rest = arena.mul(&inside);
+    let root = arena.sqrt(rest);
+    outside.push(root);
+    Some(arena.mul(&outside))
+}
+
+/// Does `e` divide by something other than a number (a power with a
+/// negative exponent of a non-atomic base)?
+fn has_quotient(arena: &Arena, e: ExprId) -> bool {
+    walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Pow(b, n) => {
+                !arena.node(*b).is_atom()
+                    && arena
+                        .as_num(*n)
+                        .is_some_and(num_traits::Signed::is_negative)
+            }
+            _ => false,
+        })
+}
+
+/// `ln(p/q)` for a positive rational `p/q ≠ 1` as `Σ eᵢ·ln pᵢ` over the
+/// prime factors of `p` and `q` (to [`MAX_LOG_PRIME`]; a larger cofactor
+/// stays one logarithm) — exact, the logarithm of a positive real being
+/// additive.  `None` for another argument, or when nothing splits.
+fn ln_of_rational_in_primes(arena: &mut Arena, a: ExprId) -> Option<ExprId> {
+    use num_traits::{One, Signed, ToPrimitive};
+    let q = arena.as_num(a)?.clone();
+    if !q.is_positive() || q.is_one() {
+        return None;
+    }
+    let mut factors: Vec<(u64, i64)> = Vec::new();
+    for (n, sign) in [(q.numer(), 1i64), (q.denom(), -1i64)] {
+        let mut n = n.to_u64()?;
+        let mut d = 2u64;
+        while d <= MAX_LOG_PRIME && d.saturating_mul(d) <= n {
+            let mut e = 0i64;
+            while n % d == 0 {
+                n /= d;
+                e += 1;
+            }
+            if e > 0 {
+                factors.push((d, sign * e));
+            }
+            d += 1;
+        }
+        if n > 1 {
+            factors.push((n, sign));
+        }
+    }
+    if factors.len() == 1 && factors[0].1 == 1 {
+        return None; // a prime (or an unsplit cofactor) already
+    }
+    let terms: Vec<ExprId> = factors
+        .into_iter()
+        .map(|(p, e)| {
+            let p = arena.big_int(num_bigint::BigInt::from(p));
+            let l = arena.ln(p);
+            let e = arena.int(e);
+            arena.mul(&[e, l])
+        })
+        .collect();
+    Some(arena.add(&terms))
+}
+
+/// `a` for `f⁻¹(f(a))` (`outer` the inverse function, `inner` its
+/// argument `f(a)`) when `a` is a real constant (by the assumptions) whose
+/// certified value lies inside the principal range of `f⁻¹`: `[−π/2, π/2]`
+/// for `asin` and `atan`, `[0, π]` for `acos`, `[0, ∞)` for `acosh`, all
+/// reals for `asinh` and `atanh`.  `None` otherwise.
+fn inverse_of_value(arena: &mut Arena, outer: &ExprNode, inner: ExprId) -> Option<ExprId> {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let (a, lo, hi) = match (outer, arena.node(inner)) {
+        (ExprNode::Asin(_), ExprNode::Sin(a)) | (ExprNode::Atan(_), ExprNode::Tan(a)) => {
+            (*a, -FRAC_PI_2, FRAC_PI_2)
+        }
+        (ExprNode::Acos(_), ExprNode::Cos(a)) => (*a, 0.0, PI),
+        (ExprNode::Acosh(_), ExprNode::Cosh(a)) => (*a, 0.0, f64::INFINITY),
+        (ExprNode::Asinh(_), ExprNode::Sinh(a)) | (ExprNode::Atanh(_), ExprNode::Tanh(a)) => {
+            (*a, f64::NEG_INFINITY, f64::INFINITY)
+        }
+        _ => return None,
+    };
+    real_constant_within(arena, a, lo, hi).then_some(a)
+}
+
+/// `i·acos(a)` for `acosh(a)` when `a` is a real constant (by the
+/// assumptions) whose certified value lies in `(−1, 1)`, where the
+/// principal values agree (`acosh(1/2) = iπ/3`; mpmath `acosh(0.5)` =
+/// `1.0471975511966j`): the form in which Gruntz continues `acosh` along
+/// its cut.
+fn acosh_as_acos(arena: &mut Arena, a: ExprId) -> Option<ExprId> {
+    if !real_constant_within(arena, a, -1.0, 1.0) {
+        return None;
+    }
+    let acos = arena.acos(a);
+    let i = arena.i_unit();
+    Some(arena.mul(&[i, acos]))
+}
+
+/// `f(g(z))` for a trigonometric (hyperbolic) `f` of an inverse
+/// trigonometric (hyperbolic) `g`, an algebraic function of `z` on all of
+/// ℂ with the principal branches (as SymPy evaluates them): `sin(asin z) =
+/// z`, `cos(asin z) = sin(acos z) = √(1 − z²)`, `tan(asin z) = z/√(1 −
+/// z²)`, `sin(atan z) = z/√(1 + z²)`, `cosh(asinh z) = √(1 + z²)`, …
+/// `None` for another pair.
+fn function_of_inverse(arena: &mut Arena, outer: &ExprNode, inner: ExprId) -> Option<ExprId> {
+    let one = arena.one();
+    let two = arena.int(2);
+    let half = arena.rational(1, 2);
+    let m_half = arena.rational(-1, 2);
+    // √(1 ∓ z²) and its reciprocal.
+    let root = |arena: &mut Arena, z: ExprId, minus: bool, e: ExprId| {
+        let z2 = arena.pow(z, two);
+        let s = if minus {
+            arena.sub(one, z2)
+        } else {
+            arena.add(&[one, z2])
+        };
+        arena.pow(s, e)
+    };
+    Some(match (outer, arena.node(inner).clone()) {
+        (ExprNode::Sin(_), ExprNode::Asin(z))
+        | (ExprNode::Cos(_), ExprNode::Acos(z))
+        | (ExprNode::Tan(_), ExprNode::Atan(z))
+        | (ExprNode::Sinh(_), ExprNode::Asinh(z))
+        | (ExprNode::Cosh(_), ExprNode::Acosh(z))
+        | (ExprNode::Tanh(_), ExprNode::Atanh(z)) => z,
+        (ExprNode::Cos(_), ExprNode::Asin(z)) | (ExprNode::Sin(_), ExprNode::Acos(z)) => {
+            root(arena, z, true, half)
+        }
+        (ExprNode::Tan(_), ExprNode::Asin(z)) => {
+            let r = root(arena, z, true, m_half);
+            arena.mul(&[z, r])
+        }
+        (ExprNode::Tan(_), ExprNode::Acos(z)) => {
+            let r = root(arena, z, true, half);
+            let m1 = arena.neg_one();
+            let zi = arena.pow(z, m1);
+            arena.mul(&[r, zi])
+        }
+        (ExprNode::Sin(_), ExprNode::Atan(z)) => {
+            let r = root(arena, z, false, m_half);
+            arena.mul(&[z, r])
+        }
+        (ExprNode::Cos(_), ExprNode::Atan(z)) => root(arena, z, false, m_half),
+        (ExprNode::Cosh(_), ExprNode::Asinh(z)) => root(arena, z, false, half),
+        (ExprNode::Sinh(_), ExprNode::Acosh(z)) => {
+            let zm = arena.sub(z, one);
+            let zp = arena.add(&[z, one]);
+            let rm = arena.sqrt(zm);
+            let rp = arena.sqrt(zp);
+            arena.mul(&[rm, rp])
+        }
+        _ => return None,
+    })
+}
+
+/// `asin(a)` for a real constant `a` beyond `±1` (certified), on the cut
+/// of `asin`: `π/2 − i·acosh(a)` for `a > 1`, `−π/2 + i·acosh(−a)` for
+/// `a < −1` — the principal values there (mpmath `asin(2)` =
+/// `1.5708 − 1.3170j`), so that `asin(φ)` and the `acosh` written by
+/// Gruntz's tractable rewrite meet.
+fn asin_on_cut(arena: &mut Arena, a: ExprId) -> Option<ExprId> {
+    let (t, sign) = if real_constant_within(arena, a, 1.0, f64::INFINITY) {
+        (a, 1)
+    } else if real_constant_within(arena, a, f64::NEG_INFINITY, -1.0) {
+        (arena.neg(a), -1)
+    } else {
+        return None;
+    };
+    let half = arena.rational(1, 2);
+    let pi = arena.pi();
+    let half_pi = arena.mul(&[half, pi]);
+    let i = arena.i_unit();
+    let acosh = arena.acosh(t);
+    let i_acosh = arena.mul(&[i, acosh]);
+    let v = arena.sub(half_pi, i_acosh);
+    let s = arena.int(sign);
+    Some(arena.mul(&[s, v]))
+}
+
+/// Is `a` a real constant (by the assumptions) whose certified value lies
+/// strictly inside `(lo, hi)`, with a margin far above its error?
+fn real_constant_within(arena: &mut Arena, a: ExprId, lo: f64, hi: f64) -> bool {
+    if !walk::free_symbols(arena, a).is_empty() {
+        return false;
+    }
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    if cache.query(arena, a, crate::base::assumptions::Props::REAL) != Some(true) {
+        return false;
+    }
+    let Some(z) = evalf::evalf_verdict(arena, a, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap)
+        .ok()
+        .and_then(crate::base::truth::Verdict::proven)
+    else {
+        return false;
+    };
+    let Some(v) = crate::base::bigfloat::to_f64(&z.0) else {
+        return false;
+    };
+    // 30 certified digits: a margin far above the error of `v`.
+    let margin = 1e-9 * v.abs().max(1.0);
+    v > lo + margin && v < hi - margin
+}
+
+/// A constant after the zero test of [`settle_constant`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZeroTest {
+    /// Proved 0, exactly or by a certified evaluation.
+    Zero,
+    /// The evaluated constant, not 0: proved nonzero, or a constant with
+    /// free parameters, which is taken as nonzero for generic values of
+    /// them (the generic-solution convention; [`settle_parametric`]
+    /// recognises the ones that vanish identically).  So is a constant
+    /// without a value — one `evalf` cannot evaluate or with an
+    /// unevaluated part (`legendre(3/2, e) − 1`): it is opaque like a
+    /// parameter, and there is no numerical hint that it vanishes.
+    ///
+    /// [`settle_parametric`]: crate::calculus::series::settle_parametric
+    Nonzero(ExprId),
+    /// The evaluated constant, 0 to the precision reached (at the sample
+    /// points of its parameters, if any) but proved neither 0 nor nonzero:
+    /// a caller may keep it as a value, but may not divide by it, take it
+    /// for a leading coefficient, or drop it.
+    Undecided(ExprId),
+}
+
+impl ZeroTest {
+    /// `True` for `Zero`, `False` for `Nonzero`, `Unknown` for `Undecided`.
+    pub(crate) fn is_zero(self) -> crate::base::truth::Truth {
+        use crate::base::truth::Truth;
+        match self {
+            ZeroTest::Zero => Truth::True,
+            ZeroTest::Nonzero(_) => Truth::False,
+            ZeroTest::Undecided(_) => Truth::Unknown,
+        }
+    }
+
+    /// `0` for `Zero`, the evaluated constant otherwise.
+    pub(crate) fn value(self, arena: &Arena) -> ExprId {
+        match self {
+            ZeroTest::Zero => arena.zero,
+            ZeroTest::Nonzero(v) | ZeroTest::Undecided(v) => v,
+        }
+    }
+}
+
+/// `c` after `eval`, and whether it is 0 ([`hidden_zero`]; a constant with
+/// free parameters or without a value is `Nonzero`, see
+/// [`ZeroTest::Nonzero`]).
+pub(crate) fn settle_constant(arena: &mut Arena, c: ExprId) -> ZeroTest {
+    let v = eval::eval(arena, c);
+    if arena.is_zero_structural(v) {
+        return ZeroTest::Zero;
+    }
+    if !walk::free_symbols(arena, v).is_empty() {
+        return ZeroTest::Nonzero(v);
+    }
+    match zero_reading(hidden_zero(arena, v)) {
+        crate::base::truth::Truth::True => ZeroTest::Zero,
+        crate::base::truth::Truth::False => ZeroTest::Nonzero(v),
+        crate::base::truth::Truth::Unknown => ZeroTest::Undecided(v),
+    }
+}
+
+/// How the limit and series engines read a [`hidden_zero`] verdict: a
+/// proof decides; a value 0 to the precision reached and not proved
+/// (`True` on `Approximate` evidence) is `Unknown`; a constant without a
+/// value (`Unknown`) is `False`, opaque like a parameter (see
+/// [`ZeroTest::Nonzero`]).
+pub(crate) fn zero_reading(
+    verdict: crate::base::truth::Verdict<crate::base::truth::Truth>,
+) -> crate::base::truth::Truth {
+    use crate::base::truth::Truth;
+    match (verdict.proven(), verdict.value) {
+        (Some(t), _) => t,
+        (None, Truth::True) => Truth::Unknown,
+        (None, Truth::False | Truth::Unknown) => Truth::False,
     }
 }
 
@@ -1527,7 +2295,7 @@ pub(crate) fn settle_constant(arena: &mut Arena, c: ExprId) -> ExprId {
 mod tests {
     use super::*;
     use crate::base::arena::Arena;
-    use crate::base::node::{ExprNode, INTERVAL_BOTH_CLOSED, INTERVAL_BOTH_OPEN};
+    use crate::base::node::ExprNode;
     use std::f64::consts::PI;
 
     /// Helper: get the SymbolId for an ExprId that is a Symbol.
@@ -1557,7 +2325,7 @@ mod tests {
         let expr = arena.sqrt(x);
 
         // domain = ℝ = (-∞, ∞)
-        let reals = arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN);
+        let reals = arena.interval(arena.neg_infinity, arena.infinity, IntervalKind::Open);
 
         let result = continuous_domain(&mut arena, expr, x, x_sym, reals);
         let s = set_display(&arena, result);
@@ -1585,7 +2353,7 @@ mod tests {
         // 1/x = x^(-1)
         let expr = arena.div(arena.one, x);
 
-        let reals = arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN);
+        let reals = arena.interval(arena.neg_infinity, arena.infinity, IntervalKind::Open);
         let result = continuous_domain(&mut arena, expr, x, x_sym, reals);
         let s = set_display(&arena, result);
 
@@ -1610,7 +2378,7 @@ mod tests {
 
         let expr = arena.ln(x);
 
-        let reals = arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN);
+        let reals = arena.interval(arena.neg_infinity, arena.infinity, IntervalKind::Open);
         let result = continuous_domain(&mut arena, expr, x, x_sym, reals);
         let s = set_display(&arena, result);
 
@@ -1641,7 +2409,7 @@ mod tests {
         // domain = [-5, 5]
         let neg5 = arena.int(-5);
         let five = arena.int(5);
-        let domain = arena.interval(neg5, five, INTERVAL_BOTH_CLOSED);
+        let domain = arena.interval(neg5, five, IntervalKind::Closed);
 
         let result = continuous_domain(&mut arena, expr, x, x_sym, domain);
         let s = set_display(&arena, result);

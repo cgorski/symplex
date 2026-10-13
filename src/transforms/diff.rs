@@ -209,7 +209,7 @@ fn diff_node(
                 let dval = get_deriv(cache, val, arena);
                 new_pairs.push((dval, cond));
             }
-            arena.intern(ExprNode::Piecewise(new_pairs))
+            arena.make(ExprNode::Piecewise(new_pairs))
         }
 
         // ── Add: linearity ─────────────────────────────────────────

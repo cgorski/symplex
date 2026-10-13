@@ -143,525 +143,18 @@ pub(crate) fn rebuild_with_cache(
 /// `get` (a child that `get` maps to itself is unchanged).  Every child
 /// operand is looked up, including the variable operand of a binder; a
 /// pass that treats binders specially (substitution) rebuilds them with
-/// [`rebuild_binder`] instead.
+/// [`rebuild_binder`] instead.  A node whose children changed is built by
+/// [`Arena::make`], i.e. by its variant's canonical constructor: `{x, y}`
+/// with `x, y := 1` is `{1}` and `[x, y]` with `x := 3, y := 2` is `∅`,
+/// `==` to the sets built directly.
 pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
     arena: &mut Arena,
     id: ExprId,
     get: &F,
 ) -> ExprId {
-    let node = arena.node(id).clone();
-
-    macro_rules! rebuild_intern_unary {
-        ($arena:expr, $id:expr, $inner:expr, $get:expr, $Variant:ident) => {{
-            let new_inner = ($get)($inner);
-            if new_inner == $inner {
-                $id
-            } else {
-                $arena.intern(ExprNode::$Variant(new_inner))
-            }
-        }};
-    }
-
-    match node {
-        // Atoms: no children.
-        ExprNode::Num(_)
-        | ExprNode::Symbol(_)
-        | ExprNode::Pi
-        | ExprNode::E
-        | ExprNode::ImaginaryUnit
-        | ExprNode::EulerGamma
-        | ExprNode::Catalan
-        | ExprNode::GoldenRatio
-        | ExprNode::PhysicalConstant(_, _)
-        | ExprNode::Infinity
-        | ExprNode::NegInfinity
-        | ExprNode::ComplexInfinity
-        | ExprNode::NaN
-        | ExprNode::BoolTrue
-        | ExprNode::BoolFalse
-        | ExprNode::EmptySet
-        | ExprNode::UniversalSet => id,
-
-        // N-ary: Add, Mul
-        ExprNode::Add(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children.iter().map(|&c| get(c)).collect();
-            if new_children == *children {
-                id
-            } else {
-                arena.add(&new_children)
-            }
-        }
-
-        ExprNode::Mul(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children.iter().map(|&c| get(c)).collect();
-            if new_children == *children {
-                id
-            } else {
-                arena.mul(&new_children)
-            }
-        }
-
-        // Binary: Pow, Derivative, Integral
-        ExprNode::Pow(base, exp) => {
-            let new_base = get(base);
-            let new_exp = get(exp);
-            if new_base == base && new_exp == exp {
-                id
-            } else {
-                arena.pow(new_base, new_exp)
-            }
-        }
-
-        ExprNode::Derivative(body, var) => {
-            let new_body = get(body);
-            let new_var = get(var);
-            if new_body == body && new_var == var {
-                id
-            } else {
-                arena.intern(ExprNode::Derivative(new_body, new_var))
-            }
-        }
-
-        ExprNode::Integral(body, var) => {
-            let new_body = get(body);
-            let new_var = get(var);
-            if new_body == body && new_var == var {
-                id
-            } else {
-                arena.intern(ExprNode::Integral(new_body, new_var))
-            }
-        }
-
-        ExprNode::DefiniteIntegral(body, var, lo, hi) => {
-            let nb = get(body);
-            let nv = get(var);
-            let nl = get(lo);
-            let nh = get(hi);
-            if nb == body && nv == var && nl == lo && nh == hi {
-                id
-            } else {
-                arena.definite_integral(nb, nv, nl, nh)
-            }
-        }
-
-        // Unary: Neg, Sin, Cos, Tan, Exp, Ln, Sqrt, Abs
-        ExprNode::Neg(inner) => rebuild_unary(arena, id, inner, get, Arena::neg),
-        ExprNode::Sin(inner) => rebuild_unary(arena, id, inner, get, Arena::sin),
-        ExprNode::Cos(inner) => rebuild_unary(arena, id, inner, get, Arena::cos),
-        ExprNode::Tan(inner) => rebuild_unary(arena, id, inner, get, Arena::tan),
-        ExprNode::Exp(inner) => rebuild_unary(arena, id, inner, get, Arena::exp),
-        ExprNode::Ln(inner) => rebuild_unary(arena, id, inner, get, Arena::ln),
-        ExprNode::Abs(inner) => rebuild_unary(arena, id, inner, get, Arena::abs),
-
-        // Unary: Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh
-        ExprNode::Asin(inner) => rebuild_intern_unary!(arena, id, inner, get, Asin),
-        ExprNode::Acos(inner) => rebuild_intern_unary!(arena, id, inner, get, Acos),
-        ExprNode::Atan(inner) => rebuild_intern_unary!(arena, id, inner, get, Atan),
-        ExprNode::Atan2(y, x) => {
-            let ny = get(y);
-            let nx = get(x);
-            if ny == y && nx == x {
-                id
-            } else {
-                arena.atan2(ny, nx)
-            }
-        }
-        ExprNode::Sinh(inner) => rebuild_intern_unary!(arena, id, inner, get, Sinh),
-        ExprNode::Cosh(inner) => rebuild_intern_unary!(arena, id, inner, get, Cosh),
-        ExprNode::Tanh(inner) => rebuild_intern_unary!(arena, id, inner, get, Tanh),
-        ExprNode::Asinh(inner) => rebuild_intern_unary!(arena, id, inner, get, Asinh),
-        ExprNode::Acosh(inner) => rebuild_intern_unary!(arena, id, inner, get, Acosh),
-        ExprNode::Atanh(inner) => rebuild_intern_unary!(arena, id, inner, get, Atanh),
-
-        ExprNode::Sign(inner) => {
-            let ni = get(inner);
-            if ni == inner { id } else { arena.sign(ni) }
-        }
-
-        ExprNode::Heaviside(inner) => rebuild_intern_unary!(arena, id, inner, get, Heaviside),
-        ExprNode::DiracDelta(inner) => rebuild_intern_unary!(arena, id, inner, get, DiracDelta),
-
-        // Complex analysis — go through the canonical constructors so that
-        // e.g. `re(x)` with `x := 3 + 4i` collapses to `3`.
-        ExprNode::Re(inner) => rebuild_unary(arena, id, inner, get, Arena::re),
-        ExprNode::Im(inner) => rebuild_unary(arena, id, inner, get, Arena::im),
-        ExprNode::Conjugate(inner) => rebuild_unary(arena, id, inner, get, Arena::conjugate),
-        ExprNode::Arg(inner) => rebuild_unary(arena, id, inner, get, Arena::arg),
-
-        // Special functions (0.2) — canonical constructors fold exact values.
-        ExprNode::Si(inner) => rebuild_unary(arena, id, inner, get, Arena::si),
-        ExprNode::Ci(inner) => rebuild_unary(arena, id, inner, get, Arena::ci),
-        ExprNode::Ei(inner) => rebuild_unary(arena, id, inner, get, Arena::ei),
-        ExprNode::Li(inner) => rebuild_unary(arena, id, inner, get, Arena::li),
-        ExprNode::Zeta(inner) => rebuild_unary(arena, id, inner, get, Arena::zeta),
-        ExprNode::Polygamma(n, x) => {
-            let nn = get(n);
-            let nx = get(x);
-            if nn == n && nx == x {
-                id
-            } else {
-                arena.polygamma(nn, nx)
-            }
-        }
-        ExprNode::KroneckerDelta(i, j) => {
-            let ni = get(i);
-            let nj = get(j);
-            if ni == i && nj == j {
-                id
-            } else {
-                arena.kronecker_delta(ni, nj)
-            }
-        }
-
-        ExprNode::Gamma(inner) => rebuild_intern_unary!(arena, id, inner, get, Gamma),
-        ExprNode::LogGamma(inner) => rebuild_intern_unary!(arena, id, inner, get, LogGamma),
-        ExprNode::Digamma(inner) => rebuild_intern_unary!(arena, id, inner, get, Digamma),
-        ExprNode::Erf(inner) => rebuild_intern_unary!(arena, id, inner, get, Erf),
-        ExprNode::Erfc(inner) => rebuild_intern_unary!(arena, id, inner, get, Erfc),
-        ExprNode::LambertW(inner) => rebuild_intern_unary!(arena, id, inner, get, LambertW),
-        ExprNode::Beta(a, b) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.beta(na, nb)
-            }
-        }
-
-        ExprNode::Floor(inner) => rebuild_intern_unary!(arena, id, inner, get, Floor),
-        ExprNode::Ceiling(inner) => rebuild_intern_unary!(arena, id, inner, get, Ceiling),
-
-        ExprNode::Min(ref children) => {
-            let new_children: SmallVec<[ExprId; 4]> = children.iter().map(|&c| get(c)).collect();
-            if new_children == *children {
-                id
-            } else {
-                arena.intern(ExprNode::Min(new_children))
-            }
-        }
-
-        ExprNode::Max(ref children) => {
-            let new_children: SmallVec<[ExprId; 4]> = children.iter().map(|&c| get(c)).collect();
-            if new_children == *children {
-                id
-            } else {
-                arena.intern(ExprNode::Max(new_children))
-            }
-        }
-
-        ExprNode::Sum(body, var, lo, hi) => {
-            let nb = get(body);
-            let nv = get(var);
-            let nl = get(lo);
-            let nh = get(hi);
-            if nb == body && nv == var && nl == lo && nh == hi {
-                id
-            } else {
-                arena.intern(ExprNode::Sum(nb, nv, nl, nh))
-            }
-        }
-
-        ExprNode::Product_(body, var, lo, hi) => {
-            let nb = get(body);
-            let nv = get(var);
-            let nl = get(lo);
-            let nh = get(hi);
-            if nb == body && nv == var && nl == lo && nh == hi {
-                id
-            } else {
-                arena.intern(ExprNode::Product_(nb, nv, nl, nh))
-            }
-        }
-
-        // Apply: user-defined function
-        ExprNode::Apply(func_id, ref args) => {
-            let new_args: SmallVec<[ExprId; 2]> = args.iter().map(|&c| get(c)).collect();
-            if new_args == *args {
-                id
-            } else {
-                arena.intern(ExprNode::Apply(func_id, new_args))
-            }
-        }
-
-        // Combinatorial: Factorial, Binomial
-        ExprNode::Factorial(inner) => rebuild_unary(arena, id, inner, get, Arena::factorial),
-        ExprNode::Binomial(n, k) => {
-            let new_n = get(n);
-            let new_k = get(k);
-            if new_n == n && new_k == k {
-                id
-            } else {
-                arena.binomial(new_n, new_k)
-            }
-        }
-
-        // Binary relational: Gt, Ge, Eq_, Ne
-        ExprNode::Gt(a, b) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.gt(na, nb)
-            }
-        }
-        ExprNode::Ge(a, b) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.ge(na, nb)
-            }
-        }
-        ExprNode::Eq_(a, b) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.eq_(na, nb)
-            }
-        }
-        ExprNode::Ne(a, b) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.ne_(na, nb)
-            }
-        }
-
-        // Unary logical: Not
-        ExprNode::Not(inner) => rebuild_unary(arena, id, inner, get, Arena::not),
-
-        // N-ary logical: And, Or
-        ExprNode::And(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children.iter().map(|&c| get(c)).collect();
-            if new_children == *children {
-                id
-            } else {
-                arena.and(&new_children)
-            }
-        }
-        ExprNode::Or(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children.iter().map(|&c| get(c)).collect();
-            if new_children == *children {
-                id
-            } else {
-                arena.or(&new_children)
-            }
-        }
-
-        // Piecewise
-        ExprNode::Piecewise(ref pairs) => {
-            let new_pairs: SmallVec<[(ExprId, ExprId); 3]> = pairs
-                .iter()
-                .map(|&(val, cond)| {
-                    let nv = get(val);
-                    let nc = get(cond);
-                    (nv, nc)
-                })
-                .collect();
-            if new_pairs == *pairs {
-                id
-            } else {
-                arena.piecewise(&new_pairs)
-            }
-        }
-
-        // Set constructors — through the canonical constructors, so that
-        // `{x, y}` with `x, y := 1` is `{1}` and `[x, y]` with `x := 3,
-        // y := 2` is `∅`, `==` to the sets built directly.
-        ExprNode::Interval(a, b, flags) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.interval(na, nb, flags)
-            }
-        }
-
-        ExprNode::FiniteSet(ref elems) => {
-            let new_elems: SmallVec<[ExprId; 4]> = elems.iter().map(|&e| get(e)).collect();
-            if new_elems == *elems {
-                id
-            } else {
-                arena.finite_set(&new_elems)
-            }
-        }
-
-        ExprNode::SetUnion(ref sets) => {
-            let new_sets: SmallVec<[ExprId; 4]> = sets.iter().map(|&s| get(s)).collect();
-            if new_sets == *sets {
-                id
-            } else {
-                arena.set_union(&new_sets)
-            }
-        }
-
-        ExprNode::SetIntersection(ref sets) => {
-            let new_sets: SmallVec<[ExprId; 4]> = sets.iter().map(|&s| get(s)).collect();
-            if new_sets == *sets {
-                id
-            } else {
-                arena.set_intersection(&new_sets)
-            }
-        }
-
-        ExprNode::SetComplement(a, b) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.set_complement(na, nb)
-            }
-        }
-
-        // 3-field formal nodes
-        ExprNode::Limit(a, b, c) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            if na == a && nb == b && nc == c {
-                id
-            } else {
-                arena.intern(ExprNode::Limit(na, nb, nc))
-            }
-        }
-
-        ExprNode::LaplaceTransform(a, b, c) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            if na == a && nb == b && nc == c {
-                id
-            } else {
-                arena.intern(ExprNode::LaplaceTransform(na, nb, nc))
-            }
-        }
-
-        ExprNode::InverseLaplaceTransform(a, b, c) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            if na == a && nb == b && nc == c {
-                id
-            } else {
-                arena.intern(ExprNode::InverseLaplaceTransform(na, nb, nc))
-            }
-        }
-
-        ExprNode::Residue(a, b, c) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            if na == a && nb == b && nc == c {
-                id
-            } else {
-                arena.intern(ExprNode::Residue(na, nb, nc))
-            }
-        }
-
-        ExprNode::DSolve(a, b, c) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            if na == a && nb == b && nc == c {
-                id
-            } else {
-                arena.intern(ExprNode::DSolve(na, nb, nc))
-            }
-        }
-
-        ExprNode::RootSum(a, b, c) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            if na == a && nb == b && nc == c {
-                id
-            } else {
-                arena.intern(ExprNode::RootSum(na, nb, nc))
-            }
-        }
-
-        // 4-field formal node
-        ExprNode::Series(a, b, c, d) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            let nd = get(d);
-            if na == a && nb == b && nc == c && nd == d {
-                id
-            } else {
-                arena.intern(ExprNode::Series(na, nb, nc, nd))
-            }
-        }
-
-        ExprNode::RootOf(a, b, c) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            if na == a && nb == b && nc == c {
-                id
-            } else {
-                arena.intern(ExprNode::RootOf(na, nb, nc))
-            }
-        }
-
-        ExprNode::Subs(a, b, c) => {
-            let na = get(a);
-            let nb = get(b);
-            let nc = get(c);
-            if na == a && nb == b && nc == c {
-                id
-            } else {
-                subs_node(arena, na, nb, nc)
-            }
-        }
-
-        // 2-field formal nodes
-        ExprNode::ConditionSet(a, b) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.intern(ExprNode::ConditionSet(na, nb))
-            }
-        }
-
-        ExprNode::ImageSet(a, b) => {
-            let na = get(a);
-            let nb = get(b);
-            if na == a && nb == b {
-                id
-            } else {
-                arena.intern(ExprNode::ImageSet(na, nb))
-            }
-        }
-    }
-}
-
-/// Helper for rebuilding unary nodes — avoids repeating the same
-/// pattern 8 times.
-#[inline]
-fn rebuild_unary<F: Fn(ExprId) -> ExprId>(
-    arena: &mut Arena,
-    id: ExprId,
-    inner: ExprId,
-    get: &F,
-    constructor: fn(&mut Arena, ExprId) -> ExprId,
-) -> ExprId {
-    let new_inner = get(inner);
-    if new_inner == inner {
-        id
-    } else {
-        constructor(arena, new_inner)
+    match arena.node(id).map_children(get) {
+        None => id,
+        Some(node) => arena.make(node),
     }
 }
 
@@ -743,49 +236,21 @@ pub(crate) struct Binder {
 ///
 /// Every binder-aware pass — [`free_symbols`], [`has_free_symbol`],
 /// substitution (`transforms::subs`), the integrator's dependence test —
-/// reads this one table.
+/// reads this one table, which is the `#[binder(..)]` attributes of the
+/// `ExprNode` declaration (`ExprNode::binder_operands`).
 pub(crate) fn binder(arena: &Arena, id: ExprId) -> Option<Binder> {
-    let is_symbol = |v: ExprId| matches!(arena.node(v), ExprNode::Symbol(_));
-    let b = |var: ExprId, scoped: &[ExprId], outer: &[ExprId]| Binder {
-        var,
-        scoped: SmallVec::from_slice(scoped),
-        outer: SmallVec::from_slice(outer),
-    };
-    match *arena.node(id) {
-        ExprNode::Sum(body, var, lo, hi)
-        | ExprNode::Product_(body, var, lo, hi)
-        | ExprNode::DefiniteIntegral(body, var, lo, hi)
-            if is_symbol(var) =>
-        {
-            Some(b(var, &[body], &[lo, hi]))
-        }
-        ExprNode::RootSum(poly, body, var) if is_symbol(var) => Some(b(var, &[poly, body], &[])),
-        ExprNode::ConditionSet(var, cond) | ExprNode::ImageSet(var, cond) if is_symbol(var) => {
-            Some(b(var, &[cond], &[]))
-        }
-        ExprNode::RootOf(poly, var, idx) if is_symbol(var) => Some(b(var, &[poly], &[idx])),
-        ExprNode::Limit(body, var, point)
-        | ExprNode::Residue(body, var, point)
-        | ExprNode::Subs(body, var, point)
-            if is_symbol(var) =>
-        {
-            Some(b(var, &[body], &[point]))
-        }
-        ExprNode::LaplaceTransform(body, var, other)
-        | ExprNode::InverseLaplaceTransform(body, var, other)
-            if is_symbol(var) =>
-        {
-            Some(b(var, &[body], &[other]))
-        }
-        _ => None,
-    }
+    arena
+        .node(id)
+        .binder_operands()
+        .filter(|b| matches!(arena.node(b.var), ExprNode::Symbol(_)))
 }
 
 /// The binder `id` (for which [`binder`] is `Some`) rebuilt with bound
 /// variable `var` and the given `scoped` / `outer` operands, in the order
-/// [`binder`] lists them.  A `DefiniteIntegral` goes through its
-/// constructor (which applies the cheap folds); the other nodes are
-/// interned as they are.  Returns `id` for a node that is not a binder.
+/// [`binder`] lists them, through [`Arena::make`] (a `DefiniteIntegral`
+/// applies its cheap folds, a `Subs` its normal form; the other binders
+/// have no canonical constructor and are interned as they are).  Returns
+/// `id` for a node that is not a binder.
 pub(crate) fn rebuild_binder(
     arena: &mut Arena,
     id: ExprId,
@@ -793,26 +258,10 @@ pub(crate) fn rebuild_binder(
     scoped: &[ExprId],
     outer: &[ExprId],
 ) -> ExprId {
-    let node = match (arena.node(id), scoped, outer) {
-        (ExprNode::Sum(..), &[body], &[lo, hi]) => ExprNode::Sum(body, var, lo, hi),
-        (ExprNode::Product_(..), &[body], &[lo, hi]) => ExprNode::Product_(body, var, lo, hi),
-        (ExprNode::DefiniteIntegral(..), &[body], &[lo, hi]) => {
-            return arena.definite_integral(body, var, lo, hi);
-        }
-        (ExprNode::RootSum(..), &[poly, body], &[]) => ExprNode::RootSum(poly, body, var),
-        (ExprNode::ConditionSet(..), &[cond], &[]) => ExprNode::ConditionSet(var, cond),
-        (ExprNode::ImageSet(..), &[body], &[]) => ExprNode::ImageSet(var, body),
-        (ExprNode::RootOf(..), &[poly], &[idx]) => ExprNode::RootOf(poly, var, idx),
-        (ExprNode::Subs(..), &[body], &[point]) => return subs_node(arena, body, var, point),
-        (ExprNode::Limit(..), &[body], &[point]) => ExprNode::Limit(body, var, point),
-        (ExprNode::Residue(..), &[body], &[point]) => ExprNode::Residue(body, var, point),
-        (ExprNode::LaplaceTransform(..), &[body], &[s]) => ExprNode::LaplaceTransform(body, var, s),
-        (ExprNode::InverseLaplaceTransform(..), &[body], &[t]) => {
-            ExprNode::InverseLaplaceTransform(body, var, t)
-        }
-        _ => return id,
-    };
-    arena.intern(node)
+    match arena.node(id).with_binder_operands(var, scoped, outer) {
+        Some(node) => arena.make(node),
+        None => id,
+    }
 }
 
 /// The variable slot of a node that is a function *of* its variable:
@@ -834,28 +283,19 @@ pub(crate) fn rebuild_binder(
 /// (`transforms::subs`) reads this table to rename the variable when `a`
 /// is a fresh symbol, and to build the [`subs_node`] otherwise.  For every
 /// other pass the node binds nothing: [`free_symbols`] of `f′(x)` is `{x}`.
+/// The table is the `#[var_slot(..)]` attributes of the `ExprNode`
+/// declaration (`ExprNode::var_slot_operands`).
 pub(crate) fn var_slot(arena: &Arena, id: ExprId) -> Option<Binder> {
-    let is_symbol = |v: ExprId| matches!(arena.node(v), ExprNode::Symbol(_));
-    let b = |var: ExprId, scoped: &[ExprId], outer: &[ExprId]| Binder {
-        var,
-        scoped: SmallVec::from_slice(scoped),
-        outer: SmallVec::from_slice(outer),
-    };
-    match *arena.node(id) {
-        ExprNode::Derivative(body, var) | ExprNode::Integral(body, var) if is_symbol(var) => {
-            Some(b(var, &[body], &[]))
-        }
-        ExprNode::Series(body, var, point, order) if is_symbol(var) => {
-            Some(b(var, &[body], &[point, order]))
-        }
-        ExprNode::DSolve(eq, func, var) if is_symbol(var) => Some(b(var, &[eq, func], &[])),
-        _ => None,
-    }
+    arena
+        .node(id)
+        .var_slot_operands()
+        .filter(|b| matches!(arena.node(b.var), ExprNode::Symbol(_)))
 }
 
 /// The node `id` (for which [`var_slot`] is `Some`) rebuilt with variable
 /// `var` and the given `scoped` / `outer` operands, in the order
-/// [`var_slot`] lists them.  Returns `id` for any other node.
+/// [`var_slot`] lists them, through [`Arena::make`].  Returns `id` for any
+/// other node.
 pub(crate) fn rebuild_var_slot(
     arena: &mut Arena,
     id: ExprId,
@@ -863,16 +303,10 @@ pub(crate) fn rebuild_var_slot(
     scoped: &[ExprId],
     outer: &[ExprId],
 ) -> ExprId {
-    let node = match (arena.node(id), scoped, outer) {
-        (ExprNode::Derivative(..), &[body], &[]) => ExprNode::Derivative(body, var),
-        (ExprNode::Integral(..), &[body], &[]) => ExprNode::Integral(body, var),
-        (ExprNode::Series(..), &[body], &[point, order]) => {
-            ExprNode::Series(body, var, point, order)
-        }
-        (ExprNode::DSolve(..), &[eq, func], &[]) => ExprNode::DSolve(eq, func, var),
-        _ => return id,
-    };
-    arena.intern(node)
+    match arena.node(id).with_var_slot_operands(var, scoped, outer) {
+        Some(node) => arena.make(node),
+        None => id,
+    }
 }
 
 /// `Subs(body, var, point)`, with the folds that make it a normal form:
@@ -889,31 +323,6 @@ pub(crate) fn subs_node(arena: &mut Arena, body: ExprId, var: ExprId, point: Exp
     arena.intern(ExprNode::Subs(body, var, point))
 }
 
-/// The variable operand of a binder ([`binder`]) or variable-slot node
-/// ([`var_slot`]), whether or not it is a symbol; `None` for any other
-/// node.
-fn var_operand(node: &ExprNode) -> Option<ExprId> {
-    match *node {
-        ExprNode::Sum(_, v, _, _)
-        | ExprNode::Product_(_, v, _, _)
-        | ExprNode::DefiniteIntegral(_, v, _, _)
-        | ExprNode::Series(_, v, _, _)
-        | ExprNode::RootSum(_, _, v)
-        | ExprNode::DSolve(_, _, v)
-        | ExprNode::ConditionSet(v, _)
-        | ExprNode::ImageSet(v, _)
-        | ExprNode::RootOf(_, v, _)
-        | ExprNode::Limit(_, v, _)
-        | ExprNode::Residue(_, v, _)
-        | ExprNode::Subs(_, v, _)
-        | ExprNode::LaplaceTransform(_, v, _)
-        | ExprNode::InverseLaplaceTransform(_, v, _)
-        | ExprNode::Derivative(_, v)
-        | ExprNode::Integral(_, v) => Some(v),
-        _ => None,
-    }
-}
-
 /// A node of the tree rooted at `root` whose variable operand is not a
 /// symbol (`Sum(1/9*k, 1/3=0..3)`: a malformed binder), skipping the
 /// nodes of the tree rooted at `except`.  `None` if there is none.
@@ -921,7 +330,9 @@ pub(crate) fn malformed_binder(arena: &Arena, root: ExprId, except: ExprId) -> O
     let old: FxHashSet<ExprId> = post_order_ids(arena, except).into_iter().collect();
     post_order_ids(arena, root).into_iter().find(|id| {
         !old.contains(id)
-            && var_operand(arena.node(*id))
+            && arena
+                .node(*id)
+                .var_operand()
                 .is_some_and(|v| !matches!(arena.node(v), ExprNode::Symbol(_)))
     })
 }

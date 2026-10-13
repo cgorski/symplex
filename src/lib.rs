@@ -144,7 +144,7 @@ pub use num_traits;
 /// Assumption system for symbolic variables.
 pub use base::assumptions;
 /// Limits on one call — deadline, time limit, step cap — shared by the simplex and the certificate provers.
-pub use base::budget::{Budget, BudgetHit};
+pub use base::budget::{Budget, BudgetHit, BudgetKind};
 /// Library-wide configuration knobs.
 pub use base::config;
 /// Error types used throughout the library.

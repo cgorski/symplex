@@ -549,7 +549,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 } else if kept == *pairs {
                     id
                 } else {
-                    arena.intern(ExprNode::Piecewise(kept))
+                    arena.make(ExprNode::Piecewise(kept))
                 }
             }
 

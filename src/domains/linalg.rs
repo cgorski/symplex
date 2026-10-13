@@ -590,6 +590,10 @@ fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
     a
 }
 
+/// Largest numerator (in terms) [`Tower::is_zero`] computes exactly when
+/// every sample point gave 0 (a likely zero, to be confirmed).
+const RF_HINTED_BUDGET: usize = 4 * RF_TERM_BUDGET;
+
 impl Tower {
     /// The tower of the expressions `roots`; `None` if a node is not
     /// field arithmetic over `ℚ(radicals, i)(symbols)` (a function, `π`,
@@ -1122,10 +1126,14 @@ impl Tower {
 
     /// Exact zero test of `root` in `K(params)`: evaluated at the sample
     /// points of the parameters first (a nonzero value proves `≢ 0`); at a
-    /// zero value the numerator is computed as a reduced polynomial, and
-    /// only when that exceeds [`RF_TERM_BUDGET`] terms is the answer taken
-    /// from the values at all the points (Schwartz–Zippel), as in
-    /// [`rational_function_is_zero`](crate::domains::matrix::rational_function_is_zero).
+    /// zero value the numerator is computed as a reduced polynomial.  When
+    /// that exceeds [`RF_TERM_BUDGET`] terms and every point gave 0 — a zero
+    /// with high probability (Schwartz–Zippel), which is no proof — the
+    /// numerator is computed once more with [`RF_HINTED_BUDGET`] terms;
+    /// `None` when that does not settle it.  Up to 0.48 the zero values at
+    /// the points were taken for `Some(true)`, as
+    /// [`rational_function_is_zero`](crate::domains::matrix::rational_function_is_zero)
+    /// still does for rational functions over ℚ.
     fn is_zero(&self, arena: &Arena, root: ExprId) -> Option<bool> {
         if self.syms.is_empty() || self.ext.is_some() {
             // (With a nested root a nonzero value at a point proves
@@ -1144,7 +1152,13 @@ impl Tower {
                 return Some(n.is_zero());
             }
         }
-        zero_at_all.then_some(true)
+        if !zero_at_all {
+            return None;
+        }
+        match self.eval_frac(arena, root, None, RF_HINTED_BUDGET) {
+            Some(Some((n, _))) => Some(n.is_zero()),
+            _ => None,
+        }
     }
 
     // ── The field K(params) for square roots (L ≤ 2) ────────────────────────

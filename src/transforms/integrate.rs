@@ -40,6 +40,7 @@ use num_traits::Signed;
 use num_traits::Zero;
 
 use crate::base::arena::{Arena, FN_CHI, FN_ERFI, FN_SHI};
+use crate::base::budget::{BudgetKind, WorkScope};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
 use crate::base::stage::stage;
@@ -50,7 +51,7 @@ use crate::poly::Poly;
 /// Returns the antiderivative. If integration cannot be performed,
 /// returns an unevaluated `Integral(expr, var)` node.
 pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    let call = IntegrateCall::enter(arena);
+    let call = IntegrateCall::enter();
     if call.depth > MAX_INTEGRATE_NESTING {
         tracing::debug!("integrate: nesting limit reached");
         return arena.intern(ExprNode::Integral(expr, var));
@@ -58,6 +59,14 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
     // The outermost call remembers the jumps at the poles of `tan w` for
     // all the substitutions and degenerate cases below it.
     let _jumps = crate::transforms::trig_integ::JumpMemo::enter();
+    // ... and owns the work budget the nested calls draw from.
+    let mut scope;
+    let arena: &mut Arena = if call.outermost {
+        scope = WorkScope::enter(arena, BudgetKind::Integration, INTEGRATE_WORK);
+        &mut scope
+    } else {
+        arena
+    };
     stage!(arena, "integrate", expr, integrate_impl(arena, expr, var))
 }
 
@@ -70,8 +79,9 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
 const MAX_INTEGRATE_NESTING: usize = 48;
 
 /// One `integrate` call on this thread.  The outermost call owns the step
-/// and arena budgets and the memo; nested calls (substitutions re-entering
-/// the pipeline, `integrate_definite`) draw from them.  Dropping the guard
+/// budget and the memo (and, in [`integrate`], the work budget); nested
+/// calls (substitutions re-entering the pipeline, `integrate_definite`)
+/// draw from them.  Dropping the guard
 /// — also when a panic unwinds through the call, as under the Rubi
 /// harness's `catch_unwind` — restores the nesting depth and, for the
 /// outermost call, clears the memo, so no later call on another arena can
@@ -83,7 +93,7 @@ struct IntegrateCall {
 }
 
 impl IntegrateCall {
-    fn enter(arena: &Arena) -> Self {
+    fn enter() -> Self {
         let depth = NODE_BUDGET_DEPTH.with(|d| {
             let depth = d.get();
             d.set(depth + 1);
@@ -93,7 +103,6 @@ impl IntegrateCall {
         if outermost {
             NODE_BUDGET_USED.with(|u| u.set(0));
             NODE_BUDGET_CAP.with(|c| c.set(usize::MAX));
-            ARENA_BUDGET_START.with(|s| s.set(arena.node_count()));
             INTEGRATE_MEMO.with(|m| m.borrow_mut().clear());
             VERDICT_MEMO.with(|m| m.borrow_mut().clear());
             JUMP_MEMO.with(|m| m.borrow_mut().clear());
@@ -145,18 +154,22 @@ impl Drop for IntegrateCall {
 /// unevaluated, which the callers already treat as "no closed form".
 const INTEGRATE_NODE_BUDGET: usize = 20_000;
 
-/// Upper bound on the arena nodes one top-level `integrate` may create.
-/// Successful integrations of the Rubi suite and the test suite stay far
-/// below it; a search that keeps building larger candidates (as the
-/// complex partial fractions of `∫ x³/(x⁸ + 1) dx` did in 0.24, past 8 GB)
-/// stops here and leaves the remaining sub-integrals unevaluated, so no
-/// integrand can exhaust memory through the arena.
-const INTEGRATE_ARENA_BUDGET: usize = 2_000_000;
+/// Upper bound on the interns one top-level `integrate` may attempt (a
+/// [`WorkScope`] of kind [`BudgetKind::Integration`]), which bounds the
+/// nodes it can add to the arena.  Successful integrations of the Rubi
+/// suite and the test suite stay far below it; a search that keeps building
+/// larger candidates (as the complex partial fractions of `∫ x³/(x⁸ + 1)
+/// dx` did in 0.24, past 8 GB) stops here and leaves the remaining
+/// sub-integrals unevaluated, so no integrand can exhaust memory through
+/// the arena.  Up to 0.48 it was 2,000,000 nodes of arena growth, which
+/// depends on what the context already holds.  The largest top-level
+/// integration of the Rubi suite attempts 11.3 million interns (and adds
+/// 1.0 million nodes), of the golden corpus 2.5 million.
+const INTEGRATE_WORK: u64 = 20_000_000;
 
 thread_local! {
     static NODE_BUDGET_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NODE_BUDGET_USED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static ARENA_BUDGET_START: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// The step count at which the current [`StepCap`] ends (`usize::MAX`:
     /// none).
     static NODE_BUDGET_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
@@ -190,11 +203,10 @@ impl Drop for StepCap {
     }
 }
 
-/// Has the outermost `integrate` created more than
-/// [`INTEGRATE_ARENA_BUDGET`] arena nodes?
+/// Has the outermost `integrate` attempted more than [`INTEGRATE_WORK`]
+/// interns?
 fn arena_budget_exhausted(arena: &Arena) -> bool {
-    let start = ARENA_BUDGET_START.with(std::cell::Cell::get);
-    let exhausted = arena.node_count().saturating_sub(start) > INTEGRATE_ARENA_BUDGET;
+    let exhausted = arena.work_exhausted(BudgetKind::Integration);
     if exhausted {
         tracing::debug!("integrate: arena budget exhausted");
     }
@@ -3274,7 +3286,7 @@ fn jump_kept_undecided(arena: &Arena, g: ExprId, t_sym: SymbolId) -> bool {
 /// call ends ([`CLEARED_MEMO`]).
 pub(crate) fn clear_nested_fractions(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     let inside = NODE_BUDGET_DEPTH.with(std::cell::Cell::get) > 0;
-    let key = (std::ptr::from_ref::<Arena>(arena) as usize, expr, var);
+    let key = (arena.serial(), expr, var);
     if inside && let Some(found) = CLEARED_MEMO.with(|m| m.borrow().get(&key).copied()) {
         return found;
     }
@@ -3293,7 +3305,7 @@ thread_local! {
     /// numerator: `∫ (A + B·sec u + C·sec²u)/(a + b·sec u)⁴ du` made 116
     /// such calls (1.4 s, multiplying out numerators such as `(t² + 1)⁷·…`)
     /// on inputs whose distinct ones took 0.16 s (0.38).
-    static CLEARED_MEMO: std::cell::RefCell<FxHashMap<(usize, ExprId, ExprId), ExprId>> =
+    static CLEARED_MEMO: std::cell::RefCell<FxHashMap<(u64, ExprId, ExprId), ExprId>> =
         std::cell::RefCell::new(FxHashMap::default());
 }
 
@@ -3434,10 +3446,11 @@ enum MemoOutcome {
 /// A sub-integrand in its search context.  The strategies that apply
 /// depend on whether `try_risch_rational` may run (its recursion guard) and
 /// on the nesting of substitution strategies, so both are part of the key;
-/// the arena's address keeps two arenas on one thread apart.
+/// the arena's serial ([`Arena::serial`]) keeps two arenas on one thread
+/// apart (up to 0.48 its address, which a later arena can have again).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct MemoKey {
-    arena: usize,
+    arena: u64,
     expr: ExprId,
     var: ExprId,
     in_risch: bool,
@@ -3467,7 +3480,7 @@ fn integrate_node(
     depth: usize,
 ) -> ExprId {
     let key = MemoKey {
-        arena: std::ptr::from_ref::<Arena>(arena) as usize,
+        arena: arena.serial(),
         expr,
         var,
         in_risch: crate::calculus::risch::rational_guard_active(),
@@ -3854,9 +3867,10 @@ fn integrate_node_uncached(
                         }
 
                         // General case: solve δ(g(x)) = 0, i.e. g(x) = 0 for x
-                        let solutions = crate::transforms::solve::solve(arena, delta_arg, var);
+                        let solutions =
+                            crate::transforms::solve::known_real_roots(arena, delta_arg, var);
                         if solutions.len() == 1 {
-                            let root = solutions[0].value;
+                            let root = solutions[0];
                             let f_at_root = crate::transforms::subs::subs(arena, f_expr, var, root);
                             let f_at_root_eval = crate::transforms::eval::eval(arena, f_at_root);
                             let heaviside = arena.intern(ExprNode::Heaviside(delta_arg));
@@ -5906,7 +5920,7 @@ const VARIES_POINTS: [(i64, i64); 2] = [(3, 7), (5, 11)];
 /// call ends ([`VARIES_MEMO`]).
 fn varies_numerically(arena: &mut Arena, q: ExprId, var: ExprId) -> bool {
     let inside = NODE_BUDGET_DEPTH.with(std::cell::Cell::get) > 0;
-    let key = (std::ptr::from_ref::<Arena>(arena) as usize, q, var);
+    let key = (arena.serial(), q, var);
     if inside && let Some(found) = VARIES_MEMO.with(|m| m.borrow().get(&key).copied()) {
         return found;
     }
@@ -5924,7 +5938,7 @@ thread_local! {
     /// case of the parameters and every depth it is retried at: on the Rubi
     /// suite's 4.5.4.2 (0.38) its 45,000 tests took 6.5 s, a fifth of the
     /// integration time, and 24,700 of them were repeats.
-    static VARIES_MEMO: std::cell::RefCell<FxHashMap<(usize, ExprId, ExprId), bool>> =
+    static VARIES_MEMO: std::cell::RefCell<FxHashMap<(u64, ExprId, ExprId), bool>> =
         std::cell::RefCell::new(FxHashMap::default());
 }
 
@@ -8924,20 +8938,20 @@ fn real_roots(arena: &mut Arena, g: ExprId, var: ExprId) -> Option<Vec<ExprId>> 
     {
         return None;
     }
-    let sols = crate::transforms::solve::solve(arena, g, var);
+    let sols = crate::transforms::solve::known_real_roots(arena, g, var);
     if sols.is_empty() && poly.is_none() {
         return None;
     }
     let mut roots = Vec::new();
     for s in sols {
-        if !crate::base::walk::free_symbols(arena, s.value).is_empty() {
+        if !crate::base::walk::free_symbols(arena, s).is_empty() {
             return None; // parametric root: cannot decide
         }
-        match crate::transforms::evalf::eval_const_f64(arena, s.value) {
-            Some(v) if v.is_finite() => roots.push(s.value),
+        match crate::transforms::evalf::eval_const_f64(arena, s) {
+            Some(v) if v.is_finite() => roots.push(s),
             Some(_) => return None,
             None => {
-                let value = crate::transforms::eval::eval(arena, s.value);
+                let value = crate::transforms::eval::eval(arena, s);
                 match crate::transforms::evalf::evalf_complex64(arena, value) {
                     Ok(z) if z.im != 0.0 && z.re.is_finite() && z.im.is_finite() => {} // complex root
                     _ => return None,
@@ -9763,16 +9777,13 @@ fn degenerate_values(arena: &mut Arena, denom: ExprId, sym: ExprId) -> Vec<ExprI
         .filter(|&f| crate::base::walk::contains(arena, f, sym))
         .collect();
     if split.len() < 2 {
-        return crate::transforms::solve::solve(arena, denom, sym)
-            .into_iter()
-            .map(|s| s.value)
-            .collect();
+        return crate::transforms::solve::known_real_roots(arena, denom, sym);
     }
     let mut values: Vec<ExprId> = Vec::new();
     for f in split {
-        for s in crate::transforms::solve::solve(arena, f, sym) {
-            if !values.contains(&s.value) {
-                values.push(s.value);
+        for s in crate::transforms::solve::known_real_roots(arena, f, sym) {
+            if !values.contains(&s) {
+                values.push(s);
             }
         }
     }
@@ -9821,7 +9832,7 @@ thread_local! {
     /// The denominators of the degenerate values of the enclosing
     /// [`try_piecewise_wrap`] cases on this thread (`a` for `c = b²/(4a)`):
     /// non-zero wherever the case's answer applies.
-    static NONZERO_IN_CASE: std::cell::RefCell<Vec<(usize, ExprId)>> =
+    static NONZERO_IN_CASE: std::cell::RefCell<Vec<(u64, ExprId)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -9832,7 +9843,7 @@ struct NonzeroInCase(usize);
 
 impl NonzeroInCase {
     fn enter(arena: &Arena, denominators: Vec<ExprId>) -> Self {
-        let key = std::ptr::from_ref::<Arena>(arena) as usize;
+        let key = arena.serial();
         NONZERO_IN_CASE.with(|s| {
             let mut s = s.borrow_mut();
             let len = s.len();
@@ -9855,7 +9866,7 @@ impl Drop for NonzeroInCase {
 /// Does `sym = val` make one of the enclosing cases' non-zero
 /// denominators ([`NONZERO_IN_CASE`]) vanish?
 fn excluded_by_enclosing_case(arena: &mut Arena, sym: ExprId, val: ExprId) -> bool {
-    let key = std::ptr::from_ref::<Arena>(arena) as usize;
+    let key = arena.serial();
     let nonzero: Vec<ExprId> = NONZERO_IN_CASE.with(|s| {
         s.borrow()
             .iter()
@@ -11301,10 +11312,7 @@ fn factor_roots(arena: &mut Arena, g: &Poly, var: ExprId) -> Option<FactorRoots>
     }
     if deg <= MAX_EXPLICIT_ROOT_DEGREE {
         let g_expr = crate::poly::polybridge::poly_to_expr(arena, g, var);
-        let roots: Vec<ExprId> = crate::transforms::solve::solve(arena, g_expr, var)
-            .into_iter()
-            .map(|s| s.value)
-            .collect();
+        let roots: Vec<ExprId> = crate::transforms::solve::known_real_roots(arena, g_expr, var);
         let small = roots.iter().all(|&r| {
             let ids = crate::base::walk::post_order_ids(arena, r);
             written_size(arena, r, MAX_EXPLICIT_ROOT_SIZE) <= MAX_EXPLICIT_ROOT_SIZE
@@ -12096,13 +12104,12 @@ fn vanishing_parameter_values(
     let [s] = syms[..] else {
         return None;
     };
-    let solutions = crate::transforms::solve::solve(arena, alpha, s);
+    let solutions = crate::transforms::solve::known_real_roots(arena, alpha, s);
     if solutions.is_empty() {
         return None;
     }
     let mut out = Vec::new();
-    for sol in solutions {
-        let v = sol.value;
+    for v in solutions {
         if !crate::base::walk::free_symbols(arena, v).is_empty() || contains_non_finite(arena, v) {
             return None;
         }
@@ -12559,7 +12566,7 @@ fn antiderivative_rejected(
     // A route's accepted candidate is usually its stage's answer too, and
     // is then judged again at the stage's exit: the verdict is remembered
     // for the rest of the top-level call (cleared with `INTEGRATE_MEMO`).
-    let key = (std::ptr::from_ref::<Arena>(arena) as usize, f, big_f, var);
+    let key = (arena.serial(), f, big_f, var);
     let verdict = match VERDICT_MEMO.with(|m| m.borrow().get(&key).copied()) {
         Some(verdict) => verdict,
         None => {
@@ -12575,7 +12582,7 @@ fn antiderivative_rejected(
     };
     match verdict {
         FtcVerdict::Verified => {
-            let key = (std::ptr::from_ref::<Arena>(arena) as usize, f, big_f, var);
+            let key = (arena.serial(), f, big_f, var);
             if let Some(jumps) = JUMP_MEMO.with(|m| m.borrow().get(&key).copied()) {
                 return jumps;
             }
@@ -12597,7 +12604,7 @@ fn antiderivative_rejected(
 thread_local! {
     /// [`jumps_at_argument_poles`] verdicts during the current top-level
     /// `integrate` (cleared with [`VERDICT_MEMO`]).
-    static JUMP_MEMO: std::cell::RefCell<FxHashMap<(usize, ExprId, ExprId, ExprId), bool>> =
+    static JUMP_MEMO: std::cell::RefCell<FxHashMap<(u64, ExprId, ExprId, ExprId), bool>> =
         std::cell::RefCell::new(FxHashMap::default());
 }
 
@@ -12689,7 +12696,7 @@ fn jumps_at_argument_poles(
 thread_local! {
     /// [`check_antiderivative`] verdicts during the current top-level
     /// `integrate`, by (arena, `f`, `F`, variable).
-    static VERDICT_MEMO: std::cell::RefCell<FxHashMap<(usize, ExprId, ExprId, ExprId), FtcVerdict>> =
+    static VERDICT_MEMO: std::cell::RefCell<FxHashMap<(u64, ExprId, ExprId, ExprId), FtcVerdict>> =
         std::cell::RefCell::new(FxHashMap::default());
 }
 

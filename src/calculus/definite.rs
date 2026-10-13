@@ -65,6 +65,7 @@ use crate::base::extended::Extended;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::base::walk;
 use crate::calculus::calculus_util::{self, BreakKind, BreakScan, Breakpoint, LinearCoeffs};
 use crate::calculus::residue;
@@ -4099,9 +4100,17 @@ fn resolve_at(
                 ExprNode::Piecewise(pairs) if walk::contains(arena, id, x) => {
                     let mut chosen: Option<ExprId> = None;
                     for (val, cond) in pairs.iter() {
-                        if condition_at(arena, *cond, x, mid)? {
-                            chosen = Some(*val);
-                            break;
+                        match condition_at(arena, *cond, x, mid)? {
+                            Truth::True => {
+                                chosen = Some(*val);
+                                break;
+                            }
+                            Truth::False => {}
+                            Truth::Unknown => {
+                                return Err(failed(
+                                    "cannot decide a Piecewise condition at a test point",
+                                ));
+                            }
                         }
                     }
                     Some(chosen.unwrap_or_else(|| arena.zero()))
@@ -4161,94 +4170,93 @@ fn sign_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<Order
 /// the assumption system: `Some(true/false)` or `None` if undecidable.
 fn decide_condition(arena: &mut Arena, cond: ExprId) -> Option<bool> {
     let order = walk::post_order_ids(arena, cond);
-    let mut vals: FxHashMap<ExprId, Option<bool>> = FxHashMap::default();
+    let mut vals: FxHashMap<ExprId, Truth> = FxHashMap::default();
     for id in order {
         let node = arena.node(id).clone();
-        let v: Option<bool> = match node {
-            ExprNode::BoolTrue => Some(true),
-            ExprNode::BoolFalse => Some(false),
+        let v = match node {
+            ExprNode::BoolTrue => Truth::True,
+            ExprNode::BoolFalse => Truth::False,
             ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
                 let d = arena.sub(a, b);
                 let d = safe_eval(arena, d);
                 let s = sign_of(arena, d);
-                match node {
+                Truth::from(match node {
                     ExprNode::Gt(..) => s.map(|s| s == Ordering::Greater),
                     ExprNode::Ge(..) => s.map(|s| s != Ordering::Less),
                     ExprNode::Eq_(..) => s.map(|s| s == Ordering::Equal),
                     _ => s.map(|s| s != Ordering::Equal),
-                }
+                })
             }
-            ExprNode::And(children) => {
-                let parts: Vec<Option<bool>> = children
-                    .iter()
-                    .map(|c| vals.get(c).copied().flatten())
-                    .collect();
-                if parts.contains(&Some(false)) {
-                    Some(false)
-                } else if parts.iter().all(|p| *p == Some(true)) {
-                    Some(true)
-                } else {
-                    None
-                }
-            }
-            ExprNode::Or(children) => {
-                let parts: Vec<Option<bool>> = children
-                    .iter()
-                    .map(|c| vals.get(c).copied().flatten())
-                    .collect();
-                if parts.contains(&Some(true)) {
-                    Some(true)
-                } else if parts.iter().all(|p| *p == Some(false)) {
-                    Some(false)
-                } else {
-                    None
-                }
-            }
-            ExprNode::Not(inner) => vals.get(&inner).copied().flatten().map(|b| !b),
-            _ => None,
+            ExprNode::And(children) => Truth::all(children.iter().map(|c| truth_of(&vals, *c))),
+            ExprNode::Or(children) => Truth::any(children.iter().map(|c| truth_of(&vals, *c))),
+            ExprNode::Not(inner) => truth_of(&vals, inner).not(),
+            _ => Truth::Unknown,
         };
         vals.insert(id, v);
     }
-    vals.get(&cond).copied().flatten()
+    truth_of(&vals, cond).to_option()
 }
 
-/// Truth value of a boolean condition at `x = mid`.
+/// The truth value recorded for `id`, `Unknown` when there is none.
+fn truth_of(vals: &FxHashMap<ExprId, Truth>, id: ExprId) -> Truth {
+    vals.get(&id).copied().unwrap_or(Truth::Unknown)
+}
+
+/// Truth value of a boolean condition at `x = mid`, three-valued: the
+/// relation of `p` and `q` there is decided by the exact or certified zero
+/// and sign tests of `p − q`
+/// ([`is_zero_checked`](crate::poly::algebraic::is_zero_checked),
+/// [`sign_checked`](crate::poly::algebraic::sign_checked)), and is
+/// `Unknown` when they do not decide it (a value 0 to the precision
+/// reached, an order of non-real values); so is a connective of an
+/// undecided part, by Kleene's rules.  Up to 0.48 the difference was an
+/// `f64`, `Eq` held when it was within `10⁻¹²` of 0, and an undecided
+/// sub-condition counted as `false`.
 fn condition_at(
     arena: &mut Arena,
     cond: ExprId,
     x: ExprId,
     mid: ExprId,
-) -> Result<bool, SymplexError> {
+) -> Result<Truth, SymplexError> {
     let order = walk::post_order_ids(arena, cond);
-    let mut vals: FxHashMap<ExprId, bool> = FxHashMap::default();
+    let mut vals: FxHashMap<ExprId, Truth> = FxHashMap::default();
     for id in order {
         let node = arena.node(id).clone();
         let v = match node {
-            ExprNode::BoolTrue => true,
-            ExprNode::BoolFalse => false,
+            ExprNode::BoolTrue => Truth::True,
+            ExprNode::BoolFalse => Truth::False,
             ExprNode::Gt(p, q) | ExprNode::Ge(p, q) | ExprNode::Eq_(p, q) | ExprNode::Ne(p, q) => {
                 let d = arena.sub(p, q);
-                let dv = value_at(arena, d, x, mid)?;
+                let d = subs::subs(arena, d, x, mid);
+                let d = safe_eval(arena, d);
+                if !walk::free_symbols(arena, d).is_empty() {
+                    return Err(failed(
+                        "piecewise structure depends on symbolic parameters; cannot resolve",
+                    ));
+                }
                 match node {
-                    ExprNode::Gt(..) => dv > 0.0,
-                    ExprNode::Ge(..) => dv >= 0.0,
-                    ExprNode::Eq_(..) => dv.abs() <= 1e-12,
-                    _ => dv.abs() > 1e-12,
+                    ExprNode::Gt(..) | ExprNode::Ge(..) => {
+                        match crate::poly::algebraic::sign_checked(arena, d) {
+                            Some(s) if matches!(node, ExprNode::Gt(..)) => Truth::from_bool(s > 0),
+                            Some(s) => Truth::from_bool(s >= 0),
+                            None => Truth::Unknown,
+                        }
+                    }
+                    ExprNode::Eq_(..) => {
+                        Truth::from(crate::poly::algebraic::is_zero_checked(arena, d))
+                    }
+                    _ => Truth::from(crate::poly::algebraic::is_zero_checked(arena, d)).not(),
                 }
             }
-            ExprNode::And(children) => children
-                .iter()
-                .all(|c| vals.get(c).copied().unwrap_or(false)),
-            ExprNode::Or(children) => children
-                .iter()
-                .any(|c| vals.get(c).copied().unwrap_or(false)),
-            ExprNode::Not(inner) => !vals.get(&inner).copied().unwrap_or(false),
+            ExprNode::And(children) => Truth::all(children.iter().map(|c| truth_of(&vals, *c))),
+            ExprNode::Or(children) => Truth::any(children.iter().map(|c| truth_of(&vals, *c))),
+            ExprNode::Not(inner) => truth_of(&vals, inner).not(),
             // Relational sub-terms (numbers, symbols) are not booleans.
             _ => {
                 if id == cond {
                     return Err(failed("unsupported Piecewise condition"));
                 }
-                false
+                Truth::Unknown
             }
         };
         vals.insert(id, v);

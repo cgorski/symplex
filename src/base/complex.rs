@@ -15,16 +15,24 @@
 //! behaviour of silently treating every bare symbol as real.
 //!
 //! Principal-branch semantics are used throughout: `arg(z) ∈ (−π, π]`,
-//! `ln z = ln|z| + i·arg z`.  Functions with branch cuts (`ln`, non-integer
-//! powers, inverse trig/hyperbolic functions, `LambertW`, `Ei`, `Ci`, `li`)
-//! are never pushed through `conjugate`; they stay as unevaluated nodes
-//! unless the argument is provably real.
+//! `ln z = ln|z| + i·arg z`.  `conjugate` commutes with a function where
+//! the function table's reflection rule says so ([`Func::spec`]`().conj`,
+//! shared with `evalf`): everywhere for the entire and meromorphic
+//! functions real on the real axis, and for a function with a branch cut
+//! (`ln`, the inverse functions, `Ei`, `J_ν` of non-integer order, …) only
+//! when the assumptions place the cut argument off the cut (a finite
+//! non-real value, or a positive one for the cut `(−∞, 0]`).  Otherwise
+//! the conjugate stays an unevaluated node unless the whole value is
+//! provably real.
+//!
+//! [`Func::spec`]: crate::base::func::Func::spec
 //!
 //! All traversals are iterative (post-order over the DAG with a cache);
 //! no recursion over expression trees.
 
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
+use crate::base::func::{Conj, CutLine};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
@@ -869,12 +877,21 @@ pub(crate) fn expand_complex(arena: &mut Arena, z: ExprId) -> ExprId {
 /// * provably real → `z`; provably imaginary → `−z`; `i` → `−i`;
 /// * distributes over `Add`, `Mul`, `Neg`, integer `Pow`;
 /// * `b^e` with `b > 0` → `b^conj(e)`;
-/// * commutes with real-analytic functions without branch cuts on ℂ∖ℝ:
-///   `exp`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `Γ`, `erf`, `erfc`,
-///   `ψ`, `ψ⁽ⁿ⁾`, `ζ`, `Si`;
+/// * `conj f(z…) = f(conj z…)` for a function where the function table's
+///   reflection rule holds by the assumptions ([`reflects`]): `exp`, the
+///   trigonometric and hyperbolic functions, `Γ`, `erf`, `erfi`, `Shi`, the
+///   Airy and Fresnel functions, … everywhere; `ψ⁽ᵐ⁾`, `J_ν`, `I_ν` for
+///   an integer order and the orthogonal polynomials for an integer degree
+///   `≥ 0`; `ln`, the inverse functions, `Ei`, `Chi`, … off their cuts;
 /// * `conjugate(conjugate(z)) = z`; `Abs`/`Re`/`Im`/`Arg` are real;
-/// * anything else (`ln`, non-integer powers, inverse functions, `W`,
-///   `Ei`, `Ci`, `li`, user functions, formal nodes) → `Conjugate(z)` node.
+/// * anything else (non-integer powers, `W`, user functions, formal nodes,
+///   a cut argument not known off the cut) → `Conjugate(z)` node.
+///
+/// Up to 0.48 a hand-written list of 14 functions commuted, and
+/// `conjugate(erfi(z))`, `conjugate(Shi(x))` for a real `x` stayed
+/// unevaluated, while `conjugate(polygamma(x, z))` for a real `x` became
+/// `polygamma(x, conjugate(z))` also on the cut `z ≤ 0` of a non-integer
+/// order.
 pub(crate) fn conjugate(arena: &mut Arena, z: ExprId) -> ExprId {
     let post_order = walk::post_order_ids(arena, z);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
@@ -938,73 +955,110 @@ fn conjugate_node(
             }
         }
 
-        // Real-analytic on ℝ, no branch cut in ℂ∖ℝ → Schwarz reflection.
-        ExprNode::Exp(inner) => {
-            let c = get(inner);
-            arena.exp(c)
-        }
-        ExprNode::Sin(inner) => {
-            let c = get(inner);
-            arena.sin(c)
-        }
-        ExprNode::Cos(inner) => {
-            let c = get(inner);
-            arena.cos(c)
-        }
-        ExprNode::Tan(inner) => {
-            let c = get(inner);
-            arena.tan(c)
-        }
-        ExprNode::Sinh(inner) => {
-            let c = get(inner);
-            arena.sinh(c)
-        }
-        ExprNode::Cosh(inner) => {
-            let c = get(inner);
-            arena.cosh(c)
-        }
-        ExprNode::Tanh(inner) => {
-            let c = get(inner);
-            arena.tanh(c)
-        }
-        ExprNode::Gamma(inner) => {
-            let c = get(inner);
-            arena.gamma(c)
-        }
-        ExprNode::Digamma(inner) => {
-            let c = get(inner);
-            arena.digamma(c)
-        }
-        ExprNode::Erf(inner) => {
-            let c = get(inner);
-            arena.erf(c)
-        }
-        ExprNode::Erfc(inner) => {
-            let c = get(inner);
-            arena.erfc(c)
-        }
-        ExprNode::Zeta(inner) => {
-            let c = get(inner);
-            arena.zeta(c)
-        }
-        ExprNode::Si(inner) => {
-            let c = get(inner);
-            arena.si(c)
-        }
-        ExprNode::Polygamma(n, x) => {
-            if assumptions.query(arena, n, Props::REAL) == Some(true) {
-                let cx = get(x);
-                arena.polygamma(n, cx)
-            } else {
-                arena.intern(ExprNode::Conjugate(id))
-            }
-        }
-
         // Involution.
         ExprNode::Conjugate(inner) => inner,
 
-        // Branch cuts / unknown structure → unevaluated node.
-        _ => arena.intern(ExprNode::Conjugate(id)),
+        // A function: Schwarz reflection where the table's rule holds.
+        _ => match node.func(arena) {
+            Some((f, args)) if reflects(arena, f.spec().conj, &args, assumptions) => {
+                let conjugated: Vec<ExprId> = args.iter().map(|&a| get(a)).collect();
+                match arena.func(f, &conjugated) {
+                    Ok(c) => c,
+                    Err(_) => arena.intern(ExprNode::Conjugate(id)),
+                }
+            }
+            // A cut argument not known off the cut, unknown structure.
+            _ => arena.intern(ExprNode::Conjugate(id)),
+        },
+    }
+}
+
+/// Does `conj f(args) = f(conj args)` hold by the reflection rule `conj` of
+/// a function, as far as the assumptions decide?
+fn reflects(arena: &Arena, conj: Conj, args: &[ExprId], assumptions: &mut AssumptionCache) -> bool {
+    let arg = |i: u8| args.get(usize::from(i)).copied();
+    match conj {
+        Conj::Entire => true,
+        Conj::OffCut(cut) => {
+            arg(cut.arg).is_some_and(|a| known_off_cut(arena, a, cut.line, assumptions))
+        }
+        Conj::IntegerOrderOffCut { cut, nonnegative } => {
+            arg(0).is_some_and(|n| known_integer(arena, n, nonnegative, assumptions))
+                || arg(cut.arg).is_some_and(|a| known_off_cut(arena, a, cut.line, assumptions))
+        }
+        Conj::Polynomial { degree } => {
+            arg(degree).is_some_and(|n| known_integer(arena, n, true, assumptions))
+        }
+        Conj::No => false,
+    }
+}
+
+/// The imaginary part of a Gaussian rational `a` (`2 + i`, `−3i/2`), which
+/// the assumption system leaves undecided as "real or not"; `None` for
+/// anything else.  Builds no node.
+fn rational_imaginary_part(arena: &Arena, a: ExprId) -> Option<Q> {
+    // The imaginary part of one term: a rational, `i`, or a rational times `i`.
+    let term = |t: ExprId| -> Option<Q> {
+        match arena.node(t) {
+            ExprNode::Num(_) => Some(Q::zero()),
+            ExprNode::ImaginaryUnit => Some(Q::from_integer(1.into())),
+            ExprNode::Mul(fs) if fs.len() == 2 => {
+                let c = if fs[1] == arena.i_unit {
+                    fs[0]
+                } else if fs[0] == arena.i_unit {
+                    fs[1]
+                } else {
+                    return None;
+                };
+                arena.as_num(c).cloned()
+            }
+            _ => None,
+        }
+    };
+    match arena.node(a) {
+        ExprNode::Add(ts) => ts.iter().try_fold(Q::zero(), |im, &t| Some(im + term(t)?)),
+        _ => term(a),
+    }
+}
+
+/// Is `n` known to be an integer (`nonnegative`: an integer `≥ 0`)?
+fn known_integer(
+    arena: &Arena,
+    n: ExprId,
+    nonnegative: bool,
+    assumptions: &mut AssumptionCache,
+) -> bool {
+    assumptions.query(arena, n, Props::INTEGER) == Some(true)
+        && (!nonnegative || assumptions.query(arena, n, Props::NONNEGATIVE) == Some(true))
+}
+
+/// Is the value of `a` known to be off the cut `line`?  A finite non-real
+/// value is off every cut on the real axis; a real one is off the cut on
+/// the imaginary axis, and off `(−∞, 0]` when positive, off `[1, ∞)` when
+/// non-positive.
+fn known_off_cut(
+    arena: &Arena,
+    a: ExprId,
+    line: CutLine,
+    assumptions: &mut AssumptionCache,
+) -> bool {
+    let real = assumptions.query(arena, a, Props::REAL);
+    let finite_non_real = (real == Some(false)
+        && assumptions.query(arena, a, Props::COMPLEX) == Some(true))
+        || rational_imaginary_part(arena, a).is_some_and(|q| !q.is_zero());
+    match line {
+        CutLine::NonPositiveReals => {
+            finite_non_real
+                || (real == Some(true)
+                    && assumptions.query(arena, a, Props::POSITIVE) == Some(true))
+        }
+        CutLine::BelowOne | CutLine::OutsideUnitInterval => finite_non_real,
+        CutLine::AtLeastOne => {
+            finite_non_real
+                || (real == Some(true)
+                    && assumptions.query(arena, a, Props::NONPOSITIVE) == Some(true))
+        }
+        CutLine::ImaginaryOutsideUnit => real == Some(true),
     }
 }
 

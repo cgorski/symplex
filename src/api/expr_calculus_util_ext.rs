@@ -969,15 +969,6 @@ fn monotone_on(f: &Ex, var: &Ex, domain: &SetEx, strict: bool) -> Option<bool> {
     zeros.as_finite_set().map(|_| true)
 }
 
-/// Three-valued `a ∨ b`.
-fn or3(a: Option<bool>, b: Option<bool>) -> Option<bool> {
-    match (a, b) {
-        (Some(true), _) | (_, Some(true)) => Some(true),
-        (Some(false), Some(false)) => Some(false),
-        _ => None,
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Public API
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1351,10 +1342,10 @@ impl Ex {
     /// ```
     #[must_use]
     pub fn is_monotonic(&self, var: &Ex, domain: &SetEx) -> Option<bool> {
-        or3(
-            self.is_increasing(var, domain),
-            self.is_decreasing(var, domain),
-        )
+        use crate::base::truth::Truth;
+        Truth::from(self.is_increasing(var, domain))
+            .or(Truth::from(self.is_decreasing(var, domain)))
+            .to_option()
     }
 
     /// Is `self` convex in `var` on `domain` (`f'' ≥ 0` there)?  SymPy's

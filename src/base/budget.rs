@@ -12,9 +12,36 @@
 //! The two helpers [`deadline_from`] and [`deadline_passed`] are the rule
 //! behind that — the earlier of the absolute deadline and now + limit, and
 //! "has it passed" with `None` never passing.
+//!
+//! # Deterministic work budgets
+//!
+//! A deadline is the caller's choice; the limits the engines set
+//! themselves must not depend on the machine or on what the context
+//! already holds, or the same input gives different answers.  They count
+//! **work**, in units named by a [`BudgetKind`]:
+//!
+//! * `Work { spent, cap, kind }` is a budget charged explicitly (a
+//!   quadrature charges one unit per integrand evaluation);
+//! * `WorkScope` (RAII, crate-internal) bounds the nodes an engine builds
+//!   while it lives, counted as **interns attempted** in the arena — every
+//!   construction, whether hash-consing finds the node already present or
+//!   not.  Scopes of one kind nest (the inner one is the tighter of its own
+//!   cap and what the enclosing one has left); kinds do not interact.
+//!
+//! Up to 0.48 the series and integration limits measured the *growth* of
+//! the arena, which depends on what hash-consing finds already present: in
+//! a context that had done the computation before, nothing was new, the
+//! limit never bit, and `series(sign(asin(asin(x))), x, 1, 3)` repeated
+//! seven times in one context took 0.70, 1.88, 4.01 … 15.47 s.  The
+//! quadrature stopped after 20 s of wall-clock time, so its answer depended
+//! on the speed of the machine.  When a budget surfaces as an error it is
+//! [`SymplexError::BudgetExhausted`] with its kind.
 
 use std::fmt;
 use std::time::{Duration, Instant};
+
+use crate::base::arena::Arena;
+use crate::base::errors::SymplexError;
 
 /// A limit on one call: an absolute deadline, a relative time limit and/or
 /// a cap on the number of steps (pivots, iterations).  Each defaults to
@@ -209,6 +236,147 @@ impl fmt::Display for BudgetHit {
     }
 }
 
+/// What a deterministic work budget counts, and so which one ran out
+/// ([`SymplexError::BudgetExhausted`]).
+/// Every kind is measured in work done — nodes built, evaluations made —
+/// never in time, so the outcome does not depend on the machine or on the
+/// history of the context.
+///
+/// `#[non_exhaustive]`: match with a `_` arm.
+///
+/// ```
+/// use symplex::BudgetKind;
+///
+/// assert_eq!(BudgetKind::QuadratureEvaluations.to_string(), "quadrature evaluations");
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BudgetKind {
+    /// Expression nodes built (interns attempted) by one expansion of the
+    /// series engine's last resort for limits.
+    SeriesExpansion,
+    /// Expression nodes built (interns attempted) by one top-level
+    /// `integrate`.
+    Integration,
+    /// Integrand evaluations of one numerical quadrature.
+    QuadratureEvaluations,
+}
+
+impl BudgetKind {
+    /// Why the computation stopped, as the error message says it (the
+    /// quadrature's text is the one it had before the variant existed).
+    pub(crate) const fn reason(self) -> &'static str {
+        match self {
+            BudgetKind::SeriesExpansion => "the series expansion exceeded its work budget",
+            BudgetKind::Integration => "the integration exceeded its work budget",
+            BudgetKind::QuadratureEvaluations => {
+                "quadrature of the definite integral did not converge: the evaluation budget was \
+                 exhausted"
+            }
+        }
+    }
+}
+
+impl fmt::Display for BudgetKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            BudgetKind::SeriesExpansion => "series expansion",
+            BudgetKind::Integration => "integration",
+            BudgetKind::QuadratureEvaluations => "quadrature evaluations",
+        })
+    }
+}
+
+/// A deterministic budget charged explicitly: `spent` of `cap` units of
+/// `kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Work {
+    spent: u64,
+    cap: u64,
+    kind: BudgetKind,
+}
+
+impl Work {
+    /// Nothing spent of `cap` units of `kind`.
+    pub(crate) const fn new(kind: BudgetKind, cap: u64) -> Self {
+        Work {
+            spent: 0,
+            cap,
+            kind,
+        }
+    }
+
+    /// The units spent so far.
+    pub(crate) const fn spent(&self) -> u64 {
+        self.spent
+    }
+
+    /// The units the budget started with.
+    pub(crate) const fn cap(&self) -> u64 {
+        self.cap
+    }
+
+    /// The units left.
+    pub(crate) const fn left(&self) -> u64 {
+        self.cap.saturating_sub(self.spent)
+    }
+
+    /// Charge `units` for `operation`: the [`BudgetExhausted`]
+    /// error, with nothing charged, when fewer are left.
+    ///
+    /// [`BudgetExhausted`]: crate::errors::SymplexError::BudgetExhausted
+    pub(crate) fn charge(
+        &mut self,
+        units: u64,
+        operation: &'static str,
+    ) -> Result<(), SymplexError> {
+        if units > self.left() {
+            return Err(SymplexError::BudgetExhausted {
+                operation,
+                kind: self.kind,
+            });
+        }
+        self.spent += units;
+        Ok(())
+    }
+}
+
+/// A bound on the nodes built in `arena` while the scope lives, counted
+/// as interns attempted (see the [module docs](self)): the tighter of
+/// `cap` and what an enclosing scope of the same kind has left.  The
+/// scope holds the arena and dereferences to it; dropping it — also when
+/// a panic unwinds — closes it.
+pub(crate) struct WorkScope<'a> {
+    arena: &'a mut Arena,
+}
+
+impl<'a> WorkScope<'a> {
+    /// Open a scope of `kind` allowing `cap` more interns in `arena`.
+    pub(crate) fn enter(arena: &'a mut Arena, kind: BudgetKind, cap: u64) -> Self {
+        arena.open_work_scope(kind, cap);
+        WorkScope { arena }
+    }
+}
+
+impl std::ops::Deref for WorkScope<'_> {
+    type Target = Arena;
+    fn deref(&self) -> &Arena {
+        self.arena
+    }
+}
+
+impl std::ops::DerefMut for WorkScope<'_> {
+    fn deref_mut(&mut self) -> &mut Arena {
+        self.arena
+    }
+}
+
+impl Drop for WorkScope<'_> {
+    fn drop(&mut self) {
+        self.arena.close_work_scope();
+    }
+}
+
 /// The deadline of a call starting now under an absolute `deadline`
 /// and/or a relative `time_limit`: the earlier of the two (a limit too
 /// large to represent as an instant is no limit).  The one rule every
@@ -265,6 +433,58 @@ mod tests {
         assert!(!deadline_passed(None));
         // An unrepresentable limit is no limit.
         assert!(deadline_from(None, Some(Duration::MAX)).is_none());
+    }
+
+    #[test]
+    fn work_charges_until_the_cap() {
+        let mut w = Work::new(BudgetKind::QuadratureEvaluations, 3);
+        assert_eq!((w.spent(), w.left(), w.cap()), (0, 3, 3));
+        assert!(w.charge(2, "evalf").is_ok());
+        // Not enough left: nothing is charged.
+        let err = w.charge(2, "evalf").unwrap_err();
+        assert!(matches!(
+            err,
+            SymplexError::BudgetExhausted {
+                operation: "evalf",
+                kind: BudgetKind::QuadratureEvaluations
+            }
+        ));
+        assert_eq!(w.left(), 1);
+        assert!(w.charge(1, "evalf").is_ok());
+        assert!(w.charge(1, "evalf").is_err());
+    }
+
+    /// A scope counts interns attempted — found nodes too — so a warm
+    /// arena spends exactly what a fresh one does; scopes of one kind nest
+    /// with the tighter end, other kinds are independent.
+    #[test]
+    fn work_scopes_count_interns_and_nest() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let two = arena.int(2);
+        let warm = arena.pow(x, two);
+        assert!(!arena.work_exhausted(BudgetKind::SeriesExpansion));
+        {
+            let mut outer = WorkScope::enter(&mut arena, BudgetKind::SeriesExpansion, 3);
+            let mut steps = 0;
+            while !outer.work_exhausted(BudgetKind::SeriesExpansion) {
+                // Already present: hash-consing finds it, the scope still pays.
+                assert_eq!(outer.pow(x, two), warm);
+                steps += 1;
+            }
+            assert!((1..=4).contains(&steps), "{steps}");
+            {
+                let mut inner = WorkScope::enter(&mut outer, BudgetKind::Integration, 100);
+                assert!(inner.work_exhausted(BudgetKind::SeriesExpansion));
+                assert!(!inner.work_exhausted(BudgetKind::Integration));
+                let mut same = WorkScope::enter(&mut inner, BudgetKind::SeriesExpansion, 100);
+                // The enclosing scope of the kind has nothing left.
+                assert!(same.work_exhausted(BudgetKind::SeriesExpansion));
+                same.pow(x, two);
+            }
+            assert!(!outer.work_exhausted(BudgetKind::Integration));
+        }
+        assert!(!arena.work_exhausted(BudgetKind::SeriesExpansion));
     }
 
     #[test]

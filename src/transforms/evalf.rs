@@ -1401,41 +1401,11 @@ fn root_cause(
             if let Some(child_error) = failed.get(&c)
                 && *reason == not_evaluated_reason(c)
             {
-                return duplicate_error(child_error);
+                return child_error.clone();
             }
         }
     }
     e
-}
-
-/// A copy of an evaluation error (`SymplexError` is not `Clone`): the
-/// variants `evalf` raises field for field, any other by its message.
-fn duplicate_error(e: &SymplexError) -> SymplexError {
-    match e {
-        SymplexError::PrecisionExhausted {
-            requested,
-            achieved,
-        } => SymplexError::PrecisionExhausted {
-            requested: *requested,
-            achieved: *achieved,
-        },
-        SymplexError::FreeSymbol { name } => SymplexError::FreeSymbol { name: name.clone() },
-        SymplexError::Unevaluable { reason } => SymplexError::Unevaluable {
-            reason: reason.clone(),
-        },
-        SymplexError::ComputationFailed { operation, reason } => SymplexError::ComputationFailed {
-            operation,
-            reason: reason.clone(),
-        },
-        SymplexError::NotImplemented(s) => SymplexError::NotImplemented(s.clone()),
-        SymplexError::Divergent { operation, reason } => SymplexError::Divergent {
-            operation,
-            reason: reason.clone(),
-        },
-        other => SymplexError::Unevaluable {
-            reason: other.to_string(),
-        },
-    }
 }
 
 /// Is `node` a condition (a truth value, not a number)?
@@ -4055,7 +4025,8 @@ fn eval_definite_integral(
     if prec > QUADRATURE_F64_MAX_PREC {
         return eval_definite_integral_bigfloat(
             arena, body, var, lo, hi, cache, errs, prec, rm, cc, false,
-        );
+        )
+        .map_err(SymplexError::from);
     }
     if let Some(served) =
         eval_definite_integral_f64(arena, body, var, lo, hi, cache, errs, prec, false, cc)?
@@ -4088,12 +4059,16 @@ fn eval_definite_integral(
         // `x ≈ 10¹¹⁰⁰⁰⁰`, or next to a breakpoint): the `f64` value did not
         // see them.
         (Err(e), Some(_))
-            if quad::is_not_decaying(&e) || matches!(e, SymplexError::Divergent { .. }) =>
+            if matches!(
+                e,
+                quad::QuadError::NotDecaying
+                    | quad::QuadError::Failed(SymplexError::Divergent { .. })
+            ) =>
         {
-            Err(e)
+            Err(e.into())
         }
         (Err(_), Some(f)) => Ok(f),
-        (Err(e), None) => Err(e),
+        (Err(e), None) => Err(e.into()),
     }
 }
 
@@ -4142,7 +4117,7 @@ fn eval_definite_integral_bigfloat(
     rm: RoundingMode,
     cc: &mut Consts,
     light: bool,
-) -> Result<(Complex, accuracy::Bound), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), quad::QuadError> {
     debug!(
         prec,
         light, "evalf: DefiniteIntegral — tanh-sinh quadrature"
@@ -4276,20 +4251,20 @@ fn eval_definite_integral_bigfloat(
         Err(e) => {
             // Terms that do not decay, or an integrand without a value at a
             // far node (`eˣ` overflows): a proof of divergence is sought.
-            let e = if matches!(e, SymplexError::ComputationFailed { .. }) {
+            let e = if e.may_diverge() {
                 match improper::divergence(&mut pa, body_p, var_p, &approaches) {
-                    Some(reason) => SymplexError::Divergent {
+                    Some(reason) => quad::QuadError::Failed(SymplexError::Divergent {
                         operation: "evalf",
                         reason: format!("the definite integral diverges: {reason}"),
-                    },
+                    }),
                     None => e,
                 }
             } else {
                 e
             };
-            if (!light || matches!(e, SymplexError::Divergent { .. })) && quad::is_node_failure(&e)
-            {
-                quad::remember(key, prec, Err(duplicate_error(&e)));
+            let divergent = matches!(e, quad::QuadError::Failed(SymplexError::Divergent { .. }));
+            if (!light || divergent) && e.is_node_failure() {
+                quad::remember(key, prec, Err(e.clone()));
             }
             return Err(e);
         }
@@ -4934,16 +4909,30 @@ fn decide_condition(
     truth.get(&cond).copied().flatten()
 }
 
-/// `Or` (`absorbing = true`) or `And` (`false`) of decisions: a certain
-/// absorbing operand decides; otherwise every operand must be decided, and
-/// the result is certain when they all are.
+/// `Or` (`absorbing = true`) or `And` (`false`) of decisions.  The certain
+/// operands combine by Kleene's rules ([`Truth::any`], [`Truth::all`]):
+/// a certain absorbing operand decides, and so do certain operands only.
+/// Otherwise every operand must be decided, and the result, read off the
+/// values, is not certain.
+///
+/// [`Truth::any`]: crate::base::truth::Truth::any
+/// [`Truth::all`]: crate::base::truth::Truth::all
 fn combine(operands: &[Option<Decision>], absorbing: bool) -> Option<Decision> {
-    let certain_absorbing = Decision {
-        value: absorbing,
-        certain: true,
+    use crate::base::truth::Truth;
+    let certain = operands.iter().map(|d| match d {
+        Some(d) if d.certain => Truth::from_bool(d.value),
+        _ => Truth::Unknown,
+    });
+    let proved = if absorbing {
+        Truth::any(certain)
+    } else {
+        Truth::all(certain)
     };
-    if operands.contains(&Some(certain_absorbing)) {
-        return Some(certain_absorbing);
+    if proved.is_known() {
+        return Some(Decision {
+            value: proved.is_true(),
+            certain: true,
+        });
     }
     let decided: Option<Vec<Decision>> = operands.iter().copied().collect();
     let decided = decided?;
@@ -4953,7 +4942,7 @@ fn combine(operands: &[Option<Decision>], absorbing: bool) -> Option<Decision> {
         } else {
             decided.iter().all(|d| d.value)
         },
-        certain: decided.iter().all(|d| d.certain),
+        certain: false,
     })
 }
 

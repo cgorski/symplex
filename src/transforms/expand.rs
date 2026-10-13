@@ -873,7 +873,7 @@ fn expand_pass(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
                 if new == *pairs {
                     id
                 } else {
-                    arena.intern(ExprNode::Piecewise(new))
+                    arena.make(ExprNode::Piecewise(new))
                 }
             }
 

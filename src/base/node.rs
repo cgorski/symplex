@@ -8,9 +8,28 @@
 //! Numeric literals and symbolic names are stored in separate side‐tables and
 //! referenced via [`NumId`] and [`SymbolId`] respectively, keeping the core
 //! node type small and cheap to clone.
+//!
+//! # Shape
+//!
+//! Which operands of a node are children, how many there are, how to
+//! rebuild it with new children ([`ExprNode::map_children`]), how to move it
+//! to another arena ([`ExprNode::remap_ids`]) and which operand a binder
+//! binds are generated from the enum declaration by
+//! `#[derive(NodeShape)]` (symplex-macros): an `ExprId` field is a child,
+//! a `SmallVec` of ids (or of id pairs) is a list of children, a
+//! `#[payload] ExprId` is an id that is not a child, and the
+//! `#[binder(..)]` / `#[var_slot(..)]` attributes are the binder tables of
+//! `walk::binder` and `walk::var_slot`.  A new variant therefore touches
+//! the declaration and its semantic code only.  The sort key
+//! (`sort_key.rs`) is still written by hand: its bytes are byte-identity
+//! critical.
 
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use std::fmt;
+use symplex_macros::NodeShape;
+
+use crate::base::interval::IntervalKind;
+use crate::base::walk::Binder;
 
 // ---------------------------------------------------------------------------
 // Id newtypes
@@ -119,7 +138,13 @@ impl fmt::Debug for CtxId {
 /// * **Sets** – `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`,
 ///   `SetComplement`, `ImageSet` (the image of the integers under a
 ///   function: periodic solution families).
-#[derive(Clone, PartialEq, Eq, Hash)]
+///
+/// The shape methods ([`children`](Self::children),
+/// [`for_each_child`](Self::for_each_child),
+/// [`child_count`](Self::child_count), [`is_atom`](Self::is_atom), and the
+/// crate-internal rebuild, remap and binder views) are generated from this
+/// declaration (see the module documentation).
+#[derive(Clone, PartialEq, Eq, Hash, NodeShape)]
 pub enum ExprNode {
     // -- atoms ---------------------------------------------------------------
     /// A numeric literal.  The actual value lives in the number side‐table
@@ -158,7 +183,8 @@ pub enum ExprNode {
 
     /// A named physical constant with a known exact value.
     /// Displays as name, evaluates to value. E.g., speed of light, Planck's constant.
-    PhysicalConstant(SymbolId, ExprId),
+    /// An atom: the value is a payload, not a child.
+    PhysicalConstant(SymbolId, #[payload] ExprId),
 
     /// Positive infinity (+∞).
     Infinity,
@@ -370,11 +396,13 @@ pub enum ExprNode {
     /// Formal derivative: d/d(var) of an expression.
     ///
     /// `Derivative(body, var)` represents ∂/∂`var` `body`.
+    #[var_slot(var = 1, scoped(0))]
     Derivative(ExprId, ExprId),
 
     /// Formal indefinite integral: ∫ expr d(var).
     ///
     /// `Integral(body, var)` represents ∫ `body` d`var`.
+    #[var_slot(var = 1, scoped(0))]
     Integral(ExprId, ExprId),
 
     /// Formal definite integral: ∫ₗₒʰⁱ expr d(var).
@@ -385,27 +413,35 @@ pub enum ExprNode {
     /// display, differentiation (Leibniz rule) and numeric quadrature.
     /// `var` is bound inside `body` only; `lo` and `hi` are in the outer
     /// scope.
+    #[binder(var = 1, scoped(0), outer(2, 3))]
     DefiniteIntegral(ExprId, ExprId, ExprId, ExprId),
 
     /// Symbolic summation: Sum(body, var, lower, upper).
+    #[binder(var = 1, scoped(0), outer(2, 3))]
     Sum(ExprId, ExprId, ExprId, ExprId),
 
     /// Symbolic product: Product(body, var, lower, upper).
+    #[binder(var = 1, scoped(0), outer(2, 3))]
     Product_(ExprId, ExprId, ExprId, ExprId),
 
     /// Formal limit: lim_{var → point} body.
+    #[binder(var = 1, scoped(0), outer(2))]
     Limit(ExprId, ExprId, ExprId),
 
     /// Formal series expansion: Series(body, var, point, order).
+    #[var_slot(var = 1, scoped(0), outer(2, 3))]
     Series(ExprId, ExprId, ExprId, ExprId),
 
     /// Formal Laplace transform: ℒ{body}(t → s).
+    #[binder(var = 1, scoped(0), outer(2))]
     LaplaceTransform(ExprId, ExprId, ExprId),
 
     /// Formal inverse Laplace transform: ℒ⁻¹{body}(s → t).
+    #[binder(var = 1, scoped(0), outer(2))]
     InverseLaplaceTransform(ExprId, ExprId, ExprId),
 
     /// Formal residue: Res_{var=point} body.
+    #[binder(var = 1, scoped(0), outer(2))]
     Residue(ExprId, ExprId, ExprId),
 
     /// Root of a polynomial: the index-th root of poly.
@@ -417,6 +453,7 @@ pub enum ExprNode {
     ///   `CRootOf` likewise keeps its polynomial's generator);
     /// - `index` selects the root (Aberth ordering: by real part, then
     ///   imaginary part).
+    #[binder(var = 1, scoped(0), outer(2))]
     RootOf(ExprId, ExprId, ExprId),
 
     /// Sum over roots of a polynomial: Σ_{α: poly(α)=0} body(α, x).
@@ -428,12 +465,15 @@ pub enum ExprNode {
     /// - `poly` is the polynomial expression whose roots are summed over
     /// - `body` is the expression evaluated at each root (contains `sumvar`)
     /// - `sumvar` is the bound summation variable symbol
+    #[binder(var = 2, scoped(0, 1))]
     RootSum(ExprId, ExprId, ExprId),
 
     /// Formal ODE solution: DSolve(expr=0, func, var).
+    #[var_slot(var = 2, scoped(0, 1))]
     DSolve(ExprId, ExprId, ExprId),
 
     /// Condition set: {var | condition}.
+    #[binder(var = 0, scoped(1))]
     ConditionSet(ExprId, ExprId),
 
     // -- set atoms --------------------------------------------------------
@@ -443,9 +483,12 @@ pub enum ExprNode {
     UniversalSet,
 
     // -- set constructors -------------------------------------------------
-    /// A closed/open interval [a, b] with flags encoding open/closed.
-    /// Bits: 0x01 = left_open, 0x02 = right_open.
-    Interval(ExprId, ExprId, u8),
+    /// An interval between two endpoints, with the kind saying which
+    /// endpoints belong to it.  Its sort-key byte (and the `flags` of the
+    /// JSON `ExprTree::Interval`) is the kind's flag byte of symplex ≤ 0.48
+    /// (`IntervalKind::flag_bits`: bit 0 = lower end open, bit 1 = upper
+    /// end open).
+    Interval(ExprId, ExprId, IntervalKind),
 
     /// A finite set of elements {a, b, c, ...}, sorted and deduplicated.
     FiniteSet(SmallVec<[ExprId; 4]>),
@@ -471,6 +514,7 @@ pub enum ExprNode {
     /// `DSolve` whose variable is replaced by something that is not a fresh
     /// symbol, and `diff` for a partial derivative of an undefined function
     /// in an argument that is not a lone symbol (`∂f/∂u` at `u = x²`).
+    #[binder(var = 1, scoped(0), outer(2))]
     Subs(ExprId, ExprId, ExprId),
 
     // -- image of the integers (declared after `Subs`: appending keeps the
@@ -483,448 +527,45 @@ pub enum ExprNode {
     /// families of an equation are image sets: `sin x = 0` has the solution
     /// set `{n·π : n ∈ ℤ}`.  A complete answer, not an unevaluated form;
     /// `transforms::sets::image_set` builds the canonical form.
+    #[binder(var = 0, scoped(1))]
     ImageSet(ExprId, ExprId),
 }
 
-/// Interval flag: left endpoint is open (excluded).
-pub const INTERVAL_LEFT_OPEN: u8 = 0x01;
-/// Interval flag: right endpoint is open (excluded).
-pub const INTERVAL_RIGHT_OPEN: u8 = 0x02;
-/// Interval flag: both endpoints are open.
-pub const INTERVAL_BOTH_OPEN: u8 = 0x03;
-/// Interval flag: both endpoints are closed.
-pub const INTERVAL_BOTH_CLOSED: u8 = 0x00;
+impl IntervalKind {
+    /// The kind's flag byte in the node encoding of symplex ≤ 0.48: bit 0
+    /// set when the lower end is open, bit 1 when the upper end is open
+    /// (`[a, b]` = 0, `(a, b]` = 1, `[a, b)` = 2, `(a, b)` = 3).  It is the
+    /// byte an `Interval` node contributes to its sort key and the `flags`
+    /// of `ExprTree::Interval` (the stable JSON form).
+    pub(crate) const fn flag_bits(self) -> u8 {
+        match self {
+            IntervalKind::Closed => 0,
+            IntervalKind::LeftOpen => 1,
+            IntervalKind::RightOpen => 2,
+            IntervalKind::Open => 3,
+        }
+    }
+
+    /// The kind with the given flag byte ([`flag_bits`](Self::flag_bits));
+    /// bits other than the two low ones are ignored.
+    pub(crate) const fn from_flag_bits(flags: u8) -> Self {
+        IntervalKind::from_open_ends(flags & 1 != 0, flags & 2 != 0)
+    }
+}
+
+/// Maps the ids a node refers to — its children, a physical constant's
+/// value, numbers and symbols — into another arena's id spaces: the
+/// callbacks of [`ExprNode::remap_ids`] (compaction).
+pub(crate) trait IdRemap {
+    /// The id, in the destination, of the expression `id`.
+    fn expr(&mut self, id: ExprId) -> ExprId;
+    /// The id, in the destination, of the number `id`.
+    fn num(&mut self, id: NumId) -> NumId;
+    /// The id, in the destination, of the symbol name `id`.
+    fn symbol(&mut self, id: SymbolId) -> SymbolId;
+}
 
 impl ExprNode {
-    /// Returns all child `ExprId`s contained in this node.
-    ///
-    /// For atoms (numbers, symbols, constants, and special values) the
-    /// returned collection is empty.  For compound nodes the children are
-    /// returned in the order they appear in the variant.
-    pub fn children(&self) -> SmallVec<[ExprId; 6]> {
-        match self {
-            // atoms — no children
-            ExprNode::Num(_)
-            | ExprNode::Symbol(_)
-            | ExprNode::Pi
-            | ExprNode::E
-            | ExprNode::ImaginaryUnit
-            | ExprNode::EulerGamma
-            | ExprNode::Catalan
-            | ExprNode::GoldenRatio
-            | ExprNode::PhysicalConstant(_, _)
-            | ExprNode::Infinity
-            | ExprNode::NegInfinity
-            | ExprNode::ComplexInfinity
-            | ExprNode::NaN
-            | ExprNode::BoolTrue
-            | ExprNode::BoolFalse
-            | ExprNode::EmptySet
-            | ExprNode::UniversalSet => smallvec![],
-
-            // n‐ary
-            ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
-                ids.clone()
-            }
-
-            // n-ary min/max (SmallVec<[ExprId; 4]> → SmallVec<[ExprId; 6]>)
-            ExprNode::Min(ids) | ExprNode::Max(ids) => ids.iter().copied().collect(),
-
-            // n-ary set ops (SmallVec<[ExprId; 4]> → SmallVec<[ExprId; 6]>)
-            ExprNode::FiniteSet(ids) | ExprNode::SetUnion(ids) | ExprNode::SetIntersection(ids) => {
-                ids.iter().copied().collect()
-            }
-
-            // piecewise — flatten pairs into children list
-            ExprNode::Piecewise(pairs) => {
-                let mut result = SmallVec::new();
-                for &(val, cond) in pairs {
-                    result.push(val);
-                    result.push(cond);
-                }
-                result
-            }
-
-            // binary
-            ExprNode::Pow(a, b)
-            | ExprNode::Atan2(a, b)
-            | ExprNode::Binomial(a, b)
-            | ExprNode::Beta(a, b)
-            | ExprNode::Polygamma(a, b)
-            | ExprNode::KroneckerDelta(a, b)
-            | ExprNode::Gt(a, b)
-            | ExprNode::Ge(a, b)
-            | ExprNode::Eq_(a, b)
-            | ExprNode::Ne(a, b)
-            | ExprNode::Derivative(a, b)
-            | ExprNode::Integral(a, b)
-            | ExprNode::SetComplement(a, b)
-            | ExprNode::ConditionSet(a, b)
-            | ExprNode::ImageSet(a, b) => {
-                smallvec![*a, *b]
-            }
-
-            // ternary-ish: Interval(a, b, _flags)
-            ExprNode::Interval(a, b, _) => {
-                smallvec![*a, *b]
-            }
-
-            // ternary
-            ExprNode::Limit(a, b, c)
-            | ExprNode::LaplaceTransform(a, b, c)
-            | ExprNode::InverseLaplaceTransform(a, b, c)
-            | ExprNode::Residue(a, b, c)
-            | ExprNode::DSolve(a, b, c)
-            | ExprNode::RootSum(a, b, c)
-            | ExprNode::RootOf(a, b, c)
-            | ExprNode::Subs(a, b, c) => smallvec![*a, *b, *c],
-
-            // 4-ary: Sum, Product_, Series, DefiniteIntegral
-            ExprNode::Sum(a, b, c, d)
-            | ExprNode::Product_(a, b, c, d)
-            | ExprNode::Series(a, b, c, d)
-            | ExprNode::DefiniteIntegral(a, b, c, d) => {
-                smallvec![*a, *b, *c, *d]
-            }
-
-            // unary
-            ExprNode::Neg(x)
-            | ExprNode::Floor(x)
-            | ExprNode::Ceiling(x)
-            | ExprNode::Sin(x)
-            | ExprNode::Cos(x)
-            | ExprNode::Tan(x)
-            | ExprNode::Exp(x)
-            | ExprNode::Ln(x)
-            | ExprNode::Abs(x)
-            | ExprNode::Asin(x)
-            | ExprNode::Acos(x)
-            | ExprNode::Atan(x)
-            | ExprNode::Sinh(x)
-            | ExprNode::Cosh(x)
-            | ExprNode::Tanh(x)
-            | ExprNode::Asinh(x)
-            | ExprNode::Acosh(x)
-            | ExprNode::Atanh(x)
-            | ExprNode::Sign(x)
-            | ExprNode::Heaviside(x)
-            | ExprNode::DiracDelta(x)
-            | ExprNode::Re(x)
-            | ExprNode::Im(x)
-            | ExprNode::Conjugate(x)
-            | ExprNode::Arg(x)
-            | ExprNode::Gamma(x)
-            | ExprNode::LogGamma(x)
-            | ExprNode::Digamma(x)
-            | ExprNode::Erf(x)
-            | ExprNode::Erfc(x)
-            | ExprNode::LambertW(x)
-            | ExprNode::Si(x)
-            | ExprNode::Ci(x)
-            | ExprNode::Ei(x)
-            | ExprNode::Li(x)
-            | ExprNode::Zeta(x)
-            | ExprNode::Factorial(x)
-            | ExprNode::Not(x) => smallvec![*x],
-
-            // function application
-            ExprNode::Apply(_, args) => {
-                // Promote the SmallVec<[ExprId; 2]> into SmallVec<[ExprId; 6]>
-                args.iter().copied().collect()
-            }
-        }
-    }
-
-    /// Calls `f` for each child `ExprId` without allocating.
-    ///
-    /// This is the zero-allocation alternative to [`children()`](Self::children).
-    /// Prefer this in hot paths (tree walks, display) where the allocation
-    /// from `children()` would be significant.
-    #[inline]
-    pub fn for_each_child(&self, mut f: impl FnMut(ExprId)) {
-        match self {
-            // atoms — no children
-            ExprNode::Num(_)
-            | ExprNode::Symbol(_)
-            | ExprNode::Pi
-            | ExprNode::E
-            | ExprNode::ImaginaryUnit
-            | ExprNode::EulerGamma
-            | ExprNode::Catalan
-            | ExprNode::GoldenRatio
-            | ExprNode::PhysicalConstant(_, _)
-            | ExprNode::Infinity
-            | ExprNode::NegInfinity
-            | ExprNode::ComplexInfinity
-            | ExprNode::NaN
-            | ExprNode::BoolTrue
-            | ExprNode::BoolFalse
-            | ExprNode::EmptySet
-            | ExprNode::UniversalSet => {}
-
-            // n-ary
-            ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
-                for &id in ids {
-                    f(id);
-                }
-            }
-
-            // n-ary min/max
-            ExprNode::Min(ids) | ExprNode::Max(ids) => {
-                for &id in ids {
-                    f(id);
-                }
-            }
-
-            // n-ary set ops
-            ExprNode::FiniteSet(ids) | ExprNode::SetUnion(ids) | ExprNode::SetIntersection(ids) => {
-                for &id in ids {
-                    f(id);
-                }
-            }
-
-            // piecewise — flatten pairs
-            ExprNode::Piecewise(pairs) => {
-                for &(val, cond) in pairs {
-                    f(val);
-                    f(cond);
-                }
-            }
-
-            // binary
-            ExprNode::Pow(a, b)
-            | ExprNode::Atan2(a, b)
-            | ExprNode::Binomial(a, b)
-            | ExprNode::Beta(a, b)
-            | ExprNode::Polygamma(a, b)
-            | ExprNode::KroneckerDelta(a, b)
-            | ExprNode::Gt(a, b)
-            | ExprNode::Ge(a, b)
-            | ExprNode::Eq_(a, b)
-            | ExprNode::Ne(a, b)
-            | ExprNode::Derivative(a, b)
-            | ExprNode::Integral(a, b)
-            | ExprNode::SetComplement(a, b)
-            | ExprNode::ConditionSet(a, b)
-            | ExprNode::ImageSet(a, b) => {
-                f(*a);
-                f(*b);
-            }
-
-            ExprNode::Interval(a, b, _) => {
-                f(*a);
-                f(*b);
-            }
-
-            // ternary
-            ExprNode::Limit(a, b, c)
-            | ExprNode::LaplaceTransform(a, b, c)
-            | ExprNode::InverseLaplaceTransform(a, b, c)
-            | ExprNode::Residue(a, b, c)
-            | ExprNode::DSolve(a, b, c)
-            | ExprNode::RootSum(a, b, c)
-            | ExprNode::RootOf(a, b, c)
-            | ExprNode::Subs(a, b, c) => {
-                f(*a);
-                f(*b);
-                f(*c);
-            }
-
-            // 4-ary
-            ExprNode::Sum(a, b, c, d)
-            | ExprNode::Product_(a, b, c, d)
-            | ExprNode::Series(a, b, c, d)
-            | ExprNode::DefiniteIntegral(a, b, c, d) => {
-                f(*a);
-                f(*b);
-                f(*c);
-                f(*d);
-            }
-
-            // unary
-            ExprNode::Neg(x)
-            | ExprNode::Floor(x)
-            | ExprNode::Ceiling(x)
-            | ExprNode::Sin(x)
-            | ExprNode::Cos(x)
-            | ExprNode::Tan(x)
-            | ExprNode::Exp(x)
-            | ExprNode::Ln(x)
-            | ExprNode::Abs(x)
-            | ExprNode::Asin(x)
-            | ExprNode::Acos(x)
-            | ExprNode::Atan(x)
-            | ExprNode::Sinh(x)
-            | ExprNode::Cosh(x)
-            | ExprNode::Tanh(x)
-            | ExprNode::Asinh(x)
-            | ExprNode::Acosh(x)
-            | ExprNode::Atanh(x)
-            | ExprNode::Sign(x)
-            | ExprNode::Heaviside(x)
-            | ExprNode::DiracDelta(x)
-            | ExprNode::Re(x)
-            | ExprNode::Im(x)
-            | ExprNode::Conjugate(x)
-            | ExprNode::Arg(x)
-            | ExprNode::Gamma(x)
-            | ExprNode::LogGamma(x)
-            | ExprNode::Digamma(x)
-            | ExprNode::Erf(x)
-            | ExprNode::Erfc(x)
-            | ExprNode::LambertW(x)
-            | ExprNode::Si(x)
-            | ExprNode::Ci(x)
-            | ExprNode::Ei(x)
-            | ExprNode::Li(x)
-            | ExprNode::Zeta(x)
-            | ExprNode::Factorial(x)
-            | ExprNode::Not(x) => f(*x),
-
-            // function application
-            ExprNode::Apply(_, args) => {
-                for &id in args {
-                    f(id);
-                }
-            }
-        }
-    }
-
-    /// Returns the number of children without allocating.
-    #[inline]
-    pub fn child_count(&self) -> usize {
-        match self {
-            ExprNode::Num(_)
-            | ExprNode::Symbol(_)
-            | ExprNode::Pi
-            | ExprNode::E
-            | ExprNode::ImaginaryUnit
-            | ExprNode::EulerGamma
-            | ExprNode::Catalan
-            | ExprNode::GoldenRatio
-            | ExprNode::PhysicalConstant(_, _)
-            | ExprNode::Infinity
-            | ExprNode::NegInfinity
-            | ExprNode::ComplexInfinity
-            | ExprNode::NaN
-            | ExprNode::BoolTrue
-            | ExprNode::BoolFalse
-            | ExprNode::EmptySet
-            | ExprNode::UniversalSet => 0,
-            ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
-                ids.len()
-            }
-            ExprNode::Min(ids) | ExprNode::Max(ids) => ids.len(),
-            ExprNode::FiniteSet(ids) | ExprNode::SetUnion(ids) | ExprNode::SetIntersection(ids) => {
-                ids.len()
-            }
-            ExprNode::Piecewise(pairs) => pairs.len() * 2,
-            ExprNode::Pow(..)
-            | ExprNode::Atan2(..)
-            | ExprNode::Binomial(..)
-            | ExprNode::Beta(..)
-            | ExprNode::Polygamma(..)
-            | ExprNode::KroneckerDelta(..)
-            | ExprNode::Gt(..)
-            | ExprNode::Ge(..)
-            | ExprNode::Eq_(..)
-            | ExprNode::Ne(..)
-            | ExprNode::Derivative(..)
-            | ExprNode::Integral(..)
-            | ExprNode::SetComplement(..)
-            | ExprNode::Interval(..)
-            | ExprNode::ConditionSet(..)
-            | ExprNode::ImageSet(..) => 2,
-            ExprNode::Limit(..)
-            | ExprNode::LaplaceTransform(..)
-            | ExprNode::InverseLaplaceTransform(..)
-            | ExprNode::Residue(..)
-            | ExprNode::DSolve(..)
-            | ExprNode::RootSum(..)
-            | ExprNode::RootOf(..)
-            | ExprNode::Subs(..) => 3,
-            ExprNode::Sum(..)
-            | ExprNode::Product_(..)
-            | ExprNode::Series(..)
-            | ExprNode::DefiniteIntegral(..) => 4,
-            ExprNode::Neg(_)
-            | ExprNode::Floor(_)
-            | ExprNode::Ceiling(_)
-            | ExprNode::Sin(_)
-            | ExprNode::Cos(_)
-            | ExprNode::Tan(_)
-            | ExprNode::Exp(_)
-            | ExprNode::Ln(_)
-            | ExprNode::Abs(_)
-            | ExprNode::Asin(_)
-            | ExprNode::Acos(_)
-            | ExprNode::Atan(_)
-            | ExprNode::Sinh(_)
-            | ExprNode::Cosh(_)
-            | ExprNode::Tanh(_)
-            | ExprNode::Asinh(_)
-            | ExprNode::Acosh(_)
-            | ExprNode::Atanh(_)
-            | ExprNode::Sign(_)
-            | ExprNode::Heaviside(_)
-            | ExprNode::DiracDelta(_)
-            | ExprNode::Re(_)
-            | ExprNode::Im(_)
-            | ExprNode::Conjugate(_)
-            | ExprNode::Arg(_)
-            | ExprNode::Gamma(_)
-            | ExprNode::LogGamma(_)
-            | ExprNode::Digamma(_)
-            | ExprNode::Erf(_)
-            | ExprNode::Erfc(_)
-            | ExprNode::LambertW(_)
-            | ExprNode::Si(_)
-            | ExprNode::Ci(_)
-            | ExprNode::Ei(_)
-            | ExprNode::Li(_)
-            | ExprNode::Zeta(_)
-            | ExprNode::Factorial(_)
-            | ExprNode::Not(_) => 1,
-            ExprNode::Apply(_, args) => args.len(),
-        }
-    }
-
-    /// Returns `true` if this node is an atom (a leaf with no child
-    /// expressions).
-    ///
-    /// Atoms are: [`Num`](ExprNode::Num), [`Symbol`](ExprNode::Symbol),
-    /// [`Pi`](ExprNode::Pi), [`E`](ExprNode::E),
-    /// [`ImaginaryUnit`](ExprNode::ImaginaryUnit),
-    /// [`EulerGamma`](ExprNode::EulerGamma), [`Catalan`](ExprNode::Catalan),
-    /// [`GoldenRatio`](ExprNode::GoldenRatio),
-    /// [`PhysicalConstant`](ExprNode::PhysicalConstant),
-    /// [`Infinity`](ExprNode::Infinity),
-    /// [`NegInfinity`](ExprNode::NegInfinity),
-    /// [`ComplexInfinity`](ExprNode::ComplexInfinity),
-    /// [`NaN`](ExprNode::NaN), the boolean atoms and the set atoms.
-    pub fn is_atom(&self) -> bool {
-        matches!(
-            self,
-            ExprNode::Num(_)
-                | ExprNode::Symbol(_)
-                | ExprNode::Pi
-                | ExprNode::E
-                | ExprNode::ImaginaryUnit
-                | ExprNode::EulerGamma
-                | ExprNode::Catalan
-                | ExprNode::GoldenRatio
-                | ExprNode::PhysicalConstant(_, _)
-                | ExprNode::Infinity
-                | ExprNode::NegInfinity
-                | ExprNode::ComplexInfinity
-                | ExprNode::NaN
-                | ExprNode::BoolTrue
-                | ExprNode::BoolFalse
-                | ExprNode::EmptySet
-                | ExprNode::UniversalSet
-        )
-    }
-
     /// Returns `true` if this node is a set-valued expression.
     pub fn is_set_node(&self) -> bool {
         matches!(
@@ -1054,11 +695,11 @@ impl fmt::Debug for ExprNode {
                 .finish(),
             ExprNode::EmptySet => write!(f, "EmptySet"),
             ExprNode::UniversalSet => write!(f, "UniversalSet"),
-            ExprNode::Interval(a, b, flags) => f
+            ExprNode::Interval(a, b, kind) => f
                 .debug_tuple("Interval")
                 .field(a)
                 .field(b)
-                .field(flags)
+                .field(&kind.flag_bits())
                 .finish(),
             ExprNode::FiniteSet(ids) => f.debug_tuple("FiniteSet").field(ids).finish(),
             ExprNode::SetUnion(ids) => f.debug_tuple("SetUnion").field(ids).finish(),
@@ -1133,9 +774,366 @@ impl fmt::Debug for ExprNode {
     }
 }
 
+/// One node of every variant (several for the variable-arity ones and for
+/// each [`IntervalKind`]), over the distinct children `c`: the samples of
+/// the shape tests.  The tests check that every variant name occurs.
+#[cfg(test)]
+pub(crate) fn shape_samples(
+    c: [ExprId; 8],
+    num: NumId,
+    sym: SymbolId,
+    value: ExprId,
+) -> Vec<ExprNode> {
+    use ExprNode as N;
+    use smallvec::smallvec;
+    let [a, b, d, e, g, h, k, m] = c;
+    vec![
+        N::Num(num),
+        N::Symbol(sym),
+        N::Pi,
+        N::E,
+        N::ImaginaryUnit,
+        N::EulerGamma,
+        N::Catalan,
+        N::GoldenRatio,
+        N::PhysicalConstant(sym, value),
+        N::Infinity,
+        N::NegInfinity,
+        N::ComplexInfinity,
+        N::NaN,
+        N::Add(smallvec![a, b]),
+        N::Add(smallvec![a, b, d, e, g, h, k]),
+        N::Mul(smallvec![a, b, d]),
+        N::Mul(smallvec![a, b, d, e, g, h, k]),
+        N::Min(smallvec![a, b]),
+        N::Max(smallvec![a, b, d, e, g]),
+        N::Pow(a, b),
+        N::Neg(a),
+        N::Floor(a),
+        N::Ceiling(a),
+        N::Sin(a),
+        N::Cos(a),
+        N::Tan(a),
+        N::Exp(a),
+        N::Ln(a),
+        N::Abs(a),
+        N::Asin(a),
+        N::Acos(a),
+        N::Atan(a),
+        N::Atan2(a, b),
+        N::Sinh(a),
+        N::Cosh(a),
+        N::Tanh(a),
+        N::Asinh(a),
+        N::Acosh(a),
+        N::Atanh(a),
+        N::Sign(a),
+        N::Heaviside(a),
+        N::DiracDelta(a),
+        N::Re(a),
+        N::Im(a),
+        N::Conjugate(a),
+        N::Arg(a),
+        N::Gamma(a),
+        N::LogGamma(a),
+        N::Digamma(a),
+        N::Erf(a),
+        N::Erfc(a),
+        N::LambertW(a),
+        N::Beta(a, b),
+        N::Si(a),
+        N::Ci(a),
+        N::Ei(a),
+        N::Li(a),
+        N::Zeta(a),
+        N::Polygamma(a, b),
+        N::KroneckerDelta(a, b),
+        N::Factorial(a),
+        N::Binomial(a, b),
+        N::BoolTrue,
+        N::BoolFalse,
+        N::Gt(a, b),
+        N::Ge(a, b),
+        N::Eq_(a, b),
+        N::Ne(a, b),
+        N::And(smallvec![a, b]),
+        N::Or(smallvec![a, b, d]),
+        N::Not(a),
+        N::Piecewise(smallvec![(a, b)]),
+        N::Piecewise(smallvec![(a, b), (d, e), (g, h), (k, m)]),
+        N::Apply(sym, smallvec![]),
+        N::Apply(sym, smallvec![a]),
+        N::Apply(sym, smallvec![a, b, d]),
+        N::Derivative(a, b),
+        N::Integral(a, b),
+        N::DefiniteIntegral(a, b, d, e),
+        N::Sum(a, b, d, e),
+        N::Product_(a, b, d, e),
+        N::Limit(a, b, d),
+        N::Series(a, b, d, e),
+        N::LaplaceTransform(a, b, d),
+        N::InverseLaplaceTransform(a, b, d),
+        N::Residue(a, b, d),
+        N::RootOf(a, b, d),
+        N::RootSum(a, b, d),
+        N::DSolve(a, b, d),
+        N::ConditionSet(a, b),
+        N::EmptySet,
+        N::UniversalSet,
+        N::Interval(a, b, IntervalKind::Closed),
+        N::Interval(a, b, IntervalKind::LeftOpen),
+        N::Interval(a, b, IntervalKind::RightOpen),
+        N::Interval(a, b, IntervalKind::Open),
+        N::FiniteSet(smallvec![a]),
+        N::FiniteSet(smallvec![a, b, d, e, g]),
+        N::SetUnion(smallvec![a, b]),
+        N::SetIntersection(smallvec![a, b, d]),
+        N::SetComplement(a, b),
+        N::Subs(a, b, d),
+        N::ImageSet(a, b),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallvec::smallvec;
+
+    fn ids8(base: u32) -> [ExprId; 8] {
+        std::array::from_fn(|i| ExprId(base + i as u32))
+    }
+
+    fn samples() -> Vec<ExprNode> {
+        shape_samples(ids8(10), NumId(3), SymbolId(4), ExprId(99))
+    }
+
+    /// The variants without children (the hand-written `is_atom` list of
+    /// 0.48).
+    const ATOMS: &[&str] = &[
+        "Num",
+        "Symbol",
+        "Pi",
+        "E",
+        "ImaginaryUnit",
+        "EulerGamma",
+        "Catalan",
+        "GoldenRatio",
+        "PhysicalConstant",
+        "Infinity",
+        "NegInfinity",
+        "ComplexInfinity",
+        "NaN",
+        "BoolTrue",
+        "BoolFalse",
+        "EmptySet",
+        "UniversalSet",
+    ];
+
+    /// The binder table of `walk::binder` (0.48, hand-written): variant,
+    /// position of the variable, positions it is bound in, outer positions.
+    const BINDERS: &[(&str, usize, &[usize], &[usize])] = &[
+        ("Sum", 1, &[0], &[2, 3]),
+        ("Product_", 1, &[0], &[2, 3]),
+        ("DefiniteIntegral", 1, &[0], &[2, 3]),
+        ("RootSum", 2, &[0, 1], &[]),
+        ("ConditionSet", 0, &[1], &[]),
+        ("ImageSet", 0, &[1], &[]),
+        ("RootOf", 1, &[0], &[2]),
+        ("Limit", 1, &[0], &[2]),
+        ("Residue", 1, &[0], &[2]),
+        ("Subs", 1, &[0], &[2]),
+        ("LaplaceTransform", 1, &[0], &[2]),
+        ("InverseLaplaceTransform", 1, &[0], &[2]),
+    ];
+
+    /// The table of `walk::var_slot` (0.48, hand-written).
+    const VAR_SLOTS: &[(&str, usize, &[usize], &[usize])] = &[
+        ("Derivative", 1, &[0], &[]),
+        ("Integral", 1, &[0], &[]),
+        ("Series", 1, &[0], &[2, 3]),
+        ("DSolve", 2, &[0, 1], &[]),
+    ];
+
+    #[test]
+    fn shape_samples_cover_every_variant() {
+        let names: std::collections::BTreeSet<&str> =
+            samples().iter().map(ExprNode::variant_name).collect();
+        let all: std::collections::BTreeSet<&str> =
+            ExprNode::VARIANT_NAMES.iter().copied().collect();
+        assert_eq!(names, all);
+        assert_eq!(all.len(), ExprNode::VARIANT_NAMES.len());
+        for n in samples() {
+            let debug = format!("{n:?}");
+            let head = debug.split('(').next().unwrap_or_default();
+            assert_eq!(n.variant_name(), head, "{debug}");
+        }
+    }
+
+    #[test]
+    fn generated_children_count_and_atoms_agree() {
+        for n in samples() {
+            let mut seen: SmallVec<[ExprId; 6]> = SmallVec::new();
+            n.for_each_child(|c| seen.push(c));
+            assert_eq!(seen, n.children(), "{n:?}");
+            assert_eq!(n.child_count(), seen.len(), "{n:?}");
+            assert_eq!(n.is_atom(), ATOMS.contains(&n.variant_name()), "{n:?}");
+            if n.is_atom() {
+                assert!(seen.is_empty(), "{n:?}");
+            }
+        }
+        // A physical constant's value is a payload, not a child.
+        let pc = ExprNode::PhysicalConstant(SymbolId(1), ExprId(5));
+        assert!(pc.children().is_empty() && pc.is_atom());
+        // Piecewise pairs are flattened value, condition, value, ...
+        let pw = ExprNode::Piecewise(smallvec![(ExprId(1), ExprId(2)), (ExprId(3), ExprId(4))]);
+        assert_eq!(
+            pw.children().as_slice(),
+            &[ExprId(1), ExprId(2), ExprId(3), ExprId(4)]
+        );
+    }
+
+    #[test]
+    fn map_children_maps_each_child_in_order_and_keeps_payload() {
+        let shift = |c: ExprId| ExprId(c.0 + 100);
+        for n in samples() {
+            assert_eq!(n.map_children(|c| c), None, "{n:?}");
+            let mut order = Vec::new();
+            let mapped = n.map_children(|c| {
+                order.push(c);
+                shift(c)
+            });
+            assert_eq!(order.as_slice(), n.children().as_slice(), "{n:?}");
+            match mapped {
+                None => assert!(n.child_count() == 0, "{n:?}"),
+                Some(m) => {
+                    assert_eq!(m.variant_name(), n.variant_name());
+                    let want: SmallVec<[ExprId; 6]> = n.children().into_iter().map(shift).collect();
+                    assert_eq!(m.children(), want, "{n:?}");
+                    // Payloads (interval kind, function name) survive.
+                    assert_eq!(m.map_children(|c| ExprId(c.0 - 100)), Some(n.clone()));
+                }
+            }
+        }
+    }
+
+    struct Offset(i64);
+
+    impl IdRemap for Offset {
+        fn expr(&mut self, id: ExprId) -> ExprId {
+            ExprId((i64::from(id.0) + self.0) as u32)
+        }
+        fn num(&mut self, id: NumId) -> NumId {
+            NumId((i64::from(id.0) + self.0) as u32)
+        }
+        fn symbol(&mut self, id: SymbolId) -> SymbolId {
+            SymbolId((i64::from(id.0) + self.0) as u32)
+        }
+    }
+
+    #[test]
+    fn remap_ids_maps_every_id_and_nothing_else() {
+        for n in samples() {
+            let m = n.remap_ids(&mut Offset(1000));
+            assert_eq!(m.variant_name(), n.variant_name());
+            let want: SmallVec<[ExprId; 6]> = n
+                .children()
+                .into_iter()
+                .map(|c| ExprId(c.0 + 1000))
+                .collect();
+            assert_eq!(m.children(), want, "{n:?}");
+            assert_eq!(m.remap_ids(&mut Offset(-1000)), n, "{n:?}");
+        }
+        let pc = ExprNode::PhysicalConstant(SymbolId(1), ExprId(5));
+        assert_eq!(
+            pc.remap_ids(&mut Offset(7)),
+            ExprNode::PhysicalConstant(SymbolId(8), ExprId(12))
+        );
+        assert_eq!(
+            ExprNode::Num(NumId(2)).remap_ids(&mut Offset(7)),
+            ExprNode::Num(NumId(9))
+        );
+        let iv = ExprNode::Interval(ExprId(1), ExprId(2), IntervalKind::LeftOpen);
+        assert_eq!(
+            iv.remap_ids(&mut Offset(1)),
+            ExprNode::Interval(ExprId(2), ExprId(3), IntervalKind::LeftOpen)
+        );
+    }
+
+    fn check_layouts(
+        table: &[(&str, usize, &[usize], &[usize])],
+        view: impl Fn(&ExprNode) -> Option<Binder>,
+        rebuild: impl Fn(&ExprNode, ExprId, &[ExprId], &[ExprId]) -> Option<ExprNode>,
+    ) {
+        for n in samples() {
+            let kids = n.children();
+            let row = table.iter().find(|r| r.0 == n.variant_name());
+            match (view(&n), row) {
+                (None, None) => {
+                    assert_eq!(
+                        rebuild(&n, kids.first().copied().unwrap_or(ExprId(0)), &[], &[]),
+                        None
+                    );
+                }
+                (Some(b), Some(&(_, var, scoped, outer))) => {
+                    assert_eq!(b.var, kids[var], "{n:?}");
+                    let s: Vec<ExprId> = scoped.iter().map(|&i| kids[i]).collect();
+                    let o: Vec<ExprId> = outer.iter().map(|&i| kids[i]).collect();
+                    assert_eq!(b.scoped.as_slice(), s.as_slice(), "{n:?}");
+                    assert_eq!(b.outer.as_slice(), o.as_slice(), "{n:?}");
+                    assert_eq!(n.var_operand(), Some(b.var), "{n:?}");
+                    assert_eq!(rebuild(&n, b.var, &b.scoped, &b.outer), Some(n.clone()));
+                    // A new variable lands in the variable's position.
+                    let renamed = rebuild(&n, ExprId(77), &b.scoped, &b.outer);
+                    assert_eq!(renamed.and_then(|r| r.var_operand()), Some(ExprId(77)));
+                    // Wrong operand counts are refused.
+                    assert_eq!(
+                        rebuild(&n, b.var, &b.outer, &b.scoped).is_some(),
+                        scoped.len() == outer.len()
+                    );
+                }
+                (got, want) => panic!("{n:?}: layout {got:?}, table {want:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn binder_and_var_slot_layouts_are_the_048_tables() {
+        check_layouts(
+            BINDERS,
+            ExprNode::binder_operands,
+            ExprNode::with_binder_operands,
+        );
+        check_layouts(
+            VAR_SLOTS,
+            ExprNode::var_slot_operands,
+            ExprNode::with_var_slot_operands,
+        );
+        for n in samples() {
+            let both = n.binder_operands().is_some() && n.var_slot_operands().is_some();
+            assert!(!both, "{n:?}");
+            if n.binder_operands().is_none() && n.var_slot_operands().is_none() {
+                assert_eq!(n.var_operand(), None, "{n:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn interval_kind_flag_bits_are_the_048_flags() {
+        use IntervalKind::*;
+        for (kind, bits) in [(Closed, 0u8), (LeftOpen, 1), (RightOpen, 2), (Open, 3)] {
+            assert_eq!(kind.flag_bits(), bits);
+            assert_eq!(IntervalKind::from_flag_bits(bits), kind);
+            assert_eq!(kind.lower_open(), bits & 1 != 0);
+            assert_eq!(kind.upper_open(), bits & 2 != 0);
+        }
+        // Only the two low bits mean anything.
+        assert_eq!(IntervalKind::from_flag_bits(4), Closed);
+        assert_eq!(IntervalKind::from_flag_bits(0xff), Open);
+        assert_eq!(
+            format!("{:?}", ExprNode::Interval(ExprId(1), ExprId(2), RightOpen)),
+            "Interval(e1, e2, 2)"
+        );
+    }
 
     #[test]
     fn debug_expr_id() {

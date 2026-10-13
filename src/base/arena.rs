@@ -23,7 +23,9 @@ use smallvec::SmallVec;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use crate::base::budget::BudgetKind;
 use crate::base::config::EvalConfig;
+use crate::base::interval::IntervalKind;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, NumId, SymbolId};
 use crate::base::numeric::Q;
@@ -206,7 +208,30 @@ pub struct Arena {
 
     /// Node count at the last `compact()` call. Used by `should_compact()` heuristic.
     pub(crate) last_compact_size: usize,
+
+    // -- work accounting and per-arena state ---------------------------------
+    /// [`Self::intern`] calls so far, whether the node was new or found:
+    /// the deterministic measure of the
+    /// [`WorkScope`](crate::base::budget::WorkScope) budgets (the growth of
+    /// `nodes` depends on what the arena already holds).
+    interns: u64,
+
+    /// The open work scopes, innermost last: each kind with the intern
+    /// count at which it is spent.
+    work_scopes: Vec<(BudgetKind, u64)>,
+
+    /// A number no other arena of this process has.  Nodes are only ever
+    /// appended, so `(serial, id)` names one node for good (the
+    /// quadrature's memo of failures; an address can be reused).
+    serial: u64,
+
+    /// The number of the next wild symbol `Arena::wild` creates (`_w0`,
+    /// `_w1`, … in every arena).
+    pub(crate) next_wild: u32,
 }
+
+/// The serial of the next arena created ([`Arena::serial`]).
+static NEXT_ARENA_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Construction
@@ -253,6 +278,10 @@ impl Arena {
             one_num: NumId(0),
             neg_one_num: NumId(0),
             last_compact_size: 0,
+            interns: 0,
+            work_scopes: Vec::new(),
+            serial: NEXT_ARENA_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            next_wild: 0,
         };
 
         // 1. Intern the three fundamental numeric values.
@@ -534,6 +563,7 @@ impl Arena {
     /// algorithms that intern directly — passes through here, so canonical
     /// arithmetic never meets such an atom (`sin(0)/sin(0)` is `nan`, not 1).
     pub(crate) fn intern(&mut self, node: ExprNode) -> ExprId {
+        self.interns += 1;
         if let Some(value) = crate::base::canon::canon_function(self, &node) {
             return value;
         }
@@ -560,6 +590,124 @@ impl Arena {
         self.dedup.entry(hash).or_default().push(id);
 
         id
+    }
+
+    /// Builds `node` with its variant's canonical constructor, or interns
+    /// it when the variant has none: the way to turn a node value into an
+    /// [`ExprId`] outside `base`.
+    ///
+    /// [`intern`](Self::intern) stores a node as it is, so a raw
+    /// `intern(ExprNode::FiniteSet([1, 1]))` makes a `{1, 1}` that is not
+    /// `==` to the `{1}` every constructor builds.  `make` routes `Add`,
+    /// `Mul`, `Pow`, `Neg`, the relationals, `And`/`Or`/`Not`, `Piecewise`,
+    /// the set constructors (`Interval`, `FiniteSet`, `SetUnion`,
+    /// `SetIntersection`, `SetComplement`), `DefiniteIntegral`, `Subs` and
+    /// every function with a folding constructor (`abs`, `sign`, `re`, `si`,
+    /// `zeta`, `polygamma`, `kronecker_delta`, …) to that constructor, and
+    /// interns the rest (atoms, the formal nodes, the functions whose
+    /// constructor is a plain intern).  It is what
+    /// [`walk::rebuild_with`](crate::base::walk::rebuild_with) builds a node
+    /// with new children with ([`ExprNode::map_children`]), and the
+    /// `test_canonical_construction` ratchet keeps raw interns of the
+    /// canonical variants out of the rest of the crate.
+    pub(crate) fn make(&mut self, node: ExprNode) -> ExprId {
+        use crate::base::walk::subs_node;
+        match node {
+            ExprNode::Add(c) => self.add(&c),
+            ExprNode::Mul(c) => self.mul(&c),
+            ExprNode::Pow(b, e) => self.pow(b, e),
+            ExprNode::Neg(x) => self.neg(x),
+            ExprNode::Sin(x) => self.sin(x),
+            ExprNode::Cos(x) => self.cos(x),
+            ExprNode::Tan(x) => self.tan(x),
+            ExprNode::Exp(x) => self.exp(x),
+            ExprNode::Ln(x) => self.ln(x),
+            ExprNode::Abs(x) => self.abs(x),
+            ExprNode::Atan2(y, x) => self.atan2(y, x),
+            ExprNode::Sign(x) => self.sign(x),
+            ExprNode::Re(x) => self.re(x),
+            ExprNode::Im(x) => self.im(x),
+            ExprNode::Conjugate(x) => self.conjugate(x),
+            ExprNode::Arg(x) => self.arg(x),
+            ExprNode::Si(x) => self.si(x),
+            ExprNode::Ci(x) => self.ci(x),
+            ExprNode::Ei(x) => self.ei(x),
+            ExprNode::Li(x) => self.li(x),
+            ExprNode::Zeta(x) => self.zeta(x),
+            ExprNode::Polygamma(n, x) => self.polygamma(n, x),
+            ExprNode::KroneckerDelta(i, j) => self.kronecker_delta(i, j),
+            ExprNode::Beta(a, b) => self.beta(a, b),
+            ExprNode::Factorial(x) => self.factorial(x),
+            ExprNode::Binomial(n, k) => self.binomial(n, k),
+            ExprNode::Gt(a, b) => self.gt(a, b),
+            ExprNode::Ge(a, b) => self.ge(a, b),
+            ExprNode::Eq_(a, b) => self.eq_(a, b),
+            ExprNode::Ne(a, b) => self.ne_(a, b),
+            ExprNode::Not(x) => self.not(x),
+            ExprNode::And(c) => self.and(&c),
+            ExprNode::Or(c) => self.or(&c),
+            ExprNode::Piecewise(pairs) => self.piecewise(&pairs),
+            ExprNode::Interval(a, b, kind) => self.interval(a, b, kind),
+            ExprNode::FiniteSet(c) => self.finite_set(&c),
+            ExprNode::SetUnion(c) => self.set_union(&c),
+            ExprNode::SetIntersection(c) => self.set_intersection(&c),
+            ExprNode::SetComplement(a, b) => self.set_complement(a, b),
+            ExprNode::DefiniteIntegral(f, v, lo, hi) => self.definite_integral(f, v, lo, hi),
+            ExprNode::Subs(f, v, p) => subs_node(self, f, v, p),
+            other @ (ExprNode::Num(_)
+            | ExprNode::Symbol(_)
+            | ExprNode::Pi
+            | ExprNode::E
+            | ExprNode::ImaginaryUnit
+            | ExprNode::EulerGamma
+            | ExprNode::Catalan
+            | ExprNode::GoldenRatio
+            | ExprNode::PhysicalConstant(..)
+            | ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity
+            | ExprNode::NaN
+            | ExprNode::Min(_)
+            | ExprNode::Max(_)
+            | ExprNode::Floor(_)
+            | ExprNode::Ceiling(_)
+            | ExprNode::Asin(_)
+            | ExprNode::Acos(_)
+            | ExprNode::Atan(_)
+            | ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Tanh(_)
+            | ExprNode::Asinh(_)
+            | ExprNode::Acosh(_)
+            | ExprNode::Atanh(_)
+            | ExprNode::Heaviside(_)
+            | ExprNode::DiracDelta(_)
+            | ExprNode::Gamma(_)
+            | ExprNode::LogGamma(_)
+            | ExprNode::Digamma(_)
+            | ExprNode::Erf(_)
+            | ExprNode::Erfc(_)
+            | ExprNode::LambertW(_)
+            | ExprNode::BoolTrue
+            | ExprNode::BoolFalse
+            | ExprNode::Apply(..)
+            | ExprNode::Derivative(..)
+            | ExprNode::Integral(..)
+            | ExprNode::Sum(..)
+            | ExprNode::Product_(..)
+            | ExprNode::Limit(..)
+            | ExprNode::Series(..)
+            | ExprNode::LaplaceTransform(..)
+            | ExprNode::InverseLaplaceTransform(..)
+            | ExprNode::Residue(..)
+            | ExprNode::RootOf(..)
+            | ExprNode::RootSum(..)
+            | ExprNode::DSolve(..)
+            | ExprNode::ConditionSet(..)
+            | ExprNode::EmptySet
+            | ExprNode::UniversalSet
+            | ExprNode::ImageSet(..)) => self.intern(other),
+        }
     }
 
     /// Interns a rational number, returning its [`NumId`].
@@ -686,17 +834,13 @@ impl Arena {
             | (ExprNode::Apply(s, _), ExprNode::Apply(t, _)) => {
                 self.symbol_name(*s).cmp(self.symbol_name(*t))
             }
-            (ExprNode::Interval(_, _, f), ExprNode::Interval(_, _, g)) => f.cmp(g),
-            _ if std::mem::discriminant(np) == std::mem::discriminant(nq) => Ordering::Equal,
-            _ => {
-                // The variant's name, from `Debug` (`Add([e1, e2])` → `Add`):
-                // reached only by distinct nodes with equal sort keys.
-                let name = |n: &ExprNode| {
-                    let s = format!("{n:?}");
-                    s.split('(').next().unwrap_or_default().to_owned()
-                };
-                name(np).cmp(&name(nq))
+            (ExprNode::Interval(_, _, f), ExprNode::Interval(_, _, g)) => {
+                f.flag_bits().cmp(&g.flag_bits())
             }
+            _ if std::mem::discriminant(np) == std::mem::discriminant(nq) => Ordering::Equal,
+            // The variant's name (`Add`): reached only by distinct nodes
+            // with equal sort keys.
+            _ => np.variant_name().cmp(nq.variant_name()),
         }
     }
 }
@@ -737,6 +881,37 @@ impl Arena {
     /// Returns the total number of interned expression nodes.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// The number no other arena of this process has (see the field).
+    pub(crate) fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// Open a work scope of `kind` allowing `cap` more interns, within
+    /// what the innermost open scope of the same kind has left (used by
+    /// [`WorkScope`](crate::base::budget::WorkScope), which closes it).
+    pub(crate) fn open_work_scope(&mut self, kind: BudgetKind, cap: u64) {
+        let mut end = self.interns.saturating_add(cap);
+        if let Some(&(_, outer)) = self.work_scopes.iter().rev().find(|(k, _)| *k == kind) {
+            end = end.min(outer);
+        }
+        self.work_scopes.push((kind, end));
+    }
+
+    /// Close the innermost work scope.
+    pub(crate) fn close_work_scope(&mut self) {
+        self.work_scopes.pop();
+    }
+
+    /// Has the innermost open work scope of `kind` been spent?  `false`
+    /// when none is open.
+    pub(crate) fn work_exhausted(&self, kind: BudgetKind) -> bool {
+        self.work_scopes
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == kind)
+            .is_some_and(|&(_, end)| self.interns > end)
     }
 
     /// Returns the interned name of a symbol.
@@ -1048,13 +1223,17 @@ impl Arena {
 
     /// Solve `expr = 0` for `var`.
     ///
-    /// Returns a vector of solutions. Delegates to [`solve::solve`](crate::transforms::solve::solve).
+    /// Returns a vector of solutions (none when none is found). Delegates to
+    /// [`known_real_roots`](crate::transforms::solve::known_real_roots).
     pub fn solve_for(
         &mut self,
         expr: ExprId,
         var: ExprId,
     ) -> Vec<crate::transforms::solve::Solution> {
-        crate::transforms::solve::solve(self, expr, var)
+        crate::transforms::solve::known_real_roots(self, expr, var)
+            .into_iter()
+            .map(|value| crate::transforms::solve::Solution { value })
+            .collect()
     }
 
     /// Cancel common polynomial factors in a rational expression.
@@ -2113,11 +2292,12 @@ impl Arena {
 
     // ── Set constructors ───────────────────────────────────────────
 
-    /// Build a canonical interval `[start, end]` (or open variants based on `flags`).
+    /// Build a canonical interval between `start` and `end`, with the
+    /// endpoints `kind` includes.
     ///
     /// Delegates to [`canon::canon_interval`](crate::base::canon::canon_interval) for degenerate-case handling.
-    pub(crate) fn interval(&mut self, start: ExprId, end: ExprId, flags: u8) -> ExprId {
-        crate::base::canon::canon_interval(self, start, end, flags)
+    pub(crate) fn interval(&mut self, start: ExprId, end: ExprId, kind: IntervalKind) -> ExprId {
+        crate::base::canon::canon_interval(self, start, end, kind)
     }
 
     /// Build a canonical finite set `{elems[0], elems[1], …}`.

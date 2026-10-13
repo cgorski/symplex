@@ -407,9 +407,11 @@ fn solve_sinh_x_eq_zero() {
 
 #[test]
 fn solve_abs_x_eq_5() {
-    // |x| = 5 → x = 5 or x = -5
+    // |x| = 5 → x = 5 or x = -5 for a real x.  (For a plain, complex x the
+    // solutions are the circle |x| = 5, and since 0.49 `solve` refuses
+    // instead of returning ±5 as all of them.)
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let expr = &x.abs() - 5;
     let roots = expr.solve_or_empty(&x);
     assert!(
