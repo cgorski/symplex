@@ -1592,8 +1592,14 @@ fn indefinite_abs_closed_forms() {
     let v = (s.subs(&x, &ctx.int(2)).eval().eval_f64().unwrap())
         - (s.subs(&x, &ctx.int(-2)).eval().eval_f64().unwrap());
     assert!(v.abs() < 1e-12, "{s}");
-    // |g| with two real roots stays unevaluated (no single closed form)
-    assert!((&x.powi(2) - 1).abs().integrate(&x).has_unevaluated());
+    // |g| with two real roots: a continuous piecewise antiderivative since
+    // 0.47 (it stayed unevaluated; SymPy 1.14 integrates it too).
+    // ∫₋₂² |x² − 1| dx = 4.
+    let g2 = (&x.powi(2) - 1).abs().integrate(&x);
+    assert!(!g2.has_unevaluated(), "{g2}");
+    let span = g2.subs(&x, &ctx.int(2)).eval().eval_f64().unwrap()
+        - g2.subs(&x, &ctx.int(-2)).eval().eval_f64().unwrap();
+    assert!((span - 4.0).abs() < 1e-12, "{g2}");
     // |g| with no real roots: |x² + 1| = x² + 1
     let g = (&x.powi(2) + 1).abs().integrate(&x);
     assert!(!g.has_unevaluated(), "{g}");
@@ -1616,20 +1622,21 @@ fn abs_with_symbolic_bounds_is_refused() {
     }
 }
 
+/// `Si(x)` arises as `∫ sin(x)/x`; up to 0.46 its own definite integral was
+/// refused ("must not be guessed").  Since 0.47 `Si` is a by-parts `u`:
+/// `∫ Si = x·Si(x) + cos x`, so `∫₀¹ Si(x) dx = Si(1) + cos 1 − 1`.  mpmath
+/// `quad(lambda t: si(t), [0, 1])` = `0.486385376235323…`.
 #[test]
-fn integrand_with_unanalysable_function_is_refused() {
-    // Si(x) arises as ∫ sin(x)/x; its own definite integral over an
-    // interval must not be guessed.
+fn definite_integral_of_si_by_parts() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let si = (&x.sin() / &x).integrate(&x);
     assert_eq!(format!("{si}"), "Si(x)");
-    let r = si.try_integrate_definite(&x, &ctx.int(0), &ctx.int(1));
-    assert!(r.is_err(), "{r:?}");
-    assert!(
-        si.integrate_definite(&x, &ctx.int(0), &ctx.int(1))
-            .has_unevaluated()
-    );
+    let v = si
+        .try_integrate_definite(&x, &ctx.int(0), &ctx.int(1))
+        .unwrap();
+    let f = v.eval_f64().unwrap();
+    assert!((f - 0.486_385_376_235_323).abs() < 1e-12, "{v} = {f}");
 }
 
 #[test]

@@ -1588,8 +1588,11 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 fn directed_infinity(arena: &mut Arena, negative: bool, factors: &[ExprId]) -> ExprId {
     let mut negative = negative;
     let mut kept: SmallVec<[ExprId; 6]> = SmallVec::new();
-    for &f in factors.iter().filter(|&&f| arena.as_num(f).is_none()) {
-        match known_sign(arena, f) {
+    for &f in factors {
+        if arena.as_num(f).is_some() {
+            continue;
+        }
+        match known_sign_memo(arena, f) {
             Some(Ordering::Greater) => {}
             Some(Ordering::Less) => negative = !negative,
             _ => kept.push(f),
@@ -1621,6 +1624,91 @@ fn directed_infinity(arena: &mut Arena, negative: bool, factors: &[ExprId]) -> E
 /// [`canon_add`] collects it.
 pub(crate) fn is_directed_infinity(arena: &Arena, id: ExprId) -> bool {
     matches!(arena.node(id), ExprNode::Mul(ch) if ch.contains(&arena.infinity))
+}
+
+/// [`Arena::constant_facts`] keys of [`known_sign_memo`] (`eval` uses 0
+/// and 1): the sign of a real constant factor `f` is known positive, known
+/// negative (keyed by `f`); the sign of `re(g)`, of `im(g)` (keyed by `g`).
+const FACT_SIGN_POSITIVE: u8 = 2;
+const FACT_SIGN_NEGATIVE: u8 = 3;
+const FACT_RE_POSITIVE: u8 = 4;
+const FACT_RE_NEGATIVE: u8 = 5;
+const FACT_IM_POSITIVE: u8 = 6;
+const FACT_IM_NEGATIVE: u8 = 7;
+
+/// The memoised sign under the keys `(key, positive)`, `(key, negative)`:
+/// `None` when not memoised, `Some(None)` when memoised as unknown.
+fn sign_fact(arena: &Arena, key: ExprId, positive: u8, negative: u8) -> Option<Option<Ordering>> {
+    let p = *arena.constant_facts.get(&(key, positive))?;
+    let n = *arena.constant_facts.get(&(key, negative))?;
+    Some(if p {
+        Some(Ordering::Greater)
+    } else if n {
+        Some(Ordering::Less)
+    } else {
+        None
+    })
+}
+
+fn remember_sign(
+    arena: &mut Arena,
+    key: ExprId,
+    positive: u8,
+    negative: u8,
+    sign: Option<Ordering>,
+) {
+    let facts = &mut arena.constant_facts;
+    facts.insert((key, positive), sign == Some(Ordering::Greater));
+    facts.insert((key, negative), sign == Some(Ordering::Less));
+}
+
+/// [`known_sign`], memoised per arena for a symbol-free factor: canonical
+/// products rebuild `f·∞` on every pass over an expression and the parser
+/// on every parse, and the certified value of `im(Γ(z))` evaluates `Γ` at
+/// a complex point each time.  `re(g)` and `im(g)` take their signs from one
+/// certified value of `g` ([`Arena::part_signs`]) when it settles both.
+/// Inputs with `re(…)·∞` and `im(…)·∞` of the same complex Γ chain were
+/// 2–2.5 times slower in 0.46 than in 0.43.
+fn known_sign_memo(arena: &mut Arena, f: ExprId) -> Option<Ordering> {
+    let part = match *arena.node(f) {
+        ExprNode::Re(g) => Some((g, true)),
+        ExprNode::Im(g) => Some((g, false)),
+        _ => None,
+    };
+    let (key, positive, negative) = match part {
+        Some((g, true)) => (g, FACT_RE_POSITIVE, FACT_RE_NEGATIVE),
+        Some((g, false)) => (g, FACT_IM_POSITIVE, FACT_IM_NEGATIVE),
+        None => (f, FACT_SIGN_POSITIVE, FACT_SIGN_NEGATIVE),
+    };
+    if let Some(sign) = sign_fact(arena, key, positive, negative) {
+        return sign;
+    }
+    if !crate::base::walk::free_symbols(arena, f).is_empty() {
+        return known_sign(arena, f);
+    }
+    if let Some((g, re)) = part {
+        use crate::base::assumptions::{AssumptionCache, Props};
+        let mut cache = AssumptionCache::new();
+        let decided = cache.query(arena, f, Props::POSITIVE) == Some(true)
+            || cache.query(arena, f, Props::NEGATIVE) == Some(true);
+        // A part the shared value does not settle is evaluated on its own
+        // (an imaginary part far below the real one).
+        if !decided && let Some(signs) = arena.part_signs(g) {
+            if signs.re.is_some() {
+                remember_sign(arena, g, FACT_RE_POSITIVE, FACT_RE_NEGATIVE, signs.re);
+            }
+            if signs.im.is_some() {
+                remember_sign(arena, g, FACT_IM_POSITIVE, FACT_IM_NEGATIVE, signs.im);
+            }
+            let sign = if re { signs.re } else { signs.im };
+            if sign.is_some() {
+                return sign;
+            }
+        }
+    }
+    let sign = known_sign(arena, f);
+    remember_sign(arena, key, positive, negative, sign);
+    sign
 }
 
 /// The sign of a real factor, when it is known: from the assumption engine

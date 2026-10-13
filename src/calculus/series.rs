@@ -143,6 +143,169 @@ const MIN_WORKING_ORDER: i64 = 4;
 const MAX_PRECISION_ATTEMPTS: usize = 3;
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Constants that vanish identically in their parameters
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Largest tree [`vanishes_identically`] evaluates.
+const MAX_PARAM_ZERO_SIZE: usize = 400;
+
+/// Digits at which [`vanishes_identically`] evaluates a sample.
+const PARAM_ZERO_DIGITS: u32 = 30;
+
+/// Is the constant `c` (free of the expansion variable) zero for every
+/// value of its parameters allowed by their assumptions — a sum whose
+/// terms cancel by an identity canonical forms do not apply
+/// (`1 − sin²a − cos²a`, `ln(ab) − ln a − ln b` for positive `a`, `b`) —
+/// or a symbol-free function value that is zero (`cos` of a hidden `π/2`:
+/// `cos(π/(24π − 2) − 12π²/(24π − 2))`)?
+///
+/// A symbol-free sum is [`settle_constant`]'s numerical test.  With
+/// parameters, a sum containing a transcendental function (a polynomial
+/// or rational sum is already canonical) is evaluated at two sample points
+/// chosen within the parameters' assumptions (integers for integer
+/// symbols, both signs for a real symbol of unknown sign, complex values
+/// for an unrestricted one): it vanishes identically when both samples
+/// are zero to the working precision.  This is SymPy's `equals` test; it
+/// is what decides that `z/(1 − √(1 + z)·sin²a − √(1 − z)·cos²a)` at `0⁺`
+/// has the denominator `(cos²a − sin²a)·z/2 + …`, not the non-zero
+/// constant `1 − sin²a − cos²a` (before: the limit was `0`).
+pub(crate) fn vanishes_identically(arena: &mut Arena, c: ExprId) -> bool {
+    if arena.is_zero_structural(c) {
+        return true;
+    }
+    if arena.as_num(c).is_some() || walk::has_unevaluated(arena, c) {
+        return false;
+    }
+    let syms = walk::free_symbols(arena, c);
+    if syms.is_empty() {
+        if crate::calculus::calculus_util::is_hidden_zero(arena, c) {
+            return true;
+        }
+        // A function value with real zeros at a symbolic constant.
+        if !matches!(
+            arena.node(c),
+            ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_) | ExprNode::Sinh(_)
+        ) || walk::post_order_ids(arena, c).len() > MAX_PARAM_ZERO_SIZE
+        {
+            return false;
+        }
+        return matches!(
+            crate::transforms::evalf::evalf_complex(arena, c, PARAM_ZERO_DIGITS),
+            Ok(z) if z.0.is_zero() && z.1.is_zero()
+        );
+    }
+    if !matches!(arena.node(c), ExprNode::Add(_))
+        || walk::post_order_ids(arena, c).len() > MAX_PARAM_ZERO_SIZE
+        || !has_transcendental_node(arena, c)
+    {
+        return false;
+    }
+    for sample in 0..2 {
+        let mut v = c;
+        for (k, &s) in syms.iter().enumerate() {
+            let value = parameter_sample(arena, s, sample, k);
+            v = subs::subs(arena, v, s, value);
+        }
+        let v = eval::eval(arena, v);
+        if arena.is_zero_structural(v) {
+            continue;
+        }
+        if !walk::free_symbols(arena, v).is_empty() {
+            return false;
+        }
+        match crate::transforms::evalf::evalf_complex(arena, v, PARAM_ZERO_DIGITS) {
+            Ok(z) if z.0.is_zero() && z.1.is_zero() => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// [`settle_constant`], and `0` for a constant that vanishes identically in
+/// its parameters ([`vanishes_identically`]).
+pub(crate) fn settle_parametric(arena: &mut Arena, c: ExprId) -> ExprId {
+    let v = settle_constant(arena, c);
+    let candidate = match arena.node(v) {
+        ExprNode::Add(_) => !walk::free_symbols(arena, v).is_empty(),
+        ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_) | ExprNode::Sinh(_) => {
+            walk::free_symbols(arena, v).is_empty()
+        }
+        _ => false,
+    };
+    if candidate && vanishes_identically(arena, v) {
+        arena.zero
+    } else {
+        v
+    }
+}
+
+/// Does `c` contain a function application or a non-integer power — a node
+/// through which an identity can hide from canonical forms?
+fn has_transcendental_node(arena: &Arena, c: ExprId) -> bool {
+    walk::post_order_ids(arena, c)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Num(_) | ExprNode::Symbol(_) => false,
+            ExprNode::Pow(_, e) => arena.as_num(*e).is_none_or(|r| !r.is_integer()),
+            n => !n.is_atom(),
+        })
+}
+
+/// The `sample`-th (0 or 1) test value of the parameter `s` (the `k`-th
+/// free symbol), inside its assumptions: an integer for an integer symbol
+/// (of the right parity and sign), a rational of the right sign for a real
+/// one (one of each sign when the sign is unknown), a non-real value for
+/// an unrestricted symbol.  Distinct parameters get distinct values.
+fn parameter_sample(arena: &mut Arena, s: ExprId, sample: usize, k: usize) -> ExprId {
+    use crate::base::assumptions::AssumptionCache;
+    let mut cache = AssumptionCache::new();
+    let mut is = |p: Props| cache.query(arena, s, p) == Some(true);
+    let zero = is(Props::ZERO);
+    let positive = is(Props::POSITIVE) || is(Props::NONNEGATIVE);
+    let negative = is(Props::NEGATIVE) || is(Props::NONPOSITIVE);
+    let integer = is(Props::INTEGER);
+    let even = is(Props::EVEN);
+    let odd = is(Props::ODD) || is(Props::PRIME);
+    let real = is(Props::REAL);
+    if zero {
+        return arena.zero;
+    }
+    let kk = k as i64;
+    if integer {
+        let base: i64 = if even {
+            [4, 6][sample]
+        } else if odd {
+            [5, 7][sample]
+        } else {
+            [5, 8][sample]
+        } + 2 * kk;
+        let v = if negative || (!positive && sample == 1) {
+            -base
+        } else {
+            base
+        };
+        return arena.int(v);
+    }
+    let (p, q) = [(1153, 877), (1789, 2311)][sample];
+    let p = p + 97 * kk;
+    let p = if negative || (!positive && sample == 1) {
+        -p
+    } else {
+        p
+    };
+    let re = arena.rational(p, q);
+    if real || positive || negative {
+        return re;
+    }
+    let (ip, iq) = [(311, 997), (577, 1013)][sample];
+    let im = arena.rational(ip + 13 * kk, iq);
+    let i = arena.i_unit;
+    let im = arena.mul(&[im, i]);
+    let z = arena.add(&[re, im]);
+    eval::eval(arena, z)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Public entry points
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -220,12 +383,10 @@ pub(crate) fn series_dir(
         Ok(s) => return Ok(s),
         Err(e) => e,
     };
-    if order == 0
-        || matches!(
-            arena.node(point),
-            ExprNode::Infinity | ExprNode::NegInfinity
-        )
-        || !matches!(arena.node(var), ExprNode::Symbol(_))
+    if matches!(
+        arena.node(point),
+        ExprNode::Infinity | ExprNode::NegInfinity
+    ) || !matches!(arena.node(var), ExprNode::Symbol(_))
     {
         return Err(err);
     }
@@ -344,7 +505,6 @@ fn series_with_pole_retry(
         arena.node(point),
         ExprNode::Infinity | ExprNode::NegInfinity
     ) || !matches!(arena.node(var), ExprNode::Symbol(_))
-        || order == 0
         || retry_cannot_help(arena, expr, var, point, mode.side)
     {
         return Err(err);
@@ -435,9 +595,10 @@ fn series_in_mode(
     order: u32,
     mode: Mode,
 ) -> Result<ExprId, SymplexError> {
-    if order == 0 {
-        return Ok(arena.zero);
-    }
+    // `order = 0` asks for the terms of negative exponent (the principal
+    // part at a pole): before, it returned `0` at once, and
+    // `series(sin(x⁵⁰)/x⁵¹, x, 0, 0)` was `0` (it is `1/x`; SymPy
+    // `1/x + O(1)`).
     match arena.node(point) {
         ExprNode::Infinity => return series_at_infinity(arena, expr, var, order, false),
         ExprNode::NegInfinity => return series_at_infinity(arena, expr, var, order, true),
@@ -503,22 +664,104 @@ pub(crate) fn series_at_infinity(
     order: u32,
     negative: bool,
 ) -> Result<ExprId, SymplexError> {
-    if order == 0 {
-        return Ok(arena.zero);
-    }
     let err = match series_at_infinity_integer(arena, expr, var, order, negative) {
         Ok(s) => return Ok(s),
         Err(e) => e,
     };
-    if !matches!(arena.node(var), ExprNode::Symbol(_)) || !has_fractional_power(arena, expr, var) {
+    if !matches!(arena.node(var), ExprNode::Symbol(_)) {
         return Err(err);
     }
-    for q in PUISEUX_RAMIFICATIONS {
-        if let Ok(s) = puiseux_at_infinity(arena, expr, var, order, negative, q) {
-            return Ok(s);
+    if has_fractional_power(arena, expr, var) {
+        for q in PUISEUX_RAMIFICATIONS {
+            if let Ok(s) = puiseux_at_infinity(arena, expr, var, order, negative, q) {
+                return Ok(s);
+            }
+        }
+    }
+    // The special functions of an argument tending to infinity in their
+    // asymptotic forms (Gruntz's tractable rewrite: `Γ(s, u) = u^{s−1}e^{−u}
+    // G(s, u)`, `Kν(u) = e^{−u}(π/2u)^{1/2} K(ν, u)`, …, internal heads whose
+    // expansions in `1/u` the engine knows), where the exponential factors
+    // cancel and the rest may be a Puiseux series: `Γ(−1/2, 2x + 1)·e^{2x+1}·x/2`
+    // at `∞` is `2^{−5/2}·x^{−1/2} + …` and `Γ(2, x)·eˣ = x + 1` (both were
+    // refused).
+    if let Some(g) = crate::calculus::gruntz::tractable_at_infinity(arena, expr, var, negative) {
+        let clean = |arena: &Arena, s: ExprId| !has_internal_head(arena, s);
+        if let Ok(s) = series_at_infinity_integer(arena, g, var, order, negative)
+            && clean(arena, s)
+        {
+            return Ok(merge_constant_exponentials(arena, s));
+        }
+        if has_fractional_power(arena, g, var) {
+            for q in PUISEUX_RAMIFICATIONS {
+                if let Ok(s) = puiseux_at_infinity(arena, g, var, order, negative, q)
+                    && clean(arena, s)
+                {
+                    return Ok(merge_constant_exponentials(arena, s));
+                }
+            }
         }
     }
     Err(err)
+}
+
+/// `s` with the constant exponential factors of each product merged:
+/// `e^{−1}·E·c = c` (the expansions of the asymptotic forms carry the
+/// constant parts of `e^{u}`, `e^{−u}` separately).
+fn merge_constant_exponentials(arena: &mut Arena, s: ExprId) -> ExprId {
+    let post = walk::post_order_ids(arena, s);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let r = walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(r).clone() {
+            ExprNode::Mul(cs) => {
+                let mut exps = Vec::new();
+                let mut rest = Vec::new();
+                for c in cs {
+                    match arena.node(c).clone() {
+                        ExprNode::Exp(a) if walk::free_symbols(arena, a).is_empty() => exps.push(a),
+                        ExprNode::E => exps.push(arena.one),
+                        ExprNode::Pow(b, k)
+                            if b == arena.e_const && walk::free_symbols(arena, k).is_empty() =>
+                        {
+                            exps.push(k)
+                        }
+                        _ => rest.push(c),
+                    }
+                }
+                if exps.len() >= 2 {
+                    changed = true;
+                    let sum = arena.add(&exps);
+                    let e = arena.exp(sum);
+                    rest.push(e);
+                    let m = arena.mul(&rest);
+                    eval::eval(arena, m)
+                } else {
+                    r
+                }
+            }
+            _ => r,
+        };
+        cache.insert(id, new);
+    }
+    if !changed {
+        return s;
+    }
+    let r = cache.get(&s).copied().unwrap_or(s);
+    eval::eval(arena, r)
+}
+
+/// Does `e` hold an internal function (a head named `__…`, such as the
+/// asymptotic heads of the tractable rewrite)?
+fn has_internal_head(arena: &Arena, e: ExprId) -> bool {
+    walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Apply(f, _) => arena.symbol_name(*f).starts_with("__"),
+            ExprNode::Symbol(s) => arena.symbol_name(*s).starts_with("__"),
+            _ => false,
+        })
 }
 
 /// Does `expr` have a power with a non-integer rational exponent of a
@@ -818,7 +1061,7 @@ impl TSeries {
                 if arena.is_zero_structural(ca) || arena.is_zero_structural(cb) {
                     eval::eval(arena, s)
                 } else {
-                    settle_constant(arena, s)
+                    settle_parametric(arena, s)
                 },
             );
         }
@@ -878,7 +1121,7 @@ impl TSeries {
                 1 => eval::eval(arena, terms[0]),
                 _ => {
                     let s = arena.add(&terms);
-                    settle_constant(arena, s)
+                    settle_parametric(arena, s)
                 }
             });
         }
@@ -925,7 +1168,7 @@ impl TSeries {
                 _ => arena.add(&terms),
             };
             let ns = arena.neg(s);
-            b.push(settle_constant(arena, ns));
+            b.push(settle_parametric(arena, ns));
         }
         let coeffs = b
             .iter()
@@ -1631,7 +1874,7 @@ fn leading_term_decided(arena: &mut Arena, ts: &TSeries) -> bool {
         if arena.is_zero_structural(c) {
             continue;
         }
-        let c = settle_constant(arena, c);
+        let c = settle_parametric(arena, c);
         if arena.is_zero_structural(c) {
             continue;
         }
@@ -3132,7 +3375,7 @@ fn is_known_real(arena: &Arena, c: ExprId) -> bool {
 }
 
 fn is_zero_const(arena: &mut Arena, c: ExprId) -> bool {
-    let v = settle_constant(arena, c);
+    let v = settle_parametric(arena, c);
     arena.is_zero_structural(v) || arena.as_num(v).is_some_and(|r| r.is_zero())
 }
 
@@ -3168,10 +3411,12 @@ fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
             if u0_zero {
                 return Some(if kind == FnKind::Sin { sw } else { cw });
             }
+            // A hidden zero of `sin`/`cos` (`u0 = π/(24π − 2) − 12π²/(24π −
+            // 2) = −π/2`) must show, or the valuation is wrong.
             let su = arena.sin(u0);
-            let su = eval::eval(arena, su);
+            let su = settle_parametric(arena, su);
             let cu = arena.cos(u0);
-            let cu = eval::eval(arena, cu);
+            let cu = settle_parametric(arena, cu);
             let (t1, t2) = if kind == FnKind::Sin {
                 // sin(u0 + w) = sin u0 cos w + cos u0 sin w
                 (

@@ -1172,8 +1172,8 @@ fn polygamma_partial_sum(arena: &mut Arena, y: ExprId, m: u32) -> ExprId {
 /// [`rational_sum_finite`]): `α^(−m)·(G_m(hi + β/α) − G_m(lo − 1 + β/α))`
 /// with `G_1 = harmonic` (`H(x) − H(x − 1) = 1/x` for every `x` that is
 /// not a negative integer) and [`polygamma_partial_sum`] for `m ≥ 2`.
-/// `Σ_{k=1}^{n} 1/(n + k)` was refused (SymPy 1.14: `harmonic(2n) −
-/// harmonic(n)`).
+/// `Σ_{k=1}^{n} 1/(n + k)` was refused (it is `harmonic(2n) − harmonic(n)`;
+/// SymPy 1.14 leaves the `Sum` unevaluated).
 fn symbolic_pole_sum(
     arena: &mut Arena,
     body: ExprId,
@@ -1206,10 +1206,29 @@ fn symbolic_pole_sum(
             polygamma_partial_sum(arena, x, m as u32)
         }
     };
+    let scale = rat_expr(arena, rat_pow_i(&alpha, -m));
+    // Every `k + β/α` of the range negative (`hi + β/α` a negative integer:
+    // the range ends before the pole): with `j = −(k + β/α)` the sum is
+    // `(−1)^m·Σ_{j=J₁}^{J₂} j^(−m)`, `J₁ = −(hi + β/α)`, `J₂ = −(lo + β/α)`.
+    // `G_m` at the negative integers it reaches otherwise is a pole on
+    // both ends: `Σ_{x=0}^{b−1} (x − b)^(−2)` for an integer `b` was `zoo`
+    // (it is `π²/6 − ψ′(b + 1)`).
+    let hi_v = eval::eval(arena, hi_x);
+    if let Some(h) = as_i64(arena, hi_v)
+        && h < 0
+    {
+        let j1_m1 = arena.int(-h - 1);
+        let neg_lo = arena.neg(lo_x);
+        let j2 = arena.sub(neg_lo, one);
+        let top = partial(arena, j2);
+        let bottom = partial(arena, j1_m1);
+        let diff = arena.sub(top, bottom);
+        let sign = arena.int(if m % 2 == 0 { 1 } else { -1 });
+        return Some(arena.mul(&[scale, sign, diff]));
+    }
     let top = partial(arena, hi_x);
     let bottom = partial(arena, lo_x);
     let diff = arena.sub(top, bottom);
-    let scale = rat_expr(arena, rat_pow_i(&alpha, -m));
     Some(arena.mul(&[scale, diff]))
 }
 
@@ -1334,7 +1353,8 @@ fn rational_sum_infinite(
             // for integer and half-integer offsets, else as the polygamma
             // `(−1)^m ψ^{(m−1)}(q)/(m−1)!` (`Σ_{k≥m} 1/k² = ψ′(m)` for a
             // symbolic `m`, `Σ_{k≥0} 1/(k + 1/3)² = ψ′(1/3)` were refused;
-            // SymPy 1.14 gives `polygamma(1, m)`, `polygamma(1, 1/3)`).
+            // SymPy 1.14 gives the same values as `lerchphi(1, 2, m)` and a
+            // polylog expression).
             for p in &group {
                 let x = add_rat(arena, lo, &p.beta);
                 let q = eval::eval(arena, x);
@@ -4091,7 +4111,9 @@ fn product_closed(
                 let allow_zero = as_rat(arena, exp).is_some_and(|q| q.is_positive());
                 if !positive_on_range(arena, base, var, lo, allow_zero) {
                     // A negative `f(k)`: `f^e = (−1)^e·(−f)^e` (principal
-                    // powers), so `Π √(−k) = i^n·√(n!)` (SymPy 1.14 too).
+                    // powers), so `Π √(−k) = i^n·√(n!)` (SymPy 1.14 gives
+                    // `sqrt((-1)**n*factorial(n))`, which is √2 at n = 2; the
+                    // product is −√2).
                     let neg = arena.neg(base);
                     let neg = eval::eval(arena, neg);
                     if !positive_on_range(arena, neg, var, lo, false) {

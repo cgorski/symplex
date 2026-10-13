@@ -52,7 +52,7 @@ pub enum Relation {
 
 impl Relation {
     /// Does a value with the given sign satisfy `value rel 0`?
-    fn accepts(self, sign: std::cmp::Ordering) -> bool {
+    pub(crate) fn accepts(self, sign: std::cmp::Ordering) -> bool {
         use std::cmp::Ordering::*;
         matches!(
             (self, sign),
@@ -130,6 +130,11 @@ pub(crate) fn solve_inequality_over_reals(
         return Ok(set);
     }
 
+    // ── Non-real coefficients: real only where the imaginary part vanishes.
+    if let Some(set) = try_solve_nonreal_inequality(arena, expr, var, rel) {
+        return set;
+    }
+
     // ── Sturm fast path: if the expression is polynomial, use Sturm
     //    chains to detect the no-real-roots case without solving. ──
     if let Some(poly) = crate::poly::polybridge::expr_to_poly(arena, expr, var) {
@@ -146,7 +151,502 @@ pub(crate) fn solve_inequality_over_reals(
         }
     }
 
+    // ── Periodic functions of the variable alone: one period, then all. ──
+    if let Some(set) = try_solve_periodic_inequality(arena, expr, var, rel) {
+        return set;
+    }
+
     sign_chart(arena, expr, var, rel)
+}
+
+/// Most critical points in one period of a periodic inequality.
+const MAX_PERIODIC_POINTS: usize = 128;
+
+/// Largest `m` tried when reducing a common period `T` to `T/m`.
+const MAX_PERIOD_DIVISOR: usize = 24;
+
+/// The common period `T = 2π·r` (returned: `r`) of an expression in which
+/// `var` occurs only in `sin`, `cos` and `tan` of `a·var + b` (rational
+/// `a ≠ 0`; `cot`, `sec`, `csc` are their reciprocals): `r` is the least
+/// common multiple of the `1/|a|`.  `None` otherwise.
+fn trig_period_ratio(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Q> {
+    let mut atoms: Vec<ExprId> = Vec::new();
+    let mut ratio: Option<Q> = None;
+    for id in walk::post_order_ids(arena, expr) {
+        let arg = match *arena.node(id) {
+            ExprNode::Sin(a) | ExprNode::Cos(a) | ExprNode::Tan(a) => a,
+            _ => continue,
+        };
+        if !walk::contains(arena, arg, var) {
+            continue;
+        }
+        let slope = crate::transforms::diff::diff(arena, arg, var);
+        let slope = crate::transforms::eval::eval(arena, slope);
+        let a = arena.as_num(slope)?.clone();
+        if a.is_zero() {
+            return None;
+        }
+        let r = Ratio::one() / a.abs();
+        ratio = Some(match ratio {
+            None => r,
+            Some(q) => {
+                // lcm of p₁/q₁ and p₂/q₂ is lcm(p₁, p₂)/gcd(q₁, q₂)
+                let num = num_integer::Integer::lcm(q.numer(), r.numer());
+                let den = num_integer::Integer::gcd(q.denom(), r.denom());
+                Ratio::new(num, den)
+            }
+        });
+        if !atoms.contains(&id) {
+            atoms.push(id);
+        }
+    }
+    let ratio = ratio?;
+    // `var` only inside the atoms, whose arguments are linear in it.
+    let mut probe = expr;
+    for (k, &a) in atoms.iter().enumerate() {
+        let s = arena.symbol(&format!("__trig_atom_{k}"));
+        probe = arena.subs_structural(probe, a, s);
+    }
+    if walk::contains(arena, probe, var) {
+        return None;
+    }
+    for &a in &atoms {
+        let arg = match *arena.node(a) {
+            ExprNode::Sin(x) | ExprNode::Cos(x) | ExprNode::Tan(x) => x,
+            _ => return None,
+        };
+        let slope = crate::transforms::diff::diff(arena, arg, var);
+        let slope = crate::transforms::eval::eval(arena, slope);
+        let at0 = crate::transforms::subs::subs(arena, arg, var, arena.zero);
+        let at0 = crate::transforms::eval::eval(arena, at0);
+        let lin = arena.mul(&[slope, var]);
+        let lin = arena.add(&[lin, at0]);
+        let d = arena.sub(arg, lin);
+        let d = crate::transforms::expand::expand(arena, d);
+        let d = crate::transforms::eval::eval(arena, d);
+        if !arena.is_zero_structural(d) {
+            return None;
+        }
+    }
+    Some(ratio)
+}
+
+/// `expr rel 0` for an expression periodic in `var` ([`trig_period_ratio`]):
+/// the critical points in one period `[0, T)` — the members there of the
+/// families of zeros of the numerator, of the denominator (`tan` written
+/// `sin/cos`) and of the domain constraints, from the general solver —
+/// decide the sign on each arc between consecutive points (the last arc
+/// wraps around to the first point plus `T`) and at each point, and the
+/// maximal runs of accepted arcs and points repeat with the period:
+/// `⋃ₙ ⟨lo + n·T, hi + n·T⟩` ([`crate::transforms::sets::periodic_interval_set`]),
+/// with `T` reduced to `T/m` when the pattern repeats with it, each run
+/// placed with its middle in `(−T/2, T/2]`.  `sin x > 1/2` is `⋃ₙ (π/6 +
+/// 2nπ, 5π/6 + 2nπ)`; refused before 0.47 ("cannot build a sign chart"),
+/// while SymPy's `solveset(sin(x) > 1/2, x, S.Reals)` gives the one period
+/// `(π/6, 5π/6)`.  `None` when `expr` is not of that form; an error when
+/// the zeros of a critical expression are not all found or a sign is not
+/// decided.
+fn try_solve_periodic_inequality(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    rel: Relation,
+) -> Option<Result<ExprId, SymplexError>> {
+    let ratio = trig_period_ratio(arena, expr, var)?;
+    Some(solve_periodic_inequality(arena, expr, var, rel, &ratio))
+}
+
+/// [`try_solve_periodic_inequality`] for the period `2π·ratio`.
+fn solve_periodic_inequality(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    rel: Relation,
+    ratio: &Q,
+) -> Result<ExprId, SymplexError> {
+    let expr = crate::transforms::eval::eval(arena, expr);
+    let two_r = arena.num_ratio(ratio * Ratio::from_integer(BigInt::from(2)));
+    let period = arena.mul(&[two_r, arena.pi]);
+    let period = crate::transforms::eval::eval(arena, period);
+    let period_q =
+        approx_real(arena, period).ok_or_else(|| failed("the period cannot be located".into()))?;
+    let period_f = crate::base::numeric::ratio_to_f64(&period_q)
+        .ok_or_else(|| failed("the period cannot be located".into()))?;
+    // `tan u` as `sin u/cos u`: its poles are the zeros of a denominator.
+    let mut rewritten = expr;
+    for id in walk::post_order_ids(arena, expr) {
+        if let ExprNode::Tan(u) = *arena.node(id)
+            && walk::contains(arena, u, var)
+        {
+            let s = arena.sin(u);
+            let c = arena.cos(u);
+            let q = arena.div(s, c);
+            rewritten = arena.subs_structural(rewritten, id, q);
+        }
+    }
+    let rewritten = crate::transforms::eval::eval(arena, rewritten);
+    let (numer, denom) = numer_denom(arena, rewritten);
+    let constraints = domain_constraints(arena, rewritten, var)?;
+    let mut critical: Vec<(ExprId, bool, bool)> = vec![(numer, true, false)];
+    if denom != arena.one {
+        critical.push((denom, false, true));
+    }
+    for c in &constraints {
+        critical.push((c.expr, false, c.kind != ConstraintKind::NonNegative));
+    }
+    let mut points: Vec<Critical> = Vec::new();
+    let mut identity = false;
+    for (e, numer_zero, undefined) in critical {
+        if !walk::contains(arena, e, var) {
+            continue;
+        }
+        let members = match periodic_zeros_in_period(arena, e, var, period, period_f)? {
+            Some(m) => m,
+            None => {
+                // `e` vanishes identically
+                if numer_zero {
+                    identity = true;
+                    continue;
+                }
+                return Err(failed(format!("{} vanishes identically", arena.display(e))));
+            }
+        };
+        add_roots(arena, &mut points, &members, numer_zero, undefined)?;
+    }
+    sort_points(&mut points);
+    if points.len() > MAX_PERIODIC_POINTS {
+        return Err(failed(format!(
+            "too many critical points in one period ({})",
+            points.len()
+        )));
+    }
+    let branch = Branch {
+        resolved: expr,
+        constraints,
+    };
+    if identity {
+        // `expr` is 0 wherever it is defined: the relation decides.
+        if !rel.accepts(std::cmp::Ordering::Equal) {
+            return Ok(arena.empty_set);
+        }
+    }
+    let k = points.len();
+    if k == 0 {
+        // no zero, pole or boundary: one sign everywhere
+        let p = arena.zero;
+        let all = sample_satisfies(arena, &branch, var, p, rel)?;
+        let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
+        return Ok(if all {
+            arena.interval(ninf, pinf, INTERVAL_BOTH_OPEN)
+        } else {
+            arena.empty_set
+        });
+    }
+    // The arcs (pᵢ, pᵢ₊₁), the last one up to p₀ + T.
+    let first_shifted = {
+        let id = arena.add(&[points[0].id, period]);
+        let id = crate::transforms::eval::eval(arena, id);
+        Critical {
+            id,
+            approx: &points[0].approx + &period_q,
+            exact: false,
+            numer_zero: points[0].numer_zero,
+            undefined: points[0].undefined,
+        }
+    };
+    let mut arc_in: Vec<bool> = Vec::with_capacity(k);
+    for i in 0..k {
+        let lo = &points[i];
+        let hi = if i + 1 < k {
+            &points[i + 1]
+        } else {
+            &first_shifted
+        };
+        let mut decision: Option<bool> = None;
+        for r in probe_ratios(Some(lo), Some(hi))? {
+            let p = arena.num_ratio(r);
+            let here = sample_satisfies(arena, &branch, var, p, rel)?;
+            match decision {
+                None => decision = Some(here),
+                Some(d) if d != here => {
+                    return Err(failed(format!(
+                        "the sign of {} changes between two consecutive critical points \
+                         (a zero or a pole was not found)",
+                        arena.display(expr)
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        arc_in.push(decision.unwrap_or(false));
+    }
+    let mut point_in: Vec<bool> = Vec::with_capacity(k);
+    for c in &points {
+        let inside = point_in_domain(arena, &branch, var, c)?;
+        point_in.push(inside && point_satisfies(arena, expr, var, c, rel)?);
+    }
+    // The smallest period `T/m` the pattern repeats with.
+    let mut m_best = 1usize;
+    for m in (2..=MAX_PERIOD_DIVISOR.min(k)).rev() {
+        if !k.is_multiple_of(m) {
+            continue;
+        }
+        let step = k / m;
+        let shift = &period_q / Ratio::from_integer(BigInt::from(m as i64));
+        let repeats = (0..k).all(|i| {
+            let j = (i + step) % k;
+            let target = if i + step >= k {
+                &points[j].approx + &period_q
+            } else {
+                points[j].approx.clone()
+            };
+            approx_same(&(&points[i].approx + &shift), &target)
+                && point_in[i] == point_in[j]
+                && arc_in[i] == arc_in[j]
+        });
+        if repeats {
+            m_best = m;
+            break;
+        }
+    }
+    let (k, period, period_q) = if m_best > 1 {
+        let m_id = arena.int(m_best as i64);
+        let p = arena.div(period, m_id);
+        let p = crate::transforms::eval::eval(arena, p);
+        (
+            k / m_best,
+            p,
+            &period_q / Ratio::from_integer(BigInt::from(m_best as i64)),
+        )
+    } else {
+        (k, period, period_q)
+    };
+    // Elements in cyclic order: point i is 2i, arc i is 2i + 1.
+    let included = |e: usize| -> bool {
+        let e = e % (2 * k);
+        if e.is_multiple_of(2) {
+            point_in[e / 2]
+        } else {
+            arc_in[e / 2]
+        }
+    };
+    if (0..2 * k).all(included) {
+        let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
+        return Ok(arena.interval(ninf, pinf, INTERVAL_BOTH_OPEN));
+    }
+    // Every arc in, some points out: the line without their families.
+    if (0..k).all(|i| arc_in[i]) {
+        let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
+        let line = arena.interval(ninf, pinf, INTERVAL_BOTH_OPEN);
+        let mut holes: Vec<ExprId> = Vec::new();
+        for (i, c) in points.iter().take(k).enumerate() {
+            if !point_in[i] {
+                holes.push(point_family(arena, c.id, period));
+            }
+        }
+        let holes = arena.set_union(&holes);
+        let set = arena.set_complement(line, holes);
+        return Ok(crate::transforms::sets::simplify_set(arena, set));
+    }
+    // Start just after an excluded element, collect the maximal runs.
+    let start = (0..2 * k).find(|&e| !included(e)).unwrap_or(0) + 1;
+    let mut parts: Vec<ExprId> = Vec::new();
+    let mut e = start;
+    while e < start + 2 * k {
+        if !included(e) {
+            e += 1;
+            continue;
+        }
+        let run_start = e;
+        while e < start + 2 * k && included(e) {
+            e += 1;
+        }
+        let run_end = e - 1;
+        // the end of element `idx` (index into the doubled cycle) and its
+        // number of whole periods past the base window
+        let end_of = |idx: usize, upper: bool| -> (usize, i64) {
+            let pt = if idx.is_multiple_of(2) {
+                idx / 2
+            } else if upper {
+                idx / 2 + 1
+            } else {
+                idx / 2
+            };
+            (pt % k, (pt / k) as i64)
+        };
+        if run_start == run_end && run_start % 2 == 0 {
+            let (pt, wraps) = end_of(run_start, false);
+            let at = shifted(arena, points[pt].id, period, wraps);
+            parts.push(point_family(arena, at, period));
+            continue;
+        }
+        let (lo_pt, lo_wraps) = end_of(run_start, false);
+        let (hi_pt, hi_wraps) = end_of(run_end, true);
+        let lo_open = run_start % 2 == 1;
+        let hi_open = run_end % 2 == 1;
+        let mid = (&points[lo_pt].approx
+            + &period_q * Ratio::from_integer(BigInt::from(lo_wraps))
+            + &points[hi_pt].approx
+            + &period_q * Ratio::from_integer(BigInt::from(hi_wraps)))
+            / Ratio::from_integer(BigInt::from(2));
+        // place the run with its middle in (−T/2, T/2]
+        let half = &period_q / Ratio::from_integer(BigInt::from(2));
+        let turns = ((&mid + &half) / &period_q).ceil() - Ratio::one();
+        let turns = turns.to_integer();
+        let turns = num_traits::ToPrimitive::to_i64(&turns).unwrap_or(0);
+        let lo = shifted(arena, points[lo_pt].id, period, lo_wraps - turns);
+        let hi = shifted(arena, points[hi_pt].id, period, hi_wraps - turns);
+        let mut flags = INTERVAL_BOTH_CLOSED;
+        if lo_open {
+            flags |= INTERVAL_LEFT_OPEN;
+        }
+        if hi_open {
+            flags |= INTERVAL_RIGHT_OPEN;
+        }
+        parts.push(crate::transforms::sets::periodic_interval_set(
+            arena, lo, hi, flags, period,
+        ));
+    }
+    let union = arena.set_union(&parts);
+    Ok(crate::transforms::sets::simplify_set(arena, union))
+}
+
+/// `p + k·period`, evaluated.
+fn shifted(arena: &mut Arena, p: ExprId, period: ExprId, k: i64) -> ExprId {
+    if k == 0 {
+        return p;
+    }
+    let kk = arena.int(k);
+    let s = arena.mul(&[kk, period]);
+    let sum = arena.add(&[p, s]);
+    crate::transforms::eval::eval(arena, sum)
+}
+
+/// The point family `{p + n·period : n ∈ ℤ}`.
+fn point_family(arena: &mut Arena, p: ExprId, period: ExprId) -> ExprId {
+    let scope = arena.finite_set(&[p, period]);
+    let zero = arena.zero;
+    let n = crate::transforms::sets::image_param(arena, zero, scope);
+    let pn = arena.mul(&[period, n]);
+    let body = arena.add(&[p, pn]);
+    crate::transforms::sets::image_set(arena, n, body)
+}
+
+/// The real zeros of `e` (periodic in `var` with the period `period ≈
+/// period_f`) in `[0, period)`, from the general solver: the members of its
+/// families there and its other solutions reduced into the window.
+/// `Ok(None)` when `e` vanishes identically; an error when its zeros are
+/// not found or a family cannot be located.
+fn periodic_zeros_in_period(
+    arena: &mut Arena,
+    e: ExprId,
+    var: ExprId,
+    period: ExprId,
+    period_f: f64,
+) -> Result<Option<Vec<ExprId>>, SymplexError> {
+    use crate::transforms::solve::SolveOutcome;
+    let scope = arena.finite_set(&[e, var]);
+    let zero = arena.zero;
+    let n = crate::transforms::sets::image_param(arena, zero, scope);
+    let sols = match crate::transforms::solve::solve_general(arena, e, var, n) {
+        SolveOutcome::Identity => return Ok(None),
+        SolveOutcome::NoSolution(_) => return Ok(Some(Vec::new())),
+        SolveOutcome::Unresolved(reason) => {
+            return Err(failed(format!(
+                "could not find the zeros of {}: {reason}",
+                arena.display(e)
+            )));
+        }
+        SolveOutcome::Solutions(s) if s.is_empty() => {
+            return Err(failed(format!(
+                "could not find the zeros of {}",
+                arena.display(e)
+            )));
+        }
+        SolveOutcome::Solutions(s) => s,
+    };
+    let margin = 1e-12 * (1.0 + period_f);
+    let mut out: Vec<ExprId> = Vec::new();
+    let approx = |arena: &mut Arena, v: ExprId| -> Option<(f64, f64)> {
+        let z = crate::transforms::evalf::evalf_complex64(arena, v).ok()?;
+        (z.re.is_finite() && z.im.is_finite()).then_some((z.re, z.im))
+    };
+    for s in sols {
+        let v = crate::transforms::eval::eval(arena, s.value);
+        if walk::contains(arena, v, n) {
+            let Some(crate::transforms::sets::Lattice { step, offset }) =
+                crate::transforms::sets::image_linear_parts(arena, n, v)
+            else {
+                return Err(failed(format!(
+                    "the family {} is not linear",
+                    arena.display(v)
+                )));
+            };
+            let (Some((sr, si)), Some((or, oi))) = (approx(arena, step), approx(arena, offset))
+            else {
+                return Err(failed(format!(
+                    "the family {} cannot be located",
+                    arena.display(v)
+                )));
+            };
+            if si.abs() > 1e-12 * (1.0 + sr.abs()) || oi.abs() > 1e-12 * (1.0 + or.abs()) {
+                // not real (a real variable takes no member)
+                if value_sign(arena, offset) == ValueSign::NonReal
+                    || value_sign(arena, step) == ValueSign::NonReal
+                {
+                    continue;
+                }
+                return Err(failed(format!(
+                    "the family {} cannot be located on the real line",
+                    arena.display(v)
+                )));
+            }
+            if sr == 0.0 {
+                return Err(failed("a family with a zero step".into()));
+            }
+            let (k1, k2) = ((-margin - or) / sr, (period_f + margin - or) / sr);
+            let (lo, hi) = (k1.min(k2).floor() - 1.0, k1.max(k2).ceil() + 1.0);
+            if !lo.is_finite() || !hi.is_finite() || hi - lo > 4.0 * MAX_PERIODIC_POINTS as f64 {
+                return Err(failed(format!(
+                    "the family {} has too many members in one period",
+                    arena.display(v)
+                )));
+            }
+            for kk in (lo as i64)..=(hi as i64) {
+                let x = or + sr * kk as f64;
+                if x < -margin || x >= period_f - margin {
+                    continue;
+                }
+                let ki = arena.int(kk);
+                let m = crate::transforms::subs::subs(arena, v, n, ki);
+                out.push(crate::transforms::eval::eval(arena, m));
+            }
+        } else {
+            let Some((re, im)) = approx(arena, v) else {
+                return Err(failed(format!(
+                    "the zero {} cannot be located",
+                    arena.display(v)
+                )));
+            };
+            if im.abs() > 1e-12 * (1.0 + re.abs()) {
+                if value_sign(arena, v) == ValueSign::NonReal {
+                    continue;
+                }
+                return Err(failed(format!(
+                    "the zero {} cannot be located on the real line",
+                    arena.display(v)
+                )));
+            }
+            // a zero of a periodic function: its translates by the period
+            let turns = (re / period_f).floor();
+            if !turns.is_finite() || turns.abs() > 1e12 {
+                return Err(failed("a zero far outside one period".into()));
+            }
+            let shifted_v = shifted(arena, v, period, -(turns as i64));
+            out.push(shifted_v);
+        }
+    }
+    Ok(Some(out))
 }
 
 /// Solve `expr = 0`, returning the solution set as an `ExprId`.
@@ -207,6 +707,142 @@ fn solveset_over_all_values(arena: &mut Arena, expr: ExprId, var: ExprId) -> Exp
             }
         }
     }
+}
+
+/// `expr rel 0` for an expression with non-real coefficients (`i`), which
+/// holds only where `expr` is real: at the real zeros of its imaginary part
+/// (for a real `var`) at which its real part satisfies the relation.  Up
+/// to 0.46 the sign chart sampled `expr` between the zeros of `expr`
+/// itself, found it non-real everywhere and answered `EmptySet`:
+/// `((x − 1)(x − 2) + i)·((x − 1)(x − 2) + 2i) < 0` holds at `x = 1` and
+/// `x = 2`, where it is `−2` (SymPy: `{1, 2}`).  `None` when `expr` has no
+/// `i`, its parts are not found, or its imaginary part vanishes
+/// identically.
+fn try_solve_nonreal_inequality(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    rel: Relation,
+) -> Option<Result<ExprId, SymplexError>> {
+    let has_i = walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| matches!(arena.node(id), ExprNode::ImaginaryUnit));
+    if !has_i || !walk::contains(arena, expr, var) {
+        return None;
+    }
+    // The parts for a real variable: a real stand-in for `var`.
+    let t = crate::transforms::subs::fresh_symbol(arena, "__ineq_real", &[expr]);
+    if let ExprNode::Symbol(sid) = *arena.node(t) {
+        let mut real = crate::base::assumptions::Assumptions::default();
+        real.assert_true(crate::base::assumptions::Props::REAL);
+        arena.set_symbol_assumptions(sid, real);
+    }
+    let e_t = crate::transforms::subs::subs(arena, expr, var, t);
+    let expanded = crate::transforms::expand::expand(arena, e_t);
+    let (_, im) = crate::base::complex::as_real_imag(arena, expanded);
+    let im = crate::transforms::eval::eval(arena, im);
+    let opaque = walk::post_order_ids(arena, im).into_iter().any(|id| {
+        matches!(
+            arena.node(id),
+            ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Arg(_) | ExprNode::Conjugate(_)
+        )
+    });
+    if opaque || arena.is_zero_structural(im) {
+        return None;
+    }
+    let (im_numer, _) = numer_denom(arena, im);
+    // Only a polynomial imaginary part has its real zeros all found (a
+    // Sturm count); `sin t` from `e^(i·x)` would give its principal zeros.
+    crate::poly::polybridge::expr_to_poly(arena, im_numer, t)?;
+    let roots = match real_roots(arena, im_numer, t) {
+        Ok(RootSet::Finite(r)) => r,
+        // the imaginary part vanishes identically: `expr` is real
+        Ok(RootSet::Everywhere) => return None,
+        Err(e) => return Some(Err(e)),
+    };
+    let mut kept: Vec<ExprId> = Vec::new();
+    for r in roots {
+        let at = crate::transforms::subs::subs(arena, expr, var, r);
+        let at = crate::transforms::eval::eval(arena, at);
+        match value_sign(arena, at).ordering() {
+            Some(o) => {
+                if rel.accepts(o) {
+                    kept.push(r);
+                }
+            }
+            None => match value_sign(arena, at) {
+                ValueSign::NonReal | ValueSign::Undefined => {}
+                _ => {
+                    return Some(Err(failed(format!(
+                        "the sign of {} at {} is not decided",
+                        arena.display(expr),
+                        arena.display(r)
+                    ))));
+                }
+            },
+        }
+    }
+    Some(Ok(arena.finite_set(&kept)))
+}
+
+/// The set of real `var` where every expression of `sides` is defined
+/// (denominators nonzero, radicands of fractional powers nonnegative,
+/// `ln` arguments positive, …), when it may be smaller than that of
+/// `combined` (their difference, in which singular terms can cancel:
+/// `x + 1/x` and `−2 + 1/x` differ by `x + 2`).  `Ok(None)` when every
+/// constraint of `sides` is one of `combined` (nothing is lost) or there
+/// is none, also when a side has piecewise-defined pieces (not looked
+/// into).  An error when a constraint cannot be solved.
+pub(crate) fn lost_domain(
+    arena: &mut Arena,
+    sides: &[ExprId],
+    combined: ExprId,
+    var: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    if !kink_expressions(arena, combined, var).is_empty() {
+        return Ok(None);
+    }
+    let have = domain_constraints(arena, combined, var)?;
+    let mut lost: Vec<Constraint> = Vec::new();
+    for &s in sides {
+        if !walk::contains(arena, s, var) {
+            continue;
+        }
+        if !kink_expressions(arena, s, var).is_empty() {
+            return Ok(None);
+        }
+        for c in domain_constraints(arena, s, var)? {
+            let known = have
+                .iter()
+                .chain(lost.iter())
+                .any(|h| h.expr == c.expr && h.kind == c.kind);
+            if !known {
+                lost.push(c);
+            }
+        }
+    }
+    if lost.is_empty() {
+        return Ok(None);
+    }
+    let mut parts: Vec<ExprId> = Vec::with_capacity(lost.len());
+    for c in lost {
+        let set = match c.kind {
+            ConstraintKind::Positive => {
+                solve_inequality_over_reals(arena, c.expr, var, Relation::Gt)?
+            }
+            ConstraintKind::NonNegative => {
+                solve_inequality_over_reals(arena, c.expr, var, Relation::Ge)?
+            }
+            ConstraintKind::NonZero => {
+                let above = solve_inequality_over_reals(arena, c.expr, var, Relation::Gt)?;
+                let below = solve_inequality_over_reals(arena, c.expr, var, Relation::Lt)?;
+                arena.set_union(&[above, below])
+            }
+        };
+        parts.push(set);
+    }
+    let meet = arena.set_intersection(&parts);
+    Ok(Some(crate::transforms::sets::simplify_set(arena, meet)))
 }
 
 /// Does `var` occur in `expr` only in sums, products and powers with a

@@ -167,9 +167,12 @@ fn exp_of_a_multiple_of_a_logarithm() {
     assert_eq!(p(&ctx, "exp(x + 2*log(3))").eval(), p(&ctx, "9*exp(x)"));
     assert_eq!(p(&ctx, "exp(log(2) + log(3))").eval(), ctx.int(6));
     assert_eq!(p(&ctx, "exp(2*log(10))").simplify(), ctx.int(100));
-    for s in ["exp(x*log(2))", "exp(I*log(2))", "exp(2*log(x))"] {
+    for s in ["exp(x*log(2))", "exp(I*log(2))"] {
         assert_eq!(p(&ctx, s).eval(), p(&ctx, s), "{s}");
     }
+    // A symbolic base is generic, as for `exp(log(x)) = x` (0.47; SymPy:
+    // `exp(2*log(x))` → `x**2`).
+    assert_eq!(p(&ctx, "exp(2*log(x))").eval(), p(&ctx, "x^2"));
 }
 
 /// Before: `log(exp(I))`, `log(exp(5*I))`, `log(exp(2 + 5*pi*I/3))`,

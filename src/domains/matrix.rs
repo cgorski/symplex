@@ -3841,7 +3841,8 @@ impl Matrix {
         // Rank first, decided exactly: a zero singular value of a symbolic
         // matrix is often not recognisable as such (`√(a − √(a²))`), and
         // before 0.38 `[[x − 2, 2], [0, 0]]` had `Max(…)/Min(…)` with an
-        // identically zero `Min` (SymPy: `zoo`).
+        // identically zero `Min` (SymPy 1.14 gives `Max(0, σ)/Min(0, σ)`
+        // too, without deciding the zero).
         if self.as_qmatrix().is_none() && self.rank() < self.nrows.min(self.ncols) {
             return Err(failed(
                 "condition_number",

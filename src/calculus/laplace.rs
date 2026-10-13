@@ -204,9 +204,11 @@ fn do_forward(
 /// (F(s − ib) − F(s + ib))/(2i)` for a rational `R` over ℚ with `F = L{R}`
 /// from [`forward_rational`] and a real numeric `b` (the frequency shift by
 /// `±ib` keeps `Re s`, where `F` is analytic).  Before 0.46 `cos t/(t + 1)`
-/// and `sin t/(t + 1)` were refused; SymPy:
-/// `laplace_transform(sin(t)/(t + 1), t, s)` has no closed form either way
-/// (it returns a Meijer G), mpmath `quad` is the oracle.
+/// and `sin t/(t + 1)` were refused.  SymPy 1.14's
+/// `laplace_transform(sin(t)/(t + 1), t, s)` returns an `Ei` closed form
+/// that is wrong (−0.58871 at `s = 1`; mpmath `quad` gives 0.26273, and
+/// 0.41059 for `cos t/(t + 1)`, where SymPy gives 0.91706); mpmath `quad`
+/// is the oracle.
 fn forward_rational_trig(arena: &mut Arena, expr: ExprId, t: ExprId, s: ExprId) -> Option<ExprId> {
     let factors: Vec<ExprId> = match arena.node(expr) {
         ExprNode::Mul(ch) => ch.to_vec(),

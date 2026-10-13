@@ -48,9 +48,10 @@ fn incomplete_gamma_at_zero_refuses_nonpositive_s() {
         let l = zero.lowergamma(&s).eval();
         assert_eq!(format!("{l}"), format!("lowergamma({s}, 0)"), "{l}");
     }
-    // s > 0 keeps folding: Γ(1/2, 0) = Γ(1/2) (SymPy: sqrt(pi)), γ(3, 0) = 0.
+    // s > 0 keeps folding: Γ(1/2, 0) = Γ(1/2) = √π (SymPy: sqrt(pi); since
+    // 0.47 in one `eval`), γ(3, 0) = 0.
     let g = zero.uppergamma(&ctx.rational(1, 2)).eval();
-    assert_eq!(g, ctx.rational(1, 2).gamma(), "{g}");
+    assert_eq!(g, ctx.pi().sqrt(), "{g}");
     assert_eq!(g.eval(), ctx.pi().sqrt(), "{g}");
     assert_eq!(zero.uppergamma(&ctx.int(3)).eval().eval(), ctx.int(2));
     assert_eq!(zero.lowergamma(&ctx.int(3)).eval(), zero);

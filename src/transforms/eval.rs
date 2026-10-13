@@ -355,7 +355,9 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         .iter()
                         .map(|&c| cache.get(&c).copied().unwrap_or(c))
                         .collect();
-                    if new == *children {
+                    if let Some(folded) = eval_log_quotient(arena, &new) {
+                        folded
+                    } else if new == *children {
                         id
                     } else {
                         arena.mul(&new)
@@ -590,6 +592,8 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         };
                         arena.big_int(floor_val)
                     }
+                } else if let Some(n) = integer_part_of_constant(arena, ni, false) {
+                    n
                 } else if ni == inner {
                     id
                 } else {
@@ -614,6 +618,8 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         };
                         arena.big_int(ceil_val)
                     }
+                } else if let Some(n) = integer_part_of_constant(arena, ni, true) {
+                    n
                 } else if ni == inner {
                     id
                 } else {
@@ -1133,6 +1139,14 @@ fn relation_truth(
     b: ExprId,
     orig: (ExprId, ExprId),
 ) -> Option<bool> {
+    // `nan` equals nothing, itself included (SymPy 1.14: `Eq(nan, -1)` and
+    // `Eq(nan, nan)` are `False`), as Boolean `simplify` decides it
+    // (`logic::fold_rel`); it has no order, which stays.  Up to 0.46 `eval`
+    // left `nan == -1` while `simplify` gave `False`.
+    let nan = arena.nan;
+    if (a == nan || b == nan) && matches!(kind, RelationKind::Eq | RelationKind::Ne) {
+        return Some(kind == RelationKind::Ne);
+    }
     let d = Difference { a, b, orig };
     match kind {
         RelationKind::Gt | RelationKind::Ge => {
@@ -1340,6 +1354,29 @@ fn known_real(arena: &mut Arena, x: ExprId) -> bool {
                 return false;
             }
             constant_fact(arena, x, FACT_REAL, |arena| {
+                // A certified nonzero imaginary part decides at once (the
+                // exact tests below are for parts that cancel only exactly;
+                // a certified 16-digit value shows a part of any size, here
+                // 10⁻¹³ of the modulus).  Without it the cyclotomic walk did
+                // exact radical arithmetic on `(((10⁻¹²i +
+                // 13/4)^(−3/4))^(−3/2))^(−3/2)` for a second per `eval`
+                // (`fuzz_simplify` timed out, 0.47 development).
+                if let Ok((z, Settled::Certified)) = evalf_settled(arena, x, 16, ZeroSearch::Cap)
+                    && !z.1.is_zero()
+                {
+                    return false;
+                }
+                // The exact conjugation test next: a walk over the
+                // radicals, which settles a root by Cardano's or Ferrari's
+                // formula at once, where the zero search of its imaginary
+                // part runs to the cap and the minimal polynomial takes a
+                // Zassenhaus factorisation (`solve` of a septic with a
+                // quartic factor took 32 ms in 0.46, 1 ms in 0.43).  Any
+                // other constant leaves the walk at its first node of
+                // another kind.
+                if let Some(real) = cyclotomic::is_real(arena, x) {
+                    return real;
+                }
                 let im = arena.im(x);
                 let im = eval(arena, im);
                 if arena.is_zero_structural(im) {
@@ -1351,7 +1388,7 @@ fn known_real(arena: &mut Arena, x: ExprId) -> bool {
                 {
                     return z.0.is_zero() && z.1.is_zero();
                 }
-                algebraic_is_real(arena, x) || cyclotomic::is_real(arena, x) == Some(true)
+                algebraic_is_real(arena, x)
             })
         }
     }
@@ -1470,6 +1507,49 @@ pub(crate) fn certified_real_sign(arena: &Arena, x: ExprId) -> Option<std::cmp::
         }
         _ => None,
     }
+}
+
+/// The signs of the real and imaginary parts of the symbol-free constant
+/// `x` from one certified 16-digit value: a part is settled when it is
+/// nonzero and within `2⁴⁰` of the larger part, far inside the digits the
+/// value carries (a smaller part may be rounding noise next to the larger
+/// one, and is left to an evaluation of its own).  `None` when the value
+/// does not settle.
+pub(crate) fn certified_part_signs(
+    arena: &Arena,
+    x: ExprId,
+) -> Option<crate::base::arena::PartSigns> {
+    use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+    use std::cmp::Ordering;
+    if !walk::free_symbols(arena, x).is_empty() {
+        return None;
+    }
+    let Ok((z, Settled::Certified)) = evalf_settled(arena, x, 16, ZeroSearch::Cap) else {
+        return None;
+    };
+    let exponent = |part: &astro_float::BigFloat| {
+        if part.is_zero() || part.is_nan() || part.is_inf() {
+            None
+        } else {
+            part.exponent()
+        }
+    };
+    let top = exponent(&z.0).max(exponent(&z.1));
+    let sign = |part: &astro_float::BigFloat| -> Option<Ordering> {
+        let e = exponent(part)?;
+        if top.is_some_and(|t| i64::from(e) < i64::from(t) - 40) {
+            return None;
+        }
+        Some(if part.is_negative() {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        })
+    };
+    Some(crate::base::arena::PartSigns {
+        re: sign(&z.0),
+        im: sign(&z.1),
+    })
 }
 
 /// `a = b` decided by the difference `a − b`: 0 or a nonzero Gaussian
@@ -2106,8 +2186,25 @@ fn eval_erf(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let erf_pos = arena.erf(pos_inner);
         return Some(arena.neg(erf_pos));
     }
+    // A constant's sign is extracted (SymPy: `erf(-2)` → `-erf(2)`).
+    if let Some(pos) = negated_constant(arena, inner) {
+        let erf_pos = eval_erf(arena, pos).unwrap_or_else(|| arena.erf(pos));
+        return Some(arena.neg(erf_pos));
+    }
 
     None
+}
+
+/// `c` for a symbol-free argument `−c` with a negative rational coefficient
+/// ([`as_negated`]): the odd functions without a sign rule for symbols
+/// (`erf`, `asin`, `atan`, `asinh`, `atanh`) extract it from a constant, as
+/// SymPy does (`atanh(-1/2)` → `-atanh(1/2)`).  The identities hold on the
+/// principal branches, cuts included.
+fn negated_constant(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if !walk::free_symbols(arena, inner).is_empty() {
+        return None;
+    }
+    as_negated(arena, inner)
 }
 
 /// erfc(0) → 1
@@ -2538,11 +2635,16 @@ fn eval_erfc(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 /// Before 0.30 the three factorials were multiplied out (a `Ratio` product
 /// of `a + b` factors): `beta(6, 10^7)`, `beta(10^12, 3)`, `beta(10^8, 17)`
 /// and `beta(8, 14!)` never returned, though each is a small rational.
+///
+/// Other rationals off the poles: `Γ(a)Γ(b)/Γ(a + b)` when the three `Γ`
+/// fold (half-integers, a positive integer beside any rational): `B(1,
+/// 5/2) = 2/5`, `B(1/2, 1/2) = π` (SymPy folds them; before 0.47 they
+/// stayed).
 fn eval_beta(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
     let ra = arena.as_num(a)?.clone();
     let rb = arena.as_num(b)?.clone();
     if !ra.is_integer() || !ra.is_positive() || !rb.is_integer() || !rb.is_positive() {
-        return None;
+        return beta_by_gamma(arena, &ra, &rb);
     }
     let a_int = ra.to_integer();
     let b_int = rb.to_integer();
@@ -2554,6 +2656,199 @@ fn eval_beta(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
     }
     let c = crate::base::combinatorics::binomial(n, j);
     guarded_num(arena, Ratio::new(BigInt::one(), c * b_int))
+}
+
+/// `ln(a)/ln(b)` in a product, `a` and `b` positive rationals other than 1
+/// with `a = b^k` for a rational `k` (`a^q = b^p`, `q ≤ 64`): `k` — the
+/// `log(a, b)` the parser writes as that quotient.  SymPy folds `log(8, 2)`
+/// to 3 and `log(27, 3)` to 3; before 0.47 they stayed `ln(8)/ln(2)`.
+/// `None` unless the product holds exactly one such pair.
+fn eval_log_quotient(arena: &mut Arena, factors: &[ExprId]) -> Option<ExprId> {
+    let positive_rational = |arena: &Arena, id: ExprId| -> Option<Q> {
+        let ExprNode::Ln(a) = *arena.node(id) else {
+            return None;
+        };
+        let r = arena.as_num(a)?;
+        (r.is_positive() && !r.is_one() && r.numer().bits() <= 256 && r.denom().bits() <= 256)
+            .then(|| r.clone())
+    };
+    let mut numerators = Vec::new();
+    let mut denominators = Vec::new();
+    for (i, &f) in factors.iter().enumerate() {
+        if let Some(a) = positive_rational(arena, f) {
+            numerators.push((i, a));
+        } else if let ExprNode::Pow(base, e) = *arena.node(f)
+            && arena.as_num(e).is_some_and(|q| *q == -Q::one())
+            && let Some(b) = positive_rational(arena, base)
+        {
+            denominators.push((i, b));
+        }
+    }
+    let ([(i, a)], [(j, b)]) = (numerators.as_slice(), denominators.as_slice()) else {
+        return None;
+    };
+    let k = rational_log(a, b)?;
+    let k = arena.num_ratio(k);
+    let mut rest: smallvec::SmallVec<[ExprId; 6]> = factors
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| n != i && n != j)
+        .map(|(_, &f)| f)
+        .collect();
+    rest.push(k);
+    Some(arena.mul(&rest))
+}
+
+/// The rational `k = p/q` (`q ≤ 64`) with `a = b^k` for positive rationals
+/// `a`, `b ≠ 1`, checked exactly (`a^q = b^p`).
+fn rational_log(a: &Q, b: &Q) -> Option<Q> {
+    use num_traits::Pow;
+    let lg = |q: &Q| -> Option<f64> {
+        let n = q.numer().to_f64()?.ln();
+        let d = q.denom().to_f64()?.ln();
+        Some(n - d)
+    };
+    let estimate = lg(a)? / lg(b)?;
+    if !estimate.is_finite() || estimate.abs() > 4096.0 {
+        return None;
+    }
+    for q in 1..=64u32 {
+        let p = (estimate * f64::from(q)).round();
+        if (estimate * f64::from(q) - p).abs() > 1e-6 || p == 0.0 {
+            continue;
+        }
+        let p = p as i64;
+        let e = u32::try_from(p.unsigned_abs()).ok()?;
+        // a^q = b^p, as `an^q·bd^p = bn^p·ad^q` (`b^−|p|` swapped).
+        let (bn, bd) = if p > 0 {
+            (b.numer(), b.denom())
+        } else {
+            (b.denom(), b.numer())
+        };
+        let lhs: BigInt = Pow::pow(a.numer(), q) * Pow::pow(bd, e);
+        let rhs: BigInt = Pow::pow(bn, e) * Pow::pow(a.denom(), q);
+        if lhs == rhs {
+            return Some(Q::new(BigInt::from(p), BigInt::from(q)));
+        }
+    }
+    None
+}
+
+/// Most nodes of a constant whose floor or ceiling is evaluated.
+const MAX_INTEGER_PART_NODES: usize = 60;
+
+/// `⌊x⌋` (`ceiling`: `⌈x⌉`) of a real constant `x` that is not a rational:
+/// the integer its certified decimal value lies strictly inside, or, when
+/// that value is within its last digit of an integer `n`, `n` if `x − n` is
+/// exactly 0 ([`exact_zero_test`]).  SymPy's `floor.eval` (`get_integer_part`)
+/// folds `floor(E)` to 2 and `ceiling(50!/e)` to an integer; before 0.47
+/// they stayed.  `None` when `x` is not known real, its value does not
+/// settle, or the integer is beyond 1,000 digits.
+fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Option<ExprId> {
+    if arena.as_num(x).is_some()
+        || !walk::free_symbols(arena, x).is_empty()
+        || walk::has_unevaluated(arena, x)
+        || walk::post_order_ids(arena, x).len() > MAX_INTEGER_PART_NODES
+        || !known_real(arena, x)
+    {
+        return None;
+    }
+    let mut digits = 25u32;
+    let (value, ulp) = loop {
+        let printed = crate::transforms::evalf::evalf(arena, x, digits).ok()?;
+        let (value, ulp, exponent) = decimal_value(&printed)?;
+        if exponent + 20 < i64::from(digits) {
+            break (value, ulp);
+        }
+        if digits > 25 {
+            return None;
+        }
+        digits = u32::try_from(exponent + 25).ok().filter(|&d| d <= 1000)?;
+    };
+    let round = |q: Q| if ceiling { q.ceil() } else { q.floor() };
+    let low = round(&value - &ulp);
+    let high = round(&value + &ulp);
+    if low == high {
+        return Some(arena.num_ratio(low));
+    }
+    // Within a digit of an integer: that integer if the difference is 0.
+    let n = value.round();
+    let n_id = arena.num_ratio(n.clone());
+    let diff = arena.sub(x, n_id);
+    (exact_zero_test(arena, diff) == Some(true)).then(|| arena.num_ratio(n))
+}
+
+/// The exact value of a decimal `evalf` printed (`-2.5e+3`, `3.14`), a
+/// unit in its last digit, and its decimal exponent; `None` for anything
+/// else (a complex value).
+fn decimal_value(s: &str) -> Option<(Q, Q, i64)> {
+    let s = s.trim();
+    let (mantissa, exp) = match s.split_once('e') {
+        Some((m, e)) => (m, e.trim_start_matches('+').parse::<i64>().ok()?),
+        None => (s, 0),
+    };
+    let negative = mantissa.starts_with('-');
+    let mantissa = mantissa.trim_start_matches(['-', '+']);
+    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if int_part.is_empty()
+        || !int_part
+            .bytes()
+            .chain(frac_part.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits: BigInt = format!("{int_part}{frac_part}").parse().ok()?;
+    let shift = exp - i64::try_from(frac_part.len()).ok()?;
+    let ten = BigInt::from(10);
+    let scale = |k: i64| -> Option<Q> {
+        let p = num_traits::pow(ten.clone(), usize::try_from(k.unsigned_abs()).ok()?);
+        Some(if k >= 0 {
+            Q::from_integer(p)
+        } else {
+            Q::new(BigInt::one(), p)
+        })
+    };
+    let ulp = scale(shift)?;
+    let mut value = Q::from_integer(digits) * &ulp;
+    if negative {
+        value = -value;
+    }
+    // The decimal exponent of the leading digit.
+    let leading = exp + i64::try_from(int_part.trim_start_matches('0').len()).ok()? - 1;
+    Some((value, ulp, leading))
+}
+
+/// `B(a, b) = Γ(a)Γ(b)/Γ(a + b)` for rationals `a`, `b` none of which nor
+/// `a + b` is a pole of `Γ`, when each `Γ` folds to an expression free of
+/// `Γ` (a positive integer one of them, or half-integers: `Γ(n + ½)` is
+/// a rational times `√π`); `None` otherwise.
+fn beta_by_gamma(arena: &mut Arena, ra: &Q, rb: &Q) -> Option<ExprId> {
+    let pole = |q: &Q| q.is_integer() && !q.is_positive();
+    let sum = ra + rb;
+    if pole(ra) || pole(rb) || pole(&sum) {
+        return None;
+    }
+    // Γ of a rational of a large numerator is a large exact number.
+    let small = |q: &Q| q.numer().bits() <= 16 && q.denom().bits() <= 16;
+    if !small(ra) || !small(rb) || !small(&sum) {
+        return None;
+    }
+    let mut folded = |q: &Q| -> Option<ExprId> {
+        let n = arena.num_ratio(q.clone());
+        let g = arena.gamma(n);
+        let g = eval(arena, g);
+        let free = !walk::post_order_ids(arena, g)
+            .iter()
+            .any(|&id| matches!(arena.node(id), ExprNode::Gamma(_)));
+        free.then_some(g)
+    };
+    let ga = folded(ra)?;
+    let gb = folded(rb)?;
+    let gs = folded(&sum)?;
+    let num = arena.mul(&[ga, gb]);
+    let quotient = arena.div(num, gs);
+    Some(eval(arena, quotient))
 }
 
 /// `C(n, k)` for non-negative integer literals.  A negative `n` is left
@@ -3553,6 +3848,70 @@ fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Q> {
     None
 }
 
+/// Which function [`first_quadrant`] reduces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrigKind {
+    Sin,
+    Cos,
+    Tan,
+}
+
+/// `sin(qπ)`, `cos(qπ)`, `tan(qπ)` at a rational `q ≥ 0` without a value in
+/// radicals, reduced to an angle in `[0, π/2]` by the periods and
+/// reflections, as SymPy's `sin.eval` and `cos.eval` reduce them
+/// (`sin(104π/105)` → `sin(π/105)`, `cos(106π/105)` → `−cos(π/105)`,
+/// `tan(10π/7)` → `tan(3π/7)`); `None` when the angle is already there.
+/// Up to 0.46 they stayed, and `sin(104π/105) − sin(π/105)` was not 0.
+fn first_quadrant(arena: &mut Arena, q: &Q, kind: TrigKind) -> Option<ExprId> {
+    let one = Q::one();
+    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+    let period = if kind == TrigKind::Tan {
+        one.clone()
+    } else {
+        Q::from_integer(BigInt::from(2))
+    };
+    let mut x = mod_positive(q, &period);
+    let mut negative = false;
+    match kind {
+        TrigKind::Sin => {
+            if x > one {
+                x -= &one;
+                negative = true;
+            }
+            if x > half {
+                x = &one - &x;
+            }
+        }
+        TrigKind::Cos => {
+            if x > one {
+                x -= &one;
+                negative = true;
+            }
+            if x > half {
+                x = &one - &x;
+                negative = !negative;
+            }
+        }
+        TrigKind::Tan => {
+            if x > half {
+                x = &one - &x;
+                negative = true;
+            }
+        }
+    }
+    if x == *q {
+        return None;
+    }
+    let coeff = arena.num_ratio(x);
+    let angle = arena.mul(&[coeff, arena.pi]);
+    let value = match kind {
+        TrigKind::Sin => eval_sin(arena, angle).unwrap_or_else(|| arena.sin(angle)),
+        TrigKind::Cos => eval_cos(arena, angle).unwrap_or_else(|| arena.cos(angle)),
+        TrigKind::Tan => eval_tan(arena, angle).unwrap_or_else(|| arena.tan(angle)),
+    };
+    Some(if negative { arena.neg(value) } else { value })
+}
+
 /// Evaluate `sin(inner)` for known special values.
 fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Odd function: sin(-x) = -sin(x)
@@ -3575,7 +3934,8 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // reductions keep (see `denominator_divides`); the others SymPy
     // evaluates are in radicals ([`sin_pi_radical`]).
     if !is_classical_denominator(&coeff) {
-        return sin_pi_radical(arena, &coeff);
+        return sin_pi_radical(arena, &coeff)
+            .or_else(|| first_quadrant(arena, &coeff, TrigKind::Sin));
     }
 
     // Reduce modulo 2 (sin has period 2π).
@@ -3686,7 +4046,8 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
     let coeff = as_pi_multiple(arena, inner)?;
     if !is_classical_denominator(&coeff) {
-        return cos_pi_radical(arena, &coeff);
+        return cos_pi_radical(arena, &coeff)
+            .or_else(|| first_quadrant(arena, &coeff, TrigKind::Cos));
     }
 
     let two: Q = Ratio::from_integer(2.into());
@@ -3788,10 +4149,17 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let tan_pos = eval_tan(arena, pos_inner).unwrap_or_else(|| arena.tan(pos_inner));
         return Some(arena.neg(tan_pos));
     }
+    // tan(i·x) = i·tanh(x), the bridge `sin` and `cos` take (SymPy:
+    // `tan(I*pi)` → `I*tanh(pi)`); up to 0.46 `tan(i·x)` stayed.
+    if let Some(real_part) = as_pure_imaginary(arena, inner) {
+        let t = eval_tanh(arena, real_part).unwrap_or_else(|| arena.tanh(real_part));
+        return Some(arena.mul(&[arena.i_unit, t]));
+    }
 
     let coeff = as_pi_multiple(arena, inner)?;
     if !is_classical_denominator(&coeff) {
-        return tan_pi_radical(arena, &coeff);
+        return tan_pi_radical(arena, &coeff)
+            .or_else(|| first_quadrant(arena, &coeff, TrigKind::Tan));
     }
 
     let one_ratio: Q = Ratio::one();
@@ -4274,6 +4642,14 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
 
+    // exp(i·q·π) with `q` reduced to (−1, 1] (period 2πi), alone or beside
+    // other terms, as SymPy's `exp.eval` does (`exp(23πi/9)` →
+    // `exp(5πi/9)`, `exp(2 − 17πi/5)` → `exp(2 + 3πi/5)`); up to 0.46 they
+    // stayed, and `exp(37πi/8) − exp(−11πi/8)` was not 0.
+    if let Some(reduced) = principal_imaginary_pi(arena, inner) {
+        return Some(eval_exp(arena, reduced).unwrap_or_else(|| arena.exp(reduced)));
+    }
+
     // exp(w + i·k·π) = exp(w)·exp(i·k·π) for a sum with an imaginary
     // π-multiple term whose exponential folds (k integer or half-integer):
     // exp(ln 2 − 3πi) = −2 exactly.  Otherwise the numeric evaluator meets
@@ -4297,10 +4673,11 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
                 return Some(arena.mul(&[unit, rest_exp]));
             }
         }
-        // exp(Σ kⱼ·ln zⱼ + w) = ∏ zⱼ^kⱼ · exp(w) for constants `zⱼ`, as SymPy's
+        // exp(Σ kⱼ·ln zⱼ + w) = ∏ zⱼ^kⱼ · exp(w) for real constants `kⱼ`, as SymPy's
         // `exp.eval` splits a sum (`exp(x + 2*log(3))` → `9*exp(x)`,
         // `exp(log(-8)/3)` → `2*exp(I*pi/3)`): `exp(a + b) = exp(a)·exp(b)` on
-        // all of ℂ.  (Not for a symbolic `zⱼ`: see [`log_multiple_power`].)
+        // all of ℂ.  A symbolic `zⱼ` is generic ([`log_multiple_power`]:
+        // `exp(x + 2·ln y) = y²·eˣ`, as in SymPy).
         let mut powers: smallvec::SmallVec<[ExprId; 4]> = smallvec::SmallVec::new();
         let mut rest: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
         for &t in &terms {
@@ -4320,16 +4697,54 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
+/// `inner` with its term `i·q·π` (`q` rational) moved into `(−1, 1]` by a
+/// multiple of 2, when it is outside; `None` otherwise.
+fn principal_imaginary_pi(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let terms: smallvec::SmallVec<[ExprId; 6]> = match arena.node(inner) {
+        ExprNode::Add(terms) => terms.clone(),
+        _ => smallvec::smallvec![inner],
+    };
+    let two = Q::from_integer(BigInt::from(2));
+    for (k, &t) in terms.iter().enumerate() {
+        let Some(q) = as_imaginary_pi_multiple(arena, t) else {
+            continue;
+        };
+        // (−1, 1]: q − 2·⌈(q − 1)/2⌉.
+        let shift = ((&q - Q::one()) / &two).ceil() * &two;
+        if shift.is_zero() {
+            return None;
+        }
+        let r = &q - &shift;
+        let r = arena.num_ratio(r);
+        let reduced = arena.mul(&[r, arena.i_unit, arena.pi]);
+        let rest: smallvec::SmallVec<[ExprId; 6]> = terms
+            .iter()
+            .enumerate()
+            .map(|(j, &c)| if j == k { reduced } else { c })
+            .collect();
+        return Some(if rest.len() == 1 {
+            rest[0]
+        } else {
+            arena.add(&rest)
+        });
+    }
+    None
+}
+
 /// `z^k` for a term `t = k·ln z` of an exponent, `z ≠ 0` (a constant, or
 /// nonzero by the assumptions) and `k` a finite real constant (a product of
 /// real constant factors, as SymPy's `exp.eval` asks of the cofactor of its
 /// one `log`): `exp(k·Log z) = z^k` is the definition of the principal
 /// power.  So `exp(2·ln 10) = 100`, `exp(−ln(2)·3/2) = √2/4`, `exp(2·ln(√2))
 /// = 2`, `exp(π·ln 2) = 2^π`, `exp(ln(2 + i)/2) = √(2 + i)`, `exp(2·ln x) =
-/// x²` for a nonzero `x`; a symbolic or non-real `k` stays (`exp(x·ln 2)`,
-/// `exp(i·ln 2)`, as in SymPy).  Up to 0.43 all stayed, and in 0.44 a
-/// symbolic `z` stayed (the Gruntz rewrite then mishandled `exp(−ln(1/ω))`
-/// folding to `ω`, fixed in 0.44).
+/// x²`; a symbolic or non-real `k` stays (`exp(x·ln 2)`, `exp(i·ln 2)`, as
+/// in SymPy).  Up to 0.43 all stayed, and in 0.44 a symbolic `z` stayed
+/// (the Gruntz rewrite then mishandled `exp(−ln(1/ω))` folding to `ω`,
+/// fixed in 0.44).  A symbolic `z` is generic, as for `exp(ln z) = z` in
+/// [`eval_exp`] (and `x/x = 1`): up to 0.46 `exp(2·ln x)` folded to `x²`
+/// only for an `x` known nonzero while `exp(ln x)` folded to `x` for every
+/// `x` (SymPy folds both); a constant `z` must still be known nonzero (a
+/// zero the canonical form does not see).
 fn log_multiple_power(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
     let children = match arena.node(t).clone() {
@@ -4348,7 +4763,7 @@ fn log_multiple_power(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
         }
     }
     let z = log_arg?;
-    if !constant_is_nonzero(arena, z) {
+    if walk::free_symbols(arena, z).is_empty() && !constant_is_nonzero(arena, z) {
         return None;
     }
     let k = arena.mul(&coeffs);
@@ -4598,10 +5013,15 @@ fn ln_of_special_complex(arena: &mut Arena, z: ExprId) -> Option<ExprId> {
         let t = pi_times(arena, arg);
         arena.mul(&[arena.i_unit, t])
     };
-    // `ln|z| = ln √(a² + b²)`.
+    // `ln|z| = ln √(a² + b²)`, the squares expanded: on the unit circle
+    // `a² + b²` is 1 and the logarithm 0 (`log(cos(7π/12) + i·sin(7π/12))`
+    // → `7πi/12`, as SymPy gives it; up to 0.46 `ln √((√2/4 − √6/4)² +
+    // …)` stayed beside it).
     let two = arena.int(2);
     let (re2, im2) = (arena.pow(re, two), arena.pow(im, two));
     let m2 = arena.add(&[re2, im2]);
+    let m2 = crate::transforms::expand::expand(arena, m2);
+    let m2 = eval(arena, m2);
     let half = arena.rational(1, 2);
     let modulus = arena.pow(m2, half);
     let modulus = eval(arena, modulus);
@@ -5103,9 +5523,13 @@ fn eval_asin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.mul(&[arena.i_unit, v]));
     }
     // asin(v) = π/2 − acos(v) = s·(1/2 − q)·π for |v| = cos(qπ).
-    let (s, q) = special_angle_of(arena, inner, SpecialTable::Cos)?;
-    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
-    Some(pi_times(arena, (half - q) * s))
+    if let Some((s, q)) = special_angle_of(arena, inner, SpecialTable::Cos) {
+        let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+        return Some(pi_times(arena, (half - q) * s));
+    }
+    let pos = negated_constant(arena, inner)?;
+    let v = eval_asin(arena, pos).unwrap_or_else(|| arena.asin(pos));
+    Some(arena.neg(v))
 }
 
 fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -5188,8 +5612,12 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(v);
     }
     // atan(±tan(qπ)) = ±qπ (principal range (−π/2, π/2)).
-    let (s, q) = special_angle_of(arena, inner, SpecialTable::Tan)?;
-    Some(pi_times(arena, q * s))
+    if let Some((s, q)) = special_angle_of(arena, inner, SpecialTable::Tan) {
+        return Some(pi_times(arena, q * s));
+    }
+    let pos = negated_constant(arena, inner)?;
+    let v = eval_atan(arena, pos).unwrap_or_else(|| arena.atan(pos));
+    Some(arena.neg(v))
 }
 
 /// Which inverse function [`inverse_of_trig_at_pi_multiple`] applies.
@@ -5687,9 +6115,11 @@ fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // sinh(i·qπ) = i·sin(qπ) where that evaluates (SymPy's `sinh.eval`:
     // `sinh(I*pi/8)` → `I*sqrt(1/2 - sqrt(2)/4)`); before 0.43 only the
     // rational values folded (in the canonical constructor).
+    // At any other rational `q` the sine stays (`sinh(iπ/105)` →
+    // `i·sin(π/105)`, as SymPy writes it; up to 0.46 the `sinh` stayed).
     let q = as_imaginary_pi_multiple(arena, inner)?;
     let angle = pi_times(arena, q);
-    let s = eval_sin(arena, angle)?;
+    let s = eval_sin(arena, angle).unwrap_or_else(|| arena.sin(angle));
     Some(arena.mul(&[arena.i_unit, s]))
 }
 
@@ -5703,9 +6133,10 @@ fn eval_cosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.one);
     } // cosh(0) = 1
     // cosh(i·qπ) = cos(qπ) (SymPy: `cosh(I*pi/5)` → `1/4 + sqrt(5)/4`).
+    // (`cosh(iπ/105)` → `cos(π/105)` at any other rational `q`.)
     let q = as_imaginary_pi_multiple(arena, inner)?;
     let angle = pi_times(arena, q);
-    eval_cos(arena, angle)
+    Some(eval_cos(arena, angle).unwrap_or_else(|| arena.cos(angle)))
 }
 
 fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -5719,9 +6150,10 @@ fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.zero);
     } // tanh(0) = 0
     // tanh(i·qπ) = i·tan(qπ) (SymPy: `tanh(I*pi/12)` → `I*(2 - sqrt(3))`).
+    // (`tanh(iπ/105)` → `i·tan(π/105)` at any other rational `q`.)
     let q = as_imaginary_pi_multiple(arena, inner)?;
     let angle = pi_times(arena, q);
-    let t = eval_tan(arena, angle)?;
+    let t = eval_tan(arena, angle).unwrap_or_else(|| arena.tan(angle));
     Some(arena.mul(&[arena.i_unit, t]))
 }
 
@@ -5769,9 +6201,14 @@ fn eval_asinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     {
         return Some(z);
     }
-    let c = imaginary_real_cofactor(arena, inner)?;
-    let v = eval_asin(arena, c)?;
-    Some(arena.mul(&[arena.i_unit, v]))
+    if let Some(c) = imaginary_real_cofactor(arena, inner)
+        && let Some(v) = eval_asin(arena, c)
+    {
+        return Some(arena.mul(&[arena.i_unit, v]));
+    }
+    let pos = negated_constant(arena, inner)?;
+    let v = eval_asinh(arena, pos).unwrap_or_else(|| arena.asinh(pos));
+    Some(arena.neg(v))
 }
 
 /// The special values of `acosh` (SymPy's `acosh.eval` and its table):
@@ -5854,9 +6291,14 @@ fn eval_atanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // atanh(i·c) = i·atan(c) on all of ℂ (SymPy's `atanh.eval`): `atanh(±i)
     // = ±iπ/4`, `atanh(i√3) = iπ/3`, and through `acoth(z) = atanh(1/z)`,
     // `acoth(±i) = ∓iπ/4`.  Up to 0.43 they stayed.
-    let c = imaginary_real_cofactor(arena, inner)?;
-    let v = eval_atan(arena, c)?;
-    Some(arena.mul(&[arena.i_unit, v]))
+    if let Some(c) = imaginary_real_cofactor(arena, inner)
+        && let Some(v) = eval_atan(arena, c)
+    {
+        return Some(arena.mul(&[arena.i_unit, v]));
+    }
+    let pos = negated_constant(arena, inner)?;
+    let v = eval_atanh(arena, pos).unwrap_or_else(|| arena.atanh(pos));
+    Some(arena.neg(v))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5892,7 +6334,28 @@ fn as_pure_imaginary(arena: &mut Arena, id: ExprId) -> Option<ExprId> {
 
 /// Detect if `id` represents a negated expression: `-x` or `Mul(-1, x)`.
 /// Returns `Some(positive_inner)` if negated, `None` otherwise.
+///
+/// A constant with any negative rational coefficient is negated too (a
+/// negative rational, `−√2/2`, `−2π/7`), as SymPy extracts the sign
+/// (`cos(-sqrt(2)/2)` → `cos(sqrt(2)/2)`, `sinh(-1)` → `-sinh(1)`): up to
+/// 0.46 `cos(−√2)` was `cos(√2)` but `cos(−√2/2)` and `cos(−2)` stayed.  A
+/// symbolic product keeps its coefficient (`sin(−2x)`), as before.
 fn as_negated(arena: &mut Arena, id: ExprId) -> Option<ExprId> {
+    if let Some(r) = arena.as_num(id) {
+        return r
+            .is_negative()
+            .then(|| -r.clone())
+            .map(|q| arena.num_ratio(q));
+    }
+    if let ExprNode::Mul(children) = arena.node(id)
+        && children.len() >= 2
+        && arena
+            .as_num(children[0])
+            .is_some_and(|c| c.is_negative() && !(-c.clone()).is_one())
+        && walk::free_symbols(arena, id).is_empty()
+    {
+        return as_negated_general(arena, id);
+    }
     match arena.node(id).clone() {
         ExprNode::Neg(inner) => Some(inner),
         ExprNode::Mul(ref children) if children.len() >= 2 => {
@@ -6920,7 +7383,9 @@ fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
         if known_nonpositive(arena, s) {
             return None;
         }
-        return Some(arena.gamma(s));
+        // `Γ(s)` evaluated (`uppergamma(4, 0)` is 6, as SymPy gives it;
+        // up to 0.46 it was `Gamma(4)` until a second `eval`).
+        return Some(eval_gamma(arena, s).unwrap_or_else(|| arena.gamma(s)));
     }
     let r = as_ratio(arena, s)?;
     uppergamma_closed(arena, &r, x)

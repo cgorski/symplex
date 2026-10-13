@@ -177,8 +177,11 @@ fn pinv_of_a_complex_matrix_uses_the_conjugate_transpose() {
 fn least_squares_and_condition_number_refuse_symbolic_rank_deficiency() {
     // Before: [[x − 2, 2], [0, 0]] (rank 1) had a least-squares "solution"
     // dividing by an unrecognised zero (no value anywhere) and a condition
-    // number Max(σ)/Min(σ) whose Min is identically 0 (SymPy:
-    // condition_number() is zoo; solve_least_squares raises).
+    // number Max(σ)/Min(σ) whose Min is identically 0.  SymPy 1.14 has both
+    // flaws: condition_number() is Max(0, σ)/Min(0, σ) with σ =
+    // sqrt((x - 2)*(conjugate(x) - 2) + 4), and solve_least_squares returns
+    // a vector over the vanishing denominator.  (Up to 0.46 this said SymPy
+    // gives zoo and raises; re-run in SymPy 1.14.0.)
     let ctx = Context::new();
     let a = sq(&ctx, 2, "x-2;2;0;0");
     let b = Matrix::col_vector(vec![ctx.int(1), ctx.int(2)]).unwrap();

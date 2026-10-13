@@ -363,7 +363,9 @@ fn solve_lambert_sample_against_sympy_and_findroot() {
         20.0,
         &["-1.8414056604369606378", "1.1461932206205825852"],
     );
-    // SymPy 1.14 solve(log(x) - x + 2): [-LambertW(-exp(-2))] (misses 3.1461…)
+    // SymPy 1.14 solve(log(x) - x + 2): [-LambertW(-exp(-2)),
+    // -LambertW(-exp(-2), -1)], both roots (this said it misses 3.1461… up
+    // to 0.46; re-run in SymPy 1.14.0).
     lambert_roots(
         "log(x) - x + 2",
         1e-9,

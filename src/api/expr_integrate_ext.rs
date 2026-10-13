@@ -290,7 +290,18 @@ impl Expr<Numeric> {
     ///   integrand contains `DiracDelta` of `var` (a distribution, 0 at every
     ///   point a quadrature samples; before 0.43 `∫₋₁¹ δ(x) dx` was `0`),
     /// * [`SymplexError::ComputationFailed`] — neither quadrature reached
-    ///   the tolerance (e.g. a divergent integral).
+    ///   the tolerance (e.g. a divergent integral),
+    /// * [`SymplexError::Divergent`] — the arbitrary-precision quadrature
+    ///   met terms that do not decay and a comparison test proves the
+    ///   divergence (`(x − c)·f(x)`, `x·f(x)` at `±∞`, or with a factor
+    ///   `ln`, tends to a nonzero limit).
+    ///
+    /// On an infinite range the `f64` value is returned only when the
+    /// integrand's tail beyond `|x| = 2¹⁶`, evaluated with certified bounds
+    /// out to `2²⁰⁴⁸`, carries less than the tolerance or was seen by the
+    /// compiled integrand.  Before 0.47 an overflow in the compiled integrand
+    /// cut a divergent integral off: `∫_{−∞}^{∞} |x|/((x² + 1)π) dx` was
+    /// `225.93` (`|x|/(x² + 1)` is 0 in `f64` once `x²` overflows).
     ///
     /// # Examples
     ///
@@ -459,6 +470,23 @@ impl Expr<Numeric> {
         drop(inner);
 
         let f = |t: f64| func(&[t]);
+        let tolerance = |r: &QuadResult| opts.abs_tol.max(opts.rel_tol * r.value.abs());
+        // On an infinite range the compiled body is cut off where an
+        // intermediate value overflows (`|x|/(x² + 1)` is 0 beyond `x ≈
+        // 1.3·10¹⁵⁴`) and no node lies beyond `f64::MAX`: the integrand's
+        // far tail is checked by certified evaluations.
+        let tail_seen = |r: &QuadResult| {
+            let guard = self.inner.read();
+            crate::transforms::evalf::f64_quadrature_tail_trusted(
+                &guard.arena,
+                evaled,
+                var_id,
+                a,
+                b,
+                &f,
+                tolerance(r),
+            )
+        };
         let report = if a <= b {
             definite::quadrature_split(&f, a, b, &points, opts)
         } else {
@@ -473,29 +501,48 @@ impl Expr<Numeric> {
             })
         };
         if let Ok((r, _)) = &report
-            && r.error <= opts.abs_tol.max(opts.rel_tol * r.value.abs())
+            && r.error <= tolerance(r)
+            && tail_seen(r)
         {
             return Ok(*r);
         }
-        if let Some(r) = self.certified_quadrature(var, lo, hi) {
-            return Ok(r);
+        match self.certified_quadrature(var, lo, hi) {
+            Ok(r) => return Ok(r),
+            Err(e @ SymplexError::Divergent { .. }) => return Err(e),
+            Err(_) => {}
         }
-        report.map(|(r, _)| r)
+        match report {
+            Ok((r, _)) if !tail_seen(&r) => Err(SymplexError::ComputationFailed {
+                operation: "integrate_numeric",
+                reason: format!(
+                    "quadrature did not converge: the estimate {} misses the integrand's tail \
+                     beyond |x| = 2^16, which does not decay fast enough (the integral may diverge)",
+                    r.value
+                ),
+            }),
+            report => report.map(|(r, _)| r),
+        }
     }
 
     /// `∫_lo^hi self dvar` by the arbitrary-precision quadrature of
     /// [`integrate_numeric_decimal`](Self::integrate_numeric_decimal) to 17
     /// digits, read as an `f64` with an error of two units in its last place
-    /// (`2⁻⁶⁰`, the radius `evalf` returns 0 within, for 0); `None` when it
-    /// fails or the value is not real.
-    fn certified_quadrature(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<QuadResult> {
+    /// (`2⁻⁶⁰`, the radius `evalf` returns 0 within, for 0); its error when
+    /// it fails, [`SymplexError::Unevaluable`] when the value is not real.
+    fn certified_quadrature(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Result<QuadResult, SymplexError> {
         let node = self.definite_integral_node(var, lo, hi).eval();
         let printed = {
             let guard = node.inner.read();
             crate::transforms::evalf::evalf_quadrature(&guard.arena, node.raw_id(), 17, false)
+        }?;
+        let not_real = || SymplexError::Unevaluable {
+            reason: format!("the integral is not a real number: {printed}"),
         };
-        let value: f64 = printed.ok()?.parse().ok()?;
-        value.is_finite().then(|| QuadResult {
+        let value: f64 = printed.parse().map_err(|_| not_real())?;
+        if !value.is_finite() {
+            return Err(not_real());
+        }
+        Ok(QuadResult {
             value,
             error: (2.0 * f64::EPSILON * value.abs()).max((-60f64).exp2()),
         })

@@ -31,7 +31,7 @@
 //! | `−z`, `conj`, `re`, `im`, `abs` | of the mantissa; of the polynomial when its monomials are real (`abs`: of known sign) | — |
 //! | `Ei(x)`, `erfc(x)` | — | the asymptotic series times `exp` at its scale |
 //! | `J_ν(x)`, `I_ν(x)` (`ν > 0`, `x² ≤ ν + 1`) | — | `e^L·₀F₁(; ν + 1; ∓x²/4)`, `L = ν·ln(abs(x)/2) − ln Γ(ν + 1)` |
-//! | `erf(±x)`, `erfc(−x)` (`abs(x) > 38000`) | — | `±1 ∓ erfc(abs(x))`, `2 − erfc(abs(x))` ([`Ext::Near`]) |
+//! | `erf(±x)`, `erfc(−x)` (`abs(x) > 38000`, or `erfc(abs(x))` below every precision the search reaches) | — | `±1 ∓ erfc(abs(x))`, `2 − erfc(abs(x))` ([`Ext::Near`]) |
 //!
 //! Beside its mantissa and scale, a value below the range is held as a
 //! polynomial in such values with exact rational coefficients, plus a
@@ -140,7 +140,9 @@ pub(super) enum Ext {
     Above(Scaled),
     /// The value is `p + d` with `p` an exact complex rational (the
     /// ordinary value, up to `d`) and `d` below the range: `1 + exp(−10¹⁰)`,
-    /// `exp(exp(−10¹⁰))`, `8/3 − 5/3·cos(exp(−10¹⁰))`.
+    /// `exp(exp(−10¹⁰))`, `8/3 − 5/3·cos(exp(−10¹⁰))` — or below every
+    /// precision the search reaches ([`below_search`]: `erf(90) = 1 −
+    /// erfc(90)`), within the ordinary value's bound either way.
     Near(Gauss, Scaled),
 }
 
@@ -518,10 +520,32 @@ pub(super) fn wanted(
 /// (`x²·log₂ e > 2³¹`, with room for the margin).
 const ERFC_UNDERFLOW: f64 = 38_000.0;
 
+/// `abs(x)` beyond which `erfc(abs(x)) < e^(−x²)` lies below `2^−(max + 64)`,
+/// `max` the configured maximum precision: no evaluation of `erf(x) − 1`
+/// by cancellation reaches it (`√((max + 64)·ln 2)`, 83.6 at the default
+/// 10,000 bits).
+fn erfc_beyond_search(arena: &Arena) -> f64 {
+    ((f64::from(arena.config.max_evalf_precision) + 64.0) * std::f64::consts::LN_2).sqrt()
+}
+
+/// Does the scaled `s` lie below `2^−(max + 64)` (see
+/// [`erfc_beyond_search`])?
+fn below_search(arena: &Arena, s: &Scaled) -> bool {
+    if s.eb.is_unknown() {
+        return false;
+    }
+    let top = match accuracy::mag(&s.m) {
+        None => return false,
+        Some(t) => t.saturating_add(s.k) as f64,
+    };
+    top <= -(f64::from(arena.config.max_evalf_precision) + 64.0)
+}
+
 /// Is node `id` `erf(x)` or `erfc(x)` at an ordinary real `x` far enough
 /// from 0 that its distance from its limit (`erfc(abs(x))`) lies below the
-/// range, with an ordinary value that is that limit: `erf(±x)` (`±1`) or
-/// `erfc(−x)` (`2`)?
+/// range — or below every precision the evaluation may reach — with an
+/// ordinary value that is that limit: `erf(±x)` (`±1`) or `erfc(−x)`
+/// (`2`)?
 fn erf_tail_below(
     arena: &Arena,
     id: ExprId,
@@ -541,9 +565,10 @@ fn erf_tail_below(
         return false;
     }
     let erfc_right = matches!(arena.node(id), ExprNode::Erfc(_)) && !x.0.is_negative();
+    let threshold = ERFC_UNDERFLOW.min(erfc_beyond_search(arena));
     !erfc_right
         && super::bigfloat_to_f64_rounded(&x.0, RoundingMode::ToEven)
-            .is_ok_and(|v| v.abs() > ERFC_UNDERFLOW)
+            .is_ok_and(|v| v.abs() > threshold)
 }
 
 /// The extended evaluation of node `id` (see the module documentation), or
@@ -609,7 +634,7 @@ pub(super) fn extend(
                 Some(Outcome::InRange(v, b))
             }
             View::Near(p, d) if p == one() => match series(&poly_of(*c, &d), &LOG1P, prec, rm) {
-                Some(l) => settle_poly(l, prec, rm, ab),
+                Some(l) => settle_poly(arena, l, prec, rm, ab),
                 None => {
                     let out = first_order(d.bare(), 1);
                     note_series_cut(&d, 2, -1.0, &out, prec, rm, ab);
@@ -620,7 +645,7 @@ pub(super) fn extend(
         },
         ExprNode::Mul(children) => {
             if let Some(full) = poly_product(&cx, children, prec, rm) {
-                return settle_poly(full, prec, rm, ab);
+                return settle_poly(arena, full, prec, rm, ab);
             }
             let mut factors = Vec::with_capacity(children.len());
             let mut beyond = false;
@@ -663,7 +688,7 @@ pub(super) fn extend(
                     if let Some(q) = q
                         && let Some(full) = poly_power(&poly_of(*b, &s), q, x, ex, prec, rm, cc)
                     {
-                        return settle_poly(full, prec, rm, ab);
+                        return settle_poly(arena, full, prec, rm, ab);
                     }
                     let out = power(&s, q, x, ex, prec, rm, cc)?;
                     note_dropped(&s, rel_error(&out), prec, rm, ab);
@@ -734,7 +759,7 @@ pub(super) fn extend(
                 _ => None,
             };
             if let Some(p) = exact {
-                return settle_poly(p, prec, rm, ab);
+                return settle_poly(arena, p, prec, rm, ab);
             }
             note_dropped(&with_poly(s.clone(), *c), accuracy::EXACT, prec, rm, ab);
             let (m, eb) = match arena.node(id) {
@@ -753,7 +778,10 @@ pub(super) fn extend(
         // `erf(±x) = ±(1 − erfc x)`, `erfc(−x) = 2 − erfc x` with `erfc x` below
         // the range: the ordinary value is the limit, and the part below the
         // range is kept ([`Ext::Near`]).  Before 0.37 `erfc(−10⁵) − 2` printed
-        // `0` (truly `−erfc(10⁵)`, `−5.2·10^(−4342944825)`).
+        // `0` (truly `−erfc(10⁵)`, `−5.2·10^(−4342944825)`).  So is a part
+        // in range below every precision the zero search reaches: before
+        // 0.47 `erf(x) − 1` was refused for `84 < x < 38000` (SymPy and
+        // mpmath: `−erfc(x)`, `−1.5·10^(−4345)` at `x = 100`).
         ExprNode::Erf(c) | ExprNode::Erfc(c)
             if !underflowed && erf_tail_below(arena, id, cache, exts) =>
         {
@@ -763,7 +791,7 @@ pub(super) fn extend(
             }
             let negative = x.0.is_negative();
             let tail = erfc_scaled(&x.0.abs(), b.re, prec, rm, cc)?;
-            if !lies_below(&tail, prec) {
+            if !lies_below(&tail, prec) && !below_search(arena, &tail) {
                 return None;
             }
             let (p, d) = match (matches!(arena.node(id), ExprNode::Erfc(_)), negative) {
@@ -819,7 +847,7 @@ pub(super) fn extend(
                 prec,
                 rm,
             ) {
-                return settle_poly(full, prec, rm, ab);
+                return settle_poly(arena, full, prec, rm, ab);
             }
             let out = product(&[first_order(s.bare(), 2), f], prec, rm)?;
             note_series_cut(&s, 3, -2.0, &out, prec, rm, ab);
@@ -848,7 +876,7 @@ pub(super) fn extend(
                 _ => &ATANH,
             };
             match series(&poly_of(*c, &s), table, prec, rm) {
-                Some(f) => settle_poly(f, prec, rm, ab),
+                Some(f) => settle_poly(arena, f, prec, rm, ab),
                 None => {
                     let out = first_order(s.bare(), 2);
                     note_series_cut(&s, 3, -3.0, &out, prec, rm, ab);
@@ -1317,7 +1345,7 @@ fn hyperbolic_above(
             mono: Mono::exp(g.neg()),
             v: down,
         })?;
-        return settle_poly(poly, prec, rm, ab);
+        return settle_poly(cx.arena, poly, prec, rm, ab);
     }
     let mut e = exp_scaled(&(x.abs(), BigFloat::new(prec)), zb, prec, rm, cc)?;
     e.k = e.k.checked_sub(1)?;
@@ -1414,7 +1442,7 @@ fn sum_node(
                 }
             });
         if let Some(f) = whole {
-            return settle_poly(f, prec, rm, ab);
+            return settle_poly(cx.arena, f, prec, rm, ab);
         }
     }
     if ordinary_terms.is_empty() && lost.is_exact() {
@@ -1422,7 +1450,7 @@ fn sum_node(
         if p.is_zero() {
             return finish_node(d, id, prec);
         }
-        if lies_below(&d, prec) {
+        if lies_below(&d, prec) || below_search(cx.arena, &d) {
             return Some(near_node(p, d, id));
         }
         // Terms above the range: `p` is one term of the sum below.
@@ -2319,6 +2347,7 @@ fn numeric(p: Poly, prec: usize, rm: RoundingMode) -> Option<Scaled> {
 /// remainder of the series: `sin(e^(−10¹⁰)) − e^(−10¹⁰) + e^(−3·10¹⁰)/6 −
 /// e^(−5·10¹⁰)/120` is `−e^(−7·10¹⁰)/5040 + …`, beyond the fifth order.
 fn settle_poly(
+    arena: &Arena,
     full: Poly,
     prec: usize,
     rm: RoundingMode,
@@ -2329,7 +2358,12 @@ fn settle_poly(
         rest
     } else {
         let d = numeric(rest.clone(), prec, rm)?;
-        if (accuracy::mag(&d.m).is_none() && d.eb.is_exact()) || lies_below(&d, prec) {
+        // Below the range, or below every precision the search reaches
+        // (`p` is a small exact rational): `−erf(90) = −1 + erfc(90)`.
+        if (accuracy::mag(&d.m).is_none() && d.eb.is_exact())
+            || lies_below(&d, prec)
+            || below_search(arena, &d)
+        {
             return Some(Outcome::Near(p, d));
         }
         // Other terms in range or above it (monomials `e^g` above the

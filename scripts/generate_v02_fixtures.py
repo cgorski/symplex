@@ -21,6 +21,11 @@ Design rules (see tests/README.md):
 * **Every fixture has a stable ``key``** (unique within category:subcategory)
   so the Rust consumers can attach ``// BUG:`` annotations that survive
   regeneration.
+* **SymPy is corrected where it is wrong.**  ``ORACLE_CORRECTIONS`` patches a
+  computed fixture whose SymPy value an independent oracle refutes (or that
+  SymPy's closed form cannot give, such as ``0/0`` at a removable point) and
+  records SymPy's output and the oracle in an ``oracle_correction`` field, so
+  that regenerating the file keeps the corrected value.
 
 Usage::
 
@@ -188,7 +193,69 @@ class Collector:
                 self.unevaluated += 1
                 print(f"  UNEVAL  {category}:{subcategory} {key}", file=sys.stderr)
             fx.update(result)
+            correction = ORACLE_CORRECTIONS.get(ident)
+            if correction is not None:
+                patch, note = correction
+                patch(fx)
+                fx["oracle_correction"] = note
+                print(f"  CORRECT {category}:{subcategory} {key}", file=sys.stderr)
         self.fixtures.append(fx)
+
+
+def _set_value(value):
+    """Patch: replace the fixture's ``value``."""
+
+    def patch(fx):
+        fx["value"] = value
+
+    return patch
+
+
+def _set_eval_point(subs, value):
+    """Patch: replace the value of the eval point at ``subs``."""
+
+    def patch(fx):
+        for p in fx["eval_points"]:
+            if p["subs"] == subs:
+                p["value"] = value
+                return
+        raise KeyError(f"no eval point at {subs}")
+
+    return patch
+
+
+# (category, subcategory, key) -> (patch, oracle_correction note).  Applied by
+# ``Collector.add`` after SymPy's computation; each value is refuted by the
+# independent oracle quoted in the note (and in the consumer's header).
+ORACLE_CORRECTIONS = {
+    ("residue", "finite", "z**2*exp(1/z) @ 0"): (
+        _set_value(numval(Rational(1, 6))),
+        "SymPy 1.14 residue(z**2*exp(1/z), z, 0) returns 0 (wrong: essential singularity); "
+        "value is 1/6 from mpmath 1.3.0 quad(lambda th: z**2*exp(1/z)*i*z, [0, 2*pi])/(2*pi*i) "
+        "with z = expj(th), dps 30",
+    ),
+    ("mellin", "forward", "1/(1 + x)**3"): (
+        _set_eval_point({"s": 1.0}, numval(Rational(1, 2))),
+        "SymPy 1.14 mellin_transform(1/(1 + x)**3, x, s) = pi*(s - 2)*(s - 1)/(2*sin(pi*s)), "
+        "which is 0/0 at s = 1 (inside the strip (0, 3)) and was stored as nan, so the point "
+        "was skipped; the transform there is Gamma(1)*Gamma(2)/Gamma(3) = 1/2, from mpmath "
+        "1.3.0 quad(lambda x: 1/(1 + x)**3, [0, inf]) = 0.5 (dps 30)",
+    ),
+    ("mellin", "forward", "1/(1 + x)**2"): (
+        _set_eval_point({"s": 1.0}, numval(S.One)),
+        "SymPy 1.14 mellin_transform(1/(1 + x)**2, x, s) = pi*(1 - s)/sin(pi*s), which is 0/0 "
+        "at s = 1 (inside the strip (0, 2)) and was stored as nan, so the point was skipped; "
+        "the transform there is Gamma(1)*Gamma(1)/Gamma(2) = 1, from mpmath 1.3.0 "
+        "quad(lambda x: 1/(1 + x)**2, [0, inf]) = 1.0 (dps 30)",
+    ),
+    ("summation", "divergent", "1/sqrt(k)"): (
+        _set_value({"special": "oo"}),
+        "SymPy 1.14 summation(1/sqrt(k), (k, 1, oo)) returns the unevaluated Sum, and N() of "
+        "it gave 9.046256971665328e+74 (meaningless); the series diverges (p-series with "
+        "p = 1/2 <= 1: the partial sums grow like 2*sqrt(n), mpmath 1.3.0 "
+        "fsum(1/sqrt(k) for k in 1..10**4) = 198.54)",
+    ),
+}
 
 
 C = Collector()

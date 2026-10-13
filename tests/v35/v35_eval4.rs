@@ -32,8 +32,9 @@ fn assert_decided(ctx: &Context, s: &str, want: &str) {
 /// `Eq(cos(pi/32), sqrt(2 + sqrt(2 + sqrt(2 + sqrt(2))))/2)` → `True`;
 /// `(cos(pi/16) >= …).simplify()` → `True`, `(cos(pi/16) > …)` → `False`,
 /// `Ne(cos(pi/16), …)` → `False`; mpmath `cos(pi/16)` =
-/// `0.98078528040323044912618223613424242128462863569050`, equal to
-/// `sqrt(2 + sqrt(2 + sqrt(2)))/2` to 50 digits.
+/// `0.98078528040323044912618223613423903697393373089334`, equal to
+/// `sqrt(2 + sqrt(2 + sqrt(2)))/2` to 50 digits (mpmath at 70 digits; up to
+/// 0.46 the value was quoted wrong from its 30th digit on).
 #[test]
 fn trigonometric_values_against_nested_radicals() {
     let ctx = Context::new();
@@ -60,12 +61,18 @@ fn trigonometric_values_against_nested_radicals() {
 /// (`Eq(cos(pi/7)*cos(2*pi/7)*cos(4*pi/7), -1/8)` → itself); they hold in
 /// `ℚ(ζ_N)` coordinate by coordinate.
 ///
-/// Oracle: SymPy 1.14 `.simplify()` of each relation below → `True`;
+/// Oracle: SymPy 1.14 `.simplify()` of each relation below → `True`, except
+/// the last, which SymPy's `simplify` does not finish in 600 s (up to 0.46
+/// this claimed `True` for it too); that one is the product-to-sum formula
+/// `cos A·cos B = (cos(A − B) + cos(A + B))/2` with `A − B = −43π/187`, `A + B
+/// = 485π/187`, and 0 to 50 digits in mpmath;
 /// mpmath `cos(pi/7)*cos(2*pi/7)*cos(4*pi/7)` = `-0.125` (to 50 digits),
 /// `sin(pi/7)*sin(2*pi/7)*sin(3*pi/7) - sqrt(7)/8` = `0`,
 /// `tan(pi/9)*tan(2*pi/9)*tan(4*pi/9) - sqrt(3)` = `0`,
 /// `cos(2*pi/13) + cos(6*pi/13) + cos(8*pi/13)` =
-/// `0.65138781886599722660416896106524486569580745064823` = `(sqrt(13) - 1)/4`.
+/// `0.65138781886599732327980531686762398656282414346131` = `(sqrt(13) - 1)/4`
+/// (mpmath at 70 digits; up to 0.46 the value was quoted wrong from its 16th
+/// digit on).
 #[test]
 fn identities_between_values_at_the_same_denominator() {
     let ctx = Context::new();
@@ -94,10 +101,12 @@ fn identities_between_values_at_the_same_denominator() {
 /// the norm decides.
 ///
 /// Oracle: SymPy 1.14 `Eq(cos(pi/14), sqrt((1 + cos(pi/7))/2)).simplify()`
-/// → `True`; `Eq(2*cos(2*pi/7), -1/3 + 7/(9*(7/54 + 7*sqrt(3)*I/18)**(1/3))
-/// + (7/54 + 7*sqrt(3)*I/18)**(1/3)).simplify()` → `True` (the root
+/// → `True`; `Eq(2*cos(2*pi/7), -1/3 + 7/(9*(7/54 + 7*sqrt(3)*I/18)**(1/3)) +
+/// (7/54 + 7*sqrt(3)*I/18)**(1/3)).simplify()` → `True` (the root
 /// `roots(x**3 + x**2 - 2*x - 1, cubics=True)` pairs with `2*cos(2*pi/7)`);
-/// mpmath `2*cos(2*pi/7)` = `1.2469796037174670610500097680084796212645703924685`.
+/// mpmath `2*cos(2*pi/7)` = `1.2469796037174670610500097680084796212645494617928`
+/// (mpmath at 70 digits; up to 0.46 the value was quoted wrong from its 43rd
+/// digit on).
 #[test]
 fn radicals_over_unevaluated_values() {
     let ctx = Context::new();

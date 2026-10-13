@@ -19,7 +19,12 @@ use v02_oracle_common::*;
 ///   `1/3! = 1/6`, confirmed by mpmath 1.3.0 (dps 30)
 ///   `quad(lambda th: f(expj(th))*expj(th), [0, 2*pi])/(2*pi)` on `|z| = 1`
 ///   → `0.1666666666666666666666667`.  (The fixture held `0`; symplex
-///   returned `0` too until 0.29, then refused, now `1/6`.)
+///   returned `0` too until 0.29, then refused, now `1/6`.  Since 0.46 the
+///   generator re-applies the correction, `ORACLE_CORRECTIONS`.)
+/// - `summation: 1/sqrt(k)` (divergent) — SymPy 1.14 leaves the `Sum`
+///   unevaluated and the fixture's `value` was its `N()`, `9.05e74`; the
+///   series diverges (p-series, `p = 1/2`), so the value is `oo` since 0.46
+///   (the consumer checks the divergence, not the value).
 const KNOWN_BUGS: &[KnownBug] = &[];
 
 /// Regression: `series_at_infinity(atan(x))` used to return the garbage

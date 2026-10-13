@@ -481,11 +481,11 @@ fn identically_zero_and_constant_expressions() {
 fn unsupported_shapes_return_condition_sets_not_guesses() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    // Periodic: the equation solver only knows principal roots.
+    // Periodic: since 0.47 every period, not a guess (refused before).
     let sol = x.sin().solve_gt(&x);
-    assert!(
-        sol.has_unevaluated(),
-        "sin(x) > 0 must not be guessed: {sol}"
+    assert_eq!(
+        sol.to_string(),
+        "ImageSet(Lambda(_n, (2*_n*pi, 2*_n*pi + pi)), Integers)"
     );
     // Floor has infinitely many jumps.
     let sol = (x.floor() - 1).solve_gt(&x);

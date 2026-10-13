@@ -223,7 +223,10 @@ fn point_events_respect_the_lattice_and_the_support() -> Result<(), SymplexError
 fn beta_student_t_and_f_cdfs() -> Result<(), SymplexError> {
     let ctx = Context::new();
     // mpmath (dps 25): betainc(2.5, 1.5, 0, 0.3, regularized=True) = 0.08894372317066559158
-    // (SymPy: cdf(Beta(5/2, 3/2))(3/10) is an unevaluated hypergeometric form.)
+    // (SymPy 1.14: cdf(Beta(5/2, 3/2))(3/10) = (-3*sqrt(21)/250 +
+    // asin(sqrt(30)/10)/8)/beta(5/2, 3/2) = 0.088943723170665599355, the
+    // same value in closed form; up to 0.46 this said "an unevaluated
+    // hypergeometric form".)
     let b = Distribution::beta(ctx.rational(5, 2), ctx.rational(3, 2));
     assert_close(
         &b.cdf(&ctx.rational(3, 10)),

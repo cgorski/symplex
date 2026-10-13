@@ -260,8 +260,11 @@ fn tangent_of_multiple_angles() {
 /// `{2nπ + π}`, without `0` (`sin 0 = 0`) and the roots `±acos(…)`; likewise
 /// `sin 3x = √2·sin x`.  Wrong before 0.44; refused as incomplete in 0.44;
 /// since 0.45 the polynomial is solved over `ℚ(√p)` and the roots are all
-/// there (SymPy 1.14 `solveset(sin(4*x) - sqrt(3)*sin(x), x, S.Reals)`
-/// contains `{2nπ}`; the full answers are pinned in `v35_solve2`).
+/// there (the full answers are pinned in `v35_solve2`).  Oracle: `sin 0 = 0`
+/// and substitution of every root.  (Up to 0.46 this said SymPy 1.14
+/// `solveset(sin(4*x) - sqrt(3)*sin(x), x, S.Reals)` contains `{2nπ}`; it
+/// returns `ConditionSet(x, Eq(-sqrt(3)*sin(x) + sin(4*x), 0), Reals)`, and
+/// `solve` gives `[0, pi]`.)
 #[test]
 fn incomplete_substituted_polynomial_is_refused() {
     let ctx = Context::new();

@@ -88,6 +88,16 @@ mod v35_stats;
 mod v35_stats2;
 #[path = "v35/v35_sums.rs"]
 mod v35_sums;
+#[path = "v35/v35_sympy_audit.rs"]
+mod v35_sympy_audit;
+#[path = "v35/v35_sympy_evalf.rs"]
+mod v35_sympy_evalf;
+#[path = "v35/v35_sympy_integrals.rs"]
+mod v35_sympy_integrals;
+#[path = "v35/v35_sympy_limits.rs"]
+mod v35_sympy_limits;
+#[path = "v35/v35_sympy_solvers.rs"]
+mod v35_sympy_solvers;
 #[path = "v35/v35_transcendental.rs"]
 mod v35_transcendental;
 #[path = "v35/v35_transforms.rs"]

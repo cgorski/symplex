@@ -40,7 +40,7 @@ symplex is designed for Rust developers who need symbolic computation as part of
 
 Being clear about limitations is important for evaluating whether this library fits your needs.
 
-- **Geometry, statistics, and tensor algebra** are not implemented. If you need these, SymPy is the more complete choice today.
+- **Geometry and tensor algebra** are not implemented. If you need these, SymPy is the more complete choice today. (Statistics is: see the `stats` chapter.)
 - **PDE solving** is not available. ODE solving covers 16 classes; partial differential equations are out of scope for now.
 - **Group theory** is limited. There is no permutation group, symmetric group, or abstract algebra module.
 - **Hypergeometric / Meijer-G machinery** is absent; definite integration relies on antiderivatives, symmetry, and a table of ~30 classical improper integrals.

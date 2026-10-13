@@ -211,10 +211,14 @@ fn new_features_lambertw() {
             return status;
         }
         // Symbolic special values must fold exactly (W(0)=0, W(e)=1, W(-1/e)=-1).
+        // symplex prints the function as `W(…)`; up to 0.46 this looked for
+        // SymPy's spelling `LambertW` in symplex's output, which never occurs,
+        // so an unfolded `W(E)` would have passed unnoticed.  (Where SymPy
+        // leaves `LambertW(3*log(3))`, symplex folds it to `ln(3)`.)
         if fx.subcategory == "eval_symbolic"
             && let Some(expected) = fx.str("expected")
             && !expected.contains("LambertW")
-            && w.to_string().contains("LambertW")
+            && w.to_string().contains("W(")
         {
             return Status::NotImplemented(format!(
                 "special value not folded: {w} (SymPy: {expected})"

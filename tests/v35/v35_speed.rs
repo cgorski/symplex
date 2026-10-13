@@ -103,8 +103,10 @@ fn pole_factor_of_a_product() {
 /// Oracle: mpmath at `π ± 10⁻²⁰`: `−0.00079672208760790455991…` from both
 /// sides, the value of `1/((π^{2π} − 1)·sin(π^π))`; `±1.35·10⁸` for
 /// `1/(cos(xˣ) − cos(π^π))` at `π ± 10⁻¹⁰` (`sin(π^π) = −0.9448 < 0`).
-/// SymPy says the limit does not exist (its `atanh` written as logarithms
-/// leaves the cut from the wrong side).
+/// SymPy 1.14 has no value for it: it returns `oo*sign(c)` with `c =
+/// −ln(π^π − 1)/2 + ln(π^π + 1)/2 − iπ/2 − atanh(π^π)`, which is exactly 0
+/// (`simplify` of the limit gives `nan`).  (Up to 0.46 this said "SymPy says
+/// the limit does not exist".)
 #[test]
 fn atanh_of_a_power_tower_on_its_cut() {
     let bound = Duration::from_secs(10);

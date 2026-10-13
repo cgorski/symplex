@@ -8,6 +8,17 @@ use super::v02_oracle_common;
 use symplex::prelude::*;
 use v02_oracle_common::*;
 
+/// Library bugs surfaced by this file (strict xfail — see common module).
+///
+/// Oracle values SymPy cannot give are corrected in the fixture instead,
+/// with an `oracle_correction` field (re-applied by the generator):
+/// - `mellin: 1/(1 + x)**3` and `1/(1 + x)**2` at `s = 1` — SymPy 1.14's
+///   closed forms `pi*(s - 2)*(s - 1)/(2*sin(pi*s))` and `pi*(1 - s)/sin(pi*s)`
+///   are `0/0` there, inside the strips `(0, 3)` and `(0, 2)`, and the points
+///   were stored as `nan` and skipped (0.46 and before); the transforms are
+///   `Γ(1)Γ(2)/Γ(3) = 1/2` and `Γ(1)Γ(1)/Γ(2) = 1` (mpmath 1.3.0 `quad` of
+///   `1/(1 + x)³` and `1/(1 + x)²` over `[0, ∞)`), and symplex's `B(s, 3 − s)`,
+///   `B(s, 2 − s)` give them.
 const KNOWN_BUGS: &[KnownBug] = &[];
 
 #[test]

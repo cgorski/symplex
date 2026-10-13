@@ -283,20 +283,21 @@ fn sin_of_a_huge_exact_integer_is_reduced_exactly() {
 }
 
 #[test]
-fn sin_of_a_huge_inexact_argument_is_refused() {
-    // exp(100) ≈ 2^144 is rounded to the working precision, so it is known
-    // only to within about 2^(144 − prec): not enough to reduce modulo 2π.
-    // mpmath (mp.dps = 80): sin(exp(100)) = 0.14219812365823864.
+fn sin_of_a_huge_inexact_argument_is_reduced_within_its_bound() {
+    // exp(100) ≈ 2^144 is known to within about 2^(144 − prec): `sin` of it
+    // has no value until the precision makes that bound small, and then the
+    // argument's value is reduced modulo 2π in full, its bound carried
+    // (before 0.47 it was refused at every precision).
+    // mpmath (mp.dps = 100, 150): sin(exp(100)) =
+    // 0.1421981236582386377724503064786852563347.
     let ctx = Context::new();
     let e = ctx.int(100).exp().sin();
-    for digits in [16, 30] {
-        let r = e.eval_decimal(digits);
-        assert!(
-            matches!(r, Err(SymplexError::PrecisionExhausted { .. })),
-            "sin(exp(100)) at {digits} digits: {r:?}"
-        );
-    }
-    assert!(e.eval_f64().is_err());
+    assert_eq!(e.eval_decimal(16).unwrap(), "0.1421981236582386");
+    assert_eq!(
+        e.eval_decimal(30).unwrap(),
+        "0.142198123658238637772450306479"
+    );
+    assert_eq!(e.eval_f64().unwrap(), 0.142_198_123_658_238_64);
 }
 
 #[test]

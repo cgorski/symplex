@@ -879,7 +879,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | Rational simplification | `ratsimp`/`cancel`: heuristic multivariate GCD | `cancel`, `ratsimp`, `together`, `apart` (similar) |
 | Linear programming | Exact simplex on hybrid `i64`/`i128`/256-bit/`BigInt` cells; duals, Farkas certificates, budgets | `sympy.solvers.simplex` (exact; optimum and argmin only) |
 | Polynomial inequalities | Handelman (boxes), Pólya (half-lines), parametric polyhedra with a goal multiplier, sums of squares (built-in SDP + exact rounding); all re-verified exactly; Lean export | — |
-| Integer normal forms | Row/column HNF with transform, SNF with transforms, integer nullspace, lattice index, exact LLL | `hermite_normal_form`, `smith_normal_form` (no transforms), `lll` |
+| Integer normal forms | Row/column HNF with transform, SNF with transforms, integer nullspace, lattice index, exact LLL | `hermite_normal_form`, `smith_normal_form`, `smith_normal_decomp` (with transforms), `lll` |
 | Polytopes | Exact vertices (integer arithmetic, tight sets), `clip`, volume in any dimension, parametric families | — |
 | Numerical optimisation | Brent, bisection, Newton, Nelder–Mead, differential evolution, QR least squares, exact rational fits | Defers to SciPy / mpmath; far broader via SciPy |
 | Series expansion | Taylor / Laurent / at ∞ / formal power series with general terms | + `O()` notation, Puiseux |

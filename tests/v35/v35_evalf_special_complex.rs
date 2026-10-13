@@ -175,7 +175,9 @@ fn sine_and_cosine_integrals_of_complex_arguments() {
 /// 2097913261506351.89672415317959923960572i`; `si(mpc(0,200))` =
 /// `1.81561761657967842619835502192321252323e84·i`; `chi(mpc(-300,-1))` =
 /// `1.76415418614251317654620696790179277551e127 +
-/// 2.72740045201863315832187414111825281782e127i`.
+/// 2.72740045201863315832187414118252817817e127i` (recomputed at 60 and 90
+/// digits; up to 0.46 this imaginary part was quoted with a stray `1` after
+/// `…74141`, the asserted prefix was right).
 #[test]
 fn sine_and_cosine_integrals_of_large_arguments() {
     assert_c(

@@ -476,7 +476,26 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
 /// [`solve_system_ex`] without the restriction to the declared domains of
 /// the variables.
 fn solve_system_over_all_values(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
-    if eqs.is_empty() || vars.is_empty() {
+    if eqs.is_empty() {
+        return Ok(vec![vec![]]);
+    }
+    // No unknowns: the empty assignment solves the system exactly when every
+    // equation holds.  Up to 0.46 it was returned whatever the equations
+    // (`solve_system_ex([42], [])` was `[[]]`, one solution; SymPy 1.14
+    // `solve(42)` is `[]`).
+    if vars.is_empty() {
+        for e in eqs {
+            match e.expand().is_zero() {
+                Some(true) => {}
+                Some(false) => return Ok(vec![]),
+                None => {
+                    return Err(SymplexError::ComputationFailed {
+                        operation: "solve_system_ex",
+                        reason: format!("cannot decide whether {e} = 0 (no unknowns)"),
+                    });
+                }
+            }
+        }
         return Ok(vec![vec![]]);
     }
 

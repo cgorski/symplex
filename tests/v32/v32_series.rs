@@ -47,8 +47,12 @@ fn logarithmic_singularities_refuse_at_once() {
             for dir in [Direction::Both, Direction::Right, Direction::Left] {
                 let t = Instant::now();
                 let s = e.series_dir(&x, &zero, 3, dir);
+                // 3 s per call: the two-sided `asin(exp(−1/x))` takes ~1 s in
+                // a debug build alone and reached 2.0 s under a 64-way
+                // parallel test run (0.47); `atan(x^(x²))`, 2.8 s before the
+                // fix, is 6 ms.
                 assert!(
-                    t.elapsed() < Duration::from_secs(2),
+                    t.elapsed() < Duration::from_secs(3),
                     "{src} {dir:?} took {:?}",
                     t.elapsed()
                 );

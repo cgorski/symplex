@@ -82,7 +82,7 @@ fn inverse_functions_of_a_power_tower_on_their_cuts() {
         "(acos(x^x) - acos(pi^pi))/(sin(x^x) - sin(pi^pi))",
         "pi",
         B,
-        "-pi^pi/(pi^pi*sqrt(1 - (pi^pi)^2)*cos(pi^pi))",
+        "-1/(sqrt(1 - (pi^pi)^2)*cos(pi^pi))",
         Some((0.0, 0.083_728_758_396_087_2)),
         bound,
     );
@@ -91,7 +91,7 @@ fn inverse_functions_of_a_power_tower_on_their_cuts() {
         "(acos(x^x) - acos(pi^pi))/(x - pi)",
         "pi",
         B,
-        "-pi^pi*(log(pi) + 1)/sqrt(1 - (pi^pi)^2)",
+        "-(pi^pi + pi^pi*log(pi))/sqrt(1 - (pi^pi)^2)",
         Some((0.0, 2.145_536_940_443_052)),
         bound,
     );
@@ -100,7 +100,7 @@ fn inverse_functions_of_a_power_tower_on_their_cuts() {
         "(asin(x^x) - asin(pi^pi))/(sin(x^x) - sin(pi^pi))",
         "pi",
         B,
-        "pi^pi/(pi^pi*sqrt(1 - (pi^pi)^2)*cos(pi^pi))",
+        "1/(sqrt(1 - (pi^pi)^2)*cos(pi^pi))",
         Some((0.0, -0.083_728_758_396_087_2)),
         bound,
     );
@@ -109,7 +109,7 @@ fn inverse_functions_of_a_power_tower_on_their_cuts() {
         "(acosh(x^x/40) - acosh(pi^pi/40))/(x - pi)",
         "pi",
         B,
-        "-pi^pi*(log(pi) + 1)*I/(40*sqrt(1 - (pi^pi)^2/1600))",
+        "-(pi^pi/40 + pi^pi*log(pi)/40)*I/sqrt(1 - (pi^pi)^2/1600)",
         Some((0.0, -4.754_694_231_069_322)),
         bound,
     );

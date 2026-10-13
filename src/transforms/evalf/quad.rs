@@ -163,7 +163,7 @@ const TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
 /// node with `evalf`'s error bounds: the nodes that depend on `var` in
 /// post-order by [`eval_node_with_error`] at every node, the others once per
 /// precision by [`evaluate_tree`].
-struct Integrand<'a> {
+pub(super) struct Integrand<'a> {
     arena: &'a Arena,
     root: ExprId,
     var: ExprId,
@@ -179,7 +179,7 @@ struct Integrand<'a> {
 }
 
 impl<'a> Integrand<'a> {
-    fn new(arena: &'a Arena, root: ExprId, var: ExprId) -> Self {
+    pub(super) fn new(arena: &'a Arena, root: ExprId, var: ExprId) -> Self {
         let post = walk::post_order_ids(arena, root);
         let mut dep: FxHashSet<ExprId> = FxHashSet::default();
         for &id in &post {
@@ -228,7 +228,7 @@ impl<'a> Integrand<'a> {
 
     /// The value and error bound of the integrand at `x ± 2^x_err`,
     /// evaluated at `prec` bits.
-    fn eval(
+    pub(super) fn eval(
         &mut self,
         x: &BigFloat,
         x_err: ErrExp,
@@ -430,7 +430,7 @@ fn dyadic(j: u64, k: u32) -> BigFloat {
 }
 
 /// `x·2^s` for an integer `s`, exactly.
-fn scale2(x: &BigFloat, s: i32) -> BigFloat {
+pub(super) fn scale2(x: &BigFloat, s: i32) -> BigFloat {
     let mut y = x.clone();
     if !y.is_zero()
         && let Some(e) = y.exponent()
@@ -440,7 +440,7 @@ fn scale2(x: &BigFloat, s: i32) -> BigFloat {
     y
 }
 
-fn small(n: u64) -> BigFloat {
+pub(super) fn small(n: u64) -> BigFloat {
     BigFloat::from_u64(n, 64)
 }
 
@@ -1568,10 +1568,18 @@ pub(super) fn remember(
     });
 }
 
-/// Is `e` a failure for want of nodes (a higher precision fails too)?
+/// Is `e` a failure for want of nodes (a higher precision fails too), or a
+/// proof of divergence?
 pub(super) fn is_node_failure(e: &SymplexError) -> bool {
-    matches!(e, SymplexError::ComputationFailed { reason, .. }
+    matches!(e, SymplexError::Divergent { .. })
+        || matches!(e, SymplexError::ComputationFailed { reason, .. }
         if reason.contains(NOT_DECAYING) || reason.contains("budget") || reason.contains("time limit"))
+}
+
+/// Is `e` the refusal of a quadrature whose terms do not decay towards an
+/// end — of the range, or of a piece at a breakpoint ([`NOT_DECAYING`])?
+pub(super) fn is_not_decaying(e: &SymplexError) -> bool {
+    matches!(e, SymplexError::ComputationFailed { reason, .. } if reason.contains(NOT_DECAYING))
 }
 
 #[cfg(test)]

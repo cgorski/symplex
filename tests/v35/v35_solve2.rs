@@ -329,9 +329,11 @@ fn lambert_values_on_the_domain_boundary() {
 /// the root is `0`) gave `[−π/4 + atan(1/2) + atan(1/3)]`.  Refused in
 /// 0.45, with the reason; the set keeps the undecided intersection.  Now
 /// `eval` decides sums of arctangents of rationals exactly, and that root
-/// is `0`, not positive: no root (the set still keeps the intersection).  A member that no exact test decides (`sin²1 + cos²1 −
-/// 1`, 0 to every precision) is still refused.  Oracle: the identity
-/// `tan(atan(1/2) + atan(1/3)) = (1/2 + 1/3)/(1 − 1/6) = 1`.
+/// is `0`, not positive: no root, and since 0.47 the set is `EmptySet` as
+/// well (it kept the intersection `(0, ∞) ∩ {…}`).  A member that no exact
+/// test decides (`sin²1 + cos²1 − 1`, 0 to every precision) is still
+/// refused.  Oracle: the identity `tan(atan(1/2) + atan(1/3)) = (1/2 +
+/// 1/3)/(1 − 1/6) = 1`.
 #[test]
 fn undecided_zero_member_is_refused() {
     let ctx = Context::new();
@@ -339,7 +341,7 @@ fn undecided_zero_member_is_refused() {
     let e = parse(&ctx, "x - atan(1/2) - atan(1/3) + pi/4");
     assert!(e.solve(&pos).unwrap().is_empty());
     let set = e.solve_as_set(&pos).to_string();
-    assert!(set.starts_with("(0, oo) ∩"), "{set}");
+    assert_eq!(set, "EmptySet");
     let undecided = parse(&ctx, "x - sin(1)^2 - cos(1)^2 + 1");
     match undecided.solve(&pos) {
         Err(SymplexError::ComputationFailed { reason, .. }) => {

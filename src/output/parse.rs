@@ -728,7 +728,8 @@ impl<'a> Lexer<'a> {
                 {
                     self.pos += 1;
                 }
-                // Check for decimal point followed by digits → Rational token
+                // A decimal point followed by digits → Rational token.
+                let mut decimal_places = 0usize;
                 if self.pos < self.input.len()
                     && self.input.as_bytes()[self.pos] == b'.'
                     && self.pos + 1 < self.input.len()
@@ -741,29 +742,28 @@ impl<'a> Lexer<'a> {
                     {
                         self.pos += 1;
                     }
-                    let decimal_places = self.pos - frac_start;
-                    let full_str = self.input[start..self.pos].replace('.', "");
-                    let numer = full_str.parse::<BigInt>().map_err(|e| ParseError {
-                        message: format!(
-                            "invalid number '{}': {}",
-                            &self.input[start..self.pos],
-                            e
-                        ),
-                        position: start,
-                    })?;
-                    let mut denom = BigInt::from(1);
-                    for _ in 0..decimal_places {
-                        denom *= 10;
-                    }
-                    let ratio = Ratio::new(numer, denom);
-                    return Ok(Token::Rational(ratio));
+                    decimal_places = self.pos - frac_start;
                 }
-                let s = &self.input[start..self.pos];
-                let n = s.parse::<BigInt>().map_err(|e| ParseError {
-                    message: format!("invalid integer '{}': {}", s, e),
+                let mantissa_end = self.pos;
+                let exponent = self.decimal_exponent(start)?;
+                let full_str = self.input[start..mantissa_end].replace('.', "");
+                let numer = full_str.parse::<BigInt>().map_err(|e| ParseError {
+                    message: format!("invalid number '{}': {}", &self.input[start..self.pos], e),
                     position: start,
                 })?;
-                Ok(Token::Int(n))
+                if decimal_places == 0 && exponent.is_none() {
+                    return Ok(Token::Int(numer));
+                }
+                // value = numer · 10^(exponent − decimal_places), exactly.
+                let shift = exponent.unwrap_or(0) - decimal_places as i64;
+                let ten = BigInt::from(10);
+                let power = num_traits::pow(ten, shift.unsigned_abs() as usize);
+                let ratio = if shift >= 0 {
+                    Ratio::from_integer(numer * power)
+                } else {
+                    Ratio::new(numer, power)
+                };
+                Ok(Token::Rational(ratio))
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let start = self.pos;
@@ -783,6 +783,53 @@ impl<'a> Lexer<'a> {
                 position: self.pos,
             }),
         }
+    }
+}
+
+/// The largest decimal exponent a literal may carry (`1e10000`): the
+/// literal is exact, so `1e1000000000` would build a billion-digit integer.
+const MAX_DECIMAL_EXPONENT: i64 = 10_000;
+
+impl Lexer<'_> {
+    /// The exponent of a decimal literal after its digits: `e` or `E`, an
+    /// optional sign and at least one digit (`1e-05`, `2.5E3`), as Python and
+    /// SymPy read them.  `None` (nothing consumed) when no exponent follows:
+    /// `2e` stays `2·e` and `2e+x` stays `2·e + x`.  Up to 0.46 there were no
+    /// exponents and `1e-05` was read silently as `1·e − 5`, `2e3` as `2·e3`.
+    fn decimal_exponent(&mut self, start: usize) -> Result<Option<i64>, ParseError> {
+        let bytes = self.input.as_bytes();
+        let mut p = self.pos;
+        if p >= bytes.len() || !matches!(bytes[p], b'e' | b'E') {
+            return Ok(None);
+        }
+        p += 1;
+        let negative = p < bytes.len() && bytes[p] == b'-';
+        if p < bytes.len() && matches!(bytes[p], b'+' | b'-') {
+            p += 1;
+        }
+        let digits_start = p;
+        while p < bytes.len() && bytes[p].is_ascii_digit() {
+            p += 1;
+        }
+        if p == digits_start {
+            return Ok(None);
+        }
+        // Characters after the digits are the next token (`2e3x` = 2000·x,
+        // implicit multiplication, as `2x`).
+        let digits = &self.input[digits_start..p];
+        let magnitude = digits
+            .parse::<i64>()
+            .ok()
+            .filter(|&m| m <= MAX_DECIMAL_EXPONENT)
+            .ok_or_else(|| ParseError {
+                message: format!(
+                    "decimal exponent of '{}' beyond ±{MAX_DECIMAL_EXPONENT}",
+                    &self.input[start..p]
+                ),
+                position: start,
+            })?;
+        self.pos = p;
+        Ok(Some(if negative { -magnitude } else { magnitude }))
     }
 }
 

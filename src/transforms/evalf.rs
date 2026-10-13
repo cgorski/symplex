@@ -92,6 +92,7 @@ mod exact;
 mod extended;
 mod factorials;
 mod hypsum;
+mod improper;
 mod lambertw;
 mod loggamma;
 mod polylog;
@@ -232,6 +233,36 @@ pub(crate) fn evalf_quadrature(
 ) -> Result<String, SymplexError> {
     let _rule = quad::RuleGuard::set(gauss_legendre);
     evalf(arena, expr, digits)
+}
+
+/// Can an `f64` quadrature of `body` (in `var`) from `a` to `b` (`±∞`
+/// allowed), which evaluates the integrand by `compiled`, have seen its
+/// integral beyond `|x| = 2¹⁶` to within `allowed`?  Always for a finite
+/// range; for an infinite one by certified evaluations of the integrand out
+/// to `2²⁰⁴⁸` (see `improper::f64_tail_trusted`): an overflow in the
+/// compiled body cuts the integrand off (`Ex::integrate_numeric` of
+/// `|x|/(x² + 1)` over the line, which diverges, was `709.78` before
+/// 0.47).  `false` when the integrand cannot be evaluated there.
+pub(crate) fn f64_quadrature_tail_trusted(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    a: f64,
+    b: f64,
+    compiled: &dyn Fn(f64) -> f64,
+    allowed: f64,
+) -> bool {
+    let (low, high) = (a.min(b), a.max(b));
+    if low.is_finite() && high.is_finite() {
+        return true;
+    }
+    with_f64_consts(|cc| {
+        Ok((high != f64::INFINITY
+            || improper::f64_tail_trusted(arena, body, var, true, compiled, allowed, cc))
+            && (low != f64::NEG_INFINITY
+                || improper::f64_tail_trusted(arena, body, var, false, compiled, allowed, cc)))
+    })
+    .unwrap_or(false)
 }
 
 /// The working precision behind `digits` decimal digits: `3.4` bits per
@@ -1648,6 +1679,34 @@ fn eval_node_with_error(
                 cc,
             );
             (value, err)
+        }
+        // `sin`, `cos`, `tan` of a real inexact argument beyond `2⁶⁴`
+        // (`sin(e·10¹⁰⁰)`, a quadrature node at `x ≈ 3.7·10²²`), which
+        // `eval_node` refuses at every precision: the function of the
+        // argument's value taken as exact, reduced modulo 2π in full, its
+        // error the argument's own bound (`node_error`) — and no value yet
+        // (`precision_limited`, so a higher precision follows) while that
+        // bound is not well below 1.  Before 0.47 `sin(e·10¹⁰⁰)` was
+        // refused (SymPy: `0.409160531722613`), and every oscillating
+        // integrand on an infinite range lacked a bound at its far nodes.
+        ExprNode::Sin(c) | ExprNode::Cos(c) | ExprNode::Tan(c)
+            if large_inexact_trig_argument(arena, *c, cache) =>
+        {
+            let b = errs.get(c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            if b.is_unknown() || b.joint() > -4.0 {
+                return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
+            }
+            let arg = &get_cached(cache, *c)?.0;
+            let value = match arena.node(id) {
+                ExprNode::Sin(_) => arg.sin(prec, rm, cc),
+                ExprNode::Cos(_) => arg.cos(prec, rm, cc),
+                _ => arg.tan(prec, rm, cc),
+            };
+            let value = (value, BigFloat::new(prec));
+            let err = accuracy::node_error(arena, id, &value, cache, errs, prec, || {
+                sensitivity::special_error(arena, id, &value, cache, errs, prec, rm, cc)
+            });
+            return Ok((value, err));
         }
         ExprNode::PhysicalConstant(_, value_id) => match cache.get(value_id) {
             // The constant is an atom to every tree walk, so its stored
@@ -3913,6 +3972,18 @@ const QUADRATURE_F64_MAX_PREC: usize = 128;
 /// tanh-sinh does not resolve, `∫₀^∞ sin x·e^{−√x}/(2√x) dx` — and the
 /// latter then gets a quarter of its work.  The DiracDelta of the variable is refused: 0 at every node,
 /// its integral is no sum of values (before 0.43 `∫₋₁¹ δ(x) dx` was `0`).
+///
+/// An `f64` value over an infinite range is served only when the integrand's
+/// mass beyond `|x| = 2¹⁶`, measured by certified evaluations out to
+/// `2²⁰⁴⁸`, is within its bound or was seen by the compiled body
+/// (`improper::f64_tail_trusted`), and the smoothed one never when the
+/// arbitrary-precision quadrature found the terms not decaying: an `f64`
+/// body whose intermediate values overflow is 0 beyond the overflow, and
+/// before 0.47 `∫_{−∞}^{∞} |x|/((x² + 1)π) dx`, which diverges, was
+/// `225.93`.  An integral refused for terms that do not decay is
+/// [`SymplexError::Divergent`] when the comparison tests prove it
+/// (`improper::divergence`).
+///
 /// Before 0.43 an integral was refused beyond 16
 /// digits, an endpoint singularity was certified to 8 or 9 digits with a
 /// bound its error exceeded (`∫₀¹ x⁴e^{x/10}/(√(1 − x)·B(5, ½)) dx`,
@@ -3953,17 +4024,17 @@ fn eval_definite_integral(
             arena, body, var, lo, hi, cache, errs, prec, rm, cc, false,
         );
     }
-    let f64_at = |smoothing| {
-        eval_definite_integral_f64(arena, body, var, lo, hi, cache, errs, prec, smoothing)
-    };
-    if let Some(served) = f64_at(false)? {
+    if let Some(served) =
+        eval_definite_integral_f64(arena, body, var, lo, hi, cache, errs, prec, false, cc)?
+    {
         return Ok(served);
     }
     // An endpoint singularity the plain bisection cannot resolve: the
     // arbitrary-precision quadrature, unless it fails or certifies less than
     // the smoothed `f64` one (an oscillating tail it does not resolve,
     // `∫₀^∞ sin x·e^{−√x}/√x dx`), with less work when the latter exists.
-    let fallback = f64_at(true)?;
+    let fallback =
+        eval_definite_integral_f64(arena, body, var, lo, hi, cache, errs, prec, true, cc)?;
     let big = eval_definite_integral_bigfloat(
         arena,
         body,
@@ -3980,6 +4051,14 @@ fn eval_definite_integral(
     match (big, fallback) {
         (Ok(b), Some(f)) if b.1.joint() > f.1.joint() => Ok(f),
         (Ok(b), _) => Ok(b),
+        // Terms that do not decay far beyond the reach of `f64` (out to
+        // `x ≈ 10¹¹⁰⁰⁰⁰`, or next to a breakpoint): the `f64` value did not
+        // see them.
+        (Err(e), Some(_))
+            if quad::is_not_decaying(&e) || matches!(e, SymplexError::Divergent { .. }) =>
+        {
+            Err(e)
+        }
         (Err(_), Some(f)) => Ok(f),
         (Err(e), None) => Err(e),
     }
@@ -4130,15 +4209,53 @@ fn eval_definite_integral_bigfloat(
         shift(&mut pa, p, false);
         shift(&mut pa, p, true);
     }
+    // Where a refusal is examined for a proof of divergence: the ends and
+    // both sides of every breakpoint.
+    let mut approaches: Vec<improper::Approach> = Vec::new();
+    let anchor = |pa: &mut Arena, e: &quad::End| match e {
+        quad::End::Rational(q) => Some(pa.num_ratio(q.clone())),
+        quad::End::Expr(id) => Some(*id),
+        _ => None,
+    };
+    match &lo_e {
+        None => approaches.push(improper::Approach::NegInf),
+        Some(a) => approaches.extend(anchor(&mut pa, a).map(improper::Approach::Above)),
+    }
+    match &hi_e {
+        None => approaches.push(improper::Approach::PosInf),
+        Some(b) => approaches.extend(anchor(&mut pa, b).map(improper::Approach::Below)),
+    }
+    for p in &points {
+        if let Some(c) = anchor(&mut pa, p) {
+            approaches.push(improper::Approach::Below(c));
+            approaches.push(improper::Approach::Above(c));
+        }
+    }
     let pieces = quad::pieces(lo_e, hi_e, points);
     let mut q = quad::Quad::new(&pa, body_p, var_p, variants, prec, rm);
     if light {
         q.lighten();
     }
-    let out = match q.run(pieces, cc) {
+    let run = q.run(pieces, cc);
+    drop(q);
+    let out = match run {
         Ok(out) => out,
         Err(e) => {
-            if !light && quad::is_node_failure(&e) {
+            // Terms that do not decay, or an integrand without a value at a
+            // far node (`eˣ` overflows): a proof of divergence is sought.
+            let e = if matches!(e, SymplexError::ComputationFailed { .. }) {
+                match improper::divergence(&mut pa, body_p, var_p, &approaches) {
+                    Some(reason) => SymplexError::Divergent {
+                        operation: "evalf",
+                        reason: format!("the definite integral diverges: {reason}"),
+                    },
+                    None => e,
+                }
+            } else {
+                e
+            };
+            if (!light || matches!(e, SymplexError::Divergent { .. })) && quad::is_node_failure(&e)
+            {
                 quad::remember(key, prec, Err(duplicate_error(&e)));
             }
             return Err(e);
@@ -4229,6 +4346,7 @@ fn eval_definite_integral_f64(
     errs: &ErrMap,
     prec: usize,
     smoothing: bool,
+    cc: &mut Consts,
 ) -> Result<Option<(Complex, accuracy::Bound)>, SymplexError> {
     use crate::calculus::definite::{QuadOpts, QuadResult, quadrature, quadrature_resolved};
     debug!("evalf: DefiniteIntegral — f64 Gauss–Kronrod quadrature");
@@ -4308,6 +4426,19 @@ fn eval_definite_integral_f64(
         || total <= 0.0
         || total > value.abs() * (-needed).exp2()
     {
+        return Ok(None);
+    }
+    // Beyond the reach of the compiled body (an overflow cuts it off, and
+    // no node lies past `f64::MAX`): the integrand's own far tail.
+    let compiled = |t: f64| func(&[t]);
+    let (low, high) = (a.min(b), a.max(b));
+    let tail_seen = |upper: bool, cc: &mut Consts| {
+        improper::f64_tail_trusted(arena, body, var, upper, &compiled, total, cc)
+    };
+    if (high == f64::INFINITY && !tail_seen(true, cc))
+        || (low == f64::NEG_INFINITY && !tail_seen(false, cc))
+    {
+        debug!("evalf: the f64 quadrature cannot have seen the far tail");
         return Ok(None);
     }
     Ok(Some((
@@ -5250,6 +5381,31 @@ fn abs_le_one(x: &BigFloat, prec: usize) -> bool {
 /// 64 guard bits beyond the digits requested, so past `2^64` the reduction
 /// eats into the digits that are printed.
 const TRIG_ARG_MAX_INEXACT_EXPONENT: i64 = 64;
+
+/// Is the argument `c` of a trigonometric node one that [`check_trig_arg`]
+/// refuses at every precision although its error bound is tracked: real,
+/// inexact, beyond `2⁶⁴` (and within the configured maximum precision),
+/// and not a rational literal (which [`trig_arg`] converts again with more
+/// bits)?  `eval_node_with_error` evaluates it from its value and bound.
+fn large_inexact_trig_argument(
+    arena: &Arena,
+    c: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+) -> bool {
+    if matches!(arena.node(c), ExprNode::Num(_)) {
+        return false;
+    }
+    let Some(v) = cache.get(&c) else {
+        return false;
+    };
+    if !v.1.is_zero() || !v.0.inexact() || v.0.is_nan() || v.0.is_inf() {
+        return false;
+    }
+    v.0.exponent().is_some_and(|e| {
+        let e = i64::from(e);
+        e > TRIG_ARG_MAX_INEXACT_EXPONENT && e <= i64::from(arena.config.max_evalf_precision)
+    })
+}
 
 /// Refuse a trigonometric argument whose value is not known well enough to
 /// reduce it modulo 2π at this precision: an inexact one of magnitude

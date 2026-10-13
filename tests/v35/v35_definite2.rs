@@ -131,9 +131,12 @@ fn positive_frequency_parameter() {
 /// `∫₀^∞ ln x/((x + 1)(x + 2)) dx = ln²2/2`, `∫₀^∞ ln x/(x⁴ + 1) dx =
 /// −√2π²/16` and `∫₀^∞ ln x/(x² + x + 1) dx = 0` were refused (dilogarithms
 /// with unknown limits at `∞`); the keyhole contour gives `−½ Σ Res[R(z)
-/// ln²(−z)]`.  SymPy: `integrate(log(x)/((x + 1)*(x + 2)), (x, 0, oo))` =
-/// `log(2)**2/2`; mpmath: `quad(log(x)/(x**4 + 1), [0, 1, inf])` =
-/// −0.872358024954859941769695117021.
+/// ln²(−z)]`.  mpmath: `quad(log(x)/((x + 1)*(x + 2)), [0, 1, inf])` =
+/// 0.240226506959100712333551263163 = `ln²2/2`, `quad(log(x)/(x**4 + 1), [0,
+/// 1, inf])` = −0.872358024954859941769695117021.  (Up to 0.46 this cited
+/// SymPy for `log(2)**2/2`; SymPy 1.14 returns the first and the third
+/// integral unevaluated, with `x` positive and with `meijerg=True` too, and
+/// takes 80 s for the second.)
 #[test]
 fn logarithm_over_rational_by_keyhole() {
     let ctx = Context::new();
@@ -194,11 +197,15 @@ fn exponential_integral_along_a_complex_ray() {
 /// The Fourier transform refused every rational function without a table
 /// entry, down to `1/(t² + 1)`; it is now `H(−ω)·U(ω) + H(ω)·L(ω)` from the
 /// residues in the two half-planes (`L(|ω|)` for an even function), with
-/// half residues at simple real poles (principal value).  SymPy:
-/// `fourier_transform(1/(t**2 + 1), t, w)` = `pi*exp(-2*pi*Abs(w))`
-/// (ordinary frequency); mpmath (`quad` + `quadosc`): `∫ e^{−it}/(t² + t +
-/// 1) dt` = 1.33905116569145104967232157776 + 0.731526985845469784831387754368i,
-/// `∫ sin t·e^{−it/2}/(t(t² + 1)) dt` = 1.838364485266392670107542.
+/// half residues at simple real poles (principal value).  The ordinary
+/// frequency transform of `1/(t² + 1)` is `πe^{−2π|w|}` (mpmath
+/// `quad(cos(2πwt)/(t² + 1))`; up to 0.46 this cited SymPy for it, but SymPy
+/// 1.14 `fourier_transform(1/(t**2 + 1), t, w)` is `pi*exp(-2*pi*w)` for a
+/// plain and for a real `w` alike, wrong for `w < 0`: 25.51 at `w = −1/3`
+/// instead of 0.38687, see `v35_sympy_audit`); mpmath (`quad` + `quadosc`):
+/// `∫ e^{−it}/(t² + t + 1) dt` = 1.33905116569145104967232157776 +
+/// 0.731526985845469784831387754368i, `∫ sin t·e^{−it/2}/(t(t² + 1)) dt` =
+/// 1.838364485266392670107542.
 #[test]
 fn fourier_transform_of_rational_functions() {
     let ctx = Context::new();
@@ -265,7 +272,10 @@ fn mellin_transform_of_rational_functions() {
 }
 
 /// The Laplace transform refused rational functions with poles off 0:
-/// `L{1/(t + 1)} = e^s E₁(s)` (SymPy: `exp(s)*expint(1, s)`), `L{1/(t² + 1)}`.
+/// `L{1/(t + 1)} = e^s E₁(s)` (mpmath `quad(exp(-t)/(t + 1), [0, inf])` =
+/// 0.596347362323194074341078499369 = `e·E₁(1)`; up to 0.46 this cited SymPy
+/// for `exp(s)*expint(1, s)`, but SymPy 1.14 gives `-exp(-s)*Ei(-s)`, which is
+/// 0.0807 at `s = 1`: wrong, see `v35_sympy_audit`), `L{1/(t² + 1)}`.
 /// For a pole with a positive real part (`t² − 2t + 2`, poles `1 ± i`) the
 /// continuation `e^{−ρs}(±iπ − Ei(ρs))` keeps the result right at complex
 /// `s`.  mpmath: `quad(exp(-2t)/(t**2 + 1), [0, 1, inf])` =

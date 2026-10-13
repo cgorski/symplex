@@ -170,18 +170,19 @@ fn third_order_green_function_with_ei() {
 }
 
 /// `y″ + y = sin x/x`: refused (variation of parameters needs `∫ sin²x/x`
-/// and `∫ sin x·cos x/x` in the trigonometric form).  The Green's function
-/// with `sin x` written as exponentials gives `ln|x|` and `Ei(±2ix)` —
-/// `Ci(2x)`, `Si(2x)` in disguise (SymPy 1.14: `(C1 + Si(2x)/2)·sin x +
-/// (C2 − log(x)/2 + Ci(2x)/2)·cos x`).  Oracle: substitution (real values);
-/// SymPy.
+/// and `∫ sin x·cos x/x` in the trigonometric form).  In 0.46 the Green's
+/// function with `sin x` written as exponentials gave `Ei(±2ix)`; since 0.47
+/// the integrator's sin/cos products over a rational function give
+/// `Si(2x)`, `Ci(2x)` directly (SymPy 1.14: `(C1 + Si(2x)/2)·sin x + (C2 −
+/// log(x)/2 + Ci(2x)/2)·cos x`).  Oracle: substitution (real values); SymPy.
 #[test]
 fn green_function_sin_over_x() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let text = "D2Y + y - sin(x)/x";
     let sol = ode(&ctx, text).solve_ode(&y, &x);
-    assert!(sol.to_string().contains("Ei(2*x*I)"), "{sol}");
+    let s = sol.to_string();
+    assert!(s.contains("Si(2*x)") || s.contains("Ei(2*x*I)"), "{sol}");
     assert_solves(&ctx, text, &sol, 2);
 }
 

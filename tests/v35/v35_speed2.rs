@@ -167,3 +167,23 @@ fn acosh_on_the_imaginary_axis() {
     assert!(dt < Duration::from_secs(5), "limit took {dt:?}");
     assert_eq!(r.unwrap(), ctx.parse("oo").unwrap());
 }
+
+/// `eval` of `acosh` of a nested complex power took ~1 s per call in the
+/// 0.47 development (release; 2 ms in 0.46): the realness test ran the
+/// exact cyclotomic walk over the radicals before looking at the value,
+/// whose imaginary part (`10⁻¹³` of the modulus) a certified evaluation
+/// shows at once.  `fuzz_simplify` timed out on
+/// `acosh(((x^(-3/4))^(-3/2))^(-3/2))` (60 s for its sample points).
+#[test]
+fn realness_of_a_visibly_complex_value_is_decided_numerically() {
+    let ctx = Context::new();
+    let e = ctx
+        .parse("acosh((((1/1000000000000*I + 13/4)^(-3/4))^(-3/2))^(-3/2))")
+        .unwrap();
+    let t = std::time::Instant::now();
+    let v = e.eval();
+    assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+    let z = v.eval_complex64().unwrap();
+    // mpmath: acosh(((mpc(13/4, 1e-12)**(-0.75))**(-1.5))**(-1.5))
+    assert!((z.im + 1.433_530_793_143_204_9).abs() < 1e-12, "{z}");
+}

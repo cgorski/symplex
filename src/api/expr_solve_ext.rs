@@ -588,18 +588,7 @@ pub(crate) fn exact_zero_members(
         return ids;
     }
     ids.into_iter()
-        .map(|id| {
-            let near_zero = crate::base::walk::free_symbols(arena, id).is_empty()
-                && !arena.is_zero_structural(id)
-                && crate::transforms::evalf::evalf_complex64(arena, id)
-                    .is_ok_and(|z| z.norm() < 1e-10);
-            if near_zero && crate::transforms::eval::constant_zero_decision(arena, id) == Some(true)
-            {
-                arena.zero
-            } else {
-                id
-            }
-        })
+        .map(|id| crate::transforms::solve::exact_zero_form(arena, id))
         .collect()
 }
 

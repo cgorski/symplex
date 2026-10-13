@@ -223,8 +223,10 @@ fn logarithm_of_a_complex_leading_term() {
 /// infinity had no expansion (`asinh x` at `+∞` was refused); nor had a
 /// power with a fractional exponent at infinity (`√(x + 1)`, `∛x`).
 ///
-/// Oracle: SymPy `series(asinh(x), x, oo, 4)` = `log(2) + log(x) +
-/// 1/(4x²) + O(x⁻⁴)`, `series(sqrt(x + 1), x, oo, 3)`; mpmath residuals at
+/// Oracle: the classical expansion `asinh x = ln(2x) + 1/(4x²) − 3/(32x⁴) +
+/// …` at `+∞` (up to 0.46 this cited SymPy `series(asinh(x), x, oo, 4)`
+/// for it, which in SymPy 1.14 raises `PoleError`, "Asymptotic expansion of
+/// asinh around [oo] is not implemented"), `series(sqrt(x + 1), x, oo, 3)`; mpmath residuals at
 /// `x = ±10ᵏ` (`asin(10⁸) = π/2 − 19.11…i`, `acosh(−10⁸) = 19.11… + πi`,
 /// `sqrt(−10⁸ + 1) = 9999.99995i`).
 #[test]

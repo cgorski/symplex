@@ -53,10 +53,12 @@ fn same_values(got: &[Ex], want: &[(f64, f64)], what: &str) {
 /// reals written with complex cube roots, decided real exactly).
 ///
 /// Oracle: mpmath `polyroots([1, 4, 1/2, -2, 5])` →
-/// `-3.59952026842732282153594906164939471`,
-/// `-1.5670157668818220274189475178688504`,
-/// `0.583268017654568424477448289759122553 ±
-/// 0.739083127027217270207827747348092348j`; `polyroots([1, 4, 3, -2,
+/// `-3.599520268427317688282153594906164939471`,
+/// `-1.56701576688181804220274189475178688504`,
+/// `0.5832680176545678652424477448289759122553 ±
+/// 0.7390831270272174439270207827747348092348j` (mpmath at 60 and 90
+/// digits; up to 0.46 these three were quoted with four digits dropped after
+/// the 15th); `polyroots([1, 4, 3, -2,
 /// 5])` → `-2.439748469536361512867538324270333269393 ±
 /// 0.7568854969757944141518026513549220253436j`,
 /// `0.4397484695363615128675383242703332693925 ±
@@ -127,7 +129,9 @@ fn ferrari_eigenvalues_of_a_parametric_companion_matrix() {
 /// `-1.41421356237309504880168872420969807857 ±
 /// 0.7653668647301795434569199680607977335227j`,
 /// `1.41421356237309504880168872420969807857 ±
-/// 1.84775906502257256366378793576573645j`.
+/// 1.847759065022573512256366378793576573645j` (mpmath at 60 and 90
+/// digits; up to 0.46 the imaginary part was quoted with four digits dropped
+/// after the 15th).
 #[test]
 fn descartes_euler_poles_of_a_parametric_transfer_function() {
     let ctx = Context::new();
@@ -136,8 +140,13 @@ fn descartes_euler_poles_of_a_parametric_transfer_function() {
     let g = TransferFunction::new(ctx.one(), p(&ctx, "s^4 + 4*x*s + 4*x^2 - x"), s);
     let poles = g.poles();
     assert_eq!(poles.len(), 4, "{poles:?}");
+    // A cube root prints as `cbrt(…)`, its square as `(…)^(2/3)`; up to 0.46
+    // only the first spelling was excluded.
     assert!(
-        poles.iter().all(|e| !e.to_string().contains("cbrt")),
+        poles.iter().all(|e| {
+            let s = e.to_string();
+            !s.contains("cbrt") && !s.contains("/3)")
+        }),
         "square roots only: {poles:?}"
     );
     let xv = p(&ctx, "2");
@@ -165,14 +174,18 @@ fn descartes_euler_poles_of_a_parametric_transfer_function() {
 /// Oracle: mpmath at 50 digits, `V·diag(f(λ))·V⁻¹` from `mp.eig` with the
 /// principal branch: eigenvalues `-3.2730942988980187952030611554`,
 /// `3.93564575772980553032073667283`, `2.06949934873709055840977082408`;
-/// `√A[0][0]` = `1.7352211107693470009367746355622808 +
-/// 0.36575921101158350248546085869636915j`, `√A[1][2]` =
-/// `0.211584740743989045089067388274711047 +
+/// `√A[0][0]` = `1.735221110769299904470009367746355622808 +
+/// 0.3657592110115794765350248546085869636915j`, `√A[1][2]` =
+/// `0.2115847407439890587045089067388274711047 +
 /// 0.07348092299140044976788323614201027658579j`; `ln A[0][0]` =
 /// `1.512514285023704337963627224034036069731 +
 /// 0.6351347659421727685813216712674810595044j`, `ln A[2][1]` =
 /// `0.1618138209541746931891468179608423809763 +
-/// 1.16266245742011425415688061937842215j` (scipy `sqrtm`/`logm` agree).
+/// 1.162662457420114054425415688061937842215j` (scipy `sqrtm`/`logm` agree;
+/// recomputed at 50 and 70 digits — up to 0.46 both parts of `√A[0][0]`,
+/// the real part of `√A[1][2]` and the imaginary part of `ln A[2][1]` were
+/// quoted with four to six digits dropped after the 14th; the asserted
+/// 13–15-digit literals were right).
 #[test]
 fn principal_root_and_logarithm_of_a_real_matrix_with_a_cardano_spectrum() {
     let ctx = Context::new();

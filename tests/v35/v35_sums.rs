@@ -144,8 +144,10 @@ fn alternating_binomial_sums_by_cases() {
 /// negative over the whole range takes the phase `((−1)^e)^count`; mixed
 /// signs stay unevaluated.
 ///
-/// Oracle: the products factor by factor; SymPy 1.14
-/// `product(sqrt(-k), (k, 1, n))` → `I**n*sqrt(factorial(n))`.
+/// Oracle: the products factor by factor.  (Up to 0.46 this cited SymPy
+/// 1.14 for `product(sqrt(-k), (k, 1, n))` → `I**n*sqrt(factorial(n))`;
+/// SymPy 1.14 returns `sqrt((-1)**n*factorial(n))`, the form symplex had,
+/// which is `√2` at `n = 2` where the product is `−√2`.)
 #[test]
 fn products_of_roots_respect_principal_branches() {
     let ctx = Context::new();

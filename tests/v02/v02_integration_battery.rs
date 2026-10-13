@@ -295,9 +295,9 @@ fn battery_piecewise_like() {
     assert!(!anti.has_unevaluated(), "piecewise: {anti}");
     let s = format!("{anti}");
     assert!(s.contains("Piecewise") || s.contains("piecewise"), "{s}");
-    // |x² − 1| has real roots → must stay unevaluated rather than guess
-    let g = (&x.powi(2) - 1).abs().integrate(&x);
-    assert!(g.has_unevaluated(), "{g}");
+    // |x² − 1| has real roots: a continuous piecewise antiderivative since
+    // 0.47 (it stayed unevaluated), checked like the others.
+    b.verify("abs(x^2-1)", &(&x.powi(2) - 1).abs(), &x);
     // |x² + 1| = x² + 1 (no real roots) → integrates
     b.verify("abs(x^2+1)", &(&x.powi(2) + 1).abs(), &x);
     b.finish();

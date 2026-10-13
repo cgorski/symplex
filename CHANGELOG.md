@@ -8,6 +8,140 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+SymPy's own test suites as a yardstick: their integrals, equations,
+inequalities, limits, series, sums and special values were run through
+symplex, every answer checked independently (differentiation, quadrature,
+substitution, mpmath), and the gaps and errors fixed.
+
+### Breaking (behaviour)
+
+- **Decimal exponents in literals**: `1e-05`, `2.5E3`, `3e+2` parse as the
+  exact numbers they denote.  Up to 0.46 the parser had no exponents and
+  read `1e-05` silently as `1·e − 5` (Euler's number) and `2e3` as `2·e3`
+  (a symbol); `2e` and `2e+x` keep meaning `2·e`.
+- `eval`: constant arguments give up their sign (`sin(−1)` → `−sin(1)`,
+  `cos(−√2/2)` → `cos(√2/2)`), `sin`/`cos`/`tan` of `qπ` are reduced to the
+  first quadrant, `exp(i·q·π)` to `q ∈ (−1, 1]`, `tan(i·x)` = `i·tanh x`,
+  `floor`/`ceiling` of real constants fold, `log(b^k, b) = k`, `beta` of
+  rationals through `Γ` (`beta(1, 5/2) = 2/5`), `exp(k·ln x) = x^k` for
+  every `x` (as `exp(ln x) = x`; SymPy folds it too), `Eq(nan, a)` is
+  `False` (as Boolean `simplify` said).
+- Limits whose leading coefficient is a parameter of unknown sign answer
+  `sign(a)·∞` (SymPy `oo*sign(a)`); they were refused.  `(−x)^x` and
+  `(1 − x/2)^{3x}` at ∞ are refused (they were `∞`; SymPy `zoo`).
+- Solution sets over ℝ keep `∩ ℝ` around members not known to be real
+  (`x² + a`: `ℝ ∩ {±√(−a)}`); `|x² − 1|`-type integrands integrate to
+  continuous piecewise antiderivatives (they were unevaluated).
+
+### Fixed
+
+- **Divergent improper integrals were numbers**: `eval_f64`,
+  `eval_decimal` and `integrate_numeric` of `∫_{−∞}^{∞} |x|/((x² + 1)π) dx`
+  gave 225.93 (the `f64` integrand is 0 once `x²` overflows), and `∫ (x +
+  4)/(x² + 5)` over ℝ its principal value 5.62.  An `f64` value over an
+  infinite range is served only when certified evaluations out to `2²⁰⁴⁸`
+  show its tail is seen; a refused integral is `Divergent` when a
+  comparison test proves it.  Hunt (400 improper integrals, 202 divergent
+  by construction): numbers for divergent integrals 21 → 0, 174 proven
+  divergent; SymPy returns a number for all 202.
+- `erfc` on the positive imaginary axis had the wrong sign (`erfc(14i)`,
+  and through it `uppergamma(−7/2, −401/2)`), wrong since 0.45.
+- **Integration**: `∫ sin(kx)·sin(mx)` for integer `k`, `m` missed the case
+  `m = ±k` (`∫₀^π` was 0, it is π/2): degenerate parameter values come
+  from the factored denominator and integer parameters are sampled by the
+  self-check; `∫₀^{2π} dt/(e^{it} − 2)` was 0 (it is −π: the logarithms of
+  `u = e^{it}` jumped); an antiderivative with dilogarithms that jumped by
+  π²/2 where the integrand is finite is refused (SymPy is wrong there too).
+- **Limits**: constants vanishing identically in their parameters (`1 −
+  sin²a − cos²a`) were taken as nonzero, hidden rational exponent ratios
+  (`ln 3/ln 27`) as irrational, a turning phase `(−x)^x` as `∞`; Gruntz's
+  representative of the most rapidly varying class depended on hash order
+  (now SymPy's simplest member), exponentials of the class of ω were split
+  (`exp(ψ(x)) − x` at ∞ was `∞`; it is −1/2); infinite constants inside an
+  expression (`x − oo`, `(1 + x)^oo`); `Σ_{x=0}^{b−1} (x − b)⁻²` was `zoo`;
+  series of order 0 returned 0; limits of unevaluated sums were 0.  SymPy
+  limit/series/sum corpus (1,517 cases): right 1,036 → 1,115, refused 251 →
+  183.
+- **Solve, sets, inequalities**: nested periodic functions shared one
+  parameter (`sin(cos x) = 1/2` lost all periods but one); periodic
+  equations in a substituted unknown kept one member (`cot(eˣ) = 2`; 151
+  hunter cases); poles inside a factor were roots; equal roots in
+  different forms were listed twice; complex-valued inequalities (`{1, 2}`,
+  was ∅); poles of both sides of an inequality kept (`x + 1/x > −2 + 1/x`);
+  parametric Lambert sets take both real branches; `solve_as_set` decides
+  exact zeros; rational Ferrari resolvent roots beyond 10⁶ are found (roots
+  in ℚ(√2) instead of cube roots, as in 0.43).  SymPy solver corpus (1,602
+  calls): right 952 → 1,030, wrong 20 → 3 (two `polysys` edge cases and
+  one SymPy shares), refusals 314 → 255.
+- **Tests and fixtures audited** against SymPy 1.14 and mpmath: 22 wrong
+  SymPy claims in comments corrected (SymPy's Laplace transforms of `1/(t
+  + 1)`, `sin t/(t + 1)` and Fourier transform of `1/(t² + 1)` at `ω < 0`
+  are wrong, not equal to symplex's); two fixture values that were
+  SymPy's errors corrected (`Mellin(1/(1 + x)²)` at `s = 1`, `Σ 1/√k`);
+  the fixture generator keeps the corrections.
+
+### Added
+
+- **Integration** (SymPy integration corpus, 1,052 problems: right 646 →
+  754, wrong 5 → 0, refused-while-SymPy-answers 162 → 65; symplex 3 s of
+  CPU, SymPy 857 s): by parts with `Ei`, `Si`, `Ci`, `li`, `Shi`, `Chi`,
+  `Eₙ`, inverse hyperbolic functions as `u` (`∫ x·eˣ·ln x = (x − 1)eˣ ln x −
+  eˣ + Ei(x)`); products of exponentials and sines/cosines over rational
+  functions through `Ei` at complex points (`∫ eˣ cos x/x`, `∫ e^{−x} sin
+  x/(x² + 1)`); `√(ax² + bx + c)` with numeric or symbolic coefficients;
+  symbolic powers of linear terms; `u = xᵏ` and arguments of library
+  functions as substitutions (`∫ x·J₁(x²) = −J₀(x²)/2`); `b^g` through
+  `exp`; incomplete gamma; orthogonal polynomials of symbolic degree;
+  Bessel power rules; Lambert W; `δ` with several roots; `|g|`, `sign`,
+  `H`, `min`/`max` with several roots split continuously.  Definite
+  integrals: the integration variable in the bounds, exponential decay at
+  ∞ (moments of the normal distribution with symbolic μ, σ), `∫₀^∞ ln(x +
+  1)/(x² + 1) = π ln 2/4 + G`, kink-aware quadrature guard.
+- **Periodic inequalities over every period**: `sin x > 1/2` is the image
+  set `⋃ₙ (π/6 + 2nπ, 5π/6 + 2nπ)` (refused; SymPy's `solveset` gives one
+  period); exponentials of different bases, several `|·|`, `erf`/`erfc` and
+  their inverses, `LambertW`, `atan2`, `x^c`, `binomial(x, k)`, three or
+  four square roots, trigonometric multiples with a common factor.
+- **Limits and series**: `Si`/`Ci` along horizontal lines, Fresnel and
+  Bessel functions at infinity, points `d·∞`, symbolic exponents,
+  `binomial` and `fibonacci`/`lucas` at infinity; Gruntz depth 15 → 30
+  (the limits 8.2–8.18 of Gruntz's thesis); series at ±∞ of `uppergamma`,
+  `besselk`, `besseli`, `erfc` products; `limit(1/(acosh(2i + ix) −
+  acosh(2i)), x, 0, −)` 14 s → 24 ms.
+- **evalf**: `sin`/`cos`/`tan` of huge inexact arguments (`sin(E·10¹⁰⁰)`),
+  `erf(x) − 1` for 84 < x < 38000 (`−6.406·10⁻⁴³⁴⁶` at 100; SymPy
+  `0.e-125`).  SymPy special-value corpus: exact folds 569 → 674 of 854,
+  0 wrong.
+
+### Changed (performance)
+
+- Realness of Ferrari radicands by the cyclotomic test first (`solve` of
+  a septic 33 → 7 ms, as in 0.43); the directions of `re(g)·∞` and
+  `im(g)·∞` from one memoised value (parser benchmark 205 → 125 ms).
+
+### Measured
+
+- `tests/v35/` (0.39–0.47): 52 files, 493 tests.  nextest 14,285 tests
+  (14 skipped), doctests 1,330 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,753 verified (0.46: 29,529), 115 real_verified (was
+  91), 0 wrong; self-test 56,013 / 0 wrong / 204 undecided;
+  `--negative-params` 115 real_verified, 0 wrong (it caught 4 wrong
+  answers of the development code, fixed before the release: the
+  logarithmic substitution with a non-real exponent).
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.  MSRV 1.93: `cargo check --all-targets` passes.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s
+  and 4 GB limits): the campaign on the development code found one
+  `fuzz_simplify` timeout (`acosh(((x^(−3/4))^(−3/2))^(−3/2))`, 60 s:
+  the realness test ran an exact radical walk before looking at the
+  certified value; fixed), then ran clean: `fuzz_numdist` 90,860,128
+  inputs, `fuzz_refine` 16,719,435, `fuzz_lambertw` 3,253,176,
+  `fuzz_parser` 2,058,450, `fuzz_exact_matrix` 214,006, `fuzz_eigenvects`
+  194,690, `fuzz_evalf` 66,778, `fuzz_calculus` 38,746, `fuzz_poly` 27,044,
+  `fuzz_roundtrip` 19,550, `fuzz_simplify` 13,519, `fuzz_integrate` 3,526:
+  0 crashes, 0 timeouts, 0 out-of-memory (one slow `fuzz_integrate` unit,
+  10 s: `∫ (√x + e⁻¹)/(x³ + √2·i/2) dx`, 3.3 s in 0.46, 5.1 s now alone).
+
 ## [0.46.0] - 2026-10-12
 
 Decisions that agree with each other, statistics without silent errors,
@@ -22,8 +156,9 @@ now right.  Improper integrals of rational functions times `cos`, `sin`
 or `ln` are found by residues and keyhole contours, and Fourier, Mellin,
 Laplace and z-transforms of rational functions are closed forms (2,375 of
 4,000 hunter cases, up from 1,326; 0 wrong).  ODEs gain the Green's
-function method (`y″ + y = eˣ/x`) and recurrences trigonometric forcing —
-both refused by SymPy.  Plots no longer join curves across undefined
+function method (`y″ + y = eˣ/x`, which SymPy 1.14 answers only with
+Meijer G-functions) and recurrences trigonometric forcing (refused by
+SymPy 1.14's `rsolve`).  Plots no longer join curves across undefined
 gaps.  Rubi: 29,529 verified, 0 wrong.
 
 ### Breaking (behaviour)
@@ -324,7 +459,8 @@ on every fuzz corpus) answer in 0.3 s.  Rubi: 29,529 verified, 0 wrong.
   now taken without that search (`Γ(−2 + ix)·ix` at `0`: 0.14 s → 2 ms).
   `lim_{x→π} (atanh(xˣ) − atanh(π^π))/(cos(xˣ) − cos(π^π))` was refused
   after 4 s ("maximum recursion depth exceeded"); it is `1/((π^{2π} −
-  1)·sin(π^π))` (mpmath; SymPy says it does not exist), found in 0.4 s: an
+  1)·sin(π^π))` (mpmath; SymPy 1.14 returns `oo*sign(c)` with `c` exactly
+  0 — no value), found in 0.4 s: an
   argument real near the point (`xˣ` at `π`) stays on the cut of `atanh`,
   where the principal values are continuous (realness was asked for
   every real `x`); `ln π + 1` has a known sign (`1/(cos xˣ − cos π^π)`

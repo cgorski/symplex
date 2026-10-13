@@ -402,7 +402,7 @@ fn values_come_out_in_sympys_normal_forms() {
 /// `cosh(I*pi/5)` → `1/4 + sqrt(5)/4`, `sinh(I*pi/8)` → `I*sqrt(1/2 -
 /// sqrt(2)/4)`, `tanh(I*pi/12)` → `I*(2 - sqrt(3))`, `sinh(I*pi/4)` →
 /// `sqrt(2)*I/2`, `coth(I*pi/8)` → `-I*(1 + sqrt(2))`; `cosh(I*pi/7)`
-/// → `cos(pi/7)` (here `cosh(iπ/7)` stays).
+/// → `cos(pi/7)` (here too since 0.47; before, `cosh(iπ/7)` stayed).
 #[test]
 fn hyperbolic_functions_at_imaginary_multiples_of_pi() {
     let ctx = Context::new();
@@ -414,7 +414,7 @@ fn hyperbolic_functions_at_imaginary_multiples_of_pi() {
         ("cosh(I*pi/4)", "1/2*sqrt(2)"),
         ("sinh(-I*pi/4)", "-1/2*sqrt(2)*I"),
         ("coth(I*pi/8)", "-(sqrt(2) + 1)*I"),
-        ("cosh(I*pi/7)", "cosh(1/7*pi*I)"),
+        ("cosh(I*pi/7)", "cos(1/7*pi)"),
     ] {
         assert_eq!(parse(&ctx, input).eval().to_string(), want, "{input}");
     }

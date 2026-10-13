@@ -40,6 +40,17 @@ pub(crate) const FN_ERFI: &str = LibFn::Erfi.name();
 pub(crate) const FN_SHI: &str = LibFn::Shi.name();
 pub(crate) const FN_CHI: &str = LibFn::Chi.name();
 
+/// The signs of the real and imaginary parts of a constant
+/// ([`Arena::part_signs`]); `None` for a part whose sign is not settled (or
+/// that is 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PartSigns {
+    /// The sign of the real part.
+    pub(crate) re: Option<std::cmp::Ordering>,
+    /// The sign of the imaginary part.
+    pub(crate) im: Option<std::cmp::Ordering>,
+}
+
 // ---------------------------------------------------------------------------
 // Arena
 // ---------------------------------------------------------------------------
@@ -87,7 +98,9 @@ pub struct Arena {
     pub(crate) config: EvalConfig,
 
     /// Answers `eval` proved for symbol-free constants (realness, sign),
-    /// keyed by the expression and the question (`eval`'s `FACT_*` codes).
+    /// keyed by the expression and the question (`eval`'s `FACT_*` codes 0
+    /// and 1; `canon`'s 2 and 3, the sign of a factor of a directed
+    /// infinity).
     ///
     /// A proof takes a certified evaluation, a deep zero search of the
     /// imaginary part and a minimal polynomial, and every `eval` pass over
@@ -1937,6 +1950,15 @@ impl Arena {
             return None;
         }
         crate::transforms::eval::certified_real_sign(self, expr)
+    }
+
+    /// The signs of the real and imaginary parts of the symbol-free `expr`
+    /// from one certified 16-digit value (see
+    /// `eval::certified_part_signs`): canonical multiplication orients
+    /// `re(g)·∞` and `im(g)·∞` from one evaluation of `g`.  `None` when
+    /// the value does not settle.
+    pub(crate) fn part_signs(&self, expr: ExprId) -> Option<PartSigns> {
+        crate::transforms::eval::certified_part_signs(self, expr)
     }
 
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.

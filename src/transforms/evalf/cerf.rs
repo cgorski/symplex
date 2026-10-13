@@ -209,8 +209,16 @@ fn family_at(
     cc: &mut Consts,
 ) -> Result<(Complex, f64), SymplexError> {
     if kind == Kind::Erfc {
-        // erfc z directly for Re z > 0, 2 − erfc(−z) otherwise.
-        let right = arg.0.is_positive() && !arg.0.is_zero();
+        // erfc z directly for Re z > 0 and on the positive imaginary axis,
+        // 2 − erfc(−z) otherwise, as `erf_asymptotic` splits it: the
+        // expansion is of `Γ(1/2, s²)` with `s²` on the principal branch,
+        // which on the imaginary axis (`s² < 0`) is `2·arg s` only for `Im s
+        // > 0`.  Up to 0.46 `erfc(14i)` came out `+5.35·10⁸³i` (mpmath: `1 −
+        // 5.347…·10⁸³i`), and so did `uppergamma(−7/2, −401/2)`, which `eval`
+        // writes with `erfc(i·√802/2)`: `2.57·10⁸⁵i` (mpmath: `0.27 −
+        // 5.33·10⁷⁶i`).
+        let right =
+            (arg.0.is_positive() && !arg.0.is_zero()) || (arg.0.is_zero() && !arg.1.is_negative());
         let s = if right { arg.clone() } else { c_neg(arg) };
         if let Some(e) = erfc_asymptotic(&s, wp, rm, cc) {
             if right {

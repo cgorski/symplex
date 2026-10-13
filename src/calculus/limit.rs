@@ -817,13 +817,35 @@ fn limit_val_parts(
         };
     }
 
+    if point == arena.nan() || point == arena.complex_infinity() {
+        return Err(fail("limit point must be finite or ±∞"));
+    }
+
+    // A directed infinity `d·∞` (`i·∞`): `var = d·t` with `t → +∞`, as
+    // SymPy reads it.  Before, the point was taken for a finite one, and
+    // `limit(besselj(1, x), x, i·∞)` failed.
+    if point != arena.infinity()
+        && point != arena.neg_infinity()
+        && is_infinite_form(arena, point)
+        && let Some((d, o)) = split_infinite(arena, point)
+        && arena.is_zero_structural(o)
+        && !crate::base::walk::contains(arena, d, var)
+    {
+        let t = arena.positive_symbol("__lim_dir_t");
+        let dt = arena.mul(&[d, t]);
+        let e = crate::transforms::subs::subs(arena, expr, var, dt);
+        let e = crate::transforms::eval::eval(arena, e);
+        let inf = arena.infinity();
+        return limit_val_parts(arena, e, t, inf, Direction::Both, depth + 1, perpendicular);
+    }
+
+    if let Some(r) = infinite_constant_limit(arena, expr, var, point, dir) {
+        return r.map(LimVal::exact);
+    }
+
     if point == arena.infinity() || point == arena.neg_infinity() {
         let positive = point == arena.infinity();
         return limit_at_infinity_dir(arena, expr, var, positive, depth, perpendicular);
-    }
-
-    if point == arena.nan() || point == arena.complex_infinity() {
-        return Err(fail("limit point must be finite or ±∞"));
     }
 
     // ── Finite point ────────────────────────────────────────────────
@@ -891,6 +913,163 @@ fn limit_val_parts(
                 }
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Infinite constants inside the expression
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Does `e` contain `∞`, `−∞`, `zoo` or `NaN` as a constant?
+fn contains_infinite_constant(arena: &Arena, e: ExprId) -> bool {
+    let atoms = [
+        arena.infinity(),
+        arena.neg_infinity(),
+        arena.complex_infinity(),
+        arena.nan(),
+    ];
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| atoms.contains(&id))
+}
+
+/// `t = c·(±∞)` with `c` free of infinite constants: `Some(±c)`.
+fn infinite_term_coefficient(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
+    if t == arena.infinity() {
+        return Some(arena.one());
+    }
+    if t == arena.neg_infinity() {
+        return Some(arena.neg_one());
+    }
+    let ExprNode::Mul(factors) = arena.node(t).clone() else {
+        return None;
+    };
+    let mut sign = 1i64;
+    let mut rest = Vec::with_capacity(factors.len());
+    let mut infinities = 0;
+    for f in factors {
+        if f == arena.infinity() {
+            infinities += 1;
+        } else if f == arena.neg_infinity() {
+            infinities += 1;
+            sign = -sign;
+        } else if contains_infinite_constant(arena, f) {
+            return None;
+        } else {
+            rest.push(f);
+        }
+    }
+    if infinities != 1 {
+        return None;
+    }
+    rest.push(arena.int(sign));
+    let c = arena.mul(&rest);
+    Some(crate::transforms::eval::eval(arena, c))
+}
+
+/// The limit of an expression holding an infinite constant, taken
+/// pointwise in the extended reals, `f(x)` being for each `x` near the
+/// point the value of the expression there: `x − ∞ = −∞` for every `x`,
+/// so its limit at `∞` is `−∞` (before: `∞`, from `∞ − ∞` read off the
+/// leading terms); `(1 + x)^∞` is `∞` for `x > 0` and `0` for `−1 < x < 0`
+/// (before: `1` from both sides).  SymPy leaves all of these unevaluated.
+///
+/// Handled: `F + c·∞` (`F` free of infinities, finite near the point:
+/// `sign(c)·∞` by the eventual sign of `c`), `c·∞`, `b^{±∞}` for a real
+/// `b` (by the eventual signs of `b − 1` and `b + 1`), `e^{c·∞}`.  Any
+/// other place of an infinite constant is refused.  `None` when `expr` has
+/// none.
+fn infinite_constant_limit(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    dir: Direction,
+) -> Option<Result<ExprId, SymplexError>> {
+    if !contains_infinite_constant(arena, expr) {
+        return None;
+    }
+    let ap = Approach { var, point, dir };
+    let refuse = || Some(Err(fail("an infinite constant inside the expression")));
+    // The eventual sign of a coefficient (constant or not).
+    let sign_of = |arena: &mut Arena, c: ExprId| -> Option<i32> {
+        if crate::base::walk::contains(arena, c, var) {
+            if !eventually_real(arena, c, &ap) {
+                return None;
+            }
+            eventual_sign_along(arena, c, &ap)
+        } else {
+            const_sign(arena, c)
+        }
+    };
+    let signed_infinity = |arena: &mut Arena, s: Option<i32>| match s {
+        Some(1) => Some(Ok(arena.infinity())),
+        Some(-1) => Some(Ok(arena.neg_infinity())),
+        _ => Some(Err(fail(
+            "the sign of the coefficient of an infinite constant is unknown",
+        ))),
+    };
+    let node = arena.node(expr).clone();
+    match node {
+        ExprNode::Add(terms) => {
+            let mut coefficient = None;
+            for t in terms {
+                if !contains_infinite_constant(arena, t) {
+                    continue;
+                }
+                if coefficient.is_some() {
+                    return refuse();
+                }
+                match infinite_term_coefficient(arena, t) {
+                    Some(c) => coefficient = Some(c),
+                    None => return refuse(),
+                }
+            }
+            let c = coefficient?;
+            let s = sign_of(arena, c);
+            signed_infinity(arena, s)
+        }
+        ExprNode::Mul(_) => match infinite_term_coefficient(arena, expr) {
+            Some(c) => {
+                let s = sign_of(arena, c);
+                signed_infinity(arena, s)
+            }
+            None => refuse(),
+        },
+        ExprNode::Exp(a) => match infinite_term_coefficient(arena, a) {
+            Some(c) => match sign_of(arena, c) {
+                Some(1) => Some(Ok(arena.infinity())),
+                Some(-1) => Some(Ok(arena.zero())),
+                _ => refuse(),
+            },
+            None => refuse(),
+        },
+        ExprNode::Pow(b, e) if !contains_infinite_constant(arena, b) => {
+            let up = if e == arena.infinity() {
+                true
+            } else if e == arena.neg_infinity() {
+                false
+            } else {
+                return refuse();
+            };
+            if !eventually_real(arena, b, &ap) {
+                return refuse();
+            }
+            let one = arena.one();
+            let bm1 = arena.sub(b, one);
+            let bp1 = arena.add(&[b, one]);
+            // b > 1: b^∞ = ∞, b^{−∞} = 0; |b| < 1: b^∞ = 0, and
+            // b^{−∞} = ∞ for 0 < b < 1 (no direction for b < 0).
+            let v = match (sign_of(arena, bm1), sign_of(arena, bp1)) {
+                (Some(1), _) if up => arena.infinity(),
+                (Some(1), _) => arena.zero(),
+                (Some(-1), Some(1)) if up => arena.zero(),
+                (Some(-1), Some(1)) if sign_of(arena, b) == Some(1) => arena.infinity(),
+                _ => return refuse(),
+            };
+            Some(Ok(v))
+        }
+        _ => refuse(),
     }
 }
 
@@ -1331,8 +1510,16 @@ fn expansion_cost_estimate(arena: &Arena, e: ExprId) -> f64 {
 /// Is the value `v` zero, structurally or as a sum of constants that
 /// cancels numerically (`asinh 2 − ln(2 + √5)`)?  A structural test let
 /// `x/(asinh(x + 2) − ln(2 + √5))` substitute to `0·(1/0) = 0` at `x = 0`.
-fn is_zero_value(arena: &Arena, v: ExprId) -> bool {
-    arena.is_zero_structural(v) || is_hidden_zero(arena, v)
+/// Also a constant that vanishes identically in its parameters
+/// (`1 − sin²a − cos²a`) or a function value at a hidden zero of the
+/// function (`cos(π/(24π − 2) − 12π²/(24π − 2))`, a `cos(−π/2)`):
+/// [`vanishes_identically`](crate::calculus::series::vanishes_identically).
+/// Before, `z/(1 − sin²a − cos²a + z)` at `0` was `0` and `3·sec(x/3 −
+/// 4πx)` at `3π/(24π − 2)` the finite `3/cos(…)`.
+fn is_zero_value(arena: &mut Arena, v: ExprId) -> bool {
+    arena.is_zero_structural(v)
+        || is_hidden_zero(arena, v)
+        || crate::calculus::series::vanishes_identically(arena, v)
 }
 
 /// A "definite" constant: numeric, or a symbolic constant with a known sign.
@@ -1452,6 +1639,17 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
             // `ln π + 1` was of unknown sign (the leading coefficient
             // `−1/(π^π·(ln π + 1)·sin π^π)` of `1/(cos xˣ − cos π^π)` at `π⁺`).
             let Some(r) = arena.as_num(inner).cloned() else {
+                // `ln u` for a positive `u`: the sign of `u − 1` (`ln(c + 1)`
+                // for a positive `c`, the rate of `(1 + c)^{−n}`: before,
+                // "cannot determine the sign of −ln(c + 1)").
+                if const_sign_depth(arena, inner, depth + 1) == Some(1) {
+                    let one = arena.one();
+                    let um1 = arena.sub(inner, one);
+                    let um1 = crate::transforms::eval::eval(arena, um1);
+                    if let Some(s) = const_sign_depth(arena, um1, depth + 1) {
+                        return Some(s);
+                    }
+                }
                 return assumption_sign(arena, e).or_else(|| numeric_sign(arena, e));
             };
             if !r.is_positive() {
@@ -2633,6 +2831,35 @@ fn try_compose(
                 arena.zero()
             })
         }
+        ExprNode::Si(a) | ExprNode::Ci(a) => {
+            let l = inner_limit(arena, a)?;
+            let Kind::Infinite(inf) = kind_of(arena, l)? else {
+                return None;
+            };
+            sine_cosine_integral_at_infinity(arena, &node, a, inf, &ap)
+        }
+        ExprNode::Apply(f, ref args) => {
+            let lf = arena.lib_fn(f)?;
+            let (order, a) = match (lf, args.as_slice()) {
+                (
+                    crate::base::libfn::LibFn::FresnelS | crate::base::libfn::LibFn::FresnelC,
+                    &[a],
+                ) => (None, a),
+                (
+                    crate::base::libfn::LibFn::BesselJ
+                    | crate::base::libfn::LibFn::BesselY
+                    | crate::base::libfn::LibFn::BesselI
+                    | crate::base::libfn::LibFn::BesselK,
+                    &[nu, a],
+                ) if !crate::base::walk::contains(arena, nu, var) => (Some(nu), a),
+                _ => return None,
+            };
+            let l = inner_limit(arena, a)?;
+            let Kind::Infinite(inf) = kind_of(arena, l)? else {
+                return None;
+            };
+            special_at_infinity(arena, lf, order, a, inf, &ap)
+        }
         ExprNode::Floor(a) | ExprNode::Ceiling(a) => {
             let is_floor = matches!(node, ExprNode::Floor(_));
             let l = inner_limit(arena, a)?;
@@ -2657,6 +2884,135 @@ fn try_compose(
                     exact_result(arena.intern(ExprNode::Num(nid)))
                 }
             }
+        }
+        _ => None,
+    }
+}
+
+/// `Si g`, `Ci g` for `g` tending to the infinity `inf` along a horizontal
+/// line (`Re g → ±∞` with `Im g` convergent, or real): `Si → ±π/2` and
+/// `Ci → 0` as `Re g → +∞`; `Ci → ±iπ` as `Re g → −∞` with the side of
+/// its cut `(−∞, 0]` (`+iπ` on it, from above, as SymPy's and mpmath's
+/// principal value `Ci(−x) = Ci(x) + iπ`).  `Si z = π/2 − f(z)·cos z −
+/// g(z)·sin z`, `Ci z = f(z)·sin z − g(z)·cos z` with `f, g = O(1/z)`
+/// (DLMF 6.5.5–6, 6.12.3–4; `sin`, `cos` bounded on the line).  Before,
+/// `Ci(x + i)`, `Si(x + i)` and `Ci(−x)` at `∞` were refused ("cannot
+/// determine the leading behaviour").
+fn sine_cosine_integral_at_infinity(
+    arena: &mut Arena,
+    node: &ExprNode,
+    g: ExprId,
+    inf: Infinite,
+    ap: &Approach,
+) -> Option<Result<LimVal, SymplexError>> {
+    let positive = match inf.axis {
+        Axis::RealPos => true,
+        Axis::RealNeg => false,
+        _ => return None,
+    };
+    // The imaginary part must stay bounded (converge).
+    let real = eventually_real(arena, g, ap);
+    let im = if real {
+        arena.zero()
+    } else {
+        offset_im(arena, inf.offset?)?
+    };
+    let half_pi = {
+        let h = arena.rational(1, 2);
+        arena.mul(&[h, arena.pi()])
+    };
+    match node {
+        ExprNode::Si(_) => exact_result(if positive {
+            half_pi
+        } else {
+            arena.neg(half_pi)
+        }),
+        _ if positive => exact_result(arena.zero()),
+        _ => {
+            let side = if real { 1 } else { const_sign(arena, im)? };
+            if side == 0 {
+                return None;
+            }
+            let i_pi = arena.mul(&[arena.i_unit(), arena.pi()]);
+            let v = if side > 0 { i_pi } else { arena.neg(i_pi) };
+            finite_result(arena, v, ap.var)
+        }
+    }
+}
+
+/// The Fresnel integrals and the Bessel functions of a constant order for
+/// an argument `g` tending to the infinity `inf`:
+///
+/// * `S, C → ±1/2` along the real axis (DLMF 7.12);
+/// * `Jν, Yν → 0` along the real axis (`O(|z|^{−1/2})`, DLMF 10.17.3–4; on
+///   the negative axis `Jν(−x) = e^{iπν}Jν(x)`, `Yν(−x) = e^{−iπν}Yν(x) +
+///   2i·cos(πν)·Jν(x)`);
+/// * `Iν(−x) = (−1)^ν·Iν(x) → (−1)^ν·∞` for an integer `ν`; along the
+///   imaginary axis `Iν(±iy) = (±i)^ν Jν(y) → 0`, `Kν(±iy) → 0`,
+///   `Jν(±iy) = (±i)^ν Iν(y) → (±i)^ν·∞` and `Yν(±iy) → i^{ν+1}·∞`,
+///   `(−i)^{ν+1}·∞` (DLMF 10.27.6–8; integer `ν`).
+///
+/// Before, all of these were refused (SymPy answers them).
+fn special_at_infinity(
+    arena: &mut Arena,
+    lf: crate::base::libfn::LibFn,
+    order: Option<ExprId>,
+    g: ExprId,
+    inf: Infinite,
+    ap: &Approach,
+) -> Option<Result<LimVal, SymplexError>> {
+    use crate::base::libfn::LibFn;
+    let real = matches!(inf.axis, Axis::RealPos | Axis::RealNeg) && eventually_real(arena, g, ap);
+    let imaginary =
+        matches!(inf.axis, Axis::ImagPos | Axis::ImagNeg) && real_part_vanishes(arena, g, ap);
+    let up = matches!(inf.axis, Axis::RealPos | Axis::ImagPos);
+    let integer_order = order
+        .and_then(|nu| arena.as_num(nu))
+        .filter(|r| r.is_integer())
+        .cloned();
+    let directed = |arena: &mut Arena, d: ExprId| -> Option<Result<LimVal, SymplexError>> {
+        let d = crate::transforms::eval::eval(arena, d);
+        let axis = direction_axis(arena, d)?;
+        let offset = (axis != Axis::Other).then(|| arena.zero());
+        infinite_value(
+            arena,
+            Infinite {
+                dir: d,
+                axis,
+                offset,
+            },
+            ap.var,
+        )
+        .map(Ok)
+    };
+    match lf {
+        LibFn::FresnelS | LibFn::FresnelC if real => {
+            exact_result(arena.rational(if up { 1 } else { -1 }, 2))
+        }
+        LibFn::BesselJ | LibFn::BesselY if real => exact_result(arena.zero()),
+        LibFn::BesselI | LibFn::BesselK if imaginary => exact_result(arena.zero()),
+        LibFn::BesselI if real && !up => {
+            let n = integer_order?;
+            let odd = (n.to_integer() % BigInt::from(2)) != BigInt::zero();
+            exact_result(if odd {
+                arena.neg_infinity()
+            } else {
+                arena.infinity()
+            })
+        }
+        LibFn::BesselJ | LibFn::BesselY if imaginary => {
+            let nu = order?;
+            integer_order.as_ref()?;
+            let i = arena.i_unit();
+            let unit = if up { i } else { arena.neg(i) };
+            let d = if lf == LibFn::BesselJ {
+                arena.pow(unit, nu)
+            } else {
+                let one = arena.one();
+                let nu1 = arena.add(&[nu, one]);
+                arena.pow(unit, nu1)
+            };
+            directed(arena, d)
         }
         _ => None,
     }
@@ -3361,12 +3717,36 @@ fn one_sided_gruntz(
 // (d) L'Hôpital + series fallback (analytic expressions only)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Does `expr` hold an unevaluated sum, product, integral, derivative or
+/// limit that depends on `var` (in its body or its bounds)?  The
+/// polynomial-degree and L'Hôpital fallbacks do not see through them.
+fn has_varying_binder(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| {
+            matches!(
+                arena.node(id),
+                ExprNode::Sum(..)
+                    | ExprNode::Product_(..)
+                    | ExprNode::Integral(..)
+                    | ExprNode::DefiniteIntegral(..)
+                    | ExprNode::Derivative(..)
+                    | ExprNode::Limit(..)
+            ) && crate::base::walk::contains(arena, id, var)
+        })
+}
+
 fn analytic_fallback(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     point: ExprId,
 ) -> Result<ExprId, SymplexError> {
+    if has_varying_binder(arena, expr, var) {
+        return Err(fail(
+            "an unevaluated sum, product or integral of the limit variable",
+        ));
+    }
     if meets_branch_cut_off_axis(arena, expr, var, point) {
         return Err(fail(
             "a non-real argument meets a branch cut at the point: the one-sided limits may differ",
@@ -3582,6 +3962,12 @@ fn limit_at_infinity_dir(
     };
 
     // ── Polynomial-degree fallback ──
+    // Not for an unevaluated sum, product or integral of `var`: the
+    // fallback took `Σ_{k=1}^{n} k²·Σ_{m=1}^{k} 2^m/m/(2ⁿ·n)` for `0` (it is
+    // `4`; SymPy `limit_seq`).
+    if has_varying_binder(arena, expr, var) {
+        return Err(gruntz_err);
+    }
     tracing::debug!("limit: Gruntz failed, falling back to polynomial degree analysis");
     match limit_at_infinity(arena, expr, var, positive) {
         Ok(r) if is_valid_limit_value(arena, r, var) => {
@@ -3652,6 +4038,10 @@ fn with_imaginary_part(
     }
     if depth >= MAX_COMPOSE_DEPTH {
         return Err(undetermined());
+    }
+    let e = imaginary_arguments_as_real(arena, e, t);
+    if crate::calculus::gruntz::eventually_real_at_inf(arena, e, t) {
+        return Ok(LimVal::exact(value));
     }
     // Real arguments on a cut: their principal values written off the cut.
     let Some(e) = crate::calculus::gruntz::continue_real_on_cut_at_inf(arena, e, t) else {
@@ -3736,6 +4126,95 @@ fn with_imaginary_part(
         }
     }
     Err(undetermined())
+}
+
+/// `e` with the inverse functions of a purely imaginary argument `i·y` (`y`
+/// real for all large `t`) written through real functions of `y`:
+/// `acosh(iy) = asinh|y| + i·sign(y)·π/2` (by the eventual sign of `y`),
+/// `asin(iy) = i·asinh y`, `acos(iy) = π/2 − i·asinh y`, `atanh(iy) =
+/// i·atan y` (DLMF 4.23, 4.37; principal values).  The imaginary part of
+/// `1/(acosh(2i − i/t) − acosh(2i))` vanishes identically, which only these
+/// forms show: the search for it took 14 s of `limit(1/(acosh(2i + ix) −
+/// acosh(2i)), x, 0, '−')` (it is now immediate; the `+` side was already).
+fn imaginary_arguments_as_real(arena: &mut Arena, e: ExprId, t: ExprId) -> ExprId {
+    let candidate = |arena: &Arena, id: ExprId| {
+        matches!(
+            arena.node(id),
+            ExprNode::Acosh(_) | ExprNode::Asin(_) | ExprNode::Acos(_) | ExprNode::Atanh(_)
+        )
+    };
+    let post = crate::base::walk::post_order_ids(arena, e);
+    if !post.iter().any(|&id| candidate(arena, id)) {
+        return e;
+    }
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let r = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let arg = match *arena.node(r) {
+            ExprNode::Acosh(a) | ExprNode::Asin(a) | ExprNode::Acos(a) | ExprNode::Atanh(a) => a,
+            _ => {
+                cache.insert(id, r);
+                continue;
+            }
+        };
+        let i = arena.i_unit();
+        let ni = arena.neg(i);
+        let y = arena.mul(&[ni, arg]);
+        let y = crate::transforms::expand::expand(arena, y);
+        let y = crate::transforms::eval::eval(arena, y);
+        let real = if crate::base::walk::contains(arena, y, t) {
+            crate::calculus::gruntz::eventually_real_at_inf(arena, y, t)
+        } else {
+            let mut cache = crate::base::assumptions::AssumptionCache::new();
+            cache.query(arena, y, crate::base::assumptions::Props::REAL) == Some(true)
+        };
+        if !real || arena.is_zero_structural(y) {
+            cache.insert(id, r);
+            continue;
+        }
+        let half = arena.rational(1, 2);
+        let half_pi = arena.mul(&[half, arena.pi()]);
+        let new = match *arena.node(r) {
+            ExprNode::Acosh(_) => {
+                let s = if crate::base::walk::contains(arena, y, t) {
+                    crate::calculus::gruntz::eventual_sign_at_inf(arena, y, t)
+                } else {
+                    const_sign(arena, y)
+                };
+                match s {
+                    Some(s) if s != 0 => {
+                        let ay = if s > 0 { y } else { arena.neg(y) };
+                        let re = arena.asinh(ay);
+                        let sgn = arena.int(i64::from(s));
+                        let ph = arena.mul(&[sgn, i, half_pi]);
+                        arena.add(&[re, ph])
+                    }
+                    _ => r,
+                }
+            }
+            ExprNode::Asin(_) => {
+                let s = arena.asinh(y);
+                arena.mul(&[i, s])
+            }
+            ExprNode::Acos(_) => {
+                let s = arena.asinh(y);
+                let is = arena.mul(&[i, s]);
+                arena.sub(half_pi, is)
+            }
+            _ => {
+                let a = arena.atan(y);
+                arena.mul(&[i, a])
+            }
+        };
+        changed |= new != r;
+        cache.insert(id, new);
+    }
+    if !changed {
+        return e;
+    }
+    let r = cache.get(&e).copied().unwrap_or(e);
+    crate::transforms::eval::eval(arena, r)
 }
 
 /// Is `v` an infinity on an axis, `±∞` or `±i·∞` (whose perpendicular

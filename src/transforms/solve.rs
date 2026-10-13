@@ -210,8 +210,59 @@ fn variable_may_be_nonreal(arena: &Arena, var: ExprId) -> bool {
     }
 }
 
+thread_local! {
+    /// Set when a general solve meets a periodic function of a periodic
+    /// family (`sin(cos x) = 1/2`: `cos x = π/6 + 2nπ`, then `x = ±acos(π/6 +
+    /// 2nπ) + 2mπ`), whose solutions need two independent integer
+    /// parameters where the solver has one: [`solve_impl`] then refuses.
+    static PERIOD_CONFLICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
+    /// Set while a general solve runs (a solution set is wanted): the
+    /// Lambert strategies then take the other real branch and every odd root
+    /// of a symbolic value ([`lambert_branches`], [`power_roots`]).
+    static GENERAL_SOLVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Record a [`PERIOD_CONFLICT`].
+fn flag_period_conflict() {
+    PERIOD_CONFLICT.with(|c| c.set(true));
+}
+
 /// Shared implementation of [`solve_classified`] and [`solve_general`].
+///
+/// A general solve that met a periodic function of a periodic family
+/// ([`PERIOD_CONFLICT`]) is refused: up to 0.46 both layers took the same
+/// parameter, a strict subset of the solutions — for a real `x`,
+/// `sin(cos x) = 1/2` gave `±acos(2nπ + π/6) + 2nπ` cut to the real line,
+/// i.e. `±acos(π/6)` without `±acos(π/6) + 2mπ` (now listed: only `n = 0`
+/// puts `π/6 + 2nπ` in the range of `cos`).
 fn solve_impl(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    period: Option<ExprId>,
+) -> SolveOutcome {
+    if period.is_none() {
+        return solve_impl_checked(arena, expr, var, period);
+    }
+    let previous = PERIOD_CONFLICT.with(|c| c.replace(false));
+    let previous_general = GENERAL_SOLVE.with(|c| c.replace(true));
+    let outcome = solve_impl_checked(arena, expr, var, period);
+    GENERAL_SOLVE.with(|c| c.set(previous_general));
+    if PERIOD_CONFLICT.with(|c| c.replace(previous)) {
+        return SolveOutcome::Unresolved(
+            "the general solution nests periodic families, which need independent integer \
+             parameters"
+                .into(),
+        );
+    }
+    outcome
+}
+
+/// [`solve_impl`] without the check of nested periodic families.
+fn solve_impl_checked(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
@@ -274,23 +325,41 @@ fn tangent_pole_roots(
     period: Option<ExprId>,
 ) -> Result<Vec<Solution>, String> {
     // tan u has its poles at cos u = 0, tanh u at cosh u = 0 (u = iπ/2 + nπi)
-    let denominators: Vec<ExprId> = crate::base::walk::post_order_ids(arena, expr)
+    let atoms: Vec<(ExprId, ExprId, bool)> = crate::base::walk::post_order_ids(arena, expr)
         .into_iter()
         .filter_map(|id| match *arena.node(id) {
-            ExprNode::Tan(u) if expr_contains_var(arena, u, var) => Some((u, false)),
-            ExprNode::Tanh(u) if expr_contains_var(arena, u, var) => Some((u, true)),
+            ExprNode::Tan(u) if expr_contains_var(arena, u, var) => Some((id, u, false)),
+            ExprNode::Tanh(u) if expr_contains_var(arena, u, var) => Some((id, u, true)),
             _ => None,
         })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|(u, hyperbolic)| {
-            if hyperbolic {
-                arena.cosh(u)
-            } else {
-                arena.cos(u)
-            }
-        })
         .collect();
+    let mut denominators: Vec<ExprId> = Vec::with_capacity(atoms.len());
+    for (atom, u, hyperbolic) in atoms {
+        // `expr` as a rational function of `T = tan u` that does not tend
+        // to 0 as `T → ∞` (degree of its numerator in `T` at least that of
+        // its denominator: `tan(4·sin x) + √2/2`) is not 0 at a pole of
+        // `tan u`: none of them is a root (up to 0.46 the poles of
+        // `tan(k·sin x)` could pass the check of a family as roots).
+        let big_t = arena.symbol("__tan_pole");
+        let in_t = arena.subs_structural(expr, atom, big_t);
+        let in_t = polybridge::together(arena, in_t);
+        let (num, den) = polybridge::as_numer_denom(arena, in_t);
+        let num = crate::transforms::expand::expand(arena, num);
+        let den = crate::transforms::expand::expand(arena, den);
+        if let (Some(nc), Some(dc)) = (
+            symbolic_poly_coeffs(arena, num, big_t),
+            symbolic_poly_coeffs(arena, den, big_t),
+        ) && nc.len() >= dc.len()
+            && !crate::base::walk::contains(arena, num, atom)
+        {
+            continue;
+        }
+        denominators.push(if hyperbolic {
+            arena.cosh(u)
+        } else {
+            arena.cos(u)
+        });
+    }
     let mut out: Vec<Solution> = Vec::new();
     for c in denominators {
         let SolveOutcome::Solutions(candidates) = solve_raw(arena, c, var, period) else {
@@ -371,7 +440,16 @@ pub(crate) struct PeriodicCandidates {
 /// identity / contradiction.
 fn raw_families(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<PeriodicCandidates> {
     let n = branch_parameter(arena, &[expr, var]);
-    let SolveOutcome::Solutions(cands) = solve_raw(arena, expr, var, Some(n)) else {
+    // As in `solve_impl`: the families of a general solve, refused when
+    // they nest periodic families ([`PERIOD_CONFLICT`]).
+    let previous = PERIOD_CONFLICT.with(|c| c.replace(false));
+    let previous_general = GENERAL_SOLVE.with(|c| c.replace(true));
+    let outcome = solve_raw(arena, expr, var, Some(n));
+    GENERAL_SOLVE.with(|c| c.set(previous_general));
+    if PERIOD_CONFLICT.with(|c| c.replace(previous)) {
+        return None;
+    }
+    let SolveOutcome::Solutions(cands) = outcome else {
         return None;
     };
     let mut plain = Vec::new();
@@ -793,6 +871,12 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     if !expr_contains_var(arena, expr, var) {
         return classify_constant(arena, expr, var);
     }
+    // `C(f, k)` for a nonnegative integer `k` is the polynomial
+    // `f(f − 1)⋯(f − k + 1)/k!` (refused before 0.47; SymPy: `solve(binomial(x,
+    // 2) - 3)` → `[-2, 3]`, by `expand_func`).
+    if let Some(rewritten) = binomials_as_polynomials(arena, expr, var) {
+        return solve_raw(arena, rewritten, var, period);
+    }
 
     // Pre-check: if expr is a Mul, solve each var-dependent factor
     // independently.  x*(x-1)*(x+2) = 0 → union of factor solutions.
@@ -977,6 +1061,16 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
         None => {}
     }
 
+    // Step 3b: trigonometric functions of rational multiples of `var` with
+    // a common factor `r ≠ 1` (`sin 300x + sin 600x`, `cos(x/5) + cos(x/15)`):
+    // in `u = r·x` the multiples are coprime integers.
+    match try_scale_trig_arguments(arena, expr, var, period) {
+        Some(SolveOutcome::Solutions(s)) if !s.is_empty() => return SolveOutcome::Solutions(s),
+        Some(SolveOutcome::NoSolution(reason)) => return SolveOutcome::NoSolution(reason),
+        Some(SolveOutcome::Identity) => return SolveOutcome::Identity,
+        _ => {}
+    }
+
     // Step 4: change-of-variable: if expression is polynomial in f(x) for
     // some f, substitute t = f(x), solve the polynomial, back-substitute.
     if let Some(solutions) = try_change_of_variable(arena, expr, var, period)
@@ -993,10 +1087,25 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
         return SolveOutcome::Solutions(solutions);
     }
     // Square roots of one or two polynomials (`√(x + 5) + √x = 3`).
-    if let Some(solutions) = try_square_root_elimination(arena, expr, var)
-        && !solutions.is_empty()
-    {
-        return SolveOutcome::Solutions(solutions);
+    if let Some(solutions) = try_square_root_elimination(arena, expr, var) {
+        if !solutions.is_empty() {
+            return SolveOutcome::Solutions(solutions);
+        }
+        // The norm over the sign choices is a nonzero constant: no root
+        // (`x + √(x² − 5) = 0`: the norm is 5; refused before 0.47).
+        if SQRT_NORM_CONSTANT.with(|c| c.replace(false)) {
+            return SolveOutcome::NoSolution(
+                "the radicals cancel to a nonzero constant under every choice of signs".into(),
+            );
+        }
+    }
+    // Several absolute values of rational functions (`|x + 3| = 2·|x − 3|`).
+    match try_abs_cases(arena, expr, var, period) {
+        Some(SolveOutcome::Solutions(solutions)) if !solutions.is_empty() => {
+            return SolveOutcome::Solutions(solutions);
+        }
+        Some(SolveOutcome::NoSolution(reason)) => return SolveOutcome::NoSolution(reason),
+        _ => {}
     }
 
     // Step 4c: exponentials of one rate (`e^x + e^(−x) = 3`,
@@ -1014,6 +1123,17 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
             try_exponential_substitution(arena, expr, var, period)
         };
         match outcome {
+            Some(SolveOutcome::Solutions(solutions)) if !solutions.is_empty() => {
+                return SolveOutcome::Solutions(solutions);
+            }
+            Some(SolveOutcome::NoSolution(_)) => domain_empty = true,
+            _ => {}
+        }
+    }
+    // Exponentials of different bases in two groups (`5^(x/2) = 2^(x/3)`,
+    // `7^(x² − 80) = 49^x`): logarithms of both sides.
+    if !domain_empty {
+        match try_exponential_log_split(arena, expr, var, period) {
             Some(SolveOutcome::Solutions(solutions)) if !solutions.is_empty() => {
                 return SolveOutcome::Solutions(solutions);
             }
@@ -1085,6 +1205,9 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
 fn finalize_solutions(arena: &mut Arena, solutions: Vec<Solution>) -> SolveOutcome {
     let had_candidates = !solutions.is_empty();
     let mut out: Vec<Solution> = Vec::with_capacity(solutions.len());
+    // The 16-digit values of the constant solutions kept, for the test of
+    // equal values written differently.
+    let mut values: Vec<Option<num_complex::Complex64>> = Vec::with_capacity(solutions.len());
     for s in solutions {
         let v = crate::transforms::eval::eval(arena, s.value);
         let infinite = matches!(
@@ -1094,9 +1217,23 @@ fn finalize_solutions(arena: &mut Arena, solutions: Vec<Solution>) -> SolveOutco
         if infinite {
             continue;
         }
-        if !out.iter().any(|o| o.value == v) {
-            out.push(Solution { value: v });
+        if out.iter().any(|o| o.value == v) {
+            continue;
         }
+        // One value in several forms is one solution: up to 0.46 `t³` for
+        // the three roots `t` of a cubic in `t = x^(1/3)` came back as
+        // `100√2·π/481` and two radical forms of the same number.
+        let z = constant_value_f64(arena, v);
+        if let Some(z) = z
+            && out.iter().zip(&values).any(|(o, w)| {
+                w.is_some_and(|w| (w - z).norm() <= 1e-9 * (1.0 + z.norm()))
+                    && same_constant(arena, o.value, v)
+            })
+        {
+            continue;
+        }
+        values.push(z);
+        out.push(Solution { value: v });
     }
     if had_candidates && out.is_empty() {
         return SolveOutcome::NoSolution(
@@ -1104,6 +1241,39 @@ fn finalize_solutions(arena: &mut Arena, solutions: Vec<Solution>) -> SolveOutco
         );
     }
     SolveOutcome::Solutions(out)
+}
+
+/// The 16-digit value of a constant solution with an algebraic or
+/// transcendental form (not a rational, not a `RootOf`: those are
+/// distinct by construction), for [`finalize_solutions`].
+fn constant_value_f64(arena: &mut Arena, v: ExprId) -> Option<num_complex::Complex64> {
+    if arena.as_num(v).is_some()
+        || !crate::base::walk::free_symbols(arena, v).is_empty()
+        || crate::base::walk::post_order_ids(arena, v)
+            .into_iter()
+            .any(|id| matches!(arena.node(id), ExprNode::RootOf(..)))
+    {
+        return None;
+    }
+    crate::transforms::evalf::evalf_complex64(arena, v)
+        .ok()
+        .filter(|z| z.re.is_finite() && z.im.is_finite())
+}
+
+/// Are the constants `a` and `b` exactly equal (their difference decided
+/// to be 0)?  An algebraic multiple of `π` is decided as the algebraic
+/// number `(a − b)/π` (`15√3πi·∛20·20000^(1/6)/1924 + … = 100√2π/481`).
+fn same_constant(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
+    let d = arena.sub(a, b);
+    if crate::transforms::eval::constant_zero_decision(arena, d) == Some(true) {
+        return true;
+    }
+    let d = crate::transforms::expand::expand(arena, d);
+    let q = arena.div(d, arena.pi);
+    let q = crate::transforms::expand::expand(arena, q);
+    let q = crate::transforms::eval::eval(arena, q);
+    !crate::base::walk::contains(arena, q, arena.pi)
+        && crate::poly::algebraic::is_zero_checked(arena, q) == Some(true)
 }
 
 /// Dispatch a nonconstant polynomial with rational coefficients to the
@@ -1569,6 +1739,29 @@ fn solve_by_peeling(
                     indep.push(child);
                 }
             }
+            if dep.len() != 1 && is_rational_in(arena, lhs, var) {
+                // A rational function (`(x − 3)/x = 0` under `√`, `(x + 1)(x − 1)
+                // = 1` under `ln`; refused before 0.47), by the polynomial and
+                // rational solvers directly (not `solve_raw`, which peels).
+                let diff = arena.sub(lhs, rhs);
+                let diff = crate::transforms::eval::eval(arena, diff);
+                if let Some(poly) = polybridge::expr_to_poly(arena, diff, var) {
+                    if poly.is_zero() || poly.is_constant() {
+                        return None;
+                    }
+                    return Some(solve_rational_poly(arena, var, &poly));
+                }
+                if is_rational_function_of(arena, diff, var) {
+                    return match try_solve_rational(arena, diff, var, period) {
+                        Some(SolveOutcome::Solutions(s)) if !s.is_empty() => Some(s),
+                        Some(SolveOutcome::NoSolution(_)) => Some(vec![]),
+                        _ => None,
+                    };
+                }
+                return try_solve_linear_symbolic(arena, diff, var)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| try_solve_symbolic_poly(arena, diff, var));
+            }
             if dep.len() != 1 || indep.is_empty() {
                 return None;
             }
@@ -1602,6 +1795,10 @@ fn solve_by_peeling(
             // A non-real argument (`exp(i·x) = c`) reaches every branch of
             // the logarithm with real values of `var`: the general solution
             // carries the period `2πi`.
+            if !real_inner && period_in_use(arena, rhs, period) {
+                flag_period_conflict();
+                return None;
+            }
             let new_rhs = match period {
                 Some(n) if !real_inner => {
                     let p = two_pi_i_n(arena, n);
@@ -1617,6 +1814,30 @@ fn solve_by_peeling(
             solve_by_peeling(arena, inner, new_rhs, var, period)
         }
         // sin(f(x)) = rhs → f(x) ∈ {asin(rhs), π - asin(rhs)} (+ 2πn)
+        ExprNode::Sin(inner) | ExprNode::Cos(inner) if period_in_use(arena, rhs, period) => {
+            // `sin f = cₙ` for a family `cₙ` (an outer periodic layer): over
+            // the reals only the members with `|cₙ| ≤ 1` can be reached, each
+            // giving families in a parameter of their own.
+            let n = period?;
+            let members = if real_for_real_var(arena, inner, var) {
+                bounded_family_members(arena, rhs, n)
+            } else {
+                None
+            };
+            let Some(members) = members else {
+                flag_period_conflict();
+                return None;
+            };
+            let mut out: Vec<Solution> = Vec::new();
+            for m in members {
+                for s in solve_by_peeling(arena, lhs, m, var, period)? {
+                    if !out.iter().any(|o| o.value == s.value) {
+                        out.push(s);
+                    }
+                }
+            }
+            Some(out)
+        }
         ExprNode::Sin(inner) => {
             // Domain check: sin(x) = c has no real solutions when |c| > 1
             if let Some(c) = arena.as_num(rhs)
@@ -1672,6 +1893,10 @@ fn solve_by_peeling(
         }
         // tan(f(x)) = rhs → f(x) = atan(rhs) (+ πn)
         ExprNode::Tan(inner) => {
+            if period_in_use(arena, rhs, period) {
+                flag_period_conflict();
+                return None;
+            }
             let atan_rhs = arena.atan(rhs);
             let new_rhs = match period {
                 Some(n) => {
@@ -1718,6 +1943,10 @@ fn solve_by_peeling(
                     let ln_base = crate::transforms::eval::eval(arena, ln_base);
                     let prod = arena.mul(&[inner_exp, ln_base]);
                     if !real_for_real_var(arena, prod, var) {
+                        if period_in_use(arena, rhs, period) {
+                            flag_period_conflict();
+                            return None;
+                        }
                         let ln_rhs = principal_ln(arena, rhs);
                         let p = two_pi_i_n(arena, n);
                         let num = arena.add(&[ln_rhs, p]);
@@ -1763,6 +1992,31 @@ fn solve_by_peeling(
                 return solve_by_peeling(arena, inner_exp, new_rhs, var, period);
             }
 
+            // f^c = rhs for a constant irrational real c (`x^π = 2`): the
+            // principal f = rhs^(1/c), the one real solution of a real f
+            // (`f^c = exp(c·ln f)` is real only for f ≥ 0; refused before
+            // 0.47, SymPy: `[2**(1/pi)]`).  Other branches for a complex f.
+            if expr_contains_var(arena, inner_base, var)
+                && !expr_contains_var(arena, inner_exp, var)
+                && crate::base::walk::free_symbols(arena, inner_exp).is_empty()
+                && arena.as_num(inner_exp).is_none()
+                && crate::transforms::realness::constant_realness_as_declared(
+                    arena,
+                    inner_exp,
+                    ROOT_CHECK_DIGITS,
+                    &mut crate::base::assumptions::AssumptionCache::new(),
+                ) == Some(true)
+            {
+                if period.is_some() && !real_for_real_var(arena, inner_base, var) {
+                    return None;
+                }
+                let one = arena.one;
+                let inv = arena.div(one, inner_exp);
+                let new_rhs = arena.pow(rhs, inv);
+                let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
+                return solve_by_peeling(arena, inner_base, new_rhs, var, period);
+            }
+
             None
         }
         // Neg(-f(x)) = rhs → f(x) = -rhs
@@ -1792,6 +2046,13 @@ fn solve_by_peeling(
         ExprNode::Sinh(inner) => {
             let asinh_rhs = arena.asinh(rhs);
             match period {
+                Some(_)
+                    if !real_for_real_var(arena, inner, var)
+                        && period_in_use(arena, rhs, period) =>
+                {
+                    flag_period_conflict();
+                    None
+                }
                 Some(n) if !real_for_real_var(arena, inner, var) => {
                     let p = two_pi_i_n(arena, n);
                     let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
@@ -1814,6 +2075,10 @@ fn solve_by_peeling(
                 tracing::debug!("solve_by_peeling: cosh domain error, rhs < 1");
                 return Some(vec![]);
             }
+            if !real_inner && period_in_use(arena, rhs, period) {
+                flag_period_conflict();
+                return None;
+            }
             let acosh_rhs = arena.acosh(rhs);
             let neg_acosh = arena.neg(acosh_rhs);
             let (b1, b2) = match period {
@@ -1827,6 +2092,10 @@ fn solve_by_peeling(
         }
         // tanh(f(x)) = rhs → f(x) = atanh(rhs) (+ iπn for a non-real f)
         ExprNode::Tanh(inner) => {
+            if !real_for_real_var(arena, inner, var) && period_in_use(arena, rhs, period) {
+                flag_period_conflict();
+                return None;
+            }
             let atanh_rhs = arena.atanh(rhs);
             let new_rhs = match period {
                 Some(n) if !real_for_real_var(arena, inner, var) => {
@@ -1857,6 +2126,77 @@ fn solve_by_peeling(
         }
         // ── Abs peeling ───────────────────────────────────────────
         // ── Abs peeling ───────────────────────────────────────────────────────────
+        // erf(f) = rhs → f = erfinv(rhs), erfc(f) = rhs → f = erfcinv(rhs):
+        // for a real f only when rhs is in the range (−1, 1), (0, 2); for
+        // a complex f these are the principal solutions (erf is entire and
+        // takes each value infinitely often).  Refused before 0.47 (SymPy:
+        // `solve(erf(x) - y)` → `[erfinv(y)]`).
+        ExprNode::Erf(inner) | ExprNode::Erfc(inner) => {
+            let is_erf = matches!(arena.node(lhs), ExprNode::Erf(_));
+            let real_inner = real_for_real_var(arena, inner, var);
+            if real_inner && let Some(c) = arena.as_num(rhs) {
+                let (lo, hi) = if is_erf {
+                    (-Q::one(), Q::one())
+                } else {
+                    (Q::zero(), Q::from_integer(BigInt::from(2)))
+                };
+                if *c <= lo || *c >= hi {
+                    return Some(vec![]);
+                }
+            }
+            if period.is_some() && !real_inner {
+                // the other preimages of a complex argument are not known
+                return None;
+            }
+            let f = if is_erf {
+                crate::base::libfn::LibFn::ErfInv
+            } else {
+                crate::base::libfn::LibFn::ErfcInv
+            };
+            let new_rhs = arena.lib_apply(f, &[rhs]);
+            let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
+            solve_by_peeling(arena, inner, new_rhs, var, period)
+        }
+        // W(f) = rhs → f = rhs·e^rhs (the principal branch reaches rhs only
+        // in its range, which the check of the candidate decides; refused
+        // before 0.47, SymPy: `solve(LambertW(2*x) - y)` → `[y*exp(y)/2]`).
+        ExprNode::LambertW(inner) => {
+            let e = arena.exp(rhs);
+            let new_rhs = arena.mul(&[rhs, e]);
+            let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
+            solve_by_peeling(arena, inner, new_rhs, var, period)
+        }
+        // atan2(f, c) = rhs for a constant c > 0 is atan(f/c) = rhs: f =
+        // c·tan(rhs) (in the range when |rhs| < π/2, checked; refused before
+        // 0.47, SymPy: `solve(atan2(x, 2) - pi/3)` → `[2*sqrt(3)]`).
+        ExprNode::Atan2(f, c)
+            if !expr_contains_var(arena, c, var)
+                && crate::base::walk::free_symbols(arena, c).is_empty()
+                && crate::poly::algebraic::sign_checked(arena, c) == Some(1) =>
+        {
+            let t = arena.tan(rhs);
+            let new_rhs = arena.mul(&[c, t]);
+            let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
+            solve_by_peeling(arena, f, new_rhs, var, period)
+        }
+        // erfinv(f) = rhs → f = erf(rhs), erfcinv(f) = rhs → f = erfc(rhs)
+        // (the inverses are injective; candidates are checked).
+        ExprNode::Apply(sid, ref args)
+            if args.len() == 1
+                && matches!(
+                    arena.lib_fn(sid),
+                    Some(crate::base::libfn::LibFn::ErfInv | crate::base::libfn::LibFn::ErfcInv)
+                ) =>
+        {
+            let inner = args[0];
+            let new_rhs = if arena.lib_fn(sid) == Some(crate::base::libfn::LibFn::ErfInv) {
+                arena.intern(ExprNode::Erf(rhs))
+            } else {
+                arena.intern(ExprNode::Erfc(rhs))
+            };
+            let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
+            solve_by_peeling(arena, inner, new_rhs, var, period)
+        }
         // |f(x)| = rhs → f(x) = rhs OR f(x) = -rhs (when rhs ≥ 0)
         ExprNode::Abs(inner) => {
             // |f(x)| = negative has no solutions
@@ -1876,6 +2216,54 @@ fn solve_by_peeling(
         }
         _ => None,
     }
+}
+
+/// Does `rhs` hold the integer parameter of a general solve (a family from
+/// an outer periodic layer)?
+fn period_in_use(arena: &Arena, rhs: ExprId, period: Option<ExprId>) -> bool {
+    period.is_some_and(|n| crate::base::walk::contains(arena, rhs, n))
+}
+
+/// Most members of a family listed by [`bounded_family_members`].
+const MAX_BOUNDED_MEMBERS: f64 = 64.0;
+
+/// The members `c(k)` of the family `c(n) = a + b·n` (constant real `a`,
+/// `b ≠ 0`) that may lie in `[−1, 1]`, the range of `sin` and `cos` on the
+/// reals: the integers `k` with `|a + b·k| ≤ 1`, and one more on either
+/// side (a member just outside is answered with no real solution by the
+/// next layer).  `None` when `c` is not of that form or there are too
+/// many.
+fn bounded_family_members(arena: &mut Arena, c: ExprId, n: ExprId) -> Option<Vec<ExprId>> {
+    let expanded = crate::transforms::expand::expand(arena, c);
+    let coeffs = symbolic_poly_coeffs(arena, expanded, n)?;
+    let [a, b] = coeffs[..] else {
+        return None;
+    };
+    if !crate::base::walk::free_symbols(arena, a).is_empty()
+        || !crate::base::walk::free_symbols(arena, b).is_empty()
+    {
+        return None;
+    }
+    let real = |arena: &mut Arena, e: ExprId| -> Option<f64> {
+        let z = crate::transforms::evalf::evalf_complex64(arena, e).ok()?;
+        (z.im.abs() <= 1e-12 * (1.0 + z.re.abs()) && z.re.is_finite()).then_some(z.re)
+    };
+    let (af, bf) = (real(arena, a)?, real(arena, b)?);
+    if bf.abs() < 1e-12 {
+        return None;
+    }
+    let (k1, k2) = ((-1.0 - af) / bf, (1.0 - af) / bf);
+    let (lo, hi) = (k1.min(k2).floor() - 1.0, k1.max(k2).ceil() + 1.0);
+    if !lo.is_finite() || !hi.is_finite() || hi - lo > MAX_BOUNDED_MEMBERS {
+        return None;
+    }
+    let mut out = Vec::new();
+    for k in (lo as i64)..=(hi as i64) {
+        let kk = arena.int(k);
+        let m = crate::transforms::subs::subs(arena, c, n, kk);
+        out.push(crate::transforms::eval::eval(arena, m));
+    }
+    Some(out)
 }
 
 /// Largest `|p|` for which `f^(p/q) = c` with a numeric `c` is inverted
@@ -2727,10 +3115,42 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 /// Ferrari factorization (i.e. `2m − p ≠ 0`, so that `k = √(2m−p) ≠ 0`).
 ///
 /// Uses the Rational Root Theorem: for a polynomial with integer coefficients,
-/// every rational root `p/q` satisfies `p | a₀` and `q | aₙ`.
+/// every rational root `p/q` satisfies `p | a₀` and `q | aₙ`; when that
+/// search finds no non-degenerate root (it enumerates no divisors of a
+/// coefficient above 10⁶), the linear factors of the resolvent over ℤ.
 ///
 /// Returns `None` if no rational root is found (Cardano fallback will be used).
 fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Q) -> Option<Q> {
+    let found = rational_resolvent_root_by_divisors(resolvent, p_rat);
+    if let Some((m, true)) = found {
+        return Some(m);
+    }
+    // `divisors` gives up above 10⁶ (it returns `{1, n}`), so a resolvent
+    // with large coefficients kept its rational root hidden and Cardano's
+    // formula took over: the Rothstein–Trager polynomial `7168t⁴ + 7168t³ +
+    // 96t² + 16t + 1` of `∫ x³/(x⁴ + 4x³ − 1) dx` (resolvent root `−9/224`)
+    // had its roots in cube roots of `81/44957696·√21 ± …` instead of in
+    // `ℚ(√2)` (up to 0.46).  Its linear factors over ℤ are its rational
+    // roots.
+    let two = Ratio::from_integer(BigInt::from(2));
+    let (_, factors) = resolvent.factor_over_z();
+    let mut fallback = found.map(|(m, _)| m);
+    for (f, _) in &factors {
+        if f.degree() == Some(1) {
+            let m = -f.coeff(0) / f.coeff(1);
+            if &two * &m != *p_rat {
+                return Some(m);
+            }
+            fallback.get_or_insert(m);
+        }
+    }
+    fallback
+}
+
+/// The rational-root search of [`find_preferred_resolvent_root`] over the
+/// divisors of the end coefficients: a root and whether it is
+/// non-degenerate (`2m ≠ p`).
+fn rational_resolvent_root_by_divisors(resolvent: &Poly, p_rat: &Q) -> Option<(Q, bool)> {
     let (int_poly, _scale) = clear_denominators(resolvent);
     let a0 = int_poly.coeff(0).to_integer();
     let an = {
@@ -2745,7 +3165,7 @@ fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Q) -> Option<Q> {
         // m = 0 is a root.  Record it but keep looking for a non-degenerate one.
         let zero = Ratio::zero();
         if &two_r * &zero - p_rat != Ratio::zero() {
-            return Some(zero);
+            return Some((zero, true));
         }
         fallback = Some(zero);
 
@@ -2761,7 +3181,7 @@ fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Q) -> Option<Q> {
                 let two_aq = Ratio::from_integer(BigInt::from(2)) * &aq;
                 for candidate in [(-&bq + &sqrt_d) / &two_aq, (-&bq - &sqrt_d) / &two_aq] {
                     if &two_r * &candidate - p_rat != Ratio::zero() {
-                        return Some(candidate);
+                        return Some((candidate, true));
                     }
                     if fallback.is_none() {
                         fallback = Some(candidate);
@@ -2780,7 +3200,7 @@ fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Q) -> Option<Q> {
                     if resolvent.eval(&candidate).is_zero() {
                         // Prefer a root where 2m - p ≠ 0.
                         if &two_r * &candidate - p_rat != Ratio::zero() {
-                            return Some(candidate);
+                            return Some((candidate, true));
                         }
                         if fallback.is_none() {
                             fallback = Some(candidate);
@@ -2791,7 +3211,7 @@ fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Q) -> Option<Q> {
         }
     }
 
-    fallback
+    fallback.map(|m| (m, false))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3001,8 +3421,20 @@ fn try_change_of_variable(
             // All the roots in `t`, or none: a polynomial with radical
             // coefficients of which the solver finds some roots only is
             // solved over its number field, or this generator is skipped.
-            let Some(t_solutions) = substitution_roots(arena, substituted, t) else {
-                continue;
+            // A periodic equation in `t` gives its families in a general
+            // solve: up to 0.46 its principal roots alone, and for a real `x`
+            // `cot(eˣ) = 2` had the solution set `{ln(2·atan(√5 − 2))}`
+            // instead of `ln(acot 2 + nπ)` for `n ≥ 0`.
+            let t_solutions = if period.is_some() && has_periodic_atom(arena, substituted, t) {
+                match solve_impl(arena, substituted, t, period) {
+                    SolveOutcome::Solutions(s) => s,
+                    _ => continue,
+                }
+            } else {
+                let Some(t_solutions) = substitution_roots(arena, substituted, t) else {
+                    continue;
+                };
+                t_solutions
             };
 
             if !t_solutions.is_empty() {
@@ -3062,6 +3494,115 @@ fn try_change_of_variable(
     }
 
     None
+}
+
+/// An equation in `sin`, `cos`, `tan` of `aᵢ·x + bᵢ` alone with rational
+/// `aᵢ` whose gcd `r` (gcd of the numerators over the lcm of the
+/// denominators) is not 1, solved in `u = r·x` (multiples `aᵢ/r`, coprime
+/// integers) and mapped back by `x = u/r`: `sin 300x + sin 600x = 0` and
+/// `cos(x/5) + cos(x/15) = 0` were refused before 0.47 (the half-angle
+/// substitution of `sin 600x` has degree 1200), SymPy solves both.  `u`
+/// carries the assumptions of `x` (`r > 0`).  `None` for another shape or
+/// `r = 1`.
+fn try_scale_trig_arguments(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    period: Option<ExprId>,
+) -> Option<SolveOutcome> {
+    let ExprNode::Symbol(var_sid) = *arena.node(var) else {
+        return None;
+    };
+    // `var` only in the trigonometric atoms
+    walk_var_atoms(arena, expr, var, |id| {
+        matches!(
+            arena.node(id),
+            ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_)
+        )
+    })?;
+    let mut slopes: Vec<Q> = Vec::new();
+    let mut ok = true;
+    let atoms: Vec<ExprId> = crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .filter(|&id| {
+            matches!(arena.node(id), ExprNode::Sin(a) | ExprNode::Cos(a) | ExprNode::Tan(a) if expr_contains_var(arena, *a, var))
+        })
+        .collect();
+    for id in atoms {
+        let (ExprNode::Sin(a) | ExprNode::Cos(a) | ExprNode::Tan(a)) = *arena.node(id) else {
+            continue;
+        };
+        match linear_rate(arena, a, var) {
+            Some((rate, _)) => match arena.as_num(rate) {
+                Some(q) if !q.is_zero() => slopes.push(q.abs()),
+                _ => ok = false,
+            },
+            None => ok = false,
+        }
+    }
+    if !ok || slopes.is_empty() {
+        return None;
+    }
+    let mut gn = BigInt::zero();
+    let mut gd = BigInt::one();
+    for q in &slopes {
+        gn = num_integer::Integer::gcd(&gn, q.numer());
+        gd = num_integer::Integer::lcm(&gd, q.denom());
+    }
+    let r = Q::new(gn, gd);
+    if r.is_zero() || r.is_one() {
+        return None;
+    }
+    let u = arena.symbol("__u_scaled");
+    if let ExprNode::Symbol(u_sid) = *arena.node(u) {
+        let declared = arena.symbol_assumptions(var_sid);
+        arena.set_symbol_assumptions(u_sid, declared);
+    }
+    let r_id = arena.num_ratio(r.clone());
+    let x_of_u = arena.div(u, r_id);
+    let sub = crate::transforms::subs::subs(arena, expr, var, x_of_u);
+    let sub = crate::transforms::eval::eval(arena, sub);
+    if expr_contains_var(arena, sub, var) {
+        return None;
+    }
+    match solve_raw(arena, sub, u, period) {
+        SolveOutcome::Solutions(s) => {
+            let mut out: Vec<Solution> = Vec::with_capacity(s.len());
+            for sol in s {
+                let x = arena.div(sol.value, r_id);
+                let x = crate::transforms::expand::expand(arena, x);
+                let x = crate::transforms::eval::eval(arena, x);
+                if !out.iter().any(|o| o.value == x) {
+                    out.push(Solution { value: x });
+                }
+            }
+            Some(SolveOutcome::Solutions(out))
+        }
+        other => Some(other),
+    }
+}
+
+/// Does `e` hold a function of `t` that is periodic for the variable of the
+/// solve: `sin`, `cos`, `tan` always, exponentials and hyperbolic
+/// functions for a variable that may be non-real ([`solve_general_over_c`]).
+fn has_periodic_atom(arena: &Arena, e: ExprId, t: ExprId) -> bool {
+    let complex = COMPLEX_VARIABLE.with(std::cell::Cell::get);
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| match *arena.node(id) {
+            ExprNode::Sin(a) | ExprNode::Cos(a) | ExprNode::Tan(a) => {
+                crate::base::walk::contains(arena, a, t)
+            }
+            ExprNode::Exp(a) | ExprNode::Sinh(a) | ExprNode::Cosh(a) | ExprNode::Tanh(a) => {
+                complex && crate::base::walk::contains(arena, a, t)
+            }
+            ExprNode::Pow(b, x) => {
+                complex
+                    && !crate::base::walk::contains(arena, b, t)
+                    && crate::base::walk::contains(arena, x, t)
+            }
+            _ => false,
+        })
 }
 
 /// Equations in `x` and rational powers `x^(p/q)` of `x` itself
@@ -3217,6 +3758,9 @@ fn try_square_root_elimination(
             _ => return None,
         }
     }
+    if radicands.len() > 2 && radicands.len() <= MAX_SQRT_RADICANDS {
+        return eliminate_many_square_roots(arena, expr, var, &radicands);
+    }
     if radicands.is_empty() || radicands.len() > 2 {
         return None;
     }
@@ -3304,6 +3848,116 @@ fn try_square_root_elimination(
     let norm = crate::transforms::eval::eval(arena, norm);
     let poly = polybridge::expr_to_poly(arena, norm, var)?;
     if poly.is_constant() {
+        if !poly.is_zero() {
+            SQRT_NORM_CONSTANT.with(|c| c.set(true));
+            return Some(Vec::new());
+        }
+        return None;
+    }
+    let candidates = solve_rational_poly(arena, var, &poly);
+    strictly_checked(arena, expr, var, candidates)
+}
+
+thread_local! {
+    /// Set by [`try_square_root_elimination`] when the norm of the
+    /// equation is a nonzero constant (it then returns no candidates): the
+    /// equation has no root.
+    static SQRT_NORM_CONSTANT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Most square roots of polynomials eliminated by
+/// [`eliminate_many_square_roots`].
+const MAX_SQRT_RADICANDS: usize = 4;
+
+/// Largest degree of the norm of [`eliminate_many_square_roots`].
+const MAX_SQRT_NORM_DEGREE: usize = 64;
+
+/// [`try_square_root_elimination`] for three or four radicands `Aᵢ`: with
+/// `sᵢ = √Aᵢ` the equation is a polynomial `P` in `x` and the `sᵢ`, of
+/// degree one in each after `sᵢ² = Aᵢ`; writing `P = P₀ + P₁·sₖ`, the
+/// product with its conjugate `P₀ − P₁·sₖ` is `P₀² − P₁²·Aₖ`, free of `sₖ`
+/// — repeated for every `sᵢ`, the norm over all sign choices, a polynomial
+/// in `x` that every solution is a root of.  Its roots are the candidates,
+/// each checked strictly.  `√(2x + 9) = √(x + 1) + √(x + 4)` gives `0`
+/// (refused before 0.47; SymPy: `[0]`).
+fn eliminate_many_square_roots(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    radicands: &[ExprId],
+) -> Option<Vec<Solution>> {
+    let syms: Vec<ExprId> = (0..radicands.len())
+        .map(|i| arena.symbol(&format!("__s_unrad_{i}")))
+        .collect();
+    let mut replaced = expr;
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        let ExprNode::Pow(b, e) = *arena.node(id) else {
+            continue;
+        };
+        let Some(k) = arena.as_num(e).cloned() else {
+            continue;
+        };
+        let Some(which) = radicands.iter().position(|&u| u == b) else {
+            continue;
+        };
+        if k.is_integer() {
+            continue;
+        }
+        let m = k.floor();
+        let m_id = arena.num_ratio(m);
+        let bm = arena.pow(b, m_id);
+        let repl = arena.mul(&[bm, syms[which]]);
+        replaced = arena.subs_structural(replaced, id, repl);
+    }
+    // `p` with every `sⱼ^m` reduced by `sⱼ² = Aⱼ` (degree ≤ 1 in each).
+    let reduce = |arena: &mut Arena, p: ExprId| -> Option<ExprId> {
+        let mut p = crate::transforms::expand::expand(arena, p);
+        for (j, &s) in syms.iter().enumerate() {
+            if !crate::base::walk::contains(arena, p, s) {
+                continue;
+            }
+            let coeffs = symbolic_poly_coeffs(arena, p, s)?;
+            let mut terms: Vec<ExprId> = Vec::with_capacity(coeffs.len());
+            for (m, &c) in coeffs.iter().enumerate() {
+                let half = arena.int((m / 2) as i64);
+                let am = arena.pow(radicands[j], half);
+                let t = if m % 2 == 1 {
+                    arena.mul(&[c, am, s])
+                } else {
+                    arena.mul(&[c, am])
+                };
+                terms.push(t);
+            }
+            let sum = arena.add(&terms);
+            p = crate::transforms::expand::expand(arena, sum);
+        }
+        Some(crate::transforms::eval::eval(arena, p))
+    };
+    let mut p = reduce(arena, replaced)?;
+    for (i, &s) in syms.iter().enumerate().rev() {
+        let coeffs = symbolic_poly_coeffs(arena, p, s)?;
+        if coeffs.len() > 2 {
+            return None;
+        }
+        let zero = arena.zero;
+        let p0 = coeffs.first().copied().unwrap_or(zero);
+        let p1 = coeffs.get(1).copied().unwrap_or(zero);
+        let two = arena.int(2);
+        let p0_2 = arena.pow(p0, two);
+        let p1_2 = arena.pow(p1, two);
+        let p1_2a = arena.mul(&[p1_2, radicands[i]]);
+        let n = arena.sub(p0_2, p1_2a);
+        p = reduce(arena, n)?;
+        if crate::base::walk::contains(arena, p, s) {
+            return None;
+        }
+    }
+    let poly = polybridge::expr_to_poly(arena, p, var)?;
+    if poly.is_constant() && !poly.is_zero() {
+        SQRT_NORM_CONSTANT.with(|c| c.set(true));
+        return Some(Vec::new());
+    }
+    if poly.is_constant() || poly.degree().unwrap_or(0) > MAX_SQRT_NORM_DEGREE {
         return None;
     }
     let candidates = solve_rational_poly(arena, var, &poly);
@@ -3571,21 +4225,22 @@ fn drop_poles_of_product(
     var: ExprId,
     candidates: Vec<Solution>,
 ) -> Result<Vec<Solution>, String> {
-    let ExprNode::Mul(children) = arena.node(expr).clone() else {
+    if !matches!(arena.node(expr), ExprNode::Mul(_)) {
         return Ok(candidates);
-    };
-    let dens: Vec<ExprId> = children
-        .iter()
-        .filter_map(|&c| match *arena.node(c) {
-            ExprNode::Pow(b, e)
-                if arena.as_num(e).is_some_and(|r| r.is_negative())
-                    && expr_contains_var(arena, b, var) =>
-            {
-                Some(b)
-            }
-            _ => None,
-        })
-        .collect();
+    }
+    // Every denominator, also inside a factor: up to 0.46 the roots of
+    // `d = x⁵ − x + 1` came back from `d·(1 + 1/d) = 0` (`0·∞` there; SymPy
+    // returns the roots of `d + 1` only).
+    let mut dens: Vec<ExprId> = Vec::new();
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        if let ExprNode::Pow(b, e) = *arena.node(id)
+            && arena.as_num(e).is_some_and(|r| r.is_negative())
+            && expr_contains_var(arena, b, var)
+            && !dens.contains(&b)
+        {
+            dens.push(b);
+        }
+    }
     if dens.is_empty() {
         return Ok(candidates);
     }
@@ -3596,6 +4251,22 @@ fn drop_poles_of_product(
             continue;
         }
         for &b in &dens {
+            // `RootOf(q, k)` (of an irreducible `q`) is a zero of the
+            // polynomial `b` exactly when `q` divides it.
+            if let ExprNode::RootOf(q, qv, _) = *arena.node(s.value)
+                && let (Some(qp), Some(bp)) = (
+                    polybridge::expr_to_poly(arena, q, qv),
+                    polybridge::expr_to_poly(arena, b, var),
+                )
+            {
+                let g = Poly::gcd(&qp, &bp).degree().unwrap_or(0);
+                if g > 0 && Some(g) == qp.degree() {
+                    continue 'cand;
+                }
+                if g == 0 {
+                    continue;
+                }
+            }
             let d = crate::transforms::subs::subs(arena, b, var, s.value);
             let d = crate::transforms::expand::expand(arena, d);
             let d = crate::transforms::eval::eval(arena, d);
@@ -3828,6 +4499,18 @@ fn try_exponential_substitution(
         }
     };
     let mut out: Vec<Solution> = Vec::new();
+    // A rational equation in `t` with a constant numerator has no root at
+    // all: neither has the equation in `x` (`tanh(x − 3)·tanh(x + 3) = 1`;
+    // refused before 0.47, SymPy: `[]`).
+    {
+        let num = full_numerator(arena, sub);
+        if polybridge::expr_to_poly(arena, num, t).is_some_and(|p| p.is_constant() && !p.is_zero())
+        {
+            return Some(SolveOutcome::NoSolution(
+                "the equation in the exponential has no root".into(),
+            ));
+        }
+    }
     let t_roots = solutions_unless_identity(arena, sub, t)?;
     let mut all_without_preimage = !t_roots.is_empty();
     for ts in t_roots {
@@ -3855,6 +4538,292 @@ fn try_exponential_substitution(
         }
     }
     Some(SolveOutcome::Solutions(out))
+}
+
+/// Sums `Σ cᵢ·e^(Sᵢ(x))` of exponentials (`e^L`, `b^L` with constant
+/// positive bases `b`, products of them; `S = Σ L·ln b`) whose exponents
+/// fall into two groups up to constants: `C₁·e^(S₁) + C₂·e^(S₂) = 0` is
+/// `S₁ − S₂ = ln(−C₂/C₁)`, an equation without exponentials (SymPy's
+/// `_solve_exponential`).  For a variable taken real: no solution when
+/// `−C₂/C₁` is certainly not positive.  `5^(x/2) = 2^(x/3)` gives `x = 0`,
+/// `4^(x+1) + 4^(x−1) + 4^(x+2) = 3^(x+2) + 3^(x+3)` one root, `5^(x/2) =
+/// 2^(3/x)` the two `±√(6·ln 2/ln 5)`; all refused up to 0.46 (bases
+/// with no common power).  Not for a variable that may be non-real (the
+/// branches of the logarithm).  Candidates are checked by the caller.
+fn try_exponential_log_split(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    period: Option<ExprId>,
+) -> Option<SolveOutcome> {
+    if variable_may_be_nonreal(arena, var) {
+        return None;
+    }
+    let ExprNode::Add(terms) = arena.node(expr).clone() else {
+        return None;
+    };
+    // (coefficient, exponent S) per term
+    let mut parts: Vec<(ExprId, ExprId)> = Vec::with_capacity(terms.len());
+    for t in terms.iter().copied() {
+        let factors: Vec<ExprId> = match arena.node(t) {
+            ExprNode::Mul(ch) => ch.to_vec(),
+            _ => vec![t],
+        };
+        let mut coeff: Vec<ExprId> = Vec::new();
+        let mut logs: Vec<ExprId> = Vec::new();
+        for f in factors {
+            if !expr_contains_var(arena, f, var) {
+                coeff.push(f);
+                continue;
+            }
+            let node = arena.node(f).clone();
+            match node {
+                ExprNode::Exp(l) => logs.push(l),
+                ExprNode::Pow(b, l)
+                    if !expr_contains_var(arena, b, var)
+                        && crate::base::walk::free_symbols(arena, b).is_empty()
+                        && crate::poly::algebraic::sign_checked(arena, b) == Some(1) =>
+                {
+                    let ln_b = arena.ln(b);
+                    logs.push(arena.mul(&[l, ln_b]));
+                }
+                _ => return None,
+            }
+        }
+        if logs.is_empty() {
+            return None;
+        }
+        let c = arena.mul(&coeff);
+        let s = arena.add(&logs);
+        let s = crate::transforms::expand::expand(arena, s);
+        let s = crate::transforms::eval::eval(arena, s);
+        parts.push((c, s));
+    }
+    // Group the exponents equal up to a constant: (S, Σ cᵢ·e^(Sᵢ − S)).
+    let mut groups: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+    for (c, s) in parts {
+        let mut placed = false;
+        for (s0, coeffs) in groups.iter_mut() {
+            let d = arena.sub(s, *s0);
+            let d = crate::transforms::expand::expand(arena, d);
+            let d = crate::transforms::eval::eval(arena, d);
+            if !expr_contains_var(arena, d, var) {
+                let e = arena.exp(d);
+                coeffs.push(arena.mul(&[c, e]));
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            groups.push((s, vec![c]));
+        }
+    }
+    let [(s1, c1), (s2, c2)] = &groups[..] else {
+        return None;
+    };
+    let c1 = arena.add(c1);
+    let c1 = crate::transforms::eval::eval(arena, c1);
+    let c2 = arena.add(c2);
+    let c2 = crate::transforms::eval::eval(arena, c2);
+    if arena.is_zero_structural(c1) || arena.is_zero_structural(c2) {
+        return None;
+    }
+    let ratio = arena.div(c2, c1);
+    let ratio = arena.neg(ratio);
+    let ratio = crate::transforms::eval::eval(arena, ratio);
+    if crate::base::walk::free_symbols(arena, ratio).is_empty()
+        && matches!(
+            crate::poly::algebraic::sign_checked(arena, ratio),
+            Some(0) | Some(-1)
+        )
+    {
+        return Some(SolveOutcome::NoSolution(
+            "the exponentials of a real argument are positive and the coefficients do not allow it"
+                .into(),
+        ));
+    }
+    let ln_ratio = principal_ln(arena, ratio);
+    let d = arena.sub(*s1, *s2);
+    let eq = arena.sub(d, ln_ratio);
+    let eq = crate::transforms::expand::expand(arena, eq);
+    let eq = crate::transforms::eval::eval(arena, eq);
+    if !expr_contains_var(arena, eq, var) || has_exponential_of(arena, eq, var) {
+        return None;
+    }
+    Some(solve_raw(arena, eq, var, period))
+}
+
+/// Most absolute values split by [`try_abs_cases`] (`2ⁿ` sign patterns).
+const MAX_ABS_CASES: usize = 4;
+
+/// An equation with absolute values `|uᵢ|` of rational functions `uᵢ` (with
+/// rational coefficients) of a variable taken real: for each choice of
+/// signs `|uᵢ| = ±uᵢ` the equation without them (a rational one, all its
+/// roots found), and the real candidates of all the choices — the caller
+/// checks every candidate against the equation, which drops those of a
+/// choice the signs at them contradict.  Every real root is found by the
+/// choice of the signs of the `uᵢ` at it.  `|x + 3| = 2·|x − 3|` gives `1, 9`,
+/// `|x + 1| + |x² − 7| = 9` gives `(√61 − 1)/2, (1 − √69)/2`, refused
+/// before 0.47 (SymPy gives the same for a real `x`).  `None` for another shape, a
+/// variable that may be non-real, or more than [`MAX_ABS_CASES`] absolute
+/// values; `NoSolution` when no choice has a real root.
+fn try_abs_cases(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    period: Option<ExprId>,
+) -> Option<SolveOutcome> {
+    if variable_may_be_nonreal(arena, var)
+        || !crate::base::walk::free_symbols(arena, expr)
+            .iter()
+            .all(|&s| s == var)
+    {
+        return None;
+    }
+    let mut abs_atoms: Vec<ExprId> = Vec::new();
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        if let ExprNode::Abs(u) = *arena.node(id)
+            && expr_contains_var(arena, u, var)
+        {
+            // `|u| = ±u` covers every case only for a real `u` (an imaginary
+            // variable has `|i·t| = |t|`).
+            if !is_rational_in(arena, u, var)
+                || !real_for_real_var(arena, u, var)
+                || crate::base::walk::post_order_ids(arena, u)
+                    .into_iter()
+                    .any(|j| matches!(arena.node(j), ExprNode::Abs(_)))
+            {
+                return None;
+            }
+            if !abs_atoms.contains(&id) {
+                abs_atoms.push(id);
+            }
+        }
+    }
+    if abs_atoms.is_empty() || abs_atoms.len() > MAX_ABS_CASES {
+        return None;
+    }
+    let mut out: Vec<Solution> = Vec::new();
+    for mask in 0..(1usize << abs_atoms.len()) {
+        let mut branch = expr;
+        for (i, &a) in abs_atoms.iter().enumerate() {
+            let ExprNode::Abs(u) = *arena.node(a) else {
+                return None;
+            };
+            let signed = if mask & (1 << i) != 0 {
+                arena.neg(u)
+            } else {
+                u
+            };
+            branch = arena.subs_structural(branch, a, signed);
+        }
+        let branch = crate::transforms::eval::eval(arena, branch);
+        if !is_rational_in(arena, branch, var) {
+            return None;
+        }
+        match solve_raw(arena, branch, var, period) {
+            SolveOutcome::Solutions(s) => {
+                for sol in s {
+                    let v = crate::transforms::eval::eval(arena, sol.value);
+                    if crate::transforms::realness::constant_realness_as_declared(
+                        arena,
+                        v,
+                        ROOT_CHECK_DIGITS,
+                        &mut crate::base::assumptions::AssumptionCache::new(),
+                    ) == Some(false)
+                    {
+                        continue;
+                    }
+                    if !out.iter().any(|o| o.value == v) {
+                        out.push(Solution { value: v });
+                    }
+                }
+            }
+            SolveOutcome::NoSolution(_) => {}
+            // `0 = 0` on a whole branch: an interval of solutions
+            SolveOutcome::Identity | SolveOutcome::Unresolved(_) => return None,
+        }
+    }
+    if out.is_empty() {
+        return Some(SolveOutcome::NoSolution(
+            "no choice of the signs of the absolute values has a real root".into(),
+        ));
+    }
+    Some(SolveOutcome::Solutions(out))
+}
+
+/// Is `expr` a polynomial or a rational function of `var` (integer powers
+/// only), with any coefficients free of it?
+fn is_rational_in(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .filter(|&id| expr_contains_var(arena, id, var))
+        .all(|id| match arena.node(id) {
+            ExprNode::Symbol(_) | ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+            ExprNode::Pow(_, e) => arena.as_num(*e).is_some_and(|r| r.is_integer()),
+            _ => false,
+        })
+}
+
+/// Largest `k` of a `C(f, k)` written as a polynomial.
+const MAX_BINOMIAL_POLY: i64 = 32;
+
+/// `expr` with each `C(f, k)` (`f` involving `var`, `k` an integer in
+/// `0..=MAX_BINOMIAL_POLY`) replaced by `f(f − 1)⋯(f − k + 1)/k!`; `None`
+/// when there is none.
+fn binomials_as_polynomials(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    let mut out = expr;
+    let mut any = false;
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        let ExprNode::Binomial(f, k) = *arena.node(id) else {
+            continue;
+        };
+        if !expr_contains_var(arena, f, var) {
+            continue;
+        }
+        let Some(kk) = arena
+            .as_num(k)
+            .filter(|q| q.is_integer())
+            .map(|q| q.to_integer())
+        else {
+            continue;
+        };
+        let Some(kk) =
+            num_traits::ToPrimitive::to_i64(&kk).filter(|v| (0..=MAX_BINOMIAL_POLY).contains(v))
+        else {
+            continue;
+        };
+        let mut factors: Vec<ExprId> = Vec::with_capacity(kk as usize + 1);
+        let mut fact = BigInt::one();
+        for j in 0..kk {
+            let jj = arena.int(j);
+            factors.push(arena.sub(f, jj));
+            fact *= BigInt::from(j + 1);
+        }
+        let inv = arena.num_ratio(Q::new(BigInt::one(), fact));
+        factors.push(inv);
+        let poly = arena.mul(&factors);
+        out = arena.subs_structural(out, id, poly);
+        any = true;
+    }
+    if !any {
+        return None;
+    }
+    let out = crate::transforms::eval::eval(arena, out);
+    Some(out)
+}
+
+/// Does `e` hold an exponential (`e^u`, `b^u`) whose exponent involves `var`?
+fn has_exponential_of(arena: &Arena, e: ExprId, var: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| match *arena.node(id) {
+            ExprNode::Exp(u) => expr_contains_var(arena, u, var),
+            ExprNode::Pow(b, u) => {
+                !expr_contains_var(arena, b, var) && expr_contains_var(arena, u, var)
+            }
+            _ => false,
+        })
 }
 
 /// Equations in `sinh`, `cosh`, `tanh` (and exponentials) of the variable:
@@ -4675,7 +5644,7 @@ fn try_power_of_log(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<
 /// substitution is exact, so no root is lost, and [`solve_impl`] checks
 /// the candidates against the equation in `x`.  `(x² + 1)·e^(x²) = 3` is
 /// `(w + 1)·e^w = 3`: `x = ±√(W(3e) − 1)`;
-/// refused before 0.45 (SymPy: `NotImplementedError`).  `None` for a
+/// refused before 0.45 (SymPy 1.14 solves it too).  `None` for a
 /// polynomial, for families in `w` (periodic ones are peeled directly),
 /// or when the equation in `w` is not solved.
 fn try_monomial_substitution(
@@ -4874,9 +5843,28 @@ fn self_power_root(n: &BigInt) -> Option<u32> {
 /// for `arg ≥ 0` or a symbolic `arg` only `W₀` is taken — the other
 /// branches give the complex roots, infinitely many, which `solve` does
 /// not enumerate.
+///
+/// In a general solve (a solution set) a symbolic `arg` not known to be
+/// nonnegative also gives `W₋₁(arg)`, real for `−1/e ≤ arg < 0`: up to
+/// 0.46 the real solutions of `a/x + e^(x/2) = 0` were `{2·W(−a/2)}`,
+/// without `2·W₋₁(−a/2)` (for `0 < a < 2/e` both are real), and the set
+/// cut to the real line drops it where it is not real.
 fn lambert_branches(arena: &mut Arena, arg: ExprId) -> Vec<ExprId> {
     let arg = crate::transforms::eval::eval(arena, arg);
     let arg = merge_exp_factors(arena, arg);
+    if GENERAL_SOLVE.with(std::cell::Cell::get)
+        && !crate::base::walk::free_symbols(arena, arg).is_empty()
+        && crate::base::complex::query_prop(
+            arena,
+            arg,
+            crate::base::assumptions::Props::NONNEGATIVE,
+        ) != Some(true)
+    {
+        let principal = arena.lambertw(arg);
+        let neg_one = arena.neg_one;
+        let lower = arena.lambertw_branch(arg, neg_one);
+        return vec![principal, lower];
+    }
     if crate::base::walk::free_symbols(arena, arg).is_empty()
         && crate::poly::algebraic::sign_checked(arena, arg) == Some(-1)
     {
@@ -5793,6 +6781,19 @@ fn power_roots(arena: &mut Arena, c: ExprId, a: &Q) -> Option<Vec<ExprId>> {
                     .map(|s| s.value),
             );
         }
+        // A symbolic `c` and an odd `m ≥ 3`: every root (the real one of a
+        // real `c` is not the principal one when `c < 0`): up to 0.46 the
+        // real solutions of `e^(x/2)/4 + 2a/x³ = 0` were `{6·W(∛(−8a)/6)}`,
+        // not real for `a > 0`, without the two real roots `6·Wₖ(−∛a/3)`
+        // (SymPy's `solve` gives `W₀` of the three cube roots).
+        _ if !even => {
+            let n = usize::try_from(m).ok()?;
+            out.extend(
+                binomial_roots(arena, target, n)
+                    .into_iter()
+                    .map(|s| s.value),
+            );
+        }
         _ => {
             let r = arena.pow(target, inv_m);
             out.push(r);
@@ -6358,6 +7359,22 @@ fn violates_numerically(
             certainly_not_integer(arena, value, s)
         }
         _ => false,
+    }
+}
+
+/// `id`, or `0` when it is a constant that is exactly 0 without being
+/// written 0 (`atan(1/2) + atan(1/3) − π/4`, `cos(π/16) − √(2 + √(2 +
+/// √2))/2`: the zero tests of
+/// [`constant_zero_decision`](crate::transforms::eval::constant_zero_decision)).
+/// Only a value whose `f64` evaluation is within `10⁻¹⁰` of 0 is tested.
+pub(crate) fn exact_zero_form(arena: &mut Arena, id: ExprId) -> ExprId {
+    let near_zero = crate::base::walk::free_symbols(arena, id).is_empty()
+        && !arena.is_zero_structural(id)
+        && crate::transforms::evalf::evalf_complex64(arena, id).is_ok_and(|z| z.norm() < 1e-10);
+    if near_zero && crate::transforms::eval::constant_zero_decision(arena, id) == Some(true) {
+        arena.zero
+    } else {
+        id
     }
 }
 

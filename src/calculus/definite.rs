@@ -56,7 +56,7 @@ use std::cmp::Ordering;
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
@@ -207,6 +207,22 @@ pub fn integrate_definite(
     let f = evaluate_inner_definite(arena, f);
     let a = safe_eval(arena, a);
     let b = safe_eval(arena, b);
+    // A bound in the variable itself (`∫_{3x}^{5x} x dx`): the variable of
+    // integration is a dummy, the one in the bounds is free (SymPy: `8·x²`).
+    // Up to 0.46 the two were the same symbol and the result was refused
+    // as "still depending on the integration variable".
+    if walk::contains(arena, a, x) || walk::contains(arena, b, x) {
+        let dummy = fresh_symbol(arena, "idv", 0);
+        let f_d = crate::transforms::subs::subs(arena, f, x, dummy);
+        let result = integrate_definite(arena, f_d, dummy, a, b)?;
+        if walk::contains(arena, result, dummy) {
+            return Err(SymplexError::ComputationFailed {
+                operation: "integrate_definite",
+                reason: "result still depends on the integration variable".into(),
+            });
+        }
+        return Ok(result);
+    }
     let result = integrate_range(arena, f, x, a, b, 0)?;
     let result = safe_eval(arena, result);
     if walk::contains(arena, result, x) {
@@ -287,9 +303,32 @@ fn contradicted_by_quadrature(
         return false;
     };
     let g = |t: f64| func(&[t]);
-    let Ok((q, true)) = quadrature_report(&g, lo, hi, &QuadOpts::default()) else {
-        return false;
+    // Pieces between the integrand's breakpoints (kinks of `|·|`, poles,
+    // …): over a whole range the error estimate missed the kinks of
+    // `|x² − 3x|` on `[−15, 15]` and the right value 2259 was refused (0.46,
+    // SymPy's test_integrals).
+    let (a_ord, b_ord) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    let mut cuts: Vec<f64> = vec![a_ord];
+    cuts.extend(
+        quadrature_breakpoints(arena, f, x, a_ord, b_ord)
+            .into_iter()
+            .map(|(_, v)| v),
+    );
+    cuts.push(b_ord);
+    let mut q = QuadResult {
+        value: 0.0,
+        error: 0.0,
     };
+    for w in cuts.windows(2) {
+        let Ok((part, true)) = quadrature_report(&g, w[0], w[1], &QuadOpts::default()) else {
+            return false;
+        };
+        q.value += part.value;
+        q.error += part.error;
+    }
+    if lo > hi {
+        q.value = -q.value;
+    }
     if !(q.value.is_finite() && q.error.is_finite()) {
         return false;
     }
@@ -2372,6 +2411,9 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<Extended<Exp
         LimVal::Value(infinite) => return Some(infinite),
         LimVal::Bounded | LimVal::Unknown => {}
     }
+    if let Some(v) = log_polylog_limit(arena, g, u) {
+        return Some(Extended::Finite(v));
+    }
 
     // Black-box engine: only trusted when no parameters are present and
     // the expression has no unbounded oscillation (the engine can report
@@ -2411,6 +2453,194 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<Extended<Exp
         }
     }
     None
+}
+
+/// `lim_{u→+∞} g` for a `g` that is (multiplied out) a sum of terms
+/// `c·ln A`, `c·ln A·ln B`, `c·Li₂(C)` with `A`, `B`, `C` linear in `u` (numeric
+/// slopes) and terms with finite limits: with `ℓ = ln u`, `ln(a·u + b) = ℓ +
+/// λ + o(1)` ([`asymptotic_log_shift`]) and `Li₂(C) = −π²/6 − ½·ln²(−C) −
+/// Li₂(1/C)` (DLMF 25.12.4, `C` off `[0, ∞)`), each term is `α·ℓ² + β·ℓ + γ +
+/// o(1)`; when the `α` and the `β` add up to 0 the limit is the sum of the
+/// `γ`.  The antiderivative of `ln(x + c)/D(x)` is such a sum of `Li₂` and
+/// products of logarithms at the roots of `D`, whose `ln²u` terms cancel
+/// only in the sum: `∫₀^∞ ln(x + 1)/(x² + 1) dx = π·ln 2/4 + G` was refused up
+/// to 0.46.  The sums are decided exactly, or for a parameter-free `g` to
+/// 30 digits (the closed form then faces the quadrature check of
+/// [`integrate_definite`]).
+fn log_polylog_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<ExprId> {
+    let has_target = walk::post_order_ids(arena, g).into_iter().any(|id| {
+        matches!(arena.node(id), ExprNode::Apply(sid, args)
+            if arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::PolyLog)
+                && args.len() == 2)
+    });
+    if !has_target {
+        return None;
+    }
+    let e = expand::expand(arena, g);
+    let terms: Vec<ExprId> = match arena.node(e) {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![e],
+    };
+    let mut sq: Vec<ExprId> = Vec::new();
+    let mut lin: Vec<ExprId> = Vec::new();
+    let mut cst: Vec<ExprId> = Vec::new();
+    let mut rest: Vec<ExprId> = Vec::new();
+    let order_two = arena.int(2);
+    for t in terms {
+        if !walk::contains(arena, t, u) {
+            cst.push(t);
+            continue;
+        }
+        let factors: Vec<ExprId> = match arena.node(t) {
+            ExprNode::Mul(fs) => fs.to_vec(),
+            _ => vec![t],
+        };
+        let (dep, coef): (Vec<ExprId>, Vec<ExprId>) = factors
+            .into_iter()
+            .partition(|&f| walk::contains(arena, f, u));
+        let c = arena.mul(&coef);
+        let mut logs: Vec<ExprId> = Vec::new();
+        let mut li2: Option<ExprId> = None;
+        let mut ok = true;
+        for &d in &dep {
+            match arena.node(d).clone() {
+                ExprNode::Ln(a) => logs.push(a),
+                ExprNode::Pow(b, n)
+                    if matches!(arena.node(b), ExprNode::Ln(_))
+                        && arena
+                            .as_num(n)
+                            .is_some_and(|q| *q == Q::from_integer(2.into())) =>
+                {
+                    let ExprNode::Ln(a) = *arena.node(b) else {
+                        return None;
+                    };
+                    logs.push(a);
+                    logs.push(a);
+                }
+                ExprNode::Apply(sid, args)
+                    if arena.lib_fn(sid) == Some(crate::base::libfn::LibFn::PolyLog)
+                        && args.len() == 2
+                        && args[0] == order_two
+                        && li2.is_none() =>
+                {
+                    li2 = Some(args[1]);
+                }
+                _ => ok = false,
+            }
+        }
+        if !ok || (li2.is_some() && !logs.is_empty()) || logs.len() > 2 {
+            rest.push(t);
+            continue;
+        }
+        if let Some(z) = li2 {
+            // −π²/6 − ½(ℓ + μ)² with μ the shift of ln(−C).
+            let neg_z = arena.neg(z);
+            let neg_z = safe_eval(arena, neg_z);
+            let mu = asymptotic_log_shift(arena, neg_z, u, true)?;
+            let minus_half = arena.rational(-1, 2);
+            sq.push(arena.mul(&[c, minus_half]));
+            let minus_one = arena.int(-1);
+            lin.push(arena.mul(&[c, minus_one, mu]));
+            let pi = arena.pi();
+            let two = arena.int(2);
+            let pi2 = arena.pow(pi, two);
+            let sixth = arena.rational(-1, 6);
+            let mu2 = arena.pow(mu, two);
+            let g0 = arena.mul(&[sixth, pi2]);
+            let g1 = arena.mul(&[minus_half, mu2]);
+            let g = arena.add(&[g0, g1]);
+            cst.push(arena.mul(&[c, g]));
+            continue;
+        }
+        let lambdas: Vec<ExprId> = logs
+            .iter()
+            .map(|&a| asymptotic_log_shift(arena, a, u, false))
+            .collect::<Option<_>>()?;
+        match lambdas.len() {
+            1 => {
+                lin.push(c);
+                cst.push(arena.mul(&[c, lambdas[0]]));
+            }
+            2 => {
+                sq.push(c);
+                let s = arena.add(&[lambdas[0], lambdas[1]]);
+                lin.push(arena.mul(&[c, s]));
+                cst.push(arena.mul(&[c, lambdas[0], lambdas[1]]));
+            }
+            _ => rest.push(t),
+        }
+    }
+    let vanishes = |arena: &mut Arena, parts: &[ExprId]| -> bool {
+        let s = arena.add(parts);
+        let s = safe_eval(arena, s);
+        if arena.is_zero_structural(s) {
+            return true;
+        }
+        let s = expand::expand(arena, s);
+        let s = safe_eval(arena, s);
+        arena.is_zero_structural(s)
+            || (walk::free_symbols(arena, s).is_empty()
+                && evalf::evalf_complex(arena, s, 30)
+                    .ok()
+                    .and_then(|v| evalf::abs_to_f64(&v))
+                    .is_some_and(|m| m < 1e-25))
+    };
+    if !vanishes(arena, &sq) || !vanishes(arena, &lin) {
+        return None;
+    }
+    if !rest.is_empty() {
+        let r = arena.add(&rest);
+        match compositional_limit(arena, r, u) {
+            LimVal::Value(Extended::Finite(v)) => cst.push(v),
+            _ => return None,
+        }
+    }
+    let total = arena.add(&cst);
+    let total = safe_eval(arena, total);
+    is_finite_value(arena, total, u).then_some(total)
+}
+
+/// `λ` with `ln(a·u + b) = ln u + λ + o(1)` as `u → +∞`, for a numeric
+/// slope `a ≠ 0` and a constant `b`: `ln a` off the negative axis; on it
+/// `ln|a| ± iπ` above or below the axis by the sign of `im b` (`+iπ` on the
+/// axis itself, the principal value).  With `avoid_positive_axis` (the
+/// argument `−C` of a `Li₂(C)` inversion), `None` when `a·u + b` runs along
+/// the negative axis: `C` on `Li₂`'s cut.
+fn asymptotic_log_shift(
+    arena: &mut Arena,
+    arg: ExprId,
+    u: ExprId,
+    avoid_positive_axis: bool,
+) -> Option<ExprId> {
+    let LinearCoeffs { slope, intercept } = calculus_util::linear_coeffs_exact(arena, arg, u)?;
+    if walk::contains(arena, slope, u)
+        || walk::contains(arena, intercept, u)
+        || !walk::free_symbols(arena, slope).is_empty()
+    {
+        return None;
+    }
+    let a = evalf::evalf_complex64(arena, slope).ok()?;
+    if a.norm().is_nan() || a.norm() <= 0.0 {
+        return None;
+    }
+    if a.re < 0.0 && a.im.abs() <= 1e-12 * a.norm() {
+        if !walk::free_symbols(arena, intercept).is_empty() {
+            return None;
+        }
+        let b = evalf::evalf_complex64(arena, intercept).ok()?;
+        let on_axis = b.im.abs() <= 1e-12 * b.norm().max(1.0);
+        if avoid_positive_axis && on_axis {
+            return None;
+        }
+        let abs_a = arena.neg(slope);
+        let ln_abs = arena.ln(abs_a);
+        let pi = arena.pi();
+        let i = arena.i_unit();
+        let sg = arena.int(if b.im < 0.0 && !on_axis { -1 } else { 1 });
+        let i_pi = arena.mul(&[sg, i, pi]);
+        return Some(arena.add(&[ln_abs, i_pi]));
+    }
+    Some(arena.ln(slope))
 }
 
 /// Does `g` contain `sin`/`cos`/`tan` of an argument that does not
@@ -2504,22 +2734,44 @@ enum LimVal {
 fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
     let order = walk::post_order_ids(arena, g);
     let mut vals: FxHashMap<ExprId, LimVal> = FxHashMap::default();
+    // Nodes that tend to 0 faster than any power of `u` grows
+    // ([`exponentially_small`]).
+    let mut small: FxHashSet<ExprId> = FxHashSet::default();
+
+    // Leading terms `c·u^d` of the nodes that are algebraic in `u`.
+    let mut lead: FxHashMap<ExprId, (Q, ExprId)> = FxHashMap::default();
 
     for id in order {
         let node = arena.node(id).clone();
+        if exponentially_small(arena, &node, &vals, &small, u) {
+            small.insert(id);
+        }
+        if let Some(t) = leading_term(arena, id, &node, &lead, u) {
+            lead.insert(id, t);
+        }
         let v = if id == u {
             LimVal::Value(Extended::PosInf)
         } else if !walk::contains(arena, id, u) {
             LimVal::Value(Extended::Finite(id))
         } else {
             match node {
+                ExprNode::Mul(_) | ExprNode::Add(_) if small.contains(&id) => {
+                    LimVal::Value(Extended::Finite(arena.zero()))
+                }
                 ExprNode::Add(children) => {
                     let mut finite: Vec<ExprId> = Vec::new();
                     let mut pos = 0usize;
                     let mut neg = 0usize;
                     let mut bounded = false;
                     let mut unknown = false;
+                    let (grouped, group_value) = linear_log_group(arena, &children, u);
+                    if let Some(v) = group_value {
+                        finite.push(v);
+                    }
                     for c in children.iter() {
+                        if grouped.contains(c) {
+                            continue;
+                        }
                         match vals.get(c).copied().unwrap_or(LimVal::Unknown) {
                             LimVal::Value(Extended::Finite(v)) => finite.push(v),
                             LimVal::Value(Extended::PosInf) => pos += 1,
@@ -2805,9 +3057,290 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                 _ => LimVal::Unknown,
             }
         };
+        let v = match (v, lead.get(&id)) {
+            (LimVal::Unknown, Some((d, c))) => leading_term_limit(arena, d, *c),
+            (v, _) => v,
+        };
         vals.insert(id, v);
     }
     vals.get(&g).copied().unwrap_or(LimVal::Unknown)
+}
+
+/// The leading term `c·u^d` (`u → +∞`) of the node `id` (children done) when
+/// it is algebraic in `u`: a constant, `u`, a sum (the top degree's
+/// coefficients must not cancel structurally), a product, a constant
+/// power (of a positive leading coefficient unless integer).
+fn leading_term(
+    arena: &mut Arena,
+    id: ExprId,
+    node: &ExprNode,
+    lead: &FxHashMap<ExprId, (Q, ExprId)>,
+    u: ExprId,
+) -> Option<(Q, ExprId)> {
+    if id == u {
+        return Some((Q::one(), arena.one()));
+    }
+    if !walk::contains(arena, id, u) {
+        return Some((Q::zero(), id));
+    }
+    match node {
+        ExprNode::Add(children) => {
+            let terms: Vec<(Q, ExprId)> = children
+                .iter()
+                .map(|c| lead.get(c).cloned())
+                .collect::<Option<_>>()?;
+            let top = terms.iter().map(|(d, _)| d.clone()).max()?;
+            let coeffs: Vec<ExprId> = terms
+                .iter()
+                .filter(|(d, _)| *d == top)
+                .map(|&(_, c)| c)
+                .collect();
+            let c = arena.add(&coeffs);
+            let c = safe_eval(arena, c);
+            if arena.is_zero_structural(c) || sign_of(arena, c) == Some(Ordering::Equal) {
+                return None;
+            }
+            Some((top, c))
+        }
+        ExprNode::Mul(children) => {
+            let mut d = Q::zero();
+            let mut cs: Vec<ExprId> = Vec::with_capacity(children.len());
+            for c in children.iter() {
+                let (dc, cc) = lead.get(c).cloned()?;
+                d += dc;
+                cs.push(cc);
+            }
+            let c = arena.mul(&cs);
+            Some((d, safe_eval(arena, c)))
+        }
+        ExprNode::Neg(inner) => {
+            let (d, c) = lead.get(inner).cloned()?;
+            let n = arena.neg(c);
+            Some((d, safe_eval(arena, n)))
+        }
+        ExprNode::Pow(b, e) => {
+            if walk::contains(arena, *e, u) {
+                return None;
+            }
+            let r = arena.as_num(*e)?.clone();
+            let (db, cb) = lead.get(b).cloned()?;
+            if !r.is_integer() && sign_of(arena, cb) != Some(Ordering::Greater) {
+                return None;
+            }
+            let p = arena.pow(cb, *e);
+            Some((db * r, safe_eval(arena, p)))
+        }
+        _ => None,
+    }
+}
+
+/// The limit at `+∞` of a leading term `c·u^d`.
+fn leading_term_limit(arena: &mut Arena, d: &Q, c: ExprId) -> LimVal {
+    if d.is_negative() {
+        return LimVal::Value(Extended::Finite(arena.zero()));
+    }
+    if d.is_zero() {
+        return LimVal::Value(Extended::Finite(c));
+    }
+    match sign_of(arena, c) {
+        Some(Ordering::Greater) => LimVal::Value(Extended::PosInf),
+        Some(Ordering::Less) => LimVal::Value(Extended::NegInf),
+        _ => LimVal::Unknown,
+    }
+}
+
+/// Does the node `node` (its children already visited) tend to 0 as `u → +∞`
+/// faster than any power of `u` grows: `e^g` for an algebraic `g → −∞` (so
+/// `|e^g| ≤ e^{−c·u^ε}`), a product of such a factor with factors that grow at
+/// most like a power of `u` ([`at_most_polynomial`]), a sum of such terms?
+/// Such a product tends to 0.  The compositional rules saw `∞·0` in
+/// `x²·e^{−(x−μ)²/(2σ²)}` and in `x·(e^{−x}·sin x + e^{−x}·cos x)`, and the limit
+/// engine is not consulted with parameters or oscillation:
+/// `∫₀^∞ x³·e^{−x}·sin x dx` and the moments of a normal density with symbolic
+/// `μ`, `σ` were refused up to 0.46 (SymPy's test_meijerint).
+fn exponentially_small(
+    arena: &Arena,
+    node: &ExprNode,
+    vals: &FxHashMap<ExprId, LimVal>,
+    small: &FxHashSet<ExprId>,
+    u: ExprId,
+) -> bool {
+    match node {
+        ExprNode::Exp(g) => {
+            matches!(vals.get(g), Some(LimVal::Value(Extended::NegInf)))
+                && algebraic_in(arena, *g, u)
+        }
+        ExprNode::Mul(children) => {
+            children.iter().any(|c| small.contains(c))
+                && children.iter().all(|&c| {
+                    small.contains(&c)
+                        || !walk::contains(arena, c, u)
+                        || at_most_polynomial(arena, c, u)
+                })
+        }
+        ExprNode::Add(children) => children.iter().all(|c| small.contains(c)),
+        ExprNode::Neg(c) => small.contains(c),
+        _ => false,
+    }
+}
+
+/// Is every node of `e` that depends on `u` a sum, product or constant
+/// power of `u`?
+fn algebraic_in(arena: &Arena, e: ExprId, u: ExprId) -> bool {
+    walk::post_order_ids(arena, e).into_iter().all(|id| {
+        !walk::contains(arena, id, u)
+            || id == u
+            || match arena.node(id) {
+                ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+                ExprNode::Pow(_, ex) => !walk::contains(arena, *ex, u),
+                _ => false,
+            }
+    })
+}
+
+/// Is `|e|` bounded by a power of `u` as `u → +∞`: built from `u`, sums,
+/// products, constant powers of algebraic bases, logarithms, and the
+/// bounded functions `sin`, `cos`, `atan`, `tanh`, `erf`, `erfc`, `sign`,
+/// `Si` (of anything), with no exponential?
+fn at_most_polynomial(arena: &Arena, e: ExprId, u: ExprId) -> bool {
+    walk::post_order_ids(arena, e).into_iter().all(|id| {
+        if !walk::contains(arena, id, u) || id == u {
+            return true;
+        }
+        match arena.node(id) {
+            ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Neg(_)
+            | ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Atan(_)
+            | ExprNode::Tanh(_)
+            | ExprNode::Erf(_)
+            | ExprNode::Erfc(_)
+            | ExprNode::Sign(_)
+            | ExprNode::Si(_)
+            | ExprNode::Abs(_) => true,
+            ExprNode::Ln(g) => algebraic_in(arena, *g, u),
+            ExprNode::Pow(b, ex) => {
+                !walk::contains(arena, *ex, u)
+                    && (algebraic_in(arena, *b, u)
+                        || arena.as_num(*ex).is_some_and(|r| !r.is_negative()))
+            }
+            _ => false,
+        }
+    })
+}
+
+/// The terms `cⱼ·ln(aⱼ·u + bⱼ)` among `children` (constants `cⱼ`, numeric
+/// `aⱼ ≠ 0`, constant `bⱼ`), each of modulus tending to `∞`, and the limit
+/// of their sum as `u → +∞` when the coefficients `cⱼ` add up to 0:
+/// `ln(a·u + b) = ln a + ln u + o(1)` (principal branches, `u > 0`) off the
+/// negative axis, and `ln|a| + ln u ± iπ` along it, above or below by the
+/// sign of `im b` (`+iπ` on the cut itself), so the `ln u` cancel and the
+/// limit is `Σ cⱼ·ln aⱼ` (with those `±iπ`).  The continuous antiderivative
+/// of `∫ e^{−x}·sin x/(x² + 1) dx` holds `ln(x + i) − ln((−1 + i)·x − 1 − i)`,
+/// each of whose limits is a complex infinity (0.46 refused
+/// `∫₀^∞ e^{−x}·sin x/(x² + 1) dx`).  Empty and `None` otherwise.
+fn linear_log_group(
+    arena: &mut Arena,
+    children: &[ExprId],
+    u: ExprId,
+) -> (Vec<ExprId>, Option<ExprId>) {
+    let none = (Vec::new(), None);
+    let mut members: Vec<ExprId> = Vec::new();
+    let mut coeffs: Vec<ExprId> = Vec::new();
+    let mut values: Vec<ExprId> = Vec::new();
+    for &c in children {
+        let (coeff, log) = match arena.node(c).clone() {
+            ExprNode::Ln(_) => (arena.one(), c),
+            ExprNode::Mul(fs) => {
+                let (logs, rest): (Vec<ExprId>, Vec<ExprId>) = fs
+                    .iter()
+                    .partition(|&&f| matches!(arena.node(f), ExprNode::Ln(_)));
+                if logs.len() != 1 || rest.iter().any(|&f| walk::contains(arena, f, u)) {
+                    continue;
+                }
+                (arena.mul(&rest), logs[0])
+            }
+            _ => continue,
+        };
+        let ExprNode::Ln(arg) = *arena.node(log) else {
+            continue;
+        };
+        // `ln|a·u + b|` (real `a`, `b`): `ln|a| + ln u + o(1)`.
+        let (arg, absolute) = match *arena.node(arg) {
+            ExprNode::Abs(inner) => (inner, true),
+            _ => (arg, false),
+        };
+        let Some(LinearCoeffs { slope, intercept }) =
+            calculus_util::linear_coeffs_exact(arena, arg, u)
+        else {
+            continue;
+        };
+        if absolute {
+            if walk::contains(arena, slope, u)
+                || walk::contains(arena, intercept, u)
+                || !walk::free_symbols(arena, slope).is_empty()
+                || !is_real(arena, slope)
+                || !is_real(arena, intercept)
+            {
+                continue;
+            }
+            let abs_slope = arena.abs(slope);
+            let value = arena.ln(abs_slope);
+            members.push(c);
+            coeffs.push(coeff);
+            values.push(arena.mul(&[coeff, value]));
+            continue;
+        }
+        if walk::contains(arena, slope, u)
+            || walk::contains(arena, intercept, u)
+            || !walk::free_symbols(arena, slope).is_empty()
+        {
+            continue;
+        }
+        let Ok(a) = evalf::evalf_complex64(arena, slope) else {
+            continue;
+        };
+        if a.norm().is_nan() || a.norm() <= 0.0 {
+            continue;
+        }
+        let tiny = 1e-12 * a.norm();
+        let value = if a.re < 0.0 && a.im.abs() <= tiny {
+            // Along the negative axis: ln|a| + ln u ± iπ by the side of b.
+            let below = walk::free_symbols(arena, intercept).is_empty()
+                && evalf::evalf_complex64(arena, intercept)
+                    .is_ok_and(|b| b.im < -1e-12 * b.norm().max(1.0));
+            let above_or_on = walk::free_symbols(arena, intercept).is_empty()
+                && evalf::evalf_complex64(arena, intercept)
+                    .is_ok_and(|b| b.im >= -1e-12 * b.norm().max(1.0));
+            if !below && !above_or_on {
+                return none;
+            }
+            let abs_a = arena.neg(slope);
+            let ln_abs = arena.ln(abs_a);
+            let pi = arena.pi();
+            let i = arena.i_unit();
+            let sg = arena.int(if below { -1 } else { 1 });
+            let i_pi = arena.mul(&[sg, i, pi]);
+            arena.add(&[ln_abs, i_pi])
+        } else {
+            arena.ln(slope)
+        };
+        members.push(c);
+        coeffs.push(coeff);
+        values.push(arena.mul(&[coeff, value]));
+    }
+    if members.len() < 2 {
+        return none;
+    }
+    let total = arena.add(&coeffs);
+    let total = safe_eval(arena, total);
+    if !arena.is_zero_structural(total) {
+        return none;
+    }
+    let sum = arena.add(&values);
+    (members, Some(safe_eval(arena, sum)))
 }
 
 /// The exponential and trigonometric integrals that
@@ -3473,8 +4006,27 @@ fn kink_arguments(arena: &Arena, f: ExprId, x: ExprId) -> Vec<ExprId> {
 
 /// A rational point strictly inside `(lo, hi)` (infinite ends allowed).
 fn test_point(arena: &mut Arena, lo: ExprId, hi: ExprId) -> Option<ExprId> {
-    let lo_v = point_value(arena, lo)?;
-    let hi_v = point_value(arena, hi)?;
+    // A symbolic end next to an infinite one, or two symbolic ends (whose
+    // order the caller decided): `h − 1`, `l + 1`, the midpoint.  The
+    // Laplace density `e^{−|x − μ|/b}` over ℝ with a real `μ` was refused up
+    // to 0.46 for want of a test point in `(−∞, μ)` (SymPy's test_meijerint).
+    let (lo_v, hi_v) = match (point_value(arena, lo), point_value(arena, hi)) {
+        (Some(l), Some(h)) => (l, h),
+        (l, h) => {
+            let one = arena.one();
+            return Some(match (l, h) {
+                (Some(l), None) if l == f64::NEG_INFINITY => arena.sub(hi, one),
+                (None, Some(h)) if h == f64::INFINITY => arena.add(&[lo, one]),
+                (None, None) => {
+                    let half = arena.rational(1, 2);
+                    let s = arena.add(&[lo, hi]);
+                    let m = arena.mul(&[half, s]);
+                    safe_eval(arena, m)
+                }
+                _ => return None,
+            });
+        }
+    };
     let m = match (lo_v.is_finite(), hi_v.is_finite()) {
         (true, true) => {
             if let (Some(rl), Some(rh)) = (arena.as_num(lo).cloned(), arena.as_num(hi).cloned()) {
@@ -3588,6 +4140,13 @@ fn value_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<f64,
 
 /// Sign of `g` at `x = mid`.
 fn sign_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<Ordering, SymplexError> {
+    let gm = subs::subs(arena, g, x, mid);
+    let gm = safe_eval(arena, gm);
+    if !walk::free_symbols(arena, gm).is_empty() {
+        return sign_of(arena, gm).ok_or_else(|| {
+            failed("piecewise structure depends on symbolic parameters; cannot resolve")
+        });
+    }
     let v = value_at(arena, g, x, mid)?;
     Ok(if v == 0.0 {
         Ordering::Equal

@@ -706,13 +706,18 @@ fn decaying_exponential_with_positive_parameter() {
     );
 }
 
+/// A parameter of unknown sign is not guessed.  Since 0.47 a linear
+/// leading term gives the infinity in the coefficient's direction,
+/// `sign(u)·∞` (generic in `u`, as every limit with parameters; SymPy 1.14
+/// `oo*sign(u)`); up to 0.46 it was refused.  `e^{u·x}` (depends on `Re u`)
+/// and the two-sided `u/x` at 0 stay unevaluated.
 #[test]
 fn unknown_sign_parameters_are_not_guessed() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let u = ctx.symbol("u");
     let inf = ctx.infinity();
-    assert!((&u * &x).limit(&x, &inf).has_unevaluated());
+    assert_eq!((&u * &x).limit(&x, &inf), u.sign() * &inf);
     assert!((&u * &x).exp().limit(&x, &inf).has_unevaluated());
     assert!((&u / &x).limit(&x, &ctx.int(0)).has_unevaluated());
 }

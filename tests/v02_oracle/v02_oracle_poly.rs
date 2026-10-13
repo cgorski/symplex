@@ -154,12 +154,17 @@ fn constant_or_points(ctx: &Context, r: &Ex, fx: &Fixture) -> Status {
     }
 }
 
+/// `resultant` takes rational coefficients only; symbolic ones go to
+/// `resultant_symbolic` (SymPy's `resultant(f, g, x)` takes both).  Up to
+/// 0.46 only `resultant` was called, so the three `resultant:symbolic`
+/// fixtures were reported NOT_IMPL although symplex computes them (e.g.
+/// `res(x² + a·x + b, x − 1) = a + b + 1`, checked at the fixture's points).
 fn resultant(ctx: &Context, fx: &Fixture) -> Status {
     let (f, g, x) = match two_polys(ctx, fx) {
         Ok(v) => v,
         Err(e) => return Status::NotImplemented(e),
     };
-    match f.resultant(&g, &x) {
+    match f.resultant(&g, &x).or_else(|| f.resultant_symbolic(&g, &x)) {
         Some(r) => constant_or_points(ctx, &r, fx),
         None => Status::NotImplemented("resultant returned None".into()),
     }
@@ -175,13 +180,16 @@ fn resultant_symbolic_coefficients() {
     run_with_known_bugs("resultant", "symbolic", KNOWN_BUGS, resultant);
 }
 
+/// As [`resultant`]: symbolic coefficients go to `discriminant_symbolic`
+/// (up to 0.46 the three `discriminant:symbolic` fixtures were reported
+/// NOT_IMPL; symplex gives `b² − 4a` for `a·x² + b·x + 1`, as SymPy).
 fn discriminant(ctx: &Context, fx: &Fixture) -> Status {
     let f = match parse(ctx, fx.str("input").unwrap_or("")) {
         Ok(e) => e,
         Err(e) => return Status::NotImplemented(e),
     };
     let x = ctx.symbol(fx.str("variable").unwrap_or("x"));
-    match f.discriminant(&x) {
+    match f.discriminant(&x).or_else(|| f.discriminant_symbolic(&x)) {
         Some(r) => constant_or_points(ctx, &r, fx),
         None => Status::NotImplemented("discriminant returned None".into()),
     }
@@ -368,13 +376,15 @@ fn apart_partial_fractions() {
             .map(|t| t.together().as_numer_denom().1.degree(&x).unwrap_or(0))
             .max()
             .unwrap_or(0);
-        if terms.len() == 1
-            && in_deg >= 2
-            && max_term_den_deg == in_deg
-            && fx
-                .str("sympy_result")
-                .is_some_and(|s| s.contains(" + ") || s.contains(" - "))
-        {
+        // SymPy decomposed only if its result is a sum of terms.  Up to 0.46
+        // this looked for " + " or " - " anywhere in SymPy's string, so the
+        // unchanged `(x**2 + 1)**(-2)` (irreducible over ℚ, nothing to split)
+        // counted as decomposed and symplex's identical answer as NOT_IMPL.
+        let sympy_split = fx
+            .str("sympy_result")
+            .and_then(|s| parse(ctx, s).ok())
+            .is_some_and(|e| e.expr_type() == ExprType::Add);
+        if terms.len() == 1 && in_deg >= 2 && max_term_den_deg == in_deg && sympy_split {
             return Status::NotImplemented(format!("not decomposed: {}", truncate(&r)));
         }
         Status::Pass
