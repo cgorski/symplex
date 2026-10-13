@@ -163,3 +163,35 @@ fn constant_coefficients_over_a_rational_denominator_split_by_constant() {
     );
     integrate_within("(E*x^3 + pi)/(x^2 + 1)^3", Duration::from_secs(10), true);
 }
+
+/// The real-variable convention accepts an `F` whose derivative differs
+/// from `f` only where `f` is complex: `∫ √x·|√x| dx = x²·sign(√x)/2` (by
+/// `u = √x`; at `x < 0` the integrand is imaginary), as `∫ asin(√x)/x² dx
+/// = −asin(√x)/x − √(1/x − 1)·sign(√x)` (Rubi 5.1.5 #365).  Times a
+/// constant that is not real that no longer holds: `∫ √3·i·√x·|√x| dx` was
+/// `√3·i·x²·sign(√x)/2`, and at `x = −5/7` the integrand is the real
+/// `−1.2372`, the answer's derivative `+1.2372` (up to 0.46; the CI Fuzz
+/// workflow's `fuzz_integrate`).  A non-real constant split off an
+/// integrand is now checked against it when the antiderivative is not
+/// analytic; with `|u|` of a real `u` (`u = x² − 1`, `u = sin x`) and real
+/// constants nothing changes.
+#[test]
+fn non_real_constant_factors_keep_the_real_variable_convention() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let src = "sqrt(3)*sqrt(x)*abs(sqrt(x))*I";
+    let big_f = ctx.parse(src).unwrap().integrate(&x);
+    assert!(big_f.has_unevaluated(), "∫ {src} = {big_f}");
+    // Checked where the integrand is real (0 < x < 1).
+    let f = ctx.parse("asin(sqrt(x))/x^2").unwrap();
+    let big_f = f.integrate(&x);
+    assert!(!big_f.has_unevaluated(), "∫ {f} = {big_f}");
+    let residual = &big_f.diff(&x) - &f;
+    for point in ["1/3", "1/2", "5/7"] {
+        let p = ctx.parse(point).unwrap();
+        let r = residual.subs(&x, &p).eval_complex64().unwrap();
+        assert!(r.norm() < 1e-9, "∫ {f} = {big_f}: F′ − f = {r} at {point}");
+    }
+    integrate_within("2*x*abs(x^2 - 1)", Duration::from_secs(20), true);
+    integrate_within("cos(x)*sign(sin(x))", Duration::from_secs(20), true);
+}

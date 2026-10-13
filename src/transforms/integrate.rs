@@ -259,7 +259,8 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
         if matches!(arena.node(big_f), ExprNode::Integral(..)) {
             return arena.intern(ExprNode::Integral(expr, var));
         }
-        return wrap_with_constants(arena, big_f, &constants);
+        return constants_times_antiderivative(arena, expr, f, big_f, &constants, var, var_sym)
+            .unwrap_or_else(|| arena.intern(ExprNode::Integral(expr, var)));
     }
     integrate_stages(arena, expr, var, var_sym)
 }
@@ -3551,7 +3552,8 @@ fn integrate_node_uncached(
         if matches!(arena.node(big_f), ExprNode::Integral(..)) {
             return arena.intern(ExprNode::Integral(expr, var));
         }
-        return wrap_with_constants(arena, big_f, &constants);
+        return constants_times_antiderivative(arena, expr, f, big_f, &constants, var, var_sym)
+            .unwrap_or_else(|| arena.intern(ExprNode::Integral(expr, var)));
     }
 
     // Try trig power/product integration first (sin^n, cos^n, sin^m*cos^n)
@@ -9110,6 +9112,40 @@ fn contains_non_finite(arena: &Arena, e: ExprId) -> bool {
         })
 }
 
+/// Does `e` apply a function that is not analytic (`|·|`, `sign`, `H`,
+/// `re`, `im`, `conjugate`, `arg`, `min`, `max`, `Piecewise`) to something
+/// that depends on the variable?  A `ln|g|` does not count: the stage exit
+/// writes it `ln g` where `g` is not real ([`analytic_log_of_complex_arguments`]),
+/// and `floor`/`ceiling` do not either (the continuity corrections
+/// `J·⌊w/π + 1/2⌋` of trigonometric antiderivatives): they are constant
+/// between their jumps, so their derivative is 0 along any path.
+fn non_analytic_in(arena: &Arena, e: ExprId, var_sym: SymbolId) -> bool {
+    let ids = crate::base::walk::post_order_ids(arena, e);
+    let in_log: FxHashSet<ExprId> = ids
+        .iter()
+        .filter_map(|&id| match arena.node(id) {
+            ExprNode::Ln(a) if matches!(arena.node(*a), ExprNode::Abs(_)) => Some(*a),
+            _ => None,
+        })
+        .collect();
+    ids.into_iter().any(|id| {
+        let non_analytic = match arena.node(id) {
+            ExprNode::Abs(_) => !in_log.contains(&id),
+            ExprNode::Sign(_)
+            | ExprNode::Heaviside(_)
+            | ExprNode::Re(_)
+            | ExprNode::Im(_)
+            | ExprNode::Conjugate(_)
+            | ExprNode::Arg(_)
+            | ExprNode::Min(_)
+            | ExprNode::Max(_)
+            | ExprNode::Piecewise(_) => true,
+            _ => false,
+        };
+        non_analytic && contains_var(arena, id, var_sym)
+    })
+}
+
 /// Is `e` real *and continuous* for every real value of the integration
 /// variable, under the declared assumptions of the other symbols?  The
 /// `|g|`/`sign(g)` route needs both: `g` may change sign only at its real
@@ -12313,6 +12349,42 @@ fn split_constant_factors(
         arena.mul(&dependent)
     };
     Some((constants, f))
+}
+
+/// `c·F` for the integrand `expr = c·f` whose constant factors `c` were
+/// split off (linearity) and `F = ∫ f`; `None` when that is not an
+/// antiderivative of `expr`.
+///
+/// `F` may differ from `f` where `f` is complex (the real-variable
+/// convention: `F′ = f` is checked only where `f` is real), and for a
+/// constant `c` that is not real, `c·f` is real exactly at some such
+/// points.  `∫ √3·i·√x·|√x| dx` was `√3·i·x²·sign(√x)/2` (`∫ √x·|√x| dx =
+/// x²·sign(√x)/2` differs from its integrand only at `x < 0`, where that
+/// is imaginary): at `x = −5/7` the integrand is the real `−1.2372` and the
+/// answer's derivative `+1.2372` (up to 0.46; the CI Fuzz workflow's
+/// `fuzz_integrate`).  So `c·F` is checked as an antiderivative of `c·f` when
+/// `c` is not known to be real and `f` or `F` is not analytic in the
+/// variable ([`non_analytic_in`]); an `F` built from analytic functions has
+/// `F′ = f` along the whole real line once it holds where `f` is real.
+fn constants_times_antiderivative(
+    arena: &mut Arena,
+    expr: ExprId,
+    f: ExprId,
+    big_f: ExprId,
+    constants: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let result = wrap_with_constants(arena, big_f, constants);
+    if !non_analytic_in(arena, f, var_sym) && !non_analytic_in(arena, big_f, var_sym) {
+        return Some(result);
+    }
+    let c = arena.mul(constants);
+    let mut reals = crate::base::assumptions::AssumptionCache::new();
+    if constant_is_real(arena, c, &mut reals) {
+        return Some(result);
+    }
+    (!candidate_rejected(arena, expr, result, var, var_sym)).then_some(result)
 }
 
 /// Multiply a result by constant factors (if any).
