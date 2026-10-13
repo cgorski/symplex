@@ -26,6 +26,8 @@ mod test_bug_regression;
 mod test_calculus_parity;
 #[path = "unit/test_calculus_util.rs"]
 mod test_calculus_util;
+#[path = "unit/test_canonical_construction.rs"]
+mod test_canonical_construction;
 #[path = "unit/test_codegen.rs"]
 mod test_codegen;
 #[path = "unit/test_codegen_advanced.rs"]
