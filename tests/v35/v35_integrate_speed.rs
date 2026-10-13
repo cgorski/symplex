@@ -137,3 +137,29 @@ fn ferrari_radicands_are_decided_once() {
     integrate_within("1/(x^5 + x + 2)", Duration::from_secs(20), true);
     integrate_within("log(x + x^(-3) - 1)", Duration::from_secs(20), true);
 }
+
+/// A rational function whose denominator is over ℚ and whose numerator
+/// has constant coefficients that are not (`t⁸ + t⁷/e`) is integrated as
+/// `Σ κ·∫ P/D` over its distinct constants `κ`, each piece by the rational
+/// integrator.  Neither rational integrator took it (`1/e` is neither in ℚ
+/// nor a parameter), and the search found the same answer through nested
+/// by parts and sum distributions: 6.4 s for the first integrand, and 3.6 s
+/// in 0.46 (5.2 s in the 0.47 development code) for the second, whose
+/// `x = t²` substitution and real and imaginary parts lead to it — the
+/// slow `fuzz_integrate` unit of the 0.47 campaign (10 s in the
+/// instrumented build; CI's limit is 30 s).  Now 0.012 s and 0.041 s; the
+/// third integrand's answer shrank from 234 characters to 94.
+#[test]
+fn constant_coefficients_over_a_rational_denominator_split_by_constant() {
+    integrate_within(
+        "(x^8 + x^7*exp(-1))/(x^12 + 1/2)",
+        Duration::from_secs(10),
+        true,
+    );
+    integrate_within(
+        "(sqrt(x) + exp(-1))/(x^3 + sqrt(2)*I/2)",
+        Duration::from_secs(10),
+        true,
+    );
+    integrate_within("(E*x^3 + pi)/(x^2 + 1)^3", Duration::from_secs(10), true);
+}

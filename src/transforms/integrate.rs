@@ -2553,6 +2553,117 @@ fn try_gaussian_rational(
     Some(result)
 }
 
+/// At most this many distinct constants in the numerator for
+/// [`try_rational_with_constant_coefficients`]: each costs one rational
+/// integration over the same denominator.
+const MAX_CONSTANT_GROUPS: usize = 8;
+
+/// The largest numerator degree [`try_rational_with_constant_coefficients`]
+/// takes (the rational integrator's own bound on exponents): its pieces are
+/// built as dense polynomials, and `x^1000000000/(x + 1)` would ask for a
+/// billion coefficients.
+const MAX_CONSTANT_COEFF_DEGREE: usize = 1000;
+
+/// `∫ N(x)/D(x) dx` for `D ∈ ℚ[x]` and a polynomial numerator whose
+/// coefficients are constants, not all rational: `N = Σ κₖ·Pₖ(x)` with
+/// distinct constants `κₖ` and `Pₖ ∈ ℚ[x]`, and `∫ N/D = Σ κₖ·∫ Pₖ/D`, each
+/// piece the rational integrator's over ℚ (Hermite, Rothstein–Trager),
+/// complete there.  Linearity is exact, so the pieces' checked answers need
+/// no further check.  Up to 0.46 the integrator over ℚ refused such an
+/// integrand (a constant like `1/e` is not in ℚ), the one over ℚ(p₁, …)
+/// as well (`e` is no symbol), and the search went down nested by parts and
+/// sum distributions that found the same answer piece by piece: `∫ (t⁸ +
+/// t⁷/e)/(t¹² + 1/2) dt` took 6.4 s, and through it (`x = t²`, then real and
+/// imaginary parts) `∫ (√x + 1/e)/(x³ + √2·i/2) dx` 3.6 s in 0.46 and 5.2 s
+/// in the 0.47 development code (the slow `fuzz_integrate` unit of its
+/// campaign: 10 s in the instrumented build, against a 30 s CI limit);
+/// now 0.012 s and 0.041 s.
+fn try_rational_with_constant_coefficients(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let expr = arena.mul(dependent);
+    if depth < 2 || !is_rational_in(arena, expr, var_sym) {
+        return None;
+    }
+    let (num, den) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    if !contains_var(arena, den, var_sym)
+        || !is_polynomial_in(arena, num, var, var_sym)
+        || crate::poly::polybridge::expr_to_poly(arena, den, var).is_none()
+        || crate::poly::polybridge::expr_to_poly(arena, num, var).is_some()
+    {
+        return None;
+    }
+    let terms = crate::poly::polybridge::symbolic_multipoly_terms(arena, num, &[var])?;
+    // The terms `q·κ·xᵈ` of the numerator, `q` rational.
+    let mut monomials: Vec<(usize, Q, ExprId)> = Vec::new();
+    for (exps, c) in terms {
+        let degree = usize::try_from(exps[0]).ok()?;
+        if degree > MAX_CONSTANT_COEFF_DEGREE {
+            return None;
+        }
+        let parts: SmallVec<[ExprId; 6]> = match arena.node(c) {
+            ExprNode::Add(children) => children.clone(),
+            _ => SmallVec::from_slice(&[c]),
+        };
+        for part in parts {
+            let (q, kappa) = arena.as_coeff_term(part);
+            if contains_var(arena, kappa, var_sym) {
+                return None;
+            }
+            monomials.push((degree, q, kappa));
+        }
+    }
+    if monomials.iter().all(|(_, _, kappa)| *kappa == arena.one) {
+        return None;
+    }
+    // κₖ ↦ the coefficients of Pₖ, by degree.
+    let mut groups: Vec<(ExprId, Vec<Q>)> = Vec::new();
+    for (degree, q, kappa) in monomials {
+        let k = match groups.iter().position(|(g, _)| *g == kappa) {
+            Some(k) => k,
+            None => {
+                if groups.len() == MAX_CONSTANT_GROUPS {
+                    return None;
+                }
+                groups.push((kappa, Vec::new()));
+                groups.len() - 1
+            }
+        };
+        let coeffs = &mut groups[k].1;
+        if coeffs.len() <= degree {
+            coeffs.resize(degree + 1, Q::zero());
+        }
+        coeffs[degree] += q;
+    }
+    let mut parts: Vec<ExprId> = Vec::with_capacity(groups.len());
+    for (kappa, coeffs) in groups {
+        let p = Poly::from_coeffs(coeffs);
+        if p.is_zero() {
+            continue;
+        }
+        let p = crate::poly::polybridge::poly_to_expr(arena, &p, var);
+        let piece = arena.div(p, den);
+        let big_f = integrate_node(arena, piece, var, var_sym, depth - 1);
+        if crate::base::walk::has_unevaluated(arena, big_f) {
+            return None;
+        }
+        // Term by term, as `try_gaussian_rational` writes its parts.
+        let terms: Vec<ExprId> = match arena.node(big_f) {
+            ExprNode::Add(children) => children.to_vec(),
+            _ => vec![big_f],
+        };
+        for term in terms {
+            parts.push(arena.mul(&[kappa, term]));
+        }
+    }
+    tracing::debug!("integrate: a rational function over ℚ times constants, piece by piece");
+    Some(arena.add(&parts))
+}
+
 /// `∫ A(sin u, cos u) du` for `A = R(sin u, cos u)·√(1 + ε·w)^p` (`w` = `sin u`
 /// or `cos u`, `ε = ±1`, every radical `(κ·(1 + ε·w))^(k/2)` of the
 /// integrand of that one base: Rubi 4.1.1.1, 4.1.1.2, 4.2.1.1 `(a + a·sin(c +
@@ -3786,6 +3897,18 @@ fn integrate_node_uncached(
                 "log_times_rational",
                 expr,
                 try_log_times_rational(arena, &dependent, var, var_sym, depth, true)
+            ) {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
+            // ── N(x)/D(x), D over ℚ, N with constant coefficients: by constants ──
+            // Before by parts, whose nested attempts on such a quotient only
+            // repeat, piece by piece, what the rational integrator does at once.
+            if let Some(result) = stage!(
+                arena,
+                "rational_constant_coefficients",
+                expr,
+                try_rational_with_constant_coefficients(arena, &dependent, var, var_sym, depth)
             ) {
                 return wrap_with_constants(arena, result, &constants);
             }
