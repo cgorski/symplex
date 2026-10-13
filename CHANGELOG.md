@@ -8,10 +8,25 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-13
+
 SymPy's own test suites as a yardstick: their integrals, equations,
 inequalities, limits, series, sums and special values were run through
 symplex, every answer checked independently (differentiation, quadrature,
-substitution, mpmath), and the gaps and errors fixed.
+substitution, mpmath), and the gaps and errors fixed — the integration
+corpus 646 → 754 right of 1,052 (SymPy took 857 s of CPU, symplex 3 s),
+the solver corpus 952 → 1,030 of 1,602, the limit/series/sum corpus
+1,036 → 1,115 of 1,517.  Silent wrong answers removed: numbers for
+divergent integrals (`∫_{−∞}^{∞} |x|/((x² + 1)π) dx` was 225.93),
+`1e-05` parsed as `1·e − 5`, `erfc` on the imaginary axis with the wrong
+sign, nested periodic equations missing periods, `∫₀^π sin²(kx)` as 0 for
+integer `k`, a wrong antiderivative times `i` (`∫ i·√x·|√x| dx`).  The
+nightly fuzzing no longer runs out of memory (the sanitizer's own
+bookkeeping, not symplex); the runs that then completed, and the local
+campaigns, found that antiderivative, an overflow, a hang and a
+timeout, all fixed.  Every SymPy claim in the tests and docs was re-checked
+against SymPy 1.14 (22 corrected; SymPy is the one that is wrong in
+several).  Rubi: 30,753 verified (0.46: 29,529), 0 wrong.
 
 ### Breaking (behaviour)
 
@@ -79,6 +94,20 @@ substitution, mpmath), and the gaps and errors fixed.
   are wrong, not equal to symplex's); two fixture values that were
   SymPy's errors corrected (`Mellin(1/(1 + x)²)` at `s = 1`, `Σ 1/√k`);
   the fixture generator keeps the corrections.
+- **A wrong antiderivative times a non-real constant**: `∫ √3·i·√x·|√x|
+  dx` was `√3·i·x²·sign(√x)/2`; at `x = −5/7` the integrand is the real
+  `−1.2372` and the answer's derivative `+1.2372`.  `∫ √x·|√x| dx =
+  x²·sign(√x)/2` differs from its integrand only where that is complex
+  (`x < 0`), which the real-variable convention allows, but multiplied
+  by `i` the integrand is real exactly there.  A constant factor that is
+  not real, split off an integrand whose antiderivative is not analytic
+  (`|·|`, `sign`, …), now has the product checked by differentiation
+  (found by the CI Fuzz workflow; 0.46 gave the same wrong answer).
+- `evalf` of `J_ν`, `Si`/`Ci` and `Ei` at arguments beyond `1.3·10¹⁹`
+  whose power series is reached (`besselj(10²⁰, 10²⁰)`): the guard-bit
+  count overflowed, a panic in builds with overflow checks (the CI Fuzz
+  workflow's `fuzz_roundtrip` met it in canon's zero test); refused now,
+  as release builds refused them.
 
 ### Added
 
@@ -118,10 +147,21 @@ substitution, mpmath), and the gaps and errors fixed.
 - Realness of Ferrari radicands by the cyclotomic test first (`solve` of
   a septic 33 → 7 ms, as in 0.43); the directions of `re(g)·∞` and
   `im(g)·∞` from one memoised value (parser benchmark 205 → 125 ms).
+- `∫ N(x)/D(x) dx` with `D` over ℚ and a numerator whose coefficients are
+  constants, not all rational (`(t⁸ + t⁷/e)/(t¹² + 1/2)`): one rational
+  integration per distinct constant, where the search went through
+  nested by parts for the same answer (6.4 s → 0.012 s; `∫ (√x + 1/e)/(x³
+  + √2·i/2) dx`, whose substitution leads there, 3.6 s in 0.46 → 0.041 s;
+  `∫ (e·x³ + π)/(x² + 1)³ dx` gets a 94-character answer, was 234).
+- Gruntz's last-resort series expansion stops adding terms after 20,000
+  new expression nodes (those that find a leading term take tens):
+  `series(sign(asin(asin(x))), x, 1, 3)` built coefficients like
+  `π⁸⁹·(1 − π²/4)^(−179/2)` for 22 s before refusing (since 0.43; a CI
+  Fuzz timeout), now 0.7 s, the same answer.
 
 ### Measured
 
-- `tests/v35/` (0.39–0.47): 52 files, 493 tests.  nextest 14,285 tests
+- `tests/v35/` (0.39–0.47): 52 files, 498 tests.  nextest 14,290 tests
   (14 skipped), doctests 1,330 — run on a 64-core x86-64 machine.
 - Rubi harness: 30,753 verified (0.46: 29,529), 115 real_verified (was
   91), 0 wrong; self-test 56,013 / 0 wrong / 204 undecided;
@@ -130,17 +170,32 @@ substitution, mpmath), and the gaps and errors fixed.
   logarithmic substitution with a non-real exponent).
 - Byte identity of the LP paths and the s42 Lean certificates:
   identical.  MSRV 1.93: `cargo check --all-targets` passes.
+  `cargo semver-checks` against 0.46.0: no semver update required.
 - Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s
-  and 4 GB limits): the campaign on the development code found one
+  and 4 GB limits): the campaigns on the development code found a
   `fuzz_simplify` timeout (`acosh(((x^(−3/4))^(−3/2))^(−3/2))`, 60 s:
   the realness test ran an exact radical walk before looking at the
-  certified value; fixed), then ran clean: `fuzz_numdist` 90,860,128
-  inputs, `fuzz_refine` 16,719,435, `fuzz_lambertw` 3,253,176,
-  `fuzz_parser` 2,058,450, `fuzz_exact_matrix` 214,006, `fuzz_eigenvects`
-  194,690, `fuzz_evalf` 66,778, `fuzz_calculus` 38,746, `fuzz_poly` 27,044,
-  `fuzz_roundtrip` 19,550, `fuzz_simplify` 13,519, `fuzz_integrate` 3,526:
-  0 crashes, 0 timeouts, 0 out-of-memory (one slow `fuzz_integrate` unit,
-  10 s: `∫ (√x + e⁻¹)/(x³ + √2·i/2) dx`, 3.3 s in 0.46, 5.1 s now alone).
+  certified value), a slow `fuzz_integrate` unit (`∫ (√x + e⁻¹)/(x³ +
+  √2·i/2) dx`, 10 s; see *Changed*) and a `fuzz_evalf` timeout
+  (`floor(Shi(12!))`: the new integer-part fold raised 10 to the power
+  208,027,742 before it looked at the size); all fixed.  The campaign on
+  the release code: `fuzz_numdist` 93,370,830 inputs, `fuzz_refine`
+  17,386,008, `fuzz_lambertw` 3,279,462, `fuzz_parser` 2,197,639,
+  `fuzz_exact_matrix` 219,559, `fuzz_eigenvects` 208,435, `fuzz_evalf`
+  78,510, `fuzz_calculus` 42,496, `fuzz_poly` 27,847, `fuzz_roundtrip`
+  26,211, `fuzz_simplify` 14,337, `fuzz_integrate` 5,384: 0 crashes, 0
+  timeouts, 0 out-of-memory.
+- The CI Fuzz workflow ran `fuzz_integrate` out of memory while it
+  replayed its corpus (4,098 MB of 4,096 at about 4,400 inputs;
+  `fuzz_calculus` reached 3,994 MB).  Not symplex: the same replay
+  without AddressSanitizer stays at 76 MB, and no input needs more than
+  68 MB alone; the sanitizer keeps the stack of every distinct
+  allocation site (30 frames each, never freed), which grows with the
+  number of code paths.  The workflow now keeps 5 frames and a 64 MB
+  quarantine.  Its next runs found the `besselj` overflow, the series
+  timeout and the wrong antiderivative above; the run on the release
+  code was green on all 12 targets, peak memory 196–600 MB per target
+  (`fuzz_integrate` 416 MB; it was 4,098 MB).
 
 ## [0.46.0] - 2026-10-12
 
