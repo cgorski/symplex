@@ -51,6 +51,16 @@ jobs:
       # cargo-fuzz defaults `--target` to the triple it was built for, and
       # the prebuilt binary is a musl build (no sanitizer, no musl std here).
       FUZZ_TARGET_TRIPLE: x86_64-unknown-linux-gnu
+      # These builds keep AddressSanitizer (cargo-fuzz's default; the local
+      # release campaigns use `-s none`, so the two complement each other).
+      # ASan stores the stack of every distinct allocation and free site in
+      # a depot it never frees, 30 frames each by default, and a computer
+      # algebra system has a vast number of distinct call paths: the RSS
+      # grew with every input (fuzz_integrate 4,098 MB at ~4,400 inputs of
+      # its corpus, out of memory, on 0.47 development code; fuzz_calculus
+      # 3,994 MB) while the same replay without ASan stays at 63 MB.  Five
+      # frames and a 64 MB quarantine: the same replay peaks at 396 MB.
+      ASAN_OPTIONS: malloc_context_size=5:quarantine_size_mb=64
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
