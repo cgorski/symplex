@@ -8,6 +8,18 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-13
+
+Five gaps against SymPy closed, each with an independent oracle and 0
+wrong answers in its hunt: `solve` returns the complex roots of an
+unknown with no assumptions (`eˣ + 1 = 0` → `[iπ]`; it said "no real
+solutions"), formal power series of `√x·eˣ`-type functions (they were all
+`nan`), infinite sums that are polylogarithms (`Σ (1/2)^k/k² = π²/12 −
+ln²2/2`; 6,119 refusals in the hunt → 0), the reciprocal and hyperbolic
+forms of the Pythagorean identities in `simplify` (`sec²x − tan²x`,
+`tanh²x + sech²x`), and `compile()` of `Si`, `Ci`, `Ei`, `li`, `Shi`,
+`Chi`, `erfi` and the Fresnel integrals.
+
 ### Breaking (behaviour)
 
 - `solve`: a symbol without assumptions is complex, so the range
@@ -93,6 +105,25 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   measure: `simplify` takes 5% less CPU on the `fuzz_simplify` corpus and
   half the wall time on the simplify/trig tests, despite the new
   strategies.
+
+### Measured
+
+- `tests/v35/` (0.39–0.48): 57 files, 541 tests.  nextest 14,335 tests
+  (14 skipped), doctests 1,333 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,753 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,013 / 0 wrong / 204 undecided; `--negative-params` 115
+  real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.  MSRV 1.93: `cargo check --all-targets` passes.
+  `cargo semver-checks` against 0.47.0: no semver update required.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s
+  and 4 GB limits) on the release code: `fuzz_numdist` 93,069,745 inputs,
+  `fuzz_refine` 15,376,777, `fuzz_lambertw` 3,342,701, `fuzz_parser`
+  2,286,758, `fuzz_exact_matrix` 221,618, `fuzz_eigenvects` 208,498,
+  `fuzz_evalf` 73,646, `fuzz_calculus` 41,492, `fuzz_poly` 27,837,
+  `fuzz_roundtrip` 24,769, `fuzz_simplify` 15,307, `fuzz_integrate` 5,862:
+  0 crashes, 0 timeouts, 0 out-of-memory.  The Fuzz workflow on the
+  release code (12 targets × 600 s on CI) was green on all 12.
 
 ## [0.47.0] - 2026-10-13
 
