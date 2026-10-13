@@ -253,3 +253,40 @@ fn exponentials_of_logarithmic_growth_in_gruntz() {
         bound,
     );
 }
+
+/// Gruntz's last resort expands `sign(asin(asin(1 − u²)))` (the series
+/// at `x = 1⁻` of the limit engine's two-sided test) to order 20 in `u`:
+/// the compositions built coefficients such as `π⁸⁹·(1 − π²/4)^(−179/2)`,
+/// 238,000 arena nodes, each coefficient tested for a hidden zero, for 21
+/// s before the expansion failed; `series(sign(asin(asin(x))), x, 1, 3)`
+/// took 22 s to stay unevaluated (`abs` the same), since 0.43 — the CI
+/// Fuzz workflow's `fuzz_calculus` timed out on it (34 s against its 30 s
+/// limit) during the 0.47 release.  A last-resort expansion now stops
+/// adding terms after 20,000 nodes (the ones that find a leading term take
+/// tens): 0.7 s and 1.8 s, the same answers.
+///
+/// There is no expansion in powers of `x − 1`: near 1, `asin x` is `π/2`
+/// plus a real (left) or an imaginary (right) multiple of `√|x − 1|`, so the
+/// value has a `√|x − 1|` term, a different one on each side (mpmath, 30
+/// and 50 digits: `c = sign(asin(π/2)) = 0.837904562907634 −
+/// 0.545816767293354i`, and `(sign(asin(asin(1 ∓ h))) − c)/√h` at `h =
+/// 10⁻⁸` is `0.2848 + 0.4373i` on the left, `−0.1856 − 0.2849i` on the
+/// right).
+#[test]
+fn last_resort_expansions_are_bounded() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one = ctx.int(1);
+    for src in ["sign(asin(asin(x)))", "abs(asin(asin(x)))"] {
+        let f = ctx.parse(src).unwrap();
+        let t0 = Instant::now();
+        let s = f.try_series(&x, &one, 3);
+        let dt = t0.elapsed();
+        assert!(dt < Duration::from_secs(60), "series of {src} took {dt:?}");
+        assert!(
+            s.is_err(),
+            "series of {src} at 1 = {:?}",
+            s.map(|e| e.to_string())
+        );
+    }
+}

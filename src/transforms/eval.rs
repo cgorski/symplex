@@ -2744,6 +2744,13 @@ const MAX_INTEGER_PART_NODES: usize = 60;
 /// folds `floor(E)` to 2 and `ceiling(50!/e)` to an integer; before 0.47
 /// they stayed.  `None` when `x` is not known real, its value does not
 /// settle, or the integer is beyond 1,000 digits.
+///
+/// The size is read off the printed exponent before any exact value is
+/// built: the 0.47 development code built `digits·10^shift` first, and
+/// `floor(Shi(12!))` (`Shi(12!) ≈ 5.3·10²⁰⁸⁰²⁷⁷⁴²`) raised 10 to the
+/// 208,027,742nd power (the `fuzz_evalf` timeout of the release campaign).
+/// A value below `10⁻⁵` in modulus (a certified nonzero value was printed)
+/// is settled by its sign alone, without its `10^−k` either.
 fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Option<ExprId> {
     if arena.as_num(x).is_some()
         || !walk::free_symbols(arena, x).is_empty()
@@ -2756,9 +2763,19 @@ fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Opti
     let mut digits = 25u32;
     let (value, ulp) = loop {
         let printed = crate::transforms::evalf::evalf(arena, x, digits).ok()?;
-        let (value, ulp, exponent) = decimal_value(&printed)?;
+        let parts = DecimalParts::of(&printed)?;
+        let exponent = parts.leading_exponent()?;
+        if exponent < -5 && parts.is_nonzero() {
+            // 0 < |x| < 10⁻⁵.
+            let n = match (parts.negative, ceiling) {
+                (false, false) | (true, true) => 0,
+                (false, true) => 1,
+                (true, false) => -1,
+            };
+            return Some(arena.int(n));
+        }
         if exponent + 20 < i64::from(digits) {
-            break (value, ulp);
+            break parts.value_and_ulp()?;
         }
         if digits > 25 {
             return None;
@@ -2778,45 +2795,81 @@ fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Opti
     (exact_zero_test(arena, diff) == Some(true)).then(|| arena.num_ratio(n))
 }
 
-/// The exact value of a decimal `evalf` printed (`-2.5e+3`, `3.14`), a
-/// unit in its last digit, and its decimal exponent; `None` for anything
-/// else (a complex value).
-fn decimal_value(s: &str) -> Option<(Q, Q, i64)> {
-    let s = s.trim();
-    let (mantissa, exp) = match s.split_once('e') {
-        Some((m, e)) => (m, e.trim_start_matches('+').parse::<i64>().ok()?),
-        None => (s, 0),
-    };
-    let negative = mantissa.starts_with('-');
-    let mantissa = mantissa.trim_start_matches(['-', '+']);
-    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    if int_part.is_empty()
-        || !int_part
-            .bytes()
-            .chain(frac_part.bytes())
-            .all(|b| b.is_ascii_digit())
-    {
-        return None;
+/// A decimal `evalf` printed (`-2.5e+3`, `3.14`), split into its sign,
+/// digits and exponent; `None` for anything else (a complex value).
+struct DecimalParts<'a> {
+    negative: bool,
+    int_part: &'a str,
+    frac_part: &'a str,
+    exp: i64,
+}
+
+impl<'a> DecimalParts<'a> {
+    fn of(s: &'a str) -> Option<Self> {
+        let s = s.trim();
+        let (mantissa, exp) = match s.split_once('e') {
+            Some((m, e)) => (m, e.trim_start_matches('+').parse::<i64>().ok()?),
+            None => (s, 0),
+        };
+        let negative = mantissa.starts_with('-');
+        let mantissa = mantissa.trim_start_matches(['-', '+']);
+        let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        if int_part.is_empty()
+            || !int_part
+                .bytes()
+                .chain(frac_part.bytes())
+                .all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        Some(DecimalParts {
+            negative,
+            int_part,
+            frac_part,
+            exp,
+        })
     }
-    let digits: BigInt = format!("{int_part}{frac_part}").parse().ok()?;
-    let shift = exp - i64::try_from(frac_part.len()).ok()?;
-    let ten = BigInt::from(10);
-    let scale = |k: i64| -> Option<Q> {
-        let p = num_traits::pow(ten.clone(), usize::try_from(k.unsigned_abs()).ok()?);
-        Some(if k >= 0 {
+
+    /// Is a digit other than 0 printed?
+    fn is_nonzero(&self) -> bool {
+        self.int_part
+            .bytes()
+            .chain(self.frac_part.bytes())
+            .any(|b| b != b'0')
+    }
+
+    /// The decimal exponent of the leading digit (an upper bound when the
+    /// integer part is 0).
+    fn leading_exponent(&self) -> Option<i64> {
+        self.exp
+            .checked_add(i64::try_from(self.int_part.trim_start_matches('0').len()).ok()?)?
+            .checked_sub(1)
+    }
+
+    /// The exact value and a unit in the last digit.  It costs a power of
+    /// ten of the size of the exponent: callers bound that first.
+    fn value_and_ulp(&self) -> Option<(Q, Q)> {
+        let digits: BigInt = format!("{}{}", self.int_part, self.frac_part)
+            .parse()
+            .ok()?;
+        let shift = self
+            .exp
+            .checked_sub(i64::try_from(self.frac_part.len()).ok()?)?;
+        let p = num_traits::pow(
+            BigInt::from(10),
+            usize::try_from(shift.unsigned_abs()).ok()?,
+        );
+        let ulp = if shift >= 0 {
             Q::from_integer(p)
         } else {
             Q::new(BigInt::one(), p)
-        })
-    };
-    let ulp = scale(shift)?;
-    let mut value = Q::from_integer(digits) * &ulp;
-    if negative {
-        value = -value;
+        };
+        let mut value = Q::from_integer(digits) * &ulp;
+        if self.negative {
+            value = -value;
+        }
+        Some((value, ulp))
     }
-    // The decimal exponent of the leading digit.
-    let leading = exp + i64::try_from(int_part.trim_start_matches('0').len()).ok()? - 1;
-    Some((value, ulp, leading))
 }
 
 /// `B(a, b) = Γ(a)Γ(b)/Γ(a + b)` for rationals `a`, `b` none of which nor

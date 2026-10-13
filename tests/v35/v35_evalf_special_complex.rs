@@ -587,6 +587,35 @@ fn zeta_of_an_inexact_argument_far_up() {
     );
 }
 
+/// The guard bits of the alternating power series of `J_ν`, `Si`/`Ci` and
+/// `Ei` are `⌈|x|·log₂e⌉ + 32`; for `|x| ≥ 1.3·10¹⁹` the cast saturates and
+/// the `+ 32` overflowed: a panic with overflow checks (the CI Fuzz
+/// workflow's `fuzz_roundtrip`, through `besselj` of two
+/// `falling_factorial`s near `10⁸⁹` in canon's zero test), a wrap to 31
+/// guard bits in release builds.  The series is now refused (the cap), as
+/// the large-order route refused these before.  mpmath 1.3 cannot evaluate
+/// them either (`besselj(10**20, 10**20)`: "Hypergeometric series converges
+/// too slowly").
+#[test]
+fn series_guard_bits_of_huge_arguments_do_not_overflow() {
+    let ctx = Context::new();
+    for src in [
+        "besselj(10^20, 10^20)",
+        "besselj(10^30, 10^30)",
+        "besselj(10^20 + 1/2, 10^20)",
+    ] {
+        let e = ctx.parse(src).unwrap();
+        assert!(e.eval_decimal(30).is_err(), "{src}");
+        assert!(e.eval_f64().is_err(), "{src}");
+    }
+    // Past the turning point the Debye expansion still answers; its leading
+    // term (mpmath, 60 and 90 digits: `sqrt(2/(πν tan β))·cos(ν(tan β − β)
+    // − π/4)`, `ν = 10²⁰`, `β = π/3`) is `9.35541349690078522435·10⁻¹²`, to
+    // within its `O(1/ν)` relative correction.
+    let v = value("besselj(10^20, 2*10^20)", 30);
+    assert!(v.starts_with("9.355413496900785224"), "{v}");
+}
+
 /// `eval_complex64` takes the same routines (refused before).  mpmath
 /// `airyai(mpc(1,1))` = `0.060458308371838149 − 0.15188956587718140i`.
 #[test]

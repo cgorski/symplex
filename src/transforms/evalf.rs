@@ -7210,8 +7210,15 @@ fn arb_catalan(prec: usize, rm: RoundingMode, cc: &mut Consts) -> Result<BigFloa
 
 /// Number of guard bits needed to absorb the cancellation in an
 /// alternating power series whose largest term is `~e^{|x|}`.
+///
+/// Saturating: `as usize` takes a huge or infinite `|x|·log₂e` to
+/// `usize::MAX`, and the sum must stay there for the callers' cap to refuse
+/// it.  Up to 0.46 the `+ 32` overflowed: a panic with overflow checks (the
+/// CI fuzz builds: `besselj` of an argument near `2¹⁰⁰⁰` that the Hankel
+/// expansion declined, met by `fuzz_roundtrip`), and in release builds a
+/// wrap to 31 guard bits for a series that needed `10³⁰⁰`.
 fn cancellation_guard_bits(x_abs: f64) -> usize {
-    (x_abs * std::f64::consts::LOG2_E).ceil() as usize + 32
+    ((x_abs * std::f64::consts::LOG2_E).ceil() as usize).saturating_add(32)
 }
 
 /// [`cancellation_guard_bits`] for the power series of `J_ν` and `Y_n` at

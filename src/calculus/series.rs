@@ -142,6 +142,49 @@ const MIN_WORKING_ORDER: i64 = 4;
 /// Number of precision-escalation rounds before giving up on a deep pole.
 const MAX_PRECISION_ATTEMPTS: usize = 3;
 
+/// Arena nodes one expansion of Gruntz's last resort
+/// ([`expand_leading_last_resort`]) may create before its compositions stop
+/// adding terms ([`NodeLimit`]).  The expansions that find a leading term
+/// there take tens of nodes; `sign(asin(asin(1 − u²)))` at order 20 built
+/// 238,000 (coefficients with `π⁸⁹·(1 − π²/4)^(−179/2)`, each tested for a
+/// hidden zero) in 21 s before it failed, and `series(sign(asin(asin(x))),
+/// x, 1, 3)` took 22 s to stay unevaluated (a CI Fuzz `fuzz_calculus`
+/// timeout, present since 0.43).
+const LAST_RESORT_NODES: usize = 20_000;
+
+thread_local! {
+    /// The arena size beyond which the expansion in progress adds no more
+    /// terms (`usize::MAX`: no limit); see [`NodeLimit`].
+    static NODE_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// A bound on the arena size for the expansions made while it lives (the
+/// tighter of it and an enclosing one).  [`TSeries::compose`] past it stops
+/// with the terms already exact, so the expansion knows fewer terms and the
+/// caller refuses rather than answers wrongly.
+struct NodeLimit {
+    prev: usize,
+}
+
+impl NodeLimit {
+    fn new(arena: &Arena, nodes: usize) -> Self {
+        let limit = arena.node_count().saturating_add(nodes);
+        let prev = NODE_LIMIT.with(|c| c.replace(c.get().min(limit)));
+        NodeLimit { prev }
+    }
+}
+
+impl Drop for NodeLimit {
+    fn drop(&mut self) {
+        NODE_LIMIT.with(|c| c.set(self.prev));
+    }
+}
+
+/// Has the arena passed the [`NodeLimit`] in force?
+fn over_node_limit(arena: &Arena) -> bool {
+    arena.node_count() > NODE_LIMIT.with(std::cell::Cell::get)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Constants that vanish identically in their parameters
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1243,6 +1286,11 @@ impl TSeries {
             if p.shift >= known || p.coeffs.is_empty() {
                 break;
             }
+            if over_node_limit(arena) {
+                // The terms left have valuation ≥ `p.shift`: below it `acc`
+                // is exact.
+                return acc.truncate_known(p.shift);
+            }
             let fn_ = f(arena, n);
             if !arena.is_zero_structural(fn_) {
                 let term = Self::scale(arena, &p, fn_);
@@ -1684,6 +1732,7 @@ pub(crate) fn expand_leading_last_resort(
     order: i64,
     log_var: ExprId,
 ) -> Result<TSeries, SymplexError> {
+    let _limit = NodeLimit::new(arena, LAST_RESORT_NODES);
     expand_with_mode(
         arena,
         expr,

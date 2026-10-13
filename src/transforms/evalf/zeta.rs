@@ -397,11 +397,12 @@ pub(super) fn hurwitz(
     if a.1.is_zero() && !right && (a.0.is_zero() || a.0.is_int()) {
         return Err(super::unevaluable("Hurwitz zeta at a pole of its argument"));
     }
-    // Direct terms up to Re(a + N) ≥ 1 at least.
+    // Direct terms up to Re(a + N) ≥ 1 at least (saturating: a huge `−Re a`
+    // casts to `usize::MAX`, refused below).
     let min_n = if ar >= 1.0 {
         0
     } else {
-        (1.0 - ar).ceil() as usize + 1
+        ((1.0 - ar).ceil() as usize).saturating_add(1)
     };
     if min_n > MAX_TERMS {
         return Err(super::unevaluable(
@@ -586,7 +587,7 @@ fn digamma_em(
     let min_n = if zr >= 1.0 {
         0
     } else {
-        (1.0 - zr).ceil() as usize + 1
+        ((1.0 - zr).ceil() as usize).saturating_add(1)
     };
     if min_n > MAX_TERMS {
         return Err(super::unevaluable(

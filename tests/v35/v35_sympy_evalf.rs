@@ -200,6 +200,40 @@ fn floor_and_ceiling_of_real_constants() {
     assert!(stays.to_string().starts_with("ceiling("), "{stays}");
 }
 
+/// The integer part of a huge or tiny constant: the fold read the printed
+/// value as an exact rational before looking at its size, and `Shi(12!) ≈
+/// 5.27·10^208027742` raised 10 to that power — `floor(Shi(factorial(12)))`
+/// never finished (the `fuzz_evalf` timeout of the 0.47 release campaign).
+/// Now an integer beyond 1,000 digits stays unevaluated at once, and a value
+/// below `10⁻⁵` in modulus is settled by its sign: `floor(exp(-10^6))` = 0,
+/// `ceiling(exp(-10^6))` = 1, `floor(-exp(-10^6))` = −1 (`e^{−10⁶} ≈
+/// 3.3·10^−434295`, mpmath).
+#[test]
+fn floor_of_huge_and_tiny_constants_is_quick() {
+    let ctx = Context::new();
+    let t = std::time::Instant::now();
+    for s in ["floor(Shi(factorial(12)))", "ceiling(exp(10^7))"] {
+        let e = p(&ctx, s).eval();
+        assert!(
+            e.to_string().starts_with("floor(") || e.to_string().starts_with("ceiling("),
+            "{s} = {e}"
+        );
+    }
+    for (s, want) in [
+        ("floor(exp(-10^6))", "0"),
+        ("ceiling(exp(-10^6))", "1"),
+        ("floor(-exp(-10^6))", "-1"),
+        ("ceiling(-exp(-10^6))", "0"),
+    ] {
+        assert_eq!(p(&ctx, s).eval().to_string(), want, "{s}");
+    }
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        t.elapsed()
+    );
+}
+
 /// Before: `log(8, 2)` was `ln(8)/ln(2)`, `beta(1, 5/2)` and `beta(1/2,
 /// 1/2)` stayed, `uppergamma(4, 0)` was `Gamma(4)`.  SymPy
 /// `test_exponential.py`, `test_beta_functions.py`, `test_gamma_functions.py`:
