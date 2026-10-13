@@ -1626,40 +1626,31 @@ pub(crate) fn is_directed_infinity(arena: &Arena, id: ExprId) -> bool {
     matches!(arena.node(id), ExprNode::Mul(ch) if ch.contains(&arena.infinity))
 }
 
-/// [`Arena::constant_facts`] keys of [`known_sign_memo`] (`eval` uses 0
-/// and 1): the sign of a real constant factor `f` is known positive, known
-/// negative (keyed by `f`); the sign of `re(g)`, of `im(g)` (keyed by `g`).
-const FACT_SIGN_POSITIVE: u8 = 2;
-const FACT_SIGN_NEGATIVE: u8 = 3;
-const FACT_RE_POSITIVE: u8 = 4;
-const FACT_RE_NEGATIVE: u8 = 5;
-const FACT_IM_POSITIVE: u8 = 6;
-const FACT_IM_NEGATIVE: u8 = 7;
-
-/// The memoised sign under the keys `(key, positive)`, `(key, negative)`:
-/// `None` when not memoised, `Some(None)` when memoised as unknown.
-fn sign_fact(arena: &Arena, key: ExprId, positive: u8, negative: u8) -> Option<Option<Ordering>> {
-    let p = *arena.constant_facts.get(&(key, positive))?;
-    let n = *arena.constant_facts.get(&(key, negative))?;
-    Some(if p {
-        Some(Ordering::Greater)
-    } else if n {
-        Some(Ordering::Less)
-    } else {
-        None
-    })
+/// The sign memoised under `(key, fact)` ([`Arena::constant_facts`]; the
+/// keys of [`known_sign_memo`] are `FactKey::Sign` for a real constant
+/// factor `f`, keyed by `f`, and `FactKey::RePart`/`FactKey::ImPart` for
+/// `re(g)`/`im(g)`, keyed by `g`): `None` when not memoised, `Some(None)`
+/// when memoised as unknown.
+fn sign_fact(
+    arena: &Arena,
+    key: ExprId,
+    fact: crate::base::arena::FactKey,
+) -> Option<Option<Ordering>> {
+    arena
+        .constant_facts
+        .get(&(key, fact))
+        .map(|signs| signs.to_ordering())
 }
 
 fn remember_sign(
     arena: &mut Arena,
     key: ExprId,
-    positive: u8,
-    negative: u8,
+    fact: crate::base::arena::FactKey,
     sign: Option<Ordering>,
 ) {
-    let facts = &mut arena.constant_facts;
-    facts.insert((key, positive), sign == Some(Ordering::Greater));
-    facts.insert((key, negative), sign == Some(Ordering::Less));
+    use crate::base::truth::SignSet;
+    let signs = sign.map_or(SignSet::UNKNOWN, SignSet::from_ordering);
+    arena.constant_facts.insert((key, fact), signs);
 }
 
 /// [`known_sign`], memoised per arena for a symbol-free factor: canonical
@@ -1675,12 +1666,13 @@ fn known_sign_memo(arena: &mut Arena, f: ExprId) -> Option<Ordering> {
         ExprNode::Im(g) => Some((g, false)),
         _ => None,
     };
-    let (key, positive, negative) = match part {
-        Some((g, true)) => (g, FACT_RE_POSITIVE, FACT_RE_NEGATIVE),
-        Some((g, false)) => (g, FACT_IM_POSITIVE, FACT_IM_NEGATIVE),
-        None => (f, FACT_SIGN_POSITIVE, FACT_SIGN_NEGATIVE),
+    use crate::base::arena::FactKey;
+    let (key, fact) = match part {
+        Some((g, true)) => (g, FactKey::RePart),
+        Some((g, false)) => (g, FactKey::ImPart),
+        None => (f, FactKey::Sign),
     };
-    if let Some(sign) = sign_fact(arena, key, positive, negative) {
+    if let Some(sign) = sign_fact(arena, key, fact) {
         return sign;
     }
     if !crate::base::walk::free_symbols(arena, f).is_empty() {
@@ -1695,10 +1687,10 @@ fn known_sign_memo(arena: &mut Arena, f: ExprId) -> Option<Ordering> {
         // (an imaginary part far below the real one).
         if !decided && let Some(signs) = arena.part_signs(g) {
             if signs.re.is_some() {
-                remember_sign(arena, g, FACT_RE_POSITIVE, FACT_RE_NEGATIVE, signs.re);
+                remember_sign(arena, g, FactKey::RePart, signs.re);
             }
             if signs.im.is_some() {
-                remember_sign(arena, g, FACT_IM_POSITIVE, FACT_IM_NEGATIVE, signs.im);
+                remember_sign(arena, g, FactKey::ImPart, signs.im);
             }
             let sign = if re { signs.re } else { signs.im };
             if sign.is_some() {
@@ -1707,7 +1699,7 @@ fn known_sign_memo(arena: &mut Arena, f: ExprId) -> Option<Ordering> {
         }
     }
     let sign = known_sign(arena, f);
-    remember_sign(arena, key, positive, negative, sign);
+    remember_sign(arena, key, fact, sign);
     sign
 }
 

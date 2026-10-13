@@ -154,37 +154,49 @@ fn is_nonzero_number(e: &Ex) -> bool {
         .is_some_and(|r| !r.is_zero())
 }
 
-/// Decide whether an (already normalised) entry is zero.
+/// Is an (already normalised) entry zero?
 ///
-/// Structural zero → `true`; numeric literal → by value; a rational
+/// Structural zero → `True`; numeric literal → by value; a rational
 /// function over `ℚ(radicals, i)` of the symbols → exactly
 /// ([`rational_function_is_zero`](crate::domains::matrix::rational_function_is_zero),
 /// which before 0.31 did not take `√2`: a zero mixing `√2` and a symbol
 /// was then "nonzero" and a consistent system "Inconsistent"); otherwise a
-/// full `simplify` pass, then the certified test for constants.  An entry
-/// not recognised as zero is a pivot: the generic solution.
-fn entry_is_zero(e: &Ex) -> bool {
+/// full `simplify` pass, then the certified test for constants.  `Unknown`
+/// when none of them decides.
+///
+/// The two readings differ.  An entry not proved zero may be a pivot (the
+/// generic solution: `!entry_is_zero(e).is_true()`).  A claim needs a
+/// proof: a row is inconsistent only when its coefficients are proved zero
+/// and its right-hand side is proved nonzero.  Up to 0.48 one `bool` served
+/// both, and `x + y = 1, x + y = 1 + k` with `k = Γ(1/3)Γ(2/3) − 2π/√3`
+/// (0 by the reflection formula, which no test here recognises) was
+/// reported `Inconsistent`.
+fn entry_is_zero(e: &Ex) -> crate::base::truth::Truth {
+    use crate::base::truth::Truth;
     if e.is_zero_structural() {
-        return true;
+        return Truth::True;
     }
     if is_number(e) {
-        return false;
+        return Truth::False;
     }
     // A rational function of the symbols is decided exactly.
     if let Some(b) = crate::domains::matrix::rational_function_is_zero(e) {
-        return b;
+        return Truth::from_bool(b);
     }
     let s = e.simplify();
     if s.is_zero_structural() {
-        return true;
+        return Truth::True;
     }
     // Purely numeric (no free symbols) but not folded: the certified zero
     // test (before 0.30, `|f64 value| < 10⁻¹²` counted as zero).
     if s.free_symbols().is_empty() && s.eval_complex64().is_ok() {
         let mut inner = s.inner.write();
-        return crate::poly::algebraic::is_zero_checked(&mut inner.arena, s.raw_id()) == Some(true);
+        return Truth::from(crate::poly::algebraic::is_zero_checked(
+            &mut inner.arena,
+            s.raw_id(),
+        ));
     }
-    false
+    Truth::Unknown
 }
 
 /// Symbolic reduced-row-echelon solve of `rows · x = rhs`.
@@ -252,7 +264,8 @@ pub(crate) fn rref_solve(
                 numeric = Some(r);
                 break;
             }
-            if !entry_is_zero(&e) {
+            // Not proved zero: a candidate (the generic solution).
+            if !entry_is_zero(&e).is_true() {
                 let ops = e.count_ops();
                 if symbolic.is_none_or(|(_, o)| ops < o) {
                     symbolic = Some((r, ops));
@@ -286,7 +299,7 @@ pub(crate) fn rref_solve(
                 continue;
             }
             let factor = normalize(&row[col]);
-            if entry_is_zero(&factor) {
+            if entry_is_zero(&factor).is_true() {
                 row[col] = factor.context().zero();
                 continue;
             }
@@ -305,15 +318,56 @@ pub(crate) fn rref_solve(
     }
 
     // Inconsistency check: rows with zero coefficients but nonzero rhs.
+    // One such row proves the system inconsistent; a right-hand side that
+    // is neither proved zero nor proved nonzero leaves it undecided.
+    let mut undecided: Option<&Ex> = None;
     for r in &mat {
-        let all_zero = r[..n_vars].iter().all(entry_is_zero);
-        if all_zero && !entry_is_zero(&r[n_vars]) {
-            return Ok(SymbolicLinearResult {
-                values: Vec::new(),
-                free: Vec::new(),
-                inconsistent: true,
-            });
+        use crate::base::truth::Truth;
+        if !Truth::all(r[..n_vars].iter().map(entry_is_zero)).is_true() {
+            continue;
         }
+        match entry_is_zero(&r[n_vars]) {
+            Truth::True => {}
+            Truth::False => {
+                return Ok(SymbolicLinearResult {
+                    values: Vec::new(),
+                    free: Vec::new(),
+                    inconsistent: true,
+                });
+            }
+            Truth::Unknown => {
+                // A right-hand side with symbols that is certified nonzero
+                // at a sample point is not identically zero: the system is
+                // inconsistent for generic values of the symbols, the
+                // convention a lone symbol `a` already gets (`sin a` was
+                // undecided after the 0.49 change above).
+                let rhs = &r[n_vars];
+                let generic_nonzero = !rhs.free_symbols().is_empty() && {
+                    let mut inner = rhs.inner.write();
+                    crate::simplify::identically_zero::nonzero_at_a_sample(
+                        &mut inner.arena,
+                        rhs.raw_id(),
+                    )
+                };
+                if generic_nonzero {
+                    return Ok(SymbolicLinearResult {
+                        values: Vec::new(),
+                        free: Vec::new(),
+                        inconsistent: true,
+                    });
+                }
+                undecided = undecided.or(Some(rhs));
+            }
+        }
+    }
+    if let Some(rhs) = undecided {
+        return Err(SymplexError::ComputationFailed {
+            operation: "linsolve",
+            reason: format!(
+                "cannot decide whether {rhs} is 0, so whether the system is consistent \
+                 (a row of zero coefficients has it as right-hand side)"
+            ),
+        });
     }
 
     let pivot_set: std::collections::HashSet<usize> = pivots.iter().copied().collect();
@@ -323,7 +377,7 @@ pub(crate) fn rref_solve(
     for (r, &pc) in pivots.iter().enumerate() {
         let mut v = mat[r][n_vars].clone();
         for &f in &free {
-            if !entry_is_zero(&mat[r][f]) {
+            if !entry_is_zero(&mat[r][f]).is_true() {
                 let t = &mat[r][f] * &unknowns[f];
                 v = &v - &t;
             }
@@ -644,7 +698,7 @@ impl Tower {
             primes.push(five.clone());
         }
         primes.sort();
-        syms.sort();
+        syms.sort_by(|&a, &b| arena.canonical_cmp(a, b));
         let ns = syms.len();
         let np = primes.len();
         if nested_base.is_some() && l > 2 {

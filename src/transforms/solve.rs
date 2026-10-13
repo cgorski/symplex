@@ -70,6 +70,9 @@ use crate::poly::Poly;
 use crate::poly::polybridge;
 
 mod algebraic_roots;
+mod context;
+
+pub(crate) use context::{Domain, SolveCx};
 
 /// A solution to an equation, with the variable and its value.
 #[derive(Clone, Debug)]
@@ -144,8 +147,19 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
 /// restrictions take `var` real (for the solvers on the real line, e.g.
 /// the equations of `reduce_inequalities`).
 pub(crate) fn solve_classified_real(arena: &mut Arena, expr: ExprId, var: ExprId) -> SolveOutcome {
-    let _restore = DeclaredUnknownGuard::set(false);
-    solve_impl(arena, expr, var, None)
+    solve_with(arena, expr, var, &SolveCx::principal(Domain::Real))
+}
+
+/// Solve `expr = 0` for `var` in the context `cx` (the domain of `var`,
+/// principal roots or families; see [`SolveCx`]), distinguishing identities
+/// and contradictions from "no roots found".
+pub(crate) fn solve_with(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> SolveOutcome {
+    solve_impl(arena, expr, var, cx)
 }
 
 /// Solve `expr = 0` for `var`, distinguishing identities and
@@ -162,33 +176,7 @@ pub(crate) fn solve_classified_real(arena: &mut Arena, expr: ExprId, var: ExprId
 /// `Ex::solve_as_set` gave the complex families.  For a variable declared
 /// real nothing changes.
 pub(crate) fn solve_classified(arena: &mut Arena, expr: ExprId, var: ExprId) -> SolveOutcome {
-    let _restore = DeclaredUnknownGuard::set(true);
-    solve_impl(arena, expr, var, None)
-}
-
-thread_local! {
-    /// Set while [`solve_classified`] runs, cleared while [`solve`] runs:
-    /// whether the range restrictions of a principal solve take the unknown
-    /// in its declared domain (ℂ for a plain symbol) rather than real
-    /// ([`range_restricted`]).  Inner solves of a substituted equation keep
-    /// the setting of the outer one.
-    static DECLARED_UNKNOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Sets [`DECLARED_UNKNOWN`], restoring the previous value on drop.
-struct DeclaredUnknownGuard(bool);
-
-impl DeclaredUnknownGuard {
-    fn set(declared: bool) -> Self {
-        DeclaredUnknownGuard(DECLARED_UNKNOWN.with(|c| c.replace(declared)))
-    }
-}
-
-impl Drop for DeclaredUnknownGuard {
-    fn drop(&mut self) {
-        let previous = self.0;
-        DECLARED_UNKNOWN.with(|c| c.set(previous));
-    }
+    solve_with(arena, expr, var, &SolveCx::principal(Domain::Complex))
 }
 
 /// Solve `expr = 0` for `var`, returning **general** solution families for
@@ -204,25 +192,7 @@ pub(crate) fn solve_general(
     var: ExprId,
     param: ExprId,
 ) -> SolveOutcome {
-    solve_impl(arena, expr, var, Some(param))
-}
-
-thread_local! {
-    /// Set while [`solve_general_over_c`] runs: the variable takes its
-    /// declared domain (ℂ for a plain symbol) in [`real_for_real_var`]
-    /// rather than the real line, and the Lambert W strategy (its real
-    /// branches only) is skipped for a variable not known to be real.
-    static COMPLEX_VARIABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Restores the previous [`COMPLEX_VARIABLE`] on drop.
-struct ComplexVariableGuard(bool);
-
-impl Drop for ComplexVariableGuard {
-    fn drop(&mut self) {
-        let previous = self.0;
-        COMPLEX_VARIABLE.with(|c| c.set(previous));
-    }
+    solve_impl(arena, expr, var, &SolveCx::general(Domain::Real, param))
 }
 
 /// [`solve_general`] with `var` ranging over its declared domain, ℂ for a
@@ -244,22 +214,7 @@ pub(crate) fn solve_general_over_c(
     var: ExprId,
     param: ExprId,
 ) -> SolveOutcome {
-    let previous = COMPLEX_VARIABLE.with(|c| c.replace(true));
-    let _restore = ComplexVariableGuard(previous);
-    solve_general(arena, expr, var, param)
-}
-
-/// Is `var` treated as complex: under [`solve_general_over_c`] and not
-/// declared real?
-fn variable_may_be_nonreal(arena: &Arena, var: ExprId) -> bool {
-    use crate::base::assumptions::Props;
-    if !COMPLEX_VARIABLE.with(std::cell::Cell::get) {
-        return false;
-    }
-    match *arena.node(var) {
-        ExprNode::Symbol(sid) => arena.symbol_assumptions(sid).query(Props::REAL) != Some(true),
-        _ => true,
-    }
+    solve_impl(arena, expr, var, &SolveCx::general(Domain::Complex, param))
 }
 
 thread_local! {
@@ -268,13 +223,6 @@ thread_local! {
     /// 2nπ) + 2mπ`), whose solutions need two independent integer
     /// parameters where the solver has one: [`solve_impl`] then refuses.
     static PERIOD_CONFLICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-thread_local! {
-    /// Set while a general solve runs (a solution set is wanted): the
-    /// Lambert strategies then take the other real branch and every odd root
-    /// of a symbolic value ([`lambert_branches`], [`power_roots`]).
-    static GENERAL_SOLVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Record a [`PERIOD_CONFLICT`].
@@ -290,19 +238,12 @@ fn flag_period_conflict() {
 /// `sin(cos x) = 1/2` gave `±acos(2nπ + π/6) + 2nπ` cut to the real line,
 /// i.e. `±acos(π/6)` without `±acos(π/6) + 2mπ` (now listed: only `n = 0`
 /// puts `π/6 + 2nπ` in the range of `cos`).
-fn solve_impl(
-    arena: &mut Arena,
-    expr: ExprId,
-    var: ExprId,
-    period: Option<ExprId>,
-) -> SolveOutcome {
-    if period.is_none() {
-        return solve_impl_checked(arena, expr, var, period);
+fn solve_impl(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> SolveOutcome {
+    if cx.period().is_none() {
+        return solve_impl_checked(arena, expr, var, cx);
     }
     let previous = PERIOD_CONFLICT.with(|c| c.replace(false));
-    let previous_general = GENERAL_SOLVE.with(|c| c.replace(true));
-    let outcome = solve_impl_checked(arena, expr, var, period);
-    GENERAL_SOLVE.with(|c| c.set(previous_general));
+    let outcome = solve_impl_checked(arena, expr, var, cx);
     if PERIOD_CONFLICT.with(|c| c.replace(previous)) {
         return SolveOutcome::Unresolved(
             "the general solution nests periodic families, which need independent integer \
@@ -314,21 +255,16 @@ fn solve_impl(
 }
 
 /// [`solve_impl`] without the check of nested periodic families.
-fn solve_impl_checked(
-    arena: &mut Arena,
-    expr: ExprId,
-    var: ExprId,
-    period: Option<ExprId>,
-) -> SolveOutcome {
-    match solve_raw(arena, expr, var, period) {
+fn solve_impl_checked(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> SolveOutcome {
+    match solve_raw(arena, expr, var, cx) {
         SolveOutcome::Solutions(s) => {
             let had_candidates = !s.is_empty();
-            let mut s = match drop_certain_non_roots(arena, expr, var, s, period) {
+            let mut s = match drop_certain_non_roots(arena, expr, var, s, cx) {
                 Ok(s) => s,
                 Err(reason) => return SolveOutcome::Unresolved(reason),
             };
             if had_candidates {
-                match tangent_pole_roots(arena, expr, var, period) {
+                match tangent_pole_roots(arena, expr, var, cx) {
                     Ok(extra) => s.extend(extra),
                     Err(reason) => return SolveOutcome::Unresolved(reason),
                 }
@@ -337,8 +273,8 @@ fn solve_impl_checked(
                 // The principal candidates all fail; a member of a periodic
                 // family through them may not (`tan(x)/x = 0`: `0` is a
                 // pole, `π` a root).  "No solution" only when none can.
-                if period.is_none()
-                    && let Some(outcome) = other_branches_outcome(arena, expr, var)
+                if cx.period().is_none()
+                    && let Some(outcome) = other_branches_outcome(arena, expr, var, cx)
                 {
                     return outcome;
                 }
@@ -351,7 +287,7 @@ fn solve_impl_checked(
         }
         // `1/tan(x) = 0` holds at the poles of `tan` (before 0.40: "no
         // solution", from `tan x = 1/0`).
-        SolveOutcome::NoSolution(reason) => match tangent_pole_roots(arena, expr, var, period) {
+        SolveOutcome::NoSolution(reason) => match tangent_pole_roots(arena, expr, var, cx) {
             Ok(extra) if !extra.is_empty() => finalize_solutions(arena, extra),
             Ok(_) => SolveOutcome::NoSolution(reason),
             Err(reason) => SolveOutcome::Unresolved(reason),
@@ -367,14 +303,14 @@ fn solve_impl_checked(
 /// paths found them (`tan(−x) − 2`), others did not (`−tan(x) − 2`): before 0.40
 /// `solve_general((cos(2x/3) − 1/4)/(−tan x − 2))` lacked `π/2 + nπ` and
 /// `solve(1/tan(x))` was "no solution".  The candidates solve `cos u = 0`
-/// (in families when `period` is given) and are checked against `expr` as
+/// (in families in a general solve) and are checked against `expr` as
 /// [`solve_impl`] checks its own; `Err` when a family of them mixes roots
 /// and non-roots.  Empty when `expr` has no `tan` of `var`.
 fn tangent_pole_roots(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Result<Vec<Solution>, String> {
     // tan u has its poles at cos u = 0, tanh u at cosh u = 0 (u = iπ/2 + nπi)
     let atoms: Vec<(ExprId, ExprId, bool)> = crate::base::walk::post_order_ids(arena, expr)
@@ -414,12 +350,10 @@ fn tangent_pole_roots(
     }
     let mut out: Vec<Solution> = Vec::new();
     for c in denominators {
-        let SolveOutcome::Solutions(candidates) = solve_raw(arena, c, var, period) else {
+        let SolveOutcome::Solutions(candidates) = solve_raw(arena, c, var, cx) else {
             continue;
         };
-        out.extend(drop_certain_non_roots(
-            arena, expr, var, candidates, period,
-        )?);
+        out.extend(drop_certain_non_roots(arena, expr, var, candidates, cx)?);
     }
     Ok(out)
 }
@@ -427,8 +361,13 @@ fn tangent_pole_roots(
 /// `Unresolved`, naming a root, when the principal candidates of
 /// `expr = 0` all failed but a member of a periodic family through them
 /// solves it.
-fn other_branches_outcome(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<SolveOutcome> {
-    let member = root_off_principal_branch(arena, expr, var)?;
+fn other_branches_outcome(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> Option<SolveOutcome> {
+    let member = root_off_principal_branch(arena, expr, var, cx)?;
     let shown = arena.display(member).to_string();
     Some(SolveOutcome::Unresolved(format!(
         "every principal-branch candidate fails the equation (a pole or a branch the \
@@ -488,16 +427,20 @@ pub(crate) struct PeriodicCandidates {
 }
 
 /// The candidates of the general solve of `expr = 0` (see
-/// [`PeriodicCandidates`]).  `None` when it gives no candidates, or an
-/// identity / contradiction.
-fn raw_families(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<PeriodicCandidates> {
+/// [`PeriodicCandidates`]), in the context [`SolveCx::families`] of the
+/// solve `cx`.  `None` when it gives no candidates, or an identity /
+/// contradiction.
+fn raw_families(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> Option<PeriodicCandidates> {
     let n = branch_parameter(arena, &[expr, var]);
     // As in `solve_impl`: the families of a general solve, refused when
     // they nest periodic families ([`PERIOD_CONFLICT`]).
     let previous = PERIOD_CONFLICT.with(|c| c.replace(false));
-    let previous_general = GENERAL_SOLVE.with(|c| c.replace(true));
-    let outcome = solve_raw(arena, expr, var, Some(n));
-    GENERAL_SOLVE.with(|c| c.set(previous_general));
+    let outcome = solve_raw(arena, expr, var, &cx.families(n));
     if PERIOD_CONFLICT.with(|c| c.replace(previous)) {
         return None;
     }
@@ -529,16 +472,22 @@ pub(crate) fn periodic_candidates(
     expr: ExprId,
     var: ExprId,
 ) -> Option<PeriodicCandidates> {
-    raw_families(arena, expr, var).filter(|c| !c.families.is_empty())
+    raw_families(arena, expr, var, &SolveCx::principal(Domain::Real))
+        .filter(|c| !c.families.is_empty())
 }
 
 /// A root of `expr = 0` that is a member (`n = ±1, ±2, ±3`) of a periodic
 /// family through the principal candidates, when the principal solve lost
 /// all its candidates.
-fn root_off_principal_branch(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+fn root_off_principal_branch(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> Option<ExprId> {
     let PeriodicCandidates {
         families, param: n, ..
-    } = raw_families(arena, expr, var)?;
+    } = raw_families(arena, expr, var, cx)?;
     for fam in families {
         for k in [1i64, -1, 2, -2, 3, -3] {
             let kk = arena.int(k);
@@ -614,14 +563,14 @@ fn drop_certain_non_roots(
     expr: ExprId,
     var: ExprId,
     solutions: Vec<Solution>,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Result<Vec<Solution>, String> {
     if solutions.is_empty() || polybridge::expr_to_poly(arena, expr, var).is_some() {
         return Ok(solutions);
     }
     let mut out = Vec::with_capacity(solutions.len());
     for s in solutions {
-        match period {
+        match cx.period() {
             Some(n) if crate::base::walk::contains(arena, s.value, n) => {
                 for value in check_family(arena, expr, var, s.value, n)? {
                     out.push(Solution { value });
@@ -915,7 +864,7 @@ pub(crate) fn certainly_not_a_root(
 const ROOT_CHECK_DIGITS: u32 = 20;
 
 /// Strategy dispatch without the final clean-up pass (see [`solve_impl`]).
-fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId>) -> SolveOutcome {
+fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> SolveOutcome {
     // Step 0: degenerate cases.
     if arena.is_zero_structural(expr) {
         return SolveOutcome::Identity;
@@ -927,7 +876,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     // `f(f − 1)⋯(f − k + 1)/k!` (refused before 0.47; SymPy: `solve(binomial(x,
     // 2) - 3)` → `[-2, 3]`, by `expand_func`).
     if let Some(rewritten) = binomials_as_polynomials(arena, expr, var) {
-        return solve_raw(arena, rewritten, var, period);
+        return solve_raw(arena, rewritten, var, cx);
     }
 
     // Pre-check: if expr is a Mul, solve each var-dependent factor
@@ -991,7 +940,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
                         SolveOutcome::Solutions(solve_rational_poly(arena, var, &p))
                     }
                 }
-                _ => solve_raw(arena, child, var, period),
+                _ => solve_raw(arena, child, var, cx),
             };
             match outcome {
                 SolveOutcome::Solutions(child_solutions) => {
@@ -1024,8 +973,8 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
                 Ok(_) => {
                     // Every candidate is a pole, as `solve_impl` decides
                     // when its check drops them all.
-                    if period.is_none()
-                        && let Some(outcome) = other_branches_outcome(arena, expr, var)
+                    if cx.period().is_none()
+                        && let Some(outcome) = other_branches_outcome(arena, expr, var, cx)
                     {
                         return outcome;
                     }
@@ -1088,12 +1037,12 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
 
     // Step 2b': a polynomial with symbolic coefficients of higher degree,
     // factored over ℤ[x, parameters].
-    if let Some(solutions) = try_solve_parametric_factors(arena, expr, var, period) {
+    if let Some(solutions) = try_solve_parametric_factors(arena, expr, var, cx) {
         return SolveOutcome::Solutions(solutions);
     }
 
     // Step 2c: rational equations P(x)/Q(x) = 0.
-    match try_solve_rational(arena, expr, var, period) {
+    match try_solve_rational(arena, expr, var, cx) {
         Some(SolveOutcome::Solutions(solutions)) if !solutions.is_empty() => {
             return SolveOutcome::Solutions(solutions);
         }
@@ -1105,7 +1054,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     // Step 3: transcendental solving via inversion peeling.
     // Handles: exp(x)=c, ln(x)=c, sin(x)=c, sqrt(x)=c, etc.
     let mut domain_empty = false;
-    match try_solve_by_inversion(arena, expr, var, period) {
+    match try_solve_by_inversion(arena, expr, var, cx) {
         Some(solutions) if !solutions.is_empty() => {
             return SolveOutcome::Solutions(solutions);
         }
@@ -1116,7 +1065,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     // Step 3b: trigonometric functions of rational multiples of `var` with
     // a common factor `r ≠ 1` (`sin 300x + sin 600x`, `cos(x/5) + cos(x/15)`):
     // in `u = r·x` the multiples are coprime integers.
-    match try_scale_trig_arguments(arena, expr, var, period) {
+    match try_scale_trig_arguments(arena, expr, var, cx) {
         Some(SolveOutcome::Solutions(s)) if !s.is_empty() => return SolveOutcome::Solutions(s),
         Some(SolveOutcome::NoSolution(reason)) => return SolveOutcome::NoSolution(reason),
         Some(SolveOutcome::Identity) => return SolveOutcome::Identity,
@@ -1125,7 +1074,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
 
     // Step 4: change-of-variable: if expression is polynomial in f(x) for
     // some f, substitute t = f(x), solve the polynomial, back-substitute.
-    if let Some(solutions) = try_change_of_variable(arena, expr, var, period)
+    if let Some(solutions) = try_change_of_variable(arena, expr, var, cx)
         && !solutions.is_empty()
     {
         return SolveOutcome::Solutions(solutions);
@@ -1133,26 +1082,27 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
 
     // Step 4b: radicals of the variable itself (`√x = x − 2`), or of one
     // linear radicand (`√(x + 1) = x − 1`).
-    if let Some(solutions) = try_radical_substitution(arena, expr, var)
+    if let Some(solutions) = try_radical_substitution(arena, expr, var, cx)
         && !solutions.is_empty()
     {
         return SolveOutcome::Solutions(solutions);
     }
     // Square roots of one or two polynomials (`√(x + 5) + √x = 3`).
-    if let Some(solutions) = try_square_root_elimination(arena, expr, var) {
-        if !solutions.is_empty() {
+    match try_square_root_elimination(arena, expr, var) {
+        Some(Unradicated::Roots(solutions)) if !solutions.is_empty() => {
             return SolveOutcome::Solutions(solutions);
         }
         // The norm over the sign choices is a nonzero constant: no root
         // (`x + √(x² − 5) = 0`: the norm is 5; refused before 0.47).
-        if SQRT_NORM_CONSTANT.with(|c| c.replace(false)) {
+        Some(Unradicated::NormConstant) => {
             return SolveOutcome::NoSolution(
                 "the radicals cancel to a nonzero constant under every choice of signs".into(),
             );
         }
+        _ => {}
     }
     // Several absolute values of rational functions (`|x + 3| = 2·|x − 3|`).
-    match try_abs_cases(arena, expr, var, period) {
+    match try_abs_cases(arena, expr, var, cx) {
         Some(SolveOutcome::Solutions(solutions)) if !solutions.is_empty() => {
             return SolveOutcome::Solutions(solutions);
         }
@@ -1170,9 +1120,9 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
             if domain_empty {
                 continue;
             }
-            try_hyperbolic_substitution(arena, expr, var, period)
+            try_hyperbolic_substitution(arena, expr, var, cx)
         } else {
-            try_exponential_substitution(arena, expr, var, period)
+            try_exponential_substitution(arena, expr, var, cx)
         };
         match outcome {
             Some(SolveOutcome::Solutions(solutions)) if !solutions.is_empty() => {
@@ -1185,7 +1135,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     // Exponentials of different bases in two groups (`5^(x/2) = 2^(x/3)`,
     // `7^(x² − 80) = 49^x`): logarithms of both sides.
     if !domain_empty {
-        match try_exponential_log_split(arena, expr, var, period) {
+        match try_exponential_log_split(arena, expr, var, cx) {
             Some(SolveOutcome::Solutions(solutions)) if !solutions.is_empty() => {
                 return SolveOutcome::Solutions(solutions);
             }
@@ -1193,12 +1143,12 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
             _ => {}
         }
     }
-    if let Some(solutions) = try_half_angle_substitution(arena, expr, var, period)
+    if let Some(solutions) = try_half_angle_substitution(arena, expr, var, cx)
         && !solutions.is_empty()
     {
         return SolveOutcome::Solutions(solutions);
     }
-    if let Some(solutions) = try_log_sum(arena, expr, var, period)
+    if let Some(solutions) = try_log_sum(arena, expr, var, cx)
         && !solutions.is_empty()
     {
         return SolveOutcome::Solutions(solutions);
@@ -1211,16 +1161,16 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
         _ => None,
     };
     if let Some(var_sym) = var_sym_opt
-        && !variable_may_be_nonreal(arena, var)
-        && let Some(solutions) = try_solve_lambert(arena, expr, var, var_sym)
+        && !cx.variable_may_be_nonreal(arena, var)
+        && let Some(solutions) = try_solve_lambert(arena, expr, var, var_sym, cx)
             .filter(|s| !s.is_empty())
-            .or_else(|| try_solve_power_exp(arena, expr, var, period))
+            .or_else(|| try_solve_power_exp(arena, expr, var, cx))
             .filter(|s| !s.is_empty())
-            .or_else(|| try_lambert_power_log(arena, expr, var))
+            .or_else(|| try_lambert_power_log(arena, expr, var, cx))
             .filter(|s| !s.is_empty())
-            .or_else(|| try_power_of_log(arena, expr, var))
+            .or_else(|| try_power_of_log(arena, expr, var, cx))
             .filter(|s| !s.is_empty())
-            .or_else(|| try_monomial_substitution(arena, expr, var, period))
+            .or_else(|| try_monomial_substitution(arena, expr, var, cx))
         && !solutions.is_empty()
     {
         return SolveOutcome::Solutions(solutions);
@@ -1242,7 +1192,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     if let Some(num) = numerator_over_polynomial(arena, expr, var)
         && numerator_over_polynomial(arena, num, var).is_none()
     {
-        match solve_raw(arena, num, var, period) {
+        match solve_raw(arena, num, var, cx) {
             SolveOutcome::Solutions(s) if !s.is_empty() => return SolveOutcome::Solutions(s),
             SolveOutcome::NoSolution(reason) => return SolveOutcome::NoSolution(reason),
             _ => {}
@@ -1676,66 +1626,6 @@ fn try_solve_binomial_rational(arena: &mut Arena, poly: &Poly) -> Option<Vec<Sol
 // Transcendental solving via inversion peeling
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Is `e` real for every real value of `var` (and of the parameters
-/// without declared assumptions, which count as real, as in
-/// `realness::constant_realness`)?  Decided by the assumption system:
-/// `exp(x)`, `cos(2x + 1)`, `|x|` are real, `I·x`, `√x` and `ln x` are
-/// not known to be (`√x` is imaginary for `x < 0`).
-///
-/// The range restrictions of peeling (`exp f = −1`, `cos f = 2`,
-/// `cosh f = 1/2` have no real solution) hold only for a real `f`; before
-/// 0.31 they were applied to any argument, and `exp(i·x) = −1` (solved by
-/// `x = π`), `cos(i·x) = 2` (`x = ±acosh 2`), `exp(√x) = −1` (`x = −π²`)
-/// were reported to have no solution.
-///
-/// Under [`solve_general_over_c`] `var` ranges over its declared domain
-/// (ℂ for a plain symbol) instead: `exp(x)` is not real, and the range
-/// restrictions and the single real branch of `exp` do not apply.
-fn real_for_real_var(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
-    let complex_var = COMPLEX_VARIABLE.with(std::cell::Cell::get);
-    real_with_unknown(arena, e, var, !complex_var)
-}
-
-/// Does a range restriction of peeling hold for the argument `f` of `g(f)
-/// = c`: is `f` certainly real?  [`real_for_real_var`], except in a
-/// principal solve under [`solve_classified`] (`period` is `None`), where
-/// `var` keeps its declared domain (ℂ for a plain symbol): `eˣ = −1`
-/// then has the principal root `iπ` rather than no solution.
-fn range_restricted(arena: &mut Arena, f: ExprId, var: ExprId, period: Option<ExprId>) -> bool {
-    if period.is_none() && DECLARED_UNKNOWN.with(std::cell::Cell::get) {
-        real_with_unknown(arena, f, var, false)
-    } else {
-        real_for_real_var(arena, f, var)
-    }
-}
-
-/// Is `e` certainly real, with the parameters without declared assumptions
-/// taken real and `var` taken real when `var_real` (otherwise in its
-/// declared domain)?
-fn real_with_unknown(arena: &mut Arena, e: ExprId, var: ExprId, var_real: bool) -> bool {
-    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
-    let mut cache = AssumptionCache::new();
-    for s in crate::base::walk::free_symbols(arena, e) {
-        let ExprNode::Symbol(sid) = *arena.node(s) else {
-            continue;
-        };
-        let declared = arena.symbol_assumptions(sid);
-        let take_real = if s == var {
-            var_real
-        } else {
-            declared == Assumptions::default()
-        };
-        if take_real {
-            let mut real = declared;
-            real.known_true |= Props::REAL;
-            if !real.is_contradictory() {
-                cache.set_symbol_assumptions(s, real);
-            }
-        }
-    }
-    cache.query(arena, e, Props::REAL) == Some(true)
-}
-
 /// `2π·i·n` for the integer parameter `n`: the period of `exp`.
 fn two_pi_i_n(arena: &mut Arena, n: ExprId) -> ExprId {
     let two = arena.int(2);
@@ -1754,27 +1644,30 @@ fn try_solve_by_inversion(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     if !expr_contains_var(arena, expr, var) {
         return None;
     }
     let zero = arena.zero;
-    solve_by_peeling(arena, expr, zero, var, period)
+    solve_by_peeling(arena, expr, zero, var, cx)
 }
 
 /// Peel layers off `lhs = rhs` to isolate `var`.
 ///
-/// `rhs` never contains `var`.  When `period` is `Some(n)`, periodic
-/// inversions (sin, cos, tan) emit full solution families in terms of the
-/// integer parameter `n`; otherwise only principal branches are produced.
+/// `rhs` never contains `var`.  In a general solve ([`SolveCx::period`])
+/// periodic inversions (sin, cos, tan) emit full solution families in terms
+/// of the integer parameter `n`; otherwise only principal branches are
+/// produced.  A range restriction is used when [`SolveCx::range_restricted`]
+/// allows it.
 fn solve_by_peeling(
     arena: &mut Arena,
     lhs: ExprId,
     rhs: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
+    let period = cx.period();
     // Base case: lhs IS the variable
     if lhs == var {
         return Some(vec![Solution { value: rhs }]);
@@ -1800,7 +1693,7 @@ fn solve_by_peeling(
                     let sum_indep = arena.add(&indep);
                     arena.sub(rhs, sum_indep)
                 };
-                return solve_by_peeling(arena, dep[0], new_rhs, var, period);
+                return solve_by_peeling(arena, dep[0], new_rhs, var, cx);
             }
             // Multiple var-dependent terms: lhs - rhs = 0 may be polynomial.
             let diff = arena.sub(lhs, rhs);
@@ -1840,7 +1733,7 @@ fn solve_by_peeling(
                     return Some(solve_rational_poly(arena, var, &poly));
                 }
                 if is_rational_function_of(arena, diff, var) {
-                    return match try_solve_rational(arena, diff, var, period) {
+                    return match try_solve_rational(arena, diff, var, cx) {
                         Some(SolveOutcome::Solutions(s)) if !s.is_empty() => Some(s),
                         Some(SolveOutcome::NoSolution(_)) => Some(vec![]),
                         _ => None,
@@ -1861,7 +1754,7 @@ fn solve_by_peeling(
                 let e = crate::transforms::expand::expand(arena, e);
                 new_rhs = crate::transforms::eval::eval(arena, e);
             }
-            solve_by_peeling(arena, dep[0], new_rhs, var, period)
+            solve_by_peeling(arena, dep[0], new_rhs, var, cx)
         }
         // exp(f(x)) = rhs → f(x) = ln(rhs) (+ 2πin for a non-real f)
         // Domain check: exp never vanishes; exp(f) > 0 for a real f, so
@@ -1871,11 +1764,11 @@ fn solve_by_peeling(
                 tracing::debug!("solve_by_peeling: exp domain error, rhs = 0");
                 return Some(vec![]);
             }
-            let real_inner = real_for_real_var(arena, inner, var);
+            let real_inner = cx.real_for_real_var(arena, inner, var);
             if real_inner
                 && let Some(c) = arena.as_num(rhs)
                 && !c.is_positive()
-                && range_restricted(arena, inner, var, period)
+                && cx.range_restricted(arena, inner, var)
             {
                 tracing::debug!("solve_by_peeling: exp domain error, rhs <= 0");
                 return Some(vec![]);
@@ -1884,7 +1777,7 @@ fn solve_by_peeling(
             // A non-real argument (`exp(i·x) = c`) reaches every branch of
             // the logarithm with real values of `var`: the general solution
             // carries the period `2πi`.
-            if !real_inner && period_in_use(arena, rhs, period) {
+            if !real_inner && period_in_use(arena, rhs, cx) {
                 flag_period_conflict();
                 return None;
             }
@@ -1895,20 +1788,20 @@ fn solve_by_peeling(
                 }
                 _ => ln_rhs,
             };
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // ln(f(x)) = rhs → f(x) = exp(rhs)
         ExprNode::Ln(inner) => {
             let new_rhs = arena.exp(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // sin(f(x)) = rhs → f(x) ∈ {asin(rhs), π - asin(rhs)} (+ 2πn)
-        ExprNode::Sin(inner) | ExprNode::Cos(inner) if period_in_use(arena, rhs, period) => {
+        ExprNode::Sin(inner) | ExprNode::Cos(inner) if period_in_use(arena, rhs, cx) => {
             // `sin f = cₙ` for a family `cₙ` (an outer periodic layer): over
             // the reals only the members with `|cₙ| ≤ 1` can be reached, each
             // giving families in a parameter of their own.
             let n = period?;
-            let members = if real_for_real_var(arena, inner, var) {
+            let members = if cx.real_for_real_var(arena, inner, var) {
                 bounded_family_members(arena, rhs, n)
             } else {
                 None
@@ -1919,7 +1812,7 @@ fn solve_by_peeling(
             };
             let mut out: Vec<Solution> = Vec::new();
             for m in members {
-                for s in solve_by_peeling(arena, lhs, m, var, period)? {
+                for s in solve_by_peeling(arena, lhs, m, var, cx)? {
                     if !out.iter().any(|o| o.value == s.value) {
                         out.push(s);
                     }
@@ -1931,7 +1824,7 @@ fn solve_by_peeling(
             // Domain check: sin(x) = c has no real solutions when |c| > 1
             if let Some(c) = arena.as_num(rhs)
                 && c.abs() > Ratio::one()
-                && range_restricted(arena, inner, var, period)
+                && cx.range_restricted(arena, inner, var)
             {
                 tracing::debug!("solve_by_peeling: sin domain error, |c| > 1");
                 return Some(vec![]);
@@ -1951,14 +1844,14 @@ fn solve_by_peeling(
                 }
                 None => (asin_rhs, pi_minus_asin),
             };
-            peel_two_branches(arena, inner, b1, b2, var, period)
+            peel_two_branches(arena, inner, b1, b2, var, cx)
         }
         // cos(f(x)) = rhs → f(x) ∈ {acos(rhs), -acos(rhs)} (+ 2πn)
         ExprNode::Cos(inner) => {
             // Domain check: cos(x) = c has no real solutions when |c| > 1
             if let Some(c) = arena.as_num(rhs)
                 && c.abs() > Ratio::one()
-                && range_restricted(arena, inner, var, period)
+                && cx.range_restricted(arena, inner, var)
             {
                 tracing::debug!("solve_by_peeling: cos domain error, |c| > 1");
                 return Some(vec![]);
@@ -1978,11 +1871,11 @@ fn solve_by_peeling(
                 }
                 None => (acos_rhs, neg_acos),
             };
-            peel_two_branches(arena, inner, b1, b2, var, period)
+            peel_two_branches(arena, inner, b1, b2, var, cx)
         }
         // tan(f(x)) = rhs → f(x) = atan(rhs) (+ πn)
         ExprNode::Tan(inner) => {
-            if period_in_use(arena, rhs, period) {
+            if period_in_use(arena, rhs, cx) {
                 flag_period_conflict();
                 return None;
             }
@@ -1995,7 +1888,7 @@ fn solve_by_peeling(
                 }
                 None => atan_rhs,
             };
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // f(x)^n = rhs → f(x) = rhs^(1/n)
         // When n is a positive even integer, also consider f(x) = -(rhs^(1/n))
@@ -2006,7 +1899,7 @@ fn solve_by_peeling(
                 let n = n.clone();
                 if !n.is_zero() {
                     let branches = power_preimages(arena, rhs, &n)?;
-                    return peel_branches(arena, inner_base, &branches, var, period);
+                    return peel_branches(arena, inner_base, &branches, var, cx);
                 }
             }
 
@@ -2031,8 +1924,8 @@ fn solve_by_peeling(
                     let ln_base = arena.ln(inner_base);
                     let ln_base = crate::transforms::eval::eval(arena, ln_base);
                     let prod = arena.mul(&[inner_exp, ln_base]);
-                    if !real_for_real_var(arena, prod, var) {
-                        if period_in_use(arena, rhs, period) {
+                    if !cx.real_for_real_var(arena, prod, var) {
+                        if period_in_use(arena, rhs, cx) {
                             flag_period_conflict();
                             return None;
                         }
@@ -2042,7 +1935,7 @@ fn solve_by_peeling(
                         let new_rhs = arena.div(num, ln_base);
                         let new_rhs = crate::transforms::expand::expand(arena, new_rhs);
                         let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
-                        return solve_by_peeling(arena, inner_exp, new_rhs, var, period);
+                        return solve_by_peeling(arena, inner_exp, new_rhs, var, cx);
                     }
                 }
 
@@ -2065,7 +1958,7 @@ fn solve_by_peeling(
                             tracing::debug!(
                                 "solve_by_peeling: integer log shortcut, base^{k} = rhs"
                             );
-                            return solve_by_peeling(arena, inner_exp, k_expr, var, period);
+                            return solve_by_peeling(arena, inner_exp, k_expr, var, cx);
                         }
                         if power > r_int {
                             break;
@@ -2078,7 +1971,7 @@ fn solve_by_peeling(
                 let ln_base = arena.ln(inner_base);
                 let ln_rhs = principal_ln(arena, rhs);
                 let new_rhs = arena.div(ln_rhs, ln_base);
-                return solve_by_peeling(arena, inner_exp, new_rhs, var, period);
+                return solve_by_peeling(arena, inner_exp, new_rhs, var, cx);
             }
 
             // f^c = rhs for a constant irrational real c (`x^π = 2`): the
@@ -2096,14 +1989,14 @@ fn solve_by_peeling(
                     &mut crate::base::assumptions::AssumptionCache::new(),
                 ) == Some(true)
             {
-                if period.is_some() && !real_for_real_var(arena, inner_base, var) {
+                if period.is_some() && !cx.real_for_real_var(arena, inner_base, var) {
                     return None;
                 }
                 let one = arena.one;
                 let inv = arena.div(one, inner_exp);
                 let new_rhs = arena.pow(rhs, inv);
                 let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
-                return solve_by_peeling(arena, inner_base, new_rhs, var, period);
+                return solve_by_peeling(arena, inner_base, new_rhs, var, cx);
             }
 
             None
@@ -2111,23 +2004,23 @@ fn solve_by_peeling(
         // Neg(-f(x)) = rhs → f(x) = -rhs
         ExprNode::Neg(inner) => {
             let new_rhs = arena.neg(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // ── Inverse trig peeling ──────────────────────────────────
         // asin(f(x)) = rhs → f(x) = sin(rhs)
         ExprNode::Asin(inner) => {
             let new_rhs = arena.sin(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // acos(f(x)) = rhs → f(x) = cos(rhs)
         ExprNode::Acos(inner) => {
             let new_rhs = arena.cos(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // atan(f(x)) = rhs → f(x) = tan(rhs)
         ExprNode::Atan(inner) => {
             let new_rhs = arena.tan(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // ── Inverse hyperbolic peeling ────────────────────────────
         // sinh(f(x)) = rhs → f(x) = asinh(rhs); for a non-real f the
@@ -2136,36 +2029,36 @@ fn solve_by_peeling(
             let asinh_rhs = arena.asinh(rhs);
             match period {
                 Some(_)
-                    if !real_for_real_var(arena, inner, var)
-                        && period_in_use(arena, rhs, period) =>
+                    if !cx.real_for_real_var(arena, inner, var)
+                        && period_in_use(arena, rhs, cx) =>
                 {
                     flag_period_conflict();
                     None
                 }
-                Some(n) if !real_for_real_var(arena, inner, var) => {
+                Some(n) if !cx.real_for_real_var(arena, inner, var) => {
                     let p = two_pi_i_n(arena, n);
                     let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
                     let other = arena.sub(i_pi, asinh_rhs);
                     let b1 = arena.add(&[asinh_rhs, p]);
                     let b2 = arena.add(&[other, p]);
-                    peel_two_branches(arena, inner, b1, b2, var, period)
+                    peel_two_branches(arena, inner, b1, b2, var, cx)
                 }
-                _ => solve_by_peeling(arena, inner, asinh_rhs, var, period),
+                _ => solve_by_peeling(arena, inner, asinh_rhs, var, cx),
             }
         }
         // cosh(f(x)) = rhs → f(x) = ±acosh(rhs) (+ 2πin for a non-real f)
         // Domain check: cosh(f) >= 1 for a real f, so rhs must be >= 1.
         ExprNode::Cosh(inner) => {
-            let real_inner = real_for_real_var(arena, inner, var);
+            let real_inner = cx.real_for_real_var(arena, inner, var);
             if real_inner
                 && let Some(c) = arena.as_num(rhs)
                 && *c < Ratio::one()
-                && range_restricted(arena, inner, var, period)
+                && cx.range_restricted(arena, inner, var)
             {
                 tracing::debug!("solve_by_peeling: cosh domain error, rhs < 1");
                 return Some(vec![]);
             }
-            if !real_inner && period_in_use(arena, rhs, period) {
+            if !real_inner && period_in_use(arena, rhs, cx) {
                 flag_period_conflict();
                 return None;
             }
@@ -2178,23 +2071,23 @@ fn solve_by_peeling(
                 }
                 _ => (acosh_rhs, neg_acosh),
             };
-            peel_two_branches(arena, inner, b1, b2, var, period)
+            peel_two_branches(arena, inner, b1, b2, var, cx)
         }
         // tanh(f(x)) = rhs → f(x) = atanh(rhs) (+ iπn for a non-real f)
         ExprNode::Tanh(inner) => {
-            if !real_for_real_var(arena, inner, var) && period_in_use(arena, rhs, period) {
+            if !cx.real_for_real_var(arena, inner, var) && period_in_use(arena, rhs, cx) {
                 flag_period_conflict();
                 return None;
             }
             let atanh_rhs = arena.atanh(rhs);
             let new_rhs = match period {
-                Some(n) if !real_for_real_var(arena, inner, var) => {
+                Some(n) if !cx.real_for_real_var(arena, inner, var) => {
                     let i_pi_n = arena.mul(&[arena.i_unit, arena.pi, n]);
                     arena.add(&[atanh_rhs, i_pi_n])
                 }
                 _ => atanh_rhs,
             };
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // asinh(f) = rhs → f = sinh(rhs), acosh(f) = rhs → f = cosh(rhs),
         // atanh(f) = rhs → f = tanh(rhs): valid when rhs lies in the range
@@ -2204,35 +2097,39 @@ fn solve_by_peeling(
         // were invisible to the definite integrator.
         ExprNode::Asinh(inner) => {
             let new_rhs = arena.sinh(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         ExprNode::Acosh(inner) => {
             let new_rhs = arena.cosh(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         ExprNode::Atanh(inner) => {
             let new_rhs = arena.tanh(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // ── Abs peeling ───────────────────────────────────────────
         // ── Abs peeling ───────────────────────────────────────────────────────────
-        // erf(f) = rhs → f = erfinv(rhs), erfc(f) = rhs → f = erfcinv(rhs):
-        // for a real f only when rhs is in the range (−1, 1), (0, 2); for
-        // a complex f these are the principal solutions (erf is entire and
-        // takes each value infinitely often).  Refused before 0.47 (SymPy:
-        // `solve(erf(x) - y)` → `[erfinv(y)]`).
+        // erf(f) = rhs → f = erfinv(rhs), erfc(f) = rhs → f = erfcinv(rhs),
+        // the principal solutions (erf is entire and takes each value
+        // infinitely often).  A rhs outside the range (−1, 1) of erf on the
+        // reals, (0, 2) of erfc, is reached by a complex f only, where the
+        // inverse has no principal value: no solution when f is real in the
+        // domain of the unknown, refused otherwise.  Up to 0.48 a plain `x`
+        // was taken real here (alone among the range restrictions), and
+        // `Ex::solve` answered `erf(x) = 2` with "no solution", while
+        // `erf(0.8694… + 1.3406…i) = 2` (mpmath `findroot`).  Refused before
+        // 0.47 (SymPy: `solve(erf(x) - y)` → `[erfinv(y)]`).
         ExprNode::Erf(inner) | ExprNode::Erfc(inner) => {
             let is_erf = matches!(arena.node(lhs), ExprNode::Erf(_));
-            let real_inner = real_for_real_var(arena, inner, var);
-            if real_inner && let Some(c) = arena.as_num(rhs) {
-                let (lo, hi) = if is_erf {
-                    (-Q::one(), Q::one())
-                } else {
-                    (Q::zero(), Q::from_integer(BigInt::from(2)))
-                };
-                if *c <= lo || *c >= hi {
-                    return Some(vec![]);
-                }
+            let (lo, hi) = if is_erf {
+                (-Q::one(), Q::one())
+            } else {
+                (Q::zero(), Q::from_integer(BigInt::from(2)))
+            };
+            let out_of_range = arena.as_num(rhs).is_some_and(|c| *c <= lo || *c >= hi);
+            let real_inner = cx.range_restricted(arena, inner, var);
+            if out_of_range {
+                return if real_inner { Some(vec![]) } else { None };
             }
             if period.is_some() && !real_inner {
                 // the other preimages of a complex argument are not known
@@ -2245,7 +2142,7 @@ fn solve_by_peeling(
             };
             let new_rhs = arena.lib_apply(f, &[rhs]);
             let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // W(f) = rhs → f = rhs·e^rhs (the principal branch reaches rhs only
         // in its range, which the check of the candidate decides; refused
@@ -2254,7 +2151,7 @@ fn solve_by_peeling(
             let e = arena.exp(rhs);
             let new_rhs = arena.mul(&[rhs, e]);
             let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // atan2(f, c) = rhs for a constant c > 0 is atan(f/c) = rhs: f =
         // c·tan(rhs) (in the range when |rhs| < π/2, checked; refused before
@@ -2267,7 +2164,7 @@ fn solve_by_peeling(
             let t = arena.tan(rhs);
             let new_rhs = arena.mul(&[c, t]);
             let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
-            solve_by_peeling(arena, f, new_rhs, var, period)
+            solve_by_peeling(arena, f, new_rhs, var, cx)
         }
         // erfinv(f) = rhs → f = erf(rhs), erfcinv(f) = rhs → f = erfc(rhs)
         // (the inverses are injective; candidates are checked).
@@ -2285,7 +2182,7 @@ fn solve_by_peeling(
                 arena.intern(ExprNode::Erfc(rhs))
             };
             let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // |f(x)| = rhs → f(x) = rhs OR f(x) = -rhs (when rhs ≥ 0)
         ExprNode::Abs(inner) => {
@@ -2298,11 +2195,11 @@ fn solve_by_peeling(
             // `f = ±rhs` are all the solutions only for a real `f`: a
             // complex `f` has modulus `rhs` on a whole circle.  Before 0.31
             // `|i·x| = 2` gave `x = ±2i` and missed the real `x = ±2`.
-            if !real_for_real_var(arena, inner, var) {
+            if !cx.real_for_real_var(arena, inner, var) {
                 return None;
             }
             let neg_rhs = arena.neg(rhs);
-            peel_two_branches(arena, inner, rhs, neg_rhs, var, period)
+            peel_two_branches(arena, inner, rhs, neg_rhs, var, cx)
         }
         _ => None,
     }
@@ -2310,8 +2207,9 @@ fn solve_by_peeling(
 
 /// Does `rhs` hold the integer parameter of a general solve (a family from
 /// an outer periodic layer)?
-fn period_in_use(arena: &Arena, rhs: ExprId, period: Option<ExprId>) -> bool {
-    period.is_some_and(|n| crate::base::walk::contains(arena, rhs, n))
+fn period_in_use(arena: &Arena, rhs: ExprId, cx: &SolveCx) -> bool {
+    cx.period()
+        .is_some_and(|n| crate::base::walk::contains(arena, rhs, n))
 }
 
 /// Most members of a family listed by [`bounded_family_members`].
@@ -2542,61 +2440,73 @@ fn in_principal_sector(t: &Q, k: usize, n: i64, q: &BigInt) -> bool {
 }
 
 /// Continue peeling `inner` against each of several right-hand sides and
-/// merge the (deduplicated) results (see [`peel_two_branches`]).
+/// merge the (deduplicated) results ([`merge_branches`]).
 fn peel_branches(
     arena: &mut Arena,
     inner: ExprId,
     rhss: &[ExprId],
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     let mut solutions: Vec<Solution> = Vec::new();
-    let mut saw_some = rhss.is_empty();
+    let mut refused = false;
     for &rhs in rhss {
-        if let Some(sols) = solve_by_peeling(arena, inner, rhs, var, period) {
-            saw_some = true;
-            for sol in sols {
-                if !solutions.iter().any(|s| s.value == sol.value) {
-                    solutions.push(sol);
+        match solve_by_peeling(arena, inner, rhs, var, cx) {
+            Some(sols) => {
+                for sol in sols {
+                    if !solutions.iter().any(|s| s.value == sol.value) {
+                        solutions.push(sol);
+                    }
                 }
             }
+            None => refused = true,
         }
     }
-    if solutions.is_empty() {
-        if saw_some { Some(vec![]) } else { None }
-    } else {
-        Some(solutions)
-    }
+    merge_branches(solutions, refused)
 }
 
 /// Continue peeling `inner` against two alternative right-hand sides and
-/// merge the (deduplicated) results.
+/// merge the (deduplicated) results ([`merge_branches`]).
 fn peel_two_branches(
     arena: &mut Arena,
     inner: ExprId,
     rhs1: ExprId,
     rhs2: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     let mut solutions = Vec::new();
-    let mut saw_some = false;
-    if let Some(sols) = solve_by_peeling(arena, inner, rhs1, var, period) {
-        saw_some = true;
-        solutions.extend(sols);
+    let mut refused = false;
+    match solve_by_peeling(arena, inner, rhs1, var, cx) {
+        Some(sols) => solutions.extend(sols),
+        None => refused = true,
     }
-    if let Some(sols) = solve_by_peeling(arena, inner, rhs2, var, period) {
-        saw_some = true;
-        for sol in sols {
-            if !solutions.iter().any(|s| s.value == sol.value) {
-                solutions.push(sol);
+    match solve_by_peeling(arena, inner, rhs2, var, cx) {
+        Some(sols) => {
+            for sol in sols {
+                if !solutions.iter().any(|s| s.value == sol.value) {
+                    solutions.push(sol);
+                }
             }
         }
+        None => refused = true,
     }
-    if solutions.is_empty() {
-        // Distinguish "structure not invertible" (None) from "both branches
-        // proved empty" (Some(vec![])).
-        if saw_some { Some(vec![]) } else { None }
+    merge_branches(solutions, refused)
+}
+
+/// The merge of the branches of an inversion (`f = c₁` or `f = c₂`, the
+/// preimages of a power): the solutions found, or `None` ("not
+/// invertible") when there are none and some branch was refused.  "No
+/// solution" (`Some(vec![])`) needs every branch to prove it, as one
+/// refused branch may hold roots: up to 0.48 one branch proved empty next to
+/// a refused one gave "no solution" — for a real `x`, `|x + i|² = 4` peels
+/// to `|x + i| = ±2`, the branch `−2` is empty and `|x + i| = 2` (of a
+/// non-real argument) is refused, while `±√3` solve it (SymPy's `solveset`
+/// too).  (Found roots with a refused branch are still returned as all of
+/// them; an outcome type that can say "partial" is planned.)
+fn merge_branches(solutions: Vec<Solution>, refused: bool) -> Option<Vec<Solution>> {
+    if solutions.is_empty() && refused {
+        None
     } else {
         Some(solutions)
     }
@@ -3488,7 +3398,7 @@ fn try_change_of_variable(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     let var_sym = match arena.node(var) {
         ExprNode::Symbol(sid) => *sid,
@@ -3515,17 +3425,18 @@ fn try_change_of_variable(
             // solve: up to 0.46 its principal roots alone, and for a real `x`
             // `cot(eˣ) = 2` had the solution set `{ln(2·atan(√5 − 2))}`
             // instead of `ln(acot 2 + nπ)` for `n ≥ 0`.
-            let t_solutions = if period.is_some() && has_periodic_atom(arena, substituted, t) {
-                match solve_impl(arena, substituted, t, period) {
-                    SolveOutcome::Solutions(s) => s,
-                    _ => continue,
-                }
-            } else {
-                let Some(t_solutions) = substitution_roots(arena, substituted, t) else {
-                    continue;
+            let t_solutions =
+                if cx.period().is_some() && has_periodic_atom(arena, substituted, t, cx) {
+                    match solve_impl(arena, substituted, t, cx) {
+                        SolveOutcome::Solutions(s) => s,
+                        _ => continue,
+                    }
+                } else {
+                    let Some(t_solutions) = substitution_roots(arena, substituted, t, cx) else {
+                        continue;
+                    };
+                    t_solutions
                 };
-                t_solutions
-            };
 
             if !t_solutions.is_empty() {
                 // Back-substitute: for each t = c, solve generator(var) = c.
@@ -3534,7 +3445,7 @@ fn try_change_of_variable(
                 let mut var_solutions: Vec<Solution> = Vec::new();
                 for t_sol in &t_solutions {
                     if let Some(back_sols) =
-                        solve_by_peeling(arena, generator, t_sol.value, var, period)
+                        solve_by_peeling(arena, generator, t_sol.value, var, cx)
                     {
                         for s in back_sols {
                             if !var_solutions.iter().any(|v| v.value == s.value) {
@@ -3560,13 +3471,13 @@ fn try_change_of_variable(
             if rewritten != expr {
                 let substituted2 = arena.subs_structural(rewritten, generator, t);
                 if !expr_contains_var(arena, substituted2, var)
-                    && let Some(t_solutions) = substitution_roots(arena, substituted2, t)
+                    && let Some(t_solutions) = substitution_roots(arena, substituted2, t, cx)
                     && !t_solutions.is_empty()
                 {
                     let mut var_solutions: Vec<Solution> = Vec::new();
                     for t_sol in &t_solutions {
                         if let Some(back_sols) =
-                            solve_by_peeling(arena, generator, t_sol.value, var, period)
+                            solve_by_peeling(arena, generator, t_sol.value, var, cx)
                         {
                             for s in back_sols {
                                 if !var_solutions.iter().any(|v| v.value == s.value) {
@@ -3598,7 +3509,7 @@ fn try_scale_trig_arguments(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<SolveOutcome> {
     let ExprNode::Symbol(var_sid) = *arena.node(var) else {
         return None;
@@ -3655,7 +3566,7 @@ fn try_scale_trig_arguments(
     if expr_contains_var(arena, sub, var) {
         return None;
     }
-    match solve_raw(arena, sub, u, period) {
+    match solve_raw(arena, sub, u, cx) {
         SolveOutcome::Solutions(s) => {
             let mut out: Vec<Solution> = Vec::with_capacity(s.len());
             for sol in s {
@@ -3674,9 +3585,10 @@ fn try_scale_trig_arguments(
 
 /// Does `e` hold a function of `t` that is periodic for the variable of the
 /// solve: `sin`, `cos`, `tan` always, exponentials and hyperbolic
-/// functions for a variable that may be non-real ([`solve_general_over_c`]).
-fn has_periodic_atom(arena: &Arena, e: ExprId, t: ExprId) -> bool {
-    let complex = COMPLEX_VARIABLE.with(std::cell::Cell::get);
+/// functions for a variable that may be non-real
+/// ([`SolveCx::variable_may_be_nonreal`]: [`solve_general_over_c`]).
+fn has_periodic_atom(arena: &Arena, e: ExprId, t: ExprId, cx: &SolveCx) -> bool {
+    let complex = cx.variable_may_be_nonreal(arena, t);
     crate::base::walk::post_order_ids(arena, e)
         .into_iter()
         .any(|id| match *arena.node(id) {
@@ -3712,7 +3624,12 @@ fn has_periodic_atom(arena: &Arena, e: ExprId, t: ExprId) -> bool {
 /// `solve(sqrt(x + 1) - (x - 1))` → `[3]` (the candidate `0` of the squared
 /// equation fails), `solve(x - 2*sqrt(x - 1))` → `[2]`; both were refused
 /// before 0.39.
-fn try_radical_substitution(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+fn try_radical_substitution(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> Option<Vec<Solution>> {
     let post = crate::base::walk::post_order_ids(arena, expr);
     // The one base of the fractional powers.
     let mut radicand: Option<ExprId> = None;
@@ -3790,7 +3707,7 @@ fn try_radical_substitution(arena: &mut Arena, expr: ExprId, var: ExprId) -> Opt
     if expr_contains_var(arena, substituted, var) {
         return None;
     }
-    let t_solutions = solve_impl(arena, substituted, t, None).into_solutions();
+    let t_solutions = solve_impl(arena, substituted, t, &cx.substituted()).into_solutions();
     let mut out: Vec<Solution> = Vec::new();
     for ts in t_solutions {
         let x0 = crate::transforms::subs::subs(arena, x_of_t, t, ts.value);
@@ -3823,7 +3740,7 @@ fn try_square_root_elimination(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-) -> Option<Vec<Solution>> {
+) -> Option<Unradicated> {
     // The radicands, and the half-integer powers of them.
     let mut radicands: Vec<ExprId> = Vec::new();
     for id in crate::base::walk::post_order_ids(arena, expr) {
@@ -3939,20 +3856,22 @@ fn try_square_root_elimination(
     let poly = polybridge::expr_to_poly(arena, norm, var)?;
     if poly.is_constant() {
         if !poly.is_zero() {
-            SQRT_NORM_CONSTANT.with(|c| c.set(true));
-            return Some(Vec::new());
+            return Some(Unradicated::NormConstant);
         }
         return None;
     }
     let candidates = solve_rational_poly(arena, var, &poly);
-    strictly_checked(arena, expr, var, candidates)
+    strictly_checked(arena, expr, var, candidates).map(Unradicated::Roots)
 }
 
-thread_local! {
-    /// Set by [`try_square_root_elimination`] when the norm of the
-    /// equation is a nonzero constant (it then returns no candidates): the
-    /// equation has no root.
-    static SQRT_NORM_CONSTANT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// What [`try_square_root_elimination`] found.
+enum Unradicated {
+    /// The candidates that certainly solve the equation (possibly none).
+    Roots(Vec<Solution>),
+    /// The norm of the equation over the sign choices is a nonzero
+    /// constant: the equation has no root.  (Up to 0.48 the thread-local
+    /// flag `SQRT_NORM_CONSTANT` next to an empty list.)
+    NormConstant,
 }
 
 /// Most square roots of polynomials eliminated by
@@ -3975,7 +3894,7 @@ fn eliminate_many_square_roots(
     expr: ExprId,
     var: ExprId,
     radicands: &[ExprId],
-) -> Option<Vec<Solution>> {
+) -> Option<Unradicated> {
     let syms: Vec<ExprId> = (0..radicands.len())
         .map(|i| arena.symbol(&format!("__s_unrad_{i}")))
         .collect();
@@ -4044,14 +3963,13 @@ fn eliminate_many_square_roots(
     }
     let poly = polybridge::expr_to_poly(arena, p, var)?;
     if poly.is_constant() && !poly.is_zero() {
-        SQRT_NORM_CONSTANT.with(|c| c.set(true));
-        return Some(Vec::new());
+        return Some(Unradicated::NormConstant);
     }
     if poly.is_constant() || poly.degree().unwrap_or(0) > MAX_SQRT_NORM_DEGREE {
         return None;
     }
     let candidates = solve_rational_poly(arena, var, &poly);
-    strictly_checked(arena, expr, var, candidates)
+    strictly_checked(arena, expr, var, candidates).map(Unradicated::Roots)
 }
 
 /// The candidates that certainly solve `expr = 0` (whose only symbol is
@@ -4144,7 +4062,7 @@ fn try_solve_rational(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<SolveOutcome> {
     if !is_rational_function_of(arena, expr, var) {
         return None;
@@ -4192,7 +4110,7 @@ fn try_solve_rational(
         Some(reduced) => reduced,
         None => num,
     };
-    let candidates = solve_raw(arena, num, var, period).into_solutions();
+    let candidates = solve_raw(arena, num, var, cx).into_solutions();
     let mut out = Vec::with_capacity(candidates.len());
     for s in candidates {
         let d = crate::transforms::subs::subs(arena, den, var, s.value);
@@ -4233,7 +4151,7 @@ fn try_solve_parametric_factors(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     let coeffs = symbolic_poly_coeffs(arena, expr, var)?;
     if coeffs.len() < 4 || coeffs.len() > 9 {
@@ -4268,7 +4186,7 @@ fn try_solve_parametric_factors(
         if f == expr {
             return None;
         }
-        let SolveOutcome::Solutions(sols) = solve_raw(arena, f, var, period) else {
+        let SolveOutcome::Solutions(sols) = solve_raw(arena, f, var, cx) else {
             return None;
         };
         if sols.is_empty() {
@@ -4290,7 +4208,7 @@ fn rational_over_q_in_all_symbols(arena: &Arena, expr: ExprId) -> bool {
         return false;
     };
     let mut syms = crate::base::walk::free_symbols(arena, expr);
-    syms.sort_by_key(|id| id.0);
+    syms.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     syms.dedup();
     if syms.len() > 4 {
         return false;
@@ -4411,7 +4329,7 @@ fn without_common_factors_multi(
 ) -> Option<ExprId> {
     let mut syms = crate::base::walk::free_symbols(arena, num);
     syms.extend(crate::base::walk::free_symbols(arena, den));
-    syms.sort_by_key(|id| id.0);
+    syms.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     syms.dedup();
     if !syms.contains(&var) || syms.len() < 2 || syms.len() > 4 {
         return None;
@@ -4502,7 +4420,7 @@ fn try_exponential_substitution(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<SolveOutcome> {
     let mut atoms: Vec<ExprId> = Vec::new();
     walk_var_atoms(arena, expr, var, |id| {
@@ -4601,10 +4519,10 @@ fn try_exponential_substitution(
             ));
         }
     }
-    let t_roots = solutions_unless_identity(arena, sub, t)?;
+    let t_roots = solutions_unless_identity(arena, sub, t, cx)?;
     let mut all_without_preimage = !t_roots.is_empty();
     for ts in t_roots {
-        match solve_by_peeling(arena, generator, ts.value, var, period) {
+        match solve_by_peeling(arena, generator, ts.value, var, cx) {
             Some(back) => {
                 all_without_preimage &= back.is_empty();
                 for s in back {
@@ -4644,9 +4562,9 @@ fn try_exponential_log_split(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<SolveOutcome> {
-    if variable_may_be_nonreal(arena, var) {
+    if cx.variable_may_be_nonreal(arena, var) {
         return None;
     }
     let ExprNode::Add(terms) = arena.node(expr).clone() else {
@@ -4730,9 +4648,8 @@ fn try_exponential_log_split(
     } else {
         None
     };
-    let declared_unknown = period.is_none() && DECLARED_UNKNOWN.with(std::cell::Cell::get);
     if sign == Some(0)
-        || (sign == Some(-1) && (!declared_unknown || real_with_unknown(arena, d, var, false)))
+        || (sign == Some(-1) && (!cx.declared_principal() || cx.range_restricted(arena, d, var)))
     {
         return Some(SolveOutcome::NoSolution(
             "the exponentials of a real argument are positive and the coefficients do not allow it"
@@ -4746,7 +4663,7 @@ fn try_exponential_log_split(
     if !expr_contains_var(arena, eq, var) || has_exponential_of(arena, eq, var) {
         return None;
     }
-    Some(solve_raw(arena, eq, var, period))
+    Some(solve_raw(arena, eq, var, cx))
 }
 
 /// Most absolute values split by [`try_abs_cases`] (`2ⁿ` sign patterns).
@@ -4767,9 +4684,9 @@ fn try_abs_cases(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<SolveOutcome> {
-    if variable_may_be_nonreal(arena, var)
+    if cx.variable_may_be_nonreal(arena, var)
         || !crate::base::walk::free_symbols(arena, expr)
             .iter()
             .all(|&s| s == var)
@@ -4784,7 +4701,7 @@ fn try_abs_cases(
             // `|u| = ±u` covers every case only for a real `u` (an imaginary
             // variable has `|i·t| = |t|`).
             if !is_rational_in(arena, u, var)
-                || !real_for_real_var(arena, u, var)
+                || !cx.real_for_real_var(arena, u, var)
                 || crate::base::walk::post_order_ids(arena, u)
                     .into_iter()
                     .any(|j| matches!(arena.node(j), ExprNode::Abs(_)))
@@ -4817,7 +4734,7 @@ fn try_abs_cases(
         if !is_rational_in(arena, branch, var) {
             return None;
         }
-        match solve_raw(arena, branch, var, period) {
+        match solve_raw(arena, branch, var, cx) {
             SolveOutcome::Solutions(s) => {
                 for sol in s {
                     let v = crate::transforms::eval::eval(arena, sol.value);
@@ -4933,7 +4850,7 @@ fn try_hyperbolic_substitution(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<SolveOutcome> {
     let mut hyperbolic = false;
     walk_var_atoms(arena, expr, var, |id| match arena.node(id) {
@@ -4953,7 +4870,7 @@ fn try_hyperbolic_substitution(
     if rewritten == expr {
         return None;
     }
-    try_exponential_substitution(arena, rewritten, var, period)
+    try_exponential_substitution(arena, rewritten, var, cx)
 }
 
 /// The numerator of `expr` over a common denominator when that
@@ -4986,7 +4903,12 @@ fn numerator_over_polynomial(arena: &mut Arena, expr: ExprId, var: ExprId) -> Op
 /// describes.  Before 0.39 `sin(x)/cos(x) − tan(x) = 0` (`0 = 0` in
 /// `t = tan(x/2)`) gave only `x = π` (the value `t = ∞` checked apart),
 /// and `solve_general` the family `π + 2nπ`.
-fn solutions_unless_identity(arena: &mut Arena, sub: ExprId, t: ExprId) -> Option<Vec<Solution>> {
+fn solutions_unless_identity(
+    arena: &mut Arena,
+    sub: ExprId,
+    t: ExprId,
+    cx: &SolveCx,
+) -> Option<Vec<Solution>> {
     let combined = polybridge::together(arena, sub);
     let (num, _) = polybridge::as_numer_denom(arena, combined);
     let num = crate::transforms::expand::expand(arena, num);
@@ -4996,12 +4918,12 @@ fn solutions_unless_identity(arena: &mut Arena, sub: ExprId, t: ExprId) -> Optio
     }
     // (`together` leaves nested quotients: the whole combined fraction)
     let full_num = full_numerator(arena, sub);
-    match numerator_roots(arena, full_num, t) {
+    match numerator_roots(arena, full_num, t, cx) {
         NumeratorRoots::Solver => {}
         NumeratorRoots::Found(roots) => return Some(roots),
         NumeratorRoots::Unknown => return None,
     }
-    match solve_impl(arena, sub, t, None) {
+    match solve_impl(arena, sub, t, &cx.substituted()) {
         SolveOutcome::Identity => None,
         other => Some(other.into_solutions()),
     }
@@ -5042,7 +4964,7 @@ enum NumeratorRoots {
 /// substitution then refused, `sin 4x = √3·sin x` and `cos³x = √2·cos x`
 /// were "not polynomial".  `Solver` when `num` is not a polynomial in `t`
 /// (nothing to count).
-fn numerator_roots(arena: &mut Arena, num: ExprId, t: ExprId) -> NumeratorRoots {
+fn numerator_roots(arena: &mut Arena, num: ExprId, t: ExprId, cx: &SolveCx) -> NumeratorRoots {
     if polybridge::expr_to_poly(arena, num, t).is_some() {
         return NumeratorRoots::Solver;
     }
@@ -5050,7 +4972,12 @@ fn numerator_roots(arena: &mut Arena, num: ExprId, t: ExprId) -> NumeratorRoots 
         return NumeratorRoots::Solver;
     };
     let degree = coeffs.len().saturating_sub(1);
-    if degree <= 2 || solve_impl(arena, num, t, None).into_solutions().len() >= degree {
+    if degree <= 2
+        || solve_impl(arena, num, t, &cx.substituted())
+            .into_solutions()
+            .len()
+            >= degree
+    {
         return NumeratorRoots::Solver;
     }
     match algebraic_roots::number_field_roots(arena, num, t, false) {
@@ -5063,10 +4990,17 @@ fn numerator_roots(arena: &mut Arena, num: ExprId, t: ExprId) -> NumeratorRoots 
 
 /// The roots in `t` of the substituted equation `sub = 0` of a change of
 /// variable, all of them, or `None` ([`numerator_roots`]).
-fn substitution_roots(arena: &mut Arena, sub: ExprId, t: ExprId) -> Option<Vec<Solution>> {
+fn substitution_roots(
+    arena: &mut Arena,
+    sub: ExprId,
+    t: ExprId,
+    cx: &SolveCx,
+) -> Option<Vec<Solution>> {
     let full_num = full_numerator(arena, sub);
-    match numerator_roots(arena, full_num, t) {
-        NumeratorRoots::Solver => Some(solve_impl(arena, sub, t, None).into_solutions()),
+    match numerator_roots(arena, full_num, t, cx) {
+        NumeratorRoots::Solver => {
+            Some(solve_impl(arena, sub, t, &cx.substituted()).into_solutions())
+        }
         NumeratorRoots::Found(roots) => Some(roots),
         NumeratorRoots::Unknown => None,
     }
@@ -5088,7 +5022,7 @@ fn try_half_angle_substitution(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     let mut atoms: Vec<ExprId> = Vec::new();
     let mut multiple = false;
@@ -5164,8 +5098,8 @@ fn try_half_angle_substitution(
     let half_x = arena.mul(&[half, var]);
     let generator = arena.tan(half_x);
     let mut out: Vec<Solution> = Vec::new();
-    for ts in solutions_unless_identity(arena, sub, t)? {
-        if let Some(back) = solve_by_peeling(arena, generator, ts.value, var, period) {
+    for ts in solutions_unless_identity(arena, sub, t, cx)? {
+        if let Some(back) = solve_by_peeling(arena, generator, ts.value, var, cx) {
             for s in back {
                 if !out.iter().any(|o| o.value == s.value) {
                     out.push(s);
@@ -5181,7 +5115,7 @@ fn try_half_angle_substitution(
         || (crate::base::walk::free_symbols(arena, at_pi).is_empty()
             && crate::poly::algebraic::is_zero_checked(arena, at_pi) == Some(true));
     if zero_at_pi {
-        let value = match period {
+        let value = match cx.period() {
             Some(n) => {
                 let two_pi_n = arena.mul(&[two, pi, n]);
                 arena.add(&[pi, two_pi_n])
@@ -5205,7 +5139,7 @@ fn try_log_sum(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     let terms: Vec<ExprId> = match arena.node(expr) {
         ExprNode::Add(ch) => ch.to_vec(),
@@ -5274,7 +5208,7 @@ fn try_log_sum(
     if !expr_contains_var(arena, eq, var) {
         return None;
     }
-    Some(solve_raw(arena, eq, var, period).into_solutions())
+    Some(solve_raw(arena, eq, var, cx).into_solutions())
 }
 
 /// Collect candidate generator functions: exp(x), sin(x), cos(x), ln(x), x^(k), etc.
@@ -5385,6 +5319,7 @@ fn try_solve_lambert(
     expr: ExprId,
     var: ExprId,
     _var_sym: SymbolId,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     tracing::debug!("solve: trying LambertW");
 
@@ -5447,7 +5382,7 @@ fn try_solve_lambert(
             let neg_d = arena.neg(d);
             let neg_d_over_a = arena.div(neg_d, a);
             let b_arg = arena.mul(&[b, neg_d_over_a]);
-            lambert_branches(arena, b_arg)
+            lambert_branches(arena, b_arg, cx)
                 .into_iter()
                 .map(|w| arena.div(w, b))
                 .collect()
@@ -5467,7 +5402,7 @@ fn try_solve_lambert(
             let a_b = arena.mul(&[a_exp, b]);
             let w_arg = arena.div(a_b, c_exp_bd_c);
             let d_over_c = arena.div(d, c);
-            lambert_branches(arena, w_arg)
+            lambert_branches(arena, w_arg, cx)
                 .into_iter()
                 .map(|w| {
                     let neg_w = arena.neg(w);
@@ -5491,7 +5426,7 @@ fn try_solve_lambert(
             let neg_bd_over_a = arena.div(neg_bd, a);
             let exp_c_a = arena.exp(c_over_a);
             let w_arg = arena.mul(&[neg_bd_over_a, exp_c_a]);
-            lambert_branches(arena, w_arg)
+            lambert_branches(arena, w_arg, cx)
                 .into_iter()
                 .map(|w| {
                     let t = arena.sub(w, c_over_a);
@@ -5521,7 +5456,7 @@ fn try_solve_lambert(
             let neg_d_over_a = arena.div(neg_d, a);
             let exp_part = arena.exp(neg_d_over_a);
             let w_arg = arena.mul(&[c1_over_a, exp_part]);
-            lambert_branches(arena, w_arg)
+            lambert_branches(arena, w_arg, cx)
                 .into_iter()
                 .map(|w| {
                     let u = arena.mul(&[a_over_c1, w]);
@@ -5552,7 +5487,7 @@ fn try_solve_lambert(
                 Some(n) => vec![arena.int(i64::from(n))],
                 None => {
                     let ln_r = arena.ln(r);
-                    lambert_branches(arena, ln_r)
+                    lambert_branches(arena, ln_r, cx)
                         .into_iter()
                         .map(|w| arena.exp(w))
                         .collect()
@@ -5593,7 +5528,12 @@ fn try_solve_lambert(
 /// constant multiple is first rescaled, `x = y/B`.  SymPy:
 /// `solve(x**2*log(x) - 1)` → `[exp(LambertW(2)/2)]`, `solve(x**5*log(2*x)
 /// - 3)` → `[exp(LambertW(480)/5)/2]`; refused before 0.44.
-fn try_lambert_power_log(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+fn try_lambert_power_log(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> Option<Vec<Solution>> {
     let logs: Vec<ExprId> = crate::base::walk::post_order_ids(arena, expr)
         .into_iter()
         .filter_map(|id| match *arena.node(id) {
@@ -5605,7 +5545,7 @@ fn try_lambert_power_log(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option
         return None;
     };
     if arg == var {
-        return power_log_in(arena, expr, var);
+        return power_log_in(arena, expr, var, cx);
     }
     let scale = extract_var_coeff_in_product(arena, arg, var)?;
     // y = B·x: xⁿ = B⁻ⁿ·yⁿ for an integer n, or a positive B
@@ -5636,7 +5576,7 @@ fn try_lambert_power_log(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option
     if expr_contains_var(arena, scaled, var) {
         return None;
     }
-    let sols = power_log_in(arena, scaled, y)?;
+    let sols = power_log_in(arena, scaled, y, cx)?;
     Some(
         sols.into_iter()
             .map(|s| {
@@ -5656,7 +5596,12 @@ fn try_lambert_power_log(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option
 /// candidate is checked by [`solve_impl`].  SymPy: `solve(x*log(x)**2 -
 /// 2)` → `[exp(2*LambertW(-sqrt(2)/2)), exp(2*LambertW(sqrt(2)/2))]`;
 /// refused before 0.45.
-fn try_power_of_log(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+fn try_power_of_log(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> Option<Vec<Solution>> {
     let terms: Vec<ExprId> = match arena.node(expr) {
         ExprNode::Add(ch) => ch.to_vec(),
         _ => vec![expr],
@@ -5721,7 +5666,7 @@ fn try_power_of_log(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<
     let mut out: Vec<Solution> = Vec::new();
     for r in power_roots(arena, c, &m)? {
         let arg = arena.mul(&[s_id, r]);
-        for w in lambert_branches(arena, arg) {
+        for w in lambert_branches(arena, arg, cx) {
             let y = arena.div(w, s_id);
             let x = arena.exp(y);
             let x = crate::transforms::eval::eval(arena, x);
@@ -5747,7 +5692,7 @@ fn try_monomial_substitution(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     if polybridge::expr_to_poly(arena, expr, var).is_some() {
         return None;
@@ -5798,7 +5743,7 @@ fn try_monomial_substitution(
     if expr_contains_var(arena, sub, var) {
         return None;
     }
-    let SolveOutcome::Solutions(w_roots) = solve_raw(arena, sub, w, period) else {
+    let SolveOutcome::Solutions(w_roots) = solve_raw(arena, sub, w, cx) else {
         return None;
     };
     if w_roots.is_empty() {
@@ -5806,7 +5751,10 @@ fn try_monomial_substitution(
     }
     let mut out: Vec<Solution> = Vec::new();
     for r in w_roots {
-        if period.is_some_and(|p| crate::base::walk::contains(arena, r.value, p)) {
+        if cx
+            .period()
+            .is_some_and(|p| crate::base::walk::contains(arena, r.value, p))
+        {
             return None;
         }
         for x in real_nth_roots(arena, r.value, n) {
@@ -5820,7 +5768,12 @@ fn try_monomial_substitution(
 }
 
 /// [`try_lambert_power_log`] for `ln(var)` itself.
-fn power_log_in(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+fn power_log_in(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> Option<Vec<Solution>> {
     let ln_x = arena.ln(var);
     let mut power: Option<(ExprId, Q)> = None;
     let mut has_log = false;
@@ -5866,7 +5819,7 @@ fn power_log_in(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solu
     if expr_contains_var(arena, sub, var) {
         return None;
     }
-    let sols = try_solve_lambert(arena, sub, u, u_sym)?;
+    let sols = try_solve_lambert(arena, sub, u, u_sym, cx)?;
     Some(
         sols.into_iter()
             .map(|s| {
@@ -5940,15 +5893,15 @@ fn self_power_root(n: &BigInt) -> Option<u32> {
 /// branches give the complex roots, infinitely many, which `solve` does
 /// not enumerate.
 ///
-/// In a general solve (a solution set) a symbolic `arg` not known to be
-/// nonnegative also gives `W₋₁(arg)`, real for `−1/e ≤ arg < 0`: up to
+/// In a general solve (a solution set, [`SolveCx::all_branches`]) a
+/// symbolic `arg` not known to be nonnegative also gives `W₋₁(arg)`, real for `−1/e ≤ arg < 0`: up to
 /// 0.46 the real solutions of `a/x + e^(x/2) = 0` were `{2·W(−a/2)}`,
 /// without `2·W₋₁(−a/2)` (for `0 < a < 2/e` both are real), and the set
 /// cut to the real line drops it where it is not real.
-fn lambert_branches(arena: &mut Arena, arg: ExprId) -> Vec<ExprId> {
+fn lambert_branches(arena: &mut Arena, arg: ExprId, cx: &SolveCx) -> Vec<ExprId> {
     let arg = crate::transforms::eval::eval(arena, arg);
     let arg = merge_exp_factors(arena, arg);
-    if GENERAL_SOLVE.with(std::cell::Cell::get)
+    if cx.all_branches()
         && !crate::base::walk::free_symbols(arena, arg).is_empty()
         && crate::base::complex::query_prop(
             arena,
@@ -6575,7 +6528,7 @@ fn power_exp_monomial_solutions(
     eq: &PowExpMonomial<'_>,
     root_of_base: bool,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     let mut out: Vec<Solution> = Vec::new();
     let mut push = |arena: &mut Arena, value: ExprId| {
@@ -6591,7 +6544,7 @@ fn power_exp_monomial_solutions(
         let generator = arena.exp(exponent);
         let c_over_k = arena.div(eq.c, eq.k);
         let c_over_k = crate::transforms::eval::eval(arena, c_over_k);
-        for s in solve_by_peeling(arena, generator, c_over_k, var, period)? {
+        for s in solve_by_peeling(arena, generator, c_over_k, var, cx)? {
             push(arena, s.value);
         }
     } else {
@@ -6613,7 +6566,7 @@ fn power_exp_monomial_solutions(
         let b_u = crate::transforms::eval::eval(arena, b_u);
         let c_u = arena.div(eq.c, eq.k);
         let c_u = crate::transforms::eval::eval(arena, c_u);
-        for u in power_exp_monomial_roots(arena, eq.a, b_u, eq.n, c_u)? {
+        for u in power_exp_monomial_roots(arena, eq.a, b_u, eq.n, c_u, cx)? {
             let shifted = arena.sub(u, eq.beta);
             let x = arena.div(shifted, eq.alpha);
             push(arena, x);
@@ -6659,6 +6612,7 @@ fn power_exp_monomial_roots(
     b: ExprId,
     n: &Q,
     c: ExprId,
+    cx: &SolveCx,
 ) -> Option<Vec<ExprId>> {
     let constant = crate::base::walk::free_symbols(arena, b).is_empty()
         && crate::base::walk::free_symbols(arena, c).is_empty();
@@ -6675,7 +6629,7 @@ fn power_exp_monomial_roots(
             let mut out: Vec<ExprId> = Vec::new();
             for r in power_roots(arena, c, &k)? {
                 let arg = arena.mul(&[b_over_k, r]);
-                for wk in lambert_branches(arena, arg) {
+                for wk in lambert_branches(arena, arg, cx) {
                     let w = arena.mul(&[k_over_b, wk]);
                     let w = crate::transforms::eval::eval(arena, w);
                     for u in real_nth_roots(arena, w, n) {
@@ -6702,7 +6656,7 @@ fn power_exp_monomial_roots(
         let mut out: Vec<ExprId> = Vec::new();
         for r in power_roots(arena, c, &am)? {
             let arg = arena.mul(&[b_over_am, r]);
-            for wk in lambert_branches(arena, arg) {
+            for wk in lambert_branches(arena, arg, cx) {
                 let w = arena.mul(&[am_over_b, wk]);
                 let u = arena.pow(w, m_id);
                 let u = crate::transforms::eval::eval(arena, u);
@@ -6735,7 +6689,7 @@ fn power_exp_monomial_roots(
     let mut out: Vec<ExprId> = Vec::new();
     for r in power_roots(arena, c2, &Q::from_integer(BigInt::from(p)))? {
         let arg = arena.mul(&[b2_over_p, r]);
-        for wk in lambert_branches(arena, arg) {
+        for wk in lambert_branches(arena, arg, cx) {
             let w = arena.mul(&[p_over_b2, wk]);
             let w = crate::transforms::eval::eval(arena, w);
             let candidates: Vec<ExprId> = if unit {
@@ -6958,7 +6912,7 @@ fn try_solve_power_exp(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    period: Option<ExprId>,
+    cx: &SolveCx,
 ) -> Option<Vec<Solution>> {
     let terms: Vec<ExprId> = match arena.node(expr) {
         ExprNode::Add(ch) => ch.to_vec(),
@@ -7038,7 +6992,7 @@ fn try_solve_power_exp(
             rate_base: shape.0,
             n: &shape.1,
         };
-        return power_exp_monomial_solutions(arena, &eq, root_of_base, var, period);
+        return power_exp_monomial_solutions(arena, &eq, root_of_base, var, cx);
     }
     let root_of_base = root_of_base.then(|| {
         let neg_beta = arena.neg(beta);
@@ -7050,7 +7004,7 @@ fn try_solve_power_exp(
         // (`x²·2ˣ − x²/10`).
         let bx = arena.mul(&[b, var]);
         let generator = arena.exp(bx);
-        let mut out = solve_by_peeling(arena, generator, c, var, period)?;
+        let mut out = solve_by_peeling(arena, generator, c, var, cx)?;
         if let Some(x0) = root_of_base
             && !out.iter().any(|s| s.value == x0)
         {
@@ -7079,7 +7033,7 @@ fn try_solve_power_exp(
     };
     for r in power_roots(arena, c1, &a)? {
         let arg = arena.mul(&[b1_over_a, r]);
-        for w in lambert_branches(arena, arg) {
+        for w in lambert_branches(arena, arg, cx) {
             let u = arena.mul(&[a_over_b1, w]);
             let shifted = arena.sub(u, beta);
             let x = arena.div(shifted, alpha);
@@ -7861,7 +7815,7 @@ pub(crate) fn restrict_to_domain(
     }
     let Some(PeriodicCandidates {
         families, param: n, ..
-    }) = raw_families(arena, expr, var)
+    }) = raw_families(arena, expr, var, &SolveCx::principal(Domain::Real))
     else {
         return Ok(kept);
     };

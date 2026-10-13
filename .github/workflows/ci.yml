@@ -54,6 +54,24 @@ jobs:
       - run: cargo clippy --all-targets --manifest-path symplex-macros/Cargo.toml -- -D warnings
       - run: cargo clippy --all-targets --manifest-path symplex-build/Cargo.toml -- -D warnings
       - run: cargo clippy --all-targets --manifest-path symplex-wasm/Cargo.toml -- -D warnings
+      # clippy.toml bans astro-float primitives (src/base/bigfloat.rs has the safe
+      # replacements), but a path that stops resolving after a library release is
+      # silently not linted.  The canary calls each banned method: clippy must
+      # FAIL on it, naming every one.
+      - name: Clippy canary (must fail on every disallowed method)
+        run: |
+          if cargo clippy --manifest-path probes/clippy_canary/Cargo.toml -- -D clippy::disallowed_methods 2> canary.txt; then
+            cat canary.txt
+            echo "::error::clippy accepted probes/clippy_canary: a disallowed-methods path in clippy.toml no longer resolves"
+            exit 1
+          fi
+          for m in pow log convert_to_radix; do
+            if ! grep -q "use of a disallowed method \`astro_float::BigFloat::$m\`" canary.txt; then
+              cat canary.txt
+              echo "::error::clippy did not flag BigFloat::$m in probes/clippy_canary"
+              exit 1
+            fi
+          done
 
   deny:
     name: Dependency policy (cargo-deny)

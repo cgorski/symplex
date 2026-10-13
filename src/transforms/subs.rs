@@ -99,7 +99,7 @@
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use crate::base::arena::Arena;
+use crate::base::arena::{Arena, ArenaOrder};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::walk::Binder;
 
@@ -195,6 +195,12 @@ pub(crate) fn subs_map(
     subs_scoped(arena, expr, &map, true, None)
 }
 
+/// Puts a scope's `(old, new)` pairs in the fixed order [`Scopes::intern`]
+/// keys them by: [`ArenaOrder`], since the list is only a set's identity.
+fn sort_scope(pairs: &mut [(ExprId, ExprId)]) {
+    pairs.sort_unstable_by_key(|&(k, v)| (ArenaOrder(k), ArenaOrder(v)));
+}
+
 /// The substitution maps in force in the scopes met during one
 /// [`subs_scoped`] walk, interned so that `(node, scope)` is a cheap key.
 /// Scope 0 is the identity (nothing left to substitute).
@@ -216,7 +222,7 @@ impl Scopes {
         };
         scopes.index.insert(Vec::new(), 0);
         let mut pairs: Vec<(ExprId, ExprId)> = map.iter().map(|(&k, &v)| (k, v)).collect();
-        pairs.sort_unstable();
+        sort_scope(&mut pairs);
         let top = scopes.intern(pairs);
         (scopes, top)
     }
@@ -274,7 +280,7 @@ impl Scopes {
         } else {
             b.var
         };
-        inner.sort_unstable();
+        sort_scope(&mut inner);
         (self.intern(inner), var)
     }
 
@@ -297,7 +303,7 @@ impl Scopes {
             .collect();
         let captured = brings(arena, &inner, var_sym);
         if point == b.var && !captured {
-            inner.sort_unstable();
+            sort_scope(&mut inner);
             return SlotPlan::rebuild(self.intern(inner), b.var);
         }
         // A clean rename to a symbol the operands and the replacements do
@@ -327,7 +333,7 @@ impl Scopes {
                     .any(|&e| crate::base::walk::contains(arena, e, point)))
         {
             rename_bound(arena, &mut b.scoped, &mut inner, b.var, var_sym, point);
-            inner.sort_unstable();
+            sort_scope(&mut inner);
             return SlotPlan::rebuild(self.intern(inner), point);
         }
         // Evaluation at `point`: `Subs(node, var, point)` binds `var` in the
@@ -347,7 +353,7 @@ impl Scopes {
         } else {
             b.var
         };
-        inner.sort_unstable();
+        sort_scope(&mut inner);
         SlotPlan {
             inner: self.intern(inner),
             var,

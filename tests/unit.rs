@@ -126,6 +126,8 @@ mod test_hensel;
 mod test_heurisch;
 #[path = "unit/test_homogeneous_tuples.rs"]
 mod test_homogeneous_tuples;
+#[path = "unit/test_id_order.rs"]
+mod test_id_order;
 #[path = "unit/test_inequalities.rs"]
 mod test_inequalities;
 #[path = "unit/test_integrate.rs"]

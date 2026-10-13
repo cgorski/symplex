@@ -317,12 +317,15 @@ pub(crate) struct PartSigns {
 
 /// The signs of the real and imaginary parts of a constant `d`, when both
 /// are certified (the direction of Gruntz's directed infinities,
-/// `gruntz::directed_infinity`).
+/// `gruntz::directed_infinity`).  A part whose sign is not decided is 0
+/// when `eval`'s exact realness tests prove it ([`part_vanishes`]).
 pub(crate) fn direction_signs(arena: &mut Arena, d: ExprId) -> Option<PartSigns> {
-    if let Some((re, im)) = const_parts(arena, d)
-        && let (Some(re), Some(im)) = (const_sign(arena, re), const_sign(arena, im))
-    {
-        return Some(PartSigns { re, im });
+    if let Some((re, im)) = const_parts(arena, d) {
+        let re = const_sign(arena, re).or_else(|| part_vanishes(arena, d, false).then_some(0));
+        let im = const_sign(arena, im).or_else(|| part_vanishes(arena, d, true).then_some(0));
+        if let (Some(re), Some(im)) = (re, im) {
+            return Some(PartSigns { re, im });
+        }
     }
     // Off both axes by its certified digits (`−(−1)^{4/3}`, which the exact
     // decomposition does not see through): both parts clearly non-zero (a
@@ -339,6 +342,25 @@ pub(crate) fn direction_signs(arena: &mut Arena, d: ExprId) -> Option<PartSigns>
         re: sign(z.re),
         im: sign(z.im),
     })
+}
+
+/// Is the imaginary part of the constant `d` (`imaginary`), or its real
+/// part, exactly 0: `d` (or `i·d`) proved real by the exact tests of `eval`
+/// ([`constant_facts`](crate::transforms::eval::constant_facts): the
+/// conjugation test over radicals and roots of unity, the minimal
+/// polynomial)?  The written-out part of a real radical constant cancels
+/// only exactly, so its value is only zero to the precision reached, which
+/// gives no sign ([`numeric_sign`]): the coefficient `−i·√(2i − 1)·√(2i +
+/// 1) = √5` of `1/(acosh(2i + ix) − acosh(2i))` at `0⁺`.
+fn part_vanishes(arena: &mut Arena, d: ExprId, imaginary: bool) -> bool {
+    use crate::base::assumptions::Props;
+    let target = if imaginary {
+        d
+    } else {
+        let i = arena.i_unit();
+        arena.mul(&[i, d])
+    };
+    crate::transforms::eval::constant_facts(arena, target).query(Props::REAL) == Some(true)
 }
 
 /// The kind of a computed limit value (`None` for a malformed one).
@@ -708,7 +730,7 @@ fn guard_degenerate_parameters(
             }
         }
     }
-    candidates.sort_unstable();
+    candidates.sort_unstable_by(|&a, &b| arena.canonical_cmp(a, b));
     candidates.dedup();
     let mut values: Vec<ExprId> = Vec::new();
     for c in candidates {
@@ -1580,10 +1602,18 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
             Some(result)
         }
         ExprNode::Add(children) => {
-            // All terms share a sign → that sign.
+            // All terms share a sign → that sign.  A term of undecided sign
+            // leaves it to the value of the sum: a term that is 0 but only
+            // zero to the precision reached has no sign ([`numeric_sign`]),
+            // and a sum with such a term may still have a certified sign
+            // (the real part `√5`, written out with trigonometric terms of
+            // `atan 2` that cancel, of the coefficient of
+            // `1/(acosh(2i + ix) − acosh(2i))` at `0⁺`).
             let mut sign = 0;
             for c in children {
-                let s = const_sign_depth(arena, c, depth + 1)?;
+                let Some(s) = const_sign_depth(arena, c, depth + 1) else {
+                    return assumption_sign(arena, e).or_else(|| numeric_sign(arena, e));
+                };
                 if s == 0 {
                     continue;
                 }
@@ -1669,18 +1699,48 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
 }
 
 /// Sign of a constant free of symbols by certified evaluation: the value
-/// must be real (see [`constant_realness`]), and then its digits decide;
-/// an exact 0 from `evalf` (a sum cancelling to its working precision) is
-/// 0.  `None` for a non-real or unevaluable constant.
+/// must be real (see [`constant_realness`]), and then its certified digits
+/// decide.  It is 0 only when proved so: a certified exact 0, the exact
+/// zero tests of `eval` ([`constant_zero_decision`]), or the logarithm
+/// identities ([`logarithms_cancel`]).  A value that is only zero to the
+/// precision reached is pursued by the deep zero search first (a tiny value
+/// hidden by cancellation).  `None` for a non-real or unevaluable constant,
+/// and for one that stays zero to the precision reached without an exact
+/// proof.
+///
+/// Up to 0.48 a value zero to the precision reached was 0, and
+/// `c = e^{−10⁻¹⁵⁰} − 1` (`−10⁻¹⁵⁰`) made `lim_{x→∞} c·x² − 1` equal
+/// `−1` (it is `−∞`).
 ///
 /// [`constant_realness`]: crate::transforms::realness::constant_realness
+/// [`constant_zero_decision`]: crate::transforms::eval::constant_zero_decision
 fn numeric_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
+    use crate::transforms::evalf::{ZeroSearch, evalf_verdict};
     if !crate::base::walk::free_symbols(arena, e).is_empty()
         || crate::base::walk::has_unevaluated(arena, e)
     {
         return None;
     }
-    let z = crate::transforms::evalf::evalf_complex(arena, e, NUMERIC_SIGN_DIGITS).ok()?;
+    let cap = evalf_verdict(arena, e, NUMERIC_SIGN_DIGITS, ZeroSearch::Cap).ok()?;
+    let z = match cap.proven() {
+        Some(z) => z,
+        None => match evalf_verdict(arena, e, NUMERIC_SIGN_DIGITS, ZeroSearch::Deep)
+            .ok()
+            .and_then(|deep| deep.proven())
+        {
+            Some(z) => z,
+            None => {
+                let zero = crate::transforms::eval::constant_zero_decision(arena, e) == Some(true)
+                    || logarithms_cancel(arena, e);
+                tracing::debug!(
+                    constant = %arena.display(e),
+                    zero,
+                    "numeric_sign: zero to the precision reached; exact tests"
+                );
+                return zero.then_some(0);
+            }
+        },
+    };
     if z.0.is_zero() && z.1.is_zero() {
         return Some(0);
     }
@@ -1701,6 +1761,43 @@ fn numeric_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
 
 /// Digits at which [`numeric_sign`] evaluates a constant.
 const NUMERIC_SIGN_DIGITS: u32 = 20;
+
+/// Is the symbol-free constant `c` exactly 0 by the logarithm identities,
+/// applied only where they hold (`log_combine` and `expand_log` without
+/// `force`)?  The numerator over a common denominator proved nonzero is
+/// tried, so `(ln(2/3) − ln(4/3))/ln 2 + 1` is 0: its numerator `ln(2/3) −
+/// ln(4/3) + ln 2` combines to `ln 1`.  Gruntz's leading coefficients and
+/// exponents are such sums (`ln 16 − 4·ln 2`, `½·ln(2π) − ½·ln 2 −
+/// ½·ln π`), which no evaluation proves 0 ([`numeric_sign`]).
+fn logarithms_cancel(arena: &mut Arena, c: ExprId) -> bool {
+    use crate::transforms::evalf::{ZeroSearch, evalf_verdict};
+    let has_ln = crate::base::walk::post_order_ids(arena, c)
+        .iter()
+        .any(|&id| matches!(arena.node(id), ExprNode::Ln(_)));
+    if !has_ln {
+        return false;
+    }
+    let (numerator, denominator) = arena.as_numer_denom_expr(c);
+    if denominator != arena.one() {
+        let nonzero = evalf_verdict(arena, denominator, 16, ZeroSearch::Cap)
+            .ok()
+            .and_then(|v| v.proven())
+            .is_some_and(|z| !(z.0.is_zero() && z.1.is_zero()));
+        if !nonzero {
+            return false;
+        }
+    }
+    let numerator = crate::transforms::expand::expand(arena, numerator);
+    let numerator = crate::transforms::eval::eval(arena, numerator);
+    let combined = crate::simplify::log_combine::log_combine(arena, numerator);
+    let combined = crate::transforms::eval::eval(arena, combined);
+    if arena.is_zero_structural(combined) {
+        return true;
+    }
+    let expanded = crate::simplify::log_expand::expand_log(arena, numerator);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    arena.is_zero_structural(expanded)
+}
 
 fn sign_of_ratio(r: &Q) -> i32 {
     if r.is_positive() {

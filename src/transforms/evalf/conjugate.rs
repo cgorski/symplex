@@ -90,6 +90,24 @@ fn hash_of(parts: impl Hash) -> u64 {
     h.finish()
 }
 
+/// The head of `node` for its signature: the variant and, for an `Apply`,
+/// which function it applies with how many arguments.  Up to 0.48 the
+/// variant alone signed every `Apply` alike, so the conjugate-symmetric
+/// `Shi(z̄)` and `erfi(z)` "paired" as conjugates and an imaginary part of
+/// 10⁻⁴⁵ became exactly 0 (a logarithm of the sum then landed on the wrong
+/// side of its cut, 2πi off).
+fn head_tag(arena: &Arena, node: &ExprNode) -> u64 {
+    let variant = std::mem::discriminant(node);
+    match node {
+        ExprNode::Apply(head, args) => match node.func(arena) {
+            Some((f, _)) => hash_of((variant, f, args.len())),
+            // A user function, or a library name at an arity it does not take.
+            None => hash_of((variant, *head, args.len())),
+        },
+        _ => hash_of(variant),
+    }
+}
+
 /// The signature of a monomial and of its conjugate.
 fn mono_sig(m: &Mono) -> Sig {
     let mut s: Vec<u64> = m.factors.iter().map(|f| f.own).collect();
@@ -235,7 +253,7 @@ impl Sigs {
         } else {
             let kids = node.children();
             let child_sigs: Option<Vec<Sig>> = kids.iter().map(|c| self.get(*c)).collect();
-            let tag = std::mem::discriminant(node);
+            let tag = head_tag(arena, node);
             let symmetric = match node {
                 ExprNode::Add(_) => true,
                 ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()) => true,
@@ -310,13 +328,12 @@ impl Sigs {
                         c.sort_unstable();
                         sig(hash_of((ADD, s)), hash_of((ADD, c)))
                     } else {
-                        let tag = hash_of(tag);
                         sig(hash_of((tag, s)), hash_of((tag, c)))
                     }
                 }
                 Some(cs) => {
                     let s: Vec<u64> = cs.iter().map(|c| c.own).collect();
-                    let h = hash_of((hash_of(tag), s));
+                    let h = hash_of((tag, s));
                     sig(h, if real { h } else { unique() })
                 }
                 None => {

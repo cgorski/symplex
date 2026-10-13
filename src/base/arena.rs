@@ -51,6 +51,34 @@ pub(crate) struct PartSigns {
     pub(crate) im: Option<std::cmp::Ordering>,
 }
 
+/// The question an [`Arena::constant_facts`] entry answers about a
+/// symbol-free constant `x`: whose value (`x`, `re x` or `im x`) and which
+/// decider.  Each decider owns its keys, so none can read another's answer
+/// as its own.  Up to 0.48 the keys were hand-picked `u8` codes, `canon`'s
+/// sign codes 2–7 overlapped `eval`'s class codes 2–9, and once `(ln 2 −
+/// 1)·∞` had memoised the sign of `ln 2 − 1`, `(ln 2 − 1).is_positive()`
+/// read that entry as the class "positive" (`Some(true)`; the value is
+/// −0.307).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum FactKey {
+    /// Is `x` real: `eval`'s `known_real` (`REAL` when proved, `UNKNOWN`
+    /// when not).
+    Real,
+    /// Is `x` a negative real: `eval`'s `constant_is_negative` (`NEGATIVE`
+    /// when proved, `UNKNOWN` when not).
+    Negative,
+    /// The signs `eval`'s `constant_class` decides for `x`: the facts the
+    /// assumption queries of constants add.
+    Class,
+    /// The sign of `x` as a factor of a directed infinity: `canon`'s
+    /// `known_sign_memo`.
+    Sign,
+    /// The sign of `re(x)`, likewise.
+    RePart,
+    /// The sign of `im(x)`, likewise.
+    ImPart,
+}
+
 // ---------------------------------------------------------------------------
 // Arena
 // ---------------------------------------------------------------------------
@@ -97,10 +125,11 @@ pub struct Arena {
     /// Evaluation-time configuration (guards against runaway computation).
     pub(crate) config: EvalConfig,
 
-    /// Answers `eval` proved for symbol-free constants (realness, sign),
-    /// keyed by the expression and the question (`eval`'s `FACT_*` codes 0
-    /// and 1; `canon`'s 2 and 3, the sign of a factor of a directed
-    /// infinity).
+    /// Answers `eval` and `canon` proved for symbol-free constants
+    /// (realness, sign), keyed by the expression and the question
+    /// ([`FactKey`]).  The value is the set of signs the decider proved
+    /// possible for the value the key names (`SignSet::UNKNOWN` when it
+    /// proved nothing).
     ///
     /// A proof takes a certified evaluation, a deep zero search of the
     /// imaginary part and a minimal polynomial, and every `eval` pass over
@@ -111,7 +140,7 @@ pub struct Arena {
     /// cleared when either can change ([`Self::config_mut`],
     /// [`Self::set_symbol_assumptions`]); a warm entry is what a cold
     /// proof returns.
-    pub(crate) constant_facts: FxHashMap<(ExprId, u8), bool>,
+    pub(crate) constant_facts: FxHashMap<(ExprId, FactKey), crate::base::truth::SignSet>,
 
     // -- pre-interned constants (ExprId) ------------------------------------
     /// The integer zero (0).
@@ -574,6 +603,101 @@ impl Arena {
             },
             |sym_id| self.symbols.name(sym_id).to_owned(),
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Orders on nodes
+// ---------------------------------------------------------------------------
+
+/// An [`ExprId`] ordered by its allocation number.
+///
+/// Ids themselves have no order: the number is allocation order, which
+/// depends on everything the context built before.  This wrapper names
+/// that order for the places that need *some* fixed order — dedup, a
+/// sorted list used as a set or a hash key — and whose order never reaches
+/// output.  It must not decide which term is printed first, which
+/// candidate is chosen or which branch is tried: that is
+/// [`Arena::canonical_cmp`]'s job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ArenaOrder(pub(crate) ExprId);
+
+impl Ord for ArenaOrder {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.0.cmp(&other.0.0)
+    }
+}
+
+impl PartialOrd for ArenaOrder {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Arena {
+    /// The canonical order of two nodes: the order of their sort keys,
+    /// with ties broken structurally.
+    ///
+    /// Sort keys are only a preorder (a key longer than
+    /// [`MAX_KEY_BYTES`](crate::base::sort_key::MAX_KEY_BYTES) is cut and
+    /// digested, and the keys of differently shaped nodes may concatenate
+    /// to the same bytes), so equal keys are compared by variant name, then
+    /// payload (number value, symbol name, interval flags), then arity, and
+    /// then child by child in the same way.  The result depends only on the
+    /// two expressions, never on the order in which nodes were allocated:
+    /// it is the same in every context, and `Equal` exactly when `a == b`
+    /// (the arena is hash-consed, so distinct ids differ structurally).
+    ///
+    /// Explicit stack, no recursion; since distinct ids differ, only the
+    /// first differing child pair is ever descended into.
+    pub(crate) fn canonical_cmp(&self, a: ExprId, b: ExprId) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let mut stack: SmallVec<[(ExprId, ExprId); 8]> = SmallVec::new();
+        stack.push((a, b));
+        while let Some((p, q)) = stack.pop() {
+            if p == q {
+                continue;
+            }
+            let ord = self
+                .sort_key(p)
+                .cmp(self.sort_key(q))
+                .then_with(|| self.node_head_cmp(p, q));
+            if ord != Ordering::Equal {
+                return ord;
+            }
+            let (cp, cq) = (self.node(p).children(), self.node(q).children());
+            if cp.len() != cq.len() {
+                return cp.len().cmp(&cq.len());
+            }
+            stack.extend(cp.iter().copied().zip(cq.iter().copied()).rev());
+        }
+        Ordering::Equal
+    }
+
+    /// [`canonical_cmp`](Self::canonical_cmp) of two nodes whose sort keys
+    /// are equal, before their children: variant, then payload.
+    fn node_head_cmp(&self, p: ExprId, q: ExprId) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let (np, nq) = (self.node(p), self.node(q));
+        match (np, nq) {
+            (ExprNode::Num(m), ExprNode::Num(n)) => self.num(*m).cmp(self.num(*n)),
+            (ExprNode::Symbol(s), ExprNode::Symbol(t))
+            | (ExprNode::PhysicalConstant(s, _), ExprNode::PhysicalConstant(t, _))
+            | (ExprNode::Apply(s, _), ExprNode::Apply(t, _)) => {
+                self.symbol_name(*s).cmp(self.symbol_name(*t))
+            }
+            (ExprNode::Interval(_, _, f), ExprNode::Interval(_, _, g)) => f.cmp(g),
+            _ if std::mem::discriminant(np) == std::mem::discriminant(nq) => Ordering::Equal,
+            _ => {
+                // The variant's name, from `Debug` (`Add([e1, e2])` → `Add`):
+                // reached only by distinct nodes with equal sort keys.
+                let name = |n: &ExprNode| {
+                    let s = format!("{n:?}");
+                    s.split('(').next().unwrap_or_default().to_owned()
+                };
+                name(np).cmp(&name(nq))
+            }
+        }
     }
 }
 

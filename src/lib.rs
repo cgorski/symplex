@@ -316,7 +316,7 @@ pub mod prelude {
     pub use crate::api::context::Context;
     pub use crate::api::eq::Equation;
     pub use crate::api::expr::{
-        BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, SimplifyOpts, Sort,
+        AnyExpr, BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, SimplifyOpts, Sort,
     };
     pub use crate::api::expr_ops::{Scalar, ToEx};
     pub use crate::api::expr_rules_ext::{

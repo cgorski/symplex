@@ -315,12 +315,7 @@ pub(crate) fn rational_in_var(
     if others.is_empty() {
         return None;
     }
-    others.sort_by(|a, b| {
-        arena
-            .sort_key(*a)
-            .cmp(arena.sort_key(*b))
-            .then_with(|| a.0.cmp(&b.0))
-    });
+    others.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     let mut vars = vec![var];
     vars.extend(others);
     let numer = to_multipoly(arena, n, &vars)?;

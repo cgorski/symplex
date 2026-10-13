@@ -372,7 +372,7 @@ fn collect_components(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> Vec<Exp
 
     let mut result: Vec<ExprId> = components.into_iter().collect();
     // Sort for deterministic ordering.
-    result.sort_by_key(|&id| id.0);
+    result.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     result
 }
 

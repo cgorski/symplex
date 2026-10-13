@@ -93,7 +93,7 @@ use astro_float::{BigFloat, Consts, RoundingMode};
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
-use crate::base::arena::Arena;
+use crate::base::arena::{Arena, ArenaOrder};
 use crate::base::bigcomplex::{Complex, c_div, c_one, c_powi, c_zero};
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
@@ -1555,7 +1555,13 @@ fn part_sum<'a>(
             }
             return Some((BigFloat::new(prec), k as i64, extra - k));
         };
-        let (head, below): (Vec<_>, Vec<_>) = live.iter().partition(|t| t.3 >= kmax - window);
+        // Scales are `i64` exponents of values far outside the `BigFloat`
+        // range (`1/sinh(3.55·10¹⁸)` is about `2^(−5.1·10¹⁸)`), so their
+        // differences are taken without overflow: saturating for the window,
+        // in `f64` for the error shifts.
+        let (head, below): (Vec<_>, Vec<_>) = live
+            .iter()
+            .partition(|t| t.3 >= kmax.saturating_sub(window));
         let mut shifted: Vec<(Complex, Bound)> = Vec::with_capacity(head.len());
         for &&(x, k, e, _) in &head {
             let j = k - kmax;
@@ -1573,7 +1579,7 @@ fn part_sum<'a>(
         let mut eb = sb.re;
         for &&(x, k, e, _) in &below {
             let m = accuracy::lsum(accuracy::part_lg(x), e);
-            eb = accuracy::lsum(eb, accuracy::shift(m, (k - kmax) as f64));
+            eb = accuracy::lsum(eb, accuracy::shift(m, k as f64 - kmax as f64));
         }
         eb = accuracy::lsum(eb, accuracy::shift(extra, -(kmax as f64)));
         return Some((sum.0, kmax, eb));
@@ -1800,9 +1806,10 @@ const MAX_POLY_POWER: i64 = 8;
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Mono {
     exp: Gauss,
-    /// `(node, n)`, sorted by node: values below the range.
+    /// `(node, n)`, sorted by [`ArenaOrder`] (a set: the order never
+    /// reaches a value): values below the range.
     nodes: Vec<(ExprId, u32)>,
-    /// `(node, n)`, sorted by node: factors in range.
+    /// `(node, n)`, sorted by [`ArenaOrder`]: factors in range.
     factors: Vec<(ExprId, u32)>,
 }
 
@@ -1817,7 +1824,7 @@ fn merge_powers(a: &[(ExprId, u32)], b: &[(ExprId, u32)]) -> Option<Vec<(ExprId,
                 i += 1;
                 j += 1;
             }
-            (Some(&(x, n)), Some(&(y, _))) if x < y => {
+            (Some(&(x, n)), Some(&(y, _))) if ArenaOrder(x) < ArenaOrder(y) => {
                 out.push((x, n));
                 i += 1;
             }

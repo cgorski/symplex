@@ -517,7 +517,7 @@ pub(crate) fn polynomial_sqrt(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
     let mut vars: Vec<ExprId> = crate::base::walk::free_symbols(arena, e)
         .into_iter()
         .collect();
-    vars.sort_by_key(|id| id.0);
+    vars.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     if vars.is_empty() {
         let q = arena.as_num(e)?.clone();
         let r = q_sqrt(&q)?;
@@ -867,7 +867,7 @@ fn parameters(arena: &Arena, expr: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
             _ => return None,
         }
     }
-    params.sort_by_key(|id| id.0);
+    params.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     params.dedup();
     (has_var && !params.is_empty() && params.len() <= MAX_ALL_PARAMS).then_some(params)
 }

@@ -1,0 +1,14 @@
+# Clippy configuration (applies to every crate under this directory that
+# does not have its own clippy.toml, including probes/clippy_canary).
+
+# astro-float primitives that do not terminate or misbehave; the safe
+# replacements live in `src/base/bigfloat.rs`, the only module allowed to
+# call them (`#[allow(clippy::disallowed_methods)]`).  CI runs clippy on
+# `probes/clippy_canary`, which calls each of them, and expects it to fail:
+# if an astro-float release moves `BigFloat` so that a path below stops
+# resolving, clippy silently stops linting it and the canary notices.
+disallowed-methods = [
+    { path = "astro_float::BigFloat::pow", reason = "never returns when the exact result is representable (4^(1/2), 2.5^2) under every rounding mode but None (astro-float #31); use `base::bigfloat::pow`" },
+    { path = "astro_float::BigFloat::log", reason = "never returns when the exact result is representable (log(8, 2), log(9, 3)); divide two `ln`s" },
+    { path = "astro_float::BigFloat::convert_to_radix", reason = "decimal conversion had a wrong exponent at 1024 bits (astro-float #33); call `base::bigfloat::to_decimal_digits`, the single allowed caller" },
+]

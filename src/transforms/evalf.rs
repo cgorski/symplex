@@ -66,7 +66,7 @@ use num_rational::Ratio;
 use num_traits::Zero;
 use rustc_hash::FxHashMap;
 
-use astro_float::{BigFloat, Consts, Radix, RoundingMode, Sign, WORD_BIT_SIZE};
+use astro_float::{BigFloat, Consts, RoundingMode, Sign, WORD_BIT_SIZE};
 use num_complex::Complex64;
 
 use crate::base::arena::Arena;
@@ -2679,6 +2679,39 @@ pub(crate) fn evalf_settled(
         Adaptive::Hidden { below_range: true } => Err(hidden_error()),
         Adaptive::Hidden { below_range: false } => Err(hidden_deep_error(digits)),
     }
+}
+
+/// [`evalf_settled`] with its evidence as a [`Verdict`]: the value is
+/// `Certified` when every part it shows carries the digits (an exact zero
+/// included: a certified value with both parts 0 is exactly 0), and only
+/// `Approximate` when it is zero to the precision reached
+/// ([`Settled::ZeroToPrecision`]).  [`evalf_complex`] drops that
+/// distinction; a sign, zero or realness that justifies a claim must not
+/// (read the verdict with [`Verdict::proven`]).
+///
+/// A certified part that is 0 next to a nonzero other part is only below
+/// the precision of the whole value (see [`settle`]): realness needs
+/// `im(x)` evaluated on its own.
+///
+/// [`Verdict`]: crate::base::truth::Verdict
+/// [`Verdict::proven`]: crate::base::truth::Verdict::proven
+///
+/// # Errors
+///
+/// As [`evalf_settled`].
+pub(crate) fn evalf_verdict(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+    search: ZeroSearch,
+) -> Result<crate::base::truth::Verdict<Complex>, SymplexError> {
+    use crate::base::truth::{Evidence, Verdict};
+    let (z, settled) = evalf_settled(arena, expr, digits, search)?;
+    let evidence = match settled {
+        Settled::Certified => Evidence::Certified,
+        Settled::ZeroToPrecision => Evidence::Approximate,
+    };
+    Ok(Verdict::new(z, evidence))
 }
 
 /// `ln x` for a positive real constant `x`, from a 16-digit evaluation;
@@ -7566,31 +7599,10 @@ fn round_to(mut v: BigFloat, prec: usize, rm: RoundingMode) -> BigFloat {
     v
 }
 
-/// `b^e` for real `b > 0` (or integer `e`), computed as `powi` for integer
-/// exponents and `exp(e·ln b)` otherwise.
-///
-/// This deliberately avoids [`BigFloat::pow`], whose correct-rounding loop
-/// never terminates when the exact result is representable in binary
-/// (e.g. `4^{1/2} = 2`), which is exactly what happens for the integer
-/// bases used in series like Borwein's `ζ` algorithm.
+/// `b^e` for real `b > 0` (or integer `e`): [`crate::base::bigfloat::pow`],
+/// which never calls the non-terminating `BigFloat::pow`.
 fn bf_pow(b: &BigFloat, e: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
-    if e.is_zero() {
-        return BigFloat::from_i32(1, wp);
-    }
-    if e.is_int()
-        && let Ok(ef) = bigfloat_to_f64(e, rm, cc)
-        && ef.abs() < 1.0e9
-    {
-        let n = ef.abs() as usize;
-        let p = b.powi(n, wp, rm);
-        return if ef < 0.0 {
-            BigFloat::from_i32(1, wp).div(&p, wp, rm)
-        } else {
-            p
-        };
-    }
-    let ln_b = b.ln(wp + 32, rm, cc);
-    ln_b.mul(e, wp + 32, rm).exp(wp, rm, cc)
+    crate::base::bigfloat::pow(b, e, wp, rm, cc)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -12396,9 +12408,10 @@ fn round_decimal_digits(mantissa: &[u8], digits: usize) -> (Vec<u8>, i64) {
 
 /// Format a `BigFloat` as a decimal string with `digits` significant digits.
 ///
-/// Uses astro-float's `convert_to_radix` for reliable base-10 conversion,
-/// rounds to `digits` significant digits, then formats the result with
-/// proper decimal point placement.
+/// Uses astro-float's `convert_to_radix` (through
+/// [`crate::base::bigfloat::to_decimal_digits`]) for the base-10
+/// conversion, rounds to `digits` significant digits, then formats the
+/// result with proper decimal point placement.
 fn format_decimal(
     val: &BigFloat,
     digits: u32,
@@ -12417,8 +12430,11 @@ fn format_decimal(
     }
 
     // Use the library's decimal conversion.
-    let (sign, mantissa, exponent) = val
-        .convert_to_radix(Radix::Dec, rm, cc)
+    let crate::base::bigfloat::DecimalDigits {
+        sign,
+        digits: mantissa,
+        exponent,
+    } = crate::base::bigfloat::to_decimal_digits(val, rm, cc)
         .map_err(|e| SymplexError::NotImplemented(format!("decimal conversion failed: {e:?}")))?;
 
     let sign_str = if sign == Sign::Neg { "-" } else { "" };

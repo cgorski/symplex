@@ -8,6 +8,7 @@
 //! Principle 5.
 
 use crate::base::arena::Arena;
+use crate::base::cast::integer_span;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode, INTERVAL_BOTH_OPEN, SymbolId};
 use crate::base::walk;
@@ -831,13 +832,15 @@ fn push_integer_family(
     } else {
         (t_hi, t_lo)
     };
-    let n_min = t_min.floor() as i64 - 1;
-    let n_max = t_max.ceil() as i64 + 1;
-    if n_max - n_min > 10_000 {
+    // At most 10 001 candidates (`n_max − n_min ≤ 10 000`).  Before 0.49 the
+    // `as i64` casts saturated and the `± 1` and the length wrapped: the
+    // jumps of `floor(10¹⁹x)` on `[−1, 1]` were skipped (integral 0) and
+    // `floor(9·10¹⁸x)` looped over 1.8·10¹⁹ candidates.
+    let Ok(span) = integer_span(t_min, t_max, 1, 10_001) else {
         scan.complete = false;
         return;
-    }
-    for n in n_min..=n_max {
+    };
+    for n in span {
         if !keep(n) {
             continue;
         }
@@ -1436,17 +1439,25 @@ const HIDDEN_ZERO_DIGITS: u32 = 30;
 ///
 /// Only a sum free of symbols is examined (a product or function of
 /// non-zero factors is non-zero; with a free parameter nothing is decided
-/// here), and then by evaluation: `evalf` returns an exact 0 only when the
-/// value vanishes to its working precision (twice the requested precision
-/// plus 256 bits, relative to its terms), otherwise certified digits.
-/// This is the numerical zero test every CAS uses for constants; a value
-/// below `10^-80` or so relative to its terms counts as 0.
+/// here), and then by evaluation ([`hidden_zero_by_evaluation`]).
 ///
 /// Series coefficients and Gruntz's leading coefficients must be decided
 /// this way: a structural test takes `asinh(2 + x) − ln(2 + √5)`'s constant
 /// term for a non-zero leading coefficient, and the series of
 /// `x/(asinh(x + 2) − ln(2 + √5))` became `x/0` (and `lim_{x→0}` of
 /// `x/(asinh(x + 2) − asinh 2)` became `0`, from Gruntz's `ln` rewrite).
+///
+/// A deliberate heuristic: a value that is still zero to the precision of
+/// the deep zero search counts as 0 (`Evidence::Approximate`).  The callers
+/// read `false` as "nonzero", which is a claim too, not a refusal, so the
+/// certified reading turns a true zero that no exact test proves into a
+/// wrong leading term: with it, `lim_{x→0} x/(asinh(x + 2) − asinh 2)`
+/// (`√5`) and `lim_{x→0⁻} x/(asin(2 + ix) − asin 2)` (`√3`) came out `0`,
+/// and 10 more tests of the suite failed alike.  Reading the evidence
+/// strictly needs callers that refuse on `Unknown`.  Before 0.49 the
+/// search stopped at the cap of the digits, and a value below about
+/// `10⁻⁸⁰` relative to its terms counted as 0: `c = e^{−10⁻¹⁵⁰} − 1`
+/// (`−10⁻¹⁵⁰`) made `lim_{x→∞} c·x` equal `0` (it is `−∞`).
 pub(crate) fn is_hidden_zero(arena: &Arena, c: ExprId) -> bool {
     if !matches!(arena.node(c), ExprNode::Add(_)) || !walk::free_symbols(arena, c).is_empty() {
         return false;
@@ -1454,10 +1465,47 @@ pub(crate) fn is_hidden_zero(arena: &Arena, c: ExprId) -> bool {
     if walk::has_unevaluated(arena, c) {
         return false;
     }
-    matches!(
-        evalf::evalf_complex(arena, c, HIDDEN_ZERO_DIGITS),
-        Ok(z) if z.0.is_zero() && z.1.is_zero()
-    )
+    hidden_zero_by_evaluation(arena, c)
+        .truth_at_least(crate::base::truth::Evidence::Approximate)
+        .is_true()
+}
+
+/// Is the symbol-free constant `c` zero, by evaluation to
+/// [`HIDDEN_ZERO_DIGITS`] digits, and on what evidence?
+///
+/// A certified value decides (`Certified`: an exact 0, or a certified
+/// digit).  A value zero to the cap of the digits is pursued by the deep
+/// zero search of `evalf` (about 1,024 bits more), which certifies a tiny
+/// value hidden by cancellation (`e^{−10⁻¹⁵⁰} − 1`); one still zero there
+/// is `True` on `Approximate` evidence only.  A value `evalf` cannot settle
+/// (below the exponent range without a sign, an absorbed term) is
+/// `Unknown`.
+fn hidden_zero_by_evaluation(
+    arena: &Arena,
+    c: ExprId,
+) -> crate::base::truth::Verdict<crate::base::truth::Truth> {
+    use crate::base::truth::{Evidence, Truth, Verdict};
+    let certified = |z: &crate::base::bigcomplex::Complex| {
+        Verdict::new(
+            Truth::from_bool(z.0.is_zero() && z.1.is_zero()),
+            Evidence::Certified,
+        )
+    };
+    let unsettled = Verdict::new(Truth::Unknown, Evidence::Approximate);
+    let cap = evalf::evalf_verdict(arena, c, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap);
+    match cap.map(Verdict::proven) {
+        Ok(Some(z)) => certified(&z),
+        Ok(None) => {
+            match evalf::evalf_verdict(arena, c, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Deep) {
+                Ok(deep) => match deep.proven() {
+                    Some(z) => certified(&z),
+                    None => Verdict::new(Truth::True, Evidence::Approximate),
+                },
+                Err(_) => unsettled,
+            }
+        }
+        Err(_) => unsettled,
+    }
 }
 
 /// `c` after `eval`, with a hidden zero (see [`is_hidden_zero`]) replaced

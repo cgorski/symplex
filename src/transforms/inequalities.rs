@@ -1345,10 +1345,13 @@ fn numer_denom(arena: &mut Arena, e: ExprId) -> (ExprId, ExprId) {
 /// Polynomials over ℚ are complete by construction: the number of real
 /// roots returned by the equation solver is checked against an exact Sturm
 /// count.  Rational functions reduce to their numerator.  Other
-/// expressions rely on the equation solver and fail when it cannot find
-/// the zeros.
+/// expressions rely on the equation solver, asked for the zeros with `var`
+/// real ([`Domain::Real`](crate::transforms::solve::Domain::Real)), and
+/// fail when it cannot find them.  (Up to 0.48 it asked for the principal
+/// roots in the declared domain of `var`, `Ex::solve`'s, and got the real
+/// ones only because the inversions it reached took `var` real anyway.)
 fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, SymplexError> {
-    use crate::transforms::solve::SolveOutcome;
+    use crate::transforms::solve::{Domain, SolveCx, SolveOutcome};
 
     if !walk::contains(arena, e, var) {
         let ev = crate::transforms::eval::eval(arena, e);
@@ -1422,7 +1425,7 @@ fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, Symp
         ));
     }
 
-    match crate::transforms::solve::solve_classified(arena, e, var) {
+    match crate::transforms::solve::solve_with(arena, e, var, &SolveCx::principal(Domain::Real)) {
         SolveOutcome::Identity => Ok(RootSet::Everywhere),
         SolveOutcome::NoSolution(_) => Ok(RootSet::Finite(Vec::new())),
         SolveOutcome::Solutions(s) if s.is_empty() => Err(failed(format!(
@@ -1661,7 +1664,7 @@ fn kink_expressions(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<ExprId>
         }
     }
     out.retain(|&e| walk::contains(arena, e, var));
-    out.sort_by_key(|id| id.0);
+    out.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     out.dedup();
     out
 }

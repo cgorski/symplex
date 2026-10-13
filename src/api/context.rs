@@ -278,6 +278,11 @@ impl Context {
     /// Returns `Some(true)` if the property is provably true,
     /// `Some(false)` if provably false, or `None` if unknown.
     ///
+    /// # Panics
+    ///
+    /// Panics if `ex` belongs to a different context (the standard
+    /// cross-context guard).
+    ///
     /// # Examples
     ///
     /// ```
@@ -293,7 +298,7 @@ impl Context {
         inner
             .assumptions
             .lock()
-            .query(&inner.arena, ex.raw_id(), prop)
+            .query(&inner.arena, self.own_id(ex), prop)
     }
 
     /// Creates an integer expression.
@@ -438,6 +443,10 @@ impl Context {
     ///
     /// The constant displays as `name` but evaluates numerically to `value`.
     ///
+    /// # Panics
+    ///
+    /// Panics if `value` belongs to a different context.
+    ///
     /// # Examples
     ///
     /// ```
@@ -452,7 +461,7 @@ impl Context {
         name: &str,
         value: crate::api::expr::Ex,
     ) -> crate::api::expr::Ex {
-        let val_id = value.raw_id();
+        let val_id = self.own_id(&value);
         let id = self.inner.write().arena.physical_constant(name, val_id);
         self.make_ex(id)
     }
@@ -559,6 +568,10 @@ impl Context {
     /// An [`Interval<Ex>`](crate::Interval) converts with
     /// [`Interval::to_set`](crate::Interval::to_set).
     ///
+    /// # Panics
+    ///
+    /// Panics if an endpoint belongs to a different context.
+    ///
     /// # Examples
     ///
     /// ```
@@ -592,17 +605,18 @@ impl Context {
         if kind.upper_open() {
             flags |= crate::base::node::INTERVAL_RIGHT_OPEN;
         }
-        let id = self
-            .inner
-            .write()
-            .arena
-            .interval(start.raw_id(), end.raw_id(), flags);
+        let (start, end) = (self.own_id(start), self.own_id(end));
+        let id = self.inner.write().arena.interval(start, end, flags);
         self.make_set_ex(id)
     }
 
     /// Create a finite set `{elements[0], elements[1], …}`.
     ///
     /// Elements are sorted and deduplicated.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an element belongs to a different context.
     ///
     /// # Examples
     ///
@@ -615,7 +629,7 @@ impl Context {
     /// assert!(display.contains("{") && display.contains("}"), "finite set: {display}");
     /// ```
     pub fn finite_set(&self, elements: &[crate::api::expr::Ex]) -> crate::api::expr::SetEx {
-        let ids: Vec<ExprId> = elements.iter().map(|e| e.raw_id()).collect();
+        let ids: Vec<ExprId> = elements.iter().map(|e| self.own_id(e)).collect();
         let id = self.inner.write().arena.finite_set(&ids);
         self.make_set_ex(id)
     }
@@ -692,10 +706,15 @@ impl Context {
     /// This is a convenience shorthand for deserializing an
     /// [`ExprTree`](crate::output::tree::ExprTree) from JSON and converting it.
     ///
+    /// The result is an `Ex` whatever the sort of the root (a set or a
+    /// relation too); [`from_json_any`](Self::from_json_any) returns it
+    /// with its sort.
+    ///
     /// # Errors
     ///
     /// Returns `Err` if the JSON is malformed or doesn't represent a
-    /// valid `ExprTree`.
+    /// valid `ExprTree` (including a number whose numerator or denominator
+    /// is not a decimal integer, or whose denominator is 0).
     ///
     /// # Examples
     ///
@@ -708,8 +727,78 @@ impl Context {
     /// assert_eq!(format!("{expr}"), "x");
     /// ```
     pub fn from_json(&self, json: &str) -> Result<crate::api::expr::Ex, serde_json::Error> {
-        let tree: crate::output::tree::ExprTree = serde_json::from_str(json)?;
+        let tree = crate::output::tree::tree_from_json(json)?;
         Ok(self.from_tree(&tree))
+    }
+
+    /// Parse a JSON [`ExprTree`](crate::output::tree::ExprTree) into an
+    /// expression of the sort its root has: a set (`Interval`,
+    /// `FiniteSet`, a union, …, `ConditionSet`) is an
+    /// [`AnyExpr::Set`](crate::api::expr::AnyExpr::Set), a relation, `And`,
+    /// `Or`, `Not`, `True` or `False` an
+    /// [`AnyExpr::Bool`](crate::api::expr::AnyExpr::Bool), anything else an
+    /// [`AnyExpr::Num`](crate::api::expr::AnyExpr::Num).  Sets are rebuilt
+    /// canonically (`{1, 1}` reads as `{1}`).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`](crate::base::errors::SymplexError::InvalidArgument)
+    /// if the JSON is malformed or doesn't represent a valid `ExprTree`
+    /// (as [`from_json`](Self::from_json)).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let json = r#"{"type":"FiniteSet","elements":[
+    ///     {"type":"Num","numer":"1","denom":"1"},
+    ///     {"type":"Num","numer":"1","denom":"1"}]}"#;
+    /// let AnyExpr::Set(s) = ctx.from_json_any(json)? else {
+    ///     panic!("a set");
+    /// };
+    /// assert_eq!(s, ctx.finite_set(&[ctx.int(1)]));
+    /// assert!(matches!(ctx.from_json_any(r#"{"type":"Pi"}"#)?, AnyExpr::Num(_)));
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    pub fn from_json_any(
+        &self,
+        json: &str,
+    ) -> Result<crate::api::expr::AnyExpr, crate::base::errors::SymplexError> {
+        use crate::api::expr::{AnyExpr, BoolEx, Ex, SetEx};
+        use crate::base::node::ExprNode;
+        let tree = crate::output::tree::tree_from_json(json).map_err(|e| {
+            crate::base::errors::SymplexError::InvalidArgument {
+                operation: "from_json_any",
+                reason: e.to_string(),
+            }
+        })?;
+        let mut inner = self.inner.write();
+        let id = crate::output::tree::tree_to_expr(&mut inner.arena, &tree);
+        let node = inner.arena.node(id);
+        let set = node.is_set_node() || matches!(node, ExprNode::ConditionSet(..));
+        let boolean = matches!(
+            node,
+            ExprNode::BoolTrue
+                | ExprNode::BoolFalse
+                | ExprNode::Gt(..)
+                | ExprNode::Ge(..)
+                | ExprNode::Eq_(..)
+                | ExprNode::Ne(..)
+                | ExprNode::And(_)
+                | ExprNode::Or(_)
+                | ExprNode::Not(_)
+        );
+        drop(inner);
+        let (ctx, arena) = (self.id, &self.inner);
+        Ok(if set {
+            AnyExpr::Set(SetEx::from_raw_parts(ctx, Arc::clone(arena), id))
+        } else if boolean {
+            AnyExpr::Bool(BoolEx::from_raw_parts(ctx, Arc::clone(arena), id))
+        } else {
+            AnyExpr::Num(Ex::from_raw_parts(ctx, Arc::clone(arena), id))
+        })
     }
 
     // ── Linear system solving ──────────────────────────────────────────
@@ -764,6 +853,10 @@ impl Context {
     /// (in the same order as `roots`).  The old context remains valid —
     /// existing expression handles continue to work.
     ///
+    /// # Panics
+    ///
+    /// Panics if a root belongs to a different context.
+    ///
     /// # Use Case
     ///
     /// After a heavy computation that creates thousands of intermediate
@@ -788,17 +881,18 @@ impl Context {
             return (new_ctx, Vec::new());
         }
 
+        let root_ids: Vec<ExprId> = roots.iter().map(|r| self.own_id(r)).collect();
         let src_inner = self.inner.read();
         let mut dst_inner = new_ctx.inner.write();
 
         let mut map = rustc_hash::FxHashMap::default();
         let mut new_roots = Vec::with_capacity(roots.len());
 
-        for root in roots {
+        for root in root_ids {
             let new_id = crate::base::compact::transfer_subtree(
                 &src_inner.arena,
                 &mut dst_inner.arena,
-                root.raw_id(),
+                root,
                 &mut map,
             );
             new_roots.push(crate::api::expr::Ex::from_raw_parts(
@@ -833,8 +927,12 @@ impl Context {
     ///
     /// Returns a value between 0.0 and 1.0. A value of 0.3 means 70% of
     /// arena nodes are unreachable (dead) and would be freed by `compact()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a root belongs to a different context.
     pub fn liveness_ratio(&self, roots: &[crate::api::expr::Ex]) -> f64 {
-        let root_ids: Vec<crate::base::node::ExprId> = roots.iter().map(|r| r.raw_id()).collect();
+        let root_ids: Vec<ExprId> = roots.iter().map(|r| self.own_id(r)).collect();
         let inner = self.inner.read();
         crate::base::compact::liveness_ratio(&inner.arena, &root_ids)
     }
@@ -844,8 +942,12 @@ impl Context {
     /// Returns `true` when the arena has grown large (>100K nodes),
     /// has doubled since the last compact, and less than 50% of nodes
     /// are reachable from the given roots.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a root belongs to a different context.
     pub fn should_compact(&self, roots: &[crate::api::expr::Ex]) -> bool {
-        let root_ids: Vec<crate::base::node::ExprId> = roots.iter().map(|r| r.raw_id()).collect();
+        let root_ids: Vec<ExprId> = roots.iter().map(|r| self.own_id(r)).collect();
         let inner = self.inner.read();
         crate::base::compact::should_compact(&inner.arena, &root_ids)
     }

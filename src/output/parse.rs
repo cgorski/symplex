@@ -464,8 +464,9 @@ fn lib_fn_by_name(name_lower: &str) -> Option<LibFn> {
 fn declared_function(arena: &Arena, name: &str) -> Option<SymbolId> {
     let sid = arena.symbols.get(name)?;
     let headed = |i: usize| {
-        u32::try_from(i)
-            .is_ok_and(|i| matches!(arena.node(ExprId(i)), ExprNode::Apply(s, _) if *s == sid))
+        u32::try_from(i).is_ok_and(
+            |i| matches!(arena.node(ExprId::from_index(i)), ExprNode::Apply(s, _) if *s == sid),
+        )
     };
     (0..arena.node_count()).rev().any(headed).then_some(sid)
 }

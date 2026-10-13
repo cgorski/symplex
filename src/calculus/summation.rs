@@ -1841,7 +1841,7 @@ pub(crate) fn term_shape(arena: &mut Arena, body: ExprId, var: ExprId) -> Option
         }
     }
     merged_bases.retain(|(_, a)| !a.is_zero());
-    merged_bases.sort_by_key(|(b, _)| b.0);
+    merged_bases.sort_by(|(a, _), (b, _)| arena.canonical_cmp(*a, *b));
     shape.bases = merged_bases;
     let mut merged_bin: Vec<(ExprId, i64)> = Vec::new();
     for (n, e) in shape.binomials {

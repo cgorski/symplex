@@ -383,7 +383,11 @@ fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(
         coeffs[0] = -r_pow_p;
         coeffs[q] = rat(1, 1);
         let exp_bf = ratio_to_bigfloat(exp, prec);
-        let value = c_from_real(ratio_to_bigfloat(r, prec).pow(&exp_bf, prec, rm, cc), prec);
+        let base_bf = ratio_to_bigfloat(r, prec);
+        let value = c_from_real(
+            crate::base::bigfloat::pow(&base_bf, &exp_bf, prec, rm, cc),
+            prec,
+        );
         let mp = select_vanishing_factor(&Poly::from_coeffs(coeffs), &value)?;
         return Some((mp, value));
     }
@@ -395,7 +399,8 @@ fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(
         (mp_base, base_val)
     } else {
         let root = if is_real_positive(&base_val, prec) {
-            let root = base_val.0.pow(
+            let root = crate::base::bigfloat::pow(
+                &base_val.0,
                 &BigFloat::from_i32(1, prec).div(&BigFloat::from_i64(q as i64, prec), prec, rm),
                 prec,
                 rm,

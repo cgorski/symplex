@@ -1525,10 +1525,10 @@ pub(super) fn memo_key(
     [
         std::ptr::from_ref(arena) as usize,
         arena.node_count(),
-        body.0 as usize,
-        var.0 as usize,
-        lo.0 as usize,
-        hi.0 as usize,
+        body.index() as usize,
+        var.index() as usize,
+        lo.index() as usize,
+        hi.index() as usize,
     ]
 }
 

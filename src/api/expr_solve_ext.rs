@@ -17,7 +17,7 @@ use crate::api::expr::Ex;
 use crate::base::assumptions::Assumption;
 use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
-use crate::base::node::{ExprId, SymbolId};
+use crate::base::node::ExprId;
 use crate::domains::matrix::Matrix;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -156,6 +156,11 @@ impl LinearSolution {
 ///
 /// [`SymplexError::InvalidArgument`] if `eqs` or `vars` is empty, or an
 /// equation is not linear in the unknowns.
+/// [`SymplexError::ComputationFailed`] if elimination leaves an equation
+/// `0 = c` whose `c` is neither proved zero nor proved nonzero, so that
+/// whether the system is consistent is undecided (`c = Γ(1/3)·Γ(2/3) −
+/// 2π/√3`, which is 0 by the reflection formula; up to 0.48 the system was
+/// reported `Inconsistent`).
 ///
 /// # Examples
 ///
@@ -221,7 +226,8 @@ fn wrap_linear_result(
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] if `b` is not a column vector with
-/// as many rows as `a`.
+/// as many rows as `a`; [`SymplexError::ComputationFailed`] when the
+/// consistency of the system is undecided, as for [`linsolve`].
 ///
 /// # Examples
 ///
@@ -309,10 +315,7 @@ impl GeneralSolution {
 pub(crate) fn fresh_symbol(ctx: &Context, base: &str, assumptions: &[Assumption]) -> Ex {
     let name = {
         let inner = ctx.inner.read();
-        let taken = |name: &str| -> bool {
-            let n = inner.arena.symbols.len();
-            (0..n).any(|i| inner.arena.symbols.name(SymbolId(i as u32)) == name)
-        };
+        let taken = |name: &str| -> bool { inner.arena.symbols.get(name).is_some() };
         if !taken(base) {
             base.to_string()
         } else {

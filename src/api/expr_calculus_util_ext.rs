@@ -34,6 +34,7 @@ use std::cmp::Ordering;
 
 use crate::api::expr::{BoolEx, Ex, ExprType, SetEx, SetValued};
 use crate::api::poly_ex::Poly;
+use crate::base::cast::integer_span;
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::ExprNode;
@@ -190,21 +191,20 @@ fn enumerate_family(
     }
     let (k1, k2) = ((lo - offset_f) / step_f, (hi - offset_f) / step_f);
     let (k_lo, k_hi) = (k1.min(k2), k1.max(k2));
-    // Bound the index range while still in `f64`: the ±1 widening below
-    // only absorbs the rounding error of `k` while `|k|` is small, and the
-    // casts must not saturate.
-    if !k_lo.is_finite()
-        || !k_hi.is_finite()
-        || k_lo.abs() > MAX_FAMILY_INDEX
-        || k_hi.abs() > MAX_FAMILY_INDEX
-    {
-        return Err(computation_failed(
+    let beyond = || {
+        computation_failed(
             op,
             format!(
                 "the members of `{member}` in the domain have indices beyond \
                  ±{MAX_FAMILY_INDEX:e}, where they cannot be located reliably"
             ),
-        ));
+        )
+    };
+    // Bound the index range while still in `f64`: the ±1 widening below
+    // only absorbs the rounding error of `k` while `|k|` is small.  NaN
+    // passes these comparisons and is refused by `integer_span`.
+    if k_lo.abs() > MAX_FAMILY_INDEX || k_hi.abs() > MAX_FAMILY_INDEX {
+        return Err(beyond());
     }
     if k_hi - k_lo > MAX_FAMILY_MEMBERS as f64 {
         return Err(computation_failed(
@@ -212,8 +212,10 @@ fn enumerate_family(
             format!("more than {MAX_FAMILY_MEMBERS} members of `{member}` may lie in the domain"),
         ));
     }
-    let (k_min, k_max) = (k_lo.floor() as i64 - 1, k_hi.ceil() as i64 + 1);
-    for k in k_min..=k_max {
+    let Ok(span) = integer_span(k_lo, k_hi, 1, u64::MAX) else {
+        return Err(beyond());
+    };
+    for k in span {
         let point = member.subs_i64(param, k).eval();
         match domain.contains(&point) {
             Some(true) => out.push(point),

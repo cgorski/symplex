@@ -900,15 +900,62 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
 // ExprTree → ExprId (deserialization direction)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The [`ExprTree`] of a JSON text, with every `Num` checked: its
+/// numerator and denominator must be decimal integers and the denominator
+/// nonzero.  ([`tree_to_expr`] reads a malformed number as 0.)
+///
+/// # Errors
+///
+/// The JSON error if the text is not an `ExprTree`, or a custom one for
+/// a malformed number.
+pub(crate) fn tree_from_json(json: &str) -> Result<ExprTree, serde_json::Error> {
+    use serde::de::Error as _;
+    let value: serde_json::Value = serde_json::from_str(json)?;
+    let mut stack: Vec<&serde_json::Value> = vec![&value];
+    while let Some(v) = stack.pop() {
+        match v {
+            serde_json::Value::Object(map) => {
+                if map.get("type").and_then(serde_json::Value::as_str) == Some("Num") {
+                    let part = |key: &str| {
+                        map.get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(|s| s.parse::<BigInt>().ok())
+                    };
+                    match (part("numer"), part("denom")) {
+                        (Some(_), Some(d)) if d != BigInt::from(0) => {}
+                        _ => {
+                            return Err(serde_json::Error::custom(format!(
+                                "malformed number (decimal numerator and nonzero denominator \
+                                 expected): {v}"
+                            )));
+                        }
+                    }
+                }
+                stack.extend(map.values());
+            }
+            serde_json::Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    serde_json::from_value(value)
+}
+
 /// Convert a standalone [`ExprTree`] back into an arena expression.
 ///
 /// The resulting expression is fully canonicalized (it goes through
-/// the arena's canonical constructors).
+/// the arena's canonical constructors).  A malformed number reads as 0
+/// ([`tree_from_json`] rejects one), and `n/0` is `n·0⁻¹` (`zoo`, or
+/// `nan` for `0/0`), not a panic.
 pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
     match tree {
         ExprTree::Num { numer, denom } => {
             let n: BigInt = numer.parse().unwrap_or_default();
             let d: BigInt = denom.parse().unwrap_or_else(|_| BigInt::from(1));
+            if d == BigInt::from(0) {
+                let n = arena.num_ratio(Ratio::from_integer(n));
+                let inv = arena.pow(arena.zero, arena.neg_one);
+                return arena.mul(&[n, inv]);
+            }
             let r = Ratio::new(n, d);
             let nid = arena.intern_num(r);
             arena.intern(ExprNode::Num(nid))
@@ -1229,34 +1276,37 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
                 .iter()
                 .map(|(val, cond)| (tree_to_expr(arena, val), tree_to_expr(arena, cond)))
                 .collect();
-            arena.intern(ExprNode::Piecewise(pairs))
+            arena.piecewise(&pairs)
         }
         ExprTree::EmptySet => arena.intern(ExprNode::EmptySet),
         ExprTree::UniversalSet => arena.intern(ExprNode::UniversalSet),
+        // The set constructors are canonical: a tree edited (or written by
+        // hand) to `{1, 1}` or `[5, 3]` reads back as `{1}` or `∅`, `==` to
+        // the set built directly.
         ExprTree::Interval { start, end, flags } => {
             let s = tree_to_expr(arena, start);
             let e = tree_to_expr(arena, end);
-            arena.intern(ExprNode::Interval(s, e, *flags))
+            arena.interval(s, e, *flags)
         }
         ExprTree::FiniteSet { elements } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
                 elements.iter().map(|e| tree_to_expr(arena, e)).collect();
-            arena.intern(ExprNode::FiniteSet(ids))
+            arena.finite_set(&ids)
         }
         ExprTree::SetUnion { sets } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
                 sets.iter().map(|s| tree_to_expr(arena, s)).collect();
-            arena.intern(ExprNode::SetUnion(ids))
+            arena.set_union(&ids)
         }
         ExprTree::SetIntersection { sets } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
                 sets.iter().map(|s| tree_to_expr(arena, s)).collect();
-            arena.intern(ExprNode::SetIntersection(ids))
+            arena.set_intersection(&ids)
         }
         ExprTree::SetComplement { set, universe } => {
             let s = tree_to_expr(arena, set);
             let u = tree_to_expr(arena, universe);
-            arena.intern(ExprNode::SetComplement(s, u))
+            arena.set_complement(s, u)
         }
         ExprTree::Limit { body, var, point } => {
             let b = tree_to_expr(arena, body);

@@ -18,8 +18,30 @@ use std::fmt;
 
 /// Opaque handle that identifies an expression node inside an expression
 /// context.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ExprId(pub u32);
+///
+/// Ids have no order: their numbers are allocation order, which depends on
+/// the context's history.  Order nodes canonically with
+/// `Arena::canonical_cmp`; where an arbitrary but fixed order is wanted
+/// (dedup, set identity) and never reaches output, use `ArenaOrder`.  The
+/// number is private to `base`; elsewhere [`index`](Self::index) gives it
+/// for hashing and memo keys only (the `test_id_order` ratchet).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExprId(pub(in crate::base) u32);
+
+impl ExprId {
+    /// The allocation number, for hashing, memo keys and side tables
+    /// indexed by id — never for ordering: it depends on everything the
+    /// context built before.
+    pub(crate) const fn index(self) -> u32 {
+        self.0
+    }
+
+    /// The id with allocation number `i` (which the caller checks against
+    /// the arena's `node_count`).
+    pub(crate) const fn from_index(i: u32) -> ExprId {
+        ExprId(i)
+    }
+}
 
 impl fmt::Debug for ExprId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,8 +50,10 @@ impl fmt::Debug for ExprId {
 }
 
 /// Index into the numeric literal side‐table of an expression context.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NumId(pub u32);
+///
+/// No order (allocation order); compare the values instead.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NumId(pub(in crate::base) u32);
 
 impl fmt::Debug for NumId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -38,8 +62,10 @@ impl fmt::Debug for NumId {
 }
 
 /// Index into the symbol name table of an expression context.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SymbolId(pub u32);
+///
+/// No order (creation order); compare the names instead.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SymbolId(pub(in crate::base) u32);
 
 impl fmt::Debug for SymbolId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -6285,7 +6285,7 @@ fn peak_points(arena: &mut Arena, f: ExprId, x: ExprId, lo: f64, hi: f64) -> Vec
             _ => None,
         })
         .collect();
-    parts.sort_unstable();
+    parts.sort_unstable_by(|a, b| arena.canonical_cmp(a.0, b.0).then(a.1.cmp(&b.1)));
     parts.dedup();
     let narrow = |centre: f64, half_width: f64| {
         let scale = if lo.is_finite() && hi.is_finite() {

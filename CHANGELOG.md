@@ -8,8 +8,88 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking
+
+- **Expression identifiers have no order.**  `ExprId` (from
+  `ExprView::id()`) and the `SymbolId`/`NumId` inside `ExprView::node()`
+  no longer implement `PartialOrd`/`Ord`, and their number is no longer a
+  public field; they keep `Eq`, `Hash`, `Copy` and `Debug`.  The numbers
+  were allocation order, so sorting by them made results depend on the
+  context's history (see Fixed).
+- **`Context` methods check the context of their arguments.**  `query`,
+  `physical_constant`, `interval`, `finite_set`, `compact`,
+  `liveness_ratio` and `should_compact` silently used another context's
+  expression as an index into their own arena:
+  `a.query(&b.int(-7), POSITIVE)` was `Some(true)` (it read `a`'s `7`),
+  `a.finite_set(&[t_b])` built a set of an unrelated symbol.  They now
+  panic with the cross-context message, like every other method.
+- `linsolve`/`linsolve_matrix`: when elimination leaves `0 = c` and `c` is
+  neither proved zero nor proved nonzero, the result is
+  `Err(ComputationFailed)` ("cannot decide whether c is 0").  Up to 0.48 it
+  was `Inconsistent` — also for `x + y = 1, x + y = 1 + k` with
+  `k = Γ(1/3)Γ(2/3) − 2π/√3`, which is 0 by the reflection formula.
+- `TransferFunction::poles`/`zeros` are empty when the roots are not all
+  known (a non-polynomial numerator or denominator, an unsolved factor),
+  never a subset: for `1/((s⁵ + a·s + 1)(s − 2))` they returned `[]` while
+  `s = 2` is a pole, and for `1/(eˢ + 1)` the single principal root `[iπ]`
+  of infinitely many poles.  The new `try_poles`/`try_zeros` say why.
+
+### Fixed
+
+- **Results no longer depend on the order in which symbols were
+  created.**  With `y` created before `x`, `factor_all(x³ − y³)` was
+  `-(-x + y)*(x^2 + x*y + y^2)` (now `(x − y)*(x^2 + x*y + y^2)`), and
+  `∫ 1/((x − a)(x − b)) dx` swapped `a` and `b` in its `Piecewise`; in a
+  probe of 96 task × creation-order pairs, 18 differed (now 0).  Factoring,
+  heurisch, the Risch tower, parametric rational integration, `solve`,
+  inequalities, summation, Gruntz limits, linear algebra and quadrature
+  sorted by allocation order; they use the canonical order.
+- **Assumption queries of constants no longer depend on earlier work in
+  the context.**  After `(ln 2 − 1)·∞` had been built, `(ln 2 −
+  1).is_positive()` was `Some(true)` (the value is −0.3069), and after
+  `re(Γ(1 + i))·∞`, `Γ(1 + i).is_zero()` and `.is_real()` were
+  `Some(true)` (the value is 0.498 − 0.155i): two deciders shared one memo
+  of constant facts under colliding hand-picked keys.  Also
+  `Distribution::try_exponential(ln 2 − 1)` and `is_positive_definite` of
+  `[[ln 2 − 1]]` were accepted in such a context.
+- **Limits no longer take "zero to the working precision" for zero, or an
+  imaginary part that is zero only to the working precision for proof of
+  realness.**  With `c = e^{−10⁻¹⁵⁰} − 1` (= −10⁻¹⁵⁰): `lim c·x` was `0`
+  (now −∞), `lim (c·x² − 1)` was −1 (−∞), `lim e^{c·x}` was 1 (0),
+  `lim x²(c + 1/x)` and `lim (c·x + ln x)` were ∞ (−∞).  With
+  `d = e^{10⁻¹⁵⁰} − 1 − 10⁻¹⁵⁰`, limits of `(Γ(2 + i·d) − 1)·x` and twelve
+  similar ones were 0, ∞ or 1; they are refused (the imaginary part is
+  2.1·10⁻³⁰¹, not 0).  SymPy 1.14 also gets the first family wrong.
+- `eval_decimal`/evalf no longer treats two different library functions at
+  conjugate arguments as complex conjugates of each other: every library
+  function node had the same signature, so `Shi(1 − b·i) + erfi(1 + b·i)`
+  (imaginary parts equal to 45 digits) was taken as exactly real and
+  `log(−(…))` came out `+ 3.14159…·i` instead of `− 3.14159…·i` (mpmath).
+- `solve`: `erf(x) = c`/`erfc(x) = c` outside the function's real range is
+  refused for a complex unknown (it was `NoSolution`; `erf(z) = 2` has the
+  root z ≈ 0.869417565 + 1.340594819i, `erfc(z) = 0` the root
+  −1.354810128 + 1.991466843i, mpmath `findroot`), and no longer returns
+  the meaningless `erfinv(2)`.  An inversion with one branch proved empty
+  and another refused is refused: `|x + i|² = 4` for real `x` was
+  `NoSolution` (roots ±√3) and `solve_as_set(|x|² − 4)` was `EmptySet`.
+- `integrate_definite` over a family of jumps or poles with a huge slope:
+  `∫₋₁¹ floor(10¹⁹x)/10¹⁹ dx` was `0` (true −10⁻¹⁹), and
+  `floor(9·10¹⁸x)/10¹⁹`, `ceiling(…)`, `Γ(9·10¹⁸x)` and `1/Γ(9·10¹⁸x)`
+  never returned while memory grew.  The breakpoint scan's `f64 → i64`
+  casts saturated and the `± 1` and the length check that followed
+  wrapped.  They are left unevaluated (more than 10,000 breakpoints).
+- **Substitution rebuilds sets canonically:** `{x, y}` with `x, y ↦ 1` was
+  `{1, 1}` (and not `==` to `{1}`), `[x, y]` with `x ↦ 3, y ↦ 2` was
+  `[3, 2]` (now `EmptySet`).
+- **JSON input is canonical and checked:** a tree `{1, 1}` reads as `{1}`;
+  a number with denominator 0 panicked inside `from_json` and a malformed
+  numerator was read as 0 — both are now errors.
+
 ### Added
 
+- `Context::from_json_any` → `AnyExpr { Num, Bool, Set }` (in the
+  prelude): a serialized tree read with the sort of its root.
+- `TransferFunction::try_poles`/`try_zeros`.
 - `symplex::base::truth`: `Truth` (three-valued Kleene logic with no
   implicit reading of "unknown" as true or false), `SignSet` (the set of
   signs {< 0, 0, > 0, non-real} a finite value can have, with sign
@@ -24,6 +104,39 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   and a diff tool, used to show that a refactor changes no outputs.
 
 ### Changed
+
+- **Internal type architecture (refactor wave 1).**
+  - One identity for every function: `base/func.rs` generates, from one
+    list, the public `LibFn` (unchanged) and an internal `Func` for all 101
+    functions (43 dedicated nodes, 50 library functions, 8 internal
+    asymptotic helpers) with a `FuncSpec` table (name, parser names,
+    argument count, sort sub-rank, LaTeX layout) in which every facet is
+    mandatory; tests over every function check sort keys, display, parsing
+    and LaTeX against the table.
+  - The domain of the unknown in `solve` is an explicit `SolveCx`
+    (`Domain::{Complex, Real, Integer}`) threaded through the solver,
+    instead of three thread-local flags and a period argument that
+    doubled as a domain switch; `reduce_inequalities` asks for real roots
+    explicitly.  Every inversion asks one gate whether a range restriction
+    may be used.
+  - The memo of constant facts is keyed by a typed `FactKey` and stores
+    `SignSet`s; eval's sign classes are `SignSet`s; certified evaluation
+    exposes its strength of evidence (`Verdict`).
+  - `Arena::canonical_cmp` (the canonical order of two expressions) and
+    `ArenaOrder` (allocation order, for set identity only); a ratchet test
+    rejects ordering by identifier numbers.
+  - `base::cast` (`f64_to_i64`, `integer_span`): checked float-to-integer
+    conversion; a ratchet freezes the remaining 90 rounded casts and 44
+    guard-bit casts so they can only decrease.
+  - `base::bigfloat`: the boundary to astro-float.  `BigFloat::pow` and
+    `BigFloat::log` never return when the exact result is representable
+    (`4^(1/2)`, `log(8, 2)`; upstream #31) and are disallowed by
+    `clippy.toml` together with `convert_to_radix`; a CI canary checks the
+    lint still fires.  A property test of astro-float 0.9.6 against exact
+    rational arithmetic (11.2 M cases) and mpmath (1.05 M) found its
+    arithmetic correctly rounded, its `Up`/`Down`/`ToZero`/`FromZero` modes
+    directed (the documentation says "round half"), and `from_f64` halving
+    subnormals (no symplex result affected; documented in the facade).
 
 - astro-float 0.9.5 → 0.9.6.  On 32-bit targets (wasm32) 0.9.5 used the
   64-bit word size in its decimal conversion, which silently corrupted

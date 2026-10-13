@@ -30,43 +30,70 @@ fn poly_coeffs_symbolic(expr: &Ex, var: &Ex) -> Option<Vec<Ex>> {
 }
 
 /// Roots of `p`, a polynomial in `var`, repeated with multiplicity (SymPy's
-/// `roots(…, multiple=True)`, which `TransferFunction.poles()` uses).
+/// `roots(…, multiple=True)`, which `TransferFunction.poles()` uses), or
+/// the error that says why they are not all known.
 ///
 /// They are the eigenvalues of the companion matrix of `p`, so they agree
-/// with [`StateSpace::poles`] of the realisation.  When `p` is not a
-/// polynomial in `var`, or the eigenvalue solver does not find every root,
-/// the distinct roots of the solver are returned.
-fn roots_with_multiplicity(p: &Ex, var: &Ex) -> Vec<Ex> {
-    if let Some(mut c) = poly_coeffs_symbolic(p, var) {
-        while c.len() > 1 && c.last().is_some_and(is_exact_zero) {
-            c.pop();
-        }
-        let n = c.len() - 1;
-        if n == 0 {
-            // A nonzero constant has no roots; the zero polynomial is left
-            // to the solver.
-            if !c.first().is_some_and(is_exact_zero) {
-                return Vec::new();
-            }
-        } else {
-            let ctx = p.context();
-            let lead = &c[n];
-            let companion = Matrix::from_fn(n, n, |i, j| {
-                if i + 1 < n {
-                    if j == i + 1 { ctx.one() } else { ctx.zero() }
-                } else {
-                    (-(&c[j] / lead)).eval()
-                }
+/// with [`StateSpace::poles`] of the realisation.  When the eigenvalue
+/// solver does not find every root, the roots of the equation solver are
+/// taken if they are as many as the degree (all simple).  `Err` when they
+/// are not, when `p` is not a polynomial in `var` (`1 − e⁻ˢ` has infinitely
+/// many roots, of which a solver lists the principal one), and for the
+/// zero polynomial.  Up to 0.48 the distinct roots of the solver were
+/// returned, or an empty list when it failed: `(s⁵ + a·s + 1)(s − 2)` had
+/// no poles, not even `2`.
+fn try_roots_with_multiplicity(
+    p: &Ex,
+    var: &Ex,
+    operation: &'static str,
+) -> Result<Vec<Ex>, SymplexError> {
+    let Some(mut c) = poly_coeffs_symbolic(p, var) else {
+        return Err(SymplexError::computation_failed(
+            operation,
+            format!("{p} is not a polynomial in {var}: its roots are not a finite list"),
+        ));
+    };
+    while c.len() > 1 && c.last().is_some_and(is_exact_zero) {
+        c.pop();
+    }
+    let n = c.len().saturating_sub(1);
+    if n == 0 {
+        // A nonzero constant has no roots, the zero polynomial every value.
+        if c.first().is_none_or(is_exact_zero) {
+            return Err(SymplexError::InfiniteSolutions {
+                operation,
+                reason: format!("the zero polynomial vanishes at every {var}"),
             });
-            if let Ok(ev) = companion.and_then(|m| m.eigenvals())
-                && ev.len() == n
-            {
-                return ev;
-            }
         }
+        return Ok(Vec::new());
+    }
+    let ctx = p.context();
+    let lead = &c[n];
+    let companion = Matrix::from_fn(n, n, |i, j| {
+        if i + 1 < n {
+            if j == i + 1 { ctx.one() } else { ctx.zero() }
+        } else {
+            (-(&c[j] / lead)).eval()
+        }
+    });
+    if let Ok(ev) = companion.and_then(|m| m.eigenvals())
+        && ev.len() == n
+    {
+        return Ok(ev);
     }
     // every root, whatever the declared domain of `var`
-    p.solve_over_all_values(var).unwrap_or_default()
+    let roots = p.solve_over_all_values(var)?;
+    if roots.len() == n {
+        return Ok(roots);
+    }
+    Err(SymplexError::computation_failed(
+        operation,
+        format!(
+            "found {} distinct roots of the polynomial {p} of degree {n} in {var}: the others, or \
+             the multiplicities, are not known",
+            roots.len()
+        ),
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -627,7 +654,13 @@ impl TransferFunction {
     ///
     /// `1/(s + 1)²` has the poles `[−1, −1]`.  (Before 0.41 every
     /// repeated pole was listed once, unlike [`StateSpace::poles`].)
-    /// Returns an empty vector if the solver cannot find the roots.
+    ///
+    /// The list is empty both for a constant denominator and when the poles
+    /// are not all known — a denominator that is not a polynomial in the
+    /// variable, a factor without roots in closed form, multiplicities not
+    /// found; it is never a part of them (up to 0.48 it could be: the
+    /// solver's distinct roots, or principal roots of a transcendental
+    /// denominator).  [`try_poles`](Self::try_poles) tells the cases apart.
     ///
     /// # Examples
     ///
@@ -640,15 +673,70 @@ impl TransferFunction {
     /// assert_eq!(g.poles(), vec![ctx.int(-1), ctx.int(-1)]);
     /// ```
     pub fn poles(&self) -> Vec<Ex> {
-        roots_with_multiplicity(&self.den, &self.var)
+        self.try_poles().unwrap_or_default()
+    }
+
+    /// [`poles`](Self::poles), or the error that says why they are not all
+    /// known.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] when the denominator is not a
+    /// polynomial in the variable, or its roots are not all found with
+    /// their multiplicities; [`SymplexError::InfiniteSolutions`] for the
+    /// zero denominator.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
+    /// let g = TransferFunction::new(ctx.int(1), &s.powi(2) + 1, s.clone());
+    /// assert_eq!(g.try_poles().unwrap().len(), 2);
+    /// // no poles at all
+    /// let k = TransferFunction::new(ctx.int(1), ctx.int(2), s.clone());
+    /// assert!(k.try_poles().unwrap().is_empty());
+    /// // infinitely many poles: refused (`poles` is empty)
+    /// let d = TransferFunction::new(ctx.int(1), &s.exp() + 1, s.clone());
+    /// assert!(d.try_poles().is_err());
+    /// assert!(d.poles().is_empty());
+    /// ```
+    pub fn try_poles(&self) -> Result<Vec<Ex>, SymplexError> {
+        try_roots_with_multiplicity(&self.den, &self.var, "TransferFunction::try_poles")
     }
 
     /// Zeros: roots of the numerator polynomial, repeated with
     /// multiplicity (as SymPy's `TransferFunction.zeros()`).
     ///
-    /// Returns an empty vector if the solver cannot find the roots.
+    /// The list is empty both for a constant numerator and when the zeros
+    /// are not all known, never a part of them, as for
+    /// [`poles`](Self::poles); [`try_zeros`](Self::try_zeros) tells the
+    /// cases apart.
     pub fn zeros(&self) -> Vec<Ex> {
-        roots_with_multiplicity(&self.num, &self.var)
+        self.try_zeros().unwrap_or_default()
+    }
+
+    /// [`zeros`](Self::zeros), or the error that says why they are not all
+    /// known.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_poles`](Self::try_poles), for the numerator.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
+    /// let g = TransferFunction::new(&s - 3, (&s + 1).powi(2), s.clone());
+    /// assert_eq!(g.try_zeros().unwrap(), vec![ctx.int(3)]);
+    /// ```
+    pub fn try_zeros(&self) -> Result<Vec<Ex>, SymplexError> {
+        try_roots_with_multiplicity(&self.num, &self.var, "TransferFunction::try_zeros")
     }
 
     /// DC gain: `lim_{s→0} G(s)` (SymPy: `limit(G, s, 0)`).

@@ -177,6 +177,34 @@ pub type BoolEx = Expr<Boolean>;
 /// A set-valued expression — intervals, finite sets, unions.
 pub type SetEx = Expr<SetValued>;
 
+/// An expression of any sort, read from its root node: what
+/// [`Context::from_json_any`](crate::api::context::Context::from_json_any)
+/// returns for a serialized tree whose sort is not known in advance.
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// let json = x.gt(&ctx.int(1)).to_json()?;
+/// match ctx.from_json_any(&json)? {
+///     AnyExpr::Bool(b) => assert_eq!(format!("{b}"), "x > 1"),
+///     other => panic!("expected a relation, got {other:?}"),
+/// }
+/// # Ok::<(), SymplexError>(())
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AnyExpr {
+    /// A numeric expression.
+    Num(Ex),
+    /// A boolean expression: a relation, `And`, `Or`, `Not`, `True` or
+    /// `False`.
+    Bool(BoolEx),
+    /// A set: an interval, a finite set, a union, an intersection, a
+    /// complement, an image set or a condition set.
+    Set(SetEx),
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // impl<S: Sort> Expr<S> — wrap helpers
 // ═══════════════════════════════════════════════════════════════════════════

@@ -468,18 +468,20 @@ pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
             if new_pairs == *pairs {
                 id
             } else {
-                arena.intern(ExprNode::Piecewise(new_pairs))
+                arena.piecewise(&new_pairs)
             }
         }
 
-        // Set constructors
+        // Set constructors — through the canonical constructors, so that
+        // `{x, y}` with `x, y := 1` is `{1}` and `[x, y]` with `x := 3,
+        // y := 2` is `∅`, `==` to the sets built directly.
         ExprNode::Interval(a, b, flags) => {
             let na = get(a);
             let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
-                arena.intern(ExprNode::Interval(na, nb, flags))
+                arena.interval(na, nb, flags)
             }
         }
 
@@ -488,7 +490,7 @@ pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
             if new_elems == *elems {
                 id
             } else {
-                arena.intern(ExprNode::FiniteSet(new_elems))
+                arena.finite_set(&new_elems)
             }
         }
 
@@ -497,7 +499,7 @@ pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
             if new_sets == *sets {
                 id
             } else {
-                arena.intern(ExprNode::SetUnion(new_sets))
+                arena.set_union(&new_sets)
             }
         }
 
@@ -506,7 +508,7 @@ pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
             if new_sets == *sets {
                 id
             } else {
-                arena.intern(ExprNode::SetIntersection(new_sets))
+                arena.set_intersection(&new_sets)
             }
         }
 
@@ -516,7 +518,7 @@ pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
             if na == a && nb == b {
                 id
             } else {
-                arena.intern(ExprNode::SetComplement(na, nb))
+                arena.set_complement(na, nb)
             }
         }
 
@@ -1013,7 +1015,7 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
         }
         let mut new_scope = scopes[sc as usize].clone();
         new_scope.push(var);
-        new_scope.sort_unstable();
+        new_scope.sort_unstable_by_key(|&v| crate::base::arena::ArenaOrder(v));
         if let Some(pos) = scopes.iter().position(|s| *s == new_scope) {
             return pos as u32;
         }
@@ -1393,21 +1395,22 @@ mod tests {
         assert_eq!(free_symbols(&a, res), vec![y]);
         let ty = a.mul(&[t, y]);
         let lt = a.intern(ExprNode::LaplaceTransform(ty, t, s));
+        let by_id = |v: &ExprId| crate::base::arena::ArenaOrder(*v);
         let mut got = free_symbols(&a, lt);
-        got.sort_unstable();
+        got.sort_unstable_by_key(by_id);
         let mut want = vec![y, s];
-        want.sort_unstable();
+        want.sort_unstable_by_key(by_id);
         assert_eq!(got, want);
         let ilt = a.intern(ExprNode::InverseLaplaceTransform(ty, t, s));
         let mut got = free_symbols(&a, ilt);
-        got.sort_unstable();
+        got.sort_unstable_by_key(by_id);
         assert_eq!(got, want);
         // A limit point in the dummy is the outer variable.
         let lim_x = a.intern(ExprNode::Limit(xy, x, x));
         let mut got = free_symbols(&a, lim_x);
-        got.sort_unstable();
+        got.sort_unstable_by_key(by_id);
         let mut want = vec![x, y];
-        want.sort_unstable();
+        want.sort_unstable_by_key(by_id);
         assert_eq!(got, want);
     }
 

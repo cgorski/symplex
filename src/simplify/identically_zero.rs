@@ -228,7 +228,7 @@ fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
     if has(Props::ZERO) {
         return Some(arena.zero);
     }
-    let h = mix(u64::from(sym.0) ^ k.wrapping_mul(0xD6E8_FEB8_6659_FD93));
+    let h = mix(u64::from(sym.index()) ^ k.wrapping_mul(0xD6E8_FEB8_6659_FD93));
     let pick = |table: &[i64], salt: u32| table[((h >> salt) % table.len() as u64) as usize];
     let sign: i64 = if has(Props::NEGATIVE) || has(Props::NONPOSITIVE) {
         -1
@@ -341,6 +341,16 @@ fn sample(arena: &mut Arena, e: ExprId) -> Sampled {
     } else {
         Sampled::Unknown
     }
+}
+
+/// Is `e` certified nonzero at one of the sample points ([`sample_value`],
+/// which respect each symbol's declared assumptions)?  For an expression
+/// with free symbols that proves it is *not identically zero* — nonzero for
+/// generic values of the symbols, the reading of the generic-solution
+/// convention (a lone symbol `a` is taken as nonzero); for a constant, that
+/// it is nonzero.  `false` proves nothing.
+pub(crate) fn nonzero_at_a_sample(arena: &mut Arena, e: ExprId) -> bool {
+    !walk::has_unevaluated(arena, e) && sample(arena, e) == Sampled::Nonzero
 }
 
 /// Largest `|k|` of a power `exp(m/L)^k` built by [`in_exponentials`].

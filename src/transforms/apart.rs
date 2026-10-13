@@ -1829,12 +1829,7 @@ fn apart_param_algebraic(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option
     if params.is_empty() || atoms.is_empty() || params.len() > MAX_PARAMS {
         return None;
     }
-    params.sort_by(|a, b| {
-        arena
-            .sort_key(*a)
-            .cmp(arena.sort_key(*b))
-            .then_with(|| a.0.cmp(&b.0))
-    });
+    params.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     let mut field = ParamAlgField::new(arena, var, &params, &atoms)?;
     let p = field.poly_of(arena, n)?;
     let q = field.poly_of(arena, d)?;

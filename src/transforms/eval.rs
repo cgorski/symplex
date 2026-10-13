@@ -1353,7 +1353,9 @@ fn known_real(arena: &mut Arena, x: ExprId) -> bool {
             if !walk::free_symbols(arena, x).is_empty() {
                 return false;
             }
-            constant_fact(arena, x, FACT_REAL, |arena| {
+            let fact = crate::base::arena::FactKey::Real;
+            let real = crate::base::truth::SignSet::REAL;
+            constant_fact(arena, x, fact, real, |arena| {
                 // A certified nonzero imaginary part decides at once (the
                 // exact tests below are for parts that cancel only exactly;
                 // a certified 16-digit value shows a part of any size, here
@@ -1394,27 +1396,28 @@ fn known_real(arena: &mut Arena, x: ExprId) -> bool {
     }
 }
 
-/// [`known_real`] of a symbol-free constant (a key of
-/// [`Arena::constant_facts`]).
-const FACT_REAL: u8 = 0;
-/// [`constant_is_negative`] (a key of [`Arena::constant_facts`]).
-const FACT_NEGATIVE: u8 = 1;
-
 /// The answer `prove` gives for the symbol-free constant `x`, memoised in
-/// [`Arena::constant_facts`] under `fact`: the proofs evaluate, search for
-/// zeros and take minimal polynomials, and `eval` asks again on every pass
-/// over the same radicals.
+/// [`Arena::constant_facts`] under `fact` as the signs `proved` when it
+/// holds and as `SignSet::UNKNOWN` when it does not: the proofs evaluate,
+/// search for zeros and take minimal polynomials, and `eval` asks again on
+/// every pass over the same radicals.
 fn constant_fact(
     arena: &mut Arena,
     x: ExprId,
-    fact: u8,
+    fact: crate::base::arena::FactKey,
+    proved: crate::base::truth::SignSet,
     prove: impl FnOnce(&mut Arena) -> bool,
 ) -> bool {
     if let Some(&known) = arena.constant_facts.get(&(x, fact)) {
-        return known;
+        return known.is_subset(proved);
     }
     let answer = prove(arena);
-    arena.constant_facts.insert((x, fact), answer);
+    let signs = if answer {
+        proved
+    } else {
+        crate::base::truth::SignSet::UNKNOWN
+    };
+    arena.constant_facts.insert((x, fact), signs);
     answer
 }
 
@@ -4953,7 +4956,9 @@ fn constant_is_negative(arena: &mut Arena, w: ExprId) -> bool {
     if !walk::free_symbols(arena, w).is_empty() {
         return false;
     }
-    constant_fact(arena, w, FACT_NEGATIVE, |arena| {
+    let fact = crate::base::arena::FactKey::Negative;
+    let negative = crate::base::truth::SignSet::NEGATIVE;
+    constant_fact(arena, w, fact, negative, |arena| {
         let mut cache = AssumptionCache::new();
         if cache.query(arena, w, Props::FINITE) == Some(false) {
             return false;
@@ -5404,65 +5409,29 @@ fn real_constant_sign(arena: &mut Arena, x: ExprId) -> Option<std::cmp::Ordering
     known_real(arena, x).then_some(sign)
 }
 
-/// What [`constant_facts`] found about a symbol-free constant, memoised in
-/// [`Arena::constant_facts`] under one key per class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ConstantClass {
-    /// Real (by [`known_real`]) with a certified positive value.
-    Positive,
-    /// Real with a certified negative value.
-    Negative,
-    /// Exactly 0 ([`exact_zero_test`]).
-    Zero,
-    /// A certified nonzero imaginary part.
-    NonReal,
-    /// Real and not 0 (an exact test), sign not decided.
-    NonzeroReal,
-    /// Not 0 (a certified nonzero value, or an exact test), realness not
-    /// decided.
-    Nonzero,
-    /// Real, nothing else decided.
-    Real,
-    /// Nothing decided.
-    Unknown,
-}
-
-impl ConstantClass {
-    const ALL: [Self; 8] = [
-        Self::Positive,
-        Self::Negative,
-        Self::Zero,
-        Self::NonReal,
-        Self::NonzeroReal,
-        Self::Nonzero,
-        Self::Real,
-        Self::Unknown,
-    ];
-
-    /// The key of the class in [`Arena::constant_facts`] (after
-    /// [`FACT_REAL`] and [`FACT_NEGATIVE`]).
-    fn key(self) -> u8 {
-        2 + self as u8
-    }
-}
-
-/// The class of the symbol-free constant `x`, decided on its evaluated form
+/// The signs of the symbol-free constant `x`, decided on its evaluated form
 /// `v = eval(x)` as `eval` decides relations (`W(√3·e^{√3}) − √3` is `0`):
 /// the certified 16-digit value of `v` first (a nonzero imaginary part, or
 /// a nonzero real part and realness by [`known_real`]), the exact zero
 /// tests of `Eq(v, 0)` when the value is 0 to its precision.  Memoised per
-/// arena.
-fn constant_class(arena: &mut Arena, x: ExprId) -> ConstantClass {
+/// arena ([`FactKey::Class`](crate::base::arena::FactKey::Class)).
+///
+/// One of eight sets: `POSITIVE`, `NEGATIVE` (real by [`known_real`], with
+/// a certified value of that sign), `ZERO` (exactly 0, structurally or by
+/// [`exact_zero_test`]), `NONREAL` (a certified nonzero imaginary part),
+/// `NONZERO_REAL` (real and not 0 by an exact test, sign not decided),
+/// `NONZERO` (a certified nonzero value or an exact test, realness not
+/// decided), `REAL` (nothing else decided) and `UNKNOWN`.
+fn constant_class(arena: &mut Arena, x: ExprId) -> crate::base::truth::SignSet {
+    use crate::base::arena::FactKey;
+    use crate::base::truth::SignSet;
     use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
-    if let Some(&c) = ConstantClass::ALL
-        .iter()
-        .find(|c| arena.constant_facts.contains_key(&(x, c.key())))
-    {
-        return c;
+    if let Some(&class) = arena.constant_facts.get(&(x, FactKey::Class)) {
+        return class;
     }
     let v = eval(arena, x);
     let class = if arena.is_zero_structural(v) {
-        ConstantClass::Zero
+        SignSet::ZERO
     } else {
         let value = evalf_settled(arena, v, 16, ZeroSearch::Cap);
         let (nonzero, nonreal) = match &value {
@@ -5470,27 +5439,27 @@ fn constant_class(arena: &mut Arena, x: ExprId) -> ConstantClass {
             _ => (false, false),
         };
         if nonreal {
-            ConstantClass::NonReal
+            SignSet::NONREAL
         } else if nonzero {
             match (known_real(arena, v), value) {
-                (true, Ok((z, _))) if z.0.is_negative() => ConstantClass::Negative,
-                (true, _) => ConstantClass::Positive,
-                (false, _) => ConstantClass::Nonzero,
+                (true, Ok((z, _))) if z.0.is_negative() => SignSet::NEGATIVE,
+                (true, _) => SignSet::POSITIVE,
+                (false, _) => SignSet::NONZERO,
             }
         } else {
             let real = known_real(arena, v);
             let zero = exact_zero_test(arena, v)
                 .or_else(|| (v != x).then(|| exact_zero_test(arena, x)).flatten());
             match (zero, real) {
-                (Some(true), _) => ConstantClass::Zero,
-                (Some(false), true) => ConstantClass::NonzeroReal,
-                (Some(false), false) => ConstantClass::Nonzero,
-                (None, true) => ConstantClass::Real,
-                (None, false) => ConstantClass::Unknown,
+                (Some(true), _) => SignSet::ZERO,
+                (Some(false), true) => SignSet::NONZERO_REAL,
+                (Some(false), false) => SignSet::NONZERO,
+                (None, true) => SignSet::REAL,
+                (None, false) => SignSet::UNKNOWN,
             }
         }
     };
-    arena.constant_facts.insert((x, class.key()), true);
+    arena.constant_facts.insert((x, FactKey::Class), class);
     class
 }
 
@@ -5521,19 +5490,20 @@ pub(crate) fn constant_facts(
     {
         return facts;
     }
-    let class = constant_class(arena, x);
-    match class {
-        ConstantClass::Positive => facts.known_true |= Props::REAL | Props::POSITIVE,
-        ConstantClass::Negative => facts.known_true |= Props::REAL | Props::NEGATIVE,
-        ConstantClass::Zero => facts.known_true |= Props::ZERO,
-        ConstantClass::NonReal => {
+    use crate::base::truth::SignSet;
+    match constant_class(arena, x) {
+        SignSet::POSITIVE => facts.known_true |= Props::REAL | Props::POSITIVE,
+        SignSet::NEGATIVE => facts.known_true |= Props::REAL | Props::NEGATIVE,
+        SignSet::ZERO => facts.known_true |= Props::ZERO,
+        SignSet::NONREAL => {
             facts.known_true |= Props::NONZERO | Props::COMPLEX;
             facts.known_false |= Props::REAL | Props::EXTENDED_REAL;
         }
-        ConstantClass::NonzeroReal => facts.known_true |= Props::NONZERO | Props::REAL,
-        ConstantClass::Nonzero => facts.known_true |= Props::NONZERO,
-        ConstantClass::Real => facts.known_true |= Props::REAL,
-        ConstantClass::Unknown => {}
+        SignSet::NONZERO_REAL => facts.known_true |= Props::NONZERO | Props::REAL,
+        SignSet::NONZERO => facts.known_true |= Props::NONZERO,
+        SignSet::REAL => facts.known_true |= Props::REAL,
+        // `UNKNOWN`; [`constant_class`] gives no other set.
+        _ => {}
     }
     facts.forward_chain();
     facts

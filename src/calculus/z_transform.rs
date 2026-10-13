@@ -817,7 +817,7 @@ fn try_normalized_forward(
             }
             // Named after the value: a nested call rewriting another
             // factor never reuses the symbol for a different base.
-            let g = arena.symbol(&format!("__zt_geometric{}", value.0));
+            let g = arena.symbol(&format!("__zt_geometric{}", value.index()));
             bases.push((g, value));
             let gn = arena.pow(g, n_var);
             out.push(arena.mul(&[constant, gn]));

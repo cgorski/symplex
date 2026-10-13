@@ -219,9 +219,9 @@ pub fn build_tower(
     collect_transcendentals(arena, expr, var, &mut exp_args, &mut ln_args);
 
     // Deduplicate by ExprId.
-    exp_args.sort_by_key(|e| e.0);
+    exp_args.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     exp_args.dedup();
-    ln_args.sort_by_key(|e| e.0);
+    ln_args.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     ln_args.dedup();
 
     let has_exp = !exp_args.is_empty();

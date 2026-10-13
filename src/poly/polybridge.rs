@@ -1511,7 +1511,7 @@ fn is_plain_generator(arena: &Arena, g: ExprId) -> bool {
 fn generator_residue(arena: &Arena, id: ExprId) -> Residue {
     let plain = |g: ExprId| {
         residue_pow(
-            residue_unit(u64::from(g.0) ^ RESIDUE_GENERATOR_SALT),
+            residue_unit(u64::from(g.index()) ^ RESIDUE_GENERATOR_SALT),
             RESIDUE_ROOT_SCALE,
         )
     };
@@ -1535,7 +1535,10 @@ fn generator_residue(arena: &Arena, id: ExprId) -> Residue {
             None
         }
         ExprNode::Pow(g, q) if is_plain_generator(arena, *g) => arena.as_num(*q).and_then(|q| {
-            residue_scaled_power(residue_unit(u64::from(g.0) ^ RESIDUE_GENERATOR_SALT), q)
+            residue_scaled_power(
+                residue_unit(u64::from(g.index()) ^ RESIDUE_GENERATOR_SALT),
+                q,
+            )
         }),
         ExprNode::Pow(n, q) => {
             if let (Some(n), Some(q)) = (arena.as_num(*n), arena.as_num(*q))
@@ -1620,12 +1623,12 @@ fn exponent_unit(arena: &Arena, u: ExprId, salt: u64) -> Option<u64> {
                 };
                 let key = rest
                     .iter()
-                    .fold(salt, |h, c| residue_hash(h ^ u64::from(c.0)));
+                    .fold(salt, |h, c| residue_hash(h ^ u64::from(c.index())));
                 (coeff, key)
             }
             _ => (
                 crate::base::numeric::Q::one(),
-                residue_hash(salt ^ u64::from(t.0)),
+                residue_hash(salt ^ u64::from(t.index())),
             ),
         };
         value = residue_mul(
@@ -1816,7 +1819,7 @@ fn try_together_poly_lcm(
     for &d in unique_denoms {
         all_syms.extend(walk::free_symbols(arena, d));
     }
-    all_syms.sort_by_key(|id| id.0);
+    all_syms.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     all_syms.dedup();
 
     // Need exactly one variable for univariate polynomial operations.

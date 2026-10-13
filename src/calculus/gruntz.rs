@@ -680,7 +680,11 @@ impl SubsSet {
                 let size = crate::transforms::pattern::tree_size_capped(arena, k, 10_000);
                 (dirty, size, k)
             })
-            .min()
+            .min_by(|a, b| {
+                (a.0, a.1)
+                    .cmp(&(b.0, b.1))
+                    .then_with(|| arena.canonical_cmp(a.2, b.2))
+            })
             .map(|(_, _, k)| k)
             .ok_or_else(|| crate::base::errors::SymplexError::ComputationFailed {
                 operation: "gruntz",
@@ -728,7 +732,7 @@ impl SubsSet {
                 (size, orig, dummy)
             })
             .collect();
-        entries.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        entries.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| arena.canonical_cmp(a.1, b.1)));
         let mut result = e;
         for (_, orig, dummy) in entries {
             result = crate::transforms::subs::subs(arena, result, orig, dummy);
@@ -1706,13 +1710,14 @@ fn rewrite(
 
     // All entries must be Exp nodes.  The representative g is the simplest
     // (SymPy sorts by the height of the rewrite tree and takes the last):
-    // the smallest tree, ties by id.  It was the last entry in hash-map
+    // the smallest tree, ties in canonical order.  It was the last entry in hash-map
     // order, which changed with the contents of the arena: `(ln(e + 1/x) −
     // 1)^(−√(e + 1/x))` at `∞` (`∞`) failed whenever `exp(−√(…)·ln(…))`
     // came last instead of `exp(x)`.
-    let Some(&(g_expr, _g_dummy)) = entries
+    let Some((_, g_expr)) = entries
         .iter()
-        .min_by_key(|&&(e, _)| (crate::base::walk::post_order_ids(arena, e).len(), e))
+        .map(|&(e, _)| (crate::base::walk::post_order_ids(arena, e).len(), e))
+        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| arena.canonical_cmp(a.1, b.1)))
     else {
         return Ok((exps, arena.zero()));
     };

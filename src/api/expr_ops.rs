@@ -775,11 +775,16 @@ impl<'a> std::iter::Product<&'a Ex> for Option<Ex> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Context {
-    /// Crate-internal: the `ExprId` of `e` after verifying it belongs to
-    /// this context.  Panics with the standard cross-context message
-    /// otherwise (mirror of `Expr::checked_id`).
+    /// Crate-internal: the `ExprId` of `e` (of any sort) after verifying
+    /// it belongs to this context.  Panics with the standard cross-context
+    /// message otherwise (mirror of `Expr::checked_id`).  Every `Context`
+    /// method that takes an expression goes through it: a foreign id
+    /// indexes this arena silently (a wrong answer) or out of bounds.
     #[inline]
-    pub(crate) fn own_id(&self, e: &Ex) -> ExprId {
+    pub(crate) fn own_id<S: crate::api::expr::Sort>(
+        &self,
+        e: &crate::api::expr::Expr<S>,
+    ) -> ExprId {
         if e.ctx_id != self.id {
             panic!(
                 "symplex: cannot combine expressions from different contexts \
@@ -1635,8 +1640,8 @@ impl Ex {
         }
         let ctx = self.context();
         let seed = 0x5EED_0000_0000_0000_u64
-            ^ (u64::from(self.raw_id().0) << 32)
-            ^ u64::from(other_id.0)
+            ^ (u64::from(self.raw_id().index()) << 32)
+            ^ u64::from(other_id.index())
             ^ (samples as u64).rotate_left(17);
         let mut rng = SplitMix64::new(seed);
         let samples = samples.max(1);

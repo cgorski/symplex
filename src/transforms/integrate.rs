@@ -789,10 +789,13 @@ fn by_parts_dv_one(
 /// a failing search took 1.1 s for 77 ms).
 const DV_ONE_NESTED_DEPTH: usize = 20;
 
-/// The argument of a one-argument function node (the last argument of a
-/// library function), if any.
+/// The argument of a one-argument function node, if any.  A library function
+/// of several arguments has no single one (`besselj(ν, x)` takes it last,
+/// `lambertw(x, k)` and `elliptic_f(φ, m)` first; up to 0.48 the last was
+/// taken for all of them), nor has a user function: `None`.
 fn single_argument(arena: &Arena, expr: ExprId) -> Option<ExprId> {
-    match arena.node(expr) {
+    let node = arena.node(expr);
+    match node {
         ExprNode::Ei(g)
         | ExprNode::Si(g)
         | ExprNode::Ci(g)
@@ -806,7 +809,12 @@ fn single_argument(arena: &Arena, expr: ExprId) -> Option<ExprId> {
         | ExprNode::Erf(g)
         | ExprNode::Erfc(g)
         | ExprNode::Ln(g) => Some(*g),
-        ExprNode::Apply(_, args) => args.last().copied(),
+        ExprNode::Apply(..) => match node.func(arena)? {
+            (f, args) if f.spec().arity == crate::base::func::ArgCount::Exactly(1) => {
+                args.first().copied()
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -3179,7 +3187,7 @@ fn tan_pole_continuous(arena: &mut Arena, h: ExprId, t: ExprId) -> Option<bool> 
     if params.len() > FTC_PARAMETER_VALUES.len() {
         return None;
     }
-    params.sort();
+    params.sort_by(|a, b| a.0.cmp(&b.0));
     for (j, &(_, s)) in params.iter().enumerate() {
         let (p, d) = FTC_PARAMETER_VALUES[j];
         let value = arena.rational(p, d);
@@ -5935,7 +5943,7 @@ fn varies_numerically_uncached(arena: &mut Arena, q: ExprId, var: ExprId) -> boo
     if params.len() > FTC_PARAMETER_VALUES.len() {
         return false;
     }
-    params.sort();
+    params.sort_by(|a, b| a.0.cmp(&b.0));
     let mut bound = q;
     for (k, &(_, s)) in params.iter().enumerate() {
         let (p, d) = FTC_PARAMETER_VALUES[k];
@@ -9791,7 +9799,7 @@ fn real_at_generic_values(arena: &mut Arena, val: ExprId) -> bool {
     if params.len() > 3 {
         return true;
     }
-    params.sort();
+    params.sort_by(|a, b| a.0.cmp(&b.0));
     for signs in 0u32..(1 << params.len()) {
         let mut bound = val;
         for (k, &(_, s)) in params.iter().enumerate() {
@@ -12775,7 +12783,7 @@ fn bind_parameters(
     if params.len() > FTC_PARAMETER_VALUES.len() {
         return None;
     }
-    params.sort();
+    params.sort_by(|a, b| a.0.cmp(&b.0));
     let (mut f, mut big_f) = (f, big_f);
     let mut may_be_complex = false;
     let mut facts = crate::base::assumptions::AssumptionCache::new();

@@ -56,12 +56,7 @@ fn shared_generators(arena: &Arena, exprs: &[ExprId]) -> Vec<ExprId> {
             }
         }
     }
-    gens.sort_by(|a, b| {
-        arena
-            .sort_key(*a)
-            .cmp(arena.sort_key(*b))
-            .then_with(|| a.0.cmp(&b.0))
-    });
+    gens.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     gens
 }
 

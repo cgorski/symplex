@@ -152,7 +152,7 @@ fn factor_parts(
     route: Route,
 ) -> Option<FactorParts> {
     let mut syms = walk::free_symbols(arena, expr);
-    syms.sort_by_key(|id| id.0);
+    syms.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     syms.dedup();
 
     match var {

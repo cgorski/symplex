@@ -35,12 +35,19 @@ enum Unassumed {
 /// numerically: its value to `digits` correct digits with an imaginary part
 /// beyond them (two digits of margin) is not real (`√(1/2 − √5/2)`).  If
 /// the imaginary part is within them, `im(c)` is evaluated on its own and
-/// `c` is real when that is exactly 0 (`√(3 − √5)`, which the assumption
-/// system leaves open).  `evalf` refuses a value it cannot certify
-/// (`PrecisionExhausted`), and then the answer is `None`; so it is for a
-/// non-zero `im(c)` below the digits, which may be a rounding residue (the
-/// imaginary part `evalf` (0.28) returns for a real `RootOf` root) or a
-/// genuinely tiny imaginary part.
+/// `c` is real when that is a certified exact 0 (`√(3 − √5)`, which the
+/// assumption system leaves open).  `evalf` refuses a value it cannot
+/// certify (`PrecisionExhausted`), and then the answer is `None`; so it is
+/// for a non-zero `im(c)` below the digits, which may be a rounding residue
+/// (the imaginary part `evalf` (0.28) returns for a real `RootOf` root) or
+/// a genuinely tiny imaginary part.  An `im(c)` that is only zero to the
+/// precision reached is no proof: then `eval`'s exact realness tests decide
+/// ([`constant_facts`](crate::transforms::eval::constant_facts): the exact
+/// conjugation test over radicals and roots of unity, the minimal
+/// polynomial), else `None`.  Up to 0.48 it counted as real:
+/// `Γ(2 + i·d)` with `d = e^{10⁻¹⁵⁰} − 1 − 10⁻¹⁵⁰ ≈ 5·10⁻³⁰¹` (imaginary
+/// part `2.1·10⁻³⁰¹`) was real, and `lim_{x→∞} (Γ(2 + i·d) − 1)·x` was
+/// `0`.
 pub(crate) fn constant_realness(
     arena: &mut Arena,
     c: ExprId,
@@ -111,6 +118,9 @@ fn constant_realness_with(
     if !params.is_empty() {
         return None;
     }
+    // `evalf_complex` returns certified digits or a 0 that is only zero to
+    // the precision reached, which is real to any digits: an imaginary part
+    // beyond the digits is certified.
     let z = crate::transforms::evalf::evalf_complex(arena, c, digits).ok()?;
     if !crate::transforms::evalf::is_real_to_digits(&z, digits.saturating_sub(2)) {
         return Some(false);
@@ -120,8 +130,15 @@ fn constant_realness_with(
     if walk::has_unevaluated(arena, im) {
         return None;
     }
-    let w = crate::transforms::evalf::evalf_complex(arena, im, digits).ok()?;
-    (w.0.is_zero() && w.1.is_zero()).then_some(true)
+    let search = crate::transforms::evalf::ZeroSearch::Cap;
+    let w = crate::transforms::evalf::evalf_verdict(arena, im, digits, search).ok()?;
+    match w.proven() {
+        Some(w) => (w.0.is_zero() && w.1.is_zero()).then_some(true),
+        None => {
+            let facts = crate::transforms::eval::constant_facts(arena, c);
+            (facts.query(Props::REAL) == Some(true)).then_some(true)
+        }
+    }
 }
 
 /// Is the symbol `s` declared real (directly or through a declaration that
