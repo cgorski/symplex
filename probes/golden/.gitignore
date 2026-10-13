@@ -1,0 +1,4 @@
+# The top-level `.gitignore` ignores every `Cargo.lock`; keep this one so that
+# runs against different trees resolve the same dependency versions.
+!Cargo.lock
+/target/

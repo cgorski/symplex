@@ -25,6 +25,7 @@ All five probes compile against the 0.2 API (checked at the 0.2.0 release).
 | `probe_correctness.rs` | For each integral that returns a closed form, checks `F(hi) − F(lo)` against numerical quadrature; also verifies simplification identities, series accuracy and ODE solutions numerically. Reports PASS / WRONG / SKIP |
 | `safety_test.rs` | Dimensional-analysis type safety: every legal ordering of typed products compiles and tracks the dimension |
 | `expr_units_test.rs` | `expr!` + `from_ex`, named-type arithmetic, and `diff_wrt` / `integrate_wrt` workflows in the units module |
+| `golden/` (a crate) | The golden-output harness: 200,000 deterministic random expressions × 31 operations (simplify, integrate, solve, limits, series, evalf, compile, printers, round trips, …), each case in a fresh context and thread, run in parallel; `golden_diff.py` compares two runs. Used to show that a refactor changes no output, or to list exactly the outputs an intended change alters. See `golden/README.md` |
 
 The user-facing counterparts of these checks are the integration test suites
 in `tests/` (`test_correctness_audit.rs`, `test_sympy_cross_validation.rs`,

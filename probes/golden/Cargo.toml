@@ -1,0 +1,21 @@
+[package]
+name = "golden"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Deterministic golden-output harness: runs a fixed corpus of symplex operations and prints one TSV line per (case, op), so two trees can be diffed"
+
+# Relative path on purpose: the same harness directory builds against whatever
+# tree it is copied into (`<tree>/probes/golden`).
+[dependencies]
+symplex = { path = "../.." }
+
+# Its own workspace (like `rubi-harness`): not a member of the symplex package,
+# and `/probes` is excluded from the published crate.
+[workspace]
+
+[profile.release]
+debug = false
+# Every op runs under `catch_unwind`; panics must unwind.
+panic = "unwind"

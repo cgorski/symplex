@@ -96,6 +96,8 @@ mod test_expr_view;
 mod test_factoring_boundaries;
 #[path = "unit/test_finite_diff.rs"]
 mod test_finite_diff;
+#[path = "unit/test_float_casts.rs"]
+mod test_float_casts;
 #[path = "unit/test_floor_ceil_minmax.rs"]
 mod test_floor_ceil_minmax;
 #[path = "unit/test_formal_series.rs"]

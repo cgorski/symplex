@@ -8,6 +8,30 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Added
+
+- `symplex::base::truth`: `Truth` (three-valued Kleene logic with no
+  implicit reading of "unknown" as true or false), `SignSet` (the set of
+  signs {< 0, 0, > 0, non-real} a finite value can have, with sign
+  arithmetic checked exhaustively against sampled complex numbers),
+  `Evidence` and `Verdict<T>` (how a decision was established: exact,
+  certified, approximate or probabilistic; only the first two justify a
+  claim).  The foundation of the type-architecture refactor of 0.49: the
+  crate's internal decisions move to these types from `Option<bool>` and
+  five sign encodings.
+- `probes/golden/`: a golden-output harness (200,000 deterministic random
+  expressions × 31 operations, each case in a fresh context and thread)
+  and a diff tool, used to show that a refactor changes no outputs.
+
+### Changed
+
+- astro-float 0.9.5 → 0.9.6.  On 32-bit targets (wasm32) 0.9.5 used the
+  64-bit word size in its decimal conversion, which silently corrupted
+  float round trips (upstream #40/#47: `0.5` read back as `8`); 0.9.6 also
+  fixes `BigFloat::cmp` against a zero right operand (#44) and adds
+  overflow guards.  Results on 64-bit targets are unchanged (byte identity
+  and the golden-output harness identical).
+
 ## [0.48.0] - 2026-10-13
 
 Five gaps against SymPy closed, each with an independent oracle and 0
