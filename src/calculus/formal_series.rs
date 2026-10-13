@@ -22,10 +22,29 @@
 //!   [`truncate`](FormalPowerSeries::truncate));
 //! * an explicit **polynomial** (finite coefficient list);
 //! * a **derived** series: `add`, `sub`, `mul`, `scale`, `compose`,
-//!   `derivative`, `integral`, `inverse` (`1/f`, needs `f(a) ≠ 0`) or
-//!   `reversion` (compositional inverse by Lagrange inversion, needs
-//!   `f(a) = 0`, `f'(a) ≠ 0`) of other series.  Derived coefficients are
-//!   computed from the operands' coefficients exactly, to any index.
+//!   `derivative`, `integral`, `inverse` (`1/f`, needs `f(a) ≠ 0` or a
+//!   pole) or `reversion` (compositional inverse by Lagrange inversion,
+//!   needs `f(a) = 0`, `f'(a) ≠ 0`) of other series.  Derived coefficients
+//!   are computed from the operands' coefficients exactly (principal parts
+//!   included), to any index.
+//!
+//! # Puiseux series and symbolic powers
+//!
+//! In general a series is `(x − a)^ρ · Σ_k a_k (x − a)^(k/d)`: the
+//! [`offset`](FormalPowerSeries::offset) `ρ` is a non-integer rational or a
+//! symbolic exponent (`√x·eˣ = x^(1/2)·Σ xᵏ/k!`, `x^a·eˣ = x^a·Σ xᵏ/k!`)
+//! and the [`ramification`](FormalPowerSeries::ramification) `d` allows
+//! fractional steps (`exp(√x) = Σ x^(k/2)/k!`).  `coefficient(k)` and
+//! `general_term` refer to the term of exponent `ρ + k/d`
+//! ([`exponent`](FormalPowerSeries::exponent)); for a Taylor or Laurent
+//! series `ρ = 0`, `d = 1` and nothing changes.
+//!
+//! A function with no Laurent or Puiseux expansion at the point (`ln x`,
+//! `exp(1/x)`, `|x|` at 0) gives a [refused](FormalPowerSeries::is_refused)
+//! series: its coefficients are unevaluated stand-ins (never `nan`), its
+//! truncation a formal `Series` node, and
+//! [`try_coefficient`](FormalPowerSeries::try_coefficient) /
+//! [`try_truncate`](FormalPowerSeries::try_truncate) return `Err`.
 //!
 //! Series are created with [`Ex::fps`](crate::api::expr::Ex::fps) /
 //! [`Ex::fps_maclaurin`](crate::api::expr::Ex::fps_maclaurin) or
@@ -43,6 +62,10 @@
 //! // (e^x)² = e^{2x}: a_3 = 8/6 = 4/3
 //! let sq = e.mul(&e).unwrap();
 //! assert_eq!(sq.coefficient(3).to_string(), "4/3");
+//!
+//! // A Puiseux series: x^(1/3)·sin x = x^(4/3) − x^(10/3)/6 + …
+//! let p = (&x.cbrt() * &x.sin()).fps_maclaurin(&x);
+//! assert_eq!(p.truncate(4).to_string(), "x^(4/3) - 1/6*x^(10/3)");
 //! ```
 
 use std::sync::{Arc, Mutex};
@@ -67,14 +90,37 @@ use crate::transforms::eval;
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A formal power series `Σ a_k (x − point)^k` with exact, lazily computed
-/// coefficients.  See the [module docs](self) for the design.
+/// coefficients — more generally a Laurent or Puiseux series
+/// `(x − point)^ρ · Σ_k a_k (x − point)^(k/d)` (see
+/// [`offset`](Self::offset) and [`ramification`](Self::ramification)).
+/// See the [module docs](self) for the design.
 pub struct FormalPowerSeries {
     ctx: Context,
     var: ExprId,
     point: ExprId,
+    /// Exponent offset `ρ` (zero for a Taylor or Laurent series): a
+    /// non-integer rational or an expression free of `var`.
+    offset: ExprId,
+    /// Ramification `d ≥ 1`: index `k` is the exponent `ρ + k/d`.
+    ram: u32,
+    /// No coefficient below this index is non-zero (negative for a
+    /// principal part).
+    valuation: i64,
+    /// `Σ r_p (x − point)^p ln(x − point)` (`p ≥ 0`), from `integral` of a
+    /// series with an `(x − point)^(−1)` term; empty otherwise.
+    log_terms: Vec<(i64, ExprId)>,
     source: Source,
-    /// Memoised coefficients `a_0, a_1, …`.
-    memo: Mutex<Vec<ExprId>>,
+    /// Memoised coefficients `a_valuation, a_valuation+1, …`.
+    memo: Mutex<Vec<Coeff>>,
+    zero: ExprId,
+}
+
+/// A memoised coefficient; `exact` is false for an unevaluated stand-in
+/// (the expansion does not exist, or failed at this order).
+#[derive(Clone, Copy, Debug)]
+struct Coeff {
+    id: ExprId,
+    exact: bool,
 }
 
 /// Closed-form elementary series `f(c · xᵐ)` (all with `f(0)` known).
@@ -94,33 +140,62 @@ enum Known {
 }
 
 enum Source {
+    /// A closed-form series in the series variable (`var`, or
+    /// `(x − point)^(1/d)` for a ramified series).
     Known(Known),
-    /// Expanded on demand by the truncated-series engine.
+    /// Expanded on demand by the truncated-series engine, `expr` in `svar`
+    /// (the shifted function, or its ramified form in a placeholder).
     Engine {
         expr: ExprId,
+        svar: ExprId,
         cache: Mutex<Option<TSeries>>,
     },
     Polynomial(Vec<ExprId>),
+    /// No Laurent or Puiseux expansion of `expr` about the point exists
+    /// (`ln x`, `exp(1/x)`, `|x|` at 0): coefficients are unevaluated
+    /// stand-ins and `truncate` is a formal `Series` node.
+    Refused {
+        expr: ExprId,
+        reason: String,
+    },
+    /// Operands share `offset` and `ram` (aligned by `add`/`sub`).
     Add(Box<FormalPowerSeries>, Box<FormalPowerSeries>),
     Sub(Box<FormalPowerSeries>, Box<FormalPowerSeries>),
+    /// Operands share `ram`; the offsets add.
     Mul(Box<FormalPowerSeries>, Box<FormalPowerSeries>),
     Scale(Box<FormalPowerSeries>, ExprId),
     Compose(Box<FormalPowerSeries>, Box<FormalPowerSeries>),
     Derivative(Box<FormalPowerSeries>),
     Integral(Box<FormalPowerSeries>),
-    Inverse(Box<FormalPowerSeries>),
+    /// `1/f`, with the index of `f`'s leading coefficient.
+    Inverse(Box<FormalPowerSeries>, i64),
     Reversion(Box<FormalPowerSeries>),
+    /// The same function under another `(offset, ram)`: coefficient `k` is
+    /// the inner coefficient `(k·mul − shift)/div` (zero unless integral).
+    Reindex {
+        inner: Box<FormalPowerSeries>,
+        mul: u32,
+        div: u32,
+        shift: i64,
+    },
 }
 
 impl Clone for FormalPowerSeries {
     fn clone(&self) -> Self {
+        // Lock order memo → cache, as in `coeff` (memo → context → cache).
+        let memo = self.memo.lock().map(|m| m.clone()).unwrap_or_default();
         let source = match &self.source {
             Source::Known(k) => Source::Known(k.clone()),
-            Source::Engine { expr, cache } => Source::Engine {
+            Source::Engine { expr, svar, cache } => Source::Engine {
                 expr: *expr,
+                svar: *svar,
                 cache: Mutex::new(cache.lock().ok().and_then(|c| c.clone())),
             },
             Source::Polynomial(v) => Source::Polynomial(v.clone()),
+            Source::Refused { expr, reason } => Source::Refused {
+                expr: *expr,
+                reason: reason.clone(),
+            },
             Source::Add(a, b) => Source::Add(a.clone(), b.clone()),
             Source::Sub(a, b) => Source::Sub(a.clone(), b.clone()),
             Source::Mul(a, b) => Source::Mul(a.clone(), b.clone()),
@@ -128,15 +203,31 @@ impl Clone for FormalPowerSeries {
             Source::Compose(a, b) => Source::Compose(a.clone(), b.clone()),
             Source::Derivative(a) => Source::Derivative(a.clone()),
             Source::Integral(a) => Source::Integral(a.clone()),
-            Source::Inverse(a) => Source::Inverse(a.clone()),
+            Source::Inverse(a, l) => Source::Inverse(a.clone(), *l),
             Source::Reversion(a) => Source::Reversion(a.clone()),
+            Source::Reindex {
+                inner,
+                mul,
+                div,
+                shift,
+            } => Source::Reindex {
+                inner: inner.clone(),
+                mul: *mul,
+                div: *div,
+                shift: *shift,
+            },
         };
         FormalPowerSeries {
             ctx: self.ctx.clone(),
             var: self.var,
             point: self.point,
+            offset: self.offset,
+            ram: self.ram,
+            valuation: self.valuation,
+            log_terms: self.log_terms.clone(),
             source,
-            memo: Mutex::new(self.memo.lock().map(|m| m.clone()).unwrap_or_default()),
+            memo: Mutex::new(memo),
+            zero: self.zero,
         }
     }
 }
@@ -258,6 +349,93 @@ fn poly_inverse(arena: &mut Arena, a: &[ExprId], n: usize) -> Vec<ExprId> {
 fn is_zero_expr(arena: &mut Arena, e: ExprId) -> bool {
     let v = eval::eval(arena, e);
     arena.is_zero_structural(v) || arena.as_num(v).is_some_and(|r| r.is_zero())
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
+}
+
+fn gcd_u32(a: u32, b: u32) -> u32 {
+    let (mut a, mut b) = (a, b);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// `lcm(a, b)`, `None` above [`MAX_RAMIFICATION`].
+fn lcm_u32(a: u32, b: u32) -> Option<u32> {
+    let l = u64::from(a / gcd_u32(a, b).max(1)) * u64::from(b);
+    u32::try_from(l).ok().filter(|&l| l <= MAX_RAMIFICATION)
+}
+
+/// The largest ramification index tried or produced (`x^(1/d)`).
+const MAX_RAMIFICATION: u32 = 360;
+
+/// Stand-in for `(x − point)^(1/d)` while a ramified series is built.
+const RAMIFIED_PLACEHOLDER: &str = "__fps_t";
+
+/// The value of a number expression as an `i64` when it is an integer.
+fn as_integer(arena: &Arena, e: ExprId) -> Option<i64> {
+    use num_traits::ToPrimitive;
+    let q = arena.as_num(e)?;
+    if q.is_integer() {
+        q.to_integer().to_i64()
+    } else {
+        None
+    }
+}
+
+/// `q` as an `i64` when it is an integer.
+fn q_to_i64(q: &Q) -> Option<i64> {
+    use num_traits::ToPrimitive;
+    if q.is_integer() {
+        q.to_integer().to_i64()
+    } else {
+        None
+    }
+}
+
+/// The rational part of an exponent: `3/2` for `a + 3/2`, `0` for `a`.
+fn rational_part(arena: &Arena, e: ExprId) -> Q {
+    if let Some(q) = arena.as_num(e) {
+        return q.clone();
+    }
+    let mut acc = Q::zero();
+    if let ExprNode::Add(args) = arena.node(e) {
+        for &t in args {
+            if let Some(q) = arena.as_num(t) {
+                acc += q;
+            }
+        }
+    }
+    acc
+}
+
+fn contains_singular(arena: &Arena, id: ExprId) -> bool {
+    walk::contains(arena, id, arena.nan)
+        || walk::contains(arena, id, arena.complex_infinity)
+        || walk::contains(arena, id, arena.infinity)
+        || walk::contains(arena, id, arena.neg_infinity)
+}
+
+/// The unevaluated `k`-th Taylor coefficient `Subs(dᵏ f/dxᵏ, x, point)/k!`,
+/// returned where the coefficient cannot be computed (never `nan`).
+fn taylor_standin(arena: &mut Arena, f: ExprId, var: ExprId, point: ExprId, k: i64) -> ExprId {
+    let k = u64::try_from(k).unwrap_or(0);
+    let mut body = f;
+    for _ in 0..k {
+        body = arena.intern(ExprNode::Derivative(body, var));
+    }
+    let at = arena.intern(ExprNode::Subs(body, var, point));
+    if k <= 1 {
+        return at;
+    }
+    let inv = rat_expr(arena, Q::new(BigInt::one(), factorial(k)));
+    arena.mul(&[inv, at])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -514,47 +692,284 @@ impl Known {
 
 /// Build the formal power series of `expr` about `point` in `var`
 /// (crate-internal entry used by `Ex::fps`).
+///
+/// Tried in order, on `f(x) = expr(x + point)`:
+/// 1. a Taylor or Laurent series in `x` (closed form, polynomial, or the
+///    meromorphic expansion engine);
+/// 2. `f = x^ρ · h` with `ρ` a non-integer rational or symbolic exponent
+///    (`√x·eˣ`, `x^a·eˣ`) and `h` as in 1;
+/// 3. a Puiseux series: `x^(p/q)` in `h` becomes `t^(p·d/q)` and `x` becomes
+///    `t^d` for `t = x^(1/d)` (an identity for principal branches, as
+///    `arg t = arg(x)/d`), and `h(t^d)` is expanded as in 1 (`exp(√x)`,
+///    `√(1 + √x)`); an even or odd `h(t^d)` drops to `d/2` (`cos √x` is a
+///    power series in `x`, `sin √x = √x·(1 − x/6 + …)`);
+/// 4. a sum, term by term, when the terms' exponents differ by rationals
+///    (`x^a + x^(a+1)·eˣ`).
+///
+/// Otherwise the series is refused (never `nan` coefficients).
 pub(crate) fn fps(ctx: &Context, expr: ExprId, var: ExprId, point: ExprId) -> FormalPowerSeries {
-    let source = {
+    let (whole, parts, zero) = {
         let mut inner = ctx.inner.write();
         let arena = &mut inner.arena;
-        let at_zero = arena.is_zero_structural(point);
-        let shifted = if at_zero {
+        let zero = arena.zero;
+        let shifted = if arena.is_zero_structural(point) {
             expr
         } else {
             let v = arena.add(&[var, point]);
             crate::transforms::subs::subs(arena, expr, var, v)
         };
-        match detect_known(arena, shifted, var) {
-            Some(k) => Source::Known(k),
+        match build_term(ctx, arena, shifted, var, point) {
+            Some(s) => (Some(s), Vec::new(), zero),
             None => {
-                // Polynomials get an explicit coefficient list.
-                if let Some(terms) = crate::calculus::summation::sym_poly_in(arena, shifted, var) {
-                    let deg = terms.iter().map(|(p, _)| *p).max().unwrap_or(0);
-                    let mut coeffs = vec![arena.zero; deg + 1];
-                    for (p, c) in terms {
-                        coeffs[p] = c;
-                    }
-                    Source::Polynomial(coeffs)
-                } else {
-                    Source::Engine {
-                        expr: shifted,
-                        cache: Mutex::new(None),
+                let mut parts = Vec::new();
+                if let ExprNode::Add(args) = arena.node(shifted).clone() {
+                    for t in args {
+                        match build_term(ctx, arena, t, var, point) {
+                            Some(s) => parts.push(s),
+                            None => {
+                                parts.clear();
+                                break;
+                            }
+                        }
                     }
                 }
+                (None, parts, zero)
             }
         }
     };
-    FormalPowerSeries {
-        ctx: ctx.clone(),
+    if let Some(s) = whole {
+        return s;
+    }
+    let mut parts = parts.into_iter();
+    if let Some(mut acc) = parts.next() {
+        let mut ok = true;
+        for p in parts {
+            match acc.add(&p) {
+                Ok(s) => acc = s,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            return acc;
+        }
+    }
+    FormalPowerSeries::with_source(
+        ctx,
         var,
         point,
-        source,
-        memo: Mutex::new(Vec::new()),
+        zero,
+        Source::Refused {
+            expr,
+            reason: "no Laurent or Puiseux expansion exists at this point".into(),
+        },
+    )
+}
+
+/// Steps 1–3 of [`fps`] for one term `f` (already shifted to 0).
+fn build_term(
+    ctx: &Context,
+    arena: &mut Arena,
+    f: ExprId,
+    var: ExprId,
+    point: ExprId,
+) -> Option<FormalPowerSeries> {
+    let zero = arena.zero;
+    let make = |offset: ExprId, ram: u32, (source, valuation): (Source, i64)| {
+        let mut s = FormalPowerSeries::with_source(ctx, var, point, zero, source);
+        s.offset = offset;
+        s.ram = ram;
+        s.valuation = valuation;
+        s
+    };
+    if let Some(o) = ordinary(arena, f, var) {
+        return Some(make(zero, 1, o));
+    }
+    let (offset, h) = split_monomial(arena, f, var);
+    if h != f
+        && let Some(o) = ordinary(arena, h, var)
+    {
+        return Some(make(offset, 1, o));
+    }
+    // Step 3: ramification by the lcm of the denominators of `x^(p/q)`.
+    let mut d = 1u32;
+    let mut pows: Vec<(ExprId, ExprId, Q)> = Vec::new();
+    for id in walk::post_order_ids(arena, h) {
+        if let ExprNode::Pow(b, e) = *arena.node(id)
+            && let Some(c) = positive_multiple_of(arena, b, var)
+            && let Some(q) = arena.as_num(e)
+            && !q.is_integer()
+        {
+            let den = u32::try_from(q.denom()).ok()?;
+            d = lcm_u32(d, den)?;
+            let q = q.clone();
+            let ce = arena.pow(c, e);
+            pows.push((id, eval::eval(arena, ce), q));
+        }
+    }
+    if d == 1 {
+        return None;
+    }
+    let t = arena.symbol(RAMIFIED_PLACEHOLDER);
+    if walk::contains(arena, h, t) {
+        return None;
+    }
+    let d_q = Q::from_integer(BigInt::from(d));
+    let mut g = h;
+    for (node, ce, q) in pows {
+        let m = q_to_i64(&(q * &d_q))?;
+        let tm = pow_i(arena, t, m);
+        let tm = mul_all(arena, &[ce, tm]);
+        g = crate::transforms::subs::subs(arena, g, node, tm);
+    }
+    let td = pow_i(arena, t, i64::from(d));
+    g = crate::transforms::subs::subs(arena, g, var, td);
+    g = eval::eval(arena, g);
+    if walk::contains(arena, g, var) {
+        return None;
+    }
+    let s = make(offset, d, ordinary(arena, g, t)?);
+    if !d.is_multiple_of(2) {
+        return Some(s);
+    }
+    // `g(−t) = ±g(t)`: only even (odd) powers of `t` occur.
+    let mt = arena.neg(t);
+    let gm = crate::transforms::subs::subs(arena, g, t, mt);
+    let gm = eval::eval(arena, gm);
+    let ng = arena.neg(g);
+    let ng = eval::eval(arena, ng);
+    if gm == g {
+        Some(s.reindexed(arena, offset, d / 2, 2, 1, 0))
+    } else if gm == ng {
+        let step = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(d)));
+        let o = arena.add(&[offset, step]);
+        let o = eval::eval(arena, o);
+        Some(s.reindexed(arena, o, d / 2, 2, 1, -1))
+    } else {
+        Some(s)
     }
 }
 
+/// A Taylor or Laurent series of `f` in `svar` about 0: a closed form, a
+/// polynomial, or the meromorphic expansion engine.  Returns the source and
+/// its valuation.
+fn ordinary(arena: &mut Arena, f: ExprId, svar: ExprId) -> Option<(Source, i64)> {
+    if let Some(k) = detect_known(arena, f, svar) {
+        return Some((Source::Known(k), 0));
+    }
+    if let Some(terms) = crate::calculus::summation::sym_poly_in(arena, f, svar) {
+        let deg = terms.iter().map(|(p, _)| *p).max().unwrap_or(0);
+        let mut coeffs = vec![arena.zero; deg + 1];
+        for (p, c) in terms {
+            coeffs[p] = c;
+        }
+        return Some((Source::Polynomial(coeffs), 0));
+    }
+    // A formal power series stands for `f`, so `f` must be meromorphic at
+    // the point: the real asymptotic expansion of `series` would give
+    // `exp(−1/x²)` the coefficients 0, 0, 0, … (see the series contract).
+    let ts = expand_meromorphic(arena, f, svar, 8).ok()?;
+    let valuation = ts.shift();
+    Some((
+        Source::Engine {
+            expr: f,
+            svar,
+            cache: Mutex::new(Some(ts)),
+        },
+        valuation,
+    ))
+}
+
+/// `Some(c)` when `b = c·var` with `c` a positive rational (`c = 1` for
+/// `var`): then `(c·x)^e = c^e·x^e` for principal powers.
+fn positive_multiple_of(arena: &Arena, b: ExprId, var: ExprId) -> Option<ExprId> {
+    if b == var {
+        return Some(arena.one);
+    }
+    if let ExprNode::Mul(args) = arena.node(b)
+        && args.len() == 2
+    {
+        for (c, v) in [(args[0], args[1]), (args[1], args[0])] {
+            if v == var && arena.as_num(c).is_some_and(|q| *q > Q::zero()) {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+/// `f = var^ρ · h` for the factors `(c·var)^e` (`e` free of `var`, `c > 0`) of a product,
+/// when `ρ = Σ e` is not an integer; `(0, f)` otherwise.
+fn split_monomial(arena: &mut Arena, f: ExprId, var: ExprId) -> (ExprId, ExprId) {
+    let zero = arena.zero;
+    let factors: Vec<ExprId> = match arena.node(f) {
+        ExprNode::Mul(args) => args.to_vec(),
+        _ => vec![f],
+    };
+    let mut exps = Vec::new();
+    let mut rest = Vec::new();
+    for t in factors {
+        match *arena.node(t) {
+            ExprNode::Pow(b, e)
+                if !walk::contains(arena, e, var)
+                    && positive_multiple_of(arena, b, var).is_some() =>
+            {
+                exps.push(e);
+                if let Some(c) = positive_multiple_of(arena, b, var)
+                    && c != arena.one
+                {
+                    let ce = arena.pow(c, e);
+                    rest.push(eval::eval(arena, ce));
+                }
+            }
+            // `(x^e)^n = x^(e·n)` for an integer `n` (`1/x^a`).
+            ExprNode::Pow(b, n) if as_integer(arena, n).is_some() => match *arena.node(b) {
+                ExprNode::Pow(bb, e) if bb == var && !walk::contains(arena, e, var) => {
+                    let en = arena.mul(&[e, n]);
+                    exps.push(eval::eval(arena, en));
+                }
+                _ => rest.push(t),
+            },
+            _ => rest.push(t),
+        }
+    }
+    if exps.is_empty() {
+        return (zero, f);
+    }
+    let rho = add_all(arena, &exps);
+    if let Some(m) = as_integer(arena, rho) {
+        // An integer total (`x^a/x^a`, `x^(1/2)·x^(1/2)` left unmerged) stays
+        // in `h`, as a plain power of `var`.
+        rest.push(pow_i(arena, var, m));
+        return (zero, mul_all(arena, &rest));
+    }
+    (rho, mul_all(arena, &rest))
+}
+
 impl FormalPowerSeries {
+    fn with_source(
+        ctx: &Context,
+        var: ExprId,
+        point: ExprId,
+        zero: ExprId,
+        source: Source,
+    ) -> Self {
+        FormalPowerSeries {
+            ctx: ctx.clone(),
+            var,
+            point,
+            offset: zero,
+            ram: 1,
+            valuation: 0,
+            log_terms: Vec::new(),
+            source,
+            memo: Mutex::new(Vec::new()),
+            zero,
+        }
+    }
+
     /// A polynomial series `Σ coeffs[k] (var − point)^k` from explicit
     /// coefficients (all in the same context as `var`).
     ///
@@ -575,23 +990,159 @@ impl FormalPowerSeries {
     pub fn from_coefficients(var: &Ex, point: &Ex, coeffs: &[Ex]) -> Self {
         let point_id = var.checked_id(point);
         let ids: Vec<ExprId> = coeffs.iter().map(|c| var.checked_id(c)).collect();
-        FormalPowerSeries {
-            ctx: var.context(),
-            var: var.raw_id(),
-            point: point_id,
-            source: Source::Polynomial(ids),
-            memo: Mutex::new(Vec::new()),
-        }
+        let ctx = var.context();
+        let zero = ctx.inner.read().arena.zero;
+        Self::with_source(&ctx, var.raw_id(), point_id, zero, Source::Polynomial(ids))
     }
 
-    fn derived(&self, source: Source) -> Self {
-        FormalPowerSeries {
-            ctx: self.ctx.clone(),
-            var: self.var,
-            point: self.point,
-            source,
-            memo: Mutex::new(Vec::new()),
+    /// A derived series in the frame (`offset`, `ram`) of `self`.
+    fn derived(&self, source: Source, valuation: i64) -> Self {
+        let mut s = Self::with_source(&self.ctx, self.var, self.point, self.zero, source);
+        s.offset = self.offset;
+        s.ram = self.ram;
+        s.valuation = valuation;
+        s
+    }
+
+    /// A refused series standing for `expr` (from an operation on a refused
+    /// series).
+    fn refused_like(&self, expr: ExprId, reason: &str) -> Self {
+        let source = Source::Refused {
+            expr,
+            reason: reason.to_string(),
+        };
+        Self::with_source(&self.ctx, self.var, self.point, self.zero, source)
+    }
+
+    /// The same function under the frame `(offset, ram)`, coefficient `k`
+    /// being `self`'s coefficient `(k·mul − shift)/div`.  An integer offset
+    /// is folded into the indices (offset 0).
+    fn reindexed(
+        self,
+        arena: &Arena,
+        offset: ExprId,
+        ram: u32,
+        mul: u32,
+        div: u32,
+        shift: i64,
+    ) -> Self {
+        let (offset, shift) = match as_integer(arena, offset) {
+            Some(m) if m != 0 => (
+                self.zero,
+                shift.saturating_add(m.saturating_mul(i64::from(ram) * i64::from(mul))),
+            ),
+            _ => (offset, shift),
+        };
+        if mul == 1 && div == 1 && shift == 0 && offset == self.offset && ram == self.ram {
+            return self;
         }
+        let num = self
+            .valuation
+            .saturating_mul(i64::from(div))
+            .saturating_add(shift);
+        let m = i64::from(mul);
+        let valuation = num.div_euclid(m) + i64::from(num.rem_euclid(m) != 0);
+        let (ctx, var, point, zero) = (self.ctx.clone(), self.var, self.point, self.zero);
+        let log_terms = self.log_terms.clone();
+        let source = Source::Reindex {
+            inner: Box::new(self),
+            mul,
+            div,
+            shift,
+        };
+        let mut s = Self::with_source(&ctx, var, point, zero, source);
+        s.offset = offset;
+        s.ram = ram;
+        s.valuation = valuation;
+        s.log_terms = log_terms;
+        s
+    }
+
+    /// `self` in the frame `(offset, ram)`: `ram` a multiple of `self.ram`
+    /// and the offsets differing by a multiple of `1/ram`.
+    fn aligned(&self, offset: ExprId, ram: u32) -> Option<Self> {
+        if !ram.is_multiple_of(self.ram) {
+            return None;
+        }
+        let shift = {
+            let mut inner = self.ctx.inner.write();
+            let arena = &mut inner.arena;
+            let n = arena.neg(offset);
+            let delta = add_all(arena, &[self.offset, n]);
+            let q = arena.as_num(delta)?.clone();
+            q_to_i64(&(q * Q::from_integer(BigInt::from(ram))))?
+        };
+        // Clone (memo locks) without holding the context lock: `coeff`
+        // takes the memo lock first.
+        let s = self.clone();
+        let inner = self.ctx.inner.read();
+        Some(s.reindexed(&inner.arena, offset, ram, 1, ram / self.ram, shift))
+    }
+
+    /// A frame `(offset, ram)` holding both `self` and `other`, when their
+    /// offsets differ by a rational number.
+    fn common_frame(&self, other: &Self) -> Option<(ExprId, u32)> {
+        let ram = lcm_u32(self.ram, other.ram)?;
+        if self.offset == other.offset {
+            return Some((self.offset, ram));
+        }
+        let mut inner = self.ctx.inner.write();
+        let arena = &mut inner.arena;
+        let n = arena.neg(self.offset);
+        let delta = add_all(arena, &[other.offset, n]);
+        let dq = arena.as_num(delta)?.clone();
+        let den = |q: &Q| u32::try_from(q.denom()).ok();
+        if let (Some(a), Some(b)) = (
+            arena.as_num(self.offset).cloned(),
+            arena.as_num(other.offset).cloned(),
+        ) {
+            let r = lcm_u32(lcm_u32(ram, den(&a)?)?, den(&b)?)?;
+            return Some((arena.zero, r));
+        }
+        let r = lcm_u32(ram, den(&dq)?)?;
+        let offset = if dq >= Q::zero() {
+            self.offset
+        } else {
+            other.offset
+        };
+        Some((offset, r))
+    }
+
+    /// `self` with offset 0 (a rational offset folded into the indices).
+    fn with_zero_offset(&self) -> Option<Self> {
+        if self.offset == self.zero {
+            return Some(self.clone());
+        }
+        let den = {
+            let inner = self.ctx.inner.read();
+            let q = inner.arena.as_num(self.offset)?;
+            u32::try_from(q.denom()).ok()?
+        };
+        self.aligned(self.zero, lcm_u32(self.ram, den)?)
+    }
+
+    fn ensure_usable(&self, op: &'static str, logs_ok: bool) -> Result<(), SymplexError> {
+        if let Source::Refused { reason, .. } = &self.source {
+            return Err(SymplexError::ComputationFailed {
+                operation: op,
+                reason: format!("the series does not exist: {reason}"),
+            });
+        }
+        if !logs_ok && !self.log_terms.is_empty() {
+            return Err(SymplexError::InvalidArgument {
+                operation: op,
+                reason: "series has a logarithmic term".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn is_zero_coeff(&self, c: Coeff) -> bool {
+        if !c.exact {
+            return false;
+        }
+        let mut inner = self.ctx.inner.write();
+        is_zero_expr(&mut inner.arena, c.id)
     }
 
     fn wrap(&self, id: ExprId) -> Ex {
@@ -616,6 +1167,92 @@ impl FormalPowerSeries {
         self.ctx.clone()
     }
 
+    /// The exponent offset `ρ`: the series is
+    /// `(x − a)^ρ · Σ_k a_k (x − a)^(k/d)`.  Zero for a Taylor or Laurent
+    /// series; a non-integer rational or a symbolic exponent otherwise.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let a = ctx.symbol("a");
+    /// // x^a·eˣ = x^a · Σ x^k/k!
+    /// let s = (&x.pow(&a) * &x.exp()).fps_maclaurin(&x);
+    /// assert_eq!(s.offset().to_string(), "a");
+    /// assert_eq!(s.coefficient(2).to_string(), "1/2");
+    /// assert_eq!(s.exponent(2).to_string(), "a + 2");
+    /// ```
+    #[must_use]
+    pub fn offset(&self) -> Ex {
+        self.wrap(self.offset)
+    }
+
+    /// The ramification index `d ≥ 1`: coefficient `k` multiplies
+    /// `(x − a)^(ρ + k/d)`.  `1` unless the series is in fractional powers
+    /// beyond the offset (`exp(√x) = Σ x^(k/2)/k!` has `d = 2`).
+    #[must_use]
+    pub fn ramification(&self) -> u32 {
+        self.ram
+    }
+
+    /// The exponent `ρ + k/d` of `x − a` that [`coefficient(k)`](Self::coefficient)
+    /// multiplies (`k` for a Taylor series).
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // exp(√x) = Σ x^(k/2)/k!
+    /// let s = x.sqrt().exp().fps_maclaurin(&x);
+    /// assert_eq!(s.ramification(), 2);
+    /// assert_eq!(s.exponent(3).to_string(), "3/2");
+    /// assert_eq!(s.coefficient(3).to_string(), "1/6");
+    /// ```
+    #[must_use]
+    pub fn exponent(&self, k: usize) -> Ex {
+        let id = {
+            let mut inner = self.ctx.inner.write();
+            self.exponent_id(&mut inner.arena, index(k))
+        };
+        self.wrap(id)
+    }
+
+    fn exponent_id(&self, arena: &mut Arena, k: i64) -> ExprId {
+        let step = rat_expr(arena, Q::new(BigInt::from(k), BigInt::from(self.ram)));
+        add_all(arena, &[self.offset, step])
+    }
+
+    /// The index of the integer exponent `e`, when the offset is rational.
+    fn exponent_index_in(&self, arena: &Arena, e: i64) -> Option<i64> {
+        let rho = arena.as_num(self.offset)?;
+        q_to_i64(
+            &((Q::from_integer(BigInt::from(e)) - rho) * Q::from_integer(BigInt::from(self.ram))),
+        )
+    }
+
+    /// Whether `f` has no Laurent or Puiseux expansion at the point (`ln x`,
+    /// `exp(1/x)` or `|x|` at 0).  The coefficients of a refused series are
+    /// unevaluated stand-ins (`Subs(Derivative(…), x, a)`), never `nan`;
+    /// [`truncate`](Self::truncate) is a formal `Series` node, and the
+    /// fallible accessors return `Err`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let s = x.ln().fps_maclaurin(&x);
+    /// assert!(s.is_refused());
+    /// assert!(s.try_coefficient(0).is_err());
+    /// assert!(!x.sqrt().fps_maclaurin(&x).is_refused());
+    /// ```
+    #[must_use]
+    pub fn is_refused(&self) -> bool {
+        matches!(self.source, Source::Refused { .. })
+    }
+
     /// Check that `other` is compatible (same context, variable, point).
     fn check_compatible(&self, other: &Self, op: &'static str) -> Result<(), SymplexError> {
         // Cross-context is a logic error, like for `Ex` (panics with the same message).
@@ -631,11 +1268,16 @@ impl FormalPowerSeries {
 
     // ── Coefficients ───────────────────────────────────────────────
 
-    /// The `k`-th coefficient `a_k` as an exact expression.
+    /// The `k`-th coefficient `a_k` as an exact expression: the coefficient
+    /// of `(x − a)^k` for a Taylor or Laurent series, of
+    /// `(x − a)^(ρ + k/d)` in general (see [`exponent`](Self::exponent)).
     ///
     /// For series with a pole at the expansion point this is the Laurent
     /// coefficient of `(x − a)^k` for `k ≥ 0`; use
-    /// [`truncate`](Self::truncate) to see the negative powers.
+    /// [`truncate`](Self::truncate) to see the negative powers.  Where no
+    /// coefficient exists (a [refused](Self::is_refused) series) it is an
+    /// unevaluated stand-in; [`try_coefficient`](Self::try_coefficient)
+    /// returns `Err` instead.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -648,17 +1290,34 @@ impl FormalPowerSeries {
     /// ```
     #[must_use]
     pub fn coefficient(&self, k: usize) -> Ex {
-        let id = self.coefficient_id(k);
-        self.wrap(id)
+        self.wrap(self.coeff(index(k)).id)
+    }
+
+    /// Like [`coefficient`](Self::coefficient), but `Err` when the series is
+    /// refused or the coefficient could not be computed.
+    pub fn try_coefficient(&self, k: usize) -> Result<Ex, SymplexError> {
+        self.ensure_usable("fps_coefficient", true)?;
+        let c = self.coeff(index(k));
+        if c.exact {
+            Ok(self.wrap(c.id))
+        } else {
+            Err(SymplexError::ComputationFailed {
+                operation: "fps_coefficient",
+                reason: "the expansion failed at this order".into(),
+            })
+        }
     }
 
     /// The `k`-th coefficient as an exact rational, or `None` if it is not
     /// a rational number (e.g. `ln 2`, `2/√π`, or a symbolic parameter).
     #[must_use]
     pub fn coefficient_rational(&self, k: usize) -> Option<Q> {
-        let id = self.coefficient_id(k);
+        let c = self.coeff(index(k));
+        if !c.exact {
+            return None;
+        }
         let inner = self.ctx.inner.read();
-        inner.arena.as_num(id).cloned()
+        inner.arena.as_num(c.id).cloned()
     }
 
     /// The first `n` coefficients `a_0 … a_{n−1}`.
@@ -667,154 +1326,288 @@ impl FormalPowerSeries {
         (0..n).map(|k| self.coefficient(k)).collect()
     }
 
-    fn coefficient_id(&self, k: usize) -> ExprId {
-        if let Ok(memo) = self.memo.lock()
-            && k < memo.len()
-        {
-            return memo[k];
+    /// Coefficient of index `k` (memoised; computed sequentially from the
+    /// valuation — recurrences need the earlier terms).
+    fn coeff(&self, k: i64) -> Coeff {
+        let zero = Coeff {
+            id: self.zero,
+            exact: true,
+        };
+        let Ok(idx) = usize::try_from(k.saturating_sub(self.valuation)) else {
+            return zero;
+        };
+        let mut memo = lock(&self.memo);
+        while memo.len() <= idx {
+            let next = self.valuation + memo.len() as i64;
+            let c = self.compute(next, &memo);
+            memo.push(c);
         }
-        let id = self.compute_coefficient(k);
-        if let Ok(mut memo) = self.memo.lock()
-            && k == memo.len()
-        {
-            memo.push(id);
-        }
-        id
+        memo[idx]
     }
 
-    /// Ensure `a_0..a_{n-1}` are memoised (sequentially — recurrences need
-    /// earlier terms) and return them.
-    fn coefficient_ids(&self, n: usize) -> Vec<ExprId> {
-        (0..n).map(|k| self.coefficient_id(k)).collect()
+    /// Coefficients of indices `lo..=hi`.
+    fn coeffs(&self, lo: i64, hi: i64) -> Vec<Coeff> {
+        if hi < lo {
+            return Vec::new();
+        }
+        let _ = self.coeff(hi);
+        (lo..=hi).map(|k| self.coeff(k)).collect()
     }
 
-    fn compute_coefficient(&self, k: usize) -> ExprId {
+    fn compute(&self, k: i64, prev: &[Coeff]) -> Coeff {
+        let exact = |id: ExprId| Coeff { id, exact: true };
+        let zero = exact(self.zero);
         match &self.source {
             Source::Known(known) => {
+                let Ok(k) = usize::try_from(k) else {
+                    return zero;
+                };
                 let mut inner = self.ctx.inner.write();
-                known.coefficient(&mut inner.arena, k)
+                exact(known.coefficient(&mut inner.arena, k))
             }
-            Source::Engine { expr, cache } => {
+            Source::Engine { expr, svar, cache } => {
                 let mut inner = self.ctx.inner.write();
                 let arena = &mut inner.arena;
-                let mut guard = match cache.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
-                let need = k as i64 + 1;
+                let mut guard = lock(cache);
+                let need = k + 1;
                 if guard.as_ref().is_none_or(|ts| ts.known() < need) {
-                    let order = need.max(guard.as_ref().map_or(8, |ts| ts.known() * 2));
-                    // A formal power series stands for `f`, so `f` must be
-                    // meromorphic at the point: the real asymptotic
-                    // expansion of `series` would give `exp(−1/x²)` the
-                    // coefficients 0, 0, 0, … (see the series contract).
-                    *guard = expand_meromorphic(arena, *expr, self.var, order).ok();
+                    let order =
+                        need.max(guard.as_ref().map_or(8, |ts| ts.known().saturating_mul(2)));
+                    let ts = expand_meromorphic(arena, *expr, *svar, order).or_else(|e| {
+                        if order > need {
+                            expand_meromorphic(arena, *expr, *svar, need)
+                        } else {
+                            Err(e)
+                        }
+                    });
+                    // On failure the earlier expansion stays valid.
+                    if let Ok(ts) = ts {
+                        *guard = Some(ts);
+                    }
                 }
-                match guard.as_ref() {
-                    Some(ts) if ts.known() >= need => ts.coefficient(arena, k as i64),
-                    // The expansion does not exist (Puiseux / essential
-                    // singularity); expose the failure as NaN.
-                    _ => arena.nan,
+                if let Some(ts) = guard.as_ref()
+                    && ts.known() >= need
+                {
+                    let c = ts.coefficient(arena, k);
+                    if !contains_singular(arena, c) {
+                        return exact(c);
+                    }
                 }
+                let id = taylor_standin(arena, *expr, *svar, self.zero, k);
+                Coeff { id, exact: false }
             }
-            Source::Polynomial(c) => {
-                let inner = self.ctx.inner.read();
-                c.get(k).copied().unwrap_or(inner.arena.zero)
-            }
-            Source::Add(a, b) => {
-                let x = a.coefficient_id(k);
-                let y = b.coefficient_id(k);
+            Source::Polynomial(c) => usize::try_from(k)
+                .ok()
+                .and_then(|k| c.get(k).copied())
+                .map_or(zero, exact),
+            Source::Refused { expr, .. } => {
+                if k < 0 {
+                    return zero;
+                }
                 let mut inner = self.ctx.inner.write();
-                add_all(&mut inner.arena, &[x, y])
+                let id = taylor_standin(&mut inner.arena, *expr, self.var, self.point, k);
+                Coeff { id, exact: false }
             }
-            Source::Sub(a, b) => {
-                let x = a.coefficient_id(k);
-                let y = b.coefficient_id(k);
+            Source::Add(a, b) | Source::Sub(a, b) => {
+                let x = a.coeff(k);
+                let y = b.coeff(k);
                 let mut inner = self.ctx.inner.write();
-                let ny = inner.arena.neg(y);
-                add_all(&mut inner.arena, &[x, ny])
+                let arena = &mut inner.arena;
+                let y_id = if matches!(self.source, Source::Sub(..)) {
+                    arena.neg(y.id)
+                } else {
+                    y.id
+                };
+                Coeff {
+                    id: add_all(arena, &[x.id, y_id]),
+                    exact: x.exact && y.exact,
+                }
             }
             Source::Mul(a, b) => {
-                let xs = a.coefficient_ids(k + 1);
-                let ys = b.coefficient_ids(k + 1);
+                let (va, vb) = (a.valuation, b.valuation);
+                let xs = a.coeffs(va, k - vb);
+                let ys = b.coeffs(vb, k - va);
                 let mut inner = self.ctx.inner.write();
                 let arena = &mut inner.arena;
                 let mut terms = Vec::new();
-                for i in 0..=k {
-                    if arena.is_zero_structural(xs[i]) || arena.is_zero_structural(ys[k - i]) {
+                let mut ex = true;
+                let top = ys.len();
+                for (i, x) in xs.iter().enumerate() {
+                    let y = ys[top - 1 - i];
+                    if (x.exact && arena.is_zero_structural(x.id))
+                        || (y.exact && arena.is_zero_structural(y.id))
+                    {
                         continue;
                     }
-                    terms.push(arena.mul(&[xs[i], ys[k - i]]));
+                    ex &= x.exact && y.exact;
+                    terms.push(arena.mul(&[x.id, y.id]));
                 }
-                add_all(arena, &terms)
+                Coeff {
+                    id: add_all(arena, &terms),
+                    exact: ex,
+                }
             }
             Source::Scale(a, c) => {
-                let x = a.coefficient_id(k);
+                let x = a.coeff(k);
                 let mut inner = self.ctx.inner.write();
-                mul_all(&mut inner.arena, &[*c, x])
+                Coeff {
+                    id: mul_all(&mut inner.arena, &[*c, x.id]),
+                    exact: x.exact,
+                }
             }
             Source::Derivative(a) => {
-                let x = a.coefficient_id(k + 1);
-                let mut inner = self.ctx.inner.write();
-                let kp1 = inner.arena.int(k as i64 + 1);
-                mul_all(&mut inner.arena, &[kp1, x])
-            }
-            Source::Integral(a) => {
-                if k == 0 {
-                    let inner = self.ctx.inner.read();
-                    return inner.arena.zero;
-                }
-                let x = a.coefficient_id(k - 1);
-                let mut inner = self.ctx.inner.write();
-                let inv = rat_expr(&mut inner.arena, Q::new(BigInt::one(), BigInt::from(k)));
-                mul_all(&mut inner.arena, &[inv, x])
-            }
-            Source::Inverse(a) => {
-                let xs = a.coefficient_ids(k + 1);
-                let mut inner = self.ctx.inner.write();
-                let b = poly_inverse(&mut inner.arena, &xs, k + 1);
-                b[k]
-            }
-            Source::Compose(f, g) => {
-                // Σ_{n≤k} f_n · (g^n)_k with g_0 = 0.
-                let fs = f.coefficient_ids(k + 1);
-                let gs = g.coefficient_ids(k + 1);
+                // d/dx (x−a)^(ρ+j/d) = (ρ + j/d)·(x−a)^(ρ+j/d−1),  j = k + d
+                let d = i64::from(a.ram);
+                let x = a.coeff(k + d);
                 let mut inner = self.ctx.inner.write();
                 let arena = &mut inner.arena;
-                let n = k + 1;
+                let e = a.exponent_id(arena, k + d);
+                let mut terms = vec![arena.mul(&[e, x.id])];
+                for &(p, r) in &a.log_terms {
+                    // d/dx r(x−a)^p ln(x−a) contributes r(x−a)^(p−1)
+                    if a.exponent_index_in(arena, p - 1) == Some(k) {
+                        terms.push(r);
+                    }
+                }
+                Coeff {
+                    id: add_all(arena, &terms),
+                    exact: x.exact,
+                }
+            }
+            Source::Integral(a) => {
+                // ∫ (x−a)^e = (x−a)^(e+1)/(e+1),  e = ρ + (k−d)/d
+                let d = i64::from(a.ram);
+                let x = a.coeff(k - d);
+                let mut inner = self.ctx.inner.write();
+                let arena = &mut inner.arena;
+                let e = a.exponent_id(arena, k - d);
+                let one = arena.one;
+                let e1 = add_all(arena, &[e, one]);
+                let mut terms = Vec::new();
+                // e = −1: the constant of integration is 0 and the residue is
+                // a logarithmic term (see `integral`).
+                if !is_zero_expr(arena, e1) && !arena.is_zero_structural(x.id) {
+                    let m1 = arena.neg_one;
+                    let inv = arena.pow(e1, m1);
+                    terms.push(arena.mul(&[x.id, inv]));
+                }
+                for &(p, r) in &a.log_terms {
+                    // ∫ r(x−a)^p ln(x−a) = r/(p+1)·(x−a)^(p+1) ln(x−a) − r/(p+1)²·(x−a)^(p+1)
+                    if a.exponent_index_in(arena, p + 1) == Some(k) {
+                        let c = rat_expr(
+                            arena,
+                            Q::new(BigInt::from(-1), BigInt::from((p + 1) * (p + 1))),
+                        );
+                        terms.push(arena.mul(&[c, r]));
+                    }
+                }
+                Coeff {
+                    id: add_all(arena, &terms),
+                    exact: x.exact,
+                }
+            }
+            Source::Inverse(a, l) => {
+                // b_j = (δ_j0 − Σ_{i=1}^{j} a_{l+i} b_{j−i}) / a_l,  j = k + l
+                let j = k + l;
+                let xs = a.coeffs(*l, l + j);
+                let mut inner = self.ctx.inner.write();
+                let arena = &mut inner.arena;
+                let inv0 = {
+                    let m1 = arena.neg_one;
+                    let p = arena.pow(xs[0].id, m1);
+                    eval::eval(arena, p)
+                };
+                let mut ex = xs[0].exact;
+                if j == 0 {
+                    return Coeff {
+                        id: inv0,
+                        exact: ex,
+                    };
+                }
+                let mut terms = Vec::new();
+                for (i, ai) in xs.iter().enumerate().skip(1) {
+                    let bj = prev[usize::try_from(j).unwrap_or(0) - i];
+                    if arena.is_zero_structural(ai.id) || arena.is_zero_structural(bj.id) {
+                        continue;
+                    }
+                    ex &= ai.exact && bj.exact;
+                    terms.push(arena.mul(&[ai.id, bj.id]));
+                }
+                let s = add_all(arena, &terms);
+                let v = arena.mul(&[inv0, s]);
+                let v = arena.neg(v);
+                Coeff {
+                    id: eval::eval(arena, v),
+                    exact: ex,
+                }
+            }
+            Source::Compose(f, g) => {
+                // Σ_{n≤k} f_n · (g^n)_k with g_j = 0 for j ≤ 0.
+                let Ok(ku) = usize::try_from(k) else {
+                    return zero;
+                };
+                let fs = f.coeffs(0, k);
+                let gs = g.coeffs(0, k);
+                let ex = fs.iter().chain(gs.iter()).all(|c| c.exact);
+                let gs: Vec<ExprId> = gs.iter().map(|c| c.id).collect();
+                let mut inner = self.ctx.inner.write();
+                let arena = &mut inner.arena;
+                let n = ku + 1;
                 let mut power: Vec<ExprId> = vec![arena.zero; n];
                 power[0] = arena.one;
                 let mut terms = Vec::new();
-                for (i, &fi) in fs.iter().enumerate() {
+                for (i, fi) in fs.iter().enumerate() {
                     if i > 0 {
                         power = poly_mul(arena, &power, &gs, n);
                     }
-                    if arena.is_zero_structural(fi) || arena.is_zero_structural(power[k]) {
+                    if arena.is_zero_structural(fi.id) || arena.is_zero_structural(power[ku]) {
                         continue;
                     }
-                    terms.push(arena.mul(&[fi, power[k]]));
+                    terms.push(arena.mul(&[fi.id, power[ku]]));
                 }
-                add_all(arena, &terms)
+                Coeff {
+                    id: add_all(arena, &terms),
+                    exact: ex,
+                }
             }
             Source::Reversion(f) => {
                 // Lagrange inversion: [x^k] g = (1/k) [x^{k−1}] (x/f(x))^k, k ≥ 1.
-                if k == 0 {
-                    let inner = self.ctx.inner.read();
-                    return inner.arena.zero;
+                let Ok(ku) = usize::try_from(k) else {
+                    return zero;
+                };
+                if ku == 0 {
+                    return zero;
                 }
-                let fs = f.coefficient_ids(k + 1);
+                let fs = f.coeffs(0, k);
+                let ex = fs.iter().all(|c| c.exact);
                 let mut inner = self.ctx.inner.write();
                 let arena = &mut inner.arena;
                 // h = f/x  (drop f_0 = 0)
-                let h: Vec<ExprId> = fs[1..].to_vec();
-                let inv_h = poly_inverse(arena, &h, k);
-                let mut power: Vec<ExprId> = vec![arena.zero; k];
+                let h: Vec<ExprId> = fs[1..].iter().map(|c| c.id).collect();
+                let inv_h = poly_inverse(arena, &h, ku);
+                let mut power: Vec<ExprId> = vec![arena.zero; ku];
                 power[0] = arena.one;
-                for _ in 0..k {
-                    power = poly_mul(arena, &power, &inv_h, k);
+                for _ in 0..ku {
+                    power = poly_mul(arena, &power, &inv_h, ku);
                 }
-                let inv_k = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(k)));
-                mul_all(arena, &[inv_k, power[k - 1]])
+                let inv_k = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(ku)));
+                Coeff {
+                    id: mul_all(arena, &[inv_k, power[ku - 1]]),
+                    exact: ex,
+                }
+            }
+            Source::Reindex {
+                inner,
+                mul,
+                div,
+                shift,
+            } => {
+                let num = k.saturating_mul(i64::from(*mul)).saturating_sub(*shift);
+                let dv = i64::from(*div);
+                if num.rem_euclid(dv) != 0 {
+                    return zero;
+                }
+                inner.coeff(num.div_euclid(dv))
             }
         }
     }
@@ -828,15 +1621,23 @@ impl FormalPowerSeries {
         match &self.source {
             Source::Known(_) | Source::Polynomial(_) => true,
             Source::Add(a, b) | Source::Sub(a, b) => a.has_closed_form() && b.has_closed_form(),
-            Source::Scale(a, _) | Source::Derivative(a) | Source::Integral(a) => {
-                a.has_closed_form()
+            Source::Scale(a, _) => a.has_closed_form(),
+            Source::Derivative(a) => a.log_terms.is_empty() && a.has_closed_form(),
+            Source::Integral(a) => {
+                a.is_taylor_frame() && a.log_terms.is_empty() && a.has_closed_form()
             }
+            Source::Reindex { inner, div, .. } => *div == 1 && inner.has_closed_form(),
             _ => false,
         }
     }
 
+    fn is_taylor_frame(&self) -> bool {
+        self.offset == self.zero && self.ram == 1
+    }
+
     /// The general coefficient `a_k` as a closed-form expression in the
-    /// symbolic index `k`, when known.
+    /// symbolic index `k`, when known (the coefficient of
+    /// `(x − a)^(ρ + k/d)`, see [`exponent`](Self::exponent)).
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -895,15 +1696,25 @@ impl FormalPowerSeries {
                 Some(mul_all(&mut inner.arena, &[*c, x]))
             }
             Source::Derivative(a) => {
+                if !a.log_terms.is_empty() {
+                    return None;
+                }
+                // (ρ + (k+d)/d)·a_{k+d}
                 let mut inner = self.ctx.inner.write();
-                let one = inner.arena.one;
-                let kp1 = inner.arena.add(&[k, one]);
+                let d = inner.arena.int(i64::from(a.ram));
+                let kpd = inner.arena.add(&[k, d]);
                 drop(inner);
-                let x = a.general_term_id(kp1)?;
+                let x = a.general_term_id(kpd)?;
                 let mut inner = self.ctx.inner.write();
-                Some(mul_all(&mut inner.arena, &[kp1, x]))
+                let arena = &mut inner.arena;
+                let e = if a.ram == 1 { kpd } else { arena.div(kpd, d) };
+                let e = arena.add(&[a.offset, e]);
+                Some(mul_all(arena, &[e, x]))
             }
             Source::Integral(a) => {
+                if !(a.is_taylor_frame() && a.log_terms.is_empty()) {
+                    return None;
+                }
                 let mut inner = self.ctx.inner.write();
                 let one = inner.arena.one;
                 let km1 = inner.arena.sub(k, one);
@@ -918,14 +1729,37 @@ impl FormalPowerSeries {
                 let lt1 = arena.gt(one, k);
                 Some(arena.piecewise(&[(v, ge1), (zero, lt1)]))
             }
+            Source::Reindex {
+                inner: s,
+                mul,
+                div,
+                shift,
+            } => {
+                if *div != 1 {
+                    return None;
+                }
+                let mut inner = self.ctx.inner.write();
+                let arena = &mut inner.arena;
+                let m = arena.int(i64::from(*mul));
+                let km = arena.mul(&[m, k]);
+                let sh = arena.int(-*shift);
+                let j = arena.add(&[km, sh]);
+                let j = eval::eval(arena, j);
+                drop(inner);
+                s.general_term_id(j)
+            }
             _ => None,
         }
     }
 
-    /// The truncated series `Σ_{k<n} a_k (x − point)^k`.
+    /// The truncated series: every term of order below `(x − point)^n`,
+    /// i.e. `Σ_{k<n} a_k (x − point)^k` for a Taylor series.
     ///
     /// For series with a pole at the point, negative powers down to the
-    /// pole order are included.
+    /// pole order are included; Puiseux series keep the terms whose
+    /// exponent (its rational part, for a symbolic offset) is below `n`, as
+    /// SymPy's `fps(f).truncate(n)` does.  A [refused](Self::is_refused)
+    /// series gives a formal `Series` node.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -934,10 +1768,54 @@ impl FormalPowerSeries {
     /// let x = ctx.symbol("x");
     /// let s = x.cos().fps_maclaurin(&x);
     /// assert_eq!(s.truncate(5).to_string(), "1/24*x^4 - 1/2*x^2 + 1");
+    /// // √x·eˣ = √x + x^(3/2) + x^(5/2)/2 + …
+    /// let p = (&x.sqrt() * &x.exp()).fps_maclaurin(&x);
+    /// assert_eq!(p.truncate(3).to_string(), "sqrt(x) + x^(3/2) + 1/2*x^(5/2)");
     /// ```
     #[must_use]
     pub fn truncate(&self, n: usize) -> Ex {
-        let coeffs = self.coefficient_ids(n);
+        let id = self.truncate_id(n);
+        self.wrap(id)
+    }
+
+    /// Like [`truncate`](Self::truncate), but `Err` when the series is
+    /// refused or a coefficient could not be computed.
+    pub fn try_truncate(&self, n: usize) -> Result<Ex, SymplexError> {
+        self.ensure_usable("fps_truncate", true)?;
+        let end = self.index_end(n);
+        if self
+            .coeffs(self.valuation, end - 1)
+            .iter()
+            .any(|c| !c.exact)
+        {
+            return Err(SymplexError::ComputationFailed {
+                operation: "fps_truncate",
+                reason: "the expansion failed at this order".into(),
+            });
+        }
+        Ok(self.truncate(n))
+    }
+
+    /// One past the largest index whose exponent has rational part `< n`.
+    fn index_end(&self, n: usize) -> i64 {
+        let inner = self.ctx.inner.read();
+        let r = rational_part(&inner.arena, self.offset);
+        let x = (Q::from_integer(BigInt::from(n)) - r) * Q::from_integer(BigInt::from(self.ram));
+        q_to_i64(&x.ceil())
+            .unwrap_or(self.valuation)
+            .max(self.valuation)
+    }
+
+    fn truncate_id(&self, n: usize) -> ExprId {
+        if let Source::Refused { expr, .. } = &self.source {
+            let mut inner = self.ctx.inner.write();
+            let order = inner.arena.int(i64::try_from(n).unwrap_or(i64::MAX));
+            return inner
+                .arena
+                .intern(ExprNode::Series(*expr, self.var, self.point, order));
+        }
+        let end = self.index_end(n);
+        let coeffs = self.coeffs(self.valuation, end - 1);
         let mut inner = self.ctx.inner.write();
         let arena = &mut inner.arena;
         let base = if arena.is_zero_structural(self.point) {
@@ -946,55 +1824,100 @@ impl FormalPowerSeries {
             arena.sub(self.var, self.point)
         };
         let mut terms = Vec::new();
-        // Negative powers for engine series with a pole.
-        if let Source::Engine { cache, .. } = &self.source
-            && let Ok(guard) = cache.lock()
-            && let Some(ts) = guard.as_ref()
-        {
-            for e in ts.shift()..0 {
-                let c = ts.coefficient(arena, e);
-                if arena.is_zero_structural(c) {
-                    continue;
-                }
-                let p = pow_i(arena, base, e);
-                terms.push(arena.mul(&[c, p]));
-            }
-        }
-        for (k, &c) in coeffs.iter().enumerate() {
-            if arena.is_zero_structural(c) {
+        for (i, c) in coeffs.iter().enumerate() {
+            if arena.is_zero_structural(c.id) {
                 continue;
             }
-            let t = if k == 0 {
-                c
+            let e = self.exponent_id(arena, self.valuation + i as i64);
+            let t = if arena.is_zero_structural(e) {
+                c.id
+            } else if e == arena.one {
+                arena.mul(&[c.id, base])
             } else {
-                let p = pow_i(arena, base, k as i64);
-                arena.mul(&[c, p])
+                let p = arena.pow(base, e);
+                let p = eval::eval(arena, p);
+                arena.mul(&[c.id, p])
             };
             terms.push(t);
         }
-        let id = add_all(arena, &terms);
-        drop(inner);
-        self.wrap(id)
+        for &(p, r) in &self.log_terms {
+            if usize::try_from(p).is_ok_and(|p| p < n) {
+                let ln = arena.ln(base);
+                let bp = pow_i(arena, base, p);
+                terms.push(arena.mul(&[r, bp, ln]));
+            }
+        }
+        add_all(arena, &terms)
     }
 
     // ── Arithmetic ─────────────────────────────────────────────────
 
-    /// `self + other`.
+    /// `self + other`.  Puiseux series are added in a common ramification;
+    /// offsets must differ by a rational number (`Err` for `x^a + x^b`).
     pub fn add(&self, other: &Self) -> Result<Self, SymplexError> {
-        self.check_compatible(other, "fps_add")?;
-        Ok(self.derived(Source::Add(Box::new(self.clone()), Box::new(other.clone()))))
+        self.add_sub(other, false, "fps_add")
     }
 
-    /// `self − other`.
+    /// `self − other` (see [`add`](Self::add)).
     pub fn sub(&self, other: &Self) -> Result<Self, SymplexError> {
-        self.check_compatible(other, "fps_sub")?;
-        Ok(self.derived(Source::Sub(Box::new(self.clone()), Box::new(other.clone()))))
+        self.add_sub(other, true, "fps_sub")
     }
 
-    /// Cauchy product `self · other`.
+    fn add_sub(&self, other: &Self, sub: bool, op: &'static str) -> Result<Self, SymplexError> {
+        self.check_compatible(other, op)?;
+        self.ensure_usable(op, true)?;
+        other.ensure_usable(op, true)?;
+        let mismatch = || SymplexError::InvalidArgument {
+            operation: op,
+            reason: "the exponents of the two series differ by a non-rational amount".into(),
+        };
+        let (offset, ram) = self.common_frame(other).ok_or_else(mismatch)?;
+        let a = self.aligned(offset, ram).ok_or_else(mismatch)?;
+        let b = other.aligned(offset, ram).ok_or_else(mismatch)?;
+        let mut logs = a.log_terms.clone();
+        {
+            let mut inner = self.ctx.inner.write();
+            let arena = &mut inner.arena;
+            for &(p, r) in &b.log_terms {
+                let r = if sub { arena.neg(r) } else { r };
+                match logs.iter_mut().find(|(q, _)| *q == p) {
+                    Some(e) => e.1 = add_all(arena, &[e.1, r]),
+                    None => logs.push((p, r)),
+                }
+            }
+        }
+        let valuation = a.valuation.min(b.valuation);
+        let source = if sub {
+            Source::Sub(Box::new(a.clone()), Box::new(b))
+        } else {
+            Source::Add(Box::new(a.clone()), Box::new(b))
+        };
+        let mut s = a.derived(source, valuation);
+        s.log_terms = logs;
+        Ok(s)
+    }
+
+    /// Cauchy product `self · other` (offsets add: `√x · √x·eˣ = x·eˣ`).
     pub fn mul(&self, other: &Self) -> Result<Self, SymplexError> {
         self.check_compatible(other, "fps_mul")?;
-        Ok(self.derived(Source::Mul(Box::new(self.clone()), Box::new(other.clone()))))
+        self.ensure_usable("fps_mul", false)?;
+        other.ensure_usable("fps_mul", false)?;
+        let too_fine = || SymplexError::InvalidArgument {
+            operation: "fps_mul",
+            reason: "ramification too large".into(),
+        };
+        let ram = lcm_u32(self.ram, other.ram).ok_or_else(too_fine)?;
+        let a = self.aligned(self.offset, ram).ok_or_else(too_fine)?;
+        let b = other.aligned(other.offset, ram).ok_or_else(too_fine)?;
+        let offset = {
+            let mut inner = self.ctx.inner.write();
+            add_all(&mut inner.arena, &[a.offset, b.offset])
+        };
+        let valuation = a.valuation.saturating_add(b.valuation);
+        let mut s = a.derived(Source::Mul(Box::new(a.clone()), Box::new(b)), valuation);
+        s.offset = offset;
+        let inner = self.ctx.inner.read();
+        Ok(s.reindexed(&inner.arena, offset, ram, 1, 1, 0))
     }
 
     /// `c · self` for a constant `c`.
@@ -1005,10 +1928,28 @@ impl FormalPowerSeries {
     #[must_use]
     pub fn scale(&self, c: &Ex) -> Self {
         let cid = self.variable().checked_id(c);
-        self.derived(Source::Scale(Box::new(self.clone()), cid))
+        let mut inner = self.ctx.inner.write();
+        let arena = &mut inner.arena;
+        if let Source::Refused { expr, reason } = &self.source {
+            let e = mul_all(arena, &[cid, *expr]);
+            drop(inner);
+            return self.refused_like(e, reason);
+        }
+        let logs = self
+            .log_terms
+            .iter()
+            .map(|&(p, r)| (p, mul_all(arena, &[cid, r])))
+            .collect();
+        drop(inner);
+        let mut s = self.derived(Source::Scale(Box::new(self.clone()), cid), self.valuation);
+        s.log_terms = logs;
+        s
     }
 
-    /// Composition `self(other)`; requires `other` to have zero constant term.
+    /// Composition `self(other)`; requires `self` to be a power series (no
+    /// pole, no fractional powers) and `other` to have no constant term and
+    /// no negative powers.  `other` may be a Puiseux series
+    /// (`exp ∘ √x = exp(√x)`).
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -1023,35 +1964,112 @@ impl FormalPowerSeries {
     /// ```
     pub fn compose(&self, other: &Self) -> Result<Self, SymplexError> {
         self.check_compatible(other, "fps_compose")?;
-        let g0 = other.coefficient_id(0);
-        let mut inner = self.ctx.inner.write();
-        let zero = is_zero_expr(&mut inner.arena, g0);
-        drop(inner);
-        if !zero {
+        self.ensure_usable("fps_compose", false)?;
+        other.ensure_usable("fps_compose", false)?;
+        if !self.is_taylor_frame() || !self.vanishes_up_to(-1) {
             return Err(SymplexError::InvalidArgument {
                 operation: "fps_compose",
-                reason: "inner series must have zero constant term".into(),
+                reason: "outer series must be a power series".into(),
             });
         }
-        Ok(self.derived(Source::Compose(
-            Box::new(self.clone()),
-            Box::new(other.clone()),
-        )))
+        let g = other
+            .with_zero_offset()
+            .filter(|g| g.vanishes_up_to(0))
+            .ok_or_else(|| SymplexError::InvalidArgument {
+                operation: "fps_compose",
+                reason: "inner series must have zero constant term".into(),
+            })?;
+        let mut s = g.derived(
+            Source::Compose(Box::new(self.clone()), Box::new(g.clone())),
+            0,
+        );
+        s.offset = self.zero;
+        Ok(s)
+    }
+
+    /// Every coefficient of index `≤ top` is provably zero.
+    fn vanishes_up_to(&self, top: i64) -> bool {
+        if self.valuation < -4096 {
+            return false;
+        }
+        (self.valuation..=top).all(|i| self.is_zero_coeff(self.coeff(i)))
     }
 
     /// Term-wise derivative `d/dx`.
     #[must_use]
     pub fn derivative(&self) -> Self {
-        self.derived(Source::Derivative(Box::new(self.clone())))
+        if let Source::Refused { expr, reason } = &self.source {
+            let d = {
+                let mut inner = self.ctx.inner.write();
+                inner.arena.intern(ExprNode::Derivative(*expr, self.var))
+            };
+            return self.refused_like(d, reason);
+        }
+        let mut valuation = self.valuation.saturating_sub(i64::from(self.ram));
+        let mut logs = Vec::new();
+        {
+            let mut inner = self.ctx.inner.write();
+            let arena = &mut inner.arena;
+            for &(p, r) in &self.log_terms {
+                if let Some(i) = self.exponent_index_in(arena, p - 1) {
+                    valuation = valuation.min(i);
+                }
+                if p > 0 {
+                    let pe = arena.int(p);
+                    logs.push((p - 1, mul_all(arena, &[pe, r])));
+                }
+            }
+        }
+        let mut s = self.derived(Source::Derivative(Box::new(self.clone())), valuation);
+        s.log_terms = logs;
+        s
     }
 
-    /// Term-wise antiderivative with zero constant term.
+    /// Term-wise antiderivative with zero constant term.  An
+    /// `(x − a)^(−1)` term integrates to a logarithm, kept as a
+    /// `r·ln(x − a)` term of [`truncate`](Self::truncate) (the
+    /// coefficients are those of the power part).
     #[must_use]
     pub fn integral(&self) -> Self {
-        self.derived(Source::Integral(Box::new(self.clone())))
+        if let Source::Refused { expr, reason } = &self.source {
+            let i = {
+                let mut inner = self.ctx.inner.write();
+                inner.arena.intern(ExprNode::Integral(*expr, self.var))
+            };
+            return self.refused_like(i, reason);
+        }
+        let residue_index = {
+            let inner = self.ctx.inner.read();
+            self.exponent_index_in(&inner.arena, -1)
+        };
+        let mut logs = Vec::new();
+        if let Some(i) = residue_index
+            && i >= self.valuation
+        {
+            let c = self.coeff(i);
+            if !self.is_zero_coeff(c) {
+                logs.push((0, c.id));
+            }
+        }
+        let mut valuation = self.valuation.saturating_add(i64::from(self.ram));
+        {
+            let mut inner = self.ctx.inner.write();
+            let arena = &mut inner.arena;
+            for &(p, r) in &self.log_terms {
+                if let Some(i) = self.exponent_index_in(arena, p + 1) {
+                    valuation = valuation.min(i);
+                }
+                let c = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(p + 1)));
+                logs.push((p + 1, mul_all(arena, &[c, r])));
+            }
+        }
+        let mut s = self.derived(Source::Integral(Box::new(self.clone())), valuation);
+        s.log_terms = logs;
+        s
     }
 
-    /// Multiplicative inverse `1/self`; requires a non-zero constant term.
+    /// Multiplicative inverse `1/self`; requires a non-zero constant term
+    /// or a pole (more generally a non-zero coefficient of index `≤ 0`).
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -1063,21 +2081,38 @@ impl FormalPowerSeries {
     /// assert_eq!(sec.truncate(5).to_string(), "5/24*x^4 + 1/2*x^2 + 1");
     /// ```
     pub fn inverse(&self) -> Result<Self, SymplexError> {
-        let a0 = self.coefficient_id(0);
-        let mut inner = self.ctx.inner.write();
-        let zero = is_zero_expr(&mut inner.arena, a0);
-        drop(inner);
-        if zero {
-            return Err(SymplexError::InvalidArgument {
-                operation: "fps_inverse",
-                reason: "series has zero constant term (not invertible as a power series)".into(),
-            });
+        self.ensure_usable("fps_inverse", false)?;
+        let not_invertible = || SymplexError::InvalidArgument {
+            operation: "fps_inverse",
+            reason: "series has zero constant term (not invertible as a power series)".into(),
+        };
+        if self.valuation < -4096 {
+            return Err(not_invertible());
         }
-        Ok(self.derived(Source::Inverse(Box::new(self.clone()))))
+        let mut lead = None;
+        for i in self.valuation..=0 {
+            let c = self.coeff(i);
+            if !c.exact {
+                return Err(not_invertible());
+            }
+            if !self.is_zero_coeff(c) {
+                lead = Some(i);
+                break;
+            }
+        }
+        let l = lead.ok_or_else(not_invertible)?;
+        let offset = {
+            let mut inner = self.ctx.inner.write();
+            let n = inner.arena.neg(self.offset);
+            eval::eval(&mut inner.arena, n)
+        };
+        let mut s = self.derived(Source::Inverse(Box::new(self.clone()), l), -l);
+        s.offset = offset;
+        Ok(s)
     }
 
     /// Compositional inverse (series reversion) by Lagrange inversion;
-    /// requires `a_0 = 0` and `a_1 ≠ 0`.
+    /// requires a power series with `a_0 = 0` and `a_1 ≠ 0`.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -1089,20 +2124,24 @@ impl FormalPowerSeries {
     /// assert_eq!(asin.truncate(6).to_string(), "3/40*x^5 + 1/6*x^3 + x");
     /// ```
     pub fn reversion(&self) -> Result<Self, SymplexError> {
-        let a0 = self.coefficient_id(0);
-        let a1 = self.coefficient_id(1);
-        let mut inner = self.ctx.inner.write();
-        let z0 = is_zero_expr(&mut inner.arena, a0);
-        let z1 = is_zero_expr(&mut inner.arena, a1);
-        drop(inner);
-        if !z0 || z1 {
+        self.ensure_usable("fps_reversion", false)?;
+        let ok = self.is_taylor_frame() && self.vanishes_up_to(0) && {
+            let a1 = self.coeff(1);
+            a1.exact && !self.is_zero_coeff(a1)
+        };
+        if !ok {
             return Err(SymplexError::InvalidArgument {
                 operation: "fps_reversion",
                 reason: "reversion needs a_0 = 0 and a_1 ≠ 0".into(),
             });
         }
-        Ok(self.derived(Source::Reversion(Box::new(self.clone()))))
+        Ok(self.derived(Source::Reversion(Box::new(self.clone())), 0))
     }
+}
+
+/// A public `usize` index as a signed one.
+fn index(k: usize) -> i64 {
+    i64::try_from(k).unwrap_or(i64::MAX)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -3311,7 +3311,10 @@ impl Expr<Numeric> {
     /// - [`SymplexError::NoSolution`] when the equation is provably
     ///   unsatisfiable: it reduces to a nonzero constant (`1 = 0`), does
     ///   not depend on `var` at all, or violates a range restriction such
-    ///   as `exp(x) = 0` or `sin(x) = 2` (no real solution).
+    ///   as `exp(x) = 0`, `|x| = −1`, or `sin(x) = 2` for a real `x` (a
+    ///   symbol without assumptions is complex: `sin(x) = 2` gives the
+    ///   principal roots `asin 2`, `π − asin 2`, `exp(x) = −1` gives `iπ`;
+    ///   up to 0.47 both were "no real solution").
     /// - [`SymplexError::ComputationFailed`] when the expression is not
     ///   polynomial in `var` and no transcendental strategy applies, or is a
     ///   polynomial whose roots are not all found (coefficients generating a
@@ -5544,6 +5547,14 @@ impl Expr<Numeric> {
     /// general term for elementary functions, truncation, and series
     /// arithmetic (`add`, `mul`, `compose`, `inverse`, `reversion`, …).
     ///
+    /// Laurent series (poles), Puiseux series (`√x·eˣ`, `exp(√x)`) and
+    /// symbolic powers (`x^a·eˣ = x^a·Σ xᵏ/k!`) are supported, see
+    /// [`offset`](crate::calculus::formal_series::FormalPowerSeries::offset)
+    /// and [`ramification`](crate::calculus::formal_series::FormalPowerSeries::ramification).
+    /// Where no such expansion exists (`ln x` or `exp(1/x)` at 0) the series
+    /// is [refused](crate::calculus::formal_series::FormalPowerSeries::is_refused):
+    /// unevaluated coefficients, never `nan`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -5554,6 +5565,11 @@ impl Expr<Numeric> {
     /// let series = x.exp().fps(&x, &ctx.int(0));
     /// assert!(series.has_closed_form());
     /// assert_eq!(series.coefficient(3).to_string(), "1/6");
+    ///
+    /// // √x·eˣ = √x + x^(3/2) + x^(5/2)/2 + …
+    /// let p = (&x.sqrt() * &x.exp()).fps(&x, &ctx.int(0));
+    /// assert_eq!(p.offset().to_string(), "1/2");
+    /// assert!(x.ln().fps(&x, &ctx.int(0)).is_refused());
     /// ```
     #[must_use]
     pub fn fps(&self, var: &Ex, point: &Ex) -> crate::calculus::formal_series::FormalPowerSeries {

@@ -6,6 +6,8 @@
 mod v35_applied;
 #[path = "v35/v35_assumptions.rs"]
 mod v35_assumptions;
+#[path = "v35/v35_compile.rs"]
+mod v35_compile;
 #[path = "v35/v35_consistency.rs"]
 mod v35_consistency;
 #[path = "v35/v35_decisions.rs"]
@@ -34,6 +36,8 @@ mod v35_evalf_special_complex;
 mod v35_evalf_sums;
 #[path = "v35/v35_folds.rs"]
 mod v35_folds;
+#[path = "v35/v35_fps.rs"]
+mod v35_fps;
 #[path = "v35/v35_infinity.rs"]
 mod v35_infinity;
 #[path = "v35/v35_integrate2.rs"]
@@ -76,6 +80,8 @@ mod v35_sets;
 mod v35_solve;
 #[path = "v35/v35_solve2.rs"]
 mod v35_solve2;
+#[path = "v35/v35_solve3.rs"]
+mod v35_solve3;
 #[path = "v35/v35_special.rs"]
 mod v35_special;
 #[path = "v35/v35_speed.rs"]
@@ -88,6 +94,8 @@ mod v35_stats;
 mod v35_stats2;
 #[path = "v35/v35_sums.rs"]
 mod v35_sums;
+#[path = "v35/v35_sums2.rs"]
+mod v35_sums2;
 #[path = "v35/v35_sympy_audit.rs"]
 mod v35_sympy_audit;
 #[path = "v35/v35_sympy_evalf.rs"]
@@ -104,5 +112,7 @@ mod v35_transcendental;
 mod v35_transforms;
 #[path = "v35/v35_trig_values.rs"]
 mod v35_trig_values;
+#[path = "v35/v35_trigsimp.rs"]
+mod v35_trigsimp;
 #[path = "v35/v35_units.rs"]
 mod v35_units;

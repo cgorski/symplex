@@ -465,6 +465,36 @@ pub(crate) fn smart_simplify_traced(
         best.consider(arena, s5e_rules, "trig_identities(pi as angle)", Vec::new());
     }
 
+    // Strategy 5f: Fu on the hyperbolic functions through Osborne's rule
+    // (SymPy's `hyper_as_trig`): `tanh²x + sech²x → 1`, `cosh⁴x − sinh⁴x →
+    // cosh 2x`.  Only with two hyperbolic factors or more (with
+    // multiplicity), which every identity relates.
+    let hyp_degree = if flags.has_hyp {
+        crate::simplify::fu::hyperbolic_degree(arena, s1)
+    } else {
+        0
+    };
+    if hyp_degree >= 2
+        && let Some(s5f) = crate::simplify::fu::fu_hyperbolic(arena, s1)
+    {
+        best.consider(arena, s5f, "eval+osborne+fu", Vec::new());
+    }
+
+    // Strategy 5g: hyperbolic functions written as exponentials → expand →
+    // rules: `eˣ·cosh x − (e²ˣ + 1)/2 → 0`, `sinh x + cosh x → eˣ` (up to
+    // 0.47 both stayed).  With one hyperbolic factor only next to an
+    // exponential; not with `sin`, `cos`, `tan`, which the rewriting would
+    // turn into complex exponentials, nor with more than 12 hyperbolic
+    // factors (the expansion has up to `2ⁿ` terms).
+    if (if flags.has_exp_ln { 1 } else { 2 }..=12).contains(&hyp_degree) && !flags.has_trig {
+        let rules = crate::transforms::pattern::basic_rules(arena);
+        let s5g_exp = crate::simplify::rewrite::rewrite_as_exp(arena, s1);
+        let s5g_expand = crate::transforms::expand::expand(arena, s5g_exp);
+        let s5g_eval = crate::transforms::eval::eval(arena, s5g_expand);
+        let (s5g, steps) = crate::transforms::pattern::apply_rules(arena, s5g_eval, &rules);
+        best.consider(arena, s5g, "eval+rewrite(exp)+expand+rules", steps);
+    }
+
     // Strategy 6: eval → logcombine → simplify (only if has Ln nodes)
     if flags.has_exp_ln {
         let rules = crate::transforms::pattern::basic_rules(arena);

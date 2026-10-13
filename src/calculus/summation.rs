@@ -36,7 +36,9 @@
 //! `Σ P(k)·C(k+c,k)·xᵏ` (`(1−x)^{−(c+1)}` for `P = 1`, any `c`), and a
 //! table of classical power series
 //! (`Σ xᵏ/k! = eˣ`, `Σ (−1)ᵏ x²ᵏ⁺¹/(2k+1)! = sin x`, `Σ xᵏ/k = −ln(1−x)`, …),
-//! and proves divergence where it can.
+//! a rational function times a geometric term by partial fractions into
+//! polylogarithms (`Σ xᵏ/k² = Li₂(x)`, `Σ xᵏ/(k+1)² = Li₂(x)/x − 1`, odd
+//! parts for half-integer poles), and proves divergence where it can.
 //!
 //! **Symbolic ratios.**  Convergence of an infinite geometric-type series
 //! is decided for a numeric ratio (real or not: `Σ (i/2)ᵏ`) and for a
@@ -71,6 +73,7 @@ use crate::base::arena::Arena;
 use crate::base::bernoulli::bernoulli;
 use crate::base::combinatorics::{binomial, factorial};
 use crate::base::extended::Extended;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
@@ -2492,10 +2495,32 @@ fn binomial_sum_from_zero(
 /// `(P as monomial list, Y, const_factor)` — see [`geometric_split`].
 type GeometricSplit = (Vec<(usize, ExprId)>, ExprId, ExprId);
 
+/// `body = rest·ratio^k·constant`: see [`geometric_factors`].
+struct GeometricFactors {
+    /// Product of the `k`-dependent factors that are not exponential in `k`.
+    rest: ExprId,
+    /// `Y`, the product of every exponential factor's ratio.
+    ratio: ExprId,
+    /// The `k`-free factors (and the exponentials' offsets), unmultiplied.
+    constant_parts: Vec<ExprId>,
+}
+
 /// Split `body = P(k)·Y^k·const` where `Y` collects every exponential factor.
 /// Returns `(P as monomial list, Y, const_factor)`; `P` may have symbolic
 /// coefficients.
 fn geometric_split(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<GeometricSplit> {
+    let g = geometric_factors(arena, body, var)?;
+    let poly = sym_poly_in(arena, g.rest, var)?;
+    if poly.is_empty() {
+        return None;
+    }
+    let c = mul_all(arena, &g.constant_parts);
+    Some((poly, g.ratio, c))
+}
+
+/// Split `body = rest·Y^k·const` where `Y` collects every exponential
+/// factor `b^(a·k + c)` / `exp(a·k + c)`; `None` without one.
+fn geometric_factors(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<GeometricFactors> {
     let factors = mul_factors(arena, body);
     let mut y_parts = Vec::new();
     let mut c_parts = Vec::new();
@@ -2534,14 +2559,13 @@ fn geometric_split(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Geome
         return None;
     }
     let y = mul_all(arena, &y_parts);
-    let y = eval::eval(arena, y);
-    let p_expr = mul_all(arena, &p_parts);
-    let poly = sym_poly_in(arena, p_expr, var)?;
-    if poly.is_empty() {
-        return None;
-    }
-    let c = mul_all(arena, &c_parts);
-    Some((poly, y, c))
+    let ratio = eval::eval(arena, y);
+    let rest = mul_all(arena, &p_parts);
+    Some(GeometricFactors {
+        rest,
+        ratio,
+        constant_parts: c_parts,
+    })
 }
 
 /// Apply `Σ_j p_j (r·d/dr)^j` to `s0(r)` and substitute `r = y`.
@@ -2742,6 +2766,206 @@ fn geometric_poly_infinite(
     Some(SumOutcome::Closed(eval::eval(arena, total)))
 }
 
+/// Is the symbol-free, non-rational `y` exactly on the unit circle
+/// (`y·conj(y) = 1` exactly) and certainly not `1`?
+fn on_unit_circle_not_one(arena: &mut Arena, y: ExprId) -> bool {
+    if !walk::free_symbols(arena, y).is_empty() || walk::has_unevaluated(arena, y) {
+        return false;
+    }
+    let c = arena.conjugate(y);
+    let n = arena.mul(&[y, c]);
+    let n = arena.expand_expr(n);
+    if eval_rat(arena, n) != Some(Q::one()) {
+        return false;
+    }
+    let one = arena.one;
+    let d = arena.sub(y, one);
+    let d = eval::eval(arena, d);
+    const_nonzero(arena, d)
+}
+
+/// `−ln(1 − x)`, as `ln(q/p)` when `1 − x = p/q` is a positive rational.
+fn neg_ln_one_minus(arena: &mut Arena, x: ExprId) -> ExprId {
+    let one = arena.one;
+    let omx = arena.sub(one, x);
+    let omx = eval::eval(arena, omx);
+    if let Some(r) = as_rat(arena, omx)
+        && r.is_positive()
+    {
+        let inv = rat_expr(arena, Q::one() / r);
+        return arena.ln(inv);
+    }
+    let l = arena.ln(omx);
+    arena.neg(l)
+}
+
+/// `Li_m(y)` for an integer order `m ≥ 1` (`Li_1(y) = −ln(1 − y)`).
+fn polylog_of_order(arena: &mut Arena, m: i64, y: ExprId) -> ExprId {
+    if m == 1 {
+        return neg_ln_one_minus(arena, y);
+    }
+    let order = arena.int(m);
+    arena.lib_apply(LibFn::PolyLog, &[order, y])
+}
+
+/// `Σ_{j≥j0, j ≡ j0 (mod step)} w^j/j^m` for `step = 1` with `j0 ≥ 1`, or
+/// `step = 2` with an odd `j0`: the series `Li_m(w)`, or its odd part
+/// `(Li_m(w) − Li_m(−w))/2` (`atanh(w)` for `m = 1`), less the terms
+/// below `j0` (plus those from a negative `j0` up to `−1`).
+///
+/// `at_one` (for `w = 1`, `m = 1`, whose series diverge) takes the
+/// regularised values `Li_1 → 0` and `atanh → ln 2`: the divergent parts
+/// `−ln(1 − y)` of `Li_1(y)` and of `2·atanh(√y) = −ln(1 − y) + 2 ln 2 + o(1)`
+/// cancel in a sum whose `1/(k + β)` coefficients add up to 0.
+fn polylog_tail(arena: &mut Arena, m: i64, w: ExprId, j0: i64, step: i64, at_one: bool) -> ExprId {
+    let series = if at_one && m == 1 {
+        if step == 1 {
+            arena.zero
+        } else {
+            let two = arena.int(2);
+            arena.ln(two)
+        }
+    } else if step == 1 {
+        polylog_of_order(arena, m, w)
+    } else if m == 1 {
+        arena.atanh(w)
+    } else {
+        let plus = polylog_of_order(arena, m, w);
+        let nw = arena.neg(w);
+        let nw = eval::eval(arena, nw);
+        let minus = polylog_of_order(arena, m, nw);
+        let d = arena.sub(plus, minus);
+        let half = arena.rational(1, 2);
+        arena.mul(&[half, d])
+    };
+    let mut terms = vec![series];
+    let (mut j, end, sign) = if j0 >= 1 { (1, j0, -1) } else { (j0, 0, 1) };
+    while j < end {
+        let wj = pow_rat(arena, w, &rat_i(j));
+        let jm = rat_expr(arena, rat_pow_i(&rat_i(j), -m) * rat_i(sign));
+        terms.push(arena.mul(&[jm, wj]));
+        j += step;
+    }
+    add_all(arena, &terms)
+}
+
+/// Largest denominator degree of `R` in [`geometric_rational_infinite`].
+const MAX_POLYLOG_DENOMINATOR_DEGREE: usize = 16;
+
+/// `Σ_{k≥lo} R(k)·Y^k` for a rational function `R` (rational coefficients,
+/// non-constant denominator) whose poles are integers or half-integers
+/// below `lo`: with the partial fractions `R = P + Σ c/(k + β)^m`,
+///
+/// ```text
+/// Σ_{k≥lo} Y^k/(k + β)^m = Y^(−β)·(Li_m(Y) − Σ_{j=1}^{lo+β−1} Y^j/j^m)
+/// ```
+///
+/// (`Li_1(Y) = −ln(1 − Y)`); for `β = h/2` with an odd `h` the index
+/// `j = 2k + h` is odd and, with `w² = Y` (either root: the result is even
+/// in `w`), the sum is `2^m·w^(−h)` times the odd part
+/// `(Li_m(w) − Li_m(−w))/2` less its terms `j < 2·lo + h`.  The
+/// polynomial part `Σ P(k)·Y^k` is summed by
+/// [`geometric_poly_infinite`].  The series converges for `|Y| < 1`; for
+/// `deg R < 0` also at `Y = −1` (Leibniz) and at an exactly unimodular
+/// `Y ≠ 1` (Dirichlet; the value by Abel's theorem); for `deg R ≤ −2` at
+/// `Y = 1` (a body without geometric factor, or `(−1)^(2k)`), where the
+/// divergent `Li_1(1)` parts cancel and are dropped.  A symbolic `Y` closes
+/// only when the declared assumptions bound it inside the unit disc, as
+/// `Σ Y^k` does (see the module docs).  Divergent and undecided cases are
+/// left to the later strategies (`None`).
+///
+/// Before 0.48 `Σ_{k≥1} (1/2)^k/k²`, `Σ (1/2)^k/k³` and
+/// `Σ (1/2)^k/(k²(k + 1))` stayed unevaluated (SymPy 1.14: `π²/12 −
+/// ln²2/2`, `polylog(3, 1/2)`, `−1 − ln²2/2 + ln 2 + π²/12`).
+fn geometric_rational_infinite(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+) -> Option<SumOutcome> {
+    let lo_i = as_i64(arena, lo)?;
+    // A rational body is the ratio 1: `Σ_{k≥1} (1 − 3k)/((2k − 3)²(k + 1)(k + 3))`
+    // with poles at integers and half-integers was refused (SymPy 1.14:
+    // `nan`).
+    let g = geometric_factors(arena, body, var).unwrap_or_else(|| GeometricFactors {
+        rest: body,
+        ratio: arena.one,
+        constant_parts: Vec::new(),
+    });
+    let y = g.ratio;
+    let (num, den) = polybridge::as_numer_denom(arena, g.rest);
+    let num_degree = polybridge::expr_to_poly(arena, num, var)?.degree()?;
+    let den_degree = polybridge::expr_to_poly(arena, den, var)?.degree()?;
+    if den_degree == 0 || den_degree > MAX_POLYLOG_DENOMINATOR_DEGREE {
+        return None;
+    }
+    let at_one = as_rat(arena, y).is_some_and(|q| q.is_one());
+    match as_rat(arena, y) {
+        Some(q) if q.is_zero() => return None,
+        Some(q) if q.abs() < Q::one() => {}
+        // Alternating with terms decreasing to zero.
+        Some(q) if q == -Q::one() && num_degree < den_degree => {}
+        // A trivial ratio (`(−1)^(2k)`): absolutely convergent.
+        Some(_) if at_one && num_degree + 2 <= den_degree => {}
+        Some(_) => return None,
+        None => match abs_less_than_one(arena, y) {
+            Some(true) if const_nonzero(arena, y) => {}
+            // Dirichlet's test on the unit circle (`Σ i^k/k²`), and Abel's
+            // theorem for the value.
+            None if num_degree < den_degree && on_unit_circle_not_one(arena, y) => {}
+            _ => return None,
+        },
+    }
+    let (poly_part, poles) = rational_decompose(arena, g.rest, var)?;
+    let mut terms = Vec::new();
+    for p in &poles {
+        let two_beta = &p.beta * rat_i(2);
+        if !two_beta.is_integer() {
+            return None;
+        }
+        let h = two_beta.to_integer().to_i64()?;
+        let m = i64::from(p.m);
+        let c = rat_expr(arena, p.c.clone());
+        if h % 2 == 0 {
+            // j = k + β from j0 = lo + β; j ≤ 0 would be a pole in range.
+            let beta = h / 2;
+            let j0 = lo_i.checked_add(beta)?;
+            if j0 < 1 || j0 - 1 > MAX_TELESCOPE_SHIFT {
+                return None;
+            }
+            let tail = polylog_tail(arena, m, y, j0, 1, at_one);
+            let shift = pow_rat(arena, y, &rat_i(-beta));
+            terms.push(arena.mul(&[c, shift, tail]));
+        } else {
+            // j = 2k + h (odd) from j0 = 2·lo + h, Y^k = w^(j − h).
+            let j0 = lo_i.checked_mul(2)?.checked_add(h)?;
+            if j0.abs() > 2 * MAX_TELESCOPE_SHIFT + 1 || m > 62 {
+                return None;
+            }
+            let w = pow_rat(arena, y, &Q::new(BigInt::one(), BigInt::from(2)));
+            let w = eval::eval(arena, w);
+            let tail = polylog_tail(arena, m, w, j0, 2, at_one);
+            let shift = pow_rat(arena, w, &rat_i(-h));
+            let scale = arena.int(1i64 << m);
+            terms.push(arena.mul(&[c, scale, shift, tail]));
+        }
+    }
+    if !poly_part.is_zero() {
+        let p = poly_at(arena, &poly_part, var);
+        let yk = arena.pow(y, var);
+        let p_body = arena.mul(&[p, yk]);
+        match geometric_poly_infinite(arena, p_body, var, lo)? {
+            SumOutcome::Closed(v) => terms.push(v),
+            _ => return None,
+        }
+    }
+    tracing::debug!("summation: polylogarithm series");
+    let total = add_all(arena, &terms);
+    let c = mul_all(arena, &g.constant_parts);
+    let total = arena.mul(&[c, total]);
+    Some(SumOutcome::Closed(eval::eval(arena, total)))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Infinite sums
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2879,6 +3103,11 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
 
     // 6. Gosper antidifference with an exactly computable tail limit.
     if let Some(r) = gosper_infinite(arena, body, var, lo) {
+        return r;
+    }
+
+    // 6b. Rational function times a geometric term: polylogarithms.
+    if let Some(r) = geometric_rational_infinite(arena, body, var, lo) {
         return r;
     }
 
@@ -3478,6 +3707,8 @@ enum Domain {
     ClosedUnit,
     /// `|x| < 1` or `x = −1`.
     OpenUnitOrMinusOne,
+    /// `|x| ≤ 1` and `x ≠ 1`.
+    ClosedUnitExceptOne,
 }
 
 /// One entry of the classical power-series table: the canonical term
@@ -3580,21 +3811,8 @@ fn series_table() -> Vec<SeriesEntry> {
             b: 0,
             k0: 1,
             table_const: one(),
-            domain: Domain::OpenUnitOrMinusOne,
-            build: |a, x| {
-                let one = a.one;
-                let omx = a.sub(one, x);
-                let omx = eval::eval(a, omx);
-                // −ln(p/q) = ln(q/p) for rational arguments.
-                if let Some(r) = as_rat(a, omx)
-                    && r.is_positive()
-                {
-                    let inv = rat_expr(a, Q::one() / r);
-                    return a.ln(inv);
-                }
-                let l = a.ln(omx);
-                a.neg(l)
-            },
+            domain: Domain::ClosedUnitExceptOne,
+            build: neg_ln_one_minus,
         },
         SeriesEntry {
             name: "atan",
@@ -3775,13 +3993,18 @@ fn in_domain(arena: &mut Arena, x: ExprId, domain: Domain) -> Option<bool> {
             Domain::Everywhere => true,
             Domain::OpenUnit => a < one,
             Domain::ClosedUnit => a <= one,
-            Domain::OpenUnitOrMinusOne => a < one || r == -one,
+            Domain::OpenUnitOrMinusOne | Domain::ClosedUnitExceptOne => a < one || r == -one,
         });
     }
-    // Non-rational constant: decide strictly inside / outside the unit disc
-    // (a transcendental constant cannot sit exactly on the unit circle in a
-    // way we could certify, so the boundary cases stay undecided).
-    abs_less_than_one(arena, x)
+    // Non-rational constant: decide strictly inside / outside the unit disc;
+    // on the circle only `−ln(1 − x)` is decided, for an `x` whose modulus
+    // is exactly 1 (`Σ i^k/k = −ln(1 − i)` by Dirichlet's test was refused).
+    let inside = abs_less_than_one(arena, x);
+    if inside.is_none() && domain == Domain::ClosedUnitExceptOne && on_unit_circle_not_one(arena, x)
+    {
+        return Some(true);
+    }
+    inside
 }
 
 /// Recognise `Σ_{k=lo}^{∞} t(k)` against the classical power-series table.

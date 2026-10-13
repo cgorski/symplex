@@ -3217,8 +3217,9 @@ fn atom_to_set_of_difference(
             })
         };
         // A provable contradiction (`cos x = −2`, `x/sin x = 0`: every root a
-        // pole) has no solution; before 0.40 it was "could not solve".
-        let sols = match crate::transforms::solve::solve_classified(arena, d, var) {
+        // pole) has no solution; before 0.40 it was "could not solve".  The
+        // variable is real here: the range restrictions take it so.
+        let sols = match crate::transforms::solve::solve_classified_real(arena, d, var) {
             crate::transforms::solve::SolveOutcome::NoSolution(_) => return Ok(arena.empty_set),
             crate::transforms::solve::SolveOutcome::Identity => return identity(arena),
             outcome => outcome.into_solutions(),

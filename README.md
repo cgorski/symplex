@@ -345,7 +345,8 @@ syms!(ctx; x, y, z);
 
 expr!(ctx, x^2 - 5*x + 6).solve(&x);                  // Ok([3, 2])
 (&x.sin() - &ctx.rational(1, 2)).solve(&x);           // Ok([1/6*pi, 5/6*pi])
-(&x.sin() - 2).solve(&x);                             // Err(NoSolution)
+(&x.exp() + 1).solve(&x);                             // Ok([pi*I]) (a plain x is complex)
+(&x.abs() + 1).solve(&x);                             // Err(NoSolution)
 (&x - &x).solve(&x);                                  // Err(InfiniteSolutions)
 
 // All periodic solutions, with an integer parameter

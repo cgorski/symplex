@@ -347,8 +347,14 @@ fn solving() {
         r.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
         ["1/6*pi", "5/6*pi"]
     );
+    // A plain `x` is complex: `eˣ = −1` has the principal root `iπ`.
+    let r = (&x.exp() + 1).solve(&x).unwrap();
+    assert_eq!(
+        r.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
+        ["pi*I"]
+    );
     assert!(matches!(
-        (&x.sin() - 2).solve(&x),
+        (&x.abs() + 1).solve(&x),
         Err(SymplexError::NoSolution { .. })
     ));
     assert!(matches!(

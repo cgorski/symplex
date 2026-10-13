@@ -123,7 +123,7 @@ expr.to_c_fn("f", &["x"]);        // same, C99
 expr.integrate_numeric(&x, &a, &b);   // Err if the quadrature does not converge
 ```
 
-Solvers whose failure is a mathematical fact also use `Result`: `solve` returns `Err(InfiniteSolutions)` for an identity and `Err(NoSolution)` for a contradiction or range violation (`sin x = 2`); `linsolve` returns `Ok(LinearSolution::Inconsistent)` because inconsistency is a legitimate answer, but `Err(InvalidArgument)` for non-linear input.
+Solvers whose failure is a mathematical fact also use `Result`: `solve` returns `Err(InfiniteSolutions)` for an identity and `Err(NoSolution)` for a contradiction or range violation (`|x| = −1`, or `sin x = 2` for an `x` declared real — a symbol without assumptions is complex, and `sin x = 2` has the roots `asin 2`, `π − asin 2`); `linsolve` returns `Ok(LinearSolution::Inconsistent)` because inconsistency is a legitimate answer, but `Err(InvalidArgument)` for non-linear input.
 
 ### Pattern 4: Queries → `Option`
 

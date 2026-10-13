@@ -131,14 +131,64 @@ impl SolveOutcome {
 /// multiplicity (`(x − 1)² = 0` gives `[1]`).  Only principal branches of
 /// periodic functions are returned; see [`solve_general`] for full
 /// families.
+///
+/// The crate's root searches (poles and critical points in integration,
+/// limits, residues, ODEs, summation) look for real points: here the range
+/// restrictions of transcendental inversions take the unknown to be real
+/// (`eˣ = −1`, `sin x = 2` have no solution), unlike [`solve_classified`].
 pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solution> {
-    solve_classified(arena, expr, var).into_solutions()
+    solve_classified_real(arena, expr, var).into_solutions()
+}
+
+/// [`solve`] distinguishing identities and contradictions: the range
+/// restrictions take `var` real (for the solvers on the real line, e.g.
+/// the equations of `reduce_inequalities`).
+pub(crate) fn solve_classified_real(arena: &mut Arena, expr: ExprId, var: ExprId) -> SolveOutcome {
+    let _restore = DeclaredUnknownGuard::set(false);
+    solve_impl(arena, expr, var, None)
 }
 
 /// Solve `expr = 0` for `var`, distinguishing identities and
-/// contradictions from "no roots found".
+/// contradictions from "no roots found": the principal roots `Ex::solve`
+/// returns.
+///
+/// `var` takes its declared domain, ℂ for a plain symbol: the range
+/// restrictions of the inversions (`exp f = c ≤ 0`, `sin f = c` and `cos f
+/// = c` with `|c| > 1`, `cosh f = c < 1`) prove "no solution" only for an
+/// `f` real over that domain, and otherwise the principal complex roots
+/// are returned — `eˣ + 1 = 0` gives `[iπ]`, `cosh x = 0` gives `[±iπ/2]`,
+/// `sin x = 2` gives `[asin 2, π − asin 2]` (SymPy's `solve` likewise);
+/// up to 0.47 these were "no real solutions" for a plain `x`, while
+/// `Ex::solve_as_set` gave the complex families.  For a variable declared
+/// real nothing changes.
 pub(crate) fn solve_classified(arena: &mut Arena, expr: ExprId, var: ExprId) -> SolveOutcome {
+    let _restore = DeclaredUnknownGuard::set(true);
     solve_impl(arena, expr, var, None)
+}
+
+thread_local! {
+    /// Set while [`solve_classified`] runs, cleared while [`solve`] runs:
+    /// whether the range restrictions of a principal solve take the unknown
+    /// in its declared domain (ℂ for a plain symbol) rather than real
+    /// ([`range_restricted`]).  Inner solves of a substituted equation keep
+    /// the setting of the outer one.
+    static DECLARED_UNKNOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Sets [`DECLARED_UNKNOWN`], restoring the previous value on drop.
+struct DeclaredUnknownGuard(bool);
+
+impl DeclaredUnknownGuard {
+    fn set(declared: bool) -> Self {
+        DeclaredUnknownGuard(DECLARED_UNKNOWN.with(|c| c.replace(declared)))
+    }
+}
+
+impl Drop for DeclaredUnknownGuard {
+    fn drop(&mut self) {
+        let previous = self.0;
+        DECLARED_UNKNOWN.with(|c| c.set(previous));
+    }
 }
 
 /// Solve `expr = 0` for `var`, returning **general** solution families for
@@ -181,7 +231,9 @@ impl Drop for ComplexVariableGuard {
 /// [`solve`] and [`solve_general`] take the variable of a transcendental
 /// inversion to be real: `sin(f) = 2`, `exp(f) = −1`, `cosh(f) = 1/2` have
 /// no solution and `exp(f) = c` the one branch `f = ln c` when `f` is real
-/// for a real `var`, and `x·eˣ = c` the real branches of Lambert W.  Here
+/// for a real `var`, and `x·eˣ = c` the real branches of Lambert W
+/// ([`solve_classified`] gives the principal complex roots of the first
+/// three for a plain `var`).  Here
 /// those hold only for a variable declared real: `exp(x) = 1` gives the
 /// family `2nπi`, `sin(x) = 2` the families `asin 2 + 2nπ`, `π − asin 2 +
 /// 2nπ`, `|x| = 1` (a circle) and `x·eˣ = 1` (the branches `W_k(1)`) are
@@ -1210,11 +1262,7 @@ fn finalize_solutions(arena: &mut Arena, solutions: Vec<Solution>) -> SolveOutco
     let mut values: Vec<Option<num_complex::Complex64>> = Vec::with_capacity(solutions.len());
     for s in solutions {
         let v = crate::transforms::eval::eval(arena, s.value);
-        let infinite = matches!(
-            arena.node(v),
-            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
-        );
-        if infinite {
+        if has_infinite_term(arena, v) {
             continue;
         }
         if out.iter().any(|o| o.value == v) {
@@ -1241,6 +1289,26 @@ fn finalize_solutions(arena: &mut Arena, solutions: Vec<Solution>) -> SolveOutco
         );
     }
     SolveOutcome::Solutions(out)
+}
+
+/// Is `v` infinite or undefined: `∞`, `−∞`, `zoo`, `nan`, or a sum or
+/// product with one of them (a directed infinity `i·∞`, a family `nπ +
+/// i·∞`)?  `tan z = i` inverts to `atan(i) = i·∞`: up to 0.47 `solve`
+/// returned `[I*oo]` and `solve_as_set` the family `nπ + I*oo`, while `tan
+/// z = ±i` has no solution (`e^(2iz) = 0`; SymPy: `[]`).
+fn has_infinite_term(arena: &Arena, v: ExprId) -> bool {
+    let mut stack = vec![v];
+    while let Some(e) = stack.pop() {
+        match arena.node(e) {
+            ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity
+            | ExprNode::NaN => return true,
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The 16-digit value of a constant solution with an algebraic or
@@ -1624,8 +1692,28 @@ fn try_solve_binomial_rational(arena: &mut Arena, poly: &Poly) -> Option<Vec<Sol
 /// (ℂ for a plain symbol) instead: `exp(x)` is not real, and the range
 /// restrictions and the single real branch of `exp` do not apply.
 fn real_for_real_var(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
-    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
     let complex_var = COMPLEX_VARIABLE.with(std::cell::Cell::get);
+    real_with_unknown(arena, e, var, !complex_var)
+}
+
+/// Does a range restriction of peeling hold for the argument `f` of `g(f)
+/// = c`: is `f` certainly real?  [`real_for_real_var`], except in a
+/// principal solve under [`solve_classified`] (`period` is `None`), where
+/// `var` keeps its declared domain (ℂ for a plain symbol): `eˣ = −1`
+/// then has the principal root `iπ` rather than no solution.
+fn range_restricted(arena: &mut Arena, f: ExprId, var: ExprId, period: Option<ExprId>) -> bool {
+    if period.is_none() && DECLARED_UNKNOWN.with(std::cell::Cell::get) {
+        real_with_unknown(arena, f, var, false)
+    } else {
+        real_for_real_var(arena, f, var)
+    }
+}
+
+/// Is `e` certainly real, with the parameters without declared assumptions
+/// taken real and `var` taken real when `var_real` (otherwise in its
+/// declared domain)?
+fn real_with_unknown(arena: &mut Arena, e: ExprId, var: ExprId, var_real: bool) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
     let mut cache = AssumptionCache::new();
     for s in crate::base::walk::free_symbols(arena, e) {
         let ExprNode::Symbol(sid) = *arena.node(s) else {
@@ -1633,7 +1721,7 @@ fn real_for_real_var(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
         };
         let declared = arena.symbol_assumptions(sid);
         let take_real = if s == var {
-            !complex_var
+            var_real
         } else {
             declared == Assumptions::default()
         };
@@ -1787,6 +1875,7 @@ fn solve_by_peeling(
             if real_inner
                 && let Some(c) = arena.as_num(rhs)
                 && !c.is_positive()
+                && range_restricted(arena, inner, var, period)
             {
                 tracing::debug!("solve_by_peeling: exp domain error, rhs <= 0");
                 return Some(vec![]);
@@ -1842,7 +1931,7 @@ fn solve_by_peeling(
             // Domain check: sin(x) = c has no real solutions when |c| > 1
             if let Some(c) = arena.as_num(rhs)
                 && c.abs() > Ratio::one()
-                && real_for_real_var(arena, inner, var)
+                && range_restricted(arena, inner, var, period)
             {
                 tracing::debug!("solve_by_peeling: sin domain error, |c| > 1");
                 return Some(vec![]);
@@ -1869,7 +1958,7 @@ fn solve_by_peeling(
             // Domain check: cos(x) = c has no real solutions when |c| > 1
             if let Some(c) = arena.as_num(rhs)
                 && c.abs() > Ratio::one()
-                && real_for_real_var(arena, inner, var)
+                && range_restricted(arena, inner, var, period)
             {
                 tracing::debug!("solve_by_peeling: cos domain error, |c| > 1");
                 return Some(vec![]);
@@ -2071,6 +2160,7 @@ fn solve_by_peeling(
             if real_inner
                 && let Some(c) = arena.as_num(rhs)
                 && *c < Ratio::one()
+                && range_restricted(arena, inner, var, period)
             {
                 tracing::debug!("solve_by_peeling: cosh domain error, rhs < 1");
                 return Some(vec![]);
@@ -3700,7 +3790,7 @@ fn try_radical_substitution(arena: &mut Arena, expr: ExprId, var: ExprId) -> Opt
     if expr_contains_var(arena, substituted, var) {
         return None;
     }
-    let t_solutions = solve(arena, substituted, t);
+    let t_solutions = solve_impl(arena, substituted, t, None).into_solutions();
     let mut out: Vec<Solution> = Vec::new();
     for ts in t_solutions {
         let x0 = crate::transforms::subs::subs(arena, x_of_t, t, ts.value);
@@ -4631,11 +4721,18 @@ fn try_exponential_log_split(
     let ratio = arena.div(c2, c1);
     let ratio = arena.neg(ratio);
     let ratio = crate::transforms::eval::eval(arena, ratio);
-    if crate::base::walk::free_symbols(arena, ratio).is_empty()
-        && matches!(
-            crate::poly::algebraic::sign_checked(arena, ratio),
-            Some(0) | Some(-1)
-        )
+    let d = arena.sub(*s1, *s2);
+    // `e^(S₁ − S₂) = ratio ≤ 0`: no solution for a real `S₁ − S₂`; for a
+    // complex unknown under `solve_classified` the principal root of
+    // `S₁ − S₂ = ln(ratio)` (`2ˣ + 3ˣ = 0`: `x = iπ/ln(2/3)`).
+    let sign = if crate::base::walk::free_symbols(arena, ratio).is_empty() {
+        crate::poly::algebraic::sign_checked(arena, ratio)
+    } else {
+        None
+    };
+    let declared_unknown = period.is_none() && DECLARED_UNKNOWN.with(std::cell::Cell::get);
+    if sign == Some(0)
+        || (sign == Some(-1) && (!declared_unknown || real_with_unknown(arena, d, var, false)))
     {
         return Some(SolveOutcome::NoSolution(
             "the exponentials of a real argument are positive and the coefficients do not allow it"
@@ -4643,7 +4740,6 @@ fn try_exponential_log_split(
         ));
     }
     let ln_ratio = principal_ln(arena, ratio);
-    let d = arena.sub(*s1, *s2);
     let eq = arena.sub(d, ln_ratio);
     let eq = crate::transforms::expand::expand(arena, eq);
     let eq = crate::transforms::eval::eval(arena, eq);
@@ -4905,7 +5001,7 @@ fn solutions_unless_identity(arena: &mut Arena, sub: ExprId, t: ExprId) -> Optio
         NumeratorRoots::Found(roots) => return Some(roots),
         NumeratorRoots::Unknown => return None,
     }
-    match solve_classified(arena, sub, t) {
+    match solve_impl(arena, sub, t, None) {
         SolveOutcome::Identity => None,
         other => Some(other.into_solutions()),
     }
@@ -4954,7 +5050,7 @@ fn numerator_roots(arena: &mut Arena, num: ExprId, t: ExprId) -> NumeratorRoots 
         return NumeratorRoots::Solver;
     };
     let degree = coeffs.len().saturating_sub(1);
-    if degree <= 2 || solve_classified(arena, num, t).into_solutions().len() >= degree {
+    if degree <= 2 || solve_impl(arena, num, t, None).into_solutions().len() >= degree {
         return NumeratorRoots::Solver;
     }
     match algebraic_roots::number_field_roots(arena, num, t, false) {
@@ -4970,7 +5066,7 @@ fn numerator_roots(arena: &mut Arena, num: ExprId, t: ExprId) -> NumeratorRoots 
 fn substitution_roots(arena: &mut Arena, sub: ExprId, t: ExprId) -> Option<Vec<Solution>> {
     let full_num = full_numerator(arena, sub);
     match numerator_roots(arena, full_num, t) {
-        NumeratorRoots::Solver => Some(solve(arena, sub, t)),
+        NumeratorRoots::Solver => Some(solve_impl(arena, sub, t, None).into_solutions()),
         NumeratorRoots::Found(roots) => Some(roots),
         NumeratorRoots::Unknown => None,
     }

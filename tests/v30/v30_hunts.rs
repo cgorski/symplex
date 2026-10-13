@@ -105,11 +105,16 @@ fn range_restrictions_only_for_real_arguments() {
     assert_eq!(s.len(), 1);
     assert_eq!(s[0], ctx.parse("-pi^2").unwrap());
 
-    // exp(x) = −1 still has no real solution (the documented contract).
+    // exp(x) = −1 has no real solution: for a real `x` no solution; since
+    // 0.48 a plain `x` is complex and gets the principal root `iπ` (up to
+    // 0.47 "no real solutions"; SymPy `solve(exp(x) + 1, x)` → `[I*pi]`).
+    let xr = ctx.symbol_with("xr", &[Assumption::Real]).unwrap();
     assert!(matches!(
-        ctx.parse("exp(x) + 1").unwrap().solve(&x),
+        ctx.parse("exp(xr) + 1").unwrap().solve(&xr),
         Err(SymplexError::NoSolution { .. })
     ));
+    let s = ctx.parse("exp(x) + 1").unwrap().solve(&x).unwrap();
+    assert_eq!(s, vec![ctx.parse("pi*I").unwrap()]);
 }
 
 /// `solve_general` missed the periodic families of non-real arguments:

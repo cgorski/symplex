@@ -8,13 +8,21 @@
 //!
 //! Every numerically evaluable [`ExprNode`] is supported, including the
 //! special functions (Γ, ln Γ, ψ, erf/erfc and their inverses erfinv/erfcinv,
-//! Lambert W, Beta, factorials,
-//! binomials), Bessel functions and orthogonal polynomials with integer
-//! order, integer sequences, piecewise expressions and boolean/relational
-//! nodes (represented as `0.0`/`1.0`).  The special-function algorithms live
-//! in the crate-internal `numeric_rt` module and are shared with
-//! the Rust code generator, so `compile()` and `to_rust_fn()` agree bit for
-//! bit on those routines.
+//! erfi, Lambert W, Beta, factorials, binomials, the exponential,
+//! logarithmic, sine and cosine integrals Ei, li, Si, Ci, Shi, Chi and the
+//! Fresnel integrals S, C), Bessel functions and orthogonal polynomials with
+//! integer order, integer sequences, piecewise expressions and
+//! boolean/relational nodes (represented as `0.0`/`1.0`).  The
+//! special-function algorithms live in the crate-internal `numeric_rt`
+//! module and are shared with the Rust code generator, so `compile()` and
+//! `to_rust_fn()` agree bit for bit on those routines (the integrals, erfi
+//! and the Fresnel integrals, new in 0.48, are not lowered by the code
+//! generators yet).
+//!
+//! `Ci`, `Chi` and `li` are NaN for a negative argument, where their values
+//! are not real (`Ci(−x) = Ci(x) + iπ`); `Ci(0)`, `Chi(0)`, `Ei(0)` and
+//! `li(1)` are `−∞`, the limit along the real axis from the side where the
+//! function is real (mpmath's value; SymPy's `Ci(0)` and `Chi(0)` are `zoo`).
 //!
 //! Symbol-free subexpressions are decided at compile time like the code
 //! emitters decide them: a real constant is folded to its certified `f64`
@@ -678,6 +686,15 @@ impl Program {
                 Instruction::Erfcinv => un!(rt::erfcinv),
                 Instruction::LambertW => un!(rt::lambert_w0),
                 Instruction::LambertWm1 => un!(rt::lambert_wm1),
+                Instruction::Si => un!(rt::sin_integral),
+                Instruction::Ci => un!(rt::cos_integral),
+                Instruction::Ei => un!(rt::exp_integral_ei),
+                Instruction::Li => un!(rt::log_integral),
+                Instruction::Shi => un!(rt::sinh_integral),
+                Instruction::Chi => un!(rt::cosh_integral),
+                Instruction::Erfi => un!(rt::erfi),
+                Instruction::FresnelS => un!(rt::fresnel_s),
+                Instruction::FresnelC => un!(rt::fresnel_c),
                 Instruction::Factorial => un!(rt::factorial),
                 Instruction::Binomial => bin!(rt::binomial),
                 Instruction::Beta => bin!(rt::beta),
@@ -795,6 +812,18 @@ enum Instruction {
     LambertW,
     /// The lower real branch `W₋₁` (`lambertw(x, -1)`).
     LambertWm1,
+    Si,
+    /// NaN for a negative argument (`Ci(−x) = Ci(x) + iπ`).
+    Ci,
+    Ei,
+    /// NaN for a negative argument (`li` is not real there).
+    Li,
+    Shi,
+    /// NaN for a negative argument (`Chi(−x) = Chi(x) + iπ`).
+    Chi,
+    Erfi,
+    FresnelS,
+    FresnelC,
     Factorial,
     /// `binomial(second, top)`.
     Binomial,
@@ -1121,10 +1150,10 @@ impl<'a> Emitter<'a> {
             ExprNode::Im(x) => self.unary(x, Instruction::Im),
             ExprNode::Conjugate(_) => return Err(self.unsupported("conjugate")),
             ExprNode::Arg(_) => return Err(self.unsupported("arg")),
-            ExprNode::Si(_) => return Err(self.unsupported("Si")),
-            ExprNode::Ci(_) => return Err(self.unsupported("Ci")),
-            ExprNode::Ei(_) => return Err(self.unsupported("Ei")),
-            ExprNode::Li(_) => return Err(self.unsupported("li")),
+            ExprNode::Si(x) => self.unary(x, Instruction::Si),
+            ExprNode::Ci(x) => self.unary(x, Instruction::Ci),
+            ExprNode::Ei(x) => self.unary(x, Instruction::Ei),
+            ExprNode::Li(x) => self.unary(x, Instruction::Li),
             ExprNode::Zeta(_) => return Err(self.unsupported("zeta")),
             ExprNode::Polygamma(_, _) => return Err(self.unsupported("polygamma")),
             ExprNode::KroneckerDelta(_, _) => return Err(self.unsupported("KroneckerDelta")),
@@ -1428,6 +1457,12 @@ fn vm_lowering(f: LibFn) -> VmLowering {
         LibFn::Factorial2 => VmLowering::Unary(Instruction::Factorial2),
         LibFn::ErfInv => VmLowering::Unary(Instruction::Erfinv),
         LibFn::ErfcInv => VmLowering::Unary(Instruction::Erfcinv),
+        // VM only (`VM_ONLY`): the source back ends have no helper yet.
+        LibFn::Erfi => VmLowering::Unary(Instruction::Erfi),
+        LibFn::Shi => VmLowering::Unary(Instruction::Shi),
+        LibFn::Chi => VmLowering::Unary(Instruction::Chi),
+        LibFn::FresnelS => VmLowering::Unary(Instruction::FresnelS),
+        LibFn::FresnelC => VmLowering::Unary(Instruction::FresnelC),
         LibFn::RisingFactorial => VmLowering::Binary(Instruction::RisingFactorial),
         LibFn::FallingFactorial => VmLowering::Binary(Instruction::FallingFactorial),
         LibFn::Subfactorial
@@ -1439,12 +1474,7 @@ fn vm_lowering(f: LibFn) -> VmLowering {
         | LibFn::Stirling2
         | LibFn::PartitionCount
         | LibFn::LambertW
-        | LibFn::Erfi
         | LibFn::ExpInt
-        | LibFn::Shi
-        | LibFn::Chi
-        | LibFn::FresnelS
-        | LibFn::FresnelC
         | LibFn::LowerGamma
         | LibFn::UpperGamma
         | LibFn::PolyLog
@@ -1465,6 +1495,18 @@ fn vm_lowering(f: LibFn) -> VmLowering {
         | LibFn::BetaIncRegularized => VmLowering::Unsupported,
     }
 }
+
+/// Library functions the VM evaluates (through `numeric_rt`) that the source
+/// back ends (`to_rust_fn`, `to_c_fn`) do not lower yet: `codegen::rt_lowering`
+/// still reports them unsupported, and the C back end has no helper for them.
+#[cfg(test)]
+const VM_ONLY: &[LibFn] = &[
+    LibFn::Erfi,
+    LibFn::Shi,
+    LibFn::Chi,
+    LibFn::FresnelS,
+    LibFn::FresnelC,
+];
 
 /// Iterative check for nodes that must bypass the `eval()` pre-pass
 /// (`Piecewise` and orthogonal-polynomial `Apply` nodes).
@@ -1732,7 +1774,10 @@ mod tests {
     }
 
     /// The VM and the source back ends implement the same library functions
-    /// with the same shapes.
+    /// with the same shapes, except the VM-only ones listed in `VM_ONLY`
+    /// (0.48: erfi, Shi, Chi and the Fresnel integrals compile, their Rust/C
+    /// code generation is still unsupported), which must stay unsupported
+    /// there until the list is shortened.
     #[test]
     fn vm_and_rt_lowering_agree() {
         use crate::output::codegen::{RtLowering, rt_lowering};
@@ -1749,7 +1794,11 @@ mod tests {
                 RtLowering::Binary(_) => "binary",
                 RtLowering::Unsupported => "unsupported",
             };
-            assert_eq!(vm, rt, "{f}");
+            if VM_ONLY.contains(&f) {
+                assert_eq!((vm, rt), ("unary", "unsupported"), "{f}");
+            } else {
+                assert_eq!(vm, rt, "{f}");
+            }
         }
     }
 

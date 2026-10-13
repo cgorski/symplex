@@ -551,9 +551,16 @@ fn catalan_constant_from_alternating_odd_squares() {
         approx(s.eval_f64().unwrap(), 0.915_965_594_177_219 - 1.0, 1e-12),
         "{s}"
     );
-    // β(4) has no closed form: unevaluated, not wrong
+    // β(4) = (Li₄(i) − Li₄(−i))/(2i), the odd part of the polylogarithm
+    // (unevaluated up to 0.47; SymPy 1.14 gives the same form; mpmath
+    // nsum: 0.98894455174110533610842263…)
     let s = (ctx.int(-1).pow(&k) / (&k * 2 + 1).powi(4)).summation(&k, &ctx.int(0), &inf);
-    assert!(s.has_unevaluated(), "{s}");
+    assert!(!s.has_unevaluated(), "{s}");
+    let v = s.eval_complex64().unwrap();
+    assert!(
+        approx(v.re, 0.988_944_551_741_105_3, 1e-12) && v.im.abs() < 1e-12,
+        "{s} = {v}"
+    );
 }
 
 #[test]

@@ -34,6 +34,15 @@
 //! | orthogonal polynomials | three-term recurrences | a few ulps per step |
 //! | `fibonacci`, `lucas` | fast doubling (exact ≤ 2⁵³), Binet beyond | exact / ≈ 1e-15 |
 //! | `harmonic` | direct sum (n ≤ 100), Maclaurin series (\|n\| ≤ ½), ψ(n+1)+γ beyond | ≈ 1e-15 |
+//! | `exp_integral_ei` | power series, E₁ continued fraction (x < −1), asymptotic series (x ≥ 45), Taylor series about the zero | ≤ 1.9e-15, relative also at the zero |
+//! | `log_integral` | Ei(ln x), scaled as x·e^{−L}Ei(L) for \|ln x\| ≥ 1; Taylor series about the zero μ | ≤ 2.1e-15, relative also at μ |
+//! | `sinh_integral`, `cosh_integral` | power series (\|x\| ≤ 45), asymptotic series; Chi: Taylor series about its zero | ≤ 1.8e-15 |
+//! | `sin_integral`, `cos_integral` | power series (x ≤ 2), continued fraction for f, g (x < 64), asymptotic f, g; Ci: Taylor series about its first zero | ≤ 8e-16; Ci absolute (≲ 3e-17) next to its later zeros |
+//! | `erfi` | power series (\|x\| ≤ 6.5), asymptotic series with an exact e^{x²} | ≤ 1.8e-15 |
+//! | `fresnel_s`, `fresnel_c` | power series (\|x\| ≤ 1.25), continued fraction for f, g (πx²/2 < 64), asymptotic f, g; exact reduction of x²/2 | ≤ 5e-16 |
+//!
+//! (The accuracies of the last six rows are the maxima over ~44,000 points
+//! per function against mpmath at 30 digits, 0.48.)
 
 #![allow(clippy::excessive_precision)]
 #![allow(clippy::manual_range_contains)]
@@ -1789,6 +1798,590 @@ pub fn falling_factorial(x: f64, n: f64) -> f64 {
 }
 // @@end pochhammer
 
+// @@begin expint_core
+/// Where Ei, Shi and Chi switch from their power series to the asymptotic
+/// expansion DLMF 6.12.2: its smallest term is ~e^{−x}·√(2πx) and its
+/// remainder at most 1 + χ(n+1) ≈ 9 times that (DLMF 6.12(i)), below 2⁻⁵⁶
+/// from x = 45 on.
+const EI_ASYM: f64 = 45.0;
+/// The positive zero x₀ of Ei, as `EI_ZERO_HI + EI_ZERO_LO` (mpmath
+/// `findroot(ei, 0.37)` at 50 digits: 0.37250741078136663446199186658…).
+const EI_ZERO_HI: f64 = 0.3725074107813666;
+const EI_ZERO_LO: f64 = 1.3140183414386028e-17;
+/// e^{x₀} (which is the zero μ of li, since li(x) = Ei(ln x)).
+const EI_ZERO_EXP: f64 = 1.451369234883381;
+/// Ei(x) = γ + ln|x| + Σ_{k≥1} x^k/(k·k!) (DLMF 6.6.1; for x < 0 it is
+/// −E₁(−x) by DLMF 6.6.2 and 6.2.6).  Every term is positive for x > 0;
+/// used for −1 ≤ x < 45 away from the zero of Ei.
+fn ei_series(x: f64) -> f64 {
+    let mut t = 1.0;
+    let mut s = 0.0;
+    let mut k = 1.0;
+    while k < 400.0 {
+        t *= x / k;
+        let term = t / k;
+        s += term;
+        if p_abs(term) <= 1e-17 * p_abs(s) {
+            break;
+        }
+        k += 1.0;
+    }
+    EULER_GAMMA + p_ln(p_abs(x)) + s
+}
+/// e^t·E₁(t) for real t ≥ 1: the continued fraction DLMF 6.9.1 (the case
+/// a = 0 of DLMF 8.9.2) in its even contraction
+/// 1/(t + 1 − 1²/(t + 3 − 2²/(t + 5 − …))), evaluated backwards from a
+/// depth fixed by t (a few ulps for t ≥ 1; backward evaluation does not
+/// accumulate the rounding errors of the forward Lentz products).
+fn e1_scaled_cf(t: f64) -> f64 {
+    let mut k = p_floor(12.0 + 95.0 / t);
+    let mut v = 0.0;
+    while k >= 1.0 {
+        v = -(k * k) / (t + 2.0 * k + 1.0 + v);
+        k -= 1.0;
+    }
+    1.0 / (t + 1.0 + v)
+}
+/// x·e^{−x}·Ei(x) for x ≥ 45: the asymptotic expansion DLMF 6.12.2,
+/// Σ k!/x^k, summed until its terms drop below 1e-17 (or start to grow).
+fn ei_asym_scaled(x: f64) -> f64 {
+    let mut t = 1.0;
+    let mut s = 1.0;
+    let mut k = 1.0;
+    while k < 200.0 {
+        let next = t * k / x;
+        if next > t {
+            break;
+        }
+        t = next;
+        s += t;
+        if t <= 1e-17 * s {
+            break;
+        }
+        k += 1.0;
+    }
+    s
+}
+/// e^x·s/x for x > 0 without overflowing in e^x first (the product is
+/// finite up to x ≈ 716 when s ≈ 1).
+fn exp_times_over(x: f64, s: f64) -> f64 {
+    if x > 700.0 {
+        let h = p_exp(0.5 * x);
+        h * (h * (s / x))
+    } else {
+        p_exp(x) * (s / x)
+    }
+}
+/// F(x₀ + h) for a function F with F(x₀) = 0 and F′(t) = N(t)/t, where
+/// N^{(k)}(x₀) = n0·σ^{k/2} for even k and n1·σ^{(k−1)/2} for odd k:
+/// Ei, Chi and Ci with N = exp, cosh, cos (DLMF 6.2.5, 6.2.16, 6.2.11).
+/// The Taylor coefficients of N(x₀+s)/(x₀+s) = Σ a_k s^k satisfy
+/// x₀·a_k + a_{k−1} = N^{(k)}(x₀)/k!, so F(x₀+h) = Σ a_k h^{k+1}/(k+1),
+/// convergent for |h| < x₀.  Near the zero this keeps the relative
+/// accuracy that cancellation in the defining power series loses.
+fn zero_taylor(h: f64, x0: f64, n0: f64, n1: f64, sigma: f64) -> f64 {
+    let mut a = 0.0;
+    let mut sum = 0.0;
+    let mut hp = h;
+    let mut inv_fact = 1.0;
+    let mut sk = 1.0;
+    let mut k = 0.0;
+    while k < 80.0 {
+        let even = is_even(k);
+        let d = if even { n0 } else { n1 } * sk * inv_fact;
+        a = (d - a) / x0;
+        let term = a * hp / (k + 1.0);
+        sum += term;
+        if k >= 2.0 && p_abs(term) <= 1e-17 * p_abs(sum) {
+            break;
+        }
+        if !even {
+            sk *= sigma;
+        }
+        k += 1.0;
+        inv_fact /= k;
+        hp *= h;
+    }
+    sum
+}
+/// Ei(x₀ + h) near the zero x₀ of Ei (|h| ≤ 0.1).
+fn ei_near_zero(h: f64) -> f64 {
+    zero_taylor(h, EI_ZERO_HI, EI_ZERO_EXP, EI_ZERO_EXP, 1.0)
+}
+// @@end expint_core
+
+// @@begin exp_integral_ei
+/// Exponential integral Ei(x) (the principal value DLMF 6.2.5): real for
+/// every real x ≠ 0, Ei(0) = −∞, Ei(−∞) = 0, Ei(+∞) = +∞.
+pub fn exp_integral_ei(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+    let h = (x - EI_ZERO_HI) - EI_ZERO_LO;
+    if p_abs(h) <= 0.1 {
+        return ei_near_zero(h);
+    }
+    if x < -1.0 {
+        // Ei(x) = −E₁(−x) (DLMF 6.2.6).
+        return -p_exp(x) * e1_scaled_cf(-x);
+    }
+    if x < EI_ASYM {
+        return ei_series(x);
+    }
+    exp_times_over(x, ei_asym_scaled(x))
+}
+// @@end exp_integral_ei
+
+// @@begin log_integral
+/// The zero μ of li (the Ramanujan–Soldner constant) as
+/// `LI_ZERO_HI + LI_ZERO_LO` (mpmath: 1.4513692348833810502839684858920…).
+const LI_ZERO_HI: f64 = 1.451369234883381;
+const LI_ZERO_LO: f64 = -4.82713642696033e-17;
+/// Logarithmic integral li(x) = Ei(ln x) (DLMF 6.2.8): real for x ≥ 0,
+/// NaN for x < 0 (where li is not real), li(0) = 0, li(1) = −∞.
+///
+/// For |ln x| ≥ 1 the value is computed as x·(e^{−L}·Ei(L)) with L = ln x:
+/// the scaled function e^{−L}·Ei(L) has relative condition number ≈ 1, so
+/// the rounding of L costs one ulp, where Ei(L) itself would amplify it by
+/// L (up to 709).
+pub fn log_integral(x: f64) -> f64 {
+    if x.is_nan() || x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return 0.0;
+    }
+    if x == 1.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+    // Near μ: ln x − ln μ = ln(1 + (x − μ)/μ), and ln μ is the zero of Ei.
+    let r = ((x - LI_ZERO_HI) - LI_ZERO_LO) / LI_ZERO_HI;
+    if p_abs(r) <= 0.1 {
+        return ei_near_zero(p_ln1p(r));
+    }
+    let l = p_ln(x);
+    if p_abs(l) < 1.0 {
+        return ei_series(l);
+    }
+    if l < 0.0 {
+        // Ei(L) = −E₁(−L) = −e^{L}·(e^{−L}E₁(−L)) and e^{L} = x.
+        return -x * e1_scaled_cf(-l);
+    }
+    if l < EI_ASYM {
+        return x * (p_exp(-l) * ei_series(l));
+    }
+    x * (ei_asym_scaled(l) / l)
+}
+// @@end log_integral
+
+// @@begin hyperbolic_integrals
+/// The zero of Chi as `CHI_ZERO_HI + CHI_ZERO_LO` (mpmath
+/// `findroot(chi, 0.52)`: 0.52382257138986440645095829438…).
+const CHI_ZERO_HI: f64 = 0.5238225713898644;
+const CHI_ZERO_LO: f64 = -2.6671382575502846e-17;
+/// cosh and sinh at the zero of Chi.
+const CHI_ZERO_COSH: f64 = 1.1403609569334683;
+const CHI_ZERO_SINH: f64 = 0.5481086681473077;
+/// Hyperbolic sine integral Shi(x) = ∫₀ˣ sinh(t)/t dt (DLMF 6.2.15): odd,
+/// real on the whole real line.
+pub fn sinh_integral(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let s = p_abs(x);
+    let v = if s == f64::INFINITY {
+        f64::INFINITY
+    } else if s <= EI_ASYM {
+        // Σ x^{2n+1}/((2n+1)·(2n+1)!) (DLMF 6.6.5 with Shi(x) = −i·Si(ix),
+        // DLMF 6.5.3): every term positive.  Multiplying by x twice (not by
+        // a rounded x²) keeps the rounding of x² from being amplified.
+        let mut t = s;
+        let mut sum = s;
+        let mut n = 1.0;
+        while n < 100.0 {
+            t = t * s * s / ((2.0 * n) * (2.0 * n + 1.0));
+            let term = t / (2.0 * n + 1.0);
+            sum += term;
+            if term <= 1e-17 * sum {
+                break;
+            }
+            n += 1.0;
+        }
+        sum
+    } else {
+        // Shi = (Ei + E₁)/2 (DLMF 6.5.3); E₁(x) < e^{−45} is negligible.
+        exp_times_over(s, 0.5 * ei_asym_scaled(s))
+    };
+    if x < 0.0 { -v } else { v }
+}
+/// Hyperbolic cosine integral Chi(x) = γ + ln x + ∫₀ˣ (cosh t − 1)/t dt
+/// (DLMF 6.2.16): real for x > 0, NaN for x < 0 (Chi(−x) = Chi(x) + iπ),
+/// Chi(0) = −∞.
+pub fn cosh_integral(x: f64) -> f64 {
+    if x.is_nan() || x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+    let h = (x - CHI_ZERO_HI) - CHI_ZERO_LO;
+    if p_abs(h) <= 0.15 {
+        return zero_taylor(h, CHI_ZERO_HI, CHI_ZERO_COSH, CHI_ZERO_SINH, 1.0);
+    }
+    if x > EI_ASYM {
+        // Chi = (Ei − E₁)/2 (DLMF 6.5.4).
+        return exp_times_over(x, 0.5 * ei_asym_scaled(x));
+    }
+    // γ + ln x + Σ_{n≥1} x^{2n}/(2n·(2n)!) (DLMF 6.6.6 with
+    // Chi(x) = Ci(ix) − iπ/2, DLMF 6.5.4): every term of the sum positive.
+    let mut t = 1.0;
+    let mut sum = 0.0;
+    let mut n = 1.0;
+    while n < 100.0 {
+        t = t * x * x / ((2.0 * n - 1.0) * (2.0 * n));
+        let term = t / (2.0 * n);
+        sum += term;
+        if term <= 1e-17 * sum {
+            break;
+        }
+        n += 1.0;
+    }
+    EULER_GAMMA + p_ln(x) + sum
+}
+// @@end hyperbolic_integrals
+
+// @@begin gamma_cf_imag
+/// The continued fraction K(a, z) = e^z·z^{−a}·Γ(a, z) of DLMF 8.9.2 at
+/// z = −iw (w > 0), in its even contraction
+/// K = 1/(z + 1 − a − 1·(1 − a)/(z + 3 − a − 2·(2 − a)/(z + 5 − a − …))),
+/// evaluated backwards from a depth fixed by w (relative error ≲ 4e-16
+/// for 1.5 ≤ w ≤ 64 and a ∈ {0, ½}, checked against mpmath).
+/// Returns (Re K, Im K).
+fn gamma_cf_imag(a: f64, w: f64) -> (f64, f64) {
+    let mut k = p_floor(16.0 + 170.0 / w);
+    let mut vr = 0.0;
+    let mut vi = 0.0;
+    while k >= 1.0 {
+        let dr = 2.0 * k + 1.0 - a + vr;
+        let di = vi - w;
+        let c = -k * (k - a) / (dr * dr + di * di);
+        vr = c * dr;
+        vi = -c * di;
+        k -= 1.0;
+    }
+    let dr = 1.0 - a + vr;
+    let di = vi - w;
+    let m = dr * dr + di * di;
+    (dr / m, -di / m)
+}
+// @@end gamma_cf_imag
+
+// @@begin trig_integrals
+/// The first positive zero of Ci as `CI_ZERO_HI + CI_ZERO_LO` (mpmath
+/// `findroot(ci, 0.6)`: 0.61650548562071623379711040410…).
+const CI_ZERO_HI: f64 = 0.6165054856207163;
+const CI_ZERO_LO: f64 = -4.209920321433186e-17;
+/// cos and sin at that zero.
+const CI_ZERO_COS: f64 = 0.8159039188668792;
+const CI_ZERO_SIN: f64 = 0.5781875086662364;
+/// The auxiliary functions (f(x), g(x)) of the sine and cosine integrals
+/// (DLMF 6.2.17–6.2.18) for x > 2: g + i·f = e^{−ix}·E₁(−ix) (DLMF 6.5.7)
+/// = K(0, −ix), from the continued fraction for x < 64 and from the
+/// asymptotic expansions DLMF 6.12.3–6.12.4 beyond (remainder bounded by
+/// the first neglected term, DLMF 6.12(ii)).
+fn sici_fg(x: f64) -> (f64, f64) {
+    if x < 64.0 {
+        let (re, im) = gamma_cf_imag(0.0, x);
+        return (im, re);
+    }
+    let y = 1.0 / (x * x);
+    let mut tf = 1.0;
+    let mut tg = 1.0;
+    let mut sf = 1.0;
+    let mut sg = 1.0;
+    let mut m = 1.0;
+    while m < 40.0 {
+        tf *= -(2.0 * m - 1.0) * (2.0 * m) * y;
+        tg *= -(2.0 * m) * (2.0 * m + 1.0) * y;
+        sf += tf;
+        sg += tg;
+        if p_abs(tg) <= 1e-17 {
+            break;
+        }
+        m += 1.0;
+    }
+    (sf / x, sg * y)
+}
+/// Sine integral Si(x) = ∫₀ˣ sin(t)/t dt (DLMF 6.2.9): odd, real on the
+/// whole real line, Si(±∞) = ±π/2.
+pub fn sin_integral(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let s = p_abs(x);
+    let v = if s <= 2.0 {
+        // Σ (−1)^n x^{2n+1}/((2n+1)·(2n+1)!) (DLMF 6.6.5).
+        let mut t = s;
+        let mut sum = s;
+        let mut n = 1.0;
+        while n < 30.0 {
+            t = -t * s * s / ((2.0 * n) * (2.0 * n + 1.0));
+            let term = t / (2.0 * n + 1.0);
+            sum += term;
+            if p_abs(term) <= 1e-17 * p_abs(sum) {
+                break;
+            }
+            n += 1.0;
+        }
+        sum
+    } else if s == f64::INFINITY {
+        0.5 * PI
+    } else {
+        // Si = π/2 − f·cos x − g·sin x (DLMF 6.2.19).
+        let (f, g) = sici_fg(s);
+        0.5 * PI - (f * p_cos(s) + g * p_sin(s))
+    };
+    if x < 0.0 { -v } else { v }
+}
+/// Cosine integral Ci(x) = −∫ₓ^∞ cos(t)/t dt (DLMF 6.2.11): real for x > 0,
+/// NaN for x < 0 (Ci(−x) = Ci(x) + iπ), Ci(0) = −∞, Ci(+∞) = 0.
+///
+/// Relative accuracy everywhere except near the zeros of Ci beyond the
+/// first, where the error is absolute (≲ 1e-16 next to f, g ≲ 1/x).
+pub fn cos_integral(x: f64) -> f64 {
+    if x.is_nan() || x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x == f64::INFINITY {
+        return 0.0;
+    }
+    let h = (x - CI_ZERO_HI) - CI_ZERO_LO;
+    if p_abs(h) <= 0.15 {
+        return zero_taylor(h, CI_ZERO_HI, CI_ZERO_COS, -CI_ZERO_SIN, -1.0);
+    }
+    if x <= 2.0 {
+        // γ + ln x + Σ_{n≥1} (−1)^n x^{2n}/(2n·(2n)!) (DLMF 6.6.6).
+        let mut t = 1.0;
+        let mut sum = 0.0;
+        let mut n = 1.0;
+        while n < 30.0 {
+            t = -t * x * x / ((2.0 * n - 1.0) * (2.0 * n));
+            let term = t / (2.0 * n);
+            sum += term;
+            if p_abs(term) <= 1e-17 * p_abs(sum) {
+                break;
+            }
+            n += 1.0;
+        }
+        return EULER_GAMMA + p_ln(x) + sum;
+    }
+    // Ci = f·sin x − g·cos x (DLMF 6.2.20).
+    let (f, g) = sici_fg(x);
+    f * p_sin(x) - g * p_cos(x)
+}
+// @@end trig_integrals
+
+// @@begin erfi
+/// Imaginary error function erfi(x) = −i·erf(ix) = (2/√π)·e^{x²}·F(x),
+/// F Dawson's integral (DLMF 7.2.5, 7.5.1): odd, real on the whole real
+/// line, +∞ beyond x ≈ 26.7 (overflow).
+pub fn erfi(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let s = p_abs(x);
+    let v = if s <= 6.5 {
+        // (2/√π)·Σ x^{2n+1}/(n!·(2n+1)) (DLMF 7.6.1 at z = ix): every term
+        // positive; multiplying by x twice keeps the rounding of x² from
+        // being amplified (the sum grows like e^{x²}).
+        let mut t = s;
+        let mut sum = s;
+        let mut n = 1.0;
+        while n < 200.0 {
+            t = t * s * s / n;
+            let term = t / (2.0 * n + 1.0);
+            sum += term;
+            if term <= 1e-17 * sum {
+                break;
+            }
+            n += 1.0;
+        }
+        core::f64::consts::FRAC_2_SQRT_PI * sum
+    } else if s >= 27.0 {
+        f64::INFINITY
+    } else {
+        // erfi(x) ~ e^{x²}/(√π·x)·Σ (½)_m/x^{2m}: DLMF 7.12.1 at z = ix
+        // (|ph z| < 3π/4); the smallest term is ~√2·e^{−x²} < 1e-18 here.
+        let y = 1.0 / (s * s);
+        let mut t = 1.0;
+        let mut sum = 1.0;
+        let mut m = 1.0;
+        while m < 100.0 {
+            let next = t * (m - 0.5) * y;
+            if next > t {
+                break;
+            }
+            t = next;
+            sum += t;
+            if t <= 1e-17 * sum {
+                break;
+            }
+            m += 1.0;
+        }
+        let a = sum * (0.5 * core::f64::consts::FRAC_2_SQRT_PI) / s;
+        // e^{x²} = e^{r²}·e^{(x−r)(x+r)} with r = ⌊16x⌋/16, r² exact, so the
+        // rounding of x² (relative error ~x²·2⁻⁵³ in e^{x²}) is avoided.
+        let r = p_floor(16.0 * s) / 16.0;
+        let rr = r * r;
+        let e2 = p_exp((s - r) * (s + r));
+        if rr > 700.0 {
+            // e^{r²} alone overflows before the product does.
+            p_exp(rr - 64.0) * (e2 * a) * p_exp(64.0)
+        } else {
+            p_exp(rr) * (e2 * a)
+        }
+    };
+    if x < 0.0 { -v } else { v }
+}
+// @@end erfi
+
+// @@begin fresnel
+/// (sin(πx²/2), cos(πx²/2)) for 0 ≤ x ≤ 1e17 with x²/2 reduced modulo 2
+/// exactly: x² = p + e exactly (Dekker's product with Veltkamp's split),
+/// so the trigonometric argument keeps full accuracy for large x, where
+/// the rounded π·x²/2 would carry an absolute error ~x²·2⁻⁵³.
+fn sincos_half_pi_sq(x: f64) -> (f64, f64) {
+    let p = x * x;
+    let c = 134217729.0 * x;
+    let xh = c - (c - x);
+    let xl = x - xh;
+    let e = ((xh * xh - p) + 2.0 * xh * xl) + xl * xl;
+    let hi = 0.5 * p;
+    let n = p_floor(hi + 0.5);
+    let r = (hi - n) + 0.5 * e;
+    let s = p_sin(PI * r);
+    let co = p_cos(PI * r);
+    if is_even(n) { (s, co) } else { (-s, -co) }
+}
+/// The auxiliary functions (f(x), g(x)) of the Fresnel integrals
+/// (DLMF 7.2.10–7.2.11) for x > 1.25: g + i·f = ½(1 + i)·e^{ζ²}·erfc ζ with
+/// ζ = ½√π(1 − i)x (DLMF 7.5.10), and erfc ζ = Γ(½, ζ²)/√π (DLMF 7.11.2),
+/// so g + i·f = (x/2)·K(½, −iπx²/2) with the continued fraction of
+/// DLMF 8.9.2 for πx²/2 < 64, the asymptotic expansions DLMF 7.12.2–7.12.3
+/// beyond.
+fn fresnel_fg(x: f64) -> (f64, f64) {
+    let w = 0.5 * PI * x * x;
+    if w < 64.0 {
+        let (re, im) = gamma_cf_imag(0.5, w);
+        let h = 0.5 * x;
+        return (h * im, h * re);
+    }
+    // u_k = (½)_k/w^k: f takes the even k, g the odd k, with signs
+    // (−1)^{⌊k/2⌋}.
+    let mut u = 1.0;
+    let mut sf = 1.0;
+    let mut sg = 0.0;
+    let mut k = 1.0;
+    while k < 200.0 {
+        u *= (k - 0.5) / w;
+        let sign = if is_even(p_floor(0.5 * k)) { 1.0 } else { -1.0 };
+        if is_even(k) {
+            sf += sign * u;
+        } else {
+            sg += sign * u;
+        }
+        if u <= 1e-17 {
+            break;
+        }
+        k += 1.0;
+    }
+    let c = 1.0 / (PI * x);
+    (c * sf, c * sg)
+}
+/// Fresnel sine integral S(x) = ∫₀ˣ sin(πt²/2) dt (DLMF 7.2.8): odd,
+/// S(±∞) = ±½.
+pub fn fresnel_s(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let s = p_abs(x);
+    let v = if s <= 1.25 {
+        // Σ (−1)^n (π/2)^{2n+1} x^{4n+3}/((2n+1)!·(4n+3)) (DLMF 7.6.6).
+        let q = 0.5 * PI * s * s;
+        let mut t = s * q;
+        let mut sum = t / 3.0;
+        let mut n = 1.0;
+        while n < 40.0 {
+            t = -t * q * q / ((2.0 * n) * (2.0 * n + 1.0));
+            let term = t / (4.0 * n + 3.0);
+            sum += term;
+            if p_abs(term) <= 1e-17 * p_abs(sum) {
+                break;
+            }
+            n += 1.0;
+        }
+        sum
+    } else if s > 1e17 {
+        // |S(x) − ½| ≤ 1/(πx) < 2⁻⁵⁸.
+        0.5
+    } else {
+        // S = ½ − f·cos(πx²/2) − g·sin(πx²/2) (DLMF 7.5.4).
+        let (f, g) = fresnel_fg(s);
+        let (sn, cs) = sincos_half_pi_sq(s);
+        0.5 - (f * cs + g * sn)
+    };
+    if x < 0.0 { -v } else { v }
+}
+/// Fresnel cosine integral C(x) = ∫₀ˣ cos(πt²/2) dt (DLMF 7.2.7): odd,
+/// C(±∞) = ±½.
+pub fn fresnel_c(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let s = p_abs(x);
+    let v = if s <= 1.25 {
+        // Σ (−1)^n (π/2)^{2n} x^{4n+1}/((2n)!·(4n+1)) (DLMF 7.6.4).
+        let q = 0.5 * PI * s * s;
+        let mut t = s;
+        let mut sum = s;
+        let mut n = 1.0;
+        while n < 40.0 {
+            t = -t * q * q / ((2.0 * n - 1.0) * (2.0 * n));
+            let term = t / (4.0 * n + 1.0);
+            sum += term;
+            if p_abs(term) <= 1e-17 * p_abs(sum) {
+                break;
+            }
+            n += 1.0;
+        }
+        sum
+    } else if s > 1e17 {
+        0.5
+    } else {
+        // C = ½ + f·sin(πx²/2) − g·cos(πx²/2) (DLMF 7.5.3).
+        let (f, g) = fresnel_fg(s);
+        let (sn, cs) = sincos_half_pi_sq(s);
+        0.5 + (f * sn - g * cs)
+    };
+    if x < 0.0 { -v } else { v }
+}
+// @@end fresnel
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2246,5 +2839,210 @@ mod tests {
         );
         assert_eq!(falling_factorial(5.0, 2.0), 20.0);
         assert_eq!(falling_factorial(0.5, 2.0), -0.25);
+    }
+
+    /// mpmath 1.3 (dps 40) at the exact double of each literal: `si`, `ci`,
+    /// `ei`, `li`, `shi`, `chi`, `erfi`, `fresnels`, `fresnelc`.  The points
+    /// straddle every switch between series, continued fraction and
+    /// asymptotic expansion, and include the zeros of Ei, li, Chi and the
+    /// first zero of Ci, where the results keep their relative accuracy.
+    #[test]
+    fn exponential_and_trigonometric_integrals_known_values() {
+        type Case = (f64, f64);
+        type Table = (&'static str, fn(f64) -> f64, &'static [Case]);
+        let tables: [Table; 9] = [
+            (
+                "Si",
+                sin_integral,
+                &[
+                    (1e-300, 1.0000000000000000251e-300),
+                    (1e-08, 1.0000000000000000154e-8),
+                    (0.5, 0.49310741804306668916),
+                    (2.0, 1.6054129768026948486),
+                    (2.5, 1.7785201734438266421),
+                    (10.0, 1.6583475942188740493),
+                    (63.9, 1.5630466030285787596),
+                    (64.5, 1.5720636445392780209),
+                    (1000.0, 1.5702331219687712181),
+                    (1e10, 1.570796326707584657),
+                    (-3.0, -1.8486525279994682564),
+                ],
+            ),
+            (
+                "Ci",
+                cos_integral,
+                &[
+                    (1e-300, -690.19831223331217232),
+                    (0.5, -0.17778407880661290134),
+                    (0.6165054856207163, 5.5715489456128631287e-17),
+                    (0.62, 0.0046059848815549665688),
+                    (2.0, 0.4229808287748649957),
+                    (2.5, 0.28587119636538349539),
+                    (10.0, -0.045456433004455372635),
+                    (64.5, 0.015446400671808082775),
+                    (1e10, -4.8750602517482265379e-11),
+                ],
+            ),
+            (
+                "Ei",
+                exp_integral_ei,
+                &[
+                    (-700.0, -1.4065187662340329228e-307),
+                    (-50.0, -3.7832640295504590187e-24),
+                    (-1.5, -0.1000195824066326519),
+                    (-0.5, -0.55977359477616081175),
+                    (1e-300, -690.19831223331217232),
+                    (0.3725074107813666, -5.1196989365556847021e-17),
+                    (0.38, 0.029011221419283038485),
+                    (1.0, 1.8951178163559367555),
+                    (30.0, 3.6897320940727419706e11),
+                    (44.9, 7.2043442487032991969e17),
+                    (45.1, 8.7594549739949086921e17),
+                    (700.0, 1.4509787360525608526e301),
+                    (716.0, 1.2605029106040893555e308),
+                ],
+            ),
+            (
+                "li",
+                log_integral,
+                &[
+                    (1e-300, -1.4455586289196509272e-303),
+                    (0.2, -0.085126486728794060606),
+                    (0.5, -0.37867104306108797673),
+                    (1.0000001, -15.540879935472920138),
+                    (1.451369234883381, 1.2958497702998692421e-16),
+                    (1.5, 0.12506498631529635599),
+                    (2.0, 1.0451637801174927848),
+                    (1e6, 78627.54915946218192),
+                    (1e20, 2.2208196027836634835e18),
+                    (1e300, 1.4497500526693363651e297),
+                ],
+            ),
+            (
+                "Shi",
+                sinh_integral,
+                &[
+                    (1e-300, 1.0000000000000000251e-300),
+                    (0.5, 0.50699674981966719583),
+                    (10.0, 1246.1144901994233444),
+                    (44.9, 3.6021721243516495985e17),
+                    (45.1, 4.3797274869974543461e17),
+                    (700.0, 7.2548936802628042631e300),
+                    (-3.0, -4.9734404758598067977),
+                ],
+            ),
+            (
+                "Chi",
+                cosh_integral,
+                &[
+                    (1e-300, -690.19831223331217232),
+                    (0.5238225713898644, 5.8063560101731740179e-17),
+                    (0.53, 0.01338946755889949865),
+                    (1.0, 0.83786694098020824089),
+                    (10.0, 1246.1144860424544147),
+                    (44.9, 3.6021721243516495985e17),
+                    (45.1, 4.3797274869974543461e17),
+                    (700.0, 7.2548936802628042631e300),
+                ],
+            ),
+            (
+                "erfi",
+                erfi,
+                &[
+                    (1e-300, 1.1283791670955126022e-300),
+                    (0.5, 0.61495209469651098084),
+                    (3.0, 1629.9946226015656511),
+                    (6.4, 5.488087260890454295e16),
+                    (6.6, 7.1595491037404315298e17),
+                    (20.0, 1.4747975396287862024e172),
+                    (26.7, 8.4998672612689850586e307),
+                    (-2.0, -18.564802414575552599),
+                ],
+            ),
+            (
+                "S",
+                fresnel_s,
+                &[
+                    (1e-100, 5.2359877559829890448e-301),
+                    (0.5, 0.064732432859999277611),
+                    (1.5, 0.69750496008209301308),
+                    (1.7, 0.5491959403215685448),
+                    (3.0, 0.4963129989673750361),
+                    (6.3, 0.4555454305043984958),
+                    (6.5, 0.54537645524323358023),
+                    (1000.0, 0.49968169011381630608),
+                    (1e8, 0.49999999681690113816),
+                    (-2.0, -0.3434156783636982422),
+                ],
+            ),
+            (
+                "C",
+                fresnel_c,
+                &[
+                    (1e-300, 1.0000000000000000251e-300),
+                    (0.5, 0.49234422587144639288),
+                    (1.5, 0.44526117603982153506),
+                    (1.7, 0.32382687600390026138),
+                    (3.0, 0.60572078929768562956),
+                    (6.3, 0.47600445535306793248),
+                    (6.5, 0.48160345989096403456),
+                    (1000.0, 0.49999999989867881636),
+                    (1e8, 0.5),
+                    (-2.0, -0.4882534060753407545),
+                ],
+            ),
+        ];
+        for (name, f, cases) in tables {
+            for &(x, want) in cases {
+                assert_rel(f(x), want, 4e-15, &format!("{name}({x:e})"));
+            }
+        }
+        // The second zero of Ci (3.3841804225511862…): absolute accuracy.
+        assert!((cos_integral(3.384180422551186) - 1.8395124042672971097e-16).abs() < 1e-16);
+    }
+
+    /// NaN where the value is not real (`compile`'s rule), the limits at
+    /// 0 and ±∞, and overflow to ±∞.
+    #[test]
+    fn exponential_and_trigonometric_integrals_special_points() {
+        for f in [cos_integral, cosh_integral, log_integral] {
+            assert!(f(-1.0).is_nan() && f(-1e-300).is_nan() && f(f64::NEG_INFINITY).is_nan());
+        }
+        for f in [
+            sin_integral,
+            cos_integral,
+            exp_integral_ei,
+            log_integral,
+            sinh_integral,
+            cosh_integral,
+            erfi,
+            fresnel_s,
+            fresnel_c,
+        ] {
+            assert!(f(f64::NAN).is_nan());
+        }
+        assert_eq!(cos_integral(0.0), f64::NEG_INFINITY);
+        assert_eq!(cosh_integral(0.0), f64::NEG_INFINITY);
+        assert_eq!(exp_integral_ei(0.0), f64::NEG_INFINITY);
+        assert_eq!(exp_integral_ei(-0.0), f64::NEG_INFINITY);
+        assert_eq!(log_integral(1.0), f64::NEG_INFINITY);
+        assert_eq!(log_integral(0.0), 0.0);
+        assert_eq!(sin_integral(0.0), 0.0);
+        assert_eq!(sin_integral(f64::INFINITY), 0.5 * PI);
+        assert_eq!(sin_integral(f64::NEG_INFINITY), -0.5 * PI);
+        assert_eq!(cos_integral(f64::INFINITY), 0.0);
+        assert_eq!(exp_integral_ei(f64::NEG_INFINITY), 0.0);
+        assert_eq!(exp_integral_ei(f64::INFINITY), f64::INFINITY);
+        assert_eq!(exp_integral_ei(720.0), f64::INFINITY);
+        assert_eq!(log_integral(f64::INFINITY), f64::INFINITY);
+        assert_eq!(sinh_integral(f64::NEG_INFINITY), f64::NEG_INFINITY);
+        assert_eq!(sinh_integral(-720.0), f64::NEG_INFINITY);
+        assert_eq!(cosh_integral(f64::INFINITY), f64::INFINITY);
+        assert_eq!(erfi(27.0), f64::INFINITY);
+        assert_eq!(erfi(-1e300), f64::NEG_INFINITY);
+        assert_eq!(fresnel_s(f64::INFINITY), 0.5);
+        assert_eq!(fresnel_c(-1e300), -0.5);
+        assert_eq!(fresnel_s(0.0), 0.0);
+        assert_eq!(erfi(0.0), 0.0);
     }
 }

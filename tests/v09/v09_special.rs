@@ -1076,8 +1076,9 @@ fn special_09_high_precision_and_errors() {
             .is_err()
     );
     // codegen reports the missing runtime clearly instead of panicking
+    // (`erfi` compiles since 0.48, see `v35_compile`; Airy Ai does not yet)
     let x = ctx.symbol("x");
-    assert!(x.erfi().compile(&["x"]).is_err());
+    assert!(x.airyai().compile(&["x"]).is_err());
     assert!(x.erfi().to_rust_fn("f", &["x"]).is_err());
     assert!(x.erfi().to_c_fn("f", &["x"]).is_err());
 }

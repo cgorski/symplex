@@ -80,13 +80,20 @@ fn measure(arena: &Arena, expr: ExprId) -> (usize, usize) {
     (trig_count(arena, expr), count_ops(arena, expr))
 }
 
-/// Pick the best expression from candidates by measure.
-fn pick_best(arena: &Arena, candidates: &[ExprId]) -> ExprId {
-    candidates
-        .iter()
-        .copied()
-        .min_by_key(|&e| measure(arena, e))
-        .unwrap_or(candidates[0])
+/// Pick the best expression from candidates by measure (the first of the
+/// best), measuring each expression once per [`fu`] call.
+fn pick_best(arena: &Arena, cx: &mut FuCx, candidates: &[ExprId]) -> ExprId {
+    let mut best: Option<(ExprId, (usize, usize))> = None;
+    for &c in candidates {
+        let m = *cx
+            .measure_memo
+            .entry(c)
+            .or_insert_with(|| measure(arena, c));
+        if best.is_none_or(|(_, bm)| m < bm) {
+            best = Some((c, m));
+        }
+    }
+    best.map_or(arena.zero, |(c, _)| c)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -145,14 +152,37 @@ fn extract_double_angle_arg(arena: &Arena, expr: ExprId) -> Option<ExprId> {
 // TR0: Normalize via eval + pattern rules
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// What the transforms of one [`fu`] call share: TR0's pattern rules, built
+/// once, and TR0's results by input (the alternatives of RL2 and the final
+/// steps reach the same expressions many times).  Up to 0.47 every TR0
+/// rebuilt the rules, a quarter of Fu's time.
+struct FuCx {
+    rules: Vec<crate::transforms::pattern::Rule>,
+    tr0_memo: FxHashMap<ExprId, ExprId>,
+    measure_memo: FxHashMap<ExprId, (usize, usize)>,
+}
+
+impl FuCx {
+    fn new(arena: &mut Arena) -> Self {
+        FuCx {
+            rules: crate::transforms::pattern::basic_rules(arena),
+            tr0_memo: FxHashMap::default(),
+            measure_memo: FxHashMap::default(),
+        }
+    }
+}
+
 /// TR0: Normalize via eval and basic pattern-rule simplification.
 ///
 /// Delegates to `eval::eval` then `pattern::apply_rules` with the
 /// standard rule set (Pythagorean identity, exp/ln cancellation, etc.).
-fn tr0(arena: &mut Arena, expr: ExprId) -> ExprId {
+fn tr0(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
+    if let Some(&done) = cx.tr0_memo.get(&expr) {
+        return done;
+    }
     let evaled = crate::transforms::eval::eval(arena, expr);
-    let rules = crate::transforms::pattern::basic_rules(arena);
-    let (result, _) = crate::transforms::pattern::apply_rules(arena, evaled, &rules);
+    let (result, _) = crate::transforms::pattern::apply_rules(arena, evaled, &cx.rules);
+    cx.tr0_memo.insert(expr, result);
     result
 }
 
@@ -1078,7 +1108,7 @@ pub(crate) fn binomial_coeff(n: u32, k: u32) -> BigInt {
 ///
 /// This is the Pythagorean substitution strategy that complements the
 /// standard TR transforms.
-fn pyth_sub_sin2(arena: &mut Arena, expr: ExprId) -> ExprId {
+fn pyth_sub_sin2(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
     let replaced = walk_transform(arena, expr, |arena, id| {
         let node = arena.node(id).clone();
         if let ExprNode::Pow(base, exp) = node
@@ -1101,11 +1131,11 @@ fn pyth_sub_sin2(arena: &mut Arena, expr: ExprId) -> ExprId {
         None
     });
     let expanded = crate::transforms::expand::expand(arena, replaced);
-    tr0(arena, expanded)
+    tr0(arena, cx, expanded)
 }
 
 /// Replace every `cos^(2k)(x)` with `(1-sin²(x))^k`, then expand + simplify.
-fn pyth_sub_cos2(arena: &mut Arena, expr: ExprId) -> ExprId {
+fn pyth_sub_cos2(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
     let replaced = walk_transform(arena, expr, |arena, id| {
         let node = arena.node(id).clone();
         if let ExprNode::Pow(base, exp) = node
@@ -1128,7 +1158,7 @@ fn pyth_sub_cos2(arena: &mut Arena, expr: ExprId) -> ExprId {
         None
     });
     let expanded = crate::transforms::expand::expand(arena, replaced);
-    tr0(arena, expanded)
+    tr0(arena, cx, expanded)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1136,56 +1166,52 @@ fn pyth_sub_cos2(arena: &mut Arena, expr: ExprId) -> ExprId {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// CTR1: Try `(TR5, TR0)`, `(TR6, TR0)`, or identity — pick best.
-fn ctr1(arena: &mut Arena, expr: ExprId) -> ExprId {
+fn ctr1(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
     let c1 = {
         let t = tr5(arena, expr);
-        tr0(arena, t)
+        tr0(arena, cx, t)
     };
     let c2 = {
         let t = tr6(arena, expr);
-        tr0(arena, t)
+        tr0(arena, cx, t)
     };
-    pick_best(arena, &[expr, c1, c2])
+    pick_best(arena, cx, &[expr, c1, c2])
 }
 
 /// CTR2: `TR11`, then try `(TR5, TR0)`, `(TR6, TR0)`, or `TR0` — pick best.
-fn ctr2(arena: &mut Arena, expr: ExprId) -> ExprId {
+fn ctr2(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
     let expanded = tr11(arena, expr);
     let c1 = {
         let t = tr5(arena, expanded);
-        tr0(arena, t)
+        tr0(arena, cx, t)
     };
     let c2 = {
         let t = tr6(arena, expanded);
-        tr0(arena, t)
+        tr0(arena, cx, t)
     };
-    let c3 = tr0(arena, expanded);
-    pick_best(arena, &[expanded, c1, c2, c3])
+    let c3 = tr0(arena, cx, expanded);
+    pick_best(arena, cx, &[expanded, c1, c2, c3])
 }
 
 /// CTR3: Try `(TRmorrie, TR8, TR0)`, `(TRmorrie, TR8, TR10i, TR0)`, or identity.
-fn ctr3(arena: &mut Arena, expr: ExprId) -> ExprId {
-    let c1 = {
-        let t1 = tr_morrie(arena, expr);
-        let t2 = tr8(arena, t1);
-        tr0(arena, t2)
-    };
+fn ctr3(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
+    let t1 = tr_morrie(arena, expr);
+    let t2 = tr8(arena, t1);
+    let c1 = tr0(arena, cx, t2);
     let c2 = {
-        let t1 = tr_morrie(arena, expr);
-        let t2 = tr8(arena, t1);
         let t3 = tr10i(arena, t2);
-        tr0(arena, t3)
+        tr0(arena, cx, t3)
     };
-    pick_best(arena, &[expr, c1, c2])
+    pick_best(arena, cx, &[expr, c1, c2])
 }
 
 /// CTR4: Try `(TR3, TR10i)` or identity — pick best.
-fn ctr4(arena: &mut Arena, expr: ExprId) -> ExprId {
+fn ctr4(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
     let c1 = {
         let t = tr3(arena, expr);
         tr10i(arena, t)
     };
-    pick_best(arena, &[expr, c1])
+    pick_best(arena, cx, &[expr, c1])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1196,19 +1222,19 @@ fn ctr4(arena: &mut Arena, expr: ExprId) -> ExprId {
 ///
 /// `[TR3, TR3, TR13, TR3, TR0]` (simplified from the paper —
 /// TR12 is not implemented, so we substitute eval passes).
-fn rl1(arena: &mut Arena, expr: ExprId) -> ExprId {
+fn rl1(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
     let mut r = tr3(arena, expr);
     r = tr3(arena, r);
     r = tr13(arena, r);
     r = tr3(arena, r);
-    r = tr0(arena, r);
+    r = tr0(arena, cx, r);
     r
 }
 
 /// RL2: Rule list for expressions with sin/cos.
 ///
 /// Tries multiple alternative sequences and picks the best result by measure.
-fn rl2(arena: &mut Arena, expr: ExprId) -> ExprId {
+fn rl2(arena: &mut Arena, cx: &mut FuCx, expr: ExprId) -> ExprId {
     // Alternative 1: [TR3, TR10i, TR3, TR11]
     let alt1 = {
         let mut r = tr3(arena, expr);
@@ -1217,7 +1243,7 @@ fn rl2(arena: &mut Arena, expr: ExprId) -> ExprId {
         r = tr3(arena, r);
         r = tr3(arena, r);
         r = tr11(arena, r);
-        tr0(arena, r)
+        tr0(arena, cx, r)
     };
 
     // Alternative 2: [TR5, TR7, TR11, TR3]
@@ -1226,43 +1252,326 @@ fn rl2(arena: &mut Arena, expr: ExprId) -> ExprId {
         r = tr7(arena, r);
         r = tr11(arena, r);
         r = tr3(arena, r);
-        tr0(arena, r)
+        tr0(arena, cx, r)
     };
 
     // Alternative 3: [CTR3, CTR1, TR9, CTR2, TR3, TR9, TR9, CTR4]
     let alt3 = {
-        let mut r = ctr3(arena, expr);
-        r = ctr1(arena, r);
+        let mut r = ctr3(arena, cx, expr);
+        r = ctr1(arena, cx, r);
         r = tr9(arena, r);
-        r = ctr2(arena, r);
+        r = ctr2(arena, cx, r);
         r = tr3(arena, r);
         r = tr9(arena, r);
         r = tr9(arena, r);
-        ctr4(arena, r)
+        ctr4(arena, cx, r)
     };
 
-    // Alternative 4: Pythagorean sub (sin² → 1-cos²) + expand + simplify
-    let alt_pyth1 = {
-        let expanded = tr11(arena, expr);
-        pyth_sub_cos2(arena, expanded)
-    };
-
-    // Alternative 5: Pythagorean sub (cos² → 1-sin²) + expand + simplify
-    let alt_pyth2 = {
-        let expanded = tr11(arena, expr);
-        pyth_sub_sin2(arena, expanded)
+    // Alternatives 4 and 5: Pythagorean sub (sin² → 1-cos², cos² →
+    // 1-sin²) + expand + simplify, after TR11 and, when TR11 expanded an
+    // angle, also before it: up to 0.47 `sec²(2x) − tan²(2x)` and
+    // `sec²(x + 1) − tan²(x + 1)` stayed (the substitutions saw only the
+    // expansion in `sin x`, `cos x`).
+    let expanded = tr11(arena, expr);
+    let alt_pyth1 = pyth_sub_cos2(arena, cx, expanded);
+    let alt_pyth2 = pyth_sub_sin2(arena, cx, expanded);
+    let (alt_pyth3, alt_pyth4) = if expanded == expr {
+        (expr, expr)
+    } else {
+        (
+            pyth_sub_cos2(arena, cx, expr),
+            pyth_sub_sin2(arena, cx, expr),
+        )
     };
 
     // Alternative 6: TR5i (inverse power-reduction)
     let alt_tr5i = {
         let r = tr5i(arena, expr);
-        tr0(arena, r)
+        tr0(arena, cx, r)
+    };
+
+    // Alternative 6b: CTR1 (power reduction `sin²`, `cos²` → double
+    // angles) on its own; in alternative 3 the TR11 of CTR2 expands the
+    // double angle back: up to 0.47 `x² + 2·cos²x` stayed instead of `x² +
+    // cos 2x + 1`.
+    let alt_ctr1 = ctr1(arena, cx, expr);
+
+    // Alternative 7: TRpower (`sinⁿx`, `cosⁿx` as sums of multiple angles,
+    // the power case of SymPy's TR8) + expand + simplify: up to 0.47
+    // `4·cos³x − 3·cos x` stayed instead of `cos 3x`.
+    let alt_power = {
+        let r = tr_power(arena, expr);
+        if r == expr {
+            expr
+        } else {
+            let expanded = crate::transforms::expand::expand(arena, r);
+            tr0(arena, cx, expanded)
+        }
     };
 
     pick_best(
         arena,
-        &[expr, alt1, alt2, alt3, alt_pyth1, alt_pyth2, alt_tr5i],
+        cx,
+        &[
+            expr, alt1, alt2, alt3, alt_pyth1, alt_pyth2, alt_pyth3, alt_pyth4, alt_tr5i, alt_ctr1,
+            alt_power,
+        ],
     )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Hyperbolic functions through Osborne's rule
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `a·d`, distributed over the terms of a sum so that every angle stays a
+/// sum of multiples of `d` (SymPy's `_osborne`).
+fn times_marker(arena: &mut Arena, a: ExprId, d: ExprId) -> ExprId {
+    if let ExprNode::Add(terms) = arena.node(a).clone() {
+        let scaled: Vec<ExprId> = terms.iter().map(|&t| arena.mul(&[t, d])).collect();
+        arena.add(&scaled)
+    } else {
+        arena.mul(&[a, d])
+    }
+}
+
+/// The argument `u + i·k` of the hyperbolic function for the trigonometric
+/// angle `c = u·d + k` (`u`, `k` free of `d`), at `d = −i`: `sin c =
+/// −i·sinh(u + i·k)`, `cos c = cosh(u + i·k)`.  `None` when `c` is not of
+/// that form.
+fn osborne_angle(arena: &mut Arena, c: ExprId, d: ExprId) -> Option<ExprId> {
+    let terms: Vec<ExprId> = match arena.node(c) {
+        ExprNode::Add(t) => t.to_vec(),
+        _ => vec![c],
+    };
+    let mut u: Vec<ExprId> = Vec::new();
+    let mut k: Vec<ExprId> = Vec::new();
+    for t in terms {
+        if !walk::contains(arena, t, d) {
+            k.push(t);
+        } else if t == d {
+            u.push(arena.one);
+        } else {
+            let ExprNode::Mul(factors) = arena.node(t).clone() else {
+                return None;
+            };
+            let pos = factors.iter().position(|&f| f == d)?;
+            let rest: Vec<ExprId> = factors
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != pos)
+                .map(|(_, &f)| f)
+                .collect();
+            let r = arena.mul(&rest);
+            if walk::contains(arena, r, d) {
+                return None;
+            }
+            u.push(r);
+        }
+    }
+    let u = if u.is_empty() {
+        arena.zero
+    } else {
+        arena.add(&u)
+    };
+    if k.is_empty() {
+        return Some(u);
+    }
+    let k = arena.add(&k);
+    let ik = arena.mul(&[arena.i_unit, k]);
+    Some(arena.add(&[u, ik]))
+}
+
+/// The number of `sinh`, `cosh` and `tanh` factors in `expr`, counted with
+/// multiplicity as [`trig_count`] does (`cosh³x·sinh x` counts 4, a shared
+/// subtree once per occurrence, saturating).  An identity relates at least
+/// two such factors.
+pub(crate) fn hyperbolic_degree(arena: &Arena, expr: ExprId) -> usize {
+    fn below(counts: &FxHashMap<ExprId, usize>, c: ExprId) -> usize {
+        counts.get(&c).copied().unwrap_or(0)
+    }
+    let order = walk::post_order_ids(arena, expr);
+    let mut counts: FxHashMap<ExprId, usize> = FxHashMap::default();
+    for &id in &order {
+        let n = match arena.node(id) {
+            ExprNode::Sinh(a) | ExprNode::Cosh(a) | ExprNode::Tanh(a) => {
+                below(&counts, *a).saturating_add(1)
+            }
+            ExprNode::Pow(b, e) => {
+                let k = arena
+                    .as_num(*e)
+                    .filter(|r| r.is_integer())
+                    .and_then(|r| TryInto::<i64>::try_into(r.to_integer()).ok())
+                    .map_or(1, |k| {
+                        usize::try_from(k.unsigned_abs()).unwrap_or(usize::MAX)
+                    });
+                below(&counts, *b)
+                    .saturating_mul(k)
+                    .saturating_add(below(&counts, *e))
+            }
+            _ => arena
+                .children(id)
+                .iter()
+                .fold(0usize, |acc, &c| acc.saturating_add(below(&counts, c))),
+        };
+        counts.insert(id, n);
+    }
+    below(&counts, expr)
+}
+
+/// Fu applied to the hyperbolic functions of `expr` through Osborne's rule,
+/// as SymPy's `futrig` does with `hyper_as_trig`: with a fresh symbol `d`
+/// (standing for `−i`), `sinh a = i·sin(a·d)`, `cosh a = cos(a·d)`, `tanh a =
+/// i·tan(a·d)` (exact at `d = −i`); Fu's identities hold for all complex
+/// angles, and its result is read back at `d = −i` ([`osborne_angle`]).
+/// Up to 0.47 `tanh²x + sech²x`, `cosh 2x − cosh²x − sinh²x` and
+/// `cosh⁴x − sinh⁴x` stayed (no rule saw them).  The `sin`, `cos`, `tan`
+/// of `expr` itself (outside the hyperbolic ones) are masked by fresh
+/// symbols meanwhile, as SymPy does, since the reading back would take them
+/// for converted ones.
+///
+/// `None` when `expr` has no `sinh`, `cosh`, `tanh` outside a
+/// trigonometric function, or when Fu's result is not of the form read
+/// back.
+pub(crate) fn fu_hyperbolic(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
+    // The outermost `sin`, `cos`, `tan` (explicit stack, no descent into
+    // them) and whether a hyperbolic function is left outside them.
+    let mut trig: Vec<ExprId> = Vec::new();
+    let mut has_hyp = false;
+    let mut seen: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    let mut stack = vec![expr];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_) => trig.push(id),
+            node => {
+                has_hyp |= matches!(
+                    node,
+                    ExprNode::Sinh(_) | ExprNode::Cosh(_) | ExprNode::Tanh(_)
+                );
+                stack.extend(arena.children(id).iter().copied());
+            }
+        }
+    }
+    if !has_hyp {
+        return None;
+    }
+    let mut mask: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut unmask: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut avoid = vec![expr];
+    for t in trig {
+        let m = crate::transforms::subs::fresh_symbol(arena, "_trig", &avoid);
+        avoid.push(m);
+        mask.insert(t, m);
+        unmask.insert(m, t);
+    }
+    let expr = if mask.is_empty() {
+        expr
+    } else {
+        // Keyed by the original nodes: a masked node may share a subtree
+        // with another (`sin x` in `cos(sin x) + sin x`).
+        let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+        for id in walk::post_order_ids(arena, expr) {
+            let r = match mask.get(&id) {
+                Some(&m) => m,
+                None => walk::rebuild_with_cache(arena, id, &cache),
+            };
+            cache.insert(id, r);
+        }
+        cache.get(&expr).copied().unwrap_or(expr)
+    };
+    let d = crate::transforms::subs::fresh_symbol(arena, "_osborne", &avoid);
+    let as_trig = walk_transform(arena, expr, |arena, id| {
+        let node = arena.node(id).clone();
+        let (ExprNode::Sinh(a) | ExprNode::Cosh(a) | ExprNode::Tanh(a)) = node else {
+            return None;
+        };
+        let angle = times_marker(arena, a, d);
+        let i = arena.i_unit;
+        Some(match node {
+            ExprNode::Sinh(_) => {
+                let s = arena.sin(angle);
+                arena.mul(&[i, s])
+            }
+            ExprNode::Cosh(_) => arena.cos(angle),
+            _ => {
+                let t = arena.tan(angle);
+                arena.mul(&[i, t])
+            }
+        })
+    });
+    let simplified = fu(arena, as_trig);
+    let failed = std::cell::Cell::new(false);
+    let back = walk_transform(arena, simplified, |arena, id| {
+        let node = arena.node(id).clone();
+        let (ExprNode::Sin(c) | ExprNode::Cos(c) | ExprNode::Tan(c)) = node else {
+            return None;
+        };
+        let Some(a) = osborne_angle(arena, c, d) else {
+            failed.set(true);
+            return None;
+        };
+        let neg_i = arena.neg(arena.i_unit);
+        Some(match node {
+            ExprNode::Sin(_) => {
+                let s = arena.sinh(a);
+                arena.mul(&[neg_i, s])
+            }
+            ExprNode::Cos(_) => arena.cosh(a),
+            _ => {
+                let t = arena.tanh(a);
+                arena.mul(&[neg_i, t])
+            }
+        })
+    });
+    if failed.get() || walk::contains(arena, back, d) {
+        return None;
+    }
+    let back = if unmask.is_empty() {
+        back
+    } else {
+        walk_transform(arena, back, |_, id| unmask.get(&id).copied())
+    };
+    let back = crate::transforms::eval::eval(arena, back);
+    // Fu's measure ties `tan²θ + 2` with `cos⁻²θ + 1`, but their readings
+    // `2 − tanh²x` and `1 + cosh⁻²x` differ by a sign: the hyperbolic
+    // Pythagorean substitution of `tanh²`, chosen by its own length.
+    let subbed = tanh_pythagorean_sub(arena, back);
+    if subbed != back && count_ops(arena, subbed) < count_ops(arena, back) {
+        return Some(subbed);
+    }
+    Some(back)
+}
+
+/// `tanh²ᵏa → (1 − cosh⁻²a)ᵏ` (`1 ≤ k ≤ 6`), then expand and TR0; `expr`
+/// when there is no such power of `tanh`.
+fn tanh_pythagorean_sub(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let replaced = walk_transform(arena, expr, |arena, id| {
+        if let ExprNode::Pow(base, exp) = *arena.node(id)
+            && let ExprNode::Tanh(inner) = *arena.node(base)
+            && let Some(n) = arena
+                .as_num(exp)
+                .filter(|r| r.is_integer())
+                .and_then(|r| TryInto::<i64>::try_into(r.to_integer()).ok())
+            && (2..=12).contains(&n)
+            && n % 2 == 0
+        {
+            let cosh = arena.cosh(inner);
+            let neg_two = arena.int(-2);
+            let sech2 = arena.pow(cosh, neg_two);
+            let one_minus = arena.sub(arena.one, sech2);
+            let k = arena.int(n / 2);
+            return Some(arena.pow(one_minus, k));
+        }
+        None
+    });
+    if replaced == expr {
+        return expr;
+    }
+    let expanded = crate::transforms::expand::expand(arena, replaced);
+    let cx = &mut FuCx::new(arena);
+    tr0(arena, cx, expanded)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1294,63 +1603,75 @@ pub(crate) fn fu(arena: &mut Arena, expr: ExprId) -> ExprId {
         return value;
     }
 
+    let cx = &mut FuCx::new(arena);
+
     // Step 1: Apply TR1 (remove sec/csc — already normalized in this system)
     let mut result = tr1(arena, expr);
 
     // Step 2: If expression has tan/cot, try RL1
     if has_tan(arena, result) {
-        let rl1_result = rl1(arena, result);
-        result = pick_best(arena, &[result, rl1_result]);
+        let rl1_result = rl1(arena, cx, result);
+        result = pick_best(arena, cx, &[result, rl1_result]);
         tracing::trace!("fu: RL1 produced measure {:?}", measure(arena, result));
     }
 
     // Step 3: If still has tan, apply TR2 (convert to sin/cos)
+    // unconditionally, as SymPy's `fu` does; the form with `tan` stays a
+    // candidate of step 4.  `tan x → sin x/cos x` raises the trig count, so
+    // choosing by measure here always kept `tan`, and RL2 never saw the
+    // `sin²x` of `tan²x`: up to 0.47 `sec²x − tan²x` (`cos⁻²x − tan²x`)
+    // stayed while `csc²x − cot²x` (`sin⁻²x − cos²x·sin⁻²x`, no `tan`)
+    // was `1`.
+    let with_tan = result;
     if has_tan(arena, result) {
         tracing::trace!("fu: applying TR2");
-        let converted = tr2(arena, result);
-        result = pick_best(arena, &[result, converted]);
+        result = tr2(arena, result);
     }
 
     // Step 4: If expression has sin/cos, try RL2 and additional transforms
     if has_sin_or_cos(arena, result) {
-        let rl2_result = rl2(arena, result);
+        let rl2_result = rl2(arena, cx, result);
 
         // Also try TRmorrie + TR8
         tracing::trace!("fu: applying TRmorrie + TR8");
         let morrie_then_combine = {
             let t1 = tr_morrie(arena, result);
             let t2 = tr8(arena, t1);
-            tr0(arena, t2)
+            tr0(arena, cx, t2)
         };
 
-        result = pick_best(arena, &[result, rl2_result, morrie_then_combine]);
+        result = pick_best(
+            arena,
+            cx,
+            &[with_tan, result, rl2_result, morrie_then_combine],
+        );
         tracing::trace!("fu: RL2 produced measure {:?}", measure(arena, result));
     }
 
     // Step 5: Try TR2i at the end (convert back to tan if simpler)
     let with_tan = tr2i(arena, result);
-    result = pick_best(arena, &[result, with_tan]);
+    result = pick_best(arena, cx, &[result, with_tan]);
     tracing::trace!("fu: TR2i final measure {:?}", measure(arena, result));
 
     // Step 6: Try Pythagorean substitutions as additional strategies
     tracing::trace!("fu: applying Pythagorean substitutions");
-    let pyth1 = pyth_sub_cos2(arena, result);
-    let pyth2 = pyth_sub_sin2(arena, result);
-    result = pick_best(arena, &[result, pyth1, pyth2]);
+    let pyth1 = pyth_sub_cos2(arena, cx, result);
+    let pyth2 = pyth_sub_sin2(arena, cx, result);
+    result = pick_best(arena, cx, &[result, pyth1, pyth2]);
 
     // Step 7: Try TR5i (inverse power-reduction)
     tracing::trace!("fu: applying TR5i");
     let inv_pr = tr5i(arena, result);
-    result = pick_best(arena, &[result, inv_pr]);
+    result = pick_best(arena, cx, &[result, inv_pr]);
 
     // Step 8: Final normalization
-    result = tr0(arena, result);
+    result = tr0(arena, cx, result);
 
     // Step 9: Apply TR9 (sum-to-product) — prefer the product form when it
     // does not increase trig count, even if it has more operations.  This
     // matches the paper's intent that product forms are "simpler".
     let tr9_result = tr9(arena, result);
-    let tr9_result = tr0(arena, tr9_result);
+    let tr9_result = tr0(arena, cx, tr9_result);
     if trig_count(arena, tr9_result) <= trig_count(arena, result) && tr9_result != result {
         result = tr9_result;
     }
@@ -1359,7 +1680,7 @@ pub(crate) fn fu(arena: &mut Arena, expr: ExprId) -> ExprId {
     // Only fall back to the original when it has strictly fewer trig nodes;
     // otherwise keep the pipeline result (which may be a product form from
     // TR9 with the same trig count but more operations).
-    let original_simplified = tr0(arena, expr);
+    let original_simplified = tr0(arena, cx, expr);
     let orig_tc = trig_count(arena, original_simplified);
     let result_tc = trig_count(arena, result);
     if orig_tc < result_tc {
@@ -1370,7 +1691,7 @@ pub(crate) fn fu(arena: &mut Arena, expr: ExprId) -> ExprId {
         if result == original_simplified {
             result
         } else if count_ops(arena, original_simplified) < count_ops(arena, result)
-            && result == tr0(arena, expr)
+            && result == tr0(arena, cx, expr)
         {
             // Pipeline didn't actually transform anything; use original.
             original_simplified
@@ -1691,7 +2012,8 @@ mod tests {
         let cos2 = arena.pow(cos_x, two);
         // sin²(x) + cos²(x) → should become 1
         let expr = arena.add(&[sin2, cos2]);
-        let result = pyth_sub_sin2(&mut arena, expr);
+        let cx = &mut FuCx::new(&mut arena);
+        let result = pyth_sub_sin2(&mut arena, cx, expr);
         assert_eq!(
             display(&arena, result),
             "1",
@@ -1709,7 +2031,8 @@ mod tests {
         let cos_x = arena.cos(x);
         let cos2 = arena.pow(cos_x, two);
         let expr = arena.add(&[sin2, cos2]);
-        let result = pyth_sub_cos2(&mut arena, expr);
+        let cx = &mut FuCx::new(&mut arena);
+        let result = pyth_sub_cos2(&mut arena, cx, expr);
         assert_eq!(
             display(&arena, result),
             "1",

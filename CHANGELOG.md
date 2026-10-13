@@ -8,6 +8,92 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour)
+
+- `solve`: a symbol without assumptions is complex, so the range
+  restrictions of transcendental inversions no longer claim "no solution"
+  for it.  `eˣ + 1 = 0` gives the principal root `[iπ]`, `eˣ = −2` gives
+  `[ln 2 + iπ]`, `cosh x = 0` gives `[±iπ/2]`, `sin x = 2` gives `[asin 2,
+  π − asin 2]`, `2ˣ + 3ˣ = 0` gives `[iπ/(ln 2 − ln 3)]`, and substitutions
+  keep complex preimages (`sinh x + tanh x` → `[0, iπ]`, `(2x + 8)(8 + eˣ)`
+  → `[−4, ln 8 + iπ]`), as SymPy's `solve` and symplex's own
+  `solve_as_set`.  Up to 0.47 these were `NoSolution("no real solutions
+  …")` or lacked the complex roots.  For a symbol declared real nothing
+  changes; `|x| = −1`, `√x = −1` and `eˣ = 0` stay `NoSolution`; the
+  internal callers that need real roots (integration, limits, ODEs,
+  inequalities) are unchanged.  Hunt (4,000 equations): false
+  `NoSolution` 241 → 0, wrong roots 0.
+- `simplify` returns shorter multiple-angle forms: `sin⁴x − cos⁴x` is
+  `−cos 2x` (was `2·sin²x − 1`).
+
+### Fixed
+
+- `solve`: `tan x = ±i` has no solution; up to 0.47 it returned `[I*oo]`,
+  and `solve_as_set` the image set `nπ + I*oo`.
+- **Formal power series never `nan`**: up to 0.47 every function without
+  a Laurent expansion gave `FormalPowerSeries(nan)` (`√x·eˣ`, `x^(1/3)·sin
+  x`, `x^a·eˣ`, `exp(√x)`; in a hunt of 2,500 functions 1,916 were
+  `nan`).  Now Puiseux series and symbolic powers expand (below), and a
+  function with no such expansion (`ln x`, `exp(1/x)`, `|x|` at 0) is
+  refused: `is_refused()`, a formal `Series` node from `truncate`, `Err`
+  from the new `try_coefficient`/`try_truncate`.  Hunt: 584 → 2,255
+  right, `nan` 1,916 → 0, wrong 0 (SymPy 1.14: 999 right, 37 wrong).
+- **Series arithmetic on Laurent series** ignored the negative powers:
+  `fps(eˣ/x).inverse()` was `1 − x/2 + x²/12` (it is `x·e⁻ˣ`), `fps(1/x)·
+  fps(x)` was `0`, `d/dx fps(1/x)` was `0`.  A residue integrates to an
+  exact `r·ln(x − a)` term.
+- `simplify` proves the Pythagorean identities in their reciprocal
+  guises: `sec²x − tan²x`, `1/cos²x − tan²x`, `sec²(x + 1) − tan²(x + 1)` →
+  `1`, `tan²x + 1` → `cos(x)^(-2)`.  Up to 0.47 they stayed while `csc²x −
+  cot²x` gave `1`: Fu wrote `tan` as `sin/cos` (TR2) only when its
+  measure preferred it, which it never does; now always, as SymPy.
+
+### Added
+
+- **Hyperbolic identities in `simplify`** by Osborne's rule (SymPy's
+  `hyper_as_trig`): `tanh²x + sech²x`, `coth²x − csch²x` → `1`, `cosh 2x −
+  cosh²x − sinh²x` → `0`, `cosh⁴x − sinh⁴x` → `cosh 2x`, `4·cosh³x − 3·cosh
+  x` → `cosh 3x`; next to exponentials in exponential form: `eˣ·cosh x −
+  (e²ˣ + 1)/2` → `0` (SymPy 1.14 leaves it), `sinh x + cosh x` → `exp(x)`.
+  Multiple angles from powers: `4·cos³x − 3·cos x` → `cos 3x`, `3·sin x −
+  4·sin³x` → `sin 3x`.  Hunt (identity plus a random rational part, 2,000
+  cases): reduced to the simple part 859 → 1,913, 0 wrong (SymPy 1.14:
+  1,096 by its own measure).
+- **Puiseux series and symbolic powers in `fps`**: `√x·eˣ = x^(1/2)·Σ
+  xᵏ/k!`, `x^(1/3)·sin x`, `x^a·eˣ = x^a·Σ xᵏ/k!`, `exp(√x) = Σ
+  x^(k/2)/k!`, `√(1 + √x)` (SymPy 1.14 refuses it), `cos √x = Σ
+  (−1)ᵏxᵏ/(2k)!`; new accessors `offset()`, `ramification()`,
+  `exponent(k)`.
+- **Polylogarithm sums**: `Σ_{k≥lo} R(k)·Y^k` for a rational `R` whose poles
+  are integers or half-integers closes by partial fractions into `Li_m(Y)`
+  (`(Li_m(√Y) − Li_m(−√Y))/2` for half-integer poles): `Σ (1/2)^k/k² =
+  π²/12 − ln²2/2`, `Σ (1/2)^k/k³ = Li₃(1/2)`, `Σ (1/2)^k/(k + 1)² = π²/6 −
+  ln²2 − 1`, `Σ (1/(a + 1))^k/k² = Li₂(1/(a + 1))` for a positive `a`;
+  ratios on the unit circle when `deg R < 0` (`Σ i^k/k = −ln(1 − i)`, `Σ
+  e^(iπk/3)/k = iπ/3`, which SymPy 1.14 leaves unevaluated); rational sums
+  with poles at integers and half-integers both (`Σ_{k≥1} 1/((2k − 1)k(k +
+  3)) = 4/7·ln 2 − 11/126`; SymPy 1.14 gives `nan`).  Up to 0.47 all
+  stayed unevaluated.  Hunt (8,000 sums): right 1,072 → 7,191, refused
+  convergent 6,119 → 0, wrong 0 (SymPy 1.14: 85 wrong).  An unassumed
+  symbolic ratio still leaves the sum formal, as `Σ x^k` does.
+- **`compile()` of the exponential and trigonometric integrals**: `Si`,
+  `Ci`, `Ei`, `li`, `Shi`, `Chi`, `erfi` and the Fresnel integrals compile to
+  `f64` routines from DLMF series, continued fractions and asymptotic
+  expansions: at most 9 ulps (2.1·10⁻¹⁵ relative) against mpmath over
+  ~395,000 points, relative accuracy kept at the zeros of `Ei`, `li`,
+  `Chi` and the first zero of `Ci`; NaN where the value is not real, −∞ at
+  `Ei(0)`, `li(1)`, `Ci(0)`, `Chi(0)`.  Up to 0.47 they failed with
+  `NotImplemented`.  (SymPy 1.14's `lambdify` cannot call `li`, `Shi`,
+  `Chi`, returns nan for `erfi(30)` and `Ei(10⁵)`.)  Rust/C code
+  generation of these functions is not available yet.
+
+### Changed (performance)
+
+- Fu builds its pattern rules once per call and caches TR0 and its
+  measure: `simplify` takes 5% less CPU on the `fuzz_simplify` corpus and
+  half the wall time on the simplify/trig tests, despite the new
+  strategies.
+
 ## [0.47.0] - 2026-10-13
 
 SymPy's own test suites as a yardstick: their integrals, equations,

@@ -12,8 +12,10 @@ The 0.2 contract is that `solve` never lies:
 |-----------|--------|
 | Finitely many solutions | `Ok(vec![…])` |
 | Identity (`x − x = 0`) | `Err(SymplexError::InfiniteSolutions { .. })` |
-| Contradiction (`0·x + 1 = 0`) or range violation (`sin x = 2`, `eˣ = −1`, `|x| = −1`) | `Err(SymplexError::NoSolution { .. })` |
+| Contradiction (`0·x + 1 = 0`) or range violation (`|x| = −1`, `eˣ = 0`; `sin x = 2`, `eˣ = −1` for a real `x`) | `Err(SymplexError::NoSolution { .. })` |
 | Solver has no method | `Err(SymplexError::ComputationFailed { .. })` |
+
+A symbol without assumptions is complex: `eˣ = −1` gives its principal root `[iπ]` and `sin x = 2` gives `[asin 2, π − asin 2]` (as SymPy's `solve`; up to 0.47 both were `NoSolution`). Declare the symbol real for the real roots only.
 
 `solve_or_empty` maps every error to an empty vector when you do not care why.
 
@@ -31,7 +33,10 @@ fn main() {
     println!("{}", (&x.powi(5) - &x - 1).solve(&x).unwrap()[0]);             // RootOf(x^5 - x - 1, 0)
 
     assert!(matches!((&x - &x).solve(&x), Err(SymplexError::InfiniteSolutions { .. })));
-    assert!(matches!((&x.sin() - 2).solve(&x), Err(SymplexError::NoSolution { .. })));
+    assert!(matches!((&x.abs() + 1).solve(&x), Err(SymplexError::NoSolution { .. })));
+    println!("{:?}", (&x.exp() + 1).solve(&x).unwrap());                     // [Ex(pi*I)]
+    let xr = ctx.symbol_with("xr", &[Assumption::Real]).unwrap();
+    assert!(matches!((&xr.sin() - 2).solve(&xr), Err(SymplexError::NoSolution { .. })));
 }
 ```
 

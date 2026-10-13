@@ -632,12 +632,7 @@ fn numeric_back_ends_refuse_the_same_functions() {
         LibFn::PartitionCount,
         // (`lambertw(a)` by name is the native principal-branch node since
         // 0.30, which every back end evaluates.)
-        LibFn::Erfi,
         LibFn::ExpInt,
-        LibFn::Shi,
-        LibFn::Chi,
-        LibFn::FresnelS,
-        LibFn::FresnelC,
         LibFn::LowerGamma,
         LibFn::UpperGamma,
         LibFn::PolyLog,
@@ -662,6 +657,32 @@ fn numeric_back_ends_refuse_the_same_functions() {
         let e = generic_call(&ctx, f);
         for (what, res) in [
             ("compile", e.compile(&params).map(|_| ())),
+            ("to_rust_fn", e.to_rust_fn("f", &params).map(|_| ())),
+            ("to_c_fn", e.to_c_fn("f", &params).map(|_| ())),
+        ] {
+            match res {
+                Err(SymplexError::NotImplemented(msg)) => {
+                    assert!(msg.contains(f.name()), "{f} {what}: {msg}");
+                }
+                other => panic!("{f} {what}: {other:?}"),
+            }
+        }
+    }
+    // Since 0.48 `compile` evaluates erfi, Shi, Chi and the Fresnel
+    // integrals (`v35_compile`); the source back ends still refuse them by
+    // name (no Rust/C helper is lowered for them yet).
+    let compile_only = [
+        LibFn::Erfi,
+        LibFn::Shi,
+        LibFn::Chi,
+        LibFn::FresnelS,
+        LibFn::FresnelC,
+    ];
+    for f in compile_only {
+        let e = generic_call(&ctx, f);
+        e.compile(&params)
+            .unwrap_or_else(|err| panic!("{f} compile: {err}"));
+        for (what, res) in [
             ("to_rust_fn", e.to_rust_fn("f", &params).map(|_| ())),
             ("to_c_fn", e.to_c_fn("f", &params).map(|_| ())),
         ] {

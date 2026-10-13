@@ -80,22 +80,29 @@ fn nonzero_constant_is_no_solution() {
     }
 }
 
+/// `eˣ = −1` and `sin x = 2` have no solution only for a real `x` (since
+/// 0.48 a plain `x` is complex there: `[iπ]`, `[asin 2, π − asin 2]`, as
+/// SymPy's `solve`); `eˣ = 0`, `|x| = −1` and `1/x = 0` have none at all.
 #[test]
 fn range_restrictions_are_no_solution() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
+    let xr = ctx.symbol_with("xr", &[Assumption::Real]).unwrap();
     assert!(matches!(
         x.exp().solve(&x),
         Err(SymplexError::NoSolution { .. })
     ));
     assert!(matches!(
-        (&x.exp() + 1).solve(&x),
+        (&xr.exp() + 1).solve(&xr),
         Err(SymplexError::NoSolution { .. })
     ));
     assert!(matches!(
-        (&x.sin() - 2).solve(&x),
+        (&xr.sin() - 2).solve(&xr),
         Err(SymplexError::NoSolution { .. })
     ));
+    let roots = (&x.exp() + 1).solve(&x).unwrap();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].to_string(), "pi*I");
     assert!(matches!(
         (&x.abs() + 1).solve(&x),
         Err(SymplexError::NoSolution { .. })
