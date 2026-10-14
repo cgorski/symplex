@@ -839,7 +839,8 @@ impl Expr<Numeric> {
     /// Bernoulli number: `B(self)`.
     ///
     /// For non-negative integer arguments, `.eval()` computes the exact value.
-    /// `B(0) = 1`, `B(1) = -1/2`, `B(2) = 1/6`.
+    /// `B(0) = 1`, `B(1) = 1/2` (the convention `B₁ = +1/2`, the value at 1
+    /// of `−s·ζ(1 − s)`, as SymPy since 1.12), `B(2) = 1/6`.
     #[must_use]
     pub fn bernoulli_number(&self) -> Ex {
         let id = self.inner.write().arena.bernoulli_number(self.raw_id());

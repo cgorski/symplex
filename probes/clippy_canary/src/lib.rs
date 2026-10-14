@@ -22,5 +22,11 @@ pub fn disallowed_calls(cc: &mut Consts) -> usize {
     let power = x.pow(&two, p, rm, cc);
     let log = x.log(&two, p, rm, cc);
     let digits = x.convert_to_radix(Radix::Dec, rm, cc);
-    usize::from(power.is_nan()) + usize::from(log.is_nan()) + usize::from(digits.is_err())
+    // `is_positive` is true for `+0`: a sign test must use
+    // `bigfloat::is_strictly_positive` / `is_sign_positive`.
+    let positive = x.is_positive();
+    usize::from(power.is_nan())
+        + usize::from(log.is_nan())
+        + usize::from(digits.is_err())
+        + usize::from(positive)
 }

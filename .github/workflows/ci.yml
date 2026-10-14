@@ -65,7 +65,7 @@ jobs:
             echo "::error::clippy accepted probes/clippy_canary: a disallowed-methods path in clippy.toml no longer resolves"
             exit 1
           fi
-          for m in pow log convert_to_radix; do
+          for m in pow log convert_to_radix is_positive; do
             if ! grep -q "use of a disallowed method \`astro_float::BigFloat::$m\`" canary.txt; then
               cat canary.txt
               echo "::error::clippy did not flag BigFloat::$m in probes/clippy_canary"

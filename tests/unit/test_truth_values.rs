@@ -72,7 +72,7 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     ("transforms/solve.rs", [27, 0, 1, 0, 0]),
     ("transforms/solve/algebraic_roots.rs", [0, 0, 0, 1, 0]),
     ("transforms/solve/context.rs", [4, 0, 0, 0, 0]),
-    // `risch/param_rational.rs`: W10c rewrites `PFrac` (the site is in `nonnegative(&PFrac)`).
+    // `risch/param_rational.rs`: kept for the planned `PFrac` rewrite (the site is in `nonnegative(&PFrac)`).
     ("calculus/risch/param_rational.rs", [1, 0, 0, 0, 0]),
     // ── Kept, with the reason ──────────────────────────────────────────────
     // `is_convergent`: `Arena::is_convergent_expr` (arena.rs) returns it as `Option<bool>`.
@@ -95,7 +95,7 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     // precondition), not "undecided".
     ("calculus/risch/tower_integrate.rs", [0, 0, 1, 0, 0]),
     // The radical tower (`Tower::decide`/`is_zero`/`real_sign`/`real_constant_sign`,
-    // `algebraic_function_is_zero`) is rewritten by W10c this wave.
+    // `algebraic_function_is_zero`) was planned for W10c (not done).
     ("domains/linalg.rs", [1, 0, 3, 2, 0]),
     // `atan_sum::is_zero`, `cyclotomic::{is_zero, is_real}` and the `Tower` helpers:
     // their caller is eval.rs.

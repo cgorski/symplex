@@ -79,7 +79,7 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (~12,900 tests; a few minutes in debug)
+# Run the test suite (~14,600 tests; a few minutes in debug)
 cargo test
 # ... or, recommended: one process per test with per-test timeouts
 # (`.config/nextest.toml`; `cargo install cargo-nextest`)
@@ -650,9 +650,9 @@ exceptions are allowlisted with their reason and exact count).
 
 Every function — the 43 with a dedicated `ExprNode` variant, the 50 library
 functions (nodes `ExprNode::Lib(LibFn, args)`, built by `Arena::lib_apply` /
-`Arena::func`, arity-checked; `Apply(name, args)` is a user function or one
-of the reserved `__…` internal heads), and the 8 internal asymptotic helpers
-of the series engine — has one identity, `Func`, and one entry in the
+`Arena::func`, arity-checked; `Apply(name, args)` is a user function), and
+the 8 internal asymptotic helpers of the limit engine (`ExprNode::Internal`,
+which no name builds) — has one identity, `Func`, and one entry in the
 `funcs!` table of `src/base/func.rs`.  Code that treats a family of
 functions uniformly asks `Func::elementary()` (sin…atanh, exp, ln) or
 `Func::is_special()` through `ExprNode::func`, instead of an or-pattern of
@@ -664,12 +664,15 @@ forgets a facet does not compile:
 ```rust,ignore
 /// Imaginary error function `erfi(x)`.
 Erfi => FuncSpec {
-    name: "erfi", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call(r"\operatorname{erfi}"),
-    conj: Conj::Entire,          // f(conj z) = conj f(z) everywhere (DLMF 7.4.2)
-    real_on: RealOn::Reals,      // real for real x
-    parity: Odd(Negation),       // must match today's sign extraction (a test checks it)
+    name: "erfi", parse: &[], arity: Exactly(1), sort: Named,
+    tex: Tex::Call(r"\operatorname{erfi}"),
+    conj: Conj::Entire,            // f(conj z) = conj f(z) everywhere (DLMF 7.4.2)
+    real_on: RealOn::Reals,        // real for real x
+    parity: Odd(Coefficient),      // must match today's sign extraction (a test checks it)
     poles: Poles::None,
     constants: Constants::Evaluated,
+    rt: Runtime::helper(Kernel::Unary("erfi"), Backends::VM_RUST_C)
+        .scipy("scipy.special.erfi(x)"),
 };
 ```
 
@@ -800,7 +803,8 @@ For example, `Limit(body, var, point)` represents `lim_{var→point} body`.
 
 Follow the same steps as adding a new function (above), plus:
 
-1. Add to `has_unevaluated()` in `src/base/walk.rs` — return `true` for your node.
+1. Add it to `is_unevaluated_node` in `src/base/arena.rs` (the per-node
+   facts that `walk::has_unevaluated` reads are computed from it).
 
 2. Consider adding it to `ExprType::Unevaluated` in `src/api/expr.rs`.
 
@@ -1236,8 +1240,8 @@ representable (`4^(1/2)`, `log(8, 2)`; upstream #31) and are disallowed by
 `bigfloat::to_f64` (finite or `None`) for conversions.  astro-float's
 `Up`/`Down`/`ToZero`/`FromZero` are directed roundings (its documentation
 says "round half"), `None` truncates, and `BigFloat::from_f64` halves
-subnormal inputs.  `probes/clippy_canary` calls each disallowed method and CI
-expects clippy to reject every call (a path that stops resolving after an
+subnormal inputs.  `probes/clippy_canary` calls each disallowed method (`pow`, `log`,
+`convert_to_radix`, `is_positive`) and CI expects clippy to reject every call (a path that stops resolving after an
 astro-float release is noticed).
 
 **Solving** (`src/transforms/solve/`).  The domain of the unknown is a
