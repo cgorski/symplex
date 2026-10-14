@@ -1427,7 +1427,7 @@ fn constant_fact(
     proved: crate::base::truth::SignSet,
     prove: impl FnOnce(&mut Arena) -> bool,
 ) -> bool {
-    if let Some(&known) = arena.constant_facts.get(&(x, fact)) {
+    if let Some(known) = arena.constant_fact(x, fact) {
         return known.is_subset(proved);
     }
     let answer = prove(arena);
@@ -1436,7 +1436,7 @@ fn constant_fact(
     } else {
         crate::base::truth::SignSet::UNKNOWN
     };
-    arena.constant_facts.insert((x, fact), signs);
+    arena.remember_constant_fact(x, fact, signs);
     answer
 }
 
@@ -5446,7 +5446,7 @@ fn constant_class(arena: &mut Arena, x: ExprId) -> crate::base::truth::SignSet {
     use crate::base::arena::FactKey;
     use crate::base::truth::SignSet;
     use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
-    if let Some(&class) = arena.constant_facts.get(&(x, FactKey::Class)) {
+    if let Some(class) = arena.constant_fact(x, FactKey::Class) {
         return class;
     }
     let v = eval(arena, x);
@@ -5489,7 +5489,7 @@ fn constant_class(arena: &mut Arena, x: ExprId) -> crate::base::truth::SignSet {
             }
         }
     };
-    arena.constant_facts.insert((x, FactKey::Class), class);
+    arena.remember_constant_fact(x, FactKey::Class, class);
     class
 }
 

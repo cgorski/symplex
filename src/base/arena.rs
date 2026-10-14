@@ -75,6 +75,10 @@ pub(crate) enum FactKey {
     /// precision reached but not proved (a test with no evidence at all is
     /// not memoised).
     HiddenZero,
+    /// Is `x` nonzero by a certified value: the assumption rules for a
+    /// power `x^e` of a constant (`assumptions`' `certified_nonzero`;
+    /// `NONZERO` when proved, `UNKNOWN` when not).
+    NonzeroValue,
 }
 
 /// The `sym_bits` entry of a symbol name without a `Symbol` node.
@@ -271,8 +275,13 @@ pub struct Arena {
     /// (assumptions do not reach a symbol-free constant), so the memo is
     /// cleared when either can change ([`Self::config_mut`],
     /// [`Self::set_symbol_assumptions`]); a warm entry is what a cold
-    /// proof returns.
-    pub(crate) constant_facts: FxHashMap<(ExprId, FactKey), crate::base::truth::SignSet>,
+    /// proof returns.  Behind a lock, read and written through
+    /// [`Self::constant_fact`] and [`Self::remember_constant_fact`], so that
+    /// a decider holding only `&Arena` memoises too: the assumption rules,
+    /// which evaluated the base of `x^(−1)` again in every fresh
+    /// `AssumptionCache` (0.51 development: +48% on the `fuzz_roundtrip`
+    /// corpus).
+    constant_facts: parking_lot::Mutex<FxHashMap<(ExprId, FactKey), crate::base::truth::SignSet>>,
 
     // -- pre-interned constants (ExprId) ------------------------------------
     /// The integer zero (0).
@@ -390,7 +399,7 @@ impl Arena {
             num_dedup: FxHashMap::default(),
             symbols: SymbolTable::new(),
             config,
-            constant_facts: FxHashMap::default(),
+            constant_facts: parking_lot::Mutex::new(FxHashMap::default()),
             // Temporary placeholders — will be overwritten immediately below.
             zero: ExprId(0),
             one: ExprId(0),
@@ -573,8 +582,28 @@ impl Arena {
     /// Returns a mutable reference to the evaluation configuration.
     #[inline]
     pub fn config_mut(&mut self) -> &mut EvalConfig {
-        self.constant_facts.clear();
+        self.constant_facts.get_mut().clear();
         &mut self.config
+    }
+
+    /// The signs memoised for the symbol-free constant `x` under `key`
+    /// ([`Self::constant_facts`]), if any.
+    pub(crate) fn constant_fact(
+        &self,
+        x: ExprId,
+        key: FactKey,
+    ) -> Option<crate::base::truth::SignSet> {
+        self.constant_facts.lock().get(&(x, key)).copied()
+    }
+
+    /// Memoise `signs` for the symbol-free constant `x` under `key`.
+    pub(crate) fn remember_constant_fact(
+        &self,
+        x: ExprId,
+        key: FactKey,
+        signs: crate::base::truth::SignSet,
+    ) {
+        self.constant_facts.lock().insert((x, key), signs);
     }
 }
 
@@ -1317,7 +1346,7 @@ impl Arena {
             self.symbols.name(id)
         );
         if consistent {
-            self.constant_facts.clear();
+            self.constant_facts.get_mut().clear();
             self.symbols.set_assumptions(id, a);
         }
     }

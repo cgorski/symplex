@@ -1665,7 +1665,7 @@ pub(crate) fn hidden_zero(
         );
     }
     // Only symbol-free constants without unevaluated parts are memoised.
-    if let Some(&signs) = arena.constant_facts.get(&(c, FactKey::HiddenZero)) {
+    if let Some(signs) = arena.constant_fact(c, FactKey::HiddenZero) {
         return match signs {
             SignSet::ZERO => Verdict::new(Truth::True, Evidence::Certified),
             SignSet::NONZERO => Verdict::new(Truth::False, Evidence::Certified),
@@ -1683,7 +1683,7 @@ pub(crate) fn hidden_zero(
         (Some(Truth::Unknown), _) | (None, Truth::False | Truth::Unknown) => None,
     };
     if let Some(signs) = signs {
-        arena.constant_facts.insert((c, FactKey::HiddenZero), signs);
+        arena.remember_constant_fact(c, FactKey::HiddenZero, signs);
     }
     verdict
 }

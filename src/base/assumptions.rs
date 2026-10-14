@@ -1700,9 +1700,7 @@ impl AssumptionCache {
             || has(&exp_a, Props::NONNEGATIVE)
             || (has(&base_a, Props::FINITE)
                 && has(&exp_a, Props::FINITE)
-                && arena
-                    .part_signs(base)
-                    .is_some_and(|s| s.re.is_some() || s.im.is_some()));
+                && certified_nonzero(arena, base));
 
         // If base and exp are both complex → result is complex.
         if off_pole && has(&base_a, Props::COMPLEX) && has(&exp_a, Props::COMPLEX) {
@@ -2415,6 +2413,30 @@ impl AssumptionCache {
 /// No `Symbol` node at all, bound or free: O(1) from the node's facts.
 fn is_constant(arena: &Arena, e: ExprId) -> bool {
     !arena.facts(e).has_symbol()
+}
+
+/// Is the symbol-free `x` nonzero by a certified value
+/// ([`Arena::part_signs`])?  Memoised in the arena
+/// ([`FactKey::NonzeroValue`](crate::base::arena::FactKey::NonzeroValue)):
+/// every `AssumptionCache` is fresh, and `eval`, `canon` and the complex
+/// decomposition ask about the same powers again and again (unmemoised,
+/// the `fuzz_roundtrip` corpus took 48% longer in 0.51 development).
+fn certified_nonzero(arena: &Arena, x: ExprId) -> bool {
+    use crate::base::arena::FactKey;
+    use crate::base::truth::SignSet;
+    if let Some(signs) = arena.constant_fact(x, FactKey::NonzeroValue) {
+        return signs.is_subset(SignSet::NONZERO);
+    }
+    let nonzero = arena
+        .part_signs(x)
+        .is_some_and(|s| s.re.is_some() || s.im.is_some());
+    let signs = if nonzero {
+        SignSet::NONZERO
+    } else {
+        SignSet::UNKNOWN
+    };
+    arena.remember_constant_fact(x, FactKey::NonzeroValue, signs);
+    nonzero
 }
 
 /// Does [`AssumptionCache::compute_func`] claim anything for functions

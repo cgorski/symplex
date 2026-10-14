@@ -1654,8 +1654,7 @@ fn sign_fact(
     fact: crate::base::arena::FactKey,
 ) -> Option<Option<Ordering>> {
     arena
-        .constant_facts
-        .get(&(key, fact))
+        .constant_fact(key, fact)
         .map(|signs| signs.to_ordering())
 }
 
@@ -1667,7 +1666,7 @@ fn remember_sign(
 ) {
     use crate::base::truth::SignSet;
     let signs = sign.map_or(SignSet::UNKNOWN, SignSet::from_ordering);
-    arena.constant_facts.insert((key, fact), signs);
+    arena.remember_constant_fact(key, fact, signs);
 }
 
 /// [`known_sign`], memoised per arena for a symbol-free factor: canonical
