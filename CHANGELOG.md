@@ -8,6 +8,68 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour)
+
+- **Inverting a principal power needs the right-hand side in its range.**
+  `f^(p/q) = c` gives `f = c^(q/p)` only when `c` lies in the range of the
+  principal `f^(p/q)` (decided exactly from declared signs and the branch,
+  no evaluation); otherwise no solution when proved outside, a refusal when
+  undecided.  `√(x + ∛x) + (x − y)^(1/5) = 0` solved for `y` gave `x + (x +
+  ∛x)^(5/2)`, which is not a root (residual 3.27 + 1.06i at `x = 2`; SymPy
+  1.14 gives the same), and `√x + √y = 0` gave `[y]`.  With declared signs
+  the answer is decided (`y > 0`: both have no solution, `√x = y` still
+  gives `y²`); with a plain parameter the public solvers now refuse: `√x =
+  y` gave `[y²]`, which is wrong for `y = −1` (SymPy gives `[y**2]`).
+- `DiracDelta` of a non-real argument has no value: `eval_decimal`,
+  `eval_f64` and `compile` refuse `δ(i)`, `δ(1 + i)`, `δ(W(−1))` (they gave
+  0), and an argument real only to the working precision; `δ(i).is_real()`
+  is `None` (SymPy 1.14 rejects `DiracDelta(I)`).
+
+### Fixed
+
+- **Residues at poles whose order depends on a tiny or hidden constant.**
+  The order was read from a 20-digit decimal (a coefficient below 10⁻¹⁸
+  counted as 0): `residue(1/(z(z + e⁻⁵⁰)), z, 0)` was `0` and
+  `residue(eᶻ/(z² + e⁻⁵⁰z), z, 0)` was `1` (both are `e⁵⁰`), `1/(z² + (√2√3 −
+  √6 + e⁻⁴⁵)z)` gave `0` (`e⁴⁵`).  Coefficients are decided on exact or
+  certified evidence and an undecided one refuses.  A hunt of 3,866
+  residues, Laplace transforms and contour integrals with such constants:
+  1,612 wrong → 0.
+- The Laplace transform of a rational function chose the `E₁` or `Ei` form
+  of a pole by `Re ρ ≤ 10⁻⁹|ρ|` in floating point: `L{1/((t − 10⁻¹⁰)² + 1)}`
+  at `s = 10⁻¹² − i` was `−0.578 + 0.647i` (true `0.578 + 0.647i`), and a
+  real pole at `−10⁻¹³` was refused.  The sign of `Re ρ` is exact or
+  certified.
+- **A negative power of a constant that is 0 without looking like it is no
+  longer called finite or real:** `1/max(−Γ(1/2), 0)`, `1/min(W(π), 0)`,
+  `1/⌊W(1/2)⌋`, `1/H(−W(1))` (all `zoo`) had `is_finite`/`is_real`
+  `Some(true)`.  A constant base has to be known nonzero, by its structure
+  or a certified value.  Hunt of 13,227 such powers: 6,465 wrong → 0.  A
+  constant without a value is no longer called real (`fresnels(10) − ∞`,
+  `coth(⌊γ⌋)`, `sin(∞)`).
+- `min`/`max` have signs (`sign(max(γ, 4)) = 1`, `lim x·∛max(x, 1) = ∞`),
+  and `eval` folds `min`/`max` of constants whose order it decides,
+  including equal values (`min(atan(1/2) + atan(1/3) − π/4, 0) = 0`).
+- **Real unknowns no longer get non-real roots.**  `4^(x+3/4) + 2·2^(x+3/4)
+  + 1 = 0` for a real `x` returned two logarithms of negative numbers: the
+  discriminant `8√2 − 4·4^(3/4)` of the equation in `2ˣ` is 0, but the
+  canonical form keeps `4^(3/4)` beside `2√2`; it is now "no solution" (the
+  left side is `(2^(x+3/4) + 1)² > 0`).  Constant discriminants and leading
+  coefficients are decided by the exact zero test, a constant root of a real
+  unknown whose realness cannot be decided is refused, and `exp(erf x) = 3`
+  for a real `x` is "no solution" (it gave `erfinv(ln 3)`).  In a hunt of
+  16,000 radical equations: 9,387 wrong roots → 833 (the remaining class,
+  roots real only for some parameter values, is listed as open).
+- `ln(a·x) + 4i = 0` has no solution (the imaginary part of `ln` lies in
+  (−π, π]).
+
+### Changed
+
+- `tests/unit/test_float_evidence.rs`: a ratchet of decisions made by
+  comparing a computed float with a small threshold, per file (the review
+  queue of the evidence rule); `ode.rs`'s residual check and the
+  integrator's `known_zero` decide by proof, not by `|f64| ≤ 10⁻⁹`.
+
 ## [0.50.0] - 2026-10-14
 
 The type-architecture refactor completed, its performance dividend, and

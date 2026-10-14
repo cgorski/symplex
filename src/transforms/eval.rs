@@ -5467,7 +5467,17 @@ fn constant_class(arena: &mut Arena, x: ExprId) -> crate::base::truth::SignSet {
                 (false, _) => SignSet::NONZERO,
             }
         } else {
-            let real = known_real(arena, v);
+            // A real is finite: a value 0 to its precision is, but without a
+            // value realness by [`known_real`] (an imaginary part 0 wherever
+            // defined) is no claim unless the assumptions know `v` finite.
+            // Up to 0.50 `1/max(Γ(1/3)·Γ(2/3) − 2π/√3, 0)`, a `1/0` that
+            // `eval` keeps, was real.
+            let finite = value.is_ok() || {
+                use crate::base::assumptions::{AssumptionCache, Props};
+                use crate::base::truth::Truth;
+                Truth::from(AssumptionCache::new().query(arena, v, Props::FINITE)).is_true()
+            };
+            let real = finite && known_real(arena, v);
             let zero = exact_zero_test(arena, v)
                 .or_else(|| (v != x).then(|| exact_zero_test(arena, x)).flatten());
             match (zero, real) {
@@ -6071,18 +6081,29 @@ pub(crate) fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<Expr
 
 /// The least (`min`) or greatest of the symbol-free real constants `args`
 /// (`Min(π, 3) = 3`, `Max(√2, 3/2) = 3/2`; SymPy compares them the same
-/// way), each comparison decided by the certified sign of a difference
-/// ([`Arena::sign_of_real_constant`]).  `None` when an argument is not such
-/// a constant or a comparison is not decided (equal values included).
+/// way), each comparison decided as `eval` decides `a ≥ b`
+/// ([`order_by_difference`]: a certified sign of the difference, else its
+/// exact zero tests; of equal values a number, else the first, so that
+/// `Min(atan(1/2) + atan(1/3) − π/4, 0)` is 0, which up to 0.50 stayed a
+/// `Min` that hid a 0 from the rules for `1/c`).  `None` when an argument
+/// is not such a constant or a comparison is not decided.
 fn extremum_of_real_constants(arena: &mut Arena, args: &[ExprId], min: bool) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::truth::Truth;
+    use crate::transforms::evalf::{ZeroSearch, evalf_settled};
     if args.len() < 2 || args.len() > 8 {
         return None;
     }
     let mut cache = AssumptionCache::new();
     for &a in args {
-        if !crate::base::walk::free_symbols(arena, a).is_empty()
-            || cache.query(arena, a, Props::FINITE) != Some(true)
+        if !crate::base::walk::free_symbols(arena, a).is_empty() {
+            return None;
+        }
+        // Finite by the assumptions, else by a value (`Ai(√2)`,
+        // `fresnels(15)`: the table claims nothing for a constant argument
+        // of a function whose special values are not all folded).
+        if !Truth::from(cache.query(arena, a, Props::FINITE)).is_true()
+            && evalf_settled(arena, a, 16, ZeroSearch::Cap).is_err()
         {
             return None;
         }
@@ -6094,11 +6115,24 @@ fn extremum_of_real_constants(arena: &mut Arena, args: &[ExprId], min: bool) -> 
             return None;
         }
     }
-    let mut best = args[0];
-    for &a in &args[1..] {
-        let d = arena.sub(a, best);
-        let s = certified_real_sign(arena, d)?;
-        if (min && s == std::cmp::Ordering::Less) || (!min && s == std::cmp::Ordering::Greater) {
+    let first = args
+        .iter()
+        .position(|&a| arena.as_num(a).is_some())
+        .unwrap_or(0);
+    let mut best = args[first];
+    for (_, &a) in args.iter().enumerate().filter(|&(i, _)| i != first) {
+        let diff = Difference {
+            a,
+            b: best,
+            orig: (a, best),
+        };
+        // `a < best` is `!(a ≥ best)`; `a > best` is decided directly.
+        let beyond = if min {
+            !order_by_difference(arena, diff, false)?
+        } else {
+            order_by_difference(arena, diff, true)?
+        };
+        if beyond {
             best = a;
         }
     }

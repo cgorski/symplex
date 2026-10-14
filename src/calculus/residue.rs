@@ -7,7 +7,9 @@
 //!
 //! 1. Shift: `g(t) = f(a + t)` and split `g = N(t)/D(t)`.
 //! 2. If `D` is a polynomial in `t`, its multiplicity `m` at `t = 0` is the
-//!    index of the first non-zero coefficient.  With `D̃(t) = D(t)/tᵐ`
+//!    index of the first coefficient proved nonzero, every earlier one
+//!    proved 0 ([`coefficient_is_zero`]; an undecided coefficient refuses).
+//!    With `D̃(t) = D(t)/tᵐ`
 //!    (exact, non-vanishing at 0), the residue is the Taylor coefficient
 //!    `Res = 1/(m−1)! · dᵐ⁻¹/dtᵐ⁻¹ [N(t)/D̃(t)]` at `t = 0`, which is a plain
 //!    substitution — no limits needed.  This handles algebraic points such
@@ -47,7 +49,7 @@ use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
-use crate::base::truth::SignSet;
+use crate::base::truth::{Evidence, SignSet, Truth};
 use crate::base::walk;
 use crate::calculus::calculus_util;
 use crate::poly::Poly;
@@ -174,13 +176,21 @@ fn residue_polynomial_denominator(
     coeffs: &[ExprId],
     t: ExprId,
 ) -> Result<ExprId, SymplexError> {
-    // Multiplicity of t = 0: index of the first coefficient that is not
-    // provably zero.
+    // Multiplicity of t = 0: index of the first coefficient proved nonzero,
+    // every earlier one proved 0.
     let mut m = coeffs.len();
     for (k, &c) in coeffs.iter().enumerate() {
-        if !is_provably_zero(arena, c) {
-            m = k;
-            break;
+        match coefficient_is_zero(arena, c) {
+            Truth::True => {}
+            Truth::False => {
+                m = k;
+                break;
+            }
+            Truth::Unknown => {
+                return Err(failed(format!(
+                    "cannot decide whether the coefficient of t^{k} of the denominator is 0"
+                )));
+            }
         }
     }
     if m == coeffs.len() {
@@ -379,8 +389,20 @@ fn nonzero_roots(arena: &mut Arena, polys: &[ExprId], t: ExprId) -> Option<Vec<E
     let mut symbolic: Vec<ExprId> = Vec::new();
     for &p in polys {
         let coeffs = calculus_util::poly_coeffs_symbolic(arena, p, t)?;
-        // Divide out the root at 0: p̃(t) = p(t)/t^m.
-        let m = coeffs.iter().position(|&c| !arena.is_zero_structural(c))?;
+        // Divide out the root at 0: p̃(t) = p(t)/t^m, with p̃(0) proved
+        // nonzero.
+        let mut m = None;
+        for (k, &c) in coeffs.iter().enumerate() {
+            match coefficient_is_zero(arena, c) {
+                Truth::True => {}
+                Truth::False => {
+                    m = Some(k);
+                    break;
+                }
+                Truth::Unknown => return None,
+            }
+        }
+        let m = m?;
         let tail = &coeffs[m..];
         if tail.len() <= 1 {
             continue;
@@ -604,8 +626,67 @@ struct RationalPole {
     cofactor: Poly,
     mult: usize,
     place: PolePlace,
+    /// The sign of `Re ρ`: one atom, exact or from the certified disk, or
+    /// `UNKNOWN` when the disk does not decide ([`ball_re_signs`]).
+    re_sign: SignSet,
     /// `ρ` written out: a rational, a quadratic surd, or `RootOf(factor, k)`.
     root: ExprId,
+}
+
+/// The sign of a rational as a single atom.
+fn sign_of_q(q: &Q) -> SignSet {
+    if q.is_positive() {
+        SignSet::POSITIVE
+    } else if q.is_negative() {
+        SignSet::NEGATIVE
+    } else {
+        SignSet::ZERO
+    }
+}
+
+/// The sign of the real part of each root of the irreducible `g` (degree
+/// ≥ 3) from its certified disk `balls[k]`: decided when `|Re|` exceeds
+/// the radius.  The real parts left undecided are exactly 0 when `g` is
+/// even, `g(t) = h(t²)`, and their number is twice that of the negative
+/// roots of `h` (Sturm): an irreducible `g` with a root `iy` also has
+/// `−iy = conj(iy)`, so `g(−t) = ±g(t)` and `g` is even, with `(iy)² =
+/// −y²` a negative root of `h`; and a disk always contains its root.
+/// Otherwise they stay `UNKNOWN`.
+fn ball_re_signs(g: &Poly, balls: &[crate::poly::roots::RootBall]) -> Vec<SignSet> {
+    let mut out = Vec::with_capacity(balls.len());
+    let mut undecided = 0usize;
+    for ball in balls {
+        let decided = ball
+            .radius
+            .as_ref()
+            .is_some_and(|r| ball.value.0.abs().cmp(r).unwrap_or(-1) > 0);
+        if decided {
+            out.push(
+                if crate::base::bigfloat::is_strictly_positive(&ball.value.0) {
+                    SignSet::POSITIVE
+                } else {
+                    SignSet::NEGATIVE
+                },
+            );
+        } else {
+            out.push(SignSet::UNKNOWN);
+            undecided += 1;
+        }
+    }
+    let even = g.coeffs().iter().skip(1).step_by(2).all(Zero::is_zero);
+    if undecided > 0 && even {
+        let h = Poly::from_coeffs(g.coeffs().iter().step_by(2).cloned().collect());
+        let lo = -crate::poly::sturm::cauchy_bound(&h) - Q::one();
+        let negative = crate::poly::sturm::SturmChain::new(&h).count_roots_in(&lo, &Q::zero());
+        if 2 * negative == undecided {
+            for s in &mut out {
+                if *s == SignSet::UNKNOWN {
+                    *s = SignSet::ZERO;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Precision (bits) of the root balls that place the poles.
@@ -625,7 +706,8 @@ const MAX_POLE_DEGREE: usize = 24;
 /// whose imaginary part exceeds its radius.  `None` when a disk is not
 /// certified, when the number of real disks differs from the Sturm count,
 /// or above [`MAX_POLE_DEGREE`].  `bound` is the variable of the `RootOf`
-/// polynomials.
+/// polynomials.  The sign of each real part is exact for degrees 1 and 2
+/// and certified by the disks above ([`ball_re_signs`]).
 fn rational_poles(arena: &mut Arena, d: &Poly, bound: ExprId) -> Option<Vec<RationalPole>> {
     if d.degree()? > MAX_POLE_DEGREE {
         return None;
@@ -648,12 +730,14 @@ fn rational_poles(arena: &mut Arena, d: &Poly, bound: ExprId) -> Option<Vec<Rati
         match deg {
             1 => {
                 let rho = -factor.coeff(0) / factor.coeff(1);
+                let re_sign = sign_of_q(&rho);
                 let root = arena.num_ratio(rho);
                 out.push(RationalPole {
                     factor: factor.clone(),
                     cofactor,
                     mult,
                     place: PolePlace::Real,
+                    re_sign,
                     root,
                 });
             }
@@ -661,7 +745,12 @@ fn rational_poles(arena: &mut Arena, d: &Poly, bound: ExprId) -> Option<Vec<Rati
                 let (a, b, c) = (factor.coeff(2), factor.coeff(1), factor.coeff(0));
                 let disc = &b * &b - Q::from_integer(BigInt::from(4)) * &a * &c;
                 let two_a = Q::from_integer(BigInt::from(2)) * &a;
-                let centre = arena.num_ratio(-b / &two_a);
+                let centre_q = -b / &two_a;
+                // Real roots: of opposite signs when their product `c/a` is
+                // negative (the `+` one is the larger for `a > 0`), else
+                // both of the sign of their sum `2·centre`.
+                let product = &c / &a;
+                let centre = arena.num_ratio(centre_q.clone());
                 let real = disc.is_positive();
                 let r = arena.num_ratio(if real { disc.clone() } else { -disc.clone() });
                 let root_disc = arena.sqrt(r);
@@ -683,11 +772,21 @@ fn rational_poles(arena: &mut Arena, d: &Poly, bound: ExprId) -> Option<Vec<Rati
                     } else {
                         PolePlace::Lower
                     };
+                    let re_sign = if real && product.is_negative() {
+                        if plus == two_a.is_positive() {
+                            SignSet::POSITIVE
+                        } else {
+                            SignSet::NEGATIVE
+                        }
+                    } else {
+                        sign_of_q(&centre_q)
+                    };
                     out.push(RationalPole {
                         factor: factor.clone(),
                         cofactor: cofactor.clone(),
                         mult,
                         place,
+                        re_sign,
                         root,
                     });
                 }
@@ -715,20 +814,22 @@ fn rational_poles(arena: &mut Arena, d: &Poly, bound: ExprId) -> Option<Vec<Rati
                         return None;
                     });
                 }
-                if let Some(explicit) = explicit_roots(arena, factor, bound, &places) {
-                    for (root, place) in explicit {
+                let re_signs = ball_re_signs(factor, &balls);
+                if let Some(explicit) = explicit_roots(arena, factor, bound, &places, &re_signs) {
+                    for (root, place, re_sign) in explicit {
                         out.push(RationalPole {
                             factor: factor.clone(),
                             cofactor: cofactor.clone(),
                             mult,
                             place,
+                            re_sign,
                             root,
                         });
                     }
                     continue;
                 }
                 let g_expr = crate::poly::polybridge::poly_to_expr(arena, factor, bound);
-                for (k, &place) in places.iter().enumerate() {
+                for (k, (&place, &re_sign)) in places.iter().zip(&re_signs).enumerate() {
                     let idx = arena.int(i64::try_from(k).ok()?);
                     let root = arena.intern(ExprNode::RootOf(g_expr, bound, idx));
                     out.push(RationalPole {
@@ -736,6 +837,7 @@ fn rational_poles(arena: &mut Arena, d: &Poly, bound: ExprId) -> Option<Vec<Rati
                         cofactor: cofactor.clone(),
                         mult,
                         place,
+                        re_sign,
                         root,
                     });
                 }
@@ -752,20 +854,55 @@ const MAX_EXPLICIT_ROOT_DEGREE: usize = 4;
 /// Largest root (nodes written out) used explicitly; others stay `RootOf`.
 const MAX_EXPLICIT_ROOT_SIZE: usize = 48;
 
+/// The sign of the real constant `e` (a real or an imaginary part of a
+/// root): from certified digits, or 0 when proved
+/// ([`calculus_util::hidden_zero`]); `None` otherwise.
+fn certified_part_sign(arena: &mut Arena, e: ExprId) -> Option<SignSet> {
+    let e = eval::eval(arena, e);
+    if arena.is_zero_structural(e) {
+        return Some(SignSet::ZERO);
+    }
+    let v = crate::transforms::evalf::evalf_verdict(
+        arena,
+        e,
+        20,
+        crate::transforms::evalf::ZeroSearch::Cap,
+    )
+    .ok()?;
+    if let Some(z) = v.proven() {
+        return Some(if z.0.is_zero() && z.1.is_zero() {
+            SignSet::ZERO
+        } else if !z.1.is_zero() {
+            return None;
+        } else if crate::base::bigfloat::is_strictly_positive(&z.0) {
+            SignSet::POSITIVE
+        } else {
+            SignSet::NEGATIVE
+        });
+    }
+    calculus_util::hidden_zero(arena, e)
+        .proven()
+        .filter(|t| t.is_true())
+        .map(|_| SignSet::ZERO)
+}
+
 /// The roots of the irreducible `g` (degree 3 or 4) in radicals with
 /// their places, when `solve` writes every one of them in at most
 /// [`MAX_EXPLICIT_ROOT_SIZE`] nodes (`x⁴ + 1`: `±√2/2 ± i√2/2`).  Each root
-/// is placed by its numeric value, and the places must agree in number with
-/// the certified ones `certified` (which decide; a root whose imaginary
-/// part is too small to tell refuses).
+/// is placed by the certified signs of its imaginary and real parts
+/// ([`certified_part_sign`]; a part that is neither certified nor proved 0
+/// refuses), and the places and signs must agree in number with those of
+/// the disks, `certified` and `certified_re` ([`ball_re_signs`]).  Up to
+/// 0.50 a root was placed by its `f64` value (`|Im| ≤ 10⁻¹²|ρ|`: real).
 fn explicit_roots(
     arena: &mut Arena,
     g: &Poly,
     bound: ExprId,
     certified: &[PolePlace],
-) -> Option<Vec<(ExprId, PolePlace)>> {
+    certified_re: &[SignSet],
+) -> Option<Vec<(ExprId, PolePlace, SignSet)>> {
     let deg = g.degree()?;
-    if deg > MAX_EXPLICIT_ROOT_DEGREE {
+    if deg > MAX_EXPLICIT_ROOT_DEGREE || certified_re.iter().any(|s| !s.is_single()) {
         return None;
     }
     let g_expr = crate::poly::polybridge::poly_to_expr(arena, g, bound);
@@ -788,28 +925,27 @@ fn explicit_roots(
         {
             return None;
         }
-        let z = crate::transforms::evalf::evalf_complex64(arena, r).ok()?;
-        let scale = z.norm().max(1.0);
-        if !z.re.is_finite() || !z.im.is_finite() {
-            return None;
-        }
-        let place = if z.im.abs() <= 1e-12 * scale {
-            PolePlace::Real
-        } else if z.im.abs() > 1e-6 * scale {
-            if z.im > 0.0 {
-                PolePlace::Upper
-            } else {
-                PolePlace::Lower
-            }
-        } else {
-            return None;
+        let im = arena.im(r);
+        let place = match certified_part_sign(arena, im)? {
+            SignSet::ZERO => PolePlace::Real,
+            SignSet::POSITIVE => PolePlace::Upper,
+            _ => PolePlace::Lower,
         };
-        out.push((r, place));
+        let re = arena.re(r);
+        let re_sign = certified_part_sign(arena, re)?;
+        out.push((r, place, re_sign));
     }
     let count =
         |v: &mut dyn Iterator<Item = PolePlace>, p: PolePlace| v.filter(|&q| q == p).count();
     for p in [PolePlace::Upper, PolePlace::Lower, PolePlace::Real] {
         if count(&mut out.iter().map(|e| e.1), p) != count(&mut certified.iter().copied(), p) {
+            return None;
+        }
+    }
+    for s in [SignSet::NEGATIVE, SignSet::ZERO, SignSet::POSITIVE] {
+        if out.iter().filter(|e| e.2 == s).count()
+            != certified_re.iter().filter(|&&c| c == s).count()
+        {
             return None;
         }
     }
@@ -929,8 +1065,10 @@ pub(crate) fn rational_residue_sum(
 pub(crate) struct PoleView {
     /// Where the pole lies relative to the real axis (certified).
     pub(crate) place: PolePlace,
-    /// Its value to about 16 digits.
-    pub(crate) approx: num_complex::Complex64,
+    /// The sign of its real part: one atom (exact or certified), or
+    /// `UNKNOWN`.  Up to 0.50 the callback got a 16-digit value instead,
+    /// and the Laplace transform decided `Re ρ ≤ 0` by `Re ρ ≤ 10⁻⁹|ρ|`.
+    pub(crate) re_sign: SignSet,
 }
 
 /// [`rational_residue_sum`] with a weight chosen per pole: `weight_for`
@@ -949,13 +1087,9 @@ pub(crate) fn rational_residue_sum_with(
     let mut derivatives: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
     let mut terms: Vec<ExprId> = Vec::new();
     for pole in &poles {
-        let approx = match crate::transforms::evalf::evalf_complex64(arena, pole.root) {
-            Ok(z) if z.re.is_finite() && z.im.is_finite() => z,
-            _ => return None,
-        };
         let view = PoleView {
             place: pole.place,
-            approx,
+            re_sign: pole.re_sign,
         };
         let Some(weight) = weight_for(arena, &view)? else {
             continue;
@@ -1067,41 +1201,104 @@ fn divide_by_factorial(arena: &mut Arena, v: ExprId, n: usize) -> ExprId {
     arena.div(v, f)
 }
 
-/// Is `c` provably zero (structurally after `eval`, after full
-/// simplification, or numerically when constant)?
-fn is_provably_zero(arena: &mut Arena, c: ExprId) -> bool {
+/// Is the coefficient `c` (free of the variable) 0, on exact or certified
+/// evidence only?
+///
+/// - `True`: 0 after `eval` or expansion; a constant proved 0 by
+///   [`calculus_util::hidden_zero`] or, failing that, by the exact tests
+///   of `eval` ([`eval::constant_zero_decision`]: `atan(1/2) + atan(1/3) −
+///   π/4`), as it is, factor by factor (a product is 0 exactly when a
+///   factor is, a positive power when its base is: `2c`, `c²` for such a
+///   `c`), or multiplied out; a constant with parameters shown 0 for all
+///   their values by
+///   [`calculus_util::exactly_zero`] or [`calculus_util::zero_by_identity`].
+/// - `False`: a constant proved nonzero by either; a constant with
+///   parameters certified nonzero at a sample point that respects their
+///   assumptions
+///   ([`nonzero_at_a_sample`](crate::simplify::identically_zero::nonzero_at_a_sample)):
+///   not identically 0, so nonzero for generic values of the parameters,
+///   the convention of every parametric residue.
+/// - `Unknown` otherwise: a constant 0 to the precision reached but not
+///   proved, one without a value, one with an unevaluated part.  Callers
+///   refuse: taken for 0, a coefficient of the denominator raises the order
+///   of the pole, taken for nonzero it lowers it, and the residue is wrong
+///   either way.
+///
+/// Up to 0.50 a constant counted as 0 when its 20-digit decimal was below
+/// `10⁻¹⁸`: the simple pole of `1/(z(z + e⁻⁵⁰))` at `0` was taken for a
+/// double pole and its residue, `e⁵⁰`, came out `0`.
+fn coefficient_is_zero(arena: &mut Arena, c: ExprId) -> Truth {
     let c = eval::eval(arena, c);
     if arena.is_zero_structural(c) {
-        return true;
+        return Truth::True;
     }
     let expanded = crate::transforms::expand::expand(arena, c);
     let expanded = eval::eval(arena, expanded);
     if arena.is_zero_structural(expanded) {
-        return true;
+        return Truth::True;
     }
-    if walk::free_symbols(arena, expanded).is_empty() {
-        // Constant: decide numerically (real or complex).
-        if let Ok(s) = crate::transforms::evalf::evalf(arena, expanded, 20) {
-            let s = s.trim();
-            if s == "0" {
-                return true;
-            }
-            if let Ok(v) = s.parse::<f64>() {
-                return v.abs() < 1e-18;
-            }
-            return false;
+    if walk::free_symbols(arena, c).is_empty() {
+        let t = constant_is_zero(arena, c);
+        if !matches!(t, Truth::Unknown) {
+            return t;
         }
+        // Factor by factor, when the value is finite (0 to the precision
+        // reached, so no factor is infinite).
+        if calculus_util::hidden_zero(arena, c).value.is_true() {
+            let factors = match arena.node(c) {
+                ExprNode::Mul(fs) => fs.to_vec(),
+                _ => vec![c],
+            };
+            let mut all_nonzero = true;
+            for f in factors {
+                let base = match *arena.node(f) {
+                    ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(Signed::is_positive) => b,
+                    _ => f,
+                };
+                match constant_is_zero(arena, base) {
+                    Truth::True => return Truth::True,
+                    Truth::False => {}
+                    Truth::Unknown => all_nonzero = false,
+                }
+            }
+            if all_nonzero {
+                return Truth::False;
+            }
+        }
+        return if expanded == c {
+            Truth::Unknown
+        } else {
+            constant_is_zero(arena, expanded)
+        };
     }
-    let opts = crate::simplify::simplify_engine::SimplifyOpts::default();
-    let r = crate::simplify::simplify_engine::unified_simplify(arena, expanded, &opts);
-    arena.is_zero_structural(r.expr)
+    if crate::simplify::identically_zero::nonzero_at_a_sample(arena, expanded) {
+        return Truth::False;
+    }
+    let rewritten = calculus_util::exact_rewrites(arena, expanded);
+    if calculus_util::exactly_zero(arena, expanded, rewritten)
+        || calculus_util::zero_by_identity(arena, expanded, rewritten)
+    {
+        return Truth::True;
+    }
+    Truth::Unknown
+}
+
+/// Is the symbol-free constant `v` 0: [`calculus_util::hidden_zero`] on
+/// exact or certified evidence, else [`eval::constant_zero_decision`].
+fn constant_is_zero(arena: &mut Arena, v: ExprId) -> Truth {
+    let t = calculus_util::hidden_zero(arena, v).truth_at_least(Evidence::Certified);
+    if matches!(t, Truth::Unknown) {
+        Truth::from(eval::constant_zero_decision(arena, v))
+    } else {
+        t
+    }
 }
 
 /// What is known about a constant `v` (the value of a subexpression at the
 /// expansion point).
 struct PointValue {
-    /// Provably nonzero (or, with free parameters, not structurally zero —
-    /// the generic case).
+    /// Proved nonzero ([`coefficient_is_zero`] is `False`; with free
+    /// parameters: nonzero for generic values of them).
     nonzero: bool,
     /// The complex value, when `v` is a finite number.
     value: Option<num_complex::Complex64>,
@@ -1119,13 +1316,13 @@ fn point_value(arena: &mut Arena, v: ExprId) -> PointValue {
         // Symbolic parameter: generic position, as for every other
         // parameter-dependent residue.
         return PointValue {
-            nonzero: true,
+            nonzero: coefficient_is_zero(arena, v).is_false(),
             value: None,
         };
     }
     match crate::transforms::evalf::evalf_complex64(arena, v) {
         Ok(z) if z.re.is_finite() && z.im.is_finite() => PointValue {
-            nonzero: !is_provably_zero(arena, v),
+            nonzero: coefficient_is_zero(arena, v).is_false(),
             value: Some(z),
         },
         _ => PointValue {
@@ -1146,7 +1343,8 @@ fn point_value(arena: &mut Arena, v: ExprId) -> PointValue {
 /// off their branch cuts; `tan`/`tanh`/`Γ`/`ψ` need to avoid their poles.
 /// Anything else (`|·|`, `re`, `conj`, `sign`, `H`, `floor`, …) is not
 /// certified.  With symbolic parameters the value at 0 is taken in generic
-/// position (nonzero unless structurally zero).
+/// position (nonzero when certified nonzero at a sample point,
+/// [`coefficient_is_zero`]).
 pub(crate) fn analytic_at_zero(arena: &mut Arena, e: ExprId, t: ExprId) -> bool {
     use num_complex::Complex64;
     let zero = arena.zero();

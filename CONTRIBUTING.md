@@ -1199,6 +1199,27 @@ else.  `tests/unit/test_truth_values.rs` counts per file the remaining
 returning `Option<bool>`, `Option<…>` sign encodings and `(ExprId, u8)` memo
 keys; the counts may only shrink.
 
+**Float evidence** (`tests/unit/test_float_evidence.rs`).  A computed
+float compared with a small threshold (`|v| < 1e-12`, `z.im == 0.0`) is a
+guess, not a proof: it may steer a heuristic whose result is right either
+way, never a claim.  Decide claims with `hidden_zero`,
+`evalf_verdict(..).proven()`, `cmp_values` or certified root disks.  The
+ratchet counts such comparisons per file (`tol`: an operand with a float
+literal ≤ 10⁻³ or a same-file constant bound to one; `zero`: `==`/`!=`
+against `0.0`); counts may only shrink, and the table is the review queue.
+Poles of rational functions carry the certified sign of their real part
+(`PoleView::re_sign`); a residue's pole order counts a coefficient as zero
+only when proved (`residue::coefficient_is_zero`).
+
+**Poles of powers.**  `b^e` is claimed complex, real, rational,
+non-negative or finite only off the pole at `b = 0`: for a symbol-free `b`
+that means `b` known nonzero (structure, or a certified value via
+`Arena::part_signs`) or `e` known non-negative — a constant has no
+"elsewhere".  A base with symbols keeps the generic reading "away from the
+poles" (`1/x` is real for a real `x`).  A constant without a value is real
+only if known finite.  `δ` has a value only at a real argument (an exact-0
+imaginary part).
+
 When only coprimality or the degree of a gcd is needed, use modular images
 (`modgcd::main_gcd_degree_bound`, `coprime_certified`), not a full gcd: an
 image gcd of degree 0 proves coprimality (`Exact`), a positive image degree
@@ -1255,7 +1276,15 @@ merge branches with `union`, which decides once that a refused branch next
 to an empty one is a refusal, not a proof.  There is no `is_empty` and no
 conversion that collapses "no solution", "every value" and "refused" into an
 empty list; callers pick a named policy (`points_if_complete()`,
-`known_real_roots()`).
+`known_real_roots()`).  An inversion that takes a principal branch (`f^(p/q)
+= c → f = c^(q/p)`, a root `t₀` of `t = x^(1/L)`) claims the root only when
+`c` (or `t₀`) lies in that branch's range: for a value with parameters
+`principal_power_preimage` decides from the exact argument range
+(`arg_range`, declared signs and the branch, no evaluation); undecided means
+refuse in the public solvers, a candidate only for `known_real_roots`
+(`SolveCx::as_candidates`).  A root returned for a real unknown must be
+proved real; a constant discriminant or leading coefficient is decided by
+`constant_zero_decision`, never by how it looks.
 
 **Budgets count work.**  An engine's limit counts deterministic work — a
 `Work` charged per step, or a `WorkScope` that counts interns attempted —

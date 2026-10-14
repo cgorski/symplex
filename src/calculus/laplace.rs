@@ -47,7 +47,7 @@ use crate::base::arena::Arena;
 use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
-use crate::base::truth::Truth;
+use crate::base::truth::{SignSet, Truth};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Forward Laplace transform
@@ -297,16 +297,20 @@ fn forward_rational(arena: &mut Arena, expr: ExprId, t: ExprId, s: ExprId) -> Op
         let z = arena.symbol("__laplace_pole");
         let one = arena.one;
         let sum = residue::rational_residue_sum_with(arena, &proper, z, bound, |arena, pole| {
-            let scale = pole.approx.norm().max(1.0);
-            let re = pole.approx.re;
-            if pole.place == PolePlace::Real && re > -1e-12 * scale {
-                // A pole on [0, ∞): the integral diverges.
+            // `Re ρ ≤ 0` or `> 0` decides the form, so it must be certified
+            // (`pole.re_sign`): up to 0.50 a pole with `0 < Re ρ ≤ 10⁻⁹|ρ|`
+            // took the `E₁` form, wrong by `2πi·e^{−ρs}` between the cut and
+            // the imaginary axis (`1/((t − 10⁻¹⁰)² + 1)` at `s = 10⁻¹² − i`).
+            if !pole.re_sign.is_single()
+                || (pole.place == PolePlace::Real && pole.re_sign != SignSet::NEGATIVE)
+            {
+                // A pole on [0, ∞) (the integral diverges), or undecided.
                 return None;
             }
             let zs = arena.mul(&[z, s]);
             let neg_zs = arena.neg(zs);
             let damp = arena.exp(neg_zs);
-            let w = if re <= 1e-9 * scale {
+            let w = if pole.re_sign != SignSet::POSITIVE {
                 let e1 = crate::transforms::eval::apply_named(
                     arena,
                     crate::base::libfn::LibFn::ExpInt,

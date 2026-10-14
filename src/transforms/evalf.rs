@@ -3696,13 +3696,28 @@ fn eval_node(
         }
 
         // ── DiracDelta ─────────────────────────────────────────────
-        // A distribution: `δ(z) = 0` for every `z ≠ 0`, and no value at 0.
-        // A 0 argument is refused, unless it is only 0 to the working
-        // precision (`eval_ball` then has no value yet and asks
-        // for more precision); an argument within its error of 0 has no
-        // bound (`node_error`).  Up to 0.49 `δ(0)` was a certified `0`.
+        // A distribution on the real line: `δ(x) = 0` for every real
+        // `x ≠ 0`, no value at 0 and none off the reals (SymPy 1.14 rejects
+        // `DiracDelta(I)`; the limit engine and `is_zero` leave it
+        // undecided).  A 0 or non-real argument is refused, unless it is
+        // only so to the working precision (`eval_ball` then has no value
+        // yet and asks for more precision); an argument within its error
+        // of 0, or whose imaginary part is not an exact 0, has no bound
+        // (`node_error`).  Up to 0.49 `δ(0)` was a certified `0`, up to
+        // 0.50 `δ(i)` (and `compile`, which folds constants by `evalf`).
         ExprNode::DiracDelta(inner) => {
             let val = get_cached(cache, *inner)?;
+            // An imaginary part nonzero beyond its error (without a bound:
+            // nonzero).
+            let non_real = !val.1.is_zero()
+                && cache
+                    .bound(inner)
+                    .is_none_or(|b| !accuracy::part_contains_zero(&val.1, b.im));
+            if non_real {
+                return Err(unevaluable(
+                    "DiracDelta has no value at a non-real argument",
+                ));
+            }
             if val.0.is_zero() && val.1.is_zero() {
                 return Err(unevaluable("DiracDelta(0) has no value"));
             }

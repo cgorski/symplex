@@ -54,7 +54,7 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     // `base/{arena,canon}.rs` (W12, byte identity), `base/{assumptions,complex}.rs`,
     // `poly/**` (W10c), `transforms/{eval,evalf,inequalities,sets,solve}` (B3 / evalf).
     ("base/arena.rs", [1, 0, 1, 1, 0]),
-    ("base/assumptions.rs", [110, 0, 0, 0, 0]),
+    ("base/assumptions.rs", [98, 0, 0, 0, 0]),
     ("base/canon.rs", [47, 2, 1, 3, 0]),
     ("base/complex.rs", [27, 0, 2, 1, 0]),
     ("poly/algebraic.rs", [1, 0, 2, 2, 0]),
@@ -65,7 +65,7 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     ("poly/polysys.rs", [5, 0, 2, 0, 0]),
     ("poly/sturm.rs", [0, 0, 0, 1, 0]),
     ("poly/zerodim.rs", [1, 0, 0, 0, 0]),
-    ("transforms/eval.rs", [23, 0, 8, 2, 0]),
+    ("transforms/eval.rs", [22, 0, 8, 2, 0]),
     ("transforms/evalf.rs", [0, 1, 0, 0, 0]),
     ("transforms/inequalities.rs", [1, 2, 0, 1, 0]),
     ("transforms/sets.rs", [18, 0, 18, 0, 0]),

@@ -34,7 +34,7 @@
 //! | `sin`, `cos` / `sinh`, `cosh` | `r·cosh(abs(im z) + r)` / `r·cosh(abs(re z) + r)` — exactly `r` for `sin`, `cos` of a real argument; `r` of a rational `abs(q) ≥ 1` under `sin`, `cos`, `tan` is its rounding at `prec + log₂ abs(q)` bits (it is converted again, `evalf::trig_arg`) |
 //! | `tan`, `tanh` | `r·(1 + w²)`, `w = (T + t)/(1 − T·t)`, `T = abs(f(z))`, `t = tan r`; no bound when `r·T > 1/8` (the ball reaches an eighth of the distance to a pole); `r` for a real `tanh` |
 //! | `atan`, `asin`, `acos`, `asinh`, `acosh`, `atanh` | `r·Π(dᵢ − r)^(−k)` with the distances `dᵢ` to the two branch points (`abs(f′) = Π abs(z − pᵢ)^(−k)`); within a few error radii of a square-root branch point `p` the Hölder bound `2.06·√(2·(abs(z − p) + r))`, and no bound near a logarithmic one |
-//! | `sign`, `floor`, `ceiling`, `heaviside`, `DiracDelta`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold (0 for `DiracDelta`, whose value at an exact 0 is refused) |
+//! | `sign`, `floor`, `ceiling`, `heaviside`, `DiracDelta`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold (0 for `DiracDelta`, whose value at an exact 0 or a non-real argument is refused, and unknown at an argument not exactly real) |
 //! | special functions `f(x₁, …, xₙ)` | `2·Σᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing; a 0 from exact nonzero arguments is an underflow for the functions that vanish at no rational point (`erfc`, `Γ`, `Ei`, `Ai`, `Bi`, `I_ν`, `K_ν`, `Γ(s, x)`, `E_ν`) and for `J_ν` with `ν > abs(x)`, exact otherwise |
 //!
 //! The sensitivity `abs(∂f/∂x)` of a special function — its condition number
@@ -1171,9 +1171,14 @@ impl<Z: Borrow<Complex>> Ball<Z> {
         }))
     }
 
-    /// The propagated bound of `DiracDelta` at this argument (see [`node_error`]).
+    /// The propagated bound of `DiracDelta` at this argument (see [`node_error`]):
+    /// exact for a real argument (an exact 0 imaginary part; `δ` has no
+    /// value off the reals, and up to 0.50 one only real to the working
+    /// precision was a certified 0) away from 0.
     fn delta_error(&self) -> NodeBound {
-        if self.err.is_exact() || !contains_zero(self.z(), self.err.joint()) {
+        if exactly_real(self.z(), self.err)
+            && (self.err.is_exact() || !contains_zero(self.z(), self.err.joint()))
+        {
             NodeBound::Final(Bound::EXACT)
         } else {
             NodeBound::Final(Bound::UNKNOWN)

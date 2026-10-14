@@ -2157,12 +2157,14 @@ fn family_verifies(
 
 /// The residual of the family `sol` (one constant `c1`; others are set to
 /// fixed values) in `expr = 0` at three points and four values of `c1`,
-/// evaluated over ℂ on principal branches: `True` when it is below `1e⁻⁹`
-/// of the scale of the derivatives at two or more of them (a formula may
-/// be a solution only where its radicals take the right branch: `(x/2 +
-/// C1/2)²` for `y′ = √y` needs `x + C1 ≥ 0`), `False` when it evaluates at
-/// two or more and is small at none, `Unknown` otherwise.  Evidence:
-/// 12-digit samples (`Evidence::Approximate`).
+/// evaluated over ℂ on principal branches: `True` when it is proved 0 at
+/// two or more of them (a formula may be a solution only where its
+/// radicals take the right branch: `(x/2 + C1/2)²` for `y′ = √y` needs `x +
+/// C1 ≥ 0`), `False` when it is certified nonzero at every point where it
+/// evaluates (two or more), `Unknown` otherwise.  Each point is decided
+/// by [`residual_zero_at`] (exact or certified); up to 0.50 a residual
+/// below `10⁻⁹` of the derivatives' scale in 12-digit arithmetic counted
+/// as 0, so a family off by a tiny amount verified.
 fn residual_verdict(
     arena: &mut Arena,
     expr: ExprId,
@@ -2190,49 +2192,68 @@ fn residual_verdict(
         .into_iter()
         .filter(|&s| s != c1 && s != var && is_constant_name(arena, s))
         .collect();
-    let (mut evaluated, mut passed) = (0usize, 0usize);
+    let (mut evaluated, mut passed, mut refuted) = (0usize, 0usize, 0usize);
     for (xn, xd) in [(3i64, 7i64), (11, 9), (-5, 4)] {
         for (cn, cd) in [(2i64, 3i64), (-5, 4), (7, 5), (-1, 3)] {
             let xv = arena.rational(xn, xd);
             let cv = arena.rational(cn, cd);
             let ov = arena.rational(3, 5);
-            let at = |arena: &mut Arena, e: ExprId| {
-                let mut e = crate::transforms::subs::subs(arena, e, var, xv);
-                e = crate::transforms::subs::subs(arena, e, c1, cv);
-                for &o in &others {
-                    e = crate::transforms::subs::subs(arena, e, o, ov);
-                }
-                let e = crate::transforms::eval::eval(arena, e);
-                // Zeros pursued only to the digits asked (true zeros are
-                // the rule here; `evalf_complex64` works to certify them).
-                let z = crate::transforms::evalf::evalf_complex(arena, e, 12).ok()?;
-                crate::transforms::evalf::abs_to_f64(&z).filter(|m| m.is_finite())
-            };
-            let Some(r) = at(arena, resid) else {
+            let mut e = crate::transforms::subs::subs(arena, resid, var, xv);
+            e = crate::transforms::subs::subs(arena, e, c1, cv);
+            for &o in &others {
+                e = crate::transforms::subs::subs(arena, e, o, ov);
+            }
+            let r = crate::transforms::eval::eval(arena, e);
+            let Some(zero) = residual_zero_at(arena, r) else {
                 continue;
             };
-            let mut scale = 1.0f64;
-            for &d in &ders {
-                if let Some(m) = at(arena, d) {
-                    scale = scale.max(m);
-                }
-            }
             evaluated += 1;
-            if r <= 1e-9 * scale {
-                passed += 1;
-                if passed >= 2 {
-                    return Truth::True;
+            match zero {
+                Truth::True => {
+                    passed += 1;
+                    if passed >= 2 {
+                        return Truth::True;
+                    }
                 }
+                Truth::False => refuted += 1,
+                Truth::Unknown => {}
             }
         }
     }
     if passed >= 2 {
         Truth::True
-    } else if evaluated >= 2 && passed == 0 {
+    } else if evaluated >= 2 && refuted == evaluated {
         Truth::False
     } else {
         Truth::Unknown
     }
+}
+
+/// Is the residual `r` of [`residual_verdict`] at one sample point 0?
+/// `True` when canonical forms or [`hidden_zero`](crate::calculus::calculus_util::hidden_zero)
+/// prove it, `False` when a certified evaluation excludes 0, `Unknown` when
+/// it is 0 to the precision reached but not proved; `None` when it has no
+/// finite value there (a point outside the family's domain).
+fn residual_zero_at(arena: &mut Arena, r: ExprId) -> Option<Truth> {
+    if arena.is_zero_structural(r) {
+        return Some(Truth::True);
+    }
+    let v = crate::transforms::evalf::evalf_verdict(
+        arena,
+        r,
+        15,
+        crate::transforms::evalf::ZeroSearch::Cap,
+    )
+    .ok()?;
+    let (re, im) = (&v.value.0, &v.value.1);
+    if re.is_inf() || re.is_nan() || im.is_inf() || im.is_nan() {
+        return None;
+    }
+    if let Some(z) = v.proven() {
+        return Some(Truth::from_bool(z.0.is_zero() && z.1.is_zero()));
+    }
+    let proven = crate::calculus::calculus_util::hidden_zero(arena, r).proven();
+    Some(proven.unwrap_or(Truth::Unknown))
 }
 
 /// Is the symbol `s` named like an integration constant (`C1`, `C2`, …)?

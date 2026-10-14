@@ -1758,8 +1758,8 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
 /// Up to 0.48 a value zero to the precision reached was 0, and
 /// `c = e^{−10⁻¹⁵⁰} − 1` (`−10⁻¹⁵⁰`) made `lim_{x→∞} c·x² − 1` equal
 /// `−1` (it is `−∞`).  A constant with a `δ` off the reals has no value
-/// and so no sign ([`hidden_zero`]'s convention; `evalf` takes `δ(i)` for
-/// 0, and `lim_{x→∞} x·(δ(1 + i) + 1)` was `∞`).
+/// and so no sign ([`hidden_zero`]'s convention; up to 0.50 `evalf` took
+/// `δ(i)` for 0, and `lim_{x→∞} x·(δ(1 + i) + 1)` was `∞`).
 ///
 /// [`constant_realness`]: crate::transforms::realness::constant_realness
 /// [`constant_zero_decision`]: crate::transforms::eval::constant_zero_decision

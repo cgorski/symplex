@@ -1657,14 +1657,17 @@ fn try_linear_over_quadratic(
 
     let mut terms: Vec<ExprId> = Vec::new();
 
-    // A term is dropped only when its coefficient is *known* to vanish:
-    // structurally zero, or a constant whose value is zero to the working
-    // precision (`√5·√5/5 − 1`).  A coefficient with a free parameter has no
-    // numeric value, and treating that as "zero" returned
-    // `∫ (a·x + b)/(x² + 1) dx = 0` — 56 wrong answers on the Rubi suite (0.24).
+    // A term is dropped only when its coefficient is *proved* to vanish:
+    // structurally zero, or a constant shown 0 exactly
+    // (`constant_zero_decision`: `√5·√5/5 − 1`).  Up to 0.50 a constant whose
+    // `f64` value was below `10⁻¹⁴` counted as 0, so a coefficient `e⁻⁴⁰/2`
+    // was dropped; keeping a coefficient that is 0 but not proved is
+    // harmless.  A coefficient with a free parameter has no value, and
+    // treating that as "zero" returned `∫ (a·x + b)/(x² + 1) dx = 0` — 56
+    // wrong answers on the Rubi suite (0.24).
     let known_zero = |arena: &mut Arena, c: ExprId| {
         arena.is_zero_structural(c)
-            || crate::transforms::evalf::eval_const_f64(arena, c).is_some_and(|v| v.abs() <= 1e-14)
+            || Truth::from(crate::transforms::eval::constant_zero_decision(arena, c)).is_true()
     };
 
     // First term: log_coeff · ln|quadratic|

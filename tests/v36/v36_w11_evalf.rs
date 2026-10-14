@@ -22,8 +22,10 @@ fn dirac_delta_at_zero_has_no_value() {
     assert_eq!(decimal("DiracDelta(2)", 30).unwrap(), "0");
     assert_eq!(decimal("DiracDelta(-1/10^60)", 30).unwrap(), "0");
     assert_eq!(decimal("1 + DiracDelta(3)", 30).unwrap(), "1");
-    // A complex argument is not 0 either (as before).
-    assert_eq!(decimal("DiracDelta(I)", 30).unwrap(), "0");
+    // Off the reals `δ` has no value either: this line pinned `0` up to
+    // 0.50 (SymPy 1.14 rejects `DiracDelta(I)`; `is_zero` is `None`), see
+    // `v36_s14d_assume::dirac_delta_off_the_reals_has_no_value`.
+    assert!(decimal("DiracDelta(I)", 30).is_err());
 }
 
 /// An argument that is 0 only to the precision reached is no proof that

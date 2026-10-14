@@ -104,8 +104,18 @@ pub struct Solution {
 /// (or [`Solutions::points_if_complete`]).  The range restrictions of
 /// transcendental inversions take the unknown real (`eˣ = −1`, `sin x =
 /// 2` have no solution), unlike [`solve_classified`].
+///
+/// A root that holds only for some values of the parameters is taken as a
+/// candidate here ([`SolveCx::conditional_roots_as_candidates`]), where
+/// [`solve_classified_real`] refuses.
 pub(crate) fn known_real_roots(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<ExprId> {
-    solve_classified_real(arena, expr, var).claimed_points()
+    solutions(
+        arena,
+        expr,
+        var,
+        &SolveCx::principal(Domain::Real).as_candidates(),
+    )
+    .claimed_points()
 }
 
 /// Why the public solvers (`Ex::solve`, `Ex::solve_general`) return no
@@ -901,6 +911,11 @@ fn singular_member(
 /// substituted equation, free of symbols, is undefined (`zoo`, `NaN`, `±∞`)
 /// or evaluates to a number with a certified nonzero digit; `false` when
 /// it is zero (to the precision of the zero search) or cannot be decided.
+/// A candidate with parameters is decided when the substituted equation
+/// is free of them: up to 0.50 it was kept unchecked, and `(x + y)^(1/6)
+/// = −(1 + √2)/3` gave `x = −y + 70√2/729 + 11/81` (the sixth root of
+/// `(1 + √2)⁶/729` is positive), and `(x − y)^(3/2) = −√2/3` the three
+/// roots `y + k`, `k³ = 2/9`, with the real `k`, whose `k^(3/2)` is `+√2/3`.
 pub(crate) fn certainly_not_a_root(
     arena: &mut Arena,
     expr: ExprId,
@@ -908,7 +923,7 @@ pub(crate) fn certainly_not_a_root(
     candidate: ExprId,
 ) -> bool {
     use crate::base::walk;
-    if !walk::free_symbols(arena, candidate).is_empty() || walk::has_unevaluated(arena, candidate) {
+    if walk::has_unevaluated(arena, candidate) {
         return false;
     }
     let at = crate::transforms::subs::subs(arena, expr, var, candidate);
@@ -1558,7 +1573,20 @@ fn try_solve_symbolic_poly(arena: &mut Arena, expr: ExprId, var: ExprId) -> Opti
 /// rational normal form with `ratsimp`, so parametric coefficients that are
 /// themselves fractions (`(3r - 1)/(j + 1) - (r + 1)/(2j)`) yield a single
 /// cancelled fraction rather than a fraction of fractions.
+///
+/// A constant leading coefficient or discriminant that is 0 without being
+/// written 0 is decided exactly ([`proved_zero_constant`]): canonical forms
+/// keep `4^(3/4)` beside `2√2`, and before 0.51 the discriminant `8√2 −
+/// 4·4^(3/4)` of `4^(3/4)·t² + 2·2^(3/4)·t + 1` (from `4^(x + 3/4) +
+/// 2·2^(x + 3/4) + 1 = 0`, `t = 2ˣ`) split the double root `t = −2^(−3/4)`
+/// into two forms whose sign no evaluation decides, and a real `x` got two
+/// logarithms of negative numbers as roots (the left side is positive).
 fn solve_symbolic_coeffs(arena: &mut Arena, coeffs: &[ExprId]) -> Option<Vec<Solution>> {
+    let mut len = coeffs.len();
+    while len > 1 && proved_zero_constant(arena, coeffs[len - 1]) {
+        len -= 1;
+    }
+    let coeffs = &coeffs[..len];
     let degree = coeffs.len().checked_sub(1)?;
     match degree {
         0 => None,
@@ -1593,6 +1621,13 @@ fn solve_symbolic_coeffs(arena: &mut Arena, coeffs: &[ExprId]) -> Option<Vec<Sol
             let disc = arena.sub(b_sq, four_ac);
             let disc = crate::transforms::eval::eval(arena, disc);
             let disc = crate::simplify::ratsimp::ratsimp(arena, disc);
+            if proved_zero_constant(arena, disc) {
+                let neg_b = arena.neg(b);
+                let two_a = arena.mul(&[two, a]);
+                let root = arena.div(neg_b, two_a);
+                let root = crate::transforms::eval::eval(arena, root);
+                return Some(vec![Solution { value: root }]);
+            }
             let sqrt_disc = arena.sqrt(disc);
             let neg_b = arena.neg(b);
             let two_a = arena.mul(&[two, a]);
@@ -1624,6 +1659,21 @@ fn solve_symbolic_coeffs(arena: &mut Arena, coeffs: &[ExprId]) -> Option<Vec<Sol
             Some(binomial_roots(arena, ratio, degree))
         }
     }
+}
+
+/// Is `c` a constant (no symbols) that is 0 without being written 0, by an
+/// exact zero test ([`constant_zero_decision`]: the minimal polynomial, the
+/// square-root tower, sums of arctangents; a value only zero to the working
+/// precision is not a proof)?  `false` for a number, a structural 0 and a
+/// constant with parameters.
+///
+/// [`constant_zero_decision`]: crate::transforms::eval::constant_zero_decision
+fn proved_zero_constant(arena: &mut Arena, c: ExprId) -> bool {
+    if arena.as_num(c).is_some() || !crate::base::walk::free_symbols(arena, c).is_empty() {
+        return false;
+    }
+    crate::base::truth::Truth::from(crate::transforms::eval::constant_zero_decision(arena, c))
+        .is_true()
 }
 
 /// All `n` complex solutions of `xⁿ = c`: `c^(1/n) · e^{2πik/n}` for
@@ -1986,7 +2036,7 @@ fn solve_by_peeling(
             if let Some(n) = arena.as_num(inner_exp) {
                 let n = n.clone();
                 if !n.is_zero() {
-                    let Some(branches) = power_preimages(arena, rhs, &n) else {
+                    let Some(branches) = power_preimages(arena, rhs, &n, cx) else {
                         return not_inverted();
                     };
                     return peel_branches(arena, inner_base, &branches, var, cx);
@@ -2212,7 +2262,25 @@ fn solve_by_peeling(
             } else {
                 (Q::zero(), Q::from_integer(BigInt::from(2)))
             };
-            let out_of_range = arena.as_num(rhs).is_some_and(|c| *c <= lo || *c >= hi);
+            // a constant `rhs` by its certified sign against the ends (`ln 3`:
+            // up to 0.50 the real solve of `exp(erf x) = 3` gave `erfinv(ln 3)`,
+            // which is not real)
+            let out_of_range = match arena.as_num(rhs) {
+                Some(c) => *c <= lo || *c >= hi,
+                None if crate::base::walk::free_symbols(arena, rhs).is_empty() => {
+                    let (lo_id, hi_id) = (arena.num_ratio(lo.clone()), arena.num_ratio(hi.clone()));
+                    let above = arena.sub(rhs, hi_id);
+                    let below = arena.sub(rhs, lo_id);
+                    matches!(
+                        crate::poly::algebraic::sign_checked(arena, above),
+                        Some(0 | 1)
+                    ) || matches!(
+                        crate::poly::algebraic::sign_checked(arena, below),
+                        Some(0 | -1)
+                    )
+                }
+                None => false,
+            };
             let real_inner = cx.range_restricted(arena, inner, var);
             if out_of_range {
                 return if real_inner {
@@ -2435,9 +2503,21 @@ const MAX_POWER_PREIMAGES: i64 = 24;
 ///   sector are spurious (`√x = −2` has none, `x^(1/3) = −3/4` neither)
 ///   and are dropped by the check of every candidate against the equation
 ///   ([`certainly_not_a_root`]).  For a `c` with free symbols that check
-///   cannot run, and only the principal candidate `c^(q/p)` is kept, as
-///   before.
-fn power_preimages(arena: &mut Arena, c: ExprId, n: &Q) -> Option<Vec<ExprId>> {
+///   cannot run, and only the principal candidate `c^(q/p)` can be a root
+///   ([`principal_power_preimage`] decides whether it is one): it is kept
+///   when it is, there is no preimage when `c` is nonzero and outside the
+///   range of `f^(p/q)` (`√x = −√y`, `y > 0`), and otherwise the public
+///   solvers refuse while the crate's root searches keep the candidate
+///   ([`SolveCx::conditional_roots_as_candidates`]).  Before 0.51 it was
+///   always kept: `√(x + ∛x) + (x − y)^(1/5) = 0` gave `y = x + (x +
+///   ∛x)^(5/2)`, a root nowhere but at `x + ∛x = 0` (`−√w` is never a
+///   principal fifth root), as in SymPy 1.14.
+///
+/// In a general solve a `c` whose only symbol is the integer parameter
+/// stands for constants, each member of the family of candidates checked
+/// by [`check_family`] (`e^√x = −1`: `√x = (2n + 1)πi`, `x = −(2n +
+/// 1)²π²`, all roots although half the `√x` are not principal).
+fn power_preimages(arena: &mut Arena, c: ExprId, n: &Q, cx: &SolveCx) -> Option<Vec<ExprId>> {
     let p = n.numer().clone();
     let q = n.denom().clone();
     let c_zero = arena.is_zero_structural(c);
@@ -2503,9 +2583,164 @@ fn power_preimages(arena: &mut Arena, c: ExprId, n: &Q) -> Option<Vec<ExprId>> {
         return Some(out);
     }
     // Principal candidate only: f = c^(1/n).
+    let parametric = crate::base::walk::free_symbols(arena, c)
+        .into_iter()
+        .any(|s| Some(s) != cx.period());
+    if parametric {
+        match principal_power_preimage(arena, c, n) {
+            crate::base::truth::Truth::True => {}
+            crate::base::truth::Truth::False => return Some(Vec::new()),
+            crate::base::truth::Truth::Unknown if cx.conditional_roots_as_candidates() => {}
+            crate::base::truth::Truth::Unknown => return None,
+        }
+    }
     let inv_n = Ratio::one() / n.clone();
     let inv_n_id = arena.num_ratio(inv_n);
     Some(vec![arena.pow(c, inv_n_id)])
+}
+
+/// Does the principal candidate `F = c^(q/p)` solve `f^(p/q) = c` (`n =
+/// p/q` in lowest terms, `q > 1`) for every value of the symbols in `c`?
+///
+/// `F^(p/q) = c` exactly when `θ·q/p` (`θ = arg c ∈ (−π, π]`) needs no
+/// reduction into `(−π, π]`: always for `|p| > q`, and for `|p| < q` when
+/// `θ ∈ (−|p|π/q, |p|π/q]` (`p > 0`) or `[−|p|π/q, |p|π/q)` (`p < 0`) — the
+/// range of `f^(p/q)` — or `c = 0`.  No other preimage exists then (a root
+/// `u` of `u^p = c` in the sector `|arg u| ≤ π/q` of principal `q`-th roots
+/// has `|arg(u^p)| < π`).  `True` when the argument range of `c`
+/// ([`arg_range`]) lies in that range, `False` when it misses it and `c` is
+/// not 0, `Unknown` otherwise: `√x = y` for a plain `y` (`x = y²` only for
+/// `−π/2 < arg y ≤ π/2`), or `−√w` when `w` may be 0.
+fn principal_power_preimage(arena: &mut Arena, c: ExprId, n: &Q) -> crate::base::truth::Truth {
+    use crate::base::truth::Truth;
+    let (p, q) = (n.numer().abs(), n.denom().clone());
+    if p > q {
+        return Truth::True;
+    }
+    let Some(range) = arg_range(arena, c) else {
+        return Truth::Unknown;
+    };
+    let b = Ratio::new(p, q);
+    let positive = n.is_positive();
+    let (lo, hi) = (&range.center - &range.half, &range.center + &range.half);
+    let point = range.half.is_zero();
+    // the range of `f^(p/q)` shifted by `2k` turns: `(a, a + 2b]` for
+    // `p > 0`, `[a, a + 2b)` for `p < 0`
+    let meets = |k: i64| {
+        let shift = Ratio::from_integer(BigInt::from(2 * k));
+        let (a, e) = (&shift - &b, &shift + &b);
+        match (point, positive) {
+            (true, true) => a < lo && lo <= e,
+            (true, false) => a <= lo && lo < e,
+            (false, true) => lo < e && a < hi,
+            (false, false) => a <= hi && lo < e,
+        }
+    };
+    // in `(−b, b]` (`p > 0`) or `[−b, b)` (`p < 0`); an interval open
+    // at `lo` may start at `−b`
+    let minus_b = -b.clone();
+    let inside = match (point, positive) {
+        (true, true) => minus_b < lo && hi <= b,
+        (false, true) => minus_b <= lo && hi <= b,
+        (_, false) => minus_b <= lo && hi < b,
+    };
+    if inside {
+        Truth::True
+    } else if !range.maybe_zero && !(-1..=1).any(meets) {
+        Truth::False
+    } else {
+        Truth::Unknown
+    }
+}
+
+/// The arguments a value can take, in turns of `π`: `arg/π ∈ (center −
+/// half, center + half]` (modulo 2; the point `center` when `half` is 0),
+/// or the value is 0 (`maybe_zero`).
+struct ArgRange {
+    center: Q,
+    half: Q,
+    maybe_zero: bool,
+}
+
+/// The [`ArgRange`] of a product of factors whose arguments are known
+/// exactly from the principal branch and the declared assumptions: a
+/// nonzero rational or Gaussian rational with a rational argument
+/// ([`gaussian_rational_arg`]), a positive or negative factor (`0`, `1`;
+/// nonnegative and nonpositive ones may also be 0), `B^r` with a negative
+/// `B` (`r`) and, for `0 < r < 1`, `B^r` with `B` of unknown sign (`r·arg B
+/// ∈ (−rπ, rπ]`, or 0).  `None` when a factor is not of these kinds or the
+/// range is the whole circle.  Exact: no evaluation decides an argument.
+fn arg_range(arena: &mut Arena, value: ExprId) -> Option<ArgRange> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let mut factors: Vec<ExprId> = vec![value];
+    let mut out = ArgRange {
+        center: Q::zero(),
+        half: Q::zero(),
+        maybe_zero: false,
+    };
+    let mut cache = AssumptionCache::new();
+    while let Some(f) = factors.pop() {
+        match arena.node(f) {
+            ExprNode::Mul(ch) => {
+                factors.extend(ch.iter().copied());
+                continue;
+            }
+            ExprNode::Neg(inner) => {
+                factors.push(*inner);
+                out.center += Q::one();
+                continue;
+            }
+            _ => {}
+        }
+        if crate::base::walk::free_symbols(arena, f).is_empty()
+            && let Some(t) = gaussian_rational_arg(arena, f)
+        {
+            out.center += t;
+            continue;
+        }
+        let mut known = |arena: &Arena, e: ExprId, p: Props| {
+            crate::base::truth::Truth::from(cache.query(arena, e, p)).is_true()
+        };
+        if known(arena, f, Props::POSITIVE) {
+            continue;
+        }
+        if known(arena, f, Props::NEGATIVE) {
+            out.center += Q::one();
+            continue;
+        }
+        if known(arena, f, Props::NONNEGATIVE) {
+            out.maybe_zero = true;
+            continue;
+        }
+        if known(arena, f, Props::NONPOSITIVE) {
+            out.center += Q::one();
+            out.maybe_zero = true;
+            continue;
+        }
+        let ExprNode::Pow(base, e) = *arena.node(f) else {
+            return None;
+        };
+        let r = arena.as_num(e)?.clone();
+        if known(arena, base, Props::NEGATIVE) {
+            out.center += r;
+        } else if r.is_positive() && r < Q::one() {
+            out.half += &r;
+            out.maybe_zero |= !known(arena, base, Props::NONZERO);
+        } else {
+            return None;
+        }
+    }
+    if out.half >= Q::one() {
+        return None;
+    }
+    let two = Q::from_integer(BigInt::from(2));
+    while out.center > Q::one() {
+        out.center -= &two;
+    }
+    while out.center <= -Q::one() {
+        out.center += &two;
+    }
+    Some(out)
 }
 
 /// Largest integer exponent `|n|` whose `n` roots are listed when peeling
@@ -3877,7 +4112,14 @@ fn has_periodic_atom(arena: &Arena, e: ExprId, t: ExprId, cx: &SolveCx) -> bool 
 /// gives the candidate `x = t₀^L`.  The identity holds only for `t` in the
 /// principal sector (`−π/L < arg t ≤ π/L`), so a root outside it yields a
 /// spurious `x` (`t = −1` gives `x = 1`, where `√1 = 1 ≠ 1 − 2`); the
-/// check of every candidate against the equation removes those.
+/// check of every candidate against the equation removes those.  A root
+/// `t₀` with parameters, which that check cannot evaluate, is decided by
+/// its argument range ([`principal_power_preimage`]): kept in the sector,
+/// dropped outside it, and otherwise the outcome of a public solver is
+/// partial ([`SolveCx::conditional_roots_as_candidates`]).  Before 0.51
+/// it was kept: `√x + y + 4 = 0` gave `x = (y + 4)²` (no root for `y = 0`:
+/// `√x = −4`), `x^(2/3) = y` gave `±y^(3/2)` (`−y^(3/2)` is no root for `y =
+/// 1`: `(−1)^(2/3) = e^(2πi/3)`).
 ///
 /// `None` when `x` occurs other than bare or as the base of a rational
 /// power, or when no power has a denominator.
@@ -3911,6 +4153,8 @@ struct RadicalSubstitution {
     /// The radicand is `a·x + b` rather than `x`: the candidates are
     /// checked strictly.
     linear: bool,
+    /// `1/L`: `t` is the principal `L`-th root of the radicand.
+    index: Q,
 }
 
 impl RadicalSubstitution {
@@ -3922,13 +4166,45 @@ impl RadicalSubstitution {
             return Solutions::refused(Reason::NotFound);
         };
         let mut out: Vec<ExprId> = Vec::new();
+        let mut off_branch = false;
+        let mut undecided = false;
         for ts in t_roots {
+            let parametric = crate::base::walk::free_symbols(arena, ts)
+                .into_iter()
+                .any(|s| Some(s) != cx.period());
+            if parametric {
+                match principal_power_preimage(arena, ts, &self.index) {
+                    crate::base::truth::Truth::True => {}
+                    crate::base::truth::Truth::False => {
+                        off_branch = true;
+                        continue;
+                    }
+                    crate::base::truth::Truth::Unknown if cx.conditional_roots_as_candidates() => {}
+                    crate::base::truth::Truth::Unknown => {
+                        undecided = true;
+                        continue;
+                    }
+                }
+            }
             let x0 = crate::transforms::subs::subs(arena, self.x_of_t, self.t, ts);
             let x0 = crate::transforms::expand::expand(arena, x0);
             let x0 = crate::transforms::eval::eval(arena, x0);
             if !out.contains(&x0) {
                 out.push(x0);
             }
+        }
+        let missing = if undecided {
+            missing.or(Some(Missing::Alternative(Reason::said(
+                "a root of the equation in the radical is a principal root only for some values \
+                 of the parameters",
+            ))))
+        } else {
+            missing
+        };
+        if out.is_empty() && missing.is_none() && off_branch {
+            return Solutions::none(Reason::said(
+                "no root of the equation in the radical is a principal root",
+            ));
         }
         if self.linear {
             return match strictly_checked(arena, expr, var, out) {
@@ -4016,6 +4292,7 @@ fn radical_substitution(
             arena.div(num, a)
         }
     };
+    let index = Ratio::new(BigInt::one(), lcm);
     substituted = crate::transforms::subs::subs(arena, substituted, var, x_of_t);
     if rate.is_some() {
         substituted = crate::transforms::expand::expand(arena, substituted);
@@ -4029,6 +4306,7 @@ fn radical_substitution(
         substituted,
         x_of_t,
         linear: rate.is_some(),
+        index,
     })
 }
 
@@ -8331,17 +8609,26 @@ fn holds_numerically(
 }
 
 /// The candidates in `values` that do not certainly violate the declared
-/// assumptions of `var` ([`assumptions_hold`]): undecided ones are kept,
-/// unless one is a constant that is 0 to the precision of the zero search
-/// ([`zero_to_precision`]), which is `Err` with the reason.
+/// assumptions of `var` ([`assumptions_hold`]): undecided ones with
+/// parameters are kept; an undecided constant is `Err` with the reason —
+/// one that is 0 to the precision of the zero search
+/// ([`zero_to_precision`]), or whose membership no exact or certified test
+/// decides.  Up to 0.50 the latter was kept: a real `x` got the roots
+/// `ln(⅕·4^(1/4)·(±√(8√2 − 4·4^(3/4)) − 2·2^(3/4)))/ln 2` of `4^(x + 3/4) +
+/// 2·2^(x + 3/4) + 1 = 0`, logarithms of negative numbers whose value no
+/// evaluation could settle (the radicand is 0); a root of a real unknown
+/// must be proved real.
 pub(crate) fn retain_admissible(
     arena: &mut Arena,
     var: ExprId,
     values: Vec<ExprId>,
 ) -> Result<Vec<ExprId>, String> {
-    if declared_domain(arena, var).is_none() {
+    let Some(declared) = declared_domain(arena, var) else {
         return Ok(values);
-    }
+    };
+    let real_unknown =
+        crate::base::truth::Truth::from(declared.query(crate::base::assumptions::Props::REAL))
+            .is_true();
     let mut kept = Vec::with_capacity(values.len());
     for v in values {
         match assumptions_hold(arena, var, v) {
@@ -8356,11 +8643,53 @@ pub(crate) fn retain_admissible(
                          of {name}: it is 0 to {ROOT_CHECK_DIGITS} digits, and not known to be 0"
                     ));
                 }
+                match constant_realness(arena, v) {
+                    Some(crate::base::truth::Truth::False) if real_unknown => continue,
+                    Some(crate::base::truth::Truth::Unknown) if real_unknown => {
+                        let shown = arena.display(v).to_string();
+                        let name = arena.display(var).to_string();
+                        return Err(format!(
+                            "cannot decide whether the solution {shown} is real (the declared \
+                             domain of {name})"
+                        ));
+                    }
+                    _ => {}
+                }
                 kept.push(v);
             }
         }
     }
     Ok(kept)
+}
+
+/// Is the constant `value` real: by the assumption system or a certified
+/// evaluation ([`constant_realness_as_declared`]), else by the facts `eval`
+/// decides from its value ([`constant_facts`], with the exact zero tests:
+/// `∛(1 − √(8√2 − 4·4^(3/4)))` is `1`)?  `None` for a value with symbols
+/// or an unevaluated part (not decided here).
+///
+/// [`constant_realness_as_declared`]: crate::transforms::realness::constant_realness_as_declared
+/// [`constant_facts`]: crate::transforms::eval::constant_facts
+fn constant_realness(arena: &mut Arena, value: ExprId) -> Option<crate::base::truth::Truth> {
+    use crate::base::truth::Truth;
+    use crate::base::walk;
+    if !walk::free_symbols(arena, value).is_empty() || walk::has_unevaluated(arena, value) {
+        return None;
+    }
+    let mut reals = crate::base::assumptions::AssumptionCache::new();
+    let by_value = Truth::from(crate::transforms::realness::constant_realness_as_declared(
+        arena,
+        value,
+        ROOT_CHECK_DIGITS,
+        &mut reals,
+    ));
+    Some(match by_value {
+        Truth::Unknown => Truth::from(
+            crate::transforms::eval::constant_facts(arena, value)
+                .query(crate::base::assumptions::Props::REAL),
+        ),
+        decided => decided,
+    })
 }
 
 /// Is the constant `value` zero to the precision of the zero search

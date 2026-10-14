@@ -1701,8 +1701,8 @@ fn hidden_zero_uncached(
         return Verdict::new(Truth::Unknown, Evidence::Approximate);
     }
     // `δ(a)` of a nonzero real `a` is 0 ([`dirac_delta_off_zero`]); `δ(0)`
-    // has no value, nor has `δ` off the reals (`evalf` takes `δ(i)` for 0;
-    // up to 0.49 the rewrites here did too, and `δ(i) + 1` was nonzero on
+    // has no value, nor has `δ` off the reals (`evalf` took `δ(i)` for 0 up
+    // to 0.50; up to 0.49 the rewrites here did too, and `δ(i) + 1` was nonzero on
     // exact evidence): no claim unless an identity shows `c` to be 0
     // whatever the value of `δ`.
     if has_dirac_delta(arena, c) {

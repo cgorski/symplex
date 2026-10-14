@@ -1264,8 +1264,10 @@ impl AssumptionCache {
             ExprNode::DefiniteIntegral(body, _, lo, hi) => {
                 self.compute_all_real_to_real(arena, &[body, lo, hi])
             }
+            ExprNode::Min(ref args) => self.compute_min_max(arena, args, true),
+            ExprNode::Max(ref args) => self.compute_min_max(arena, args, false),
             // Every other function by its table entry (`Γ`, `erf`, `Si`,
-            // `ln Γ`, `ψ⁽ᵐ⁾`, `min`, the library functions, …); a user
+            // `ln Γ`, `ψ⁽ᵐ⁾`, the library functions, …); a user
             // function, `Derivative`, `Integral`, formal nodes: nothing.
             _ => match node.func(arena) {
                 Some((f, args)) => self.compute_func(arena, f, &args),
@@ -1678,13 +1680,37 @@ impl AssumptionCache {
             return a;
         }
 
+        // Where the base is 0, an exponent that may be negative makes a pole
+        // (`0^(−1)`, `0^(−1/2)` are `zoo`, `0^(−i)` is nan).  For a base
+        // with symbols the claims below are generic, as everywhere in this
+        // module: they hold away from the poles (`1/x` is real for a real
+        // `x`; see `may_be_infinite`).  A constant base has no "elsewhere":
+        // a claim of a finite value (complex, real, rational, non-negative,
+        // finite) needs it known nonzero, structurally or by a certified
+        // value (`1/ln 3`, `1/(π − 3)`: the structural rules know few
+        // constants nonzero), or an exponent known non-negative.  A hidden 0
+        // has no such value (`max(−Γ(1/2), 0)` evaluates to an exact 0,
+        // `atan(1/2) + atan(1/3) − π/4` to 0 within its error).  Up to 0.50
+        // "real^integer is real" and "finite^finite is finite" called
+        // `1/max(−Γ(1/2), 0)` (`1/0`, a decided `max` the constructors keep)
+        // real and finite.
+        let has = |s: &Assumptions, p: Props| s.known_true.contains(p);
+        let off_pole = !is_constant(arena, base)
+            || has(&base_a, Props::NONZERO)
+            || has(&exp_a, Props::NONNEGATIVE)
+            || (has(&base_a, Props::FINITE)
+                && has(&exp_a, Props::FINITE)
+                && arena
+                    .part_signs(base)
+                    .is_some_and(|s| s.re.is_some() || s.im.is_some()));
+
         // If base and exp are both complex → result is complex.
-        if base_a.query(Props::COMPLEX) == Some(true) && exp_a.query(Props::COMPLEX) == Some(true) {
+        if off_pole && has(&base_a, Props::COMPLEX) && has(&exp_a, Props::COMPLEX) {
             a.known_true |= Props::COMPLEX;
         }
 
         // real^real → complex (at least).
-        if base_a.query(Props::REAL) == Some(true) && exp_a.query(Props::REAL) == Some(true) {
+        if off_pole && has(&base_a, Props::REAL) && has(&exp_a, Props::REAL) {
             a.known_true |= Props::COMPLEX;
         }
 
@@ -1711,7 +1737,7 @@ impl AssumptionCache {
         }
 
         // real_base^even_integer → nonneg
-        if base_a.query(Props::REAL) == Some(true) && exp_a.query(Props::EVEN) == Some(true) {
+        if off_pole && has(&base_a, Props::REAL) && has(&exp_a, Props::EVEN) {
             a.known_true |= Props::NONNEGATIVE | Props::REAL;
         }
 
@@ -1733,8 +1759,8 @@ impl AssumptionCache {
             a.known_true |= Props::NEGATIVE | Props::NONZERO | Props::REAL;
         }
 
-        // real_base^integer_exp → real (wherever defined)
-        if base_a.query(Props::REAL) == Some(true) && exp_a.query(Props::INTEGER) == Some(true) {
+        // real_base^integer_exp → real
+        if off_pole && has(&base_a, Props::REAL) && has(&exp_a, Props::INTEGER) {
             a.known_true |= Props::REAL;
         }
 
@@ -1747,13 +1773,12 @@ impl AssumptionCache {
         }
 
         // rational^integer → rational
-        if base_a.query(Props::RATIONAL) == Some(true) && exp_a.query(Props::INTEGER) == Some(true)
-        {
+        if off_pole && has(&base_a, Props::RATIONAL) && has(&exp_a, Props::INTEGER) {
             a.known_true |= Props::RATIONAL;
         }
 
         // finite^finite → finite
-        if base_a.query(Props::FINITE) == Some(true) && exp_a.query(Props::FINITE) == Some(true) {
+        if off_pole && has(&base_a, Props::FINITE) && has(&exp_a, Props::FINITE) {
             a.known_true |= Props::FINITE;
         }
 
@@ -2228,6 +2253,45 @@ impl AssumptionCache {
         // Where the poles are not located, no argument can be known off them.
         if complex && spec.poles != Poles::Other {
             a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
+    /// `min`/`max`: the table's claims ([`compute_func`](Self::compute_func):
+    /// real when every argument is), and, for real arguments, what follows
+    /// from the value being one of them (SymPy `MinMaxBase`,
+    /// `Min._eval_is_positive`, …): a property every argument has
+    /// (integer, rational, nonzero), `min` positive (non-negative) when
+    /// every argument is and negative (non-positive) when one is, `max` the
+    /// other way round.  Up to 0.50 no sign was known (`min(x, y)` for
+    /// positive `x`, `y`; `sign(max(γ, 4))` stayed).
+    fn compute_min_max(&mut self, arena: &Arena, args: &[ExprId], is_min: bool) -> Assumptions {
+        let f = if is_min { Func::Min } else { Func::Max };
+        let mut a = self.compute_func(arena, f, args);
+        if !a.known_true.contains(Props::REAL) {
+            return a;
+        }
+        let facts: smallvec::SmallVec<[Assumptions; 4]> =
+            args.iter().map(|&c| self.compute(arena, c)).collect();
+        let all = |p: Props| facts.iter().all(|s| s.known_true.contains(p));
+        let any = |p: Props| facts.iter().any(|s| s.known_true.contains(p));
+        // A bound below 0 needs one argument for a `min`, every argument
+        // for a `max`; a bound above 0 the other way round.
+        let below = |p: Props| if is_min { any(p) } else { all(p) };
+        let above = |p: Props| if is_min { all(p) } else { any(p) };
+        for (p, holds) in [
+            (Props::NEGATIVE, below(Props::NEGATIVE)),
+            (Props::NONPOSITIVE, below(Props::NONPOSITIVE)),
+            (Props::POSITIVE, above(Props::POSITIVE)),
+            (Props::NONNEGATIVE, above(Props::NONNEGATIVE)),
+            (Props::INTEGER, all(Props::INTEGER)),
+            (Props::RATIONAL, all(Props::RATIONAL)),
+            (Props::NONZERO, all(Props::NONZERO)),
+        ] {
+            if holds {
+                a.known_true |= p;
+            }
         }
         a.forward_chain();
         a

@@ -4359,7 +4359,7 @@ impl Expr<Numeric> {
     ///   `atanh(9)`, `(−8)^(1/3)`, `loggamma(−5/2)`), which a real-valued
     ///   function cannot represent.
     /// * [`SymplexError::Unevaluable`] for the `DiracDelta` of a constant
-    ///   without a value (`DiracDelta(0)`).
+    ///   without a value (`DiracDelta(0)`, `DiracDelta(I)`).
     /// * [`SymplexError::InvalidArgument`] for duplicate parameter names.
     ///
     /// # Examples

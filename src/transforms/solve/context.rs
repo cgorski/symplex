@@ -21,7 +21,7 @@
 //! | caller | context | entry point in `solve.rs` |
 //! |---|---|---|
 //! | `Ex::solve` (principal roots in the declared domain) | `SolveCx::principal(Domain::Complex)`, [`Params::AsDeclared`] | `solve_classified` |
-//! | the crate's root searches (integrate, limit, residues, ODEs, …), the equations of `reduce_inequalities` | `SolveCx::principal(Domain::Real)` | `known_real_roots`, `solve_classified_real`, `solutions` |
+//! | the crate's root searches (integrate, limit, residues, ODEs, …), the equations of `reduce_inequalities` | `SolveCx::principal(Domain::Real)` (`.as_candidates()` for `known_real_roots`: [`SolveCx::conditional_roots_as_candidates`]) | `known_real_roots`, `solve_classified_real`, `solutions` |
 //! | the real zeros of a periodic function (sign charts, extrema), `periodic_candidates` | `SolveCx::general(Domain::Real, n)` | `solve_general` |
 //! | `Ex::solve_general` | `SolveCx::general(Domain::declared(var), n)`, [`Params::AsDeclared`] | `solve_general_declared` |
 //! | `Ex::solve_as_set` | `SolveCx::general(Domain::Complex, n)`, [`Params::AsDeclared`] | `solve_general_over_c` |
@@ -161,6 +161,9 @@ pub(crate) struct SolveCx {
     /// solved inside one): the Lambert W strategies then also take the other
     /// real branch.
     all_branches: bool,
+    /// Roots that hold only for some values of the parameters may be
+    /// returned ([`as_candidates`](Self::as_candidates)).
+    candidates: bool,
 }
 
 impl SolveCx {
@@ -176,6 +179,7 @@ impl SolveCx {
                 Request::Real
             },
             all_branches: false,
+            candidates: false,
         }
     }
 
@@ -192,6 +196,7 @@ impl SolveCx {
                 Request::Real
             },
             all_branches: true,
+            candidates: false,
         }
     }
 
@@ -250,6 +255,29 @@ impl SolveCx {
     /// Is a solution set wanted (Lambert W's other real branch)?
     pub(crate) fn all_branches(&self) -> bool {
         self.all_branches
+    }
+
+    /// This context for a caller that takes the roots as candidate points
+    /// ([`conditional_roots_as_candidates`](Self::conditional_roots_as_candidates)).
+    pub(crate) fn as_candidates(self) -> Self {
+        SolveCx {
+            candidates: true,
+            ..self
+        }
+    }
+
+    /// May a root that holds only for some values of the parameters be
+    /// returned (`√x = y` gives `x = y²`, a root only for `−π/2 < arg y ≤
+    /// π/2`)?  Only for the crate's root searches through `known_real_roots`
+    /// ([`as_candidates`](Self::as_candidates)): they take the roots as
+    /// candidate points, which they use or check (the ODE solver verifies
+    /// each family against the equation: `2∛(3(C1 + y)/8) = x + C2` gives
+    /// `y = (x + C2)³/3 − C1`, a solution of `y″² = 4y′` for every `x`).
+    /// The public solvers (`Ex::solve`, `reduce_inequalities`) and the
+    /// callers that need every root and only roots (residues, partial
+    /// fractions) refuse instead, since 0.51: their roots are claims.
+    pub(crate) fn conditional_roots_as_candidates(&self) -> bool {
+        self.candidates
     }
 
     /// May the range restriction of an inversion `g(f) = c` be used —
