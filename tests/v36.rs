@@ -2,12 +2,12 @@
 //! (`tests/v36/*.rs`): one file per workstream.  Every reference value
 //! cites the oracle call that produced it.
 
-#[path = "v36/v36_w1_ids.rs"]
-mod v36_w1_ids;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w11_evalf.rs"]
 mod v36_w11_evalf;
+#[path = "v36/v36_w1_ids.rs"]
+mod v36_w1_ids;
 #[path = "v36/v36_w2_truth.rs"]
 mod v36_w2_truth;
 #[path = "v36/v36_w3_solve.rs"]

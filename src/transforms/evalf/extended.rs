@@ -1281,14 +1281,17 @@ fn gamma_scaled(
     if !accuracy::is_exact(xe) && xe > xf.log2() - 4.0 {
         return None;
     }
-    let int_bits = (xf * xf.ln()).log2().ceil().max(1.0) as usize;
-    let wp = prec + int_bits + 64;
+    // The bits of the integer part of `ln Γ(x) ≈ x·ln x`, taken in log space:
+    // `x·ln x` itself overflows `f64` above `x ≈ 2.5·10³⁰⁵` (then the cast
+    // saturated and `prec + int_bits` overflowed — fuzz_parser).
+    let int_bits = (xf.log2() + xf.ln().log2()).ceil().max(1.0) as usize;
+    let wp = prec.checked_add(int_bits)?.checked_add(64)?;
     let (l, _) = super::arb_log_gamma(&x, wp, rm, cc).ok()?;
     let round = accuracy::rounding(&(l.clone(), BigFloat::new(wp)), wp) + 1.0;
     let arg = if accuracy::is_exact(xe) {
         accuracy::EXACT
     } else {
-        (xf * 1.0625).ln().log2() + xe + 1.0
+        (xf.ln() + 1.0625f64.ln()).log2() + xe + 1.0
     };
     exp_scaled(
         &(l, BigFloat::new(wp)),

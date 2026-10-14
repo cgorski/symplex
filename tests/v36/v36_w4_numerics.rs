@@ -772,3 +772,31 @@ fn sums_at_scales_far_below_the_exponent_range_do_not_overflow() {
         }
     }
 }
+
+/// `Γ(x)` above the exponent range is `e^{ln Γ(x)}` with `ln Γ(x)` computed
+/// at the bits of its integer part, `log₂(x·ln x)`; `x·ln x` overflows `f64`
+/// above `x ≈ 2.5·10³⁰⁵`, the cast to `usize` saturated and `prec +
+/// int_bits` overflowed ("attempt to add with overflow" with debug
+/// assertions, a wrapped precision in release).  Found by the 0.49
+/// release's local `fuzz_parser` campaign (built with debug assertions as
+/// CI builds it) on a parse of huge double factorials.  `ln Γ(3·10³⁰⁵)` is
+/// 2.1004…·10³⁰⁸ (mpmath `loggamma(mpf('3e305'))`), so `Γ(3·10³⁰⁵)` is far
+/// beyond the printable range: the documented answer is a refusal.
+#[test]
+fn gamma_beyond_the_exponent_range_does_not_overflow_its_precision() {
+    let ctx = Context::new();
+    let _ = within(60, "fuzz_parser input", || {
+        let ctx = Context::new();
+        ctx.parse("na+c\r0**e**-17!!**170!!*07!*-9**-7023!!7!2!!7!!0**-9<-\u{1c}!2a")
+            .map(|e| e.to_string())
+            .map_err(|e| e.to_string())
+    });
+    for s in [
+        "gamma(3*10^305)",
+        "factorial(3*10^305)",
+        "log(gamma(10^306))",
+    ] {
+        let e = ctx.parse(s).unwrap();
+        let _ = within(60, s, move || e.eval_decimal(15).map_err(|e| e.to_string()));
+    }
+}
