@@ -8,6 +8,21 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-14
+
+The type-architecture refactor completed, its performance dividend, and
+the silent wrong answers the new types and four more hunts exposed.  The
+solvers now work over the declared domain of the unknown everywhere
+(`solve_general` gives complex families; parameters may be complex), the
+code generators read one table for what each back end can evaluate (Rust
+and C now emit the exponential and trigonometric integrals, `compile`
+handles the complete elliptic integrals), library functions are nodes of
+their own, and evalf keeps every value with its error bound in one ball.
+Definite integrals of periodic kinks at extreme scales (787 wrong in a
+hunt), limits of functions of `c − k·x` with non-real `c` (262 wrong) and
+matrix sign tests read from floats are fixed; the core is 6.5% faster on
+the Rubi suite and dense multivariate gcds are up to 30× faster.
+
 ### Breaking (behaviour)
 
 - `Ex::solve_general` solves over the declared domain of the unknown (ℂ
@@ -241,6 +256,39 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `+0`) is disallowed; one `BigFloat → f64` conversion; `from_f64` exact for
   subnormals.  The remaining work budgets (Gruntz, Risch, integration
   steps) are `Work`; memos are keyed by arena serials.
+
+### Measured
+
+- `tests/v36/` (0.49–0.50): 25 files, one per refactor workstream.
+  nextest 14,596 tests (14 skipped), doctests 1,350 — run on a 64-core
+  x86-64 machine.
+- Rubi harness: 30,760 verified (+7: four-parameter integrands the
+  parametric gcd bound used to stop), 115 real_verified, 0 wrong;
+  self-test 56,013 / 0 wrong / 204 undecided; `--negative-params` 115
+  real_verified, 0 wrong; CPU −6.5% (core) and −2% (coprimality by images)
+  against 0.49.
+- Byte identity of the LP paths and the s42 Lean certificates: identical
+  after every workstream.  MSRV 1.93 passes for all four crates.
+  `cargo semver-checks` against 0.49.0: no semver update required.
+- Golden-output harness (200,000 random expressions × 31 operations): every
+  change from 0.49 is one of the fixes and changes above, reviewed against
+  mpmath or SymPy (wave 3: 35,459, of which 34,492 are the new LaTeX
+  notation; wave 4: 1,870; wave 5: 5,649).
+- Hunts with mpmath at two precisions: periodic kinks in definite
+  integrals 787 wrong → 0 (1,086 cases × 4 routes) and 89 → 0 (382
+  non-polynomial kinks); limits of `c − k·x` with non-real `c`, reals-only
+  functions of non-real values and folded reciprocal zeros 262 → 0 (8,547
+  limits); shifted-argument equations 2,543 refusals → 445, 0 wrong roots.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s
+  and 4 GB limits, built with debug assertions as CI builds them) on the
+  release code: `fuzz_numdist` 93,772,550 inputs, `fuzz_refine`
+  14,988,661, `fuzz_lambertw` 2,508,263, `fuzz_parser` 1,785,636,
+  `fuzz_exact_matrix` 195,379, `fuzz_eigenvects` 173,104, `fuzz_calculus`
+  31,766, `fuzz_roundtrip` 25,139, `fuzz_evalf` 19,038, `fuzz_poly`
+  18,081, `fuzz_simplify` 5,082, `fuzz_integrate` 2,860 (it replayed only
+  its corpus of 4,525 in 15 minutes at 0.49): 0 crashes, 0 timeouts, 0
+  out-of-memory; also clean after waves 3 and 4.  The Fuzz workflow on the
+  release code was green on all 12.
 
 ## [0.49.0] - 2026-10-13
 
