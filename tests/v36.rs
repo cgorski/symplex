@@ -8,6 +8,12 @@ mod v36_b1_definite;
 mod v36_b2_limits;
 #[path = "v36/v36_b3_canon_solve.rs"]
 mod v36_b3_canon_solve;
+#[path = "v36/v36_s14c_residue.rs"]
+mod v36_s14c_residue;
+#[path = "v36/v36_s14d_assume.rs"]
+mod v36_s14d_assume;
+#[path = "v36/v36_s14e_solve.rs"]
+mod v36_s14e_solve;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
