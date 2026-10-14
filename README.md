@@ -874,10 +874,10 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | Numeric integration | Adaptive G7/K15 quadrature | via mpmath (more algorithms) |
 | Summation | Faulhaber, Gosper, telescoping, binomial, p-series, power-series recognition | + Zeilberger, hypergeometric closed forms (broader) |
 | Polynomial solving | Through quartic + `RootOf`; `real_roots` as ordered `RootOf`s | Through quartic + `CRootOf` |
-| General solutions | `solve_general` (periodic families); `solve_as_set` with image sets | `solveset` with `ImageSet` |
+| General solutions | `solve_general` (periodic families over the declared domain: ℂ for a plain symbol, including `2nπi` families); `solve_as_set` with image sets; partial answers are failures or `ConditionSet`s, never short lists | `solveset` with `ImageSet` |
 | Linear systems | `linsolve` (unique / parametric / inconsistent, symbolic) | `linsolve` (similar) |
 | Polynomial systems | Gröbner + FGLM, algebraic solutions; `Ex::groebner`/`reduce_modulo` | Gröbner, more strategies |
-| Polynomial algebra | `Poly` with symbolic coefficients, `MultiPoly` over ℚ, resultants/discriminants (also with symbolic coefficients), `gcd_all`, `factor_mod` over GF(p), `minimal_polynomial` | `Poly` with domains, algebraic extensions, `primitive_element` (broader) |
+| Polynomial algebra | `Poly` with symbolic coefficients, `MultiPoly` over ℚ (heuristic gcd, and Brown's modular gcd for dense inputs with large coefficients), coefficient domains as values (`CoeffDomain`: ℚ, ℤ, GF(p), ℚ(i)), resultants/discriminants (also with symbolic coefficients), `gcd_all`, `factor_mod` over GF(p), `minimal_polynomial` | `Poly` with domains, algebraic extensions, `primitive_element` (broader) |
 | Function analysis | `singularities`, `stationary_points`, `maximum`/`minimum`, monotonicity/convexity (exact via Sturm), `periodicity`, `function_range` | `calculus.util` (similar) |
 | Rational simplification | `ratsimp`/`cancel`: heuristic multivariate GCD | `cancel`, `ratsimp`, `together`, `apart` (similar) |
 | Linear programming | Exact simplex on hybrid `i64`/`i128`/256-bit/`BigInt` cells; duals, Farkas certificates, budgets | `sympy.solvers.simplex` (exact; optimum and argmin only) |
@@ -899,7 +899,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | Combinatorics | Stirling, Bell, partitions, derangements, multinomial | Broader (permutation groups, etc.) |
 | Special functions | Γ family (incl. incomplete), ψ⁽ⁿ⁾, erf/erfi/erfinv, B, W, Bessel, Airy, elliptic K/E/F/Π, `expint`, Si/Ci/Shi/Chi/Ei/li, Fresnel, polylog/η/ζ, classical + associated orthogonal polynomials — all arbitrary precision | Many more (hypergeometric, Meijer G, Mathieu, …) |
 | Algebraic numbers | `ℚ(α)` field with exact zero/sign testing; `minimal_polynomial` | `AlgebraicNumber` + `ANP`, `primitive_element` |
-| Code generation | Rust, C99, Python, NumPy, Julia with CSE and an embedded special-function runtime (Rust/C); compiled closures | Python / C / Fortran / Rust / Julia / Octave / JS via `codegen` |
+| Code generation | Rust, C99, Python, NumPy, Julia with CSE and an embedded special-function runtime (Rust/C: Bessel, Airy, Γ family, erf family, Si/Ci/Ei/li/Shi/Chi, Fresnel, complete elliptic integrals, Lambert W, … — bit-identical to the compiled closures); compiled closures; one table says which back end evaluates which function | Python / C / Fortran / Rust / Julia / Octave / JS via `codegen` |
 | Interchange | LaTeX, Unicode pretty-print, Presentation MathML, `srepr`, Graphviz DOT, JSON tree, Lean 4 | LaTeX, MathML, `srepr`, `dotprint`, pretty |
 | Parsing | Numeric expressions, relations and Boolean connectives, implicit multiplication | `sympify`/`parse_expr` (+ LaTeX, Mathematica) |
 | Dimensional analysis | Compile-time type checking | Runtime `physics.units` |
