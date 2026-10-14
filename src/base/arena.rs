@@ -281,7 +281,13 @@ pub struct Arena {
     /// which evaluated the base of `x^(−1)` again in every fresh
     /// `AssumptionCache` (0.51 development: +48% on the `fuzz_roundtrip`
     /// corpus).
-    constant_facts: parking_lot::Mutex<FxHashMap<(ExprId, FactKey), crate::base::truth::SignSet>>,
+    // `AssertUnwindSafe`: the memo only ever holds completed proofs (an
+    // entry is inserted whole, under the lock), so a panic elsewhere cannot
+    // leave it inconsistent; without the wrapper `parking_lot::Mutex` would
+    // make `Arena`, hence the public `ExprView`, lose `RefUnwindSafe`.
+    constant_facts: std::panic::AssertUnwindSafe<
+        parking_lot::Mutex<FxHashMap<(ExprId, FactKey), crate::base::truth::SignSet>>,
+    >,
 
     // -- pre-interned constants (ExprId) ------------------------------------
     /// The integer zero (0).
@@ -399,7 +405,9 @@ impl Arena {
             num_dedup: FxHashMap::default(),
             symbols: SymbolTable::new(),
             config,
-            constant_facts: parking_lot::Mutex::new(FxHashMap::default()),
+            constant_facts: std::panic::AssertUnwindSafe(parking_lot::Mutex::new(
+                FxHashMap::default(),
+            )),
             // Temporary placeholders — will be overwritten immediately below.
             zero: ExprId(0),
             one: ExprId(0),
