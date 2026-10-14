@@ -8,6 +8,20 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-14
+
+Silent wrong answers found after the 0.50 refactor, by a post-release
+review and two regression sweeps that re-ran 62 archived correctness
+hunters against 0.50.  Residues whose pole order hinged on a tiny constant
+were read from a float (1,612 wrong of 3,866 in a hunt), negative powers of
+constants that are 0 without looking like it were called finite and real
+(6,465 wrong of 13,227), a real unknown could get non-real roots from a
+discriminant that is 0 only by an identity, and inverting a principal power
+returned roots outside its range (9,387 wrong roots of 16,000 radical
+equations → 833).  A new ratchet counts decisions made by comparing floats
+with thresholds, the review queue of the rule that only exact or certified
+evidence may justify an answer.
+
 ### Breaking (behaviour)
 
 - **Inverting a principal power needs the right-hand side in its range.**
@@ -69,6 +83,35 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   comparing a computed float with a small threshold, per file (the review
   queue of the evidence rule); `ode.rs`'s residual check and the
   integrator's `known_zero` decide by proof, not by `|f64| ≤ 10⁻⁹`.
+
+### Measured
+
+- `tests/v36/` (0.49–0.51): 28 files.  nextest 14,616 tests (14 skipped),
+  doctests 1,350 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,760 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,013 / 0 wrong / 204 undecided; `--negative-params` 115
+  real_verified, 0 wrong; CPU unchanged.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+  MSRV 1.93 passes for all four crates.  `cargo semver-checks` against
+  0.50.0: no semver update required.
+- Golden-output harness (200,000 random expressions × 31 operations): the
+  2,293 changes from 0.50 are the fixes above, each reviewed against mpmath
+  or SymPy.
+- Regression sweeps of 62 archived hunters (calculus and applied areas)
+  against 0.50: findings are fixed above or listed for the next release.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s
+  and 4 GB limits, built with debug assertions as CI builds them) on the
+  release code: `fuzz_numdist` 97,594,493 inputs, `fuzz_refine`
+  15,685,464, `fuzz_lambertw` 2,650,344, `fuzz_parser` 1,802,719,
+  `fuzz_exact_matrix` 197,035, `fuzz_eigenvects` 180,275,
+  `fuzz_calculus` 34,536, `fuzz_roundtrip` 31,019, `fuzz_evalf` 26,947,
+  `fuzz_poly` 19,467, `fuzz_simplify` 5,968, `fuzz_integrate` 4,935: 0
+  crashes, 0 timeouts, 0 out-of-memory.  The campaign of the first merge
+  found a 44% slowdown of `fuzz_roundtrip` (a certified evaluation of
+  constant bases on every assumption query, now memoised per context) and
+  one slow unit already in 0.50 (`ceiling(Chi(1600))`, 1.15 s per
+  evaluation; open).  The Fuzz workflow on the release code was green on
+  all 12.
 
 ## [0.50.0] - 2026-10-14
 
