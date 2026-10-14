@@ -6,7 +6,7 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release (0.48).** The API is stabilising but not stable: 0.7.0 reshaped the
+> **Pre-release (0.49).** The API is stabilising but not stable: 0.7.0 reshaped the
 > certificate API and 0.10.0 added variants to three fresh enums/structs; every
 > breaking change is listed first, under `### Breaking`, in the release's entry in
 > [CHANGELOG.md](CHANGELOG.md), and the larger ones have a one-line fix in the book's
@@ -819,7 +819,9 @@ let velocity: Velocity = position.diff_wrt(&t_var);   // g·t [m/s]
 
 9. **One crate, no knobs.** There are no Cargo features to combine; every capability is always present. Compile time is not the constraint, capability is.
 
-10. **Named positions, not tuples.** Where two values share a type, the API says which is which: `Interval { lower, upper, kind }` rather than `(f64, f64)`, `Qr { q, r }` rather than `(Matrix, Matrix)`, `ExtendedGcd { gcd, x, y }` rather than `(BigInt, BigInt, BigInt)`, `DhLink { theta, d, a, alpha }`, `Bounds::at_least(0)` for an LP variable. Universal conventions stay tuples (`(x, y)` points, `(re, im)`, `(numer, denom)`, `(quotient, remainder)`, `shape() -> (rows, cols)`). Polynomial coefficient vectors are ascending (`c[i]` multiplies `x^i`) everywhere except `Poly::all_coeffs`, which is SymPy's highest-first by name. A ratchet test keeps new same-typed tuples off the public surface — see CONTRIBUTING.md, "Tuples versus structs".
+10. **Types that keep bug classes out.** Internal decisions are three-valued (`Truth`) and a decision is made only on exact or certified evidence (`Evidence`), never on a float that happens to be near 0; every function has one identity and one table of facts (`Func`: names, conjugation, real domain, parity, poles) instead of facts copied into twenty consumers; the solvers carry the domain of the unknown explicitly (`SolveCx`) and return `Complete`, `Partial` or `Refused` (`Solutions`), so a refusal can never be merged into "no solution"; expression identifiers have no order, so no result depends on the order symbols were created in; nodes are built only through their canonical constructors; budgets count work, never wall-clock time. Each rule is enforced by the compiler or by a ratchet test — see CONTRIBUTING.md, "Type rules that keep bug classes out".
+
+11. **Named positions, not tuples.** Where two values share a type, the API says which is which: `Interval { lower, upper, kind }` rather than `(f64, f64)`, `Qr { q, r }` rather than `(Matrix, Matrix)`, `ExtendedGcd { gcd, x, y }` rather than `(BigInt, BigInt, BigInt)`, `DhLink { theta, d, a, alpha }`, `Bounds::at_least(0)` for an LP variable. Universal conventions stay tuples (`(x, y)` points, `(re, im)`, `(numer, denom)`, `(quotient, remainder)`, `shape() -> (rows, cols)`). Polynomial coefficient vectors are ascending (`c[i]` multiplies `x^i`) everywhere except `Poly::all_coeffs`, which is SymPy's highest-first by name. A ratchet test keeps new same-typed tuples off the public surface — see CONTRIBUTING.md, "Tuples versus structs".
 
 ---
 
@@ -863,7 +865,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.48 | SymPy 1.14 |
+| Feature | symplex 0.49 | SymPy 1.14 |
 |---------|--------------|------------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete, incl. Bessel/Airy/orthogonal/polygamma/erf family | Complete |
@@ -1023,7 +1025,7 @@ Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen
 
 ## Requirements
 
-Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~14,000 tests (`cargo nextest run`), ~1,300 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.48, with a per-file ratchet); `fuzz/` checks properties nightly.
+Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~14,000 tests (`cargo nextest run`), ~1,300 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.49, with a per-file ratchet); `fuzz/` checks properties nightly.
 
 ## License
 

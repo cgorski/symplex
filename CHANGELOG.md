@@ -8,6 +8,23 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-13
+
+A type-architecture release.  Most silent wrong answers of the last forty
+releases came from five representation problems: a fact about a function
+written in several places that disagreed, "undecided" read as "false" and
+numeric evidence read as proof, the domain of an unknown left implicit and
+"no solution" sharing one empty list with "could not solve", nodes built
+around the canonicaliser and ids used as an order, and numeric edge states
+kept in side channels.  A survey of the code at 0.48 found about thirty
+new wrong answers of these kinds; this release replaces the conventions
+with types — three-valued `Truth`, `SignSet` and `Evidence`, one `Func`
+identity and fact table for all 101 functions, an explicit solve domain
+(`SolveCx`) and outcome (`Solutions`), identifiers without an order, a
+derived node shape with one canonical builder, deterministic work budgets,
+checked casts and a boundary around astro-float — and fixes every bug
+they exposed.  New ratchet tests keep the old patterns out.
+
 ### Breaking
 
 - **Expression identifiers have no order.**  `ExprId` (from
@@ -112,6 +129,13 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   never returned while memory grew.  The breakpoint scan's `f64 → i64`
   casts saturated and the `± 1` and the length check that followed
   wrapped.  They are left unevaluated (more than 10,000 breakpoints).
+- Found by the refactor's fuzz campaigns: evalf added the scales of
+  terms far below the exponent range without overflow checks
+  (`sin(1/sinh(3554090000043952550))` panicked with debug assertions);
+  `Γ(x)` above the exponent range overflowed its working precision for
+  `x > 2.5·10³⁰⁵` (`x·ln x` overflowed `f64`); and an intermediate version
+  of the limit engine spent 66 s on `lim_{x→−1/3} (√tanh x − √tanh(−1/3))/(x
+  + 1/3)` (0.05 s in 0.48; now 0.02 s, `−0.790649435247292392·i`).
 - **Substitution rebuilds sets canonically:** `{x, y}` with `x, y ↦ 1` was
   `{1, 1}` (and not `==` to `{1}`), `[x, y]` with `x ↦ 3, y ↦ 2` was
   `[3, 2]` (now `EmptySet`).
@@ -235,6 +259,46 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   - `Work`/`WorkScope` deterministic budgets carried by the arena;
     per-arena serials for memos; structured error variants instead of
     message matching.
+- symplex-macros 0.3.5: the doc-hidden `#[derive(NodeShape)]`; `syn`'s
+  `clone-impls` feature is now requested explicitly.
+
+### Measured
+
+- `tests/v36/` (0.49): 10 files, one per refactor workstream.  nextest
+  14,454 tests (14 skipped), doctests 1,344 — run on a 64-core x86-64
+  machine.
+- Rubi harness: 30,753 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,013 / 0 wrong / 204 undecided; `--negative-params` 115
+  real_verified, 0 wrong; CPU time unchanged within noise.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical after every workstream.  MSRV 1.93: `cargo check --all-targets`
+  passes for all four crates.  `cargo semver-checks` against 0.48.0 (its
+  202 checks of the public API): no semver update required — the breaking
+  changes listed above are in behaviour and in items reached through
+  `ExprView`.
+- Golden-output harness (200,000 random expressions × 31 operations, each
+  case in a fresh context): every change from 0.48 is one of the fixes
+  above — wave 1 changed 252 outputs (240 `solve` answers that were a wrong
+  `NoSolution` or an incomplete list, 12 limits at ∞), wave 2 4,861
+  (refused partial `solve` answers, `conjugate` moved inside functions,
+  newly decided realness, limits, derivatives and integrals of library
+  functions), each reviewed against mpmath or SymPy.
+- astro-float property test: 11.2 M exactly checked arithmetic cases and
+  1.05 M transcendental cases against mpmath, 0 wrong.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s
+  and 4 GB limits, built with debug assertions as CI builds them) on the
+  release code: `fuzz_numdist` 96,348,990 inputs, `fuzz_refine`
+  13,697,193, `fuzz_lambertw` 2,566,596, `fuzz_parser` 1,741,845,
+  `fuzz_exact_matrix` 191,060, `fuzz_eigenvects` 164,880,
+  `fuzz_calculus` 29,565, `fuzz_evalf` 27,772, `fuzz_poly` 17,447,
+  `fuzz_roundtrip` 8,485, `fuzz_simplify` 4,477, `fuzz_integrate` its
+  corpus of 4,525 inputs: 0 timeouts, 0 out-of-memory, and one overflow
+  panic in `fuzz_parser`, fixed (`Γ` above the exponent range, below).
+  The campaigns of the refactor found two more (an `i64` scale overflow in
+  evalf's sums, a 66 s limit), both fixed below; the Fuzz workflow on the
+  code after those fixes was green on all 12.  Replaying the
+  `fuzz_integrate` and `fuzz_simplify` corpora takes the same CPU time as
+  0.48 (654 s vs 665 s, 482 s vs 482 s).
 
 - astro-float 0.9.5 → 0.9.6.  On 32-bit targets (wasm32) 0.9.5 used the
   64-bit word size in its decimal conversion, which silently corrupted

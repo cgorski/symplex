@@ -125,6 +125,12 @@ expr.integrate_numeric(&x, &a, &b);   // Err if the quadrature does not converge
 
 Solvers whose failure is a mathematical fact also use `Result`: `solve` returns `Err(InfiniteSolutions)` for an identity and `Err(NoSolution)` for a contradiction or range violation (`|x| = −1`, or `sin x = 2` for an `x` declared real — a symbol without assumptions is complex, and `sin x = 2` has the roots `asin 2`, `π − asin 2`); `linsolve` returns `Ok(LinearSolution::Inconsistent)` because inconsistency is a legitimate answer, but `Err(InvalidArgument)` for non-linear input.
 
+A list of roots from `solve` is always complete in the unknown's domain.  When only some branches could be solved — `sin(x − x⁴) = 0` (the roots of `x⁴ − x + kπ` are not all found), `|x| = 1` for a complex `x` (a circle, not two points) — `solve` returns `Err(ComputationFailed)` naming the roots it found, and `solve_as_set` returns them united with a `ConditionSet` for the rest.  An answer is never "the part we could do" presented as the whole.
+
+### Three-valued answers and what counts as a proof
+
+A query that cannot be decided says so (`None`) rather than guessing, and a decision is made only on a proof: exact algebra (canonical forms, minimal polynomials, identities such as `Γ(p)Γ(1 − p) = π/sin πp`) or certified numerics (an error-bounded evaluation that excludes 0).  A floating-point value, a number that is 0 only to the working precision, or zeros at random sample points may guide which method to try, but never decide an answer: `lim_{x→∞} (e^{−10⁻¹⁵⁰} − 1)·x` is `−∞` (that constant is −10⁻¹⁵⁰, not 0), and a limit or series whose leading coefficient cannot be decided is refused.  Internally these answers are `symplex::base::truth::Truth` (three-valued, with no implicit reading of "unknown") and `SignSet`; the public queries return `Option<bool>`.
+
 ### Pattern 4: Queries → `Option`
 
 Three-valued queries return `Option` — the answer might be yes, no, or "can't determine":

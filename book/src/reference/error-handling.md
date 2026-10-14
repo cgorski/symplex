@@ -10,14 +10,17 @@ symplex has one error type, `SymplexError` (in the prelude; `#[non_exhaustive]`,
 | `Unevaluable { reason }` | | numeric evaluation of a node with no finite value (`oo`, `zoo`, a set, …), a non-real integration bound |
 | `PrecisionExhausted { requested, achieved }` | | `eval_decimal`, `eval_f64`, `eval_complex64` when the requested digits cannot be certified: evaluation tracks an error bound and re-evaluates at a higher precision (up to twice the initial one plus 256 bits), so this means a division by a quantity that cancels to 0, `sign`/`floor` of such a quantity, or a precision above `EvalConfig::max_evalf_precision` |
 | `NotImplemented(String)` | names the node | `compile`/codegen on a node without numerical meaning (unevaluated `Integral`, `Apply`, Bessel with symbolic order, …) |
-| `ComputationFailed { operation, reason }` | which operation, why | every `try_*` method when the result is unevaluated; `fourier_transform`/`mellin_transform`/`z_transform` when no rule applies; `solve` when no method applies; `solve_ode_ivp` when constants cannot be fitted; `integrate_numeric` when quadrature does not converge |
+| `ComputationFailed { operation, reason }` | which operation, why | every `try_*` method when the result is unevaluated; `fourier_transform`/`mellin_transform`/`z_transform` when no rule applies; `solve` when no method applies, and (since 0.49) when only some roots were found — the reason names them, `solve_as_set` returns them ∪ a `ConditionSet`; `linsolve` when it cannot decide whether a right-hand side left over by elimination is 0; `solve_ode_ivp` when constants cannot be fitted; `integrate_numeric` when quadrature does not converge |
+| `BudgetExhausted { operation, kind }` | which deterministic work budget (`BudgetKind`) | an engine that stopped at its work limit, e.g. arbitrary-precision quadrature after 30,000 integrand evaluations (`kind: QuadratureEvaluations`).  Budgets count work, never wall-clock time, so the same call fails or succeeds the same way on every machine |
+| `ExpressionSwell { operation, nodes }` | the size reached | matrix operations (`det`, `inv`, `exp`, eigenvalues, …) whose symbolic entries grew past the expression budget |
+| `NotDiagonalizable { operation, reason }` | | `diagonalize` of a defective matrix |
 | `Divergent { operation, reason }` | | `try_integrate_definite` when the integral is *proven* divergent; `laplace_final_value` for a pole in the closed right half-plane |
-| `NoSolution { operation, reason }` | | `solve` / `solve_general` on a contradiction or range violation (`sin x = 2` for a real `x`, `|x| = −1`); `solve_ode_ivp` with contradictory initial conditions |
+| `NoSolution { operation, reason }` | | `solve` / `solve_general` on a contradiction or range violation proved in the unknown's domain (`sin x = 2` for a real `x`, `|x| = −1`); `solve_ode_ivp` with contradictory initial conditions.  A range restriction is used only where it holds: for a complex unknown `erf(x) = 2` is refused (`ComputationFailed`), not `NoSolution` — it has the root `0.8694 + 1.3406i` |
 | `InfiniteSolutions { operation, reason }` | | `solve` on an identity; `polysys::solve_system_ex` on a positive-dimensional system |
 | `InvalidArgument { operation, reason }` | | malformed input: a non-symbol variable, duplicate parameter names, wrong shapes (`cholesky` on a non-symmetric matrix, `norm_p` on a non-vector), `linsolve` with a non-linear equation, `Rule::try_new` with an unbound wildcard, `CompiledFn::try_call` with the wrong arity |
 | `ContradictoryAssumptions { symbol, a, b }` | the two clashing facts | `Context::symbol_with`, `Ex::assume`, `Ex::refine_with` when the assumptions contradict each other once their consequences are drawn (`Positive` with `Negative`, `Integer` with `Irrational`, …); nothing is declared |
 
-Because the enum is `#[non_exhaustive]`, always include a wildcard arm when matching.
+Because the enum is `#[non_exhaustive]`, always include a wildcard arm when matching.  `SymplexError` is `Clone`.  Match on variants, not on the text of `reason` — symplex itself never branches on error messages.
 
 ## Matching on outcomes
 
