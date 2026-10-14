@@ -14,6 +14,16 @@ mod v36_s14c_residue;
 mod v36_s14d_assume;
 #[path = "v36/v36_s14e_solve.rs"]
 mod v36_s14e_solve;
+#[path = "v36/v36_s14f1_constants.rs"]
+mod v36_s14f1_constants;
+#[path = "v36/v36_s14f2_limits.rs"]
+mod v36_s14f2_limits;
+#[path = "v36/v36_s14f3_definite.rs"]
+mod v36_s14f3_definite;
+#[path = "v36/v36_s14f4_solve.rs"]
+mod v36_s14f4_solve;
+#[path = "v36/v36_s14f5_matrix_ode.rs"]
+mod v36_s14f5_matrix_ode;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
