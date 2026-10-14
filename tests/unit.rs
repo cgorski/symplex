@@ -318,6 +318,8 @@ mod test_sympy_cross_validation;
 mod test_trig_hyp;
 #[path = "unit/test_trig_power_integ.rs"]
 mod test_trig_power_integ;
+#[path = "unit/test_truth_values.rs"]
+mod test_truth_values;
 #[path = "unit/test_type_gating.rs"]
 mod test_type_gating;
 #[path = "unit/test_units_comprehensive.rs"]
