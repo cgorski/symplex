@@ -1026,6 +1026,12 @@ impl TSeries {
         self.shift
     }
 
+    /// Was [`known`](Self::known) cut short by an undecided coefficient
+    /// (see the field)?  A wider expansion meets the same coefficient.
+    pub(crate) fn undecided(&self) -> bool {
+        self.undecided
+    }
+
     /// Coefficient of `x^e`, zero outside the stored range (public alias of
     /// [`coeff_at`](Self::coeff_at) for other modules).
     pub(crate) fn coefficient(&self, arena: &Arena, e: i64) -> ExprId {
@@ -1936,6 +1942,18 @@ fn expand_from_side(
         ) {
             Ok(ts) if ts.known >= order => return Ok(ts.truncate_known(order)),
             Ok(ts) if mode.partial && leading_term_decided(arena, &ts) => return Ok(ts),
+            // Cut short by an undecided coefficient: a wider window meets
+            // it again.
+            Ok(ts) if ts.undecided => {
+                return match best {
+                    Some(b) if b.known >= ts.known => Ok(b),
+                    _ if mode.partial => Ok(ts),
+                    _ => Err(SymplexError::ComputationFailed {
+                        operation: "series",
+                        reason: "cannot decide whether a coefficient is 0".into(),
+                    }),
+                };
+            }
             Ok(ts) => {
                 // Precision was lost through poles; increase and retry.
                 working += order - ts.known + 1;

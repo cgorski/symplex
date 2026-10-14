@@ -286,6 +286,9 @@ fn leadterm_by_tseries(
             tracing::debug!(f = %arena.display(f), c = %arena.display(c), e, "gruntz::leadterm_by_tseries");
             return Ok((c, arena.int(e)));
         }
+        if ts.undecided() {
+            break; // a longer expansion meets the same undecided coefficient
+        }
     }
     Err(crate::base::errors::SymplexError::ComputationFailed {
         operation: "gruntz::leadterm",
@@ -472,6 +475,9 @@ fn last_resort_series(
             tracing::debug!(f = %arena.display(f), c = %arena.display(c), e, q, "gruntz::leadterm_last_resort");
             return Ok((c, arena.rational(e, q)));
         }
+        if ts.undecided() {
+            break; // a longer expansion meets the same undecided coefficient
+        }
     }
     Err(crate::base::errors::SymplexError::ComputationFailed {
         operation: "gruntz::leadterm",
@@ -637,10 +643,14 @@ fn vanishes_to_positive_order(
     // shows there at a fraction of the cost of ten terms (those of
     // `atanh(xˣ)` and `cos(xˣ)` near `x = π`, large constants in `π^π`,
     // took 3 s of `lim_{x→π⁺} (atanh(xˣ) − atanh(π^π))/(cos(xˣ) − cos(π^π))`).
-    if let Ok(short) = crate::calculus::series::expand_leading(arena, f, w, 3, l)
-        && nonzero_below_known(arena, &short)
-    {
-        return None;
+    if let Ok(short) = crate::calculus::series::expand_leading(arena, f, w, 3, l) {
+        if nonzero_below_known(arena, &short) {
+            return None;
+        }
+        // Cut short by an undecided coefficient: ten terms meet it too.
+        if short.undecided() {
+            return (short.known() > 0).then_some(short.known());
+        }
     }
     let ts = crate::calculus::series::expand_leading(arena, f, w, 10, l).ok()?;
     if ts.known() <= 0 || nonzero_below_known(arena, &ts) {

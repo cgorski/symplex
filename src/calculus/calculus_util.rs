@@ -1617,12 +1617,16 @@ const MAX_LOG_PRIME: u64 = 1 << 20;
 ///   prime factors, `ln 16 = 4·ln 2`, `ln(3/2) = ln 3 − ln 2`;
 /// - the square root of a polynomial with its nonnegative square factors
 ///   taken out, `√(a² + 2a + 1) = a + 1` for `a > 0` ([`sqrt_of_squares`]);
+/// - two radicals or two values of one function whose arguments are equal
+///   by an identity made one node ([`like_arguments_unified`]);
 /// - `Γ(p)·Γ(1 − p) = π/sin(πp)` ([`gamma_reflection`]), `exp(a)·exp(b) =
 ///   exp(a + b)` ([`exponentials_combined`]), Bessel functions of integer
 ///   order and `Eₙ` of order `n ≤ 0` in a normal form
 ///   ([`special_function_rewrite`]), `atan2(0, a)` for a real `a ≠ 0`,
 ///   `δ(a) = 0` for `a ≠ 0` ([`dirac_delta_off_zero`]), a binomial
-///   coefficient that evaluates to exactly 0 ([`certified_zero_value`]);
+///   coefficient that evaluates to exactly 0 ([`certified_zero_value`]),
+///   `min`/`max` of real constants of certified order
+///   ([`extreme_constant`]);
 /// - a function argument with a quotient in it reduced as a rational
 ///   function of its generators ([`ratsimp`](crate::simplify::ratsimp::ratsimp)):
 ///   `cos((π − 12π²)/(24π − 2)) = cos(−π/2) = 0`.
@@ -1633,11 +1637,88 @@ pub(crate) fn exact_rewrites(arena: &mut Arena, c: ExprId) -> ExprId {
     let r = compositions_pass(arena, c);
     let r = exact_pass(arena, r);
     let logs = crate::calculus::limit::inverse_functions_as_logs(arena, r);
-    if logs == r {
+    let r = if logs == r {
         r
     } else {
         exact_pass(arena, logs)
+    };
+    like_arguments_unified(arena, r)
+}
+
+/// Most nodes [`like_arguments_unified`] compares in one group.
+const MAX_LIKE_NODES: usize = 12;
+
+/// `c` with like nodes — radicals `b^q` of one exponent, applications of
+/// one function of one argument — whose arguments are equal made one node:
+/// the difference of two arguments is shown to be 0 by
+/// [`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity)
+/// (a certified sample, then an exact confirmation: as rational functions
+/// of exponentials for `tanh`, `sin`, …).  So `√((e^{−2/3} − 1)/(e^{−2/3}
+/// + 1)) − √(−tanh(1/3))`, the constant term Gruntz's exponential form
+/// of `√(tanh x)` leaves beside the original at `x = −1/3`, is 0.
+fn like_arguments_unified(arena: &mut Arena, c: ExprId) -> ExprId {
+    use rustc_hash::FxHashSet;
+    // The kind of a like node: its variant, and the exponent of a radical.
+    type Kind = (std::mem::Discriminant<ExprNode>, Option<ExprId>);
+    // (node, argument, kind) for every radical and unary function.
+    let mut like: Vec<(ExprId, ExprId, Kind)> = Vec::new();
+    for id in walk::post_order_ids(arena, c) {
+        let node = arena.node(id);
+        let kind = std::mem::discriminant(node);
+        let entry = match *node {
+            ExprNode::Pow(b, q)
+                if arena.as_num(q).is_some_and(|q| !q.is_integer())
+                    && !matches!(arena.node(b), ExprNode::Num(_)) =>
+            {
+                Some((b, (kind, Some(q))))
+            }
+            ExprNode::Ln(a)
+            | ExprNode::Exp(a)
+            | ExprNode::Sin(a)
+            | ExprNode::Cos(a)
+            | ExprNode::Tan(a)
+            | ExprNode::Sinh(a)
+            | ExprNode::Cosh(a)
+            | ExprNode::Tanh(a)
+            | ExprNode::Asin(a)
+            | ExprNode::Acos(a)
+            | ExprNode::Atan(a)
+            | ExprNode::Asinh(a)
+            | ExprNode::Acosh(a)
+            | ExprNode::Atanh(a) => Some((a, (kind, None))),
+            _ => None,
+        };
+        if let Some((arg, kind)) = entry {
+            like.push((id, arg, kind));
+        }
     }
+    let mut out = c;
+    let mut replaced: FxHashSet<ExprId> = FxHashSet::default();
+    for i in 0..like.len() {
+        let (node_i, arg_i, kind_i) = like[i];
+        if replaced.contains(&node_i) {
+            continue;
+        }
+        let mut compared = 0;
+        for &(node_j, arg_j, kind_j) in &like[i + 1..] {
+            if kind_j != kind_i || replaced.contains(&node_j) || arg_i == arg_j {
+                continue;
+            }
+            compared += 1;
+            if compared > MAX_LIKE_NODES {
+                break;
+            }
+            let d = arena.sub(arg_i, arg_j);
+            let d = eval::eval(arena, d);
+            if arena.is_zero_structural(d)
+                || crate::simplify::identically_zero::vanishes_by_identity(arena, d)
+            {
+                out = crate::transforms::subs::subs(arena, out, node_j, node_i);
+                replaced.insert(node_j);
+            }
+        }
+    }
+    if out == c { c } else { eval::eval(arena, out) }
 }
 
 /// The compositions of [`function_of_inverse`] rewritten, bottom-up (before
@@ -1723,6 +1804,8 @@ fn exact_pass(arena: &mut Arena, c: ExprId) -> ExprId {
                 power_of_positive_product(arena, *m, *q).unwrap_or(r)
             }
             ExprNode::Binomial(..) => certified_zero_value(arena, r).unwrap_or(r),
+            ExprNode::Min(args) => extreme_constant(arena, args, true).unwrap_or(r),
+            ExprNode::Max(args) => extreme_constant(arena, args, false).unwrap_or(r),
             ExprNode::Acosh(a) => inverse_of_value(arena, &node, *a)
                 .or_else(|| acosh_as_acos(arena, *a))
                 .unwrap_or(r),
@@ -2190,25 +2273,49 @@ fn asin_on_cut(arena: &mut Arena, a: ExprId) -> Option<ExprId> {
 /// Is `a` a real constant (by the assumptions) whose certified value lies
 /// strictly inside `(lo, hi)`, with a margin far above its error?
 fn real_constant_within(arena: &mut Arena, a: ExprId, lo: f64, hi: f64) -> bool {
+    certified_real_value(arena, a).is_some_and(|v| {
+        let margin = value_margin(v);
+        v > lo + margin && v < hi - margin
+    })
+}
+
+/// The certified value of a real constant `a` (real by the assumptions),
+/// to [`HIDDEN_ZERO_DIGITS`] digits, as an `f64`; compare it with a
+/// [`value_margin`].
+fn certified_real_value(arena: &mut Arena, a: ExprId) -> Option<f64> {
     if !walk::free_symbols(arena, a).is_empty() {
-        return false;
+        return None;
     }
     let mut cache = crate::base::assumptions::AssumptionCache::new();
     if cache.query(arena, a, crate::base::assumptions::Props::REAL) != Some(true) {
-        return false;
+        return None;
     }
-    let Some(z) = evalf::evalf_verdict(arena, a, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap)
-        .ok()
-        .and_then(crate::base::truth::Verdict::proven)
-    else {
-        return false;
-    };
-    let Some(v) = crate::base::bigfloat::to_f64(&z.0) else {
-        return false;
-    };
-    // 30 certified digits: a margin far above the error of `v`.
-    let margin = 1e-9 * v.abs().max(1.0);
-    v > lo + margin && v < hi - margin
+    let z = evalf::evalf_verdict(arena, a, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap)
+        .ok()?
+        .proven()?;
+    crate::base::bigfloat::to_f64(&z.0)
+}
+
+/// A margin far above the error of a [`certified_real_value`] `v` (30
+/// certified digits, then rounded to `f64`).
+fn value_margin(v: f64) -> f64 {
+    1e-9 * v.abs().max(1.0)
+}
+
+/// The argument of `min(args)` (`max` for `min = false`) of real constants
+/// whose certified value is below (above) every other by a margin:
+/// `min(0, Catalan − 1/6, bernoulli(1/2)) = 0`.  `None` otherwise.
+fn extreme_constant(arena: &mut Arena, args: &[ExprId], min: bool) -> Option<ExprId> {
+    let mut vals: Vec<(f64, ExprId)> = Vec::with_capacity(args.len());
+    for &a in args {
+        let v = certified_real_value(arena, a)?;
+        vals.push(if min { (v, a) } else { (-v, a) });
+    }
+    let &(best, arg) = vals.iter().min_by(|p, q| p.0.total_cmp(&q.0))?;
+    let margin = value_margin(best);
+    vals.iter()
+        .all(|&(v, a)| a == arg || v > best + margin.max(value_margin(v)))
+        .then_some(arg)
 }
 
 /// A constant after the zero test of [`settle_constant`].

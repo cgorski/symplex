@@ -2,6 +2,8 @@
 //! Every test says what was wrong before and cites its oracle.
 
 #![allow(unused_imports)]
+use std::time::{Duration, Instant};
+
 use symplex::prelude::*;
 
 /// `c(a) = sin(1)·(a − 1153/877)·(a − 1789/2311)`, multiplied out: a
@@ -140,6 +142,44 @@ fn a_coefficient_below_the_deep_search_is_not_dropped() {
         Err(_) => {}
         Ok(s) => assert!(s.to_string().contains('x'), "series = {s}"),
     }
+}
+
+/// The `fuzz_calculus` timeout after the three-valued zero tests (0.49):
+/// at `x = −1/3` Gruntz's exponential form of `√(tanh x)` leaves the
+/// constant term `√((e^{−2/3} − 1)/(e^{−2/3} + 1)) − √(−tanh(1/3))`, a 0
+/// that no exact test proved.  The undecided coefficient cut the short
+/// expansion, so a ten-term one followed, whose coefficients (sums of huge
+/// constants) were each evaluated: over 100 s in release (0.05 s at
+/// 0.48).  Now the two radicands are shown equal (a rational function of
+/// exponentials), and an expansion cut by an undecided coefficient is not
+/// widened — the second limit, whose zero `K₁/₂(1) − √(π/2)·e⁻¹` is
+/// not proved, is refused at once.  Bounds for a debug build under load
+/// (release: 0.05 s and 0.2 s).
+///
+/// Oracle: mpmath `diff(lambda x: sqrt(tanh(x)), -1/3)` =
+/// `−0.790649435247292391869…·i` (the principal branch; both one-sided
+/// quotients at `10⁻¹²` agree).
+#[test]
+fn a_radical_spelled_two_ways_does_not_widen_the_expansion() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = ctx
+        .parse("(sqrt(tanh(x)) - sqrt(tanh(-1/3)))/(x + 1/3)")
+        .unwrap();
+    let t = Instant::now();
+    let l = f.try_limit(&x, &ctx.rational(-1, 3)).unwrap();
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    let z = l.eval_complex64().unwrap();
+    assert!(
+        z.re.abs() < 1e-12 && (z.im + 0.790_649_435_247_292_4).abs() < 1e-12,
+        "{l} = {z}"
+    );
+    let g = ctx
+        .parse("(sqrt(x + besselk(1/2, 1)) - sqrt(sqrt(pi/2)*exp(-1)))/x")
+        .unwrap();
+    let t = Instant::now();
+    let _ = g.try_limit(&x, &ctx.int(0));
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 }
 
 /// `Quantity::is_zero`/`equals` return `bool` and mean "proved": an
