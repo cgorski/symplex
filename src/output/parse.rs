@@ -476,6 +476,40 @@ fn declared_function(arena: &Arena, name: &str) -> Option<SymbolId> {
     (0..arena.node_count()).rev().any(headed).then_some(sid)
 }
 
+/// What the call `name(args)` parses as when `name` is a function the
+/// parser knows (`sin`, `log`, `C`, `besselj`, `Integral`, …, compared
+/// ignoring ASCII case): `Some(Ok(id))` for the built-in expression,
+/// `Some(Err(reason))` when the parser does not read the name with that
+/// many arguments, and `None` for any other name — an undefined function
+/// (`H` is one too: the parser reads `H(x)` as Heaviside only while the
+/// context has no undefined function `H`).
+///
+/// [`Context::apply`](crate::api::context::Context::apply) builds a
+/// built-in name through this, so what it builds prints as text that
+/// parses back to it (until 0.49 `apply("sin", [x])` was an undefined
+/// function that printed as `sin(x)` and `apply("bell", [3])` evaluated
+/// as a Bell number because the head was resolved by name).
+pub(crate) fn builtin_call(
+    arena: &mut Arena,
+    name: &str,
+    args: &[ExprId],
+) -> Option<Result<ExprId, String>> {
+    let name_lower = name.to_ascii_lowercase();
+    if !is_known_function(&name_lower) {
+        return None;
+    }
+    let parser = Parser::new("", Mode::STRICT);
+    Some(
+        parser
+            .call_with_args(arena, name, &name_lower, args)
+            .map_err(|_| {
+                let n = args.len();
+                let s = if n == 1 { "" } else { "s" };
+                format!("'{name}' is a built-in function, which does not take {n} argument{s}")
+            }),
+    )
+}
+
 /// The reciprocal trigonometric and hyperbolic functions and their inverses
 /// (`cot`, `sec`, …, `acsch`; `name` lower case), which have no node of
 /// their own: see [`crate::base::canon::reciprocal_function`], which builds
@@ -1390,9 +1424,22 @@ impl<'a> Parser<'a> {
         {
             return Ok(result);
         }
+        self.call_with_args(arena, name, &name_lower, &args)
+    }
 
+    /// The call `name(args)` of a function, its arguments parsed (`name_lower`
+    /// is `name` in lower case): the table of known functions by argument
+    /// count, then the library functions and the undefined functions the
+    /// context knows ([`Parser::lib_call`]).
+    fn call_with_args(
+        &self,
+        arena: &mut Arena,
+        name: &str,
+        name_lower: &str,
+        args: &[ExprId],
+    ) -> Result<ExprId, ParseError> {
         // Variadic functions.
-        if matches!(name_lower.as_str(), "min" | "max") {
+        if matches!(name_lower, "min" | "max") {
             if args.len() < 2 {
                 return Err(ParseError {
                     message: format!("function '{}' requires at least 2 arguments", name),
@@ -1407,12 +1454,13 @@ impl<'a> Parser<'a> {
             }));
         }
 
-        match args.len() {
-            1 => self.call_1(arena, name, &name_lower, args[0]),
-            2 => self.call_2(arena, name, &name_lower, args[0], args[1]),
-            3 => self.call_3(arena, name, &name_lower, args[0], args[1], args[2]),
-            4 => self.call_4(arena, name, &name_lower, args[0], args[1], args[2], args[3]),
-            n => self.lib_call(arena, name, &name_lower, &args, || {
+        match *args {
+            [a] => self.call_1(arena, name, name_lower, a),
+            [a, b] => self.call_2(arena, name, name_lower, a, b),
+            [a, b, c] => self.call_3(arena, name, name_lower, a, b, c),
+            [a, b, c, d] => self.call_4(arena, name, name_lower, a, b, c, d),
+            _ => self.lib_call(arena, name, name_lower, args, || {
+                let n = args.len();
                 format!(
                     "unknown {n}-argument function '{}'. Only min and max take more than 4 arguments",
                     name

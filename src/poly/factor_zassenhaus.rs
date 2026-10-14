@@ -69,10 +69,18 @@ pub mod traits {
 }
 
 /// The value-level polynomial ring `𝔽ₚ[x]` behind [`factor_mod_p`] and the
-/// modular steps of the Zassenhaus algorithm: [`PolyIn`]
-/// over [`Fp64`].
+/// modular steps of the Zassenhaus algorithm: [`DensePoly`](modpoly::DensePoly)
+/// (also named `PolyIn`) over [`Fp64`] or any other
+/// [`CoeffDomain`](domain::CoeffDomain).
 pub mod modpoly {
-    pub use crate::poly::modpoly::{DivRem, ExtendedGcd, Fp64, PolyIn, RingOps};
+    pub use crate::poly::modpoly::{DensePoly, DivRem, ExtendedGcd, Fp64, PolyIn, RingOps};
+}
+
+/// Coefficient domains as values ([`CoeffDomain`](domain::CoeffDomain)):
+/// `ℚ`, `ℤ`, `ℚ(i)` and any element-level field, for
+/// [`DensePoly`](modpoly::DensePoly).
+pub mod domain {
+    pub use crate::poly::domain::{CoeffDomain, FieldOf, GaussQ, GaussQQ, QQ, ZZ};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

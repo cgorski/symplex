@@ -1572,10 +1572,8 @@ impl Expr<Numeric> {
         let arena = &mut inner.arena;
         let id = match arena.node(var_id).clone() {
             ExprNode::Symbol(_) => arena.diff_wrt(self.raw_id(), var_id),
-            ExprNode::Apply(f, _) if arena.lib_fn(f).is_none() => {
-                diff_wrt_function_value(arena, self.raw_id(), var_id)
-            }
-            ExprNode::Derivative(body, _) if matches!(arena.node(body), ExprNode::Apply(f, _) if arena.lib_fn(*f).is_none()) => {
+            ExprNode::Apply(..) => diff_wrt_function_value(arena, self.raw_id(), var_id),
+            ExprNode::Derivative(body, _) if matches!(arena.node(body), ExprNode::Apply(..)) => {
                 diff_wrt_function_value(arena, self.raw_id(), var_id)
             }
             _ => arena.formal_diff(self.raw_id(), var_id),
@@ -5204,7 +5202,7 @@ impl Expr<Numeric> {
 
     // ── More special functions (0.9) ───────────────────────────────────
 
-    /// Build a library `Apply(f, args)` node.  Every id in `args` must
+    /// Build a library-function node `f(args)`.  Every id in `args` must
     /// already have been validated with `checked_id` (or be `self`).
     fn special_apply(
         &self,

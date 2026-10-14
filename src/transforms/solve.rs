@@ -2209,15 +2209,12 @@ fn solve_by_peeling(
         }
         // erfinv(f) = rhs → f = erf(rhs), erfcinv(f) = rhs → f = erfc(rhs)
         // (the inverses are injective; candidates are checked).
-        ExprNode::Apply(sid, ref args)
-            if args.len() == 1
-                && matches!(
-                    arena.lib_fn(sid),
-                    Some(crate::base::libfn::LibFn::ErfInv | crate::base::libfn::LibFn::ErfcInv)
-                ) =>
-        {
+        ExprNode::Lib(
+            f @ (crate::base::libfn::LibFn::ErfInv | crate::base::libfn::LibFn::ErfcInv),
+            ref args,
+        ) if args.len() == 1 => {
             let inner = args[0];
-            let new_rhs = if arena.lib_fn(sid) == Some(crate::base::libfn::LibFn::ErfInv) {
+            let new_rhs = if f == crate::base::libfn::LibFn::ErfInv {
                 arena.intern(ExprNode::Erf(rhs))
             } else {
                 arena.intern(ExprNode::Erfc(rhs))
@@ -6314,8 +6311,10 @@ const LAMBERT_VALUE_MAX_DENOMINATOR: i64 = 12;
 /// W(√2·ln(2)/2)/ln 2]`, which is `0`.  `w` itself when nothing is found.
 fn exact_lambert_value(arena: &mut Arena, arg: ExprId, w: ExprId, principal: bool) -> ExprId {
     use crate::base::walk;
-    if !matches!(arena.node(w), ExprNode::LambertW(_) | ExprNode::Apply(..))
-        || !walk::free_symbols(arena, arg).is_empty()
+    if !matches!(
+        arena.node(w),
+        ExprNode::LambertW(_) | ExprNode::Apply(..) | ExprNode::Lib(..)
+    ) || !walk::free_symbols(arena, arg).is_empty()
         || walk::has_unevaluated(arena, arg)
     {
         return w;
@@ -7670,10 +7669,7 @@ fn certainly_transcendental(arena: &mut Arena, value: ExprId) -> bool {
     match arena.node(value) {
         ExprNode::Exp(q) | ExprNode::LambertW(q) => nonzero_rational(arena, *q),
         // the other branches `W_k(q)`
-        ExprNode::Apply(f, args)
-            if args.len() == 2
-                && arena.symbols.name(*f) == crate::base::libfn::LibFn::LambertW.name() =>
-        {
+        ExprNode::Lib(crate::base::libfn::LibFn::LambertW, args) if args.len() == 2 => {
             nonzero_rational(arena, args[0])
         }
         ExprNode::Ln(_) => log_of_rational(arena, value),

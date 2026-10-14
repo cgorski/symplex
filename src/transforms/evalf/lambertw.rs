@@ -60,29 +60,27 @@ pub(super) fn lambert_parts(
 ) -> Option<Result<(ExprId, i64), SymplexError>> {
     match node {
         ExprNode::LambertW(x) => Some(Ok((*x, 0))),
-        ExprNode::Apply(sid, args) if arena.lib_fn(*sid) == Some(LibFn::LambertW) => {
-            Some(match args[..] {
-                [x] => Ok((x, 0)),
-                [x, k] => match arena.as_num(k) {
-                    Some(q) if q.is_integer() => {
-                        q.to_integer().to_i64().map(|k| (x, k)).ok_or_else(|| {
-                            SymplexError::NotImplemented(format!(
-                                "evaluation of the Lambert W branch {q} (beyond 64 bits)"
-                            ))
-                        })
-                    }
-                    _ => Err(SymplexError::Unevaluable {
-                        reason: format!(
-                            "LambertW(x, k) needs an integer branch index k, got {}",
-                            arena.display(k)
-                        ),
-                    }),
-                },
+        ExprNode::Lib(LibFn::LambertW, args) => Some(match args[..] {
+            [x] => Ok((x, 0)),
+            [x, k] => match arena.as_num(k) {
+                Some(q) if q.is_integer() => {
+                    q.to_integer().to_i64().map(|k| (x, k)).ok_or_else(|| {
+                        SymplexError::NotImplemented(format!(
+                            "evaluation of the Lambert W branch {q} (beyond 64 bits)"
+                        ))
+                    })
+                }
                 _ => Err(SymplexError::Unevaluable {
-                    reason: format!("lambertw called with {} arguments", args.len()),
+                    reason: format!(
+                        "LambertW(x, k) needs an integer branch index k, got {}",
+                        arena.display(k)
+                    ),
                 }),
-            })
-        }
+            },
+            _ => Err(SymplexError::Unevaluable {
+                reason: format!("lambertw called with {} arguments", args.len()),
+            }),
+        }),
         _ => None,
     }
 }

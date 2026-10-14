@@ -120,9 +120,11 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_acos(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Acos(inner)))
             }
-            ExprNode::Atan(inner) => {
-                let inner = cache.get(&inner).copied().unwrap_or(inner);
-                eval_atan(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Atan(inner)))
+            ExprNode::Atan(original) => {
+                let inner = cache.get(&original).copied().unwrap_or(original);
+                reciprocal_at_zero(arena, "acot", original, inner, &cache)
+                    .or_else(|| eval_atan(arena, inner))
+                    .unwrap_or_else(|| arena.intern(ExprNode::Atan(inner)))
             }
             ExprNode::Atan2(y, x) => {
                 let ny = cache.get(&y).copied().unwrap_or(y);
@@ -151,13 +153,17 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_asinh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Asinh(inner)))
             }
-            ExprNode::Acosh(inner) => {
-                let inner = cache.get(&inner).copied().unwrap_or(inner);
-                eval_acosh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Acosh(inner)))
+            ExprNode::Acosh(original) => {
+                let inner = cache.get(&original).copied().unwrap_or(original);
+                reciprocal_at_zero(arena, "asech", original, inner, &cache)
+                    .or_else(|| eval_acosh(arena, inner))
+                    .unwrap_or_else(|| arena.intern(ExprNode::Acosh(inner)))
             }
-            ExprNode::Atanh(inner) => {
-                let inner = cache.get(&inner).copied().unwrap_or(inner);
-                eval_atanh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Atanh(inner)))
+            ExprNode::Atanh(original) => {
+                let inner = cache.get(&original).copied().unwrap_or(original);
+                reciprocal_at_zero(arena, "acoth", original, inner, &cache)
+                    .or_else(|| eval_atanh(arena, inner))
+                    .unwrap_or_else(|| arena.intern(ExprNode::Atanh(inner)))
             }
             ExprNode::Sign(inner) => {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
@@ -553,25 +559,36 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
 
-            // ── Apply (library special functions) ──────────────────
+            // ── Library special functions ───────────────────────────
+            ExprNode::Lib(f, ref args) => {
+                let new_args: smallvec::SmallVec<[ExprId; 2]> = args
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                // It may fold to an exact value; otherwise it is rebuilt on
+                // its evaluated arguments.
+                let folded = if f.arity().accepts(new_args.len()) {
+                    eval_lib_fn(arena, f, &new_args)
+                } else {
+                    None
+                };
+                match folded {
+                    Some(result) => result,
+                    None if new_args[..] == args[..] => id,
+                    None => arena.lib_apply(f, &new_args),
+                }
+            }
+
+            // ── Apply (user functions): rebuilt on the evaluated arguments ──
             ExprNode::Apply(name_sid, ref args) => {
                 let new_args: smallvec::SmallVec<[ExprId; 2]> = args
                     .iter()
                     .map(|&c| cache.get(&c).copied().unwrap_or(c))
                     .collect();
-                // A library function with the right number of arguments may
-                // fold to an exact value; anything else — a user function or
-                // a wrong arity — is rebuilt on its evaluated arguments.
-                let folded = match arena.lib_fn(name_sid) {
-                    Some(f) if f.arity().accepts(new_args.len()) => {
-                        eval_lib_fn(arena, f, &new_args)
-                    }
-                    _ => None,
-                };
-                match folded {
-                    Some(result) => result,
-                    None if new_args[..] == args[..] => id,
-                    None => arena.intern(ExprNode::Apply(name_sid, new_args)),
+                if new_args[..] == args[..] {
+                    id
+                } else {
+                    arena.intern(ExprNode::Apply(name_sid, new_args))
                 }
             }
 
@@ -2333,7 +2350,7 @@ fn zero_real_lambert_parts(arena: &mut Arena, v: ExprId) -> ExprId {
 fn lambert_real_argument(arena: &Arena, w: ExprId) -> Option<(ExprId, LambertRealBranch)> {
     match arena.node(w) {
         ExprNode::LambertW(a) => Some((*a, LambertRealBranch::Principal)),
-        ExprNode::Apply(f, args) if arena.lib_fn(*f) == Some(LibFn::LambertW) => match args[..] {
+        ExprNode::Lib(LibFn::LambertW, args) => match args[..] {
             [a, k] if arena.as_num(k).is_some_and(|q| *q == -Q::one()) => {
                 Some((a, LambertRealBranch::MinusOne))
             }
@@ -3599,7 +3616,8 @@ fn eval_lucas(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     guarded_int(arena, crate::base::combinatorics::lucas(i128::from(n)))
 }
 
-/// The Bernoulli number `Bₙ` exactly, or `None` beyond the digit guard.
+/// The Bernoulli number `Bₙ` exactly, or `None` beyond the digit guard,
+/// with `B₁ = +1/2` (`base::bernoulli`; up to 0.49 `−1/2`).
 ///
 /// `|Bₙ| = 2·n!·ζ(n)/(2π)ⁿ ≥ 2·n!/(2π)ⁿ` for even `n ≥ 2` bounds the
 /// digits first.  Even indices come from the tangent numbers,
@@ -3615,7 +3633,7 @@ fn eval_lucas(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 pub(crate) fn exact_bernoulli(arena: &Arena, n: u64) -> Option<Q> {
     match n {
         0 => return Some(Ratio::one()),
-        1 => return Some(Ratio::new(BigInt::from(-1), BigInt::from(2))),
+        1 => return Some(Ratio::new(BigInt::from(1), BigInt::from(2))),
         _ if n % 2 == 1 => return Some(Ratio::zero()),
         _ => {}
     }
@@ -5599,6 +5617,57 @@ fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     Some(pi_times(arena, angle))
 }
 
+/// The value at `c = 0` of the reciprocal function `name` (`acot`, `acoth`,
+/// `asech`), whose node is `atan`, `atanh`, `acosh` of `1/c`
+/// ([`reciprocal_function`](crate::base::canon::reciprocal_function)):
+/// `acot(0) = π/2`, `acoth(0) = iπ/2`, `asech(0) = ∞`, when the argument
+/// `original` is written as a reciprocal `k·∏ bⱼ^(−mⱼ)` and evaluated to
+/// `zoo` because `c = k⁻¹·∏ bⱼ^mⱼ` evaluated to 0 (the bases' values are
+/// in `cache`).  `reciprocal_function` takes these values for a literal
+/// `0`, and `subs` for a substituted one; up to 0.49 a `c` that became 0
+/// only here was lost: `acot(min(W(π), 0))` was `atan(zoo)` (`compile`:
+/// NaN), `asech(min(W(π), 0))` was `zoo`.  `None` anywhere else.
+fn reciprocal_at_zero(
+    arena: &mut Arena,
+    name: &str,
+    original: ExprId,
+    evaluated: ExprId,
+    cache: &FxHashMap<ExprId, ExprId>,
+) -> Option<ExprId> {
+    if evaluated != arena.complex_infinity {
+        return None;
+    }
+    let factors: Vec<ExprId> = match arena.node(original) {
+        ExprNode::Mul(fs) => fs.to_vec(),
+        _ => vec![original],
+    };
+    let mut c_factors: Vec<ExprId> = Vec::with_capacity(factors.len());
+    for (i, &f) in factors.iter().enumerate() {
+        if i == 0
+            && let Some(k) = arena.as_num(f)
+        {
+            if k.is_zero() {
+                return None;
+            }
+            let inv = k.recip();
+            c_factors.push(arena.num_ratio(inv));
+            continue;
+        }
+        let ExprNode::Pow(b, m) = *arena.node(f) else {
+            return None;
+        };
+        if !arena.as_num(m).is_some_and(Signed::is_negative) {
+            return None;
+        }
+        let b = cache.get(&b).copied().unwrap_or(b);
+        let m = arena.neg(m);
+        c_factors.push(arena.pow(b, m));
+    }
+    let c = arena.mul(&c_factors);
+    let zero = arena.zero;
+    (c == zero).then(|| crate::base::canon::reciprocal_function(arena, name, zero))
+}
+
 fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.zero {
         return Some(arena.zero);
@@ -6986,7 +7055,7 @@ fn eval_orthopoly(arena: &mut Arena, n: ExprId, x: ExprId, family: OrthoFamily) 
     ortho_value(arena, &family, n_int as usize, x)
 }
 
-/// Intern `f(args)` as a library `Apply` node (no folding).
+/// Intern the library-function node `f(args)` (no folding).
 pub(crate) fn apply_named(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> ExprId {
     arena.lib_apply(f, args)
 }

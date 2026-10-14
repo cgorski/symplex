@@ -39,7 +39,7 @@ use num_traits::One;
 use num_traits::Signed;
 use num_traits::Zero;
 
-use crate::base::arena::{Arena, FN_CHI, FN_ERFI, FN_SHI};
+use crate::base::arena::Arena;
 use crate::base::budget::{BudgetKind, Work, WorkScope};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
@@ -729,11 +729,8 @@ fn is_special_by_parts_fn(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> boo
         | ExprNode::Asinh(g)
         | ExprNode::Acosh(g)
         | ExprNode::Atanh(g) => *g,
-        ExprNode::Apply(sid, args)
-            if matches!(
-                arena.lib_fn(*sid),
-                Some(LibFn::Shi | LibFn::Chi | LibFn::FresnelS | LibFn::FresnelC)
-            ) && args.len() == 1 =>
+        ExprNode::Lib(LibFn::Shi | LibFn::Chi | LibFn::FresnelS | LibFn::FresnelC, args)
+            if args.len() == 1 =>
         {
             args[0]
         }
@@ -838,7 +835,7 @@ fn single_argument(arena: &Arena, expr: ExprId) -> Option<ExprId> {
         | ExprNode::Erf(g)
         | ExprNode::Erfc(g)
         | ExprNode::Ln(g) => Some(*g),
-        ExprNode::Apply(..) => match node.func(arena)? {
+        ExprNode::Apply(..) | ExprNode::Lib(..) => match node.func(arena)? {
             (f, args) if f.spec().arity == crate::base::func::ArgCount::Exactly(1) => {
                 args.first().copied()
             }
@@ -853,10 +850,8 @@ fn single_argument(arena: &Arena, expr: ExprId) -> Option<ExprId> {
 /// their derivatives are Gaussians, so `∫ xⁿ·erf(a·x + b)` is a polynomial
 /// times a Gaussian (unevaluated up to 0.43; SymPy integrates them).
 fn is_erfi_of_var(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> bool {
-    matches!(arena.node(expr), ExprNode::Apply(sid, args)
-        if arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::Erfi)
-            && args.len() == 1
-            && contains_var(arena, args[0], var_sym))
+    matches!(arena.node(expr), ExprNode::Lib(crate::base::libfn::LibFn::Erfi, args)
+        if args.len() == 1 && contains_var(arena, args[0], var_sym))
 }
 
 /// LIATE priority for integration by parts: lower = better choice for u.
@@ -4772,7 +4767,7 @@ fn integrate_node_uncached(
                     let sqrt_a2 = arena.sqrt(a_expr);
                     let denom = arena.mul(&[two, sqrt_a2]);
                     let erfi_arg = arena.div(numer, denom);
-                    let erfi_term = special_apply(arena, FN_ERFI, erfi_arg);
+                    let erfi_term = special_apply(arena, crate::base::libfn::LibFn::Erfi, erfi_arg);
 
                     return arena.mul(&[front, exp_factor, erfi_term]);
                 }
@@ -4934,9 +4929,7 @@ fn integrate_node_uncached(
 
         // ── erfi of a linear argument g = ax+b ──────────────────────────
         //   ∫ erfi(g) = (g·erfi(g) − e^{g²}/√π)/a  (unevaluated up to 0.43)
-        ExprNode::Apply(sid, ref args)
-            if arena.lib_fn(sid) == Some(crate::base::libfn::LibFn::Erfi) && args.len() == 1 =>
-        {
+        ExprNode::Lib(crate::base::libfn::LibFn::Erfi, ref args) if args.len() == 1 => {
             let g = args[0];
             let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, g, var, var_sym) else {
                 return by_parts_dv_one(arena, expr, var, var_sym, depth)
@@ -5104,9 +5097,8 @@ fn integrate_node_uncached(
         // ── expint(ν, a·x + b): ∫ = −expint(ν + 1, a·x + b)/a (DLMF 8.19.13,
         // E′_ν = −E_{ν−1}); unevaluated up to 0.46, as was every ∫ Ei, Si,
         // Ci, li, Shi, Chi, Fresnel S/C below (by parts with dv = dx).
-        ExprNode::Apply(sid, ref args)
-            if arena.lib_fn(sid) == Some(crate::base::libfn::LibFn::ExpInt)
-                && args.len() == 2
+        ExprNode::Lib(crate::base::libfn::LibFn::ExpInt, ref args)
+            if args.len() == 2
                 && !contains_var(arena, args[0], var_sym)
                 && symbolic_linear_coeff_of(arena, args[1], var, var_sym).is_some() =>
         {
@@ -5124,9 +5116,11 @@ fn integrate_node_uncached(
             by_parts_dv_one(arena, expr, var, var_sym, depth)
                 .unwrap_or_else(|| arena.intern(ExprNode::Integral(expr, var)))
         }
-        ExprNode::Apply(..) => orthogonal_polynomial_integral(arena, expr, var, var_sym)
-            .or_else(|| bessel_power_integral(arena, &[expr], var, var_sym))
-            .unwrap_or_else(|| arena.intern(ExprNode::Integral(expr, var))),
+        ExprNode::Apply(..) | ExprNode::Lib(..) => {
+            orthogonal_polynomial_integral(arena, expr, var, var_sym)
+                .or_else(|| bessel_power_integral(arena, &[expr], var, var_sym))
+                .unwrap_or_else(|| arena.intern(ExprNode::Integral(expr, var)))
+        }
         // ── W(a·x + b): ∫ = (g·W(g) − g + g/W(g))/a (∫ f⁻¹ = x·f⁻¹ − F∘f⁻¹ for
         // f(w) = w·eʷ, F(w) = (w − 1)·eʷ, and e^{W(g)} = g/W(g)); unevaluated up
         // to 0.46 (SymPy's test_heurisch and test_integrals).
@@ -6013,30 +6007,21 @@ fn varies_numerically_uncached(arena: &mut Arena, q: ExprId, var: ExprId) -> boo
 /// is a substitution rather than a Weierstrass problem.
 fn u_sub_candidates(arena: &Arena, factor: ExprId, var_sym: SymbolId) -> SmallVec<[ExprId; 4]> {
     let mut out: SmallVec<[ExprId; 4]> = SmallVec::new();
-    match arena.node(factor).clone() {
-        ExprNode::Sin(inner)
-        | ExprNode::Cos(inner)
-        | ExprNode::Tan(inner)
-        | ExprNode::Exp(inner)
-        | ExprNode::Ln(inner)
-        | ExprNode::Sinh(inner)
-        | ExprNode::Cosh(inner)
-        | ExprNode::Tanh(inner)
-        | ExprNode::Asin(inner)
-        | ExprNode::Acos(inner)
-        | ExprNode::Atan(inner)
-        | ExprNode::Asinh(inner)
-        | ExprNode::Acosh(inner)
-        | ExprNode::Atanh(inner)
-        | ExprNode::Abs(inner)
-            if contains_var(arena, inner, var_sym) =>
-        {
-            out.push(inner);
-            // Also try the function node itself as a candidate.
-            // E.g., for ln(x), try u = ln(x) (not just u = x).
-            // This enables ∫ 1/(x·ln(x)) dx via u = ln(x), du = 1/x dx.
-            out.push(factor);
-        }
+    let node = arena.node(factor).clone();
+    // The elementary functions and `|·|` (`Func::elementary`).
+    if let Some((f, args)) = node.func(arena)
+        && (f.elementary().is_some() || f == crate::base::func::Func::Abs)
+        && let [inner] = args[..]
+        && contains_var(arena, inner, var_sym)
+    {
+        out.push(inner);
+        // Also try the function node itself as a candidate.
+        // E.g., for ln(x), try u = ln(x) (not just u = x).
+        // This enables ∫ 1/(x·ln(x)) dx via u = ln(x), du = 1/x dx.
+        out.push(factor);
+        return out;
+    }
+    match node {
         ExprNode::Pow(base, _exp) if contains_var(arena, base, var_sym) => {
             out.push(base);
             // The argument of a function under the power: `u = x²` for
@@ -6058,7 +6043,9 @@ fn u_sub_candidates(arena: &Arena, factor: ExprId, var_sym: SymbolId) -> SmallVe
         // `du = −J₁ dx`; SymPy's test_meijerint), and its arguments other
         // than the bare variable: `u = x²` for `∫ x·J₁(x²) dx = −J₀(x²)/2`
         // (unevaluated up to 0.46; SymPy 1.14 integrates it).
-        ExprNode::Apply(_, args) if args.iter().any(|&a| contains_var(arena, a, var_sym)) => {
+        ExprNode::Apply(_, args) | ExprNode::Lib(_, args)
+            if args.iter().any(|&a| contains_var(arena, a, var_sym)) =>
+        {
             out.push(factor);
             for &a in &args {
                 if contains_var(arena, a, var_sym)
@@ -10149,10 +10136,10 @@ fn linear_special_base(arena: &mut Arena, fam: LinearSpecial, w: ExprId, beta: E
             }
         }
         LinearSpecial::Sinh => {
-            let shi = special_apply(arena, FN_SHI, w);
+            let shi = special_apply(arena, crate::base::libfn::LibFn::Shi, w);
             arena.mul(&[odd_sign, shi])
         }
-        LinearSpecial::Cosh => special_apply(arena, FN_CHI, w),
+        LinearSpecial::Cosh => special_apply(arena, crate::base::libfn::LibFn::Chi, w),
     }
 }
 
@@ -10485,10 +10472,9 @@ fn orthogonal_polynomial_integral(
     var_sym: SymbolId,
 ) -> Option<ExprId> {
     use crate::base::libfn::LibFn;
-    let ExprNode::Apply(sid, args) = arena.node(expr).clone() else {
+    let ExprNode::Lib(f, args) = arena.node(expr).clone() else {
         return None;
     };
-    let f = arena.lib_fn(sid)?;
     let g = *args.last()?;
     let params = &args[..args.len() - 1];
     if params.is_empty() || params.iter().any(|&p| contains_var(arena, p, var_sym)) {
@@ -10573,9 +10559,10 @@ fn bessel_power_integral(
     let mut bessel: Option<(LibFn, ExprId, ExprId)> = None;
     let mut m_terms: SmallVec<[ExprId; 2]> = SmallVec::new();
     for &d in dependent {
-        if let ExprNode::Apply(sid, args) = arena.node(d).clone()
-            && let Some(f @ (LibFn::BesselJ | LibFn::BesselY | LibFn::BesselI | LibFn::BesselK)) =
-                arena.lib_fn(sid)
+        if let ExprNode::Lib(
+            f @ (LibFn::BesselJ | LibFn::BesselY | LibFn::BesselI | LibFn::BesselK),
+            args,
+        ) = arena.node(d).clone()
             && args.len() == 2
             && !contains_var(arena, args[0], var_sym)
             && bessel.is_none()
@@ -10798,12 +10785,7 @@ fn ci_real_on_real_line(arena: &mut Arena, e: ExprId, var: ExprId, var_sym: Symb
     for id in crate::base::walk::post_order_ids(arena, e) {
         let w = match arena.node(id) {
             ExprNode::Ci(w) => *w,
-            ExprNode::Apply(sid, args)
-                if arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::Chi)
-                    && args.len() == 1 =>
-            {
-                args[0]
-            }
+            ExprNode::Lib(crate::base::libfn::LibFn::Chi, args) if args.len() == 1 => args[0],
             _ => continue,
         };
         if !contains_var(arena, w, var_sym) {
@@ -11512,7 +11494,7 @@ fn gaussian_integral(
         arena.erf(arg)
     } else {
         let arg = arena.add(&[rx, b_2r]);
-        special_apply(arena, FN_ERFI, arg)
+        special_apply(arena, crate::base::libfn::LibFn::Erfi, arg)
     };
     Some(if arena.is_zero_structural(shift) {
         arena.mul(&[front, special])
@@ -11572,8 +11554,8 @@ fn fresnel_integral(
     let lin = arena.add(&[two_a_x, b]);
     let scale = arena.mul(&[root, sqrt_pi]);
     let u = arena.div(lin, scale);
-    let s_u = special_apply(arena, LibFn::FresnelS.name(), u);
-    let c_u = special_apply(arena, LibFn::FresnelC.name(), u);
+    let s_u = special_apply(arena, LibFn::FresnelS, u);
+    let c_u = special_apply(arena, LibFn::FresnelC, u);
     let (main, other) = if sine { (s_u, c_u) } else { (c_u, s_u) };
     let body = if arena.is_zero_structural(theta) {
         main
@@ -11795,9 +11777,8 @@ fn try_dilog_integral(
         return None;
     };
     let li2 = |arena: &mut Arena, z: ExprId| -> ExprId {
-        let sid = arena.symbols.intern(LibFn::PolyLog.name());
         let two = arena.int(2);
-        arena.intern(ExprNode::Apply(sid, [two, z].into_iter().collect()))
+        arena.lib_apply(LibFn::PolyLog, &[two, z])
     };
     let is_inverse = |arena: &Arena, e: ExprId| -> Option<ExprId> {
         match *arena.node(e) {
@@ -11886,11 +11867,8 @@ fn try_dilog_integral(
 
 /// `Li₂(z)`, the `polylog(2, z)` node.
 fn dilog(arena: &mut Arena, z: ExprId) -> ExprId {
-    let sid = arena
-        .symbols
-        .intern(crate::base::libfn::LibFn::PolyLog.name());
     let two = arena.int(2);
-    arena.intern(ExprNode::Apply(sid, [two, z].into_iter().collect()))
+    arena.lib_apply(crate::base::libfn::LibFn::PolyLog, &[two, z])
 }
 
 /// `∫ ln(L)·R(x) dx` for a linear `L = a·x + b` (`a`, `b` rational) and
@@ -12170,10 +12148,9 @@ fn with_parameter_cases(
     Some(out)
 }
 
-/// The `Apply` node of a named special function with one argument.
-fn special_apply(arena: &mut Arena, name: &str, arg: ExprId) -> ExprId {
-    let sid = arena.symbols.intern(name);
-    arena.intern(ExprNode::Apply(sid, std::iter::once(arg).collect()))
+/// The node of a library function with one argument.
+fn special_apply(arena: &mut Arena, f: crate::base::libfn::LibFn, arg: ExprId) -> ExprId {
+    arena.lib_apply(f, &[arg])
 }
 
 /// Split the factors of a product into those free of `var` and those
@@ -12650,12 +12627,7 @@ fn jumps_at_argument_poles(
     for id in crate::base::walk::post_order_ids(arena, big_f) {
         let arg = match arena.node(id) {
             ExprNode::Ln(a) => *a,
-            ExprNode::Apply(sid, args)
-                if arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::PolyLog)
-                    && args.len() == 2 =>
-            {
-                args[1]
-            }
+            ExprNode::Lib(crate::base::libfn::LibFn::PolyLog, args) if args.len() == 2 => args[1],
             _ => continue,
         };
         if !contains_var(arena, arg, var_sym) {

@@ -1143,8 +1143,18 @@ impl Context {
 
     /// Apply a named, otherwise undefined function to arguments: `f(x, y)`.
     ///
-    /// This produces the generic `Apply` node.  Nothing is known about
-    /// `f`, so:
+    /// A built-in name builds the built-in function: `name(args)` is what
+    /// the parser reads that text as (`apply("sin", [x])` is `x.sin()`,
+    /// `apply("bell", [n])` the Bell number `bell(n)`, `apply("C", [n, k])`
+    /// the binomial coefficient; names compare ignoring ASCII case, as in
+    /// the parser), so what `apply` returns prints as text that parses back
+    /// to it.  Until 0.49 a built-in name made an undefined function that
+    /// printed like the built-in (`apply("sin", [x]) - x.sin()` printed as
+    /// `-sin(x) + sin(x)`) or, for a library function, took on its
+    /// semantics only by its name.
+    ///
+    /// Any other name produces the generic `Apply` node.  Nothing is known
+    /// about `f`, so:
     ///
     /// * [`eval`](crate::expr::Ex::eval) and
     ///   [`simplify`](crate::expr::Ex::simplify) leave it alone (its
@@ -1158,9 +1168,11 @@ impl Context {
     ///
     /// # Errors
     ///
-    /// Returns [`SymplexError::InvalidArgument`] if `name` is empty or
-    /// reserved: the heads of the limit engine's internal functions
-    /// (`__ei_asym`, …), which would take on their semantics.
+    /// Returns [`SymplexError::InvalidArgument`] if `name` is empty, if it
+    /// is a built-in function that does not take `args.len()` arguments
+    /// (`apply("Shi", [x, 3])`), or if it is reserved: the heads of the
+    /// limit engine's internal functions (`__ei_asym`, …), which would take
+    /// on their semantics.
     ///
     /// # Panics
     ///
@@ -1183,6 +1195,10 @@ impl Context {
     /// assert_eq!(format!("{}", g.diff(&x)), "2*x*Subs(Derivative(g(_xi), _xi), _xi, x^2)");
     /// assert!(ctx.apply("", &[&x]).is_err());
     /// assert!(ctx.apply("__ei_asym", &[&x]).is_err());
+    /// // Built-in names build the built-in function, with its argument count.
+    /// assert_eq!(ctx.apply("sin", &[&x]).unwrap(), x.sin());
+    /// assert_eq!(ctx.apply("bell", &[ctx.int(3)]).unwrap().eval(), ctx.int(5));
+    /// assert!(ctx.apply("Shi", &[x.clone(), ctx.int(3)]).is_err());
     /// ```
     pub fn apply<T: AsRef<Ex>>(&self, name: &str, args: &[T]) -> Result<Ex, SymplexError> {
         if name.is_empty() {
@@ -1199,8 +1215,16 @@ impl Context {
         }
         let ids: SmallVec<[ExprId; 2]> = args.iter().map(|a| self.own_id(a.as_ref())).collect();
         let mut inner = self.inner.write();
-        let sid = inner.arena.symbols.intern(name);
-        let id = inner.arena.intern(ExprNode::Apply(sid, ids));
+        let id = match crate::output::parse::builtin_call(&mut inner.arena, name, &ids) {
+            Some(Ok(id)) => id,
+            Some(Err(reason)) => {
+                return Err(SymplexError::invalid_argument("Context::apply", reason));
+            }
+            None => {
+                let sid = inner.arena.symbols.intern(name);
+                inner.arena.intern(ExprNode::Apply(sid, ids))
+            }
+        };
         drop(inner);
         Ok(ctx_wrap(self, id))
     }

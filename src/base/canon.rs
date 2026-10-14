@@ -855,48 +855,38 @@ impl EverywhereMemo {
 }
 
 /// The arguments of `node` when it is a function application into which
-/// [`everywhere`] looks: the elementary and special functions, library and
-/// user functions (`Apply`), and a power with a symbolic exponent.
+/// [`everywhere`] looks: the elementary and special functions, library
+/// functions (`Lib`) and user functions (`Apply`), and a power with a
+/// symbolic exponent.
 fn application_arguments(arena: &Arena, node: &ExprNode) -> Option<SmallVec<[ExprId; 2]>> {
     match node {
-        ExprNode::Floor(a)
-        | ExprNode::Ceiling(a)
-        | ExprNode::Sin(a)
-        | ExprNode::Cos(a)
-        | ExprNode::Tan(a)
-        | ExprNode::Exp(a)
-        | ExprNode::Ln(a)
-        | ExprNode::Abs(a)
-        | ExprNode::Asin(a)
-        | ExprNode::Acos(a)
-        | ExprNode::Atan(a)
-        | ExprNode::Sinh(a)
-        | ExprNode::Cosh(a)
-        | ExprNode::Tanh(a)
-        | ExprNode::Asinh(a)
-        | ExprNode::Acosh(a)
-        | ExprNode::Atanh(a)
-        | ExprNode::Sign(a)
-        | ExprNode::Gamma(a)
-        | ExprNode::LogGamma(a)
-        | ExprNode::Digamma(a)
-        | ExprNode::Erf(a)
-        | ExprNode::Erfc(a)
-        | ExprNode::LambertW(a)
-        | ExprNode::Si(a)
-        | ExprNode::Ci(a)
-        | ExprNode::Ei(a)
-        | ExprNode::Li(a)
-        | ExprNode::Zeta(a)
-        | ExprNode::Factorial(a) => Some(smallvec![*a]),
-        ExprNode::Atan2(a, b)
-        | ExprNode::Beta(a, b)
-        | ExprNode::Polygamma(a, b)
-        | ExprNode::Binomial(a, b) => Some(smallvec![*a, *b]),
         ExprNode::Pow(b, e) if arena.as_num(*e).is_none() => Some(smallvec![*b, *e]),
-        ExprNode::Apply(_, args) => Some(args.iter().copied().collect()),
-        _ => None,
+        ExprNode::Apply(_, args) | ExprNode::Lib(_, args) => Some(args.iter().copied().collect()),
+        _ => match node.func(arena) {
+            Some((f, args)) if looked_into(f) => Some(args.into_iter().collect()),
+            _ => None,
+        },
     }
+}
+
+/// The node-backed functions into whose arguments [`everywhere`] looks:
+/// all but the variadic `min`/`max`, the parts `re`, `im`, `conjugate`,
+/// `arg` and the distributions `H`, `δ`, `KroneckerDelta` (until 0.49 an
+/// or-pattern of the 34 others).
+fn looked_into(f: crate::base::func::Func) -> bool {
+    use crate::base::func::Func;
+    !matches!(
+        f,
+        Func::Min
+            | Func::Max
+            | Func::Re
+            | Func::Im
+            | Func::Conjugate
+            | Func::Arg
+            | Func::Heaviside
+            | Func::DiracDelta
+            | Func::KroneckerDelta
+    )
 }
 
 /// What `root` is at every point ([`Everywhere`]), bottom-up over its sums,
@@ -2289,43 +2279,25 @@ pub(crate) fn costly_to_evaluate(arena: &Arena, f: ExprId) -> bool {
 fn is_costly_node(arena: &Arena, id: ExprId) -> bool {
     use crate::base::libfn::LibFn;
     let node = arena.node(id);
-    let special = matches!(
-        node,
-        ExprNode::Gamma(_)
-            | ExprNode::LogGamma(_)
-            | ExprNode::Digamma(_)
-            | ExprNode::Polygamma(..)
-            | ExprNode::Zeta(_)
-            | ExprNode::Beta(..)
-            | ExprNode::Factorial(_)
-            | ExprNode::Binomial(..)
-            | ExprNode::Erf(_)
-            | ExprNode::Erfc(_)
-            | ExprNode::Ei(_)
-            | ExprNode::Li(_)
-            | ExprNode::Si(_)
-            | ExprNode::Ci(_)
-            | ExprNode::LambertW(_)
-            | ExprNode::Apply(..)
-    );
+    let special = match node {
+        ExprNode::Apply(..) | ExprNode::Lib(..) => true,
+        _ => node.func(arena).is_some_and(|(f, _)| f.is_special()),
+    };
     if !special {
         return false;
     }
-    if let ExprNode::Apply(sid, args) = node
-        && matches!(
-            arena.lib_fn(*sid),
-            Some(
-                LibFn::Legendre
-                    | LibFn::ChebyshevT
-                    | LibFn::ChebyshevU
-                    | LibFn::Hermite
-                    | LibFn::Laguerre
-                    | LibFn::Gegenbauer
-                    | LibFn::Jacobi
-                    | LibFn::AssocLegendre
-                    | LibFn::AssocLaguerre
-            )
-        )
+    if let ExprNode::Lib(
+        LibFn::Legendre
+        | LibFn::ChebyshevT
+        | LibFn::ChebyshevU
+        | LibFn::Hermite
+        | LibFn::Laguerre
+        | LibFn::Gegenbauer
+        | LibFn::Jacobi
+        | LibFn::AssocLegendre
+        | LibFn::AssocLaguerre,
+        args,
+    ) = node
     {
         let degree_bound = Q::from_integer(BigInt::from(COSTLY_DEGREE));
         if args
@@ -4488,7 +4460,7 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
             }
             _ => return None,
         },
-        ExprNode::Apply(head, ref args) => lib_function_value(arena, head, args)?,
+        ExprNode::Lib(f, ref args) => lib_function_value(arena, f, args)?,
         _ => return None,
     };
     Some(match folded {
@@ -5293,12 +5265,11 @@ fn beta_has_pole(a: &Q, b: &Q) -> bool {
 /// (mpmath `ei(±1e-30)` = `-68.50…`).  Before 0.30 `Chi(0)` was `−∞`.
 fn lib_function_value(
     arena: &Arena,
-    head: crate::base::node::SymbolId,
+    f: crate::base::libfn::LibFn,
     args: &[ExprId],
 ) -> Option<Folded> {
     use crate::base::libfn::LibFn;
-    // Cheap filter before the name lookup: some argument must be a number
-    // or a special atom.
+    // Cheap filter: some argument must be a number or a special atom.
     let special = |id: ExprId| {
         matches!(
             arena.node(id),
@@ -5312,7 +5283,6 @@ fn lib_function_value(
     if !args.iter().any(|&a| special(a)) {
         return None;
     }
-    let f = arena.lib_fn(head)?;
     if args.contains(&arena.nan) {
         return Some(Folded::NaN);
     }
@@ -5750,6 +5720,59 @@ mod tests {
     }
     fn display(arena: &Arena, id: ExprId) -> String {
         arena.display(id).to_string()
+    }
+
+    /// `application_arguments` looks into exactly the 34 node-backed
+    /// functions its 0.49 or-pattern listed (W6c: the list became the
+    /// `looked_into` predicate).
+    #[test]
+    fn looked_into_is_the_old_list() {
+        use crate::base::func::{Family, Func};
+        use std::collections::HashSet;
+        let old: HashSet<Func> = [
+            Func::Floor,
+            Func::Ceiling,
+            Func::Sin,
+            Func::Cos,
+            Func::Tan,
+            Func::Exp,
+            Func::Ln,
+            Func::Abs,
+            Func::Asin,
+            Func::Acos,
+            Func::Atan,
+            Func::Sinh,
+            Func::Cosh,
+            Func::Tanh,
+            Func::Asinh,
+            Func::Acosh,
+            Func::Atanh,
+            Func::Sign,
+            Func::Gamma,
+            Func::LogGamma,
+            Func::Digamma,
+            Func::Erf,
+            Func::Erfc,
+            Func::LambertW0,
+            Func::Si,
+            Func::Ci,
+            Func::Ei,
+            Func::Li,
+            Func::Zeta,
+            Func::Factorial,
+            Func::Atan2,
+            Func::Beta,
+            Func::Polygamma,
+            Func::Binomial,
+        ]
+        .into_iter()
+        .collect();
+        let new: HashSet<Func> = Func::ALL
+            .iter()
+            .copied()
+            .filter(|&f| f.family() == Family::Node && looked_into(f))
+            .collect();
+        assert_eq!(new, old);
     }
 
     // ── Add canonicalization ────────────────────────────────────────────

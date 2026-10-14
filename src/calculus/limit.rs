@@ -506,6 +506,23 @@ fn eventually_real(arena: &mut Arena, g: ExprId, ap: &Approach) -> bool {
     true
 }
 
+/// [`eventually_real`] with the parameters (symbols without declared
+/// assumptions) read generically, as real: `⌊·⌋`, `⌈·⌉` and `H` have no
+/// value off the reals, so `⌊1/2 + i·x⌋` has no limit at 0, while
+/// `⌊1/2 + x·y⌋` is `0` for a generic `y`.
+fn eventually_real_generic(arena: &mut Arena, g: ExprId, ap: &Approach) -> bool {
+    let t = arena.positive_symbol("__lim_r");
+    for &right in approach_sides(ap.dir) {
+        let sub = approach_substitute(arena, ap, t, right);
+        let e = crate::transforms::subs::subs(arena, g, ap.var, sub);
+        let e = crate::transforms::eval::eval(arena, e);
+        if !crate::calculus::gruntz::real_for_generic_parameters_at_inf(arena, e, t) {
+            return false;
+        }
+    }
+    true
+}
+
 /// The eventual sign of `g` near the limit point along the approach (the
 /// same from every side approached), `None` when undecided.
 fn eventual_sign_along(arena: &mut Arena, g: ExprId, ap: &Approach) -> Option<i32> {
@@ -1160,9 +1177,8 @@ fn contains_hidden_singularity(arena: &Arena, root: ExprId) -> bool {
             },
             // `Eₙ(0)` is infinite for `n ≤ 1` (`expint(1, 0)` was taken for
             // the finite limit of `expint(1, x)` at `0`).
-            ExprNode::Apply(f, args)
+            ExprNode::Lib(crate::base::libfn::LibFn::ExpInt, args)
                 if args.len() == 2
-                    && arena.lib_fn(*f) == Some(crate::base::libfn::LibFn::ExpInt)
                     && arena.is_zero_structural(args[1])
                     && arena
                         .as_num(args[0])
@@ -1421,10 +1437,7 @@ pub(crate) fn safe_substitute(
                 }
             }
             // `Eₙ(z)` at `z = 0`: a pole for `n ≤ 1` (logarithmic for `n = 1`).
-            ExprNode::Apply(f, ref args)
-                if args.len() == 2
-                    && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::ExpInt) =>
-            {
+            ExprNode::Lib(crate::base::libfn::LibFn::ExpInt, ref args) if args.len() == 2 => {
                 let zv = val_of(arena, &values, args[1]);
                 let nv = val_of(arena, &values, args[0]);
                 if !is_zero_value(arena, zv).is_false()
@@ -1475,11 +1488,17 @@ pub(crate) fn safe_substitute(
                 // 1^∞ / ∞^0 forms are caught by the singular check below
                 // because the offending sub-expression evaluates to ∞.
             }
+            // `H`, `δ`, `⌊·⌋`, `⌈·⌉` have values on the reals only: an
+            // argument real at the point need not be real near it
+            // (`⌊1/2 + i·x⌋` at `0`, which was `0`).
             ExprNode::Sign(a) | ExprNode::Heaviside(a) | ExprNode::DiracDelta(a) => {
                 let av = val_of(arena, &values, a);
                 match arena.as_num(av) {
                     Some(r) if !r.is_zero() => {}
                     _ => return None,
+                }
+                if !matches!(node, ExprNode::Sign(_)) && !inner_known_real(arena, a) {
+                    return None;
                 }
             }
             ExprNode::Floor(a) | ExprNode::Ceiling(a) => {
@@ -1487,6 +1506,9 @@ pub(crate) fn safe_substitute(
                 match arena.as_num(av) {
                     Some(r) if !r.is_integer() => {}
                     _ => return None,
+                }
+                if !inner_known_real(arena, a) {
+                    return None;
                 }
             }
             _ => {}
@@ -1654,10 +1676,14 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
                 assumption_sign(arena, e).or_else(|| numeric_sign(arena, e))
             }
         }
-        ExprNode::Abs(inner) => {
-            let s = const_sign_depth(arena, inner, depth + 1)?;
-            Some(if s == 0 { 0 } else { 1 })
-        }
+        // `|z| > 0` for a non-real `z` proved nonzero too (`|ln(−2)|`, the
+        // modulus of the rate of `ln(−2)^x`).
+        ExprNode::Abs(inner) => match const_sign_depth(arena, inner, depth + 1) {
+            Some(s) => Some(if s == 0 { 0 } else { 1 }),
+            None => (crate::base::walk::free_symbols(arena, inner).is_empty()
+                && hidden_zero(arena, inner).proven() == Some(crate::base::truth::Truth::False))
+            .then_some(1),
+        },
         ExprNode::Pow(base, exp) => {
             let bs = const_sign_depth(arena, base, depth + 1)?;
             if let Some(r) = arena.as_num(exp).cloned() {
@@ -1728,7 +1754,9 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
 ///
 /// Up to 0.48 a value zero to the precision reached was 0, and
 /// `c = e^{−10⁻¹⁵⁰} − 1` (`−10⁻¹⁵⁰`) made `lim_{x→∞} c·x² − 1` equal
-/// `−1` (it is `−∞`).
+/// `−1` (it is `−∞`).  A constant with a `δ` off the reals has no value
+/// and so no sign ([`hidden_zero`]'s convention; `evalf` takes `δ(i)` for
+/// 0, and `lim_{x→∞} x·(δ(1 + i) + 1)` was `∞`).
 ///
 /// [`constant_realness`]: crate::transforms::realness::constant_realness
 /// [`constant_zero_decision`]: crate::transforms::eval::constant_zero_decision
@@ -1736,6 +1764,7 @@ fn numeric_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
     use crate::transforms::evalf::{ZeroSearch, evalf_verdict};
     if !crate::base::walk::free_symbols(arena, e).is_empty()
         || crate::base::walk::has_unevaluated(arena, e)
+        || crate::calculus::calculus_util::dirac_delta_off_reals(arena, e)
     {
         return None;
     }
@@ -2937,8 +2966,9 @@ fn try_compose(
                         _ => return None,
                     }
                 }
-                Kind::Finite(l) => match arena.as_num(l) {
-                    Some(r) if !r.is_zero() => sign_of_ratio(r),
+                // `H` has no value off the reals (`H(1 + i·x)` near 0).
+                Kind::Finite(l) => match arena.as_num(l).map(sign_of_ratio) {
+                    Some(s) if s != 0 && (is_sign || eventually_real_generic(arena, a, &ap)) => s,
                     _ => return None,
                 },
             };
@@ -2957,8 +2987,7 @@ fn try_compose(
             };
             sine_cosine_integral_at_infinity(arena, &node, a, inf, &ap)
         }
-        ExprNode::Apply(f, ref args) => {
-            let lf = arena.lib_fn(f)?;
+        ExprNode::Lib(lf, ref args) => {
             let (order, a) = match (lf, args.as_slice()) {
                 (
                     crate::base::libfn::LibFn::FresnelS | crate::base::libfn::LibFn::FresnelC,
@@ -2993,9 +3022,12 @@ fn try_compose(
                         _ => None,
                     }
                 }
+                // `⌊z⌋`, `⌈z⌉` have no value off the reals (`ceiling(1 +
+                // i/2)` is an error): `⌊1/2 + i·x⌋` at `0` has no limit
+                // (it was `0`).
                 Kind::Finite(l) => {
                     let r = arena.as_num(l).cloned()?;
-                    if r.is_integer() {
+                    if r.is_integer() || !eventually_real_generic(arena, a, &ap) {
                         return None;
                     }
                     let v = if is_floor { r.floor() } else { r.ceil() };
@@ -3479,7 +3511,7 @@ pub(crate) fn branch_cut_of(arena: &Arena, id: ExprId) -> Option<(ExprId, Branch
         ExprNode::Acosh(a) | ExprNode::Li(a) => (a, BranchCut::BelowOne),
         ExprNode::Asinh(a) | ExprNode::Atan(a) => (a, BranchCut::ImaginaryAxis),
         ExprNode::LambertW(a) => (a, BranchCut::BelowMinusInvE),
-        ExprNode::Apply(f, ref args) => match (arena.lib_fn(f)?, args.as_slice()) {
+        ExprNode::Lib(f, ref args) => match (f, args.as_slice()) {
             (LibFn::Chi, &[a]) => (a, BranchCut::NegativeReals),
             (LibFn::ExpInt, &[n, z]) if not_nonpositive_integer(n) => (z, BranchCut::NegativeReals),
             (LibFn::BesselK | LibFn::BesselY, &[_, z]) => (z, BranchCut::NegativeReals),
@@ -3665,7 +3697,7 @@ pub(crate) fn continuation_across_cut(
             let shift = signed(arena, pick(1), i_pi);
             arena.add(&[c, shift])
         }
-        ExprNode::Apply(f, _) if arena.lib_fn(f) == Some(crate::base::libfn::LibFn::Chi) => {
+        ExprNode::Lib(crate::base::libfn::LibFn::Chi, _) => {
             let c = arena.lib_apply(crate::base::libfn::LibFn::Chi, &[neg_u]);
             let shift = signed(arena, pick(1), i_pi);
             arena.add(&[c, shift])
@@ -3704,9 +3736,8 @@ pub(crate) fn continuation_across_cut(
         // `E₁(u) = −Ei(−u) ∓ iπ` (`−` above or on the cut; DLMF §6.2, with
         // `Ei` continuous across the positive reals): mpmath `e1(−1) =
         // −1.895 − iπ = −Ei(1) − iπ`.
-        ExprNode::Apply(f, ref args)
+        ExprNode::Lib(crate::base::libfn::LibFn::ExpInt, ref args)
             if args.len() == 2
-                && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::ExpInt)
                 && arena
                     .as_num(args[0])
                     .is_some_and(|n| *n == Q::from_integer(BigInt::from(1))) =>

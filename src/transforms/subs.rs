@@ -380,11 +380,10 @@ fn function_pattern(
     var: ExprId,
     var_sym: SymbolId,
 ) -> bool {
-    let ExprNode::Apply(head, args) = arena.node(old) else {
+    let ExprNode::Apply(_, args) = arena.node(old) else {
         return false;
     };
-    arena.lib_fn(*head).is_none()
-        && (args.contains(&var) || !crate::base::walk::has_free_symbol(arena, new, var_sym))
+    args.contains(&var) || !crate::base::walk::has_free_symbol(arena, new, var_sym)
 }
 
 /// Does a replacement of `inner` bring a free `sym` into the scope of a

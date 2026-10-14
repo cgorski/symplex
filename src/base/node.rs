@@ -29,6 +29,7 @@ use std::fmt;
 use symplex_macros::NodeShape;
 
 use crate::base::interval::IntervalKind;
+use crate::base::libfn::LibFn;
 use crate::base::walk::Binder;
 
 // ---------------------------------------------------------------------------
@@ -389,9 +390,20 @@ pub enum ExprNode {
     Piecewise(SmallVec<[(ExprId, ExprId); 3]>),
 
     // -- composite forms -----------------------------------------------------
-    /// Application of a user‐defined or library function identified by
-    /// `SymbolId` to a list of argument expressions.
+    /// Application of a user-defined function, identified by its name, to a
+    /// list of argument expressions (`Context::apply("f", …)`; nothing is
+    /// known about it).  The only other heads are the reserved `__…` names
+    /// of the series engine's internal asymptotic functions, which no user
+    /// entry point accepts.
     Apply(SymbolId, SmallVec<[ExprId; 2]>),
+
+    /// Application of a library function ([`LibFn`]: Bessel functions,
+    /// orthogonal polynomials, `erfi`, …) to its arguments, identified by
+    /// the function, not by a name.  Built only by `Arena::lib_apply` and
+    /// `Arena::func`, so the argument count is one the function accepts.
+    /// Until 0.49 library functions were `Apply` nodes resolved by their
+    /// name, so a user function named `bell` evaluated as the Bell numbers.
+    Lib(LibFn, SmallVec<[ExprId; 2]>),
 
     /// Formal derivative: d/d(var) of an expression.
     ///
@@ -666,6 +678,7 @@ impl fmt::Debug for ExprNode {
                 d.finish()
             }
             ExprNode::Apply(sym, args) => f.debug_tuple("Apply").field(sym).field(args).finish(),
+            ExprNode::Lib(lib, args) => f.debug_tuple("Lib").field(lib).field(args).finish(),
             ExprNode::Derivative(body, var) => {
                 f.debug_tuple("Derivative").field(body).field(var).finish()
             }
@@ -864,6 +877,9 @@ pub(crate) fn shape_samples(
         N::Apply(sym, smallvec![]),
         N::Apply(sym, smallvec![a]),
         N::Apply(sym, smallvec![a, b, d]),
+        N::Lib(LibFn::Erfi, smallvec![a]),
+        N::Lib(LibFn::BesselJ, smallvec![a, b]),
+        N::Lib(LibFn::Jacobi, smallvec![a, b, d, e]),
         N::Derivative(a, b),
         N::Integral(a, b),
         N::DefiniteIntegral(a, b, d, e),

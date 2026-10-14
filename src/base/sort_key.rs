@@ -339,7 +339,7 @@ impl fmt::Debug for SortKey {
 /// |  40  | `Pow`                                              |
 /// |  60  | `Mul`                                              |
 /// |  80  | `Add`                                              |
-/// | 100  | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply`, special functions, `Re`, `Im`, `Conjugate`, `Arg` |
+/// | 100  | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply`, `Lib`, special functions, `Re`, `Im`, `Conjugate`, `Arg` |
 /// | 110  | `Gt`, `Ge`, `Eq_`, `Ne` (relational)               |
 /// | 112  | `And`                                              |
 /// | 114  | `Or`                                               |
@@ -695,6 +695,18 @@ pub fn compute_sort_key(
             // alphabetically among themselves.
             key.extend(get_sym_name(*sym).as_bytes());
             // Null byte separator to avoid ambiguity between name and args.
+            key.push(0x00);
+            for &arg in args {
+                key.extend(get_key(arg).as_bytes());
+            }
+        }
+
+        // Byte-identical to the `Apply` key the library functions had until
+        // 0.49 (they sort by name among themselves and with user functions).
+        ExprNode::Lib(lib, args) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_APPLY);
+            key.extend(lib.name().as_bytes());
             key.push(0x00);
             for &arg in args {
                 key.extend(get_key(arg).as_bytes());

@@ -753,6 +753,10 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             name: arena.symbol_name(sid).to_owned(),
             args: args.iter().map(|&a| expr_to_tree(arena, a)).collect(),
         },
+        ExprNode::Lib(f, args) => ExprTree::Apply {
+            name: f.name().to_owned(),
+            args: args.iter().map(|&a| expr_to_tree(arena, a)).collect(),
+        },
         ExprNode::Derivative(body, var) => ExprTree::Derivative {
             body: Box::new(expr_to_tree(arena, body)),
             var: Box::new(expr_to_tree(arena, var)),
@@ -904,12 +908,16 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
 
 /// The [`ExprTree`] of a JSON text, with every `Num` checked: its
 /// numerator and denominator must be decimal integers and the denominator
-/// nonzero.  ([`tree_to_expr`] reads a malformed number as 0.)
+/// nonzero.  ([`tree_to_expr`] reads a malformed number as 0.)  Every
+/// `Apply` is checked too: its head must not be one of the reserved names
+/// of the limit engine's internal functions (`__ei_asym`, which would take
+/// on its asymptotic semantics), and a library function must have an
+/// argument count it takes.
 ///
 /// # Errors
 ///
 /// The JSON error if the text is not an `ExprTree`, or a custom one for
-/// a malformed number.
+/// a malformed number or `Apply`.
 pub(crate) fn tree_from_json(json: &str) -> Result<ExprTree, serde_json::Error> {
     use serde::de::Error as _;
     let value: serde_json::Value = serde_json::from_str(json)?;
@@ -931,6 +939,27 @@ pub(crate) fn tree_from_json(json: &str) -> Result<ExprTree, serde_json::Error> 
                                  expected): {v}"
                             )));
                         }
+                    }
+                }
+                if map.get("type").and_then(serde_json::Value::as_str) == Some("Apply")
+                    && let Some(name) = map.get("name").and_then(serde_json::Value::as_str)
+                {
+                    let n = map
+                        .get("args")
+                        .and_then(serde_json::Value::as_array)
+                        .map_or(0, Vec::len);
+                    if crate::base::func::Func::is_internal_name(name) {
+                        return Err(serde_json::Error::custom(format!(
+                            "function name '{name}' is reserved for internal use"
+                        )));
+                    }
+                    if let Some(f) = crate::base::libfn::LibFn::from_name(name)
+                        && !f.arity().accepts(n)
+                    {
+                        return Err(serde_json::Error::custom(format!(
+                            "{name} takes {}, got {n}",
+                            crate::base::func::Func::from(f).spec().arity
+                        )));
                     }
                 }
                 stack.extend(map.values());
@@ -1187,9 +1216,17 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let k = tree_to_expr(arena, &args[1]);
             arena.lambertw_branch(x, k)
         }
+        // A built-in name is the built-in function, as `Context::apply` and
+        // the parser read it (a library function's JSON form is its name);
+        // any other name, or a built-in name with an argument count the
+        // function does not take (which `from_json` refuses), is an
+        // undefined function.
         ExprTree::Apply { name, args } => {
-            let sym_id = arena.symbols.intern(name);
             let arg_ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
+            if let Some(Ok(id)) = crate::output::parse::builtin_call(arena, name, &arg_ids) {
+                return id;
+            }
+            let sym_id = arena.symbols.intern(name);
             let sv: smallvec::SmallVec<[ExprId; 2]> = arg_ids.into_iter().collect();
             arena.make(ExprNode::Apply(sym_id, sv))
         }

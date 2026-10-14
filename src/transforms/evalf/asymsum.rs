@@ -78,7 +78,7 @@
 //! applied to the powers `k^(−s)(ln k)^m` only, where its remainder has a
 //! proven bound, and the expansion of the summand has one too.
 
-use super::ball::CBall;
+use super::ball::{CBall, RBall, two_ulps, ulp};
 use super::wp::{RM, Wp};
 use astro_float::{BigFloat, Consts};
 use num_bigint::BigInt;
@@ -110,136 +110,11 @@ const MAX_ORDER: usize = 160;
 
 // ── Balls ──────────────────────────────────────────────────────────────────
 
-/// A real number `m ± 2^r` (`r = −∞`: exact).
-#[derive(Clone, Debug)]
-struct Ball {
-    m: BigFloat,
-    r: f64,
-}
+// The real balls are `ball::RBall`.
 
 /// `log₂(2^a + 2^b)`, rounded up.
 fn lsum(a: f64, b: f64) -> f64 {
     accuracy::lsum(a, b)
-}
-
-impl Ball {
-    fn zero(wp: usize) -> Ball {
-        Ball {
-            m: BigFloat::new(wp),
-            r: f64::NEG_INFINITY,
-        }
-    }
-
-    fn exact_zero(&self) -> bool {
-        self.m.is_zero() && self.r == f64::NEG_INFINITY
-    }
-
-    fn from_q(q: &Q, wp: usize) -> Ball {
-        let m = ratio_to_bigfloat(q, wp, RM);
-        let exact = q.is_zero() || {
-            let d = q.denom();
-            (d & (d - BigInt::one())).is_zero() && q.numer().bits() <= wp as u64
-        };
-        let r = if exact {
-            f64::NEG_INFINITY
-        } else {
-            rounding(&m, wp)
-        };
-        Ball { m, r }
-    }
-
-    fn from_int(n: i64, wp: usize) -> Ball {
-        Ball {
-            m: BigFloat::from_i64(n, wp),
-            r: f64::NEG_INFINITY,
-        }
-    }
-
-    /// `log₂` of an upper bound on the absolute value.
-    fn hi(&self) -> f64 {
-        lsum(accuracy::part_lg(&self.m), self.r)
-    }
-
-    /// `log₂` of a lower bound on the absolute value (`−∞` when the ball holds 0).
-    fn lo(&self) -> f64 {
-        let l = accuracy::part_lg_low(&self.m);
-        if self.r == f64::NEG_INFINITY {
-            return l;
-        }
-        if l.is_nan() || l <= self.r + 1e-9 {
-            return f64::NEG_INFINITY;
-        }
-        l + (1.0 - (self.r - l).exp2()).log2() - 1e-12
-    }
-
-    fn certainly_nonzero(&self) -> bool {
-        self.lo() > f64::NEG_INFINITY
-    }
-
-    fn certainly_positive(&self) -> bool {
-        self.certainly_nonzero() && super::bf_strictly_positive(&self.m)
-    }
-
-    fn add(&self, o: &Ball, wp: usize) -> Ball {
-        if self.exact_zero() {
-            return o.clone();
-        }
-        if o.exact_zero() {
-            return self.clone();
-        }
-        let m = self.m.add(&o.m, wp, RM);
-        let r = lsum(lsum(self.r, o.r), op_rounding(&m, wp));
-        Ball { m, r }
-    }
-
-    fn neg(&self) -> Ball {
-        Ball {
-            m: self.m.neg(),
-            r: self.r,
-        }
-    }
-
-    fn mul(&self, o: &Ball, wp: usize) -> Ball {
-        if self.exact_zero() || o.exact_zero() {
-            return Ball::zero(wp);
-        }
-        let m = self.m.mul(&o.m, wp, RM);
-        let (la, lb) = (accuracy::part_lg(&self.m), accuracy::part_lg(&o.m));
-        let r = lsum(
-            lsum(lsum(la + o.r, lb + self.r), self.r + o.r),
-            op_rounding(&m, wp),
-        );
-        Ball { m, r }
-    }
-
-    /// `1/self` (the ball must exclude 0).
-    fn recip(&self, wp: usize) -> Option<Ball> {
-        let lo = self.lo();
-        if lo == f64::NEG_INFINITY {
-            return None;
-        }
-        let m = BigFloat::from_i32(1, 64).div(&self.m, wp, RM);
-        // |1/(m+δ) − 1/m| ≤ |δ|/(|m|·(|m| − |δ|)).
-        let r = if self.r == f64::NEG_INFINITY {
-            op_rounding(&m, wp)
-        } else {
-            lsum(
-                self.r - lo - accuracy::part_lg_low(&self.m),
-                op_rounding(&m, wp),
-            )
-        };
-        Some(Ball { m, r })
-    }
-}
-
-/// The rounding of a `wp`-bit result `m`: an ulp at its magnitude.
-fn op_rounding(m: &BigFloat, wp: usize) -> f64 {
-    accuracy::part_mag(m).map_or(f64::NEG_INFINITY, |e| (e - wp as i64) as f64)
-}
-
-/// Two ulps (a transcendental function's rounding).
-fn rounding(m: &BigFloat, wp: usize) -> f64 {
-    accuracy::part_mag(m).map_or(f64::NEG_INFINITY, |e| (e - wp as i64 + 1) as f64)
 }
 
 // ── Models ─────────────────────────────────────────────────────────────────
@@ -264,7 +139,7 @@ struct Ctx {
 struct Model {
     beta: Q,
     alt: bool,
-    c: Vec<Vec<Ball>>,
+    c: Vec<Vec<RBall>>,
     off: usize,
     le: f64,
     l: usize,
@@ -316,7 +191,7 @@ impl Ctx {
         }
     }
 
-    fn constant(&self, b: Ball) -> Model {
+    fn constant(&self, b: RBall) -> Model {
         let mut m = self.zero();
         m.c[0] = vec![b];
         m
@@ -331,7 +206,7 @@ impl Ctx {
     }
 
     fn var(&self) -> Model {
-        let mut m = self.constant(Ball::from_int(1, self.wp));
+        let mut m = self.constant(RBall::from_int(1, self.wp));
         m.beta = -Q::one();
         m
     }
@@ -437,11 +312,11 @@ impl Ctx {
                 let x = a.c[j]
                     .get(m)
                     .cloned()
-                    .unwrap_or_else(|| Ball::zero(self.wp));
+                    .unwrap_or_else(|| RBall::zero(self.wp));
                 let y = b.c[j]
                     .get(m)
                     .cloned()
-                    .unwrap_or_else(|| Ball::zero(self.wp));
+                    .unwrap_or_else(|| RBall::zero(self.wp));
                 row.push(x.add(&y, self.wp));
             }
             out.c[j] = row;
@@ -464,7 +339,7 @@ impl Ctx {
             if row.is_empty() {
                 continue;
             }
-            let mut r = vec![Ball::zero(self.wp); d];
+            let mut r = vec![RBall::zero(self.wp); d];
             r.append(row);
             *row = r;
         }
@@ -472,10 +347,10 @@ impl Ctx {
     }
 
     fn is_zero(&self, a: &Model) -> bool {
-        a.le == f64::NEG_INFINITY && a.c.iter().all(|row| row.iter().all(Ball::exact_zero))
+        a.le == f64::NEG_INFINITY && a.c.iter().all(|row| row.iter().all(RBall::exact_zero))
     }
 
-    fn scale(&self, a: &Model, s: &Ball) -> Model {
+    fn scale(&self, a: &Model, s: &RBall) -> Model {
         let mut out = a.clone();
         for row in out.c.iter_mut() {
             for b in row.iter_mut() {
@@ -514,7 +389,7 @@ impl Ctx {
                         if t <= jj {
                             let row = &mut out.c[t];
                             if row.len() <= m {
-                                row.resize(m + 1, Ball::zero(self.wp));
+                                row.resize(m + 1, RBall::zero(self.wp));
                             }
                             row[m] = row[m].add(&x.mul(y, self.wp), self.wp);
                         } else {
@@ -573,9 +448,9 @@ impl Ctx {
     /// `a = x^(−β)·c₀·ℓ^p·(1 + v)`: `c₀` (certainly not 0, the only term of
     /// order `u⁰`, with a power `p ≥ 0` of `ℓ`), `p`, and `v` (`β = 0`, no term
     /// of order `u⁰`).
-    fn split_lead(&self, a: &Model) -> Option<(Ball, usize, Model)> {
+    fn split_lead(&self, a: &Model) -> Option<(RBall, usize, Model)> {
         let row0 = &a.c[0];
-        let mut lead: Option<(usize, Ball)> = None;
+        let mut lead: Option<(usize, RBall)> = None;
         for (i, b) in row0.iter().enumerate() {
             if b.exact_zero() {
                 continue;
@@ -626,20 +501,20 @@ impl Ctx {
     }
 
     /// `Σ_{i≤J} coeffs[i]·v^i` (Horner) plus the remainder `2^tail·abs(v)^(J+1)`.
-    fn compose(&self, v: &Model, coeffs: &[Ball], tail: f64) -> Option<Model> {
+    fn compose(&self, v: &Model, coeffs: &[RBall], tail: f64) -> Option<Model> {
         let jj = self.j;
         let mut acc = self.constant(
             coeffs
                 .get(jj)
                 .cloned()
-                .unwrap_or_else(|| Ball::zero(self.wp)),
+                .unwrap_or_else(|| RBall::zero(self.wp)),
         );
         for i in (0..jj).rev() {
             acc = self.mul(&acc, v)?;
             let c = coeffs
                 .get(i)
                 .cloned()
-                .unwrap_or_else(|| Ball::zero(self.wp));
+                .unwrap_or_else(|| RBall::zero(self.wp));
             acc = self.add(&acc, &self.constant(c))?;
         }
         let (_, v1, l1) = self.v_bounds(v);
@@ -670,8 +545,8 @@ impl Ctx {
         if !self.below_one(sup, -1e-3) {
             return None;
         }
-        let coeffs: Vec<Ball> = (0..=self.j)
-            .map(|i| Ball::from_int(if i.is_multiple_of(2) { 1 } else { -1 }, self.wp))
+        let coeffs: Vec<RBall> = (0..=self.j)
+            .map(|i| RBall::from_int(if i.is_multiple_of(2) { 1 } else { -1 }, self.wp))
             .collect();
         let tail = -(1.0 - sup.exp2()).log2();
         let s = self.compose(&v, &coeffs, tail)?;
@@ -685,7 +560,7 @@ impl Ctx {
     /// `a^n` for an integer `n`.
     fn powi(&self, a: &Model, n: i64) -> Option<Model> {
         if n == 0 {
-            return Some(self.constant(Ball::from_int(1, self.wp)));
+            return Some(self.constant(RBall::from_int(1, self.wp)));
         }
         let base = if n < 0 { self.recip(a)? } else { a.clone() };
         let mut e = n.unsigned_abs();
@@ -723,7 +598,7 @@ impl Ctx {
         let mut coeffs = Vec::with_capacity(self.j + 1);
         let mut binom = Q::one();
         for i in 0..=self.j {
-            coeffs.push(Ball::from_q(&binom, self.wp));
+            coeffs.push(RBall::from_q(&binom, self.wp));
             binom = binom * (alpha - Q::from_integer(BigInt::from(i)))
                 / Q::from_integer(BigInt::from(i + 1));
         }
@@ -752,9 +627,9 @@ impl Ctx {
         };
         let r = lsum(
             accuracy::part_lg(&p) + af.abs().max(1e-300).log2() + dl + 1.0,
-            rounding(&p, wp) + 1.0,
+            two_ulps(&p, wp) + 1.0,
         );
-        let mut out = self.scale(&s, &Ball { m: p, r });
+        let mut out = self.scale(&s, &RBall { m: p, r });
         out.beta = &a.beta * alpha;
         Some(out)
     }
@@ -772,13 +647,13 @@ impl Ctx {
         if !self.below_one(sup, -1e-3) {
             return None;
         }
-        let mut coeffs = vec![Ball::zero(self.wp)];
+        let mut coeffs = vec![RBall::zero(self.wp)];
         for i in 1..=self.j {
             let q = Q::new(
                 BigInt::from(if !i.is_multiple_of(2) { 1 } else { -1 }),
                 BigInt::from(i),
             );
-            coeffs.push(Ball::from_q(&q, self.wp));
+            coeffs.push(RBall::from_q(&q, self.wp));
         }
         let tail = -((self.j as f64 + 1.0).log2()) - (1.0 - sup.exp2()).log2();
         let s = self.compose(&v, &coeffs, tail)?;
@@ -789,11 +664,11 @@ impl Ctx {
         } else {
             c0.r - c0.lo()
         };
-        let r = lsum(dl, rounding(&lc, wp));
-        let mut out = self.add(&s, &self.constant(Ball { m: lc, r }))?;
+        let r = lsum(dl, two_ulps(&lc, wp));
+        let mut out = self.add(&s, &self.constant(RBall { m: lc, r }))?;
         if !a.beta.is_zero() {
             let mut lterm = self.zero();
-            lterm.c[0] = vec![Ball::zero(wp), Ball::from_q(&-a.beta.clone(), wp)];
+            lterm.c[0] = vec![RBall::zero(wp), RBall::from_q(&-a.beta.clone(), wp)];
             out = self.add(&out, &lterm)?;
         }
         Some(out)
@@ -801,7 +676,7 @@ impl Ctx {
 
     /// `a` as `c₀ + v` with `β = 0` (`a` bounded: an integer `β ≥ 0`, no `ℓ`
     /// beside the constant): `(c₀, v)`.
-    fn split_const(&self, a: &Model) -> Option<(Ball, Model)> {
+    fn split_const(&self, a: &Model) -> Option<(RBall, Model)> {
         if a.alt {
             return None;
         }
@@ -816,7 +691,7 @@ impl Ctx {
         let c0 = a0.c[0]
             .get(a0.off)
             .cloned()
-            .unwrap_or_else(|| Ball::zero(self.wp));
+            .unwrap_or_else(|| RBall::zero(self.wp));
         let mut v = a0;
         v.c[0] = Vec::new();
         Some((c0, v))
@@ -831,7 +706,7 @@ impl Ctx {
         let mut coeffs = Vec::with_capacity(self.j + 1);
         let mut f = Q::one();
         for i in 0..=self.j {
-            coeffs.push(Ball::from_q(&f, self.wp));
+            coeffs.push(RBall::from_q(&f, self.wp));
             f /= Q::from_integer(BigInt::from(i + 1));
         }
         let tail = sup.exp2() * LOG2E - log2_factorial(self.j + 1);
@@ -845,9 +720,9 @@ impl Ctx {
                 } else {
                     c0.r + 1.0
                 },
-            rounding(&e, wp),
+            two_ulps(&e, wp),
         );
-        Some(self.scale(&s, &Ball { m: e, r }))
+        Some(self.scale(&s, &RBall { m: e, r }))
     }
 
     /// `sin a` (`cos = false`) or `cos a`.
@@ -868,9 +743,9 @@ impl Ctx {
                 -f.clone()
             };
             let (s, c) = if !i.is_multiple_of(2) {
-                (Ball::from_q(&sign, wp), Ball::zero(wp))
+                (RBall::from_q(&sign, wp), RBall::zero(wp))
             } else {
-                (Ball::zero(wp), Ball::from_q(&sign, wp))
+                (RBall::zero(wp), RBall::from_q(&sign, wp))
             };
             sin_c.push(s);
             cos_c.push(c);
@@ -882,8 +757,8 @@ impl Ctx {
         let sc = c0.m.sin(wp, RM, cc);
         let ccv = c0.m.cos(wp, RM, cc);
         let ball = |x: BigFloat| {
-            let r = lsum(c0.r, rounding(&x, wp));
-            Ball { m: x, r }
+            let r = lsum(c0.r, two_ulps(&x, wp));
+            RBall { m: x, r }
         };
         let (sb, cb) = (ball(sc), ball(ccv));
         if cos {
@@ -901,13 +776,13 @@ impl Ctx {
             return None;
         }
         let wp = self.wp;
-        let coeffs: Vec<Ball> = (0..=self.j)
+        let coeffs: Vec<RBall> = (0..=self.j)
             .map(|i| {
                 if i.is_multiple_of(2) {
-                    Ball::zero(wp)
+                    RBall::zero(wp)
                 } else {
                     let sign = if (i / 2).is_multiple_of(2) { 1 } else { -1 };
-                    Ball::from_q(&Q::new(BigInt::from(sign), BigInt::from(i)), wp)
+                    RBall::from_q(&Q::new(BigInt::from(sign), BigInt::from(i)), wp)
                 }
             })
             .collect();
@@ -934,10 +809,10 @@ impl Ctx {
             let t = self.atan_small(&v)?;
             let pi = cc.pi(wp, RM).clone();
             let half = pi.div(&BigFloat::from_i32(2, 64), wp, RM);
-            let r = rounding(&half, wp);
+            let r = two_ulps(&half, wp);
             return self.add(
-                &self.constant(Ball { m: half, r }),
-                &self.scale(&t, &Ball::from_int(-1, wp)),
+                &self.constant(RBall { m: half, r }),
+                &self.scale(&t, &RBall::from_int(-1, wp)),
             );
         }
         let (c0, v) = self.split_const(a)?;
@@ -945,7 +820,7 @@ impl Ctx {
             return self.atan_small(&v);
         }
         // atan(c₀ + v) = atan c₀ + atan(v/(1 + c₀² + c₀v)).
-        let one = Ball::from_int(1, wp);
+        let one = RBall::from_int(1, wp);
         let d0 = one.add(&c0.mul(&c0, wp), wp);
         let den = self.add(&self.constant(d0), &self.scale(&v, &c0))?;
         let y = self.mul(&v, &self.recip(&den)?)?;
@@ -955,12 +830,12 @@ impl Ctx {
         }
         let t = self.atan_small(&w)?;
         let at = c0.m.atan(wp, RM, cc);
-        let r = lsum(c0.r, rounding(&at, wp));
-        self.add(&self.constant(Ball { m: at, r }), &t)
+        let r = lsum(c0.r, two_ulps(&at, wp));
+        self.add(&self.constant(RBall { m: at, r }), &t)
     }
 
     /// `harmonic(a)` for `a → +∞` (real, `c₀ > 0`, `β < 0` an integer).
-    fn harmonic(&self, a: &Model, gamma: &Ball, cc: &mut Consts) -> Option<Model> {
+    fn harmonic(&self, a: &Model, gamma: &RBall, cc: &mut Consts) -> Option<Model> {
         if a.alt || !a.beta.is_negative() || !a.beta.is_integer() {
             return None;
         }
@@ -974,7 +849,7 @@ impl Ctx {
         out = self.add(&out, &self.constant(gamma.clone()))?;
         out = self.add(
             &out,
-            &self.scale(&y, &Ball::from_q(&Q::new(1.into(), 2.into()), wp)),
+            &self.scale(&y, &RBall::from_q(&Q::new(1.into(), 2.into()), wp)),
         )?;
         // −Σ_{i≤I} B₂ᵢ/(2i)·y^(2i), with 2I·β_y ≥ J + 1.
         let by = y.beta.to_integer().to_usize()?.max(1);
@@ -986,7 +861,7 @@ impl Ctx {
                 pw = self.mul(&pw, &y2)?;
             }
             let b = super::bernoulli::even(i) / Q::from_integer(BigInt::from(2 * i));
-            out = self.add(&out, &self.scale(&pw, &Ball::from_q(&-b, wp)))?;
+            out = self.add(&out, &self.scale(&pw, &RBall::from_q(&-b, wp)))?;
         }
         // |R| ≤ |B₂ᵢ|/(2I)·y^(2I) with y ≤ Y·u^β_y, Y = sup over x ≥ N.
         let b = super::bernoulli::even(big_i) / Q::from_integer(BigInt::from(2 * big_i));
@@ -1031,7 +906,7 @@ fn build(
     var: ExprId,
     lo: &BigInt,
     ctx: &Ctx,
-    gamma: &Ball,
+    gamma: &RBall,
     part: &mut PartFn<'_>,
     cc: &mut Consts,
 ) -> Result<Model, Fail> {
@@ -1059,14 +934,14 @@ fn build(
             ctx.var()
         } else if dep.get(&id) != Some(&true) {
             if let Some(q) = arena.as_num(id) {
-                ctx.constant(Ball::from_q(q, ctx.wp))
+                ctx.constant(RBall::from_q(q, ctx.wp))
             } else {
                 let CBall { mid: v, err: b } =
                     part(id, lo, ctx.wp).map_err(|_| Fail::Unsupported)?;
                 if !accuracy::exactly_real(&v, b) || b.is_unknown() {
                     return Err(Fail::Unsupported);
                 }
-                ctx.constant(Ball { m: v.0, r: b.re })
+                ctx.constant(RBall { m: v.0, r: b.re })
             }
         } else {
             let get = |c: &ExprId| models.get(c).ok_or(Fail::Unsupported);
@@ -1079,13 +954,13 @@ fn build(
                     acc
                 }
                 ExprNode::Mul(children) => {
-                    let mut acc = ctx.constant(Ball::from_int(1, ctx.wp));
+                    let mut acc = ctx.constant(RBall::from_int(1, ctx.wp));
                     for c in children.iter() {
                         acc = small(ctx.mul(&acc, get(c)?))?;
                     }
                     acc
                 }
-                ExprNode::Neg(c) => ctx.scale(get(c)?, &Ball::from_int(-1, ctx.wp)),
+                ExprNode::Neg(c) => ctx.scale(get(c)?, &RBall::from_int(-1, ctx.wp)),
                 ExprNode::Pow(b, e) => {
                     if let Some(q) = arena.as_num(*e) {
                         let base = get(b)?;
@@ -1111,9 +986,7 @@ fn build(
                 ExprNode::Sin(c) => small(ctx.sin_cos(get(c)?, false, cc))?,
                 ExprNode::Cos(c) => small(ctx.sin_cos(get(c)?, true, cc))?,
                 ExprNode::Atan(c) => small(ctx.atan(get(c)?, cc))?,
-                ExprNode::Apply(sid, args)
-                    if arena.lib_fn(*sid) == Some(LibFn::Harmonic) && args.len() == 1 =>
-                {
+                ExprNode::Lib(LibFn::Harmonic, args) if args.len() == 1 => {
                     small(ctx.harmonic(get(&args[0])?, gamma, cc))?
                 }
                 _ => return Err(Fail::Unsupported),
@@ -1128,7 +1001,7 @@ fn build(
 /// (for an odd `s`) times `(−1)^c`.
 fn alternation(arena: &Arena, e: ExprId, var: ExprId, ctx: &Ctx) -> Option<Model> {
     let (s, c) = linear_integer(arena, e, var)?;
-    let mut m = ctx.constant(Ball::from_int(
+    let mut m = ctx.constant(RBall::from_int(
         if c.rem_euclid(2) == 0 { 1 } else { -1 },
         ctx.wp,
     ));
@@ -1227,7 +1100,7 @@ fn power_log_tail(
     alt: bool,
     floor: f64,
     wpc: &mut Wp<'_>,
-) -> Option<(BigFloat, f64)> {
+) -> Option<RBall> {
     let wp = wpc.bits();
     let p = wp + 32;
     let nb = BigFloat::from_u64(n, 64);
@@ -1304,7 +1177,7 @@ fn power_log_tail(
     let mut npow = nps.clone(); // N^(−s−order)
     let mut fact = BigFloat::from_i32(1, p); // (order)!
     let max_m = 4 * wp + 64;
-    let mut best: Option<(BigFloat, f64)> = None;
+    let mut best: Option<RBall> = None;
     for order in 0..(2 * max_m) {
         let so = s.add(&BigFloat::from_u64(order as u64, 64), p, RM);
         let mut next = vec![BigFloat::new(p); coef.len() + 1];
@@ -1370,19 +1243,30 @@ fn power_log_tail(
             let rem = lb + mult + ib;
             let err = lsum(rem, largest - p as f64 + 8.0);
             if rem < largest - wp as f64 - 8.0 || rem < floor {
-                return Some((super::round_to(value, wp), err));
+                return Some(RBall {
+                    m: super::round_to(value, wp),
+                    r: err,
+                });
             }
             match &best {
-                Some((_, b)) if *b + 24.0 < err => break,
-                Some((_, b)) if *b <= err => {}
-                _ => best = Some((value.clone(), err)),
+                Some(b) if b.r + 24.0 < err => break,
+                Some(b) if b.r <= err => {}
+                _ => {
+                    best = Some(RBall {
+                        m: value.clone(),
+                        r: err,
+                    })
+                }
             }
             if k > 2 * max_m - 2 {
                 break;
             }
         }
     }
-    best.map(|(v, b)| (super::round_to(v, wp), b))
+    best.map(|b| RBall {
+        m: super::round_to(b.m, wp),
+        r: b.r,
+    })
 }
 
 // ── The sum ────────────────────────────────────────────────────────────────
@@ -1434,8 +1318,8 @@ pub(super) fn asymptotic_sum(
     let cc = &mut consts;
     let wp = prec + 32;
     let g = super::arb_euler_gamma(&mut Wp::new(wp, cc)).ok()?;
-    let gr = rounding(&g, wp);
-    let gamma = Ball { m: g, r: gr };
+    let gr = two_ulps(&g, wp);
+    let gamma = RBall { m: g, r: gr };
     let start = lo.to_i64()?;
     // N = 64 first (the terms below it are evaluated one by one, at the cost
     // of a full evaluation each: `harmonic(k)` takes milliseconds), larger
@@ -1491,7 +1375,7 @@ pub(super) fn asymptotic_sum(
             k += 1;
         }
         match tail(&model, &ctx, n, cc) {
-            TailResult::Done(value, err) => {
+            TailResult::Done(RBall { m: value, r: err }) => {
                 let target = accuracy::part_lg(&value)
                     .max(accuracy::lg_abs(&direct.value))
                     .max(-1e6)
@@ -1529,7 +1413,7 @@ pub(super) fn asymptotic_sum(
 }
 
 enum TailResult {
-    Done(BigFloat, f64),
+    Done(RBall),
     Divergent,
     Undecided,
     Failed,
@@ -1588,7 +1472,7 @@ fn tail(model: &Model, ctx: &Ctx, n: u64, cc: &mut Consts) -> TailResult {
                 };
             }
             let sb = ratio_to_bigfloat(&s_q, p, RM);
-            let Some((z, ez)) = power_log_tail(
+            let Some(RBall { m: z, r: ez }) = power_log_tail(
                 &sb,
                 sf,
                 e,
@@ -1603,7 +1487,7 @@ fn tail(model: &Model, ctx: &Ctx, n: u64, cc: &mut Consts) -> TailResult {
             let es = if s_q.denom().is_one() {
                 f64::NEG_INFINITY
             } else {
-                rounding(&sb, p) + accuracy::part_lg(&z) + (ctx.ln_n + 1.0).log2() + 1.0
+                two_ulps(&sb, p) + accuracy::part_lg(&z) + (ctx.ln_n + 1.0).log2() + 1.0
             };
             let t = c.m.mul(&z, p, RM);
             value = value.add(&t, p, RM);
@@ -1611,7 +1495,7 @@ fn tail(model: &Model, ctx: &Ctx, n: u64, cc: &mut Consts) -> TailResult {
                 err,
                 lsum(c.hi() + lsum(ez, es), c.r + accuracy::part_lg(&z)),
             );
-            err = lsum(err, op_rounding(&t, p) + 1.0);
+            err = lsum(err, ulp(&t, p) + 1.0);
         }
     }
     if model.le > f64::NEG_INFINITY {
@@ -1630,7 +1514,7 @@ fn tail(model: &Model, ctx: &Ctx, n: u64, cc: &mut Consts) -> TailResult {
     if !err.is_finite() && err != f64::NEG_INFINITY {
         return TailResult::Failed;
     }
-    TailResult::Done(value, err)
+    TailResult::Done(RBall { m: value, r: err })
 }
 
 /// Does a logarithm of the index appear under a negative power (`1/ln(k +
@@ -1671,9 +1555,7 @@ fn supported_shape(arena: &Arena, body: ExprId, var: ExprId) -> bool {
             | ExprNode::Sin(_)
             | ExprNode::Cos(_)
             | ExprNode::Atan(_) => true,
-            ExprNode::Apply(sid, args) => {
-                arena.lib_fn(*sid) == Some(LibFn::Harmonic) && args.len() == 1
-            }
+            ExprNode::Lib(LibFn::Harmonic, args) => args.len() == 1,
             _ => false,
         };
         if !ok {
@@ -1690,7 +1572,7 @@ mod tests {
     fn check(s: i32, m: i64, alt: bool, want: &str) {
         let mut cc = Consts::new().unwrap();
         let sb = BigFloat::from_i32(s, 64);
-        let (v, e) = power_log_tail(
+        let RBall { m: v, r: e } = power_log_tail(
             &sb,
             f64::from(s),
             m,

@@ -42,8 +42,6 @@ const ROUNDED_ALLOWLIST: &[(&str, usize)] = &[
     ("base/bernoulli.rs", 2),
     ("base/canon.rs", 1),
     ("base/dense_f64.rs", 1),
-    // `push_trig_zeros`: `k_min`/`k_max` of `offset + kπ`, saturating (`saturating_sub`/`add`) since 0.45.
-    ("calculus/calculus_util.rs", 2),
     ("calculus/limit.rs", 1),
     ("domains/ntheory.rs", 2),
     ("domains/stats/anova.rs", 3),

@@ -48,11 +48,10 @@
 //! `erfc x < e^(−x²)/(x√π)`), over the ball `1/(2(u − r)x)`, with no bound
 //! when the ball reaches within eight radii of 0.
 
-use super::ball::CBall;
+use super::ball::{CBall, Cache};
 use super::wp::{RM, Wp};
 use crate::base::bigfloat::{is_strictly_positive, to_f64};
 use astro_float::{BigFloat, Consts};
-use rustc_hash::FxHashMap;
 
 use super::accuracy::{self, Bound, Cut};
 use super::cexpint::{self, TrigInt};
@@ -81,17 +80,17 @@ pub(super) enum Fun {
     FresnelC,
 }
 
-fn nonreal(cache: &FxHashMap<ExprId, Complex>, c: ExprId) -> bool {
+fn nonreal(cache: Cache<'_>, c: ExprId) -> bool {
     cache.get(&c).is_some_and(|v| !v.1.is_zero())
 }
 
-fn negative_real(cache: &FxHashMap<ExprId, Complex>, c: ExprId) -> bool {
+fn negative_real(cache: Cache<'_>, c: ExprId) -> bool {
     cache
         .get(&c)
         .is_some_and(|v| v.1.is_zero() && v.0.is_negative() && !v.0.is_zero())
 }
 
-fn integer_real(cache: &FxHashMap<ExprId, Complex>, c: ExprId) -> bool {
+fn integer_real(cache: Cache<'_>, c: ExprId) -> bool {
     cache
         .get(&c)
         .is_some_and(|v| v.1.is_zero() && (v.0.is_zero() || v.0.is_int()))
@@ -99,11 +98,7 @@ fn integer_real(cache: &FxHashMap<ExprId, Complex>, c: ExprId) -> bool {
 
 /// The function of `node` and its arguments, when the complex routines
 /// evaluate it (module documentation).
-pub(super) fn classify(
-    arena: &Arena,
-    node: &ExprNode,
-    cache: &FxHashMap<ExprId, Complex>,
-) -> Option<(Fun, Vec<ExprId>)> {
+pub(super) fn classify(node: &ExprNode, cache: Cache<'_>) -> Option<(Fun, Vec<ExprId>)> {
     use super::cbessel::Kind as B;
     let (f, args): (Fun, Vec<ExprId>) = match node {
         ExprNode::Ei(c) if nonreal(cache, *c) => (Fun::Ei, vec![*c]),
@@ -113,8 +108,8 @@ pub(super) fn classify(
         ExprNode::Binomial(n, k) if nonreal(cache, *n) || nonreal(cache, *k) => {
             (Fun::Binomial, vec![*n, *k])
         }
-        ExprNode::Apply(sid, a) => {
-            let f = arena.lib_fn(*sid)?;
+        ExprNode::Lib(f, a) => {
+            let f = *f;
             let any_nonreal = a.iter().any(|&c| nonreal(cache, c));
             let f = match (f, a.len()) {
                 (LibFn::Shi, 1) if any_nonreal => Fun::Trig(TrigInt::Shi),
@@ -388,15 +383,14 @@ const END_COMPLEMENT: f64 = 1.0 / 1024.0;
 fn end_complement(
     arena: &Arena,
     node: &ExprNode,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &FxHashMap<ExprId, Bound>,
+    cache: Cache<'_>,
     prec: usize,
 ) -> Option<EndComplement> {
     use crate::base::numeric::Q;
-    let ExprNode::Apply(sid, args) = node else {
+    let ExprNode::Lib(f, args) = node else {
         return None;
     };
-    let inverse_erfc = match arena.lib_fn(*sid)? {
+    let inverse_erfc = match f {
         LibFn::ErfInv => false,
         LibFn::ErfcInv => true,
         _ => return None,
@@ -432,7 +426,7 @@ fn end_complement(
                 _ => return None,
             };
             let tv = cache.get(&t)?;
-            let tb = errs.get(&t).copied()?;
+            let tb = cache.bound(&t)?;
             if tb.is_unknown() || !accuracy::exactly_real(tv, tb) {
                 return None;
             }
@@ -461,12 +455,11 @@ fn end_complement(
 pub(super) fn inverse_erf_end(
     arena: &Arena,
     node: &ExprNode,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &FxHashMap<ExprId, Bound>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Option<Result<CBall, SymplexError>> {
     let prec = w.bits();
-    let end = end_complement(arena, node, cache, errs, prec)?;
+    let end = end_complement(arena, node, cache, prec)?;
     let lu = accuracy::part_lg(&end.u);
     let well_inside = end.err + 3.0 <= lu;
     if !accuracy::is_exact(end.err) && !well_inside {
@@ -533,8 +526,7 @@ pub(super) fn bound(
     f: Fun,
     args: &[ExprId],
     v: &Complex,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &FxHashMap<ExprId, Bound>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Bound {
     let prec = w.bits();
@@ -544,14 +536,14 @@ pub(super) fn bound(
     let mut vals: Vec<&Complex> = Vec::with_capacity(args.len());
     let mut bs: Vec<Bound> = Vec::with_capacity(args.len());
     for a in args {
-        let (Some(val), Some(b)) = (cache.get(a), errs.get(a)) else {
+        let (Some(val), Some(b)) = (cache.get(a), cache.bound(a)) else {
             return Bound::UNKNOWN;
         };
         if b.is_unknown() {
             return Bound::UNKNOWN;
         }
         vals.push(val);
-        bs.push(*b);
+        bs.push(b);
     }
     let lv = accuracy::lg_abs(v);
     let own = lv - prec as f64 - 12.0;

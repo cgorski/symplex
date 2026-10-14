@@ -321,8 +321,9 @@ pub(crate) fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize, rm: RoundingMode
 // ── Integer gcd: the one implementation ──────────────────────────────────────────
 //
 // Before 0.50 the crate had two big-integer gcds (this file's Euclid-then-
-// binary `gcd_big` and the polynomial code's Lehmer `int_gcd`) and three
-// word gcds; they are one now.  `num-integer`'s gcd is the binary (Stein)
+// binary `gcd_big` and the polynomial code's Lehmer `int_gcd`) and eight
+// word gcds (`u32`, `u64`, `u128` copies in ntheory, linalg, formal series,
+// nsimplify and the polynomial code); they are these three now.  `num-integer`'s gcd is the binary (Stein)
 // algorithm, about one bit per pass over the operands; Lehmer's algorithm
 // (Knuth, TAOCP vol. 2, §4.5.2, Algorithm L) runs the Euclidean quotients
 // on the leading 62 bits and applies them to the full operands about 30
@@ -350,8 +351,8 @@ pub(crate) fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
     }
 }
 
-/// `gcd(a, b)` on double words (Euclid).
-fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+/// `gcd(a, b)` on double words (Euclid; `gcd(0, b) = b`).
+pub(crate) fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
         (a, b) = (b, a % b);
     }

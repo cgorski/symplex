@@ -132,7 +132,7 @@
 //! higher precision until the requested digits are covered
 //! (`evaluate_adaptive` in `evalf.rs`).
 
-use super::ball::{Ball, CBall};
+use super::ball::{Ball, CBall, Cache};
 use super::wp::RM;
 use std::borrow::Borrow;
 
@@ -437,7 +437,7 @@ pub(super) fn ceil_log2(n: usize) -> i64 {
 }
 
 /// Is the rational exactly representable as a `prec`-bit binary float?
-fn exactly_representable(q: &Q, prec: usize) -> bool {
+pub(super) fn exactly_representable(q: &Q, prec: usize) -> bool {
     let d = q.denom();
     let power_of_two = (d & (d - BigInt::one())).is_zero();
     power_of_two && q.numer().bits() <= prec as u64
@@ -712,7 +712,7 @@ fn product_part(
             continue;
         }
         let (lx, ly) = (part_lg(x), part_lg(y));
-        err = lsum(err, lsum(lsum(lx + ey, ly + ex), ex + ey));
+        err = lsum(err, product_rule(lx, ex, ly, ey));
         round = round.max(lmag(x) + lmag(y) - p);
         exact &= ex == f64::NEG_INFINITY && ey == f64::NEG_INFINITY;
         live.push((x, y));
@@ -740,6 +740,13 @@ fn product_part(
     }
     round = round.max(lmag(result) - p);
     lsum(err, round + 3f64.log2())
+}
+
+/// The propagated error of a product `x·y` of `x ± 2^ex`, `y ± 2^ey` with
+/// `abs(x) ≤ 2^lx`, `abs(y) ≤ 2^ly`: `abs(x)·err(y) + abs(y)·err(x) +
+/// err(x)·err(y)` (the rounding of the product is not included).
+pub(super) fn product_rule(lx: f64, ex: ErrExp, ly: f64, ey: ErrExp) -> ErrExp {
+    lsum(lsum(lx + ey, ly + ex), ex + ey)
 }
 
 /// `a₁ · … · aₙ` multiplied left to right from 1 at `prec` bits, as `evalf`
@@ -946,91 +953,6 @@ fn holder(j: ErrExp) -> ErrExp {
     }
 }
 
-/// The propagated bound of an inverse trigonometric or hyperbolic function
-/// (node `node`) of `z ± b`, at working precision `prec`: see the module
-/// documentation.  `|f′(z)| = |(z − p₁)(z − p₂)|^(−k)` with the branch
-/// points `p₁, p₂` (`k = ½` for `asin`, `acos`, `asinh`, `acosh`, 1 for
-/// `atan`, `atanh`), computed from the distances at high precision — the
-/// 64-bit `1 − z²` before 0.29 cancelled to 0 for `z` within `2⁻⁶⁴` of ±1
-/// and `acos(1 + 5·10⁻⁶¹)` was refused.
-fn inverse_error(node: &ExprNode, z: &Complex, b: Bound, prec: usize) -> Bound {
-    use BranchPoint::{Log, Root, RootOnCut};
-    // The two branch points `re + i·im` and how the function behaves there.
-    type Points = [((i32, i32), BranchPoint); 2];
-    let (points, cut, halve): (Points, Cut, bool) = match node {
-        ExprNode::Asin(_) | ExprNode::Acos(_) => {
-            ([((1, 0), Root), ((-1, 0), Root)], Cut::RealBeyondOne, true)
-        }
-        ExprNode::Atanh(_) => ([((1, 0), Log), ((-1, 0), Log)], Cut::RealBeyondOne, false),
-        ExprNode::Acosh(_) => (
-            [((1, 0), Root), ((-1, 0), RootOnCut)],
-            Cut::RealBelowOne,
-            true,
-        ),
-        ExprNode::Atan(_) => (
-            [((0, 1), Log), ((0, -1), Log)],
-            Cut::ImaginaryBeyondOne,
-            false,
-        ),
-        _ => (
-            [((0, 1), Root), ((0, -1), Root)],
-            Cut::ImaginaryBeyondOne,
-            true,
-        ),
-    };
-    let real = exactly_real(z, b)
-        && match node {
-            ExprNode::Asin(_) | ExprNode::Acos(_) | ExprNode::Atanh(_) => within(&z.0, b.re, -1, 1),
-            ExprNode::Acosh(_) => at_least(&z.0, b.re, 1),
-            _ => true,
-        };
-    let result = |e: ErrExp| {
-        if is_unknown(e) {
-            Bound::UNKNOWN
-        } else if real {
-            Bound::real(e)
-        } else {
-            Bound::both(e)
-        }
-    };
-    if b.is_exact() {
-        return result(EXACT);
-    }
-    let j = b.joint();
-    let hp = z.0.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64;
-    let mut distance = [0.0f64; 2];
-    for (slot, &((pr, pi), kind)) in distance.iter_mut().zip(points.iter()) {
-        let p = (BigFloat::from_i32(pr, 64), BigFloat::from_i32(pi, 64));
-        let d = c_sub(z, &p, hp, RM);
-        let ld = lg_abs_low(&d);
-        if mag(&d).is_some() && ld > j + 3.0 {
-            *slot = ld;
-        } else {
-            return match kind {
-                Log => Bound::UNKNOWN,
-                Root => result(holder(j)),
-                RootOnCut if !exactly_real(z, b) && cut_undecided(z, b, cut) => Bound::UNKNOWN,
-                RootOnCut => result(holder(j)),
-            };
-        }
-    }
-    if cut_undecided(z, b, cut) {
-        return Bound::UNKNOWN;
-    }
-    // `|f′(w)| = Π|w − pᵢ|^(−k)` exactly, and over the ball `|w − pᵢ| ≥
-    // dᵢ − r`: the error is at most `r·Π(dᵢ − r)^(−k)`.  Far from both points
-    // it is small (`|atan′ z| = 1/|z² + 1|`): before 0.30 the amplification
-    // was at least 1, `atan(polygamma(1792, E))` (an argument of
-    // `−1.2·10⁴²⁷⁵` with its relative error) had a ball of `2^10341` around
-    // `−π/2`, which contains 0, and came out `0`.
-    let k = if halve { 0.5 } else { 1.0 };
-    let log_w: f64 = distance
-        .iter()
-        .map(|&ld| ld + (-(j - ld).exp2()).ln_1p() * std::f64::consts::LOG2_E)
-        .sum();
-    result(shift(j, up(-k * log_w)))
-}
-
 /// The branch cut of a special function on the real axis, in one of its
 /// arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1062,7 +984,7 @@ enum Analytic {
     Unknown,
 }
 
-fn analyticity(arena: &Arena, node: &ExprNode) -> Analytic {
+fn analyticity(node: &ExprNode) -> Analytic {
     use Analytic::{Everywhere, OffCut, Unknown};
     use RealCut::{AboveOne, BelowOne, BelowZero, OutsideUnit, OutsideZeroTwo};
     match node {
@@ -1079,41 +1001,37 @@ fn analyticity(arena: &Arena, node: &ExprNode) -> Analytic {
         | ExprNode::DiracDelta(_) => Everywhere,
         ExprNode::LogGamma(_) | ExprNode::Ci(_) | ExprNode::Ei(_) => OffCut(0, BelowZero),
         ExprNode::Li(_) => OffCut(0, BelowOne),
-        ExprNode::Apply(sid, _) => match arena.lib_fn(*sid) {
-            Some(
-                LibFn::Erfi
-                | LibFn::Shi
-                | LibFn::FresnelS
-                | LibFn::FresnelC
-                | LibFn::AiryAi
-                | LibFn::AiryBi
-                | LibFn::AiryAiPrime
-                | LibFn::AiryBiPrime
-                | LibFn::DirichletEta
-                | LibFn::Legendre
-                | LibFn::ChebyshevT
-                | LibFn::ChebyshevU
-                | LibFn::Hermite
-                | LibFn::Laguerre
-                | LibFn::Gegenbauer
-                | LibFn::Jacobi
-                | LibFn::AssocLaguerre,
-            ) => Everywhere,
-            Some(LibFn::Chi) => OffCut(0, BelowZero),
-            Some(
-                LibFn::BesselJ
-                | LibFn::BesselY
-                | LibFn::BesselI
-                | LibFn::BesselK
-                | LibFn::ExpInt
-                | LibFn::UpperGamma
-                | LibFn::LowerGamma,
-            ) => OffCut(1, BelowZero),
-            Some(LibFn::PolyLog) => OffCut(1, AboveOne),
-            Some(LibFn::EllipticK | LibFn::EllipticE) => OffCut(0, AboveOne),
-            Some(LibFn::ErfInv) => OffCut(0, OutsideUnit),
-            Some(LibFn::ErfcInv) => OffCut(0, OutsideZeroTwo),
-            Some(LibFn::AssocLegendre) => OffCut(2, OutsideUnit),
+        ExprNode::Lib(f, _) => match f {
+            LibFn::Erfi
+            | LibFn::Shi
+            | LibFn::FresnelS
+            | LibFn::FresnelC
+            | LibFn::AiryAi
+            | LibFn::AiryBi
+            | LibFn::AiryAiPrime
+            | LibFn::AiryBiPrime
+            | LibFn::DirichletEta
+            | LibFn::Legendre
+            | LibFn::ChebyshevT
+            | LibFn::ChebyshevU
+            | LibFn::Hermite
+            | LibFn::Laguerre
+            | LibFn::Gegenbauer
+            | LibFn::Jacobi
+            | LibFn::AssocLaguerre => Everywhere,
+            LibFn::Chi => OffCut(0, BelowZero),
+            LibFn::BesselJ
+            | LibFn::BesselY
+            | LibFn::BesselI
+            | LibFn::BesselK
+            | LibFn::ExpInt
+            | LibFn::UpperGamma
+            | LibFn::LowerGamma => OffCut(1, BelowZero),
+            LibFn::PolyLog => OffCut(1, AboveOne),
+            LibFn::EllipticK | LibFn::EllipticE => OffCut(0, AboveOne),
+            LibFn::ErfInv => OffCut(0, OutsideUnit),
+            LibFn::ErfcInv => OffCut(0, OutsideZeroTwo),
+            LibFn::AssocLegendre => OffCut(2, OutsideUnit),
             _ => Unknown,
         },
         _ => Unknown,
@@ -1136,7 +1054,7 @@ fn is_integer_value(x: &BigFloat) -> bool {
     x.is_zero() || x.int() == *x
 }
 
-// ── Node bounds of the elementary functions, from the argument's ball ─────
+// ── Node bounds, from the arguments' balls ──────────────────────────────────
 
 /// What a node's bound rule gives: the final bound, or the propagated one
 /// to which [`finish`] adds the node's rounding.
@@ -1148,8 +1066,8 @@ pub(super) enum NodeBound {
     Propagated(Bound),
 }
 
-/// The bound rules of the elementary nodes (the module documentation's
-/// table), one method per node kind, on the argument's ball.
+/// The bound rules of the nodes (the module documentation's table), one
+/// method per node kind, on the argument's ball.
 impl<Z: Borrow<Complex>> Ball<Z> {
     /// The propagated bound of `exp` at this argument, for a value of magnitude `2^lv` (see [`node_error`]).
     fn exp_error(&self, lv: f64) -> NodeBound {
@@ -1330,6 +1248,264 @@ impl<Z: Borrow<Complex>> Ball<Z> {
             Bound::both(e)
         })
     }
+
+    /// The bound of `atan2(y, x)` for `y` this ball (see [`node_error`]):
+    /// `atan2(y, x) = arg(x + iy)` for real `x`, `y`, whose cut is `y = 0`,
+    /// `x < 0`.  Arguments whose imaginary parts are only within their
+    /// error of 0 may be complex, where `atan2` is not the real function.
+    fn atan2_error<W: Borrow<Complex>>(&self, x: &Ball<W>) -> NodeBound {
+        let (yv, ey) = (self.z(), self.err);
+        let (xv, ex) = (x.z(), x.err);
+        if !exactly_real(yv, ey) || !exactly_real(xv, ex) {
+            return NodeBound::Final(Bound::UNKNOWN);
+        }
+        let z = (xv.0.clone(), yv.0.clone());
+        let b = Bound {
+            re: ex.re,
+            im: ey.re,
+        };
+        if b.is_exact() {
+            return NodeBound::Propagated(Bound::real(EXACT));
+        }
+        let j = b.joint();
+        if contains_zero(&z, j) || cut_undecided(&z, b, Cut::NegativeReal) {
+            return NodeBound::Final(Bound::UNKNOWN);
+        }
+        NodeBound::Propagated(Bound::real(log_ball(j, lg_abs_low(&z))))
+    }
+
+    /// The bound of `floor` (`floor`) or `ceiling` at this argument, whose
+    /// value is `value` (see [`node_error`]): exact, unless the argument may
+    /// be complex or is within its error of the integer it rounded to or of
+    /// the next one.
+    fn floor_error(&self, floor: bool, value: &Complex, prec: usize) -> NodeBound {
+        let (z, b) = (self.z(), self.err);
+        if !exactly_real(z, b) {
+            return NodeBound::Final(Bound::UNKNOWN); // `floor` of a value that may be complex
+        }
+        if is_exact(b.re) {
+            return NodeBound::Final(Bound::EXACT);
+        }
+        // Distance from the argument to the integer it rounded to, and to
+        // the next one.
+        let p = 64 + prec;
+        let d1 = z.0.sub(&value.0, p, RM);
+        let one = BigFloat::from_i32(1, p);
+        let next = if floor {
+            value.0.add(&one, p, RM)
+        } else {
+            value.0.sub(&one, p, RM)
+        };
+        let d2 = next.sub(&z.0, p, RM);
+        if part_contains_zero(&d1, b.re) || part_contains_zero(&d2, b.re) {
+            return NodeBound::Final(Bound::UNKNOWN);
+        }
+        NodeBound::Final(Bound::EXACT) // an integer
+    }
+
+    /// The bound of `min` or `max` of the arguments `args` (see
+    /// [`node_error`]): a copy of one of them, so the largest of their
+    /// bounds; none for an argument that may be complex.
+    fn extremum_error(args: &[Ball<Z>]) -> NodeBound {
+        let mut worst = EXACT;
+        for x in args {
+            if !exactly_real(x.z(), x.err) {
+                return NodeBound::Final(Bound::UNKNOWN);
+            }
+            worst = worst.max(x.err.re);
+        }
+        NodeBound::Final(Bound::real(worst))
+    }
+
+    /// The bound of `KroneckerDelta(i, j)` for `i` this ball (see
+    /// [`node_error`]): a decision on `i − j = 0`, exact when both are exact
+    /// or their difference is outside its error box.
+    fn kronecker_error<W: Borrow<Complex>>(&self, j: &Ball<W>, prec: usize) -> NodeBound {
+        let (iv, ei) = (self.z(), self.err);
+        let (jv, ej) = (j.z(), j.err);
+        if ei.is_exact() && ej.is_exact() {
+            return NodeBound::Final(Bound::EXACT);
+        }
+        let d = c_sub(iv, jv, prec + 64, RM);
+        let re = lsum(ei.re, ej.re);
+        let im = lsum(ei.im, ej.im);
+        if part_contains_zero(&d.0, re) && part_contains_zero(&d.1, im) {
+            return NodeBound::Final(Bound::UNKNOWN);
+        }
+        NodeBound::Final(Bound::EXACT)
+    }
+
+    /// The bound of a special function of the arguments `args` whose value
+    /// is `value`, from `worst`, the propagated error of its real routine
+    /// (`sensitivity::special_error`; see [`node_error`]).  On arguments
+    /// that may be off the real axis the bound holds where the function is
+    /// analytic (`analytic`), not across its cut, where the side is
+    /// undecidable.
+    fn special_error(
+        args: &[Ball<Z>],
+        worst: ErrExp,
+        value: &Complex,
+        analytic: impl FnOnce() -> Analytic,
+    ) -> NodeBound {
+        if is_unknown(worst) {
+            return NodeBound::Final(Bound::UNKNOWN);
+        }
+        let all_real = args.iter().all(|x| exactly_real(x.z(), x.err));
+        if all_real && value.1.is_zero() {
+            return NodeBound::Propagated(Bound::real(worst));
+        }
+        if all_real {
+            return NodeBound::Propagated(Bound::both(worst));
+        }
+        match analytic() {
+            Analytic::Everywhere => NodeBound::Propagated(Bound::both(worst)),
+            Analytic::OffCut(i, cut) => {
+                let Some(x) = args.get(i) else {
+                    return NodeBound::Final(Bound::UNKNOWN);
+                };
+                if !exactly_real(x.z(), x.err) && meets_cut(&x.z().0, x.err.re, cut) {
+                    return NodeBound::Final(Bound::UNKNOWN);
+                }
+                NodeBound::Propagated(Bound::both(worst))
+            }
+            Analytic::Unknown => NodeBound::Final(Bound::UNKNOWN),
+        }
+    }
+
+    /// The propagated bound of `b^x` for the base `b ± eb` (this ball) and the
+    /// exponent `x ± ex` (`x_literal`: its exact value when it is a rational
+    /// literal), `lv` bounding the result's magnitude (`log₂`).
+    ///
+    /// A non-integer power has the cut of `ln` on the negative real axis: an
+    /// undecidable side has no bound.  The result is real (exact imaginary
+    /// part) for an exactly real base and exponent when the exponent is an
+    /// integer or the base is positive; `(−r)^(n/2) = ±i·r^(n/2)` (the half-
+    /// integer power of an exactly real negative base, evaluated exactly so)
+    /// has an exact real part.
+    pub(super) fn power_error<W: Borrow<Complex>>(
+        &self,
+        exp: &Ball<W>,
+        x_literal: Option<&Q>,
+        lv: f64,
+    ) -> Bound {
+        let (b, eb) = (self.z(), self.err);
+        let (x, ex) = (exp.z(), exp.err);
+        let integer_exponent = match x_literal {
+            Some(q) => q.is_integer(),
+            None => ex.is_exact() && x.1.is_zero() && is_integer_value(&x.0),
+        };
+        if !integer_exponent
+            && !contains_zero(b, eb.joint())
+            && cut_undecided(b, eb, Cut::NegativeReal)
+        {
+            return Bound::UNKNOWN;
+        }
+        let e = pow_error(x_literal, b, eb.joint(), x, ex.joint(), lv);
+        let base_real = exactly_real(b, eb);
+        let base_sign = if part_contains_zero(&b.0, eb.re) {
+            0
+        } else {
+            sign_of(&b.0)
+        };
+        if base_real && exactly_real(x, ex) && (integer_exponent || base_sign > 0) {
+            Bound::real(e)
+        } else if base_real
+            && base_sign < 0
+            && x_literal.is_some_and(|q| *q.denom() == BigInt::from(2))
+        {
+            Bound { re: EXACT, im: e }
+        } else {
+            Bound::both(e)
+        }
+    }
+
+    /// The propagated bound of an inverse trigonometric or hyperbolic function
+    /// (node `node`) at this argument, at working precision `prec`: see the
+    /// module documentation.  `|f′(z)| = |(z − p₁)(z − p₂)|^(−k)` with the branch
+    /// points `p₁, p₂` (`k = ½` for `asin`, `acos`, `asinh`, `acosh`, 1 for
+    /// `atan`, `atanh`), computed from the distances at high precision — the
+    /// 64-bit `1 − z²` before 0.29 cancelled to 0 for `z` within `2⁻⁶⁴` of ±1
+    /// and `acos(1 + 5·10⁻⁶¹)` was refused.
+    fn inverse_error(&self, node: &ExprNode, prec: usize) -> Bound {
+        use BranchPoint::{Log, Root, RootOnCut};
+        let (z, b) = (self.z(), self.err);
+        // The two branch points `re + i·im` and how the function behaves there.
+        type Points = [((i32, i32), BranchPoint); 2];
+        let (points, cut, halve): (Points, Cut, bool) = match node {
+            ExprNode::Asin(_) | ExprNode::Acos(_) => {
+                ([((1, 0), Root), ((-1, 0), Root)], Cut::RealBeyondOne, true)
+            }
+            ExprNode::Atanh(_) => ([((1, 0), Log), ((-1, 0), Log)], Cut::RealBeyondOne, false),
+            ExprNode::Acosh(_) => (
+                [((1, 0), Root), ((-1, 0), RootOnCut)],
+                Cut::RealBelowOne,
+                true,
+            ),
+            ExprNode::Atan(_) => (
+                [((0, 1), Log), ((0, -1), Log)],
+                Cut::ImaginaryBeyondOne,
+                false,
+            ),
+            _ => (
+                [((0, 1), Root), ((0, -1), Root)],
+                Cut::ImaginaryBeyondOne,
+                true,
+            ),
+        };
+        let real = exactly_real(z, b)
+            && match node {
+                ExprNode::Asin(_) | ExprNode::Acos(_) | ExprNode::Atanh(_) => {
+                    within(&z.0, b.re, -1, 1)
+                }
+                ExprNode::Acosh(_) => at_least(&z.0, b.re, 1),
+                _ => true,
+            };
+        let result = |e: ErrExp| {
+            if is_unknown(e) {
+                Bound::UNKNOWN
+            } else if real {
+                Bound::real(e)
+            } else {
+                Bound::both(e)
+            }
+        };
+        if b.is_exact() {
+            return result(EXACT);
+        }
+        let j = b.joint();
+        let hp = z.0.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64;
+        let mut distance = [0.0f64; 2];
+        for (slot, &((pr, pi), kind)) in distance.iter_mut().zip(points.iter()) {
+            let p = (BigFloat::from_i32(pr, 64), BigFloat::from_i32(pi, 64));
+            let d = c_sub(z, &p, hp, RM);
+            let ld = lg_abs_low(&d);
+            if mag(&d).is_some() && ld > j + 3.0 {
+                *slot = ld;
+            } else {
+                return match kind {
+                    Log => Bound::UNKNOWN,
+                    Root => result(holder(j)),
+                    RootOnCut if !exactly_real(z, b) && cut_undecided(z, b, cut) => Bound::UNKNOWN,
+                    RootOnCut => result(holder(j)),
+                };
+            }
+        }
+        if cut_undecided(z, b, cut) {
+            return Bound::UNKNOWN;
+        }
+        // `|f′(w)| = Π|w − pᵢ|^(−k)` exactly, and over the ball `|w − pᵢ| ≥
+        // dᵢ − r`: the error is at most `r·Π(dᵢ − r)^(−k)`.  Far from both points
+        // it is small (`|atan′ z| = 1/|z² + 1|`): before 0.30 the amplification
+        // was at least 1, `atan(polygamma(1792, E))` (an argument of
+        // `−1.2·10⁴²⁷⁵` with its relative error) had a ball of `2^10341` around
+        // `−π/2`, which contains 0, and came out `0`.
+        let k = if halve { 0.5 } else { 1.0 };
+        let log_w: f64 = distance
+            .iter()
+            .map(|&ld| ld + (-(j - ld).exp2()).ln_1p() * std::f64::consts::LOG2_E)
+            .sum();
+        result(shift(j, up(-k * log_w)))
+    }
 }
 
 // ── Node bounds ─────────────────────────────────────────────────────────────
@@ -1344,8 +1520,7 @@ pub(super) fn node_error(
     arena: &Arena,
     id: ExprId,
     value: &Complex,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &FxHashMap<ExprId, Bound>,
+    cache: Cache<'_>,
     prec: usize,
     special: impl FnOnce() -> ErrExp,
 ) -> Bound {
@@ -1353,12 +1528,7 @@ pub(super) fn node_error(
         return Bound::UNKNOWN;
     }
     // The child's value and bound (a view of the cached value).
-    let child = |c: ExprId| -> Option<Ball<&Complex>> {
-        Some(Ball {
-            mid: cache.get(&c)?,
-            err: errs.get(&c).copied().unwrap_or(Bound::UNKNOWN),
-        })
-    };
+    let child = |c: ExprId| cache.ball(&c);
     // The child's ball, or an early `UNKNOWN`.
     macro_rules! known_ball {
         ($c:expr) => {
@@ -1368,11 +1538,15 @@ pub(super) fn node_error(
             }
         };
     }
-    // The child's value and bound, or an early `UNKNOWN`.
-    macro_rules! known_child {
-        ($c:expr) => {{
-            let x = known_ball!($c);
-            (x.mid, x.err)
+    // The balls of the children, or an early `UNKNOWN`.
+    macro_rules! known_balls {
+        ($children:expr) => {{
+            let children = $children;
+            let mut balls = Vec::with_capacity(children.len());
+            for &c in children.iter() {
+                balls.push(known_ball!(c));
+            }
+            balls
         }};
     }
     // A rule's final bound returns; a propagated one gets the rounding.
@@ -1404,7 +1578,7 @@ pub(super) fn node_error(
         | ExprNode::PhysicalConstant(..) => Bound::real(EXACT),
 
         // Evaluated with their bound by `add_with_bound` / `mul_with_bound`
-        // (`eval_node_with_error`); recomputed here for completeness.
+        // (`eval_ball`); recomputed here for completeness.
         ExprNode::Add(children) | ExprNode::Mul(children) => {
             let mut parts: Vec<(&Complex, Bound)> = Vec::with_capacity(children.len());
             for &c in children.iter() {
@@ -1426,9 +1600,7 @@ pub(super) fn node_error(
         ExprNode::Re(c) => return child(*c).map_or(Bound::UNKNOWN, |x| Bound::real(x.err.re)),
         ExprNode::Im(c) => return child(*c).map_or(Bound::UNKNOWN, |x| Bound::real(x.err.im)),
         ExprNode::Pow(base, exp) => {
-            let (b, eb) = known_child!(*base);
-            let (x, ex) = known_child!(*exp);
-            pow_bound(arena.as_num(*exp), b, eb, x, ex, lv)
+            known_ball!(*base).power_error(&known_ball!(*exp), arena.as_num(*exp), lv)
         }
 
         // `d exp z = exp z · dz`: the argument's absolute error is the
@@ -1457,35 +1629,12 @@ pub(super) fn node_error(
         | ExprNode::Acos(c)
         | ExprNode::Asinh(c)
         | ExprNode::Acosh(c)
-        | ExprNode::Atanh(c) => {
-            let (z, b) = known_child!(*c);
-            inverse_error(node, z, b, prec)
-        }
+        | ExprNode::Atanh(c) => known_ball!(*c).inverse_error(node, prec),
         ExprNode::Abs(c) => settle!(known_ball!(*c).abs_error()),
         // `atan2(y, x) = arg(x + iy)` for real `x`, `y`: the cut is `y = 0`,
         // `x < 0`.  Arguments whose imaginary parts are only within their
         // error of 0 may be complex, where `atan2` is not the real function.
-        ExprNode::Atan2(y, x) => {
-            let (yv, ey) = known_child!(*y);
-            let (xv, ex) = known_child!(*x);
-            if !exactly_real(yv, ey) || !exactly_real(xv, ex) {
-                return Bound::UNKNOWN;
-            }
-            let z = (xv.0.clone(), yv.0.clone());
-            let b = Bound {
-                re: ex.re,
-                im: ey.re,
-            };
-            if b.is_exact() {
-                Bound::real(EXACT)
-            } else {
-                let j = b.joint();
-                if contains_zero(&z, j) || cut_undecided(&z, b, Cut::NegativeReal) {
-                    return Bound::UNKNOWN;
-                }
-                Bound::real(log_ball(j, lg_abs_low(&z)))
-            }
-        }
+        ExprNode::Atan2(y, x) => settle!(known_ball!(*y).atan2_error(&known_ball!(*x))),
 
         // Decisions: exact, unless the argument is within its error of the
         // threshold.
@@ -1497,55 +1646,14 @@ pub(super) fn node_error(
             settle!(known_ball!(*c).sign_error(matches!(node, ExprNode::Heaviside(_))))
         }
         ExprNode::Floor(c) | ExprNode::Ceiling(c) => {
-            let (z, b) = known_child!(*c);
-            if !exactly_real(z, b) {
-                return Bound::UNKNOWN; // `floor` of a value that may be complex
-            }
-            if is_exact(b.re) {
-                return Bound::EXACT;
-            }
-            // Distance from the argument to the integer it rounded to, and
-            // to the next one.
-            let p = 64 + prec;
-            let d1 = z.0.sub(&value.0, p, RM);
-            let one = BigFloat::from_i32(1, p);
-            let next = match node {
-                ExprNode::Floor(_) => value.0.add(&one, p, RM),
-                _ => value.0.sub(&one, p, RM),
-            };
-            let d2 = next.sub(&z.0, p, RM);
-            if part_contains_zero(&d1, b.re) || part_contains_zero(&d2, b.re) {
-                return Bound::UNKNOWN;
-            }
-            return Bound::EXACT; // an integer
+            let floor = matches!(node, ExprNode::Floor(_));
+            settle!(known_ball!(*c).floor_error(floor, value, prec))
         }
         ExprNode::Min(children) | ExprNode::Max(children) => {
-            let mut worst = EXACT;
-            for &c in children.iter() {
-                let (z, b) = known_child!(c);
-                if !exactly_real(z, b) {
-                    return Bound::UNKNOWN;
-                }
-                worst = worst.max(b.re);
-            }
-            // A copy of one of the arguments.
-            return Bound::real(worst);
+            settle!(Ball::extremum_error(&known_balls!(children)))
         }
-        // A decision on `i − j = 0`: exact when both are exact or their
-        // difference is outside its error box.
         ExprNode::KroneckerDelta(i, j) => {
-            let (iv, ei) = known_child!(*i);
-            let (jv, ej) = known_child!(*j);
-            if ei.is_exact() && ej.is_exact() {
-                return Bound::EXACT;
-            }
-            let d = c_sub(iv, jv, prec + 64, RM);
-            let re = lsum(ei.re, ej.re);
-            let im = lsum(ei.im, ej.im);
-            if part_contains_zero(&d.0, re) && part_contains_zero(&d.1, im) {
-                return Bound::UNKNOWN;
-            }
-            return Bound::EXACT;
+            settle!(known_ball!(*i).kronecker_error(&known_ball!(*j), prec))
         }
 
         // Special functions: each argument's error times the function's
@@ -1567,47 +1675,19 @@ pub(super) fn node_error(
         | ExprNode::Polygamma(_, _)
         | ExprNode::Factorial(_)
         | ExprNode::Binomial(_, _)
-        | ExprNode::Apply(_, _) => {
-            let mut all_real = true;
-            for c in node.children() {
-                let (v, b) = known_child!(c);
-                all_real &= exactly_real(v, b);
-            }
+        | ExprNode::Apply(_, _)
+        | ExprNode::Lib(_, _) => {
+            let args = known_balls!(node.children());
             let worst = special();
-            if is_unknown(worst) {
-                return Bound::UNKNOWN;
-            }
-            if all_real && value.1.is_zero() {
-                Bound::real(worst)
-            } else if all_real {
-                Bound::both(worst)
-            } else {
-                // A real routine applied to arguments that may be off the
-                // real axis: the propagated bound holds where the function
-                // is analytic, not across its cut, where the side is
-                // undecidable.
-                match analyticity(arena, node) {
-                    Analytic::Everywhere => Bound::both(worst),
-                    Analytic::OffCut(i, cut) => {
-                        let kids = node.children();
-                        let Some(Ball { mid: v, err: b }) = kids.get(i).and_then(|&c| child(c))
-                        else {
-                            return Bound::UNKNOWN;
-                        };
-                        if !exactly_real(v, b) && meets_cut(&v.0, b.re, cut) {
-                            return Bound::UNKNOWN;
-                        }
-                        Bound::both(worst)
-                    }
-                    Analytic::Unknown => return Bound::UNKNOWN,
-                }
-            }
+            settle!(Ball::special_error(&args, worst, value, || {
+                analyticity(node)
+            }))
         }
 
-        // Evaluated with their own bounds by `eval_node_with_error`.
+        // Evaluated with their own bounds by `eval_ball`.
         _ => return Bound::UNKNOWN,
     };
-    finish(arena, id, value, cache, errs, propagated, prec)
+    finish(arena, id, value, cache, propagated, prec)
 }
 
 /// The joint error of the argument `c` (value `z ± b`) of the node `node`
@@ -1648,8 +1728,7 @@ fn finish(
     arena: &Arena,
     id: ExprId,
     value: &Complex,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &FxHashMap<ExprId, Bound>,
+    cache: Cache<'_>,
     propagated: Bound,
     prec: usize,
 ) -> Bound {
@@ -1660,11 +1739,7 @@ fn finish(
         if !underflowed(arena, id, cache) {
             return Bound::EXACT;
         }
-        let real = |c: &ExprId| {
-            cache
-                .get(c)
-                .is_some_and(|v| exactly_real(v, errs.get(c).copied().unwrap_or(Bound::UNKNOWN)))
-        };
+        let real = |c: &ExprId| cache.get(c).is_some_and(|v| exactly_real(v, cache.err(c)));
         let positive = |c: &ExprId| cache.get(c).is_some_and(|v| sign_of(&v.0) > 0);
         let im = match arena.node(id) {
             ExprNode::Exp(c) if real(c) => EXACT,
@@ -1704,12 +1779,10 @@ fn finish(
 /// (the first positive zero `j_{ν,1}` exceeds `ν`, DLMF 10.21.3, and
 /// `J_n(−x) = (−1)ⁿ J_n(x)`).  Before 0.35 a `J_ν` below the range was
 /// refused where it arose: `1 + besselj(10⁹, 1)` was refused, truly `1`.
-fn underflowed(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, Complex>) -> bool {
+fn underflowed(arena: &Arena, id: ExprId, cache: Cache<'_>) -> bool {
     let nonzero = |c: &ExprId| cache.get(c).is_some_and(|v| mag(v).is_some());
     match arena.node(id) {
-        ExprNode::Apply(sid, args) if arena.lib_fn(*sid) == Some(LibFn::BesselJ) => {
-            bessel_j_zero_free(args, cache)
-        }
+        ExprNode::Lib(LibFn::BesselJ, args) => bessel_j_zero_free(args, cache),
         ExprNode::Exp(_) => true,
         ExprNode::Mul(children) => children.iter().all(nonzero),
         ExprNode::Pow(base, _) => nonzero(base),
@@ -1717,19 +1790,17 @@ fn underflowed(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, Complex>) ->
             nonzero(c)
         }
         // The variable is the last argument (the order or parameter may be 0).
-        ExprNode::Apply(sid, args) => {
+        ExprNode::Lib(f, args) => {
             matches!(
-                arena.lib_fn(*sid),
-                Some(
-                    LibFn::AiryAi
-                        | LibFn::AiryAiPrime
-                        | LibFn::AiryBi
-                        | LibFn::AiryBiPrime
-                        | LibFn::BesselI
-                        | LibFn::BesselK
-                        | LibFn::UpperGamma
-                        | LibFn::ExpInt
-                )
+                f,
+                LibFn::AiryAi
+                    | LibFn::AiryAiPrime
+                    | LibFn::AiryBi
+                    | LibFn::AiryBiPrime
+                    | LibFn::BesselI
+                    | LibFn::BesselK
+                    | LibFn::UpperGamma
+                    | LibFn::ExpInt
             ) && args.last().is_some_and(nonzero)
         }
         _ => false,
@@ -1739,7 +1810,7 @@ fn underflowed(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, Complex>) ->
 /// Do the values of `(ν, x)` lie where `J_ν(x)` has no zero: a real
 /// order `ν > abs(x) > 0` with a real `x`, or a negative integer order
 /// `−n` with `n > abs(x) > 0` (`J_{−n} = (−1)ⁿ J_n`; see [`underflowed`])?
-fn bessel_j_zero_free(args: &[ExprId], cache: &FxHashMap<ExprId, Complex>) -> bool {
+fn bessel_j_zero_free(args: &[ExprId], cache: Cache<'_>) -> bool {
     let (Some(nu), Some(x)) = (
         args.first().and_then(|c| cache.get(c)),
         args.get(1).and_then(|c| cache.get(c)),
@@ -1810,11 +1881,10 @@ impl Nonzero {
 pub(super) fn underflow_nonzero(
     arena: &Arena,
     id: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &FxHashMap<ExprId, Bound>,
+    cache: Cache<'_>,
     nonzero: &FxHashMap<ExprId, Nonzero>,
 ) -> Option<Nonzero> {
-    let bound = |c: ExprId| errs.get(&c).copied().unwrap_or(Bound::UNKNOWN);
+    let bound = |c: ExprId| cache.err(&c);
     let real = |c: ExprId| cache.get(&c).is_some_and(|v| exactly_real(v, bound(c)));
     let exact = |c: ExprId| bound(c).is_exact();
     let finite = |c: ExprId| cache.get(&c).is_some_and(is_finite) && !bound(c).is_unknown();
@@ -1891,7 +1961,7 @@ pub(super) fn underflow_nonzero(
             Some(Nonzero::Negative) => Some(Nonzero::Negative),
             _ => (exact(*c) && status(*c).is_some()).then_some(Nonzero::Unsigned),
         },
-        ExprNode::Apply(sid, args) => {
+        ExprNode::Lib(f, args) => {
             if !underflowed(arena, id, cache) || !args.iter().all(|&c| exact(c)) {
                 return None;
             }
@@ -1905,8 +1975,8 @@ pub(super) fn underflow_nonzero(
             let nonnegative_order = args
                 .first()
                 .is_some_and(|&c| cache.get(&c).is_some_and(|v| sign_of(&v.0) >= 0) && real(c));
-            Some(match arena.lib_fn(*sid) {
-                Some(LibFn::AiryAi | LibFn::BesselK | LibFn::UpperGamma | LibFn::ExpInt)
+            Some(match f {
+                LibFn::AiryAi | LibFn::BesselK | LibFn::UpperGamma | LibFn::ExpInt
                     if positive_x && real_params =>
                 {
                     Nonzero::Positive
@@ -1916,7 +1986,7 @@ pub(super) fn underflow_nonzero(
                 // and `J_{−n}(x) = (−1)ⁿ J_n(x)`: for an integer order the
                 // sign `(−1)ⁿ` once for a negative `x`, once for a negative
                 // order.
-                Some(LibFn::BesselJ) if real_params => {
+                LibFn::BesselJ if real_params => {
                     let order = args.first().and_then(|c| cache.get(c));
                     match order {
                         Some(n) if n.0.is_int() => {
@@ -1931,57 +2001,14 @@ pub(super) fn underflow_nonzero(
                         _ => Nonzero::Unsigned,
                     }
                 }
-                Some(LibFn::AiryAiPrime) if positive_x => Nonzero::Negative,
-                Some(LibFn::BesselI) if positive_x && real_params && nonnegative_order => {
+                LibFn::AiryAiPrime if positive_x => Nonzero::Negative,
+                LibFn::BesselI if positive_x && real_params && nonnegative_order => {
                     Nonzero::Positive
                 }
                 _ => Nonzero::Unsigned,
             })
         }
         _ => None,
-    }
-}
-
-/// The bound of `b^x` for `b ± eb`, `x ± ex` (`x_literal`: the exponent's
-/// exact value when it is a rational literal), `lv` bounding the result's
-/// magnitude (`log₂`).
-///
-/// A non-integer power has the cut of `ln` on the negative real axis: an
-/// undecidable side has no bound.  The result is real (exact imaginary
-/// part) for an exactly real base and exponent when the exponent is an
-/// integer or the base is positive; `(−r)^(n/2) = ±i·r^(n/2)` (the half-
-/// integer power of an exactly real negative base, evaluated exactly so)
-/// has an exact real part.
-pub(super) fn pow_bound(
-    x_literal: Option<&Q>,
-    b: &Complex,
-    eb: Bound,
-    x: &Complex,
-    ex: Bound,
-    lv: f64,
-) -> Bound {
-    let integer_exponent = match x_literal {
-        Some(q) => q.is_integer(),
-        None => ex.is_exact() && x.1.is_zero() && is_integer_value(&x.0),
-    };
-    if !integer_exponent && !contains_zero(b, eb.joint()) && cut_undecided(b, eb, Cut::NegativeReal)
-    {
-        return Bound::UNKNOWN;
-    }
-    let e = pow_error(x_literal, b, eb.joint(), x, ex.joint(), lv);
-    let base_real = exactly_real(b, eb);
-    let base_sign = if part_contains_zero(&b.0, eb.re) {
-        0
-    } else {
-        sign_of(&b.0)
-    };
-    if base_real && exactly_real(x, ex) && (integer_exponent || base_sign > 0) {
-        Bound::real(e)
-    } else if base_real && base_sign < 0 && x_literal.is_some_and(|q| *q.denom() == BigInt::from(2))
-    {
-        Bound { re: EXACT, im: e }
-    } else {
-        Bound::both(e)
     }
 }
 

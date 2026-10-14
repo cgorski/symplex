@@ -1,19 +1,20 @@
-//! The registry of library special functions carried as
-//! [`ExprNode::Apply`](crate::base::node::ExprNode::Apply).
+//! The registry of library special functions, the nodes
+//! [`ExprNode::Lib`](crate::base::node::ExprNode::Lib).
 //!
 //! Elementary functions (`sin`, `exp`, `gamma`, `erf`, …) are dedicated
 //! `ExprNode` variants.  The larger family of special functions — Bessel,
 //! orthogonal polynomials, incomplete gamma, elliptic integrals, the integer
-//! sequences — is stored as `Apply(SymbolId, args)` where the symbol interns
-//! the function's name.  [`LibFn`] is the closed list of those names, so a
-//! consumer that matches on it (an evaluator, a differentiator, a printer)
-//! is checked for completeness by the compiler instead of failing at run
-//! time on a name it forgot.
+//! sequences — is stored as `Lib(LibFn, args)`.  [`LibFn`] is the closed
+//! list of those functions, so a consumer that matches on it (an
+//! evaluator, a differentiator, a printer) is checked for completeness by
+//! the compiler instead of failing at run time on a name it forgot.
 //!
-//! Names are resolved through `Arena::lib_fn`
-//! (a lookup on the interned text; no symbol is pre-interned, so `SymbolId`
-//! numbering is unaffected) and nodes are built with
-//! `Arena::lib_apply`.
+//! Nodes are built with `Arena::lib_apply` (or the arity-checked
+//! `Arena::func`).  Until 0.49 they were `Apply(SymbolId, args)` nodes
+//! resolved by the interned text of the head, so a user function named
+//! like a library function took on its semantics.  The name
+//! ([`LibFn::name`]) is still the head of the JSON `Apply` form and of the
+//! display.
 //!
 //! The list of functions itself (since 0.49) is the one list of *every*
 //! function, node-backed, library or internal, in `base/func.rs`: it

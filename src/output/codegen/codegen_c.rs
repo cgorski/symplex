@@ -645,15 +645,13 @@ impl<'a> CEmitter<'a> {
                 self.schedule(id, Plan::AndOr("||", kids.len()), &kids);
             }
             ExprNode::Not(x) => self.schedule(id, Plan::Not, &[(x, Kind::Bool)]),
-            ExprNode::Apply(sid, apply_args) => match arena.lib_fn(sid) {
-                Some(f) => self.visit_rt(id, Func::from(f), &apply_args)?,
-                None => {
-                    return Err(SymplexError::NotImplemented(format!(
-                        "cannot generate C code for user-defined Apply node `{}`",
-                        arena.symbol_name(sid)
-                    )));
-                }
-            },
+            ExprNode::Lib(f, apply_args) => self.visit_rt(id, Func::from(f), &apply_args)?,
+            ExprNode::Apply(sid, _) => {
+                return Err(SymplexError::NotImplemented(format!(
+                    "cannot generate C code for user-defined Apply node `{}`",
+                    arena.symbol_name(sid)
+                )));
+            }
             ExprNode::Derivative(_, _) => return Err(self.unsupported("Derivative")),
             ExprNode::Integral(_, _) => return Err(self.unsupported("Integral")),
             ExprNode::DefiniteIntegral(_, _, _, _) => {

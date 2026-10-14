@@ -76,11 +76,13 @@ fn generic_call(ctx: &Context, f: LibFn) -> Ex {
         ctx.symbol("c"),
         ctx.symbol("d"),
     ];
-    // The one optional argument (`lambertw`'s branch, since 0.30) is left
-    // out: the generic call is the principal branch.
+    // The one optional argument is `lambertw`'s branch (since 0.30): its
+    // one-argument call is the principal-branch node `W(a)` (which
+    // `Context::apply` builds since 0.50, as the parser does), so the
+    // library function is the two-argument call.
     let n = match f.arity() {
         Arity::Fixed(n) => n,
-        Arity::Range { min, .. } => min,
+        Arity::Range { max, .. } => max,
     };
     ctx.apply(f.name(), &syms[..n as usize]).unwrap()
 }
@@ -229,19 +231,19 @@ fn eval_folds_exactly_as_before() {
 fn wrong_arity_is_left_unevaluated_and_unevaluable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let one_arg_bessel = ctx.apply("besselj", &[&x]).unwrap();
-    assert_eq!(one_arg_bessel.eval(), one_arg_bessel);
-    assert_eq!(format!("{one_arg_bessel}"), "besselj(x)");
-    let fib2 = ctx.apply("fibonacci", &[ctx.int(5), ctx.int(6)]).unwrap();
-    assert_eq!(fib2.eval(), fib2, "two-argument fibonacci is not folded");
+    // Since 0.50 a library name with the wrong number of arguments is an
+    // error of `Context::apply` (up to 0.49 it built a call every consumer
+    // left unevaluated, `besselj(x)`, and evalf refused "erfi called with 2
+    // argument(s)").
+    assert!(ctx.apply("besselj", &[&x]).is_err());
+    assert!(ctx.apply("fibonacci", &[ctx.int(5), ctx.int(6)]).is_err());
     assert_eq!(
         format!("{}", ctx.apply("fibonacci", &[ctx.int(5)]).unwrap().eval()),
         "5"
     );
-    // evalf: a library name with the wrong number of arguments is an error,
-    // never a value.
-    let erfi2 = ctx.apply("erfi", &[ctx.int(1), ctx.int(2)]).unwrap();
-    let err = erfi2.eval_f64().expect_err("erfi/2 has no value");
+    let err = ctx
+        .apply("erfi", &[ctx.int(1), ctx.int(2)])
+        .expect_err("erfi takes one argument");
     assert!(err.to_string().contains("erfi"), "{err}");
     // A user function of the same shape stays a user function.
     let user = ctx.apply("f", &[&x]).unwrap();
@@ -351,14 +353,12 @@ fn display_and_latex_unchanged() {
     // Since 0.50 every library function prints in its notation (the `tex`
     // facet; SymPy 1.14: `J_{n}\left(x\right)`, `F_{n}`, `P_{n}\left(x\right)`);
     // up to 0.49 these printed as plain calls (`besselj\left(n, x\right)`).
-    // User functions and calls of the wrong arity print as plain calls.
+    // User functions print as plain calls (a library name with the wrong
+    // arity is an error of `Context::apply` since 0.50).
     assert_eq!(x.bessel_j(&n).to_latex(), r"J_{n}\left(x\right)");
     assert_eq!(n.fibonacci().to_latex(), r"F_{n}");
     assert_eq!(x.legendre(&n).to_latex(), r"P_{n}\left(x\right)");
-    assert_eq!(
-        ctx.apply("erfi", &[&x, &n]).unwrap().to_latex(),
-        r"erfi\left(x, n\right)"
-    );
+    assert!(ctx.apply("erfi", &[&x, &n]).is_err());
     assert_eq!(
         ctx.apply("f", &[&x]).unwrap().to_latex(),
         r"f\left(x\right)"

@@ -1535,20 +1535,18 @@ fn expr_to_rust_cse(
         ExprNode::Binomial(n, k) => {
             emit_rt_binary(arena, n, k, "binomial", var_names, options, cse_constants)
         }
-        ExprNode::Apply(sid, ref apply_args) => match arena.lib_fn(sid) {
-            Some(f) => emit_rt_func(
-                arena,
-                Func::from(f),
-                apply_args,
-                var_names,
-                options,
-                cse_constants,
-            ),
-            None => Err(SymplexError::NotImplemented(format!(
-                "cannot generate Rust code for user-defined Apply node `{}`",
-                arena.symbols.name(sid)
-            ))),
-        },
+        ExprNode::Lib(f, ref apply_args) => emit_rt_func(
+            arena,
+            Func::from(f),
+            apply_args,
+            var_names,
+            options,
+            cse_constants,
+        ),
+        ExprNode::Apply(sid, _) => Err(SymplexError::NotImplemented(format!(
+            "cannot generate Rust code for user-defined Apply node `{}`",
+            arena.symbols.name(sid)
+        ))),
         // Unsupported nodes
         ExprNode::ImaginaryUnit => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for imaginary unit".to_string(),
@@ -2052,7 +2050,8 @@ fn has_duplicating_emission(arena: &Arena, id: ExprId, options: &CodegenOptions)
             | ExprNode::Digamma(_)
             | ExprNode::Factorial(_)
             | ExprNode::LambertW(_)
-            | ExprNode::Apply(_, _) => options.checked_domain,
+            | ExprNode::Apply(_, _)
+            | ExprNode::Lib(_, _) => options.checked_domain,
             _ => false,
         };
         if dup {

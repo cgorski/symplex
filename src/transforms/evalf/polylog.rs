@@ -78,6 +78,7 @@
 //! two-Hurwitz form beyond; here the inversion takes one Hurwitz function
 //! and the series of `1/z`, and every truncation has a bound.
 
+use super::ball::Cache;
 use super::wp::{RM, Wp};
 use crate::base::bigfloat::{self, is_strictly_positive, to_f64};
 use astro_float::{BigFloat, Consts};
@@ -131,16 +132,11 @@ pub(super) fn off_unit_interval(z: &Complex) -> bool {
 
 /// Is `node` a `polylog(s, z)` with a real order and an argument this module
 /// evaluates, both values in `cache`?
-pub(super) fn is_general(
-    arena: &crate::base::arena::Arena,
-    node: &crate::base::node::ExprNode,
-    cache: &rustc_hash::FxHashMap<crate::base::node::ExprId, Complex>,
-) -> bool {
-    let crate::base::node::ExprNode::Apply(sid, args) = node else {
+pub(super) fn is_general(node: &crate::base::node::ExprNode, cache: Cache<'_>) -> bool {
+    let crate::base::node::ExprNode::Lib(crate::base::libfn::LibFn::PolyLog, args) = node else {
         return false;
     };
-    arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::PolyLog)
-        && args.len() == 2
+    args.len() == 2
         && cache.get(&args[0]).is_some_and(|s| s.1.is_zero())
         && cache.get(&args[1]).is_some_and(off_unit_interval)
 }
@@ -636,16 +632,11 @@ fn series(
 
 /// Is `node` a `polylog(s, z)` with a non-real order and `abs(z) < 1`, both
 /// values in `cache` ([`polylog_complex_order`])?
-pub(super) fn is_complex_order(
-    arena: &crate::base::arena::Arena,
-    node: &crate::base::node::ExprNode,
-    cache: &rustc_hash::FxHashMap<crate::base::node::ExprId, Complex>,
-) -> bool {
-    let crate::base::node::ExprNode::Apply(sid, args) = node else {
+pub(super) fn is_complex_order(node: &crate::base::node::ExprNode, cache: Cache<'_>) -> bool {
+    let crate::base::node::ExprNode::Lib(crate::base::libfn::LibFn::PolyLog, args) = node else {
         return false;
     };
-    arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::PolyLog)
-        && args.len() == 2
+    args.len() == 2
         && cache.get(&args[0]).is_some_and(|s| !s.1.is_zero())
         && cache.get(&args[1]).is_some()
 }

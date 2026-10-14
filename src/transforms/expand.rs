@@ -948,6 +948,15 @@ fn expand_pass(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
                     arena.intern(ExprNode::Apply(func_id, new_args))
                 }
             }
+            ExprNode::Lib(f, ref args) => {
+                let new_args: smallvec::SmallVec<[crate::base::node::ExprId; 2]> =
+                    args.iter().map(|&a| *cache.get(&a).unwrap_or(&a)).collect();
+                if new_args == *args {
+                    id
+                } else {
+                    arena.lib_apply(f, &new_args)
+                }
+            }
             // Sets: rebuilt with their expanded elements and endpoints by the
             // canonical constructors (`{(x+1)^2, x^2+2x+1}` merges).  Up to
             // 0.49 the wildcard below kept `{3, (x+1)^2}` unexpanded.

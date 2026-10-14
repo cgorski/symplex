@@ -785,13 +785,13 @@ fn diff_node(
             arena.intern(ExprNode::Derivative(id, v))
         }
 
-        // ── Apply (user-defined function): chain rule ──────────────
+        // ── Apply (user-defined function), library function: chain rule ──
         // d/dx(f(u₁,…,uₙ)) = Σᵢ (∂f/∂uᵢ) · (duᵢ/dx)
-        ExprNode::Apply(func_sym, ref args) => {
+        ExprNode::Apply(_, ref args) | ExprNode::Lib(_, ref args) => {
             let args_clone = args.clone();
 
             // Library special functions with known derivative rules.
-            if let Some(f) = arena.lib_fn(func_sym)
+            if let ExprNode::Lib(f, _) = *arena.node(id)
                 && f.arity().accepts(args_clone.len())
                 && let Some(result) = diff_lib_fn(arena, id, f, &args_clone, cache)
             {
@@ -806,7 +806,7 @@ fn diff_node(
                     continue;
                 }
                 // ∂f/∂(arg_i) — stays formal since f is unknown
-                let partial = slot_partial(arena, id, func_sym, &args_clone, i);
+                let partial = slot_partial(arena, id, &args_clone, i);
                 terms.push(arena.mul(&[partial, d_arg]));
             }
 
@@ -1019,13 +1019,7 @@ fn diff_node(
 ///   later pass misread (substituting `x = 1` gave `Derivative(f(1), 1)`),
 ///   and `f(x, x)′` was `2·Derivative(f(x, x), x)`, twice the total
 ///   derivative.
-fn slot_partial(
-    arena: &mut Arena,
-    id: ExprId,
-    func: SymbolId,
-    args: &[ExprId],
-    i: usize,
-) -> ExprId {
+fn slot_partial(arena: &mut Arena, id: ExprId, args: &[ExprId], i: usize) -> ExprId {
     let arg = args[i];
     if let ExprNode::Symbol(s) = *arena.node(arg)
         && args
@@ -1036,9 +1030,18 @@ fn slot_partial(
         return arena.intern(ExprNode::Derivative(id, arg));
     }
     let xi = crate::transforms::subs::fresh_symbol(arena, "_xi", args);
-    let mut slot_args: SmallVec<[ExprId; 2]> = SmallVec::from_slice(args);
-    slot_args[i] = xi;
-    let body = arena.intern(ExprNode::Apply(func, slot_args));
+    // `id` with its argument `i` replaced by `xi` (a user function's
+    // `Apply` or a library function's node alike).
+    let mut k = 0usize;
+    let slotted = arena.node(id).map_children(|c| {
+        let r = if k == i { xi } else { c };
+        k += 1;
+        r
+    });
+    let body = match slotted {
+        Some(node) => arena.make(node),
+        None => id,
+    };
     let d = arena.intern(ExprNode::Derivative(body, xi));
     crate::base::walk::subs_node(arena, d, xi, arg)
 }
@@ -1323,9 +1326,8 @@ fn diff_special_09(
     // Formal derivative of the whole node: used when a parameter depends on
     // the variable (or the rule is unknown, e.g. η).
     // `slot` is the argument's position (see `slot_partial`).
-    let func = arena.symbols.intern(name.name());
     let formal = |arena: &mut Arena, slot: usize| -> ExprId {
-        let partial = slot_partial(arena, id, func, args, slot);
+        let partial = slot_partial(arena, id, args, slot);
         let d = get_deriv(cache, args[slot], arena);
         arena.mul(&[partial, d])
     };

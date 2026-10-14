@@ -302,32 +302,22 @@ fn collect_components(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> Vec<Exp
         visited.insert(id);
 
         let node = arena.node(id).clone();
+        // The elementary functions and `|·|` (`Func::elementary`).
+        if let Some((f, args)) = node.func(arena)
+            && (f.elementary().is_some() || f == crate::base::func::Func::Abs)
+            && let [inner] = args[..]
+        {
+            if contains_var(arena, inner, var_sym) {
+                components.insert(id);
+                // Also recurse into the inner expression to collect
+                // sub-components.
+                stack.push(inner);
+            }
+            continue;
+        }
         match node {
             ExprNode::Symbol(sid) if sid == var_sym => {
                 components.insert(id);
-            }
-
-            ExprNode::Sin(inner)
-            | ExprNode::Cos(inner)
-            | ExprNode::Tan(inner)
-            | ExprNode::Exp(inner)
-            | ExprNode::Ln(inner)
-            | ExprNode::Asin(inner)
-            | ExprNode::Acos(inner)
-            | ExprNode::Atan(inner)
-            | ExprNode::Sinh(inner)
-            | ExprNode::Cosh(inner)
-            | ExprNode::Tanh(inner)
-            | ExprNode::Asinh(inner)
-            | ExprNode::Acosh(inner)
-            | ExprNode::Atanh(inner)
-            | ExprNode::Abs(inner) => {
-                if contains_var(arena, inner, var_sym) {
-                    components.insert(id);
-                    // Also recurse into the inner expression to collect
-                    // sub-components.
-                    stack.push(inner);
-                }
             }
 
             ExprNode::Pow(base, exp) => {

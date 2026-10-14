@@ -2779,7 +2779,7 @@ fn cut_jump(
             }
             (neg(arena, two_pi_i), one)
         }
-        ExprNode::Apply(f, _) if arena.lib_fn(f) == Some(LibFn::Chi) => {
+        ExprNode::Lib(LibFn::Chi, _) => {
             if above {
                 return identity;
             }
@@ -2807,11 +2807,11 @@ fn cut_jump(
         }
         // The complete elliptic integrals and `Liₛ` take the limit from below
         // on their cut `(1, ∞)` (mpmath), with no form above.
-        ExprNode::Apply(f, ref args)
+        ExprNode::Lib(f, ref args)
             if extended
                 && matches!(
-                    (arena.lib_fn(f), args.len()),
-                    (Some(LibFn::EllipticK | LibFn::EllipticE), 1) | (Some(LibFn::PolyLog), 2)
+                    (f, args.len()),
+                    (LibFn::EllipticK | LibFn::EllipticE, 1) | (LibFn::PolyLog, 2)
                 ) =>
         {
             if above {
@@ -2819,9 +2819,8 @@ fn cut_jump(
             }
             return identity;
         }
-        ExprNode::Apply(f, ref args) if args.len() == 2 && extended => {
+        ExprNode::Lib(lib, ref args) if args.len() == 2 && extended => {
             let order = args[0];
-            let lib = arena.lib_fn(f)?;
             // `Kν`, `Yν` (a logarithm of the argument) take the limit from
             // above on the negative reals (mpmath), with no constant form
             // below (the jump is a multiple of `Iν`, `Jν`).
@@ -2970,11 +2969,8 @@ fn structural_series(
         ExprNode::Abs(a) => return abs_series(arena, &child(cache, a)?, side),
         ExprNode::Sign(a) => return sign_series(arena, &child(cache, a)?, side, false),
         ExprNode::Heaviside(a) => return sign_series(arena, &child(cache, a)?, side, true),
-        ExprNode::Apply(f, ref args)
-            if mode.full_rules()
-                && args.len() == 2
-                && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::PolyLog)
-                && !walk::contains(arena, args[0], var) =>
+        ExprNode::Lib(crate::base::libfn::LibFn::PolyLog, ref args)
+            if mode.full_rules() && args.len() == 2 && !walk::contains(arena, args[0], var) =>
         {
             // Liₛ(u) = Σ uᵏ/kˢ at a zero of `u` (before 0.44 the
             // differentiation fallback met `Liₛ₋₁(t)/t` at `t = 0` and asked
@@ -2996,7 +2992,7 @@ fn structural_series(
             };
             return Ok(TSeries::compose(arena, &coefficient, &u));
         }
-        ExprNode::Apply(f, ref args) if args.len() == 2 && is_bessel(arena, f) => {
+        ExprNode::Lib(f, ref args) if args.len() == 2 && is_bessel(f) => {
             let u = child(cache, args[1])?;
             if let Some(s) = log_bessel_series(arena, f, args[0], &u, var, mode)? {
                 return Ok(s);
@@ -3013,21 +3009,21 @@ fn structural_series(
         | ExprNode::Si(_)
         | ExprNode::Li(_)
         | ExprNode::Erfc(_) => return special_series(arena, &node, var, mode, cache),
+        ExprNode::Lib(
+            crate::base::libfn::LibFn::Shi | crate::base::libfn::LibFn::Chi,
+            ref args,
+        ) if args.len() == 1 => {
+            return special_series(arena, &node, var, mode, cache);
+        }
         ExprNode::Apply(f, ref args)
             if (args.len() == 1
-                && (matches!(
-                    arena.lib_fn(f),
-                    Some(crate::base::libfn::LibFn::Shi | crate::base::libfn::LibFn::Chi)
-                ) || matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC)))
+                && matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC))
                 || PowerAsymptotic::from_name(arena.symbol_name(f)).is_some() =>
         {
             return special_series(arena, &node, var, mode, cache);
         }
-        ExprNode::Apply(f, ref args)
-            if mode.full_rules()
-                && args.len() == 2
-                && arena.lib_fn(f) == Some(crate::base::libfn::LibFn::ExpInt)
-                && is_one_const(arena, args[0]) =>
+        ExprNode::Lib(crate::base::libfn::LibFn::ExpInt, ref args)
+            if mode.full_rules() && args.len() == 2 && is_one_const(arena, args[0]) =>
         {
             return special_series(arena, &node, var, mode, cache);
         }
@@ -3338,11 +3334,11 @@ fn tanh_log_extended(arena: &mut Arena, u: &TSeries, mode: Mode) -> Option<TSeri
     Some(TSeries::add(arena, &one, &tail))
 }
 
-fn is_bessel(arena: &Arena, f: crate::base::node::SymbolId) -> bool {
+fn is_bessel(f: crate::base::libfn::LibFn) -> bool {
     use crate::base::libfn::LibFn;
     matches!(
-        arena.lib_fn(f),
-        Some(LibFn::BesselJ | LibFn::BesselY | LibFn::BesselI | LibFn::BesselK)
+        f,
+        LibFn::BesselJ | LibFn::BesselY | LibFn::BesselI | LibFn::BesselK
     )
 }
 
@@ -3356,7 +3352,7 @@ fn is_bessel(arena: &Arena, f: crate::base::node::SymbolId) -> bool {
 /// essential singularity; elsewhere the fallback (finite values) applies.
 fn bessel_series(
     arena: &mut Arena,
-    f: crate::base::node::SymbolId,
+    lib: crate::base::libfn::LibFn,
     order: ExprId,
     u: &TSeries,
     var: ExprId,
@@ -3372,7 +3368,6 @@ fn bessel_series(
     if k == 0 {
         return Err(Obstruction::Unknown);
     }
-    let lib = arena.lib_fn(f).ok_or(Obstruction::Unknown)?;
     if walk::contains(arena, order, var) || !matches!(lib, LibFn::BesselJ | LibFn::BesselI) {
         return Err(Obstruction::NoExpansion);
     }
@@ -5149,12 +5144,12 @@ fn special_series(
             }
             Ok(s)
         }
-        ExprNode::Apply(f, ref args) => {
-            let (kind, z) = match (arena.lib_fn(f), args.as_slice()) {
-                (Some(LibFn::Shi), &[z]) => (IntegralKind::Shi, z),
-                (Some(LibFn::Chi), &[z]) => (IntegralKind::Chi, z),
+        ExprNode::Lib(f, ref args) => {
+            let (kind, z) = match (f, args.as_slice()) {
+                (LibFn::Shi, &[z]) => (IntegralKind::Shi, z),
+                (LibFn::Chi, &[z]) => (IntegralKind::Chi, z),
                 // `E₁` (a series, and Gruntz's last resort).
-                (Some(LibFn::ExpInt), &[n, z]) if mode.full_rules() && is_one_const(arena, n) => {
+                (LibFn::ExpInt, &[n, z]) if mode.full_rules() && is_one_const(arena, n) => {
                     (IntegralKind::E1, z)
                 }
                 _ => return unknown,
@@ -5510,17 +5505,16 @@ fn definite_obstruction(e: Obstruction) -> Obstruction {
 /// does not apply.
 fn log_bessel_series(
     arena: &mut Arena,
-    f: crate::base::node::SymbolId,
+    lib: crate::base::libfn::LibFn,
     order: ExprId,
     u: &TSeries,
     var: ExprId,
     mode: Mode,
 ) -> Result<Option<TSeries>, Obstruction> {
     use crate::base::libfn::LibFn;
-    let lib = arena.lib_fn(f);
     let is_k = match lib {
-        Some(LibFn::BesselK) => true,
-        Some(LibFn::BesselY) => false,
+        LibFn::BesselK => true,
+        LibFn::BesselY => false,
         _ => return Ok(None),
     };
     if mode.log_var.is_none()

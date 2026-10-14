@@ -55,6 +55,9 @@ const CANONICAL: &[&str] = &[
     "Ge",
     "Eq_",
     "Ne",
+    // A library function's node is built by `Arena::lib_apply` /
+    // `Arena::func`, which check its argument count (0.50, W6c).
+    "Lib",
 ];
 
 /// Files allowed to intern a canonical variant raw, with the exact count.

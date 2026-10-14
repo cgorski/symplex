@@ -8,7 +8,6 @@
 //! Principle 5.
 
 use crate::base::arena::Arena;
-use crate::base::cast::integer_span;
 use crate::base::interval::Interval;
 use crate::base::interval::IntervalKind;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
@@ -17,6 +16,8 @@ use crate::transforms::eval;
 use crate::transforms::evalf;
 use crate::transforms::inequalities::Relation;
 use crate::transforms::solve;
+use num_bigint::BigInt;
+use num_rational::Ratio;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // continuous_domain
@@ -229,7 +230,8 @@ pub(crate) fn singularities(
         "singularities: scanning for singularities"
     );
 
-    let scan = scan_breakpoints(arena, expr, var, Some(range));
+    let scan_range = ScanRange::from_f64(arena, range);
+    let scan = scan_breakpoints(arena, expr, var, scan_range);
     let mut sing_points: Vec<f64> = Vec::new();
 
     for bp in scan.points {
@@ -270,7 +272,9 @@ pub(crate) enum BreakKind {
 pub(crate) struct Breakpoint {
     /// The location as a symbolic expression (may contain parameters).
     pub point: ExprId,
-    /// Numeric value when the location is a real constant.
+    /// Numeric value when the location is a real constant, within `2⁻⁴⁶` of
+    /// it relatively ([`POINT_VALUE_ACCURACY`]): two values further apart
+    /// than `2⁻⁴⁰` show the order of their points, closer ones do not.
     pub value: Option<f64>,
     /// Whether this is a genuine singularity or just a kink.
     pub kind: BreakKind,
@@ -290,6 +294,61 @@ pub(crate) struct BreakScan {
     /// analysed at all (unknown `Apply` functions, formal integrals /
     /// limits, `RootOf`, `LambertW`).  No numeric guard can compensate.
     pub opaque: bool,
+    /// `true` when a periodic family (`sin`/`cos`/`tan` zeros, `Gamma`
+    /// poles, `floor` steps) has more members in the range than the scan
+    /// enumerates ([`MAX_FAMILY_POINTS`]); `complete` is then `false` too.
+    pub crowded: bool,
+    /// `true` when the zeros of a periodic composition (`cos(x²) − 1/7`,
+    /// `sin x − cos x`) are the roots of a principal solve, one period of
+    /// infinitely many: their translates may be missing.  The definite
+    /// integrator's numeric guard samples such an expression for sign
+    /// changes no point explains; the quadrature, which has no guard,
+    /// locates its kinks numerically.
+    pub periodic: bool,
+}
+
+/// The relative accuracy of [`Breakpoint::value`]: `2⁻⁴⁶`.  A 16-digit
+/// evaluation has it, and so has the `f64` formula of a family member when
+/// it cancels less than four bits.
+pub(crate) const POINT_VALUE_ACCURACY: f64 = 1.4210854715202004e-14;
+
+/// The most members of one periodic family a scan enumerates.
+const MAX_FAMILY_POINTS: u32 = 10_001;
+
+/// The range over which [`scan_breakpoints`] enumerates periodic families
+/// (`sin`/`cos`/`tan` zeros, `Gamma` poles, `floor` steps): its exact ends,
+/// real constants with finite values, in either order.
+///
+/// The members of a family `α·x + β = k·c + d` inside are those with `k`
+/// from the certified ceiling and floor of `(α·end + β − d)/c` at the exact
+/// ends, and each is an exact expression.  Up to 0.49 they were enumerated
+/// from the `f64` ends with a tolerance of `10⁻¹²`: on `[1, 1 + 4·10⁻²⁰]`,
+/// a single `f64`, the zeros of `sin(10²⁰x)` could not be told from the
+/// ends, and `∫|sin(10²⁰x)| dx` there was `1.75·10⁻²⁰` (truly
+/// `2.25·10⁻²⁰`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScanRange {
+    /// The exact ends.
+    pub exact: Interval<ExprId>,
+}
+
+impl ScanRange {
+    /// The range between the real constants `lower` and `upper`, whose
+    /// values are `approx`; `None` when a value is not finite.
+    pub(crate) fn new(lower: ExprId, upper: ExprId, approx: Interval<f64>) -> Option<Self> {
+        (approx.lower.is_finite() && approx.upper.is_finite()).then_some(ScanRange {
+            exact: Interval::closed(lower, upper),
+        })
+    }
+
+    /// The `f64` range `r` itself, its ends taken as the exact binary
+    /// numbers they are; `None` when an end is not finite.
+    pub(crate) fn from_f64(arena: &mut Arena, r: Interval<f64>) -> Option<Self> {
+        let lower = crate::base::numeric::f64_to_ratio_exact(r.lower)?;
+        let upper = crate::base::numeric::f64_to_ratio_exact(r.upper)?;
+        let (lower, upper) = (arena.num_ratio(lower), arena.num_ratio(upper));
+        ScanRange::new(lower, upper, r)
+    }
 }
 
 /// Scan `expr` for every point where it (or an antiderivative of it) may
@@ -297,22 +356,24 @@ pub(crate) struct BreakScan {
 ///
 /// When `range` is given, periodic families (`sin`, `cos`, `tan` with a
 /// linear argument, `Gamma` poles, `floor` steps) are enumerated inside
-/// the closed range `[lower, upper]`; without a range only the solver's
-/// representative roots are reported and `complete` is cleared for such
-/// families.
+/// the closed range between its exact ends ([`ScanRange`]); without a range
+/// only the solver's representative roots are reported and `complete` is
+/// cleared for such families.
 ///
 /// Uses an explicit post-order walk (no recursion).
 pub(crate) fn scan_breakpoints(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    range: Option<Interval<f64>>,
+    range: Option<ScanRange>,
 ) -> BreakScan {
     let post_order = walk::post_order_ids(arena, expr);
     let mut scan = BreakScan {
         points: Vec::new(),
         complete: true,
         opaque: false,
+        crowded: false,
+        periodic: false,
     };
 
     for &id in &post_order {
@@ -333,7 +394,7 @@ fn push_zeros(
     g: ExprId,
     var: ExprId,
     kind: BreakKind,
-    range: Option<Interval<f64>>,
+    range: Option<ScanRange>,
     scan: &mut BreakScan,
 ) {
     if !walk::contains(arena, g, var) {
@@ -348,19 +409,44 @@ fn push_zeros(
         return;
     }
 
-    let solutions = solve::known_real_roots(arena, g, var);
-    if solutions.is_empty() {
-        // A polynomial with no real roots is fine (solve returns complex
-        // roots explicitly).  Anything the solver silently gave up on is
-        // a hole in our knowledge.
-        if crate::poly::polybridge::expr_to_poly(arena, g, var).is_none() {
-            scan.complete = false;
+    // Every real root, or the scan is incomplete (a root list that misses
+    // a branch).  The principal solve lists one period of a periodic
+    // composition (`cos(x²) = 1/7` gives `±√acos(1/7)` only): `periodic`.
+    // Up to 0.49 nothing said so, and the quadrature of `sign(cos(x²) −
+    // 1/7)` over `[0, 3]` ran across the zeros it lacked (`0.5178` for
+    // `0.5360`).
+    use solve::{RootSet, Solutions};
+    let (solutions, complete) = match solve::solve_classified_real(arena, g, var).into_found() {
+        Ok((roots, missing)) => {
+            if periodic_in(arena, g, var) {
+                scan.periodic = true;
+            }
+            (roots, missing.is_none())
         }
-        return;
+        Err(Solutions::Complete(RootSet::Empty(_))) => (Vec::new(), true),
+        Err(_) => {
+            // A polynomial with no real roots is fine (solve returns complex
+            // roots explicitly).  Anything the solver gave up on is a hole in
+            // our knowledge.
+            let polynomial = crate::poly::polybridge::expr_to_poly(arena, g, var).is_some();
+            (Vec::new(), polynomial)
+        }
+    };
+    if !complete {
+        scan.complete = false;
     }
     for s in solutions {
         push_point(arena, s, kind, scan);
     }
+}
+
+/// Does `g` contain `sin`, `cos` or `tan` of an argument depending on
+/// `var` (whose principal roots are one period of infinitely many)?
+fn periodic_in(arena: &Arena, g: ExprId, var: ExprId) -> bool {
+    walk::post_order_ids(arena, g).into_iter().any(|id| {
+        matches!(*arena.node(id), ExprNode::Sin(u) | ExprNode::Cos(u) | ExprNode::Tan(u)
+            if walk::contains(arena, u, var))
+    })
 }
 
 /// Push a single candidate point, filtering out non-real constants.
@@ -433,114 +519,157 @@ fn push_point(arena: &mut Arena, point: ExprId, kind: BreakKind, scan: &mut Brea
     }
 }
 
-/// If `g` is `sin(αx+β)`, `cos(αx+β)` or `tan(αx+β)` with numeric α, β,
-/// enumerate its zeros in `range`.  Returns `None` if `g` is not such a
-/// form, `Some(true)` on success, `Some(false)` if the family could not
-/// be enumerated (no range or non-numeric coefficients).
+/// If `g` is `sin(αx+β)`, `cos(αx+β)` or `tan(αx+β)` with constant α, β,
+/// push its zeros in `range`, `x = ((k + d)·π − β)/α` (`d = ½` for `cos`),
+/// exactly: `k` runs between the certified ceiling and floor of `(α·end +
+/// β)/π − d` at the exact ends (see [`ScanRange`]).  Returns `None` if `g` is
+/// not such a form, `Some(true)` on success, `Some(false)` if the family
+/// could not be enumerated (no range, more than [`MAX_FAMILY_POINTS`]
+/// members, or an integer part that does not settle).
 fn push_trig_zeros(
     arena: &mut Arena,
     g: ExprId,
     var: ExprId,
     kind: BreakKind,
-    range: Option<Interval<f64>>,
+    range: Option<ScanRange>,
     scan: &mut BreakScan,
 ) -> Option<bool> {
-    // offset_k: zeros are at αx+β = offset + kπ
-    let (inner, offset) = match arena.node(g).clone() {
-        ExprNode::Sin(i) | ExprNode::Tan(i) => (i, 0.0),
-        ExprNode::Cos(i) => (i, std::f64::consts::FRAC_PI_2),
+    let (inner, half) = match arena.node(g).clone() {
+        ExprNode::Sin(i) | ExprNode::Tan(i) => (i, false),
+        ExprNode::Cos(i) => (i, true),
         _ => return None,
     };
     if !walk::contains(arena, inner, var) {
         return None;
     }
-    let LinearCoeffs {
-        slope: alpha,
-        intercept: beta,
-    } = match linear_coeffs_f64(arena, inner, var) {
-        Some(ab) => ab,
-        None => return Some(false),
-    };
-    let (lo, hi) = match range {
-        Some(r) => (r.lower, r.upper),
-        None => return Some(false),
-    };
-    if alpha == 0.0 || !lo.is_finite() || !hi.is_finite() {
+    let (Some(lin), Some(range)) = (linear_coeffs_exact(arena, inner, var), range) else {
         return Some(false);
-    }
-    // x = (offset + kπ − β)/α.  Enumerate k so that x ∈ [lo, hi].
-    let t_lo = alpha * lo + beta;
-    let t_hi = alpha * hi + beta;
-    let (t_min, t_max) = if t_lo <= t_hi {
-        (t_lo, t_hi)
+    };
+    // The family in the variable t = (αx + β)/π − d: the integers.
+    let pi = arena.pi();
+    let shift = if half {
+        arena.rational(1, 2)
     } else {
-        (t_hi, t_lo)
+        arena.zero()
     };
-    // `as i64` saturates for a huge range (`[−10³⁰⁰, 10³⁰⁰]`); the bounds and
-    // their difference saturate too (up to 0.45 they overflowed: a panic in
-    // debug builds, a wrapped count in release).
-    let k_min = (((t_min - offset) / std::f64::consts::PI).floor() as i64).saturating_sub(1);
-    let k_max = (((t_max - offset) / std::f64::consts::PI).ceil() as i64).saturating_add(1);
-    if k_max.saturating_sub(k_min) > 10_000 {
+    let to_t = |arena: &mut Arena, u: ExprId| {
+        let over_pi = arena.div(u, pi);
+        arena.sub(over_pi, shift)
+    };
+    let Some(ks) = family_indices(arena, lin, range, to_t, scan) else {
         return Some(false);
-    }
-    // Build exact symbolic points: x = ((offset_frac + k)·π − β)/α.
-    let LinearCoeffs {
-        slope: alpha_ex,
-        intercept: beta_ex,
-    } = match linear_coeffs_exact(arena, inner, var) {
-        Some(ab) => ab,
-        None => return Some(false),
     };
-    for k in k_min..=k_max {
-        let t = offset + (k as f64) * std::f64::consts::PI;
-        let xv = (t - beta) / alpha;
-        if xv < lo - 1e-12 || xv > hi + 1e-12 {
-            continue;
-        }
-        // Symbolic: ((k + offset/π)·π − β)/α
-        let k_ex = if offset == 0.0 {
-            arena.int(k)
+    let lin_f = linear_f64(arena, lin);
+    for k in ks {
+        // x = ((k + d)·π − β)/α.
+        let k_d = if half {
+            Ratio::new(BigInt::from(2) * &k + 1, BigInt::from(2))
         } else {
-            arena.rational(2 * k + 1, 2)
+            Ratio::from_integer(k)
         };
-        let pi = arena.pi();
+        let t_f64 = num_traits::ToPrimitive::to_f64(&k_d).map(|t| t * std::f64::consts::PI);
+        let k_ex = arena.num_ratio(k_d);
         let k_pi = arena.mul(&[k_ex, pi]);
-        let num = arena.sub(k_pi, beta_ex);
-        let point = arena.div(num, alpha_ex);
-        scan.points.push(Breakpoint {
-            point,
-            value: Some(xv),
-            kind,
-        });
+        let num = arena.sub(k_pi, lin.intercept);
+        let point = arena.div(num, lin.slope);
+        let value = affine_point_f64(t_f64, lin_f).or_else(|| expr_to_f64(arena, point));
+        scan.points.push(Breakpoint { point, value, kind });
     }
     Some(true)
 }
 
+/// The integers `k` of a family `t(α·x + β) = k` (`to_t` builds `t(u)`, an
+/// increasing affine map) with `x` in the closed `range`, from the certified
+/// ceiling and floor of `t` at its exact ends; `None` (with `scan.crowded`
+/// when that is the reason) when an integer part does not settle or there
+/// are more than [`MAX_FAMILY_POINTS`].
+fn family_indices(
+    arena: &mut Arena,
+    lin: LinearCoeffs<ExprId>,
+    range: ScanRange,
+    to_t: impl Fn(&mut Arena, ExprId) -> ExprId,
+    scan: &mut BreakScan,
+) -> Option<Vec<BigInt>> {
+    if arena.is_zero_structural(lin.slope) {
+        return None;
+    }
+    let t_at = |arena: &mut Arena, end: ExprId| {
+        let ax = arena.mul(&[lin.slope, end]);
+        let u = arena.add(&[ax, lin.intercept]);
+        let t = to_t(arena, u);
+        eval::eval(arena, t)
+    };
+    let ta = t_at(arena, range.exact.lower);
+    let tb = t_at(arena, range.exact.upper);
+    let (ca, fa) = (
+        integer_part(arena, ta, true)?,
+        integer_part(arena, ta, false)?,
+    );
+    let (cb, fb) = (
+        integer_part(arena, tb, true)?,
+        integer_part(arena, tb, false)?,
+    );
+    // Integers between t(a) and t(b), in whichever order they are.
+    let (mut k, last) = (ca.min(cb), fa.max(fb));
+    if &last - &k >= BigInt::from(MAX_FAMILY_POINTS) {
+        scan.crowded = true;
+        return None;
+    }
+    let mut ks = Vec::new();
+    while k <= last {
+        ks.push(k.clone());
+        k += 1;
+    }
+    Some(ks)
+}
+
+/// `⌊t⌋` (`ceiling`: `⌈t⌉`) of the real constant `t`, certified (`eval`'s
+/// integer part of a constant: exact, or the integer its certified value
+/// lies strictly inside); `None` when it does not settle.
+fn integer_part(arena: &mut Arena, t: ExprId, ceiling: bool) -> Option<BigInt> {
+    let node = if ceiling {
+        arena.ceiling(t)
+    } else {
+        arena.floor(t)
+    };
+    let n = eval::eval(arena, node);
+    arena
+        .as_num(n)
+        .filter(|r| r.is_integer())
+        .map(|r| r.to_integer())
+}
+
+/// The slope and intercept of `lin` as `f64`s, when both evaluate.
+fn linear_f64(arena: &mut Arena, lin: LinearCoeffs<ExprId>) -> Option<LinearCoeffs<f64>> {
+    let slope = expr_to_f64(arena, lin.slope).filter(|v| v.is_finite() && *v != 0.0)?;
+    let intercept = expr_to_f64(arena, lin.intercept).filter(|v| v.is_finite())?;
+    Some(LinearCoeffs { slope, intercept })
+}
+
+/// `(t − β)/α` in `f64` for a family member `t` (`f64`, within `4·2⁻⁵³` of
+/// its value), when that is within [`POINT_VALUE_ACCURACY`] of the exact
+/// point: finite, nonzero, and `t − β` cancelling less than four bits.
+fn affine_point_f64(t: Option<f64>, lin: Option<LinearCoeffs<f64>>) -> Option<f64> {
+    let (t, lin) = (t?, lin?);
+    let num = t - lin.intercept;
+    let v = num / lin.slope;
+    (t.is_finite()
+        && num != 0.0
+        && t.abs() + lin.intercept.abs() <= 16.0 * num.abs()
+        && v.is_finite()
+        && v != 0.0)
+        .then_some(v)
+}
+
 /// The coefficients of a linear expression `slope·var + intercept`, as
-/// returned by [`linear_coeffs_exact`] (exact `ExprId`s) and
-/// [`linear_coeffs_f64`] (numeric).
+/// returned by [`linear_coeffs_exact`] (exact `ExprId`s), and their values
+/// ([`linear_f64`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LinearCoeffs<T> {
     /// Coefficient of `var` (`α` in `α·var + β`).
     pub slope: T,
     /// Constant term (`β` in `α·var + β`).
     pub intercept: T,
-}
-
-/// Numeric `α·var + β` coefficients for `expr` with constant coefficients.
-fn linear_coeffs_f64(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<LinearCoeffs<f64>> {
-    let lin = linear_coeffs_exact(arena, expr, var)?;
-    let af = expr_to_f64(arena, lin.slope)?;
-    let bf = expr_to_f64(arena, lin.intercept)?;
-    if af.is_finite() && bf.is_finite() {
-        Some(LinearCoeffs {
-            slope: af,
-            intercept: bf,
-        })
-    } else {
-        None
-    }
 }
 
 /// Exact `α·var + β` coefficients for `expr`, where both are free of
@@ -669,7 +798,7 @@ fn breakpoints_of_node(
     arena: &mut Arena,
     node: &ExprNode,
     var: ExprId,
-    range: Option<Interval<f64>>,
+    range: Option<ScanRange>,
     scan: &mut BreakScan,
 ) {
     use BreakKind::{Kink, Singular};
@@ -742,7 +871,9 @@ fn breakpoints_of_node(
             if !walk::contains(arena, inner, var) {
                 return;
             }
-            push_integer_family(arena, inner, var, range, Singular, scan, |n| n <= 0);
+            push_integer_family(arena, inner, var, range, Singular, scan, |n| {
+                !num_traits::Signed::is_positive(n)
+            });
         }
 
         // Kinks: |g|, sign(g), H(g), δ(g) at zeros of g.
@@ -757,6 +888,15 @@ fn breakpoints_of_node(
             if !walk::contains(arena, inner, var) {
                 return;
             }
+            // `sin u`, `cos u` reach the integers −1, 0, 1 only where `sin u`
+            // or `cos u` is 0: the steps of `floor(sin(αx + β))` are among
+            // the zeros of both (up to 0.49 they were not located).
+            if let ExprNode::Sin(u) | ExprNode::Cos(u) = *arena.node(inner) {
+                let (s, c) = (arena.sin(u), arena.cos(u));
+                push_zeros(arena, s, var, Kink, range, scan);
+                push_zeros(arena, c, var, Kink, range, scan);
+                return;
+            }
             push_integer_family(arena, inner, var, range, Kink, scan, |_| true);
         }
 
@@ -766,8 +906,24 @@ fn breakpoints_of_node(
             push_zeros(arena, d, var, Kink, range, scan);
         }
 
+        // min/max: kinks where two arguments cross.  Up to 0.49 none was
+        // pushed, and the quadrature of `Max(x − 1/3, 0)` was not split.
+        ExprNode::Min(args) | ExprNode::Max(args)
+            if args.iter().any(|&a| walk::contains(arena, a, var)) =>
+        {
+            let args = args.to_vec();
+            for (i, &p) in args.iter().enumerate() {
+                for &q in &args[i + 1..] {
+                    let d = arena.sub(p, q);
+                    push_zeros(arena, d, var, Kink, range, scan);
+                }
+            }
+        }
+
         // Unknown functions and formal nodes: we cannot see inside.
-        ExprNode::Apply(_, args) if args.iter().any(|&a| walk::contains(arena, a, var)) => {
+        ExprNode::Apply(_, args) | ExprNode::Lib(_, args)
+            if args.iter().any(|&a| walk::contains(arena, a, var)) =>
+        {
             scan.complete = false;
             scan.opaque = true;
         }
@@ -800,63 +956,42 @@ fn breakpoints_of_node(
 }
 
 /// Push the points where the linear expression `inner = αx+β` takes the
-/// integer values selected by `keep`, restricted to `range`.
+/// integer values selected by `keep`, restricted to `range`: `n` between
+/// the certified ceiling and floor of `α·end + β` at the exact ends, at
+/// most [`MAX_FAMILY_POINTS`] of them.  Before 0.49 `as i64` casts of the
+/// `f64` ends saturated and the `± 1` and the length wrapped: the jumps of
+/// `floor(10¹⁹x)` on `[−1, 1]` were skipped (integral 0) and
+/// `floor(9·10¹⁸x)` looped over 1.8·10¹⁹ candidates; up to 0.49 the ends
+/// were `f64`s and the steps of `floor(x)` beyond `2⁵³` were not found.
 fn push_integer_family(
     arena: &mut Arena,
     inner: ExprId,
     var: ExprId,
-    range: Option<Interval<f64>>,
+    range: Option<ScanRange>,
     kind: BreakKind,
     scan: &mut BreakScan,
-    keep: impl Fn(i64) -> bool,
+    keep: impl Fn(&BigInt) -> bool,
 ) {
-    let (Some(lin), Some(lin_ex), Some(r)) = (
-        linear_coeffs_f64(arena, inner, var),
-        linear_coeffs_exact(arena, inner, var),
-        range,
-    ) else {
+    let (Some(lin), Some(range)) = (linear_coeffs_exact(arena, inner, var), range) else {
         scan.complete = false;
         return;
     };
-    let (alpha, beta) = (lin.slope, lin.intercept);
-    let (alpha_ex, beta_ex) = (lin_ex.slope, lin_ex.intercept);
-    let (lo, hi) = (r.lower, r.upper);
-    if alpha == 0.0 || !lo.is_finite() || !hi.is_finite() {
-        scan.complete = false;
-        return;
-    }
-    let t_lo = alpha * lo + beta;
-    let t_hi = alpha * hi + beta;
-    let (t_min, t_max) = if t_lo <= t_hi {
-        (t_lo, t_hi)
-    } else {
-        (t_hi, t_lo)
-    };
-    // At most 10 001 candidates (`n_max − n_min ≤ 10 000`).  Before 0.49 the
-    // `as i64` casts saturated and the `± 1` and the length wrapped: the
-    // jumps of `floor(10¹⁹x)` on `[−1, 1]` were skipped (integral 0) and
-    // `floor(9·10¹⁸x)` looped over 1.8·10¹⁹ candidates.
-    let Ok(span) = integer_span(t_min, t_max, 1, 10_001) else {
+    let Some(ns) = family_indices(arena, lin, range, |_, u| u, scan) else {
         scan.complete = false;
         return;
     };
-    for n in span {
-        if !keep(n) {
+    let lin_f = linear_f64(arena, lin);
+    for n in ns {
+        if !keep(&n) {
             continue;
         }
-        let xv = ((n as f64) - beta) / alpha;
-        if xv < lo - 1e-12 || xv > hi + 1e-12 {
-            continue;
-        }
-        let n_ex = arena.int(n);
-        let num = arena.sub(n_ex, beta_ex);
-        let point = arena.div(num, alpha_ex);
+        let n_f64 = num_traits::ToPrimitive::to_f64(&n);
+        let n_ex = arena.num_ratio(Ratio::from_integer(n));
+        let num = arena.sub(n_ex, lin.intercept);
+        let point = arena.div(num, lin.slope);
         let point = eval::eval(arena, point);
-        scan.points.push(Breakpoint {
-            point,
-            value: Some(xv),
-            kind,
-        });
+        let value = affine_point_f64(n_f64, lin_f).or_else(|| expr_to_f64(arena, point));
+        scan.points.push(Breakpoint { point, value, kind });
     }
 }
 
@@ -1110,7 +1245,7 @@ fn opaque_node_name(node: &ExprNode) -> Option<&'static str> {
         ExprNode::Binomial(..) => "binomial",
         ExprNode::KroneckerDelta(..) => "KroneckerDelta",
         ExprNode::LambertW(_) => "LambertW",
-        ExprNode::Apply(..) => "an unknown function",
+        ExprNode::Apply(..) | ExprNode::Lib(..) => "an unknown function",
         ExprNode::Derivative(..) => "Derivative",
         ExprNode::Integral(..) => "Integral",
         ExprNode::DefiniteIntegral(..) => "DefiniteIntegral",
@@ -1462,7 +1597,11 @@ const MAX_IDENTITY_SIZE: usize = 150;
 ///   which is no proof.  A constant with free symbols or an unevaluated
 ///   part, or one `evalf` cannot evaluate (`legendre(3/2, e)`), is
 ///   `Unknown`: there is no evidence either way (see
-///   [`ZeroTest::Nonzero`] for how the series engine reads that).
+///   [`ZeroTest::Nonzero`] for how the series engine reads that).  So is
+///   one without a zero question, as for
+///   [`Ex::is_zero`](crate::api::expr::Ex::is_zero): with `±∞`, `zoo` or
+///   NaN in it, and one with a `δ` that no identity shows to be 0 (`δ` of
+///   an argument not proved real has no value; it is never taken for 0).
 ///
 /// Series coefficients and Gruntz's leading coefficients are decided this
 /// way, and both readings of an unproved zero are claims: as "nonzero" it
@@ -1532,8 +1671,16 @@ fn hidden_zero_uncached(
     c: ExprId,
 ) -> crate::base::truth::Verdict<crate::base::truth::Truth> {
     use crate::base::truth::{Evidence, Truth, Verdict};
-    // `evalf` takes `δ(x)` for 0 everywhere, `δ(0)` included: no value,
-    // but `δ(a)` of a nonzero `a` is 0 ([`dirac_delta_off_zero`]).
+    // No zero question to answer, as for `Ex::is_zero`: up to 0.49 the
+    // structural shortcut below called `zoo` and NaN nonzero.
+    if without_zero_question(arena, c) {
+        return Verdict::new(Truth::Unknown, Evidence::Approximate);
+    }
+    // `δ(a)` of a nonzero real `a` is 0 ([`dirac_delta_off_zero`]); `δ(0)`
+    // has no value, nor has `δ` off the reals (`evalf` takes `δ(i)` for 0;
+    // up to 0.49 the rewrites here did too, and `δ(i) + 1` was nonzero on
+    // exact evidence): no claim unless an identity shows `c` to be 0
+    // whatever the value of `δ`.
     if has_dirac_delta(arena, c) {
         let rewritten = exact_rewrites(arena, c);
         if exactly_zero(arena, c, rewritten) {
@@ -1716,21 +1863,13 @@ fn like_arguments_unified(arena: &mut Arena, c: ExprId) -> ExprId {
             {
                 Some((b, (kind, Some(q))))
             }
-            ExprNode::Ln(a)
-            | ExprNode::Exp(a)
-            | ExprNode::Sin(a)
-            | ExprNode::Cos(a)
-            | ExprNode::Tan(a)
-            | ExprNode::Sinh(a)
-            | ExprNode::Cosh(a)
-            | ExprNode::Tanh(a)
-            | ExprNode::Asin(a)
-            | ExprNode::Acos(a)
-            | ExprNode::Atan(a)
-            | ExprNode::Asinh(a)
-            | ExprNode::Acosh(a)
-            | ExprNode::Atanh(a) => Some((a, (kind, None))),
-            _ => None,
+            // The elementary functions (`Func::elementary`).
+            _ => match node.func(arena) {
+                Some((f, args)) if f.elementary().is_some() => {
+                    args.first().map(|&a| (a, (kind, None)))
+                }
+                _ => None,
+            },
         };
         if let Some((arg, kind)) = entry {
             like.push((id, arg, kind));
@@ -1820,7 +1959,7 @@ fn exact_pass(arena: &mut Arena, c: ExprId) -> ExprId {
         let node = arena.node(r).clone();
         let mut new = match &node {
             ExprNode::Ln(a) => ln_of_rational_in_primes(arena, *a).unwrap_or(r),
-            ExprNode::Apply(f, args) if args.len() == 2 => {
+            ExprNode::Lib(f, args) if args.len() == 2 => {
                 special_function_rewrite(arena, *f, args[0], args[1]).unwrap_or(r)
             }
             ExprNode::Atan2(y, a) if arena.is_zero_structural(*y) => {
@@ -1885,6 +2024,37 @@ fn exact_pass(arena: &mut Arena, c: ExprId) -> ExprId {
     eval::eval(arena, r)
 }
 
+/// Is the symbol-free constant `c` one without a zero question (the
+/// conventions of [`Ex::is_zero`](crate::api::expr::Ex::is_zero)): `±∞`,
+/// `zoo` or NaN in it (NaN is not "nonzero"), or a value proved infinite?
+fn without_zero_question(arena: &mut Arena, c: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let singular = walk::post_order_ids(arena, c).into_iter().any(|id| {
+        matches!(
+            arena.node(id),
+            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
+        )
+    });
+    singular || AssumptionCache::new().query(arena, c, Props::FINITE) == Some(false)
+}
+
+/// Does the symbol-free constant `c` contain a `δ` whose argument is not
+/// proved real (`δ(i)`: no value, so no zero or sign of `c` either)?
+pub(crate) fn dirac_delta_off_reals(arena: &mut Arena, c: ExprId) -> bool {
+    walk::post_order_ids(arena, c).into_iter().any(|id| {
+        let ExprNode::DiracDelta(a) = *arena.node(id) else {
+            return false;
+        };
+        !dirac_delta_argument_real(arena, a)
+    })
+}
+
+/// Is the symbol-free argument `a` of a `δ` proved real?
+fn dirac_delta_argument_real(arena: &mut Arena, a: ExprId) -> bool {
+    crate::transforms::eval::constant_facts(arena, a).query(crate::base::assumptions::Props::REAL)
+        == Some(true)
+}
+
 /// Does `c` contain `δ`?
 fn has_dirac_delta(arena: &Arena, c: ExprId) -> bool {
     walk::post_order_ids(arena, c)
@@ -1892,13 +2062,15 @@ fn has_dirac_delta(arena: &Arena, c: ExprId) -> bool {
         .any(|id| matches!(arena.node(id), ExprNode::DiracDelta(_)))
 }
 
-/// `0` for `δ(a)` when `a` is not 0: a constant with a certified nonzero
-/// digit, or an expression in parameters that is nonzero at a sample point
-/// (`δ(y) = 0` for generic `y`, the generic-parameter reading of the limit
-/// and series engines).  `None` otherwise.
+/// `0` for `δ(a)` when `a` is not 0: a real constant with a certified
+/// nonzero digit (`δ(i)` has no value; up to 0.49 it was 0 here), or an
+/// expression in parameters that is nonzero at a sample point (`δ(y) = 0`
+/// for generic `y`, the generic-parameter reading of the limit and series
+/// engines).  `None` otherwise.
 fn dirac_delta_off_zero(arena: &mut Arena, a: ExprId) -> Option<ExprId> {
     let nonzero = if walk::free_symbols(arena, a).is_empty() {
         !has_dirac_delta(arena, a)
+            && dirac_delta_argument_real(arena, a)
             && evalf::evalf_verdict(arena, a, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap)
                 .ok()
                 .and_then(crate::base::truth::Verdict::proven)
@@ -1952,13 +2124,12 @@ const MAX_SPECIAL_ORDER: i64 = 20;
 /// structurally.  `None` for anything else.
 fn special_function_rewrite(
     arena: &mut Arena,
-    f: crate::base::node::SymbolId,
+    lib: crate::base::libfn::LibFn,
     order: ExprId,
     z: ExprId,
 ) -> Option<ExprId> {
     use crate::base::libfn::LibFn;
     use num_traits::ToPrimitive;
-    let lib = arena.lib_fn(f)?;
     let n = arena
         .as_num(order)
         .filter(|q| q.is_integer())?
@@ -2673,6 +2844,37 @@ mod tests {
             freq.is_none(),
             "x^2 + 1 should have no frequency, got: {:?}",
             freq
+        );
+    }
+
+    /// `hidden_zero` makes the claims `Ex::is_zero` makes: none for `zoo`,
+    /// NaN, `±∞` (up to 0.49 the structural shortcut called `zoo·π` and
+    /// NaN nonzero, on exact evidence), and none that takes `δ` of a
+    /// non-real argument for 0 (`δ(i)` was 0, exactly); `δ` of a nonzero
+    /// real is 0.
+    #[test]
+    fn hidden_zero_makes_no_claim_without_a_zero_question() {
+        use crate::base::truth::Truth;
+        let mut arena = Arena::new();
+        let zoo = arena.complex_infinity;
+        let zoo_pi = arena.mul(&[zoo, arena.pi]);
+        let nan = arena.nan;
+        let oo = arena.infinity;
+        for c in [zoo, zoo_pi, nan, oo] {
+            assert_eq!(hidden_zero(&mut arena, c).proven(), None);
+        }
+        let i = arena.i_unit;
+        let delta_i = arena.dirac_delta(i);
+        let one = arena.one;
+        let delta_i_plus_one = arena.add(&[delta_i, one]);
+        for c in [delta_i, delta_i_plus_one] {
+            assert_eq!(hidden_zero(&mut arena, c).proven(), None);
+        }
+        let two = arena.int(2);
+        let delta_two = arena.dirac_delta(two);
+        assert_eq!(
+            hidden_zero(&mut arena, delta_two).proven(),
+            Some(Truth::True)
         );
     }
 }

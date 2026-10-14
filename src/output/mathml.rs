@@ -727,7 +727,11 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
             }
             ExprNode::Apply(sid, args) => {
                 let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
-                render_apply(arena.lib_fn(*sid), arena.symbol_name(*sid), &rendered)
+                render_apply(None, arena.symbol_name(*sid), &rendered)
+            }
+            ExprNode::Lib(f, args) => {
+                let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
+                render_apply(Some(*f), f.name(), &rendered)
             }
 
             // ── Calculus ───────────────────────────────────────────────

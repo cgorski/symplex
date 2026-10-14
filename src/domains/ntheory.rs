@@ -98,17 +98,7 @@ fn mod_pow_u64(base: u64, mut exp: u64, modulus: u64) -> u64 {
     result as u64
 }
 
-/// Binary GCD on `u64`.
-fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a
-}
-
-use crate::base::numeric::Q;
+use crate::base::numeric::{Q, gcd_u64, gcd_u128};
 /// The deterministic generator of the randomised algorithms here
 /// (Miller–Rabin witnesses, Pollard–Brent), so that results are
 /// reproducible run-to-run.  Root finding modulo `p` draws from the same
@@ -650,15 +640,6 @@ fn mul_wide_u128(a: u128, b: u128) -> (u128, u128) {
     let (lo, lo_carry) = p00.overflowing_add(mid << 64);
     let hi = p11 + (mid >> 64) + ((mid_carry as u128) << 64) + (lo_carry as u128);
     (hi, lo)
-}
-
-fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a
 }
 
 impl Mont128 {
@@ -4056,7 +4037,8 @@ pub fn lucas(n: impl Into<BigInt>) -> BigInt {
 }
 
 /// Bernoulli number `Bₙ` as an exact rational, with the convention
-/// `B₁ = −1/2`.  Returns `None` for negative `n`, and — a work bound —
+/// `B₁ = +1/2` (`Bₙ = Bₙ(1) = −n·ζ(1 − n)`, SymPy's since 1.12, the one of
+/// the crate's `bernoulli(n)`; up to 0.49 it was `−1/2`, DLMF's).  Returns `None` for negative `n`, and — a work bound —
 /// for an even `n > 30000`.  Below `B₅₁₂` the numbers come from the
 /// tangent numbers (cached); from there, each from `2·n!·ζ(n)/(2π)ⁿ` to
 /// the precision that fixes its numerator, with the denominator of von
@@ -4072,7 +4054,7 @@ pub fn lucas(n: impl Into<BigInt>) -> BigInt {
 ///
 /// let r = |p: i64, q: i64| Ratio::new(BigInt::from(p), BigInt::from(q));
 /// assert_eq!(bernoulli(0), Some(r(1, 1)));
-/// assert_eq!(bernoulli(1), Some(r(-1, 2)));
+/// assert_eq!(bernoulli(1), Some(r(1, 2)));
 /// assert_eq!(bernoulli(2), Some(r(1, 6)));
 /// assert_eq!(bernoulli(12), Some(r(-691, 2730)));
 /// assert_eq!(bernoulli(3), Some(r(0, 1)));
@@ -6771,7 +6753,7 @@ mod tests {
     fn bernoulli_euler_harmonic_values() {
         let r = |p: i64, q: i64| Ratio::new(bi(p), bi(q));
         assert_eq!(bernoulli(0), Some(r(1, 1)));
-        assert_eq!(bernoulli(1), Some(r(-1, 2)));
+        assert_eq!(bernoulli(1), Some(r(1, 2)));
         assert_eq!(bernoulli(2), Some(r(1, 6)));
         assert_eq!(bernoulli(4), Some(r(-1, 30)));
         assert_eq!(bernoulli(6), Some(r(1, 42)));

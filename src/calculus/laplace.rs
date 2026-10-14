@@ -342,9 +342,8 @@ fn elementary_expint(arena: &mut Arena, e: ExprId) -> ExprId {
     use crate::base::libfn::LibFn;
     let post = crate::base::walk::post_order_ids(arena, e);
     let has_low_order = post.iter().any(|&id| match arena.node(id) {
-        ExprNode::Apply(f, args) => {
-            arena.lib_fn(*f) == Some(LibFn::ExpInt)
-                && args.len() == 2
+        ExprNode::Lib(LibFn::ExpInt, args) => {
+            args.len() == 2
                 && arena
                     .as_num(args[0])
                     .is_some_and(|n| n.is_integer() && !n.is_positive())
@@ -360,16 +359,12 @@ fn elementary_expint(arena: &mut Arena, e: ExprId) -> ExprId {
         // `Eₙ(w)` with an integer `n = −k`, `0 ≤ k ≤ 16` (no `if let` match
         // guards: they are newer than the MSRV).
         let low_order = match arena.node(rebuilt) {
-            ExprNode::Apply(f, args)
-                if arena.lib_fn(*f) == Some(LibFn::ExpInt) && args.len() == 2 =>
-            {
-                arena
-                    .as_num(args[0])
-                    .filter(|n| n.is_integer() && !n.is_positive())
-                    .and_then(|n| u64::try_from(-n.to_integer()).ok())
-                    .filter(|&k| k <= 16)
-                    .map(|k| (args[1], k))
-            }
+            ExprNode::Lib(LibFn::ExpInt, args) if args.len() == 2 => arena
+                .as_num(args[0])
+                .filter(|n| n.is_integer() && !n.is_positive())
+                .and_then(|n| u64::try_from(-n.to_integer()).ok())
+                .filter(|&k| k <= 16)
+                .map(|k| (args[1], k)),
             _ => None,
         };
         let new = match low_order {
@@ -1028,9 +1023,7 @@ fn try_special_forward(
             Ok(Some(arena.div(e, s)))
         }
         // Jₙ(at) → (√(s²+a²) − s)ⁿ / (aⁿ √(s²+a²)), integer n ≥ 0
-        ExprNode::Apply(name, args)
-            if arena.symbol_name(name) == crate::base::arena::FN_BESSELJ && args.len() == 2 =>
-        {
+        ExprNode::Lib(crate::base::libfn::LibFn::BesselJ, args) if args.len() == 2 => {
             let order = args[0];
             let arg = args[1];
             let Some(n) = arena.as_num(order).cloned() else {

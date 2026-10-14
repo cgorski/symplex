@@ -67,7 +67,9 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::truth::Truth;
 use crate::base::walk;
-use crate::calculus::calculus_util::{self, BreakKind, BreakScan, Breakpoint, LinearCoeffs};
+use crate::calculus::calculus_util::{
+    self, BreakKind, BreakScan, Breakpoint, LinearCoeffs, POINT_VALUE_ACCURACY, ScanRange,
+};
 use crate::calculus::residue;
 use crate::transforms::{eval, evalf, expand, subs};
 
@@ -303,18 +305,38 @@ fn contradicted_by_quadrature(
     let Ok(func) = crate::output::lambdify::compile(arena, f, &[&name]) else {
         return false;
     };
-    let g = |t: f64| func(&[t]);
+    let peak = std::cell::Cell::new(0.0f64);
+    let g = |t: f64| {
+        let v = func(&[t]);
+        peak.set(peak.get().max(v.abs()));
+        v
+    };
     // Pieces between the integrand's breakpoints (kinks of `|·|`, poles,
     // …): over a whole range the error estimate missed the kinks of
     // `|x² − 3x|` on `[−15, 15]` and the right value 2259 was refused (0.46,
     // SymPy's test_integrals).
-    let (a_ord, b_ord) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    let (a_ord, b_ord, ends) = if lo <= hi {
+        (lo, hi, Interval::closed(a, b))
+    } else {
+        (hi, lo, Interval::closed(b, a))
+    };
+    if f64_narrow(a_ord, b_ord) {
+        // A range of few `f64` values (`[10²⁰, 10²⁰ + 4]` is one): no
+        // `f64` quadrature to compare with.
+        return false;
+    }
+    let Ok(points) = quadrature_breakpoints(
+        arena,
+        f,
+        x,
+        Interval::closed(a_ord, b_ord),
+        Some(ends),
+        None,
+    ) else {
+        return false;
+    };
     let mut cuts: Vec<f64> = vec![a_ord];
-    cuts.extend(
-        quadrature_breakpoints(arena, f, x, a_ord, b_ord)
-            .into_iter()
-            .map(|(_, v)| v),
-    );
+    cuts.extend(points.into_iter().map(|(_, v)| v));
     cuts.push(b_ord);
     let mut q = QuadResult {
         value: 0.0,
@@ -333,7 +355,10 @@ fn contradicted_by_quadrature(
     if !(q.value.is_finite() && q.error.is_finite()) {
         return false;
     }
-    let tol = (1e-6 * q.value.abs().max(1.0)).max(100.0 * q.error);
+    // The quadrature ran between the bounds rounded to `f64`: up to 0.49
+    // it said 0 for `[10²⁰, 10²⁰ + 4]`, one `f64`.
+    let moved = bound_rounding(arena, a, lo) + bound_rounding(arena, b, hi);
+    let tol = (1e-6 * q.value.abs().max(1.0)).max(100.0 * q.error) + 2.0 * moved * peak.get();
     let contradicted = (v - q.value).abs() > tol;
     if contradicted {
         tracing::debug!(
@@ -344,6 +369,27 @@ fn contradicted_by_quadrature(
         );
     }
     contradicted
+}
+
+/// An upper bound on `|c − v|` for the real constant `c` whose value
+/// rounded to the nearest `f64` is `v`: 0 for a rational that `v`
+/// represents, their difference for another rational, an ulp of `v`
+/// otherwise (and 0 for `±∞` itself).
+pub(crate) fn bound_rounding(arena: &Arena, c: ExprId, v: f64) -> f64 {
+    if v.is_infinite() && is_infinite(arena, c) {
+        return 0.0;
+    }
+    if !v.is_finite() {
+        return f64::INFINITY;
+    }
+    if let Some(r) = arena.as_num(c)
+        && let Some(rv) = crate::base::numeric::f64_to_ratio_exact(v)
+    {
+        let d = (r - rv).abs();
+        return crate::base::numeric::ratio_to_f64(&d)
+            .map_or(f64::INFINITY, |d| d * (1.0 + 4.0 * f64::EPSILON));
+    }
+    (v.abs() * f64::EPSILON).max(f64::from_bits(1))
 }
 
 /// `eval`, except that expressions containing a `Piecewise` are left
@@ -859,9 +905,16 @@ fn point_value(arena: &mut Arena, id: ExprId) -> Option<f64> {
 
 /// Compare two points on the extended real line.
 ///
-/// Exact for rationals and infinities; numeric (16 digits) for other
-/// constants; assumption-based for symbolic differences.  `None` when the
-/// order cannot be established.
+/// Exact for rationals and infinities; for other constants from their
+/// 16-digit values when these are far enough apart to show the order
+/// ([`separated`]), otherwise by the certified sign of the difference
+/// ([`sign_checked`](crate::poly::algebraic::sign_checked)); assumption-based
+/// for symbolic differences.  `None` when the order cannot be established.
+///
+/// Up to 0.49 two values within `10⁻¹³` of each other (relatively, of 1
+/// below 1) were "equal": a zero of `sin x` less than 100 from an end at
+/// `10¹⁵` was taken for the end, and `∫_{10¹⁵}^{10¹⁵+4} |sin x| dx` came out
+/// as `∫ sin x dx = 1.4982` (truly `2.4718`).
 fn cmp_points(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<Ordering> {
     if p == q {
         return Some(Ordering::Equal);
@@ -871,18 +924,62 @@ fn cmp_points(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<Ordering> {
     }
     let pv = point_value(arena, p);
     let qv = point_value(arena, q);
+    cmp_values(arena, (p, pv), (q, qv))
+}
+
+/// The relative gap beyond which two values known to
+/// [`POINT_VALUE_ACCURACY`] (`2⁻⁴⁶`) are certainly in the order of the
+/// points they stand for: `2⁻⁴⁰`, 32 times their joint error.
+const SEPARATION: f64 = 64.0 * POINT_VALUE_ACCURACY;
+
+/// The order of two points from their values (each within
+/// [`POINT_VALUE_ACCURACY`] of its point), when the values are nonzero,
+/// finite and further apart than [`SEPARATION`] relatively; `None` when the
+/// values cannot show it.
+fn separated(pv: f64, qv: f64) -> Option<Ordering> {
+    if pv == 0.0 || qv == 0.0 || !pv.is_finite() || !qv.is_finite() {
+        return None;
+    }
+    if (pv - qv).abs() > SEPARATION * pv.abs().max(qv.abs()) {
+        pv.partial_cmp(&qv)
+    } else {
+        None
+    }
+}
+
+/// [`cmp_points`] for two points with their values ([`point_value`], or a
+/// [`Breakpoint::value`]) known.
+fn cmp_values(
+    arena: &mut Arena,
+    (p, pv): (ExprId, Option<f64>),
+    (q, qv): (ExprId, Option<f64>),
+) -> Option<Ordering> {
+    if p == q {
+        return Some(Ordering::Equal);
+    }
+    if let (Some(rp), Some(rq)) = (arena.as_num(p), arena.as_num(q)) {
+        return Some(rp.cmp(rq));
+    }
     if let (Some(pv), Some(qv)) = (pv, qv) {
-        if pv == qv {
-            return Some(Ordering::Equal);
-        }
         if pv.is_infinite() || qv.is_infinite() {
-            return pv.partial_cmp(&qv);
+            return if pv == qv {
+                Some(Ordering::Equal)
+            } else {
+                pv.partial_cmp(&qv)
+            };
         }
-        let scale = pv.abs().max(qv.abs()).max(1.0);
-        if (pv - qv).abs() <= 1e-13 * scale {
-            return Some(Ordering::Equal);
+        if let Some(order) = separated(pv, qv) {
+            return Some(order);
         }
-        return pv.partial_cmp(&qv);
+        // Closer than their values tell (or one of them 0): the certified
+        // sign of the difference decides, equality included.
+        let d = arena.sub(q, p);
+        let d = safe_eval(arena, d);
+        return match crate::poly::algebraic::sign_checked(arena, d)? {
+            s if s > 0 => Some(Ordering::Less),
+            s if s < 0 => Some(Ordering::Greater),
+            _ => Some(Ordering::Equal),
+        };
     }
     if is_infinite(arena, p) || is_infinite(arena, q) {
         // One infinite, other symbolic-but-finite.
@@ -922,10 +1019,13 @@ fn sign_of(arena: &mut Arena, id: ExprId) -> Option<Ordering> {
         if !v.is_finite() {
             return None;
         }
-        if v == 0.0 {
-            return Some(Ordering::Equal);
+        if v != 0.0 {
+            // A printed digit of `evalf` is certified: so is its sign.
+            return v.partial_cmp(&0.0);
         }
-        return v.partial_cmp(&0.0);
+        // 0 to 16 digits, or below the `f64` range, is no proof of 0 (up to
+        // 0.49 it was): the certified sign decides, or nothing does.
+        return crate::poly::algebraic::sign_checked(arena, id).map(|s| s.cmp(&0));
     }
     let mut cache = AssumptionCache::new();
     if cache.query(arena, id, Props::POSITIVE) == Some(true) {
@@ -1129,15 +1229,11 @@ fn numeric_range(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<Interval<f64
     Some(Interval::closed(av, bv))
 }
 
-/// Finite numeric range for enumeration purposes (clamped for infinite
-/// bounds: periodic families are only enumerated over a finite window).
-fn finite_scan_range(range: Option<Interval<f64>>) -> Option<Interval<f64>> {
-    let r = range?;
-    if r.lower.is_finite() && r.upper.is_finite() {
-        Some(r)
-    } else {
-        None
-    }
+/// The range of a breakpoint scan of `[a, b]` with the numeric `range` of
+/// [`numeric_range`]: the exact bounds, when both are finite (periodic
+/// families are only enumerated over a finite range).
+fn scan_range(a: ExprId, b: ExprId, range: Option<Interval<f64>>) -> Option<ScanRange> {
+    ScanRange::new(a, b, range?)
 }
 
 /// Split `[a, b]` at the breakpoints of `f`, marking singular endpoints.
@@ -1149,7 +1245,7 @@ fn split_at_breakpoints(
     b: ExprId,
 ) -> Result<Vec<Piece>, SymplexError> {
     let range = numeric_range(arena, a, b);
-    let scan = calculus_util::scan_breakpoints(arena, f, x, finite_scan_range(range));
+    let scan = calculus_util::scan_breakpoints(arena, f, x, scan_range(a, b, range));
 
     // Opaque nodes (unknown functions, formal integrals, …) cannot be
     // analysed at all — no numeric guard can vouch for them.
@@ -1185,6 +1281,60 @@ fn split_at_breakpoints(
     }
 
     build_pieces(arena, &scan, a, b)
+}
+
+/// `points` (each with its value, as [`cmp_values`] takes them) in
+/// increasing order, equal ones merged; `None` when two of them cannot be
+/// ordered.  A bottom-up merge sort: the comparison may fail, and the
+/// standard sort wants a total order.
+fn sort_points(
+    arena: &mut Arena,
+    points: Vec<(ExprId, Option<f64>)>,
+) -> Option<Vec<(ExprId, Option<f64>)>> {
+    let mut runs: Vec<Vec<(ExprId, Option<f64>)>> = points.into_iter().map(|p| vec![p]).collect();
+    while runs.len() > 1 {
+        let mut next = Vec::with_capacity(runs.len().div_ceil(2));
+        let mut pairs = runs.into_iter();
+        while let Some(left) = pairs.next() {
+            let Some(right) = pairs.next() else {
+                next.push(left);
+                break;
+            };
+            let mut merged = Vec::with_capacity(left.len() + right.len());
+            let mut l = left.into_iter().peekable();
+            let mut r = right.into_iter().peekable();
+            loop {
+                match (l.peek().copied(), r.peek().copied()) {
+                    (Some(p), Some(q)) => match cmp_values(arena, p, q)? {
+                        Ordering::Less => {
+                            merged.push(p);
+                            l.next();
+                        }
+                        Ordering::Greater => {
+                            merged.push(q);
+                            r.next();
+                        }
+                        Ordering::Equal => {
+                            merged.push(p);
+                            l.next();
+                            r.next();
+                        }
+                    },
+                    (Some(_), None) => {
+                        merged.extend(l.by_ref());
+                        break;
+                    }
+                    (None, _) => {
+                        merged.extend(r.by_ref());
+                        break;
+                    }
+                }
+            }
+            next.push(merged);
+        }
+        runs = next;
+    }
+    Some(runs.pop().unwrap_or_default())
 }
 
 /// Is the parametric point `p` non-real for every value the assumptions
@@ -1298,43 +1448,11 @@ fn build_pieces(
         return Err(failed("too many singularities inside the interval"));
     }
 
-    // Order the interior points.
-    if interior.iter().all(|(_, v)| v.is_some()) {
-        interior.sort_by(|p, q| {
-            p.1.unwrap_or(0.0)
-                .partial_cmp(&q.1.unwrap_or(0.0))
-                .unwrap_or(Ordering::Equal)
-        });
-        // Merge numerically coincident points.
-        interior.dedup_by(|p, q| {
-            let (pv, qv) = (p.1.unwrap_or(0.0), q.1.unwrap_or(0.0));
-            (pv - qv).abs() <= 1e-12 * pv.abs().max(qv.abs()).max(1.0)
-        });
-    } else if interior.len() > 1 {
-        // Symbolic interior points: sort with cmp_points, fail if unordered.
-        let mut ordered: Vec<(ExprId, Option<f64>)> = Vec::new();
-        for item in interior {
-            let mut idx = ordered.len();
-            for (i, other) in ordered.iter().enumerate() {
-                match cmp_points(arena, item.0, other.0) {
-                    Some(Ordering::Less) => {
-                        idx = i;
-                        break;
-                    }
-                    Some(Ordering::Equal) => {
-                        idx = usize::MAX;
-                        break;
-                    }
-                    Some(Ordering::Greater) => {}
-                    None => return Err(failed("cannot order symbolic singular points")),
-                }
-            }
-            if idx != usize::MAX {
-                ordered.insert(idx, item);
-            }
-        }
-        interior = ordered;
-    }
+    // Order the interior points and merge equal ones.  Up to 0.49 constant
+    // points were sorted by their `f64` values and merged within `10⁻¹²`:
+    // the zeros of `sin(10²⁰x)` near 1 were all one point.
+    let interior =
+        sort_points(arena, interior).ok_or_else(|| failed("cannot order the singular points"))?;
 
     let mut pieces = Vec::with_capacity(interior.len() + 1);
     let mut cur_lo = a;
@@ -1420,6 +1538,11 @@ fn sign_changes_explained(
     if watched.is_empty() {
         return Some(true);
     }
+    // `f64` samples cannot resolve a range this narrow next to its position
+    // (`7t` rounds by about 1 at `t = 10¹⁵`): their sign changes are noise.
+    if f64_narrow(lo, hi) {
+        return None;
+    }
     let x_name = match arena.node(x) {
         ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
         _ => return None,
@@ -1443,7 +1566,10 @@ fn sign_changes_explained(
                 && v != 0.0
                 && (pv < 0.0) != (v < 0.0)
             {
-                let explained = known.iter().any(|&k| k >= pt - 1e-9 && k <= t + 1e-9);
+                // The known values are within `2⁻⁴⁶` of their points: at
+                // `10¹⁵` a zero of `sin` may show up to `0.06` off.
+                let slack = 1e-9_f64.max(4.0 * POINT_VALUE_ACCURACY * pt.abs().max(t.abs()));
+                let explained = known.iter().any(|&k| k >= pt - slack && k <= t + slack);
                 if !explained {
                     all_ok = false;
                 }
@@ -1634,7 +1760,7 @@ fn evaluate_antiderivative(
     check_branch_cuts(arena, anti, x, p)?;
     // Discontinuities of F strictly inside (lo, hi).
     let range = numeric_range(arena, p.lo, p.hi);
-    let scan = calculus_util::scan_breakpoints(arena, anti, x, finite_scan_range(range));
+    let scan = calculus_util::scan_breakpoints(arena, anti, x, scan_range(p.lo, p.hi, range));
     if let Some(r) = range
         && numeric_guard(arena, anti, x, r.lower, r.upper, &scan) == Some(false)
     {
@@ -1642,17 +1768,14 @@ fn evaluate_antiderivative(
             "the antiderivative has a discontinuity inside the interval that could not be located",
         ));
     }
-    let mut inner_points: Vec<(ExprId, f64)> = Vec::new();
+    let mut inner_points: Vec<(ExprId, Option<f64>)> = Vec::new();
     for bp in &scan.points {
         // Both poles and kinks (sign/Heaviside jumps) of F matter here.
         match position_in(arena, bp.point, p.lo, p.hi) {
             Position::Inside => match bp.value {
                 Some(v) => {
-                    if !inner_points
-                        .iter()
-                        .any(|(_, w)| (w - v).abs() <= 1e-12 * v.abs().max(1.0))
-                    {
-                        inner_points.push((bp.point, v));
+                    if !inner_points.iter().any(|(q, _)| *q == bp.point) {
+                        inner_points.push((bp.point, Some(v)));
                     }
                 }
                 None => {
@@ -1674,7 +1797,8 @@ fn evaluate_antiderivative(
         if depth >= MAX_DEPTH || inner_points.len() > MAX_PIECES {
             return Err(failed("too many discontinuities of the antiderivative"));
         }
-        inner_points.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        let inner_points = sort_points(arena, inner_points)
+            .ok_or_else(|| failed("cannot order the discontinuities of the antiderivative"))?;
         let mut sub_pieces = Vec::new();
         let mut cur_lo = p.lo;
         let mut cur_sing = p.lo_sing;
@@ -1760,21 +1884,19 @@ fn cut_arguments(arena: &Arena, anti: ExprId, x: ExprId) -> Vec<(ExprId, Cut)> {
             // Before 0.46 the library functions were not looked at: the
             // dilogarithms of `∫ ln(x)·R(x) dx` (cut `[1, ∞)`) and `Chi`, `Eₙ`
             // were taken as continuous whatever their arguments did.
-            ExprNode::Apply(f, ref args) => {
+            ExprNode::Lib(f, ref args) => {
                 use crate::base::libfn::LibFn;
-                match (arena.lib_fn(f), args.as_slice()) {
-                    (Some(LibFn::Chi), [u]) => Some((*u, Cut::RealBelow(0.0))),
+                match (f, args.as_slice()) {
+                    (LibFn::Chi, [u]) => Some((*u, Cut::RealBelow(0.0))),
                     (
-                        Some(
-                            LibFn::ExpInt
-                            | LibFn::BesselY
-                            | LibFn::BesselK
-                            | LibFn::UpperGamma
-                            | LibFn::LowerGamma,
-                        ),
+                        LibFn::ExpInt
+                        | LibFn::BesselY
+                        | LibFn::BesselK
+                        | LibFn::UpperGamma
+                        | LibFn::LowerGamma,
                         [_, u],
                     ) => Some((*u, Cut::RealBelow(0.0))),
-                    (Some(LibFn::PolyLog), [_, u]) => Some((*u, Cut::RealAbove(1.0))),
+                    (LibFn::PolyLog, [_, u]) => Some((*u, Cut::RealAbove(1.0))),
                     _ => None,
                 }
             }
@@ -2470,9 +2592,8 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<Extended<Exp
 /// [`integrate_definite`]).
 fn log_polylog_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<ExprId> {
     let has_target = walk::post_order_ids(arena, g).into_iter().any(|id| {
-        matches!(arena.node(id), ExprNode::Apply(sid, args)
-            if arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::PolyLog)
-                && args.len() == 2)
+        matches!(arena.node(id), ExprNode::Lib(crate::base::libfn::LibFn::PolyLog, args)
+            if args.len() == 2)
     });
     if !has_target {
         return None;
@@ -2518,11 +2639,8 @@ fn log_polylog_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<ExprId> 
                     logs.push(a);
                     logs.push(a);
                 }
-                ExprNode::Apply(sid, args)
-                    if arena.lib_fn(sid) == Some(crate::base::libfn::LibFn::PolyLog)
-                        && args.len() == 2
-                        && args[0] == order_two
-                        && li2.is_none() =>
+                ExprNode::Lib(crate::base::libfn::LibFn::PolyLog, args)
+                    if args.len() == 2 && args[0] == order_two && li2.is_none() =>
                 {
                     li2 = Some(args[1]);
                 }
@@ -3845,7 +3963,7 @@ fn split_piecewise_like(
     depth: usize,
 ) -> Result<ExprId, SymplexError> {
     let range = numeric_range(arena, a, b);
-    let scan = calculus_util::scan_breakpoints(arena, f, x, finite_scan_range(range));
+    let scan = calculus_util::scan_breakpoints(arena, f, x, scan_range(a, b, range));
     if scan.opaque {
         return Err(failed(
             "the integrand contains a function whose breakpoints cannot be analysed",
@@ -3869,7 +3987,7 @@ fn split_piecewise_like(
         .collect();
     let mut complete = scan.complete;
     for &g in &args {
-        let s = calculus_util::scan_breakpoints(arena, g, x, finite_scan_range(range));
+        let s = calculus_util::scan_breakpoints(arena, g, x, scan_range(a, b, range));
         complete &= s.complete && !s.opaque;
         breaks.extend(
             s.points
@@ -3901,7 +4019,7 @@ fn split_piecewise_like(
     // scan of `floor(x²)` (a non-linear argument) passed with an empty
     // watch list, the one piece was resolved at its midpoint, and
     // `∫₀² a·floor(x²) dx` came out as `2a` (it is `(5 − √2 − √3)·a`).
-    if !steps_located(arena, f, x, finite_scan_range(range)) {
+    if !steps_located(arena, f, x, scan_range(a, b, range)) {
         return Err(failed(
             "could not locate every step of floor, ceiling or a Piecewise condition inside the interval",
         ));
@@ -3929,15 +4047,8 @@ fn split_piecewise_like(
     if points.len() > MAX_PIECES {
         return Err(failed("too many kinks inside the interval"));
     }
-    points.sort_by(|p, q| {
-        p.1.unwrap_or(0.0)
-            .partial_cmp(&q.1.unwrap_or(0.0))
-            .unwrap_or(Ordering::Equal)
-    });
-    points.dedup_by(|p, q| match (p.1, q.1) {
-        (Some(pv), Some(qv)) => (pv - qv).abs() <= 1e-12 * pv.abs().max(qv.abs()).max(1.0),
-        _ => false,
-    });
+    let points = sort_points(arena, points)
+        .ok_or_else(|| failed("cannot order the kinks of the integrand"))?;
 
     let mut bounds: Vec<ExprId> = Vec::with_capacity(points.len() + 2);
     bounds.push(a);
@@ -3966,7 +4077,7 @@ fn split_piecewise_like(
 /// Did the breakpoint scan locate every step of the `floor`/`ceiling` nodes
 /// and every boundary of the `Piecewise` conditions of `f` depending on
 /// `x` (the breakpoints [`sign_changes_explained`] does not check)?
-fn steps_located(arena: &mut Arena, f: ExprId, x: ExprId, range: Option<Interval<f64>>) -> bool {
+fn steps_located(arena: &mut Arena, f: ExprId, x: ExprId, range: Option<ScanRange>) -> bool {
     let mut probes: Vec<ExprId> = Vec::new();
     for id in walk::post_order_ids(arena, f) {
         match arena.node(id) {
@@ -3983,9 +4094,12 @@ fn steps_located(arena: &mut Arena, f: ExprId, x: ExprId, range: Option<Interval
             _ => {}
         }
     }
+    // A periodic composition's boundaries are one period of a principal
+    // solve (`Piecewise((1, cos x > 1/2), (0, True))` on `[0, 10]` has six,
+    // not two).
     probes.into_iter().all(|p| {
         let s = calculus_util::scan_breakpoints(arena, p, x, range);
-        s.complete && !s.opaque
+        s.complete && !s.opaque && !s.periodic
     })
 }
 
@@ -4036,7 +4150,26 @@ fn test_point(arena: &mut Arena, lo: ExprId, hi: ExprId) -> Option<ExprId> {
                 let nid = arena.intern_num(mid);
                 return Some(arena.intern(ExprNode::Num(nid)));
             }
-            0.5 * (lo_v + hi_v)
+            let m = 0.5 * (lo_v + hi_v);
+            // The binary midpoint of the values, when they show it strictly
+            // inside; otherwise (ends closer than their `f64` values tell,
+            // `[kπ/10²⁰, (k + 1)π/10²⁰]`) the exact midpoint.  Up to 0.49 the
+            // binary one was taken anyway, outside such a piece.
+            let above = |end: ExprId, v: f64, arena: &Arena| {
+                separated(v, m) == Some(Ordering::Less)
+                    || (arena.is_zero_structural(end) && m > 0.0)
+            };
+            let below = |end: ExprId, v: f64, arena: &Arena| {
+                separated(m, v) == Some(Ordering::Less)
+                    || (arena.is_zero_structural(end) && m < 0.0)
+            };
+            if !(above(lo, lo_v, arena) && below(hi, hi_v, arena)) {
+                let half = arena.rational(1, 2);
+                let s = arena.add(&[lo, hi]);
+                let mid = arena.mul(&[half, s]);
+                return Some(safe_eval(arena, mid));
+            }
+            m
         }
         (true, false) => lo_v + 1.0,
         (false, true) => hi_v - 1.0,
@@ -4086,16 +4219,13 @@ fn resolve_at(
                 ExprNode::Floor(inner) | ExprNode::Ceiling(inner)
                     if walk::contains(arena, inner, x) =>
                 {
-                    let v = value_at(arena, inner, x, mid)?;
-                    let n = if matches!(node, ExprNode::Floor(_)) {
-                        v.floor()
-                    } else {
-                        v.ceil()
-                    };
-                    if n.abs() > 1e15 {
-                        return Err(failed("floor/ceiling argument too large"));
-                    }
-                    Some(arena.int(n as i64))
+                    Some(integer_part_at(
+                        arena,
+                        inner,
+                        x,
+                        mid,
+                        matches!(node, ExprNode::Ceiling(_)),
+                    )?)
                 }
                 ExprNode::Piecewise(pairs) if walk::contains(arena, id, x) => {
                     let mut chosen: Option<ExprId> = None;
@@ -4147,7 +4277,40 @@ fn value_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<f64,
         .ok_or_else(|| failed("could not evaluate a piecewise argument at a test point"))
 }
 
-/// Sign of `g` at `x = mid`.
+/// `⌊g⌋` (`ceiling`: `⌈g⌉`) at `x = mid`, certified (`eval`'s integer part
+/// of a constant).  Up to 0.49 it was the `f64` floor of the value, refused
+/// beyond `10¹⁵`.
+fn integer_part_at(
+    arena: &mut Arena,
+    g: ExprId,
+    x: ExprId,
+    mid: ExprId,
+    ceiling: bool,
+) -> Result<ExprId, SymplexError> {
+    let gm = subs::subs(arena, g, x, mid);
+    let gm = safe_eval(arena, gm);
+    if !walk::free_symbols(arena, gm).is_empty() {
+        return Err(failed(
+            "piecewise structure depends on symbolic parameters; cannot resolve",
+        ));
+    }
+    let part = if ceiling {
+        arena.ceiling(gm)
+    } else {
+        arena.floor(gm)
+    };
+    let n = eval::eval(arena, part);
+    match arena.as_num(n) {
+        Some(r) if r.is_integer() => Ok(n),
+        _ => Err(failed(
+            "could not decide a floor or ceiling at a test point",
+        )),
+    }
+}
+
+/// Sign of `g` at `x = mid`: from its 16-digit value when that is not 0
+/// (a printed digit is certified), otherwise from the certified sign test
+/// (up to 0.49 a value 0 to 16 digits was a zero of `g`).
 fn sign_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<Ordering, SymplexError> {
     let gm = subs::subs(arena, g, x, mid);
     let gm = safe_eval(arena, gm);
@@ -4156,14 +4319,16 @@ fn sign_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<Order
             failed("piecewise structure depends on symbolic parameters; cannot resolve")
         });
     }
-    let v = value_at(arena, g, x, mid)?;
-    Ok(if v == 0.0 {
-        Ordering::Equal
-    } else if v < 0.0 {
-        Ordering::Less
-    } else {
-        Ordering::Greater
-    })
+    match value_at(arena, g, x, mid) {
+        Ok(v) if v != 0.0 => return Ok(v.partial_cmp(&0.0).unwrap_or(Ordering::Equal)),
+        Ok(_) | Err(_) => {}
+    }
+    match crate::poly::algebraic::sign_checked(arena, gm) {
+        Some(s) => Ok(s.cmp(&0)),
+        None => Err(failed(
+            "could not decide the sign of a piecewise argument at a test point",
+        )),
+    }
 }
 
 /// Decide a parameter condition (no integration variable involved) with
@@ -5864,6 +6029,18 @@ fn gk15_with(f: &dyn Fn(f64) -> f64, a: f64, b: f64, raw: bool) -> (f64, f64, f6
     if resabs_floor > err {
         err = resabs_floor;
     }
+    // Nodes that round onto each other (a segment of a few hundred ulps of
+    // its position): the rule sees fewer values than it weighs, K15 and G7
+    // agree on them, and their difference says nothing.  Up to 0.49 such a
+    // segment was "resolved": `∫_{10¹⁶}^{10¹⁶+4} |sin(x/3 + 1/2)| dx` was
+    // `3.0537` (truly `2.8325`), its nodes on a grid of spacing 2.
+    let nodes_distinct = (0..7).all(|j| {
+        let (o, i) = (half * XGK[j], half * XGK[j + 1]);
+        inward(centre - o) < inward(centre - i) && inward(centre + i) < inward(centre + o)
+    });
+    if !nodes_distinct {
+        err = err.max(peak);
+    }
     if !raw {
         // The outermost nodes lie at `(1 − XGK[0])` and `(1 − XGK[1])`
         // half-widths from the end.  A rise faster than `|x − end|⁻¹` (a
@@ -6172,6 +6349,9 @@ pub(crate) fn quadrature_resolved(
             reason: "integration bounds must not be NaN".into(),
         });
     }
+    if f64_narrow(a, b) {
+        return Ok(None);
+    }
     if a == b {
         return Ok(Some(QuadResult {
             value: 0.0,
@@ -6219,35 +6399,452 @@ pub(crate) fn quadrature_resolved(
 /// real constant expression and its `f64` value.  Points without a numeric
 /// value are skipped; an incomplete scan gives the points it found (the
 /// quadrature checks its own convergence).
+///
+/// `range` holds the bounds' values (`lower ≤ upper`, `±∞` allowed) and
+/// `exact`, when known, the finite bounds themselves: the periodic families
+/// are enumerated between them and a point is inside when that is
+/// certified ([`cmp_values`]); without them the `f64` bounds stand in, as
+/// the binary numbers they are.  Up to 0.49 the families were enumerated
+/// from the `f64` bounds and a point within `10⁻¹²` of one was dropped: no
+/// zero of `sin x` was found on `[10²⁰, 10²⁰ + 4]`.
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] when a family of poles, kinks or
+/// steps has more than 10,000 members in the range (`Γ(9·10¹⁸x)` on `[−1,
+/// 1]`): no quadrature resolves them, and up to 0.49 the arbitrary-precision
+/// one spent minutes trying.
 pub(crate) fn quadrature_breakpoints(
     arena: &mut Arena,
     f: ExprId,
     x: ExprId,
-    lo: f64,
-    hi: f64,
-) -> Vec<(ExprId, f64)> {
-    let range = (lo.is_finite() && hi.is_finite()).then(|| Interval::closed(lo, hi));
-    let scan = calculus_util::scan_breakpoints(arena, f, x, range);
-    let margin = |v: f64| 1e-12 * v.abs().max(1.0);
-    let mut points: Vec<(ExprId, f64)> = scan
+    range: Interval<f64>,
+    exact: Option<Interval<ExprId>>,
+    locate: Option<u32>,
+) -> Result<Vec<(ExprId, f64)>, SymplexError> {
+    let (lo, hi) = (range.lower, range.upper);
+    let ends = match exact {
+        Some(e) => Some(e),
+        None => ScanRange::from_f64(arena, range).map(|r| r.exact),
+    }
+    .filter(|_| lo.is_finite() && hi.is_finite());
+    let scan_range = ends.and_then(|e| ScanRange::new(e.lower, e.upper, range));
+    let scan = calculus_util::scan_breakpoints(arena, f, x, scan_range);
+    if scan.crowded {
+        return Err(failed(
+            "the integrand has more than 10,000 poles, kinks or steps inside the interval",
+        ));
+    }
+    // Kinks and steps the scan could not place (`sign(cos x²)`, `floor(x³ −
+    // x)`): located numerically, or the quadrature is refused.  Up to 0.49
+    // the quadrature ran across them, and its estimate, which assumes a
+    // smooth integrand, missed the jumps: `∫₀³ sign(cos x² − 1/7) dx` was
+    // `0.5178` from `eval_f64` (truly `0.5360`).
+    // (On an infinite range the kinks are not sought: there may be
+    // infinitely many, `|sin x|·e⁻ˣ` on `[0, ∞)`.)
+    let mut located: Vec<(ExprId, f64)> = Vec::new();
+    if let Some(bits) = locate
+        && let Some(e) = ends.filter(|_| lo < hi)
+        && (!scan.complete || scan.periodic)
+    {
+        let unplaced = unlocated_kink_arguments(arena, f, x, scan_range);
+        if !unplaced.is_empty() {
+            let mut budget = MAX_LOCATE_EVALS;
+            for (g, crossing) in unplaced {
+                located.extend(locate_crossings(
+                    arena,
+                    g,
+                    crossing,
+                    x,
+                    e,
+                    range,
+                    bits,
+                    &mut budget,
+                )?);
+                if located.len() > MAX_PIECES {
+                    return Err(failed("too many kinks or steps inside the interval"));
+                }
+            }
+        }
+    }
+    let mut points: Vec<(ExprId, Option<f64>)> = Vec::new();
+    let candidates = scan
         .points
         .into_iter()
         .filter_map(|bp| bp.value.map(|v| (bp.point, v)))
-        .filter(|&(p, v)| {
-            v.is_finite()
-                && v - lo > margin(lo)
-                && hi - v > margin(hi)
-                && walk::free_symbols(arena, p).is_empty()
-        })
+        .chain(located)
+        .chain(peak_points(arena, f, x, lo, hi));
+    for (p, v) in candidates {
+        if !v.is_finite() || !walk::free_symbols(arena, p).is_empty() {
+            continue;
+        }
+        // Strictly inside, certified.
+        let inside = match ends {
+            Some(e) => {
+                let (ev_lo, ev_hi) = (Some(lo), Some(hi));
+                cmp_values(arena, (e.lower, ev_lo), (p, Some(v))) == Some(Ordering::Less)
+                    && cmp_values(arena, (p, Some(v)), (e.upper, ev_hi)) == Some(Ordering::Less)
+            }
+            None => lo < v && v < hi,
+        };
+        if inside && !points.iter().any(|(q, _)| *q == p) {
+            points.push((p, Some(v)));
+        }
+    }
+    let points = sort_points(arena, points)
+        .ok_or_else(|| failed("cannot order the breakpoints of the integrand"))?;
+    Ok(points
+        .into_iter()
+        .filter_map(|(p, v)| v.map(|v| (p, v)))
+        .collect())
+}
+
+/// What crossing of an argument `g` makes a kink or a step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Crossing {
+    /// `g` changes sign: `|g|`, `sign g`, `H(g)`, `min`/`max` (`g` a
+    /// difference of two arguments), a condition `p > q` (`g = p − q`).
+    Zero,
+    /// `g` passes an integer: `floor g`, `ceiling g`.
+    Integer,
+}
+
+/// The arguments, with their crossings, of the kink and step nodes of `f`
+/// (depending on `x`) whose kinks a scan over `range` does not locate.
+fn unlocated_kink_arguments(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    range: Option<ScanRange>,
+) -> Vec<(ExprId, Crossing)> {
+    let mut out: Vec<(ExprId, Crossing)> = Vec::new();
+    for id in walk::post_order_ids(arena, f) {
+        let args: Vec<(ExprId, Crossing)> = match arena.node(id).clone() {
+            ExprNode::Abs(g) | ExprNode::Sign(g) | ExprNode::Heaviside(g) => {
+                vec![(g, Crossing::Zero)]
+            }
+            ExprNode::Floor(g) | ExprNode::Ceiling(g) => vec![(g, Crossing::Integer)],
+            ExprNode::Gt(p, q) | ExprNode::Ge(p, q) | ExprNode::Eq_(p, q) | ExprNode::Ne(p, q) => {
+                vec![(arena.sub(p, q), Crossing::Zero)]
+            }
+            ExprNode::Min(args) | ExprNode::Max(args) => {
+                let args = args.to_vec();
+                let mut d = Vec::new();
+                for (i, &p) in args.iter().enumerate() {
+                    for &q in &args[i + 1..] {
+                        d.push((arena.sub(p, q), Crossing::Zero));
+                    }
+                }
+                d
+            }
+            _ => continue,
+        };
+        if !args.iter().any(|&(g, _)| walk::contains(arena, g, x)) {
+            continue;
+        }
+        let s = calculus_util::scan_breakpoints(arena, id, x, range);
+        if s.complete && !s.opaque && !s.periodic {
+            continue;
+        }
+        for (g, c) in args {
+            let g = safe_eval(arena, g);
+            if walk::contains(arena, g, x) && !out.contains(&(g, c)) {
+                out.push((g, c));
+            }
+        }
+    }
+    out
+}
+
+/// Most evaluations of kink arguments one [`quadrature_breakpoints`] call
+/// spends locating crossings.
+const MAX_LOCATE_EVALS: usize = 20_000;
+/// Samples of a kink argument over the range.
+const LOCATE_SAMPLES: usize = 256;
+/// Samples of the refinement around a minimum of the distance to a level.
+const LOCATE_REFINE: usize = 32;
+
+/// The value of `h` at `x = t` for locating its crossings: the 16-digit
+/// value, whose sign is certified when it is not 0; for a value that is 0
+/// to 16 digits the certified sign test decides (`0.0` for an exact zero,
+/// `±f64::MIN_POSITIVE` for a tiny one); `None` when `h` has no real value
+/// there or its sign does not settle.
+fn crossing_value(arena: &mut Arena, h: ExprId, x: ExprId, t: ExprId) -> Option<f64> {
+    let v = subs::subs(arena, h, x, t);
+    let v = safe_eval(arena, v);
+    if !walk::free_symbols(arena, v).is_empty() {
+        return None;
+    }
+    match calculus_util::expr_to_f64(arena, v) {
+        Some(y) if y.is_finite() && y != 0.0 => Some(y),
+        Some(0.0) => match crate::poly::algebraic::sign_checked(arena, v)? {
+            0 => Some(0.0),
+            s => Some(f64::from(s) * f64::MIN_POSITIVE),
+        },
+        _ => None,
+    }
+}
+
+/// The crossings of `g` ([`Crossing`]) strictly inside the finite range
+/// between the exact ends `ends` (values `range`, `lower < upper`), located
+/// numerically: `g` sampled at [`LOCATE_SAMPLES`] points (and
+/// [`LOCATE_REFINE`] more around each minimum of its distance to a level
+/// that a parabola through three samples puts beyond the level) — by its
+/// compiled `f64` form when it has one, a guide only —, each level passed
+/// between two samples bracketed by certified signs ([`crossing_value`])
+/// and narrowed (secant and bisection steps) to `2⁻ᵇⁱᵗˢ` of the range.  A
+/// point returned is a crossing that the signs prove, to that accuracy; a
+/// pair of crossings between two samples that no minimum reveals is
+/// missed, the limit of every sampling (and of the quadrature's own
+/// estimate).
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] when `g` has no real value at a
+/// sample (or at an end), a sign does not settle, the samples cannot be
+/// placed in `f64`, or the certified evaluations exceed `budget`.
+#[allow(clippy::too_many_arguments)]
+fn locate_crossings(
+    arena: &mut Arena,
+    g: ExprId,
+    crossing: Crossing,
+    x: ExprId,
+    ends: Interval<ExprId>,
+    range: Interval<f64>,
+    bits: u32,
+    budget: &mut usize,
+) -> Result<Vec<(ExprId, f64)>, SymplexError> {
+    let unlocatable = || failed("cannot locate the kinks or steps of the integrand");
+    let (lo_f, hi_f) = (range.lower, range.upper);
+    let width = hi_f - lo_f;
+    // The samples: the exact ends and binary numbers between them.
+    let mut ts: Vec<(ExprId, f64)> = vec![(ends.lower, lo_f)];
+    for j in 1..LOCATE_SAMPLES {
+        let t = lo_f + width * (j as f64) / (LOCATE_SAMPLES as f64);
+        let Some(q) = crate::base::numeric::f64_to_ratio_exact(t) else {
+            return Err(unlocatable());
+        };
+        if t <= ts.last().map_or(lo_f, |p| p.1) || t >= hi_f {
+            return Err(unlocatable());
+        }
+        ts.push((arena.num_ratio(q), t));
+    }
+    ts.push((ends.upper, hi_f));
+    let compiled = match arena.node(x) {
+        ExprNode::Symbol(sid) => {
+            let name = arena.symbol_name(*sid).to_string();
+            crate::output::lambdify::compile(arena, g, &[&name]).ok()
+        }
+        _ => None,
+    };
+    // A guide to the value of `g` at the sample `(id, t)`: compiled, or
+    // certified when that is not finite (or not available).
+    let guide = |arena: &mut Arena, id: ExprId, t: f64, budget: &mut usize| {
+        if let Some(func) = &compiled {
+            let v = func(&[t]);
+            if v.is_finite() {
+                return Ok(v);
+            }
+        }
+        spend(budget)?;
+        crossing_value(arena, g, x, id).ok_or_else(unlocatable)
+    };
+    let mut vs: Vec<f64> = Vec::with_capacity(ts.len());
+    for &(id, t) in &ts {
+        vs.push(guide(arena, id, t, budget)?);
+    }
+    // The level nearest to a value.
+    let nearest = |v: f64| match crossing {
+        Crossing::Zero => 0.0,
+        Crossing::Integer => v.round(),
+    };
+    // Refine around minima of the distance to the nearest level that a
+    // parabola puts across it.
+    let mut fine: Vec<(ExprId, f64, f64)> = Vec::new();
+    for j in 1..ts.len() - 1 {
+        let level = nearest(vs[j]);
+        let d = |v: f64| (v - level).abs();
+        if !(d(vs[j]) < d(vs[j - 1]) && d(vs[j]) < d(vs[j + 1])) {
+            continue;
+        }
+        let side = |v: f64| v > level;
+        if side(vs[j - 1]) != side(vs[j]) || side(vs[j]) != side(vs[j + 1]) {
+            continue;
+        }
+        let (t0, t1, t2) = (ts[j - 1].1, ts[j].1, ts[j + 1].1);
+        let (v0, v1, v2) = (vs[j - 1], vs[j], vs[j + 1]);
+        let a = ((v2 - v1) / (t2 - t1) - (v1 - v0) / (t1 - t0)) / (t2 - t0);
+        let b = (v1 - v0) / (t1 - t0) - a * (t0 + t1);
+        if a == 0.0 || !a.is_finite() || !b.is_finite() {
+            continue;
+        }
+        let tv = -b / (2.0 * a);
+        let pv = v1 + (v1 - v0) / (t1 - t0) * (tv - t1) + a * (tv - t0) * (tv - t1);
+        if !(t0 < tv && tv < t2) || side(pv) == side(v1) {
+            continue;
+        }
+        for k in 1..LOCATE_REFINE {
+            let t = t0 + (t2 - t0) * (k as f64) / (LOCATE_REFINE as f64);
+            if t == t1 || t <= t0 || t >= t2 {
+                continue;
+            }
+            let Some(q) = crate::base::numeric::f64_to_ratio_exact(t) else {
+                continue;
+            };
+            let id = arena.num_ratio(q);
+            let v = guide(arena, id, t, budget)?;
+            fine.push((id, t, v));
+        }
+    }
+    let mut all: Vec<(ExprId, f64, f64)> = ts
+        .iter()
+        .zip(&vs)
+        .map(|(&(id, t), &v)| (id, t, v))
+        .chain(fine)
         .collect();
-    points.extend(
-        peak_points(arena, f, x, lo, hi)
-            .into_iter()
-            .filter(|&(_, v)| v - lo > margin(lo) && hi - v > margin(hi)),
-    );
-    points.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
-    points.dedup_by(|a, b| (a.1 - b.1).abs() <= 1e-14 * a.1.abs().max(1.0));
-    points
+    all.sort_by(|p, q| p.1.partial_cmp(&q.1).unwrap_or(Ordering::Equal));
+    // Brackets: a level the guide puts between two neighbouring samples, or
+    // close to one of them, confirmed by certified signs; or a sample
+    // exactly on a level.
+    let target = width * f64::powi(2.0, -i32::try_from(bits.min(1000)).unwrap_or(1000));
+    let max_steps = 2 * bits.min(1000) + 128;
+    let close = |v: f64, level: f64| (v - level).abs() <= 1e-6 * v.abs().max(level.abs()).max(1.0);
+    let mut out: Vec<(ExprId, f64)> = Vec::new();
+    for (k, w) in all.windows(2).enumerate() {
+        let ((l, lt, lv), (r, rt, rv)) = (w[0], w[1]);
+        let levels: Vec<f64> = match crossing {
+            Crossing::Zero => vec![0.0],
+            Crossing::Integer => {
+                let (first, last) = (lv.min(rv).floor(), lv.max(rv).ceil());
+                if !(first.is_finite() && last.is_finite()) || last - first > 64.0 {
+                    return Err(unlocatable());
+                }
+                let mut ls = Vec::new();
+                let mut n = first;
+                while n <= last {
+                    ls.push(n);
+                    n += 1.0;
+                }
+                ls
+            }
+        };
+        for level in levels {
+            let between = (lv - level) * (rv - level) < 0.0;
+            if !between && !close(lv, level) && !close(rv, level) {
+                continue;
+            }
+            let h = if level == 0.0 {
+                g
+            } else {
+                let Some(q) = crate::base::numeric::f64_to_ratio_exact(level) else {
+                    return Err(unlocatable());
+                };
+                let n = arena.num_ratio(q);
+                let h = arena.sub(g, n);
+                safe_eval(arena, h)
+            };
+            spend(budget)?;
+            spend(budget)?;
+            let sl = crossing_value(arena, h, x, l).ok_or_else(unlocatable)?;
+            let sr = crossing_value(arena, h, x, r).ok_or_else(unlocatable)?;
+            if sl == 0.0 {
+                // On the level: a crossing unless it is the lower end.
+                if k > 0 && !out.iter().any(|&(p, _)| p == l) {
+                    out.push((l, lt));
+                }
+                continue;
+            }
+            if sr == 0.0 || (sl < 0.0) == (sr < 0.0) {
+                continue;
+            }
+            if let Some(p) = narrow_crossing(
+                arena,
+                h,
+                x,
+                (l, lt, sl),
+                (r, rt, sr),
+                target,
+                max_steps,
+                budget,
+            )? {
+                out.push(p);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One evaluation of the budget of [`locate_crossings`].
+fn spend(budget: &mut usize) -> Result<(), SymplexError> {
+    if *budget == 0 {
+        return Err(failed(
+            "locating the kinks of the integrand took too many evaluations",
+        ));
+    }
+    *budget -= 1;
+    Ok(())
+}
+
+/// A crossing of `h` between `l` and `r` (each `(point, f64 value of the
+/// point, f64 value of h)`, values of `h` of opposite certified signs),
+/// narrowed until the bracket is narrower than `target` (at most
+/// `max_steps` evaluations): secant steps (kept a sixteenth of the bracket
+/// from its ends) alternating with bisections.  The midpoint of the last
+/// bracket, with its value; `None` when the signs do not differ.
+#[allow(clippy::too_many_arguments)]
+fn narrow_crossing(
+    arena: &mut Arena,
+    h: ExprId,
+    x: ExprId,
+    (mut l, mut lt, mut lv): (ExprId, f64, f64),
+    (mut r, mut rt, mut rv): (ExprId, f64, f64),
+    target: f64,
+    max_steps: u32,
+    budget: &mut usize,
+) -> Result<Option<(ExprId, f64)>, SymplexError> {
+    if (lv < 0.0) == (rv < 0.0) || lv == 0.0 || rv == 0.0 {
+        return Ok(None);
+    }
+    for step in 0..max_steps {
+        let w = arena.sub(r, l);
+        let w = safe_eval(arena, w);
+        let wv = calculus_util::expr_to_f64(arena, w).unwrap_or(f64::INFINITY);
+        if wv.is_finite() && wv.abs() <= target {
+            break;
+        }
+        let frac = if step % 2 == 0 {
+            (lv / (lv - rv)).clamp(1.0 / 16.0, 15.0 / 16.0)
+        } else {
+            0.5
+        };
+        let Some(q) = crate::base::numeric::f64_to_ratio_exact(frac) else {
+            return Err(failed("cannot locate the kinks or steps of the integrand"));
+        };
+        let fq = arena.num_ratio(q);
+        let shift = arena.mul(&[fq, w]);
+        let m = arena.add(&[l, shift]);
+        let m = safe_eval(arena, m);
+        spend(budget)?;
+        let Some(mv) = crossing_value(arena, h, x, m) else {
+            return Err(failed("cannot locate the kinks or steps of the integrand"));
+        };
+        let mt = lt + (rt - lt) * frac;
+        if mv == 0.0 {
+            let value = calculus_util::expr_to_f64(arena, m).unwrap_or(mt);
+            return Ok(Some((m, value)));
+        }
+        if (mv < 0.0) == (lv < 0.0) {
+            (l, lt, lv) = (m, mt, mv);
+        } else {
+            (r, rt, rv) = (m, mt, mv);
+        }
+    }
+    let half = arena.rational(1, 2);
+    let s = arena.add(&[l, r]);
+    let m = arena.mul(&[half, s]);
+    let m = safe_eval(arena, m);
+    let value = calculus_util::expr_to_f64(arena, m).unwrap_or(0.5 * (lt + rt));
+    Ok(Some((m, value)))
 }
 
 /// The centres of the narrow peaks of `f` in `(lo, hi)`, features a rule
@@ -6373,49 +6970,35 @@ fn peak_points(arena: &mut Arena, f: ExprId, x: ExprId, lo: f64, hi: f64) -> Vec
 }
 
 /// The points at which `Ex::integrate_numeric_with` splits its `f64`
-/// quadrature of `f` over `(lo, hi)`, sorted: the [`peak_points`] (a
-/// structural scan, cheap), and when `f` has a kink or a step (`|·|`,
-/// `sign`, `Heaviside`, `floor`, `ceiling`, `min`, `max`, `Piecewise`) the
-/// breakpoints of [`quadrature_breakpoints`] — at an irrational point (`|sin
-/// x|` at `π`) the error estimate of the segment holding it understates its
-/// error (QUADPACK's reduction assumes a smooth integrand).  Interior
-/// singularities are left to the caller's arbitrary-precision fallback.
+/// quadrature of `f` over `(lo, hi)`, sorted: the breakpoints of
+/// [`quadrature_breakpoints`] (with the [`peak_points`]).  At a kink or a
+/// step at an irrational point (`|sin x|` at `π`) the error estimate of the
+/// segment holding it understates its error (QUADPACK's reduction assumes a
+/// smooth integrand); a segment across an interior pole may cancel it
+/// exactly: up to 0.49, when only the integrands with kinks were scanned,
+/// `∫₋₂² tan x dx` and `∫₋₁¹ x/(x² − 1/4) dx`, which diverge, were
+/// `Ok(0.0)` (the nodes symmetric about 0, the integrand odd).  A piece
+/// that ends at a singularity is left to the caller's arbitrary-precision
+/// fallback.
+///
+/// `exact` holds the finite bounds when known (see
+/// [`quadrature_breakpoints`], whose errors this returns).
 pub(crate) fn quadrature_split_points(
     arena: &mut Arena,
     f: ExprId,
     x: ExprId,
     lo: f64,
     hi: f64,
-) -> Vec<f64> {
-    let non_smooth = contains_node(arena, f, |n| {
-        matches!(
-            n,
-            ExprNode::Abs(_)
-                | ExprNode::Sign(_)
-                | ExprNode::Heaviside(_)
-                | ExprNode::Floor(_)
-                | ExprNode::Ceiling(_)
-                | ExprNode::Min(_)
-                | ExprNode::Max(_)
-                | ExprNode::Piecewise(_)
-        )
-    });
-    let mut points: Vec<f64> = if non_smooth {
-        quadrature_breakpoints(arena, f, x, lo, hi)
+    exact: Option<Interval<ExprId>>,
+) -> Result<Vec<f64>, SymplexError> {
+    let mut points: Vec<f64> =
+        quadrature_breakpoints(arena, f, x, Interval::closed(lo, hi), exact, Some(64))?
             .into_iter()
             .map(|(_, v)| v)
-            .collect()
-    } else {
-        let margin = |v: f64| 1e-12 * v.abs().max(1.0);
-        peak_points(arena, f, x, lo, hi)
-            .into_iter()
-            .map(|(_, v)| v)
-            .filter(|&v| v - lo > margin(lo) && hi - v > margin(hi))
-            .collect()
-    };
+            .collect();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
     points.dedup_by(|a, b| (*a - *b).abs() <= 1e-14 * a.abs().max(1.0));
-    points
+    Ok(points)
 }
 
 /// [`quadrature_report`] over `[a, b]` split at the sorted interior
@@ -6460,6 +7043,134 @@ pub(crate) fn quadrature_split(
     }
     Ok((total, resolved))
 }
+
+/// Does `f` have a kink or a step depending on `x` (`|·|`, `sign`,
+/// `Heaviside`, `floor`, `ceiling`, `min`, `max`, `Piecewise`)?
+pub(crate) fn has_kink(arena: &Arena, f: ExprId, x: ExprId) -> bool {
+    walk::post_order_ids(arena, f).into_iter().any(|id| {
+        matches!(
+            arena.node(id),
+            ExprNode::Abs(_)
+                | ExprNode::Sign(_)
+                | ExprNode::Heaviside(_)
+                | ExprNode::Floor(_)
+                | ExprNode::Ceiling(_)
+                | ExprNode::Min(_)
+                | ExprNode::Max(_)
+                | ExprNode::Piecewise(_)
+        ) && walk::contains(arena, id, x)
+    })
+}
+
+/// The pieces of the `f64` quadrature of `evalf` for a body `f` (in `x`,
+/// both in `arena`) with a kink or a step on the finite range `[a, b]`
+/// (`a < b`, the binary numbers themselves): the interior breakpoints of
+/// [`quadrature_breakpoints`] (located to 64 bits where the scan cannot
+/// place them) as `f64`s, and a bound on the error of integrating between
+/// those instead of the breakpoints, per unit of the integrand's largest
+/// value (the jump of a step is at most twice that).  `None` when not every
+/// breakpoint is located, or the range is infinite or too narrow
+/// ([`f64_narrow`]).
+///
+/// `evalf` reads the quadrature's error estimate as a bound, which across a
+/// kink or a step it is not (QUADPACK's estimate assumes a smooth
+/// integrand): up to 0.49 `eval_f64` of `∫_{100.7}^{130.7} frac(x) dx` was
+/// `21` (truly 15), and of `∫_{10.7}^{410.7} |sin(x + 1/2)| dx` `254.736821`
+/// (truly `254.736834`, mpmath).
+pub(crate) fn f64_pieces(arena: &Arena, f: ExprId, x: ExprId, a: f64, b: f64) -> Option<F64Pieces> {
+    if a.partial_cmp(&b) != Some(Ordering::Less)
+        || !a.is_finite()
+        || !b.is_finite()
+        || f64_narrow(a, b)
+    {
+        return None;
+    }
+    let mut pa = Arena::with_config(arena.config.clone());
+    let mut map: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let f_p = crate::base::compact::transfer_subtree(arena, &mut pa, f, &mut map);
+    let x_p = crate::base::compact::transfer_subtree(arena, &mut pa, x, &mut map);
+    let points =
+        quadrature_breakpoints(&mut pa, f_p, x_p, Interval::closed(a, b), None, Some(64)).ok()?;
+    let mut cuts = Vec::with_capacity(points.len());
+    let mut misplaced = 0.0;
+    for (p, v) in points {
+        // The nearest `f64` to the point, from its 16-digit value: within
+        // two ulps (a located crossing is within `2⁻⁶⁴` of the range of
+        // its own value).
+        let v = calculus_util::expr_to_f64(&mut pa, p).unwrap_or(v);
+        if !(a < v && v < b) {
+            return None;
+        }
+        misplaced += 2.0 * (2.0 * f64::EPSILON * v.abs() + (b - a) * 2f64.powi(-60));
+        cuts.push(v);
+    }
+    cuts.sort_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Equal));
+    cuts.dedup();
+    Some(F64Pieces { cuts, misplaced })
+}
+
+/// The split of [`f64_pieces`].
+#[derive(Clone, Debug)]
+pub(crate) struct F64Pieces {
+    /// The interior split points, increasing.
+    pub cuts: Vec<f64>,
+    /// The error of splitting at `cuts` rather than at the breakpoints, per
+    /// unit of the integrand's largest value.
+    pub misplaced: f64,
+}
+
+/// [`quadrature_resolved`] on `[a, b]` (`a < b`, finite) split at the
+/// increasing interior `cuts`: the sum of the pieces, each with an equal
+/// share of the absolute tolerance and of the subdivisions; `None` unless
+/// every piece is resolved.
+///
+/// # Errors
+///
+/// As [`quadrature`].
+pub(crate) fn quadrature_resolved_split(
+    f: &dyn Fn(f64) -> f64,
+    a: f64,
+    b: f64,
+    cuts: &[f64],
+    opts: &QuadOpts,
+) -> Result<Option<QuadResult>, SymplexError> {
+    let n = cuts.len() + 1;
+    let share = QuadOpts {
+        abs_tol: opts.abs_tol / n as f64,
+        max_subdivisions: opts.max_subdivisions.div_ceil(n).max(16),
+        ..*opts
+    };
+    let ends: Vec<f64> = std::iter::once(a)
+        .chain(cuts.iter().copied())
+        .chain(std::iter::once(b))
+        .collect();
+    let mut total = QuadResult {
+        value: 0.0,
+        error: 0.0,
+    };
+    for w in ends.windows(2) {
+        let Some(r) = quadrature_resolved(f, w[0], w[1], &share, false)? else {
+            return Ok(None);
+        };
+        total.value += r.value;
+        total.error += r.error;
+    }
+    Ok(Some(total))
+}
+
+/// Is the finite range between `a` and `b` narrower than `2⁻²⁰` of its
+/// position, so that `f64` arithmetic cannot resolve it: its nodes are a
+/// few thousand ulps apart at most, and an integrand that varies on the
+/// scale of the range (`frac(10x)` near `10¹⁵`) is evaluated there with
+/// errors of `2²⁰` ulps of its argument.  The `f64` quadratures leave such a
+/// range to the arbitrary-precision one; up to 0.49 `∫_{10¹⁵+1/3}^{10¹⁵+1/3+40}
+/// frac(10x) dx` was `0` from `integrate_numeric` (truly 20).
+pub(crate) fn f64_narrow(a: f64, b: f64) -> bool {
+    a.is_finite() && b.is_finite() && (b - a).abs() < NARROW * a.abs().max(b.abs())
+}
+
+/// The relative width below which [`f64_narrow`] holds: `2⁻²⁰`.
+const NARROW: f64 = 9.5367431640625e-7;
 
 /// The highest degree of a denominator whose complex zeros
 /// [`peak_points`] computes.

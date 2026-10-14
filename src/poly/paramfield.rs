@@ -17,6 +17,9 @@
 //! algebraic numbers (`√2`, `i`, …; the gcd over the number field,
 //! [`numfield`]), which SymPy does with `extension=`.
 
+use std::fmt;
+use std::marker::PhantomData;
+
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::Ratio;
@@ -57,181 +60,285 @@ fn bigint_one() -> BigInt {
 // The field ℚ(y₁, …, yₖ)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// An element of `ℚ(y₁, …, yₖ)`: a rational number, or `n/d` with `n, d`
-/// coprime polynomials (`d` integer-primitive with a positive leading
-/// coefficient), not both constant.  All polynomials of one computation
-/// have the same number of variables.
-#[derive(Clone, Debug)]
-pub(crate) enum PFrac {
-    /// A rational constant.
-    Rat(Q),
-    /// `numerator / denominator`.
-    Frac(MPoly, MPoly),
+/// What a computation over `ℚ(y₁, …, yₖ)` ([`PFrac<P>`]) does at each
+/// field operation besides the arithmetic: the gcd it cancels with and the
+/// budget it charges.  The arithmetic and the canonical form are written
+/// once, in [`PFrac`]; up to 0.49 the integrator had its own copy of them
+/// (`risch::param_rational::PFrac`) for the sake of its budget.
+pub(crate) trait ParamPolicy: Clone + fmt::Debug + PartialEq {
+    /// `gcd(a, b)` of two numerators or denominators (`1` to skip the
+    /// cancellation: a constant operand, an attempt given up).
+    fn gcd(a: &MPoly, b: &MPoly) -> MPoly;
+    /// A quotient is about to be normalised ([`PFrac::finish`]).
+    fn charge() {}
+    /// May the non-zero quotient `num/den` be normalised, or does it
+    /// become `0` (an attempt abandoned)?
+    fn admit(num: &MPoly, den: &MPoly) -> bool {
+        let _ = (num, den);
+        true
+    }
+    /// Does every element count as zero (an attempt abandoned)?
+    fn abandoned() -> bool {
+        false
+    }
 }
 
-impl PFrac {
-    /// The element `p` (a polynomial).
-    pub(crate) fn from_poly(p: &MPoly) -> Self {
-        match p.as_constant() {
-            Some(c) => PFrac::Rat(c),
-            None => PFrac::Frac(p.clone(), MPoly::from_int(p.num_vars(), 1)),
+/// Exact arithmetic with no budget: the field of `cancel` and `apart`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Exact;
+
+impl ParamPolicy for Exact {
+    fn gcd(a: &MPoly, b: &MPoly) -> MPoly {
+        if a.as_constant().is_some() || b.as_constant().is_some() {
+            return MPoly::from_int(a.num_vars(), 1);
+        }
+        MPoly::gcd(a, b)
+    }
+}
+
+/// An element of `ℚ(y₁, …, yₖ)`.
+///
+/// `Const` holds the rational constants (so that [`Ring::zero`] and
+/// [`Ring::one`] need no variable count); `Frac` a non-constant quotient
+/// `num/den` in canonical form: `gcd(num, den) = 1`, `den` with integer
+/// coefficients, primitive, positive leading coefficient.  Equal elements
+/// therefore have equal representations, and `==` is equality in the
+/// field.  All polynomials of one computation have the same number of
+/// variables.  `P` decides the gcd and the budget ([`ParamPolicy`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PFrac<P: ParamPolicy = Exact> {
+    /// A rational constant.
+    Const(Q),
+    /// `num / den` (and the policy, which has no data).
+    Frac(Box<(MPoly, MPoly, PhantomData<P>)>),
+}
+
+/// `a/g` for a divisor `g` of `a` (`None` if it does not divide).
+fn div_mp(a: &MPoly, g: &MPoly) -> Option<MPoly> {
+    if g.as_constant().is_some_and(|c| One::is_one(&c)) {
+        return Some(a.clone());
+    }
+    a.div_exact(g)
+}
+
+impl<P: ParamPolicy> PFrac<P> {
+    /// `num/den` in canonical form (`den ≠ 0`).
+    pub(crate) fn canon(num: MPoly, den: MPoly) -> Self {
+        if num.is_zero() || den.is_zero() {
+            return PFrac::Const(qzero());
+        }
+        let g = P::gcd(&num, &den);
+        match (div_mp(&num, &g), div_mp(&den, &g)) {
+            (Some(n), Some(d)) => PFrac::finish(n, d),
+            _ => PFrac::finish(num, den),
         }
     }
 
-    /// `n/d` normalised; `d` must be nonzero.  `coprime`: `n` and `d` are
-    /// known to have no common factor of positive degree.
-    fn make(n: MPoly, d: MPoly, coprime: bool) -> Self {
-        if n.is_zero() {
-            return PFrac::Rat(qzero());
+    /// `num/den` for coprime `num`, `den` (`den ≠ 0`): the denominator's
+    /// rational content and sign moved into the numerator.
+    pub(crate) fn finish(num: MPoly, den: MPoly) -> Self {
+        P::charge();
+        if num.is_zero() || den.is_zero() || !P::admit(&num, &den) {
+            return PFrac::Const(qzero());
         }
-        let (n, d) = if coprime {
-            (n, d)
+        let (mut num, mut den) = (num, den);
+        let (lcm, dz) = den.clear_denominators();
+        let content = dz.integer_content();
+        let mut lambda = if Zero::is_zero(&content) {
+            Q::from_integer(lcm)
         } else {
-            let g = MPoly::gcd(&n, &d);
-            if g.total_degree().unwrap_or(0) > 0 {
-                match (n.div_exact(&g), d.div_exact(&g)) {
-                    (Some(a), Some(b)) => (a, b),
-                    _ => (n, d),
-                }
-            } else {
-                (n, d)
-            }
+            Q::new(lcm, content)
         };
-        // Integer-primitive denominator with a positive leading coefficient.
-        let (dl, dz) = d.clear_denominators();
-        let c = dz.integer_content();
-        let neg = dz.leading_coeff().is_some_and(Signed::is_negative);
-        let c = if neg { -c } else { c };
-        if Zero::is_zero(&c) {
-            return PFrac::Rat(qzero());
+        if den.leading_coeff().is_some_and(Signed::is_negative) {
+            lambda = -lambda;
         }
-        let d = dz.scale(&Ratio::new(bigint_one(), c.clone()));
-        let n = n.scale(&Ratio::new(dl, c));
-        match (n.as_constant(), d.as_constant()) {
-            (Some(a), Some(b)) => PFrac::Rat(a / b),
-            _ => PFrac::Frac(n, d),
+        if !One::is_one(&lambda) {
+            num = num.scale(&lambda);
+            den = den.scale(&lambda);
+        }
+        if den.as_constant().is_some()
+            && let Some(n) = num.as_constant()
+        {
+            return PFrac::Const(n);
+        }
+        PFrac::Frac(Box::new((num, den, PhantomData)))
+    }
+
+    /// The element `p` of `ℚ[y₁, …]`.
+    pub(crate) fn from_mp(p: MPoly) -> Self {
+        if let Some(c) = p.as_constant() {
+            return PFrac::Const(c);
+        }
+        let one = MPoly::from_int(p.num_vars(), 1);
+        PFrac::Frac(Box::new((p, one, PhantomData)))
+    }
+
+    /// The element `p` (a polynomial).
+    pub(crate) fn from_poly(p: &MPoly) -> Self {
+        Self::from_mp(p.clone())
+    }
+
+    /// The number of variables of the polynomials (`None` for a constant).
+    pub(crate) fn num_vars(&self) -> Option<usize> {
+        match self {
+            PFrac::Const(_) => None,
+            PFrac::Frac(f) => Some(f.0.num_vars()),
         }
     }
 
     /// Numerator and denominator as polynomials in `nv` variables.
     pub(crate) fn parts(&self, nv: usize) -> PolyFraction {
         match self {
-            PFrac::Rat(q) => PolyFraction {
+            PFrac::Const(q) => PolyFraction {
                 numer: MPoly::constant(nv, q.clone()),
                 denom: MPoly::from_int(nv, 1),
             },
-            PFrac::Frac(n, d) => PolyFraction {
-                numer: n.clone(),
-                denom: d.clone(),
+            PFrac::Frac(f) => PolyFraction {
+                numer: f.0.clone(),
+                denom: f.1.clone(),
             },
+        }
+    }
+
+    /// The rational constant, if this is one.
+    pub(crate) fn as_const(&self) -> Option<&Q> {
+        match self {
+            PFrac::Const(q) => Some(q),
+            PFrac::Frac(_) => None,
+        }
+    }
+
+    /// `k·self` for a rational `k` (no gcd needed).
+    pub(crate) fn scale_q(&self, k: &Q) -> Self {
+        if Zero::is_zero(k) {
+            return PFrac::Const(qzero());
+        }
+        match self {
+            PFrac::Const(q) => PFrac::Const(q * k),
+            PFrac::Frac(f) => PFrac::Frac(Box::new((f.0.scale(k), f.1.clone(), PhantomData))),
         }
     }
 
     fn size_ok(&self) -> bool {
         match self {
-            PFrac::Rat(_) => true,
-            PFrac::Frac(n, d) => within_budget(n) && within_budget(d),
+            PFrac::Const(_) => true,
+            PFrac::Frac(f) => within_budget(&f.0) && within_budget(&f.1),
         }
+    }
+
+    /// Both operands as `num/den` over the same variables.
+    fn pair(&self, rhs: &Self) -> Option<[PolyFraction; 2]> {
+        let nv = self.num_vars().or_else(|| rhs.num_vars())?;
+        Some([self.parts(nv), rhs.parts(nv)])
+    }
+
+    /// Henrici's sum: with `g = gcd(ad, bd)`, `(an·bd/g + bn·ad/g)/(ad·bd/g)`
+    /// reduced by the gcd of that numerator with `g` alone (Knuth, TAOCP
+    /// vol. 2, §4.5.1).  The gcds are of the factors, not of the products:
+    /// with four parameters the heuristic gcd of the products took seconds.
+    fn add_frac(&self, rhs: &Self) -> Self {
+        let Some([a, b]) = self.pair(rhs) else {
+            return PFrac::Const(qzero());
+        };
+        let (an, ad, bn, bd) = (&a.numer, &a.denom, &b.numer, &b.denom);
+        let henrici = || {
+            let g = P::gcd(ad, bd);
+            let (ad1, bd1) = (div_mp(ad, &g)?, div_mp(bd, &g)?);
+            let num = an.mul(&bd1).add(&bn.mul(&ad1));
+            let g2 = P::gcd(&num, &g);
+            Some(PFrac::finish(
+                div_mp(&num, &g2)?,
+                div_mp(&ad1.mul(bd), &g2)?,
+            ))
+        };
+        henrici().unwrap_or_else(|| PFrac::canon(an.mul(bd).add(&bn.mul(ad)), ad.mul(bd)))
+    }
+
+    /// Henrici's product: `(an/g₁·bn/g₂)/(ad/g₂·bd/g₁)` with
+    /// `g₁ = gcd(an, bd)`, `g₂ = gcd(bn, ad)`.
+    fn mul_frac(&self, rhs: &Self) -> Self {
+        let Some([a, b]) = self.pair(rhs) else {
+            return PFrac::Const(qzero());
+        };
+        let (an, ad, bn, bd) = (&a.numer, &a.denom, &b.numer, &b.denom);
+        let henrici = || {
+            let g1 = P::gcd(an, bd);
+            let g2 = P::gcd(bn, ad);
+            let num = div_mp(an, &g1)?.mul(&div_mp(bn, &g2)?);
+            let den = div_mp(ad, &g2)?.mul(&div_mp(bd, &g1)?);
+            Some(PFrac::finish(num, den))
+        };
+        henrici().unwrap_or_else(|| PFrac::canon(an.mul(bn), ad.mul(bd)))
     }
 }
 
-impl PartialEq for PFrac {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (PFrac::Rat(a), PFrac::Rat(b)) => a == b,
-            (PFrac::Frac(n1, d1), PFrac::Frac(n2, d2)) => n1 == n2 && d1 == d2,
-            _ => false,
-        }
-    }
-}
-
-impl Ring for PFrac {
+impl<P: ParamPolicy> Ring for PFrac<P> {
     fn zero() -> Self {
-        PFrac::Rat(qzero())
+        PFrac::Const(qzero())
     }
 
     fn one() -> Self {
-        PFrac::Rat(qone())
+        PFrac::Const(qone())
     }
 
+    /// Once an attempt is abandoned ([`ParamPolicy::abandoned`]) every
+    /// element counts as zero: the operations return zero then, and a
+    /// division whose quotient coefficient came out zero would otherwise
+    /// never remove the leading term of its remainder (`GenPoly::try_div_rem`
+    /// looped for minutes inside the extended gcd of
+    /// `1/((d + e·x)²·(a + c·x⁴)³)`); with every coefficient zero each
+    /// polynomial normalises to zero and every loop ends.  The result is
+    /// discarded at the next budget check.
     fn is_zero(&self) -> bool {
-        matches!(self, PFrac::Rat(q) if Zero::is_zero(q))
-    }
-
-    fn is_one(&self) -> bool {
-        matches!(self, PFrac::Rat(q) if One::is_one(q))
+        P::abandoned() || matches!(self, PFrac::Const(q) if Zero::is_zero(q))
     }
 
     fn add(&self, rhs: &Self) -> Self {
         match (self, rhs) {
-            (PFrac::Rat(a), PFrac::Rat(b)) => PFrac::Rat(Ring::add(a, b)),
-            (PFrac::Rat(a), PFrac::Frac(n, d)) | (PFrac::Frac(n, d), PFrac::Rat(a)) => {
-                // gcd(n + a·d, d) = gcd(n, d) = 1.
-                PFrac::make(n.add(&d.scale(a)), d.clone(), true)
-            }
-            (PFrac::Frac(n1, d1), PFrac::Frac(n2, d2)) => {
-                if d1 == d2 {
-                    PFrac::make(n1.add(n2), d1.clone(), false)
-                } else {
-                    PFrac::make(n1.mul(d2).add(&n2.mul(d1)), d1.mul(d2), false)
-                }
-            }
+            (PFrac::Const(a), PFrac::Const(b)) => PFrac::Const(a + b),
+            _ if rhs.is_zero() => self.clone(),
+            _ if self.is_zero() => rhs.clone(),
+            _ => self.add_frac(rhs),
         }
     }
 
     fn sub(&self, rhs: &Self) -> Self {
-        Ring::add(self, &Ring::neg(rhs))
+        self.add(&rhs.neg())
     }
 
     fn mul(&self, rhs: &Self) -> Self {
         match (self, rhs) {
-            (PFrac::Rat(a), PFrac::Rat(b)) => PFrac::Rat(Ring::mul(a, b)),
-            (PFrac::Rat(a), PFrac::Frac(n, d)) | (PFrac::Frac(n, d), PFrac::Rat(a)) => {
-                if Zero::is_zero(a) {
-                    PFrac::Rat(qzero())
-                } else {
-                    PFrac::make(n.scale(a), d.clone(), true)
-                }
-            }
-            (PFrac::Frac(n1, d1), PFrac::Frac(n2, d2)) => {
-                PFrac::make(n1.mul(n2), d1.mul(d2), false)
-            }
+            (PFrac::Const(a), PFrac::Const(b)) => PFrac::Const(a * b),
+            (PFrac::Const(a), _) => rhs.scale_q(a),
+            (_, PFrac::Const(b)) => self.scale_q(b),
+            _ => self.mul_frac(rhs),
         }
     }
 
     fn neg(&self) -> Self {
-        match self {
-            PFrac::Rat(a) => PFrac::Rat(-a),
-            PFrac::Frac(n, d) => PFrac::Frac(n.neg(), d.clone()),
-        }
+        self.scale_q(&-qone())
     }
 }
 
-impl EuclideanDomain for PFrac {
+impl<P: ParamPolicy> EuclideanDomain for PFrac<P> {
     fn div_rem(&self, other: &Self) -> (Self, Self) {
-        if other.is_zero() {
-            return (Self::zero(), self.clone());
-        }
         (Field::div(self, other), Self::zero())
     }
 }
 
-impl Field for PFrac {
+impl<P: ParamPolicy> Field for PFrac<P> {
+    /// Division; by zero it gives zero (the polynomial algorithms divide
+    /// only by leading coefficients, which are never zero).
     fn div(&self, other: &Self) -> Self {
-        Ring::mul(self, &other.inv())
+        self.mul(&other.inv())
     }
 
-    /// `1/a`; the zero element (never inverted here) gives `0`.
+    /// The inverse; that of zero is zero (see [`Field::div`]).
     fn inv(&self) -> Self {
         match self {
-            PFrac::Rat(a) => {
-                if Zero::is_zero(a) {
-                    PFrac::Rat(qzero())
-                } else {
-                    PFrac::Rat(qone() / a)
-                }
-            }
-            PFrac::Frac(n, d) => PFrac::make(d.clone(), n.clone(), true),
+            PFrac::Const(q) if Zero::is_zero(q) => PFrac::Const(qzero()),
+            PFrac::Const(q) => PFrac::Const(q.recip()),
+            PFrac::Frac(f) => PFrac::finish(f.1.clone(), f.0.clone()),
         }
     }
 }
@@ -693,7 +800,7 @@ impl ParamAlgField {
     ) -> Option<Self> {
         let ext = ExtField::for_atoms(arena, atoms)?;
         let m = ext.field.modulus();
-        let mp = PPoly::from_coeffs(m.coeffs().iter().map(|c| PFrac::Rat(c.clone())).collect());
+        let mp = PPoly::from_coeffs(m.coeffs().iter().map(|c| PFrac::Const(c.clone())).collect());
         let mut vars = vec![var];
         vars.extend_from_slice(params);
         Some(ParamAlgField {
@@ -710,9 +817,9 @@ impl ParamAlgField {
     /// An element of `ℚ(α)` in the field.
     fn element(&self, a: &AlgNum) -> PAlg {
         match a {
-            AlgNum::Rat(q) => PAlg::Base(PFrac::Rat(q.clone())),
+            AlgNum::Rat(q) => PAlg::Base(PFrac::Const(q.clone())),
             AlgNum::Elt(p, _) => PAlg::reduce(
-                PPoly::from_coeffs(p.coeffs().iter().map(|c| PFrac::Rat(c.clone())).collect()),
+                PPoly::from_coeffs(p.coeffs().iter().map(|c| PFrac::Const(c.clone())).collect()),
                 &self.modulus,
             ),
         }
@@ -771,7 +878,7 @@ impl ParamAlgField {
             } else {
                 match arena.node(id).clone() {
                     ExprNode::Num(nid) => {
-                        PAPoly::constant(PAlg::Base(PFrac::Rat(arena.num(nid).clone())))
+                        PAPoly::constant(PAlg::Base(PFrac::Const(arena.num(nid).clone())))
                     }
                     ExprNode::Add(ch) => {
                         let mut acc = PAPoly::zero();
@@ -1071,8 +1178,8 @@ mod tests {
         let a: MPoly = MPoly::var(2, 1);
         let one = MPoly::from_int(2, 1);
         // 1/(a − 1) + 1/(a + 1) = 2a/(a² − 1)
-        let f = PFrac::make(one.clone(), a.sub(&one), true);
-        let g = PFrac::make(one.clone(), a.add(&one), true);
+        let f = PFrac::<Exact>::finish(one.clone(), a.sub(&one));
+        let g = PFrac::<Exact>::finish(one.clone(), a.add(&one));
         let s = Ring::add(&f, &g);
         let PolyFraction { numer: n, denom: d } = s.parts(2);
         assert_eq!(n, a.scale(&Q::from_integer(BigInt::from(2))));

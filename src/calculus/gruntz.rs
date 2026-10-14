@@ -975,11 +975,18 @@ fn sign_at_inf(
     }
 
     tracing::trace!("gruntz::sign_at_inf: computing leading term to determine sign");
-    let (c0, _e0) = mrv_leadterm(arena, e, x, depth + 1, budget, false)?;
+    let (c0, e0) = mrv_leadterm(arena, e, x, depth + 1, budget, false)?;
     if contains_foreign_dummy(arena, c0, x) {
         return Err(crate::base::errors::SymplexError::ComputationFailed {
             operation: "gruntz::sign_at_inf",
             reason: "leading coefficient is not a genuine constant".into(),
+        });
+    }
+    // `c₀·ω^{e₀}` has the sign of `c₀` only for a real `e₀`.
+    if exponent_turns(arena, e0, x, depth, budget) {
+        return Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::sign_at_inf",
+            reason: "the leading term has a turning phase".into(),
         });
     }
     if arena.is_zero_structural(c0) {
@@ -1191,30 +1198,17 @@ fn mrv(
             // constant non-real term of the exponent made it complex, and
             // `e^{x − i}·|√x − 3i|` had the leading coefficient 1 (its limit
             // was `oo`; it is `e^{−i}·oo`).  Constant terms come out as
-            // `e^a·(cos b + i·sin b)` when the varying part is real.
-            let split = if li_is_inf
-                && crate::base::walk::contains(arena, arg, arena.i_unit())
-                && !eventually_real(arena, arg, x, depth + 1, budget)
-            {
-                let terms: Vec<ExprId> = match arena.node(arg) {
-                    ExprNode::Add(cs) => cs.to_vec(),
-                    _ => vec![arg],
-                };
-                let (consts, deps): (Vec<ExprId>, Vec<ExprId>) = terms
-                    .into_iter()
-                    .partition(|&t| !crate::base::walk::contains(arena, t, x));
-                let d = arena.add(&deps);
-                let c = arena.add(&consts);
-                let p = crate::base::complex::decompose(arena, c);
-                (!consts.is_empty() && p.exact && eventually_real(arena, d, x, depth + 1, budget))
-                    .then_some((d, p))
+            // `e^a·(cos b + i·sin b)` when the varying part is real.  A
+            // non-real constant need not be written with `i`: up to 0.49
+            // `(1 + z)·e^{−z}` (`Γ(2, z)`), `z = (−3)^{−1/3} − e·x`, kept
+            // `(−1)^{2/3}` in `ω` and its limit at `∞` was `−∞` (it is
+            // `−e^{i·3^{1/6}/2}·∞`), and `e^{x + asin 2}` tended to `∞`.
+            let split = if li_is_inf {
+                exponent_phase_split(arena, arg, x, depth, budget)?
             } else {
                 None
             };
-            if let Some((d, p)) = split {
-                let re = crate::transforms::eval::eval(arena, p.re);
-                let im = crate::transforms::eval::eval(arena, p.im);
-                let real = arena.add(&[d, re]);
+            if let Some((real, im)) = split {
                 let e_real = arena.exp(real);
                 let cos = arena.cos(im);
                 let sin = arena.sin(im);
@@ -1389,6 +1383,7 @@ fn check_growth_known(
     let function_like = matches!(
         node,
         ExprNode::Apply(..)
+            | ExprNode::Lib(..)
             | ExprNode::Si(_)
             | ExprNode::Ci(_)
             | ExprNode::Ei(_)
@@ -1422,9 +1417,9 @@ fn check_growth_known(
             ExprNode::Si(_) | ExprNode::Ci(_) => true,
             ExprNode::LogGamma(_) | ExprNode::Digamma(_) | ExprNode::LambertW(_) => plus,
             ExprNode::Polygamma(m, _) => plus && !crate::base::walk::contains(arena, *m, x),
-            ExprNode::Apply(f, _) => matches!(
-                arena.lib_fn(*f),
-                Some(LibFn::BesselJ | LibFn::BesselY | LibFn::FresnelS | LibFn::FresnelC)
+            ExprNode::Lib(f, _) => matches!(
+                f,
+                LibFn::BesselJ | LibFn::BesselY | LibFn::FresnelS | LibFn::FresnelC
             ),
             _ => false,
         }
@@ -1442,7 +1437,14 @@ fn check_growth_known(
         match limitinf(arena, c, x, depth + 1, budget) {
             Ok(l) if !is_infinite(arena, l) && !contains_singular_atom(arena, l) => {}
             Ok(l) if l == arena.infinity() || l == arena.neg_infinity() => {
-                if !tame_at(arena, l == arena.infinity()) {
+                // The Fresnel integrals are power-like along the reals only:
+                // `sin(πu²/2)` grows like `e^{π·k·|Im c|·x}` for `u = c + k·x`
+                // (`Si`, `Ci`, `Jₙ`, `Yₙ` stay bounded on such a line), and
+                // `eˣ·fresnelc(√5·i − 2x)` at `−∞` was `0` (it has no limit).
+                let fresnel = matches!(node, ExprNode::Lib(LibFn::FresnelS | LibFn::FresnelC, _));
+                if !tame_at(arena, l == arena.infinity())
+                    || (fresnel && !eventually_real(arena, c, x, depth + 1, budget))
+                {
                     return Err(unknown());
                 }
             }
@@ -2559,31 +2561,11 @@ fn unary_is_bounded(template: &ExprNode) -> bool {
 /// Rebuild a unary function node of the same kind as `template` applied to
 /// `arg`.
 fn apply_unary(arena: &mut Arena, template: &ExprNode, arg: ExprId) -> ExprId {
-    match template {
-        ExprNode::Sin(_) => arena.sin(arg),
-        ExprNode::Cos(_) => arena.cos(arg),
-        ExprNode::Tan(_) => arena.tan(arg),
-        ExprNode::Asin(_) => arena.asin(arg),
-        ExprNode::Acos(_) => arena.acos(arg),
-        ExprNode::Atan(_) => arena.atan(arg),
-        ExprNode::Sinh(_) => arena.sinh(arg),
-        ExprNode::Cosh(_) => arena.cosh(arg),
-        ExprNode::Tanh(_) => arena.tanh(arg),
-        ExprNode::Asinh(_) => arena.asinh(arg),
-        ExprNode::Acosh(_) => arena.acosh(arg),
-        ExprNode::Atanh(_) => arena.atanh(arg),
-        ExprNode::Erf(_) => arena.erf(arg),
-        ExprNode::Erfc(_) => arena.erfc(arg),
-        ExprNode::Gamma(_) => arena.gamma(arg),
-        ExprNode::LogGamma(_) => arena.log_gamma(arg),
-        ExprNode::Digamma(_) => arena.digamma(arg),
-        ExprNode::LambertW(_) => arena.lambertw(arg),
-        ExprNode::Factorial(_) => arena.factorial(arg),
-        ExprNode::Abs(_) => arena.abs(arg),
-        ExprNode::Sign(_) => arena.sign(arg),
-        ExprNode::Heaviside(_) => arena.heaviside(arg),
-        ExprNode::Exp(_) => arena.exp(arg),
-        ExprNode::Ln(_) => arena.ln(arg),
+    // The one-argument function of `template`, built by its constructor
+    // (`Arena::func`); until 0.49 a list of 24 arms, one per function the
+    // callers (`mrv`, `unary_leadterm`) pass.
+    match template.func(arena) {
+        Some((f, args)) if args.len() == 1 => arena.func(f, &[arg]).unwrap_or(arg),
         _ => arg,
     }
 }
@@ -3297,6 +3279,27 @@ fn mrv_leadterm(
     let e0_display = arena.display(e0).to_string();
     tracing::debug!(c0 = %c0_display, e0 = %e0_display, "gruntz::mrv_leadterm: leading term extracted");
 
+    // `c₀·ω^{e₀}` with `e₀ < 0` (or undecided) needs the phase of `ω`, which a
+    // member of unknown phase does not give ([`phase_unknown`]); `e₀ ≥ 0`
+    // does not (`|ω| → 0`).  Up to 0.49 `Γ((−1)^{1/7} − x/2)·sinh(√5·i +
+    // 2x)` at `−∞` was `(−cos √5 + i·sin √5)·∞/2` (its phase turns).
+    if !arena.as_num(e0).is_some_and(|r| !r.is_negative())
+        && !matches!(crate::calculus::limit::const_sign(arena, e0), Some(0 | 1))
+    {
+        let members: Vec<ExprId> = omega.exprs.keys().copied().collect();
+        for m in members {
+            if phase_unknown(arena, m, x, depth, budget)? {
+                return Err(crate::base::errors::SymplexError::ComputationFailed {
+                    operation: "gruntz::mrv_leadterm",
+                    reason: format!(
+                        "the phase of {} is not known (a non-real divergent exponent)",
+                        arena.display(m)
+                    ),
+                });
+            }
+        }
+    }
+
     // Replace log(w) → logw in c0 (SymPy does this as the last step)
     let ln_w = arena.ln(w);
     let c0 = crate::transforms::subs::subs(arena, c0, ln_w, logw);
@@ -3511,8 +3514,12 @@ fn directed_infinity(
         if depth > MAX_DEPTH {
             return None;
         }
-        let (c, _) = mrv_leadterm(arena, d, x, depth + 1, budget, false).ok()?;
-        if contains_foreign_dummy(arena, c, x) || arena.is_zero_structural(c) {
+        // `ω^{e}` keeps its direction only for a real `e`: `ω^{3i}` turns.
+        let (c, e) = mrv_leadterm(arena, d, x, depth + 1, budget, false).ok()?;
+        if contains_foreign_dummy(arena, c, x)
+            || arena.is_zero_structural(c)
+            || exponent_turns(arena, e, x, depth, budget)
+        {
             return None;
         }
         d = crate::transforms::eval::eval(arena, c);
@@ -3593,11 +3600,10 @@ fn needs_tractable_rewrite(arena: &Arena, e: ExprId, x: ExprId) -> bool {
         if matches!(node, ExprNode::Binomial(..)) && crate::base::walk::contains(arena, id, x) {
             return true;
         }
-        if let ExprNode::Apply(f, args) = node
-            && matches!(
-                arena.lib_fn(*f),
-                Some(crate::base::libfn::LibFn::Fibonacci | crate::base::libfn::LibFn::Lucas)
-            )
+        if let ExprNode::Lib(
+            crate::base::libfn::LibFn::Fibonacci | crate::base::libfn::LibFn::Lucas,
+            args,
+        ) = node
             && args
                 .iter()
                 .any(|&a| crate::base::walk::contains(arena, a, x))
@@ -3750,6 +3756,21 @@ fn modulus_of_power(
         {
             let ab = arena.abs(b);
             Some(arena.pow(ab, g))
+        }
+        // `|b^g| = b^{Re g}` for an eventually positive real base (`|x^{ln(−2)
+        // + x/2}| = x^{x/2 + ln 2}`).
+        ExprNode::Pow(b, g)
+            if crate::base::walk::contains(arena, g, x)
+                && !eventually_real(arena, g, x, depth + 1, budget)
+                && eventually_real(arena, b, x, depth + 1, budget)
+                && matches!(sign_at_inf(arena, b, x, depth + 1, budget), Ok(1)) =>
+        {
+            let (gr, _) = arena.as_real_imag_expr(g);
+            let gr = crate::transforms::eval::eval(arena, gr);
+            (!walk_has(arena, gr, |n| {
+                matches!(n, ExprNode::Re(_) | ExprNode::Im(_))
+            }))
+            .then(|| arena.pow(b, gr))
         }
         ExprNode::Exp(g)
             if crate::base::walk::contains(arena, g, x) && may_leave_reals(arena, g) =>
@@ -4228,7 +4249,7 @@ fn rewrite_tractable_pass(
                     _ => rebuilt,
                 }
             }
-            ExprNode::Zeta(_) | ExprNode::Apply(..)
+            ExprNode::Zeta(_) | ExprNode::Lib(..)
                 if special_asymptotic_arg(arena, &node, x).is_some() =>
             {
                 let Some(u) = special_asymptotic_arg(arena, &node, x) else {
@@ -4249,8 +4270,24 @@ fn rewrite_tractable_pass(
             // The eventual sign decides |u|, sign u, H(u) only for a real u:
             // `(−2)^(−1/x)` tends to 1 but is not real, and taking it for
             // positive made `lim_{x→0⁺} |(−2)^(−x)|^(1/x)` equal −1/2.
+            // `⌊u⌋`, `⌈u⌉`, `δ(u)`, `min`, `max` have no value at all off the
+            // reals: `ln(x)^(x²)` tends to 1 at `0⁺` with a positive
+            // imaginary part, and `lim ceiling(ln(x)^(x²))` was 2.
             ExprNode::Abs(u) | ExprNode::Sign(u) | ExprNode::Heaviside(u)
                 if !eventually_real(arena, u, x, depth + 1, budget) =>
+            {
+                rebuilt
+            }
+            ExprNode::Floor(u) | ExprNode::Ceiling(u) | ExprNode::DiracDelta(u)
+                if !real_for_generic_parameters(arena, u, x, depth, budget) =>
+            {
+                rebuilt
+            }
+            ExprNode::Min(ref args) | ExprNode::Max(ref args)
+                if !args
+                    .clone()
+                    .into_iter()
+                    .all(|a| min_max_argument_real(arena, a, x, depth, budget)) =>
             {
                 rebuilt
             }
@@ -4323,15 +4360,10 @@ fn rewrite_tractable_pass(
             // Binet's formula, extended to real `u` by `cos(πu)` for `(−1)^u`:
             // `F(u) = (φ^u − cos(πu)·φ^{−u})/√5`, `L(u) = φ^u + cos(πu)·φ^{−u}`
             // (SymPy's real extension of `fibonacci`; `F(n + 1)/F(n) → φ`).
-            ExprNode::Apply(f, ref args)
-                if args.len() == 1
-                    && matches!(
-                        arena.lib_fn(f),
-                        Some(
-                            crate::base::libfn::LibFn::Fibonacci | crate::base::libfn::LibFn::Lucas
-                        )
-                    ) =>
-            {
+            ExprNode::Lib(
+                f @ (crate::base::libfn::LibFn::Fibonacci | crate::base::libfn::LibFn::Lucas),
+                ref args,
+            ) if args.len() == 1 => {
                 let u = args[0];
                 let phi = arena.golden_ratio();
                 let pu = arena.pow(phi, u);
@@ -4340,7 +4372,7 @@ fn rewrite_tractable_pass(
                 let piu = arena.mul(&[arena.pi(), u]);
                 let c = arena.cos(piu);
                 let tail = arena.mul(&[c, pnu]);
-                if arena.lib_fn(f) == Some(crate::base::libfn::LibFn::Fibonacci) {
+                if f == crate::base::libfn::LibFn::Fibonacci {
                     let d = arena.sub(pu, tail);
                     let five = arena.int(5);
                     let s5 = arena.sqrt(five);
@@ -4552,7 +4584,7 @@ fn special_asymptotic_arg(arena: &Arena, node: &ExprNode, x: ExprId) -> Option<E
     use crate::base::libfn::LibFn;
     match *node {
         ExprNode::Zeta(u) => Some(u),
-        ExprNode::Apply(f, ref args) => match (arena.lib_fn(f)?, args.as_slice()) {
+        ExprNode::Lib(f, ref args) => match (f, args.as_slice()) {
             (LibFn::Chi | LibFn::Shi | LibFn::Erfi, &[u]) => Some(u),
             (_, &[p, _]) if crate::base::walk::contains(arena, p, x) => None,
             (
@@ -4623,13 +4655,13 @@ fn special_asymptotic_rewrite(
             let t = arena.mul(&[p, z]);
             Some(arena.add(&[one, t]))
         }
-        ExprNode::Apply(f, ref args) => match (arena.lib_fn(f)?, args.as_slice()) {
+        ExprNode::Lib(f, ref args) => match (f, args.as_slice()) {
             (LibFn::Chi | LibFn::Shi, _) => {
                 let fp = internal(arena, EI_ASYMPTOTIC, &[u]);
                 let fm = internal(arena, EI_ASYMPTOTIC, &[neg_u]);
                 let ei_p = arena.mul(&[e_u, fp]);
                 let ei_m = arena.mul(&[e_neg_u, fm]);
-                let chi = arena.lib_fn(f) == Some(LibFn::Chi);
+                let chi = f == LibFn::Chi;
                 let ei_m = if chi { ei_m } else { arena.neg(ei_m) };
                 let s = arena.add(&[ei_p, ei_m]);
                 let r = arena.mul(&[half, s]);
@@ -4652,8 +4684,7 @@ fn special_asymptotic_rewrite(
             (LibFn::BesselI, &[nu, _]) if positive => {
                 // Not beside an `I₋ν` (see above).
                 for id in crate::base::walk::post_order_ids(arena, whole) {
-                    if let ExprNode::Apply(g, gargs) = arena.node(id).clone()
-                        && arena.lib_fn(g) == Some(LibFn::BesselI)
+                    if let ExprNode::Lib(LibFn::BesselI, gargs) = arena.node(id).clone()
                         && gargs.len() == 2
                         && gargs[0] != nu
                     {
@@ -4682,7 +4713,7 @@ fn special_asymptotic_rewrite(
                 let sm1 = arena.sub(s, one);
                 let p = arena.pow(u, sm1);
                 let upper = arena.mul(&[p, e_neg_u, g]);
-                if arena.lib_fn(f) == Some(LibFn::UpperGamma) {
+                if f == LibFn::UpperGamma {
                     return Some(upper);
                 }
                 // γ(s, u) = Γ(s) − Γ(s, u), for Γ(s) finite.
@@ -5093,6 +5124,208 @@ pub(crate) fn continue_real_on_cut_at_inf(
     continue_real_on_cut(arena, e, x, 0, &mut budget)
 }
 
+/// [`eventually_real`] under the generic reading of the parameters: every
+/// symbol other than `x` without declared assumptions taken real.  The
+/// guard of [`rewrite_tractable`] for `⌊·⌋`, `⌈·⌉`, `δ`, `min`, `max`,
+/// which have no value off the reals: `δ(x + y) → 0` and `min(x + y, …)`
+/// are read for a generic (real) `y`, as `δ(y) = 0` is elsewhere in the
+/// limit engine; `⌈ln(x)^{x²}⌉` and `⌊1/2 + i·x⌋` are not real for any
+/// value of a parameter.
+fn real_for_generic_parameters(
+    arena: &mut Arena,
+    u: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> bool {
+    use crate::base::assumptions::{Assumptions, Props};
+    if known_real(arena, u, x, depth, budget) {
+        return true;
+    }
+    // Last, the values along the approach: exactly real at the samples, as
+    // a function the rules above do not know (`δ(erfinv x)`, `H(F(5 | x))`
+    // at 0); a certified imaginary digit refuses.
+    if let Some(r) = real_at_samples(arena, u, x) {
+        return r;
+    }
+    let params: Vec<ExprId> = crate::base::walk::free_symbols(arena, u)
+        .into_iter()
+        .filter(|&s| {
+            s != x
+                && matches!(*arena.node(s), ExprNode::Symbol(sid)
+                    if arena.symbol_assumptions(sid) == Assumptions::default())
+        })
+        .collect();
+    if params.is_empty() {
+        return false;
+    }
+    let mut v = u;
+    for (k, &s) in params.iter().enumerate() {
+        let r = arena.symbol(&format!("__gz_real{k}"));
+        if let ExprNode::Symbol(sid) = *arena.node(r) {
+            let mut a = Assumptions::default();
+            a.assert_true(Props::REAL);
+            a.forward_chain();
+            arena.set_symbol_assumptions(sid, a);
+        }
+        v = crate::transforms::subs::subs(arena, v, s, r);
+    }
+    let v = crate::transforms::eval::eval(arena, v);
+    known_real(arena, v, x, depth, budget)
+}
+
+/// [`eventually_real`], with `W` and the internal asymptotic functions of
+/// real arguments as real symbols ([`real_special_values_as_symbols`]),
+/// or by the assumption system (`x` is positive), which knows the library
+/// functions by their `real_on` facet (`⌈J₀(x)⌉` at `0`) and that `re`,
+/// `im` are real.  Not rules of `eventually_real` itself, which also
+/// routes `limit.rs` (a real product or sum goes to the Gruntz algorithm,
+/// which does not expand `fresnels(x)/x` at `∞`).
+fn known_real(arena: &mut Arena, v: ExprId, x: ExprId, depth: usize, budget: &mut Budget) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if eventually_real(arena, v, x, depth + 1, budget)
+        || AssumptionCache::new().query(arena, v, Props::REAL) == Some(true)
+    {
+        return true;
+    }
+    let w = real_special_values_as_symbols(arena, v, x, depth, budget);
+    w != v && eventually_real(arena, w, x, depth + 1, budget)
+}
+
+/// Is `u` (a function of the positive `x → ∞`, free of other symbols) real
+/// at the samples `x = 10², 10⁴` by a certified evaluation: `Some(false)`
+/// for a certified nonzero imaginary part at one of them, `Some(true)` for
+/// an exactly real value at both, `None` otherwise (a value `evalf` cannot
+/// give).  The reading of [`real_for_generic_parameters`] for functions
+/// its rules do not know, as `nonzero_at_a_sample` is for the parameters
+/// of `δ`.
+fn real_at_samples(arena: &mut Arena, u: ExprId, x: ExprId) -> Option<bool> {
+    use crate::transforms::evalf::{ZeroSearch, evalf_verdict};
+    if crate::base::walk::free_symbols(arena, u)
+        .into_iter()
+        .any(|s| s != x)
+    {
+        return None;
+    }
+    for sample in [100_i64, 10_000] {
+        let s = arena.int(sample);
+        let v = crate::transforms::subs::subs(arena, u, x, s);
+        let v = crate::transforms::eval::eval(arena, v);
+        if crate::base::walk::has_unevaluated(arena, v) || contains_singular_atom(arena, v) {
+            return None;
+        }
+        let z = evalf_verdict(arena, v, 20, ZeroSearch::Cap)
+            .ok()?
+            .proven()?;
+        if !z.1.is_zero() {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+/// Is the argument `a` of `min` or `max` real near the limit point: its
+/// terms that vary with `x` by [`real_for_generic_parameters`], those free
+/// of `x` unless they are proved not real (`min(−3y, Γ(x))`,
+/// `min(ψ^{(1/2)}(−3/5), 3 − W(x))` keep their generic reading; `min(0, x +
+/// i)` and `min(x, Ci(−2))` have no value)?
+fn min_max_argument_real(
+    arena: &mut Arena,
+    a: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let terms: Vec<ExprId> = match arena.node(a) {
+        ExprNode::Add(cs) => cs.to_vec(),
+        _ => vec![a],
+    };
+    let (consts, deps): (Vec<ExprId>, Vec<ExprId>) = terms
+        .into_iter()
+        .partition(|&t| !crate::base::walk::contains(arena, t, x));
+    let consts_ok = consts.into_iter().all(|c| {
+        AssumptionCache::new().query(arena, c, Props::REAL) != Some(false)
+            && !(crate::base::walk::free_symbols(arena, c).is_empty() && {
+                let mut reals = AssumptionCache::new();
+                crate::transforms::realness::constant_realness_as_declared(arena, c, 20, &mut reals)
+                    == Some(false)
+            })
+    });
+    consts_ok && {
+        let d = arena.add(&deps);
+        deps.is_empty() || real_for_generic_parameters(arena, d, x, depth, budget)
+    }
+}
+
+/// `v` with the values of `W` and of the internal asymptotic functions of
+/// [`special_asymptotic_rewrite`] that are real replaced by real symbols:
+/// `W(a)` for a real `a` with `a + 1/e` eventually positive, an internal
+/// function (a series in `1/u`) of real arguments.  So `⌊3/2 + W(−x)⌋` and
+/// `⌈1 + li x⌉` at `0⁺` pass [`real_for_generic_parameters`].  (Not rules
+/// of [`eventually_real`]: `limit.rs` sends a real product or sum to the
+/// Gruntz algorithm, and `atan2(√2 − x, W(x))` at 0 then had no series.)
+fn real_special_values_as_symbols(
+    arena: &mut Arena,
+    v: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> ExprId {
+    use crate::base::assumptions::{Assumptions, Props};
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut k = 0usize;
+    for id in crate::base::walk::post_order_ids(arena, v) {
+        let r = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        // `Some(true)`: positive (`W(a)` of a positive `a`), `Some(false)`:
+        // real.
+        let real = match arena.node(r).clone() {
+            ExprNode::LambertW(a) if eventually_real(arena, a, x, depth + 1, budget) => {
+                if matches!(sign_at_inf(arena, a, x, depth + 1, budget), Ok(1)) {
+                    Some(true)
+                } else {
+                    let e_inv = arena.pow(arena.e_const(), arena.neg_one());
+                    let d = arena.add(&[a, e_inv]);
+                    matches!(sign_at_inf(arena, d, x, depth + 1, budget), Ok(1)).then_some(false)
+                }
+            }
+            // Positive when its series in `1/u` is (`Ei u = e^u·F(u)`, `F > 0`
+            // for `u → +∞`: `Ei(x)^x` at `∞`).
+            ExprNode::Apply(f, args) if is_internal_asymptotic(arena, f) => {
+                if args
+                    .iter()
+                    .all(|&c| eventually_real(arena, c, x, depth + 1, budget))
+                {
+                    Some(matches!(sign_at_inf(arena, r, x, depth + 1, budget), Ok(1)))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let new = match real {
+            Some(true) => {
+                k += 1;
+                arena.positive_symbol(&format!("__gz_posv{k}"))
+            }
+            Some(false) => {
+                let s = arena.symbol(&format!("__gz_realv{k}"));
+                k += 1;
+                if let ExprNode::Symbol(sid) = *arena.node(s) {
+                    let mut a = Assumptions::default();
+                    a.assert_true(Props::REAL);
+                    a.forward_chain();
+                    arena.set_symbol_assumptions(sid, a);
+                }
+                s
+            }
+            None => r,
+        };
+        cache.insert(id, new);
+    }
+    cache.get(&v).copied().unwrap_or(v)
+}
+
 /// Is `e` real for all sufficiently large `x` (`x` itself is real and
 /// positive)?  Structural and conservative: rational constants, `π`, `e`,
 /// `x`; sums, products, `exp`, trigonometric and hyperbolic functions,
@@ -5143,6 +5376,10 @@ fn eventually_real(
             | ExprNode::Erf(a)
             | ExprNode::Erfc(a) => r(a),
             ExprNode::Abs(_) | ExprNode::Sign(_) | ExprNode::Heaviside(_) => true,
+            // `re c`, `im c` of an opaque constant ([`opaque_constants_split`]).
+            ExprNode::Re(a) | ExprNode::Im(a) | ExprNode::Arg(a) => {
+                !crate::base::walk::contains(arena, a, x)
+            }
             ExprNode::Floor(a) | ExprNode::Ceiling(a) => r(a),
             ExprNode::Pow(b, g) => {
                 r(b) && r(g) && {
@@ -5201,6 +5438,269 @@ fn eventually_real(
         real.insert(id, v);
     }
     real.get(&e).copied().unwrap_or(false)
+}
+
+/// `(Re g, Im g)` for the exponent `g → ±∞` of an exponential that is not
+/// eventually real, when `Re g` is (so that `e^g = e^{Re g}·(cos(Im g) +
+/// i·sin(Im g))` has a positive representative `e^{−Re g}`); `None` for a
+/// real exponent or one not split exactly.
+///
+/// - A non-real constant term `c`, the varying part real: `Re c`, `Im c`
+///   by the exact decomposition, of the logarithmic forms of the inverse
+///   functions in it if needed (`atanh 2 = ln 3/2 − iπ/2`), else, for a
+///   constant certified non-real, the parts `re c`, `im c` themselves.
+/// - A non-real varying part whose imaginary part tends to a nonzero
+///   constant or diverges: the exact decomposition of `g`, `Im g` in its
+///   tractable form (`e^{−z·ln(2z + atanh 2)}`, from `(atanh 2 − 2x)^x` at
+///   `−∞`: `Im g → π/4`; up to 0.49 its `ω` was not positive, and
+///   `sign((atanh 2 − 2x)^x)` tended to `1`).  A diverging `Im g` leaves
+///   the bounded oscillation `cos(Im g) + i·sin(Im g)`, as in
+///   [`phase_split`] (which the tractable rewrite applies before; this
+///   exponential was built later, from a power, or by combining two:
+///   `(√5·i + 2x)^x·x^{2 − 3i + ex}` at `∞` was `e^{i√5/2}·∞`, its phase
+///   `−3·ln x` lost).  An imaginary part tending to 0 turns the phase of
+///   `ω` to 1 and needs no split.
+///
+/// A non-real varying part without an exact decomposition is left as it
+/// is: [`mrv_leadterm`] refuses a leading term that needs the phase of such
+/// a member ([`phase_unknown`]).
+fn exponent_phase_split(
+    arena: &mut Arena,
+    arg: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<Option<(ExprId, ExprId)>, crate::base::errors::SymplexError> {
+    use crate::transforms::eval::eval;
+    let (c, d) = constant_and_varying_terms(arena, arg, x);
+    let consts = if arena.is_zero_structural(c) {
+        Vec::new()
+    } else {
+        vec![c]
+    };
+    let c_real = consts.is_empty() || constant_known_real(arena, c, x, depth, budget);
+    let d_real = !may_leave_reals(arena, d) || known_real(arena, d, x, depth, budget);
+    if c_real && d_real {
+        return Ok(None);
+    }
+    let (re, im) = if d_real {
+        let mut p = crate::base::complex::decompose(arena, c);
+        if !p.exact {
+            let logs = crate::calculus::limit::inverse_functions_as_logs(arena, c);
+            if logs != c {
+                let logs = eval(arena, logs);
+                let q = crate::base::complex::decompose(arena, logs);
+                if q.exact {
+                    p = q;
+                }
+            }
+        }
+        let (re, im) = if p.exact {
+            (p.re, p.im)
+        } else if crate::base::walk::free_symbols(arena, c).is_empty() && {
+            let mut reals = crate::base::assumptions::AssumptionCache::new();
+            crate::transforms::realness::constant_realness_as_declared(arena, c, 20, &mut reals)
+                == Some(false)
+        } {
+            (arena.re(c), arena.im(c))
+        } else {
+            return Ok(None);
+        };
+        let re = eval(arena, re);
+        (arena.add(&[d, re]), im)
+    } else {
+        let Some((re, im)) = varying_parts(arena, arg, x) else {
+            return Ok(None);
+        };
+        if !eventually_real(arena, re, x, depth + 1, budget) {
+            return Ok(None);
+        }
+        // `Im g` in its tractable form (`atan(π/(x/2 + ln 2))`, not
+        // `atan2(π, x/2 + ln 2)`, which the series engine does not expand).
+        match imaginary_part_limit(arena, im, x, depth, budget)? {
+            Some((im, l)) if !arena.is_zero_structural(l) => (re, im),
+            _ => return Ok(None),
+        }
+    };
+    let im = eval(arena, im);
+    Ok((!arena.is_zero_structural(im)).then_some((re, im)))
+}
+
+/// Most nodes of an exponent [`constant_and_varying_terms`] multiplies out.
+const MAX_SPLIT_EXPAND_SIZE: usize = 64;
+
+/// The terms of the exponent `g` free of `x` and those with `x`, summed;
+/// a small `g` that is not a sum multiplied out first (`(c + re x)·ln √2`
+/// has the constant term `c·ln √2`).
+fn constant_and_varying_terms(arena: &mut Arena, g: ExprId, x: ExprId) -> (ExprId, ExprId) {
+    let g = if matches!(arena.node(g), ExprNode::Add(_))
+        || crate::transforms::pattern::tree_size_capped(arena, g, MAX_SPLIT_EXPAND_SIZE + 1)
+            > MAX_SPLIT_EXPAND_SIZE
+    {
+        g
+    } else {
+        let e = crate::transforms::expand::expand(arena, g);
+        crate::transforms::eval::eval(arena, e)
+    };
+    let terms: Vec<ExprId> = match arena.node(g) {
+        ExprNode::Add(cs) => cs.to_vec(),
+        _ => vec![g],
+    };
+    let (consts, deps): (Vec<ExprId>, Vec<ExprId>) = terms
+        .into_iter()
+        .partition(|&t| !crate::base::walk::contains(arena, t, x));
+    (arena.add(&consts), arena.add(&deps))
+}
+
+/// `(Re g, Im g)` of an exponent `g` that varies with `x`, by the exact
+/// decomposition of `g` with its inverse functions as logarithms, and with
+/// its opaque constants written `re c + i·im c` if that is needed (`W(−1)`
+/// in `−(πx + W(−1))²`, from `erfc(W(−1) − πx)`).  `None` when the
+/// decomposition is not exact.
+fn varying_parts(arena: &mut Arena, g: ExprId, x: ExprId) -> Option<(ExprId, ExprId)> {
+    use crate::transforms::eval::eval;
+    let logs = crate::calculus::limit::inverse_functions_as_logs(arena, g);
+    let g = if logs == g { g } else { eval(arena, logs) };
+    let mut p = crate::base::complex::decompose(arena, g);
+    if !p.exact {
+        let split = opaque_constants_split(arena, g, x);
+        if split != g {
+            p = crate::base::complex::decompose(arena, split);
+        }
+    }
+    if !p.exact {
+        return None;
+    }
+    let re = eval(arena, p.re);
+    let im = eval(arena, p.im);
+    Some((re, im))
+}
+
+/// The imaginary part `im` of an exponent in its tractable form, and its
+/// limit at `∞` (`±∞` or a finite value); `None` when it is not found.
+fn imaginary_part_limit(
+    arena: &mut Arena,
+    im: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<Option<(ExprId, ExprId)>, crate::base::errors::SymplexError> {
+    let Ok(im) = rewrite_tractable(arena, im, x, depth + 1, budget) else {
+        return Ok(None);
+    };
+    match limitinf(arena, im, x, depth + 1, budget) {
+        Ok(l) if l == arena.infinity() || l == arena.neg_infinity() => Ok(Some((im, l))),
+        // A constant limit that is 0 by its certified value (`im c` of a
+        // real `c` the decomposition did not see: `laguerre(−1, 3)`).
+        Ok(l) if !contains_singular_atom(arena, l) => {
+            let zero = arena.is_zero_structural(l)
+                || (crate::base::walk::free_symbols(arena, l).is_empty()
+                    && crate::calculus::calculus_util::hidden_zero(arena, l).proven()
+                        == Some(crate::base::truth::Truth::True));
+            Ok(Some((im, if zero { arena.zero() } else { l })))
+        }
+        Err(e) if is_budget_error(&e) => Err(e),
+        _ => Ok(None),
+    }
+}
+
+/// Is the member `m = e^g` of an MRV set one whose phase is not known: the
+/// terms of `g` that vary with `x` not known to be real, and their
+/// imaginary part not shown to tend to 0 ([`exponent_phase_split`] leaves
+/// such a member whole, so its representative `ω` need not be positive)?
+/// `Γ(c − x/2)` at `−∞` for a non-real `c` is `e^{ln Γ(c + t/2)}`, whose
+/// phase `Im c·ln t` turns.  A constant term is read generically (one
+/// proved non-real has been split off).
+fn phase_unknown(
+    arena: &mut Arena,
+    m: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<bool, crate::base::errors::SymplexError> {
+    let ExprNode::Exp(g) = *arena.node(m) else {
+        return Ok(false);
+    };
+    let (_, d) = constant_and_varying_terms(arena, g, x);
+    // With parameters the generic reading stands (`(y/x)^{asin x + 42} →
+    // sign(y)⁴²·∞` at `0`).
+    if crate::base::walk::free_symbols(arena, d)
+        .into_iter()
+        .any(|s| s != x)
+        || !may_leave_reals(arena, d)
+        || known_real(arena, d, x, depth, budget)
+        || real_at_samples(arena, d, x) == Some(true)
+    {
+        return Ok(false);
+    }
+    let Some((_, im)) = varying_parts(arena, d, x) else {
+        return Ok(true);
+    };
+    Ok(!imaginary_part_limit(arena, im, x, depth, budget)?
+        .is_some_and(|(_, l)| arena.is_zero_structural(l)))
+}
+
+/// `g` with every subexpression free of `x` and of symbols whose complex
+/// decomposition is not exact (`W(−1)`, `acos(3)²`) written `re c +
+/// i·im c`, with the real nodes `re c`, `im c`.
+fn opaque_constants_split(arena: &mut Arena, g: ExprId, x: ExprId) -> ExprId {
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut changed = false;
+    for id in crate::base::walk::post_order_ids(arena, g) {
+        let opaque = !crate::base::walk::contains(arena, id, x)
+            && arena.as_num(id).is_none()
+            && crate::base::walk::free_symbols(arena, id).is_empty()
+            && !crate::base::complex::decompose(arena, id).exact;
+        let new = if opaque {
+            let re = arena.re(id);
+            let im = arena.im(id);
+            let i_im = arena.mul(&[arena.i_unit(), im]);
+            arena.add(&[re, i_im])
+        } else {
+            crate::base::walk::rebuild_with_cache(arena, id, &cache)
+        };
+        changed |= new != id;
+        cache.insert(id, new);
+    }
+    if changed {
+        cache.get(&g).copied().unwrap_or(g)
+    } else {
+        g
+    }
+}
+
+/// Is the leading exponent `e` (of `c·ω^e`, `ω → 0⁺`) a constant free of
+/// symbols that is not proved real, so that `ω^e = e^{e·ln ω}` has a
+/// phase turning with `ln ω`?  Up to 0.49 the leading coefficients were
+/// followed regardless: `(√5·i + 2x)^x·x^{−3i}` at `∞` was `e^{i√5/2}·∞`
+/// and `e^{−x}·(e^i − πx)^i` at `−∞` was `π^i·∞` (neither has a
+/// direction).  An exponent with parameters keeps the generic reading.
+fn exponent_turns(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> bool {
+    arena.as_num(e).is_none()
+        && !crate::base::walk::contains(arena, e, x)
+        && crate::base::walk::free_symbols(arena, e).is_empty()
+        && !constant_known_real(arena, e, x, depth, budget)
+}
+
+/// Is the constant (free of `x`) `c` real: by the assumptions (cheap,
+/// structural), else by [`eventually_real`] (its rules, then a certified
+/// evaluation of a constant free of symbols)?
+fn constant_known_real(
+    arena: &mut Arena,
+    c: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> bool {
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    cache.query(arena, c, crate::base::assumptions::Props::REAL) == Some(true)
+        || eventually_real(arena, c, x, depth + 1, budget)
 }
 
 /// Decide whether a boolean condition holds for all sufficiently large `x`.
@@ -5292,6 +5792,13 @@ pub(crate) fn limit_pos_inf(
     let r = validate_result(arena, r, x)?;
     // `e^{½ ln 2 + ½ ln π}` (from Stirling's constant) is `√2·√π`.
     Ok(simplify_exp_log(arena, r))
+}
+
+/// [`real_for_generic_parameters`] for the positive variable `x → ∞`, with
+/// a budget of its own.
+pub(crate) fn real_for_generic_parameters_at_inf(arena: &mut Arena, e: ExprId, x: ExprId) -> bool {
+    let mut budget = Budget::new();
+    real_for_generic_parameters(arena, e, x, 0, &mut budget)
 }
 
 /// Is `e` real for all sufficiently large values of the positive variable

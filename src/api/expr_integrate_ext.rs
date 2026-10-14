@@ -4,6 +4,7 @@ use tracing::debug_span;
 
 use crate::api::expr::{Ex, Expr, Numeric};
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::base::node::ExprNode;
 use crate::calculus::definite::{self, QuadOpts, QuadResult, QuadRule};
 
@@ -290,11 +291,24 @@ impl Expr<Numeric> {
     ///   integrand contains `DiracDelta` of `var` (a distribution, 0 at every
     ///   point a quadrature samples; before 0.43 `∫₋₁¹ δ(x) dx` was `0`),
     /// * [`SymplexError::ComputationFailed`] — neither quadrature reached
-    ///   the tolerance (e.g. a divergent integral),
+    ///   the tolerance (e.g. a divergent integral), the integrand has more
+    ///   than 10,000 poles, kinks or steps in the range (`Γ(9·10¹⁸x)` on
+    ///   `[−1, 1]`: up to 0.49 a search of minutes), or a kink or step the
+    ///   breakpoint scan cannot place could not be located numerically,
     /// * [`SymplexError::Divergent`] — the arbitrary-precision quadrature
     ///   met terms that do not decay and a comparison test proves the
     ///   divergence (`(x − c)·f(x)`, `x·f(x)` at `±∞`, or with a factor
     ///   `ln`, tends to a nonzero limit).
+    ///
+    /// Bounds that round to the same `f64`, or lie within `2⁻²⁰` of each
+    /// other relatively, are integrated by the arbitrary-precision quadrature
+    /// with the bounds as they are, and the rounding of the bounds to `f64`
+    /// counts in the error estimate otherwise: up to 0.49 `∫|sin x| dx` over
+    /// `[10²⁰, 10²⁰ + 4]` was `Ok(0.0)` (it is `2.2483…`).  The integrand is
+    /// split at its breakpoints (poles, kinks, steps), the periodic ones
+    /// enumerated between the exact bounds; before 0.50 only an integrand
+    /// with a kink was split, and `∫₋₂² tan x dx`, which diverges, was
+    /// `Ok(0.0)`.
     ///
     /// On an infinite range the `f64` value is returned only when the
     /// integrand's tail beyond `|x| = 2¹⁶`, evaluated with certified bounds
@@ -466,10 +480,44 @@ impl Expr<Numeric> {
             ))
         })?;
         let (lo_f, hi_f) = if a <= b { (a, b) } else { (b, a) };
-        let points = definite::quadrature_split_points(arena, evaled, var_id, lo_f, hi_f);
+        let lo_x = crate::transforms::eval::eval(arena, lo_id);
+        let hi_x = crate::transforms::eval::eval(arena, hi_id);
+        // How far the `f64` bounds are from the bounds themselves.
+        let moved =
+            definite::bound_rounding(arena, lo_x, a) + definite::bound_rounding(arena, hi_x, b);
+        let exact = (a.is_finite() && b.is_finite()).then(|| {
+            if a <= b {
+                Interval::closed(lo_x, hi_x)
+            } else {
+                Interval::closed(hi_x, lo_x)
+            }
+        });
+        let points = definite::quadrature_split_points(arena, evaled, var_id, lo_f, hi_f, exact)?;
         drop(inner);
 
-        let f = |t: f64| func(&[t]);
+        // Distinct bounds with one `f64` value (`[10²⁰, 10²⁰ + 4]`), or a
+        // few thousand ulps apart: the `f64` quadrature has no interval, or
+        // too few `f64` nodes, to integrate over.  Up to 0.49 it returned
+        // `Ok(0.0)` for the first; the arbitrary-precision quadrature takes
+        // the bounds as they are.
+        if definite::f64_narrow(lo_f, hi_f) && lo_x != hi_x {
+            return self.certified_quadrature(var, lo, hi);
+        }
+
+        let peak = std::cell::Cell::new(0.0f64);
+        let f = |t: f64| {
+            let v = func(&[t]);
+            if v.is_finite() {
+                peak.set(peak.get().max(v.abs()));
+            }
+            v
+        };
+        // The bounds' rounding to `f64` moves the range: its effect is in the
+        // error estimate (at most the largest value seen times the shift).
+        let with_bounds = |r: QuadResult| QuadResult {
+            error: r.error + 2.0 * moved * peak.get(),
+            ..r
+        };
         let tolerance = |r: &QuadResult| opts.abs_tol.max(opts.rel_tol * r.value.abs());
         // On an infinite range the compiled body is cut off where an
         // intermediate value overflows (`|x|/(x² + 1)` is 0 beyond `x ≈
@@ -499,7 +547,8 @@ impl Expr<Numeric> {
                     ok,
                 )
             })
-        };
+        }
+        .map(|(r, ok)| (with_bounds(r), ok));
         if let Ok((r, _)) = &report
             && r.error <= tolerance(r)
             && tail_seen(r)

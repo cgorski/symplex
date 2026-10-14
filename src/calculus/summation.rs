@@ -963,15 +963,13 @@ fn monomial_in(arena: &mut Arena, t: ExprId, var: ExprId) -> Option<(usize, Expr
 /// Coefficients (ascending) of the Faulhaber polynomial
 /// `S_p(n) = Σ_{k=1}^{n} k^p` using `B₁ = +1/2`:
 ///
-/// `S_p(n) = 1/(p+1) · Σ_{j=0}^{p} C(p+1, j) · B⁺_j · n^{p+1−j}`.
+/// `S_p(n) = 1/(p+1) · Σ_{j=0}^{p} C(p+1, j) · B⁺_j · n^{p+1−j}` (the
+/// crate's Bernoulli numbers are the `B⁺_j`).
 pub(crate) fn faulhaber_coefficients(p: usize) -> Poly {
     let mut coeffs = vec![Q::zero(); p + 2];
     let inv = Q::one() / rat_i(p as i64 + 1);
     for j in 0..=p {
-        let mut bj = bernoulli(j);
-        if j == 1 {
-            bj = -bj; // B₁⁺ = +1/2
-        }
+        let bj = bernoulli(j);
         if bj.is_zero() {
             continue;
         }

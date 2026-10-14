@@ -50,9 +50,10 @@ use astro_float::BigFloat;
 use rustc_hash::{FxHashMap, FxHasher};
 
 use super::accuracy::{self, Bound};
+use super::ball::Cache;
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::Complex;
-use crate::base::func::{Conj, CutLine};
+use crate::base::func::{Conj, CutLine, Func};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
@@ -94,8 +95,9 @@ fn hash_of(parts: impl Hash) -> u64 {
     h.finish()
 }
 
-/// The head of `node` for its signature: the variant and, for an `Apply`,
-/// which function it applies with how many arguments.  Up to 0.48 the
+/// The head of `node` for its signature: the variant and, for a library
+/// function or an `Apply`, which function it applies with how many
+/// arguments.  Up to 0.48 the
 /// variant alone signed every `Apply` alike, so the conjugate-symmetric
 /// `Shi(z̄)` and `erfi(z)` "paired" as conjugates and an imaginary part of
 /// 10⁻⁴⁵ became exactly 0 (a logarithm of the sum then landed on the wrong
@@ -103,9 +105,10 @@ fn hash_of(parts: impl Hash) -> u64 {
 fn head_tag(arena: &Arena, node: &ExprNode) -> u64 {
     let variant = std::mem::discriminant(node);
     match node {
+        ExprNode::Lib(f, args) => hash_of((variant, Func::from(*f), args.len())),
         ExprNode::Apply(head, args) => match node.func(arena) {
             Some((f, _)) => hash_of((variant, f, args.len())),
-            // A user function, or a library name at an arity it does not take.
+            // A user function, or an internal name at an arity it does not take.
             None => hash_of((variant, *head, args.len())),
         },
         _ => hash_of(variant),
@@ -210,12 +213,11 @@ impl Sigs {
         id: ExprId,
         value: &Complex,
         bound: Bound,
-        cache: &FxHashMap<ExprId, Complex>,
-        errs: &FxHashMap<ExprId, Bound>,
+        cache: Cache<'_>,
     ) {
         let real = accuracy::exactly_real(value, bound);
         let unique = || hash_of((UNIQUE, id));
-        let child_bound = |c: &ExprId| errs.get(c).copied().unwrap_or(Bound::UNKNOWN);
+        let child_bound = |c: &ExprId| cache.err(c);
         let off_cut = |c: &ExprId, line: CutLine| {
             cache
                 .get(c)
@@ -337,18 +339,13 @@ impl Sigs {
 
     /// Do the children of a sum or product that are not exactly real pair
     /// up into complex conjugates (see the module documentation)?
-    pub(super) fn conjugates_pair_up(
-        &self,
-        children: &[ExprId],
-        cache: &FxHashMap<ExprId, Complex>,
-        errs: &FxHashMap<ExprId, Bound>,
-    ) -> bool {
+    pub(super) fn conjugates_pair_up(&self, children: &[ExprId], cache: Cache<'_>) -> bool {
         let mut open: Vec<Sig> = Vec::new();
         for c in children {
             let (Some(v), Some(s)) = (cache.get(c), self.get(*c)) else {
                 return false;
             };
-            let b = errs.get(c).copied().unwrap_or(Bound::UNKNOWN);
+            let b = cache.err(c);
             if accuracy::exactly_real(v, b) {
                 continue;
             }

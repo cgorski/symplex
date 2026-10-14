@@ -57,6 +57,7 @@ use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
+use crate::poly::domain::GaussQ;
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
 use crate::poly::traits::Ring;
@@ -1436,90 +1437,16 @@ pub(crate) fn vieta_rootsum_poly_body(
 // Numeric RootSum with a rational body: exact trace
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A Gaussian rational `re + im·i`: the coefficients of a numeric
-/// `RootSum` once the parameters of an antiderivative are bound to the
-/// complex values of the integrator's self-check.
-#[derive(Clone, Debug, PartialEq)]
-struct GaussQ {
-    re: Q,
-    im: Q,
-}
-
-impl GaussQ {
-    fn real(re: Q) -> Self {
-        GaussQ {
-            re,
-            im: Q::from_integer(BigInt::from(0)),
-        }
-    }
-
-    fn from_usize(n: usize) -> Self {
-        GaussQ::real(Q::from_integer(BigInt::from(n)))
-    }
-}
-
-impl Ring for GaussQ {
-    fn zero() -> Self {
-        GaussQ::real(Q::from_integer(BigInt::from(0)))
-    }
-    fn one() -> Self {
-        GaussQ::real(Q::from_integer(BigInt::from(1)))
-    }
-    fn is_zero(&self) -> bool {
-        num_traits::Zero::is_zero(&self.re) && num_traits::Zero::is_zero(&self.im)
-    }
-    fn add(&self, rhs: &Self) -> Self {
-        GaussQ {
-            re: &self.re + &rhs.re,
-            im: &self.im + &rhs.im,
-        }
-    }
-    fn sub(&self, rhs: &Self) -> Self {
-        GaussQ {
-            re: &self.re - &rhs.re,
-            im: &self.im - &rhs.im,
-        }
-    }
-    fn mul(&self, rhs: &Self) -> Self {
-        GaussQ {
-            re: &self.re * &rhs.re - &self.im * &rhs.im,
-            im: &self.re * &rhs.im + &self.im * &rhs.re,
-        }
-    }
-    fn neg(&self) -> Self {
-        GaussQ {
-            re: -&self.re,
-            im: -&self.im,
-        }
-    }
-}
-
-impl crate::poly::traits::EuclideanDomain for GaussQ {
-    fn div_rem(&self, other: &Self) -> (Self, Self) {
-        (crate::poly::traits::Field::div(self, other), GaussQ::zero())
-    }
-}
-
-impl crate::poly::traits::Field for GaussQ {
-    fn div(&self, other: &Self) -> Self {
-        self.mul(&other.inv())
-    }
-    /// `(a + b·i)⁻¹ = (a − b·i)/(a² + b²)`; callers only invert non-zero
-    /// elements (leading coefficients, a gcd's constant), and a zero one
-    /// gives zero rather than a panic.
-    fn inv(&self) -> Self {
-        let norm = &self.re * &self.re + &self.im * &self.im;
-        if num_traits::Zero::is_zero(&norm) {
-            return GaussQ::zero();
-        }
-        GaussQ {
-            re: &self.re / &norm,
-            im: -&self.im / &norm,
-        }
-    }
-}
-
+/// The coefficients of a numeric `RootSum` once the parameters of an
+/// antiderivative are bound to the complex values of the integrator's
+/// self-check are Gaussian rationals ([`GaussQ`], the crate's one `ℚ(i)`;
+/// up to 0.49 a copy of it lived here).
 type GaussPoly = GenPoly<GaussQ>;
+
+/// The integer `n` in `ℚ(i)`.
+fn gauss_usize(n: usize) -> GaussQ {
+    GaussQ::real(Q::from_integer(BigInt::from(n)))
+}
 
 /// Largest degree in the root variable [`gauss_fraction`] builds.
 const MAX_GAUSS_DEGREE: usize = 64;
@@ -1538,13 +1465,7 @@ fn gauss_fraction(arena: &Arena, e: ExprId, t: ExprId) -> Option<(GaussPoly, Gau
                 let q = arena.as_num(id)?.clone();
                 (GaussPoly::constant(GaussQ::real(q)), one.clone())
             }
-            ExprNode::ImaginaryUnit => {
-                let i = GaussQ {
-                    re: Q::from_integer(BigInt::from(0)),
-                    im: Q::from_integer(BigInt::from(1)),
-                };
-                (GaussPoly::constant(i), one.clone())
-            }
+            ExprNode::ImaginaryUnit => (GaussPoly::constant(GaussQ::i()), one.clone()),
             ExprNode::Symbol(_) if id == t => (GaussPoly::x(), one.clone()),
             ExprNode::Add(children) => {
                 let mut acc = (GaussPoly::zero(), one.clone());
@@ -1655,9 +1576,9 @@ pub(crate) fn numeric_rootsum_rational_body(
     // e = tⁿ + a_{n−1}·tⁿ⁻¹ + … + a₀.
     let a = e.coeffs();
     let mut power_sums: Vec<GaussQ> = Vec::with_capacity(n);
-    power_sums.push(GaussQ::from_usize(n));
+    power_sums.push(gauss_usize(n));
     for k in 1..n {
-        let mut pk = a[n - k].mul(&GaussQ::from_usize(k)).neg();
+        let mut pk = a[n - k].mul(&gauss_usize(k)).neg();
         for i in 1..k {
             pk = pk.sub(&a[n - i].mul(&power_sums[k - i]));
         }

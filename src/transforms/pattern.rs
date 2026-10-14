@@ -690,6 +690,7 @@ fn same_head(p_node: &ExprNode, s_node: &ExprNode, p: ExprId, s: ExprId) -> bool
     }
     match (p_node, s_node) {
         (ExprNode::Apply(pf, _), ExprNode::Apply(sf, _)) => pf == sf,
+        (ExprNode::Lib(pf, _), ExprNode::Lib(sf, _)) => pf == sf,
         (ExprNode::Interval(_, _, pf), ExprNode::Interval(_, _, sf)) => pf == sf,
         _ => true,
     }

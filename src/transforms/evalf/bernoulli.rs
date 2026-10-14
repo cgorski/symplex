@@ -34,11 +34,13 @@ pub(crate) fn even(k: usize) -> Q {
 }
 
 /// The Bernoulli function `B(s) = −s·ζ(1 − s)` of a real `s` (SymPy's
-/// `bernoulli(s)` off the integers, which `evalf`s it so: `bernoulli(1/2)
-/// = 0.730177…`, `bernoulli(−1) = ζ(2)`).  It is the integer `Bₙ` at
-/// `n ≥ 2` and `n = 0`; at `s = 1` it is `+1/2`, and the exact `−1/2` of
-/// this crate's convention is returned instead, as `eval` folds it.
-/// (Before 0.40 `evalf` had no routine for `bernoulli`.)
+/// `bernoulli(s)`, which `evalf`s it so: `bernoulli(1/2) = 0.730177…`,
+/// `bernoulli(−1) = ζ(2)`).  An entire function, it is the Bernoulli
+/// number `Bₙ` at every integer `n ≥ 0` in this crate's convention,
+/// `B₁ = +1/2` (`Bₙ = Bₙ(1)`, SymPy's since 1.12).  Up to 0.49 the crate's
+/// `B₁` was `−1/2`, returned at `s = 1` exactly: `bernoulli(1)` was `−1/2`
+/// and `bernoulli(1 + 10⁻³⁰)` `+0.5`.  (Before 0.40 `evalf` had no routine
+/// for `bernoulli`.)
 pub(super) fn bernoulli_function(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let prec = w.bits();
     if s.is_nan() || s.is_inf() {
@@ -50,7 +52,7 @@ pub(super) fn bernoulli_function(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloa
         return Ok(BigFloat::from_i32(1, prec));
     }
     if *s == BigFloat::from_i32(1, 64) {
-        return Ok(BigFloat::from_i32(-1, prec).div(&BigFloat::from_i32(2, prec), prec, RM));
+        return Ok(BigFloat::from_i32(1, prec).div(&BigFloat::from_i32(2, prec), prec, RM));
     }
     // `1 − s` exactly: next to `s = 0` the pole of `ζ` at 1 is cancelled
     // by the factor `s`, both relative to `s`.

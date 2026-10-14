@@ -32,16 +32,6 @@ use crate::base::numeric::Q;
 use crate::base::sort_key::{SortKey, compute_sort_key};
 use crate::base::symbol::SymbolTable;
 
-// ── Library function names ─────────────────────────────────────────────
-// The registry is `base::libfn::LibFn`; consumers match on the enum and
-// build nodes with `Arena::lib_apply`.  These aliases remain for the two
-// callers outside the registry's consumers (`transforms::integrate`,
-// `calculus::laplace`), which compare or intern the name text directly.
-pub(crate) const FN_BESSELJ: &str = LibFn::BesselJ.name();
-pub(crate) const FN_ERFI: &str = LibFn::Erfi.name();
-pub(crate) const FN_SHI: &str = LibFn::Shi.name();
-pub(crate) const FN_CHI: &str = LibFn::Chi.name();
-
 /// The signs of the real and imaginary parts of a constant
 /// ([`Arena::part_signs`]); `None` for a part whose sign is not settled (or
 /// that is 0).
@@ -660,6 +650,7 @@ impl Arena {
             ExprNode::SetComplement(a, b) => self.set_complement(a, b),
             ExprNode::DefiniteIntegral(f, v, lo, hi) => self.definite_integral(f, v, lo, hi),
             ExprNode::Subs(f, v, p) => subs_node(self, f, v, p),
+            ExprNode::Lib(f, args) => self.lib_apply(f, &args),
             other @ (ExprNode::Num(_)
             | ExprNode::Symbol(_)
             | ExprNode::Pi
@@ -788,6 +779,15 @@ impl PartialOrd for ArenaOrder {
     }
 }
 
+/// The variant name [`Arena::canonical_cmp`] orders distinct heads with
+/// equal sort keys by: a library function's is `Apply`, as until 0.49.
+fn head_variant_name(n: &ExprNode) -> &'static str {
+    match n {
+        ExprNode::Lib(..) => "Apply",
+        other => other.variant_name(),
+    }
+}
+
 impl Arena {
     /// The canonical order of two nodes: the order of their sort keys,
     /// with ties broken structurally.
@@ -843,10 +843,20 @@ impl Arena {
             (ExprNode::Interval(_, _, f), ExprNode::Interval(_, _, g)) => {
                 f.flag_bits().cmp(&g.flag_bits())
             }
+            // A library function compares as the `Apply` it was until 0.49:
+            // by name (a user function never has a library name; if it
+            // had, the user function would come first).
+            (ExprNode::Lib(f, _), ExprNode::Lib(g, _)) => f.name().cmp(g.name()),
+            (ExprNode::Lib(f, _), ExprNode::Apply(t, _)) => {
+                f.name().cmp(self.symbol_name(*t)).then(Ordering::Greater)
+            }
+            (ExprNode::Apply(s, _), ExprNode::Lib(g, _)) => {
+                self.symbol_name(*s).cmp(g.name()).then(Ordering::Less)
+            }
             _ if std::mem::discriminant(np) == std::mem::discriminant(nq) => Ordering::Equal,
             // The variant's name (`Add`): reached only by distinct nodes
             // with equal sort keys.
-            _ => np.variant_name().cmp(nq.variant_name()),
+            _ => head_variant_name(np).cmp(head_variant_name(nq)),
         }
     }
 }
@@ -929,19 +939,21 @@ impl Arena {
         self.symbols.name(id)
     }
 
-    /// The library function an `Apply` head names, if it is one.
+    /// Interns the library-function node `f(args)` ([`ExprNode::Lib`])
+    /// without folding.
     ///
-    /// Resolved from the interned text, so the registry never pre-interns a
-    /// symbol and `SymbolId` numbering is exactly what the user's own
-    /// interning order produces.
-    pub(crate) fn lib_fn(&self, sym: SymbolId) -> Option<LibFn> {
-        LibFn::from_name(self.symbols.name(sym))
-    }
-
-    /// Interns `f(args)` as a library `Apply` node without folding.
+    /// The callers pass an argument count `f` accepts (a literal call
+    /// shape, or arguments already checked): input from outside the crate
+    /// goes through [`Arena::func`](crate::base::func), which returns an
+    /// error for a wrong count.  No name is interned: the node is
+    /// identified by `f`, not by a symbol.
     pub(crate) fn lib_apply(&mut self, f: LibFn, args: &[ExprId]) -> ExprId {
-        let sid = self.symbols.intern(f.name());
-        self.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
+        debug_assert!(
+            f.arity().accepts(args.len()),
+            "{f} called with {} argument(s)",
+            args.len()
+        );
+        self.intern(ExprNode::Lib(f, args.iter().copied().collect()))
     }
 
     /// Get the stored assumptions for a symbol.
@@ -2034,7 +2046,7 @@ impl Arena {
         self.intern(ExprNode::DefiniteIntegral(body, var, lo, hi))
     }
 
-    // ── Combinatorial functions (Apply-based) ──────────────────────
+    // ── Combinatorial functions (library) ──────────────────────────
 
     /// Creates a `factorial2` (double factorial) node: `n!!`.
     pub fn factorial2(&mut self, n: ExprId) -> ExprId {
@@ -2091,7 +2103,7 @@ impl Arena {
         self.lib_apply(LibFn::EulerNumber, &[n])
     }
 
-    // ── Combinatorial functions — Phase 1 (Apply-based) ────────────
+    // ── Combinatorial functions — Phase 1 (library) ────────────────
 
     /// Creates a `stirling1` (signed Stirling number of the first kind) node: `s(n, k)`.
     pub fn stirling1(&mut self, n: ExprId, k: ExprId) -> ExprId {
@@ -2108,7 +2120,7 @@ impl Arena {
         self.lib_apply(LibFn::PartitionCount, &[n])
     }
 
-    // ── Special / distribution functions (Apply-based) ─────────────
+    // ── Special / distribution functions ───────────────────────────
 
     /// Creates a `heaviside` (Heaviside step function) node: 0 for x<0, 1/2 for x=0, 1 for x>0.
     pub fn heaviside(&mut self, arg: ExprId) -> ExprId {
@@ -2137,7 +2149,7 @@ impl Arena {
         self.lib_apply(LibFn::LambertW, &[arg, k])
     }
 
-    // ── Bessel functions (Apply-based) ─────────────────────────────
+    // ── Bessel functions (library) ─────────────────────────────────
 
     /// Creates a `besselj` (Bessel function of the first kind) node: J_ν(x).
     pub fn besselj(&mut self, order: ExprId, arg: ExprId) -> ExprId {
@@ -2159,7 +2171,7 @@ impl Arena {
         self.lib_apply(LibFn::BesselK, &[order, arg])
     }
 
-    // ── Orthogonal polynomials (Apply-based) ───────────────────────
+    // ── Orthogonal polynomials (library) ───────────────────────────
 
     /// Creates a `legendre` (Legendre polynomial) node: P_n(x).
     pub fn legendre(&mut self, n: ExprId, x: ExprId) -> ExprId {

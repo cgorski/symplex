@@ -74,6 +74,8 @@ fn main() {
 
 `solve` returns principal branches. `solve_general` returns the complete solution families of periodic equations, expressed with a fresh integer-assumed parameter (`n`, or `n1`, `n2`, … if `n` is taken). `GeneralSolution::instance(k)` substitutes a concrete integer.
 
+Like `solve` and `solve_as_set`, `solve_general` works in the declared domain of the unknown: for a plain symbol that is ℂ, so `eˣ = −1` gives `2nπi + iπ` and `eˣ = 1` gives `2nπi`; declare the unknown real (`ctx.symbol_with("x", &[Assumption::Real])`) for the real families.  Parameters without assumptions may be complex too: for a real `x`, `e^{a·x} + 1 = 0` has the solution `iπ/a`.  A list of roots is always complete — when only some branches could be solved, `solve` and `solve_general` fail with `ComputationFailed` naming the roots found, and `solve_as_set` returns them united with a `ConditionSet`.
+
 ```rust
 use symplex::prelude::*;
 

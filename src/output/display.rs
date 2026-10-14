@@ -150,6 +150,7 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Sum(_, _, _, _)
         | ExprNode::Product_(_, _, _, _)
         | ExprNode::Apply(_, _)
+        | ExprNode::Lib(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _)
         | ExprNode::DefiniteIntegral(_, _, _, _)
@@ -659,12 +660,6 @@ fn expand_expr(
 
         // ── Apply (user-defined function) ──────────────────────────
         ExprNode::Apply(sym_id, ref args) => {
-            // `lambertw(x, k)` prints as the principal branch does, `W(x, k)`
-            // (the parser reads both back).
-            let name = match arena.lib_fn(sym_id) {
-                Some(crate::base::libfn::LibFn::LambertW) => "W".to_owned(),
-                _ => arena.symbol_name(sym_id).to_owned(),
-            };
             // Push in reverse: name ( arg1 , arg2 , ... )
             stack.push(WorkItem::Lit(")"));
             for (i, &arg) in args.iter().enumerate().rev() {
@@ -674,7 +669,25 @@ fn expand_expr(
                 }
             }
             stack.push(WorkItem::Lit("("));
-            stack.push(WorkItem::Owned(name));
+            stack.push(WorkItem::Owned(arena.symbol_name(sym_id).to_owned()));
+        }
+
+        // ── Library function ───────────────────────────────────────────────
+        ExprNode::Lib(f, ref args) => {
+            stack.push(WorkItem::Lit(")"));
+            for (i, &arg) in args.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(arg, 0));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(", "));
+                }
+            }
+            stack.push(WorkItem::Lit("("));
+            // `lambertw(x, k)` prints as the principal branch does, `W(x, k)`
+            // (the parser reads both back).
+            stack.push(WorkItem::Lit(match f {
+                crate::base::libfn::LibFn::LambertW => "W",
+                _ => f.name(),
+            }));
         }
 
         // ── Calculus forms ─────────────────────────────────────────

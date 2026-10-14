@@ -6,8 +6,9 @@
 //!
 //! - a dedicated [`ExprNode`] variant (`Sin(x)`, `Beta(a, b)`, `Min(…)`:
 //!   the 43 *node-backed* functions);
-//! - an `Apply(name, args)` whose head names a library function (the 50
-//!   [`LibFn`]s: Bessel, orthogonal polynomials, `erfi`, …);
+//! - an `ExprNode::Lib(f, args)` node of a library function (the 50
+//!   [`LibFn`]s: Bessel, orthogonal polynomials, `erfi`, …), identified by
+//!   `f` (until 0.49 an `Apply` resolved by the text of its head);
 //! - an `Apply` headed by one of the 8 internal pseudo-functions of Gruntz's
 //!   asymptotic rewrite (`__ei_asym`, …; they exist only inside a limit
 //!   computation and are never parsed).
@@ -74,18 +75,24 @@
 //!   the node, as `lambertw(x)` and `lambertw(x, 0)` parse.  Both print as
 //!   `W`; the library entry's `name` is its interned head `lambertw`.
 //! - **Names.**  `name` is the head `Display` prints in call notation (and
-//!   the interned head symbol of an `Apply` family).  Two exceptions, both
+//!   the head of the JSON `Apply` form of a library function, the interned
+//!   head symbol of an internal one).  Two exceptions, both
 //!   tested: `Factorial` prints postfix (`n!`) and `lambertw(x, k)` prints
 //!   as `W(x, k)`.  The parser compares names ignoring ASCII case, except
 //!   Heaviside's display name `H`, which it reads only as written (and only
 //!   while no undefined function `H` exists); `parse` lists the names it
 //!   reads besides `name`, at the function's own arity (`log(x, b)` is a
 //!   quotient, not `ln`).
-//! - **Wrong argument counts.**  An `Apply` whose head names a library or
-//!   internal function but whose argument count the function does not
-//!   accept (`ctx.apply("Shi", [x, 3])`) is not a call of that function:
-//!   every consumer leaves it unevaluated, and [`ExprNode::func`] returns
-//!   `None`.
+//! - **Wrong argument counts.**  A library function's node always has an
+//!   argument count the function accepts: [`Arena::func`] refuses any
+//!   other, and so do [`Context::apply`] (`ctx.apply("Shi", [x, 3])` is an
+//!   error; until 0.49 it built a node every consumer left unevaluated),
+//!   the parser and `from_json`.  An internal `Apply` of another count is
+//!   not a call of that function ([`ExprNode::func`] returns `None`).
+//! - **Built-in names.**  [`Context::apply`] with the name of a built-in
+//!   function builds that function (`apply("sin", [x])` is `sin(x)`,
+//!   `apply("bell", [3])` the Bell number); `Apply` means a user function
+//!   (or an internal head), never a library function.
 //! - **Sort keys.**  [`SortSub`] reproduces the hand-assigned bytes of
 //!   `sort_key.rs` exactly.  `Binomial` and `Asin` share byte 8 (since
 //!   0.13; byte identity keeps it), the one allowlisted duplicate.
@@ -116,7 +123,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::libfn::Arity;
-use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::node::{ExprId, ExprNode};
 
 // ---------------------------------------------------------------------------
 // The facets
@@ -185,9 +192,10 @@ pub(crate) enum SortSub {
     Function(u8),
     /// A rank of its own (`Min` 130, `Max` 132).
     Rank(u8),
-    /// The function rank (100), the `Apply` byte (17), the interned name and
-    /// a 0 byte: library and internal functions sort by name among
-    /// themselves and with user functions.
+    /// The function rank (100), the `Apply` byte (17), the name and a 0
+    /// byte: library and internal functions sort by name among themselves
+    /// and with user functions (a library function's `Lib` node has the
+    /// key its `Apply` node had until 0.49).
     Named,
 }
 
@@ -625,10 +633,10 @@ impl Runtime {
 )]
 pub(crate) struct FuncSpec {
     /// The name: the head `Display` prints in call notation (`sin`,
-    /// `Gamma`, `W`, `C`), and for a library or internal function the
-    /// interned head of its `Apply` node (`besselj`, `lambertw`,
-    /// `__ei_asym`).  See the module documentation for the two printing
-    /// exceptions.
+    /// `Gamma`, `W`, `C`), for a library function the head of its JSON
+    /// `Apply` form (`besselj`, `lambertw`), and for an internal function
+    /// the interned head of its `Apply` node (`__ei_asym`).  See the module
+    /// documentation for the two printing exceptions.
     pub(crate) name: &'static str,
     /// Further names the parser reads as this function at its arity
     /// (`arcsin`, `ceil`, `log`), compared ignoring ASCII case.
@@ -658,7 +666,7 @@ pub(crate) struct FuncSpec {
 pub(crate) enum Family {
     /// A dedicated [`ExprNode`] variant.
     Node,
-    /// `Apply` headed by a [`LibFn`] name.
+    /// An `ExprNode::Lib` node of a [`LibFn`].
     Lib,
     /// `Apply` headed by an internal `__…` name (never parsed).
     Internal,
@@ -691,7 +699,8 @@ macro_rules! funcs {
             }; )*
         }
     ) => {
-        /// A library special function carried as `Apply(name, args)`.
+        /// A library special function: the identity of its expression node
+        /// (an `Apply(name, args)` resolved by name until 0.49).
         ///
         /// The variant order is the declaration order of the historical
         /// `FN_*` name constants and is the order of [`LibFn::ALL`].  The
@@ -716,8 +725,8 @@ macro_rules! funcs {
             /// Every library function, in declaration order.
             pub const ALL: &[LibFn] = &[ $( LibFn::$L, )* ];
 
-            /// The interned name: what the `Apply` node's symbol holds and
-            /// what `Display` prints (`lambertw(x, k)` prints as `W(x, k)`).
+            /// The name: what `Display` prints (`lambertw(x, k)` prints as
+            /// `W(x, k)`) and the head of the JSON `Apply` form.
             pub const fn name(self) -> &'static str {
                 match self { $( LibFn::$L => $lname, )* }
             }
@@ -791,7 +800,7 @@ macro_rules! funcs {
             }
 
             /// The internal function whose head is exactly `s`.
-            fn internal_named(s: &str) -> Option<Func> {
+            pub(crate) fn internal_named(s: &str) -> Option<Func> {
                 match s { $( $iname => Some(Func::$I), )* _ => None }
             }
         }
@@ -1361,7 +1370,7 @@ funcs! {
         /// inverse of `w·eʷ`, as SymPy's `LambertW(x, k)`.  The principal branch
         /// `k = 0` is the dedicated `ExprNode::LambertW(x)` node, which
         /// `Arena::lambertw_branch` and `eval` build for `lambertw(x)` and
-        /// `lambertw(x, 0)`; an `Apply` carries only the other branches.
+        /// `lambertw(x, 0)`; a `Lib` node carries only the other branches.
         LambertW => FuncSpec {
             name: "lambertw", parse: &["w"], arity: Between { min: 1, max: 2 }, sort: Named,
             tex: Tex::Layout(&[
@@ -1757,7 +1766,7 @@ funcs! {
         /// `erfcx(z) = e^{z²} erfc(z)` for `z → +∞` (SymPy's `_erfs`).
         ErfcxAsym => FuncSpec {
             name: "__erfcx_asym", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("__erfcx_asym"),
+            tex: Tex::Call(r"\operatorname{\_\_erfcx\_asym}"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1765,7 +1774,7 @@ funcs! {
         /// `e^{−z} Ei(z)` for `z → ±∞` (SymPy's `_eis`).
         EiAsym => FuncSpec {
             name: "__ei_asym", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("__ei_asym"),
+            tex: Tex::Call(r"\operatorname{\_\_ei\_asym}"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1773,7 +1782,7 @@ funcs! {
         /// `√v·e^{−v} erfi(√v)`, a function of `v = z²`.
         Erfix2Asym => FuncSpec {
             name: "__erfix2_asym", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("__erfix2_asym"),
+            tex: Tex::Call(r"\operatorname{\_\_erfix2\_asym}"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1781,7 +1790,7 @@ funcs! {
         /// `√v·e^{v} erfc(√v)`, a function of `v = z²`.
         Erfcx2Asym => FuncSpec {
             name: "__erfcx2_asym", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("__erfcx2_asym"),
+            tex: Tex::Call(r"\operatorname{\_\_erfcx2\_asym}"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1789,7 +1798,7 @@ funcs! {
         /// `√(2πz) e^{−z} Iν(z)`, arguments `(ν, z)`.
         BesselIAsym => FuncSpec {
             name: "__besseli_asym", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("__besseli_asym"),
+            tex: Tex::Call(r"\operatorname{\_\_besseli\_asym}"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1797,7 +1806,7 @@ funcs! {
         /// `√(2z/π) e^{z} Kν(z)`, arguments `(ν, z)`.
         BesselKAsym => FuncSpec {
             name: "__besselk_asym", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("__besselk_asym"),
+            tex: Tex::Call(r"\operatorname{\_\_besselk\_asym}"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1805,7 +1814,7 @@ funcs! {
         /// `z^{1−s} e^{z} Γ(s, z)`, arguments `(s, z)`.
         UpperGammaAsym => FuncSpec {
             name: "__uppergamma_asym", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("__uppergamma_asym"),
+            tex: Tex::Call(r"\operatorname{\_\_uppergamma\_asym}"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1813,7 +1822,7 @@ funcs! {
         /// `2^z (ζ(z) − 1)`.
         ZetaAsym => FuncSpec {
             name: "__zeta_asym", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("__zeta_asym"),
+            tex: Tex::Call(r"\operatorname{\_\_zeta\_asym}"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1882,8 +1891,15 @@ impl ExprNode {
             ExprNode::KroneckerDelta(i, j) => two(Func::KroneckerDelta, i, j),
             ExprNode::Factorial(x) => one(Func::Factorial, x),
             ExprNode::Binomial(n, k) => two(Func::Binomial, n, k),
+            ExprNode::Lib(lib, args) => {
+                let f = Func::from(*lib);
+                f.spec()
+                    .arity
+                    .accepts(args.len())
+                    .then(|| (f, args.iter().copied().collect()))
+            }
             ExprNode::Apply(head, args) => {
-                let f = Func::of_head(arena, *head)?;
+                let f = Func::internal_named(arena.symbol_name(*head))?;
                 f.spec()
                     .arity
                     .accepts(args.len())
@@ -1950,15 +1966,127 @@ impl Func {
         Func::internal_named(name).is_some()
     }
 
-    /// The library or internal function an `Apply` head names (by its
-    /// interned text, as [`Arena::lib_fn`] resolves library names).
-    fn of_head(arena: &Arena, head: SymbolId) -> Option<Func> {
-        let name = arena.symbol_name(head);
-        match LibFn::from_name(name) {
-            Some(lib) => Some(Func::from(lib)),
-            None => Func::internal_named(name),
+    /// The family of an elementary transcendental function: `Some` for the
+    /// 14 one-argument functions `sin`, `cos`, `tan`, their inverses, the
+    /// hyperbolic functions and their inverses, `exp` and `ln`; `None` for
+    /// every other function.
+    ///
+    /// Code that treats these uniformly asks this instead of listing the
+    /// variants (until 0.49 some 20 hand-written or-patterns did); the match
+    /// is exhaustive, so a new function must say whether it is one.
+    pub(crate) const fn elementary(self) -> Option<Elementary> {
+        match self {
+            Func::Sin | Func::Cos | Func::Tan => Some(Elementary::Trig),
+            Func::Asin | Func::Acos | Func::Atan => Some(Elementary::InverseTrig),
+            Func::Sinh | Func::Cosh | Func::Tanh => Some(Elementary::Hyperbolic),
+            Func::Asinh | Func::Acosh | Func::Atanh => Some(Elementary::InverseHyperbolic),
+            Func::Exp => Some(Elementary::Exp),
+            Func::Ln => Some(Elementary::Ln),
+            Func::Min
+            | Func::Max
+            | Func::Floor
+            | Func::Ceiling
+            | Func::Abs
+            | Func::Atan2
+            | Func::Sign
+            | Func::Heaviside
+            | Func::DiracDelta
+            | Func::Re
+            | Func::Im
+            | Func::Conjugate
+            | Func::Arg
+            | Func::Gamma
+            | Func::LogGamma
+            | Func::Digamma
+            | Func::Erf
+            | Func::Erfc
+            | Func::LambertW0
+            | Func::Beta
+            | Func::Si
+            | Func::Ci
+            | Func::Ei
+            | Func::Li
+            | Func::Zeta
+            | Func::Polygamma
+            | Func::KroneckerDelta
+            | Func::Factorial
+            | Func::Binomial
+            | non_node_funcs!() => None,
         }
     }
+
+    /// Is this one of the 15 node-backed special functions: `Γ`, `ln Γ`,
+    /// `ψ`, `ψ⁽ⁿ⁾`, `ζ`, `B`, `n!`, `C(n, k)`, `erf`, `erfc`, `Ei`, `li`,
+    /// `Si`, `Ci`, `W`?  (The library functions are special functions too;
+    /// [`Func::family`] tells them apart.)  Exhaustive, as
+    /// [`Func::elementary`].
+    pub(crate) const fn is_special(self) -> bool {
+        match self {
+            Func::Gamma
+            | Func::LogGamma
+            | Func::Digamma
+            | Func::Polygamma
+            | Func::Zeta
+            | Func::Beta
+            | Func::Factorial
+            | Func::Binomial
+            | Func::Erf
+            | Func::Erfc
+            | Func::Ei
+            | Func::Li
+            | Func::Si
+            | Func::Ci
+            | Func::LambertW0 => true,
+            Func::Min
+            | Func::Max
+            | Func::Floor
+            | Func::Ceiling
+            | Func::Sin
+            | Func::Cos
+            | Func::Tan
+            | Func::Exp
+            | Func::Ln
+            | Func::Abs
+            | Func::Asin
+            | Func::Acos
+            | Func::Atan
+            | Func::Atan2
+            | Func::Sinh
+            | Func::Cosh
+            | Func::Tanh
+            | Func::Asinh
+            | Func::Acosh
+            | Func::Atanh
+            | Func::Sign
+            | Func::Heaviside
+            | Func::DiracDelta
+            | Func::Re
+            | Func::Im
+            | Func::Conjugate
+            | Func::Arg
+            | Func::KroneckerDelta
+            | non_node_funcs!() => false,
+        }
+    }
+}
+
+/// The family of an elementary transcendental function ([`Func::elementary`]).
+/// The algorithms keep their own finer private kinds (`TrigKind`, …) where
+/// they dispatch on the individual function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Elementary {
+    /// `sin`, `cos`, `tan`.
+    Trig,
+    /// `asin`, `acos`, `atan` (one argument).
+    InverseTrig,
+    /// `sinh`, `cosh`, `tanh`.
+    Hyperbolic,
+    /// `asinh`, `acosh`, `atanh`.
+    InverseHyperbolic,
+    /// `exp`.
+    Exp,
+    /// `ln`.
+    Ln,
 }
 
 /// The error for a call of `f` with `n` arguments.
@@ -2268,6 +2396,120 @@ mod tests {
                 let back = ctx.parse(&src).unwrap_or_else(|err| panic!("{src}: {err}"));
                 assert_eq!(back.raw_id(), e.raw_id(), "{src}");
             }
+        }
+    }
+
+    /// A library function's node is `ExprNode::Lib`, identified by the
+    /// function; an `Apply` is never one, whatever the text of its head
+    /// (until 0.49 library functions were `Apply` nodes resolved by name, so
+    /// `Context::apply("bell", [3])` evaluated to 5 as an "undefined"
+    /// function).
+    #[test]
+    fn library_functions_are_lib_nodes_and_apply_is_never_one() {
+        for &f in Func::ALL.iter().filter(|f| f.family() == Family::Lib) {
+            let n = sample_count(f);
+            let (ctx, _syms, e) = built(f, n);
+            ctx.with_arena_mut(|a| {
+                let node = a.node(e.raw_id()).clone();
+                assert!(
+                    matches!(node, ExprNode::Lib(lib, ref args)
+                        if Some(lib) == f.as_lib() && args.len() == n),
+                    "{f:?}: {node:?}"
+                );
+                assert_eq!(node.func(a).map(|(g, _)| g), Some(f), "{f:?}");
+                let head = a.symbols.intern(f.spec().name);
+                let apply = ExprNode::Apply(head, node.children().into_iter().collect());
+                assert_eq!(apply.func(a), None, "{f:?}");
+                // The sort key is the one the `Apply` form had (byte identity).
+                let old = a.intern(apply);
+                assert_ne!(old, e.raw_id());
+                assert_eq!(a.sort_key(old), a.sort_key(e.raw_id()), "{f:?}");
+            });
+        }
+    }
+
+    /// The functions a predicate selects, as a set.
+    fn selected(pred: impl Fn(Func) -> bool) -> std::collections::HashSet<Func> {
+        Func::ALL.iter().copied().filter(|&f| pred(f)).collect()
+    }
+
+    /// The 14 elementary functions, the or-pattern of
+    /// `calculus_util::like_arguments_unified` until 0.49 (W6c: each list
+    /// rewritten through a family selects exactly its old set).
+    #[test]
+    fn elementary_is_the_old_list_of_fourteen() {
+        use Func::*;
+        let old = [
+            Ln, Exp, Sin, Cos, Tan, Sinh, Cosh, Tanh, Asin, Acos, Atan, Asinh, Acosh, Atanh,
+        ];
+        assert_eq!(
+            selected(|f| f.elementary().is_some()),
+            old.into_iter().collect()
+        );
+        assert_eq!(Sin.elementary(), Some(Elementary::Trig));
+        assert_eq!(Acosh.elementary(), Some(Elementary::InverseHyperbolic));
+    }
+
+    /// `heurisch::collect_components` and `integrate::u_sub_candidates`:
+    /// the elementary functions and `|·|` are their old 15-variant lists.
+    #[test]
+    fn elementary_and_abs_are_the_old_component_lists() {
+        use Func::*;
+        let old = [
+            Sin, Cos, Tan, Exp, Ln, Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Abs,
+        ];
+        assert_eq!(
+            selected(|f| f.elementary().is_some() || f == Abs),
+            old.into_iter().collect()
+        );
+    }
+
+    /// `canon::is_costly_node`: the node-backed special functions are its
+    /// old 15-variant list.
+    #[test]
+    fn is_special_is_the_old_costly_list() {
+        use Func::*;
+        let old = [
+            Gamma, LogGamma, Digamma, Polygamma, Zeta, Beta, Factorial, Binomial, Erf, Erfc, Ei,
+            Li, Si, Ci, LambertW0,
+        ];
+        assert_eq!(selected(Func::is_special), old.into_iter().collect());
+    }
+
+    /// `gruntz::apply_unary` rebuilds every one-argument function through
+    /// `Arena::func`: each of the 24 its old arms built is one, and
+    /// `Arena::func` builds it with that constructor (`view_inverts_the_constructor`).
+    #[test]
+    fn apply_unary_covers_its_old_arms() {
+        use Func::*;
+        let old = [
+            Sin, Cos, Tan, Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Erf, Erfc,
+            Gamma, LogGamma, Digamma, LambertW0, Factorial, Abs, Sign, Heaviside, Exp, Ln,
+        ];
+        for f in old {
+            assert_eq!(f.spec().arity, Exactly(1), "{f:?}");
+            let (ctx, syms, e) = built(f, 1);
+            ctx.with_arena_mut(|a| {
+                let node = a.node(e.raw_id()).clone();
+                assert_eq!(
+                    node.func(a),
+                    Some((f, smallvec![syms[0].raw_id()])),
+                    "{f:?}"
+                );
+            });
+        }
+    }
+
+    /// The internal heads print as valid TeX: until 0.49 `__ei_asym(t)`
+    /// printed `__ei_asym\left(t\right)`, a double subscript outside math
+    /// mode that TeX rejects.
+    #[test]
+    fn internal_heads_print_as_valid_tex() {
+        for &f in Func::ALL.iter().filter(|f| f.family() == Family::Internal) {
+            let (_ctx, _syms, e) = built(f, sample_count(f));
+            let tex = e.to_latex();
+            assert!(tex.starts_with(r"\operatorname{\_\_"), "{f:?}: {tex}");
+            assert!(!tex.replace(r"\_", "").contains('_'), "{f:?}: {tex}");
         }
     }
 
@@ -2584,19 +2826,23 @@ mod tests {
         }
     }
 
-    /// User functions, wrong-arity library calls and non-functions have no
-    /// `Func`.
+    /// User functions, wrong-arity internal calls and non-functions have
+    /// no `Func` (`Context::apply` refuses a library name with the wrong
+    /// arity since 0.50; `Arena::func` too).
     #[test]
     fn view_of_non_functions_is_none() {
         let ctx = Context::new();
         let x = ctx.symbol("x");
         let three = ctx.int(3);
         let user = ctx.apply("f", std::slice::from_ref(&x)).unwrap();
-        let shi2 = ctx.apply("Shi", &[x.clone(), three]).unwrap();
+        assert!(ctx.apply("Shi", &[x.clone(), three.clone()]).is_err());
         let sum = &x + 1;
         ctx.with_arena_mut(|a| {
-            for e in [&user, &shi2, &sum, &x] {
-                let node = a.node(e.raw_id()).clone();
+            assert!(a.func(Func::Shi, &[x.raw_id(), three.raw_id()]).is_err());
+            let head = a.symbols.intern(Func::EiAsym.spec().name);
+            let internal2 = a.intern(ExprNode::Apply(head, smallvec![x.raw_id(), three.raw_id()]));
+            for id in [user.raw_id(), internal2, sum.raw_id(), x.raw_id()] {
+                let node = a.node(id).clone();
                 assert_eq!(node.func(a), None, "{node:?}");
             }
         });

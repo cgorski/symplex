@@ -37,66 +37,16 @@ const MAX_EXPONENT: u32 = 256;
 /// exact value.
 const MAX_BITS: u64 = 1 << 15;
 
-/// An exact complex rational `re + im·i`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Gauss {
-    /// The real part.
-    pub(super) re: Q,
-    /// The imaginary part.
-    pub(super) im: Q,
-}
+/// An exact complex rational `re + im·i`: the crate's one `ℚ(i)`
+/// ([`GaussQ`](crate::poly::domain::GaussQ); up to 0.49 a struct of its
+/// own here).  Its arithmetic (`add`, `mul`, `neg`, `recip`, `is_zero`)
+/// is `GaussQ`'s; the bounds of exact evaluation are below.
+pub(super) type Gauss = crate::poly::domain::GaussQ;
 
 /// The exact values of the composite nodes evaluated so far.
 pub(super) type ExactMap = FxHashMap<ExprId, Gauss>;
 
 impl Gauss {
-    pub(super) fn real(re: Q) -> Gauss {
-        Gauss { re, im: Q::zero() }
-    }
-
-    pub(super) fn is_zero(&self) -> bool {
-        self.re.is_zero() && self.im.is_zero()
-    }
-
-    pub(super) fn add(&self, o: &Gauss) -> Gauss {
-        Gauss {
-            re: &self.re + &o.re,
-            im: &self.im + &o.im,
-        }
-    }
-
-    pub(super) fn mul(&self, o: &Gauss) -> Gauss {
-        if self.im.is_zero() && o.im.is_zero() {
-            return Gauss::real(&self.re * &o.re);
-        }
-        Gauss {
-            re: &self.re * &o.re - &self.im * &o.im,
-            im: &self.re * &o.im + &self.im * &o.re,
-        }
-    }
-
-    pub(super) fn neg(&self) -> Gauss {
-        Gauss {
-            re: -self.re.clone(),
-            im: -self.im.clone(),
-        }
-    }
-
-    /// `1/z` for `z ≠ 0`.
-    fn recip(&self) -> Option<Gauss> {
-        if self.is_zero() {
-            return None;
-        }
-        if self.im.is_zero() {
-            return Some(Gauss::real(self.re.recip()));
-        }
-        let n = &self.re * &self.re + &self.im * &self.im;
-        Some(Gauss {
-            re: &self.re / &n,
-            im: -(&self.im / &n),
-        })
-    }
-
     /// Within [`MAX_BITS`]?
     pub(super) fn small(&self) -> bool {
         let bits = |q: &Q| q.numer().bits() + q.denom().bits();

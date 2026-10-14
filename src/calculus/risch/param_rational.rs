@@ -54,7 +54,8 @@ use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
 use crate::poly::generic::GenPoly;
 use crate::poly::multipoly::{GrevLex, MultiPoly};
-use crate::poly::traits::{EuclideanDomain, Field, Ring};
+use crate::poly::paramfield::{ParamPolicy, PolyFraction};
+use crate::poly::traits::{Field, Ring};
 
 type MP = MultiPoly<GrevLex>;
 type GP = GenPoly<PFrac>;
@@ -167,19 +168,59 @@ fn abandon() {
 // The coefficient field ℚ(p₁, …, p_k)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// An element of `ℚ(p₁, …, p_k)`.
-///
-/// `Const` holds the rational constants (so that [`Ring::zero`] and
-/// [`Ring::one`] need no variable count); `Frac` a non-constant quotient
-/// `num/den` in canonical form: `gcd(num, den) = 1`, `den` with integer
-/// coefficients, primitive, positive leading coefficient.  Equal elements
-/// therefore have equal representations, and `==` is equality in the
-/// field.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum PFrac {
-    Const(Q),
-    Frac(Box<(MP, MP)>),
+/// The integrator's policy on the crate's one `ℚ(p₁, …, p_k)`
+/// ([`paramfield::PFrac`](crate::poly::paramfield::PFrac), whose
+/// canonical form — `gcd(num, den) = 1`, `den` integer, primitive, with a
+/// positive leading coefficient — and Henrici sums and products are
+/// written there; up to 0.49 this module had its own copy): the gcds go
+/// through [`gcd_mp`] (bounded by [`GCD_COST_LIMIT`] and the attempt's
+/// budget), every normalisation is charged to the attempt, and an
+/// abandoned attempt makes every element zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Budgeted;
+
+impl ParamPolicy for Budgeted {
+    fn gcd(a: &MP, b: &MP) -> MP {
+        gcd_mp(a, b)
+    }
+
+    fn charge() {
+        let (over, factored) = with_budget(|b| {
+            if b.ops.charge(1, "param_rational").is_err() {
+                b.ops_spent = true;
+            }
+            (b.ops_spent, b.factored())
+        });
+        if over && factored {
+            // A factored attempt past its budget: zero ends the loop of
+            // the caller (an extended gcd) at once.
+            abandon();
+        }
+    }
+
+    fn admit(num: &MP, den: &MP) -> bool {
+        let factored = BUDGET.with(Cell::get).factored();
+        if abandoned()
+            || num.num_terms() + den.num_terms() > MAX_COEFF_TERMS
+            || (factored
+                && (max_coeff_bits(num) > MAX_FACTORED_COEFF_BITS
+                    || max_coeff_bits(den) > MAX_FACTORED_COEFF_BITS))
+        {
+            // The attempt is abandoned at the next budget check; until then
+            // everything is zero, which ends every loop quickly.
+            abandon();
+            return false;
+        }
+        true
+    }
+
+    fn abandoned() -> bool {
+        abandoned()
+    }
 }
+
+/// An element of `ℚ(p₁, …, p_k)` under the attempt's budget.
+pub(crate) type PFrac = crate::poly::paramfield::PFrac<Budgeted>;
 
 /// Bound on `∏ᵥ (min(degᵥ a, degᵥ b) + 1)` for the inputs of a gcd.  The
 /// heuristic gcd evaluates one variable after the other at a large
@@ -254,234 +295,6 @@ fn gcd_cost(a: &MP, b: &MP) -> u64 {
         cost = cost.saturating_mul(m + 1);
     }
     cost
-}
-
-/// `a/g` for a divisor `g` of `a` (`None` if it does not divide).
-fn div_mp(a: &MP, g: &MP) -> Option<MP> {
-    if g.as_constant().is_some_and(|c| c.is_one()) {
-        return Some(a.clone());
-    }
-    a.div_exact(g)
-}
-
-impl PFrac {
-    /// `num/den` in canonical form (`den ≠ 0`).
-    fn canon(num: MP, den: MP) -> Self {
-        if num.is_zero() || den.is_zero() {
-            return PFrac::Const(Q::zero());
-        }
-        let g = gcd_mp(&num, &den);
-        match (div_mp(&num, &g), div_mp(&den, &g)) {
-            (Some(n), Some(d)) => PFrac::finish(n, d),
-            _ => PFrac::finish(num, den),
-        }
-    }
-
-    /// `num/den` for coprime `num`, `den` (`den ≠ 0`): the denominator's
-    /// rational content and sign moved into the numerator.
-    fn finish(num: MP, den: MP) -> Self {
-        let (over, factored) = with_budget(|b| {
-            if b.ops.charge(1, "param_rational").is_err() {
-                b.ops_spent = true;
-            }
-            (b.ops_spent, b.factored())
-        });
-        if over && factored {
-            // A factored attempt past its budget: zero ends the loop of
-            // the caller (an extended gcd) at once.
-            abandon();
-        }
-        if num.is_zero() || den.is_zero() {
-            return PFrac::Const(Q::zero());
-        }
-        if abandoned()
-            || num.num_terms() + den.num_terms() > MAX_COEFF_TERMS
-            || (factored
-                && (max_coeff_bits(&num) > MAX_FACTORED_COEFF_BITS
-                    || max_coeff_bits(&den) > MAX_FACTORED_COEFF_BITS))
-        {
-            // The attempt is abandoned at the next budget check; until then
-            // everything is zero, which ends every loop quickly.
-            abandon();
-            return PFrac::Const(Q::zero());
-        }
-        let (mut num, mut den) = (num, den);
-        let (lcm, dz) = den.clear_denominators();
-        let content = dz.integer_content();
-        let mut lambda = if content.is_zero() {
-            Q::from_integer(lcm)
-        } else {
-            Q::new(lcm, content)
-        };
-        if den.leading_coeff().is_some_and(Signed::is_negative) {
-            lambda = -lambda;
-        }
-        if !lambda.is_one() {
-            num = num.scale(&lambda);
-            den = den.scale(&lambda);
-        }
-        if den.as_constant().is_some()
-            && let Some(n) = num.as_constant()
-        {
-            return PFrac::Const(n);
-        }
-        PFrac::Frac(Box::new((num, den)))
-    }
-
-    /// The element `p` of `ℚ[p₁, …]`.
-    fn from_mp(p: MP) -> Self {
-        if let Some(c) = p.as_constant() {
-            return PFrac::Const(c);
-        }
-        let one = MP::from_int(p.num_vars(), 1);
-        PFrac::Frac(Box::new((p, one)))
-    }
-
-    fn num_vars(&self) -> Option<usize> {
-        match self {
-            PFrac::Const(_) => None,
-            PFrac::Frac(f) => Some(f.0.num_vars()),
-        }
-    }
-
-    /// `(num, den)` as polynomials in `nv` variables.
-    fn parts(&self, nv: usize) -> (MP, MP) {
-        match self {
-            PFrac::Const(q) => (MP::constant(nv, q.clone()), MP::from_int(nv, 1)),
-            PFrac::Frac(f) => (f.0.clone(), f.1.clone()),
-        }
-    }
-
-    fn as_const(&self) -> Option<&Q> {
-        match self {
-            PFrac::Const(q) => Some(q),
-            PFrac::Frac(_) => None,
-        }
-    }
-
-    /// `k·self` for a rational `k` (no gcd needed).
-    fn scale_q(&self, k: &Q) -> Self {
-        if k.is_zero() {
-            return PFrac::Const(Q::zero());
-        }
-        match self {
-            PFrac::Const(q) => PFrac::Const(q * k),
-            PFrac::Frac(f) => PFrac::Frac(Box::new((f.0.scale(k), f.1.clone()))),
-        }
-    }
-
-    /// Both operands as `(num, den)` pairs over the same variables.
-    fn pair(&self, rhs: &Self) -> Option<((MP, MP), (MP, MP))> {
-        let nv = self.num_vars().or_else(|| rhs.num_vars())?;
-        Some((self.parts(nv), rhs.parts(nv)))
-    }
-
-    /// Henrici's sum: with `g = gcd(ad, bd)`, `(an·bd/g + bn·ad/g)/(ad·bd/g)`
-    /// reduced by the gcd of that numerator with `g` alone (Knuth, TAOCP
-    /// vol. 2, §4.5.1).  The gcds are of the factors, not of the products:
-    /// with four parameters the heuristic gcd of the products took seconds.
-    fn add_frac(&self, rhs: &Self) -> Self {
-        let Some(((an, ad), (bn, bd))) = self.pair(rhs) else {
-            return PFrac::Const(Q::zero());
-        };
-        let henrici = || {
-            let g = gcd_mp(&ad, &bd);
-            let (ad1, bd1) = (div_mp(&ad, &g)?, div_mp(&bd, &g)?);
-            let num = an.mul(&bd1).add(&bn.mul(&ad1));
-            let g2 = gcd_mp(&num, &g);
-            Some(PFrac::finish(
-                div_mp(&num, &g2)?,
-                div_mp(&ad1.mul(&bd), &g2)?,
-            ))
-        };
-        henrici().unwrap_or_else(|| PFrac::canon(an.mul(&bd).add(&bn.mul(&ad)), ad.mul(&bd)))
-    }
-
-    /// Henrici's product: `(an/g₁·bn/g₂)/(ad/g₂·bd/g₁)` with
-    /// `g₁ = gcd(an, bd)`, `g₂ = gcd(bn, ad)`.
-    fn mul_frac(&self, rhs: &Self) -> Self {
-        let Some(((an, ad), (bn, bd))) = self.pair(rhs) else {
-            return PFrac::Const(Q::zero());
-        };
-        let henrici = || {
-            let g1 = gcd_mp(&an, &bd);
-            let g2 = gcd_mp(&bn, &ad);
-            let num = div_mp(&an, &g1)?.mul(&div_mp(&bn, &g2)?);
-            let den = div_mp(&ad, &g2)?.mul(&div_mp(&bd, &g1)?);
-            Some(PFrac::finish(num, den))
-        };
-        henrici().unwrap_or_else(|| PFrac::canon(an.mul(&bn), ad.mul(&bd)))
-    }
-}
-
-impl Ring for PFrac {
-    fn zero() -> Self {
-        PFrac::Const(Q::zero())
-    }
-
-    fn one() -> Self {
-        PFrac::Const(Q::one())
-    }
-
-    /// Once an attempt is abandoned ([`abandoned`]) every element counts as
-    /// zero: the operations return zero then, and a division whose
-    /// quotient coefficient came out zero would otherwise never remove the
-    /// leading term of its remainder (`GenPoly::try_div_rem` looped for
-    /// minutes inside the extended gcd of `1/((d + e·x)²·(a + c·x⁴)³)`);
-    /// with every coefficient zero each polynomial normalises to zero and
-    /// every loop ends.  The result is discarded at the next budget check.
-    fn is_zero(&self) -> bool {
-        abandoned() || matches!(self, PFrac::Const(q) if q.is_zero())
-    }
-
-    fn add(&self, rhs: &Self) -> Self {
-        match (self, rhs) {
-            (PFrac::Const(a), PFrac::Const(b)) => PFrac::Const(a + b),
-            _ if rhs.is_zero() => self.clone(),
-            _ if self.is_zero() => rhs.clone(),
-            _ => self.add_frac(rhs),
-        }
-    }
-
-    fn sub(&self, rhs: &Self) -> Self {
-        self.add(&rhs.neg())
-    }
-
-    fn mul(&self, rhs: &Self) -> Self {
-        match (self, rhs) {
-            (PFrac::Const(a), PFrac::Const(b)) => PFrac::Const(a * b),
-            (PFrac::Const(a), _) => rhs.scale_q(a),
-            (_, PFrac::Const(b)) => self.scale_q(b),
-            _ => self.mul_frac(rhs),
-        }
-    }
-
-    fn neg(&self) -> Self {
-        self.scale_q(&-Q::one())
-    }
-}
-
-impl EuclideanDomain for PFrac {
-    fn div_rem(&self, other: &Self) -> (Self, Self) {
-        (Field::div(self, other), Self::zero())
-    }
-}
-
-impl Field for PFrac {
-    /// Division; by zero it gives zero (the polynomial algorithms divide
-    /// only by leading coefficients, which are never zero).
-    fn div(&self, other: &Self) -> Self {
-        self.mul(&other.inv())
-    }
-
-    /// The inverse; that of zero is zero (see [`Field::div`]).
-    fn inv(&self) -> Self {
-        match self {
-            PFrac::Const(q) if q.is_zero() => PFrac::Const(Q::zero()),
-            PFrac::Const(q) => PFrac::Const(q.recip()),
-            PFrac::Frac(f) => PFrac::finish(f.1.clone(), f.0.clone()),
-        }
-    }
 }
 
 /// `p′` with the integer multiples taken by scaling (the generic
@@ -682,7 +495,7 @@ fn int_sqrt(n: &BigInt) -> Option<BigInt> {
 /// primes), of the monomial content, and a perfect-square remainder are
 /// moved into `σ`.  `ρ = 1` exactly when `Δ` is recognised as a square.
 fn split_square(delta: &PFrac, nv: usize) -> (PFrac, MP) {
-    let (n, d) = delta.parts(nv);
+    let PolyFraction { numer: n, denom: d } = delta.parts(nv);
     // Δ = n/d = (n·d)/d².
     let p = n.mul(&d);
     let mut sigma = PFrac::canon(MP::from_int(nv, 1), d);
@@ -785,7 +598,7 @@ impl Ctx {
             if c.is_zero() {
                 continue;
             }
-            let (n, d) = c.parts(nv);
+            let PolyFraction { numer: n, denom: d } = c.parts(nv);
             let scaled = n.mul(&l.div_exact(&d)?);
             let k = u32::try_from(k).ok()?;
             for (e, q) in scaled.terms() {
@@ -885,7 +698,7 @@ impl Ctx {
     fn declared_real(&self, arena: &Arena, p: &GP) -> bool {
         let nv = self.nv();
         p.coeffs().iter().all(|c| {
-            let (n, d) = c.parts(nv);
+            let PolyFraction { numer: n, denom: d } = c.parts(nv);
             let mut vars = n.variables_present();
             vars.extend(d.variables_present());
             vars.into_iter().all(|i| match arena.node(self.params[i]) {
@@ -1359,7 +1172,7 @@ fn integrate_gp_with(
                 // (`1/((d + e·x)²·(a + c·x⁴)³)`).
                 let nv = ctx.nv();
                 let too_big = parts.1.coeffs().iter().any(|c| {
-                    let (n, d) = c.parts(nv);
+                    let PolyFraction { numer: n, denom: d } = c.parts(nv);
                     n.num_terms() + d.num_terms() > MAX_COEFF_TERMS / 4
                         || max_coeff_bits(&n).max(max_coeff_bits(&d)) > MAX_FACTORED_COEFF_BITS / 8
                 });

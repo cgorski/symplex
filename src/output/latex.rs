@@ -23,7 +23,7 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::func::{Func, Tex, TexPiece};
-use crate::base::libfn::LibFn;
+
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::prelude::*;
@@ -467,20 +467,21 @@ fn push_latex_call(head: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) {
     stack.push(LatexItem::Owned(format!("{head}\\left(")));
 }
 
-/// LaTeX for the library special functions, from the `tex` facet of the
-/// function table (SymPy's notations: `\operatorname{erfi}`,
-/// `\operatorname{E}_{n}`, `J_{\nu}\left(x\right)`, `T_{n}\left(x\right)`,
-/// `F_{n}`, `{x}^{\left(n\right)}`, `F\left(\phi\middle| m\right)`, …).
+/// LaTeX for the library special functions and the internal asymptotic
+/// heads, from the `tex` facet of the function table (SymPy's notations:
+/// `\operatorname{erfi}`, `\operatorname{E}_{n}`, `J_{\nu}\left(x\right)`,
+/// `T_{n}\left(x\right)`, `F_{n}`, `{x}^{\left(n\right)}`,
+/// `F\left(\phi\middle| m\right)`, …).
 ///
 /// Returns `false` (pushing nothing) for a call of the wrong arity, which
 /// prints as a user function.
 fn push_lib_fn_latex(
     arena: &Arena,
-    name: LibFn,
+    name: Func,
     args: &[ExprId],
     stack: &mut Vec<LatexItem>,
 ) -> bool {
-    if !name.arity().accepts(args.len()) {
+    if !name.spec().arity.accepts(args.len()) {
         return false;
     }
     let group = |stack: &mut Vec<LatexItem>, arg: ExprId| {
@@ -492,7 +493,7 @@ fn push_lib_fn_latex(
             stack.push(LatexItem::Lit(r"\left("));
         }
     };
-    let tex = Func::from(name).spec().tex;
+    let tex = name.spec().tex;
     if let Tex::Layout(pieces) = tex
         && pieces.iter().any(|p| match *p {
             TexPiece::Arg(i) | TexPiece::Group(i) => usize::from(i) >= args.len(),
@@ -1043,7 +1044,9 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::Apply(sym_id, ref args) => {
             let name = arena.symbol_name(sym_id).to_owned();
             let args = args.clone();
-            if let Some(f) = arena.lib_fn(sym_id)
+            // An internal head (`__ei_asym`) prints from its `tex` facet:
+            // its name is not valid TeX.
+            if let Some(f) = Func::internal_named(&name)
                 && push_lib_fn_latex(arena, f, &args, stack)
             {
                 return;
@@ -1056,6 +1059,14 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
                 }
             }
             stack.push(LatexItem::Owned(format!("{}\\left(", name)));
+        }
+
+        // ── Library function ───────────────────────────────────────────────
+        ExprNode::Lib(f, ref args) => {
+            let args = args.clone();
+            if !push_lib_fn_latex(arena, Func::from(f), &args, stack) {
+                push_latex_call(f.name(), &args, stack);
+            }
         }
 
         // ── Piecewise ──────────────────────────────────────────────

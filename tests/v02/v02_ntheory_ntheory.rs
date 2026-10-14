@@ -170,9 +170,12 @@ fn oeis_a000364_euler_and_a027641_bernoulli() {
         assert_eq!(euler_number(2 * i as i64), Some(bi(e)));
     }
     let r = |p: i64, q: i64| Ratio::new(bi(p), bi(q));
+    // A027641 has `B₁ = −1/2`; the crate's convention since 0.50 is
+    // `B₁ = +1/2` (A164555 / A027642, SymPy 1.14's `bernoulli(1)`), the
+    // only number where the two differ.
     let bern = [
         (0i64, r(1, 1)),
-        (1, r(-1, 2)),
+        (1, r(1, 2)),
         (2, r(1, 6)),
         (4, r(-1, 30)),
         (6, r(1, 42)),

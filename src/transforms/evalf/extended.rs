@@ -89,7 +89,7 @@
 //! (`accuracy::Absorbed`), so that a zero ball the evaluation ends with is
 //! refused rather than printed `0`.
 
-use super::ball::{Ball, CBall};
+use super::ball::{Ball, CBall, Cache};
 use super::wp::{RM, Wp};
 use crate::base::bigfloat::is_sign_positive;
 use astro_float::BigFloat;
@@ -170,7 +170,7 @@ pub(super) enum Outcome {
 pub(super) struct Edge {
     /// It is 0 with an underflow bound.
     pub(super) underflowed: bool,
-    /// It overflowed (`exponent_range_error`).
+    /// It overflowed (`range_error`).
     pub(super) overflowed: bool,
 }
 
@@ -449,8 +449,7 @@ enum View {
 /// Lookups shared by the node rules.
 struct Ctx<'a> {
     arena: &'a Arena,
-    cache: &'a FxHashMap<ExprId, Complex>,
-    errs: &'a FxHashMap<ExprId, Bound>,
+    cache: Cache<'a>,
     exts: &'a ExtMap,
     exact: &'a ExactMap,
 }
@@ -478,7 +477,7 @@ impl Ctx<'_> {
     /// The ordinary value and bound of `c`, when finite with a bound.
     fn ordinary(&self, c: ExprId) -> Option<(&Complex, Bound)> {
         let v = self.cache.get(&c)?;
-        let b = *self.errs.get(&c)?;
+        let b = self.cache.bound(&c)?;
         let finite = !(v.0.is_inf() || v.0.is_nan() || v.1.is_inf() || v.1.is_nan());
         (finite && !b.is_unknown()).then_some((v, b))
     }
@@ -506,7 +505,7 @@ pub(super) fn wanted(
     arena: &Arena,
     id: ExprId,
     edge: Edge,
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     exts: &ExtMap,
 ) -> bool {
     edge.underflowed
@@ -549,12 +548,7 @@ fn below_search(arena: &Arena, s: &Scaled) -> bool {
 /// range — or below every precision the evaluation may reach — with an
 /// ordinary value that is that limit: `erf(±x)` (`±1`) or `erfc(−x)`
 /// (`2`)?
-fn erf_tail_below(
-    arena: &Arena,
-    id: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    exts: &ExtMap,
-) -> bool {
+fn erf_tail_below(arena: &Arena, id: ExprId, cache: Cache<'_>, exts: &ExtMap) -> bool {
     let (ExprNode::Erf(c) | ExprNode::Erfc(c)) = arena.node(id) else {
         return false;
     };
@@ -581,8 +575,7 @@ pub(super) fn extend(
     arena: &Arena,
     id: ExprId,
     edge: Edge,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &FxHashMap<ExprId, Bound>,
+    cache: Cache<'_>,
     exts: &ExtMap,
     exact: &ExactMap,
     w: &mut Wp<'_>,
@@ -592,7 +585,6 @@ pub(super) fn extend(
     let cx = Ctx {
         arena,
         cache,
-        errs,
         exts,
         exact,
     };
@@ -913,10 +905,10 @@ pub(super) fn extend(
             }
             finish_node(erfc_scaled(&x.0, b.re, w)?, id, prec)
         }
-        ExprNode::Apply(sid, args) if underflowed && args.len() == 2 => {
-            let alternating = match arena.lib_fn(*sid) {
-                Some(LibFn::BesselJ) => true,
-                Some(LibFn::BesselI) => false,
+        ExprNode::Lib(f, args) if underflowed && args.len() == 2 => {
+            let alternating = match f {
+                LibFn::BesselJ => true,
+                LibFn::BesselI => false,
                 _ => return None,
             };
             let (nu, nb) = cx.ordinary(args[0])?;
@@ -1143,7 +1135,7 @@ fn ln_dominant(s: &Scaled, w: &mut Wp<'_>) -> Option<Outcome> {
 
 /// `b^x` for `b = s` (`q`: the exponent's literal value, `x ± ex` its
 /// value): an integer power up to 1024 by multiplication (`mⁿ·2^(nk)`, the
-/// bound as for any power, `accuracy::pow_bound`); otherwise `exp(x·Log b)`
+/// bound as for any power, `Ball::power_error`); otherwise `exp(x·Log b)`
 /// with `Log b` at the precision its size needs.
 fn power(
     s: &Scaled,
@@ -1168,7 +1160,11 @@ fn power(
         };
         let v = (super::round_to(v.0, prec), super::round_to(v.1, prec));
         let lv = accuracy::lg_abs(&v);
-        let prop = accuracy::pow_bound(Some(q), &s.m, s.eb, x, ex, lv);
+        let prop = Ball {
+            mid: &s.m,
+            err: s.eb,
+        }
+        .power_error(&Ball { mid: x, err: ex }, Some(q), lv);
         let rounding =
             |y: &BigFloat| accuracy::rounding(&(y.clone(), BigFloat::new(prec)), prec) + 1.0;
         let part = |e: ErrExp, y: &BigFloat| {
@@ -1191,7 +1187,7 @@ fn power(
 }
 
 /// A factor `c` of a product that has no value of its own because it lies
-/// above the exponent range (`exponent_range_error`): a power `b^e` of a
+/// above the exponent range (`range_error`): a power `b^e` of a
 /// base `b` below the range (a negative power), or `exp(g)` of an argument
 /// in range.  Its scaled value, `k` unbounded, for the product with a
 /// factor below the range to bring back: `besselj(10⁹, 1)/besselj(10⁹, 2)

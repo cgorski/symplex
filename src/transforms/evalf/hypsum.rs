@@ -49,7 +49,7 @@
 //! dominating series (see "Dominated series" below; before 0.44 refused),
 //! and so is an infinite product of `1 + a(k)` with such an `a`.
 
-use super::ball::CBall;
+use super::ball::{CBall, RBall};
 use super::wp::RM;
 use crate::base::truth::SignSet;
 use astro_float::{BigFloat, RoundingMode};
@@ -58,7 +58,7 @@ use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
-use super::accuracy::{self, Bound, ErrExp};
+use super::accuracy::{self, Bound};
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::{Complex, c_mul, c_sub};
 use crate::base::errors::SymplexError;
@@ -467,7 +467,7 @@ pub(super) fn infinite_sum(
 
     // F = Σ u_j at wp bits.
     let wp = prec + 64;
-    let (f, f_err) = normalised_series(&p, &q, &start, prec, wp)?;
+    let RBall { m: f, r: f_err } = normalised_series(&p, &q, &start, prec, wp)?;
 
     // Sanity check of the ratio: t(N₀ + 1) = t(N₀)·P(N₀)/Q(N₀).
     let e0 = b0.joint();
@@ -810,7 +810,7 @@ fn normalised_series(
     start: &BigInt,
     prec: usize,
     wp: usize,
-) -> Result<(BigFloat, ErrExp), SymplexError> {
+) -> Result<RBall, SymplexError> {
     let mag = |x: &BigFloat| -> Option<i64> {
         if x.is_zero() {
             None
@@ -856,7 +856,10 @@ fn normalised_series(
         }
     };
     if accuracy::is_unknown(tail) {
-        return Ok((f, accuracy::UNKNOWN));
+        return Ok(RBall {
+            m: f,
+            r: accuracy::UNKNOWN,
+        });
     }
     // Each u_j carries a relative error below 3j·2^(−wp) (two roundings per
     // step, the exact integers converted exactly or with one more), and
@@ -867,7 +870,7 @@ fn normalised_series(
     let rounding = (peak + n - wp_i) as f64;
     let err = accuracy::shift(recurrence.max(rounding).max(tail), 1.0);
     tracing::debug!(steps, err, "evalf: hypergeometric series summed");
-    Ok((f, err))
+    Ok(RBall { m: f, r: err })
 }
 
 // ── Dominated series ──────────────────────────────────────────────────────────────
@@ -1242,15 +1245,9 @@ impl Analysis<'_, '_, '_> {
                     positive,
                 }
             }
-            ExprNode::Apply(sid, args) => {
-                if arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::Harmonic)
-                    && args.len() == 1
-                {
-                    let f = fact(self, &args[0]);
-                    real_only(f.positive)
-                } else {
-                    Facts::default()
-                }
+            ExprNode::Lib(crate::base::libfn::LibFn::Harmonic, args) if args.len() == 1 => {
+                let f = fact(self, &args[0]);
+                real_only(f.positive)
             }
             _ => Facts::default(),
         })
@@ -1404,10 +1401,7 @@ impl Analysis<'_, '_, '_> {
                 .get(c)?
                 .real
                 .then_some(Envelope::constant(up(LOG2_PI - 1.0)))?,
-            ExprNode::Apply(sid, args)
-                if arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::Harmonic)
-                    && args.len() == 1 =>
-            {
+            ExprNode::Lib(crate::base::libfn::LibFn::Harmonic, args) if args.len() == 1 => {
                 // 0 ≤ H(x) ≤ ψ(x + 1) + γ ≤ 1 + ln(x + 1) for x ≥ 0, and
                 // x = c(k) ≤ U·k^d.
                 let Some(Shape::Poly(p)) = self.shapes.get(&args[0]) else {

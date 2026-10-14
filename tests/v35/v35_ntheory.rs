@@ -455,8 +455,8 @@ fn binomial_with_a_huge_n() {
 /// `euler(-1)` = pi/2; `bernoulli(s).evalf(20)` = 0.73017725440479340644
 /// (`s = 1/2`), 1.6449340668482264365 (`-1`), 0.063713004724582589874
 /// (`5/2`), 2.6771645527264000362 (`-7/3`), -0.00090664277014792935168
-/// (`301/100`).  (`bernoulli(1)` stays `−1/2`, this crate's convention;
-/// SymPy 1.14 has `+1/2`.)
+/// (`301/100`).  (`bernoulli(1)` is `+1/2`, the value of the function at 1,
+/// as in SymPy 1.14; up to 0.49 this crate's convention was `−1/2`.)
 #[test]
 fn bernoulli_function_and_euler_number_at_minus_one() {
     let ctx = Context::new();
@@ -464,7 +464,7 @@ fn bernoulli_function_and_euler_number_at_minus_one() {
         parse(&ctx, "euler_number(-1)").eval(),
         parse(&ctx, "pi/2").eval()
     );
-    assert_eq!(parse(&ctx, "bernoulli(1)").eval(), parse(&ctx, "-1/2"));
+    assert_eq!(parse(&ctx, "bernoulli(1)").eval(), parse(&ctx, "1/2"));
     for (s, want) in [
         ("bernoulli(1/2)", "0.73017725440479340644"),
         ("bernoulli(-1)", "1.6449340668482264365"),

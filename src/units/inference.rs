@@ -410,9 +410,13 @@ fn infer_in_arena(arena: &Arena, root: ExprId, dims: &DimMap) -> Result<ConstDim
                 same(&[*x, *value], "a substitution")?;
                 get(f)?
             }
-            ExprNode::Apply(..) if dims.get(&arena.display(id).to_string()).is_some() => *dims
-                .get(&arena.display(id).to_string())
-                .unwrap_or(&dimensionless),
+            ExprNode::Apply(..) | ExprNode::Lib(..)
+                if dims.get(&arena.display(id).to_string()).is_some() =>
+            {
+                *dims
+                    .get(&arena.display(id).to_string())
+                    .unwrap_or(&dimensionless)
+            }
             // Constants, sets and the remaining forms: dimensionless.
             ExprNode::Pi
             | ExprNode::E
@@ -446,15 +450,17 @@ fn infer_in_arena(arena: &Arena, root: ExprId, dims: &DimMap) -> Result<ConstDim
                     k += 1;
                 });
                 if let Some((i, d)) = bad {
-                    return Err(if matches!(other, ExprNode::Apply(..)) {
-                        format!("Applied function argument {i} must be dimensionless, got {d}")
-                    } else {
-                        format!(
-                            "Function argument {i} must be dimensionless, got {d} \
+                    return Err(
+                        if matches!(other, ExprNode::Apply(..) | ExprNode::Lib(..)) {
+                            format!("Applied function argument {i} must be dimensionless, got {d}")
+                        } else {
+                            format!(
+                                "Function argument {i} must be dimensionless, got {d} \
                              (in expression {})",
-                            arena.display(id)
-                        )
-                    });
+                                arena.display(id)
+                            )
+                        },
+                    );
                 }
                 dimensionless
             }

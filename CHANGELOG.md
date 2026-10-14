@@ -33,7 +33,28 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - `DiracDelta(0)` has no value: evalf refuses it (it was a certified `0`,
   also for `DiracDelta(sin²1 + cos²1 − 1)`), so `solve` of an equation
   containing it reports no solution instead of an identity, and `is_real`/
-  `is_zero` answer `None` (SymPy 1.14 agrees).
+  `is_zero` answer `None` (SymPy 1.14 agrees).  `compile()` refuses a
+  symbol-free `DiracDelta(c)` with no value as evalf does
+  (`ln(√2 + DiracDelta(0))` compiled to 0.3466).
+- **`Context::apply` with a built-in name builds the built-in function.**
+  `apply("sin", [x])` is `x.sin()`, `apply("bell", [n])` the Bell number,
+  `apply("C", [n, k])` the binomial coefficient (names as the parser reads
+  them); a built-in name with an argument count the function does not take
+  is `InvalidArgument` (`apply("Shi", [x, 3])` was accepted and failed later
+  in evalf).  Up to 0.49 `apply("sin", [x]) − x.sin()` printed `-sin(x) +
+  sin(x)` and re-parsed as `0`.  `from_json` refuses an `Apply` headed by a
+  reserved internal name and a library function with the wrong argument
+  count.
+- **The Bernoulli numbers use `B₁ = +1/2`** throughout (`bernoulli(1)`,
+  `ntheory::bernoulli(1)`): the value at 1 of the Bernoulli function
+  `bernoulli(s) = −s·ζ(1 − s)` that evalf computes off the integers
+  (SymPy's convention since 1.12).  `bernoulli(1)` was `−1/2` while
+  `bernoulli(1 ± 10⁻³⁰)` evaluated to `+0.5`, and
+  `limit(bernoulli(x + 1), x, 0)` was `−1/2`.  The other numbers are
+  unchanged.
+- `integrate_numeric` and `eval_f64` refuse integrands with more than
+  10,000 kinks, steps or poles in the range (`floor(10⁵x)` on `[0, 1]` was
+  `49999.5`, right only by luck; `sign(sin(10⁵x))` was not).
 
 ### Added
 
@@ -48,8 +69,46 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   limit engine's work budget fails with `BudgetExhausted { kind: LimitSteps
   }` (same message), `rsolve_linear`'s swell with `ExpressionSwell`.
 - `multipoly::Monomial` (`MonoKey` deprecated).
+- `factor_zassenhaus::domain`: coefficient domains as values
+  (`CoeffDomain`, the former `modpoly::RingOps`, still a name for it), with
+  `QQ`, `ZZ`, `GaussQQ` and `FieldOf<C>`; `modpoly::DensePoly` (formerly
+  `PolyIn`, still a name for it) gains `resultant`, `squarefree_factors`
+  (Yun), `try_div_rem` and `try_gcd`.
 
 ### Fixed
+
+- **Definite integrals of periodic kinks at extreme scales.**  The zeros
+  of `sin`/`cos`/`tan`, the poles of `Γ` and the steps of `floor` are
+  enumerated between the exact bounds from certified integer parts and
+  ordered by certified comparisons (points closer than 10⁻¹³ counted as
+  equal before): `∫_{10¹⁵}^{10¹⁵+4} |sin x| dx` was 1.4982 (truly 2.4718),
+  `∫_1^{1+4·10⁻²⁰} |sin(10²⁰x)| dx` 1.75·10⁻²⁰ (truly 2.25·10⁻²⁰).  In a
+  hunt of 1,086 periodic kinks and jumps at scales 10⁰…10³⁰⁰ through the four
+  routes (symbolic, `integrate_numeric`, `eval_decimal`, `eval_f64`): 787
+  wrong answers → 0.
+- `integrate_numeric` with bounds that round to one `f64` (`[10²⁰, 10²⁰ +
+  4]`) returned `Ok(0.0)`; it integrates the exact bounds.  `∫₋₂² tan x dx`
+  and `∫₋₁¹ x/(x² − 1/4) dx` were `Ok(0.0)` (both diverge: symmetric nodes
+  cancelled across the poles), and a Gauss–Kronrod rule whose nodes rounded
+  onto each other reported convergence.  Kinks the breakpoint scan cannot
+  place (`sign(cos x² − 1/7)`, `floor(x³ − x)`) are located numerically or
+  the quadrature is refused: `eval_f64(∫₀³ sign(cos x² − 1/7) dx)` was
+  0.5178 (truly 0.5360).  Hunt of 382 such integrands: 89 wrong → 0.
+- **Limits at ±∞ of functions of `c − k·x` with a non-real `c` keep their
+  direction.**  The Gruntz representative kept non-real constants not
+  written with `i` (`(−1)^{2/3}`, `asin 2`, `atanh 2`, `W(−1)`), so
+  `limit(uppergamma(2, (−3)^{−1/3} − e·x), x, ∞)` was `−∞`; it is `−e^{i·3^{1/6}/2}·∞`
+  (mpmath along the ray).  `floor`, `ceiling`, `δ`, `H`, `min` and `max` of
+  non-real values have no limit (`limit(ceiling(ln(x)^(x²)), x, 0)` was
+  `2`).  Hunt of 8,547 limits: 262 wrong → 0.
+- `acot(c)`, `acoth(c)`, `asech(c)` with `c` evaluating to 0 are `π/2`,
+  `iπ/2`, `∞` (`acot(min(W(π), 0))` was `atan(zoo)` and compiled to NaN).
+- `expint(1, 0)` (`E₁`'s pole) is refused as divergent like `expint(n, 0)`
+  for every `n ≤ 1` (it was "precision exhausted").
+- `eigenvects` of a matrix with a radical of index above 2³¹ beside `√3`
+  panicked in debug builds (the common root index wrapped in `u32`);
+  `Fp64::inv` returned a non-inverse for a non-unit modulo a composite;
+  `PolyIn::gcd` over a ring with non-unit leading coefficients looped.
 
 - `eˣ + e^(x + ix) = 0` for a real `x` was "no solution" (also as a set
   and in `reduce_inequalities`); the solutions are `π + 2nπ`.  `Ex::solve`
@@ -92,6 +151,18 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   (SymPy 1.14: 19.7 s and 40.3 s).  One integer gcd (Lehmer) for polynomial
   and rational arithmetic.  The parametric Risch gcd bound was raised (7 more
   Rubi integrands verified).
+- Arithmetic modulo word primes uses Barrett reduction and a Euclidean
+  inverse (it was Fermat's): Brown's modular gcd is about 25% faster on
+  sparse inputs and 15% on dense ones.
+- **Internal type architecture (refactor wave 4).**  Library functions are
+  `ExprNode::Lib(LibFn, args)` nodes, identified by the function rather
+  than resolved from the text of an `Apply` head (`Apply` is a user
+  function); display, LaTeX, MathML, JSON and sort keys are byte-identical.
+  Function families (`Func::elementary()`, `Func::is_special()`) replace
+  hand-written variant lists.  evalf keeps values and bounds in one map of
+  balls, and every node's bound rule is a `Ball` method.  One
+  implementation each of ℚ(i) (three before) and ℚ(parameters) for
+  `cancel`/`apart` and the integrator (two before).
 - **Internal type architecture (refactor wave 3).**  The `Func` table
   gained the `rt` facet (which `f64` back end evaluates which function): the
   VM, Rust, C and Python generators read it, and tests check every claim

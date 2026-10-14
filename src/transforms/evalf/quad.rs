@@ -42,7 +42,12 @@
 //!
 //! Interior points where the integrand is not smooth are split off first:
 //! those of the definite integrator's breakpoint scanner (poles, branch
-//! points, kinks of `|·|`, steps, `Piecewise` boundaries).  A finite piece
+//! points, kinks of `|·|`, steps, `Piecewise` boundaries), its periodic
+//! families enumerated between the exact bounds; the kinks and steps it
+//! cannot place (`sign(cos x²)`, `floor(x³ − x)`) are located by sampling
+//! their argument and narrowing each crossing between certified signs to
+//! `2^−(p + 16)` of the range, and a family of more than 10,000 members, or
+//! a crossing that cannot be located, refuses the integral.  A finite piece
 //! on which tanh-sinh resolves nothing by level 6 (an oscillation its nodes,
 //! crowded at the ends, do not resolve) is tried by Gauss–Legendre of
 //! increasing degree, accepted on the same criterion; a piece that converges
@@ -75,7 +80,11 @@
 //! more aggressively); it is a heuristic, not a proof: an integrand with a
 //! feature narrower than the node spacing at level 4 that no node sees, or
 //! an unresolved interior singularity the scanner misses whose effect on two
-//! successive levels happens to agree, can pass it.  A piece that does not
+//! successive levels happens to agree, can pass it (so can a pair of
+//! crossings of a kink argument between two of its samples).  Up to 0.49 the
+//! kinks the scanner could not place were not split off at all, and the
+//! criterion passed across them: `∫₀³ sign(cos x² − 1/7) dx` was `0.5178`
+//! (truly `0.5360`).  A piece that does not
 //! meet it within the work limit reports the difference it reached — `evalf`
 //! certifies the digits that covers — and an integral whose terms do not
 //! decay (a divergent or oscillatory infinite integral) is refused.
@@ -321,6 +330,17 @@ pub(super) enum End {
 }
 
 impl End {
+    /// The end as an exact expression in `pa` (a rational or a constant
+    /// expression); `None` for a binary split point or a value known to a
+    /// fixed precision.
+    pub(super) fn exact(&self, pa: &mut Arena) -> Option<ExprId> {
+        match self {
+            End::Rational(q) => Some(pa.num_ratio(q.clone())),
+            End::Expr(id) => Some(*id),
+            End::Float(_) | End::Value(..) => None,
+        }
+    }
+
     /// Are `self` and `other` the same number by construction?
     fn same(&self, other: &End) -> bool {
         match (self, other) {

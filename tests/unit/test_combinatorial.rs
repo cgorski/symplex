@@ -160,7 +160,9 @@ fn lucas_known_values() {
 fn bernoulli_known_values() {
     let ctx = Context::new();
     check(&ctx.int(0).bernoulli_number().eval(), "1");
-    check(&ctx.int(1).bernoulli_number().eval(), "-1/2");
+    // `B₁ = +1/2`, the crate's convention since 0.50 (SymPy 1.14: `bernoulli(1)`
+    // = 1/2); it was `−1/2`.
+    check(&ctx.int(1).bernoulli_number().eval(), "1/2");
     check(&ctx.int(2).bernoulli_number().eval(), "1/6");
     check(&ctx.int(3).bernoulli_number().eval(), "0");
     check(&ctx.int(4).bernoulli_number().eval(), "-1/30");

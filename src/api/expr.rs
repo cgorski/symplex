@@ -490,7 +490,9 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::Max(_)
             | crate::base::node::ExprNode::Sum(_, _, _, _)
             | crate::base::node::ExprNode::Product_(_, _, _, _) => ExprType::Function,
-            crate::base::node::ExprNode::Apply(_, _) => ExprType::Apply,
+            crate::base::node::ExprNode::Apply(_, _) | crate::base::node::ExprNode::Lib(_, _) => {
+                ExprType::Apply
+            }
             crate::base::node::ExprNode::Derivative(_, _) => ExprType::Derivative,
             crate::base::node::ExprNode::Integral(_, _) => ExprType::Integral,
             crate::base::node::ExprNode::Factorial(_)

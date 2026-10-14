@@ -1,6 +1,7 @@
 //! Bernoulli number computation and caching.
 //!
-//! Provides exact rational Bernoulli numbers B_0, B_1, B_2, ...
+//! Provides exact rational Bernoulli numbers B_0, B_1, B_2, ... (`B₁ = +1/2`,
+//! see [`bernoulli`])
 //! computed from the tangent numbers (Brent–Harvey) and cached for reuse
 //! across evaluations. Bernoulli numbers are the foundation for the
 //! Stirling series used in arbitrary-precision Gamma function evaluation.
@@ -42,7 +43,10 @@ const TABLE_MAX_K: usize = 2048;
 pub(crate) const EXACT_EULER_N: usize = 512;
 
 /// Return B_n (the n-th Bernoulli number) as an exact rational, with
-/// `B₁ = −1/2`.
+/// `B₁ = +1/2`: the crate's convention, `Bₙ = Bₙ(1) = −n·ζ(1 − n)`, so
+/// that the Bernoulli function `bernoulli(s) = −s·ζ(1 − s)` of `evalf` is
+/// continuous at 1 (SymPy's since 1.12; DLMF 24.2.1 and mpmath have
+/// `B₁ = −1/2`, which was this crate's up to 0.49).
 ///
 /// Odd Bernoulli numbers beyond B_1 are zero.  The even ones come from the
 /// tangent numbers ([`even`]).  Results are cached globally; thread-safe
@@ -51,7 +55,7 @@ pub(crate) const EXACT_EULER_N: usize = 512;
 pub(crate) fn bernoulli(n: usize) -> Q {
     match n {
         0 => Ratio::one(),
-        1 => Ratio::new(BigInt::from(-1), BigInt::from(2)),
+        1 => Ratio::new(BigInt::from(1), BigInt::from(2)),
         _ if n % 2 == 1 => Ratio::zero(),
         _ => even(n / 2),
     }
@@ -381,10 +385,11 @@ mod tests {
     }
 
     #[test]
-    fn b1_is_neg_half() {
+    fn b1_is_half() {
+        // The crate's convention since 0.50: `B₁ = +1/2` (was `−1/2`).
         let b1 = bernoulli(1);
-        let expected = Ratio::new(BigInt::from(-1), BigInt::from(2));
-        assert_eq!(b1, expected, "B_1 = -1/2");
+        let expected = Ratio::new(BigInt::from(1), BigInt::from(2));
+        assert_eq!(b1, expected, "B_1 = +1/2");
     }
 
     #[test]
@@ -490,7 +495,8 @@ mod tests {
 
     /// The tangent-number values equal the rational recurrence
     /// `B_m = −Σ_{k<m} C(m+1, k)·B_k/(m+1)` (the algorithm of this module up
-    /// to 0.39) through `B₃₀₀`.
+    /// to 0.39) through `B₃₀₀` — which gives `B₁ = −1/2`, the other
+    /// convention (the only number where they differ).
     #[test]
     fn tangent_numbers_match_the_rational_recurrence() {
         let mut b: Vec<Q> = vec![Ratio::one()];
@@ -505,7 +511,8 @@ mod tests {
             b.push(-sum / Ratio::from_integer(BigInt::from(m + 1)));
         }
         for (m, bm) in b.iter().enumerate() {
-            assert_eq!(bernoulli(m), *bm, "B_{m}");
+            let want = if m == 1 { -bm.clone() } else { bm.clone() };
+            assert_eq!(bernoulli(m), want, "B_{m}");
         }
     }
 

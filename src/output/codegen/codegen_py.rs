@@ -1095,10 +1095,14 @@ impl Emitter<'_> {
                 // Library special functions are outside `math`/`numpy`/base
                 // Julia; the error names the SciPy routine that computes the
                 // function, when there is one (the `rt` facet).
+                ExprNode::Lib(f, _) => {
+                    let name = f.name();
+                    let f = Some(Func::from(*f));
+                    return Err(self.refuse_function(&format!("the function `{name}`"), f));
+                }
                 ExprNode::Apply(sid, _) => {
                     let name = arena.symbol_name(*sid);
-                    let f = arena.lib_fn(*sid).map(Func::from);
-                    return Err(self.refuse_function(&format!("the function `{name}`"), f));
+                    return Err(self.refuse_function(&format!("the function `{name}`"), None));
                 }
                 other => {
                     let f = other.func(arena).map(|(f, _)| f);

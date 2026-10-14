@@ -628,9 +628,15 @@ exceptions are allowlisted with their reason and exact count).
 ## How to Add a New Function
 
 Every function — the 43 with a dedicated `ExprNode` variant, the 50 library
-functions carried as `Apply(name, args)` (`LibFn`), and the 8 internal
-asymptotic helpers of the series engine — has one identity, `Func`, and one
-entry in the `funcs!` table of `src/base/func.rs`.  The entry is a
+functions (nodes `ExprNode::Lib(LibFn, args)`, built by `Arena::lib_apply` /
+`Arena::func`, arity-checked; `Apply(name, args)` is a user function or one
+of the reserved `__…` internal heads), and the 8 internal asymptotic helpers
+of the series engine — has one identity, `Func`, and one entry in the
+`funcs!` table of `src/base/func.rs`.  Code that treats a family of
+functions uniformly asks `Func::elementary()` (sin…atanh, exp, ln) or
+`Func::is_special()` through `ExprNode::func`, instead of an or-pattern of
+variants; a list without a family gets a predicate on `Func` and a test that
+it selects the intended set.  The entry is a
 `FuncSpec` struct literal with every field mandatory, so a function that
 forgets a facet does not compile:
 
@@ -1135,9 +1141,23 @@ branch that drops cases).  `Approximate` (an `f64`, a value zero only to the
 working precision) and `Probabilistic` (random sampling) may only guide a
 heuristic whose result is right either way — a pivot choice, the order of
 methods — and are read visibly with `truth_at_least(Evidence::Approximate)`.
+**Breakpoints of integrands** (`calculus_util`, `definite`, quadrature) are
+exact expressions; their `f64` value is a guide accurate to 2⁻⁴⁶.  Order or
+merge them with `cmp_values` (by value only when more than 2⁻⁴⁰ apart,
+otherwise by a certified sign), never with an `f64` tolerance; periodic
+families are enumerated over the exact bounds (`ScanRange`) from certified
+integer parts; a principal root list of a periodic composition sets
+`BreakScan.periodic` (one period, not every zero); an `f64` quadrature never
+trusts its error estimate across a kink.  Limits: a rule resolves a
+reals-only function (`floor`, `ceiling`, `H`, `δ`, `min`, `max`) only for an
+argument proved real near the point; the Gruntz `ω` must be positive — split
+non-real exponents, and never test non-realness by "contains `i`".
+
 Use `evalf_verdict(..).proven()` or `evalf_settled` with
 `Settled::Certified` for a numeric proof; `evalf_complex`, `eval_const_f64`
-and `expr_to_f64` drop the evidence.  Zero tests of constants in limits and
+and `expr_to_f64` drop the evidence.  Bernoulli numbers use `B₁ = +1/2`
+everywhere; a formula written for `B₁ = −1/2` flips that one sign
+explicitly.  Zero tests of constants in limits and
 series go through `calculus_util::hidden_zero` (`Verdict<Truth>`): an
 undecided coefficient may be kept as a value but never divided by, dropped,
 or taken as a leading term; new exact rewrites go in `exact_rewrites`, each
@@ -1233,7 +1253,11 @@ use `RM` (round to nearest even) and write a directed mode out literally
 where a bound needs it.  A precision raised by an `f64` estimate goes
 through `Prec::guarded(Guard::for_log2(..))` (saturating; no `as usize +
 …`).  A value with its error bound is a `CBall` (`Ball<&Complex>` for a
-cached value), never a `(Complex, Bound)` pair; read signs and branch-cut
+cached value; a real value with a log₂ radius an `RBall`), never a
+`(Complex, Bound)` or `(BigFloat, f64)` pair; evaluated nodes live in one
+map of balls (`ball::Balls`) read through the view `ball::Cache`, and a
+node's bound rule is a `Ball` method returning `NodeBound::{Final,
+Propagated}`; read signs and branch-cut
 sides from the ball (`sign_re`, `sign_im`, `cut_side`), not from the
 midpoint.  Use `bigfloat::is_strictly_positive`/`is_sign_positive`
 (`BigFloat::is_positive` is true for `+0` and is disallowed),
@@ -1242,8 +1266,16 @@ subnormals), and `bigfloat::to_f64`/`to_f64_or_inf` as the only conversions
 to `f64`.  Decimal output is our exact conversion
 (`bigfloat::to_decimal_digits`), not astro-float's `convert_to_radix`.
 
-**Integer gcds** go through `base::numeric::gcd_big` (Lehmer) or `gcd_u64`;
-do not add another.  A graded `MonomialOrd` overrides `cmp_monomials` to use
+**Coefficient domains are values.**  A new coefficient ring implements
+`poly::domain::CoeffDomain` (`&self` carries its parameters — a modulus, a
+minimal polynomial; `inv` returns `None` for non-units) and uses
+`DensePoly<D>`: do not hand-write gcd, xgcd, resultant or square-free
+decomposition again, and do not put the domain's context into every
+element.  A faster method a domain overrides (`dense_gcd`, …) must return
+what the generic algorithm returns.
+
+**Integer gcds** go through `base::numeric::gcd_big` (Lehmer), `gcd_u64` or
+`gcd_u128`; do not add another.  A graded `MonomialOrd` overrides `cmp_monomials` to use
 the stored `Monomial::total_degree`.  Dense multivariate gcds with large
 coefficients go to Brown's modular algorithm (`poly/brown.rs`), verified by
 trial division.

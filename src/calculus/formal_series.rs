@@ -358,17 +358,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
-fn gcd_u32(a: u32, b: u32) -> u32 {
-    let (mut a, mut b) = (a, b);
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a
-}
-
 /// `lcm(a, b)`, `None` above [`MAX_RAMIFICATION`].
 fn lcm_u32(a: u32, b: u32) -> Option<u32> {
-    let l = u64::from(a / gcd_u32(a, b).max(1)) * u64::from(b);
+    let (a, b) = (u64::from(a), u64::from(b));
+    let l = a / crate::base::numeric::gcd_u64(a, b).max(1) * b;
     u32::try_from(l).ok().filter(|&l| l <= MAX_RAMIFICATION)
 }
 

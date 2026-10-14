@@ -75,7 +75,7 @@ use crate::base::errors::SymplexError;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
-use ball::CBall;
+use ball::{Balls, CBall, Cache};
 use tracing::debug;
 use wp::{Guard, Prec, RM, Wp};
 
@@ -312,7 +312,9 @@ struct Evaluated {
     second_bits: u64,
 }
 
-/// The error bounds of the evaluated nodes (see [`accuracy`]).
+/// Error bounds of nodes held apart from their values: quadrature's
+/// integrand (`quad.rs`) keeps the two maps, read as [`Cache::Split`]; the
+/// evaluator holds one map of balls ([`Balls`]).
 type ErrMap = FxHashMap<ExprId, accuracy::Bound>;
 
 /// A bound variable preset to a value with an error bound.
@@ -342,7 +344,7 @@ fn evaluate_tree(
 /// A composite node of rationals and `i` takes its exact value
 /// ([`exact`]); a node whose value overflows the exponent range, or is the
 /// reciprocal of one that underflowed, fails with that reason
-/// ([`exponent_range_error`]) rather than passing `±∞` up to a
+/// ([`range_error`]) rather than passing `±∞` up to a
 /// `PrecisionExhausted` that no precision would cure.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_tree_full(
@@ -354,8 +356,7 @@ fn evaluate_tree_full(
     w: &mut Wp<'_>,
 ) -> Result<Evaluated, SymplexError> {
     let prec = w.bits();
-    let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
-    let mut errs: ErrMap = FxHashMap::default();
+    let mut balls = Balls::default();
     let mut failed: FxHashMap<ExprId, SymplexError> = FxHashMap::default();
     let mut exact_values = exact::ExactMap::default();
     let mut limited = false;
@@ -375,13 +376,13 @@ fn evaluate_tree_full(
     let mut second_bits = 0u64;
     if let Some((id, CBall { mid: value, err })) = seed {
         sigs.record_leaf(id, &value, err);
-        cache.insert(id, value);
-        errs.insert(id, err);
+        balls.insert(id, CBall::new(value, err));
     }
     for &id in post_order {
-        if cache.contains_key(&id) || (id != root && is_condition(arena.node(id))) {
+        if balls.contains_key(&id) || (id != root && is_condition(arena.node(id))) {
             continue;
         }
+        let cache = Cache::Balls(&balls);
         let exact_z = exact::exact_value(arena, id, &exact_values);
         match (&exact_z, arena.node(id)) {
             (Some(z), _) => {
@@ -399,8 +400,8 @@ fn evaluate_tree_full(
         }
         // Whether the value overflowed the exponent range.
         let mut overflowed = false;
-        let mut evaluated = eval_node_with_error(arena, id, &cache, &errs, w).and_then(|ball| {
-            match exponent_range_error(arena, id, &ball.mid, &cache, &errs) {
+        let mut evaluated = eval_ball(arena, id, cache, w).and_then(|ball| {
+            match range_error(arena, id, &ball.mid, cache) {
                 Some(err) => {
                     overflowed = true;
                     Err(err)
@@ -418,13 +419,12 @@ fn evaluate_tree_full(
                 underflowed,
                 overflowed,
             };
-            if extended::wanted(arena, id, edge, &cache, &exts)
+            if extended::wanted(arena, id, edge, cache, &exts)
                 && let Some(outcome) = extended::extend(
                     arena,
                     id,
                     edge,
-                    &cache,
-                    &errs,
+                    cache,
                     &exts,
                     &exact_values,
                     w,
@@ -479,7 +479,7 @@ fn evaluate_tree_full(
         // A domain error of a function whose argument is ±∞ or 0 only
         // because an argument lacked precision (`loggamma` of `atanh(1 −
         // 2·10⁻⁵⁰)³`, infinite at 128 bits): no value yet, as in
-        // `eval_node_with_error` for an inexact zero.
+        // `eval_ball` for an inexact zero.
         let evaluated = match evaluated {
             Err(SymplexError::Unevaluable { .. }) if tainted_child() => {
                 Ok(CBall::unknown(c_zero(prec)))
@@ -491,7 +491,7 @@ fn evaluate_tree_full(
                 mid: mut value,
                 err: mut e,
             }) => {
-                if precision_limited(&evaluation_arguments(arena, id), &value, e, &cache, &errs)
+                if precision_limited(&evaluation_arguments(arena, id), &value, e, cache)
                     || (e.is_unknown() && tainted_child())
                 {
                     limited = true;
@@ -504,45 +504,29 @@ fn evaluate_tree_full(
                     && !e.is_unknown()
                     && !accuracy::exact_zero(&value.1, e.im)
                     && accuracy::part_contains_zero(&value.1, e.im)
-                    && sigs.conjugates_pair_up(children, &cache, &errs)
+                    && sigs.conjugates_pair_up(children, cache)
                 {
                     value.1 = BigFloat::new(prec);
                     e.im = accuracy::EXACT;
                 }
-                sigs.record(arena, id, &value, e, &cache, &errs);
+                sigs.record(arena, id, &value, e, cache);
                 // A sum known scaled recorded its lost terms itself
                 // (`extended`); an exact one lost nothing.
                 if let ExprNode::Add(children) = arena.node(id)
                     && !exact_values.contains_key(&id)
                     && !matches!(exts.get(&id), Some(extended::Ext::Beyond(_)))
                 {
-                    note_absorbed(
-                        children,
-                        e.joint(),
-                        &cache,
-                        &errs,
-                        &exts,
-                        &nonzero,
-                        &mut absorbed,
-                    );
+                    note_absorbed(children, e.joint(), cache, &exts, &nonzero, &mut absorbed);
                 }
                 if !exts.contains_key(&id) {
-                    note_series_tail(arena.node(id), e.joint(), &cache, &errs, &mut absorbed);
-                    note_limit_tail(
-                        arena,
-                        arena.node(id),
-                        e.joint(),
-                        &cache,
-                        &errs,
-                        &mut absorbed,
-                    );
+                    note_series_tail(arena.node(id), e.joint(), cache, &mut absorbed);
+                    note_limit_tail(arena.node(id), e.joint(), cache, &mut absorbed);
                     note_cross_terms(
                         arena,
                         id,
                         &value,
                         e.joint(),
-                        &cache,
-                        &errs,
+                        cache,
                         &exact_values,
                         &mut absorbed,
                     );
@@ -553,14 +537,13 @@ fn evaluate_tree_full(
                 if accuracy::mag(&value).is_none() && accuracy::is_underflow(e.joint()) {
                     let status = match exts.get(&id) {
                         Some(extended::Ext::Beyond(s)) => s.nonzero(),
-                        _ => accuracy::underflow_nonzero(arena, id, &cache, &errs, &nonzero),
+                        _ => accuracy::underflow_nonzero(arena, id, cache, &nonzero),
                     };
                     if let Some(s) = status {
                         nonzero.insert(id, s);
                     }
                 }
-                errs.insert(id, e);
-                cache.insert(id, value);
+                balls.insert(id, CBall::new(value, e));
             }
             Err(e) => {
                 let e = root_cause(arena.node(id), e, &failed);
@@ -574,10 +557,9 @@ fn evaluate_tree_full(
             }
         }
     }
-    let value = cache.remove(&root).ok_or_else(|| {
+    let CBall { mid: value, err } = balls.remove(&root).ok_or_else(|| {
         SymplexError::NotImplemented("evalf: expression not found in cache".into())
     })?;
-    let err = errs.get(&root).copied().unwrap_or(accuracy::Bound::UNKNOWN);
     let beyond = match exts.remove(&root) {
         Some(extended::Ext::Beyond(s)) => Some(s),
         _ => None,
@@ -643,8 +625,7 @@ fn near_ordinary(
 fn note_absorbed(
     children: &[ExprId],
     radius: accuracy::ErrExp,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     exts: &extended::ExtMap,
     nonzero: &FxHashMap<ExprId, accuracy::Nonzero>,
     slot: &mut Option<accuracy::Absorbed>,
@@ -661,7 +642,7 @@ fn note_absorbed(
                 s.lg_value()
             }
             _ => {
-                let (Some(v), Some(b)) = (cache.get(c), errs.get(c)) else {
+                let (Some(v), Some(b)) = (cache.get(c), cache.bound(c)) else {
                     continue;
                 };
                 if !b.is_unknown() && !accuracy::contains_zero(v, b.joint()) {
@@ -735,8 +716,7 @@ fn note_flattened(
 fn note_series_tail(
     node: &ExprNode,
     radius: accuracy::ErrExp,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     slot: &mut Option<accuracy::Absorbed>,
 ) {
     // `log₂` of the coefficients of the third and fifth powers of the odd
@@ -769,7 +749,7 @@ fn note_series_tail(
     if !radius.is_finite() {
         return;
     }
-    let (Some(x), Some(b)) = (cache.get(&c), errs.get(&c)) else {
+    let (Some(x), Some(b)) = (cache.get(&c), cache.bound(&c)) else {
         return;
     };
     if b.is_unknown() || accuracy::contains_zero(x, b.joint()) {
@@ -804,11 +784,9 @@ fn note_series_tail(
 /// printed `0` (mpmath at 30 digits does too; SymPy's `N(…, maxn=2000)` finds
 /// them).
 fn note_limit_tail(
-    arena: &Arena,
     node: &ExprNode,
     radius: accuracy::ErrExp,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     slot: &mut Option<accuracy::Absorbed>,
 ) {
     if !radius.is_finite() {
@@ -817,8 +795,8 @@ fn note_limit_tail(
     // `log₂ abs(x)` of a real argument, and of the end of its ball nearer to
     // infinity (the tails fall with `abs(x)`).
     let real = |c: ExprId| -> Option<(f64, f64, bool)> {
-        let (v, b) = (cache.get(&c)?, errs.get(&c)?);
-        if b.is_unknown() || !accuracy::exactly_real(v, *b) || v.0.is_zero() {
+        let (v, b) = (cache.get(&c)?, cache.bound(&c)?);
+        if b.is_unknown() || !accuracy::exactly_real(v, b) || v.0.is_zero() {
             return None;
         }
         let lx = accuracy::lg_abs(v);
@@ -855,20 +833,20 @@ fn note_limit_tail(
                 (!negative && lx >= 1.0).then_some(())?;
                 -e2(far)
             }
-            ExprNode::Apply(sid, ref args) => match (arena.lib_fn(sid), args.as_slice()) {
-                (Some(LibFn::DirichletEta), &[s]) => {
+            ExprNode::Lib(f, ref args) => match (f, args.as_slice()) {
+                (LibFn::DirichletEta, &[s]) => {
                     let (ls, far, negative) = real(s)?;
                     (!negative && ls >= 1.0).then_some(())?;
                     -e2(far) - 1.0
                 }
-                (Some(LibFn::PolyLog), &[s, z]) => {
+                (LibFn::PolyLog, &[s, z]) => {
                     let (ls, _, negative) = real(s)?;
                     (!negative && ls >= 2.0).then_some(())?;
                     polylog_tail(
                         cache.get(&s)?,
-                        *errs.get(&s)?,
+                        cache.bound(&s)?,
                         cache.get(&z)?,
-                        *errs.get(&z)?,
+                        cache.bound(&z)?,
                         radius,
                     )
                 }
@@ -977,13 +955,7 @@ fn polylog_tail_proved(
 /// or, for an exact real rational `x` that is not a sum (the canonical form
 /// folds `1 + 10⁻³⁰⁰` into one rational), the size of its small part
 /// ([`rational_small_part`]).
-fn small_part(
-    arena: &Arena,
-    id: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
-    exact: &exact::ExactMap,
-) -> Option<f64> {
+fn small_part(arena: &Arena, id: ExprId, cache: Cache<'_>, exact: &exact::ExactMap) -> Option<f64> {
     let ExprNode::Add(children) = arena.node(id) else {
         // (A small part within 64 bits shows at any working precision.)
         return match exact::operand(arena, id, exact) {
@@ -992,14 +964,14 @@ fn small_part(
         };
     };
     let total = cache.get(&id)?;
-    let tb = errs.get(&id)?;
+    let tb = cache.bound(&id)?;
     if tb.is_unknown() || accuracy::contains_zero(total, tb.joint()) {
         return None;
     }
     let smallest = children
         .iter()
         .filter_map(|c| {
-            let (v, b) = (cache.get(c)?, errs.get(c)?);
+            let (v, b) = (cache.get(c)?, cache.bound(c)?);
             (!b.is_unknown() && !accuracy::contains_zero(v, b.joint())).then(|| accuracy::lg_abs(v))
         })
         .fold(f64::INFINITY, f64::min);
@@ -1121,8 +1093,7 @@ fn note_cross_terms(
     id: ExprId,
     value: &Complex,
     radius: accuracy::ErrExp,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     exact: &exact::ExactMap,
     slot: &mut Option<accuracy::Absorbed>,
 ) {
@@ -1141,7 +1112,7 @@ fn note_cross_terms(
             else {
                 return;
             };
-            let Some(r) = small_part(arena, *b, cache, errs, exact) else {
+            let Some(r) = small_part(arena, *b, cache, exact) else {
                 return;
             };
             let c = (q * (q - 1.0) / 2.0).abs();
@@ -1153,7 +1124,7 @@ fn note_cross_terms(
         ExprNode::Mul(children) => {
             let mut parts: Vec<f64> = children
                 .iter()
-                .filter_map(|&c| small_part(arena, c, cache, errs, exact))
+                .filter_map(|&c| small_part(arena, c, cache, exact))
                 .filter(|&r| r <= -8.0)
                 .collect();
             if parts.len() < 2 {
@@ -1188,7 +1159,7 @@ fn note_cross_terms(
         | ExprNode::Li(c)
         | ExprNode::Zeta(c)
         | ExprNode::Factorial(c) => {
-            let Some(r) = small_part(arena, *c, cache, errs, exact) else {
+            let Some(r) = small_part(arena, *c, cache, exact) else {
                 return;
             };
             if r > -8.0 {
@@ -1217,8 +1188,7 @@ fn precision_limited(
     arguments: &[ExprId],
     value: &Complex,
     e: accuracy::Bound,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
 ) -> bool {
     let finite = |z: &Complex| !(z.0.is_inf() || z.0.is_nan() || z.1.is_inf() || z.1.is_nan());
     if !e.is_unknown() && finite(value) {
@@ -1226,7 +1196,7 @@ fn precision_limited(
     }
     let mut inexact = false;
     for &c in arguments {
-        let (Some(v), Some(b)) = (cache.get(&c), errs.get(&c)) else {
+        let (Some(v), Some(b)) = (cache.get(&c), cache.bound(&c)) else {
             continue;
         };
         if b.is_unknown() || !finite(v) || accuracy::is_underflow(b.joint()) {
@@ -1283,12 +1253,11 @@ fn evaluation_arguments(arena: &Arena, id: ExprId) -> smallvec::SmallVec<[ExprId
 /// may resolve, see [`precision_limited`]).  Before 0.31 the infinite value
 /// propagated to a `PrecisionExhausted`: `Γ(10²⁰/3)` "achieved 0 digits",
 /// while `uppergamma(10²⁰/3, 10²⁰/3)` reported its overflow.
-fn exponent_range_error(
+fn range_error(
     arena: &Arena,
     id: ExprId,
     value: &Complex,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
 ) -> Option<SymplexError> {
     if !(value.0.is_inf() || value.1.is_inf()) {
         return None;
@@ -1308,15 +1277,15 @@ fn exponent_range_error(
         ExprNode::Ei(_) => "Ei",
         // The functions that grow like an exponential or a factorial, and
         // have no pole at a finite nonzero argument.
-        ExprNode::Apply(sid, _) => match arena.lib_fn(*sid) {
-            Some(LibFn::Erfi) => "erfi",
-            Some(LibFn::Shi) => "Shi",
-            Some(LibFn::Chi) => "Chi",
-            Some(LibFn::BesselI) => "besseli",
-            Some(LibFn::AiryBi) => "airybi",
-            Some(LibFn::AiryBiPrime) => "airybiprime",
-            Some(LibFn::RisingFactorial) => "rising_factorial",
-            Some(LibFn::Subfactorial) => "subfactorial",
+        ExprNode::Lib(f, _) => match f {
+            LibFn::Erfi => "erfi",
+            LibFn::Shi => "Shi",
+            LibFn::Chi => "Chi",
+            LibFn::BesselI => "besseli",
+            LibFn::AiryBi => "airybi",
+            LibFn::AiryBiPrime => "airybiprime",
+            LibFn::RisingFactorial => "rising_factorial",
+            LibFn::Subfactorial => "subfactorial",
             _ => return None,
         },
         _ => return None,
@@ -1330,7 +1299,7 @@ fn exponent_range_error(
             return None;
         }
         if accuracy::mag(v).is_none() {
-            let b = errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let b = cache.err(&c);
             // An exact 0 is a parameter (`besseli(0, x)`); an inexact one
             // may be a division by a difference that cancelled, which more
             // precision resolves (`precision_limited`).
@@ -1418,8 +1387,32 @@ fn is_condition(node: &ExprNode) -> bool {
     )
 }
 
-/// Evaluate node `id` from its children's values (`cache`) and error bounds
-/// (`errs`): its value and error bound.
+/// [`range_error`] over values and bounds held in two maps (quadrature's
+/// integrand, `quad.rs`).
+fn exponent_range_error(
+    arena: &Arena,
+    id: ExprId,
+    value: &Complex,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+) -> Option<SymplexError> {
+    range_error(arena, id, value, Cache::Split(cache, Some(errs)))
+}
+
+/// [`eval_ball`] over values and bounds held in two maps (quadrature's
+/// integrand, `quad.rs`).
+fn eval_node_with_error(
+    arena: &Arena,
+    id: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    w: &mut Wp<'_>,
+) -> Result<CBall, SymplexError> {
+    eval_ball(arena, id, Cache::Split(cache, Some(errs)), w)
+}
+
+/// Evaluate node `id` from its children's values and error bounds
+/// (`cache`): its value and error bound.
 ///
 /// Most nodes are evaluated by [`eval_node`] and bounded from their
 /// children by [`accuracy::node_error`].  `+` and `·` are evaluated with
@@ -1431,17 +1424,16 @@ fn is_condition(node: &ExprNode) -> bool {
 /// inclusion disks of the roots), `Piecewise` (whether its conditions were
 /// decided with certainty), physical constants (their value's bound) and
 /// definite integrals (the quadrature's error estimate).
-fn eval_node_with_error(
+fn eval_ball(
     arena: &Arena,
     id: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<CBall, SymplexError> {
     let prec = w.bits();
     // `erfinv`, `erfcinv` next to the ends of their domains, from the exact
     // complement of the argument (`cspecial.rs`; refused before 0.45).
-    if let Some(r) = cspecial::inverse_erf_end(arena, arena.node(id), cache, errs, w) {
+    if let Some(r) = cspecial::inverse_erf_end(arena, arena.node(id), cache, w) {
         let CBall { mid: value, err } = r?;
         let err = accuracy::reported(&value, err, prec);
         return Ok(CBall::new(value, err));
@@ -1451,7 +1443,7 @@ fn eval_node_with_error(
             let mut parts: Vec<(&Complex, accuracy::Bound)> = Vec::with_capacity(children.len());
             for &c in children.iter() {
                 let v = get_cached(cache, c)?;
-                parts.push((v, errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN)));
+                parts.push((v, cache.err(&c)));
             }
             return Ok(if matches!(arena.node(id), ExprNode::Add(_)) {
                 accuracy::add_with_bound(&parts, prec)
@@ -1463,18 +1455,15 @@ fn eval_node_with_error(
         ExprNode::Product_(body, var, lo, hi) => {
             eval_product(arena, *body, *var, *lo, *hi, cache, w)?
         }
-        ExprNode::Piecewise(pairs) => eval_piecewise(arena, pairs, cache, errs, w)?,
+        ExprNode::Piecewise(pairs) => eval_piecewise(arena, pairs, cache, w)?,
         ExprNode::RootOf(poly, var, index) => eval_rootof(arena, *poly, *var, *index, prec)?,
         ExprNode::RootSum(poly, body, sumvar) => eval_rootsum(arena, *poly, *body, *sumvar, w)?,
         ExprNode::DefiniteIntegral(body, var, lo, hi) => {
-            eval_definite_integral(arena, *body, *var, *lo, *hi, cache, errs, w)?
+            eval_definite_integral(arena, *body, *var, *lo, *hi, cache, w)?
         }
-        node if inverse_identity(arena, node, cache, errs, prec).is_some() => {
-            let u = inverse_identity(arena, node, cache, errs, prec).unwrap_or(id);
-            return Ok(CBall::new(
-                get_cached(cache, u)?.clone(),
-                errs.get(&u).copied().unwrap_or(accuracy::Bound::UNKNOWN),
-            ));
+        node if inverse_identity(arena, node, cache, prec).is_some() => {
+            let u = inverse_identity(arena, node, cache, prec).unwrap_or(id);
+            return Ok(CBall::new(get_cached(cache, u)?.clone(), cache.err(&u)));
         }
         // Lambert W reports its own bound (complex arguments, every branch).
         node if lambertw::lambert_parts(arena, node).is_some() => {
@@ -1482,14 +1471,14 @@ fn eval_node_with_error(
                 Ok(value) => value,
                 // `W_k(0)` for `k ≠ 0` at an argument only 0 to the working
                 // precision: no value yet (as in the arm below).
-                Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache, errs) => {
+                Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache) => {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
             };
             let err = match lambertw::lambert_parts(arena, node) {
                 Some(Ok((x, k))) => {
-                    let bz = errs.get(&x).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+                    let bz = cache.err(&x);
                     lambertw::error_bound(get_cached(cache, x)?, bz, &value, k, prec)
                 }
                 _ => accuracy::Bound::UNKNOWN,
@@ -1500,19 +1489,18 @@ fn eval_node_with_error(
         // sensitivity rules are for real arguments).
         ExprNode::LogGamma(c) if cache.get(c).is_some_and(|v| !v.1.is_zero()) => {
             let value = eval_node(arena, id, cache, w)?;
-            let bz = errs.get(c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let bz = cache.err(c);
             let err = loggamma::error_bound(get_cached(cache, *c)?, bz, &value, prec);
             CBall::new(value, err)
         }
         // `ζ`, `η`, `ψ⁽ᵐ⁾`, `ψ`, `Γ` and `x!` of a non-real argument report their
         // own bounds (`zeta.rs`; the sensitivity rules are for real
         // arguments).
-        node if complex_zeta_family(arena, node, cache).is_some() => {
-            let (kind, c) =
-                complex_zeta_family(arena, node, cache).unwrap_or((ZetaFamily::Zeta, id));
+        node if complex_zeta_family(node, cache).is_some() => {
+            let (kind, c) = complex_zeta_family(node, cache).unwrap_or((ZetaFamily::Zeta, id));
             let value = eval_node(arena, id, cache, w)?;
             let z = get_cached(cache, c)?;
-            let bz = errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let bz = cache.err(&c);
             let err = match kind {
                 ZetaFamily::Zeta => zeta::zeta_bound(z, bz, &value, prec),
                 ZetaFamily::Eta => zeta::eta_bound(z, bz, &value, prec),
@@ -1525,10 +1513,7 @@ fn eval_node_with_error(
                     zeta::gamma_bound(&z1, bz, &value, prec)
                 }
                 ZetaFamily::Polygamma(order) => {
-                    let bn = errs
-                        .get(&order)
-                        .copied()
-                        .unwrap_or(accuracy::Bound::UNKNOWN);
+                    let bn = cache.err(&order);
                     let m = get_cached(cache, order)
                         .ok()
                         .and_then(|v| f64_of(&v.0).ok())
@@ -1554,20 +1539,20 @@ fn eval_node_with_error(
         }
         // The special functions of `cspecial.rs` at non-real arguments (or
         // real ones where the value is not real) report their own bounds.
-        node if cspecial::classify(arena, node, cache).is_some() => {
-            let Some((f, args)) = cspecial::classify(arena, node, cache) else {
+        node if cspecial::classify(node, cache).is_some() => {
+            let Some((f, args)) = cspecial::classify(node, cache) else {
                 return Err(unevaluable("special function lost its arguments"));
             };
             let value = match eval_node(arena, id, cache, w) {
                 Ok(value) => value,
                 // A domain error at 0 for an argument only 0 to the working
                 // precision (as in the arm below).
-                Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache, errs) => {
+                Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache) => {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
             };
-            let err = cspecial::bound(arena, id, f, &args, &value, cache, errs, w);
+            let err = cspecial::bound(arena, id, f, &args, &value, cache, w);
             CBall::new(value, err)
         }
         ExprNode::Beta(a, b)
@@ -1575,7 +1560,7 @@ fn eval_node_with_error(
                 || cache.get(b).is_some_and(|v| !v.1.is_zero()) =>
         {
             let value = eval_node(arena, id, cache, w)?;
-            let bound = |c: &ExprId| errs.get(c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let bound = |c: &ExprId| cache.err(c);
             let err = zeta::beta_bound(
                 get_cached(cache, *a)?,
                 bound(a),
@@ -1588,20 +1573,19 @@ fn eval_node_with_error(
         }
         // `polylog` off the real interval [−1, 1] reports its own bound (the
         // sensitivity rules are for real arguments; `polylog.rs`).
-        node @ ExprNode::Apply(_, args) if polylog::is_general(arena, node, cache) => {
+        node @ ExprNode::Lib(_, args) if polylog::is_general(node, cache) => {
             let value = match eval_node(arena, id, cache, w) {
                 Ok(value) => value,
                 // An argument that cancelled to 0 or rounded onto 1 (as in
                 // the arm below).
                 Err(SymplexError::Unevaluable { .. })
-                    if inexact_zero_child(node, cache, errs)
-                        || rounded_onto_pole(arena, node, cache, errs) =>
+                    if inexact_zero_child(node, cache) || rounded_onto_pole(node, cache) =>
                 {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
             };
-            let bound = |c: ExprId| errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let bound = |c: ExprId| cache.err(&c);
             let err = polylog::error_bound(
                 &get_cached(cache, args[0])?.0,
                 bound(args[0]),
@@ -1613,18 +1597,16 @@ fn eval_node_with_error(
             CBall::new(value, err)
         }
         // `polylog` of a complex order reports its own bound.
-        node @ ExprNode::Apply(_, args) if polylog::is_complex_order(arena, node, cache) => {
+        node @ ExprNode::Lib(_, args) if polylog::is_complex_order(node, cache) => {
             let value = match eval_node(arena, id, cache, w) {
                 Ok(value) => value,
                 // An argument that rounded onto 1 (as in the arm above).
-                Err(SymplexError::Unevaluable { .. })
-                    if rounded_onto_pole(arena, node, cache, errs) =>
-                {
+                Err(SymplexError::Unevaluable { .. }) if rounded_onto_pole(node, cache) => {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
             };
-            let bound = |c: ExprId| errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let bound = |c: ExprId| cache.err(&c);
             let err = polylog::complex_order_bound(
                 get_cached(cache, args[0])?,
                 bound(args[0]),
@@ -1647,7 +1629,7 @@ fn eval_node_with_error(
         ExprNode::Sin(c) | ExprNode::Cos(c) | ExprNode::Tan(c)
             if large_inexact_trig_argument(arena, *c, cache) =>
         {
-            let b = errs.get(c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let b = cache.err(c);
             if b.is_unknown() || b.joint() > -4.0 {
                 return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
             }
@@ -1658,8 +1640,8 @@ fn eval_node_with_error(
                 _ => arg.tan(prec, RM, w.cc),
             };
             let value = (value, BigFloat::new(prec));
-            let err = accuracy::node_error(arena, id, &value, cache, errs, prec, || {
-                sensitivity::special_error(arena, id, &value, cache, errs, w)
+            let err = accuracy::node_error(arena, id, &value, cache, prec, || {
+                sensitivity::special_error(arena, id, &value, cache, w)
             });
             return Ok(CBall::new(value, err));
         }
@@ -1667,12 +1649,7 @@ fn eval_node_with_error(
             // The constant is an atom to every tree walk, so its stored
             // value (`h/(2π)` for ħ) was never visited: evaluate it as a
             // subtree of its own unless it is a single already-cached node.
-            Some(v) => CBall::new(
-                v.clone(),
-                errs.get(value_id)
-                    .copied()
-                    .unwrap_or(accuracy::Bound::UNKNOWN),
-            ),
+            Some(v) => CBall::new(v.clone(), cache.err(value_id)),
             None => {
                 let order = walk::post_order_ids(arena, *value_id);
                 evaluate_tree(arena, *value_id, &order, None, true, w)?
@@ -1690,15 +1667,15 @@ fn eval_node_with_error(
                 // rounded onto it (`ζ(1 + 10⁻⁴⁵)`: `1 + 10⁻⁴⁵` is 1 at 128
                 // bits).
                 Err(SymplexError::Unevaluable { .. })
-                    if inexact_zero_child(arena.node(id), cache, errs)
-                        || rounded_onto_pole(arena, arena.node(id), cache, errs) =>
+                    if inexact_zero_child(arena.node(id), cache)
+                        || rounded_onto_pole(arena.node(id), cache) =>
                 {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
             };
-            let err = accuracy::node_error(arena, id, &value, cache, errs, prec, || {
-                sensitivity::special_error(arena, id, &value, cache, errs, w)
+            let err = accuracy::node_error(arena, id, &value, cache, prec, || {
+                sensitivity::special_error(arena, id, &value, cache, w)
             });
             return Ok(CBall::new(value, err));
         }
@@ -1724,11 +1701,7 @@ enum ZetaFamily {
 /// Is `node` one of the functions of `zeta.rs` (`ζ`, `η`, `Γ`, `x!`, `ψ`,
 /// `ψ⁽ᵐ⁾`, `harmonic`) or `cerf.rs` (`erf`, `erfc`, `erfi`) whose (last)
 /// argument has a non-real value in `cache`?  Which one, and that argument.
-fn complex_zeta_family(
-    arena: &Arena,
-    node: &ExprNode,
-    cache: &FxHashMap<ExprId, Complex>,
-) -> Option<(ZetaFamily, ExprId)> {
+fn complex_zeta_family(node: &ExprNode, cache: Cache<'_>) -> Option<(ZetaFamily, ExprId)> {
     let (kind, c) = match node {
         ExprNode::Zeta(c) => (ZetaFamily::Zeta, *c),
         ExprNode::Gamma(c) => (ZetaFamily::Gamma, *c),
@@ -1737,21 +1710,11 @@ fn complex_zeta_family(
         ExprNode::Polygamma(n, c) => (ZetaFamily::Polygamma(*n), *c),
         ExprNode::Erf(c) => (ZetaFamily::Erf(cerf::Kind::Erf), *c),
         ExprNode::Erfc(c) => (ZetaFamily::Erf(cerf::Kind::Erfc), *c),
-        ExprNode::Apply(sid, args)
-            if arena.lib_fn(*sid) == Some(LibFn::Erfi) && args.len() == 1 =>
-        {
+        ExprNode::Lib(LibFn::Erfi, args) if args.len() == 1 => {
             (ZetaFamily::Erf(cerf::Kind::Erfi), args[0])
         }
-        ExprNode::Apply(sid, args)
-            if arena.lib_fn(*sid) == Some(LibFn::DirichletEta) && args.len() == 1 =>
-        {
-            (ZetaFamily::Eta, args[0])
-        }
-        ExprNode::Apply(sid, args)
-            if arena.lib_fn(*sid) == Some(LibFn::Harmonic) && args.len() == 1 =>
-        {
-            (ZetaFamily::Harmonic, args[0])
-        }
+        ExprNode::Lib(LibFn::DirichletEta, args) if args.len() == 1 => (ZetaFamily::Eta, args[0]),
+        ExprNode::Lib(LibFn::Harmonic, args) if args.len() == 1 => (ZetaFamily::Harmonic, args[0]),
         _ => return None,
     };
     cache
@@ -1778,8 +1741,7 @@ fn complex_zeta_family(
 fn inverse_identity(
     arena: &Arena,
     node: &ExprNode,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     prec: usize,
 ) -> Option<ExprId> {
     let (outer, inner) = match node {
@@ -1813,11 +1775,7 @@ fn inverse_identity(
         _ => &[],
     };
     if !singular.is_empty() {
-        let err = errs
-            .get(&u)
-            .copied()
-            .unwrap_or(accuracy::Bound::UNKNOWN)
-            .joint();
+        let err = cache.err(&u).joint();
         if accuracy::is_unknown(err) {
             return None;
         }
@@ -1841,22 +1799,13 @@ fn inverse_identity(
 /// `Π(n, 1)`, `erfc⁻¹(2)`, `erf⁻¹(±1)` — met by an argument that rounded
 /// onto it (before 0.31 `polylog(1/3, 1 − 10⁻⁴⁰)` was "`polylog(s, 1)`
 /// diverges" at 16 digits: `1 − 10⁻⁴⁰` is 1 at 128 bits)?
-fn rounded_onto_pole(
-    arena: &Arena,
-    node: &ExprNode,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
-) -> bool {
-    if let ExprNode::Apply(sid, _) = node {
+fn rounded_onto_pole(node: &ExprNode, cache: Cache<'_>) -> bool {
+    if let ExprNode::Lib(f, _) = node {
         let args = node.children();
         // Is argument `k` an inexact real value equal to one of `points`?
         let at = |k: usize, points: &[i32]| -> bool {
             args.get(k).is_some_and(|c| {
-                let inexact = !errs
-                    .get(c)
-                    .copied()
-                    .unwrap_or(accuracy::Bound::UNKNOWN)
-                    .is_exact();
+                let inexact = !cache.err(c).is_exact();
                 inexact
                     && cache.get(c).is_some_and(|v| {
                         v.1.is_zero()
@@ -1866,12 +1815,20 @@ fn rounded_onto_pole(
                     })
             })
         };
-        match arena.lib_fn(*sid) {
-            Some(LibFn::PolyLog) => return at(1, &[1]),
-            Some(LibFn::EllipticK) => return at(0, &[1]),
-            Some(LibFn::EllipticPi) => return at(0, &[1]) || at(1, &[1]),
-            Some(LibFn::ErfcInv) => return at(0, &[2]),
-            Some(LibFn::ErfInv) => return at(0, &[-1, 1]),
+        match f {
+            LibFn::PolyLog => return at(1, &[1]),
+            LibFn::EllipticK => return at(0, &[1]),
+            LibFn::EllipticPi => return at(0, &[1]) || at(1, &[1]),
+            LibFn::ErfcInv => return at(0, &[2]),
+            LibFn::ErfInv => return at(0, &[-1, 1]),
+            // `E_n(0)` is finite for `n > 1` only: an order that rounded
+            // onto 1 (`expint(1 + 10⁻⁴⁰, 0)` = 10⁴⁰) is decided at a
+            // higher precision.
+            LibFn::ExpInt => {
+                let zero =
+                    |c: &ExprId| cache.get(c).is_some_and(|v| v.0.is_zero() && v.1.is_zero());
+                return at(0, &[1]) && args.get(1).is_some_and(zero);
+            }
             _ => {}
         }
     }
@@ -1884,34 +1841,25 @@ fn rounded_onto_pole(
         | ExprNode::Factorial(_)
         | ExprNode::Beta(_, _)
         | ExprNode::Binomial(_, _) => true,
-        ExprNode::Apply(sid, _) => matches!(
-            arena.lib_fn(*sid),
-            Some(LibFn::RisingFactorial | LibFn::FallingFactorial | LibFn::Harmonic)
+        ExprNode::Lib(f, _) => matches!(
+            f,
+            LibFn::RisingFactorial | LibFn::FallingFactorial | LibFn::Harmonic
         ),
         _ => false,
     };
     poles
         && node.children().into_iter().any(|c| {
             cache.get(&c).is_some_and(|v| v.1.is_zero() && v.0.is_int())
-                && !errs
-                    .get(&c)
-                    .copied()
-                    .unwrap_or(accuracy::Bound::UNKNOWN)
-                    .is_exact()
+                && !cache.err(&c).is_exact()
         })
 }
 
 /// Does `node` have a child whose value is 0 without being exactly 0?
-fn inexact_zero_child(node: &ExprNode, cache: &FxHashMap<ExprId, Complex>, errs: &ErrMap) -> bool {
+fn inexact_zero_child(node: &ExprNode, cache: Cache<'_>) -> bool {
     node.children().into_iter().any(|c| {
-        cache.get(&c).is_some_and(|v| {
-            accuracy::mag(v).is_none()
-                && !errs
-                    .get(&c)
-                    .copied()
-                    .unwrap_or(accuracy::Bound::UNKNOWN)
-                    .is_exact()
-        })
+        cache
+            .get(&c)
+            .is_some_and(|v| accuracy::mag(v).is_none() && !cache.err(&c).is_exact())
     })
 }
 
@@ -2133,7 +2081,7 @@ fn underflow_error() -> SymplexError {
 /// 30 digits.  The internal tolerance checks ([`ZeroSearch::Cap`]) are not
 /// affected (their search ends at the cap), and an infinite value that no
 /// precision cures — beyond the exponent range — fails where it arises
-/// ([`exponent_range_error`]).
+/// ([`range_error`]).
 fn evaluate_adaptive(
     arena: &Arena,
     expr: ExprId,
@@ -2860,7 +2808,7 @@ pub(crate) fn eval_const_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
 fn eval_node(
     arena: &Arena,
     id: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
     let prec = w.bits();
@@ -2868,7 +2816,7 @@ fn eval_node(
 
     // Special functions at non-real arguments, and at real ones where the
     // value is not real (`cspecial.rs`; refused before 0.45).
-    if let Some((f, args)) = cspecial::classify(arena, node, cache) {
+    if let Some((f, args)) = cspecial::classify(node, cache) {
         let vals = args
             .iter()
             .map(|a| get_cached(cache, *a))
@@ -3076,9 +3024,9 @@ fn eval_node(
             }
         }
 
-        // Evaluated with their own error bounds by `eval_node_with_error`,
-        // which never hands them here; without the children's bounds a
-        // `Piecewise` decision is never certain.
+        // Evaluated with their own error bounds by `eval_ball`, which never
+        // hands them here; without the children's bounds a `Piecewise`
+        // decision is never certain.
         ExprNode::PhysicalConstant(..)
         | ExprNode::Sum(..)
         | ExprNode::Product_(..)
@@ -3086,8 +3034,7 @@ fn eval_node(
         | ExprNode::RootOf(..)
         | ExprNode::RootSum(..)
         | ExprNode::DefiniteIntegral(..) => {
-            eval_node_with_error(arena, id, cache, &ErrMap::default(), w)
-                .map(|CBall { mid: v, err: _ }| v)
+            eval_ball(arena, id, cache.values_only(), w).map(|CBall { mid: v, err: _ }| v)
         }
 
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
@@ -3751,7 +3698,7 @@ fn eval_node(
         // ── DiracDelta ─────────────────────────────────────────────
         // A distribution: `δ(z) = 0` for every `z ≠ 0`, and no value at 0.
         // A 0 argument is refused, unless it is only 0 to the working
-        // precision (`eval_node_with_error` then has no value yet and asks
+        // precision (`eval_ball` then has no value yet and asks
         // for more precision); an argument within its error of 0 has no
         // bound (`node_error`).  Up to 0.49 `δ(0)` was a certified `0`.
         ExprNode::DiracDelta(inner) => {
@@ -3762,19 +3709,19 @@ fn eval_node(
             Ok(c_zero(prec))
         }
 
-        // ── Apply-based special functions ───────────────────────────
-        ExprNode::Apply(sid, args) => {
+        // ── Library special functions ────────────────────────────────
+        ExprNode::Lib(f, args) => match f {
+            LibFn::LambertW => eval_lambertw_node(arena, node, cache, w),
+            f if f.arity().accepts(args.len()) => eval_lib_fn(*f, args, cache, w),
+            _ => Err(unevaluable(format!(
+                "{f} called with {} argument(s)",
+                args.len()
+            ))),
+        },
+        // A user function has no numeric meaning.
+        ExprNode::Apply(sid, _) => {
             let name = arena.symbol_name(*sid);
-            match arena.lib_fn(*sid) {
-                Some(LibFn::LambertW) => eval_lambertw_node(arena, node, cache, w),
-                Some(f) if f.arity().accepts(args.len()) => eval_lib_fn(f, args, cache, w),
-                Some(_) => Err(unevaluable(format!(
-                    "{name} called with {} argument(s)",
-                    args.len()
-                ))),
-                // A user function has no numeric meaning.
-                None => Err(unevaluable(format!("cannot evaluate function '{name}'"))),
-            }
+            Err(unevaluable(format!("cannot evaluate function '{name}'")))
         }
 
         ExprNode::Derivative(_, _) => Err(SymplexError::Unevaluable {
@@ -3869,8 +3816,7 @@ fn contains_definite_integral(arena: &Arena, root: ExprId) -> bool {
 /// (must be real).
 fn definite_bound_f64(
     arena: &Arena,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     id: ExprId,
 ) -> Result<(f64, f64), SymplexError> {
     match arena.node(id) {
@@ -3884,7 +3830,7 @@ fn definite_bound_f64(
                 });
             }
             let x = f64_of(&v.0)?;
-            let bound = errs.get(&id).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let bound = cache.err(&id);
             if bound.is_unknown() || !x.is_finite() {
                 return Err(SymplexError::PrecisionExhausted {
                     requested: F64_DIGITS,
@@ -3978,8 +3924,7 @@ fn eval_definite_integral(
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<CBall, SymplexError> {
     let prec = w.bits();
@@ -4000,30 +3945,19 @@ fn eval_definite_integral(
         });
     }
     if prec > QUADRATURE_F64_MAX_PREC {
-        return eval_definite_integral_bigfloat(arena, body, var, lo, hi, cache, errs, w, false)
+        return eval_definite_integral_bigfloat(arena, body, var, lo, hi, cache, w, false)
             .map_err(SymplexError::from);
     }
-    if let Some(served) =
-        eval_definite_integral_f64(arena, body, var, lo, hi, cache, errs, w, false)?
-    {
+    if let Some(served) = eval_definite_integral_f64(arena, body, var, lo, hi, cache, w, false)? {
         return Ok(served);
     }
     // An endpoint singularity the plain bisection cannot resolve: the
     // arbitrary-precision quadrature, unless it fails or certifies less than
     // the smoothed `f64` one (an oscillating tail it does not resolve,
     // `∫₀^∞ sin x·e^{−√x}/√x dx`), with less work when the latter exists.
-    let fallback = eval_definite_integral_f64(arena, body, var, lo, hi, cache, errs, w, true)?;
-    let big = eval_definite_integral_bigfloat(
-        arena,
-        body,
-        var,
-        lo,
-        hi,
-        cache,
-        errs,
-        w,
-        fallback.is_some(),
-    );
+    let fallback = eval_definite_integral_f64(arena, body, var, lo, hi, cache, w, true)?;
+    let big =
+        eval_definite_integral_bigfloat(arena, body, var, lo, hi, cache, w, fallback.is_some());
     match (big, fallback) {
         (Ok(b), Some(f)) if b.err.joint() > f.err.joint() => Ok(f),
         (Ok(b), _) => Ok(b),
@@ -4049,8 +3983,7 @@ fn eval_definite_integral(
 fn quadrature_end(
     arena: &Arena,
     id: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     pa: &mut Arena,
     map: &mut FxHashMap<ExprId, ExprId>,
 ) -> Result<Result<quad::End, bool>, SymplexError> {
@@ -4066,7 +3999,7 @@ fn quadrature_end(
     }
     // A bound that depends on an enclosing bound variable: its cached value.
     let v = get_cached(cache, id)?;
-    let b = errs.get(&id).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+    let b = cache.err(&id);
     if b.is_unknown() || !accuracy::exact_zero(&v.1, b.im) || v.0.is_inf() || v.0.is_nan() {
         return Err(SymplexError::Unevaluable {
             reason: "integration bounds of a definite integral must be real".into(),
@@ -4083,8 +4016,7 @@ fn eval_definite_integral_bigfloat(
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
     light: bool,
 ) -> Result<CBall, quad::QuadError> {
@@ -4106,8 +4038,8 @@ fn eval_definite_integral_bigfloat(
     let mut map: FxHashMap<ExprId, ExprId> = FxHashMap::default();
     let body_p = crate::base::compact::transfer_subtree(arena, &mut pa, body, &mut map);
     let var_p = crate::base::compact::transfer_subtree(arena, &mut pa, var, &mut map);
-    let lo_e = quadrature_end(arena, lo, cache, errs, &mut pa, &mut map)?;
-    let hi_e = quadrature_end(arena, hi, cache, errs, &mut pa, &mut map)?;
+    let lo_e = quadrature_end(arena, lo, cache, &mut pa, &mut map)?;
+    let hi_e = quadrature_end(arena, hi, cache, &mut pa, &mut map)?;
     let exact_zero = || Ok(CBall::exact(c_zero(prec)));
     let probe = prec + 32;
     let mut q = quad::Quad::new(&pa, body_p, var_p, Vec::new(), prec);
@@ -4145,13 +4077,16 @@ fn eval_definite_integral_bigfloat(
     let hi_f = f64_of(&hi_e, f64::INFINITY)?;
     drop(q);
     // Interior breakpoints, located in the private arena.
-    let points: Vec<quad::End> = quadrature_breakpoints(&mut pa, body_p, var_p, lo_f, hi_f)
-        .into_iter()
-        .map(|(p, _)| match pa.as_num(p) {
-            Some(r) => quad::End::Rational(r.clone()),
-            None => quad::End::Expr(p),
-        })
-        .collect();
+    let range = crate::base::interval::Interval::closed(lo_f, hi_f);
+    let points = quadrature_breakpoints(
+        &mut pa,
+        body_p,
+        var_p,
+        lo_e.as_ref(),
+        hi_e.as_ref(),
+        range,
+        prec,
+    )?;
     debug!(
         lo_f,
         hi_f,
@@ -4270,16 +4205,35 @@ fn quadrature_value(mut value: Complex, err: accuracy::ErrExp, real: bool, prec:
     CBall::new(value, bound)
 }
 
-/// The interior breakpoints of `body` in `(lo, hi)` for `quad`, from the
-/// definite integrator's breakpoint scan.
+/// The interior breakpoints of `body` strictly between the ends `lo` and
+/// `hi` (`None`: infinite), whose values are `range`, for `quad`: the
+/// definite integrator's breakpoint scan between the exact ends (the `f64`
+/// ones when an end is not exact), the kinks it cannot place located to
+/// `prec + 16` bits.  An error for a family of more than 10,000 poles,
+/// kinks or steps, or kinks that cannot be located.
 fn quadrature_breakpoints(
     pa: &mut Arena,
     body: ExprId,
     var: ExprId,
-    lo: f64,
-    hi: f64,
-) -> Vec<(ExprId, f64)> {
-    crate::calculus::definite::quadrature_breakpoints(pa, body, var, lo, hi)
+    lo: Option<&quad::End>,
+    hi: Option<&quad::End>,
+    range: crate::base::interval::Interval<f64>,
+    prec: usize,
+) -> Result<Vec<quad::End>, SymplexError> {
+    use crate::base::interval::Interval;
+    let lo_x = lo.and_then(|e| e.exact(pa));
+    let hi_x = hi.and_then(|e| e.exact(pa));
+    let exact = lo_x.zip(hi_x).map(|(l, h)| Interval::closed(l, h));
+    let bits = u32::try_from(prec.saturating_add(16)).unwrap_or(u32::MAX);
+    let points =
+        crate::calculus::definite::quadrature_breakpoints(pa, body, var, range, exact, Some(bits))?;
+    Ok(points
+        .into_iter()
+        .map(|(p, _)| match pa.as_num(p) {
+            Some(r) => quad::End::Rational(r.clone()),
+            None => quad::End::Expr(p),
+        })
+        .collect())
 }
 
 /// `∫_lo^hi body d(var)` by adaptive `f64` Gauss–Kronrod quadrature
@@ -4316,8 +4270,7 @@ fn eval_definite_integral_f64(
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
     smoothing: bool,
 ) -> Result<Option<CBall>, SymplexError> {
@@ -4329,10 +4282,21 @@ fn eval_definite_integral_f64(
         _ => return Ok(None),
     };
     let (Ok((a, a_err)), Ok((b, b_err))) = (
-        definite_bound_f64(arena, cache, errs, lo),
-        definite_bound_f64(arena, cache, errs, hi),
+        definite_bound_f64(arena, cache, lo),
+        definite_bound_f64(arena, cache, hi),
     ) else {
         return Ok(None);
+    };
+    // Across a kink or a step the estimate is no bound: split at them
+    // (all located), or leave the integral to the arbitrary-precision
+    // quadrature.
+    let kinks = if crate::calculus::definite::has_kink(arena, body, var) {
+        match crate::calculus::definite::f64_pieces(arena, body, var, a.min(b), a.max(b)) {
+            Some(p) if !smoothing => Some(p),
+            _ => return Ok(None),
+        }
+    } else {
+        None
     };
     // The smoothed run is trusted only where its nodes keep their distance
     // to a finite end, which in `f64` they do next to 0 alone (see
@@ -4381,13 +4345,29 @@ fn eval_definite_integral_f64(
         },
         ..default
     };
-    let Ok(Some(QuadResult { value, error })) = quadrature_resolved(&f, a, b, &opts, smoothing)
-    else {
+    let run = match &kinks {
+        Some(k) => crate::calculus::definite::quadrature_resolved_split(
+            &f,
+            a.min(b),
+            a.max(b),
+            &k.cuts,
+            &opts,
+        )
+        .map(|r| {
+            r.map(|r| QuadResult {
+                value: if a > b { -r.value } else { r.value },
+                ..r
+            })
+        }),
+        None => quadrature_resolved(&f, a, b, &opts, smoothing),
+    };
+    let Ok(Some(QuadResult { value, error })) = run else {
         return Ok(None);
     };
     let rounding = QUADRATURE_ROUNDING_FACTOR * f64::EPSILON * l1.max(value.abs());
     let endpoints = (a_err + b_err) * peak.get();
-    let total = error + rounding + endpoints;
+    let misplaced = kinks.as_ref().map_or(0.0, |k| k.misplaced) * peak.get();
+    let total = error + rounding + endpoints + misplaced;
     debug!(
         value,
         error, rounding, endpoints, "evalf: DefiniteIntegral evaluated in f64"
@@ -4464,7 +4444,7 @@ fn evaluate_at_integer(
 /// exactly, another value when it is real and within `10⁻⁹` of an integer.
 fn range_bound(
     arena: &Arena,
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     id: ExprId,
     what: &str,
 ) -> Result<BigInt, SymplexError> {
@@ -4556,7 +4536,7 @@ fn eval_sum(
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<CBall, SymplexError> {
     let prec = w.bits();
@@ -4616,7 +4596,7 @@ fn eval_product(
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<CBall, SymplexError> {
     let prec = w.bits();
@@ -4701,11 +4681,10 @@ struct Decision {
 fn decide_condition(
     arena: &Arena,
     cond: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     prec: usize,
 ) -> Option<Decision> {
-    let bound_of = |a: &ExprId| errs.get(a).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+    let bound_of = |a: &ExprId| cache.err(a);
     // `a − b`, the exponent of its (joint) error bound, and whether it is
     // exact (both operands exact, or the same expression).
     let difference = |a: &ExprId, b: &ExprId| -> Option<(Complex, accuracy::ErrExp, bool)> {
@@ -4905,8 +4884,7 @@ fn combine(operands: &[Option<Decision>], absorbing: bool) -> Option<Decision> {
 fn eval_piecewise(
     arena: &Arena,
     pairs: &[(ExprId, ExprId)],
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &ErrMap,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<CBall, SymplexError> {
     let prec = w.bits();
@@ -4916,7 +4894,7 @@ fn eval_piecewise(
     );
     let mut certain = true;
     for &(value_id, cond_id) in pairs {
-        let Some(decision) = decide_condition(arena, cond_id, cache, errs, prec) else {
+        let Some(decision) = decide_condition(arena, cond_id, cache, prec) else {
             return Err(unevaluable(format!(
                 "cannot evaluate piecewise: condition `{}` is undecided",
                 arena.display(cond_id)
@@ -4927,13 +4905,8 @@ fn eval_piecewise(
             continue;
         }
         let CBall { mid: value, err } = match cache.get(&value_id) {
-            Some(v) => CBall::new(
-                v.clone(),
-                errs.get(&value_id)
-                    .copied()
-                    .unwrap_or(accuracy::Bound::UNKNOWN),
-            ),
-            None => eval_node_with_error(arena, value_id, cache, errs, w)?,
+            Some(v) => CBall::new(v.clone(), cache.err(&value_id)),
+            None => eval_ball(arena, value_id, cache, w)?,
         };
         return Ok(CBall {
             mid: value,
@@ -5358,12 +5331,8 @@ const TRIG_ARG_MAX_INEXACT_EXPONENT: i64 = 64;
 /// refuses at every precision although its error bound is tracked: real,
 /// inexact, beyond `2⁶⁴` (and within the configured maximum precision),
 /// and not a rational literal (which [`trig_arg`] converts again with more
-/// bits)?  `eval_node_with_error` evaluates it from its value and bound.
-fn large_inexact_trig_argument(
-    arena: &Arena,
-    c: ExprId,
-    cache: &FxHashMap<ExprId, Complex>,
-) -> bool {
+/// bits)?  `eval_ball` evaluates it from its value and bound.
+fn large_inexact_trig_argument(arena: &Arena, c: ExprId, cache: Cache<'_>) -> bool {
     if matches!(arena.node(c), ExprNode::Num(_)) {
         return false;
     }
@@ -8404,11 +8373,7 @@ fn series_did_not_converge(operation: &'static str, max_terms: usize) -> Symplex
 }
 
 /// The cached values of `args`, all required to be real.
-fn real_args(
-    name: &str,
-    args: &[ExprId],
-    cache: &FxHashMap<ExprId, Complex>,
-) -> Result<Vec<BigFloat>, SymplexError> {
+fn real_args(name: &str, args: &[ExprId], cache: Cache<'_>) -> Result<Vec<BigFloat>, SymplexError> {
     let mut out = Vec::with_capacity(args.len());
     for &a in args {
         let v = get_cached(cache, a)?;
@@ -8468,7 +8433,7 @@ fn bf_as_int(x: &BigFloat) -> Result<Option<i64>, SymplexError> {
 fn eval_lib_fn(
     f: LibFn,
     args: &[ExprId],
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
     let prec = w.bits();
@@ -8572,7 +8537,7 @@ fn eval_lib_fn(
 /// 5/18·i)`, `polylog(2, 3)`, `polylog(1/3, −5)`).
 fn eval_polylog(
     args: &[ExprId],
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
     let prec = w.bits();
@@ -8593,7 +8558,7 @@ fn eval_polylog(
 fn eval_lambertw_node(
     arena: &Arena,
     node: &ExprNode,
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
     let prec = w.bits();
@@ -8612,7 +8577,7 @@ fn eval_bessel(
     arb: fn(&BigFloat, &BigFloat, &mut Wp<'_>) -> Result<BigFloat, SymplexError>,
     what: &str,
     args: &[ExprId],
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
     let prec = w.bits();
@@ -8634,7 +8599,7 @@ fn eval_orthopoly(
     kind: OrthoPoly,
     f: LibFn,
     args: &[ExprId],
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
     let prec = w.bits();
@@ -8671,7 +8636,7 @@ fn eval_orthopoly(
 fn eval_special_09(
     f: LibFn,
     args: &[ExprId],
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
     let prec = w.bits();
@@ -9540,8 +9505,11 @@ fn arb_expint(n: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, Sy
     let wp = prec + 32;
     let one = BigFloat::from_i32(1, wp);
     if x.is_zero() {
+        // `E_n(0) = +∞` for `n ≤ 1`: `E₁` has a logarithmic pole at 0.  (Up
+        // to 0.49 `n − 1 = +0` counted as positive and `expint(1, 0)` came
+        // out `1/0`, refused as "precision exhausted".)
         let n_minus_1 = n.sub(&one, wp, RM);
-        if !is_sign_positive(&n_minus_1) {
+        if !is_strictly_positive(&n_minus_1) {
             return Err(unevaluable("expint(n, 0) diverges for n ≤ 1"));
         }
         return Ok(round_to(one.div(&n_minus_1, wp, RM), prec));
@@ -11796,7 +11764,7 @@ fn not_evaluated_reason(id: ExprId) -> String {
     format!("sub-expression {id:?} has no numerical value")
 }
 
-fn get_cached(cache: &FxHashMap<ExprId, Complex>, id: ExprId) -> Result<&Complex, SymplexError> {
+fn get_cached(cache: Cache<'_>, id: ExprId) -> Result<&Complex, SymplexError> {
     cache.get(&id).ok_or_else(|| SymplexError::Unevaluable {
         reason: not_evaluated_reason(id),
     })

@@ -187,7 +187,7 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
                 flags.has_gamma = true;
             }
             ExprNode::Add(_) => flags.has_add = true,
-            ExprNode::Apply(_, _) => flags.has_apply = true,
+            ExprNode::Apply(_, _) | ExprNode::Lib(_, _) => flags.has_apply = true,
             ExprNode::Abs(_) => flags.has_abs = true,
             ExprNode::Sign(_) => flags.has_sign = true,
             ExprNode::Floor(_) | ExprNode::Ceiling(_) => flags.has_floor_ceil = true,

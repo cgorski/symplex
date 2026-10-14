@@ -583,13 +583,6 @@ fn small_factorization(n: &BigInt) -> Option<Vec<(BigInt, u32)>> {
     Some(out)
 }
 
-fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a
-}
-
 /// Largest numerator (in terms) [`Tower::is_zero`] computes exactly when
 /// every sample point gave 0 (a likely zero, to be confirmed).
 const RF_HINTED_BUDGET: usize = 4 * RF_TERM_BUDGET;
@@ -674,10 +667,14 @@ impl Tower {
                 }
                 has_i = true;
             }
-            l = l / gcd_u32(l, *t) * *t;
-            if l > MAX_ROOT_INDEX {
-                return None;
-            }
+            // In `u64`: `l ≤ 12` and `t < 2³²`, so the product cannot wrap
+            // (in `u32` it did for a huge index `t`, leaving a small `l`).
+            let (lw, tw) = (u64::from(l), u64::from(*t));
+            let lcm = lw / crate::base::numeric::gcd_u64(lw, tw).max(1) * tw;
+            l = match u32::try_from(lcm) {
+                Ok(v) if v <= MAX_ROOT_INDEX => v,
+                _ => return None,
+            };
         }
         // Factor the radicands (exponent of each prime in |q|).
         let mut primes: Vec<BigInt> = Vec::new();
@@ -1521,11 +1518,9 @@ impl KFrac {
     }
 }
 
-/// A Gaussian rational `re + im·i`.
-pub(crate) struct GaussianRational {
-    pub re: Q,
-    pub im: Q,
-}
+/// A Gaussian rational `re + im·i` (the crate's one `ℚ(i)`; up to 0.49 a
+/// struct of its own).
+pub(crate) type GaussianRational = crate::poly::domain::GaussQ;
 
 /// `e` as a Gaussian rational, when `e` is field arithmetic on rationals
 /// and `i` only.

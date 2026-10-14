@@ -9,22 +9,25 @@
 //! root finding in `ntheory::polynomial_congruence` used to be hand-rolled
 //! twice on `Vec<u64>`.  This module is the single spelling of that ring:
 //!
-//! - [`RingOps`] — the operations of a commutative ring given as methods
-//!   on a ring *value* (`&self` carries `p`), with an optional inverse so
-//!   that fields and non-fields share one trait;
+//! - [`RingOps`] — since 0.50 a name for
+//!   [`CoeffDomain`](super::domain::CoeffDomain), the operations of a
+//!   commutative ring given as methods on a ring *value* (`&self` carries
+//!   `p`), with an optional inverse so that fields and non-fields share one
+//!   trait;
 //! - [`Fp64`] — the prime field `𝔽ₚ` on `u64` residues for `p < 2⁶³`;
-//! - [`PolyIn<R>`] — a polynomial with coefficients in `R::El` together
-//!   with the ring it lives in: addition, multiplication, Euclidean
-//!   division, monic gcd, extended gcd, derivative, square-freeness,
-//!   modular exponentiation, and (over [`Fp64`]) `p`-th roots and root
-//!   finding by Cantor–Zassenhaus.
+//! - [`DensePoly<D>`] (also named [`PolyIn<D>`]) — a polynomial with
+//!   coefficients in `D::El` together with the domain it lives in:
+//!   addition, multiplication, Euclidean division, monic gcd, extended
+//!   gcd, resultant, Yun's square-free decomposition, derivative,
+//!   square-freeness, Horner evaluation, modular exponentiation, and (over
+//!   [`Fp64`]) `p`-th roots and root finding by Cantor–Zassenhaus.
 //!
 //! Coefficients are stored in ascending degree order with no trailing
 //! zeros; the zero polynomial has an empty coefficient vector.  Every
 //! [`Fp64`] method is `#[inline]`, so the generic loops monomorphise to
 //! the same machine code as the hand-rolled `u64` versions they replace.
 //!
-//! The randomised splitting in [`PolyIn::roots`] draws from the crate's
+//! The randomised splitting in [`DensePoly::roots`] draws from the crate's
 //! pinned [`XorShift64Star`](crate::base::rng::XorShift64Star): which
 //! factor a split finds first depends on that stream, so the iteration
 //! order here is an output contract, not an implementation detail.
@@ -39,38 +42,11 @@ use crate::base::rng::XorShift64Star as XorShift;
 // The ring trait
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A commutative ring whose operations are methods on a ring *value*.
-///
-/// Unlike [`Ring`](super::traits::Ring), `zero`/`one` take `&self`, so the
-/// modulus (or any other parameter) may be decided at run time.  `inv`
-/// returns `None` for non-units, which lets a field and a non-field ring
-/// share the trait; [`PolyIn`]'s division-based algorithms need every
-/// non-zero leading coefficient they meet to be a unit.
-pub trait RingOps: Clone + fmt::Debug {
-    /// Element representation.
-    type El: Clone + PartialEq + fmt::Debug;
-
-    /// The additive identity.
-    fn zero(&self) -> Self::El;
-    /// The multiplicative identity.
-    fn one(&self) -> Self::El;
-    /// The image of the integer `n`.
-    fn embed_u64(&self, n: u64) -> Self::El;
-    /// Is `a` the additive identity?
-    fn is_zero(&self, a: &Self::El) -> bool;
-    /// Is `a` the multiplicative identity?
-    fn is_one(&self, a: &Self::El) -> bool;
-    /// `a + b`.
-    fn add(&self, a: &Self::El, b: &Self::El) -> Self::El;
-    /// `a − b`.
-    fn sub(&self, a: &Self::El, b: &Self::El) -> Self::El;
-    /// `a · b`.
-    fn mul(&self, a: &Self::El, b: &Self::El) -> Self::El;
-    /// `−a`.
-    fn neg(&self, a: &Self::El) -> Self::El;
-    /// `a⁻¹`, or `None` when `a` is not a unit.
-    fn inv(&self, a: &Self::El) -> Option<Self::El>;
-}
+/// The trait of coefficient domains, under its name before 0.50
+/// ([`CoeffDomain`](super::domain::CoeffDomain)); [`DensePoly`]'s
+/// division-based algorithms need every non-zero leading coefficient they
+/// meet to be a unit.
+pub use super::domain::CoeffDomain as RingOps;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 𝔽ₚ on u64
@@ -80,19 +56,38 @@ pub trait RingOps: Clone + fmt::Debug {
 /// residues in `[0, p)`.
 ///
 /// Products go through `u128` only when `p ≥ 2³²`; below that the `u64`
-/// product cannot overflow and a native remainder is used.  Inverses are
-/// by Fermat (`a^(p−2)`).  The caller guarantees primality — nothing here
-/// checks it — exactly as the hand-rolled predecessors did.
+/// product cannot overflow and a native remainder is used.  Above it the
+/// double-word product is reduced by Barrett's method (Menezes et al.,
+/// *Handbook of Applied Cryptography*, Algorithm 14.42, with base 2): two
+/// word multiplications by the precomputed `⌊2²ᵏ/p⌋` (`k` the bit length
+/// of `p`) and at most two subtractions, instead of a call to the
+/// compiler's 128-by-128-bit remainder (`__umodti3`).  Inverses are by the
+/// extended Euclidean algorithm on words (before 0.50 by Fermat,
+/// `a^(p−2)`: 124 modular products, 46% of the time of Brown's modular
+/// gcd).  The caller guarantees primality — nothing here checks it —
+/// exactly as the hand-rolled predecessors did; an element that is not a
+/// unit (`p` composite) has no inverse.
 ///
 /// `p = 2` is supported: the arithmetic is the same, and
-/// [`PolyIn::roots`] tests the two field elements directly, since the
+/// [`DensePoly::roots`] tests the two field elements directly, since the
 /// Cantor–Zassenhaus splitting it uses for odd `p` (`(x + a)^{(p−1)/2}`)
 /// degenerates there.  The factoring routes of the crate never call it
 /// with `2` (they need `p ∤ lc(f)` for arbitrary `f`), which is why the
 /// earlier documentation said "odd prime".
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Fp64 {
     p: u64,
+    /// The bit length `k` of `p`.
+    bits: u32,
+    /// Barrett's constant `⌊2²ᵏ/p⌋`, below `2⁶⁴` for `k ≤ 63`.
+    mu: u64,
+}
+
+/// Only the modulus: `mu` and `bits` are functions of it.
+impl fmt::Debug for Fp64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Fp64").field("p", &self.p).finish()
+    }
 }
 
 impl Fp64 {
@@ -104,7 +99,15 @@ impl Fp64 {
     pub const fn new(p: u64) -> Self {
         debug_assert!(p >= 2);
         debug_assert!(p < (1u64 << 63));
-        Fp64 { p }
+        let bits = u64::BITS - p.leading_zeros();
+        // `2²ᵏ/p < 2ᵏ⁺¹ ≤ 2⁶⁴` since `p ≥ 2ᵏ⁻¹`; for an out-of-contract
+        // `p ≥ 2⁶³` the constant is 0 and [`mul_reduced`](Self::mul_reduced)
+        // takes its exact fallback.
+        let mu = match 1u128.checked_shl(2 * bits) {
+            Some(t) if bits <= 63 => (t / p as u128) as u64,
+            _ => 0,
+        };
+        Fp64 { p, bits, mu }
     }
 
     /// The modulus.
@@ -125,8 +128,30 @@ impl Fp64 {
         if self.p <= u32::MAX as u64 {
             (a * b) % self.p
         } else {
-            ((a as u128 * b as u128) % self.p as u128) as u64
+            self.barrett(a as u128 * b as u128)
         }
+    }
+
+    /// `x mod p` for `p > 2³²` (HAC 14.42): with `k` the bit length of
+    /// `p` and `x < 2²ᵏ`, `q = ⌊⌊x/2ᵏ⁻¹⌋·μ / 2ᵏ⁺¹⌋` is at most 2 below
+    /// `⌊x/p⌋`, and `x − q·p < 3p`.  A larger `x` (operands that were not
+    /// reduced) takes the exact double-word remainder.
+    #[inline]
+    const fn barrett(self, x: u128) -> u64 {
+        let k = self.bits;
+        if self.mu == 0 || x >> (2 * k) != 0 {
+            return (x % self.p as u128) as u64;
+        }
+        // `x < 2²ᵏ` so `x / 2ᵏ⁻¹ < 2ᵏ⁺¹ ≤ 2⁶⁴`: no bits are lost.
+        let q1 = (x >> (k - 1)) as u64;
+        let q = ((q1 as u128 * self.mu as u128) >> (k + 1)) as u64;
+        let p = self.p as u128;
+        let mut r = x - q as u128 * p;
+        // Two conditional subtractions (`r < 3p`), without branches: which
+        // of the three cases occurs is data-dependent and unpredictable.
+        r -= if r >= p { p } else { 0 };
+        r -= if r >= p { p } else { 0 };
+        r as u64
     }
 
     /// `base^exp mod p` by binary exponentiation.
@@ -193,14 +218,24 @@ impl RingOps for Fp64 {
         if *a == 0 { 0 } else { self.p - a }
     }
 
-    #[inline]
+    /// The extended Euclidean algorithm on `(p, a)`: the cofactors stay
+    /// below `p` in absolute value, so `i128` holds them.
     fn inv(&self, a: &u64) -> Option<u64> {
         let a = a % self.p;
         if a == 0 {
-            None
-        } else {
-            Some(self.pow(a, self.p - 2))
+            return None;
         }
+        let (mut r0, mut r1) = (self.p, a);
+        let (mut t0, mut t1) = (0i128, 1i128);
+        while r1 != 0 {
+            let q = r0 / r1;
+            (r0, r1) = (r1, r0 - q * r1);
+            (t0, t1) = (t1, t0 - i128::from(q) * t1);
+        }
+        if r0 != 1 {
+            return None;
+        }
+        u64::try_from(t0.rem_euclid(i128::from(self.p))).ok()
     }
 }
 
@@ -208,43 +243,82 @@ impl RingOps for Fp64 {
 // The polynomial
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Result of [`PolyIn::div_rem`]: `a = quotient · b + remainder` with
+/// Result of [`DensePoly::div_rem`]: `a = quotient · b + remainder` with
 /// `deg remainder < deg b`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DivRem<R: RingOps> {
     /// The quotient.
-    pub quotient: PolyIn<R>,
+    pub quotient: DensePoly<R>,
     /// The remainder, of degree below the divisor's.
-    pub remainder: PolyIn<R>,
+    pub remainder: DensePoly<R>,
 }
 
-/// Result of [`PolyIn::extended_gcd`]: `u · a + v · b = gcd`, `gcd` monic.
+/// Result of [`DensePoly::extended_gcd`]: `u · a + v · b = gcd`, `gcd` monic.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExtendedGcd<R: RingOps> {
     /// Bézout cofactor of the first argument.
-    pub u: PolyIn<R>,
+    pub u: DensePoly<R>,
     /// Bézout cofactor of the second argument.
-    pub v: PolyIn<R>,
+    pub v: DensePoly<R>,
     /// The monic greatest common divisor.
-    pub gcd: PolyIn<R>,
+    pub gcd: DensePoly<R>,
 }
 
-/// A dense univariate polynomial over the ring value `ring`.
+/// A dense univariate polynomial over the domain value `ring`
+/// ([`CoeffDomain`](super::domain::CoeffDomain)): the one implementation
+/// of the dense algorithms for domains given as values (`𝔽ₚ`, `ℚ`, `ℤ`,
+/// `ℚ(i)`, …).  Up to 0.49 it was `PolyIn`, still a name for it.
 ///
 /// Coefficients ascend in degree and the last one is non-zero (the zero
 /// polynomial is empty).  Two polynomials compare equal when their
 /// coefficient vectors do; operands of a binary operation are assumed to
 /// share the ring (the left operand's ring is used).
+///
+/// ```
+/// use symplex::factor_zassenhaus::domain::QQ;
+/// use symplex::factor_zassenhaus::modpoly::DensePoly;
+/// use num_bigint::BigInt;
+/// use num_rational::Ratio;
+///
+/// let q = |n: i64| Ratio::from_integer(BigInt::from(n));
+/// // (x − 1)²(x + 2) and (x − 1)(x + 3)
+/// let f = DensePoly::from_coeffs(QQ, vec![q(2), q(-3), q(0), q(1)]);
+/// let g = DensePoly::from_coeffs(QQ, vec![q(-3), q(2), q(1)]);
+/// assert_eq!(f.gcd(&g).coeffs(), &[q(-1), q(1)]);
+/// assert_eq!(f.resultant(&g), Some(q(0)));
+/// let sqf = f.squarefree_factors().unwrap();
+/// assert_eq!(sqf.len(), 2);
+/// assert_eq!((sqf[1].0.coeffs(), sqf[1].1), (&[q(-1), q(1)][..], 2));
+/// ```
 #[derive(Clone, Debug, PartialEq)]
-pub struct PolyIn<R: RingOps> {
+pub struct DensePoly<R: RingOps> {
     ring: R,
     coeffs: Vec<R::El>,
 }
 
-impl<R: RingOps> PolyIn<R> {
+/// [`DensePoly`] under its name before 0.50.
+pub type PolyIn<R> = DensePoly<R>;
+
+/// `xⁿ` in `ring` by repeated squaring.
+fn el_pow<R: RingOps>(ring: &R, x: &R::El, mut n: usize) -> R::El {
+    let mut result = ring.one();
+    let mut base = x.clone();
+    while n > 0 {
+        if n & 1 == 1 {
+            result = ring.mul(&result, &base);
+        }
+        n >>= 1;
+        if n > 0 {
+            base = ring.mul(&base, &base);
+        }
+    }
+    result
+}
+
+impl<R: RingOps> DensePoly<R> {
     /// The zero polynomial.
     pub fn zero(ring: R) -> Self {
-        PolyIn {
+        DensePoly {
             ring,
             coeffs: Vec::new(),
         }
@@ -253,7 +327,7 @@ impl<R: RingOps> PolyIn<R> {
     /// The constant polynomial `1`.
     pub fn one(ring: R) -> Self {
         let one = ring.one();
-        PolyIn {
+        DensePoly {
             ring,
             coeffs: vec![one],
         }
@@ -264,7 +338,7 @@ impl<R: RingOps> PolyIn<R> {
         if ring.is_zero(&c) {
             return Self::zero(ring);
         }
-        PolyIn {
+        DensePoly {
             ring,
             coeffs: vec![c],
         }
@@ -273,7 +347,7 @@ impl<R: RingOps> PolyIn<R> {
     /// The variable `x`.
     pub fn x(ring: R) -> Self {
         let (zero, one) = (ring.zero(), ring.one());
-        PolyIn {
+        DensePoly {
             ring,
             coeffs: vec![zero, one],
         }
@@ -282,7 +356,7 @@ impl<R: RingOps> PolyIn<R> {
     /// From coefficients in ascending degree order (already reduced into
     /// the ring's canonical representation); trailing zeros are dropped.
     pub fn from_coeffs(ring: R, coeffs: Vec<R::El>) -> Self {
-        let mut p = PolyIn { ring, coeffs };
+        let mut p = DensePoly { ring, coeffs };
         p.normalize();
         p
     }
@@ -400,13 +474,17 @@ impl<R: RingOps> PolyIn<R> {
         self.with(out)
     }
 
-    /// `self · rhs` (schoolbook).
+    /// `self · rhs` (the domain's [`dense_mul`](RingOps::dense_mul), else
+    /// schoolbook).
     #[must_use]
     pub fn mul(&self, rhs: &Self) -> Self {
         if self.is_zero() || rhs.is_zero() {
             return Self::zero(self.ring.clone());
         }
         let ring = &self.ring;
+        if let Some(out) = ring.dense_mul(&self.coeffs, &rhs.coeffs) {
+            return self.with(out);
+        }
         let mut out = vec![ring.zero(); self.coeffs.len() + rhs.coeffs.len() - 1];
         for (i, a) in self.coeffs.iter().enumerate() {
             if ring.is_zero(a) {
@@ -435,30 +513,30 @@ impl<R: RingOps> PolyIn<R> {
     /// identity, rather than a panic.
     #[must_use]
     pub fn div_rem(&self, b: &Self) -> DivRem<R> {
+        self.try_div_rem(b).unwrap_or_else(|| DivRem {
+            quotient: Self::zero(self.ring.clone()),
+            remainder: self.clone(),
+        })
+    }
+
+    /// Euclidean division, `None` when `b` is zero or its leading
+    /// coefficient is not a unit (and `deg self ≥ deg b`).
+    pub fn try_div_rem(&self, b: &Self) -> Option<DivRem<R>> {
         let ring = &self.ring;
         let trivial = |remainder: Self| DivRem {
             quotient: Self::zero(ring.clone()),
             remainder,
         };
-        let Some(db) = b.degree() else {
-            return trivial(self.clone());
-        };
+        let db = b.degree()?;
         let Some(da) = self.degree() else {
-            return trivial(Self::zero(ring.clone()));
+            return Some(trivial(Self::zero(ring.clone())));
         };
         if da < db {
-            return trivial(self.clone());
+            return Some(trivial(self.clone()));
         }
         let lc = &b.coeffs[db];
         let monic = ring.is_one(lc);
-        let inv_lc = if monic {
-            ring.one()
-        } else {
-            match ring.inv(lc) {
-                Some(v) => v,
-                None => return trivial(self.clone()),
-            }
-        };
+        let inv_lc = if monic { ring.one() } else { ring.inv(lc)? };
         let mut rem = self.coeffs.clone();
         let mut quot = vec![ring.zero(); da - db + 1];
         while rem.len() > db {
@@ -482,10 +560,10 @@ impl<R: RingOps> PolyIn<R> {
                 rem.pop();
             }
         }
-        DivRem {
+        Some(DivRem {
             quotient: self.with(quot),
             remainder: self.with(rem),
-        }
+        })
     }
 
     /// Quotient of the Euclidean division.
@@ -516,32 +594,77 @@ impl<R: RingOps> PolyIn<R> {
         }
     }
 
-    /// Monic greatest common divisor by Euclid's algorithm
-    /// (`gcd(a, 0) = monic(a)`, `gcd(0, 0) = 0`).
+    /// Monic greatest common divisor (`gcd(a, 0) = monic(a)`,
+    /// `gcd(0, 0) = 0`): the domain's [`dense_gcd`](RingOps::dense_gcd),
+    /// else Euclid's algorithm.
+    ///
+    /// Over a domain that is not a field Euclid may meet a leading
+    /// coefficient that is not a unit; it cannot continue, and the last
+    /// remainder reached (a multiple of the gcd, not monic) is returned —
+    /// [`try_gcd`](Self::try_gcd) says so.  (Before 0.50 the loop did not
+    /// end in that case.)
     #[must_use]
     pub fn gcd(&self, other: &Self) -> Self {
+        match self.gcd_steps(other) {
+            Ok(g) | Err(g) => g,
+        }
+    }
+
+    /// [`gcd`](Self::gcd), `None` when a leading coefficient that is not a
+    /// unit stopped Euclid's algorithm.
+    pub fn try_gcd(&self, other: &Self) -> Option<Self> {
+        self.gcd_steps(other).ok()
+    }
+
+    /// `Ok(monic gcd)`, or `Err(last remainder)` on a non-unit.
+    fn gcd_steps(&self, other: &Self) -> Result<Self, Self> {
+        if let Some(g) = self.ring.dense_gcd(&self.coeffs, &other.coeffs) {
+            return Ok(self.with(g));
+        }
         let mut a = self.clone();
         let mut b = other.clone();
         while !b.is_zero() {
-            let r = a.rem(&b);
+            let Some(DivRem { remainder: r, .. }) = a.try_div_rem(&b) else {
+                return Err(b);
+            };
             a = b;
             b = r;
         }
-        a.monic()
+        Ok(a.monic())
     }
 
-    /// Extended Euclid: `u · self + v · other = gcd`, `gcd` monic.
+    /// Extended Euclid: `u · self + v · other = gcd`, `gcd` monic (the
+    /// domain's [`dense_extended_gcd`](RingOps::dense_extended_gcd) when it
+    /// has one).  On a leading coefficient that is not a unit the row
+    /// reached is returned (the identity holds; `gcd` is a multiple of the
+    /// gcd, not monic).
     #[must_use]
     pub fn extended_gcd(&self, other: &Self) -> ExtendedGcd<R> {
         let ring = &self.ring;
+        if !other.is_zero()
+            && let Some(e) = ring.dense_extended_gcd(&self.coeffs, &other.coeffs)
+        {
+            return ExtendedGcd {
+                u: self.with(e.x),
+                v: self.with(e.y),
+                gcd: self.with(e.gcd),
+            };
+        }
         let (mut r0, mut r1) = (self.clone(), other.clone());
         let (mut s0, mut s1) = (Self::one(ring.clone()), Self::zero(ring.clone()));
         let (mut t0, mut t1) = (Self::zero(ring.clone()), Self::one(ring.clone()));
         while !r1.is_zero() {
-            let DivRem {
+            let Some(DivRem {
                 quotient: q,
                 remainder: r,
-            } = r0.div_rem(&r1);
+            }) = r0.try_div_rem(&r1)
+            else {
+                return ExtendedGcd {
+                    u: s1,
+                    v: t1,
+                    gcd: r1,
+                };
+            };
             let s = s0.sub(&q.mul(&s1));
             let t = t0.sub(&q.mul(&t1));
             r0 = r1;
@@ -595,6 +718,96 @@ impl<R: RingOps> PolyIn<R> {
         self.gcd(&d).degree() == Some(0)
     }
 
+    /// The resultant `res(self, other)` by the Euclidean algorithm
+    /// (`res(a, b) = (−1)^{mn} lc(b)^{m−s} res(b, a mod b)`, `s = deg(a mod
+    /// b)`), or the domain's [`dense_resultant`](RingOps::dense_resultant);
+    /// `0` when either is zero.  `None` when a leading coefficient that is
+    /// not a unit is met.
+    pub fn resultant(&self, other: &Self) -> Option<R::El> {
+        let ring = &self.ring;
+        let odd = |m: usize, n: usize| (m % 2 == 1) && (n % 2 == 1);
+        let mut acc = ring.one();
+        let (mut a, mut b) = (self.clone(), other.clone());
+        loop {
+            let (Some(m), Some(n)) = (a.degree(), b.degree()) else {
+                return Some(ring.zero());
+            };
+            if m == 0 && n == 0 {
+                return Some(acc);
+            }
+            if m == 0 {
+                return Some(ring.mul(&acc, &el_pow(ring, &a.coeffs[0], n)));
+            }
+            if n == 0 {
+                return Some(ring.mul(&acc, &el_pow(ring, &b.coeffs[0], m)));
+            }
+            if m < n {
+                if odd(m, n) {
+                    acc = ring.neg(&acc);
+                }
+                std::mem::swap(&mut a, &mut b);
+                continue;
+            }
+            if let Some(res) = ring.dense_resultant(&a.coeffs, &b.coeffs) {
+                return Some(ring.mul(&acc, &res));
+            }
+            let r = a.try_div_rem(&b)?.remainder;
+            let Some(s) = r.degree() else {
+                return Some(ring.zero());
+            };
+            if odd(m, n) {
+                acc = ring.neg(&acc);
+            }
+            acc = ring.mul(&acc, &el_pow(ring, &b.coeffs[n], m - s));
+            a = b;
+            b = r;
+        }
+    }
+
+    /// Yun's square-free decomposition: `[(f₁, 1), (f₂, 2), …]` with
+    /// `self = lc · ∏ fᵢ^i`, the `fᵢ` monic, square-free, pairwise coprime
+    /// and of positive degree; empty for a constant or zero polynomial.
+    /// The same steps as `GenPoly::squarefree_factors`.  Needs
+    /// characteristic 0 or above the degree; `None` when a leading
+    /// coefficient that is not a unit is met.
+    pub fn squarefree_factors(&self) -> Option<Vec<(Self, usize)>> {
+        let n = self.degree().unwrap_or(0);
+        if n == 0 {
+            return Some(Vec::new());
+        }
+        let quo = |a: &Self, b: &Self| a.try_div_rem(b).map(|d| d.quotient);
+        let p = self.monic();
+        let p_prime = p.derivative();
+        let c = p.try_gcd(&p_prime)?;
+        if c.degree().unwrap_or(0) == 0 {
+            return Some(vec![(p, 1)]);
+        }
+        let mut w = quo(&p, &c)?;
+        let mut y = quo(&p_prime, &c)?;
+        let mut factors = Vec::new();
+        let mut i = 1;
+        loop {
+            if i > n {
+                // Only in characteristic p ≤ deg: Yun does not apply.
+                return None;
+            }
+            let z = y.sub(&w.derivative());
+            if z.is_zero() {
+                if w.degree().unwrap_or(0) > 0 {
+                    factors.push((w.monic(), i));
+                }
+                return Some(factors);
+            }
+            let g = w.try_gcd(&z)?;
+            if g.degree().unwrap_or(0) > 0 {
+                factors.push((g.monic(), i));
+            }
+            w = quo(&w, &g)?;
+            y = quo(&z, &g)?;
+            i += 1;
+        }
+    }
+
     /// `self^exp mod m`.
     #[must_use]
     pub fn powmod(&self, mut exp: u64, m: &Self) -> Self {
@@ -634,7 +847,7 @@ impl<R: RingOps> PolyIn<R> {
 // 𝔽ₚ[x]-specific operations
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl PolyIn<Fp64> {
+impl DensePoly<Fp64> {
     /// Build from `u64` residues (already reduced modulo `p`) over `𝔽ₚ`.
     pub fn over_prime(p: u64, coeffs: Vec<u64>) -> Self {
         Self::from_coeffs(Fp64::new(p), coeffs)
@@ -711,7 +924,7 @@ impl PolyIn<Fp64> {
                         p,
                         found = out.len(),
                         unsplit_degree = deg,
-                        "PolyIn::roots: 4096 failed Cantor–Zassenhaus splits, returning an incomplete root list"
+                        "DensePoly::roots: 4096 failed Cantor–Zassenhaus splits, returning an incomplete root list"
                     );
                     out.sort_unstable();
                     return out;
@@ -743,8 +956,8 @@ impl PolyIn<Fp64> {
 mod tests {
     use super::*;
 
-    fn fp(p: u64, c: &[u64]) -> PolyIn<Fp64> {
-        PolyIn::over_prime(p, c.to_vec())
+    fn fp(p: u64, c: &[u64]) -> DensePoly<Fp64> {
+        DensePoly::over_prime(p, c.to_vec())
     }
 
     #[test]
@@ -769,15 +982,48 @@ mod tests {
         assert_eq!(big.mul(&big.inv(&a).unwrap_or(0), &a), 1);
     }
 
+    /// Barrett's reduction equals the double-word remainder: primes at the
+    /// ends of the range it serves (just above `2³²`, the gcd primes below
+    /// `2…²`, the largest below `2⁶³`), operands at the edges, random
+    /// operands, and unreduced operands (the exact fallback).
+    #[test]
+    fn barrett_matches_the_double_word_remainder() {
+        let mut rng = XorShift::new(0x5eed);
+        for p in [
+            4_294_967_311u64,
+            1_000_000_000_039,
+            (1u64 << 62) - 57,
+            (1u64 << 62) - 87,
+            (1u64 << 63) - 25,
+        ] {
+            let f = Fp64::new(p);
+            let exact = |a: u64, b: u64| ((a as u128 * b as u128) % p as u128) as u64;
+            let edge = [0, 1, 2, p / 2, p - 2, p - 1];
+            for &a in &edge {
+                for &b in &edge {
+                    assert_eq!(f.mul_reduced(a, b), exact(a, b), "{p}: {a}·{b}");
+                }
+            }
+            for _ in 0..20_000 {
+                let (a, b) = (rng.next_u64() % p, rng.next_u64() % p);
+                assert_eq!(f.mul_reduced(a, b), exact(a, b), "{p}: {a}·{b}");
+                let (a, b) = (rng.next_u64(), rng.next_u64());
+                assert_eq!(f.mul_reduced(a, b), exact(a, b), "{p}: {a}·{b} unreduced");
+            }
+            let a = rng.next_u64() % (p - 1) + 1;
+            assert_eq!(f.mul(&f.inv(&a).unwrap_or(0), &a), 1);
+        }
+    }
+
     #[test]
     fn construction_normalizes() {
         assert_eq!(fp(7, &[1, 2, 0, 0]).coeffs(), &[1, 2]);
         assert!(fp(7, &[0, 0]).is_zero());
         assert_eq!(fp(7, &[0, 0]).degree(), None);
-        assert_eq!(PolyIn::x(Fp64::new(7)).coeffs(), &[0, 1]);
+        assert_eq!(DensePoly::x(Fp64::new(7)).coeffs(), &[0, 1]);
         assert_eq!(
-            PolyIn::constant(Fp64::new(7), 0),
-            PolyIn::zero(Fp64::new(7))
+            DensePoly::constant(Fp64::new(7), 0),
+            DensePoly::zero(Fp64::new(7))
         );
         assert!(fp(7, &[3, 1]).is_monic() && !fp(7, &[3, 2]).is_monic());
     }
@@ -794,7 +1040,7 @@ mod tests {
         assert_eq!(a.scale(&2).coeffs(), &[6, 2, 1]);
         // (3 + x + 4x²)(4 + 6x + 3x²) mod 7
         assert_eq!(a.mul(&b).coeffs(), &[5, 1, 3, 6, 5]);
-        assert!(a.mul(&PolyIn::zero(Fp64::new(7))).is_zero());
+        assert!(a.mul(&DensePoly::zero(Fp64::new(7))).is_zero());
     }
 
     #[test]
@@ -817,7 +1063,7 @@ mod tests {
         assert_eq!(d.quotient.mul(&b).add(&d.remainder), a);
         assert!(d.remainder.degree().unwrap_or(0) < 1);
         // Degenerate divisors.
-        let d = a.div_rem(&PolyIn::zero(Fp64::new(7)));
+        let d = a.div_rem(&DensePoly::zero(Fp64::new(7)));
         assert!(d.quotient.is_zero());
         assert_eq!(d.remainder, a);
         let d = fp(7, &[1]).div_rem(&a);
@@ -865,7 +1111,7 @@ mod tests {
     fn powmod_matches_sympy() {
         // sympy: gf_pow_mod([1,0], 101, [1,0,0,0,3,1], 101, ZZ) ascending → [0, 4, 62, 93]
         let f = fp(101, &[1, 3, 0, 0, 0, 1]);
-        let x = PolyIn::x(Fp64::new(101));
+        let x = DensePoly::x(Fp64::new(101));
         assert_eq!(x.powmod(101, &f).coeffs(), &[0, 4, 62, 93]);
         // sympy: gf_pow_mod([1,2], 50, f, 101, ZZ) ascending → [25, 51, 64, 76, 31]
         assert_eq!(
@@ -881,7 +1127,7 @@ mod tests {
         let p = 1_000_003u64;
         let f = fp(p, &[5, p - 3, 0, 0, 1]);
         assert_eq!(
-            PolyIn::x(Fp64::new(p)).powmod(p, &f).coeffs(),
+            DensePoly::x(Fp64::new(p)).powmod(p, &f).coeffs(),
             &[821_714, 144_019, 352_342, 190_351]
         );
     }

@@ -1263,6 +1263,19 @@ impl<'a> Emitter<'a> {
             ExprNode::Atanh(x) => self.unary(x, Instruction::Atanh),
             ExprNode::Sign(x) => self.unary(x, Instruction::Sign),
             ExprNode::Heaviside(x) => self.unary(x, Instruction::Heaviside),
+            // `δ(c)` of a constant is 0 where `evalf` certifies `c ≠ 0`
+            // ([`Emitter::constant_value`] folded it); otherwise it has no
+            // value (`δ(0)`), or none `evalf` can certify, and the program
+            // is refused as `evalf` refuses it.  Up to 0.49 the VM's
+            // pointwise 0 compiled `ln(√2 + δ(0))` to 0.3466.
+            ExprNode::DiracDelta(x) if self.fold_constants && !self.subtree_has_symbol(x) => {
+                let why = crate::transforms::evalf::evalf_f64(arena, id)
+                    .err()
+                    .map_or_else(|| "no value".to_string(), |e| e.to_string());
+                return Err(SymplexError::Unevaluable {
+                    reason: format!("compile: `{}`: {why}", arena.display(id)),
+                });
+            }
             ExprNode::DiracDelta(x) => self.unary(x, Instruction::DiracDelta),
 
             ExprNode::Gamma(x) => self.unary(x, Instruction::Gamma),
@@ -1301,15 +1314,13 @@ impl<'a> Emitter<'a> {
             | ExprNode::Or(_)
             | ExprNode::Not(_) => self.work.push(Task::Bool(id)),
 
-            ExprNode::Apply(sid, ref args) => match arena.lib_fn(sid) {
-                Some(f) => self.lower_apply(f, args)?,
-                None => {
-                    return Err(SymplexError::NotImplemented(format!(
-                        "cannot compile `Apply({}, …)` to a numerical function",
-                        arena.symbol_name(sid)
-                    )));
-                }
-            },
+            ExprNode::Lib(f, ref args) => self.lower_apply(f, args)?,
+            ExprNode::Apply(sid, _) => {
+                return Err(SymplexError::NotImplemented(format!(
+                    "cannot compile `Apply({}, …)` to a numerical function",
+                    arena.symbol_name(sid)
+                )));
+            }
 
             ExprNode::Derivative(_, _) => return Err(self.unsupported("Derivative")),
             ExprNode::Integral(_, _) => return Err(self.unsupported("Integral")),
@@ -1517,18 +1528,14 @@ fn needs_raw_lowering(arena: &Arena, root: ExprId) -> bool {
         let node = arena.node(id);
         match node {
             ExprNode::Piecewise(_) => return true,
-            ExprNode::Apply(sid, _)
-                if matches!(
-                    arena.lib_fn(*sid),
-                    Some(
-                        LibFn::Legendre
-                            | LibFn::ChebyshevT
-                            | LibFn::ChebyshevU
-                            | LibFn::Hermite
-                            | LibFn::Laguerre
-                    )
-                ) =>
-            {
+            ExprNode::Lib(
+                LibFn::Legendre
+                | LibFn::ChebyshevT
+                | LibFn::ChebyshevU
+                | LibFn::Hermite
+                | LibFn::Laguerre,
+                _,
+            ) => {
                 return true;
             }
             _ => {}

@@ -46,10 +46,10 @@
 //! in the sense of the `accuracy` module (upper bounds of the first-order
 //! term, not interval arithmetic), made conservative by a factor of two.
 
+use super::ball::{Balls, CBall, Cache};
 use super::wp::{RM, Wp};
 use crate::base::bigfloat::is_strictly_positive;
 use astro_float::{BigFloat, Consts};
-use rustc_hash::FxHashMap;
 
 use super::accuracy::{self, EXACT, ErrExp, UNKNOWN};
 use crate::base::arena::Arena;
@@ -363,7 +363,7 @@ fn radius(e: ErrExp) -> f64 {
 }
 
 /// The sensitivity of node `node` to its argument number `i`.
-fn analytic(arena: &Arena, node: &ExprNode, i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
+fn analytic(node: &ExprNode, i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
     let x = a.x[i];
     let e = a.e[i];
     let lv = lg(a.v);
@@ -479,10 +479,7 @@ fn analytic(arena: &Arena, node: &ExprNode, i: usize, a: &Args<'_>, cc: &mut Con
             deriv_if(inside(lu, e), lsum(-2.0 * (lu - shrink(e - lu)), 0.0))
         }
         ExprNode::DiracDelta(_) => Sens::Zero,
-        ExprNode::Apply(sid, _) => match arena.lib_fn(*sid) {
-            Some(fun) => lib_sens(fun, i, a, cc),
-            None => Sens::Numeric,
-        },
+        ExprNode::Lib(fun, _) => lib_sens(*fun, i, a, cc),
         _ => Sens::Numeric,
     }
 }
@@ -1132,7 +1129,7 @@ pub(super) fn numeric_change(
     child: ExprId,
     e: ErrExp,
     value: &Complex,
-    cache: &FxHashMap<ExprId, Complex>,
+    cache: Cache<'_>,
     wpc: &mut Wp<'_>,
 ) -> Option<ErrExp> {
     let prec = wpc.bits();
@@ -1145,13 +1142,13 @@ pub(super) fn numeric_change(
     }
     let mut delta = BigFloat::from_i32(1, LP);
     delta.set_exponent(i32::try_from(pe as i64 + 1).ok()?);
-    let mut local: FxHashMap<ExprId, Complex> = FxHashMap::default();
+    let mut local = Balls::default();
     for c in arena.node(id).children() {
-        local.insert(c, cache.get(&c)?.clone());
+        local.insert(c, CBall::unknown(cache.get(&c)?.clone()));
     }
     for moved in [sum(&v.0, &delta), diff(&v.0, &delta)] {
-        local.insert(child, (moved, v.1.clone()));
-        if let Ok(w) = super::eval_node(arena, id, &local, wpc) {
+        local.insert(child, CBall::unknown((moved, v.1.clone())));
+        if let Ok(w) = super::eval_node(arena, id, Cache::Values(&local), wpc) {
             if [&w.0, &w.1].iter().any(|p| p.is_nan() || p.is_inf()) {
                 continue;
             }
@@ -1179,8 +1176,7 @@ pub(super) fn special_error(
     arena: &Arena,
     id: ExprId,
     value: &Complex,
-    cache: &FxHashMap<ExprId, Complex>,
-    errs: &FxHashMap<ExprId, accuracy::Bound>,
+    cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> ErrExp {
     let node = arena.node(id);
@@ -1189,7 +1185,7 @@ pub(super) fn special_error(
     let mut e = Vec::with_capacity(kids.len());
     let mut joint = Vec::with_capacity(kids.len());
     for c in &kids {
-        let (Some(v), Some(b)) = (cache.get(c), errs.get(c)) else {
+        let (Some(v), Some(b)) = (cache.get(c), cache.bound(c)) else {
             return UNKNOWN;
         };
         if b.is_unknown() {
@@ -1215,7 +1211,7 @@ pub(super) fn special_error(
         let mut change = f64::NEG_INFINITY;
         let mut numeric = false;
         for (j, _) in kids.iter().enumerate().filter(|&(_, &k)| k == c) {
-            match analytic(arena, node, j, &args, w.cc) {
+            match analytic(node, j, &args, w.cc) {
                 Sens::Zero => {}
                 Sens::Deriv(d) if d.is_nan() => numeric = true,
                 Sens::Deriv(d) => total = lsum(total, d),

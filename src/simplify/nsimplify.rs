@@ -292,7 +292,7 @@ fn build_pi_fraction(arena: &mut Arena, k: i64, n: i64) -> ExprId {
     let pi_expr = arena.pi;
 
     // Reduce k/n to lowest terms.
-    let g = gcd_i64(k.unsigned_abs(), n.unsigned_abs()) as i64;
+    let g = crate::base::numeric::gcd_u64(k.unsigned_abs(), n.unsigned_abs()) as i64;
     let k_red = k / g;
     let n_red = n / g;
 
@@ -428,16 +428,6 @@ fn find_rational_pair(val: f64, tol: f64) -> Option<(i64, i64)> {
         }
     }
     None
-}
-
-/// Simple GCD for unsigned 64-bit integers.
-fn gcd_i64(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
-    }
-    a
 }
 
 #[cfg(test)]

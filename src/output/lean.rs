@@ -459,6 +459,9 @@ pub(crate) fn render(arena: &Arena, expr: ExprId, opts: &LeanOpts) -> Result<Str
                     arena.symbol_name(*sid)
                 )));
             }
+            ExprNode::Lib(f, _) => {
+                return Err(unsupported(format!("the special function `{}`", f.name())));
+            }
 
             other => return Err(unsupported(format!("`{}`", describe(other)))),
         };
