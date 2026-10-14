@@ -10,5 +10,6 @@
 disallowed-methods = [
     { path = "astro_float::BigFloat::pow", reason = "never returns when the exact result is representable (4^(1/2), 2.5^2) under every rounding mode but None (astro-float #31); use `base::bigfloat::pow`" },
     { path = "astro_float::BigFloat::log", reason = "never returns when the exact result is representable (log(8, 2), log(9, 3)); divide two `ln`s" },
-    { path = "astro_float::BigFloat::convert_to_radix", reason = "decimal conversion had a wrong exponent at 1024 bits (astro-float #33); call `base::bigfloat::to_decimal_digits`, the single allowed caller" },
+    { path = "astro_float::BigFloat::convert_to_radix", reason = "decimal conversion had a wrong exponent at 1024 bits (astro-float #33); call `base::bigfloat::to_decimal_digits` (exact, from the mantissa)" },
+    { path = "astro_float::BigFloat::is_positive", reason = "true for +0 (only the sign bit); say what is meant: `base::bigfloat::is_strictly_positive` (x > 0), `!x.is_negative()` (the sign bit), or the sign of a ball (`CBall::sign_re`)" },
 ]

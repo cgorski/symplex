@@ -260,6 +260,17 @@ pub enum BudgetKind {
     Integration,
     /// Integrand evaluations of one numerical quadrature.
     QuadratureEvaluations,
+    /// Steps of one top-level limit by the Gruntz algorithm: one per
+    /// recursive step (`mrv`, `limitinf`, `compare`, …), more for a series
+    /// expansion, in proportion to the size of what it expands.
+    LimitSteps,
+    /// Calls of the integrator's dispatch in one top-level `integrate`
+    /// (every sub-integral a strategy asks for is one).
+    IntegrationSteps,
+    /// Work of one parametric rational integration: its field operations
+    /// in `ℚ(parameters)`, and the cost bounds of the multivariate gcds
+    /// that normalise them.
+    ParametricRational,
 }
 
 impl BudgetKind {
@@ -273,6 +284,13 @@ impl BudgetKind {
                 "quadrature of the definite integral did not converge: the evaluation budget was \
                  exhausted"
             }
+            BudgetKind::LimitSteps => {
+                "work budget exhausted (expression too complex for the limit engine)"
+            }
+            BudgetKind::IntegrationSteps => "the integration exceeded its step budget",
+            BudgetKind::ParametricRational => {
+                "the parametric rational integration exceeded its work budget"
+            }
         }
     }
 }
@@ -283,6 +301,9 @@ impl fmt::Display for BudgetKind {
             BudgetKind::SeriesExpansion => "series expansion",
             BudgetKind::Integration => "integration",
             BudgetKind::QuadratureEvaluations => "quadrature evaluations",
+            BudgetKind::LimitSteps => "limit steps",
+            BudgetKind::IntegrationSteps => "integration steps",
+            BudgetKind::ParametricRational => "parametric rational integration",
         })
     }
 }

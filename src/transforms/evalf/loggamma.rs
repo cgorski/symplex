@@ -35,7 +35,9 @@
 //! with `S(z)` instead of mpmath's floor terms, and the stopping rule is the
 //! DLMF bound.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use crate::base::bigfloat::{self, to_f64};
+use astro_float::BigFloat;
 
 use super::accuracy::{self, Bound};
 use crate::base::bigcomplex::{Complex, c_abs, c_add, c_div, c_mul, c_sub};
@@ -43,12 +45,8 @@ use crate::base::errors::SymplexError;
 
 /// `loggamma(z)` for `Im z ≠ 0`, rounded to `prec` bits: its absolute error
 /// on each part is below `2^−(prec+16)·|loggamma(z)|`.
-pub(super) fn loggamma_complex(
-    z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+pub(super) fn loggamma_complex(z: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     if z.0.is_nan() || z.1.is_nan() || z.0.is_inf() || z.1.is_inf() {
         return Err(super::unevaluable("LogGamma of special float value"));
     }
@@ -62,7 +60,7 @@ pub(super) fn loggamma_complex(
     let mut extra = 40 + accuracy::ceil_log2(prec) as usize;
     loop {
         let wp = prec + extra;
-        let (value, largest) = upper_half(&upper, wp, rm, cc)?;
+        let (value, largest) = upper_half(&upper, &mut w.at(wp))?;
         let lv = accuracy::lg_abs(&value);
         let lost = if lv.is_finite() {
             (largest - lv).max(0.0).ceil() as usize
@@ -71,8 +69,8 @@ pub(super) fn loggamma_complex(
         };
         if lost + 24 <= extra {
             let v = (
-                super::round_to(value.0, prec + 16, rm),
-                super::round_to(value.1, prec + 16, rm),
+                super::round_to(value.0, prec + 16),
+                super::round_to(value.1, prec + 16),
             );
             return Ok(if below { (v.0, v.1.neg()) } else { v });
         }
@@ -85,81 +83,69 @@ pub(super) fn loggamma_complex(
 
 /// `loggamma(z)` for `Im z > 0` at working precision `wp`, and `log₂` of the
 /// largest term summed (the absolute error is a few units of `2^−wp` of it).
-fn upper_half(
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<(Complex, f64), SymplexError> {
+fn upper_half(z: &Complex, w: &mut Wp<'_>) -> Result<(Complex, f64), SymplexError> {
+    let wp = w.bits();
     let half = BigFloat::from_f64(0.5, 64);
-    if !z.0.sub(&half, wp, rm).is_negative() {
-        return shifted_stirling(z, wp, rm, cc);
+    if !z.0.sub(&half, wp, RM).is_negative() {
+        return shifted_stirling(z, w);
     }
     // Reflection: ln π − S(z) − conj(loggamma(1 − z̄)).
     let one = BigFloat::from_i32(1, 64);
-    let mirror = (one.sub(&z.0, super::exact_bits(&z.0, wp), rm), z.1.clone());
-    let (g, lg) = shifted_stirling(&mirror, wp, rm, cc)?;
-    let s = log_sin_pi(z, wp, rm, cc);
-    let ln_pi = cc.pi(wp, rm).clone().ln(wp, rm, cc);
-    let re = ln_pi.sub(&s.0, wp, rm).sub(&g.0, wp, rm);
-    let im = s.1.neg().add(&g.1, wp, rm);
+    let mirror = (one.sub(&z.0, super::exact_bits(&z.0, wp), RM), z.1.clone());
+    let (g, lg) = shifted_stirling(&mirror, w)?;
+    let s = log_sin_pi(z, w);
+    let ln_pi = w.cc.pi(wp, RM).clone().ln(wp, RM, w.cc);
+    let re = ln_pi.sub(&s.0, wp, RM).sub(&g.0, wp, RM);
+    let im = s.1.neg().add(&g.1, wp, RM);
     let largest = lg.max(accuracy::lg_abs(&s)).max(1.0);
     Ok(((re, im), largest))
 }
 
 /// `S(z)` for `Im z > 0`: the logarithm of `sin πz` continuous in the upper
 /// half-plane that is real on `(0, 1)` (see the module documentation).
-fn log_sin_pi(z: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    let pi = cc.pi(wp, rm).clone();
+fn log_sin_pi(z: &Complex, wpc: &mut Wp<'_>) -> Complex {
+    let wp = wpc.bits();
+    let pi = wpc.cc.pi(wp, RM).clone();
     let (x, y) = (&z.0, &z.1);
     let n = x
-        .add(&BigFloat::from_f64(0.5, 64), super::exact_bits(x, wp), rm)
+        .add(&BigFloat::from_f64(0.5, 64), super::exact_bits(x, wp), RM)
         .floor();
-    let d = x.sub(&n, super::exact_bits(x, wp), rm);
+    let d = x.sub(&n, super::exact_bits(x, wp), RM);
     let quarter = BigFloat::from_f64(0.25, 64);
     // q = 1 − e^{2πiz′}, z′ = d + iy.
-    let q: Complex = if !y.sub(&quarter, wp, rm).is_negative() {
+    let q: Complex = if !y.sub(&quarter, wp, RM).is_negative() {
         // |e^{2πiz′}| ≤ e^{−π/2}: no cancellation in 1 − e^{2πiz′}.
-        let two_pi = pi.mul(&BigFloat::from_i32(2, 64), wp, rm);
-        let w = super::c_exp(
-            &(two_pi.mul(y, wp, rm).neg(), two_pi.mul(&d, wp, rm)),
-            wp,
-            rm,
-            cc,
-        );
-        (BigFloat::from_i32(1, 64).sub(&w.0, wp, rm), w.1.neg())
+        let two_pi = pi.mul(&BigFloat::from_i32(2, 64), wp, RM);
+        let w = super::c_exp(&(two_pi.mul(y, wp, RM).neg(), two_pi.mul(&d, wp, RM)), wpc);
+        (BigFloat::from_i32(1, 64).sub(&w.0, wp, RM), w.1.neg())
     } else {
         // −2i·sin(πz′)·e^{iπz′}.
-        let theta = (pi.mul(&d, wp, rm), pi.mul(y, wp, rm));
-        let s = super::c_sin(&theta, wp, rm, cc);
-        let e = super::c_exp(&(theta.1.neg(), theta.0.clone()), wp, rm, cc);
-        let p = c_mul(&s, &e, wp, rm);
+        let theta = (pi.mul(&d, wp, RM), pi.mul(y, wp, RM));
+        let s = super::c_sin(&theta, wpc);
+        let e = super::c_exp(&(theta.1.neg(), theta.0.clone()), wpc);
+        let p = c_mul(&s, &e, wp, RM);
         let two = BigFloat::from_i32(2, 64);
-        (p.1.mul(&two, wp, rm), p.0.mul(&two, wp, rm).neg())
+        (p.1.mul(&two, wp, RM), p.0.mul(&two, wp, RM).neg())
     };
-    let lq = super::c_ln(&q, wp, rm, cc);
-    let ln2 = BigFloat::from_i32(2, 64).ln(wp, rm, cc);
-    let half_pi = pi.div(&BigFloat::from_i32(2, 64), wp, rm);
-    let re = pi.mul(y, wp, rm).sub(&ln2, wp, rm).add(&lq.0, wp, rm);
+    let lq = super::c_ln(&q, wpc);
+    let ln2 = BigFloat::from_i32(2, 64).ln(wp, RM, wpc.cc);
+    let half_pi = pi.div(&BigFloat::from_i32(2, 64), wp, RM);
+    let re = pi.mul(y, wp, RM).sub(&ln2, wp, RM).add(&lq.0, wp, RM);
     let im = pi
-        .mul(x, wp, rm)
+        .mul(x, wp, RM)
         .neg()
-        .add(&half_pi, wp, rm)
-        .add(&lq.1, wp, rm);
+        .add(&half_pi, wp, RM)
+        .add(&lq.1, wp, RM);
     (re, im)
 }
 
 /// `loggamma(z)` for `Im z > 0`, `Re z > 0` at working precision `wp` by
 /// Stirling's series after a shift (see the module documentation), and
 /// `log₂` of the largest term.
-fn shifted_stirling(
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<(Complex, f64), SymplexError> {
-    let x = super::bigfloat_to_f64(&z.0, rm, cc)?;
-    let y = super::bigfloat_to_f64(&z.1, rm, cc)?;
+fn shifted_stirling(z: &Complex, wpc: &mut Wp<'_>) -> Result<(Complex, f64), SymplexError> {
+    let wp = wpc.bits();
+    let x = super::f64_of(&z.0)?;
+    let y = super::f64_of(&z.1)?;
     let target = (0.5 * wp as f64).max(12.0);
     // The shift n: |z + n| ≥ target.
     let n: u64 = if x.hypot(y) >= target || y >= target {
@@ -168,8 +154,8 @@ fn shifted_stirling(
         ((target * target - y * y).sqrt() - x).ceil().max(0.0) as u64
     };
     let exact = super::exact_bits(&z.0, wp);
-    let w = (z.0.add(&BigFloat::from_u64(n, 64), exact, rm), z.1.clone());
-    let (g, lg) = stirling_series(&w, wp, rm, cc)?;
+    let w = (z.0.add(&BigFloat::from_u64(n, 64), exact, RM), z.1.clone());
+    let (g, lg) = stirling_series(&w, wpc)?;
     if n == 0 {
         return Ok((g, lg));
     }
@@ -178,50 +164,48 @@ fn shifted_stirling(
     let wp2 = wp + accuracy::ceil_log2(n as usize) as usize + 8;
     let mut p: Complex = (z.0.clone(), z.1.clone());
     for k in 1..n {
-        let f = (z.0.add(&BigFloat::from_u64(k, 64), exact, rm), z.1.clone());
-        p = c_mul(&p, &f, wp2, rm);
+        let f = (z.0.add(&BigFloat::from_u64(k, 64), exact, RM), z.1.clone());
+        p = c_mul(&p, &f, wp2, RM);
     }
-    let mut l = super::c_ln(&p, wp2, rm, cc);
+    let mut l = super::c_ln(&p, &mut wpc.at(wp2));
     let args: f64 = (0..n).map(|k| y.atan2(x + k as f64)).sum();
-    let im0 = super::bigfloat_to_f64(&l.1, rm, cc)?;
+    let im0 = super::f64_of(&l.1)?;
     let two_pi_f = 2.0 * std::f64::consts::PI;
     let m = ((args - im0) / two_pi_f).round();
     if m != 0.0 {
-        let two_pi = cc
-            .pi(wp2, rm)
+        let two_pi = wpc
+            .cc
+            .pi(wp2, RM)
             .clone()
-            .mul(&BigFloat::from_i32(2, 64), wp2, rm);
-        let shift = two_pi.mul(&BigFloat::from_f64(m, 64), wp2, rm);
-        l.1 = l.1.add(&shift, wp2, rm);
+            .mul(&BigFloat::from_i32(2, 64), wp2, RM);
+        let shift = two_pi.mul(&bigfloat::from_f64(m, 64), wp2, RM);
+        l.1 = l.1.add(&shift, wp2, RM);
     }
-    let v = c_sub(&g, &l, wp, rm);
+    let v = c_sub(&g, &l, wp, RM);
     Ok((v, lg.max(accuracy::lg_abs(&l))))
 }
 
 /// Stirling's series `(w − ½)ln w − w + ½ln 2π + Σ_{k≥1} B₂ₖ/(2k(2k−1)w^{2k−1})`
 /// for `Re w > 0`, `|w| ≥ 12`, to an absolute error below `2^−wp` of the
 /// leading part; `log₂` of the largest term.
-fn stirling_series(
-    w: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<(Complex, f64), SymplexError> {
+fn stirling_series(w: &Complex, wpc: &mut Wp<'_>) -> Result<(Complex, f64), SymplexError> {
+    let wp = wpc.bits();
     let half = BigFloat::from_f64(0.5, 64);
-    let ln_w = super::c_ln(w, wp, rm, cc);
-    let w_half = (w.0.sub(&half, wp, rm), w.1.clone());
-    let lead = c_sub(&c_mul(&w_half, &ln_w, wp, rm), w, wp, rm);
-    let two_pi = cc
-        .pi(wp, rm)
+    let ln_w = super::c_ln(w, wpc);
+    let w_half = (w.0.sub(&half, wp, RM), w.1.clone());
+    let lead = c_sub(&c_mul(&w_half, &ln_w, wp, RM), w, wp, RM);
+    let two_pi = wpc
+        .cc
+        .pi(wp, RM)
         .clone()
-        .mul(&BigFloat::from_i32(2, 64), wp, rm);
-    let half_ln_2pi = two_pi.ln(wp, rm, cc).mul(&half, wp, rm);
-    let mut v = (lead.0.add(&half_ln_2pi, wp, rm), lead.1);
+        .mul(&BigFloat::from_i32(2, 64), wp, RM);
+    let half_ln_2pi = two_pi.ln(wp, RM, wpc.cc).mul(&half, wp, RM);
+    let mut v = (lead.0.add(&half_ln_2pi, wp, RM), lead.1);
     let largest = accuracy::lg_abs(&v).max(accuracy::lg_abs(w));
     // |w| and sec²(½ ph w) = 2|w|/(|w| + Re w) ≤ 2, in f64 (logarithms).
     let lw = accuracy::lg_abs_low(w);
-    let abs_w = super::bigfloat_to_f64(&c_abs(w, wp, rm), rm, cc)?;
-    let re_w = super::bigfloat_to_f64(&w.0, rm, cc)?;
+    let abs_w = super::f64_of(&c_abs(w, wp, RM))?;
+    let re_w = super::f64_of(&w.0)?;
     let lsec2 = if abs_w.is_finite() && abs_w > 0.0 {
         (2.0 * abs_w / (abs_w + re_w.max(0.0)))
             .log2()
@@ -231,8 +215,8 @@ fn stirling_series(
     };
     let goal = accuracy::lg_abs_low(&v) - wp as f64 - 4.0;
     let one = (BigFloat::from_i32(1, 64), BigFloat::new(64));
-    let u = c_div(&one, w, wp, rm);
-    let u2 = c_mul(&u, &u, wp, rm);
+    let u = c_div(&one, w, wp, RM);
+    let u2 = c_mul(&u, &u, wp, RM);
     let mut pw = u; // w^{−(2k−1)}
     let max_terms = (wp as f64 * 0.4) as usize + 16;
     for k in 1..=max_terms {
@@ -244,15 +228,15 @@ fn stirling_series(
         if lb < goal {
             return Ok((v, largest));
         }
-        let b = super::ratio_to_bigfloat(&super::bernoulli::even(k), wp, rm);
+        let b = super::ratio_to_bigfloat(&super::bernoulli::even(k), wp);
         let c = b.div(
             &BigFloat::from_u64((2 * k * (2 * k - 1)) as u64, 64),
             wp,
-            rm,
+            RM,
         );
-        let term = (pw.0.mul(&c, wp, rm), pw.1.mul(&c, wp, rm));
-        v = c_add(&v, &term, wp, rm);
-        pw = c_mul(&pw, &u2, wp, rm);
+        let term = (pw.0.mul(&c, wp, RM), pw.1.mul(&c, wp, RM));
+        v = c_add(&v, &term, wp, RM);
+        pw = c_mul(&pw, &u2, wp, RM);
     }
     Err(super::series_did_not_converge(
         "loggamma Stirling series",
@@ -340,11 +324,4 @@ pub(super) fn log2_psi_bound(x: f64, y: f64, r: f64) -> Option<f64> {
     let psi_mirror = right(1.0 - x, y);
     let total = psi_mirror + pi * cot;
     total.is_finite().then(|| total.log2())
-}
-
-/// A finite `f64` value of `x` (`None` beyond the range or for NaN).
-fn to_f64(x: &BigFloat) -> Option<f64> {
-    super::bigfloat_to_f64_rounded(x, RoundingMode::ToEven)
-        .ok()
-        .filter(|v| v.is_finite())
 }

@@ -34,7 +34,7 @@
 //! | `sin`, `cos` / `sinh`, `cosh` | `r·cosh(abs(im z) + r)` / `r·cosh(abs(re z) + r)` — exactly `r` for `sin`, `cos` of a real argument; `r` of a rational `abs(q) ≥ 1` under `sin`, `cos`, `tan` is its rounding at `prec + log₂ abs(q)` bits (it is converted again, `evalf::trig_arg`) |
 //! | `tan`, `tanh` | `r·(1 + w²)`, `w = (T + t)/(1 − T·t)`, `T = abs(f(z))`, `t = tan r`; no bound when `r·T > 1/8` (the ball reaches an eighth of the distance to a pole); `r` for a real `tanh` |
 //! | `atan`, `asin`, `acos`, `asinh`, `acosh`, `atanh` | `r·Π(dᵢ − r)^(−k)` with the distances `dᵢ` to the two branch points (`abs(f′) = Π abs(z − pᵢ)^(−k)`); within a few error radii of a square-root branch point `p` the Hölder bound `2.06·√(2·(abs(z − p) + r))`, and no bound near a logarithmic one |
-//! | `sign`, `floor`, `ceiling`, `heaviside`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold |
+//! | `sign`, `floor`, `ceiling`, `heaviside`, `DiracDelta`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold (0 for `DiracDelta`, whose value at an exact 0 is refused) |
 //! | special functions `f(x₁, …, xₙ)` | `2·Σᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing; a 0 from exact nonzero arguments is an underflow for the functions that vanish at no rational point (`erfc`, `Γ`, `Ei`, `Ai`, `Bi`, `I_ν`, `K_ν`, `Γ(s, x)`, `E_ν`) and for `J_ν` with `ν > abs(x)`, exact otherwise |
 //!
 //! The sensitivity `abs(∂f/∂x)` of a special function — its condition number
@@ -132,7 +132,11 @@
 //! higher precision until the requested digits are covered
 //! (`evaluate_adaptive` in `evalf.rs`).
 
-use astro_float::{BigFloat, RoundingMode};
+use super::ball::{Ball, CBall};
+use super::wp::RM;
+use std::borrow::Borrow;
+
+use astro_float::BigFloat;
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
@@ -577,13 +581,13 @@ fn clean(x: &BigFloat) -> BigFloat {
 }
 
 /// Is the sum of the exact values `parts` at `prec` bits free of rounding?
-fn exact_sum<'a>(parts: impl Iterator<Item = &'a BigFloat>, prec: usize, rm: RoundingMode) -> bool {
+fn exact_sum<'a>(parts: impl Iterator<Item = &'a BigFloat>, prec: usize) -> bool {
     let mut s = BigFloat::new(prec);
     for x in parts {
         if x.is_zero() {
             continue;
         }
-        s = s.add(&clean(x), prec, rm);
+        s = s.add(&clean(x), prec, RM);
         if s.inexact() {
             return false;
         }
@@ -594,26 +598,22 @@ fn exact_sum<'a>(parts: impl Iterator<Item = &'a BigFloat>, prec: usize, rm: Rou
 /// `a₁ + … + aₙ` summed left to right from 0 at `prec` bits, as `evalf`
 /// sums, with the bound of each part ([`PartSum`]); a part whose terms are
 /// all exact and whose partial sums were never rounded is exact.
-pub(super) fn add_with_bound(
-    terms: &[(&Complex, Bound)],
-    prec: usize,
-    rm: RoundingMode,
-) -> (Complex, Bound) {
+pub(super) fn add_with_bound(terms: &[(&Complex, Bound)], prec: usize) -> CBall {
     let mut sum = c_zero(prec);
     let (mut re, mut im) = (PartSum::new(), PartSum::new());
     let mut unknown = false;
     for &(v, b) in terms {
         unknown |= b.is_unknown();
-        sum = c_add(&sum, v, prec, rm);
+        sum = c_add(&sum, v, prec, RM);
         re.add(&v.0, b.re, &sum.0, prec);
         im.add(&v.1, b.im, &sum.1, prec);
     }
     if unknown {
-        return (sum, Bound::UNKNOWN);
+        return CBall::unknown(sum);
     }
     let finish = |acc: &PartSum, exact_terms: bool, parts: &mut dyn Iterator<Item = &BigFloat>| {
         let e = acc.bound();
-        if is_exact(e) || (exact_terms && exact_sum(parts, prec, rm)) {
+        if is_exact(e) || (exact_terms && exact_sum(parts, prec)) {
             EXACT
         } else {
             e
@@ -625,7 +625,7 @@ pub(super) fn add_with_bound(
         re: finish(&re, re_exact, &mut terms.iter().map(|(v, _)| &v.0)),
         im: finish(&im, im_exact, &mut terms.iter().map(|(v, _)| &v.1)),
     };
-    (sum, bound)
+    CBall::new(sum, bound)
 }
 
 /// A term certainly not 0 that a sum lost below its error bound: the sum's
@@ -700,7 +700,6 @@ fn product_part(
     result: &BigFloat,
     subtract: bool,
     prec: usize,
-    rm: RoundingMode,
 ) -> f64 {
     let p = prec as f64;
     let lmag = |x: &BigFloat| part_mag(x).map_or(f64::NEG_INFINITY, |m| m as f64);
@@ -725,12 +724,12 @@ fn product_part(
         let mut acc: Option<BigFloat> = None;
         let mut rounded = false;
         for &(x, y) in &live {
-            let t = clean(x).mul(&clean(y), prec, rm);
+            let t = clean(x).mul(&clean(y), prec, RM);
             rounded |= t.inexact();
             let next = match acc {
                 None => t,
-                Some(a) if subtract => a.sub(&t, prec, rm),
-                Some(a) => a.add(&t, prec, rm),
+                Some(a) if subtract => a.sub(&t, prec, RM),
+                Some(a) => a.add(&t, prec, RM),
             };
             rounded |= next.inexact();
             acc = Some(next);
@@ -747,11 +746,7 @@ fn product_part(
 /// multiplies, with the bound of each part ([`product_part`] for every
 /// step).  An exact-zero factor makes the product exact; a product of
 /// non-zero factors that came out 0 underflowed.
-pub(super) fn mul_with_bound(
-    factors: &[(&Complex, Bound)],
-    prec: usize,
-    rm: RoundingMode,
-) -> (Complex, Bound) {
+pub(super) fn mul_with_bound(factors: &[(&Complex, Bound)], prec: usize) -> CBall {
     let mut product = c_one(prec);
     let mut err = [f64::NEG_INFINITY; 2];
     let mut unknown = false;
@@ -763,32 +758,32 @@ pub(super) fn mul_with_bound(
         zero_factor |= exact_zero(&v.0, b.re) && exact_zero(&v.1, b.im);
         all_real &= exactly_real(v, b);
         all_nonzero &= mag(v).is_some();
-        let next = c_mul(&product, v, prec, rm);
+        let next = c_mul(&product, v, prec, RM);
         if !unknown && !zero_factor {
             let (pr, pi) = ((&product.0, err[0]), (&product.1, err[1]));
             let (fr, fi) = ((&v.0, lg(b.re)), (&v.1, lg(b.im)));
             err = [
-                product_part([(pr, fr), (pi, fi)], &next.0, true, prec, rm),
-                product_part([(pr, fi), (pi, fr)], &next.1, false, prec, rm),
+                product_part([(pr, fr), (pi, fi)], &next.0, true, prec),
+                product_part([(pr, fi), (pi, fr)], &next.1, false, prec),
             ];
         }
         product = next;
     }
     if unknown {
-        return (product, Bound::UNKNOWN);
+        return CBall::unknown(product);
     }
     if zero_factor {
-        return (product, Bound::EXACT);
+        return CBall::exact(product);
     }
     if mag(&product).is_none() && all_nonzero && !factors.is_empty() {
         let im = if all_real { EXACT } else { UNDERFLOW };
-        return (product, Bound { re: UNDERFLOW, im });
+        return CBall::new(product, Bound { re: UNDERFLOW, im });
     }
     let bound = Bound {
         re: from_lg(err[0]),
         im: from_lg(err[1]),
     };
-    (product, bound)
+    CBall::new(product, bound)
 }
 
 // ── Branch cuts ────────────────────────────────────────────────────────────
@@ -821,7 +816,7 @@ fn sign_of(x: &BigFloat) -> i32 {
 /// `x − c`, keeping every bit of `x`.
 fn minus(x: &BigFloat, c: i32) -> BigFloat {
     let p = x.mantissa_max_bit_len().unwrap_or(64).max(64) + 64;
-    x.sub(&BigFloat::from_i32(c, 64), p, RoundingMode::ToEven)
+    x.sub(&BigFloat::from_i32(c, 64), p, RM)
 }
 
 /// Does the interval `x ± 2^e` meet `(−∞, c]`?
@@ -858,7 +853,54 @@ fn meets_at_least_strict(x: &BigFloat, e: ErrExp, c: i32) -> bool {
     sign_of(&d) > 0 || (!is_exact(e) && part_contains_zero(&d, e))
 }
 
-/// Is the side of `cut` on which the argument `z ± b` lies undecidable?
+/// Where a ball lies relative to a branch cut ([`cut_side`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CutSide {
+    /// The ball does not meet the cut: its part perpendicular to the cut
+    /// has a certain sign (the side the value takes), or the ball misses
+    /// the cut's segment of the line.
+    Off,
+    /// Exactly on the cut: the perpendicular part is an exact 0 and the
+    /// ball meets the cut's segment; the value is the principal one by
+    /// convention.
+    On,
+    /// The perpendicular part is within its error of 0 without being
+    /// exactly 0 and the ball meets the cut's segment: the side is
+    /// undecidable at this precision.
+    Undecided,
+}
+
+/// Where the argument `z ± b` lies relative to `cut`.
+///
+/// The part perpendicular to the cut is `im` for the real-axis cuts and
+/// `re` for the imaginary-axis ones; the box `re ± 2^b.re`, `im ± 2^b.im`
+/// meets the cut when that part may be 0 and the other part meets the
+/// cut's segment of its axis.
+pub(super) fn cut_side(z: &Complex, b: Bound, cut: Cut) -> CutSide {
+    let (across, across_err, along, along_err) = match cut {
+        Cut::ImaginaryBeyondOne => (&z.0, b.re, &z.1, b.im),
+        _ => (&z.1, b.im, &z.0, b.re),
+    };
+    let exactly_on_line = exact_zero(across, across_err);
+    if !exactly_on_line && !part_contains_zero(across, across_err) {
+        return CutSide::Off;
+    }
+    let meets = match cut {
+        Cut::NegativeReal => meets_at_most(along, along_err, 0),
+        Cut::RealBelowOne => meets_at_most(along, along_err, 1),
+        Cut::RealBeyondOne | Cut::ImaginaryBeyondOne => {
+            meets_at_most(along, along_err, -1) || meets_at_least(along, along_err, 1)
+        }
+    };
+    match (meets, exactly_on_line) {
+        (false, _) => CutSide::Off,
+        (true, true) => CutSide::On,
+        (true, false) => CutSide::Undecided,
+    }
+}
+
+/// Is the side of `cut` on which the argument `z ± b` lies undecidable
+/// ([`CutSide::Undecided`])?
 ///
 /// The box `re ± 2^b.re`, `im ± 2^b.im` must meet the cut, and the part
 /// perpendicular to it (`im` for the real-axis cuts, `re` for the
@@ -866,20 +908,16 @@ fn meets_at_least_strict(x: &BigFloat, e: ErrExp, c: i32) -> bool {
 /// 0: an exact 0 is on the cut, where the principal value is the
 /// convention, and a part outside its error ball has a certain sign.
 pub(super) fn cut_undecided(z: &Complex, b: Bound, cut: Cut) -> bool {
-    let (across, across_err, along, along_err) = match cut {
-        Cut::ImaginaryBeyondOne => (&z.0, b.re, &z.1, b.im),
-        _ => (&z.1, b.im, &z.0, b.re),
+    // `cut_side(z, b, cut) == CutSide::Undecided`, without testing the
+    // segment for an exactly real argument (every real `ln`).
+    let (across, across_err) = match cut {
+        Cut::ImaginaryBeyondOne => (&z.0, b.re),
+        _ => (&z.1, b.im),
     };
     if exact_zero(across, across_err) || !part_contains_zero(across, across_err) {
         return false;
     }
-    match cut {
-        Cut::NegativeReal => meets_at_most(along, along_err, 0),
-        Cut::RealBelowOne => meets_at_most(along, along_err, 1),
-        Cut::RealBeyondOne | Cut::ImaginaryBeyondOne => {
-            meets_at_most(along, along_err, -1) || meets_at_least(along, along_err, 1)
-        }
-    }
+    cut_side(z, b, cut) == CutSide::Undecided
 }
 
 /// How a function behaves at one of its branch points.
@@ -963,7 +1001,7 @@ fn inverse_error(node: &ExprNode, z: &Complex, b: Bound, prec: usize) -> Bound {
     let mut distance = [0.0f64; 2];
     for (slot, &((pr, pi), kind)) in distance.iter_mut().zip(points.iter()) {
         let p = (BigFloat::from_i32(pr, 64), BigFloat::from_i32(pi, 64));
-        let d = c_sub(z, &p, hp, RoundingMode::ToEven);
+        let d = c_sub(z, &p, hp, RM);
         let ld = lg_abs_low(&d);
         if mag(&d).is_some() && ld > j + 3.0 {
             *slot = ld;
@@ -1098,6 +1136,202 @@ fn is_integer_value(x: &BigFloat) -> bool {
     x.is_zero() || x.int() == *x
 }
 
+// ── Node bounds of the elementary functions, from the argument's ball ─────
+
+/// What a node's bound rule gives: the final bound, or the propagated one
+/// to which [`finish`] adds the node's rounding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum NodeBound {
+    /// The node's bound as it stands.
+    Final(Bound),
+    /// The propagated part; the rounding of the result is added.
+    Propagated(Bound),
+}
+
+/// The bound rules of the elementary nodes (the module documentation's
+/// table), one method per node kind, on the argument's ball.
+impl<Z: Borrow<Complex>> Ball<Z> {
+    /// The propagated bound of `exp` at this argument, for a value of magnitude `2^lv` (see [`node_error`]).
+    fn exp_error(&self, lv: f64) -> NodeBound {
+        let (z, b) = (self.z(), self.err);
+        // `|e^(z+δ) − e^z| ≤ |e^z|·(e^|δ| − 1)`: the first-order `|e^z|·|δ|`
+        // only for a small `δ`; `(e^r − 1)/r` for a radius `r` from 1/8
+        // (before 0.30 always the first order, `e^1000·10` for
+        // `exp(1000 ± 10)`, whose values reach `e^1010`).
+        let j = b.joint();
+        // `e^z` is never 0: a 0 underflowed, and so does every value in
+        // the ball, `|e^(z+δ)| ≤ |e^z|·e^|δ|`.  Up to 0.31 its bound was
+        // unknown (`lv` is `−∞`) and `exp(−10¹⁰ − √2)` was refused as
+        // lacking precision.
+        if lv == f64::NEG_INFINITY && j <= 9.0 {
+            let e = if is_exact(j) {
+                UNDERFLOW
+            } else {
+                up(UNDERFLOW + j.exp2() * std::f64::consts::LOG2_E)
+            };
+            let im = if exactly_real(z, b) { EXACT } else { e };
+            return NodeBound::Final(Bound { re: e, im });
+        }
+        let e = if is_exact(j) {
+            EXACT
+        } else if j < -30.0 {
+            // `e^r − 1 ≤ r·e^r`.
+            shift(j, up(lv + j.exp2() * std::f64::consts::LOG2_E))
+        } else if j <= 9.0 {
+            clamp(up(lv + j.exp2().exp_m1().log2()))
+        } else {
+            return NodeBound::Final(Bound::UNKNOWN);
+        };
+        NodeBound::Propagated(if exactly_real(z, b) {
+            Bound::real(e)
+        } else {
+            Bound::both(e)
+        })
+    }
+
+    /// The propagated bound of `ln` (or `arg`, `is_arg`) at this argument, whose value is `value` (see [`node_error`]).
+    fn ln_error(&self, is_arg: bool, value: &Complex) -> NodeBound {
+        let (z, b) = (self.z(), self.err);
+        let real = is_arg || (exactly_real(z, b) && sign_of(&z.0) > 0);
+        // The argument of an exactly real number that is certainly
+        // positive is exactly 0.  Before 0.30 it carried the child's
+        // relative error: `arg(expint(1, √22))` was a 0 with a bound,
+        // only zero to the precision reached (and the deep zero search
+        // would pursue it for seconds).
+        if is_arg
+            && exactly_real(z, b)
+            && !part_contains_zero(&z.0, b.re)
+            && sign_of(&z.0) > 0
+            && value.0.is_zero()
+        {
+            return NodeBound::Final(Bound::EXACT);
+        }
+        NodeBound::Propagated(if b.is_exact() {
+            if real {
+                Bound::real(EXACT)
+            } else {
+                Bound::EXACT
+            }
+        } else {
+            let j = b.joint();
+            if contains_zero(z, j) || cut_undecided(z, b, Cut::NegativeReal) {
+                return NodeBound::Final(Bound::UNKNOWN);
+            }
+            // `|ln(z + δ) − ln z| ≤ r/(|z| − r)` (and `arg` likewise).
+            let e = log_ball(j, lg_abs_low(z));
+            if real { Bound::real(e) } else { Bound::both(e) }
+        })
+    }
+
+    /// The propagated bound of `abs` at this argument (see [`node_error`]).
+    fn abs_error(&self) -> NodeBound {
+        let (z, b) = (self.z(), self.err);
+        NodeBound::Propagated(Bound::real(if exactly_real(z, b) {
+            b.re
+        } else {
+            b.joint()
+        }))
+    }
+
+    /// The propagated bound of `DiracDelta` at this argument (see [`node_error`]).
+    fn delta_error(&self) -> NodeBound {
+        if self.err.is_exact() || !contains_zero(self.z(), self.err.joint()) {
+            NodeBound::Final(Bound::EXACT)
+        } else {
+            NodeBound::Final(Bound::UNKNOWN)
+        }
+    }
+
+    /// The propagated bound of `sign` (or `heaviside`) at this argument (see
+    /// [`node_error`]).
+    fn sign_error(&self, heaviside: bool) -> NodeBound {
+        let (z, b) = (self.z(), self.err);
+        if exactly_real(z, b) {
+            if is_exact(b.re) || !part_contains_zero(&z.0, b.re) {
+                return NodeBound::Final(Bound::EXACT); // −1, 0 or 1
+            }
+            return NodeBound::Final(Bound::UNKNOWN);
+        }
+        // An argument that may be complex: `heaviside` is undefined
+        // there, `sign(z) = z/|z|`.
+        let j = b.joint();
+        if heaviside || contains_zero(z, j) {
+            return NodeBound::Final(Bound::UNKNOWN);
+        }
+        // `|w/|w| − z/|z|| ≤ 2r/|z|` for `|w − z| ≤ r`.
+        NodeBound::Propagated(Bound::both(shift(log_ball(j, lg_abs_low(z)), 1.0)))
+    }
+
+    /// The propagated bound of `sin`, `cos` (`circular`) or `sinh`, `cosh` at
+    /// this argument, whose joint error as the node uses it is `2^j`
+    /// ([`trig_arg_error`]; see [`node_error`]).
+    fn trig_error(&self, circular: bool, j: ErrExp) -> NodeBound {
+        let (z, b) = (self.z(), self.err);
+        // The derivative over the ball: `|cos w|, |sin w| ≤ cosh(Im w)`,
+        // `|cosh w|, |sinh w| ≤ cosh(Re w)` — exactly 1 for `sin`, `cos`
+        // of a real argument, which are Lipschitz with constant 1
+        // (before 0.30 `2·max(1, |f(z)|)`, a bit per `sin` of a chain).
+        let across = if circular { (&z.1, b.im) } else { (&z.0, b.re) };
+        let factor = if exact_zero(across.0, across.1) {
+            0.0
+        } else {
+            let t = part_lg(across.0).exp2()
+                + if is_exact(across.1) {
+                    0.0
+                } else {
+                    across.1.exp2()
+                };
+            if !j.is_finite() && !is_exact(j) {
+                UNKNOWN
+            } else {
+                log2_cosh(t + if is_exact(j) { 0.0 } else { j.exp2() })
+            }
+        };
+        let e = shift(j, factor);
+        NodeBound::Propagated(if exactly_real(z, b) {
+            Bound::real(e)
+        } else {
+            Bound::both(e)
+        })
+    }
+
+    /// The propagated bound of `tan` (`tan`) or `tanh` at this argument,
+    /// whose joint error as the node uses it is `2^arg_err`, for a value of
+    /// magnitude `2^lv` (see [`node_error`]).
+    fn tan_error(&self, tan: bool, arg_err: ErrExp, lv: f64) -> NodeBound {
+        let (z, b) = (self.z(), self.err);
+        // The first-order bound holds on a ball well inside the
+        // distance to the nearest pole, about `1/|tan z|` there: no
+        // bound beyond an eighth of it.  Before 0.30 the ball of
+        // `tan(π/2·(1 − 10⁻⁸⁰))` at 128 bits (its argument rounded onto
+        // the pole) was `±3·10³⁹` around a value of `10³⁹` — the true
+        // value is `6.4·10⁷⁹` — and `Piecewise` decided `3.8·10⁵⁰ > tan(…)`
+        // on it.
+        // (A real `tanh` has no pole and a derivative below 1.)
+        let poles = tan || !exactly_real(z, b);
+        if poles && !is_exact(arg_err) && arg_err + lv.max(0.0) > -3.0 {
+            return NodeBound::Final(Bound::UNKNOWN);
+        }
+        // `f(z + δ) = (f(z) ± g(δ))/(1 ∓ f(z)·g(δ))` with `|g(δ)| ≤ tan r`,
+        // and `|f′(w)| ≤ 1 + |f(w)|²` over the ball; 1 for a real `tanh`.
+        let factor = if !poles || is_exact(arg_err) {
+            0.0
+        } else {
+            let r = arg_err.exp2();
+            let t = r * (1.0 + r * r);
+            let big_t = lv.exp2();
+            let w = (big_t + t) / (1.0 - big_t * t);
+            (1.0 + w * w).log2()
+        };
+        let e = shift(arg_err, up(factor));
+        NodeBound::Propagated(if exactly_real(z, b) {
+            Bound::real(e)
+        } else {
+            Bound::both(e)
+        })
+    }
+}
+
 // ── Node bounds ─────────────────────────────────────────────────────────────
 
 /// The error bound of the value `value` of node `id`, from the values
@@ -1118,18 +1352,35 @@ pub(super) fn node_error(
     if !is_finite(value) {
         return Bound::UNKNOWN;
     }
-    let child = |c: ExprId| -> Option<(&Complex, Bound)> {
-        Some((
-            cache.get(&c)?,
-            errs.get(&c).copied().unwrap_or(Bound::UNKNOWN),
-        ))
+    // The child's value and bound (a view of the cached value).
+    let child = |c: ExprId| -> Option<Ball<&Complex>> {
+        Some(Ball {
+            mid: cache.get(&c)?,
+            err: errs.get(&c).copied().unwrap_or(Bound::UNKNOWN),
+        })
     };
-    // The child's value and bound, or an early `UNKNOWN`.
-    macro_rules! known_child {
+    // The child's ball, or an early `UNKNOWN`.
+    macro_rules! known_ball {
         ($c:expr) => {
             match child($c) {
-                Some((z, b)) if !b.is_unknown() => (z, b),
+                Some(x) if !x.err.is_unknown() => x,
                 _ => return Bound::UNKNOWN,
+            }
+        };
+    }
+    // The child's value and bound, or an early `UNKNOWN`.
+    macro_rules! known_child {
+        ($c:expr) => {{
+            let x = known_ball!($c);
+            (x.mid, x.err)
+        }};
+    }
+    // A rule's final bound returns; a propagated one gets the rounding.
+    macro_rules! settle {
+        ($rule:expr) => {
+            match $rule {
+                NodeBound::Final(b) => return b,
+                NodeBound::Propagated(p) => p,
             }
         };
     }
@@ -1158,23 +1409,22 @@ pub(super) fn node_error(
             let mut parts: Vec<(&Complex, Bound)> = Vec::with_capacity(children.len());
             for &c in children.iter() {
                 match child(c) {
-                    Some(part) => parts.push(part),
+                    Some(x) => parts.push((x.mid, x.err)),
                     None => return Bound::UNKNOWN,
                 }
             }
-            let rm = RoundingMode::ToEven;
             return if matches!(node, ExprNode::Add(_)) {
-                add_with_bound(&parts, prec, rm).1
+                add_with_bound(&parts, prec).err
             } else {
-                mul_with_bound(&parts, prec, rm).1
+                mul_with_bound(&parts, prec).err
             };
         }
         // Exact operations: the child's bound, no rounding.
         ExprNode::Neg(c) | ExprNode::Conjugate(c) => {
-            return child(*c).map_or(Bound::UNKNOWN, |(_, b)| b);
+            return child(*c).map_or(Bound::UNKNOWN, |x| x.err);
         }
-        ExprNode::Re(c) => return child(*c).map_or(Bound::UNKNOWN, |(_, b)| Bound::real(b.re)),
-        ExprNode::Im(c) => return child(*c).map_or(Bound::UNKNOWN, |(_, b)| Bound::real(b.im)),
+        ExprNode::Re(c) => return child(*c).map_or(Bound::UNKNOWN, |x| Bound::real(x.err.re)),
+        ExprNode::Im(c) => return child(*c).map_or(Bound::UNKNOWN, |x| Bound::real(x.err.im)),
         ExprNode::Pow(base, exp) => {
             let (b, eb) = known_child!(*base);
             let (x, ex) = known_child!(*exp);
@@ -1187,141 +1437,20 @@ pub(super) fn node_error(
         // absolute error of its argument, `2^(9 − prec)`: at the 384-bit cap
         // that ball contained 0, `ln(exp(−260.1))` had no bound and was
         // refused.
-        ExprNode::Exp(c) => {
-            let (z, b) = known_child!(*c);
-            // `|e^(z+δ) − e^z| ≤ |e^z|·(e^|δ| − 1)`: the first-order `|e^z|·|δ|`
-            // only for a small `δ`; `(e^r − 1)/r` for a radius `r` from 1/8
-            // (before 0.30 always the first order, `e^1000·10` for
-            // `exp(1000 ± 10)`, whose values reach `e^1010`).
-            let j = b.joint();
-            // `e^z` is never 0: a 0 underflowed, and so does every value in
-            // the ball, `|e^(z+δ)| ≤ |e^z|·e^|δ|`.  Up to 0.31 its bound was
-            // unknown (`lv` is `−∞`) and `exp(−10¹⁰ − √2)` was refused as
-            // lacking precision.
-            if lv == f64::NEG_INFINITY && j <= 9.0 {
-                let e = if is_exact(j) {
-                    UNDERFLOW
-                } else {
-                    up(UNDERFLOW + j.exp2() * std::f64::consts::LOG2_E)
-                };
-                let im = if exactly_real(z, b) { EXACT } else { e };
-                return Bound { re: e, im };
-            }
-            let e = if is_exact(j) {
-                EXACT
-            } else if j < -30.0 {
-                // `e^r − 1 ≤ r·e^r`.
-                shift(j, up(lv + j.exp2() * std::f64::consts::LOG2_E))
-            } else if j <= 9.0 {
-                clamp(up(lv + j.exp2().exp_m1().log2()))
-            } else {
-                return Bound::UNKNOWN;
-            };
-            if exactly_real(z, b) {
-                Bound::real(e)
-            } else {
-                Bound::both(e)
-            }
-        }
+        ExprNode::Exp(c) => settle!(known_ball!(*c).exp_error(lv)),
         ExprNode::Ln(c) | ExprNode::Arg(c) => {
-            let (z, b) = known_child!(*c);
-            let is_arg = matches!(node, ExprNode::Arg(_));
-            let real = is_arg || (exactly_real(z, b) && sign_of(&z.0) > 0);
-            // The argument of an exactly real number that is certainly
-            // positive is exactly 0.  Before 0.30 it carried the child's
-            // relative error: `arg(expint(1, √22))` was a 0 with a bound,
-            // only zero to the precision reached (and the deep zero search
-            // would pursue it for seconds).
-            if is_arg
-                && exactly_real(z, b)
-                && !part_contains_zero(&z.0, b.re)
-                && sign_of(&z.0) > 0
-                && value.0.is_zero()
-            {
-                return Bound::EXACT;
-            }
-            if b.is_exact() {
-                if real {
-                    Bound::real(EXACT)
-                } else {
-                    Bound::EXACT
-                }
-            } else {
-                let j = b.joint();
-                if contains_zero(z, j) || cut_undecided(z, b, Cut::NegativeReal) {
-                    return Bound::UNKNOWN;
-                }
-                // `|ln(z + δ) − ln z| ≤ r/(|z| − r)` (and `arg` likewise).
-                let e = log_ball(j, lg_abs_low(z));
-                if real { Bound::real(e) } else { Bound::both(e) }
-            }
+            settle!(known_ball!(*c).ln_error(matches!(node, ExprNode::Arg(_)), value))
         }
         ExprNode::Sin(c) | ExprNode::Cos(c) | ExprNode::Sinh(c) | ExprNode::Cosh(c) => {
-            let (z, b) = known_child!(*c);
-            let j = trig_arg_error(arena, node, *c, z, b, prec);
-            // The derivative over the ball: `|cos w|, |sin w| ≤ cosh(Im w)`,
-            // `|cosh w|, |sinh w| ≤ cosh(Re w)` — exactly 1 for `sin`, `cos`
-            // of a real argument, which are Lipschitz with constant 1
-            // (before 0.30 `2·max(1, |f(z)|)`, a bit per `sin` of a chain).
-            let across = if matches!(node, ExprNode::Sin(_) | ExprNode::Cos(_)) {
-                (&z.1, b.im)
-            } else {
-                (&z.0, b.re)
-            };
-            let factor = if exact_zero(across.0, across.1) {
-                0.0
-            } else {
-                let t = part_lg(across.0).exp2()
-                    + if is_exact(across.1) {
-                        0.0
-                    } else {
-                        across.1.exp2()
-                    };
-                if !j.is_finite() && !is_exact(j) {
-                    UNKNOWN
-                } else {
-                    log2_cosh(t + if is_exact(j) { 0.0 } else { j.exp2() })
-                }
-            };
-            let e = shift(j, factor);
-            if exactly_real(z, b) {
-                Bound::real(e)
-            } else {
-                Bound::both(e)
-            }
+            let x = known_ball!(*c);
+            let j = trig_arg_error(arena, node, *c, x.z(), x.err, prec);
+            let circular = matches!(node, ExprNode::Sin(_) | ExprNode::Cos(_));
+            settle!(x.trig_error(circular, j))
         }
         ExprNode::Tan(c) | ExprNode::Tanh(c) => {
-            let (z, b) = known_child!(*c);
-            let arg_err = trig_arg_error(arena, node, *c, z, b, prec);
-            // The first-order bound holds on a ball well inside the
-            // distance to the nearest pole, about `1/|tan z|` there: no
-            // bound beyond an eighth of it.  Before 0.30 the ball of
-            // `tan(π/2·(1 − 10⁻⁸⁰))` at 128 bits (its argument rounded onto
-            // the pole) was `±3·10³⁹` around a value of `10³⁹` — the true
-            // value is `6.4·10⁷⁹` — and `Piecewise` decided `3.8·10⁵⁰ > tan(…)`
-            // on it.
-            // (A real `tanh` has no pole and a derivative below 1.)
-            let poles = matches!(node, ExprNode::Tan(_)) || !exactly_real(z, b);
-            if poles && !is_exact(arg_err) && arg_err + lv.max(0.0) > -3.0 {
-                return Bound::UNKNOWN;
-            }
-            // `f(z + δ) = (f(z) ± g(δ))/(1 ∓ f(z)·g(δ))` with `|g(δ)| ≤ tan r`,
-            // and `|f′(w)| ≤ 1 + |f(w)|²` over the ball; 1 for a real `tanh`.
-            let factor = if !poles || is_exact(arg_err) {
-                0.0
-            } else {
-                let r = arg_err.exp2();
-                let t = r * (1.0 + r * r);
-                let big_t = lv.exp2();
-                let w = (big_t + t) / (1.0 - big_t * t);
-                (1.0 + w * w).log2()
-            };
-            let e = shift(arg_err, up(factor));
-            if exactly_real(z, b) {
-                Bound::real(e)
-            } else {
-                Bound::both(e)
-            }
+            let x = known_ball!(*c);
+            let arg_err = trig_arg_error(arena, node, *c, x.z(), x.err, prec);
+            settle!(x.tan_error(matches!(node, ExprNode::Tan(_)), arg_err, lv))
         }
         ExprNode::Atan(c)
         | ExprNode::Asin(c)
@@ -1332,10 +1461,7 @@ pub(super) fn node_error(
             let (z, b) = known_child!(*c);
             inverse_error(node, z, b, prec)
         }
-        ExprNode::Abs(c) => {
-            let (z, b) = known_child!(*c);
-            Bound::real(if exactly_real(z, b) { b.re } else { b.joint() })
-        }
+        ExprNode::Abs(c) => settle!(known_ball!(*c).abs_error()),
         // `atan2(y, x) = arg(x + iy)` for real `x`, `y`: the cut is `y = 0`,
         // `x < 0`.  Arguments whose imaginary parts are only within their
         // error of 0 may be complex, where `atan2` is not the real function.
@@ -1363,22 +1489,12 @@ pub(super) fn node_error(
 
         // Decisions: exact, unless the argument is within its error of the
         // threshold.
+        // `δ(z)` is exactly 0 for a `z` certainly not 0 (complex too), and
+        // has no bound for a `z` within its error of 0 (at an exact 0 it has
+        // no value, refused in `eval_node`).
+        ExprNode::DiracDelta(c) => settle!(known_ball!(*c).delta_error()),
         ExprNode::Sign(c) | ExprNode::Heaviside(c) => {
-            let (z, b) = known_child!(*c);
-            if exactly_real(z, b) {
-                if is_exact(b.re) || !part_contains_zero(&z.0, b.re) {
-                    return Bound::EXACT; // −1, 0 or 1
-                }
-                return Bound::UNKNOWN;
-            }
-            // An argument that may be complex: `heaviside` is undefined
-            // there, `sign(z) = z/|z|`.
-            let j = b.joint();
-            if matches!(node, ExprNode::Heaviside(_)) || contains_zero(z, j) {
-                return Bound::UNKNOWN;
-            }
-            // `|w/|w| − z/|z|| ≤ 2r/|z|` for `|w − z| ≤ r`.
-            Bound::both(shift(log_ball(j, lg_abs_low(z)), 1.0))
+            settle!(known_ball!(*c).sign_error(matches!(node, ExprNode::Heaviside(_))))
         }
         ExprNode::Floor(c) | ExprNode::Ceiling(c) => {
             let (z, b) = known_child!(*c);
@@ -1391,14 +1507,13 @@ pub(super) fn node_error(
             // Distance from the argument to the integer it rounded to, and
             // to the next one.
             let p = 64 + prec;
-            let rm = RoundingMode::ToEven;
-            let d1 = z.0.sub(&value.0, p, rm);
+            let d1 = z.0.sub(&value.0, p, RM);
             let one = BigFloat::from_i32(1, p);
             let next = match node {
-                ExprNode::Floor(_) => value.0.add(&one, p, rm),
-                _ => value.0.sub(&one, p, rm),
+                ExprNode::Floor(_) => value.0.add(&one, p, RM),
+                _ => value.0.sub(&one, p, RM),
             };
-            let d2 = next.sub(&z.0, p, rm);
+            let d2 = next.sub(&z.0, p, RM);
             if part_contains_zero(&d1, b.re) || part_contains_zero(&d2, b.re) {
                 return Bound::UNKNOWN;
             }
@@ -1424,7 +1539,7 @@ pub(super) fn node_error(
             if ei.is_exact() && ej.is_exact() {
                 return Bound::EXACT;
             }
-            let d = c_sub(iv, jv, prec + 64, RoundingMode::ToEven);
+            let d = c_sub(iv, jv, prec + 64, RM);
             let re = lsum(ei.re, ej.re);
             let im = lsum(ei.im, ej.im);
             if part_contains_zero(&d.0, re) && part_contains_zero(&d.1, im) {
@@ -1452,8 +1567,7 @@ pub(super) fn node_error(
         | ExprNode::Polygamma(_, _)
         | ExprNode::Factorial(_)
         | ExprNode::Binomial(_, _)
-        | ExprNode::Apply(_, _)
-        | ExprNode::DiracDelta(_) => {
+        | ExprNode::Apply(_, _) => {
             let mut all_real = true;
             for c in node.children() {
                 let (v, b) = known_child!(c);
@@ -1476,7 +1590,8 @@ pub(super) fn node_error(
                     Analytic::Everywhere => Bound::both(worst),
                     Analytic::OffCut(i, cut) => {
                         let kids = node.children();
-                        let Some((v, b)) = kids.get(i).and_then(|&c| child(c)) else {
+                        let Some(Ball { mid: v, err: b }) = kids.get(i).and_then(|&c| child(c))
+                        else {
                             return Bound::UNKNOWN;
                         };
                         if !exactly_real(v, b) && meets_cut(&v.0, b.re, cut) {

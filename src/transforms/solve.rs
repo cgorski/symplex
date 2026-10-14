@@ -76,7 +76,7 @@ mod algebraic_roots;
 mod context;
 mod outcome;
 
-pub(crate) use context::{Domain, SolveCx};
+pub(crate) use context::{Domain, Params, SolveCx};
 pub(crate) use outcome::{Missing, Reason, RootSet, Solutions};
 
 /// A solution to an equation, with the variable and its value.
@@ -180,8 +180,15 @@ pub(crate) fn solutions(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &Solve
 /// up to 0.47 these were "no real solutions" for a plain `x`, while
 /// `Ex::solve_as_set` gave the complex families.  For a variable declared
 /// real nothing changes.
+///
+/// The other symbols are taken as declared ([`Params::AsDeclared`]): a
+/// plain parameter may be complex, so for a real `x` the restriction
+/// does not apply to `e^(a·x) = −1` (root `iπ/a`, real for `a = iπ`), and
+/// `|a·x| = 1` is not `±1/a`.  Up to 0.49 plain parameters were taken real
+/// here ("no solution", `[1/a, −1/a]`).
 pub(crate) fn solve_classified(arena: &mut Arena, expr: ExprId, var: ExprId) -> Solutions {
-    solutions(arena, expr, var, &SolveCx::principal(Domain::Complex))
+    let cx = SolveCx::principal(Domain::Complex).with_params(Params::AsDeclared);
+    solutions(arena, expr, var, &cx)
 }
 
 /// Solve `expr = 0` for `var`, returning **general** solution families for
@@ -191,7 +198,10 @@ pub(crate) fn solve_classified(arena: &mut Arena, expr: ExprId, var: ExprId) -> 
 /// assumption); it is used as the free integer parameter `n` in
 /// `asin(c) + 2πn`, `±acos(c) + 2πn`, `atan(c) + πn`, etc.  Equations
 /// without periodic structure return the same results as
-/// [`solve_classified_real`].
+/// [`solve_classified_real`].  `var` is taken real: the real zeros of a
+/// periodic function (sign charts, extrema); `Ex::solve_general` is
+/// [`solve_general_declared`] (up to 0.49 it was this one, and `eˣ + 1 =
+/// 0` had "no solution" for a plain `x`).
 pub(crate) fn solve_general(
     arena: &mut Arena,
     expr: ExprId,
@@ -201,8 +211,29 @@ pub(crate) fn solve_general(
     solve_impl(arena, expr, var, &SolveCx::general(Domain::Real, param))
 }
 
+/// Every solution of `expr = 0` in `var` over its declared domain, the
+/// other symbols as declared ([`Params::AsDeclared`], see
+/// [`solve_classified`]), periodic families in the integer parameter
+/// `param`: `Ex::solve_general`.  For a `var` declared real this is the
+/// real solve of [`solve_general`] with declared parameters (its
+/// substituted unknowns, `t = eˣ`, taken real: `e^(x²) = −1` has no
+/// solution), otherwise [`solve_general_over_c`] (`eˣ = −1` gives
+/// `2nπi + iπ`; `|x| = 1`, a circle, is refused).  Up to 0.49
+/// `Ex::solve_general` took a plain `x` and plain parameters real.
+pub(crate) fn solve_general_declared(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    param: ExprId,
+) -> Solutions {
+    let unknown = Domain::declared(arena, var);
+    let cx = SolveCx::general(unknown, param).with_params(Params::AsDeclared);
+    solve_impl(arena, expr, var, &cx)
+}
+
 /// [`solve_general`] with `var` ranging over its declared domain, ℂ for a
-/// plain symbol, for a complete solution *set* (`Ex::solve_as_set`).
+/// plain symbol, and the other symbols as declared ([`Params::AsDeclared`],
+/// see [`solve_classified`]): the solution *set* of `Ex::solve_as_set`.
 ///
 /// [`solve_classified_real`] and [`solve_general`] take the variable of a transcendental
 /// inversion to be real: `sin(f) = 2`, `exp(f) = −1`, `cosh(f) = 1/2` have
@@ -220,7 +251,8 @@ pub(crate) fn solve_general_over_c(
     var: ExprId,
     param: ExprId,
 ) -> Solutions {
-    solve_impl(arena, expr, var, &SolveCx::general(Domain::Complex, param))
+    let cx = SolveCx::general(Domain::Complex, param).with_params(Params::AsDeclared);
+    solve_impl(arena, expr, var, &cx)
 }
 
 /// Shared implementation of [`solve_classified`] and [`solve_general`].
@@ -2221,17 +2253,73 @@ fn solve_by_peeling(
                         &mut crate::base::assumptions::AssumptionCache::new(),
                     ) == Some(false)
                         || crate::poly::algebraic::sign_checked(arena, rhs) == Some(-1));
-                return if not_a_modulus {
-                    no_preimage()
-                } else {
-                    not_inverted()
-                };
+                if not_a_modulus {
+                    return no_preimage();
+                }
+                // A real unknown: `|f|² = (Re f)² + (Im f)² = rhs²`, an
+                // equivalent real equation for `rhs ≥ 0` (`|x + i| = 2`:
+                // `x² + 1 = 4`, `x = ±√3`; up to 0.49 refused).
+                if !cx.unknown_may_be_nonreal(arena, var)
+                    && crate::base::walk::free_symbols(arena, rhs).is_empty()
+                    && crate::poly::algebraic::sign_checked(arena, rhs).is_some_and(|s| s >= 0)
+                    && let Some(squared) = modulus_squared(arena, inner, var)
+                {
+                    let two = arena.int(2);
+                    let rhs2 = arena.pow(rhs, two);
+                    let eq = arena.sub(squared, rhs2);
+                    let eq = crate::transforms::expand::expand(arena, eq);
+                    let eq = crate::transforms::eval::eval(arena, eq);
+                    if expr_contains_var(arena, eq, var) {
+                        return solve_raw(arena, eq, var, cx);
+                    }
+                }
+                return not_inverted();
             }
             let neg_rhs = arena.neg(rhs);
             peel_two_branches(arena, inner, rhs, neg_rhs, var, cx)
         }
         _ => not_inverted(),
     }
+}
+
+/// `|f|² = (Re f)² + (Im f)²` for a real `var`, expanded (`|x + i|² =
+/// x² + 1`, `|a·x|² = (re(a)² + im(a)²)·x²`); `None` when a part of `f`
+/// is not found free of `re`, `im`, `arg`, `conjugate` of `var`.
+fn modulus_squared(arena: &mut Arena, f: ExprId, var: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{Assumptions, Props};
+    // the parts for a real variable: a real stand-in for `var`
+    let t = crate::transforms::subs::fresh_symbol(arena, "__abs_real", &[f]);
+    if let ExprNode::Symbol(sid) = *arena.node(t) {
+        let mut real = Assumptions::default();
+        real.assert_true(Props::REAL);
+        arena.set_symbol_assumptions(sid, real);
+    }
+    let f_t = crate::transforms::subs::subs(arena, f, var, t);
+    let f_t = crate::transforms::expand::expand(arena, f_t);
+    let (re, im) = crate::base::complex::as_real_imag(arena, f_t);
+    let mut parts = Vec::with_capacity(2);
+    for p in [re, im] {
+        let p = crate::transforms::eval::eval(arena, p);
+        let opaque = crate::base::walk::post_order_ids(arena, p)
+            .into_iter()
+            .any(|id| match *arena.node(id) {
+                ExprNode::Re(u) | ExprNode::Im(u) | ExprNode::Arg(u) | ExprNode::Conjugate(u) => {
+                    crate::base::walk::contains(arena, u, t)
+                }
+                _ => false,
+            });
+        if opaque {
+            return None;
+        }
+        parts.push(p);
+    }
+    let two = arena.int(2);
+    let re2 = arena.pow(parts[0], two);
+    let im2 = arena.pow(parts[1], two);
+    let sum = arena.add(&[re2, im2]);
+    let sum = crate::transforms::subs::subs(arena, sum, t, var);
+    let sum = crate::transforms::expand::expand(arena, sum);
+    Some(crate::transforms::eval::eval(arena, sum))
 }
 
 /// Does `rhs` hold the integer parameter of a general solve (a family from
@@ -4580,12 +4668,16 @@ fn exponential_substitution(
 /// positive bases `b`, products of them; `S = Σ L·ln b`) whose exponents
 /// fall into two groups up to constants: `C₁·e^(S₁) + C₂·e^(S₂) = 0` is
 /// `S₁ − S₂ = ln(−C₂/C₁)`, an equation without exponentials (SymPy's
-/// `_solve_exponential`).  For a variable taken real: no solution when
+/// `_solve_exponential`).  For a real `S₁ − S₂`: no solution when
 /// `−C₂/C₁` is certainly not positive.  `5^(x/2) = 2^(x/3)` gives `x = 0`,
 /// `4^(x+1) + 4^(x−1) + 4^(x+2) = 3^(x+2) + 3^(x+3)` one root, `5^(x/2) =
 /// 2^(3/x)` the two `±√(6·ln 2/ln 5)`; all refused up to 0.46 (bases
-/// with no common power).  Not for a variable that may be non-real (the
-/// branches of the logarithm).  Candidates are checked by the caller.
+/// with no common power).  Otherwise a general solve takes every branch
+/// `ln(−C₂/C₁) + 2nπi` (`2ˣ + 3ˣ = 0` for a plain `x`: `(2n + 1)πi/ln(2/3)`)
+/// and a principal solve the principal one.  Up to 0.49 a real unknown was
+/// taken to make `S₁ − S₂` real (`eˣ + e^(x + ix) = 0` for a real `x` had
+/// "no solution", but `x = π` solves it) and a general solve over ℂ did
+/// not split.  Candidates are checked by the caller.
 fn try_exponential_log_split(
     arena: &mut Arena,
     expr: ExprId,
@@ -4604,9 +4696,6 @@ fn exponential_log_split(
     var: ExprId,
     cx: &SolveCx,
 ) -> Option<Solutions> {
-    if cx.variable_may_be_nonreal(arena, var) {
-        return None;
-    }
     let ExprNode::Add(terms) = arena.node(expr).clone() else {
         return None;
     };
@@ -4680,23 +4769,32 @@ fn exponential_log_split(
     let ratio = arena.neg(ratio);
     let ratio = crate::transforms::eval::eval(arena, ratio);
     let d = arena.sub(*s1, *s2);
-    // `e^(S₁ − S₂) = ratio ≤ 0`: no solution for a real `S₁ − S₂`; for a
-    // complex unknown under `solve_classified` the principal root of
-    // `S₁ − S₂ = ln(ratio)` (`2ˣ + 3ˣ = 0`: `x = iπ/ln(2/3)`).
+    // `e^(S₁ − S₂) = ratio ≤ 0`: no solution for a real `S₁ − S₂`;
+    // otherwise `S₁ − S₂ = ln(ratio)`, all its branches in a general solve
+    // (as the arm of `exp` in `solve_by_peeling`).
     let sign = if crate::base::walk::free_symbols(arena, ratio).is_empty() {
         crate::poly::algebraic::sign_checked(arena, ratio)
     } else {
         None
     };
-    if sign == Some(0)
-        || (sign == Some(-1) && (!cx.declared_principal() || cx.range_restricted(arena, d, var)))
-    {
+    let real_d = cx.range_restricted(arena, d, var);
+    if sign == Some(0) || (sign == Some(-1) && real_d) {
         return Some(Solutions::none(Reason::said(
             "the exponentials of a real argument are positive and the coefficients do not allow it",
         )));
     }
     let ln_ratio = principal_ln(arena, ratio);
-    let eq = arena.sub(d, ln_ratio);
+    let branch = match cx.period() {
+        Some(n) if !real_d => {
+            if period_in_use(arena, ratio, cx) {
+                return Some(Solutions::refused(Reason::NestedPeriods));
+            }
+            let p = two_pi_i_n(arena, n);
+            arena.add(&[ln_ratio, p])
+        }
+        _ => ln_ratio,
+    };
+    let eq = arena.sub(d, branch);
     let eq = crate::transforms::expand::expand(arena, eq);
     let eq = crate::transforms::eval::eval(arena, eq);
     if !expr_contains_var(arena, eq, var) || has_exponential_of(arena, eq, var) {
@@ -4707,6 +4805,144 @@ fn exponential_log_split(
 
 /// Most absolute values split by [`try_abs_cases`] (`2ⁿ` sign patterns).
 const MAX_ABS_CASES: usize = 4;
+
+/// What an equation with absolute values says of a complex unknown
+/// ([`abs_unknown_shape`]).
+enum AbsUnknown {
+    /// Every solution is real: the numerator is `A·x + B(|uᵢ|)` with a
+    /// nonzero real constant `A` and `B` real for real moduli.
+    Real,
+    /// The unknown occurs only in the one modulus given (`1 + C(|x|, 4)`).
+    ModulusOnly(ExprId),
+    /// Neither: `|x| = 1` is a circle.
+    Other,
+}
+
+/// The shape of `expr` in the absolute values `|uᵢ|` of `var` (each `uᵢ`
+/// rational in `var`) for a complex `var` ([`AbsUnknown`]): `|x − π| + x
+/// = 0` forces `x = −|x − π|` real, as do `|x|/x + 3 = 0` and `|x| + c −
+/// x = 0`; up to 0.48 these were split as for a real `x` because a plain
+/// `x` was taken real, and in 0.49 refused.
+fn abs_unknown_shape(arena: &mut Arena, expr: ExprId, var: ExprId) -> AbsUnknown {
+    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
+    let mut atoms: Vec<ExprId> = Vec::new();
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        if let ExprNode::Abs(u) = *arena.node(id)
+            && expr_contains_var(arena, u, var)
+        {
+            if !is_rational_in(arena, u, var) {
+                return AbsUnknown::Other;
+            }
+            if !atoms.contains(&id) {
+                atoms.push(id);
+            }
+        }
+    }
+    if atoms.is_empty() || atoms.len() > MAX_ABS_CASES {
+        return AbsUnknown::Other;
+    }
+    // each modulus a real stand-in `sᵢ`
+    let mut replaced = expr;
+    for (i, &a) in atoms.iter().enumerate() {
+        let s =
+            crate::transforms::subs::fresh_symbol(arena, &format!("__abs_modulus_{i}"), &[expr]);
+        if let ExprNode::Symbol(sid) = *arena.node(s) {
+            let mut real = Assumptions::default();
+            real.assert_true(Props::REAL);
+            arena.set_symbol_assumptions(sid, real);
+        }
+        replaced = arena.subs_structural(replaced, a, s);
+    }
+    if !expr_contains_var(arena, replaced, var) {
+        return match atoms[..] {
+            [atom] => AbsUnknown::ModulusOnly(atom),
+            _ => AbsUnknown::Other,
+        };
+    }
+    let num = full_numerator(arena, replaced);
+    let Some(coeffs) = symbolic_poly_coeffs(arena, num, var) else {
+        return AbsUnknown::Other;
+    };
+    let [b, a] = coeffs[..] else {
+        return AbsUnknown::Other;
+    };
+    let a_real_nonzero = crate::base::walk::free_symbols(arena, a).is_empty()
+        && matches!(crate::poly::algebraic::sign_checked(arena, a), Some(s) if s != 0);
+    if a_real_nonzero
+        && !expr_contains_var(arena, b, var)
+        && AssumptionCache::new().query(arena, b, Props::REAL) == Some(true)
+    {
+        AbsUnknown::Real
+    } else {
+        AbsUnknown::Other
+    }
+}
+
+/// The roots of `expr = 0` in a complex `var` that occurs only in the
+/// modulus `atom = |u|` (real and nonnegative): no root when no real
+/// `s ≥ 0` solves `expr(|u| = s) = 0` (`1 + C(|x|, 4)`: `C(s, 4) ≥ −1/24`),
+/// the roots of `u = 0` when `s = 0` is the only one; `None` when a
+/// positive `s` solves it (`|u| = s` is a curve: `tan |x| = 0` holds on
+/// the circles `|x| = nπ`) or nothing is decided.
+fn modulus_only_roots(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    atom: ExprId,
+    cx: &SolveCx,
+) -> Option<Solutions> {
+    use crate::base::assumptions::{Assumptions, Props};
+    let ExprNode::Abs(u) = *arena.node(atom) else {
+        return None;
+    };
+    let s = crate::transforms::subs::fresh_symbol(arena, "__abs_modulus", &[expr]);
+    if let ExprNode::Symbol(sid) = *arena.node(s) {
+        let mut real = Assumptions::default();
+        real.assert_true(Props::REAL);
+        arena.set_symbol_assumptions(sid, real);
+    }
+    let in_s = arena.subs_structural(expr, atom, s);
+    // every real root of the equation in `s` (a general solve: the
+    // principal roots of `tan s = 0` are `[0]`, its roots `nπ`)
+    let n = branch_parameter(arena, &[expr, var]);
+    let points = match solve_impl(arena, in_s, s, &SolveCx::general(Domain::Real, n)) {
+        Solutions::Complete(RootSet::Empty(_)) => Vec::new(),
+        complete @ Solutions::Complete(RootSet::Points(_) | RootSet::Families { .. }) => {
+            complete.claimed_points()
+        }
+        _ => return None,
+    };
+    // a family of `s` has positive members (`|x| = π`: a circle)
+    if points
+        .iter()
+        .any(|&p| crate::base::walk::contains(arena, p, n))
+    {
+        return None;
+    }
+    let mut zero = false;
+    for p in points {
+        if crate::transforms::realness::constant_realness_as_declared(
+            arena,
+            p,
+            ROOT_CHECK_DIGITS,
+            &mut crate::base::assumptions::AssumptionCache::new(),
+        ) == Some(false)
+        {
+            continue;
+        }
+        match crate::poly::algebraic::sign_checked(arena, p) {
+            Some(s) if s < 0 => {}
+            Some(0) => zero = true,
+            _ => return None,
+        }
+    }
+    if zero {
+        return Some(solve_raw(arena, u, var, cx));
+    }
+    Some(Solutions::none(Reason::said(
+        "no nonnegative real value of the absolute value solves the equation",
+    )))
+}
 
 /// An equation with absolute values `|uᵢ|` of rational functions `uᵢ` (with
 /// rational coefficients) of a variable taken real: for each choice of
@@ -4726,15 +4962,28 @@ fn try_abs_cases(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> 
 /// [`try_abs_cases`]; `None` when the equation does not have its shape, or
 /// a choice of signs is refused or vanishes identically.
 fn abs_cases(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Option<Solutions> {
-    // (Up to 0.48 a plain `x` was taken real under `Ex::solve`: `|x + 3| =
-    // 2·|x − 3|` gave `[9, 1]`, while the Apollonius circle solves it.)
-    if cx.unknown_may_be_nonreal(arena, var)
-        || !crate::base::walk::free_symbols(arena, expr)
-            .iter()
-            .all(|&s| s == var)
+    if !crate::base::walk::free_symbols(arena, expr)
+        .iter()
+        .all(|&s| s == var)
     {
         return None;
     }
+    // (Up to 0.48 a plain `x` was taken real under `Ex::solve`: `|x + 3| =
+    // 2·|x − 3|` gave `[9, 1]`, while the Apollonius circle solves it.  A
+    // complex unknown is split only when the equation makes it real.)
+    let real_cx;
+    let cx = if cx.unknown_may_be_nonreal(arena, var) {
+        match abs_unknown_shape(arena, expr, var) {
+            AbsUnknown::Real => {
+                real_cx = cx.with_real_unknown();
+                &real_cx
+            }
+            AbsUnknown::ModulusOnly(atom) => return modulus_only_roots(arena, expr, var, atom, cx),
+            AbsUnknown::Other => return None,
+        }
+    } else {
+        cx
+    };
     let mut abs_atoms: Vec<ExprId> = Vec::new();
     for id in crate::base::walk::post_order_ids(arena, expr) {
         if let ExprNode::Abs(u) = *arena.node(id)
@@ -7954,6 +8203,50 @@ pub(crate) fn restrict_to_domain(
     Ok(kept)
 }
 
+/// Has `expr = 0` no solution at all in the declared domain of `var`?  For
+/// `Ex::solve` when [`restrict_to_domain`] dropped every principal root:
+/// decided by the general solution over that domain
+/// ([`solve_general_declared`]), complete, each family without a member in
+/// the domain ([`family_in_domain`]) and each other root certainly outside
+/// it.  For a real `x`, `eˣ + e^(ix) = 0` has the principal root
+/// `iπ/(1 − i)` and the solutions `(2n + 1)πi/(1 − i)`, none real; up to
+/// 0.49 `Ex::solve` answered `Ok([])`, which also means "no principal
+/// root in the domain, other branches not looked at".  `false` for a
+/// polynomial (its empty list of roots in the domain is an answer) and
+/// when not decided.
+pub(crate) fn none_in_domain(arena: &mut Arena, expr: ExprId, var: ExprId) -> bool {
+    if declared_domain(arena, var).is_none() || polybridge::expr_to_poly(arena, expr, var).is_some()
+    {
+        return false;
+    }
+    if let Some(coeffs) = symbolic_poly_coeffs(arena, expr, var)
+        && coeffs.iter().all(|&c| !expr_contains_var(arena, c, var))
+    {
+        return false;
+    }
+    let n = branch_parameter(arena, &[expr, var]);
+    let roots = match solve_general_declared(arena, expr, var, n) {
+        Solutions::Complete(RootSet::Empty(_)) => return true,
+        complete @ Solutions::Complete(RootSet::Points(_) | RootSet::Families { .. }) => {
+            complete.claimed_points()
+        }
+        _ => return false,
+    };
+    // (the parameter of the rays of `family_in_domain`, never returned)
+    let k = branch_parameter(arena, &[expr, var, n]);
+    for r in roots {
+        let outside = if crate::base::walk::contains(arena, r, n) {
+            matches!(family_in_domain(arena, var, r, n, k), FamilyInDomain::Empty)
+        } else {
+            assumptions_hold(arena, var, r) == Some(false)
+        };
+        if !outside {
+            return false;
+        }
+    }
+    true
+}
+
 /// The members of a periodic family in the declared domain of the unknown
 /// ([`family_in_domain`]).
 pub(crate) enum FamilyInDomain {
@@ -8088,7 +8381,9 @@ pub(crate) fn family_in_domain(
     .iter()
     .any(|&p| declared.query(p).is_some());
 
-    if discrete {
+    // (A discrete domain on the real line is decided below only for a
+    // non-real step, when at most one member is real.)
+    if discrete && declared.query(Props::REAL) != Some(true) {
         return FamilyInDomain::Undecided;
     }
     let (Ok(z0), Ok(zd)) = (
@@ -8185,7 +8480,8 @@ pub(crate) fn family_in_domain(
             None => FamilyInDomain::Undecided,
         };
     }
-    if d_real != Some(true) || !matches!(part_signs(arena, d).re, Some(Less | Greater)) {
+    if discrete || d_real != Some(true) || !matches!(part_signs(arena, d).re, Some(Less | Greater))
+    {
         return FamilyInDomain::Undecided;
     }
     match s_real {
@@ -8253,6 +8549,32 @@ mod tests {
 
     fn solution_strings(a: &Arena, solutions: &[Solution]) -> Vec<String> {
         solutions.iter().map(|s| display(a, s.value)).collect()
+    }
+
+    /// `Arena::solve_for` returned `[]` for "no root" (`eˣ + 1` for a real
+    /// `x`), for "not solved" (`x − cos x`, root ≈ 0.739) and for an
+    /// identity; `Arena::solve_roots` (0.50) tells them apart.
+    #[test]
+    fn arena_solve_roots_tells_refusal_from_no_root() {
+        use crate::base::errors::SymplexError;
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let (two, four, one) = (a.int(2), a.int(4), a.one);
+        let x2 = a.pow(x, two);
+        let e = a.sub(x2, four);
+        assert!(matches!(a.solve_roots(e, x), Ok(r) if r.len() == 2));
+        let ex = a.exp(x);
+        let e = a.add(&[ex, one]);
+        assert!(matches!(
+            a.solve_roots(e, x),
+            Err(SymplexError::NoSolution { .. })
+        ));
+        let cx = a.cos(x);
+        let e = a.sub(x, cx);
+        assert!(matches!(
+            a.solve_roots(e, x),
+            Err(SymplexError::ComputationFailed { .. })
+        ));
     }
 
     // ── Linear ──────────────────────────────────────────────────────

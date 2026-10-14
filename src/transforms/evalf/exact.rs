@@ -18,7 +18,9 @@
 //! result whose numerator and denominator together exceed [`MAX_BITS`] is
 //! left to the floating-point evaluation.
 
-use astro_float::{BigFloat, RoundingMode};
+use super::ball::CBall;
+use super::wp::RM;
+use astro_float::BigFloat;
 use num_traits::{One, Zero};
 use rustc_hash::FxHashMap;
 
@@ -196,12 +198,12 @@ pub(super) fn exact_value(arena: &Arena, id: ExprId, exact: &ExactMap) -> Option
 
 /// The value of `z` at `prec` bits and its bound: each part rounded once,
 /// exact when it is 0 or representable (see [`accuracy::rational_part`]).
-pub(super) fn to_value(z: &Gauss, prec: usize, rm: RoundingMode) -> (Complex, Bound) {
+pub(super) fn to_value(z: &Gauss, prec: usize) -> CBall {
     let part = |q: &Q| -> BigFloat {
         if q.is_zero() {
             BigFloat::new(prec)
         } else {
-            crate::base::numeric::ratio_to_bigfloat(q, prec, rm)
+            crate::base::numeric::ratio_to_bigfloat(q, prec, RM)
         }
     };
     let re = part(&z.re);
@@ -210,7 +212,7 @@ pub(super) fn to_value(z: &Gauss, prec: usize, rm: RoundingMode) -> (Complex, Bo
         re: accuracy::rational_part(&z.re, &re, prec),
         im: accuracy::rational_part(&z.im, &im, prec),
     };
-    ((re, im), bound)
+    CBall::new((re, im), bound)
 }
 
 /// The floating-point value `value ± e` of a node whose exact value is `z`,
@@ -225,14 +227,11 @@ pub(super) fn to_value(z: &Gauss, prec: usize, rm: RoundingMode) -> (Complex, Bo
 /// imaginary part that is 0 within its error at 128 bits; before 0.31
 /// `evalf` did not take polylog of a complex argument), and the side of a
 /// cut that it decides is found at the precision that resolves it.
-pub(super) fn refine(
-    z: &Gauss,
-    value: Complex,
-    e: Bound,
-    prec: usize,
-    rm: RoundingMode,
-) -> (Complex, Bound) {
-    let ((xre, xim), xb) = to_value(z, prec, rm);
+pub(super) fn refine(z: &Gauss, value: Complex, e: Bound, prec: usize) -> CBall {
+    let CBall {
+        mid: (xre, xim),
+        err: xb,
+    } = to_value(z, prec);
     let pick = |q: &Q, fv: BigFloat, fe: accuracy::ErrExp, xv: BigFloat, xe: accuracy::ErrExp| {
         if q.is_zero() {
             (BigFloat::new(prec), accuracy::EXACT)
@@ -244,7 +243,7 @@ pub(super) fn refine(
     };
     let (re, bre) = pick(&z.re, value.0, e.re, xre, xb.re);
     let (im, bim) = pick(&z.im, value.1, e.im, xim, xb.im);
-    ((re, im), Bound { re: bre, im: bim })
+    CBall::new((re, im), Bound { re: bre, im: bim })
 }
 
 #[cfg(test)]

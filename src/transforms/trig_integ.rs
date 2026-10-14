@@ -870,7 +870,7 @@ pub(crate) enum EndValue {
 /// the limit engine); `None` when `p` is no such polynomial, is zero, or a
 /// constant leading coefficient is not decided.
 fn leading_term(arena: &mut Arena, p: ExprId, t: ExprId) -> Option<(usize, ExprId)> {
-    let key = (std::ptr::from_ref::<Arena>(arena) as usize, p, t);
+    let key = (arena.serial(), p, t);
     if let Some(found) = JUMP_MEMO.with(|m| {
         m.borrow()
             .as_ref()
@@ -1115,7 +1115,9 @@ fn log_end(
 /// [`ASSUME_REAL_PARAMETERS`] on entry (the latter sets it itself).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct JumpKey {
-    arena: usize,
+    /// [`Arena::serial`]: up to 0.49 the arena's address, which a later
+    /// arena at the same address shared.
+    arena: u64,
     real_parameters: bool,
     assumed_real: bool,
     g: ExprId,
@@ -1127,7 +1129,7 @@ struct JumpKey {
 #[derive(Default)]
 struct JumpMemoMaps {
     jumps: rustc_hash::FxHashMap<JumpKey, Option<ExprId>>,
-    leading: rustc_hash::FxHashMap<(usize, ExprId, ExprId), Option<(usize, ExprId)>>,
+    leading: rustc_hash::FxHashMap<(u64, ExprId, ExprId), Option<(usize, ExprId)>>,
 }
 
 thread_local! {
@@ -1449,7 +1451,7 @@ pub(crate) fn infinity_jump_real_parameters(
 ) -> Option<ExprId> {
     // The parameters count as real whatever the caller's setting.
     let key = JumpKey {
-        arena: std::ptr::from_ref::<Arena>(arena) as usize,
+        arena: arena.serial(),
         real_parameters: true,
         assumed_real: true,
         g,
@@ -1856,7 +1858,7 @@ pub(crate) fn infinity_jump(
     t_sym: SymbolId,
 ) -> Option<ExprId> {
     let key = JumpKey {
-        arena: std::ptr::from_ref::<Arena>(arena) as usize,
+        arena: arena.serial(),
         real_parameters: false,
         assumed_real: ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get),
         g,

@@ -33,7 +33,7 @@ use quote::ToTokens;
 use syn::visit::Visit;
 
 /// Files allowed to contain rounded casts, with the exact count (0.49: 90,
-/// down from 94).  Paths are relative to `src/`.  Not audited one by one:
+/// down from 94; 0.50: 87, three evalf guards through `Prec::guarded`).  Paths are relative to `src/`.  Not audited one by one:
 /// most are bounded by an earlier guard in the same function (a precision
 /// cap, a `digits.clamp`, an `is_finite` test); each is a candidate for
 /// `base::cast`, and the list may only shrink.
@@ -55,7 +55,7 @@ const ROUNDED_ALLOWLIST: &[(&str, usize)] = &[
     ("simplify/nsimplify.rs", 4),
     ("transforms/apart.rs", 3),
     // evalf: precisions and term counts from `f64` estimates (wave 3: `Prec`/`Wp`).
-    ("transforms/evalf.rs", 25),
+    ("transforms/evalf.rs", 22),
     ("transforms/evalf/asymsum.rs", 2),
     ("transforms/evalf/bernoulli.rs", 1),
     ("transforms/evalf/bessel_debye.rs", 2),
@@ -77,12 +77,12 @@ const ROUNDED_ALLOWLIST: &[(&str, usize)] = &[
 ];
 
 /// Files allowed to contain precision casts, with the exact count (0.49:
-/// 44).  Guard bits `(x.log2()) as usize + wp + k` (wave 3: `Prec::guarded`
+/// 44; 0.50: 41).  Guard bits `(x.log2()) as usize + wp + k` (wave 3: `Prec::guarded`
 /// replaces them with a checked sum).
 const PRECISION_ALLOWLIST: &[(&str, usize)] = &[
     ("api/expr_poly_ext.rs", 1),
     ("base/bernoulli.rs", 2),
-    ("transforms/evalf.rs", 23),
+    ("transforms/evalf.rs", 20),
     ("transforms/evalf/asymsum.rs", 2),
     ("transforms/evalf/bessel_debye.rs", 2),
     ("transforms/evalf/bessel_order.rs", 1),

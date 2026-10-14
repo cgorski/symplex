@@ -347,10 +347,13 @@ pub(crate) fn rootof_field_is_zero(e: &Ex) -> Option<bool> {
 /// points of large height: a nonzero value proves `e ≢ 0` (the common
 /// case, linear in the size of the expression DAG).  When a value is zero
 /// the numerator `P` of `e = P/Q` is expanded exactly and `e ≡ 0` iff
-/// `P = 0`; only if that expansion exceeds [`RF_TERM_BUDGET`] terms is the
-/// answer taken from the values at all the points (zero at every point:
-/// zero — a nonzero `P` of degree `d` vanishes at a point of height `h`
-/// with probability about `d/h`, Schwartz–Zippel).
+/// `P = 0`.  If that expansion exceeds [`RF_TERM_BUDGET`] terms, zero
+/// values at all the points are only a hint (a nonzero `P` of degree `d`
+/// vanishes at a point of height `h` with probability about `d/h`,
+/// Schwartz–Zippel), which an exact test on a grid confirms or refutes
+/// ([`rf_numerator_vanishes_on_grid`]); `None` when the grid is too large.
+/// Up to 0.49 the hint was the answer: `Some(true)` on probabilistic
+/// evidence.
 ///
 /// The pivots of symbolic Gaussian elimination are such rational
 /// functions.  Before 0.30 `linsolve` decided them by `simplify`, which
@@ -387,12 +390,168 @@ fn rational_function_is_zero_q(e: &Ex) -> Option<bool> {
             // A denominator vanishes at this point: no information.
             None => zero_at_all = false,
         }
-        // A zero value: settle it exactly (below) unless it is too big.
-        if let Some(b) = rf_numerator_is_zero(arena, e.raw_id(), &syms) {
-            return Some(b);
+    }
+    // No nonzero value: settle it exactly unless the numerator is too big.
+    if let Some(b) = rf_numerator_is_zero(arena, e.raw_id(), &syms) {
+        return Some(b);
+    }
+    // Zero at every point, each denominator nonzero there: the hint that
+    // the exact test on a grid checks.
+    if zero_at_all {
+        return rf_numerator_vanishes_on_grid(arena, e.raw_id(), &syms);
+    }
+    None
+}
+
+/// Most evaluation points of [`rf_numerator_vanishes_on_grid`].
+const RF_GRID_POINTS: u64 = 4096;
+
+/// Is the numerator `P` of `root = P/Q` (over ℚ in `syms`, the fraction
+/// built node by node without cancellation: `a/b + c/d = (ad + cb)/(bd)`,
+/// `(a/b)⁻ⁿ = bⁿ/aⁿ`) the zero polynomial?  Decided exactly from its
+/// values on a grid: a polynomial of degree at most `dᵢ` in the `i`-th
+/// variable that vanishes on `S₁ × … × Sₖ` with `|Sᵢ| = dᵢ + 1` is zero
+/// (by induction on `k`: each coefficient in the last variable vanishes on
+/// the smaller grid), and a nonzero value shows `P ≠ 0`.  The degrees are
+/// bounded node by node.  `None` when the grid would have more than
+/// [`RF_GRID_POINTS`] points, or for a node that is not rational-function
+/// arithmetic.
+///
+/// The caller has seen `root` evaluate to 0 at points where no
+/// denominator vanishes, so `Q ≠ 0` and `root ≡ 0` iff `P = 0`.
+fn rf_numerator_vanishes_on_grid(
+    arena: &crate::base::arena::Arena,
+    root: crate::base::node::ExprId,
+    syms: &[crate::base::node::ExprId],
+) -> Option<bool> {
+    use crate::base::node::{ExprId, ExprNode};
+    use num_traits::Zero;
+    let order = crate::base::walk::post_order_ids(arena, root);
+    let index: rustc_hash::FxHashMap<ExprId, usize> =
+        syms.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+    let exponent = |x: ExprId| -> Option<i64> {
+        let k = arena.as_num(x)?;
+        if !k.is_integer() {
+            return None;
+        }
+        num_traits::ToPrimitive::to_i64(&k.to_integer()).filter(|k| (-64..=64).contains(k))
+    };
+    // Degree bounds (numerator, denominator) per variable.
+    let nv = syms.len();
+    let mut degs: rustc_hash::FxHashMap<ExprId, (Vec<u64>, Vec<u64>)> =
+        rustc_hash::FxHashMap::default();
+    for &id in &order {
+        let r = match arena.node(id) {
+            ExprNode::Num(_) => (vec![0; nv], vec![0; nv]),
+            ExprNode::Symbol(_) => {
+                let mut n = vec![0; nv];
+                n[*index.get(&id)?] = 1;
+                (n, vec![0; nv])
+            }
+            ExprNode::Neg(b) => degs.get(b)?.clone(),
+            ExprNode::Add(ch) => {
+                let (mut n, mut d) = (vec![0u64; nv], vec![0u64; nv]);
+                for c in ch {
+                    let (cn, cd) = degs.get(c)?;
+                    for i in 0..nv {
+                        n[i] = (n[i].saturating_add(cd[i])).max(cn[i].saturating_add(d[i]));
+                        d[i] = d[i].saturating_add(cd[i]);
+                    }
+                }
+                (n, d)
+            }
+            ExprNode::Mul(ch) => {
+                let (mut n, mut d) = (vec![0u64; nv], vec![0u64; nv]);
+                for c in ch {
+                    let (cn, cd) = degs.get(c)?;
+                    for i in 0..nv {
+                        n[i] = n[i].saturating_add(cn[i]);
+                        d[i] = d[i].saturating_add(cd[i]);
+                    }
+                }
+                (n, d)
+            }
+            ExprNode::Pow(b, x) => {
+                let k = exponent(*x)?;
+                let (bn, bd) = degs.get(b)?;
+                let m = k.unsigned_abs();
+                let scale = |v: &[u64]| v.iter().map(|&e| e.saturating_mul(m)).collect();
+                if k >= 0 {
+                    (scale(bn), scale(bd))
+                } else {
+                    (scale(bd), scale(bn))
+                }
+            }
+            _ => return None,
+        };
+        degs.insert(id, r);
+    }
+    let bounds = &degs.get(&root)?.0;
+    let mut points: u64 = 1;
+    for &d in bounds {
+        points = points.saturating_mul(d.saturating_add(1));
+        if points > RF_GRID_POINTS {
+            return None;
         }
     }
-    zero_at_all.then_some(true)
+    // Every point of {0, …, d₁} × … × {0, …, dₖ}, in mixed radix.
+    let one = Q::from_integer(BigInt::from(1));
+    for p in 0..points {
+        let mut rest = p;
+        let coords: Vec<Q> = bounds
+            .iter()
+            .map(|&d| {
+                let c = rest % (d + 1);
+                rest /= d + 1;
+                Q::from_integer(BigInt::from(c))
+            })
+            .collect();
+        let mut val: rustc_hash::FxHashMap<ExprId, (Q, Q)> = rustc_hash::FxHashMap::default();
+        for &id in &order {
+            let r = match arena.node(id) {
+                ExprNode::Num(_) => (arena.as_num(id)?.clone(), one.clone()),
+                ExprNode::Symbol(_) => (coords[*index.get(&id)?].clone(), one.clone()),
+                ExprNode::Neg(b) => {
+                    let (n, d) = val.get(b)?;
+                    (-n.clone(), d.clone())
+                }
+                ExprNode::Add(ch) => {
+                    let (mut n, mut d) = (Q::zero(), one.clone());
+                    for c in ch {
+                        let (cn, cd) = val.get(c)?;
+                        n = &n * cd + cn * &d;
+                        d *= cd;
+                    }
+                    (n, d)
+                }
+                ExprNode::Mul(ch) => {
+                    let (mut n, mut d) = (one.clone(), one.clone());
+                    for c in ch {
+                        let (cn, cd) = val.get(c)?;
+                        n *= cn;
+                        d *= cd;
+                    }
+                    (n, d)
+                }
+                ExprNode::Pow(b, x) => {
+                    let k = exponent(*x)?;
+                    let (bn, bd) = val.get(b)?;
+                    let m = i32::try_from(k.unsigned_abs()).ok()?;
+                    if k >= 0 {
+                        (num_traits::Pow::pow(bn, m), num_traits::Pow::pow(bd, m))
+                    } else {
+                        (num_traits::Pow::pow(bd, m), num_traits::Pow::pow(bn, m))
+                    }
+                }
+                _ => return None,
+            };
+            val.insert(id, r);
+        }
+        if !val.get(&root)?.0.is_zero() {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 /// Number of evaluation points of [`rational_function_is_zero`].
@@ -8216,5 +8375,81 @@ mod tests {
         assert_eq!(all3([Some(true), None]), None);
         assert_eq!(all3([Some(true), None, Some(false)]), Some(false));
         assert_eq!(all3([Some(true), Some(true)]), Some(true));
+    }
+
+    /// `P = (x − p₀)(x − p₁)(x − p₂)·(1 + y)³¹·(1 + z)³¹` with `pₖ` the
+    /// `x`-coordinates of the three sample points vanishes at all of them,
+    /// and its numerator (4,096 terms) is past the expansion budget.  Up to
+    /// 0.49 the zero samples were the answer (Schwartz–Zippel):
+    /// `Some(true)`, so `P` was "identically zero".  The grid test refutes
+    /// it exactly.
+    ///
+    /// Oracle: `P(0, 0, 0) = −p₀p₁p₂ ≠ 0` (the `pₖ` are nonzero rationals).
+    #[test]
+    fn zero_samples_do_not_prove_a_rational_function_zero() {
+        let ctx = tctx();
+        let build = |i: usize| {
+            let p: Vec<String> = (0..RF_POINTS)
+                .map(|k| rf_sample_point(i, k).to_string())
+                .collect();
+            ctx.parse(&format!(
+                "(x - ({}))*(x - ({}))*(x - ({}))*(1 + y)^31*(1 + z)^31",
+                p[0], p[1], p[2]
+            ))
+            .unwrap()
+        };
+        // The coordinate of `x` is its position among the free symbols.
+        let x = ctx.symbol("x");
+        let mut i = 0;
+        let mut e = build(i);
+        for _ in 0..3 {
+            let at = {
+                let inner = e.inner.read();
+                crate::base::walk::free_symbols(&inner.arena, e.raw_id())
+                    .iter()
+                    .position(|&s| s == x.raw_id())
+                    .unwrap()
+            };
+            if at == i {
+                break;
+            }
+            i = at;
+            e = build(i);
+        }
+        {
+            let inner = e.inner.read();
+            let syms = crate::base::walk::free_symbols(&inner.arena, e.raw_id());
+            for k in 0..RF_POINTS {
+                let v = rf_value_at(&inner.arena, e.raw_id(), &syms, k).unwrap();
+                assert_eq!(v.map(|v| num_traits::Zero::is_zero(&v)), Some(true));
+            }
+            assert_eq!(rf_numerator_is_zero(&inner.arena, e.raw_id(), &syms), None);
+        }
+        assert_eq!(rational_function_is_zero_q(&e), Some(false));
+    }
+
+    /// `(1 + x)⁶³·(1 + y)⁶³ − (1 + x + y + xy)⁶³` is identically zero, and its
+    /// numerator (4,096 terms) is past the expansion budget: up to 0.49 the
+    /// answer `Some(true)` came from three samples; now from the exact grid
+    /// test (64 × 64 points).
+    ///
+    /// Oracle (exact identity): `1 + x + y + xy = (1 + x)(1 + y)`.
+    #[test]
+    fn a_large_identically_zero_rational_function_is_proved_zero() {
+        let ctx = tctx();
+        let e = ctx
+            .parse("(1 + x)^63*(1 + y)^63 - (1 + x + y + x*y)^63")
+            .unwrap();
+        assert!(!e.is_zero_structural());
+        {
+            let inner = e.inner.read();
+            let syms = crate::base::walk::free_symbols(&inner.arena, e.raw_id());
+            assert_eq!(rf_numerator_is_zero(&inner.arena, e.raw_id(), &syms), None);
+            assert_eq!(
+                rf_numerator_vanishes_on_grid(&inner.arena, e.raw_id(), &syms),
+                Some(true)
+            );
+        }
+        assert_eq!(rational_function_is_zero_q(&e), Some(true));
     }
 }

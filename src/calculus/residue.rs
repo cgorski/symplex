@@ -691,7 +691,7 @@ fn rational_poles(arena: &mut Arena, d: &Poly, bound: ExprId) -> Option<Vec<Rati
                     places.push(if ball.real {
                         PolePlace::Real
                     } else if ball.value.1.abs().cmp(radius).unwrap_or(-1) > 0 {
-                        if ball.value.1.is_positive() {
+                        if crate::base::bigfloat::is_strictly_positive(&ball.value.1) {
                             PolePlace::Upper
                         } else {
                             PolePlace::Lower

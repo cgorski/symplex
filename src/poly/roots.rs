@@ -530,7 +530,8 @@ fn aberth_iterate(
                 wp,
                 rm,
             );
-            if corr_abs_sq.sub(&max_correction, prec, rm).is_positive() {
+            let larger = corr_abs_sq.sub(&max_correction, prec, rm);
+            if crate::base::bigfloat::is_sign_positive(&larger) {
                 max_correction = corr_abs_sq;
             }
 
@@ -544,7 +545,8 @@ fn aberth_iterate(
 
         // Check convergence: max |correction|^2 < threshold^2
         let threshold_sq = threshold.mul(threshold, wp, rm);
-        if max_correction.is_zero() || !max_correction.sub(&threshold_sq, prec, rm).is_positive() {
+        let excess = max_correction.sub(&threshold_sq, prec, rm);
+        if max_correction.is_zero() || !crate::base::bigfloat::is_sign_positive(&excess) {
             break;
         }
     }
@@ -849,7 +851,7 @@ pub(crate) fn root_balls(poly: &Poly, roots: &[Complex], prec: usize) -> Vec<Roo
         let d_err = d_scale.mul(&unit, BALL_PREC, rm);
         let numer = inflate(&modulus(&pz).add(&p_err, BALL_PREC, rm));
         let denom = deflate(&deflate(&modulus(&dz)).sub(&p_err.max(&d_err), BALL_PREC, rm));
-        if !denom.is_positive() {
+        if !crate::base::bigfloat::is_sign_positive(&denom) {
             return uncertified();
         }
         let r = inflate(&n_bf.mul(&numer, BALL_PREC, rm).div(&denom, BALL_PREC, rm));

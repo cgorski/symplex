@@ -32,7 +32,9 @@
 //! real part may lie on the branch's cut has an undecidable side and no
 //! bound.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use crate::base::bigfloat;
+use astro_float::BigFloat;
 use num_bigint::BigInt;
 use num_complex::Complex64;
 use num_traits::{ToPrimitive, Zero};
@@ -101,16 +103,16 @@ fn neg(x: &BigFloat) -> bool {
 }
 
 fn to_f64(x: &BigFloat) -> f64 {
-    super::bigfloat_to_f64_rounded(x, RoundingMode::ToEven).unwrap_or(f64::NAN)
+    super::f64_of(x).unwrap_or(f64::NAN)
 }
 
 fn from_c64(z: Complex64, prec: usize) -> Complex {
     let im = if z.im == 0.0 {
         BigFloat::new(prec)
     } else {
-        BigFloat::from_f64(z.im, prec)
+        bigfloat::from_f64(z.im, prec)
     };
-    (BigFloat::from_f64(z.re, prec), im)
+    (bigfloat::from_f64(z.re, prec), im)
 }
 
 fn real(x: BigFloat, prec: usize) -> Complex {
@@ -129,13 +131,8 @@ fn int(n: i64, prec: usize) -> Complex {
 /// the branches `k ≠ 0` (`W_k(0) = −∞`) and for a non-finite `z`;
 /// [`SymplexError::ComputationFailed`] if Halley's iteration does not
 /// converge.
-pub(super) fn lambert_w(
-    z: &Complex,
-    k: i64,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+pub(super) fn lambert_w(z: &Complex, k: i64, wpc: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let prec = wpc.bits();
     if [&z.0, &z.1].iter().any(|p| p.is_nan() || p.is_inf()) {
         return Err(unevaluable("LambertW of a non-finite argument"));
     }
@@ -149,7 +146,7 @@ pub(super) fn lambert_w(
         };
     }
     let real_z = z.1.is_zero();
-    let (delta, cancel) = branch_point_offset(z, prec, rm, cc);
+    let (delta, cancel) = branch_point_offset(z, wpc);
     // The two real branches on their real domains: `W₀` on `[−1/e, ∞)`,
     // `W₋₁` on `[−1/e, 0)` (`δ = z + 1/e` is never 0, `1/e` irrational).
     let real_value = real_z && (k == 0 || (k == -1 && neg(&z.0))) && !neg(&delta.0);
@@ -167,33 +164,33 @@ pub(super) fn lambert_w(
     // from above and of `W₁` from below.
     let touches = k == 0 || (k == -1 && !neg(&z.1)) || (k == 1 && neg(&z.1));
     let start = if near_bp && touches {
-        match branch_point_series(&delta, k != 0, cancel, tol, wp, rm, cc) {
-            (w, true) => return Ok(finish(w, real_value, prec, rm)),
+        match branch_point_series(&delta, k != 0, cancel, tol, &mut wpc.at(wp)) {
+            (w, true) => return Ok(finish(w, real_value, prec)),
             (w, false) => w,
         }
     } else if (k == 0 || k == -1) && (-9..900).contains(&magz) {
         let zf = Complex64::new(to_f64(&z.0), if real_z { 0.0 } else { to_f64(&z.1) });
         from_c64(hybrid_start(zf, real_z, k), wp)
     } else {
-        asymptotic_start(z, k, magz, wp, rm, cc)
+        asymptotic_start(z, k, magz, &mut wpc.at(wp))
     };
     // Up to 0.41 the iteration asked for steps below `2^−tol` including the
     // conditioning bits, which rounding noise near `−1/e` never allows:
     // `W(−1/e + 13/400000000)` to 60 digits did not converge (the series
     // alone settles it at fewer digits).
     let halley_tol = tol - conditioning as i64;
-    let w = halley(z, start, halley_tol, wp, rm, cc)?;
-    Ok(finish(w, real_value, prec, rm))
+    let w = halley(z, start, halley_tol, &mut wpc.at(wp))?;
+    Ok(finish(w, real_value, prec))
 }
 
 /// Rounds `w` to `prec` bits, with an exactly zero imaginary part when the
 /// value is real (`real`).
-fn finish(w: Complex, real: bool, prec: usize, rm: RoundingMode) -> Complex {
-    let re = super::round_to(w.0, prec, rm);
+fn finish(w: Complex, real: bool, prec: usize) -> Complex {
+    let re = super::round_to(w.0, prec);
     let im = if real {
         BigFloat::new(prec)
     } else {
-        super::round_to(w.1, prec, rm)
+        super::round_to(w.1, prec)
     };
     (re, im)
 }
@@ -201,17 +198,13 @@ fn finish(w: Complex, real: bool, prec: usize, rm: RoundingMode) -> Complex {
 /// `δ = z + 1/e` and the bits it cancels (`log₂(|z|/|δ|)`, 0 when `|δ|`
 /// is not small), computed with those bits more so that `δ` is accurate
 /// relative to itself.
-fn branch_point_offset(
-    z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> (Complex, usize) {
+fn branch_point_offset(z: &Complex, w: &mut Wp<'_>) -> (Complex, usize) {
+    let prec = w.bits();
     let cap = 3 * prec + 256;
     let mut p = prec + 64;
     loop {
-        let inv_e = BigFloat::from_i32(1, p).div(&cc.e(p, rm), p, rm);
-        let re = z.0.add(&inv_e, p, rm);
+        let inv_e = BigFloat::from_i32(1, p).div(&w.cc.e(p, RM), p, RM);
+        let re = z.0.add(&inv_e, p, RM);
         let delta = (re, z.1.clone());
         let lost = match (accuracy::mag(z), accuracy::mag(&delta)) {
             (Some(a), Some(b)) => usize::try_from(a - b).unwrap_or(0),
@@ -255,12 +248,11 @@ fn branch_point_series(
     minus: bool,
     cancel: usize,
     tol: i64,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> (Complex, bool) {
-    let two_e = real(cc.e(wp, rm).mul(&BigFloat::from_i32(2, wp), wp, rm), wp);
-    let mut p = super::c_sqrt(&c_mul(&two_e, delta, wp, rm), wp, rm, cc);
+    let wp = w.bits();
+    let two_e = real(w.cc.e(wp, RM).mul(&BigFloat::from_i32(2, wp), wp, RM), wp);
+    let mut p = super::c_sqrt(&c_mul(&two_e, delta, wp, RM), w);
     if minus {
         p = (p.0.neg(), p.1.neg());
     }
@@ -269,12 +261,12 @@ fn branch_point_series(
     let mut s = c_zero(wp);
     let mut pl = int(1, wp);
     for u in &coeffs {
-        let term = c_mul(&real(super::ratio_to_bigfloat(u, wp, rm), wp), &pl, wp, rm);
-        s = c_add(&s, &term, wp, rm);
+        let term = c_mul(&real(super::ratio_to_bigfloat(u, wp), wp), &pl, wp, RM);
+        s = c_add(&s, &term, wp, RM);
         if accuracy::mag(&term).is_none_or(|m| m < -tol) {
             return (s, true);
         }
-        pl = c_mul(&pl, &p, wp, rm);
+        pl = c_mul(&pl, &p, wp, RM);
     }
     (s, false)
 }
@@ -364,39 +356,33 @@ fn hybrid_start(z: Complex64, real: bool, k: i64) -> Complex64 {
 /// `W₋₁` on `(−1/e, 0)`, otherwise `L₁ − L₂ + L₂/L₁ + L₂(L₂ − 2)/(2L₁²)`
 /// with `L₁ = ln z + 2πik`, `L₂ = ln L₁` (relative error `O(1/ln z)` both as
 /// `z → 0` and as `z → ∞`).
-fn asymptotic_start(
-    z: &Complex,
-    k: i64,
-    magz: i64,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Complex {
+fn asymptotic_start(z: &Complex, k: i64, magz: i64, w: &mut Wp<'_>) -> Complex {
+    let wp = w.bits();
     if k == 0 && magz < -1 {
-        return c_mul(z, &c_sub(&int(1, wp), z, wp, rm), wp, rm);
+        return c_mul(z, &c_sub(&int(1, wp), z, wp, RM), wp, RM);
     }
     if k == -1 && z.1.is_zero() && neg(&z.0) && to_f64(&z.0) > NEG_INV_E {
-        let l1 = z.0.neg().ln(wp, rm, cc);
-        let l2 = l1.neg().ln(wp, rm, cc);
-        return real(l1.sub(&l2, wp, rm), wp);
+        let l1 = z.0.neg().ln(wp, RM, w.cc);
+        let l2 = l1.neg().ln(wp, RM, w.cc);
+        return real(l1.sub(&l2, wp, RM), wp);
     }
-    let two_pi_k = cc
-        .pi(wp, rm)
-        .mul(&BigFloat::from_i128(2 * i128::from(k), wp.max(128)), wp, rm);
-    let ln_z = super::c_ln(z, wp, rm, cc);
-    let l1 = (ln_z.0, ln_z.1.add(&two_pi_k, wp, rm));
-    let l2 = super::c_ln(&l1, wp, rm, cc);
+    let two_pi_k =
+        w.cc.pi(wp, RM)
+            .mul(&BigFloat::from_i128(2 * i128::from(k), wp.max(128)), wp, RM);
+    let ln_z = super::c_ln(z, w);
+    let l1 = (ln_z.0, ln_z.1.add(&two_pi_k, wp, RM));
+    let l2 = super::c_ln(&l1, w);
     let two = int(2, wp);
-    let a = c_sub(&l1, &l2, wp, rm);
-    let b = c_div(&l2, &l1, wp, rm);
-    let l1sq2 = c_mul(&c_mul(&l1, &l1, wp, rm), &two, wp, rm);
+    let a = c_sub(&l1, &l2, wp, RM);
+    let b = c_div(&l2, &l1, wp, RM);
+    let l1sq2 = c_mul(&c_mul(&l1, &l1, wp, RM), &two, wp, RM);
     let c = c_div(
-        &c_mul(&l2, &c_sub(&l2, &two, wp, rm), wp, rm),
+        &c_mul(&l2, &c_sub(&l2, &two, wp, RM), wp, RM),
         &l1sq2,
         wp,
-        rm,
+        RM,
     );
-    c_add(&c_add(&a, &b, wp, rm), &c, wp, rm)
+    c_add(&c_add(&a, &b, wp, RM), &c, wp, RM)
 }
 
 /// Halley's iteration on `w·eʷ − z` (mpmath's form) until a step is below
@@ -405,30 +391,29 @@ fn halley(
     z: &Complex,
     mut w: Complex,
     tol: i64,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    wpc: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
+    let wp = wpc.bits();
     let one = int(1, wp);
     let two = int(2, wp);
     for _ in 0..100 {
-        let ew = super::c_exp(&w, wp, rm, cc);
-        let wew = c_mul(&w, &ew, wp, rm);
-        let wewz = c_sub(&wew, z, wp, rm);
+        let ew = super::c_exp(&w, wpc);
+        let wew = c_mul(&w, &ew, wp, RM);
+        let wewz = c_sub(&wew, z, wp, RM);
         if is_zero(&wewz) {
             return Ok(w);
         }
-        let w2 = c_mul(&c_add(&w, &one, wp, rm), &two, wp, rm);
+        let w2 = c_mul(&c_add(&w, &one, wp, RM), &two, wp, RM);
         if is_zero(&w2) {
             break;
         }
-        let corr = c_div(&c_mul(&c_add(&w, &two, wp, rm), &wewz, wp, rm), &w2, wp, rm);
-        let denom = c_sub(&c_add(&wew, &ew, wp, rm), &corr, wp, rm);
+        let corr = c_div(&c_mul(&c_add(&w, &two, wp, RM), &wewz, wp, RM), &w2, wp, RM);
+        let denom = c_sub(&c_add(&wew, &ew, wp, RM), &corr, wp, RM);
         if is_zero(&denom) {
             break;
         }
-        let step = c_div(&wewz, &denom, wp, rm);
-        let wn = c_sub(&w, &step, wp, rm);
+        let step = c_div(&wewz, &denom, wp, RM);
+        let wn = c_sub(&w, &step, wp, RM);
         let done = match (accuracy::mag(&step), accuracy::mag(&wn)) {
             (None, _) => true,
             (Some(s), Some(m)) => s <= m - tol,
@@ -485,7 +470,7 @@ pub(super) fn error_bound(z: &Complex, bz: Bound, w: &Complex, k: i64, prec: usi
     let wp1 = w.0.add(
         &BigFloat::from_i32(1, 64),
         w.0.mantissa_max_bit_len().unwrap_or(64) + 64,
-        RoundingMode::ToEven,
+        RM,
     );
     let l1w = accuracy::lg_abs_low(&(wp1, w.1.clone()));
     // log₂|W′(z)| = −Re W·log₂ e − log₂|1 + W|.

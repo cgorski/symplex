@@ -22,6 +22,7 @@ use num_traits::Signed;
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
+use crate::base::func::{Func, Tex, TexPiece};
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
@@ -466,150 +467,59 @@ fn push_latex_call(head: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) {
     stack.push(LatexItem::Owned(format!("{head}\\left(")));
 }
 
-/// LaTeX for the library special functions with a SymPy-style notation:
-/// `\operatorname{erfi}`, `\operatorname{E}_{n}`, `S`/`C`,
-/// `\gamma`/`\Gamma`, `\operatorname{Li}_{s}`, `\eta`, `\operatorname{Ai}`,
-/// `K`/`E`/`F\left(\phi\middle| m\right)`/`\Pi`, `C_{n}^{\left(a\right)}`,
-/// `\operatorname{B}_{(x_1, x_2)}`/`\operatorname{I}_{(x_1, x_2)}`, …
+/// LaTeX for the library special functions, from the `tex` facet of the
+/// function table (SymPy's notations: `\operatorname{erfi}`,
+/// `\operatorname{E}_{n}`, `J_{\nu}\left(x\right)`, `T_{n}\left(x\right)`,
+/// `F_{n}`, `{x}^{\left(n\right)}`, `F\left(\phi\middle| m\right)`, …).
 ///
-/// Returns `false` (pushing nothing) for a function rendered as a plain
-/// `name\left(args\right)` — the integer sequences, the Bessel functions and
-/// the classical orthogonal polynomials — and for a call of the wrong arity.
-/// Exhaustive over [`LibFn`].
-fn push_lib_fn_latex(name: LibFn, args: &[ExprId], stack: &mut Vec<LatexItem>) -> bool {
+/// Returns `false` (pushing nothing) for a call of the wrong arity, which
+/// prints as a user function.
+fn push_lib_fn_latex(
+    arena: &Arena,
+    name: LibFn,
+    args: &[ExprId],
+    stack: &mut Vec<LatexItem>,
+) -> bool {
     if !name.arity().accepts(args.len()) {
         return false;
     }
-    // Plain `head\left(args\right)` renderings fall out of the match; the
-    // structured layouts push their items and return directly.
-    let head: &str = match name {
-        LibFn::Erfi => r"\operatorname{erfi}",
-        LibFn::ErfInv => r"\operatorname{erf}^{-1}",
-        LibFn::ErfcInv => r"\operatorname{erfc}^{-1}",
-        LibFn::Shi => r"\operatorname{Shi}",
-        LibFn::Chi => r"\operatorname{Chi}",
-        LibFn::FresnelS => "S",
-        LibFn::FresnelC => "C",
-        LibFn::LowerGamma => r"\gamma",
-        LibFn::UpperGamma => r"\Gamma",
-        LibFn::DirichletEta => r"\eta",
-        LibFn::AiryAi => r"\operatorname{Ai}",
-        LibFn::AiryBi => r"\operatorname{Bi}",
-        LibFn::AiryAiPrime => r"\operatorname{Ai}^\prime",
-        LibFn::AiryBiPrime => r"\operatorname{Bi}^\prime",
-        LibFn::EllipticK => "K",
-        LibFn::EllipticE => "E",
-        // The branch `k` of Lambert W, `\operatorname{W}_{k}\left(x\right)`.
-        LibFn::LambertW => {
-            if let [x, k] = args {
-                stack.push(LatexItem::Lit(r"\right)"));
-                stack.push(LatexItem::Expr(*x));
-                stack.push(LatexItem::Lit(r"}\left("));
-                stack.push(LatexItem::Expr(*k));
-                stack.push(LatexItem::Lit(r"\operatorname{W}_{"));
-                return true;
-            }
-            r"\operatorname{W}"
-        }
-        // head_{param}\left(x\right)
-        LibFn::ExpInt | LibFn::PolyLog => {
-            let head = if name == LibFn::ExpInt {
-                r"\operatorname{E}_{"
-            } else {
-                r"\operatorname{Li}_{"
-            };
+    let group = |stack: &mut Vec<LatexItem>, arg: ExprId| {
+        if arena.node(arg).is_atom() {
+            stack.push(LatexItem::Expr(arg));
+        } else {
             stack.push(LatexItem::Lit(r"\right)"));
-            stack.push(LatexItem::Expr(args[1]));
-            stack.push(LatexItem::Lit(r"}\left("));
-            stack.push(LatexItem::Expr(args[0]));
-            stack.push(LatexItem::Lit(head));
-            return true;
+            stack.push(LatexItem::Expr(arg));
+            stack.push(LatexItem::Lit(r"\left("));
         }
-        // F\left(\phi\middle| m\right), \Pi\left(n\middle| m\right)
-        LibFn::EllipticF | LibFn::EllipticPi => {
-            stack.push(LatexItem::Lit(r"\right)"));
-            stack.push(LatexItem::Expr(args[1]));
-            stack.push(LatexItem::Lit(r"\middle| "));
-            stack.push(LatexItem::Expr(args[0]));
-            stack.push(LatexItem::Lit(if name == LibFn::EllipticF {
-                r"F\left("
-            } else {
-                r"\Pi\left("
-            }));
-            return true;
-        }
-        // C_{n}^{\left(a\right)}\left(x\right), P_{n}^{\left(m\right)}, L_{n}^{\left(a\right)}
-        LibFn::Gegenbauer | LibFn::AssocLegendre | LibFn::AssocLaguerre => {
-            let letter = match name {
-                LibFn::Gegenbauer => r"C_{",
-                LibFn::AssocLegendre => r"P_{",
-                _ => r"L_{",
-            };
-            stack.push(LatexItem::Lit(r"\right)"));
-            stack.push(LatexItem::Expr(args[2]));
-            stack.push(LatexItem::Lit(r"\right)}\left("));
-            stack.push(LatexItem::Expr(args[1]));
-            stack.push(LatexItem::Lit(r"}^{\left("));
-            stack.push(LatexItem::Expr(args[0]));
-            stack.push(LatexItem::Lit(letter));
-            return true;
-        }
-        // P_{n}^{\left(a,b\right)}\left(x\right)
-        LibFn::Jacobi => {
-            stack.push(LatexItem::Lit(r"\right)"));
-            stack.push(LatexItem::Expr(args[3]));
-            stack.push(LatexItem::Lit(r"\right)}\left("));
-            stack.push(LatexItem::Expr(args[2]));
-            stack.push(LatexItem::Lit(","));
-            stack.push(LatexItem::Expr(args[1]));
-            stack.push(LatexItem::Lit(r"}^{\left("));
-            stack.push(LatexItem::Expr(args[0]));
-            stack.push(LatexItem::Lit(r"P_{"));
-            return true;
-        }
-        // \operatorname{B}_{(x_1, x_2)}\left(a, b\right), \operatorname{I}_{(x_1, x_2)}\left(a, b\right)
-        LibFn::BetaInc | LibFn::BetaIncRegularized => {
-            stack.push(LatexItem::Lit(r"\right)"));
-            stack.push(LatexItem::Expr(args[1]));
-            stack.push(LatexItem::Lit(", "));
-            stack.push(LatexItem::Expr(args[0]));
-            stack.push(LatexItem::Lit(r")}\left("));
-            stack.push(LatexItem::Expr(args[3]));
-            stack.push(LatexItem::Lit(", "));
-            stack.push(LatexItem::Expr(args[2]));
-            stack.push(LatexItem::Lit(if name == LibFn::BetaInc {
-                r"\operatorname{B}_{("
-            } else {
-                r"\operatorname{I}_{("
-            }));
-            return true;
-        }
-        // Plain `name\left(args\right)`, exactly as a user function.
-        LibFn::Factorial2
-        | LibFn::Subfactorial
-        | LibFn::RisingFactorial
-        | LibFn::FallingFactorial
-        | LibFn::Fibonacci
-        | LibFn::Lucas
-        | LibFn::Bernoulli
-        | LibFn::Harmonic
-        | LibFn::Catalan
-        | LibFn::Bell
-        | LibFn::EulerNumber
-        | LibFn::Stirling1
-        | LibFn::Stirling2
-        | LibFn::PartitionCount
-        | LibFn::BesselJ
-        | LibFn::BesselY
-        | LibFn::BesselI
-        | LibFn::BesselK
-        | LibFn::Legendre
-        | LibFn::ChebyshevT
-        | LibFn::ChebyshevU
-        | LibFn::Hermite
-        | LibFn::Laguerre => return false,
     };
-    push_latex_call(head, args, stack);
+    let tex = Func::from(name).spec().tex;
+    if let Tex::Layout(pieces) = tex
+        && pieces.iter().any(|p| match *p {
+            TexPiece::Arg(i) | TexPiece::Group(i) => usize::from(i) >= args.len(),
+            TexPiece::Lit(_) => false,
+        })
+    {
+        return false;
+    }
+    match tex {
+        Tex::Call(head) => push_latex_call(head, args, stack),
+        Tex::Layout(pieces) => {
+            for piece in pieces.iter().rev() {
+                match *piece {
+                    TexPiece::Lit(s) => stack.push(LatexItem::Lit(s)),
+                    TexPiece::Arg(i) => stack.push(LatexItem::Expr(args[usize::from(i)])),
+                    TexPiece::Group(i) => group(stack, args[usize::from(i)]),
+                }
+            }
+        }
+        Tex::Postfix(op) => {
+            let [arg] = args else {
+                return false;
+            };
+            stack.push(LatexItem::Lit(op));
+            group(stack, *arg);
+        }
+    }
     true
 }
 
@@ -1134,7 +1044,7 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
             let name = arena.symbol_name(sym_id).to_owned();
             let args = args.clone();
             if let Some(f) = arena.lib_fn(sym_id)
-                && push_lib_fn_latex(f, &args, stack)
+                && push_lib_fn_latex(arena, f, &args, stack)
             {
                 return;
             }

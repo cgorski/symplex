@@ -35,7 +35,7 @@
 //!
 //! Only facets that are *data*, uniform across the representations, live in
 //! the spec: the name, the parser's further names, the argument count, the
-//! sort-key sub-rank and the LaTeX layout, and five facets with semantics,
+//! sort-key sub-rank and the LaTeX layout, and six facets with semantics,
 //! each read by the code that used to keep a list of its own:
 //!
 //! | Facet | Says | Read by |
@@ -45,6 +45,7 @@
 //! | [`Parity`] | `f(−z) = ±f(z)`, and how the sign is extracted today | a test against `canon`/`eval` |
 //! | [`Poles`] | where `f` is infinite at finite arguments | the assumption system (no claim at a known pole) |
 //! | [`Constants`] | whether its special values at constants are folded | the assumption system (no claim at constants otherwise) |
+//! | [`Runtime`] (`rt`) | which numeric back ends evaluate `f` in `f64`, with which runtime helper | `compile`, `to_rust_fn`, `to_c_fn`, `to_python` (availability, refusals) |
 //!
 //! Up to 0.48 symbolic conjugation knew 14 functions and `evalf` 35, in
 //! two lists that disagreed, and the assumption system knew no library
@@ -190,7 +191,14 @@ pub(crate) enum SortSub {
     Named,
 }
 
-/// The LaTeX layout of a call, with each argument rendered in place.
+/// The LaTeX layout of a call, with each argument rendered in place: the
+/// notation of SymPy's `latex()` where it has one (`T_{n}\left(x\right)`,
+/// `F_{n}`, `{x}^{\left(n\right)}` for the rising and
+/// `{\left(x\right)}_{n}` for the falling factorial, the combinatorial
+/// convention).  The LaTeX printer renders the library functions from it;
+/// a test checks the node-backed ones against their own printer arms.  Up to
+/// 0.49 library functions without a notation printed their names, and an
+/// underscore in one was a subscript (`rising_factorial\left(x, y\right)`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Tex {
     /// `head\left(a, b, …\right)`.
@@ -209,6 +217,9 @@ pub(crate) enum TexPiece {
     Lit(&'static str),
     /// The argument at this position.
     Arg(u8),
+    /// The argument at this position, in `\left(…\right)` unless it is an
+    /// atom (the base of `{x}^{\left(n\right)}`, the operand of `!n`).
+    Group(u8),
 }
 
 /// A branch cut: where, in the values of one argument, a function's
@@ -413,6 +424,193 @@ pub(crate) enum Poles {
     Other,
 }
 
+/// One numeric back end: a consumer of the [`Runtime`] facet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Backend {
+    /// The stack VM behind `Ex::compile`.
+    Vm,
+    /// The Rust source emitter (`to_rust_fn`).
+    Rust,
+    /// The C99 source emitter (`to_c_fn`).
+    C,
+    /// The Python source emitter (`to_python`, the `math` module only).
+    Python,
+}
+
+impl Backend {
+    /// The bit of this back end in a [`Backends`] set.
+    const fn bit(self) -> u8 {
+        match self {
+            Backend::Vm => 1,
+            Backend::Rust => 2,
+            Backend::C => 4,
+            Backend::Python => 8,
+        }
+    }
+
+    /// The entry point, as error messages name it.
+    pub(crate) const fn entry_point(self) -> &'static str {
+        match self {
+            Backend::Vm => "compile",
+            Backend::Rust => "to_rust_fn",
+            Backend::C => "to_c_fn",
+            Backend::Python => "to_python",
+        }
+    }
+}
+
+/// A set of [`Backend`]s.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Backends(u8);
+
+impl Backends {
+    /// No back end.
+    pub(crate) const NONE: Backends = Backends(0);
+    /// The VM and the Rust and C emitters: every back end that shares the
+    /// `f64` runtime (`numeric_rt` and its C port).
+    pub(crate) const VM_RUST_C: Backends = Backends(1 | 2 | 4);
+    /// Every back end.
+    pub(crate) const ALL: Backends = Backends(1 | 2 | 4 | 8);
+
+    /// Does the set contain `b`?
+    pub(crate) const fn contains(self, b: Backend) -> bool {
+        self.0 & b.bit() != 0
+    }
+}
+
+impl fmt::Debug for Backends {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let all = [Backend::Vm, Backend::Rust, Backend::C, Backend::Python];
+        f.debug_set()
+            .entries(all.iter().filter(|b| self.contains(**b)))
+            .finish()
+    }
+}
+
+/// The `f64` routine of a function, the same in every back end that
+/// implements it ([`Runtime::backends`]).  A helper `h` is the function
+/// `numeric_rt::h` the VM calls, emitted as `symplex_rt::h` into generated
+/// Rust (the runtime source embedded verbatim) and as the C port
+/// `symplex_h` into generated C.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Kernel {
+    /// Each back end lowers the function in an arm of its own: an
+    /// operator, an `f64` method or a `<math.h>` function, or a runtime
+    /// helper it picks (`sin`, `|x|`, `Γ`: Rust `symplex_rt::gamma`, C
+    /// `tgamma`, Python `math.gamma`).
+    Own,
+    /// `h(x)`.
+    Unary(&'static str),
+    /// `h(a, b)`.
+    Binary(&'static str),
+    /// `h(n, x)` with an order or degree `n` that must be a constant
+    /// integer.
+    Ordered(&'static str),
+    /// One helper per branch that is real somewhere on the real axis, the
+    /// branch chosen by a constant argument: `lambertw(x, k)` is `W₀` or
+    /// `W₋₁` (`codegen::lambert_rt_helper`).
+    Branches(&'static [&'static str]),
+    /// No `f64` routine: the function is complex-valued on the reals
+    /// (`conjugate`, `arg`), an exact count (`bell`), or not implemented
+    /// in `f64` yet.
+    None,
+}
+
+impl Kernel {
+    /// The runtime helpers the kernel calls (none for [`Own`](Self::Own)
+    /// and [`None`](Self::None)).
+    #[cfg(test)]
+    pub(crate) fn helpers(self) -> SmallVec<[&'static str; 2]> {
+        match self {
+            Kernel::Unary(h) | Kernel::Binary(h) | Kernel::Ordered(h) => smallvec![h],
+            Kernel::Branches(hs) => hs.iter().copied().collect(),
+            Kernel::Own | Kernel::None => SmallVec::new(),
+        }
+    }
+}
+
+/// The `rt` facet: which numeric back ends evaluate a function in `f64`,
+/// and with which routine.
+///
+/// Read by `compile` (the VM), `to_rust_fn`, `to_c_fn` and `to_python`:
+/// a back end not in [`backends`](Self::backends) refuses the function,
+/// and the refusal says where the function is available instead (another
+/// back end, or the SciPy routine for Python).  The tests check every
+/// claim against the emitters, and that each helper a claim names exists
+/// in the embedded Rust runtime and in the C helper library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Runtime {
+    /// The routine.
+    pub(crate) kernel: Kernel,
+    /// The back ends implementing it.
+    pub(crate) backends: Backends,
+    /// The `scipy.special` routine with the function's value, written as
+    /// a call over the function's own argument names (SciPy 1.13); named
+    /// in the refusals of the Python, NumPy and Julia printers, which emit
+    /// `math`/`numpy`/base Julia only.  `None` for the functions Python
+    /// spells, and where SciPy has no routine (the integer sequences,
+    /// `li`, `polylog`, `dirichlet_eta`, `elliptic_pi`) or only a
+    /// differently shaped one (`bernoulli`/`euler` return the whole
+    /// sequence; `lambertw` is complex-valued).
+    pub(crate) scipy: Option<&'static str>,
+}
+
+impl Runtime {
+    /// Lowered by each back end in `on` in an arm of its own.
+    const fn own(on: Backends) -> Runtime {
+        Runtime {
+            kernel: Kernel::Own,
+            backends: on,
+            scipy: None,
+        }
+    }
+
+    /// The helper kernel `kernel` in the back ends `on`.
+    const fn helper(kernel: Kernel, on: Backends) -> Runtime {
+        Runtime {
+            kernel,
+            backends: on,
+            scipy: None,
+        }
+    }
+
+    /// No `f64` routine in any back end.
+    const NONE: Runtime = Runtime {
+        kernel: Kernel::None,
+        backends: Backends::NONE,
+        scipy: None,
+    };
+
+    /// The same, with the SciPy routine `call`.
+    const fn scipy(self, call: &'static str) -> Runtime {
+        Runtime {
+            scipy: Some(call),
+            ..self
+        }
+    }
+
+    /// Does `b` implement the function?
+    pub(crate) const fn on(self, b: Backend) -> bool {
+        self.backends.contains(b)
+    }
+
+    /// The end of `b`'s refusal message: the other back ends that do
+    /// implement the function (` (available in to_rust_fn, to_c_fn)`), or
+    /// nothing when none does.
+    pub(crate) fn elsewhere(self, b: Backend) -> String {
+        let others: Vec<&str> = [Backend::Vm, Backend::Rust, Backend::C, Backend::Python]
+            .into_iter()
+            .filter(|&o| o != b && self.on(o))
+            .map(Backend::entry_point)
+            .collect();
+        if others.is_empty() {
+            String::new()
+        } else {
+            format!(" (available in {})", others.join(", "))
+        }
+    }
+}
+
 /// The data of one function.  Every entry of the list writes every field
 /// (a struct literal without `..`), so a new field is a compile error
 /// until each function says what it is.
@@ -421,8 +619,8 @@ pub(crate) enum Poles {
     not(test),
     expect(
         dead_code,
-        reason = "`parse`, `sort`, `tex` and `parity` are read by the tests over `Func::ALL`; the \
-                  printers, parser, sort keys and sign extraction migrate to them later"
+        reason = "`parse`, `sort` and `parity` are read by the tests over `Func::ALL`; the \
+                  parser, sort keys and sign extraction migrate to them later"
     )
 )]
 pub(crate) struct FuncSpec {
@@ -451,6 +649,8 @@ pub(crate) struct FuncSpec {
     pub(crate) poles: Poles,
     /// Whether the claims extend to constant arguments.
     pub(crate) constants: Constants,
+    /// Which numeric back ends evaluate the function in `f64`, and how.
+    pub(crate) rt: Runtime,
 }
 
 /// Which representation a [`Func`] has in the arena.
@@ -613,7 +813,7 @@ use ArgCount::{AtLeast, Between, Exactly};
 use AutoSign::{Canonical, Coefficient, Negation, SymbolFree};
 use Parity::{Even, Neither, Odd};
 use SortSub::{Function, Named, Rank};
-use TexPiece::{Arg, Lit};
+use TexPiece::{Arg, Group, Lit};
 
 /// The cut `(−∞, 0]` of the first argument.
 const NEG0: Cut = Cut {
@@ -634,12 +834,14 @@ funcs! {
             // Of real arguments only (the order of ℝ).
             conj: Conj::No, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Maximum `max(a, b, …)`.
         Max => FuncSpec {
             name: "max", parse: &[], arity: AtLeast(1), sort: Rank(132), tex: Tex::Call(r"\max"),
             conj: Conj::No, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Floor `⌊x⌋`.
         Floor => FuncSpec {
@@ -649,6 +851,7 @@ funcs! {
             // `floor(−y) ≠ −floor(y)`.
             conj: Conj::No, real_on: RealOn::IntegerValued, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Ceiling `⌈x⌉`.
         Ceiling => FuncSpec {
@@ -656,18 +859,21 @@ funcs! {
             tex: Tex::Layout(&[Lit(r"\lceil "), Arg(0), Lit(r"\rceil")]),
             conj: Conj::No, real_on: RealOn::IntegerValued, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Sine.
         Sin => FuncSpec {
             name: "sin", parse: &[], arity: Exactly(1), sort: Function(0), tex: Tex::Call(r"\sin"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Negation), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Cosine.
         Cos => FuncSpec {
             name: "cos", parse: &[], arity: Exactly(1), sort: Function(1), tex: Tex::Call(r"\cos"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Even(Negation), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Tangent.
         Tan => FuncSpec {
@@ -676,12 +882,14 @@ funcs! {
             // generic convention of its own handler (`compute_trig`).
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Negation), poles: Poles::Other,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Exponential `eˣ`.
         Exp => FuncSpec {
             name: "exp", parse: &[], arity: Exactly(1), sort: Function(3), tex: Tex::Call(r"\exp"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Natural logarithm (`log(x)` with one argument).
         Ln => FuncSpec {
@@ -689,6 +897,7 @@ funcs! {
             conj: Conj::OffCut(NEG0), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(0),
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Absolute value (complex modulus).
         Abs => FuncSpec {
@@ -697,6 +906,7 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Everywhere, parity: Even(Canonical),
             poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Inverse sine.
         Asin => FuncSpec {
@@ -706,6 +916,7 @@ funcs! {
             real_on: RealOn::UnitInterval { closed: true }, parity: Odd(SymbolFree),
             poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Inverse cosine.
         Acos => FuncSpec {
@@ -714,6 +925,7 @@ funcs! {
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::OutsideUnitInterval }),
             real_on: RealOn::UnitInterval { closed: true }, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Inverse tangent.
         Atan => FuncSpec {
@@ -723,6 +935,7 @@ funcs! {
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::ImaginaryOutsideUnit }),
             real_on: RealOn::Reals, parity: Odd(SymbolFree), poles: Poles::Other,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Two-argument arctangent `atan2(y, x)`.
         Atan2 => FuncSpec {
@@ -731,18 +944,21 @@ funcs! {
             // Of real arguments only.
             conj: Conj::No, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Hyperbolic sine.
         Sinh => FuncSpec {
             name: "sinh", parse: &[], arity: Exactly(1), sort: Function(11), tex: Tex::Call(r"\sinh"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Negation), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Hyperbolic cosine.
         Cosh => FuncSpec {
             name: "cosh", parse: &[], arity: Exactly(1), sort: Function(12), tex: Tex::Call(r"\cosh"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Even(Negation), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Hyperbolic tangent.
         Tanh => FuncSpec {
@@ -750,6 +966,7 @@ funcs! {
             // Poles at i(π/2 + kπ).
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Negation), poles: Poles::Other,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Inverse hyperbolic sine.
         Asinh => FuncSpec {
@@ -758,6 +975,7 @@ funcs! {
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::ImaginaryOutsideUnit }),
             real_on: RealOn::Reals, parity: Odd(SymbolFree), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Inverse hyperbolic cosine.
         Acosh => FuncSpec {
@@ -766,6 +984,7 @@ funcs! {
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::BelowOne }),
             real_on: RealOn::AtLeastOne, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Inverse hyperbolic tangent.
         Atanh => FuncSpec {
@@ -776,6 +995,7 @@ funcs! {
             real_on: RealOn::UnitInterval { closed: false }, parity: Odd(SymbolFree),
             poles: Poles::Other,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Sign function.
         Sign => FuncSpec {
@@ -785,6 +1005,7 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::IntegerValued, parity: Odd(Canonical),
             poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Heaviside step `H(x)` (the parser reads `H` only as written).
         Heaviside => FuncSpec {
@@ -793,6 +1014,7 @@ funcs! {
             // Of real arguments.
             conj: Conj::No, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Dirac delta `δ(x)`.
         DiracDelta => FuncSpec {
@@ -802,6 +1024,7 @@ funcs! {
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Even(AutoSign::Never),
             poles: Poles::Other,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Real part.
         Re => FuncSpec {
@@ -809,6 +1032,7 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Everywhere, parity: Odd(Canonical),
             poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Imaginary part.
         Im => FuncSpec {
@@ -816,6 +1040,7 @@ funcs! {
             // `im z̄ = −im z`.
             conj: Conj::No, real_on: RealOn::Everywhere, parity: Odd(Canonical), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Complex conjugate.
         Conjugate => FuncSpec {
@@ -823,6 +1048,7 @@ funcs! {
             tex: Tex::Layout(&[Lit(r"\overline{"), Arg(0), Lit("}")]),
             conj: Conj::Entire, real_on: RealOn::Custom, parity: Odd(Canonical), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::NONE,
         };
         /// Principal argument `arg(z) ∈ (−π, π]`.
         Arg => FuncSpec {
@@ -830,6 +1056,7 @@ funcs! {
             // `arg z̄ = −arg z` off the cut.
             conj: Conj::No, real_on: RealOn::Everywhere, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::NONE,
         };
         /// Gamma function.
         Gamma => FuncSpec {
@@ -837,6 +1064,7 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[0]),
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Log-gamma function.
         LogGamma => FuncSpec {
@@ -845,6 +1073,7 @@ funcs! {
             conj: Conj::OffCut(NEG0), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[0]),
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Digamma `ψ(x)`.
         Digamma => FuncSpec {
@@ -852,6 +1081,7 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[0]),
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::VM_RUST_C).scipy("scipy.special.psi(x)"),
         };
         /// Error function.
         Erf => FuncSpec {
@@ -859,6 +1089,7 @@ funcs! {
             tex: Tex::Call(r"\operatorname{erf}"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(SymbolFree), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Complementary error function.
         Erfc => FuncSpec {
@@ -866,6 +1097,7 @@ funcs! {
             tex: Tex::Call(r"\operatorname{erfc}"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Principal branch `W₀(x)` of Lambert W (the node `ExprNode::LambertW`;
         /// the other branches are [`Func::LambertW`]).
@@ -876,6 +1108,7 @@ funcs! {
             // tests; real on `[−1/e, ∞)` (DLMF §4.13), claimed on `[0, ∞)`.
             conj: Conj::No, real_on: RealOn::NonNegativeReals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::VM_RUST_C),
         };
         /// Beta function `B(a, b)`.
         Beta => FuncSpec {
@@ -887,6 +1120,7 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[0, 1]),
             constants: Constants::Evaluated,
+            rt: Runtime::own(Backends::VM_RUST_C).scipy("scipy.special.beta(a, b)"),
         };
         /// Sine integral.
         Si => FuncSpec {
@@ -894,6 +1128,8 @@ funcs! {
             tex: Tex::Call(r"\operatorname{Si}"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Canonical), poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::helper(Kernel::Unary("sin_integral"), Backends::VM_RUST_C)
+                .scipy("scipy.special.sici(x)[0]"),
         };
         /// Cosine integral.
         Ci => FuncSpec {
@@ -903,6 +1139,8 @@ funcs! {
             conj: Conj::OffCut(NEG0), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(0),
             constants: Constants::Folded,
+            rt: Runtime::helper(Kernel::Unary("cos_integral"), Backends::VM_RUST_C)
+                .scipy("scipy.special.sici(x)[1]"),
         };
         /// Exponential integral.
         Ei => FuncSpec {
@@ -912,6 +1150,8 @@ funcs! {
             // where the reflection holds too; tested off it only).
             conj: Conj::OffCut(NEG0), real_on: RealOn::Reals, parity: Neither, poles: Poles::Zero(0),
             constants: Constants::Folded,
+            rt: Runtime::helper(Kernel::Unary("exp_integral_ei"), Backends::VM_RUST_C)
+                .scipy("scipy.special.expi(x)"),
         };
         /// Logarithmic integral.
         Li => FuncSpec {
@@ -922,12 +1162,14 @@ funcs! {
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::BelowOne }),
             real_on: RealOn::PositiveReals, parity: Neither, poles: Poles::One(0),
             constants: Constants::Folded,
+            rt: Runtime::helper(Kernel::Unary("log_integral"), Backends::VM_RUST_C),
         };
         /// Riemann zeta.
         Zeta => FuncSpec {
             name: "zeta", parse: &[], arity: Exactly(1), sort: Function(39), tex: Tex::Call(r"\zeta"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::One(0),
             constants: Constants::Folded,
+            rt: Runtime::NONE.scipy("scipy.special.zeta(s)"),
         };
         /// Polygamma `ψ⁽ⁿ⁾(x)`, `polygamma(n, x)`.
         Polygamma => FuncSpec {
@@ -940,6 +1182,7 @@ funcs! {
             real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[1]),
             constants: Constants::Folded,
+            rt: Runtime::NONE.scipy("scipy.special.polygamma(n, x)"),
         };
         /// Kronecker delta `δᵢⱼ`.
         KroneckerDelta => FuncSpec {
@@ -949,6 +1192,7 @@ funcs! {
             // 0 or 1: `δ(ī, j̄) = δ(i, j)`.
             conj: Conj::Entire, real_on: RealOn::Custom, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
+            rt: Runtime::NONE,
         };
         /// Factorial `n!` (printed postfix).
         Factorial => FuncSpec {
@@ -959,6 +1203,7 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::NonNegativeReals, parity: Neither,
             poles: Poles::Other,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::ALL),
         };
         /// Binomial coefficient `C(n, k)`.  Its sort byte 8 is `Asin`'s too.
         Binomial => FuncSpec {
@@ -969,6 +1214,7 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::Other,
             constants: Constants::Folded,
+            rt: Runtime::own(Backends::VM_RUST_C).scipy("scipy.special.binom(n, k)"),
         };
     }
     lib {
@@ -976,59 +1222,69 @@ funcs! {
         /// Double factorial `n!!`.
         Factorial2 => FuncSpec {
             name: "factorial2", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("factorial2"),
+            tex: Tex::Postfix("!!"),
             // Integers (SymPy's extension to ℂ is not evaluated here); `(−2k)!!`
             // is infinite.
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("factorial2"), Backends::VM_RUST_C)
+                .scipy("scipy.special.factorial2(n)"),
         };
         /// Subfactorial (derangement count) `!n`.
         Subfactorial => FuncSpec {
             name: "subfactorial", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("subfactorial"),
+            tex: Tex::Layout(&[Lit("!"), Group(0)]),
             // SymPy's extension `Γ(n + 1, −1)/e` sits on the cut of `Γ(a, ·)`.
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// Rising factorial (Pochhammer symbol) `(x)_n = x (x+1) ⋯ (x+n−1)`.
         RisingFactorial => FuncSpec {
             name: "rising_factorial", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("rising_factorial"),
+            tex: Tex::Layout(&[Lit("{"), Group(0), Lit(r"}^{\left("), Arg(1), Lit(r"\right)}")]),
             // `Γ(x + n)/Γ(x)` (DLMF §5.2(iii)): a polynomial in `x` for an
             // integer `n ≥ 0`.
             conj: Conj::Entire, real_on: RealOn::Polynomial { degree: 1 }, parity: Neither,
             poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Binary("rising_factorial"), Backends::VM_RUST_C)
+                .scipy("scipy.special.poch(x, n)"),
         };
         /// Falling factorial `x^(n) = x (x−1) ⋯ (x−n+1)`.
         FallingFactorial => FuncSpec {
             name: "falling_factorial", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("falling_factorial"),
+            tex: Tex::Layout(&[Lit(r"{\left("), Arg(0), Lit(r"\right)}_{"), Arg(1), Lit("}")]),
             // `Γ(x + 1)/Γ(x − n + 1)`.
             conj: Conj::Entire, real_on: RealOn::Polynomial { degree: 1 }, parity: Neither,
             poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Binary("falling_factorial"), Backends::VM_RUST_C)
+                .scipy("scipy.special.poch(x - n + 1, n)"),
         };
         /// Fibonacci number `F_n`.
         Fibonacci => FuncSpec {
             name: "fibonacci", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("fibonacci"),
+            tex: Tex::Layout(&[Lit("F_{"), Arg(0), Lit("}")]),
             // Binet's `(φˣ − cos(πx)φ⁻ˣ)/√5` at real `x` (`evalf`).
             conj: Conj::No, real_on: RealOn::RealLine, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("fibonacci"), Backends::VM_RUST_C),
         };
         /// Lucas number `L_n`.
         Lucas => FuncSpec {
-            name: "lucas", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call("lucas"),
+            name: "lucas", parse: &[], arity: Exactly(1), sort: Named,
+            tex: Tex::Layout(&[Lit("L_{"), Arg(0), Lit("}")]),
             conj: Conj::No, real_on: RealOn::RealLine, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("lucas"), Backends::VM_RUST_C),
         };
         /// Bernoulli number `B_n`.
         Bernoulli => FuncSpec {
             name: "bernoulli", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("bernoulli"),
+            tex: Tex::Layout(&[Lit("B_{"), Arg(0), Lit("}")]),
             // `−s·ζ(1 − s)` at real `s` (`evalf`), entire, is `+1/2` at `s = 1`,
             // but the exact `bernoulli(1)` is `−1/2` (SymPy 1.14: `1/2`): not
             // claimed real off the integers, where a limit would cross the
@@ -1036,59 +1292,70 @@ funcs! {
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// Harmonic number `H_n`.
         Harmonic => FuncSpec {
-            name: "harmonic", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call("harmonic"),
+            name: "harmonic", parse: &[], arity: Exactly(1), sort: Named,
+            tex: Tex::Layout(&[Lit("H_{"), Arg(0), Lit("}")]),
             // `ψ(x + 1) + γ`: poles at the negative integers.
             conj: Conj::No, real_on: RealOn::NonNegativeReals, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("harmonic"), Backends::VM_RUST_C),
         };
         /// Catalan number `C_n`.
         Catalan => FuncSpec {
-            name: "catalan", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call("catalan"),
+            name: "catalan", parse: &[], arity: Exactly(1), sort: Named,
+            tex: Tex::Layout(&[Lit("C_{"), Arg(0), Lit("}")]),
             // `Γ(2x + 1)/(Γ(x + 1)Γ(x + 2))`: poles at `x = −1/2, −3/2, …`.
             conj: Conj::No, real_on: RealOn::NonNegativeReals, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// Bell number `B_n`.
         Bell => FuncSpec {
-            name: "bell", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call("bell"),
+            name: "bell", parse: &[], arity: Exactly(1), sort: Named,
+            tex: Tex::Layout(&[Lit("B_{"), Arg(0), Lit("}")]),
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// Euler number `E_n`.
         EulerNumber => FuncSpec {
             name: "euler_number", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("euler_number"),
+            tex: Tex::Layout(&[Lit("E_{"), Arg(0), Lit("}")]),
             // By Hurwitz zeta functions at real `s` (`evalf`), entire.
             conj: Conj::No, real_on: RealOn::RealLine, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// Signed Stirling number of the first kind `s(n, k)`.
         Stirling1 => FuncSpec {
             name: "stirling1", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("stirling1"),
+            tex: Tex::Layout(&[Lit(r"\left[{"), Arg(0), Lit(r" \atop "), Arg(1), Lit(r"}\right]")]),
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// Stirling number of the second kind `S(n, k)`.
         Stirling2 => FuncSpec {
             name: "stirling2", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("stirling2"),
+            tex: Tex::Layout(&[Lit(r"\left\{{"), Arg(0), Lit(r" \atop "), Arg(1), Lit(r"}\right\}")]),
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.stirling2(n, k)"),
         };
         /// Integer partition count `p(n)`.
         PartitionCount => FuncSpec {
             name: "partition_count", parse: &[], arity: Exactly(1), sort: Named,
-            tex: Tex::Call("partition_count"),
+            tex: Tex::Call("p"),
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// Lambert W, `lambertw(x, k)`: the branch `W_k` (`k` an integer) of the
         /// inverse of `w·eʷ`, as SymPy's `LambertW(x, k)`.  The principal branch
@@ -1104,81 +1371,107 @@ funcs! {
             // `[−1/e, 0)`; `W_k(0) = −∞` for `k ≠ 0` (DLMF §4.13).
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Branches(&["lambert_w0", "lambert_wm1"]), Backends::VM_RUST_C),
         };
 
         // ── Bessel functions `(order, x)` ─────────────────────────────────────
         /// Bessel function of the first kind `J_ν(x)`.
         BesselJ => FuncSpec {
-            name: "besselj", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call("besselj"),
+            name: "besselj", parse: &[], arity: Exactly(2), sort: Named,
+            tex: Tex::Layout(&[Lit("J_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             // Entire in `x` for an integer order, else `(x/2)^ν·(entire)`
             // (DLMF §10.2(ii)); infinite at 0 for some orders.
             conj: Conj::IntegerOrderOffCut { cut: NEG1, nonnegative: false },
             real_on: RealOn::BesselOrder, parity: Neither, poles: Poles::Zero(1),
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("bessel_j"), Backends::VM_RUST_C)
+                .scipy("scipy.special.jv(order, x)"),
         };
         /// Bessel function of the second kind `Y_ν(x)`.
         BesselY => FuncSpec {
-            name: "bessely", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call("bessely"),
+            name: "bessely", parse: &[], arity: Exactly(2), sort: Named,
+            tex: Tex::Layout(&[Lit("Y_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(1),
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("bessel_y"), Backends::VM_RUST_C)
+                .scipy("scipy.special.yv(order, x)"),
         };
         /// Modified Bessel function of the first kind `I_ν(x)`.
         BesselI => FuncSpec {
-            name: "besseli", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call("besseli"),
+            name: "besseli", parse: &[], arity: Exactly(2), sort: Named,
+            tex: Tex::Layout(&[Lit("I_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             conj: Conj::IntegerOrderOffCut { cut: NEG1, nonnegative: false },
             real_on: RealOn::BesselOrder, parity: Neither, poles: Poles::Zero(1),
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("bessel_i"), Backends::VM_RUST_C)
+                .scipy("scipy.special.iv(order, x)"),
         };
         /// Modified Bessel function of the second kind `K_ν(x)`.
         BesselK => FuncSpec {
-            name: "besselk", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call("besselk"),
+            name: "besselk", parse: &[], arity: Exactly(2), sort: Named,
+            tex: Tex::Layout(&[Lit("K_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(1),
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("bessel_k"), Backends::VM_RUST_C)
+                .scipy("scipy.special.kv(order, x)"),
         };
 
         // ── Classical orthogonal polynomials `(n, x)` ─────────────────────────
         /// Legendre polynomial `P_n(x)`.
         Legendre => FuncSpec {
-            name: "legendre", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call("legendre"),
+            name: "legendre", parse: &[], arity: Exactly(2), sort: Named,
+            tex: Tex::Layout(&[Lit("P_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             // A polynomial for an integer degree `n ≥ 0`; `₂F₁(−ν, ν + 1; 1;
             // (1 − x)/2)`, infinite at `x = −1`, otherwise.
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("legendre_p"), Backends::VM_RUST_C)
+                .scipy("scipy.special.eval_legendre(n, x)"),
         };
         /// Chebyshev polynomial of the first kind `T_n(x)`.
         ChebyshevT => FuncSpec {
             name: "chebyshev_t", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("chebyshev_t"),
+            tex: Tex::Layout(&[Lit("T_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("chebyshev_t"), Backends::VM_RUST_C)
+                .scipy("scipy.special.eval_chebyt(n, x)"),
         };
         /// Chebyshev polynomial of the second kind `U_n(x)`.
         ChebyshevU => FuncSpec {
             name: "chebyshev_u", parse: &[], arity: Exactly(2), sort: Named,
-            tex: Tex::Call("chebyshev_u"),
+            tex: Tex::Layout(&[Lit("U_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("chebyshev_u"), Backends::VM_RUST_C)
+                .scipy("scipy.special.eval_chebyu(n, x)"),
         };
         /// Physicists' Hermite polynomial `H_n(x)`.
         Hermite => FuncSpec {
-            name: "hermite", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call("hermite"),
+            name: "hermite", parse: &[], arity: Exactly(2), sort: Named,
+            tex: Tex::Layout(&[Lit("H_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             // Entire in `x` for every degree (DLMF §12.7, §18.5).
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("hermite_h"), Backends::VM_RUST_C)
+                .scipy("scipy.special.eval_hermite(n, x)"),
         };
         /// Laguerre polynomial `L_n(x)`.
         Laguerre => FuncSpec {
-            name: "laguerre", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call("laguerre"),
+            name: "laguerre", parse: &[], arity: Exactly(2), sort: Named,
+            tex: Tex::Layout(&[Lit("L_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
             // `₁F₁(−ν; 1; x)`, entire in `x` for every degree.
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Ordered("laguerre_l"), Backends::VM_RUST_C)
+                .scipy("scipy.special.eval_laguerre(n, x)"),
         };
 
         // ── Error-function family and integrals (0.9) ─────────────────────────
@@ -1189,6 +1482,8 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Coefficient),
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("erfi"), Backends::VM_RUST_C)
+                .scipy("scipy.special.erfi(x)"),
         };
         /// Inverse error function `erf⁻¹(y)`.
         ErfInv => FuncSpec {
@@ -1199,6 +1494,8 @@ funcs! {
             conj: Conj::No, real_on: RealOn::UnitInterval { closed: false },
             parity: Odd(Coefficient), poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("erfinv"), Backends::VM_RUST_C)
+                .scipy("scipy.special.erfinv(y)"),
         };
         /// Inverse complementary error function `erfc⁻¹(y)`.
         ErfcInv => FuncSpec {
@@ -1208,6 +1505,8 @@ funcs! {
             // `±∞` at 0 and 2.
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("erfcinv"), Backends::VM_RUST_C)
+                .scipy("scipy.special.erfcinv(y)"),
         };
         /// Generalised exponential integral `E_n(x)`, as `expint(n, x)`.
         ExpInt => FuncSpec {
@@ -1219,6 +1518,7 @@ funcs! {
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(1),
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.expn(n, x)"),
         };
         /// Hyperbolic sine integral `Shi(x)`.
         Shi => FuncSpec {
@@ -1227,6 +1527,8 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Coefficient),
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("sinh_integral"), Backends::VM_RUST_C)
+                .scipy("scipy.special.shichi(x)[0]"),
         };
         /// Hyperbolic cosine integral `Chi(x)`.
         Chi => FuncSpec {
@@ -1236,6 +1538,8 @@ funcs! {
             conj: Conj::OffCut(NEG0), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(0),
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("cosh_integral"), Backends::VM_RUST_C)
+                .scipy("scipy.special.shichi(x)[1]"),
         };
         /// Fresnel sine integral `S(x)`.
         FresnelS => FuncSpec {
@@ -1243,6 +1547,8 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Coefficient),
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("fresnel_s"), Backends::VM_RUST_C)
+                .scipy("scipy.special.fresnel(x)[0]"),
         };
         /// Fresnel cosine integral `C(x)`.
         FresnelC => FuncSpec {
@@ -1250,6 +1556,8 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Coefficient),
             poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::helper(Kernel::Unary("fresnel_c"), Backends::VM_RUST_C)
+                .scipy("scipy.special.fresnel(x)[1]"),
         };
         /// Lower incomplete gamma `γ(s, x)`.
         LowerGamma => FuncSpec {
@@ -1258,6 +1566,7 @@ funcs! {
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[0]),
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.gamma(s) * scipy.special.gammainc(s, x)"),
         };
         /// Upper incomplete gamma `Γ(s, x)`.
         UpperGamma => FuncSpec {
@@ -1266,6 +1575,7 @@ funcs! {
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(1),
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.gamma(s) * scipy.special.gammaincc(s, x)"),
         };
         /// Polylogarithm `Li_s(z)`, as `polylog(s, z)`.
         PolyLog => FuncSpec {
@@ -1277,6 +1587,7 @@ funcs! {
             conj: Conj::OffCut(Cut { arg: 1, line: CutLine::AtLeastOne }),
             real_on: RealOn::BelowOne, parity: Neither, poles: Poles::One(1),
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// Dirichlet eta `η(s)`.
         DirichletEta => FuncSpec {
@@ -1285,6 +1596,7 @@ funcs! {
             // `(1 − 2^{1−s})·ζ(s)`, entire.
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
 
         // ── Airy functions ────────────────────────────────────────────────────
@@ -1294,6 +1606,7 @@ funcs! {
             tex: Tex::Call(r"\operatorname{Ai}"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.airy(x)[0]"),
         };
         /// Airy function `Bi(x)`.
         AiryBi => FuncSpec {
@@ -1301,6 +1614,7 @@ funcs! {
             tex: Tex::Call(r"\operatorname{Bi}"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.airy(x)[2]"),
         };
         /// Derivative `Ai′(x)`.
         AiryAiPrime => FuncSpec {
@@ -1308,6 +1622,7 @@ funcs! {
             tex: Tex::Call(r"\operatorname{Ai}^\prime"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.airy(x)[1]"),
         };
         /// Derivative `Bi′(x)`.
         AiryBiPrime => FuncSpec {
@@ -1315,6 +1630,7 @@ funcs! {
             tex: Tex::Call(r"\operatorname{Bi}^\prime"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.airy(x)[3]"),
         };
 
         // ── Elliptic integrals (parameter `m = k²`, as in SymPy) ──────────────
@@ -1325,6 +1641,7 @@ funcs! {
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::AtLeastOne }),
             real_on: RealOn::BelowOne, parity: Neither, poles: Poles::One(0),
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.ellipk(m)"),
         };
         /// Complete elliptic integral of the second kind `E(m)`.
         EllipticE => FuncSpec {
@@ -1332,6 +1649,7 @@ funcs! {
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::AtLeastOne }),
             real_on: RealOn::BelowOne, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.ellipe(m)"),
         };
         /// Incomplete elliptic integral of the first kind `F(φ | m)`.
         EllipticF => FuncSpec {
@@ -1340,6 +1658,7 @@ funcs! {
             // The cuts in `φ` are not tabulated; real for real `φ` and `m < 1`.
             conj: Conj::No, real_on: RealOn::BelowOne, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.ellipkinc(phi, m)"),
         };
         /// Complete elliptic integral of the third kind `Π(n | m)`.
         EllipticPi => FuncSpec {
@@ -1348,6 +1667,7 @@ funcs! {
             // Cut in both arguments; real for `n, m < 1` (two bounds).
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
 
         // ── Orthogonal polynomials with parameters ────────────────────────────
@@ -1363,6 +1683,7 @@ funcs! {
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.eval_gegenbauer(n, alpha, x)"),
         };
         /// Jacobi polynomial `P_n^{(α,β)}(x)`, as `jacobi(n, α, β, x)`.
         Jacobi => FuncSpec {
@@ -1374,6 +1695,7 @@ funcs! {
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.eval_jacobi(n, alpha, beta, x)"),
         };
         /// Associated Legendre function `P_n^m(x)`, as `assoc_legendre(n, m, x)`.
         AssocLegendre => FuncSpec {
@@ -1385,6 +1707,7 @@ funcs! {
             // The factor `(1 − x²)^{m/2}`: for an odd `m` real on `[−1, 1]` only.
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.lpmv(m, n, x)"),
         };
         /// Generalised Laguerre polynomial `L_n^{(α)}(x)`, as `assoc_laguerre(n, α, x)`.
         AssocLaguerre => FuncSpec {
@@ -1396,6 +1719,7 @@ funcs! {
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE.scipy("scipy.special.eval_genlaguerre(n, alpha, x)"),
         };
 
         // ── Generalised incomplete beta (0.12), SymPy order `(a, b, x1, x2)` ──
@@ -1409,6 +1733,8 @@ funcs! {
             // `∫ t^{a−1}(1 − t)^{b−1} dt` from `x₁` to `x₂`: real for `x₁, x₂ ∈ [0, 1]`.
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE
+                .scipy("scipy.special.beta(a, b) * (scipy.special.betainc(a, b, x2) - scipy.special.betainc(a, b, x1))"),
         };
         /// Regularised incomplete beta `I_{(x₁, x₂)}(a, b)`.
         BetaIncRegularized => FuncSpec {
@@ -1419,6 +1745,8 @@ funcs! {
             ]),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE
+                .scipy("scipy.special.betainc(a, b, x2) - scipy.special.betainc(a, b, x1)"),
         };
     }
     internal {
@@ -1432,6 +1760,7 @@ funcs! {
             tex: Tex::Call("__erfcx_asym"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// `e^{−z} Ei(z)` for `z → ±∞` (SymPy's `_eis`).
         EiAsym => FuncSpec {
@@ -1439,6 +1768,7 @@ funcs! {
             tex: Tex::Call("__ei_asym"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// `√v·e^{−v} erfi(√v)`, a function of `v = z²`.
         Erfix2Asym => FuncSpec {
@@ -1446,6 +1776,7 @@ funcs! {
             tex: Tex::Call("__erfix2_asym"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// `√v·e^{v} erfc(√v)`, a function of `v = z²`.
         Erfcx2Asym => FuncSpec {
@@ -1453,6 +1784,7 @@ funcs! {
             tex: Tex::Call("__erfcx2_asym"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// `√(2πz) e^{−z} Iν(z)`, arguments `(ν, z)`.
         BesselIAsym => FuncSpec {
@@ -1460,6 +1792,7 @@ funcs! {
             tex: Tex::Call("__besseli_asym"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// `√(2z/π) e^{z} Kν(z)`, arguments `(ν, z)`.
         BesselKAsym => FuncSpec {
@@ -1467,6 +1800,7 @@ funcs! {
             tex: Tex::Call("__besselk_asym"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// `z^{1−s} e^{z} Γ(s, z)`, arguments `(s, z)`.
         UpperGammaAsym => FuncSpec {
@@ -1474,6 +1808,7 @@ funcs! {
             tex: Tex::Call("__uppergamma_asym"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
         /// `2^z (ζ(z) − 1)`.
         ZetaAsym => FuncSpec {
@@ -1481,6 +1816,7 @@ funcs! {
             tex: Tex::Call("__zeta_asym"),
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
+            rt: Runtime::NONE,
         };
     }
 }
@@ -1786,6 +2122,8 @@ mod tests {
                 .map(|p| match *p {
                     TexPiece::Lit(s) => s.to_owned(),
                     TexPiece::Arg(i) => args[usize::from(i)].clone(),
+                    TexPiece::Group(i) if atom => args[usize::from(i)].clone(),
+                    TexPiece::Group(i) => format!(r"\left({}\right)", args[usize::from(i)]),
                 })
                 .collect(),
             Tex::Postfix(op) if atom => format!("{}{op}", args[0]),

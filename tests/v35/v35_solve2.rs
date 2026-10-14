@@ -306,7 +306,12 @@ fn lambert_values_on_the_domain_boundary() {
     let ctx = Context::new();
     let pos = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     let e = parse(&ctx, "2*2^x + 4*x - 2");
-    assert!(e.solve(&pos).unwrap().is_empty());
+    // the only real root `0` is not positive: no solution (since 0.50, w3c
+    // F4: `Ok([])` before)
+    assert!(matches!(
+        e.solve(&pos),
+        Err(SymplexError::NoSolution { .. })
+    ));
     assert_eq!(e.solve_as_set(&pos).to_string(), "EmptySet");
     let ctx = Context::new();
     let real = real_x(&ctx);

@@ -276,11 +276,15 @@ pub(crate) struct Growth {
     a: Q,
     b_rat: Q,
     b_logs: BTreeMap<u64, Q>,
-    /// Contribution `Σ a·ln|base|` of constant, non-rational bases (e.g. `π^k`).
-    b_numeric: f64,
-    b_has_numeric: bool,
+    /// Contribution `Σ a·ln|base|` of constant, non-rational bases (e.g.
+    /// `π^k`): the pairs `(base, a)`.
+    b_numeric: Vec<(ExprId, Q)>,
     /// `b` contains `ln|x|` for a symbolic base `x` (sign unknown).
     b_symbolic: bool,
+    /// The sign of `b`, decided once the parts above are known
+    /// ([`certified_b_sign`]) when `a` = 0 (`UNKNOWN` otherwise: the sign
+    /// of `a` decides first).
+    b_signs: SignSet,
     c: Q,
     alternating: bool,
     /// The term may vanish identically for some parameter values (a
@@ -294,43 +298,7 @@ impl Growth {
     /// `NEGATIVE`, `UNKNOWN` when undecided.  (Up to 0.48 an
     /// `Option<Option<bool>>`.)
     fn b_sign(&self) -> SignSet {
-        let sign_of = |positive: bool| {
-            if positive {
-                SignSet::POSITIVE
-            } else {
-                SignSet::NEGATIVE
-            }
-        };
-        if self.b_symbolic {
-            return SignSet::UNKNOWN;
-        }
-        let logs_zero = self.b_logs.values().all(|q| q.is_zero());
-        if !self.b_has_numeric {
-            if logs_zero {
-                if self.b_rat.is_zero() {
-                    return SignSet::ZERO;
-                }
-                return sign_of(self.b_rat.is_positive());
-            }
-            // {1} ∪ {ln p : p prime} is ℚ-linearly independent (Lindemann–
-            // Weierstrass + unique factorisation), so b ≠ 0 here and its sign
-            // is safely decided numerically.
-            let mut v = self.b_rat.to_f64().unwrap_or(0.0);
-            for (p, q) in &self.b_logs {
-                v += q.to_f64().unwrap_or(0.0) * (*p as f64).ln();
-            }
-            return sign_of(v > 0.0);
-        }
-        // A transcendental constant base is involved: decide numerically
-        // only when clearly away from zero.
-        let mut v = self.b_rat.to_f64().unwrap_or(0.0) + self.b_numeric;
-        for (p, q) in &self.b_logs {
-            v += q.to_f64().unwrap_or(0.0) * (*p as f64).ln();
-        }
-        if v.abs() < 1e-9 {
-            return SignSet::UNKNOWN;
-        }
-        sign_of(v > 0.0)
+        self.b_signs
     }
 
     /// Does `|a_k| → 0`?  `Some(false)` when `|a_k| → ∞`, `None` when the
@@ -395,6 +363,65 @@ impl Growth {
             Convergence::Diverges
         }
     }
+}
+
+/// The sign of the exponential coefficient `b = b_rat + Σ qₚ·ln p + Σ
+/// a·ln|base|` of `g`: exact when `b` is rational, otherwise the sign of a
+/// certified value of `b` (its error ball excludes 0), `UNKNOWN` when that
+/// does not settle or `b` has a symbolic part.  Without a transcendental
+/// base `b ≠ 0` once a logarithm is in it ({1} ∪ {ln p : p prime} is
+/// ℚ-linearly independent: Lindemann–Weierstrass and unique
+/// factorisation), so only the precision limits the decision; with one,
+/// `b` may be 0, and a value 0 to its precision decides nothing.
+///
+/// Up to 0.49 the value was an `f64` sum: a `b` closer to 0 than its
+/// rounding error got the sign of the rounding, and with a transcendental
+/// base anything beyond `10⁻⁹` counted, whatever the error of the `f64`
+/// value of the base.
+fn certified_b_sign(arena: &mut Arena, g: &Growth) -> SignSet {
+    if g.b_symbolic {
+        return SignSet::UNKNOWN;
+    }
+    if g.b_numeric.is_empty() && g.b_logs.values().all(Zero::is_zero) {
+        return if g.b_rat.is_zero() {
+            SignSet::ZERO
+        } else if g.b_rat.is_positive() {
+            SignSet::POSITIVE
+        } else {
+            SignSet::NEGATIVE
+        };
+    }
+    let mut terms = vec![arena.num_ratio(g.b_rat.clone())];
+    for (p, q) in &g.b_logs {
+        if q.is_zero() {
+            continue;
+        }
+        let Ok(p) = i64::try_from(*p) else {
+            return SignSet::UNKNOWN;
+        };
+        let p = arena.int(p);
+        let ln = arena.ln(p);
+        let q = arena.num_ratio(q.clone());
+        terms.push(arena.mul(&[q, ln]));
+    }
+    for (base, a) in &g.b_numeric {
+        let modulus = arena.abs(*base);
+        let ln = arena.ln(modulus);
+        let a = arena.num_ratio(a.clone());
+        terms.push(arena.mul(&[a, ln]));
+    }
+    let b = arena.add(&terms);
+    if let Some(r) = arena.as_num(b) {
+        return if r.is_zero() {
+            SignSet::ZERO
+        } else if r.is_positive() {
+            SignSet::POSITIVE
+        } else {
+            SignSet::NEGATIVE
+        };
+    }
+    // `b` is real: a sum of rationals times logarithms of positive reals.
+    eval::certified_real_sign(arena, b).map_or(SignSet::UNKNOWN, SignSet::from_ordering)
 }
 
 /// Add `q·ln|r|` for a rational `r ≠ 0` to the exact log-sum.
@@ -487,9 +514,9 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
         a: Q::zero(),
         b_rat: Q::zero(),
         b_logs: BTreeMap::new(),
-        b_numeric: 0.0,
-        b_has_numeric: false,
+        b_numeric: Vec::new(),
         b_symbolic: false,
+        b_signs: SignSet::UNKNOWN,
         c: Q::zero(),
         alternating: shape.alternating,
         may_vanish: false,
@@ -517,8 +544,7 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
             if v <= 0.0 || !v.is_finite() {
                 return None;
             }
-            g.b_numeric += a.to_f64()? * v.ln();
-            g.b_has_numeric = true;
+            g.b_numeric.push((*base, a.clone()));
         } else {
             g.b_symbolic = true;
             if !summation::const_nonzero(arena, *base) {
@@ -543,6 +569,10 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
         g.a += c;
         add_log_rational(&mut g.b_logs, alpha, c)?;
         g.c += d;
+    }
+    // `b` matters only when `a` = 0 (see `decide_generic`).
+    if g.a.is_zero() {
+        g.b_signs = certified_b_sign(arena, &g);
     }
     trace!(?g, "convergence: growth exponents");
     Some(g)

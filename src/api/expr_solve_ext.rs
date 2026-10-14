@@ -355,6 +355,19 @@ impl Ex {
     /// (`sin²x − sin x = 0`) are supported.  Non-periodic equations return
     /// the same solutions as `solve` with an empty parameter list.
     ///
+    /// `var` ranges over its declared domain, ℂ for a plain symbol, as in
+    /// [`solve`](Ex::solve) and [`solve_as_set`](Ex::solve_as_set), and the
+    /// other symbols are taken as declared (a plain `a` may be complex):
+    /// `eˣ = −1` gives the family `2nπi + iπ`, `eˣ = 1` the family
+    /// `2nπi`, `sin x = 2` the families `asin 2 + 2nπ`, `π − asin 2 +
+    /// 2nπ`; for an `x` declared real the first and the last have no
+    /// solution and the second is `0`.  Equations whose complex solutions
+    /// are not families of this kind are refused (`|x| = 1`, a circle;
+    /// `x·eˣ = 1`, the branches `W_k(1)`): declare `x` real for the real
+    /// solutions.  Up to 0.49 a plain `x` (and every plain parameter) was
+    /// taken real here, unlike in `solve`: `eˣ = −1` had "no solution" and
+    /// `eˣ = 1` gave `[0]` as if it were every solution.
+    ///
     /// Every member of every family solves the equation.  When some members
     /// of a family are not solutions (poles), the family is split into
     /// sub-families of a multiple period if the equation is periodic
@@ -407,8 +420,38 @@ impl Ex {
     ///         assert!(residual.abs() < 1e-12);
     ///     }
     /// }
+    ///
+    /// // Over ℂ, eˣ = 1 at every 2nπi; for a real x only at 0.
+    /// let fam = (&x.exp() - &ctx.int(1)).solve_general(&x).unwrap();
+    /// assert_eq!(fam.parameters.len(), 1);
+    /// let xr = ctx.symbol_with("xr", &[Assumption::Real]).unwrap();
+    /// let fam = (&xr.exp() - &ctx.int(1)).solve_general(&xr).unwrap();
+    /// assert_eq!(fam.solutions, vec![ctx.int(0)]);
     /// ```
     pub fn solve_general(&self, var: &Ex) -> Result<GeneralSolution, SymplexError> {
+        self.general_solution(var, crate::transforms::solve::solve_general_declared)
+    }
+
+    /// [`solve_general`](Ex::solve_general) with `var` taken real (and the
+    /// parameters too): the real zeros of a periodic function, for the
+    /// crate's searches on the real line (extrema on an interval), which
+    /// filter the members they need.
+    pub(crate) fn solve_general_real(&self, var: &Ex) -> Result<GeneralSolution, SymplexError> {
+        self.general_solution(var, crate::transforms::solve::solve_general)
+    }
+
+    /// [`solve_general`](Ex::solve_general) through the general solver
+    /// `solver` (`(arena, expr, var, param)`), which fixes the domains.
+    fn general_solution(
+        &self,
+        var: &Ex,
+        solver: fn(
+            &mut crate::base::arena::Arena,
+            ExprId,
+            ExprId,
+            ExprId,
+        ) -> crate::transforms::solve::Solutions,
+    ) -> Result<GeneralSolution, SymplexError> {
         let var_id = self.checked_id(var);
         let ctx = self.context();
         let param = fresh_symbol(&ctx, "n", &[Assumption::Integer]);
@@ -416,12 +459,7 @@ impl Ex {
 
         let outcome = {
             let mut inner = self.inner.write();
-            crate::transforms::solve::solve_general(
-                &mut inner.arena,
-                self.raw_id(),
-                var_id,
-                param_id,
-            )
+            solver(&mut inner.arena, self.raw_id(), var_id, param_id)
         };
         let outcome = {
             let inner = self.inner.read();

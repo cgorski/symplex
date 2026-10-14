@@ -1768,7 +1768,7 @@ fn numeric_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
     if real != Some(true) {
         return None;
     }
-    if z.0.is_positive() {
+    if crate::base::bigfloat::is_sign_positive(&z.0) {
         Some(1)
     } else if z.0.is_negative() {
         Some(-1)
@@ -3418,7 +3418,11 @@ pub(crate) fn on_branch_cut(arena: &mut Arena, cut: BranchCut, l: ExprId) -> boo
         BranchCut::NegativeReals => is_zero(&im) && re.0.is_negative(),
         BranchCut::BelowOne => is_zero(&im) && (re.0.is_negative() || magnitude(&re) < 1.0),
         BranchCut::BeyondOne => is_zero(&im) && magnitude(&re) > 1.0,
-        BranchCut::AboveOne => is_zero(&im) && re.0.is_positive() && magnitude(&re) > 1.0,
+        BranchCut::AboveOne => {
+            is_zero(&im)
+                && crate::base::bigfloat::is_strictly_positive(&re.0)
+                && magnitude(&re) > 1.0
+        }
         BranchCut::BelowMinusInvE => {
             if !is_zero(&im) || !re.0.is_negative() {
                 return false;

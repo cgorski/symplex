@@ -52,6 +52,8 @@
 //! truncation bound above with an extra factor `R`.  (SymPy's `Product`
 //! evaluates `exp(Sum(log(f)))` the same way, by its Euler–Maclaurin sum.)
 
+use super::ball::CBall;
+use super::wp::{RM, Wp};
 use astro_float::{BigFloat, RoundingMode};
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -60,7 +62,6 @@ use rustc_hash::FxHashMap;
 
 use super::accuracy::{self, Bound, ErrExp};
 use crate::base::arena::Arena;
-use crate::base::bigcomplex::Complex;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::{Q, bigint_to_bigfloat, ratio_to_bigfloat};
@@ -230,7 +231,7 @@ pub(super) fn rational_sum(
     var: ExprId,
     lo: &BigInt,
     prec: usize,
-) -> Option<Result<(Complex, Bound), SymplexError>> {
+) -> Option<Result<CBall, SymplexError>> {
     let r = rational_summand(arena, body, var)?;
     Some(sum_rational(arena, body, &r, lo, prec))
 }
@@ -291,11 +292,13 @@ fn sum_rational(
     r: &Rational,
     lo: &BigInt,
     prec: usize,
-) -> Result<(Complex, Bound), SymplexError> {
+) -> Result<CBall, SymplexError> {
     let wp = prec + 64;
-    let rm = RoundingMode::ToEven;
     if r.num.is_zero() {
-        return Ok(((BigFloat::new(prec), BigFloat::new(prec)), Bound::EXACT));
+        return Ok(CBall::new(
+            (BigFloat::new(prec), BigFloat::new(prec)),
+            Bound::EXACT,
+        ));
     }
     let d = r.den.degree().unwrap_or(0) as i64 - r.num.degree().unwrap_or(0) as i64;
     if d < 1 || (!r.alt && d < 2) {
@@ -337,20 +340,23 @@ fn sum_rational(
             let (head, mut e) = direct_sum(&gn, &gd, &BigInt::zero(), &m0, false, wp)?;
             let (rest, e2) = zeta_tail(&gn, &gd, &m0, wp)?;
             e.add(&e2.0);
-            (head.add(&rest, wp, rm), e)
+            (head.add(&rest, wp, RM), e)
         };
         let tail = if n.is_odd() { tail.neg() } else { tail };
         err.add(&tail_err.0);
-        (direct.add(&tail, wp, rm), err)
+        (direct.add(&tail, wp, RM), err)
     } else {
         let n = cut_point(&r.den, lo, wp)?;
         let (direct, mut err) = direct_sum(&r.num, &r.den, lo, &n, false, wp)?;
         let (tail, e) = zeta_tail(&r.num, &r.den, &n, wp)?;
         err.add(&e.0);
-        (direct.add(&tail, wp, rm), err)
+        (direct.add(&tail, wp, RM), err)
     };
     tracing::debug!(err = err.exponent(), "evalf: rational infinite sum");
-    Ok(((value, BigFloat::new(prec)), Bound::real(err.exponent())))
+    Ok(CBall::new(
+        (value, BigFloat::new(prec)),
+        Bound::real(err.exponent()),
+    ))
 }
 
 /// A summand `C·(−1)^(εk)·(a·k + b)^(−s)`: the `k`-free factors `C`, the
@@ -436,12 +442,11 @@ pub(super) fn power_summand(arena: &Arena, body: ExprId, var: ExprId) -> Option<
 /// were refused.
 pub(super) fn power_sum(
     p: &PowerSummand,
-    consts: &[(Complex, Bound)],
+    consts: &[CBall],
     lo: &BigInt,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut astro_float::Consts,
-) -> Result<(Complex, Bound), SymplexError> {
+    w: &mut Wp<'_>,
+) -> Result<CBall, SymplexError> {
+    let prec = w.bits();
     let x = Q::from_integer(lo.clone()) + &p.b / &p.a;
     if !x.is_positive() {
         return Err(unevaluable(
@@ -455,24 +460,24 @@ pub(super) fn power_sum(
         ));
     }
     let wp = prec + 64 + super::magnitude_bits(sf.abs() + 1.0);
-    let s = ratio_to_bigfloat(&p.s, wp, rm);
+    let s = ratio_to_bigfloat(&p.s, wp, RM);
     let (sum, largest) = if p.alt {
         let half = Q::new(BigInt::one(), BigInt::from(2));
-        let x1 = ratio_to_bigfloat(&(&x * &half), wp, rm);
-        let x2 = ratio_to_bigfloat(&((&x + Q::one()) * &half), wp, rm);
-        let (h1, l1) = super::polylog::hurwitz_real(&s, &x1, wp, rm, cc)?;
-        let (h2, l2) = super::polylog::hurwitz_real(&s, &x2, wp, rm, cc)?;
-        let two_s = super::bf_pow(&BigFloat::from_i32(2, 64), &s.neg(), wp, rm, cc);
-        let v = h1.sub(&h2, wp, rm).mul(&two_s, wp, rm);
+        let x1 = ratio_to_bigfloat(&(&x * &half), wp, RM);
+        let x2 = ratio_to_bigfloat(&((&x + Q::one()) * &half), wp, RM);
+        let (h1, l1) = super::polylog::hurwitz_real(&s, &x1, &mut w.at(wp))?;
+        let (h2, l2) = super::polylog::hurwitz_real(&s, &x2, &mut w.at(wp))?;
+        let two_s = super::bf_pow(&BigFloat::from_i32(2, 64), &s.neg(), &mut w.at(wp));
+        let v = h1.sub(&h2, wp, RM).mul(&two_s, wp, RM);
         let v = if lo.is_odd() { v.neg() } else { v };
         (v, l1.max(l2) - sf)
     } else {
-        let xb = ratio_to_bigfloat(&x, wp, rm);
-        super::polylog::hurwitz_real(&s, &xb, wp, rm, cc)?
+        let xb = ratio_to_bigfloat(&x, wp, RM);
+        super::polylog::hurwitz_real(&s, &xb, &mut w.at(wp))?
     };
-    let scale = super::bf_pow(&ratio_to_bigfloat(&p.a, wp, rm), &s.neg(), wp, rm, cc);
+    let scale = super::bf_pow(&ratio_to_bigfloat(&p.a, wp, RM), &s.neg(), &mut w.at(wp));
     let ls = accuracy::part_lg(&scale);
-    let value = sum.mul(&scale, wp, rm);
+    let value = sum.mul(&scale, wp, RM);
     let value = if p.negate { value.neg() } else { value };
     // Up to `5·wp + 3|s| + 100` terms, each rounded with a relative error of
     // `(|s|·ln(x + N) + 4)·2^(−wp)`; a^(−s) and the products a few more.
@@ -481,12 +486,12 @@ pub(super) fn power_sum(
     let per_term = sf.abs() * (xf + terms).ln() + 4.0;
     let e = largest + ls - wp as f64 + 8.0 + (terms * per_term).log2();
     if !e.is_finite() {
-        return Ok(((value, BigFloat::new(prec)), Bound::UNKNOWN));
+        return Ok(CBall::new((value, BigFloat::new(prec)), Bound::UNKNOWN));
     }
-    let mut parts: Vec<(&Complex, Bound)> = consts.iter().map(|(v, b)| (v, *b)).collect();
-    let summed = (value, BigFloat::new(prec));
-    parts.push((&summed, Bound::real(e)));
-    Ok(accuracy::mul_with_bound(&parts, prec, rm))
+    let summed = CBall::new((value, BigFloat::new(prec)), Bound::real(e));
+    let mut factors: Vec<&CBall> = consts.iter().collect();
+    factors.push(&summed);
+    Ok(CBall::product(&factors, prec))
 }
 
 /// `∏_{k ≥ lo} body` when the factor is a rational function of the index
@@ -500,7 +505,7 @@ pub(super) fn rational_product(
     var: ExprId,
     lo: &BigInt,
     prec: usize,
-) -> Option<Result<(Complex, Bound), SymplexError>> {
+) -> Option<Result<CBall, SymplexError>> {
     let r = rational_summand(arena, body, var)?;
     if r.alt {
         return None;
@@ -514,9 +519,8 @@ fn product_rational(
     r: &Rational,
     lo: &BigInt,
     prec: usize,
-) -> Result<(Complex, Bound), SymplexError> {
+) -> Result<CBall, SymplexError> {
     let wp = prec + 64;
-    let rm = RoundingMode::ToEven;
     let diverges = |why: &str| SymplexError::Divergent {
         operation: "evalf",
         reason: format!(
@@ -526,7 +530,10 @@ fn product_rational(
     };
     let (a, b) = (&r.num, &r.den);
     if a.is_zero() {
-        return Ok(((BigFloat::new(prec), BigFloat::new(prec)), Bound::EXACT));
+        return Ok(CBall::new(
+            (BigFloat::new(prec), BigFloat::new(prec)),
+            Bound::EXACT,
+        ));
     }
     let (da, db) = (a.degree().unwrap_or(0), b.degree().unwrap_or(0));
     if da != db || a.coeff(da) != b.coeff(db) {
@@ -535,7 +542,7 @@ fn product_rational(
     let diff = a.sub(b);
     if diff.is_zero() {
         // Every factor is 1 (A = B: no pole either).
-        return Ok((
+        return Ok(CBall::new(
             (BigFloat::from_i32(1, prec), BigFloat::new(prec)),
             Bound::EXACT,
         ));
@@ -561,13 +568,16 @@ fn product_rational(
         let ak = eval_int(&ai, &k);
         if ak.is_zero() {
             // A zero factor; the rest converges.
-            return Ok(((BigFloat::new(prec), BigFloat::new(prec)), Bound::EXACT));
+            return Ok(CBall::new(
+                (BigFloat::new(prec), BigFloat::new(prec)),
+                Bound::EXACT,
+            ));
         }
         num *= ak;
         den *= bk;
         k += 1;
     }
-    let head = ratio_to_bigfloat(&Q::new(num, den), wp, rm);
+    let head = ratio_to_bigfloat(&Q::new(num, den), wp, RM);
     let (tail, tail_err) = if gn.is_zero() {
         (BigFloat::new(wp), ErrSum::new())
     } else {
@@ -577,7 +587,7 @@ fn product_rational(
     // an error δ of the tail moves e^tail by at most e^δ − 1 ≤ 2δ relative.
     let mut cc = astro_float::Consts::new()
         .map_err(|e| unevaluable(format!("astro-float constants: {e:?}")))?;
-    let value = head.mul(&tail.exp(wp, rm, &mut cc), wp, rm);
+    let value = head.mul(&tail.exp(wp, RM, &mut cc), wp, RM);
     let delta = tail_err
         .0
         .mul(&BigFloat::from_i32(2, 64), 64, RoundingMode::Up);
@@ -587,7 +597,10 @@ fn product_rational(
     let mut err = ErrSum::new();
     err.add(&value.abs().mul(&rel.0, 64, RoundingMode::Up));
     tracing::debug!(err = err.exponent(), "evalf: rational infinite product");
-    Ok(((value, BigFloat::new(prec)), Bound::real(err.exponent())))
+    Ok(CBall::new(
+        (value, BigFloat::new(prec)),
+        Bound::real(err.exponent()),
+    ))
 }
 
 /// An integer `R ≥ 4` with `|bᵢ| ≤ |bₙ|·(R/4)^(n−i)` for the integer
@@ -660,7 +673,6 @@ fn direct_sum(
     alt: bool,
     wp: usize,
 ) -> Result<(BigFloat, ErrSum), SymplexError> {
-    let rm = RoundingMode::ToEven;
     let (a, b) = integer_coefficients(num, den);
     let mut sum = BigFloat::new(wp);
     let mut abs = BigFloat::new(64);
@@ -674,11 +686,11 @@ fn direct_sum(
             )));
         }
         let ak = eval_int(&a, &k);
-        let mut t = bigint_to_bigfloat(&ak, wp).div(&bigint_to_bigfloat(&bk, wp), wp, rm);
+        let mut t = bigint_to_bigfloat(&ak, wp).div(&bigint_to_bigfloat(&bk, wp), wp, RM);
         if alt && k.is_odd() {
             t = t.neg();
         }
-        sum = sum.add(&t, wp, rm);
+        sum = sum.add(&t, wp, RM);
         abs = abs.add(&t.abs(), 64, RoundingMode::Up);
         abs = abs.add(&sum.abs(), 64, RoundingMode::Up);
         k += 1;
@@ -759,7 +771,6 @@ fn zeta_tail_with(
     wp: usize,
     log: bool,
 ) -> Result<(BigFloat, ErrSum), SymplexError> {
-    let rm = RoundingMode::ToEven;
     let (a, b) = integer_coefficients(num, den);
     let decay = if log { 3 } else { 2 };
     if a.is_empty() || b.len() < a.len() + decay {
@@ -829,13 +840,13 @@ fn zeta_tail_with(
     }
 
     let n_bf = bigint_to_bigfloat(n, wp);
-    let inv_n = BigFloat::from_i32(1, wp).div(&n_bf, wp, rm);
-    let inv_n2 = inv_n.mul(&inv_n, wp, rm);
+    let inv_n = BigFloat::from_i32(1, wp).div(&n_bf, wp, RM);
+    let inv_n2 = inv_n.mul(&inv_n, wp, RM);
     let mut err = ErrSum::new();
     err.add(&pow2(truncation.ceil() as i64));
     let mut total = BigFloat::new(wp);
     // N^(−j), starting at j = d.
-    let mut n_pow = inv_n.powi(d, wp, rm);
+    let mut n_pow = inv_n.powi(d, wp, RM);
     let mut em_terms = 16usize;
     let mut table = bernoulli_over_factorial(em_terms);
     for (i, ci) in big_c.iter().enumerate() {
@@ -843,11 +854,11 @@ fn zeta_tail_with(
         if !ci.is_zero() {
             // ζ(j, N) ≈ N^(1−j)/(j−1) + N^(−j)/2 + Σ_m B₂ₘ/(2m)!·(j)₂ₘ₋₁·N^(1−j−2m).
             let jm1 = BigFloat::from_u64(j as u64 - 1, wp);
-            let mut zeta = n_bf.mul(&n_pow, wp, rm).div(&jm1, wp, rm);
-            zeta = zeta.add(&n_pow.div(&BigFloat::from_i32(2, wp), wp, rm), wp, rm);
+            let mut zeta = n_bf.mul(&n_pow, wp, RM).div(&jm1, wp, RM);
+            zeta = zeta.add(&n_pow.div(&BigFloat::from_i32(2, wp), wp, RM), wp, RM);
             // rising = (j)_{2m−1}, power = N^(1−j−2m).
             let mut rising = BigFloat::from_u64(j as u64, wp);
-            let mut power = n_pow.mul(&inv_n, wp, rm);
+            let mut power = n_pow.mul(&inv_n, wp, RM);
             let mut m = 1usize;
             let remainder = loop {
                 if m > table.len() {
@@ -857,9 +868,9 @@ fn zeta_tail_with(
                     em_terms = (em_terms * 2).min(MAX_EM_TERMS);
                     table = bernoulli_over_factorial(em_terms);
                 }
-                let coef = ratio_to_bigfloat(&table[m - 1], wp, rm);
-                let t = coef.mul(&rising, wp, rm).mul(&power, wp, rm);
-                zeta = zeta.add(&t, wp, rm);
+                let coef = ratio_to_bigfloat(&table[m - 1], wp, RM);
+                let t = coef.mul(&rising, wp, RM).mul(&power, wp, RM);
+                zeta = zeta.add(&t, wp, RM);
                 // Remainder after these m corrections:
                 // 2ζ(2m)·(2π)^(−2m)·(j)_{2m−1}·N^(1−j−2m), with 2ζ(2m) < 4
                 // and (2π)^(2m) ≥ 32^m.
@@ -878,8 +889,8 @@ fn zeta_tail_with(
                 // (j)_{2m+1} = (j)_{2m−1}·(j + 2m − 1)·(j + 2m).
                 let f1 = BigFloat::from_u64((j + 2 * m - 1) as u64, wp);
                 let f2 = BigFloat::from_u64((j + 2 * m) as u64, wp);
-                rising = rising.mul(&f1, wp, rm).mul(&f2, wp, rm);
-                power = power.mul(&inv_n2, wp, rm);
+                rising = rising.mul(&f1, wp, RM).mul(&f2, wp, RM);
+                power = power.mul(&inv_n2, wp, RM);
                 m += 1;
             };
             let Some(remainder) = remainder else {
@@ -888,13 +899,13 @@ fn zeta_tail_with(
                 ));
             };
             let mut cj =
-                bigint_to_bigfloat(ci, wp).div(&bigint_to_bigfloat(&beta0_pow[i + 1], wp), wp, rm);
+                bigint_to_bigfloat(ci, wp).div(&bigint_to_bigfloat(&beta0_pow[i + 1], wp), wp, RM);
             if log {
                 // −eⱼ₊₁/j: one more rounding, which the count below covers.
-                cj = cj.div(&BigFloat::from_u64(j as u64, 64), wp, rm).neg();
+                cj = cj.div(&BigFloat::from_u64(j as u64, 64), wp, RM).neg();
             }
-            let term = cj.mul(&zeta, wp, rm);
-            total = total.add(&term, wp, rm);
+            let term = cj.mul(&zeta, wp, RM);
+            total = total.add(&term, wp, RM);
             // |cⱼ|·(remainder + roundings of ζ) + rounding of cⱼ·ζ and of the
             // sum.  The powers of 1/N carry j + 2m roundings, the
             // corrections 3m more.
@@ -910,7 +921,7 @@ fn zeta_tail_with(
             ));
             err.add(&total.abs().mul(&pow2(1 - wp as i64), 64, RoundingMode::Up));
         }
-        n_pow = n_pow.mul(&inv_n, wp, rm);
+        n_pow = n_pow.mul(&inv_n, wp, RM);
     }
     Ok((total, err))
 }

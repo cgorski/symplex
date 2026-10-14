@@ -27,7 +27,9 @@
 //! The bounds' parameters are computed in `f64`, in `log₂` where mpmath's
 //! 15-bit floats would underflow at high precision.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use crate::base::bigfloat::to_f64;
+use astro_float::{BigFloat, Consts};
 use num_traits::Signed;
 
 use crate::base::bigcomplex::{Complex, c_add, c_mul, c_zero};
@@ -101,16 +103,10 @@ fn prec_of(p: f64) -> usize {
     }
 }
 
-fn to_f64(x: &BigFloat) -> Option<f64> {
-    super::bigfloat_to_f64_rounded(x, RoundingMode::ToEven)
-        .ok()
-        .filter(|v| v.is_finite())
-}
-
 // ── BigFloat helpers ────────────────────────────────────────────────────────────────────
 
-fn scale(z: &Complex, x: &BigFloat, p: usize, rm: RoundingMode) -> Complex {
-    (z.0.mul(x, p, rm), z.1.mul(x, p, rm))
+fn scale(z: &Complex, x: &BigFloat, p: usize) -> Complex {
+    (z.0.mul(x, p, RM), z.1.mul(x, p, RM))
 }
 
 fn conj(z: &Complex) -> Complex {
@@ -124,17 +120,19 @@ fn abs_f64(z: &Complex) -> f64 {
 }
 
 /// `e^(iθ)` for a real `θ`.
-fn expj(theta: &BigFloat, p: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    (theta.cos(p, rm, cc), theta.sin(p, rm, cc))
+fn expj(theta: &BigFloat, w: &mut Wp<'_>) -> Complex {
+    let p = w.bits();
+    (theta.cos(p, RM, w.cc), theta.sin(p, RM, w.cc))
 }
 
 /// `√(t/2π)` at `p` bits.
-fn a_of(t: &BigFloat, p: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
-    let two_pi = cc
-        .pi(p + 8, rm)
-        .clone()
-        .mul(&BigFloat::from_i32(2, 64), p + 8, rm);
-    t.div(&two_pi, p + 8, rm).sqrt(p, rm)
+fn a_of(t: &BigFloat, w: &mut Wp<'_>) -> BigFloat {
+    let p = w.bits();
+    let two_pi =
+        w.cc.pi(p + 8, RM)
+            .clone()
+            .mul(&BigFloat::from_i32(2, 64), p + 8, RM);
+    t.div(&two_pi, p + 8, RM).sqrt(p, RM)
 }
 
 // ── The coefficients c_n of F (II, Sections 3.14–3.16) ──────────────────────
@@ -142,21 +140,16 @@ fn a_of(t: &BigFloat, p: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
 /// The Taylor coefficients `c_n` (`n < 2J + 4`) of
 /// `F(z) = (e^(πi(z²/2 + 3/8)) − i√2·cos(πz/2))/(2cos πz)` with error below
 /// `2^leps6`, and the powers `π^n`, `n ≤ 2J + 4` (mpmath's `_coef`).
-fn coefficients(
-    j: usize,
-    leps6: f64,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> (Vec<Complex>, Vec<BigFloat>) {
+fn coefficients(j: usize, leps6: f64, cc: &mut Consts) -> (Vec<Complex>, Vec<BigFloat>) {
     let newj = j + 2;
     let lneweps6 = leps6 - 1.0;
     let wpvw = mag(10.0 * (newj + 3) as f64).max(4 * newj as i64 + 5 - mag_l(lneweps6));
     let wppi = prec_of(mag(40.0 * newj as f64).max(mag(newj as f64) + 3 + wpvw) as f64);
-    let pi = cc.pi(wppi, rm).clone();
+    let pi = cc.pi(wppi, RM).clone();
     let mut pipow = Vec::with_capacity(2 * newj + 1);
     pipow.push(BigFloat::from_i32(1, wppi));
     for n in 1..=2 * newj {
-        let next = pipow[n - 1].mul(&pi, wppi, rm);
+        let next = pipow[n - 1].mul(&pi, wppi, RM);
         pipow.push(next);
     }
     // v(n) = (−1)^n E_{2n}/(2n)!·π^(2n), w(n) = π^n/(n!·2^n).
@@ -166,20 +159,20 @@ fn coefficients(
     for n in 0..=newj {
         if n > 0 {
             fact = fact
-                .mul(&BigFloat::from_u64((2 * n - 1) as u64, 64), pv, rm)
-                .mul(&BigFloat::from_u64((2 * n) as u64, 64), pv, rm);
+                .mul(&BigFloat::from_u64((2 * n - 1) as u64, 64), pv, RM)
+                .mul(&BigFloat::from_u64((2 * n) as u64, 64), pv, RM);
         }
         let e = crate::base::combinatorics::euler_even(n);
         let e = crate::base::numeric::bigint_to_bigfloat(&e.abs(), pv);
-        v.push(e.div(&fact, pv, rm).mul(&pipow[2 * n], pv, rm));
+        v.push(e.div(&fact, pv, RM).mul(&pipow[2 * n], pv, RM));
     }
     let mut w = Vec::with_capacity(2 * newj + 1);
     let mut f = BigFloat::from_i32(1, pv); // n!·2^n
     for (n, pn) in pipow.iter().enumerate() {
         if n > 0 {
-            f = f.mul(&BigFloat::from_u64((2 * n) as u64, 64), pv, rm);
+            f = f.mul(&BigFloat::from_u64((2 * n) as u64, 64), pv, RM);
         }
-        w.push(pn.div(&f, pv, rm));
+        w.push(pn.div(&f, pv, RM));
     }
     // P1(n) = (−1)^(n+1)·i·Σ (−1)^k v(k) w(2n−2k), P2(n) = Σ i^(n−k) v(k) w(n−k).
     let wpp1a = 9 - mag_l(lneweps6);
@@ -189,11 +182,11 @@ fn coefficients(
         let wp = prec_of(mag(10.0 * (n + 4) as f64).max(4 * n as i64 + wpp1a) as f64);
         let mut s = BigFloat::new(wp);
         for k in 0..=n {
-            let term = v[k].mul(&w[2 * n - 2 * k], wp, rm);
+            let term = v[k].mul(&w[2 * n - 2 * k], wp, RM);
             s = if k % 2 == 0 {
-                s.add(&term, wp, rm)
+                s.add(&term, wp, RM)
             } else {
-                s.sub(&term, wp, rm)
+                s.sub(&term, wp, RM)
             };
         }
         // (−1)^(n+1)·i·s
@@ -201,13 +194,13 @@ fn coefficients(
         p1.push((BigFloat::new(wp), im));
         let mut q = c_zero(wp);
         for k in 0..=n {
-            let term = v[k].mul(&w[n - k], wp, rm);
+            let term = v[k].mul(&w[n - k], wp, RM);
             // i^(n−k)
             q = match (n - k) % 4 {
-                0 => (q.0.add(&term, wp, rm), q.1),
-                1 => (q.0, q.1.add(&term, wp, rm)),
-                2 => (q.0.sub(&term, wp, rm), q.1),
-                _ => (q.0, q.1.sub(&term, wp, rm)),
+                0 => (q.0.add(&term, wp, RM), q.1),
+                1 => (q.0, q.1.add(&term, wp, RM)),
+                2 => (q.0.sub(&term, wp, RM), q.1),
+                _ => (q.0, q.1.sub(&term, wp, RM)),
             };
         }
         p2.push(q);
@@ -216,22 +209,17 @@ fn coefficients(
     let wpc0 = 5 - mag_l(lneweps6);
     let wpc = prec_of(6i64.max(4 * newj as i64 + wpc0) as f64);
     let half = BigFloat::from_f64(0.5, 64);
-    let mu = BigFloat::from_i32(2, 64).sqrt(wpc, rm).mul(&half, wpc, rm);
+    let mu = BigFloat::from_i32(2, 64).sqrt(wpc, RM).mul(&half, wpc, RM);
     let ang = cc
-        .pi(wpc + 8, rm)
+        .pi(wpc + 8, RM)
         .clone()
-        .mul(&BigFloat::from_i32(3, 64), wpc + 8, rm)
-        .div(&BigFloat::from_i32(8, 64), wpc + 8, rm);
-    let nu = scale(&expj(&ang, wpc, rm, cc), &half, wpc, rm);
+        .mul(&BigFloat::from_i32(3, 64), wpc + 8, RM)
+        .div(&BigFloat::from_i32(8, 64), wpc + 8, RM);
+    let nu = scale(&expj(&ang, &mut Wp::new(wpc, cc)), &half, wpc);
     let mut c = vec![c_zero(64); 2 * newj];
     for n in 0..newj {
         let wp = prec_of(6i64.max(4 * n as i64 + wpc0) as f64);
-        c[2 * n] = c_add(
-            &scale(&p1[n], &mu, wp, rm),
-            &c_mul(&nu, &p2[n], wp, rm),
-            wp,
-            rm,
-        );
+        c[2 * n] = c_add(&scale(&p1[n], &mu, wp), &c_mul(&nu, &p2[n], wp, RM), wp, RM);
     }
     (c, pipow)
 }
@@ -302,14 +290,7 @@ fn j_bound(sd: &Side, leps4: f64, a: f64, m: usize) -> f64 {
 }
 
 /// The coefficients `d(n, k)`, `n < L`, `k ≤ 3n/2` (II, Section 3.17).
-fn d_coefficients(
-    sig: &BigFloat,
-    sd: &Side,
-    leps4: f64,
-    a: f64,
-    l: usize,
-    rm: RoundingMode,
-) -> Vec<Vec<BigFloat>> {
+fn d_coefficients(sig: &BigFloat, sd: &Side, leps4: f64, a: f64, l: usize) -> Vec<Vec<BigFloat>> {
     let d1 = mag(40.0 * (l * l) as f64).max(6);
     let d2 = 13 + mag((1.0 + sd.sigma.abs()) * sd.big_a) - mag_l(leps4) - 1;
     let cnst = (8.0 / (PI * PI * a * a * sd.b1 * sd.b1)).ln() / 2.0;
@@ -328,7 +309,7 @@ fn d_coefficients(
     for n in 1..l {
         let wp = wpd[n] + 10;
         let psig =
-            BigFloat::from_i32(1, 64).sub(&sig.mul(&BigFloat::from_i32(2, 64), wp, rm), wp, rm);
+            BigFloat::from_i32(1, 64).sub(&sig.mul(&BigFloat::from_i32(2, 64), wp, RM), wp, RM);
         let kmax = 3 * n / 2;
         let mut row: Vec<BigFloat> = Vec::with_capacity(kmax + 1);
         for k in 0..=kmax {
@@ -338,19 +319,19 @@ fn d_coefficients(
                 let mf = BigFloat::from_i64(m, 64);
                 let mut acc = BigFloat::new(wp);
                 if let Some(x) = get(prev, k as i64 - 2) {
-                    acc = acc.sub(&x.mul(&BigFloat::from_i64(m + 1, 64), wp, rm), wp, rm);
+                    acc = acc.sub(&x.mul(&BigFloat::from_i64(m + 1, 64), wp, RM), wp, RM);
                 }
                 if let Some(x) = get(prev, k as i64) {
                     let c1 = BigFloat::from_i32(1, 64).div(
-                        &mf.mul(&BigFloat::from_i32(4, 64), wp, rm),
+                        &mf.mul(&BigFloat::from_i32(4, 64), wp, RM),
                         wp,
-                        rm,
+                        RM,
                     );
-                    acc = acc.add(&x.mul(&c1, wp, rm), wp, rm);
+                    acc = acc.add(&x.mul(&c1, wp, RM), wp, RM);
                 }
                 if let Some(x) = get(prev, k as i64 - 1) {
-                    let c2 = psig.div(&mf.mul(&BigFloat::from_i32(2, 64), wp, rm), wp, rm);
-                    acc = acc.add(&x.mul(&c2, wp, rm), wp, rm);
+                    let c2 = psig.div(&mf.mul(&BigFloat::from_i32(2, 64), wp, RM), wp, RM);
+                    acc = acc.add(&x.mul(&c2, wp, RM), wp, RM);
                 }
                 acc
             } else {
@@ -360,13 +341,13 @@ fn d_coefficients(
                     let q = k - r;
                     let mut f = BigFloat::from_i32(1, wp);
                     for i in (q + 1)..=(2 * q) {
-                        f = f.mul(&BigFloat::from_u64(i as u64, 64), wp, rm);
+                        f = f.mul(&BigFloat::from_u64(i as u64, 64), wp, RM);
                     }
-                    let add = dr.mul(&f, wp, rm);
+                    let add = dr.mul(&f, wp, RM);
                     acc = if q % 2 == 0 {
-                        acc.sub(&add, wp, rm)
+                        acc.sub(&add, wp, RM)
                     } else {
-                        acc.add(&add, wp, rm)
+                        acc.add(&add, wp, RM)
                     };
                 }
                 acc
@@ -382,12 +363,8 @@ fn d_coefficients(
 /// `2^−wpinit` (`Rzeta_simul` at derivative 0), or `None` where the formula
 /// does not reach that precision.
 #[allow(clippy::too_many_lines)]
-fn rzeta_pair(
-    s: &Complex,
-    wpinit: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Option<(Complex, Complex)>, SymplexError> {
+fn rzeta_pair(s: &Complex, wpc: &mut Wp<'_>) -> Result<Option<(Complex, Complex)>, SymplexError> {
+    let wpinit = wpc.bits();
     let (Some(sig), Some(t)) = (to_f64(&s.0), to_f64(&s.1)) else {
         return Ok(None);
     };
@@ -450,7 +427,7 @@ fn rzeta_pair(
     let wpfp = prec_of(wpfp as f64);
     // N and p.
     let pa = wpfp + prec_of(mag(t) as f64) + 20;
-    let a_bf = a_of(&s.1, pa, rm, cc);
+    let a_bf = a_of(&s.1, &mut wpc.at(pa));
     let n_bf = a_bf.floor();
     let Some(n) = to_f64(&n_bf)
         .map(|v| v as u64)
@@ -458,32 +435,32 @@ fn rzeta_pair(
     else {
         return Ok(None);
     };
-    let frac = a_bf.sub(&n_bf, pa, rm);
+    let frac = a_bf.sub(&n_bf, pa, RM);
     let p_full =
-        BigFloat::from_i32(1, 64).sub(&frac.mul(&BigFloat::from_i32(2, 64), pa, rm), pa, rm);
+        BigFloat::from_i32(1, 64).sub(&frac.mul(&BigFloat::from_i32(2, 64), pa, RM), pa, RM);
     // p rounded to a multiple of 2^−wpfp.
     let mut scaled = p_full.clone();
     if let Some(e) = scaled.exponent() {
         scaled.set_exponent(e + i32::try_from(wpfp).unwrap_or(i32::MAX / 4));
     }
-    let rounded = scaled.add(&BigFloat::from_f64(0.5, 64), pa + 8, rm).floor();
+    let rounded = scaled.add(&BigFloat::from_f64(0.5, 64), pa + 8, RM).floor();
     let mut p = rounded;
     if let Some(e) = p.exponent() {
         p.set_exponent(e - i32::try_from(wpfp).unwrap_or(i32::MAX / 4));
     }
     // c_n and π^n, then F^(m)(p), m ≤ M (II, Sections 3.13, 3.14).
     let leps6 = j as f64 * LOG2_TWO_PI - log2_gamma(j as f64 + 1.0) - (3.0 * j as f64).log2();
-    let (c, pipow) = coefficients(j, leps6, rm, cc);
+    let (c, pipow) = coefficients(j, leps6, wpc.cc);
     let mut ccw = c;
     let mut fp: Vec<Complex> = Vec::with_capacity(m + 1);
     for mm in 0..=m {
         let mut sum = c_zero(wpfp);
         for k in (0..(2 * j - mm)).rev() {
-            sum = c_add(&scale(&sum, &p, wpfp, rm), &ccw[k], wpfp, rm);
+            sum = c_add(&scale(&sum, &p, wpfp), &ccw[k], wpfp, RM);
         }
         fp.push(sum);
         for k in 0..(2 * j - mm - 1) {
-            ccw[k] = scale(&ccw[k + 1], &BigFloat::from_u64(k as u64 + 1, 64), wpfp, rm);
+            ccw[k] = scale(&ccw[k + 1], &BigFloat::from_u64(k as u64 + 1, 64), wpfp);
         }
     }
     // The working precisions of the corrections (II, Section 3.9).
@@ -517,10 +494,10 @@ fn rzeta_pair(
     let (ywptcoef, ywpterm) = wps(&ys, lyeps3, lyeps4, false);
     // a^(−k).
     let wpa = xwptcoef[0].max(ywptcoef[0]);
-    let av1 = BigFloat::from_i32(1, 64).div(&a_bf, wpa + 2, rm);
+    let av1 = BigFloat::from_i32(1, 64).div(&a_bf, wpa + 2, RM);
     let mut av = vec![BigFloat::from_i32(1, 64), av1.clone()];
     for k in 2..l {
-        let next = av[k - 1].mul(&av1, wpa, rm);
+        let next = av[k - 1].mul(&av1, wpa, RM);
         av.push(next);
     }
     // The sum of the corrections of one side (II, Sections 3.5–3.8).
@@ -531,7 +508,7 @@ fn rzeta_pair(
                  wptcoef: &[usize],
                  wpterm: &[usize]|
      -> Complex {
-        let d = d_coefficients(sig_bf, sd, leps4, a, l, rm);
+        let d = d_coefficients(sig_bf, sd, leps4, a, l);
         let mut terms: Vec<Complex> = Vec::with_capacity(l);
         for k in 0..l {
             let wp = wptcoef[k];
@@ -543,7 +520,7 @@ fn rzeta_pair(
                 let Some(f) = fp.get(3 * k - 2 * ell) else {
                     continue;
                 };
-                let v = scale(f, &dk.div(&pipow[2 * k - ell], wp, rm), wp, rm);
+                let v = scale(f, &dk.div(&pipow[2 * k - ell], wp, RM), wp);
                 // /(2i)^ℓ = ·(−i)^ℓ·2^(−ℓ).
                 let mut v = match ell % 4 {
                     0 => v,
@@ -556,8 +533,8 @@ fn rzeta_pair(
                         x.set_exponent(e - ell as i32);
                     }
                 }
-                let v = scale(&v, &av[k], wp, rm);
-                te = c_add(&te, &v, wpterm[k], rm);
+                let v = scale(&v, &av[k], wp);
+                te = c_add(&te, &v, wpterm[k], RM);
             }
             terms.push(te);
         }
@@ -568,11 +545,11 @@ fn rzeta_pair(
         );
         let mut sum = c_zero(wprssum);
         for k in 1..=l {
-            sum = c_add(&sum, &terms[l - k], wprssum, rm);
+            sum = c_add(&sum, &terms[l - k], wprssum, RM);
         }
         sum
     };
-    let ysig_bf = BigFloat::from_i32(1, 64).sub(&s.0, super::exact_bits(&s.0, wpinit), rm);
+    let ysig_bf = BigFloat::from_i32(1, 64).sub(&s.0, super::exact_bits(&s.0, wpinit), RM);
     let xr = rssum(&s.0, &xs, lxeps2, lxeps4, &xwptcoef, &xwpterm);
     let yr = rssum(&ysig_bf, &ys, lyeps2, lyeps4, &ywptcoef, &ywpterm);
     // S3 = (−1)^(N−1)·a^(−σ)·U (II, Section 3.19).
@@ -584,31 +561,33 @@ fn rzeta_pair(
     let wps3 = |sg: f64| 5 + mag_l(big_t.log2() + log2_1p_exp2(1.0 - leps8 - sg * la));
     let ps3 = prec_of(wps3(sig).max(wps3(1.0 - sig)) as f64);
     let tb = &s.1;
-    let two_pi = cc
-        .pi(ps3 + 8, rm)
+    let two_pi = wpc
+        .cc
+        .pi(ps3 + 8, RM)
         .clone()
-        .mul(&BigFloat::from_i32(2, 64), ps3 + 8, rm);
-    let tpi = tb.div(&two_pi, ps3 + 8, rm);
-    let half_t = tb.div(&BigFloat::from_i32(2, 64), ps3 + 8, rm);
-    let pi8 = cc
-        .pi(ps3 + 8, rm)
+        .mul(&BigFloat::from_i32(2, 64), ps3 + 8, RM);
+    let tpi = tb.div(&two_pi, ps3 + 8, RM);
+    let half_t = tb.div(&BigFloat::from_i32(2, 64), ps3 + 8, RM);
+    let pi8 = wpc
+        .cc
+        .pi(ps3 + 8, RM)
         .clone()
-        .div(&BigFloat::from_i32(8, 64), ps3 + 8, rm);
+        .div(&BigFloat::from_i32(8, 64), ps3 + 8, RM);
     let arg = half_t
-        .mul(&tpi.ln(ps3 + 8, rm, cc), ps3 + 8, rm)
-        .sub(&half_t, ps3 + 8, rm)
-        .sub(&pi8, ps3 + 8, rm);
-    let u = expj(&arg.neg(), ps3, rm, cc);
-    let a3 = a_of(tb, ps3, rm, cc);
-    let lna = a3.ln(ps3, rm, cc);
+        .mul(&tpi.ln(ps3 + 8, RM, wpc.cc), ps3 + 8, RM)
+        .sub(&half_t, ps3 + 8, RM)
+        .sub(&pi8, ps3 + 8, RM);
+    let u = expj(&arg.neg(), &mut wpc.at(ps3));
+    let a3 = a_of(tb, &mut wpc.at(ps3));
+    let lna = a3.ln(ps3, RM, wpc.cc);
     let sign_odd = n % 2 == 0; // (−1)^(N−1)
     let s3 = |sg: &BigFloat, cc: &mut Consts| {
-        let pw = sg.mul(&lna, ps3, rm).neg().exp(ps3, rm, cc);
-        let v = scale(&u, &pw, ps3, rm);
+        let pw = sg.mul(&lna, ps3, RM).neg().exp(ps3, RM, cc);
+        let v = scale(&u, &pw, ps3);
         if sign_odd { (v.0.neg(), v.1.neg()) } else { v }
     };
-    let xs3 = s3(&s.0, cc);
-    let ys3 = s3(&ysig_bf, cc);
+    let xs3 = s3(&s.0, wpc.cc);
+    let ys3 = s3(&ysig_bf, wpc.cc);
     // S1 = Σ_{w≤N} w^(−s) and Σ_{w≤N} w^(σ−1)e^(−it ln w) (II, Section 3.18).
     let nf = n as f64;
     let wpsum = |sg: f64| 4 + mag_l((nf + nf.powf(1.0 - sg)).log2() + nf.ln().log2() - leps1);
@@ -633,8 +612,8 @@ fn rzeta_pair(
         }
     }
     let two_sig_m1 =
-        s.0.mul(&BigFloat::from_i32(2, 64), wq, rm)
-            .sub(&BigFloat::from_i32(1, 64), wq, rm);
+        s.0.mul(&BigFloat::from_i32(2, 64), wq, RM)
+            .sub(&BigFloat::from_i32(1, 64), wq, RM);
     let mut xw: Vec<Complex> = Vec::with_capacity(nn + 1);
     let mut rw: Vec<BigFloat> = Vec::with_capacity(nn + 1);
     xw.push(c_zero(64));
@@ -646,18 +625,18 @@ fn rzeta_pair(
     for (w, &pr) in spf.iter().enumerate().skip(2) {
         let pr = pr as usize;
         let (x, r) = if pr == w {
-            let lw = BigFloat::from_u64(w as u64, 64).ln(wq + lt, rm, cc);
-            let ph = tb.mul(&lw, wq + lt, rm).neg();
-            let e = expj(&ph, wq, rm, cc);
-            let mag_x = s.0.mul(&lw, wq, rm).neg().exp(wq, rm, cc);
-            let r = two_sig_m1.mul(&lw, wq, rm).exp(wq, rm, cc);
-            (scale(&e, &mag_x, wq, rm), r)
+            let lw = BigFloat::from_u64(w as u64, 64).ln(wq + lt, RM, wpc.cc);
+            let ph = tb.mul(&lw, wq + lt, RM).neg();
+            let e = expj(&ph, &mut wpc.at(wq));
+            let mag_x = s.0.mul(&lw, wq, RM).neg().exp(wq, RM, wpc.cc);
+            let r = two_sig_m1.mul(&lw, wq, RM).exp(wq, RM, wpc.cc);
+            (scale(&e, &mag_x, wq), r)
         } else {
             let q = w / pr;
-            (c_mul(&xw[pr], &xw[q], wq, rm), rw[pr].mul(&rw[q], wq, rm))
+            (c_mul(&xw[pr], &xw[q], wq, RM), rw[pr].mul(&rw[q], wq, RM))
         };
-        xs1 = c_add(&xs1, &x, ws, rm);
-        ys1 = c_add(&ys1, &scale(&x, &r, wq, rm), ws, rm);
+        xs1 = c_add(&xs1, &x, ws, RM);
+        ys1 = c_add(&ys1, &scale(&x, &r, wq), ws, RM);
         xw.push(x);
         rw.push(r);
     }
@@ -667,7 +646,7 @@ fn rzeta_pair(
             prec_of(6i64.max(
                 wpinit as i64 + mag(6.0 * (3.0 * abs_f64(s1) + 7.0 * abs_f64(rs) * abs_f64(s3v))),
             ) as f64);
-        c_add(s1, &c_mul(rs, s3v, p, rm), p, rm)
+        c_add(s1, &c_mul(rs, s3v, p, RM), p, RM)
     };
     let xrz = end(&xs1, &xr, &xs3);
     let yrz = conj(&end(&ys1, &yr, &ys3));
@@ -676,26 +655,17 @@ fn rzeta_pair(
 
 /// `ζ(s)` by the Riemann–Siegel formula with absolute error below `2^−wp`
 /// (`zeta_offline` at derivative 0), or `None` where it is not used.
-pub(super) fn zeta_rs(
-    s: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Option<Complex>, SymplexError> {
+pub(super) fn zeta_rs(s: &Complex, w: &mut Wp<'_>) -> Result<Option<Complex>, SymplexError> {
     // ζ(s̄) = conj ζ(s): below the real axis by the conjugate.
     let below = s.1.is_negative();
     let upper = if below { conj(s) } else { s.clone() };
-    let v = zeta_upper(&upper, wp, rm, cc)?;
+    let v = zeta_upper(&upper, w)?;
     Ok(v.map(|v| if below { conj(&v) } else { v }))
 }
 
 /// [`zeta_rs`] for `Im s > 0`.
-fn zeta_upper(
-    s: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Option<Complex>, SymplexError> {
+fn zeta_upper(s: &Complex, w: &mut Wp<'_>) -> Result<Option<Complex>, SymplexError> {
+    let wp = w.bits();
     let (Some(sig), Some(t)) = (to_f64(&s.0), to_f64(&s.1)) else {
         return Ok(None);
     };
@@ -733,7 +703,7 @@ fn zeta_upper(
         return Ok(None);
     }
     let (wpbasic, wptheta, wpr) = (wpbasic as usize, wptheta as usize, wpr as usize);
-    let Some((xrz, yrz)) = rzeta_pair(s, wpr, rm, cc)? else {
+    let Some((xrz, yrz)) = rzeta_pair(s, &mut w.at(wpr))? else {
         return Ok(None);
     };
     // θ = ϑ(t − i(σ − 1/2)) = −(ln π/2)(t − i(σ − 1/2)) − (i/2)(ln Γ(s/2) − ln Γ((1 − s)/2)).
@@ -741,29 +711,29 @@ fn zeta_upper(
     let pg = wptheta + lg_size;
     let exact = super::exact_bits(&s.0, pg);
     let two = BigFloat::from_i32(2, 64);
-    let s2 = (s.0.div(&two, exact, rm), s.1.div(&two, exact, rm));
+    let s2 = (s.0.div(&two, exact, RM), s.1.div(&two, exact, RM));
     let one_minus = (
         BigFloat::from_i32(1, 64)
-            .sub(&s.0, exact, rm)
-            .div(&two, exact, rm),
-        s.1.neg().div(&two, exact, rm),
+            .sub(&s.0, exact, RM)
+            .div(&two, exact, RM),
+        s.1.neg().div(&two, exact, RM),
     );
-    let g1 = super::loggamma::loggamma_complex(&s2, pg, rm, cc)?;
-    let g2 = super::loggamma::loggamma_complex(&one_minus, pg, rm, cc)?;
-    let dg = (g1.0.sub(&g2.0, pg, rm), g1.1.sub(&g2.1, pg, rm));
+    let g1 = super::loggamma::loggamma_complex(&s2, &mut w.at(pg))?;
+    let g2 = super::loggamma::loggamma_complex(&one_minus, &mut w.at(pg))?;
+    let dg = (g1.0.sub(&g2.0, pg, RM), g1.1.sub(&g2.1, pg, RM));
     // −(i/2)·dg = (dg.im/2, −dg.re/2).
     let half = BigFloat::from_f64(0.5, 64);
-    let part = (dg.1.mul(&half, pg, rm), dg.0.neg().mul(&half, pg, rm));
-    let lnpi2 = cc.pi(pg, rm).clone().ln(pg, rm, cc).mul(&half, pg, rm);
-    let delta = s.0.sub(&half, exact, rm);
+    let part = (dg.1.mul(&half, pg, RM), dg.0.neg().mul(&half, pg, RM));
+    let lnpi2 = w.cc.pi(pg, RM).clone().ln(pg, RM, w.cc).mul(&half, pg, RM);
+    let delta = s.0.sub(&half, exact, RM);
     // −(ln π/2)·(t − iδ) = (−(ln π/2)t, (ln π/2)δ).
-    let lin = (s.1.mul(&lnpi2, pg, rm).neg(), delta.mul(&lnpi2, pg, rm));
-    let theta = c_add(&lin, &part, pg, rm);
+    let lin = (s.1.mul(&lnpi2, pg, RM).neg(), delta.mul(&lnpi2, pg, RM));
+    let theta = c_add(&lin, &part, pg, RM);
     // e^(−2iθ) = e^(2·Im θ)·e^(−2i·Re θ).
     let pe = wpbasic + super::magnitude_bits(to_f64(&theta.0).unwrap_or(1e18).abs() * 2.0) + 8;
-    let modulus = theta.1.mul(&two, pe, rm).exp(pe, rm, cc);
-    let ph = theta.0.mul(&two, pe, rm).neg();
-    let et = scale(&expj(&ph, pe, rm, cc), &modulus, pe, rm);
-    let zv = c_add(&xrz, &c_mul(&et, &yrz, wpbasic, rm), wpbasic, rm);
+    let modulus = theta.1.mul(&two, pe, RM).exp(pe, RM, w.cc);
+    let ph = theta.0.mul(&two, pe, RM).neg();
+    let et = scale(&expj(&ph, &mut w.at(pe)), &modulus, pe);
+    let zv = c_add(&xrz, &c_mul(&et, &yrz, wpbasic, RM), wpbasic, RM);
     Ok(Some(zv))
 }

@@ -21,7 +21,8 @@
 //! series and summation used the rational recurrence until then): one
 //! implementation and one cache.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use astro_float::BigFloat;
 
 use crate::base::errors::SymplexError;
 use crate::base::numeric::Q;
@@ -38,12 +39,8 @@ pub(crate) fn even(k: usize) -> Q {
 /// `n ≥ 2` and `n = 0`; at `s = 1` it is `+1/2`, and the exact `−1/2` of
 /// this crate's convention is returned instead, as `eval` folds it.
 /// (Before 0.40 `evalf` had no routine for `bernoulli`.)
-pub(super) fn bernoulli_function(
-    s: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<BigFloat, SymplexError> {
+pub(super) fn bernoulli_function(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     if s.is_nan() || s.is_inf() {
         return Err(SymplexError::Unevaluable {
             reason: "bernoulli of a non-finite argument".into(),
@@ -53,15 +50,15 @@ pub(super) fn bernoulli_function(
         return Ok(BigFloat::from_i32(1, prec));
     }
     if *s == BigFloat::from_i32(1, 64) {
-        return Ok(BigFloat::from_i32(-1, prec).div(&BigFloat::from_i32(2, prec), prec, rm));
+        return Ok(BigFloat::from_i32(-1, prec).div(&BigFloat::from_i32(2, prec), prec, RM));
     }
     // `1 − s` exactly: next to `s = 0` the pole of `ζ` at 1 is cancelled
     // by the factor `s`, both relative to `s`.
     let wp = prec + 32;
-    let one_minus_s = BigFloat::from_i32(1, 64).sub(s, super::exact_bits(s, wp), rm);
-    let zeta = super::arb_zeta(&one_minus_s, wp, rm, cc)?;
-    let r = s.mul(&zeta, wp, rm).neg();
-    Ok(super::round_to(r, prec, rm))
+    let one_minus_s = BigFloat::from_i32(1, 64).sub(s, super::exact_bits(s, wp), RM);
+    let zeta = super::arb_zeta(&one_minus_s, &mut w.at(wp))?;
+    let r = s.mul(&zeta, wp, RM).neg();
+    Ok(super::round_to(r, prec))
 }
 
 /// Largest `|s|` the Euler function is evaluated at (`Γ(s + 1)` and the
@@ -91,19 +88,15 @@ const MAX_EULER_ORDER: f64 = 1.0e6;
 /// the Hurwitz sums is measured and the evaluation repeated with that many
 /// more bits, as for `polylog`.  (Before 0.44 `evalf` had no routine for
 /// `euler_number`: `euler_number(1/2)` was refused.)
-pub(super) fn euler_function(
-    s: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<BigFloat, SymplexError> {
+pub(super) fn euler_function(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     let unevaluable = |reason: &str| SymplexError::Unevaluable {
         reason: reason.into(),
     };
     if s.is_nan() || s.is_inf() {
         return Err(unevaluable("euler_number of a non-finite argument"));
     }
-    let s_f = super::bigfloat_to_f64(s, rm, cc)?;
+    let s_f = super::f64_of(s)?;
     if s_f.abs() > MAX_EULER_ORDER {
         return Err(unevaluable(
             "euler_number of an argument beyond 10^6 is not evaluated numerically",
@@ -122,16 +115,14 @@ pub(super) fn euler_function(
             return Ok(super::round_to(
                 crate::base::numeric::bigint_to_bigfloat(&e, prec + 8),
                 prec,
-                rm,
             ));
         }
     }
     if *s == BigFloat::from_i32(-1, 64) {
-        let pi = cc.pi(prec + 8, rm).clone();
+        let pi = w.cc.pi(prec + 8, RM).clone();
         return Ok(super::round_to(
-            pi.div(&BigFloat::from_i32(2, 64), prec + 8, rm),
+            pi.div(&BigFloat::from_i32(2, 64), prec + 8, RM),
             prec,
-            rm,
         ));
     }
     let cap = super::cancellation_cap(prec);
@@ -140,9 +131,9 @@ pub(super) fn euler_function(
     loop {
         let wp = prec + extra;
         let (v, largest) = if s_f >= 0.5 {
-            euler_positive(s, wp, rm, cc)?
+            euler_positive(s, &mut w.at(wp))?
         } else {
-            euler_negative(s, wp, rm, cc)?
+            euler_negative(s, &mut w.at(wp))?
         };
         // |v| ≥ 2^(e − 1).
         let lv = lg(&v) - 1.0;
@@ -152,7 +143,7 @@ pub(super) fn euler_function(
             wp
         };
         if lost + 24 <= extra {
-            return Ok(super::round_to(v, prec, rm));
+            return Ok(super::round_to(v, prec));
         }
         if extra >= cap || lost + 24 > cap {
             return Err(super::special_exhausted(prec));
@@ -172,59 +163,51 @@ fn lg(x: &BigFloat) -> f64 {
 /// `E(s)` for `s ≥ ½` by Hurwitz's formula (see [`euler_function`]) at `wp`
 /// bits, and `log₂` of the largest term of the Hurwitz sums scaled as the
 /// value.
-fn euler_positive(
-    s: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<(BigFloat, f64), SymplexError> {
+fn euler_positive(s: &BigFloat, w: &mut Wp<'_>) -> Result<(BigFloat, f64), SymplexError> {
+    let wp = w.bits();
     let one = BigFloat::from_i32(1, 64);
-    let x = s.add(&one, super::exact_bits(s, wp), rm);
-    let cos = super::sin_half_pi(&x, wp, rm, cc);
+    let x = s.add(&one, super::exact_bits(s, wp), RM);
+    let cos = super::sin_half_pi(&x, w);
     if cos.is_zero() {
         return Ok((BigFloat::new(wp), f64::NEG_INFINITY));
     }
     let quarter = BigFloat::from_f64(0.25, 64);
     let three_quarters = BigFloat::from_f64(0.75, 64);
-    let (h1, l1) = super::polylog::hurwitz_real(&x, &quarter, wp, rm, cc)?;
-    let (h2, l2) = super::polylog::hurwitz_real(&x, &three_quarters, wp, rm, cc)?;
+    let (h1, l1) = super::polylog::hurwitz_real(&x, &quarter, w)?;
+    let (h2, l2) = super::polylog::hurwitz_real(&x, &three_quarters, w)?;
     // Γ(s+1)/(2π)^(s+1) = exp(ln Γ(x) − x·ln 2π), the exponent to an absolute
     // error of 2^−wp (the guard bits of `euler_function` cover its size).
     let lw = wp + 16;
-    let two_pi = cc
-        .pi(lw, rm)
-        .clone()
-        .mul(&BigFloat::from_i32(2, 64), lw, rm);
-    let ln_gamma = super::stirling_log_gamma(&x, lw, rm, cc)?;
+    let two_pi =
+        w.cc.pi(lw, RM)
+            .clone()
+            .mul(&BigFloat::from_i32(2, 64), lw, RM);
+    let ln_gamma = super::stirling_log_gamma(&x, &mut w.at(lw))?;
     let scale = ln_gamma
-        .sub(&x.mul(&two_pi.ln(lw, rm, cc), lw, rm), lw, rm)
-        .exp(wp, rm, cc)
-        .mul(&cos, wp, rm)
-        .mul(&BigFloat::from_i32(2, 64), wp, rm);
-    let diff = h1.sub(&h2, wp, rm);
-    Ok((scale.mul(&diff, wp, rm), lg(&scale) + l1.max(l2)))
+        .sub(&x.mul(&two_pi.ln(lw, RM, w.cc), lw, RM), lw, RM)
+        .exp(wp, RM, w.cc)
+        .mul(&cos, wp, RM)
+        .mul(&BigFloat::from_i32(2, 64), wp, RM);
+    let diff = h1.sub(&h2, wp, RM);
+    Ok((scale.mul(&diff, wp, RM), lg(&scale) + l1.max(l2)))
 }
 
 /// `E(s)` for `s < ½`, `s ≠ −1`, by SymPy's formula (see
 /// [`euler_function`]) at `wp` bits, and `log₂` of the largest term of the
 /// Hurwitz sums scaled as the value.
-fn euler_negative(
-    s: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<(BigFloat, f64), SymplexError> {
+fn euler_negative(s: &BigFloat, w: &mut Wp<'_>) -> Result<(BigFloat, f64), SymplexError> {
+    let wp = w.bits();
     let exact = super::exact_bits(s, wp);
     let sigma = s.neg();
     let half = BigFloat::from_f64(0.5, 64);
     let three_quarters = BigFloat::from_f64(0.75, 64);
-    let (h1, l1) = super::polylog::hurwitz_real(&sigma, &half, wp, rm, cc)?;
-    let (h2, l2) = super::polylog::hurwitz_real(&sigma, &three_quarters, wp, rm, cc)?;
-    let s1 = s.add(&BigFloat::from_i32(1, 64), exact, rm);
-    let p = super::bf_pow(&BigFloat::from_i32(2, 64), &s1, wp + 16, rm, cc);
+    let (h1, l1) = super::polylog::hurwitz_real(&sigma, &half, w)?;
+    let (h2, l2) = super::polylog::hurwitz_real(&sigma, &three_quarters, w)?;
+    let s1 = s.add(&BigFloat::from_i32(1, 64), exact, RM);
+    let p = super::bf_pow(&BigFloat::from_i32(2, 64), &s1, &mut w.at(wp + 16));
     let lp = lg(&p);
-    let inner = h1.sub(&p.mul(&h2, wp, rm), wp, rm);
-    Ok((p.mul(&inner, wp, rm), lp + l1.max(lp + l2)))
+    let inner = h1.sub(&p.mul(&h2, wp, RM), wp, RM);
+    Ok((p.mul(&inner, wp, RM), lp + l1.max(lp + l2)))
 }
 
 #[cfg(test)]

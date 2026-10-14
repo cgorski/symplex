@@ -186,14 +186,15 @@ fn a_radical_spelled_two_ways_does_not_widen_the_expansion() {
 /// undecided answer is `false`, which reads as "not zero".  The
 /// three-valued `try_is_zero`/`try_equals` (new) keep the third case.
 ///
-/// Oracle: `Γ(1/3)·Γ(2/3) = π/sin(π/3) = 2π/√3` (the reflection formula
-/// `Γ(z)Γ(1 − z) = π/sin πz`), so `k = Γ(1/3)Γ(2/3) − 2π/√3` is 0, which
-/// `Ex::is_zero` does not decide (`None`).
+/// Oracle: `K_{1/2}(z) = √(π/(2z))·e^{−z}` (DLMF 10.39.2), so `k =
+/// K_{1/2}(1) − √(π/2)·e^{−1}` is 0, which `Ex::is_zero` does not decide
+/// (`None`).  (Up to 0.49 the undecided zero here was `Γ(1/3)Γ(2/3) −
+/// 2π/√3`, which `is_zero` now proves by the reflection formula.)
 #[test]
 fn quantity_zero_tests_say_proved_or_undecided() {
     use symplex::units::*;
     let ctx = Context::new();
-    let k = ctx.parse("gamma(1/3)*gamma(2/3) - 2*pi/sqrt(3)").unwrap();
+    let k = ctx.parse("besselk(1/2, 1) - sqrt(pi/2)*exp(-1)").unwrap();
     assert_eq!(k.is_zero(), None);
     let q = Length::from_ex(k.clone());
     assert!(!q.is_zero());
@@ -205,8 +206,8 @@ fn quantity_zero_tests_say_proved_or_undecided() {
     assert!(Length::from_ex(ctx.int(0)).is_zero());
     assert_eq!(Length::from_ex(ctx.int(0)).try_is_zero(), Some(true));
 
-    let r = Length::from_ex(ctx.parse("gamma(1/3)*gamma(2/3)").unwrap());
-    let s = Length::from_ex(ctx.parse("2*pi/sqrt(3)").unwrap());
+    let r = Length::from_ex(ctx.parse("besselk(1/2, 1)").unwrap());
+    let s = Length::from_ex(ctx.parse("sqrt(pi/2)*exp(-1)").unwrap());
     assert!(!r.equals(&s));
     assert_eq!(r.try_equals(&s), None);
     assert_eq!(one.try_equals(&one), Some(true));

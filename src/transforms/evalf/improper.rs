@@ -44,7 +44,10 @@
 //! does.  A limit that is not proved nonzero (0, an oscillation, a limit the
 //! engine does not find) proves nothing: the refusal stays.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::ball::CBall;
+use super::wp::{RM, Wp};
+use crate::base::bigfloat;
+use astro_float::{BigFloat, Consts};
 use tracing::debug;
 
 use super::accuracy::{self, ErrExp};
@@ -123,7 +126,6 @@ pub(super) fn f64_tail_trusted(
     // An eighth of the tolerance for each of the far mass and the
     // differences.
     let lg_allowed = allowed.log2() - 3.0;
-    let rm = RoundingMode::ToEven;
     let mut f = Integrand::new(arena, body, var);
     // `log₂` of a bound on `|x·f(x)|` at `x = ±2^e`, and `f(x)`.
     let mut sample = |e: i32| -> Option<(ErrExp, (BigFloat, BigFloat))> {
@@ -135,9 +137,9 @@ pub(super) fn f64_tail_trusted(
         let e_bits = usize::try_from(e).unwrap_or(0);
         let mut found = None;
         for prec in [PREC, 2 * e_bits + PREC, 4 * e_bits + PREC] {
-            let evaluated = f.eval(&x, accuracy::EXACT, prec, rm, cc);
+            let evaluated = f.eval(&x, accuracy::EXACT, &mut Wp::new(prec, cc));
             match evaluated {
-                Ok((v, b))
+                Ok(CBall { mid: v, err: b })
                     if !(b.is_unknown()
                         || v.0.is_nan()
                         || v.1.is_nan()
@@ -211,9 +213,9 @@ pub(super) fn f64_tail_trusted(
         }
         let d = c_sub(
             v,
-            &(BigFloat::from_f64(c, 64), BigFloat::new(PREC)),
+            &(bigfloat::from_f64(c, 64), BigFloat::new(PREC)),
             PREC,
-            rm,
+            RM,
         );
         let diff = accuracy::shift(accuracy::lg_abs(&d), f64::from(*e));
         if diff > (g + AGREEMENT).max(floor) {

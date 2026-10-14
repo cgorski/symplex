@@ -49,6 +49,9 @@
 //! dominating series (see "Dominated series" below; before 0.44 refused),
 //! and so is an infinite product of `1 + a(k)` with such an `a`.
 
+use super::ball::CBall;
+use super::wp::RM;
+use crate::base::truth::SignSet;
 use astro_float::{BigFloat, RoundingMode};
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -79,14 +82,12 @@ const MAX_SERIES_TERMS: u64 = 100_000;
 
 /// The summand at an integer index, at a given precision: its value and
 /// error bound.
-pub(super) type TermFn<'a> =
-    dyn FnMut(&BigInt, usize) -> Result<(Complex, Bound), SymplexError> + 'a;
+pub(super) type TermFn<'a> = dyn FnMut(&BigInt, usize) -> Result<CBall, SymplexError> + 'a;
 
 /// A sub-expression of the summand (the summand itself, a factor, a
 /// constant) at an integer index, at a given precision: its value and error
 /// bound.
-pub(super) type PartFn<'a> =
-    dyn FnMut(ExprId, &BigInt, usize) -> Result<(Complex, Bound), SymplexError> + 'a;
+pub(super) type PartFn<'a> = dyn FnMut(ExprId, &BigInt, usize) -> Result<CBall, SymplexError> + 'a;
 
 /// The shape of a sub-expression of the summand, as a function of the
 /// index `k`.
@@ -403,16 +404,15 @@ pub(super) fn infinite_sum(
     var: ExprId,
     lo: &BigInt,
     prec: usize,
-    rm: RoundingMode,
     part: &mut PartFn<'_>,
-) -> Result<(Complex, Bound), SymplexError> {
+) -> Result<CBall, SymplexError> {
     let Some((p_ratio, q_ratio, constant)) = term_ratio(arena, body, var) else {
-        if let Some(result) = dominated_sum(arena, body, var, lo, prec, rm, part) {
+        if let Some(result) = dominated_sum(arena, body, var, lo, prec, part) {
             return result;
         }
         // A smooth term of polynomial decay: its expansion at infinity
         // (`asymsum.rs`; before 0.44 refused).
-        if let Some(result) = super::asymsum::asymptotic_sum(arena, body, var, lo, prec, rm, part) {
+        if let Some(result) = super::asymsum::asymptotic_sum(arena, body, var, lo, prec, part) {
             return result;
         }
         return Err(unevaluable(format!(
@@ -443,20 +443,22 @@ pub(super) fn infinite_sum(
     let mut sum = super::SumAcc::new(prec);
     let mut k = lo.clone();
     while k < start {
-        let (t, e) = term(&k, prec)?;
-        sum.add(&t, e, rm);
+        let CBall { mid: t, err: e } = term(&k, prec)?;
+        sum.add(&t, e);
         k += 1;
     }
 
-    let (t0, b0) = term(&start, prec)?;
+    let CBall { mid: t0, err: b0 } = term(&start, prec)?;
     if accuracy::mag(&t0).is_none() && b0.is_exact() {
         // t(N₀) = 0, and P, Q do not vanish beyond N₀: every later term is 0.
         return Ok(sum.finish());
     }
     if constant {
-        let (series, bound) =
-            scaled_series(arena, body, &p, &q, &start, (&t0, b0), prec, rm, term)?;
-        sum.add(&series, bound, rm);
+        let CBall {
+            mid: series,
+            err: bound,
+        } = scaled_series(arena, body, &p, &q, &start, (&t0, b0), prec, term)?;
+        sum.add(&series, bound);
         return Ok(sum.finish());
     }
     if !p.is_empty() {
@@ -465,26 +467,26 @@ pub(super) fn infinite_sum(
 
     // F = Σ u_j at wp bits.
     let wp = prec + 64;
-    let (f, f_err) = normalised_series(&p, &q, &start, prec, wp, rm)?;
+    let (f, f_err) = normalised_series(&p, &q, &start, prec, wp)?;
 
     // Sanity check of the ratio: t(N₀ + 1) = t(N₀)·P(N₀)/Q(N₀).
     let e0 = b0.joint();
-    let (t1, b1) = term(&(&start + 1), prec)?;
+    let CBall { mid: t1, err: b1 } = term(&(&start + 1), prec)?;
     let e1 = b1.joint();
     let r0 = bigint_to_bigfloat(&eval_int(&p, &start), wp).div(
         &bigint_to_bigfloat(&eval_int(&q, &start), wp),
         wp,
-        rm,
+        RM,
     );
     let r0 = (r0, BigFloat::new(wp));
-    let predicted = c_mul(&t0, &r0, wp, rm);
+    let predicted = c_mul(&t0, &r0, wp, RM);
     let e_pred = accuracy::product_error([(&t0, e0), (&r0, accuracy::rounding(&r0, wp))]);
     let slack = accuracy::shift(
         e1.max(e_pred).max(accuracy::rounding(&predicted, prec)),
         4.0,
     );
     if !accuracy::is_unknown(slack)
-        && !accuracy::contains_zero(&c_sub(&t1, &predicted, wp, rm), slack)
+        && !accuracy::contains_zero(&c_sub(&t1, &predicted, wp, RM), slack)
     {
         return Err(unevaluable(format!(
             "infinite sum of `{}`: the term ratio does not match the terms",
@@ -493,7 +495,7 @@ pub(super) fn infinite_sum(
     }
 
     let f = (f, BigFloat::new(wp));
-    let series = c_mul(&t0, &f, prec, rm);
+    let series = c_mul(&t0, &f, prec, RM);
     let series_err = accuracy::lsum(
         accuracy::product_error([(&t0, e0), (&f, f_err)]),
         accuracy::rounding(&series, prec),
@@ -504,7 +506,7 @@ pub(super) fn infinite_sum(
     } else {
         Bound::both(series_err)
     };
-    sum.add(&series, series_bound, rm);
+    sum.add(&series, series_bound);
     Ok(sum.finish())
 }
 
@@ -543,15 +545,14 @@ fn scaled_series(
     start: &BigInt,
     first: (&Complex, Bound),
     prec: usize,
-    rm: RoundingMode,
     term: &mut TermFn<'_>,
-) -> Result<(Complex, Bound), SymplexError> {
+) -> Result<CBall, SymplexError> {
     use crate::base::bigcomplex::{c_abs, c_add, c_div, c_from_real};
     let (t0, b0) = first;
     let wp = prec + 64;
-    let (t1, b1) = term(&(start + 1), prec)?;
-    let (t2, b2) = term(&(start + 2), prec)?;
-    let unknown = Ok((t0.clone(), Bound::UNKNOWN));
+    let CBall { mid: t1, err: b1 } = term(&(start + 1), prec)?;
+    let CBall { mid: t2, err: b2 } = term(&(start + 2), prec)?;
+    let unknown = Ok(CBall::unknown(t0.clone()));
     // Relative error exponents of the first terms.
     let rel = |t: &Complex, b: Bound| -> Option<i64> {
         let m = accuracy::mag(t)?;
@@ -573,10 +574,10 @@ fn scaled_series(
         return Err(unevaluable("infinite sum: the term ratio vanishes"));
     }
     let ratio0 = c_from_real(
-        bigint_to_bigfloat(&q0, wp).div(&bigint_to_bigfloat(&p0, wp), wp, rm),
+        bigint_to_bigfloat(&q0, wp).div(&bigint_to_bigfloat(&p0, wp), wp, RM),
         wp,
     );
-    let c = c_mul(&c_div(&t1, t0, wp, rm), &ratio0, wp, rm);
+    let c = c_mul(&c_div(&t1, t0, wp, RM), &ratio0, wp, RM);
     // ε(C) ≤ ε(t₀) + ε(t₁) + roundings.
     let eps_c = r0.max(r1) + 2;
     if eps_c > -16 {
@@ -589,11 +590,11 @@ fn scaled_series(
         bigint_to_bigfloat(&eval_int(p, &k1), wp).div(
             &bigint_to_bigfloat(&eval_int(q, &k1), wp),
             wp,
-            rm,
+            RM,
         ),
         wp,
     );
-    let predicted = c_mul(&c_mul(&t1, &c, wp, rm), &r1q, wp, rm);
+    let predicted = c_mul(&c_mul(&t1, &c, wp, RM), &r1q, wp, RM);
     let slack = accuracy::shift(
         accuracy::mag(&predicted)
             .map_or(accuracy::UNKNOWN, |m| (m + eps_c + 4) as f64)
@@ -601,7 +602,7 @@ fn scaled_series(
         2.0,
     );
     if !accuracy::is_unknown(slack)
-        && !accuracy::contains_zero(&c_sub(&t2, &predicted, wp, rm), slack)
+        && !accuracy::contains_zero(&c_sub(&t2, &predicted, wp, RM), slack)
     {
         return Err(unevaluable(format!(
             "infinite sum of `{}`: the term ratio does not match the terms",
@@ -610,7 +611,7 @@ fn scaled_series(
     }
 
     // |C| with its relative error; convergence from the leading ratio.
-    let c_mag = super::bigfloat_to_f64_rounded(&c_abs(&c, 64, rm), rm).unwrap_or(f64::INFINITY);
+    let c_mag = super::f64_of(&c_abs(&c, 64, RM)).unwrap_or(f64::INFINITY);
     let eps = 2f64.powi(i32::try_from(eps_c).unwrap_or(0));
     let c_hi = c_mag * (1.0 + eps) * (1.0 + 1e-15);
     let c_lo = c_mag * (1.0 - eps) * (1.0 - 1e-15);
@@ -679,11 +680,12 @@ fn scaled_series(
         }
         let pk = bigint_to_bigfloat(&eval_int(p, &k), wp);
         let qk = bigint_to_bigfloat(&eval_int(q, &k), wp);
-        let r = c_from_real(pk.div(&qk, wp, rm), wp);
-        u = c_mul(&c_mul(&u, &c, wp, rm), &r, wp, rm);
-        f = c_add(&f, &u, wp, rm);
+        let r = c_from_real(pk.div(&qk, wp, RM), wp);
+        u = c_mul(&c_mul(&u, &c, wp, RM), &r, wp, RM);
+        f = c_add(&f, &u, wp, RM);
         steps += 1;
-        let ua = c_abs(&u, 64, rm);
+        // Rounded up: `abs_sum` and `weighted` are upper bounds.
+        let ua = c_abs(&u, 64, RoundingMode::Up);
         abs_sum = abs_sum.add(&ua, 64, RoundingMode::Up);
         weighted = weighted.add(
             &ua.mul(&BigFloat::from_u64(steps, 64), 64, RoundingMode::Up),
@@ -702,7 +704,7 @@ fn scaled_series(
     let rounding = (peak + n - wp_i) as f64;
     let from_c = mag(&weighted).map_or(accuracy::EXACT, |m| (m + eps_c + 1) as f64);
     let f_err = accuracy::shift(recurrence.max(rounding).max(tail).max(from_c), 1.0);
-    let series = c_mul(t0, &f, prec, rm);
+    let series = c_mul(t0, &f, prec, RM);
     let err = accuracy::lsum(
         accuracy::product_error([(t0, b0.joint()), (&f, f_err)]),
         accuracy::rounding(&series, prec),
@@ -717,7 +719,7 @@ fn scaled_series(
     } else {
         Bound::both(err)
     };
-    Ok((series, bound))
+    Ok(CBall::new(series, bound))
 }
 
 /// `1 + 0i` at `wp` bits.
@@ -808,7 +810,6 @@ fn normalised_series(
     start: &BigInt,
     prec: usize,
     wp: usize,
-    rm: RoundingMode,
 ) -> Result<(BigFloat, ErrExp), SymplexError> {
     let mag = |x: &BigFloat| -> Option<i64> {
         if x.is_zero() {
@@ -841,9 +842,9 @@ fn normalised_series(
         }
         let pk = bigint_to_bigfloat(&eval_int(p, &k), wp);
         let qk = bigint_to_bigfloat(&eval_int(q, &k), wp);
-        u = u.mul(&pk, wp, rm).div(&qk, wp, rm);
-        f = f.add(&u, wp, rm);
-        abs_sum = abs_sum.add(&u.abs(), 64, rm);
+        u = u.mul(&pk, wp, RM).div(&qk, wp, RM);
+        f = f.add(&u, wp, RM);
+        abs_sum = abs_sum.add(&u.abs(), 64, RM);
         peak = peak.max(mag(&f).unwrap_or(peak));
         k += 1;
         steps += 1;
@@ -1088,9 +1089,9 @@ struct Analysis<'s, 'p, 'q> {
 
 impl Analysis<'_, '_, '_> {
     /// A node at `N` (its value and bound), at [`AUX_PREC`] bits.
-    fn value(&mut self, id: ExprId) -> Option<(Complex, Bound)> {
-        let (v, b) = (self.part)(id, &self.n, AUX_PREC).ok()?;
-        (!b.is_unknown()).then_some((v, b))
+    fn value(&mut self, id: ExprId) -> Option<CBall> {
+        let CBall { mid: v, err: b } = (self.part)(id, &self.n, AUX_PREC).ok()?;
+        (!b.is_unknown()).then_some(CBall::new(v, b))
     }
 
     /// [`Facts`] of every node of `root`, bottom-up.
@@ -1126,12 +1127,11 @@ impl Analysis<'_, '_, '_> {
                 });
             }
             Some(Shape::Free(None)) => {
-                let Some((v, b)) = self.value(id) else {
+                let Some(ball) = self.value(id) else {
                     return Some(Facts::default());
                 };
-                let real = accuracy::exactly_real(&v, b);
-                let positive =
-                    real && v.0.is_positive() && !accuracy::part_contains_zero(&v.0, b.re);
+                let real = ball.is_exactly_real();
+                let positive = real && ball.sign_re() == SignSet::POSITIVE;
                 return Some(Facts { real, positive });
             }
             Some(Shape::Poly(p)) => {
@@ -1317,7 +1317,7 @@ impl Analysis<'_, '_, '_> {
                 return Some(Envelope::constant(a));
             }
             Some(Shape::Free(None)) => {
-                let (v, b) = self.value(id)?;
+                let CBall { mid: v, err: b } = self.value(id)?;
                 return Some(Envelope::constant(lg_upper(&v, b)?));
             }
             Some(Shape::Poly(p)) => {
@@ -1343,7 +1343,7 @@ impl Analysis<'_, '_, '_> {
                 if pp > qm {
                     return None;
                 }
-                let (v, b) = self.value(id)?;
+                let CBall { mid: v, err: b } = self.value(id)?;
                 return Some(Envelope::constant(lg_upper(&v, b)?));
             }
             Some(Shape::Ratio(_, _, true)) => return None,
@@ -1447,7 +1447,7 @@ impl Analysis<'_, '_, '_> {
             Shape::Ratio(p, q, false) => {
                 let (pi, qi) = integer_coefficients(&p, &q);
                 // |G(N)| within [lo, hi], away from 0.
-                let (v, b) = self.value(x)?;
+                let CBall { mid: v, err: b } = self.value(x)?;
                 let e = b.joint();
                 let lv = accuracy::lg_abs_low(&v);
                 if lv.is_nan() || lv <= e + 1.0 {
@@ -1516,7 +1516,7 @@ impl Analysis<'_, '_, '_> {
         match e {
             Exponential::Exp(a) => Some(up(a * std::f64::consts::LOG2_E)),
             Exponential::Power(base, m) => {
-                let (v, b) = self.value(base)?;
+                let CBall { mid: v, err: b } = self.value(base)?;
                 let hi = lg_upper(&v, b)?;
                 let lv = accuracy::lg_abs_low(&v);
                 let err = b.joint();
@@ -1703,7 +1703,7 @@ fn dominated_tail(addends: &[Dominated], m: &BigInt, part: &mut PartFn<'_>) -> O
         let geometric = up(-(-(lrg.exp2())).ln_1p() * std::f64::consts::LOG2_E);
         let mut lh = 0.0f64;
         for &f in &d.factors {
-            let (v, b) = part(f, m, AUX_PREC).ok()?;
+            let CBall { mid: v, err: b } = part(f, m, AUX_PREC).ok()?;
             lh = up(lh + lg_upper(&v, b)?);
         }
         total = accuracy::lsum(total, up(lh + d.env.at(mf) + geometric));
@@ -1739,9 +1739,8 @@ pub(super) fn dominated_sum(
     var: ExprId,
     lo: &BigInt,
     prec: usize,
-    rm: RoundingMode,
     part: &mut PartFn<'_>,
-) -> Option<Result<(Complex, Bound), SymplexError>> {
+) -> Option<Result<CBall, SymplexError>> {
     let list: Vec<ExprId> = match arena.node(body) {
         ExprNode::Add(children) => children.to_vec(),
         _ => vec![body],
@@ -1766,7 +1765,7 @@ pub(super) fn dominated_sum(
                 && t <= peak - prec as f64 - 8.0
             {
                 let tail = if real { Bound::real(t) } else { Bound::both(t) };
-                sum.add(&crate::base::bigcomplex::c_zero(prec), tail, rm);
+                sum.add(&crate::base::bigcomplex::c_zero(prec), tail);
                 tracing::debug!(steps, tail = t, "evalf: dominated series summed");
                 return Some(Ok(sum.finish()));
             }
@@ -1778,11 +1777,11 @@ pub(super) fn dominated_sum(
                 arena.display(body)
             ))));
         }
-        let (t, e) = match part(body, &k, prec) {
+        let CBall { mid: t, err: e } = match part(body, &k, prec) {
             Ok(v) => v,
             Err(err) => return Some(Err(err)),
         };
-        sum.add(&t, e, rm);
+        sum.add(&t, e);
         peak = peak
             .max(accuracy::lg_abs(&t))
             .max(accuracy::lg_abs(&sum.value));
@@ -1799,9 +1798,8 @@ pub(super) fn dominated_product(
     var: ExprId,
     lo: &BigInt,
     prec: usize,
-    rm: RoundingMode,
     part: &mut PartFn<'_>,
-) -> Option<Result<(Complex, Bound), SymplexError>> {
+) -> Option<Result<CBall, SymplexError>> {
     let ExprNode::Add(children) = arena.node(body) else {
         return None;
     };
@@ -1848,14 +1846,14 @@ pub(super) fn dominated_product(
             let total = up_linear(rel + steps as f64 * (3.0 - wp as f64).exp2() + tail);
             if tail.log2() <= -(prec as f64) - 8.0 {
                 if unknown || total >= 0.5 {
-                    return Some(Ok((product, Bound::UNKNOWN)));
+                    return Some(Ok(CBall::new(product, Bound::UNKNOWN)));
                 }
                 // e^R − 1 ≤ R·e^R.
                 let factor = up(total.log2() + total * std::f64::consts::LOG2_E);
                 let e = up(accuracy::lg_abs(&product) + factor);
                 let bound = if real { Bound::real(e) } else { Bound::both(e) };
                 tracing::debug!(steps, tail = t, "evalf: dominated product multiplied");
-                return Some(Ok((product, bound)));
+                return Some(Ok(CBall::new(product, bound)));
             }
         }
         if steps >= MAX_DOMINATED_TERMS {
@@ -1865,13 +1863,16 @@ pub(super) fn dominated_product(
                 arena.display(body)
             ))));
         }
-        let (f, e) = match part(body, &k, prec) {
+        let CBall { mid: f, err: e } = match part(body, &k, prec) {
             Ok(v) => v,
             Err(err) => return Some(Err(err)),
         };
         if accuracy::mag(&f).is_none() && e.is_exact() {
             // An exact zero factor; the rest converges.
-            return Some(Ok((crate::base::bigcomplex::c_zero(prec), Bound::EXACT)));
+            return Some(Ok(CBall::new(
+                crate::base::bigcomplex::c_zero(prec),
+                Bound::EXACT,
+            )));
         }
         let je = e.joint();
         if !accuracy::is_exact(je) {
@@ -1883,7 +1884,7 @@ pub(super) fn dominated_product(
                 rel = up_linear(rel + (je - low + 1.0).exp2());
             }
         }
-        product = c_mul(&product, &f, wp, rm);
+        product = c_mul(&product, &f, wp, RM);
         k += 1;
         steps += 1;
     }

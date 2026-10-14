@@ -76,6 +76,7 @@ use crate::base::extended::Extended;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::SignSet;
 use crate::base::walk;
 use crate::calculus::gosper;
 use crate::poly::Poly;
@@ -331,38 +332,45 @@ fn is_zero_expr(arena: &mut Arena, e: ExprId) -> bool {
     arena.is_zero_structural(simp.expr)
 }
 
-/// Sign of a k-free expression: `Some(true)` positive, `Some(false)`
-/// negative, `None` unknown / zero.
-fn const_sign(arena: &mut Arena, e: ExprId) -> Option<bool> {
+/// The signs a k-free expression may have: exact for a rational, the
+/// declared sign of an expression in parameters (`a + 1` for a positive
+/// `a`), and for a symbol-free constant the sign the assumption queries
+/// decide ([`constant_facts`](crate::transforms::eval::constant_facts): a
+/// certified value of a constant proved real, or a proved zero);
+/// `UNKNOWN` when nothing is decided.  Up to 0.49 an `Option<bool>` whose
+/// `None` meant "zero or unknown", and a constant's sign was that of an
+/// uncertified `f64` value.
+fn const_sign(arena: &mut Arena, e: ExprId) -> SignSet {
     use crate::base::assumptions::{AssumptionCache, Props};
     if let Some(r) = const_value(arena, e) {
-        if r.is_positive() {
-            return Some(true);
-        }
-        if r.is_negative() {
-            return Some(false);
-        }
-        return None;
-    }
-    if !walk::free_symbols(arena, e).is_empty() {
-        // A parameter's declared sign (`a + 1` for a positive `a`).
-        let mut cache = AssumptionCache::new();
-        return match (
-            cache.query(arena, e, Props::POSITIVE),
-            cache.query(arena, e, Props::NEGATIVE),
-        ) {
-            (Some(true), _) => Some(true),
-            (_, Some(true)) => Some(false),
-            _ => None,
+        return if r.is_positive() {
+            SignSet::POSITIVE
+        } else if r.is_negative() {
+            SignSet::NEGATIVE
+        } else {
+            SignSet::ZERO
         };
     }
-    let f = crate::transforms::evalf::eval_const_f64(arena, e)?;
-    if f > 0.0 {
-        Some(true)
-    } else if f < 0.0 {
-        Some(false)
+    let facts = if walk::free_symbols(arena, e).is_empty() {
+        crate::transforms::eval::constant_facts(arena, e)
     } else {
-        None
+        let mut cache = AssumptionCache::new();
+        let mut facts = crate::base::assumptions::Assumptions::default();
+        for p in [Props::POSITIVE, Props::NEGATIVE] {
+            if cache.query(arena, e, p) == Some(true) {
+                facts.known_true |= p;
+            }
+        }
+        facts
+    };
+    if facts.query(Props::POSITIVE) == Some(true) {
+        SignSet::POSITIVE
+    } else if facts.query(Props::NEGATIVE) == Some(true) {
+        SignSet::NEGATIVE
+    } else if facts.query(Props::ZERO) == Some(true) {
+        SignSet::ZERO
+    } else {
+        SignSet::UNKNOWN
     }
 }
 
@@ -450,11 +458,11 @@ fn real_abs_less_than_one(arena: &mut Arena, e: ExprId) -> Option<bool> {
     None
 }
 
-fn infinity_of_sign(arena: &Arena, positive: Option<bool>) -> Option<ExprId> {
-    match positive {
-        Some(true) => Some(arena.infinity),
-        Some(false) => Some(arena.neg_infinity),
-        None => None,
+fn infinity_of_sign(arena: &Arena, signs: SignSet) -> Option<ExprId> {
+    match signs {
+        SignSet::POSITIVE => Some(arena.infinity),
+        SignSet::NEGATIVE => Some(arena.neg_infinity),
+        _ => None,
     }
 }
 
@@ -583,6 +591,7 @@ pub(crate) fn summation(
         return SumOutcome::Unevaluated;
     }
     tracing::debug!("summation: dispatching");
+    let body = with_integer_index(arena, body, var);
     if let Some(outcome) = pole_in_range(arena, body, var, lower, upper) {
         return outcome;
     }
@@ -608,6 +617,42 @@ pub(crate) fn summation(
         }
         _ => SumOutcome::Unevaluated,
     }
+}
+
+/// The summand `body` simplified with the index `var` an integer, which it
+/// is at every term of the sum whatever its declared assumptions: `sin(kπ)`
+/// is `0`, `cos(2kπ)` is `1`, `floor(k)` is `k` (evaluated with an integer
+/// stand-in for `var`, then written in `var` again, so the sum and its
+/// closed form keep the user's index).  Up to 0.49 the index was a plain
+/// symbol here, and `Σ_{k=1}^{N} sin(kπ)`, `cos(2kπ)`, `floor(k)` stayed
+/// unevaluated unless `k` was declared integer (SymPy: `0`, `N`,
+/// `N²/2 + N/2`).  `body` unchanged when `var` is declared integer or its
+/// assumptions exclude it.
+fn with_integer_index(arena: &mut Arena, body: ExprId, var: ExprId) -> ExprId {
+    use crate::base::assumptions::Props;
+    let ExprNode::Symbol(sid) = *arena.node(var) else {
+        return body;
+    };
+    let mut declared = arena.symbol_assumptions(sid);
+    declared.forward_chain();
+    if declared.query(Props::INTEGER) == Some(true)
+        || !crate::base::walk::contains(arena, body, var)
+    {
+        return body;
+    }
+    let mut integer = declared;
+    integer.assert_true(Props::INTEGER);
+    if integer.is_contradictory() {
+        return body;
+    }
+    let k = subs::fresh_symbol(arena, "__sum_index", &[body, var]);
+    let ExprNode::Symbol(k_sid) = *arena.node(k) else {
+        return body;
+    };
+    arena.set_symbol_assumptions(k_sid, integer);
+    let in_k = subs::subs(arena, body, var, k);
+    let in_k = eval::eval(arena, in_k);
+    subs::subs(arena, in_k, k, var)
 }
 
 /// A term with a pole at an integer `k₀` of the summation range makes the
@@ -1267,7 +1312,7 @@ fn rational_sum_infinite(
         let lc = poly_part.leading_coeff().cloned().unwrap_or_else(Q::zero);
         return Some(SumOutcome::Divergent(infinity_of_sign(
             arena,
-            Some(lc.is_positive()),
+            SignSet::from_ordering(lc.cmp(&Q::zero())),
         )));
     }
     // Simple poles: total coefficient must vanish for convergence.
@@ -1275,7 +1320,7 @@ fn rational_sum_infinite(
     if !simple_total.is_zero() {
         return Some(SumOutcome::Divergent(infinity_of_sign(
             arena,
-            Some(simple_total.is_positive()),
+            SignSet::from_ordering(simple_total.cmp(&Q::zero())),
         )));
     }
     // Integer-offset simple poles: use harmonic numbers only if their
@@ -2730,15 +2775,14 @@ fn geometric_poly_infinite(
         Some(true) => {}
         Some(false) => {
             // Divergent: direction known only for positive ratio & rational sign.
-            let y_pos = const_sign(arena, y) == Some(true);
+            let y_pos = const_sign(arena, y) == SignSet::POSITIVE;
             let lead = poly.last().map(|(_, c)| *c);
-            let sign = if y_pos {
-                lead.and_then(|l| {
+            let sign = match lead {
+                Some(l) if y_pos => {
                     let lc = arena.mul(&[c, l]);
                     const_sign(arena, lc)
-                })
-            } else {
-                None
+                }
+                _ => SignSet::UNKNOWN,
             };
             return Some(SumOutcome::Divergent(infinity_of_sign(arena, sign)));
         }
@@ -3051,8 +3095,8 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
                 // factor that may vanish (an unassumed `x` was "divergent").
                 SumOutcome::Divergent(_) if !const_nonzero(arena, c) => SumOutcome::Unevaluated,
                 SumOutcome::Divergent(Some(inf)) => match const_sign(arena, c) {
-                    Some(true) => SumOutcome::Divergent(Some(inf)),
-                    Some(false) => {
+                    SignSet::POSITIVE => SumOutcome::Divergent(Some(inf)),
+                    SignSet::NEGATIVE => {
                         let flipped = if inf == arena.infinity {
                             arena.neg_infinity
                         } else {
@@ -3060,7 +3104,7 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
                         };
                         SumOutcome::Divergent(Some(flipped))
                     }
-                    None => SumOutcome::Divergent(None),
+                    _ => SumOutcome::Divergent(None),
                 },
                 other => other,
             };
@@ -3407,22 +3451,28 @@ fn alternating_rational_infinite(
 
 /// Eventual sign of `body(k)` for large `k`, when structurally obvious:
 /// a hypergeometric monomial with a non-alternating sign and positive
-/// geometric base has the sign of its constant.
-fn eventual_sign(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<bool> {
-    let shape = term_shape(arena, body, var)?;
-    if shape.alternating {
-        return None;
+/// geometric base has the sign of its constant (`UNKNOWN` otherwise).
+fn eventual_sign(arena: &mut Arena, body: ExprId, var: ExprId) -> SignSet {
+    let Some(shape) = term_shape(arena, body, var) else {
+        return SignSet::UNKNOWN;
+    };
+    if shape.alternating || shape.numeric_base.is_negative() {
+        return SignSet::UNKNOWN;
     }
     for (b, a) in &shape.bases {
-        if a.is_integer() && a.to_integer().to_i64()? % 2 == 0 {
-            continue;
+        let even = if a.is_integer() {
+            a.to_integer().to_i64().map(|n| n % 2 == 0)
+        } else {
+            Some(false)
+        };
+        match even {
+            Some(true) => continue,
+            None => return SignSet::UNKNOWN,
+            Some(false) => {}
         }
-        if const_sign(arena, *b) != Some(true) {
-            return None;
+        if const_sign(arena, *b) != SignSet::POSITIVE {
+            return SignSet::UNKNOWN;
         }
-    }
-    if shape.numeric_base.is_negative() {
-        return None;
     }
     const_sign(arena, shape.constant)
 }
@@ -3623,7 +3673,7 @@ fn negative_binomial_series(
             if c_val.is_negative() {
                 return None;
             }
-            let sign = if const_sign(arena, x) == Some(true) {
+            let sign = if const_sign(arena, x) == SignSet::POSITIVE {
                 // Leading coefficient of P (1 when there is no polynomial).
                 let lead = if poly_factors.is_empty() {
                     arena.one
@@ -3637,7 +3687,7 @@ fn negative_binomial_series(
                 let lc = mul_all(arena, &all);
                 const_sign(arena, lc)
             } else {
-                None
+                SignSet::UNKNOWN
             };
             return Some(SumOutcome::Divergent(infinity_of_sign(arena, sign)));
         }
@@ -4098,10 +4148,10 @@ fn power_series_infinite(
         match in_domain(arena, x, entry.domain) {
             Some(true) => {}
             Some(false) => {
-                let sign = if !shape_alternating && const_sign(arena, x) == Some(true) {
+                let sign = if !shape_alternating && const_sign(arena, x) == SignSet::POSITIVE {
                     const_sign(arena, coeff)
                 } else {
-                    None
+                    SignSet::UNKNOWN
                 };
                 return Some(SumOutcome::Divergent(infinity_of_sign(arena, sign)));
             }

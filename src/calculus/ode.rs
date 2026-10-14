@@ -6096,7 +6096,7 @@ fn rootof_char_roots(
         let root = arena.intern(ExprNode::RootOf(g_expr, bound, idx));
         if ball.real {
             out.push(CharRoot::Real(root));
-        } else if ball.value.1.is_positive() {
+        } else if crate::base::bigfloat::is_sign_positive(&ball.value.1) {
             let re = arena.re(root);
             let im = arena.im(root);
             out.push(CharRoot::Pair { re, im });

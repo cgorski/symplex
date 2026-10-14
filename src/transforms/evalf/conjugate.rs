@@ -43,6 +43,7 @@
 //!
 //! [`Func::spec`]: crate::base::func::Func::spec
 
+use crate::base::bigfloat::is_strictly_positive;
 use std::hash::{Hash, Hasher};
 
 use astro_float::BigFloat;
@@ -139,14 +140,14 @@ fn certainly_nonzero(x: &BigFloat, e: accuracy::ErrExp) -> bool {
 
 /// Is `z ± b` certainly off the cut `(−∞, 0]`?
 fn off_negative_axis(z: &Complex, b: Bound) -> bool {
-    certainly_nonzero(&z.1, b.im) || (z.0.is_positive() && certainly_nonzero(&z.0, b.re))
+    certainly_nonzero(&z.1, b.im) || (is_strictly_positive(&z.0) && certainly_nonzero(&z.0, b.re))
 }
 
 /// `re z − 1`, exactly enough to decide its sign against the bound.
 fn re_minus_one(z: &Complex) -> BigFloat {
     let one = BigFloat::from_i32(1, 64);
     let p = z.0.mantissa_max_bit_len().unwrap_or(64) + 64;
-    z.0.sub(&one, p, astro_float::RoundingMode::ToEven)
+    z.0.sub(&one, p, super::wp::RM)
 }
 
 /// Is `z ± b` certainly off the cut `(−∞, 1]` (of `li`, `acosh`)?
@@ -155,7 +156,7 @@ fn off_below_one(z: &Complex, b: Bound) -> bool {
         return true;
     }
     let d = re_minus_one(z);
-    d.is_positive() && certainly_nonzero(&d, b.re)
+    is_strictly_positive(&d) && certainly_nonzero(&d, b.re)
 }
 
 /// Is `z ± b` certainly off the cut `[1, ∞)` (of `polylog`, `K`, `E`)?
@@ -226,7 +227,8 @@ impl Sigs {
             cache.get(c).is_some_and(|v| {
                 child_bound(c).is_exact()
                     && v.1.is_zero()
-                    && (v.0.is_zero() || (v.0.is_int() && (!nonnegative || v.0.is_positive())))
+                    && (v.0.is_zero()
+                        || (v.0.is_int() && (!nonnegative || is_strictly_positive(&v.0))))
             })
         };
         // The table's rule for a function applied to `args`.

@@ -5,7 +5,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
-use crate::base::libfn::LibFn;
+use crate::base::func::{Backend, Func, Kernel};
 use crate::base::node::{ExprId, ExprNode};
 use num_traits::ToPrimitive;
 use rustc_hash::FxHashMap;
@@ -1536,7 +1536,14 @@ fn expr_to_rust_cse(
             emit_rt_binary(arena, n, k, "binomial", var_names, options, cse_constants)
         }
         ExprNode::Apply(sid, ref apply_args) => match arena.lib_fn(sid) {
-            Some(f) => emit_rt_apply(arena, f, apply_args, var_names, options, cse_constants),
+            Some(f) => emit_rt_func(
+                arena,
+                Func::from(f),
+                apply_args,
+                var_names,
+                options,
+                cse_constants,
+            ),
             None => Err(SymplexError::NotImplemented(format!(
                 "cannot generate Rust code for user-defined Apply node `{}`",
                 arena.symbols.name(sid)
@@ -1558,6 +1565,7 @@ fn expr_to_rust_cse(
                 "(if ({code}).is_nan() {{ {nan} }} else {{ 0.0{s} }})"
             ))
         }
+        // Through the `rt` facet: the runtime helper, or the refusal.
         ExprNode::Conjugate(_)
         | ExprNode::Arg(_)
         | ExprNode::Si(_)
@@ -1566,11 +1574,13 @@ fn expr_to_rust_cse(
         | ExprNode::Li(_)
         | ExprNode::Zeta(_)
         | ExprNode::Polygamma(_, _)
-        | ExprNode::KroneckerDelta(_, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for conjugate/arg, Si/Ci/Ei/li, zeta, polygamma, \
-             or KroneckerDelta yet"
-                .to_string(),
-        )),
+        | ExprNode::KroneckerDelta(_, _) => match arena.node(id).func(arena) {
+            Some((f, args)) => emit_rt_func(arena, f, &args, var_names, options, cse_constants),
+            None => Err(SymplexError::NotImplemented(format!(
+                "cannot generate Rust code for `{}`",
+                arena.display(id)
+            ))),
+        },
         ExprNode::Derivative(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for unevaluated Derivative".to_string(),
         )),
@@ -2691,26 +2701,9 @@ fn const_order(arena: &Arena, id: ExprId, what: &str) -> Result<i32, SymplexErro
     )))
 }
 
-/// How a library function is lowered by the numeric back ends (`compile`,
-/// `to_rust_fn`, `to_c_fn`): the shared-runtime helper it calls, or the
-/// fact that the runtime has no implementation.
-///
-/// Exhaustive over [`LibFn`], so adding a function forces a decision here.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RtLowering {
-    /// `helper(order, x)` with a compile-time integer order/degree.
-    Ordered(&'static str),
-    /// `helper(x)`.
-    Unary(&'static str),
-    /// `helper(a, b)`.
-    Binary(&'static str),
-    /// No `f64` implementation in the shared runtime.
-    Unsupported,
-}
-
 /// The shared-runtime helper of a Lambert W call `lambertw(x[, k])`, which
-/// the numeric back ends lower by its branch (`rt_lowering` has no single
-/// helper for it): `lambert_w0` for the principal branch, `lambert_wm1` for
+/// the numeric back ends lower by its branch (the `rt` facet's
+/// [`Kernel::Branches`]): `lambert_w0` for the principal branch, `lambert_wm1` for
 /// `k = −1`.  Every other branch is complex-valued on the whole real axis
 /// and has no `f64` code.
 pub(crate) fn lambert_rt_helper(
@@ -2742,89 +2735,54 @@ pub(crate) fn lambert_rt_helper(
     }
 }
 
-/// The runtime lowering of `f`; every back end consults this one table.
-pub(crate) fn rt_lowering(f: LibFn) -> RtLowering {
-    match f {
-        LibFn::BesselJ => RtLowering::Ordered("bessel_j"),
-        LibFn::BesselY => RtLowering::Ordered("bessel_y"),
-        LibFn::BesselI => RtLowering::Ordered("bessel_i"),
-        LibFn::BesselK => RtLowering::Ordered("bessel_k"),
-        LibFn::Legendre => RtLowering::Ordered("legendre_p"),
-        LibFn::ChebyshevT => RtLowering::Ordered("chebyshev_t"),
-        LibFn::ChebyshevU => RtLowering::Ordered("chebyshev_u"),
-        LibFn::Hermite => RtLowering::Ordered("hermite_h"),
-        LibFn::Laguerre => RtLowering::Ordered("laguerre_l"),
-        LibFn::Fibonacci => RtLowering::Unary("fibonacci"),
-        LibFn::Lucas => RtLowering::Unary("lucas"),
-        LibFn::Harmonic => RtLowering::Unary("harmonic"),
-        LibFn::Factorial2 => RtLowering::Unary("factorial2"),
-        LibFn::ErfInv => RtLowering::Unary("erfinv"),
-        LibFn::ErfcInv => RtLowering::Unary("erfcinv"),
-        LibFn::RisingFactorial => RtLowering::Binary("rising_factorial"),
-        LibFn::FallingFactorial => RtLowering::Binary("falling_factorial"),
-        // No `f64` routine in `numeric_rt` (yet): the exact combinatorial
-        // counts and the 0.9 special functions other than the inverse error
-        // functions.  (`lambertw(x, k)` is lowered by its branch,
-        // `lambert_rt_helper`.)
-        LibFn::Subfactorial
-        | LibFn::Bernoulli
-        | LibFn::Catalan
-        | LibFn::Bell
-        | LibFn::EulerNumber
-        | LibFn::Stirling1
-        | LibFn::Stirling2
-        | LibFn::PartitionCount
-        | LibFn::LambertW
-        | LibFn::Erfi
-        | LibFn::ExpInt
-        | LibFn::Shi
-        | LibFn::Chi
-        | LibFn::FresnelS
-        | LibFn::FresnelC
-        | LibFn::LowerGamma
-        | LibFn::UpperGamma
-        | LibFn::PolyLog
-        | LibFn::DirichletEta
-        | LibFn::AiryAi
-        | LibFn::AiryBi
-        | LibFn::AiryAiPrime
-        | LibFn::AiryBiPrime
-        | LibFn::EllipticK
-        | LibFn::EllipticE
-        | LibFn::EllipticF
-        | LibFn::EllipticPi
-        | LibFn::Gegenbauer
-        | LibFn::Jacobi
-        | LibFn::AssocLegendre
-        | LibFn::AssocLaguerre
-        | LibFn::BetaInc
-        | LibFn::BetaIncRegularized => RtLowering::Unsupported,
+/// The runtime kernel of `f` in the back end `b` (the `rt` facet of the
+/// function table, which every numeric back end reads), or the refusal:
+/// `what` is the back end's "cannot generate … code for" prefix.
+pub(crate) fn rt_kernel(f: Func, b: Backend, what: &str) -> Result<Kernel, SymplexError> {
+    let rt = f.spec().rt;
+    match rt.kernel {
+        Kernel::Unary(_) | Kernel::Binary(_) | Kernel::Ordered(_) | Kernel::Branches(_)
+            if rt.on(b) =>
+        {
+            Ok(rt.kernel)
+        }
+        _ => Err(SymplexError::NotImplemented(format!(
+            "{what} `{}`{}",
+            f.spec().name,
+            rt.elsewhere(b)
+        ))),
     }
 }
 
-/// Emit library `Apply` nodes (Bessel functions, orthogonal polynomials,
-/// integer sequences, factorial variants) through the shared runtime.
-fn emit_rt_apply(
+/// Emit a call of a function through the shared runtime: the library
+/// `Apply` nodes (Bessel functions, orthogonal polynomials, integer
+/// sequences, the integrals) and the node-backed functions whose `rt`
+/// facet names a helper (`Si`, `Ci`, `Ei`, `li`).
+fn emit_rt_func(
     arena: &Arena,
-    f: LibFn,
+    f: Func,
     args: &[ExprId],
     var_names: &[&str],
     options: &CodegenOptions,
     cse_constants: &FxHashMap<usize, f64>,
 ) -> Result<String, SymplexError> {
-    let fname = f.name();
+    let fname = f.spec().name;
     let arity_err = |n: usize| {
         SymplexError::NotImplemented(format!(
             "cannot generate code for `{fname}` with {} argument(s) (expected {n})",
             args.len()
         ))
     };
-    if f == LibFn::LambertW {
-        let helper = lambert_rt_helper(arena, args)?;
-        return emit_rt_unary(arena, args[0], helper, var_names, options, cse_constants);
-    }
-    match rt_lowering(f) {
-        RtLowering::Ordered(helper) => {
+    match rt_kernel(
+        f,
+        Backend::Rust,
+        "cannot generate Rust code for the special function",
+    )? {
+        Kernel::Branches(_) => {
+            let helper = lambert_rt_helper(arena, args)?;
+            emit_rt_unary(arena, args[0], helper, var_names, options, cse_constants)
+        }
+        Kernel::Ordered(helper) => {
             let [order, x] = args else {
                 return Err(arity_err(2));
             };
@@ -2833,14 +2791,14 @@ fn emit_rt_apply(
             let call = rt_call(helper, Some(order), std::slice::from_ref(&x), options);
             Ok(wrap_domain_check(&call, &x, helper, options))
         }
-        RtLowering::Unary(helper) => {
+        Kernel::Unary(helper) => {
             let [x] = args else {
                 return Err(arity_err(1));
             };
             let x = expr_to_rust_cse(arena, *x, var_names, options, cse_constants)?;
             Ok(rt_call(helper, None, &[x], options))
         }
-        RtLowering::Binary(helper) => {
+        Kernel::Binary(helper) => {
             let [a, b] = args else {
                 return Err(arity_err(2));
             };
@@ -2848,7 +2806,8 @@ fn emit_rt_apply(
             let b = expr_to_rust_cse(arena, *b, var_names, options, cse_constants)?;
             Ok(rt_call(helper, None, &[a, b], options))
         }
-        RtLowering::Unsupported => Err(SymplexError::NotImplemented(format!(
+        // `rt_kernel` returns helper kernels only.
+        Kernel::Own | Kernel::None => Err(SymplexError::NotImplemented(format!(
             "cannot generate Rust code for the special function `{fname}`"
         ))),
     }
@@ -3819,5 +3778,95 @@ mod tests {
             "electric_potential"
         );
         assert_eq!(uom_type_to_module("AngularVelocity"), "angular_velocity");
+    }
+
+    /// `f` of symbols in a fresh arena, with a constant integer where the
+    /// `rt` kernel needs one (the order of `besselj(2, x)`, the branch of
+    /// `lambertw(x, -1)`).
+    fn sample_call(f: Func) -> (Arena, ExprId) {
+        use crate::base::func::ArgCount;
+        let mut a = Arena::new();
+        let n = match f.spec().arity {
+            ArgCount::Exactly(n) => usize::from(n),
+            ArgCount::Between { max, .. } => usize::from(max),
+            ArgCount::AtLeast(n) => usize::from(n).max(2),
+        };
+        let mut args: Vec<ExprId> = ["x", "y", "z", "t"][..n]
+            .iter()
+            .map(|s| a.symbol(s))
+            .collect();
+        match f.spec().rt.kernel {
+            Kernel::Ordered(_) => args[0] = a.int(2),
+            Kernel::Branches(_) => args[1] = a.int(-1),
+            _ => {}
+        }
+        let e = a.func(f, &args).unwrap_or_else(|e| panic!("{f:?}: {e}"));
+        (a, e)
+    }
+
+    /// The `rt` facet is what the four back ends do: each function compiles
+    /// or emits exactly in the back ends its facet claims (and every refusal
+    /// is `NotImplemented`).  Up to 0.49 each back end kept its own list
+    /// and they drifted: `compile` evaluated erfi, Shi, Chi, the Fresnel
+    /// integrals, Si, Ci, Ei and li, which `to_rust_fn` and `to_c_fn`
+    /// refused.
+    #[test]
+    fn the_rt_facet_is_what_every_back_end_does() {
+        use crate::output::codegen::codegen_py::{Target, to_expr_code};
+        let vars = ["x", "y", "z", "t"];
+        let mut wrong = Vec::new();
+        for &f in Func::ALL {
+            let rt = f.spec().rt;
+            let results = [
+                (Backend::Vm, {
+                    let (mut a, e) = sample_call(f);
+                    crate::output::lambdify::compile(&mut a, e, &vars).map(|_| ())
+                }),
+                (Backend::Rust, {
+                    let (mut a, e) = sample_call(f);
+                    to_rust_fn(&mut a, e, "f", &vars).map(|_| ())
+                }),
+                (Backend::C, {
+                    let (mut a, e) = sample_call(f);
+                    codegen_c::to_c_fn(&mut a, e, "f", &vars).map(|_| ())
+                }),
+                (Backend::Python, {
+                    let (mut a, e) = sample_call(f);
+                    to_expr_code(&mut a, e, Target::Python).map(|_| ())
+                }),
+            ];
+            for (b, r) in results {
+                match r {
+                    Ok(()) if rt.on(b) => {}
+                    Err(SymplexError::NotImplemented(_)) if !rt.on(b) => {}
+                    other => wrong.push(format!("{f:?} {b:?}: facet {} but {other:?}", rt.on(b))),
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// Every runtime helper of a function the `rt` facet claims for Rust is
+    /// a public function of the embedded runtime (`numeric_rt`).
+    #[test]
+    fn every_function_claimed_for_rust_has_its_helper() {
+        let helpers = rt_embed::all_helper_fns();
+        for &f in Func::ALL {
+            let rt = f.spec().rt;
+            assert!(
+                !matches!(rt.kernel, Kernel::None)
+                    || rt.backends == crate::base::func::Backends::NONE,
+                "{f:?}: no kernel, yet claimed"
+            );
+            if !rt.on(Backend::Rust) {
+                continue;
+            }
+            for h in rt.kernel.helpers() {
+                assert!(
+                    helpers.iter().any(|g| g == h),
+                    "{f:?}: no runtime helper `{h}`"
+                );
+            }
+        }
     }
 }

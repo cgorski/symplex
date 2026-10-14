@@ -92,7 +92,10 @@
 //! search at higher precisions gets its answer again at once.  Gauss–Legendre nodes (`O(n²)` operations
 //! each set) are cached per thread.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::ball::CBall;
+use super::wp::{RM, Wp};
+use crate::base::bigfloat;
+use astro_float::{BigFloat, Consts};
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -231,10 +234,9 @@ impl<'a> Integrand<'a> {
         &mut self,
         x: &BigFloat,
         x_err: ErrExp,
-        prec: usize,
-        rm: RoundingMode,
-        cc: &mut Consts,
-    ) -> Result<(Complex, Bound), SymplexError> {
+        w: &mut Wp<'_>,
+    ) -> Result<CBall, SymplexError> {
+        let prec = w.bits();
         if !self.scratch.contains_key(&prec) {
             if self.scratch.len() >= MAX_PRECISIONS {
                 self.scratch.clear();
@@ -242,7 +244,8 @@ impl<'a> Integrand<'a> {
             let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
             let mut errs = ErrMap::default();
             for (c, order) in &self.frontier {
-                if let Ok((v, b)) = evaluate_tree(self.arena, *c, order, None, false, prec, rm, cc)
+                if let Ok(CBall { mid: v, err: b }) =
+                    evaluate_tree(self.arena, *c, order, None, false, w)
                 {
                     cache.insert(*c, v);
                     errs.insert(*c, b);
@@ -257,13 +260,14 @@ impl<'a> Integrand<'a> {
         errs.insert(self.var, Bound::real(x_err));
         let mut failed: FxHashMap<ExprId, SymplexError> = FxHashMap::default();
         for &id in &self.dependent {
-            let evaluated = eval_node_with_error(self.arena, id, cache, errs, prec, rm, cc)
-                .and_then(
-                    |(v, b)| match exponent_range_error(self.arena, id, &v, cache, errs) {
-                        Some(e) => Err(e),
-                        None => Ok((v, b)),
-                    },
-                );
+            let evaluated = eval_node_with_error(self.arena, id, cache, errs, w).and_then(
+                |CBall { mid: v, err: b }| match exponent_range_error(
+                    self.arena, id, &v, cache, errs,
+                ) {
+                    Some(e) => Err(e),
+                    None => Ok((v, b)),
+                },
+            );
             match evaluated {
                 Ok((v, b)) => {
                     cache.insert(id, v);
@@ -287,7 +291,7 @@ impl<'a> Integrand<'a> {
                 reason: "the integrand has no value at a quadrature node".into(),
             })?;
         let bound = errs.get(&self.root).copied().unwrap_or(Bound::UNKNOWN);
-        Ok((value, bound))
+        Ok(CBall::new(value, bound))
     }
 }
 
@@ -466,8 +470,6 @@ pub(super) struct Quad<'a> {
     pe: usize,
     /// The highest precision a node may be evaluated at.
     p_cap: usize,
-    rm: RoundingMode,
-    /// The integrand evaluations left ([`MAX_EVALS`]).
     work: Work,
     ends: FxHashMap<(ExprId, usize), (BigFloat, ErrExp)>,
     /// The tanh-sinh abscissae computed so far, by level and index (shared
@@ -489,7 +491,6 @@ impl<'a> Quad<'a> {
         var: ExprId,
         variants: Vec<(End, bool, ExprId)>,
         prec: usize,
-        rm: RoundingMode,
     ) -> Self {
         let pe = prec + EVAL_GUARD;
         let max = arena.config.max_evalf_precision as usize;
@@ -502,7 +503,6 @@ impl<'a> Quad<'a> {
             prec,
             pe,
             p_cap: (12 * pe + 1024).min(max.max(pe)),
-            rm,
             work: Work::new(BudgetKind::QuadratureEvaluations, MAX_EVALS),
             ends: FxHashMap::default(),
             nodes: FxHashMap::default(),
@@ -519,12 +519,12 @@ impl<'a> Quad<'a> {
     pub(super) fn end_value(
         &mut self,
         e: &End,
-        p: usize,
-        cc: &mut Consts,
+        w: &mut Wp<'_>,
     ) -> Result<(BigFloat, ErrExp), SymplexError> {
+        let p = w.bits();
         match e {
             End::Rational(q) => {
-                let v = crate::base::numeric::ratio_to_bigfloat(q, p, self.rm);
+                let v = crate::base::numeric::ratio_to_bigfloat(q, p, RM);
                 let err = accuracy::rational_part(q, &v, p);
                 Ok((v, err))
             }
@@ -535,7 +535,8 @@ impl<'a> Quad<'a> {
                     return Ok(hit.clone());
                 }
                 let order = walk::post_order_ids(self.f.arena, *id);
-                let (v, b) = evaluate_tree(self.f.arena, *id, &order, None, true, p, self.rm, cc)?;
+                let CBall { mid: v, err: b } =
+                    evaluate_tree(self.f.arena, *id, &order, None, true, w)?;
                 if !accuracy::exact_zero(&v.1, b.im) || b.is_unknown() {
                     return Err(SymplexError::Unevaluable {
                         reason: "integration bounds of a definite integral must be real".into(),
@@ -557,27 +558,27 @@ impl<'a> Quad<'a> {
     }
 
     /// The tanh-sinh abscissa `t = j·2⁻ᵏ` at `pw` bits, computed once.
-    fn ts_node(&mut self, j: u64, k: u32, pw: usize, cc: &mut Consts) -> std::rc::Rc<TsNode> {
+    fn ts_node(&mut self, j: u64, k: u32, w: &mut Wp<'_>) -> std::rc::Rc<TsNode> {
         if let Some(n) = self.nodes.get(&(k, j)) {
             return n.clone();
         }
-        let n = std::rc::Rc::new(self.compute_ts_node(j, k, pw, cc));
+        let n = std::rc::Rc::new(self.compute_ts_node(j, k, w));
         self.nodes.insert((k, j), n.clone());
         n
     }
 
     /// [`Quad::ts_node`], computed.
-    fn compute_ts_node(&self, j: u64, k: u32, pw: usize, cc: &mut Consts) -> TsNode {
-        let rm = self.rm;
+    fn compute_ts_node(&self, j: u64, k: u32, wpc: &mut Wp<'_>) -> TsNode {
+        let pw = wpc.bits();
         let t = dyadic(j, k);
-        let pi = cc.pi(pw, rm);
-        let s = t.sinh(pw, rm, cc);
-        let c = t.cosh(pw, rm, cc);
-        let arg = pi.mul(&s, pw, rm); // π·sinh t = 2u
-        let q = arg.neg().exp(pw, rm, cc); // e^{−2u}
-        let opq = small(1).add(&q, pw, rm);
-        let delta = scale2(&q, 1).div(&opq, pw, rm); // 2q/(1 + q) = 1 − tanh u
-        let w = scale2(&pi.mul(&c, pw, rm).mul(&q, pw, rm), 1).div(&opq.mul(&opq, pw, rm), pw, rm);
+        let pi = wpc.cc.pi(pw, RM);
+        let s = t.sinh(pw, RM, wpc.cc);
+        let c = t.cosh(pw, RM, wpc.cc);
+        let arg = pi.mul(&s, pw, RM); // π·sinh t = 2u
+        let q = arg.neg().exp(pw, RM, wpc.cc); // e^{−2u}
+        let opq = small(1).add(&q, pw, RM);
+        let delta = scale2(&q, 1).div(&opq, pw, RM); // 2q/(1 + q) = 1 − tanh u
+        let w = scale2(&pi.mul(&c, pw, RM).mul(&q, pw, RM), 1).div(&opq.mul(&opq, pw, RM), pw, RM);
         // `exp` of an argument known to a relative 2^−pw loses its magnitude.
         let a = (j as f64 * (-(k as f64)).exp2()).sinh() * std::f64::consts::PI;
         let rel = (1.0 + a).log2() + 4.0 - pw as f64;
@@ -594,10 +595,9 @@ impl<'a> Quad<'a> {
         side: Option<Side>,
         node: Option<&TsNode>,
         k: u32,
-        p: usize,
-        cc: &mut Consts,
+        wpc: &mut Wp<'_>,
     ) -> Result<Placed, SymplexError> {
-        let rm = self.rm;
+        let p = wpc.bits();
         let pw = self.pe + NODE_GUARD;
         let step = -(k as i32);
         let (c, c_err) = half;
@@ -617,23 +617,23 @@ impl<'a> Quad<'a> {
         let two = small(2);
         let (Some(node), Some(side)) = (node, side) else {
             // The centre: s = 0, w = π/2.
-            let pi_half = scale2(&cc.pi(pw, rm), -1);
+            let pi_half = scale2(&wpc.cc.pi(pw, RM), -1);
             return Ok(match piece {
                 Piece::Finite(a, _) => {
-                    let (av, ae) = self.end_value(a, p, cc)?;
-                    let x = av.add(c, p, rm);
+                    let (av, ae) = self.end_value(a, wpc)?;
+                    let x = av.add(c, p, RM);
                     Placed {
                         x_err: accuracy::lsum(accuracy::lsum(ae, *c_err), ulp2(&x, p)),
                         x,
-                        w: scale2(&c.mul(&pi_half, pw, rm), step),
+                        w: scale2(&c.mul(&pi_half, pw, RM), step),
                         w_rel: accuracy::lsum(c_rel, 2.0 - pw as f64),
                         need: p,
                         which: None,
                     }
                 }
                 Piece::Upper(a) => {
-                    let (av, ae) = self.end_value(a, p, cc)?;
-                    let x = av.add(&one, p, rm);
+                    let (av, ae) = self.end_value(a, wpc)?;
+                    let x = av.add(&one, p, RM);
                     Placed {
                         x_err: accuracy::lsum(ae, ulp2(&x, p)),
                         x,
@@ -644,8 +644,8 @@ impl<'a> Quad<'a> {
                     }
                 }
                 Piece::Lower(b) => {
-                    let (bv, be) = self.end_value(b, p, cc)?;
-                    let x = bv.sub(&one, p, rm);
+                    let (bv, be) = self.end_value(b, wpc)?;
+                    let x = bv.sub(&one, p, RM);
                     Placed {
                         x_err: accuracy::lsum(be, ulp2(&x, p)),
                         x,
@@ -661,77 +661,77 @@ impl<'a> Quad<'a> {
         let base_rel = node.rel + 3.0;
         Ok(match (piece, side) {
             (Piece::Finite(a, _), Side::Lo) | (Piece::Finite(_, a), Side::Hi) => {
-                let dist = c.mul(d, pw, rm);
+                let dist = c.mul(d, pw, RM);
                 if let Some(i) = self.variant(a, side == Side::Lo) {
                     return Ok(Placed {
                         x_err: ulp2(&dist, pw),
                         x: dist,
-                        w: scale2(&c.mul(&node.w, pw, rm), step),
+                        w: scale2(&c.mul(&node.w, pw, RM), step),
                         w_rel: accuracy::lsum(c_rel, base_rel),
                         need: p,
                         which: Some(i),
                     });
                 }
-                let (av, ae) = self.end_value(a, p, cc)?;
+                let (av, ae) = self.end_value(a, wpc)?;
                 let x = if side == Side::Lo {
-                    av.add(&dist, p, rm)
+                    av.add(&dist, p, RM)
                 } else {
-                    av.sub(&dist, p, rm)
+                    av.sub(&dist, p, RM)
                 };
                 Placed {
                     x_err: accuracy::lsum(ae, ulp2(&x, p)),
                     need: need_for(&av, &dist, pe),
                     x,
-                    w: scale2(&c.mul(&node.w, pw, rm), step),
+                    w: scale2(&c.mul(&node.w, pw, RM), step),
                     w_rel: accuracy::lsum(c_rel, base_rel),
                     which: None,
                 }
             }
             // The finite end of a half-infinite piece: x = a ± δ/(2 − δ).
             (Piece::Upper(a), Side::Lo) | (Piece::Lower(a), Side::Hi) => {
-                let tmd = two.sub(d, pw, rm);
-                let dist = d.div(&tmd, pw, rm);
-                let factor = scale2(&one.div(&tmd.mul(&tmd, pw, rm), pw, rm), 1);
+                let tmd = two.sub(d, pw, RM);
+                let dist = d.div(&tmd, pw, RM);
+                let factor = scale2(&one.div(&tmd.mul(&tmd, pw, RM), pw, RM), 1);
                 if let Some(i) = self.variant(a, side == Side::Lo) {
                     return Ok(Placed {
                         x_err: ulp2(&dist, pw),
                         x: dist,
-                        w: scale2(&node.w.mul(&factor, pw, rm), step),
+                        w: scale2(&node.w.mul(&factor, pw, RM), step),
                         w_rel: base_rel + 1.0,
                         need: p,
                         which: Some(i),
                     });
                 }
-                let (av, ae) = self.end_value(a, p, cc)?;
+                let (av, ae) = self.end_value(a, wpc)?;
                 let x = if side == Side::Lo {
-                    av.add(&dist, p, rm)
+                    av.add(&dist, p, RM)
                 } else {
-                    av.sub(&dist, p, rm)
+                    av.sub(&dist, p, RM)
                 };
                 Placed {
                     x_err: accuracy::lsum(ae, ulp2(&x, p)),
                     need: need_for(&av, &dist, pe),
                     x,
-                    w: scale2(&node.w.mul(&factor, pw, rm), step),
+                    w: scale2(&node.w.mul(&factor, pw, RM), step),
                     w_rel: base_rel + 1.0,
                     which: None,
                 }
             }
             // The infinite end: x = a − 1 + 2/δ, x = b + 1 − 2/δ.
             (Piece::Upper(a), Side::Hi) | (Piece::Lower(a), Side::Lo) => {
-                let far = scale2(&one.div(d, pw, rm), 1);
-                let (av, ae) = self.end_value(a, p, cc)?;
+                let far = scale2(&one.div(d, pw, RM), 1);
+                let (av, ae) = self.end_value(a, wpc)?;
                 let x = if side == Side::Hi {
-                    av.sub(&one, p, rm).add(&far, p, rm)
+                    av.sub(&one, p, RM).add(&far, p, RM)
                 } else {
-                    av.add(&one, p, rm).sub(&far, p, rm)
+                    av.add(&one, p, RM).sub(&far, p, RM)
                 };
-                let factor = scale2(&one.div(&d.mul(d, pw, rm), pw, rm), 1);
+                let factor = scale2(&one.div(&d.mul(d, pw, RM), pw, RM), 1);
                 Placed {
                     x_err: accuracy::lsum(ae, ulp2(&x, p)),
                     need: p,
                     x,
-                    w: scale2(&node.w.mul(&factor, pw, rm), step),
+                    w: scale2(&node.w.mul(&factor, pw, RM), step),
                     w_rel: base_rel + 1.0,
                     which: None,
                 }
@@ -754,23 +754,22 @@ impl<'a> Quad<'a> {
         budget: ErrExp,
         cc: &mut Consts,
     ) -> Result<Term, SymplexError> {
-        let rm = self.rm;
         let psum = self.pe + SUM_GUARD;
         let mut p = self.pe;
         loop {
             self.work.charge(1, "evalf")?;
-            let placed = self.place(piece, half, side, node, k, p, cc)?;
+            let placed = self.place(piece, half, side, node, k, &mut Wp::new(p, cc))?;
             let f = match placed.which.and_then(|i| self.variants.get_mut(i)) {
                 Some((_, _, g)) => g,
                 None => &mut self.f,
             };
-            let evaluated = f.eval(&placed.x, placed.x_err, p, rm, cc);
+            let evaluated = f.eval(&placed.x, placed.x_err, &mut Wp::new(p, cc));
             let next = match evaluated {
-                Ok((fv, fb))
+                Ok(CBall { mid: fv, err: fb })
                     if !fb.is_unknown()
                         && !(fv.0.is_nan() || fv.0.is_inf() || fv.1.is_nan() || fv.1.is_inf()) =>
                 {
-                    let value = (fv.0.mul(&placed.w, psum, rm), fv.1.mul(&placed.w, psum, rm));
+                    let value = (fv.0.mul(&placed.w, psum, RM), fv.1.mul(&placed.w, psum, RM));
                     let size = accuracy::lg_abs(&value);
                     let err = accuracy::lsum(
                         accuracy::lsum(
@@ -794,7 +793,7 @@ impl<'a> Quad<'a> {
                     };
                     return Err(not_converged(&format!(
                         "the integrand has no error bound at a node (x ≈ {}) even at {} bits{why}",
-                        super::bigfloat_to_f64_rounded(&placed.x, rm)
+                        super::f64_of(&placed.x)
                             .map_or_else(|_| "?".to_string(), |v| format!("{v:e}")),
                         self.p_cap
                     )));
@@ -807,14 +806,13 @@ impl<'a> Quad<'a> {
 
     /// Integrate one piece by tanh-sinh, levels 1 to at most [`MAX_LEVEL`].
     fn piece(&mut self, piece: &Piece, cc: &mut Consts) -> Result<PieceOut, QuadError> {
-        let rm = self.rm;
         let psum = self.pe + SUM_GUARD;
         let pw = self.pe + NODE_GUARD;
         let half = match piece {
             Piece::Finite(a, b) => {
-                let (av, ae) = self.end_value(a, pw, cc)?;
-                let (bv, be) = self.end_value(b, pw, cc)?;
-                let c = scale2(&bv.sub(&av, pw, rm), -1);
+                let (av, ae) = self.end_value(a, &mut Wp::new(pw, cc))?;
+                let (bv, be) = self.end_value(b, &mut Wp::new(pw, cc))?;
+                let c = scale2(&bv.sub(&av, pw, RM), -1);
                 let err = accuracy::lsum(accuracy::lsum(ae, be), ulp2(&c, pw));
                 (c, err)
             }
@@ -833,7 +831,7 @@ impl<'a> Quad<'a> {
             accuracy::lsum(accuracy::lg_abs(&centre.value), centre.err),
         );
         rerr = accuracy::lsum(rerr, centre.err);
-        sum = c_add(&sum, &centre.value, psum, rm);
+        sum = c_add(&sum, &centre.value, psum, RM);
         additions += 1;
         // The walk outwards on each side: the level-1 terms' sizes, until
         // two in a row are negligible (and not before `t = 3`).
@@ -845,14 +843,14 @@ impl<'a> Quad<'a> {
                 if j > T_MAX_HALVES {
                     return Err(QuadError::NotDecaying);
                 }
-                let node = self.ts_node(j, 1, pw, cc);
+                let node = self.ts_node(j, 1, &mut Wp::new(pw, cc));
                 let budget = accuracy::shift(l1, -((self.pe as f64) + 8.0));
                 let t = self.term(piece, &half, Some(side), Some(node.as_ref()), 1, budget, cc)?;
                 real &= t.real;
                 let size = accuracy::lsum(accuracy::lg_abs(&t.value), t.err);
                 l1 = accuracy::lsum(l1, size);
                 rerr = accuracy::lsum(rerr, t.err);
-                sum = c_add(&sum, &t.value, psum, rm);
+                sum = c_add(&sum, &t.value, psum, RM);
                 additions += 1;
                 sizes[si].push(size);
                 let threshold = accuracy::shift(l1, -((self.pe as f64) + 8.0));
@@ -914,24 +912,24 @@ impl<'a> Quad<'a> {
                 let top = ends[si] << (k - 1);
                 let mut j = 1u64;
                 while j <= top {
-                    let node = self.ts_node(j, k, pw, cc);
+                    let node = self.ts_node(j, k, &mut Wp::new(pw, cc));
                     let t =
                         self.term(piece, &half, Some(side), Some(node.as_ref()), k, budget, cc)?;
                     real &= t.real;
                     level_l1 =
                         accuracy::lsum(level_l1, accuracy::lsum(accuracy::lg_abs(&t.value), t.err));
                     level_err = accuracy::lsum(level_err, t.err);
-                    level = c_add(&level, &t.value, psum, rm);
+                    level = c_add(&level, &t.value, psum, RM);
                     additions += 1;
                     j += 2;
                 }
             }
             let halved = (scale2(&prev.0, -1), scale2(&prev.1, -1));
-            sum = c_add(&halved, &level, psum, rm);
+            sum = c_add(&halved, &level, psum, RM);
             additions += 1;
             l1 = accuracy::lsum(accuracy::shift(l1, -1.0), level_l1);
             rerr = accuracy::lsum(accuracy::shift(rerr, -1.0), level_err);
-            let diff = accuracy::lg_abs(&c_sub(&sum, &prev, psum, rm));
+            let diff = accuracy::lg_abs(&c_sub(&sum, &prev, psum, RM));
             let rounding = accuracy::shift(l1, (additions as f64).log2() + 1.0 - psum as f64);
             let r = accuracy::lsum(rerr, rounding);
             let e = accuracy::lsum(accuracy::lsum(diff, r), tail);
@@ -1022,7 +1020,7 @@ impl<'a> Quad<'a> {
         if let Some(n) = hit {
             return n;
         }
-        let nodes = std::rc::Rc::new(gauss_legendre(m, pw, self.rm));
+        let nodes = std::rc::Rc::new(gauss_legendre(m, pw));
         GL_NODES.with(|c| {
             let mut c = c.borrow_mut();
             if c.len() >= GL_CACHE {
@@ -1039,7 +1037,6 @@ impl<'a> Quad<'a> {
     /// so a smooth oscillating integrand needs several times fewer nodes,
     /// while an endpoint singularity does not converge.
     fn gl_piece(&mut self, piece: &Piece, cc: &mut Consts) -> Result<PieceOut, SymplexError> {
-        let rm = self.rm;
         let pe = self.pe;
         let psum = pe + SUM_GUARD;
         let pw = pe + NODE_GUARD;
@@ -1049,20 +1046,20 @@ impl<'a> Quad<'a> {
         // `transform_nodes`), `centre` holding `e ∓ 1`.
         let (centre, c, end_err, upper) = match piece {
             Piece::Finite(a, b) => {
-                let (av, ae) = self.end_value(a, pw, cc)?;
-                let (bv, be) = self.end_value(b, pw, cc)?;
-                let c = scale2(&bv.sub(&av, pw, rm), -1);
-                let mid = scale2(&av.add(&bv, pw, rm), -1);
+                let (av, ae) = self.end_value(a, &mut Wp::new(pw, cc))?;
+                let (bv, be) = self.end_value(b, &mut Wp::new(pw, cc))?;
+                let c = scale2(&bv.sub(&av, pw, RM), -1);
+                let mid = scale2(&av.add(&bv, pw, RM), -1);
                 let err = accuracy::lsum(accuracy::lsum(ae, be), ulp2(&mid, pw));
                 (mid, c, err, None)
             }
             Piece::Upper(a) => {
-                let (av, ae) = self.end_value(a, pw, cc)?;
-                (av.sub(&one, pw, rm), one.clone(), ae, Some(true))
+                let (av, ae) = self.end_value(a, &mut Wp::new(pw, cc))?;
+                (av.sub(&one, pw, RM), one.clone(), ae, Some(true))
             }
             Piece::Lower(b) => {
-                let (bv, be) = self.end_value(b, pw, cc)?;
-                (bv.add(&one, pw, rm), one.clone(), be, Some(false))
+                let (bv, be) = self.end_value(b, &mut Wp::new(pw, cc))?;
+                (bv.add(&one, pw, RM), one.clone(), be, Some(false))
             }
         };
         let rel_tol_bits = (self.prec - TARGET_GUARD.min(self.prec)) as f64;
@@ -1092,20 +1089,21 @@ impl<'a> Quad<'a> {
                     self.work.charge(1, "evalf")?;
                     let s = if sign { r.neg() } else { r.clone() };
                     let (x, weight) = match upper {
-                        None => (centre.add(&c.mul(&s, pw, rm), pe, rm), c.mul(w, pw, rm)),
+                        None => (centre.add(&c.mul(&s, pw, RM), pe, RM), c.mul(w, pw, RM)),
                         Some(up) => {
-                            let sp1 = s.add(&one, pw, rm);
-                            let u = scale2(&one.div(&sp1, pw, rm), 1);
+                            let sp1 = s.add(&one, pw, RM);
+                            let u = scale2(&one.div(&sp1, pw, RM), 1);
                             let x = if up {
-                                centre.add(&u, pe, rm)
+                                centre.add(&u, pe, RM)
                             } else {
-                                centre.sub(&u, pe, rm)
+                                centre.sub(&u, pe, RM)
                             };
-                            (x, scale2(&w.div(&sp1.mul(&sp1, pw, rm), pw, rm), 1))
+                            (x, scale2(&w.div(&sp1.mul(&sp1, pw, RM), pw, RM), 1))
                         }
                     };
                     let x_err = accuracy::lsum(end_err, ulp2(&x, pe));
-                    let (fv, fb) = self.f.eval(&x, x_err, pe, rm, cc)?;
+                    let CBall { mid: fv, err: fb } =
+                        self.f.eval(&x, x_err, &mut Wp::new(pe, cc))?;
                     if fb.is_unknown()
                         || fv.0.is_nan()
                         || fv.0.is_inf()
@@ -1114,7 +1112,7 @@ impl<'a> Quad<'a> {
                     {
                         return Err(not_converged("the integrand has no error bound at a node"));
                     }
-                    let value = (fv.0.mul(&weight, psum, rm), fv.1.mul(&weight, psum, rm));
+                    let value = (fv.0.mul(&weight, psum, RM), fv.1.mul(&weight, psum, RM));
                     let size = accuracy::lg_abs(&value);
                     let err = accuracy::lsum(
                         accuracy::lsum(
@@ -1126,14 +1124,14 @@ impl<'a> Quad<'a> {
                     real &= accuracy::exactly_real(&fv, fb);
                     l1 = accuracy::lsum(l1, accuracy::lsum(size, err));
                     rerr = accuracy::lsum(rerr, err);
-                    sum = c_add(&sum, &value, psum, rm);
+                    sum = c_add(&sum, &value, psum, RM);
                 }
             }
             let rounding =
                 accuracy::shift(l1, ((2 * list.len()) as f64).log2() + 1.0 - psum as f64);
             let r = accuracy::lsum(rerr, rounding);
             if let Some(p) = &prev {
-                let diff = accuracy::lg_abs(&c_sub(&sum, p, psum, rm));
+                let diff = accuracy::lg_abs(&c_sub(&sum, p, psum, RM));
                 let rel_tol = accuracy::shift(l1, -rel_tol_bits).max(self.abs_floor);
                 let tol = rel_tol.max(accuracy::shift(r, 1.0));
                 debug!(m, diff, tol, r, "quadrature: Gauss–Legendre degree done");
@@ -1162,7 +1160,6 @@ impl<'a> Quad<'a> {
     /// Integrate over `pieces`, bisecting a finite piece that does not
     /// converge.
     pub(super) fn run(&mut self, pieces: Vec<Piece>, cc: &mut Consts) -> Result<RunOut, QuadError> {
-        let rm = self.rm;
         let psum = self.pe + SUM_GUARD;
         let mut total = c_zero(psum);
         let mut err = accuracy::EXACT;
@@ -1259,7 +1256,7 @@ impl<'a> Quad<'a> {
                 }
                 continue;
             }
-            total = c_add(&total, &out.value, psum, rm);
+            total = c_add(&total, &out.value, psum, RM);
             err = accuracy::lsum(err, out.err);
             l1 = accuracy::lsum(l1, out.l1);
             self.abs_floor = accuracy::shift(
@@ -1303,7 +1300,7 @@ impl<'a> Quad<'a> {
             return Ok(End::Rational(if up { q + step } else { q - step }));
         }
         let p = self.pe + NODE_GUARD;
-        let (v, _) = self.end_value(e, p, cc)?;
+        let (v, _) = self.end_value(e, &mut Wp::new(p, cc))?;
         let one = small(1);
         let step = if v.abs().cmp(&one).is_some_and(|c| c > 0) {
             v.abs()
@@ -1311,9 +1308,9 @@ impl<'a> Quad<'a> {
             one
         };
         Ok(End::Float(if up {
-            v.add(&step, p, self.rm)
+            v.add(&step, p, RM)
         } else {
-            v.sub(&step, p, self.rm)
+            v.sub(&step, p, RM)
         }))
     }
 
@@ -1324,9 +1321,9 @@ impl<'a> Quad<'a> {
             return Ok(End::Rational((x + y) / BigInt::from(2)));
         }
         let p = self.pe + NODE_GUARD;
-        let (av, _) = self.end_value(a, p, cc)?;
-        let (bv, _) = self.end_value(b, p, cc)?;
-        Ok(End::Float(scale2(&av.add(&bv, p, self.rm), -1)))
+        let (av, _) = self.end_value(a, &mut Wp::new(p, cc))?;
+        let (bv, _) = self.end_value(b, &mut Wp::new(p, cc))?;
+        Ok(End::Float(scale2(&av.add(&bv, p, RM), -1)))
     }
 }
 
@@ -1424,7 +1421,7 @@ fn legendre_f64(n: usize, r: f64) -> (f64, f64) {
 /// `GaussLegendre.calc_nodes`, from the asymptotic first guess
 /// `cos(π(j − ¼)/(n + ½))` by Newton's iteration on the recurrence — in
 /// `f64` first, then doubling the correct bits at `pw` bits.
-fn gauss_legendre(m: u32, pw: usize, rm: RoundingMode) -> (Vec<(BigFloat, BigFloat)>, ErrExp) {
+fn gauss_legendre(m: u32, pw: usize) -> (Vec<(BigFloat, BigFloat)>, ErrExp) {
     let n: usize = 3 << m.saturating_sub(1);
     let nb = small(n as u64);
     let one = small(1);
@@ -1440,29 +1437,29 @@ fn gauss_legendre(m: u32, pw: usize, rm: RoundingMode) -> (Vec<(BigFloat, BigFlo
                 break;
             }
         }
-        let mut rb = BigFloat::from_f64(r, pw);
+        let mut rb = bigfloat::from_f64(r, pw);
         let mut bits = 40usize;
         let t4 = loop {
             let (mut t1, mut t2) = (one.clone(), BigFloat::new(pw));
             for jj in 1..=n as u64 {
-                let a = rb.mul(&t1, pw, rm).mul(&small(2 * jj - 1), pw, rm);
-                let b = t2.mul(&small(jj - 1), pw, rm);
-                let t3 = a.sub(&b, pw, rm).div(&small(jj), pw, rm);
+                let a = rb.mul(&t1, pw, RM).mul(&small(2 * jj - 1), pw, RM);
+                let b = t2.mul(&small(jj - 1), pw, RM);
+                let t3 = a.sub(&b, pw, RM).div(&small(jj), pw, RM);
                 t2 = t1;
                 t1 = t3;
             }
-            let den = rb.mul(&rb, pw, rm).sub(&one, pw, rm);
+            let den = rb.mul(&rb, pw, RM).sub(&one, pw, RM);
             let t4 = nb
-                .mul(&rb.mul(&t1, pw, rm).sub(&t2, pw, rm), pw, rm)
-                .div(&den, pw, rm);
-            rb = rb.sub(&t1.div(&t4, pw, rm), pw, rm);
+                .mul(&rb.mul(&t1, pw, RM).sub(&t2, pw, RM), pw, RM)
+                .div(&den, pw, RM);
+            rb = rb.sub(&t1.div(&t4, pw, RM), pw, RM);
             bits *= 2;
             if bits >= pw + 16 {
                 break t4;
             }
         };
-        let om = one.sub(&rb.mul(&rb, pw, rm), pw, rm);
-        let w = scale2(&one, 1).div(&om.mul(&t4.mul(&t4, pw, rm), pw, rm), pw, rm);
+        let om = one.sub(&rb.mul(&rb, pw, RM), pw, RM);
+        let w = scale2(&one, 1).div(&om.mul(&t4.mul(&t4, pw, RM), pw, RM), pw, RM);
         out.push((rb, w));
     }
     (out, (n as f64).log2() + 6.0 - pw as f64)
@@ -1610,29 +1607,28 @@ mod tests {
     use super::*;
 
     fn to_f64(x: &BigFloat) -> f64 {
-        super::super::bigfloat_to_f64_rounded(x, RoundingMode::ToEven).unwrap_or(f64::NAN)
+        super::super::f64_of(x).unwrap_or(f64::NAN)
     }
 
     /// The 12-point Gauss–Legendre rule (`m = 3`) integrates `x^22` exactly:
     /// `Σ w·(r²²·2) = 2/23`, and its weights sum to 2.
     #[test]
     fn gauss_legendre_nodes_are_exact_to_degree_2n_minus_1() {
-        let rm = RoundingMode::ToEven;
         let p = 200;
-        let (nodes, rel) = gauss_legendre(3, p, rm);
+        let (nodes, rel) = gauss_legendre(3, p);
         assert_eq!(nodes.len(), 6);
         assert!(rel < -180.0);
         let mut sum_w = BigFloat::new(p);
         let mut moment = BigFloat::new(p);
         for (r, w) in &nodes {
-            sum_w = sum_w.add(&scale2(w, 1), p, rm);
-            moment = moment.add(&scale2(&w.mul(&r.powi(22, p, rm), p, rm), 1), p, rm);
+            sum_w = sum_w.add(&scale2(w, 1), p, RM);
+            moment = moment.add(&scale2(&w.mul(&r.powi(22, p, RM), p, RM), 1), p, RM);
         }
         let two = small(2);
-        let exact = two.div(&small(23), p, rm);
-        assert!(lg(&sum_w.sub(&two, p, rm)) < -180.0, "{}", to_f64(&sum_w));
+        let exact = two.div(&small(23), p, RM);
+        assert!(lg(&sum_w.sub(&two, p, RM)) < -180.0, "{}", to_f64(&sum_w));
         assert!(
-            lg(&moment.sub(&exact, p, rm)) < -180.0,
+            lg(&moment.sub(&exact, p, RM)) < -180.0,
             "{}",
             to_f64(&moment)
         );

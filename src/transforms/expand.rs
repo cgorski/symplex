@@ -948,6 +948,14 @@ fn expand_pass(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
                     arena.intern(ExprNode::Apply(func_id, new_args))
                 }
             }
+            // Sets: rebuilt with their expanded elements and endpoints by the
+            // canonical constructors (`{(x+1)^2, x^2+2x+1}` merges).  Up to
+            // 0.49 the wildcard below kept `{3, (x+1)^2}` unexpanded.
+            ExprNode::FiniteSet(_)
+            | ExprNode::Interval(..)
+            | ExprNode::SetUnion(_)
+            | ExprNode::SetIntersection(_)
+            | ExprNode::SetComplement(..) => walk::rebuild_with_cache(arena, id, &cache),
             // Keep the wildcard for truly inert nodes (atoms handled earlier)
             _ => id,
         };

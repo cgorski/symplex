@@ -1076,9 +1076,12 @@ fn special_09_high_precision_and_errors() {
             .is_err()
     );
     // codegen reports the missing runtime clearly instead of panicking
-    // (`erfi` compiles since 0.48, see `v35_compile`; Airy Ai does not yet)
+    // (`erfi` compiles since 0.48, see `v35_compile`, and is emitted in
+    // Rust and C since 0.50; Airy Ai has no `f64` routine yet)
     let x = ctx.symbol("x");
     assert!(x.airyai().compile(&["x"]).is_err());
-    assert!(x.erfi().to_rust_fn("f", &["x"]).is_err());
-    assert!(x.erfi().to_c_fn("f", &["x"]).is_err());
+    assert!(x.airyai().to_rust_fn("f", &["x"]).is_err());
+    assert!(x.airyai().to_c_fn("f", &["x"]).is_err());
+    assert!(x.erfi().to_rust_fn("f", &["x"]).is_ok());
+    assert!(x.erfi().to_c_fn("f", &["x"]).is_ok());
 }

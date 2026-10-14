@@ -1,12 +1,13 @@
 //! Integer gcds and modular images behind the polynomial gcds.
 //!
 //! - [`int_gcd`]: the gcd of two integers by Lehmer's algorithm (Knuth,
-//!   TAOCP vol. 2, §4.5.2, Algorithm L).  `num-integer`'s gcd is the binary
-//!   (Stein) algorithm, about one bit per pass over the operands; Lehmer's
-//!   algorithm runs the Euclidean quotients on the leading 62 bits and
-//!   applies them to the full operands about 30 bits per pass.  Both are
-//!   quadratic; the integer gcds at the bottom of a heuristic gcd in four
-//!   variables have hundreds of thousands of digits.
+//!   TAOCP vol. 2, §4.5.2, Algorithm L), the crate's one implementation
+//!   (`base::numeric::gcd_big`, here since 0.50).  `num-integer`'s gcd is
+//!   the binary (Stein) algorithm, about one bit per pass over the
+//!   operands; Lehmer's algorithm runs the Euclidean quotients on the
+//!   leading 62 bits and applies them to the full operands about 30 bits
+//!   per pass.  Both are quadratic; the integer gcds at the bottom of a
+//!   heuristic gcd in four variables have hundreds of thousands of digits.
 //! - [`content`], [`ratio_reduced`], [`int_lcm`], [`rat_add`], [`rat_mul`]:
 //!   contents, reduced fractions and fraction arithmetic with it.
 //! - [`heu_gcd`]: the heuristic gcd in `ℤ[x₁, …, xₙ]` (SymPy's
@@ -26,51 +27,22 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use num_bigint::{BigInt, BigUint, Sign};
+use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use super::modpoly::{Fp64, PolyIn, RingOps};
+use super::multipoly::Exps;
 use crate::base::rng::SplitMix64;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Integer gcd
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// `gcd(a, b) ≥ 0` (`gcd(0, 0) = 0`), equal to `num_integer::Integer::gcd`.
-/// Operands of one or two words take a machine gcd.
+/// `gcd(a, b) ≥ 0` (`gcd(0, 0) = 0`), equal to `num_integer::Integer::gcd`:
+/// Lehmer's algorithm, [`crate::base::numeric::gcd_big`].
 pub(crate) fn int_gcd(a: &BigInt, b: &BigInt) -> BigInt {
-    let (x, y) = (a.magnitude(), b.magnitude());
-    if let (Some(x), Some(y)) = (x.to_u64(), y.to_u64()) {
-        return BigInt::from(gcd_u64(x, y));
-    }
-    if x.bits() <= 128 && y.bits() <= 128 {
-        let (x, y) = (x.to_u128().unwrap_or(0), y.to_u128().unwrap_or(0));
-        return BigInt::from(gcd_u128(x.max(y), x.min(y)));
-    }
-    BigInt::from_biguint(Sign::Plus, uint_gcd(x, y))
-}
-
-/// Binary gcd on words.
-fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
-    if a == 0 {
-        return b;
-    }
-    if b == 0 {
-        return a;
-    }
-    let shift = (a | b).trailing_zeros();
-    a >>= a.trailing_zeros();
-    loop {
-        b >>= b.trailing_zeros();
-        if a > b {
-            std::mem::swap(&mut a, &mut b);
-        }
-        b -= a;
-        if b == 0 {
-            return a << shift;
-        }
-    }
+    crate::base::numeric::gcd_big(a, b)
 }
 
 /// The gcd of the integers in `xs`, non-negative (`0` when there are none or
@@ -181,174 +153,6 @@ pub(crate) fn int_lcm(a: &BigInt, b: &BigInt) -> BigInt {
         return BigInt::zero();
     }
     (a / int_gcd(a, b) * b).abs()
-}
-
-/// Lehmer's gcd of two natural numbers.
-///
-/// The operands are kept as little-endian `u64` limb vectors, and each
-/// cosequence matrix is applied to both in one pass in place
-/// ([`lehmer_apply`]); a quotient too long for the leading word is one
-/// multiprecision division.
-fn uint_gcd(a: &BigUint, b: &BigUint) -> BigUint {
-    let (mut u, mut v) = if a >= b {
-        (a.to_u64_digits(), b.to_u64_digits())
-    } else {
-        (b.to_u64_digits(), a.to_u64_digits())
-    };
-    loop {
-        limbs_trim(&mut u);
-        limbs_trim(&mut v);
-        if v.len() <= 2 {
-            // Two words: finish with a division and machine gcds.
-            let (ub, vb) = (limbs_to_big(&u), limbs_to_big(&v));
-            if vb.is_zero() {
-                return ub;
-            }
-            let r = (&ub % &vb).to_u128().unwrap_or(0);
-            return BigUint::from(gcd_u128(vb.to_u128().unwrap_or(0), r));
-        }
-        let (ubits, vbits) = (limbs_bits(&u), limbs_bits(&v));
-        let division_step = |u: &mut Vec<u64>, v: &mut Vec<u64>| {
-            let (ub, vb) = (limbs_to_big(u), limbs_to_big(v));
-            let r = &ub % &vb;
-            *u = std::mem::take(v);
-            *v = r.to_u64_digits();
-        };
-        // A quotient longer than half a word: one multiprecision division.
-        if ubits - vbits > 32 {
-            division_step(&mut u, &mut v);
-            continue;
-        }
-        let shift = ubits - 62;
-        let x = limbs_window(&u, shift) & ((1 << 62) - 1);
-        let y = limbs_window(&v, shift) & ((1 << 62) - 1);
-        let coeffs = lehmer_cosequence(x, y);
-        let bounded = coeffs.iter().all(|c| c.unsigned_abs() < 1u64 << 62);
-        if coeffs[1] == 0 || !bounded {
-            division_step(&mut u, &mut v);
-            continue;
-        }
-        // (u, v) ← (A·u + B·v, C·u + D·v): two consecutive remainders of
-        // Euclid's sequence (the matrix is a product of the true quotient
-        // steps, unimodular, so the gcd is unchanged in any case).
-        v.resize(u.len(), 0);
-        if !lehmer_apply(&mut u, &mut v, coeffs) {
-            // Not reached (the quotients are exact); start over from the
-            // values with BigUint arithmetic, which is always correct.
-            return uint_gcd_simple(a, b);
-        }
-        limbs_trim(&mut u);
-        limbs_trim(&mut v);
-        if limbs_cmp(&u, &v) == std::cmp::Ordering::Less {
-            std::mem::swap(&mut u, &mut v);
-        }
-    }
-}
-
-/// The Euclidean algorithm with `num-integer`'s gcd, the fallback of
-/// [`uint_gcd`].
-fn uint_gcd_simple(a: &BigUint, b: &BigUint) -> BigUint {
-    a.gcd(b)
-}
-
-/// `(u, v) ← (A·u + B·v, C·u + D·v)` in place, for limb vectors of the same
-/// length and cofactors below `2⁶²` in magnitude; `false` (operands
-/// unspecified) if a result would be negative or overflow, which a Lehmer
-/// cosequence rules out.
-fn lehmer_apply(u: &mut [u64], v: &mut [u64], [a, b, c, d]: [i64; 4]) -> bool {
-    let (a, b, c, d) = (i128::from(a), i128::from(b), i128::from(c), i128::from(d));
-    let (mut cu, mut cv) = (0i128, 0i128);
-    for (ui, vi) in u.iter_mut().zip(v.iter_mut()) {
-        let (x, y) = (i128::from(*ui), i128::from(*vi));
-        let su = a * x + b * y + cu;
-        let sv = c * x + d * y + cv;
-        *ui = su as u64;
-        *vi = sv as u64;
-        cu = su >> 64;
-        cv = sv >> 64;
-    }
-    cu == 0 && cv == 0
-}
-
-fn limbs_trim(x: &mut Vec<u64>) {
-    while x.last() == Some(&0) {
-        x.pop();
-    }
-}
-
-fn limbs_bits(x: &[u64]) -> u64 {
-    x.last().map_or(0, |&top| {
-        64 * (x.len() as u64 - 1) + (64 - u64::from(top.leading_zeros()))
-    })
-}
-
-/// The 64 bits of `x` starting at bit `shift`.
-fn limbs_window(x: &[u64], shift: u64) -> u64 {
-    let (w, off) = ((shift / 64) as usize, (shift % 64) as u32);
-    let lo = x.get(w).copied().unwrap_or(0) >> off;
-    let hi = if off == 0 {
-        0
-    } else {
-        x.get(w + 1).copied().unwrap_or(0) << (64 - off)
-    };
-    lo | hi
-}
-
-fn limbs_cmp(x: &[u64], y: &[u64]) -> std::cmp::Ordering {
-    x.len()
-        .cmp(&y.len())
-        .then_with(|| x.iter().rev().cmp(y.iter().rev()))
-}
-
-fn limbs_to_big(x: &[u64]) -> BigUint {
-    let digits: Vec<u32> = x
-        .iter()
-        .flat_map(|&w| [w as u32, (w >> 32) as u32])
-        .collect();
-    BigUint::new(digits)
-}
-
-/// The cosequence `[A, B, C, D]` of Lehmer's inner loop for the leading
-/// 62 bits `x ≥ y` (taken with the same shift) of `u ≥ v`: Euclid's
-/// quotients of `x/y` are emulated as long as they provably agree with
-/// those of `u/v` (Knuth's test with `(x + A)/(y + C)` and
-/// `(x + B)/(y + D)`).  `B = 0` means no quotient was certain.  Every
-/// cosequence value is at most `x < 2⁶²` in magnitude (Knuth), so the
-/// sums fit an `i64` and the updates, whose results do, are computed with
-/// wrapping products.
-fn lehmer_cosequence(x: u64, y: u64) -> [i64; 4] {
-    let (mut a, mut b, mut c, mut d) = (1i64, 0i64, 0i64, 1i64);
-    let (mut x, mut y) = (x as i64, y as i64);
-    loop {
-        let (yc, yd) = (y + c, y + d);
-        if yc <= 0 || yd <= 0 {
-            break;
-        }
-        let (xa, xb) = (x + a, x + b);
-        if xa < 0 || xb < 0 {
-            break;
-        }
-        let q = xa / yc;
-        if q != xb / yd {
-            break;
-        }
-        (a, c) = (c, a.wrapping_sub(q.wrapping_mul(c)));
-        (b, d) = (d, b.wrapping_sub(q.wrapping_mul(d)));
-        (x, y) = (y, x.wrapping_sub(q.wrapping_mul(y)));
-        if [a, b, c, d].iter().any(|t| t.unsigned_abs() >= 1u64 << 62) {
-            // Outside the proven range (not reached): stop with the last
-            // step undone by the caller's bound check.
-            break;
-        }
-    }
-    [a, b, c, d]
-}
-
-fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -739,8 +543,9 @@ pub(crate) fn coprime_certified<'a>(
 
 /// A sparse polynomial with integer coefficients, keyed by exponent
 /// vectors in lexicographic order (the last variable least significant);
-/// no zero coefficients.  The working form of [`heu_gcd`].
-pub(crate) type ZMap = std::collections::BTreeMap<Vec<u32>, BigInt>;
+/// no zero coefficients.  The working form of [`heu_gcd`].  The keys are
+/// stored inline up to six variables (`Exps`, ordered like `Vec<u32>`).
+pub(crate) type ZMap = std::collections::BTreeMap<Exps, BigInt>;
 
 /// Maximum number of evaluation points tried by [`heu_gcd`] at one level.
 const HEU_GCD_MAX_TRIES: usize = 6;
@@ -787,10 +592,10 @@ pub(crate) fn heu_gcd(nv: usize, f: &ZMap, g: &ZMap) -> Option<HeuGcd> {
     let c = int_gcd(&cf, &cg);
     let f = zmap_div_scalar(f, &c);
     let g = zmap_div_scalar(g, &c);
-    let one = || ZMap::from([(vec![0u32; nv], BigInt::one())]);
+    let one = || ZMap::from([(Exps::from_elem(0, nv), BigInt::one())]);
     let constant_of = |p: &ZMap| -> Option<BigInt> {
         match p.len() {
-            1 => p.get(&vec![0u32; nv]).cloned(),
+            1 => p.get(&Exps::from_elem(0, nv)).cloned(),
             _ => None,
         }
     };
@@ -801,7 +606,7 @@ pub(crate) fn heu_gcd(nv: usize, f: &ZMap, g: &ZMap) -> Option<HeuGcd> {
         if k.is_zero() {
             return None;
         }
-        let h = ZMap::from([(vec![0u32; nv], &k * &c)]);
+        let h = ZMap::from([(Exps::from_elem(0, nv), &k * &c)]);
         return Some(HeuGcd {
             h,
             cff: zmap_div_scalar(&f, &k),
@@ -913,7 +718,7 @@ fn eval_last(nv: usize, p: &ZMap, xi: &BigInt) -> ZMap {
     let mut out = ZMap::new();
     for (e, c) in p {
         let term = c * &pows[e[nv - 1] as usize];
-        *out.entry(e[..nv - 1].to_vec()).or_default() += term;
+        *out.entry(Exps::from_slice(&e[..nv - 1])).or_default() += term;
     }
     out.retain(|_, c| !c.is_zero());
     out
@@ -935,7 +740,7 @@ fn interpolate(h: &ZMap, xi: &BigInt) -> ZMap {
             rest -= &d;
             rest /= xi;
             if !d.is_zero() {
-                let mut k = Vec::with_capacity(e.len() + 1);
+                let mut k = Exps::with_capacity(e.len() + 1);
                 k.extend_from_slice(e);
                 k.push(i);
                 out.insert(k, d);
@@ -995,13 +800,13 @@ pub(crate) fn zmap_div_exact(f: &ZMap, h: &ZMap) -> Option<ZMap> {
         if e.iter().zip(he).any(|(a, b)| a < b) {
             return None;
         }
-        let qe: Vec<u32> = e.iter().zip(he).map(|(a, b)| a - b).collect();
+        let qe: Exps = e.iter().zip(he).map(|(a, b)| a - b).collect();
         let (qc, rem) = c.div_rem(hc);
         if !rem.is_zero() {
             return None;
         }
         for (e2, c2) in h {
-            let k: Vec<u32> = e2.iter().zip(&qe).map(|(a, b)| a + b).collect();
+            let k: Exps = e2.iter().zip(&qe).map(|(a, b)| a + b).collect();
             if k.iter().zip(&df).any(|(a, b)| a > b) {
                 return None;
             }
@@ -1132,8 +937,8 @@ mod tests {
                     .all(|n| !is_prime_u64(n))
             );
         }
-        assert_eq!(gcd_u64(0, 12), 12);
-        assert_eq!(gcd_u64(48, 180), 12);
+        assert_eq!(crate::base::numeric::gcd_u64(0, 12), 12);
+        assert_eq!(crate::base::numeric::gcd_u64(48, 180), 12);
         assert_eq!(
             int_gcd(
                 &b("-340282366920938463463374607431768211455"),
@@ -1191,7 +996,7 @@ mod tests {
         cs.iter()
             .enumerate()
             .filter(|(_, c)| **c != 0)
-            .map(|(i, &c)| (vec![i as u32], BigInt::from(c)))
+            .map(|(i, &c)| (Exps::from_slice(&[i as u32]), BigInt::from(c)))
             .collect()
     }
 
@@ -1210,7 +1015,7 @@ mod tests {
             let mut out = ZMap::new();
             for (ea, ca) in a {
                 for (eb, cb) in b {
-                    *out.entry(vec![ea[0] + eb[0]]).or_default() += ca * cb;
+                    *out.entry(Exps::from_slice(&[ea[0] + eb[0]])).or_default() += ca * cb;
                 }
             }
             out.retain(|_, c| !c.is_zero());

@@ -28,7 +28,8 @@
 //! * the ascending series of `I_ν` is refused when it would take more than
 //!   [`MAX_TERMS`] terms (its terms grow until `k(ν + k) = x²/4`).
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use astro_float::BigFloat;
 
 use crate::base::errors::SymplexError;
 
@@ -61,13 +62,13 @@ pub(super) fn is_odd(n: &BigFloat) -> bool {
 
 /// `ln|x|` in `f64` for a nonzero finite `x` at any exponent (`±∞` beyond
 /// the `f64` range of the logarithm, which no `BigFloat` reaches).
-fn ln_abs_f64(x: &BigFloat, rm: RoundingMode) -> f64 {
+fn ln_abs_f64(x: &BigFloat) -> f64 {
     let Some(e) = x.exponent() else {
         return f64::NEG_INFINITY;
     };
     let mut m = x.abs();
     m.set_exponent(0);
-    let mf = super::bigfloat_to_f64_rounded(&m, rm).unwrap_or(0.5);
+    let mf = super::f64_of(&m).unwrap_or(0.5);
     f64::from(e) * std::f64::consts::LN_2 + mf.ln()
 }
 
@@ -138,10 +139,9 @@ pub(super) fn power_over_gamma(
     x_half: &BigFloat,
     bounds: Lg2Bounds,
     what: &str,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Option<BigFloat>, SymplexError> {
+    let wp = w.bits();
     let min = f64::from(astro_float::EXPONENT_MIN) + MARGIN;
     let max = f64::from(astro_float::EXPONENT_MAX) - MARGIN;
     let decide = |l2: f64| -> Option<Result<Option<BigFloat>, SymplexError>> {
@@ -157,8 +157,8 @@ pub(super) fn power_over_gamma(
     };
     // An estimate first: the exponent and `ln Γ` of a huge order decide
     // without any work at the precision `L` would need.
-    let nu_f = super::bigfloat_to_f64_rounded(nu, rm)?;
-    let ln_xh = ln_abs_f64(x_half, rm);
+    let nu_f = super::f64_of(nu)?;
+    let ln_xh = ln_abs_f64(x_half);
     let t = nu_f * ln_xh;
     let (lg_est, lg_size) = if nu_f > 0.0 {
         let g = ln_gamma_f64(nu_f + 1.0);
@@ -192,17 +192,17 @@ pub(super) fn power_over_gamma(
     if nu_f > 0.0 && l2_est - slack > max {
         return Err(out_of_range(what, l2_est));
     }
-    let l = log_power_over_gamma(nu, x_half, wp, rm, cc)?;
-    let l2 = super::bigfloat_to_f64_rounded(&l, rm)? * std::f64::consts::LOG2_E;
+    let l = log_power_over_gamma(nu, x_half, w)?;
+    let l2 = super::f64_of(&l)? * std::f64::consts::LOG2_E;
     if let Some(r) = decide(l2) {
         return r;
     }
-    let v = l.exp(wp, rm, cc);
+    let v = l.exp(wp, RM, w.cc);
     if v.is_zero() || v.is_inf() || v.is_nan() {
         return Err(out_of_range(what, l2));
     }
     // Γ(ν + 1) < 0 between the poles −2m − 1 and −2m: ⌊ν + 1⌋ odd.
-    let nu1 = nu.add(&BigFloat::from_i32(1, 64), super::exact_bits(nu, wp), rm);
+    let nu1 = nu.add(&BigFloat::from_i32(1, 64), super::exact_bits(nu, wp), RM);
     let negative = nu1.is_negative() && is_odd(&nu1.floor());
     Ok(Some(if negative { v.neg() } else { v }))
 }
@@ -217,12 +217,11 @@ pub(super) fn power_over_gamma(
 pub(super) fn log_power_over_gamma(
     nu: &BigFloat,
     x_half: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
-    let nu_f = super::bigfloat_to_f64_rounded(nu, rm)?;
-    let t = nu_f * ln_abs_f64(x_half, rm);
+    let wp = w.bits();
+    let nu_f = super::f64_of(nu)?;
+    let t = nu_f * ln_abs_f64(x_half);
     let lg_size = if nu_f > 0.0 {
         ln_gamma_f64(nu_f + 1.0).abs()
     } else {
@@ -239,9 +238,9 @@ pub(super) fn log_power_over_gamma(
     }
     let lp = wp + 16 + size.log2().ceil().max(0.0) as usize;
     let one = BigFloat::from_i32(1, 64);
-    let nu1 = nu.add(&one, super::exact_bits(nu, lp), rm);
-    let lg = super::arb_log_gamma(&nu1, lp, rm, cc)?;
-    Ok(nu.mul(&x_half.ln(lp, rm, cc), lp, rm).sub(&lg.0, lp, rm))
+    let nu1 = nu.add(&one, super::exact_bits(nu, lp), RM);
+    let lg = super::arb_log_gamma(&nu1, &mut w.at(lp))?;
+    Ok(nu.mul(&x_half.ln(lp, RM, w.cc), lp, RM).sub(&lg.0, lp, RM))
 }
 
 /// The ascending series of `I_ν(x)` would take more than [`MAX_TERMS`]
@@ -324,16 +323,15 @@ pub(super) fn neumann_leading(
     kind: Second,
     n: &BigFloat,
     x: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Option<Result<BigFloat, SymplexError>> {
+    let prec = w.bits();
     let what = match kind {
         Second::Y => "bessely",
         Second::K => "besselk",
     };
-    let nf = super::bigfloat_to_f64_rounded(n, rm).ok()?;
-    let xf = super::bigfloat_to_f64_rounded(x, rm).ok()?;
+    let nf = super::f64_of(n).ok()?;
+    let xf = super::f64_of(x).ok()?;
     // `x² > 2(n − 1)`: the terms of `Y_n`'s sum (all positive) rise
     // first, see [`neumann_rising`]; `K_n`'s alternate and would cancel.
     let rising = xf * xf > 2.0 * (nf - 1.0);
@@ -344,7 +342,7 @@ pub(super) fn neumann_leading(
         return None;
     }
     let wp = prec + 40;
-    let ln_x2 = ln_abs_f64(x, rm) - std::f64::consts::LN_2;
+    let ln_x2 = ln_abs_f64(x) - std::f64::consts::LN_2;
     // The neglected parts over the first term `c_0 = 1`, in `log₂`: checked
     // here against it, or (rising terms) against the sum below.
     let (rest, last) = if rising {
@@ -370,13 +368,13 @@ pub(super) fn neumann_leading(
         (4 * wp) as u64
     };
     let two = BigFloat::from_i32(2, 64);
-    let x_half = x.div(&two, wp, rm);
+    let x_half = x.div(&two, wp, RM);
     // Γ(n)·(x/2)^(−n) = 1/((x/2)^(n−1)/Γ(n)) / (x/2): through
     // `power_over_gamma` of the order n − 1 (the series is at least ½, `K`,
     // and at most 2).
-    let nm1 = n.sub(&BigFloat::from_i32(1, 64), super::exact_bits(n, wp), rm);
+    let nm1 = n.sub(&BigFloat::from_i32(1, 64), super::exact_bits(n, wp), RM);
     let bounds = Lg2Bounds { lo: -1.0, hi: 1.0 };
-    let p = match power_over_gamma(&nm1, &x_half, bounds, what, wp, rm, cc) {
+    let p = match power_over_gamma(&nm1, &x_half, bounds, what, &mut w.at(wp)) {
         Ok(Some(p)) => p,
         // Its reciprocal: an underflow of the factor is an overflow here.
         Ok(None) => {
@@ -385,15 +383,15 @@ pub(super) fn neumann_leading(
         }
         Err(e) => return Some(Err(e)),
     };
-    let q = p.mul(&x_half, wp, rm).reciprocal(wp, rm);
-    let xh2 = x_half.mul(&x_half, wp, rm);
+    let q = p.mul(&x_half, wp, RM).reciprocal(wp, RM);
+    let xh2 = x_half.mul(&x_half, wp, RM);
     let mut c = BigFloat::from_i32(1, wp);
     let mut sum = c.clone();
     let mut k: u64 = 1;
     loop {
         let kb = BigFloat::from_u64(k, 64);
-        let nk = n.sub(&kb, super::exact_bits(n, wp), rm);
-        c = c.mul(&xh2, wp, rm).div(&kb.mul(&nk, wp, rm), wp, rm);
+        let nk = n.sub(&kb, super::exact_bits(n, wp), RM);
+        c = c.mul(&xh2, wp, RM).div(&kb.mul(&nk, wp, RM), wp, RM);
         // Rising terms: past their peak, falling by the ratio `r < 1` (and
         // by less after, up to the middle of the sum), the rest of them
         // below `c·r/(1 − r)` (`neumann_rising`).
@@ -418,9 +416,9 @@ pub(super) fn neumann_leading(
             return None;
         }
         sum = if kind == Second::K && k % 2 == 1 {
-            sum.sub(&c, wp, rm)
+            sum.sub(&c, wp, RM)
         } else {
-            sum.add(&c, wp, rm)
+            sum.add(&c, wp, RM)
         };
         if k as f64 >= nf - 1.0 {
             break;
@@ -443,16 +441,16 @@ pub(super) fn neumann_leading(
     }
     let v = match kind {
         Second::Y => q
-            .mul(&sum, wp, rm)
-            .div(&cc.pi(wp, rm).clone(), wp, rm)
+            .mul(&sum, wp, RM)
+            .div(&w.cc.pi(wp, RM).clone(), wp, RM)
             .neg(),
-        Second::K => q.mul(&sum, wp, rm).div(&two, wp, rm),
+        Second::K => q.mul(&sum, wp, RM).div(&two, wp, RM),
     };
     if v.is_zero() || v.is_inf() || v.is_nan() {
         let l2 = (ln_gamma_f64(nf) - nf * ln_x2) * std::f64::consts::LOG2_E;
         return Some(Err(overflow(what, l2)));
     }
-    Some(Ok(super::round_to(v, prec, rm)))
+    Some(Ok(super::round_to(v, prec)))
 }
 
 #[cfg(test)]
@@ -469,10 +467,10 @@ mod tests {
         let e20 = BigFloat::from_u64(10_000_000_000, p).mul(
             &BigFloat::from_u64(10_000_000_000, p),
             p,
-            RoundingMode::ToEven,
+            RM,
         );
         assert!(!is_odd(&e20));
-        let e20p1 = e20.add(&BigFloat::from_i32(1, p), p, RoundingMode::ToEven);
+        let e20p1 = e20.add(&BigFloat::from_i32(1, p), p, RM);
         assert!(is_odd(&e20p1));
     }
 

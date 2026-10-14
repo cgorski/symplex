@@ -40,7 +40,7 @@ use num_traits::Signed;
 use num_traits::Zero;
 
 use crate::base::arena::{Arena, FN_CHI, FN_ERFI, FN_SHI};
-use crate::base::budget::{BudgetKind, WorkScope};
+use crate::base::budget::{BudgetKind, Work, WorkScope};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
 use crate::base::stage::stage;
@@ -94,15 +94,20 @@ struct IntegrateCall {
 
 impl IntegrateCall {
     fn enter() -> Self {
-        let depth = NODE_BUDGET_DEPTH.with(|d| {
+        let depth = INTEGRATE_DEPTH.with(|d| {
             let depth = d.get();
             d.set(depth + 1);
             depth
         });
         let outermost = depth == 0;
         if outermost {
-            NODE_BUDGET_USED.with(|u| u.set(0));
-            NODE_BUDGET_CAP.with(|c| c.set(usize::MAX));
+            STEPS.with(|s| {
+                s.set(Work::new(
+                    BudgetKind::IntegrationSteps,
+                    INTEGRATE_NODE_BUDGET,
+                ))
+            });
+            STEP_END.with(|c| c.set(u64::MAX));
             INTEGRATE_MEMO.with(|m| m.borrow_mut().clear());
             VERDICT_MEMO.with(|m| m.borrow_mut().clear());
             JUMP_MEMO.with(|m| m.borrow_mut().clear());
@@ -115,7 +120,7 @@ impl IntegrateCall {
 
 impl Drop for IntegrateCall {
     fn drop(&mut self) {
-        let _ = NODE_BUDGET_DEPTH.try_with(|d| d.set(d.get().saturating_sub(1)));
+        let _ = INTEGRATE_DEPTH.try_with(|d| d.set(d.get().saturating_sub(1)));
         if self.outermost {
             let _ = INTEGRATE_MEMO.try_with(|m| {
                 if let Ok(mut m) = m.try_borrow_mut() {
@@ -151,8 +156,9 @@ impl Drop for IntegrateCall {
 /// at most ~600; a failing search can branch much further before it gives
 /// up — `∫ x·ln(x + sin 2) dx` made 524 540 calls (12 s) to return the
 /// unevaluated form.  At the cap the remaining sub-integrals stay
-/// unevaluated, which the callers already treat as "no closed form".
-const INTEGRATE_NODE_BUDGET: usize = 20_000;
+/// unevaluated, which the callers already treat as "no closed form".  A
+/// [`Work`] of kind [`BudgetKind::IntegrationSteps`].
+const INTEGRATE_NODE_BUDGET: u64 = 20_000;
 
 /// Upper bound on the interns one top-level `integrate` may attempt (a
 /// [`WorkScope`] of kind [`BudgetKind::Integration`]), which bounds the
@@ -167,24 +173,32 @@ const INTEGRATE_NODE_BUDGET: usize = 20_000;
 /// 1.0 million nodes), of the golden corpus 2.5 million.
 const INTEGRATE_WORK: u64 = 20_000_000;
 
+// The step budget lives beside the call nesting in thread-locals: the
+// strategies reach `integrate_node` through many paths that carry only the
+// arena.  The outermost call sets it afresh, so it does not depend on what
+// the thread did before.
 thread_local! {
-    static NODE_BUDGET_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static NODE_BUDGET_USED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// The step count at which the current [`StepCap`] ends (`usize::MAX`:
-    /// none).
-    static NODE_BUDGET_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+    /// Enclosing `integrate` calls on this thread.
+    static INTEGRATE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The steps of the outermost call ([`INTEGRATE_NODE_BUDGET`]).
+    static STEPS: std::cell::Cell<Work> = const {
+        std::cell::Cell::new(Work::new(BudgetKind::IntegrationSteps, INTEGRATE_NODE_BUDGET))
+    };
+    /// The spent step count at which the current [`StepCap`] ends
+    /// (`u64::MAX`: none).
+    static STEP_END: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
 }
 
 /// A bound of `steps` further `integrate_node` steps on a nested
 /// computation, within the top-level budget; the previous bound is
 /// restored on drop (also when a panic unwinds).  While one is active, a
 /// failure is not remembered in `INTEGRATE_MEMO`: it may be the bound's.
-struct StepCap(usize);
+struct StepCap(u64);
 
 impl StepCap {
-    fn enter(steps: usize) -> Self {
-        let used = NODE_BUDGET_USED.with(std::cell::Cell::get);
-        let old = NODE_BUDGET_CAP.with(|c| {
+    fn enter(steps: u64) -> Self {
+        let used = STEPS.with(std::cell::Cell::get).spent();
+        let old = STEP_END.with(|c| {
             let old = c.get();
             c.set(old.min(used.saturating_add(steps)));
             old
@@ -193,13 +207,13 @@ impl StepCap {
     }
 
     fn active() -> bool {
-        NODE_BUDGET_CAP.with(std::cell::Cell::get) != usize::MAX
+        STEP_END.with(std::cell::Cell::get) != u64::MAX
     }
 }
 
 impl Drop for StepCap {
     fn drop(&mut self) {
-        let _ = NODE_BUDGET_CAP.try_with(|c| c.set(self.0));
+        let _ = STEP_END.try_with(|c| c.set(self.0));
     }
 }
 
@@ -213,12 +227,15 @@ fn arena_budget_exhausted(arena: &Arena) -> bool {
     exhausted
 }
 
-/// Charge one `integrate_node` step; `true` once the budget is spent.
+/// Charge one `integrate_node` step; `true` once the budget is spent (the
+/// step does not fit; then no later one does either) or the current
+/// [`StepCap`]'s steps are.
 fn node_budget_exhausted() -> bool {
-    NODE_BUDGET_USED.with(|u| {
-        let used = u.get() + 1;
-        u.set(used);
-        used > INTEGRATE_NODE_BUDGET || used > NODE_BUDGET_CAP.with(std::cell::Cell::get)
+    STEPS.with(|s| {
+        let mut steps = s.get();
+        let spent = steps.charge(1, "integrate").is_err();
+        s.set(steps);
+        spent || steps.spent() > STEP_END.with(std::cell::Cell::get)
     })
 }
 
@@ -3285,7 +3302,7 @@ fn jump_kept_undecided(arena: &Arena, g: ExprId, t_sym: SymbolId) -> bool {
 /// Inside an `integrate` call the result is remembered until the outermost
 /// call ends ([`CLEARED_MEMO`]).
 pub(crate) fn clear_nested_fractions(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    let inside = NODE_BUDGET_DEPTH.with(std::cell::Cell::get) > 0;
+    let inside = INTEGRATE_DEPTH.with(std::cell::Cell::get) > 0;
     let key = (arena.serial(), expr, var);
     if inside && let Some(found) = CLEARED_MEMO.with(|m| m.borrow().get(&key).copied()) {
         return found;
@@ -5919,7 +5936,7 @@ const VARIES_POINTS: [(i64, i64); 2] = [(3, 7), (5, 11)];
 /// Inside an `integrate` call the answer is remembered until the outermost
 /// call ends ([`VARIES_MEMO`]).
 fn varies_numerically(arena: &mut Arena, q: ExprId, var: ExprId) -> bool {
-    let inside = NODE_BUDGET_DEPTH.with(std::cell::Cell::get) > 0;
+    let inside = INTEGRATE_DEPTH.with(std::cell::Cell::get) > 0;
     let key = (arena.serial(), q, var);
     if inside && let Some(found) = VARIES_MEMO.with(|m| m.borrow().get(&key).copied()) {
         return found;
@@ -9792,7 +9809,7 @@ fn degenerate_values(arena: &mut Arena, denom: ExprId, sym: ExprId) -> Vec<ExprI
 
 /// The step budget ([`StepCap`]) of a degenerate case whose value is not
 /// real at real parameter values.
-const NONREAL_CASE_STEPS: usize = 20;
+const NONREAL_CASE_STEPS: u64 = 20;
 
 /// Is the parameter value `val` real for some real values of its own
 /// parameters: the generic values of [`FTC_PARAMETER_VALUES`] (in name
@@ -12043,7 +12060,7 @@ fn is_exponential_of_var(arena: &Arena, g: ExprId, var_sym: SymbolId) -> bool {
 }
 
 /// Steps of `integrate_node` for the integrand of [`split_common_factors`].
-const SPLIT_STEPS: usize = 1_000;
+const SPLIT_STEPS: u64 = 1_000;
 
 /// Is `g` the variable to a numeric power times constants (`x`, `3·x²`)?
 fn is_monomial_in_var(arena: &Arena, g: ExprId, var_sym: SymbolId) -> bool {

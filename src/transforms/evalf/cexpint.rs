@@ -72,7 +72,9 @@
 //! (`mpmath/functions/expintegrals.py`, BSD); the remainder bound replaces
 //! its size test.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use crate::base::bigfloat::{is_strictly_positive, to_f64};
+use astro_float::BigFloat;
 
 use super::accuracy;
 use super::zeta::{Sum, plus_int};
@@ -91,12 +93,6 @@ const MAX_FINITE: u64 = 5_000;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn to_f64(x: &BigFloat) -> Option<f64> {
-    super::bigfloat_to_f64_rounded(x, RoundingMode::ToEven)
-        .ok()
-        .filter(|v| v.is_finite())
-}
-
 /// The parts of `z` in `f64`, a zero imaginary part as `+0`.
 fn parts(z: &Complex) -> Option<(f64, f64)> {
     let x = to_f64(&z.0)?;
@@ -104,11 +100,8 @@ fn parts(z: &Complex) -> Option<(f64, f64)> {
     Some((x, if y == 0.0 { 0.0 } else { y }))
 }
 
-fn round_c(v: Complex, prec: usize, rm: RoundingMode) -> Complex {
-    (
-        super::round_to(v.0, prec, rm),
-        super::round_to(v.1, prec, rm),
-    )
+fn round_c(v: Complex, prec: usize) -> Complex {
+    (super::round_to(v.0, prec), super::round_to(v.1, prec))
 }
 
 fn is_zero(z: &Complex) -> bool {
@@ -140,7 +133,7 @@ fn above(z: &Complex) -> Complex {
 /// Is `z` in the closed upper half-plane (a zero imaginary part counts as
 /// `+0`)?
 fn upper(z: &Complex) -> bool {
-    z.1.is_zero() || z.1.is_positive()
+    z.1.is_zero() || is_strictly_positive(&z.1)
 }
 
 /// `i·z`.
@@ -154,15 +147,15 @@ fn times_minus_i(z: &Complex) -> Complex {
 }
 
 /// `z/n` for a positive integer `n`.
-fn div_u(z: &Complex, n: u64, p: usize, rm: RoundingMode) -> Complex {
+fn div_u(z: &Complex, n: u64, p: usize) -> Complex {
     let d = BigFloat::from_u64(n, 64);
-    (z.0.div(&d, p, rm), z.1.div(&d, p, rm))
+    (z.0.div(&d, p, RM), z.1.div(&d, p, RM))
 }
 
 /// `z·n` for a positive integer `n`.
-fn mul_u(z: &Complex, n: u64, p: usize, rm: RoundingMode) -> Complex {
+fn mul_u(z: &Complex, n: u64, p: usize) -> Complex {
     let d = BigFloat::from_u64(n, 64);
-    (z.0.mul(&d, p, rm), z.1.mul(&d, p, rm))
+    (z.0.mul(&d, p, RM), z.1.mul(&d, p, RM))
 }
 
 /// `z/2` exactly.
@@ -177,13 +170,13 @@ fn half(z: &Complex) -> Complex {
 }
 
 /// `z·x` for a real `x`.
-fn scale(z: &Complex, x: &BigFloat, p: usize, rm: RoundingMode) -> Complex {
-    (z.0.mul(x, p, rm), z.1.mul(x, p, rm))
+fn scale(z: &Complex, x: &BigFloat, p: usize) -> Complex {
+    (z.0.mul(x, p, RM), z.1.mul(x, p, RM))
 }
 
 /// `a + c` exactly for an integer `c` (the real part; `a` complex).
-fn shift(a: &Complex, c: i64, p: usize, rm: RoundingMode) -> Complex {
-    (plus_int(&a.0, c, p, rm), a.1.clone())
+fn shift(a: &Complex, c: i64, p: usize) -> Complex {
+    (plus_int(&a.0, c, p), a.1.clone())
 }
 
 /// Guard bits for the roundings of `n` terms (see the module documentation).
@@ -191,9 +184,9 @@ pub(super) fn guard(n: usize) -> usize {
     2 * accuracy::ceil_log2(n.max(2)) as usize + 8
 }
 
-fn add_term(sum: &mut Sum, t: &Complex, p: usize, rm: RoundingMode) {
+fn add_term(sum: &mut Sum, t: &Complex, p: usize) {
     sum.largest = sum.largest.max(accuracy::lg_abs(t));
-    sum.value = c_add(&sum.value, t, p, rm);
+    sum.value = c_add(&sum.value, t, p, RM);
 }
 
 fn new_sum(p: usize) -> Sum {
@@ -204,61 +197,53 @@ fn new_sum(p: usize) -> Sum {
 }
 
 /// `Ln z` (principal; a negative real `z` from above).
-pub(super) fn ln_c(z: &Complex, p: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    super::c_ln(&above(z), p, rm, cc)
+pub(super) fn ln_c(z: &Complex, w: &mut Wp<'_>) -> Complex {
+    super::c_ln(&above(z), w)
 }
 
 /// `exp(e)` with the bits of `abs(e)` as guard (its absolute error is the
 /// result's relative one), rounded to `p` bits.
-fn exp_c(e: &Complex, p: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    round_c(super::c_exp(e, p, rm, cc), p, rm)
+fn exp_c(e: &Complex, w: &mut Wp<'_>) -> Complex {
+    let p = w.bits();
+    round_c(super::c_exp(e, w), p)
 }
 
 /// `exp(c·Ln z − z)` (`minus_z`) or `exp(c·Ln z)` for a complex `c`: `z^c
 /// e^(−z)` or `z^c`, to `p` bits relative (the exponent formed to an
 /// absolute `2^−p`).
-pub(super) fn power_exp(
-    z: &Complex,
-    c: &Complex,
-    minus_z: bool,
-    p: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Complex {
+pub(super) fn power_exp(z: &Complex, c: &Complex, minus_z: bool, w: &mut Wp<'_>) -> Complex {
+    let p = w.bits();
     let lz = accuracy::lg_abs(z);
     let lnz = (lz.abs() * std::f64::consts::LN_2) + 4.0;
     let size = accuracy::lg_abs(c).exp2() * lnz + if minus_z { lz.exp2() } else { 0.0 };
     let pe = p + super::magnitude_bits(size) + 8;
-    let l = ln_c(z, pe, rm, cc);
-    let mut e = c_mul(c, &l, pe, rm);
+    let l = ln_c(z, &mut w.at(pe));
+    let mut e = c_mul(c, &l, pe, RM);
     if minus_z {
-        e = c_sub(&e, z, pe, rm);
+        e = c_sub(&e, z, pe, RM);
     }
-    exp_c(&e, pe.max(p), rm, cc)
+    exp_c(&e, &mut w.at(pe.max(p)))
 }
 
 /// `e^(−z)/z` to `p` bits relative.
-fn exp_over(z: &Complex, p: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+fn exp_over(z: &Complex, w: &mut Wp<'_>) -> Complex {
+    let p = w.bits();
     let pe = p + super::magnitude_bits(accuracy::lg_abs(z).exp2()) + 8;
-    let e = super::c_exp(&c_neg(z), pe, rm, cc);
-    round_c(c_div(&e, z, pe, rm), p, rm)
+    let e = super::c_exp(&c_neg(z), &mut w.at(pe));
+    round_c(c_div(&e, z, pe, RM), p)
 }
 
 /// `Γ(a)` for `a` off the poles: `arb_gamma_real` for a real `a`,
 /// `gamma_complex` otherwise, to `p` bits relative.
-fn gamma_of(
-    a: &Complex,
-    p: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+fn gamma_of(a: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let p = w.bits();
     if a.1.is_zero() {
         let af = to_f64(&a.0).unwrap_or(f64::INFINITY).abs();
         let g = super::magnitude_bits((af + 2.0) * ((af + 2.0).ln() + 1.0));
-        let v = super::arb_gamma_real(&a.0, p + g + 16, rm, cc)?;
-        Ok((super::round_to(v, p, rm), BigFloat::new(p)))
+        let v = super::arb_gamma_real(&a.0, &mut w.at(p + g + 16))?;
+        Ok((super::round_to(v, p), BigFloat::new(p)))
     } else {
-        super::zeta::gamma_complex(a, p, rm, cc)
+        super::zeta::gamma_complex(a, w)
     }
 }
 
@@ -363,7 +348,7 @@ fn asymptotic_terms(re_a: f64, im_a: f64, abs_z: f64, theta: f64, wp: usize) -> 
 /// `Σ_{k<n} u_k z^(−k)` of the expansion of `Γ(a, z)` (module
 /// documentation), with its remainder below `2^−wp` (relative to the
 /// leading term 1), or `None` where the expansion does not converge so far.
-fn asymptotic_bracket(a: &Complex, z: &Complex, wp: usize, rm: RoundingMode) -> Option<Sum> {
+fn asymptotic_bracket(a: &Complex, z: &Complex, wp: usize) -> Option<Sum> {
     let (ar, ai) = parts(a)?;
     let (x, y) = parts(z)?;
     let theta = y.atan2(x);
@@ -373,9 +358,9 @@ fn asymptotic_bracket(a: &Complex, z: &Complex, wp: usize, rm: RoundingMode) -> 
     let mut t = c_one(p);
     let mut exact = false;
     for k in 0..n {
-        add_term(&mut sum, &t, p, rm);
-        let f = shift(a, -(k as i64) - 1, p, rm);
-        t = c_div(&c_mul(&t, &f, p, rm), z, p, rm);
+        add_term(&mut sum, &t, p);
+        let f = shift(a, -(k as i64) - 1, p);
+        t = c_div(&c_mul(&t, &f, p, RM), z, p, RM);
         if is_zero(&t) {
             exact = true;
             break;
@@ -405,13 +390,8 @@ pub(super) fn budget(abs_z: f64, abs_a: f64, wp: usize) -> usize {
 
 /// `γ(a, z)` by its series (module documentation) for `a` not a non-positive
 /// integer and `z ≠ 0`, at working precision `wp`.
-fn lower_series(
-    a: &Complex,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn lower_series(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     let ((ar, ai), (x, y)) = match (parts(a), parts(z)) {
         (Some(pa), Some(pz)) => (pa, pz),
         _ => return Err(super::unevaluable("incomplete gamma argument beyond f64")),
@@ -427,9 +407,9 @@ fn lower_series(
         let mz = c_neg(z);
         let mut t = c_one(p);
         for k in 0..max {
-            let d = shift(a, k as i64, p, rm);
-            add_term(&mut sum, &c_div(&t, &d, p, rm), p, rm);
-            t = div_u(&c_mul(&t, &mz, p, rm), k as u64 + 1, p, rm);
+            let d = shift(a, k as i64, p);
+            add_term(&mut sum, &c_div(&t, &d, p, RM), p);
+            t = div_u(&c_mul(&t, &mz, p, RM), k as u64 + 1, p);
             let q = abs_z / (k as f64 + 2.0);
             let dmin = ar + k as f64 + 1.0;
             if q < 1.0 && dmin > 0.0 {
@@ -442,10 +422,10 @@ fn lower_series(
         }
     } else {
         // Σ s_k, s_0 = 1/a, s_{k+1} = s_k·z/(a + k + 1).
-        let mut s = c_div(&c_one(p), &shift(a, 0, p, rm), p, rm);
+        let mut s = c_div(&c_one(p), &shift(a, 0, p), p, RM);
         for k in 0..max {
-            add_term(&mut sum, &s, p, rm);
-            s = c_div(&c_mul(&s, z, p, rm), &shift(a, k as i64 + 1, p, rm), p, rm);
+            add_term(&mut sum, &s, p);
+            s = c_div(&c_mul(&s, z, p, RM), &shift(a, k as i64 + 1, p), p, RM);
             let dmin = ar + k as f64 + 2.0;
             let q = abs_z / dmin;
             if dmin > 0.0 && q < 1.0 {
@@ -460,20 +440,16 @@ fn lower_series(
     if !converged {
         return Err(super::series_did_not_converge("incomplete gamma", max));
     }
-    let pref = power_exp(z, a, !kummer, p, rm, cc);
+    let pref = power_exp(z, a, !kummer, &mut w.at(p));
     Ok(Sum {
         largest: accuracy::lg_abs(&pref) + sum.largest,
-        value: round_c(c_mul(&pref, &sum.value, p, rm), wp, rm),
+        value: round_c(c_mul(&pref, &sum.value, p, RM), wp),
     })
 }
 
 /// `E1(z) = −γ − ln z − Σ_{k≥1} (−z)^k/(k·k!)` for `z ≠ 0`.
-fn e1_series(
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn e1_series(z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     let Some((x, y)) = parts(z) else {
         return Err(super::unevaluable("E1 argument beyond f64"));
     };
@@ -485,8 +461,8 @@ fn e1_series(
     let mut t = mz.clone(); // (−z)^k/k!
     let mut converged = false;
     for k in 1..max {
-        add_term(&mut sum, &div_u(&t, k as u64, p, rm), p, rm);
-        t = div_u(&c_mul(&t, &mz, p, rm), k as u64 + 1, p, rm);
+        add_term(&mut sum, &div_u(&t, k as u64, p), p);
+        t = div_u(&c_mul(&t, &mz, p, RM), k as u64 + 1, p);
         let q = abs_z / (k as f64 + 2.0);
         if q < 1.0 {
             let rest = accuracy::lg_abs(&t) - ((k + 1) as f64).log2() - (1.0 - q).log2();
@@ -499,13 +475,13 @@ fn e1_series(
     if !converged {
         return Err(super::series_did_not_converge("E1", max));
     }
-    let g = super::arb_euler_gamma(p, rm, cc)?;
-    let l = ln_c(z, p, rm, cc);
+    let g = super::arb_euler_gamma(&mut w.at(p))?;
+    let l = ln_c(z, &mut w.at(p));
     let v = c_neg(&c_add(
-        &c_add(&sum.value, &l, p, rm),
+        &c_add(&sum.value, &l, p, RM),
         &(g, BigFloat::new(p)),
         p,
-        rm,
+        RM,
     ));
     Ok(Sum {
         largest: sum.largest.max(accuracy::lg_abs(&l)).max(0.0),
@@ -514,41 +490,34 @@ fn e1_series(
 }
 
 /// `Γ(−m, z)` by DLMF 8.4.15 (module documentation), `z ≠ 0`.
-fn upper_negint(
-    m: u64,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn upper_negint(m: u64, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     let p = wp + guard(m as usize + 2);
-    let e1 = e1_series(z, p, rm, cc)?;
+    let e1 = e1_series(z, &mut w.at(p))?;
     if m == 0 {
         return Ok(e1);
     }
     // Σ_{k<m} (−1)^k k!/z^(k+1), the terms by `t_{k+1} = −t_k·(k+1)/z`.
     let mut s = new_sum(p);
-    let mut t = c_div(&c_one(p), z, p, rm);
+    let mut t = c_div(&c_one(p), z, p, RM);
     for k in 0..m {
-        add_term(&mut s, &t, p, rm);
-        t = c_neg(&c_div(&mul_u(&t, k + 1, p, rm), z, p, rm));
+        add_term(&mut s, &t, p);
+        t = c_neg(&c_div(&mul_u(&t, k + 1, p), z, p, RM));
     }
     let e = exp_c(
         &c_neg(z),
-        p + super::magnitude_bits(accuracy::lg_abs(z).exp2()) + 8,
-        rm,
-        cc,
+        &mut w.at(p + super::magnitude_bits(accuracy::lg_abs(z).exp2()) + 8),
     );
-    let es = c_mul(&e, &s.value, p, rm);
-    let mut v = c_sub(&e1.value, &es, p, rm);
+    let es = c_mul(&e, &s.value, p, RM);
+    let mut v = c_sub(&e1.value, &es, p, RM);
     let largest = e1.largest.max(accuracy::lg_abs(&e) + s.largest);
     // (−1)^m/m!.
     let mut f = BigFloat::from_i32(1, p);
     for k in 2..=m {
-        f = f.mul(&BigFloat::from_u64(k, 64), p, rm);
+        f = f.mul(&BigFloat::from_u64(k, 64), p, RM);
     }
     let lf = super::zeta::log2_factorial(m);
-    v = (v.0.div(&f, p, rm), v.1.div(&f, p, rm));
+    v = (v.0.div(&f, p, RM), v.1.div(&f, p, RM));
     if m % 2 == 1 {
         v = c_neg(&v);
     }
@@ -559,35 +528,28 @@ fn upper_negint(
 }
 
 /// `Γ(n, z) = (n − 1)!·e^(−z)·Σ_{k<n} z^k/k!` for a positive integer `n`.
-fn upper_posint(
-    n: u64,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn upper_posint(n: u64, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     let p = wp + guard(n as usize + 2);
     let mut s = new_sum(p);
     let mut t = c_one(p);
     for k in 0..n {
-        add_term(&mut s, &t, p, rm);
-        t = div_u(&c_mul(&t, z, p, rm), k + 1, p, rm);
+        add_term(&mut s, &t, p);
+        t = div_u(&c_mul(&t, z, p, RM), k + 1, p);
     }
     // (n − 1)!·e^(−z) = exp(ln((n − 1)!) − z).
     let mut f = BigFloat::from_i32(1, p);
     for k in 2..n {
-        f = f.mul(&BigFloat::from_u64(k, 64), p, rm);
+        f = f.mul(&BigFloat::from_u64(k, 64), p, RM);
     }
     let e = exp_c(
         &c_neg(z),
-        p + super::magnitude_bits(accuracy::lg_abs(z).exp2()) + 8,
-        rm,
-        cc,
+        &mut w.at(p + super::magnitude_bits(accuracy::lg_abs(z).exp2()) + 8),
     );
-    let e = scale(&e, &f, p, rm);
+    let e = scale(&e, &f, p);
     Ok(Sum {
         largest: accuracy::lg_abs(&e) + s.largest,
-        value: c_mul(&e, &s.value, p, rm),
+        value: c_mul(&e, &s.value, p, RM),
     })
 }
 
@@ -596,33 +558,23 @@ fn upper_posint(
 /// `Γ(a, z)` at working precision `wp` by the asymptotic expansion, or `None`
 /// where it does not converge to `2^−wp` (`erfc z = Γ(1/2, z²)/√π`,
 /// `cerf.rs`).
-pub(super) fn upper_asymptotic(
-    a: &Complex,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<Sum> {
-    let b = asymptotic_bracket(a, z, wp, rm)?;
+pub(super) fn upper_asymptotic(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Option<Sum> {
+    let wp = w.bits();
+    let b = asymptotic_bracket(a, z, wp)?;
     let p = wp + 8;
-    let pref = power_exp(z, &shift(a, -1, p, rm), true, p, rm, cc);
+    let pref = power_exp(z, &shift(a, -1, p), true, &mut w.at(p));
     Some(Sum {
         largest: accuracy::lg_abs(&pref) + b.largest,
-        value: c_mul(&pref, &b.value, p, rm),
+        value: c_mul(&pref, &b.value, p, RM),
     })
 }
 
 /// `Γ(a, z)` at working precision `wp`.
-fn upper_at(
-    a: &Complex,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn upper_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     if is_zero(z) {
-        if a.0.is_positive() && !a.0.is_zero() {
-            let g = gamma_of(a, wp, rm, cc)?;
+        if is_strictly_positive(&a.0) {
+            let g = gamma_of(a, w)?;
             return Ok(Sum {
                 largest: accuracy::lg_abs(&g),
                 value: g,
@@ -632,11 +584,11 @@ fn upper_at(
             "uppergamma(a, 0) with Re a ≤ 0 is infinite",
         ));
     }
-    if let Some(s) = upper_asymptotic(a, z, wp, rm, cc) {
+    if let Some(s) = upper_asymptotic(a, z, w) {
         return Ok(s);
     }
     if let Some(m) = nonpositive_int(a) {
-        return upper_negint(m, z, wp, rm, cc);
+        return upper_negint(m, z, w);
     }
     if a.1.is_zero() && (a.0.is_zero() || (a.0.is_int() && a.0.is_negative())) {
         return Err(super::unevaluable(
@@ -644,31 +596,26 @@ fn upper_at(
         ));
     }
     if let Some(n) = positive_int(a) {
-        return upper_posint(n, z, wp, rm, cc);
+        return upper_posint(n, z, w);
     }
-    let low = lower_series(a, z, wp, rm, cc)?;
-    let g = gamma_of(a, wp + 8, rm, cc)?;
+    let low = lower_series(a, z, w)?;
+    let g = gamma_of(a, &mut w.at(wp + 8))?;
     Ok(Sum {
         largest: low.largest.max(accuracy::lg_abs(&g)),
-        value: c_sub(&g, &low.value, wp + 8, rm),
+        value: c_sub(&g, &low.value, wp + 8, RM),
     })
 }
 
 /// `γ(a, z)` at working precision `wp` (`a` not a non-positive integer).
-fn lower_at(
-    a: &Complex,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn lower_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     if nonpositive_int(a).is_some() || (a.1.is_zero() && a.0.is_int() && a.0.is_negative()) {
         return Err(super::unevaluable(
             "lowergamma at a non-positive integer order is infinite",
         ));
     }
     if is_zero(z) {
-        if a.0.is_positive() && !a.0.is_zero() {
+        if is_strictly_positive(&a.0) {
             return Ok(Sum {
                 value: c_zero(wp),
                 largest: f64::NEG_INFINITY,
@@ -678,71 +625,67 @@ fn lower_at(
             "lowergamma(a, 0) with Re a ≤ 0 is infinite",
         ));
     }
-    if let Some(b) = asymptotic_bracket(a, z, wp, rm) {
+    if let Some(b) = asymptotic_bracket(a, z, wp) {
         let p = wp + 8;
-        let pref = power_exp(z, &shift(a, -1, p, rm), true, p, rm, cc);
-        let up = c_mul(&pref, &b.value, p, rm);
-        let g = gamma_of(a, p, rm, cc)?;
+        let pref = power_exp(z, &shift(a, -1, p), true, &mut w.at(p));
+        let up = c_mul(&pref, &b.value, p, RM);
+        let g = gamma_of(a, &mut w.at(p))?;
         return Ok(Sum {
             largest: (accuracy::lg_abs(&pref) + b.largest).max(accuracy::lg_abs(&g)),
-            value: c_sub(&g, &up, p, rm),
+            value: c_sub(&g, &up, p, RM),
         });
     }
-    lower_series(a, z, wp, rm, cc)
+    lower_series(a, z, w)
 }
 
 /// `E_n(z) = z^(n−1)Γ(1 − n, z)` at working precision `wp`, `z ≠ 0`.
-fn expint_at(
-    n: &Complex,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn expint_at(n: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     let p = wp + 8;
-    let a = (plus_int(&n.0.neg(), 1, p, rm), n.1.neg());
-    if let Some(b) = asymptotic_bracket(&a, z, wp, rm) {
-        let pref = exp_over(z, p, rm, cc);
+    let a = (plus_int(&n.0.neg(), 1, p), n.1.neg());
+    if let Some(b) = asymptotic_bracket(&a, z, wp) {
+        let pref = exp_over(z, &mut w.at(p));
         return Ok(Sum {
             largest: accuracy::lg_abs(&pref) + b.largest,
-            value: c_mul(&pref, &b.value, p, rm),
+            value: c_mul(&pref, &b.value, p, RM),
         });
     }
-    let g = upper_at(&a, z, wp, rm, cc)?;
+    let g = upper_at(&a, z, w)?;
     // z^(n−1): an integer power exactly by repeated products, else `exp`.
-    let nm1 = shift(n, -1, p, rm);
+    let nm1 = shift(n, -1, p);
     let pw = if nm1.1.is_zero() && (nm1.0.is_zero() || nm1.0.is_int()) {
         let k = to_f64(&nm1.0).unwrap_or(f64::INFINITY);
         if k.abs() > MAX_FINITE as f64 {
-            power_exp(z, &nm1, false, p, rm, cc)
+            power_exp(z, &nm1, false, &mut w.at(p))
         } else {
             let q = p + guard(k.abs() as usize + 2);
-            let pos = crate::base::bigcomplex::c_powi(z, k.abs() as usize, q, rm);
+            let pos = crate::base::bigcomplex::c_powi(z, k.abs() as usize, q, RM);
             if k < 0.0 {
-                c_div(&c_one(q), &pos, q, rm)
+                c_div(&c_one(q), &pos, q, RM)
             } else {
                 pos
             }
         }
     } else {
-        power_exp(z, &nm1, false, p, rm, cc)
+        power_exp(z, &nm1, false, &mut w.at(p))
     };
     let lp = accuracy::lg_abs(&pw);
     Ok(Sum {
         largest: g.largest + lp,
-        value: c_mul(&pw, &g.value, p, rm),
+        value: c_mul(&pw, &g.value, p, RM),
     })
 }
 
 /// `E1(z)` at working precision `wp`, `z ≠ 0`.
-fn e1_at(z: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Result<Sum, SymplexError> {
+fn e1_at(z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
     let one = (BigFloat::from_i32(1, 64), BigFloat::new(64));
-    expint_at(&one, z, wp, rm, cc)
+    expint_at(&one, z, w)
 }
 
 /// `iπ` or `−iπ` (`negative`), halved when `halve`.
-fn i_pi(negative: bool, halve: bool, p: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    let mut pi = cc.pi(p, rm).clone();
+fn i_pi(negative: bool, halve: bool, w: &mut Wp<'_>) -> Complex {
+    let p = w.bits();
+    let mut pi = w.cc.pi(p, RM).clone();
     if halve && let Some(e) = pi.exponent() {
         pi.set_exponent(e - 1);
     }
@@ -750,13 +693,14 @@ fn i_pi(negative: bool, halve: bool, p: usize, rm: RoundingMode, cc: &mut Consts
 }
 
 /// `Ei(z)` for a non-real `z` at working precision `wp`: `−E1(−z) ± iπ`.
-fn ei_at(z: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Result<Sum, SymplexError> {
-    let e = e1_at(&c_neg(z), wp, rm, cc)?;
+fn ei_at(z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
+    let e = e1_at(&c_neg(z), w)?;
     let p = wp + 8;
-    let ip = i_pi(z.1.is_negative() && !z.1.is_zero(), false, p, rm, cc);
+    let ip = i_pi(z.1.is_negative() && !z.1.is_zero(), false, &mut w.at(p));
     Ok(Sum {
         largest: e.largest.max(2.0),
-        value: c_sub(&ip, &e.value, p, rm),
+        value: c_sub(&ip, &e.value, p, RM),
     })
 }
 
@@ -770,13 +714,8 @@ pub(super) enum TrigInt {
 }
 
 /// `Si`, `Ci`, `Shi` or `Chi` of `z ≠ 0` at working precision `wp`.
-fn trig_at(
-    kind: TrigInt,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn trig_at(kind: TrigInt, z: &Complex, wpc: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = wpc.bits();
     let z = &above(z);
     let w = match kind {
         TrigInt::Si | TrigInt::Ci => times_i(z),
@@ -787,13 +726,13 @@ fn trig_at(
     let p = wp + 8;
     // Large `abs(z)`: from `E1(±w)` when both expansions converge.
     if let (Some(bp), Some(bm)) = (
-        asymptotic_bracket(&zero, &w, wp + 2, rm),
-        asymptotic_bracket(&zero, &mw, wp + 2, rm),
+        asymptotic_bracket(&zero, &w, wp + 2),
+        asymptotic_bracket(&zero, &mw, wp + 2),
     ) {
-        let ep = exp_over(&w, p, rm, cc);
-        let em = exp_over(&mw, p, rm, cc);
-        let e_plus = c_mul(&ep, &bp.value, p, rm);
-        let e_minus = c_mul(&em, &bm.value, p, rm);
+        let ep = exp_over(&w, &mut wpc.at(p));
+        let em = exp_over(&mw, &mut wpc.at(p));
+        let e_plus = c_mul(&ep, &bp.value, p, RM);
+        let e_minus = c_mul(&em, &bm.value, p, RM);
         let largest = (accuracy::lg_abs(&ep) + bp.largest)
             .max(accuracy::lg_abs(&em) + bm.largest)
             .max(2.0);
@@ -801,13 +740,11 @@ fn trig_at(
             TrigInt::Shi | TrigInt::Si => {
                 // (E1(w) − E1(−w))/2 + (ln w − ln(−w))/2.
                 let c = i_pi(
-                    !(w.1.is_positive() && !w.1.is_zero()) && !w_neg_real(&w),
+                    !is_strictly_positive(&w.1) && !w_neg_real(&w),
                     true,
-                    p,
-                    rm,
-                    cc,
+                    &mut wpc.at(p),
                 );
-                let s = c_add(&half(&c_sub(&e_plus, &e_minus, p, rm)), &c, p, rm);
+                let s = c_add(&half(&c_sub(&e_plus, &e_minus, p, RM)), &c, p, RM);
                 if kind == TrigInt::Si {
                     times_minus_i(&s)
                 } else {
@@ -816,21 +753,19 @@ fn trig_at(
             }
             TrigInt::Chi => {
                 let c = i_pi(
-                    !(w.1.is_positive() && !w.1.is_zero()) && !w_neg_real(&w),
+                    !is_strictly_positive(&w.1) && !w_neg_real(&w),
                     true,
-                    p,
-                    rm,
-                    cc,
+                    &mut wpc.at(p),
                 );
-                c_sub(&c, &half(&c_add(&e_plus, &e_minus, p, rm)), p, rm)
+                c_sub(&c, &half(&c_add(&e_plus, &e_minus, p, RM)), p, RM)
             }
             TrigInt::Ci => {
-                let s = c_neg(&half(&c_add(&e_plus, &e_minus, p, rm)));
+                let s = c_neg(&half(&c_add(&e_plus, &e_minus, p, RM)));
                 let (x_neg, x_zero) = (z.0.is_negative() && !z.0.is_zero(), z.0.is_zero());
                 if x_neg {
-                    c_add(&s, &i_pi(!upper(z), false, p, rm, cc), p, rm)
+                    c_add(&s, &i_pi(!upper(z), false, &mut wpc.at(p)), p, RM)
                 } else if x_zero && !upper(z) {
-                    c_add(&s, &i_pi(true, false, p, rm, cc), p, rm)
+                    c_add(&s, &i_pi(true, false, &mut wpc.at(p)), p, RM)
                 } else {
                     s
                 }
@@ -838,7 +773,7 @@ fn trig_at(
         };
         return Ok(Sum { value, largest });
     }
-    trig_series(kind, z, wp, rm, cc)
+    trig_series(kind, z, wpc)
 }
 
 /// Is `w` a negative real number (on the cut, from above)?
@@ -847,13 +782,8 @@ fn w_neg_real(w: &Complex) -> bool {
 }
 
 /// The power series of `Si`, `Ci`, `Shi`, `Chi` (module documentation).
-fn trig_series(
-    kind: TrigInt,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn trig_series(kind: TrigInt, z: &Complex, wpc: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = wpc.bits();
     let Some((x, y)) = parts(z) else {
         return Err(super::unevaluable(
             "sine/cosine integral argument beyond f64",
@@ -862,7 +792,7 @@ fn trig_series(
     let abs_z = x.hypot(y);
     let max = budget(abs_z, 0.0, wp);
     let p = wp + guard(max);
-    let z2 = c_mul(z, z, p, rm);
+    let z2 = c_mul(z, z, p, RM);
     let w = match kind {
         TrigInt::Si | TrigInt::Ci => c_neg(&z2),
         _ => z2,
@@ -875,8 +805,8 @@ fn trig_series(
         // c_k = z^(2k+1)/(2k+1)!, term c_k/(2k+1).
         let mut c = z.clone();
         for k in 0..max as u64 {
-            add_term(&mut sum, &div_u(&c, 2 * k + 1, p, rm), p, rm);
-            c = div_u(&c_mul(&c, &w, p, rm), (2 * k + 2) * (2 * k + 3), p, rm);
+            add_term(&mut sum, &div_u(&c, 2 * k + 1, p), p);
+            c = div_u(&c_mul(&c, &w, p, RM), (2 * k + 2) * (2 * k + 3), p);
             let q = aw / ((2 * k + 4) as f64 * (2 * k + 5) as f64);
             if q < 1.0 {
                 let rest = accuracy::lg_abs(&c) - ((2 * k + 3) as f64).log2() - (1.0 - q).log2();
@@ -888,10 +818,10 @@ fn trig_series(
         }
     } else {
         // d_k = z^(2k)/(2k)!, term d_k/(2k), k ≥ 1.
-        let mut d = div_u(&w, 2, p, rm);
+        let mut d = div_u(&w, 2, p);
         for k in 1..max as u64 {
-            add_term(&mut sum, &div_u(&d, 2 * k, p, rm), p, rm);
-            d = div_u(&c_mul(&d, &w, p, rm), (2 * k + 1) * (2 * k + 2), p, rm);
+            add_term(&mut sum, &div_u(&d, 2 * k, p), p);
+            d = div_u(&c_mul(&d, &w, p, RM), (2 * k + 1) * (2 * k + 2), p);
             let q = aw / ((2 * k + 3) as f64 * (2 * k + 4) as f64);
             if q < 1.0 {
                 let rest = accuracy::lg_abs(&d) - ((2 * k + 2) as f64).log2() - (1.0 - q).log2();
@@ -908,11 +838,11 @@ fn trig_series(
     if odd {
         return Ok(sum);
     }
-    let g = super::arb_euler_gamma(p, rm, cc)?;
-    let l = ln_c(z, p, rm, cc);
+    let g = super::arb_euler_gamma(&mut wpc.at(p))?;
+    let l = ln_c(z, &mut wpc.at(p));
     Ok(Sum {
         largest: sum.largest.max(accuracy::lg_abs(&l)).max(0.0),
-        value: c_add(&c_add(&sum.value, &l, p, rm), &(g, BigFloat::new(p)), p, rm),
+        value: c_add(&c_add(&sum.value, &l, p, RM), &(g, BigFloat::new(p)), p, RM),
     })
 }
 
@@ -927,83 +857,67 @@ fn special_input(z: &Complex) -> bool {
 pub(super) fn upper_gamma(
     a: &Complex,
     z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     if special_input(a) || special_input(z) {
         return Err(super::unevaluable("uppergamma of special float value"));
     }
     tracing::debug!(prec, "evalf: uppergamma at a complex argument");
-    super::zeta::with_loss(prec, rm, cc, &mut |wp, cc| upper_at(a, z, wp, rm, cc))
+    super::zeta::with_loss(w, &mut |wp, cc| upper_at(a, z, &mut Wp::new(wp, cc)))
 }
 
 /// `γ(a, z)` (complex), as [`upper_gamma`].
 pub(super) fn lower_gamma(
     a: &Complex,
     z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     if special_input(a) || special_input(z) {
         return Err(super::unevaluable("lowergamma of special float value"));
     }
-    if is_zero(z) && a.0.is_positive() && !a.0.is_zero() {
+    if is_zero(z) && is_strictly_positive(&a.0) {
         return Ok(c_zero(prec + 16));
     }
     tracing::debug!(prec, "evalf: lowergamma at a complex argument");
-    super::zeta::with_loss(prec, rm, cc, &mut |wp, cc| lower_at(a, z, wp, rm, cc))
+    super::zeta::with_loss(w, &mut |wp, cc| lower_at(a, z, &mut Wp::new(wp, cc)))
 }
 
 /// `E_n(z)` (complex), as [`upper_gamma`].
-pub(super) fn expint(
-    n: &Complex,
-    z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+pub(super) fn expint(n: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     if special_input(n) || special_input(z) {
         return Err(super::unevaluable("expint of special float value"));
     }
     if is_zero(z) {
         // E_n(0) = 1/(n − 1) for Re n > 1.
-        let nm1 = shift(n, -1, prec + 64, rm);
-        if nm1.0.is_positive() && !nm1.0.is_zero() {
+        let nm1 = shift(n, -1, prec + 64);
+        if is_strictly_positive(&nm1.0) {
             return Ok(round_c(
-                c_div(&c_one(prec + 32), &nm1, prec + 32, rm),
+                c_div(&c_one(prec + 32), &nm1, prec + 32, RM),
                 prec + 16,
-                rm,
             ));
         }
         return Err(super::unevaluable("expint(n, 0) with Re n ≤ 1 is infinite"));
     }
     tracing::debug!(prec, "evalf: expint at a complex argument");
-    super::zeta::with_loss(prec, rm, cc, &mut |wp, cc| expint_at(n, z, wp, rm, cc))
+    super::zeta::with_loss(w, &mut |wp, cc| expint_at(n, z, &mut Wp::new(wp, cc)))
 }
 
 /// `Ei(z)` for a non-real `z`, as [`upper_gamma`].
-pub(super) fn ei(
-    z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+pub(super) fn ei(z: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     if special_input(z) {
         return Err(super::unevaluable("Ei of special float value"));
     }
     tracing::debug!(prec, "evalf: Ei at a complex argument");
-    super::zeta::with_loss(prec, rm, cc, &mut |wp, cc| ei_at(z, wp, rm, cc))
+    super::zeta::with_loss(w, &mut |wp, cc| ei_at(z, &mut Wp::new(wp, cc)))
 }
 
 /// `li(z) = Ei(ln z)` for `z` off `[0, ∞)`, as [`upper_gamma`].
-pub(super) fn li(
-    z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+pub(super) fn li(z: &Complex, wpc: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let prec = wpc.bits();
     if special_input(z) {
         return Err(super::unevaluable("li of special float value"));
     }
@@ -1011,13 +925,13 @@ pub(super) fn li(
         return Ok(c_zero(prec + 16));
     }
     tracing::debug!(prec, "evalf: li at a complex argument");
-    super::zeta::with_loss(prec, rm, cc, &mut |wp, cc| {
+    super::zeta::with_loss(wpc, &mut |wp, cc| {
         // The rounding of ln z moves Ei by abs(e^w/w)·abs(Δw) ≤ abs(z)·2^−wp.
-        let w = ln_c(z, wp + 16, rm, cc);
+        let w = ln_c(z, &mut Wp::new(wp + 16, cc));
         if is_zero(&w) {
             return Err(super::unevaluable("li(1) is -∞"));
         }
-        let e = ei_at(&w, wp, rm, cc)?;
+        let e = ei_at(&w, &mut Wp::new(wp, cc))?;
         Ok(Sum {
             largest: e.largest.max(accuracy::lg_abs(z)),
             value: e.value,
@@ -1029,10 +943,9 @@ pub(super) fn li(
 pub(super) fn trig_integral(
     kind: TrigInt,
     z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     if special_input(z) {
         return Err(super::unevaluable(
             "sine/cosine integral of special float value",
@@ -1049,5 +962,5 @@ pub(super) fn trig_integral(
         ?kind,
         "evalf: sine/cosine integral at a complex argument"
     );
-    super::zeta::with_loss(prec, rm, cc, &mut |wp, cc| trig_at(kind, z, wp, rm, cc))
+    super::zeta::with_loss(w, &mut |wp, cc| trig_at(kind, z, &mut Wp::new(wp, cc)))
 }

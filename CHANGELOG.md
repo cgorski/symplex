@@ -8,6 +8,101 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour)
+
+- `Ex::solve_general` solves over the declared domain of the unknown (ℂ
+  for a plain symbol), as `solve` and `solve_as_set` do: `eˣ = −1` gives
+  `2nπi + iπ` (it said "no real solutions"), `eˣ = 1` gives `2nπi` (it gave
+  `[0]` as the general solution), `tanh x = 2` gives `nπi + atanh 2`, `sin x
+  = 2` gives `asin 2 + 2nπ` and `π − asin 2 + 2nπ`; complex curves and
+  Lambert branches (`|x| = 1`, `x·eˣ = 1`) are refused rather than given
+  their real points.  Declare the unknown real for the real solutions.
+- The public solvers take plain parameters as possibly complex: for a real
+  `x`, `exp(a·x) + 1 = 0` gives `[iπ/a]` (it was "no solution": `a = iπ`,
+  `x = 1` solves it) and `|a·x| = 1` gives `±1/√(re(a)² + im(a)²)` (it was
+  `±1/a`).  Real parameters are unchanged; `reduce_inequalities` keeps
+  parameters real (an inequality compares real values).
+- LaTeX of the library functions uses their mathematical notation (as
+  SymPy prints it): `T_{n}\left(x\right)`, `U_{n}`, `P_{n}`, `H_{n}`, `L_{n}`,
+  `J_{\nu}`/`Y`/`I`/`K`, `F_{n}`, `B_{n}`, `C_{n}`, `E_{n}`, the harmonic
+  `H_{n}`, `p\left(n\right)`, `{x}^{\left(n\right)}` (rising) and
+  `{\left(x\right)}_{n}` (falling factorial), `n!!`, `!n`, the Stirling
+  brackets.  They printed as calls of their names, and TeX read the
+  underscore in `rising_factorial`, `chebyshev_t`, `euler_number`,
+  `partition_count` as a subscript.
+- `DiracDelta(0)` has no value: evalf refuses it (it was a certified `0`,
+  also for `DiracDelta(sin²1 + cos²1 − 1)`), so `solve` of an equation
+  containing it reports no solution instead of an identity, and `is_real`/
+  `is_zero` answer `None` (SymPy 1.14 agrees).
+
+### Added
+
+- `to_rust_fn` and `to_c_fn` emit `Si`, `Ci`, `Ei`, `li`, `Shi`, `Chi`,
+  `erfi` and the Fresnel integrals (until now only `compile()` evaluated
+  them): on 114,254 points per function the emitted Rust and the C compiled
+  with `cc -O2` return `compile()`'s values bit for bit (with
+  `-ffp-contract=fast` on an FMA target within 2 ulps, absolutely ≲ 10⁻¹⁹
+  next to the zeros of `Ci`).  Code-generator refusals say where a function
+  is available (`Si(x).to_python()` names `scipy.special.sici(x)[0]`).
+- `BudgetKind::{LimitSteps, IntegrationSteps, ParametricRational}`; the
+  limit engine's work budget fails with `BudgetExhausted { kind: LimitSteps
+  }` (same message), `rsolve_linear`'s swell with `ExpressionSwell`.
+- `multipoly::Monomial` (`MonoKey` deprecated).
+
+### Fixed
+
+- `eˣ + e^(x + ix) = 0` for a real `x` was "no solution" (also as a set
+  and in `reduce_inequalities`); the solutions are `π + 2nπ`.  `Ex::solve`
+  returns `NoSolution` when every solution of a non-polynomial equation lies
+  outside the declared domain (`eˣ + e^(ix)`, `2ˣ + 1` for a real `x`; it
+  was `Ok([])`).
+- `|f| = c` for a real unknown and a non-real `f` is solved (`|x + i| = 2`:
+  `±√3`), and `reduce_inequalities([|x + i| − 2 > 0])` is `(−∞, −√3) ∪
+  (√3, ∞)` (it was a union of intervals with complex endpoints).
+  Absolute-value equations that force a plain unknown to be real are
+  solved (`|x − π| + x = 0`, `|x|/x + 3 = 0`: no solution; `|x²| + x = 0`:
+  `0, −1`).
+- `Σ_{k=1}^{N} sin(kπ)`, `cos(2kπ)`, `floor(k)` give `0`, `N`, `N²/2 + N/2`
+  without declaring `k` an integer (the summation index is one).
+- `is_convergent` certifies the sign of the growth rate:
+  `Σ 2ᵏ·e^{−0.6931471805599453·k}` was "convergent" (`ln 2 − c = 9.4·10⁻¹⁸`
+  rounded to `0.0` in `f64`).  A divergent sum of a constant gets a
+  direction only from a proved real sign (`Σ (−1 + i·(e^{10⁻³⁰} − 1 −
+  10⁻³⁰))` was `−∞`).  The zero test of symbolic linear algebra no longer
+  takes three zero samples for proof: an exact grid test decides.
+- `Ex::is_zero` and `query` of constants prove zeros with the limit
+  engine's exact tests: `Γ(1/3)Γ(2/3) − 2π/√3`, `sin²1 + cos²1 − 1`,
+  `δ(a)` for a real `a ≠ 0` are zero, `e^{10⁻¹⁵⁰} − 1` is nonzero (all
+  `None` up to 0.49); zero verdicts are remembered per context (limits and
+  series that refuse are 12% cheaper).
+- `expand()` expands the elements of sets and the endpoints of intervals
+  (`{3, (x+1)²}` was unchanged).
+- The graded monomial orders summed degrees in `u32`: `x^(2³²−1)·y` ranked
+  below `x` in release builds.
+
+### Changed
+
+- **Faster multivariate polynomials.**  `MultiPoly` is keyed by
+  `Monomial` (degree stored, exponents inline up to six variables), and
+  large products accumulate in a hash map and in `i128`: Fateman's `p·(p +
+  1)` with `p = (1 + x + y + z + w)¹⁰` 210 → 44 ms.  Dense multivariate gcds
+  with large coefficients use Brown's modular algorithm (after SymPy's
+  `modgcd_multivariate`) instead of million-digit heuristic images: 20.8 s →
+  0.65 s and 29.6 s → 2.0 s on the two dense cases of the 0.49 survey
+  (SymPy 1.14: 19.7 s and 40.3 s).  One integer gcd (Lehmer) for polynomial
+  and rational arithmetic.  The parametric Risch gcd bound was raised (7 more
+  Rubi integrands verified).
+- **Internal type architecture (refactor wave 3).**  The `Func` table
+  gained the `rt` facet (which `f64` back end evaluates which function): the
+  VM, Rust, C and Python generators read it, and tests check every claim
+  against all four.  evalf passes precision and the constants cache as one
+  `Wp`, values with their bounds as `CBall` (elementary bound rules are
+  ball methods), signs from the ball (`SignSet`); decimal output is our
+  exact conversion (astro-float #33); `BigFloat::is_positive` (true for
+  `+0`) is disallowed; one `BigFloat → f64` conversion; `from_f64` exact for
+  subnormals.  The remaining work budgets (Gruntz, Risch, integration
+  steps) are `Work`; memos are keyed by arena serials.
+
 ## [0.49.0] - 2026-10-13
 
 A type-architecture release.  Most silent wrong answers of the last forty

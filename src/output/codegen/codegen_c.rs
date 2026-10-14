@@ -3,13 +3,22 @@
 //! `to_c_fn_with_options` emits a self-contained C99 translation unit
 //! fragment: `#include <math.h>`, any `static inline` helper functions the
 //! expression needs (Lambert W, digamma, Bessel functions, orthogonal
-//! polynomials, integer sequences, …) and the function itself, using
-//! `const double tN = …;` temporaries for common subexpressions.
+//! polynomials, integer sequences, the exponential, logarithmic, sine and
+//! cosine integrals, erfi, the Fresnel integrals, …) and the function
+//! itself, using `const double tN = …;` temporaries for common
+//! subexpressions.  Which functions have a helper is the `rt` facet of the
+//! function list (`base/func.rs`), shared with `compile()` and
+//! `to_rust_fn()`.
 //!
 //! Functions available in `<math.h>` are used directly (`sin`, `exp`, `pow`,
 //! `tgamma`, `lgamma`, `erf`, `erfc`, `fma`, `expm1`, `log1p`, …).  The
 //! helpers mirror the algorithms of the shared Rust runtime (`numeric_rt`)
-//! so that `compile()`, `to_rust_fn()` and `to_c_fn()` agree; `min`/`max`
+//! so that `compile()`, `to_rust_fn()` and `to_c_fn()` agree (the ports of
+//! `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`, `erfi` and the Fresnel integrals
+//! statement for statement: bit for bit with the same `<math.h>` and no
+//! contraction of `a*b + c` into a fused multiply-add — GCC's default on
+//! x86-64; `-ffp-contract=fast` on an FMA target may move the last bits);
+//! `min`/`max`
 //! are the NaN-propagating `symplex_min`/`symplex_max` (`fmin` returns the
 //! other operand of a NaN).  Constants whose formula would not evaluate to
 //! their real value are folded to literals and non-real constants refused
@@ -17,10 +26,10 @@
 //!
 //! The emitter walks the expression with an explicit stack (no recursion).
 
-use super::{CodegenOptions, Precision, RtLowering, lambert_rt_helper, rt_lowering};
+use super::{CodegenOptions, Precision, lambert_rt_helper, rt_kernel};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
-use crate::base::libfn::LibFn;
+use crate::base::func::{Backend, Func, Kernel};
 use crate::base::node::{ExprId, ExprNode};
 use num_traits::ToPrimitive;
 use rustc_hash::FxHashMap;
@@ -365,18 +374,21 @@ impl<'a> CEmitter<'a> {
                 plan: None,
             }),
             ExprNode::Im(x) => self.schedule(id, Plan::RtUnary("im"), &[(x, v)]),
-            // The other complex-analysis nodes have no meaning in a
-            // real-valued backend, and the remaining special functions have
-            // no runtime helper yet.
-            ExprNode::Conjugate(_) => return Err(self.unsupported("conjugate")),
-            ExprNode::Arg(_) => return Err(self.unsupported("arg")),
-            ExprNode::Si(_) => return Err(self.unsupported("Si")),
-            ExprNode::Ci(_) => return Err(self.unsupported("Ci")),
-            ExprNode::Ei(_) => return Err(self.unsupported("Ei")),
-            ExprNode::Li(_) => return Err(self.unsupported("li")),
-            ExprNode::Zeta(_) => return Err(self.unsupported("zeta")),
-            ExprNode::Polygamma(_, _) => return Err(self.unsupported("polygamma")),
-            ExprNode::KroneckerDelta(_, _) => return Err(self.unsupported("KroneckerDelta")),
+            // Through the `rt` facet: the C port of the runtime helper, or
+            // the refusal (the other complex-analysis nodes have no meaning
+            // in a real-valued backend).
+            ExprNode::Conjugate(_)
+            | ExprNode::Arg(_)
+            | ExprNode::Si(_)
+            | ExprNode::Ci(_)
+            | ExprNode::Ei(_)
+            | ExprNode::Li(_)
+            | ExprNode::Zeta(_)
+            | ExprNode::Polygamma(_, _)
+            | ExprNode::KroneckerDelta(_, _) => match arena.node(id).func(arena) {
+                Some((f, args)) => self.visit_rt(id, f, &args)?,
+                None => return Err(self.unsupported(&arena.display(id).to_string())),
+            },
 
             ExprNode::Add(children) => {
                 if children.is_empty() {
@@ -634,7 +646,7 @@ impl<'a> CEmitter<'a> {
             }
             ExprNode::Not(x) => self.schedule(id, Plan::Not, &[(x, Kind::Bool)]),
             ExprNode::Apply(sid, apply_args) => match arena.lib_fn(sid) {
-                Some(f) => self.visit_apply(id, f, &apply_args)?,
+                Some(f) => self.visit_rt(id, Func::from(f), &apply_args)?,
                 None => {
                     return Err(SymplexError::NotImplemented(format!(
                         "cannot generate C code for user-defined Apply node `{}`",
@@ -675,10 +687,12 @@ impl<'a> CEmitter<'a> {
         Ok(())
     }
 
-    /// Library functions through the C helper library, which mirrors the
-    /// shared Rust runtime helper for helper (see [`rt_lowering`]).
-    fn visit_apply(&mut self, id: ExprId, f: LibFn, args: &[ExprId]) -> Result<(), SymplexError> {
-        let fname = f.name();
+    /// Functions through the C helper library, which ports the shared Rust
+    /// runtime helper for helper (the `rt` facet, see [`rt_kernel`]): the
+    /// library functions and the node-backed functions the facet names a
+    /// helper for.
+    fn visit_rt(&mut self, id: ExprId, f: Func, args: &[ExprId]) -> Result<(), SymplexError> {
+        let fname = f.spec().name;
         let v = Kind::Value;
         let arity_err = |n: usize| {
             SymplexError::NotImplemented(format!(
@@ -686,32 +700,32 @@ impl<'a> CEmitter<'a> {
                 args.len()
             ))
         };
-        if f == LibFn::LambertW {
-            let helper = lambert_rt_helper(self.arena, args)?;
-            self.schedule(id, Plan::RtUnary(helper), &[(args[0], v)]);
-            return Ok(());
-        }
-        match rt_lowering(f) {
-            RtLowering::Ordered(helper) => {
+        match rt_kernel(f, Backend::C, "cannot generate C code for")? {
+            Kernel::Branches(_) => {
+                let helper = lambert_rt_helper(self.arena, args)?;
+                self.schedule(id, Plan::RtUnary(helper), &[(args[0], v)]);
+            }
+            Kernel::Ordered(helper) => {
                 let [order, x] = args else {
                     return Err(arity_err(2));
                 };
                 let order = const_order(self.arena, *order, fname)?;
                 self.schedule(id, Plan::RtOrdered(helper, order), &[(*x, v)]);
             }
-            RtLowering::Unary(helper) => {
+            Kernel::Unary(helper) => {
                 let [x] = args else {
                     return Err(arity_err(1));
                 };
                 self.schedule(id, Plan::RtUnary(helper), &[(*x, v)]);
             }
-            RtLowering::Binary(helper) => {
+            Kernel::Binary(helper) => {
                 let [a, b] = args else {
                     return Err(arity_err(2));
                 };
                 self.schedule(id, Plan::RtBinary(helper), &[(*a, v), (*b, v)]);
             }
-            RtLowering::Unsupported => return Err(self.unsupported(fname)),
+            // `rt_kernel` returns helper kernels only.
+            Kernel::Own | Kernel::None => return Err(self.unsupported(fname)),
         }
         Ok(())
     }
@@ -1945,11 +1959,422 @@ static inline double symplex_falling_factorial(double x, double n) {
 }
 "#,
     },
+    // The exponential, logarithmic, sine and cosine integrals, erfi and the
+    // Fresnel integrals: the `numeric_rt` sections `expint_core` … `fresnel`
+    // statement for statement (same operations in the same order, so the
+    // results are the VM's bit for bit when the C compiler does not contract
+    // `a*b + c` into a fused multiply-add).  Formulas: DLMF 6.2, 6.5, 6.6,
+    // 6.9, 6.12, 7.2, 7.5, 7.6, 7.12, 8.9.2 (see `numeric_rt`).
+    CHelper {
+        name: "expint_core",
+        deps: &["util"],
+        src: r#"
+/* Ei(x) = gamma + ln|x| + sum x^k/(k k!) (DLMF 6.6.1). */
+static inline double symplex_ei_series(double x) {
+    double t = 1.0, s = 0.0, k = 1.0;
+    while (k < 400.0) {
+        t *= x / k;
+        double term = t / k;
+        s += term;
+        if (fabs(term) <= 1e-17 * fabs(s)) break;
+        k += 1.0;
+    }
+    return 0.5772156649015329 + log(fabs(x)) + s;
+}
+/* e^t E1(t), t >= 1: even contraction of DLMF 6.9.1, evaluated backwards. */
+static inline double symplex_e1_scaled_cf(double t) {
+    double k = floor(12.0 + 95.0 / t), v = 0.0;
+    while (k >= 1.0) {
+        v = -(k * k) / (t + 2.0 * k + 1.0 + v);
+        k -= 1.0;
+    }
+    return 1.0 / (t + 1.0 + v);
+}
+/* x e^-x Ei(x), x >= 45: asymptotic series DLMF 6.12.2. */
+static inline double symplex_ei_asym_scaled(double x) {
+    double t = 1.0, s = 1.0, k = 1.0;
+    while (k < 200.0) {
+        double next = t * k / x;
+        if (next > t) break;
+        t = next;
+        s += t;
+        if (t <= 1e-17 * s) break;
+        k += 1.0;
+    }
+    return s;
+}
+/* e^x s/x without overflowing in e^x first. */
+static inline double symplex_exp_times_over(double x, double s) {
+    if (x > 700.0) { double h = exp(0.5 * x); return h * (h * (s / x)); }
+    return exp(x) * (s / x);
+}
+/* F(x0 + h) for F(x0) = 0, F'(t) = N(t)/t (Taylor series about the zero). */
+static inline double symplex_zero_taylor(double h, double x0, double n0, double n1, double sigma) {
+    double a = 0.0, sum = 0.0, hp = h, inv_fact = 1.0, sk = 1.0, k = 0.0;
+    while (k < 80.0) {
+        int even = symplex_is_even(k);
+        double d = (even ? n0 : n1) * sk * inv_fact;
+        a = (d - a) / x0;
+        double term = a * hp / (k + 1.0);
+        sum += term;
+        if (k >= 2.0 && fabs(term) <= 1e-17 * fabs(sum)) break;
+        if (!even) sk *= sigma;
+        k += 1.0;
+        inv_fact /= k;
+        hp *= h;
+    }
+    return sum;
+}
+/* Ei(x0 + h) near the zero x0 = 0.37250741078136663... of Ei. */
+static inline double symplex_ei_near_zero(double h) {
+    return symplex_zero_taylor(h, 0.3725074107813666, 1.451369234883381, 1.451369234883381, 1.0);
+}
+"#,
+    },
+    CHelper {
+        name: "exp_integral_ei",
+        deps: &["expint_core"],
+        src: r#"
+static inline double symplex_exp_integral_ei(double x) {
+    if (isnan(x)) return NAN;
+    if (x == 0.0) return -INFINITY;
+    if (x == INFINITY) return INFINITY;
+    double h = (x - 0.3725074107813666) - 1.3140183414386028e-17;
+    if (fabs(h) <= 0.1) return symplex_ei_near_zero(h);
+    if (x < -1.0) return -exp(x) * symplex_e1_scaled_cf(-x);
+    if (x < 45.0) return symplex_ei_series(x);
+    return symplex_exp_times_over(x, symplex_ei_asym_scaled(x));
+}
+"#,
+    },
+    CHelper {
+        name: "log_integral",
+        deps: &["expint_core"],
+        src: r#"
+/* li(x) = Ei(ln x) (DLMF 6.2.8), scaled as x (e^-L Ei(L)) for |L| >= 1. */
+static inline double symplex_log_integral(double x) {
+    if (isnan(x) || x < 0.0) return NAN;
+    if (x == 0.0) return 0.0;
+    if (x == 1.0) return -INFINITY;
+    if (x == INFINITY) return INFINITY;
+    double r = ((x - 1.451369234883381) + 4.82713642696033e-17) / 1.451369234883381;
+    if (fabs(r) <= 0.1) return symplex_ei_near_zero(log1p(r));
+    double l = log(x);
+    if (fabs(l) < 1.0) return symplex_ei_series(l);
+    if (l < 0.0) return -x * symplex_e1_scaled_cf(-l);
+    if (l < 45.0) return x * (exp(-l) * symplex_ei_series(l));
+    return x * (symplex_ei_asym_scaled(l) / l);
+}
+"#,
+    },
+    CHelper {
+        name: "sinh_integral",
+        deps: &["expint_core"],
+        src: r#"
+/* Shi(x) (DLMF 6.2.15): series (DLMF 6.6.5 at ix), (Ei + E1)/2 beyond 45. */
+static inline double symplex_sinh_integral(double x) {
+    if (isnan(x)) return NAN;
+    double s = fabs(x), v;
+    if (s == INFINITY) {
+        v = INFINITY;
+    } else if (s <= 45.0) {
+        double t = s, sum = s, n = 1.0;
+        while (n < 100.0) {
+            t = t * s * s / ((2.0 * n) * (2.0 * n + 1.0));
+            double term = t / (2.0 * n + 1.0);
+            sum += term;
+            if (term <= 1e-17 * sum) break;
+            n += 1.0;
+        }
+        v = sum;
+    } else {
+        v = symplex_exp_times_over(s, 0.5 * symplex_ei_asym_scaled(s));
+    }
+    return x < 0.0 ? -v : v;
+}
+"#,
+    },
+    CHelper {
+        name: "cosh_integral",
+        deps: &["expint_core"],
+        src: r#"
+/* Chi(x) (DLMF 6.2.16), NaN for x < 0 (not real there). */
+static inline double symplex_cosh_integral(double x) {
+    if (isnan(x) || x < 0.0) return NAN;
+    if (x == 0.0) return -INFINITY;
+    if (x == INFINITY) return INFINITY;
+    double h = (x - 0.5238225713898644) + 2.6671382575502846e-17;
+    if (fabs(h) <= 0.15)
+        return symplex_zero_taylor(h, 0.5238225713898644, 1.1403609569334683, 0.5481086681473077, 1.0);
+    if (x > 45.0) return symplex_exp_times_over(x, 0.5 * symplex_ei_asym_scaled(x));
+    double t = 1.0, sum = 0.0, n = 1.0;
+    while (n < 100.0) {
+        t = t * x * x / ((2.0 * n - 1.0) * (2.0 * n));
+        double term = t / (2.0 * n);
+        sum += term;
+        if (term <= 1e-17 * sum) break;
+        n += 1.0;
+    }
+    return 0.5772156649015329 + log(x) + sum;
+}
+"#,
+    },
+    CHelper {
+        name: "gamma_cf_imag",
+        deps: &[],
+        src: r#"
+/* K(a, -iw) = e^z z^-a Gamma(a, z) at z = -iw (DLMF 8.9.2, even contraction, backwards). */
+static inline void symplex_gamma_cf_imag(double a, double w, double *re, double *im) {
+    double k = floor(16.0 + 170.0 / w), vr = 0.0, vi = 0.0;
+    while (k >= 1.0) {
+        double dr = 2.0 * k + 1.0 - a + vr;
+        double di = vi - w;
+        double c = -k * (k - a) / (dr * dr + di * di);
+        vr = c * dr;
+        vi = -c * di;
+        k -= 1.0;
+    }
+    double dr = 1.0 - a + vr, di = vi - w, m = dr * dr + di * di;
+    *re = dr / m;
+    *im = -di / m;
+}
+"#,
+    },
+    CHelper {
+        name: "sici_fg",
+        deps: &["gamma_cf_imag"],
+        src: r#"
+/* The auxiliary f, g of Si and Ci, x > 2 (DLMF 6.5.7, 6.12.3-4). */
+static inline void symplex_sici_fg(double x, double *f, double *g) {
+    if (x < 64.0) {
+        double re, im;
+        symplex_gamma_cf_imag(0.0, x, &re, &im);
+        *f = im;
+        *g = re;
+        return;
+    }
+    double y = 1.0 / (x * x), tf = 1.0, tg = 1.0, sf = 1.0, sg = 1.0, m = 1.0;
+    while (m < 40.0) {
+        tf *= -(2.0 * m - 1.0) * (2.0 * m) * y;
+        tg *= -(2.0 * m) * (2.0 * m + 1.0) * y;
+        sf += tf;
+        sg += tg;
+        if (fabs(tg) <= 1e-17) break;
+        m += 1.0;
+    }
+    *f = sf / x;
+    *g = sg * y;
+}
+"#,
+    },
+    CHelper {
+        name: "sin_integral",
+        deps: &["sici_fg"],
+        src: r#"
+/* Si(x) (DLMF 6.2.9): series (DLMF 6.6.5) to 2, pi/2 - f cos x - g sin x beyond. */
+static inline double symplex_sin_integral(double x) {
+    if (isnan(x)) return NAN;
+    double s = fabs(x), v;
+    if (s <= 2.0) {
+        double t = s, sum = s, n = 1.0;
+        while (n < 30.0) {
+            t = -t * s * s / ((2.0 * n) * (2.0 * n + 1.0));
+            double term = t / (2.0 * n + 1.0);
+            sum += term;
+            if (fabs(term) <= 1e-17 * fabs(sum)) break;
+            n += 1.0;
+        }
+        v = sum;
+    } else if (s == INFINITY) {
+        v = 0.5 * 3.141592653589793;
+    } else {
+        double f, g;
+        symplex_sici_fg(s, &f, &g);
+        v = 0.5 * 3.141592653589793 - (f * cos(s) + g * sin(s));
+    }
+    return x < 0.0 ? -v : v;
+}
+"#,
+    },
+    CHelper {
+        name: "cos_integral",
+        deps: &["expint_core", "sici_fg"],
+        src: r#"
+/* Ci(x) (DLMF 6.2.11), NaN for x < 0 (not real there). */
+static inline double symplex_cos_integral(double x) {
+    if (isnan(x) || x < 0.0) return NAN;
+    if (x == 0.0) return -INFINITY;
+    if (x == INFINITY) return 0.0;
+    double h = (x - 0.6165054856207163) + 4.209920321433186e-17;
+    if (fabs(h) <= 0.15)
+        return symplex_zero_taylor(h, 0.6165054856207163, 0.8159039188668792, -0.5781875086662364, -1.0);
+    if (x <= 2.0) {
+        double t = 1.0, sum = 0.0, n = 1.0;
+        while (n < 30.0) {
+            t = -t * x * x / ((2.0 * n - 1.0) * (2.0 * n));
+            double term = t / (2.0 * n);
+            sum += term;
+            if (fabs(term) <= 1e-17 * fabs(sum)) break;
+            n += 1.0;
+        }
+        return 0.5772156649015329 + log(x) + sum;
+    }
+    double f, g;
+    symplex_sici_fg(x, &f, &g);
+    return f * sin(x) - g * cos(x);
+}
+"#,
+    },
+    CHelper {
+        name: "erfi",
+        deps: &[],
+        src: r#"
+/* erfi(x) = -i erf(ix): series (DLMF 7.6.1) to 6.5, asymptotic (DLMF 7.12.1) with an exact e^(x^2). */
+static inline double symplex_erfi(double x) {
+    if (isnan(x)) return NAN;
+    double s = fabs(x), v;
+    if (s <= 6.5) {
+        double t = s, sum = s, n = 1.0;
+        while (n < 200.0) {
+            t = t * s * s / n;
+            double term = t / (2.0 * n + 1.0);
+            sum += term;
+            if (term <= 1e-17 * sum) break;
+            n += 1.0;
+        }
+        v = 1.1283791670955126 * sum;
+    } else if (s >= 27.0) {
+        v = INFINITY;
+    } else {
+        double y = 1.0 / (s * s), t = 1.0, sum = 1.0, m = 1.0;
+        while (m < 100.0) {
+            double next = t * (m - 0.5) * y;
+            if (next > t) break;
+            t = next;
+            sum += t;
+            if (t <= 1e-17 * sum) break;
+            m += 1.0;
+        }
+        double a = sum * (0.5 * 1.1283791670955126) / s;
+        double r = floor(16.0 * s) / 16.0, rr = r * r;
+        double e2 = exp((s - r) * (s + r));
+        v = rr > 700.0 ? exp(rr - 64.0) * (e2 * a) * exp(64.0) : exp(rr) * (e2 * a);
+    }
+    return x < 0.0 ? -v : v;
+}
+"#,
+    },
+    CHelper {
+        name: "fresnel_core",
+        deps: &["util", "gamma_cf_imag"],
+        src: r#"
+/* sin, cos of pi x^2/2 with x^2/2 reduced mod 2 exactly (Dekker's product). */
+static inline void symplex_sincos_half_pi_sq(double x, double *sn, double *cs) {
+    double p = x * x;
+    double c = 134217729.0 * x;
+    double xh = c - (c - x);
+    double xl = x - xh;
+    double e = ((xh * xh - p) + 2.0 * xh * xl) + xl * xl;
+    double hi = 0.5 * p;
+    double n = floor(hi + 0.5);
+    double r = (hi - n) + 0.5 * e;
+    double s = sin(3.141592653589793 * r);
+    double co = cos(3.141592653589793 * r);
+    if (symplex_is_even(n)) { *sn = s; *cs = co; } else { *sn = -s; *cs = -co; }
+}
+/* The auxiliary f, g of the Fresnel integrals, x > 1.25 (DLMF 7.5.10, 7.11.2, 8.9.2, 7.12.2-3). */
+static inline void symplex_fresnel_fg(double x, double *f, double *g) {
+    double w = 0.5 * 3.141592653589793 * x * x;
+    if (w < 64.0) {
+        double re, im;
+        symplex_gamma_cf_imag(0.5, w, &re, &im);
+        double h = 0.5 * x;
+        *f = h * im;
+        *g = h * re;
+        return;
+    }
+    double u = 1.0, sf = 1.0, sg = 0.0, k = 1.0;
+    while (k < 200.0) {
+        u *= (k - 0.5) / w;
+        double sign = symplex_is_even(floor(0.5 * k)) ? 1.0 : -1.0;
+        if (symplex_is_even(k)) sf += sign * u; else sg += sign * u;
+        if (u <= 1e-17) break;
+        k += 1.0;
+    }
+    double c = 1.0 / (3.141592653589793 * x);
+    *f = c * sf;
+    *g = c * sg;
+}
+"#,
+    },
+    CHelper {
+        name: "fresnel_s",
+        deps: &["fresnel_core"],
+        src: r#"
+/* Fresnel S(x) (DLMF 7.2.8): series (DLMF 7.6.6) to 1.25, 1/2 - f cos - g sin beyond. */
+static inline double symplex_fresnel_s(double x) {
+    if (isnan(x)) return NAN;
+    double s = fabs(x), v;
+    if (s <= 1.25) {
+        double q = 0.5 * 3.141592653589793 * s * s;
+        double t = s * q, sum = t / 3.0, n = 1.0;
+        while (n < 40.0) {
+            t = -t * q * q / ((2.0 * n) * (2.0 * n + 1.0));
+            double term = t / (4.0 * n + 3.0);
+            sum += term;
+            if (fabs(term) <= 1e-17 * fabs(sum)) break;
+            n += 1.0;
+        }
+        v = sum;
+    } else if (s > 1e17) {
+        v = 0.5;
+    } else {
+        double f, g, sn, cs;
+        symplex_fresnel_fg(s, &f, &g);
+        symplex_sincos_half_pi_sq(s, &sn, &cs);
+        v = 0.5 - (f * cs + g * sn);
+    }
+    return x < 0.0 ? -v : v;
+}
+"#,
+    },
+    CHelper {
+        name: "fresnel_c",
+        deps: &["fresnel_core"],
+        src: r#"
+/* Fresnel C(x) (DLMF 7.2.7): series (DLMF 7.6.4) to 1.25, 1/2 + f sin - g cos beyond. */
+static inline double symplex_fresnel_c(double x) {
+    if (isnan(x)) return NAN;
+    double s = fabs(x), v;
+    if (s <= 1.25) {
+        double q = 0.5 * 3.141592653589793 * s * s;
+        double t = s, sum = s, n = 1.0;
+        while (n < 40.0) {
+            t = -t * q * q / ((2.0 * n - 1.0) * (2.0 * n));
+            double term = t / (4.0 * n + 1.0);
+            sum += term;
+            if (fabs(term) <= 1e-17 * fabs(sum)) break;
+            n += 1.0;
+        }
+        v = sum;
+    } else if (s > 1e17) {
+        v = 0.5;
+    } else {
+        double f, g, sn, cs;
+        symplex_fresnel_fg(s, &f, &g);
+        symplex_sincos_half_pi_sq(s, &sn, &cs);
+        v = 0.5 + (f * sn - g * cs);
+    }
+    return x < 0.0 ? -v : v;
+}
+"#,
+    },
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base::libfn::LibFn;
 
     fn gen_c(arena: &mut Arena, e: ExprId, args: &[&str]) -> String {
         to_c_fn(arena, e, "f", args).unwrap()
@@ -2129,22 +2554,29 @@ mod tests {
         assert_eq!(rt.matches('(').count(), rt.matches(')').count());
     }
 
-    /// Every runtime helper the shared lowering table names has a C
-    /// implementation (and every dependency it declares exists).
+    /// Every runtime helper of a function the `rt` facet claims for C has a
+    /// C port (and every dependency it declares exists, defined before it).
     #[test]
-    fn every_lowered_library_function_has_a_c_helper() {
-        let names: BTreeSet<&str> = C_HELPERS.iter().map(|h| h.name).collect();
-        for h in C_HELPERS {
+    fn every_function_claimed_for_c_has_its_helper() {
+        for (i, h) in C_HELPERS.iter().enumerate() {
             for d in h.deps {
-                assert!(names.contains(d), "{}: missing dependency {d}", h.name);
+                let at = C_HELPERS.iter().position(|o| o.name == *d);
+                assert!(
+                    at.is_some_and(|j| j < i),
+                    "{}: dependency {d} missing or later",
+                    h.name
+                );
             }
         }
-        for &f in LibFn::ALL {
-            let helper = match rt_lowering(f) {
-                RtLowering::Ordered(h) | RtLowering::Unary(h) | RtLowering::Binary(h) => h,
-                RtLowering::Unsupported => continue,
-            };
-            assert!(names.contains(helper), "{f}: no C helper `{helper}`");
+        let names: BTreeSet<&str> = C_HELPERS.iter().map(|h| h.name).collect();
+        for &f in Func::ALL {
+            let rt = f.spec().rt;
+            if !rt.on(Backend::C) {
+                continue;
+            }
+            for helper in rt.kernel.helpers() {
+                assert!(names.contains(helper), "{f:?}: no C helper `{helper}`");
+            }
         }
     }
 

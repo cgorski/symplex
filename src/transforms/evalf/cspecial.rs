@@ -48,7 +48,10 @@
 //! `erfc x < e^(−x²)/(x√π)`), over the ball `1/(2(u − r)x)`, with no bound
 //! when the ball reaches within eight radii of 0.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::ball::CBall;
+use super::wp::{RM, Wp};
+use crate::base::bigfloat::{is_strictly_positive, to_f64};
+use astro_float::{BigFloat, Consts};
 use rustc_hash::FxHashMap;
 
 use super::accuracy::{self, Bound, Cut};
@@ -160,35 +163,23 @@ pub(super) fn classify(
 
 /// The value of `f` at `args` (rounded to `prec + 16` bits, its error below
 /// `2^−(prec+12)` of its modulus).
-pub(super) fn eval(
-    f: Fun,
-    args: &[&Complex],
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+pub(super) fn eval(f: Fun, args: &[&Complex], w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
     match f {
-        Fun::Ei => cexpint::ei(args[0], prec, rm, cc),
-        Fun::Li => cexpint::li(args[0], prec, rm, cc),
-        Fun::Trig(kind) => cexpint::trig_integral(kind, args[0], prec, rm, cc),
-        Fun::ExpInt => cexpint::expint(args[0], args[1], prec, rm, cc),
-        Fun::UpperGamma => cexpint::upper_gamma(args[0], args[1], prec, rm, cc),
-        Fun::LowerGamma => cexpint::lower_gamma(args[0], args[1], prec, rm, cc),
-        Fun::Bessel(kind) => super::cbessel::bessel(kind, args[0], args[1], prec, rm, cc),
-        Fun::Airy(kind) => super::cbessel::airy(kind, args[0], prec, rm, cc),
-        Fun::Binomial => binomial(args[0], args[1], prec, rm, cc),
-        Fun::FresnelS => super::cerf::fresnel(true, args[0], prec, rm, cc),
-        Fun::FresnelC => super::cerf::fresnel(false, args[0], prec, rm, cc),
+        Fun::Ei => cexpint::ei(args[0], w),
+        Fun::Li => cexpint::li(args[0], w),
+        Fun::Trig(kind) => cexpint::trig_integral(kind, args[0], w),
+        Fun::ExpInt => cexpint::expint(args[0], args[1], w),
+        Fun::UpperGamma => cexpint::upper_gamma(args[0], args[1], w),
+        Fun::LowerGamma => cexpint::lower_gamma(args[0], args[1], w),
+        Fun::Bessel(kind) => super::cbessel::bessel(kind, args[0], args[1], w),
+        Fun::Airy(kind) => super::cbessel::airy(kind, args[0], w),
+        Fun::Binomial => binomial(args[0], args[1], w),
+        Fun::FresnelS => super::cerf::fresnel(true, args[0], w),
+        Fun::FresnelC => super::cerf::fresnel(false, args[0], w),
     }
 }
 
 // ── binomial ────────────────────────────────────────────────────────────────
-
-fn to_f64(x: &BigFloat) -> Option<f64> {
-    super::bigfloat_to_f64_rounded(x, RoundingMode::ToEven)
-        .ok()
-        .filter(|v| v.is_finite())
-}
 
 /// The parts of `z` in `f64` (a zero imaginary part as `+0`).
 fn parts(z: &Complex) -> Option<(f64, f64)> {
@@ -208,14 +199,14 @@ fn exact_int(z: &Complex) -> Option<i64> {
 const MAX_FALLING: i64 = 100_000;
 
 /// `a(a − 1)⋯(a − m + 1)/m!`, `0 ≤ m ≤ MAX_FALLING`, to `p` bits relative.
-fn falling_over_factorial(a: &Complex, m: i64, p: usize, rm: RoundingMode) -> Complex {
+fn falling_over_factorial(a: &Complex, m: i64, p: usize) -> Complex {
     let q = p + cexpint::guard(m as usize + 2);
     let mut v = c_one(q);
     for j in 0..m {
-        let f = (super::zeta::plus_int(&a.0, -j, q, rm), a.1.clone());
-        v = c_mul(&v, &f, q, rm);
+        let f = (super::zeta::plus_int(&a.0, -j, q), a.1.clone());
+        v = c_mul(&v, &f, q, RM);
         let d = BigFloat::from_u64(j as u64 + 1, 64);
-        v = (v.0.div(&d, q, rm), v.1.div(&d, q, rm));
+        v = (v.0.div(&d, q, RM), v.1.div(&d, q, RM));
     }
     v
 }
@@ -225,25 +216,20 @@ fn falling_over_factorial(a: &Complex, m: i64, p: usize, rm: RoundingMode) -> Co
 /// `a(a−1)⋯(a−m+1)/m!`, `0` for a negative one (`1/Γ` vanishes at its poles:
 /// mpmath's `binomial`).  Rounded to `prec + 16` bits, its error below
 /// `2^−(prec+12)` of its modulus.
-fn binomial(
-    a: &Complex,
-    b: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+fn binomial(a: &Complex, b: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     let p = prec + 24;
     let exact = super::exact_bits(&a.0, p).max(super::exact_bits(&b.0, p));
-    let amb = (a.0.sub(&b.0, exact, rm), a.1.sub(&b.1, p + 64, rm));
+    let amb = (a.0.sub(&b.0, exact, RM), a.1.sub(&b.1, p + 64, RM));
     for m in [exact_int(b), exact_int(&amb)].into_iter().flatten() {
         if m < 0 {
             return Ok(c_zero(prec + 16));
         }
         if m <= MAX_FALLING {
-            let v = falling_over_factorial(a, m, p, rm);
+            let v = falling_over_factorial(a, m, p);
             return Ok((
-                super::round_to(v.0, prec + 16, rm),
-                super::round_to(v.1, prec + 16, rm),
+                super::round_to(v.0, prec + 16),
+                super::round_to(v.1, prec + 16),
             ));
         }
     }
@@ -251,35 +237,35 @@ fn binomial(
         if z.1.is_zero() {
             let zf = to_f64(&z.0).unwrap_or(f64::INFINITY).abs();
             let g = super::magnitude_bits((zf + 2.0) * ((zf + 2.0).ln() + 1.0));
-            let v = super::arb_gamma_real(&z.0, p + g + 16, rm, cc)?;
+            let v = super::arb_gamma_real(&z.0, &mut Wp::new(p + g + 16, cc))?;
             Ok((v, BigFloat::new(p)))
         } else {
-            super::zeta::gamma_complex(z, p, rm, cc)
+            super::zeta::gamma_complex(z, &mut Wp::new(p, cc))
         }
     };
     let one = BigFloat::from_i32(1, 64);
-    let a1 = (a.0.add(&one, super::exact_bits(&a.0, p), rm), a.1.clone());
-    let b1 = (b.0.add(&one, super::exact_bits(&b.0, p), rm), b.1.clone());
+    let a1 = (a.0.add(&one, super::exact_bits(&a.0, p), RM), a.1.clone());
+    let b1 = (b.0.add(&one, super::exact_bits(&b.0, p), RM), b.1.clone());
     let amb1 = (
-        amb.0.add(&one, super::exact_bits(&amb.0, p), rm),
+        amb.0.add(&one, super::exact_bits(&amb.0, p), RM),
         amb.1.clone(),
     );
-    let ga = gamma(&a1, cc)?;
-    let gb = gamma(&b1, cc)?;
-    let gab = gamma(&amb1, cc)?;
-    let den = c_mul(&gb, &gab, p, rm);
+    let ga = gamma(&a1, w.cc)?;
+    let gb = gamma(&b1, w.cc)?;
+    let gab = gamma(&amb1, w.cc)?;
+    let den = c_mul(&gb, &gab, p, RM);
     if den.0.is_zero() && den.1.is_zero() {
         return Err(super::unevaluable(
             "binomial: Gamma(b + 1)·Gamma(a − b + 1) is zero",
         ));
     }
-    let v = c_div(&ga, &den, p, rm);
+    let v = c_div(&ga, &den, p, RM);
     if [&v.0, &v.1].iter().any(|x| x.is_nan() || x.is_inf()) {
         return Err(super::unevaluable("binomial beyond the exponent range"));
     }
     Ok((
-        super::round_to(v.0, prec + 16, rm),
-        super::round_to(v.1, prec + 16, rm),
+        super::round_to(v.0, prec + 16),
+        super::round_to(v.1, prec + 16),
     ))
 }
 
@@ -405,7 +391,6 @@ fn end_complement(
     cache: &FxHashMap<ExprId, Complex>,
     errs: &FxHashMap<ExprId, Bound>,
     prec: usize,
-    rm: RoundingMode,
 ) -> Option<EndComplement> {
     use crate::base::numeric::Q;
     let ExprNode::Apply(sid, args) = node else {
@@ -419,9 +404,8 @@ fn end_complement(
     if args.len() != 1 {
         return None;
     }
-    let small = |u: &BigFloat| {
-        u.is_positive() && !u.is_zero() && to_f64(u).is_some_and(|f| f < END_COMPLEMENT)
-    };
+    let small =
+        |u: &BigFloat| is_strictly_positive(u) && to_f64(u).is_some_and(|f| f < END_COMPLEMENT);
     match arena.node(args[0]) {
         ExprNode::Num(n) => {
             let q = arena.num(*n);
@@ -433,7 +417,7 @@ fn end_complement(
             } else {
                 (one - q, false)
             };
-            let u = super::ratio_to_bigfloat(&c, prec + 64, rm);
+            let u = super::ratio_to_bigfloat(&c, prec + 64);
             if !small(&u) {
                 return None;
             }
@@ -479,18 +463,17 @@ pub(super) fn inverse_erf_end(
     node: &ExprNode,
     cache: &FxHashMap<ExprId, Complex>,
     errs: &FxHashMap<ExprId, Bound>,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<Result<(Complex, Bound), SymplexError>> {
-    let end = end_complement(arena, node, cache, errs, prec, rm)?;
+    w: &mut Wp<'_>,
+) -> Option<Result<CBall, SymplexError>> {
+    let prec = w.bits();
+    let end = end_complement(arena, node, cache, errs, prec)?;
     let lu = accuracy::part_lg(&end.u);
     let well_inside = end.err + 3.0 <= lu;
     if !accuracy::is_exact(end.err) && !well_inside {
         // The ball reaches within eight radii of 0: no bound yet.
-        return Some(Ok((super::c_zero(prec), Bound::UNKNOWN)));
+        return Some(Ok(CBall::new(super::c_zero(prec), Bound::UNKNOWN)));
     }
-    let x = match super::arb_erfcinv_small(&end.u, prec + 8, rm, cc) {
+    let x = match super::arb_erfcinv_small(&end.u, &mut w.at(prec + 8)) {
         Ok(x) => x,
         Err(e) => return Some(Err(e)),
     };
@@ -505,14 +488,14 @@ pub(super) fn inverse_erf_end(
         let xf = to_f64(&x).unwrap_or(0.0);
         let shrink = (1.0 - (end.err - lu).exp2()).log2();
         if !(xf > 1.0 && shrink.is_finite()) {
-            return Some(Ok((super::c_zero(prec), Bound::UNKNOWN)));
+            return Some(Ok(CBall::new(super::c_zero(prec), Bound::UNKNOWN)));
         }
         let d = -(1.0 + lu + shrink + xf.log2()) + 0.33;
         accuracy::lsum(own, d + end.err + 1.0)
     };
-    let v = super::round_to(x, prec, rm);
+    let v = super::round_to(x, prec);
     let v = if end.negate { v.neg() } else { v };
-    Some(Ok(((v, BigFloat::new(prec)), Bound::real(total))))
+    Some(Ok(CBall::new((v, BigFloat::new(prec)), Bound::real(total))))
 }
 
 /// `log₂(2^a + 2^b)`.
@@ -552,10 +535,9 @@ pub(super) fn bound(
     v: &Complex,
     cache: &FxHashMap<ExprId, Complex>,
     errs: &FxHashMap<ExprId, Bound>,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Bound {
+    let prec = w.bits();
     if [&v.0, &v.1].iter().any(|x| x.is_nan() || x.is_inf()) {
         return Bound::UNKNOWN;
     }
@@ -608,12 +590,10 @@ pub(super) fn bound(
         let c = match closed {
             Some(d) if d.is_finite() => d + e + 1.0,
             Some(_) => return Bound::UNKNOWN,
-            None => {
-                match super::sensitivity::numeric_change(arena, id, *a, e, v, cache, prec, rm, cc) {
-                    Some(k) => k,
-                    None => return Bound::UNKNOWN,
-                }
-            }
+            None => match super::sensitivity::numeric_change(arena, id, *a, e, v, cache, w) {
+                Some(k) => k,
+                None => return Bound::UNKNOWN,
+            },
         };
         total = accuracy::lsum(total, c);
     }

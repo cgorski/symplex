@@ -18,7 +18,7 @@
 //! different scale and each silently saturating on large inputs.
 
 use astro_float::{BigFloat, RoundingMode};
-use num_bigint::{BigInt, Sign};
+use num_bigint::{BigInt, BigUint, Sign};
 use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
@@ -315,48 +315,229 @@ pub(crate) fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize, rm: RoundingMode
 // positive denominator) representation, computed the way SymPy's
 // `Rational.__add__`/`__mul__` do (an integer operand needs no gcd in a
 // sum and only the one against the other denominator in a product) and,
-// for two fractions, with Henrici's sum (Knuth, TAOCP vol. 2, 4.5.1);
-// every gcd starts with Euclidean steps that bring the larger operand down
-// to the size of the smaller ([`gcd_big`]).
+// for two fractions, with Henrici's sum (Knuth, TAOCP vol. 2, 4.5.1),
+// and every gcd is Lehmer's ([`gcd_big`]).
 
-/// `gcd(a, b)` on machine words.
-fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+// ── Integer gcd: the one implementation ──────────────────────────────────────────
+//
+// Before 0.50 the crate had two big-integer gcds (this file's Euclid-then-
+// binary `gcd_big` and the polynomial code's Lehmer `int_gcd`) and three
+// word gcds; they are one now.  `num-integer`'s gcd is the binary (Stein)
+// algorithm, about one bit per pass over the operands; Lehmer's algorithm
+// (Knuth, TAOCP vol. 2, §4.5.2, Algorithm L) runs the Euclidean quotients
+// on the leading 62 bits and applies them to the full operands about 30
+// bits per pass (5–7× faster at 1,000–20,000 digits).  Both are quadratic.
+
+/// `gcd(a, b)` on machine words (binary; `gcd(0, b) = b`).
+pub(crate) fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    if a == 0 {
+        return b;
+    }
+    if b == 0 {
+        return a;
+    }
+    let shift = (a | b).trailing_zeros();
+    a >>= a.trailing_zeros();
+    loop {
+        b >>= b.trailing_zeros();
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+        }
+        b -= a;
+        if b == 0 {
+            return a << shift;
+        }
+    }
+}
+
+/// `gcd(a, b)` on double words (Euclid).
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
+        (a, b) = (b, a % b);
     }
     a
 }
 
-/// `gcd(|a|, |b|)` (`gcd(0, 0) = 0`).
-///
-/// Euclidean steps while the operands differ in size by more than a limb
-/// (each a division linear in the larger), a word gcd once the smaller
-/// fits in 64 bits, and num-bigint's binary gcd only for two operands of
-/// about the same size, where its cost is that of the gcd itself.
+/// `gcd(|a|, |b|)` (`gcd(0, 0) = 0`), equal to
+/// `num_integer::Integer::gcd`: when the smaller operand fits a word, one
+/// division of the larger by it and a word gcd (the common case in
+/// rational arithmetic: a long numerator against a short denominator);
+/// a double-word gcd for two operands of at most 128 bits; Lehmer's
+/// algorithm beyond (whose division steps first bring a much larger
+/// operand down to the size of the smaller).
 pub(crate) fn gcd_big(a: &BigInt, b: &BigInt) -> BigInt {
     let (x, y) = (a.magnitude(), b.magnitude());
-    let (mut big, mut small) = if x >= y {
-        (x.clone(), y.clone())
+    let (big, small) = if x >= y { (x, y) } else { (y, x) };
+    if small.is_zero() {
+        return BigInt::from(big.clone());
+    }
+    if let Some(s) = small.to_u64() {
+        let t = match big.to_u64() {
+            Some(b) => b % s,
+            None => (big % s).to_u64().unwrap_or(0),
+        };
+        return BigInt::from(gcd_u64(s, t));
+    }
+    if big.bits() <= 128 {
+        let (x, y) = (big.to_u128().unwrap_or(0), small.to_u128().unwrap_or(0));
+        return BigInt::from(gcd_u128(x, y));
+    }
+    BigInt::from_biguint(Sign::Plus, uint_gcd(big, small))
+}
+
+/// Lehmer's gcd of two natural numbers.
+///
+/// The operands are kept as little-endian `u64` limb vectors, and each
+/// cosequence matrix is applied to both in one pass in place
+/// ([`lehmer_apply`]); a quotient too long for the leading word is one
+/// multiprecision division.
+fn uint_gcd(a: &BigUint, b: &BigUint) -> BigUint {
+    let (mut u, mut v) = if a >= b {
+        (a.to_u64_digits(), b.to_u64_digits())
     } else {
-        (y.clone(), x.clone())
+        (b.to_u64_digits(), a.to_u64_digits())
     };
     loop {
-        if small.is_zero() {
-            return BigInt::from(big);
+        limbs_trim(&mut u);
+        limbs_trim(&mut v);
+        if v.len() <= 2 {
+            // Two words: finish with a division and machine gcds.
+            let (ub, vb) = (limbs_to_big(&u), limbs_to_big(&v));
+            if vb.is_zero() {
+                return ub;
+            }
+            let r = (&ub % &vb).to_u128().unwrap_or(0);
+            return BigUint::from(gcd_u128(vb.to_u128().unwrap_or(0), r));
         }
-        if let Some(s) = small.to_u64() {
-            let t = (&big % s).to_u64().unwrap_or(0);
-            return BigInt::from(gcd_u64(s, t));
+        let (ubits, vbits) = (limbs_bits(&u), limbs_bits(&v));
+        let division_step = |u: &mut Vec<u64>, v: &mut Vec<u64>| {
+            let (ub, vb) = (limbs_to_big(u), limbs_to_big(v));
+            let r = &ub % &vb;
+            *u = std::mem::take(v);
+            *v = r.to_u64_digits();
+        };
+        // A quotient longer than half a word: one multiprecision division.
+        if ubits - vbits > 32 {
+            division_step(&mut u, &mut v);
+            continue;
         }
-        if big.bits() <= small.bits() + 64 {
-            return BigInt::from(num_integer::Integer::gcd(&big, &small));
+        let shift = ubits - 62;
+        let x = limbs_window(&u, shift) & ((1 << 62) - 1);
+        let y = limbs_window(&v, shift) & ((1 << 62) - 1);
+        let coeffs = lehmer_cosequence(x, y);
+        let bounded = coeffs.iter().all(|c| c.unsigned_abs() < 1u64 << 62);
+        if coeffs[1] == 0 || !bounded {
+            division_step(&mut u, &mut v);
+            continue;
         }
-        let r = &big % &small;
-        big = small;
-        small = r;
+        // (u, v) ← (A·u + B·v, C·u + D·v): two consecutive remainders of
+        // Euclid's sequence (the matrix is a product of the true quotient
+        // steps, unimodular, so the gcd is unchanged in any case).
+        v.resize(u.len(), 0);
+        if !lehmer_apply(&mut u, &mut v, coeffs) {
+            // Not reached (the quotients are exact); start over from the
+            // values with BigUint arithmetic, which is always correct.
+            return num_integer::Integer::gcd(a, b);
+        }
+        limbs_trim(&mut u);
+        limbs_trim(&mut v);
+        if limbs_cmp(&u, &v) == std::cmp::Ordering::Less {
+            std::mem::swap(&mut u, &mut v);
+        }
     }
+}
+
+/// `(u, v) ← (A·u + B·v, C·u + D·v)` in place, for limb vectors of the same
+/// length and cofactors below `2⁶²` in magnitude; `false` (operands
+/// unspecified) if a result would be negative or overflow, which a Lehmer
+/// cosequence rules out.
+fn lehmer_apply(u: &mut [u64], v: &mut [u64], [a, b, c, d]: [i64; 4]) -> bool {
+    let (a, b, c, d) = (i128::from(a), i128::from(b), i128::from(c), i128::from(d));
+    let (mut cu, mut cv) = (0i128, 0i128);
+    for (ui, vi) in u.iter_mut().zip(v.iter_mut()) {
+        let (x, y) = (i128::from(*ui), i128::from(*vi));
+        let su = a * x + b * y + cu;
+        let sv = c * x + d * y + cv;
+        *ui = su as u64;
+        *vi = sv as u64;
+        cu = su >> 64;
+        cv = sv >> 64;
+    }
+    cu == 0 && cv == 0
+}
+
+fn limbs_trim(x: &mut Vec<u64>) {
+    while x.last() == Some(&0) {
+        x.pop();
+    }
+}
+
+fn limbs_bits(x: &[u64]) -> u64 {
+    x.last().map_or(0, |&top| {
+        64 * (x.len() as u64 - 1) + (64 - u64::from(top.leading_zeros()))
+    })
+}
+
+/// The 64 bits of `x` starting at bit `shift`.
+fn limbs_window(x: &[u64], shift: u64) -> u64 {
+    let (w, off) = ((shift / 64) as usize, (shift % 64) as u32);
+    let lo = x.get(w).copied().unwrap_or(0) >> off;
+    let hi = if off == 0 {
+        0
+    } else {
+        x.get(w + 1).copied().unwrap_or(0) << (64 - off)
+    };
+    lo | hi
+}
+
+fn limbs_cmp(x: &[u64], y: &[u64]) -> std::cmp::Ordering {
+    x.len()
+        .cmp(&y.len())
+        .then_with(|| x.iter().rev().cmp(y.iter().rev()))
+}
+
+fn limbs_to_big(x: &[u64]) -> BigUint {
+    let digits: Vec<u32> = x
+        .iter()
+        .flat_map(|&w| [w as u32, (w >> 32) as u32])
+        .collect();
+    BigUint::new(digits)
+}
+
+/// The cosequence `[A, B, C, D]` of Lehmer's inner loop for the leading
+/// 62 bits `x ≥ y` (taken with the same shift) of `u ≥ v`: Euclid's
+/// quotients of `x/y` are emulated as long as they provably agree with
+/// those of `u/v` (Knuth's test with `(x + A)/(y + C)` and
+/// `(x + B)/(y + D)`).  `B = 0` means no quotient was certain.  Every
+/// cosequence value is at most `x < 2⁶²` in magnitude (Knuth), so the
+/// sums fit an `i64` and the updates, whose results do, are computed with
+/// wrapping products.
+fn lehmer_cosequence(x: u64, y: u64) -> [i64; 4] {
+    let (mut a, mut b, mut c, mut d) = (1i64, 0i64, 0i64, 1i64);
+    let (mut x, mut y) = (x as i64, y as i64);
+    loop {
+        let (yc, yd) = (y + c, y + d);
+        if yc <= 0 || yd <= 0 {
+            break;
+        }
+        let (xa, xb) = (x + a, x + b);
+        if xa < 0 || xb < 0 {
+            break;
+        }
+        let q = xa / yc;
+        if q != xb / yd {
+            break;
+        }
+        (a, c) = (c, a.wrapping_sub(q.wrapping_mul(c)));
+        (b, d) = (d, b.wrapping_sub(q.wrapping_mul(d)));
+        (x, y) = (y, x.wrapping_sub(q.wrapping_mul(y)));
+        if [a, b, c, d].iter().any(|t| t.unsigned_abs() >= 1u64 << 62) {
+            // Outside the proven range (not reached): stop with the last
+            // step undone by the caller's bound check.
+            break;
+        }
+    }
+    [a, b, c, d]
 }
 
 /// `x / g` for a divisor `g` of `x` (skipped when `g = 1`).

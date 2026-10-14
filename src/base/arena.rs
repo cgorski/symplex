@@ -79,6 +79,11 @@ pub(crate) enum FactKey {
     RePart,
     /// The sign of `im(x)`, likewise.
     ImPart,
+    /// Is `x` zero: `calculus_util`'s `hidden_zero`.  `ZERO` when proved 0,
+    /// `NONZERO` when proved not 0, `UNKNOWN` when `x` is 0 to the
+    /// precision reached but not proved (a test with no evidence at all is
+    /// not memoised).
+    HiddenZero,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,8 +132,9 @@ pub struct Arena {
     /// Evaluation-time configuration (guards against runaway computation).
     pub(crate) config: EvalConfig,
 
-    /// Answers `eval` and `canon` proved for symbol-free constants
-    /// (realness, sign), keyed by the expression and the question
+    /// Answers `eval`, `canon` and the zero test of the limit and series
+    /// engines proved for symbol-free constants (realness, sign, zero),
+    /// keyed by the expression and the question
     /// ([`FactKey`]).  The value is the set of signs the decider proved
     /// possible for the value the key names (`SignSet::UNKNOWN` when it
     /// proved nothing).
@@ -1225,6 +1231,10 @@ impl Arena {
     ///
     /// Returns a vector of solutions (none when none is found). Delegates to
     /// [`known_real_roots`](crate::transforms::solve::known_real_roots).
+    #[deprecated(
+        since = "0.50.0",
+        note = "an empty list means both \"no root\" and \"not solved\"; use `Arena::solve_roots`"
+    )]
     pub fn solve_for(
         &mut self,
         expr: ExprId,
@@ -1234,6 +1244,45 @@ impl Arena {
             .into_iter()
             .map(|value| crate::transforms::solve::Solution { value })
             .collect()
+    }
+
+    /// The principal roots of `expr = 0` in `var` taken real (as
+    /// [`solve_for`](Self::solve_for)), or why there is no list:
+    /// `NoSolution` when there provably is none (`eˣ = −1`),
+    /// `InfiniteSolutions` for an identity, `ComputationFailed` when the
+    /// roots are not found or not all of them.  `solve_for` returns an empty
+    /// list in all three cases.
+    ///
+    /// # Errors
+    ///
+    /// As above.
+    pub fn solve_roots(
+        &mut self,
+        expr: ExprId,
+        var: ExprId,
+    ) -> Result<Vec<ExprId>, crate::base::errors::SymplexError> {
+        use crate::base::errors::SymplexError;
+        use crate::transforms::solve::{Refusal, roots_or_refusal, solve_classified_real};
+        let outcome = solve_classified_real(self, expr, var);
+        match roots_or_refusal(self, outcome) {
+            Ok(roots) if !roots.is_empty() => Ok(roots),
+            Ok(_) => Err(SymplexError::ComputationFailed {
+                operation: "solve",
+                reason: "no root found".into(),
+            }),
+            Err(Refusal::Identity) => Err(SymplexError::InfiniteSolutions {
+                operation: "solve",
+                reason: "the equation is an identity".into(),
+            }),
+            Err(Refusal::NoSolution(reason)) => Err(SymplexError::NoSolution {
+                operation: "solve",
+                reason,
+            }),
+            Err(Refusal::Failed(reason)) => Err(SymplexError::ComputationFailed {
+                operation: "solve",
+                reason,
+            }),
+        }
     }
 
     /// Cancel common polynomial factors in a rational expression.

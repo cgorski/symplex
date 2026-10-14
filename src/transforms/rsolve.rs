@@ -219,8 +219,10 @@ fn n_pow(n: &Ex, j: usize) -> Ex {
 }
 
 /// Node budget for the closed form (before and after fitting the initial
-/// values); exceeding it is reported as "expression swell" instead of
-/// letting simplification of nested radicals spin.
+/// values); exceeding it is reported as
+/// [`SymplexError::ExpressionSwell`] instead of letting simplification of
+/// nested radicals spin (up to 0.49 a `ComputationFailed` whose reason
+/// said "expression swell").
 const RSOLVE_BUDGET: usize = crate::base::config::EXPRESSION_BUDGET / 4;
 
 /// Fit the constants of `a(n) = Σ C_k r_kⁿ` (all roots simple, no forcing)
@@ -300,12 +302,9 @@ fn swell_check(exprs: &[&Ex]) -> Result<(), SymplexError> {
     for e in exprs {
         total += tree_size_capped(e, RSOLVE_BUDGET - total.min(RSOLVE_BUDGET));
         if total > RSOLVE_BUDGET {
-            return Err(SymplexError::ComputationFailed {
+            return Err(SymplexError::ExpressionSwell {
                 operation: "rsolve_linear",
-                reason: format!(
-                    "expression swell: the closed form exceeds the budget of {RSOLVE_BUDGET} \
-                     expression nodes"
-                ),
+                nodes: RSOLVE_BUDGET,
             });
         }
     }

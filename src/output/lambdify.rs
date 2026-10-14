@@ -15,9 +15,10 @@
 //! boolean/relational nodes (represented as `0.0`/`1.0`).  The
 //! special-function algorithms live in the crate-internal `numeric_rt`
 //! module and are shared with the Rust code generator, so `compile()` and
-//! `to_rust_fn()` agree bit for bit on those routines (the integrals, erfi
-//! and the Fresnel integrals, new in 0.48, are not lowered by the code
-//! generators yet).
+//! `to_rust_fn()` agree bit for bit on those routines; the C generator's
+//! helpers port them statement for statement.  Which functions each back
+//! end evaluates is one table, the `rt` facet of the function list
+//! (`base/func.rs`).
 //!
 //! `Ci`, `Chi` and `li` are NaN for a negative argument, where their values
 //! are not real (`Ci(−x) = Ci(x) + iπ`); `Ci(0)`, `Chi(0)`, `Ei(0)` and
@@ -46,6 +47,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::func::{Backend, Func};
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::output::codegen::numeric_rt as rt;
@@ -1389,6 +1391,13 @@ impl<'a> Emitter<'a> {
                 args.len()
             ))
         };
+        let facet = Func::from(f).spec().rt;
+        if !facet.on(Backend::Vm) {
+            return Err(SymplexError::NotImplemented(format!(
+                "cannot compile `Apply({name}, …)` to a numerical function{}",
+                facet.elsewhere(Backend::Vm)
+            )));
+        }
         if f == LibFn::LambertW {
             let inst = match crate::output::codegen::lambert_rt_helper(self.arena, args)? {
                 "lambert_wm1" => Instruction::LambertWm1,
@@ -1438,8 +1447,9 @@ enum VmLowering {
     Unsupported,
 }
 
-/// Exhaustive over [`LibFn`]; agrees with `codegen::rt_lowering` on which
-/// functions are implemented (checked by `vm_and_rt_lowering_agree`).
+/// Exhaustive over [`LibFn`]: the instruction of each function the `rt`
+/// facet claims for the VM, with the facet's argument shape and helper
+/// (checked by `vm_lowering_is_the_rt_facet`).
 fn vm_lowering(f: LibFn) -> VmLowering {
     match f {
         LibFn::BesselJ => VmLowering::Ordered(Instruction::BesselJ),
@@ -1457,7 +1467,6 @@ fn vm_lowering(f: LibFn) -> VmLowering {
         LibFn::Factorial2 => VmLowering::Unary(Instruction::Factorial2),
         LibFn::ErfInv => VmLowering::Unary(Instruction::Erfinv),
         LibFn::ErfcInv => VmLowering::Unary(Instruction::Erfcinv),
-        // VM only (`VM_ONLY`): the source back ends have no helper yet.
         LibFn::Erfi => VmLowering::Unary(Instruction::Erfi),
         LibFn::Shi => VmLowering::Unary(Instruction::Shi),
         LibFn::Chi => VmLowering::Unary(Instruction::Chi),
@@ -1495,18 +1504,6 @@ fn vm_lowering(f: LibFn) -> VmLowering {
         | LibFn::BetaIncRegularized => VmLowering::Unsupported,
     }
 }
-
-/// Library functions the VM evaluates (through `numeric_rt`) that the source
-/// back ends (`to_rust_fn`, `to_c_fn`) do not lower yet: `codegen::rt_lowering`
-/// still reports them unsupported, and the C back end has no helper for them.
-#[cfg(test)]
-const VM_ONLY: &[LibFn] = &[
-    LibFn::Erfi,
-    LibFn::Shi,
-    LibFn::Chi,
-    LibFn::FresnelS,
-    LibFn::FresnelC,
-];
 
 /// Iterative check for nodes that must bypass the `eval()` pre-pass
 /// (`Piecewise` and orthogonal-polynomial `Apply` nodes).
@@ -1773,14 +1770,14 @@ mod tests {
         assert!(close(f(&[0.1]), 1.1630871536766740677, 1e-15));
     }
 
-    /// The VM and the source back ends implement the same library functions
-    /// with the same shapes, except the VM-only ones listed in `VM_ONLY`
-    /// (0.48: erfi, Shi, Chi and the Fresnel integrals compile, their Rust/C
-    /// code generation is still unsupported), which must stay unsupported
-    /// there until the list is shortened.
+    /// `vm_lowering` is the `rt` facet's VM column: a library function has
+    /// an instruction exactly when the facet claims the VM, in the facet's
+    /// argument shape (Lambert W is lowered by its branch before the
+    /// table).  Which functions are VM-only is facet data now; up to 0.49 it
+    /// was a hand list (`VM_ONLY`: erfi, Shi, Chi, Fresnel S and C).
     #[test]
-    fn vm_and_rt_lowering_agree() {
-        use crate::output::codegen::{RtLowering, rt_lowering};
+    fn vm_lowering_is_the_rt_facet() {
+        use crate::base::func::Kernel;
         for &f in LibFn::ALL {
             let vm = match vm_lowering(f) {
                 VmLowering::Ordered(_) => "ordered",
@@ -1788,17 +1785,16 @@ mod tests {
                 VmLowering::Binary(_) => "binary",
                 VmLowering::Unsupported => "unsupported",
             };
-            let rt = match rt_lowering(f) {
-                RtLowering::Ordered(_) => "ordered",
-                RtLowering::Unary(_) => "unary",
-                RtLowering::Binary(_) => "binary",
-                RtLowering::Unsupported => "unsupported",
+            let facet = Func::from(f).spec().rt;
+            let want = match facet.kernel {
+                _ if !facet.on(Backend::Vm) => "unsupported",
+                Kernel::Ordered(_) => "ordered",
+                Kernel::Unary(_) => "unary",
+                Kernel::Binary(_) => "binary",
+                Kernel::Branches(_) => "unsupported",
+                Kernel::Own | Kernel::None => "no helper kernel",
             };
-            if VM_ONLY.contains(&f) {
-                assert_eq!((vm, rt), ("unary", "unsupported"), "{f}");
-            } else {
-                assert_eq!(vm, rt, "{f}");
-            }
+            assert_eq!(vm, want, "{f}");
         }
     }
 

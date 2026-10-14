@@ -20,10 +20,11 @@
 //!
 //! | caller | context | entry point in `solve.rs` |
 //! |---|---|---|
-//! | `Ex::solve` (principal roots in the declared domain) | `SolveCx::principal(Domain::Complex)` | `solve_classified` |
+//! | `Ex::solve` (principal roots in the declared domain) | `SolveCx::principal(Domain::Complex)`, [`Params::AsDeclared`] | `solve_classified` |
 //! | the crate's root searches (integrate, limit, residues, ODEs, …), the equations of `reduce_inequalities` | `SolveCx::principal(Domain::Real)` | `known_real_roots`, `solve_classified_real`, `solutions` |
-//! | `Ex::solve_general`, `periodic_candidates` | `SolveCx::general(Domain::Real, n)` | `solve_general` |
-//! | `Ex::solve_as_set` | `SolveCx::general(Domain::Complex, n)` | `solve_general_over_c` |
+//! | the real zeros of a periodic function (sign charts, extrema), `periodic_candidates` | `SolveCx::general(Domain::Real, n)` | `solve_general` |
+//! | `Ex::solve_general` | `SolveCx::general(Domain::declared(var), n)`, [`Params::AsDeclared`] | `solve_general_declared` |
+//! | `Ex::solve_as_set` | `SolveCx::general(Domain::Complex, n)`, [`Params::AsDeclared`] | `solve_general_over_c` |
 //!
 //! # Domains
 //!
@@ -48,10 +49,12 @@
 //!   [`SolveCx::variable_may_be_nonreal`]), and the families searched when
 //!   every principal candidate fails take it real too
 //!   ([`SolveCx::families`]).
-//! - The split of two exponentials tests the realness of their exponent
-//!   difference only in such a solve ([`SolveCx::declared_principal`]).
+
 //! - Parameters (other symbols without assumptions) are taken real
-//!   ([`Params::Real`]).
+//!   ([`Params::Real`]) by the crate's root searches; the public solvers
+//!   take them as declared ([`Params::AsDeclared`], since 0.50: a plain
+//!   `a` may be complex, so `e^(a·x) = −1` for a real `x` is not a
+//!   contradiction — `a = iπ`, `x = 1` solves it).
 //!
 //! (A general solve that nests periodic families refuses with the outcome
 //! `Reason::NestedPeriods`, up to 0.48 the thread-local flag
@@ -78,6 +81,23 @@ pub(crate) enum Domain {
 }
 
 impl Domain {
+    /// The declared domain of the unknown `var`: [`Domain::Real`] for a
+    /// symbol declared real (positive, integer, …), [`Domain::Complex`]
+    /// otherwise.
+    pub(crate) fn declared(arena: &Arena, var: ExprId) -> Domain {
+        use crate::base::assumptions::Props;
+        let ExprNode::Symbol(sid) = *arena.node(var) else {
+            return Domain::Complex;
+        };
+        let mut declared = arena.symbol_assumptions(sid);
+        declared.forward_chain();
+        if declared.query(Props::REAL) == Some(true) {
+            Domain::Real
+        } else {
+            Domain::Complex
+        }
+    }
+
     /// Is the unknown taken real (realness added to its declaration)?
     fn is_real(self) -> bool {
         !matches!(self, Domain::Complex)
@@ -89,14 +109,10 @@ impl Domain {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Params {
     /// As declared: a symbol without assumptions is complex (integration's
-    /// convention).
-    #[expect(
-        dead_code,
-        reason = "every solve still takes its parameters real (declared parameters are \
-                  planned)"
-    )]
+    /// convention; the public solvers since 0.50).
     AsDeclared,
-    /// A symbol without assumptions is taken real (every solve up to 0.48).
+    /// A symbol without assumptions is taken real (every solve up to 0.49;
+    /// the crate's root searches).
     Real,
 }
 
@@ -208,6 +224,21 @@ impl SolveCx {
         }
     }
 
+    /// This context with the other symbols taken per `params` (the
+    /// constructors take them real, [`Params::Real`]).
+    pub(crate) fn with_params(self, params: Params) -> Self {
+        SolveCx { params, ..self }
+    }
+
+    /// This context with the unknown taken real: for an equation whose
+    /// every solution is real (`|x − π| + x = 0`, i.e. `x = −|x − π|`).
+    pub(crate) fn with_real_unknown(self) -> Self {
+        SolveCx {
+            unknown: Domain::Real,
+            ..self
+        }
+    }
+
     /// The integer parameter of a general solve.
     pub(crate) fn period(&self) -> Option<ExprId> {
         match self.form {
@@ -278,8 +309,8 @@ impl SolveCx {
     }
 
     /// Is `var` possibly non-real for the strategies that assume a real
-    /// unknown (Lambert W's real branches, the |·| cases, the split of two
-    /// exponentials), in the domain [`real_for_real_var`] uses?
+    /// unknown (Lambert W's real branches, the periodic atoms of a change of
+    /// variable), in the domain [`real_for_real_var`] uses?
     ///
     /// [`real_for_real_var`]: Self::real_for_real_var
     pub(crate) fn variable_may_be_nonreal(&self, arena: &Arena, var: ExprId) -> bool {
@@ -291,14 +322,6 @@ impl SolveCx {
             ExprNode::Symbol(sid) => arena.symbol_assumptions(sid).query(Props::REAL) != Some(true),
             _ => true,
         }
-    }
-
-    /// Is this a principal solve over the declared domain whose other arms
-    /// take the unknown real (`Ex::solve`, see the [module
-    /// documentation](self))?  The split of two exponentials tests the
-    /// realness of their exponent difference only here.
-    pub(crate) fn declared_principal(&self) -> bool {
-        self.unknown == Domain::Complex && self.legacy_unknown().is_real()
     }
 
     /// The domain of the unknown in [`real_for_real_var`] and

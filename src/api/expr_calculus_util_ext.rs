@@ -253,7 +253,7 @@ fn zeros_in_domain(
     let mut families: Vec<SetEx> = Vec::new();
 
     let outcome = if periodic {
-        g.solve_general(var).map(|fam| {
+        g.solve_general_real(var).map(|fam| {
             let mut plain = Vec::new();
             let mut parametric = Vec::new();
             for s in fam.solutions {

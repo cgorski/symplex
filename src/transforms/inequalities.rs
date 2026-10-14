@@ -1656,11 +1656,20 @@ fn resolve_branches(
                 continue;
             }
             let replacement = match arena.node(id).clone() {
-                ExprNode::Abs(a) => match sign_at(arena, a, var, p)? {
-                    std::cmp::Ordering::Greater => a,
-                    std::cmp::Ordering::Less => arena.neg(a),
-                    std::cmp::Ordering::Equal => return Err(kink_at_sample(arena, id)),
-                },
+                // `|a|` of an `a` that is not real at the sample point has no
+                // switching point there and stays (`|x + i|`; up to 0.49 the
+                // sign chart failed on "the sign of x + I").
+                ExprNode::Abs(a) => {
+                    let at = crate::transforms::subs::subs(arena, a, var, p);
+                    if value_sign(arena, at) == ValueSign::NonReal {
+                        continue;
+                    }
+                    match sign_at(arena, a, var, p)? {
+                        std::cmp::Ordering::Greater => a,
+                        std::cmp::Ordering::Less => arena.neg(a),
+                        std::cmp::Ordering::Equal => return Err(kink_at_sample(arena, id)),
+                    }
+                }
                 ExprNode::Sign(a) => match sign_at(arena, a, var, p)? {
                     std::cmp::Ordering::Greater => arena.one,
                     std::cmp::Ordering::Less => arena.neg_one,
@@ -2138,6 +2147,23 @@ fn decimal_to_ratio(text: &str) -> Option<Q> {
 // Absolute-value inequalities: c·|f(x)| + d  rel  0  with f linear in x
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Is `e` certainly real, its symbols without assumptions taken real (the
+/// parameters of an inequality)?
+fn real_taking_symbols_real(arena: &Arena, e: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
+    let mut cache = AssumptionCache::new();
+    for s in walk::free_symbols(arena, e) {
+        if let ExprNode::Symbol(sid) = *arena.node(s)
+            && arena.symbol_assumptions(sid) == Assumptions::default()
+        {
+            let mut real = Assumptions::default();
+            real.known_true |= Props::REAL;
+            cache.set_symbol_assumptions(s, real);
+        }
+    }
+    cache.query(arena, e, Props::REAL) == Some(true)
+}
+
 /// Try to solve `expr rel 0` when `expr` has the shape `c·|a·x + b| + d`
 /// (a single absolute-value term plus var-free terms).
 ///
@@ -2148,8 +2174,9 @@ fn decimal_to_ratio(text: &str) -> Option<Q> {
 /// - `|f| < k`  → `-k < f < k`  → one interval in `x`
 /// - `|f| > k`  → `f < -k ∪ f > k` → union of two rays
 ///
-/// Returns `None` if the expression does not have this shape or the sign
-/// of the leading coefficient `a` cannot be determined.
+/// Returns `None` if the expression does not have this shape, `a·x + b`
+/// is not certainly real, or the sign of the leading coefficient `a`
+/// cannot be determined.
 fn try_solve_abs_inequality(
     arena: &mut Arena,
     expr: ExprId,
@@ -2215,6 +2242,12 @@ fn try_solve_abs_inequality(
     }
     let a = coeffs[1];
     let b = coeffs[0];
+    // `|a·x + b| = ±(a·x + b)` only for a real `a·x + b`: `|x + i| > 2` is
+    // `x² + 1 > 4` (the sign chart), not `x + i > 2` (up to 0.49 the set
+    // `(2 − i, ∞) ∪ (−∞, −i − 2)`).  Plain parameters are taken real.
+    if !real_taking_symbols_real(arena, a) || !real_taking_symbols_real(arena, b) {
+        return None;
+    }
 
     // c·|f| + d rel 0  ⇔  |f| rel'  (-d/c)   (flip if c < 0)
     let d = match rest.len() {

@@ -46,7 +46,9 @@
 //! in the sense of the `accuracy` module (upper bounds of the first-order
 //! term, not interval arithmetic), made conservative by a factor of two.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use crate::base::bigfloat::is_strictly_positive;
+use astro_float::{BigFloat, Consts};
 use rustc_hash::FxHashMap;
 
 use super::accuracy::{self, EXACT, ErrExp, UNKNOWN};
@@ -125,7 +127,7 @@ fn lg(x: &BigFloat) -> f64 {
     let e = x.exponent().unwrap_or(0);
     let mut m = x.abs();
     m.set_exponent(0);
-    let mf = super::bigfloat_to_f64_rounded(&m, RoundingMode::ToEven).unwrap_or(0.75);
+    let mf = super::f64_of(&m).unwrap_or(0.75);
     f64::from(e) + mf.abs().max(0.5).log2()
 }
 
@@ -151,7 +153,7 @@ fn f(x: &BigFloat) -> f64 {
             f64::INFINITY
         };
     }
-    super::bigfloat_to_f64_rounded(x, RoundingMode::ToEven).unwrap_or(0.0)
+    super::f64_of(x).unwrap_or(0.0)
 }
 
 /// `x > 0`.  astro-float's `is_positive` is the sign bit alone, true for
@@ -159,7 +161,7 @@ fn f(x: &BigFloat) -> f64 {
 /// shape sensitivity bounded by `|ln 0|` (`ln(betainc_regularized(23 + 1/3,
 /// 1/2, 0, 2⁻²⁰))` was `PrecisionExhausted`).
 fn pos(x: &BigFloat) -> bool {
-    x.is_positive() && !x.is_zero()
+    is_strictly_positive(x)
 }
 
 /// `x < 0` (not `−0`).
@@ -353,7 +355,6 @@ struct Args<'a> {
     x: Vec<&'a BigFloat>,
     e: Vec<f64>,
     v: &'a BigFloat,
-    rm: RoundingMode,
 }
 
 fn radius(e: ErrExp) -> f64 {
@@ -809,13 +810,12 @@ fn eta_sens(s: &BigFloat) -> Sens {
 fn elliptic_f_sens(i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
     let (phi, m) = (a.x[0], a.x[1]);
     let e = a.e[i];
-    let rm = a.rm;
     let small = lg(phi) < 0.6; // |φ| < π/2
     // 1 − m sin²φ (when φ is not huge), and its minimum on [0, φ].
     let at_phi = (lg(phi) <= 20.0).then(|| {
         let p = LP + 32;
-        let s = phi.sin(p, rm, cc);
-        one_minus(&m.mul(&s.mul(&s, p, rm), p, rm))
+        let s = phi.sin(p, RM, cc);
+        one_minus(&m.mul(&s.mul(&s, p, RM), p, RM))
     });
     let d_min = if !pos(m) {
         Some(int(1))
@@ -971,12 +971,11 @@ fn bessel_x(fun: LibFn, a: &Args<'_>, cc: &mut Consts) -> Sens {
         });
     }
     let nu1 = diff(nu, &int(1));
-    let rm = a.rm;
     let companion = match fun {
-        LibFn::BesselJ => super::arb_bessel_j(&nu1, x, LP, rm, cc),
-        LibFn::BesselY => super::arb_bessel_y(&nu1, x, LP, rm, cc),
-        LibFn::BesselI => super::arb_bessel_i(&nu1, x, LP, rm, cc),
-        _ => super::arb_bessel_k(&nu1, x, LP, rm, cc),
+        LibFn::BesselJ => super::arb_bessel_j(&nu1, x, &mut Wp::new(LP, cc)),
+        LibFn::BesselY => super::arb_bessel_y(&nu1, x, &mut Wp::new(LP, cc)),
+        LibFn::BesselI => super::arb_bessel_i(&nu1, x, &mut Wp::new(LP, cc)),
+        _ => super::arb_bessel_k(&nu1, x, &mut Wp::new(LP, cc)),
     };
     match companion {
         Ok(c) => {
@@ -1134,10 +1133,9 @@ pub(super) fn numeric_change(
     e: ErrExp,
     value: &Complex,
     cache: &FxHashMap<ExprId, Complex>,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    wpc: &mut Wp<'_>,
 ) -> Option<ErrExp> {
+    let prec = wpc.bits();
     let v = cache.get(&child)?;
     let floor = accuracy::mag(v).map_or(e, |m| (m - prec as i64 + 2) as f64);
     // The move: `2^pe` with `pe` an integer at least the radius.
@@ -1153,12 +1151,12 @@ pub(super) fn numeric_change(
     }
     for moved in [sum(&v.0, &delta), diff(&v.0, &delta)] {
         local.insert(child, (moved, v.1.clone()));
-        if let Ok(w) = super::eval_node(arena, id, &local, prec, rm, cc) {
+        if let Ok(w) = super::eval_node(arena, id, &local, wpc) {
             if [&w.0, &w.1].iter().any(|p| p.is_nan() || p.is_inf()) {
                 continue;
             }
             let hp = prec + 64;
-            let d = c_sub(&w, value, hp, rm);
+            let d = c_sub(&w, value, hp, RM);
             // Scaled back from the move to the radius, doubled.
             return Some(if accuracy::mag(&d).is_none() {
                 EXACT
@@ -1183,9 +1181,7 @@ pub(super) fn special_error(
     value: &Complex,
     cache: &FxHashMap<ExprId, Complex>,
     errs: &FxHashMap<ExprId, accuracy::Bound>,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> ErrExp {
     let node = arena.node(id);
     let kids = node.children();
@@ -1206,12 +1202,7 @@ pub(super) fn special_error(
     if joint.iter().all(|&j| accuracy::is_exact(j)) {
         return EXACT;
     }
-    let args = Args {
-        x,
-        e,
-        v: &value.0,
-        rm,
-    };
+    let args = Args { x, e, v: &value.0 };
     let mut contributions: Vec<ErrExp> = Vec::new();
     let mut seen: Vec<ExprId> = Vec::new();
     for (i, &c) in kids.iter().enumerate() {
@@ -1224,7 +1215,7 @@ pub(super) fn special_error(
         let mut change = f64::NEG_INFINITY;
         let mut numeric = false;
         for (j, _) in kids.iter().enumerate().filter(|&(_, &k)| k == c) {
-            match analytic(arena, node, j, &args, cc) {
+            match analytic(arena, node, j, &args, w.cc) {
                 Sens::Zero => {}
                 Sens::Deriv(d) if d.is_nan() => numeric = true,
                 Sens::Deriv(d) => total = lsum(total, d),
@@ -1235,7 +1226,7 @@ pub(super) fn special_error(
             }
         }
         if numeric {
-            match numeric_change(arena, id, c, joint[i], value, cache, prec, rm, cc) {
+            match numeric_change(arena, id, c, joint[i], value, cache, w) {
                 Some(k) => contributions.push(k),
                 None => return UNKNOWN,
             }

@@ -19,8 +19,10 @@
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Zero};
+use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::marker::PhantomData;
 use std::ops;
 
 use super::modgcd;
@@ -35,6 +37,35 @@ use crate::base::errors::SymplexError;
 pub trait MonomialOrd: 'static + Clone + Send + Sync + std::fmt::Debug {
     /// Compare two exponent vectors according to this ordering.
     fn cmp_exponents(a: &[u32], b: &[u32]) -> std::cmp::Ordering;
+
+    /// Compare two monomials: the same order as
+    /// [`cmp_exponents`](Self::cmp_exponents) of their exponent vectors.  A
+    /// graded order overrides it to read the total degrees the monomials
+    /// cache instead of summing the vectors on every comparison.
+    fn cmp_monomials(a: &Monomial<Self>, b: &Monomial<Self>) -> std::cmp::Ordering
+    where
+        Self: Sized,
+    {
+        Self::cmp_exponents(a.exponents(), b.exponents())
+    }
+}
+
+/// Total degree of an exponent vector (in `u64`: a sum of `u32`s that
+/// cannot wrap for fewer than 2³² variables).
+fn degree_of(a: &[u32]) -> u64 {
+    a.iter().map(|&e| u64::from(e)).sum()
+}
+
+/// The reverse-lexicographic tie-break of [`GrevLex`]: from the last
+/// variable, reversed (a higher last exponent is the *smaller* monomial).
+fn revlex_tail(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
+    for (ai, bi) in a.iter().rev().zip(b.iter().rev()) {
+        match bi.cmp(ai) {
+            std::cmp::Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 /// Graded reverse lexicographic ordering (default for Gröbner computation).
@@ -51,19 +82,15 @@ pub struct GrLex;
 
 impl MonomialOrd for GrevLex {
     fn cmp_exponents(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
-        let deg_a: u32 = a.iter().sum();
-        let deg_b: u32 = b.iter().sum();
-        deg_a.cmp(&deg_b).then_with(|| {
-            // Reverse lex: compare from the LAST variable, REVERSED
-            for (ai, bi) in a.iter().rev().zip(b.iter().rev()) {
-                match bi.cmp(ai) {
-                    // Note: reversed! Higher last component = SMALLER in grevlex
-                    std::cmp::Ordering::Equal => continue,
-                    other => return other,
-                }
-            }
-            std::cmp::Ordering::Equal
-        })
+        degree_of(a)
+            .cmp(&degree_of(b))
+            .then_with(|| revlex_tail(a, b))
+    }
+
+    fn cmp_monomials(a: &Monomial<Self>, b: &Monomial<Self>) -> std::cmp::Ordering {
+        a.deg
+            .cmp(&b.deg)
+            .then_with(|| revlex_tail(&a.exps, &b.exps))
     }
 }
 
@@ -82,9 +109,15 @@ impl MonomialOrd for Lex {
 
 impl MonomialOrd for GrLex {
     fn cmp_exponents(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
-        let deg_a: u32 = a.iter().sum();
-        let deg_b: u32 = b.iter().sum();
-        deg_a.cmp(&deg_b).then_with(|| Lex::cmp_exponents(a, b))
+        degree_of(a)
+            .cmp(&degree_of(b))
+            .then_with(|| Lex::cmp_exponents(a, b))
+    }
+
+    fn cmp_monomials(a: &Monomial<Self>, b: &Monomial<Self>) -> std::cmp::Ordering {
+        a.deg
+            .cmp(&b.deg)
+            .then_with(|| Lex::cmp_exponents(&a.exps, &b.exps))
     }
 }
 
@@ -105,10 +138,147 @@ pub enum MonomialOrder {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MonoKey — exponent vector with ordering
+// Monomial — exponent vector with cached degree, ordered by O
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Exponent storage of a [`Monomial`]: up to six variables inline, without
+/// a heap allocation.  Ordered lexicographically like `Vec<u32>`.
+pub(crate) type Exps = SmallVec<[u32; 6]>;
+
+/// A monomial `x₀^e₀ · x₁^e₁ · …`, ordered by the monomial order `O`: the
+/// key of a [`MultiPoly`]'s term map.
+///
+/// The order is exactly [`O::cmp_exponents`](MonomialOrd::cmp_exponents)
+/// of the exponent vectors.  The total degree is computed once, at
+/// construction, and the graded orders ([`GrevLex`], [`GrLex`]) compare it
+/// first; exponent vectors of up to six variables are stored inline.
+/// Before 0.50 the key was a [`MonoKey`] holding a `Vec<u32>`: a heap
+/// allocation per term and both vectors summed on every comparison (two
+/// thirds of the time of a product in four variables).
+///
+/// ```
+/// use symplex::multipoly::{GrevLex, Lex, Monomial};
+///
+/// let a = Monomial::<GrevLex>::new(&[2, 0, 1]);
+/// assert_eq!(a.exponents(), &[2, 0, 1]);
+/// assert_eq!(a.total_degree(), 3);
+/// assert!(a > Monomial::new(&[0, 1, 1])); // higher degree
+/// assert!(a < Monomial::new(&[3, 0, 0])); // same degree, less of the last variable wins
+/// assert!(Monomial::<Lex>::new(&[1, 0, 0]) > Monomial::new(&[0, 5, 5]));
+/// ```
+#[derive(Clone, Debug)]
+pub struct Monomial<O: MonomialOrd> {
+    deg: u64,
+    exps: Exps,
+    _order: PhantomData<O>,
+}
+
+impl<O: MonomialOrd> Monomial<O> {
+    /// The monomial with exponent vector `exponents`.
+    pub fn new(exponents: &[u32]) -> Self {
+        Self::from_exps(Exps::from_slice(exponents))
+    }
+
+    /// The monomial with exponent vector `exps` (its degree computed here).
+    pub(crate) fn from_exps(exps: Exps) -> Self {
+        Monomial {
+            deg: degree_of(&exps),
+            exps,
+            _order: PhantomData,
+        }
+    }
+
+    /// The monomial with exponent vector `v` (moved inline when it fits).
+    pub(crate) fn from_vec(v: Vec<u32>) -> Self {
+        Self::from_exps(Exps::from_vec(v))
+    }
+
+    /// `1` in `nv` variables.
+    pub(crate) fn one(nv: usize) -> Self {
+        Monomial {
+            deg: 0,
+            exps: smallvec::smallvec![0; nv],
+            _order: PhantomData,
+        }
+    }
+
+    /// The exponent vector.
+    pub fn exponents(&self) -> &[u32] {
+        &self.exps
+    }
+
+    /// The total degree, the sum of the exponents.
+    pub fn total_degree(&self) -> u64 {
+        self.deg
+    }
+
+    /// The same exponents under another order.
+    pub(crate) fn convert<B: MonomialOrd>(&self) -> Monomial<B> {
+        Monomial {
+            deg: self.deg,
+            exps: self.exps.clone(),
+            _order: PhantomData,
+        }
+    }
+
+    /// The product `self · other` (component-wise sum); `None` if the
+    /// vectors differ in length or an exponent would overflow `u32`.
+    pub(crate) fn checked_mul(&self, other: &Self) -> Option<Self> {
+        if self.exps.len() != other.exps.len() {
+            return None;
+        }
+        let mut exps = Exps::with_capacity(self.exps.len());
+        for (a, b) in self.exps.iter().zip(&other.exps) {
+            exps.push(a.checked_add(*b)?);
+        }
+        Some(Monomial {
+            deg: self.deg + other.deg,
+            exps,
+            _order: PhantomData,
+        })
+    }
+
+    /// The exponent vector with entry `i` replaced by `e` (`i` in range).
+    pub(crate) fn with_exponent(&self, i: usize, e: u32) -> Self {
+        let mut exps = self.exps.clone();
+        exps[i] = e;
+        Self::from_exps(exps)
+    }
+}
+
+impl<O: MonomialOrd> PartialEq for Monomial<O> {
+    fn eq(&self, other: &Self) -> bool {
+        self.exps == other.exps
+    }
+}
+impl<O: MonomialOrd> Eq for Monomial<O> {}
+
+impl<O: MonomialOrd> PartialOrd for Monomial<O> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<O: MonomialOrd> Ord for Monomial<O> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        O::cmp_monomials(self, other)
+    }
+}
+
+impl<O: MonomialOrd> std::hash::Hash for Monomial<O> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.exps.hash(state);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MonoKey — exponent vector with ordering (superseded by Monomial)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A monomial exponent vector with ordering determined by type parameter O.
+///
+/// [`MultiPoly`] is keyed by [`Monomial`] since 0.50 (degree cached,
+/// exponents inline); this type is kept for source compatibility.
+#[deprecated(since = "0.50.0", note = "use `Monomial`, the key of `MultiPoly`")]
 #[derive(Clone, Debug)]
 pub struct MonoKey<O: MonomialOrd> {
     /// The exponent vector.
@@ -116,6 +286,7 @@ pub struct MonoKey<O: MonomialOrd> {
     _phantom: std::marker::PhantomData<O>,
 }
 
+#[allow(deprecated)]
 impl<O: MonomialOrd> MonoKey<O> {
     /// Create a new `MonoKey` from an exponent vector.
     pub fn new(exponents: Vec<u32>) -> Self {
@@ -126,24 +297,29 @@ impl<O: MonomialOrd> MonoKey<O> {
     }
 }
 
+#[allow(deprecated)]
 impl<O: MonomialOrd> PartialEq for MonoKey<O> {
     fn eq(&self, other: &Self) -> bool {
         self.exponents == other.exponents
     }
 }
+#[allow(deprecated)]
 impl<O: MonomialOrd> Eq for MonoKey<O> {}
 
+#[allow(deprecated)]
 impl<O: MonomialOrd> PartialOrd for MonoKey<O> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
+#[allow(deprecated)]
 impl<O: MonomialOrd> Ord for MonoKey<O> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         O::cmp_exponents(&self.exponents, &other.exponents)
     }
 }
 
+#[allow(deprecated)]
 impl<O: MonomialOrd> std::hash::Hash for MonoKey<O> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.exponents.hash(state);
@@ -177,9 +353,8 @@ pub type Exponent = Vec<u32>;
 pub struct MultiPoly<O: MonomialOrd = GrevLex> {
     /// Number of variables.
     num_vars: usize,
-    /// Map from exponent vector to coefficient.
-    /// Uses `BTreeMap` with `MonoKey<O>` for ordering-aware storage.
-    terms: BTreeMap<MonoKey<O>, Ratio<BigInt>>,
+    /// Map from monomial to coefficient, in the order `O`.
+    terms: BTreeMap<Monomial<O>, Ratio<BigInt>>,
 }
 
 impl<O: MonomialOrd> PartialEq for MultiPoly<O> {
@@ -307,7 +482,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     pub fn constant(num_vars: usize, c: Ratio<BigInt>) -> Self {
         let mut p = Self::zero(num_vars);
         if !c.is_zero() {
-            p.terms.insert(MonoKey::new(vec![0; num_vars]), c);
+            p.terms.insert(Monomial::one(num_vars), c);
         }
         p
     }
@@ -329,10 +504,11 @@ impl<O: MonomialOrd> MultiPoly<O> {
             var_index < num_vars,
             "var_index {var_index} out of range for {num_vars} variables"
         );
-        let mut exp = vec![0u32; num_vars];
-        exp[var_index] = 1;
         let mut terms = BTreeMap::new();
-        terms.insert(MonoKey::new(exp), Ratio::one());
+        terms.insert(
+            Monomial::one(num_vars).with_exponent(var_index, 1),
+            Ratio::one(),
+        );
         MultiPoly { num_vars, terms }
     }
 
@@ -357,18 +533,17 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let num_vars = exponents.len();
         let mut p = Self::zero(num_vars);
         if !c.is_zero() {
-            p.terms.insert(MonoKey::new(exponents), c);
+            p.terms.insert(Monomial::from_vec(exponents), c);
         }
         p
     }
 
     // ─── internal helper: insert a term, combining with any existing ───
 
-    fn insert_term(&mut self, exp: Vec<u32>, coeff: Ratio<BigInt>) {
+    fn insert_term(&mut self, key: Monomial<O>, coeff: Ratio<BigInt>) {
         if coeff.is_zero() {
             return;
         }
-        let key = MonoKey::new(exp);
         let entry = self
             .terms
             .entry(key)
@@ -397,7 +572,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
         if exp.len() != self.num_vars {
             return None;
         }
-        self.terms.get(&MonoKey::<O>::new(exp.to_vec()))
+        self.terms.get(&Monomial::<O>::new(exp))
     }
 
     /// Build a polynomial from `(exponent_vector, coefficient)` pairs.
@@ -425,7 +600,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
             if exp.len() != num_vars {
                 return None;
             }
-            p.insert_term(exp, c);
+            p.insert_term(Monomial::from_vec(exp), c);
         }
         p.prune();
         Some(p)
@@ -449,7 +624,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
             if c.is_zero() {
                 continue;
             }
-            match p.terms.entry(MonoKey::new(exp)) {
+            match p.terms.entry(Monomial::from_vec(exp)) {
                 std::collections::btree_map::Entry::Vacant(slot) => {
                     slot.insert(c);
                 }
@@ -466,7 +641,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// dropped; every key must have `num_vars` exponents).
     pub(crate) fn from_term_map(
         num_vars: usize,
-        terms: BTreeMap<MonoKey<O>, Ratio<BigInt>>,
+        terms: BTreeMap<Monomial<O>, Ratio<BigInt>>,
     ) -> Self {
         let mut p = MultiPoly { num_vars, terms };
         p.prune();
@@ -540,7 +715,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     ///
     /// Returns `None` for the zero polynomial (which has no defined degree).
     pub fn total_degree(&self) -> Option<u32> {
-        self.terms.keys().map(|k| k.exponents.iter().sum()).max()
+        self.terms.keys().map(|k| k.exps.iter().sum()).max()
     }
 
     /// Degree in a specific variable.
@@ -560,7 +735,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     pub fn degree_in(&self, var_index: usize) -> u32 {
         self.terms
             .keys()
-            .filter_map(|k| k.exponents.get(var_index).copied())
+            .filter_map(|k| k.exps.get(var_index).copied())
             .max()
             .unwrap_or(0)
     }
@@ -568,16 +743,12 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// Leading term (highest monomial under the ordering O).
     /// O(log n) via BTreeMap::last().
     pub fn leading_term(&self) -> Option<(&[u32], &Ratio<BigInt>)> {
-        self.terms
-            .last_key_value()
-            .map(|(k, v)| (k.exponents.as_slice(), v))
+        self.terms.last_key_value().map(|(k, v)| (k.exponents(), v))
     }
 
     /// Leading monomial exponent vector.
     pub fn leading_monomial(&self) -> Option<&[u32]> {
-        self.terms
-            .last_key_value()
-            .map(|(k, _)| k.exponents.as_slice())
+        self.terms.last_key_value().map(|(k, _)| k.exponents())
     }
 
     /// Leading coefficient.
@@ -591,7 +762,15 @@ impl<O: MonomialOrd> MultiPoly<O> {
     pub fn terms(
         &self,
     ) -> impl DoubleEndedIterator<Item = (&[u32], &Ratio<BigInt>)> + ExactSizeIterator {
-        self.terms.iter().map(|(k, v)| (k.exponents.as_slice(), v))
+        self.terms.iter().map(|(k, v)| (k.exponents(), v))
+    }
+
+    /// Iterate over all terms as `(monomial, coefficient)` pairs, in
+    /// ascending order of `O`.
+    pub(crate) fn monomial_terms(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&Monomial<O>, &Ratio<BigInt>)> + ExactSizeIterator {
+        self.terms.iter()
     }
 
     /// The value of a constant polynomial (`Some(0)` for the zero
@@ -613,7 +792,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
                 .terms
                 .iter()
                 .next()
-                .filter(|(k, _)| k.exponents.iter().all(|&e| e == 0))
+                .filter(|(k, _)| k.deg == 0)
                 .map(|(_, c)| c.clone()),
             _ => None,
         }
@@ -640,11 +819,10 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let mut coeffs = vec![zero.clone(); self.num_vars];
         let mut constant = zero;
         for (key, c) in &self.terms {
-            let degree: u32 = key.exponents.iter().sum();
-            match degree {
+            match key.deg {
                 0 => constant = c.clone(),
                 1 => {
-                    let i = key.exponents.iter().position(|&e| e == 1)?;
+                    let i = key.exps.iter().position(|&e| e == 1)?;
                     coeffs[i] = c.clone();
                 }
                 _ => return None,
@@ -657,7 +835,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     pub fn convert_order<B: MonomialOrd>(&self) -> MultiPoly<B> {
         let mut new_terms = BTreeMap::new();
         for (key, coeff) in &self.terms {
-            new_terms.insert(MonoKey::<B>::new(key.exponents.clone()), coeff.clone());
+            new_terms.insert(key.convert::<B>(), coeff.clone());
         }
         MultiPoly {
             num_vars: self.num_vars,
@@ -730,14 +908,14 @@ impl<O: MonomialOrd> MultiPoly<O> {
         }
         let mut result = Self::zero(self.num_vars);
         for (key, coeff) in &self.terms {
-            let e_i = key.exponents[var_index];
+            let e_i = key.exps[var_index];
             if e_i == 0 {
                 continue; // derivative kills this term
             }
             let new_coeff = coeff * Ratio::from_integer(BigInt::from(e_i));
-            let mut new_exp = key.exponents.clone();
-            new_exp[var_index] -= 1;
-            result.terms.insert(MonoKey::new(new_exp), new_coeff);
+            result
+                .terms
+                .insert(key.with_exponent(var_index, e_i - 1), new_coeff);
         }
         result
     }
@@ -771,14 +949,12 @@ impl<O: MonomialOrd> MultiPoly<O> {
         }
         let mut result = Self::zero(self.num_vars);
         for (key, coeff) in &self.terms {
-            let e_i = key.exponents[var_index];
+            let e_i = key.exps[var_index];
             let new_coeff = coeff * pow_ratio(value, e_i);
             if new_coeff.is_zero() {
                 continue;
             }
-            let mut new_exp = key.exponents.clone();
-            new_exp[var_index] = 0;
-            result.insert_term(new_exp, new_coeff);
+            result.insert_term(key.with_exponent(var_index, 0), new_coeff);
         }
         result.prune();
         result
@@ -805,20 +981,20 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let new_num_vars = self.num_vars - 1;
         let mut result = Self::zero(new_num_vars);
         for (key, coeff) in &self.terms {
-            let e_i = key.exponents[var_index];
+            let e_i = key.exps[var_index];
             let val_pow = pow_ratio(value, e_i);
             let new_coeff = coeff * val_pow;
             if new_coeff.is_zero() {
                 continue;
             }
             // Build new exponent vector without var_index
-            let mut new_exp = Vec::with_capacity(new_num_vars);
-            for (j, &ej) in key.exponents.iter().enumerate() {
+            let mut new_exp = Exps::with_capacity(new_num_vars);
+            for (j, &ej) in key.exps.iter().enumerate() {
                 if j != var_index {
                     new_exp.push(ej);
                 }
             }
-            result.insert_term(new_exp, new_coeff);
+            result.insert_term(Monomial::from_exps(new_exp), new_coeff);
         }
         result.prune();
         result
@@ -858,7 +1034,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
         self.assert_compatible(other);
         let mut result = self.clone();
         for (key, coeff) in &other.terms {
-            result.insert_term(key.exponents.clone(), coeff.clone());
+            result.insert_term(key.clone(), coeff.clone());
         }
         result.prune();
         result
@@ -881,7 +1057,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
         self.assert_compatible(other);
         let mut result = self.clone();
         for (key, coeff) in &other.terms {
-            result.insert_term(key.exponents.clone(), -coeff.clone());
+            result.insert_term(key.clone(), -coeff.clone());
         }
         result.prune();
         result
@@ -1032,12 +1208,13 @@ impl<O: MonomialOrd> MultiPoly<O> {
         if coeff.is_zero() {
             return Some(Self::zero(self.num_vars));
         }
+        let factor = Monomial::<O>::new(exp);
         let mut result = BTreeMap::new();
         for (key, c) in &self.terms {
-            let new_exp = monomial_mul(&key.exponents, exp)?;
+            let new_exp = key.checked_mul(&factor)?;
             let new_coeff = q_mul(c, coeff);
             if !new_coeff.is_zero() {
-                result.insert(MonoKey::new(new_exp), new_coeff);
+                result.insert(new_exp, new_coeff);
             }
         }
         Some(MultiPoly {
@@ -1175,7 +1352,12 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// with Lehmer's integer GCD (before, every evaluation multiplied
     /// reduced fractions, each paying a binary gcd against the denominator
     /// `1`: `ratsimp` of ten fractions `1/(x + n)` with 5,000-digit `n` took
-    /// 43 s).  The GCD is the same polynomial whichever route finds it.
+    /// 43 s).  Since 0.50 inputs for which the heuristic's integers would
+    /// be large go to Brown's modular algorithm instead (images modulo word
+    /// primes, evaluation and interpolation variable by variable, Chinese
+    /// remaindering, trial division): a dense GCD in four variables with
+    /// 21-digit coefficients took 20.8 s and takes 0.65 s.  The GCD is the
+    /// same polynomial whichever route finds it.
     ///
     /// # Examples
     ///
@@ -1257,12 +1439,24 @@ impl<O: MonomialOrd> MultiPoly<O> {
             }
         }
         let to_zmap = |t: &[(&[u32], &BigInt)]| -> modgcd::ZMap {
-            t.iter().map(|(e, x)| (e.to_vec(), (*x).clone())).collect()
+            t.iter()
+                .map(|(e, x)| (Exps::from_slice(e), (*x).clone()))
+                .collect()
         };
-        let h = modgcd::heu_gcd(nv, &to_zmap(&ft), &to_zmap(&gt))?.h;
+        let (zf, zg) = (to_zmap(&ft), to_zmap(&gt));
+        if heuristic_size(nv, &ft, &gt) >= BROWN_MIN_HEURISTIC_BITS
+            && let Some(h) = super::brown::brown_gcd(nv, &zf, &zg)
+        {
+            let terms = h
+                .into_iter()
+                .map(|(e, x)| (e.into_vec(), Ratio::from_integer(x)))
+                .collect();
+            return Self::from_distinct_terms(nv, terms);
+        }
+        let h = modgcd::heu_gcd(nv, &zf, &zg)?.h;
         let terms = h
             .into_iter()
-            .map(|(e, x)| (e, Ratio::from_integer(x)))
+            .map(|(e, x)| (e.into_vec(), Ratio::from_integer(x)))
             .collect();
         Self::from_distinct_terms(nv, terms)
     }
@@ -1317,11 +1511,9 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// The coefficient of `v^k` as a polynomial in the other variables.
     pub(crate) fn coeff_in(&self, v: usize, k: u32) -> Self {
         let mut out = Self::zero(self.num_vars);
-        for (e, c) in self.terms() {
-            if e[v] == k {
-                let mut e = e.to_vec();
-                e[v] = 0;
-                out.insert_term(e, c.clone());
+        for (e, c) in &self.terms {
+            if e.exps[v] == k {
+                out.insert_term(e.with_exponent(v, 0), c.clone());
             }
         }
         out.prune();
@@ -1401,6 +1593,29 @@ impl<O: MonomialOrd> MultiPoly<O> {
     }
 }
 
+/// Estimated size in bits of the integers at the bottom of the heuristic
+/// gcd ([`modgcd::heu_gcd`]) from which [`MultiPoly::gcd`] uses Brown's
+/// modular algorithm ([`super::brown`]) instead.  Measured (release) on
+/// 600 random sparse problems in two to six variables, where the dense
+/// modular algorithm took twice as long in total, this threshold costs
+/// +0.5% (at most +96 ms on one problem); on 120 random dense ones
+/// (powers of sparse polynomials) the heuristic took minutes where the
+/// modular algorithm takes seconds, and the survey's dense gcd in four
+/// variables went from 20.8 s to 0.65 s.
+const BROWN_MIN_HEURISTIC_BITS: u64 = 10_000_000;
+
+/// The estimate compared with [`BROWN_MIN_HEURISTIC_BITS`]: the heuristic
+/// evaluates the variables one after another at a point about the size of
+/// the coefficients, so each variable multiplies the size of the numbers
+/// by its degree plus one: `(bits + 2)·∏ᵥ (max(degᵥ f, degᵥ g) + 1)`.
+fn heuristic_size(nv: usize, f: &[(&[u32], &BigInt)], g: &[(&[u32], &BigInt)]) -> u64 {
+    let bits = f.iter().chain(g).map(|(_, c)| c.bits()).max().unwrap_or(0);
+    (0..nv).fold(bits.saturating_add(2), |acc, v| {
+        let deg = f.iter().chain(g).map(|(e, _)| e[v]).max().unwrap_or(0);
+        acc.saturating_mul(u64::from(deg) + 1)
+    })
+}
+
 /// The content of a polynomial with respect to one variable (the gcd over
 /// ℤ of its coefficients, a polynomial in the other variables) and the
 /// primitive part, `polynomial = content · primitive`.
@@ -1456,9 +1671,9 @@ impl<O: MonomialOrd> MultiPoly<O> {
 
             if !divided {
                 // Leading term not divisible by any divisor — move to remainder
-                remainder.insert_term(lt_exp.clone(), lt_coeff);
-                // Remove leading term from p
-                p.terms.remove(&MonoKey::<O>::new(lt_exp));
+                let key = Monomial::from_vec(lt_exp);
+                p.terms.remove(&key);
+                remainder.insert_term(key, lt_coeff);
             }
         }
 
@@ -1500,7 +1715,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
             let quot_exp = monomial_div(&div_lt_exp, lt_exp)?;
             let quot_coeff = q_div(lt_coeff, &div_lt_coeff);
             let subtrahend = divisor.try_mul_monomial(&quot_coeff, &quot_exp)?;
-            quotient.insert_term(quot_exp, quot_coeff);
+            quotient.insert_term(Monomial::from_vec(quot_exp), quot_coeff);
             // `p −= subtrahend` in place (`sub` cloned all of `p` per step).
             for (key, c) in subtrahend.terms {
                 match p.terms.entry(key) {
@@ -1541,7 +1756,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// exponent) in some term.
     pub fn variables_present(&self) -> Vec<usize> {
         (0..self.num_vars)
-            .filter(|&i| self.terms.keys().any(|k| k.exponents[i] > 0))
+            .filter(|&i| self.terms.keys().any(|k| k.exps[i] > 0))
             .collect()
     }
 }
@@ -1644,7 +1859,7 @@ impl<O: MonomialOrd> fmt::Display for MultiPoly<O> {
         // Iterate in REVERSE (highest term first) for conventional display
         let mut first = true;
         for (key, coeff) in self.terms.iter().rev() {
-            let exp = &key.exponents;
+            let exp = key.exponents();
             let is_constant = exp.iter().all(|&e| e == 0);
             let coeff_is_one = *coeff == Ratio::one();
             let coeff_is_neg_one = *coeff == -Ratio::<BigInt>::one();

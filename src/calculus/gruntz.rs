@@ -28,6 +28,7 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
+use crate::base::budget::{BudgetKind, Work};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::calculus::calculus_util::{ZeroTest, settle_constant};
@@ -49,7 +50,7 @@ const MAX_DEPTH: usize = 30;
 /// per invocation; the cap is set an order of magnitude higher so that
 /// legitimate limits never hit it while pathological inputs are cut off
 /// within a fraction of a second.
-const MAX_WORK: u32 = 20_000;
+const MAX_WORK: u64 = 20_000;
 
 /// Work charged for one series expansion (see [`MAX_WORK`]), on top of a
 /// size-proportional charge.
@@ -57,7 +58,7 @@ const SERIES_COST: u32 = 25;
 
 /// Work the failed last resorts of one top-level Gruntz invocation may
 /// spend in all ([`Budget::resort`]).
-const MAX_RESORT_WORK: u32 = 5_000;
+const MAX_RESORT_WORK: u64 = 5_000;
 
 /// Largest denominator of a fractional power of `ω` that
 /// [`leadterm_last_resort`] ramifies (`ω = u^q`).
@@ -80,44 +81,79 @@ const MAX_TREE_SIZE: usize = 4_000;
 /// ratios, `leadterm` falls back to series expansion, …). Each recursion is
 /// depth-limited, but the *breadth* of the search is not, so a pathological
 /// input can still take a very long time without any single recursion
-/// exceeding its depth limit. The budget bounds the total amount of work:
-/// once it is exhausted every step fails with `ComputationFailed`, the
-/// error propagates to the top, and the caller returns an unevaluated
-/// `Limit` node.
+/// exceeding its depth limit. The budget bounds the total amount of work
+/// ([`Work`] of kind [`BudgetKind::LimitSteps`]): once a charge does not
+/// fit, it and every later one fail with
+/// [`BudgetExhausted`](crate::base::errors::SymplexError::BudgetExhausted)
+/// (up to 0.49 `ComputationFailed`), the error propagates to the top, and
+/// the caller returns an unevaluated `Limit` node.
 ///
 /// The budget also hands out the fresh dummy symbols (`__gw0`, `__gw1`, …)
 /// used for MRV substitutions.
 #[derive(Debug)]
 pub(crate) struct Budget {
     dummies: u32,
-    work: u32,
+    work: Spent,
     /// Work spent by failed last resorts ([`leadterm_last_resort`]), which
     /// is given back to `work` so that a refusal there leaves the rest of
     /// the computation as it was; bounded by [`MAX_RESORT_WORK`].
-    resort: u32,
+    resort: Spent,
+}
+
+/// A [`Work`] that stays spent once a charge did not fit: the computation
+/// it bounds is abandoned, also where a caller catches the error and tries
+/// another method.  `attempted` counts every unit asked for, those that
+/// did not fit included, which is what a failed last resort gives back
+/// ([`leadterm_last_resort`]).
+#[derive(Clone, Copy, Debug)]
+struct Spent {
+    work: Work,
+    attempted: u64,
+}
+
+impl Spent {
+    const fn new(cap: u64) -> Self {
+        Spent {
+            work: Work::new(BudgetKind::LimitSteps, cap),
+            attempted: 0,
+        }
+    }
+
+    /// Charge `units`; `Err` if they do not fit or an earlier charge did
+    /// not.
+    fn charge(&mut self, units: u64) -> Result<(), crate::base::errors::SymplexError> {
+        self.attempted = self.attempted.saturating_add(units);
+        if self.overrun() {
+            return Err(crate::base::errors::SymplexError::BudgetExhausted {
+                operation: "gruntz",
+                kind: BudgetKind::LimitSteps,
+            });
+        }
+        self.work.charge(units, "gruntz")
+    }
+
+    /// Has a charge not fitted?
+    const fn overrun(&self) -> bool {
+        self.attempted > self.work.cap()
+    }
 }
 
 impl Budget {
     pub(crate) fn new() -> Self {
         Self {
             dummies: 0,
-            work: 0,
-            resort: 0,
+            work: Spent::new(MAX_WORK),
+            resort: Spent::new(MAX_RESORT_WORK),
         }
     }
 
     /// Charge `weight` units of work; `Err` once the budget is exhausted.
     fn tick(&mut self, weight: u32) -> Result<(), crate::base::errors::SymplexError> {
-        self.work = self.work.saturating_add(weight);
-        if self.work > MAX_WORK {
-            tracing::warn!(work = self.work, "gruntz: work budget exhausted");
-            return Err(crate::base::errors::SymplexError::ComputationFailed {
-                operation: "gruntz",
-                reason: "work budget exhausted (expression too complex for the limit engine)"
-                    .into(),
-            });
+        let charged = self.work.charge(u64::from(weight));
+        if charged.is_err() {
+            tracing::warn!(work = self.work.attempted, "gruntz: work budget exhausted");
         }
-        Ok(())
+        charged
     }
 
     /// Charge for an expensive operation on `e` proportionally to its tree
@@ -141,8 +177,8 @@ impl Budget {
 
     /// Work units spent so far (for diagnostics and tests).
     #[cfg(test)]
-    fn work(&self) -> u32 {
-        self.work
+    fn work(&self) -> u64 {
+        self.work.attempted
     }
 }
 
@@ -389,15 +425,16 @@ fn leadterm_last_resort(
         operation: "gruntz::leadterm",
         reason: "the last-resort series expansion found no leading term".into(),
     };
-    if budget.resort > MAX_RESORT_WORK {
+    if budget.resort.overrun() {
         return Err(refused());
     }
     let before = budget.work;
     let r = last_resort_series(arena, budget, f, w, logw);
     if let Err(e) = &r {
         tracing::debug!(f = %arena.display(f), error = %e, "gruntz::leadterm_last_resort failed");
-        let spent = budget.work.saturating_sub(before);
-        budget.resort = budget.resort.saturating_add(spent);
+        let spent = budget.work.attempted.saturating_sub(before.attempted);
+        // Past its cap the resort count only refuses the next last resort.
+        let _ = budget.resort.charge(spent);
         budget.work = before;
     }
     r.map_err(|_| refused())
@@ -5441,6 +5478,9 @@ fn is_budget_error(e: &crate::base::errors::SymplexError) -> bool {
         crate::base::errors::SymplexError::ComputationFailed {
             operation: "gruntz",
             ..
+        } | crate::base::errors::SymplexError::BudgetExhausted {
+            kind: BudgetKind::LimitSteps,
+            ..
         }
     )
 }
@@ -5759,7 +5799,8 @@ mod tests {
         }
     }
 
-    /// An exhausted budget aborts with `ComputationFailed` instead of spinning.
+    /// An exhausted budget aborts with `BudgetExhausted` instead of
+    /// spinning (up to 0.49 `ComputationFailed`).
     #[test]
     fn exhausted_budget_fails_cleanly() {
         let mut a = Arena::new();
@@ -5768,12 +5809,19 @@ mod tests {
         let neg_x = a.neg(x);
         let exp_neg_x = a.exp(neg_x);
         let e = a.mul(&[x, exp_neg_x]);
-        let mut budget = Budget {
-            dummies: 0,
-            work: MAX_WORK,
-            resort: 0,
-        };
+        let mut budget = Budget::new();
+        budget.work.charge(MAX_WORK).unwrap();
         let err = gruntz_with_budget(&mut a, e, x, inf, &mut budget).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::base::errors::SymplexError::BudgetExhausted {
+                    kind: BudgetKind::LimitSteps,
+                    ..
+                }
+            ),
+            "{err}"
+        );
         assert!(err.to_string().contains("budget"), "{err}");
     }
 }

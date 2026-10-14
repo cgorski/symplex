@@ -646,12 +646,24 @@ Erfi => FuncSpec {
 };
 ```
 
-The data facets — names (display, parser aliases, LaTeX), argument count,
-sort sub-rank (node-backed functions keep their historical byte; a test
-checks uniqueness), conjugation rule, the real-argument domain on which the
-function is real, parity, poles, constant folding — are read from the table
-by every consumer (`conjugate`, evalf's conjugate pairing, the assumption
-system, the printers' tests), so two consumers can no longer disagree.
+The data facets — names (display, parser aliases, LaTeX layout), argument
+count, sort sub-rank (node-backed functions keep their historical byte; a
+test checks uniqueness), conjugation rule, the real-argument domain on which
+the function is real, parity, poles, constant folding, and `rt` (which `f64`
+back ends evaluate it and with which runtime kernel) — are read from the
+table by every consumer (`conjugate`, evalf's conjugate pairing, the
+assumption system, LaTeX, `compile`, `to_rust_fn`, `to_c_fn`, the Python
+printers), so two consumers can no longer disagree.
+
+**`rt`.**  `Runtime::NONE` (optionally `.scipy("…")` for the Python printer)
+when there is no `f64` routine.  Otherwise
+`Runtime::helper(Kernel::Unary("name"), Backends::VM_RUST_C)`, which needs
+three things: a `pub fn name` in a `// @@begin` section of
+`src/output/codegen/numeric_rt.rs` (shared by `compile` and the embedded Rust
+runtime), a VM instruction, and a C port (`CHelper { name, deps, src }` in
+`codegen_c.rs`, statement for statement, with its dependencies earlier in the
+list).  `the_rt_facet_is_what_every_back_end_does` and the two helper tests
+fail until all of these agree.
 Choose the strongest *true* value and cite DLMF or SymPy in a comment where
 it is not obvious; check a `conj` rule in mpmath at two complex points off
 the cut; `Conj::No` and `RealOn::Unclaimed` never claim anything.
@@ -1199,8 +1211,42 @@ surfaces as an error is `SymplexError::BudgetExhausted { kind }`; add a
 `BudgetKind` per new budget.
 
 **Per-arena state.**  Memos keyed by an arena use `Arena::serial()`, never
-its address.  Rule sets built on every call use fixed wilds
+its address; zero verdicts of constants are memoised under
+`FactKey::HiddenZero` (proofs only, never "no evidence").  An engine budget
+that must live in a thread-local (a trait without context, such as `PFrac`
+arithmetic) holds `Work` values, set afresh at the outermost entry.  Rule sets built on every call use fixed wilds
 (`arena.wild_at(k)`), so repeated calls create no nodes.
+
+**Solvers and parameters.**  A public solver uses `Domain::Complex` (or
+`Domain::declared(var)`) with `Params::AsDeclared`: a symbol without
+assumptions may be complex, as an unknown and as a parameter.  The crate's
+own root searches (sign charts, singularities, integration) use
+`Domain::Real` with `Params::Real`.  A range restriction ("no solution
+because `f` is real") needs `cx.range_restricted(f, var)` for the very
+expression it reasons about, never just the realness of the unknown; a
+general solve adds `2nπi` wherever an argument is not certainly real.
+
+**Numerical evaluation (`src/transforms/evalf/`).**  A routine that needs
+the working precision or the constants cache takes `w: &mut Wp<'_>` (`&mut
+w.at(bits)` for another precision); there is no rounding-mode parameter —
+use `RM` (round to nearest even) and write a directed mode out literally
+where a bound needs it.  A precision raised by an `f64` estimate goes
+through `Prec::guarded(Guard::for_log2(..))` (saturating; no `as usize +
+…`).  A value with its error bound is a `CBall` (`Ball<&Complex>` for a
+cached value), never a `(Complex, Bound)` pair; read signs and branch-cut
+sides from the ball (`sign_re`, `sign_im`, `cut_side`), not from the
+midpoint.  Use `bigfloat::is_strictly_positive`/`is_sign_positive`
+(`BigFloat::is_positive` is true for `+0` and is disallowed),
+`bigfloat::from_f64` for a computed `f64` (astro-float's halves
+subnormals), and `bigfloat::to_f64`/`to_f64_or_inf` as the only conversions
+to `f64`.  Decimal output is our exact conversion
+(`bigfloat::to_decimal_digits`), not astro-float's `convert_to_radix`.
+
+**Integer gcds** go through `base::numeric::gcd_big` (Lehmer) or `gcd_u64`;
+do not add another.  A graded `MonomialOrd` overrides `cmp_monomials` to use
+the stored `Monomial::total_degree`.  Dense multivariate gcds with large
+coefficients go to Brown's modular algorithm (`poly/brown.rs`), verified by
+trial division.
 
 **Branch on error variants, never on message text.**  A failure callers act
 on gets a variant (`BudgetExhausted`, `ExpressionSwell`,

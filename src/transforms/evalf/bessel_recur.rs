@@ -46,7 +46,8 @@
 //! the callers refuse as before: `Y_ν(x)` far below the turning point
 //! (`bessely(200000, 150000)`), where it is huge and the steps many.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use astro_float::BigFloat;
 
 use super::bessel_debye::{self, Kind};
 use crate::base::errors::SymplexError;
@@ -97,17 +98,10 @@ struct Pair {
 }
 
 /// `kind` at `μ` and `μ + 1` by the uniform expansions at `wp` bits.
-fn start(
-    kind: Kind,
-    mu: &BigFloat,
-    mu1: &BigFloat,
-    x: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<Pair> {
-    let lo = bessel_debye::debye(kind, mu, x, wp, rm, cc)?.ok()?;
-    let hi = bessel_debye::debye(kind, mu1, x, wp, rm, cc)?.ok()?;
+fn start(kind: Kind, mu: &BigFloat, mu1: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Option<Pair> {
+    let wp = w.bits();
+    let lo = bessel_debye::debye(kind, mu, x, w)?.ok()?;
+    let hi = bessel_debye::debye(kind, mu1, x, w)?.ok()?;
     // Each is correct to `2^(−wp)` relative (and the rounding to `wp` bits).
     let err = lsum(lg_up(&lo), lg_up(&hi)) - wp as f64 + 1.0;
     Some(Pair { lo, hi, err })
@@ -115,14 +109,7 @@ fn start(
 
 /// Run the recurrence from `(f_μ, f_{μ+1})` up to `f_n`, `n = μ + 1 + steps`:
 /// the value at `n` and `log₂ Σ abs(ρ_k)`.
-fn run(
-    p: &Pair,
-    mu1: &BigFloat,
-    x: &BigFloat,
-    steps: usize,
-    wp: usize,
-    rm: RoundingMode,
-) -> (BigFloat, f64) {
+fn run(p: &Pair, mu1: &BigFloat, x: &BigFloat, steps: usize, wp: usize) -> (BigFloat, f64) {
     let mut prev = p.lo.clone();
     let mut cur = p.hi.clone();
     let mut order = mu1.clone();
@@ -130,18 +117,18 @@ fn run(
     let one = BigFloat::from_i32(1, 64);
     // `2k/x = k·(2/x)`, `2/x` to `2^(−wp−16)` relative: `c` is within
     // `(1 + 2⁻¹⁶)·2^(−wp)` of `2k/x` (no division per step).
-    let inv = BigFloat::from_i32(2, 64).div(x, wp + 16, rm);
+    let inv = BigFloat::from_i32(2, 64).div(x, wp + 16, RM);
     // The orders `μ + 1 + j` exactly, at the bits of `μ + 1` (and room for
     // the steps).
     let po = super::exact_bits(mu1, 64);
     for _ in 0..steps {
-        let c = order.mul(&inv, wp, rm);
-        let next = c.mul(&cur, wp, rm).sub(&prev, wp, rm);
+        let c = order.mul(&inv, wp, RM);
+        let next = c.mul(&cur, wp, RM).sub(&prev, wp, RM);
         let local = lsum(lg_up(&c) + lg_up(&cur) + 1.01, lg_up(&next) + 0.015) - wp as f64;
         rho = lsum(rho, local);
         prev = cur;
         cur = next;
-        order = order.add(&one, po, rm);
+        order = order.add(&one, po, RM);
     }
     (cur, rho)
 }
@@ -153,18 +140,17 @@ pub(super) fn recur(
     kind: Kind,
     nu: &BigFloat,
     x: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Option<Result<BigFloat, SymplexError>> {
+    let prec = w.bits();
     if !matches!(kind, Kind::J | Kind::Y)
         || !super::bf_strictly_positive(nu)
         || !super::bf_strictly_positive(x)
     {
         return None;
     }
-    let nu_f = super::bigfloat_to_f64_rounded(nu, rm).ok()?;
-    let x_f = super::bigfloat_to_f64_rounded(x, rm).ok()?;
+    let nu_f = super::f64_of(nu).ok()?;
+    let x_f = super::f64_of(x).ok()?;
     if !nu_f.is_finite() || !x_f.is_finite() || nu_f < 32.0 {
         return None;
     }
@@ -183,15 +169,15 @@ pub(super) fn recur(
         }
         let one = BigFloat::from_i32(1, 64);
         let mb = BigFloat::from_u64(m as u64, 64);
-        let mu1 = nu.sub(&mb, super::exact_bits(nu, prec), rm);
-        let mu = mu1.sub(&one, super::exact_bits(&mu1, prec), rm);
+        let mu1 = nu.sub(&mb, super::exact_bits(nu, prec), RM);
+        let mu = mu1.sub(&one, super::exact_bits(&mu1, prec), RM);
         let mu_f = nu_f - below - 1.0;
-        let Some(y) = start(Kind::Y, &mu, &mu1, x, wp_start, rm, cc) else {
+        let Some(y) = start(Kind::Y, &mu, &mu1, x, &mut w.at(wp_start)) else {
             dist *= 2.0;
             continue;
         };
         let j = if kind == Kind::J {
-            match start(Kind::J, &mu, &mu1, x, wp_start, rm, cc) {
+            match start(Kind::J, &mu, &mu1, x, &mut w.at(wp_start)) {
                 Some(j) => Some(j),
                 None => {
                     dist *= 2.0;
@@ -208,7 +194,7 @@ pub(super) fn recur(
         if wp_run > 8 * prec + 65_536 || wp_start > 4 * prec + 4096 || work > MAX_WORK {
             return None;
         }
-        let (yn, rho_y) = run(&y, &mu1, x, m, wp_run, rm);
+        let (yn, rho_y) = run(&y, &mu1, x, m, wp_run);
         // `πx·L`, `L = b_L·μ^(−1/3)`.
         let lg_l = (LANDAU * mu_f.powf(-1.0 / 3.0)).log2();
         let lg_pxl = (std::f64::consts::PI * x_f).log2() + lg_l + 1e-9;
@@ -233,7 +219,7 @@ pub(super) fn recur(
         let (value, start_part, steps_part) = match &j {
             None => (yn, start_y, steps_y),
             Some(j) => {
-                let (jn, rho_j) = run(j, &mu1, x, m, wp_run, rm);
+                let (jn, rho_j) = run(j, &mu1, x, m, wp_run);
                 (jn, lg_pxl + j.err + 1.0, lg_pxl + rho_j)
             }
         };
@@ -256,7 +242,7 @@ pub(super) fn recur(
             }
             continue;
         }
-        return Some(Ok(super::round_to(value, prec, rm)));
+        return Some(Ok(super::round_to(value, prec)));
     }
     None
 }

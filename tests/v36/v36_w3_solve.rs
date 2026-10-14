@@ -128,7 +128,8 @@ fn reduce_inequalities_keeps_the_real_line_for_a_plain_unknown() {
 /// a non-real argument) was refused, and the merge of the two took the
 /// refusal for a proof.  `x = ±√3` solve it (exact: `|±√3 + i|² = 3 + 1`;
 /// SymPy `solveset(Abs(x + I)**2 - 4, x, S.Reals)` = `{-sqrt(3), sqrt(3)}`).
-/// Now refused.
+/// In 0.49 refused; since 0.50 (w3c) the branch `|x + i| = 2` of a real
+/// `x` is solved as `|f|² = (Re f)² + (Im f)² = 4`, `x² + 1 = 4`.
 #[test]
 fn branch_merge_refused_and_empty_is_refused() {
     let ctx = Context::new();
@@ -137,12 +138,15 @@ fn branch_merge_refused_and_empty_is_refused() {
     for r in ["sqrt(3)", "-sqrt(3)"] {
         assert_exact_root(&e, &x, &parse(&ctx, r));
     }
-    let r = e.solve(&x);
-    assert!(is_refusal(&r), "{r:?}");
+    let mut roots: Vec<String> = e.solve(&x).unwrap().iter().map(|r| r.to_string()).collect();
+    roots.sort();
+    assert_eq!(roots, ["-sqrt(3)", "sqrt(3)"]);
     assert_ne!(e.solve_as_set(&x).to_string(), "EmptySet");
     let zero = ctx.int(0);
-    let red = reduce_inequalities(&[e.eq_expr(&zero)], &x);
-    assert!(red.is_err(), "{red:?}");
+    let red = reduce_inequalities(&[e.eq_expr(&zero)], &x).unwrap();
+    for r in ["sqrt(3)", "-sqrt(3)"] {
+        assert_eq!(red.contains(&parse(&ctx, r)), Some(true), "{red}");
+    }
     // `|i·x|² = 4`: the same merge; `x = ±2` (exact)
     let e2 = parse(&ctx, "Abs(I*x)**2 - 4");
     assert_exact_root(&e2, &x, &ctx.int(2));

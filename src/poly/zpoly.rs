@@ -41,7 +41,18 @@ use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
-use super::multipoly::{MonoKey, MonomialOrd, MultiPoly};
+use super::multipoly::{Monomial, MonomialOrd, MultiPoly};
+
+/// Number of term products from which [`ZPoly::mul`] accumulates in a
+/// hash map instead of the ordered map.
+const HASHED_PRODUCT_MIN: usize = 1024;
+
+/// The numerators of the two factors of a product, narrowed to `i64`
+/// (in term order).
+struct SmallFactors {
+    lhs: Vec<i64>,
+    rhs: Vec<i64>,
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Common-denominator helpers
@@ -644,14 +655,14 @@ pub(crate) fn extended_gcd_via_z(
 /// [`MultiPoly`].  Terms are keyed by the same monomial order `O`.
 pub(crate) struct ZPoly<O: MonomialOrd> {
     den: BigInt,
-    terms: BTreeMap<MonoKey<O>, BigInt>,
+    terms: BTreeMap<Monomial<O>, BigInt>,
 }
 
 impl<O: MonomialOrd> ZPoly<O> {
     /// The constant `1` in `nv` variables.
     pub(crate) fn one(nv: usize) -> Self {
         let mut terms = BTreeMap::new();
-        terms.insert(MonoKey::new(vec![0u32; nv]), BigInt::one());
+        terms.insert(Monomial::one(nv), BigInt::one());
         ZPoly {
             den: BigInt::one(),
             terms,
@@ -662,14 +673,14 @@ impl<O: MonomialOrd> ZPoly<O> {
     pub(crate) fn from_multipoly(mp: &MultiPoly<O>) -> Self {
         let den = denominator_lcm(mp.terms().map(|(_, c)| c));
         let terms = mp
-            .terms()
+            .monomial_terms()
             .map(|(e, c)| {
                 let n = if den.is_one() {
                     c.numer().clone()
                 } else {
                     c.numer() * (&den / c.denom())
                 };
-                (MonoKey::new(e.to_vec()), n)
+                (e.clone(), n)
             })
             .collect();
         ZPoly { den, terms }
@@ -678,7 +689,7 @@ impl<O: MonomialOrd> ZPoly<O> {
     /// Back to reduced rational coefficients (one reduction per term).
     pub(crate) fn into_multipoly(self, nv: usize) -> MultiPoly<O> {
         let den = self.den;
-        let terms: BTreeMap<MonoKey<O>, Ratio<BigInt>> = if den.is_one() {
+        let terms: BTreeMap<Monomial<O>, Ratio<BigInt>> = if den.is_one() {
             self.terms
                 .into_iter()
                 .map(|(e, n)| (e, Ratio::from_integer(n)))
@@ -693,32 +704,83 @@ impl<O: MonomialOrd> ZPoly<O> {
     }
 
     /// Product; `None` if some exponent would overflow `u32`.
+    ///
+    /// A large product accumulates in a hash map and is sorted once at the
+    /// end: inserting each of the `m·n` term products into the ordered map
+    /// costs `log` comparisons apiece (half the time of a product in four
+    /// variables).  When every coefficient sum provably fits, it
+    /// accumulates in `i128` instead of allocating a `BigInt` per term
+    /// product.  The sums are exact either way, so the result is the same.
     pub(crate) fn mul(&self, other: &Self) -> Option<Self> {
-        let mut terms: BTreeMap<MonoKey<O>, BigInt> = BTreeMap::new();
-        for (ea, na) in &self.terms {
-            for (eb, nb) in &other.terms {
-                let e: Option<Vec<u32>> = ea
-                    .exponents
-                    .iter()
-                    .zip(&eb.exponents)
-                    .map(|(a, b)| a.checked_add(*b))
-                    .collect();
-                let prod = na * nb;
-                match terms.entry(MonoKey::new(e?)) {
-                    std::collections::btree_map::Entry::Vacant(slot) => {
-                        slot.insert(prod);
-                    }
-                    std::collections::btree_map::Entry::Occupied(mut slot) => {
-                        *slot.get_mut() += prod;
+        let pairs = self.terms.len().saturating_mul(other.terms.len());
+        let mut terms: BTreeMap<Monomial<O>, BigInt> = if pairs < HASHED_PRODUCT_MIN {
+            let mut terms = BTreeMap::new();
+            for (ea, na) in &self.terms {
+                for (eb, nb) in &other.terms {
+                    let e = ea.checked_mul(eb)?;
+                    let prod = na * nb;
+                    match terms.entry(e) {
+                        std::collections::btree_map::Entry::Vacant(slot) => {
+                            slot.insert(prod);
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut slot) => {
+                            *slot.get_mut() += prod;
+                        }
                     }
                 }
             }
-        }
+            terms
+        } else if let Some(small) = self.small_coefficients(other) {
+            let mut acc: rustc_hash::FxHashMap<Monomial<O>, i128> =
+                rustc_hash::FxHashMap::default();
+            for (ea, na) in self.terms.keys().zip(&small.lhs) {
+                for (eb, nb) in other.terms.keys().zip(&small.rhs) {
+                    // In range: `small_coefficients` bounds every sum.
+                    *acc.entry(ea.checked_mul(eb)?).or_default() +=
+                        i128::from(*na) * i128::from(*nb);
+                }
+            }
+            acc.into_iter()
+                .filter(|(_, n)| *n != 0)
+                .map(|(e, n)| (e, BigInt::from(n)))
+                .collect()
+        } else {
+            let mut acc: rustc_hash::FxHashMap<Monomial<O>, BigInt> =
+                rustc_hash::FxHashMap::default();
+            for (ea, na) in &self.terms {
+                for (eb, nb) in &other.terms {
+                    *acc.entry(ea.checked_mul(eb)?).or_default() += na * nb;
+                }
+            }
+            acc.into_iter().filter(|(_, n)| !n.is_zero()).collect()
+        };
         terms.retain(|_, n| !n.is_zero());
         Some(ZPoly {
             den: &self.den * &other.den,
             terms,
         })
+    }
+
+    /// The numerators of both factors as `i64`, when every coefficient of
+    /// the product is a sum of at most `min(m, n)` products of them whose
+    /// total stays below `2¹²⁶` in magnitude; `None` otherwise.
+    fn small_coefficients(&self, other: &Self) -> Option<SmallFactors> {
+        let narrow = |p: &Self| -> Option<Vec<i64>> {
+            p.terms
+                .values()
+                .map(num_traits::ToPrimitive::to_i64)
+                .collect()
+        };
+        let (lhs, rhs) = (narrow(self)?, narrow(other)?);
+        let bits = |v: &[i64]| -> u32 {
+            v.iter()
+                .map(|x| 64 - x.unsigned_abs().leading_zeros())
+                .max()
+                .unwrap_or(0)
+        };
+        let count = self.terms.len().min(other.terms.len());
+        let count_bits = usize::BITS - count.leading_zeros();
+        (bits(&lhs) + bits(&rhs) + count_bits <= 126).then_some(SmallFactors { lhs, rhs })
     }
 
     /// `self^n` by repeated squaring; `None` on exponent overflow.
@@ -742,7 +804,7 @@ impl<O: MonomialOrd> ZPoly<O> {
     fn degree_list(&self, nv: usize) -> Vec<u32> {
         let mut out = vec![0u32; nv];
         for e in self.terms.keys() {
-            for (o, &x) in out.iter_mut().zip(&e.exponents) {
+            for (o, &x) in out.iter_mut().zip(e.exponents()) {
                 *o = (*o).max(x);
             }
         }
@@ -774,7 +836,7 @@ impl<O: MonomialOrd> ZPoly<O> {
         let mut sum = BigInt::zero();
         for (e, n) in &self.terms {
             let mut t = n.clone();
-            for (i, &ei) in e.exponents.iter().enumerate() {
+            for (i, &ei) in e.exponents().iter().enumerate() {
                 if ei > 0 {
                     t *= &num_pows[i][ei as usize];
                 }

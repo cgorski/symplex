@@ -78,7 +78,9 @@
 //! applied to the powers `k^(−s)(ln k)^m` only, where its remainder has a
 //! proven bound, and the expansion of the summand has one too.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::ball::CBall;
+use super::wp::{RM, Wp};
+use astro_float::{BigFloat, Consts};
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
@@ -86,7 +88,6 @@ use rustc_hash::FxHashMap;
 use super::accuracy::{self, Bound};
 use super::hypsum::PartFn;
 use crate::base::arena::Arena;
-use crate::base::bigcomplex::Complex;
 use crate::base::errors::SymplexError;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
@@ -133,8 +134,8 @@ impl Ball {
         self.m.is_zero() && self.r == f64::NEG_INFINITY
     }
 
-    fn from_q(q: &Q, wp: usize, rm: RoundingMode) -> Ball {
-        let m = ratio_to_bigfloat(q, wp, rm);
+    fn from_q(q: &Q, wp: usize) -> Ball {
+        let m = ratio_to_bigfloat(q, wp, RM);
         let exact = q.is_zero() || {
             let d = q.denom();
             (d & (d - BigInt::one())).is_zero() && q.numer().bits() <= wp as u64
@@ -179,14 +180,14 @@ impl Ball {
         self.certainly_nonzero() && super::bf_strictly_positive(&self.m)
     }
 
-    fn add(&self, o: &Ball, wp: usize, rm: RoundingMode) -> Ball {
+    fn add(&self, o: &Ball, wp: usize) -> Ball {
         if self.exact_zero() {
             return o.clone();
         }
         if o.exact_zero() {
             return self.clone();
         }
-        let m = self.m.add(&o.m, wp, rm);
+        let m = self.m.add(&o.m, wp, RM);
         let r = lsum(lsum(self.r, o.r), op_rounding(&m, wp));
         Ball { m, r }
     }
@@ -198,11 +199,11 @@ impl Ball {
         }
     }
 
-    fn mul(&self, o: &Ball, wp: usize, rm: RoundingMode) -> Ball {
+    fn mul(&self, o: &Ball, wp: usize) -> Ball {
         if self.exact_zero() || o.exact_zero() {
             return Ball::zero(wp);
         }
-        let m = self.m.mul(&o.m, wp, rm);
+        let m = self.m.mul(&o.m, wp, RM);
         let (la, lb) = (accuracy::part_lg(&self.m), accuracy::part_lg(&o.m));
         let r = lsum(
             lsum(lsum(la + o.r, lb + self.r), self.r + o.r),
@@ -212,12 +213,12 @@ impl Ball {
     }
 
     /// `1/self` (the ball must exclude 0).
-    fn recip(&self, wp: usize, rm: RoundingMode) -> Option<Ball> {
+    fn recip(&self, wp: usize) -> Option<Ball> {
         let lo = self.lo();
         if lo == f64::NEG_INFINITY {
             return None;
         }
-        let m = BigFloat::from_i32(1, 64).div(&self.m, wp, rm);
+        let m = BigFloat::from_i32(1, 64).div(&self.m, wp, RM);
         // |1/(m+δ) − 1/m| ≤ |δ|/(|m|·(|m| − |δ|)).
         let r = if self.r == f64::NEG_INFINITY {
             op_rounding(&m, wp)
@@ -254,7 +255,6 @@ struct Ctx {
     /// `ln N`.
     ln_n: f64,
     wp: usize,
-    rm: RoundingMode,
 }
 
 /// `x^(−β)·(Σ c[j][i] u^j ℓ^(i−off) + R)`, `|R| ≤ 2^le·u^(J+1)·(1 + ℓ)^l`,
@@ -442,7 +442,7 @@ impl Ctx {
                     .get(m)
                     .cloned()
                     .unwrap_or_else(|| Ball::zero(self.wp));
-                row.push(x.add(&y, self.wp, self.rm));
+                row.push(x.add(&y, self.wp));
             }
             out.c[j] = row;
         }
@@ -479,7 +479,7 @@ impl Ctx {
         let mut out = a.clone();
         for row in out.c.iter_mut() {
             for b in row.iter_mut() {
-                *b = b.mul(s, self.wp, self.rm);
+                *b = b.mul(s, self.wp);
             }
         }
         out.le = a.le + s.hi();
@@ -516,7 +516,7 @@ impl Ctx {
                             if row.len() <= m {
                                 row.resize(m + 1, Ball::zero(self.wp));
                             }
-                            row[m] = row[m].add(&x.mul(y, self.wp, self.rm), self.wp, self.rm);
+                            row[m] = row[m].add(&x.mul(y, self.wp), self.wp);
                         } else {
                             dropped =
                                 lsum(dropped, x.hi() + y.hi() - (t - jj - 1) as f64 * self.lg_n);
@@ -590,7 +590,7 @@ impl Ctx {
             return None;
         }
         let p = i - a.off;
-        let inv = c0.recip(self.wp, self.rm)?;
+        let inv = c0.recip(self.wp)?;
         let mut v = self.ell_shift_down(&self.scale(a, &inv), p);
         v.beta = Q::zero();
         v.alt = false;
@@ -676,7 +676,7 @@ impl Ctx {
         let tail = -(1.0 - sup.exp2()).log2();
         let s = self.compose(&v, &coeffs, tail)?;
         // ·c₀⁻¹·ℓ^(−p).
-        let mut out = self.ell_shift_down(&self.scale(&s, &c0.recip(self.wp, self.rm)?), p);
+        let mut out = self.ell_shift_down(&self.scale(&s, &c0.recip(self.wp)?), p);
         out.beta = -a.beta.clone();
         out.alt = a.alt;
         Some(out)
@@ -723,7 +723,7 @@ impl Ctx {
         let mut coeffs = Vec::with_capacity(self.j + 1);
         let mut binom = Q::one();
         for i in 0..=self.j {
-            coeffs.push(Ball::from_q(&binom, self.wp, self.rm));
+            coeffs.push(Ball::from_q(&binom, self.wp));
             binom = binom * (alpha - Q::from_integer(BigInt::from(i)))
                 / Q::from_integer(BigInt::from(i + 1));
         }
@@ -741,9 +741,9 @@ impl Ctx {
         let s = self.compose(&v, &coeffs, tail)?;
         // c₀^α = exp(α ln c₀).
         let wp = self.wp;
-        let ln_c0 = c0.m.ln(wp + 16, self.rm, cc);
-        let alpha_b = ratio_to_bigfloat(alpha, wp + 16, self.rm);
-        let p = ln_c0.mul(&alpha_b, wp + 16, self.rm).exp(wp, self.rm, cc);
+        let ln_c0 = c0.m.ln(wp + 16, RM, cc);
+        let alpha_b = ratio_to_bigfloat(alpha, wp + 16, RM);
+        let p = ln_c0.mul(&alpha_b, wp + 16, RM).exp(wp, RM, cc);
         // |Δ ln c₀| ≤ r/(c₀ − r); the result moves by about |α|·that.
         let dl = if c0.r == f64::NEG_INFINITY {
             f64::NEG_INFINITY
@@ -778,12 +778,12 @@ impl Ctx {
                 BigInt::from(if !i.is_multiple_of(2) { 1 } else { -1 }),
                 BigInt::from(i),
             );
-            coeffs.push(Ball::from_q(&q, self.wp, self.rm));
+            coeffs.push(Ball::from_q(&q, self.wp));
         }
         let tail = -((self.j as f64 + 1.0).log2()) - (1.0 - sup.exp2()).log2();
         let s = self.compose(&v, &coeffs, tail)?;
         let wp = self.wp;
-        let lc = c0.m.ln(wp, self.rm, cc);
+        let lc = c0.m.ln(wp, RM, cc);
         let dl = if c0.r == f64::NEG_INFINITY {
             f64::NEG_INFINITY
         } else {
@@ -793,7 +793,7 @@ impl Ctx {
         let mut out = self.add(&s, &self.constant(Ball { m: lc, r }))?;
         if !a.beta.is_zero() {
             let mut lterm = self.zero();
-            lterm.c[0] = vec![Ball::zero(wp), Ball::from_q(&-a.beta.clone(), wp, self.rm)];
+            lterm.c[0] = vec![Ball::zero(wp), Ball::from_q(&-a.beta.clone(), wp)];
             out = self.add(&out, &lterm)?;
         }
         Some(out)
@@ -831,13 +831,13 @@ impl Ctx {
         let mut coeffs = Vec::with_capacity(self.j + 1);
         let mut f = Q::one();
         for i in 0..=self.j {
-            coeffs.push(Ball::from_q(&f, self.wp, self.rm));
+            coeffs.push(Ball::from_q(&f, self.wp));
             f /= Q::from_integer(BigInt::from(i + 1));
         }
         let tail = sup.exp2() * LOG2E - log2_factorial(self.j + 1);
         let s = self.compose(&v, &coeffs, tail)?;
         let wp = self.wp;
-        let e = c0.m.exp(wp, self.rm, cc);
+        let e = c0.m.exp(wp, RM, cc);
         let r = lsum(
             accuracy::part_lg(&e)
                 + if c0.r == f64::NEG_INFINITY {
@@ -868,9 +868,9 @@ impl Ctx {
                 -f.clone()
             };
             let (s, c) = if !i.is_multiple_of(2) {
-                (Ball::from_q(&sign, wp, self.rm), Ball::zero(wp))
+                (Ball::from_q(&sign, wp), Ball::zero(wp))
             } else {
-                (Ball::zero(wp), Ball::from_q(&sign, wp, self.rm))
+                (Ball::zero(wp), Ball::from_q(&sign, wp))
             };
             sin_c.push(s);
             cos_c.push(c);
@@ -879,8 +879,8 @@ impl Ctx {
         let tail = -log2_factorial(self.j + 1);
         let sv = self.compose(&v, &sin_c, tail)?;
         let cv = self.compose(&v, &cos_c, tail)?;
-        let sc = c0.m.sin(wp, self.rm, cc);
-        let ccv = c0.m.cos(wp, self.rm, cc);
+        let sc = c0.m.sin(wp, RM, cc);
+        let ccv = c0.m.cos(wp, RM, cc);
         let ball = |x: BigFloat| {
             let r = lsum(c0.r, rounding(&x, wp));
             Ball { m: x, r }
@@ -907,7 +907,7 @@ impl Ctx {
                     Ball::zero(wp)
                 } else {
                     let sign = if (i / 2).is_multiple_of(2) { 1 } else { -1 };
-                    Ball::from_q(&Q::new(BigInt::from(sign), BigInt::from(i)), wp, self.rm)
+                    Ball::from_q(&Q::new(BigInt::from(sign), BigInt::from(i)), wp)
                 }
             })
             .collect();
@@ -932,8 +932,8 @@ impl Ctx {
                 return None;
             }
             let t = self.atan_small(&v)?;
-            let pi = cc.pi(wp, self.rm).clone();
-            let half = pi.div(&BigFloat::from_i32(2, 64), wp, self.rm);
+            let pi = cc.pi(wp, RM).clone();
+            let half = pi.div(&BigFloat::from_i32(2, 64), wp, RM);
             let r = rounding(&half, wp);
             return self.add(
                 &self.constant(Ball { m: half, r }),
@@ -946,7 +946,7 @@ impl Ctx {
         }
         // atan(c₀ + v) = atan c₀ + atan(v/(1 + c₀² + c₀v)).
         let one = Ball::from_int(1, wp);
-        let d0 = one.add(&c0.mul(&c0, wp, self.rm), wp, self.rm);
+        let d0 = one.add(&c0.mul(&c0, wp), wp);
         let den = self.add(&self.constant(d0), &self.scale(&v, &c0))?;
         let y = self.mul(&v, &self.recip(&den)?)?;
         let (z, w) = self.split_const(&y)?;
@@ -954,7 +954,7 @@ impl Ctx {
             return None;
         }
         let t = self.atan_small(&w)?;
-        let at = c0.m.atan(wp, self.rm, cc);
+        let at = c0.m.atan(wp, RM, cc);
         let r = lsum(c0.r, rounding(&at, wp));
         self.add(&self.constant(Ball { m: at, r }), &t)
     }
@@ -974,7 +974,7 @@ impl Ctx {
         out = self.add(&out, &self.constant(gamma.clone()))?;
         out = self.add(
             &out,
-            &self.scale(&y, &Ball::from_q(&Q::new(1.into(), 2.into()), wp, self.rm)),
+            &self.scale(&y, &Ball::from_q(&Q::new(1.into(), 2.into()), wp)),
         )?;
         // −Σ_{i≤I} B₂ᵢ/(2i)·y^(2i), with 2I·β_y ≥ J + 1.
         let by = y.beta.to_integer().to_usize()?.max(1);
@@ -986,7 +986,7 @@ impl Ctx {
                 pw = self.mul(&pw, &y2)?;
             }
             let b = super::bernoulli::even(i) / Q::from_integer(BigInt::from(2 * i));
-            out = self.add(&out, &self.scale(&pw, &Ball::from_q(&-b, wp, self.rm)))?;
+            out = self.add(&out, &self.scale(&pw, &Ball::from_q(&-b, wp)))?;
         }
         // |R| ≤ |B₂ᵢ|/(2I)·y^(2I) with y ≤ Y·u^β_y, Y = sup over x ≥ N.
         let b = super::bernoulli::even(big_i) / Q::from_integer(BigInt::from(2 * big_i));
@@ -1059,9 +1059,10 @@ fn build(
             ctx.var()
         } else if dep.get(&id) != Some(&true) {
             if let Some(q) = arena.as_num(id) {
-                ctx.constant(Ball::from_q(q, ctx.wp, ctx.rm))
+                ctx.constant(Ball::from_q(q, ctx.wp))
             } else {
-                let (v, b) = part(id, lo, ctx.wp).map_err(|_| Fail::Unsupported)?;
+                let CBall { mid: v, err: b } =
+                    part(id, lo, ctx.wp).map_err(|_| Fail::Unsupported)?;
                 if !accuracy::exactly_real(&v, b) || b.is_unknown() {
                     return Err(Fail::Unsupported);
                 }
@@ -1225,125 +1226,124 @@ fn power_log_tail(
     n: u64,
     alt: bool,
     floor: f64,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    wpc: &mut Wp<'_>,
 ) -> Option<(BigFloat, f64)> {
+    let wp = wpc.bits();
     let p = wp + 32;
     let nb = BigFloat::from_u64(n, 64);
-    let ln_n = nb.ln(p, rm, cc);
-    let inv_ln = BigFloat::from_i32(1, 64).div(&ln_n, p, rm);
+    let ln_n = nb.ln(p, RM, wpc.cc);
+    let inv_ln = BigFloat::from_i32(1, 64).div(&ln_n, p, RM);
     let lnf = (n as f64).ln();
     let lg_n = (n as f64).log2();
     // (ln N)^k for an integer k.
     let lpow = |k: i64| -> BigFloat {
         let b = if k >= 0 { &ln_n } else { &inv_ln };
-        b.powi(k.unsigned_abs() as usize, p, rm)
+        b.powi(k.unsigned_abs() as usize, p, RM)
     };
     // N^(−s).
-    let nps = ln_n.mul(s, p, rm).neg().exp(p, rm, cc);
+    let nps = ln_n.mul(s, p, RM).neg().exp(p, RM, wpc.cc);
     let one = BigFloat::from_i32(1, 64);
     let mut value = BigFloat::new(p);
     if !alt {
         let integral = if e >= 0 {
             // N^(1−s)·Σ_r e!/(e−r)!·(ln N)^(e−r)/(s−1)^(r+1).
             let m = e as usize;
-            let s1 = s.sub(&one, p, rm);
+            let s1 = s.sub(&one, p, RM);
             let mut acc = BigFloat::new(p);
             let mut fall = BigFloat::from_i32(1, p);
             let mut den = s1.clone();
             for r in 0..=m {
                 if r > 0 {
-                    fall = fall.mul(&BigFloat::from_u64((m - r + 1) as u64, 64), p, rm);
-                    den = den.mul(&s1, p, rm);
+                    fall = fall.mul(&BigFloat::from_u64((m - r + 1) as u64, 64), p, RM);
+                    den = den.mul(&s1, p, RM);
                 }
                 acc = acc.add(
-                    &fall.mul(&lpow((m - r) as i64), p, rm).div(&den, p, rm),
+                    &fall.mul(&lpow((m - r) as i64), p, RM).div(&den, p, RM),
                     p,
-                    rm,
+                    RM,
                 );
             }
-            acc.mul(&nps, p, rm).mul(&nb, p, rm)
+            acc.mul(&nps, p, RM).mul(&nb, p, RM)
         } else if *s == BigFloat::from_i32(1, 64) {
             if e >= -1 {
                 return None;
             }
-            lpow(e + 1).div(&BigFloat::from_i64(-e - 1, 64), p, rm)
+            lpow(e + 1).div(&BigFloat::from_i64(-e - 1, 64), p, RM)
         } else {
             // The recurrence cancels about log₂(x/k) bits at step k: as many
             // more.
             let steps = (-e - 1) as usize;
             let xf = (sf - 1.0) * lnf;
             let pg = p + steps * (super::magnitude_bits(xf.max(1.0)) + 2);
-            let s1 = s.sub(&one, pg, rm);
-            let x = s1.mul(&ln_n, pg, rm);
-            let mut g = super::arb_expint(&BigFloat::from_i32(1, 64), &x, pg, rm, cc).ok()?;
-            let ex = x.neg().exp(pg, rm, cc);
-            let inv_x = BigFloat::from_i32(1, 64).div(&x, pg, rm);
+            let s1 = s.sub(&one, pg, RM);
+            let x = s1.mul(&ln_n, pg, RM);
+            let mut g = super::arb_expint(&BigFloat::from_i32(1, 64), &x, &mut wpc.at(pg)).ok()?;
+            let ex = x.neg().exp(pg, RM, wpc.cc);
+            let inv_x = BigFloat::from_i32(1, 64).div(&x, pg, RM);
             let mut xk = BigFloat::from_i32(1, pg); // x^(−k)
             for k in 1..=steps {
-                xk = xk.mul(&inv_x, pg, rm);
-                g = xk.mul(&ex, pg, rm).sub(&g, pg, rm).div(
+                xk = xk.mul(&inv_x, pg, RM);
+                g = xk.mul(&ex, pg, RM).sub(&g, pg, RM).div(
                     &BigFloat::from_u64(k as u64, 64),
                     pg,
-                    rm,
+                    RM,
                 );
             }
-            super::round_to(s1.powi(steps, pg, rm).mul(&g, pg, rm), p, rm)
+            super::round_to(s1.powi(steps, pg, RM).mul(&g, pg, RM), p)
         };
-        value = value.add(&integral, p, rm);
+        value = value.add(&integral, p, RM);
     }
     // f(N)/2.
-    let f_n = nps.mul(&lpow(e), p, rm);
-    value = value.add(&f_n.div(&BigFloat::from_i32(2, 64), p, rm), p, rm);
+    let f_n = nps.mul(&lpow(e), p, RM);
+    value = value.add(&f_n.div(&BigFloat::from_i32(2, 64), p, RM), p, RM);
     let mut largest = accuracy::part_lg(&value).max(accuracy::part_lg(&f_n));
     // The derivatives f^(k)(N) = N^(−s−k)·Σ_d coef[d]·(ln N)^(e−d):
     // d/dt t^(−a)(ln t)^q = t^(−a−1)·(−a(ln t)^q + q(ln t)^(q−1)).
     let mut coef: Vec<BigFloat> = vec![BigFloat::from_i32(1, p)];
-    let inv_n = BigFloat::from_i32(1, 64).div(&nb, p, rm);
+    let inv_n = BigFloat::from_i32(1, 64).div(&nb, p, RM);
     let mut npow = nps.clone(); // N^(−s−order)
     let mut fact = BigFloat::from_i32(1, p); // (order)!
     let max_m = 4 * wp + 64;
     let mut best: Option<(BigFloat, f64)> = None;
     for order in 0..(2 * max_m) {
-        let so = s.add(&BigFloat::from_u64(order as u64, 64), p, rm);
+        let so = s.add(&BigFloat::from_u64(order as u64, 64), p, RM);
         let mut next = vec![BigFloat::new(p); coef.len() + 1];
         for (d, c) in coef.iter().enumerate() {
             if c.is_zero() {
                 continue;
             }
-            next[d] = next[d].sub(&c.mul(&so, p, rm), p, rm);
+            next[d] = next[d].sub(&c.mul(&so, p, RM), p, RM);
             let q = e - d as i64;
             if q != 0 {
-                next[d + 1] = next[d + 1].add(&c.mul(&BigFloat::from_i64(q, 64), p, rm), p, rm);
+                next[d + 1] = next[d + 1].add(&c.mul(&BigFloat::from_i64(q, 64), p, RM), p, RM);
             }
         }
         while next.len() > 1 && next.last().is_some_and(BigFloat::is_zero) {
             next.pop();
         }
         coef = next;
-        npow = npow.mul(&inv_n, p, rm);
+        npow = npow.mul(&inv_n, p, RM);
         let k = order + 1; // the order of `coef`
-        fact = fact.mul(&BigFloat::from_u64(k as u64, 64), p, rm);
+        fact = fact.mul(&BigFloat::from_u64(k as u64, 64), p, RM);
         if !k.is_multiple_of(2) {
             let j = k.div_ceil(2);
             // −B₂ⱼ/(2j)!·f^(2j−1)(N) (times 2^(2j) − 1 alternating).
             let mut d = BigFloat::new(p);
             for (i, c) in coef.iter().enumerate() {
-                d = d.add(&c.mul(&lpow(e - i as i64), p, rm), p, rm);
+                d = d.add(&c.mul(&lpow(e - i as i64), p, RM), p, RM);
             }
-            let deriv = d.mul(&npow, p, rm);
-            let b = ratio_to_bigfloat(&super::bernoulli::even(j), p, rm);
-            let fact2j = fact.mul(&BigFloat::from_u64((k + 1) as u64, 64), p, rm);
-            let mut t = b.mul(&deriv, p, rm).div(&fact2j, p, rm).neg();
+            let deriv = d.mul(&npow, p, RM);
+            let b = ratio_to_bigfloat(&super::bernoulli::even(j), p, RM);
+            let fact2j = fact.mul(&BigFloat::from_u64((k + 1) as u64, 64), p, RM);
+            let mut t = b.mul(&deriv, p, RM).div(&fact2j, p, RM).neg();
             if alt {
                 let w = BigFloat::from_i32(2, 64)
-                    .powi(2 * j, p, rm)
-                    .sub(&one, p, rm);
-                t = t.mul(&w, p, rm);
+                    .powi(2 * j, p, RM)
+                    .sub(&one, p, RM);
+                t = t.mul(&w, p, RM);
             }
             largest = largest.max(accuracy::part_lg(&t));
-            value = value.add(&t, p, rm);
+            value = value.add(&t, p, RM);
         } else {
             // The remainder after j = k/2 corrections: f^(2j).
             let j = k / 2;
@@ -1370,7 +1370,7 @@ fn power_log_tail(
             let rem = lb + mult + ib;
             let err = lsum(rem, largest - p as f64 + 8.0);
             if rem < largest - wp as f64 - 8.0 || rem < floor {
-                return Some((super::round_to(value, wp, rm), err));
+                return Some((super::round_to(value, wp), err));
             }
             match &best {
                 Some((_, b)) if *b + 24.0 < err => break,
@@ -1382,7 +1382,7 @@ fn power_log_tail(
             }
         }
     }
-    best.map(|(v, b)| (super::round_to(v, wp, rm), b))
+    best.map(|(v, b)| (super::round_to(v, wp), b))
 }
 
 // ── The sum ────────────────────────────────────────────────────────────────
@@ -1424,9 +1424,8 @@ pub(super) fn asymptotic_sum(
     var: ExprId,
     lo: &BigInt,
     prec: usize,
-    rm: RoundingMode,
     part: &mut PartFn<'_>,
-) -> Option<Result<(Complex, Bound), SymplexError>> {
+) -> Option<Result<CBall, SymplexError>> {
     if !supported_shape(arena, body, var) {
         return None;
     }
@@ -1434,7 +1433,7 @@ pub(super) fn asymptotic_sum(
     let mut consts = Consts::new().ok()?;
     let cc = &mut consts;
     let wp = prec + 32;
-    let g = super::arb_euler_gamma(wp, rm, cc).ok()?;
+    let g = super::arb_euler_gamma(&mut Wp::new(wp, cc)).ok()?;
     let gr = rounding(&g, wp);
     let gamma = Ball { m: g, r: gr };
     let start = lo.to_i64()?;
@@ -1473,7 +1472,6 @@ pub(super) fn asymptotic_sum(
             lg_n,
             ln_n: (n as f64).ln(),
             wp,
-            rm,
         };
         let model = match build(arena, body, var, lo, &ctx, &gamma, part, cc) {
             Ok(m) => m,
@@ -1487,7 +1485,7 @@ pub(super) fn asymptotic_sum(
         let n_big = BigInt::from(n);
         while k < n_big {
             match part(body, &k, prec) {
-                Ok((t, e)) => direct.add(&t, e, rm),
+                Ok(CBall { mid: t, err: e }) => direct.add(&t, e),
                 Err(e) => return Some(Err(e)),
             }
             k += 1;
@@ -1501,9 +1499,9 @@ pub(super) fn asymptotic_sum(
                     - 4.0;
                 if err <= target || (attempts >= 4 && err.is_finite()) {
                     let mut out = std::mem::replace(&mut direct, super::SumAcc::new(prec));
-                    let v = (super::round_to(value, prec, rm), BigFloat::new(prec));
+                    let v = (super::round_to(value, prec), BigFloat::new(prec));
                     let e = lsum(err, accuracy::rounding(&v, prec));
-                    out.add(&v, Bound::real(e), rm);
+                    out.add(&v, Bound::real(e));
                     tracing::debug!(n, j, err, "evalf: sum by its expansion at infinity");
                     return Some(Ok(out.finish()));
                 }
@@ -1540,7 +1538,7 @@ enum TailResult {
 /// `Σ_{k≥N} model(k)`: the power sums times the coefficients, plus the sum
 /// of the remainder.
 fn tail(model: &Model, ctx: &Ctx, n: u64, cc: &mut Consts) -> TailResult {
-    let (wp, rm) = (ctx.wp, ctx.rm);
+    let wp = ctx.wp;
     let p = wp + 16;
     let min_s = if model.alt { 0.0 } else { 1.0 };
     // Σ k^(−s)(ln k)^e converges for s above `min_s`, and at `min_s` when
@@ -1589,10 +1587,16 @@ fn tail(model: &Model, ctx: &Ctx, n: u64, cc: &mut Consts) -> TailResult {
                     TailResult::Undecided
                 };
             }
-            let sb = ratio_to_bigfloat(&s_q, p, rm);
-            let Some((z, ez)) =
-                power_log_tail(&sb, sf, e, n, model.alt, floor - c.hi(), wp, rm, cc)
-            else {
+            let sb = ratio_to_bigfloat(&s_q, p, RM);
+            let Some((z, ez)) = power_log_tail(
+                &sb,
+                sf,
+                e,
+                n,
+                model.alt,
+                floor - c.hi(),
+                &mut Wp::new(wp, cc),
+            ) else {
                 return TailResult::Failed;
             };
             // The rounding of s moves the sum by |Δs|·Σ k^(−s)(ln k)^(m+1).
@@ -1601,8 +1605,8 @@ fn tail(model: &Model, ctx: &Ctx, n: u64, cc: &mut Consts) -> TailResult {
             } else {
                 rounding(&sb, p) + accuracy::part_lg(&z) + (ctx.ln_n + 1.0).log2() + 1.0
             };
-            let t = c.m.mul(&z, p, rm);
-            value = value.add(&t, p, rm);
+            let t = c.m.mul(&z, p, RM);
+            value = value.add(&t, p, RM);
             err = lsum(
                 err,
                 lsum(c.hi() + lsum(ez, es), c.r + accuracy::part_lg(&z)),
@@ -1684,12 +1688,20 @@ mod tests {
     use super::*;
 
     fn check(s: i32, m: i64, alt: bool, want: &str) {
-        let rm = RoundingMode::ToEven;
         let mut cc = Consts::new().unwrap();
         let sb = BigFloat::from_i32(s, 64);
-        let (v, e) = power_log_tail(&sb, f64::from(s), m, 64, alt, -1e9, 160, rm, &mut cc).unwrap();
-        let w = BigFloat::parse(want, astro_float::Radix::Dec, 200, rm, &mut cc);
-        let d = v.sub(&w, 200, rm);
+        let (v, e) = power_log_tail(
+            &sb,
+            f64::from(s),
+            m,
+            64,
+            alt,
+            -1e9,
+            &mut Wp::new(160, &mut cc),
+        )
+        .unwrap();
+        let w = BigFloat::parse(want, astro_float::Radix::Dec, 200, RM, &mut cc);
+        let d = v.sub(&w, 200, RM);
         // The bound holds, and is small.
         assert!(e < -120.0, "bound 2^{e}");
         // (The rounding to 160 bits, and the reference's 60 digits.)

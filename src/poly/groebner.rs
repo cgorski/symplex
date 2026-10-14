@@ -557,14 +557,13 @@ pub fn fglm<From: MonomialOrd, To: MonomialOrd>(
     nf_cache.insert(zero_mono.clone(), nf_one);
 
     // Priority queue of candidates in `To` order (ascending: smallest first via BTreeSet)
-    let mut candidates: BTreeSet<MonoKey<To>> = BTreeSet::new();
-    candidates.insert(MonoKey::new(zero_mono));
+    let mut candidates: BTreeSet<Monomial<To>> = BTreeSet::new();
+    candidates.insert(Monomial::new(&zero_mono));
 
     let mut visited_to: HashSet<Vec<u32>> = HashSet::new();
 
-    while let Some(mono_key) = candidates.iter().next().cloned() {
-        candidates.remove(&mono_key);
-        let mono = mono_key.exponents.clone();
+    while let Some(mono_key) = candidates.pop_first() {
+        let mono = mono_key.exponents().to_vec();
 
         if visited_to.contains(&mono) {
             continue;
@@ -598,7 +597,7 @@ pub fn fglm<From: MonomialOrd, To: MonomialOrd>(
                     let mut next = mono.clone();
                     next[var] += 1;
                     if !visited_to.contains(&next) {
-                        candidates.insert(MonoKey::<To>::new(next));
+                        candidates.insert(Monomial::<To>::new(&next));
                     }
                 }
             }

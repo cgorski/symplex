@@ -348,11 +348,13 @@ fn display_and_latex_unchanged() {
             .to_latex(),
         r"\operatorname{I}_{(0, x)}\left(a, b\right)"
     );
-    // Functions without a SymPy notation print as plain calls, as do user
-    // functions and calls of the wrong arity.
-    assert_eq!(x.bessel_j(&n).to_latex(), r"besselj\left(n, x\right)");
-    assert_eq!(n.fibonacci().to_latex(), r"fibonacci\left(n\right)");
-    assert_eq!(x.legendre(&n).to_latex(), r"legendre\left(n, x\right)");
+    // Since 0.50 every library function prints in its notation (the `tex`
+    // facet; SymPy 1.14: `J_{n}\left(x\right)`, `F_{n}`, `P_{n}\left(x\right)`);
+    // up to 0.49 these printed as plain calls (`besselj\left(n, x\right)`).
+    // User functions and calls of the wrong arity print as plain calls.
+    assert_eq!(x.bessel_j(&n).to_latex(), r"J_{n}\left(x\right)");
+    assert_eq!(n.fibonacci().to_latex(), r"F_{n}");
+    assert_eq!(x.legendre(&n).to_latex(), r"P_{n}\left(x\right)");
     assert_eq!(
         ctx.apply("erfi", &[&x, &n]).unwrap().to_latex(),
         r"erfi\left(x, n\right)"
@@ -668,31 +670,25 @@ fn numeric_back_ends_refuse_the_same_functions() {
             }
         }
     }
-    // Since 0.48 `compile` evaluates erfi, Shi, Chi and the Fresnel
-    // integrals (`v35_compile`); the source back ends still refuse them by
-    // name (no Rust/C helper is lowered for them yet).
-    let compile_only = [
+    // `compile` evaluates erfi, Shi, Chi and the Fresnel integrals since
+    // 0.48 (`v35_compile`), and since 0.50 the source back ends emit them
+    // too (the `rt` facet; up to 0.49 they refused them by name: the C and
+    // Rust helpers were missing).
+    let all_three = [
         LibFn::Erfi,
         LibFn::Shi,
         LibFn::Chi,
         LibFn::FresnelS,
         LibFn::FresnelC,
     ];
-    for f in compile_only {
+    for f in all_three {
         let e = generic_call(&ctx, f);
         e.compile(&params)
             .unwrap_or_else(|err| panic!("{f} compile: {err}"));
-        for (what, res) in [
-            ("to_rust_fn", e.to_rust_fn("f", &params).map(|_| ())),
-            ("to_c_fn", e.to_c_fn("f", &params).map(|_| ())),
-        ] {
-            match res {
-                Err(SymplexError::NotImplemented(msg)) => {
-                    assert!(msg.contains(f.name()), "{f} {what}: {msg}");
-                }
-                other => panic!("{f} {what}: {other:?}"),
-            }
-        }
+        e.to_rust_fn("f", &params)
+            .unwrap_or_else(|err| panic!("{f} to_rust_fn: {err}"));
+        e.to_c_fn("f", &params)
+            .unwrap_or_else(|err| panic!("{f} to_c_fn: {err}"));
     }
     // And the seventeen with a routine all compile.
     let x = ctx.symbol("x");

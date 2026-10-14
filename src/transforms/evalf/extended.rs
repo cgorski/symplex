@@ -89,7 +89,10 @@
 //! (`accuracy::Absorbed`), so that a zero ball the evaluation ends with is
 //! refused rather than printed `0`.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::ball::{Ball, CBall};
+use super::wp::{RM, Wp};
+use crate::base::bigfloat::is_sign_positive;
+use astro_float::BigFloat;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
@@ -152,7 +155,7 @@ pub(super) type ExtMap = FxHashMap<ExprId, Ext>;
 /// The extended evaluation of a node.
 pub(super) enum Outcome {
     /// The value is in range: it replaces the ordinary one.
-    InRange(Complex, Bound),
+    InRange(CBall),
     /// The value lies below the range.
     Beyond(Scaled),
     /// The value lies above the range: refused at the root, and by every
@@ -232,7 +235,7 @@ impl Scaled {
 
     /// The ordinary value and bound that stand for it: 0 within the
     /// underflow bound, on each part that is not exactly 0.
-    pub(super) fn placeholder(&self, prec: usize) -> (Complex, Bound) {
+    pub(super) fn placeholder(&self, prec: usize) -> CBall {
         let part = |x: &BigFloat, e: ErrExp| {
             if accuracy::exact_zero(x, e) {
                 accuracy::EXACT
@@ -240,7 +243,7 @@ impl Scaled {
                 accuracy::UNDERFLOW
             }
         };
-        (
+        CBall::new(
             c_zero(prec),
             Bound {
                 re: part(&self.m.0, self.eb.re),
@@ -254,7 +257,8 @@ impl Scaled {
     /// magnitude is not the value's).  `None` for a zero ball.
     pub(super) fn representative(&self, prec: usize) -> Option<Complex> {
         let t = accuracy::mag(&self.m)?;
-        let (z, _) = scale_with_loss(&self.m, self.eb, MIN_EXP + margin(prec) - t);
+        let CBall { mid: z, err: _ } =
+            scale_with_loss(&self.m, self.eb, MIN_EXP + margin(prec) - t);
         Some(z)
     }
 
@@ -292,7 +296,7 @@ fn scale_part(x: &BigFloat, j: i64) -> Option<BigFloat> {
 /// `z·2^j` with its bound `eb·2^j`; a part that would fall below the range
 /// (the smaller part of a value at its bottom) is 0 with its magnitude
 /// added to its error.  `j` must not lift a part above the range.
-fn scale_with_loss(z: &Complex, eb: Bound, j: i64) -> (Complex, Bound) {
+fn scale_with_loss(z: &Complex, eb: Bound, j: i64) -> CBall {
     let part = |x: &BigFloat, e: ErrExp| -> (BigFloat, ErrExp) {
         let e2 = accuracy::shift(e, j as f64);
         match scale_part(x, j) {
@@ -308,7 +312,7 @@ fn scale_with_loss(z: &Complex, eb: Bound, j: i64) -> (Complex, Bound) {
     };
     let (re, ere) = part(&z.0, eb.re);
     let (im, eim) = part(&z.1, eb.im);
-    ((re, im), Bound { re: ere, im: eim })
+    CBall::new((re, im), Bound { re: ere, im: eim })
 }
 
 /// `v ± b` as `m·2^k` with `abs(m) ∈ [½, 1)`.
@@ -316,7 +320,7 @@ fn normalized(v: &Complex, b: Bound) -> Option<Scaled> {
     match accuracy::mag(v) {
         None => Some(Scaled::plain(v.clone(), 0, b)),
         Some(t) => {
-            let (m, eb) = scale_with_loss(v, b, -t);
+            let CBall { mid: m, err: eb } = scale_with_loss(v, b, -t);
             Some(Scaled::plain(m, t, eb))
         }
     }
@@ -332,7 +336,7 @@ fn finish(s: Scaled, prec: usize) -> Option<Outcome> {
     match accuracy::mag(&s.m) {
         None => {
             if s.eb.is_exact() {
-                return Some(Outcome::InRange(c_zero(prec), Bound::EXACT));
+                return Some(Outcome::InRange(CBall::exact(c_zero(prec))));
             }
             let radius = s.eb.joint() + s.k as f64;
             if radius > (MIN_EXP + margin) as f64 {
@@ -344,17 +348,16 @@ fn finish(s: Scaled, prec: usize) -> Option<Outcome> {
                     re: accuracy::shift(s.eb.re, k),
                     im: accuracy::shift(s.eb.im, k),
                 };
-                return Some(Outcome::InRange(s.m, eb));
+                return Some(Outcome::InRange(CBall::new(s.m, eb)));
             }
             Some(Outcome::Beyond(s))
         }
         Some(t) => {
             let total = t.checked_add(s.k)?;
             if total > MIN_EXP + margin && total < MAX_EXP - margin {
-                let (v, eb) = scale_with_loss(&s.m, s.eb, s.k);
-                return Some(Outcome::InRange(v, eb));
+                return Some(Outcome::InRange(scale_with_loss(&s.m, s.eb, s.k)));
             }
-            let (m, eb) = scale_with_loss(&s.m, s.eb, -t);
+            let CBall { mid: m, err: eb } = scale_with_loss(&s.m, s.eb, -t);
             let out = Scaled {
                 m,
                 k: total,
@@ -566,9 +569,7 @@ fn erf_tail_below(
     }
     let erfc_right = matches!(arena.node(id), ExprNode::Erfc(_)) && !x.0.is_negative();
     let threshold = ERFC_UNDERFLOW.min(erfc_beyond_search(arena));
-    !erfc_right
-        && super::bigfloat_to_f64_rounded(&x.0, RoundingMode::ToEven)
-            .is_ok_and(|v| v.abs() > threshold)
+    !erfc_right && super::f64_of(&x.0).is_ok_and(|v| v.abs() > threshold)
 }
 
 /// The extended evaluation of node `id` (see the module documentation), or
@@ -584,11 +585,10 @@ pub(super) fn extend(
     errs: &FxHashMap<ExprId, Bound>,
     exts: &ExtMap,
     exact: &ExactMap,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
     ab: &mut Option<Absorbed>,
 ) -> Option<Outcome> {
+    let prec = w.bits();
     let cx = Ctx {
         arena,
         cache,
@@ -600,11 +600,11 @@ pub(super) fn extend(
     let left_range = edge.underflowed || edge.overflowed;
     match arena.node(id) {
         ExprNode::Exp(c) => match cx.view(*c)? {
-            View::Plain(s, true) => match series(&poly_of(*c, &s), &EXPM1, prec, rm) {
-                Some(d) => near(one(), d, prec, rm),
+            View::Plain(s, true) => match series(&poly_of(*c, &s), &EXPM1, prec) {
+                Some(d) => near(one(), d, prec),
                 None => {
                     let d = first_order(s.bare(), 1);
-                    note_series_cut(&s, 2, -1.0, &d, prec, rm, ab);
+                    note_series_cut(&s, 2, -1.0, &d, prec, ab);
                     Some(near_node(one(), d, id))
                 }
             },
@@ -613,7 +613,7 @@ pub(super) fn extend(
                 if !z.1.is_zero() {
                     super::check_trig_arg(&z.1, 0, prec, arena).ok()?;
                 }
-                let s = exp_scaled(z, b, prec, rm, cc)?;
+                let s = exp_scaled(z, b, w)?;
                 // `exp` of an exact argument: the monomial `e^g`.
                 let mono = match cx.exact_of(*c) {
                     Some(g) => Mono::exp(g),
@@ -625,34 +625,34 @@ pub(super) fn extend(
         },
         ExprNode::Ln(c) => match cx.view(*c)? {
             View::Plain(s, true) | View::Above(s) => {
-                if let Some(out) = ln_dominant(&s, prec, rm, cc) {
+                if let Some(out) = ln_dominant(&s, w) {
                     return Some(out);
                 }
-                let (v, b) = ln_scaled(&s, prec, rm, cc)?;
+                let CBall { mid: v, err: b } = ln_scaled(&s, w)?;
                 // The absolute error of `Log s` is the relative error of `s`.
-                note_dropped(&s, b.joint(), prec, rm, ab);
-                Some(Outcome::InRange(v, b))
+                note_dropped(&s, b.joint(), prec, ab);
+                Some(Outcome::InRange(CBall::new(v, b)))
             }
-            View::Near(p, d) if p == one() => match series(&poly_of(*c, &d), &LOG1P, prec, rm) {
-                Some(l) => settle_poly(arena, l, prec, rm, ab),
+            View::Near(p, d) if p == one() => match series(&poly_of(*c, &d), &LOG1P, prec) {
+                Some(l) => settle_poly(arena, l, prec, ab),
                 None => {
                     let out = first_order(d.bare(), 1);
-                    note_series_cut(&d, 2, -1.0, &out, prec, rm, ab);
+                    note_series_cut(&d, 2, -1.0, &out, prec, ab);
                     finish_node(out, id, prec)
                 }
             },
             _ => None,
         },
         ExprNode::Mul(children) => {
-            if let Some(full) = poly_product(&cx, children, prec, rm) {
-                return settle_poly(arena, full, prec, rm, ab);
+            if let Some(full) = poly_product(&cx, children, prec) {
+                return settle_poly(arena, full, prec, ab);
             }
             let mut factors = Vec::with_capacity(children.len());
             let mut beyond = false;
             for &c in children.iter() {
                 let (s, b) = match cx.plain_or_near(c) {
                     Some(f) => f,
-                    None => (beyond_power(&cx, c, prec, rm, cc, ab)?, true),
+                    None => (beyond_power(&cx, c, w, ab)?, true),
                 };
                 beyond |= b;
                 factors.push(s);
@@ -660,13 +660,13 @@ pub(super) fn extend(
             if !beyond && !left_range {
                 return None;
             }
-            let out = product(&factors, prec, rm)?;
+            let out = product(&factors, prec)?;
             // The factors' polynomials, and the parts `d` of the factors
             // `p + d` (taken as `p`), are lost in the number.
             let rel = rel_error(&out);
             for (&c, f) in children.iter().zip(&factors) {
                 match cx.exts.get(&c) {
-                    Some(Ext::Beyond(_) | Ext::Above(_)) => note_dropped(f, rel, prec, rm, ab),
+                    Some(Ext::Beyond(_) | Ext::Above(_)) => note_dropped(f, rel, prec, ab),
                     Some(Ext::Near(_, d)) if d.nonzero().is_some() => {
                         let radius = out.eb.joint() + out.k as f64;
                         let term = d.lg_value() - f.lg_value() + out.lg_value();
@@ -686,33 +686,33 @@ pub(super) fn extend(
             match cx.view(*b)? {
                 View::Plain(s, true) | View::Above(s) => {
                     if let Some(q) = q
-                        && let Some(full) = poly_power(&poly_of(*b, &s), q, x, ex, prec, rm, cc)
+                        && let Some(full) = poly_power(&poly_of(*b, &s), q, x, ex, w)
                     {
-                        return settle_poly(arena, full, prec, rm, ab);
+                        return settle_poly(arena, full, prec, ab);
                     }
-                    let out = power(&s, q, x, ex, prec, rm, cc)?;
-                    note_dropped(&s, rel_error(&out), prec, rm, ab);
+                    let out = power(&s, q, x, ex, w)?;
+                    note_dropped(&s, rel_error(&out), prec, ab);
                     finish_node(out, id, prec)
                 }
                 View::Plain(s, false) if left_range => {
-                    finish_node(power(&s, q, x, ex, prec, rm, cc)?, id, prec)
+                    finish_node(power(&s, q, x, ex, w)?, id, prec)
                 }
                 View::Near(p, d) if p == one() => {
                     // `(1 + d)^q` by the binomial series for an exact `q`.
                     if let Some(q) = q
-                        && let Some(dq) = binomial(&poly_of(*b, &d), q, prec, rm)
+                        && let Some(dq) = binomial(&poly_of(*b, &d), q, prec)
                     {
-                        return near(one(), dq, prec, rm);
+                        return near(one(), dq, prec);
                     }
                     // `(1 + d)^x = 1 + x·d·(1 + O(d))`.
-                    let xd = first_order(product(&[d.bare(), normalized(x, ex)?], prec, rm)?, 1);
-                    note_series_cut(&d, 2, 0.0, &xd, prec, rm, ab);
+                    let xd = first_order(product(&[d.bare(), normalized(x, ex)?], prec)?, 1);
+                    note_series_cut(&d, 2, 0.0, &xd, prec, ab);
                     Some(near_node(one(), xd, id))
                 }
                 _ => None,
             }
         }
-        ExprNode::Add(children) => sum_node(&cx, id, children, prec, rm, ab),
+        ExprNode::Add(children) => sum_node(&cx, id, children, prec, ab),
         ExprNode::Neg(c) => match cx.view(*c)? {
             View::Plain(s, true) | View::Above(s) => finish(negated(with_poly(s, *c)), prec),
             View::Near(p, d) => Some(Outcome::Near(p.neg(), negated(with_poly(d, *c)))),
@@ -724,7 +724,7 @@ pub(super) fn extend(
                 let s = with_poly(s, *c);
                 let out = conjugated(s.clone());
                 if out.poly.is_none() {
-                    note_dropped(&s, accuracy::EXACT, prec, rm, ab);
+                    note_dropped(&s, accuracy::EXACT, prec, ab);
                 }
                 out
             };
@@ -759,15 +759,15 @@ pub(super) fn extend(
                 _ => None,
             };
             if let Some(p) = exact {
-                return settle_poly(arena, p, prec, rm, ab);
+                return settle_poly(arena, p, prec, ab);
             }
-            note_dropped(&with_poly(s.clone(), *c), accuracy::EXACT, prec, rm, ab);
+            note_dropped(&with_poly(s.clone(), *c), accuracy::EXACT, prec, ab);
             let (m, eb) = match arena.node(id) {
                 ExprNode::Re(_) => (s.m.0.clone(), s.eb.re),
                 ExprNode::Im(_) => (s.m.1.clone(), s.eb.im),
                 // `abs` is 1-Lipschitz.
                 _ => {
-                    let a = crate::base::bigcomplex::c_abs(&s.m, prec, rm);
+                    let a = crate::base::bigcomplex::c_abs(&s.m, prec, RM);
                     let r = accuracy::rounding(&(a.clone(), BigFloat::new(prec)), prec);
                     (a, accuracy::lsum(s.eb.joint(), r))
                 }
@@ -790,7 +790,7 @@ pub(super) fn extend(
                 return None;
             }
             let negative = x.0.is_negative();
-            let tail = erfc_scaled(&x.0.abs(), b.re, prec, rm, cc)?;
+            let tail = erfc_scaled(&x.0.abs(), b.re, w)?;
             if !lies_below(&tail, prec) && !below_search(arena, &tail) {
                 return None;
             }
@@ -807,11 +807,11 @@ pub(super) fn extend(
                 return None;
             }
             let factorial = matches!(arena.node(id), ExprNode::Factorial(_));
-            finish_node(gamma_scaled(&z.0, b.re, factorial, prec, rm, cc)?, id, prec)
+            finish_node(gamma_scaled(&z.0, b.re, factorial, w)?, id, prec)
         }
         ExprNode::Cosh(c) | ExprNode::Sinh(c) if edge.overflowed => {
             let sinh = matches!(arena.node(id), ExprNode::Sinh(_));
-            hyperbolic_above(&cx, id, *c, sinh, prec, rm, cc, ab)
+            hyperbolic_above(&cx, id, *c, sinh, w, ab)
         }
         // `erf s = 2/√π·(s − s³/3 + s⁵/10 + O(s⁷))`: the series with `2/√π`
         // a factor of the monomials, keyed by this node (below the range, it
@@ -823,8 +823,8 @@ pub(super) fn extend(
                 return None;
             };
             let wp = prec + 16;
-            let pi = cc.pi(wp, rm).clone();
-            let two_over_sqrt_pi = BigFloat::from_i32(2, wp).div(&pi.sqrt(wp, rm), wp, rm);
+            let pi = w.cc.pi(wp, RM).clone();
+            let two_over_sqrt_pi = BigFloat::from_i32(2, wp).div(&pi.sqrt(wp, RM), wp, RM);
             let f = normalized(
                 &(two_over_sqrt_pi, BigFloat::new(wp)),
                 Bound::real(-(prec as f64) - 8.0),
@@ -839,18 +839,13 @@ pub(super) fn extend(
                 1.0,
                 Some(1),
                 prec,
-                rm,
-            ) && let Some(full) = poly_mul(
-                &p,
-                &Poly::atom(Mono::factor(id), &f),
-                accuracy::EXACT,
-                prec,
-                rm,
-            ) {
-                return settle_poly(arena, full, prec, rm, ab);
+            ) && let Some(full) =
+                poly_mul(&p, &Poly::atom(Mono::factor(id), &f), accuracy::EXACT, prec)
+            {
+                return settle_poly(arena, full, prec, ab);
             }
-            let out = product(&[first_order(s.bare(), 2), f], prec, rm)?;
-            note_series_cut(&s, 3, -2.0, &out, prec, rm, ab);
+            let out = product(&[first_order(s.bare(), 2), f], prec)?;
+            note_series_cut(&s, 3, -2.0, &out, prec, ab);
             finish_node(out, id, prec)
         }
         // Odd functions with `f′(0) = 1`: their series, `f(s) = s + c₃s³ + c₅s⁵ + O(s⁷)`.
@@ -875,11 +870,11 @@ pub(super) fn extend(
                 ExprNode::Asinh(_) => &ASINH,
                 _ => &ATANH,
             };
-            match series(&poly_of(*c, &s), table, prec, rm) {
-                Some(f) => settle_poly(arena, f, prec, rm, ab),
+            match series(&poly_of(*c, &s), table, prec) {
+                Some(f) => settle_poly(arena, f, prec, ab),
                 None => {
                     let out = first_order(s.bare(), 2);
-                    note_series_cut(&s, 3, -3.0, &out, prec, rm, ab);
+                    note_series_cut(&s, 3, -3.0, &out, prec, ab);
                     finish_node(out, id, prec)
                 }
             }
@@ -891,17 +886,17 @@ pub(super) fn extend(
             };
             let is_cos = matches!(arena.node(id), ExprNode::Cos(_));
             let table = if is_cos { &COSM1 } else { &COSHM1 };
-            if let Some(d) = series(&poly_of(*c, &s), table, prec, rm) {
-                return near(one(), d, prec, rm);
+            if let Some(d) = series(&poly_of(*c, &s), table, prec) {
+                return near(one(), d, prec);
             }
             let sb = s.bare();
-            let mut sq = product(&[sb.clone(), sb], prec, rm)?;
+            let mut sq = product(&[sb.clone(), sb], prec)?;
             sq.k = sq.k.checked_sub(1)?;
             if is_cos {
                 sq = negated(sq);
             }
             let d = first_order(sq, 1);
-            note_series_cut(&s, 4, -5.0, &d, prec, rm, ab);
+            note_series_cut(&s, 4, -5.0, &d, prec, ab);
             Some(near_node(one(), d, id))
         }
         ExprNode::Ei(c) if underflowed => {
@@ -909,14 +904,14 @@ pub(super) fn extend(
             if !accuracy::exactly_real(x, b) || !x.0.is_negative() {
                 return None;
             }
-            finish_node(ei_scaled(&x.0, b.re, prec, rm, cc)?, id, prec)
+            finish_node(ei_scaled(&x.0, b.re, w)?, id, prec)
         }
         ExprNode::Erfc(c) if underflowed => {
             let (x, b) = cx.ordinary(*c)?;
             if !accuracy::exactly_real(x, b) || !super::bf_strictly_positive(&x.0) {
                 return None;
             }
-            finish_node(erfc_scaled(&x.0, b.re, prec, rm, cc)?, id, prec)
+            finish_node(erfc_scaled(&x.0, b.re, w)?, id, prec)
         }
         ExprNode::Apply(sid, args) if underflowed && args.len() == 2 => {
             let alternating = match arena.lib_fn(*sid) {
@@ -932,7 +927,7 @@ pub(super) fn extend(
             // `J_{−n} = (−1)ⁿ J_n`, `I_{−n} = I_n` for an exact integer order.
             let reflected = nu.0.is_negative() && nu.0.is_int() && nb.is_exact();
             let order = if reflected { nu.0.abs() } else { nu.0.clone() };
-            let s = bessel_scaled(&order, nb.re, &x.0, xb.re, alternating, prec, rm, cc)?;
+            let s = bessel_scaled(&order, nb.re, &x.0, xb.re, alternating, w)?;
             let flip = reflected && alternating && super::bessel_order::is_odd(&nu.0);
             finish_node(if flip { negated(s) } else { s }, id, prec)
         }
@@ -957,8 +952,8 @@ fn ratio(n: i64, d: i64) -> Gauss {
 
 /// `p + d` ([`Outcome::Near`]) for the polynomial `d` (without a constant
 /// term).
-fn near(p: Gauss, d: Poly, prec: usize, rm: RoundingMode) -> Option<Outcome> {
-    Some(Outcome::Near(p, numeric(d, prec, rm)?))
+fn near(p: Gauss, d: Poly, prec: usize) -> Option<Outcome> {
+    Some(Outcome::Near(p, numeric(d, prec)?))
 }
 
 /// `s·(1 + O(s^n))`: `s` with the relative error `abs(s)^n` added (the
@@ -999,9 +994,9 @@ fn conjugated(s: Scaled) -> Scaled {
 }
 
 /// `Π sᵢ`: the mantissas multiplied with their bounds, the scales added.
-fn product(factors: &[Scaled], prec: usize, rm: RoundingMode) -> Option<Scaled> {
+fn product(factors: &[Scaled], prec: usize) -> Option<Scaled> {
     let parts: Vec<(&Complex, Bound)> = factors.iter().map(|s| (&s.m, s.eb)).collect();
-    let (m, eb) = accuracy::mul_with_bound(&parts, prec, rm);
+    let CBall { mid: m, err: eb } = accuracy::mul_with_bound(&parts, prec);
     let k = factors.iter().try_fold(0i64, |a, s| a.checked_add(s.k))?;
     Some(Scaled::plain(m, k, eb))
 }
@@ -1032,29 +1027,24 @@ fn lg_expm1(r: ErrExp) -> ErrExp {
 /// bits (`zb`: `z`'s bound).  The bound of `m` is `abs(m)·(e^R − 1)` with
 /// `R` the radius of the reduced argument (as for `exp` in
 /// `accuracy::node_error`), plus its rounding.
-fn exp_scaled(
-    z: &Complex,
-    zb: Bound,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<Scaled> {
-    let x = super::bigfloat_to_f64_rounded(&z.0, RoundingMode::ToEven).ok()?;
+fn exp_scaled(z: &Complex, zb: Bound, w: &mut Wp<'_>) -> Option<Scaled> {
+    let prec = w.bits();
+    let x = super::f64_of(&z.0).ok()?;
     if !x.is_finite() || x.abs() > 4e18 {
         return None;
     }
     let k = (x * std::f64::consts::LOG2_E).round() as i64;
     let p = prec + bits(k) + 64;
-    let kl = BigFloat::from_i64(k, 64).mul(&cc.ln_2(p, rm), p, rm);
-    let r = z.0.sub(&kl, p, rm);
+    let kl = BigFloat::from_i64(k, 64).mul(&w.cc.ln_2(p, RM), p, RM);
+    let r = z.0.sub(&kl, p, RM);
     // `k·ln 2` and the difference are each rounded at `p` bits.
     let reduction = (bits(k) as f64 + 2.0) - p as f64;
     let radius = accuracy::lsum(zb.joint(), reduction);
     let real = accuracy::exactly_real(z, zb);
     let m: Complex = if real {
-        (r.exp(prec, rm, cc), BigFloat::new(prec))
+        (r.exp(prec, RM, w.cc), BigFloat::new(prec))
     } else {
-        super::c_exp(&(r, z.1.clone()), prec, rm, cc)
+        super::c_exp(&(r, z.1.clone()), w)
     };
     let lv = accuracy::lg_abs(&m);
     let rel = lg_expm1(radius);
@@ -1067,7 +1057,7 @@ fn exp_scaled(
         im: if real { accuracy::EXACT } else { part(&m.1) },
     };
     let t = accuracy::mag(&m)?;
-    let (m, eb) = scale_with_loss(&m, eb, -t);
+    let CBall { mid: m, err: eb } = scale_with_loss(&m, eb, -t);
     Some(Scaled::plain(m, k.checked_add(t)?, eb))
 }
 
@@ -1076,31 +1066,31 @@ fn exp_scaled(
 /// `r` of `m` (at most `2r/abs(m)`; `None` when `r > abs(m)/2`), the
 /// roundings, and no bound when the side of the cut is undecidable.  The
 /// imaginary part is exactly 0 for an exactly real positive `m`.
-fn ln_scaled(
-    s: &Scaled,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<(Complex, Bound)> {
+fn ln_scaled(s: &Scaled, w: &mut Wp<'_>) -> Option<CBall> {
+    let prec = w.bits();
     let lm = accuracy::lg_abs_low(&s.m);
     let r = s.eb.joint();
     if accuracy::mag(&s.m).is_none() || s.eb.is_unknown() || r > lm - 1.0 {
         return None;
     }
     let real = accuracy::exactly_real(&s.m, s.eb);
-    let positive = real && s.m.0.is_positive();
-    if !real && accuracy::cut_undecided(&s.m, s.eb, accuracy::Cut::NegativeReal) {
+    let positive = real && is_sign_positive(&s.m.0);
+    let ball = Ball {
+        mid: &s.m,
+        err: s.eb,
+    };
+    if !real && ball.cut_side(accuracy::Cut::NegativeReal) == accuracy::CutSide::Undecided {
         return None;
     }
     let p = prec + bits(s.k) + 64;
     let (lre, lim) = if positive {
-        (s.m.0.ln(p, rm, cc), BigFloat::new(prec))
+        (s.m.0.ln(p, RM, w.cc), BigFloat::new(prec))
     } else {
-        super::c_ln(&s.m, p, rm, cc)
+        super::c_ln(&s.m, &mut w.at(p))
     };
-    let kl = BigFloat::from_i64(s.k, 64).mul(&cc.ln_2(p, rm), p, rm);
-    let re = super::round_to(lre.add(&kl, p, rm), prec, rm);
-    let im = super::round_to(lim, prec, rm);
+    let kl = BigFloat::from_i64(s.k, 64).mul(&w.cc.ln_2(p, RM), p, RM);
+    let re = super::round_to(lre.add(&kl, p, RM), prec);
+    let im = super::round_to(lim, prec);
     let prop = r - lm + 1.0;
     let reduction = (bits(s.k) as f64 + 2.0) - p as f64;
     let rounding = |x: &BigFloat| accuracy::rounding(&(x.clone(), BigFloat::new(prec)), prec) + 1.0;
@@ -1112,7 +1102,7 @@ fn ln_scaled(
             accuracy::lsum(prop, rounding(&im))
         },
     };
-    Some(((re, im), eb))
+    Some(CBall::new((re, im), eb))
 }
 
 /// `ln(e^g·(1 + r)) = g + ln(1 + r)` for a value `s` outside the range whose
@@ -1120,7 +1110,8 @@ fn ln_scaled(
 /// range: `g + d` ([`Outcome::Near`]), `d` the series of `ln(1 + r)`.  The
 /// mirror of `ln(1 + s)`: `ln(e^(10¹⁰) + 1) − 10¹⁰` is `e^(−10¹⁰)·(1 +
 /// O(e^(−10¹⁰)))`, not a number alone whose lost term only refuses it.
-fn ln_dominant(s: &Scaled, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Option<Outcome> {
+fn ln_dominant(s: &Scaled, w: &mut Wp<'_>) -> Option<Outcome> {
+    let prec = w.bits();
     let poly = s.poly.as_deref()?;
     let (i, lead) = poly
         .terms
@@ -1138,16 +1129,15 @@ fn ln_dominant(s: &Scaled, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Op
     }
     let minus_one = (BigFloat::from_i32(-1, 64), BigFloat::new(64));
     let q = Q::from_integer((-1).into());
-    let inv = power(&lead.v, Some(&q), &minus_one, Bound::EXACT, prec, rm, cc)?;
+    let inv = power(&lead.v, Some(&q), &minus_one, Bound::EXACT, w)?;
     let r = poly_mul(
         &rest,
         &Poly::atom(Mono::exp(g.neg()), &inv),
         accuracy::EXACT,
         prec,
-        rm,
     )?;
-    let l = series(&r, &LOG1P, prec, rm)?;
-    let d = numeric(l, prec, rm)?;
+    let l = series(&r, &LOG1P, prec)?;
+    let d = numeric(l, prec)?;
     lies_below(&d, prec).then_some(Outcome::Near(g, d))
 }
 
@@ -1160,10 +1150,9 @@ fn power(
     q: Option<&crate::base::numeric::Q>,
     x: &Complex,
     ex: Bound,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    wpc: &mut Wp<'_>,
 ) -> Option<Scaled> {
+    let prec = wpc.bits();
     accuracy::mag(&s.m)?;
     if let Some(q) = q
         && q.is_integer()
@@ -1171,16 +1160,13 @@ fn power(
         && n.unsigned_abs() <= 1024
     {
         let wp = prec + 16;
-        let pos = c_powi(&s.m, n.unsigned_abs() as usize, wp, rm);
+        let pos = c_powi(&s.m, n.unsigned_abs() as usize, wp, RM);
         let v = if n >= 0 {
             pos
         } else {
-            c_div(&c_one(wp), &pos, wp, rm)
+            c_div(&c_one(wp), &pos, wp, RM)
         };
-        let v = (
-            super::round_to(v.0, prec, rm),
-            super::round_to(v.1, prec, rm),
-        );
+        let v = (super::round_to(v.0, prec), super::round_to(v.1, prec));
         let lv = accuracy::lg_abs(&v);
         let prop = accuracy::pow_bound(Some(q), &s.m, s.eb, x, ex, lv);
         let rounding =
@@ -1199,9 +1185,9 @@ fn power(
         return Some(Scaled::plain(v, s.k.checked_mul(n)?, eb));
     }
     let p = prec + bits(s.k) + 64;
-    let (l, lb) = ln_scaled(s, p, rm, cc)?;
-    let (w, wb) = accuracy::mul_with_bound(&[(&l, lb), (x, ex)], p, rm);
-    exp_scaled(&w, wb, prec, rm, cc)
+    let CBall { mid: l, err: lb } = ln_scaled(s, &mut wpc.at(p))?;
+    let CBall { mid: w, err: wb } = accuracy::mul_with_bound(&[(&l, lb), (x, ex)], p);
+    exp_scaled(&w, wb, wpc)
 }
 
 /// A factor `c` of a product that has no value of its own because it lies
@@ -1215,11 +1201,10 @@ fn power(
 fn beyond_power(
     cx: &Ctx<'_>,
     c: ExprId,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
     ab: &mut Option<Absorbed>,
 ) -> Option<Scaled> {
+    let prec = w.bits();
     match cx.arena.node(c) {
         ExprNode::Pow(b, e) => {
             let Some(Ext::Beyond(s)) = cx.exts.get(b) else {
@@ -1229,8 +1214,8 @@ fn beyond_power(
                 return None;
             }
             let (x, ex) = cx.ordinary(*e)?;
-            let out = power(s, cx.arena.as_num(*e), x, ex, prec, rm, cc)?;
-            note_dropped(s, rel_error(&out), prec, rm, ab);
+            let out = power(s, cx.arena.as_num(*e), x, ex, w)?;
+            note_dropped(s, rel_error(&out), prec, ab);
             Some(out)
         }
         ExprNode::Exp(g) => {
@@ -1244,7 +1229,7 @@ fn beyond_power(
             if !z.1.is_zero() {
                 super::check_trig_arg(&z.1, 0, prec, cx.arena).ok()?;
             }
-            exp_scaled(z, b, prec, rm, cc)
+            exp_scaled(z, b, w)
         }
         _ => None,
     }
@@ -1259,21 +1244,15 @@ fn beyond_power(
 /// exponential.  `Γ` overflows only far right on the real axis (`x > 8·10⁷`),
 /// where it is positive.  Before 0.37 `Γ(10⁸)/Γ(10⁸ − 1)` and `ln Γ(10⁸)`
 /// were refused ("overflows the exponent range").
-fn gamma_scaled(
-    x: &BigFloat,
-    xe: ErrExp,
-    factorial: bool,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<Scaled> {
+fn gamma_scaled(x: &BigFloat, xe: ErrExp, factorial: bool, w: &mut Wp<'_>) -> Option<Scaled> {
+    let prec = w.bits();
     let x = if factorial {
         let one = BigFloat::from_i32(1, 64);
-        x.add(&one, super::exact_bits(x, prec + 64), rm)
+        x.add(&one, super::exact_bits(x, prec + 64), RM)
     } else {
         x.clone()
     };
-    let xf = super::bigfloat_to_f64_rounded(&x, rm).ok()?;
+    let xf = super::f64_of(&x).ok()?;
     if !xf.is_finite() || xf <= 16.0 || accuracy::is_unknown(xe) {
         return None;
     }
@@ -1286,7 +1265,7 @@ fn gamma_scaled(
     // saturated and `prec + int_bits` overflowed — fuzz_parser).
     let int_bits = (xf.log2() + xf.ln().log2()).ceil().max(1.0) as usize;
     let wp = prec.checked_add(int_bits)?.checked_add(64)?;
-    let (l, _) = super::arb_log_gamma(&x, wp, rm, cc).ok()?;
+    let (l, _) = super::arb_log_gamma(&x, &mut w.at(wp)).ok()?;
     let round = accuracy::rounding(&(l.clone(), BigFloat::new(wp)), wp) + 1.0;
     let arg = if accuracy::is_exact(xe) {
         accuracy::EXACT
@@ -1296,9 +1275,7 @@ fn gamma_scaled(
     exp_scaled(
         &(l, BigFloat::new(wp)),
         Bound::real(accuracy::lsum(round, arg)),
-        prec,
-        rm,
-        cc,
+        w,
     )
 }
 
@@ -1316,17 +1293,16 @@ fn hyperbolic_above(
     id: ExprId,
     c: ExprId,
     sinh: bool,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
     ab: &mut Option<Absorbed>,
 ) -> Option<Outcome> {
+    let prec = w.bits();
     let (z, b) = cx.ordinary(c)?;
     if !accuracy::exactly_real(z, b) || z.0.is_zero() {
         return None;
     }
     let x = &z.0;
-    let xf = super::bigfloat_to_f64_rounded(x, rm).ok()?.abs();
+    let xf = super::f64_of(x).ok()?.abs();
     if !xf.is_finite() || xf < 1e9 {
         return None;
     }
@@ -1334,8 +1310,8 @@ fn hyperbolic_above(
     if let Some(g) = cx.exact_of(c)
         && g.im.is_zero()
     {
-        let up = exp_scaled(&(x.clone(), BigFloat::new(prec)), zb, prec, rm, cc)?;
-        let down = exp_scaled(&(x.neg(), BigFloat::new(prec)), zb, prec, rm, cc)?;
+        let up = exp_scaled(&(x.clone(), BigFloat::new(prec)), zb, w)?;
+        let down = exp_scaled(&(x.neg(), BigFloat::new(prec)), zb, w)?;
         let half = ratio(1, 2);
         let mut poly = Poly::zero();
         poly.push(Term {
@@ -1348,9 +1324,9 @@ fn hyperbolic_above(
             mono: Mono::exp(g.neg()),
             v: down,
         })?;
-        return settle_poly(cx.arena, poly, prec, rm, ab);
+        return settle_poly(cx.arena, poly, prec, ab);
     }
-    let mut e = exp_scaled(&(x.abs(), BigFloat::new(prec)), zb, prec, rm, cc)?;
+    let mut e = exp_scaled(&(x.abs(), BigFloat::new(prec)), zb, w)?;
     e.k = e.k.checked_sub(1)?;
     // `e^(−2·abs(x))` relative, in `log₂`.
     let other = -2.0 * xf * std::f64::consts::LOG2_E;
@@ -1374,7 +1350,6 @@ fn sum_node(
     id: ExprId,
     children: &[ExprId],
     prec: usize,
-    rm: RoundingMode,
     ab: &mut Option<Absorbed>,
 ) -> Option<Outcome> {
     let mut beyond_terms = Vec::with_capacity(children.len());
@@ -1445,11 +1420,11 @@ fn sum_node(
                 }
             });
         if let Some(f) = whole {
-            return settle_poly(cx.arena, f, prec, rm, ab);
+            return settle_poly(cx.arena, f, prec, ab);
         }
     }
     if ordinary_terms.is_empty() && lost.is_exact() {
-        let d = add_terms(&beyond_terms, Bound::EXACT, prec, rm)?;
+        let d = add_terms(&beyond_terms, Bound::EXACT, prec)?;
         if p.is_zero() {
             return finish_node(d, id, prec);
         }
@@ -1465,7 +1440,7 @@ fn sum_node(
         shaped.push((None, s.bare()));
     }
     for s in &beyond_terms {
-        match s.poly.as_ref().and_then(|p| shaped_terms(p, prec, rm)) {
+        match s.poly.as_ref().and_then(|p| shaped_terms(p, prec)) {
             Some(terms) => shaped.extend(terms),
             None => shaped.push((None, s.bare())),
         }
@@ -1473,15 +1448,15 @@ fn sum_node(
     let mut terms = ordinary_terms;
     terms.append(&mut beyond_terms);
     if !p.is_zero() {
-        let (v, b) = exact::to_value(&p, prec, rm);
+        let CBall { mid: v, err: b } = exact::to_value(&p, prec);
         let v = normalized(&v, b)?;
         shaped.push((None, v.clone()));
         terms.push(v);
     }
-    let s = add_terms(&terms, lost, prec, rm)?;
+    let s = add_terms(&terms, lost, prec)?;
     // The value is a number alone from here: what lies below its error is
     // lost.
-    note_lost(shaped, s.eb.joint() + s.k as f64, prec, rm, ab);
+    note_lost(shaped, s.eb.joint() + s.k as f64, prec, ab);
     // A ball that holds 0 only because of a term without a scaled form says
     // nothing the placeholder does not.
     if !lost.is_exact() {
@@ -1494,19 +1469,9 @@ fn sum_node(
 /// part on its own as SymPy's `evalf_add` adds the real and the imaginary
 /// parts ([`part_sum`]): an imaginary part far below the real one is still
 /// known (it decides the side of a cut), then both at the larger scale.
-fn add_terms(terms: &[Scaled], lost: Bound, prec: usize, rm: RoundingMode) -> Option<Scaled> {
-    let (sr, kr, er) = part_sum(
-        terms.iter().map(|t| (&t.m.0, t.k, t.eb.re)),
-        lost.re,
-        prec,
-        rm,
-    )?;
-    let (si, ki, ei) = part_sum(
-        terms.iter().map(|t| (&t.m.1, t.k, t.eb.im)),
-        lost.im,
-        prec,
-        rm,
-    )?;
+fn add_terms(terms: &[Scaled], lost: Bound, prec: usize) -> Option<Scaled> {
+    let (sr, kr, er) = part_sum(terms.iter().map(|t| (&t.m.0, t.k, t.eb.re)), lost.re, prec)?;
+    let (si, ki, ei) = part_sum(terms.iter().map(|t| (&t.m.1, t.k, t.eb.im)), lost.im, prec)?;
     // A zero part's scale is its error's: `0 ± 2^e` at scale 0.
     let k = match (sr.is_zero(), si.is_zero()) {
         (true, true) => kr.max(ki),
@@ -1515,7 +1480,8 @@ fn add_terms(terms: &[Scaled], lost: Bound, prec: usize, rm: RoundingMode) -> Op
         (false, false) => kr.max(ki),
     };
     let part = |s: BigFloat, ks: i64, e: ErrExp| -> (BigFloat, ErrExp) {
-        let (z, b) = scale_with_loss(&(s, BigFloat::new(prec)), Bound::real(e), ks - k);
+        let CBall { mid: z, err: b } =
+            scale_with_loss(&(s, BigFloat::new(prec)), Bound::real(e), ks - k);
         (z.0, b.re)
     };
     let (re, ebr) = part(sr, kr, er);
@@ -1534,7 +1500,6 @@ fn part_sum<'a>(
     parts: impl Iterator<Item = (&'a BigFloat, i64, ErrExp)>,
     lost: ErrExp,
     prec: usize,
-    rm: RoundingMode,
 ) -> Option<(BigFloat, i64, ErrExp)> {
     let window = prec as i64 + 64;
     let mut extra = lost;
@@ -1565,16 +1530,16 @@ fn part_sum<'a>(
         let (head, below): (Vec<_>, Vec<_>) = live
             .iter()
             .partition(|t| t.3 >= kmax.saturating_sub(window));
-        let mut shifted: Vec<(Complex, Bound)> = Vec::with_capacity(head.len());
+        let mut shifted: Vec<CBall> = Vec::with_capacity(head.len());
         for &&(x, k, e, _) in &head {
             let j = k - kmax;
-            shifted.push((
+            shifted.push(CBall::new(
                 (scale_part(x, j)?, BigFloat::new(prec)),
                 Bound::real(accuracy::shift(e, j as f64)),
             ));
         }
-        let refs: Vec<(&Complex, Bound)> = shifted.iter().map(|(z, b)| (z, *b)).collect();
-        let (sum, sb) = accuracy::add_with_bound(&refs, prec, rm);
+        let refs: Vec<&CBall> = shifted.iter().collect();
+        let CBall { mid: sum, err: sb } = CBall::sum(&refs, prec);
         if sum.0.is_zero() && accuracy::is_exact(sb.re) {
             live = below.into_iter().copied().collect();
             continue;
@@ -1593,24 +1558,17 @@ fn part_sum<'a>(
 /// `Σ k!/xᵏ / x` (as `evalf::arb_ei` sums it) times `e^x` at its scale.  The
 /// bound: the factor's and `e^x`'s relative errors, and `x`'s error through
 /// `Ei′/Ei = 1/(x·Ei e^(−x))` ≈ 1 (counted twice).
-fn ei_scaled(
-    x: &BigFloat,
-    xe: ErrExp,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<Scaled> {
+fn ei_scaled(x: &BigFloat, xe: ErrExp, w: &mut Wp<'_>) -> Option<Scaled> {
+    let prec = w.bits();
     let wp = prec + 32;
-    let (inv_x, sum) = super::ei_asymptotic_series(x, wp, rm);
+    let (inv_x, sum) = super::ei_asymptotic_series(x, wp);
     let e = exp_scaled(
         &(x.clone(), BigFloat::new(prec)),
         Bound::real(xe),
-        wp,
-        rm,
-        cc,
+        &mut w.at(wp),
     )?;
-    let m = e.m.0.mul(&inv_x, wp, rm).mul(&sum, wp, rm);
-    let m = super::round_to(m, prec, rm);
+    let m = e.m.0.mul(&inv_x, wp, RM).mul(&sum, wp, RM);
+    let m = super::round_to(m, prec);
     scaled_by(
         e,
         (m, BigFloat::new(prec)),
@@ -1625,31 +1583,24 @@ fn ei_scaled(
 /// `x²` exact enough for its exponential (`2·log₂ x` bits more).  The bound:
 /// the relative errors of the sum and of `e^(−x²)` (whose argument carries
 /// `2x·err(x)`), and `x`'s error through the factor `1/x`.
-fn erfc_scaled(
-    x: &BigFloat,
-    xe: ErrExp,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<Scaled> {
+fn erfc_scaled(x: &BigFloat, xe: ErrExp, w: &mut Wp<'_>) -> Option<Scaled> {
+    let prec = w.bits();
     let wp = prec + 32;
     let t = accuracy::mag(&(x.clone(), BigFloat::new(64)))?;
     let px = wp + 2 * usize::try_from(t.max(0)).ok()? + 16;
-    let x_sq = x.mul(x, px, rm);
+    let x_sq = x.mul(x, px, RM);
     let arg_err = accuracy::lsum(
         accuracy::shift(xe, (t + 1) as f64),
         accuracy::rounding(&(x_sq.clone(), BigFloat::new(64)), px),
     );
-    let (series, x_sqrt_pi) = super::erfc_asymptotic_series(x, wp, rm, cc);
+    let (series, x_sqrt_pi) = super::erfc_asymptotic_series(x, &mut w.at(wp));
     let e = exp_scaled(
         &(x_sq.neg(), BigFloat::new(prec)),
         Bound::real(arg_err),
-        wp,
-        rm,
-        cc,
+        &mut w.at(wp),
     )?;
-    let m = e.m.0.mul(&series, wp, rm).div(&x_sqrt_pi, wp, rm);
-    let m = super::round_to(m, prec, rm);
+    let m = e.m.0.mul(&series, wp, RM).div(&x_sqrt_pi, wp, RM);
+    let m = super::round_to(m, prec);
     scaled_by(
         e,
         (m, BigFloat::new(prec)),
@@ -1687,10 +1638,9 @@ fn bessel_scaled(
     x: &BigFloat,
     x_err: ErrExp,
     alternating: bool,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Option<Scaled> {
+    let prec = w.bits();
     if !super::bf_strictly_positive(nu) || x.is_zero() || x.is_nan() || x.is_inf() {
         return None;
     }
@@ -1698,10 +1648,10 @@ fn bessel_scaled(
     if x.is_negative() && !(integer && accuracy::is_exact(nu_err)) {
         return None;
     }
-    let nu_f = super::bigfloat_to_f64_rounded(nu, rm).ok()?;
+    let nu_f = super::f64_of(nu).ok()?;
     let x_abs = x.abs();
     let lg_x = accuracy::part_lg(&x_abs);
-    let xf = super::bigfloat_to_f64_rounded(&x_abs, rm).ok()?;
+    let xf = super::f64_of(&x_abs).ok()?;
     if !nu_f.is_finite() || !xf.is_finite() || xf * xf > nu_f + 1.0 {
         return None;
     }
@@ -1730,17 +1680,15 @@ fn bessel_scaled(
     }
     let wp = prec + 32;
     let two = BigFloat::from_i32(2, 64);
-    let x_half = x_abs.div(&two, wp + 8, rm);
-    let l = super::bessel_order::log_power_over_gamma(nu, &x_half, wp, rm, cc).ok()?;
+    let x_half = x_abs.div(&two, wp + 8, RM);
+    let l = super::bessel_order::log_power_over_gamma(nu, &x_half, &mut w.at(wp)).ok()?;
     let e = exp_scaled(
         &(l, BigFloat::new(prec)),
         Bound::real(-((wp + 12) as f64)),
-        wp,
-        rm,
-        cc,
+        &mut w.at(wp),
     )?;
     // S, its terms by running products.
-    let q = x_half.mul(&x_half, wp, rm);
+    let q = x_half.mul(&x_half, wp, RM);
     let q = if alternating { q.neg() } else { q };
     let mut term = BigFloat::from_i32(1, wp);
     let mut sum = term.clone();
@@ -1751,8 +1699,8 @@ fn bessel_scaled(
             return None;
         }
         let kb = BigFloat::from_u64(k, 64);
-        let nk = nu.add(&kb, super::exact_bits(nu, wp), rm);
-        term = term.mul(&q, wp, rm).div(&kb.mul(&nk, wp, rm), wp, rm);
+        let nk = nu.add(&kb, super::exact_bits(nu, wp), RM);
+        term = term.mul(&q, wp, RM).div(&kb.mul(&nk, wp, RM), wp, RM);
         if term.is_zero()
             || term
                 .exponent()
@@ -1760,12 +1708,12 @@ fn bessel_scaled(
         {
             break;
         }
-        sum = sum.add(&term, wp, rm);
+        sum = sum.add(&term, wp, RM);
     }
     let s_rel = ((k + 8) as f64).log2() + 2.0 - wp as f64;
     let negative = x.is_negative() && super::bessel_order::is_odd(nu);
-    let m = e.m.0.mul(&sum, wp, rm);
-    let m = super::round_to(if negative { m.neg() } else { m }, prec, rm);
+    let m = e.m.0.mul(&sum, wp, RM);
+    let m = super::round_to(if negative { m.neg() } else { m }, prec);
     scaled_by(
         e,
         (m, BigFloat::new(prec)),
@@ -1788,7 +1736,7 @@ fn scaled_by(e: Scaled, m: Complex, rel: ErrExp, wp: usize, prec: usize) -> Opti
     let round = accuracy::rounding(&m, prec) + 1.0;
     let eb = accuracy::lsum(lm + accuracy::lsum(accuracy::lsum(e_rel, rel), work), round);
     let t = accuracy::mag(&m)?;
-    let (m, eb) = scale_with_loss(&m, Bound::real(eb), -t);
+    let CBall { mid: m, err: eb } = scale_with_loss(&m, Bound::real(eb), -t);
     Some(Scaled::plain(m, e.k.checked_add(t)?, eb))
 }
 
@@ -2157,7 +2105,7 @@ impl Poly {
 
 /// `a·b`; a product of terms below `floor`, or below the remainder the
 /// product has anyway, goes into the remainder.
-fn poly_mul(a: &Poly, b: &Poly, floor: ErrExp, prec: usize, rm: RoundingMode) -> Option<Poly> {
+fn poly_mul(a: &Poly, b: &Poly, floor: ErrExp, prec: usize) -> Option<Poly> {
     let real = a.is_real() && b.is_real();
     // `(A + ra)(B + rb) − AB` is bounded by `abs(a)·rb + abs(b)·ra`.
     let rem = accuracy::lsum(
@@ -2183,7 +2131,7 @@ fn poly_mul(a: &Poly, b: &Poly, floor: ErrExp, prec: usize, rm: RoundingMode) ->
             } else if tb.mono.is_one() {
                 ta.v.clone()
             } else {
-                product(&[ta.v.clone(), tb.v.clone()], prec, rm)?
+                product(&[ta.v.clone(), tb.v.clone()], prec)?
             };
             out.push(Term {
                 c,
@@ -2202,22 +2150,22 @@ fn poly_mul(a: &Poly, b: &Poly, floor: ErrExp, prec: usize, rm: RoundingMode) ->
 }
 
 /// The value of the term `c·μ` as a number.
-fn term_value(t: &Term, prec: usize, rm: RoundingMode) -> Option<Scaled> {
+fn term_value(t: &Term, prec: usize) -> Option<Scaled> {
     Some(if t.c == one() {
         t.v.clone()
     } else if t.c == one().neg() {
         negated(t.v.clone())
     } else {
-        let (cv, cb) = exact::to_value(&t.c, prec, rm);
-        product(&[normalized(&cv, cb)?, t.v.clone()], prec, rm)?
+        let CBall { mid: cv, err: cb } = exact::to_value(&t.c, prec);
+        product(&[normalized(&cv, cb)?, t.v.clone()], prec)?
     })
 }
 
 /// The terms of `p` as numbers, with their shapes ([`Mono::shape`]).
-fn shaped_terms(p: &Poly, prec: usize, rm: RoundingMode) -> Option<Vec<(Option<Mono>, Scaled)>> {
+fn shaped_terms(p: &Poly, prec: usize) -> Option<Vec<(Option<Mono>, Scaled)>> {
     p.terms
         .iter()
-        .map(|t| Some((Some(t.mono.shape()), term_value(t, prec, rm)?)))
+        .map(|t| Some((Some(t.mono.shape()), term_value(t, prec)?)))
         .collect()
 }
 
@@ -2236,7 +2184,6 @@ fn note_lost(
     shaped: Vec<(Option<Mono>, Scaled)>,
     radius: ErrExp,
     prec: usize,
-    rm: RoundingMode,
     ab: &mut Option<Absorbed>,
 ) {
     if !radius.is_finite() {
@@ -2253,7 +2200,7 @@ fn note_lost(
         }
     }
     for (_, vs) in groups {
-        let Some(g) = add_terms(&vs, Bound::EXACT, prec, rm) else {
+        let Some(g) = add_terms(&vs, Bound::EXACT, prec) else {
             continue;
         };
         if g.nonzero().is_some() {
@@ -2278,9 +2225,9 @@ fn note_lost(
 /// 0.36 `log(e^(−10¹⁰) + e^(−2·10¹⁰)) + 10¹⁰` (truly `e^(−10¹⁰)`),
 /// `log(sin e^(−10¹⁰)) + 10¹⁰` (`−e^(−2·10¹⁰)/6`) and `abs(sin((1 +
 /// i)·e^(−10¹⁰))) − √2·e^(−10¹⁰)` printed `0`.
-fn note_dropped(s: &Scaled, rel: ErrExp, prec: usize, rm: RoundingMode, ab: &mut Option<Absorbed>) {
+fn note_dropped(s: &Scaled, rel: ErrExp, prec: usize, ab: &mut Option<Absorbed>) {
     if let Some(poly) = &s.poly
-        && let Some(shaped) = shaped_terms(poly, prec, rm)
+        && let Some(shaped) = shaped_terms(poly, prec)
     {
         let own = s.eb.joint() + s.k as f64;
         let radius = if accuracy::is_exact(rel) || accuracy::is_unknown(rel) {
@@ -2288,7 +2235,7 @@ fn note_dropped(s: &Scaled, rel: ErrExp, prec: usize, rm: RoundingMode, ab: &mut
         } else {
             accuracy::lsum(s.lg_value() + rel, own)
         };
-        note_lost(shaped, radius, prec, rm, ab);
+        note_lost(shaped, radius, prec, ab);
     }
 }
 
@@ -2312,10 +2259,9 @@ fn note_series_cut(
     lc: f64,
     out: &Scaled,
     prec: usize,
-    rm: RoundingMode,
     ab: &mut Option<Absorbed>,
 ) {
-    note_dropped(s, rel_error(out), prec, rm, ab);
+    note_dropped(s, rel_error(out), prec, ab);
     if s.nonzero().is_some() {
         // The term lies within `out`'s error by construction (`first_order`).
         let radius = out.eb.joint() + out.k as f64;
@@ -2328,22 +2274,22 @@ fn note_series_cut(
 /// root, read as the number `m·2^k` — hides of its polynomial below its error
 /// ([`note_lost`]): `e^(−10¹⁰)·(sin²1 + cos²1) − e^(−10¹⁰) + e^(−2·10¹⁰)`
 /// is a zero ball at the scale of `e^(−10¹⁰)` with the term `e^(−2·10¹⁰)`.
-pub(super) fn note_hidden(s: &Scaled, prec: usize, rm: RoundingMode, ab: &mut Option<Absorbed>) {
+pub(super) fn note_hidden(s: &Scaled, prec: usize, ab: &mut Option<Absorbed>) {
     if let Some(poly) = &s.poly
-        && let Some(shaped) = shaped_terms(poly, prec, rm)
+        && let Some(shaped) = shaped_terms(poly, prec)
     {
-        note_lost(shaped, s.eb.joint() + s.k as f64, prec, rm, ab);
+        note_lost(shaped, s.eb.joint() + s.k as f64, prec, ab);
     }
 }
 
 /// The value of the polynomial `p` as a number (SymPy's `add_terms` over
 /// its terms, [`add_terms`]), `p` attached.
-fn numeric(p: Poly, prec: usize, rm: RoundingMode) -> Option<Scaled> {
+fn numeric(p: Poly, prec: usize) -> Option<Scaled> {
     let mut values = Vec::with_capacity(p.terms.len());
     for t in &p.terms {
-        values.push(term_value(t, prec, rm)?);
+        values.push(term_value(t, prec)?);
     }
-    let s = add_terms(&values, p.rem, prec, rm)?;
+    let s = add_terms(&values, p.rem, prec)?;
     Some(Scaled {
         poly: Some(Box::new(p)),
         ..s
@@ -2360,14 +2306,13 @@ fn settle_poly(
     arena: &Arena,
     full: Poly,
     prec: usize,
-    rm: RoundingMode,
     ab: &mut Option<Absorbed>,
 ) -> Option<Outcome> {
     let (p, rest) = full.split_constant();
     let rest = if p.is_zero() {
         rest
     } else {
-        let d = numeric(rest.clone(), prec, rm)?;
+        let d = numeric(rest.clone(), prec)?;
         // Below the range, or below every precision the search reaches
         // (`p` is a small exact rational): `−erf(90) = −1 + erfc(90)`.
         if (accuracy::mag(&d.m).is_none() && d.eb.is_exact())
@@ -2389,7 +2334,7 @@ fn settle_poly(
     };
     let undecided_rem = !rest.rem.is_exact();
     let bare = undecided_rem.then(|| rest.without_rem());
-    let d = numeric(rest, prec, rm)?;
+    let d = numeric(rest, prec)?;
     if let Some(bare) = bare
         && d.nonzero().is_none()
     {
@@ -2400,7 +2345,7 @@ fn settle_poly(
         // ball no wider than the remainder (the zero search cannot shrink
         // it).
         let rem = d.poly.as_ref().map_or(accuracy::UNKNOWN, |p| p.rem.joint());
-        let d0 = numeric(bare, prec, rm)?;
+        let d0 = numeric(bare, prec)?;
         if d0.nonzero().is_some() || d0.lg_upper() <= rem + 1.0 {
             return None;
         }
@@ -2409,10 +2354,10 @@ fn settle_poly(
     let out = finish(d, prec)?;
     // Back in range, the value is a number alone: the terms below its error
     // are lost (`sin(e^(−10¹⁰))·F/e^(−10¹⁰) = F − F·e^(−2·10¹⁰)/6 + …`).
-    if let (Outcome::InRange(_, b), Some(poly)) = (&out, poly)
-        && let Some(shaped) = shaped_terms(&poly, prec, rm)
+    if let (Outcome::InRange(CBall { err: b, .. }), Some(poly)) = (&out, poly)
+        && let Some(shaped) = shaped_terms(&poly, prec)
     {
-        note_lost(shaped, b.joint(), prec, rm, ab);
+        note_lost(shaped, b.joint(), prec, ab);
     }
     Some(out)
 }
@@ -2424,7 +2369,7 @@ fn settle_poly(
 /// terms of the other factors stay apart.  Before 0.35 such a product was a
 /// number alone: `sin(e^(−10¹⁰))·(sin²1 + cos²1) − e^(−10¹⁰)` (truly
 /// `−e^(−3·10¹⁰)/6`) cancelled to a zero ball and printed `0`.
-fn poly_product(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode) -> Option<Poly> {
+fn poly_product(cx: &Ctx<'_>, children: &[ExprId], prec: usize) -> Option<Poly> {
     let mut acc = Poly::constant(one());
     let mut any = false;
     for &c in children {
@@ -2444,13 +2389,12 @@ fn poly_product(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode
                     &Poly::atom(Mono::factor(c), &s),
                     accuracy::EXACT,
                     prec,
-                    rm,
                 )?;
                 continue;
             }
         };
         any = true;
-        acc = poly_mul(&acc, &f, accuracy::EXACT, prec, rm)?;
+        acc = poly_mul(&acc, &f, accuracy::EXACT, prec)?;
     }
     any.then_some(acc)
 }
@@ -2460,15 +2404,8 @@ fn poly_product(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode
 /// principal power) — or a polynomial's integer power up to
 /// [`MAX_POLY_POWER`].  `None` otherwise (the number alone).
 #[allow(clippy::too_many_arguments)]
-fn poly_power(
-    v: &Poly,
-    q: &Q,
-    x: &Complex,
-    ex: Bound,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<Poly> {
+fn poly_power(v: &Poly, q: &Q, x: &Complex, ex: Bound, w: &mut Wp<'_>) -> Option<Poly> {
+    let prec = w.bits();
     let single = match v.terms.as_slice() {
         [t] if v.rem.is_exact() => Some(t),
         _ => None,
@@ -2482,7 +2419,7 @@ fn poly_power(
         if !g.small() {
             return None;
         }
-        let value = power(&t.v, Some(q), x, ex, prec, rm, cc)?;
+        let value = power(&t.v, Some(q), x, ex, w)?;
         return Some(Poly::atom(Mono::exp(g), &value));
     }
     let n = q.to_integer().to_i64()?;
@@ -2498,14 +2435,14 @@ fn poly_power(
         if !g.small() {
             return None;
         }
-        let value = power(&t.v, Some(q), x, ex, prec, rm, cc)?;
+        let value = power(&t.v, Some(q), x, ex, w)?;
         return Some(Poly::atom(Mono::exp(g), &value));
     }
     if let Some(t) = single
         && n <= 1024
     {
         let n32 = u32::try_from(n).ok()?;
-        let value = power(&t.v, Some(q), x, ex, prec, rm, cc)?;
+        let value = power(&t.v, Some(q), x, ex, w)?;
         return Some(Poly {
             terms: vec![Term {
                 c: gauss_pow(&t.c, n32)?,
@@ -2520,7 +2457,7 @@ fn poly_power(
     }
     let mut acc = v.clone();
     for _ in 1..n {
-        acc = poly_mul(&acc, v, accuracy::EXACT, prec, rm)?;
+        acc = poly_mul(&acc, v, accuracy::EXACT, prec)?;
     }
     Some(acc)
 }
@@ -2597,9 +2534,9 @@ const ATANH: Series = Series {
 };
 
 /// `f(V) − f(0)` for `V = v` (no constant term) by the series `s`.
-fn series(v: &Poly, s: &Series, prec: usize, rm: RoundingMode) -> Option<Poly> {
+fn series(v: &Poly, s: &Series, prec: usize) -> Option<Poly> {
     let coeffs: Vec<(u32, Gauss)> = s.coeffs.iter().map(|&(n, a, b)| (n, ratio(a, b))).collect();
-    series_with(v, &coeffs, Some((s.next, 0.0)), 1.0, s.parity, prec, rm)
+    series_with(v, &coeffs, Some((s.next, 0.0)), 1.0, s.parity, prec)
 }
 
 /// `Σ cₙ·Vⁿ` for `V = v` (no constant term, `abs(V) < 2⁻⁶⁴`), with the
@@ -2618,7 +2555,6 @@ fn series_with(
     lf1: f64,
     parity: Option<u32>,
     prec: usize,
-    rm: RoundingMode,
 ) -> Option<Poly> {
     let l = v.lg();
     // (A NaN bound is not small either.)
@@ -2637,7 +2573,7 @@ fn series_with(
     let mut n = 1;
     for (order, c) in coeffs {
         while n < *order {
-            pow = poly_mul(&pow, &bare, cut, prec, rm)?;
+            pow = poly_mul(&pow, &bare, cut, prec)?;
             n += 1;
         }
         out = out.plus(pow.clone().scaled(c)?)?;
@@ -2664,7 +2600,7 @@ fn series_with(
 
 /// `(1 + V)^q − 1` for `V = v` and an exact `q`: the binomial series to the
 /// fifth order (the principal power: `Log(1 + V)` is analytic at `V = 0`).
-fn binomial(v: &Poly, q: &Q, prec: usize, rm: RoundingMode) -> Option<Poly> {
+fn binomial(v: &Poly, q: &Q, prec: usize) -> Option<Poly> {
     let mut coeffs = Vec::new();
     let mut c = Q::one();
     for n in 1..=6u32 {
@@ -2683,12 +2619,13 @@ fn binomial(v: &Poly, q: &Q, prec: usize, rm: RoundingMode) -> Option<Poly> {
     }
     let tail = (!c.is_zero()).then(|| (6, lg_gauss(&Gauss::real(c))));
     // `abs(f′) = abs(q)·abs(1 + ξ)^(q − 1) ≤ 2·abs(q)` near 0.
-    series_with(v, &coeffs, tail, 1.0 + lq, None, prec, rm)
+    series_with(v, &coeffs, tail, 1.0 + lq, None, prec)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use astro_float::Consts;
 
     fn bf(x: f64) -> BigFloat {
         BigFloat::from_f64(x, 128)
@@ -2701,7 +2638,7 @@ mod tests {
     fn exp_of_minus_ten_to_the_ten() {
         let mut cc = Consts::new().unwrap();
         let z = (bf(-1e10), BigFloat::new(128));
-        let s = exp_scaled(&z, Bound::EXACT, 128, RoundingMode::ToEven, &mut cc).unwrap();
+        let s = exp_scaled(&z, Bound::EXACT, &mut Wp::new(128, &mut cc)).unwrap();
         let lg = (accuracy::lg_abs(&s.m) - accuracy::mag(&s.m).unwrap() as f64)
             + (accuracy::mag(&s.m).unwrap() + s.k) as f64;
         assert!((lg / -1.4426950408889634e10 - 1.0).abs() < 1e-15, "{lg}");

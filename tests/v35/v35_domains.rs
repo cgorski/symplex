@@ -76,7 +76,12 @@ fn constant_roots_are_decided_by_certified_evaluation() {
     let ctx = Context::new();
     let x = ctx.symbol_with("x", &[Assumption::Rational]).unwrap();
     assert!(parse(&ctx, "x^2 - x - 1").solve(&x).unwrap().is_empty());
-    assert!(parse(&ctx, "sin(x) - 1/2").solve(&x).unwrap().is_empty());
+    // Since 0.50 every branch is decided (no member of `π/6 + 2nπ`,
+    // `5π/6 + 2nπ` is rational): no solution, not `Ok([])` (w3c, F4).
+    assert!(matches!(
+        parse(&ctx, "sin(x) - 1/2").solve(&x),
+        Err(SymplexError::NoSolution { .. })
+    ));
     assert_eq!(
         shown(&parse(&ctx, "(x - 1/2)*(x^2 - 2)").solve(&x).unwrap()),
         ["1/2"]
@@ -123,7 +128,12 @@ fn parametric_roots_are_decided_by_the_assumptions() {
         (at.eval_complex64().unwrap() - Complex64::new(-2.0, 0.0)).norm() < 1e-12,
         "{at}"
     );
-    assert!(parse(&ctx, "exp(x) - a").solve(&x).unwrap().is_empty());
+    // `eˣ = a < 0` for a real `x`: no solution on any branch (since 0.50;
+    // `Ok([])` before, w3c F4).
+    assert!(matches!(
+        parse(&ctx, "exp(x) - a").solve(&x),
+        Err(SymplexError::NoSolution { .. })
+    ));
 }
 
 /// Principal branches outside the domain.  Before: `x` negative, `sin x =

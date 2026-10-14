@@ -78,7 +78,9 @@
 //! two-Hurwitz form beyond; here the inversion takes one Hurwitz function
 //! and the series of `1/z`, and every truncation has a bound.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use crate::base::bigfloat::{self, is_strictly_positive, to_f64};
+use astro_float::{BigFloat, Consts};
 use num_bigint::BigInt;
 use num_rational::Ratio;
 
@@ -115,9 +117,9 @@ impl Sum {
         }
     }
 
-    fn add(&mut self, t: &Complex, wp: usize, rm: RoundingMode) {
+    fn add(&mut self, t: &Complex, wp: usize) {
         self.largest = self.largest.max(accuracy::lg_abs(t));
-        self.value = c_add(&self.value, t, wp, rm);
+        self.value = c_add(&self.value, t, wp, RM);
     }
 }
 
@@ -149,10 +151,9 @@ pub(super) fn is_general(
 pub(super) fn polylog_general(
     s: &BigFloat,
     z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     if [s, &z.0, &z.1].iter().any(|x| x.is_nan() || x.is_inf()) {
         return Err(super::unevaluable("polylog of special float value"));
     }
@@ -168,15 +169,15 @@ pub(super) fn polylog_general(
             "polylog of an order beyond 10^6 off [-1, 1] not supported in evalf",
         ));
     }
-    let s_int = super::bf_as_int(s, rm, cc)?;
+    let s_int = super::bf_as_int(s)?;
     let real = z.1.is_zero() && (z.0.is_negative() || s_int.is_some_and(|n| n <= 0));
     tracing::debug!(prec, s = s_f, "evalf: polylog off [-1, 1]");
     let cap = super::cancellation_cap(prec);
     let mut extra =
-        (32 + accuracy::ceil_log2(prec) as usize + near_integer_bits(s, s_int, prec, rm)).min(cap);
+        (32 + accuracy::ceil_log2(prec) as usize + near_integer_bits(s, s_int, prec)).min(cap);
     loop {
         let wp = prec + extra;
-        let sum = value_at(s, s_int, s_f, z, wp, rm, cc).map_err(super::requested_at(prec))?;
+        let sum = value_at(s, s_int, s_f, z, &mut w.at(wp)).map_err(super::requested_at(prec))?;
         let lv = if real {
             accuracy::part_lg(&sum.value.0)
         } else {
@@ -190,13 +191,13 @@ pub(super) fn polylog_general(
             wp
         };
         if lost + 24 <= extra {
-            let re = super::round_to(sum.value.0, prec + 16, rm);
+            let re = super::round_to(sum.value.0, prec + 16);
             let im = if real {
                 BigFloat::new(prec + 16)
-            } else if let Some(im) = cut_imaginary(s, z, prec + 16, rm, cc) {
+            } else if let Some(im) = cut_imaginary(s, z, &mut w.at(prec + 16)) {
                 im
             } else {
-                super::round_to(sum.value.1, prec + 16, rm)
+                super::round_to(sum.value.1, prec + 16)
             };
             return Ok((re, im));
         }
@@ -223,43 +224,38 @@ fn on_cut(s: &BigFloat, z: &Complex) -> bool {
 /// the expansion in `μ = ln x`), to `prec` bits relative.  The expansions
 /// give it only to `2^−wp` of the real part: before 0.37 `im(polylog(300,
 /// 3))` (`−5.02·10⁻⁶⁰⁰`, mpmath at 200 digits) printed `0`.  `None` off the cut.
-fn cut_imaginary(
-    s: &BigFloat,
-    z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<BigFloat> {
+fn cut_imaginary(s: &BigFloat, z: &Complex, w: &mut Wp<'_>) -> Option<BigFloat> {
+    let prec = w.bits();
     if !on_cut(s, z) {
         return None;
     }
     let sf = to_f64(s)?;
     let wp = prec + 16;
     // ln x relative to 2^(−wp−32) (next to 1 from x² − 1 formed exactly).
-    let (lnx, _) = ln_near_one(z, wp + 32, rm, cc);
-    let lnln = lnx.ln(wp + 32, rm, cc);
+    let (lnx, _) = ln_near_one(z, &mut w.at(wp + 32));
+    let lnln = lnx.ln(wp + 32, RM, w.cc);
     let size = (sf * (sf.ln().abs() + 2.0) + to_f64(&lnln)?.abs() * sf).max(1.0);
     let lp = wp + 32 + super::magnitude_bits(size) + super::magnitude_bits(sf.max(1.0));
-    let lnln = lnx.ln(lp, rm, cc);
-    let s1 = minus_int(s, 1, lp, rm);
-    let lgs = super::arb_log_gamma(s, lp, rm, cc).ok()?.0;
-    let e = s1.mul(&lnln, lp, rm).sub(&lgs, lp, rm);
-    let pi = cc.pi(wp, rm).clone();
-    let v = e.exp(wp, rm, cc).mul(&pi, wp, rm).neg();
-    (!v.is_zero() && !v.is_inf() && !v.is_nan()).then(|| super::round_to(v, prec, rm))
+    let lnln = lnx.ln(lp, RM, w.cc);
+    let s1 = minus_int(s, 1, lp);
+    let lgs = super::arb_log_gamma(s, &mut w.at(lp)).ok()?.0;
+    let e = s1.mul(&lnln, lp, RM).sub(&lgs, lp, RM);
+    let pi = w.cc.pi(wp, RM).clone();
+    let v = e.exp(wp, RM, w.cc).mul(&pi, wp, RM).neg();
+    (!v.is_zero() && !v.is_inf() && !v.is_nan()).then(|| super::round_to(v, prec))
 }
 
 /// `log₂(1/|s − n|)` for a non-integer `s` within `2⁻⁸` of an integer `n`
 /// (else 0): the bits the `μ`-expansion loses to the cancelling poles of
 /// `Γ(1 − s)` and `ζ(s − n + 1)`, taken as guard bits from the start (the
 /// measured loss would cost a second pass).
-fn near_integer_bits(s: &BigFloat, s_int: Option<i64>, prec: usize, rm: RoundingMode) -> usize {
+fn near_integer_bits(s: &BigFloat, s_int: Option<i64>, prec: usize) -> usize {
     if s_int.is_some() {
         return 0;
     }
     let exact = super::exact_bits(s, prec);
-    let n = s.add(&BigFloat::from_f64(0.5, 64), exact, rm).floor();
-    let d = s.sub(&n, exact, rm);
+    let n = s.add(&BigFloat::from_f64(0.5, 64), exact, RM).floor();
+    let d = s.sub(&n, exact, RM);
     let l = -lg2(&d);
     if l.is_finite() && l > 8.0 {
         (l.ceil() as usize).min(4 * prec)
@@ -275,41 +271,40 @@ fn value_at(
     s_int: Option<i64>,
     s_f: f64,
     z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     if let Some(n) = s_int
         && n <= 0
     {
         if n.unsigned_abs() > super::MAX_NONPOSITIVE_ORDER {
-            return nonpositive_poles(n.unsigned_abs(), z, wp, rm, cc);
+            return nonpositive_poles(n.unsigned_abs(), z, w);
         }
-        return nonpositive(n.unsigned_abs(), z, wp, rm);
+        return nonpositive(n.unsigned_abs(), z, wp);
     }
-    let r2 = z.0.mul(&z.0, wp, rm).add(&z.1.mul(&z.1, wp, rm), wp, rm);
+    let r2 = z.0.mul(&z.0, wp, RM).add(&z.1.mul(&z.1, wp, RM), wp, RM);
     let lz = 0.5 * lg2(&r2);
     let cheap = |r: f64| series_terms(r, s_f, wp).is_some_and(|k| k <= 3 * wp + 64);
     if lz <= LOG2_THREE_QUARTERS {
-        return series(s, s_int, s_f, z, wp, rm, cc);
+        return series(s, s_int, s_f, z, w);
     }
     if !super::bf_gt(&r2, &BigFloat::from_i32(1, 64)) {
         return if cheap(lz.exp2().min(1.0)) {
-            series(s, s_int, s_f, z, wp, rm, cc)
+            series(s, s_int, s_f, z, w)
         } else {
-            mu_expansion(s, s_int, s_f, z, wp, rm, cc)
+            mu_expansion(s, s_int, s_f, z, w)
         };
     }
     // A large order: the expansion in `ln z` wherever it converges well (its
     // terms do not cancel, and they stop early, see `mu_tail`), rather than
     // the inversion, whose Hurwitz sum cancels about `1.77·s` bits.
     if s_f >= LARGE_ORDER && mu_ratio(z).is_some_and(|r| r <= MU_RATIO) {
-        return mu_expansion(s, s_int, s_f, z, wp, rm, cc);
+        return mu_expansion(s, s_int, s_f, z, w);
     }
     if lz >= 1.0 || cheap((-lz).exp2()) {
-        inversion(s, s_int, s_f, z, wp, rm, cc)
+        inversion(s, s_int, s_f, z, w)
     } else {
-        mu_expansion(s, s_int, s_f, z, wp, rm, cc)
+        mu_expansion(s, s_int, s_f, z, w)
     }
 }
 
@@ -329,13 +324,6 @@ fn mu_ratio(z: &Complex) -> Option<f64> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// A finite `f64` value of `x` (`None` beyond the range or for NaN).
-fn to_f64(x: &BigFloat) -> Option<f64> {
-    super::bigfloat_to_f64_rounded(x, RoundingMode::ToEven)
-        .ok()
-        .filter(|v| v.is_finite())
-}
-
 /// `log₂|x|` (`−∞` for 0), also beyond the `f64` range.
 fn lg2(x: &BigFloat) -> f64 {
     if x.is_zero() {
@@ -348,45 +336,47 @@ fn lg2(x: &BigFloat) -> f64 {
 }
 
 /// `z·x` for a real `x`.
-fn scale(z: &Complex, x: &BigFloat, wp: usize, rm: RoundingMode) -> Complex {
-    (z.0.mul(x, wp, rm), z.1.mul(x, wp, rm))
+fn scale(z: &Complex, x: &BigFloat, wp: usize) -> Complex {
+    (z.0.mul(x, wp, RM), z.1.mul(x, wp, RM))
 }
 
 /// `z/n` for a positive integer `n`.
-fn div_int(z: &Complex, n: u64, wp: usize, rm: RoundingMode) -> Complex {
+fn div_int(z: &Complex, n: u64, wp: usize) -> Complex {
     let d = BigFloat::from_u64(n, 64);
-    (z.0.div(&d, wp, rm), z.1.div(&d, wp, rm))
+    (z.0.div(&d, wp, RM), z.1.div(&d, wp, RM))
 }
 
 /// `w^e = exp(e·Ln w)` (principal branch) for a real `e`, to `wp` bits
 /// relative: the exponent is formed with the bits of its magnitude as guard.
-fn pow_real(w: &Complex, e: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+fn pow_real(w: &Complex, e: &BigFloat, wpc: &mut Wp<'_>) -> Complex {
+    let wp = wpc.bits();
     let ef = to_f64(e).unwrap_or(f64::INFINITY).abs();
     let lw = (accuracy::lg_abs(w) * LN2).abs() + 4.0;
     let p = wp + super::magnitude_bits(ef * lw) + 8;
-    let l = super::c_ln(w, p, rm, cc);
-    let x = scale(&l, e, p, rm);
-    let v = super::c_exp(&x, p, rm, cc);
-    (super::round_to(v.0, wp, rm), super::round_to(v.1, wp, rm))
+    let l = super::c_ln(w, &mut wpc.at(p));
+    let x = scale(&l, e, p);
+    let v = super::c_exp(&x, &mut wpc.at(p));
+    (super::round_to(v.0, wp), super::round_to(v.1, wp))
 }
 
 /// `x − c` exactly for a small integer `c`.
-fn minus_int(x: &BigFloat, c: i64, wp: usize, rm: RoundingMode) -> BigFloat {
+fn minus_int(x: &BigFloat, c: i64, wp: usize) -> BigFloat {
     x.sub(
         &BigFloat::from_i128(i128::from(c), 128),
         super::exact_bits(x, wp),
-        rm,
+        RM,
     )
 }
 
 /// `e^{iπx}`, exact where `x` is an integer or half-integer.
-fn exp_i_pi(x: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+fn exp_i_pi(x: &BigFloat, w: &mut Wp<'_>) -> Complex {
+    let wp = w.bits();
     // x′ = x − 2·round(x/2), exactly (a binary x/2 is exact).
     let exact = super::exact_bits(x, wp);
-    let half_x = x.div(&BigFloat::from_i32(2, 64), exact, rm);
-    let n = half_x.add(&BigFloat::from_f64(0.5, 64), exact, rm).floor();
-    let xr = x.sub(&n.mul(&BigFloat::from_i32(2, 64), exact, rm), exact, rm);
-    let twice = xr.mul(&BigFloat::from_i32(2, 64), exact, rm);
+    let half_x = x.div(&BigFloat::from_i32(2, 64), exact, RM);
+    let n = half_x.add(&BigFloat::from_f64(0.5, 64), exact, RM).floor();
+    let xr = x.sub(&n.mul(&BigFloat::from_i32(2, 64), exact, RM), exact, RM);
+    let twice = xr.mul(&BigFloat::from_i32(2, 64), exact, RM);
     if twice.is_int() || twice.is_zero() {
         let q = to_f64(&twice).unwrap_or(0.0).round() as i64;
         let one = BigFloat::from_i32(1, wp);
@@ -398,8 +388,8 @@ fn exp_i_pi(x: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Compl
             _ => (zero, one.neg()),
         };
     }
-    let t = cc.pi(wp + 8, rm).clone().mul(&xr, wp + 8, rm);
-    (t.cos(wp, rm, cc), t.sin(wp, rm, cc))
+    let t = w.cc.pi(wp + 8, RM).clone().mul(&xr, wp + 8, RM);
+    (t.cos(wp, RM, w.cc), t.sin(wp, RM, w.cc))
 }
 
 /// `ln Γ(x)` for `x ≥ 1` in `f64`: the recurrence up to 16 and Stirling's
@@ -464,27 +454,26 @@ fn smallest_prime_factors(n: usize) -> Vec<u32> {
 // ── Regimes ─────────────────────────────────────────────────────────────────
 
 /// `Li_{−n}(z) = Σ_{k=0}^{n} k! S(n+1, k+1) w^{k+1}`, `w = z/(1 − z)`.
-fn nonpositive(n: u64, z: &Complex, wp: usize, rm: RoundingMode) -> Result<Sum, SymplexError> {
+fn nonpositive(n: u64, z: &Complex, wp: usize) -> Result<Sum, SymplexError> {
     // The row of Stirling numbers at once (`O(n²)`; before 0.34 one number
     // at a time, `O(n³)`, up to an order of −5000).
     let row = super::stirling2_row(n + 1)?;
     let one = BigFloat::from_i32(1, 64);
-    let omz = (one.sub(&z.0, super::exact_bits(&z.0, wp), rm), z.1.neg());
+    let omz = (one.sub(&z.0, super::exact_bits(&z.0, wp), RM), z.1.neg());
     if omz.0.is_zero() && omz.1.is_zero() {
         return Err(super::unevaluable("polylog(s, 1) diverges for s ≤ 1"));
     }
-    let w = c_div(z, &omz, wp, rm);
+    let w = c_div(z, &omz, wp, RM);
     let mut k_fact = BigInt::from(1);
     let mut w_pow = w.clone();
     let mut sum = Sum::new(wp);
     for k in 0..=n {
         if k > 0 {
             k_fact *= BigInt::from(k);
-            w_pow = c_mul(&w_pow, &w, wp, rm);
+            w_pow = c_mul(&w_pow, &w, wp, RM);
         }
-        let c =
-            super::ratio_to_bigfloat(&Ratio::from_integer(&k_fact * &row[k as usize + 1]), wp, rm);
-        sum.add(&scale(&w_pow, &c, wp, rm), wp, rm);
+        let c = super::ratio_to_bigfloat(&Ratio::from_integer(&k_fact * &row[k as usize + 1]), wp);
+        sum.add(&scale(&w_pow, &c, wp), wp);
     }
     Ok(sum)
 }
@@ -507,20 +496,15 @@ fn nonpositive(n: u64, z: &Complex, wp: usize, rm: RoundingMode) -> Result<Sum, 
 /// guard.  A real `z < 0` has two dominant conjugate terms (`k = 0, 1`),
 /// whose cancellation the caller measures.  Before 0.35 the Stirling sum of
 /// [`nonpositive`] was refused beyond `n = 1000`: `polylog(−1500, 1/2)`.
-fn nonpositive_poles(
-    n: u64,
-    z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn nonpositive_poles(n: u64, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     if z.0.is_zero() && z.1.is_zero() {
         return Ok(Sum::new(wp));
     }
     let nf = n as f64;
     // ln n! is about n·ln n, and (n + 1)·Log(…) as large.
     let p = wp + 24 + super::magnitude_bits(nf * (nf.ln() + 64.0));
-    let mu = super::c_ln(z, p, rm, cc);
+    let mu = super::c_ln(z, &mut w.at(p));
     let mu_abs = accuracy::lg_abs(&mu).exp2();
     if !mu_abs.is_finite() || mu_abs == 0.0 {
         return Err(super::unevaluable("polylog(s, 1) diverges for s ≤ 1"));
@@ -541,28 +525,31 @@ fn nonpositive_poles(
         }
     }
     let n1 = BigFloat::from_u64(n + 1, 64);
-    let ln_fact = super::arb_log_gamma(&n1, p, rm, cc)?.0;
-    let two_pi = cc.pi(p, rm).clone().mul(&BigFloat::from_i32(2, 64), p, rm);
+    let ln_fact = super::arb_log_gamma(&n1, &mut w.at(p))?.0;
+    let two_pi =
+        w.cc.pi(p, RM)
+            .clone()
+            .mul(&BigFloat::from_i32(2, 64), p, RM);
     let neg_re = mu.0.neg();
     let mut sum = Sum::new(wp);
     let kmax = i64::try_from(kmax).unwrap_or(i64::MAX);
     for k in -kmax..=kmax {
         let im = two_pi
-            .mul(&BigFloat::from_i64(k, 64), p, rm)
-            .sub(&mu.1, p, rm);
-        let l = super::c_ln(&(neg_re.clone(), im), p, rm, cc);
+            .mul(&BigFloat::from_i64(k, 64), p, RM)
+            .sub(&mu.1, p, RM);
+        let l = super::c_ln(&(neg_re.clone(), im), &mut w.at(p));
         let e = (
-            ln_fact.sub(&l.0.mul(&n1, p, rm), p, rm),
-            l.1.mul(&n1, p, rm).neg(),
+            ln_fact.sub(&l.0.mul(&n1, p, RM), p, RM),
+            l.1.mul(&n1, p, RM).neg(),
         );
-        let t = super::c_exp(&e, wp, rm, cc);
+        let t = super::c_exp(&e, w);
         if [&t.0, &t.1].iter().any(|v| v.is_inf() || v.is_nan()) {
             return Err(super::unevaluable(
                 "polylog of a large negative order: the value overflows the arbitrary-precision \
                  exponent range",
             ));
         }
-        sum.add(&t, wp, rm);
+        sum.add(&t, wp);
     }
     Ok(sum)
 }
@@ -575,10 +562,9 @@ fn series(
     s_int: Option<i64>,
     s_f: f64,
     z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     let lr = accuracy::lg_abs(z);
     let unit = lr >= -1e-9;
     if unit && s_f <= 1.25 {
@@ -601,7 +587,7 @@ fn series(
     let target = |largest: f64| largest - wp as f64 - 4.0;
     for k in 1..=max_terms {
         if k > 1 {
-            zk = c_mul(&zk, z, wp, rm);
+            zk = c_mul(&zk, z, wp, RM);
         }
         let p = if k == 1 {
             one.clone()
@@ -610,24 +596,24 @@ fn series(
                 Some(n) => {
                     // n ≥ 1 here (the non-positive orders are rational).
                     let kn =
-                        BigFloat::from_u64(k as u64, 64).powi(n.unsigned_abs() as usize, wp, rm);
-                    one.div(&kn, wp, rm)
+                        BigFloat::from_u64(k as u64, 64).powi(n.unsigned_abs() as usize, wp, RM);
+                    one.div(&kn, wp, RM)
                 }
                 None => {
                     let q = spf[k] as usize;
                     if q == k {
-                        super::bf_pow(&BigFloat::from_u64(k as u64, 64), &neg_s, wp, rm, cc)
+                        super::bf_pow(&BigFloat::from_u64(k as u64, 64), &neg_s, w)
                     } else {
-                        powers[q - 1].mul(&powers[k / q - 1], wp, rm)
+                        powers[q - 1].mul(&powers[k / q - 1], wp, RM)
                     }
                 }
             }
         };
-        let term = scale(&zk, &p, wp, rm);
+        let term = scale(&zk, &p, wp);
         if s_int.is_none() {
             powers.push(p);
         }
-        sum.add(&term, wp, rm);
+        sum.add(&term, wp);
         // The tail Σ_{j>k} |z|^j j^{−s}.
         let kf = k as f64;
         let next = (kf + 1.0) * lr.min(0.0) - s_f * (kf + 1.0).log2();
@@ -684,10 +670,9 @@ pub(super) fn is_complex_order(
 pub(super) fn polylog_complex_order(
     s: &Complex,
     z: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
     if [&s.0, &s.1, &z.0, &z.1]
         .iter()
         .any(|x| x.is_nan() || x.is_inf())
@@ -701,7 +686,7 @@ pub(super) fn polylog_complex_order(
     let tau = to_f64(&s.1).ok_or_else(|| super::unevaluable("polylog order beyond f64"))?;
     if z.1.is_zero() && z.0 == BigFloat::from_i32(1, 64) {
         if super::bf_gt(&s.0, &BigFloat::from_i32(1, 64)) {
-            return super::zeta::zeta_complex(s, prec, rm, cc);
+            return super::zeta::zeta_complex(s, w);
         }
         return Err(super::unevaluable("polylog(s, 1) diverges for Re s <= 1"));
     }
@@ -732,9 +717,9 @@ pub(super) fn polylog_complex_order(
     loop {
         let wp = prec + extra;
         let sum = match regime {
-            Regime::Series => complex_series(s, sigma, z, wp, rm, cc),
-            Regime::Mu => complex_mu_expansion(s, sigma, tau, z, wp, rm, cc),
-            Regime::Inversion => complex_inversion(s, sigma, z, wp, rm, cc),
+            Regime::Series => complex_series(s, sigma, z, &mut w.at(wp)),
+            Regime::Mu => complex_mu_expansion(s, sigma, tau, z, &mut w.at(wp)),
+            Regime::Inversion => complex_inversion(s, sigma, z, &mut w.at(wp)),
         }
         .map_err(super::requested_at(prec))?;
         let lv = accuracy::lg_abs(&sum.value);
@@ -746,8 +731,8 @@ pub(super) fn polylog_complex_order(
 
         if lost + 24 <= extra {
             return Ok((
-                super::round_to(sum.value.0, prec + 16, rm),
-                super::round_to(sum.value.1, prec + 16, rm),
+                super::round_to(sum.value.0, prec + 16),
+                super::round_to(sum.value.1, prec + 16),
             ));
         }
         if extra >= cap || lost + 24 > cap {
@@ -790,12 +775,11 @@ fn complex_mu_expansion(
     sigma: f64,
     tau: f64,
     z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     use super::zeta;
-    let mu = ln_near_one(z, wp, rm, cc);
+    let mu = ln_near_one(z, w);
     let lmu = accuracy::lg_abs(&mu);
     let rho = (lmu - LOG2_TWO_PI).exp2();
     if rho.is_nan() || rho >= 0.9 {
@@ -805,13 +789,13 @@ fn complex_mu_expansion(
     }
     let mut sum = Sum::new(wp);
     let one_minus =
-        |k: i64, wp: usize| -> Complex { (zeta::plus_int(&s.0.neg(), 1 + k, wp, rm), s.1.neg()) };
+        |k: i64, wp: usize| -> Complex { (zeta::plus_int(&s.0.neg(), 1 + k, wp), s.1.neg()) };
     if !(mu.0.is_zero() && mu.1.is_zero()) {
         // Γ(1 − s)·(−μ)^(s−1), principal branch.
         let t = one_minus(0, wp);
-        let g = zeta::gamma_complex(&t, wp, rm, cc)?;
-        let pw = zeta::pow_neg(&c_neg(&mu), &t, wp, rm, cc);
-        sum.add(&c_mul(&g, &pw, wp, rm), wp, rm);
+        let g = zeta::gamma_complex(&t, w)?;
+        let pw = zeta::pow_neg(&c_neg(&mu), &t, w);
+        sum.add(&c_mul(&g, &pw, wp, RM), wp);
     }
     let lcosh = std::f64::consts::FRAC_PI_2 * tau.abs() * LOG2E;
     let max_terms = 8 * wp + 256;
@@ -821,15 +805,15 @@ fn complex_mu_expansion(
     // (`zeta::direct_terms_upto`): each step divides by m.
     let mut direct: Option<Vec<Complex>> = None;
     let dp = wp + 16;
-    let pi = cc.pi(wp + 16, rm).clone();
-    let two_pi = pi.mul(&BigFloat::from_i32(2, 64), wp + 16, rm);
+    let pi = w.cc.pi(wp + 16, RM).clone();
+    let two_pi = pi.mul(&BigFloat::from_i32(2, 64), wp + 16, RM);
     for k in 0..max_terms {
         if k > 0 {
-            mk = div_int(&c_mul(&mk, &mu, wp, rm), k as u64, wp, rm);
+            mk = div_int(&c_mul(&mk, &mu, wp, RM), k as u64, wp);
         }
-        let sk = (zeta::plus_int(&s.0, -(k as i64), wp, rm), s.1.clone());
+        let sk = (zeta::plus_int(&s.0, -(k as i64), wp), s.1.clone());
         let (zv, zlargest) = if sigma - (k as f64) >= 0.0 {
-            let v = zeta::zeta_complex(&sk, wp, rm, cc)?;
+            let v = zeta::zeta_complex(&sk, w)?;
             let l = accuracy::lg_abs(&v);
             (v, l)
         } else {
@@ -837,29 +821,29 @@ fn complex_mu_expansion(
             let LeftZeta { a, g, sn, cs } = match left.take() {
                 Some(LeftZeta { a, g, sn, cs }) => {
                     // A_k = A_{k−1}/2π, Γ(1 − s + k) = (k − s)·Γ(k − s).
-                    let a = (a.0.div(&two_pi, wp, rm), a.1.div(&two_pi, wp, rm));
-                    let g = c_mul(&g, &one_minus(ki - 1, wp), wp, rm);
+                    let a = (a.0.div(&two_pi, wp, RM), a.1.div(&two_pi, wp, RM));
+                    let g = c_mul(&g, &one_minus(ki - 1, wp), wp, RM);
                     LeftZeta { a, g, sn, cs }
                 }
                 None => {
                     let p = wp
                         + super::magnitude_bits((sigma.abs() + tau.abs() + k as f64 + 2.0) * 3.0)
                         + 16;
-                    let ln2 = BigFloat::from_i32(2, 64).ln(p, rm, cc);
-                    let lnpi = pi.clone().ln(p, rm, cc);
-                    let sk1 = (zeta::plus_int(&sk.0, -1, p, rm), sk.1.clone());
+                    let ln2 = BigFloat::from_i32(2, 64).ln(p, RM, w.cc);
+                    let lnpi = pi.clone().ln(p, RM, w.cc);
+                    let sk1 = (zeta::plus_int(&sk.0, -1, p), sk.1.clone());
                     let e = c_add(
-                        &(sk.0.mul(&ln2, p, rm), sk.1.mul(&ln2, p, rm)),
-                        &(sk1.0.mul(&lnpi, p, rm), sk1.1.mul(&lnpi, p, rm)),
+                        &(sk.0.mul(&ln2, p, RM), sk.1.mul(&ln2, p, RM)),
+                        &(sk1.0.mul(&lnpi, p, RM), sk1.1.mul(&lnpi, p, RM)),
                         p,
-                        rm,
+                        RM,
                     );
-                    let a = super::c_exp(&e, p, rm, cc);
-                    let a = (super::round_to(a.0, wp, rm), super::round_to(a.1, wp, rm));
-                    let g = zeta::gamma_complex(&one_minus(ki, wp), wp, rm, cc)?;
-                    let sn = zeta::sin_half_pi(s, wp, rm, cc);
-                    let s1 = (zeta::plus_int(&s.0, 1, wp, rm), s.1.clone());
-                    let cs = zeta::sin_half_pi(&s1, wp, rm, cc);
+                    let a = super::c_exp(&e, &mut w.at(p));
+                    let a = (super::round_to(a.0, wp), super::round_to(a.1, wp));
+                    let g = zeta::gamma_complex(&one_minus(ki, wp), w)?;
+                    let sn = zeta::sin_half_pi(s, w);
+                    let s1 = (zeta::plus_int(&s.0, 1, wp), s.1.clone());
+                    let cs = zeta::sin_half_pi(&s1, w);
                     LeftZeta { a, g, sn, cs }
                 }
             };
@@ -878,7 +862,7 @@ fn complex_mu_expansion(
                         Some(mut p) => {
                             for (m, x) in p.iter_mut().enumerate().skip(1) {
                                 let d = BigFloat::from_u64(m as u64 + 1, 64);
-                                *x = (x.0.div(&d, dp, rm), x.1.div(&d, dp, rm));
+                                *x = (x.0.div(&d, dp, RM), x.1.div(&d, dp, RM));
                             }
                             p
                         }
@@ -887,14 +871,14 @@ fn complex_mu_expansion(
                             (1..=64u64)
                                 .map(|m| {
                                     let b = (BigFloat::from_u64(m, 64), BigFloat::new(64));
-                                    zeta::pow_neg(&b, &t, dp, rm, cc)
+                                    zeta::pow_neg(&b, &t, &mut w.at(dp))
                                 })
                                 .collect()
                         }
                     };
                     let mut acc = c_zero(dp);
                     for x in powers.iter().take(n) {
-                        acc = c_add(&acc, x, dp, rm);
+                        acc = c_add(&acc, x, dp, RM);
                     }
                     direct = Some(powers);
                     zeta::Sum {
@@ -902,21 +886,21 @@ fn complex_mu_expansion(
                         largest: 0.0,
                     }
                 }
-                None => zeta::hurwitz(&one_minus(ki, wp), &one, wp, rm, cc)?,
+                None => zeta::hurwitz(&one_minus(ki, wp), &one, w)?,
             };
             let v = c_mul(
-                &c_mul(&c_mul(&a, &trig, wp, rm), &g, wp, rm),
+                &c_mul(&c_mul(&a, &trig, wp, RM), &g, wp, RM),
                 &zr.value,
                 wp,
-                rm,
+                RM,
             );
             let l =
                 accuracy::lg_abs(&v).max(zr.largest + accuracy::lg_abs(&a) + accuracy::lg_abs(&g));
             left = Some(LeftZeta { a, g, sn, cs });
             (v, l)
         };
-        let term = c_mul(&mk, &zv, wp, rm);
-        sum.add(&term, wp, rm);
+        let term = c_mul(&mk, &zv, wp, RM);
+        sum.add(&term, wp);
         sum.largest = sum.largest.max(zlargest + accuracy::lg_abs(&mk));
         // The tail from j = k + 1 once σ − j ≤ −1 (see `mu_expansion`).
         let j = k as f64 + 1.0;
@@ -944,62 +928,54 @@ fn complex_inversion(
     s: &Complex,
     sigma: f64,
     z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     use super::zeta;
-    let pi = cc.pi(wp, rm).clone();
-    let two_pi = pi.mul(&BigFloat::from_i32(2, 64), wp, rm);
-    let arg = super::atan2_bf(&z.1, &z.0, wp, rm, cc);
-    let upper = (z.1.is_positive() && !z.1.is_zero()) || (z.1.is_zero() && z.0.is_negative());
-    let turn = arg.div(&two_pi, wp, rm);
+    let pi = w.cc.pi(wp, RM).clone();
+    let two_pi = pi.mul(&BigFloat::from_i32(2, 64), wp, RM);
+    let arg = super::atan2_bf(&z.1, &z.0, w);
+    let upper = is_strictly_positive(&z.1) || (z.1.is_zero() && z.0.is_negative());
+    let turn = arg.div(&two_pi, wp, RM);
     let re_a = if upper {
         turn
     } else {
-        BigFloat::from_i32(1, 64).add(&turn, wp, rm)
+        BigFloat::from_i32(1, 64).add(&turn, wp, RM)
     };
-    let ln_abs = super::c_abs(z, wp + 8, rm).ln(wp, rm, cc);
-    let a = (re_a, ln_abs.div(&two_pi, wp, rm).neg());
-    let inv_z = c_div(&c_one(wp), z, wp, rm);
-    let li = complex_series(s, sigma, &inv_z, wp, rm, cc)?;
-    let t = (zeta::plus_int(&s.0.neg(), 1, wp, rm), s.1.neg());
-    let hz = zeta::hurwitz(&t, &a, wp, rm, cc)?;
-    let gamma = zeta::gamma_complex(s, wp, rm, cc)?;
+    let ln_abs = super::c_abs(z, wp + 8, RM).ln(wp, RM, w.cc);
+    let a = (re_a, ln_abs.div(&two_pi, wp, RM).neg());
+    let inv_z = c_div(&c_one(wp), z, wp, RM);
+    let li = complex_series(s, sigma, &inv_z, w)?;
+    let t = (zeta::plus_int(&s.0.neg(), 1, wp), s.1.neg());
+    let hz = zeta::hurwitz(&t, &a, w)?;
+    let gamma = zeta::gamma_complex(s, w)?;
     // (2π)^s/Γ(s) = exp(s·ln 2π)/Γ(s).
     let ls = accuracy::lg_abs(s).exp2();
     let p = wp + super::magnitude_bits(ls * 2.0) + 8;
-    let ln2pi = cc
-        .pi(p, rm)
-        .clone()
-        .mul(&BigFloat::from_i32(2, 64), p, rm)
-        .ln(p, rm, cc);
-    let ex = super::c_exp(&(s.0.mul(&ln2pi, p, rm), s.1.mul(&ln2pi, p, rm)), p, rm, cc);
-    let c = c_div(&ex, &gamma, wp, rm);
+    let ln2pi =
+        w.cc.pi(p, RM)
+            .clone()
+            .mul(&BigFloat::from_i32(2, 64), p, RM)
+            .ln(p, RM, w.cc);
+    let ex = super::c_exp(
+        &(s.0.mul(&ln2pi, p, RM), s.1.mul(&ln2pi, p, RM)),
+        &mut w.at(p),
+    );
+    let c = c_div(&ex, &gamma, wp, RM);
     // e^(iπs), e^(iπs/2): `e^(−πτ)` with the bits of `πτ` as guard.
     let tp = wp + super::magnitude_bits(4.0 * ls) + 8;
-    let pt = cc.pi(tp, rm).clone().mul(&s.1, tp, rm);
-    let e1 = scale(
-        &exp_i_pi(&s.0, wp, rm, cc),
-        &pt.neg().exp(wp, rm, cc),
-        wp,
-        rm,
-    );
+    let pt = w.cc.pi(tp, RM).clone().mul(&s.1, tp, RM);
+    let e1 = scale(&exp_i_pi(&s.0, w), &pt.neg().exp(wp, RM, w.cc), wp);
     let half_s =
-        s.0.div(&BigFloat::from_i32(2, 64), super::exact_bits(&s.0, wp), rm);
-    let half_pt = pt.div(&BigFloat::from_i32(2, 64), tp, rm);
-    let e2 = scale(
-        &exp_i_pi(&half_s, wp, rm, cc),
-        &half_pt.neg().exp(wp, rm, cc),
-        wp,
-        rm,
-    );
-    let t1 = c_neg(&c_mul(&e1, &li.value, wp, rm));
-    let ce2 = c_mul(&c, &e2, wp, rm);
-    let t2 = c_mul(&ce2, &hz.value, wp, rm);
+        s.0.div(&BigFloat::from_i32(2, 64), super::exact_bits(&s.0, wp), RM);
+    let half_pt = pt.div(&BigFloat::from_i32(2, 64), tp, RM);
+    let e2 = scale(&exp_i_pi(&half_s, w), &half_pt.neg().exp(wp, RM, w.cc), wp);
+    let t1 = c_neg(&c_mul(&e1, &li.value, wp, RM));
+    let ce2 = c_mul(&c, &e2, wp, RM);
+    let t2 = c_mul(&ce2, &hz.value, wp, RM);
     let mut sum = Sum::new(wp);
-    sum.add(&t1, wp, rm);
-    sum.add(&t2, wp, rm);
+    sum.add(&t1, wp);
+    sum.add(&t2, wp);
     sum.largest = sum
         .largest
         .max(li.largest + accuracy::lg_abs(&e1))
@@ -1012,10 +988,9 @@ fn complex_series(
     s: &Complex,
     sigma: f64,
     z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     let lr = accuracy::lg_abs(z);
     let r = lr.exp2().min(1.0);
     let max_terms = series_terms(r, sigma, wp)
@@ -1033,19 +1008,19 @@ fn complex_series(
     let mut sum = Sum::new(wp);
     for k in 1..=max_terms {
         if k > 1 {
-            zk = c_mul(&zk, z, wp, rm);
+            zk = c_mul(&zk, z, wp, RM);
         }
         let p = if k == 1 {
             c_one(wp)
         } else {
             let q = spf[k] as usize;
             if q == k {
-                pow_complex(k as u64, &neg_s, wp, rm, cc)
+                pow_complex(k as u64, &neg_s, &mut w.at(wp))
             } else {
-                c_mul(&powers[q - 1], &powers[k / q - 1], wp, rm)
+                c_mul(&powers[q - 1], &powers[k / q - 1], wp, RM)
             }
         };
-        sum.add(&c_mul(&zk, &p, wp, rm), wp, rm);
+        sum.add(&c_mul(&zk, &p, wp, RM), wp);
         powers.push(p);
         // The tail Σ_{j>k} |z|^j j^{−σ}, as in `series`.
         let kf = k as f64;
@@ -1060,14 +1035,15 @@ fn complex_series(
 
 /// `k^w = e^(w·ln k)` for a positive integer `k` and a complex `w`, to `wp` bits
 /// relative: the exponent with the bits of its magnitude as guard.
-fn pow_complex(k: u64, w: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+fn pow_complex(k: u64, w: &Complex, wpc: &mut Wp<'_>) -> Complex {
+    let wp = wpc.bits();
     let size = (to_f64(&w.0).unwrap_or(f64::INFINITY).abs()
         + to_f64(&w.1).unwrap_or(f64::INFINITY).abs())
         * ((k as f64).ln() + 1.0);
     let p = wp + super::magnitude_bits(size) + 8;
-    let lk = BigFloat::from_u64(k, 64).ln(p, rm, cc);
-    let v = super::c_exp(&scale(w, &lk, p, rm), p, rm, cc);
-    (super::round_to(v.0, wp, rm), super::round_to(v.1, wp, rm))
+    let lk = BigFloat::from_u64(k, 64).ln(p, RM, wpc.cc);
+    let v = super::c_exp(&scale(w, &lk, p), &mut wpc.at(p));
+    (super::round_to(v.0, wp), super::round_to(v.1, wp))
 }
 
 /// The error bound of `Li_s(z)` (value `v`) for a complex order (see
@@ -1086,10 +1062,9 @@ pub(super) fn complex_order_bound(
     z: &Complex,
     bz: Bound,
     v: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Bound {
+    let prec = w.bits();
     if bs.is_unknown() || bz.is_unknown() {
         return Bound::UNKNOWN;
     }
@@ -1118,13 +1093,13 @@ pub(super) fn complex_order_bound(
         }
         if rp >= 0.75 {
             if !bz.is_exact() {
-                match complex_z_change(s, z, bz, rm, cc) {
+                match complex_z_change(s, z, bz, w.cc) {
                     Some(c) => total = accuracy::lsum(total, c),
                     None => return Bound::UNKNOWN,
                 }
             }
             if !bs.is_exact() {
-                match complex_s_change(s, bs.joint(), z, v, rm, cc) {
+                match complex_s_change(s, bs.joint(), z, v, w.cc) {
                     Some(c) => total = accuracy::lsum(total, c),
                     None => return Bound::UNKNOWN,
                 }
@@ -1152,35 +1127,29 @@ pub(super) fn complex_order_bound(
 
 /// Twice the change of `Li_s` (a non-real order) over the ball of `z` (see
 /// [`complex_order_bound`]).
-fn complex_z_change(
-    s: &Complex,
-    z: &Complex,
-    bz: Bound,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<f64> {
+fn complex_z_change(s: &Complex, z: &Complex, bz: Bound, cc: &mut Consts) -> Option<f64> {
     let r = bz.joint();
     let undecided_side =
         !accuracy::exact_zero(&z.1, bz.im) && accuracy::part_contains_zero(&z.1, bz.im);
     if undecided_side {
-        let hi = z.0.add(&BigFloat::from_f64(r.exp2(), 64), LP, rm);
+        let hi = z.0.add(&bigfloat::from_f64(r.exp2(), 64), LP, RM);
         if !super::bf_lt(&hi, &BigFloat::from_i32(1, 64)) {
             return None;
         }
     }
     let one = BigFloat::from_i32(1, 64);
-    let d = (z.0.sub(&one, super::exact_bits(&z.0, LP), rm), z.1.clone());
+    let d = (z.0.sub(&one, super::exact_bits(&z.0, LP), RM), z.1.clone());
     let ld = accuracy::lg_abs_low(&d);
     if ld.is_nan() || ld <= r + 3.0 {
         return None;
     }
-    let s1 = (super::zeta::plus_int(&s.0, -1, LP, rm), s.1.clone());
-    let li = polylog_complex_order(&s1, z, LP, rm, cc).ok()?;
+    let s1 = (super::zeta::plus_int(&s.0, -1, LP), s.1.clone());
+    let li = polylog_complex_order(&s1, z, &mut Wp::new(LP, cc)).ok()?;
     let dl = accuracy::lg_abs(&li) - accuracy::lg_abs_low(z);
     if !dl.is_finite() {
         return None;
     }
-    let s2 = (super::zeta::plus_int(&s.0, -2, LP, rm), s.1.clone());
+    let s2 = (super::zeta::plus_int(&s.0, -2, LP), s.1.clone());
     let p = accuracy::lg_abs(&s2).exp2().max(1.0);
     Some(dl + p * shrink(r - ld) + r + 1.0)
 }
@@ -1193,7 +1162,6 @@ fn complex_s_change(
     es: f64,
     z: &Complex,
     v: &Complex,
-    rm: RoundingMode,
     cc: &mut Consts,
 ) -> Option<f64> {
     let ls = accuracy::lg_abs(s);
@@ -1203,9 +1171,9 @@ fn complex_s_change(
     }
     let mut h = BigFloat::from_i32(1, 64);
     h.set_exponent(lh as i32 + 1);
-    let moved = (s.0.add(&h, super::exact_bits(&s.0, LP), rm), s.1.clone());
-    let w = polylog_complex_order(&moved, z, LP, rm, cc).ok()?;
-    let diff = c_sub(&w, v, LP + 64, rm);
+    let moved = (s.0.add(&h, super::exact_bits(&s.0, LP), RM), s.1.clone());
+    let w = polylog_complex_order(&moved, z, &mut Wp::new(LP, cc)).ok()?;
+    let diff = c_sub(&w, v, LP + 64, RM);
     let noise = accuracy::lg_abs(v) - (LP as f64 - 4.0) - lh;
     let deriv = accuracy::lsum(accuracy::lg_abs(&diff) - lh, noise);
     Some(deriv + es + 2.0)
@@ -1249,35 +1217,36 @@ fn magnitude_sum(r: f64, e: f64, derivative: bool) -> Option<f64> {
 /// `ln z` accurate next to `z = 1`: `ln|z| = ½ ln(1 + d)` with `d = |z|² −
 /// 1 = (x − 1)(x + 1) + y²` formed with `x − 1` exact, and `ln(1 + d) =
 /// 2 atanh(t)`, `t = d/(2 + d)`, summed for `|d| < 1/4`.
-fn ln_near_one(z: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+fn ln_near_one(z: &Complex, w: &mut Wp<'_>) -> Complex {
+    let wp = w.bits();
     let p = wp + 16;
     let one = BigFloat::from_i32(1, 64);
-    let xm1 = z.0.sub(&one, super::exact_bits(&z.0, p), rm);
-    let xp1 = z.0.add(&one, super::exact_bits(&z.0, p), rm);
-    let d = xm1.mul(&xp1, p, rm).add(&z.1.mul(&z.1, p, rm), p, rm);
-    let arg = super::atan2_bf(&z.1, &z.0, wp, rm, cc);
+    let xm1 = z.0.sub(&one, super::exact_bits(&z.0, p), RM);
+    let xp1 = z.0.add(&one, super::exact_bits(&z.0, p), RM);
+    let d = xm1.mul(&xp1, p, RM).add(&z.1.mul(&z.1, p, RM), p, RM);
+    let arg = super::atan2_bf(&z.1, &z.0, w);
     let small = d.is_zero() || d.exponent().is_some_and(|e| e <= -2);
     let ln_abs = if !small {
-        one.add(&d, p, rm)
-            .ln(p, rm, cc)
-            .div(&BigFloat::from_i32(2, 64), wp, rm)
+        one.add(&d, p, RM)
+            .ln(p, RM, w.cc)
+            .div(&BigFloat::from_i32(2, 64), wp, RM)
     } else if d.is_zero() {
         BigFloat::new(wp)
     } else {
         // ½ ln(1 + d) = t + t³/3 + t⁵/5 + …, |t| < 1/7.
-        let t = d.div(&BigFloat::from_i32(2, 64).add(&d, p, rm), p, rm);
-        let t2 = t.mul(&t, p, rm);
+        let t = d.div(&BigFloat::from_i32(2, 64).add(&d, p, RM), p, RM);
+        let t2 = t.mul(&t, p, RM);
         let mut pw = t.clone();
         let mut acc = t.clone();
         for k in 1..(p / 2 + 8) {
-            pw = pw.mul(&t2, p, rm);
-            let term = pw.div(&BigFloat::from_u64((2 * k + 1) as u64, 64), p, rm);
-            acc = acc.add(&term, p, rm);
+            pw = pw.mul(&t2, p, RM);
+            let term = pw.div(&BigFloat::from_u64((2 * k + 1) as u64, 64), p, RM);
+            acc = acc.add(&term, p, RM);
             if super::negligible(&term, &acc, p) {
                 break;
             }
         }
-        super::round_to(acc, wp, rm)
+        super::round_to(acc, wp)
     };
     (ln_abs, arg)
 }
@@ -1290,11 +1259,10 @@ fn mu_expansion(
     s_int: Option<i64>,
     s_f: f64,
     z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Sum, SymplexError> {
-    let mu = ln_near_one(z, wp, rm, cc);
+    let wp = w.bits();
+    let mu = ln_near_one(z, w);
     let neg_mu = c_neg(&mu);
     let lmu = accuracy::lg_abs(&mu);
     // |μ|/2π: below 0.6 for 3/4 < |z| < 2, below 0.85 for a large order (`value_at`).
@@ -1307,11 +1275,11 @@ fn mu_expansion(
     let mut sum = Sum::new(wp);
     if s_int.is_none() {
         // Γ(1 − s)(−μ)^{s−1}, `1 − s` exact (see `polylog_near_one_at`).
-        let one_minus_s = BigFloat::from_i32(1, 64).sub(s, super::exact_bits(s, wp), rm);
-        let g = super::arb_gamma_real(&one_minus_s, wp, rm, cc)?;
-        let s_minus_1 = minus_int(s, 1, wp, rm);
-        let lead = scale(&pow_real(&neg_mu, &s_minus_1, wp, rm, cc), &g, wp, rm);
-        sum.add(&lead, wp, rm);
+        let one_minus_s = BigFloat::from_i32(1, 64).sub(s, super::exact_bits(s, wp), RM);
+        let g = super::arb_gamma_real(&one_minus_s, w)?;
+        let s_minus_1 = minus_int(s, 1, wp);
+        let lead = scale(&pow_real(&neg_mu, &s_minus_1, w), &g, wp);
+        sum.add(&lead, wp);
     }
     let max_terms = 8 * wp + 256 + s_f.max(0.0) as usize;
     let minus_one = BigFloat::from_i32(-1, 64);
@@ -1331,7 +1299,7 @@ fn mu_expansion(
             return Ok(sum);
         }
         if k > 0 {
-            mk = div_int(&c_mul(&mk, &mu, wp, rm), k as u64, wp, rm);
+            mk = div_int(&c_mul(&mk, &mu, wp, RM), k as u64, wp);
         }
         let term = match s_int {
             Some(n) if k as i64 + 1 == n => {
@@ -1339,28 +1307,28 @@ fn mu_expansion(
                 let one = BigFloat::from_i32(1, wp);
                 let mut h = BigFloat::new(wp);
                 for j in 1..n {
-                    h = h.add(&one.div(&BigFloat::from_i64(j, 64), wp, rm), wp, rm);
+                    h = h.add(&one.div(&BigFloat::from_i64(j, 64), wp, RM), wp, RM);
                 }
-                let l = super::c_ln(&neg_mu, wp, rm, cc);
-                c_mul(&mk, &(h.sub(&l.0, wp, rm), l.1.neg()), wp, rm)
+                let l = super::c_ln(&neg_mu, w);
+                c_mul(&mk, &(h.sub(&l.0, wp, RM), l.1.neg()), wp, RM)
             }
             Some(n) => {
                 let m = n - k as i64;
                 let zeta = if m <= 0 {
-                    super::zeta_nonpositive_int(m, wp, rm)
+                    super::zeta_nonpositive_int(m, wp)
                 } else {
                     let mb = BigFloat::from_i64(m, 64);
-                    match zeta_direct(&mb, m as f64, wp, rm, cc) {
+                    match zeta_direct(&mb, m as f64, w) {
                         Some(z) => z,
-                        None => super::arb_zeta(&mb, wp, rm, cc)?,
+                        None => super::arb_zeta(&mb, w)?,
                     }
                 };
-                scale(&mk, &zeta, wp, rm)
+                scale(&mk, &zeta, wp)
             }
             None => {
-                let arg = minus_int(s, k as i64, wp, rm);
+                let arg = minus_int(s, k as i64, wp);
                 let direct = if left.is_none() {
-                    zeta_direct(&arg, s_f - k as f64, wp, rm, cc)
+                    zeta_direct(&arg, s_f - k as f64, w)
                 } else {
                     None
                 };
@@ -1368,19 +1336,19 @@ fn mu_expansion(
                     z
                 } else if left.is_some() || super::bf_lt(&arg, &minus_one) {
                     if left.is_none() {
-                        left = Some(super::ZetaLeft::new(&arg, wp, rm, cc)?);
+                        left = Some(super::ZetaLeft::new(&arg, &mut w.at(wp))?);
                     }
                     match left.as_mut() {
-                        Some(l) => l.next(rm),
-                        None => super::arb_zeta(&arg, wp, rm, cc)?,
+                        Some(l) => l.next(),
+                        None => super::arb_zeta(&arg, w)?,
                     }
                 } else {
-                    super::arb_zeta(&arg, wp, rm, cc)?
+                    super::arb_zeta(&arg, w)?
                 };
-                scale(&mk, &zeta, wp, rm)
+                scale(&mk, &zeta, wp)
             }
         };
-        sum.add(&term, wp, rm);
+        sum.add(&term, wp);
         // The tail from j = k + 1 once σ = s − j ≤ −1: the terms are below
         // b_j = 3.3·(2π)^{s−j−1}Γ(j+1−s)|μ|^j/j!, with b_{i+1}/b_i =
         // ρ(i+1−s)/(i+1) ≤ ρ·max(1, (j+1−s)/(j+1)) for i ≥ j.
@@ -1402,13 +1370,8 @@ fn mu_expansion(
 /// real `m ≥ max(8, wp/4)` (`mf` its value), where `J ≤ 64` terms do: the
 /// terms of the expansion in `ln z` at a large order (Borwein's sum takes
 /// `0.39·wp` powers whatever `m`).  `None` otherwise.
-fn zeta_direct(
-    m: &BigFloat,
-    mf: f64,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<BigFloat> {
+fn zeta_direct(m: &BigFloat, mf: f64, w: &mut Wp<'_>) -> Option<BigFloat> {
+    let wp = w.bits();
     if mf.is_nan() || mf < 8.0 || mf < wp as f64 / 4.0 {
         return None;
     }
@@ -1419,10 +1382,10 @@ fn zeta_direct(
     let neg = m.neg();
     let mut sum = BigFloat::from_i32(1, wp + 8);
     for j in 2..=(j_max as u64) {
-        let t = super::bf_pow(&BigFloat::from_u64(j, 64), &neg, wp + 8, rm, cc);
-        sum = sum.add(&t, wp + 8, rm);
+        let t = super::bf_pow(&BigFloat::from_u64(j, 64), &neg, &mut w.at(wp + 8));
+        sum = sum.add(&t, wp + 8, RM);
     }
-    Some(super::round_to(sum, wp, rm))
+    Some(super::round_to(sum, wp))
 }
 
 /// `log₂` of a bound on `Σ_{j≥k} abs(ζ(s − j)·μ^j/j!)` (the log term at `j = n − 1`
@@ -1532,27 +1495,26 @@ fn inversion(
     s_int: Option<i64>,
     s_f: f64,
     z: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<Sum, SymplexError> {
+    let wp = w.bits();
     // a = ½ + ln(−z)/(2πi) = (½ + arg(−z)/2π) − i·ln|z|/2π with the
     // principal arg(−z) = arg z ∓ π: Re a = arg z/2π above the real axis
     // (and for z < 0), 1 + arg z/2π below it and on the cut z > 1 (arg(−z)
     // = π there).  From arg z itself, not ½ + arg(−z)/2π: just above the
     // cut the latter cancels to 0 (`z = 73/8 + 10⁻⁵⁸·i`).
-    let pi = cc.pi(wp, rm).clone();
-    let two_pi = pi.mul(&BigFloat::from_i32(2, 64), wp, rm);
-    let arg = super::atan2_bf(&z.1, &z.0, wp, rm, cc);
-    let upper = (z.1.is_positive() && !z.1.is_zero()) || (z.1.is_zero() && z.0.is_negative());
-    let turn = arg.div(&two_pi, wp, rm);
+    let pi = w.cc.pi(wp, RM).clone();
+    let two_pi = pi.mul(&BigFloat::from_i32(2, 64), wp, RM);
+    let arg = super::atan2_bf(&z.1, &z.0, w);
+    let upper = is_strictly_positive(&z.1) || (z.1.is_zero() && z.0.is_negative());
+    let turn = arg.div(&two_pi, wp, RM);
     let re_a = if upper {
         turn
     } else {
-        BigFloat::from_i32(1, 64).add(&turn, wp, rm)
+        BigFloat::from_i32(1, 64).add(&turn, wp, RM)
     };
-    let ln_abs = super::c_abs(z, wp + 8, rm).ln(wp, rm, cc);
-    let a = (re_a, ln_abs.div(&two_pi, wp, rm).neg());
+    let ln_abs = super::c_abs(z, wp + 8, RM).ln(wp, RM, w.cc);
+    let a = (re_a, ln_abs.div(&two_pi, wp, RM).neg());
     // For a large order the Hurwitz sum cancels about `1.77·s` bits (terms
     // of `|w|^(s−1)`, `|w| ≈ s/5`, against `|ζ(1 − s, a)| ≈ 2Γ(s)/(2π)^s`):
     // beyond the cap, refused before the sum (`polylog(1000.5, 3)` spent a
@@ -1560,21 +1522,21 @@ fn inversion(
     if 1.5 * s_f > super::cancellation_cap(wp) as f64 {
         return Err(super::special_exhausted(wp));
     }
-    let inv_z = c_div(&c_one(wp), z, wp, rm);
-    let li = series(s, s_int, s_f, &inv_z, wp, rm, cc)?;
-    let sigma = BigFloat::from_i32(1, 64).sub(s, super::exact_bits(s, wp), rm);
-    let hz = hurwitz(&sigma, &a, wp, rm, cc)?;
-    let gamma = super::arb_gamma_real(s, wp, rm, cc)?;
-    let c = super::bf_pow(&two_pi, s, wp, rm, cc).div(&gamma, wp, rm);
-    let e1 = exp_i_pi(s, wp, rm, cc);
-    let half_s = s.div(&BigFloat::from_i32(2, 64), super::exact_bits(s, wp), rm);
-    let e2 = exp_i_pi(&half_s, wp, rm, cc);
-    let t1 = c_neg(&c_mul(&e1, &li.value, wp, rm));
-    let t2 = scale(&c_mul(&e2, &hz.value, wp, rm), &c, wp, rm);
+    let inv_z = c_div(&c_one(wp), z, wp, RM);
+    let li = series(s, s_int, s_f, &inv_z, w)?;
+    let sigma = BigFloat::from_i32(1, 64).sub(s, super::exact_bits(s, wp), RM);
+    let hz = hurwitz(&sigma, &a, w)?;
+    let gamma = super::arb_gamma_real(s, w)?;
+    let c = super::bf_pow(&two_pi, s, w).div(&gamma, wp, RM);
+    let e1 = exp_i_pi(s, w);
+    let half_s = s.div(&BigFloat::from_i32(2, 64), super::exact_bits(s, wp), RM);
+    let e2 = exp_i_pi(&half_s, w);
+    let t1 = c_neg(&c_mul(&e1, &li.value, wp, RM));
+    let t2 = scale(&c_mul(&e2, &hz.value, wp, RM), &c, wp);
     let lc = lg2(&c);
     let mut sum = Sum::new(wp);
-    sum.add(&t1, wp, rm);
-    sum.add(&t2, wp, rm);
+    sum.add(&t1, wp);
+    sum.add(&t2, wp);
     sum.largest = sum.largest.max(li.largest).max(hz.largest + lc);
     Ok(sum)
 }
@@ -1587,26 +1549,20 @@ fn inversion(
 pub(super) fn hurwitz_real(
     sigma: &BigFloat,
     a: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<(BigFloat, f64), SymplexError> {
+    let wp = w.bits();
     if *sigma == BigFloat::from_i32(1, 64) {
         return Err(super::unevaluable("Hurwitz zeta: pole at order 1"));
     }
-    let sum = hurwitz(sigma, &(a.clone(), BigFloat::new(wp)), wp, rm, cc)?;
+    let sum = hurwitz(sigma, &(a.clone(), BigFloat::new(wp)), w)?;
     Ok((sum.value.0, sum.largest))
 }
 
 /// The Hurwitz zeta function `ζ(σ, a)` for a real `σ ≠ 1` and `0 < Re a ≤
 /// 1` by Euler–Maclaurin (see the module documentation).
-fn hurwitz(
-    sigma: &BigFloat,
-    a: &Complex,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<Sum, SymplexError> {
+fn hurwitz(sigma: &BigFloat, a: &Complex, wpc: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+    let wp = wpc.bits();
     let sf = to_f64(sigma).ok_or_else(|| super::unevaluable("Hurwitz zeta order"))?;
     let (Some(ar), Some(ai)) = (to_f64(&a.0), to_f64(&a.1)) else {
         return Err(super::unevaluable("Hurwitz zeta argument beyond f64"));
@@ -1627,54 +1583,54 @@ fn hurwitz(
     let mut sum = Sum::new(wp);
     for k in 0..n {
         let ak = (
-            a.0.add(&BigFloat::from_u64(k as u64, 64), exact, rm),
+            a.0.add(&BigFloat::from_u64(k as u64, 64), exact, RM),
             a.1.clone(),
         );
-        sum.add(&pow_real(&ak, &neg_sigma, wp, rm, cc), wp, rm);
+        sum.add(&pow_real(&ak, &neg_sigma, wpc), wp);
     }
     let w = (
-        a.0.add(&BigFloat::from_u64(n as u64, 64), exact, rm),
+        a.0.add(&BigFloat::from_u64(n as u64, 64), exact, RM),
         a.1.clone(),
     );
-    let base = pow_real(&w, &neg_sigma, wp, rm, cc); // w^{−σ}
-    let sigma_minus_1 = minus_int(sigma, 1, wp, rm);
+    let base = pow_real(&w, &neg_sigma, wpc); // w^{−σ}
+    let sigma_minus_1 = minus_int(sigma, 1, wp);
     let integral = c_div(
-        &c_mul(&base, &w, wp, rm),
+        &c_mul(&base, &w, wp, RM),
         &(sigma_minus_1, BigFloat::new(wp)),
         wp,
-        rm,
+        RM,
     );
-    sum.add(&integral, wp, rm);
-    sum.add(&div_int(&base, 2, wp, rm), wp, rm);
-    let inv_w = c_div(&c_one(wp), &w, wp, rm);
-    let inv_w2 = c_mul(&inv_w, &inv_w, wp, rm);
+    sum.add(&integral, wp);
+    sum.add(&div_int(&base, 2, wp), wp);
+    let inv_w = c_div(&c_one(wp), &w, wp, RM);
+    let inv_w2 = c_mul(&inv_w, &inv_w, wp, RM);
     let lw = accuracy::lg_abs_low(&w);
     let lre = lg2(&w.0) - 1e-9;
     let mut pw = inv_w; // w^{−(2j−1)}
     // c_j = (σ)_{2j−1}/(2j)!
-    let mut c = sigma.div(&BigFloat::from_i32(2, 64), wp, rm);
+    let mut c = sigma.div(&BigFloat::from_i32(2, 64), wp, RM);
     let mut lpoch = 0.0f64; // log₂|(σ)_{2j}|
     let max_m = 4 * wp + 2 * sf.abs() as usize + 64;
     for j in 1..=max_m {
         if j > 1 {
-            let f1 = minus_int(sigma, -(2 * j as i64 - 3), wp, rm);
-            let f2 = minus_int(sigma, -(2 * j as i64 - 2), wp, rm);
-            c = c.mul(&f1, wp, rm).mul(&f2, wp, rm).div(
+            let f1 = minus_int(sigma, -(2 * j as i64 - 3), wp);
+            let f2 = minus_int(sigma, -(2 * j as i64 - 2), wp);
+            c = c.mul(&f1, wp, RM).mul(&f2, wp, RM).div(
                 &BigFloat::from_u64(((2 * j - 1) * (2 * j)) as u64, 64),
                 wp,
-                rm,
+                RM,
             );
-            pw = c_mul(&pw, &inv_w2, wp, rm);
+            pw = c_mul(&pw, &inv_w2, wp, RM);
         }
-        let b = super::ratio_to_bigfloat(&super::bernoulli::even(j), wp, rm);
-        let t = scale(&c_mul(&base, &pw, wp, rm), &b.mul(&c, wp, rm), wp, rm);
-        sum.add(&t, wp, rm);
+        let b = super::ratio_to_bigfloat(&super::bernoulli::even(j), wp);
+        let t = scale(&c_mul(&base, &pw, wp, RM), &b.mul(&c, wp, RM), wp);
+        sum.add(&t, wp);
         let jf = j as f64;
         // The factors σ + 2j − 2 and σ + 2j − 1 exactly: next to an integer
         // order one of them is tiny (`σ = −1 − 10⁻²⁰`), and in `f64` it was 0
         // — an "exact" sum after one term, wrong from the 21st digit.
-        let g1 = minus_int(sigma, -(2 * j as i64 - 2), wp, rm);
-        let g2 = minus_int(sigma, -(2 * j as i64 - 1), wp, rm);
+        let g1 = minus_int(sigma, -(2 * j as i64 - 2), wp);
+        let g2 = minus_int(sigma, -(2 * j as i64 - 1), wp);
         lpoch += lg2(&g1) + lg2(&g2);
         if lpoch == f64::NEG_INFINITY {
             // (σ)_{2j} = 0: the sum is exact (an integer σ ≤ 0).
@@ -1723,10 +1679,9 @@ pub(super) fn error_bound(
     z: &Complex,
     bz: Bound,
     v: &Complex,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Bound {
+    let prec = w.bits();
     if bs.is_unknown() || bz.is_unknown() {
         return Bound::UNKNOWN;
     }
@@ -1746,13 +1701,13 @@ pub(super) fn error_bound(
     }
     let mut total = lv - prec as f64 - 12.0;
     if !bz.is_exact() {
-        match z_change(s, z, bz, rm, cc) {
+        match z_change(s, z, bz, w.cc) {
             Some(c) => total = accuracy::lsum(total, c),
             None => return Bound::UNKNOWN,
         }
     }
     if !bs.is_exact() {
-        match s_change(s, bs.joint(), z, v, rm, cc) {
+        match s_change(s, bs.joint(), z, v, w.cc) {
             Some(c) => total = accuracy::lsum(total, c),
             None => return Bound::UNKNOWN,
         }
@@ -1827,31 +1782,25 @@ fn cut_imaginary_bound(
 }
 
 /// Twice the change of `Li_s` over the ball of `z` (see [`error_bound`]).
-fn z_change(
-    s: &BigFloat,
-    z: &Complex,
-    bz: Bound,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<f64> {
+fn z_change(s: &BigFloat, z: &Complex, bz: Bound, cc: &mut Consts) -> Option<f64> {
     let r = bz.joint();
     let undecided_side =
         !accuracy::exact_zero(&z.1, bz.im) && accuracy::part_contains_zero(&z.1, bz.im);
     if undecided_side {
         // Does the real part's interval reach [1, ∞)?
-        let hi = z.0.add(&BigFloat::from_f64(r.exp2(), 64), LP, rm);
+        let hi = z.0.add(&bigfloat::from_f64(r.exp2(), 64), LP, RM);
         if !super::bf_lt(&hi, &BigFloat::from_i32(1, 64)) {
             return None;
         }
     }
     let one = BigFloat::from_i32(1, 64);
-    let d = (z.0.sub(&one, super::exact_bits(&z.0, LP), rm), z.1.clone());
+    let d = (z.0.sub(&one, super::exact_bits(&z.0, LP), RM), z.1.clone());
     let ld = accuracy::lg_abs_low(&d);
     if ld.is_nan() || ld <= r + 3.0 {
         return None;
     }
-    let s1 = minus_int(s, 1, LP, rm);
-    let li = polylog_general(&s1, z, LP, rm, cc).ok()?;
+    let s1 = minus_int(s, 1, LP);
+    let li = polylog_general(&s1, z, &mut Wp::new(LP, cc)).ok()?;
     let lz = accuracy::lg_abs_low(z);
     let dl = accuracy::lg_abs(&li) - lz;
     if !dl.is_finite() {
@@ -1865,14 +1814,7 @@ fn z_change(
 
 /// Twice the change of `Li_s(z)` over the ball `s ± 2^es` (see
 /// [`error_bound`]).
-fn s_change(
-    s: &BigFloat,
-    es: f64,
-    z: &Complex,
-    v: &Complex,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Option<f64> {
+fn s_change(s: &BigFloat, es: f64, z: &Complex, v: &Complex, cc: &mut Consts) -> Option<f64> {
     let sf = to_f64(s)?;
     let lh = (sf.abs().max(1.0).log2() - 40.0).floor();
     if es > lh - 8.0 {
@@ -1881,9 +1823,9 @@ fn s_change(
     }
     let mut h = BigFloat::from_i32(1, 64);
     h.set_exponent(lh as i32 + 1);
-    let moved = s.add(&h, super::exact_bits(s, LP), rm);
-    let w = polylog_general(&moved, z, LP, rm, cc).ok()?;
-    let diff = c_sub(&w, v, LP + 64, rm);
+    let moved = s.add(&h, super::exact_bits(s, LP), RM);
+    let w = polylog_general(&moved, z, &mut Wp::new(LP, cc)).ok()?;
+    let diff = c_sub(&w, v, LP + 64, RM);
     // |Δ|/h plus the rounding of both values (2^−(LP−4) of |Li|).
     let noise = accuracy::lg_abs(v) - (LP as f64 - 4.0) - lh;
     let deriv = accuracy::lsum(accuracy::lg_abs(&diff) - lh, noise);
@@ -1896,9 +1838,8 @@ mod tests {
     use astro_float::Radix;
 
     fn close(x: &BigFloat, want: &str, bits: i32, cc: &mut Consts) -> bool {
-        let rm = RoundingMode::ToEven;
-        let w = BigFloat::parse(want, Radix::Dec, 400, rm, cc);
-        let d = x.sub(&w, 400, rm);
+        let w = BigFloat::parse(want, Radix::Dec, 400, RM, cc);
+        let d = x.sub(&w, 400, RM);
         d.is_zero()
             || d.exponent()
                 .is_some_and(|e| e < w.exponent().unwrap_or(0) - bits)
@@ -1908,12 +1849,11 @@ mod tests {
     /// sum by itself (`(σ)_{2j} = 0`).  `a = 1/2 + i`: `13/24`, real.
     #[test]
     fn hurwitz_at_a_non_positive_integer_is_a_bernoulli_polynomial() {
-        let rm = RoundingMode::ToEven;
         let mut cc = Consts::new().unwrap();
         let a = (BigFloat::from_f64(0.5, 64), BigFloat::from_i32(1, 64));
-        let v = hurwitz(&BigFloat::from_i32(-1, 64), &a, 256, rm, &mut cc).unwrap();
-        let want = BigFloat::from_i32(13, 64).div(&BigFloat::from_i32(24, 64), 400, rm);
-        let d = v.value.0.sub(&want, 400, rm);
+        let v = hurwitz(&BigFloat::from_i32(-1, 64), &a, &mut Wp::new(256, &mut cc)).unwrap();
+        let want = BigFloat::from_i32(13, 64).div(&BigFloat::from_i32(24, 64), 400, RM);
+        let d = v.value.0.sub(&want, 400, RM);
         assert!(d.is_zero() || d.exponent().is_some_and(|e| e < -200));
         assert!(v.value.1.is_zero() || v.value.1.exponent().is_some_and(|e| e < -200));
     }
@@ -1928,13 +1868,12 @@ mod tests {
     /// + 0.1250000000000000000001218632544294143230559564251799939…i`.
     #[test]
     fn hurwitz_next_to_an_integer_order() {
-        let rm = RoundingMode::ToEven;
         let mut cc = Consts::new().unwrap();
         let mut eps = BigFloat::from_i32(1, 64);
         eps.set_exponent(-69);
-        let sigma = BigFloat::from_i32(-1, 64).sub(&eps, 200, rm);
+        let sigma = BigFloat::from_i32(-1, 64).sub(&eps, 200, RM);
         let a = (BigFloat::from_f64(0.25, 64), BigFloat::from_f64(0.5, 64));
-        let v = hurwitz(&sigma, &a, 256, rm, &mut cc).unwrap();
+        let v = hurwitz(&sigma, &a, &mut Wp::new(256, &mut cc)).unwrap();
         assert!(close(
             &v.value.0,
             "0.135416666666666666666373504570848456900621708517242889",
@@ -1952,11 +1891,10 @@ mod tests {
     /// `e^{iπx}` is exact at the integers and half-integers.
     #[test]
     fn exp_i_pi_is_exact_at_quarter_turns() {
-        let rm = RoundingMode::ToEven;
         let mut cc = Consts::new().unwrap();
-        let e = exp_i_pi(&BigFloat::from_f64(-2.5, 64), 128, rm, &mut cc);
+        let e = exp_i_pi(&BigFloat::from_f64(-2.5, 64), &mut Wp::new(128, &mut cc));
         assert!(e.0.is_zero() && e.1 == BigFloat::from_i32(-1, 64));
-        let e = exp_i_pi(&BigFloat::from_i32(7, 64), 128, rm, &mut cc);
+        let e = exp_i_pi(&BigFloat::from_i32(7, 64), &mut Wp::new(128, &mut cc));
         assert!(e.1.is_zero() && e.0 == BigFloat::from_i32(-1, 64));
     }
 }

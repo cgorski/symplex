@@ -26,7 +26,9 @@
 //!   1 − f + j)` (`f` the fractional part), which cancel exactly at a
 //!   half-integer `x`.
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use super::wp::{RM, Wp};
+use crate::base::bigfloat::is_strictly_positive;
+use astro_float::BigFloat;
 
 use crate::base::errors::SymplexError;
 
@@ -38,7 +40,7 @@ fn unevaluable(reason: impl Into<String>) -> SymplexError {
 
 /// `x > 0` strictly (astro-float's `is_positive` is true for `+0`).
 fn pos(x: &BigFloat) -> bool {
-    x.is_positive() && !x.is_zero()
+    is_strictly_positive(x)
 }
 
 /// Is `x` a pole of Γ, a non-positive integer?
@@ -69,7 +71,7 @@ fn gamma_sign(x: &BigFloat) -> i32 {
 
 /// `a + b` exactly (the precision spans both operands' bits), or to
 /// `2¹⁸ + prec` bits when they are further apart than that.
-pub(super) fn exact_sum(a: &BigFloat, b: &BigFloat, prec: usize, rm: RoundingMode) -> BigFloat {
+pub(super) fn exact_sum(a: &BigFloat, b: &BigFloat, prec: usize) -> BigFloat {
     let span = |x: &BigFloat| -> Option<(i64, i64)> {
         let e = i64::from(x.exponent()?);
         let m = x.mantissa_max_bit_len().unwrap_or(64) as i64;
@@ -86,7 +88,7 @@ pub(super) fn exact_sum(a: &BigFloat, b: &BigFloat, prec: usize, rm: RoundingMod
         (None, None) => prec,
     }
     .max(64);
-    a.add(b, p, rm)
+    a.add(b, p, RM)
 }
 
 fn int(n: i32) -> BigFloat {
@@ -107,10 +109,9 @@ fn int(n: i32) -> BigFloat {
 pub(super) fn gamma_ratio(
     num: &[BigFloat],
     den: &[BigFloat],
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     if num.iter().chain(den).any(|x| x.is_nan() || x.is_inf()) {
         return Err(unevaluable("Gamma quotient of a non-finite argument"));
     }
@@ -126,11 +127,11 @@ pub(super) fn gamma_ratio(
     }
     let mut sign = 1;
     for (i, j) in poles_num.into_iter().zip(poles_den) {
-        if !is_even(&exact_sum(i, j, prec, rm)) {
+        if !is_even(&exact_sum(i, j, prec)) {
             sign = -sign;
         }
-        regular_num.push(exact_sum(&int(1), &j.neg(), prec, rm));
-        regular_den.push(exact_sum(&int(1), &i.neg(), prec, rm));
+        regular_num.push(exact_sum(&int(1), &j.neg(), prec));
+        regular_den.push(exact_sum(&int(1), &i.neg(), prec));
     }
     // Γ(1) = Γ(2) = 1: such factors drop out.  (Their logarithm is exactly
     // 0, which `arb_log_gamma` cannot certify to any relative precision: up
@@ -152,25 +153,23 @@ pub(super) fn gamma_ratio(
             .map(|x| (x, true))
             .chain(regular_den.iter().map(|x| (x, false)))
         {
-            let l = super::arb_log_gamma(x, wp, rm, cc)?.0;
-            size += super::bigfloat_to_f64_rounded(&l, rm)
-                .unwrap_or(f64::INFINITY)
-                .abs();
+            let l = super::arb_log_gamma(x, &mut w.at(wp))?.0;
+            size += super::f64_of(&l).unwrap_or(f64::INFINITY).abs();
             total = if plus {
-                total.add(&l, wp, rm)
+                total.add(&l, wp, RM)
             } else {
-                total.sub(&l, wp, rm)
+                total.sub(&l, wp, RM)
             };
         }
         let needed = prec + 32 + (size + 1.0).log2().ceil().max(0.0) as usize;
         if needed <= wp || !size.is_finite() {
-            let v = total.exp(wp, rm, cc);
+            let v = total.exp(wp, RM, w.cc);
             if v.is_inf() || v.is_nan() || (v.is_zero() && !total.is_zero()) {
                 return Err(unevaluable(
                     "the Gamma quotient is beyond the floating-point exponent range",
                 ));
             }
-            let v = super::round_to(v, prec, rm);
+            let v = super::round_to(v, prec);
             return Ok(if sign < 0 { v.neg() } else { v });
         }
         wp = needed;
@@ -194,31 +193,29 @@ fn split_poles(xs: &[BigFloat]) -> (Vec<&BigFloat>, Vec<BigFloat>) {
 pub(super) fn rising_factorial(
     x: &BigFloat,
     n: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     if n.is_zero() {
         return Ok(BigFloat::from_i32(1, prec));
     }
-    let xn = exact_sum(x, n, prec, rm);
-    gamma_ratio(&[xn], std::slice::from_ref(x), prec, rm, cc)
+    let xn = exact_sum(x, n, prec);
+    gamma_ratio(&[xn], std::slice::from_ref(x), w)
 }
 
 /// `ff(x, n) = Γ(x + 1)/Γ(x − n + 1)` for real `x`, `n`.
 pub(super) fn falling_factorial(
     x: &BigFloat,
     n: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     if n.is_zero() {
         return Ok(BigFloat::from_i32(1, prec));
     }
-    let x1 = exact_sum(x, &int(1), prec, rm);
-    let xn1 = exact_sum(&x1, &n.neg(), prec, rm);
-    gamma_ratio(&[x1], &[xn1], prec, rm, cc)
+    let x1 = exact_sum(x, &int(1), prec);
+    let xn1 = exact_sum(&x1, &n.neg(), prec);
+    gamma_ratio(&[x1], &[xn1], w)
 }
 
 /// `C(n, k) = Γ(n + 1)/(Γ(k + 1)·Γ(n − k + 1))` through [`gamma_ratio`]:
@@ -227,27 +224,21 @@ pub(super) fn falling_factorial(
 pub(super) fn binomial(
     n: &BigFloat,
     k: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
-    let n1 = exact_sum(n, &int(1), prec, rm);
-    let k1 = exact_sum(k, &int(1), prec, rm);
-    let nk1 = exact_sum(&n1, &k.neg(), prec, rm);
-    gamma_ratio(&[n1], &[k1, nk1], prec, rm, cc)
+    let prec = w.bits();
+    let n1 = exact_sum(n, &int(1), prec);
+    let k1 = exact_sum(k, &int(1), prec);
+    let nk1 = exact_sum(&n1, &k.neg(), prec);
+    gamma_ratio(&[n1], &[k1, nk1], w)
 }
 
 /// Does `C(n, k)`'s Γ formula meet a pole: is `n + 1`, `k + 1` or
 /// `n − k + 1` a non-positive integer?
-pub(super) fn binomial_meets_pole(
-    n: &BigFloat,
-    k: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-) -> bool {
-    let n1 = exact_sum(n, &int(1), prec, rm);
-    let k1 = exact_sum(k, &int(1), prec, rm);
-    let nk1 = exact_sum(&n1, &k.neg(), prec, rm);
+pub(super) fn binomial_meets_pole(n: &BigFloat, k: &BigFloat, prec: usize) -> bool {
+    let n1 = exact_sum(n, &int(1), prec);
+    let k1 = exact_sum(k, &int(1), prec);
+    let nk1 = exact_sum(&n1, &k.neg(), prec);
     is_npint(&n1) || is_npint(&k1) || is_npint(&nk1)
 }
 
@@ -258,31 +249,27 @@ pub(super) fn binomial_meets_pole(
 /// and continuous: the limits `C(−1) = −1/2`, `C(n) = 0` for `n ≤ −2`;
 /// the negative half-integers are poles.  (Before 0.40 `evalf` had no
 /// routine for `catalan` at all.)
-pub(super) fn catalan(
-    x: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<BigFloat, SymplexError> {
+pub(super) fn catalan(x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     if x.is_nan() || x.is_inf() {
         return Err(unevaluable("catalan of a non-finite argument"));
     }
     if is_npint(x) && !x.is_zero() {
         return Ok(if x.cmp(&int(-1)) == Some(0) {
-            int(-1).div(&int(2), prec, rm)
+            int(-1).div(&int(2), prec, RM)
         } else {
             BigFloat::new(prec)
         });
     }
-    let numerator = exact_sum(&exact_sum(x, x, prec, rm), &int(1), prec, rm);
+    let numerator = exact_sum(&exact_sum(x, x, prec), &int(1), prec);
     if is_npint(&numerator) {
         return Err(unevaluable(
             "catalan has a pole at a negative half-integer (the value is infinite)",
         ));
     }
-    let x1 = exact_sum(x, &int(1), prec, rm);
-    let x2 = exact_sum(x, &int(2), prec, rm);
-    gamma_ratio(&[numerator], &[x1, x2], prec, rm, cc)
+    let x1 = exact_sum(x, &int(1), prec);
+    let x2 = exact_sum(x, &int(2), prec);
+    gamma_ratio(&[numerator], &[x1, x2], w)
 }
 
 /// `cos(πx)` to full relative precision: `x = k + f` with `k` the nearest
@@ -290,19 +277,20 @@ pub(super) fn catalan(
 /// exactly 0 at the half-integers.  (The `cos` of a rounded `πx` has an
 /// absolute error of `2^{(bits of x) − wp}`, all of the value next to a
 /// half-integer.)
-fn cos_pi(x: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+fn cos_pi(x: &BigFloat, w: &mut Wp<'_>) -> BigFloat {
+    let wp = w.bits();
     let half = BigFloat::from_f64(0.5, 64);
     let mut k = x.floor();
-    let mut f = exact_sum(x, &k.neg(), wp, rm);
+    let mut f = exact_sum(x, &k.neg(), wp);
     if f.cmp(&half).is_some_and(|c| c > 0) {
-        f = exact_sum(&f, &int(-1), wp, rm);
-        k = exact_sum(&k, &int(1), wp, rm);
+        f = exact_sum(&f, &int(-1), wp);
+        k = exact_sum(&k, &int(1), wp);
     }
-    let g = exact_sum(&half, &f.abs().neg(), wp, rm);
+    let g = exact_sum(&half, &f.abs().neg(), wp);
     let s = if g.is_zero() {
         BigFloat::new(wp)
     } else {
-        cc.pi(wp, rm).clone().mul(&g, wp, rm).sin(wp, rm, cc)
+        w.cc.pi(wp, RM).clone().mul(&g, wp, RM).sin(wp, RM, w.cc)
     };
     if is_even(&k) { s } else { s.neg() }
 }
@@ -319,10 +307,9 @@ fn cos_pi(x: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloa
 pub(super) fn fibonacci(
     x: &BigFloat,
     lucas: bool,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     if x.is_nan() || x.is_inf() {
         return Err(unevaluable("fibonacci of a non-finite argument"));
     }
@@ -334,22 +321,22 @@ pub(super) fn fibonacci(
     let mut extra = 32 + int_bits;
     loop {
         let wp = prec + extra;
-        let sqrt5 = int(5).sqrt(wp, rm);
-        let phi = int(1).add(&sqrt5, wp, rm).div(&int(2), wp, rm);
-        let t = x.mul(&phi.ln(wp, rm, cc), wp, rm);
-        let up = t.exp(wp, rm, cc);
-        let down = t.neg().exp(wp, rm, cc);
+        let sqrt5 = int(5).sqrt(wp, RM);
+        let phi = int(1).add(&sqrt5, wp, RM).div(&int(2), wp, RM);
+        let t = x.mul(&phi.ln(wp, RM, w.cc), wp, RM);
+        let up = t.exp(wp, RM, w.cc);
+        let down = t.neg().exp(wp, RM, w.cc);
         if up.is_inf() || up.is_nan() || down.is_inf() || down.is_nan() {
             return Err(unevaluable(
                 "fibonacci of this argument is beyond the floating-point exponent range",
             ));
         }
-        let cosine = cos_pi(x, wp, rm, cc);
-        let tail = cosine.mul(&down, wp, rm);
+        let cosine = cos_pi(x, &mut w.at(wp));
+        let tail = cosine.mul(&down, wp, RM);
         let sum = if lucas {
-            up.add(&tail, wp, rm)
+            up.add(&tail, wp, RM)
         } else {
-            up.sub(&tail, wp, rm)
+            up.sub(&tail, wp, RM)
         };
         // A zero tail (the cosine at a half-integer) has no exponent to
         // compare: the sum is `up` exactly.
@@ -366,8 +353,8 @@ pub(super) fn fibonacci(
             _ => wp,
         };
         if lost + 16 <= extra {
-            let value = if lucas { sum } else { sum.div(&sqrt5, wp, rm) };
-            return Ok(super::round_to(value, prec, rm));
+            let value = if lucas { sum } else { sum.div(&sqrt5, wp, RM) };
+            return Ok(super::round_to(value, prec));
         }
         if extra >= cap {
             return Err(super::special_exhausted(prec));
@@ -380,12 +367,8 @@ pub(super) fn fibonacci(
 /// The terms cancel near `z = 0` (`H(z) ≈ ζ(2)·z`): the loss is measured
 /// and the sum repeated with that many more bits, up to the cancellation
 /// cap of the other special functions.
-pub(super) fn harmonic(
-    z: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<BigFloat, SymplexError> {
+pub(super) fn harmonic(z: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     if z.is_nan() || z.is_inf() {
         return Err(unevaluable("harmonic of a non-finite argument"));
     }
@@ -397,14 +380,14 @@ pub(super) fn harmonic(
             "harmonic has a pole at a negative integer (the value is infinite)",
         ));
     }
-    let z1 = exact_sum(z, &int(1), prec, rm);
+    let z1 = exact_sum(z, &int(1), prec);
     let cap = super::cancellation_cap(prec);
     let mut extra = 32;
     loop {
         let wp = prec + extra;
-        let psi = super::arb_digamma(&z1, wp, rm, cc)?;
-        let gamma = super::arb_euler_gamma(wp, rm, cc)?;
-        let h = psi.add(&gamma, wp, rm);
+        let psi = super::arb_digamma(&z1, &mut w.at(wp))?;
+        let gamma = super::arb_euler_gamma(&mut w.at(wp))?;
+        let h = psi.add(&gamma, wp, RM);
         let top = psi
             .exponent()
             .unwrap_or(0)
@@ -414,7 +397,7 @@ pub(super) fn harmonic(
             _ => wp,
         };
         if lost + 16 <= extra {
-            return Ok(super::round_to(h, prec, rm));
+            return Ok(super::round_to(h, prec));
         }
         if extra >= cap {
             return Err(super::special_exhausted(prec));
@@ -440,18 +423,17 @@ const MAX_ORDER: f64 = 9.0e15;
 pub(super) fn polygamma_large(
     n: &BigFloat,
     x: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
     if x.is_nan() || x.is_inf() {
         return Err(unevaluable("polygamma of a non-finite argument"));
     }
     if is_npint(x) {
         return Err(unevaluable("polygamma at non-positive integer pole"));
     }
-    let s = exact_sum(n, &int(1), prec, rm);
-    let sf = super::bigfloat_to_f64_rounded(&s, rm)?;
+    let s = exact_sum(n, &int(1), prec);
+    let sf = super::f64_of(&s)?;
     if !(2.0..=MAX_ORDER).contains(&sf) {
         return Err(SymplexError::NotImplemented(format!(
             "polygamma of order {} (at most {MAX_ORDER:e})",
@@ -463,7 +445,7 @@ pub(super) fn polygamma_large(
     let mut extra = 32;
     loop {
         let wp = prec + extra;
-        let (scale, z) = scaled_hurwitz(&s, sf, odd, x, wp, rm, cc)?;
+        let (scale, z) = scaled_hurwitz(&s, sf, odd, x, &mut w.at(wp))?;
         // `Z` is a sum of terms of magnitude at most 1: its loss is `−log₂|Z|`.
         let lost = match z.exponent() {
             Some(e) if !z.is_zero() => usize::try_from(-i64::from(e)).unwrap_or(0),
@@ -477,16 +459,15 @@ pub(super) fn polygamma_large(
             continue;
         }
         // ln|ψ| = ln Γ(s) − s·ln d + ln|Z|, to an absolute error below 2^{−prec−32}.
-        let lg = super::arb_log_gamma(&s, wp, rm, cc)?.0;
-        let ln_d = scale.ln(wp, rm, cc);
-        let size = super::bigfloat_to_f64_rounded(&lg, rm)?.abs()
-            + sf * super::bigfloat_to_f64_rounded(&ln_d, rm)?.abs();
+        let lg = super::arb_log_gamma(&s, &mut w.at(wp))?.0;
+        let ln_d = scale.ln(wp, RM, w.cc);
+        let size = super::f64_of(&lg)?.abs() + sf * super::f64_of(&ln_d)?.abs();
         let lp = prec + 32 + (size + 1.0).log2().ceil().max(0.0) as usize;
-        let lg = super::arb_log_gamma(&s, lp, rm, cc)?.0;
-        let s_ln_d = s.mul(&scale.ln(lp, rm, cc), lp, rm);
-        let ln_z = z.abs().ln(lp, rm, cc);
-        let total = lg.sub(&s_ln_d, lp, rm).add(&ln_z, lp, rm);
-        let v = total.exp(lp, rm, cc);
+        let lg = super::arb_log_gamma(&s, &mut w.at(lp))?.0;
+        let s_ln_d = s.mul(&scale.ln(lp, RM, w.cc), lp, RM);
+        let ln_z = z.abs().ln(lp, RM, w.cc);
+        let total = lg.sub(&s_ln_d, lp, RM).add(&ln_z, lp, RM);
+        let v = total.exp(lp, RM, w.cc);
         if v.is_inf() || v.is_nan() || v.is_zero() {
             return Err(unevaluable(
                 "polygamma of this order is beyond the floating-point exponent range",
@@ -494,7 +475,7 @@ pub(super) fn polygamma_large(
         }
         // (−1)^{n+1} = (−1)^s.
         let negative = odd != z.is_negative();
-        let v = super::round_to(v, prec, rm);
+        let v = super::round_to(v, prec);
         return Ok(if negative { v.neg() } else { v });
     }
 }
@@ -506,26 +487,22 @@ fn scaled_hurwitz(
     sf: f64,
     odd: bool,
     x: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<(BigFloat, BigFloat), SymplexError> {
+    let wp = w.bits();
     if pos(x) {
-        return Ok((x.clone(), positive_part(s, sf, x, x, wp, rm, cc)?));
+        return Ok((x.clone(), positive_part(s, sf, x, x, w)?));
     }
     // x = f − m, f ∈ (0, 1), m ≥ 1: the terms left of 0 are (x + j)^{−s} =
     // (−1)^s·(i − f)^{−s}, i = m − j = 1 … m.
     let m = x.floor().neg();
-    let f = exact_sum(x, &m, wp, rm);
-    let one_minus_f = exact_sum(&int(1), &f.neg(), wp, rm);
-    let mf = super::bigfloat_to_f64_rounded(&m, rm)?;
+    let f = exact_sum(x, &m, wp);
+    let one_minus_f = exact_sum(&int(1), &f.neg(), wp);
+    let mf = super::f64_of(&m)?;
     if odd && f == one_minus_f {
         // A half-integer x: the pairs (f + j, 1 − f + j), j < m, cancel exactly.
-        let start = exact_sum(&f, &m, wp, rm);
-        return Ok((
-            start.clone(),
-            positive_part(s, sf, &start, &start, wp, rm, cc)?,
-        ));
+        let start = exact_sum(&f, &m, wp);
+        return Ok((start.clone(), positive_part(s, sf, &start, &start, w)?));
     }
     let g = if f < one_minus_f {
         f.clone()
@@ -546,14 +523,14 @@ fn scaled_hurwitz(
     let mut u = f.clone(); // f + j
     let mut v = one_minus_f.clone(); // 1 − f + j
     while j < mf {
-        let a = scaled_term(s, &u, &g, wp, rm, cc);
-        let b = scaled_term(s, &v, &g, wp, rm, cc);
+        let a = scaled_term(s, &u, &g, w);
+        let b = scaled_term(s, &v, &g, w);
         let pair = if odd {
-            a.sub(&b, wp, rm)
+            a.sub(&b, wp, RM)
         } else {
-            a.add(&b, wp, rm)
+            a.add(&b, wp, RM)
         };
-        z = z.add(&pair, wp, rm);
+        z = z.add(&pair, wp, RM);
         if negligible(&a, &z) && negligible(&b, &z) {
             // The rest of both sums: below `(1 + u/(s − 1))` times these
             // terms each (the bound of `positive_part`), under `2^{−wp−8}`
@@ -561,8 +538,8 @@ fn scaled_hurwitz(
             return Ok((g, z));
         }
         j += 1.0;
-        u = exact_sum(&u, &int(1), wp, rm);
-        v = exact_sum(&v, &int(1), wp, rm);
+        u = exact_sum(&u, &int(1), wp);
+        v = exact_sum(&v, &int(1), wp);
         if j > 1.0e6 {
             return Err(SymplexError::NotImplemented(
                 "polygamma of large order far left of 0 (more than a million terms)".into(),
@@ -570,25 +547,19 @@ fn scaled_hurwitz(
         }
     }
     // The terms right of the last pair: f + m, f + m + 1, …
-    let rest = positive_part(s, sf, &u, &g, wp, rm, cc)?;
-    Ok((g, z.add(&rest, wp, rm)))
+    let rest = positive_part(s, sf, &u, &g, w)?;
+    Ok((g, z.add(&rest, wp, RM)))
 }
 
 /// `(g/u)^s = exp(−s·ln(u/g))` at `wp` bits (`u ≥ g > 0`).
-fn scaled_term(
-    s: &BigFloat,
-    u: &BigFloat,
-    g: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> BigFloat {
+fn scaled_term(s: &BigFloat, u: &BigFloat, g: &BigFloat, w: &mut Wp<'_>) -> BigFloat {
+    let wp = w.bits();
     // `s·ln(u/g)` to an absolute `2^{−wp−8}` where the term matters
     // (`s·ln(u/g) ≲ wp`): `log₂ s` bits for the product, `2·log₂ wp` more.
     let s_bits = s.exponent().map_or(0, |e| usize::try_from(e).unwrap_or(0));
     let p = wp + s_bits + 2 * (usize::BITS - wp.leading_zeros()) as usize + 16;
-    let l = u.div(g, p, rm).ln(p, rm, cc);
-    s.mul(&l, p, rm).neg().exp(wp, rm, cc)
+    let l = u.div(g, p, RM).ln(p, RM, w.cc);
+    s.mul(&l, p, RM).neg().exp(wp, RM, w.cc)
 }
 
 /// `Σ_{j≥0} (g/(f + j))^s` for `f ≥ g > 0` and a large `s`: the terms while
@@ -599,23 +570,22 @@ fn positive_part(
     sf: f64,
     f: &BigFloat,
     g: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
+    let wp = w.bits();
     let switch = (sf / std::f64::consts::PI).max(wp as f64) + 1.0;
     let mut sum = BigFloat::new(wp);
     let mut u = f.clone();
     for _ in 0..1_000_000 {
-        let uf = super::bigfloat_to_f64_rounded(&u, rm)?;
+        let uf = super::f64_of(&u)?;
         if uf >= switch {
-            let tail = euler_maclaurin_tail(s, &u, g, wp, rm, cc);
-            return Ok(sum.add(&tail, wp, rm));
+            let tail = euler_maclaurin_tail(s, &u, g, w);
+            return Ok(sum.add(&tail, wp, RM));
         }
-        let t = scaled_term(s, &u, g, wp, rm, cc);
-        sum = sum.add(&t, wp, rm);
-        let u1 = exact_sum(&u, &int(1), wp, rm);
-        let next = scaled_term(s, &u1, g, wp, rm, cc);
+        let t = scaled_term(s, &u, g, w);
+        sum = sum.add(&t, wp, RM);
+        let u1 = exact_sum(&u, &int(1), wp);
+        let next = scaled_term(s, &u1, g, w);
         // Σ_{i≥0} (u1 + i)^{−s} ≤ u1^{−s}·(1 + u1/(s − 1)).
         let factor = 1.0 + (uf + 1.0) / (sf - 1.0);
         let bound_exp =
@@ -636,48 +606,42 @@ fn positive_part(
 /// series stopped once a term is below `2^{−wp−8}` of the bracket (for the
 /// completely monotone `t^{−s}` the remainder is below the first omitted
 /// term).
-fn euler_maclaurin_tail(
-    s: &BigFloat,
-    a: &BigFloat,
-    g: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> BigFloat {
+fn euler_maclaurin_tail(s: &BigFloat, a: &BigFloat, g: &BigFloat, w: &mut Wp<'_>) -> BigFloat {
+    let wp = w.bits();
     let one = BigFloat::from_i32(1, wp);
-    let s_minus_1 = s.sub(&one, wp, rm);
+    let s_minus_1 = s.sub(&one, wp, RM);
     let mut bracket = a
-        .div(&s_minus_1, wp, rm)
-        .add(&BigFloat::from_f64(0.5, wp), wp, rm);
-    let a2 = a.mul(a, wp, rm);
+        .div(&s_minus_1, wp, RM)
+        .add(&BigFloat::from_f64(0.5, wp), wp, RM);
+    let a2 = a.mul(a, wp, RM);
     // (s)_{2j−1}/((2j)!·a^{2j−1}), j = 1: s/(2a).
-    let mut coef = s.div(&a.mul(&BigFloat::from_i32(2, wp), wp, rm), wp, rm);
+    let mut coef = s.div(&a.mul(&BigFloat::from_i32(2, wp), wp, RM), wp, RM);
     let mut prev: Option<i64> = None;
     for j in 1usize..=(wp / 2 + 64) {
         if j > 1 {
             // × (s + 2j − 3)(s + 2j − 2)/((2j − 1)(2j)·a²)
             let jj = j as i64;
-            let p1 = s.add(&BigFloat::from_i64(2 * jj - 3, 64), wp, rm);
-            let p2 = s.add(&BigFloat::from_i64(2 * jj - 2, 64), wp, rm);
+            let p1 = s.add(&BigFloat::from_i64(2 * jj - 3, 64), wp, RM);
+            let p2 = s.add(&BigFloat::from_i64(2 * jj - 2, 64), wp, RM);
             let q = BigFloat::from_i64((2 * jj - 1) * (2 * jj), 64);
             coef = coef
-                .mul(&p1, wp, rm)
-                .mul(&p2, wp, rm)
-                .div(&q, wp, rm)
-                .div(&a2, wp, rm);
+                .mul(&p1, wp, RM)
+                .mul(&p2, wp, RM)
+                .div(&q, wp, RM)
+                .div(&a2, wp, RM);
         }
-        let b = super::ratio_to_bigfloat(&super::bernoulli::even(j), wp, rm);
-        let term = b.mul(&coef, wp, rm);
+        let b = super::ratio_to_bigfloat(&super::bernoulli::even(j), wp);
+        let term = b.mul(&coef, wp, RM);
         let te = term.exponent().map_or(i64::MIN / 2, i64::from);
         if prev.is_some_and(|p| te > p) {
             break; // the asymptotic series turned (not reached for a ≥ s/π)
         }
         prev = Some(te);
-        bracket = bracket.add(&term, wp, rm);
+        bracket = bracket.add(&term, wp, RM);
         let be = bracket.exponent().map_or(0, i64::from);
         if term.is_zero() || be - te > wp as i64 + 8 {
             break;
         }
     }
-    scaled_term(s, a, g, wp, rm, cc).mul(&bracket, wp, rm)
+    scaled_term(s, a, g, w).mul(&bracket, wp, RM)
 }

@@ -1093,9 +1093,21 @@ impl Expr<Numeric> {
     /// Uses layered detection:
     /// 1. Structural identity with 0 (O(1))
     /// 2. Assumption system query
+    /// 3. For a constant, its value: [`query`](Self::query) with
+    ///    `Props::ZERO`, which proves a zero by the exact tests of the limit
+    ///    engine (`Γ(1/3)·Γ(2/3) − 2π/√3` is 0 by the reflection formula;
+    ///    `None` up to 0.49).
     ///
     /// Returns `Some(true)` if provably zero, `Some(false)` if provably
     /// nonzero, or `None` if unknown.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let k = ctx.parse("gamma(1/3)*gamma(2/3) - 2*pi/sqrt(3)").unwrap();
+    /// assert_eq!(k.is_zero(), Some(true));
+    /// assert_eq!(ctx.parse("pi - 22/7").unwrap().is_zero(), Some(false));
+    /// ```
     #[must_use]
     pub fn is_zero(&self) -> Option<bool> {
         // Layer 1: structural.
@@ -1119,7 +1131,10 @@ impl Expr<Numeric> {
     /// zero tests (`cos(π/16) − √(2 + √(2 + √2))/2` is zero, `atan(1/2) +
     /// atan(1/3) − π/4` too).  Up to 0.45 these queries were `None` while
     /// `eval` and `sign` decided the same constants (SymPy 1.14:
-    /// `cos(pi/16).is_positive` is `True`).
+    /// `cos(pi/16).is_positive` is `True`).  A zero those tests leave open
+    /// goes to the zero test of the limit and series engines (identities
+    /// such as `Γ(p)·Γ(1 − p) = π/sin(πp)`, a deeper certified evaluation),
+    /// whose verdict the context remembers; only a proof counts.
     #[must_use]
     pub fn query(&self, prop: Props) -> Option<bool> {
         let known = {
@@ -1148,8 +1163,12 @@ impl Expr<Numeric> {
 
     /// The facts `eval` decides about this expression when it is a constant
     /// ([`constant_facts`](crate::transforms::eval::constant_facts),
-    /// memoised per context); none for an expression with symbols.
+    /// memoised per context), with zero decided by the limit engine's
+    /// [`hidden_zero`](crate::calculus::calculus_util::hidden_zero) where
+    /// `eval` leaves it open; none for an expression with symbols.
     fn constant_facts(&self) -> crate::base::assumptions::Assumptions {
+        use crate::base::assumptions::{AssumptionCache, Props};
+        use crate::base::truth::Truth;
         let constant = {
             let inner = self.inner.read();
             crate::base::walk::free_symbols(&inner.arena, self.raw_id()).is_empty()
@@ -1158,7 +1177,50 @@ impl Expr<Numeric> {
             return crate::base::assumptions::Assumptions::default();
         }
         let mut inner = self.inner.write();
-        crate::transforms::eval::constant_facts(&mut inner.arena, self.raw_id())
+        let arena = &mut inner.arena;
+        let x = self.raw_id();
+        let mut facts = crate::transforms::eval::constant_facts(arena, x);
+        if facts.query(Props::ZERO).is_some()
+            || AssumptionCache::new().query(arena, x, Props::FINITE) == Some(false)
+        {
+            return facts;
+        }
+        let v = crate::transforms::eval::eval(arena, x);
+        // `±∞`, `zoo` and NaN have no zero question to answer (NaN is not
+        // "nonzero"), and `δ` has a value only at a real argument (the zero
+        // test takes `δ(a) = 0` for every `a ≠ 0`, `δ(i)` included).
+        let mut deltas = Vec::new();
+        for id in crate::base::walk::post_order_ids(arena, v) {
+            match *arena.node(id) {
+                ExprNode::Infinity
+                | ExprNode::NegInfinity
+                | ExprNode::ComplexInfinity
+                | ExprNode::NaN => return facts,
+                ExprNode::DiracDelta(a) => deltas.push(a),
+                _ => {}
+            }
+        }
+        if AssumptionCache::new().query(arena, v, Props::FINITE) == Some(false)
+            || deltas.into_iter().any(|a| {
+                crate::transforms::eval::constant_facts(arena, a).query(Props::REAL) != Some(true)
+            })
+        {
+            return facts;
+        }
+        let zero = if arena.is_zero_structural(v) {
+            Truth::True
+        } else {
+            crate::calculus::calculus_util::hidden_zero(arena, v)
+                .proven()
+                .unwrap_or(Truth::Unknown)
+        };
+        match zero {
+            Truth::True => facts.known_true |= Props::ZERO,
+            Truth::False => facts.known_true |= Props::NONZERO,
+            Truth::Unknown => return facts,
+        }
+        facts.forward_chain();
+        facts
     }
 
     /// Query whether this expression is negative.
@@ -3323,7 +3385,10 @@ impl Expr<Numeric> {
     ///   as `exp(x) = 0`, `|x| = −1`, or `sin(x) = 2` for a real `x` (a
     ///   symbol without assumptions is complex: `sin(x) = 2` gives the
     ///   principal roots `asin 2`, `π − asin 2`, `exp(x) = −1` gives `iπ`;
-    ///   up to 0.47 both were "no real solution").
+    ///   up to 0.47 both were "no real solution").  Also when every
+    ///   solution of a non-polynomial equation, on every branch, is outside
+    ///   the declared domain of `var` (`eˣ + e^(ix) = 0` for a real `x`:
+    ///   `(2n + 1)πi/(1 − i)`; up to 0.49 `Ok([])`).
     /// - [`SymplexError::ComputationFailed`] when the expression is not
     ///   polynomial in `var` and no transcendental strategy applies, or is a
     ///   polynomial whose roots are not all found (coefficients generating a
@@ -3402,6 +3467,18 @@ impl Expr<Numeric> {
                 kept => kept,
             }
         };
+        // Every principal root outside the domain: no solution when no branch
+        // has one in it (`eˣ + e^(ix)` for a real `x`; `Ok([])` up to 0.49).
+        if matches!(&kept, Ok(ids) if ids.is_empty()) && !roots.is_empty() {
+            let mut inner = self.inner.write();
+            if crate::transforms::solve::none_in_domain(&mut inner.arena, self.raw_id(), var_id) {
+                drop(inner);
+                return Err(SymplexError::NoSolution {
+                    operation: "solve",
+                    reason: format!("every solution lies outside the declared domain of {var}"),
+                });
+            }
+        }
         match kept {
             Ok(ids) => Ok(ids.into_iter().map(|id| self.wrap(id)).collect()),
             Err(reason) => Err(SymplexError::ComputationFailed {
@@ -4238,7 +4315,10 @@ impl Expr<Numeric> {
     /// subexpressions are shared before lowering to a stack-VM program.
     /// Every numerically evaluable node is supported, including the
     /// special functions (`gamma`, `loggamma`, `digamma`, `erf`, `erfc`,
-    /// `lambertw`, `beta`, `factorial`, `binomial`), Bessel functions and
+    /// `erfinv`, `erfcinv`, `erfi`, `lambertw` (branches 0 and −1), `beta`,
+    /// `factorial`, `binomial`), the exponential, logarithmic, sine and
+    /// cosine integrals (`Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`) and the
+    /// Fresnel integrals, Bessel functions and
     /// orthogonal polynomials with constant integer order, `fibonacci`,
     /// `lucas`, `harmonic`, `factorial2`, rising/falling factorials,
     /// `min`/`max`/`floor`/`ceiling`/`sign`/`heaviside`/`atan2`, `re`/`im`

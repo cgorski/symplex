@@ -1474,20 +1474,64 @@ const MAX_IDENTITY_SIZE: usize = 150;
 /// `−∞`).  Read the verdict with
 /// [`Verdict::proven`](crate::base::truth::Verdict::proven); a caller
 /// that meets `Unknown` tries its next method or refuses.
+///
+/// The verdict is memoised per arena
+/// ([`FactKey::HiddenZero`](crate::base::arena::FactKey::HiddenZero)):
+/// the series engine settles the same constant in every expansion that
+/// meets it, and a constant that is 0 but not proved costs the whole
+/// ladder above each time.  Up to 0.49 `lim_{x→∞} sin(asin(x + π/3)) +
+/// cos(acos(x + π/3))` re-tested its undecided constants at every
+/// occurrence before it refused (1.9 s; 1.6 s with the memo), and 142
+/// limits and series of the golden corpus ran past 5 s (120 with it).
+/// A memoised proof comes back as `Certified` (whether it was
+/// exact is not kept; both are proofs, and callers read them alike); a
+/// test without any evidence (a value `evalf` cannot compute) is not
+/// memoised.  The ladder reads no work budget, so the verdict depends
+/// only on the node and the arena's configuration, like the other
+/// entries of [`Arena::constant_facts`](crate::base::arena::Arena).
 pub(crate) fn hidden_zero(
     arena: &mut Arena,
     c: ExprId,
 ) -> crate::base::truth::Verdict<crate::base::truth::Truth> {
-    use crate::base::truth::{Evidence, Truth, Verdict};
+    use crate::base::arena::FactKey;
+    use crate::base::truth::{Evidence, SignSet, Truth, Verdict};
     if let Some(r) = arena.as_num(c) {
         return Verdict::new(
             Truth::from_bool(num_traits::Zero::is_zero(r)),
             Evidence::Exact,
         );
     }
+    // Only symbol-free constants without unevaluated parts are memoised.
+    if let Some(&signs) = arena.constant_facts.get(&(c, FactKey::HiddenZero)) {
+        return match signs {
+            SignSet::ZERO => Verdict::new(Truth::True, Evidence::Certified),
+            SignSet::NONZERO => Verdict::new(Truth::False, Evidence::Certified),
+            _ => Verdict::new(Truth::True, Evidence::Approximate),
+        };
+    }
     if !walk::free_symbols(arena, c).is_empty() || walk::has_unevaluated(arena, c) {
         return Verdict::new(Truth::Unknown, Evidence::Approximate);
     }
+    let verdict = hidden_zero_uncached(arena, c);
+    let signs = match (verdict.proven(), verdict.value) {
+        (Some(Truth::True), _) => Some(SignSet::ZERO),
+        (Some(Truth::False), _) => Some(SignSet::NONZERO),
+        (None, Truth::True) => Some(SignSet::UNKNOWN),
+        (Some(Truth::Unknown), _) | (None, Truth::False | Truth::Unknown) => None,
+    };
+    if let Some(signs) = signs {
+        arena.constant_facts.insert((c, FactKey::HiddenZero), signs);
+    }
+    verdict
+}
+
+/// [`hidden_zero`] of a symbol-free constant without unevaluated parts,
+/// not memoised.
+fn hidden_zero_uncached(
+    arena: &mut Arena,
+    c: ExprId,
+) -> crate::base::truth::Verdict<crate::base::truth::Truth> {
+    use crate::base::truth::{Evidence, Truth, Verdict};
     // `evalf` takes `δ(x)` for 0 everywhere, `δ(0)` included: no value,
     // but `δ(a)` of a nonzero `a` is 0 ([`dirac_delta_off_zero`]).
     if has_dirac_delta(arena, c) {

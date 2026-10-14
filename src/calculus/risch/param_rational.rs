@@ -48,6 +48,7 @@ use num_bigint::BigInt;
 use num_traits::Signed;
 
 use crate::base::arena::Arena;
+use crate::base::budget::{BudgetKind, Work};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
@@ -92,24 +93,74 @@ const OP_BUDGET: u64 = 60_000;
 /// multivariate gcds, whose cost grows with the size of their inputs).
 const MAX_COEFF_TERMS: usize = 400;
 
+/// The work budget of one attempt of [`integrate_param_rational`], two
+/// [`Work`]s of kind [`BudgetKind::ParametricRational`].  It lives in a
+/// thread-local, set afresh when an attempt starts, because the field
+/// operations of [`PFrac`] (the [`Ring`]/[`Field`] traits) take no
+/// context to carry it; an attempt does not nest (nothing below it
+/// integrates).  Up to 0.49 four separate counters.
+#[derive(Clone, Copy)]
+struct AttemptBudget {
+    /// Field operations ([`OP_BUDGET`]); `ops_spent` once one did not fit.
+    ops: Work,
+    ops_spent: bool,
+    /// The summed [`gcd_cost`]s of the gcds: unbounded except in a
+    /// factored attempt ([`FACTORED_GCD_BUDGET`]).
+    gcds: Work,
+    /// The attempt is abandoned (a gcd beyond its cost bound, a coefficient
+    /// beyond its size bound): every element counts as zero until the next
+    /// budget check ([`PFrac::is_zero`]).
+    abandoned: bool,
+}
+
+impl AttemptBudget {
+    const fn fresh() -> Self {
+        AttemptBudget {
+            ops: Work::new(BudgetKind::ParametricRational, OP_BUDGET),
+            ops_spent: false,
+            gcds: Work::new(BudgetKind::ParametricRational, u64::MAX),
+            abandoned: false,
+        }
+    }
+
+    /// Is this a factored attempt ([`integrate_factored`]), whose gcds are
+    /// bounded in all?
+    const fn factored(&self) -> bool {
+        self.gcds.cap() != u64::MAX
+    }
+}
+
 thread_local! {
-    static OPS: Cell<u64> = const { Cell::new(0) };
-    static TOO_BIG: Cell<bool> = const { Cell::new(false) };
-    /// The summed [`gcd_affordable`] costs of the gcds of this attempt.
-    static GCD_SPENT: Cell<u64> = const { Cell::new(0) };
-    /// The bound on [`GCD_SPENT`] of this attempt (`u64::MAX`: none).
-    static GCD_TOTAL_LIMIT: Cell<u64> = const { Cell::new(u64::MAX) };
+    static BUDGET: Cell<AttemptBudget> = const { Cell::new(AttemptBudget::fresh()) };
+}
+
+/// `f` applied to the budget of the current attempt.
+fn with_budget<R>(f: impl FnOnce(&mut AttemptBudget) -> R) -> R {
+    BUDGET.with(|c| {
+        let mut b = c.get();
+        let r = f(&mut b);
+        c.set(b);
+        r
+    })
 }
 
 fn reset_budget() {
-    OPS.with(|c| c.set(0));
-    TOO_BIG.with(|c| c.set(false));
-    GCD_SPENT.with(|c| c.set(0));
-    GCD_TOTAL_LIMIT.with(|c| c.set(u64::MAX));
+    BUDGET.with(|c| c.set(AttemptBudget::fresh()));
 }
 
 fn budget_exceeded() -> bool {
-    OPS.with(Cell::get) > OP_BUDGET || TOO_BIG.with(Cell::get)
+    let b = BUDGET.with(Cell::get);
+    b.ops_spent || b.abandoned
+}
+
+/// Has the current attempt been abandoned?
+fn abandoned() -> bool {
+    BUDGET.with(Cell::get).abandoned
+}
+
+/// Abandon the current attempt.
+fn abandon() {
+    with_budget(|b| b.abandoned = true);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -135,29 +186,29 @@ pub(crate) enum PFrac {
 /// integer, so its numbers grow with the product of the degrees: in four
 /// parameters two coefficients of total degree 35 (degrees 8, 19, 11, 19
 /// in the variables, a product of 43,200) took 6–13 s in a by-parts
-/// sub-integral of a Rubi entry; calls up to about 10,000 take below
-/// 0.2 s (release build).
-const GCD_COST_LIMIT: u64 = 20_000;
+/// sub-integral of a Rubi entry, and up to 0.49 the bound was 20,000.
+/// Since 0.50 [`MultiPoly::gcd`] sends inputs whose heuristic images would
+/// be large to Brown's modular algorithm, whose work is about one
+/// univariate gcd per point of that product (per prime): the bound is ten
+/// times higher.
+const GCD_COST_LIMIT: u64 = 200_000;
 
 /// `gcd(a, b)` in `ℤ[p₁, …]` ([`MultiPoly::gcd`]), `1` at once when either
-/// is a constant.  Beyond [`GCD_COST_LIMIT`] the attempt is abandoned
-/// (`TOO_BIG`; `1` is returned meanwhile).
+/// is a constant.  Beyond [`GCD_COST_LIMIT`], or beyond the attempt's
+/// bound on its gcds in all, the attempt is abandoned (`1` is returned
+/// meanwhile).
 fn gcd_mp(a: &MP, b: &MP) -> MP {
     let one = MP::from_int(a.num_vars(), 1);
-    if a.as_constant().is_some() || b.as_constant().is_some() || TOO_BIG.with(Cell::get) {
+    if a.as_constant().is_some() || b.as_constant().is_some() || abandoned() {
         return one;
     }
     if !gcd_affordable(a, b) {
-        TOO_BIG.with(|c| c.set(true));
+        abandon();
         return one;
     }
-    let spent = GCD_SPENT.with(|c| {
-        let s = c.get().saturating_add(gcd_cost(a, b));
-        c.set(s);
-        s
-    });
-    if spent > GCD_TOTAL_LIMIT.with(Cell::get) {
-        TOO_BIG.with(|c| c.set(true));
+    let cost = gcd_cost(a, b);
+    if with_budget(|w| w.gcds.charge(cost, "param_rational").is_err()) {
+        abandon();
         return one;
     }
     let t = std::time::Instant::now();
@@ -229,27 +280,29 @@ impl PFrac {
     /// `num/den` for coprime `num`, `den` (`den ≠ 0`): the denominator's
     /// rational content and sign moved into the numerator.
     fn finish(num: MP, den: MP) -> Self {
-        let ops = OPS.with(|c| {
-            c.set(c.get() + 1);
-            c.get()
+        let (over, factored) = with_budget(|b| {
+            if b.ops.charge(1, "param_rational").is_err() {
+                b.ops_spent = true;
+            }
+            (b.ops_spent, b.factored())
         });
-        if ops > OP_BUDGET && GCD_TOTAL_LIMIT.with(Cell::get) != u64::MAX {
+        if over && factored {
             // A factored attempt past its budget: zero ends the loop of
             // the caller (an extended gcd) at once.
-            TOO_BIG.with(|c| c.set(true));
+            abandon();
         }
         if num.is_zero() || den.is_zero() {
             return PFrac::Const(Q::zero());
         }
-        if TOO_BIG.with(Cell::get)
+        if abandoned()
             || num.num_terms() + den.num_terms() > MAX_COEFF_TERMS
-            || (GCD_TOTAL_LIMIT.with(Cell::get) != u64::MAX
+            || (factored
                 && (max_coeff_bits(&num) > MAX_FACTORED_COEFF_BITS
                     || max_coeff_bits(&den) > MAX_FACTORED_COEFF_BITS))
         {
             // The attempt is abandoned at the next budget check; until then
             // everything is zero, which ends every loop quickly.
-            TOO_BIG.with(|c| c.set(true));
+            abandon();
             return PFrac::Const(Q::zero());
         }
         let (mut num, mut den) = (num, den);
@@ -370,7 +423,7 @@ impl Ring for PFrac {
         PFrac::Const(Q::one())
     }
 
-    /// Once an attempt is abandoned (`TOO_BIG`) every element counts as
+    /// Once an attempt is abandoned ([`abandoned`]) every element counts as
     /// zero: the operations return zero then, and a division whose
     /// quotient coefficient came out zero would otherwise never remove the
     /// leading term of its remainder (`GenPoly::try_div_rem` looped for
@@ -378,7 +431,7 @@ impl Ring for PFrac {
     /// with every coefficient zero each polynomial normalises to zero and
     /// every loop ends.  The result is discarded at the next budget check.
     fn is_zero(&self) -> bool {
-        TOO_BIG.with(Cell::get) || matches!(self, PFrac::Const(q) if q.is_zero())
+        abandoned() || matches!(self, PFrac::Const(q) if q.is_zero())
     }
 
     fn add(&self, rhs: &Self) -> Self {
@@ -759,7 +812,7 @@ impl Ctx {
         }
         let (am, bm) = (self.to_mp(a)?, self.to_mp(b)?);
         if !gcd_affordable(&am, &bm) {
-            TOO_BIG.with(|c| c.set(true));
+            abandon();
             return None;
         }
         let g = MP::gcd(&am, &bm);
@@ -1110,7 +1163,15 @@ fn integrate_factored(
     if denominator_params.len() > MAX_FACTORED_PARAMS {
         return None;
     }
-    GCD_TOTAL_LIMIT.with(|c| c.set(FACTORED_GCD_BUDGET));
+    // The gcds of the attempt so far count against the bound.
+    with_budget(|b| {
+        let spent = b.gcds.spent();
+        b.gcds = Work::new(BudgetKind::ParametricRational, FACTORED_GCD_BUDGET);
+        if b.gcds.charge(spent, "param_rational").is_err() {
+            // Spent already: the next gcd abandons the attempt.
+            let _ = b.gcds.charge(b.gcds.left(), "param_rational");
+        }
+    });
     let lc = d.leading_coeff()?.clone();
     let mut a = a.scale(&lc.inv());
     for (f, k) in &mut fz {
@@ -1136,8 +1197,8 @@ fn integrate_factored(
     }
     let result = integrate_gp_with(arena, ctx, &a, &d, &cands, Some(&fz), label);
     tracing::debug!(
-        ops = OPS.with(Cell::get),
-        gcd_spent = GCD_SPENT.with(Cell::get),
+        ops = BUDGET.with(Cell::get).ops.spent(),
+        gcd_spent = BUDGET.with(Cell::get).gcds.spent(),
         ok = result.is_some(),
         "param_rational: factored attempt"
     );

@@ -490,12 +490,12 @@ fn principal_root(mp: &Poly, z: &Complex, q: usize, cc: &mut Consts) -> Option<C
         if !re_clear {
             return None;
         }
-        if re.is_positive() {
+        if crate::base::bigfloat::is_sign_positive(re) {
             BigFloat::new(prec)
         } else {
             pi
         }
-    } else if re_clear && re.is_positive() {
+    } else if re_clear && crate::base::bigfloat::is_sign_positive(re) {
         im.div(re, prec, rm).atan(prec, rm, cc)
     } else if re_clear {
         // Left half-plane: atan(im/re) ± π by the sign of the imaginary part.
@@ -704,7 +704,7 @@ fn c_abs_upper(z: &Complex, prec: usize) -> BigFloat {
 /// The imaginary part must be zero or smaller than `2^{-prec/2}·|re|`.
 fn is_real_positive(z: &Complex, prec: usize) -> bool {
     let (re, im) = z;
-    if re.is_nan() || im.is_nan() || !re.is_positive() {
+    if re.is_nan() || im.is_nan() || !crate::base::bigfloat::is_sign_positive(re) {
         return false;
     }
     if im.is_zero() {

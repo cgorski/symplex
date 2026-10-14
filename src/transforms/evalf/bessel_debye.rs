@@ -52,9 +52,10 @@
 //! oscillating `J` or `Y` near a zero cancels: the bits lost are measured
 //! and the evaluation repeated with as many more.
 
+use super::wp::{RM, Wp};
 use std::cell::RefCell;
 
-use astro_float::{BigFloat, Consts, RoundingMode};
+use astro_float::BigFloat;
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{Signed, ToPrimitive, Zero};
@@ -228,27 +229,20 @@ fn plan(lg_t: f64, nu_f: f64, wp: usize) -> Option<Plan> {
 
 /// `Σ_{k<n} s_k·U_k(t)/ν^k` at `wp` bits, with `s_k = (−1)^k` when
 /// `alternating`, else 1.
-fn sum_terms(
-    n: usize,
-    t: &BigFloat,
-    nu: &BigFloat,
-    alternating: bool,
-    wp: usize,
-    rm: RoundingMode,
-) -> BigFloat {
+fn sum_terms(n: usize, t: &BigFloat, nu: &BigFloat, alternating: bool, wp: usize) -> BigFloat {
     with_u(n, |us| {
-        let inv_nu = BigFloat::from_i32(1, wp).div(nu, wp, rm);
+        let inv_nu = BigFloat::from_i32(1, wp).div(nu, wp, RM);
         let mut scale = BigFloat::from_i32(1, wp);
         let mut sum = BigFloat::new(wp);
         for (k, u) in us.iter().enumerate().take(n) {
             if k > 0 {
-                scale = scale.mul(&inv_nu, wp, rm);
+                scale = scale.mul(&inv_nu, wp, RM);
             }
-            let term = eval_dense(u, k, t, false, wp, rm).mul(&scale, wp, rm);
+            let term = eval_dense(u, k, t, false, wp).mul(&scale, wp, RM);
             sum = if alternating && k % 2 == 1 {
-                sum.sub(&term, wp, rm)
+                sum.sub(&term, wp, RM)
             } else {
-                sum.add(&term, wp, rm)
+                sum.add(&term, wp, RM)
             };
         }
         sum
@@ -258,15 +252,8 @@ fn sum_terms(
 /// `U_k(t)` at `wp` bits by Horner's rule in `t²` over the powers `k, k +
 /// 2, …, 3k` (a vanishing coefficient is a 0 step); `alt`: `V_k(t) =
 /// i^(−k)·U_k(it)`, the coefficient of `t^(k+2m)` with the sign `(−1)^m`.
-fn eval_dense(
-    u: &UPoly,
-    k: usize,
-    t: &BigFloat,
-    alt: bool,
-    wp: usize,
-    rm: RoundingMode,
-) -> BigFloat {
-    let t2 = t.mul(t, wp, rm);
+fn eval_dense(u: &UPoly, k: usize, t: &BigFloat, alt: bool, wp: usize) -> BigFloat {
+    let t2 = t.mul(t, wp, RM);
     let mut acc = BigFloat::new(wp);
     let mut idx = u.coeffs.len();
     let top = u.coeffs.last().map_or(k, |(j, _)| *j);
@@ -275,18 +262,18 @@ fn eval_dense(
         let c = if idx > 0 && u.coeffs[idx - 1].0 == j {
             idx -= 1;
             let m = (j - k) / 2;
-            let cf = super::ratio_to_bigfloat(&u.coeffs[idx].1, wp, rm);
+            let cf = super::ratio_to_bigfloat(&u.coeffs[idx].1, wp);
             if alt && m % 2 == 1 { cf.neg() } else { cf }
         } else {
             BigFloat::new(wp)
         };
-        acc = acc.mul(&t2, wp, rm).add(&c, wp, rm);
+        acc = acc.mul(&t2, wp, RM).add(&c, wp, RM);
         if j < k + 2 {
             break;
         }
         j -= 2;
     }
-    acc.mul(&t.powi(k, wp, rm), wp, rm)
+    acc.mul(&t.powi(k, wp, RM), wp, RM)
 }
 
 /// `log₂ abs(x)` of a nonzero finite `x` (`−∞` for 0).
@@ -295,7 +282,7 @@ fn lg(x: &BigFloat) -> f64 {
         Some(e) if !x.is_zero() => {
             let mut m = x.abs();
             m.set_exponent(0);
-            let mf = super::bigfloat_to_f64_rounded(&m, RoundingMode::ToEven).unwrap_or(0.5);
+            let mf = super::f64_of(&m).unwrap_or(0.5);
             f64::from(e) + mf.log2()
         }
         _ => f64::NEG_INFINITY,
@@ -326,19 +313,15 @@ fn overflow(kind: Kind, lg2: f64) -> SymplexError {
 }
 
 /// `ν^ν e^(−ν)/Γ(ν + 1)` as its logarithm `ν ln ν − ν − ln Γ(ν + 1)` at `lp` bits.
-fn ln_stirling_ratio(
-    nu: &BigFloat,
-    lp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<BigFloat, SymplexError> {
+fn ln_stirling_ratio(nu: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
+    let lp = w.bits();
     let one = BigFloat::from_i32(1, 64);
-    let nu1 = nu.add(&one, super::exact_bits(nu, lp), rm);
-    let lg = super::arb_log_gamma(&nu1, lp, rm, cc)?;
+    let nu1 = nu.add(&one, super::exact_bits(nu, lp), RM);
+    let lg = super::arb_log_gamma(&nu1, w)?;
     Ok(nu
-        .mul(&nu.ln(lp, rm, cc), lp, rm)
-        .sub(nu, lp, rm)
-        .sub(&lg.0, lp, rm))
+        .mul(&nu.ln(lp, RM, w.cc), lp, RM)
+        .sub(nu, lp, RM)
+        .sub(&lg.0, lp, RM))
 }
 
 /// `e^E·f` at `prec` bits for `E` known to an absolute `2^(−wp−8)` and a
@@ -348,12 +331,11 @@ fn scale_exp(
     kind: Kind,
     e: &BigFloat,
     f: &BigFloat,
-    prec: usize,
+    w: &mut Wp<'_>,
     wp: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
-    let l2 = super::bigfloat_to_f64_rounded(e, rm)? * std::f64::consts::LOG2_E + lg(f);
+    let prec = w.bits();
+    let l2 = super::f64_of(e)? * std::f64::consts::LOG2_E + lg(f);
     let min = f64::from(astro_float::EXPONENT_MIN) + 64.0;
     let max = f64::from(astro_float::EXPONENT_MAX) - 64.0;
     if l2 < min {
@@ -362,11 +344,11 @@ fn scale_exp(
     if l2 > max {
         return Err(overflow(kind, l2));
     }
-    let v = e.exp(wp, rm, cc).mul(f, wp, rm);
+    let v = e.exp(wp, RM, w.cc).mul(f, wp, RM);
     if v.is_zero() || v.is_inf() || v.is_nan() {
         return Err(overflow(kind, l2));
     }
-    Ok(super::round_to(v, prec, rm))
+    Ok(super::round_to(v, prec))
 }
 
 /// `J_ν(x)`, `Y_ν(x)`, `I_ν(x)` or `K_ν(x)` for `ν ≥ 16`, `x > 0` by the
@@ -378,9 +360,7 @@ pub(super) fn debye(
     kind: Kind,
     nu: &BigFloat,
     x: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Option<Result<BigFloat, SymplexError>> {
     if !super::bf_strictly_positive(nu)
         || !super::bf_strictly_positive(x)
@@ -391,21 +371,21 @@ pub(super) fn debye(
     {
         return None;
     }
-    let nu_f = super::bigfloat_to_f64_rounded(nu, rm).ok()?;
-    let x_f = super::bigfloat_to_f64_rounded(x, rm).ok()?;
+    let nu_f = super::f64_of(nu).ok()?;
+    let x_f = super::f64_of(x).ok()?;
     if nu_f.is_nan() || nu_f < MIN_ORDER || !nu_f.is_finite() || !x_f.is_finite() || x_f <= 0.0 {
         return None;
     }
     match kind {
-        Kind::K | Kind::I => modified(kind, nu, x, nu_f, x_f, prec, rm, cc),
+        Kind::K | Kind::I => modified(kind, nu, x, nu_f, x_f, w),
         Kind::J | Kind::Y => match x.cmp(nu) {
             Some(c) if c < 0 => {
                 if kind == Kind::Y {
                     return None;
                 }
-                j_below(nu, x, nu_f, x_f, prec, rm, cc)
+                j_below(nu, x, nu_f, x_f, w)
             }
-            Some(c) if c > 0 => hankel(kind, nu, x, nu_f, x_f, prec, rm, cc),
+            Some(c) if c > 0 => hankel(kind, nu, x, nu_f, x_f, w),
             _ => None,
         },
     }
@@ -419,10 +399,9 @@ fn modified(
     x: &BigFloat,
     nu_f: f64,
     x_f: f64,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    w: &mut Wp<'_>,
 ) -> Option<Result<BigFloat, SymplexError>> {
+    let prec = w.bits();
     let wp = prec + 40;
     // Sizes of the parts of the exponent, for the bits it needs.
     let r_f = nu_f.hypot(x_f);
@@ -434,38 +413,38 @@ fn modified(
     };
     let lp = wp + 16 + int_bits(r_f + ln_part + stirling + 1.0);
     let r = nu
-        .mul(nu, lp, rm)
-        .add(&x.mul(x, lp, rm), lp, rm)
-        .sqrt(lp, rm);
-    let p = nu.div(&r, wp, rm);
+        .mul(nu, lp, RM)
+        .add(&x.mul(x, lp, RM), lp, RM)
+        .sqrt(lp, RM);
+    let p = nu.div(&r, wp, RM);
     let lg_t = if kind == Kind::I { 0.0 } else { lg(&p) + 1e-9 };
     let pl = plan(lg_t, nu_f, wp)?;
-    let s = sum_terms(pl.n, &p, nu, kind == Kind::K, wp, rm);
+    let s = sum_terms(pl.n, &p, nu, kind == Kind::K, wp);
     // E and the factor in front.
-    let nu_r = nu.add(&r, lp, rm);
+    let nu_r = nu.add(&r, lp, RM);
     let (e, f) = if kind == Kind::K {
         // −νη = −r + ν·ln((ν + r)/x); (π/(2ν))^½(1 + z²)^(−¼) = (π/(2r))^½.
         let e = nu
-            .mul(&nu_r.div(x, lp, rm).ln(lp, rm, cc), lp, rm)
-            .sub(&r, lp, rm);
-        let pi = cc.pi(wp, rm).clone();
+            .mul(&nu_r.div(x, lp, RM).ln(lp, RM, w.cc), lp, RM)
+            .sub(&r, lp, RM);
+        let pi = w.cc.pi(wp, RM).clone();
         let f = pi
-            .div(&r.mul(&BigFloat::from_i32(2, 64), wp, rm), wp, rm)
-            .sqrt(wp, rm);
+            .div(&r.mul(&BigFloat::from_i32(2, 64), wp, RM), wp, RM)
+            .sqrt(wp, RM);
         (e, f)
     } else {
         // νη = r + ν·ln(x/(ν + r)); (1 + z²)^(−¼) = (ν/r)^½; over S_n(1).
-        let e = match ln_stirling_ratio(nu, lp, rm, cc) {
+        let e = match ln_stirling_ratio(nu, &mut w.at(lp)) {
             Ok(v) => v,
             Err(err) => return Some(Err(err)),
         };
-        let e = e.add(&r, lp, rm).add(
-            &nu.mul(&x.div(&nu_r, lp, rm).ln(lp, rm, cc), lp, rm),
+        let e = e.add(&r, lp, RM).add(
+            &nu.mul(&x.div(&nu_r, lp, RM).ln(lp, RM, w.cc), lp, RM),
             lp,
-            rm,
+            RM,
         );
-        let s1 = sum_terms(pl.n, &BigFloat::from_i32(1, wp), nu, false, wp, rm);
-        let f = p.sqrt(wp, rm).div(&s1, wp, rm);
+        let s1 = sum_terms(pl.n, &BigFloat::from_i32(1, wp), nu, false, wp);
+        let f = p.sqrt(wp, RM).div(&s1, wp, RM);
         (e, f)
     };
     // Relative error: the remainder over `abs(S)`, the roundings of `S` (and
@@ -479,8 +458,8 @@ fn modified(
     if rel > -((prec + 4) as f64) {
         return None;
     }
-    let factor = f.mul(&s, wp, rm);
-    Some(scale_exp(kind, &e, &factor, prec, wp, rm, cc))
+    let factor = f.mul(&s, wp, RM);
+    Some(scale_exp(kind, &e, &factor, w, wp))
 }
 
 /// `J_ν(x)` for `0 < x < ν` (real `p = ν/w > 1`, `w = (ν² − x²)^½`).
@@ -490,33 +469,32 @@ fn j_below(
     x: &BigFloat,
     nu_f: f64,
     x_f: f64,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    wpc: &mut Wp<'_>,
 ) -> Option<Result<BigFloat, SymplexError>> {
+    let prec = wpc.bits();
     let wp = prec + 40;
     let stirling = nu_f * nu_f.ln().abs() + nu_f;
     let ln_part = nu_f * (x_f / (2.0 * nu_f)).ln().abs();
     let lp = wp + 16 + int_bits(stirling + ln_part + nu_f + 1.0);
     // w = ((ν − x)(ν + x))^½, the difference exact enough at `lp` bits.
-    let d = nu.sub(x, lp, rm);
-    let w = d.mul(&nu.add(x, lp, rm), lp, rm).sqrt(lp, rm);
-    let p = nu.div(&w, wp, rm);
+    let d = nu.sub(x, lp, RM);
+    let w = d.mul(&nu.add(x, lp, RM), lp, RM).sqrt(lp, RM);
+    let p = nu.div(&w, wp, RM);
     let lg_t = lg(&p) + 1e-9;
     let pl = plan(lg_t, nu_f, wp)?;
-    let s = sum_terms(pl.n, &p, nu, false, wp, rm);
-    let s1 = sum_terms(pl.n, &BigFloat::from_i32(1, wp), nu, false, wp, rm);
-    let e = match ln_stirling_ratio(nu, lp, rm, cc) {
+    let s = sum_terms(pl.n, &p, nu, false, wp);
+    let s1 = sum_terms(pl.n, &BigFloat::from_i32(1, wp), nu, false, wp);
+    let e = match ln_stirling_ratio(nu, &mut wpc.at(lp)) {
         Ok(v) => v,
         Err(err) => return Some(Err(err)),
     };
-    let nu_w = nu.add(&w, lp, rm);
-    let e = e.add(&w, lp, rm).add(
-        &nu.mul(&x.div(&nu_w, lp, rm).ln(lp, rm, cc), lp, rm),
+    let nu_w = nu.add(&w, lp, RM);
+    let e = e.add(&w, lp, RM).add(
+        &nu.mul(&x.div(&nu_w, lp, RM).ln(lp, RM, wpc.cc), lp, RM),
         lp,
-        rm,
+        RM,
     );
-    let f = p.sqrt(wp, rm).div(&s1, wp, rm);
+    let f = p.sqrt(wp, RM).div(&s1, wp, RM);
     let n = pl.n as f64;
     let rounding = ((10.0 * n + 10.0) * pl.abs_sum).log2() - wp as f64;
     let rel = lg_add(
@@ -526,8 +504,8 @@ fn j_below(
     if rel > -((prec + 4) as f64) {
         return None;
     }
-    let factor = f.mul(&s, wp, rm);
-    Some(scale_exp(Kind::J, &e, &factor, prec, wp, rm, cc))
+    let factor = f.mul(&s, wp, RM);
+    Some(scale_exp(Kind::J, &e, &factor, wpc, wp))
 }
 
 /// `J_ν(x)` or `Y_ν(x)` for `x > ν` from `H⁽¹⁾_ν(x)`; the cancellation of a
@@ -540,33 +518,36 @@ fn hankel(
     x: &BigFloat,
     nu_f: f64,
     x_f: f64,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
+    wpc: &mut Wp<'_>,
 ) -> Option<Result<BigFloat, SymplexError>> {
+    let prec = wpc.bits();
     let cap = prec * 4 + 1024;
     let mut wp = prec + 40;
     loop {
         let lp = wp + 16 + int_bits(x_f + nu_f + 1.0);
-        let d = x.sub(nu, lp, rm);
-        let w = d.mul(&x.add(nu, lp, rm), lp, rm).sqrt(lp, rm);
-        let q = nu.div(&w, wp, rm);
+        let d = x.sub(nu, lp, RM);
+        let w = d.mul(&x.add(nu, lp, RM), lp, RM).sqrt(lp, RM);
+        let q = nu.div(&w, wp, RM);
         let lg_t = lg(&q) + 1e-9;
         let pl = plan(lg_t, nu_f, wp)?;
-        let (re_s, im_s) = with_signs(pl.n, &q, nu, wp, rm);
+        let (re_s, im_s) = with_signs(pl.n, &q, nu, wp);
         // ξ = w − ν·atan(w/ν) − π/4, to an absolute 2^(−wp−8).
-        let pi = cc.pi(lp, rm).clone();
+        let pi = wpc.cc.pi(lp, RM).clone();
         let xi = w
-            .sub(&nu.mul(&w.div(nu, lp, rm).atan(lp, rm, cc), lp, rm), lp, rm)
-            .sub(&pi.div(&BigFloat::from_i32(4, 64), lp, rm), lp, rm);
-        let (c, s) = (xi.cos(lp, rm, cc), xi.sin(lp, rm, cc));
+            .sub(
+                &nu.mul(&w.div(nu, lp, RM).atan(lp, RM, wpc.cc), lp, RM),
+                lp,
+                RM,
+            )
+            .sub(&pi.div(&BigFloat::from_i32(4, 64), lp, RM), lp, RM);
+        let (c, s) = (xi.cos(lp, RM, wpc.cc), xi.sin(lp, RM, wpc.cc));
         let amp = BigFloat::from_i32(2, wp)
-            .div(&pi.mul(&w, wp, rm), wp, rm)
-            .sqrt(wp, rm);
+            .div(&pi.mul(&w, wp, RM), wp, RM)
+            .sqrt(wp, RM);
         let combo = if kind == Kind::J {
-            c.mul(&re_s, wp, rm).sub(&s.mul(&im_s, wp, rm), wp, rm)
+            c.mul(&re_s, wp, RM).sub(&s.mul(&im_s, wp, RM), wp, RM)
         } else {
-            s.mul(&re_s, wp, rm).add(&c.mul(&im_s, wp, rm), wp, rm)
+            s.mul(&re_s, wp, RM).add(&c.mul(&im_s, wp, RM), wp, RM)
         };
         // Absolute error of the combination (relative to the amplitude):
         // the remainder, the roundings of S, of ξ (2^(−wp−8)) and of the
@@ -589,34 +570,28 @@ fn hankel(
             wp = (wp + more).min(cap);
             continue;
         }
-        return Some(Ok(super::round_to(amp.mul(&combo, wp, rm), prec, rm)));
+        return Some(Ok(super::round_to(amp.mul(&combo, wp, RM), prec)));
     }
 }
 
 /// `(Re S, Im S)` for `S = Σ_{k<n} (−i)^k V_k(q)/ν^k`.
-fn with_signs(
-    n: usize,
-    q: &BigFloat,
-    nu: &BigFloat,
-    wp: usize,
-    rm: RoundingMode,
-) -> (BigFloat, BigFloat) {
+fn with_signs(n: usize, q: &BigFloat, nu: &BigFloat, wp: usize) -> (BigFloat, BigFloat) {
     with_u(n, |us| {
-        let inv_nu = BigFloat::from_i32(1, wp).div(nu, wp, rm);
+        let inv_nu = BigFloat::from_i32(1, wp).div(nu, wp, RM);
         let mut scale = BigFloat::from_i32(1, wp);
         let mut re = BigFloat::new(wp);
         let mut im = BigFloat::new(wp);
         for (k, u) in us.iter().enumerate().take(n) {
             if k > 0 {
-                scale = scale.mul(&inv_nu, wp, rm);
+                scale = scale.mul(&inv_nu, wp, RM);
             }
-            let term = eval_dense(u, k, q, true, wp, rm).mul(&scale, wp, rm);
+            let term = eval_dense(u, k, q, true, wp).mul(&scale, wp, RM);
             // (−i)^k: 1, −i, −1, i.
             match k % 4 {
-                0 => re = re.add(&term, wp, rm),
-                1 => im = im.sub(&term, wp, rm),
-                2 => re = re.sub(&term, wp, rm),
-                _ => im = im.add(&term, wp, rm),
+                0 => re = re.add(&term, wp, RM),
+                1 => im = im.sub(&term, wp, RM),
+                2 => re = re.sub(&term, wp, RM),
+                _ => im = im.add(&term, wp, RM),
             }
         }
         (re, im)
