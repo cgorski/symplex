@@ -2348,20 +2348,9 @@ impl AssumptionCache {
 }
 
 /// Is `e` free of symbols (a number, a constant, a function of them)?
-/// Iterative, stopping at the first symbol.
+/// No `Symbol` node at all, bound or free: O(1) from the node's facts.
 fn is_constant(arena: &Arena, e: ExprId) -> bool {
-    let mut stack = vec![e];
-    let mut seen = rustc_hash::FxHashSet::default();
-    while let Some(id) = stack.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        match arena.node(id) {
-            ExprNode::Symbol(_) => return false,
-            node => node.for_each_child(|c| stack.push(c)),
-        }
-    }
-    true
+    !arena.facts(e).has_symbol()
 }
 
 /// Does [`AssumptionCache::compute_func`] claim anything for functions
@@ -2395,34 +2384,34 @@ fn queried_children(arena: &Arena, node: &ExprNode) -> smallvec::SmallVec<[ExprI
         ExprNode::Add(args) | ExprNode::Mul(args) => args.clone(),
         ExprNode::Pow(a, b) => smallvec![*a, *b],
         ExprNode::DefiniteIntegral(body, _, lo, hi) => smallvec![*body, *lo, *hi],
-        ExprNode::Neg(x)
-        | ExprNode::Sin(x)
-        | ExprNode::Cos(x)
-        | ExprNode::Tan(x)
-        | ExprNode::Exp(x)
-        | ExprNode::Ln(x)
-        | ExprNode::Abs(x)
-        | ExprNode::Sinh(x)
-        | ExprNode::Tanh(x)
-        | ExprNode::Asinh(x)
-        | ExprNode::Atanh(x)
-        | ExprNode::Cosh(x)
-        | ExprNode::Asin(x)
-        | ExprNode::Acos(x)
-        | ExprNode::Atan(x)
-        | ExprNode::Acosh(x)
-        | ExprNode::Re(x)
-        | ExprNode::Im(x)
-        | ExprNode::Conjugate(x)
-        | ExprNode::Floor(x)
-        | ExprNode::Ceiling(x)
-        | ExprNode::Sign(x) => smallvec![*x],
-        // The functions of the table (`compute_func`): every argument.
+        ExprNode::Neg(x) => smallvec![*x],
+        // The functions with a handler of their own (their argument) and
+        // those of the table (`compute_func`): every argument.
         _ => match node.func(arena) {
-            Some((f, args)) if is_tabled(f.spec().real_on) => args.into_iter().collect(),
+            Some((f, args)) if has_own_handler(f) || is_tabled(f.spec().real_on) => {
+                args.into_iter().collect()
+            }
             _ => smallvec::SmallVec::new(),
         },
     }
+}
+
+/// The one-argument functions [`AssumptionCache::compute`] dispatches to a
+/// handler of their own rather than to the table: the elementary functions
+/// and `|·|`, `re`, `im`, `conjugate`, `⌊·⌋`, `⌈·⌉`, `sign`.
+fn has_own_handler(f: crate::base::func::Func) -> bool {
+    use crate::base::func::Func;
+    f.elementary().is_some()
+        || matches!(
+            f,
+            Func::Abs
+                | Func::Re
+                | Func::Im
+                | Func::Conjugate
+                | Func::Floor
+                | Func::Ceiling
+                | Func::Sign
+        )
 }
 
 /// Is a symbol with the stored set `a` declared so that it may be
@@ -3657,5 +3646,18 @@ mod tests {
         assert_eq!(cache.query(&arena, neg, Props::PRIME), None);
         assert_eq!(cache.query(&arena, neg, Props::POSITIVE), Some(false));
         assert_eq!(cache.query(&arena, neg, Props::INTEGER), Some(true));
+    }
+
+    /// `queried_children` asks for the argument of exactly the functions of
+    /// its 0.49 or-pattern besides the table (W6d: the list became
+    /// `has_own_handler`).
+    #[test]
+    fn has_own_handler_is_the_old_list() {
+        use crate::base::func::{Func::*, selected};
+        let old = [
+            Sin, Cos, Tan, Exp, Ln, Abs, Sinh, Tanh, Asinh, Atanh, Cosh, Asin, Acos, Atan, Acosh,
+            Re, Im, Conjugate, Floor, Ceiling, Sign,
+        ];
+        assert_eq!(selected(has_own_handler), old.into_iter().collect());
     }
 }

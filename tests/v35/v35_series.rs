@@ -405,9 +405,11 @@ fn special_functions_beside_their_cuts() {
         text(&ctx, "li(1/2 - x - I*x^2)", "0", 2, R),
         "-x/ln(1/2) - pi*I + li(1/2)"
     );
+    // `polylog(2, 2)` itself folds to `π²/4 − iπ·ln 2` since 0.50 (the value
+    // `mpmath.polylog(2, 2)` gives).
     assert_eq!(
         text(&ctx, "polylog(2, 2 + x/2 - (1 + I)*x^2)", "0", 1, R),
-        "polylog(2, 2)"
+        "1/4*pi^2 - ln(2)*pi*I"
     );
     assert!(refused(
         &ctx,

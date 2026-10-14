@@ -29,8 +29,9 @@ use crate::base::interval::IntervalKind;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, NumId, SymbolId};
 use crate::base::numeric::Q;
-use crate::base::sort_key::{SortKey, compute_sort_key};
+use crate::base::sort_key::{SortKey, compute_sort_key, push_bounded_key};
 use crate::base::symbol::SymbolTable;
+use crate::base::truth::Truth;
 
 /// The signs of the real and imaginary parts of a constant
 /// ([`Arena::part_signs`]); `None` for a part whose sign is not settled (or
@@ -76,6 +77,117 @@ pub(crate) enum FactKey {
     HiddenZero,
 }
 
+/// The `sym_bits` entry of a symbol name without a `Symbol` node.
+const NO_SYMBOL_NODE: u8 = u8::MAX;
+
+/// The bit of the [`NodeFacts`] free-symbol mask shared by the symbols
+/// whose `Symbol` node was created after the first 63.
+pub(crate) const SHARED_SYMBOL_BIT: u64 = 1 << 63;
+
+/// Structural facts of a node, computed once when the node is interned — in
+/// O(arity), from the facts of its children — and read in O(1): the tree
+/// queries that used to walk the DAG on every call ([`walk::has_unevaluated`],
+/// [`walk::has_free_symbol`], [`walk::free_symbols`],
+/// [`Arena::tree_size_capped`]) answer from them.
+///
+/// The free-symbol mask follows [`walk::free_symbols`]' binder rules exactly
+/// (the table of [`walk::binder`]): bit `k < 63` is set exactly when the
+/// symbol whose `Symbol` node was the `k`-th created in this arena is free in
+/// the node, so a query about such a symbol is decided by one bit.  The
+/// symbols created later share bit 63, which is set when one of them is free
+/// and may also be set when none is (a binder of such a symbol cannot clear
+/// it: [`NodeFacts::SHARED_BIT_INEXACT`]); a query that meets bit 63 walks.
+/// Which symbol gets which bit depends on the arena's history, but every
+/// answer is exact, so no output does.
+///
+/// [`walk::has_unevaluated`]: crate::base::walk::has_unevaluated
+/// [`walk::has_free_symbol`]: crate::base::walk::has_free_symbol
+/// [`walk::free_symbols`]: crate::base::walk::free_symbols
+/// [`walk::binder`]: crate::base::walk::binder
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NodeFacts {
+    /// The number of nodes of the unfolded tree (a shared child counted at
+    /// every occurrence), saturating at `u32::MAX`.
+    pub(crate) tree_size: u32,
+    /// 1 for an atom, else 1 + the greatest height of a child; saturating.
+    pub(crate) height: u16,
+    /// The `HAS_*` flags below.
+    flags: u16,
+    /// The free symbols, one bit each (see the type's documentation).
+    sym_mask: u64,
+}
+
+impl NodeFacts {
+    /// The tree contains an unevaluated formal node (the variants
+    /// [`walk::has_unevaluated`](crate::base::walk::has_unevaluated) lists).
+    const HAS_UNEVALUATED: u16 = 1 << 0;
+    /// The tree contains a `Symbol` node, free or bound.
+    const HAS_SYMBOL: u16 = 1 << 1;
+    /// The tree contains a binder whose variable is a symbol.
+    const HAS_BINDER: u16 = 1 << 2;
+    /// Bit 63 of the mask may be set although no symbol owning it is free.
+    const SHARED_BIT_INEXACT: u16 = 1 << 3;
+
+    /// The facts of an atom other than a symbol.
+    const ATOM: NodeFacts = NodeFacts {
+        tree_size: 1,
+        height: 1,
+        flags: 0,
+        sym_mask: 0,
+    };
+
+    /// Does the tree contain an unevaluated formal node?
+    #[inline]
+    pub(crate) fn has_unevaluated(self) -> bool {
+        self.flags & Self::HAS_UNEVALUATED != 0
+    }
+
+    /// Does the tree contain a `Symbol` node (free or bound)?
+    #[inline]
+    pub(crate) fn has_symbol(self) -> bool {
+        self.flags & Self::HAS_SYMBOL != 0
+    }
+
+    /// Does the tree contain a binder of a symbol?  Without one, a symbol
+    /// occurs in the tree exactly when it is free in it.
+    #[inline]
+    pub(crate) fn has_binder(self) -> bool {
+        self.flags & Self::HAS_BINDER != 0
+    }
+
+    /// Could a tree with these facts contain one with the facts `inner`?
+    /// `false` when it is too small, too low, or lacks a structure `inner`
+    /// has (a `Symbol` node, a binder, an unevaluated node).
+    #[inline]
+    pub(crate) fn may_contain(self, inner: NodeFacts) -> bool {
+        let structural = Self::HAS_UNEVALUATED | Self::HAS_SYMBOL | Self::HAS_BINDER;
+        self.tree_size >= inner.tree_size
+            && self.height >= inner.height
+            && self.flags & inner.flags & structural == inner.flags & structural
+    }
+}
+
+/// Is `node` one of the unevaluated formal nodes
+/// [`walk::has_unevaluated`](crate::base::walk::has_unevaluated) looks for?
+fn is_unevaluated_node(node: &ExprNode) -> bool {
+    matches!(
+        node,
+        ExprNode::Integral(..)
+            | ExprNode::DefiniteIntegral(..)
+            | ExprNode::Derivative(..)
+            | ExprNode::Limit(..)
+            | ExprNode::Series(..)
+            | ExprNode::LaplaceTransform(..)
+            | ExprNode::InverseLaplaceTransform(..)
+            | ExprNode::Residue(..)
+            | ExprNode::DSolve(..)
+            | ExprNode::ConditionSet(..)
+            | ExprNode::Subs(..)
+            | ExprNode::Sum(..)
+            | ExprNode::Product_(..)
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Arena
 // ---------------------------------------------------------------------------
@@ -98,9 +210,31 @@ pub struct Arena {
     /// Numeric literal side-table indexed by [`NumId`].
     numbers: Vec<Q>,
 
-    /// Sort keys parallel to `nodes` — `sort_keys[i]` is the key for
-    /// `nodes[i]`.
-    sort_keys: Vec<SortKey>,
+    /// The sort keys of all nodes, one after the other: the key of
+    /// `nodes[i]` is `key_bytes[key_starts[i]..key_starts[i + 1]]`.  One
+    /// pool instead of a key object per node: no allocation per key, 8
+    /// bytes per node besides the key's own bytes.
+    key_bytes: Vec<u8>,
+
+    /// Where each node's key starts in `key_bytes`, plus the end of the
+    /// last one (`key_starts.len() == nodes.len() + 1`).
+    key_starts: Vec<usize>,
+
+    /// Reused buffer in which a new node's key is assembled before it is
+    /// bounded and appended to `key_bytes`.
+    key_scratch: Vec<u8>,
+
+    /// [`NodeFacts`] parallel to `nodes`.
+    facts: Vec<NodeFacts>,
+
+    /// The free-symbol bit index of each symbol ([`NodeFacts`]), indexed by
+    /// [`SymbolId`]: `k` for the symbol whose `Symbol` node was the `k`-th
+    /// created (`k < 63`), 63 for the later ones, [`NO_SYMBOL_NODE`] for a
+    /// name without a `Symbol` node (a function name, or none yet).
+    sym_bits: Vec<u8>,
+
+    /// The `Symbol` nodes owning the exact bits 0–62, in bit order.
+    bit_symbols: Vec<ExprId>,
 
     /// Hash-consing deduplication map.
     ///
@@ -246,7 +380,12 @@ impl Arena {
         let mut arena = Self {
             nodes: Vec::new(),
             numbers: Vec::new(),
-            sort_keys: Vec::new(),
+            key_bytes: Vec::new(),
+            key_starts: vec![0],
+            key_scratch: Vec::new(),
+            facts: Vec::new(),
+            sym_bits: Vec::new(),
+            bit_symbols: Vec::new(),
             dedup: FxHashMap::default(),
             num_dedup: FxHashMap::default(),
             symbols: SymbolTable::new(),
@@ -548,8 +687,8 @@ impl Arena {
     ///
     /// If a structurally identical node has already been interned, the
     /// existing [`ExprId`] is returned.  Otherwise the node is appended to
-    /// the arena, a sort key is computed, and the new [`ExprId`] is recorded
-    /// in the dedup map.
+    /// the arena, its sort key and [`NodeFacts`] are computed, and the new
+    /// [`ExprId`] is recorded in the dedup map.
     ///
     /// A function application at an exact special argument whose value is
     /// rational, infinite or `nan` is never stored: its value is returned
@@ -579,9 +718,10 @@ impl Arena {
             u32::try_from(self.nodes.len())
                 .expect("arena overflow: more than 4 billion expression nodes"),
         );
-        let sort_key = self.compute_sort_key_for(&node);
+        let facts = self.facts_of_new(id, &node);
+        self.push_sort_key(&node);
         self.nodes.push(node);
-        self.sort_keys.push(sort_key);
+        self.facts.push(facts);
 
         self.dedup.entry(hash).or_default().push(id);
 
@@ -703,7 +843,8 @@ impl Arena {
             | ExprNode::ConditionSet(..)
             | ExprNode::EmptySet
             | ExprNode::UniversalSet
-            | ExprNode::ImageSet(..)) => self.intern(other),
+            | ExprNode::ImageSet(..)
+            | ExprNode::Internal(..)) => self.intern(other),
         }
     }
 
@@ -733,22 +874,110 @@ impl Arena {
         id
     }
 
-    /// Computes the [`SortKey`] for a node by delegating to
-    /// [`sort_key::compute_sort_key`](crate::base::sort_key::compute_sort_key) with closures that resolve through
-    /// `self`.
-    fn compute_sort_key_for(&self, node: &ExprNode) -> SortKey {
+    /// Appends the sort key of `node` (about to be pushed) to the key pool:
+    /// assembled by
+    /// [`sort_key::compute_sort_key`](crate::base::sort_key::compute_sort_key)
+    /// in the reused scratch buffer from the children's keys in the pool,
+    /// then bounded by [`push_bounded_key`].
+    fn push_sort_key(&mut self, node: &ExprNode) {
+        let mut scratch = std::mem::take(&mut self.key_scratch);
+        scratch.clear();
         compute_sort_key(
             node,
-            |child_id| self.sort_keys[child_id.0 as usize].clone(),
-            |num_id| {
-                // Serialize the rational value as a string and return its
-                // bytes.  This is simple and gives a consistent (if not
-                // optimally compact) ordering.
-                self.numbers[num_id.0 as usize].to_string().into_bytes()
-            },
-            |sym_id| self.symbols.name(sym_id).to_owned(),
-        )
+            &mut scratch,
+            |child_id| self.sort_key(child_id),
+            |num_id, out| write_decimal(&self.numbers[num_id.0 as usize], out),
+            |sym_id| self.symbols.name(sym_id),
+        );
+        push_bounded_key(&scratch, &mut self.key_bytes);
+        self.key_starts.push(self.key_bytes.len());
+        self.key_scratch = scratch;
     }
+
+    /// The [`NodeFacts`] of `node`, about to be stored as `id`, from the
+    /// facts of its children (all interned before it): O(arity).  A
+    /// `Symbol` node gets the next free-symbol bit.
+    fn facts_of_new(&mut self, id: ExprId, node: &ExprNode) -> NodeFacts {
+        if let ExprNode::Symbol(s) = *node {
+            return NodeFacts {
+                tree_size: 1,
+                height: 1,
+                flags: NodeFacts::HAS_SYMBOL,
+                sym_mask: self.assign_symbol_bit(s, id),
+            };
+        }
+        if node.is_atom() {
+            return NodeFacts::ATOM;
+        }
+        let facts = &self.facts;
+        let child = |c: ExprId| facts[c.0 as usize];
+        let (mut tree_size, mut height, mut flags, mut sym_mask) = (1u32, 0u16, 0u16, 0u64);
+        node.for_each_child(|c| {
+            let f = child(c);
+            tree_size = tree_size.saturating_add(f.tree_size);
+            height = height.max(f.height);
+            flags |= f.flags;
+            sym_mask |= f.sym_mask;
+        });
+        if is_unevaluated_node(node) {
+            flags |= NodeFacts::HAS_UNEVALUATED;
+        }
+        // A binder of a symbol (`walk::binder`): its variable is free in
+        // the outer operands only, and the variable operand itself is not
+        // an occurrence.
+        if let Some(b) = node.binder_operands()
+            && let ExprNode::Symbol(var) = self.nodes[b.var.0 as usize]
+        {
+            flags |= NodeFacts::HAS_BINDER;
+            let outer = b.outer.iter().fold(0, |m, &c| m | child(c).sym_mask);
+            let mut scoped = b.scoped.iter().fold(0, |m, &c| m | child(c).sym_mask);
+            let var_bit = self.symbol_bit(var).unwrap_or(SHARED_SYMBOL_BIT);
+            if var_bit != SHARED_SYMBOL_BIT {
+                scoped &= !var_bit;
+            } else if scoped & SHARED_SYMBOL_BIT != 0 {
+                flags |= NodeFacts::SHARED_BIT_INEXACT;
+            }
+            sym_mask = outer | scoped;
+        }
+        NodeFacts {
+            tree_size,
+            height: height.saturating_add(1),
+            flags,
+            sym_mask,
+        }
+    }
+
+    /// Gives the new `Symbol(s)` node `id` the next free-symbol bit and
+    /// returns that bit.
+    fn assign_symbol_bit(&mut self, s: SymbolId, id: ExprId) -> u64 {
+        let k = self.bit_symbols.len();
+        let index = if k < 63 {
+            self.bit_symbols.push(id);
+            k as u8
+        } else {
+            63
+        };
+        let i = s.0 as usize;
+        if self.sym_bits.len() <= i {
+            self.sym_bits.resize(i + 1, NO_SYMBOL_NODE);
+        }
+        self.sym_bits[i] = index;
+        1u64 << index
+    }
+}
+
+/// Writes `q` in decimal as `Display` does (`-3`, `7/2`): the bytes of a
+/// `Num` node's sort key.  Machine-word values (most of them) skip the
+/// big-integer conversion and the temporary strings.
+fn write_decimal(q: &Q, out: &mut Vec<u8>) {
+    use num_traits::ToPrimitive;
+    use std::io::Write as _;
+    // Writing into a `Vec` cannot fail.
+    let _ = match (q.numer().to_i64(), q.denom().to_i64()) {
+        (Some(n), Some(1)) => write!(out, "{n}"),
+        (Some(n), Some(d)) => write!(out, "{n}/{d}"),
+        _ => write!(out, "{q}"),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -780,10 +1009,11 @@ impl PartialOrd for ArenaOrder {
 }
 
 /// The variant name [`Arena::canonical_cmp`] orders distinct heads with
-/// equal sort keys by: a library function's is `Apply`, as until 0.49.
+/// equal sort keys by: a library or internal function's is `Apply`, as
+/// until 0.49.
 fn head_variant_name(n: &ExprNode) -> &'static str {
     match n {
-        ExprNode::Lib(..) => "Apply",
+        ExprNode::Lib(..) | ExprNode::Internal(..) => "Apply",
         other => other.variant_name(),
     }
 }
@@ -853,6 +1083,21 @@ impl Arena {
             (ExprNode::Apply(s, _), ExprNode::Lib(g, _)) => {
                 self.symbol_name(*s).cmp(g.name()).then(Ordering::Less)
             }
+            // An internal function likewise, after a library function of
+            // the same name (there is none).
+            (ExprNode::Internal(f, _), ExprNode::Internal(g, _)) => f.name().cmp(g.name()),
+            (ExprNode::Internal(f, _), ExprNode::Apply(t, _)) => {
+                f.name().cmp(self.symbol_name(*t)).then(Ordering::Greater)
+            }
+            (ExprNode::Apply(s, _), ExprNode::Internal(g, _)) => {
+                self.symbol_name(*s).cmp(g.name()).then(Ordering::Less)
+            }
+            (ExprNode::Internal(f, _), ExprNode::Lib(g, _)) => {
+                f.name().cmp(g.name()).then(Ordering::Greater)
+            }
+            (ExprNode::Lib(f, _), ExprNode::Internal(g, _)) => {
+                f.name().cmp(g.name()).then(Ordering::Less)
+            }
             _ if std::mem::discriminant(np) == std::mem::discriminant(nq) => Ordering::Equal,
             // The variant's name (`Add`): reached only by distinct nodes
             // with equal sort keys.
@@ -875,14 +1120,97 @@ impl Arena {
         &self.nodes[id.0 as usize]
     }
 
-    /// Returns a reference to the [`SortKey`] for the node identified by
-    /// `id`.
+    /// Returns the [`SortKey`] of the node identified by `id`: its bytes in
+    /// the arena's key pool.
     ///
     /// # Panics
     ///
     /// Panics if `id` was not produced by this arena.
+    #[inline]
     pub fn sort_key(&self, id: ExprId) -> &SortKey {
-        &self.sort_keys[id.0 as usize]
+        let i = id.0 as usize;
+        &self.key_bytes[self.key_starts[i]..self.key_starts[i + 1]]
+    }
+
+    /// The [`NodeFacts`] of the node `id`.
+    #[inline]
+    pub(crate) fn facts(&self, id: ExprId) -> NodeFacts {
+        self.facts[id.0 as usize]
+    }
+
+    /// The free-symbol bit of the symbol `s` ([`NodeFacts`]); `None` when
+    /// `s` has no `Symbol` node in this arena, so is free in nothing.
+    #[inline]
+    pub(crate) fn symbol_bit(&self, s: SymbolId) -> Option<u64> {
+        match self.sym_bits.get(s.0 as usize) {
+            Some(&k) if k != NO_SYMBOL_NODE => Some(1u64 << k),
+            _ => None,
+        }
+    }
+
+    /// Is `s` free in the tree rooted at `id`, as far as the facts decide:
+    /// `False` when the symbol has no node or its bit is clear, `True` when
+    /// its bit is set and its own, `Unknown` when it shares bit 63 (a walk
+    /// must tell).
+    #[inline]
+    pub(crate) fn free_symbol_fact(&self, id: ExprId, s: SymbolId) -> Truth {
+        let Some(bit) = self.symbol_bit(s) else {
+            return Truth::False;
+        };
+        if self.facts(id).sym_mask & bit == 0 {
+            Truth::False
+        } else if bit != SHARED_SYMBOL_BIT {
+            Truth::True
+        } else {
+            Truth::Unknown
+        }
+    }
+
+    /// The free-symbol mask of `id` ([`NodeFacts`]): bits 0–62 exact, bit
+    /// 63 ([`SHARED_SYMBOL_BIT`]) a superset.  A pruning walk skips a
+    /// subtree whose mask has none of the bits it still looks for.
+    #[inline]
+    pub(crate) fn free_symbol_mask(&self, id: ExprId) -> u64 {
+        self.facts(id).sym_mask
+    }
+
+    /// The `Symbol` node owning the exact free-symbol bit `k < 63`.
+    #[inline]
+    pub(crate) fn bit_symbol(&self, k: u32) -> Option<ExprId> {
+        self.bit_symbols.get(k as usize).copied()
+    }
+
+    /// Is the tree rooted at `id` free of free symbols (a constant)?  O(1)
+    /// unless a symbol sharing bit 63 is bound in it.
+    pub(crate) fn is_symbol_free(&self, id: ExprId) -> bool {
+        let f = self.facts(id);
+        if f.sym_mask == 0 {
+            true
+        } else if f.sym_mask != SHARED_SYMBOL_BIT || f.flags & NodeFacts::SHARED_BIT_INEXACT == 0 {
+            false
+        } else {
+            crate::base::walk::free_symbols(self, id).is_empty()
+        }
+    }
+
+    /// The number of nodes of the unfolded tree rooted at `id` (shared
+    /// subtrees counted at every occurrence, not the DAG's node count),
+    /// capped: `min(size, cap)`.  O(1) from the [`NodeFacts`]; a count that
+    /// saturated the facts' `u32` is redone when `cap` is larger.
+    pub(crate) fn tree_size_capped(&self, id: ExprId, cap: usize) -> usize {
+        let size = self.facts(id).tree_size;
+        if size < u32::MAX || cap <= u32::MAX as usize {
+            return (size as usize).min(cap);
+        }
+        let mut sizes: FxHashMap<ExprId, usize> = FxHashMap::default();
+        for n in crate::base::walk::post_order_ids(self, id) {
+            let mut total = 1usize;
+            self.node(n).for_each_child(|c| {
+                total = total.saturating_add(sizes.get(&c).copied().unwrap_or(1));
+            });
+            sizes.insert(n, total.min(cap));
+        }
+        sizes.get(&id).copied().unwrap_or(1)
     }
 
     /// Returns a reference to the rational number identified by `id`.
@@ -2308,7 +2636,7 @@ impl Arena {
     /// use `eval::certified_real_sign`.
     pub(crate) fn sign_of_real_constant(&self, expr: ExprId) -> Option<std::cmp::Ordering> {
         use crate::base::assumptions::{AssumptionCache, Props};
-        if !crate::base::walk::free_symbols(self, expr).is_empty()
+        if !self.is_symbol_free(expr)
             || AssumptionCache::new().query(self, expr, Props::REAL) != Some(true)
         {
             return None;
@@ -2681,7 +3009,41 @@ mod tests {
         let mut a = Arena::new();
         let _x = a.symbol("x");
         let _y = a.symbol("y");
-        assert_eq!(a.nodes.len(), a.sort_keys.len());
+        assert_eq!(a.nodes.len() + 1, a.key_starts.len());
+        assert_eq!(a.key_starts.last().copied(), Some(a.key_bytes.len()));
+        assert_eq!(a.nodes.len(), a.facts.len());
+    }
+
+    /// A number's key bytes are its `Display` form, as in 0.48
+    /// (`Ratio::to_string`), including at the `i64` boundaries where the
+    /// machine-word fast path hands over to the big integers, and for an
+    /// unreduced representation.
+    #[test]
+    fn decimal_key_bytes_are_display_bytes() {
+        let big = |s: &str| s.parse::<BigInt>().unwrap();
+        let mut values = Vec::new();
+        for n in [
+            "0",
+            "1",
+            "-1",
+            "9223372036854775807",
+            "9223372036854775808",
+            "-9223372036854775808",
+            "-9223372036854775809",
+            "123456789012345678901234567890",
+        ] {
+            for d in ["1", "2", "9223372036854775807", "9223372036854775808"] {
+                values.push(Ratio::new(big(n), big(d)));
+            }
+        }
+        values.push(Ratio::new_raw(big("3"), big("-4")));
+        values.push(Ratio::new_raw(big("-6"), big("-1")));
+        values.push(Ratio::new_raw(big("5"), big("1")));
+        for q in values {
+            let mut out = vec![7u8];
+            write_decimal(&q, &mut out);
+            assert_eq!(&out[1..], q.to_string().as_bytes(), "{q}");
+        }
     }
 
     #[test]

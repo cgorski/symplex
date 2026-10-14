@@ -215,6 +215,7 @@ fn convert_node(
 
         ExprNode::Apply(_, _)
         | ExprNode::Lib(_, _)
+        | ExprNode::Internal(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _)
         | ExprNode::DefiniteIntegral(_, _, _, _) => None,

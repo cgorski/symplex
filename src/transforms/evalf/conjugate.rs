@@ -102,15 +102,13 @@ fn hash_of(parts: impl Hash) -> u64 {
 /// `Shi(z̄)` and `erfi(z)` "paired" as conjugates and an imaginary part of
 /// 10⁻⁴⁵ became exactly 0 (a logarithm of the sum then landed on the wrong
 /// side of its cut, 2πi off).
-fn head_tag(arena: &Arena, node: &ExprNode) -> u64 {
+fn head_tag(node: &ExprNode) -> u64 {
     let variant = std::mem::discriminant(node);
     match node {
         ExprNode::Lib(f, args) => hash_of((variant, Func::from(*f), args.len())),
-        ExprNode::Apply(head, args) => match node.func(arena) {
-            Some((f, _)) => hash_of((variant, f, args.len())),
-            // A user function, or an internal name at an arity it does not take.
-            None => hash_of((variant, *head, args.len())),
-        },
+        ExprNode::Internal(f, args) => hash_of((variant, Func::from(*f), args.len())),
+        // A user function.
+        ExprNode::Apply(head, args) => hash_of((variant, *head, args.len())),
         _ => hash_of(variant),
     }
 }
@@ -289,7 +287,7 @@ impl Sigs {
         } else {
             let kids = node.children();
             let child_sigs: Option<Vec<Sig>> = kids.iter().map(|c| self.get(*c)).collect();
-            let tag = head_tag(arena, node);
+            let tag = head_tag(node);
             let symmetric = match node {
                 ExprNode::Add(_) => true,
                 ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()) => true,

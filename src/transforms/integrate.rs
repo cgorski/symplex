@@ -44,6 +44,7 @@ use crate::base::budget::{BudgetKind, Work, WorkScope};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
 use crate::base::stage::stage;
+use crate::base::truth::Truth;
 use crate::poly::Poly;
 
 /// Integrate `expr` with respect to `var`.
@@ -686,8 +687,13 @@ fn constant_is_real(
     c: ExprId,
     reals: &mut crate::base::assumptions::AssumptionCache,
 ) -> bool {
-    crate::transforms::realness::constant_realness_as_declared(arena, c, FTC_CHECK_DIGITS, reals)
-        == Some(true)
+    Truth::from(crate::transforms::realness::constant_realness_as_declared(
+        arena,
+        c,
+        FTC_CHECK_DIGITS,
+        reals,
+    ))
+    .is_true()
 }
 
 /// Check whether `expr` is a suitable candidate for the `u` factor in
@@ -820,29 +826,25 @@ const DV_ONE_NESTED_DEPTH: usize = 20;
 /// `lambertw(x, k)` and `elliptic_f(φ, m)` first; up to 0.48 the last was
 /// taken for all of them), nor has a user function: `None`.
 fn single_argument(arena: &Arena, expr: ExprId) -> Option<ExprId> {
+    use crate::base::func::{ArgCount, Family};
     let node = arena.node(expr);
-    match node {
-        ExprNode::Ei(g)
-        | ExprNode::Si(g)
-        | ExprNode::Ci(g)
-        | ExprNode::Li(g)
-        | ExprNode::Asin(g)
-        | ExprNode::Acos(g)
-        | ExprNode::Atan(g)
-        | ExprNode::Asinh(g)
-        | ExprNode::Acosh(g)
-        | ExprNode::Atanh(g)
-        | ExprNode::Erf(g)
-        | ExprNode::Erfc(g)
-        | ExprNode::Ln(g) => Some(*g),
-        ExprNode::Apply(..) | ExprNode::Lib(..) => match node.func(arena)? {
-            (f, args) if f.spec().arity == crate::base::func::ArgCount::Exactly(1) => {
-                args.first().copied()
-            }
-            _ => None,
-        },
-        _ => None,
-    }
+    let f = node.func_head()?;
+    let library = f.family() == Family::Lib && f.spec().arity == ArgCount::Exactly(1);
+    node.unary_arg_if(|f| library || by_parts_unary(f))
+}
+
+/// The node-backed one-argument functions [`single_argument`] reads: the
+/// inverse trigonometric and hyperbolic functions, `ln`, `Ei`, `Si`, `Ci`,
+/// `li`, `erf`, `erfc` (the by-parts `u`s, whose derivatives are simpler).
+fn by_parts_unary(f: crate::base::func::Func) -> bool {
+    use crate::base::func::{Elementary, Func};
+    matches!(
+        f.elementary(),
+        Some(Elementary::InverseTrig | Elementary::InverseHyperbolic | Elementary::Ln)
+    ) || matches!(
+        f,
+        Func::Ei | Func::Si | Func::Ci | Func::Li | Func::Erf | Func::Erfc
+    )
 }
 
 /// Is `expr` `erfi(g)` with `g` depending on the variable?  The error
@@ -1905,7 +1907,7 @@ fn try_bioche_tan_substitution(
         cs.iter()
             .skip(parity)
             .step_by(2)
-            .all(|&k| crate::poly::algebraic::is_zero_checked(arena, k) == Some(true))
+            .all(|&k| Truth::from(crate::poly::algebraic::is_zero_checked(arena, k)).is_true())
     };
     // `shift` 0: both even; 1: both odd (divided by `c`).
     let shift = if vanishes(arena, &num_c, 1) && vanishes(arena, &den_c, 1) {
@@ -2007,7 +2009,7 @@ fn parity_in(arena: &mut Arena, p: ExprId, v: ExprId) -> Option<usize> {
     for (j, &k) in coeffs.iter().enumerate() {
         let zero = arena.is_zero_structural(k)
             || (crate::base::walk::free_symbols(arena, k).is_empty()
-                && crate::poly::algebraic::is_zero_checked(arena, k) == Some(true));
+                && Truth::from(crate::poly::algebraic::is_zero_checked(arena, k)).is_true());
         if !zero {
             nonzero[j % 2] = true;
         }
@@ -3175,7 +3177,7 @@ fn tan_algebraic_in_u(
     if let Some(r) = crate::transforms::trig_integ::continuous_through_tan(arena, g, t, t_sym, u) {
         return Some(r);
     }
-    if tan_pole_continuous(arena, integrand_t, t) != Some(false) {
+    if !tan_pole_continuous(arena, integrand_t, t).is_false() {
         tracing::debug!("tan u: the jump at the poles of tan u is not decided");
         return None;
     }
@@ -3189,10 +3191,10 @@ fn tan_algebraic_in_u(
 /// Is the integrand `f(u) = h(t)·(1 + t²)` (`t = tan u`) continuous across
 /// the poles of `tan u`, for its parameters at the generic values of
 /// [`FTC_PARAMETER_VALUES`]?  By the limits of `(1 + t²)·h(t)` at `t = ±∞`:
-/// `Some(false)` when one is infinite or they differ (`√(tan u)` is real on
-/// one side only), `Some(true)` when they agree, `None` when a limit is not
-/// found.
-fn tan_pole_continuous(arena: &mut Arena, h: ExprId, t: ExprId) -> Option<bool> {
+/// `False` when one is infinite or they differ (`√(tan u)` is real on one
+/// side only), `True` when they agree (to `10⁻⁹`: only `False` is acted on,
+/// by refusing), `Unknown` when a limit is not found.
+fn tan_pole_continuous(arena: &mut Arena, h: ExprId, t: ExprId) -> Truth {
     let one = arena.one;
     let two = arena.int(2);
     let t_sq = arena.pow(t, two);
@@ -3204,12 +3206,12 @@ fn tan_pole_continuous(arena: &mut Arena, h: ExprId, t: ExprId) -> Option<bool> 
             continue;
         }
         let ExprNode::Symbol(sid) = *arena.node(s) else {
-            return None;
+            return Truth::Unknown;
         };
         params.push((arena.symbol_name(sid).to_owned(), s));
     }
     if params.len() > FTC_PARAMETER_VALUES.len() {
-        return None;
+        return Truth::Unknown;
     }
     params.sort_by(|a, b| a.0.cmp(&b.0));
     for (j, &(_, s)) in params.iter().enumerate() {
@@ -3220,24 +3222,26 @@ fn tan_pole_continuous(arena: &mut Arena, h: ExprId, t: ExprId) -> Option<bool> 
     let k = crate::transforms::eval::eval(arena, k);
     let mut values = Vec::with_capacity(2);
     for point in [arena.infinity(), arena.neg_infinity()] {
-        let v = arena.limit_expr(k, t, point).ok()?;
+        let Ok(v) = arena.limit_expr(k, t, point) else {
+            return Truth::Unknown;
+        };
         let v = crate::transforms::eval::eval(arena, v);
         if crate::base::walk::has_unevaluated(arena, v) || contains_var_id(arena, v, t) {
-            return None;
+            return Truth::Unknown;
         }
         if contains_non_finite(arena, v) {
-            return Some(false);
+            return Truth::False;
         }
         let Ok(z) = crate::transforms::evalf::evalf_complex64(arena, v) else {
-            return None;
+            return Truth::Unknown;
         };
         if !z.re.is_finite() || !z.im.is_finite() {
-            return Some(false);
+            return Truth::False;
         }
         values.push(z);
     }
     let gap = (values[0] - values[1]).norm();
-    Some(gap <= 1e-9 * values[0].norm().max(1.0))
+    Truth::from_bool(gap <= 1e-9 * values[0].norm().max(1.0))
 }
 
 /// Does `e` contain the symbol `v` (free)?
@@ -3265,7 +3269,7 @@ fn undecided_jump_kept(
 ) -> bool {
     jump_kept_undecided(arena, g, t_sym)
         && (!crate::transforms::trig_integ::strict_jumps_active()
-            || tan_pole_continuous(arena, h, t) == Some(false))
+            || tan_pole_continuous(arena, h, t).is_false())
 }
 
 /// May an antiderivative `G(tan w)` (`g` = `G(t)`, `t` the substitution's
@@ -6533,7 +6537,7 @@ fn try_log_substitution(
         n,
         crate::base::assumptions::Props::REAL,
     );
-    if n_real == Some(false)
+    if Truth::from(n_real).is_false()
         || (n_real.is_none() && crate::base::walk::free_symbols(arena, n).is_empty())
     {
         return None;
@@ -9686,8 +9690,10 @@ fn try_piecewise_wrap(
                 // exclude: `a = 0` and `b = −a` for positive `a`, `b` in
                 // `∫ dx/(a + b·sin²x)` (0.42 carried both unreachable
                 // branches).  An undecided value keeps its branch.
-                if crate::transforms::solve::assumptions_hold(arena, *sym_expr, degen_val)
-                    == Some(false)
+                if Truth::from(crate::transforms::solve::assumptions_hold(
+                    arena, *sym_expr, degen_val,
+                ))
+                .is_false()
                 {
                     continue;
                 }
@@ -11817,11 +11823,12 @@ fn try_dilog_integral(
             arena.as_num(k)?;
             let beta = arena.add(&free);
             let positive = arena.as_num(beta).is_some_and(Signed::is_positive)
-                || crate::base::assumptions::AssumptionCache::new().query(
+                || Truth::from(crate::base::assumptions::AssumptionCache::new().query(
                     arena,
                     beta,
                     crate::base::assumptions::Props::POSITIVE,
-                ) == Some(true);
+                ))
+                .is_true();
             if !positive {
                 return None;
             }
@@ -12067,7 +12074,7 @@ fn constant_nonzero(arena: &mut Arena, c: ExprId) -> bool {
     if let Some(q) = arena.as_num(c) {
         return !q.is_zero();
     }
-    if AssumptionCache::new().query(arena, c, Props::NONZERO) == Some(true) {
+    if Truth::from(AssumptionCache::new().query(arena, c, Props::NONZERO)).is_true() {
         return true;
     }
     crate::base::walk::free_symbols(arena, c).is_empty()
@@ -12108,7 +12115,7 @@ fn vanishing_parameter_values(
         if !crate::base::walk::free_symbols(arena, v).is_empty() || contains_non_finite(arena, v) {
             return None;
         }
-        if crate::transforms::solve::assumptions_hold(arena, s, v) == Some(false)
+        if Truth::from(crate::transforms::solve::assumptions_hold(arena, s, v)).is_false()
             || nonreal_value_of_real_symbol(arena, s, v)
         {
             continue;
@@ -12789,7 +12796,7 @@ fn bind_parameters(
         };
         let mut declared = arena.symbol_assumptions(sid);
         declared.normalize_declared();
-        let complex = declared.query(crate::base::assumptions::Props::REAL) != Some(true);
+        let complex = !Truth::from(declared.query(crate::base::assumptions::Props::REAL)).is_true();
         may_be_complex |= complex;
         let (p, q) = FTC_PARAMETER_VALUES[k];
         let re = arena.rational(p, q);
@@ -12835,11 +12842,11 @@ fn value_satisfies(
     declared
         .known_true
         .iter()
-        .all(|flag| facts.query(arena, value, flag) == Some(true))
+        .all(|flag| Truth::from(facts.query(arena, value, flag)).is_true())
         && declared
             .known_false
             .iter()
-            .all(|flag| facts.query(arena, value, flag) == Some(false))
+            .all(|flag| Truth::from(facts.query(arena, value, flag)).is_false())
 }
 
 /// The numeric FTC check behind [`antiderivative_rejected`]: `F′` against
@@ -12908,6 +12915,24 @@ fn check_antiderivative(
     verdict
 }
 
+/// The functions [`analytic_in_parameters`] counts as analytic: the
+/// elementary functions, `Γ`, `erf`, `erfc`, `Si`, `Ci`, `Ei`, `li`, `ζ`.
+fn analytic_off_cuts(f: crate::base::func::Func) -> bool {
+    use crate::base::func::Func;
+    f.elementary().is_some()
+        || matches!(
+            f,
+            Func::Gamma
+                | Func::Erf
+                | Func::Erfc
+                | Func::Si
+                | Func::Ci
+                | Func::Ei
+                | Func::Li
+                | Func::Zeta
+        )
+}
+
 /// Is `e` analytic in its parameters (the free symbols other than the
 /// variable): does every node that is not an analytic function of its
 /// arguments — `|·|`, `sign`, `re`, `arg`, `Piecewise`, a relation, an
@@ -12936,30 +12961,8 @@ fn analytic_in_parameters(arena: &Arena, e: ExprId, var_sym: SymbolId) -> bool {
                 | ExprNode::Mul(_)
                 | ExprNode::Pow(..)
                 | ExprNode::Neg(_)
-                | ExprNode::Sin(_)
-                | ExprNode::Cos(_)
-                | ExprNode::Tan(_)
-                | ExprNode::Exp(_)
-                | ExprNode::Ln(_)
-                | ExprNode::Asin(_)
-                | ExprNode::Acos(_)
-                | ExprNode::Atan(_)
-                | ExprNode::Sinh(_)
-                | ExprNode::Cosh(_)
-                | ExprNode::Tanh(_)
-                | ExprNode::Asinh(_)
-                | ExprNode::Acosh(_)
-                | ExprNode::Atanh(_)
-                | ExprNode::Gamma(_)
-                | ExprNode::Erf(_)
-                | ExprNode::Erfc(_)
-                | ExprNode::Si(_)
-                | ExprNode::Ci(_)
-                | ExprNode::Ei(_)
-                | ExprNode::Li(_)
-                | ExprNode::Zeta(_)
                 | ExprNode::RootSum(..)
-        );
+        ) || node.func_head().is_some_and(analytic_off_cuts);
         if below && !analytic {
             return false;
         }
@@ -14534,5 +14537,22 @@ mod tests {
             });
             assert_eq!(got, expected, "∫ {f_src} = {big_f_src}");
         }
+    }
+
+    /// `single_argument` and `analytic_in_parameters` select exactly the
+    /// node-backed functions of their 0.49 or-patterns (W6d: the lists
+    /// became `by_parts_unary` and `analytic_off_cuts`).
+    #[test]
+    fn function_predicates_are_the_old_lists() {
+        use crate::base::func::{Func::*, selected};
+        let parts = [
+            Ei, Si, Ci, Li, Asin, Acos, Atan, Asinh, Acosh, Atanh, Erf, Erfc, Ln,
+        ];
+        assert_eq!(selected(by_parts_unary), parts.into_iter().collect());
+        let analytic = [
+            Sin, Cos, Tan, Exp, Ln, Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Gamma,
+            Erf, Erfc, Si, Ci, Ei, Li, Zeta,
+        ];
+        assert_eq!(selected(analytic_off_cuts), analytic.into_iter().collect());
     }
 }

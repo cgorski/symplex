@@ -36,6 +36,7 @@ use rustc_hash::FxHashMap;
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 use crate::base::walk;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -122,7 +123,7 @@ fn refine_node_immut(
         // ── abs(x) where x ≥ 0  →  x ──────────────────────────────
         ExprNode::Abs(inner) => {
             let props = prop_cache.get(&inner)?;
-            if props.is_nonneg == Some(true) {
+            if Truth::from(props.is_nonneg).is_true() {
                 tracing::debug!("refine: abs(x) -> x (nonnegative)");
                 return Some(inner);
             }
@@ -133,11 +134,11 @@ fn refine_node_immut(
         // ── sign(x) where x > 0  →  1 ─────────────────────────────
         ExprNode::Sign(inner) => {
             let props = prop_cache.get(&inner)?;
-            if props.is_positive == Some(true) {
+            if Truth::from(props.is_positive).is_true() {
                 tracing::debug!("refine: sign(x) -> 1 (positive)");
                 return Some(arena.one);
             }
-            if props.is_zero == Some(true) {
+            if Truth::from(props.is_zero).is_true() {
                 tracing::debug!("refine: sign(x) -> 0 (zero)");
                 return Some(arena.zero);
             }
@@ -148,7 +149,7 @@ fn refine_node_immut(
         // ── floor(x) where x ∈ ℤ  →  x ────────────────────────────
         ExprNode::Floor(inner) => {
             let props = prop_cache.get(&inner)?;
-            if props.is_integer == Some(true) {
+            if Truth::from(props.is_integer).is_true() {
                 tracing::debug!("refine: floor(x) -> x (integer)");
                 return Some(inner);
             }
@@ -158,7 +159,7 @@ fn refine_node_immut(
         // ── ceiling(x) where x ∈ ℤ  →  x ──────────────────────────
         ExprNode::Ceiling(inner) => {
             let props = prop_cache.get(&inner)?;
-            if props.is_integer == Some(true) {
+            if Truth::from(props.is_integer).is_true() {
                 tracing::debug!("refine: ceiling(x) -> x (integer)");
                 return Some(inner);
             }
@@ -197,7 +198,7 @@ fn refine_pow_immut(
     {
         // sqrt(x²) where x > 0 → x
         if let Some(inner_props) = prop_cache.get(&inner_base)
-            && inner_props.is_positive == Some(true)
+            && Truth::from(inner_props.is_positive).is_true()
         {
             tracing::debug!("refine: sqrt(x²) -> x (positive)");
             return Some(inner_base);
@@ -209,7 +210,7 @@ fn refine_pow_immut(
     // ── Pattern: base^exp where exp is known even → simplify ───────
     // Special case: (-1)^(even) → 1
     if let Some(exp_props) = prop_cache.get(&exp)
-        && exp_props.is_even == Some(true)
+        && Truth::from(exp_props.is_even).is_true()
         && let Some(base_num) = arena.as_num(base)
         && *base_num == Ratio::from(BigInt::from(-1))
     {
@@ -238,7 +239,7 @@ fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: Ex
             ExprNode::Abs(original) => {
                 let inner = cache.get(&original).copied().unwrap_or(original);
                 let is_neg = assumptions.query(arena, inner, Props::NEGATIVE);
-                if is_neg == Some(true) {
+                if Truth::from(is_neg).is_true() {
                     tracing::debug!("refine: abs(x) -> -x (negative)");
                     Some(arena.neg(inner))
                 } else {
@@ -254,7 +255,7 @@ fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: Ex
             ExprNode::Sign(original) => {
                 let inner = cache.get(&original).copied().unwrap_or(original);
                 let is_neg = assumptions.query(arena, inner, Props::NEGATIVE);
-                if is_neg == Some(true) {
+                if Truth::from(is_neg).is_true() {
                     tracing::debug!("refine: sign(x) -> -1 (negative)");
                     Some(arena.neg_one)
                 } else {
@@ -284,7 +285,7 @@ fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: Ex
                     // Replace this node only (the walk continues to the
                     // parents): an early `return` here made the whole
                     // expression `|x|` — `refine(cos(√(r²))) = |r|` — until 0.23.
-                    if is_real == Some(true) && is_positive != Some(true) {
+                    if Truth::from(is_real).is_true() && !Truth::from(is_positive).is_true() {
                         tracing::debug!("refine: sqrt(x²) -> abs(x) (real)");
                         let abs = arena.abs(inner_base);
                         cache.insert(id, abs);

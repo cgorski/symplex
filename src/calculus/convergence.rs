@@ -37,6 +37,7 @@ use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::truth::SignSet;
+use crate::base::truth::Truth;
 use crate::base::walk;
 use crate::calculus::summation::{self, TermShape};
 use crate::poly::polybridge;
@@ -54,11 +55,12 @@ pub(crate) enum Convergence {
 }
 
 impl Convergence {
-    fn to_option(self) -> Option<bool> {
+    /// "The series converges" as a three-valued answer.
+    fn truth(self) -> Truth {
         match self {
-            Convergence::Converges => Some(true),
-            Convergence::Diverges => Some(false),
-            Convergence::Inconclusive => None,
+            Convergence::Converges => Truth::True,
+            Convergence::Diverges => Truth::False,
+            Convergence::Inconclusive => Truth::Unknown,
         }
     }
 }
@@ -66,18 +68,17 @@ impl Convergence {
 /// Determine whether the infinite series `Σ_{k≥1} body(var)` converges.
 ///
 /// Returns `Some(true)` if convergent (absolutely or conditionally),
-/// `Some(false)` if divergent, `None` if inconclusive.
+/// `Some(false)` if divergent, `None` if inconclusive.  (`Option<bool>`
+/// because `Arena::is_convergent_expr` returns it as such.)
 pub(crate) fn is_convergent(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<bool> {
-    test_convergence(arena, body, var, false).to_option()
+    test_convergence(arena, body, var, false)
+        .truth()
+        .to_option()
 }
 
 /// Determine whether `Σ_{k≥1} |body(var)|` converges.
-pub(crate) fn is_absolutely_convergent(
-    arena: &mut Arena,
-    body: ExprId,
-    var: ExprId,
-) -> Option<bool> {
-    test_convergence(arena, body, var, true).to_option()
+pub(crate) fn is_absolutely_convergent(arena: &mut Arena, body: ExprId, var: ExprId) -> Truth {
+    test_convergence(arena, body, var, true).truth()
 }
 
 fn test_convergence(arena: &mut Arena, body: ExprId, var: ExprId, absolute: bool) -> Convergence {
@@ -301,28 +302,28 @@ impl Growth {
         self.b_signs
     }
 
-    /// Does `|a_k| → 0`?  `Some(false)` when `|a_k| → ∞`, `None` when the
+    /// Does `|a_k| → 0`?  `False` when `|a_k| → ∞`, `Unknown` when the
     /// terms stay bounded away from zero or the sign of `b` is unknown.
-    pub(crate) fn tends_to_zero(&self) -> Option<bool> {
+    pub(crate) fn tends_to_zero(&self) -> Truth {
         if self.a.is_negative() {
-            return Some(true);
+            return Truth::True;
         }
         if self.a.is_positive() {
-            return Some(false);
+            return Truth::False;
         }
         match self.b_sign() {
-            SignSet::NEGATIVE => Some(true),
-            SignSet::POSITIVE => Some(false),
+            SignSet::NEGATIVE => Truth::True,
+            SignSet::POSITIVE => Truth::False,
             SignSet::ZERO => {
                 if self.c.is_negative() {
-                    Some(true)
+                    Truth::True
                 } else if self.c.is_positive() {
-                    Some(false)
+                    Truth::False
                 } else {
-                    None
+                    Truth::Unknown
                 }
             }
-            _ => None,
+            _ => Truth::Unknown,
         }
     }
 
@@ -612,7 +613,7 @@ fn real_at_integers(arena: &mut Arena, u: ExprId, var: ExprId) -> bool {
     };
     let at_index = crate::transforms::subs::subs(arena, u, var, index);
     let at_index = eval::eval(arena, at_index);
-    AssumptionCache::new().query(arena, at_index, Props::REAL) == Some(true)
+    Truth::from(AssumptionCache::new().query(arena, at_index, Props::REAL)).is_true()
 }
 
 fn numeric_abs(arena: &mut Arena, e: ExprId) -> Option<f64> {
@@ -830,11 +831,12 @@ fn is_hardy_term(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
         if !walk::contains(arena, id, var) {
             // a constant (`π/2`): no other symbols, real
             if !walk::free_symbols(arena, id).is_empty()
-                || crate::base::assumptions::AssumptionCache::new().query(
+                || !Truth::from(crate::base::assumptions::AssumptionCache::new().query(
                     arena,
                     id,
                     crate::base::assumptions::Props::REAL,
-                ) != Some(true)
+                ))
+                .is_true()
             {
                 return false;
             }
@@ -910,7 +912,7 @@ mod tests {
         let neg2 = arena.int(-2);
         let body = arena.pow(k, neg2);
         assert_eq!(is_convergent(&mut arena, body, k), Some(true));
-        assert_eq!(is_absolutely_convergent(&mut arena, body, k), Some(true));
+        assert_eq!(is_absolutely_convergent(&mut arena, body, k), Truth::True);
     }
 
     #[test]
@@ -988,7 +990,7 @@ mod tests {
         let sgn = arena.pow(m1, k);
         let body = arena.div(sgn, k);
         assert_eq!(is_convergent(&mut arena, body, k), Some(true));
-        assert_eq!(is_absolutely_convergent(&mut arena, body, k), Some(false));
+        assert_eq!(is_absolutely_convergent(&mut arena, body, k), Truth::False);
         // (−1)^k alone diverges
         assert_eq!(is_convergent(&mut arena, sgn, k), Some(false));
     }

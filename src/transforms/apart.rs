@@ -22,6 +22,7 @@ use num_traits::{One, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 use crate::poly::Poly;
 use crate::poly::polybridge;
 use crate::transforms::solve::Solution;
@@ -431,13 +432,13 @@ fn try_root_based_apart(
         }
         used[idx] = true;
         let root = solutions[idx].value;
-        let partner = if realness[idx] == Some(false) {
+        let partner = if Truth::from(realness[idx]).is_false() {
             conjugate_by_value(&values, idx)
                 .filter(|&j| !used[j])
                 .or_else(|| {
                     ((idx + 1)..solutions.len()).find(|&j| {
                         !used[j]
-                            && realness[j] == Some(false)
+                            && Truth::from(realness[j]).is_false()
                             && are_conjugates(arena, root, solutions[j].value, &mut reals)
                     })
                 })
@@ -535,23 +536,25 @@ fn are_conjugates(
 ) -> bool {
     let sum = arena.add(&[r, s]);
     let sum = crate::transforms::eval::eval(arena, sum);
-    if crate::transforms::realness::constant_realness_as_declared(
+    if !Truth::from(crate::transforms::realness::constant_realness_as_declared(
         arena,
         sum,
         REALNESS_DIGITS,
         reals,
-    ) != Some(true)
+    ))
+    .is_true()
     {
         return false;
     }
     let product = arena.mul(&[r, s]);
     let product = crate::transforms::eval::eval(arena, product);
-    crate::transforms::realness::constant_realness_as_declared(
+    Truth::from(crate::transforms::realness::constant_realness_as_declared(
         arena,
         product,
         REALNESS_DIGITS,
         reals,
-    ) == Some(true)
+    ))
+    .is_true()
 }
 
 /// Build a term `residue / (x - root)` where both residue and root

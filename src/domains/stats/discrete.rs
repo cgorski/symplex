@@ -20,6 +20,7 @@ use crate::api::expr::{BoolEx, Ex};
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::domains::combinatorics::stirling2;
 
 use super::continuous::{one_minus_exp_neg, sampler_positive};
@@ -156,7 +157,7 @@ fn moment_from_mgf(mgf: impl Fn(&Ex) -> Option<Ex>, n: u32, ctx: &Context) -> Op
 fn geometric_tail_domain(p: &Ex) -> Option<Interval<Ex>> {
     let ctx = p.context();
     let q = ctx.one() - p;
-    if q.is_zero() == Some(true) {
+    if Truth::from(q.is_zero()).is_true() {
         return None;
     }
     Some(Interval::open(ctx.neg_infinity(), -q.ln()))
@@ -657,7 +658,7 @@ impl Family for Geometric {
     fn entropy(&self) -> Option<Ex> {
         let ctx = self.context();
         let q = ctx.one() - &self.p;
-        if q.is_zero() == Some(true) {
+        if Truth::from(q.is_zero()).is_true() {
             return Some(ctx.zero());
         }
         Some((-(&q * q.ln()) - &self.p * self.p.ln()) / &self.p)
@@ -939,7 +940,7 @@ impl Distribution {
         }
         for (i, (v, _)) in table.iter().enumerate() {
             for (w, _) in &table[i + 1..] {
-                if v.equals(w) == Some(true) {
+                if Truth::from(v.equals(w)).is_true() {
                     return Err(invalid(format!("the value `{v}` is listed twice")));
                 }
             }

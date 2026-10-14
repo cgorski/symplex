@@ -770,7 +770,7 @@ impl Expr<Boolean> {
     pub fn is_tautology(&self) -> Option<bool> {
         let mut inner = self.inner.write();
         let folded = Self::fold_with_assumptions(&mut inner, self.raw_id());
-        crate::transforms::logic::is_tautology(&mut inner.arena, folded)
+        crate::transforms::logic::is_tautology(&mut inner.arena, folded).to_option()
     }
 
     /// Fold relationals decided by the assumption system (the first step
@@ -804,7 +804,7 @@ impl Expr<Boolean> {
     pub fn is_contradiction(&self) -> Option<bool> {
         let mut inner = self.inner.write();
         let folded = Self::fold_with_assumptions(&mut inner, self.raw_id());
-        crate::transforms::logic::is_contradiction(&mut inner.arena, folded)
+        crate::transforms::logic::is_contradiction(&mut inner.arena, folded).to_option()
     }
 
     /// Does some assignment make this formula true?  Three-valued
@@ -830,7 +830,7 @@ impl Expr<Boolean> {
     pub fn satisfiable(&self) -> Option<bool> {
         let mut inner = self.inner.write();
         let folded = Self::fold_with_assumptions(&mut inner, self.raw_id());
-        crate::transforms::logic::satisfiable(&mut inner.arena, folded)
+        crate::transforms::logic::satisfiable(&mut inner.arena, folded).to_option()
     }
 
     /// The distinct atomic sub-formulas (relationals and opaque

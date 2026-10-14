@@ -316,6 +316,7 @@ impl Expr<Numeric> {
             self.raw_id(),
             var_id,
         )
+        .to_option()
     }
 
     // ── Asymptotic expansions ──────────────────────────────────────

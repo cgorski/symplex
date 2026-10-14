@@ -52,6 +52,19 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `bernoulli(1 ± 10⁻³⁰)` evaluated to `+0.5`, and
   `limit(bernoulli(x + 1), x, 0)` was `−1/2`.  The other numbers are
   unchanged.
+- `DiracDelta(u)` compiles to its pointwise value in every back end
+  (`compile`, `to_rust_fn`, `to_c_fn`, `to_python`, `to_numpy`, `to_julia`):
+  0 for `u ≠ 0`, NaN at `u = 0`.  The VM gave 0 at 0 and the source emitters
+  wrote `0.0` for any argument; the emitters refuse a constant `DiracDelta`
+  without a value as `compile` does (`ln(√2 + DiracDelta(0)).to_rust_fn(..)`
+  emitted `(0.5_f64.exp2() + 0.0_f64).ln()`).
+- `linsolve`'s neighbours: `Matrix::is_positive_definite`,
+  `is_positive_semidefinite` and `cholesky` no longer decide a sign from an
+  `f64` value (`[[e^{−10³⁰} − e^{−2·10³⁰}]]`, positive, was "not positive
+  definite"; `[[e^{−10⁻⁵⁰⁰⁰} − 1]]`, negative, was positive semidefinite);
+  `solve_ode_ivp` no longer accepts an initial condition whose residual is
+  merely below 10⁻¹⁰ (`y′ = y`, `y(0) = 0`, `y′(0) = e^{−10⁻⁵⁰⁰⁰} − 1`
+  gave `y = 0`); an undecided condition is `ComputationFailed`.
 - `integrate_numeric` and `eval_f64` refuse integrands with more than
   10,000 kinks, steps or poles in the range (`floor(10⁵x)` on `[0, 1]` was
   `49999.5`, right only by luck; `sign(sin(10⁵x))` was not).
@@ -69,6 +82,19 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   limit engine's work budget fails with `BudgetExhausted { kind: LimitSteps
   }` (same message), `rsolve_linear`'s swell with `ExpressionSwell`.
 - `multipoly::Monomial` (`MonoKey` deprecated).
+- `compile`, `to_rust_fn` and `to_c_fn` evaluate `elliptic_k(m)` and
+  `elliptic_e(m)` (AGM and DLMF series; at most 5 and 6 ulps from mpmath
+  on 69,758 points from `m = −1.7·10³⁰⁸` to 1, bit-identical across the
+  back ends).
+- `polylog` folds its classical values: `Li₃(1/2) = 7ζ(3)/8 − π² ln 2/12 +
+  ln³2/6`, `Li₂(±i) = −π²/48 ± iG`, `Li₂(2) = π²/4 − iπ ln 2`, `Li₂(1 ±
+  i)`, `Li₂((1 ± i)/2)` and the four golden-ratio values (each checked
+  against mpmath at 30 and 50 digits).
+- `solve`, `solve_as_set` and `solve_general` solve an equation in `a·x +
+  b` whenever they solve it in `a·x`: `sin(2x − 1) + cos(2x − 1) + 1/2 = 0`
+  → `[atan(2 − √7) + 1/2, atan(2 + √7) + 1/2]`.  These were refused; in a
+  hunt of 6,000 shifted equations next to their unshifted twins, refusals
+  2,543 → 445 (every remaining one has a refused twin), 0 wrong roots.
 - `factor_zassenhaus::domain`: coefficient domains as values
   (`CoeffDomain`, the former `modpoly::RingOps`, still a name for it), with
   `QQ`, `ZZ`, `GaussQQ` and `FieldOf<C>`; `modpoly::DensePoly` (formerly
@@ -105,6 +131,20 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `iπ/2`, `∞` (`acot(min(W(π), 0))` was `atan(zoo)` and compiled to NaN).
 - `expint(1, 0)` (`E₁`'s pole) is refused as divergent like `expint(n, 0)`
   for every `n ≤ 1` (it was "precision exhausted").
+- **Products of powers of `e` with rational exponents merge when built:**
+  `E·exp(−1)`, `E/E` and `exp(2)·exp(−2)` are `1`, `E·exp(1/2)` is
+  `exp(3/2)` (SymPy's rule; `E·exp(x)` stays split).  The hidden ones made
+  `binomial(−2E/E, 5)` fail to evaluate, made real solves return non-real
+  roots (`e^u + e^{−u} + 2` with `u = x/2 + 3/4`: `2πi − 3/2`), and made
+  `solve_as_set(csc(tanh(x/E)))` claim the poles of `tanh` as roots.
+- `solve_general` lists each periodic family once (`sinh(x)² + 1` listed
+  `3πi/2 + 2nπi` beside `−πi/2 + 2nπi`); `reduce_inequalities` decides which
+  members of a family are integers (`e^{ix} + 1 = 0` for an integer `x` was
+  `ℤ ∩ {2nπ + π}`, now `∅`).
+- `Context::from_tree` of an `Apply` with a reserved internal head builds a
+  plain user function (it built the limit engine's internal asymptotic
+  helper, limit 0 at ∞): the internal functions are nodes of their own that
+  no name builds.
 - `eigenvects` of a matrix with a radical of index above 2³¹ beside `√3`
   panicked in debug builds (the common root index wrapped in `u32`);
   `Fp64::inv` returned a non-inverse for a non-unit modulo a composite;
@@ -154,6 +194,34 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - Arithmetic modulo word primes uses Barrett reduction and a Euclidean
   inverse (it was Fermat's): Brown's modular gcd is about 25% faster on
   sparse inputs and 15% on dense ones.
+- **Faster core.**  Every expression node carries structural facts
+  computed once when it is created (tree size, height, whether it contains
+  an unevaluated form, a symbol or a binder, and a mask of its free symbols
+  that follows the binder rules): `has_unevaluated`, `is_constant`,
+  `free_symbols` of a constant or one-symbol expression and the size guards
+  answer in O(1) (8,000 such queries on a 30,000-node expression: 69.7 s →
+  under 0.1 s in a debug build).  Sort keys live in one byte pool per
+  context with no allocation per key; key bytes and the digest of truncated
+  keys are unchanged (checked on 92 M Rubi and 258 M golden nodes).
+  `ExprNode` is 40 bytes (was 48).  Together: Rubi suite CPU −6.5%, node and
+  key storage 160 → 132 bytes per node, `fuzz_integrate` corpus replay
+  −4.8%.
+- The parametric rational integrator checks that the factors of a
+  factored denominator are square-free and coprime by modular images
+  instead of full gcds in ℤ[x, parameters] (`∫ (A + Bx)(bx + cx²)^{3/2}/(d +
+  ex)⁸ dx` 3.3 s → 0.6 s, same answer; Rubi CPU −2%).
+- `Arena::sort_key` (reachable through `Context::with_arena_mut`) returns
+  the key bytes `&[u8]`.
+- **Internal type architecture (refactor wave 5).**  About 60 internal
+  deciders return `Truth`/`SignSet` instead of `Option<bool>`, and a new
+  ratchet (`test_truth_values`) counts the remaining `== Some(bool)`,
+  `unwrap_or(bool)`, internal `Option<bool>` functions and `Option<…>` sign
+  encodings per file (559 comparisons → 271).  The internal asymptotic
+  helpers are `ExprNode::Internal` nodes; 20 more hand-written function
+  lists became predicates over `Func`; the square-root-tower polynomials of
+  the linear algebra and `GenPoly`'s gcd, extended gcd, resultant and Yun
+  decomposition run on `DensePoly` over a coefficient domain; `ValueSign`
+  and `PartSigns` of the inequality and equation solvers are `SignSet`s.
 - **Internal type architecture (refactor wave 4).**  Library functions are
   `ExprNode::Lib(LibFn, args)` nodes, identified by the function rather
   than resolved from the text of an `Apply` head (`Apply` is a user

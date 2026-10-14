@@ -3723,6 +3723,11 @@ fn eval_node(
             let name = arena.symbol_name(*sid);
             Err(unevaluable(format!("cannot evaluate function '{name}'")))
         }
+        // Nor does an internal function of the limit engine.
+        ExprNode::Internal(f, _) => Err(unevaluable(format!(
+            "cannot evaluate function '{}'",
+            f.name()
+        ))),
 
         ExprNode::Derivative(_, _) => Err(SymplexError::Unevaluable {
             reason: "cannot evaluate unevaluated derivative".into(),

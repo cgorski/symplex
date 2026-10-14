@@ -47,6 +47,7 @@ use crate::base::arena::Arena;
 use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::truth::Truth;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Forward Laplace transform
@@ -1216,6 +1217,26 @@ fn try_divide_by_t(
     })
 }
 
+/// The functions [`continue_analytically`] does not continue through: the
+/// piecewise-defined `sign`, `H`, `⌊·⌋`, `⌈·⌉`, `min`, `max` and the
+/// non-holomorphic `re`, `im`, `arg`, `conjugate` (`|·|` has its own rule).
+fn piecewise_or_part(f: crate::base::func::Func) -> bool {
+    use crate::base::func::Func;
+    matches!(
+        f,
+        Func::Sign
+            | Func::Heaviside
+            | Func::Floor
+            | Func::Ceiling
+            | Func::Min
+            | Func::Max
+            | Func::Re
+            | Func::Im
+            | Func::Arg
+            | Func::Conjugate
+    )
+}
+
 /// The analytic continuation of `r`, a value of `∫_s^∞ F(u) du` computed
 /// with a real-variable antiderivative, from real `s → +∞` to the
 /// half-plane of convergence — or `None` when that cannot be read off.
@@ -1248,7 +1269,9 @@ fn continue_analytically(arena: &mut Arena, r: ExprId, s: ExprId) -> Option<Expr
                 }
                 let mut cache = crate::base::assumptions::AssumptionCache::new();
                 for &c in &coeffs {
-                    if cache.query(arena, c, crate::base::assumptions::Props::REAL) != Some(true) {
+                    if !Truth::from(cache.query(arena, c, crate::base::assumptions::Props::REAL))
+                        .is_true()
+                    {
                         return None;
                     }
                 }
@@ -1260,17 +1283,8 @@ fn continue_analytically(arena: &mut Arena, r: ExprId, s: ExprId) -> Option<Expr
                 };
                 replacements.push((id, rep));
             }
-            ExprNode::Sign(_)
-            | ExprNode::Heaviside(_)
-            | ExprNode::Re(_)
-            | ExprNode::Im(_)
-            | ExprNode::Arg(_)
-            | ExprNode::Conjugate(_)
-            | ExprNode::Floor(_)
-            | ExprNode::Ceiling(_)
-            | ExprNode::Min(_)
-            | ExprNode::Max(_)
-            | ExprNode::Piecewise(_) => return None,
+            ExprNode::Piecewise(_) => return None,
+            node if node.func_head().is_some_and(piecewise_or_part) => return None,
             node => node.for_each_child(|c| stack.push(c)),
         }
     }
@@ -2666,5 +2680,16 @@ mod tests {
         let one = a.one;
         let result = laplace_transform(&mut a, one, t, s);
         assert!(result.is_err());
+    }
+
+    /// `continue_analytically` stops at exactly the functions of its 0.49
+    /// or-pattern (W6d: the list became `piecewise_or_part`).
+    #[test]
+    fn piecewise_or_part_is_the_old_list() {
+        use crate::base::func::{Func::*, selected};
+        let old = [
+            Sign, Heaviside, Re, Im, Arg, Conjugate, Floor, Ceiling, Min, Max,
+        ];
+        assert_eq!(selected(piecewise_or_part), old.into_iter().collect());
     }
 }

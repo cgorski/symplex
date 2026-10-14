@@ -46,6 +46,7 @@ use crate::base::arena::Arena;
 use crate::base::assumptions::Props;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::base::walk;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -691,6 +692,7 @@ fn same_head(p_node: &ExprNode, s_node: &ExprNode, p: ExprId, s: ExprId) -> bool
     match (p_node, s_node) {
         (ExprNode::Apply(pf, _), ExprNode::Apply(sf, _)) => pf == sf,
         (ExprNode::Lib(pf, _), ExprNode::Lib(sf, _)) => pf == sf,
+        (ExprNode::Internal(pf, _), ExprNode::Internal(sf, _)) => pf == sf,
         (ExprNode::Interval(_, _, pf), ExprNode::Interval(_, _, sf)) => pf == sf,
         _ => true,
     }
@@ -817,18 +819,9 @@ pub(crate) fn instantiate(
 ///
 /// Hash-consing keeps the DAG small even when the unfolded tree grows
 /// exponentially, so rewrite-growth guards must look at the tree size.
-/// Computed by a single bottom-up pass over the DAG with memoisation.
+/// O(1): [`Arena::tree_size_capped`] reads it from the node's facts.
 pub(crate) fn tree_size_capped(arena: &Arena, root: ExprId, cap: usize) -> usize {
-    let post_order = walk::post_order_ids(arena, root);
-    let mut size: FxHashMap<ExprId, usize> = FxHashMap::default();
-    for &id in &post_order {
-        let mut total = 1usize;
-        arena.node(id).for_each_child(|c| {
-            total = total.saturating_add(size.get(&c).copied().unwrap_or(1));
-        });
-        size.insert(id, total.min(cap));
-    }
-    size.get(&root).copied().unwrap_or(1)
+    arena.tree_size_capped(root, cap)
 }
 
 /// Re-attach leftover terms of a partial `Add`/`Mul` match to the
@@ -1479,14 +1472,14 @@ fn condition_pow_pow(arena: &Arena, subs: &Substitution) -> bool {
         ExprNode::Pi | ExprNode::E => true,
         _ => {
             let mut cache = crate::base::assumptions::AssumptionCache::new();
-            cache.query(arena, *base, Props::NONNEGATIVE) == Some(true)
+            Truth::from(cache.query(arena, *base, Props::NONNEGATIVE)).is_true()
         }
     };
     let inner_real = match arena.node(*inner) {
         ExprNode::Num(_) => true,
         _ => {
             let mut cache = crate::base::assumptions::AssumptionCache::new();
-            cache.query(arena, *inner, Props::REAL) == Some(true)
+            Truth::from(cache.query(arena, *inner, Props::REAL)).is_true()
         }
     };
     if base_nonneg && inner_real {
@@ -1650,7 +1643,7 @@ fn condition_wild_real(arena: &Arena, subs: &Substitution) -> bool {
     let mut cache = crate::base::assumptions::AssumptionCache::new();
     subs.values().all(|&id| match arena.node(id) {
         ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => true,
-        _ => cache.query(arena, id, Props::REAL) == Some(true),
+        _ => Truth::from(cache.query(arena, id, Props::REAL)).is_true(),
     })
 }
 

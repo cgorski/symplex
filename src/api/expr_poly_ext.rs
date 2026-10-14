@@ -21,6 +21,7 @@ use crate::base::extended::Extended;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::poly::Poly;
 use crate::poly::polybridge::{expr_to_poly, poly_to_expr};
 use crate::poly::sturm::SturmChain;
@@ -735,7 +736,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn poly_is_nonnegative_on(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<bool> {
-        self.poly_sign_on(var, lo, hi, false)
+        self.poly_sign_on(var, lo, hi, false).to_option()
     }
 
     /// Is `self`, a univariate polynomial in `var` with rational
@@ -763,20 +764,26 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn poly_is_positive_on(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<bool> {
-        self.poly_sign_on(var, lo, hi, true)
+        self.poly_sign_on(var, lo, hi, true).to_option()
     }
 
     /// Shared implementation of the interval sign tests.
-    fn poly_sign_on(&self, var: &Ex, lo: &Ex, hi: &Ex, strict: bool) -> Option<bool> {
+    fn poly_sign_on(&self, var: &Ex, lo: &Ex, hi: &Ex, strict: bool) -> Truth {
         let var_id = self.checked_id(var);
         let lo_id = self.checked_id(lo);
         let hi_id = self.checked_id(hi);
         let inner = self.inner.read();
-        let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
-        let lo_e = endpoint(&inner.arena, lo_id)?;
-        let hi_e = endpoint(&inner.arena, hi_id)?;
+        let Some(f) = expr_to_poly(&inner.arena, self.raw_id(), var_id) else {
+            return Truth::Unknown;
+        };
+        let Some(lo_e) = endpoint(&inner.arena, lo_id) else {
+            return Truth::Unknown;
+        };
+        let Some(hi_e) = endpoint(&inner.arena, hi_id) else {
+            return Truth::Unknown;
+        };
         drop(inner);
-        Some(poly_sign_on_interval(&f, &lo_e, &hi_e, strict))
+        Truth::from_bool(poly_sign_on_interval(&f, &lo_e, &hi_e, strict))
     }
 
     /// Monic version of `self` (divide by the leading coefficient).

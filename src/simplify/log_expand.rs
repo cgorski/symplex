@@ -15,6 +15,7 @@
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 use crate::base::walk;
 use rustc_hash::FxHashMap;
 
@@ -126,11 +127,12 @@ pub(crate) fn expand_ln_node_guarded(
                 let mut split = false;
                 let mut rest: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
                 for &c in children {
-                    if force || assumptions.query(arena, c, Props::POSITIVE) == Some(true) {
+                    if force || Truth::from(assumptions.query(arena, c, Props::POSITIVE)).is_true()
+                    {
                         work.push((coeff, c));
                         split = true;
                     } else if c != arena.neg_one
-                        && assumptions.query(arena, c, Props::NEGATIVE) == Some(true)
+                        && Truth::from(assumptions.query(arena, c, Props::NEGATIVE)).is_true()
                     {
                         // `−c > 0`: a negative number becomes a positive one
                         // that may split further; any other `−c` is the
@@ -173,7 +175,9 @@ pub(crate) fn expand_ln_node_guarded(
             }
             // ln(e^w) = w for real w (Im w ∈ (−π, π] suffices; real is what
             // the assumptions can show).
-            ExprNode::Exp(w) if force || assumptions.query(arena, w, Props::REAL) == Some(true) => {
+            ExprNode::Exp(w)
+                if force || Truth::from(assumptions.query(arena, w, Props::REAL)).is_true() =>
+            {
                 terms.push(arena.mul(&[coeff, w]));
             }
             _ => {
@@ -202,13 +206,13 @@ fn pow_log_splits(
     if force {
         return true;
     }
-    if assumptions.query(arena, exp, Props::REAL) != Some(true) {
+    if !Truth::from(assumptions.query(arena, exp, Props::REAL)).is_true() {
         return false;
     }
     let in_principal_range = arena
         .as_num(exp)
         .is_some_and(|e| *e > crate::base::numeric::qi(-1) && *e <= crate::base::numeric::qi(1));
-    in_principal_range || assumptions.query(arena, base, Props::POSITIVE) == Some(true)
+    in_principal_range || Truth::from(assumptions.query(arena, base, Props::POSITIVE)).is_true()
 }
 
 #[cfg(test)]

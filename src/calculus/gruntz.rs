@@ -29,8 +29,10 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::budget::{BudgetKind, Work};
+use crate::base::func::{Elementary, Family, Func, InternalFn};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::calculus::calculus_util::{ZeroTest, settle_constant};
 
 /// Maximum recursion depth for the Gruntz algorithm.  The depth grows with
@@ -1326,21 +1328,16 @@ fn mrv(
             let (s, r) = mrv(arena, inner, x, depth + 1, budget)?;
             Ok((s, apply_unary(arena, &node, r)))
         }
-        ExprNode::Apply(f, ref args) if args.len() == 1 && is_internal_asymptotic(arena, f) => {
+        ExprNode::Internal(f, ref args) if args.len() == 1 => {
             let (s, r) = mrv(arena, args[0], x, depth + 1, budget)?;
-            Ok((s, arena.intern(ExprNode::Apply(f, smallvec::smallvec![r]))))
+            Ok((s, arena.func(f.into(), &[r])?))
         }
         // `Iν`, `Kν`, `Γ(s, ·)` of the asymptotic rewrite: a constant parameter.
-        ExprNode::Apply(f, ref args)
-            if args.len() == 2
-                && is_internal_asymptotic(arena, f)
-                && !crate::base::walk::contains(arena, args[0], x) =>
+        ExprNode::Internal(f, ref args)
+            if args.len() == 2 && !crate::base::walk::contains(arena, args[0], x) =>
         {
             let (s, r) = mrv(arena, args[1], x, depth + 1, budget)?;
-            Ok((
-                s,
-                arena.intern(ExprNode::Apply(f, smallvec::smallvec![args[0], r])),
-            ))
+            Ok((s, arena.func(f.into(), &[args[0], r])?))
         }
 
         // ── Fallback: treat as containing x somewhere ──
@@ -1380,24 +1377,10 @@ fn check_growth_known(
     budget: &mut Budget,
 ) -> Result<(), crate::base::errors::SymplexError> {
     use crate::base::libfn::LibFn;
-    let function_like = matches!(
-        node,
-        ExprNode::Apply(..)
-            | ExprNode::Lib(..)
-            | ExprNode::Si(_)
-            | ExprNode::Ci(_)
-            | ExprNode::Ei(_)
-            | ExprNode::Li(_)
-            | ExprNode::Zeta(_)
-            | ExprNode::Polygamma(..)
-            | ExprNode::Beta(..)
-            | ExprNode::Erf(_)
-            | ExprNode::Erfc(_)
-            | ExprNode::Gamma(_)
-            | ExprNode::LogGamma(_)
-            | ExprNode::Digamma(_)
-            | ExprNode::LambertW(_)
-            | ExprNode::Factorial(_)
+    let function_like = node.func_head().is_some_and(growth_checked)
+        || matches!(
+            node,
+            ExprNode::Apply(..)
             // An unevaluated sum, product or integral with a bound tending
             // to infinity grows as its terms do, which the algorithm does
             // not see: `2^{−n}·Σ_{k=1}^{n} 2^k/k` was `0` at `∞` (it is `2`),
@@ -1408,7 +1391,7 @@ fn check_growth_known(
             | ExprNode::DefiniteIntegral(..)
             | ExprNode::Derivative(..)
             | ExprNode::Limit(..)
-    );
+        );
     if !function_like {
         return Ok(());
     }
@@ -1453,6 +1436,12 @@ fn check_growth_known(
         }
     }
     Ok(())
+}
+
+/// The functions whose growth [`check_growth_known`] checks: the special
+/// functions but `C(n, k)`, and every library and internal function.
+fn growth_checked(f: Func) -> bool {
+    f.family() != Family::Node || (f.is_special() && f != Func::Binomial)
 }
 
 /// MRV for n-ary (Add/Mul) nodes.
@@ -2005,6 +1994,19 @@ fn leadterm(
 
     let node = arena.node(f).clone();
 
+    // ── Unary functions of an ω-dependent argument (none is matched by an
+    //    arm of the `match` below) ──
+    if let Some(inner) = node.unary_arg_if(leadterm_unary)
+        && crate::base::walk::contains(arena, inner, w)
+    {
+        return unary_leadterm(arena, f, &node, inner, w, logw, x, depth, budget).or_else(|e| {
+            if is_budget_error(&e) {
+                return Err(e);
+            }
+            leadterm_by_tseries(arena, budget, f, w, logw).map_err(|_| e)
+        });
+    }
+
     match node {
         ExprNode::Mul(ref children) => {
             tracing::trace!(n = children.len(), "gruntz::leadterm: Mul");
@@ -2351,38 +2353,6 @@ fn leadterm(
             Ok((crate::transforms::eval::eval(arena, coeff), arena.zero()))
         }
 
-        // ── Unary functions of an ω-dependent argument ──
-        ExprNode::Sin(inner)
-        | ExprNode::Cos(inner)
-        | ExprNode::Tan(inner)
-        | ExprNode::Asin(inner)
-        | ExprNode::Acos(inner)
-        | ExprNode::Atan(inner)
-        | ExprNode::Sinh(inner)
-        | ExprNode::Cosh(inner)
-        | ExprNode::Tanh(inner)
-        | ExprNode::Asinh(inner)
-        | ExprNode::Acosh(inner)
-        | ExprNode::Atanh(inner)
-        | ExprNode::Erf(inner)
-        | ExprNode::Erfc(inner)
-        | ExprNode::Gamma(inner)
-        | ExprNode::LogGamma(inner)
-        | ExprNode::Digamma(inner)
-        | ExprNode::LambertW(inner)
-        | ExprNode::Abs(inner)
-        | ExprNode::Sign(inner)
-        | ExprNode::Heaviside(inner)
-            if crate::base::walk::contains(arena, inner, w) =>
-        {
-            unary_leadterm(arena, f, &node, inner, w, logw, x, depth, budget).or_else(|e| {
-                if is_budget_error(&e) {
-                    return Err(e);
-                }
-                leadterm_by_tseries(arena, budget, f, w, logw).map_err(|_| e)
-            })
-        }
-
         // x! = Γ(x + 1): reuse the Gamma pole and asymptotic rules (the
         // poles of x! at the negative integers are Γ's at 0, −1, …).
         ExprNode::Factorial(inner) if crate::base::walk::contains(arena, inner, w) => {
@@ -2591,6 +2561,25 @@ fn unary_is_singular_at(arena: &Arena, template: &ExprNode, c: ExprId) -> bool {
     }
 }
 
+/// The one-argument functions [`unary_leadterm`] expands at an
+/// ω-dependent argument: the trigonometric and hyperbolic functions and
+/// their inverses, `erf`, `erfc`, `Γ`, `ln Γ`, `ψ`, `W`, `|·|`, `sign`, `H`.
+fn leadterm_unary(f: Func) -> bool {
+    matches!(f.elementary(), Some(e) if !matches!(e, Elementary::Exp | Elementary::Ln))
+        || matches!(
+            f,
+            Func::Erf
+                | Func::Erfc
+                | Func::Gamma
+                | Func::LogGamma
+                | Func::Digamma
+                | Func::LambertW0
+                | Func::Abs
+                | Func::Sign
+                | Func::Heaviside
+        )
+}
+
 /// Leading term of `F(inner)` for a unary function `F`.
 ///
 /// * `inner → 0`: expand `F` at 0 and take the first non-vanishing term.
@@ -2773,8 +2762,8 @@ fn unary_leadterm(
                 .all(|s| {
                     s == x
                         || s == w
-                        || cache.query(arena, s, crate::base::assumptions::Props::REAL)
-                            == Some(true)
+                        || Truth::from(cache.query(arena, s, crate::base::assumptions::Props::REAL))
+                            .is_true()
                 })
     } {
         return Ok((f, zero));
@@ -3552,6 +3541,30 @@ fn directed_infinity(
 // Tractable rewriting
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The functions [`needs_tractable_rewrite`] always rewrites: `tan`, the
+/// hyperbolic functions and their inverses, and the piecewise-defined
+/// `|·|`, `sign`, `H`, `δ`, `⌊·⌋`, `⌈·⌉`, `min`, `max`, `atan2`, `arg`.
+fn always_rewritten(f: Func) -> bool {
+    f == Func::Tan
+        || matches!(
+            f.elementary(),
+            Some(Elementary::Hyperbolic | Elementary::InverseHyperbolic)
+        )
+        || matches!(
+            f,
+            Func::Abs
+                | Func::Sign
+                | Func::Heaviside
+                | Func::DiracDelta
+                | Func::Floor
+                | Func::Ceiling
+                | Func::Min
+                | Func::Max
+                | Func::Atan2
+                | Func::Arg
+        )
+}
+
 /// `true` if `e` contains a node that [`rewrite_tractable`] would touch
 /// (including a branch function of an argument that may leave the reals,
 /// which [`resolve_branch_cut`] continues across its cut).
@@ -3574,27 +3587,8 @@ fn needs_tractable_rewrite(arena: &Arena, e: ExprId, x: ExprId) -> bool {
         {
             return true;
         }
-        if matches!(
-            node,
-            ExprNode::Tan(_)
-                | ExprNode::Sinh(_)
-                | ExprNode::Cosh(_)
-                | ExprNode::Tanh(_)
-                | ExprNode::Asinh(_)
-                | ExprNode::Acosh(_)
-                | ExprNode::Atanh(_)
-                | ExprNode::Abs(_)
-                | ExprNode::Sign(_)
-                | ExprNode::Heaviside(_)
-                | ExprNode::DiracDelta(_)
-                | ExprNode::Floor(_)
-                | ExprNode::Ceiling(_)
-                | ExprNode::Piecewise(_)
-                | ExprNode::Min(_)
-                | ExprNode::Max(_)
-                | ExprNode::Atan2(..)
-                | ExprNode::Arg(_)
-        ) {
+        if node.func_head().is_some_and(always_rewritten) || matches!(node, ExprNode::Piecewise(_))
+        {
             return true;
         }
         if matches!(node, ExprNode::Binomial(..)) && crate::base::walk::contains(arena, id, x) {
@@ -3819,6 +3813,34 @@ fn walk_has(arena: &Arena, e: ExprId, pred: impl Fn(&ExprNode) -> bool) -> bool 
         .any(|id| pred(arena.node(id)))
 }
 
+/// The analytic functions real at every real argument: `exp`, the
+/// trigonometric and hyperbolic functions, `atan`, `asinh`, `erf`, `erfc`
+/// (`eventually_real` reads them through their argument).
+fn real_analytic_on_reals(f: Func) -> bool {
+    matches!(
+        f.elementary(),
+        Some(Elementary::Trig | Elementary::Hyperbolic | Elementary::Exp)
+    ) || matches!(f, Func::Atan | Func::Asinh | Func::Erf | Func::Erfc)
+}
+
+/// The functions real at every real argument that [`may_leave_reals`]
+/// lets through: [`real_analytic_on_reals`] and `|·|`, `sign`, `H`,
+/// `⌊·⌋`, `⌈·⌉`.
+fn real_on_reals(f: Func) -> bool {
+    real_analytic_on_reals(f)
+        || matches!(
+            f,
+            Func::Abs | Func::Sign | Func::Heaviside | Func::Floor | Func::Ceiling
+        )
+}
+
+/// The one-argument functions `expand_functions_as_series` expands at an
+/// ω-dependent argument: the elementary functions but `acos`, `acosh`, and
+/// `erf`.
+fn expanded_as_series(f: Func) -> bool {
+    (f.elementary().is_some() && !matches!(f, Func::Acos | Func::Acosh)) || f == Func::Erf
+}
+
 /// Can `e` take non-real values for real values of its symbols?  `false`
 /// when it is built only from numbers, real constants, symbols, sums,
 /// products, integer powers and functions that are real on the reals
@@ -3835,35 +3857,21 @@ fn may_leave_reals(arena: &Arena, e: ExprId) -> bool {
         let node = arena.node(id);
         let real_preserving = match node {
             ExprNode::Pow(_, g) => arena.as_num(*g).is_some_and(|r| r.is_integer()),
-            _ => matches!(
-                node,
-                ExprNode::Num(_)
-                    | ExprNode::Pi
-                    | ExprNode::E
-                    | ExprNode::EulerGamma
-                    | ExprNode::Catalan
-                    | ExprNode::GoldenRatio
-                    | ExprNode::Symbol(_)
-                    | ExprNode::Add(_)
-                    | ExprNode::Mul(_)
-                    | ExprNode::Neg(_)
-                    | ExprNode::Exp(_)
-                    | ExprNode::Sin(_)
-                    | ExprNode::Cos(_)
-                    | ExprNode::Tan(_)
-                    | ExprNode::Sinh(_)
-                    | ExprNode::Cosh(_)
-                    | ExprNode::Tanh(_)
-                    | ExprNode::Atan(_)
-                    | ExprNode::Asinh(_)
-                    | ExprNode::Abs(_)
-                    | ExprNode::Sign(_)
-                    | ExprNode::Heaviside(_)
-                    | ExprNode::Floor(_)
-                    | ExprNode::Ceiling(_)
-                    | ExprNode::Erf(_)
-                    | ExprNode::Erfc(_)
-            ),
+            _ => {
+                matches!(
+                    node,
+                    ExprNode::Num(_)
+                        | ExprNode::Pi
+                        | ExprNode::E
+                        | ExprNode::EulerGamma
+                        | ExprNode::Catalan
+                        | ExprNode::GoldenRatio
+                        | ExprNode::Symbol(_)
+                        | ExprNode::Add(_)
+                        | ExprNode::Mul(_)
+                        | ExprNode::Neg(_)
+                ) || node.func_head().is_some_and(real_on_reals)
+            }
         };
         if !real_preserving {
             return true;
@@ -4477,12 +4485,12 @@ fn rewrite_tractable_pass(
                 let mut chosen = None;
                 for &(val, cond) in &pairs {
                     match eventually_true(arena, cond, x, depth, budget) {
-                        Some(true) => {
+                        Truth::True => {
                             chosen = Some(val);
                             break;
                         }
-                        Some(false) => continue,
-                        None => break,
+                        Truth::False => continue,
+                        Truth::Unknown => break,
                     }
                 }
                 chosen.unwrap_or(rebuilt)
@@ -4505,8 +4513,7 @@ fn rewrite_tractable_pass(
 
 /// `f(z)` of an error function, `Ei` or `li` with `z → +∞` (`positive`) or
 /// `−∞`, written with its exponential factor explicit and an internal
-/// function ([`ERFCX_ASYMPTOTIC`](crate::calculus::series::ERFCX_ASYMPTOTIC),
-/// [`EI_ASYMPTOTIC`](crate::calculus::series::EI_ASYMPTOTIC)) whose
+/// function ([`InternalFn::ErfcxAsym`], [`InternalFn::EiAsym`]) whose
 /// asymptotic series the series engine knows:
 /// `erfc z = e^{−z²}E(z)`, `erfc z = 2 − e^{−z²}E(−z)`, `erf z = 1 − erfc z`,
 /// `Ei z = e^z F(z)`, `li z = Ei(ln z) = z·F(ln z)` (`z → +∞` only).
@@ -4522,14 +4529,8 @@ fn asymptotic_rewrite(
     u: ExprId,
     positive: bool,
 ) -> Option<ExprId> {
-    use crate::calculus::series::{EI_ASYMPTOTIC, ERFCX_ASYMPTOTIC};
-    let internal = |arena: &mut Arena, name: &str, arg: ExprId| -> ExprId {
-        let head = arena.symbol(name);
-        let ExprNode::Symbol(sid) = *arena.node(head) else {
-            return head;
-        };
-        arena.intern(ExprNode::Apply(sid, smallvec::smallvec![arg]))
-    };
+    let internal =
+        |arena: &mut Arena, f: InternalFn, arg: ExprId| arena.func(f.into(), &[arg]).ok();
     match *node {
         ExprNode::Erf(_) | ExprNode::Erfc(_) => {
             let z = if positive { u } else { arena.neg(u) };
@@ -4541,15 +4542,11 @@ fn asymptotic_rewrite(
             // series in `x^{−1/2}`; `E₂(z²)/z` has one in `1/x`.
             let u2e = crate::transforms::eval::eval(arena, u2);
             let e = if has_fractional_power(arena, u) && !has_fractional_power(arena, u2e) {
-                let e2 = arena.symbol(crate::calculus::series::ERFCX2_ASYMPTOTIC);
-                let ExprNode::Symbol(sid) = *arena.node(e2) else {
-                    return None;
-                };
-                let e2 = arena.intern(ExprNode::Apply(sid, smallvec::smallvec![u2e]));
+                let e2 = internal(arena, InternalFn::Erfcx2Asym, u2e)?;
                 let inv = arena.pow(z, arena.neg_one());
                 arena.mul(&[e2, inv])
             } else {
-                internal(arena, ERFCX_ASYMPTOTIC, z)
+                internal(arena, InternalFn::ErfcxAsym, z)?
             };
             // t = erfc(z), z → +∞
             let t = arena.mul(&[damp, e]);
@@ -4564,12 +4561,12 @@ fn asymptotic_rewrite(
         }
         ExprNode::Ei(_) => {
             let e = arena.exp(u);
-            let f = internal(arena, EI_ASYMPTOTIC, u);
+            let f = internal(arena, InternalFn::EiAsym, u)?;
             Some(arena.mul(&[e, f]))
         }
         ExprNode::Li(_) if positive => {
             let l = arena.ln(u);
-            let f = internal(arena, EI_ASYMPTOTIC, l);
+            let f = internal(arena, InternalFn::EiAsym, l)?;
             Some(arena.mul(&[u, f]))
         }
         _ => None,
@@ -4604,7 +4601,7 @@ fn special_asymptotic_arg(arena: &Arena, node: &ExprNode, x: ExprId) -> Option<E
 /// `f(u)` for `u → +∞` (`positive`) or `−∞`, `u` real, of a function of
 /// [`special_asymptotic_arg`], with its exponential factor taken out and an
 /// internal function whose expansion in `1/u` the series engine knows
-/// ([`EI_ASYMPTOTIC`](crate::calculus::series::EI_ASYMPTOTIC), `F`, and the
+/// ([`InternalFn::EiAsym`], `F`, and the
 /// [`PowerAsymptotic`](crate::calculus::series::PowerAsymptotic) heads):
 ///
 /// * `Chi u = (e^u F(u) + e^{−u} F(−u))/2` (`+ iπ` for `u < 0`), `Shi u =
@@ -4634,14 +4631,9 @@ fn special_asymptotic_rewrite(
     whole: ExprId,
 ) -> Option<ExprId> {
     use crate::base::libfn::LibFn;
-    use crate::calculus::series::{EI_ASYMPTOTIC, PowerAsymptotic};
-    let internal = |arena: &mut Arena, name: &str, args: &[ExprId]| -> ExprId {
-        let head = arena.symbol(name);
-        let ExprNode::Symbol(sid) = *arena.node(head) else {
-            return head;
-        };
-        arena.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
-    };
+    use crate::calculus::series::PowerAsymptotic;
+    let internal =
+        |arena: &mut Arena, f: InternalFn, args: &[ExprId]| arena.func(f.into(), args).ok();
     let one = arena.one();
     let two = arena.int(2);
     let half = arena.rational(1, 2);
@@ -4650,15 +4642,15 @@ fn special_asymptotic_rewrite(
     let e_neg_u = arena.exp(neg_u);
     match *node {
         ExprNode::Zeta(_) if positive => {
-            let z = internal(arena, PowerAsymptotic::Zeta.name(), &[u]);
+            let z = internal(arena, PowerAsymptotic::Zeta.head(), &[u])?;
             let p = arena.pow(two, neg_u);
             let t = arena.mul(&[p, z]);
             Some(arena.add(&[one, t]))
         }
         ExprNode::Lib(f, ref args) => match (f, args.as_slice()) {
             (LibFn::Chi | LibFn::Shi, _) => {
-                let fp = internal(arena, EI_ASYMPTOTIC, &[u]);
-                let fm = internal(arena, EI_ASYMPTOTIC, &[neg_u]);
+                let fp = internal(arena, InternalFn::EiAsym, &[u])?;
+                let fm = internal(arena, InternalFn::EiAsym, &[neg_u])?;
                 let ei_p = arena.mul(&[e_u, fp]);
                 let ei_m = arena.mul(&[e_neg_u, fm]);
                 let chi = f == LibFn::Chi;
@@ -4677,7 +4669,7 @@ fn special_asymptotic_rewrite(
                 let u2 = arena.pow(u, two);
                 let u2 = crate::transforms::eval::eval(arena, u2);
                 let g = arena.exp(u2);
-                let e = internal(arena, PowerAsymptotic::Erfi.name(), &[u2]);
+                let e = internal(arena, PowerAsymptotic::Erfi.head(), &[u2])?;
                 let inv = arena.pow(u, arena.neg_one());
                 Some(arena.mul(&[g, e, inv]))
             }
@@ -4695,21 +4687,21 @@ fn special_asymptotic_rewrite(
                         }
                     }
                 }
-                let i = internal(arena, PowerAsymptotic::BesselI.name(), &[nu, u]);
+                let i = internal(arena, PowerAsymptotic::BesselI.head(), &[nu, u])?;
                 let two_pi_u = arena.mul(&[two, arena.pi(), u]);
                 let m_half = arena.rational(-1, 2);
                 let pre = arena.pow(two_pi_u, m_half);
                 Some(arena.mul(&[e_u, pre, i]))
             }
             (LibFn::BesselK, &[nu, _]) if positive => {
-                let k = internal(arena, PowerAsymptotic::BesselK.name(), &[nu, u]);
+                let k = internal(arena, PowerAsymptotic::BesselK.head(), &[nu, u])?;
                 let two_u = arena.mul(&[two, u]);
                 let q = arena.div(arena.pi(), two_u);
                 let pre = arena.pow(q, half);
                 Some(arena.mul(&[e_neg_u, pre, k]))
             }
             (LibFn::UpperGamma | LibFn::LowerGamma, &[s, _]) if positive => {
-                let g = internal(arena, PowerAsymptotic::UpperGamma.name(), &[s, u]);
+                let g = internal(arena, PowerAsymptotic::UpperGamma.head(), &[s, u])?;
                 let sm1 = arena.sub(s, one);
                 let p = arena.pow(u, sm1);
                 let upper = arena.mul(&[p, e_neg_u, g]);
@@ -4728,7 +4720,7 @@ fn special_asymptotic_rewrite(
             }
             (LibFn::ExpInt, &[n, _]) if positive => {
                 let s = arena.sub(one, n);
-                let g = internal(arena, PowerAsymptotic::UpperGamma.name(), &[s, u]);
+                let g = internal(arena, PowerAsymptotic::UpperGamma.head(), &[s, u])?;
                 let inv = arena.pow(u, arena.neg_one());
                 Some(arena.mul(&[e_neg_u, inv, g]))
             }
@@ -4745,19 +4737,12 @@ fn has_fractional_power(arena: &Arena, e: ExprId) -> bool {
     })
 }
 
-/// Is `f` the head of one of the internal asymptotic functions of
+/// Does `e` contain one of the internal asymptotic functions of
 /// [`asymptotic_rewrite`]?
-fn is_internal_asymptotic(arena: &Arena, f: crate::base::node::SymbolId) -> bool {
-    use crate::calculus::series::{EI_ASYMPTOTIC, ERFCX_ASYMPTOTIC, PowerAsymptotic};
-    let name = arena.symbol_name(f);
-    matches!(name, ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC) || PowerAsymptotic::from_name(name).is_some()
-}
-
-/// Does `e` contain one of the internal asymptotic functions?
 fn contains_internal_asymptotic(arena: &Arena, e: ExprId) -> bool {
-    crate::base::walk::post_order_ids(arena, e).into_iter().any(
-        |id| matches!(arena.node(id), ExprNode::Apply(f, _) if is_internal_asymptotic(arena, *f)),
-    )
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| matches!(arena.node(id), ExprNode::Internal(..)))
 }
 
 /// `0^g → 0` where `g` is eventually positive; `Err` where it is not
@@ -5145,8 +5130,9 @@ fn real_for_generic_parameters(
     // Last, the values along the approach: exactly real at the samples, as
     // a function the rules above do not know (`δ(erfinv x)`, `H(F(5 | x))`
     // at 0); a certified imaginary digit refuses.
-    if let Some(r) = real_at_samples(arena, u, x) {
-        return r;
+    let r = real_at_samples(arena, u, x);
+    if r.is_known() {
+        return r.is_true();
     }
     let params: Vec<ExprId> = crate::base::walk::free_symbols(arena, u)
         .into_iter()
@@ -5184,7 +5170,7 @@ fn real_for_generic_parameters(
 fn known_real(arena: &mut Arena, v: ExprId, x: ExprId, depth: usize, budget: &mut Budget) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     if eventually_real(arena, v, x, depth + 1, budget)
-        || AssumptionCache::new().query(arena, v, Props::REAL) == Some(true)
+        || Truth::from(AssumptionCache::new().query(arena, v, Props::REAL)).is_true()
     {
         return true;
     }
@@ -5193,35 +5179,37 @@ fn known_real(arena: &mut Arena, v: ExprId, x: ExprId, depth: usize, budget: &mu
 }
 
 /// Is `u` (a function of the positive `x → ∞`, free of other symbols) real
-/// at the samples `x = 10², 10⁴` by a certified evaluation: `Some(false)`
-/// for a certified nonzero imaginary part at one of them, `Some(true)` for
-/// an exactly real value at both, `None` otherwise (a value `evalf` cannot
-/// give).  The reading of [`real_for_generic_parameters`] for functions
+/// at the samples `x = 10², 10⁴` by a certified evaluation: `False` for a
+/// certified nonzero imaginary part at one of them, `True` for an exactly
+/// real value at both, `Unknown` otherwise (a value `evalf` cannot give).  The reading of [`real_for_generic_parameters`] for functions
 /// its rules do not know, as `nonzero_at_a_sample` is for the parameters
 /// of `δ`.
-fn real_at_samples(arena: &mut Arena, u: ExprId, x: ExprId) -> Option<bool> {
+fn real_at_samples(arena: &mut Arena, u: ExprId, x: ExprId) -> Truth {
     use crate::transforms::evalf::{ZeroSearch, evalf_verdict};
     if crate::base::walk::free_symbols(arena, u)
         .into_iter()
         .any(|s| s != x)
     {
-        return None;
+        return Truth::Unknown;
     }
     for sample in [100_i64, 10_000] {
         let s = arena.int(sample);
         let v = crate::transforms::subs::subs(arena, u, x, s);
         let v = crate::transforms::eval::eval(arena, v);
         if crate::base::walk::has_unevaluated(arena, v) || contains_singular_atom(arena, v) {
-            return None;
+            return Truth::Unknown;
         }
-        let z = evalf_verdict(arena, v, 20, ZeroSearch::Cap)
-            .ok()?
-            .proven()?;
+        let Some(z) = evalf_verdict(arena, v, 20, ZeroSearch::Cap)
+            .ok()
+            .and_then(crate::base::truth::Verdict::proven)
+        else {
+            return Truth::Unknown;
+        };
         if !z.1.is_zero() {
-            return Some(false);
+            return Truth::False;
         }
     }
-    Some(true)
+    Truth::True
 }
 
 /// Is the argument `a` of `min` or `max` real near the limit point: its
@@ -5245,11 +5233,13 @@ fn min_max_argument_real(
         .into_iter()
         .partition(|&t| !crate::base::walk::contains(arena, t, x));
     let consts_ok = consts.into_iter().all(|c| {
-        AssumptionCache::new().query(arena, c, Props::REAL) != Some(false)
+        !Truth::from(AssumptionCache::new().query(arena, c, Props::REAL)).is_false()
             && !(crate::base::walk::free_symbols(arena, c).is_empty() && {
                 let mut reals = AssumptionCache::new();
-                crate::transforms::realness::constant_realness_as_declared(arena, c, 20, &mut reals)
-                    == Some(false)
+                Truth::from(crate::transforms::realness::constant_realness_as_declared(
+                    arena, c, 20, &mut reals,
+                ))
+                .is_false()
             })
     });
     consts_ok && {
@@ -5291,7 +5281,7 @@ fn real_special_values_as_symbols(
             }
             // Positive when its series in `1/u` is (`Ei u = e^u·F(u)`, `F > 0`
             // for `u → +∞`: `Ei(x)^x` at `∞`).
-            ExprNode::Apply(f, args) if is_internal_asymptotic(arena, f) => {
+            ExprNode::Internal(_, args) => {
                 if args
                     .iter()
                     .all(|&c| eventually_real(arena, c, x, depth + 1, budget))
@@ -5359,22 +5349,15 @@ fn eventually_real(
             ExprNode::Symbol(_) => {
                 id == x || {
                     let mut cache = crate::base::assumptions::AssumptionCache::new();
-                    cache.query(arena, id, crate::base::assumptions::Props::REAL) == Some(true)
+                    Truth::from(cache.query(arena, id, crate::base::assumptions::Props::REAL))
+                        .is_true()
                 }
             }
             ExprNode::Add(ref cs) | ExprNode::Mul(ref cs) => cs.iter().all(|&c| r(c)),
-            ExprNode::Neg(a)
-            | ExprNode::Exp(a)
-            | ExprNode::Sin(a)
-            | ExprNode::Cos(a)
-            | ExprNode::Tan(a)
-            | ExprNode::Sinh(a)
-            | ExprNode::Cosh(a)
-            | ExprNode::Tanh(a)
-            | ExprNode::Atan(a)
-            | ExprNode::Asinh(a)
-            | ExprNode::Erf(a)
-            | ExprNode::Erfc(a) => r(a),
+            ExprNode::Neg(a) => r(a),
+            ref n if n.func_head().is_some_and(real_analytic_on_reals) => {
+                n.unary_arg_if(real_analytic_on_reals).is_some_and(r)
+            }
             ExprNode::Abs(_) | ExprNode::Sign(_) | ExprNode::Heaviside(_) => true,
             // `re c`, `im c` of an opaque constant ([`opaque_constants_split`]).
             ExprNode::Re(a) | ExprNode::Im(a) | ExprNode::Arg(a) => {
@@ -5430,9 +5413,10 @@ fn eventually_real(
                 && crate::base::walk::free_symbols(arena, id).is_empty()
                 && {
                     let mut reals = crate::base::assumptions::AssumptionCache::new();
-                    crate::transforms::realness::constant_realness_as_declared(
+                    Truth::from(crate::transforms::realness::constant_realness_as_declared(
                         arena, id, 20, &mut reals,
-                    ) == Some(true)
+                    ))
+                    .is_true()
                 }
         };
         real.insert(id, v);
@@ -5499,8 +5483,10 @@ fn exponent_phase_split(
             (p.re, p.im)
         } else if crate::base::walk::free_symbols(arena, c).is_empty() && {
             let mut reals = crate::base::assumptions::AssumptionCache::new();
-            crate::transforms::realness::constant_realness_as_declared(arena, c, 20, &mut reals)
-                == Some(false)
+            Truth::from(crate::transforms::realness::constant_realness_as_declared(
+                arena, c, 20, &mut reals,
+            ))
+            .is_false()
         } {
             (arena.re(c), arena.im(c))
         } else {
@@ -5629,7 +5615,7 @@ fn phase_unknown(
         .any(|s| s != x)
         || !may_leave_reals(arena, d)
         || known_real(arena, d, x, depth, budget)
-        || real_at_samples(arena, d, x) == Some(true)
+        || real_at_samples(arena, d, x).is_true()
     {
         return Ok(false);
     }
@@ -5699,7 +5685,7 @@ fn constant_known_real(
     budget: &mut Budget,
 ) -> bool {
     let mut cache = crate::base::assumptions::AssumptionCache::new();
-    cache.query(arena, c, crate::base::assumptions::Props::REAL) == Some(true)
+    Truth::from(cache.query(arena, c, crate::base::assumptions::Props::REAL)).is_true()
         || eventually_real(arena, c, x, depth + 1, budget)
 }
 
@@ -5710,48 +5696,38 @@ fn eventually_true(
     x: ExprId,
     depth: usize,
     budget: &mut Budget,
-) -> Option<bool> {
+) -> Truth {
     if depth > MAX_DEPTH {
-        return None;
+        return Truth::Unknown;
     }
     let node = arena.node(cond).clone();
     match node {
-        ExprNode::BoolTrue => Some(true),
-        ExprNode::BoolFalse => Some(false),
+        ExprNode::BoolTrue => Truth::True,
+        ExprNode::BoolFalse => Truth::False,
         ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
             let diff = arena.sub(a, b);
-            let s = sign_at_inf(arena, diff, x, depth + 1, budget).ok()?;
-            Some(match node {
+            let Ok(s) = sign_at_inf(arena, diff, x, depth + 1, budget) else {
+                return Truth::Unknown;
+            };
+            Truth::from_bool(match node {
                 ExprNode::Gt(..) => s > 0,
                 ExprNode::Ge(..) => s >= 0,
                 ExprNode::Eq_(..) => s == 0,
                 _ => s != 0,
             })
         }
-        ExprNode::And(children) => {
-            let mut all_true = true;
-            for c in children {
-                match eventually_true(arena, c, x, depth + 1, budget) {
-                    Some(true) => {}
-                    Some(false) => return Some(false),
-                    None => all_true = false,
-                }
-            }
-            if all_true { Some(true) } else { None }
-        }
-        ExprNode::Or(children) => {
-            let mut all_false = true;
-            for c in children {
-                match eventually_true(arena, c, x, depth + 1, budget) {
-                    Some(true) => return Some(true),
-                    Some(false) => {}
-                    None => all_false = false,
-                }
-            }
-            if all_false { Some(false) } else { None }
-        }
-        ExprNode::Not(inner) => eventually_true(arena, inner, x, depth + 1, budget).map(|b| !b),
-        _ => None,
+        ExprNode::And(children) => Truth::all(
+            children
+                .into_iter()
+                .map(|c| eventually_true(arena, c, x, depth + 1, budget)),
+        ),
+        ExprNode::Or(children) => Truth::any(
+            children
+                .into_iter()
+                .map(|c| eventually_true(arena, c, x, depth + 1, budget)),
+        ),
+        ExprNode::Not(inner) => eventually_true(arena, inner, x, depth + 1, budget).not(),
+        _ => Truth::Unknown,
     }
 }
 
@@ -5916,25 +5892,14 @@ fn expand_functions_as_series(
     for &id in &post_order {
         budget.tick(1)?;
         let should_expand = match arena.node(id).clone() {
-            ExprNode::Exp(arg)
-            | ExprNode::Ln(arg)
-            | ExprNode::Sin(arg)
-            | ExprNode::Cos(arg)
-            | ExprNode::Tan(arg)
-            | ExprNode::Asin(arg)
-            | ExprNode::Atan(arg)
-            | ExprNode::Sinh(arg)
-            | ExprNode::Cosh(arg)
-            | ExprNode::Tanh(arg)
-            | ExprNode::Asinh(arg)
-            | ExprNode::Atanh(arg)
-            | ExprNode::Erf(arg) => crate::base::walk::contains(arena, arg, w),
             // Non-integer powers of a regular base, e.g. `(1 + ω)^{1/2}`.
             ExprNode::Pow(base, e) => {
                 crate::base::walk::contains(arena, base, w)
                     && arena.as_num(e).is_some_and(|r| !r.is_integer())
             }
-            _ => false,
+            node => node
+                .unary_arg_if(expanded_as_series)
+                .is_some_and(|arg| crate::base::walk::contains(arena, arg, w)),
         };
 
         if should_expand && let Ok(series) = budgeted_series(arena, budget, id, w, order) {
@@ -6330,5 +6295,52 @@ mod tests {
             "{err}"
         );
         assert!(err.to_string().contains("budget"), "{err}");
+    }
+
+    /// The function lists of the limit engine select exactly the functions
+    /// of their 0.49 or-patterns (W6d: each list became a predicate over
+    /// `Func`, the library and internal functions included).
+    #[test]
+    fn function_predicates_are_the_old_lists() {
+        use crate::base::func::{Family, Func::*, selected};
+        use std::collections::HashSet;
+        let set = |fs: &[crate::base::func::Func]| fs.iter().copied().collect::<HashSet<_>>();
+        let mut growth = set(&[
+            Si, Ci, Ei, Li, Zeta, Polygamma, Beta, Erf, Erfc, Gamma, LogGamma, Digamma, LambertW0,
+            Factorial,
+        ]);
+        growth.extend(selected(|f| f.family() != Family::Node));
+        assert_eq!(selected(growth_checked), growth);
+        assert_eq!(
+            selected(leadterm_unary),
+            set(&[
+                Sin, Cos, Tan, Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Erf, Erfc,
+                Gamma, LogGamma, Digamma, LambertW0, Abs, Sign, Heaviside,
+            ])
+        );
+        assert_eq!(
+            selected(always_rewritten),
+            set(&[
+                Tan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Abs, Sign, Heaviside, DiracDelta,
+                Floor, Ceiling, Min, Max, Atan2, Arg,
+            ])
+        );
+        assert_eq!(
+            selected(real_on_reals),
+            set(&[
+                Exp, Sin, Cos, Tan, Sinh, Cosh, Tanh, Atan, Asinh, Abs, Sign, Heaviside, Floor,
+                Ceiling, Erf, Erfc,
+            ])
+        );
+        assert_eq!(
+            selected(real_analytic_on_reals),
+            set(&[Exp, Sin, Cos, Tan, Sinh, Cosh, Tanh, Atan, Asinh, Erf, Erfc])
+        );
+        assert_eq!(
+            selected(expanded_as_series),
+            set(&[
+                Exp, Ln, Sin, Cos, Tan, Asin, Atan, Sinh, Cosh, Tanh, Asinh, Atanh, Erf
+            ])
+        );
     }
 }

@@ -18,6 +18,7 @@ use crate::base::assumptions::Assumption;
 use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
 use crate::base::node::ExprId;
+use crate::base::truth::Truth;
 use crate::domains::matrix::Matrix;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -800,7 +801,7 @@ pub(crate) fn numeric_violation(
     v: f64,
 ) -> Option<&'static str> {
     use crate::base::assumptions::Props;
-    let holds = |p: Props| a.query(p) == Some(true);
+    let holds = |p: Props| Truth::from(a.query(p)).is_true();
     let tol = 1e-9 * v.abs().max(1.0);
     let r = v.round();
     let off_integer = (v - r).abs() > 1e-6 * v.abs().max(1.0);
@@ -1502,21 +1503,23 @@ struct FitState {
     unsolved: Vec<Ex>,
 }
 
-/// Is the constant-free residual `eq` zero?  `Some(true)`/`Some(false)` when
-/// decided exactly or by a clear numerical value, `None` otherwise.
-fn residual_is_zero(eq: &Ex) -> Option<bool> {
+/// Is the constant-free residual `eq` zero?  Decided structurally, then by
+/// [`Ex::is_zero`] of its simplified form (exact tests and certified
+/// values); `Unknown` otherwise.
+///
+/// Up to 0.49 a residual whose `f64` value was below `10⁻¹⁰` in modulus
+/// counted as zero, so contradictory initial conditions were accepted:
+/// `y′ = y`, `y(0) = 0`, `y′(0) = e^{−10⁻⁵⁰⁰⁰} − 1` (`≈ −10⁻⁵⁰⁰⁰ ≠ 0`)
+/// gave `y = 0`.
+fn residual_is_zero(eq: &Ex) -> Truth {
     if eq.is_zero_structural() {
-        return Some(true);
+        return Truth::True;
     }
     let s = eq.simplify();
     if s.is_zero_structural() {
-        return Some(true);
+        return Truth::True;
     }
-    let v = s.eval_complex64().ok()?;
-    if !v.re.is_finite() || !v.im.is_finite() {
-        return Some(false);
-    }
-    Some(v.norm() <= 1e-10)
+    Truth::from(s.is_zero())
 }
 
 /// Solve the equations `eqs = 0`, nonlinear in `constants`, and substitute
@@ -1560,12 +1563,24 @@ fn fit_nonlinear(
                 open.push((n, eq.clone()));
                 continue;
             }
-            if residual_is_zero(eq) != Some(true) {
-                last_error = Some(SymplexError::NoSolution {
-                    operation,
-                    reason: format!("initial conditions are contradictory: {eq} = 0"),
-                });
-                continue 'states;
+            match residual_is_zero(eq) {
+                Truth::True => {}
+                Truth::False => {
+                    last_error = Some(SymplexError::NoSolution {
+                        operation,
+                        reason: format!("initial conditions are contradictory: {eq} = 0"),
+                    });
+                    continue 'states;
+                }
+                // Not proved zero is not proved contradictory: refuse the
+                // branch without claiming there is no solution.
+                Truth::Unknown => {
+                    last_error = Some(SymplexError::ComputationFailed {
+                        operation,
+                        reason: format!("cannot decide whether the condition {eq} = 0 holds"),
+                    });
+                    continue 'states;
+                }
             }
         }
         if open.is_empty() {

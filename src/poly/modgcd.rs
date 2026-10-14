@@ -21,6 +21,10 @@
 //!   reduction of the coefficients.
 //! - [`coprime_certified`]: the same certificate for sparse multivariate
 //!   polynomials, one variable at a time through univariate images.
+//! - [`main_gcd_degree_bound`]: from the same images, a bound on the degree
+//!   in the first variable of the gcd over the field of the others — `0`
+//!   proves coprimality in `ℚ(x₁, …)[x₀]`, a positive bound is a common
+//!   factor with high probability.
 //!
 //! Primes are taken below `2⁶²` (so [`Fp64`] applies) in descending order
 //! and cached.  Everything here is deterministic.
@@ -499,25 +503,8 @@ pub(crate) fn coprime_certified<'a>(
         'vars: for &v in &common {
             for _ in 0..CERTIFY_POINTS {
                 let point: Vec<u64> = (0..nv).map(|_| 1 + rng.next_u64() % (p - 1)).collect();
-                let image = |t: &[(&'a [u32], &'a BigInt)], r: &[u64], deg: u32| -> Vec<u64> {
-                    let mut out = vec![0u64; deg as usize + 1];
-                    for ((e, _), &c) in t.iter().zip(r) {
-                        if c == 0 {
-                            continue;
-                        }
-                        let mut val = c;
-                        for (j, &ej) in e.iter().enumerate() {
-                            if j != v && ej > 0 {
-                                val = field.mul(&val, &field.pow(point[j], u64::from(ej)));
-                            }
-                        }
-                        let slot = &mut out[e[v] as usize];
-                        *slot = field.add(slot, &val);
-                    }
-                    out
-                };
-                let fi = image(f, &fr, df[v]);
-                let gi = image(g, &gr, dg[v]);
+                let fi = univariate_image(field, f, &fr, v, &point, df[v]);
+                let gi = univariate_image(field, g, &gr, v, &point, dg[v]);
                 if fi.last() == Some(&0) && gi.last() == Some(&0) {
                     continue;
                 }
@@ -535,6 +522,93 @@ pub(crate) fn coprime_certified<'a>(
         return true;
     }
     false
+}
+
+/// The image in `𝔽ₚ[x_v]` of the terms `t` (their residues `r` modulo
+/// `p`) with the other variables at `point`: the coefficients of
+/// `x_v⁰, …, x_v^deg`, `deg` at least the degree of `t` in `x_v`.
+fn univariate_image(
+    field: Fp64,
+    t: &[(&[u32], &BigInt)],
+    r: &[u64],
+    v: usize,
+    point: &[u64],
+    deg: u32,
+) -> Vec<u64> {
+    let mut out = vec![0u64; deg as usize + 1];
+    for ((e, _), &c) in t.iter().zip(r) {
+        if c == 0 {
+            continue;
+        }
+        let mut val = c;
+        for (j, &ej) in e.iter().enumerate() {
+            if j != v && ej > 0 {
+                val = field.mul(&val, &field.pow(point[j], u64::from(ej)));
+            }
+        }
+        let slot = &mut out[e[v] as usize];
+        *slot = field.add(slot, &val);
+    }
+    out
+}
+
+/// An upper bound on the degree in `x₀` of `gcd(f, g)` in `ℤ[x₀, …, xₙ₋₁]`
+/// — the degree of the gcd of `f` and `g` as polynomials in `x₀` over the
+/// field `ℚ(x₁, …, xₙ₋₁)` — from their images in `𝔽ₚ[x₀]` at random values
+/// of `x₁, …` (a fixed seed), one point for each of [`CERTIFY_PRIMES`]
+/// primes; `None` when the leading coefficient of `f` in `x₀` vanished at
+/// every point tried ([`CERTIFY_POINTS`] per prime).  `f` and `g` are
+/// non-zero `(exponents, coefficient)` terms in `nv` variables.
+///
+/// The bound is a proof: with `h` the gcd, `f = h·u` and `lc(f) =
+/// lc(h)·lc(u)` in `x₀` (Gauss's lemma over `ℤ[x₁, …]`), so at a point
+/// where `lc(f)` does not vanish modulo `p` neither does `lc(h)`, and the
+/// image of `h` is a common divisor of the images of `f` and `g` of the
+/// same degree.  In particular `Some(0)` proves `f` and `g` coprime over
+/// `ℚ(x₁, …)`.  It equals the degree unless every point is a root, modulo
+/// its prime, of one fixed non-zero polynomial (a subresultant
+/// coefficient of the cofactors): for each point a chance of at most its
+/// degree over `p ≈ 4.6·10¹⁸` (Schwartz–Zippel), so a positive bound
+/// means a common factor with high probability, not certainty.
+/// [`coprime_certified`] answers a different question (a gcd constant in
+/// every variable) and needs the full gcd to say "no".
+pub(crate) fn main_gcd_degree_bound(
+    nv: usize,
+    f: &[(&[u32], &BigInt)],
+    g: &[(&[u32], &BigInt)],
+) -> Option<usize> {
+    let deg0 = |t: &[(&[u32], &BigInt)]| t.iter().map(|(e, _)| e[0]).max();
+    let (df, dg) = (deg0(f)?, deg0(g)?);
+    if df == 0 || dg == 0 {
+        return Some(0);
+    }
+    let mut rng = SplitMix64::new(0x5EED_6CD0_0000_0002);
+    let mut bound: Option<usize> = None;
+    for i in 0..CERTIFY_PRIMES {
+        let p = prime(i);
+        let field = Fp64::new(p);
+        let fr: Vec<u64> = f.iter().map(|(_, c)| residue(c, p)).collect();
+        let gr: Vec<u64> = g.iter().map(|(_, c)| residue(c, p)).collect();
+        for _ in 0..CERTIFY_POINTS {
+            let point: Vec<u64> = (0..nv).map(|_| 1 + rng.next_u64() % (p - 1)).collect();
+            let fi = univariate_image(field, f, &fr, 0, &point, df);
+            if fi.last() == Some(&0) {
+                continue;
+            }
+            let gi = univariate_image(field, g, &gr, 0, &point, dg);
+            let fp = PolyIn::from_coeffs(field, fi);
+            let k = fp
+                .gcd(&PolyIn::from_coeffs(field, gi))
+                .degree()
+                .unwrap_or(0);
+            if k == 0 {
+                return Some(0);
+            }
+            bound = Some(bound.map_or(k, |b| b.min(k)));
+            break;
+        }
+    }
+    bound
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1067,5 +1141,43 @@ mod tests {
         let fx = [(&e10[..], &one), (&e00[..], &one)];
         let gy = [(&e01[..], &one), (&e00[..], &one)];
         assert!(coprime_certified(2, &fx, &gy));
+    }
+
+    #[test]
+    fn main_variable_gcd_degree() {
+        // In x (variable 0) over ℚ(y): x·y + 1 and x + y are coprime;
+        // x² − y² and x + y share x + y (degree 1); y·(x + 1) and y·(x + 2)
+        // share only y, a unit of ℚ(y): degree 0 although the gcd in
+        // ℤ[x, y] is not constant.
+        let e = |a: u32, b: u32| vec![a, b];
+        let (one, m1, two) = (b("1"), b("-1"), b("2"));
+        let (e11, e00, e10, e01, e20, e02) = (e(1, 1), e(0, 0), e(1, 0), e(0, 1), e(2, 0), e(0, 2));
+        let f = [(&e11[..], &one), (&e00[..], &one)];
+        let g = [(&e10[..], &one), (&e01[..], &one)];
+        let g2 = [(&e20[..], &one), (&e02[..], &m1)];
+        assert_eq!(main_gcd_degree_bound(2, &f, &g), Some(0));
+        assert_eq!(main_gcd_degree_bound(2, &g, &g2), Some(1));
+        let a = [(&e11[..], &one), (&e01[..], &one)];
+        let c = [(&e11[..], &one), (&e01[..], &two)];
+        assert_eq!(main_gcd_degree_bound(2, &a, &c), Some(0));
+        assert!(!coprime_certified(2, &a, &c));
+        // (x + y)⁸ and its derivative 8(x + y)⁷: degree 7.
+        let p8: Vec<(Vec<u32>, BigInt)> = (0..=8u32)
+            .map(|k| {
+                (
+                    e(k, 8 - k),
+                    num_integer::binomial(BigInt::from(8), BigInt::from(k)),
+                )
+            })
+            .collect();
+        let d8: Vec<(Vec<u32>, BigInt)> = (1..=8u32)
+            .map(|k| (e(k - 1, 8 - k), BigInt::from(k) * &p8[k as usize].1))
+            .collect();
+        let tp: Vec<(&[u32], &BigInt)> = p8.iter().map(|(e, c)| (&e[..], c)).collect();
+        let td: Vec<(&[u32], &BigInt)> = d8.iter().map(|(e, c)| (&e[..], c)).collect();
+        assert_eq!(main_gcd_degree_bound(2, &tp, &td), Some(7));
+        // A polynomial free of x: degree 0 at once.
+        let fy = [(&e01[..], &one), (&e00[..], &one)];
+        assert_eq!(main_gcd_degree_bound(2, &fy, &g), Some(0));
     }
 }

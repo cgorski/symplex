@@ -612,6 +612,27 @@ The variants fall into categories:
 Every node has a `children()` method that returns its child `ExprId`s. This is
 used by tree traversals throughout the codebase.
 
+**Node facts.**  Whole-expression structural questions are answered from
+the `NodeFacts` the arena computes when a node is interned: unevaluated
+forms, symbols and binders contained, free symbols (a 64-bit mask that
+follows the binder rules; symbols beyond the 63rd share a bit and fall back
+to a walk), unfolded tree size and height.  Use `walk::has_unevaluated`,
+`walk::has_free_symbol`, `walk::free_symbols`, `Arena::is_symbol_free` and
+`Arena::tree_size_capped`; do not write a new walk for these.  A new fact is
+a flag computed in `facts_of_new` from the children's facts in O(arity),
+tested against a walk on every node; a new unevaluated variant must be added
+to `is_unevaluated_node` in `arena.rs`.
+
+**Sort keys** are bytes in the arena's pool (`SortKey = [u8]`).  Their
+bytes, and the digest of a truncated key (one `FxHasher` write of the full
+key, big-endian), are byte-identity critical: a change must show identical
+keys on every node of the Rubi arenas.
+
+**Internal functions** of an algorithm (the series engine's asymptotic
+helpers) are `ExprNode::Internal(InternalFn, args)` nodes declared in the
+`internal` block of `func.rs` and built with `Arena::func` — never an
+`Apply` with a reserved name, so no user input can reach them.
+
 **Canonical construction.**  Outside `src/base/`, never `intern` a node of a
 variant that has a canonical constructor (`Add`, `Mul`, `Pow`, `FiniteSet`,
 `Interval`, `SetUnion`, `SetIntersection`, `Piecewise`, `DefiniteIntegral`,
@@ -1167,7 +1188,17 @@ the assumptions (`identically_zero::nonzero_at_a_sample`) is *not
 identically zero*: the generic-solution convention may treat it as nonzero.
 Do not make a decider stricter alone if its callers read its `false` as a
 claim: give it a three-valued result and make the callers refuse on
-`Unknown` first.
+`Unknown` first.  A value that is not a truth value gets an enum of its own
+(`TrigZeros`, `Parity`), not an `Option<bool>` whose `None` means something
+else.  `tests/unit/test_truth_values.rs` counts per file the remaining
+`== Some(bool)` comparisons, `unwrap_or(bool)` reads, internal functions
+returning `Option<bool>`, `Option<…>` sign encodings and `(ExprId, u8)` memo
+keys; the counts may only shrink.
+
+When only coprimality or the degree of a gcd is needed, use modular images
+(`modgcd::main_gcd_degree_bound`, `coprime_certified`), not a full gcd: an
+image gcd of degree 0 proves coprimality (`Exact`), a positive image degree
+is `Probabilistic` and may only justify a refusal.
 
 **The constant-facts memo.**  `Arena::constant_facts` is keyed by
 `(ExprId, FactKey)` and stores the `SignSet` a decider proved (`UNKNOWN` when

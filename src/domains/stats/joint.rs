@@ -35,6 +35,7 @@ use crate::api::context::Context;
 use crate::api::expr::{BoolEx, Ex, Expr, Sort};
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
+use crate::base::truth::Truth;
 
 use super::continuous::{ChiSquared, Exponential, Gamma, Normal};
 use super::discrete::{Bernoulli, Binomial, NegativeBinomial, Poisson};
@@ -325,7 +326,7 @@ pub fn correlation(vars: &[&RandomVariable], g: &Ex, h: &Ex) -> Result<Ex, Sympl
     let cov = covariance(vars, g, h)?;
     let vg = variance(vars, g)?;
     let vh = variance(vars, h)?;
-    if vg.is_zero() == Some(true) || vh.is_zero() == Some(true) {
+    if Truth::from(vg.is_zero()).is_true() || Truth::from(vh.is_zero()).is_true() {
         return Err(invalid(
             OP,
             "the correlation of a degenerate (zero-variance) quantity is undefined",
@@ -685,7 +686,7 @@ pub fn conditional_expectation(
     check_context(OP, &ctx, event)?;
     let region = x.event_region(event)?;
     let p = x.probability(event)?;
-    if p.is_zero() == Some(true) {
+    if Truth::from(p.is_zero()).is_true() {
         return Err(invalid(
             OP,
             format!("the event `{event}` has probability zero"),
@@ -731,7 +732,7 @@ pub fn conditional_probability(
     check_context(OP, &ctx, event)?;
     check_context(OP, &ctx, given)?;
     let p_given = x.probability(given)?;
-    if p_given.is_zero() == Some(true) {
+    if Truth::from(p_given.is_zero()).is_true() {
         return Err(invalid(
             OP,
             format!("the conditioning event `{given}` has probability zero"),

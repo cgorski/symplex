@@ -19,6 +19,7 @@ use crate::api::expr::{BoolEx, Ex, SetEx};
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::ExprNode;
+use crate::base::truth::Truth;
 
 use super::support::{Kind, Piece, Support};
 
@@ -69,12 +70,12 @@ pub(crate) fn flatten_relations(event: &BoolEx) -> Option<Vec<Relation>> {
 }
 
 /// Is the event the constant `True` / `False`?
-fn constant(event: &BoolEx) -> Option<bool> {
+fn constant(event: &BoolEx) -> Truth {
     let inner = event.inner.read();
     match inner.arena.node(event.raw_id()) {
-        ExprNode::BoolTrue => Some(true),
-        ExprNode::BoolFalse => Some(false),
-        _ => None,
+        ExprNode::BoolTrue => Truth::True,
+        ExprNode::BoolFalse => Truth::False,
+        _ => Truth::Unknown,
     }
 }
 
@@ -91,9 +92,9 @@ fn unsupported(event: &BoolEx) -> SymplexError {
 pub(crate) fn event_region(x: &Ex, event: &BoolEx) -> Result<Support, SymplexError> {
     let ctx = x.context();
     match constant(event) {
-        Some(true) => return Ok(Support::reals(&ctx)),
-        Some(false) => return Ok(Support::from_pieces(Kind::Continuous, vec![])),
-        None => {}
+        Truth::True => return Ok(Support::reals(&ctx)),
+        Truth::False => return Ok(Support::from_pieces(Kind::Continuous, vec![])),
+        Truth::Unknown => {}
     }
     if let Some(rels) = flatten_relations(event)
         && let Some(region) = linear_region(x, &rels)

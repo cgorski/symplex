@@ -77,6 +77,7 @@ use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::truth::SignSet;
+use crate::base::truth::Truth;
 use crate::base::walk;
 use crate::calculus::gosper;
 use crate::poly::Poly;
@@ -357,17 +358,17 @@ fn const_sign(arena: &mut Arena, e: ExprId) -> SignSet {
         let mut cache = AssumptionCache::new();
         let mut facts = crate::base::assumptions::Assumptions::default();
         for p in [Props::POSITIVE, Props::NEGATIVE] {
-            if cache.query(arena, e, p) == Some(true) {
+            if Truth::from(cache.query(arena, e, p)).is_true() {
                 facts.known_true |= p;
             }
         }
         facts
     };
-    if facts.query(Props::POSITIVE) == Some(true) {
+    if Truth::from(facts.query(Props::POSITIVE)).is_true() {
         SignSet::POSITIVE
-    } else if facts.query(Props::NEGATIVE) == Some(true) {
+    } else if Truth::from(facts.query(Props::NEGATIVE)).is_true() {
         SignSet::NEGATIVE
-    } else if facts.query(Props::ZERO) == Some(true) {
+    } else if Truth::from(facts.query(Props::ZERO)).is_true() {
         SignSet::ZERO
     } else {
         SignSet::UNKNOWN
@@ -383,7 +384,7 @@ pub(crate) fn const_nonzero(arena: &mut Arena, e: ExprId) -> bool {
     if let Some(r) = as_rat(arena, e) {
         return !r.is_zero();
     }
-    if AssumptionCache::new().query(arena, e, Props::NONZERO) == Some(true) {
+    if Truth::from(AssumptionCache::new().query(arena, e, Props::NONZERO)).is_true() {
         return true;
     }
     walk::free_symbols(arena, e).is_empty()
@@ -397,11 +398,11 @@ pub(crate) fn const_nonzero(arena: &mut Arena, e: ExprId) -> bool {
 /// Numeric magnitude test `|e| < 1` for a k-free expression.
 ///
 /// Exact for rationals; for other constants uses a 16-digit evaluation
-/// with a safety margin and returns `None` when the value is within
+/// with a safety margin and returns `Unknown` when the value is within
 /// `1e-9` of the unit circle.
-fn abs_less_than_one(arena: &mut Arena, e: ExprId) -> Option<bool> {
+fn abs_less_than_one(arena: &mut Arena, e: ExprId) -> Truth {
     if let Some(r) = const_value(arena, e) {
-        return Some(r.abs() < Q::one());
+        return Truth::from_bool(r.abs() < Q::one());
     }
     if !walk::free_symbols(arena, e).is_empty() {
         return real_abs_less_than_one(arena, e);
@@ -409,53 +410,53 @@ fn abs_less_than_one(arena: &mut Arena, e: ExprId) -> Option<bool> {
     // A non-real constant (`i/2`): its modulus (`Σ (i/2)^k` was refused).
     let f = match crate::transforms::evalf::eval_const_f64(arena, e) {
         Some(f) => f,
-        None => crate::transforms::evalf::evalf_complex64(arena, e)
-            .ok()
-            .filter(|z| z.re.is_finite() && z.im.is_finite())?
-            .norm(),
+        None => match crate::transforms::evalf::evalf_complex64(arena, e) {
+            Ok(z) if z.re.is_finite() && z.im.is_finite() => z.norm(),
+            _ => return Truth::Unknown,
+        },
     };
     if !f.is_finite() {
-        return Some(false);
+        return Truth::False;
     }
     let a = f.abs();
     if a < 1.0 - 1e-9 {
-        Some(true)
+        Truth::True
     } else if a > 1.0 + 1e-9 {
-        Some(false)
+        Truth::False
     } else {
-        None
+        Truth::Unknown
     }
 }
 
 /// `|e| < 1` for a parametric `e` that the declared assumptions make real:
-/// `Some(true)` when `1 − e` and `1 + e` are positive, `Some(false)` when
-/// `e − 1` or `−1 − e` is, `None` otherwise (and for a possibly non-real
+/// `True` when `1 − e` and `1 + e` are positive, `False` when `e − 1` or
+/// `−1 − e` is, `Unknown` otherwise (and for a possibly non-real
 /// `e`).  `Σ_{k≥1} (1/(a + 1))^k` for a positive `a` was refused (SymPy
 /// 1.14: `1/((1 − 1/(a + 1))·(a + 1))`).
-fn real_abs_less_than_one(arena: &mut Arena, e: ExprId) -> Option<bool> {
+fn real_abs_less_than_one(arena: &mut Arena, e: ExprId) -> Truth {
     use crate::base::assumptions::{AssumptionCache, Props};
     let mut cache = AssumptionCache::new();
-    if cache.query(arena, e, Props::REAL) != Some(true) {
-        return None;
+    if !Truth::from(cache.query(arena, e, Props::REAL)).is_true() {
+        return Truth::Unknown;
     }
     let one = arena.one;
     let m1 = arena.neg_one;
     let mut positive = |arena: &mut Arena, x: ExprId| -> bool {
         let x = eval::eval(arena, x);
         let x = combine_fractions(arena, x);
-        cache.query(arena, x, Props::POSITIVE) == Some(true)
+        Truth::from(cache.query(arena, x, Props::POSITIVE)).is_true()
     };
     let below = arena.sub(one, e);
     let above = arena.add(&[one, e]);
     if positive(arena, below) && positive(arena, above) {
-        return Some(true);
+        return Truth::True;
     }
     let over = arena.sub(e, one);
     let under = arena.sub(m1, e);
     if positive(arena, over) || positive(arena, under) {
-        return Some(false);
+        return Truth::False;
     }
-    None
+    Truth::Unknown
 }
 
 fn infinity_of_sign(arena: &Arena, signs: SignSet) -> Option<ExprId> {
@@ -500,8 +501,8 @@ pub(crate) fn equality_unreachable(arena: &mut Arena, lhs: ExprId, rhs: ExprId) 
     }
     let (num, _) = polybridge::as_numer_denom(arena, d);
     let mut cache = AssumptionCache::new();
-    if cache.query(arena, d, Props::NONZERO) == Some(true)
-        || cache.query(arena, num, Props::NONZERO) == Some(true)
+    if Truth::from(cache.query(arena, d, Props::NONZERO)).is_true()
+        || Truth::from(cache.query(arena, num, Props::NONZERO)).is_true()
     {
         return true;
     }
@@ -521,7 +522,7 @@ pub(crate) fn equality_unreachable(arena: &mut Arena, lhs: ExprId, rhs: ExprId) 
         if let Some(roots) = solve::solve_classified(arena, num, s).points_if_complete()
             && roots
                 .iter()
-                .all(|&r| solve::assumptions_hold(arena, s, r) == Some(false))
+                .all(|&r| Truth::from(solve::assumptions_hold(arena, s, r)).is_false())
         {
             return true;
         }
@@ -543,7 +544,8 @@ fn power_of_real_is_not_one(arena: &mut Arena, e: ExprId) -> bool {
                     walk::free_symbols(arena, b).is_empty()
                         && crate::transforms::evalf::eval_const_f64(arena, b)
                             .is_some_and(|f| f > 0.0 && (f - 1.0).abs() > 1e-9)
-                        && AssumptionCache::new().query(arena, b, Props::POSITIVE) == Some(true)
+                        && Truth::from(AssumptionCache::new().query(arena, b, Props::POSITIVE))
+                            .is_true()
                 }
             };
             if !base_ok {
@@ -554,8 +556,8 @@ fn power_of_real_is_not_one(arena: &mut Arena, e: ExprId) -> bool {
         _ => return false,
     };
     let mut cache = AssumptionCache::new();
-    cache.query(arena, u, Props::REAL) == Some(true)
-        && cache.query(arena, u, Props::NONZERO) == Some(true)
+    Truth::from(cache.query(arena, u, Props::REAL)).is_true()
+        && Truth::from(cache.query(arena, u, Props::NONZERO)).is_true()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -635,7 +637,7 @@ fn with_integer_index(arena: &mut Arena, body: ExprId, var: ExprId) -> ExprId {
     };
     let mut declared = arena.symbol_assumptions(sid);
     declared.forward_chain();
-    if declared.query(Props::INTEGER) == Some(true)
+    if Truth::from(declared.query(Props::INTEGER)).is_true()
         || !crate::base::walk::contains(arena, body, var)
     {
         return body;
@@ -1676,8 +1678,7 @@ pub(crate) fn limit_at_infinity(arena: &mut Arena, f: ExprId, var: ExprId) -> Op
     // which has the same asymptotic growth.
     let dominant = dominant_factor_form(arena, f, var);
     if crate::calculus::convergence::growth_exponents(arena, dominant, var)
-        .and_then(|g| g.tends_to_zero())
-        == Some(true)
+        .is_some_and(|g| g.tends_to_zero().is_true())
     {
         return Some(arena.zero);
     }
@@ -2770,8 +2771,8 @@ fn geometric_poly_infinite(
 ) -> Option<SumOutcome> {
     let (poly, y, c) = geometric_split(arena, body, var)?;
     match abs_less_than_one(arena, y) {
-        Some(true) => {}
-        Some(false) => {
+        Truth::True => {}
+        Truth::False => {
             // Divergent: direction known only for positive ratio & rational sign.
             let y_pos = const_sign(arena, y) == SignSet::POSITIVE;
             let lead = poly.last().map(|(_, c)| *c);
@@ -2784,7 +2785,7 @@ fn geometric_poly_infinite(
             };
             return Some(SumOutcome::Divergent(infinity_of_sign(arena, sign)));
         }
-        None => return Some(SumOutcome::Unevaluated),
+        Truth::Unknown => return Some(SumOutcome::Unevaluated),
     }
     let degree = poly.iter().map(|(p, _)| *p).max().unwrap_or(0);
     let formula = if degree > MAX_EULER_OPERATOR_DEGREE {
@@ -2947,10 +2948,10 @@ fn geometric_rational_infinite(
         Some(_) if at_one && num_degree + 2 <= den_degree => {}
         Some(_) => return None,
         None => match abs_less_than_one(arena, y) {
-            Some(true) if const_nonzero(arena, y) => {}
+            Truth::True if const_nonzero(arena, y) => {}
             // Dirichlet's test on the unit circle (`Σ i^k/k²`), and Abel's
             // theorem for the value.
-            None if num_degree < den_degree && on_unit_circle_not_one(arena, y) => {}
+            Truth::Unknown if num_degree < den_degree && on_unit_circle_not_one(arena, y) => {}
             _ => return None,
         },
     }
@@ -3150,7 +3151,11 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
     }
 
     // 7. Convergence tests can still prove divergence.
-    if crate::calculus::convergence::is_convergent(arena, body, var) == Some(false) {
+    if Truth::from(crate::calculus::convergence::is_convergent(
+        arena, body, var,
+    ))
+    .is_false()
+    {
         let sign = eventual_sign(arena, body, var);
         return SumOutcome::Divergent(infinity_of_sign(arena, sign));
     }
@@ -3663,8 +3668,8 @@ fn negative_binomial_series(
     let x = mul_all(arena, &x_parts);
     let x = eval::eval(arena, x);
     match abs_less_than_one(arena, x) {
-        Some(true) => {}
-        Some(false) => {
+        Truth::True => {}
+        Truth::False => {
             // |C(k+c, k)| ≥ 1 for a numeric c ≥ 0, so the terms cannot tend
             // to zero; for other `c` the question is left open.
             let c_val = const_value(arena, c)?;
@@ -3689,7 +3694,7 @@ fn negative_binomial_series(
             };
             return Some(SumOutcome::Divergent(infinity_of_sign(arena, sign)));
         }
-        None => return Some(SumOutcome::Unevaluated),
+        Truth::Unknown => return Some(SumOutcome::Unevaluated),
     }
     // (1 − r)^{−(c+1)} in a placeholder r, then P(r d/dr) and r → x.
     let r = arena.symbol("_r");
@@ -4027,15 +4032,15 @@ fn entry_facts(e: &SeriesEntry) -> Vec<(Q, Q, i64)> {
     v
 }
 
-/// Does `x` lie in the entry's convergence domain?  `None` = undecidable.
-fn in_domain(arena: &mut Arena, x: ExprId, domain: Domain) -> Option<bool> {
+/// Does `x` lie in the entry's convergence domain?  `Unknown` = undecidable.
+fn in_domain(arena: &mut Arena, x: ExprId, domain: Domain) -> Truth {
     if domain == Domain::Everywhere {
-        return Some(true);
+        return Truth::True;
     }
     if let Some(r) = const_value(arena, x) {
         let a = r.abs();
         let one = Q::one();
-        return Some(match domain {
+        return Truth::from_bool(match domain {
             Domain::Everywhere => true,
             Domain::OpenUnit => a < one,
             Domain::ClosedUnit => a <= one,
@@ -4046,9 +4051,11 @@ fn in_domain(arena: &mut Arena, x: ExprId, domain: Domain) -> Option<bool> {
     // on the circle only `−ln(1 − x)` is decided, for an `x` whose modulus
     // is exactly 1 (`Σ i^k/k = −ln(1 − i)` by Dirichlet's test was refused).
     let inside = abs_less_than_one(arena, x);
-    if inside.is_none() && domain == Domain::ClosedUnitExceptOne && on_unit_circle_not_one(arena, x)
+    if !inside.is_known()
+        && domain == Domain::ClosedUnitExceptOne
+        && on_unit_circle_not_one(arena, x)
     {
-        return Some(true);
+        return Truth::True;
     }
     inside
 }
@@ -4144,8 +4151,8 @@ fn power_series_infinite(
         let coeff = eval::eval(arena, coeff);
         // Domain.
         match in_domain(arena, x, entry.domain) {
-            Some(true) => {}
-            Some(false) => {
+            Truth::True => {}
+            Truth::False => {
                 let sign = if !shape_alternating && const_sign(arena, x) == SignSet::POSITIVE {
                     const_sign(arena, coeff)
                 } else {
@@ -4153,7 +4160,7 @@ fn power_series_infinite(
                 };
                 return Some(SumOutcome::Divergent(infinity_of_sign(arena, sign)));
             }
-            None => return Some(SumOutcome::Unevaluated),
+            Truth::Unknown => return Some(SumOutcome::Unevaluated),
         }
         if lo_i < entry.k0 {
             return None;
@@ -4459,7 +4466,7 @@ fn positive_on_range(
     } else {
         Props::POSITIVE
     };
-    AssumptionCache::new().query(arena, shifted, prop) == Some(true)
+    Truth::from(AssumptionCache::new().query(arena, shifted, prop)).is_true()
 }
 
 /// `N(x)/D(x) > 0` (`≥ 0` with `allow_zero`) for every real `x ≥ lo`:

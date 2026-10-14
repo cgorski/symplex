@@ -56,6 +56,7 @@ use num_rational::Ratio;
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::poly::dense::Poly;
 use crate::poly::domain::GaussQ;
 use crate::poly::generic::GenPoly;
@@ -146,7 +147,7 @@ pub(crate) fn log_to_atan_deg1(
         tracing::debug!("log_to_atan_deg1: b1 ≈ 0, B is constant → single atan");
 
         // Check b0 ≠ 0 (bail unless we can confirm nonzero, since we divide by b0)
-        if crate::poly::algebraic::is_zero_checked(arena, b0) != Some(false) {
+        if !Truth::from(crate::poly::algebraic::is_zero_checked(arena, b0)).is_false() {
             tracing::debug!("log_to_atan_deg1: b0 ≈ 0, degenerate → None");
             return None;
         }
@@ -200,7 +201,7 @@ pub(crate) fn log_to_atan_deg1(
     let det = arena.sub(a1_b0, b1_a0);
     let det = crate::transforms::eval::eval(arena, det);
 
-    if crate::poly::algebraic::is_zero_checked(arena, det) != Some(false) {
+    if !Truth::from(crate::poly::algebraic::is_zero_checked(arena, det)).is_false() {
         tracing::debug!("log_to_atan_deg1: determinant ≈ 0 (A and B proportional) → None");
         return None;
     }
@@ -1023,15 +1024,15 @@ impl RadCyc {
             .sum()
     }
 
-    /// `Some(true)` for a zero representation; `Some(false)` when the value
-    /// is clearly nonzero; `None` when a nonzero representation (`L > 1`)
-    /// has a value too small to tell.
-    fn is_zero(&self, a: &[Poly]) -> Option<bool> {
+    /// `True` for a zero representation; `False` when the value is clearly
+    /// nonzero; `Unknown` when a nonzero representation (`L > 1`) has a
+    /// value too small to tell.
+    fn is_zero(&self, a: &[Poly]) -> Truth {
         if a.iter().all(Poly::is_zero) {
-            return Some(true);
+            return Truth::True;
         }
         if self.l == 1 {
-            return Some(false);
+            return Truth::False;
         }
         // The size of the terms ρ^r·c·ζ^k (a cancellation below 10⁻⁹ of it
         // is left undecided).
@@ -1046,7 +1047,11 @@ impl RadCyc {
                 })
             })
             .fold(0.0, f64::max);
-        (self.approx(a).abs() > 1e-9 * scale).then_some(false)
+        if self.approx(a).abs() > 1e-9 * scale {
+            Truth::False
+        } else {
+            Truth::Unknown
+        }
     }
 
     /// `Σ ρ^r·aᵣ` as an expression (`ρ^r = κ^{r/L}`).
@@ -1226,7 +1231,11 @@ fn cyclotomic_log_to_real(
         let re_g_id = rc.real_expr(arena, &re_g)?;
         let x_plus = arena.add(&[var, re_g_id]);
         let x_plus = crate::transforms::eval::eval(arena, x_plus);
-        let im_zero = rc.is_zero(&im_g)?;
+        let im_zero = match rc.is_zero(&im_g) {
+            Truth::True => true,
+            Truth::False => false,
+            Truth::Unknown => return None,
+        };
         if e == 0 || 2 * e == n {
             // Real root α = ±ρ: α·ln|x + g| (g real).
             if !im_zero {
@@ -1238,7 +1247,11 @@ fn cyclotomic_log_to_real(
             terms.push(arena.mul(&[a_id, ln]));
             continue;
         }
-        let u_zero = rc.is_zero(&u)?;
+        let u_zero = match rc.is_zero(&u) {
+            Truth::True => true,
+            Truth::False => false,
+            Truth::Unknown => return None,
+        };
         if u_zero && im_zero {
             return None;
         }

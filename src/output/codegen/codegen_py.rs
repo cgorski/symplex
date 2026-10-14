@@ -1058,39 +1058,35 @@ impl Emitter<'_> {
                     }
                 }
 
-                // Distributional: pointwise value is 0 (as in the C backend).
-                ExprNode::DiracDelta(_) => Rendered::atom("0.0"),
+                // 0 off the origin, NaN at it (and for NaN), as in
+                // `compile()`; the `δ` of a constant is 0
+                // (`fold_constants_for_emission` refuses `δ(0)`).
+                ExprNode::DiracDelta(a) if super::delta_of_constant(arena, *a) => {
+                    Rendered::atom("0.0")
+                }
+                ExprNode::DiracDelta(a) => {
+                    let r = child(a)?;
+                    match self.target {
+                        Target::Python => {
+                            Rendered::atom(format!("(0.0 if abs({}) > 0 else math.nan)", r.at(0)))
+                        }
+                        Target::NumPy => Rendered::atom(format!(
+                            "numpy.where(numpy.abs({}) > 0, 0.0, numpy.nan)",
+                            r.at(0)
+                        )),
+                        Target::Julia => {
+                            Rendered::atom(format!("(abs({}) > 0 ? 0.0 : NaN)", r.at(0)))
+                        }
+                    }
+                }
 
                 // Every remaining one-argument function goes through the
                 // name table; anything without a spelling is refused.
-                ExprNode::Sin(a)
-                | ExprNode::Cos(a)
-                | ExprNode::Tan(a)
-                | ExprNode::Asin(a)
-                | ExprNode::Acos(a)
-                | ExprNode::Atan(a)
-                | ExprNode::Sinh(a)
-                | ExprNode::Cosh(a)
-                | ExprNode::Tanh(a)
-                | ExprNode::Asinh(a)
-                | ExprNode::Acosh(a)
-                | ExprNode::Atanh(a)
-                | ExprNode::Exp(a)
-                | ExprNode::Ln(a)
-                | ExprNode::Abs(a)
-                | ExprNode::Floor(a)
-                | ExprNode::Ceiling(a)
-                | ExprNode::Sign(a)
-                | ExprNode::Gamma(a)
-                | ExprNode::LogGamma(a)
-                | ExprNode::Erf(a)
-                | ExprNode::Erfc(a)
-                | ExprNode::Factorial(a) => {
-                    let name = self
-                        .target
-                        .unary(node)
-                        .ok_or_else(|| self.unsupported(&describe(node)))?;
-                    self.call(name, &[&child(a)?])
+                node if node.func_head().is_some_and(named_unary) => {
+                    let refused = || self.unsupported(&describe(node));
+                    let name = self.target.unary(node).ok_or_else(refused)?;
+                    let a = node.unary_arg_if(named_unary).ok_or_else(refused)?;
+                    self.call(name, &[&child(&a)?])
                 }
                 // Library special functions are outside `math`/`numpy`/base
                 // Julia; the error names the SciPy routine that computes the
@@ -1113,6 +1109,26 @@ impl Emitter<'_> {
         }
         self.cached(&cache, root)
     }
+}
+
+/// The one-argument functions the emitter spells through the name table
+/// (`Target::unary`), refusing those a target has no spelling for: the
+/// elementary functions, `|·|`, `⌊·⌋`, `⌈·⌉`, `sign`, `Γ`, `ln Γ`, `erf`,
+/// `erfc`, `n!` (the cases the emitter writes otherwise come first).
+fn named_unary(f: Func) -> bool {
+    f.elementary().is_some()
+        || matches!(
+            f,
+            Func::Abs
+                | Func::Floor
+                | Func::Ceiling
+                | Func::Sign
+                | Func::Gamma
+                | Func::LogGamma
+                | Func::Erf
+                | Func::Erfc
+                | Func::Factorial
+        )
 }
 
 /// Short description of a node kind for error messages.
@@ -1660,5 +1676,17 @@ mod tests {
             ctx.parse("I").unwrap().to_python(),
             Err(SymplexError::NotImplemented(_))
         ));
+    }
+
+    /// The emitter spells through its name table exactly the functions of
+    /// its 0.49 or-pattern (W6d: the list became `named_unary`).
+    #[test]
+    fn named_unary_is_the_old_list() {
+        use crate::base::func::{Func::*, selected};
+        let old = [
+            Sin, Cos, Tan, Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Exp, Ln, Abs,
+            Floor, Ceiling, Sign, Gamma, LogGamma, Erf, Erfc, Factorial,
+        ];
+        assert_eq!(selected(super::named_unary), old.into_iter().collect());
     }
 }

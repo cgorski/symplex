@@ -757,6 +757,12 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             name: f.name().to_owned(),
             args: args.iter().map(|&a| expr_to_tree(arena, a)).collect(),
         },
+        // The head is reserved: `from_json` refuses it, and `from_tree`
+        // reads it as a user function, never as the internal one.
+        ExprNode::Internal(f, args) => ExprTree::Apply {
+            name: f.name().to_owned(),
+            args: args.iter().map(|&a| expr_to_tree(arena, a)).collect(),
+        },
         ExprNode::Derivative(body, var) => ExprTree::Derivative {
             body: Box::new(expr_to_tree(arena, body)),
             var: Box::new(expr_to_tree(arena, var)),

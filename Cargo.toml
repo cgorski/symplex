@@ -35,7 +35,9 @@ num-traits = "0.2"
 # `std` only forwards to `num-traits/std` (already on) and unlocks
 # `Complex64::norm`/`arg`; the crate is pure Rust and `no_std`-capable.
 num-complex = { version = "0.4", default-features = false, features = ["std"] }
-smallvec = "1.13"
+# `union`: the inline and heap representations share their storage, so an
+# `ExprNode` is 40 bytes instead of 48.
+smallvec = { version = "1.13", features = ["union"] }
 rustc-hash = "2.1"
 bitflags = "2.11"
 parking_lot = "0.12"

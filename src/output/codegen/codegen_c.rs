@@ -576,10 +576,15 @@ impl<'a> CEmitter<'a> {
             ExprNode::Atanh(x) => self.schedule(id, Plan::Unary("atanh"), &[(x, v)]),
             ExprNode::Sign(x) => self.schedule(id, Plan::RtUnary("sign"), &[(x, v)]),
             ExprNode::Heaviside(x) => self.schedule(id, Plan::RtUnary("heaviside"), &[(x, v)]),
-            // Distributional: pointwise value is 0 (argument not evaluated).
-            ExprNode::DiracDelta(_) => {
+            // 0 off the origin, NaN at it (and for NaN), as in `compile()`;
+            // the `δ` of a constant is 0 (`fold_constants_for_emission`
+            // refuses `δ(0)`).
+            ExprNode::DiracDelta(x) if super::delta_of_constant(arena, x) => {
                 let s = self.lit(0.0);
                 self.values.push(s);
+            }
+            ExprNode::DiracDelta(x) => {
+                self.schedule(id, Plan::RtUnary("dirac_delta"), &[(x, v)]);
             }
             ExprNode::Min(ch) => {
                 if ch.is_empty() {
@@ -646,6 +651,7 @@ impl<'a> CEmitter<'a> {
             }
             ExprNode::Not(x) => self.schedule(id, Plan::Not, &[(x, Kind::Bool)]),
             ExprNode::Lib(f, apply_args) => self.visit_rt(id, Func::from(f), &apply_args)?,
+            ExprNode::Internal(f, apply_args) => self.visit_rt(id, Func::from(f), &apply_args)?,
             ExprNode::Apply(sid, _) => {
                 return Err(SymplexError::NotImplemented(format!(
                     "cannot generate C code for user-defined Apply node `{}`",
@@ -1191,6 +1197,14 @@ static inline double symplex_max(double a, double b) { return (a >= b || isnan(a
         deps: &[],
         src: r#"
 static inline double symplex_heaviside(double x) { return x > 0.0 ? 1.0 : (x < 0.0 ? 0.0 : (x == 0.0 ? 0.5 : x)); }
+"#,
+    },
+    CHelper {
+        name: "dirac_delta",
+        deps: &[],
+        src: r#"
+/* DiracDelta pointwise: 0 off the origin, no value (NaN) at it and for NaN. */
+static inline double symplex_dirac_delta(double x) { return fabs(x) > 0.0 ? 0.0 : NAN; }
 "#,
     },
     CHelper {
@@ -2364,6 +2378,87 @@ static inline double symplex_fresnel_c(double x) {
         v = 0.5 + (f * sn - g * cs);
     }
     return x < 0.0 ? -v : v;
+}
+"#,
+    },
+    CHelper {
+        name: "elliptic_ke",
+        deps: &[],
+        src: r#"
+/* K(m) by the AGM (DLMF 19.8.5) and E(m) by the AGM sum (DLMF 19.8.6) for mc >= 1/10,
+   by the series about m = 1 (DLMF 19.12.2) below; 0 <= m < 1, mc = 1 - m. */
+static void symplex_elliptic_ke(double m, double mc, int want_e, double *k_out, double *e_out) {
+    double a = 1.0, g = sqrt(mc), p = 0.5, sum = 0.5 * m;
+    int n = 0;
+    while (n < 64 && a - g > 2.2e-16 * a) {
+        double c = 0.5 * (a - g);
+        double a1 = 0.5 * (a + g);
+        g = sqrt(a * g);
+        a = a1;
+        p *= 2.0;
+        sum += p * c * c;
+        n += 1;
+    }
+    double k = 1.5707963267948966 / a;
+    *k_out = k;
+    *e_out = 0.0;
+    if (!want_e) return;
+    if (mc >= 0.1) {
+        *e_out = k * (1.0 - sum);
+        return;
+    }
+    double l = -0.5 * log(mc), d = 2.0 * 0.6931471805599453, t = 1.0, q = mc, s = 0.0, j = 0.0;
+    while (j < 80.0) {
+        double term = t * q * (l + d - 1.0 / ((2.0 * j + 1.0) * (2.0 * j + 2.0)));
+        s += term;
+        if (term <= 1e-18) break;
+        j += 1.0;
+        t = t * (j - 0.5) * (j + 0.5) / ((j + 1.0) * j);
+        d -= 2.0 / ((2.0 * j - 1.0) * (2.0 * j));
+        q *= mc;
+    }
+    *e_out = 1.0 + 0.5 * s;
+}
+"#,
+    },
+    CHelper {
+        name: "elliptic_k",
+        deps: &["elliptic_ke"],
+        src: r#"
+/* K(m), parameter m: +inf at 1, NaN beyond but 0 at +inf; m < 0 by K(m) = K(-m/(1-m))/sqrt(1-m) (DLMF 19.7.5). */
+static inline double symplex_elliptic_k(double m) {
+    double k, e;
+    if (m == INFINITY) return 0.0;
+    if (isnan(m) || m > 1.0) return NAN;
+    if (m == 1.0) return INFINITY;
+    if (m == -INFINITY) return 0.0;
+    if (m < 0.0) {
+        double w = 1.0 - m;
+        symplex_elliptic_ke(-m / w, 1.0 / w, 0, &k, &e);
+        return k / sqrt(w);
+    }
+    symplex_elliptic_ke(m, 1.0 - m, 0, &k, &e);
+    return k;
+}
+"#,
+    },
+    CHelper {
+        name: "elliptic_e",
+        deps: &["elliptic_ke"],
+        src: r#"
+/* E(m), parameter m: 1 at 1, NaN beyond; m < 0 by E(m) = sqrt(1-m) E(-m/(1-m)) (DLMF 19.7.5). */
+static inline double symplex_elliptic_e(double m) {
+    double k, e;
+    if (isnan(m) || m > 1.0) return NAN;
+    if (m == 1.0) return 1.0;
+    if (m == -INFINITY) return INFINITY;
+    if (m < 0.0) {
+        double w = 1.0 - m;
+        symplex_elliptic_ke(-m / w, 1.0 / w, 1, &k, &e);
+        return sqrt(w) * e;
+    }
+    symplex_elliptic_ke(m, 1.0 - m, 1, &k, &e);
+    return e;
 }
 "#,
     },

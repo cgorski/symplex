@@ -31,7 +31,8 @@
 
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
-use crate::domains::matrix::{Matrix, all3, ex_is_zero};
+use crate::base::truth::Truth;
+use crate::domains::matrix::{Matrix, ex_is_zero};
 
 pub use crate::domains::matrix_decomp::hessian;
 
@@ -381,7 +382,7 @@ pub fn is_conservative(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
     let Ok(c) = curl(field, vars) else {
         return Some(false);
     };
-    all3(c.iter().map(|e| identically_zero(e, vars)))
+    Truth::all(c.iter().map(|e| identically_zero(e, vars))).to_option()
 }
 
 /// Is the field component `e` identically zero as a function of `vars`?
@@ -394,9 +395,9 @@ pub fn is_conservative(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
 /// that `e` is not identically zero.  (Before 0.41 `is_conservative` and
 /// `is_solenoidal` returned `None` for such fields: 193 of 200 random
 /// rotational fields.)
-fn identically_zero(e: &Ex, vars: &[&Ex]) -> Option<bool> {
+fn identically_zero(e: &Ex, vars: &[&Ex]) -> Truth {
     let decided = ex_is_zero(e);
-    if decided.is_some() {
+    if decided.is_known() {
         return decided;
     }
     let ctx = e.context();
@@ -415,17 +416,17 @@ fn identically_zero(e: &Ex, vars: &[&Ex]) -> Option<bool> {
         let pairs: Vec<(&Ex, &Ex)> = vars.iter().copied().zip(values.iter()).collect();
         let at = e.subs_map(&pairs).eval();
         if !at.free_symbols().is_empty() {
-            return None; // depends on parameters: leave it undecided
+            return Truth::Unknown; // depends on parameters: leave it undecided
         }
         if at
             .eval_complex64()
             .is_ok_and(|z| z.re.is_finite() && z.im.is_finite() && z.norm() > 0.0)
-            && ex_is_zero(&at) == Some(false)
+            && ex_is_zero(&at).is_false()
         {
-            return Some(false);
+            return Truth::False;
         }
     }
-    None
+    Truth::Unknown
 }
 
 /// Alias of [`is_conservative`] (irrotational ⇔ curl-free).
@@ -437,7 +438,7 @@ pub fn is_irrotational(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
 /// [`is_conservative`]: `Some(false)` for a field that is not an `n×1`
 /// column with `n == vars.len()`.
 pub fn is_solenoidal(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
-    divergence(field, vars).map_or(Some(false), |d| identically_zero(&d, vars))
+    divergence(field, vars).map_or(Some(false), |d| identically_zero(&d, vars).to_option())
 }
 
 /// Scalar potential `φ` with `∇φ = F` for a conservative Cartesian field.
@@ -596,7 +597,7 @@ fn definite(g: &Ex, t: &Ex, t_user: &Ex, a: &Ex, b: &Ex) -> Ex {
 /// The stand-in has a reserved-looking name (`__t`, `__t_1`, …: the first
 /// one absent from `avoid`), so repeated calls reuse it.
 fn real_parameter(t: &Ex, avoid: &[&Ex]) -> Ex {
-    if t.is_real() == Some(true) {
+    if Truth::from(t.is_real()).is_true() {
         return t.clone();
     }
     let ctx = t.context();

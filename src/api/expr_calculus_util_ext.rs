@@ -38,6 +38,7 @@ use crate::base::cast::integer_span;
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::ExprNode;
+use crate::base::truth::{SignSet, Truth};
 use crate::calculus::calculus_util as util;
 use crate::calculus::limit::Direction;
 
@@ -98,11 +99,11 @@ fn is_real_finite_point(p: &Ex) -> bool {
     {
         return false;
     }
-    if p.is_real() == Some(false) || p.is_finite() == Some(false) {
+    if Truth::from(p.is_real()).is_false() || Truth::from(p.is_finite()).is_false() {
         return false;
     }
     if p.is_constant() {
-        if p.contains(&ctx.i_unit()) && p.is_real() != Some(true) {
+        if p.contains(&ctx.i_unit()) && !Truth::from(p.is_real()).is_true() {
             return false;
         }
         if let Ok(z) = p.eval_complex64()
@@ -342,17 +343,17 @@ fn compare(a: &Ex, b: &Ex) -> Option<Ordering> {
     if *a == ninf || *b == inf {
         return Some(Ordering::Less);
     }
-    if a.equals(b) == Some(true) {
+    if Truth::from(a.equals(b)).is_true() {
         return Some(Ordering::Equal);
     }
     let d = (a - b).eval();
-    if d.is_positive() == Some(true) {
+    if Truth::from(d.is_positive()).is_true() {
         return Some(Ordering::Greater);
     }
-    if d.is_negative() == Some(true) {
+    if Truth::from(d.is_negative()).is_true() {
         return Some(Ordering::Less);
     }
-    if a.equals(b) != Some(false) {
+    if !Truth::from(a.equals(b)).is_false() {
         return None;
     }
     // Proven distinct constants: order numerically.
@@ -429,15 +430,15 @@ fn interior_point(ctx: &crate::api::context::Context, lo: &Ex, hi: &Ex) -> Ex {
     }
 }
 
-/// Sign of the constant `value`: `Some(true)` positive, `Some(false)`
-/// negative, `None` zero or undecided.
-fn constant_sign(value: &Ex) -> Option<bool> {
-    if value.is_positive() == Some(true) {
-        Some(true)
-    } else if value.is_negative() == Some(true) {
-        Some(false)
+/// Sign of the constant `value`: `POSITIVE`, `NEGATIVE`, or `UNKNOWN` when
+/// neither is proved (zero included: the caller tests that structurally).
+fn constant_sign(value: &Ex) -> SignSet {
+    if Truth::from(value.is_positive()).is_true() {
+        SignSet::POSITIVE
+    } else if Truth::from(value.is_negative()).is_true() {
+        SignSet::NEGATIVE
     } else {
-        None
+        SignSet::UNKNOWN
     }
 }
 
@@ -537,18 +538,23 @@ fn stationary_set(
                     let mut holds = true;
                     for &(h, positive) in &pattern {
                         let value = h.subs(var, &p).eval();
+                        let wanted = if positive {
+                            SignSet::POSITIVE
+                        } else {
+                            SignSet::NEGATIVE
+                        };
                         match constant_sign(&value) {
-                            Some(sign) if sign == positive => {}
-                            Some(_) => {
+                            sign if sign == wanted => {}
+                            SignSet::POSITIVE | SignSet::NEGATIVE => {
                                 holds = false;
                                 break;
                             }
-                            None if value.is_zero_structural() => {
+                            _ if value.is_zero_structural() => {
                                 // A kink: handled above.
                                 holds = false;
                                 break;
                             }
-                            None => {
+                            _ => {
                                 return Err(computation_failed(
                                     op,
                                     format!("cannot decide the sign of `{h}` at `{var} = {p}`"),
@@ -768,21 +774,25 @@ impl Ex {
 /// Is the polynomial `p` strictly positive on the interval `part`?  Exact:
 /// a Sturm count of the roots inside the closed interval, discounting
 /// roots at open endpoints.
-fn poly_positive_on(p: &Poly, var: &Ex, part: Interval<&Ex>) -> Option<bool> {
+fn poly_positive_on(p: &Poly, var: &Ex, part: Interval<&Ex>) -> Truth {
     let Interval {
         lower: lo,
         upper: hi,
         kind,
     } = part;
-    if p.is_positive_on(lo, hi) == Some(true) {
-        return Some(true);
+    if Truth::from(p.is_positive_on(lo, hi)).is_true() {
+        return Truth::True;
     }
-    if !p.is_nonnegative_on(lo, hi)? {
-        return Some(false);
+    match Truth::from(p.is_nonnegative_on(lo, hi)) {
+        Truth::False => return Truth::False,
+        Truth::Unknown => return Truth::Unknown,
+        Truth::True => {}
     }
     // Non-negative on the closed interval with at least one root in it.
     let ctx = var.context();
-    let mut roots = p.count_real_roots_in(lo, hi)?;
+    let Some(mut roots) = p.count_real_roots_in(lo, hi) else {
+        return Truth::Unknown;
+    };
     let e = p.to_ex();
     let vanishes_at = |pt: &Ex| e.subs(var, pt).eval().is_zero_structural();
     if kind.lower_open() && *lo != ctx.neg_infinity() && vanishes_at(lo) {
@@ -791,40 +801,48 @@ fn poly_positive_on(p: &Poly, var: &Ex, part: Interval<&Ex>) -> Option<bool> {
     if kind.upper_open() && *hi != ctx.infinity() && lo != hi && vanishes_at(hi) {
         roots = roots.saturating_sub(1);
     }
-    Some(roots == 0)
+    Truth::from_bool(roots == 0)
 }
 
 /// Exact decision of `d ≥ 0` on every interval of `parts` for a rational
 /// function `d = num/den` in `var` with rational coefficients.  With
 /// `strict`, additionally requires `d` not to vanish identically (its
-/// zeros are then isolated).  `None` when the route does not apply.
-fn rational_nonneg_on(d: &Ex, var: &Ex, parts: &[Interval<Ex>], strict: bool) -> Option<bool> {
+/// zeros are then isolated).  `Unknown` when the route does not apply.
+fn rational_nonneg_on(d: &Ex, var: &Ex, parts: &[Interval<Ex>], strict: bool) -> Truth {
     let (num, den) = d.as_numer_denom();
-    let pn = Poly::new(&num, &[var])?;
-    let pd = Poly::new(&den, &[var])?;
+    let Some(pn) = Poly::new(&num, &[var]) else {
+        return Truth::Unknown;
+    };
+    let Some(pd) = Poly::new(&den, &[var]) else {
+        return Truth::Unknown;
+    };
     if !pn.has_rational_coeffs() || !pd.has_rational_coeffs() {
-        return None;
+        return Truth::Unknown;
     }
     let neg_pn = pn.neg();
     let neg_pd = pd.neg();
     for part in parts {
-        let signed_num = if poly_positive_on(&pd, var, part.as_ref())? {
-            &pn
-        } else if poly_positive_on(&neg_pd, var, part.as_ref())? {
-            &neg_pn
-        } else {
-            // The denominator changes sign or vanishes inside the interval.
-            return None;
+        let signed_num = match poly_positive_on(&pd, var, part.as_ref()) {
+            Truth::True => &pn,
+            Truth::Unknown => return Truth::Unknown,
+            Truth::False => match poly_positive_on(&neg_pd, var, part.as_ref()) {
+                Truth::True => &neg_pn,
+                Truth::Unknown => return Truth::Unknown,
+                // The denominator changes sign or vanishes inside the interval.
+                Truth::False => return Truth::Unknown,
+            },
         };
-        if !signed_num.is_nonnegative_on(&part.lower, &part.upper)? {
-            return Some(false);
+        match Truth::from(signed_num.is_nonnegative_on(&part.lower, &part.upper)) {
+            Truth::False => return Truth::False,
+            Truth::Unknown => return Truth::Unknown,
+            Truth::True => {}
         }
     }
     if strict && pn.is_zero() {
         // Identically zero: not strict unless every part is a single point.
-        return Some(parts.iter().all(|part| part.lower == part.upper));
+        return Truth::from_bool(parts.iter().all(|part| part.lower == part.upper));
     }
-    Some(true)
+    Truth::True
 }
 
 /// Is `f` continuous at every finite closed endpoint of `parts`, i.e. is
@@ -838,7 +856,7 @@ fn continuous_at_closed_endpoints(f: &Ex, var: &Ex, parts: &[Interval<Ex>]) -> b
             return false;
         }
         f.try_limit_dir(var, e, dir)
-            .is_ok_and(|lim| lim.equals(&value) == Some(true))
+            .is_ok_and(|lim| Truth::from(lim.equals(&value)).is_true())
     };
     parts.iter().all(|part| {
         let (lo, hi) = (&part.lower, &part.upper);
@@ -860,29 +878,39 @@ fn continuous_at_closed_endpoints(f: &Ex, var: &Ex, parts: &[Interval<Ex>]) -> b
 /// domain; `None` when the singularities cannot be enumerated or a limit
 /// is not decided (a finite jump, for instance, is compatible with
 /// monotonicity and is not decided here).
-fn interior_pole_breaks_monotonicity(f: &Ex, var: &Ex, domain: &SetEx) -> Option<bool> {
+fn interior_pole_breaks_monotonicity(f: &Ex, var: &Ex, domain: &SetEx) -> Truth {
     let ctx = f.context();
-    let interior = domain.interior()?;
-    let sing = f.singularities(var, Some(&interior)).ok()?;
-    if sing.is_empty() == Some(true) {
-        return Some(false);
+    let Some(interior) = domain.interior() else {
+        return Truth::Unknown;
+    };
+    let Ok(sing) = f.singularities(var, Some(&interior)) else {
+        return Truth::Unknown;
+    };
+    if Truth::from(sing.is_empty()).is_true() {
+        return Truth::False;
     }
-    let points = sing.as_finite_set()?;
+    let Some(points) = sing.as_finite_set() else {
+        return Truth::Unknown;
+    };
     let (inf, ninf) = (ctx.infinity(), ctx.neg_infinity());
     for p in points {
-        let left = f.try_limit_dir(var, &p, Direction::Left).ok()?;
-        let right = f.try_limit_dir(var, &p, Direction::Right).ok()?;
+        let Ok(left) = f.try_limit_dir(var, &p, Direction::Left) else {
+            return Truth::Unknown;
+        };
+        let Ok(right) = f.try_limit_dir(var, &p, Direction::Right) else {
+            return Truth::Unknown;
+        };
         if left == inf || left == ninf || right == inf || right == ninf {
-            return Some(true);
+            return Truth::True;
         }
         if !(is_real_finite_point(&left)
             && is_real_finite_point(&right)
-            && left.equals(&right) == Some(true))
+            && Truth::from(left.equals(&right)).is_true())
         {
-            return None;
+            return Truth::Unknown;
         }
     }
-    Some(false)
+    Truth::False
 }
 
 /// Three-valued decision "`f` is non-decreasing on `domain`" (`d = f'`;
@@ -899,74 +927,85 @@ fn interior_pole_breaks_monotonicity(f: &Ex, var: &Ex, domain: &SetEx) -> Option
 /// repeated on the interior of the domain and `f` is required to be
 /// continuous at those endpoints (mean value theorem).  `None` whenever no
 /// route decides.
-fn monotone_on(f: &Ex, var: &Ex, domain: &SetEx, strict: bool) -> Option<bool> {
+fn monotone_on(f: &Ex, var: &Ex, domain: &SetEx, strict: bool) -> Truth {
     // Discontinuous or opaque nodes (`floor`, `sign`, unknown functions, …):
     // the formal derivative says nothing about monotonicity.
     if f.continuity_scan(var).opaque.is_some() {
-        return None;
+        return Truth::Unknown;
     }
     let d = f.diff(var);
     if d.has_unevaluated() {
-        return None;
+        return Truth::Unknown;
     }
-    let parts = domain.as_intervals()?;
+    let Some(parts) = domain.as_intervals() else {
+        return Truth::Unknown;
+    };
     if parts.is_empty() {
-        return Some(true);
+        return Truth::True;
     }
     if d.is_zero_structural() {
-        return Some(!strict || parts.iter().all(|part| part.lower == part.upper));
+        return Truth::from_bool(!strict || parts.iter().all(|part| part.lower == part.upper));
     }
     // The sign of `f'` on either side of an interior pole says nothing
     // about monotonicity across it.
     match interior_pole_breaks_monotonicity(f, var, domain) {
-        Some(true) => return Some(false),
-        Some(false) => {}
-        None => return None,
+        Truth::True => return Truth::False,
+        Truth::False => {}
+        Truth::Unknown => return Truth::Unknown,
     }
-    if let Some(answer) = rational_nonneg_on(&d, var, &parts, strict) {
-        return Some(answer);
+    let answer = rational_nonneg_on(&d, var, &parts, strict);
+    if answer.is_known() {
+        return answer;
     }
     // Assumption system: a sign that holds for every real value of `var`.
-    if d.is_negative() == Some(true) {
-        return Some(false);
+    if Truth::from(d.is_negative()).is_true() {
+        return Truth::False;
     }
-    if (strict && d.is_positive() == Some(true)) || (!strict && d.is_nonnegative() == Some(true)) {
-        return Some(true);
+    if (strict && Truth::from(d.is_positive()).is_true())
+        || (!strict && Truth::from(d.is_nonnegative()).is_true())
+    {
+        return Truth::True;
     }
     // Inequality solver.
     let ge = d.solve_ge(var);
     if ge.has_unevaluated() {
-        return None;
+        return Truth::Unknown;
     }
-    let region = match domain.is_subset(&ge) {
-        Some(true) => domain.clone(),
-        Some(false) => {
+    let region = match Truth::from(domain.is_subset(&ge)) {
+        Truth::True => domain.clone(),
+        Truth::False => {
             // `f'` may merely be undefined at a closed endpoint.
             if !continuous_at_closed_endpoints(f, var, &parts) {
-                return Some(false);
+                return Truth::False;
             }
-            let interior = domain.interior()?;
-            match interior.is_subset(&ge) {
-                Some(true) => interior,
-                Some(false) => return Some(false),
-                None => return None,
+            let Some(interior) = domain.interior() else {
+                return Truth::Unknown;
+            };
+            match Truth::from(interior.is_subset(&ge)) {
+                Truth::True => interior,
+                Truth::False => return Truth::False,
+                Truth::Unknown => return Truth::Unknown,
             }
         }
-        None => return None,
+        Truth::Unknown => return Truth::Unknown,
     };
     if !strict {
-        return Some(true);
+        return Truth::True;
     }
     let gt = d.solve_gt(var);
     if gt.has_unevaluated() {
-        return None;
+        return Truth::Unknown;
     }
-    if region.is_subset(&gt) == Some(true) {
-        return Some(true);
+    if Truth::from(region.is_subset(&gt)).is_true() {
+        return Truth::True;
     }
     // `f' ≥ 0` with a finite zero set: still strictly monotonic.
     let zeros = ge.difference(&gt).intersection(&region).simplify();
-    zeros.as_finite_set().map(|_| true)
+    if zeros.as_finite_set().is_some() {
+        Truth::True
+    } else {
+        Truth::Unknown
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1237,7 +1276,7 @@ impl Ex {
     pub fn is_increasing(&self, var: &Ex, domain: &SetEx) -> Option<bool> {
         self.checked_id(var);
         self.checked_id(domain);
-        monotone_on(self, var, domain, false)
+        monotone_on(self, var, domain, false).to_option()
     }
 
     /// Is `self` non-increasing in `var` on `domain` (`f' ≤ 0` there)?
@@ -1263,7 +1302,7 @@ impl Ex {
     pub fn is_decreasing(&self, var: &Ex, domain: &SetEx) -> Option<bool> {
         self.checked_id(var);
         self.checked_id(domain);
-        monotone_on(&-self, var, domain, false)
+        monotone_on(&-self, var, domain, false).to_option()
     }
 
     /// Is `self` strictly increasing in `var` on `domain`?  SymPy's
@@ -1295,7 +1334,7 @@ impl Ex {
     pub fn is_strictly_increasing(&self, var: &Ex, domain: &SetEx) -> Option<bool> {
         self.checked_id(var);
         self.checked_id(domain);
-        monotone_on(self, var, domain, true)
+        monotone_on(self, var, domain, true).to_option()
     }
 
     /// Is `self` strictly decreasing in `var` on `domain`?  SymPy's
@@ -1317,7 +1356,7 @@ impl Ex {
     pub fn is_strictly_decreasing(&self, var: &Ex, domain: &SetEx) -> Option<bool> {
         self.checked_id(var);
         self.checked_id(domain);
-        monotone_on(&-self, var, domain, true)
+        monotone_on(&-self, var, domain, true).to_option()
     }
 
     /// Is `self` monotonic (non-decreasing or non-increasing) in `var` on
@@ -1373,7 +1412,7 @@ impl Ex {
     pub fn is_convex(&self, var: &Ex, domain: &SetEx) -> Option<bool> {
         self.checked_id(var);
         self.checked_id(domain);
-        monotone_on(&self.diff(var), var, domain, false)
+        monotone_on(&self.diff(var), var, domain, false).to_option()
     }
 
     /// A period of `self` in `var` — SymPy's `periodicity`.  Like

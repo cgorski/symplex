@@ -19,6 +19,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 
 /// The most bits of the Gaussian product `z` (the sum of `|nᵢ|·bits(qᵢ +
 /// ipᵢ)`), so that the powers stay cheap.
@@ -85,7 +86,7 @@ pub(super) fn without_zero_atan_part(arena: &mut Arena, d: ExprId) -> ExprId {
         return d;
     }
     let atans = arena.add(&atan_part);
-    if is_zero(arena, atans) != Some(true) {
+    if !Truth::from(is_zero(arena, atans)).is_true() {
         return d;
     }
     arena.add(&rest)

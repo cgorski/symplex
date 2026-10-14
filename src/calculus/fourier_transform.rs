@@ -1329,7 +1329,8 @@ fn forward_rational(arena: &mut Arena, expr: ExprId, t: ExprId, w: ExprId) -> Op
         crate::transforms::eval::eval(arena, s)
     };
     match r.parity() {
-        Some(even) => {
+        Some(parity) => {
+            let even = parity == crate::calculus::residue::Parity::Even;
             let l = lower_at(arena, p)?;
             let l = realified(arena, l);
             let abs_w = arena.abs(w);

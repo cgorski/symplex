@@ -61,6 +61,7 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric;
 use crate::base::numeric::Q;
 use crate::base::rng::SplitMix64;
+use crate::base::truth::Truth;
 use crate::output::display::fmt_expr;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1540,13 +1541,13 @@ impl Ex {
             }
         }
         // 3. Assumption system.
-        if d.is_zero() == Some(true) {
+        if Truth::from(d.is_zero()).is_true() {
             return Some(Ordering::Equal);
         }
-        if d.is_positive() == Some(true) {
+        if Truth::from(d.is_positive()).is_true() {
             return Some(Ordering::Greater);
         }
-        if d.is_negative() == Some(true) {
+        if Truth::from(d.is_negative()).is_true() {
             return Some(Ordering::Less);
         }
         // 4. Numeric fallback for constants.
@@ -1592,7 +1593,7 @@ impl Ex {
             None => {
                 // The assumption system may know "≥ 0" without knowing the sign.
                 let d = self - other;
-                if d.is_nonnegative() == Some(true) {
+                if Truth::from(d.is_nonnegative()).is_true() {
                     Some(false)
                 } else {
                     None
@@ -1619,7 +1620,7 @@ impl Ex {
             Some(_) => Some(false),
             None => {
                 let d = self - other;
-                if d.is_nonpositive() == Some(true) {
+                if Truth::from(d.is_nonpositive()).is_true() {
                     Some(false)
                 } else {
                     None

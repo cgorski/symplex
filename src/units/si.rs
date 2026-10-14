@@ -226,7 +226,7 @@ macro_rules! define_quantity {
             /// Is this quantity **proved** zero?  `false` means "not proved":
             /// it may still be zero.  [`try_is_zero`](Self::try_is_zero) gives
             /// the three-valued answer.
-            pub fn is_zero(&self) -> bool { self.0.is_zero().unwrap_or(false) }
+            pub fn is_zero(&self) -> bool { $crate::base::truth::Truth::from(self.0.is_zero()).is_true() }
 
             /// Is this quantity zero?  `Some(true)` proved zero, `Some(false)`
             /// proved nonzero, `None` undecided ([`Ex::is_zero`]).
@@ -235,7 +235,9 @@ macro_rules! define_quantity {
             /// Is this quantity **proved** equal to `other`?  `false` means "not
             /// proved": the two may still be equal.
             /// [`try_equals`](Self::try_equals) gives the three-valued answer.
-            pub fn equals(&self, other: &Self) -> bool { self.0.equals(&other.0).unwrap_or(false) }
+            pub fn equals(&self, other: &Self) -> bool {
+                $crate::base::truth::Truth::from(self.0.equals(&other.0)).is_true()
+            }
 
             /// Is this quantity equal to `other`?  `Some(true)` proved equal,
             /// `Some(false)` proved different, `None` undecided

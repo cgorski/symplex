@@ -1044,13 +1044,6 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::Apply(sym_id, ref args) => {
             let name = arena.symbol_name(sym_id).to_owned();
             let args = args.clone();
-            // An internal head (`__ei_asym`) prints from its `tex` facet:
-            // its name is not valid TeX.
-            if let Some(f) = Func::internal_named(&name)
-                && push_lib_fn_latex(arena, f, &args, stack)
-            {
-                return;
-            }
             stack.push(LatexItem::Lit(r"\right)"));
             for (i, &arg) in args.iter().enumerate().rev() {
                 stack.push(LatexItem::Expr(arg));
@@ -1063,6 +1056,15 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
 
         // ── Library function ───────────────────────────────────────────────
         ExprNode::Lib(f, ref args) => {
+            let args = args.clone();
+            if !push_lib_fn_latex(arena, Func::from(f), &args, stack) {
+                push_latex_call(f.name(), &args, stack);
+            }
+        }
+
+        // ── Internal function (`__ei_asym`): from its `tex` facet, as its
+        //    head is not valid TeX ──
+        ExprNode::Internal(f, ref args) => {
             let args = args.clone();
             if !push_lib_fn_latex(arena, Func::from(f), &args, stack) {
                 push_latex_call(f.name(), &args, stack);

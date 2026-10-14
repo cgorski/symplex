@@ -39,6 +39,7 @@ use crate::base::arena::Arena;
 use crate::base::assumptions::Props;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::base::walk;
 use crate::simplify::ratsimp::Vanishing;
 
@@ -220,8 +221,8 @@ fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
         ExprNode::Symbol(sid) => arena.symbol_assumptions(*sid),
         _ => crate::base::assumptions::Assumptions::default(),
     };
-    let has = |p: Props| props.query(p) == Some(true);
-    let lacks = |p: Props| props.query(p) == Some(false);
+    let has = |p: Props| Truth::from(props.query(p)).is_true();
+    let lacks = |p: Props| Truth::from(props.query(p)).is_false();
     if has(Props::INFINITE) || lacks(Props::FINITE) || lacks(Props::COMPLEX) {
         return None;
     }

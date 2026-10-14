@@ -42,7 +42,6 @@
 //! * [`conditional_entropy`] with [`Given::Row`] is `H(column | row)`:
 //!   the entropy left in the column variable once the row is known.
 
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use num_bigint::BigInt;
@@ -51,6 +50,7 @@ use num_traits::{One, Signed, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::truth::Truth;
 use crate::domains::ntheory::factorint_bounded;
 
 use super::common::invalid;
@@ -205,7 +205,7 @@ impl LogSum {
 /// beyond `f64::MAX` made a term infinite.
 fn log_sum_le(ctx: &Context, a: &LogSum, b: &LogSum) -> bool {
     let diff = a.clone().plus(&b.clone().negated());
-    diff.is_zero() || sign_of(&diff.to_nats(ctx)) != Some(Ordering::Greater)
+    diff.is_zero() || !sign_of(&diff.to_nats(ctx)).is_positive().is_true()
 }
 
 /// `num / den` for two log-sums: the exact rational `c_n / c_d` when both
@@ -550,7 +550,7 @@ pub fn bhattacharyya_coefficient(ctx: &Context, p: &[Q], q: &[Q]) -> Result<Ex, 
 /// if the supports are disjoint (`BC = 0`, infinite distance).
 pub fn bhattacharyya_distance(ctx: &Context, p: &[Q], q: &[Q]) -> Result<Ex, SymplexError> {
     let bc = bhattacharyya_coefficient(ctx, p, q)?;
-    if bc.is_zero() == Some(true) {
+    if Truth::from(bc.is_zero()).is_true() {
         return Err(invalid(
             "bhattacharyya_distance",
             "Bhattacharyya distance is infinite: p and q have disjoint supports",

@@ -51,6 +51,7 @@ use crate::base::arena::Arena;
 use crate::base::budget::{BudgetKind, Work};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::{Evidence, Truth, Verdict};
 use crate::poly::dense::Poly;
 use crate::poly::generic::GenPoly;
 use crate::poly::multipoly::{GrevLex, MultiPoly};
@@ -616,6 +617,9 @@ impl Ctx {
     /// by the content in `x`, a unit of `ℚ(p₁, …)`.  Euclid over the field
     /// took minutes where the heuristic gcd takes milliseconds (every
     /// field operation normalises its coefficients by a gcd of its own).
+    /// Its [`gcd_cost`] is charged to the attempt's bound on its gcds
+    /// (since 0.50; before, only the field's own gcds were); beyond
+    /// [`GCD_COST_LIMIT`] or that bound the attempt is abandoned.
     fn gcd(&self, a: &GP, b: &GP) -> Option<GP> {
         if a.is_zero() {
             return Some(b.make_monic());
@@ -624,12 +628,43 @@ impl Ctx {
             return Some(a.make_monic());
         }
         let (am, bm) = (self.to_mp(a)?, self.to_mp(b)?);
-        if !gcd_affordable(&am, &bm) {
+        let cost = gcd_cost(&am, &bm);
+        if cost > GCD_COST_LIMIT || with_budget(|w| w.gcds.charge(cost, "param_rational").is_err())
+        {
             abandon();
             return None;
         }
         let g = MP::gcd(&am, &bm);
         Some(self.to_gp(&g)?.make_monic())
+    }
+
+    /// Are `a` and `b` coprime in `ℚ(p₁, …)[x]`?  Decided from their images
+    /// modulo word primes at random values of the parameters
+    /// ([`main_gcd_degree_bound`](crate::poly::modgcd::main_gcd_degree_bound)):
+    /// an image gcd of degree 0 proves it (`True`, [`Evidence::Exact`]),
+    /// one of positive degree is a common factor with high probability
+    /// (`False`, [`Evidence::Probabilistic`]).  Only when no image could be
+    /// taken is the gcd computed ([`Ctx::gcd`]; `None` beyond its bounds).
+    fn coprime(&self, a: &GP, b: &GP) -> Option<Verdict<Truth>> {
+        let (am, bm) = (self.to_mp(a)?, self.to_mp(b)?);
+        let (az, bz) = (am.clear_denominators().1, bm.clear_denominators().1);
+        if !az.is_zero() && !bz.is_zero() {
+            let bound = crate::poly::modgcd::main_gcd_degree_bound(
+                self.nv() + 1,
+                &integer_terms(&az),
+                &integer_terms(&bz),
+            );
+            match bound {
+                Some(0) => return Some(Verdict::new(Truth::True, Evidence::Exact)),
+                Some(_) => return Some(Verdict::new(Truth::False, Evidence::Probabilistic)),
+                None => {}
+            }
+        }
+        let g = self.gcd(a, b)?;
+        Some(Verdict::new(
+            Truth::from_bool(g.degree()? == 0),
+            Evidence::Exact,
+        ))
     }
 
     fn mp_expr(&self, arena: &mut Arena, p: &MP) -> ExprId {
@@ -736,6 +771,12 @@ fn parameters(arena: &Arena, expr: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
     params.sort_by(|&a, &b| arena.canonical_cmp(a, b));
     params.dedup();
     (has_var && !params.is_empty() && params.len() <= MAX_ALL_PARAMS).then_some(params)
+}
+
+/// The terms of a polynomial with integer coefficients, as
+/// `(exponents, integer)`.
+fn integer_terms(p: &MP) -> Vec<(&[u32], &BigInt)> {
+    p.terms().map(|(e, c)| (e, c.numer())).collect()
 }
 
 /// Numerator and denominator of `expr` over a common denominator, nested
@@ -887,7 +928,17 @@ const FACTORED_GCD_BUDGET: u64 = 300_000;
 /// `d = c·∏ fᵢ^{kᵢ}` over the syntactic factors of the denominator
 /// (`(t² − a)⁸·t³` as written), the `fᵢ` monic, square-free and
 /// pairwise coprime; `None` when the factors as written do not account
-/// for all of `d` or are not such a basis.
+/// for all of `d` or are not proved such a basis.
+///
+/// Square-freeness and coprimality are decided by modular images
+/// ([`Ctx::coprime`]), not by gcds in `ℤ[x, p₁, …]`: only the degree of
+/// the gcd matters here, a proof is needed only to go on, and a probable
+/// common factor ends the route without one (a refusal needs no proof).
+/// Up to 0.49 the full gcds were computed, and for a syntactic factor
+/// that is an eighth power when expanded (`∫ (A + B·x)(b·x +
+/// c·x²)^{3/2}/(d + e·x)⁸ dx` after the Euler substitution) the gcd with
+/// its derivative, of degree 14 in four parameters, took 0.19 s each
+/// time the route was tried.
 fn factored_denominator(ctx: &Ctx, d: &GP, cands: &[GP]) -> Option<Vec<(GP, u32)>> {
     let mut rest = d.make_monic();
     let mut out: Vec<(GP, u32)> = Vec::new();
@@ -909,12 +960,13 @@ fn factored_denominator(ctx: &Ctx, d: &GP, cands: &[GP]) -> Option<Vec<(GP, u32)
     if rest.degree() != Some(0) || out.is_empty() {
         return None;
     }
+    let proved = |v: Verdict<Truth>| v.truth_at_least(Evidence::Exact).is_true();
     for (i, (f, _)) in out.iter().enumerate() {
-        if ctx.gcd(f, &deriv(f))?.degree()? > 0 {
+        if !proved(ctx.coprime(f, &deriv(f))?) {
             return None;
         }
         for (g, _) in &out[i + 1..] {
-            if ctx.gcd(f, g)?.degree()? > 0 {
+            if !proved(ctx.coprime(f, g)?) {
                 return None;
             }
         }

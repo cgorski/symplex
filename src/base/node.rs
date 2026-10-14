@@ -28,6 +28,7 @@ use smallvec::SmallVec;
 use std::fmt;
 use symplex_macros::NodeShape;
 
+use crate::base::func::InternalFn;
 use crate::base::interval::IntervalKind;
 use crate::base::libfn::LibFn;
 use crate::base::walk::Binder;
@@ -129,8 +130,9 @@ impl fmt::Debug for CtxId {
 /// * **Combinatorial** – `Factorial`, `Binomial`.
 /// * **Boolean / relational / logical** – `Gt`, `Ge`, `Eq_`, `Ne`, `And`,
 ///   `Or`, `Not`, `Piecewise`.
-/// * **Function application** – `Apply` (user-defined or library functions
-///   identified by name).
+/// * **Function application** – `Apply` (user-defined functions,
+///   identified by name), `Lib` (library functions) and `Internal` (the
+///   limit engine's internal functions).
 /// * **Calculus / formal (unevaluated) forms** – `Derivative`, `Integral`,
 ///   `Sum`, `Product_`, `Limit`, `Series`, `LaplaceTransform`,
 ///   `InverseLaplaceTransform`, `Residue`, `DSolve`, `ConditionSet`, `Subs`.
@@ -541,6 +543,19 @@ pub enum ExprNode {
     /// `transforms::sets::image_set` builds the canonical form.
     #[binder(var = 0, scoped(1))]
     ImageSet(ExprId, ExprId),
+
+    // -- internal functions (declared last: appending keeps the
+    //    discriminants, hence the hashes, of every older variant) ----------
+    /// Application of one of the limit engine's internal asymptotic
+    /// functions (`InternalFn`: `__ei_asym`, `__besselk_asym`, …, the
+    /// heads of Gruntz's rewrite of `erfc`, `Ei`, `Kν`, … at infinity) to
+    /// its arguments.  It exists only inside a limit computation and is
+    /// built only by `Arena::func`: no name converts to it.  Until 0.49
+    /// these were `Apply` nodes with reserved `__…` heads, and
+    /// `Context::from_tree` of an `Apply` named `__ei_asym` built the
+    /// internal function.  It prints, sorts and compares as that `Apply`
+    /// did.
+    Internal(InternalFn, SmallVec<[ExprId; 2]>),
 }
 
 impl IntervalKind {
@@ -679,6 +694,7 @@ impl fmt::Debug for ExprNode {
             }
             ExprNode::Apply(sym, args) => f.debug_tuple("Apply").field(sym).field(args).finish(),
             ExprNode::Lib(lib, args) => f.debug_tuple("Lib").field(lib).field(args).finish(),
+            ExprNode::Internal(g, args) => f.debug_tuple("Internal").field(g).field(args).finish(),
             ExprNode::Derivative(body, var) => {
                 f.debug_tuple("Derivative").field(body).field(var).finish()
             }
@@ -880,6 +896,8 @@ pub(crate) fn shape_samples(
         N::Lib(LibFn::Erfi, smallvec![a]),
         N::Lib(LibFn::BesselJ, smallvec![a, b]),
         N::Lib(LibFn::Jacobi, smallvec![a, b, d, e]),
+        N::Internal(InternalFn::EiAsym, smallvec![a]),
+        N::Internal(InternalFn::BesselKAsym, smallvec![a, b]),
         N::Derivative(a, b),
         N::Integral(a, b),
         N::DefiniteIntegral(a, b, d, e),

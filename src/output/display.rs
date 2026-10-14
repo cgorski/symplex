@@ -106,71 +106,14 @@ fn prec_of(node: &ExprNode) -> u8 {
         ExprNode::Mul(_) => PREC_MUL,
         ExprNode::Pow(_, _) => PREC_POW,
         ExprNode::Neg(_) => PREC_UNARY,
-        // Functions and calculus forms have their arguments inside
-        // delimiters (parens), so they behave like atoms w.r.t.
-        // outer precedence.
-        ExprNode::Sin(_)
-        | ExprNode::Cos(_)
-        | ExprNode::Tan(_)
-        | ExprNode::Exp(_)
-        | ExprNode::Ln(_)
-        | ExprNode::Abs(_)
-        | ExprNode::Asin(_)
-        | ExprNode::Acos(_)
-        | ExprNode::Atan(_)
-        | ExprNode::Atan2(_, _)
-        | ExprNode::Sinh(_)
-        | ExprNode::Cosh(_)
-        | ExprNode::Tanh(_)
-        | ExprNode::Asinh(_)
-        | ExprNode::Acosh(_)
-        | ExprNode::Atanh(_)
-        | ExprNode::Gamma(_)
-        | ExprNode::LogGamma(_)
-        | ExprNode::Digamma(_)
-        | ExprNode::Erf(_)
-        | ExprNode::Erfc(_)
-        | ExprNode::LambertW(_)
-        | ExprNode::Beta(_, _)
-        | ExprNode::Re(_)
-        | ExprNode::Im(_)
-        | ExprNode::Conjugate(_)
-        | ExprNode::Arg(_)
-        | ExprNode::Si(_)
-        | ExprNode::Ci(_)
-        | ExprNode::Ei(_)
-        | ExprNode::Li(_)
-        | ExprNode::Zeta(_)
-        | ExprNode::Polygamma(_, _)
-        | ExprNode::KroneckerDelta(_, _)
-        | ExprNode::Floor(_)
-        | ExprNode::Ceiling(_)
-        | ExprNode::Min(_)
-        | ExprNode::Max(_)
-        | ExprNode::Sum(_, _, _, _)
-        | ExprNode::Product_(_, _, _, _)
-        | ExprNode::Apply(_, _)
-        | ExprNode::Lib(_, _)
-        | ExprNode::Derivative(_, _)
-        | ExprNode::Integral(_, _)
-        | ExprNode::DefiniteIntegral(_, _, _, _)
-        | ExprNode::Limit(_, _, _)
-        | ExprNode::Series(_, _, _, _)
-        | ExprNode::LaplaceTransform(_, _, _)
-        | ExprNode::InverseLaplaceTransform(_, _, _)
-        | ExprNode::Residue(_, _, _)
-        | ExprNode::RootOf(_, _, _)
-        | ExprNode::Subs(_, _, _)
-        | ExprNode::DSolve(_, _, _)
-        | ExprNode::RootSum(_, _, _)
-        | ExprNode::ConditionSet(_, _)
-        | ExprNode::ImageSet(_, _) => PREC_ATOM,
         ExprNode::Or(_) => 10,
         ExprNode::And(_) => 15,
         ExprNode::Gt(_, _) | ExprNode::Ge(_, _) | ExprNode::Eq_(_, _) | ExprNode::Ne(_, _) => 20,
         ExprNode::Not(_) => PREC_UNARY,
-        ExprNode::Piecewise(_) | ExprNode::BoolTrue | ExprNode::BoolFalse => PREC_ATOM,
-        // Everything else is an atom.
+        // Everything else is an atom: every function (`f(…)`, and the
+        // postfix `n!`) and every calculus form has its arguments inside
+        // delimiters, so it behaves like an atom w.r.t. outer precedence.
+        // (Up to 0.49 a 61-variant list said so for most of them.)
         _ => PREC_ATOM,
     }
 }
@@ -688,6 +631,19 @@ fn expand_expr(
                 crate::base::libfn::LibFn::LambertW => "W",
                 _ => f.name(),
             }));
+        }
+
+        // ── Internal function (`__ei_asym`), as the `Apply` it was ──
+        ExprNode::Internal(f, ref args) => {
+            stack.push(WorkItem::Lit(")"));
+            for (i, &arg) in args.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(arg, 0));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(", "));
+                }
+            }
+            stack.push(WorkItem::Lit("("));
+            stack.push(WorkItem::Lit(f.name()));
         }
 
         // ── Calculus forms ─────────────────────────────────────────
@@ -1743,5 +1699,28 @@ mod tests {
         assert_display!(a, prod, "2*re(x)");
         let sq = a.pow(re_x, two);
         assert_display!(a, sq, "re(x)^2");
+    }
+
+    /// Every function node is an atom for precedence, as the 0.49 list of
+    /// 61 variants said for most of them (W6d: the list was dropped for the
+    /// wildcard it duplicated).
+    #[test]
+    fn every_function_is_an_atom_for_precedence() {
+        use crate::base::func::Func;
+        let mut a = Arena::new();
+        let args = [a.symbol("x"), a.symbol("y"), a.symbol("z"), a.symbol("t")];
+        for &f in Func::ALL {
+            let n = (0..=4)
+                .find(|&n| f.spec().arity.accepts(n))
+                .unwrap_or(1)
+                .max(1);
+            let Ok(id) = a.func(f, &args[..n.min(4)]) else {
+                continue;
+            };
+            let node = a.node(id).clone();
+            if node.func_head() == Some(f) {
+                assert_eq!(super::prec_of(&node), super::PREC_ATOM, "{f:?}");
+            }
+        }
     }
 }

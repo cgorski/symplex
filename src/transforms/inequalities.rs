@@ -33,6 +33,7 @@ use crate::base::errors::SymplexError;
 use crate::base::interval::IntervalKind;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::{SignSet, Truth};
 use crate::base::walk;
 
 /// Relation type for inequalities.
@@ -586,8 +587,8 @@ fn periodic_zeros_in_period(
             };
             if si.abs() > 1e-12 * (1.0 + sr.abs()) || oi.abs() > 1e-12 * (1.0 + or.abs()) {
                 // not real (a real variable takes no member)
-                if value_sign(arena, offset) == ValueSign::NonReal
-                    || value_sign(arena, step) == ValueSign::NonReal
+                if value_sign(arena, offset).is_nonreal().is_true()
+                    || value_sign(arena, step).is_nonreal().is_true()
                 {
                     continue;
                 }
@@ -624,7 +625,7 @@ fn periodic_zeros_in_period(
                 )));
             };
             if im.abs() > 1e-12 * (1.0 + re.abs()) {
-                if value_sign(arena, v) == ValueSign::NonReal {
+                if value_sign(arena, v).is_nonreal().is_true() {
                     continue;
                 }
                 return Err(failed(format!(
@@ -748,22 +749,21 @@ fn try_solve_nonreal_inequality(
     for r in roots {
         let at = crate::transforms::subs::subs(arena, expr, var, r);
         let at = crate::transforms::eval::eval(arena, at);
-        match value_sign(arena, at).ordering() {
+        let value = value_sign(arena, at);
+        match value.ordering() {
             Some(o) => {
                 if rel.accepts(o) {
                     kept.push(r);
                 }
             }
-            None => match value_sign(arena, at) {
-                ValueSign::NonReal | ValueSign::Undefined => {}
-                _ => {
-                    return Some(Err(failed(format!(
-                        "the sign of {} at {} is not decided",
-                        arena.display(expr),
-                        arena.display(r)
-                    ))));
-                }
-            },
+            None if value.takes_no_real_value() => {}
+            None => {
+                return Some(Err(failed(format!(
+                    "the sign of {} at {} is not decided",
+                    arena.display(expr),
+                    arena.display(r)
+                ))));
+            }
         }
     }
     Some(Ok(arena.finite_set(&kept)))
@@ -1014,6 +1014,19 @@ enum ConstraintKind {
     Positive,
 }
 
+impl ConstraintKind {
+    /// The signs the constrained expression may take: real ones only (a
+    /// variable on the real line takes no point where a denominator,
+    /// radicand or logarithm argument is not real).
+    fn allowed(self) -> SignSet {
+        match self {
+            ConstraintKind::NonZero => SignSet::NONZERO_REAL,
+            ConstraintKind::NonNegative => SignSet::NONNEGATIVE,
+            ConstraintKind::Positive => SignSet::POSITIVE,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Constraint {
     expr: ExprId,
@@ -1032,28 +1045,57 @@ struct Branch {
     constraints: Vec<Constraint>,
 }
 
-/// Classification of the value of a variable-free expression.
+/// The value of a variable-free expression ([`value_sign`]): a finite value
+/// with the signs it may have, or no finite value.  A [`SignSet`] describes
+/// finite values only (`base::truth`, "Infinities"), so `±∞`, `zoo`, NaN
+/// and booleans are the case of their own, [`Undefined`](Self::Undefined).
+/// Up to 0.49 a six-variant enum (`Neg`, `Zero`, `Pos`, `NonReal`,
+/// `Undefined`, `Unknown`) compared with `==` at each use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ValueSign {
-    Neg,
-    Zero,
-    Pos,
-    /// Finite but with a nonzero imaginary part.
-    NonReal,
-    /// Infinite / NaN / boolean.
+    /// A finite value: one atom when its sign is decided, [`SignSet::UNKNOWN`]
+    /// when it is not (symbolic, unevaluable, or numerically
+    /// indistinguishable from zero).
+    Defined(SignSet),
+    /// Infinite, NaN or a boolean.
     Undefined,
-    /// Symbolic, unevaluable, or numerically indistinguishable from zero.
-    Unknown,
 }
 
 impl ValueSign {
+    /// A value whose sign is not decided.
+    const UNDECIDED: ValueSign = ValueSign::Defined(SignSet::UNKNOWN);
+
+    /// The decided sign of a real value against 0.
     fn ordering(self) -> Option<std::cmp::Ordering> {
         match self {
-            ValueSign::Neg => Some(std::cmp::Ordering::Less),
-            ValueSign::Zero => Some(std::cmp::Ordering::Equal),
-            ValueSign::Pos => Some(std::cmp::Ordering::Greater),
-            _ => None,
+            ValueSign::Defined(s) => s.to_ordering(),
+            ValueSign::Undefined => None,
         }
+    }
+
+    /// Is the value finite with a sign in `property`?  `False` for no
+    /// finite value.
+    fn is_in(self, property: SignSet) -> Truth {
+        match self {
+            ValueSign::Defined(s) => s.is_in(property),
+            ValueSign::Undefined => Truth::False,
+        }
+    }
+
+    /// Is the value finite and certainly not real?
+    fn is_nonreal(self) -> Truth {
+        self.is_in(SignSet::NONREAL)
+    }
+
+    /// Is the value certainly not taken by a real variable: not real, or no
+    /// finite value?
+    fn takes_no_real_value(self) -> bool {
+        self == ValueSign::Undefined || self.is_nonreal().is_true()
+    }
+
+    /// Is the value finite with an undecided sign?
+    fn undecided(self) -> bool {
+        matches!(self, ValueSign::Defined(s) if !s.is_single())
     }
 }
 
@@ -1337,7 +1379,7 @@ fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, Symp
             let mut out = Vec::new();
             for r in numer_roots {
                 let at = crate::transforms::subs::subs(arena, d, var, r);
-                if value_sign(arena, at) != ValueSign::Zero {
+                if !value_sign(arena, at).is_in(SignSet::ZERO).is_true() {
                     out.push(r);
                 }
             }
@@ -1361,9 +1403,8 @@ fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, Symp
         let candidates = crate::transforms::solve::known_real_roots(arena, e, var);
         let mut reals: Vec<(ExprId, Q)> = Vec::new();
         for s in candidates {
-            match value_sign(arena, s) {
-                ValueSign::NonReal | ValueSign::Undefined => continue,
-                _ => {}
+            if value_sign(arena, s).takes_no_real_value() {
+                continue;
             }
             let Some(a) = approx_real(arena, s) else {
                 return Err(failed(format!(
@@ -1410,17 +1451,18 @@ fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, Symp
         complete @ Solutions::Complete(_) => {
             let mut out = Vec::new();
             for sol in complete.claimed_points() {
-                match value_sign(arena, sol) {
-                    ValueSign::NonReal | ValueSign::Undefined => continue,
-                    ValueSign::Unknown if approx_real(arena, sol).is_none() => {
-                        return Err(failed(format!(
-                            "zero {} of {} cannot be located on the real line",
-                            arena.display(sol),
-                            arena.display(e)
-                        )));
-                    }
-                    _ => out.push(sol),
+                let value = value_sign(arena, sol);
+                if value.takes_no_real_value() {
+                    continue;
                 }
+                if value.undecided() && approx_real(arena, sol).is_none() {
+                    return Err(failed(format!(
+                        "zero {} of {} cannot be located on the real line",
+                        arena.display(sol),
+                        arena.display(e)
+                    )));
+                }
+                out.push(sol);
             }
             Ok(RootSet::Finite(out))
         }
@@ -1661,7 +1703,7 @@ fn resolve_branches(
                 // sign chart failed on "the sign of x + I").
                 ExprNode::Abs(a) => {
                     let at = crate::transforms::subs::subs(arena, a, var, p);
-                    if value_sign(arena, at) == ValueSign::NonReal {
+                    if value_sign(arena, at).is_nonreal().is_true() {
                         continue;
                     }
                     match sign_at(arena, a, var, p)? {
@@ -1852,31 +1894,27 @@ fn sample_satisfies(
     for c in &branch.constraints {
         let at = crate::transforms::subs::subs(arena, c.expr, var, p);
         let s = value_sign(arena, at);
-        if s == ValueSign::Unknown {
+        if s.undecided() {
             return Err(failed(format!(
                 "cannot decide the domain constraint {} at a sample point",
                 arena.display(c.expr)
             )));
         }
-        let ok = match c.kind {
-            ConstraintKind::NonZero => matches!(s, ValueSign::Pos | ValueSign::Neg),
-            ConstraintKind::NonNegative => matches!(s, ValueSign::Pos | ValueSign::Zero),
-            ConstraintKind::Positive => matches!(s, ValueSign::Pos),
-        };
-        if !ok {
+        if !s.is_in(c.kind.allowed()).is_true() {
             return Ok(false);
         }
     }
     let at = crate::transforms::subs::subs(arena, branch.resolved, var, p);
-    match value_sign(arena, at) {
-        ValueSign::NonReal | ValueSign::Undefined => Ok(false),
-        ValueSign::Unknown => Err(failed(format!(
+    let value = value_sign(arena, at);
+    if value.takes_no_real_value() {
+        return Ok(false);
+    }
+    match value.ordering() {
+        Some(o) => Ok(rel.accepts(o)),
+        None => Err(failed(format!(
             "cannot decide the sign of {} at a sample point",
             arena.display(branch.resolved)
         ))),
-        ValueSign::Neg => Ok(rel.accepts(std::cmp::Ordering::Less)),
-        ValueSign::Zero => Ok(rel.accepts(std::cmp::Ordering::Equal)),
-        ValueSign::Pos => Ok(rel.accepts(std::cmp::Ordering::Greater)),
     }
 }
 
@@ -1898,20 +1936,17 @@ fn point_in_domain(
     for k in &branch.constraints {
         let at = crate::transforms::subs::subs(arena, k.expr, var, c.id);
         let s = value_sign(arena, at);
-        let ok = match (k.kind, s) {
-            (_, ValueSign::NonReal | ValueSign::Undefined) => false,
-            (_, ValueSign::Unknown) => {
-                return Err(failed(format!(
-                    "cannot decide the domain constraint {} at {}",
-                    arena.display(k.expr),
-                    arena.display(c.id)
-                )));
-            }
-            (ConstraintKind::NonZero, s) => matches!(s, ValueSign::Pos | ValueSign::Neg),
-            (ConstraintKind::NonNegative, s) => matches!(s, ValueSign::Pos | ValueSign::Zero),
-            (ConstraintKind::Positive, s) => matches!(s, ValueSign::Pos),
-        };
-        if !ok {
+        if s.takes_no_real_value() {
+            return Ok(false);
+        }
+        if s.undecided() {
+            return Err(failed(format!(
+                "cannot decide the domain constraint {} at {}",
+                arena.display(k.expr),
+                arena.display(c.id)
+            )));
+        }
+        if !s.is_in(k.kind.allowed()).is_true() {
             return Ok(false);
         }
     }
@@ -1930,31 +1965,27 @@ fn point_satisfies(
         return Ok(false);
     }
     let at = crate::transforms::subs::subs(arena, expr, var, c.id);
-    match value_sign(arena, at) {
-        ValueSign::NonReal | ValueSign::Undefined => Ok(false),
-        ValueSign::Unknown if c.numer_zero => Ok(rel.accepts(std::cmp::Ordering::Equal)),
-        ValueSign::Unknown => Err(failed(format!(
+    let value = value_sign(arena, at);
+    if value.takes_no_real_value() {
+        return Ok(false);
+    }
+    match value.ordering() {
+        Some(o) => Ok(rel.accepts(o)),
+        None if c.numer_zero => Ok(rel.accepts(std::cmp::Ordering::Equal)),
+        None => Err(failed(format!(
             "cannot decide the sign of the expression at {}",
             arena.display(c.id)
         ))),
-        ValueSign::Neg => Ok(rel.accepts(std::cmp::Ordering::Less)),
-        ValueSign::Zero => Ok(rel.accepts(std::cmp::Ordering::Equal)),
-        ValueSign::Pos => Ok(rel.accepts(std::cmp::Ordering::Greater)),
     }
 }
 
 /// Classify the value of a variable-free expression: exactly when it
 /// evaluates to a rational, otherwise to [`DECISION_DIGITS`] digits.
 fn value_sign(arena: &mut Arena, e: ExprId) -> ValueSign {
+    let real_sign = |q: &Q| ValueSign::Defined(SignSet::from_ordering(q.cmp(&Q::zero())));
     let ev = crate::transforms::eval::eval(arena, e);
     if let Some(r) = arena.as_num(ev) {
-        return if r.is_zero() {
-            ValueSign::Zero
-        } else if r.is_positive() {
-            ValueSign::Pos
-        } else {
-            ValueSign::Neg
-        };
+        return real_sign(r);
     }
     match arena.node(ev) {
         ExprNode::Infinity
@@ -1966,50 +1997,39 @@ fn value_sign(arena: &mut Arena, e: ExprId) -> ValueSign {
         _ => {}
     }
     if !walk::free_symbols(arena, ev).is_empty() || walk::has_unevaluated(arena, ev) {
-        return ValueSign::Unknown;
+        return ValueSign::UNDECIDED;
     }
     let Ok(text) = crate::transforms::evalf::evalf(arena, ev, DECISION_DIGITS) else {
-        return ValueSign::Unknown;
+        return ValueSign::UNDECIDED;
     };
     let Some(parsed) = parse_evalf_complex(&text) else {
-        return ValueSign::Unknown;
+        return ValueSign::UNDECIDED;
     };
     if !is_negligible_imaginary(&parsed) {
-        return ValueSign::NonReal;
+        return ValueSign::Defined(SignSet::NONREAL);
     }
     let first = parsed.re;
-    if first.is_zero() {
-        return ValueSign::Zero;
-    }
-    if first.abs() >= pow10_inv(AMBIGUOUS_EXP) {
-        return if first.is_positive() {
-            ValueSign::Pos
-        } else {
-            ValueSign::Neg
-        };
+    if first.is_zero() || first.abs() >= pow10_inv(AMBIGUOUS_EXP) {
+        return real_sign(&first);
     }
     // Tiny: either a genuine small value (`exp(-1000)`) or cancellation
     // noise around an exact zero.  Re-evaluate at twice the precision: a
     // genuine value reproduces itself, noise shrinks by ~30 digits.
     let Ok(text2) = crate::transforms::evalf::evalf(arena, ev, 2 * DECISION_DIGITS) else {
-        return ValueSign::Unknown;
+        return ValueSign::UNDECIDED;
     };
     let Some(second) = parse_evalf_complex(&text2).map(|p| p.re) else {
-        return ValueSign::Unknown;
+        return ValueSign::UNDECIDED;
     };
     if second.is_zero() || first.is_positive() != second.is_positive() {
-        return ValueSign::Unknown;
+        return ValueSign::UNDECIDED;
     }
     let diff = (&first - &second).abs();
     let tol = first.abs() / Ratio::from_integer(BigInt::from(1_000_000));
     if diff > tol {
-        return ValueSign::Unknown;
+        return ValueSign::UNDECIDED;
     }
-    if first.is_positive() {
-        ValueSign::Pos
-    } else {
-        ValueSign::Neg
-    }
+    real_sign(&first)
 }
 
 /// `10^-k` as an exact rational.
@@ -2328,10 +2348,10 @@ fn sign_of(arena: &mut Arena, e: ExprId) -> Option<i8> {
         };
     }
     match value_sign(arena, ev) {
-        ValueSign::Pos => return Some(1),
-        ValueSign::Neg => return Some(-1),
-        ValueSign::Zero | ValueSign::NonReal | ValueSign::Undefined => return None,
-        ValueSign::Unknown => {}
+        ValueSign::Defined(SignSet::POSITIVE) => return Some(1),
+        ValueSign::Defined(SignSet::NEGATIVE) => return Some(-1),
+        undecided if undecided.undecided() => {}
+        _ => return None,
     }
     // Symbolic: consult stored symbol assumptions for a bare symbol.
     if let ExprNode::Symbol(sid) = arena.node(ev) {

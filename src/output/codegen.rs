@@ -70,6 +70,7 @@ pub(crate) fn fold_constants_for_emission(
     operation: &str,
 ) -> Result<EmissionFolds, SymplexError> {
     refuse_bound_variable_nodes(arena, root, operation)?;
+    refuse_valueless_deltas(arena, root, operation)?;
     let mut values: FxHashMap<ExprId, f64> = FxHashMap::default();
     let mut by_index: FxHashMap<usize, f64> = FxHashMap::default();
     let mut next_k = FOLD_INDEX_BASE;
@@ -166,6 +167,40 @@ pub(crate) fn fold_constants_for_emission(
         values,
         by_index,
     })
+}
+
+/// Refuse a `DiracDelta` of a constant without a value (`δ(0)`), or
+/// without one `evalf` can certify, as `compile()` does: the Rust, C and
+/// Python emitters write the `δ` of a constant as `0.0` (its value off the
+/// origin, which `evalf` certifies here) and the `δ` of anything else as
+/// its pointwise value at run time — 0 off the origin, NaN at it and for a
+/// NaN argument ([`delta_of_constant`]).  Up to 0.49 they wrote every `δ`
+/// as `0.0`: `ln(√2 + δ(0)).to_rust_fn(..)` was
+/// `(0.5_f64.exp2() + 0.0_f64).ln()`.
+fn refuse_valueless_deltas(
+    arena: &Arena,
+    root: ExprId,
+    operation: &str,
+) -> Result<(), SymplexError> {
+    let has_symbol = symbol_dependence(arena, root);
+    for id in crate::base::walk::post_order_ids(arena, root) {
+        if let ExprNode::DiracDelta(x) = *arena.node(id)
+            && !has_symbol.get(&x).copied().unwrap_or(true)
+            && let Err(e) = crate::transforms::evalf::evalf_f64(arena, id)
+        {
+            return Err(SymplexError::Unevaluable {
+                reason: format!("{operation}: `{}`: {e}", arena.display(id)),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Is `δ(x)` the `δ` of a constant, emitted as the literal `0.0`?  Such a
+/// `δ` has the value 0: [`fold_constants_for_emission`] refused it
+/// otherwise ([`refuse_valueless_deltas`]).
+pub(crate) fn delta_of_constant(arena: &Arena, x: ExprId) -> bool {
+    crate::base::walk::free_symbols(arena, x).is_empty()
 }
 
 /// Symbol-freeness of every node of `root`.  A `RootOf` counts its free
@@ -1484,9 +1519,17 @@ fn expr_to_rust_cse(
                 Ok(format!("({})", chain(&code)))
             }
         }
-        ExprNode::DiracDelta(_x) => {
+        // 0 off the origin, NaN at it (and for NaN), as in `compile()`; the
+        // `δ` of a constant is 0 (`fold_constants_for_emission` refuses
+        // `δ(0)`).
+        ExprNode::DiracDelta(x) => {
             let s = options.precision.suffix();
-            Ok(format!("0.0{s}"))
+            if delta_of_constant(arena, x) {
+                return Ok(format!("0.0{s}"));
+            }
+            let a = emit_unary(arena, x, "abs", var_names, options, cse_constants)?;
+            let nan = options.precision.nan();
+            Ok(format!("(if {a} > 0.0{s} {{ 0.0{s} }} else {{ {nan} }})"))
         }
         ExprNode::Floor(x) => emit_unary(arena, x, "floor", var_names, options, cse_constants),
         ExprNode::Ceiling(x) => emit_unary(arena, x, "ceil", var_names, options, cse_constants),
@@ -1536,6 +1579,14 @@ fn expr_to_rust_cse(
             emit_rt_binary(arena, n, k, "binomial", var_names, options, cse_constants)
         }
         ExprNode::Lib(f, ref apply_args) => emit_rt_func(
+            arena,
+            Func::from(f),
+            apply_args,
+            var_names,
+            options,
+            cse_constants,
+        ),
+        ExprNode::Internal(f, ref apply_args) => emit_rt_func(
             arena,
             Func::from(f),
             apply_args,
@@ -2022,6 +2073,27 @@ pub(crate) fn odd_integer_beyond_f64(r: &num_rational::Ratio<num_bigint::BigInt>
     Some(rational_to_f64(r))
 }
 
+/// The functions emitted with a domain precondition when
+/// `checked_domain` is set (it names the argument twice more): `ln`,
+/// `asin`, `acos`, `acosh`, `atanh`, `Γ`, `ln Γ`, `ψ`, `n!`, `W`, and the
+/// library functions.
+fn domain_checked(f: Func) -> bool {
+    f.family() == crate::base::func::Family::Lib
+        || matches!(
+            f,
+            Func::Ln
+                | Func::Asin
+                | Func::Acos
+                | Func::Acosh
+                | Func::Atanh
+                | Func::Gamma
+                | Func::LogGamma
+                | Func::Digamma
+                | Func::Factorial
+                | Func::LambertW0
+        )
+}
+
 /// Whether the Rust code of `id` repeats the code of a subexpression
 /// (`sign`/`Heaviside` test their argument three times, `x³`…`x⁶` expand
 /// to repeated products, a checked domain names the argument twice more):
@@ -2040,18 +2112,8 @@ fn has_duplicating_emission(arena: &Arena, id: ExprId, options: &CodegenOptions)
             ExprNode::Pow(_, e) => arena.as_num(*e).is_some_and(|r| {
                 r.is_integer() && r.numer().to_i64().is_some_and(|n| (3..=6).contains(&n))
             }),
-            ExprNode::Ln(_)
-            | ExprNode::Asin(_)
-            | ExprNode::Acos(_)
-            | ExprNode::Acosh(_)
-            | ExprNode::Atanh(_)
-            | ExprNode::Gamma(_)
-            | ExprNode::LogGamma(_)
-            | ExprNode::Digamma(_)
-            | ExprNode::Factorial(_)
-            | ExprNode::LambertW(_)
-            | ExprNode::Apply(_, _)
-            | ExprNode::Lib(_, _) => options.checked_domain,
+            ExprNode::Apply(_, _) => options.checked_domain,
+            node if node.func_head().is_some_and(domain_checked) => options.checked_domain,
             _ => false,
         };
         if dup {
@@ -3867,5 +3929,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `has_duplicating_emission` counts exactly the node-backed functions
+    /// of its 0.49 or-pattern, and every library function, as checked
+    /// (W6d: the list became `domain_checked`).
+    #[test]
+    fn domain_checked_is_the_old_list() {
+        use crate::base::func::{Family, Func::*, selected};
+        let mut old: std::collections::HashSet<Func> = [
+            Ln, Asin, Acos, Acosh, Atanh, Gamma, LogGamma, Digamma, Factorial, LambertW0,
+        ]
+        .into_iter()
+        .collect();
+        old.extend(selected(|f| f.family() == Family::Lib));
+        assert_eq!(selected(domain_checked), old);
     }
 }

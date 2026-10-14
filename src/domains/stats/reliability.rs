@@ -578,7 +578,7 @@ fn prophecy(op: &'static str, r: &Ex, k: usize) -> Result<Ex, SymplexError> {
     }
     let ctx = r.context();
     let numeric = r.free_symbols().is_empty();
-    let negative = |e: &Ex| sign_of(e) == Some(Ordering::Less);
+    let negative = |e: &Ex| sign_of(e).is_negative().is_true();
     if negative(&(ctx.one() - r)) || negative(&(ctx.one() + r)) {
         return Err(invalid(
             op,
@@ -588,7 +588,7 @@ fn prophecy(op: &'static str, r: &Ex, k: usize) -> Result<Ex, SymplexError> {
     let kq = ex_usize(&ctx, k);
     let composite = ctx.one() + (&kq - ctx.one()) * r;
     // A numeric composite whose sign is undecided evaluates to 0: the pole.
-    let positive = match sign_of(&composite) {
+    let positive = match sign_of(&composite).to_ordering() {
         Some(s) => s == Ordering::Greater,
         None => !numeric,
     };

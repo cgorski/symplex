@@ -733,6 +733,10 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
                 let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
                 render_apply(Some(*f), f.name(), &rendered)
             }
+            ExprNode::Internal(f, args) => {
+                let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
+                render_apply(None, f.name(), &rendered)
+            }
 
             // ── Calculus ───────────────────────────────────────────────
             ExprNode::Derivative(body, var) => mrow(&format!(

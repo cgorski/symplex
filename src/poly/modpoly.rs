@@ -579,19 +579,32 @@ impl<R: RingOps> DensePoly<R> {
     }
 
     /// `self / lc(self)`; the zero polynomial is returned unchanged, as is
-    /// a polynomial whose leading coefficient is not a unit.
+    /// a polynomial whose leading coefficient is not a unit
+    /// ([`try_monic`](Self::try_monic) says so).
     #[must_use]
     pub fn monic(&self) -> Self {
-        let Some(lc) = self.coeffs.last() else {
-            return self.clone();
-        };
+        self.try_monic().unwrap_or_else(|| self.clone())
+    }
+
+    /// `self / lc(self)`, or `None` when the polynomial is zero or its
+    /// leading coefficient is not a unit.
+    ///
+    /// ```
+    /// use num_bigint::BigInt;
+    /// use symplex::factor_zassenhaus::domain::ZZ;
+    /// use symplex::factor_zassenhaus::modpoly::DensePoly;
+    ///
+    /// let p = |c: &[i64]| DensePoly::from_coeffs(ZZ, c.iter().map(|&k| BigInt::from(k)).collect());
+    /// assert_eq!(p(&[3, -1]).try_monic(), Some(p(&[-3, 1])));
+    /// assert_eq!(p(&[1, 2]).try_monic(), None); // 2 is not a unit of ℤ
+    /// assert_eq!(p(&[]).try_monic(), None);
+    /// ```
+    pub fn try_monic(&self) -> Option<Self> {
+        let lc = self.coeffs.last()?;
         if self.ring.is_one(lc) {
-            return self.clone();
+            return Some(self.clone());
         }
-        match self.ring.inv(lc) {
-            Some(inv) => self.scale(&inv),
-            None => self.clone(),
-        }
+        Some(self.scale(&self.ring.inv(lc)?))
     }
 
     /// Monic greatest common divisor (`gcd(a, 0) = monic(a)`,
@@ -611,7 +624,8 @@ impl<R: RingOps> DensePoly<R> {
     }
 
     /// [`gcd`](Self::gcd), `None` when a leading coefficient that is not a
-    /// unit stopped Euclid's algorithm.
+    /// unit stopped Euclid's algorithm or the last remainder cannot be made
+    /// monic (before 0.50 that remainder was returned as the gcd).
     pub fn try_gcd(&self, other: &Self) -> Option<Self> {
         self.gcd_steps(other).ok()
     }
@@ -621,8 +635,13 @@ impl<R: RingOps> DensePoly<R> {
         if let Some(g) = self.ring.dense_gcd(&self.coeffs, &other.coeffs) {
             return Ok(self.with(g));
         }
-        let mut a = self.clone();
-        let mut b = other.clone();
+        Self::euclid_gcd(self.clone(), other.clone())
+    }
+
+    /// Euclid's algorithm on `a` and `b` (no hook): `Ok(monic gcd)`, or
+    /// `Err(last remainder)` on a non-unit.  The element-level
+    /// [`GenPoly`](super::generic::GenPoly) runs its gcds here.
+    pub(crate) fn euclid_gcd(mut a: Self, mut b: Self) -> Result<Self, Self> {
         while !b.is_zero() {
             let Some(DivRem { remainder: r, .. }) = a.try_div_rem(&b) else {
                 return Err(b);
@@ -630,7 +649,10 @@ impl<R: RingOps> DensePoly<R> {
             a = b;
             b = r;
         }
-        Ok(a.monic())
+        if a.is_zero() {
+            return Ok(a);
+        }
+        a.try_monic().ok_or(a)
     }
 
     /// Extended Euclid: `u · self + v · other = gcd`, `gcd` monic (the
@@ -640,17 +662,41 @@ impl<R: RingOps> DensePoly<R> {
     /// gcd, not monic).
     #[must_use]
     pub fn extended_gcd(&self, other: &Self) -> ExtendedGcd<R> {
+        match self.extended_gcd_steps(other) {
+            Ok(e) | Err(e) => e,
+        }
+    }
+
+    /// [`extended_gcd`](Self::extended_gcd), `None` when a leading
+    /// coefficient that is not a unit stopped the algorithm or the gcd
+    /// reached cannot be made monic.
+    pub fn try_extended_gcd(&self, other: &Self) -> Option<ExtendedGcd<R>> {
+        self.extended_gcd_steps(other).ok()
+    }
+
+    /// `Ok(the extended gcd)`, or `Err(the row reached)` on a non-unit.
+    fn extended_gcd_steps(&self, other: &Self) -> Result<ExtendedGcd<R>, ExtendedGcd<R>> {
         let ring = &self.ring;
         if !other.is_zero()
             && let Some(e) = ring.dense_extended_gcd(&self.coeffs, &other.coeffs)
         {
-            return ExtendedGcd {
+            return Ok(ExtendedGcd {
                 u: self.with(e.x),
                 v: self.with(e.y),
                 gcd: self.with(e.gcd),
-            };
+            });
         }
-        let (mut r0, mut r1) = (self.clone(), other.clone());
+        Self::euclid_extended_gcd(self.clone(), other.clone())
+    }
+
+    /// The extended Euclidean algorithm on `a` and `b` (no hook):
+    /// `Ok(the extended gcd)`, or `Err(the row reached)` on a non-unit.
+    /// The element-level [`GenPoly`](super::generic::GenPoly) runs its
+    /// extended gcds here.
+    pub(crate) fn euclid_extended_gcd(a: Self, b: Self) -> Result<ExtendedGcd<R>, ExtendedGcd<R>> {
+        let ring = a.ring.clone();
+        let ring = &ring;
+        let (mut r0, mut r1) = (a, b);
         let (mut s0, mut s1) = (Self::one(ring.clone()), Self::zero(ring.clone()));
         let (mut t0, mut t1) = (Self::zero(ring.clone()), Self::one(ring.clone()));
         while !r1.is_zero() {
@@ -659,11 +705,11 @@ impl<R: RingOps> DensePoly<R> {
                 remainder: r,
             }) = r0.try_div_rem(&r1)
             else {
-                return ExtendedGcd {
+                return Err(ExtendedGcd {
                     u: s1,
                     v: t1,
                     gcd: r1,
-                };
+                });
             };
             let s = s0.sub(&q.mul(&s1));
             let t = t0.sub(&q.mul(&t1));
@@ -676,19 +722,25 @@ impl<R: RingOps> DensePoly<R> {
         }
         if let Some(lc) = r0.coeffs.last()
             && !ring.is_one(lc)
-            && let Some(inv) = ring.inv(lc)
         {
-            return ExtendedGcd {
+            let Some(inv) = ring.inv(lc) else {
+                return Err(ExtendedGcd {
+                    u: s0,
+                    v: t0,
+                    gcd: r0,
+                });
+            };
+            return Ok(ExtendedGcd {
                 u: s0.scale(&inv),
                 v: t0.scale(&inv),
                 gcd: r0.scale(&inv),
-            };
+            });
         }
-        ExtendedGcd {
+        Ok(ExtendedGcd {
             u: s0,
             v: t0,
             gcd: r0,
-        }
+        })
     }
 
     /// Formal derivative.
@@ -724,10 +776,16 @@ impl<R: RingOps> DensePoly<R> {
     /// `0` when either is zero.  `None` when a leading coefficient that is
     /// not a unit is met.
     pub fn resultant(&self, other: &Self) -> Option<R::El> {
-        let ring = &self.ring;
+        Self::resultant_of(self.clone(), other.clone())
+    }
+
+    /// [`resultant`](Self::resultant) of owned operands.  The element-level
+    /// [`GenPoly`](super::generic::GenPoly) computes its resultants here.
+    pub(crate) fn resultant_of(mut a: Self, mut b: Self) -> Option<R::El> {
+        let ring = a.ring.clone();
+        let ring = &ring;
         let odd = |m: usize, n: usize| (m % 2 == 1) && (n % 2 == 1);
         let mut acc = ring.one();
-        let (mut a, mut b) = (self.clone(), other.clone());
         loop {
             let (Some(m), Some(n)) = (a.degree(), b.degree()) else {
                 return Some(ring.zero());
@@ -776,7 +834,7 @@ impl<R: RingOps> DensePoly<R> {
             return Some(Vec::new());
         }
         let quo = |a: &Self, b: &Self| a.try_div_rem(b).map(|d| d.quotient);
-        let p = self.monic();
+        let p = self.try_monic()?;
         let p_prime = p.derivative();
         let c = p.try_gcd(&p_prime)?;
         if c.degree().unwrap_or(0) == 0 {

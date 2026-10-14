@@ -15,10 +15,11 @@
 //! 7. **Specials** (Infinity, NegInfinity, ComplexInfinity, NaN, Neg) — highest
 //!    rank, each with a unique sub-rank.
 //!
-//! The [`compute_sort_key`] function builds a [`SortKey`] for a given
-//! [`ExprNode`] by combining the (already computed) keys of its children via
-//! caller-provided closures.  This keeps the module decoupled from any
-//! particular arena or storage backend.
+//! The [`compute_sort_key`] function assembles the key of a given
+//! [`ExprNode`] from the (already computed) keys of its children, which
+//! caller-provided closures lend out, and [`push_bounded_key`] stores it.
+//! This keeps the module decoupled from any particular arena or storage
+//! backend.
 //!
 //! # Bounded size
 //!
@@ -35,10 +36,7 @@
 //! unbounded lexicographic order whenever two keys differ within the first
 //! [`MAX_KEY_BYTES`] bytes.
 
-use std::fmt;
 use std::hash::Hasher;
-
-use smallvec::SmallVec;
 
 use crate::base::node::{ExprId, ExprNode, NumId, SymbolId};
 
@@ -232,103 +230,34 @@ const SET_IMAGE: u8 = 7;
 ///
 /// Keys longer than this are truncated and suffixed with an 8-byte digest
 /// (see the module docs), so no stored key exceeds `MAX_KEY_BYTES + 8`
-/// bytes and building a node's key costs `O(arity · MAX_KEY_BYTES)` at most.
+/// bytes.
 pub const MAX_KEY_BYTES: usize = 256;
 
-/// A compact byte sequence whose lexicographic order defines the canonical
-/// ordering of expression nodes.
+/// A sort key: a byte string whose lexicographic order defines the canonical
+/// ordering of expression nodes.  No key is longer than
+/// [`MAX_KEY_BYTES`]` + 8`.
 ///
-/// The inner [`SmallVec`] is stack-allocated for keys up to 24 bytes, which
-/// covers the vast majority of leaf and simple composite nodes without a heap
-/// allocation.  No key is longer than [`MAX_KEY_BYTES`]` + 8`.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SortKey(SmallVec<[u8; 24]>);
-
-impl SortKey {
-    /// Creates an empty sort key.
-    #[inline]
-    fn new() -> Self {
-        SortKey(SmallVec::new())
-    }
-
-    /// Pushes a single byte onto the key.
-    #[inline]
-    fn push(&mut self, byte: u8) {
-        self.0.push(byte);
-    }
-
-    /// Appends a byte slice onto the key.
-    #[inline]
-    fn extend(&mut self, bytes: &[u8]) {
-        self.0.extend_from_slice(bytes);
-    }
-
-    /// Returns the key as a byte slice.
-    #[inline]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    /// Was this key cut to [`MAX_KEY_BYTES`] and suffixed with a digest?
-    #[inline]
-    pub fn is_truncated(&self) -> bool {
-        self.0.len() > MAX_KEY_BYTES
-    }
-
-    /// Enforce the size bound: keys longer than [`MAX_KEY_BYTES`] are cut
-    /// to that prefix and suffixed with a 64-bit digest of the full byte
-    /// string, so that distinct long keys still (almost surely) compare
-    /// unequal and the order stays deterministic.
-    ///
-    /// A non-truncated key of exactly `MAX_KEY_BYTES` bytes is a proper
-    /// prefix of any truncated key sharing those bytes and thus sorts
-    /// first — consistent with the unbounded lexicographic order.
-    fn bound(mut self) -> Self {
-        if self.0.len() > MAX_KEY_BYTES {
-            let mut h = rustc_hash::FxHasher::default();
-            h.write(&self.0);
-            let digest = h.finish().to_be_bytes();
-            self.0.truncate(MAX_KEY_BYTES);
-            self.0.extend_from_slice(&digest);
-        }
-        self
-    }
-}
-
-impl PartialOrd for SortKey {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for SortKey {
-    #[inline]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.as_slice().cmp(other.0.as_slice())
-    }
-}
-
-impl fmt::Debug for SortKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SortKey({:?})", self.0.as_slice())
-    }
-}
+/// The arena stores the keys of all its nodes one after the other in one
+/// byte pool and lends them out as slices (`Arena::sort_key`); up to 0.49
+/// each node owned a key object, and half of them (the ones longer than 24
+/// bytes) a heap allocation.
+pub type SortKey = [u8];
 
 // ---------------------------------------------------------------------------
 // compute_sort_key
 // ---------------------------------------------------------------------------
 
-/// Computes the [`SortKey`] for a single [`ExprNode`].
+/// Appends the full (unbounded) [`SortKey`] of a single [`ExprNode`] to
+/// `out`; [`push_bounded_key`] then stores it, cut to the size bound.
 ///
 /// The three closures abstract over whatever arena or context owns the actual
 /// data:
 ///
-/// * `get_key` — returns the (already computed) sort key for a child
+/// * `get_key` — lends the (already computed, bounded) sort key of a child
 ///   expression identified by [`ExprId`].
-/// * `get_num_bytes` — serialises the rational value behind a [`NumId`] into a
-///   byte sequence suitable for lexicographic comparison.
-/// * `get_sym_name` — returns the interned name of a [`SymbolId`].
+/// * `write_num` — appends the rational value behind a [`NumId`] in decimal
+///   (`-3`, `7/2`).
+/// * `get_sym_name` — lends the interned name of a [`SymbolId`].
 ///
 /// # Ordering summary
 ///
@@ -355,646 +284,682 @@ impl fmt::Debug for SortKey {
 /// | 170  | `Pi`, `E`, `ImaginaryUnit`, `EulerGamma`, `Catalan`, `GoldenRatio` |
 /// | 190  | `EmptySet`, `UniversalSet`, `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`, `SetComplement` |
 /// | 210  | `Infinity`, `NegInfinity`, `ComplexInfinity`, `NaN`, `Neg` |
-pub fn compute_sort_key(
+pub fn compute_sort_key<'k>(
     node: &ExprNode,
-    get_key: impl Fn(ExprId) -> SortKey,
-    get_num_bytes: impl Fn(NumId) -> Vec<u8>,
-    get_sym_name: impl Fn(SymbolId) -> String,
-) -> SortKey {
-    let mut key = SortKey::new();
-
+    out: &mut Vec<u8>,
+    get_key: impl Fn(ExprId) -> &'k SortKey,
+    write_num: impl Fn(NumId, &mut Vec<u8>),
+    get_sym_name: impl Fn(SymbolId) -> &'k str,
+) {
     match node {
         // -- atoms -----------------------------------------------------------
         ExprNode::Num(id) => {
-            key.push(RANK_NUM);
-            key.extend(&get_num_bytes(*id));
+            out.push(RANK_NUM);
+            write_num(*id, out);
         }
 
         ExprNode::Symbol(id) => {
-            key.push(RANK_SYMBOL);
-            key.extend(get_sym_name(*id).as_bytes());
+            out.push(RANK_SYMBOL);
+            out.extend_from_slice(get_sym_name(*id).as_bytes());
         }
 
         // -- n-ary operators -------------------------------------------------
         ExprNode::Add(children) => {
-            key.push(RANK_ADD);
+            out.push(RANK_ADD);
             for &child in children {
-                key.extend(get_key(child).as_bytes());
+                out.extend_from_slice(get_key(child));
             }
         }
 
         ExprNode::Mul(children) => {
-            key.push(RANK_MUL);
+            out.push(RANK_MUL);
             for &child in children {
-                key.extend(get_key(child).as_bytes());
+                out.extend_from_slice(get_key(child));
             }
         }
 
         // -- binary operators ------------------------------------------------
         ExprNode::Pow(base, exp) => {
-            key.push(RANK_POW);
-            key.extend(get_key(*base).as_bytes());
-            key.extend(get_key(*exp).as_bytes());
+            out.push(RANK_POW);
+            out.extend_from_slice(get_key(*base));
+            out.extend_from_slice(get_key(*exp));
         }
 
         ExprNode::Derivative(body, var) => {
-            key.push(RANK_DERIVATIVE);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
+            out.push(RANK_DERIVATIVE);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
         }
 
         ExprNode::Integral(body, var) => {
-            key.push(RANK_INTEGRAL);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
+            out.push(RANK_INTEGRAL);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
         }
 
         ExprNode::DefiniteIntegral(body, var, lo, hi) => {
-            key.push(RANK_DEFINITE_INTEGRAL);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
-            key.extend(get_key(*lo).as_bytes());
-            key.extend(get_key(*hi).as_bytes());
+            out.push(RANK_DEFINITE_INTEGRAL);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
+            out.extend_from_slice(get_key(*lo));
+            out.extend_from_slice(get_key(*hi));
         }
 
         // -- unary functions -------------------------------------------------
         ExprNode::Sin(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_SIN);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_SIN);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Cos(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_COS);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_COS);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Tan(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_TAN);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_TAN);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Exp(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_EXP);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_EXP);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Ln(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_LN);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_LN);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Abs(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ABS);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ABS);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Asin(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ASIN);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ASIN);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Acos(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ACOS);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ACOS);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Atan(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ATAN);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ATAN);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Atan2(y, x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ATAN2);
-            key.extend(get_key(*y).as_bytes());
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ATAN2);
+            out.extend_from_slice(get_key(*y));
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Sinh(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_SINH);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_SINH);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Cosh(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_COSH);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_COSH);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Tanh(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_TANH);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_TANH);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Asinh(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ASINH);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ASINH);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Acosh(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ACOSH);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ACOSH);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Atanh(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ATANH);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ATANH);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Sign(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_SIGN);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_SIGN);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Heaviside(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_HEAVISIDE);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_HEAVISIDE);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::DiracDelta(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_DIRAC_DELTA);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_DIRAC_DELTA);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Gamma(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_GAMMA);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_GAMMA);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::LogGamma(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_LOG_GAMMA);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_LOG_GAMMA);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Digamma(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_DIGAMMA);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_DIGAMMA);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Erf(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ERF);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ERF);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Erfc(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ERFC);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ERFC);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::LambertW(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_LAMBERT_W);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_LAMBERT_W);
+            out.extend_from_slice(get_key(*x));
         }
 
         // -- complex analysis ------------------------------------------------
         ExprNode::Re(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_RE);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_RE);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Im(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_IM);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_IM);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Conjugate(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_CONJUGATE);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_CONJUGATE);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Arg(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ARG);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ARG);
+            out.extend_from_slice(get_key(*x));
         }
 
         // -- special functions (0.2) -----------------------------------------
         ExprNode::Si(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_SI);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_SI);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Ci(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_CI);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_CI);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Ei(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_EI);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_EI);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Li(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_LI);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_LI);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Zeta(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ZETA);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ZETA);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Polygamma(n, x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_POLYGAMMA);
-            key.extend(get_key(*n).as_bytes());
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_POLYGAMMA);
+            out.extend_from_slice(get_key(*n));
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::KroneckerDelta(i, j) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_KRONECKER_DELTA);
-            key.extend(get_key(*i).as_bytes());
-            key.extend(get_key(*j).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_KRONECKER_DELTA);
+            out.extend_from_slice(get_key(*i));
+            out.extend_from_slice(get_key(*j));
         }
 
         ExprNode::Beta(a, b) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_BETA);
-            key.extend(get_key(*a).as_bytes());
-            key.extend(get_key(*b).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_BETA);
+            out.extend_from_slice(get_key(*a));
+            out.extend_from_slice(get_key(*b));
         }
 
         ExprNode::Floor(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_FLOOR);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_FLOOR);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Ceiling(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_CEILING);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_CEILING);
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Min(children) => {
-            key.push(RANK_MIN);
+            out.push(RANK_MIN);
             for &child in children {
-                key.extend(get_key(child).as_bytes());
+                out.extend_from_slice(get_key(child));
             }
         }
 
         ExprNode::Max(children) => {
-            key.push(RANK_MAX);
+            out.push(RANK_MAX);
             for &child in children {
-                key.extend(get_key(child).as_bytes());
+                out.extend_from_slice(get_key(child));
             }
         }
 
         ExprNode::Sum(body, var, lo, hi) => {
-            key.push(RANK_SUM);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
-            key.extend(get_key(*lo).as_bytes());
-            key.extend(get_key(*hi).as_bytes());
+            out.push(RANK_SUM);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
+            out.extend_from_slice(get_key(*lo));
+            out.extend_from_slice(get_key(*hi));
         }
 
         ExprNode::Product_(body, var, lo, hi) => {
-            key.push(RANK_PRODUCT);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
-            key.extend(get_key(*lo).as_bytes());
-            key.extend(get_key(*hi).as_bytes());
+            out.push(RANK_PRODUCT);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
+            out.extend_from_slice(get_key(*lo));
+            out.extend_from_slice(get_key(*hi));
         }
 
         ExprNode::Apply(sym, args) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_APPLY);
+            out.push(RANK_FUNCTION);
+            out.push(FN_APPLY);
             // Embed the function name so that distinct named functions sort
             // alphabetically among themselves.
-            key.extend(get_sym_name(*sym).as_bytes());
+            out.extend_from_slice(get_sym_name(*sym).as_bytes());
             // Null byte separator to avoid ambiguity between name and args.
-            key.push(0x00);
+            out.push(0x00);
             for &arg in args {
-                key.extend(get_key(arg).as_bytes());
+                out.extend_from_slice(get_key(arg));
             }
         }
 
         // Byte-identical to the `Apply` key the library functions had until
         // 0.49 (they sort by name among themselves and with user functions).
         ExprNode::Lib(lib, args) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_APPLY);
-            key.extend(lib.name().as_bytes());
-            key.push(0x00);
+            out.push(RANK_FUNCTION);
+            out.push(FN_APPLY);
+            out.extend_from_slice(lib.name().as_bytes());
+            out.push(0x00);
             for &arg in args {
-                key.extend(get_key(arg).as_bytes());
+                out.extend_from_slice(get_key(arg));
+            }
+        }
+
+        // Byte-identical to the `Apply` key the internal functions had until
+        // 0.49.
+        ExprNode::Internal(f, args) => {
+            out.push(RANK_FUNCTION);
+            out.push(FN_APPLY);
+            out.extend_from_slice(f.name().as_bytes());
+            out.push(0x00);
+            for &arg in args {
+                out.extend_from_slice(get_key(arg));
             }
         }
 
         // -- constants -------------------------------------------------------
         ExprNode::Pi => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_PI);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_PI);
         }
 
         ExprNode::E => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_E);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_E);
         }
 
         ExprNode::ImaginaryUnit => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_IMAGINARY_UNIT);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_IMAGINARY_UNIT);
         }
 
         ExprNode::EulerGamma => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_EULER_GAMMA);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_EULER_GAMMA);
         }
 
         ExprNode::Catalan => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_CATALAN);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_CATALAN);
         }
 
         ExprNode::GoldenRatio => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_GOLDEN_RATIO);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_GOLDEN_RATIO);
         }
 
         ExprNode::PhysicalConstant(name_id, _) => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_PHYSICAL);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_PHYSICAL);
             // Include the name for deterministic ordering among physical constants
-            key.extend(get_sym_name(*name_id).as_bytes());
+            out.extend_from_slice(get_sym_name(*name_id).as_bytes());
         }
 
         // -- special values --------------------------------------------------
         ExprNode::Infinity => {
-            key.push(RANK_SPECIAL);
-            key.push(SPECIAL_INFINITY);
+            out.push(RANK_SPECIAL);
+            out.push(SPECIAL_INFINITY);
         }
 
         ExprNode::NegInfinity => {
-            key.push(RANK_SPECIAL);
-            key.push(SPECIAL_NEG_INFINITY);
+            out.push(RANK_SPECIAL);
+            out.push(SPECIAL_NEG_INFINITY);
         }
 
         ExprNode::ComplexInfinity => {
-            key.push(RANK_SPECIAL);
-            key.push(SPECIAL_COMPLEX_INFINITY);
+            out.push(RANK_SPECIAL);
+            out.push(SPECIAL_COMPLEX_INFINITY);
         }
 
         ExprNode::NaN => {
-            key.push(RANK_SPECIAL);
-            key.push(SPECIAL_NAN);
+            out.push(RANK_SPECIAL);
+            out.push(SPECIAL_NAN);
         }
 
         ExprNode::Neg(x) => {
-            key.push(RANK_SPECIAL);
-            key.push(SPECIAL_NEG);
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_SPECIAL);
+            out.push(SPECIAL_NEG);
+            out.extend_from_slice(get_key(*x));
         }
 
         // -- combinatorial ---------------------------------------------------
         ExprNode::Factorial(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ABS + 1); // slot after last built-in function
-            key.extend(get_key(*x).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ABS + 1); // slot after last built-in function
+            out.extend_from_slice(get_key(*x));
         }
 
         ExprNode::Binomial(n, k) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_ABS + 2);
-            key.extend(get_key(*n).as_bytes());
-            key.extend(get_key(*k).as_bytes());
+            out.push(RANK_FUNCTION);
+            out.push(FN_ABS + 2);
+            out.extend_from_slice(get_key(*n));
+            out.extend_from_slice(get_key(*k));
         }
 
         // -- boolean atoms ---------------------------------------------------
         ExprNode::BoolTrue => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_BOOL_TRUE);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_BOOL_TRUE);
         }
 
         ExprNode::BoolFalse => {
-            key.push(RANK_CONSTANT);
-            key.push(CONST_BOOL_FALSE);
+            out.push(RANK_CONSTANT);
+            out.push(CONST_BOOL_FALSE);
         }
 
         // -- relational operators --------------------------------------------
         ExprNode::Gt(lhs, rhs) => {
-            key.push(RANK_RELATIONAL);
-            key.push(0); // Gt discriminant
-            key.extend(get_key(*lhs).as_bytes());
-            key.extend(get_key(*rhs).as_bytes());
+            out.push(RANK_RELATIONAL);
+            out.push(0); // Gt discriminant
+            out.extend_from_slice(get_key(*lhs));
+            out.extend_from_slice(get_key(*rhs));
         }
 
         ExprNode::Ge(lhs, rhs) => {
-            key.push(RANK_RELATIONAL);
-            key.push(1);
-            key.extend(get_key(*lhs).as_bytes());
-            key.extend(get_key(*rhs).as_bytes());
+            out.push(RANK_RELATIONAL);
+            out.push(1);
+            out.extend_from_slice(get_key(*lhs));
+            out.extend_from_slice(get_key(*rhs));
         }
 
         ExprNode::Eq_(lhs, rhs) => {
-            key.push(RANK_RELATIONAL);
-            key.push(2);
-            key.extend(get_key(*lhs).as_bytes());
-            key.extend(get_key(*rhs).as_bytes());
+            out.push(RANK_RELATIONAL);
+            out.push(2);
+            out.extend_from_slice(get_key(*lhs));
+            out.extend_from_slice(get_key(*rhs));
         }
 
         ExprNode::Ne(lhs, rhs) => {
-            key.push(RANK_RELATIONAL);
-            key.push(3);
-            key.extend(get_key(*lhs).as_bytes());
-            key.extend(get_key(*rhs).as_bytes());
+            out.push(RANK_RELATIONAL);
+            out.push(3);
+            out.extend_from_slice(get_key(*lhs));
+            out.extend_from_slice(get_key(*rhs));
         }
 
         // -- logical connectives ---------------------------------------------
         ExprNode::And(children) => {
-            key.push(RANK_AND);
+            out.push(RANK_AND);
             for &c in children {
-                key.extend(get_key(c).as_bytes());
+                out.extend_from_slice(get_key(c));
             }
         }
 
         ExprNode::Or(children) => {
-            key.push(RANK_OR);
+            out.push(RANK_OR);
             for &c in children {
-                key.extend(get_key(c).as_bytes());
+                out.extend_from_slice(get_key(c));
             }
         }
 
         ExprNode::Not(inner) => {
-            key.push(RANK_NOT);
-            key.extend(get_key(*inner).as_bytes());
+            out.push(RANK_NOT);
+            out.extend_from_slice(get_key(*inner));
         }
 
         // -- piecewise -------------------------------------------------------
         ExprNode::Piecewise(children) => {
-            key.push(RANK_PIECEWISE);
+            out.push(RANK_PIECEWISE);
             for &(val, cond) in children {
-                key.extend(get_key(val).as_bytes());
-                key.extend(get_key(cond).as_bytes());
+                out.extend_from_slice(get_key(val));
+                out.extend_from_slice(get_key(cond));
             }
         }
 
         // -- set atoms -------------------------------------------------------
         ExprNode::EmptySet => {
-            key.push(RANK_SET);
-            key.push(SET_EMPTY);
+            out.push(RANK_SET);
+            out.push(SET_EMPTY);
         }
 
         ExprNode::UniversalSet => {
-            key.push(RANK_SET);
-            key.push(SET_UNIVERSAL);
+            out.push(RANK_SET);
+            out.push(SET_UNIVERSAL);
         }
 
         // -- set constructors ------------------------------------------------
         ExprNode::Interval(start, end, kind) => {
-            key.push(RANK_SET);
-            key.push(SET_INTERVAL);
-            key.push(kind.flag_bits());
-            key.extend(get_key(*start).as_bytes());
-            key.extend(get_key(*end).as_bytes());
+            out.push(RANK_SET);
+            out.push(SET_INTERVAL);
+            out.push(kind.flag_bits());
+            out.extend_from_slice(get_key(*start));
+            out.extend_from_slice(get_key(*end));
         }
 
         ExprNode::FiniteSet(elems) => {
-            key.push(RANK_SET);
-            key.push(SET_FINITE_SET);
+            out.push(RANK_SET);
+            out.push(SET_FINITE_SET);
             for &elem in elems {
-                key.extend(get_key(elem).as_bytes());
+                out.extend_from_slice(get_key(elem));
             }
         }
 
         ExprNode::SetUnion(sets) => {
-            key.push(RANK_SET);
-            key.push(SET_UNION);
+            out.push(RANK_SET);
+            out.push(SET_UNION);
             for &s in sets {
-                key.extend(get_key(s).as_bytes());
+                out.extend_from_slice(get_key(s));
             }
         }
 
         ExprNode::SetIntersection(sets) => {
-            key.push(RANK_SET);
-            key.push(SET_INTERSECTION);
+            out.push(RANK_SET);
+            out.push(SET_INTERSECTION);
             for &s in sets {
-                key.extend(get_key(s).as_bytes());
+                out.extend_from_slice(get_key(s));
             }
         }
 
         ExprNode::SetComplement(a, b) => {
-            key.push(RANK_SET);
-            key.push(SET_COMPLEMENT);
-            key.extend(get_key(*a).as_bytes());
-            key.extend(get_key(*b).as_bytes());
+            out.push(RANK_SET);
+            out.push(SET_COMPLEMENT);
+            out.extend_from_slice(get_key(*a));
+            out.extend_from_slice(get_key(*b));
         }
 
         // The bound variable last: it only breaks ties.
         ExprNode::ImageSet(var, body) => {
-            key.push(RANK_SET);
-            key.push(SET_IMAGE);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
+            out.push(RANK_SET);
+            out.push(SET_IMAGE);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
         }
 
         // -- formal analysis nodes -------------------------------------------
         ExprNode::Limit(body, var, point) => {
-            key.push(RANK_LIMIT);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
-            key.extend(get_key(*point).as_bytes());
+            out.push(RANK_LIMIT);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
+            out.extend_from_slice(get_key(*point));
         }
 
         ExprNode::Series(body, var, point, order) => {
-            key.push(RANK_SERIES);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
-            key.extend(get_key(*point).as_bytes());
-            key.extend(get_key(*order).as_bytes());
+            out.push(RANK_SERIES);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
+            out.extend_from_slice(get_key(*point));
+            out.extend_from_slice(get_key(*order));
         }
 
         ExprNode::LaplaceTransform(body, t, s) => {
-            key.push(RANK_LAPLACE_TRANSFORM);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*t).as_bytes());
-            key.extend(get_key(*s).as_bytes());
+            out.push(RANK_LAPLACE_TRANSFORM);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*t));
+            out.extend_from_slice(get_key(*s));
         }
 
         ExprNode::InverseLaplaceTransform(body, s, t) => {
-            key.push(RANK_INV_LAPLACE_TRANSFORM);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*s).as_bytes());
-            key.extend(get_key(*t).as_bytes());
+            out.push(RANK_INV_LAPLACE_TRANSFORM);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*s));
+            out.extend_from_slice(get_key(*t));
         }
 
         ExprNode::Residue(body, var, point) => {
-            key.push(RANK_RESIDUE);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
-            key.extend(get_key(*point).as_bytes());
+            out.push(RANK_RESIDUE);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
+            out.extend_from_slice(get_key(*point));
         }
 
         // The variable last: it is determined by the polynomial unless that
         // has parameters, so it only breaks ties.
         ExprNode::RootOf(poly, var, index) => {
-            key.push(RANK_ROOTOF);
-            key.extend(get_key(*poly).as_bytes());
-            key.extend(get_key(*index).as_bytes());
-            key.extend(get_key(*var).as_bytes());
+            out.push(RANK_ROOTOF);
+            out.extend_from_slice(get_key(*poly));
+            out.extend_from_slice(get_key(*index));
+            out.extend_from_slice(get_key(*var));
         }
 
         ExprNode::DSolve(expr, func, var) => {
-            key.push(RANK_DSOLVE);
-            key.extend(get_key(*expr).as_bytes());
-            key.extend(get_key(*func).as_bytes());
-            key.extend(get_key(*var).as_bytes());
+            out.push(RANK_DSOLVE);
+            out.extend_from_slice(get_key(*expr));
+            out.extend_from_slice(get_key(*func));
+            out.extend_from_slice(get_key(*var));
         }
 
         ExprNode::RootSum(poly, body, sumvar) => {
-            key.push(RANK_ROOTSUM);
-            key.extend(get_key(*poly).as_bytes());
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*sumvar).as_bytes());
+            out.push(RANK_ROOTSUM);
+            out.extend_from_slice(get_key(*poly));
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*sumvar));
         }
 
         ExprNode::ConditionSet(var, cond) => {
-            key.push(RANK_CONDITION_SET);
-            key.extend(get_key(*var).as_bytes());
-            key.extend(get_key(*cond).as_bytes());
+            out.push(RANK_CONDITION_SET);
+            out.extend_from_slice(get_key(*var));
+            out.extend_from_slice(get_key(*cond));
         }
 
         ExprNode::Subs(body, var, point) => {
-            key.push(RANK_SUBS);
-            key.extend(get_key(*body).as_bytes());
-            key.extend(get_key(*var).as_bytes());
-            key.extend(get_key(*point).as_bytes());
+            out.push(RANK_SUBS);
+            out.extend_from_slice(get_key(*body));
+            out.extend_from_slice(get_key(*var));
+            out.extend_from_slice(get_key(*point));
         }
     }
+}
 
-    key.bound()
+/// Appends the stored form of the key `full` (as [`compute_sort_key`]
+/// assembled it) to `pool`: `full` itself when it has at most
+/// [`MAX_KEY_BYTES`] bytes, else its first `MAX_KEY_BYTES` bytes followed by
+/// the big-endian 64-bit `FxHasher` digest of all of `full`, so that distinct
+/// long keys still (almost surely) compare unequal and the order stays
+/// deterministic.
+///
+/// The digest is that of the whole pre-truncation byte string, hashed in one
+/// `write` exactly as up to 0.48: it decides the order of long keys, so it
+/// must stay bit-exact (and `rustc-hash` digests depend on the pointer width:
+/// on wasm32 long keys order differently than on 64-bit targets, as before).
+///
+/// A non-truncated key of exactly `MAX_KEY_BYTES` bytes is a proper prefix of
+/// any truncated key sharing those bytes and thus sorts first — consistent
+/// with the unbounded lexicographic order.
+pub(crate) fn push_bounded_key(full: &[u8], pool: &mut Vec<u8>) {
+    match full.get(..MAX_KEY_BYTES) {
+        Some(prefix) if full.len() > MAX_KEY_BYTES => {
+            let mut h = rustc_hash::FxHasher::default();
+            h.write(full);
+            pool.extend_from_slice(prefix);
+            pool.extend_from_slice(&h.finish().to_be_bytes());
+        }
+        _ => pool.extend_from_slice(full),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,14 +971,29 @@ mod tests {
     use super::*;
     use smallvec::smallvec;
 
-    /// Helper: builds a sort key for an atom with dummy closures.
-    fn atom_key(node: &ExprNode) -> SortKey {
+    /// The stored key of `node` whose children all have the key `child`,
+    /// whose numbers write `0x42` and whose symbol `s<i>` is named `name`.
+    fn key_with(node: &ExprNode, child: &[u8], name: &str) -> Vec<u8> {
+        let mut full = Vec::new();
         compute_sort_key(
             node,
-            |_| unreachable!("atom should not query children"),
-            |_| vec![0x42],
-            |id| format!("s{}", id.0),
-        )
+            &mut full,
+            |_| child,
+            |_, out| out.push(0x42),
+            |_| name,
+        );
+        let mut pool = Vec::new();
+        push_bounded_key(&full, &mut pool);
+        pool
+    }
+
+    /// The key of an atom (no child is ever asked for).
+    fn atom_key(node: &ExprNode) -> Vec<u8> {
+        key_with(node, &[], "s")
+    }
+
+    fn is_truncated(key: &[u8]) -> bool {
+        key.len() > MAX_KEY_BYTES
     }
 
     #[test]
@@ -1025,29 +1005,14 @@ mod tests {
 
     #[test]
     fn symbols_sort_alphabetically() {
-        let key_a = compute_sort_key(
-            &ExprNode::Symbol(SymbolId(0)),
-            |_| unreachable!(),
-            |_| unreachable!(),
-            |_| "alpha".to_string(),
-        );
-        let key_b = compute_sort_key(
-            &ExprNode::Symbol(SymbolId(1)),
-            |_| unreachable!(),
-            |_| unreachable!(),
-            |_| "beta".to_string(),
-        );
+        let key_a = key_with(&ExprNode::Symbol(SymbolId(0)), &[], "alpha");
+        let key_b = key_with(&ExprNode::Symbol(SymbolId(1)), &[], "beta");
         assert!(key_a < key_b);
     }
 
     #[test]
     fn constants_sort_after_composites() {
-        let add_key = compute_sort_key(
-            &ExprNode::Add(smallvec![ExprId(0)]),
-            |_| SortKey(SmallVec::from_slice(&[RANK_NUM, 0x01])),
-            |_| unreachable!(),
-            |_| unreachable!(),
-        );
+        let add_key = key_with(&ExprNode::Add(smallvec![ExprId(0)]), &[RANK_NUM, 0x01], "");
         let pi_key = atom_key(&ExprNode::Pi);
         assert!(add_key < pi_key, "Add should sort before Pi");
     }
@@ -1070,18 +1035,8 @@ mod tests {
 
     #[test]
     fn function_discriminants_differ() {
-        let sin_key = compute_sort_key(
-            &ExprNode::Sin(ExprId(0)),
-            |_| SortKey(SmallVec::from_slice(&[RANK_NUM, 0x01])),
-            |_| unreachable!(),
-            |_| unreachable!(),
-        );
-        let cos_key = compute_sort_key(
-            &ExprNode::Cos(ExprId(0)),
-            |_| SortKey(SmallVec::from_slice(&[RANK_NUM, 0x01])),
-            |_| unreachable!(),
-            |_| unreachable!(),
-        );
+        let sin_key = key_with(&ExprNode::Sin(ExprId(0)), &[RANK_NUM, 0x01], "");
+        let cos_key = key_with(&ExprNode::Cos(ExprId(0)), &[RANK_NUM, 0x01], "");
         assert_ne!(sin_key, cos_key);
         assert!(
             sin_key < cos_key,
@@ -1090,25 +1045,10 @@ mod tests {
     }
 
     #[test]
-    fn sort_key_ord_is_consistent() {
-        let a = SortKey(SmallVec::from_slice(&[10, 20]));
-        let b = SortKey(SmallVec::from_slice(&[10, 30]));
-        let c = SortKey(SmallVec::from_slice(&[20]));
-        assert!(a < b);
-        assert!(b < c);
-        assert!(a < c);
-    }
-
-    #[test]
     fn neg_is_special_rank() {
-        let neg_key = compute_sort_key(
-            &ExprNode::Neg(ExprId(0)),
-            |_| SortKey(SmallVec::from_slice(&[RANK_NUM, 0x01])),
-            |_| unreachable!(),
-            |_| unreachable!(),
-        );
-        assert_eq!(neg_key.as_bytes()[0], RANK_SPECIAL);
-        assert_eq!(neg_key.as_bytes()[1], SPECIAL_NEG);
+        let neg_key = key_with(&ExprNode::Neg(ExprId(0)), &[RANK_NUM, 0x01], "");
+        assert_eq!(neg_key[0], RANK_SPECIAL);
+        assert_eq!(neg_key[1], SPECIAL_NEG);
     }
 
     #[test]
@@ -1122,7 +1062,7 @@ mod tests {
             atom_key(&ExprNode::GoldenRatio),
         ];
         for k in &keys {
-            assert_eq!(k.as_bytes()[0], RANK_CONSTANT);
+            assert_eq!(k[0], RANK_CONSTANT);
         }
         for i in 0..keys.len() {
             for j in (i + 1)..keys.len() {
@@ -1134,37 +1074,53 @@ mod tests {
     #[test]
     fn long_keys_are_bounded_and_deterministic() {
         // A child key that is already at the bound.
-        let big = SortKey(SmallVec::from_slice(&vec![7u8; MAX_KEY_BYTES]));
-        let get = |_| big.clone();
+        let big = vec![7u8; MAX_KEY_BYTES];
         let add = ExprNode::Add(smallvec![ExprId(0), ExprId(1)]);
-        let k1 = compute_sort_key(&add, get, |_| unreachable!(), |_| unreachable!());
-        assert!(k1.is_truncated());
-        assert_eq!(k1.as_bytes().len(), MAX_KEY_BYTES + 8);
+        let k1 = key_with(&add, &big, "");
+        assert!(is_truncated(&k1));
+        assert_eq!(k1.len(), MAX_KEY_BYTES + 8);
         // Same structure → identical key (digest depends only on bytes).
-        let k2 = compute_sort_key(&add, get, |_| unreachable!(), |_| unreachable!());
+        let k2 = key_with(&add, &big, "");
         assert_eq!(k1, k2);
         // Different structure with the same prefix → different digest.
         let add3 = ExprNode::Add(smallvec![ExprId(0), ExprId(1), ExprId(2)]);
-        let k3 = compute_sort_key(&add3, get, |_| unreachable!(), |_| unreachable!());
-        assert!(k3.is_truncated());
+        let k3 = key_with(&add3, &big, "");
+        assert!(is_truncated(&k3));
         assert_ne!(k1, k3);
-        assert_eq!(
-            k1.as_bytes()[..MAX_KEY_BYTES],
-            k3.as_bytes()[..MAX_KEY_BYTES]
-        );
+        assert_eq!(k1[..MAX_KEY_BYTES], k3[..MAX_KEY_BYTES]);
         // A non-truncated key sharing the prefix sorts before a truncated one.
-        let exact = SortKey(SmallVec::from_slice(&k1.as_bytes()[..MAX_KEY_BYTES]));
-        assert!(!exact.is_truncated());
-        assert!(exact < k1);
+        let exact = &k1[..MAX_KEY_BYTES];
+        assert!(!is_truncated(exact));
+        assert!(exact < &k1[..]);
         // Short keys are untouched.
         let small = atom_key(&ExprNode::Pi);
-        assert!(!small.is_truncated());
-        assert_eq!(small.as_bytes().len(), 2);
+        assert!(!is_truncated(&small));
+        assert_eq!(small.len(), 2);
+    }
+
+    /// The digest of a truncated key is the `FxHasher` digest of the whole
+    /// pre-truncation byte string in one `write`, big-endian, as in 0.48
+    /// (`SortKey::bound`): the order of long keys depends on it.
+    #[test]
+    fn truncated_key_digest_is_the_hash_of_the_full_bytes() {
+        let full: Vec<u8> = (0..600u32).map(|i| (i % 251) as u8).collect();
+        let mut pool = vec![9u8; 3];
+        push_bounded_key(&full, &mut pool);
+        let mut h = rustc_hash::FxHasher::default();
+        h.write(&full);
+        let mut expected = vec![9u8; 3];
+        expected.extend_from_slice(&full[..MAX_KEY_BYTES]);
+        expected.extend_from_slice(&h.finish().to_be_bytes());
+        assert_eq!(pool, expected);
+        // At the bound exactly: stored as is.
+        let mut pool = Vec::new();
+        push_bounded_key(&full[..MAX_KEY_BYTES], &mut pool);
+        assert_eq!(pool, &full[..MAX_KEY_BYTES]);
     }
 
     #[test]
     fn new_function_discriminants_are_distinct() {
-        let child = |_| SortKey(SmallVec::from_slice(&[RANK_NUM, 0x01]));
+        let child = [RANK_NUM, 0x01];
         let nodes = [
             ExprNode::Re(ExprId(0)),
             ExprNode::Im(ExprId(0)),
@@ -1179,12 +1135,9 @@ mod tests {
             ExprNode::KroneckerDelta(ExprId(0), ExprId(0)),
             ExprNode::LambertW(ExprId(0)),
         ];
-        let keys: Vec<SortKey> = nodes
-            .iter()
-            .map(|n| compute_sort_key(n, child, |_| unreachable!(), |_| unreachable!()))
-            .collect();
+        let keys: Vec<Vec<u8>> = nodes.iter().map(|n| key_with(n, &child, "")).collect();
         for k in &keys {
-            assert_eq!(k.as_bytes()[0], RANK_FUNCTION);
+            assert_eq!(k[0], RANK_FUNCTION);
         }
         for i in 0..keys.len() {
             for j in (i + 1)..keys.len() {

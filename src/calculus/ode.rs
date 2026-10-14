@@ -107,6 +107,7 @@ use crate::base::arena::Arena;
 use crate::base::combinatorics::binomial;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::domains::matrix::Matrix;
 use num_traits::One;
 use num_traits::Signed;
@@ -1817,7 +1818,7 @@ fn explicit_families(
         for s in &sols {
             let f = crate::transforms::eval::eval(arena, s.value);
             if crate::base::walk::contains(arena, f, c1)
-                && residual_verdict(arena, expr, f, func, var, c1) != Some(false)
+                && !residual_verdict(arena, expr, f, func, var, c1).is_false()
             {
                 fams.push(f);
             }
@@ -2113,7 +2114,7 @@ fn absorb_exp_constant(arena: &mut Arena, e: ExprId, c1: ExprId) -> ExprId {
         return e;
     }
     let mut k0 = Q::new(num_gcd, den_lcm);
-    if sign_neg == Some(true) {
+    if Truth::from(sign_neg).is_true() {
         k0 = -k0;
     }
     // Pass 2: e^{k·c1 + r} → c1^{k/k₀}·e^{r}.
@@ -2148,18 +2149,20 @@ fn family_verifies(
     c1: ExprId,
 ) -> bool {
     match residual_verdict(arena, expr, sol, func, var, c1) {
-        Some(v) => v,
-        None => checkodesol(arena, expr, sol, func, var),
+        Truth::True => true,
+        Truth::False => false,
+        Truth::Unknown => checkodesol(arena, expr, sol, func, var),
     }
 }
 
 /// The residual of the family `sol` (one constant `c1`; others are set to
 /// fixed values) in `expr = 0` at three points and four values of `c1`,
-/// evaluated over ℂ on principal branches: `Some(true)` when it is below
-/// `1e⁻⁹` of the scale of the derivatives at two or more of them (a
-/// formula may be a solution only where its radicals take the right branch:
-/// `(x/2 + C1/2)²` for `y′ = √y` needs `x + C1 ≥ 0`), `Some(false)` when it
-/// evaluates at two or more and is small at none, `None` otherwise.
+/// evaluated over ℂ on principal branches: `True` when it is below `1e⁻⁹`
+/// of the scale of the derivatives at two or more of them (a formula may
+/// be a solution only where its radicals take the right branch: `(x/2 +
+/// C1/2)²` for `y′ = √y` needs `x + C1 ≥ 0`), `False` when it evaluates at
+/// two or more and is small at none, `Unknown` otherwise.  Evidence:
+/// 12-digit samples (`Evidence::Approximate`).
 fn residual_verdict(
     arena: &mut Arena,
     expr: ExprId,
@@ -2167,7 +2170,7 @@ fn residual_verdict(
     func: ExprId,
     var: ExprId,
     c1: ExprId,
-) -> Option<bool> {
+) -> Truth {
     let chain = derivative_chain(arena, func, var);
     let order = (1..chain.len())
         .rev()
@@ -2218,17 +2221,17 @@ fn residual_verdict(
             if r <= 1e-9 * scale {
                 passed += 1;
                 if passed >= 2 {
-                    return Some(true);
+                    return Truth::True;
                 }
             }
         }
     }
     if passed >= 2 {
-        Some(true)
+        Truth::True
     } else if evaluated >= 2 && passed == 0 {
-        Some(false)
+        Truth::False
     } else {
-        None
+        Truth::Unknown
     }
 }
 
@@ -5439,16 +5442,24 @@ impl CEx {
         }
         CEx::norm(arena, parts[0], parts[1])
     }
-    /// `Some(true)` for an exact zero, `Some(false)` for a value certainly
-    /// away from zero, `None` when undecided (not structurally zero but
+    /// `True` for an exact zero, `False` for a value certainly away from
+    /// zero, `Unknown` when undecided (not structurally zero but
     /// numerically tiny).
-    fn is_zero(self, arena: &Arena) -> Option<bool> {
+    fn is_zero(self, arena: &Arena) -> Truth {
         if arena.is_zero_structural(self.re) && arena.is_zero_structural(self.im) {
-            return Some(true);
+            return Truth::True;
         }
-        let re = crate::transforms::evalf::evalf_complex64(arena, self.re).ok()?;
-        let im = crate::transforms::evalf::evalf_complex64(arena, self.im).ok()?;
-        (re.norm().max(im.norm()) > 1e-8).then_some(false)
+        let (Ok(re), Ok(im)) = (
+            crate::transforms::evalf::evalf_complex64(arena, self.re),
+            crate::transforms::evalf::evalf_complex64(arena, self.im),
+        ) else {
+            return Truth::Unknown;
+        };
+        if re.norm().max(im.norm()) > 1e-8 {
+            Truth::False
+        } else {
+            Truth::Unknown
+        }
     }
 }
 
@@ -5490,9 +5501,13 @@ fn particular_for_group_sym(
     }
     let mut s = None;
     for (j, cj) in c.iter().enumerate() {
-        if !cj.is_zero(arena)? {
-            s = Some(j);
-            break;
+        match cj.is_zero(arena) {
+            Truth::True => {}
+            Truth::False => {
+                s = Some(j);
+                break;
+            }
+            Truth::Unknown => return None,
         }
     }
     let s = s?;
@@ -6785,8 +6800,12 @@ fn real_symbolic_basis(
                     ExprNode::Pow(b, e) if arena.as_num(e) == Some(&half) => {
                         let nb = arena.neg(b);
                         let nb = crate::transforms::eval::eval(arena, nb);
-                        if reals.query(arena, nb, crate::base::assumptions::Props::POSITIVE)
-                            == Some(true)
+                        if Truth::from(reals.query(
+                            arena,
+                            nb,
+                            crate::base::assumptions::Props::POSITIVE,
+                        ))
+                        .is_true()
                         {
                             let s = arena.pow(nb, e);
                             let i_unit = arena.i_unit;

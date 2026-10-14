@@ -11,6 +11,7 @@
 //!
 //! G(s) = num(s) / den(s) — a ratio of polynomials in the Laplace variable s.
 
+use crate::base::truth::Truth;
 use crate::domains::matrix::Matrix;
 use crate::prelude::*;
 
@@ -1016,7 +1017,7 @@ struct RouthTable {
 }
 
 fn is_exact_zero(e: &Ex) -> bool {
-    crate::domains::matrix::ex_is_zero(e) == Some(true)
+    crate::domains::matrix::ex_is_zero(e).is_true()
 }
 
 fn routh_table(coeffs: &[Ex]) -> Result<RouthTable, SymplexError> {
@@ -1175,12 +1176,13 @@ pub fn is_routh_stable(coeffs: &[Ex]) -> Option<bool> {
     // nonzero and of the leading coefficient's sign (see above).
     let mut nonzero = coeffs.iter().skip_while(|c| is_exact_zero(c));
     if let Some(lead) = nonzero.next()
-        && crate::domains::matrix::ex_is_zero(lead) == Some(false)
-        && let Some(lead_positive) = crate::domains::matrix::ex_is_positive(lead)
+        && crate::domains::matrix::ex_is_zero(lead).is_false()
+        && let lead_positive @ (Truth::True | Truth::False) =
+            crate::domains::matrix::ex_is_positive(lead)
     {
         for c in nonzero {
-            let wrong_sign = crate::domains::matrix::ex_is_positive(c) == Some(!lead_positive)
-                && crate::domains::matrix::ex_is_zero(c) == Some(false);
+            let wrong_sign = crate::domains::matrix::ex_is_positive(c) == lead_positive.not()
+                && crate::domains::matrix::ex_is_zero(c).is_false();
             if is_exact_zero(c) || wrong_sign {
                 return Some(false);
             }
@@ -1196,8 +1198,12 @@ pub fn is_routh_stable(coeffs: &[Ex]) -> Option<bool> {
     for row in &table.rows {
         let entry = &row[0];
         // `None`: can't decide symbolically.
-        let positive = crate::domains::matrix::ex_is_positive(entry)?;
-        if !positive && crate::domains::matrix::ex_is_zero(entry) != Some(false) {
+        let positive = match crate::domains::matrix::ex_is_positive(entry) {
+            Truth::True => true,
+            Truth::False => false,
+            Truth::Unknown => return None,
+        };
+        if !positive && !crate::domains::matrix::ex_is_zero(entry).is_false() {
             return None;
         }
         match first_sign {

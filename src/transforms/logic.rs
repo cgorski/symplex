@@ -188,14 +188,14 @@ fn fold_rel(arena: &mut Arena, rel: Rel) -> ExprId {
 /// decided.
 fn known_nonreal(arena: &Arena, cache: &mut AssumptionCache, e: ExprId) -> bool {
     use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
-    if cache.query(arena, e, Props::EXTENDED_REAL) == Some(false)
-        || cache.query(arena, e, Props::IMAGINARY) == Some(true)
-        || (cache.query(arena, e, Props::REAL) == Some(false)
-            && cache.query(arena, e, Props::FINITE) == Some(true))
+    if Truth::from(cache.query(arena, e, Props::EXTENDED_REAL)).is_false()
+        || Truth::from(cache.query(arena, e, Props::IMAGINARY)).is_true()
+        || (Truth::from(cache.query(arena, e, Props::REAL)).is_false()
+            && Truth::from(cache.query(arena, e, Props::FINITE)).is_true())
     {
         return true;
     }
-    if cache.query(arena, e, Props::REAL) == Some(true)
+    if Truth::from(cache.query(arena, e, Props::REAL)).is_true()
         || !crate::base::walk::free_symbols(arena, e).is_empty()
     {
         return false;
@@ -1200,8 +1200,8 @@ impl Formula {
 
     /// Three-valued evaluation under a partial assignment.
     /// `pairs[i]` is the set of states still possible for pair `i`.
-    fn eval(&self, pairs: &[u8], atoms: &[Option<bool>]) -> Option<bool> {
-        self.values(pairs, atoms)[self.root]
+    fn eval(&self, pairs: &[u8], atoms: &[Option<bool>]) -> Truth {
+        Truth::from(self.values(pairs, atoms)[self.root])
     }
 
     /// One round of unit propagation towards making the root `target`.
@@ -1269,11 +1269,11 @@ impl Formula {
 }
 
 /// Search for an assignment under which the formula evaluates to
-/// `target`.  Returns `Some(true)` if one exists, `Some(false)` if none
-/// exists, `None` if the budget was exhausted.
-fn search_for(f: &Formula, target: bool) -> Option<bool> {
+/// `target`.  Returns `True` if one exists, `False` if none exists,
+/// `Unknown` if the budget was exhausted.
+fn search_for(f: &Formula, target: bool) -> Truth {
     if f.var_count() > MAX_SAT_VARS {
-        return None;
+        return Truth::Unknown;
     }
     let pairs = vec![ALL; f.pair_keys.len()];
     let atoms = vec![None; f.atom_keys.len()];
@@ -1289,15 +1289,15 @@ fn search_rec(
     mut pairs: Vec<u8>,
     mut atoms: Vec<Option<bool>>,
     budget: &mut usize,
-) -> Option<bool> {
+) -> Truth {
     loop {
         if *budget == 0 {
-            return None;
+            return Truth::Unknown;
         }
         *budget -= 1;
         match f.propagate(target, &mut pairs, &mut atoms) {
-            Prop::Determined(v) => return Some(v == target),
-            Prop::Conflict => return Some(false),
+            Prop::Determined(v) => return Truth::from_bool(v == target),
+            Prop::Conflict => return Truth::False,
             Prop::Changed => continue,
             Prop::Stuck => break,
         }
@@ -1318,27 +1318,27 @@ fn search_rec(
             let mut p2 = pairs.clone();
             p2[i] = state;
             match search_rec(f, target, p2, atoms.clone(), budget) {
-                Some(true) => return Some(true),
-                Some(false) => {}
-                None => return None,
+                Truth::True => return Truth::True,
+                Truth::False => {}
+                Truth::Unknown => return Truth::Unknown,
             }
         }
-        return Some(false);
+        return Truth::False;
     }
     if let Some(i) = atoms.iter().position(Option::is_none) {
         for v in [true, false] {
             let mut a2 = atoms.clone();
             a2[i] = Some(v);
             match search_rec(f, target, pairs.clone(), a2, budget) {
-                Some(true) => return Some(true),
-                Some(false) => {}
-                None => return None,
+                Truth::True => return Truth::True,
+                Truth::False => {}
+                Truth::Unknown => return Truth::Unknown,
             }
         }
-        return Some(false);
+        return Truth::False;
     }
     // Fully assigned but undetermined cannot happen.
-    None
+    Truth::Unknown
 }
 
 /// The assumptions that restrict a symbol's value on the real line (sign,
@@ -1376,7 +1376,7 @@ fn symbol_is_free(arena: &Arena, sym: ExprId) -> bool {
                 && !a
                     .known_false
                     .intersects(RESTRICTING - Props::IMAGINARY - Props::INFINITE)
-                && a.query(Props::REAL) != Some(false)
+                && !Truth::from(a.query(Props::REAL)).is_false()
         }
         _ => false,
     }
@@ -1403,14 +1403,14 @@ fn restricted_domain(arena: &mut Arena, sym: ExprId) -> Option<Domain> {
         return None;
     };
     let a = arena.symbol_assumptions(*sid);
-    if a.query(Props::REAL) == Some(false)
+    if Truth::from(a.query(Props::REAL)).is_false()
         || a.known_true.intersects(Props::IMAGINARY | Props::INFINITE)
     {
         return None;
     }
     let parity = Props::EVEN | Props::ODD | Props::PRIME | Props::COMPOSITE;
     let kind = Props::RATIONAL | Props::IRRATIONAL | Props::ALGEBRAIC | Props::TRANSCENDENTAL;
-    let integer = a.query(Props::INTEGER) == Some(true);
+    let integer = Truth::from(a.query(Props::INTEGER)).is_true();
     // An integer is rational and algebraic, which restricts it no further;
     // its parity and primality are decided per integer.
     let unsupported = if integer {
@@ -1426,8 +1426,8 @@ fn restricted_domain(arena: &mut Arena, sym: ExprId) -> Option<Domain> {
     }
     let (zero, inf, ninf) = (arena.zero, arena.infinity, arena.neg_infinity);
     let open = IntervalKind::Open;
-    let holds = |p: Props| a.query(p) == Some(true);
-    let fails = |p: Props| a.query(p) == Some(false);
+    let holds = |p: Props| Truth::from(a.query(p)).is_true();
+    let fails = |p: Props| Truth::from(a.query(p)).is_false();
     let mut parts: Vec<ExprId> = Vec::new();
     if holds(Props::POSITIVE) || fails(Props::NONPOSITIVE) {
         parts.push(arena.interval(zero, inf, open));
@@ -1743,44 +1743,44 @@ fn univariate_status(arena: &mut Arena, root: ExprId) -> Option<(bool, bool)> {
 }
 
 /// Is the formula true under every assignment?
-pub(crate) fn is_tautology(arena: &mut Arena, root: ExprId) -> Option<bool> {
+pub(crate) fn is_tautology(arena: &mut Arena, root: ExprId) -> Truth {
     let s = simplify_bool(arena, root);
     if s == arena.bool_true {
-        return Some(true);
+        return Truth::True;
     }
     if s == arena.bool_false {
-        return Some(false);
+        return Truth::False;
     }
     let f = Formula::build(arena, s);
     match search_for(&f, false) {
-        Some(false) => return Some(true), // no falsifying assignment
-        Some(true) if pairs_independent(arena, &f) => return Some(false),
+        Truth::False => return Truth::True, // no falsifying assignment
+        Truth::True if pairs_independent(arena, &f) => return Truth::False,
         _ => {}
     }
-    univariate_status(arena, s).map(|(_, full)| full)
+    Truth::from(univariate_status(arena, s).map(|(_, full)| full))
 }
 
 /// Is the formula false under every assignment?
-pub(crate) fn is_contradiction(arena: &mut Arena, root: ExprId) -> Option<bool> {
+pub(crate) fn is_contradiction(arena: &mut Arena, root: ExprId) -> Truth {
     let s = simplify_bool(arena, root);
     if s == arena.bool_false {
-        return Some(true);
+        return Truth::True;
     }
     if s == arena.bool_true {
-        return Some(false);
+        return Truth::False;
     }
     let f = Formula::build(arena, s);
     match search_for(&f, true) {
-        Some(false) => return Some(true), // no satisfying assignment
-        Some(true) if pairs_independent(arena, &f) => return Some(false),
+        Truth::False => return Truth::True, // no satisfying assignment
+        Truth::True if pairs_independent(arena, &f) => return Truth::False,
         _ => {}
     }
-    univariate_status(arena, s).map(|(empty, _)| empty)
+    Truth::from(univariate_status(arena, s).map(|(empty, _)| empty))
 }
 
 /// Does some assignment make the formula true?
-pub(crate) fn satisfiable(arena: &mut Arena, root: ExprId) -> Option<bool> {
-    is_contradiction(arena, root).map(|c| !c)
+pub(crate) fn satisfiable(arena: &mut Arena, root: ExprId) -> Truth {
+    is_contradiction(arena, root).not()
 }
 
 /// Truth table over the given variables (≤ 8).
@@ -1868,8 +1868,9 @@ pub(crate) fn truth_table(
             continue;
         }
         match f.eval(&pairs, &atoms) {
-            Some(v) => rows.push((values, v)),
-            None => {
+            Truth::True => rows.push((values, true)),
+            Truth::False => rows.push((values, false)),
+            Truth::Unknown => {
                 return Err(SymplexError::ComputationFailed {
                     operation: "truth_table",
                     reason: "the formula is not determined by the given variables".into(),
@@ -1911,9 +1912,9 @@ pub(crate) fn eval_bool(
                     _ => (Props::NONZERO, Props::ZERO),
                 };
                 let order = matches!(arena.node(id), ExprNode::Gt(..) | ExprNode::Ge(..));
-                let decided = if assumptions.query(&*arena, d, yes) == Some(true) {
+                let decided = if Truth::from(assumptions.query(&*arena, d, yes)).is_true() {
                     Some(t)
-                } else if assumptions.query(&*arena, d, no) == Some(true) {
+                } else if Truth::from(assumptions.query(&*arena, d, no)).is_true() {
                     Some(f)
                 } else {
                     None
@@ -2273,50 +2274,50 @@ mod tests {
         let ante = f.arena.and(&[pq, p]);
         let nante = f.arena.not(ante);
         let mp = f.arena.or(&[nante, q]);
-        assert_eq!(is_tautology(&mut f.arena, mp), Some(true));
-        assert_eq!(is_contradiction(&mut f.arena, mp), Some(false));
+        assert_eq!(is_tautology(&mut f.arena, mp), Truth::True);
+        assert_eq!(is_contradiction(&mut f.arena, mp), Truth::False);
         // p ∧ ¬p ∨ (q ∧ ¬q)
         let a = f.arena.and(&[p, np]);
         let b = f.arena.and(&[q, nq]);
         let c = f.arena.or(&[a, b]);
-        assert_eq!(is_contradiction(&mut f.arena, c), Some(true));
-        assert_eq!(satisfiable(&mut f.arena, c), Some(false));
+        assert_eq!(is_contradiction(&mut f.arena, c), Truth::True);
+        assert_eq!(satisfiable(&mut f.arena, c), Truth::False);
         // p ∨ q : satisfiable, not a tautology
         let o = f.arena.or(&[p, q]);
-        assert_eq!(satisfiable(&mut f.arena, o), Some(true));
-        assert_eq!(is_tautology(&mut f.arena, o), Some(false));
+        assert_eq!(satisfiable(&mut f.arena, o), Truth::True);
+        assert_eq!(is_tautology(&mut f.arena, o), Truth::False);
         // relational: x > 1 → x > 0  (exact univariate route)
         let gt1 = f.arena.gt(f.x, f.one);
         let gt0 = f.arena.gt(f.x, f.zero);
         let ngt1 = f.arena.not(gt1);
         let imp = f.arena.or(&[ngt1, gt0]);
-        assert_eq!(is_tautology(&mut f.arena, imp), Some(true));
+        assert_eq!(is_tautology(&mut f.arena, imp), Truth::True);
         // x > 1 ∧ x < 0 : contradiction (not propositionally!)
         let lt0 = f.arena.gt(f.zero, f.x);
         let both = f.arena.and(&[gt1, lt0]);
-        assert_eq!(is_contradiction(&mut f.arena, both), Some(true));
-        assert_eq!(satisfiable(&mut f.arena, both), Some(false));
+        assert_eq!(is_contradiction(&mut f.arena, both), Truth::True);
+        assert_eq!(satisfiable(&mut f.arena, both), Truth::False);
         // x > 0 alone: satisfiable, not tautology
-        assert_eq!(satisfiable(&mut f.arena, gt0), Some(true));
-        assert_eq!(is_tautology(&mut f.arena, gt0), Some(false));
+        assert_eq!(satisfiable(&mut f.arena, gt0), Truth::True);
+        assert_eq!(is_tautology(&mut f.arena, gt0), Truth::False);
         // independent linear pairs in distinct symbols: propositional answer is exact
         let gy = f.arena.gt(f.y, f.zero);
         let both = f.arena.and(&[gt0, gy]);
-        assert_eq!(satisfiable(&mut f.arena, both), Some(true));
-        assert_eq!(is_tautology(&mut f.arena, both), Some(false));
+        assert_eq!(satisfiable(&mut f.arena, both), Truth::True);
+        assert_eq!(is_tautology(&mut f.arena, both), Truth::False);
         // dependent multivariate relationals: honest None
         let gxy = f.arena.gt(f.x, f.y);
         let dep = f.arena.and(&[gxy, gt0]);
-        assert_eq!(satisfiable(&mut f.arena, dep), None);
-        assert_eq!(is_tautology(&mut f.arena, gxy), None);
+        assert_eq!(satisfiable(&mut f.arena, dep), Truth::Unknown);
+        assert_eq!(is_tautology(&mut f.arena, gxy), Truth::Unknown);
         // non-linear pair is not "free": x² > 0 is not a tautology propositionally
         // but x² ≥ 0 is decided exactly through the solver
         let two = f.arena.int(2);
         let x2 = f.arena.pow(f.x, two);
         let ge0 = f.arena.ge(x2, f.zero);
-        assert_eq!(is_tautology(&mut f.arena, ge0), Some(true));
+        assert_eq!(is_tautology(&mut f.arena, ge0), Truth::True);
         let lt0 = f.arena.gt(f.zero, x2);
-        assert_eq!(satisfiable(&mut f.arena, lt0), Some(false));
+        assert_eq!(satisfiable(&mut f.arena, lt0), Truth::False);
     }
 
     #[test]
@@ -2346,8 +2347,8 @@ mod tests {
             }
         }
         let php = f.arena.and(&clauses);
-        assert_eq!(satisfiable(&mut f.arena, php), Some(false));
-        assert_eq!(is_contradiction(&mut f.arena, php), Some(true));
+        assert_eq!(satisfiable(&mut f.arena, php), Truth::False);
+        assert_eq!(is_contradiction(&mut f.arena, php), Truth::True);
     }
 
     #[test]

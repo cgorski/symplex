@@ -47,6 +47,7 @@ use crate::api::expr::{Ex, ExprType};
 use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::domains::decompositions::{
     Diagonalization, Hessenberg, JordanForm, Lu, RankDecomposition,
 };
@@ -151,30 +152,31 @@ pub(crate) fn reop(e: SymplexError, operation: &'static str) -> SymplexError {
 /// Layers: structural zero → assumption system → `eval().simplify()` →
 /// numeric evaluation for constants → `together().simplify()` (common
 /// denominator, catches rational-function identities such as
-/// `1 − 2sin²θ/(2cosθ + 2) − cosθ`).  Returns `None` when the value cannot
+/// `1 − 2sin²θ/(2cosθ + 2) − cosθ`).  Returns `Unknown` when the value cannot
 /// be decided symbolically (e.g. a free symbol without assumptions).
-pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
+pub(crate) fn ex_is_zero(e: &Ex) -> Truth {
     if e.is_zero_structural() {
-        return Some(true);
+        return Truth::True;
     }
     // A rational function over ℚ(radicals, i) that vanishes identically is
     // zero for every value of its symbols; a constant one is decided
     // exactly either way.  (Before 0.31 `det` of `[[√2, 2], [a, √2·a]]`
     // was not recognised as zero and `inv` divided by it.)
-    if let Some(b) = rational_function_is_zero(e)
-        && (b || e.free_symbols().is_empty())
-    {
-        return Some(b);
+    let rf = rational_function_is_zero(e);
+    if rf.is_true() || (rf.is_false() && e.free_symbols().is_empty()) {
+        return rf;
     }
-    if let Some(b) = e.is_zero() {
-        return Some(b);
+    let t = Truth::from(e.is_zero());
+    if t.is_known() {
+        return t;
     }
     let s = e.eval().simplify();
     if s.is_zero_structural() {
-        return Some(true);
+        return Truth::True;
     }
-    if let Some(b) = s.is_zero() {
-        return Some(b);
+    let t = Truth::from(s.is_zero());
+    if t.is_known() {
+        return t;
     }
     // Numeric constants (including `RootOf`, whose bound variable
     // `is_constant` would report as free): a single `RootOf` over ℚ is
@@ -182,12 +184,16 @@ pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
     // test (certified digits, the exact test for algebraic numbers, the
     // deep zero search) — undecided stays `None`.  Before 0.30 an `f64`
     // value of exactly `0.0` was zero and one above `10⁻¹²` nonzero.
-    if let Some(b) = rootof_field_is_zero(&s) {
-        return Some(b);
+    let t = rootof_field_is_zero(&s);
+    if t.is_known() {
+        return t;
     }
     if s.eval_complex64().is_ok() {
         let mut inner = s.inner.write();
-        return crate::poly::algebraic::is_zero_checked(&mut inner.arena, s.raw_id());
+        return Truth::from(crate::poly::algebraic::is_zero_checked(
+            &mut inner.arena,
+            s.raw_id(),
+        ));
     }
     // Symbolic with fractions: bring over a common denominator and retry.
     // Skipped when radicals are present: `together` then routes through a
@@ -197,14 +203,12 @@ pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
         if t != s {
             let t = t.simplify();
             if t.is_zero_structural() {
-                return Some(true);
+                return Truth::True;
             }
-            if let Some(b) = t.is_zero() {
-                return Some(b);
-            }
+            return Truth::from(t.is_zero());
         }
     }
-    None
+    Truth::Unknown
 }
 
 /// Exact zero test for a constant built from rationals and one `RootOf(g,
@@ -221,7 +225,13 @@ pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
 /// evaluation with an absolute threshold, so a matrix with small entries
 /// had pivots of size `10⁻¹⁵` taken for zero (two "eigenvectors" for a
 /// simple eigenvalue, none for another, `Av ≠ λv`).
-pub(crate) fn rootof_field_is_zero(e: &Ex) -> Option<bool> {
+pub(crate) fn rootof_field_is_zero(e: &Ex) -> Truth {
+    Truth::from(rootof_field_residue(e).map(|r| r.is_zero()))
+}
+
+/// The residue of `e` in `ℚ[t]/(g)` for [`rootof_field_is_zero`]; `None`
+/// for any other shape.
+fn rootof_field_residue(e: &Ex) -> Option<crate::poly::dense::Poly> {
     use crate::base::node::{ExprId, ExprNode};
     use crate::poly::dense::Poly;
     let inner = e.inner.read();
@@ -334,7 +344,7 @@ pub(crate) fn rootof_field_is_zero(e: &Ex) -> Option<bool> {
         };
         val.insert(id, r);
     }
-    Some(val.get(&e.raw_id())?.is_zero())
+    val.remove(&e.raw_id())
 }
 
 /// Is `e` identically zero as a rational function over ℚ of its free
@@ -371,36 +381,40 @@ pub(crate) fn rootof_field_is_zero(e: &Ex) -> Option<bool> {
 /// pivot mixing `√2` and a symbol by `simplify` (a consistent system was
 /// "Inconsistent"), `rank`/`rref`/`nullspace` structurally (`rank` of
 /// `[[√2 − 3, −2], [3√3 − √6, 2√3]]` was 2).
-pub(crate) fn rational_function_is_zero(e: &Ex) -> Option<bool> {
-    rational_function_is_zero_q(e).or_else(|| crate::domains::linalg::algebraic_function_is_zero(e))
+pub(crate) fn rational_function_is_zero(e: &Ex) -> Truth {
+    rational_function_is_zero_q(e)
+        .or_else(|| Truth::from(crate::domains::linalg::algebraic_function_is_zero(e)))
 }
 
 /// [`rational_function_is_zero`] for rational functions over ℚ (no
 /// algebraic constants).
-fn rational_function_is_zero_q(e: &Ex) -> Option<bool> {
+fn rational_function_is_zero_q(e: &Ex) -> Truth {
     use num_traits::Zero;
     let inner = e.inner.read();
     let arena = &inner.arena;
     let syms = crate::base::walk::free_symbols(arena, e.raw_id());
     let mut zero_at_all = true;
     for k in 0..RF_POINTS {
-        match rf_value_at(arena, e.raw_id(), &syms, k)? {
-            Some(v) if !v.is_zero() => return Some(false),
-            Some(_) => {}
+        match rf_value_at(arena, e.raw_id(), &syms, k) {
+            // Not rational-function arithmetic.
+            None => return Truth::Unknown,
+            Some(Some(v)) if !v.is_zero() => return Truth::False,
+            Some(Some(_)) => {}
             // A denominator vanishes at this point: no information.
-            None => zero_at_all = false,
+            Some(None) => zero_at_all = false,
         }
     }
     // No nonzero value: settle it exactly unless the numerator is too big.
-    if let Some(b) = rf_numerator_is_zero(arena, e.raw_id(), &syms) {
-        return Some(b);
+    let exact = rf_numerator_is_zero(arena, e.raw_id(), &syms);
+    if exact.is_known() {
+        return exact;
     }
     // Zero at every point, each denominator nonzero there: the hint that
     // the exact test on a grid checks.
     if zero_at_all {
         return rf_numerator_vanishes_on_grid(arena, e.raw_id(), &syms);
     }
-    None
+    Truth::Unknown
 }
 
 /// Most evaluation points of [`rf_numerator_vanishes_on_grid`].
@@ -413,7 +427,7 @@ const RF_GRID_POINTS: u64 = 4096;
 /// variable that vanishes on `S₁ × … × Sₖ` with `|Sᵢ| = dᵢ + 1` is zero
 /// (by induction on `k`: each coefficient in the last variable vanishes on
 /// the smaller grid), and a nonzero value shows `P ≠ 0`.  The degrees are
-/// bounded node by node.  `None` when the grid would have more than
+/// bounded node by node.  `Unknown` when the grid would have more than
 /// [`RF_GRID_POINTS`] points, or for a node that is not rational-function
 /// arithmetic.
 ///
@@ -423,135 +437,140 @@ fn rf_numerator_vanishes_on_grid(
     arena: &crate::base::arena::Arena,
     root: crate::base::node::ExprId,
     syms: &[crate::base::node::ExprId],
-) -> Option<bool> {
-    use crate::base::node::{ExprId, ExprNode};
-    use num_traits::Zero;
-    let order = crate::base::walk::post_order_ids(arena, root);
-    let index: rustc_hash::FxHashMap<ExprId, usize> =
-        syms.iter().enumerate().map(|(i, &s)| (s, i)).collect();
-    let exponent = |x: ExprId| -> Option<i64> {
-        let k = arena.as_num(x)?;
-        if !k.is_integer() {
-            return None;
-        }
-        num_traits::ToPrimitive::to_i64(&k.to_integer()).filter(|k| (-64..=64).contains(k))
-    };
-    // Degree bounds (numerator, denominator) per variable.
-    let nv = syms.len();
-    let mut degs: rustc_hash::FxHashMap<ExprId, (Vec<u64>, Vec<u64>)> =
-        rustc_hash::FxHashMap::default();
-    for &id in &order {
-        let r = match arena.node(id) {
-            ExprNode::Num(_) => (vec![0; nv], vec![0; nv]),
-            ExprNode::Symbol(_) => {
-                let mut n = vec![0; nv];
-                n[*index.get(&id)?] = 1;
-                (n, vec![0; nv])
+) -> Truth {
+    // `None` (every `?`): a node that is not rational-function arithmetic,
+    // or a grid that is too large.
+    let grid_test = || -> Option<bool> {
+        use crate::base::node::{ExprId, ExprNode};
+        use num_traits::Zero;
+        let order = crate::base::walk::post_order_ids(arena, root);
+        let index: rustc_hash::FxHashMap<ExprId, usize> =
+            syms.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+        let exponent = |x: ExprId| -> Option<i64> {
+            let k = arena.as_num(x)?;
+            if !k.is_integer() {
+                return None;
             }
-            ExprNode::Neg(b) => degs.get(b)?.clone(),
-            ExprNode::Add(ch) => {
-                let (mut n, mut d) = (vec![0u64; nv], vec![0u64; nv]);
-                for c in ch {
-                    let (cn, cd) = degs.get(c)?;
-                    for i in 0..nv {
-                        n[i] = (n[i].saturating_add(cd[i])).max(cn[i].saturating_add(d[i]));
-                        d[i] = d[i].saturating_add(cd[i]);
-                    }
-                }
-                (n, d)
-            }
-            ExprNode::Mul(ch) => {
-                let (mut n, mut d) = (vec![0u64; nv], vec![0u64; nv]);
-                for c in ch {
-                    let (cn, cd) = degs.get(c)?;
-                    for i in 0..nv {
-                        n[i] = n[i].saturating_add(cn[i]);
-                        d[i] = d[i].saturating_add(cd[i]);
-                    }
-                }
-                (n, d)
-            }
-            ExprNode::Pow(b, x) => {
-                let k = exponent(*x)?;
-                let (bn, bd) = degs.get(b)?;
-                let m = k.unsigned_abs();
-                let scale = |v: &[u64]| v.iter().map(|&e| e.saturating_mul(m)).collect();
-                if k >= 0 {
-                    (scale(bn), scale(bd))
-                } else {
-                    (scale(bd), scale(bn))
-                }
-            }
-            _ => return None,
+            num_traits::ToPrimitive::to_i64(&k.to_integer()).filter(|k| (-64..=64).contains(k))
         };
-        degs.insert(id, r);
-    }
-    let bounds = &degs.get(&root)?.0;
-    let mut points: u64 = 1;
-    for &d in bounds {
-        points = points.saturating_mul(d.saturating_add(1));
-        if points > RF_GRID_POINTS {
-            return None;
-        }
-    }
-    // Every point of {0, …, d₁} × … × {0, …, dₖ}, in mixed radix.
-    let one = Q::from_integer(BigInt::from(1));
-    for p in 0..points {
-        let mut rest = p;
-        let coords: Vec<Q> = bounds
-            .iter()
-            .map(|&d| {
-                let c = rest % (d + 1);
-                rest /= d + 1;
-                Q::from_integer(BigInt::from(c))
-            })
-            .collect();
-        let mut val: rustc_hash::FxHashMap<ExprId, (Q, Q)> = rustc_hash::FxHashMap::default();
+        // Degree bounds (numerator, denominator) per variable.
+        let nv = syms.len();
+        let mut degs: rustc_hash::FxHashMap<ExprId, (Vec<u64>, Vec<u64>)> =
+            rustc_hash::FxHashMap::default();
         for &id in &order {
             let r = match arena.node(id) {
-                ExprNode::Num(_) => (arena.as_num(id)?.clone(), one.clone()),
-                ExprNode::Symbol(_) => (coords[*index.get(&id)?].clone(), one.clone()),
-                ExprNode::Neg(b) => {
-                    let (n, d) = val.get(b)?;
-                    (-n.clone(), d.clone())
+                ExprNode::Num(_) => (vec![0; nv], vec![0; nv]),
+                ExprNode::Symbol(_) => {
+                    let mut n = vec![0; nv];
+                    n[*index.get(&id)?] = 1;
+                    (n, vec![0; nv])
                 }
+                ExprNode::Neg(b) => degs.get(b)?.clone(),
                 ExprNode::Add(ch) => {
-                    let (mut n, mut d) = (Q::zero(), one.clone());
+                    let (mut n, mut d) = (vec![0u64; nv], vec![0u64; nv]);
                     for c in ch {
-                        let (cn, cd) = val.get(c)?;
-                        n = &n * cd + cn * &d;
-                        d *= cd;
+                        let (cn, cd) = degs.get(c)?;
+                        for i in 0..nv {
+                            n[i] = (n[i].saturating_add(cd[i])).max(cn[i].saturating_add(d[i]));
+                            d[i] = d[i].saturating_add(cd[i]);
+                        }
                     }
                     (n, d)
                 }
                 ExprNode::Mul(ch) => {
-                    let (mut n, mut d) = (one.clone(), one.clone());
+                    let (mut n, mut d) = (vec![0u64; nv], vec![0u64; nv]);
                     for c in ch {
-                        let (cn, cd) = val.get(c)?;
-                        n *= cn;
-                        d *= cd;
+                        let (cn, cd) = degs.get(c)?;
+                        for i in 0..nv {
+                            n[i] = n[i].saturating_add(cn[i]);
+                            d[i] = d[i].saturating_add(cd[i]);
+                        }
                     }
                     (n, d)
                 }
                 ExprNode::Pow(b, x) => {
                     let k = exponent(*x)?;
-                    let (bn, bd) = val.get(b)?;
-                    let m = i32::try_from(k.unsigned_abs()).ok()?;
+                    let (bn, bd) = degs.get(b)?;
+                    let m = k.unsigned_abs();
+                    let scale = |v: &[u64]| v.iter().map(|&e| e.saturating_mul(m)).collect();
                     if k >= 0 {
-                        (num_traits::Pow::pow(bn, m), num_traits::Pow::pow(bd, m))
+                        (scale(bn), scale(bd))
                     } else {
-                        (num_traits::Pow::pow(bd, m), num_traits::Pow::pow(bn, m))
+                        (scale(bd), scale(bn))
                     }
                 }
                 _ => return None,
             };
-            val.insert(id, r);
+            degs.insert(id, r);
         }
-        if !val.get(&root)?.0.is_zero() {
-            return Some(false);
+        let bounds = &degs.get(&root)?.0;
+        let mut points: u64 = 1;
+        for &d in bounds {
+            points = points.saturating_mul(d.saturating_add(1));
+            if points > RF_GRID_POINTS {
+                return None;
+            }
         }
-    }
-    Some(true)
+        // Every point of {0, …, d₁} × … × {0, …, dₖ}, in mixed radix.
+        let one = Q::from_integer(BigInt::from(1));
+        for p in 0..points {
+            let mut rest = p;
+            let coords: Vec<Q> = bounds
+                .iter()
+                .map(|&d| {
+                    let c = rest % (d + 1);
+                    rest /= d + 1;
+                    Q::from_integer(BigInt::from(c))
+                })
+                .collect();
+            let mut val: rustc_hash::FxHashMap<ExprId, (Q, Q)> = rustc_hash::FxHashMap::default();
+            for &id in &order {
+                let r = match arena.node(id) {
+                    ExprNode::Num(_) => (arena.as_num(id)?.clone(), one.clone()),
+                    ExprNode::Symbol(_) => (coords[*index.get(&id)?].clone(), one.clone()),
+                    ExprNode::Neg(b) => {
+                        let (n, d) = val.get(b)?;
+                        (-n.clone(), d.clone())
+                    }
+                    ExprNode::Add(ch) => {
+                        let (mut n, mut d) = (Q::zero(), one.clone());
+                        for c in ch {
+                            let (cn, cd) = val.get(c)?;
+                            n = &n * cd + cn * &d;
+                            d *= cd;
+                        }
+                        (n, d)
+                    }
+                    ExprNode::Mul(ch) => {
+                        let (mut n, mut d) = (one.clone(), one.clone());
+                        for c in ch {
+                            let (cn, cd) = val.get(c)?;
+                            n *= cn;
+                            d *= cd;
+                        }
+                        (n, d)
+                    }
+                    ExprNode::Pow(b, x) => {
+                        let k = exponent(*x)?;
+                        let (bn, bd) = val.get(b)?;
+                        let m = i32::try_from(k.unsigned_abs()).ok()?;
+                        if k >= 0 {
+                            (num_traits::Pow::pow(bn, m), num_traits::Pow::pow(bd, m))
+                        } else {
+                            (num_traits::Pow::pow(bd, m), num_traits::Pow::pow(bn, m))
+                        }
+                    }
+                    _ => return None,
+                };
+                val.insert(id, r);
+            }
+            if !val.get(&root)?.0.is_zero() {
+                return Some(false);
+            }
+        }
+        Some(true)
+    };
+    Truth::from(grid_test())
 }
 
 /// Number of evaluation points of [`rational_function_is_zero`].
@@ -651,14 +670,23 @@ pub(crate) fn rf_sample_point(i: usize, k: u64) -> Q {
 }
 
 /// Is the numerator of `root = P/Q` (over ℚ in `syms`) the zero
-/// polynomial?  `None` when an intermediate polynomial exceeds
+/// polynomial?  `Unknown` when an intermediate polynomial exceeds
 /// [`RF_TERM_BUDGET`] terms, when a denominator is the zero polynomial, or
 /// for a node that is not rational-function arithmetic.
 fn rf_numerator_is_zero(
     arena: &crate::base::arena::Arena,
     root: crate::base::node::ExprId,
     syms: &[crate::base::node::ExprId],
-) -> Option<bool> {
+) -> Truth {
+    Truth::from(rf_numerator(arena, root, syms).map(|p| p.is_zero()))
+}
+
+/// The expanded numerator for [`rf_numerator_is_zero`]; `None` as there.
+fn rf_numerator(
+    arena: &crate::base::arena::Arena,
+    root: crate::base::node::ExprId,
+    syms: &[crate::base::node::ExprId],
+) -> Option<crate::poly::multipoly::MultiPoly<crate::poly::multipoly::GrevLex>> {
     use crate::base::node::{ExprId, ExprNode};
     use crate::poly::multipoly::{GrevLex, MultiPoly};
     type Mp = MultiPoly<GrevLex>;
@@ -748,7 +776,7 @@ fn rf_numerator_is_zero(
         }
         val.insert(id, r);
     }
-    Some(val.get(&root)?.0.is_zero())
+    val.remove(&root).map(|(numerator, _)| numerator)
 }
 
 /// `is_irreducible_z(g) == Some(true)`, remembering the last polynomial
@@ -765,7 +793,7 @@ fn irreducible_cached(g: &crate::poly::dense::Poly) -> bool {
     }) {
         return b;
     }
-    let b = crate::poly::factor_zassenhaus::is_irreducible_z(g) == Some(true);
+    let b = Truth::from(crate::poly::factor_zassenhaus::is_irreducible_z(g)).is_true();
     LAST.with(|c| *c.borrow_mut() = Some((g.clone(), b)));
     b
 }
@@ -1004,41 +1032,23 @@ pub(crate) fn simplify_function_entry(e: &Ex) -> Ex {
     }
 }
 
-/// Three-valued "is strictly positive" test for a scalar expression.
-pub(crate) fn ex_is_positive(e: &Ex) -> Option<bool> {
-    if let Some(b) = e.is_positive() {
-        return Some(b);
-    }
-    let s = e.eval().simplify();
-    if let Some(b) = s.is_positive() {
-        return Some(b);
-    }
-    if let Ok(v) = s.eval_f64() {
-        return Some(v > 0.0);
-    }
-    None
+/// Three-valued "is strictly positive" test for a scalar expression: the
+/// assumption system and certified evaluation ([`Ex::is_positive`]), of `e`
+/// and of `e.eval().simplify()`.
+///
+/// Up to 0.49 an undecided value was then decided by the sign of its `f64`
+/// value, which is `0.0` for a value below the exponent range or zero to
+/// the precision reached: `[[e^{−10³⁰} − e^{−2·10³⁰}]]` (positive) was "not
+/// positive definite" and `[[e^{−10⁻⁵⁰⁰⁰} − 1]]` (negative) positive
+/// semidefinite ([`ex_is_nonnegative`]).
+pub(crate) fn ex_is_positive(e: &Ex) -> Truth {
+    Truth::from(e.is_positive()).or_else(|| Truth::from(e.eval().simplify().is_positive()))
 }
 
-/// Three-valued "is non-negative" test for a scalar expression.
-pub(crate) fn ex_is_nonnegative(e: &Ex) -> Option<bool> {
-    if let Some(b) = e.is_nonnegative() {
-        return Some(b);
-    }
-    let s = e.eval().simplify();
-    if let Some(b) = s.is_nonnegative() {
-        return Some(b);
-    }
-    if let Ok(v) = s.eval_f64() {
-        return Some(v >= 0.0);
-    }
-    None
-}
-
-/// Combine three-valued results with logical AND (short-circuit on `false`):
-/// [`Truth::all`](crate::base::truth::Truth::all) on `Option<bool>`.
-pub(crate) fn all3(iter: impl IntoIterator<Item = Option<bool>>) -> Option<bool> {
-    crate::base::truth::Truth::all(iter.into_iter().map(crate::base::truth::Truth::from))
-        .to_option()
+/// Three-valued "is non-negative" test for a scalar expression, as
+/// [`ex_is_positive`] (no `f64` sign either).
+pub(crate) fn ex_is_nonnegative(e: &Ex) -> Truth {
+    Truth::from(e.is_nonnegative()).or_else(|| Truth::from(e.eval().simplify().is_nonnegative()))
 }
 
 /// Square root of `e` with rational radicands rationalised: for a positive
@@ -1068,21 +1078,14 @@ pub(crate) fn sqrt_rationalized(e: &Ex) -> Ex {
 // this is its historical public path.
 pub use crate::base::config::EXPRESSION_BUDGET;
 
-/// Tree size of `e` (nodes, without sharing), stopping as soon as `cap` is
-/// exceeded.  Iterative, so deep expressions cannot overflow the stack.
+/// Tree size of `e` (nodes, without sharing), saturating at `cap + 1` so
+/// that a caller comparing against `cap` sees the overflow.  O(1) from the
+/// node's facts.
 pub(crate) fn tree_size_capped(e: &Ex, cap: usize) -> usize {
     let inner = e.inner.read();
-    let arena = &inner.arena;
-    let mut stack = vec![e.raw_id()];
-    let mut count = 0usize;
-    while let Some(id) = stack.pop() {
-        count += 1;
-        if count > cap {
-            break;
-        }
-        stack.extend(arena.node(id).children());
-    }
-    count
+    inner
+        .arena
+        .tree_size_capped(e.raw_id(), cap.saturating_add(1))
 }
 
 /// Return `Err(ExpressionSwell)` if the combined tree size of `entries`
@@ -1780,11 +1783,12 @@ impl Matrix {
         if self.shape() != other.shape() {
             return Some(false);
         }
-        all3(
+        Truth::all(
             self.iter()
                 .zip(other.iter())
                 .map(|(a, b)| ex_is_zero(&(a - b))),
         )
+        .to_option()
     }
 
     // ── Context-aware helpers ──────────────────────────────────────────
@@ -2436,7 +2440,7 @@ impl Matrix {
         }
         self.check_budget("inv")?;
         let d = self.det().map_err(|e| reop(e, "inv"))?;
-        if ex_is_zero(&d) == Some(true) {
+        if ex_is_zero(&d).is_true() {
             return Err(failed("inv", "matrix is singular (determinant is zero)"));
         }
         let n = self.nrows;
@@ -2565,7 +2569,7 @@ impl Matrix {
                 "AᵀA is singular (A does not have full column rank)",
             ));
         }
-        let real = self.iter().all(|e| e.is_real() == Some(true));
+        let real = self.iter().all(|e| Truth::from(e.is_real()).is_true());
         let at = if real {
             self.transpose()
         } else {
@@ -3119,7 +3123,7 @@ impl Matrix {
         // decidable: for constant matrices, and for rational functions of
         // the symbols at an eigenvalue that is one too (`rref` then finds the
         // generic rank of `A − λI` exactly).
-        let exact = |e: &Ex| e.is_constant() || rational_function_is_zero(e).is_some();
+        let exact = |e: &Ex| e.is_constant() || rational_function_is_zero(e).is_known();
         let decided = self.iter().all(Ex::is_constant)
             || (self.iter().all(exact)
                 && eigvs
@@ -3817,7 +3821,7 @@ impl Matrix {
         // `Aᴴ` (SymPy's `pinv` uses `.H`); `Aᵀ` only when every entry is
         // provably real.  Before 0.38 `Aᵀ` was used for complex `A` too, so
         // `(A·A⁺)ᴴ ≠ A·A⁺` for `[[0, 1, √2·i], [0, −√2, √3], [0, 0, 2]]`.
-        let real = self.iter().all(|e| e.is_real() == Some(true));
+        let real = self.iter().all(|e| Truth::from(e.is_real()).is_true());
         let adj = |m: &Matrix| if real { m.transpose() } else { m.adjoint() };
         let at = adj(self);
         if pivots.len() == self.ncols {
@@ -3937,7 +3941,7 @@ impl Matrix {
             // only when every entry is provably real.  Before 0.32 `AᵀA` was
             // used for complex `A` too: `[[i, 0], [0, 2]]` had the "singular
             // value" `i`.
-            let at = if self.iter().all(|e| e.is_real() == Some(true)) {
+            let at = if self.iter().all(|e| Truth::from(e.is_real()).is_true()) {
                 self.transpose()
             } else {
                 self.adjoint()
@@ -3952,7 +3956,7 @@ impl Matrix {
         // A structurally diagonal Gram matrix (orthogonal columns) has its
         // eigenvalues on the diagonal; skip the characteristic polynomial,
         // whose quadratic-formula roots would hide `a²` inside `√((a²−b²)²)`.
-        let eig = if gram.is_diagonal() == Some(true) {
+        let eig = if Truth::from(gram.is_diagonal()).is_true() {
             gram.diagonal()
         } else {
             gram.eigenvals().map_err(|e| reop(e, "singular_values"))?
@@ -4033,7 +4037,7 @@ impl Matrix {
                 Ex::min_of(&ctx, sv.iter().map(real)),
             ),
         };
-        if ex_is_zero(&min) == Some(true) {
+        if ex_is_zero(&min).is_true() {
             return Err(failed(
                 "condition_number",
                 "matrix is singular (smallest singular value is 0), condition number is infinite",
@@ -4120,11 +4124,11 @@ impl Matrix {
             let mut fallback = None;
             for (i, row) in h.iter().enumerate().skip(k + 1) {
                 match ex_is_zero(&row[k]) {
-                    Some(false) => {
+                    Truth::False => {
                         pivot = Some(i);
                         break;
                     }
-                    None if fallback.is_none() => fallback = Some(i),
+                    Truth::Unknown if fallback.is_none() => fallback = Some(i),
                     _ => {}
                 }
             }
@@ -4145,7 +4149,7 @@ impl Matrix {
             }
             let pv = h[k + 1][k].clone();
             for j in (k + 2)..n {
-                if ex_is_zero(&h[j][k]) == Some(true) {
+                if ex_is_zero(&h[j][k]).is_true() {
                     h[j][k] = zero.clone();
                     continue;
                 }
@@ -4259,7 +4263,7 @@ fn low_degree_roots(coeffs: &[Ex]) -> Vec<(Ex, usize)> {
             let c1 = &crate::domains::linalg::algebraic_constant_normal_form(c1)
                 .unwrap_or_else(|| c1.clone());
             let denom = &two * c2;
-            if ex_is_zero(&disc) == Some(true) {
+            if ex_is_zero(&disc).is_true() {
                 let root = (-c1 / &denom).eval();
                 return vec![(root, 2)];
             }
@@ -4329,7 +4333,7 @@ fn quadratic_sqrt_with(disc: &Ex, by_parts: bool) -> Ex {
     let denested = disc.sqrt().sqrtdenest();
     let check = (&denested.powi(2) - disc).expand();
     if (check.is_zero_structural()
-        || crate::domains::linalg::algebraic_function_is_zero(&check) == Some(true))
+        || Truth::from(crate::domains::linalg::algebraic_function_is_zero(&check)).is_true())
         && crate::domains::linalg::algebraic_function_is_zero(&denested).is_some()
     {
         // A radical of a non-real base (`√(2p²·i)` is built as `p·√2·√i`
@@ -4416,7 +4420,7 @@ fn square_root_by_parts(disc: &Ex) -> Option<Ex> {
         let check = (&r.powi(2) - disc).expand();
 
         if check.is_zero_structural()
-            || crate::domains::linalg::algebraic_function_is_zero(&check) == Some(true)
+            || Truth::from(crate::domains::linalg::algebraic_function_is_zero(&check)).is_true()
         {
             return Some(r);
         }
@@ -4586,7 +4590,7 @@ fn monic_quadratic_roots(c: &Ex, b: &Ex) -> Vec<Ex> {
 /// [`parametric_radical_roots`] of `x³ + a·x² + b·x + c`.
 fn parametric_cubic_roots(a: &Ex, b: &Ex, c: &Ex) -> Option<Vec<Ex>> {
     let ctx = a.context();
-    let zero = |e: &Ex| ex_is_zero(e) == Some(true);
+    let zero = |e: &Ex| ex_is_zero(e).is_true();
     if zero(c) {
         // x·(x² + a·x + b)
         let mut r = monic_quadratic_roots(b, a);
@@ -4606,7 +4610,7 @@ fn parametric_cubic_roots(a: &Ex, b: &Ex, c: &Ex) -> Option<Vec<Ex>> {
             return Some(vec![(-&aon3).eval(); 3]);
         }
         // y³ = −q: any cube root of −q times the cube roots of unity.
-        let w = if q.is_positive() == Some(true) {
+        let w = if Truth::from(q.is_positive()).is_true() {
             -q.cbrt()
         } else {
             (-&q).eval().cbrt()
@@ -4625,7 +4629,7 @@ fn parametric_cubic_roots(a: &Ex, b: &Ex, c: &Ex) -> Option<Vec<Ex>> {
     let r = parametric_normal(&(&(&q.powi(2) * &q3(1, 4)) + &(&p.powi(3) * &q3(1, 27))));
     let s = quadratic_sqrt(&r);
     let half_q = &q * &q3(1, 2);
-    let w = if q.is_negative() == Some(true) {
+    let w = if Truth::from(q.is_negative()).is_true() {
         (&s - &half_q).cbrt()
     } else {
         -(&half_q + &s).cbrt()
@@ -4644,7 +4648,7 @@ fn parametric_cubic_roots(a: &Ex, b: &Ex, c: &Ex) -> Option<Vec<Ex>> {
 /// [`parametric_radical_roots`] of `x⁴ + a·x³ + b·x² + c·x + d`.
 fn parametric_quartic_roots(a: &Ex, b: &Ex, c: &Ex, d: &Ex) -> Option<Vec<Ex>> {
     let ctx = a.context();
-    let zero = |e: &Ex| ex_is_zero(e) == Some(true);
+    let zero = |e: &Ex| ex_is_zero(e).is_true();
     let qn = |n: i64, dd: i64| ctx.rational(n, dd);
     if zero(d) {
         // x·(x³ + a·x² + b·x + c)
@@ -4754,7 +4758,7 @@ fn resolvent_rational_root(e: &Ex, f: &Ex, g: &Ex) -> Option<Ex> {
 fn ferrari_roots(e: &Ex, f: &Ex, g: &Ex) -> Vec<Ex> {
     let ctx = e.context();
     let qn = |n: i64, d: i64| ctx.rational(n, d);
-    let zero = |x: &Ex| ex_is_zero(x) == Some(true);
+    let zero = |x: &Ex| ex_is_zero(x).is_true();
     let ee = e.powi(2);
     let p = parametric_normal(&(&(&ee * &qn(-1, 12)) - g));
     let q = parametric_normal(
@@ -4763,7 +4767,7 @@ fn ferrari_roots(e: &Ex, f: &Ex, g: &Ex) -> Vec<Ex> {
     let five_e_6 = parametric_normal(&(e * &qn(-5, 6)));
     let z = if zero(&p) {
         // z³ = −q
-        if q.is_positive() == Some(true) {
+        if Truth::from(q.is_positive()).is_true() {
             -q.cbrt()
         } else {
             (-&q).eval().cbrt()
@@ -4772,7 +4776,7 @@ fn ferrari_roots(e: &Ex, f: &Ex, g: &Ex) -> Vec<Ex> {
         let rad = parametric_normal(&(&(&q.powi(2) * &qn(1, 4)) + &(&p.powi(3) * &qn(1, 27))));
         let s = quadratic_sqrt(&rad);
         let half_q = &q * &qn(1, 2);
-        let u = if q.is_negative() == Some(true) {
+        let u = if Truth::from(q.is_negative()).is_true() {
             (&s - &half_q).cbrt()
         } else {
             -(&half_q + &s).cbrt()
@@ -5373,7 +5377,7 @@ impl Matrix {
 /// sine: before 0.35 the norm of `[[exp(i)]]` was `√(sin²1 + cos²1)`
 /// (SymPy: `1`).
 fn abs_squared_entry(e: &Ex) -> Ex {
-    if e.is_real() == Some(true) {
+    if Truth::from(e.is_real()).is_true() {
         return e * e;
     }
     if let Some(sq) = abs_squared_through_exp(e) {
@@ -6726,10 +6730,9 @@ fn pivot_is_zero(e: &Ex) -> bool {
     if e.expr_type() == ExprType::Number {
         return false;
     }
-    if let Some(b) = rational_function_is_zero(e) {
-        return b;
-    }
-    constant_is_zero(e) == Some(true)
+    rational_function_is_zero(e)
+        .or_else(|| constant_is_zero(e))
+        .is_true()
 }
 
 /// Zero test of a constant that is not a rational function over
@@ -6746,15 +6749,17 @@ fn pivot_is_zero(e: &Ex) -> bool {
 /// ∛2·(1/2 + √3·i/2)`, exactly 0 (`(−2)^(1/3) = 2^(1/3)·e^(iπ/3)`), was a
 /// pivot, so `rank` of `[[it, 0], [0, 1]]` was 2, its null space empty and
 /// `lu` returned a "factorization" with that zero as a pivot.
-fn constant_is_zero(e: &Ex) -> Option<bool> {
+fn constant_is_zero(e: &Ex) -> Truth {
     if !e.free_symbols().is_empty() {
-        return None;
+        return Truth::Unknown;
     }
-    if let Some(b) = rootof_field_is_zero(e) {
-        return Some(b);
-    }
-    let mut inner = e.inner.write();
-    crate::poly::algebraic::is_zero_checked(&mut inner.arena, e.raw_id())
+    rootof_field_is_zero(e).or_else(|| {
+        let mut inner = e.inner.write();
+        Truth::from(crate::poly::algebraic::is_zero_checked(
+            &mut inner.arena,
+            e.raw_id(),
+        ))
+    })
 }
 
 fn eigen_zero_test(e: &Ex) -> bool {
@@ -6768,10 +6773,7 @@ fn eigen_zero_test(e: &Ex) -> bool {
     // RootOf(g, k)`; certified for other constants (see `ex_is_zero`).
     // Before 0.30 an undecided entry was zero when its `f64` value was
     // below `10⁻¹⁰` in absolute value (see `rootof_field_is_zero`).
-    if let Some(b) = rootof_field_is_zero(e) {
-        return b;
-    }
-    ex_is_zero(e) == Some(true)
+    rootof_field_is_zero(e).or_else(|| ex_is_zero(e)).is_true()
 }
 
 /// An eigenvector entry of a symbolic matrix that is a rational function
@@ -6804,12 +6806,13 @@ fn provably_nonzero(e: &Ex) -> bool {
     if e.expr_type() == ExprType::Number {
         return true;
     }
-    if let Some(b) = rational_function_is_zero(e) {
-        return !b;
+    let rf = rational_function_is_zero(e);
+    if rf.is_known() {
+        return rf.is_false();
     }
     let syms = e.free_symbols();
     if syms.is_empty() {
-        return constant_is_zero(e) == Some(false);
+        return constant_is_zero(e).is_false();
     }
     // A `RootOf` binds a variable that `free_symbols` may report.
     if has_root_of(e) {
@@ -6821,7 +6824,7 @@ fn provably_nonzero(e: &Ex) -> bool {
             .map(|i| ctx.rational(31 + 17 * i + 7 * k, 11 + 4 * k + 3 * i))
             .collect();
         let subs: Vec<(&Ex, &Ex)> = syms.iter().zip(vals.iter()).collect();
-        constant_is_zero(&e.subs_map(&subs)) == Some(false)
+        constant_is_zero(&e.subs_map(&subs)).is_false()
     })
 }
 
@@ -6839,8 +6842,9 @@ fn radical_nonzero_by_value(e: &Ex) -> bool {
     if e.expr_type() == ExprType::Number {
         return true;
     }
-    if let Some(b) = rational_function_is_zero(e) {
-        return !b;
+    let rf = rational_function_is_zero(e);
+    if rf.is_known() {
+        return rf.is_false();
     }
     let syms = e.free_symbols();
     if has_root_of(e) {
@@ -8357,24 +8361,21 @@ mod tests {
     fn three_valued_helpers() {
         let ctx = tctx();
         let x = ctx.symbol("x");
-        assert_eq!(ex_is_zero(&ctx.int(0)), Some(true));
-        assert_eq!(ex_is_zero(&ctx.int(2)), Some(false));
-        assert_eq!(ex_is_zero(&(ctx.int(2).sqrt() - 1)), Some(false));
+        assert_eq!(ex_is_zero(&ctx.int(0)), Truth::True);
+        assert_eq!(ex_is_zero(&ctx.int(2)), Truth::False);
+        assert_eq!(ex_is_zero(&(ctx.int(2).sqrt() - 1)), Truth::False);
         assert_eq!(
             ex_is_zero(&(&x.sin().powi(2) + &x.cos().powi(2) - 1)),
-            Some(true)
+            Truth::True
         );
-        assert_eq!(ex_is_zero(&x), None);
-        assert_eq!(ex_is_positive(&(ctx.int(2).sqrt() - 1)), Some(true));
+        assert_eq!(ex_is_zero(&x), Truth::Unknown);
+        assert_eq!(ex_is_positive(&(ctx.int(2).sqrt() - 1)), Truth::True);
         assert_eq!(
             ex_is_positive(&(ctx.int(1) - ctx.int(2).sqrt())),
-            Some(false)
+            Truth::False
         );
-        assert_eq!(ex_is_positive(&x), None);
-        assert_eq!(ex_is_nonnegative(&ctx.int(0)), Some(true));
-        assert_eq!(all3([Some(true), None]), None);
-        assert_eq!(all3([Some(true), None, Some(false)]), Some(false));
-        assert_eq!(all3([Some(true), Some(true)]), Some(true));
+        assert_eq!(ex_is_positive(&x), Truth::Unknown);
+        assert_eq!(ex_is_nonnegative(&ctx.int(0)), Truth::True);
     }
 
     /// `P = (x − p₀)(x − p₁)(x − p₂)·(1 + y)³¹·(1 + z)³¹` with `pₖ` the
@@ -8423,9 +8424,12 @@ mod tests {
                 let v = rf_value_at(&inner.arena, e.raw_id(), &syms, k).unwrap();
                 assert_eq!(v.map(|v| num_traits::Zero::is_zero(&v)), Some(true));
             }
-            assert_eq!(rf_numerator_is_zero(&inner.arena, e.raw_id(), &syms), None);
+            assert_eq!(
+                rf_numerator_is_zero(&inner.arena, e.raw_id(), &syms),
+                Truth::Unknown
+            );
         }
-        assert_eq!(rational_function_is_zero_q(&e), Some(false));
+        assert_eq!(rational_function_is_zero_q(&e), Truth::False);
     }
 
     /// `(1 + x)⁶³·(1 + y)⁶³ − (1 + x + y + xy)⁶³` is identically zero, and its
@@ -8444,12 +8448,15 @@ mod tests {
         {
             let inner = e.inner.read();
             let syms = crate::base::walk::free_symbols(&inner.arena, e.raw_id());
-            assert_eq!(rf_numerator_is_zero(&inner.arena, e.raw_id(), &syms), None);
+            assert_eq!(
+                rf_numerator_is_zero(&inner.arena, e.raw_id(), &syms),
+                Truth::Unknown
+            );
             assert_eq!(
                 rf_numerator_vanishes_on_grid(&inner.arena, e.raw_id(), &syms),
-                Some(true)
+                Truth::True
             );
         }
-        assert_eq!(rational_function_is_zero_q(&e), Some(true));
+        assert_eq!(rational_function_is_zero_q(&e), Truth::True);
     }
 }

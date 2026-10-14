@@ -17,13 +17,18 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::base::arena::Arena;
+use crate::base::arena::{Arena, SHARED_SYMBOL_BIT};
 use crate::base::node::SymbolId;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Post-order traversal
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// The largest list and visited set [`post_order_ids`] allocates up front
+/// (a larger DAG grows them as before).
+const POST_ORDER_PRESIZE: usize = 256;
 
 /// Compute a post-order traversal of the expression DAG rooted at `root`.
 ///
@@ -34,8 +39,17 @@ use crate::base::node::{ExprId, ExprNode};
 ///
 /// Uses an explicit stack — never recurses.
 pub(crate) fn post_order_ids(arena: &Arena, root: ExprId) -> Vec<ExprId> {
-    let mut result = Vec::new();
-    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+    // The DAG has at most as many nodes as the unfolded tree, whose size
+    // the node facts know: a small tree (most are) gets its list and
+    // visited set allocated once, at their final size.
+    let tree_size = arena.facts(root).tree_size as usize;
+    if tree_size == 1 {
+        return vec![root];
+    }
+    let hint = tree_size.min(POST_ORDER_PRESIZE);
+    let mut result = Vec::with_capacity(hint);
+    let mut visited: FxHashSet<ExprId> =
+        FxHashSet::with_capacity_and_hasher(hint, Default::default());
     // Stack entries: (id, children_pushed).
     let mut stack: Vec<(ExprId, bool)> = vec![(root, false)];
 
@@ -165,11 +179,26 @@ pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
 /// Returns `true` if `needle` appears anywhere in the expression tree
 /// rooted at `haystack`.
 ///
+/// A symbol in a tree without binders is found by its free-symbol bit
+/// ([`NodeFacts`](crate::base::arena::NodeFacts)); otherwise subtrees that
+/// are too small or too low to hold `needle`, or lack a structure it has,
+/// are not entered.
+///
 /// Uses an explicit stack — never recurses.
 // Used for structural queries.
 pub(crate) fn contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool {
     if haystack == needle {
         return true;
+    }
+    let inner = arena.facts(needle);
+    if !arena.facts(haystack).may_contain(inner) {
+        return false;
+    }
+    if let ExprNode::Symbol(sym) = *arena.node(needle)
+        && !arena.facts(haystack).has_binder()
+    {
+        // Without binders every occurrence is free.
+        return has_free_symbol(arena, haystack, sym);
     }
 
     let mut visited: FxHashSet<ExprId> = FxHashSet::default();
@@ -184,7 +213,11 @@ pub(crate) fn contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool 
         }
         visited.insert(id);
 
-        arena.node(id).for_each_child(|c| stack.push(c));
+        arena.node(id).for_each_child(|c| {
+            if arena.facts(c).may_contain(inner) {
+                stack.push(c);
+            }
+        });
     }
 
     false
@@ -357,12 +390,22 @@ pub(crate) fn root_of_implied_var(arena: &Arena, poly: ExprId) -> Option<ExprId>
 /// either entered with `sym` free or not entered at all, and per-node
 /// visited-ness suffices.
 ///
+/// O(1) from the free-symbol mask of the
+/// [`NodeFacts`](crate::base::arena::NodeFacts) unless `sym` shares bit 63;
+/// then the walk skips the subtrees whose mask lacks that bit.
+///
 /// Uses an explicit stack — never recurses.
 pub(crate) fn has_free_symbol(arena: &Arena, root: ExprId, sym: SymbolId) -> bool {
+    match arena.free_symbol_fact(root, sym) {
+        Truth::True => return true,
+        Truth::False => return false,
+        Truth::Unknown => {}
+    }
+    let bit = SHARED_SYMBOL_BIT;
     let mut stack: Vec<ExprId> = vec![root];
     let mut visited: FxHashSet<ExprId> = FxHashSet::default();
     while let Some(id) = stack.pop() {
-        if !visited.insert(id) {
+        if arena.free_symbol_mask(id) & bit == 0 || !visited.insert(id) {
             continue;
         }
         match arena.node(id) {
@@ -408,8 +451,25 @@ pub(crate) fn has_free_var(arena: &Arena, root: ExprId, var: ExprId) -> bool {
 /// under a binder and outside it (`x + Σ_{x=0}^{3} x`), so visited-ness is
 /// tracked per *(node, scope)* pair rather than per node.
 ///
+/// The symbols are listed in the order the depth-first walk first meets
+/// them.  The free-symbol masks of the
+/// [`NodeFacts`](crate::base::arena::NodeFacts) answer a constant and a tree
+/// with one free symbol in O(1); otherwise the walk does not enter a subtree
+/// whose symbols have all been found, and stops when the mask of `root`
+/// says all have (which changes neither the list nor its order).
+///
 /// Uses an explicit stack — never recurses.
 pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
+    let all = arena.free_symbol_mask(root);
+    if all == 0 {
+        return Vec::new();
+    }
+    if all & SHARED_SYMBOL_BIT == 0
+        && all.is_power_of_two()
+        && let Some(sym) = arena.bit_symbol(all.trailing_zeros())
+    {
+        return vec![sym];
+    }
     // Scope 0 is the empty scope; every other scope is a sorted list of
     // bound symbol ids.  Scopes are interned so that `(node, scope)` is a
     // cheap hashable key.
@@ -417,6 +477,9 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     let mut result = Vec::new();
     let mut visited: FxHashSet<(ExprId, u32)> = FxHashSet::default();
     let mut seen_syms: FxHashSet<SymbolId> = FxHashSet::default();
+    // The bits of the symbols found (bit 63 never: a subtree that may hold
+    // a symbol sharing it is always entered).
+    let mut found: u64 = 0;
     let mut stack: Vec<(ExprId, u32)> = vec![(root, 0)];
 
     // Return the scope `scopes[sc] ∪ {var}` (interned).
@@ -435,7 +498,10 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     }
 
     while let Some((id, sc)) = stack.pop() {
-        if !visited.insert((id, sc)) {
+        if all & !found == 0 {
+            break;
+        }
+        if arena.free_symbol_mask(id) & !found == 0 || !visited.insert((id, sc)) {
             continue;
         }
 
@@ -443,6 +509,7 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
             ExprNode::Symbol(sid) => {
                 if !scopes[sc as usize].contains(&id) && seen_syms.insert(*sid) {
                     result.push(id);
+                    found |= arena.free_symbol_mask(id) & !SHARED_SYMBOL_BIT;
                 }
             }
             node if node.is_atom() => {}
@@ -475,35 +542,12 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
 /// roots), not pending computations.  Likewise, function nodes such as
 /// `Re`, `Im`, `Si`, `Zeta`, … are ordinary functions and never count as
 /// unevaluated.
+///
+/// O(1): a flag of the node's [`NodeFacts`](crate::base::arena::NodeFacts),
+/// set when the node is interned.
+#[inline]
 pub(crate) fn has_unevaluated(arena: &Arena, root: ExprId) -> bool {
-    let mut stack = vec![root];
-    let mut visited = FxHashSet::default();
-    while let Some(id) = stack.pop() {
-        if !visited.insert(id) {
-            continue;
-        }
-        match arena.node(id) {
-            ExprNode::Integral(..)
-            | ExprNode::DefiniteIntegral(..)
-            | ExprNode::Derivative(..)
-            | ExprNode::Limit(..)
-            | ExprNode::Series(..)
-            | ExprNode::LaplaceTransform(..)
-            | ExprNode::InverseLaplaceTransform(..)
-            | ExprNode::Residue(..)
-            | ExprNode::DSolve(..)
-            | ExprNode::ConditionSet(..)
-            | ExprNode::Subs(..)
-            | ExprNode::Sum(..)
-            | ExprNode::Product_(..) => return true,
-            node => {
-                for child in node.children() {
-                    stack.push(child);
-                }
-            }
-        }
-    }
-    false
+    arena.facts(root).has_unevaluated()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -890,6 +934,271 @@ mod tests {
         let body = a.ln(t);
         let rs = a.intern(ExprNode::RootSum(poly, body, t));
         assert!(!has_unevaluated(&a, rs), "RootSum is not unevaluated");
+    }
+
+    // ── the node facts agree with the walks they replaced ──────────────
+
+    /// `has_unevaluated` as the walk of 0.49.
+    fn walk_has_unevaluated(a: &Arena, root: ExprId) -> bool {
+        let mut stack = vec![root];
+        let mut visited = FxHashSet::default();
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if matches!(
+                a.node(id),
+                ExprNode::Integral(..)
+                    | ExprNode::DefiniteIntegral(..)
+                    | ExprNode::Derivative(..)
+                    | ExprNode::Limit(..)
+                    | ExprNode::Series(..)
+                    | ExprNode::LaplaceTransform(..)
+                    | ExprNode::InverseLaplaceTransform(..)
+                    | ExprNode::Residue(..)
+                    | ExprNode::DSolve(..)
+                    | ExprNode::ConditionSet(..)
+                    | ExprNode::Subs(..)
+                    | ExprNode::Sum(..)
+                    | ExprNode::Product_(..)
+            ) {
+                return true;
+            }
+            stack.extend(a.node(id).children());
+        }
+        false
+    }
+
+    /// `has_free_symbol` as the walk of 0.49.
+    fn walk_has_free_symbol(a: &Arena, root: ExprId, sym: SymbolId) -> bool {
+        let mut stack = vec![root];
+        let mut visited = FxHashSet::default();
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            match a.node(id) {
+                ExprNode::Symbol(s) if *s == sym => return true,
+                node if node.is_atom() => {}
+                node => match binder(a, id) {
+                    Some(b) => {
+                        stack.extend_from_slice(&b.outer);
+                        if !matches!(a.node(b.var), ExprNode::Symbol(s) if *s == sym) {
+                            stack.extend_from_slice(&b.scoped);
+                        }
+                    }
+                    None => node.for_each_child(|c| stack.push(c)),
+                },
+            }
+        }
+        false
+    }
+
+    /// `free_symbols` as the walk of 0.49, in its order.
+    fn walk_free_symbols(a: &Arena, root: ExprId) -> Vec<ExprId> {
+        let mut scopes: Vec<SmallVec<[ExprId; 4]>> = vec![SmallVec::new()];
+        let mut result = Vec::new();
+        let mut visited: FxHashSet<(ExprId, u32)> = FxHashSet::default();
+        let mut seen: FxHashSet<SymbolId> = FxHashSet::default();
+        let mut stack: Vec<(ExprId, u32)> = vec![(root, 0)];
+        while let Some((id, sc)) = stack.pop() {
+            if !visited.insert((id, sc)) {
+                continue;
+            }
+            match a.node(id) {
+                ExprNode::Symbol(s) => {
+                    if !scopes[sc as usize].contains(&id) && seen.insert(*s) {
+                        result.push(id);
+                    }
+                }
+                node if node.is_atom() => {}
+                node => match binder(a, id) {
+                    Some(b) => {
+                        for &c in &b.outer {
+                            stack.push((c, sc));
+                        }
+                        let mut scope = scopes[sc as usize].clone();
+                        if !scope.contains(&b.var) {
+                            scope.push(b.var);
+                            scope.sort_unstable_by_key(|&v| crate::base::arena::ArenaOrder(v));
+                        }
+                        let inner = match scopes.iter().position(|s| *s == scope) {
+                            Some(p) => p as u32,
+                            None => {
+                                scopes.push(scope);
+                                (scopes.len() - 1) as u32
+                            }
+                        };
+                        for &c in &b.scoped {
+                            stack.push((c, inner));
+                        }
+                    }
+                    None => node.for_each_child(|c| stack.push((c, sc))),
+                },
+            }
+        }
+        result
+    }
+
+    /// `contains` as the walk of 0.49.
+    fn walk_contains(a: &Arena, haystack: ExprId, needle: ExprId) -> bool {
+        let mut stack = vec![haystack];
+        let mut visited = FxHashSet::default();
+        while let Some(id) = stack.pop() {
+            if id == needle {
+                return true;
+            }
+            if visited.insert(id) {
+                a.node(id).for_each_child(|c| stack.push(c));
+            }
+        }
+        false
+    }
+
+    /// The unfolded tree size and the height of `root`, by a memoised walk.
+    fn walk_size_height(a: &Arena, root: ExprId) -> (u128, u32) {
+        let mut memo: FxHashMap<ExprId, (u128, u32)> = FxHashMap::default();
+        for id in post_order_ids(a, root) {
+            let (mut size, mut height) = (1u128, 0u32);
+            a.node(id).for_each_child(|c| {
+                let (s, h) = memo[&c];
+                size += s;
+                height = height.max(h);
+            });
+            memo.insert(id, (size, height + 1));
+        }
+        memo[&root]
+    }
+
+    /// Every query the facts answer, on every node of `a`, against the
+    /// walks of 0.49.
+    fn assert_facts_agree(a: &Arena) {
+        let ids: Vec<ExprId> = (0..a.node_count() as u32).map(ExprId).collect();
+        let symbols: Vec<(ExprId, SymbolId)> = ids
+            .iter()
+            .filter_map(|&id| match *a.node(id) {
+                ExprNode::Symbol(s) => Some((id, s)),
+                _ => None,
+            })
+            .collect();
+        for &id in &ids {
+            // Built only on failure: an exponential tree prints exponentially.
+            let what = || format!("{id:?} = {:?}", a.node(id));
+            assert_eq!(
+                has_unevaluated(a, id),
+                walk_has_unevaluated(a, id),
+                "{}",
+                what()
+            );
+            let free = walk_free_symbols(a, id);
+            assert_eq!(free_symbols(a, id), free, "{}", what());
+            assert_eq!(a.is_symbol_free(id), free.is_empty(), "{}", what());
+            let any_symbol = symbols.iter().any(|&(s, _)| walk_contains(a, id, s));
+            assert_eq!(a.facts(id).has_symbol(), any_symbol, "{}", what());
+            for &(s_id, s) in &symbols {
+                let free_s = walk_has_free_symbol(a, id, s);
+                assert_eq!(has_free_symbol(a, id, s), free_s, "{s_id:?} in {}", what());
+                assert_eq!(free.contains(&s_id), free_s, "{s_id:?} in {}", what());
+                let has_s = walk_contains(a, id, s_id);
+                assert_eq!(contains(a, id, s_id), has_s, "{s_id:?} in {}", what());
+            }
+            let (size, height) = walk_size_height(a, id);
+            let f = a.facts(id);
+            assert_eq!(
+                u128::from(f.tree_size),
+                size.min(u32::MAX.into()),
+                "{}",
+                what()
+            );
+            assert_eq!(
+                u32::from(f.height),
+                height.min(u16::MAX.into()),
+                "{}",
+                what()
+            );
+            for cap in [0, 1, 7, 1000, usize::MAX] {
+                let want = usize::try_from(size).unwrap_or(usize::MAX).min(cap);
+                assert_eq!(a.tree_size_capped(id, cap), want, "{}", what());
+            }
+        }
+        if ids.len() <= 600 {
+            for &h in &ids {
+                for &n in &ids {
+                    assert_eq!(contains(a, h, n), walk_contains(a, h, n));
+                }
+            }
+        }
+    }
+
+    /// An arena with every binder of the table, shadowing, a malformed
+    /// binder, a physical constant (its value is not a child) and more
+    /// than 63 symbols, so binders of symbols sharing the free-symbol bit
+    /// 63: the facts must answer exactly what the walks answer.
+    #[test]
+    fn node_facts_agree_with_the_walks_on_every_node() {
+        let mut a = Arena::new();
+        let s: Vec<ExprId> = (0..70).map(|i| sym(&mut a, &format!("s{i}"))).collect();
+        let (x, y, t) = (s[0], s[1], s[2]);
+        let (k, j) = (s[69], s[68]);
+        let f = a.symbols.intern("f");
+        let app =
+            |a: &mut Arena, arg: ExprId| a.intern(ExprNode::Apply(f, smallvec::smallvec![arg]));
+        let three = a.int(3);
+        let five = a.int(5);
+        let fk = app(&mut a, k);
+        let fk_j = a.mul(&[fk, j]);
+        // Shared-bit binders: k bound, j free; then j bound too (bit 63
+        // stays set: the facts must walk to see that nothing is free).
+        let sum1 = a.intern(ExprNode::Sum(fk_j, k, a.one, j));
+        let sum2 = a.intern(ExprNode::Sum(sum1, j, a.one, three));
+        let kx = a.add(&[k, x]);
+        let sum3 = a.intern(ExprNode::Sum(kx, k, a.zero, y));
+        // Shadowing with an own-bit symbol.
+        let inner = a.intern(ExprNode::Sum(x, x, a.one, x));
+        let outer = a.intern(ExprNode::Sum(inner, x, a.one, three));
+        // The other binders.
+        let x5 = a.pow(x, five);
+        let poly = a.add(&[x5, x, a.one]);
+        let root = a.intern(ExprNode::RootOf(poly, x, a.zero));
+        let t5 = a.pow(t, five);
+        let poly_t = a.add(&[t5, y]);
+        let ty = a.mul(&[t, y]);
+        let body = a.ln(ty);
+        let root_sum = a.intern(ExprNode::RootSum(poly_t, body, t));
+        let cond = a.gt(x, y);
+        let cset = a.intern(ExprNode::ConditionSet(x, cond));
+        let image_body = a.mul(&[k, a.pi]);
+        let image = a.intern(ExprNode::ImageSet(k, image_body));
+        let xy = a.mul(&[x, y]);
+        let lim = a.intern(ExprNode::Limit(xy, x, x));
+        let fx = app(&mut a, x);
+        let deriv = a.intern(ExprNode::Derivative(fx, x));
+        let subs = a.intern(ExprNode::Subs(deriv, x, a.zero));
+        let integral = a.intern(ExprNode::Integral(ty, t));
+        let lt = a.intern(ExprNode::LaplaceTransform(ty, t, j));
+        // A malformed binder (its variable is a number) binds nothing.
+        let bad = a.intern(ExprNode::Sum(kx, three, a.zero, k));
+        let c = a.symbols.intern("c");
+        let phys = a.intern(ExprNode::PhysicalConstant(c, x));
+        let all = a.add(&[
+            sum2, sum3, outer, root, root_sum, lim, subs, integral, lt, bad, phys, s[66],
+        ]);
+        let _ = a.mul(&[all, cset, image]);
+        assert_facts_agree(&a);
+    }
+
+    /// Unfolded trees beyond `u32::MAX` nodes: the size saturates and
+    /// [`Arena::tree_size_capped`] recounts for a larger cap.
+    #[test]
+    fn node_facts_saturate_on_exponential_trees() {
+        let mut a = Arena::new();
+        let mut e = sym(&mut a, "x");
+        for _ in 0..40 {
+            let (s, c) = (a.sin(e), a.cos(e));
+            e = a.add(&[s, c]);
+        }
+        assert_eq!(a.facts(e).tree_size, u32::MAX);
+        assert_facts_agree(&a);
     }
 
     #[test]

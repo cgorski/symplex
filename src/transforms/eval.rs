@@ -591,6 +591,8 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     arena.intern(ExprNode::Apply(name_sid, new_args))
                 }
             }
+            // ── Internal functions of the limit engine: likewise ──
+            ExprNode::Internal(..) => walk::rebuild_with_cache(arena, id, &cache),
 
             // ── Floor ──────────────────────────────────────────────
             ExprNode::Floor(inner) => {
@@ -7520,6 +7522,31 @@ fn eval_polylog(arena: &mut Arena, s: ExprId, z: ExprId) -> Option<ExprId> {
         let b = arena.mul(&[half, ln2_sq]);
         return Some(arena.sub(a, b));
     }
+    if as_int_in(arena, s, 2, 2).is_some()
+        && let Some(value) = dilog_special_value(arena, z)
+    {
+        return Some(value);
+    }
+    // Li₃(1/2) = 7ζ(3)/8 − π²·ln 2/12 + ln³2/6 (Lewin, *Polylogarithms and
+    // Associated Functions*, ch. 6; checked against mpmath at 30 and 50
+    // digits).
+    if as_int_in(arena, s, 3, 3).is_some()
+        && as_ratio(arena, z).is_some_and(|r| r == Ratio::new(BigInt::one(), BigInt::from(2)))
+    {
+        let two = arena.int(2);
+        let three = arena.int(3);
+        let zeta3 = arena.zeta(three);
+        let c78 = arena.rational(7, 8);
+        let a = arena.mul(&[c78, zeta3]);
+        let ln2 = arena.ln(two);
+        let pi2 = arena.pow(arena.pi, two);
+        let c12 = arena.rational(-1, 12);
+        let b = arena.mul(&[c12, pi2, ln2]);
+        let ln2_cubed = arena.pow(ln2, three);
+        let c6 = arena.rational(1, 6);
+        let c = arena.mul(&[c6, ln2_cubed]);
+        return Some(arena.add(&[a, b, c]));
+    }
     // Li_{−n}(z) = [Σ_{k=0}^{n} k! S(n+1, k+1) z^{k+1} (1−z)^{n−k}] / (1−z)^{n+1}
     if let Some(neg_n) = as_int_in(arena, s, -MAX_SPECIAL_EXPANSION, -1) {
         let n = (-neg_n) as usize;
@@ -7548,6 +7575,115 @@ fn eval_polylog(arena: &mut Arena, s: ExprId, z: ExprId) -> Option<ExprId> {
         return Some(arena.div(numer, denom));
     }
     None
+}
+
+/// A dilogarithm value `a·π² + b·ln²2 + c·iπ·ln 2 + d·i·G` (`G` Catalan's
+/// constant), each coefficient `[numerator, denominator]`.
+struct DilogValue {
+    pi_sq: [i64; 2],
+    ln2_sq: [i64; 2],
+    i_pi_ln2: [i64; 2],
+    i_catalan: [i64; 2],
+}
+
+/// `Li₂(z)` at the classical arguments other than `1/2` (SymPy's
+/// `_dilogtable`; the reflection, inversion and Landen identities of DLMF
+/// §25.12(i); Lewin, *Polylogarithms and Associated Functions*, ch. 1): `2`,
+/// `±i`, `1 ± i`, `(1 ± i)/2` and the four golden-ratio points `(√5 − 1)/2`,
+/// `(3 − √5)/2`, `(1 − √5)/2`, `−(1 + √5)/2`.  On the cut `z = 2` the value
+/// is the one the numerical evaluation (and `mpmath.polylog`) gives,
+/// `π²/4 − iπ·ln 2`.  There is no such value at `−1/2` (Landen's identity
+/// only relates it to `Li₂(1/3)`), so it stays.
+fn dilog_special_value(arena: &mut Arena, z: ExprId) -> Option<ExprId> {
+    if let Some((re, im)) = gaussian_rational(arena, z) {
+        let twice = |q: &Q| -> Option<i64> {
+            let t = q * Q::from_integer(BigInt::from(2));
+            if t.is_integer() {
+                t.to_integer().to_i64()
+            } else {
+                None
+            }
+        };
+        let v = |pi_sq, ln2_sq, i_pi_ln2, i_catalan| DilogValue {
+            pi_sq,
+            ln2_sq,
+            i_pi_ln2,
+            i_catalan,
+        };
+        let zero = [0, 1];
+        let value = match (twice(&re)?, twice(&im)?) {
+            (4, 0) => v([1, 4], zero, [-1, 1], zero),
+            (0, 2) => v([-1, 48], zero, zero, [1, 1]),
+            (0, -2) => v([-1, 48], zero, zero, [-1, 1]),
+            (2, -2) => v([1, 16], zero, [-1, 4], [-1, 1]),
+            (2, 2) => v([1, 16], zero, [1, 4], [1, 1]),
+            (1, -1) => v([5, 96], [-1, 8], [1, 8], [-1, 1]),
+            (1, 1) => v([5, 96], [-1, 8], [-1, 8], [1, 1]),
+            _ => return None,
+        };
+        return Some(dilog_combination(arena, &value));
+    }
+    if !matches!(arena.node(z), ExprNode::Add(cs) if cs.len() == 2) {
+        return None;
+    }
+    let (one, two) = (arena.one, arena.int(2));
+    let half = arena.rational(1, 2);
+    let sqrt5 = arena.int(5);
+    let sqrt5 = arena.pow(sqrt5, half);
+    let neg_sqrt5 = arena.neg(sqrt5);
+    // g = (√5 − 1)/2 = 1/φ and φ = (√5 + 1)/2.
+    let g = arena.add(&[sqrt5, arena.neg_one]);
+    let g = arena.div(g, two);
+    let phi = arena.add(&[sqrt5, one]);
+    let phi = arena.div(phi, two);
+    let three = arena.int(3);
+    let g_sq = arena.add(&[three, neg_sqrt5]);
+    let g_sq = arena.div(g_sq, two);
+    let neg_g = arena.neg(g);
+    let neg_phi = arena.neg(phi);
+    // c·π² + d·ln²(w)
+    let (pi_sq, w, ln_coeff) = if z == g {
+        ([1, 10], g, [-1, 1])
+    } else if z == g_sq {
+        ([1, 15], g, [-1, 1])
+    } else if z == neg_g {
+        ([-1, 15], g, [1, 2])
+    } else if z == neg_phi {
+        ([-1, 10], phi, [-1, 1])
+    } else {
+        return None;
+    };
+    let pi2 = arena.pow(arena.pi, two);
+    let c = arena.rational(pi_sq[0], pi_sq[1]);
+    let a = arena.mul(&[c, pi2]);
+    let ln_w = arena.ln(w);
+    let ln_w_sq = arena.pow(ln_w, two);
+    let d = arena.rational(ln_coeff[0], ln_coeff[1]);
+    let b = arena.mul(&[d, ln_w_sq]);
+    Some(arena.add(&[a, b]))
+}
+
+/// The sum [`DilogValue`] stands for.
+fn dilog_combination(arena: &mut Arena, value: &DilogValue) -> ExprId {
+    let two = arena.int(2);
+    let pi_sq = arena.pow(arena.pi, two);
+    let ln2 = arena.ln(two);
+    let ln2_sq = arena.pow(ln2, two);
+    let i_pi_ln2 = arena.mul(&[arena.i_unit, arena.pi, ln2]);
+    let i_catalan = arena.mul(&[arena.i_unit, arena.catalan]);
+    let mut terms: Vec<ExprId> = Vec::with_capacity(4);
+    for (c, t) in [
+        (value.pi_sq, pi_sq),
+        (value.ln2_sq, ln2_sq),
+        (value.i_pi_ln2, i_pi_ln2),
+        (value.i_catalan, i_catalan),
+    ] {
+        if c[0] != 0 {
+            let c = arena.rational(c[0], c[1]);
+            terms.push(arena.mul(&[c, t]));
+        }
+    }
+    arena.add(&terms)
 }
 
 /// `η(1) = ln 2`, `η(∞) = 1`, `η(−2k) = 0`, and `η(s) = (1 − 2^{1−s}) ζ(s)`

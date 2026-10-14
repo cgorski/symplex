@@ -660,8 +660,10 @@ impl Program {
                 } else {
                     f64::NAN
                 }),
-                // Distributional: pointwise evaluation is 0 everywhere (see docs).
-                Instruction::DiracDelta => un!(|a: f64| if a.is_nan() { f64::NAN } else { 0.0 }),
+                // Pointwise: 0 off the origin; no value (NaN) at it and for a
+                // NaN argument, in every back end (up to 0.49 the VM gave 0
+                // at 0 and the emitters wrote `0.0` for any argument).
+                Instruction::DiracDelta => un!(|a: f64| if a.abs() > 0.0 { 0.0 } else { f64::NAN }),
                 Instruction::Atan2 => bin!(|y: f64, x: f64| y.atan2(x)),
                 Instruction::Floor => un!(|a: f64| a.floor()),
                 Instruction::Ceiling => un!(|a: f64| a.ceil()),
@@ -697,6 +699,8 @@ impl Program {
                 Instruction::Erfi => un!(rt::erfi),
                 Instruction::FresnelS => un!(rt::fresnel_s),
                 Instruction::FresnelC => un!(rt::fresnel_c),
+                Instruction::EllipticK => un!(rt::elliptic_k),
+                Instruction::EllipticE => un!(rt::elliptic_e),
                 Instruction::Factorial => un!(rt::factorial),
                 Instruction::Binomial => bin!(rt::binomial),
                 Instruction::Beta => bin!(rt::beta),
@@ -826,6 +830,10 @@ enum Instruction {
     Erfi,
     FresnelS,
     FresnelC,
+    /// `K(m)`: NaN for `1 < m < ∞`, 0 at `+∞`.
+    EllipticK,
+    /// `E(m)`: NaN for `m > 1`.
+    EllipticE,
     Factorial,
     /// `binomial(second, top)`.
     Binomial,
@@ -1321,6 +1329,7 @@ impl<'a> Emitter<'a> {
                     arena.symbol_name(sid)
                 )));
             }
+            ExprNode::Internal(f, _) => return Err(self.unsupported(f.name())),
 
             ExprNode::Derivative(_, _) => return Err(self.unsupported("Derivative")),
             ExprNode::Integral(_, _) => return Err(self.unsupported("Integral")),
@@ -1483,6 +1492,8 @@ fn vm_lowering(f: LibFn) -> VmLowering {
         LibFn::Chi => VmLowering::Unary(Instruction::Chi),
         LibFn::FresnelS => VmLowering::Unary(Instruction::FresnelS),
         LibFn::FresnelC => VmLowering::Unary(Instruction::FresnelC),
+        LibFn::EllipticK => VmLowering::Unary(Instruction::EllipticK),
+        LibFn::EllipticE => VmLowering::Unary(Instruction::EllipticE),
         LibFn::RisingFactorial => VmLowering::Binary(Instruction::RisingFactorial),
         LibFn::FallingFactorial => VmLowering::Binary(Instruction::FallingFactorial),
         LibFn::Subfactorial
@@ -1503,8 +1514,6 @@ fn vm_lowering(f: LibFn) -> VmLowering {
         | LibFn::AiryBi
         | LibFn::AiryAiPrime
         | LibFn::AiryBiPrime
-        | LibFn::EllipticK
-        | LibFn::EllipticE
         | LibFn::EllipticF
         | LibFn::EllipticPi
         | LibFn::Gegenbauer

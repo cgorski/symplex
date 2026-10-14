@@ -65,7 +65,7 @@ use crate::base::extended::Extended;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
-use crate::base::truth::Truth;
+use crate::base::truth::{SignSet, Truth};
 use crate::base::walk;
 use crate::calculus::calculus_util::{
     self, BreakKind, BreakScan, Breakpoint, LinearCoeffs, POINT_VALUE_ACCURACY, ScanRange,
@@ -770,15 +770,19 @@ fn rational_trig_term(arena: &mut Arena, t: ExprId, x: ExprId, half_line: bool) 
     }
     if half_line {
         // ∫₀^∞ = ½ ∫_{−∞}^{∞} for an even integrand.
-        let want_even = kind == Trig::Cos;
-        if r.parity()? != want_even {
+        let want = if kind == Trig::Cos {
+            residue::Parity::Even
+        } else {
+            residue::Parity::Odd
+        };
+        if r.parity()? != want {
             return None;
         }
     }
     let neg_k = arena.neg(k_abs);
     let neg_k = safe_eval(arena, neg_k);
-    let j_plus = residue::fourier_rational(arena, &r, k_abs, Some(true), x)?;
-    let j_minus = residue::fourier_rational(arena, &r, neg_k, Some(false), x)?;
+    let j_plus = residue::fourier_rational(arena, &r, k_abs, SignSet::POSITIVE, x)?;
+    let j_minus = residue::fourier_rational(arena, &r, neg_k, SignSet::NEGATIVE, x)?;
     let combined = match kind {
         Trig::Cos => {
             let s = arena.add(&[j_plus, j_minus]);
@@ -1028,13 +1032,13 @@ fn sign_of(arena: &mut Arena, id: ExprId) -> Option<Ordering> {
         return crate::poly::algebraic::sign_checked(arena, id).map(|s| s.cmp(&0));
     }
     let mut cache = AssumptionCache::new();
-    if cache.query(arena, id, Props::POSITIVE) == Some(true) {
+    if Truth::from(cache.query(arena, id, Props::POSITIVE)).is_true() {
         return Some(Ordering::Greater);
     }
-    if cache.query(arena, id, Props::NEGATIVE) == Some(true) {
+    if Truth::from(cache.query(arena, id, Props::NEGATIVE)).is_true() {
         return Some(Ordering::Less);
     }
-    if cache.query(arena, id, Props::ZERO) == Some(true) {
+    if Truth::from(cache.query(arena, id, Props::ZERO)).is_true() {
         return Some(Ordering::Equal);
     }
     None
@@ -1053,7 +1057,7 @@ fn is_real(arena: &mut Arena, id: ExprId) -> bool {
         return true;
     }
     let mut cache = AssumptionCache::new();
-    cache.query(arena, id, Props::REAL) == Some(true)
+    Truth::from(cache.query(arena, id, Props::REAL)).is_true()
 }
 
 /// Does the tree contain `∞`, `−∞`, `zoo` or `NaN`, or a `ln(0)` /
@@ -1259,12 +1263,12 @@ fn split_at_breakpoints(
     // argument / fractional-power base mean an unlocated singularity.
     match range {
         Some(r) => match numeric_guard(arena, f, x, r.lower, r.upper, &scan) {
-            Some(false) => {
+            Truth::False => {
                 return Err(failed(
                     "a denominator or function argument changes sign inside the interval at a point the solver could not locate",
                 ));
             }
-            None if !scan.complete => {
+            Truth::Unknown if !scan.complete => {
                 return Err(failed(
                     "could not determine all singularities of the integrand",
                 ));
@@ -1480,8 +1484,9 @@ fn build_pieces(
 /// fractional-power base of `f` on `[lo, hi]` and look for sign changes
 /// that no known breakpoint explains.
 ///
-/// Returns `Some(true)` if all sign changes are explained, `Some(false)`
-/// if an unexplained one exists, `None` if the check could not run.
+/// Returns `True` if all sign changes are explained, `False` if an
+/// unexplained one exists, `Unknown` if the check could not run (`f64`
+/// samples: only a refusal may rest on `False`, never a claim).
 fn numeric_guard(
     arena: &mut Arena,
     f: ExprId,
@@ -1489,7 +1494,7 @@ fn numeric_guard(
     lo: f64,
     hi: f64,
     scan: &BreakScan,
-) -> Option<bool> {
+) -> Truth {
     let mut watched: Vec<ExprId> = Vec::new();
     let mut stack = vec![f];
     let mut seen = rustc_hash::FxHashSet::default();
@@ -1525,8 +1530,9 @@ fn numeric_guard(
 /// Sample each of the `watched` functions of `x` on `[lo, hi]` and look
 /// for a sign change that none of the `known` points explains.
 ///
-/// Returns `Some(true)` if all sign changes are explained, `Some(false)`
-/// if an unexplained one exists, `None` if the check could not run.
+/// Returns `True` if all sign changes are explained, `False` if an
+/// unexplained one exists, `Unknown` if the check could not run (`f64`
+/// samples: only a refusal may rest on `False`, never a claim).
 fn sign_changes_explained(
     arena: &mut Arena,
     watched: &[ExprId],
@@ -1534,32 +1540,34 @@ fn sign_changes_explained(
     lo: f64,
     hi: f64,
     known: &[f64],
-) -> Option<bool> {
+) -> Truth {
     if watched.is_empty() {
-        return Some(true);
+        return Truth::True;
     }
     // `f64` samples cannot resolve a range this narrow next to its position
     // (`7t` rounds by about 1 at `t = 10¹⁵`): their sign changes are noise.
     if f64_narrow(lo, hi) {
-        return None;
+        return Truth::Unknown;
     }
     let x_name = match arena.node(x) {
         ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
-        _ => return None,
+        _ => return Truth::Unknown,
     };
     let grid = guard_grid(lo, hi);
     let mut all_ok = true;
     for &w in watched {
         let w_eval = safe_eval(arena, w);
         if !walk::free_symbols(arena, w_eval).iter().all(|&s| s == x) {
-            return None; // parametric — cannot sample
+            return Truth::Unknown; // parametric — cannot sample
         }
-        let func = crate::output::lambdify::compile(arena, w_eval, &[&x_name]).ok()?;
+        let Ok(func) = crate::output::lambdify::compile(arena, w_eval, &[&x_name]) else {
+            return Truth::Unknown;
+        };
         let mut prev: Option<(f64, f64)> = None;
         for &t in &grid {
             let v = func(&[t]);
             if !v.is_finite() {
-                return None;
+                return Truth::Unknown;
             }
             if let Some((pt, pv)) = prev
                 && pv != 0.0
@@ -1577,7 +1585,7 @@ fn sign_changes_explained(
             prev = Some((t, v));
         }
     }
-    Some(all_ok)
+    Truth::from_bool(all_ok)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1700,12 +1708,12 @@ fn integrate_piece(
         let mut live: Vec<(ExprId, ExprId)> = Vec::new();
         for (val, cond) in pairs.iter() {
             match decide_condition(arena, *cond) {
-                Some(false) => continue,
-                Some(true) => {
+                Truth::False => continue,
+                Truth::True => {
                     live.push((*val, arena.bool_true()));
                     break;
                 }
-                None => live.push((*val, *cond)),
+                Truth::Unknown => live.push((*val, *cond)),
             }
         }
         if live.len() == 1 {
@@ -1762,7 +1770,7 @@ fn evaluate_antiderivative(
     let range = numeric_range(arena, p.lo, p.hi);
     let scan = calculus_util::scan_breakpoints(arena, anti, x, scan_range(p.lo, p.hi, range));
     if let Some(r) = range
-        && numeric_guard(arena, anti, x, r.lower, r.upper, &scan) == Some(false)
+        && numeric_guard(arena, anti, x, r.lower, r.upper, &scan).is_false()
     {
         return Err(failed(
             "the antiderivative has a discontinuity inside the interval that could not be located",
@@ -1929,8 +1937,10 @@ fn real_for_real_x(arena: &mut Arena, e: ExprId, x: ExprId, reals: &mut Assumpti
             continue;
         }
         if !walk::contains(arena, id, x) {
-            if crate::transforms::realness::constant_realness_as_declared(arena, id, 30, reals)
-                != Some(true)
+            if !Truth::from(crate::transforms::realness::constant_realness_as_declared(
+                arena, id, 30, reals,
+            ))
+            .is_true()
             {
                 return false;
             }
@@ -2036,8 +2046,10 @@ fn imaginary_part_constant_polynomial(
     };
     coeffs.len() >= 2
         && coeffs.into_iter().skip(1).all(|c| {
-            crate::transforms::realness::constant_realness_as_declared(arena, c, 30, reals)
-                == Some(true)
+            Truth::from(crate::transforms::realness::constant_realness_as_declared(
+                arena, c, 30, reals,
+            ))
+            .is_true()
         })
 }
 
@@ -2075,8 +2087,10 @@ fn constant_multiple_of_real(
     coeffs.into_iter().all(|c| {
         let ratio = arena.div(c, lead);
         let ratio = eval::eval(arena, ratio);
-        crate::transforms::realness::constant_realness_as_declared(arena, ratio, 30, reals)
-            == Some(true)
+        Truth::from(crate::transforms::realness::constant_realness_as_declared(
+            arena, ratio, 30, reals,
+        ))
+        .is_true()
     })
 }
 
@@ -2107,8 +2121,10 @@ fn meets_axis_off_the_cut(
         }
         _ => at,
     };
-    if crate::transforms::realness::constant_realness_as_declared(arena, on_axis, 30, reals)
-        != Some(true)
+    if !Truth::from(crate::transforms::realness::constant_realness_as_declared(
+        arena, on_axis, 30, reals,
+    ))
+    .is_true()
     {
         return false;
     }
@@ -2204,8 +2220,10 @@ fn atan_of_complex_line_to_logs(arena: &mut Arena, anti: ExprId, x: ExprId, p: &
         else {
             continue;
         };
-        if crate::transforms::realness::constant_realness_as_declared(arena, slope, 30, &mut reals)
-            != Some(true)
+        if !Truth::from(crate::transforms::realness::constant_realness_as_declared(
+            arena, slope, 30, &mut reals,
+        ))
+        .is_true()
         {
             continue;
         }
@@ -3496,27 +3514,32 @@ fn integral_function_at(arena: &mut Arena, kind: SineIntegral, v: ExprId) -> Lim
 /// otherwise from the assumptions on the imaginary part of the real/imaginary
 /// split, or numerically for a parameter-free `c` whose imaginary part is
 /// not negligible.
-fn imaginary_sign(arena: &mut Arena, c: ExprId) -> Option<Ordering> {
+///
+/// A single atom when decided, otherwise [`SignSet::REAL`] (an imaginary
+/// part is real; its sign is unknown).
+fn imaginary_sign(arena: &mut Arena, c: ExprId) -> SignSet {
     if is_real(arena, c) {
-        return Some(Ordering::Equal);
+        return SignSet::ZERO;
     }
     if walk::free_symbols(arena, c).is_empty() {
-        let z = evalf::evalf_complex64(arena, c).ok()?;
+        let Ok(z) = evalf::evalf_complex64(arena, c) else {
+            return SignSet::REAL;
+        };
         if !z.im.is_finite() || z.im.abs() <= 1e-9 * z.norm().max(1.0) {
-            return None;
+            return SignSet::REAL;
         }
-        return Some(if z.im > 0.0 {
-            Ordering::Greater
+        return if z.im > 0.0 {
+            SignSet::POSITIVE
         } else {
-            Ordering::Less
-        });
+            SignSet::NEGATIVE
+        };
     }
     let parts = crate::base::complex::decompose(arena, c);
     if !parts.exact {
-        return None;
+        return SignSet::REAL;
     }
     let im = safe_eval(arena, parts.im);
-    sign_of(arena, im)
+    sign_of(arena, im).map_or(SignSet::REAL, SignSet::from_ordering)
 }
 
 /// `lim_{u → ∞} f(αu + β)` for `f = Si, Ci, Ei`, a real slope `α ≠ 0` of
@@ -3589,24 +3612,24 @@ fn integral_function_at_infinity(
         }
         (SineIntegral::Ci, true) => LimVal::Value(Extended::Finite(arena.zero())),
         (SineIntegral::Ci, false) => match imaginary_sign(arena, intercept) {
-            Some(Ordering::Less) => {
+            SignSet::NEGATIVE => {
                 let v = arena.neg(i_pi);
                 finite(arena, v)
             }
-            Some(_) => finite(arena, i_pi),
-            None => LimVal::Unknown,
+            SignSet::ZERO | SignSet::POSITIVE => finite(arena, i_pi),
+            _ => LimVal::Unknown,
         },
         (SineIntegral::Ei, false) => match imaginary_sign(arena, intercept) {
-            Some(Ordering::Less) => {
+            SignSet::NEGATIVE => {
                 let v = arena.neg(i_pi);
                 finite(arena, v)
             }
-            Some(Ordering::Greater) => finite(arena, i_pi),
-            Some(Ordering::Equal) => LimVal::Value(Extended::Finite(arena.zero())),
-            None => LimVal::Unknown,
+            SignSet::POSITIVE => finite(arena, i_pi),
+            SignSet::ZERO => LimVal::Value(Extended::Finite(arena.zero())),
+            _ => LimVal::Unknown,
         },
         (SineIntegral::Ei, true) => match imaginary_sign(arena, intercept) {
-            Some(Ordering::Equal) => LimVal::Value(Extended::PosInf),
+            SignSet::ZERO => LimVal::Value(Extended::PosInf),
             _ => LimVal::Unknown,
         },
     }
@@ -3998,15 +4021,15 @@ fn split_piecewise_like(
     let known: Vec<f64> = breaks.iter().filter_map(|bp| bp.value).collect();
     let guard = match range {
         Some(r) => sign_changes_explained(arena, &args, x, r.lower, r.upper, &known),
-        None => None,
+        None => Truth::Unknown,
     };
     match guard {
-        Some(false) => {
+        Truth::False => {
             return Err(failed(
                 "an argument of |·|, sign or Heaviside changes sign inside the interval at a point the solver could not locate",
             ));
         }
-        None if !complete => {
+        Truth::Unknown if !complete => {
             return Err(failed(
                 "could not determine where the arguments of |·|, sign or Heaviside change sign",
             ));
@@ -4332,8 +4355,8 @@ fn sign_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<Order
 }
 
 /// Decide a parameter condition (no integration variable involved) with
-/// the assumption system: `Some(true/false)` or `None` if undecidable.
-fn decide_condition(arena: &mut Arena, cond: ExprId) -> Option<bool> {
+/// the assumption system: `Unknown` if undecidable.
+fn decide_condition(arena: &mut Arena, cond: ExprId) -> Truth {
     let order = walk::post_order_ids(arena, cond);
     let mut vals: FxHashMap<ExprId, Truth> = FxHashMap::default();
     for id in order {
@@ -4359,7 +4382,7 @@ fn decide_condition(arena: &mut Arena, cond: ExprId) -> Option<bool> {
         };
         vals.insert(id, v);
     }
-    truth_of(&vals, cond).to_option()
+    truth_of(&vals, cond)
 }
 
 /// The truth value recorded for `id`, `Unknown` when there is none.

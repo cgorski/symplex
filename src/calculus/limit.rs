@@ -53,6 +53,7 @@ use crate::base::errors::SymplexError;
 use crate::base::extended::Extended;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::calculus::calculus_util::hidden_zero;
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
@@ -269,12 +270,13 @@ fn const_parts(arena: &mut Arena, c: ExprId) -> Option<(ExprId, ExprId)> {
         // A real constant the decomposition does not see through
         // (`cosh(acos 4) = cos(acosh 4)`), certified numerically.
         let mut reals = crate::base::assumptions::AssumptionCache::new();
-        return (crate::transforms::realness::constant_realness_as_declared(
+        return (Truth::from(crate::transforms::realness::constant_realness_as_declared(
             arena,
             c,
             NUMERIC_SIGN_DIGITS,
             &mut reals,
-        ) == Some(true))
+        ))
+        .is_true())
         .then(|| (c, arena.zero()));
     }
     let re = crate::transforms::eval::eval(arena, p.re);
@@ -360,7 +362,7 @@ fn part_vanishes(arena: &mut Arena, d: ExprId, imaginary: bool) -> bool {
         let i = arena.i_unit();
         arena.mul(&[i, d])
     };
-    crate::transforms::eval::constant_facts(arena, target).query(Props::REAL) == Some(true)
+    Truth::from(crate::transforms::eval::constant_facts(arena, target).query(Props::REAL)).is_true()
 }
 
 /// The kind of a computed limit value (`None` for a malformed one).
@@ -492,7 +494,7 @@ fn unit_direction(arena: &mut Arena, d: ExprId) -> ExprId {
 fn eventually_real(arena: &mut Arena, g: ExprId, ap: &Approach) -> bool {
     if !crate::base::walk::contains(arena, g, ap.var) {
         let mut cache = crate::base::assumptions::AssumptionCache::new();
-        return cache.query(arena, g, crate::base::assumptions::Props::REAL) == Some(true);
+        return Truth::from(cache.query(arena, g, crate::base::assumptions::Props::REAL)).is_true();
     }
     let t = arena.positive_symbol("__lim_r");
     for &right in approach_sides(ap.dir) {
@@ -772,7 +774,8 @@ fn guard_degenerate_parameters(
         let diff = arena.sub(p, v);
         let diff = crate::transforms::eval::eval(arena, diff);
         let mut cache = crate::base::assumptions::AssumptionCache::new();
-        if cache.query(arena, diff, crate::base::assumptions::Props::NONZERO) == Some(true) {
+        if Truth::from(cache.query(arena, diff, crate::base::assumptions::Props::NONZERO)).is_true()
+        {
             continue;
         }
         let claimed = crate::transforms::subs::subs(arena, value, p, v);
@@ -1777,7 +1780,8 @@ fn numeric_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
         {
             Some(z) => z,
             None => {
-                let zero = crate::transforms::eval::constant_zero_decision(arena, e) == Some(true)
+                let zero = Truth::from(crate::transforms::eval::constant_zero_decision(arena, e))
+                    .is_true()
                     || logarithms_cancel(arena, e);
                 tracing::debug!(
                     constant = %arena.display(e),
@@ -1794,7 +1798,7 @@ fn numeric_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
     let mut reals = crate::base::assumptions::AssumptionCache::new();
     let real =
         crate::transforms::realness::constant_realness(arena, e, NUMERIC_SIGN_DIGITS, &mut reals);
-    if real != Some(true) {
+    if !Truth::from(real).is_true() {
         return None;
     }
     if crate::base::bigfloat::is_sign_positive(&z.0) {
@@ -1860,13 +1864,13 @@ fn sign_of_ratio(r: &Q) -> i32 {
 fn assumption_sign(arena: &Arena, e: ExprId) -> Option<i32> {
     use crate::base::assumptions::{AssumptionCache, Props};
     let mut cache = AssumptionCache::new();
-    if cache.query(arena, e, Props::POSITIVE) == Some(true) {
+    if Truth::from(cache.query(arena, e, Props::POSITIVE)).is_true() {
         return Some(1);
     }
-    if cache.query(arena, e, Props::NEGATIVE) == Some(true) {
+    if Truth::from(cache.query(arena, e, Props::NEGATIVE)).is_true() {
         return Some(-1);
     }
-    if cache.query(arena, e, Props::ZERO) == Some(true) {
+    if Truth::from(cache.query(arena, e, Props::ZERO)).is_true() {
         return Some(0);
     }
     None
@@ -3804,7 +3808,7 @@ pub(crate) fn inner_known_real(arena: &Arena, g: ExprId) -> bool {
             cache.set_symbol_assumptions(s, real);
         }
     }
-    cache.query(arena, g, Props::REAL) == Some(true)
+    Truth::from(cache.query(arena, g, Props::REAL)).is_true()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4152,7 +4156,8 @@ fn with_imaginary_part(
 ) -> Result<LimVal, SymplexError> {
     let undetermined = || fail("the imaginary part of an infinite limit could not be determined");
     if value != arena.infinity() && value != arena.neg_infinity() {
-        if let Some(up) = imaginary_axis_infinity(arena, value) {
+        if let Some(axis) = imaginary_axis_infinity(arena, value) {
+            let up = axis == Axis::ImagPos;
             // `±i·∞` (an imaginary leading coefficient): `∓i·e → +∞`, whose
             // imaginary part is `∓Re e`; the value turned back by `±i`.
             if depth >= MAX_COMPOSE_DEPTH {
@@ -4321,7 +4326,7 @@ fn imaginary_arguments_as_real(arena: &mut Arena, e: ExprId, t: ExprId) -> ExprI
             crate::calculus::gruntz::eventually_real_at_inf(arena, y, t)
         } else {
             let mut cache = crate::base::assumptions::AssumptionCache::new();
-            cache.query(arena, y, crate::base::assumptions::Props::REAL) == Some(true)
+            Truth::from(cache.query(arena, y, crate::base::assumptions::Props::REAL)).is_true()
         };
         if !real || arena.is_zero_structural(y) {
             cache.insert(id, r);
@@ -4385,9 +4390,11 @@ fn is_axis_infinity(arena: &Arena, v: ExprId) -> bool {
             && cs.iter().all(|&c| c == oo || c == i || c == arena.neg_one()))
 }
 
-/// `Some(true)` for an infinity `d·∞` along the positive imaginary axis
-/// (`i·∞`), `Some(false)` along the negative one, `None` otherwise.
-fn imaginary_axis_infinity(arena: &mut Arena, v: ExprId) -> Option<bool> {
+/// `Some(Axis::ImagPos)` for an infinity `d·∞` along the positive imaginary
+/// axis (`i·∞`), `Some(Axis::ImagNeg)` along the negative one, `None`
+/// otherwise.  (An `Option<bool>` up to 0.49, whose `false` meant the
+/// negative axis.)
+fn imaginary_axis_infinity(arena: &mut Arena, v: ExprId) -> Option<Axis> {
     if !is_infinite_form(arena, v) {
         return None;
     }
@@ -4396,7 +4403,8 @@ fn imaginary_axis_infinity(arena: &mut Arena, v: ExprId) -> Option<bool> {
         return None;
     }
     match direction_signs(arena, d)? {
-        PartSigns { re: 0, im } if im != 0 => Some(im > 0),
+        PartSigns { re: 0, im } if im > 0 => Some(Axis::ImagPos),
+        PartSigns { re: 0, im } if im < 0 => Some(Axis::ImagNeg),
         _ => None,
     }
 }
@@ -4516,7 +4524,7 @@ fn imaginary_part_by_reflection(arena: &mut Arena, e: ExprId, t: ExprId) -> Opti
     use crate::base::assumptions::{AssumptionCache, Props};
     let mut cache = AssumptionCache::new();
     for s in crate::base::walk::free_symbols(arena, e) {
-        if s != t && cache.query(arena, s, Props::REAL) != Some(true) {
+        if s != t && !Truth::from(cache.query(arena, s, Props::REAL)).is_true() {
             return None;
         }
     }
@@ -4560,7 +4568,8 @@ fn reflection_is_conjugate(arena: &mut Arena, u: ExprId, cut: BranchCut, t: Expr
         }
         let mut cache = crate::base::assumptions::AssumptionCache::new();
         return matches!(cut, BranchCut::None | BranchCut::NegativeReals)
-            && cache.query(arena, u, crate::base::assumptions::Props::POSITIVE) == Some(true);
+            && Truth::from(cache.query(arena, u, crate::base::assumptions::Props::POSITIVE))
+                .is_true();
     }
     let sign = |arena: &mut Arena, e: ExprId| {
         let e = crate::transforms::eval::eval(arena, e);

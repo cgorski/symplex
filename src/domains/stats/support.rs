@@ -16,6 +16,7 @@ use std::fmt;
 use crate::api::context::Context;
 use crate::api::expr::{Ex, SetEx};
 use crate::base::interval::{Interval, IntervalKind};
+use crate::base::truth::Truth;
 
 /// Whether a distribution puts its mass on intervals of ℝ (a density) or
 /// on isolated points (a probability mass function).
@@ -126,52 +127,52 @@ fn min_hi(a: &Interval<Ex>, b: &Interval<Ex>) -> (Ex, bool) {
 /// Is the interval known to be empty?  `Some(true)` when `hi < lo`, or
 /// `hi = lo` with an open end; `Some(false)` when `hi > lo`; `None` when
 /// the order is unknown.
-fn interval_empty(iv: &Interval<Ex>) -> Option<bool> {
+fn interval_empty(iv: &Interval<Ex>) -> Truth {
     let (lo, hi) = (&iv.lower, &iv.upper);
     if is_neg_inf(lo) || is_pos_inf(hi) {
-        return Some(false);
+        return Truth::False;
     }
     if is_pos_inf(lo) || is_neg_inf(hi) {
-        return Some(true);
+        return Truth::True;
     }
     let d = hi - lo;
-    match d.is_positive() {
-        Some(true) => Some(false),
-        Some(false) => match d.is_zero() {
-            Some(true) => Some(iv.kind != IntervalKind::Closed),
-            Some(false) => Some(true),
-            None => None,
+    match Truth::from(d.is_positive()) {
+        Truth::True => Truth::False,
+        Truth::False => match Truth::from(d.is_zero()) {
+            Truth::True => Truth::from_bool(iv.kind != IntervalKind::Closed),
+            Truth::False => Truth::True,
+            Truth::Unknown => Truth::Unknown,
         },
-        None => None,
+        Truth::Unknown => Truth::Unknown,
     }
 }
 
-/// Does the interval contain `v`?  `None` when undecidable.
-fn interval_contains(iv: &Interval<Ex>, v: &Ex) -> Option<bool> {
+/// Does the interval contain `v`?  `Unknown` when undecidable.
+fn interval_contains(iv: &Interval<Ex>, v: &Ex) -> Truth {
     let above = if is_neg_inf(&iv.lower) {
-        Some(true)
+        Truth::True
     } else {
         let d = v - &iv.lower;
-        if iv.kind.lower_open() {
+        Truth::from(if iv.kind.lower_open() {
             d.is_positive()
         } else {
             d.is_nonnegative()
-        }
+        })
     };
     let below = if is_pos_inf(&iv.upper) {
-        Some(true)
+        Truth::True
     } else {
         let d = &iv.upper - v;
-        if iv.kind.upper_open() {
+        Truth::from(if iv.kind.upper_open() {
             d.is_positive()
         } else {
             d.is_nonnegative()
-        }
+        })
     };
     match (above, below) {
-        (Some(false), _) | (_, Some(false)) => Some(false),
-        (Some(true), Some(true)) => Some(true),
-        _ => None,
+        (Truth::False, _) | (_, Truth::False) => Truth::False,
+        (Truth::True, Truth::True) => Truth::True,
+        _ => Truth::Unknown,
     }
 }
 
@@ -323,13 +324,9 @@ impl Support {
                 Piece::Interval(iv) => {
                     let in_interval = interval_contains(iv, v);
                     if self.kind == Kind::Discrete {
-                        match (in_interval, v.is_integer()) {
-                            (Some(false), _) | (_, Some(false)) => Some(false),
-                            (Some(true), Some(true)) => Some(true),
-                            _ => None,
-                        }
+                        in_interval.and(Truth::from(v.is_integer())).to_option()
                     } else {
-                        in_interval
+                        in_interval.to_option()
                     }
                 }
             };
@@ -408,7 +405,7 @@ impl Support {
                             upper: hi,
                             kind: IntervalKind::from_open_ends(lo_open, hi_open),
                         };
-                        if interval_empty(&iv) != Some(true) {
+                        if !interval_empty(&iv).is_true() {
                             out.push(Piece::Interval(iv));
                         }
                     }

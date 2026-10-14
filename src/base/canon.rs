@@ -739,29 +739,7 @@ fn infinite_direction(arena: &Arena, arg: ExprId) -> Option<(Q, Q)> {
 fn not_finite_at_infinity(arena: &Arena, f: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     let (inf, ninf) = (arena.infinity, arena.neg_infinity);
-    let elementary = match *arena.node(f) {
-        ExprNode::Exp(a)
-        | ExprNode::Cosh(a)
-        | ExprNode::Sinh(a)
-        | ExprNode::Sin(a)
-        | ExprNode::Cos(a)
-        | ExprNode::Tan(a)
-        | ExprNode::Tanh(a)
-        | ExprNode::Abs(a)
-        | ExprNode::Ln(a)
-        | ExprNode::Asin(a)
-        | ExprNode::Acos(a)
-        | ExprNode::Asinh(a)
-        | ExprNode::Acosh(a)
-        | ExprNode::Floor(a)
-        | ExprNode::Ceiling(a)
-        | ExprNode::Erf(a)
-        | ExprNode::Erfc(a)
-        | ExprNode::Gamma(a)
-        | ExprNode::Factorial(a) => Some(a),
-        _ => None,
-    };
-    let Some(a) = elementary else {
+    let Some(a) = arena.node(f).unary_arg_if(examined_at_infinity) else {
         let infinite_argument = application_arguments(arena, arena.node(f)).is_some_and(|args| {
             args.iter().any(|&a| {
                 crate::base::walk::contains(arena, a, inf)
@@ -1164,6 +1142,53 @@ fn fold_real_times_sign(arena: &mut Arena, bases: &mut FxHashMap<ExprId, SmallVe
     }
 }
 
+/// `E^a·exp(b) → exp(a + b)` among the combined `factors` of a product
+/// (base, exponent), for rational exponents: the factors that are powers of
+/// *e* with a rational exponent — the constant `E`, `exp(q)` and their
+/// rational powers — become one factor `(E, Σ)`, which `canon_mul` builds
+/// as `1`, `E` or `exp(Σ)`.  SymPy's `Mul.flatten` gathers them the same
+/// way (`exp(q).as_base_exp()` is `(E, q)`, and exponents with the same
+/// term `1` add).  Before 0.50 `E·exp(−1)` and `exp(2)·exp(−2)` stayed
+/// products — ones nothing reduced, `simplify(E·exp(−1))` included.
+///
+/// A symbolic exponent stays apart, as in SymPy: `E·exp(x)` is what
+/// `expand(exp(x + 1))` gives, and merging it back would undo the
+/// expansion.  Only distinct factors merge: `exp(q)²` (one base) keeps the
+/// form `canon_pow` builds.
+fn merge_constant_e_powers(arena: &mut Arena, factors: &mut SmallVec<[(ExprId, ExprId); 8]>) {
+    // The rational `q` of a base `E` or `exp(q)`, with a rational exponent.
+    fn e_power(arena: &Arena, base: ExprId, exp: ExprId) -> Option<(Option<&Q>, &Q)> {
+        let k = arena.as_num(exp)?;
+        match *arena.node(base) {
+            ExprNode::E => Some((None, k)),
+            ExprNode::Exp(q) => Some((Some(arena.as_num(q)?), k)),
+            _ => None,
+        }
+    }
+    let count = factors
+        .iter()
+        .filter(|&&(b, e)| e_power(arena, b, e).is_some())
+        .count();
+    if count < 2 {
+        return;
+    }
+    let mut total = Q::zero();
+    factors.retain(|&mut (b, e)| match e_power(arena, b, e) {
+        Some((q, k)) => {
+            total = match q {
+                Some(q) => q_add(&total, &q_mul(q, k)),
+                None => q_add(&total, k),
+            };
+            false
+        }
+        None => true,
+    });
+    tracing::trace!(%total, "canon_mul: merged rational powers of e");
+    let nid = arena.intern_num(total);
+    let exponent = arena.intern(ExprNode::Num(nid));
+    factors.push((arena.e_const, exponent));
+}
+
 /// Build a canonical `Mul` node from the given factors.
 ///
 /// Uses an explicit stack for flattening and an [`FxHashMap`] for
@@ -1285,6 +1310,8 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         };
         factors.push((*base, combined_exp));
     }
+
+    merge_constant_e_powers(arena, &mut factors);
 
     // ── Exponent-grouping pass for positive numeric bases ──────────
     //
@@ -1815,23 +1842,41 @@ pub(crate) fn zero_candidate_sums(arena: &Arena, f: ExprId) -> SmallVec<[ExprId;
             ExprNode::Pow(base, e) if arena.as_num(*e).is_some_and(Signed::is_positive) => {
                 stack.push(*base);
             }
-            ExprNode::Sin(a)
-            | ExprNode::Tan(a)
-            | ExprNode::Sinh(a)
-            | ExprNode::Tanh(a)
-            | ExprNode::Asin(a)
-            | ExprNode::Atan(a)
-            | ExprNode::Asinh(a)
-            | ExprNode::Atanh(a)
-            | ExprNode::Abs(a)
-            | ExprNode::Sign(a)
-            | ExprNode::LambertW(a)
-            | ExprNode::Floor(a)
-            | ExprNode::Ceiling(a) => stack.push(*a),
-            _ => {}
+            node => stack.extend(node.unary_arg_if(zero_through)),
         }
     }
     sums
+}
+
+/// The functions [`not_finite_at_infinity`] examines at an infinite
+/// argument: the elementary functions but `atan`, `atanh` (bounded), and
+/// `|·|`, `⌊·⌋`, `⌈·⌉`, `erf`, `erfc`, `Γ`, `n!`.
+fn examined_at_infinity(f: crate::base::func::Func) -> bool {
+    use crate::base::func::Func;
+    (f.elementary().is_some() && !matches!(f, Func::Atan | Func::Atanh))
+        || matches!(
+            f,
+            Func::Abs
+                | Func::Floor
+                | Func::Ceiling
+                | Func::Erf
+                | Func::Erfc
+                | Func::Gamma
+                | Func::Factorial
+        )
+}
+
+/// The one-argument functions a zero of the argument passes through
+/// (`f(0) = 0`) for [`zero_candidate_sums`] and [`sum_under_zero_chain`]:
+/// the odd elementary functions (`sin`, `tan`, `asin`, `atan` and their
+/// hyperbolic kin) and `|·|`, `sign`, `W`, `⌊·⌋`, `⌈·⌉`.
+fn zero_through(f: crate::base::func::Func) -> bool {
+    use crate::base::func::{Func, Parity};
+    (f.elementary().is_some() && matches!(f.spec().parity, Parity::Odd(_)))
+        || matches!(
+            f,
+            Func::Abs | Func::Sign | Func::LambertW0 | Func::Floor | Func::Ceiling
+        )
 }
 
 /// `false` when `f` certainly does not vanish identically by one of its
@@ -2088,20 +2133,7 @@ fn sum_under_zero_chain(arena: &Arena, f: ExprId) -> Option<ExprId> {
             ExprNode::Add(_) => return Some(id),
             ExprNode::Neg(inner) => *inner,
             ExprNode::Pow(base, e) if arena.as_num(*e).is_some_and(Signed::is_positive) => *base,
-            ExprNode::Sin(a)
-            | ExprNode::Tan(a)
-            | ExprNode::Sinh(a)
-            | ExprNode::Tanh(a)
-            | ExprNode::Asin(a)
-            | ExprNode::Atan(a)
-            | ExprNode::Asinh(a)
-            | ExprNode::Atanh(a)
-            | ExprNode::Abs(a)
-            | ExprNode::Sign(a)
-            | ExprNode::LambertW(a)
-            | ExprNode::Floor(a)
-            | ExprNode::Ceiling(a) => *a,
-            _ => return None,
+            node => node.unary_arg_if(zero_through)?,
         };
     }
 }
@@ -2280,7 +2312,7 @@ fn is_costly_node(arena: &Arena, id: ExprId) -> bool {
     use crate::base::libfn::LibFn;
     let node = arena.node(id);
     let special = match node {
-        ExprNode::Apply(..) | ExprNode::Lib(..) => true,
+        ExprNode::Apply(..) | ExprNode::Lib(..) | ExprNode::Internal(..) => true,
         _ => node.func(arena).is_some_and(|(f, _)| f.is_special()),
     };
     if !special {
@@ -5773,6 +5805,27 @@ mod tests {
             .filter(|&f| f.family() == Family::Node && looked_into(f))
             .collect();
         assert_eq!(new, old);
+    }
+
+    /// `not_finite_at_infinity`, `zero_candidate_sums` and
+    /// `sum_under_zero_chain` select exactly the functions of their 0.49
+    /// or-patterns (W6d: the lists became `examined_at_infinity` and
+    /// `zero_through`).
+    #[test]
+    fn examined_at_infinity_and_zero_through_are_the_old_lists() {
+        use crate::base::func::{Func::*, selected};
+        let old_infinity = [
+            Exp, Cosh, Sinh, Sin, Cos, Tan, Tanh, Abs, Ln, Asin, Acos, Asinh, Acosh, Floor,
+            Ceiling, Erf, Erfc, Gamma, Factorial,
+        ];
+        assert_eq!(
+            selected(examined_at_infinity),
+            old_infinity.into_iter().collect()
+        );
+        let old_zero = [
+            Sin, Tan, Sinh, Tanh, Asin, Atan, Asinh, Atanh, Abs, Sign, LambertW0, Floor, Ceiling,
+        ];
+        assert_eq!(selected(zero_through), old_zero.into_iter().collect());
     }
 
     // ── Add canonicalization ────────────────────────────────────────────

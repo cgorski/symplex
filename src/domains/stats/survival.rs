@@ -33,6 +33,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
+use crate::base::truth::Truth;
 use crate::domains::stats::data::Q;
 use crate::domains::stats::family::{Distribution, sign_of};
 use crate::domains::stats::hypothesis::{Alternative, TestResult};
@@ -674,10 +675,10 @@ pub fn survival_function(dist: &Distribution, t: &Ex) -> Ex {
 pub fn hazard_function(dist: &Distribution, t: &Ex) -> Ex {
     if t.free_symbols().is_empty() {
         let support = dist.support();
-        let below = support.contains(t) == Some(false)
+        let below = Truth::from(support.contains(t)).is_false()
             && support
                 .as_interval()
-                .and_then(|iv| sign_of(&(t - &iv.lower)))
+                .and_then(|iv| sign_of(&(t - &iv.lower)).to_ordering())
                 == Some(std::cmp::Ordering::Less);
         if below {
             return dist.context().zero();

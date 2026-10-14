@@ -24,7 +24,8 @@
 
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
-use crate::domains::matrix::{Matrix, all3, ex_is_positive, ex_is_zero, sqrt_rationalized};
+use crate::base::truth::Truth;
+use crate::domains::matrix::{Matrix, ex_is_positive, ex_is_zero, sqrt_rationalized};
 pub use crate::domains::robotics::EulerConvention;
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
@@ -247,7 +248,7 @@ impl Quaternion {
     /// ```
     pub fn is_unit(&self) -> Option<bool> {
         let one = self.context().one();
-        ex_is_zero(&(&self.norm_squared() - &one))
+        ex_is_zero(&(&self.norm_squared() - &one)).to_option()
     }
 
     /// Inverse `q⁻¹ = q* / |q|²`.
@@ -266,12 +267,13 @@ impl Quaternion {
     /// Mathematical equality (three-valued): every component difference
     /// simplifies to zero.
     pub fn equals(&self, other: &Quaternion) -> Option<bool> {
-        all3(
+        Truth::all(
             self.components()
                 .iter()
                 .zip(other.components().iter())
                 .map(|(a, b)| ex_is_zero(&(*a - *b))),
         )
+        .to_option()
     }
 
     // ── Rotations ──────────────────────────────────────────────────────
@@ -360,7 +362,7 @@ impl Quaternion {
                 format!("expected a 3×3 matrix, got {}×{}", r.nrows(), r.ncols()),
             ));
         }
-        if r.is_orthogonal() == Some(false) {
+        if Truth::from(r.is_orthogonal()).is_false() {
             return Err(invalid(
                 "Quaternion::from_rotation_matrix",
                 "matrix is not orthogonal (RᵀR ≠ I)",
@@ -385,7 +387,7 @@ impl Quaternion {
             let det_f = v[0][0] * (v[1][1] * v[2][2] - v[1][2] * v[2][1])
                 - v[0][1] * (v[1][0] * v[2][2] - v[1][2] * v[2][0])
                 + v[0][2] * (v[1][0] * v[2][1] - v[1][1] * v[2][0]);
-            if (det_f - 1.0).abs() > 1e-9 && ex_is_zero(&(&r.det()? - &one)) == Some(false) {
+            if (det_f - 1.0).abs() > 1e-9 && ex_is_zero(&(&r.det()? - &one)).is_false() {
                 return improper();
             }
             // Shepperd: pick the branch with the largest diagonal quantity.
@@ -445,7 +447,7 @@ impl Quaternion {
             // trig-of-rational constants and adds nothing numerically).
             let q = q.eval();
             // Canonical sign: w ≥ 0.
-            let q = if ex_is_positive(&(-&q.w)) == Some(true) {
+            let q = if ex_is_positive(&(-&q.w)).is_true() {
                 -&q
             } else {
                 q
@@ -453,11 +455,11 @@ impl Quaternion {
             return Ok(q);
         }
 
-        if ex_is_zero(&(&r.det()? + &one)) == Some(true) {
+        if ex_is_zero(&(&r.det()? + &one)).is_true() {
             return improper();
         }
         let one_plus_tr = (&one + &tr).simplify();
-        if ex_is_positive(&one_plus_tr) == Some(false) {
+        if ex_is_positive(&one_plus_tr).is_false() {
             return Err(failed(
                 "Quaternion::from_rotation_matrix",
                 format!(
@@ -517,7 +519,7 @@ impl Quaternion {
     /// ```
     pub fn to_axis_angle(&self) -> Result<(Matrix, Ex), SymplexError> {
         let v_norm_sq = (&self.x.powi(2) + &self.y.powi(2) + &self.z.powi(2)).eval();
-        if ex_is_zero(&v_norm_sq) == Some(true) {
+        if ex_is_zero(&v_norm_sq).is_true() {
             return Err(failed(
                 "Quaternion::to_axis_angle",
                 "vector part is zero (identity rotation): the axis is undefined",
@@ -539,7 +541,7 @@ impl Quaternion {
             tidy(&self.z.eval() / &v_norm),
         ])?;
         let w = self.w.eval();
-        let half_angle = if ex_is_positive(&w) == Some(true) {
+        let half_angle = if ex_is_positive(&w).is_true() {
             (&v_norm / &w).atan()
         } else {
             v_norm.atan2(&w)
@@ -627,7 +629,7 @@ impl Quaternion {
                         let maybe_zero = v.is_constant()
                             && !v.is_zero_structural()
                             && v.eval_f64().map_or(true, |f| f == 0.0);
-                        if maybe_zero && ex_is_zero(v) == Some(true) {
+                        if maybe_zero && ex_is_zero(v).is_true() {
                             zero.clone()
                         } else {
                             v.clone()
@@ -640,7 +642,7 @@ impl Quaternion {
         let hyp = |a: Ex, b: Ex| (a.powi(2) + b.powi(2)).sqrt();
         // Gimbal lock: the two entries fixing the middle angle's cosine
         // (ZYX/XYZ) or sine (ZXZ) vanish, and with them both atan2 pairs.
-        let locked = |a: Ex, b: Ex| ex_is_zero(&a) == Some(true) && ex_is_zero(&b) == Some(true);
+        let locked = |a: Ex, b: Ex| ex_is_zero(&a).is_true() && ex_is_zero(&b).is_true();
         let (phi, theta, psi) = match convention {
             // R = Rz(φ)·Ry(θ)·Rx(ψ); at cos θ = 0 with ψ = 0:
             // R₀₁ = −sin φ, R₁₁ = cos φ.
@@ -759,7 +761,7 @@ impl Quaternion {
     pub fn slerp(&self, other: &Quaternion, t: &Ex) -> Quaternion {
         let one = t.context().int(1);
         let dot = self.dot(other);
-        if ex_is_zero(&(&dot - &one)) == Some(true) {
+        if ex_is_zero(&(&dot - &one)).is_true() {
             return self.clone();
         }
         let omega = dot.acos();

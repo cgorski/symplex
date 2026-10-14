@@ -273,9 +273,51 @@ fn solve_impl(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Sol
         return Solutions::refused(Reason::said(Reason::NestedPeriods.text()));
     }
     match cx.period() {
-        Some(n) => outcome.with_families(n),
+        Some(n) => without_congruent_families(arena, outcome.with_families(n)),
         None => outcome,
     }
+}
+
+/// The outcome of a general solve without the families congruent to an
+/// earlier one: `a + d·n` and `b + d·n` with `(a − b)/d` an integer are the
+/// same set.  Before 0.50 `solve_general(sinh(x)² + 1)` listed `3πi/2 +
+/// 2nπi` beside `−πi/2 + 2nπi` (the two branches of `sinh x = −i`).
+fn without_congruent_families(arena: &mut Arena, outcome: Solutions) -> Solutions {
+    let (roots, n, missing) = match outcome {
+        Solutions::Complete(RootSet::Families { roots, n }) => (roots, n, None),
+        Solutions::Partial(RootSet::Families { roots, n }, m) => (roots, n, Some(m)),
+        other => return other,
+    };
+    // (root, its offset and step when it is linear in `n`)
+    let mut kept: Vec<(ExprId, Option<(ExprId, ExprId)>)> = Vec::with_capacity(roots.len());
+    for r in roots {
+        let linear = match symbolic_poly_coeffs(arena, r, n) {
+            Some(c) if c.len() == 2 && !arena.is_zero_structural(c[1]) => Some((c[0], c[1])),
+            _ => None,
+        };
+        if let Some((a, d)) = linear
+            && kept
+                .iter()
+                .any(|&(_, k)| k.is_some_and(|(b, e)| e == d && integer_quotient(arena, a, b, d)))
+        {
+            continue;
+        }
+        kept.push((r, linear));
+    }
+    let roots = kept.into_iter().map(|(r, _)| r).collect();
+    let set = RootSet::Families { roots, n };
+    match missing {
+        None => Solutions::Complete(set),
+        Some(m) => Solutions::Partial(set, m),
+    }
+}
+
+/// Is `(a − b)/d` an integer?
+fn integer_quotient(arena: &mut Arena, a: ExprId, b: ExprId, d: ExprId) -> bool {
+    let diff = arena.sub(a, b);
+    let q = arena.div(diff, d);
+    let q = crate::transforms::eval::eval(arena, q);
+    arena.as_num(q).is_some_and(|q| q.is_integer())
 }
 
 /// [`solve_impl`] without the check of nested periodic families.
@@ -1194,6 +1236,13 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Solu
         return Solutions::none(Reason::said(
             "equation has no real solutions (range restriction of exp/sin/cos/cosh/abs)",
         ));
+    }
+
+    // Step 5b: the unknown only through linear forms with one common shift
+    // (`sin(2x − 1) + cos(2x − 1) + 1/2`), solved in the shifted unknown.
+    let shifted = try_shifted_argument(arena, expr, var, cx);
+    if shifted.has_roots() || shifted.is_none_proved() || shifted.is_nested_periods() {
+        return shifted;
     }
 
     // Step 6: the numerator over a polynomial denominator (`ln(x)/x = 1/4`
@@ -3639,6 +3688,162 @@ fn try_scale_trig_arguments(
         let x = crate::transforms::expand::expand(arena, x);
         crate::transforms::eval::eval(arena, x)
     })
+}
+
+/// An equation in which the unknown `x` occurs only through linear forms
+/// `aᵢ·x + bᵢ` with one common shift `s = bᵢ/aᵢ ≠ 0`
+/// (`sin(2x − 1) + cos(2x − 1) + 1/2`, `sinh(x + 1/3) − tanh(x + 1/3)`,
+/// `cosh(2x + 1)² + 3·cosh(2x + 1) + 2`, `sin(2x − 1) + sin(4x − 2)`), solved in
+/// `u = x + s`, in which every form is `aᵢ·u`, and mapped back by
+/// `x = u − s` (a family `u₀ + n·P` becomes `u₀ − s + n·P`).  Before 0.50
+/// these were refused while the same equations in `aᵢ·x` were solved: the
+/// substitutions look for `sin(a·x)`, `e^(a·x)`, … of the unknown itself.
+/// SymPy solves them.
+///
+/// `u` is real when `x` is declared real; the shift must be real (per the
+/// context's [`Params`]), since a shift by
+/// `i` would make `u` non-real for a real `x`.  Refused (`NotFound`) for
+/// another shape (`x` bare or outside the forms: `x + sin(x + 1)`), for no
+/// shift, or for two different shifts (`sin(x + 1) + cos(x + 2)`).  The
+/// equation in `u` has no shifted form left, so this step does not repeat.
+fn try_shifted_argument(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Solutions {
+    use crate::base::assumptions::{Assumptions, Props};
+    let not_found = || Solutions::refused(Reason::NotFound);
+    if !matches!(arena.node(var), ExprNode::Symbol(_)) {
+        return not_found();
+    }
+    let Some(forms) = linear_forms_of(arena, expr, var) else {
+        return not_found();
+    };
+    let mut shift = None;
+    let mut rates: Vec<ExprId> = Vec::with_capacity(forms.len());
+    for &form in &forms {
+        let Some((a, b)) = linear_rate(arena, form, var) else {
+            return not_found();
+        };
+        let s = arena.div(b, a);
+        let s = crate::transforms::eval::eval(arena, s);
+        match shift {
+            None => shift = Some(s),
+            Some(t) if t == s => {}
+            Some(_) => return not_found(),
+        }
+        rates.push(a);
+    }
+    let Some(s) = shift else {
+        return not_found();
+    };
+    if arena.is_zero_structural(s) || expr_contains_var(arena, s, var) || !cx.real(arena, s, var) {
+        return not_found();
+    }
+    let u = crate::transforms::subs::fresh_symbol(arena, "__u_shifted", &[expr]);
+    if let ExprNode::Symbol(u_sid) = *arena.node(u) {
+        let mut declared = Assumptions::default();
+        if Domain::declared(arena, var) == Domain::Real {
+            declared.assert_true(Props::REAL);
+        }
+        arena.set_symbol_assumptions(u_sid, declared);
+    }
+    let mut sub = expr;
+    for (&form, &a) in forms.iter().zip(&rates) {
+        let au = arena.mul(&[a, u]);
+        sub = crate::transforms::subs::subs(arena, sub, form, au);
+    }
+    if expr_contains_var(arena, sub, var) {
+        return not_found();
+    }
+    let sub = crate::transforms::eval::eval(arena, sub);
+    let outcome = solve_raw(arena, sub, u, cx);
+    // A candidate at which the evaluated equation in `u` is undefined is
+    // dropped here: evaluation can expose an infinite factor that the
+    // original hides in an unevaluated function (`betainc_regularized(1, 1,
+    // −u, ∞) = u + ∞`), where the root of another factor is `∞·0`, and the
+    // check against the original (`solve_impl`), whose substitution makes
+    // that product `0`, would pass it.  The other candidates are left to that
+    // check.
+    let outcome = match outcome.into_found() {
+        Ok((roots, missing)) => {
+            let mut kept = Vec::with_capacity(roots.len());
+            for v in roots {
+                let at = crate::transforms::subs::subs(arena, sub, u, v);
+                let at = crate::transforms::eval::eval(arena, at);
+                let undefined = matches!(
+                    arena.node(at),
+                    ExprNode::NaN
+                        | ExprNode::ComplexInfinity
+                        | ExprNode::Infinity
+                        | ExprNode::NegInfinity
+                );
+                if !undefined {
+                    kept.push(v);
+                }
+            }
+            if kept.is_empty() {
+                return not_found();
+            }
+            Solutions::with_missing(kept, missing)
+        }
+        Err(other) => other,
+    };
+    if !(outcome.has_roots() || outcome.is_none_proved() || outcome.is_nested_periods()) {
+        return not_found();
+    }
+    tracing::debug!("solve: solved in the shifted unknown");
+    // A reason in words names the unknown it was found for: `x`, not `u`.
+    let (u_name, x_name) = (arena.display(u).to_string(), arena.display(var).to_string());
+    let renamed = |reason: Reason| match reason {
+        Reason::Said(text) if text.contains(&u_name) => {
+            Reason::said(text.replace(&u_name, &x_name))
+        }
+        other => other,
+    };
+    let outcome = match outcome {
+        Solutions::Complete(RootSet::Empty(reason)) => Solutions::none(renamed(reason)),
+        Solutions::Partial(set, Missing::Alternative(reason)) => {
+            Solutions::Partial(set, Missing::Alternative(renamed(reason)))
+        }
+        other => other,
+    };
+    outcome.map_roots(|v| {
+        let x = arena.sub(v, s);
+        let x = crate::transforms::expand::expand(arena, x);
+        crate::transforms::eval::eval(arena, x)
+    })
+}
+
+/// The maximal sums `a·x + b` (`x = var`, `a` and `b ≠ 0` free of it: an
+/// `Add` of terms free of `var`, `var` and products of `var` with factors
+/// free of it) through which `var` occurs in `expr`, or `None` when it
+/// occurs elsewhere too (bare, or inside no such sum).
+fn linear_forms_of(arena: &Arena, expr: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
+    let linear_term = |t: ExprId| {
+        t == var
+            || matches!(arena.node(t), ExprNode::Mul(fs)
+                if fs.iter().filter(|&&f| f == var).count() == 1
+                    && fs.iter().all(|&f| f == var || !expr_contains_var(arena, f, var)))
+    };
+    let mut forms = Vec::new();
+    let mut stack = vec![expr];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || !expr_contains_var(arena, id, var) {
+            continue;
+        }
+        if id == var {
+            return None;
+        }
+        if let ExprNode::Add(terms) = arena.node(id)
+            && terms.iter().any(|&t| !expr_contains_var(arena, t, var))
+            && terms
+                .iter()
+                .all(|&t| !expr_contains_var(arena, t, var) || linear_term(t))
+        {
+            forms.push(id);
+            continue;
+        }
+        stack.extend(arena.children(id));
+    }
+    (!forms.is_empty()).then_some(forms)
 }
 
 /// Does `e` hold a function of `t` that is periodic for the variable of the
@@ -7569,20 +7774,39 @@ pub(crate) fn declared_domain(
 }
 
 /// The signs of the real and imaginary parts of a constant from a
-/// certified evaluation (`Equal`: the part is exactly 0); `None` for a part
-/// whose sign is not certified.
+/// certified evaluation: one atom each ([`SignSet::ZERO`]: the part is
+/// exactly 0), or [`SignSet::REAL`] for both parts when the evaluation is
+/// not certified (a part is a real number of unknown sign).  Up to 0.49 two
+/// `Option<Ordering>`s, read by `== Some(Less)` and `matches!(…, Some(Less |
+/// Greater))` at each use.
+///
+/// [`SignSet::ZERO`]: crate::base::truth::SignSet::ZERO
+/// [`SignSet::REAL`]: crate::base::truth::SignSet::REAL
 #[derive(Clone, Copy)]
 struct PartSigns {
-    re: Option<std::cmp::Ordering>,
-    im: Option<std::cmp::Ordering>,
+    re: crate::base::truth::SignSet,
+    im: crate::base::truth::SignSet,
 }
 
 impl PartSigns {
+    /// Certainly not real: a certified nonzero imaginary part.
     fn nonreal(self) -> bool {
-        matches!(
-            self.im,
-            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Greater)
-        )
+        self.im.is_nonzero().is_true()
+    }
+
+    /// Certainly not 0: a certified nonzero part.
+    fn nonzero(self) -> bool {
+        self.nonreal() || self.re.is_nonzero().is_true()
+    }
+
+    /// Certainly 0: both parts certified 0.
+    fn zero(self) -> bool {
+        self.re.is_zero().is_true() && self.im.is_zero().is_true()
+    }
+
+    /// Are the signs certified?
+    fn certified(self) -> bool {
+        self.re.is_single() && self.im.is_single()
     }
 }
 
@@ -7598,14 +7822,18 @@ fn bigfloat_sign(x: &astro_float::BigFloat) -> std::cmp::Ordering {
 }
 
 fn part_signs(arena: &Arena, value: ExprId) -> PartSigns {
+    use crate::base::truth::SignSet;
     use crate::transforms::evalf::{Settled, ZeroSearch};
     match crate::transforms::evalf::evalf_settled(arena, value, ROOT_CHECK_DIGITS, ZeroSearch::Cap)
     {
         Ok((z, Settled::Certified)) => PartSigns {
-            re: Some(bigfloat_sign(&z.0)),
-            im: Some(bigfloat_sign(&z.1)),
+            re: SignSet::from_ordering(bigfloat_sign(&z.0)),
+            im: SignSet::from_ordering(bigfloat_sign(&z.1)),
         },
-        _ => PartSigns { re: None, im: None },
+        _ => PartSigns {
+            re: SignSet::REAL,
+            im: SignSet::REAL,
+        },
     }
 }
 
@@ -7629,11 +7857,7 @@ fn certainly_not_integer(arena: &mut Arena, value: ExprId, signs: PartSigns) -> 
     if let Some(r) = arena.as_num(d) {
         return !r.is_integer();
     }
-    let ds = part_signs(arena, d);
-    if !matches!(
-        ds.re,
-        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Greater)
-    ) {
+    if !part_signs(arena, d).re.is_nonzero().is_true() {
         return false;
     }
     crate::transforms::evalf::evalf_complex64(arena, d).is_ok_and(|w| w.re.abs() < 0.99)
@@ -7744,18 +7968,20 @@ fn violates_numerically(
     s: PartSigns,
 ) -> bool {
     use crate::base::assumptions::Props;
-    use std::cmp::Ordering::{Equal, Greater, Less};
-    let zero = s.re == Some(Equal) && s.im == Some(Equal);
+    let zero = s.zero();
+    let re_negative = s.re.is_negative().is_true();
+    let re_positive = s.re.is_positive().is_true();
+    let re_nonzero = s.re.is_nonzero().is_true();
     match prop {
         Props::REAL | Props::IRRATIONAL => s.nonreal(),
         Props::RATIONAL => s.nonreal() || certainly_irrational(arena, value),
         Props::ALGEBRAIC => certainly_transcendental(arena, value),
-        Props::POSITIVE => s.nonreal() || s.re == Some(Less) || zero,
-        Props::NEGATIVE => s.nonreal() || s.re == Some(Greater) || zero,
-        Props::NONNEGATIVE => s.nonreal() || s.re == Some(Less),
-        Props::NONPOSITIVE => s.nonreal() || s.re == Some(Greater),
-        Props::ZERO => s.nonreal() || matches!(s.re, Some(Less | Greater)),
-        Props::IMAGINARY => matches!(s.re, Some(Less | Greater)),
+        Props::POSITIVE => s.nonreal() || re_negative || zero,
+        Props::NEGATIVE => s.nonreal() || re_positive || zero,
+        Props::NONNEGATIVE => s.nonreal() || re_negative,
+        Props::NONPOSITIVE => s.nonreal() || re_positive,
+        Props::ZERO => s.nonreal() || re_nonzero,
+        Props::IMAGINARY => re_nonzero,
         // `1` is neither prime nor composite (the assumption system leaves
         // it open)
         Props::PRIME | Props::COMPOSITE
@@ -8036,7 +8262,7 @@ fn phase_of(arena: &mut Arena, value: ExprId) -> Option<Phase> {
 fn arc_excludes(arena: &mut Arena, p: &Phase, prop: crate::base::assumptions::Props) -> bool {
     use crate::base::assumptions::Props;
     use std::f64::consts::PI;
-    if part_signs(arena, p.w).re.is_none() {
+    if !part_signs(arena, p.w).certified() {
         return false;
     }
     let Ok(w) = crate::transforms::evalf::evalf_complex64(arena, p.w) else {
@@ -8080,13 +8306,13 @@ fn holds_numerically(
     real: Option<bool>,
 ) -> bool {
     use crate::base::assumptions::Props;
-    use std::cmp::Ordering::{Equal, Greater, Less};
     let is_real = real == Some(true);
     let not_real = real == Some(false) || s.nonreal();
-    let pos = is_real && s.re == Some(Greater);
-    let neg = is_real && s.re == Some(Less);
-    let zero = s.re == Some(Equal) && s.im == Some(Equal);
-    let nonzero = matches!(s.re, Some(Less | Greater)) || s.nonreal();
+    let pos = is_real && s.re.is_positive().is_true();
+    let neg = is_real && s.re.is_negative().is_true();
+    let zero = s.zero();
+    let re_nonzero = s.re.is_nonzero().is_true();
+    let nonzero = s.nonzero();
     match (prop, want) {
         (Props::REAL, true) => is_real,
         (Props::REAL, false) => not_real,
@@ -8099,7 +8325,7 @@ fn holds_numerically(
         (Props::NONPOSITIVE, true) => neg || zero,
         (Props::NONPOSITIVE, false) => pos || not_real,
         (Props::NONZERO, true) | (Props::ZERO, false) => nonzero,
-        (Props::IMAGINARY, false) => is_real || matches!(s.re, Some(Less | Greater)),
+        (Props::IMAGINARY, false) => is_real || re_nonzero,
         _ => false,
     }
 }
@@ -8277,7 +8503,6 @@ pub(crate) fn family_in_domain(
     k: ExprId,
 ) -> FamilyInDomain {
     use crate::base::assumptions::Props;
-    use std::cmp::Ordering::{Greater, Less};
     let Some(declared) = declared_domain(arena, var) else {
         return FamilyInDomain::All;
     };
@@ -8345,8 +8570,7 @@ pub(crate) fn family_in_domain(
                     if arena.is_zero_structural(m) {
                         Some(true)
                     } else {
-                        let ps = part_signs(arena, m);
-                        (ps.nonreal() || matches!(ps.re, Some(Less | Greater))).then_some(false)
+                        part_signs(arena, m).nonzero().then_some(false)
                     }
                 }
                 _ => None,
@@ -8429,8 +8653,7 @@ pub(crate) fn family_in_domain(
                     let j = arena.int(z.re.round() as i64);
                     let off = arena.sub(q, j);
                     let off = crate::transforms::eval::eval(arena, off);
-                    let ps = part_signs(arena, off);
-                    (ps.nonreal() || matches!(ps.re, Some(Less | Greater))).then_some(None)
+                    part_signs(arena, off).nonzero().then_some(None)
                 }
                 _ => None,
             }
@@ -8476,8 +8699,7 @@ pub(crate) fn family_in_domain(
             None => FamilyInDomain::Undecided,
         };
     }
-    if discrete || d_real != Some(true) || !matches!(part_signs(arena, d).re, Some(Less | Greater))
-    {
+    if discrete || d_real != Some(true) || !part_signs(arena, d).re.is_nonzero().is_true() {
         return FamilyInDomain::Undecided;
     }
     match s_real {

@@ -11,6 +11,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
+use crate::base::truth::{SignSet, Truth};
 
 use super::family::{Distribution, Family, Sampler, TailOrders, family_boilerplate};
 use super::sample::Rng;
@@ -105,7 +106,8 @@ impl Family for Truncated {
             return None;
         }
         let inner_hi = self.inner.support().as_interval().map(|s| s.upper.clone());
-        let s_hi = if is_pos_inf(hi) || inner_hi.is_some_and(|u| (hi - &u).is_zero() == Some(true))
+        let s_hi = if is_pos_inf(hi)
+            || inner_hi.is_some_and(|u| Truth::from((hi - &u).is_zero()).is_true())
         {
             self.context().zero()
         } else {
@@ -558,10 +560,10 @@ impl Transformed {
         let (mut lower, mut upper) = (None, None);
         for (h, _) in &self.branches {
             let at = h.subs(&self.image_var, y);
-            let slot = if self.branch_derivative_sign(&self.branch_slope(h, odd_power))? {
-                &mut upper
-            } else {
-                &mut lower
+            let slot = match self.branch_derivative_sign(&self.branch_slope(h, odd_power)) {
+                SignSet::POSITIVE => &mut upper,
+                SignSet::NEGATIVE => &mut lower,
+                _ => return None,
             };
             if slot.replace(at).is_some() {
                 return None;
@@ -570,11 +572,13 @@ impl Transformed {
         Some((lower, upper))
     }
 
-    /// `Some(true)` when `dh > 0` on the image, `Some(false)` when `dh < 0`,
-    /// `None` when its sign cannot be decided at a sample interior point.
-    fn branch_derivative_sign(&self, dh: &Ex) -> Option<bool> {
+    /// `POSITIVE` when `dh > 0` on the image, `NEGATIVE` when `dh < 0`,
+    /// `UNKNOWN` when its sign cannot be decided at a sample interior point.
+    fn branch_derivative_sign(&self, dh: &Ex) -> SignSet {
         let ctx = self.context();
-        let iv = self.image.as_interval()?;
+        let Some(iv) = self.image.as_interval() else {
+            return SignSet::UNKNOWN;
+        };
         let (lo, hi) = (&iv.lower, &iv.upper);
         // Points strictly inside the image; the next is tried where `dh`
         // has no sign (`2x³ + 1` has its flat point at the first probe 1).
@@ -592,17 +596,19 @@ impl Transformed {
                 lo + &w * ctx.rational(2, 3),
             ]
         };
-        probes.iter().find_map(|probe| {
-            let at = dh.subs(&self.image_var, probe).simplify();
-            match at.is_positive() {
-                Some(true) => Some(true),
-                Some(false) => match at.is_negative() {
-                    Some(true) => Some(false),
+        probes
+            .iter()
+            .find_map(|probe| {
+                let at = dh.subs(&self.image_var, probe).simplify();
+                match Truth::from(at.is_positive()) {
+                    Truth::True => Some(SignSet::POSITIVE),
+                    Truth::False if Truth::from(at.is_negative()).is_true() => {
+                        Some(SignSet::NEGATIVE)
+                    }
                     _ => None,
-                },
-                None => None,
-            }
-        })
+                }
+            })
+            .unwrap_or(SignSet::UNKNOWN)
     }
 }
 
@@ -643,9 +649,9 @@ impl Family for Transformed {
             // throughout: decide the sign at an interior point of the image
             // instead of carrying `abs`.
             let signed = match self.branch_derivative_sign(&dh) {
-                Some(true) => dh,
-                Some(false) => -dh,
-                None => dh.abs(),
+                SignSet::POSITIVE => dh,
+                SignSet::NEGATIVE => -dh,
+                _ => dh.abs(),
             };
             acc += self.inner.density(&h_y) * signed.subs(&self.image_var, y);
         }
@@ -836,7 +842,7 @@ impl Family for Mixture {
         let ctx = self.ctx();
         let heavier = |a: Option<Ex>, b: Option<Ex>| match (a, b) {
             (None, o) | (o, None) => o,
-            (Some(a), Some(b)) => Some(match super::family::sign_of(&(&a - &b)) {
+            (Some(a), Some(b)) => Some(match super::family::sign_of(&(&a - &b)).to_ordering() {
                 Some(std::cmp::Ordering::Greater) => b,
                 Some(_) => a,
                 None => Ex::min_of(&ctx, [a, b]),
@@ -971,7 +977,7 @@ fn odd_power_inverse(g: &Ex, x: &Ex, y: &Ex) -> Option<Ex> {
     );
     let b = g.subs(x, &(-&s)).simplify();
     let shifted = &a * (x + &s).powi(i64::from(n)) + &b;
-    if (shifted - g).expand().simplify().is_zero() != Some(true) {
+    if !Truth::from((shifted - g).expand().simplify().is_zero()).is_true() {
         return None;
     }
     let root = ((y - &b) / &a).real_root(n).ok()?;
@@ -1024,7 +1030,7 @@ fn compare_ends(a: &Ex, b: &Ex) -> Option<std::cmp::Ordering> {
         (None, Some(y)) => Some(if y < 0 { Greater } else { Less }),
         (None, None) => match (a - b).is_zero() {
             Some(true) => Some(Equal),
-            _ => super::family::sign_of(&(a - b)),
+            _ => super::family::sign_of(&(a - b)).to_ordering(),
         },
     }
 }
@@ -1100,7 +1106,8 @@ fn merge_pieces(kind: Kind, pieces: &[Piece]) -> Option<Vec<Piece>> {
     let mut out: Vec<Piece> = merged.iter().cloned().map(Piece::Interval).collect();
     for v in points {
         let covered = merged.iter().any(|iv| {
-            Support::from_pieces(kind, vec![Piece::Interval(iv.clone())]).contains(&v) == Some(true)
+            Truth::from(Support::from_pieces(kind, vec![Piece::Interval(iv.clone())]).contains(&v))
+                .is_true()
         });
         let listed = out.iter().any(|p| matches!(p, Piece::Point(w) if *w == v));
         if !covered && !listed {
@@ -1138,7 +1145,7 @@ impl Distribution {
     /// ```
     pub fn truncated(&self, region: &Support) -> Result<Distribution, SymplexError> {
         let mass = self.probability_of(region)?;
-        if mass.is_zero() == Some(true) {
+        if Truth::from(mass.is_zero()).is_true() {
             return Err(invalid(format!(
                 "cannot condition on a region of probability zero ({region})"
             )));
@@ -1186,7 +1193,7 @@ impl Distribution {
         let increasing = match a.is_positive() {
             Some(true) => true,
             Some(false) => {
-                if a.is_negative() == Some(true) {
+                if Truth::from(a.is_negative()).is_true() {
                     false
                 } else {
                     return Err(invalid("the slope of an affine map must be non-zero"));
@@ -1199,13 +1206,21 @@ impl Distribution {
             }
         };
         if self.kind() == Kind::Discrete && self.support().as_points().is_none() {
-            let unit = a.abs().equals(&a.context().one());
-            if unit != Some(true) {
-                return Err(invalid(
-                    "an affine map of a lattice distribution must have slope ±1 (use `transformed` on a finite table)",
-                ));
+            match Truth::from(a.abs().equals(&a.context().one())) {
+                Truth::True => {}
+                Truth::False => {
+                    return Err(invalid(
+                        "an affine map of a lattice distribution must have slope ±1 (use `transformed` on a finite table)",
+                    ));
+                }
+                // Not proved ±1 is not proved otherwise: say so.
+                Truth::Unknown => {
+                    return Err(invalid(format!(
+                        "cannot decide whether the slope `{a}` of an affine map of a lattice distribution is ±1"
+                    )));
+                }
             }
-            if b.is_integer() == Some(false) {
+            if Truth::from(b.is_integer()).is_false() {
                 return Err(invalid(format!(
                     "an affine map of a lattice distribution must have an integer intercept, got `{b}` (use `transformed` on a finite range)"
                 )));
@@ -1284,7 +1299,7 @@ impl Distribution {
                 let mass = self.density(v).eval();
                 match table
                     .iter_mut()
-                    .find(|(w, _)| w.equals(&image) == Some(true))
+                    .find(|(w, _)| Truth::from(w.equals(&image)).is_true())
                 {
                     Some((_, p)) => *p = (&*p + mass).simplify(),
                     None => table.push((image, mass)),
@@ -1492,7 +1507,7 @@ fn intersect_domains(a: Interval<Ex>, b: Interval<Ex>) -> Option<Interval<Ex>> {
         if infinite(&y) {
             return Some((x, x_open));
         }
-        let Some(ord) = super::family::sign_of(&(&x - &y)) else {
+        let Some(ord) = super::family::sign_of(&(&x - &y)).to_ordering() else {
             if x_open != y_open {
                 return None;
             }
@@ -1562,13 +1577,14 @@ fn live_even_branches(
     let [non_negative, non_positive] = branches.as_slice() else {
         return Ok(branches);
     };
-    if !lo_inf && lo.is_nonnegative() == Some(true) {
+    if !lo_inf && Truth::from(lo.is_nonnegative()).is_true() {
         return Ok(vec![non_negative.clone()]);
     }
-    if !hi_inf && (-hi).is_nonnegative() == Some(true) {
+    if !hi_inf && Truth::from((-hi).is_nonnegative()).is_true() {
         return Ok(vec![non_positive.clone()]);
     }
-    let symmetric = (lo_inf && hi_inf) || (!lo_inf && !hi_inf && (lo + hi).is_zero() == Some(true));
+    let symmetric =
+        (lo_inf && hi_inf) || (!lo_inf && !hi_inf && Truth::from((lo + hi).is_zero()).is_true());
     if symmetric {
         return Ok(branches);
     }
@@ -1588,7 +1604,7 @@ fn even_branches(x: &Ex, g: &Ex, y: &Ex, ctx: &Context) -> Option<Vec<Ex>> {
         return None;
     };
     let n = *exps.first()?;
-    if n < 2 || n % 2 != 0 || coeff.equals(&ctx.one()) != Some(true) {
+    if n < 2 || n % 2 != 0 || !Truth::from(coeff.equals(&ctx.one())).is_true() {
         return None;
     }
     let root = y.pow(&ctx.rational(1, i64::from(n)));
@@ -1610,7 +1626,7 @@ fn even_image(g: &Ex, x: &Ex, support: &Support, ctx: &Context) -> Support {
     let top = a.max_with(&b).simplify();
     // If the support does not contain 0 the minimum is min(g(lo), g(hi)).
     let contains_zero = support.contains(&ctx.zero());
-    let bottom = if contains_zero == Some(false) {
+    let bottom = if Truth::from(contains_zero).is_false() {
         a.min_with(&b).simplify()
     } else {
         ctx.zero()

@@ -16,6 +16,11 @@
 //! - `impl<C: Ring> GenPoly<C>` — add, mul, derivative, etc.
 //! - `impl<C: Field> GenPoly<C>` — div_rem, gcd, extended_gcd, etc.
 //!
+//! The gcd, the extended gcd, the resultant and Yun's square-free
+//! decomposition are [`DensePoly`]'s over the domain [`FieldOf<C>`] (since
+//! 0.50; the algorithms are written once for every coefficient domain),
+//! after the field's fast paths ([`Field::poly_gcd`], …).
+//!
 //! # Representation
 //!
 //! Coefficients are stored in ascending degree order: `coeffs[i]` is the
@@ -27,6 +32,8 @@ use std::hash;
 
 use num_integer::ExtendedGcd;
 
+use super::domain::FieldOf;
+use super::modpoly::DensePoly;
 use super::traits::{BindingStrength, CoeffDisplay, EuclideanDomain, Field, IntegralCoeff, Ring};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -632,21 +639,22 @@ impl<C: Field> GenPoly<C> {
 
     /// Greatest common divisor via the Euclidean algorithm over the
     /// coefficient field, monic.  The reference implementation behind
-    /// [`gcd`](Self::gcd).
+    /// [`gcd`](Self::gcd): since 0.50 [`DensePoly`]'s Euclid over
+    /// [`FieldOf<C>`] (one inversion per division instead of one per
+    /// quotient term; the same polynomial), written once for every domain.
     pub(crate) fn gcd_euclid(a: &Self, b: &Self) -> Self {
-        let mut a = a.clone();
-        let mut b = b.clone();
-
-        while !b.is_zero() {
-            let (_, r) = a.div_rem(&b);
-            a = b;
-            b = r;
+        match DensePoly::euclid_gcd(a.dense(), b.dense()) {
+            Ok(g) | Err(g) => Self::from_dense(g),
         }
+    }
 
-        if a.is_zero() {
-            return a;
-        }
-        a.make_monic()
+    /// The coefficients over the domain [`FieldOf<C>`] (a copy).
+    fn dense(&self) -> DensePoly<FieldOf<C>> {
+        DensePoly::from_coeffs(FieldOf::new(), self.coeffs.clone())
+    }
+
+    fn from_dense(p: DensePoly<FieldOf<C>>) -> Self {
+        GenPoly::from_coeffs(p.into_coeffs())
     }
 
     /// Compute the Euclidean polynomial remainder sequence (PRS).
@@ -771,55 +779,17 @@ impl<C: Field> GenPoly<C> {
     }
 
     /// The extended Euclidean algorithm over the coefficient field: the
-    /// reference implementation behind [`extended_gcd`](Self::extended_gcd).
+    /// reference implementation behind [`extended_gcd`](Self::extended_gcd),
+    /// since 0.50 [`DensePoly`]'s over [`FieldOf<C>`] (the same three
+    /// polynomials).
     pub(crate) fn extended_gcd_euclid(a: &Self, b: &Self) -> ExtendedGcd<Self> {
-        if b.is_zero() {
-            let Some(lc) = a.leading_coeff() else {
-                return ExtendedGcd {
-                    gcd: Self::zero(),
-                    x: Self::one(),
-                    y: Self::zero(),
-                };
-            };
-            let inv_lc = Field::inv(lc);
-            let s = Self::constant(inv_lc.clone());
-            return ExtendedGcd {
-                gcd: a.make_monic(),
-                x: s,
-                y: Self::zero(),
-            };
-        }
-
-        let (mut r_prev, mut r_curr) = (a.clone(), b.clone());
-        let (mut s_prev, mut s_curr) = (Self::one(), Self::zero());
-        let (mut t_prev, mut t_curr) = (Self::zero(), Self::one());
-
-        while !r_curr.is_zero() {
-            let (q, r_next) = r_prev.div_rem(&r_curr);
-            let neg_q = q.neg();
-            let s_next = &s_prev + &(&neg_q * &s_curr);
-            let t_next = &t_prev + &(&neg_q * &t_curr);
-
-            r_prev = r_curr;
-            r_curr = r_next;
-            s_prev = s_curr;
-            s_curr = s_next;
-            t_prev = t_curr;
-            t_curr = t_next;
-        }
-
-        // Normalize to monic GCD (the zero GCD, from a = b = 0, stays as is).
-        if let Some(lc) = r_prev.leading_coeff() {
-            let inv_lc = Field::inv(lc);
-            r_prev = r_prev.scale(&inv_lc);
-            s_prev = s_prev.scale(&inv_lc);
-            t_prev = t_prev.scale(&inv_lc);
-        }
-
+        let e = match DensePoly::euclid_extended_gcd(a.dense(), b.dense()) {
+            Ok(e) | Err(e) => e,
+        };
         ExtendedGcd {
-            gcd: r_prev,
-            x: s_prev,
-            y: t_prev,
+            gcd: Self::from_dense(e.gcd),
+            x: Self::from_dense(e.u),
+            y: Self::from_dense(e.v),
         }
     }
 
@@ -843,49 +813,20 @@ impl<C: Field> GenPoly<C> {
     /// Returns `[(f₁, 1), (f₂, 2), …]` where `self = lc · ∏ fᵢ^i`
     /// and each `fᵢ` is square-free and pairwise coprime.
     ///
-    /// Constant/zero polynomials return an empty list.
+    /// Constant/zero polynomials return an empty list, as does a field of
+    /// characteristic `p ≤` the degree, where Yun's algorithm does not
+    /// apply.  Since 0.50 [`DensePoly::squarefree_factors`] over
+    /// [`FieldOf<C>`] (the same steps).
     pub fn squarefree_factors(&self) -> Vec<(Self, usize)> {
         if self.is_zero() || self.is_constant() {
             return vec![];
         }
-
-        let p = self.make_monic();
-        let p_prime = p.derivative();
-        let c = Self::gcd(&p, &p_prime);
-
-        if c.degree().unwrap_or(0) == 0 {
-            // Already square-free.
-            return vec![(p, 1)];
-        }
-
-        let mut w = p.div(&c);
-        let mut y = p_prime.div(&c);
-
-        let mut factors = Vec::new();
-        let mut i = 1;
-
-        loop {
-            let w_prime = w.derivative();
-            let z = y.sub(&w_prime);
-
-            if z.is_zero() {
-                if w.degree().unwrap_or(0) > 0 {
-                    factors.push((w.make_monic(), i));
-                }
-                break;
-            }
-
-            let g = Self::gcd(&w, &z);
-            if g.degree().unwrap_or(0) > 0 {
-                factors.push((g.make_monic(), i));
-            }
-
-            w = w.div(&g);
-            y = z.div(&g);
-            i += 1;
-        }
-
-        factors
+        self.dense()
+            .squarefree_factors()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(f, k)| (Self::from_dense(f), k))
+            .collect()
     }
 
     /// Discriminant `disc(f) = (−1)^{n(n−1)/2} · res(f, f′) / lc(f)`.
@@ -914,66 +855,15 @@ impl<C: Field> GenPoly<C> {
         Some(Field::div(&Ring::mul(&sign, &res), &lc))
     }
 
-    /// Compute the resultant of two polynomials via the Euclidean algorithm.
+    /// Compute the resultant of two polynomials via the Euclidean algorithm
+    /// (`res(a, b) = (−1)^{mn} lc(b)^{m−s} res(b, a mod b)`, or the field's
+    /// [`Field::poly_resultant`]); since 0.50 [`DensePoly::resultant`] over
+    /// [`FieldOf<C>`], iterative (it recursed once per remainder).
     ///
     /// The resultant is zero iff the two polynomials share a common root.
     /// Returns an element of `C`.
     pub fn resultant(a: &Self, b: &Self) -> C {
-        if a.is_zero() || b.is_zero() {
-            return C::zero();
-        }
-
-        let m = match a.degree() {
-            Some(d) => d,
-            None => return C::zero(),
-        };
-        let n = match b.degree() {
-            Some(d) => d,
-            None => return C::zero(),
-        };
-
-        if m == 0 && n == 0 {
-            return C::one();
-        }
-        if m == 0 {
-            return a.coeff(0).pow_usize(n);
-        }
-        if n == 0 {
-            return b.coeff(0).pow_usize(m);
-        }
-
-        // Ensure deg(a) >= deg(b).
-        if m < n {
-            let sign = if (m * n) % 2 == 0 {
-                C::one()
-            } else {
-                Ring::neg(&C::one())
-            };
-            return Ring::mul(&sign, &Self::resultant(b, a));
-        }
-
-        if let Some(res) = C::poly_resultant(&a.coeffs, &b.coeffs) {
-            return res;
-        }
-
-        let r = a.rem(b);
-        if r.is_zero() {
-            return C::zero();
-        }
-
-        let s = r.degree().unwrap_or(0);
-        let sign = if (m * n) % 2 == 0 {
-            C::one()
-        } else {
-            Ring::neg(&C::one())
-        };
-        // b is non-zero (checked above), so its leading coefficient exists.
-        let Some(lc_b) = b.leading_coeff() else {
-            return C::zero();
-        };
-        let factor = lc_b.pow_usize(m - s);
-
-        Ring::mul(&Ring::mul(&sign, &factor), &Self::resultant(b, &r))
+        DensePoly::resultant_of(a.dense(), b.dense()).unwrap_or_else(C::zero)
     }
 
     /// Compute the parametric resultant `R(z) = res_θ(f(θ), g(θ) − z·h(θ))`

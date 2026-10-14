@@ -49,8 +49,9 @@ fn numeric_ratio_is_a_polylogarithm() {
     let s = sum_from(&ctx, "(1/3)^k/k^2", 1);
     assert_eq!(s.to_string(), "polylog(2, 1/3)");
     assert_value(&s, 0.366_213_229_977_063_5, 0.0);
+    // `polylog(3, 1/2)` folds since 0.50 (`7ζ(3)/8 − π² ln 2/12 + ln³2/6`).
     let s = sum_from(&ctx, "(1/2)^k/k^3", 1);
-    assert_eq!(s.to_string(), "polylog(3, 1/2)");
+    assert_eq!(s.to_string(), "1/6*ln(2)^3 - 1/12*pi^2*ln(2) + 7/8*zeta(3)");
     assert_value(&s, 0.537_213_193_608_040_2, 0.0);
     for body in ["(-1/2)^k/k^2", "(-1)^k*(1/2)^k/k^2"] {
         let s = sum_from(&ctx, body, 1);
@@ -150,8 +151,12 @@ fn half_integer_poles_use_the_odd_part() {
         1.069_286_375_145_237_4,
         0.0,
     );
+    // `polylog(3, 1/2)` folds since 0.50 (`7ζ(3)/8 − π² ln 2/12 + ln³2/6`).
     let s = sum_from(&ctx, "(1/4)^k/(2*k-1)^3", 1);
-    assert_eq!(s.to_string(), "-1/4*polylog(3, -1/2) + 1/4*polylog(3, 1/2)");
+    assert_eq!(
+        s.to_string(),
+        "1/24*ln(2)^3 - 1/48*pi^2*ln(2) - 1/4*polylog(3, -1/2) + 7/32*zeta(3)"
+    );
     assert_value(&s, 0.252_452_759_566_734_3, 0.0);
     assert_value(
         &sum_from(&ctx, "(-1/2)^k/(2*k+1)^2", 0),
@@ -214,8 +219,9 @@ fn unimodular_ratio_converges_by_dirichlet() {
         -0.346_573_590_279_972_65,
         std::f64::consts::FRAC_PI_4,
     );
+    // `polylog(2, I)` folds to `−π²/48 + iG` since 0.50.
     let s = sum_from(&ctx, "I^k/k^2", 1);
-    assert_eq!(s.to_string(), "polylog(2, I)");
+    assert_eq!(s.to_string(), "-1/48*pi^2 + I*Catalan");
     assert_value(&s, -0.205_616_758_356_028_3, 0.915_965_594_177_219);
     assert_value(
         &sum_from(&ctx, "((3+4*I)/5)^k/k^2", 1),

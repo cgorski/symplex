@@ -643,8 +643,8 @@ fn numeric_back_ends_refuse_the_same_functions() {
         LibFn::AiryBi,
         LibFn::AiryAiPrime,
         LibFn::AiryBiPrime,
-        LibFn::EllipticK,
-        LibFn::EllipticE,
+        // `elliptic_k`, `elliptic_e`: evaluated by every source back end
+        // since 0.50 (`v36_w6d_funcs`).
         LibFn::EllipticF,
         LibFn::EllipticPi,
         LibFn::Gegenbauer,

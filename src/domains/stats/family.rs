@@ -19,6 +19,7 @@ use crate::api::expr::{BoolEx, Ex};
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
+use crate::base::truth::{SignSet, Truth};
 
 use super::sample::Rng;
 use super::support::{Kind, Piece, Support, is_neg_inf, is_pos_inf};
@@ -151,7 +152,7 @@ fn order_exceeds(ctx: &Context, order: Option<&Ex>, n: u32) -> Cond {
         return Cond::Known(true);
     };
     let n_ex = ctx.int(i64::from(n));
-    match sign_of(&(r - &n_ex)) {
+    match sign_of(&(r - &n_ex)).to_ordering() {
         Some(Ordering::Greater) => Cond::Known(true),
         Some(_) => Cond::Known(false),
         None => Cond::Open(r.gt(&n_ex)),
@@ -293,20 +294,20 @@ impl Level {
     /// The same from an `f64` sum `t` of masses, when it lies outside
     /// [`TIE_BAND`] around the level; `None` inside it, for a `NaN`, or for
     /// a subnormal level (whose neighbourhood `f64` cannot resolve).
-    fn crossed_f64(self, t: f64) -> Option<bool> {
+    fn crossed_f64(self, t: f64) -> Truth {
         let (level, lower) = match self {
             Level::Lower(p) => (p, true),
             Level::Upper(q) => (q, false),
         };
         if level.is_nan() || level < f64::MIN_POSITIVE || t.is_nan() {
-            return None;
+            return Truth::Unknown;
         }
         if t > level * (1.0 + TIE_BAND) {
-            Some(lower)
+            Truth::from_bool(lower)
         } else if t < level * (1.0 - TIE_BAND) {
-            Some(!lower)
+            Truth::from_bool(!lower)
         } else {
-            None
+            Truth::Unknown
         }
     }
 }
@@ -397,57 +398,58 @@ impl CompensatedSum {
 /// cannot decide (`3 − √2 − 10⁻¹⁰⁰`, `10¹⁰⁰ − √2`), the sign of its value —
 /// which `evalf` gets right whenever the value is not `0` (read from its
 /// decimal expansion, which does not underflow as an `f64` would).
-/// `None` for a symbolic `e` of unknown sign, or a constant that evaluates
-/// to `0` without being known to be `0`.
-pub(crate) fn sign_of(e: &Ex) -> Option<Ordering> {
-    if e.is_zero() == Some(true) {
-        return Some(Ordering::Equal);
+/// A single atom when decided; [`SignSet::UNKNOWN`] (nothing known, not
+/// even realness) for a symbolic `e` of unknown sign, a non-real or
+/// unevaluable constant, or a constant that evaluates to `0` without being
+/// known to be `0`.
+pub(crate) fn sign_of(e: &Ex) -> SignSet {
+    if Truth::from(e.is_zero()).is_true() {
+        return SignSet::ZERO;
     }
-    if e.is_positive() == Some(true) {
-        return Some(Ordering::Greater);
+    if Truth::from(e.is_positive()).is_true() {
+        return SignSet::POSITIVE;
     }
-    if e.is_negative() == Some(true) {
-        return Some(Ordering::Less);
+    if Truth::from(e.is_negative()).is_true() {
+        return SignSet::NEGATIVE;
     }
     if !e.free_symbols().is_empty() {
-        return None;
+        return SignSet::UNKNOWN;
     }
-    let digits = e.eval_decimal(5).ok()?;
+    let Ok(digits) = e.eval_decimal(5) else {
+        return SignSet::UNKNOWN;
+    };
     let magnitude = digits.trim_start_matches('-');
     if digits.contains('I')
         || !magnitude.starts_with(|c: char| c.is_ascii_digit())
         || magnitude.trim_start_matches(['0', '.']).is_empty()
     {
-        return None;
+        return SignSet::UNKNOWN;
     }
-    Some(if digits.starts_with('-') {
-        Ordering::Less
+    if digits.starts_with('-') {
+        SignSet::NEGATIVE
     } else {
-        Ordering::Greater
-    })
+        SignSet::POSITIVE
+    }
 }
 
 /// Does the interval contain the real number `t`?  Decided by
 /// [`sign_of`] against each finite end; `None` when a comparison is not
 /// (a symbolic `t` or end).
-pub(crate) fn interval_contains(iv: &Interval<Ex>, t: &Ex) -> Option<bool> {
-    let side = |infinite: bool, diff: Ex, open: bool| -> Option<bool> {
+pub(crate) fn interval_contains(iv: &Interval<Ex>, t: &Ex) -> Truth {
+    let side = |infinite: bool, diff: Ex, open: bool| -> Truth {
         if infinite {
-            return Some(true);
+            return Truth::True;
         }
-        match sign_of(&diff)? {
-            Ordering::Greater => Some(true),
-            Ordering::Equal => Some(!open),
-            Ordering::Less => Some(false),
+        match sign_of(&diff).to_ordering() {
+            Some(Ordering::Greater) => Truth::True,
+            Some(Ordering::Equal) => Truth::from_bool(!open),
+            Some(Ordering::Less) => Truth::False,
+            None => Truth::Unknown,
         }
     };
     let lower = side(is_neg_inf(&iv.lower), t - &iv.lower, iv.kind.lower_open());
     let upper = side(is_pos_inf(&iv.upper), &iv.upper - t, iv.kind.upper_open());
-    match (lower, upper) {
-        (Some(false), _) | (_, Some(false)) => Some(false),
-        (Some(true), Some(true)) => Some(true),
-        _ => None,
-    }
+    lower.and(upper)
 }
 
 /// `t ∈ iv` as a condition (`lo < t ∧ t < hi`, `≤` at a closed end, an
@@ -894,7 +896,7 @@ impl Distribution {
             }
             match (end.as_rational(), x.as_rational()) {
                 (Some(a), Some(b)) => a == b,
-                _ => (x - end).is_zero() == Some(true),
+                _ => Truth::from((x - end).is_zero()).is_true(),
             }
         };
         let from_right = support.pieces().iter().find_map(|p| match p {
@@ -1309,7 +1311,7 @@ impl Distribution {
             return None;
         }
         if atoms < Q::from_integer(4096.into())
-            && self.0.density(lo).eval().is_rational() == Some(true)
+            && Truth::from(self.0.density(lo).eval().is_rational()).is_true()
         {
             return None;
         }
@@ -1331,7 +1333,7 @@ impl Distribution {
         let support = self.support();
         if let Some(s) = support.as_interval()
             && !is_neg_inf(&s.lower)
-            && (lo - &s.lower).is_zero() == Some(true)
+            && Truth::from((lo - &s.lower).is_zero()).is_true()
         {
             return Some(ctx.zero());
         }
@@ -1381,7 +1383,7 @@ impl Distribution {
         let support = self.support();
         if let Some(s) = support.as_interval()
             && !is_neg_inf(&s.lower)
-            && (lo - &s.lower).is_zero() == Some(true)
+            && Truth::from((lo - &s.lower).is_zero()).is_true()
         {
             return Some(ctx.one());
         }
@@ -1424,8 +1426,16 @@ impl Distribution {
         // Decide the branch for a numeric argument (`sign_of`: on its value
         // where the symbolic test cannot, `3 − (√2 + 10⁻¹⁰⁰) > 0`, rather
         // than leave a `Piecewise` whose conditions `evalf` cannot decide).
-        let from_lo = if lo_finite { sign_of(&(x - lo)) } else { None };
-        let to_hi = if hi_finite { sign_of(&(hi - x)) } else { None };
+        let from_lo = if lo_finite {
+            sign_of(&(x - lo)).to_ordering()
+        } else {
+            None
+        };
+        let to_hi = if hi_finite {
+            sign_of(&(hi - x)).to_ordering()
+        } else {
+            None
+        };
         if from_lo == Some(Ordering::Less) {
             return ctx.zero();
         }
@@ -1494,8 +1504,16 @@ impl Distribution {
         let (lo, hi) = (&iv.lower, &iv.upper);
         let lo_finite = !is_neg_inf(lo);
         let hi_finite = !is_pos_inf(hi);
-        let from_lo = if lo_finite { sign_of(&(x - lo)) } else { None };
-        let to_hi = if hi_finite { sign_of(&(hi - x)) } else { None };
+        let from_lo = if lo_finite {
+            sign_of(&(x - lo)).to_ordering()
+        } else {
+            None
+        };
+        let to_hi = if hi_finite {
+            sign_of(&(hi - x)).to_ordering()
+        } else {
+            None
+        };
         if from_lo == Some(Ordering::Less) {
             return ctx.one();
         }
@@ -1558,7 +1576,7 @@ impl Distribution {
     /// ```
     pub fn mgf(&self, t: &Ex) -> Ex {
         let ctx = self.context();
-        if t.is_zero() == Some(true) {
+        if Truth::from(t.is_zero()).is_true() {
             return ctx.one();
         }
         let domain = self.0.mgf_domain();
@@ -1567,22 +1585,22 @@ impl Distribution {
         // without a value rather than infinite).
         let mut at = t.clone();
         let mut outside = ctx.infinity();
-        if domain.is_some() && t.free_symbols().is_empty() && t.is_real() != Some(true) {
+        if domain.is_some() && t.free_symbols().is_empty() && !Truth::from(t.is_real()).is_true() {
             let (re, im) = t.as_real_imag();
-            if sign_of(&im).is_some_and(|o| o != Ordering::Equal) {
+            if sign_of(&im).is_nonzero().is_true() {
                 at = re;
                 outside = ctx.nan();
             }
         }
         let inside = domain.as_ref().map(|d| interval_contains(d, &at));
-        if inside == Some(Some(false)) {
+        if inside.is_some_and(Truth::is_false) {
             return outside;
         }
         // A domain that is the point 0 alone (a Cauchy's) has the value 1
         // there and nothing to integrate.
-        let only_zero = domain
-            .as_ref()
-            .is_some_and(|d| d.lower.is_zero() == Some(true) && d.upper.is_zero() == Some(true));
+        let only_zero = domain.as_ref().is_some_and(|d| {
+            Truth::from(d.lower.is_zero()).is_true() && Truth::from(d.upper.is_zero()).is_true()
+        });
         let value = if only_zero {
             ctx.one()
         } else {
@@ -1595,7 +1613,7 @@ impl Distribution {
             }
         };
         match domain {
-            Some(d) if inside == Some(None) => {
+            Some(d) if inside == Some(Truth::Unknown) => {
                 let cond = interval_condition(&d, &at, &ctx);
                 Ex::piecewise(&[(&value, &cond), (&outside, &ctx.bool_true())])
             }
@@ -1623,7 +1641,7 @@ impl Distribution {
     /// ```
     pub fn characteristic_function(&self, t: &Ex) -> Ex {
         let ctx = self.context();
-        if t.is_zero() == Some(true) {
+        if Truth::from(t.is_zero()).is_true() {
             return ctx.one();
         }
         if let Some(c) = self.0.characteristic_function(t) {
@@ -2207,8 +2225,9 @@ impl Distribution {
         // Has the tail crossed, from its `f64` sum `t` — or, within the
         // band of a walk that answers, from the exact sum of f over a..=b?
         let decide = |t: f64, a: f64, b: f64| -> Result<bool, SymplexError> {
-            if let Some(c) = level.crossed_f64(t) {
-                return Ok(c);
+            let c = level.crossed_f64(t);
+            if c.is_known() {
+                return Ok(c.is_true());
             }
             if guess {
                 return Ok(match level {
@@ -2300,8 +2319,9 @@ impl Distribution {
                 for (i, (v, _, m)) in pts.iter().enumerate() {
                     acc.add(*m);
                     let crossed = match level.crossed_f64(acc.value()) {
-                        Some(c) => c,
-                        None => level.crossed(&exact_sum(&pts[..=i]))?,
+                        Truth::True => true,
+                        Truth::False => false,
+                        Truth::Unknown => level.crossed(&exact_sum(&pts[..=i]))?,
                     };
                     if crossed {
                         return Ok(*v);
@@ -2323,8 +2343,9 @@ impl Distribution {
                 for i in (1..pts.len()).rev() {
                     acc.add(pts[i].2);
                     let crossed = match level.crossed_f64(acc.value()) {
-                        Some(c) => c,
-                        None => level.crossed(&exact_sum(&pts[i..]))?,
+                        Truth::True => true,
+                        Truth::False => false,
+                        Truth::Unknown => level.crossed(&exact_sum(&pts[i..]))?,
                     };
                     if !crossed {
                         break;
@@ -2402,7 +2423,7 @@ impl Distribution {
         {
             let (l, r) = self.finite_in_tails(&orders, degree);
             if !matches!(l.and(r), Cond::Known(true)) {
-                return match sign_of(&lead) {
+                return match sign_of(&lead).to_ordering() {
                     Some(Ordering::Greater) => {
                         self.by_tails(degree, 1, Box::new(|| self.expectation_plain(g, x)))
                     }
@@ -2449,10 +2470,10 @@ impl Distribution {
                 return None;
             }
             let growth = (g.abs() / x.abs().pow(&r)).limit(x, end);
-            if growth.is_zero() == Some(true) {
+            if Truth::from(growth.is_zero()).is_true() {
                 return Some(None);
             }
-            let diverges = growth == ctx.infinity() || sign_of(&growth) == Some(Ordering::Greater);
+            let diverges = growth == ctx.infinity() || sign_of(&growth).is_positive().is_true();
             if !diverges || order.is_none() {
                 return None;
             }
@@ -2462,7 +2483,7 @@ impl Distribution {
             } else if at_end == ctx.neg_infinity() {
                 -1
             } else {
-                match sign_of(&at_end) {
+                match sign_of(&at_end).to_ordering() {
                     Some(Ordering::Greater) => 1,
                     Some(Ordering::Less) => -1,
                     _ => 0,
@@ -2569,7 +2590,7 @@ impl Distribution {
         let (lo, hi) = (&iv.lower, &iv.upper);
         // A density puts no mass on a single point (`X ≤ 0` clipped to
         // `[0, ∞)` is `[0, 0]`, where a closed form need not fold: `Φ(ln 0)`).
-        if support.kind() == Kind::Continuous && (hi - lo).is_zero() == Some(true) {
+        if support.kind() == Kind::Continuous && Truth::from((hi - lo).is_zero()).is_true() {
             return ctx.zero();
         }
         // F at the support's own upper end is 1 by definition (the closed
@@ -2578,7 +2599,7 @@ impl Distribution {
         let at_upper_end = is_pos_inf(hi)
             || support
                 .as_interval()
-                .is_some_and(|s| (hi - &s.upper).is_zero() == Some(true));
+                .is_some_and(|s| Truth::from((hi - &s.upper).is_zero()).is_true());
         let probe = self.fresh_var("t", &[lo, hi]);
         let has_cdf = self.0.cdf(&probe).is_some();
         let has_sf = self.0.sf(&probe).is_some();

@@ -13,6 +13,7 @@ use crate::base::assumptions::{Assumption, Props};
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::base::node::ExprNode;
+use crate::base::truth::Truth;
 
 /// Ascending coefficients of `expr` as a polynomial in `var`, allowing
 /// arbitrary `var`-free symbolic coefficients.  The zero polynomial is the
@@ -210,7 +211,7 @@ impl Expr<Numeric> {
         if self.as_rational().is_some() {
             return Ok(real_form.eval());
         }
-        if self.is_real_valued() == Some(true) {
+        if Truth::from(self.is_real_valued()).is_true() {
             return Ok(real_form);
         }
         let on_real_line = self.im().eq_expr(&ctx.zero());
@@ -1181,7 +1182,7 @@ impl Expr<Numeric> {
         let x = self.raw_id();
         let mut facts = crate::transforms::eval::constant_facts(arena, x);
         if facts.query(Props::ZERO).is_some()
-            || AssumptionCache::new().query(arena, x, Props::FINITE) == Some(false)
+            || Truth::from(AssumptionCache::new().query(arena, x, Props::FINITE)).is_false()
         {
             return facts;
         }
@@ -1200,9 +1201,10 @@ impl Expr<Numeric> {
                 _ => {}
             }
         }
-        if AssumptionCache::new().query(arena, v, Props::FINITE) == Some(false)
+        if Truth::from(AssumptionCache::new().query(arena, v, Props::FINITE)).is_false()
             || deltas.into_iter().any(|a| {
-                crate::transforms::eval::constant_facts(arena, a).query(Props::REAL) != Some(true)
+                !Truth::from(crate::transforms::eval::constant_facts(arena, a).query(Props::REAL))
+                    .is_true()
             })
         {
             return facts;
@@ -1448,35 +1450,39 @@ impl Expr<Numeric> {
 
         // Layer 2: compute self - other; zero ⇒ equal, nonzero literal ⇒ not.
         let diff = self - other;
-        if let Some(known) = Self::equals_from_difference(&diff) {
-            return Some(known);
+        let known = Self::equals_from_difference(&diff);
+        if known.is_known() {
+            return known.to_option();
         }
 
         // Layer 2b: constants are decided as `eval` decides `Eq(self,
         // other)` (a certified value, the square-root tower, the minimal
         // polynomial, the cyclotomic field, arctangent sums), before the
         // costlier rewriting below.
-        if let Some(known) = self.equals_by_eval(other, &diff) {
-            return Some(known);
+        let known = self.equals_by_eval(other, &diff);
+        if known.is_known() {
+            return known.to_option();
         }
 
         // Layer 3: expand the difference and check again.
         let expanded = diff.expand();
-        if let Some(known) = Self::equals_from_difference(&expanded) {
-            return Some(known);
+        let known = Self::equals_from_difference(&expanded);
+        if known.is_known() {
+            return known.to_option();
         }
 
         // Layer 4: simplify the difference (catches trig identities, etc.)
         let simplified = diff.simplify();
-        if let Some(known) = Self::equals_from_difference(&simplified) {
-            return Some(known);
+        let known = Self::equals_from_difference(&simplified);
+        if known.is_known() {
+            return known.to_option();
         }
 
         // Layer 5: assumption system on the simplified difference.
-        if simplified.is_zero() == Some(true) {
+        if Truth::from(simplified.is_zero()).is_true() {
             return Some(true);
         }
-        if simplified.is_nonzero() == Some(true) {
+        if Truth::from(simplified.is_nonzero()).is_true() {
             return Some(false);
         }
 
@@ -1502,35 +1508,35 @@ impl Expr<Numeric> {
     }
 
     /// `self = other` as `eval` decides the relation `Eq(self, other)`, when
-    /// their difference `diff` is a constant; `None` otherwise.  Up to 0.45
+    /// their difference `diff` is a constant; `Unknown` otherwise.  Up to 0.45
     /// `equals` never asked: `(cos(π/16)² − (2 + √(2 + √2))/4).equals(0)`
     /// was `None` while `Eq(cos(π/16), √(2 + √(2 + √2))/2)` evaluated to
     /// `True` (SymPy 1.14: `True`).
-    fn equals_by_eval(&self, other: &Ex, diff: &Ex) -> Option<bool> {
+    fn equals_by_eval(&self, other: &Ex, diff: &Ex) -> Truth {
         let other_id = self.checked_id(other);
         let mut inner = self.inner.write();
         let arena = &mut inner.arena;
         if !crate::base::walk::free_symbols(arena, diff.raw_id()).is_empty() {
-            return None;
+            return Truth::Unknown;
         }
         let rel = arena.eq_(self.raw_id(), other_id);
         match arena.node(rel) {
-            ExprNode::BoolTrue => Some(true),
-            ExprNode::BoolFalse => Some(false),
-            _ => crate::transforms::eval::decide_relation(arena, rel),
+            ExprNode::BoolTrue => Truth::True,
+            ExprNode::BoolFalse => Truth::False,
+            _ => Truth::from(crate::transforms::eval::decide_relation(arena, rel)),
         }
     }
 
-    /// `Some(true)` if `diff` is structurally zero, `Some(false)` if it is a
-    /// nonzero numeric literal, `None` otherwise.
-    fn equals_from_difference(diff: &Ex) -> Option<bool> {
+    /// `True` if `diff` is structurally zero, `False` if it is a nonzero
+    /// numeric literal, `Unknown` otherwise.
+    fn equals_from_difference(diff: &Ex) -> Truth {
         let inner = diff.inner.read();
         if inner.arena.is_zero_structural(diff.raw_id()) {
-            return Some(true);
+            return Truth::True;
         }
         match inner.arena.node(diff.raw_id()) {
-            crate::base::node::ExprNode::Num(_) => Some(false),
-            _ => None,
+            crate::base::node::ExprNode::Num(_) => Truth::False,
+            _ => Truth::Unknown,
         }
     }
 
@@ -3288,7 +3294,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn is_constant(&self) -> bool {
-        self.free_symbols().is_empty()
+        self.inner.read().arena.is_symbol_free(self.raw_id())
     }
 
     /// Returns `true` if this expression is a polynomial in `var`.
@@ -4315,15 +4321,20 @@ impl Expr<Numeric> {
     /// special functions (`gamma`, `loggamma`, `digamma`, `erf`, `erfc`,
     /// `erfinv`, `erfcinv`, `erfi`, `lambertw` (branches 0 and −1), `beta`,
     /// `factorial`, `binomial`), the exponential, logarithmic, sine and
-    /// cosine integrals (`Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`) and the
-    /// Fresnel integrals, Bessel functions and
+    /// cosine integrals (`Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`), the
+    /// Fresnel integrals, the complete elliptic integrals `elliptic_k`,
+    /// `elliptic_e` (parameter `m`; NaN for `m > 1`), Bessel functions and
     /// orthogonal polynomials with constant integer order, `fibonacci`,
     /// `lucas`, `harmonic`, `factorial2`, rising/falling factorials,
     /// `min`/`max`/`floor`/`ceiling`/`sign`/`heaviside`/`atan2`, `re`/`im`
     /// (of the real values the function computes), and `piecewise` with
-    /// relational and boolean conditions.  `DiracDelta` evaluates to `0.0`
-    /// everywhere (its pointwise value away from the support);
-    /// `Heaviside(0)` is `0.5`.
+    /// relational and boolean conditions.  `DiracDelta(u)` evaluates to
+    /// `0.0` where `u ≠ 0` (its pointwise value away from the support) and
+    /// to NaN at `u = 0`, where it has no value (up to 0.49 to `0.0`); the
+    /// `DiracDelta` of a constant without a value (`DiracDelta(0)`) is an
+    /// error, as in [`to_rust_fn`](Self::to_rust_fn),
+    /// [`to_c_fn`](Self::to_c_fn) and `to_python`, which follow the same
+    /// rule.  `Heaviside(0)` is `0.5`.
     ///
     /// The compiled function computes the value [`eval_f64`](Self::eval_f64)
     /// gives — principal branches over ℂ, SymPy's meaning — or NaN where
@@ -4346,6 +4357,8 @@ impl Expr<Numeric> {
     ///   value is not real ("the constant … is not real": `asin(2)`,
     ///   `atanh(9)`, `(−8)^(1/3)`, `loggamma(−5/2)`), which a real-valued
     ///   function cannot represent.
+    /// * [`SymplexError::Unevaluable`] for the `DiracDelta` of a constant
+    ///   without a value (`DiracDelta(0)`).
     /// * [`SymplexError::InvalidArgument`] for duplicate parameter names.
     ///
     /// # Examples
@@ -4890,7 +4903,7 @@ impl Expr<Numeric> {
         }
         // Assumption system: a provably nonzero residual (e.g. a positive
         // symbol) is a definite failure.
-        if expanded.is_zero() == Some(false) {
+        if Truth::from(expanded.is_zero()).is_false() {
             return Some(false);
         }
         None

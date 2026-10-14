@@ -40,9 +40,11 @@
 //! | `sin_integral`, `cos_integral` | power series (x ≤ 2), continued fraction for f, g (x < 64), asymptotic f, g; Ci: Taylor series about its first zero | ≤ 8e-16; Ci absolute (≲ 3e-17) next to its later zeros |
 //! | `erfi` | power series (\|x\| ≤ 6.5), asymptotic series with an exact e^{x²} | ≤ 1.8e-15 |
 //! | `fresnel_s`, `fresnel_c` | power series (\|x\| ≤ 1.25), continued fraction for f, g (πx²/2 < 64), asymptotic f, g; exact reduction of x²/2 | ≤ 5e-16 |
+//! | `elliptic_k`, `elliptic_e` | AGM (DLMF 19.8.5–6); E by the series about m = 1 (DLMF 19.12.2) for 1 − m < 1/10; m < 0 by DLMF 19.7.5 | ≤ 5 ulps (K), ≤ 6 ulps (E) |
 //!
-//! (The accuracies of the last six rows are the maxima over ~44,000 points
-//! per function against mpmath at 30 digits, 0.48.)
+//! (The accuracies of the six rows before the last are the maxima over
+//! ~44,000 points per function against mpmath at 30 digits, 0.48; the
+//! last row's over 69,758 points, `m` from −10³⁰⁰ to 1, 0.50.)
 
 #![allow(clippy::excessive_precision)]
 #![allow(clippy::manual_range_contains)]
@@ -2382,6 +2384,106 @@ pub fn fresnel_c(x: f64) -> f64 {
 }
 // @@end fresnel
 
+// @@begin elliptic
+/// The complete elliptic integrals `(K(m), E(m))` of a parameter `m` in
+/// [0, 1), given with `mc = 1 − m` (exact, or computed by the caller to
+/// full relative accuracy); `E` only when `want_e`.
+///
+/// K by the arithmetic-geometric mean, `K = π/(2·M(1, √mc))` (DLMF 19.8.5).
+/// E by the AGM sum `E = K·(1 − Σ 2^{n−1} c_n²)`, `c_0² = m` (DLMF 19.8.6),
+/// for `mc ≥ 1/10`, and below by the series about `m = 1` (DLMF 19.12.2),
+/// whose terms are all positive there: the AGM sum cancels as `E/K → 0`.
+fn elliptic_ke(m: f64, mc: f64, want_e: bool) -> (f64, f64) {
+    let mut a = 1.0;
+    let mut g = p_sqrt(mc);
+    let mut p = 0.5;
+    let mut sum = 0.5 * m;
+    let mut n = 0;
+    while n < 64 && a - g > 2.2e-16 * a {
+        let c = 0.5 * (a - g);
+        let a1 = 0.5 * (a + g);
+        g = p_sqrt(a * g);
+        a = a1;
+        p *= 2.0;
+        sum += p * c * c;
+        n += 1;
+    }
+    let k = core::f64::consts::FRAC_PI_2 / a;
+    if !want_e {
+        return (k, 0.0);
+    }
+    if mc >= 0.1 {
+        return (k, k * (1.0 - sum));
+    }
+    // E = 1 + ½·Σ t_j·mc^{j+1}·(ln(1/k′) + d(j) − 1/((2j+1)(2j+2))), with
+    // t_j = (½)_j(3/2)_j/((2)_j·j!), d(0) = ln 4, d(j) = d(j−1) − 2/((2j−1)·2j).
+    let l = -0.5 * p_ln(mc);
+    let mut d = 2.0 * core::f64::consts::LN_2;
+    let mut t = 1.0;
+    let mut q = mc;
+    let mut s = 0.0;
+    let mut j = 0.0;
+    while j < 80.0 {
+        let term = t * q * (l + d - 1.0 / ((2.0 * j + 1.0) * (2.0 * j + 2.0)));
+        s += term;
+        if term <= 1e-18 {
+            break;
+        }
+        j += 1.0;
+        t = t * (j - 0.5) * (j + 0.5) / ((j + 1.0) * j);
+        d -= 2.0 / ((2.0 * j - 1.0) * (2.0 * j));
+        q *= mc;
+    }
+    (k, 1.0 + 0.5 * s)
+}
+
+/// Complete elliptic integral of the first kind `K(m)` of the parameter
+/// `m` (SymPy's `elliptic_k`, mpmath's `ellipk`): real for `m < 1`, `+∞`
+/// at `m = 1`, NaN beyond (the value is not real) but `0` at `m = +∞`
+/// (the limit, as `evalf` and mpmath give it).  A negative `m` is mapped
+/// into (0, 1) by `K(m) = K(−m/(1 − m))/√(1 − m)` (DLMF 19.7.5).
+pub fn elliptic_k(m: f64) -> f64 {
+    if m == f64::INFINITY {
+        return 0.0;
+    }
+    if m.is_nan() || m > 1.0 {
+        return f64::NAN;
+    }
+    if m == 1.0 {
+        return f64::INFINITY;
+    }
+    if m == f64::NEG_INFINITY {
+        return 0.0;
+    }
+    if m < 0.0 {
+        let w = 1.0 - m;
+        return elliptic_ke(-m / w, 1.0 / w, false).0 / p_sqrt(w);
+    }
+    elliptic_ke(m, 1.0 - m, false).0
+}
+
+/// Complete elliptic integral of the second kind `E(m)` of the parameter
+/// `m` (SymPy's `elliptic_e` of one argument, mpmath's `ellipe`): real for
+/// `m ≤ 1` (`E(1) = 1`), NaN beyond.  A negative `m` is mapped into (0, 1)
+/// by `E(m) = √(1 − m)·E(−m/(1 − m))` (DLMF 19.7.5).
+pub fn elliptic_e(m: f64) -> f64 {
+    if m.is_nan() || m > 1.0 {
+        return f64::NAN;
+    }
+    if m == 1.0 {
+        return 1.0;
+    }
+    if m == f64::NEG_INFINITY {
+        return f64::INFINITY;
+    }
+    if m < 0.0 {
+        let w = 1.0 - m;
+        return p_sqrt(w) * elliptic_ke(-m / w, 1.0 / w, true).1;
+    }
+    elliptic_ke(m, 1.0 - m, true).1
+}
+// @@end elliptic
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2400,6 +2502,46 @@ mod tests {
             "{what}: got {got:.17e}, want {want:.17e}, rel err {:.3e} > {tol:.0e}",
             rel(got, want)
         );
+    }
+
+    /// mpmath 1.3 `ellipk`, `ellipe` at 30 digits, on both sides of the
+    /// AGM / series switch (`m = 0.9`), next to `m = 1` and for huge
+    /// negative `m` (DLMF 19.7.5).
+    #[test]
+    fn elliptic_known_values() {
+        let cases = [
+            (0.5, 1.854_074_677_301_371_9, 1.350_643_881_047_675_5),
+            (-1.0, 1.311_028_777_146_059_9, 1.910_098_894_513_856),
+            (0.99, 3.695_637_362_989_874_2, 1.015_993_545_025_224),
+            (0.9, 2.578_092_113_348_173_3, 1.104_774_732_704_073_3),
+            (
+                1.0 - 2f64.powi(-40),
+                15.249_237_972_322_037,
+                1.000_000_000_006_707_2,
+            ),
+            (-1e10, 1.289_921_982_579_263_9e-4, 100_000.000_066_996_1),
+            (
+                -1e300,
+                3.467_740_583_102_267_3e-148,
+                1.000_000_000_000_000_03e150,
+            ),
+            (
+                1e-20,
+                core::f64::consts::FRAC_PI_2,
+                core::f64::consts::FRAC_PI_2,
+            ),
+        ];
+        for (m, k, e) in cases {
+            assert_rel(elliptic_k(m), k, 2e-15, &format!("K({m})"));
+            assert_rel(elliptic_e(m), e, 2e-15, &format!("E({m})"));
+        }
+        assert_eq!(elliptic_k(1.0), f64::INFINITY);
+        assert_eq!(elliptic_e(1.0), 1.0);
+        assert!(elliptic_k(1.5).is_nan() && elliptic_e(1.5).is_nan());
+        assert_eq!(elliptic_k(f64::NEG_INFINITY), 0.0);
+        assert_eq!(elliptic_k(f64::INFINITY), 0.0);
+        assert!(elliptic_e(f64::INFINITY).is_nan());
+        assert!(elliptic_k(f64::NAN).is_nan());
     }
 
     #[test]

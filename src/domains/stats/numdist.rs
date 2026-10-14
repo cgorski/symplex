@@ -67,6 +67,7 @@
 //! ```
 
 use crate::base::errors::SymplexError;
+use crate::base::truth::Truth;
 use crate::output::codegen::numeric_rt::{erfc as erfc_cody, erfcinv, lgamma};
 
 /// `ln √(2π)`.
@@ -1697,7 +1698,7 @@ fn snap_to_floats(x: f64, side: Side, tails: impl Fn(f64) -> Tails) -> f64 {
         match done(x) {
             Some(true) => {
                 let prev = x.next_down();
-                if done(prev) == Some(true) {
+                if Truth::from(done(prev)).is_true() {
                     x = prev;
                 } else {
                     crossing = Some((prev, x));

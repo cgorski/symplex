@@ -15,6 +15,7 @@ use tracing::debug_span;
 
 use crate::api::expr::{BoolEx, Ex, Expr, Numeric};
 use crate::base::errors::SymplexError;
+use crate::base::truth::Truth;
 
 pub use crate::calculus::fourier_transform::FourierConvention;
 pub use crate::calculus::limit::Direction;
@@ -645,7 +646,7 @@ impl Expr<Numeric> {
             }
         }
         let period = (upper - lower).eval();
-        if period.is_zero_structural() || period.is_positive() == Some(false) {
+        if period.is_zero_structural() || Truth::from(period.is_positive()).is_false() {
             return Err(SymplexError::InvalidArgument {
                 operation: "fourier_series_on",
                 reason: format!("the interval [{lower}, {upper}] must have positive length"),

@@ -120,9 +120,11 @@ use crate::base::bernoulli::bernoulli;
 use crate::base::budget::{BudgetKind, WorkScope};
 use crate::base::combinatorics::{binomial, factorial};
 use crate::base::errors::SymplexError;
+use crate::base::func::{Elementary, Func, InternalFn};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::truth::SignSet;
+use crate::base::truth::Truth;
 use crate::base::walk;
 use crate::calculus::calculus_util::{ZeroTest, settle_constant};
 use crate::transforms::{eval, subs};
@@ -305,7 +307,7 @@ fn has_transcendental_node(arena: &Arena, c: ExprId) -> bool {
 fn parameter_sample(arena: &mut Arena, s: ExprId, sample: usize, k: usize) -> ExprId {
     use crate::base::assumptions::AssumptionCache;
     let mut cache = AssumptionCache::new();
-    let mut is = |p: Props| cache.query(arena, s, p) == Some(true);
+    let mut is = |p: Props| Truth::from(cache.query(arena, s, p)).is_true();
     let zero = is(Props::ZERO);
     let positive = is(Props::POSITIVE) || is(Props::NONNEGATIVE);
     let negative = is(Props::NEGATIVE) || is(Props::NONPOSITIVE);
@@ -798,12 +800,13 @@ fn merge_constant_exponentials(arena: &mut Arena, s: ExprId) -> ExprId {
     eval::eval(arena, r)
 }
 
-/// Does `e` hold an internal function (a head named `__…`, such as the
-/// asymptotic heads of the tractable rewrite)?
+/// Does `e` hold an internal function (the asymptotic heads of the
+/// tractable rewrite, or a head or symbol named `__…`)?
 fn has_internal_head(arena: &Arena, e: ExprId) -> bool {
     walk::post_order_ids(arena, e)
         .into_iter()
         .any(|id| match arena.node(id) {
+            ExprNode::Internal(..) => true,
             ExprNode::Apply(f, _) => arena.symbol_name(*f).starts_with("__"),
             ExprNode::Symbol(s) => arena.symbol_name(*s).starts_with("__"),
             _ => false,
@@ -2222,10 +2225,10 @@ fn compose_at_constant(
                 && is_known_real(arena, u0) =>
         {
             match symbolic_on_cut(arena, cut, u0) {
-                Some(true) => Some(cut),
-                Some(false) => None,
-                None if w_real => Some(cut),
-                None => return Some(None),
+                Truth::True => Some(cut),
+                Truth::False => None,
+                Truth::Unknown if w_real => Some(cut),
+                Truth::Unknown => return Some(None),
             }
         }
         c => c
@@ -2363,12 +2366,8 @@ fn stays_on_line(
 const SIDE_PLACEHOLDER: &str = "__series_side";
 
 /// Is the real constant `u₀` with symbols on the cut `cut` of the real axis,
-/// as far as the assumptions on its symbols decide (`None`: undecided)?
-fn symbolic_on_cut(
-    arena: &mut Arena,
-    cut: crate::calculus::limit::BranchCut,
-    u0: ExprId,
-) -> Option<bool> {
+/// as far as the assumptions on its symbols decide (`Unknown`: undecided)?
+fn symbolic_on_cut(arena: &mut Arena, cut: crate::calculus::limit::BranchCut, u0: ExprId) -> Truth {
     use crate::calculus::limit::BranchCut;
     // The sign of `u₀ + k`.
     let sign = |arena: &mut Arena, k: ExprId| {
@@ -2379,26 +2378,26 @@ fn symbolic_on_cut(
     // On the cut when the sign is negative (positive), off it when it is
     // positive (negative); undecided at the branch point (`ZERO`) too.
     let below = |s: SignSet| match s {
-        SignSet::NEGATIVE => Some(true),
-        SignSet::POSITIVE => Some(false),
-        _ => None,
+        SignSet::NEGATIVE => Truth::True,
+        SignSet::POSITIVE => Truth::False,
+        _ => Truth::Unknown,
     };
-    let above = |s: SignSet| below(s).map(|b| !b);
+    let above = |s: SignSet| below(s).not();
     let one = arena.one;
     let m_one = arena.neg_one;
     match cut {
-        BranchCut::None | BranchCut::ImaginaryAxis => Some(false),
+        BranchCut::None | BranchCut::ImaginaryAxis => Truth::False,
         BranchCut::NegativeReals => below(constant_sign(arena, u0)),
         BranchCut::BelowOne => below(sign(arena, m_one)),
         BranchCut::AboveOne => above(sign(arena, m_one)),
         BranchCut::BeyondOne => {
             let (minus, plus) = (sign(arena, m_one), sign(arena, one));
             if minus == SignSet::POSITIVE || plus == SignSet::NEGATIVE {
-                Some(true)
+                Truth::True
             } else if minus == SignSet::NEGATIVE && plus == SignSet::POSITIVE {
-                Some(false)
+                Truth::False
             } else {
-                None
+                Truth::Unknown
             }
         }
         BranchCut::BelowMinusInvE => {
@@ -2520,34 +2519,16 @@ fn locally_real(arena: &mut Arena, u: ExprId, var: ExprId, mode: Mode) -> bool {
                 ExprNode::Atan2(a, b) | ExprNode::Beta(a, b) | ExprNode::Polygamma(a, b) => {
                     r(arena, a) && r(arena, b)
                 }
-                ExprNode::Gamma(a)
-                | ExprNode::Digamma(a)
-                | ExprNode::Factorial(a)
-                | ExprNode::Zeta(a)
-                | ExprNode::Erf(a)
-                | ExprNode::Erfc(a)
-                | ExprNode::Si(a)
-                | ExprNode::Ei(a)
-                | ExprNode::Heaviside(a) => r(arena, a),
+                ExprNode::Neg(a) => r(arena, a),
+                ref n if n.func_head().is_some_and(real_through_argument) => n
+                    .unary_arg_if(real_through_argument)
+                    .is_some_and(|a| r(arena, a)),
                 ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Arg(_) => true,
                 ExprNode::LogGamma(a) | ExprNode::Ci(a) | ExprNode::Li(a) => {
                     r(arena, a)
                         && ((a == var && mode.side == Side::Above)
                             || tends_into(arena, a, &positive))
                 }
-                ExprNode::Neg(a)
-                | ExprNode::Exp(a)
-                | ExprNode::Sin(a)
-                | ExprNode::Cos(a)
-                | ExprNode::Tan(a)
-                | ExprNode::Atan(a)
-                | ExprNode::Sinh(a)
-                | ExprNode::Cosh(a)
-                | ExprNode::Tanh(a)
-                | ExprNode::Asinh(a)
-                | ExprNode::Sign(a)
-                | ExprNode::Floor(a)
-                | ExprNode::Ceiling(a) => r(arena, a),
                 ExprNode::Abs(_) => true,
                 ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(|q| q.is_integer()) => {
                     r(arena, b)
@@ -2906,6 +2887,54 @@ fn child(cache: &FxHashMap<ExprId, Option<TSeries>>, id: ExprId) -> Result<TSeri
         .ok_or(Obstruction::Unknown)
 }
 
+/// The one-argument functions [`locally_real`] shows real through their
+/// argument: the trigonometric and hyperbolic functions, `exp`, `atan`,
+/// `asinh`, `sign`, `⌊·⌋`, `⌈·⌉`, `H`, `erf`, `erfc`, `Γ`, `ψ`, `n!`, `ζ`,
+/// `Si`, `Ei`.
+fn real_through_argument(f: Func) -> bool {
+    matches!(
+        f.elementary(),
+        Some(Elementary::Trig | Elementary::Hyperbolic | Elementary::Exp)
+    ) || matches!(
+        f,
+        Func::Atan
+            | Func::Asinh
+            | Func::Sign
+            | Func::Floor
+            | Func::Ceiling
+            | Func::Heaviside
+            | Func::Erf
+            | Func::Erfc
+            | Func::Gamma
+            | Func::Digamma
+            | Func::Factorial
+            | Func::Zeta
+            | Func::Si
+            | Func::Ei
+    )
+}
+
+/// The functions whose series [`special_series`] computes (the internal
+/// functions of the limit engine and `E₁` besides): `Γ`, `ln Γ`, `ψ`,
+/// `ψ⁽ⁿ⁾`, `ζ`, `Ei`, `Ci`, `Si`, `li`, `erfc`, `Shi`, `Chi`.
+fn has_special_series(f: Func) -> bool {
+    matches!(
+        f,
+        Func::Gamma
+            | Func::LogGamma
+            | Func::Digamma
+            | Func::Polygamma
+            | Func::Zeta
+            | Func::Ei
+            | Func::Ci
+            | Func::Si
+            | Func::Li
+            | Func::Erfc
+            | Func::Shi
+            | Func::Chi
+    )
+}
+
 /// Combine children's series according to the node type (`n`: the working
 /// precision).
 fn structural_series(
@@ -2999,27 +3028,10 @@ fn structural_series(
             }
             return bessel_series(arena, f, args[0], &u, var);
         }
-        ExprNode::Gamma(_)
-        | ExprNode::LogGamma(_)
-        | ExprNode::Digamma(_)
-        | ExprNode::Polygamma(..)
-        | ExprNode::Zeta(_)
-        | ExprNode::Ei(_)
-        | ExprNode::Ci(_)
-        | ExprNode::Si(_)
-        | ExprNode::Li(_)
-        | ExprNode::Erfc(_) => return special_series(arena, &node, var, mode, cache),
-        ExprNode::Lib(
-            crate::base::libfn::LibFn::Shi | crate::base::libfn::LibFn::Chi,
-            ref args,
-        ) if args.len() == 1 => {
+        ref n if n.func_head().is_some_and(has_special_series) => {
             return special_series(arena, &node, var, mode, cache);
         }
-        ExprNode::Apply(f, ref args)
-            if (args.len() == 1
-                && matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC))
-                || PowerAsymptotic::from_name(arena.symbol_name(f)).is_some() =>
-        {
+        ExprNode::Internal(..) => {
             return special_series(arena, &node, var, mode, cache);
         }
         ExprNode::Lib(crate::base::libfn::LibFn::ExpInt, ref args)
@@ -3507,10 +3519,10 @@ fn constant_sign(arena: &mut Arena, c: ExprId) -> SignSet {
         };
     }
     let mut cache = crate::base::assumptions::AssumptionCache::new();
-    if cache.query(arena, c, Props::POSITIVE) == Some(true) {
+    if Truth::from(cache.query(arena, c, Props::POSITIVE)).is_true() {
         return SignSet::POSITIVE;
     }
-    if cache.query(arena, c, Props::NEGATIVE) == Some(true) {
+    if Truth::from(cache.query(arena, c, Props::NEGATIVE)).is_true() {
         return SignSet::NEGATIVE;
     }
     // A real constant the assumption system leaves open (`ln 3`,
@@ -3526,7 +3538,7 @@ fn constant_sign(arena: &mut Arena, c: ExprId) -> SignSet {
 fn is_known_real(arena: &Arena, c: ExprId) -> bool {
     arena.as_num(c).is_some() || {
         let mut cache = crate::base::assumptions::AssumptionCache::new();
-        cache.query(arena, c, Props::REAL) == Some(true)
+        Truth::from(cache.query(arena, c, Props::REAL)).is_true()
     }
 }
 
@@ -4541,18 +4553,6 @@ fn pow_rational(
 /// Most poles `Γ(−n)`, `ψ(−n)` unwound by the recurrence.
 const MAX_POLE_SHIFT: i64 = 64;
 
-/// Head of Gruntz's internal `erfcx(z) = e^{z²} erfc(z)` for `z → +∞`
-/// (SymPy's `_erfs`), with the asymptotic series
-/// `(1/√π) Σ (−1)ᵏ (2k−1)!!/(2ᵏ z^{2k+1})` (DLMF 7.12.1).  It exists only
-/// inside a limit computation.  The internal heads are named in the
-/// function table (`base/func.rs`), which reserves them: user input cannot
-/// build them.
-pub(crate) const ERFCX_ASYMPTOTIC: &str = crate::base::func::Func::ErfcxAsym.spec().name;
-
-/// Head of Gruntz's internal `e^{−z} Ei(z)` for `z → ±∞` (SymPy's
-/// `_eis`), with the asymptotic series `Σ k!/z^{k+1}` (DLMF 6.12.2).
-pub(crate) const EI_ASYMPTOTIC: &str = crate::base::func::Func::EiAsym.spec().name;
-
 /// Most terms of an asymptotic (Stirling-type) series.
 const MAX_ASYMPTOTIC_TERMS: i64 = 40;
 
@@ -5059,19 +5059,21 @@ fn special_series(
             };
             integral_at_zero(arena, kind, &a, mode, Some((a_expr, var)))
         }
-        ExprNode::Apply(f, ref args)
-            if PowerAsymptotic::from_name(arena.symbol_name(f)).is_some() =>
-        {
-            let Some(kind) = PowerAsymptotic::from_name(arena.symbol_name(f)) else {
+        ExprNode::Internal(f, ref args) if PowerAsymptotic::of(f).is_some() => {
+            let Some(kind) = PowerAsymptotic::of(f) else {
                 return unknown;
             };
             power_asymptotic_series(arena, f, kind, args, mode, cache)
         }
-        ExprNode::Apply(f, ref args)
-            if args.len() == 1
-                && matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC) =>
+        // Gruntz's internal `erfcx(z) = e^{z²} erfc(z)` for `z → +∞` (SymPy's
+        // `_erfs`), with the asymptotic series `(1/√π) Σ (−1)ᵏ
+        // (2k−1)!!/(2ᵏ z^{2k+1})` (DLMF 7.12.1), and `e^{−z} Ei(z)` for `z →
+        // ±∞` (SymPy's `_eis`), with the asymptotic series `Σ k!/z^{k+1}`
+        // (DLMF 6.12.2).
+        ExprNode::Internal(f @ (InternalFn::ErfcxAsym | InternalFn::EiAsym), ref args)
+            if args.len() == 1 =>
         {
-            let erfcx = arena.symbol_name(f) == ERFCX_ASYMPTOTIC;
+            let erfcx = f == InternalFn::ErfcxAsym;
             let a = child(cache, args[0])?.normalized(arena);
             let v = a.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
             if v == 0
@@ -5086,7 +5088,9 @@ fn special_series(
                 // the logarithmic singularity of `e^{−z} Ei z` at `0`.
                 let c0 = a.coeffs[0];
                 if erfcx || is_zero_const(arena, c0).is_false() {
-                    let c = arena.intern(ExprNode::Apply(f, smallvec::smallvec![c0]));
+                    let c = arena
+                        .func(f.into(), &[c0])
+                        .map_err(|_| Obstruction::Unknown)?;
                     return Ok(TSeries::constant(arena, c, a.known));
                 }
                 return unknown;
@@ -5191,7 +5195,7 @@ pub(crate) enum PowerAsymptotic {
     /// `erfi(√x)` has a series in `1/x`.
     Erfi,
     /// `√v·e^{v} erfc(√v) ~ (1/√π) Σ (−1)ᵏ (2k−1)!!/(2v)ᵏ` (DLMF 7.12.1):
-    /// [`ERFCX_ASYMPTOTIC`] of `z = √v` times `z`, whose series has no
+    /// [`InternalFn::ErfcxAsym`] of `z = √v` times `z`, whose series has no
     /// half-integer powers when `z²` has none (`erfc(√x)`, and `Γ(1/2, x) =
     /// √π·erfc(√x)`).
     Erfc,
@@ -5208,40 +5212,30 @@ pub(crate) enum PowerAsymptotic {
     Zeta,
 }
 
-/// Head of [`PowerAsymptotic::Erfi`].
-pub(crate) const ERFIX_ASYMPTOTIC: &str = crate::base::func::Func::Erfix2Asym.spec().name;
-/// Head of [`PowerAsymptotic::Erfc`].
-pub(crate) const ERFCX2_ASYMPTOTIC: &str = crate::base::func::Func::Erfcx2Asym.spec().name;
-/// Head of [`PowerAsymptotic::BesselI`] (arguments `ν, z`).
-pub(crate) const BESSELI_ASYMPTOTIC: &str = crate::base::func::Func::BesselIAsym.spec().name;
-/// Head of [`PowerAsymptotic::BesselK`] (arguments `ν, z`).
-pub(crate) const BESSELK_ASYMPTOTIC: &str = crate::base::func::Func::BesselKAsym.spec().name;
-/// Head of [`PowerAsymptotic::UpperGamma`] (arguments `s, z`).
-pub(crate) const UPPERGAMMA_ASYMPTOTIC: &str = crate::base::func::Func::UpperGammaAsym.spec().name;
-/// Head of [`PowerAsymptotic::Zeta`].
-pub(crate) const ZETA_ASYMPTOTIC: &str = crate::base::func::Func::ZetaAsym.spec().name;
-
 impl PowerAsymptotic {
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            ERFIX_ASYMPTOTIC => Self::Erfi,
-            ERFCX2_ASYMPTOTIC => Self::Erfc,
-            BESSELI_ASYMPTOTIC => Self::BesselI,
-            BESSELK_ASYMPTOTIC => Self::BesselK,
-            UPPERGAMMA_ASYMPTOTIC => Self::UpperGamma,
-            ZETA_ASYMPTOTIC => Self::Zeta,
-            _ => return None,
+    /// The kind whose internal function is `f`, if it is one of these.
+    pub(crate) fn of(f: InternalFn) -> Option<Self> {
+        Some(match f {
+            InternalFn::Erfix2Asym => Self::Erfi,
+            InternalFn::Erfcx2Asym => Self::Erfc,
+            InternalFn::BesselIAsym => Self::BesselI,
+            InternalFn::BesselKAsym => Self::BesselK,
+            InternalFn::UpperGammaAsym => Self::UpperGamma,
+            InternalFn::ZetaAsym => Self::Zeta,
+            InternalFn::ErfcxAsym | InternalFn::EiAsym => return None,
         })
     }
 
-    pub(crate) fn name(self) -> &'static str {
+    /// The internal function of this kind (arguments `ν, z` for the Bessel
+    /// kinds, `s, z` for `UpperGamma`, `z` otherwise).
+    pub(crate) fn head(self) -> InternalFn {
         match self {
-            Self::Erfi => ERFIX_ASYMPTOTIC,
-            Self::Erfc => ERFCX2_ASYMPTOTIC,
-            Self::BesselI => BESSELI_ASYMPTOTIC,
-            Self::BesselK => BESSELK_ASYMPTOTIC,
-            Self::UpperGamma => UPPERGAMMA_ASYMPTOTIC,
-            Self::Zeta => ZETA_ASYMPTOTIC,
+            Self::Erfi => InternalFn::Erfix2Asym,
+            Self::Erfc => InternalFn::Erfcx2Asym,
+            Self::BesselI => InternalFn::BesselIAsym,
+            Self::BesselK => InternalFn::BesselKAsym,
+            Self::UpperGamma => InternalFn::UpperGammaAsym,
+            Self::Zeta => InternalFn::ZetaAsym,
         }
     }
 
@@ -5257,7 +5251,7 @@ impl PowerAsymptotic {
 /// `c + O(ωᴷ)`, the constant `f(c)`.  The parameter must be constant.
 fn power_asymptotic_series(
     arena: &mut Arena,
-    f: crate::base::node::SymbolId,
+    f: InternalFn,
     kind: PowerAsymptotic,
     args: &[ExprId],
     mode: Mode,
@@ -5293,7 +5287,9 @@ fn power_asymptotic_series(
         let mut new_args: smallvec::SmallVec<[ExprId; 2]> = smallvec::SmallVec::new();
         new_args.extend(param);
         new_args.push(a.coeffs[0]);
-        let c = arena.intern(ExprNode::Apply(f, new_args));
+        let c = arena
+            .func(f.into(), &new_args)
+            .map_err(|_| Obstruction::Unknown)?;
         return Ok(TSeries::constant(arena, c, a.known));
     }
     if v >= 0
@@ -6103,5 +6099,22 @@ mod tests {
                 "n={n}"
             );
         }
+    }
+
+    /// `locally_real` and `structural_series` select exactly the functions
+    /// of their 0.49 or-patterns (W6d: the lists became predicates; the
+    /// `Lib(Shi | Chi)` arm joined `has_special_series`).
+    #[test]
+    fn function_predicates_are_the_old_lists() {
+        use crate::base::func::{Func::*, selected};
+        let real = [
+            Gamma, Digamma, Factorial, Zeta, Erf, Erfc, Si, Ei, Heaviside, Exp, Sin, Cos, Tan,
+            Atan, Sinh, Cosh, Tanh, Asinh, Sign, Floor, Ceiling,
+        ];
+        assert_eq!(selected(real_through_argument), real.into_iter().collect());
+        let special = [
+            Gamma, LogGamma, Digamma, Polygamma, Zeta, Ei, Ci, Si, Li, Erfc, Shi, Chi,
+        ];
+        assert_eq!(selected(has_special_series), special.into_iter().collect());
     }
 }

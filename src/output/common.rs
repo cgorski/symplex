@@ -34,7 +34,7 @@ pub(crate) fn display_sort_key(
     let cat = display_category(arena, id);
     let degree = estimate_display_degree(arena, id);
     let var_key = dominant_var_key(arena, id);
-    let canon_key = SmallVec::from_slice(arena.sort_key(id).as_bytes());
+    let canon_key = SmallVec::from_slice(arena.sort_key(id));
     (cat, -(degree as i64), var_key, canon_key)
 }
 
@@ -138,10 +138,10 @@ pub(crate) fn estimate_display_degree(arena: &Arena, id: ExprId) -> u32 {
 /// For `x*y`, this returns the sort key of `x` (first variable alphabetically).
 pub(crate) fn dominant_var_key(arena: &Arena, id: ExprId) -> SmallVec<[u8; 24]> {
     match arena.node(id) {
-        ExprNode::Symbol(_) => SmallVec::from_slice(arena.sort_key(id).as_bytes()),
+        ExprNode::Symbol(_) => SmallVec::from_slice(arena.sort_key(id)),
         ExprNode::Pow(base, _) => {
             if matches!(arena.node(*base), ExprNode::Symbol(_)) {
-                SmallVec::from_slice(arena.sort_key(*base).as_bytes())
+                SmallVec::from_slice(arena.sort_key(*base))
             } else {
                 SmallVec::new()
             }

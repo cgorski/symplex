@@ -143,6 +143,7 @@ use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::{Complex, c_add, c_mul, c_one, c_sub, c_zero};
+use crate::base::func::Func;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
@@ -988,37 +989,10 @@ fn analyticity(node: &ExprNode) -> Analytic {
     use Analytic::{Everywhere, OffCut, Unknown};
     use RealCut::{AboveOne, BelowOne, BelowZero, OutsideUnit, OutsideZeroTwo};
     match node {
-        ExprNode::Gamma(_)
-        | ExprNode::Digamma(_)
-        | ExprNode::Polygamma(_, _)
-        | ExprNode::Zeta(_)
-        | ExprNode::Erf(_)
-        | ExprNode::Erfc(_)
-        | ExprNode::Beta(_, _)
-        | ExprNode::Factorial(_)
-        | ExprNode::Binomial(_, _)
-        | ExprNode::Si(_)
-        | ExprNode::DiracDelta(_) => Everywhere,
+        n if n.func_head().is_some_and(entire_or_meromorphic) => Everywhere,
         ExprNode::LogGamma(_) | ExprNode::Ci(_) | ExprNode::Ei(_) => OffCut(0, BelowZero),
         ExprNode::Li(_) => OffCut(0, BelowOne),
         ExprNode::Lib(f, _) => match f {
-            LibFn::Erfi
-            | LibFn::Shi
-            | LibFn::FresnelS
-            | LibFn::FresnelC
-            | LibFn::AiryAi
-            | LibFn::AiryBi
-            | LibFn::AiryAiPrime
-            | LibFn::AiryBiPrime
-            | LibFn::DirichletEta
-            | LibFn::Legendre
-            | LibFn::ChebyshevT
-            | LibFn::ChebyshevU
-            | LibFn::Hermite
-            | LibFn::Laguerre
-            | LibFn::Gegenbauer
-            | LibFn::Jacobi
-            | LibFn::AssocLaguerre => Everywhere,
             LibFn::Chi => OffCut(0, BelowZero),
             LibFn::BesselJ
             | LibFn::BesselY
@@ -1036,6 +1010,52 @@ fn analyticity(node: &ExprNode) -> Analytic {
         },
         _ => Unknown,
     }
+}
+
+/// The functions [`analyticity`] calls entire or meromorphic in every
+/// argument (for the arguments `evalf` accepts): `Γ`, `ψ`, `ψ⁽ⁿ⁾`, `ζ`,
+/// `erf`, `erfc`, `B`, `n!`, `C(n, k)`, `Si`, `δ`, and of the library
+/// functions `erfi`, `Shi`, the Fresnel and Airy functions, `η` and the
+/// orthogonal polynomials.
+fn entire_or_meromorphic(f: Func) -> bool {
+    matches!(
+        f,
+        Func::Gamma
+            | Func::Digamma
+            | Func::Polygamma
+            | Func::Zeta
+            | Func::Erf
+            | Func::Erfc
+            | Func::Beta
+            | Func::Factorial
+            | Func::Binomial
+            | Func::Si
+            | Func::DiracDelta
+            | Func::Erfi
+            | Func::Shi
+            | Func::FresnelS
+            | Func::FresnelC
+            | Func::AiryAi
+            | Func::AiryBi
+            | Func::AiryAiPrime
+            | Func::AiryBiPrime
+            | Func::DirichletEta
+            | Func::Legendre
+            | Func::ChebyshevT
+            | Func::ChebyshevU
+            | Func::Hermite
+            | Func::Laguerre
+            | Func::Gegenbauer
+            | Func::Jacobi
+            | Func::AssocLaguerre
+    )
+}
+
+/// The functions whose error [`node_error`] bounds by their sensitivity
+/// to each argument: the special functions but `W` (bounded by its own
+/// evaluation), and every library and internal function.
+fn error_by_sensitivity(f: Func) -> bool {
+    f.family() != crate::base::func::Family::Node || (f.is_special() && f != Func::LambertW0)
 }
 
 /// Does the interval `x ± 2^e` meet the cut?
@@ -1661,22 +1681,9 @@ pub(super) fn node_error(
         // relative error carried over plus 4 bits, whatever the condition
         // number: `betainc_regularized(27/11, 1/26562500, 0, 1 − 3·10⁻³⁰)`
         // lost 11 of the 16 digits it certified to the rounding of `x`.
-        ExprNode::Gamma(_)
-        | ExprNode::LogGamma(_)
-        | ExprNode::Digamma(_)
-        | ExprNode::Erf(_)
-        | ExprNode::Erfc(_)
-        | ExprNode::Beta(_, _)
-        | ExprNode::Si(_)
-        | ExprNode::Ci(_)
-        | ExprNode::Ei(_)
-        | ExprNode::Li(_)
-        | ExprNode::Zeta(_)
-        | ExprNode::Polygamma(_, _)
-        | ExprNode::Factorial(_)
-        | ExprNode::Binomial(_, _)
-        | ExprNode::Apply(_, _)
-        | ExprNode::Lib(_, _) => {
+        n if matches!(n, ExprNode::Apply(..))
+            || n.func_head().is_some_and(error_by_sensitivity) =>
+        {
             let args = known_balls!(node.children());
             let worst = special();
             settle!(Ball::special_error(&args, worst, value, || {
@@ -2128,4 +2135,60 @@ fn log2_cosh(t: f64) -> f64 {
     }
     let t = t.abs();
     up(t * std::f64::consts::LOG2_E - 1.0 + (-2.0 * t).exp().ln_1p() * std::f64::consts::LOG2_E)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `analyticity` and `node_error` select exactly the functions of their
+    /// 0.49 or-patterns (W6d: the lists became `entire_or_meromorphic`,
+    /// which took in the library functions of the `Lib` arm's
+    /// `Everywhere` group, and `error_by_sensitivity`).
+    #[test]
+    fn function_predicates_are_the_old_lists() {
+        use crate::base::func::{Family, Func::*, selected};
+        let entire = [
+            Gamma,
+            Digamma,
+            Polygamma,
+            Zeta,
+            Erf,
+            Erfc,
+            Beta,
+            Factorial,
+            Binomial,
+            Si,
+            DiracDelta,
+            Erfi,
+            Shi,
+            FresnelS,
+            FresnelC,
+            AiryAi,
+            AiryBi,
+            AiryAiPrime,
+            AiryBiPrime,
+            DirichletEta,
+            Legendre,
+            ChebyshevT,
+            ChebyshevU,
+            Hermite,
+            Laguerre,
+            Gegenbauer,
+            Jacobi,
+            AssocLaguerre,
+        ];
+        assert_eq!(
+            selected(entire_or_meromorphic),
+            entire.into_iter().collect()
+        );
+        let mut sensitivity: std::collections::HashSet<Func> = [
+            Gamma, LogGamma, Digamma, Erf, Erfc, Beta, Si, Ci, Ei, Li, Zeta, Polygamma, Factorial,
+            Binomial,
+        ]
+        .into_iter()
+        .collect();
+        sensitivity.extend(selected(|f| f.family() != Family::Node));
+        assert_eq!(selected(error_by_sensitivity), sensitivity);
+    }
 }

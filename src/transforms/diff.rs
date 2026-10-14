@@ -30,6 +30,7 @@ use smallvec::SmallVec;
 use crate::base::arena::Arena;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::truth::Truth;
 use crate::transforms::eval::apply_named;
 
 /// Differentiate `expr` with respect to the symbol identified by `var`.
@@ -128,7 +129,7 @@ fn real_for_real_symbols(arena: &Arena, f: ExprId, var: SymbolId) -> bool {
             cache.set_symbol_assumptions(s, real);
         }
     }
-    cache.query(arena, f, Props::REAL) == Some(true)
+    Truth::from(cache.query(arena, f, Props::REAL)).is_true()
 }
 
 /// `d|f|/dx = re(conj(f)·f')/|f|` along a real `x`, for any complex `f`
@@ -787,7 +788,9 @@ fn diff_node(
 
         // ── Apply (user-defined function), library function: chain rule ──
         // d/dx(f(u₁,…,uₙ)) = Σᵢ (∂f/∂uᵢ) · (duᵢ/dx)
-        ExprNode::Apply(_, ref args) | ExprNode::Lib(_, ref args) => {
+        ExprNode::Apply(_, ref args)
+        | ExprNode::Lib(_, ref args)
+        | ExprNode::Internal(_, ref args) => {
             let args_clone = args.clone();
 
             // Library special functions with known derivative rules.
@@ -1071,7 +1074,7 @@ fn var_expr(arena: &mut Arena, var: SymbolId) -> ExprId {
 /// for derivatives along the real axis.
 fn var_is_real(arena: &mut Arena, var: SymbolId) -> bool {
     let v = var_expr(arena, var);
-    crate::base::complex::is_real(arena, v) == Some(true)
+    Truth::from(crate::base::complex::is_real(arena, v)).is_true()
 }
 
 /// Derivative of the library function `f` applied to `args` (of the arity

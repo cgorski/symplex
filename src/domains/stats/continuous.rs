@@ -19,6 +19,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
+use crate::base::truth::Truth;
 
 use std::cmp::Ordering;
 
@@ -103,7 +104,7 @@ fn ln_ratio(x: &Ex, x_m: &Ex) -> Ex {
 /// symbolic parameter the formula is returned, and [`Distribution`]'s
 /// moments put it under the condition through [`Family::tail_orders`].
 fn exceeds(param: &Ex, bound: u32) -> bool {
-    (param - i64::from(bound)).is_positive() != Some(false)
+    !Truth::from((param - i64::from(bound)).is_positive()).is_false()
 }
 
 /// `value` for a `t` known not to be `0`; `1` at `t = 0`; for a `t` that
@@ -115,7 +116,7 @@ fn one_at_zero(t: &Ex, value: Ex) -> Ex {
     match t.is_zero() {
         Some(false) => value,
         Some(true) => ctx.one(),
-        None if t.free_symbols().is_empty() && sign_of(t).is_some() => value,
+        None if t.free_symbols().is_empty() && sign_of(t).to_ordering().is_some() => value,
         None => Ex::piecewise(&[
             (&value, &t.ne_expr(&ctx.zero())),
             (&ctx.one(), &ctx.bool_true()),
@@ -689,7 +690,7 @@ impl Family for Cauchy {
     // value when the symbolic test cannot (`sign_of`).
     fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
         let d = x - &self.location;
-        if sign_of(&d) != Some(Ordering::Less) {
+        if !sign_of(&d).is_negative().is_true() {
             return self.cdf(x);
         }
         Some(-(&self.scale / d).atan() / self.context().pi())
@@ -702,7 +703,7 @@ impl Family for Cauchy {
     fn sf(&self, x: &Ex) -> Option<Ex> {
         let ctx = self.context();
         let d = x - &self.location;
-        if sign_of(&d) == Some(Ordering::Greater) {
+        if sign_of(&d).is_positive().is_true() {
             return Some((&self.scale / d).atan() / ctx.pi());
         }
         Some(ctx.rational(1, 2) - (d / &self.scale).atan() / ctx.pi())
@@ -1335,7 +1336,7 @@ impl Family for Weibull {
     // t).  A shape of undecided place relative to 1 gives no domain.
     fn mgf_domain(&self) -> Option<Interval<Ex>> {
         let ctx = self.context();
-        match sign_of(&(&self.shape - 1)) {
+        match sign_of(&(&self.shape - 1)).to_ordering() {
             Some(Ordering::Less) => Some(heavy_right_tail(&ctx)),
             Some(Ordering::Equal) => {
                 Some(Interval::open(ctx.neg_infinity(), ctx.one() / &self.scale))
@@ -1462,12 +1463,12 @@ impl Triangular {
     /// Is the mode decidably at the lower end (`c = a`)?  The rising
     /// piece is then a single point and its formula divides by `c − a = 0`.
     fn mode_at_lo(&self) -> bool {
-        (&self.mode - &self.lo).is_zero() == Some(true)
+        Truth::from((&self.mode - &self.lo).is_zero()).is_true()
     }
 
     /// Is the mode decidably at the upper end (`c = b`)?
     fn mode_at_hi(&self) -> bool {
-        (&self.hi - &self.mode).is_zero() == Some(true)
+        Truth::from((&self.hi - &self.mode).is_zero()).is_true()
     }
 
     /// A closed form whose general expression `inside` (for `a < c < b`)
@@ -1478,8 +1479,8 @@ impl Triangular {
     /// (`Triangular(a, b, c)` with `c → a` had no third moment, skewness,
     /// kurtosis or mgf).  The caller handles a mode known to be at an end.
     fn by_mode(&self, inside: Ex, at_lo: impl FnOnce() -> Ex, at_hi: impl FnOnce() -> Ex) -> Ex {
-        let off_lo = (&self.mode - &self.lo).is_zero() == Some(false);
-        let off_hi = (&self.hi - &self.mode).is_zero() == Some(false);
+        let off_lo = Truth::from((&self.mode - &self.lo).is_zero()).is_false();
+        let off_hi = Truth::from((&self.hi - &self.mode).is_zero()).is_false();
         if off_lo && off_hi {
             return inside;
         }

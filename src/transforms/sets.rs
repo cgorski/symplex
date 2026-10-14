@@ -2959,6 +2959,44 @@ pub(crate) fn restrict_set_to_domain(
     Some(simplify_set(arena, union))
 }
 
+/// `set` with each family (`ImageSet` of points) that
+/// [`family_in_domain`](crate::transforms::solve::family_in_domain) decides
+/// for the declared domain of `var` replaced by its members there: none
+/// (dropped) or one point; the others and every other part unchanged (the
+/// same `ExprId` when nothing is decided).  As [`restrict_set_to_domain`]
+/// does for `solve_as_set`: before 0.50 `reduce_inequalities` of
+/// `e^(ix) + 1 = 0` for an integer `x` was `ℤ ∩ {2nπ + π : n ∈ ℤ}` where
+/// `solve_as_set` gave `∅` (`π` is irrational).
+fn families_in_domain(arena: &mut Arena, var: ExprId, set: ExprId) -> ExprId {
+    use crate::transforms::solve::{FamilyInDomain, family_in_domain};
+    let parts: Vec<ExprId> = match arena.node(set) {
+        ExprNode::SetUnion(ch) => ch.to_vec(),
+        _ => vec![set],
+    };
+    let mut changed = false;
+    let mut out: Vec<ExprId> = Vec::with_capacity(parts.len());
+    for p in parts {
+        if let ExprNode::ImageSet(n, body) = *arena.node(p)
+            && !arena.node(body).is_set_node()
+        {
+            match family_in_domain(arena, var, body, n, n) {
+                FamilyInDomain::Empty => {
+                    changed = true;
+                    continue;
+                }
+                FamilyInDomain::Point(m) => {
+                    changed = true;
+                    out.push(arena.finite_set(&[m]));
+                    continue;
+                }
+                FamilyInDomain::All | FamilyInDomain::Rays(_) | FamilyInDomain::Undecided => {}
+            }
+        }
+        out.push(p);
+    }
+    if changed { arena.set_union(&out) } else { set }
+}
+
 /// A set of real numbers (an inequality's solution in `var`) intersected
 /// with the declared domain of `var` within ℝ ([`declared_domain_set`]
 /// with `real_line`); `None` for a domain no set writes.
@@ -2970,6 +3008,7 @@ pub(crate) fn restrict_real_set_to_domain(
     match declared_domain_set(arena, var, true) {
         DeclaredDomain::Unrestricted => Some(set),
         DeclaredDomain::Set(d) => {
+            let set = families_in_domain(arena, var, set);
             let meet = arena.set_intersection(&[set, d]);
             Some(simplify_set(arena, meet))
         }

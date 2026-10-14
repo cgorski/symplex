@@ -15,6 +15,7 @@
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 use crate::base::walk;
 use rustc_hash::FxHashMap;
 
@@ -161,8 +162,8 @@ fn combine_mul_ln(
         .is_some_and(|c| *c > crate::base::numeric::qi(-1) && *c <= crate::base::numeric::qi(1));
     let guard_ok = force
         || coeff_in_principal_range
-        || (assumptions.query(arena, ln_arg, Props::POSITIVE) == Some(true)
-            && assumptions.query(arena, coeff, Props::REAL) == Some(true));
+        || (Truth::from(assumptions.query(arena, ln_arg, Props::POSITIVE)).is_true()
+            && Truth::from(assumptions.query(arena, coeff, Props::REAL)).is_true());
     if !guard_ok {
         return if new == original { id } else { arena.mul(new) };
     }
@@ -195,7 +196,7 @@ fn combine_add_ln(
 
     for &child in new {
         if let ExprNode::Ln(inner) = *arena.node(child) {
-            if force || assumptions.query(arena, inner, Props::POSITIVE) == Some(true) {
+            if force || Truth::from(assumptions.query(arena, inner, Props::POSITIVE)).is_true() {
                 ln_inner_args.push(inner);
             } else {
                 unknown.push((child, inner));

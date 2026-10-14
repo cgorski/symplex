@@ -38,6 +38,7 @@ use crate::base::canon::{
 };
 use crate::base::combinatorics::multinomial_u64;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 use crate::base::walk;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -965,6 +966,8 @@ fn expand_pass(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
             | ExprNode::SetUnion(_)
             | ExprNode::SetIntersection(_)
             | ExprNode::SetComplement(..) => walk::rebuild_with_cache(arena, id, &cache),
+            // The limit engine's internal functions, as the `Apply` they were.
+            ExprNode::Internal(..) => walk::rebuild_with_cache(arena, id, &cache),
             // Keep the wildcard for truly inert nodes (atoms handled earlier)
             _ => id,
         };
@@ -1249,7 +1252,7 @@ fn expand_power_base(
         _ => return None,
     };
     let exp_is_integer = arena.as_num(exp).is_some_and(|r| r.is_integer())
-        || assumptions.query(arena, exp, Props::INTEGER) == Some(true);
+        || Truth::from(assumptions.query(arena, exp, Props::INTEGER)).is_true();
     let allowed = force || exp_is_integer || at_most_one_non_nonneg(arena, assumptions, &children);
     if !allowed {
         tracing::trace!(
@@ -1271,7 +1274,7 @@ pub(crate) fn at_most_one_non_nonneg(
 ) -> bool {
     let unknown = factors
         .iter()
-        .filter(|&&c| assumptions.query(arena, c, Props::NONNEGATIVE) != Some(true))
+        .filter(|&&c| !Truth::from(assumptions.query(arena, c, Props::NONNEGATIVE)).is_true())
         .count();
     unknown <= 1
 }
@@ -1300,13 +1303,13 @@ fn expand_power_exp(
         let base_known_positive = if let Some(r) = arena.as_num(base) {
             r.is_positive()
         } else {
-            assumptions.query(arena, base, Props::POSITIVE) == Some(true)
+            Truth::from(assumptions.query(arena, base, Props::POSITIVE)).is_true()
         };
 
         // Safe if every summand is a known integer.
         let all_integer = children
             .iter()
-            .all(|&c| assumptions.query(arena, c, Props::INTEGER) == Some(true));
+            .all(|&c| Truth::from(assumptions.query(arena, c, Props::INTEGER)).is_true());
 
         // Safe if all exponent summands have known same sign
         let all_same_sign = {

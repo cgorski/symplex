@@ -8,6 +8,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::truth::Truth;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -951,9 +952,11 @@ fn placement(arena: &mut Arena, z: ExprId) -> Option<Placement> {
         });
     }
     let mut facts = crate::base::assumptions::AssumptionCache::new();
-    if facts.query(arena, z, crate::base::assumptions::Props::POSITIVE) == Some(true) {
+    if Truth::from(facts.query(arena, z, crate::base::assumptions::Props::POSITIVE)).is_true() {
         Some(Placement::Positive)
-    } else if facts.query(arena, z, crate::base::assumptions::Props::NEGATIVE) == Some(true) {
+    } else if Truth::from(facts.query(arena, z, crate::base::assumptions::Props::NEGATIVE))
+        .is_true()
+    {
         Some(Placement::Negative)
     } else {
         None
@@ -1589,12 +1592,15 @@ pub(crate) fn end_value(
                             // parameters (where it is 0 the term is not
                             // defined: it divides by that coefficient).
                             None if only_real_parameters(arena, lead)
-                                && crate::transforms::realness::constant_realness_as_declared(
-                                    arena,
-                                    lead,
-                                    30,
-                                    &mut crate::base::assumptions::AssumptionCache::new(),
-                                ) == Some(true) =>
+                                && Truth::from(
+                                    crate::transforms::realness::constant_realness_as_declared(
+                                        arena,
+                                        lead,
+                                        30,
+                                        &mut crate::base::assumptions::AssumptionCache::new(),
+                                    ),
+                                )
+                                .is_true() =>
                             {
                                 let half = arena.rational(1, 2);
                                 let sign = sign_of_real(arena, lead);
@@ -1943,10 +1949,10 @@ fn sign_of_real(arena: &mut Arena, z: ExprId) -> ExprId {
     let mut kept: Vec<ExprId> = Vec::new();
     let mut negative = false;
     for f in factors {
-        if facts.query(arena, f, Props::POSITIVE) == Some(true) {
+        if Truth::from(facts.query(arena, f, Props::POSITIVE)).is_true() {
             continue;
         }
-        if facts.query(arena, f, Props::NEGATIVE) == Some(true) {
+        if Truth::from(facts.query(arena, f, Props::NEGATIVE)).is_true() {
             negative = !negative;
             continue;
         }
@@ -2036,7 +2042,7 @@ pub(crate) fn add_tan_floor_in(
     }
     let coeff = arena.add(&floor_coeff);
     let coeff = crate::transforms::eval::eval(arena, coeff);
-    if crate::poly::algebraic::is_zero_checked(arena, coeff) != Some(true) {
+    if !Truth::from(crate::poly::algebraic::is_zero_checked(arena, coeff)).is_true() {
         let minus_one = arena.int(-1);
         let inv_pi = arena.pow(pi, minus_one);
         let w_over_pi = arena.mul(&[w, inv_pi]);

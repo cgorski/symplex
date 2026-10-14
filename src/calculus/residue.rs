@@ -47,6 +47,7 @@ use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::SignSet;
 use crate::base::walk;
 use crate::calculus::calculus_util;
 use crate::poly::Poly;
@@ -503,22 +504,36 @@ impl RationalQ {
         }
     }
 
-    /// Is `N/D` an even (`Some(true)`) or odd (`Some(false)`) function?
-    pub(crate) fn parity(&self) -> Option<bool> {
-        let par = |p: &Poly| -> Option<bool> {
+    /// Is `N/D` an even or an odd function (`None`: neither)?  (An
+    /// `Option<bool>` up to 0.49, whose `false` meant "odd".)
+    pub(crate) fn parity(&self) -> Option<Parity> {
+        let par = |p: &Poly| -> Option<Parity> {
             let even = p.coeffs().iter().skip(1).step_by(2).all(Zero::is_zero);
             let odd = p.coeffs().iter().step_by(2).all(Zero::is_zero);
             match (even, odd) {
-                (true, _) => Some(true),
-                (false, true) => Some(false),
+                (true, _) => Some(Parity::Even),
+                (false, true) => Some(Parity::Odd),
                 _ => None,
             }
         };
         if self.numer.is_zero() {
-            return Some(true);
+            return Some(Parity::Even);
         }
-        Some(par(&self.numer)? == par(&self.denom)?)
+        Some(if par(&self.numer)? == par(&self.denom)? {
+            Parity::Even
+        } else {
+            Parity::Odd
+        })
     }
+}
+
+/// Even (`f(−x) = f(x)`) or odd (`f(−x) = −f(x)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Parity {
+    /// `f(−x) = f(x)`.
+    Even,
+    /// `f(−x) = −f(x)`.
+    Odd,
 }
 
 /// Largest total degree of a rational function [`rational_over_q`]
@@ -996,7 +1011,8 @@ pub(crate) fn pole_symbol(arena: &mut Arena, weight: ExprId) -> ExprId {
 
 /// `∫_{−∞}^{∞} N(x)/D(x)·e^{ikx} dx` (principal value at simple real poles
 /// where the caller knows it to be the value) for a real `k` of known sign
-/// `k_positive` (or `k = 0` with `k_positive = None`), by Jordan's lemma:
+/// `k_sign` (a single atom: `NEGATIVE`, `ZERO` or `POSITIVE`; up to 0.49 an
+/// `Option<bool>` whose `None` meant `k = 0`), by Jordan's lemma:
 /// `2πi Σ_{Im ρ > 0} Res + πi Σ_{ρ real} Res` for `k > 0`, `−2πi Σ_{Im ρ < 0}
 /// Res − πi Σ_{ρ real} Res` for `k < 0` (`k = 0` closes upwards and needs
 /// `deg D ≥ deg N + 2`).  The integral converges for `deg D ≥ deg N + 1`
@@ -1008,18 +1024,22 @@ pub(crate) fn fourier_rational(
     arena: &mut Arena,
     r: &RationalQ,
     k: ExprId,
-    k_positive: Option<bool>,
+    k_sign: SignSet,
     x: ExprId,
 ) -> Option<ExprId> {
     let gap = r.degree_gap();
-    if gap < 1 || (k_positive.is_none() && gap < 2) {
+    if !k_sign.is_single() || k_sign == SignSet::NONREAL {
+        return None;
+    }
+    if gap < 1 || (k_sign == SignSet::ZERO && gap < 2) {
         return None;
     }
     let i = arena.i_unit();
     let ikx = arena.mul(&[i, k, x]);
     let weight = arena.exp(ikx);
     let weight = eval::eval(arena, weight);
-    let upward = k_positive.unwrap_or(true);
+    // `k = 0` closes upwards too.
+    let upward = k_sign != SignSet::NEGATIVE;
     let off_axis = rational_residue_sum(arena, r, weight, x, |p| {
         p == if upward {
             PolePlace::Upper

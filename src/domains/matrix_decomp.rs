@@ -25,9 +25,10 @@ use crate::api::expr::Ex;
 use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 use crate::domains::decompositions::{Diagonalization, JordanForm, Ldl, Qr};
 use crate::domains::matrix::{
-    Matrix, all3, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, is_swell, reop,
+    Matrix, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, is_swell, reop,
     simplify_function_entry, swell_or,
 };
 
@@ -151,8 +152,8 @@ struct RealAxis<'a> {
 
 impl<'a> RealAxis<'a> {
     fn of(matrix: &'a Matrix) -> Self {
-        let hermitian = matrix.is_hermitian() == Some(true);
-        let real = !hermitian && matrix.iter().all(|e| e.is_real() == Some(true));
+        let hermitian = Truth::from(matrix.is_hermitian()).is_true();
+        let real = !hermitian && matrix.iter().all(|e| Truth::from(e.is_real()).is_true());
         Self {
             matrix,
             hermitian,
@@ -305,7 +306,10 @@ fn gram_schmidt_cols(
         Some(HermitianGs::Dependent(j)) => Some(Err(dependent_error(op, j))),
         None => None,
     };
-    let hermitian = !cols.iter().flatten().all(|e| e.is_real() == Some(true));
+    let hermitian = !cols
+        .iter()
+        .flatten()
+        .all(|e| Truth::from(e.is_real()).is_true());
     if hermitian {
         if let Some(res) = exact() {
             return res;
@@ -362,10 +366,9 @@ fn gram_schmidt_expr(
         // The exact test of a rational function over ℚ(radicals, i) first:
         // `ex_is_zero` would `simplify` a norm that is not identically zero,
         // which swelled for 3×3 symbolic matrices with radicals (> 10 s).
-        let dependent = match crate::domains::matrix::rational_function_is_zero(&norm_sq) {
-            Some(b) => b,
-            None => ex_is_zero(&norm_sq) == Some(true),
-        };
+        let dependent = crate::domains::matrix::rational_function_is_zero(&norm_sq)
+            .or_else(|| ex_is_zero(&norm_sq))
+            .is_true();
         if dependent {
             return Err(dependent_error(op, j));
         }
@@ -477,7 +480,10 @@ impl Matrix {
     fn qr_spread_r(&self, pivots: &[usize], q_cols: &[Vec<Ex>], r_piv: &[Vec<Ex>]) -> Vec<Vec<Ex>> {
         let n = self.ncols();
         let zero = self.context().zero();
-        let hermitian = !q_cols.iter().flatten().all(|e| e.is_real() == Some(true));
+        let hermitian = !q_cols
+            .iter()
+            .flatten()
+            .all(|e| Truth::from(e.is_real()).is_true());
         let tidy = |e: Ex| {
             if e.is_constant() {
                 crate::domains::linalg::algebraic_constant_normal_form(&e)
@@ -573,14 +579,14 @@ impl Matrix {
             // Over one denominator a pivot such as `2 − x²/(x² + 1)` (real `x`)
             // is `(x² + 2)/(x² + 1)`, whose sign the assumptions decide.
             match ex_is_positive(&diag).or_else(|| ex_is_positive(&diag.together())) {
-                Some(true) => {}
-                Some(false) => {
+                Truth::True => {}
+                Truth::False => {
                     return Err(failed(
                         "cholesky",
                         format!("matrix is not positive definite (pivot {j} is {diag})"),
                     ));
                 }
-                None => {
+                Truth::Unknown => {
                     return Err(failed(
                         "cholesky",
                         format!(
@@ -614,13 +620,13 @@ impl Matrix {
     /// (SymPy: "Matrix must be Hermitian.").
     fn symmetry_kind(&self, op: &'static str) -> Result<Symmetry, SymplexError> {
         let symmetric = self.is_symmetric();
-        if symmetric == Some(true) {
+        if Truth::from(symmetric).is_true() {
             return Ok(Symmetry::Symmetric);
         }
-        if self.is_hermitian() == Some(true) {
+        if Truth::from(self.is_hermitian()).is_true() {
             return Ok(Symmetry::Hermitian);
         }
-        if symmetric == Some(false) {
+        if Truth::from(symmetric).is_false() {
             return Err(invalid(op, "matrix is neither symmetric nor Hermitian"));
         }
         Err(failed(
@@ -706,8 +712,8 @@ impl Matrix {
                     self.get(i, j) - &acc
                 })
                 .collect();
-            if ex_is_zero(&dj) == Some(true) {
-                if numerators.iter().all(|u| ex_is_zero(u) == Some(true)) {
+            if ex_is_zero(&dj).is_true() {
+                if numerators.iter().all(|u| ex_is_zero(u).is_true()) {
                     // Nothing to divide: the column below is zero too.
                     d[j] = zero.clone();
                     continue;
@@ -736,9 +742,10 @@ impl Matrix {
             return Some(false);
         }
         let n = self.nrows();
-        all3((0..n).flat_map(|i| {
+        Truth::all((0..n).flat_map(|i| {
             ((i + 1)..n).map(move |j| ex_is_zero(&(self.get(i, j) - self.get(j, i))))
         }))
+        .to_option()
     }
 
     /// Is `A = −Aᵀ`?  Three-valued; `Some(false)` for non-square.
@@ -747,10 +754,11 @@ impl Matrix {
             return Some(false);
         }
         let n = self.nrows();
-        all3(
+        Truth::all(
             (0..n)
                 .flat_map(|i| (i..n).map(move |j| ex_is_zero(&(self.get(i, j) + self.get(j, i))))),
         )
+        .to_option()
     }
 
     /// Is `A = Aᴴ` (conjugate transpose)?  Three-valued.
@@ -782,28 +790,31 @@ impl Matrix {
 
     /// Are all entries below the main diagonal zero?  Three-valued.
     pub fn is_upper_triangular(&self) -> Option<bool> {
-        all3(
+        Truth::all(
             (0..self.nrows())
                 .flat_map(|i| (0..i.min(self.ncols())).map(move |j| ex_is_zero(self.get(i, j)))),
         )
+        .to_option()
     }
 
     /// Are all entries above the main diagonal zero?  Three-valued.
     pub fn is_lower_triangular(&self) -> Option<bool> {
-        all3(
+        Truth::all(
             (0..self.nrows())
                 .flat_map(|i| ((i + 1)..self.ncols()).map(move |j| ex_is_zero(self.get(i, j)))),
         )
+        .to_option()
     }
 
     /// Are all off-diagonal entries zero?  Three-valued (works for
     /// rectangular matrices too).
     pub fn is_diagonal(&self) -> Option<bool> {
-        all3((0..self.nrows()).flat_map(|i| {
+        Truth::all((0..self.nrows()).flat_map(|i| {
             (0..self.ncols())
                 .filter(move |&j| j != i)
                 .map(move |j| ex_is_zero(self.get(i, j)))
         }))
+        .to_option()
     }
 
     /// Is this the identity matrix?  Three-valued; `Some(false)` for
@@ -814,7 +825,7 @@ impl Matrix {
         }
         let one = self.context().one();
         let one = &one;
-        all3((0..self.nrows()).flat_map(|i| {
+        Truth::all((0..self.nrows()).flat_map(|i| {
             (0..self.ncols()).map(move |j| {
                 if i == j {
                     ex_is_zero(&(self.get(i, j) - one))
@@ -823,11 +834,12 @@ impl Matrix {
                 }
             })
         }))
+        .to_option()
     }
 
     /// Are all entries zero?  Three-valued.
     pub fn is_zero(&self) -> Option<bool> {
-        all3(self.iter().map(ex_is_zero))
+        Truth::all(self.iter().map(ex_is_zero)).to_option()
     }
 
     /// Is `Aⁿ = 0` (n = dimension)?  Three-valued; `Some(false)` for
@@ -869,10 +881,13 @@ impl Matrix {
             None => return None,
         }
         let n = self.nrows();
-        all3((1..=n).map(|k| {
-            let minor = self.submatrix(0..k, 0..k).ok()?.det().ok()?;
-            ex_is_positive(&minor)
-        }))
+        Truth::all(
+            (1..=n).map(|k| match self.submatrix(0..k, 0..k).and_then(|m| m.det()) {
+                Ok(minor) => ex_is_positive(&minor),
+                Err(_) => Truth::Unknown,
+            }),
+        )
+        .to_option()
     }
 
     /// Positive-semidefiniteness: symmetric and **all** principal minors
@@ -897,15 +912,18 @@ impl Matrix {
             None => return None,
         }
         let n = self.nrows();
-        all3((1u32..(1u32 << n)).map(|mask| {
+        Truth::all((1u32..(1u32 << n)).map(|mask| {
             let idx: Vec<usize> = (0..n).filter(|&i| mask & (1 << i) != 0).collect();
             let rows: Vec<Vec<Ex>> = idx
                 .iter()
                 .map(|&i| idx.iter().map(|&j| self.get(i, j).clone()).collect())
                 .collect();
-            let minor = Matrix::new(rows).ok()?.det().ok()?;
-            ex_is_nonnegative(&minor)
+            match Matrix::new(rows).and_then(|m| m.det()) {
+                Ok(minor) => ex_is_nonnegative(&minor),
+                Err(_) => Truth::Unknown,
+            }
         }))
+        .to_option()
     }
 
     // ── Norms ──────────────────────────────────────────────────────────
@@ -1018,7 +1036,7 @@ impl Matrix {
                     if k == 0 {
                         return Ok(lam.pow(n));
                     }
-                    if ex_is_zero(lam) == Some(true) {
+                    if ex_is_zero(lam).is_true() {
                         return Err(failed(
                             op,
                             "a nilpotent Jordan block (eigenvalue 0, size > 1) has no closed-form power for a symbolic exponent",
@@ -1096,7 +1114,7 @@ impl Matrix {
                     if k == 0 {
                         return Ok(principal_sqrt(lam, &axis));
                     }
-                    if ex_is_zero(lam) == Some(true) {
+                    if ex_is_zero(lam).is_true() {
                         return Err(failed(
                             op,
                             "a nilpotent Jordan block (eigenvalue 0, size > 1) has no square root of this form",
@@ -1186,7 +1204,7 @@ impl Matrix {
         }
         match self.matrix_log_jordan(&axis) {
             Err(e) if is_swell(&e) => {
-                if ex_is_zero(&self.det()?) == Some(true) {
+                if ex_is_zero(&self.det()?).is_true() {
                     return Err(failed(
                         "matrix_log",
                         "matrix is singular (eigenvalue 0); the logarithm does not exist",
@@ -1220,7 +1238,7 @@ impl Matrix {
             {
                 block_size += 1;
             }
-            if ex_is_zero(&lambda) == Some(true) {
+            if ex_is_zero(&lambda).is_true() {
                 return Err(failed(
                     "matrix_log",
                     "matrix is singular (eigenvalue 0); the logarithm does not exist",
@@ -1420,7 +1438,7 @@ mod tests {
             Matrix::identity(&ctx, 2).unwrap()
         );
         assert_eq!(r.is_upper_triangular(), Some(true));
-        assert_eq!(ex_is_positive(r.get(0, 0)), Some(true));
+        assert!(ex_is_positive(r.get(0, 0)).is_true());
     }
 
     #[test]

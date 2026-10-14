@@ -45,6 +45,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::dense_f64::{self, EigenOpts, EigenTol, OnExhaust};
 use crate::base::errors::SymplexError;
+use crate::base::truth::Truth;
 use crate::domains::exact_matrix::QMatrix;
 use crate::domains::matrix::Matrix;
 
@@ -156,7 +157,7 @@ impl MultivariateNormal {
                 ),
             ));
         }
-        if cov.is_symmetric() == Some(false) {
+        if Truth::from(cov.is_symmetric()).is_false() {
             return Err(invalid(op, "the covariance matrix must be symmetric"));
         }
         let defer = singular == Singular::Defer;
@@ -169,11 +170,11 @@ impl MultivariateNormal {
                 )),
             },
             Err(_) => {
-                if cov.is_positive_definite() == Some(false)
+                if Truth::from(cov.is_positive_definite()).is_false()
                     && !(defer
                         && cov
                             .det()
-                            .is_ok_and(|d| d.simplify().is_zero() == Some(true)))
+                            .is_ok_and(|d| Truth::from(d.simplify().is_zero()).is_true()))
                 {
                     return Err(invalid(
                         op,
@@ -782,13 +783,13 @@ fn gram_schmidt(ctx: &Context, vecs: &[Vec<Ex>]) -> Vec<Vec<Ex>> {
                 .collect();
         }
         let norm = dot(&w, &w).sqrt().simplify();
-        if norm.is_zero() == Some(true) {
+        if Truth::from(norm.is_zero()).is_true() {
             continue;
         }
         let mut unit: Vec<Ex> = w.iter().map(|wi| tidy(&(wi / &norm))).collect();
         let negative_lead = unit
             .iter()
-            .find(|c| c.is_zero() != Some(true))
+            .find(|c| !Truth::from(c.is_zero()).is_true())
             .is_some_and(is_negative_constant);
         if negative_lead {
             unit = unit.iter().map(|c| (-c).simplify()).collect();

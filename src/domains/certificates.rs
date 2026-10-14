@@ -121,6 +121,7 @@ use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
+use crate::base::truth::Truth;
 use crate::domains::linprog::{Feasibility, LpProblem, LpStatus, nonneg_combination};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 
@@ -1696,7 +1697,7 @@ pub fn prove_nonnegative_on_halfline(
         Ray::AtLeast => (a_ex.clone(), ctx.infinity()),
         Ray::AtMost => (ctx.neg_infinity(), a_ex.clone()),
     };
-    if goal_poly.is_nonnegative_on(&lo, &hi) == Some(false)
+    if Truth::from(goal_poly.is_nonnegative_on(&lo, &hi)).is_false()
         && let Some((point, value)) = halfline_counterexample(&goal_poly, var, &a_q, &ray)
     {
         return Ok(Outcome::Refuted {

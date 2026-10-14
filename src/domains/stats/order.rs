@@ -39,6 +39,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
+use crate::base::truth::Truth;
 
 use super::data::binomial_q;
 use super::family::{Distribution, Family, Sampler, TailOrders, family_boilerplate};
@@ -105,10 +106,10 @@ impl OrderStatistic {
         let ctx = self.ctx();
         if let Some(iv) = self.inner.support().as_interval() {
             let (lo, hi) = (&iv.lower, &iv.upper);
-            if !is_neg_inf(lo) && (x - lo).is_negative() == Some(true) {
+            if !is_neg_inf(lo) && Truth::from((x - lo).is_negative()).is_true() {
                 return ctx.zero();
             }
-            if !is_pos_inf(hi) && (x - hi).is_nonnegative() == Some(true) {
+            if !is_pos_inf(hi) && Truth::from((x - hi).is_nonnegative()).is_true() {
                 return ctx.one();
             }
         }
@@ -123,10 +124,10 @@ impl OrderStatistic {
         let ctx = self.ctx();
         if let Some(iv) = self.inner.support().as_interval() {
             let (lo, hi) = (&iv.lower, &iv.upper);
-            if !is_neg_inf(lo) && (x - lo).is_negative() == Some(true) {
+            if !is_neg_inf(lo) && Truth::from((x - lo).is_negative()).is_true() {
                 return ctx.one();
             }
-            if !is_pos_inf(hi) && (x - hi).is_nonnegative() == Some(true) {
+            if !is_pos_inf(hi) && Truth::from((x - hi).is_nonnegative()).is_true() {
                 return ctx.zero();
             }
         }
@@ -216,7 +217,7 @@ impl Family for OrderStatistic {
         let (n, k) = self.nk();
         let m = &n - &k + 1;
         let scale = |v: Ex, factor: &Ex, open: bool| -> (Ex, bool) {
-            if is_pos_inf(&v) || is_neg_inf(&v) || v.is_zero() == Some(true) {
+            if is_pos_inf(&v) || is_neg_inf(&v) || Truth::from(v.is_zero()).is_true() {
                 (v, open)
             } else {
                 ((factor * v).simplify(), false)

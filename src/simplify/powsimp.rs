@@ -17,6 +17,7 @@
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 use crate::base::walk;
 
 use num_bigint::BigInt;
@@ -264,21 +265,22 @@ fn denest_pow_pow(
         arena.as_num(exp) == Some(&half) && arena.as_num(inner_exp) == Some(&two);
 
     if is_sqrt_of_square {
-        if force || assumptions.query(arena, inner_base, Props::NONNEGATIVE) == Some(true) {
+        if force || Truth::from(assumptions.query(arena, inner_base, Props::NONNEGATIVE)).is_true()
+        {
             return inner_base;
         }
         // Known real, not merely "not known non-real": √(i²) = i ≠ |i|.
-        if assumptions.query(arena, inner_base, Props::REAL) == Some(true) {
+        if Truth::from(assumptions.query(arena, inner_base, Props::REAL)).is_true() {
             return arena.abs(inner_base);
         }
         return original;
     }
 
     let outer_integer = arena.as_num(exp).is_some_and(|r| r.is_integer())
-        || assumptions.query(arena, exp, Props::INTEGER) == Some(true);
-    let base_positive_real_exp = assumptions.query(arena, inner_base, Props::POSITIVE)
-        == Some(true)
-        && assumptions.query(arena, inner_exp, Props::REAL) == Some(true);
+        || Truth::from(assumptions.query(arena, exp, Props::INTEGER)).is_true();
+    let base_positive_real_exp = Truth::from(assumptions.query(arena, inner_base, Props::POSITIVE))
+        .is_true()
+        && Truth::from(assumptions.query(arena, inner_exp, Props::REAL)).is_true();
 
     if force || outer_integer || base_positive_real_exp {
         let product = arena.mul(&[inner_exp, exp]);

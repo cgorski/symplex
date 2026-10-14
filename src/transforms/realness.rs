@@ -5,6 +5,7 @@
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 use crate::base::walk;
 
 /// How [`constant_realness_with`] reads a symbol without declared
@@ -136,7 +137,7 @@ fn constant_realness_with(
         Some(w) => (w.0.is_zero() && w.1.is_zero()).then_some(true),
         None => {
             let facts = crate::transforms::eval::constant_facts(arena, c);
-            (facts.query(Props::REAL) == Some(true)).then_some(true)
+            (Truth::from(facts.query(Props::REAL)).is_true()).then_some(true)
         }
     }
 }
@@ -148,5 +149,5 @@ fn constant_realness_with(
 pub(crate) fn symbol_declared_real(arena: &Arena, s: crate::base::node::SymbolId) -> bool {
     let mut declared = arena.symbol_assumptions(s);
     declared.normalize_declared();
-    declared.query(Props::REAL) == Some(true)
+    Truth::from(declared.query(Props::REAL)).is_true()
 }

@@ -11,6 +11,7 @@ use crate::base::arena::Arena;
 use crate::base::interval::Interval;
 use crate::base::interval::IntervalKind;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::truth::Truth;
 use crate::base::walk;
 use crate::transforms::eval;
 use crate::transforms::evalf;
@@ -402,11 +403,13 @@ fn push_zeros(
     }
 
     // Periodic families first: sin/cos/tan of a linear argument.
-    if let Some(done) = push_trig_zeros(arena, g, var, kind, range, scan) {
-        if !done {
+    match push_trig_zeros(arena, g, var, kind, range, scan) {
+        TrigZeros::NotTrig => {}
+        TrigZeros::Pushed => return,
+        TrigZeros::Incomplete => {
             scan.complete = false;
+            return;
         }
-        return;
     }
 
     // Every real root, or the scan is incomplete (a root list that misses
@@ -465,7 +468,8 @@ fn push_point(arena: &mut Arena, point: ExprId, kind: BreakKind, scan: &mut Brea
         // Parametric root — the caller must decide where it lies, unless
         // it is provably non-real (e.g. ±i·a for x² + a²).
         let mut cache = crate::base::assumptions::AssumptionCache::new();
-        if cache.query(arena, point, crate::base::assumptions::Props::REAL) == Some(false) {
+        if Truth::from(cache.query(arena, point, crate::base::assumptions::Props::REAL)).is_false()
+        {
             return;
         }
         // Structural non-reality: an explicit `I`, or an even root of a
@@ -495,8 +499,12 @@ fn push_point(arena: &mut Arena, point: ExprId, kind: BreakKind, scan: &mut Brea
                     if let Some(r) = arena.as_num(e)
                         && !r.is_integer()
                         && num_integer::Integer::is_even(r.denom())
-                        && cache.query(arena, b, crate::base::assumptions::Props::NEGATIVE)
-                            == Some(true)
+                        && Truth::from(cache.query(
+                            arena,
+                            b,
+                            crate::base::assumptions::Props::NEGATIVE,
+                        ))
+                        .is_true()
                     {
                         nonreal = true;
                         break;
@@ -507,7 +515,9 @@ fn push_point(arena: &mut Arena, point: ExprId, kind: BreakKind, scan: &mut Brea
                 node => node.for_each_child(|c| stack.push(c)),
             }
         }
-        if nonreal && cache.query(arena, point, crate::base::assumptions::Props::REAL) != Some(true)
+        if nonreal
+            && !Truth::from(cache.query(arena, point, crate::base::assumptions::Props::REAL))
+                .is_true()
         {
             return;
         }
@@ -522,10 +532,7 @@ fn push_point(arena: &mut Arena, point: ExprId, kind: BreakKind, scan: &mut Brea
 /// If `g` is `sin(αx+β)`, `cos(αx+β)` or `tan(αx+β)` with constant α, β,
 /// push its zeros in `range`, `x = ((k + d)·π − β)/α` (`d = ½` for `cos`),
 /// exactly: `k` runs between the certified ceiling and floor of `(α·end +
-/// β)/π − d` at the exact ends (see [`ScanRange`]).  Returns `None` if `g` is
-/// not such a form, `Some(true)` on success, `Some(false)` if the family
-/// could not be enumerated (no range, more than [`MAX_FAMILY_POINTS`]
-/// members, or an integer part that does not settle).
+/// β)/π − d` at the exact ends (see [`ScanRange`]).
 fn push_trig_zeros(
     arena: &mut Arena,
     g: ExprId,
@@ -533,17 +540,17 @@ fn push_trig_zeros(
     kind: BreakKind,
     range: Option<ScanRange>,
     scan: &mut BreakScan,
-) -> Option<bool> {
+) -> TrigZeros {
     let (inner, half) = match arena.node(g).clone() {
         ExprNode::Sin(i) | ExprNode::Tan(i) => (i, false),
         ExprNode::Cos(i) => (i, true),
-        _ => return None,
+        _ => return TrigZeros::NotTrig,
     };
     if !walk::contains(arena, inner, var) {
-        return None;
+        return TrigZeros::NotTrig;
     }
     let (Some(lin), Some(range)) = (linear_coeffs_exact(arena, inner, var), range) else {
-        return Some(false);
+        return TrigZeros::Incomplete;
     };
     // The family in the variable t = (αx + β)/π − d: the integers.
     let pi = arena.pi();
@@ -557,7 +564,7 @@ fn push_trig_zeros(
         arena.sub(over_pi, shift)
     };
     let Some(ks) = family_indices(arena, lin, range, to_t, scan) else {
-        return Some(false);
+        return TrigZeros::Incomplete;
     };
     let lin_f = linear_f64(arena, lin);
     for k in ks {
@@ -575,7 +582,20 @@ fn push_trig_zeros(
         let value = affine_point_f64(t_f64, lin_f).or_else(|| expr_to_f64(arena, point));
         scan.points.push(Breakpoint { point, value, kind });
     }
-    Some(true)
+    TrigZeros::Pushed
+}
+
+/// What [`push_trig_zeros`] did (it was an `Option<bool>` up to 0.49, whose
+/// `None` and `Some(false)` meant different things).
+enum TrigZeros {
+    /// `g` is not `sin`, `cos` or `tan` of an argument in the variable.
+    NotTrig,
+    /// The zeros in the range were pushed.
+    Pushed,
+    /// The family could not be enumerated (no range, more than
+    /// [`MAX_FAMILY_POINTS`] members, or an integer part that does not
+    /// settle): the scan is incomplete.
+    Incomplete,
 }
 
 /// The integers `k` of a family `t(α·x + β) = k` (`to_t` builds `t(u)`, an
@@ -921,7 +941,7 @@ fn breakpoints_of_node(
         }
 
         // Unknown functions and formal nodes: we cannot see inside.
-        ExprNode::Apply(_, args) | ExprNode::Lib(_, args)
+        ExprNode::Apply(_, args) | ExprNode::Lib(_, args) | ExprNode::Internal(_, args)
             if args.iter().any(|&a| walk::contains(arena, a, var)) =>
         {
             scan.complete = false;
@@ -1176,10 +1196,12 @@ pub(crate) fn continuity_scan(arena: &mut Arena, expr: ExprId, var: ExprId) -> C
                         use num_traits::Signed;
                         r.is_negative()
                     }
-                    None => {
-                        assumptions.query(arena, exp, crate::base::assumptions::Props::NEGATIVE)
-                            == Some(true)
-                    }
+                    None => Truth::from(assumptions.query(
+                        arena,
+                        exp,
+                        crate::base::assumptions::Props::NEGATIVE,
+                    ))
+                    .is_true(),
                 };
                 if negative {
                     push_unique(&mut scan.singular, base);
@@ -1245,7 +1267,7 @@ fn opaque_node_name(node: &ExprNode) -> Option<&'static str> {
         ExprNode::Binomial(..) => "binomial",
         ExprNode::KroneckerDelta(..) => "KroneckerDelta",
         ExprNode::LambertW(_) => "LambertW",
-        ExprNode::Apply(..) | ExprNode::Lib(..) => "an unknown function",
+        ExprNode::Apply(..) | ExprNode::Lib(..) | ExprNode::Internal(..) => "an unknown function",
         ExprNode::Derivative(..) => "Derivative",
         ExprNode::Integral(..) => "Integral",
         ExprNode::DefiniteIntegral(..) => "DefiniteIntegral",
@@ -1525,11 +1547,13 @@ fn pi_over_abs(arena: &mut Arena, a: ExprId, k: i64) -> ExprId {
     let pi = arena.pi();
     let num = arena.mul(&[k, pi]);
     let mut assumptions = crate::base::assumptions::AssumptionCache::new();
-    let den = if assumptions.query(arena, a, crate::base::assumptions::Props::POSITIVE)
-        == Some(true)
+    let den = if Truth::from(assumptions.query(arena, a, crate::base::assumptions::Props::POSITIVE))
+        .is_true()
     {
         a
-    } else if assumptions.query(arena, a, crate::base::assumptions::Props::NEGATIVE) == Some(true) {
+    } else if Truth::from(assumptions.query(arena, a, crate::base::assumptions::Props::NEGATIVE))
+        .is_true()
+    {
         arena.neg(a)
     } else {
         arena.abs(a)
@@ -1748,7 +1772,7 @@ pub(crate) fn exactly_zero(arena: &mut Arena, c: ExprId, rewritten: ExprId) -> b
         return false;
     }
     let constant = walk::free_symbols(arena, c).is_empty();
-    if constant && exact_is_zero(arena, c) == Some(true) {
+    if constant && Truth::from(exact_is_zero(arena, c)).is_true() {
         return true;
     }
     if crate::simplify::ratsimp::vanishes_as_rational_function(arena, c) {
@@ -1758,14 +1782,14 @@ pub(crate) fn exactly_zero(arena: &mut Arena, c: ExprId, rewritten: ExprId) -> b
     // algebraic number (`(a − ζ(3))·i + (b + ζ(3))·i`, `a + b = 0`).
     let expanded = crate::transforms::expand::expand(arena, c);
     if arena.is_zero_structural(expanded)
-        || (constant && expanded != c && exact_is_zero(arena, expanded) == Some(true))
+        || (constant && expanded != c && Truth::from(exact_is_zero(arena, expanded)).is_true())
     {
         return true;
     }
     if rewritten == c {
         return false;
     }
-    (constant && exact_is_zero(arena, rewritten) == Some(true))
+    (constant && Truth::from(exact_is_zero(arena, rewritten)).is_true())
         || crate::simplify::ratsimp::vanishes_as_rational_function(arena, rewritten)
 }
 
@@ -2035,7 +2059,7 @@ fn without_zero_question(arena: &mut Arena, c: ExprId) -> bool {
             ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
         )
     });
-    singular || AssumptionCache::new().query(arena, c, Props::FINITE) == Some(false)
+    singular || Truth::from(AssumptionCache::new().query(arena, c, Props::FINITE)).is_false()
 }
 
 /// Does the symbol-free constant `c` contain a `δ` whose argument is not
@@ -2051,8 +2075,11 @@ pub(crate) fn dirac_delta_off_reals(arena: &mut Arena, c: ExprId) -> bool {
 
 /// Is the symbol-free argument `a` of a `δ` proved real?
 fn dirac_delta_argument_real(arena: &mut Arena, a: ExprId) -> bool {
-    crate::transforms::eval::constant_facts(arena, a).query(crate::base::assumptions::Props::REAL)
-        == Some(true)
+    Truth::from(
+        crate::transforms::eval::constant_facts(arena, a)
+            .query(crate::base::assumptions::Props::REAL),
+    )
+    .is_true()
 }
 
 /// Does `c` contain `δ`?
@@ -2286,7 +2313,7 @@ fn sqrt_of_squares(arena: &mut Arena, b: ExprId) -> Option<ExprId> {
     let mut outside: Vec<ExprId> = Vec::new();
     let mut inside: Vec<ExprId> = vec![content];
     for (f, m) in factors {
-        if m >= 2 && cache.query(arena, f, Props::NONNEGATIVE) == Some(true) {
+        if m >= 2 && Truth::from(cache.query(arena, f, Props::NONNEGATIVE)).is_true() {
             let half = arena.int(i64::from(m / 2));
             let p = arena.pow(f, half);
             outside.push(p);
@@ -2502,7 +2529,7 @@ fn certified_real_value(arena: &mut Arena, a: ExprId) -> Option<f64> {
         return None;
     }
     let mut cache = crate::base::assumptions::AssumptionCache::new();
-    if cache.query(arena, a, crate::base::assumptions::Props::REAL) != Some(true) {
+    if !Truth::from(cache.query(arena, a, crate::base::assumptions::Props::REAL)).is_true() {
         return None;
     }
     let z = evalf::evalf_verdict(arena, a, HIDDEN_ZERO_DIGITS, evalf::ZeroSearch::Cap)
