@@ -8,6 +8,8 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-10-15
+
 Finite sums for every integer bound, per-part error bounds for powers and
 exponentials, the float-threshold review of the applied domains, and the
 leftovers of the solver and the integrator.  A finite sum's closed form now
@@ -110,6 +112,33 @@ a large one (parts dropped at 10 digits 765 → 11 in a hunt).
 - `transformed` refuses `ln x`, `√x`, `x^(1/3)` maps (as in 0.54).
 - Some series of functions of `elliptic_pi` take longer before giving up
   (`elliptic_e(x)·Ei(elliptic_pi(x, y))` 0.14 → 33 s).
+- `elliptic_e` at a parameter of modulus `~10⁶⁰⁰` still takes about 16 s
+  in a debug build (fuzz `fuzz_evalf` slow unit, as in 0.54).
+
+### Measured
+
+- `tests/v36/` (0.49–0.55): 53 files.  nextest 14,788 tests (14 skipped),
+  doctests 1,352 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,760 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,016 / 0 wrong / 201; `--negative-params` 115 real_verified,
+  0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+  MSRV 1.93 passes for all four crates.  `cargo semver-checks` against
+  0.54.0: no semver update required.
+- Golden-output harness (200,000 random expressions × 31 operations): 4,265
+  changes from 0.54 (3,044 from per-part bounds and the new `elliptic_pi`
+  values, 1,068 in `solve`/`solve_set`, 153 series and limits), each checked
+  against mpmath or SymPy.
+- Hunts: Karr sum hunt 5,111 wrong values → 0; constants next to the axes:
+  dropped parts 765 → 11; transformed distributions: 3 wrong classes → 0;
+  definite integrals of spiral exponentials: answered, 0 wrong.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s and
+  4 GB limits, debug assertions as CI builds them): `fuzz_numdist`
+  91,263,084 inputs, `fuzz_refine` 12,167,669, `fuzz_lambertw` 2,407,207,
+  `fuzz_parser` 1,692,637, `fuzz_exact_matrix` 180,476, `fuzz_eigenvects`
+  162,032, `fuzz_calculus` 40,270, `fuzz_roundtrip` 19,307, `fuzz_poly`
+  16,829, `fuzz_evalf` 15,410, `fuzz_simplify` 3,423, `fuzz_integrate`
+  1,947: 0 crashes, 0 out-of-memory, the one slow unit above.
 
 ## [0.54.0] - 2026-10-15
 
