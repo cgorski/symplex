@@ -271,19 +271,111 @@ pub(crate) fn vanishes_identically(arena: &mut Arena, c: ExprId) -> crate::base:
 
 /// [`settle_constant`], and `Zero` for a constant that vanishes identically
 /// in its parameters ([`vanishes_identically`]); `Undecided` also for one
-/// that is 0 at the samples without an exact confirmation.
+/// that is 0 at the samples without an exact confirmation.  The
+/// symbol-free coefficients of the parameter parts are decided first
+/// ([`parameter_parts`]): `−ω·(−1)^(5/6) + ω·∛(−1)·i` is 0.
 pub(crate) fn settle_parametric(arena: &mut Arena, c: ExprId) -> ZeroTest {
     let settled = settle_constant(arena, c);
     let ZeroTest::Nonzero(v) = settled else {
         return settled;
     };
-    if !matches!(arena.node(v), ExprNode::Add(_)) || walk::free_symbols(arena, v).is_empty() {
+    if arena.is_symbol_free(v) {
         return settled;
     }
+    let v = match parameter_parts(arena, v) {
+        ParameterParts::Decided(settled) => return settled,
+        ParameterParts::Sum(v) => v,
+    };
     match vanishes_identically(arena, v) {
         crate::base::truth::Truth::True => ZeroTest::Zero,
         crate::base::truth::Truth::False => settled,
         crate::base::truth::Truth::Unknown => ZeroTest::Undecided(v),
+    }
+}
+
+/// A constant with parameters after [`parameter_parts`].
+enum ParameterParts {
+    /// Decided by the coefficients of its parameter parts.
+    Decided(ZeroTest),
+    /// A sum of two or more parameter parts whose coefficients are not
+    /// proved 0, for [`vanishes_identically`].
+    Sum(ExprId),
+}
+
+/// The constant `c` with parameters (the Gruntz symbol `ω`, the
+/// parameters of a series) as `Σ kₗ·mₗ`: its terms grouped by their
+/// factor `mₗ` with the parameters, each symbol-free coefficient `kₗ`
+/// settled by [`settle_constant`] and the groups proved 0 dropped (`Σ
+/// kₗ·mₗ` is `c` rewritten term by term).  No group left is `Zero`; one
+/// group left is `Nonzero` (for generic values of the parameters, the
+/// convention of [`ZeroTest::Nonzero`]) or `Undecided` with its
+/// coefficient; two or more are a sum for the sampling of
+/// [`vanishes_identically`], which decides whether the parameter parts
+/// cancel each other.
+///
+/// Up to 0.51 the coefficient `−ω·(−1)^(5/6) + ω·∛(−1)·i` of
+/// `lim_{x→−∞} x^(4/3)·(tan u − u)`, `u = x^(−5/2)·ln(−x)`, was sampled as a
+/// whole, 0 at the samples without a proof, and the limit (`0`) was
+/// refused; and a product `ω·k` was taken for nonzero whatever `k`.
+fn parameter_parts(arena: &mut Arena, c: ExprId) -> ParameterParts {
+    let terms: smallvec::SmallVec<[ExprId; 8]> = match arena.node(c) {
+        ExprNode::Add(ts) => ts.iter().copied().collect(),
+        _ => smallvec::smallvec![c],
+    };
+    let mut groups: Vec<(ExprId, smallvec::SmallVec<[ExprId; 2]>)> = Vec::new();
+    let mut numeric = true;
+    for &t in &terms {
+        let (k, m) = if arena.is_symbol_free(t) {
+            (t, arena.one())
+        } else if let ExprNode::Mul(fs) = arena.node(t).clone() {
+            let (k, m): (
+                smallvec::SmallVec<[ExprId; 4]>,
+                smallvec::SmallVec<[ExprId; 4]>,
+            ) = fs.iter().copied().partition(|&f| arena.is_symbol_free(f));
+            (arena.mul(&k), arena.mul(&m))
+        } else {
+            (arena.one(), t)
+        };
+        numeric &= arena.as_num(k).is_some();
+        match groups.iter_mut().find(|g| g.0 == m) {
+            Some(g) => g.1.push(k),
+            None => groups.push((m, smallvec::smallvec![k])),
+        }
+    }
+    // Numeric coefficients of distinct parts: canonical forms decided them.
+    if numeric && groups.len() == terms.len() {
+        return if terms.len() == 1 {
+            ParameterParts::Decided(ZeroTest::Nonzero(c))
+        } else {
+            ParameterParts::Sum(c)
+        };
+    }
+    let mut kept: smallvec::SmallVec<[ExprId; 8]> = smallvec::SmallVec::new();
+    let (mut undecided, mut dropped) = (false, false);
+    for (m, ks) in groups {
+        let k = arena.add(&ks);
+        match settle_constant(arena, k) {
+            ZeroTest::Zero => dropped = true,
+            ZeroTest::Nonzero(k) => kept.push(arena.mul(&[k, m])),
+            ZeroTest::Undecided(k) => {
+                undecided = true;
+                kept.push(arena.mul(&[k, m]));
+            }
+        }
+    }
+    // `c` itself unless a group was dropped.
+    let value = |arena: &mut Arena, kept: &[ExprId]| {
+        if !dropped {
+            return c;
+        }
+        let s = arena.add(kept);
+        eval::eval(arena, s)
+    };
+    match kept.len() {
+        0 => ParameterParts::Decided(ZeroTest::Zero),
+        1 if undecided => ParameterParts::Decided(ZeroTest::Undecided(value(arena, &kept))),
+        1 => ParameterParts::Decided(ZeroTest::Nonzero(value(arena, &kept))),
+        _ => ParameterParts::Sum(value(arena, &kept)),
     }
 }
 
@@ -2067,6 +2159,7 @@ fn expand_with_precision(
                         Some(composed) => composed,
                         None if id == expr || fallbacks_used < MAX_FALLBACK_NODES => {
                             fallbacks_used += 1;
+
                             taylor_by_differentiation(arena, id, var, n, mode)
                         }
                         None => None,
@@ -3050,11 +3143,20 @@ fn structural_series(
         ExprNode::Cos(a) => apply_trig(arena, FnKind::Cos, &child(cache, a)?, mode),
         ExprNode::Sinh(a) => apply_exp_like(arena, FnKind::Sinh, &child(cache, a)?, mode),
         ExprNode::Cosh(a) => apply_exp_like(arena, FnKind::Cosh, &child(cache, a)?, mode),
-        ExprNode::Tan(a) => apply_fn(arena, FnKind::Tan, &child(cache, a)?),
+        ExprNode::Tan(a) => {
+            let u = child(cache, a)?;
+            if oscillates_at_pole(arena, FnKind::Tan, &u) {
+                return Err(Obstruction::NoExpansion);
+            }
+            apply_fn(arena, FnKind::Tan, &u)
+        }
         ExprNode::Tanh(a) => {
             let u = child(cache, a)?;
             if let Some(s) = tanh_log_extended(arena, &u, mode) {
                 return Ok(s);
+            }
+            if oscillates_at_pole(arena, FnKind::Tanh, &u) {
+                return Err(Obstruction::NoExpansion);
             }
             apply_fn(arena, FnKind::Tanh, &u)
         }
@@ -3641,6 +3743,7 @@ fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
         // `ln` is dispatched to `apply_ln` (it needs the constant term split
         // differently); a direct `Ln1p` request has no meaning here.
         FnKind::Ln1p => None,
+        FnKind::Tan | FnKind::Tanh if !u0_zero => tan_at_pole(arena, kind, u0, &w),
         _ => {
             if !u0_zero {
                 return None; // fallback: differentiate
@@ -3648,6 +3751,79 @@ fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
             Some(compose(arena, kind, &w))
         }
     }
+}
+
+/// `tan(u₀ + w)` (`tanh(u₀ + w)`) for a constant `u₀` at a pole of the
+/// function (`cos u₀ = 0`, `cosh u₀ = 0`, proved) and a series `w` of
+/// positive valuation: the Laurent series `−1/tan w` (`1/tanh w`), by the
+/// addition theorem: `tan(π/2 + w) = −cot w`, `tanh(iπ/2 + w) = coth w`.
+/// Up to 0.51 such a node went to the differentiation fallback, which at a
+/// pole asks the limit engine for derivatives of every order:
+/// `series(tanh(acosh(t − 3i·t³)), t, 0, 3)` from the right (`acosh(t −
+/// 3i·t³) = −iπ/2 + i·t + …`) refused after 14 s.  `None` off a pole (the
+/// differentiation fallback, as before) and when the cosine at `u₀` is not
+/// decided.
+fn tan_at_pole(arena: &mut Arena, kind: FnKind, u0: ExprId, w: &TSeries) -> Option<TSeries> {
+    let hyperbolic = kind == FnKind::Tanh;
+    let cosine = if hyperbolic {
+        arena.cosh(u0)
+    } else {
+        arena.cos(u0)
+    };
+    if settle_parametric(arena, cosine) != ZeroTest::Zero {
+        return None;
+    }
+    let t = TSeries::compose(
+        arena,
+        &move |ar: &mut Arena, i: usize| kind.coefficient(ar, i),
+        w,
+    );
+    let inv = TSeries::inverse(arena, &t)?;
+    Some(if hyperbolic {
+        inv
+    } else {
+        TSeries::neg(arena, &inv)
+    })
+}
+
+/// Does `tan u` (`tanh u`) oscillate without a limit at the point: `u` has a
+/// pole, every coefficient of a negative power is a constant that is real
+/// (purely imaginary for `tanh`) exactly, and one is proved nonzero?  Then
+/// `u` tends to infinity along the real (imaginary) axis plus a bounded
+/// part, where the function takes every value of a period: no expansion.
+/// `tanh(Γ(−1 − 3i·x²))` is `tanh(−i/(3x²) + γ − 1 + …)`; up to 0.51 the
+/// differentiation fallback asked the limit engine for its derivatives and
+/// the series refused after 20 s.
+fn oscillates_at_pole(arena: &mut Arena, kind: FnKind, u: &TSeries) -> bool {
+    let u = u.clone().normalized(arena);
+    if u.shift >= 0 || u.known < 0 || u.coeffs.is_empty() {
+        return false;
+    }
+    if !is_zero_const(arena, u.coeffs[0]).is_false() {
+        return false;
+    }
+    for e in u.shift..0 {
+        let c = u.coeff_at(arena, e);
+        if arena.is_zero_structural(c) {
+            continue;
+        }
+        if !arena.is_symbol_free(c) {
+            return false;
+        }
+        let part = if kind == FnKind::Tanh {
+            arena.re(c)
+        } else {
+            arena.im(c)
+        };
+        let part = eval::eval(arena, part);
+        if !arena.is_zero_structural(part)
+            && crate::calculus::calculus_util::hidden_zero(arena, part).proven()
+                != Some(Truth::True)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// The inverse trigonometric and hyperbolic functions, for
@@ -4647,8 +4823,13 @@ fn ln_gamma_one_plus(arena: &mut Arena, w: &TSeries) -> TSeries {
 /// series arithmetic of `exp` — with a numerical zero test of every sum of
 /// `ζ` values — is avoided.
 fn gamma_one_plus(arena: &mut Arena, w: &TSeries) -> TSeries {
-    // `TSeries::compose` asks for coefficients up to `w.known + 1`.
-    let n_max = w.known.max(1) as usize + 2;
+    // `TSeries::compose` asks for the coefficients of the powers `wⁿ` below
+    // `w.known`: `n < w.known/v` for the valuation `v` of `w`.  (Up to 0.51
+    // `w.known + 2` of them, each a sum of products of `ζ` values multiplied
+    // out: `Γ(−1 − 3i·ω⁶)` to `ω³⁴` built 36 for the 6 it uses, 1.2 s, and
+    // the series of `tanh(Γ(−1 − 3i·x²))` took 20 s to refuse.)
+    let v = w.clone().normalized(arena).shift.max(1);
+    let n_max = usize::try_from(w.known.max(1) / v).unwrap_or(0) + 2;
     let mut c: Vec<ExprId> = Vec::with_capacity(n_max + 1);
     c.push(arena.zero);
     for k in 1..=n_max {

@@ -458,7 +458,9 @@ impl Expr<Numeric> {
         }
 
         // `DiracDelta` compiles to 0 at every point: its integral is not a
-        // sum of values.  Before 0.43 `∫₋₁¹ δ(x) dx` came out `0`.
+        // sum of values, and only its closed form has one (`evalf`'s exact
+        // route; refused without).  Before 0.43 `∫₋₁¹ δ(x) dx` came out `0`,
+        // and up to 0.51 it was refused.
         if crate::base::walk::post_order_ids(arena, evaled)
             .iter()
             .any(|&id| {
@@ -466,11 +468,8 @@ impl Expr<Numeric> {
                 if crate::base::walk::contains(arena, *inner, var_id))
             })
         {
-            return Err(SymplexError::Unevaluable {
-                reason: "a definite integral of DiracDelta of the integration variable has no \
-                         numerical value (integrate it symbolically)"
-                    .into(),
-            });
+            drop(inner);
+            return self.certified_quadrature(var, lo, hi);
         }
 
         let func = crate::output::lambdify::compile(arena, evaled, &[&var_name]).map_err(|e| {

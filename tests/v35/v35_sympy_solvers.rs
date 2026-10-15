@@ -531,14 +531,16 @@ fn trigonometric_multiples_with_a_common_factor() {
     }
 }
 
-/// The poles of `tan u` are roots only where the expression tends to 0 as
-/// `tan u → ∞` (`1/tan x`): after the members of `cos(4·sin x) = 0` were
-/// listed, the families `±asin(π/8) + 2nπ` of `tan(4·sin x) = −√2/2` (poles
-/// of `tan`, where it is infinite) passed the check.  Oracle: the six
-/// families `4·sin x = atan(−√2/2) + kπ`, `k = −1, 0, 1`, substituted; SymPy
-/// `ConditionSet` (refused).
+/// The poles of `tan u` are not roots: after the members of `cos(4·sin x) =
+/// 0` were listed, the families `±asin(π/8) + 2nπ` of `tan(4·sin x) =
+/// −√2/2` (poles of `tan`, where it is infinite) passed the check.  Oracle:
+/// the six families `4·sin x = atan(−√2/2) + kπ`, `k = −1, 0, 1`,
+/// substituted; SymPy `ConditionSet` (refused).  `1/tan x` is undefined at
+/// the poles too: from 0.40 to 0.51 its solution set was `{nπ + π/2}`
+/// (where it tends to 0); since 0.52 it is empty, as SymPy 1.14's
+/// `solveset(1/tan(x), x)` (s14f4).
 #[test]
-fn tangent_poles_are_roots_only_where_the_expression_vanishes() {
+fn tangent_poles_are_not_roots() {
     let ctx = Context::new();
     let x = real_x(&ctx);
     let e = parse(&ctx, "tan(4*sin(x)) + sqrt(2)/2");
@@ -553,7 +555,7 @@ fn tangent_poles_are_roots_only_where_the_expression_vanishes() {
     }
     assert_eq!(
         parse(&ctx, "1/tan(x)").solve_as_set(&x).to_string(),
-        "ImageSet(Lambda(_n, _n*pi + 1/2*pi), Integers)"
+        "EmptySet"
     );
 }
 

@@ -28,7 +28,7 @@
 //! | `a₁ + … + aₙ` | per part `Σ err(aᵢ)` plus one ulp of every partial sum after the first — absolute errors add, so cancellation shows as a result much smaller than its error; exact when every term's part is exact and no partial sum was rounded |
 //! | `a₁ · … · aₙ` | per part, from `(a + bi)(c + di) = (ac − bd) + (ad + bc)i`: each product `x·y` contributes `abs(x)·err(y) + abs(y)·err(x) + err(x)·err(y)` and its rounding, and none at all when a factor is an exact 0 |
 //! | `b^q` (rational literal `q`) | `abs(b^q)·abs(q)·ρ·(1 − ρ)^(−abs(q − 1))`, `ρ = r/abs(b)` (the mean value theorem, for every `q`); a positive power of a value indistinguishable from 0 is bounded by `2·(2r)^q`, a negative one has no bound |
-//! | `b^e` | `abs(b^e)·(e^(r_w) − 1)` with `r_w` the error of `e·ln b` |
+//! | `b^e` | `abs(b^e)·(e^(r_w) − 1)` with `r_w` the error of `e·ln b`, plus `abs(b^e)·abs(e)·(abs(ln abs(b)) + abs(arg b))·2^(3 − prec)` when `evalf` forms `exp(e·Log b)` at `prec` bits (the roundings of `Log b` and of the product: exact `b` and `e` do not make it exact) |
 //! | `exp z` | `abs(exp z)·(e^r − 1)`, no bound beyond `r = 512` |
 //! | `ln z`, `arg z`, `atan2` | `r/(abs(z) − r)`; no bound when `z` is indistinguishable from 0; `arg` of an exactly real, certainly positive `z` is exactly 0 |
 //! | `sin`, `cos` / `sinh`, `cosh` | `r·cosh(abs(im z) + r)` / `r·cosh(abs(re z) + r)` — exactly `r` for `sin`, `cos` of a real argument; `r` of a rational `abs(q) ≥ 1` under `sin`, `cos`, `tan` is its rounding at `prec + log₂ abs(q)` bits (it is converted again, `evalf::trig_arg`) |
@@ -1413,6 +1413,35 @@ impl<Z: Borrow<Complex>> Ball<Z> {
         x_literal: Option<&Q>,
         lv: f64,
     ) -> Bound {
+        self.power_bound(exp, x_literal, lv, Bound::EXACT)
+    }
+
+    /// [`power_error`](Self::power_error) of the power `evalf` computes at
+    /// `prec` bits: plus the error of its own route ([`pow_rounding`]).
+    fn evaluated_power_error<W: Borrow<Complex>>(
+        &self,
+        exp: &Ball<W>,
+        x_literal: Option<&Q>,
+        lv: f64,
+        prec: usize,
+    ) -> Bound {
+        let r = pow_rounding(self.z(), exp.z(), x_literal, prec);
+        let own = Bound {
+            re: shift(r.re, lv),
+            im: shift(r.im, lv),
+        };
+        self.power_bound(exp, x_literal, lv, own)
+    }
+
+    /// The bound of `b^x` with `own` (absolute, `log₂`, per part) added to
+    /// the propagated error.
+    fn power_bound<W: Borrow<Complex>>(
+        &self,
+        exp: &Ball<W>,
+        x_literal: Option<&Q>,
+        lv: f64,
+        own: Bound,
+    ) -> Bound {
         let (b, eb) = (self.z(), self.err);
         let (x, ex) = (exp.z(), exp.err);
         let integer_exponent = match x_literal {
@@ -1426,6 +1455,7 @@ impl<Z: Borrow<Complex>> Ball<Z> {
             return Bound::UNKNOWN;
         }
         let e = pow_error(x_literal, b, eb.joint(), x, ex.joint(), lv);
+        let (e_re, e_im) = (lsum(e, own.re), lsum(e, own.im));
         let base_real = exactly_real(b, eb);
         let base_sign = if part_contains_zero(&b.0, eb.re) {
             0
@@ -1433,14 +1463,17 @@ impl<Z: Borrow<Complex>> Ball<Z> {
             sign_of(&b.0)
         };
         if base_real && exactly_real(x, ex) && (integer_exponent || base_sign > 0) {
-            Bound::real(e)
+            Bound::real(e_re)
         } else if base_real
             && base_sign < 0
             && x_literal.is_some_and(|q| *q.denom() == BigInt::from(2))
         {
-            Bound { re: EXACT, im: e }
+            Bound {
+                re: EXACT,
+                im: e_im,
+            }
         } else {
-            Bound::both(e)
+            Bound { re: e_re, im: e_im }
         }
     }
 
@@ -1624,9 +1657,12 @@ pub(super) fn node_error(
         }
         ExprNode::Re(c) => return child(*c).map_or(Bound::UNKNOWN, |x| Bound::real(x.err.re)),
         ExprNode::Im(c) => return child(*c).map_or(Bound::UNKNOWN, |x| Bound::real(x.err.im)),
-        ExprNode::Pow(base, exp) => {
-            known_ball!(*base).power_error(&known_ball!(*exp), arena.as_num(*exp), lv)
-        }
+        ExprNode::Pow(base, exp) => known_ball!(*base).evaluated_power_error(
+            &known_ball!(*exp),
+            arena.as_num(*exp),
+            lv,
+            prec,
+        ),
 
         // `d exp z = exp z · dz`: the argument's absolute error is the
         // result's relative error.  Before 0.29 the magnitude was clamped
@@ -2117,6 +2153,72 @@ fn pow_error(
         r_w.exp2().exp_m1().log2()
     };
     clamp(up(lv + factor))
+}
+
+/// `log₂` of the relative error that `evalf`'s own route for `b^x` (centre
+/// values; `x_literal` the exponent's rational literal) adds at `prec` bits
+/// beyond the rounding of the result:
+///
+/// * none for the correctly rounded routes: `√b` of a non-negative real,
+///   an integer literal exponent (`powi`; a complex base by repeated
+///   multiplication), a real integer exponent below `10⁹` of a positive
+///   base;
+/// * `|x·ln b|·2^(2 − 32 − prec)` for `exp(x·ln b)` of a positive real base
+///   and a real exponent (and `(−r)^(n/2)`, taken from `r^(n/2)`), formed
+///   with 32 guard bits;
+/// * `|x|·(|ln|b|| + |arg b|)·2^(3 − prec)` for the general route
+///   `exp(x·Log b)` at `prec` bits: the roundings of `Log b` (`π` for a
+///   negative base) and of the product, which exact `b` and `x` do not
+///   avoid.  Up to 0.51 that route counted as exact for an exact base and
+///   exponent, and `(−1)^(8 + 2i)` (`= e^(−2π)`) kept the rounding residue
+///   of `8π` as a certified imaginary part: it was called non-real.  The
+///   imaginary part alone stays exact where the route cannot make one: for
+///   `|b| = 1` and `Re x = 0` exactly, `Im(x·Log b) = Re x·arg b + Im x·ln|b|`
+///   is an exact 0 (`(−1)^i = e^(−π)`, `i^i = e^(−π/2)` are real).
+fn pow_rounding(b: &Complex, x: &Complex, x_literal: Option<&Q>, prec: usize) -> Bound {
+    if mag(b).is_none() || mag(x).is_none() {
+        return Bound::EXACT; // `0^x` and `b^0`: exact, or refused, in `eval_node`.
+    }
+    let b_real = b.1.is_zero();
+    let b_sign = sign_of(&b.0);
+    if let Some(q) = x_literal {
+        let small_integer = q.is_integer() && q.to_integer().to_i32().is_some();
+        let square_root = b_real && b_sign >= 0 && *q == Q::new(BigInt::one(), BigInt::from(2));
+        if small_integer || square_root {
+            return Bound::EXACT;
+        }
+    }
+    let ln_abs = lg_abs(b).abs().max(lg_abs_low(b).abs()) * std::f64::consts::LN_2;
+    let lx = lg_abs(x);
+    let x_real = x.1.is_zero();
+    let half_integer = x_literal.is_some_and(|q| *q.denom() == BigInt::from(2));
+    let (lw, guard) = if b_real && ((x_real && b_sign > 0) || (b_sign < 0 && half_integer)) {
+        let powi = x_real
+            && x.0.is_int()
+            && crate::base::bigfloat::to_f64(&x.0).is_some_and(|v| v.abs() < 1.0e9);
+        if powi {
+            return Bound::EXACT;
+        }
+        (lx + ln_abs.log2(), 2.0 - 32.0)
+    } else {
+        let arg = if b_real && b_sign > 0 {
+            0.0
+        } else {
+            std::f64::consts::PI
+        };
+        (lx + (ln_abs + arg).log2(), 3.0)
+    };
+    let e = lw + guard - prec as f64;
+    let e = if e.is_finite() { up(e) } else { EXACT };
+    // `b ∈ {±1, ±i}`: `|b|` and `ln|b|` are computed exactly (1 and 0).
+    let one = BigFloat::from_i32(1, prec);
+    let unit = |v: &BigFloat| v.abs().cmp(&one) == Some(0);
+    let unit_modulus = (b.1.is_zero() && unit(&b.0)) || (b.0.is_zero() && unit(&b.1));
+    let im_exact = unit_modulus && x.0.is_zero();
+    Bound {
+        re: e,
+        im: if im_exact { EXACT } else { e },
+    }
 }
 
 /// `log₂(r/(|z| − r))` for `r = 2^j < |z|` (`lz` a lower bound on

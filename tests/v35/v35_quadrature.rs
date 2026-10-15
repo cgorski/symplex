@@ -140,26 +140,46 @@ fn whole_real_line() {
 /// A divergent integral and an oscillatory one on an infinite range are
 /// refused, not guessed (`∫₀^∞ sin x/x dx = π/2` needs `quadosc`; mpmath
 /// `quadosc(lambda x: sin(x)/x, [0, inf], omega=1)` = 1.5707963267948966).
+/// Since 0.52 a refused quadrature gives way to the closed form of the
+/// definite integrator, which has `π/2` (up to 0.51 refused); an
+/// oscillatory integrand without one stays refused.
 #[test]
 fn divergent_and_infinite_oscillatory_integrals_are_refused() {
     let ctx = Context::new();
     assert!(node(&ctx, "1/x", "-1", "1").eval_decimal(20).is_err());
     assert!(node(&ctx, "1/x^2", "-1", "1").eval_f64().is_err());
-    assert!(node(&ctx, "sin(x)/x", "0", "oo").eval_decimal(20).is_err());
+    assert_eq!(
+        node(&ctx, "sin(x)/x", "0", "oo").eval_decimal(20).unwrap(),
+        "1.5707963267948966192"
+    );
+    assert!(
+        node(&ctx, "sin(x)/(x + sqrt(x + 1))", "0", "oo")
+            .eval_decimal(20)
+            .is_err()
+    );
 }
 
 /// `DiracDelta` evaluates to 0 at every point a quadrature samples, so its
-/// integral has no numerical value: refused.  Before, `eval_f64` (and
-/// `integrate_numeric`) of `∫₋₁¹ δ(x) dx` was `0.0` (truly 1).
+/// integral has no quadrature value: only its closed form has one (the
+/// exact route of 0.52; `∫₋₁¹ δ(x)·eˣ dx = e⁰ = 1`, sifting).  Before
+/// 0.43 `eval_f64` (and `integrate_numeric`) of `∫₋₁¹ δ(x) dx` was `0.0`
+/// (truly 1); from 0.43 to 0.51 they were refused.
 #[test]
-fn dirac_delta_integrand_is_refused() {
+fn dirac_delta_integrand_has_only_its_closed_form() {
     let ctx = Context::new();
     let n = node(&ctx, "diracdelta(x)*exp(x)", "-1", "1");
-    assert!(n.eval_f64().is_err());
-    assert!(n.eval_decimal(20).is_err());
+    assert_eq!(n.eval_f64().unwrap(), 1.0);
+    assert_eq!(n.eval_decimal(20).unwrap(), "1");
     let x = ctx.symbol("x");
     let d = ctx.parse("diracdelta(x)").unwrap();
-    assert!(d.integrate_numeric(&x, &ctx.int(-1), &ctx.int(1)).is_err());
+    assert_eq!(
+        d.integrate_numeric(&x, &ctx.int(-1), &ctx.int(1)).unwrap(),
+        1.0
+    );
+    // Never the quadrature's 0.
+    let g = node(&ctx, "diracdelta(x^3 - x - 1/7)*gamma(x)", "1/2", "2");
+    let v = g.eval_f64();
+    assert!(!v.as_ref().is_ok_and(|v| *v == 0.0), "{v:?}");
 }
 
 /// An integrand that is not real on the interval: `∫₀¹ √(x − 2) dx =

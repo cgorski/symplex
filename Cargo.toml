@@ -28,7 +28,10 @@ exclude = [
 
 [dependencies]
 symplex-macros = { version = "0.3.5", path = "symplex-macros" }
-num-bigint = "0.4"
+# 0.4.7 keeps a one-digit `BigUint` inline (0.4.8 fixes 0.4.7's division
+# regression): `matrix_exp` of a 6×6 unitary matrix over ℚ(√2, √3, i) makes
+# 31 M allocations instead of 194 M and takes 6.0 s instead of 8.9 s.
+num-bigint = "0.4.8"
 num-rational = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"

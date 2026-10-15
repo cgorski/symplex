@@ -23,7 +23,11 @@
 //!    Rational × `cos`/`sin` over the line (or an even/odd one over `[0, ∞)`)
 //!    and `ln x` × rational over `[0, ∞)` are summed over their poles
 //!    (Jordan's lemma, the keyhole contour).
-//! 4. **Breakpoints.** Poles, `ln` zeros, `tan` poles, branch points of
+//! 4. **Breakpoints.** A factor `B(x)^(−k)` with `B ∈ ℚ[x]` whose real
+//!    root in the range the other factors do not cancel (they are enclosed
+//!    away from 0 next to it) proves divergence at once, from the root's
+//!    isolating interval alone — no closed form of the root is needed.
+//!    Poles, `ln` zeros, `tan` poles, branch points of
 //!    fractional powers and inverse-trig domain edges of the integrand are
 //!    located with the breakpoint scanner in `calculus_util`.  Interior points
 //!    split the interval; endpoint singularities and infinite bounds are
@@ -43,8 +47,10 @@
 //!    and only then by the black-box limit engine, whose finite results are
 //!    sanity-checked numerically.
 //! 6. **Divergence.** An infinite one-sided limit of `F` proves
-//!    divergence.  Without an antiderivative, comparison with `1/(x − c)`
-//!    (or `1/x` at infinity) is attempted; if nothing can be decided the
+//!    divergence.  At an infinite end the comparison with `1/x` comes
+//!    first, on the integrand (`F` may be far harder to take a limit of);
+//!    without an antiderivative, comparison with `1/(x − c)` is attempted
+//!    at the finite singular ends; if nothing can be decided the
 //!    integral is returned unevaluated.
 //!
 //! The same file also provides the adaptive Gauss–Kronrod (G7/K15)
@@ -254,6 +260,65 @@ pub fn integrate_definite(
     Ok(result)
 }
 
+/// `∫_lo^hi body d(var)` (all in `arena`) by [`integrate_definite`], for
+/// `evalf` of a `DefiniteIntegral` node whose quadrature refused: the
+/// integral is copied into a private arena and integrated there.
+/// `Ok(Some((arena, value)))` for a constant closed form (no symbol, no
+/// unevaluated node), `Err` with the proof when the integral diverges,
+/// `Ok(None)` otherwise — also for a body with another free symbol, a
+/// bound that is not constant, or a nested definite integral.
+///
+/// Up to 0.51 a quadrature that could not evaluate its integrand at the
+/// nodes refused although the integral has a closed form:
+/// `∫ |sin(x/3 + 1/2)| dx` over `[10¹⁰⁰ + 7/10, 10¹⁰⁰ + 100]` (an
+/// argument of `3·10⁹⁹` needs 330 bits before its first fractional one)
+/// was refused by `eval_f64`, `eval_decimal` and `integrate_numeric` — in
+/// 16 s at 0.50 — while this route answers in milliseconds.
+///
+/// # Errors
+///
+/// [`SymplexError::Divergent`] when [`integrate_definite`] proves the
+/// integral divergent.
+pub(crate) fn closed_form(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+) -> Result<Option<(Arena, ExprId)>, SymplexError> {
+    if !matches!(arena.node(var), ExprNode::Symbol(_))
+        || walk::free_symbols(arena, body).iter().any(|&s| s != var)
+        || !walk::free_symbols(arena, lo).is_empty()
+        || !walk::free_symbols(arena, hi).is_empty()
+        || [body, lo, hi]
+            .into_iter()
+            .any(|e| contains_node(arena, e, |n| matches!(n, ExprNode::DefiniteIntegral(..))))
+    {
+        return Ok(None);
+    }
+    let mut pa = Arena::with_config(arena.config.clone());
+    let mut map: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut copy = |pa: &mut Arena, id: ExprId| {
+        crate::base::compact::transfer_subtree(arena, pa, id, &mut map)
+    };
+    let body_p = copy(&mut pa, body);
+    let var_p = copy(&mut pa, var);
+    let lo_p = copy(&mut pa, lo);
+    let hi_p = copy(&mut pa, hi);
+    let value = match integrate_definite(&mut pa, body_p, var_p, lo_p, hi_p) {
+        Ok(v) => v,
+        Err(e @ SymplexError::Divergent { .. }) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    if !walk::free_symbols(&pa, value).is_empty()
+        || walk::has_unevaluated(&pa, value)
+        || contains_node(&pa, value, |n| matches!(n, ExprNode::DefiniteIntegral(..)))
+    {
+        return Ok(None);
+    }
+    Ok(Some((pa, value)))
+}
+
 /// Does adaptive quadrature contradict the closed form `value` of `∫ₐᵇ f dx`
 /// with confidence?  Only for a parameter-free `f` that compiles, finite
 /// real bounds, a real `value` and a quadrature that converges with every
@@ -325,15 +390,18 @@ fn contradicted_by_quadrature(
         // `f64` quadrature to compare with.
         return false;
     }
-    let Ok(points) = quadrature_breakpoints(
+    let points = match quadrature_breakpoints(
         arena,
         f,
         x,
         Interval::closed(a_ord, b_ord),
         Some(ends),
         None,
-    ) else {
-        return false;
+    ) {
+        Ok(points) => points,
+        // A proof that the integral diverges contradicts every value.
+        Err(SymplexError::Divergent { .. }) => return true,
+        Err(_) => return false,
     };
     let mut cuts: Vec<f64> = vec![a_ord];
     cuts.extend(points.into_iter().map(|(_, v)| v));
@@ -1248,6 +1316,11 @@ fn split_at_breakpoints(
     a: ExprId,
     b: ExprId,
 ) -> Result<Vec<Piece>, SymplexError> {
+    // A pole that is not integrable, proved without solving for it (the
+    // comparisons and limits at a quartic's root in radicals took minutes).
+    if let Some(reason) = pole_divergence(arena, f, x, a, b) {
+        return Err(divergent(reason));
+    }
     let range = numeric_range(arena, a, b);
     let scan = calculus_util::scan_breakpoints(arena, f, x, scan_range(a, b, range));
 
@@ -1480,6 +1553,198 @@ fn build_pieces(
     Ok(pieces)
 }
 
+/// An end of the range of [`pole_divergence`], as a rational.
+#[derive(Clone, Debug)]
+enum RationalEnd {
+    /// `±∞`.
+    Unbounded,
+    /// The end itself, or a rational inside the range next to it.
+    At(Q),
+}
+
+/// The end `e` of a range as a [`RationalEnd`]: `±∞`, `e` itself when
+/// rational, otherwise a rational on the inner side of its value (above it
+/// for the `lower` end; see [`inner_rational`]).  `None` when `e` has no
+/// real value.
+fn rational_end(arena: &mut Arena, e: ExprId, lower: bool) -> Option<RationalEnd> {
+    if is_infinite(arena, e) {
+        return Some(RationalEnd::Unbounded);
+    }
+    if let Some(r) = arena.as_num(e) {
+        return Some(RationalEnd::At(r.clone()));
+    }
+    let v = point_value(arena, e)?;
+    inner_rational(v, lower).map(RationalEnd::At)
+}
+
+/// A rational on the inner side of an end whose value is `v` (within
+/// [`POINT_VALUE_ACCURACY`] of it relatively, or rounded to 0 from below the
+/// `f64` range): above it for a `lower` end, clear of that uncertainty.
+fn inner_rational(v: f64, lower: bool) -> Option<Q> {
+    if !v.is_finite() {
+        return None;
+    }
+    let margin = (4.0 * POINT_VALUE_ACCURACY * v.abs()).max((-1000f64).exp2());
+    let inner = if lower { v + margin } else { v - margin };
+    crate::base::numeric::f64_to_ratio_exact(inner)
+}
+
+/// Cauchy's bound `1 + max |aᵢ/aₙ|` on the absolute values of the roots of
+/// `p` (degree at least 1).
+fn root_bound(p: &crate::poly::Poly) -> Option<Q> {
+    let coeffs = p.coeffs();
+    let lead = coeffs.last().filter(|c| !c.is_zero())?;
+    let mut m = Q::zero();
+    for c in &coeffs[..coeffs.len() - 1] {
+        let r = (c / lead).abs();
+        if r > m {
+            m = r;
+        }
+    }
+    Some(m + Q::one())
+}
+
+/// Most refinements of a root's isolating cell while the other factors of
+/// the integrand are enclosed away from 0 ([`pole_divergence`]); each
+/// narrows the cell 256-fold.
+const POLE_REFINEMENTS: usize = 8;
+
+/// A proof that `∫ f dx` over `[a, b]` (constant bounds, `a < b`, `±∞`
+/// allowed) diverges at a pole, decided exactly and without the pole's
+/// closed form; `None` when none is found (see [`pole_divergence_in`]).
+///
+/// The breakpoint scanner locates a pole by solving its denominator, and
+/// the comparison test then takes the limit of `(x − c)·f` at that root
+/// `c` — for a quartic, Ferrari's nested radicals, whose zero tests
+/// (minimal polynomials of degree in the hundreds) took minutes:
+/// `∫₁² dx/(x⁴ − 3x³ − 2x² + 3x + 2)`, which diverges at the root
+/// `1.1488…`, ran for more than a minute up to 0.51 on every route
+/// (`integrate_definite`, `integrate_numeric`, `eval_decimal`).
+fn pole_divergence(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    a: ExprId,
+    b: ExprId,
+) -> Option<String> {
+    if !has_rational_pole_factor(arena, f, x) {
+        return None;
+    }
+    let lower = rational_end(arena, a, true)?;
+    let upper = rational_end(arena, b, false)?;
+    pole_divergence_in(arena, f, x, &lower, &upper)
+}
+
+/// Does `f` have a factor `B^(−k)` with `B` a polynomial in `x` (the cheap
+/// test before [`pole_divergence_in`])?
+fn has_rational_pole_factor(arena: &Arena, f: ExprId, x: ExprId) -> bool {
+    factors_of(arena, f).into_iter().any(|g| {
+        matches!(*arena.node(g), ExprNode::Pow(base, e)
+            if walk::contains(arena, base, x)
+                && arena.as_num(e).is_some_and(|r| r.is_integer() && r.is_negative()))
+    })
+}
+
+/// [`pole_divergence`] between rational ends (`lower < upper`).
+///
+/// `f = G·B^(−k)` with `B ∈ ℚ[x]` and an integer `k ≥ 1`, `G` the other
+/// factors (no parameter, no kink or step), and `c` a real root of `B` in
+/// `(lower, upper]`, isolated exactly in a cell `(l, h]` (Descartes'
+/// method, [`SturmChain`](crate::poly::sturm::SturmChain)) where `B` has no
+/// other root.  When the values of `G` over `[l, h]` lie in a box that
+/// excludes 0 ([`evalf::nonzero_on`], the cell narrowed until they do),
+/// some direction `u` has `Re(ū·G) ≥ m > 0` there, while `B^(−k)` is real,
+/// of one sign on `(l, c)` and at least `1/(K·|x − c|)` near `c` (`B(c) = 0`,
+/// `|B| ≤ K·|x − c|`): `Re(ū·f)` keeps a sign and is not integrable at
+/// `c`.  A root where `G` vanishes too (a removable or weaker
+/// singularity), or that no cell separates from `G`'s own singularities,
+/// proves nothing.
+fn pole_divergence_in(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    lower: &RationalEnd,
+    upper: &RationalEnd,
+) -> Option<String> {
+    if walk::free_symbols(arena, f).iter().any(|&s| s != x) || has_kink(arena, f, x) {
+        return None;
+    }
+    let factors = factors_of(arena, f);
+    for (i, &factor) in factors.iter().enumerate() {
+        let ExprNode::Pow(base, e) = *arena.node(factor) else {
+            continue;
+        };
+        if !arena
+            .as_num(e)
+            .is_some_and(|r| r.is_integer() && r.is_negative())
+        {
+            continue;
+        }
+        let Some(p) = crate::poly::polybridge::expr_to_poly(arena, base, x) else {
+            continue;
+        };
+        if p.degree().is_none_or(|d| d == 0) {
+            continue;
+        }
+        let chain = crate::poly::sturm::SturmChain::new(&p);
+        if chain.has_no_real_roots() {
+            continue;
+        }
+        let Some(bound) = root_bound(&p) else {
+            continue;
+        };
+        let lo = match lower {
+            RationalEnd::At(q) => q.clone(),
+            RationalEnd::Unbounded => -bound.clone(),
+        };
+        let hi = match upper {
+            RationalEnd::At(q) => q.clone(),
+            RationalEnd::Unbounded => bound,
+        };
+        if lo >= hi {
+            continue;
+        }
+        let cells = chain.isolate_roots_in(&lo, &hi, 64);
+        if cells.is_empty() {
+            continue;
+        }
+        let rest: Vec<ExprId> = factors
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != i)
+            .map(|(_, &g)| g)
+            .collect();
+        let g = if rest.is_empty() {
+            arena.one()
+        } else {
+            let g = arena.mul(&rest);
+            safe_eval(arena, g)
+        };
+        for cell in cells {
+            let mut cell = cell;
+            for _ in 0..POLE_REFINEMENTS {
+                // One root in `(l, h]`, `l < h` (a rational root hit by the
+                // bisection is left to the comparison test, which is cheap
+                // at a rational point).
+                if cell.lower >= cell.upper || chain.count_roots_in(&cell.lower, &cell.upper) != 1 {
+                    break;
+                }
+                if evalf::nonzero_on(arena, g, x, &cell.lower, &cell.upper) {
+                    return Some(format!(
+                        "the integrand is not integrable at the zero of {} in ({}, {}]",
+                        arena.display(base),
+                        cell.lower,
+                        cell.upper
+                    ));
+                }
+                let width = (&cell.upper - &cell.lower) / Q::from_integer(BigInt::from(256));
+                cell = chain.refine_interval(&cell, &width);
+            }
+        }
+    }
+    None
+}
+
 /// Sample every `var`-dependent denominator, logarithm argument and
 /// fractional-power base of `f` on `[lo, hi]` and look for sign changes
 /// that no known breakpoint explains.
@@ -1688,6 +1953,24 @@ fn integrate_piece(
         let inf = arena.infinity();
         if let Some(v) = table_lookup(arena, g, t, neg_hi, inf) {
             return Ok(v);
+        }
+    }
+
+    // ── A tail that is not integrable ─────────────────────────────────
+    // The comparison test on the integrand before the antiderivative's
+    // limits at the infinite end: these can be far harder (`∫₁^∞
+    // e^{x/2}/(x³ − x + 1) dx`, whose antiderivative is a sum of `Ei` at the
+    // cubic's roots in radicals, took 25 s to diverge up to 0.51; the
+    // integrand grows like `e^{x/2}/x³`).
+    for (end, side, infinite) in [
+        (p.hi, Side::FromLeft, hi_is_pos_inf),
+        (p.lo, Side::FromRight, lo_is_neg_inf),
+    ] {
+        if infinite && diverges_near(arena, f, x, end, side) {
+            let shown = arena.display(end).to_string();
+            return Err(divergent(format!(
+                "the integrand is not integrable as x → {shown}"
+            )));
         }
     }
 
@@ -6436,7 +6719,9 @@ pub(crate) fn quadrature_resolved(
 /// [`SymplexError::ComputationFailed`] when a family of poles, kinks or
 /// steps has more than 10,000 members in the range (`Γ(9·10¹⁸x)` on `[−1,
 /// 1]`): no quadrature resolves them, and up to 0.49 the arbitrary-precision
-/// one spent minutes trying.
+/// one spent minutes trying.  [`SymplexError::Divergent`] when a pole of a
+/// rational factor in the range is proved not integrable
+/// ([`pole_divergence_in`]), before any root is solved for.
 pub(crate) fn quadrature_breakpoints(
     arena: &mut Arena,
     f: ExprId,
@@ -6446,6 +6731,28 @@ pub(crate) fn quadrature_breakpoints(
     locate: Option<u32>,
 ) -> Result<Vec<(ExprId, f64)>, SymplexError> {
     let (lo, hi) = (range.lower, range.upper);
+    if lo < hi && has_rational_pole_factor(arena, f, x) {
+        let end = |arena: &mut Arena, e: Option<ExprId>, v: f64, lower: bool| {
+            if v.is_infinite() {
+                Some(RationalEnd::Unbounded)
+            } else {
+                match e {
+                    Some(e) => rational_end(arena, e, lower),
+                    None => inner_rational(v, lower).map(RationalEnd::At),
+                }
+            }
+        };
+        let lower = end(arena, exact.as_ref().map(|e| e.lower), lo, true);
+        let upper = end(arena, exact.as_ref().map(|e| e.upper), hi, false);
+        if let (Some(lower), Some(upper)) = (lower, upper)
+            && let Some(reason) = pole_divergence_in(arena, f, x, &lower, &upper)
+        {
+            return Err(SymplexError::Divergent {
+                operation: "evalf",
+                reason: format!("the definite integral diverges: {reason}"),
+            });
+        }
+    }
     let ends = match exact {
         Some(e) => Some(e),
         None => ScanRange::from_f64(arena, range).map(|r| r.exact),

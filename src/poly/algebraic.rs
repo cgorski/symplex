@@ -164,6 +164,19 @@ const VERIFY_PREC_BITS: usize = 320;
 /// factor would have to have a root within `~2⁻¹²⁸` of `z`.
 const VERIFY_TOLERANCE_BITS: i32 = 128;
 
+/// The most bits an exact power `r^n` of a rational may have
+/// ([`rational_pow`]), and the bound on the estimated coefficient size of
+/// the minimal polynomial of an integer power `α^n` that [`minpoly_pow`]
+/// folds.  `canon` folds integer powers of up to 5,000 digits (about 16,600
+/// bits, `EvalConfig::max_result_digits`) with exponents up to 1,000, so
+/// the powers left for this module are the larger ones.
+const MAX_POWER_BITS: u64 = 1 << 16;
+
+/// The largest degree `q·deg m` of the polynomial `m(t^q)` (or `t^q − r^p`)
+/// that [`minpoly_pow`] factors for `a^{p/q}`, and the largest `|p|` it
+/// folds product by product.
+const MAX_POWER_DEGREE: usize = 1024;
+
 /// A complex number in arbitrary precision.
 type Complex = (BigFloat, BigFloat);
 
@@ -361,12 +374,17 @@ fn minpoly_mul(mp_a: &Poly, mp_b: &Poly, value: &Complex) -> Option<Poly> {
 /// with its coefficients reversed; integer powers then fold with
 /// [`minpoly_mul`].  Returns `None` when the base is not algebraic, is
 /// zero under a negative exponent, is not real-positive under a fractional
-/// exponent, or the exponent does not fit `i64`.
+/// exponent, or the work is beyond the bounds: a degree `q·deg m_base` or
+/// a fold length `|p|` above [`MAX_POWER_DEGREE`], an exact rational power
+/// or an estimated coefficient size of the result above [`MAX_POWER_BITS`].
 fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(Poly, Complex)> {
     let prec = VERIFY_PREC_BITS;
     let rm = RoundingMode::None;
     let p: i64 = exp.numer().try_into().ok()?;
     let q: usize = exp.denom().try_into().ok()?;
+    if q > MAX_POWER_DEGREE {
+        return None;
+    }
 
     // A rational base `r > 0`: `r^{p/q}` is a root of `t^q − r^p` directly.
     if let AlgExpr::Rat(r) = base
@@ -393,6 +411,9 @@ fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(
     }
 
     let (mp_base, base_val) = minpoly_of(base, cc)?;
+    if mp_base.degree()?.checked_mul(q)? > MAX_POWER_DEGREE {
+        return None;
+    }
 
     // α = base^{1/q} with its minimal polynomial and value.
     let (mut mp, mut alpha) = if q == 1 {
@@ -434,6 +455,9 @@ fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(
 
     // α^n by folding α · α · … with the running value for factor selection.
     let n = p.unsigned_abs();
+    if n > MAX_POWER_DEGREE as u64 || power_bits_estimate(&mp, n) > MAX_POWER_BITS as f64 {
+        return None;
+    }
     let mut acc = mp.clone();
     let mut acc_val = alpha.clone();
     for _ in 1..n {
@@ -441,6 +465,27 @@ fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(
         acc = minpoly_mul(&acc, &mp, &acc_val)?;
     }
     Some((acc, acc_val))
+}
+
+/// `log₂` of a bound on the coefficients of the integer minimal polynomial
+/// of `α^n`, for an `α` with minimal polynomial `mp` of degree `d`: its
+/// roots are `n`-th powers of roots of `mp`, so its Mahler measure is at
+/// most `M(m)^n ≤ ‖m‖₂^n` (`m` the integer multiple of `mp` by the lcm of
+/// its denominators), and a coefficient at most `2^d` times that.
+fn power_bits_estimate(mp: &Poly, n: u64) -> f64 {
+    use num_integer::Integer;
+    let d = mp.degree().unwrap_or(0) as f64;
+    let lcm = mp
+        .coeffs()
+        .iter()
+        .fold(BigInt::one(), |acc, c| acc.lcm(c.denom()));
+    let max_bits = mp
+        .coeffs()
+        .iter()
+        .map(|c| (c * Ratio::from_integer(lcm.clone())).to_integer().bits())
+        .max()
+        .unwrap_or(0);
+    n as f64 * (max_bits as f64 + 0.5 * (d + 1.0).log2()) + d
 }
 
 /// The principal `q`-th root `exp(Log(z)/q)` (`q ≥ 2`) of the algebraic
@@ -1039,20 +1084,25 @@ fn rat(n: i64, d: i64) -> Ratio<BigInt> {
     Ratio::new(BigInt::from(n), BigInt::from(d))
 }
 
-/// Raise a rational number to an integer power.
+/// `base^exp` exactly, or `None` when it would have more than about
+/// [`MAX_POWER_BITS`] bits (`|exp|·(bits(numer) + bits(denom) − 1)`) or
+/// `base = 0` under a negative exponent.  Up to 0.51 the exponent was cast
+/// `as u32` — `2^(2³² + 1)` was `2`, so `2^4294967297 − 2` was called zero
+/// and `3^(2⁴⁰) − 1` not positive — and the power had no size bound
+/// (`1000000007^1000000007 − 2` never finished).
 fn rational_pow(base: &Ratio<BigInt>, exp: &BigInt) -> Option<Ratio<BigInt>> {
-    let exp_i64: i64 = exp.try_into().ok()?;
-    if exp_i64 >= 0 {
-        let e = exp_i64 as u32;
-        let n = num_traits::Pow::pow(base.numer(), e);
-        let d = num_traits::Pow::pow(base.denom(), e);
-        Some(Ratio::new(n, d))
-    } else {
-        let e = (-exp_i64) as u32;
-        let n = num_traits::Pow::pow(base.denom(), e);
-        let d = num_traits::Pow::pow(base.numer(), e);
-        Some(Ratio::new(n, d))
+    let e = u32::try_from(exp.magnitude()).ok()?;
+    let size = base.numer().bits() + base.denom().bits() - 1;
+    if size.saturating_mul(u64::from(e)) > MAX_POWER_BITS || (base.is_zero() && exp.is_negative()) {
+        return None;
     }
+    let n = num_traits::Pow::pow(base.numer(), e);
+    let d = num_traits::Pow::pow(base.denom(), e);
+    Some(if exp.is_negative() {
+        Ratio::new(d, n)
+    } else {
+        Ratio::new(n, d)
+    })
 }
 
 /// Raise a rational number to a non-negative `usize` power.

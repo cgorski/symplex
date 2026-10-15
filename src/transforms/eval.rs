@@ -2773,7 +2773,17 @@ const MAX_INTEGER_PART_NODES: usize = 60;
 /// 208,027,742nd power (the `fuzz_evalf` timeout of the release campaign).
 /// A value below `10⁻⁵` in modulus (a certified nonzero value was printed)
 /// is settled by its sign alone, without its `10^−k` either.
+///
+/// An integer part that took more than the first 25 digits is memoised
+/// per arena ([`INTEGER_PART_MEMO`]): every `eval_f64`, `eval_decimal` and
+/// `eval_complex64` begins with `eval`, and up to 0.51 each recomputed the
+/// 692-digit integer part of `ceiling(Chi(1600))` (1.15 s in a release
+/// build; seven of them timed out `fuzz_evalf`).
 fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Option<ExprId> {
+    let key = (arena.serial(), x, ceiling);
+    if let Some(n) = INTEGER_PART_MEMO.with(|m| m.borrow().get(&key).cloned()) {
+        return Some(arena.num_ratio(n));
+    }
     if arena.as_num(x).is_some()
         || !walk::free_symbols(arena, x).is_empty()
         || walk::has_unevaluated(arena, x)
@@ -2807,15 +2817,42 @@ fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Opti
     let round = |q: Q| if ceiling { q.ceil() } else { q.floor() };
     let low = round(&value - &ulp);
     let high = round(&value + &ulp);
-    if low == high {
-        return Some(arena.num_ratio(low));
+    let n = if low == high {
+        low
+    } else {
+        // Within a digit of an integer: that integer if the difference is 0.
+        let n = value.round();
+        let n_id = arena.num_ratio(n.clone());
+        let diff = arena.sub(x, n_id);
+        if exact_zero_test(arena, diff) != Some(true) {
+            return None;
+        }
+        n
+    };
+    if digits > 25 {
+        INTEGER_PART_MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.len() >= INTEGER_PART_MEMO_ENTRIES {
+                m.clear();
+            }
+            m.insert(key, n.clone());
+        });
     }
-    // Within a digit of an integer: that integer if the difference is 0.
-    let n = value.round();
-    let n_id = arena.num_ratio(n.clone());
-    let diff = arena.sub(x, n_id);
-    (exact_zero_test(arena, diff) == Some(true)).then(|| arena.num_ratio(n))
+    Some(arena.num_ratio(n))
 }
+
+thread_local! {
+    /// The integer parts [`integer_part_of_constant`] computed beyond its
+    /// first 25 digits, by (arena serial, constant, ceiling).  A node of an
+    /// arena never changes, and the integer part of a constant does not
+    /// depend on the configuration or on assumptions (a symbol-free
+    /// constant), so an entry stays valid; the map is cleared when full.
+    static INTEGER_PART_MEMO: std::cell::RefCell<FxHashMap<(u64, ExprId, bool), Q>> =
+        std::cell::RefCell::new(FxHashMap::default());
+}
+
+/// The entries [`INTEGER_PART_MEMO`] holds before it is cleared.
+const INTEGER_PART_MEMO_ENTRIES: usize = 256;
 
 /// A decimal `evalf` printed (`-2.5e+3`, `3.14`), split into its sign,
 /// digits and exponent; `None` for anything else (a complex value).
@@ -5624,9 +5661,19 @@ fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.add(&[quarter_turn, minus_i_v]));
     }
     // acos(±cos(qπ)) = qπ or (1 − q)π (principal range [0, π]).
-    let (s, q) = special_angle_of(arena, inner, SpecialTable::Cos)?;
-    let angle = if s.is_negative() { Ratio::one() - q } else { q };
-    Some(pi_times(arena, angle))
+    if let Some((s, q)) = special_angle_of(arena, inner, SpecialTable::Cos) {
+        let angle = if s.is_negative() { Ratio::one() - q } else { q };
+        return Some(pi_times(arena, angle));
+    }
+    // acos(−u) = π − acos(u) on all of ℂ, used when acos(u) folds (SymPy's
+    // `acos.eval` for `−cos`, `−sin`): `acos(−cos(3π/80)) = 77π/80`,
+    // `acos(−sin(9π/22)) = 10π/11`.  Since 0.50 `eval` reduces `cos(77π/80)`
+    // to `−cos(3π/80)` first, and `acos(cos(77π/80))`, `asec(sec(5π/9))`
+    // stayed unevaluated (0.49: `77π/80`, `5π/9`).
+    let pos = negated_constant(arena, inner)?;
+    let v = eval_acos(arena, pos)?;
+    let minus_v = arena.neg(v);
+    Some(arena.add(&[arena.pi, minus_v]))
 }
 
 /// The value at `c = 0` of the reciprocal function `name` (`acot`, `acoth`,
@@ -6989,8 +7036,8 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 /// Exact value of the library function `f` on `args` (already evaluated and
 /// of the arity `f` declares); `None` leaves the node as is.
 ///
-/// Exhaustive over [`LibFn`]: a function with no exact rules (`bessely`,
-/// `besselk`, `lambertw`) says so here rather than in a wildcard arm.
+/// Exhaustive over [`LibFn`]: a function with no exact rules says so here
+/// rather than in a wildcard arm.
 fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
     match f {
         // ── Integer sequences and combinatorial counts ──
@@ -7011,9 +7058,11 @@ fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
         // `lambertw(x)` and `lambertw(x, 0)` become `ExprNode::LambertW`.
         LibFn::LambertW => eval_lambertw_call(arena, args),
 
-        // ── Bessel functions: J and I at the origin; Y and K diverge there ──
-        LibFn::BesselJ | LibFn::BesselI => eval_bessel_regular_at_zero(arena, args[0], args[1]),
-        LibFn::BesselY | LibFn::BesselK => None,
+        // ── Bessel functions: J and I at the origin; Y and K diverge there;
+        // J, Y and K tend to 0 at infinity ──
+        LibFn::BesselJ | LibFn::BesselI => eval_bessel_regular_at_zero(arena, args[0], args[1])
+            .or_else(|| eval_bessel_at_infinity(arena, f, args[0], args[1])),
+        LibFn::BesselY | LibFn::BesselK => eval_bessel_at_infinity(arena, f, args[0], args[1]),
 
         // ── Classical orthogonal polynomials of small explicit degree ──
         LibFn::Legendre => eval_orthopoly(arena, args[0], args[1], OrthoFamily::Legendre),
@@ -7075,6 +7124,59 @@ fn eval_bessel_regular_at_zero(arena: &mut Arena, order: ExprId, x: ExprId) -> O
     } else {
         Some(arena.complex_infinity)
     }
+}
+
+/// `J_ν(±∞) = Y_ν(±∞) = K_ν(+∞) = 0` for an order with no infinity in it,
+/// and `I_ν(+∞) = ∞` for a rational order (`J_ν(x), Y_ν(x) ~
+/// √(2/(πx))·cos(…)`, `K_ν(x) ~ √(π/(2x))·e^(−x)`, `I_ν(x) ~ e^x/√(2πx)`,
+/// DLMF 10.7.8, 10.30.4, 10.25.3; SymPy 1.14: `besselj(nu, oo)`,
+/// `bessely(nu, -oo)`, `besselk(nu, oo)` → 0, `besseli(nu, oo)` → oo), as
+/// `canon` folds them when they are built; here for an argument that
+/// becomes infinite when evaluated.
+fn eval_bessel_at_infinity(
+    arena: &mut Arena,
+    f: LibFn,
+    order: ExprId,
+    x: ExprId,
+) -> Option<ExprId> {
+    if has_infinity(arena, order) {
+        return None;
+    }
+    match f {
+        LibFn::BesselJ | LibFn::BesselY if x == arena.infinity || x == arena.neg_infinity => {
+            Some(arena.zero)
+        }
+        LibFn::BesselK if x == arena.infinity => Some(arena.zero),
+        LibFn::BesselI if x == arena.infinity && arena.as_num(order).is_some() => {
+            Some(arena.infinity)
+        }
+        _ => None,
+    }
+}
+
+/// Does `id` contain `∞` or `−∞` along the real axis: one of them, and no
+/// `i`, `zoo` or `nan`?  The closed forms of `Γ(s, x)`, `γ(s, x)` and `E₀(x)`,
+/// sums of `e^{−x}·xᵏ` terms, evaluate to `∞ − ∞` or `∞/∞` (`nan`) at such an
+/// argument, where the limit is `0` or `±∞`.  (At an undirected `zoo`,
+/// where the functions have no limit, `nan` is their value; SymPy 1.14
+/// agrees.)
+fn has_real_infinity(arena: &Arena, id: ExprId) -> bool {
+    (walk::contains(arena, id, arena.infinity) || walk::contains(arena, id, arena.neg_infinity))
+        && ![arena.i_unit, arena.complex_infinity, arena.nan]
+            .iter()
+            .any(|&a| walk::contains(arena, id, a))
+}
+
+/// Does `id` contain `∞`, `−∞`, `zoo` or `nan`?
+fn has_infinity(arena: &Arena, id: ExprId) -> bool {
+    [
+        arena.infinity,
+        arena.neg_infinity,
+        arena.complex_infinity,
+        arena.nan,
+    ]
+    .iter()
+    .any(|&inf| walk::contains(arena, id, inf))
 }
 
 /// A classical orthogonal polynomial `p_n(x)` expanded by `expand` when `n`
@@ -7173,11 +7275,13 @@ fn eval_erfcinv(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 }
 
 /// `E_n(∞) = 0`, `E_n(0) = 1/(n−1)` for `n > 1`, `E_0(x) = e^{−x}/x`.
+/// `E_0` at another infinite argument stays (up to 0.51 `e^{−x}/x` there
+/// gave `∞/∞`: `expint(0, −∞)` was `nan`, its limit is `−∞`).
 fn eval_expint(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.infinity {
         return Some(arena.zero);
     }
-    if n == arena.zero {
+    if n == arena.zero && !has_real_infinity(arena, x) {
         let neg_x = arena.neg(x);
         let e = arena.exp(neg_x);
         let v = arena.div(e, x);
@@ -7491,6 +7595,9 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     {
         return None;
     }
+    if has_real_infinity(arena, x) {
+        return None;
+    }
     let upper = uppergamma_closed(arena, &r, x)?;
     let gamma_s = eval_gamma(arena, s).unwrap_or_else(|| arena.gamma(s));
     let v = arena.sub(gamma_s, upper);
@@ -7502,7 +7609,9 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
 ///
 /// `Γ(s, 0) = ∫₀^∞ t^{s−1} e^{−t} dt` diverges for `s ≤ 0` (`Γ(s)` there is
 /// the analytic continuation, not this integral), so the fold at `x = 0` is
-/// refused for `s` known to be non-positive.
+/// refused for `s` known to be non-positive.  The closed forms are not
+/// taken at another infinite argument (up to 0.51 `(x + 1)·e^{−x}` at
+/// `x = −∞` gave `nan` for `uppergamma(2, −∞)`, whose limit is `−∞`).
 fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.infinity {
         return Some(arena.zero);
@@ -7516,6 +7625,10 @@ fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
         return Some(eval_gamma(arena, s).unwrap_or_else(|| arena.gamma(s)));
     }
     let r = as_ratio(arena, s)?;
+    // (`Γ(0, x) = E₁(x)` only renames.)
+    if !r.is_zero() && has_real_infinity(arena, x) {
+        return None;
+    }
     uppergamma_closed(arena, &r, x)
 }
 

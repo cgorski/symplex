@@ -176,9 +176,16 @@ fn function_of_a_logarithmic_argument_from_one_side() {
         let x5 = xv.eval_f64().unwrap().powi(5);
         assert!(resid.abs() < 1e4 * x5, "{xv}: {resid}");
     }
-    // Still refused where f is singular at the constant term, or the
-    // argument itself tends to infinity: tan(π/2 + x·ln x), atan(ln x).
-    for src in ["tan(pi/2 + x*ln(x))", "atan(ln(x))", "acos(ln(x))"] {
+    // At a pole of `tan` the series is Laurent, `tan(π/2 + u) = −cot u =
+    // −1/u + u/3 + O(u³)` with `u = x·ln x` (refused up to 0.51; the
+    // identity is exact, and the remainder is `O(x³·ln³ x)`).
+    let r = ctx
+        .parse("tan(pi/2 + x*ln(x))")
+        .unwrap()
+        .series_dir(&x, &zero, 3, Direction::Right);
+    assert_eq!(r.to_string(), "-1/(x*ln(x)) + 1/3*x*ln(x)");
+    // Still refused where the argument itself tends to infinity: atan(ln x).
+    for src in ["atan(ln(x))", "acos(ln(x))"] {
         let t = Instant::now();
         let r = ctx
             .parse(src)

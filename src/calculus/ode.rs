@@ -88,6 +88,10 @@
 //! separable equation every explicit root of `∫ dy/g(y) = ∫ f dx + C1`, and
 //! `y'' = F(y')` (no `y`) one family per family of `y'` (`y'' = y'³`:
 //! `C2 ∓ √(C1 − 2x)`).  Before 0.30 only the first family was returned.
+//! A family through the principal Lambert W, with the constant in its
+//! argument, is followed by its twin through `W₋₁` (`y′ = 1/(2x + y + 2)`:
+//! `−2x − W_k(−2·C1·e^{−4x−1})/2 − 5/2` for `k = 0, −1`; both real for
+//! `−1/e ≤ −2·C1·e^{−4x−1} < 0`), since 0.52.
 //! [`Ex::solve_ode`](crate::api::expr::Ex::solve_ode) returns the first
 //! family, `Ex::solve_ode_all` all of them, and `Ex::solve_ode_ivp` fits the
 //! initial conditions on each family in turn (`y' = y³`, `y(0) = −1` is on
@@ -145,11 +149,26 @@ pub struct OdeResult {
 /// expanded with the highest derivative's coefficient divided out): `(x + 3)·(y‴ − 3y″ + 4y′ − 12y)`
 /// expanded, `eˣ·(y″ + y − tan x)` or `(y′ − y)/(−1)` were not
 /// recognised before (SymPy's `dsolve` solves them).
+///
+/// An explicit family through the principal Lambert W, with a constant in
+/// its argument, is followed by its twin through `W₋₁` (see *Branches* in
+/// the module docs).
 pub fn dsolve(
     arena: &mut Arena,
     expr: ExprId,
     func: ExprId, // y
     var: ExprId,  // x
+) -> Option<OdeResult> {
+    let result = dsolve_families(arena, expr, func, var)?;
+    Some(with_lambert_twins(arena, expr, func, var, result))
+}
+
+/// [`dsolve`] without the `W₋₁` twins.
+fn dsolve_families(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
 ) -> Option<OdeResult> {
     let ExprNode::Symbol(func_sym) = *arena.node(func) else {
         return None;
@@ -186,6 +205,49 @@ pub fn dsolve(
         });
     }
     best
+}
+
+/// `result` with the twin through `W₋₁` ([`lower_lambert_branch`]) of
+/// each explicit family appended after the families, when it verifies
+/// ([`family_verifies`]) and at most [`MAX_BRANCHES`] families result.
+/// An implicit solution is returned as it is.
+fn with_lambert_twins(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    mut result: OdeResult,
+) -> OdeResult {
+    let ExprNode::Symbol(func_sym) = *arena.node(func) else {
+        return result;
+    };
+    if contains_sym(arena, result.solution, func_sym) {
+        return result;
+    }
+    let mut families: Vec<ExprId> = std::iter::once(result.solution)
+        .chain(result.branches.iter().copied())
+        .collect();
+    let mut twins: Vec<(ExprId, ExprId)> = Vec::new();
+    for &f in &families {
+        if !contains_sym(arena, f, func_sym)
+            && let Some(twin) = lower_lambert_branch(arena, f, &result.constants)
+        {
+            twins.push(twin);
+        }
+    }
+    if twins.is_empty() {
+        return result;
+    }
+    for (twin, constant) in twins {
+        if families.len() < MAX_BRANCHES
+            && !families.contains(&twin)
+            && family_verifies(arena, expr, twin, func, var, constant)
+        {
+            families.push(twin);
+        }
+    }
+    result.branches = families.split_off(1);
+    result
 }
 
 /// Equivalent forms of the ODE `expr = 0` for [`dsolve`], each different
@@ -1876,6 +1938,48 @@ fn explicit_families(
     }
     let first = unique.remove(0);
     Some((first, unique))
+}
+
+/// The family `f` with its one principal Lambert W value `W₀(z)` whose
+/// argument carries one of the `constants` replaced by `W₋₁(z)`, and that
+/// constant; `None` when `f` has no such value or several.
+///
+/// Solving `w·e^w = z` for `w` takes the principal branch, but every branch
+/// solves the ODE (`W′ = W/(z·(1 + W))` on each), and for `−1/e ≤ z < 0`
+/// both `W₀(z) ≥ −1` and `W₋₁(z) ≤ −1` are real: a real initial value
+/// on the lower branch has no constant in the principal family.  Before,
+/// `y′ = 1/(2x + y + 2)`, `y(5/2) = 2/3` failed ("could not solve
+/// −W(−2·C1·e⁻¹¹)/2 − 49/6 = 0 for C1": `W₀ ≥ −1` never reaches
+/// `−49/3`); its solution is `−2x − W₋₁(−49/3·e^{−4x − 19/3})/2 − 5/2`.
+/// SymPy's `dsolve` returns the principal family only (and its `ics`
+/// fit fails).  Likewise the exact equation `y·e^{xy} + (x·e^{xy} + 1)·y′
+/// = 0` has `C1 − W_k(x·e^{C1·x})/x`, `k = 0, −1`.
+fn lower_lambert_branch(
+    arena: &mut Arena,
+    f: ExprId,
+    constants: &[ExprId],
+) -> Option<(ExprId, ExprId)> {
+    let mut principal: Option<(ExprId, ExprId, ExprId)> = None;
+    for id in crate::base::walk::post_order_ids(arena, f) {
+        let ExprNode::LambertW(z) = *arena.node(id) else {
+            continue;
+        };
+        let Some(&c) = constants
+            .iter()
+            .find(|&&c| crate::base::walk::contains(arena, z, c))
+        else {
+            continue;
+        };
+        match principal {
+            Some((w, _, _)) if w != id => return None,
+            _ => principal = Some((id, z, c)),
+        }
+    }
+    let (w, z, c) = principal?;
+    let neg_one = arena.neg_one;
+    let lower = arena.lambertw_branch(z, neg_one);
+    let twin = crate::transforms::subs::subs(arena, f, w, lower);
+    Some((crate::transforms::eval::eval(arena, twin), c))
 }
 
 /// `e` with `e^{k·ln u + r} → u^k·e^{r}` for rational `k` (`u^k` is
@@ -8009,9 +8113,10 @@ fn contains_sym_outside_deriv(
 ///
 /// Substitutes the solution for `func`, differentiates as needed,
 /// and checks if the ODE expression evaluates to zero: by expansion, the
-/// full simplifier, and two normal forms (radical bases factored out at
+/// full simplifier, and three normal forms (radical bases factored out at
 /// their lowest exponent; a rational function of `sin`, `cos` over a common
-/// denominator with `sin² = 1 − cos²`).  Every route is a chain of
+/// denominator with `sin² = 1 − cos²`; a rational function after
+/// `e^{W(z)} = z/W(z)` for every branch of Lambert W).  Every route is a chain of
 /// identities, so `true` is a proof; `false` means no route found zero (not
 /// necessarily a wrong solution).  There is no numerical fallback.
 ///
@@ -8069,9 +8174,100 @@ pub fn checkodesol(
         return true;
     }
 
-    // Two normal forms the simplifier misses; each step is an identity or a
+    // Normal forms the simplifier misses; each step is an identity or a
     // multiplication by a non-zero factor, so a zero here is a proof.
-    radical_normal_form_is_zero(arena, result) || trig_normal_form_is_zero(arena, result)
+    radical_normal_form_is_zero(arena, result)
+        || trig_normal_form_is_zero(arena, result)
+        || lambert_normal_form_is_zero(arena, result)
+}
+
+/// The argument `z` of a Lambert W value `W_k(z)` (any branch), or `None`.
+fn lambert_argument(arena: &Arena, w: ExprId) -> Option<ExprId> {
+    match arena.node(w) {
+        ExprNode::LambertW(z) => Some(*z),
+        ExprNode::Lib(crate::base::libfn::LibFn::LambertW, args) => match args[..] {
+            [z] => Some(z),
+            [z, k] if arena.as_num(k).is_some_and(|q| q.is_integer()) => Some(z),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `e` with every `e^{k·W(z) + s}` (`k` an integer, `W` any branch of
+/// Lambert W) written `(z/W(z))^k·e^s`; `None` when there is no such
+/// exponential.  Every branch solves `W·e^W = z`, so `e^{W(z)} = z/W(z)`
+/// wherever `W(z) ≠ 0`, that is off `z = 0` (only `W₀(0)` is 0), and an
+/// integer power of it is single-valued.
+fn exp_lambert_to_ratio(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
+    // Integer exponents beyond this are left alone (no blow-up of powers).
+    const MAX_POWER: i64 = 8;
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match *arena.node(rebuilt) {
+            ExprNode::Exp(arg) => {
+                let terms: Vec<ExprId> = match arena.node(arg) {
+                    ExprNode::Add(c) => c.to_vec(),
+                    _ => vec![arg],
+                };
+                let mut factors = Vec::new();
+                let mut rest = Vec::new();
+                for t in terms {
+                    let (k, term) = arena.as_coeff_term(t);
+                    let power = k
+                        .is_integer()
+                        .then(|| num_traits::ToPrimitive::to_i64(&k.to_integer()))
+                        .flatten()
+                        .filter(|p| p.abs() <= MAX_POWER);
+                    match (lambert_argument(arena, term), power) {
+                        (Some(z), Some(p)) => {
+                            let ratio = arena.div(z, term);
+                            let pe = arena.int(p);
+                            factors.push(arena.pow(ratio, pe));
+                        }
+                        _ => rest.push(t),
+                    }
+                }
+                if factors.is_empty() {
+                    rebuilt
+                } else {
+                    changed = true;
+                    if !rest.is_empty() {
+                        let r = arena.add(&rest);
+                        factors.push(arena.exp(r));
+                    }
+                    arena.mul(&factors)
+                }
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    if !changed {
+        return None;
+    }
+    let out = cache.get(&e).copied().unwrap_or(e);
+    Some(crate::transforms::eval::eval(arena, out))
+}
+
+/// Is the residual `r` zero once `e^{W(z)}` is written `z/W(z)`
+/// ([`exp_lambert_to_ratio`]), as a rational function or with radicals
+/// factored out?  The residual is then zero wherever `z ≠ 0`, a dense set,
+/// hence everywhere it is defined.  Before, the correct solution
+/// `C1·e^{W(2x/C1)} + x` of `y′ = (3y − x)/(x + y)` was rejected: its
+/// residual `2·e^W·W/(z·(1 + W)) + 1 − (3y − x)/(x + y)` is zero only
+/// through `e^W = z/W` (it gives `2/(1 + W) + 1 − (3 + W)/(1 + W)`), so
+/// `dsolve` fell back to the implicit solution.
+fn lambert_normal_form_is_zero(arena: &mut Arena, r: ExprId) -> bool {
+    let Some(s) = exp_lambert_to_ratio(arena, r) else {
+        return false;
+    };
+    arena.is_zero_structural(s)
+        || trig_normal_form_is_zero(arena, s)
+        || radical_normal_form_is_zero(arena, s)
 }
 
 /// Most terms or radical bases [`radical_normal_form_is_zero`] handles.

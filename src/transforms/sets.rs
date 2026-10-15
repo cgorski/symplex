@@ -558,16 +558,10 @@ fn rankset_to_expr(arena: &mut Arena, table: &Table, rs: &RankSet) -> ExprId {
     if !points.is_empty() {
         parts.push(arena.finite_set(&points));
     }
-    if parts.len() == 1 {
-        parts[0]
-    } else {
-        // Raw on purpose (allowlisted in `test_canonical_construction`):
-        // the canonical union orders its parts by sort key, which prints
-        // `(2, oo) ∪ (-oo, -2)`; the evaluator's results keep the pieces in
-        // ascending order.  Such a union is not `==` to the canonical one
-        // of the same parts (wave 3: an ascending canonical order).
-        arena.intern(ExprNode::SetUnion(parts))
-    }
+    // The canonical union keeps this order (real intervals ascending, then
+    // the finite set).  Up to 0.51 a raw node: `(0, 1) ∪ [2, 3]` was not
+    // `==` to the canonical union of its parts (its JSON round trip).
+    arena.set_union(&parts)
 }
 
 fn setval_to_expr(arena: &mut Arena, table: &Table, v: &SetVal) -> ExprId {

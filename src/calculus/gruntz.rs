@@ -999,6 +999,25 @@ fn sign_at_inf(
     result
 }
 
+/// The sum `c` (with `x` in it) over a common denominator when that form
+/// is smaller (`a/D + b/D = (a + b)/D`, and `1` when `a + b = D`);
+/// otherwise `c`.
+fn common_denominator_if_smaller(arena: &mut Arena, c: ExprId, x: ExprId) -> ExprId {
+    if !matches!(arena.node(c), ExprNode::Add(_)) || !crate::base::walk::contains(arena, c, x) {
+        return c;
+    }
+    let cap = 200;
+    let size =
+        |arena: &Arena, e: ExprId| crate::transforms::pattern::tree_size_capped(arena, e, cap + 1);
+    let before = size(arena, c);
+    if before > cap {
+        return c;
+    }
+    let t = crate::poly::polybridge::together(arena, c);
+    let t = crate::transforms::eval::eval(arena, t);
+    if size(arena, t) < before { t } else { c }
+}
+
 /// Determine the sign of a constant expression (no free variable x).
 ///
 /// Consults symbol assumptions (`a > 0`) through
@@ -3364,6 +3383,14 @@ fn limitinf_directed(
     let e0_display = arena.display(e0_eval).to_string();
     tracing::debug!(c0 = %c0_display, e0 = %e0_display, "gruntz::limitinf: leading term extracted, checking exponent sign");
 
+    // A coefficient in `x` that is a sum of quotients, over a common
+    // denominator when that is smaller: the phases of `e^{x²/2 + ix}` in
+    // `tanh(ix + x²/2)` leave `i·sin 2x/D + cos 2x/D` with `D = i·sin 2x +
+    // cos 2x`, which is `1`.  Up to 0.51 its sign was sought as that of a
+    // bounded oscillation and `limit(Γ(x)·tanh(ix + x²/2), x, ∞)` was
+    // refused (0.48: `∞`).
+    let c0 = common_denominator_if_smaller(arena, c0, x);
+
     // f ≈ 0·ω^e0 → the expression vanishes identically.
     if arena.is_zero_structural(c0) {
         return Ok(arena.zero());
@@ -5405,19 +5432,20 @@ fn eventually_real(
             _ => false,
         };
         // A real constant the rules above do not see (`cosh(acos 4)`),
-        // certified numerically (an unassumed symbol is complex).
+        // certified numerically (an unassumed symbol is complex), or a
+        // Bessel function of an even order at an imaginary argument
+        // (`J₀(acos π)`, whose value has no certified imaginary part 0).
         let v = v || {
             !crate::base::walk::contains(arena, id, x)
                 && !matches!(arena.node(id), ExprNode::Symbol(_))
-                && !crate::base::walk::contains(arena, id, arena.i_unit())
                 && crate::base::walk::free_symbols(arena, id).is_empty()
-                && {
+                && ((!crate::base::walk::contains(arena, id, arena.i_unit()) && {
                     let mut reals = crate::base::assumptions::AssumptionCache::new();
                     Truth::from(crate::transforms::realness::constant_realness_as_declared(
                         arena, id, 20, &mut reals,
                     ))
                     .is_true()
-                }
+                }) || crate::calculus::limit::real_bessel_at_imaginary_argument(arena, id))
         };
         real.insert(id, v);
     }

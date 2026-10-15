@@ -331,17 +331,30 @@ fn integer_quotient(arena: &mut Arena, a: ExprId, b: ExprId, d: ExprId) -> bool 
 }
 
 /// [`solve_impl`] without the check of nested periodic families.
+///
+/// A candidate whose check settles nothing because its own value is not
+/// certified, or is a real value written with `i`
+/// ([`Residual::Undecided`]), is not claimed: the outcome is partial.  Up to 0.51
+/// it was kept, and `i·x^(3/2) − 3·x^(−1/3) = 0` had the third root
+/// `−3^(6/11)` (written with `sin`, `cos` of `5π/11`, a hidden-zero
+/// imaginary part), where the residual is `3^(9/11)·e^(iπ/3)`: on the
+/// branch cut of both powers its value was not found.
 fn solve_impl_checked(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Solutions {
     match solve_raw(arena, expr, var, cx).into_found() {
         Ok((candidates, missing)) => {
-            let mut s = match drop_certain_non_roots(arena, expr, var, candidates, cx) {
-                Ok(s) => s,
+            let (s, undecided) = match drop_certain_non_roots(arena, expr, var, candidates, cx) {
+                Ok(checked) => checked,
                 Err(reason) => return Solutions::refused(Reason::said(reason)),
             };
-            match tangent_pole_roots(arena, expr, var, cx) {
-                Ok(extra) => s.extend(extra),
-                Err(reason) => return reason,
-            }
+            let undecided = first_unaccounted(arena, var, &s, undecided);
+            let missing = match (missing, undecided) {
+                (Some(m), _) => Some(m),
+                (None, Some(c)) => Some(Missing::Alternative(Reason::said(format!(
+                    "cannot decide whether {} solves the equation (its residual does not evaluate)",
+                    arena.display(c)
+                )))),
+                (None, None) => None,
+            };
             if s.is_empty() {
                 // A refused alternative may hold roots (see `Solutions::union`).
                 if missing.is_some() {
@@ -361,85 +374,12 @@ fn solve_impl_checked(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx
             }
             finalize_solutions(arena, s, missing)
         }
-        // `1/tan(x) = 0` holds at the poles of `tan` (before 0.40: "no
-        // solution", from `tan x = 1/0`).
-        Err(Solutions::Complete(RootSet::Empty(reason))) => {
-            match tangent_pole_roots(arena, expr, var, cx) {
-                Ok(extra) if !extra.is_empty() => finalize_solutions(arena, extra, None),
-                Ok(_) => Solutions::none(reason),
-                Err(refusal) => refusal,
-            }
-        }
+        // `1/tan(x) = 0` has no solution: `1/tan x` is undefined at the poles
+        // of `tan` (SymPy 1.14: `solveset(1/tan(x))` and `solve` are empty).
+        // From 0.40 to 0.51 the poles were added as roots, `g/(tan u − c)`
+        // at `cos u = 0` where `g` is finite.
         Err(other) => other,
     }
-}
-
-/// The roots of `expr = 0` at the poles of a `tan u` in it, where `expr`
-/// is 0 (`g/(tan u − c)` with `g` finite: `1/(−tan x − 2)` at `x = π/2`,
-/// which the evaluator, the limit and SymPy's `solveset` all make 0; and
-/// `1/tan x`, i.e. `cot x`, at `π/2`; likewise for `tanh`).  Some solving
-/// paths found them (`tan(−x) − 2`), others did not (`−tan(x) − 2`): before 0.40
-/// `solve_general((cos(2x/3) − 1/4)/(−tan x − 2))` lacked `π/2 + nπ` and
-/// `solve(1/tan(x))` was "no solution".  The candidates solve `cos u = 0`
-/// (in families in a general solve) and are checked against `expr` as
-/// [`solve_impl`] checks its own; `Err` (the refusal) when a family of them
-/// mixes roots and non-roots, or the solve of `cos u = 0` met nested
-/// periodic families.  Empty when `expr` has no `tan` of `var`.
-fn tangent_pole_roots(
-    arena: &mut Arena,
-    expr: ExprId,
-    var: ExprId,
-    cx: &SolveCx,
-) -> Result<Vec<ExprId>, Solutions> {
-    // tan u has its poles at cos u = 0, tanh u at cosh u = 0 (u = iπ/2 + nπi)
-    let atoms: Vec<(ExprId, ExprId, bool)> = crate::base::walk::post_order_ids(arena, expr)
-        .into_iter()
-        .filter_map(|id| match *arena.node(id) {
-            ExprNode::Tan(u) if expr_contains_var(arena, u, var) => Some((id, u, false)),
-            ExprNode::Tanh(u) if expr_contains_var(arena, u, var) => Some((id, u, true)),
-            _ => None,
-        })
-        .collect();
-    let mut denominators: Vec<ExprId> = Vec::with_capacity(atoms.len());
-    for (atom, u, hyperbolic) in atoms {
-        // `expr` as a rational function of `T = tan u` that does not tend
-        // to 0 as `T → ∞` (degree of its numerator in `T` at least that of
-        // its denominator: `tan(4·sin x) + √2/2`) is not 0 at a pole of
-        // `tan u`: none of them is a root (up to 0.46 the poles of
-        // `tan(k·sin x)` could pass the check of a family as roots).
-        let big_t = arena.symbol("__tan_pole");
-        let in_t = arena.subs_structural(expr, atom, big_t);
-        let in_t = polybridge::together(arena, in_t);
-        let (num, den) = polybridge::as_numer_denom(arena, in_t);
-        let num = crate::transforms::expand::expand(arena, num);
-        let den = crate::transforms::expand::expand(arena, den);
-        if let (Some(nc), Some(dc)) = (
-            symbolic_poly_coeffs(arena, num, big_t),
-            symbolic_poly_coeffs(arena, den, big_t),
-        ) && nc.len() >= dc.len()
-            && !crate::base::walk::contains(arena, num, atom)
-        {
-            continue;
-        }
-        denominators.push(if hyperbolic {
-            arena.cosh(u)
-        } else {
-            arena.cos(u)
-        });
-    }
-    let mut out: Vec<ExprId> = Vec::new();
-    for c in denominators {
-        let candidates = match solve_raw(arena, c, var, cx).into_found() {
-            Ok((candidates, _)) => candidates,
-            Err(nested) if nested.is_nested_periods() => return Err(nested),
-            Err(_) => continue,
-        };
-        match drop_certain_non_roots(arena, expr, var, candidates, cx) {
-            Ok(kept) => out.extend(kept),
-            Err(reason) => return Err(Solutions::refused(Reason::said(reason))),
-        }
-    }
-    Ok(out)
 }
 
 /// A refusal, naming a root, when the principal candidates of `expr = 0`
@@ -585,37 +525,182 @@ fn root_off_principal_branch(
     None
 }
 
+/// The first candidate of `undecided` (whose check settled nothing) that
+/// may be a root besides `kept`: one with the value of a kept root (another
+/// form of it, which [`finalize_solutions`] would drop) or outside the
+/// declared domain of `var` (which the public solvers drop) is not
+/// missing.  For a positive `x`, `x^(−1/3)·(231361/10000 + π²/x²)/6 =
+/// π²/(2·x^(7/3))` has `100√2·π/481` and a form of it with `i` whose
+/// residual does not evaluate.
+fn first_unaccounted(
+    arena: &mut Arena,
+    var: ExprId,
+    kept: &[ExprId],
+    undecided: Vec<ExprId>,
+) -> Option<ExprId> {
+    use crate::base::truth::Truth;
+    'cand: for c in undecided {
+        if Truth::from(assumptions_hold(arena, var, c)).is_false() {
+            continue;
+        }
+        if let Some(z) = constant_value_f64(arena, c) {
+            for &k in kept {
+                if constant_value_f64(arena, k).is_some_and(|w| near_values(w, z))
+                    && same_constant(arena, k, c)
+                {
+                    continue 'cand;
+                }
+            }
+        }
+        return Some(c);
+    }
+    None
+}
+
 /// Is `candidate` (free of symbols) certainly a root: the equation at it
 /// evaluates to zero (structurally, or zero to the precision of the zero
-/// search), and is not undefined.
+/// search), and is not undefined ([`residual_at`]).
 fn member_is_root(arena: &mut Arena, expr: ExprId, var: ExprId, candidate: ExprId) -> bool {
+    crate::base::walk::free_symbols(arena, candidate).is_empty()
+        && residual_at(arena, expr, var, candidate) == Residual::Zero
+}
+
+/// What substituting a candidate into the equation shows ([`residual_at`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Residual {
+    /// Zero: structurally, certified, or to the precision of the zero
+    /// search.
+    Zero,
+    /// Certainly not zero: a certified nonzero digit, or undefined there
+    /// (`zoo`, `nan`, or a part of the equation at a pole).
+    Nonzero,
+    /// The evaluation settles nothing, and the candidate is a constant
+    /// whose own value is not certified, or a real value written with `i`
+    /// (`−3^(6/11)` as `−3^(6/11)·(−i)^(6/11)·(cos(5π/11) + …)`): on the
+    /// real axis, where principal powers and logarithms have their cuts, a
+    /// value known as a complex ball cannot say on which side it is.
+    Undecided,
+    /// Not checked: the candidate is not fully evaluated, or the
+    /// substituted equation keeps symbols, or its evaluation settles
+    /// nothing at a certified point (`acos(atan(tan 1))`: `acos` at its
+    /// branch point 1, where it is continuous and 0).
+    Unchecked,
+}
+
+/// `expr` at `var = candidate` (see [`Residual`]).
+fn residual_at(arena: &mut Arena, expr: ExprId, var: ExprId, candidate: ExprId) -> Residual {
     use crate::base::walk;
-    if !walk::free_symbols(arena, candidate).is_empty() || walk::has_unevaluated(arena, candidate) {
-        return false;
+    if walk::has_unevaluated(arena, candidate) {
+        return Residual::Unchecked;
     }
     let at = crate::transforms::subs::subs(arena, expr, var, candidate);
     let at = crate::transforms::eval::eval(arena, at);
+    let unless_a_pole = |arena: &mut Arena, r: Residual| {
+        if part_at_a_pole(arena, expr, var, candidate) {
+            Residual::Nonzero
+        } else {
+            r
+        }
+    };
     if arena.is_zero_structural(at) {
-        return true;
+        return unless_a_pole(arena, Residual::Zero);
     }
     if !walk::free_symbols(arena, at).is_empty() || walk::has_unevaluated(arena, at) {
-        return false;
+        return Residual::Unchecked;
     }
-    let undefined = walk::post_order_ids(arena, at).into_iter().any(|id| {
-        matches!(
-            arena.node(id),
-            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
-        )
-    });
-    if undefined {
-        return false;
+    if is_undefined_value(arena, at) {
+        return Residual::Nonzero;
     }
     use crate::transforms::evalf::{Settled, ZeroSearch};
     match crate::transforms::evalf::evalf_settled(arena, at, ROOT_CHECK_DIGITS, ZeroSearch::Cap) {
-        Ok((z, Settled::Certified)) => z.0.is_zero() && z.1.is_zero(),
-        Ok((_, Settled::ZeroToPrecision)) => true,
-        Err(_) => false,
+        Ok((z, Settled::Certified)) if !(z.0.is_zero() && z.1.is_zero()) => Residual::Nonzero,
+        Ok(_) => unless_a_pole(arena, Residual::Zero),
+        Err(_) => {
+            // An exact cancellation needs no value (`s·(x + e) + i·x` at `x =
+            // −s·e/(s + i)`, with an `s` that does not evaluate)
+            let together = polybridge::together(arena, at);
+            let (num, _) = polybridge::as_numer_denom(arena, together);
+            let num = crate::transforms::expand::expand(arena, num);
+            let num = crate::transforms::eval::eval(arena, num);
+            if arena.is_zero_structural(num) {
+                return unless_a_pole(arena, Residual::Zero);
+            }
+            let uncertain_point = arena.is_symbol_free(candidate) && {
+                let s = part_signs(arena, candidate);
+                !s.certified()
+                    || (s.im.is_zero().is_true()
+                        && crate::base::walk::contains(arena, candidate, arena.i_unit))
+            };
+            let r = if uncertain_point {
+                Residual::Undecided
+            } else {
+                Residual::Unchecked
+            };
+            unless_a_pole(arena, r)
+        }
     }
+}
+
+/// Does the value `at` hold `∞`, `−∞`, `zoo` or `nan`?
+fn is_undefined_value(arena: &Arena, at: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, at)
+        .into_iter()
+        .any(|id| {
+            matches!(
+                arena.node(id),
+                ExprNode::Infinity
+                    | ExprNode::NegInfinity
+                    | ExprNode::ComplexInfinity
+                    | ExprNode::NaN
+            )
+        })
+}
+
+/// Is a part of `expr` at a pole at `var = candidate`, where `expr` is
+/// undefined although the substituted whole may evaluate to a number: a
+/// `tan u` at a zero of `cos u`, a `tanh u` at a zero of `cosh u`, or a
+/// negative power of a part that vanishes there (decided exactly).
+/// `cos(3x)/(tan(−x) − 2)` at `π/2` evaluates to `0·(1/zoo) = 0`, and
+/// `1/tan x` to `1/zoo = 0`: from 0.40 to 0.51 such poles were roots (SymPy
+/// 1.14's `solveset` excludes them from `1/tan(x)` and `1/(tan(−x) − 2)`,
+/// on bounded intervals also from `cos(3x)/(tan(−x) − 2)`;
+/// `reduce_inequalities` excluded them since 0.50).  The natural domain of
+/// an expression is where every part of it is defined.  `acot z` and
+/// `acoth z` are written `atan(1/z)`, `atanh(1/z)` and are defined at `z =
+/// 0` (`π/2`, `iπ/2`; SymPy's `acot(0)`, `acoth(0)`): a reciprocal that is
+/// only the argument of `atan` or `atanh` is not a pole.
+fn part_at_a_pole(arena: &mut Arena, expr: ExprId, var: ExprId, candidate: ExprId) -> bool {
+    let ids = crate::base::walk::post_order_ids(arena, expr);
+    let mut outside_atan: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    outside_atan.insert(expr);
+    for &id in &ids {
+        if !matches!(arena.node(id), ExprNode::Atan(_) | ExprNode::Atanh(_)) {
+            outside_atan.extend(arena.children(id));
+        }
+    }
+    let mut vanishing: Vec<ExprId> = Vec::new();
+    for id in ids {
+        let base = match *arena.node(id) {
+            ExprNode::Tan(u) if expr_contains_var(arena, u, var) => arena.cos(u),
+            ExprNode::Tanh(u) if expr_contains_var(arena, u, var) => arena.cosh(u),
+            ExprNode::Pow(b, e)
+                if arena.as_num(e).is_some_and(|r| r.is_negative())
+                    && expr_contains_var(arena, b, var)
+                    && outside_atan.contains(&id) =>
+            {
+                b
+            }
+            _ => continue,
+        };
+        if !vanishing.contains(&base) {
+            vanishing.push(base);
+        }
+    }
+    vanishing.into_iter().any(|base| {
+        let v = crate::transforms::subs::subs(arena, base, var, candidate);
+        let v = crate::transforms::eval::eval(arena, v);
+        arena.is_zero_structural(v) || proved_zero_constant(arena, v)
+    })
 }
 
 /// Remove the candidates that certainly do not solve `expr = 0`.
@@ -628,9 +713,13 @@ fn member_is_root(arena: &mut Arena, expr: ExprId, var: ExprId, candidate: ExprI
 /// (and per composition), every candidate of a non-polynomial equation is
 /// substituted back, as SymPy's `solve` does with `checksol`: one at which
 /// the equation evaluates to a certified non-zero number, or is undefined
-/// (`|x|/x = 0` at `x = 0`), is dropped.  Candidates with free parameters,
-/// and equations `evalf` cannot decide, are kept.  Polynomial equations
-/// over ℚ are solved exactly and are not re-checked.
+/// (`|x|/x = 0` at `x = 0`, `1/tan x = 0` at `x = π/2`: [`part_at_a_pole`]),
+/// is dropped.  Candidates with free parameters are kept, and so are
+/// constants at a certified point whose residual `evalf` cannot decide (a
+/// branch point: `acos` at 1); constants whose own value is not certified
+/// and whose residual does not evaluate are returned apart (the second
+/// value; up to 0.51 they were kept).  Polynomial equations over ℚ are
+/// solved exactly and are not re-checked.
 ///
 /// A certified digit decides whatever the magnitude of the residual: the
 /// candidates are exact.  Before 0.31 a residual counted only above
@@ -648,24 +737,25 @@ fn drop_certain_non_roots(
     var: ExprId,
     solutions: Vec<ExprId>,
     cx: &SolveCx,
-) -> Result<Vec<ExprId>, String> {
+) -> Result<(Vec<ExprId>, Vec<ExprId>), String> {
     if solutions.is_empty() || polybridge::expr_to_poly(arena, expr, var).is_some() {
-        return Ok(solutions);
+        return Ok((solutions, Vec::new()));
     }
     let mut out = Vec::with_capacity(solutions.len());
+    let mut undecided = Vec::new();
     for s in solutions {
         match cx.period() {
             Some(n) if crate::base::walk::contains(arena, s, n) => {
                 out.extend(check_family(arena, expr, var, s, n)?);
             }
-            _ => {
-                if !certainly_not_a_root(arena, expr, var, s) {
-                    out.push(s);
-                }
-            }
+            _ => match residual_at(arena, expr, var, s) {
+                Residual::Nonzero => {}
+                Residual::Undecided => undecided.push(s),
+                Residual::Zero | Residual::Unchecked => out.push(s),
+            },
         }
     }
-    Ok(out)
+    Ok((out, undecided))
 }
 
 /// Classes of members of `candidate(n)` (`n` an integer) that solve
@@ -908,9 +998,10 @@ fn singular_member(
 }
 
 /// Does `expr` at `var = candidate` certainly not vanish?  `true` when the
-/// substituted equation, free of symbols, is undefined (`zoo`, `NaN`, `±∞`)
-/// or evaluates to a number with a certified nonzero digit; `false` when
-/// it is zero (to the precision of the zero search) or cannot be decided.
+/// substituted equation, free of symbols, is undefined (`zoo`, `NaN`, `±∞`,
+/// or a part of it at a pole: [`part_at_a_pole`]) or evaluates to a number
+/// with a certified nonzero digit; `false` when it is zero (to the
+/// precision of the zero search) or cannot be decided ([`residual_at`]).
 /// A candidate with parameters is decided when the substituted equation
 /// is free of them: up to 0.50 it was kept unchecked, and `(x + y)^(1/6)
 /// = −(1 + √2)/3` gave `x = −y + 70√2/729 + 11/81` (the sixth root of
@@ -922,29 +1013,7 @@ pub(crate) fn certainly_not_a_root(
     var: ExprId,
     candidate: ExprId,
 ) -> bool {
-    use crate::base::walk;
-    if walk::has_unevaluated(arena, candidate) {
-        return false;
-    }
-    let at = crate::transforms::subs::subs(arena, expr, var, candidate);
-    let at = crate::transforms::eval::eval(arena, at);
-    if !walk::free_symbols(arena, at).is_empty() || walk::has_unevaluated(arena, at) {
-        return false;
-    }
-    let undefined = walk::post_order_ids(arena, at).into_iter().any(|id| {
-        matches!(
-            arena.node(id),
-            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
-        )
-    });
-    if undefined {
-        return true;
-    }
-    use crate::transforms::evalf::{Settled, ZeroSearch};
-    match crate::transforms::evalf::evalf_settled(arena, at, ROOT_CHECK_DIGITS, ZeroSearch::Cap) {
-        Ok((z, Settled::Certified)) => !(z.0.is_zero() && z.1.is_zero()),
-        Ok((_, Settled::ZeroToPrecision)) | Err(_) => false,
-    }
+    residual_at(arena, expr, var, candidate) == Residual::Nonzero
 }
 
 /// Digits at which [`certainly_not_a_root`] evaluates a residual.
@@ -1310,10 +1379,10 @@ fn finalize_solutions(
         // `100√2·π/481` and two radical forms of the same number.
         let z = constant_value_f64(arena, v);
         if let Some(z) = z
-            && out.iter().zip(&values).any(|(&o, w)| {
-                w.is_some_and(|w| (w - z).norm() <= 1e-9 * (1.0 + z.norm()))
-                    && same_constant(arena, o, v)
-            })
+            && out
+                .iter()
+                .zip(&values)
+                .any(|(&o, w)| w.is_some_and(|w| near_values(w, z)) && same_constant(arena, o, v))
         {
             continue;
         }
@@ -1363,6 +1432,13 @@ fn constant_value_f64(arena: &mut Arena, v: ExprId) -> Option<num_complex::Compl
     crate::transforms::evalf::evalf_complex64(arena, v)
         .ok()
         .filter(|z| z.re.is_finite() && z.im.is_finite())
+}
+
+/// Are two 16-digit values ([`constant_value_f64`]) close enough to be
+/// compared exactly by [`same_constant`]?  A guide only: `same_constant`
+/// decides.
+fn near_values(w: num_complex::Complex64, z: num_complex::Complex64) -> bool {
+    (w - z).norm() <= 1e-9 * (1.0 + z.norm())
 }
 
 /// Are the constants `a` and `b` exactly equal (their difference decided
@@ -1427,7 +1503,11 @@ fn classify_constant(arena: &mut Arena, expr: ExprId, var: ExprId) -> Solutions 
     // Purely numeric constant (no free symbols): the certified zero test
     // (a certified digit, or the minimal polynomial of an algebraic
     // number).  Before 0.31 `|evalf(c, 20)| < 10⁻¹⁵` was an identity:
-    // `solve(exp(−40), x)` reported every `x` as a solution.
+    // `solve(exp(−40), x)` reported every `x` as a solution.  A constant
+    // the test does not decide (one without a value, `δ(i)`, or with a
+    // hidden zero in a denominator, `1/max(Γ(1/3)Γ(2/3) − 2π/√3, 0)`) is
+    // refused: up to 0.51 it was "no solution" (`solve_as_set`:
+    // `EmptySet`).  An infinite one is not zero.
     if crate::base::walk::free_symbols(arena, expanded).is_empty() {
         match crate::poly::algebraic::is_zero_checked(arena, expanded) {
             Some(false) => {
@@ -1437,16 +1517,42 @@ fn classify_constant(arena: &mut Arena, expr: ExprId, var: ExprId) -> Solutions 
                 )));
             }
             Some(true) => return Solutions::Complete(RootSet::All),
-            // Zero to the precision of the deep zero search (1,024 bits
-            // beyond the working precision) but not provably so: an
-            // identity, the tolerance the old `10⁻¹⁵` stood for.
+            // infinite: not zero (below)
+            None if has_infinite_term(arena, expanded)
+                && !matches!(arena.node(expanded), ExprNode::NaN) => {}
             None => {
+                // What `Ex::is_zero` decides from the structure and the
+                // value (a reciprocal is never 0; a known sign)
+                use crate::base::assumptions::{AssumptionCache, Props};
+                use crate::base::truth::Truth;
+                let zero = AssumptionCache::new()
+                    .query(arena, expr, Props::ZERO)
+                    .or_else(|| {
+                        crate::transforms::eval::constant_facts(arena, expr).query(Props::ZERO)
+                    });
+                match Truth::from(zero) {
+                    Truth::True => return Solutions::Complete(RootSet::All),
+                    Truth::False => {
+                        let shown = arena.display(expr).to_string();
+                        return Solutions::none(Reason::said(format!(
+                            "equation reduces to the nonzero constant {shown} = 0"
+                        )));
+                    }
+                    Truth::Unknown => {}
+                }
+                // Zero to the precision of the deep zero search (1,024 bits
+                // beyond the working precision) but not provably so: an
+                // identity, the tolerance the old `10⁻¹⁵` stood for.
                 use crate::transforms::evalf::{Settled, ZeroSearch};
                 if let Ok((_, Settled::ZeroToPrecision)) =
                     crate::transforms::evalf::evalf_settled(arena, expanded, 20, ZeroSearch::Deep)
                 {
                     return Solutions::Complete(RootSet::All);
                 }
+                let shown = arena.display(expr).to_string();
+                return Solutions::refused(Reason::said(format!(
+                    "cannot decide whether the constant {shown} is zero (it does not evaluate)"
+                )));
             }
         }
     }
@@ -2248,14 +2354,19 @@ fn solve_by_peeling(
         // erf(f) = rhs → f = erfinv(rhs), erfc(f) = rhs → f = erfcinv(rhs),
         // the principal solutions (erf is entire and takes each value
         // infinitely often).  A rhs outside the range (−1, 1) of erf on the
-        // reals, (0, 2) of erfc, is reached by a complex f only, where the
-        // inverse has no principal value: no solution when f is real in the
-        // domain of the unknown, refused otherwise.  Up to 0.48 a plain `x`
-        // was taken real here (alone among the range restrictions), and
-        // `Ex::solve` answered `erf(x) = 2` with "no solution", while
-        // `erf(0.8694… + 1.3406…i) = 2` (mpmath `findroot`).  Refused before
-        // 0.47 (SymPy: `solve(erf(x) - y)` → `[erfinv(y)]`).
+        // reals, (0, 2) of erfc — a real one beyond the ends, or a non-real
+        // one — is reached by a complex f only, where the inverse has no
+        // principal value: no solution when f is real in the domain of the
+        // unknown, refused otherwise (a constant rhs not decided either way
+        // too).  Up to 0.48 a plain `x` was taken real here (alone among the
+        // range restrictions), and `Ex::solve` answered `erf(x) = 2` with "no
+        // solution", while `erf(0.8694… + 1.3406…i) = 2` (mpmath
+        // `findroot`); up to 0.51 a non-real rhs was inverted, and `erf(2x +
+        // 1/3) = −2i` gave the one root `−erfinv(2i)/2 − 1/6` of infinitely
+        // many.  Refused before 0.47 (SymPy: `solve(erf(x) - y)` →
+        // `[erfinv(y)]`).
         ExprNode::Erf(inner) | ExprNode::Erfc(inner) => {
+            use crate::base::truth::Truth;
             let is_erf = matches!(arena.node(lhs), ExprNode::Erf(_));
             let (lo, hi) = if is_erf {
                 (-Q::one(), Q::one())
@@ -2264,30 +2375,38 @@ fn solve_by_peeling(
             };
             // a constant `rhs` by its certified sign against the ends (`ln 3`:
             // up to 0.50 the real solve of `exp(erf x) = 3` gave `erfinv(ln 3)`,
-            // which is not real)
-            let out_of_range = match arena.as_num(rhs) {
-                Some(c) => *c <= lo || *c >= hi,
+            // which is not real); a value with parameters is inverted
+            let in_range = match arena.as_num(rhs) {
+                Some(c) => Truth::from(*c > lo && *c < hi),
                 None if crate::base::walk::free_symbols(arena, rhs).is_empty() => {
                     let (lo_id, hi_id) = (arena.num_ratio(lo.clone()), arena.num_ratio(hi.clone()));
                     let above = arena.sub(rhs, hi_id);
                     let below = arena.sub(rhs, lo_id);
-                    matches!(
-                        crate::poly::algebraic::sign_checked(arena, above),
-                        Some(0 | 1)
-                    ) || matches!(
-                        crate::poly::algebraic::sign_checked(arena, below),
-                        Some(0 | -1)
-                    )
+                    let above = crate::poly::algebraic::sign_checked(arena, above);
+                    let below = crate::poly::algebraic::sign_checked(arena, below);
+                    if above == Some(-1) && below == Some(1) {
+                        Truth::True
+                    } else if matches!(above, Some(0 | 1))
+                        || matches!(below, Some(0 | -1))
+                        || part_signs(arena, rhs).nonreal()
+                    {
+                        Truth::False
+                    } else {
+                        Truth::Unknown
+                    }
                 }
-                None => false,
+                None => Truth::True,
             };
+            // `erf` and `erfc` are entire: never infinite (`π^(erfc x − 1) =
+            // 0`); a `nan` (`0^(erfc f) = 0`) proves nothing
+            if has_infinite_term(arena, rhs) && !matches!(arena.node(rhs), ExprNode::NaN) {
+                return no_preimage();
+            }
             let real_inner = cx.range_restricted(arena, inner, var);
-            if out_of_range {
-                return if real_inner {
-                    no_preimage()
-                } else {
-                    not_inverted()
-                };
+            match in_range {
+                Truth::True => {}
+                Truth::False if real_inner => return no_preimage(),
+                Truth::False | Truth::Unknown => return not_inverted(),
             }
             if period.is_some() && !real_inner {
                 // the other preimages of a complex argument are not known
@@ -2309,6 +2428,38 @@ fn solve_by_peeling(
             let e = arena.exp(rhs);
             let new_rhs = arena.mul(&[rhs, e]);
             let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
+            solve_by_peeling(arena, inner, new_rhs, var, cx)
+        }
+        // W_k(f) = rhs → f = rhs·e^rhs for the other branches too, when rhs is
+        // a value of W_k — `W_k(rhs·e^rhs) = rhs`, which depends on rhs alone
+        // and is decided here (the candidate check skips an equation with
+        // parameters): exactly, else no preimage when certified otherwise
+        // (`W₁(x) = 0`: `W₁(0) = −∞`; `W₋₁(x) = −asin(1/π)`: `W₋₁` is real
+        // only ≤ −1), else refused (`W₋₁(x) = y`) unless roots may hold for
+        // some parameter values only ([`SolveCx::conditional_roots_as_candidates`]).
+        // `W₋₁(x) = −2` → `−2e⁻²`; refused before 0.52, so an initial value
+        // on `W₋₁` could not be fitted (SymPy 1.14 raises NotImplementedError).
+        ExprNode::Lib(crate::base::libfn::LibFn::LambertW, ref args)
+            if args.len() == 2 && !expr_contains_var(arena, args[1], var) =>
+        {
+            let (inner, k) = (args[0], args[1]);
+            let e = arena.exp(rhs);
+            let new_rhs = arena.mul(&[rhs, e]);
+            let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
+            let back = arena.lambertw_branch(new_rhs, k);
+            let gap = arena.sub(back, rhs);
+            let gap = crate::transforms::eval::eval(arena, gap);
+            if !arena.is_zero_structural(gap) {
+                // `gap` is free of `var`: the substitution is the identity.
+                if certainly_not_a_root(arena, gap, var, var) {
+                    return Solutions::none(Reason::said(
+                        "the right-hand side is not a value of this branch of Lambert W",
+                    ));
+                }
+                if !cx.conditional_roots_as_candidates() {
+                    return not_inverted();
+                }
+            }
             solve_by_peeling(arena, inner, new_rhs, var, cx)
         }
         // atan2(f, c) = rhs for a constant c > 0 is atan(f/c) = rhs: f =
@@ -4656,6 +4807,18 @@ fn try_solve_rational(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx
     let num = crate::transforms::expand::expand(arena, num);
     let num = crate::transforms::eval::eval(arena, num);
     if !expr_contains_var(arena, num, var) {
+        // A numerator that is a nonzero constant: no root.  Up to 0.51 not
+        // found, and the half-angle form `((1 − t²)² + 2(1 − t²)(1 + t²) +
+        // (1 + t²)²)/(1 + t²)²` of `cos(−x)² + 2cos(−x) + 1` (numerator 4)
+        // left `solve` partial (`[π]` and an unsolved alternative).
+        if arena.is_symbol_free(num)
+            && crate::base::truth::Truth::from(crate::poly::algebraic::is_zero_checked(arena, num))
+                .is_false()
+        {
+            return Solutions::none(Reason::said(
+                "the equation is a fraction with a nonzero constant numerator",
+            ));
+        }
         return not_found();
     }
     // The numerator is a polynomial: no negative power of `var` is left.
@@ -4821,8 +4984,12 @@ fn rational_over_q_in_all_symbols(arena: &Arena, expr: ExprId) -> bool {
 /// The candidates (roots of factors of the product `expr`) that are not
 /// poles: each denominator factor (`b^(−k)` containing `var`) at a
 /// candidate free of symbols is tested exactly (`is_zero_checked`: certified
-/// digits, then the minimal polynomial of an algebraic number).
-/// `Err` when a test is undecided.
+/// digits, then the minimal polynomial of an algebraic number); one that is
+/// infinite there (`tan(−x) − 2` at `π/2`) leaves `expr` undefined.  Up to
+/// 0.51 that was undecided: `solve(cos(3x)/(tan(−x) − 2))` was refused
+/// ("cannot decide whether 2*atan(-1) is a pole").  So is each argument `b`
+/// of a Lambert W branch `W_k(b)`, `k ≠ 0` (at any candidate: `W_k(0) =
+/// −∞`).  `Err` when a test is undecided.
 fn drop_poles_of_product(
     arena: &mut Arena,
     expr: ExprId,
@@ -4845,11 +5012,37 @@ fn drop_poles_of_product(
             dens.push(b);
         }
     }
-    if dens.is_empty() {
+    let lambert_args = lambert_branch_poles(arena, expr, var);
+    if dens.is_empty() && lambert_args.is_empty() {
         return Ok(candidates);
     }
     let mut out = Vec::with_capacity(candidates.len());
     'cand: for s in candidates {
+        // A Lambert argument with parameters left is nonzero generically, as
+        // a denominator of a rational function with parameters (`x + y` at
+        // `x = 0`); only an exact zero makes the candidate a pole.
+        for &(b, direct) in &lambert_args {
+            let d = crate::transforms::subs::subs(arena, b, var, s);
+            let d = crate::transforms::expand::expand(arena, d);
+            let d = crate::transforms::eval::eval(arena, d);
+            let zero = if arena.is_zero_structural(d) {
+                Some(true)
+            } else if arena.is_symbol_free(d) {
+                crate::poly::algebraic::is_zero_checked(arena, d)
+            } else {
+                Some(false)
+            };
+            match zero {
+                Some(true) if direct => continue 'cand,
+                Some(false) => {}
+                _ => {
+                    return Err(format!(
+                        "cannot decide whether {} is a pole",
+                        arena.display(s)
+                    ));
+                }
+            }
+        }
         if !crate::base::walk::free_symbols(arena, s).is_empty() {
             out.push(s);
             continue;
@@ -4874,7 +5067,7 @@ fn drop_poles_of_product(
             let d = crate::transforms::subs::subs(arena, b, var, s);
             let d = crate::transforms::expand::expand(arena, d);
             let d = crate::transforms::eval::eval(arena, d);
-            if arena.is_zero_structural(d) {
+            if arena.is_zero_structural(d) || is_undefined_value(arena, d) {
                 continue 'cand;
             }
             match crate::poly::algebraic::is_zero_checked(arena, d) {
@@ -4891,6 +5084,46 @@ fn drop_poles_of_product(
         out.push(s);
     }
     Ok(out)
+}
+
+/// The arguments `b` (with `var`) of the Lambert W branches `W_k(b)`, `k ≠
+/// 0`, in `expr`, each with whether it is reached through sums, products
+/// and positive powers only.  Where `b = 0` the branch is `−∞`, which the
+/// canonical product `0·W_k(0) = 0` does not show (`canon_mul` folds
+/// `W_k(0)` only later, in `eval`): reached so, the term is infinite there
+/// and the point is a pole; inside a function or an exponent the infinity
+/// may vanish (`e^{W₁(0)} = 0`) or not, undecided.  Since 0.52, when `W_k`
+/// is inverted, `x·W₁(x) = 0` would otherwise have the root 0.
+fn lambert_branch_poles(arena: &Arena, expr: ExprId, var: ExprId) -> Vec<(ExprId, bool)> {
+    let mut out: Vec<(ExprId, bool)> = Vec::new();
+    let mut stack = vec![(expr, true)];
+    while let Some((id, direct)) = stack.pop() {
+        match arena.node(id) {
+            ExprNode::Add(c) | ExprNode::Mul(c) => {
+                stack.extend(c.iter().map(|&ch| (ch, direct)));
+            }
+            ExprNode::Neg(inner) => stack.push((*inner, direct)),
+            ExprNode::Pow(b, e) => {
+                let positive = arena.as_num(*e).is_some_and(|q| q.is_positive());
+                stack.push((*b, direct && positive));
+                stack.push((*e, false));
+            }
+            node => {
+                if let ExprNode::Lib(crate::base::libfn::LibFn::LambertW, args) = node
+                    && let [b, k] = args[..]
+                    && !arena.as_num(k).is_some_and(|q| q.is_zero())
+                    && expr_contains_var(arena, b, var)
+                {
+                    match out.iter_mut().find(|(seen, _)| *seen == b) {
+                        Some(entry) => entry.1 |= direct,
+                        None => out.push((b, direct)),
+                    }
+                }
+                node.for_each_child(|c| stack.push((c, false)));
+            }
+        }
+    }
+    out
 }
 
 /// Does `var` occur in `expr` only in sums, products and integer powers,

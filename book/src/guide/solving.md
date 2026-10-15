@@ -106,6 +106,16 @@ equation that cannot be solved is a `ConditionSet`, never a partial list.
 Before 0.40 the periodic sets were the principal solutions only
 (`sin(x)` gave `{0, pi}`).
 
+A root is a point where every part of the equation is defined: the poles
+of `tan` and `tanh` and the zeros of a denominator are never roots, even
+where the substituted expression evaluates to a number
+(`solve_as_set(1/tan(x))` is `EmptySet`, as SymPy's `solveset`; before
+0.52 it was `{nπ + π/2}`).  An equation `c = 0` whose left side is a
+constant is "no solution" only when `c` is proved nonzero; a constant
+whose zero test is undecided, or that has no value (`DiracDelta(I)`), gives
+a `ConditionSet` (and `solve` refuses).  Unions of real intervals are
+printed in ascending order of their lower ends.
+
 ```rust
 use symplex::prelude::*;
 

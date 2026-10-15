@@ -128,6 +128,14 @@ Rust supports (including `wasm32-unknown-unknown`), prefer
 `default-features = false`, and extend `deny.toml` deliberately if a new
 licence appears.
 
+`Cargo.lock` is not committed, so CI and users resolve the newest compatible
+versions while a local lock may be old.  Compare performance between
+versions only with the same lock, and when a dependency version matters,
+raise its floor in `Cargo.toml`: up to 0.51 a local lock pinned num-bigint
+0.4.6, which allocates for every one-digit number, and the matrix
+functions looked 40 % slower than in 0.48 (built with 0.4.8); `Cargo.toml`
+now requires 0.4.8.
+
 ### Feature flags: one crate, no knobs
 
 `symplex` deliberately has **no Cargo features** (only `symplex-wasm` carries
@@ -642,7 +650,14 @@ variant that has a canonical constructor (`Add`, `Mul`, `Pow`, `FiniteSet`,
 new variant must say how it is built).  Up to 0.48 `subs` rebuilt `{x, y}` with
 `x, y ↦ 1` as the non-canonical `{1, 1}`.  Enforced by
 `tests/unit/test_canonical_construction.rs` (`#[cfg(test)]` code is exempt;
-exceptions are allowlisted with their reason and exact count).
+an exception would be allowlisted with its reason and exact count — the list
+is empty since 0.52).  `SetUnion` children are sorted by sort key, then the
+real intervals among them are put in ascending order of their lower ends
+(`canon::order_real_intervals`: `−∞`, exact rationals, constants by 17
+digits of `evalf`, ties by sort key) in the places the sort key gave them,
+so the set evaluator's normal form (intervals ascending, then the isolated
+points) is the canonical union; up to 0.51 `sets.rs` interned that form raw
+and `(0, 1) ∪ [2, 3]` was not `==` to its JSON round trip.
 
 ---
 
@@ -1186,7 +1201,13 @@ explicitly.  Zero tests of constants in limits and
 series go through `calculus_util::hidden_zero` (`Verdict<Truth>`): an
 undecided coefficient may be kept as a value but never divided by, dropped,
 or taken as a leading term; new exact rewrites go in `exact_rewrites`, each
-an identity of the principal values wherever both sides are finite.  A
+an identity of the principal values wherever both sides are finite.  Logs
+and powers of a constant are rewritten only where its value is certified on
+an axis (`values_on_axes`: `ln`, `√`, `(e^z)^q` by their principal values),
+logarithms combine only over certified positive reals (`logs_combined`),
+and a coefficient with parameters is decided by its symbol-free parts
+(`series::parameter_parts`): `ω·k` is 0 when `k` is proved 0, undecided
+otherwise, never "nonzero".  A
 symbol-dependent quantity certified nonzero at a sample point that respects
 the assumptions (`identically_zero::nonzero_at_a_sample`) is *not
 identically zero*: the generic-solution convention may treat it as nonzero.
@@ -1211,6 +1232,18 @@ Poles of rational functions carry the certified sign of their real part
 (`PoleView::re_sign`); a residue's pole order counts a coefficient as zero
 only when proved (`residue::coefficient_is_zero`).
 
+**Poles of rational factors in integrals.**  A pole of a factor
+`B(x)^(−k)`, `B ∈ ℚ[x]`, is located by Descartes isolation, never through
+the root's closed form: comparing or taking limits at a root in radicals
+needs minimal polynomials of unbounded degree (up to 0.51 `∫₁² dx/(x⁴ −
+3x³ − 2x² + 3x + 2)` ran for minutes).  Divergence is proved when the other
+factors are enclosed away from 0 on the isolating interval
+(`definite::pole_divergence`, `evalf::nonzero_on`).  A formal definite
+integral whose quadrature refuses is evaluated from its closed form
+(`definite::closed_form`, sought once per integral); a closed-form ball is
+raised in precision until it certifies the working precision, since
+`evalf` reads an integral's ball around 0 as an integral equal to 0.
+
 **Poles of powers.**  `b^e` is claimed complex, real, rational,
 non-negative or finite only off the pole at `b = 0`: for a symbol-free `b`
 that means `b` known nonzero (structure, or a certified value via
@@ -1219,6 +1252,14 @@ that means `b` known nonzero (structure, or a certified value via
 poles" (`1/x` is real for a real `x`).  A constant without a value is real
 only if known finite.  `δ` has a value only at a real argument (an exact-0
 imaginary part).
+
+**Values at infinity.**  The values at `±∞` (and other special values such
+as `W_k(0) = −∞`) that `eval` folds are also folded when the node is built
+(`canon::lib_function_value`), so that `0/f(∞)` is seen as `0/0` and
+`0·f(∞)` as `0·∞` before the canonical `0·x = 0` applies: up to 0.51
+`0/besselj(1, ∞)` and `0·airybi(∞)` were 0.  A closed form is not
+evaluated at an infinite argument (`uppergamma(2, −∞)` gave `nan` from
+`(x + 1)e^{−x}`).
 
 When only coprimality or the degree of a gcd is needed, use modular images
 (`modgcd::main_gcd_degree_bound`, `coprime_certified`), not a full gcd: an
@@ -1250,8 +1291,16 @@ follows wraps (up to 0.48 `∫₋₁¹ floor(10¹⁹x)/10¹⁹` was 0).  Use
 `cast::f64_to_i64` (exact or `None`) or `cast::integer_span` (a float range
 widened to integers, with a length cap).  `tests/unit/test_float_casts.rs`
 counts these casts and the `(f64 expr) as usize + …` guard-bit pattern per
-file.  Differences of `i64` exponents and scales are `saturating_*` or taken
+files.  Differences of `i64` exponents and scales are `saturating_*` or taken
 in `f64`.
+
+**Exact arithmetic has size bounds.**  An exact power, or any intermediate
+that grows with an exponent, is formed only below a bit bound
+(`algebraic::MAX_POWER_BITS`, 2¹⁶; `MAX_POWER_DEGREE` for minimal
+polynomials of powers), with checked conversions (`u32::try_from`, never
+`as`); beyond the bound the decider returns `None`.  Up to 0.51
+`rational_pow` cast the exponent `as u32`: `2^(2³² + 1)` became `2`, so
+`2^4294967297 − 2` was called zero, and `1000000007^1000000007 − 2` hung.
 
 **The BigFloat boundary** (`src/base/bigfloat.rs`).  astro-float's
 `BigFloat::pow` and `BigFloat::log` never return when the exact result is
@@ -1284,7 +1333,20 @@ empty list; callers pick a named policy (`points_if_complete()`,
 refuse in the public solvers, a candidate only for `known_real_roots`
 (`SolveCx::as_candidates`).  A root returned for a real unknown must be
 proved real; a constant discriminant or leading coefficient is decided by
-`constant_zero_decision`, never by how it looks.
+`constant_zero_decision`, never by how it looks.  A root is a point of the
+natural domain: every part of the equation is defined there.  The
+evaluator absorbs some poles (`1/zoo = 0`, `zoo^(−k) = 0`), so the check of
+a candidate (`solve::residual_at`) also asks whether a part is at a pole
+(`part_at_a_pole`: `tan u` at `cos u = 0`, `tanh u` at `cosh u = 0`, a
+negative power of a vanishing part, the argument of `W_k`, `k ≠ 0`, at 0;
+`acot`, `acoth`, written `atan(1/z)`, `atanh(1/z)`, are defined at 0).  A
+candidate whose residual does not evaluate is kept only at a certified
+point (a branch point such as `acos` at 1); one whose own value is not
+certified is not claimed (the outcome is `Partial`).  An equation `c = 0`
+for a constant `c` is "no solution" only when `c` is proved nonzero
+(certified digits, a minimal polynomial, or what `Ex::is_zero` decides);
+otherwise it is refused.  A Lambert-W family of an ODE carries its `W₋₁`
+twin, and `check_ode_solution` rewrites `e^{W(z)} = z/W(z)`.
 
 **Budgets count work.**  An engine's limit counts deterministic work — a
 `Work` charged per step, or a `WorkScope` that counts interns attempted —
@@ -1329,6 +1391,11 @@ midpoint.  Use `bigfloat::is_strictly_positive`/`is_sign_positive`
 subnormals), and `bigfloat::to_f64`/`to_f64_or_inf` as the only conversions
 to `f64`.  Decimal output is our exact conversion
 (`bigfloat::to_decimal_digits`), not astro-float's `convert_to_radix`.
+A route's own rounding belongs in its bound: exact inputs make a node's
+*propagated* error 0, not its computation (`b^x` formed as `exp(x·Log b)`
+rounds `Log b`; `accuracy::pow_rounding`), and a part is exact only where
+the route provably yields an exact 0 (up to 0.51 the rounding of `8π` made
+`(−1)^(8 + 2i)` certified non-real).
 
 **Coefficient domains are values.**  A new coefficient ring implements
 `poly::domain::CoeffDomain` (`&self` carries its parameters — a modulus, a

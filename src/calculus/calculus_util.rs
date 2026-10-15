@@ -1828,6 +1828,16 @@ const MAX_LOG_PRIME: u64 = 1 << 20;
 ///   ([`inverse_functions_as_logs`](crate::calculus::limit::inverse_functions_as_logs)),
 ///   the spelling of Gruntz's tractable rewrite: `asinh 2 − ln(2 + √5)`
 ///   becomes `0`;
+/// - the logarithms and radicals of constants on an axis by their
+///   principal values, `ln(i·(√3 − 2)) = ln(2 − √3) − iπ/2`, `√(1 − π²/4)
+///   = i·√(π²/4 − 1)`, `√(e^{2i}) = e^i` ([`values_on_axes`]), so the
+///   logarithmic forms of inverse functions on their cuts read as the
+///   principal values: `acos(−2) = π + i·ln(2 − √3)`;
+/// - a sum of logarithms of positive reals with one cofactor whose
+///   arguments multiply to 1 dropped, `ln(2 + √3) + ln(2 − √3) = 0`
+///   ([`logs_combined`]): `atan(z) + atan(1/z)` for `z = acos 2 = i·ln(2 +
+///   √3)` is `π/2`; and `atan(z) + atan(1/z) = ±π/2` for `Re z ≷ 0`
+///   ([`reciprocal_atans_paired`]);
 /// - the logarithm of a positive rational as a sum of logarithms of its
 ///   prime factors, `ln 16 = 4·ln 2`, `ln(3/2) = ln 3 − ln 2`;
 /// - the square root of a polynomial with its nonnegative square factors
@@ -1851,13 +1861,480 @@ pub(crate) fn exact_rewrites(arena: &mut Arena, c: ExprId) -> ExprId {
     }
     let r = compositions_pass(arena, c);
     let r = exact_pass(arena, r);
+    let r = reciprocal_atans_paired(arena, r);
     let logs = crate::calculus::limit::inverse_functions_as_logs(arena, r);
+    let logs = values_on_axes(arena, logs);
     let r = if logs == r {
         r
     } else {
         exact_pass(arena, logs)
     };
+    let r = logs_combined(arena, r);
     like_arguments_unified(arena, r)
+}
+
+/// The sum `c` with each pair of terms `q·K·atan(z) + q·K·atan(w)` (one
+/// rational `q`, one cofactor `K`, `z·w = 1` exactly; or `q·K·atan(z) −
+/// q·K·atan(w)` with `z·w = −1`) replaced by `±q·K·π/2` for a constant
+/// `z` whose real part has a certified sign: the principal
+/// values satisfy `atan z + atan(1/z) = π/2` for `Re z > 0` and `−π/2` for
+/// `Re z < 0` (`atan(2 + i) + atan((2 − i)/5) = π/2`, mpmath
+/// `1.5707963267949`).  On the imaginary axis the sum depends on `|z|` and
+/// is left to the logarithmic forms ([`logs_combined`]).  `c` unchanged
+/// otherwise.
+fn reciprocal_atans_paired(arena: &mut Arena, c: ExprId) -> ExprId {
+    use crate::base::truth::SignSet;
+    if !arena.is_symbol_free(c) {
+        return c;
+    }
+    let ExprNode::Add(terms) = arena.node(c).clone() else {
+        return c;
+    };
+    // (index, q, K, z) of each term `q·K·atan(z)`.
+    let mut atans: Vec<(usize, crate::base::numeric::Q, ExprId, ExprId)> = Vec::new();
+    for (k, &t) in terms.iter().enumerate() {
+        let (q, rest) = arena.as_coeff_term(t);
+        let (z, cofactor) = match arena.node(rest).clone() {
+            ExprNode::Atan(z) => (z, arena.one()),
+            ExprNode::Mul(fs) => {
+                let mut found = fs
+                    .iter()
+                    .filter(|&&f| matches!(arena.node(f), ExprNode::Atan(_)));
+                let (Some(&a), None) = (found.next(), found.next()) else {
+                    continue;
+                };
+                let ExprNode::Atan(z) = *arena.node(a) else {
+                    continue;
+                };
+                let others: Vec<ExprId> = fs.iter().copied().filter(|&f| f != a).collect();
+                (z, arena.mul(&others))
+            }
+            _ => continue,
+        };
+        atans.push((k, q, cofactor, z));
+    }
+    let mut replaced: Vec<(usize, usize, ExprId)> = Vec::new();
+    let used = |replaced: &[(usize, usize, ExprId)], k: usize| {
+        replaced.iter().any(|&(i, j, _)| i == k || j == k)
+    };
+    for (a, (i, qi, ki, zi)) in atans.iter().enumerate() {
+        for (j, qj, kj, zj) in &atans[a + 1..] {
+            // `q·atan z − q·atan w` with `w = −1/z` is the pair too (`atan` is
+            // odd, and canonical forms take the sign out of `atan(−u)`).
+            let product = if qi == qj {
+                arena.one()
+            } else if *qi == -qj.clone() {
+                arena.neg_one()
+            } else {
+                continue;
+            };
+            if ki != kj || used(&replaced, *i) || used(&replaced, *j) {
+                continue;
+            }
+            let p = arena.mul(&[*zi, *zj]);
+            let p = arena.sub(p, product);
+            let p = eval::eval(arena, p);
+            if !(arena.is_zero_structural(p)
+                || Truth::from(crate::poly::algebraic::exact_is_zero(arena, p)).is_true()
+                || crate::simplify::ratsimp::vanishes_as_rational_function(arena, p))
+            {
+                continue;
+            }
+            let re = arena.re(*zi);
+            let re = eval::eval(arena, re);
+            let half = match real_constant_sign(arena, re) {
+                SignSet::POSITIVE => arena.rational(1, 2),
+                SignSet::NEGATIVE => arena.rational(-1, 2),
+                _ => continue,
+            };
+            let q = arena.num_ratio(qi.clone());
+            let pi = arena.pi();
+            let value = arena.mul(&[q, *ki, half, pi]);
+            replaced.push((*i, *j, value));
+        }
+    }
+    if replaced.is_empty() {
+        return c;
+    }
+    let mut kept: Vec<ExprId> = terms
+        .iter()
+        .enumerate()
+        .filter(|&(k, _)| !used(&replaced, k))
+        .map(|(_, &t)| t)
+        .collect();
+    kept.extend(replaced.iter().map(|&(_, _, v)| v));
+    let s = arena.add(&kept);
+    eval::eval(arena, s)
+}
+
+/// Most terms [`distributed`] multiplies a product out into.
+const MAX_DISTRIBUTED_TERMS: usize = 16;
+
+/// `c` with the logarithms and powers of constants whose value lies on an
+/// axis written by their principal values, bottom-up (an explicit
+/// post-order walk), then `eval`:
+///
+/// - `ln w = ln(−w) + iπ` for a negative real `w`, `ln(i·b) = ln b + iπ/2`
+///   and `ln(−i·b) = ln b − iπ/2` for a positive real `b`, and `ln(e^z) =
+///   z` for `|Im z| < π` ([`ln_on_axis`]);
+/// - `w^q = (−1)^q·(−w)^q` for a negative real `w` and a rational `q` that
+///   is not an integer (`√(1 − π²/4) = i·√(π²/4 − 1)`), and `(e^z)^q =
+///   e^{qz}` for `|Im z| < π` (`√(e^{2i}) = e^i`) ([`power_on_axis`]);
+/// - `√a·√b = √(ab)` for positive reals `a`, `b` whose product multiplies
+///   out to a sum ([`positive_roots_merged`]);
+/// - a product multiplied out over its factors that are sums
+///   ([`distributed`]): canonical products distribute only a number, and
+///   `−i·(ln b + iπ/2)` (the form `eval` gives the logarithm of `acos 2`)
+///   must read `π/2 − i·ln b` for the nodes above it to see `i·ln b`.
+///
+/// The signs are certified ([`real_constant_sign`]) and each rewrite is an
+/// identity of the principal values where both sides are finite; a result
+/// more than four times [`MAX_EXACT_ZERO_SIZE`] is dropped.  So the
+/// logarithmic form of `acos(−2)`
+/// ([`inverse_functions_as_logs`](crate::calculus::limit::inverse_functions_as_logs))
+/// reads `π + i·ln(2 − √3)`, and that of `asinh(iπ/2)` reads `ln(π/2 +
+/// √(π²/4 − 1)) + iπ/2`: up to 0.51 the limits at the cuts whose
+/// coefficients compare such values with their spellings by Gruntz's
+/// rewrites were refused (`lim_{x→0⁺} x/(acos(−2 + ix) − acos(−2))`, which
+/// is `−√3`; 0.48 answered them, on a zero test that proved nothing).
+fn values_on_axes(arena: &mut Arena, c: ExprId) -> ExprId {
+    if !arena.is_symbol_free(c) {
+        return c;
+    }
+    let post = walk::post_order_ids(arena, c);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let r = walk::rebuild_with_cache(arena, id, &cache);
+        let r = match arena.node(r).clone() {
+            ExprNode::Mul(fs) => {
+                let r = positive_roots_merged(arena, &fs).unwrap_or(r);
+                match arena.node(r).clone() {
+                    ExprNode::Mul(fs) => distributed(arena, &fs).unwrap_or(r),
+                    _ => r,
+                }
+            }
+            _ => r,
+        };
+        let new = match *arena.node(r) {
+            ExprNode::Ln(w) => ln_on_axis(arena, w).unwrap_or(r),
+            ExprNode::Pow(b, q) => power_on_axis(arena, b, q).unwrap_or(r),
+            _ => r,
+        };
+        changed |= new != id;
+        cache.insert(id, new);
+    }
+    if !changed {
+        return c;
+    }
+    let r = cache.get(&c).copied().unwrap_or(c);
+    let r = eval::eval(arena, r);
+    let cap = 4 * MAX_EXACT_ZERO_SIZE;
+    if crate::transforms::pattern::tree_size_capped(arena, r, cap + 1) > cap {
+        return c;
+    }
+    r
+}
+
+/// `POSITIVE` or `NEGATIVE` for a symbol-free constant `v` proved real
+/// with a certified sign ([`eval::constant_facts`]: realness by the
+/// assumptions or an exact imaginary part 0), `UNKNOWN` otherwise (a value
+/// that is not real, 0, or not decided).
+fn real_constant_sign(arena: &mut Arena, v: ExprId) -> crate::base::truth::SignSet {
+    use crate::base::assumptions::Props;
+    use crate::base::truth::SignSet;
+    if !arena.is_symbol_free(v) || walk::has_unevaluated(arena, v) {
+        return SignSet::UNKNOWN;
+    }
+    let facts = eval::constant_facts(arena, v);
+    if Truth::from(facts.query(Props::POSITIVE)).is_true() {
+        SignSet::POSITIVE
+    } else if Truth::from(facts.query(Props::NEGATIVE)).is_true() {
+        SignSet::NEGATIVE
+    } else {
+        SignSet::UNKNOWN
+    }
+}
+
+/// `z` for the exponential `e^z` (`exp(z)` or `E^z`).
+fn exponential_argument(arena: &Arena, b: ExprId) -> Option<ExprId> {
+    match *arena.node(b) {
+        ExprNode::Exp(z) => Some(z),
+        ExprNode::Pow(e, z) if e == arena.e_const => Some(z),
+        _ => None,
+    }
+}
+
+/// Largest `|k|` of a shift `2πik` [`principal_exponent`] makes.
+const MAX_EXPONENT_TURNS: f64 = 1e6;
+
+/// The principal logarithm `ln(e^z) = z − 2πik` of `e^z` for a constant
+/// `z`: `k` the integer that puts the imaginary part inside `(−π, π)`,
+/// certified with a margin (`z` itself for `|Im z| < π`, `4i − 2πi` for
+/// `4i`).  `None` when the imaginary part is not certified away from the
+/// odd multiples of `π`.
+fn principal_exponent(arena: &mut Arena, z: ExprId) -> Option<ExprId> {
+    use std::f64::consts::PI;
+    let im = arena.im(z);
+    let im = eval::eval(arena, im);
+    let k = (certified_real_value(arena, im)? / (2.0 * PI)).round();
+    if k.abs() > MAX_EXPONENT_TURNS {
+        return None;
+    }
+    let k = crate::base::cast::f64_to_i64(k)?;
+    if k == 0 {
+        return real_constant_within(arena, im, -PI, PI).then_some(z);
+    }
+    let pi = arena.pi();
+    let two_k = arena.int(2 * k);
+    let turns = arena.mul(&[two_k, pi]);
+    let shifted_im = arena.sub(im, turns);
+    let shifted_im = eval::eval(arena, shifted_im);
+    if !real_constant_within(arena, shifted_im, -PI, PI) {
+        return None;
+    }
+    let i = arena.i_unit();
+    let shift = arena.mul(&[i, turns]);
+    let shifted = arena.sub(z, shift);
+    Some(eval::eval(arena, shifted))
+}
+
+/// `ln w` of a constant `w` on an axis by its principal value (`Arg w ∈
+/// (−π, π]`): `ln(−w) + iπ` for a negative real `w`, `ln b ± iπ/2` for `w
+/// = ±i·b` with a positive real `b`, and `z − 2πik` for `w = e^z`
+/// ([`principal_exponent`]).  `None` for a positive real `w` (nothing to
+/// do) and any other.
+fn ln_on_axis(arena: &mut Arena, w: ExprId) -> Option<ExprId> {
+    use crate::base::truth::SignSet;
+    if let Some(z) = exponential_argument(arena, w) {
+        return principal_exponent(arena, z);
+    }
+    let i = arena.i_unit();
+    let (b, angle) = match real_constant_sign(arena, w) {
+        SignSet::POSITIVE => return None,
+        SignSet::NEGATIVE => (arena.neg(w), arena.one()),
+        _ => {
+            let ni = arena.neg(i);
+            let b = match distributed(arena, &[ni, w]) {
+                Some(b) => b,
+                None => arena.mul(&[ni, w]),
+            };
+            match real_constant_sign(arena, b) {
+                SignSet::POSITIVE => (b, arena.rational(1, 2)),
+                SignSet::NEGATIVE => (arena.neg(b), arena.rational(-1, 2)),
+                _ => return None,
+            }
+        }
+    };
+    let l = arena.ln(b);
+    let pi = arena.pi();
+    let phase = arena.mul(&[angle, i, pi]);
+    Some(arena.add(&[l, phase]))
+}
+
+/// `b^q` for a rational `q` that is not an integer and a constant base on
+/// an axis, by its principal value `e^{q·ln b}`: `(−1)^q·(−b)^q` for a
+/// negative real `b`, `e^{q·(z − 2πik)}` for `b = e^z`
+/// ([`principal_exponent`]).  `None` for a numeric base (canonical forms
+/// write those) and any other.
+fn power_on_axis(arena: &mut Arena, b: ExprId, q: ExprId) -> Option<ExprId> {
+    use crate::base::truth::SignSet;
+    if arena.as_num(q).is_none_or(|r| r.is_integer()) || arena.as_num(b).is_some() {
+        return None;
+    }
+    if let Some(z) = exponential_argument(arena, b) {
+        let z = principal_exponent(arena, z)?;
+        let qz = arena.mul(&[q, z]);
+        return Some(arena.exp(qz));
+    }
+    if real_constant_sign(arena, b) != SignSet::NEGATIVE {
+        return None;
+    }
+    let m1 = arena.neg_one();
+    let unit = arena.pow(m1, q);
+    let nb = arena.neg(b);
+    let root = arena.pow(nb, q);
+    Some(arena.mul(&[unit, root]))
+}
+
+/// The product of the factors `fs` with its square roots `√a` of positive
+/// real constants (certified) merged into one, `√a·√b = √(ab)`, when the
+/// product of the radicands multiplies out to a sum: `√(π/2 − 1)·√(π/2 +
+/// 1) = √(π²/4 − 1)`.  (A product of radicands that stays a product is
+/// split again by [`power_of_positive_product`].)  `None` otherwise.
+fn positive_roots_merged(arena: &mut Arena, fs: &[ExprId]) -> Option<ExprId> {
+    use crate::base::truth::SignSet;
+    let half = arena.rational(1, 2);
+    let mut radicands: Vec<ExprId> = Vec::new();
+    let mut rest: Vec<ExprId> = Vec::new();
+    for &f in fs {
+        let radicand = match *arena.node(f) {
+            ExprNode::Pow(b, e) if e == half && arena.as_num(b).is_none() => Some(b),
+            _ => None,
+        };
+        match radicand {
+            Some(b) if real_constant_sign(arena, b) == SignSet::POSITIVE => {
+                radicands.push(b);
+            }
+            _ => rest.push(f),
+        }
+    }
+    if radicands.len() < 2 {
+        return None;
+    }
+    let product = arena.mul(&radicands);
+    let product = crate::transforms::expand::expand(arena, product);
+    if !matches!(arena.node(product), ExprNode::Add(_)) {
+        return None;
+    }
+    rest.push(arena.sqrt(product));
+    Some(arena.mul(&rest))
+}
+
+/// The product of the factors `fs` multiplied out over the factors that
+/// are sums (one level, at most [`MAX_DISTRIBUTED_TERMS`] terms):
+/// `−i·(ln b + iπ/2) = π/2 − i·ln b`.  `None` without a sum factor or
+/// past the bound.
+fn distributed(arena: &mut Arena, fs: &[ExprId]) -> Option<ExprId> {
+    if !fs
+        .iter()
+        .any(|&f| matches!(arena.node(f), ExprNode::Add(_)))
+    {
+        return None;
+    }
+    let mut products: Vec<Vec<ExprId>> = vec![Vec::new()];
+    for &f in fs {
+        match arena.node(f).clone() {
+            ExprNode::Add(ts) => {
+                if products.len() * ts.len() > MAX_DISTRIBUTED_TERMS {
+                    return None;
+                }
+                products = products
+                    .iter()
+                    .flat_map(|p| {
+                        ts.iter().map(move |&t| {
+                            let mut q = p.clone();
+                            q.push(t);
+                            q
+                        })
+                    })
+                    .collect();
+            }
+            _ => products.iter_mut().for_each(|p| p.push(f)),
+        }
+    }
+    let terms: Vec<ExprId> = products.iter().map(|p| arena.mul(p)).collect();
+    Some(arena.add(&terms))
+}
+
+/// Most logarithms [`logs_combined`] merges in one group.
+const MAX_COMBINED_LOGS: usize = 8;
+
+/// Largest exponent `|eⱼ|` of a factor of the product [`logs_combined`]
+/// forms.
+const MAX_LOG_EXPONENT: i64 = 6;
+
+/// The sum `c` with each group of its terms `qⱼ·K·ln aⱼ` — rational `qⱼ`,
+/// one cofactor `K`, positive real constants `aⱼ` (certified) — dropped
+/// when `Π aⱼ^{eⱼ} = 1` for the integers `eⱼ = d·qⱼ` (`d` the common
+/// denominator): the logarithm of a positive real is additive, so the
+/// group is `(K/d)·ln 1 = 0`.  The product is shown to be 1 exactly, by
+/// the minimal polynomial of an algebraic number
+/// ([`exact_is_zero`](crate::poly::algebraic::exact_is_zero)) or as a
+/// rational function of its generators
+/// ([`vanishes_as_rational_function`](crate::simplify::ratsimp::vanishes_as_rational_function)):
+/// `ln(2 + √3) + ln(2 − √3)`, and `ln(1 + L) − ln(L − 1) + ln(1 − 1/L) −
+/// ln(1 + 1/L)` with `L = ln(2 + √3)` (from `atan(z) + atan(1/z)`, `z =
+/// i·L`).  `c` unchanged otherwise.
+fn logs_combined(arena: &mut Arena, c: ExprId) -> ExprId {
+    use crate::base::truth::SignSet;
+    use num_traits::{One, ToPrimitive};
+    if !arena.is_symbol_free(c) || !matches!(arena.node(c), ExprNode::Add(_)) {
+        return c;
+    }
+    // The terms multiplied out (`−½·(ln a − ln b)·i`, as `eval` leaves the
+    // logarithmic form of `atan`).
+    let c = values_on_axes(arena, c);
+    let ExprNode::Add(terms) = arena.node(c).clone() else {
+        return c;
+    };
+    // (cofactor K, [(qⱼ, aⱼ)], [index of the term])
+    type Group = (ExprId, Vec<(crate::base::numeric::Q, ExprId)>, Vec<usize>);
+    let mut groups: Vec<Group> = Vec::new();
+    for (k, &t) in terms.iter().enumerate() {
+        let (q, rest) = arena.as_coeff_term(t);
+        let (a, cofactor) = match arena.node(rest).clone() {
+            ExprNode::Ln(a) => (a, arena.one()),
+            ExprNode::Mul(fs) => {
+                let mut logs = fs
+                    .iter()
+                    .filter(|&&f| matches!(arena.node(f), ExprNode::Ln(_)));
+                let (Some(&l), None) = (logs.next(), logs.next()) else {
+                    continue;
+                };
+                let ExprNode::Ln(a) = *arena.node(l) else {
+                    continue;
+                };
+                let others: Vec<ExprId> = fs.iter().copied().filter(|&f| f != l).collect();
+                (a, arena.mul(&others))
+            }
+            _ => continue,
+        };
+        if real_constant_sign(arena, a) != SignSet::POSITIVE {
+            continue;
+        }
+        match groups.iter_mut().find(|g| g.0 == cofactor) {
+            Some(g) if g.1.len() < MAX_COMBINED_LOGS => {
+                g.1.push((q, a));
+                g.2.push(k);
+            }
+            Some(_) => {}
+            None => groups.push((cofactor, vec![(q, a)], vec![k])),
+        }
+    }
+    let mut dropped: Vec<usize> = Vec::new();
+    for (_, logs, indices) in groups.into_iter().filter(|g| g.1.len() >= 2) {
+        let d = logs.iter().fold(num_bigint::BigInt::one(), |d, (q, _)| {
+            num_integer::Integer::lcm(&d, q.denom())
+        });
+        let mut factors: Vec<ExprId> = Vec::with_capacity(logs.len());
+        for (q, a) in &logs {
+            let e = (q * crate::base::numeric::Q::from_integer(d.clone()))
+                .to_integer()
+                .to_i64()
+                .filter(|e| e.abs() <= MAX_LOG_EXPONENT);
+            let Some(e) = e else {
+                factors.clear();
+                break;
+            };
+            let e = arena.int(e);
+            factors.push(arena.pow(*a, e));
+        }
+        if factors.is_empty() {
+            continue;
+        }
+        let product = arena.mul(&factors);
+        let one = arena.one();
+        let p1 = arena.sub(product, one);
+        let p1 = eval::eval(arena, p1);
+        if arena.is_zero_structural(p1)
+            || Truth::from(crate::poly::algebraic::exact_is_zero(arena, p1)).is_true()
+            || crate::simplify::ratsimp::vanishes_as_rational_function(arena, p1)
+        {
+            dropped.extend(indices);
+        }
+    }
+    if dropped.is_empty() {
+        return c;
+    }
+    let kept: Vec<ExprId> = terms
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| !dropped.contains(k))
+        .map(|(_, &t)| t)
+        .collect();
+    let s = arena.add(&kept);
+    eval::eval(arena, s)
 }
 
 /// Most nodes [`like_arguments_unified`] compares in one group.

@@ -63,15 +63,10 @@ const CANONICAL: &[&str] = &[
 ];
 
 /// Files allowed to intern a canonical variant raw, with the exact count.
-/// Paths are relative to `src/`.
-const ALLOWLIST: &[(&str, usize)] = &[
-    // `rankset_to_expr`: the set evaluator's `SetUnion` keeps its pieces in
-    // ascending order (`(-oo, -2) ∪ (2, oo)`); the canonical union sorts
-    // them by sort key (`(2, oo) ∪ (-oo, -2)`).  Until the canonical order
-    // of disjoint real intervals is ascending, the evaluator's union is
-    // not `==` to the canonical union of the same parts.
-    ("transforms/sets.rs", 1),
-];
+/// Paths are relative to `src/`.  Empty since 0.52: the set evaluator's
+/// union (`rankset_to_expr`), raw up to 0.51 for its ascending order, goes
+/// through `canon_set_union`, whose order of real intervals is ascending.
+const ALLOWLIST: &[(&str, usize)] = &[];
 
 #[derive(Default)]
 struct Scan {

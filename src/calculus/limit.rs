@@ -1741,8 +1741,81 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
                 -1
             })
         }
+        ExprNode::Lib(f, args) if args.len() == 2 => {
+            match bessel_at_imaginary_argument(arena, f, args[0], args[1]) {
+                Some(v) => const_sign_depth(arena, v, depth + 1),
+                None => assumption_sign(arena, e).or_else(|| numeric_sign(arena, e)),
+            }
+        }
         _ => assumption_sign(arena, e).or_else(|| numeric_sign(arena, e)),
     }
+}
+
+/// Is the constant `c` a Bessel function `Jₙ` or `Iₙ` of an even order at
+/// an imaginary argument ([`bessel_at_imaginary_argument`]), a real value
+/// (`J₀(acos π) = I₀(ln(π + √(π² − 1)))`) that no evaluation shows real?
+pub(crate) fn real_bessel_at_imaginary_argument(arena: &mut Arena, c: ExprId) -> bool {
+    let ExprNode::Lib(f, args) = arena.node(c).clone() else {
+        return false;
+    };
+    let [n, z] = args[..] else {
+        return false;
+    };
+    arena
+        .as_num(n)
+        .is_some_and(|q| q.is_integer() && (q.to_integer() % BigInt::from(2)).is_zero())
+        && bessel_at_imaginary_argument(arena, f, n, z).is_some()
+}
+
+/// `Jₙ(z) = iⁿ·Iₙ(b)` and `Iₙ(z) = iⁿ·Jₙ(b)` for an integer order `n`
+/// and a symbol-free argument `z = i·b` with `b` real (DLMF 10.27.6, on
+/// all of ℂ for an integer order; `z` read through
+/// [`exact_rewrites`](crate::calculus::calculus_util::exact_rewrites), so
+/// `acos π = i·ln(π + √(π² − 1))`): a real value for an even `n` whose
+/// sign the real argument decides.  Up to 0.51 `J₀(acos π)` had no sign
+/// (its value has no certified imaginary part 0) and `lim_{x→∞}
+/// x·J₀(acos π)` was refused (0.48: `∞`).  `None` for any other function
+/// or argument.
+fn bessel_at_imaginary_argument(
+    arena: &mut Arena,
+    f: crate::base::libfn::LibFn,
+    n: ExprId,
+    z: ExprId,
+) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::libfn::LibFn;
+    use num_integer::Integer;
+    use num_traits::ToPrimitive;
+    let other = match f {
+        LibFn::BesselJ => LibFn::BesselI,
+        LibFn::BesselI => LibFn::BesselJ,
+        _ => return None,
+    };
+    let k = arena
+        .as_num(n)
+        .filter(|q| q.is_integer())?
+        .to_integer()
+        .mod_floor(&BigInt::from(4))
+        .to_i64()?;
+    if !arena.is_symbol_free(z)
+        || Truth::from(AssumptionCache::new().query(arena, z, Props::REAL)).is_true()
+    {
+        return None;
+    }
+    let z = crate::calculus::calculus_util::exact_rewrites(arena, z);
+    let ni = arena.neg(arena.i_unit());
+    let b = arena.mul(&[ni, z]);
+    let b = crate::transforms::expand::expand(arena, b);
+    let b = crate::transforms::eval::eval(arena, b);
+    if !Truth::from(crate::transforms::eval::constant_facts(arena, b).query(Props::REAL)).is_true()
+    {
+        return None;
+    }
+    let i = arena.i_unit();
+    let k = arena.int(k);
+    let unit = arena.pow(i, k);
+    let value = arena.lib_apply(other, &[n, b]);
+    Some(arena.mul(&[unit, value]))
 }
 
 /// Sign of a constant free of symbols by certified evaluation: the value

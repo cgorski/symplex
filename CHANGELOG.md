@@ -8,6 +8,165 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+The remaining findings of the 0.51 regression sweeps.  Exact powers with
+huge exponents were truncated to 32 bits (`2^4294967297 − 2` was called
+zero), `evalf`'s route for complex powers left its own rounding out of the
+error bound (real powers of roots of unity were called non-real: 1,505
+wrong in a hunt → 0), and the values of library functions at infinity were
+folded only by `eval`, so `0/besselj(1, ∞)` was 0.  Limits that 0.50's
+stricter zero test had stopped answering are answered again by exact
+rewrites, definite integrals with a pole at an irrational root of a
+polynomial denominator diverge at once instead of after minutes, and a
+formal integral whose quadrature refuses is evaluated from its closed form.
+The solvers take the natural domain: the poles of `tan` are not roots, and
+an equation `c = 0` for a constant `c` not proved nonzero is refused
+instead of answered "no solution".
+
+### Breaking (behaviour)
+
+- **The poles of `tan` are not roots.**  An expression is undefined where a
+  part of it is (`tan u` at `cos u = 0`, `tanh u` at `cosh u = 0`, a negative
+  power of a vanishing part), even when the evaluator writes the substituted
+  whole as a number (`cos(3π/2)/(tan(−π/2) − 2) = 0·(1/zoo) = 0`).
+  `solve_as_set(1/tan(x))` was `{nπ + π/2}` (now `EmptySet`, as SymPy 1.14's
+  `solveset`), `cos(3x)/(tan(−x) − 2)` listed `π/2 + nπ` (now `{π/6 + nπ} ∪
+  {5π/6 + nπ}`), `solve` of it was refused ("cannot decide whether
+  2*atan(-1) is a pole") and now gives `[π/6, −π/6]`; `reduce_inequalities`
+  excluded the poles since 0.50, so the answers now agree.  `cot x = cos
+  x/sin x` keeps its roots; `acot z` and `acoth z` (written `atan(1/z)`,
+  `atanh(1/z)`) are defined at `z = 0`.
+- **Unions of real intervals are ordered ascending** (by their lower ends):
+  `(−∞, −2) ∪ (2, ∞)`, `(0, 1) ∪ [2, 3]`, `(−√3, −√2) ∪ (√2, √3)`.  The
+  order was the sort key's (`(2, oo) ∪ (-oo, -2)`) for unions built by the
+  constructors, while `simplify` and the solvers built ascending raw unions
+  that were not `==` to the canonical union of the same parts (`(0, 1) ∪ [2,
+  3]` and its JSON round trip compared unequal).  Every union now goes
+  through the canonical constructor; the display of solution sets changes.
+- **`c = 0` for a constant `c` is "no solution" only when `c` is proved
+  nonzero.**  `solve` refuses and `solve_as_set` returns a `ConditionSet`
+  when the zero test of the constant is undecided or the constant has no
+  value: `DiracDelta(I) = 0` and `1/max(Γ(1/3)Γ(2/3) − 2π/√3, 0) = 0` were
+  "no solution"/`EmptySet`.  In the golden-output harness this changes
+  14,413 answers, nearly all constants for which `is_zero()` is `None` too
+  (`erfinv(3)`, `chebyshev_t(−1/2, …)` of values outside the domain, `nan`).
+
+### Fixed
+
+- **Exact powers with exponents beyond 32 bits are no longer truncated.**
+  The minimal polynomial of `r^n` cast `n` with `as u32`: `2^(2³² + 1)`
+  became `2¹`, so `2^4294967297 − 2` had `is_zero() = Some(true)`,
+  `2^4294967297 > 2` evaluated to `False`, `3^4294967296 − 1` was zero and
+  `3^(2⁴⁰) − 1` not positive (also in 0.48).  Exact powers are formed only
+  below 2¹⁶ bits with checked conversions; beyond, the exact test leaves the
+  decision to the other deciders (often open).  The same bound removes
+  hangs: `1000000007^1000000007 − 2` (`is_positive`) and `(10⁻⁶)^2000000016·(1
+  + i)` (`is_real`) did not return within 15 s.
+- **Real powers of roots of unity are not called non-real.**  `evalf` forms
+  `b^x` as `exp(x·Log b)` and counted that route as exact for an exact base
+  and exponent, so the rounding of `8π` in `(−1)^(8 + 2i) = e^(−2π)` became
+  a certified imaginary part: `is_real()` was `Some(false)` (also `(−1)^(6 +
+  2i)`, `i^(16 + 4i)`, `ln((−1)^(100 + i)) = −π`), and `ln((−1)^(−7 +
+  5i/2))` had the wrong sign of `πi`.  The route's rounding is now part of
+  its bound.  Hunts of 18,000 such powers: 1,505 wrong → 0.
+- **Values of library functions at `±∞` are folded when built.**  Only
+  `eval` folded them, and the canonical `0·x = 0` came first:
+  `0/besselj(1, ∞)`, `0/airyai(∞)`, `0/elliptic_k(∞)`, `0/expint(2, ∞)` were
+  0, and so were `0·airybi(∞)`, `0·Chi(∞)`, `0·erfi(−∞)`, `0·besseli(1, ∞)`
+  (all `nan`).  `J_ν`, `Y_ν` at `±∞`, `K_ν`, `E_ν`, `Γ(s, ·)` at `+∞`, `Ai`,
+  `K(m)` at `±∞` fold to 0; `Bi`, `Bi′`, `Chi` at `+∞`, `erfi`, `Shi` at
+  `±∞` and `I_ν` at `+∞` to `±∞`; `W_k(0) = −∞` for a branch `k ≠ 0`, so
+  `x·W₁(x)` at `x = 0` is `nan` (was 0).  `expint(0, −∞)`, `uppergamma(1,
+  −∞)` and `uppergamma(2, −∞)` were `nan` (their closed forms evaluated at
+  an infinite argument) and stay unevaluated.
+- `acos(cos(77π/80))`, `asec(sec(10π/18))` fold again (`77π/80`, `5π/9`;
+  since 0.50 `eval` rewrote the argument to `−cos(3π/80)` first and the
+  result stayed `acos(−cos(3π/80))`): `acos(−u) = π − acos(u)` when `acos(u)`
+  folds.
+- **Limits refused since 0.50 are answered again.**  The leading
+  coefficients of difference quotients at the cuts of inverse functions
+  compare a value with its logarithmic form, zeros the canonical form does
+  not show: `limit(x/(acos(−2 + ix) − acos(−2)), x, 0, +) = −√3` needs
+  `−i·ln(√3 + 2) − acos(−2) + π = 0`.  Logarithms and radicals of constants
+  on an axis are written by their principal values, logarithms of positive
+  reals whose product is 1 cancel, `atan z + atan(1/z) = ±π/2` by the sign
+  of `Re z`, `√(e^z) = e^{z/2}` for `|Im z| < π`, and a Gruntz coefficient
+  `ω·k` is decided by `k`.  39 limits of the cut hunter and 5 others that
+  0.48 answered and 0.50–0.51 refused (`limit(asinh(e^i·x + e^i) − x, x,
+  −∞) = −i + ∞`, `limit(Γ(x)·tanh(ix + x²/2), x, ∞) = ∞`) are answered.
+- `limit(x·besselj(0, acos(π)), x, ∞)` is `∞` again (refused since 0.49):
+  `J_n(iy) = iⁿ I_n(y)` decides the realness of Bessel functions of integer
+  order at imaginary arguments.
+- Series that took 14–20 s before refusing answer or refuse at once:
+  `tanh` at a pole of `tanh` is the Laurent series of `coth`
+  (`series(tanh(acosh(t − 3it³)), t, 0)` = `−i/t + (3 + i/2)t + …`), `tan`
+  at a pole of `tan` that of `−cot`, and `tanh` of an argument tending to
+  infinity along the imaginary axis has no expansion
+  (`series(tanh(Γ(−1 − 3ix²)), x, 0)`).
+- **Definite integrals with a pole at an irrational root of a polynomial
+  denominator diverge at once.**  `∫₁² dx/(x⁴ − 3x³ − 2x² + 3x + 2)` (a
+  simple pole at 1.1488…) ran for more than a minute on every route
+  (`try_integrate_definite`, `integrate_numeric`, `eval_decimal`): the root
+  in Ferrari's radicals was compared with another radical form of itself
+  through minimal polynomials of degree in the hundreds.  A factor
+  `B(x)^(−k)`, `B ∈ ℚ[x]`, whose real root in the range the other factors do
+  not cancel (they are enclosed away from 0 on the root's isolating
+  interval) now proves divergence from the isolating interval alone.  67
+  integrals of a sweep that hung each answer in milliseconds; 8 integrals
+  of the D14 hunt that were refused are proved divergent.
+- `∫_{−∞}^{∞} −3e^{−3x}/(1 + x + x³) dx` and `∫₁^∞ −e^{x/2}/(1 − x + x³) dx`
+  were found divergent after 54 s and 25 s: the comparison test at an
+  infinite end runs before the limits of the antiderivative.
+- **A formal definite integral whose quadrature refuses is evaluated from
+  its closed form.**  `eval_f64`, `eval_decimal` and `integrate_numeric` of
+  `∫ |sin(x/3 + 1/2)| dx` over `[10¹⁰⁰ + 7/10, 10¹⁰⁰ + 100]` were refused
+  (after 16 s at 0.50) while `try_integrate_definite` answered (now
+  `62.832124030775866`); bounds farther out than `2⁴⁸` widths try the
+  closed form first, and a closed-form value is raised in precision until
+  it certifies the working precision.  Hunt of 1,086 kinked integrals at
+  extreme scales: `eval_decimal` 618 → 1,028 answered, `eval_f64` 652 →
+  1,034, `integrate_numeric` 648 → 1,031 (0 wrong before and after;
+  timeouts 9 → 0).
+- `erf(f) = c` / `erfc(f) = c` with a non-real `c` inverted to `erfinv(c)`:
+  for a plain `x`, `erf(2x + 1/3) + 2i = 0` gave the single root
+  `−erfinv(2i)/2 − 1/6` of infinitely many (mpmath finds 12 near the
+  origin); now refused; for a real `x` "no solution".
+- A candidate whose residual does not evaluate is no longer returned: `i·x^(3/2)
+  − 3x^(−1/3) = 0` gave a third root `−3^(6/11)` (residual `1.228 + 2.128i`);
+  the solve is now partial (refused by `solve`).
+- `cos(−x)² + 2cos(−x) + 1 = 0` is solved again (`[π]`, as 0.48 and SymPy;
+  0.49–0.51 refused it).
+- **ODEs: Lambert-W families carry both real branches.**  `y′ = 1/(2x + y +
+  2)`, `y(5/2) = 2/3` failed ("could not solve −½·W(−2·C1·e^(−11)) − 49/6
+  = 0 for C1"): the initial value lies on the `W₋₁` branch, and the
+  general solution had only the principal one.  An explicit family with
+  `W(…)` now comes with its `W₋₁` twin (`y = −2x − W₋₁(−49/3·e^(−4x −
+  19/3))/2 − 5/2`; mpmath `odefun` agrees at 30 and 60 digits; SymPy 1.14
+  fails to fit the initial value).  `check_ode_solution` rewrites `e^{W(z)}
+  = z/W(z)`, so `C1·exp(W(2x/C1)) + x` is verified for `y′ = (3y − x)/(x +
+  y)` (it was rejected).  `solve` inverts `W_k(f) = c` when `c` is a value of
+  that branch (`W₋₁(x) = −2` → `−2e⁻²`; `W₋₁(x) = 1` has no solution) and
+  treats `W_k(0) = −∞` as a pole (`x·W₋₁(x) = 0` has no solution).
+
+### Changed
+
+- `Cargo.toml` requires num-bigint 0.4.8 (was 0.4).  The matrix functions
+  of 6×6 algebraic matrices seemed 40 % slower than in 0.48 (`matrix_exp`
+  6.3 → 8.9 s): the repository's untracked lock file pinned num-bigint
+  0.4.6, which allocates for every one-digit number, while fresh builds
+  get 0.4.8.  With equal dependencies 0.52 is about 5 % faster than 0.48;
+  outputs are unchanged.
+- The integer part of a constant is computed once per context:
+  `ceiling(Chi(1600))` (692 digits) took 1.15 s on every `eval_f64`,
+  `eval_decimal` and `eval_complex64`; now only the first time.
+- `eval_f64`/`eval_decimal`/`integrate_numeric` of an integral of `DiracDelta`
+  give its value when the definite integrator has it (`∫₋₁¹ δ(x)eˣ dx = 1`;
+  refused since 0.43); `∫₀^∞ sin x/x dx` evaluates to `π/2` (was refused).
+- `series(tan(π/2 + x·ln x), x, 0, 3, +)` is answered (`−1/(x ln x) + x
+  ln(x)/3 + …`, the Laurent series of `−cot`); it was refused.
+- `uppergamma(1/2, −∞)` stays unevaluated (it was `√π − i∞`, correct):
+  closed forms are no longer evaluated at an infinite argument, where the
+  integer-order ones gave `nan`.
+
 ## [0.51.0] - 2026-10-14
 
 Silent wrong answers found after the 0.50 refactor, by a post-release

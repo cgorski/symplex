@@ -304,6 +304,65 @@ impl<'a> Integrand<'a> {
     }
 }
 
+/// Is `body` (in `var`, both in `arena`, no other free symbol) bounded away
+/// from 0 on the closed interval `[lo, hi]` of the real line (`lo ≤ hi`)?
+/// The body is evaluated as a quadrature node is, at the midpoint with the
+/// half-width (and the midpoint's rounding) as the variable's error, which
+/// encloses its values over the whole interval; `true` when the box of
+/// that ball excludes 0 (its real or its imaginary part keeps a sign),
+/// `false` when no bound shows it (a singularity, a zero or a step in the
+/// interval, an interval too wide for the bound).
+///
+/// The definite integrator's proof that a pole of a rational factor is not
+/// integrable rests on it: the other factors stay away from 0 next to the
+/// pole, so they cannot cancel it.
+pub(crate) fn nonzero_on(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: &Ratio<BigInt>,
+    hi: &Ratio<BigInt>,
+) -> bool {
+    /// The working precision of the evaluation.
+    const PREC: usize = 128;
+    if lo > hi {
+        return false;
+    }
+    let Ok(mut cc) = Consts::new() else {
+        return false;
+    };
+    let two = Ratio::from_integer(BigInt::from(2));
+    let centre = (lo + hi) / &two;
+    let Some(half) = crate::base::numeric::ratio_to_f64(&((hi - lo) / &two)) else {
+        return false;
+    };
+    if !half.is_finite() {
+        return false;
+    }
+    // The midpoint is within `2^(−PREC)` of `centre` relatively
+    // (`ratio_to_bigfloat`); the half-width as an `f64` within a few ulps.
+    let x = crate::base::numeric::ratio_to_bigfloat(&centre, PREC, RM);
+    let rounding = ulp2(&x, PREC);
+    let width = if half > 0.0 {
+        half.log2() + 1e-9
+    } else {
+        accuracy::EXACT
+    };
+    let x_err = accuracy::lsum(width, rounding);
+    let mut f = Integrand::new(arena, body, var);
+    let Ok(CBall { mid: v, err: b }) = f.eval(&x, x_err, &mut Wp::new(PREC, &mut cc)) else {
+        return false;
+    };
+    if b.is_unknown() || v.0.is_nan() || v.1.is_nan() || v.0.is_inf() || v.1.is_inf() {
+        return false;
+    }
+    // `|part| ≥ 2^(mag − 1)`: clear of its error with a bit to spare.
+    let clear = |part: &BigFloat, e: ErrExp| {
+        accuracy::part_mag(part).is_some_and(|m| (m - 1) as f64 > e + 1.0)
+    };
+    clear(&v.0, b.re) || clear(&v.1, b.im)
+}
+
 fn internal(what: &str) -> SymplexError {
     SymplexError::ComputationFailed {
         operation: "evalf",
@@ -861,6 +920,12 @@ impl<'a> Quad<'a> {
             let mut j = 1u64;
             loop {
                 if j > T_MAX_HALVES {
+                    debug!(
+                        ?side,
+                        sizes = ?sizes[si],
+                        l1,
+                        "quadrature: the walk found no negligible terms"
+                    );
                     return Err(QuadError::NotDecaying);
                 }
                 let node = self.ts_node(j, 1, &mut Wp::new(pw, cc));
@@ -1561,6 +1626,74 @@ pub(super) fn remember(
         f.push(Failure { key, prec, outcome });
     });
 }
+
+/// The closed form of an integral whose quadrature refused (`evalf`'s exact
+/// route): the private arena and the value, the proof that it diverges, or
+/// `Ok(None)` when there is none.
+pub(super) type ClosedForm = std::rc::Rc<Result<Option<(Arena, ExprId)>, SymplexError>>;
+
+thread_local! {
+    /// The latest closed forms sought, by integral.
+    static CLOSED_FORMS: std::cell::RefCell<Vec<(MemoKey, ClosedForm)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Is a closed form being sought on this thread?
+    static SEEKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Clears [`SEEKING`] when the search ends, also by unwinding.
+struct Seeking;
+
+impl Drop for Seeking {
+    fn drop(&mut self) {
+        SEEKING.with(|s| s.set(false));
+    }
+}
+
+/// The closed form of the integral `key` by `seek` (the definite
+/// integrator), sought once per integral: `evalf`'s search for more digits
+/// asks again at every precision, and the answer is the same.  `None`
+/// while another closed form is being sought on this thread — the
+/// integrator evaluating a bound or a breakpoint that holds a definite
+/// integral does not start a search of its own.
+pub(super) fn closed_form(
+    key: MemoKey,
+    seek: impl FnOnce() -> Result<Option<(Arena, ExprId)>, SymplexError>,
+) -> Option<ClosedForm> {
+    let known = recall_closed_form(&key);
+    if known.is_some() {
+        return known;
+    }
+    if SEEKING.with(std::cell::Cell::get) {
+        return None;
+    }
+    SEEKING.with(|s| s.set(true));
+    let found = {
+        let _seeking = Seeking;
+        std::rc::Rc::new(seek())
+    };
+    CLOSED_FORMS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= CLOSED_FORM_CAP {
+            m.remove(0);
+        }
+        m.push((key, found.clone()));
+    });
+    Some(found)
+}
+
+/// The closed form of the integral `key` when it has been sought
+/// ([`closed_form`]).
+pub(super) fn recall_closed_form(key: &MemoKey) -> Option<ClosedForm> {
+    CLOSED_FORMS.with(|m| {
+        m.borrow()
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, c)| c.clone())
+    })
+}
+
+/// Closed forms kept.
+const CLOSED_FORM_CAP: usize = 8;
 
 /// Why a quadrature gave no value.  The two causes `evalf` acts on — terms
 /// that do not decay, and a failure for want of nodes — are told apart by

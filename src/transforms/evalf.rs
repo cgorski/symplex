@@ -59,7 +59,10 @@
 //! route: more than 16 digits were refused with
 //! [`SymplexError::NotImplemented`], and an endpoint singularity left its
 //! bound wrong (`∫₀¹ dx/√(1 − x)` was `1.9999999898808887` with a bound of
-//! `2·10⁻⁹`).
+//! `2·10⁻⁹`).  When the quadratures refuse, or the bounds lie so far out
+//! next to the width that no node can be evaluated cheaply, the closed form
+//! of the definite integrator is evaluated instead, when it has one (since
+//! 0.52; `eval_definite_integral`).
 
 use crate::base::bigfloat::{self, is_sign_positive, is_strictly_positive};
 use num_bigint::BigInt;
@@ -112,6 +115,8 @@ mod zeta;
 
 /// A complex number represented as (real_part, imaginary_part).
 use crate::base::bigcomplex::Complex;
+
+pub(crate) use quad::nonzero_on;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public entry point
@@ -3897,7 +3902,104 @@ pub(crate) const QUADRATURE_F64_DIGITS: u32 = 8;
 /// request up to 18 digits.
 const QUADRATURE_F64_MAX_PREC: usize = 128;
 
-/// `∫_lo^hi body d(var)` with an error bound.
+/// A definite integral whose bounds exceed its width by more than `2^this`
+/// (or round to one `f64`) is evaluated by its closed form first, when it
+/// has one: an `f64` node has fewer than 5 bits inside such a range, and
+/// the arbitrary-precision ones need this many bits more than the working
+/// precision.  Up to 0.51 the quadrature of `∫ |cos(7x + 1/2)| dx` over
+/// `[10¹⁰⁰ + 1/3, 10¹⁰⁰ + 28/3]` spent 17 s before refusing.
+const FAR_RANGE_BITS: f64 = 48.0;
+
+/// `∫_lo^hi body d(var)` with an error bound: the quadratures of
+/// [`eval_definite_integral_numeric`], and when they refuse (the integrand
+/// has no bound at the nodes, the quadrature does not converge) the closed
+/// form of the definite integrator evaluated at the working precision, or
+/// its proof of divergence (`calculus::definite::closed_form`, sought once
+/// per integral; once found it serves the higher precisions directly).
+/// Up to 0.51 `eval_f64` of `∫ |sin(x/3 + 1/2)| dx` over
+/// `[10¹⁰⁰ + 7/10, 10¹⁰⁰ + 100]` was refused (in 16 s at 0.50): the
+/// nodes need 330 bits before the first fractional one of `x/3`.
+#[allow(clippy::too_many_arguments)]
+fn eval_definite_integral(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    cache: Cache<'_>,
+    w: &mut Wp<'_>,
+) -> Result<CBall, SymplexError> {
+    // The value of a closed form, its proof of divergence, or `None`.
+    let serve = |closed: &quad::ClosedForm, w: &mut Wp<'_>| match &**closed {
+        Ok(Some((pa, value))) => Some(closed_form_ball(pa, *value, w)),
+        Err(divergent) => Some(Err(divergent.clone())),
+        Ok(None) => None,
+    };
+    let seek = || crate::calculus::definite::closed_form(arena, body, var, lo, hi);
+    let key = quad::memo_key(arena, body, var, lo, hi);
+    // Bounds far out next to the width: every node needs that many bits
+    // more than the working precision, and the closed form comes first.
+    let far = match (
+        definite_bound_f64(arena, cache, lo),
+        definite_bound_f64(arena, cache, hi),
+    ) {
+        (Ok((a, _)), Ok((b, _))) if a.is_finite() && b.is_finite() => {
+            a == b || (a.abs().max(b.abs()) / (b - a).abs()).log2() > FAR_RANGE_BITS
+        }
+        _ => false,
+    };
+    let known = if far {
+        quad::closed_form(key, seek)
+    } else {
+        quad::recall_closed_form(&key)
+    };
+    if let Some(closed) = known
+        && let Some(served) = serve(&closed, w)
+        && (served.is_ok() || matches!(served, Err(SymplexError::Divergent { .. })))
+    {
+        return served;
+    }
+    let refused = match eval_definite_integral_numeric(arena, body, var, lo, hi, cache, w) {
+        Err(e) if !matches!(e, SymplexError::Divergent { .. }) => e,
+        done => return done,
+    };
+    let Some(closed) = quad::closed_form(key, seek) else {
+        return Err(refused);
+    };
+    match serve(&closed, w) {
+        Some(Ok(ball)) => Ok(ball),
+        Some(Err(e @ SymplexError::Divergent { .. })) => Err(e),
+        _ => Err(refused),
+    }
+}
+
+/// The closed form `value` (in the private arena `pa`) of a definite
+/// integral as a ball for `w`'s precision: evaluated at that precision, and
+/// at twice as many bits, and so on to the configured maximum, while it
+/// certifies fewer bits than that (or holds 0).  A closed form may cancel
+/// where the quadrature it replaces did not — `∫ sin(10²⁰x) dx` over
+/// `[10²⁰, 10²⁰ + 2·10⁻¹⁹]` is `(cos(10⁴⁰) − cos(10⁴⁰ + 20))/10²⁰` — and
+/// a ball around 0 within the digits asked is read as an integral equal to
+/// 0 ([`evaluate_adaptive`]): in a draft, `eval_f64` gave `0` for
+/// `−1.0065408055519122·10⁻²⁰`.
+fn closed_form_ball(pa: &Arena, value: ExprId, w: &mut Wp<'_>) -> Result<CBall, SymplexError> {
+    let order = walk::post_order_ids(pa, value);
+    let target = w.bits();
+    let cap = (pa.config.max_evalf_precision as usize).max(target);
+    let mut bits = target;
+    loop {
+        let ball = evaluate_tree(pa, value, &order, None, false, &mut w.at(bits))?;
+        let enough = ball.err.is_exact()
+            || accuracy::accurate_bits(&ball.mid, ball.err.joint())
+                .is_some_and(|a| a >= target as f64);
+        if enough || bits >= cap {
+            return Ok(ball);
+        }
+        bits = (2 * bits).min(cap);
+    }
+}
+
+/// `∫_lo^hi body d(var)` with an error bound by quadrature.
 ///
 /// At the lowest working precision ([`QUADRATURE_F64_MAX_PREC`]) the `f64`
 /// adaptive Gauss–Kronrod quadrature is tried first
@@ -3938,7 +4040,7 @@ const QUADRATURE_F64_MAX_PREC: usize = 128;
 /// with a bound below `10⁻⁹`), `∫₀¹ x^(−9/10) dx` did not converge, and
 /// an integral equal to 0 was refused.
 #[allow(clippy::too_many_arguments)]
-fn eval_definite_integral(
+fn eval_definite_integral_numeric(
     arena: &Arena,
     body: ExprId,
     var: ExprId,

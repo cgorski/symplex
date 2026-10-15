@@ -209,7 +209,11 @@ fn estimate_covers_the_rounding_of_a_cancelling_sum() {
     check("sin(2*x)*cos(x)^2", "0", "pi", 0.0);
 }
 
-/// Divergent integrals and an oscillating infinite one stay refused.
+/// Divergent integrals and an oscillating infinite one stay refused.  Since
+/// 0.52 a refused quadrature gives way to the definite integrator's closed
+/// form: `∫₀^∞ sin x/x dx` is `π/2` (mpmath `quadosc(lambda x: sin(x)/x,
+/// [0, inf], omega=1)` = 1.5707963267948966; up to 0.51 refused), so the
+/// oscillating case is one without a closed form.
 #[test]
 fn divergent_integrals_are_refused() {
     let ctx = Context::new();
@@ -217,7 +221,7 @@ fn divergent_integrals_are_refused() {
     for (body, lo, hi) in [
         ("x^(-2)", "-1", "1"),
         ("1/(1 - x)", "0", "1"),
-        ("sin(x)/x", "0", "oo"),
+        ("sin(x)/(x + sqrt(x + 1))", "0", "oo"),
     ] {
         let (f, l, h) = parse3(&ctx, body, lo, hi);
         assert!(
@@ -225,6 +229,9 @@ fn divergent_integrals_are_refused() {
             "{body} on [{lo}, {hi}]"
         );
     }
+    let (f, l, h) = parse3(&ctx, "sin(x)/x", "0", "oo");
+    let v = f.integrate_numeric(&x, &l, &h).unwrap();
+    assert!((v - std::f64::consts::FRAC_PI_2).abs() < 1e-15, "{v}");
 }
 
 /// The closure API (no symbolic body, no arbitrary-precision fallback): its
