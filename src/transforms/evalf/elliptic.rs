@@ -126,6 +126,19 @@ pub(super) fn eval(
             .and_then(|a| cache.get(a))
             .ok_or_else(|| super::unevaluable("elliptic integral lost its argument"))
     };
+    // An argument that is infinite or undefined (often only to the working
+    // precision: `1/(sin(1 + 10⁻⁶⁰) − sin 1)` is `+∞` at 16 digits) is a
+    // domain error the precision search can retry, as in the real routines;
+    // the duplication would run on `nan` and report non-convergence.
+    for i in 0..args.len() {
+        let a = arg(i)?;
+        if [&a.0, &a.1].iter().any(|x| x.is_nan() || x.is_inf()) {
+            return Err(super::unevaluable(format!(
+                "{} of special float value",
+                f.name()
+            )));
+        }
+    }
     let mut extra = 32usize;
     for _ in 0..4 {
         let wp = prec + extra;

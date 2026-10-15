@@ -8,6 +8,8 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-15
+
 The values of special functions at infinity, symbols pinned to one value,
 parts of complex values on branch cuts, constants the evaluator could not
 decide, and the float-threshold review of the solvers, sets and API layer.
@@ -118,6 +120,10 @@ ranges (`solve_as_set(sin(x − 10²⁰)) ∩ [0, 10]` was empty).
   0.24614311400238211447i` (refused in 0.53, wrong in 0.52).
 - `binomial(n, k)` in the Python printer follows the same convention as
   `compile` (`C(−2, −4) = 0`, `C(−3, 2) = 6`; SciPy's `binom` gives `nan`).
+- An elliptic integral whose parameter is infinite only to the working
+  precision is retried at a higher precision: `elliptic_k(1/(sin(1 +
+  10⁻⁶⁰) − sin 1))` reported "Carlson R_F did not converge" at 16 and 30
+  digits (found by fuzzing the merged changes before release).
 
 ### Known issues
 
@@ -127,6 +133,34 @@ ranges (`solve_as_set(sin(x − 10²⁰)) ∩ [0, 10]` was empty).
   arguments and `betainc` with `a` or `b ≤ 0` stay refused.
 - A few `series` calls on these newly evaluable functions take longer before
   refusing (`series(elliptic_pi(x·y, x + √2), x, 0, 4)`: 1.7 s → 6.6 s).
+- `elliptic_k`/`elliptic_e` at a parameter of modulus `~10⁶⁰⁰` take about
+  0.6 s (the complex duplication; the reciprocal-modulus transformation is
+  planned).
+
+### Measured
+
+- `tests/v36/` (0.49–0.54): 48 files.  nextest 14,751 tests (14 skipped),
+  doctests 1,352 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,760 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,016 / 0 wrong / 201 undecided (56,013 / 204 in 0.53);
+  `--negative-params` 115 real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+  MSRV 1.93 passes for all four crates.  `cargo semver-checks` against
+  0.53.0: no semver update required.
+- Golden-output harness (200,000 random expressions × 31 operations):
+  28,013 changes from 0.53, each traced to a fix above (21,587 from the
+  newly evaluable constants, 6,405 from the values at infinity and pinned
+  symbols) and checked against mpmath or SymPy.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s
+  and 4 GB limits, debug assertions as CI builds them) on the release code:
+  `fuzz_numdist` 91,125,583 inputs, `fuzz_refine` 13,775,971,
+  `fuzz_lambertw` 2,419,689, `fuzz_parser` 1,509,475, `fuzz_exact_matrix`
+  181,809, `fuzz_eigenvects` 160,066, `fuzz_calculus` 42,768,
+  `fuzz_roundtrip` 21,928, `fuzz_poly` 17,639, `fuzz_evalf` 15,285,
+  `fuzz_simplify` 4,706, `fuzz_integrate` 2,057: 0 crashes, 0
+  out-of-memory, one slow unit (above).  The campaign on the merged changes
+  found four inputs where an elliptic integral of a parameter infinite only
+  to the working precision failed (fixed above).
 
 ## [0.53.0] - 2026-10-15
 

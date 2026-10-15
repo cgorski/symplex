@@ -244,6 +244,34 @@ fn symbolic_ratio_sums_carry_their_convergence_region() {
     assert_eq!(r.pow(&k).summation(&k, &zero, &oo).to_string(), "(a + 1)/a");
 }
 
+/// An elliptic integral whose parameter is infinite only to the working
+/// precision (the reciprocal of a difference that cancels) is retried at a
+/// higher precision.  Found by `fuzz_evalf` on the wave-9 merge: the
+/// parameter of `elliptic_k(1/(sin(1 + 10⁻⁶⁰) − sin 1))` is `+∞` at
+/// 16 digits, the complex duplication ran on `nan` and reported "Carlson
+/// R_F did not converge", while 60 digits gave the value.
+///
+/// Oracle: mpmath at 120 and 240 digits, `ellipk(1/(sin(1 + 10**-60) -
+/// sin(1)))` = `1.1546179038880049071e-30 − 5.2020892063355175928e-29i`;
+/// `ellipe((sin(1 + 10**-80) - sin(1))**-2)` = `4.24e-81 +
+/// 1.8508157176809256179e80i` at 240 digits (mpmath's real part at 120
+/// digits, `−2.0e-48`, is not converged).
+#[test]
+fn elliptic_parameter_infinite_only_to_the_working_precision() {
+    let ctx = Context::new();
+    for digits in [16, 30, 60] {
+        let v = d(&ctx, "elliptic_k(1/(sin(1 + 10^(-60)) - sin(1)))", digits);
+        assert!(v.starts_with("1.15461790388"), "{digits}: {v}");
+        assert!(v.contains("- 5.2020892063"), "{digits}: {v}");
+    }
+    let z = ctx
+        .parse("elliptic_e((sin(1 + 10^(-80)) - sin(1))^(-2))")
+        .unwrap()
+        .eval_complex64()
+        .unwrap();
+    assert!(z.re.abs() < 1e-60 && (z.im / 1.850_815_717_680_925_6e80 - 1.0).abs() < 1e-12);
+}
+
 /// The Python printer refused `binomial` and pointed to
 /// `scipy.special.binom`, which is NaN at `C(−2, −4)` and `C(−3, 2)`, where
 /// `compile` and `eval` give 0 and 6 (GKP, D4).  It now emits a helper with
