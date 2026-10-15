@@ -54,6 +54,16 @@ mod v36_s15j3_evalf;
 mod v36_s15j4_float_evidence;
 #[path = "v36/v36_s15j5_integration.rs"]
 mod v36_s15j5_integration;
+#[path = "v36/v36_s15k1_silent.rs"]
+mod v36_s15k1_silent;
+#[path = "v36/v36_s15k2_products.rs"]
+mod v36_s15k2_products;
+#[path = "v36/v36_s15k3_stats.rs"]
+mod v36_s15k3_stats;
+#[path = "v36/v36_s15k4_functions.rs"]
+mod v36_s15k4_functions;
+#[path = "v36/v36_s15k5_integration.rs"]
+mod v36_s15k5_integration;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
