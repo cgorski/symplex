@@ -286,8 +286,9 @@ fn negative_binomial_series_symbolic_c() {
 #[test]
 fn negative_binomial_series_symbolic_ratio_stays_formal() {
     // Convention of the summation engine (see `calculus::summation` docs): with a
-    // symbolic ratio there is no |x| < 1 assumption, so the sum stays a formal `Sum`.
-    // SymPy instead returns Piecewise(((1 - x)**(-c - 1), Abs(x) < 1), (Sum(…), True)).
+    // symbolic ratio there is no |x| < 1 assumption, so the formal `Sum` remains —
+    // since 0.54 as the last branch of Piecewise(((1 - x)^(-c - 1), |x| < 1), (Sum(…),
+    // True)), as SymPy returns.
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let c = ctx.symbol("c");

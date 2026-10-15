@@ -169,6 +169,8 @@ fn cmp_vals(a: &Val, b: &Val) -> Ordering {
 }
 
 /// Are two approximations too close to be ordered by floating point?
+/// (Certified 16-digit values: farther apart than the tolerance their order
+/// is certain; closer pairs are ordered exactly or left out of the table.)
 fn too_close(a: &Val, b: &Val) -> bool {
     if let (Val::Exact(_), Val::Exact(_)) = (a, b) {
         return false;
@@ -1627,9 +1629,9 @@ pub(crate) fn to_condition(
 // Image sets over the integers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Most members of one family listed in a bounded window (as for
-/// [`MAX_PERIODIC_MEMBERS`]).
-const MAX_IMAGE_MEMBERS: f64 = 10_000.0;
+/// Most members of one family listed in a bounded window (also for the
+/// periodic equations of `reduce_inequalities`).
+const MAX_IMAGE_MEMBERS: usize = 10_000;
 
 /// Largest common period, in units of the finest step, over which the
 /// families of one class of a union are merged ([`merge_union_parts`]).
@@ -1878,14 +1880,16 @@ fn interval_family_contains(arena: &mut Arena, fam: &IntervalFamily, elem: ExprI
 }
 
 /// The intervals `I(k) ∩ [lo, hi]` of the [`IntervalFamily`] `fam` that may
-/// meet the window (numerically, with a margin: the exact ends are decided
-/// by the intersection they are cut to).  `None` beyond
-/// [`MAX_IMAGE_MEMBERS`] or when the ends cannot be located.
+/// meet the window (with a margin of one interval at either end: the exact
+/// ends are decided by the intersection they are cut to).  `None` beyond
+/// [`MAX_IMAGE_MEMBERS`] or when the ends cannot be located.  The indices
+/// are exact ([`integers_around`](crate::transforms::solve::integers_around));
+/// up to 0.53 they were `f64` values cast with `as i64`, wrong far from
+/// the family's origin.
 fn interval_family_in(
     arena: &mut Arena,
     fam: &IntervalFamily,
-    lo: f64,
-    hi: f64,
+    window: Window,
 ) -> Option<Vec<ExprId>> {
     let a0 = approx_real_f64(arena, fam.lo)?;
     let b0 = approx_real_f64(arena, fam.hi)?;
@@ -1893,19 +1897,19 @@ fn interval_family_in(
     if !a0.is_finite() || !b0.is_finite() || !step.is_finite() || step <= 0.0 {
         return None;
     }
-    if !lo.is_finite() || !hi.is_finite() {
+    if !window.is_bounded() {
         return None;
     }
-    let (k_lo, k_hi) = (
-        ((lo - b0) / step).floor() - 1.0,
-        ((hi - a0) / step).ceil() + 1.0,
-    );
-    if !k_lo.is_finite() || !k_hi.is_finite() || k_hi - k_lo > MAX_IMAGE_MEMBERS {
-        return None;
-    }
+    // I(k) meets the window for (lo − b₀)/step ≤ k ≤ (hi − a₀)/step
+    let below = arena.sub(window.lo, fam.hi);
+    let below = arena.div(below, fam.step);
+    let above = arena.sub(window.hi, fam.lo);
+    let above = arena.div(above, fam.step);
+    let indices =
+        crate::transforms::solve::integers_around(arena, [below, above], MAX_IMAGE_MEMBERS)?;
     let mut out = Vec::new();
-    for k in (k_lo as i64)..=(k_hi as i64) {
-        let kk = arena.int(k);
+    for k in indices {
+        let kk = arena.big_int(k);
         let shift = arena.mul(&[fam.step, kk]);
         let a = arena.add(&[fam.lo, shift]);
         let a = crate::transforms::eval::eval(arena, a);
@@ -2182,20 +2186,86 @@ pub(crate) fn member_form(arena: &mut Arena, set: ExprId, p: ExprId) -> Option<E
     None
 }
 
-/// The real members of the family `{body : var ∈ ℤ}` in `[lo, hi]`
-/// (numerically, with a margin: the exact ends are decided by the
-/// intersection they are cut to).  `None` when the family is not linear,
-/// cannot be located numerically, or has more than [`MAX_IMAGE_MEMBERS`]
-/// members there.  A family with a non-real step has at most one real
-/// member; one with a real step and a non-real offset none.
-fn image_set_points_in(
+/// A window `[lo, hi]` of the real line (`lo`, `hi` real constants or
+/// `±∞`): the exact ends, which give the index range of a family
+/// ([`lattice_indices`](crate::transforms::solve::lattice_indices)), and
+/// their 16-digit values, which only drop the members far outside it.
+#[derive(Clone, Copy)]
+pub(crate) struct Window {
+    lo: ExprId,
+    hi: ExprId,
+    lo_f: f64,
+    hi_f: f64,
+}
+
+impl Window {
+    /// The window between the exact ends `lo` and `hi`; `None` when one
+    /// has no 16-digit value.
+    pub(crate) fn new(arena: &mut Arena, lo: ExprId, hi: ExprId) -> Option<Window> {
+        Some(Window {
+            lo,
+            hi,
+            lo_f: approx_real_f64(arena, lo)?,
+            hi_f: approx_real_f64(arena, hi)?,
+        })
+    }
+
+    /// The whole real line.
+    fn line(arena: &Arena) -> Window {
+        Window {
+            lo: arena.neg_infinity,
+            hi: arena.infinity,
+            lo_f: f64::NEG_INFINITY,
+            hi_f: f64::INFINITY,
+        }
+    }
+
+    fn is_bounded(&self) -> bool {
+        self.lo_f.is_finite() && self.hi_f.is_finite()
+    }
+
+    /// Is the value `x` (16 digits) possibly in the window?  A guide with a
+    /// margin far above the error of `x`: the exact ends are decided by the
+    /// intersection the members are cut to.
+    fn may_contain(&self, x: f64) -> bool {
+        let margin = 1e-9 * (1.0 + self.lo_f.abs().max(self.hi_f.abs()));
+        x >= self.lo_f - margin && x <= self.hi_f + margin
+    }
+}
+
+/// The real members of the family `{body : var ∈ ℤ}` in the window (with
+/// a margin: the exact ends are decided by the intersection they are cut
+/// to).  `None` when the family is not linear, cannot be located, or has
+/// more than [`MAX_IMAGE_MEMBERS`] members there.  A family with a
+/// non-real step has at most one real member; one with a real step and a
+/// non-real offset none.  The index range of a real family is exact
+/// ([`lattice_indices`](crate::transforms::solve::lattice_indices)): up to
+/// 0.53 it was computed in `f64` and cast with `as i64`, and
+/// `solve_as_set(sin(x − 10²⁰)) ∩ [0, 10]` (three members, `n ≈
+/// −3.18·10¹⁹`) was empty.
+pub(crate) fn image_set_points_in(
     arena: &mut Arena,
     var: ExprId,
     body: ExprId,
-    lo: f64,
-    hi: f64,
+    window: Window,
 ) -> Option<Vec<ExprId>> {
     use crate::transforms::eval::eval;
+    // a family with an infinite term (`atan(i) + nπ = i∞ + nπ`) has no
+    // finite member
+    if crate::base::walk::post_order_ids(arena, body)
+        .into_iter()
+        .any(|id| {
+            matches!(
+                arena.node(id),
+                ExprNode::Infinity
+                    | ExprNode::NegInfinity
+                    | ExprNode::ComplexInfinity
+                    | ExprNode::NaN
+            )
+        })
+    {
+        return Some(Vec::new());
+    }
     let Lattice { step: a, offset: b } = image_linear_parts(arena, var, body)?;
     let member = |arena: &mut Arena, k: i64| -> ExprId {
         let kk = arena.int(k);
@@ -2212,16 +2282,13 @@ fn image_set_points_in(
     } else {
         (a_re, b_re, a_im, b_im)
     };
-    let in_window = |x: f64| {
-        let margin = 1e-9 * (1.0 + lo.abs().max(hi.abs()));
-        x >= lo - margin && x <= hi + margin
-    };
     if a_im != arena.zero {
         // Im(a·k + b) = 0 at k = −Im b / Im a.
         let (Some(ai), Some(bi)) = (approx_real_f64(arena, a_im), approx_real_f64(arena, b_im))
         else {
             return None;
         };
+        // (a part 0 to its digits but not structurally: refused)
         if ai == 0.0 || !ai.is_finite() || !bi.is_finite() {
             return None;
         }
@@ -2230,6 +2297,8 @@ fn image_set_points_in(
             return None;
         }
         let k = kf.round();
+        // certified 17-digit parts: farther than the margin from an integer,
+        // the index is not one (no real member); nearer, the member decides
         if (kf - k).abs() > NEAR_INTEGER * (1.0 + kf.abs()) {
             return Some(Vec::new());
         }
@@ -2244,7 +2313,11 @@ fn image_set_points_in(
         }
         let m_re = eval(arena, m_re);
         let x = approx_real_f64(arena, m_re)?;
-        return Some(if in_window(x) { vec![m_re] } else { Vec::new() });
+        return Some(if window.may_contain(x) {
+            vec![m_re]
+        } else {
+            Vec::new()
+        });
     }
     if b_im != arena.zero {
         return match is_nonzero_constant(arena, b_im) {
@@ -2252,24 +2325,26 @@ fn image_set_points_in(
             _ => None,
         };
     }
+    if !window.is_bounded() {
+        return None;
+    }
     let a_re = eval(arena, a_re);
     let b_re = eval(arena, b_re);
-    let step = approx_real_f64(arena, a_re)?;
-    let s0 = approx_real_f64(arena, b_re)?;
-    if step == 0.0 || !step.is_finite() || !s0.is_finite() || !lo.is_finite() || !hi.is_finite() {
-        return None;
-    }
-    let margin = 1e-9 * (1.0 + lo.abs().max(hi.abs()));
-    let (k1, k2) = ((lo - margin - s0) / step, (hi + margin - s0) / step);
-    let (k_lo, k_hi) = (k1.min(k2).floor() - 1.0, k1.max(k2).ceil() + 1.0);
-    if !k_lo.is_finite() || !k_hi.is_finite() || k_hi - k_lo > MAX_IMAGE_MEMBERS {
-        return None;
-    }
+    let indices = crate::transforms::solve::lattice_indices(
+        arena,
+        b_re,
+        a_re,
+        window.lo,
+        window.hi,
+        MAX_IMAGE_MEMBERS,
+    )?;
     let mut points = Vec::new();
-    for k in (k_lo as i64)..=(k_hi as i64) {
-        let m = member(arena, k);
+    for k in indices {
+        let kk = arena.big_int(k);
+        let m = crate::transforms::subs::subs(arena, body, var, kk);
+        let m = eval(arena, m);
         let x = approx_real_f64(arena, m)?;
-        if in_window(x) {
+        if window.may_contain(x) {
             points.push(m);
         }
     }
@@ -2506,7 +2581,7 @@ fn merge_union_parts(arena: &mut Arena, parts: &[ExprId]) -> Vec<ExprId> {
 /// that window; one whose members cannot be listed stays.  Valid because
 /// membership of a point of the window in `set` depends only on its
 /// membership in the image sets.
-fn cut_image_sets(arena: &mut Arena, set: ExprId, lo: f64, hi: f64) -> ExprId {
+fn cut_image_sets(arena: &mut Arena, set: ExprId, window: Window) -> ExprId {
     let mut out = set;
     for id in crate::base::walk::post_order_ids(arena, set) {
         let ExprNode::ImageSet(var, body) = *arena.node(id) else {
@@ -2515,14 +2590,14 @@ fn cut_image_sets(arena: &mut Arena, set: ExprId, lo: f64, hi: f64) -> ExprId {
         if arena.node(body).is_set_node() {
             // a family of intervals: its intervals in the window
             if let Some(fam) = interval_family(arena, var, body)
-                && let Some(pieces) = interval_family_in(arena, &fam, lo, hi)
+                && let Some(pieces) = interval_family_in(arena, &fam, window)
             {
                 let union = arena.set_union(&pieces);
                 out = arena.subs_structural(out, id, union);
             }
             continue;
         }
-        if let Some(points) = image_set_points_in(arena, var, body, lo, hi) {
+        if let Some(points) = image_set_points_in(arena, var, body, window) {
             let finite = arena.finite_set(&points);
             out = arena.subs_structural(out, id, finite);
         }
@@ -2541,9 +2616,8 @@ fn real_image_sets(arena: &mut Arena, set: ExprId) -> ExprId {
         if image_set_is_real(arena, var, body) == Some(true) {
             continue;
         }
-        if let Some(points) =
-            image_set_points_in(arena, var, body, f64::NEG_INFINITY, f64::INFINITY)
-        {
+        let line = Window::line(arena);
+        if let Some(points) = image_set_points_in(arena, var, body, line) {
             let finite = arena.finite_set(&points);
             out = arena.subs_structural(out, id, finite);
         }
@@ -2602,15 +2676,15 @@ fn intersect_image_parts(arena: &mut Arena, parts: &[ExprId]) -> ExprId {
             return arena.finite_set(&kept);
         }
     }
-    let (lo, hi) = match (inf(arena, hull), sup(arena, hull)) {
-        (Some(lo), Some(hi)) => (approx_real_f64(arena, lo), approx_real_f64(arena, hi)),
-        _ => (None, None),
+    let window = match (inf(arena, hull), sup(arena, hull)) {
+        (Some(lo), Some(hi)) => Window::new(arena, lo, hi),
+        _ => None,
     };
-    let (Some(lo), Some(hi)) = (lo, hi) else {
+    let Some(window) = window else {
         return arena.set_intersection(&[hull, img_set]);
     };
-    let cut = if lo.is_finite() && hi.is_finite() {
-        cut_image_sets(arena, img_set, lo, hi)
+    let cut = if window.is_bounded() {
+        cut_image_sets(arena, img_set, window)
     } else {
         real_image_sets(arena, img_set)
     };
@@ -3472,9 +3546,6 @@ pub(crate) fn reduce_inequalities(
     Ok(simplify_set(arena, combined))
 }
 
-/// Most members of one family listed in a bounded window.
-const MAX_PERIODIC_MEMBERS: f64 = 10_000.0;
-
 /// Replace the `{var | expr = 0}` sets of periodic equations by the finite
 /// set of their solutions in the bounded hull of the conditions that do not
 /// involve them.  The conditions only combine sets by union and
@@ -3506,14 +3577,14 @@ fn resolve_periodic(
     let (Some(lo), Some(hi)) = (inf(arena, hull), sup(arena, hull)) else {
         return;
     };
-    let (Some(lo), Some(hi)) = (approx_real_f64(arena, lo), approx_real_f64(arena, hi)) else {
+    let Some(window) = Window::new(arena, lo, hi) else {
         return;
     };
-    if !lo.is_finite() || !hi.is_finite() {
+    if !window.is_bounded() {
         return;
     }
     for atom in periodic {
-        let Some(points) = periodic_points_in(arena, atom, var, lo, hi) else {
+        let Some(points) = periodic_points_in(arena, atom, var, window) else {
             continue;
         };
         let finite = real_roots_set(arena, &points);
@@ -3524,15 +3595,19 @@ fn resolve_periodic(
 }
 
 /// The members of the periodic atom's families (and its other candidates)
-/// within `[lo, hi]` (numerically, with a margin; exact bounds come from
-/// the intersection) that are not certainly non-solutions.  `None` when a
-/// family cannot be located numerically or has too many members there.
+/// within the window (with a margin; exact bounds come from the
+/// intersection) that are not certainly non-solutions.  `None` when a
+/// family cannot be located or has too many members there.  The families
+/// are located as image sets ([`image_set_points_in`]: exact index ranges,
+/// exact real and imaginary parts); up to 0.53 by `f64` values, so that a
+/// step or offset with an imaginary part below `10⁻¹²` of it was taken as
+/// real or as non-real at random, and the indices far from the origin were
+/// lost (`sin(x − 10²⁰) = 0` had no zero in `[0, 10]`).
 fn periodic_points_in(
     arena: &mut Arena,
     atom: &PeriodicAtom,
     var: ExprId,
-    lo: f64,
-    hi: f64,
+    window: Window,
 ) -> Option<Vec<ExprId>> {
     let n = atom.cands.param;
     let mut points: Vec<ExprId> = Vec::new();
@@ -3546,54 +3621,16 @@ fn periodic_points_in(
     for &p in &atom.cands.plain {
         push(arena, p, &mut points);
     }
-    let margin = 1e-9 * (1.0 + lo.abs().max(hi.abs()));
     for &fam in &atom.cands.families {
-        let member = |arena: &mut Arena, k: i64| -> ExprId {
-            let kk = arena.int(k);
-            let m = crate::transforms::subs::subs(arena, fam, n, kk);
-            crate::transforms::eval::eval(arena, m)
-        };
-        let s0 = member(arena, 0);
-        let s1 = member(arena, 1);
-        let (s0f, s0i) = approx_complex_f64(arena, s0)?;
-        let (s1f, s1i) = approx_complex_f64(arena, s1)?;
-        let (step, step_i) = (s1f - s0f, s1i - s0i);
-        if step_i.abs() > 1e-12 * (1.0 + step.abs()) {
-            // members off the real line (but for at most one)
-            if s0i.abs() <= 1e-12 * (1.0 + s0f.abs()) {
-                push(arena, s0, &mut points);
-            }
+        if !crate::base::walk::has_free_var(arena, fam, n) {
+            push(arena, fam, &mut points);
             continue;
         }
-        if s0i.abs() > 1e-12 * (1.0 + s0f.abs()) {
-            continue;
-        }
-        if step == 0.0 {
-            push(arena, s0, &mut points);
-            continue;
-        }
-        let (k1, k2) = ((lo - margin - s0f) / step, (hi + margin - s0f) / step);
-        let (k_lo, k_hi) = (k1.min(k2).floor() - 1.0, k1.max(k2).ceil() + 1.0);
-        if !k_lo.is_finite() || !k_hi.is_finite() || k_hi - k_lo > MAX_PERIODIC_MEMBERS {
-            return None;
-        }
-        for k in (k_lo as i64)..=(k_hi as i64) {
-            let m = member(arena, k);
-            let (mf, _) = approx_complex_f64(arena, m)?;
-            if mf >= lo - margin && mf <= hi + margin {
-                push(arena, m, &mut points);
-            }
+        for m in image_set_points_in(arena, n, fam, window)? {
+            push(arena, m, &mut points);
         }
     }
     Some(points)
-}
-
-/// A 16-digit approximation of a constant as `(re, im)`.
-fn approx_complex_f64(arena: &mut Arena, e: ExprId) -> Option<(f64, f64)> {
-    let (re, im) = crate::base::complex::as_real_imag(arena, e);
-    let re = crate::transforms::eval::eval(arena, re);
-    let im = crate::transforms::eval::eval(arena, im);
-    Some((approx_real_f64(arena, re)?, approx_real_f64(arena, im)?))
 }
 
 /// A 16-digit approximation of a real constant (`±∞` for the infinities).

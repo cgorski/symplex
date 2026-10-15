@@ -17,8 +17,11 @@
 //! [`f64_tail_trusted`] looks where `f64` cannot: `evalf`'s node evaluator
 //! (whose exponent range ends near `2^(2³¹)`) gives a certified bound on
 //! `g = |x·f(x)|`, the integrand per unit of `ln x`, at `|x| = 2¹⁶, 2²⁴, 2³²,
-//! 2⁶⁴, …, 2²⁰⁴⁸`.  Between two samples the mass `∫ g d(ln x)` is that of the power
-//! law through them (an upper bound for a power law, `≤ g₀·min(Δ, 1/α)` at
+//! 2⁶⁴, …, 2²⁰⁴⁸` (and next to the points where terms of close orders of
+//! growth meet or their rates do, `quad::Integrand::close_points`, where a
+//! bump may lie between those).  Between two samples the mass `∫ g d(ln
+//! x)` is that of the power law through them (an upper bound for a power
+//! law, `≤ g₀·min(Δ, 1/α)` at
 //! decay rate `α`); beyond the last it is `g/α` at the last rate, infinite
 //! when `g` does not decay.  An `f64` value is trusted when that mass beyond
 //! `2¹⁶` is below its tolerance, or when the mass beyond `2¹⁰²⁴` (`> f64::MAX`)
@@ -33,20 +36,25 @@
 //! up to 0.52 `∫₀^∞ e^{−x}·e^{x²/10¹⁴⁰⁰ − 10¹⁰} dx` and
 //! `∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx`, both divergent, were `0` and `1`, and
 //! `e^{x − 10¹⁰⁰⁰}` was refused only because `exp` gave no bound at its
-//! samples.  So the integrand's constants must lie within `2^(±1024)`
-//! (`quad::Integrand::constant_scale`: terms with constants within `2^(±S)`
-//! cross over within `2^(2S)`, and the samples reach `2²⁰⁴⁸`), and the
-//! exact limit of `x·f(x)` at the end ([`tail_decay`]) must be 0 when a
-//! sample measured nothing (it underflowed, or was read as 0 below
-//! [`NEGLIGIBLE`]), and not proved nonzero when every sample measured a
-//! value (an oscillation such as `1/((1 + x⁴)(2 + cos(x/3)))` has no
-//! limit for the engine, and its samples show the decay).  It stays a
-//! heuristic as the quadrature's own error estimate is — a bump between
-//! the last sample and the asymptotic regime made by fractional powers
-//! alone (`e^{2x^(1/1000) − x^(1/999) − 10⁵}` peaks near `2^999000`), or a
-//! decay that sets in only beyond `2²⁰⁴⁸`, is not seen — but the cut-off
-//! by overflow, behind every wrong value of the divergence hunt, any growth
-//! at the end and the features of large constants are.  An integrand
+//! samples.  So the integrand's terms must cross over within the samples'
+//! reach `2²⁰⁴⁸` (`quad::Integrand::crossover_reach`: terms with constants
+//! within `2^(±S)` cross over within `2^(2S)`, and two whose orders of
+//! growth differ by `D < 1` and whose sizes at `x = 2` by `2^L` within
+//! about `2^(L/D)`), and the exact limit of `x·f(x)` at the end
+//! ([`tail_decay`]) must be 0 when a sample measured nothing (it
+//! underflowed, or was read as 0 below [`NEGLIGIBLE`]), and not proved
+//! nonzero when every sample measured a value (an oscillation such as
+//! `1/((1 + x⁴)(2 + cos(x/3)))` has no limit for the engine, and its
+//! samples show the decay).  Up to 0.53 the constants alone were looked at
+//! (`2S`), and a bump made by fractional powers was not seen:
+//! `e^{2x^(1/1000) − x^(1/999) − 10⁵}`, below `e^{−10⁵}` at every sample,
+//! peaks at `e^{10²⁹⁷}` near `2⁹⁹⁷⁵⁵⁷`, and `integrate_numeric` of it over
+//! `[0, ∞)` was `0`.  It stays a heuristic as the quadrature's own error
+//! estimate is — a decay that sets in only beyond `2²⁰⁴⁸` through
+//! functions without an order of growth is not seen — but the cut-off by
+//! overflow, behind every wrong value of the divergence hunt, any growth
+//! at the end and the features of large constants and close exponents
+//! are.  An integrand
 //! refused here goes to the arbitrary-precision quadrature, whose tanh-sinh
 //! walk samples it out to `x ≈ 10¹¹⁰⁰⁰⁰` and refuses terms that do not
 //! decay.
@@ -98,6 +106,14 @@ const F64_LAST: i32 = 1000;
 /// with the certified value (`log₂`): an `f64` evaluation loses a few digits
 /// at most, a cut-off all of them.
 const AGREEMENT: f64 = -20.0;
+
+/// `log₂` of the factor by which `g` at a sample next to a crossing of
+/// close orders ([`samples_trusted`]) may exceed the tolerance: the
+/// tolerance is relative to the value (`2⁻³³` of it for `integrate_numeric`,
+/// at most `2⁻³⁰` of it for `eval_f64`), so beyond `2¹⁰⁰` the value missed
+/// that mass (`e^{2x^(1/30) − x^(1/28) − 500}`, `|x·f(x)| ≈ 2⁸⁵⁶` at `x =
+/// 2³⁷⁸`, was integrated to `1.6·10⁻²¹⁴` over `[0, ∞)` up to 0.53).
+const UNSEEN: ErrExp = 100.0;
 
 /// `log₂ g` below which a sample counts as 0: far below any `f64` tolerance,
 /// and above the bound of a value that underflowed the exponent range
@@ -258,13 +274,34 @@ fn samples_trusted(
     let mut f = Integrand::new(arena, body, var);
     // The samples must reach where the integrand's terms cross over.
     let last = f64::from(EXPONENTS[EXPONENTS.len() - 1]);
-    if 2.0 * f.constant_scale(&mut Wp::new(PREC, cc)) > last {
+    if f.crossover_reach(&mut Wp::new(PREC, cc)) > last {
         debug!(
             upper,
             "evalf: constants beyond the reach of the far-tail samples"
         );
         return Sampled::Refused;
     }
+    // Also where terms of close orders of growth meet, or their rates do
+    // (a bump between two samples): the power law through the samples
+    // bounds the mass between them only where none lies there.
+    // The decay seen so far is not extrapolated before the last of them,
+    // and a mass there far beyond the tolerance (which is relative to the
+    // value) is one the quadrature did not see.
+    let mut exponents: Vec<i32> = EXPONENTS.to_vec();
+    let mut close: Vec<i32> = Vec::new();
+    for p in f.close_points(&mut Wp::new(PREC, cc)) {
+        if p > f64::from(EXPONENTS[0])
+            && p < last
+            && let Some(e) =
+                crate::base::cast::f64_to_i64(p.round()).and_then(|e| i32::try_from(e).ok())
+        {
+            close.extend([e - 1, e, e + 1]);
+        }
+    }
+    let must_pass = close.iter().copied().max().unwrap_or(EXPONENTS[0]);
+    exponents.extend(close.iter().copied());
+    exponents.sort_unstable();
+    exponents.dedup();
     let negligible = std::cell::Cell::new(false);
     // `log₂` of a bound on `|x·f(x)|` at `x = ±2^e`, and `f(x)`.
     let mut sample = |e: i32| -> Option<(ErrExp, (BigFloat, BigFloat))> {
@@ -311,10 +348,14 @@ fn samples_trusted(
     let mut samples: Vec<(i32, ErrExp, (BigFloat, BigFloat))> = Vec::new();
     let mut mid = accuracy::EXACT;
     let mut far = accuracy::EXACT;
-    for &e in &EXPONENTS {
+    for &e in &exponents {
         let Some((g, v)) = sample(e) else {
             return Sampled::Refused;
         };
+        if close.contains(&e) && g > lg_allowed + UNSEEN {
+            debug!(e, g, "evalf: a bump between the far-tail samples");
+            return Sampled::Refused;
+        }
         if let Some(&(pe, pg, _)) = samples.last() {
             let (mass, alpha) = segment(pe, pg, e, g);
             if pe < F64_END {
@@ -330,7 +371,7 @@ fn samples_trusted(
             } else {
                 accuracy::UNKNOWN
             };
-            if accuracy::lsum(accuracy::lsum(mid, far), rest) <= lg_allowed {
+            if e >= must_pass && accuracy::lsum(accuracy::lsum(mid, far), rest) <= lg_allowed {
                 return verdict();
             }
             if e == EXPONENTS[EXPONENTS.len() - 1] {

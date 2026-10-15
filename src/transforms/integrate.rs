@@ -5226,12 +5226,27 @@ fn linear_coeff_of(arena: &Arena, expr: ExprId, _var: ExprId, _var_sym: SymbolId
 ///
 /// Returns `Some((a_expr, b_expr))` where `a_expr` is the coefficient of `var`
 /// and `b_expr` is the constant term — both as `ExprId`s that are free of `var`.
+/// An argument with an infinity in it is not linear: up to 0.53 `∫
+/// besselj(1, x·∞) dx` and `∫ chebyshev_t(3, x·∞) dx` were `0` (an
+/// antiderivative divided by the coefficient `∞`).
 fn symbolic_linear_coeff_of(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     var_sym: SymbolId,
 ) -> Option<(ExprId, ExprId)> {
+    let special = [
+        arena.infinity,
+        arena.neg_infinity,
+        arena.complex_infinity,
+        arena.nan,
+    ];
+    if special
+        .iter()
+        .any(|&s| crate::base::walk::contains(arena, expr, s))
+    {
+        return None;
+    }
     // Fast path: try numeric first (covers the common numeric-coefficient case)
     if let Some(a) = linear_coeff_of(arena, expr, var, var_sym) {
         let a_id = arena.num_ratio(a.clone());

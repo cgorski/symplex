@@ -369,9 +369,14 @@ impl Expr<Numeric> {
     /// evaluates it (tanh-sinh quadrature over arbitrary-precision floats,
     /// breakpoints split off, the bounds exact) to 17 certified digits, and
     /// that value is returned with an error of two units in its last place
-    /// (`2⁻⁶⁰` for 0).  Otherwise the `f64` estimate is returned with its
-    /// error estimate even if the tolerance was not met; check it before
-    /// trusting the value.
+    /// (`2⁻⁶⁰` for 0).  So is a run whose every node gave 0 (an estimate 0
+    /// with an error of 0 proves nothing: up to 0.53 `∫₀^(10³⁰⁰) e^{−1000}
+    /// dx`, `5.0759588975494566·10⁻¹³⁵`, was `0` with an error of 0); when
+    /// that fails, it gets the value [`eval_f64`](Self::eval_f64) certifies
+    /// for the integral (`0.0` for one it proves below the `f64` range), or
+    /// is refused as `eval_f64` refuses it.  Otherwise
+    /// the `f64` estimate is returned with its error estimate even if the
+    /// tolerance was not met; check it before trusting the value.
     ///
     /// Before 0.44 the error estimate next to a singularity at a nonzero
     /// end was 30 to 60 times smaller than the error: `∫₀¹ dx/√(1 − x)` was
@@ -534,6 +539,11 @@ impl Expr<Numeric> {
                 tolerance(r),
             )
         };
+        // An estimate whose error is 0 — every node gave 0, as for values
+        // below the `f64` range — is no proof that the integral is 0, as in
+        // `evalf`'s `f64` route: up to 0.53 `∫₀^(10³⁰⁰) e^{−1000} dx`
+        // (`5.0759588975494566·10⁻¹³⁵`) was `Ok(0.0)`.
+        let measured = |r: &QuadResult| r.error > 0.0;
         let report = if a <= b {
             definite::quadrature_split(&f, a, b, &points, opts)
         } else {
@@ -550,15 +560,16 @@ impl Expr<Numeric> {
         .map(|(r, ok)| (with_bounds(r), ok));
         if let Ok((r, _)) = &report
             && r.error <= tolerance(r)
+            && measured(r)
             && tail_seen(r)
         {
             return Ok(*r);
         }
-        match self.certified_quadrature(var, lo, hi) {
+        let certified = match self.certified_quadrature(var, lo, hi) {
             Ok(r) => return Ok(r),
             Err(e @ SymplexError::Divergent { .. }) => return Err(e),
-            Err(_) => {}
-        }
+            Err(e) => e,
+        };
         match report {
             Ok((r, _)) if !tail_seen(&r) => Err(SymplexError::ComputationFailed {
                 operation: "integrate_numeric",
@@ -568,6 +579,24 @@ impl Expr<Numeric> {
                     r.value
                 ),
             }),
+            // `eval_f64`'s value then, certified to its 8 digits (`0.0` for
+            // an integral it proves below the `f64` range), or its refusal.
+            Ok((r, _)) if !measured(&r) => {
+                match self.definite_integral_node(var, lo, hi).eval_f64() {
+                    Ok(value) => Ok(QuadResult {
+                        value,
+                        error: (2e-8 * value.abs()).max(f64::MIN_POSITIVE),
+                    }),
+                    Err(_) => Err(SymplexError::ComputationFailed {
+                        operation: "integrate_numeric",
+                        reason: format!(
+                            "every node of the f64 quadrature gave 0, which does not show that the \
+                         integral is 0 (its values may lie below the f64 range), and the \
+                         arbitrary-precision quadrature failed: {certified}"
+                        ),
+                    }),
+                }
+            }
             report => report.map(|(r, _)| r),
         }
     }

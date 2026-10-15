@@ -373,6 +373,51 @@ pub(super) fn fibonacci(
 /// The terms cancel near `z = 0` (`H(z) ≈ ζ(2)·z`): the loss is measured
 /// and the sum repeated with that many more bits, up to the cancellation
 /// cap of the other special functions.
+/// The double factorial of a real non-integer `x`:
+/// `x!! = 2^(x/2)·(π/2)^((cos πx − 1)/4)·Γ(x/2 + 1)`, the continuation
+/// that takes the values of `n!!` at every integer where those are defined
+/// (`(−3)!! = −1`, `(−5)!! = 1/3`, as `eval` folds them) — mpmath's
+/// `fac2`, Mathematica's `Factorial2`.  Before 0.54 refused (`factorial2(1/2)`;
+/// SymPy raises there).  Integers are `eval`'s; the poles `x = −2, −4, …`
+/// are integers too.
+pub(super) fn factorial2(x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
+    if x.is_zero() || x.is_int() || x.is_nan() || x.is_inf() {
+        return Err(unevaluable(
+            "evalf has no numerical routine for 'factorial2' at an integer (eval folds it exactly)",
+        ));
+    }
+    // |x|·π is rounded relative to itself before the cosine: the bits of
+    // its integer part come on top.
+    let wp = prec
+        + 32
+        + x.exponent()
+            .map_or(0, |e| usize::try_from(e.max(0)).unwrap_or(0));
+    let two = BigFloat::from_i32(2, wp);
+    let half_x = x.div(&two, wp, RM);
+    let pi = w.cc.pi(wp, RM).clone();
+    let c = x.mul(&pi, wp, RM).cos(wp, RM, w.cc);
+    let e = c
+        .sub(&BigFloat::from_i32(1, wp), wp, RM)
+        .div(&BigFloat::from_i32(4, wp), wp, RM);
+    let ln_half_pi = pi.div(&two, wp, RM).ln(wp, RM, w.cc);
+    let ln_two = two.ln(wp, RM, w.cc);
+    let log = half_x
+        .mul(&ln_two, wp, RM)
+        .add(&e.mul(&ln_half_pi, wp, RM), wp, RM);
+    let g = super::arb_gamma_real(
+        &half_x.add(&BigFloat::from_i32(1, wp), wp, RM),
+        &mut w.at(wp),
+    )?;
+    let r = log.exp(wp, RM, w.cc).mul(&g, wp, RM);
+    if r.is_inf() || r.is_nan() {
+        return Err(unevaluable(
+            "factorial2: the value leaves the exponent range",
+        ));
+    }
+    Ok(super::round_to(r, prec))
+}
+
 pub(super) fn harmonic(z: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let prec = w.bits();
     if z.is_nan() || z.is_inf() {

@@ -327,8 +327,12 @@ fn a_near_integer_parameter_is_not_an_integer() {
     for (src, r, digits) in cases {
         certified_at(&ctx, src, digits, r);
     }
+    // A near-integer degree is not the integer: since 0.54 the Legendre
+    // function of that degree (it was refused).  mpmath
+    // `legendre(3 + mpf(10)**-13, mpf(1)/3)` = `-0.40740740740738224648`
+    // (`P_3(1/3) = -0.40740740740740740741`).
     let e = ctx.parse("legendre(3 + 10^-13, 1/3)").expect("parse");
-    assert!(e.eval_decimal(16).is_err());
+    assert_eq!(e.eval_decimal(20).unwrap(), "-0.40740740740738224648");
 }
 
 /// Found probing the class, with exact (even dyadic) arguments: the

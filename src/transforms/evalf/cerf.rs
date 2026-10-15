@@ -33,6 +33,16 @@
 //! The node's bound is its own `2^−(prec+12)` relative plus twice the radius
 //! times the derivative over the ball: `abs(erf′(u)) = (2/√π)·e^(−Re u²) ≤
 //! (2/√π)·e^((abs(y) + r)² − max(abs(x) − r, 0)²)`, and `e^(Re u²)` for `erfi`.
+//!
+//! On the imaginary axis (a real part exactly 0) the parts are real
+//! functions: `erf(iy) = i·erfi(y)`, `erfc(iy) = 1 − i·erfi(y)`, `erfi(iy) =
+//! i·erf(y)` (from `erfi z = −i·erf(iz)`), the imaginary part from the real routine
+//! with its own relative bound, the real part exact.  Before 0.54 the value
+//! carried one bound, `abs(v)·2^−(prec+12)`, for both parts, and the `1` of
+//! `erfc(10i) = 1 − 1.52·10⁴²i` lay inside it: it printed
+//! `-1.524307423e42*i` at every digit count, as did `uppergamma(1/2, −100)`
+//! (`√π·erfc(10i)`, real part `√π`) and every half-integer `Γ(a, −x)`.
+//! An argument whose real part is exactly 0 moves only the imaginary part.
 
 use super::wp::{RM, Wp};
 use crate::base::bigfloat::{self, is_strictly_positive, to_f64};
@@ -121,6 +131,7 @@ pub(super) fn erf_at(z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
             } else {
                 lt - (2.0 * nf + 3.0).log2()
             };
+            // (`lt` bounds the rest: the stop is certified.)
             if lt < sum.1 - wp as f64 - 8.0 || (t.0.is_zero() && t.1.is_zero()) {
                 break;
             }
@@ -231,6 +242,9 @@ pub(super) fn erf_family(kind: Kind, z: &Complex, w: &mut Wp<'_>) -> Result<Comp
         return Err(super::unevaluable("erf of special float value"));
     }
     tracing::debug!(prec, ?kind, "evalf: erf family at a complex argument");
+    if z.0.is_zero() {
+        return on_axis(kind, &z.1, w);
+    }
     let arg = match kind {
         Kind::Erfi => (z.1.neg(), z.0.clone()), // iz
         _ => z.clone(),
@@ -255,6 +269,27 @@ pub(super) fn erf_family(kind: Kind, z: &Complex, w: &mut Wp<'_>) -> Result<Comp
         }
         extra = (lost + 40).max(2 * extra).min(cap);
     }
+}
+
+/// `erf`, `erfc` or `erfi` of `iy` (module documentation): the real part
+/// exact, the imaginary part rounded to `prec + 16` bits, its error below
+/// `2^−(prec+12)` of itself.
+fn on_axis(kind: Kind, y: &BigFloat, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let p = w.bits() + 16;
+    let (re, im) = match kind {
+        Kind::Erf => (BigFloat::new(p), super::arb_erfi(y, &mut w.at(p))?),
+        Kind::Erfc => (
+            BigFloat::from_i32(1, p),
+            super::arb_erfi(y, &mut w.at(p))?.neg(),
+        ),
+        Kind::Erfi => (BigFloat::new(p), super::arb_erf(y, &mut w.at(p))?),
+    };
+    if im.is_zero() || im.is_nan() || im.is_inf() {
+        return Err(super::unevaluable(
+            "erf of an imaginary argument: the value overflows the arbitrary-precision exponent range",
+        ));
+    }
+    Ok((re, super::round_to(im, p)))
 }
 
 /// The Fresnel integral `S(z)` (`want_s`) or `C(z)` of a non-real `z`, from
@@ -331,9 +366,18 @@ pub(super) fn erf_bound(kind: Kind, z: &Complex, bz: Bound, v: &Complex, prec: u
     if !lv.is_finite() {
         return Bound::UNKNOWN;
     }
-    let own = lv - prec as f64 - 12.0;
+    // On the imaginary axis ([`on_axis`]) each part has its own bound.
+    let axis = z.0.is_zero();
+    let own = if axis {
+        Bound {
+            re: accuracy::EXACT,
+            im: accuracy::part_lg(&v.1) - prec as f64 - 12.0,
+        }
+    } else {
+        Bound::both(lv - prec as f64 - 12.0)
+    };
     if bz.is_exact() {
-        return Bound::both(own);
+        return own;
     }
     let (Some(x), Some(y)) = (to_f64(&z.0), to_f64(&z.1)) else {
         return Bound::UNKNOWN;
@@ -354,6 +398,15 @@ pub(super) fn erf_bound(kind: Kind, z: &Complex, bz: Bound, v: &Complex, prec: u
         return Bound::UNKNOWN;
     }
     // The derivative over the ball moves the value by at most its bound
-    // times the radius (twice, for the first-order estimate).
-    Bound::both(accuracy::lsum(own, ld + bz.joint() + 1.0))
+    // times the radius (twice, for the first-order estimate); along the
+    // imaginary axis only the imaginary part.
+    let moved = ld + bz.joint() + 1.0;
+    Bound {
+        re: if axis && accuracy::exact_zero(&z.0, bz.re) {
+            own.re
+        } else {
+            accuracy::lsum(own.re, moved)
+        },
+        im: accuracy::lsum(own.im, moved),
+    }
 }

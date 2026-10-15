@@ -269,8 +269,6 @@ fn solve_periodic_inequality(
     let period = crate::transforms::eval::eval(arena, period);
     let period_q =
         approx_real(arena, period).ok_or_else(|| failed("the period cannot be located".into()))?;
-    let period_f = crate::base::numeric::ratio_to_f64(&period_q)
-        .ok_or_else(|| failed("the period cannot be located".into()))?;
     // `tan u` as `sin u/cos u`: its poles are the zeros of a denominator.
     let mut rewritten = expr;
     for id in walk::post_order_ids(arena, expr) {
@@ -299,7 +297,7 @@ fn solve_periodic_inequality(
         if !walk::contains(arena, e, var) {
             continue;
         }
-        let members = match periodic_zeros_in_period(arena, e, var, period, period_f)? {
+        let members = match periodic_zeros_in_period(arena, e, var, period)? {
             Some(m) => m,
             None => {
                 // `e` vanishes identically
@@ -525,17 +523,23 @@ fn point_family(arena: &mut Arena, p: ExprId, period: ExprId) -> ExprId {
     crate::transforms::sets::image_set(arena, n, body)
 }
 
-/// The real zeros of `e` (periodic in `var` with the period `period ≈
-/// period_f`) in `[0, period)`, from the general solver: the members of its
-/// families there and its other solutions reduced into the window.
+/// The real zeros of `e` (periodic in `var` with the period `period`) in
+/// `[0, period)`, from the general solver: the members of its families
+/// there and its other solutions reduced into the window, exactly (the
+/// families located as image sets, every zero `z` reduced to `z −
+/// ⌊z/period⌋·period` with a certified floor, its realness certified).
 /// `Ok(None)` when `e` vanishes identically; an error when its zeros are
-/// not found or a family cannot be located.
+/// not found or one cannot be located.
+///
+/// Up to 0.53 the families were located by `f64` values cast with `as
+/// i64`, and a zero with an imaginary part below `10⁻¹²` of its value was
+/// real: `sin(x − 10²⁰) > 0` (members `n ≈ −3.18·10¹⁹`) found no zero in
+/// a period and was "every real `x`".
 fn periodic_zeros_in_period(
     arena: &mut Arena,
     e: ExprId,
     var: ExprId,
     period: ExprId,
-    period_f: f64,
 ) -> Result<Option<Vec<ExprId>>, SymplexError> {
     use crate::transforms::solve::{Reason, RootSet as Roots, Solutions};
     let scope = arena.finite_set(&[e, var]);
@@ -561,85 +565,63 @@ fn periodic_zeros_in_period(
             )));
         }
     };
-    let margin = 1e-12 * (1.0 + period_f);
+    let window = crate::transforms::sets::Window::new(arena, zero, period)
+        .ok_or_else(|| failed("the period cannot be located".into()))?;
     let mut out: Vec<ExprId> = Vec::new();
-    let approx = |arena: &mut Arena, v: ExprId| -> Option<(f64, f64)> {
-        let z = crate::transforms::evalf::evalf_complex64(arena, v).ok()?;
-        (z.re.is_finite() && z.im.is_finite()).then_some((z.re, z.im))
-    };
     for s in sols {
         let v = crate::transforms::eval::eval(arena, s);
-        if walk::contains(arena, v, n) {
-            let Some(crate::transforms::sets::Lattice { step, offset }) =
-                crate::transforms::sets::image_linear_parts(arena, n, v)
-            else {
-                return Err(failed(format!(
-                    "the family {} is not linear",
-                    arena.display(v)
-                )));
-            };
-            let (Some((sr, si)), Some((or, oi))) = (approx(arena, step), approx(arena, offset))
-            else {
-                return Err(failed(format!(
-                    "the family {} cannot be located",
-                    arena.display(v)
-                )));
-            };
-            if si.abs() > 1e-12 * (1.0 + sr.abs()) || oi.abs() > 1e-12 * (1.0 + or.abs()) {
-                // not real (a real variable takes no member)
-                if value_sign(arena, offset).is_nonreal().is_true()
-                    || value_sign(arena, step).is_nonreal().is_true()
-                {
-                    continue;
-                }
-                return Err(failed(format!(
-                    "the family {} cannot be located on the real line",
-                    arena.display(v)
-                )));
-            }
-            if sr == 0.0 {
-                return Err(failed("a family with a zero step".into()));
-            }
-            let (k1, k2) = ((-margin - or) / sr, (period_f + margin - or) / sr);
-            let (lo, hi) = (k1.min(k2).floor() - 1.0, k1.max(k2).ceil() + 1.0);
-            if !lo.is_finite() || !hi.is_finite() || hi - lo > 4.0 * MAX_PERIODIC_POINTS as f64 {
+        let family = walk::contains(arena, v, n);
+        let zeros = if family {
+            // its real members in [0, period], with a margin
+            let members = crate::transforms::sets::image_set_points_in(arena, n, v, window)
+                .ok_or_else(|| {
+                    failed(format!(
+                        "the family {} cannot be located on the real line",
+                        arena.display(v)
+                    ))
+                })?;
+            if members.len() > 4 * MAX_PERIODIC_POINTS {
                 return Err(failed(format!(
                     "the family {} has too many members in one period",
                     arena.display(v)
                 )));
             }
-            for kk in (lo as i64)..=(hi as i64) {
-                let x = or + sr * kk as f64;
-                if x < -margin || x >= period_f - margin {
-                    continue;
-                }
-                let ki = arena.int(kk);
-                let m = crate::transforms::subs::subs(arena, v, n, ki);
-                out.push(crate::transforms::eval::eval(arena, m));
-            }
+            members
         } else {
-            let Some((re, im)) = approx(arena, v) else {
+            match crate::transforms::realness::imaginary_part_sign(arena, v) {
+                SignSet::ZERO => {}
+                // not real (a real variable does not take it)
+                s if s.is_nonzero().is_true() => continue,
+                _ => {
+                    return Err(failed(format!(
+                        "the zero {} cannot be located on the real line",
+                        arena.display(v)
+                    )));
+                }
+            }
+            vec![v]
+        };
+        for z in zeros {
+            // z − ⌊z/period⌋·period, in [0, period)
+            let q = arena.div(z, period);
+            let turns = arena.floor(q);
+            let turns = crate::transforms::eval::eval(arena, turns);
+            let Some(t) = arena.as_num(turns).filter(|t| t.is_integer()).cloned() else {
                 return Err(failed(format!(
-                    "the zero {} cannot be located",
-                    arena.display(v)
+                    "the zero {} cannot be reduced into one period",
+                    arena.display(z)
                 )));
             };
-            if im.abs() > 1e-12 * (1.0 + re.abs()) {
-                if value_sign(arena, v).is_nonreal().is_true() {
-                    continue;
-                }
-                return Err(failed(format!(
-                    "the zero {} cannot be located on the real line",
-                    arena.display(v)
-                )));
+            if t.is_zero() {
+                out.push(z);
+            } else if !family {
+                // a zero of a periodic function: its translate by the period
+                let back = arena.mul(&[turns, period]);
+                let back = arena.neg(back);
+                let sum = arena.add(&[z, back]);
+                out.push(crate::transforms::eval::eval(arena, sum));
             }
-            // a zero of a periodic function: its translates by the period
-            let turns = (re / period_f).floor();
-            if !turns.is_finite() || turns.abs() > 1e12 {
-                return Err(failed("a zero far outside one period".into()));
-            }
-            let shifted_v = shifted(arena, v, period, -(turns as i64));
-            out.push(shifted_v);
+            // (a member outside the period: another member is its translate)
         }
     }
     Ok(Some(out))
@@ -1186,7 +1168,7 @@ fn sign_chart(
             let inside_lo = lo.is_none_or(|l| approx_le(&l.approx, &np.approx));
             let inside_hi = hi.is_none_or(|h| approx_le(&np.approx, &h.approx));
             if inside_lo && inside_hi {
-                merge_point(&mut points, np);
+                merge_point(arena, &mut points, np)?;
             }
         }
         branches.push(Branch {
@@ -1491,6 +1473,7 @@ fn add_roots(
             )));
         };
         merge_point(
+            arena,
             points,
             Critical {
                 id: ev,
@@ -1499,17 +1482,49 @@ fn add_roots(
                 numer_zero,
                 undefined,
             },
-        );
+        )?;
     }
     Ok(())
 }
 
-/// Insert a point, merging it with an existing numerically equal one.
-fn merge_point(points: &mut Vec<Critical>, np: Critical) {
-    if let Some(existing) = points
-        .iter_mut()
-        .find(|c| approx_same(&c.approx, &np.approx))
-    {
+/// Insert a point, merging it with an existing one it equals.  Points whose
+/// approximations agree to [`MERGE_REL`] are merged only when their
+/// difference is proved 0 (`constant_zero_decision`), kept apart when it is
+/// proved nonzero (the sample points between them then refuse if they
+/// cannot be placed), and refused otherwise.  Up to 0.53 they were merged
+/// on the approximations alone: `(x − 1)(x − 1 − e⁻⁷⁰) < 0` was `EmptySet`
+/// (it is `(1, 1 + e⁻⁷⁰)`).
+fn merge_point(
+    arena: &mut Arena,
+    points: &mut Vec<Critical>,
+    np: Critical,
+) -> Result<(), SymplexError> {
+    let mut same: Option<usize> = None;
+    for (i, c) in points.iter().enumerate() {
+        if !approx_same(&c.approx, &np.approx) {
+            continue;
+        }
+        if c.id == np.id {
+            same = Some(i);
+            break;
+        }
+        let d = arena.sub(c.id, np.id);
+        match crate::transforms::eval::constant_zero_decision(arena, d) {
+            Some(true) => {
+                same = Some(i);
+                break;
+            }
+            Some(false) => {}
+            None => {
+                return Err(failed(format!(
+                    "cannot decide whether the critical points {} and {} are equal",
+                    arena.display(c.id),
+                    arena.display(np.id)
+                )));
+            }
+        }
+    }
+    if let Some(existing) = same.and_then(|i| points.get_mut(i)) {
         existing.numer_zero |= np.numer_zero;
         existing.undefined |= np.undefined;
         if np.exact && !existing.exact {
@@ -1517,9 +1532,10 @@ fn merge_point(points: &mut Vec<Critical>, np: Critical) {
             existing.approx = np.approx;
             existing.exact = true;
         }
-        return;
+        return Ok(());
     }
     points.push(np);
+    Ok(())
 }
 
 fn sort_points(points: &mut [Critical]) {

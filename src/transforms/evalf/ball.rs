@@ -310,6 +310,7 @@ impl RBall {
         if self.r == f64::NEG_INFINITY {
             return l;
         }
+        // (Next to 0 the lower bound is 0: a margin on the safe side.)
         if l.is_nan() || l <= self.r + 1e-9 {
             return f64::NEG_INFINITY;
         }

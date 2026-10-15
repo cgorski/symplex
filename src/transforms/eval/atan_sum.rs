@@ -181,6 +181,9 @@ pub(super) fn is_zero(arena: &Arena, d: ExprId) -> Option<bool> {
         return Some(false);
     }
     // D·d = 2πk: k from the value, whose rounding errors stay far below π.
+    // (D·d ∈ 2πℤ is proved above; the `f64` value only picks the multiple,
+    // its error (a few ulps of `scale`) far inside the tolerance, which is
+    // far below π, and a value outside it refuses.)
     let tolerance = 1e-9 * scale.max(1.0);
     if tolerance >= 0.5 || !value.is_finite() {
         return None;

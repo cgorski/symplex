@@ -873,8 +873,9 @@ const CHECK_DIGITS: u32 = 16;
 enum Certified {
     /// Exactly zero (its bound is exact).
     Zero,
-    /// Nonzero, with the sign of its real part when it is real to the
-    /// digits evaluated (`None` for a value that is not real).
+    /// Nonzero, with the sign of its real part when its imaginary part is 0
+    /// within its error (`None` for a value whose imaginary part is
+    /// certified nonzero).
     Nonzero { real_sign: Option<i8> },
     /// Zero to the precision reached, or not evaluable.
     Unresolved,
@@ -903,7 +904,12 @@ fn certified(
             if z.0.is_zero() && z.1.is_zero() {
                 return Certified::Zero;
             }
-            let real_sign = evalf::is_real_to_digits(&z, CHECK_DIGITS).then(|| {
+            // `settle` sets a part whose ball contains 0 to 0, so a kept
+            // imaginary part is certified nonzero: the value is not real
+            // and has no sign, however small that part is next to the real
+            // one.  (Up to 0.53 the approximate `is_real_to_digits` read the
+            // sign of `1/2 + i·e⁻¹⁰⁰`'s real part as the value's.)
+            let real_sign = z.1.is_zero().then(|| {
                 if z.0.is_zero() {
                     0
                 } else if z.0.is_negative() {

@@ -4096,6 +4096,8 @@ impl Expr<Numeric> {
             }
         };
 
+        // (The float thresholds below steer the iteration of an `f64` API,
+        // whose result is an approximation by contract: no claim rests on them.)
         for _ in 0..max_iterations {
             if fx.abs() < tolerance {
                 return Ok(x);
@@ -4962,8 +4964,11 @@ impl Expr<Numeric> {
     /// Check whether `val` is a solution of `self = 0` for variable `var`.
     ///
     /// Substitutes `val` for `var`, evaluates, and checks if the result is zero.
-    /// Returns `Some(true)` if the residual is zero (structurally or numerically),
-    /// `Some(false)` if definitely non-zero, or `None` if the result is ambiguous.
+    /// Returns `Some(true)` if the residual is proved zero (structurally, or
+    /// as [`is_zero`](Self::is_zero) decides: exact zero tests and certified
+    /// values), `Some(false)` if it is proved non-zero, or `None` if
+    /// undecided.  Up to 0.53 a residual below `10⁻¹⁰` in modulus counted
+    /// as zero: `(x − e⁻³⁰).check_solution(x, 0)` was `Some(true)`.
     ///
     /// # Examples
     ///
@@ -4994,14 +4999,32 @@ impl Expr<Numeric> {
         if is_nonzero_literal(&substituted) {
             return Some(false);
         }
-        // Try numerical (complex) evaluation.
-        if let Ok(z) = substituted.eval_complex64() {
-            let mag = z.norm();
-            if mag < 1e-10 {
+        // A root of a polynomial `q` that divides the equation's polynomial
+        // (`p(RootOf(q, k))` with `q | p`), exactly.
+        {
+            let (val_id, var_id) = (self.checked_id(val), self.checked_id(var));
+            let inner = self.inner.read();
+            let arena = &inner.arena;
+            if let ExprNode::RootOf(q, t, _) = *arena.node(val_id)
+                && let Some(p) = crate::poly::polybridge::expr_to_poly(arena, self.raw_id(), var_id)
+                && let Some(q) = crate::poly::polybridge::expr_to_poly(arena, q, t)
+                && !q.is_constant()
+                && p.rem(&q).is_zero()
+            {
                 return Some(true);
             }
-            if mag > 1e-6 {
-                return Some(false);
+        }
+        // The zero test (exact tests, certified values for a constant), and
+        // for an algebraic constant its exact one.
+        if let Some(decided) = substituted.is_zero() {
+            return Some(decided);
+        }
+        if substituted.is_constant() {
+            let mut inner = substituted.inner.write();
+            if let Some(decided) =
+                crate::poly::algebraic::is_zero_checked(&mut inner.arena, substituted.raw_id())
+            {
+                return Some(decided);
             }
         }
         // Try expand + eval

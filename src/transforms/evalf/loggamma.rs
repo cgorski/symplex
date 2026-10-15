@@ -171,6 +171,8 @@ fn shifted_stirling(z: &Complex, wpc: &mut Wp<'_>) -> Result<(Complex, f64), Sym
     let args: f64 = (0..n).map(|k| y.atan2(x + k as f64)).sum();
     let im0 = super::f64_of(&l.1)?;
     let two_pi_f = 2.0 * std::f64::consts::PI;
+    // (A multiple of 2π whose `f64` error, about `n·2⁻⁵³`, is far below
+    // the `π` that rounding tolerates.)
     let m = ((args - im0) / two_pi_f).round();
     if m != 0.0 {
         let two_pi = wpc

@@ -393,6 +393,89 @@ fn has_symbolic_power_of(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
         })
 }
 
+/// Is every power `b^e` of `var` with an exponent that is not a number (see
+/// [`has_symbolic_power_of`]) defined at the roots of the factors of a
+/// product, for every parameter value under which the root is claimed?  At
+/// an unconditional root its base must be proved nonzero; at a root under
+/// the condition `cond`, a base that vanishes needs `re e > 0` (`e > 0` for
+/// a real `e`, as [`power_equals_zero`] writes it), which `cond` must be or
+/// contain.  `(4 − x)·x^(y + i) = 0` has the root `4` (`4^(y + i)` is
+/// defined for every `y`) and `0` when `re y > 0`; up to 0.53 such a product
+/// was solved as a whole and refused.  `x·∛(x^y)` at `0` (undefined for
+/// `re y ≤ 0`) is not.
+fn symbolic_powers_defined_at(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    roots: &[ExprId],
+    groups: &[Guarded],
+) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::truth::Truth;
+    let powers: Vec<ExprId> = crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .filter(|&id| {
+            matches!(*arena.node(id), ExprNode::Pow(b, e)
+                if arena.as_num(e).is_none() && expr_contains_var(arena, b, var))
+        })
+        .collect();
+    let base_nonzero_at = |arena: &mut Arena, b: ExprId, r: ExprId| -> bool {
+        let v = crate::transforms::subs::subs(arena, b, var, r);
+        let v = crate::transforms::eval::eval(arena, v);
+        if crate::base::walk::free_symbols(arena, v).is_empty() {
+            Truth::from(crate::transforms::eval::constant_zero_decision(arena, v)).is_false()
+        } else {
+            Truth::from(AssumptionCache::new().query(arena, v, Props::NONZERO)).is_true()
+        }
+    };
+    for &r in roots {
+        for &p in &powers {
+            let ExprNode::Pow(b, _) = *arena.node(p) else {
+                return false;
+            };
+            if !base_nonzero_at(arena, b, r) {
+                return false;
+            }
+        }
+    }
+    for g in groups {
+        let RootSet::Points(rs) = &g.roots else {
+            return false;
+        };
+        let conjuncts: Vec<ExprId> = match arena.node(g.cond) {
+            ExprNode::And(ch) => ch.to_vec(),
+            _ => vec![g.cond],
+        };
+        for &r in rs {
+            for &p in &powers {
+                let ExprNode::Pow(b, e) = *arena.node(p) else {
+                    return false;
+                };
+                if base_nonzero_at(arena, b, r) {
+                    continue;
+                }
+                if expr_contains_var(arena, e, var) {
+                    return false;
+                }
+                let zero = arena.zero;
+                let real =
+                    Truth::from(AssumptionCache::new().query(arena, e, Props::REAL)).is_true();
+                let lhs = if real {
+                    e
+                } else {
+                    let re = arena.re(e);
+                    crate::transforms::eval::eval(arena, re)
+                };
+                let needed = arena.gt(lhs, zero);
+                if !conjuncts.contains(&needed) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 /// `outcome` without the conditional roots ([`Reason::Conditional`]) that
 /// are no root for any value of the parameters: a part of the equation at
 /// a pole there (`(√x − y)/(x − y²)` at `y²`), or a residual that
@@ -931,7 +1014,7 @@ fn check_family(
         return Ok(Vec::new());
     }
     if failing.is_none() {
-        failing = singular_member(arena, expr, var, candidate, n);
+        failing = singular_member(arena, expr, var, candidate, n)?;
     }
     match failing {
         None => Ok(vec![candidate]),
@@ -1006,14 +1089,23 @@ fn rational_lcm(x: &Q, y: &Q) -> Q {
 /// A member of the family `candidate(n)` at a singular point of `expr`
 /// outside its periodic part that certainly fails the equation: the zeros
 /// of polynomial denominators and logarithm arguments (`x = 10π` for
-/// `sin(x)/(x − 10π)`, the member `n = 5` of `2nπ`).
+/// `sin(x)/(x − 10π)`, the member `n = 5` of `2nπ`).  The index `(p −
+/// s₀)/d` of a constant singular point `p` is decided exactly (a rational,
+/// or a certified non-real value, or certified floor and ceiling); an error
+/// when it is not decided whether `p` is a member.  A point with parameters
+/// is a member only for parameter values of measure zero and is skipped.
+///
+/// Up to 0.53 the index was the `f64` of a 20-digit value, and indices
+/// beyond `10¹²` were skipped: `solve_as_set(sin(x)/(x − 2·10¹³π))` was the
+/// family `nπ` with its pole `2·10¹³π`.
 fn singular_member(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     candidate: ExprId,
     n: ExprId,
-) -> Option<ExprId> {
+) -> Result<Option<ExprId>, String> {
+    use crate::base::truth::SignSet;
     let mut points: Vec<ExprId> = Vec::new();
     for id in crate::base::walk::post_order_ids(arena, expr) {
         let base = match *arena.node(id) {
@@ -1056,28 +1148,86 @@ fn singular_member(
     };
     let d = arena.sub(k1, k0);
     let d = crate::transforms::eval::eval(arena, d);
+    let k2 = {
+        let two = arena.int(2);
+        let m = crate::transforms::subs::subs(arena, candidate, n, two);
+        crate::transforms::eval::eval(arena, m)
+    };
+    let d2 = arena.sub(k2, k1);
+    let d2 = crate::transforms::eval::eval(arena, d2);
+    // (the index is `(p − s₀)/d` only for a family linear in `n`)
+    if d != d2 || has_infinite_term(arena, d) || arena.is_zero_structural(d) {
+        return Ok(None);
+    }
+    let undecided = |arena: &Arena, p: ExprId| {
+        format!(
+            "cannot decide whether the singular point {} is a member of the solution family {}",
+            arena.display(p),
+            arena.display(candidate)
+        )
+    };
+    let integer = |arena: &Arena, id: ExprId| {
+        arena
+            .as_num(id)
+            .filter(|q| q.is_integer())
+            .map(|q| q.to_integer())
+    };
     for p in points {
-        // n = (p − s₀)/d, numerically, then the exact member at round(n)
+        // the index n = (p − s₀)/d of `p` in the family, exactly
         let ratio = arena.sub(p, k0);
         let ratio = arena.div(ratio, d);
         let ratio = crate::transforms::eval::eval(arena, ratio);
-        let Ok(s) = crate::transforms::evalf::evalf(arena, ratio, 20) else {
-            continue;
-        };
-        let Ok(v) = s.trim().parse::<f64>() else {
-            continue;
-        };
-        if !v.is_finite() || (v - v.round()).abs() > 1e-9 || v.abs() > 1e12 {
+        if !crate::base::walk::free_symbols(arena, ratio).is_empty()
+            || has_infinite_term(arena, ratio)
+        {
             continue;
         }
-        let kk = arena.int(v.round() as i64);
+        let k = if let Some(q) = arena.as_num(ratio) {
+            if !q.is_integer() {
+                continue;
+            }
+            q.to_integer()
+        } else {
+            match crate::transforms::realness::imaginary_part_sign(arena, ratio) {
+                SignSet::ZERO => {}
+                s if s.is_nonzero().is_true() => continue,
+                _ => return Err(undecided(arena, p)),
+            }
+            let f = arena.floor(ratio);
+            let f = crate::transforms::eval::eval(arena, f);
+            let c = arena.ceiling(ratio);
+            let c = crate::transforms::eval::eval(arena, c);
+            match (integer(arena, f), integer(arena, c)) {
+                (Some(f), Some(c)) if f == c => f,
+                // strictly between two members
+                (Some(_), Some(_)) => continue,
+                _ => {
+                    // within its error of an integer: the nearest one
+                    let half = arena.rational(1, 2);
+                    let shifted = arena.add(&[ratio, half]);
+                    let r = arena.floor(shifted);
+                    let r = crate::transforms::eval::eval(arena, r);
+                    let Some(k) = integer(arena, r) else {
+                        return Err(undecided(arena, p));
+                    };
+                    let kk = arena.big_int(k);
+                    let m = crate::transforms::subs::subs(arena, candidate, n, kk);
+                    let m = crate::transforms::eval::eval(arena, m);
+                    if certainly_not_a_root(arena, expr, var, m) {
+                        return Ok(Some(m));
+                    }
+                    return Err(undecided(arena, p));
+                }
+            }
+        };
+        let kk = arena.big_int(k);
         let m = crate::transforms::subs::subs(arena, candidate, n, kk);
         let m = crate::transforms::eval::eval(arena, m);
         if certainly_not_a_root(arena, expr, var, m) {
-            return Some(m);
+            return Ok(Some(m));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Does `expr` at `var = candidate` certainly not vanish?  `true` when the
@@ -1237,7 +1387,8 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Solu
             // values (`x·∛(x^y)` at `0` for `re y ≤ 0`, where `drop_poles_of_product`
             // sees no pole): then the product as a whole, below.
             Ok((solutions, Some(Missing::Alternative(Reason::Conditional(groups)))))
-                if !has_symbolic_power_of(arena, expr, var) =>
+                if !has_symbolic_power_of(arena, expr, var)
+                    || symbolic_powers_defined_at(arena, expr, var, &solutions, &groups) =>
             {
                 if let Ok(s) = drop_poles_of_product(arena, expr, var, solutions) {
                     let m = Missing::Alternative(Reason::Conditional(groups));
@@ -3077,15 +3228,22 @@ fn period_in_use(arena: &Arena, rhs: ExprId, cx: &SolveCx) -> bool {
 }
 
 /// Most members of a family listed by [`bounded_family_members`].
-const MAX_BOUNDED_MEMBERS: f64 = 64.0;
+const MAX_BOUNDED_MEMBERS: usize = 64;
 
-/// The members `c(k)` of the family `c(n) = a + b·n` (constant real `a`,
-/// `b ≠ 0`) that may lie in `[−1, 1]`, the range of `sin` and `cos` on the
-/// reals: the integers `k` with `|a + b·k| ≤ 1`, and one more on either
-/// side (a member just outside is answered with no real solution by the
-/// next layer).  `None` when `c` is not of that form or there are too
-/// many.
+/// The members `c(k)` of the family `c(n) = a + b·n` (constants `a`, `b`
+/// proved real, `b ≠ 0`) that may lie in `[−1, 1]`, the range of `sin` and
+/// `cos` on the reals: the integers `k` with `|a + b·k| ≤ 1`, and one more
+/// on either side (a member just outside is answered with no real solution
+/// by the next layer), from [`lattice_indices`].  `None` when `c` is not of
+/// that form, the range is not decided or there are too many.
+///
+/// Up to 0.53 the range came from `f64` values of `a` and `b` (an imaginary
+/// part below `10⁻¹²` read as 0) and was cast with `as i64`: for `tan(sin x
+/// − 10²⁰) = 1` (`sin x = 10²⁰ + π/4 + kπ`, the member `k ≈ −3.18·10¹⁹` is
+/// `0.0840…`) the index saturated, no member was listed, and a real `x` had
+/// "no solution".
 fn bounded_family_members(arena: &mut Arena, c: ExprId, n: ExprId) -> Option<Vec<ExprId>> {
+    use crate::base::truth::SignSet;
     let expanded = crate::transforms::expand::expand(arena, c);
     let coeffs = symbolic_poly_coeffs(arena, expanded, n)?;
     let [a, b] = coeffs[..] else {
@@ -3096,26 +3254,99 @@ fn bounded_family_members(arena: &mut Arena, c: ExprId, n: ExprId) -> Option<Vec
     {
         return None;
     }
-    let real = |arena: &mut Arena, e: ExprId| -> Option<f64> {
-        let z = crate::transforms::evalf::evalf_complex64(arena, e).ok()?;
-        (z.im.abs() <= 1e-12 * (1.0 + z.re.abs()) && z.re.is_finite()).then_some(z.re)
-    };
-    let (af, bf) = (real(arena, a)?, real(arena, b)?);
-    if bf.abs() < 1e-12 {
-        return None;
+    for part in [a, b] {
+        if crate::transforms::realness::imaginary_part_sign(arena, part) != SignSet::ZERO {
+            return None;
+        }
     }
-    let (k1, k2) = ((-1.0 - af) / bf, (1.0 - af) / bf);
-    let (lo, hi) = (k1.min(k2).floor() - 1.0, k1.max(k2).ceil() + 1.0);
-    if !lo.is_finite() || !hi.is_finite() || hi - lo > MAX_BOUNDED_MEMBERS {
-        return None;
-    }
-    let mut out = Vec::new();
-    for k in (lo as i64)..=(hi as i64) {
-        let kk = arena.int(k);
+    let (lo, hi) = (arena.neg_one, arena.one);
+    let indices = lattice_indices(arena, a, b, lo, hi, MAX_BOUNDED_MEMBERS)?;
+    let mut out = Vec::with_capacity(indices.len());
+    for k in indices {
+        let kk = arena.big_int(k);
         let m = crate::transforms::subs::subs(arena, c, n, kk);
         out.push(crate::transforms::eval::eval(arena, m));
     }
     Some(out)
+}
+
+/// The integers `k` from `⌊min(q_lo, q_hi)⌋ − 1` to `⌈max(q_lo, q_hi)⌉ + 1`,
+/// `q_end = (end − offset)/step`: every index of the lattice `offset +
+/// step·k` (real constants, `step ≠ 0`) whose member lies between the real
+/// constants `lo` and `hi`, and one more on either side.  The floors and
+/// ceilings are exact (`eval`: of a rational, or the integers a certified
+/// value lies strictly between), so the range is right however far the
+/// window is from the lattice's origin.  `None` when one of them is not
+/// decided or the range holds more than `max` integers.
+///
+/// Up to 0.53 such ranges were computed from 16-digit `f64` values and cast
+/// with `as i64`: an index beyond `2⁵³` lost its last digits and one beyond
+/// `2⁶³` saturated, and the members in the window were missed
+/// (`solve_as_set(sin(x − 10²⁰)) ∩ [0, 10]` was empty).
+pub(crate) fn lattice_indices(
+    arena: &mut Arena,
+    offset: ExprId,
+    step: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    max: usize,
+) -> Option<Vec<BigInt>> {
+    let mut quotients = [lo, hi];
+    for q in &mut quotients {
+        let d = arena.sub(*q, offset);
+        *q = arena.div(d, step);
+    }
+    integers_around(arena, quotients, max)
+}
+
+/// The integers from `⌊min q⌋ − 1` to `⌈max q⌉ + 1` over the real constants
+/// `q`, the floors and ceilings exact (see [`lattice_indices`]).  A
+/// quotient within its error of an integer (`⌊q⌋` open: `π²/π² − 1` not
+/// simplified, an index at a window's end) is bracketed by its certified
+/// 20-digit value, widened by one more on either side.  `None` when a
+/// quotient has no value or there are more than `max + 1` integers.
+pub(crate) fn integers_around(
+    arena: &mut Arena,
+    quotients: [ExprId; 2],
+    max: usize,
+) -> Option<Vec<BigInt>> {
+    let integer = |arena: &Arena, id: ExprId| {
+        arena
+            .as_num(id)
+            .filter(|q| q.is_integer())
+            .map(|q| q.to_integer())
+    };
+    let mut floors: Vec<BigInt> = Vec::with_capacity(2);
+    let mut ceilings: Vec<BigInt> = Vec::with_capacity(2);
+    for q in quotients {
+        let q = crate::transforms::eval::eval(arena, q);
+        let f = arena.floor(q);
+        let f = crate::transforms::eval::eval(arena, f);
+        let c = arena.ceiling(q);
+        let c = crate::transforms::eval::eval(arena, c);
+        match (integer(arena, f), integer(arena, c)) {
+            (Some(f), Some(c)) => {
+                floors.push(f);
+                ceilings.push(c);
+            }
+            _ => {
+                // `eval` leaves the floor open: the certified 20-digit value
+                // places `q` within one of an integer (far below 2⁴⁰, its
+                // error is far below 1), and the range is widened by one more
+                let v = crate::transforms::evalf::evalf(arena, q, 20)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                    .filter(|v| v.abs() < 1_099_511_627_776.0)?;
+                let k = crate::base::cast::f64_to_i64(v.floor())?;
+                floors.push(BigInt::from(k) - BigInt::one());
+                ceilings.push(BigInt::from(k) + BigInt::from(2));
+            }
+        }
+    }
+    let first = floors.into_iter().min()? - BigInt::one();
+    let last = ceilings.into_iter().max()? + BigInt::one();
+    let count = num_traits::ToPrimitive::to_usize(&(&last - &first)).filter(|&c| c <= max)?;
+    Some((0..=count).map(|i| &first + BigInt::from(i)).collect())
 }
 
 /// Largest `|p|` for which `f^(p/q) = c` with a numeric `c` is inverted
@@ -7895,6 +8126,7 @@ fn exact_lambert_value(arena: &mut Arena, arg: ExprId, w: ExprId, principal: boo
     let Ok(value) = crate::transforms::evalf::evalf_complex64(arena, w) else {
         return w;
     };
+    // (the values only guide the guess of `r`; `y` is verified exactly below)
     if value.im != 0.0 || !value.re.is_finite() {
         return w;
     }
@@ -7946,7 +8178,8 @@ fn exact_lambert_value(arena: &mut Arena, arg: ExprId, w: ExprId, principal: boo
 }
 
 /// The rational with denominator at most `max_den` within `10⁻¹²`
-/// (relative) of `x`, the one with the least denominator.
+/// (relative) of `x`, the one with the least denominator (a guess that
+/// [`exact_lambert_value`] verifies exactly).
 fn small_rational_near(x: f64, max_den: i64) -> Option<Q> {
     if !x.is_finite() || x.abs() > 1e9 {
         return None;

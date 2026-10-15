@@ -672,44 +672,6 @@ pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<Complex64> {
     Some(Complex64::new(bigfloat_to_f64(re), bigfloat_to_f64(im)))
 }
 
-/// Relative size below which a computed imaginary part is treated as a
-/// *candidate* for being numerical noise on a real root.  The decision
-/// itself is made exactly (see [`is_real_root_near`]); this only avoids
-/// building a Sturm chain for clearly complex roots.
-const REAL_AXIS_NOISE: f64 = 1e-6;
-
-/// Does the square-free polynomial `part` have a real root within a tiny
-/// interval around `z.re`?  Decided exactly with a Sturm count over
-/// `[re − ε, re + ε]`, `ε = 2⁻³⁰ · max(1, |re|)`, on exact rationals.
-///
-/// Returns `false` immediately when `|im|` is not small relative to the
-/// root, so the chain is only built when a root actually looks real.  The
-/// chain is built lazily and cached in `sturm` across calls.
-fn is_real_root_near(
-    part: &Poly,
-    z: Complex64,
-    sturm: &mut Option<super::sturm::SturmChain>,
-) -> bool {
-    let Complex64 { re, im } = z;
-    if !re.is_finite() || !im.is_finite() {
-        return false;
-    }
-    let scale = re.abs().max(1.0);
-    if im.abs() > REAL_AXIS_NOISE * scale {
-        return false;
-    }
-    let Some(center) = crate::base::numeric::f64_to_ratio_exact(re) else {
-        return false;
-    };
-    let Some(eps) = crate::base::numeric::f64_to_ratio_exact(scale * 2f64.powi(-30)) else {
-        return false;
-    };
-    let chain = sturm.get_or_insert_with(|| super::sturm::SturmChain::new(part));
-    let lo = &center - &eps;
-    let hi = &center + &eps;
-    chain.count_roots_in_closed(&lo, &hi) >= 1
-}
-
 // ── Inclusion disks ──────────────────────────────────────────────────────────────────────────
 
 /// A computed root with a certified error bound (see [`root_balls`]).
@@ -1334,53 +1296,61 @@ fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
 /// `prec_bits` is the working precision handed to [`aberth_roots`]
 /// (at least 128 is recommended for full `f64` accuracy).
 ///
-/// Real roots are returned with `im == 0.0` *exactly*.  A root whose
-/// computed imaginary part is at the noise floor is snapped onto the real
-/// axis only after an exact check: the square-free part must have a real
-/// root in a tiny rational interval around the computed real part (Sturm
-/// count).  Genuinely complex roots with a small imaginary part therefore
-/// keep it, and the number of returned real roots always agrees with
-/// [`SturmChain::count_real_roots`](super::sturm::SturmChain::count_real_roots).
-///
-/// A real part below the iteration's convergence tolerance
-/// ([`ABERTH_TOLERANCE`]` · max(1, |z|)`, i.e. `10⁻³⁰` for roots of
-/// modulus at most one) is numerical noise on a purely imaginary root and
-/// is returned as exactly `0.0`, so `x² + 1` gives `±i` and not
-/// `-7.7·10⁻⁹³ ± i`.  Only a component the iteration cannot distinguish
-/// from zero is touched (the tolerance is some fourteen orders of
-/// magnitude below `f64` resolution at that scale); a genuinely tiny root
-/// such as `±10⁻²⁰` (from `x² − 10⁻⁴⁰`) is far above it and kept.
-/// The imaginary part is never snapped this way — whether a root is real
-/// is decided exactly, as above.
+/// A root is real (`im == 0.0` *exactly*) when its certified inclusion disk
+/// proves it (the disks of its square-free factor, as [`certified_roots`]
+/// computes them: a disk whose mirror image in the real axis meets no other
+/// disk), and its real part is exactly that of the
+/// line of symmetry of its factor when the disks prove it on that line
+/// (`x² + 1` gives `±i`, not `−7.7·10⁻⁹³ ± i`; `x² − 2·10⁻³⁵x + 1` gives
+/// `10⁻³⁵ ± i`); a real part within the certified radius of 0 is `0.0`, as
+/// `eval_complex64` shows a part that is 0 within its error ball.  A
+/// cluster of roots the precision does not separate
+/// keeps the imaginary parts the iteration left.  Up to 0.53 a computed
+/// imaginary part below `10⁻⁶` of the root was dropped whenever a real root
+/// lay within `2⁻³⁰` of its real part: `(x − 1)((x − 1)² + 10⁻¹⁴)` had
+/// the three real roots `1, 1, 1` (its roots are `1` and `1 ± 10⁻⁷i`), and a
+/// real part below `10⁻³⁰` of the root was dropped.
 ///
 /// Roots are sorted by real part, then imaginary part.  Constants and the
 /// zero polynomial produce an empty vector.
 pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<Complex64> {
-    let mut out: Vec<Complex64> = Vec::new();
     if poly.degree().unwrap_or(0) == 0 {
-        return out;
+        return Vec::new();
     }
-    let (_content, parts) = poly.sqf_list();
-    for (part, mult) in parts {
-        if part.degree().unwrap_or(0) == 0 {
+    let (_content, factors) = poly.sqf_list();
+    let mut balls: Vec<RootBall> = Vec::new();
+    for (index, (factor, mult)) in factors.iter().enumerate() {
+        if factor.degree().unwrap_or(0) == 0 {
             continue;
         }
-        let max_iter = 100 + 20 * part.degree().unwrap_or(0);
-        let roots = aberth_roots(&part, prec_bits, max_iter);
-        let mut sturm: Option<super::sturm::SturmChain> = None;
-        for (re, im) in roots {
-            let mut z = Complex64::new(bigfloat_to_f64(&re), bigfloat_to_f64(&im));
-            if z.im != 0.0 && is_real_root_near(&part, z, &mut sturm) {
-                z.im = 0.0;
-            }
-            if z.re != 0.0 && z.re.abs() < ABERTH_TOLERANCE * z.norm().max(1.0) {
-                z.re = 0.0;
-            }
-            for _ in 0..mult {
-                out.push(z);
+        for (ball, _) in factor_balls(factor, index, prec_bits) {
+            for _ in 0..*mult {
+                balls.push(ball.clone());
             }
         }
     }
+    let mut out: Vec<Complex64> = balls
+        .iter()
+        .map(|ball| {
+            // a real part within the certified radius of 0 is 0, as
+            // `eval_complex64` shows a part that is 0 within its error
+            let re_zero = ball
+                .radius
+                .as_ref()
+                .is_some_and(|r| ball.value.0.abs().cmp(r).is_some_and(|o| o <= 0));
+            let re = if re_zero {
+                0.0
+            } else {
+                bigfloat_to_f64(&ball.value.0)
+            };
+            let im = if ball.real {
+                0.0
+            } else {
+                bigfloat_to_f64(&ball.value.1)
+            };
+            Complex64::new(re, im)
+        })
+        .collect();
     out.sort_by(|a, b| {
         a.re.partial_cmp(&b.re)
             .unwrap_or(std::cmp::Ordering::Equal)

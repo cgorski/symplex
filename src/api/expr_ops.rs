@@ -1352,7 +1352,10 @@ fn parse_decimal_exact(s: &str) -> Option<Q> {
 /// floating-point evaluation (16-digit `evalf`).
 const NUMERIC_REL_TOL: f64 = 1e-9;
 
-/// Distance-based "clearly different" test for two complex f64 values.
+/// Distance-based "clearly different" test for two complex f64 values
+/// (certified 16-digit values: a distance above the tolerance is real; one
+/// below it only counts towards the documented probabilistic `Some(true)`
+/// of [`Ex::probably_equal`]).
 fn clearly_different(a: Complex64, b: Complex64) -> bool {
     let scale = 1.0_f64.max(a.norm()).max(b.norm());
     (a - b).norm() > NUMERIC_REL_TOL * scale
@@ -1504,10 +1507,13 @@ impl Ex {
     ///    `d` is `oo` / `-oo` → `Greater` / `Less`.
     /// 3. The assumption system knows the sign of `d` (e.g. `a − b` with
     ///    `a` positive and `b` negative; `x² + 1` for real `x`).
-    /// 4. Both are constants (no free symbols) → 16-digit numeric
-    ///    evaluation; decided only if the values differ by more than
-    ///    `1e-9` relative and both are real.
-    /// 5. Otherwise `None`.
+    /// 4. Both are constants (no free symbols) proved real → 16-digit
+    ///    certified evaluation; decided only if the values differ by more
+    ///    than `1e-9` relative.
+    /// 5. Otherwise `None`: complex values are unordered, and a value not
+    ///    proved real may be one (up to 0.53 an imaginary part below
+    ///    `10⁻⁹` of the value was ignored: `2 + i·e⁻³⁰` was greater than
+    ///    1).
     ///
     /// # Examples
     ///
@@ -1568,15 +1574,16 @@ impl Ex {
         if Truth::from(d.is_negative()).is_true() {
             return Some(Ordering::Less);
         }
-        // 4. Numeric fallback for constants.
+        // 4. Numeric fallback for constants proved real (complex values are
+        // unordered).
         if d.is_constant()
+            && Truth::from(self.is_real()).is_true()
+            && Truth::from(other.is_real()).is_true()
             && let (Ok(a), Ok(b)) = (self.eval_complex64(), other.eval_complex64())
         {
             let scale = 1.0_f64.max(a.re.abs()).max(b.re.abs());
-            if a.im.abs() > NUMERIC_REL_TOL * scale || b.im.abs() > NUMERIC_REL_TOL * scale {
-                return None; // complex values are unordered
-            }
             let diff = a.re - b.re;
+            // certified 16-digit values: a margin far above their errors
             if diff.abs() > NUMERIC_REL_TOL * scale {
                 return Some(if diff > 0.0 {
                     Ordering::Greater

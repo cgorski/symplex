@@ -611,6 +611,11 @@ fn lib_sens(fun: LibFn, i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
             if !inside(lg(&u), e) {
                 return Sens::Unbounded;
             }
+            // Beyond 1 (a complex value on the cut, `elliptic.rs`): the
+            // bounds below are for `m < 1`.
+            if neg(&u) {
+                return Sens::Numeric;
+            }
             if lg(x) < -1.0 {
                 return Sens::Deriv(0.0);
             }
@@ -635,7 +640,9 @@ fn lib_sens(fun: LibFn, i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
         | LibFn::Gegenbauer
         | LibFn::Jacobi
         | LibFn::AssocLaguerre => {
-            if i == 0 {
+            // A non-integer degree is a continuous parameter
+            // (`hypergeom.rs`).
+            if i == 0 && x.is_int() {
                 discrete(e)
             } else {
                 Sens::Numeric

@@ -8,6 +8,126 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+The values of special functions at infinity, symbols pinned to one value,
+parts of complex values on branch cuts, constants the evaluator could not
+decide, and the float-threshold review of the solvers, sets and API layer.
+Every function of the table now has its values at `±∞` and `±i∞` (so `0·f`
+is `nan` exactly where `f` is infinite); a symbol declared even and prime is
+2; `im(expint(1, −160))` is `−π` (it printed `0` at every precision); 7,713
+constants that were refused now evaluate (elliptic integrals above 1,
+non-integer degrees, half-integer `bessely`); infinite sums with a symbolic
+ratio return their closed form under its exact convergence condition; and
+periodic solution families far from the origin are listed from exact index
+ranges (`solve_as_set(sin(x − 10²⁰)) ∩ [0, 10]` was empty).
+
+### Breaking (behaviour)
+
+- **A symbol whose assumptions pin it to one value is that value.**  An even
+  prime is 2, a symbol declared `zero` (or `nonnegative` and not `positive`) is
+  0, a positive integer that is neither prime nor composite is 1.  Expressions
+  in such symbols have the properties of their value (`(n − 2).is_zero()` is
+  `Some(true)`, `sign(n − 2)` is 0) and the zero tests substitute it: for an
+  even prime `n`, `(⌈n⌉ − n)/(n − 2)` and `(x + 3)(n² − 4)/((n² − 4)(y + 1))`
+  are `nan` (were `0` and `(x + 3)/(y + 1)`; SymPy 1.14 gives the old
+  answers); `z/z` is `nan` for `z` declared zero.  New implications:
+  `nonnegative ∧ ¬positive → zero`, `nonpositive ∧ ¬negative → zero`, `integer ∧
+  positive ∧ ¬prime ∧ ¬composite → odd`.  Zero-test hunter: 82 wrong → 0.
+- **Infinite sums with a symbolic ratio return their closed form under its
+  exact convergence condition:** `Σ_{k≥1} xᵏ/k²` is `Piecewise((polylog(2, x),
+  |x| ≤ 1), (Sum(…), True))`, `Σ xᵏ/k` has `|x| ≤ 1 ∧ x ≠ 1`, `Σ P(k)xᵏ` has
+  `|x| < 1`; when the assumptions on `x` decide the condition, the decided
+  branch (SymPy keeps the `Piecewise` even then).  They stayed `Sum`.
+- `Σ_{k≥0} C(k + c, c)·xᵏ` with an integer `c` of unknown sign is a
+  `Piecewise` on `c ≥ 0` (`C(k + c, c) = 0` for a negative `c`; the closed form
+  `(1 − x)^(−c−1)` was returned for every `c`: `1/4` at `c = −3`, `x = 1/2`, where
+  the sum is 0).
+- `compile` refuses a constant that is now known not to be real (629 golden
+  cases that returned NaN at run time).
+
+### Fixed
+
+- **Every function of the table has its values at `±∞` and `±i∞` when built**,
+  so `0·f` is `nan` where `f` is infinite and stays 0 where it is finite:
+  `0·besselj(1, i∞)` was 0 (`J₁(i∞) = i∞`), `solve(x·hermite(1, ∞))` gave `[0]`,
+  `x·elliptic_f(0, ∞)` was refused (`F(0 | m) = 0`: every `x`),
+  `euler_number(5)/elliptic_pi(−∞, π⁴)` was 0 (`0/0`), and `eval` expanded closed
+  forms at `∞` (`legendre(3, ∞)`, `laguerre(2, ∞)` gave `nan`).  Orthogonal
+  polynomials by the sign of the leading coefficient and the parity of the
+  degree, Bessel functions at `±i∞` (`J_n(±i∞) = (±i)ⁿ∞`), `Γ(±i∞) = 0`,
+  `ψ(±i∞) = ∞ ± iπ/2`, `W(−∞) = ∞ + iπ`, `Ci(−∞) = iπ`, `Ei(±i∞) = ±iπ`,
+  `Li_s(∞)`, `F(φ | ±∞) = 0`, `Π(n | ±∞) = 0` when the other argument is known
+  not to be 1, rising factorials and binomials at infinity, and more (DLMF;
+  mpmath at `|x| = 10³, 10⁶`; 1,364 applications audited).  A function with no
+  finite value there (`erfinv(∞)`, `ζ(i∞)`, `hermite(n, ∞)` of a symbolic
+  degree) makes `0·f` `nan`.  `(i∞).is_finite()` was `None` (now `Some(false)`).
+  `∫ besselj(1, x·∞) dx` was 0; it stays unevaluated.
+- **Special functions on their branch cuts: each part has its own error
+  bound, and an imaginary part is no longer certified 0 where it is not.**  On
+  the negative axis the asymptotic expansion of `Γ(a, z)` is a real sum whose
+  `∓iπ` sits inside the remainder bound: `im(expint(1, −160))` and
+  `im(uppergamma(0, −160))` were `0` at 10, 16 and 30 digits (`−π`),
+  `im(expint(2, −530))` `0` (`−530π`), and `eval_f64(expint(1, −160))` returned the
+  real part.  `Im E_n(−x) = −πx^(n−1)/(n−1)!`, `Im Γ(−m, −x) = (−1)^(m+1)π/m!`,
+  `Chi(−x) = Chi(x) + iπ`, `Ci(−x) = Ci(x) + iπ`, `K_n(−x) = (−1)ⁿK_n(x) −
+  iπI_n(x)`, and `erf`/`erfc`/`erfi` of imaginary arguments are computed part by
+  part.  `Chi(−200)` printed only its real part, `besselk(0, −200)` only its
+  imaginary part, `erfc(10i)` dropped its real part `1`.  Hunts of 8,000
+  constants: wrong outputs 121 → 0, parts dropped at 10 digits 667 → 11.
+- **Decisions on `f64` thresholds in `evalf`** (63 classified, 13 removed):
+  `polygamma(1 + 10⁻²⁰, 2)` was `ψ′(2)` (refused now: the order must be an exact
+  integer), `Sum(k^k, (k, 1, 3 − e⁻¹⁰⁰))` was `32` (refused: a bound must be
+  proved an integer), `besselj(e⁻¹⁰⁰, 0)` was `1` (now `0`), `besselk(1/2 + 10⁻³⁰,
+  60 + 5i)` printed `K_{1/2}`'s value at 40 digits.  `∫₀¹ |x² − 1/4 − i·e⁻¹⁰⁰| dx`
+  was integrated as if the argument were real (refused now).
+- **Float evidence in the solvers, sets, inequalities, the API layer and
+  `nroots`** (66 comparisons, 26 removed): `solve_as_set(sin(x − 10²⁰)) ∩ [0, 10]`
+  was `EmptySet` (three members), `sin(x − 10²⁰) > 0` was every real `x`,
+  `tan(sin x − 10²⁰) = 1` for a real `x` was "no solution", `cos(x + 10²⁵) ≥ 1/2`
+  was `EmptySet`, `solve_as_set(sin(x)/(x − 2·10¹³π))` kept the pole: index
+  ranges were `f64` values cast with `as i64`.  `reduce_inequalities([sin(x²) =
+  1/2, −7 < x < 7])` listed 24 of 32 roots (families not linear in `n` are left
+  as the `ConditionSet` in the window).  `nroots((x − 1)((x − 1)² + 10⁻¹⁴))` was
+  `1, 1, 1` (`1`, `1 ± 10⁻⁷i`).  `(x − 1)(x − 1 − e⁻⁷⁰) < 0` was `EmptySet` (now
+  refused).  `(x − e⁻³⁰).check_solution(x, 0)` was `Some(true)`, `(2 +
+  i·e⁻³⁰).compare_numeric(1)` was `Greater`.  `sin x ≥ 1 + e⁻⁷⁰` is `EmptySet`
+  (refused); `solve_as_set((4 − x)·x^(y + i))` is `{4} ∪ (ConditionSet(x, re(y) >
+  0) ∩ {0})`.
+- **7,713 constants that were refused now evaluate** (from the solver's list
+  of undecidable constants, by frequency): `elliptic_k`, `elliptic_e` for `m > 1`
+  and non-real `m` (`K(2) = 1.311 − 1.311i`, the limit from below, as mpmath and
+  SymPy), `elliptic_f` where it is not real, `bessely` of a non-integer order at
+  small arguments (`bessely(1/2, 2)`, so `x·bessely(1/2, 2) = 0` solves to
+  `[0]`), the orthogonal polynomials of a non-integer degree by their
+  hypergeometric definitions (SymPy 1.14 gets `jacobi(1/2, 1, 2, 1/3)` wrong: 1;
+  the value is 0.8174), `factorial2` of a non-integer, `partition_count(n) = 0`
+  for negative `n`, `stirling1/2(n, k < 0) = 0`.  Undecidable constants in the
+  golden harness's `solve`: 8,394 → 6,603.  Hunts against mpmath: 3,800 values
+  and 858 sums, 0 wrong.
+- **Numeric integration:** `integrate_numeric(exp(2x^(1/1000) − x^(1/999) −
+  10⁵), 0, ∞)` was `0.0` (the exponent peaks at 3.9·10²⁹⁷: now refused), and
+  `∫₁^∞ x⁻²e^{x^(1/100)} dx` was `2.7460` (divergent): the quadrature looks as
+  far as the integrand's terms cross over, including close powers.
+  `integrate_numeric` no longer reads a run whose every node gave 0 as a zero
+  integral (`∫₀^{10³⁰⁰} e^{−1000} dx` is `5.0759588975494566e-135`, was 0).
+  Moment generating and characteristic functions with a narrow peak evaluate
+  to any precision (`Weibull(6·10⁻⁶, 31/2).mgf(50000/3).eval_decimal(30)` =
+  `1.10152349390803128596400171594`; the Weibull characteristic function of
+  0.53's known issue is `0.9819966581396259 − 0.18656816299727325i`).
+  Definite integrals across an exact cut crossing of a linear argument are
+  evaluated: `∫₀¹ ln((1 + i)x − 1 − i/2) dx` = `−0.58099697944823198508 −
+  0.24614311400238211447i` (refused in 0.53, wrong in 0.52).
+- `binomial(n, k)` in the Python printer follows the same convention as
+  `compile` (`C(−2, −4) = 0`, `C(−3, 2) = 6`; SciPy's `binom` gives `nan`).
+
+### Known issues
+
+- `elliptic_pi` off its real range is still refused (a complex Carlson
+  `R_J` is needed); `assoc_laguerre` with a negative-integer `α`,
+  `hermite`/`laguerre` of complex arguments, `rising_factorial` of complex
+  arguments and `betainc` with `a` or `b ≤ 0` stay refused.
+- A few `series` calls on these newly evaluable functions take longer before
+  refusing (`series(elliptic_pi(x·y, x + √2), x, 0, 4)`: 1.7 s → 6.6 s).
+
 ## [0.53.0] - 2026-10-15
 
 The silent wrong answers left after 0.52, and the open conventions decided

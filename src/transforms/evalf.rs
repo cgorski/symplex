@@ -94,10 +94,12 @@ mod cerf;
 mod cexpint;
 mod conjugate;
 mod cspecial;
+mod elliptic;
 mod emsum;
 mod exact;
 mod extended;
 mod factorials;
+mod hypergeom;
 mod hypsum;
 mod improper;
 mod lambertw;
@@ -918,6 +920,7 @@ fn polylog_tail_proved(
     } else {
         bz.joint().exp2() / rz
     };
+    // (Float evidence: wide radii only withhold the proof.)
     if rel_s.is_nan() || rel_z.is_nan() || rel_s > 1e-6 || rel_z > 1e-6 {
         return None;
     }
@@ -1120,6 +1123,8 @@ fn note_cross_terms(
             let Some(r) = small_part(arena, *b, cache, exact) else {
                 return;
             };
+            // (A guide for the depth of the search: a missed note is a
+            // shallower search, never a value.)
             let c = (q * (q - 1.0) / 2.0).abs();
             if c == 0.0 || r > -8.0 {
                 return;
@@ -1523,8 +1528,9 @@ fn eval_ball(
                         .ok()
                         .and_then(|v| f64_of(&v.0).ok())
                         .map_or(0.0, f64::round);
-                    // The order is discrete: within 2⁻⁴⁰ of its integer.
-                    if bn.is_unknown() || (!bn.is_exact() && bn.joint() > -40.0) {
+                    // The order is an integer only when it is exact (an
+                    // inexact one may be any number of its ball).
+                    if !bn.is_exact() {
                         accuracy::Bound::UNKNOWN
                     } else {
                         zeta::polygamma_bound(m as u32, z, bz, &value, prec)
@@ -1548,8 +1554,12 @@ fn eval_ball(
             let Some((f, args)) = cspecial::classify(node, cache) else {
                 return Err(unevaluable("special function lost its arguments"));
             };
-            let value = match eval_node(arena, id, cache, w) {
-                Ok(value) => value,
+            let vals = args
+                .iter()
+                .map(|a| get_cached(cache, *a))
+                .collect::<Result<Vec<_>, _>>()?;
+            let routed = match cspecial::eval_routed(f, &vals, w) {
+                Ok(routed) => routed,
                 // A domain error at 0 for an argument only 0 to the working
                 // precision (as in the arm below).
                 Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache) => {
@@ -1557,7 +1567,14 @@ fn eval_ball(
                 }
                 Err(e) => return Err(e),
             };
-            let err = cspecial::bound(arena, id, f, &args, &value, cache, w);
+            let err = cspecial::bound(arena, id, f, &args, &routed, cache, w);
+            CBall::new(routed.value, err)
+        }
+        // Elliptic integrals of a non-real parameter report their own bound
+        // (`elliptic.rs`; the sensitivity rules are for real arguments).
+        ExprNode::Lib(f, args) if elliptic::nonreal_args(*f, args, cache) => {
+            let value = eval_node(arena, id, cache, w)?;
+            let err = elliptic::bound(arena, id, args, &value, cache, w);
             CBall::new(value, err)
         }
         ExprNode::Beta(a, b)
@@ -1682,6 +1699,14 @@ fn eval_ball(
             let err = accuracy::node_error(arena, id, &value, cache, prec, || {
                 sensitivity::special_error(arena, id, &value, cache, w)
             });
+            // `polygamma`'s order is an integer only when it is exact (the
+            // sensitivity rules read an order within `2⁻⁴⁰` of an integer
+            // as that integer): up to 0.53 `polygamma(1 + 10⁻⁵⁰, 2)`, whose
+            // order rounds onto 1, was `ψ′(2)`.
+            let err = match arena.node(id) {
+                ExprNode::Polygamma(n, _) if !cache.err(n).is_exact() => accuracy::Bound::UNKNOWN,
+                _ => err,
+            };
             return Ok(CBall::new(value, err));
         }
     };
@@ -3005,13 +3030,16 @@ fn eval_node(
                     reason: "polygamma order must be a non-negative integer".into(),
                 });
             }
-            let n_f = f64_of(&n_val.0)?;
-            let n_round = n_f.round();
-            if (n_f - n_round).abs() > 1e-12 || n_round < 0.0 {
+            // The order exactly an integer (its bound is exact too, see
+            // `eval_ball`): up to 0.53 an order within `10⁻¹²` of one was
+            // taken for it, `polygamma(1 + 10⁻²⁰, 2)` was `ψ′(2)` while
+            // `polygamma(1/2, 2)` was refused.
+            if n_val.0.is_negative() || !(n_val.0.is_zero() || n_val.0.is_int()) {
                 return Err(SymplexError::Unevaluable {
                     reason: "polygamma order must be a non-negative integer".into(),
                 });
             }
+            let n_round = f64_of(&n_val.0)?;
             // A non-real argument: the Hurwitz zeta function (`zeta.rs`;
             // refused before 0.44).
             if !x_val.1.is_zero() {
@@ -4482,6 +4510,8 @@ fn eval_definite_integral_f64(
     // The smoothed run is trusted only where its nodes keep their distance
     // to a finite end, which in `f64` they do next to 0 alone (see
     // `quadrature_resolved`): on `[0, ∞)`, `(−∞, 0]` and the whole line.
+    // (Float evidence: an end is 0 only with an exact error, `a_err == 0`;
+    // every other case refuses.)
     let half_lines = (a == 0.0 && b == f64::INFINITY)
         || (a == f64::NEG_INFINITY && b == 0.0)
         || (a == 0.0 && b == f64::NEG_INFINITY)
@@ -4554,7 +4584,8 @@ fn eval_definite_integral_f64(
         error, rounding, endpoints, "evalf: DefiniteIntegral evaluated in f64"
     );
     // Served only when it certifies the digits of `eval_f64`; a zero bound
-    // (a zero integrand at every node) is no proof of an exact zero.
+    // (a zero integrand at every node) is no proof of an exact zero.  (Both
+    // tests only refuse.)
     let needed = f64::from(QUADRATURE_F64_DIGITS) * 3.322 + 4.0;
     if !value.is_finite()
         || !total.is_finite()
@@ -4639,10 +4670,18 @@ fn range_bound(
     if !v.1.is_zero() {
         return Err(unevaluable(format!("{what} bounds must be real")));
     }
-    let f = f64_of(&v.0)?;
-    let r = f.round();
-    if !r.is_finite() || (f - r).abs() > 1e-9 || r.abs() > 9.0e15 {
-        return Err(unevaluable(format!("{what} bounds are not integers")));
+    // An integer only when its value is one exactly, with an exact bound
+    // (`floor(…)`): up to 0.53 a value within `10⁻⁹` of an integer was
+    // taken for it, and `Σ_{k=1}^{3−e⁻¹⁰⁰} k^k` was 32.
+    let exact = cache.bound(&id).is_some_and(|b| b.is_exact());
+    if !exact || !(v.0.is_zero() || v.0.is_int()) {
+        return Err(unevaluable(format!(
+            "{what} bounds are not known to be integers"
+        )));
+    }
+    let r = f64_of(&v.0)?;
+    if r.abs() > 9.0e15 {
+        return Err(unevaluable(format!("{what} bounds are too large")));
     }
     Ok(BigInt::from(r as i64))
 }
@@ -5625,89 +5664,20 @@ fn f64_of(bf: &BigFloat) -> Result<f64, SymplexError> {
     })
 }
 
-/// Lanczos approximation for the Gamma function (g=7, 9 coefficients).
-#[allow(dead_code)]
-#[allow(clippy::excessive_precision)]
-fn lanczos_gamma_f64(x: f64) -> Result<f64, SymplexError> {
-    if x.is_nan() || x.is_infinite() {
-        return Err(SymplexError::Unevaluable {
-            reason: "Gamma of special float value".into(),
-        });
-    }
-
-    // Reflection formula for x < 0.5:  Gamma(x) = pi / (sin(pi*x) * Gamma(1-x))
-    if x < 0.5 {
-        let reflected = lanczos_gamma_f64(1.0 - x)?;
-        let sin_pi_x = (std::f64::consts::PI * x).sin();
-        if sin_pi_x.abs() < 1e-300 {
-            return Err(SymplexError::Unevaluable {
-                reason: "Gamma at non-positive integer pole".into(),
-            });
-        }
-        let result = std::f64::consts::PI / (sin_pi_x * reflected);
-        if result.is_finite() {
-            return Ok(result);
-        }
-        return Err(SymplexError::Unevaluable {
-            reason: "Gamma at pole".into(),
-        });
-    }
-
-    // Lanczos approximation with g=7
-    const COEFFICIENTS: [f64; 9] = [
-        0.99999999999980993,
-        676.5203681218851,
-        -1259.1392167224028,
-        771.32342877765313,
-        -176.61502916214059,
-        12.507343278686905,
-        -0.13857109526572012,
-        9.9843695780195716e-6,
-        1.5056327351493116e-7,
-    ];
-
-    let x = x - 1.0; // Lanczos uses Gamma(x+1) = x!
-    let t = x + 7.0 + 0.5; // g = 7
-
-    let mut sum = COEFFICIENTS[0];
-    for (i, &c) in COEFFICIENTS[1..].iter().enumerate() {
-        sum += c / (x + i as f64 + 1.0);
-    }
-
-    let result = (2.0 * std::f64::consts::PI).sqrt() * t.powf(x + 0.5) * (-t).exp() * sum;
-    Ok(result)
-}
-
-/// Error function via Taylor series (small |x|) or asymptotic expansion (large |x|).
-#[allow(dead_code)]
+/// `erf x` by its Taylor series in `f64`, for the Newton start of
+/// [`arb_erfinv`] (`abs(x) < 1/2`; the start only guides the certified
+/// Halley iteration).  (An unused Lanczos `Γ` in `f64` and the asymptotic
+/// branch of this function, which no caller reached, were removed at 0.54.)
 fn erf_f64(x: f64) -> f64 {
-    if x.abs() < 4.0 {
-        // Taylor series: erf(x) = 2/sqrt(pi) * sum_{n=0}^{inf} (-1)^n * x^(2n+1) / (n! * (2n+1))
-        let mut sum = 0.0;
-        let mut term = x; // first term: x
-        sum += term;
-        for n in 1..50 {
-            term *= -x * x / n as f64;
-            sum += term / (2 * n + 1) as f64;
-        }
-        sum * 2.0 / std::f64::consts::PI.sqrt()
-    } else {
-        // For large |x|, use complementary: erf(x) = 1 - erfc(x)
-        // erfc(x) ~ exp(-x^2)/(x*sqrt(pi)) * sum_{n=0} (-1)^n * (2n-1)!! / (2x^2)^n
-        let sign = x.signum();
-        let ax = x.abs();
-        let mut sum = 1.0;
-        let mut term = 1.0;
-        for n in 1..20 {
-            term *= -(2 * n - 1) as f64 / (2.0 * ax * ax);
-            if term.abs() < 1e-16 {
-                break;
-            }
-            sum += term;
-        }
-        let erfc = (-ax * ax).exp() / (ax * std::f64::consts::PI.sqrt()) * sum;
-        sign * (1.0 - erfc)
+    // erf(x) = 2/sqrt(pi) * sum_{n=0}^{inf} (-1)^n * x^(2n+1) / (n! * (2n+1))
+    let mut sum = 0.0;
+    let mut term = x; // first term: x
+    sum += term;
+    for n in 1..50 {
+        term *= -x * x / n as f64;
+        sum += term / (2 * n + 1) as f64;
     }
+    sum * 2.0 / std::f64::consts::PI.sqrt()
 }
 
 /// `loggamma(x)` for real `x` (not a pole): the analytic continuation of
@@ -6693,10 +6663,11 @@ fn arb_bessel_j_classic(
     let guard = 32;
     let wp = prec + guard;
 
-    // Special case: x = 0.
+    // Special case: x = 0 (`J_0(0) = 1` for the order exactly 0: up to 0.53
+    // an order below `10⁻¹⁵`, `besselj(e⁻¹⁰⁰, 0)`, gave 1, truly 0).
     if x.is_zero() {
         let order_f64 = f64_of(order)?;
-        return if order_f64.abs() < 1e-15 {
+        return if order.is_zero() {
             // J_0(0) = 1
             Ok(BigFloat::from_i32(1, prec))
         } else if order_f64 > 0.0 {
@@ -6879,6 +6850,59 @@ fn arb_bessel_y(order: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFlo
     debye_fallback(bessel_debye::Kind::Y, order, x, w, classic)
 }
 
+/// `Y_ν(x)`, `x > 0`, for a non-integer order below the Hankel range, from
+/// the Bessel functions of the first kind (DLMF 10.2.3):
+/// `Y_ν = (J_ν cos νπ − J_{−ν})/sin νπ`, and for a half-integer order
+/// `ν = n + ½` exactly `Y_ν = (−1)^{n+1} J_{−ν}` (`cos νπ = 0`; a finite
+/// trigonometric form, DLMF 10.16.1: `Y_{1/2}(x) = −√(2/(πx)) cos x`).
+/// The difference cancels where `sin νπ` is small or `J_ν cos νπ ≈
+/// J_{−ν}`: it is evaluated again with the bits lost.  Before 0.54 refused
+/// ("not yet implemented in small-|x| regime": `bessely(1/2, 2)`).
+fn bessel_y_from_j(
+    order: &BigFloat,
+    x: &BigFloat,
+    w: &mut Wp<'_>,
+) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
+    let exact = order.mantissa_max_bit_len().unwrap_or(64) + 8;
+    let twice = order.mul(&BigFloat::from_i32(2, 8), exact, RM);
+    if twice.is_int() {
+        // ν = n + ½ with 2ν = 2n + 1: (−1)^{n+1} is −1 for 2ν ≡ 1 (mod 4).
+        let Some(t) = bf_as_int(&twice)? else {
+            return Err(unevaluable("bessely: half-integer order out of range"));
+        };
+        let j = arb_bessel_j(&order.neg(), x, w)?;
+        return Ok(if t.rem_euclid(4) == 1 { j.neg() } else { j });
+    }
+    let mut extra = 32usize;
+    for _ in 0..4 {
+        let wp = prec + extra;
+        let mut ww = w.at(wp);
+        let jp = arb_bessel_j(order, x, &mut ww)?;
+        let jm = arb_bessel_j(&order.neg(), x, &mut ww)?;
+        let pi = ww.cc.pi(wp, RM).clone();
+        let t = order.mul(&pi, wp, RM);
+        let (s, c) = (t.sin(wp, RM, ww.cc), t.cos(wp, RM, ww.cc));
+        let jc = jp.mul(&c, wp, RM);
+        let num = jc.sub(&jm, wp, RM);
+        let e = |v: &BigFloat| v.exponent().map_or(i64::MIN / 4, i64::from);
+        // Bits lost in the difference, and in `sin νπ` (its argument's
+        // rounding is relative to `νπ`, not to the sine).
+        let lost = (e(&jc).max(e(&jm)) - e(&num)).max(0) + (e(&t) - e(&s)).max(0) + 4;
+        let lost = usize::try_from(lost).unwrap_or(usize::MAX / 8);
+        if lost + 16 <= extra {
+            return Ok(round_to(num.div(&s, wp, RM), prec));
+        }
+        if lost > 4 * prec + 512 {
+            break;
+        }
+        extra = lost + 32;
+    }
+    Err(unevaluable(
+        "bessely: J_ν cos νπ − J_{−ν} cancels beyond the working precision",
+    ))
+}
+
 /// [`arb_bessel_y`] by the Hankel expansion and the Neumann series.
 fn arb_bessel_y_classic(
     order: &BigFloat,
@@ -6933,11 +6957,7 @@ fn arb_bessel_y_classic(
     // few extra guard bits are added.
 
     if !is_int_order {
-        return Err(SymplexError::Unevaluable {
-            reason: format!(
-                "BesselY for non-integer order {order_f64} not yet implemented in small-|x| regime"
-            ),
-        });
+        return bessel_y_from_j(order, x, w);
     }
     // A large order: the finite part of the series alone where the rest is
     // negligible (`bessel_order::neumann_leading`).  Before 0.34 the series
@@ -7564,7 +7584,8 @@ fn arb_zeta(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
         // arguments of about `|s|·ln|s|`, whose absolute error is their
         // relative one: as many guard bits.
         wp += magnitude_bits(s_f64.abs() * (s_f64.abs().ln().max(0.0) + 2.0));
-        // Trivial zeros.
+        // Trivial zeros (the `f64` test only filters; the exact difference
+        // below decides).
         let s_round = s_f64.round();
         if (s_f64 - s_round).abs() < 1e-14 && (s_round as i64) % 2 == 0 {
             let mut sw = s.clone();
@@ -8619,6 +8640,9 @@ fn eval_lib_fn(
 ) -> Result<Complex, SymplexError> {
     let prec = w.bits();
     match f {
+        // The orthogonal polynomials of a real non-integer degree
+        // (`hypergeom.rs`; refused before 0.54).
+        f if hypergeom::takes(f, args, cache) => hypergeom::eval(f, args, cache, w),
         LibFn::BesselJ => eval_bessel(arb_bessel_j, "BesselJ", args, cache, w),
         LibFn::BesselY => eval_bessel(arb_bessel_y, "BesselY", args, cache, w),
         LibFn::BesselI => eval_bessel(arb_bessel_i, "BesselI", args, cache, w),
@@ -8642,6 +8666,13 @@ fn eval_lib_fn(
         }
         LibFn::Erfi if args.len() == 1 && cache.get(&args[0]).is_some_and(|v| !v.1.is_zero()) => {
             cerf::erf_family(cerf::Kind::Erfi, get_cached(cache, args[0])?, w)
+        }
+        // `K`, `E`, `F` with a non-real value or parameter (`elliptic.rs`;
+        // refused before 0.54: `elliptic_e(2)`, `elliptic_k(1 + 2i)`).
+        LibFn::EllipticK | LibFn::EllipticE | LibFn::EllipticF
+            if elliptic::takes(f, args, cache) =>
+        {
+            elliptic::eval(f, args, cache, w)
         }
         LibFn::Erfi
         | LibFn::ErfInv
@@ -8698,6 +8729,15 @@ fn eval_lib_fn(
             debug!(prec, "evalf: euler(s) by Hurwitz zeta functions");
             let r = bernoulli::euler_function(&v[0], w)?;
             Ok((r, BigFloat::new(prec)))
+        }
+        // A real non-integer argument (`factorials.rs`; refused before 0.54).
+        LibFn::Factorial2
+            if cache
+                .get(&args[0])
+                .is_some_and(|v| v.1.is_zero() && !v.0.is_int()) =>
+        {
+            let v = real_args(f.name(), args, cache)?;
+            Ok((factorials::factorial2(&v[0], w)?, BigFloat::new(prec)))
         }
         LibFn::Factorial2
         | LibFn::Subfactorial

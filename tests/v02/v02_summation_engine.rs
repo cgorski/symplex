@@ -841,7 +841,9 @@ fn power_series_trigonometric_and_bessel() {
 #[test]
 fn power_series_restricted_domain_needs_numeric_argument() {
     // atan / atanh / asin / ln(1−x) entries converge only for |x| ≤ 1, so a
-    // symbolic x stays unevaluated while a numeric x inside the disc evaluates.
+    // symbolic x keeps the formal sum (since 0.54 as the last branch of a
+    // Piecewise over the convergence region) while a numeric x inside the disc
+    // evaluates.
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let x = ctx.symbol("x");
@@ -885,7 +887,7 @@ fn power_series_restricted_domain_needs_numeric_argument() {
         (ctx.int(2).pow(&k) / &k).try_summation(&k, &one, &inf),
         Err(SymplexError::Divergent { .. })
     ));
-    // Symbolic x with a restricted domain stays unevaluated
+    // Symbolic x with a restricted domain keeps the formal sum (Piecewise)
     assert!((x.pow(&k) / &k).summation(&k, &one, &inf).has_unevaluated());
 }
 

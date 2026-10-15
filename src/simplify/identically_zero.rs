@@ -241,8 +241,10 @@ fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
     if has(Props::INFINITE) || lacks(Props::FINITE) || lacks(Props::COMPLEX) {
         return None;
     }
-    if has(Props::ZERO) {
-        return Some(arena.zero);
+    // A symbol pinned to a value takes it at every point (`zero`, an even
+    // prime, a positive integer neither prime nor composite).
+    if let Some(v) = props.pinned_value() {
+        return Some(arena.int(v));
     }
     let h = mix(name_hash ^ k.wrapping_mul(0xD6E8_FEB8_6659_FD93));
     let pick = |table: &[i64], salt: u32| table[((h >> salt) % table.len() as u64) as usize];
@@ -499,7 +501,13 @@ fn confirmed_zero(arena: &mut Arena, e: ExprId) -> bool {
 /// confirmation computed `u`: `ratsimp` and `expand` of `((x + 1)² − x² −
 /// 2x − 1)/(sin²u + cos²u − 1)` took 119 s and 113 s in a debug build
 /// (now milliseconds, the same `nan`).
+///
+/// A symbol whose assumptions pin it to a value is that value
+/// ([`with_pinned_values`](crate::base::canon::with_pinned_values)): the
+/// exact confirmation reads the even prime `n` in `n² − 4 + sin²x + cos²x
+/// − 1` as 2 (up to 0.53 the samples did, the confirmation did not).
 pub(crate) fn vanishes_by_identity(arena: &mut Arena, e: ExprId) -> bool {
+    let e = crate::base::canon::with_pinned_values(arena, e).unwrap_or(e);
     if arena.is_zero_structural(e) {
         return true;
     }

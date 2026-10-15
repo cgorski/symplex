@@ -43,12 +43,19 @@
 //! **Symbolic ratios.**  Convergence of an infinite geometric-type series
 //! is decided for a numeric ratio (real or not: `Σ (i/2)ᵏ`) and for a
 //! symbolic one whose modulus the declared assumptions bound (`1/(a + 1)`
-//! for a positive `a` is in `(0, 1)`, `a + 1` above 1).  Otherwise there is
-//! no `|r| < 1` to go by, so `Σ_{k≥0} rᵏ`, `Σ k (1−p)ᵏ⁻¹ p` or
-//! `Σ C(k+c,k) xᵏ` with an unconstrained symbolic ratio stay unevaluated
-//! (SymPy returns a `Piecewise` over `Abs(r) < 1` instead).  Sums whose
-//! ratio is numeric but whose other parameters are symbolic
-//! (`Σ C(k+c,k) (1/3)ᵏ = (2/3)^{−c−1}`) do close.
+//! for a positive `a` is in `(0, 1)`, `a + 1` above 1): the closed form,
+//! or the divergence.  Otherwise the outcome is
+//! `SumOutcome::Conditional`: the closed form with its convergence
+//! region, `|r| < 1` for `Σ P(k)·rᵏ`, `|r| ≤ 1` for `Σ rᵏ/k²`, `|r| ≤ 1 ∧
+//! r ≠ 1` for `Σ rᵏ/k` (exact), `|r| < 1` for `Σ C(k+c,k) rᵏ`
+//! (sufficient), which `Ex::summation` returns as `Piecewise((closed
+//! form, region), (Sum, True))` (SymPy keeps that `Piecewise` even when the
+//! assumptions decide the condition; up to 0.53 these sums stayed
+//! unevaluated).  Sums whose ratio is numeric but whose other parameters
+//! are symbolic (`Σ C(k+c,k) (1/3)ᵏ = (2/3)^{−c−1}`) close.  `C(k + c, c)`
+//! is `C(k + c, k)` unless `c` is a negative integer, where every term is 0
+//! (Graham–Knuth–Patashnik): an integer `c` of undecided sign gives
+//! `Piecewise((…, c ≥ 0), (0, True))`.
 //!
 //! **Parameter assumptions.**  A case split is made only where the
 //! declared assumptions allow the special case: a finite geometric sum
@@ -108,6 +115,19 @@ pub(crate) enum SumOutcome {
     /// The sum / product was proven divergent.  `Some(±∞)` when the
     /// direction is known, `None` for oscillating divergence.
     Divergent(Option<ExprId>),
+    /// An infinite sum with a symbolic ratio whose convergence the
+    /// assumptions do not decide: `value` is the sum wherever the condition
+    /// `region` holds (the exact convergence region of `Σ P(k)·yᵏ`, `Σ
+    /// yᵏ/kᵐ`, `Σ yᵏ/k` and the table series; a sufficient one for `Σ C(k +
+    /// c, k)·yᵏ`).  `Ex::summation` returns `Piecewise((value, region),
+    /// (Sum, True))`; `eval` of a formal `Sum` keeps the node (evaluating
+    /// that `Piecewise` would reach its own `Sum` again).
+    Conditional {
+        /// The closed form where `region` holds.
+        value: ExprId,
+        /// The condition on the parameters (a boolean expression).
+        region: ExprId,
+    },
     /// No strategy applied — the caller should keep the formal node.
     Unevaluated,
 }
@@ -461,6 +481,62 @@ fn real_abs_less_than_one(arena: &mut Arena, e: ExprId) -> Truth {
     Truth::Unknown
 }
 
+/// Does the ratio `y` hold a symbol?  Only such a ratio gets a
+/// [`SumOutcome::Conditional`] when its modulus is undecided; a constant
+/// one near the unit circle stays undecided.
+fn symbolic_ratio(arena: &Arena, y: ExprId) -> bool {
+    !walk::free_symbols(arena, y).is_empty()
+}
+
+/// The condition `|y| < 1`.
+fn open_unit_disc(arena: &mut Arena, y: ExprId) -> ExprId {
+    let a = arena.abs(y);
+    let one = arena.one;
+    arena.gt(one, a)
+}
+
+/// The condition `|y| ≤ 1`.
+fn closed_unit_disc(arena: &mut Arena, y: ExprId) -> ExprId {
+    let a = arena.abs(y);
+    let one = arena.one;
+    arena.ge(one, a)
+}
+
+/// The condition `|y| ≤ 1 ∧ y ≠ 1`.
+fn closed_unit_disc_except_one(arena: &mut Arena, y: ExprId) -> ExprId {
+    let disc = closed_unit_disc(arena, y);
+    let one = arena.one;
+    let not_one = arena.ne_(y, one);
+    arena.and(&[disc, not_one])
+}
+
+/// `c·outcome` for a constant `c` that is a closed form or a conditional
+/// one (any other outcome unchanged).
+fn scale_outcome(arena: &mut Arena, c: ExprId, outcome: SumOutcome) -> SumOutcome {
+    match outcome {
+        SumOutcome::Closed(v) => {
+            let s = arena.mul(&[c, v]);
+            SumOutcome::Closed(eval::eval(arena, s))
+        }
+        SumOutcome::Conditional { value, region } => {
+            let s = arena.mul(&[c, value]);
+            SumOutcome::Conditional {
+                value: eval::eval(arena, s),
+                region,
+            }
+        }
+        other => other,
+    }
+}
+
+/// `value`, conditional on `region` when there is one.
+fn closed_or_conditional(value: ExprId, region: Option<ExprId>) -> SumOutcome {
+    match region {
+        Some(region) => SumOutcome::Conditional { value, region },
+        None => SumOutcome::Closed(value),
+    }
+}
+
 fn infinity_of_sign(arena: &Arena, signs: SignSet) -> Option<ExprId> {
     match signs {
         SignSet::POSITIVE => Some(arena.infinity),
@@ -734,6 +810,30 @@ fn combine_outcomes(arena: &mut Arena, a: SumOutcome, b: SumOutcome) -> SumOutco
         (Closed(x), Closed(y)) => {
             let s = arena.add(&[x, y]);
             Closed(eval::eval(arena, s))
+        }
+        (Conditional { value: x, region }, Closed(y))
+        | (Closed(x), Conditional { value: y, region }) => {
+            let s = arena.add(&[x, y]);
+            Conditional {
+                value: eval::eval(arena, s),
+                region,
+            }
+        }
+        (
+            Conditional {
+                value: x,
+                region: rx,
+            },
+            Conditional {
+                value: y,
+                region: ry,
+            },
+        ) => {
+            let s = arena.add(&[x, y]);
+            Conditional {
+                value: eval::eval(arena, s),
+                region: arena.and(&[rx, ry]),
+            }
         }
         (Divergent(d), Closed(_)) | (Closed(_), Divergent(d)) => Divergent(d),
         (Divergent(Some(x)), Divergent(Some(y))) if x == y => Divergent(Some(x)),
@@ -2774,8 +2874,11 @@ fn geometric_poly_infinite(
     lo: ExprId,
 ) -> Option<SumOutcome> {
     let (poly, y, c) = geometric_split(arena, body, var)?;
+    // `Σ P(k)·yᵏ` (`P ≠ 0`) converges exactly where `|y| < 1`.
+    let mut region = None;
     match abs_less_than_one(arena, y) {
         Truth::True => {}
+        Truth::Unknown if symbolic_ratio(arena, y) => region = Some(open_unit_disc(arena, y)),
         Truth::False => {
             // Divergent: direction known only for positive ratio & rational sign.
             let y_pos = const_sign(arena, y) == SignSet::POSITIVE;
@@ -2806,7 +2909,8 @@ fn geometric_poly_infinite(
         apply_euler_operator(arena, &poly, s0, r, y)
     };
     let total = arena.mul(&[c, formula]);
-    Some(SumOutcome::Closed(eval::eval(arena, total)))
+    let total = eval::eval(arena, total);
+    Some(closed_or_conditional(total, region))
 }
 
 /// Is the symbol-free, non-rational `y` exactly on the unit circle
@@ -2943,6 +3047,10 @@ fn geometric_rational_infinite(
         return None;
     }
     let at_one = as_rat(arena, y).is_some_and(|q| q.is_one());
+    // A symbolic ratio whose modulus the assumptions do not decide: the
+    // closed form under the exact convergence condition (D2), filled in
+    // below once the poles are known.
+    let mut undecided = false;
     match as_rat(arena, y) {
         Some(q) if q.is_zero() => return None,
         Some(q) if q.abs() < Q::one() => {}
@@ -2956,10 +3064,29 @@ fn geometric_rational_infinite(
             // Dirichlet's test on the unit circle (`Σ i^k/k²`), and Abel's
             // theorem for the value.
             Truth::Unknown if num_degree < den_degree && on_unit_circle_not_one(arena, y) => {}
+            Truth::Unknown if symbolic_ratio(arena, y) => undecided = true,
             _ => return None,
         },
     }
     let (poly_part, poles) = rational_decompose(arena, g.rest, var)?;
+    // `Σ R(k)·yᵏ` converges for `|y| < 1`; for `deg R < 0` also on the rest
+    // of the unit circle (Dirichlet; the value by Abel's theorem, the
+    // polylogarithms being continuous there), and for `deg R ≤ −2` at
+    // `y = 1` too, where the closed form has a finite value only when no
+    // `Li₁ = −ln(1 − y)` occurs (the divergent parts cancel otherwise: that
+    // point is left to the `Sum`, which closes at `y = 1`).
+    let region = if undecided {
+        let logs = poles.iter().any(|p| p.m == 1);
+        Some(if num_degree >= den_degree {
+            open_unit_disc(arena, y)
+        } else if num_degree + 2 <= den_degree && !logs {
+            closed_unit_disc(arena, y)
+        } else {
+            closed_unit_disc_except_one(arena, y)
+        })
+    } else {
+        None
+    };
     let mut terms = Vec::new();
     for p in &poles {
         let two_beta = &p.beta * rat_i(2);
@@ -2999,6 +3126,8 @@ fn geometric_rational_infinite(
         let p_body = arena.mul(&[p, yk]);
         match geometric_poly_infinite(arena, p_body, var, lo)? {
             SumOutcome::Closed(v) => terms.push(v),
+            // `|y| < 1`, the region already chosen for a polynomial part.
+            SumOutcome::Conditional { value, .. } if undecided => terms.push(value),
             _ => return None,
         }
     }
@@ -3006,7 +3135,8 @@ fn geometric_rational_infinite(
     let total = add_all(arena, &terms);
     let c = mul_all(arena, &g.constant_parts);
     let total = arena.mul(&[c, total]);
-    Some(SumOutcome::Closed(eval::eval(arena, total)))
+    let total = eval::eval(arena, total);
+    Some(closed_or_conditional(total, region))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3050,17 +3180,34 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
         }
         let mut closed = Vec::new();
         let mut divergent: Vec<Option<ExprId>> = Vec::new();
+        let mut regions = Vec::new();
         let mut unknown = 0usize;
         for &t in &terms {
             match infinite_sum(arena, t, var, lo) {
                 SumOutcome::Closed(v) => closed.push(v),
+                SumOutcome::Conditional { value, region } => {
+                    closed.push(value);
+                    regions.push(region);
+                }
                 SumOutcome::Divergent(d) => divergent.push(d),
                 SumOutcome::Unevaluated => unknown += 1,
             }
         }
         if unknown == 0 && divergent.is_empty() {
             let s = add_all(arena, &closed);
-            return SumOutcome::Closed(eval::eval(arena, s));
+            let s = eval::eval(arena, s);
+            // Every part converges where all the conditions hold.
+            let region = match regions.len() {
+                0 => None,
+                1 => Some(regions[0]),
+                _ => Some(arena.and(&regions)),
+            };
+            return closed_or_conditional(s, region);
+        }
+        // A divergent part next to a conditional one: undecided outside
+        // the condition.
+        if !regions.is_empty() {
+            return SumOutcome::Unevaluated;
         }
         if unknown == 0 && divergent.len() == 1 {
             return SumOutcome::Divergent(divergent[0]);
@@ -3090,9 +3237,8 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
             }
             let inner = mul_all(arena, &varf);
             return match infinite_sum(arena, inner, var, lo) {
-                SumOutcome::Closed(v) => {
-                    let s = arena.mul(&[c, v]);
-                    SumOutcome::Closed(eval::eval(arena, s))
+                outcome @ (SumOutcome::Closed(_) | SumOutcome::Conditional { .. }) => {
+                    scale_outcome(arena, c, outcome)
                 }
                 // `Σ x/k` converges at `x = 0`: no divergence claim for a
                 // factor that may vanish (an unassumed `x` was "divergent").
@@ -3611,11 +3757,13 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
 /// geometric sums, so `Σ k·C(k+c,k) xᵏ = (c+1)·x·(1−x)^{−(c+2)}`; a lower
 /// bound `lo > 0` subtracts the skipped leading terms.
 ///
-/// Convergence follows this module's geometric-series convention: `|x| < 1`
-/// is decided only for a numeric ratio.  A *symbolic* ratio (no `|x| < 1`
-/// assumption is available) leaves the sum unevaluated — SymPy returns a
-/// `Piecewise` over `Abs(x) < 1` instead.  `|x| ≥ 1` with a numeric `c ≥ 0`
-/// is reported as divergent.
+/// Convergence follows this module's geometric-series convention: a
+/// symbolic ratio whose modulus the assumptions do not bound gives the
+/// closed form under `|x| < 1` ([`SumOutcome::Conditional`]; sufficient:
+/// on the unit circle convergence depends on `c`).  `|x| ≥ 1` with a
+/// numeric `c ≥ 0` is reported as divergent.  The shape `C(k + c, c)` has
+/// the value of `C(k + c, k)` unless `c` is a negative integer
+/// ([`negative_integer_shift`]).
 fn negative_binomial_series(
     arena: &mut Arena,
     body: ExprId,
@@ -3629,7 +3777,7 @@ fn negative_binomial_series(
     let mut consts = Vec::new();
     let mut poly_factors = Vec::new();
     let mut x_parts = Vec::new();
-    let mut shift: Option<ExprId> = None;
+    let mut shift: Option<BinomialShift> = None;
     for f in mul_factors(arena, body) {
         if !depends_on(arena, f, var) {
             consts.push(f);
@@ -3665,14 +3813,25 @@ fn negative_binomial_series(
             }
         }
     }
-    let c = shift?;
+    let (c, guard) = match shift? {
+        BinomialShift::Lower(c) => (c, ShiftSign::NeverNegativeInteger),
+        BinomialShift::Upper(c) => (c, negative_integer_shift(arena, c)),
+    };
     if x_parts.is_empty() {
         return None;
     }
+    // `C(k + c, c) = 0` for every `k` when `c` is a negative integer.
+    if guard == ShiftSign::NegativeInteger {
+        return Some(SumOutcome::Closed(arena.zero));
+    }
     let x = mul_all(arena, &x_parts);
     let x = eval::eval(arena, x);
+    // A symbolic ratio: the closed form for `|x| < 1` (sufficient; on the
+    // unit circle convergence depends on `c`).
+    let mut region = None;
     match abs_less_than_one(arena, x) {
         Truth::True => {}
+        Truth::Unknown if symbolic_ratio(arena, x) => region = Some(open_unit_disc(arena, x)),
         Truth::False => {
             // |C(k+c, k)| ≥ 1 for a numeric c ≥ 0, so the terms cannot tend
             // to zero; for other `c` the question is left open.
@@ -3729,16 +3888,81 @@ fn negative_binomial_series(
         let s = add_all(arena, &skipped);
         total = arena.sub(total, s);
     }
-    Some(SumOutcome::Closed(eval::eval(arena, total)))
+    let mut total = eval::eval(arena, total);
+    if guard == ShiftSign::Undecided {
+        // An integer `c` of undecided sign: the identity for `c ≥ 0`, every
+        // term 0 for `c < 0`.
+        let zero = arena.zero;
+        let nonnegative = arena.ge(c, zero);
+        let otherwise = arena.bool_true;
+        total = arena.piecewise(&[(total, nonnegative), (zero, otherwise)]);
+    }
+    Some(closed_or_conditional(total, region))
+}
+
+/// A binomial coefficient with the index `k` in its upper argument and a
+/// `k`-free shift `c` ([`binomial_shift`]).
+#[derive(Clone, Copy, Debug)]
+enum BinomialShift {
+    /// `C(k + c, k) = (c + 1)ₖ/k!`, for every `c`.
+    Lower(ExprId),
+    /// `C(k + c, c)`: `C(k + c, k)` by the symmetry `C(n, k) = C(n, n − k)`,
+    /// which holds unless `c` is a negative integer, where every term is 0
+    /// (a negative integer lower index, GKP).
+    Upper(ExprId),
+}
+
+/// Whether the shift `c` of `C(k + c, c)` is a negative integer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShiftSign {
+    /// Not a negative integer: a non-negative integer, a constant that is
+    /// not an integer, or a parameter not declared integer (for which the
+    /// negative integers are a set of measure zero: the generic reading).
+    NeverNegativeInteger,
+    /// A negative integer (a literal, or declared integer and negative).
+    NegativeInteger,
+    /// An integer whose sign the assumptions do not decide.
+    Undecided,
+}
+
+/// [`ShiftSign`] of `c`.  Up to 0.53 `Σ_{k≥0} C(k + c, c)/2ᵏ` for an
+/// integer `c` was `(1/2)^(−c−1)`, `1/4` at `c = −3`, where every term
+/// is 0.
+fn negative_integer_shift(arena: &mut Arena, c: ExprId) -> ShiftSign {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if let Some(r) = const_value(arena, c) {
+        return if r.is_integer() && r.is_negative() {
+            ShiftSign::NegativeInteger
+        } else {
+            ShiftSign::NeverNegativeInteger
+        };
+    }
+    let mut cache = AssumptionCache::new();
+    if !Truth::from(cache.query(arena, c, Props::INTEGER)).is_true()
+        || Truth::from(cache.query(arena, c, Props::NONNEGATIVE)).is_true()
+    {
+        return ShiftSign::NeverNegativeInteger;
+    }
+    // An integer above −1 (`n − 1` for a positive integer `n`).
+    let one = arena.one;
+    let c1 = arena.add(&[c, one]);
+    let c1 = eval::eval(arena, c1);
+    if Truth::from(cache.query(arena, c1, Props::POSITIVE)).is_true() {
+        return ShiftSign::NeverNegativeInteger;
+    }
+    if Truth::from(cache.query(arena, c, Props::NEGATIVE)).is_true() {
+        return ShiftSign::NegativeInteger;
+    }
+    ShiftSign::Undecided
 }
 
 /// The `k`-free shift `c` of a binomial coefficient written as `C(k + c, k)`
 /// or `C(k + c, c)`; `None` for any other shape.
-fn binomial_shift(arena: &mut Arena, n: ExprId, m: ExprId, var: ExprId) -> Option<ExprId> {
+fn binomial_shift(arena: &mut Arena, n: ExprId, m: ExprId, var: ExprId) -> Option<BinomialShift> {
     if m == var {
         let c = arena.sub(n, var);
         let c = eval::eval(arena, c);
-        return (!depends_on(arena, c, var)).then_some(c);
+        return (!depends_on(arena, c, var)).then_some(BinomialShift::Lower(c));
     }
     if depends_on(arena, m, var) {
         return None;
@@ -3746,7 +3970,7 @@ fn binomial_shift(arena: &mut Arena, n: ExprId, m: ExprId, var: ExprId) -> Optio
     // C(n, m) with n − m = k.
     let d = arena.sub(n, m);
     let d = arena.sub(d, var);
-    is_zero_expr(arena, d).then_some(m)
+    is_zero_expr(arena, d).then_some(BinomialShift::Upper(m))
 }
 
 // ── power-series table ────────────────────────────────────────────────────────────
@@ -4154,8 +4378,12 @@ fn power_series_infinite(
         let coeff = arena.div(shape.constant, denom);
         let coeff = eval::eval(arena, coeff);
         // Domain.
+        let mut region = None;
         match in_domain(arena, x, entry.domain) {
             Truth::True => {}
+            Truth::Unknown if symbolic_ratio(arena, x) => {
+                region = Some(domain_condition(arena, x, &entry, extra_power))
+            }
             Truth::False => {
                 let sign = if !shape_alternating && const_sign(arena, x) == SignSet::POSITIVE {
                     const_sign(arena, coeff)
@@ -4230,9 +4458,40 @@ fn power_series_infinite(
         }
         let inner = add_all(arena, &total_terms);
         let total = arena.mul(&[coeff, inner]);
-        return Some(SumOutcome::Closed(eval::eval(arena, total)));
+        let total = eval::eval(arena, total);
+        return Some(closed_or_conditional(total, region));
     }
     None
+}
+
+/// The convergence region of a table series in `x` as a condition: the
+/// entry's [`Domain`] (`atan`'s closed disc without its poles `x = ±i`);
+/// the open disc once an extra factor `kᵖ` has been applied, which can
+/// break convergence on the circle.
+fn domain_condition(arena: &mut Arena, x: ExprId, entry: &SeriesEntry, extra_power: i64) -> ExprId {
+    if extra_power > 0 {
+        return open_unit_disc(arena, x);
+    }
+    match entry.domain {
+        Domain::Everywhere => arena.bool_true,
+        Domain::OpenUnit => open_unit_disc(arena, x),
+        Domain::ClosedUnit if entry.name == "atan" => {
+            let disc = closed_unit_disc(arena, x);
+            let two = arena.int(2);
+            let x2 = arena.pow(x, two);
+            let m1 = arena.neg_one;
+            let off_poles = arena.ne_(x2, m1);
+            arena.and(&[disc, off_poles])
+        }
+        Domain::ClosedUnit => closed_unit_disc(arena, x),
+        Domain::OpenUnitOrMinusOne => {
+            let disc = open_unit_disc(arena, x);
+            let m1 = arena.neg_one;
+            let at_minus_one = arena.eq_(x, m1);
+            arena.or(&[disc, at_minus_one])
+        }
+        Domain::ClosedUnitExceptOne => closed_unit_disc_except_one(arena, x),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5346,12 +5605,14 @@ mod tests {
         let body = arena.div(hk, k);
         let s = closed(summation(&mut arena, body, k, one, inf));
         assert_eq!(arena.display(s).to_string(), "ln(2)");
-        // Σ x^k/k with symbolic x → unevaluated (convergence unknown)
+        // Σ x^k/k with symbolic x: −ln(1 − x) where |x| ≤ 1, x ≠ 1 (D2).
         let body = arena.div(xk, k);
-        assert_eq!(
-            summation(&mut arena, body, k, one, inf),
-            SumOutcome::Unevaluated
-        );
+        let SumOutcome::Conditional { value, region } = summation(&mut arena, body, k, one, inf)
+        else {
+            panic!("expected a conditional closed form");
+        };
+        assert_eq!(arena.display(value).to_string(), "-ln(-x + 1)");
+        assert_eq!(arena.display(region).to_string(), "1 >= abs(x) & x != 1");
         // Σ 1/k! = e
         let body = arena.div(one, kf);
         let s = closed(summation(&mut arena, body, k, zero, inf));
@@ -5396,14 +5657,16 @@ mod tests {
         let s = closed(summation(&mut arena, body, k, zero, inf));
         assert!(!walk::has_unevaluated(&arena, s), "{}", arena.display(s));
         assert_eq!(eval_at(&mut arena, s, c, 2), Q::new(27.into(), 8.into()));
-        // Symbolic ratio: no |x| < 1 assumption → unevaluated.
+        // Symbolic ratio: no |x| < 1 assumption → the closed form under
+        // |x| < 1 (D2).
         let x = arena.symbol("x");
         let xs = arena.pow(x, k);
         let body = arena.mul(&[bin, xs]);
-        assert_eq!(
-            summation(&mut arena, body, k, zero, inf),
-            SumOutcome::Unevaluated
-        );
+        let SumOutcome::Conditional { region, .. } = summation(&mut arena, body, k, zero, inf)
+        else {
+            panic!("expected a conditional closed form");
+        };
+        assert_eq!(arena.display(region).to_string(), "1 > abs(x)");
         // Binomial theorem with a symbolic exponent offset: Σ C(n,k) p^k (1−p)^(n−k) = 1.
         let n = arena.symbol("n");
         let p = arena.symbol("p");

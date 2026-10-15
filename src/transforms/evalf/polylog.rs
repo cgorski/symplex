@@ -413,6 +413,7 @@ fn series_terms(r: f64, s: f64, wp: usize) -> Option<usize> {
         return Some(2);
     }
     let a = -r.ln();
+    // (Next to the unit circle the term count only chooses another route.)
     if a <= 1e-12 {
         if s <= 1.25 {
             return None;
@@ -502,6 +503,7 @@ fn nonpositive_poles(n: u64, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, Symplex
     let p = wp + 24 + super::magnitude_bits(nf * (nf.ln() + 64.0));
     let mu = super::c_ln(z, &mut w.at(p));
     let mu_abs = accuracy::lg_abs(&mu).exp2();
+    // (Refuses.)
     if !mu_abs.is_finite() || mu_abs == 0.0 {
         return Err(super::unevaluable("polylog(s, 1) diverges for s ≤ 1"));
     }
@@ -562,6 +564,8 @@ fn series(
 ) -> Result<Sum, SymplexError> {
     let wp = w.bits();
     let lr = accuracy::lg_abs(z);
+    // (`lg_abs` is an upper bound: "on the circle" includes a margin, and
+    // it only refuses this route.)
     let unit = lr >= -1e-9;
     if unit && s_f <= 1.25 {
         return Err(super::unevaluable("polylog series on the unit circle"));
@@ -1193,6 +1197,7 @@ fn magnitude_sum(r: f64, e: f64, derivative: bool) -> Option<f64> {
         };
         let q = r * (1.0 + 1.0 / kf).powf(e.max(0.0)) * lnq;
         if k > 2 && q < 1.0 {
+            // (A geometric bound on the rest, returned with a margin.)
             let rest = t * q / (1.0 - q);
             if rest < sum * 1e-18 {
                 return Some((sum + rest) * 1.001);
@@ -1438,6 +1443,7 @@ fn mu_tail(k: usize, s_f: f64, s_int: Option<i64>, lmu: f64, rho: f64) -> f64 {
 pub(super) fn tail_lower_bound(s_f: f64, s_int: bool, near_int: bool, x: f64, y: f64) -> f64 {
     const UNKNOWN_TAIL: f64 = -1e300;
     let r = x.hypot(y);
+    // (No bound claimed.)
     if s_f.is_nan() || s_f < 4.0 || !r.is_finite() || r == 0.0 {
         return UNKNOWN_TAIL;
     }
@@ -1631,6 +1637,7 @@ fn hurwitz(sigma: &BigFloat, a: &Complex, wpc: &mut Wp<'_>) -> Result<Sum, Sympl
         if p >= 2.5 {
             let int = ((1.0 - p) * lre - (p - 1.0).log2()).min(LOG2_HALF_PI + (1.0 - p) * lw);
             let rem = 2.0 + lpoch - 2.0 * jf * LOG2_TWO_PI + int;
+            // (A bound on the remainder: the stop is certified.)
             if rem < sum.largest - wp as f64 - 4.0 {
                 return Ok(sum);
             }

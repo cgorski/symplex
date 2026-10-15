@@ -50,12 +50,13 @@
 
 use bitflags::bitflags;
 use num_bigint::BigInt;
-use num_traits::{Signed, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
 use crate::base::func::{Constants, Func, Poles, RealOn};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::numeric::Q;
 use crate::base::truth::Truth;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -461,6 +462,31 @@ impl Assumptions {
     /// Check whether the assumption set is self-contradictory.
     pub fn is_contradictory(&self) -> bool {
         self.known_true.intersects(self.known_false)
+    }
+
+    /// The one value a symbol with these (forward-chained) assumptions can
+    /// take, when they pin it: `0` for `zero` (also `nonnegative ∧
+    /// nonpositive`), `2` for `even ∧ prime`, `1` for a positive integer
+    /// that is neither prime nor composite.  A symbol pinned to a value is
+    /// that value: the zero tests substitute it
+    /// (`canon::with_pinned_values`), the samples take it, and the
+    /// properties of an expression in pinned symbols are those of its value
+    /// ([`AssumptionCache`]).  Up to 0.53 an even prime `n` was not known to
+    /// be 2: `(⌈n⌉ − n)/(n − 2)` was 0 and `(x + 3)(n² − 4)/((n² − 4)(y +
+    /// 1))` was `(x + 3)/(y + 1)` (both `nan`).
+    pub(crate) fn pinned_value(&self) -> Option<i64> {
+        let has = |p: Props| self.known_true.contains(p);
+        if has(Props::ZERO) {
+            Some(0)
+        } else if has(Props::EVEN | Props::PRIME) {
+            Some(2)
+        } else if has(Props::INTEGER | Props::POSITIVE)
+            && self.known_false.contains(Props::PRIME | Props::COMPOSITE)
+        {
+            Some(1)
+        } else {
+            None
+        }
     }
 
     /// `self` with one more declared [`Assumption`], forward-chained.
@@ -1065,6 +1091,23 @@ impl Assumptions {
                 self.known_true.insert(Props::ZERO);
             }
 
+            // nonnegative ∧ !positive → zero, nonpositive ∧ !negative → zero
+            // (`∞` is positive, so also among the extended reals)
+            if (self.known_true.contains(Props::NONNEGATIVE)
+                && self.known_false.contains(Props::POSITIVE))
+                || (self.known_true.contains(Props::NONPOSITIVE)
+                    && self.known_false.contains(Props::NEGATIVE))
+            {
+                self.known_true.insert(Props::ZERO);
+            }
+
+            // integer ∧ positive ∧ !prime ∧ !composite → odd: the number is 1
+            if self.known_true.contains(Props::INTEGER | Props::POSITIVE)
+                && self.known_false.contains(Props::PRIME | Props::COMPOSITE)
+            {
+                self.known_true.insert(Props::ODD);
+            }
+
             // real ∧ !rational → irrational
             if self.known_true.contains(Props::REAL) && self.known_false.contains(Props::RATIONAL) {
                 self.known_true.insert(Props::IRRATIONAL);
@@ -1142,6 +1185,10 @@ pub struct AssumptionCache {
     /// which take precedence over the arena's declarations; kept apart so
     /// that the derived entries can be dropped when one of them changes.
     declared: FxHashMap<ExprId, Assumptions>,
+    /// The exact values of the sums, products, negations and integer
+    /// powers computed so far whose symbols are all pinned to a value
+    /// ([`Assumptions::pinned_value`]): `n − 2` is 0 for an even prime `n`.
+    pinned: FxHashMap<ExprId, Q>,
 }
 
 impl AssumptionCache {
@@ -1397,6 +1444,13 @@ impl AssumptionCache {
         let mut result = result;
         result.forward_chain();
 
+        // An expression whose symbols are pinned to values has the
+        // properties of its value.
+        if let Some(value) = self.pinned_rational(arena, id, &node) {
+            result.merge(&Self::rational_assumptions(&value));
+            self.pinned.insert(id, value);
+        }
+
         // Exact sign of a univariate polynomial with rational coefficients in
         // a real-assumed symbol, when the structural rules left it open
         // (`3u² + 2u + 1` for `u ≥ 0`, `x² - 2x + 2` for real `x`, …).
@@ -1425,8 +1479,52 @@ impl AssumptionCache {
 
     // ── Atom handlers ──────────────────────────────────────────────
 
+    /// The exact value of a sum, product, negation or integer power `node`
+    /// (the node `id`) of numbers, symbols pinned to a value
+    /// ([`Assumptions::pinned_value`]) and subexpressions whose value is
+    /// known ([`pinned`](Self::pinned)); `None` for anything else (one hash
+    /// lookup per child until the first that is none of these).
+    fn pinned_rational(&self, arena: &Arena, id: ExprId, node: &ExprNode) -> Option<Q> {
+        if arena.free_symbol_mask(id) == 0 {
+            return None;
+        }
+        let value = |c: ExprId| -> Option<Q> {
+            match arena.node(c) {
+                ExprNode::Num(n) => Some(arena.num(*n).clone()),
+                ExprNode::Symbol(_) => {
+                    let v = self.cache.get(&c)?.pinned_value()?;
+                    Some(Q::from_integer(BigInt::from(v)))
+                }
+                _ => self.pinned.get(&c).cloned(),
+            }
+        };
+        match node {
+            ExprNode::Add(children) => children
+                .iter()
+                .try_fold(Q::zero(), |sum, &c| Some(sum + value(c)?)),
+            ExprNode::Mul(children) => children
+                .iter()
+                .try_fold(Q::one(), |product, &c| Some(product * value(c)?)),
+            ExprNode::Neg(c) => value(*c).map(|v| -v),
+            ExprNode::Pow(b, e) => {
+                let e = arena.as_num(*e)?;
+                let base = value(*b)?;
+                let k: i32 = e.is_integer().then(|| e.to_integer().to_i32())??;
+                if (base.is_zero() && k < 0) || k.unsigned_abs() > 64 {
+                    return None;
+                }
+                Some(num_traits::Pow::pow(base, k))
+            }
+            _ => None,
+        }
+    }
+
     fn compute_num(&self, arena: &Arena, nid: crate::base::node::NumId) -> Assumptions {
-        let val = arena.num(nid);
+        Self::rational_assumptions(arena.num(nid))
+    }
+
+    /// The properties of the rational number `val`.
+    fn rational_assumptions(val: &Q) -> Assumptions {
         let mut a = Assumptions::default();
 
         // All rationals are rational, real, algebraic, complex, finite, commutative.
@@ -1532,14 +1630,29 @@ impl AssumptionCache {
         // sum keeps since 0.41): the sum is infinite.
         let mut infinite_terms = 0usize;
         let mut others_finite = true;
+        // The infinite term is extended real (`±∞`), or not (`i·∞`).
+        let mut infinite_extended_real = Truth::Unknown;
+        // Finite terms: how many are imaginary (non-zero, `Re = 0`), and
+        // whether every other one is real.
+        let mut imaginary_terms = 0usize;
+        let mut others_real = true;
 
         for &child in args.iter() {
             let child_a = self.compute(arena, child);
+            let truth = |p: Props| Truth::from(child_a.query(p));
 
             if child_a.query(Props::INFINITE) == Some(true) {
                 infinite_terms += 1;
-            } else if child_a.query(Props::FINITE) != Some(true) {
-                others_finite = false;
+                infinite_extended_real = truth(Props::EXTENDED_REAL);
+            } else {
+                if child_a.query(Props::FINITE) != Some(true) {
+                    others_finite = false;
+                }
+                if truth(Props::IMAGINARY).is_true() {
+                    imaginary_terms += 1;
+                } else if !truth(Props::REAL).is_true() {
+                    others_real = false;
+                }
             }
 
             if child_a.query(Props::INTEGER) != Some(true) {
@@ -1593,6 +1706,26 @@ impl AssumptionCache {
         if infinite_terms == 1 && others_finite {
             a.known_false |= Props::FINITE;
         }
+        // One imaginary term beside real ones has a non-zero imaginary part:
+        // `1 + i` is non-real and non-zero (asked of a constant only, as the
+        // direction of `(1 + i)·∞`), and `∞ + i` (or `i·∞ + 1`) is not
+        // extended real, so it has no sign (up to 0.53 `(∞ + i).is_positive()`
+        // and `((1 + i)·∞).is_finite()` were `None`).
+        let finite_part_non_real = imaginary_terms == 1 && others_real;
+        if infinite_terms == 1
+            && others_finite
+            && (infinite_extended_real.is_false()
+                || (infinite_extended_real.is_true() && finite_part_non_real))
+        {
+            a.known_false |= Props::EXTENDED_REAL;
+        }
+        if infinite_terms == 0
+            && finite_part_non_real
+            && args.iter().all(|&c| arena.is_symbol_free(c))
+        {
+            a.known_true |= Props::NONZERO;
+            a.known_false |= Props::REAL;
+        }
         if all_commutative {
             a.known_true |= Props::COMMUTATIVE;
         }
@@ -1642,9 +1775,34 @@ impl AssumptionCache {
         // flip the sign; a factor of unknown sign ends the deduction.
         let mut weak_flips = 0u32;
         let mut weak_sign_known = true;
+        // A directed infinity `c·∞`: infinite factors (all extended real?)
+        // beside finite non-zero ones, of which how many are non-real and
+        // whether every other one is real.
+        let mut infinite_factors = 0usize;
+        let mut infinite_extended_real = true;
+        let mut others_finite_nonzero = true;
+        let mut non_real_factors = 0usize;
+        let mut others_real = true;
 
         for &child in args.iter() {
             let child_a = self.compute(arena, child);
+            let truth = |p: Props| Truth::from(child_a.query(p));
+
+            if truth(Props::INFINITE).is_true() {
+                infinite_factors += 1;
+                if !truth(Props::EXTENDED_REAL).is_true() {
+                    infinite_extended_real = false;
+                }
+            } else {
+                if !truth(Props::FINITE).and(truth(Props::NONZERO)).is_true() {
+                    others_finite_nonzero = false;
+                }
+                match truth(Props::REAL) {
+                    Truth::True => {}
+                    Truth::False => non_real_factors += 1,
+                    Truth::Unknown => others_real = false,
+                }
+            }
 
             if child_a.query(Props::POSITIVE) == Some(true) {
                 // no flip
@@ -1775,6 +1933,16 @@ impl AssumptionCache {
                 a.known_true |= Props::NONNEGATIVE;
             } else {
                 a.known_true |= Props::NONPOSITIVE;
+            }
+        }
+        // `c·∞` with a finite non-zero `c` is infinite, and not extended real
+        // when `c` is not real (one non-real factor beside real ones): `i·∞`
+        // and `(1 + i)·∞` are not finite and have no sign.  Up to 0.53
+        // `(i·∞).is_finite()` was `None` (SymPy 1.14: `False`).
+        if infinite_factors > 0 && others_finite_nonzero {
+            a.known_true |= Props::INFINITE;
+            if infinite_extended_real && non_real_factors == 1 && others_real {
+                a.known_false |= Props::EXTENDED_REAL;
             }
         }
 
@@ -2519,6 +2687,7 @@ impl AssumptionCache {
         // them all and keep only the stored declarations.
         self.declared.insert(id, assumptions);
         self.cache.clear();
+        self.pinned.clear();
         self.cache
             .extend(self.declared.iter().map(|(&k, &v)| (k, v)));
     }

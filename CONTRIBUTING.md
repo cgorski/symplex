@@ -1239,7 +1239,16 @@ refuse); `expr_to_f64` refuses a constant whose certified evaluation keeps a
 nonzero imaginary part, however small.  Sampled checks certify the sign at
 every sample and never skip a sample at 0.  `ln u` next to `Ei/Ci/Chi(u)`
 with coefficients summing to 0 does not jump across the cut
-(`definite::cancelling_log_steps`).
+(`definite::cancelling_log_steps`).  The solvers, sets, inequalities, the
+API layer and `nroots` were reviewed at 0.54: the members of a family `a +
+b·n` in a window are listed from an exact index range
+(`solve::lattice_indices`, `integers_around`: `eval` of `floor`/`ceiling` of
+`(end − a)/b`), never from `f64` quotients cast with `as`; their `f64`
+values only drop members far outside the window (`sets::Window`).  A zero is
+reduced into a period by a certified floor; two critical points are merged
+only when their difference is proved 0; a root from `nroots` is real when
+its certified disk shows it; `compare_numeric` orders only constants proved
+real and `check_solution` answers from `is_zero`.
 
 **Printing complex values.**  A result read as a number (`eval_decimal`,
 `eval_f64`, `eval_complex64`) shows a part unless it is 0 within its error
@@ -1248,7 +1257,23 @@ of every other part, however small next to the other; `eval_f64` refuses a
 nonzero imaginary part.  "Negligible next to the other part"
 (`is_negligible_part`, `is_real_to_digits`) is an approximate reading for
 heuristics, never an output rule.  A part dropped because a joint ball is
-wide is a bound to tighten in the route that computed it.
+wide is a bound to tighten in the route that computed it.  A function on
+its branch cut whose parts are real functions of the argument computes them
+as such and bounds each one (`cspecial::CutRule`; `cerf::on_axis`); an
+argument's rounding moves a part by that part's derivative along the cut.
+A route's exact-0 part is the value's only where the function is real there
+(`cspecial::real_valued`): an asymptotic expansion on the cut drops an
+exponentially small part inside its remainder bound (up to 0.53
+`im(expint(1, −160))` was `0`).  The evalf files were reviewed at 0.54: an
+integer argument of a function defined only for integers is one only when
+its value is an exact integer and its bound is exact; an `f64` simulation
+that decides how many terms to sum is followed by a bound on the actual
+next term; whether an argument is exact is read from its bound, never from
+an `f64` radius.  A function evaluated beyond the domain of its real
+routine gets the complex value with the convention mpmath and SymPy use on
+the cut (elliptic integrals: the limit from below), and a parameter that is
+continuous for the new route (a non-integer degree) is not `discrete` in
+`sensitivity`.
 
 **Poles of rational factors in integrals.**  A pole of a factor
 `B(x)^(−k)`, `B ∈ ℚ[x]`, is located by Descartes isolation, never through
@@ -1275,7 +1300,26 @@ nodes saw a value does not converge, and a quadrature none of whose pieces
 did is refused.  `exp` of a ball wholly below the exponent range is bounded
 by `e^(Re z + r)`.  A finite piece whose oscillation no bisection could
 resolve refuses at once (`Quad::unresolvable`), leaving the closed form its
-turn.
+turn.  Since 0.54 the reach is where the integrand's terms cross over
+(`quad::Integrand::crossover_reach`): beyond the size of the constants, terms
+whose orders of growth differ by `D < 1` cross near `2^(L/D)`, `2^L` the
+ratio of their sizes at `x = 2` (`Integrand::close_points`); samples are
+added where such terms meet, and an integrand whose terms cross beyond the
+last node is refused.  An `f64` estimate with an error of 0 (every node 0)
+is no evidence of a zero integral, in `integrate_numeric` as in `evalf`.
+
+**Cut crossings of antiderivatives.**  A Newton–Leibniz difference is
+taken across a crossing of a branch cut only at an exactly located
+crossing: a linear argument `u = αx + β` meets the real axis at `c = −im
+β/im α`, and when `u(c)` is proved on the cut each cut function of `u` is
+continued from the side `u` comes from (`definite::side_value`: `ln`, `Ci`,
+`Chi` step by `2πi`, `uᵃ` by `e^{2πia}`, `Ei` takes the mean on the axis);
+a crossing found only by sampling refuses.  On a piece in `[0, ∞)` an
+argument built from `x^q` and `ln x` is real and crosses no cut
+(`real_for_x_in`), without sampling.  Narrow peaks of a product of powers
+and an exponential are split off at the maximum of its logarithm
+(`definite::envelope_peak`), found in `f64`: a split point is a guide,
+never a claim.
 
 **Poles of powers.**  `b^e` is claimed complex, real, rational,
 non-negative or finite only off the pole at `b = 0`: for a symbol-free `b`
@@ -1298,8 +1342,33 @@ directed infinity with its exact finite part where the limit has one
 (`E₁(−∞) = −∞ − iπ`, `Γ(1/2, −∞) = √π − i∞`), `zoo` otherwise.  A library
 function in `canon::folds_at_infinity` left unevaluated at `±∞` has no value
 the constructors know, so `0·f` and `0/f` are `nan`, as are `0·δ(c)` and
-`0·H(c)` for a non-real constant `c`; add a function to `folds_at_infinity`
-only together with all its folds.
+`0·H(c)` for a non-real constant `c`.  Since 0.54 every function of the
+`funcs!` table is tabulated at the exact infinities `±∞`, `±i·∞`, argument
+slot by argument slot (`canon::at_infinity`): a value where the limit has one
+(with its exact finite part; `zoo` where the direction is off the axes or a
+part diverges at another rate); `NoFiniteValue` where it is infinite in no
+tabulated direction, has no limit (`Ai′(−∞)`) or depends on a parameter
+without a value (`hermite(n, ∞)`): then `0·f`, `0/f` are `nan`;
+`Untabulated` where a finite value may exist that the table does not build
+(the degree slot of an orthogonal polynomial): then `0·f` stays 0.  A
+pattern may answer `NoFiniteValue` only when every finite value it can have
+is folded.  A finite slot is a number, an argument with symbols (a generic
+point) or a constant with a certified value (`finite_argument`); `Π` folds
+only where the other argument is known not to be 1 (`off_the_pole`).  The
+constructors of `Si`, `Ci`, `Ei`, `li`, `ζ`, `ψ⁽ⁿ⁾` are the `eval_*`
+functions of `transforms/eval.rs`; their values at infinity live there.
+`eval` evaluates no closed form at an argument with `±∞` in it.
+
+**Symbols pinned to a value.**  A symbol whose assumptions allow one value
+(`zero`, `even ∧ prime`, a positive integer neither prime nor composite:
+`Assumptions::pinned_value`) is that value: the assumption cache gives an
+expression in such symbols the properties of its value, and the zero tests
+(`factor_vanishes`, `vanishes_by_function_identity`,
+`identically_zero::vanishes_by_identity`, `cancel`'s divided-out
+denominators) substitute it (`canon::with_pinned_values`).  The residue test
+reads a symbol as an indeterminate, so a zero test must substitute before
+it.  A new way to pin a symbol goes into `pinned_value` together with its
+forward-chain rules.
 
 **Identically zero denominators.**  A quotient whose denominator vanishes
 identically is `nan` in every operation.  An operation whose polynomial
@@ -1324,7 +1393,16 @@ public finiteness answer must not come from it.
 
 **Binomial coefficients.**  `C(n, k) = 0` for a negative integer `k` and
 every `n` (Graham–Knuth–Patashnik, SymPy).  A rewrite may use Pascal's rule
-for all integers, the symmetry `C(n, k) = C(n, n − k)` only for `n ≥ 0`.
+for all integers, the symmetry `C(n, k) = C(n, n − k)` only for `n ≥ 0`;
+reading `C(k + c, c)` as `C(k + c, k)` needs `c` not a negative integer
+(`summation::negative_integer_shift`: the identity under `c ≥ 0`, 0
+otherwise, or a refusal).
+
+**Sums with parameters.**  A sum whose convergence depends on a parameter
+the assumptions do not decide is `SumOutcome::Conditional { value, region }`
+(the closed form and the exact region, or a sufficient one documented as
+such), never `Closed`: the public `summation` writes `Piecewise((value,
+region), (Sum, True))`; `eval` of a formal `Sum` does not build it.
 
 When only coprimality or the degree of a gcd is needed, use modular images
 (`modgcd::main_gcd_degree_bound`, `coprime_certified`), not a full gcd: an

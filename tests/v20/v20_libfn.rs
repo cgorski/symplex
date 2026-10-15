@@ -279,9 +279,18 @@ fn evalf_values_unchanged() {
         let got = e.eval_f64().unwrap_or_else(|err| panic!("{e}: {err}"));
         assert_rel(got, want, 1e-13, &e.to_string());
     }
-    // Degree checks keep their message, which names the function.
-    let bad = ctx.rational(1, 2).legendre(&ctx.rational(1, 2));
-    let err = bad.eval_f64().expect_err("half-integer degree");
+    // A non-integer degree has a value since 0.54 (the hypergeometric
+    // definition; mpmath `legendre(0.5, 0.5) = 0.795248908186023857`); where
+    // that value is not real (`x ≤ −1`) the refusal names the function.
+    let half = ctx.rational(1, 2).legendre(&ctx.rational(1, 2));
+    assert_rel(
+        half.eval_f64().unwrap(),
+        0.795_248_908_186_023_9,
+        1e-13,
+        "P_1/2(1/2)",
+    );
+    let bad = ctx.int(-3).legendre(&ctx.rational(1, 2));
+    let err = bad.eval_f64().expect_err("x <= -1");
     assert!(err.to_string().contains("legendre"), "{err}");
 }
 

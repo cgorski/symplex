@@ -756,29 +756,40 @@ pub(crate) fn ratsimp_zero_denominator(arena: &mut Arena, expr: ExprId) -> Optio
 /// ([`nonzero_at_a_sample`](crate::simplify::identically_zero::nonzero_at_a_sample))
 /// → the result stands; undecided → `expr` unchanged (no claim).  A
 /// denominator in the symbols alone is a polynomial the arithmetic decides
-/// exactly.
+/// exactly — unless a symbol in it is pinned to a value
+/// ([`with_pinned_values`](crate::base::canon::with_pinned_values): `n − 2`
+/// for an even prime `n`, which the arithmetic reads as an indeterminate),
+/// so such a denominator is decided too (up to 0.53 `cancel` of `(x + 3)((x
+/// + 1)² − x² − 2x − 1)/((n − 2)(x + 2))` was 0).
 pub(crate) fn cancel(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     let result = crate::poly::paramfield::cancel_full(arena, expr, var);
     if result == expr || result == arena.nan || result == arena.complex_infinity {
         return result;
     }
     let after: FxHashSet<ExprId> = denominator_bases(arena, result).into_iter().collect();
-    let dropped: Vec<ExprId> = denominator_bases(arena, expr)
+    let candidates: Vec<ExprId> = denominator_bases(arena, expr)
         .into_iter()
-        .filter(|&d| {
-            !after.contains(&d)
-                && may_vanish_by_identity(arena, d)
-                && walk::post_order_ids(arena, d)
-                    .into_iter()
-                    .any(|id| matches!(arena.node(id), ExprNode::Add(_)))
-        })
+        .filter(|d| !after.contains(d))
         .collect();
-    for d in dropped {
-        if !crate::poly::polybridge::may_vanish_identically(arena, d) {
+    for d in candidates {
+        let pinned = crate::base::canon::with_pinned_values(arena, d).is_some();
+        let identity = may_vanish_by_identity(arena, d)
+            && walk::post_order_ids(arena, d)
+                .into_iter()
+                .any(|id| matches!(arena.node(id), ExprNode::Add(_)));
+        if !pinned && !(identity && crate::poly::polybridge::may_vanish_identically(arena, d)) {
             continue;
         }
         if crate::simplify::identically_zero::vanishes_by_identity(arena, d) {
             tracing::debug!("cancel: a divided-out denominator vanishes by an identity");
+            // At the values of its pinned symbols the input is built as
+            // what it is (`0·0⁻¹ = nan`).
+            if pinned {
+                let at = crate::base::canon::with_pinned_values(arena, expr).unwrap_or(expr);
+                if at == arena.nan || at == arena.complex_infinity {
+                    return at;
+                }
+            }
             return crate::simplify::simplify_engine::undefined_by_vanishing_denominator(
                 arena, expr,
             )

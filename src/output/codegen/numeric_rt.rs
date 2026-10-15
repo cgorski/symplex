@@ -1655,10 +1655,16 @@ fn harmonic_small(x: f64) -> f64 {
 
 // @@begin factorial2
 /// Double factorial n!! for integer n ≥ −1 (odd negative n via
-/// n!! = (n+2)!!/(n+2); even negative n and non-integers return NaN).
+/// n!! = (n+2)!!/(n+2); even negative n return NaN), and for a non-integer
+/// n its continuation 2^(n/2)·(π/2)^((cos πn − 1)/4)·Γ(n/2 + 1), as
+/// `evalf` (mpmath's `fac2`; NaN before 0.54).
 pub fn factorial2(n: f64) -> f64 {
-    if !is_int(n) {
+    if n.is_nan() {
         return f64::NAN;
+    }
+    if !is_int(n) {
+        let e = (cos_pi(n) - 1.0) / 4.0;
+        return p_powf(2.0, n / 2.0) * p_powf(PI / 2.0, e) * gamma(n / 2.0 + 1.0);
     }
     if n >= -1.0 {
         let mut acc = 1.0;

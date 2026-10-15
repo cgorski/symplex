@@ -83,36 +83,40 @@ const MAX_SIGN_FACTORS: usize = 4;
 
 /// Is `p` (a solution returned by the solver) a real, finite point?
 ///
-/// Non-real roots are rejected by the assumption system (`I`, `√−2`), by
-/// structure (a constant mentioning `I` that is not proven real), and —
-/// for constants only — numerically: a 16-digit imaginary part larger
-/// than `1e-12·(1 + |re|)` rejects the point.  (A constant whose imaginary
-/// part is non-zero but below that threshold is therefore kept; the
-/// threshold is a tolerance, not an exact decision.)  Infinite or
-/// undefined values are rejected.
-fn is_real_finite_point(p: &Ex) -> bool {
+/// Infinite or undefined values and what the assumption system proves
+/// non-real (`I`, `√−2`) are not.  A constant is real when the side of the
+/// real axis it lies on is decided ([`imaginary_part_sign`]: proved real, or
+/// an imaginary part certified nonzero however small); `Unknown` when it is
+/// not.  Up to 0.53 an imaginary part below `10⁻¹²` of the value was read
+/// as 0, and a constant mentioning `I` not proved real was called
+/// non-real.
+///
+/// [`imaginary_part_sign`]: crate::transforms::realness::imaginary_part_sign
+fn is_real_finite_point(p: &Ex) -> Truth {
+    use crate::base::truth::SignSet;
     let ctx = p.context();
     if *p == ctx.infinity()
         || *p == ctx.neg_infinity()
         || *p == ctx.complex_infinity()
         || *p == ctx.nan()
     {
-        return false;
+        return Truth::False;
     }
     if Truth::from(p.is_real()).is_false() || Truth::from(p.is_finite()).is_false() {
-        return false;
+        return Truth::False;
     }
     if p.is_constant() {
-        if p.contains(&ctx.i_unit()) && !Truth::from(p.is_real()).is_true() {
-            return false;
-        }
-        if let Ok(z) = p.eval_complex64()
-            && z.im.abs() > 1e-12 * (1.0 + z.re.abs())
-        {
-            return false;
-        }
+        let side = {
+            let mut inner = p.inner.write();
+            crate::transforms::realness::imaginary_part_sign(&mut inner.arena, p.raw_id())
+        };
+        return match side {
+            SignSet::ZERO => Truth::True,
+            s if s.is_nonzero().is_true() => Truth::False,
+            _ => Truth::Unknown,
+        };
     }
-    true
+    Truth::True
 }
 
 /// Finite `f64` bounds of `domain` (its infimum and supremum, open or
@@ -177,8 +181,15 @@ fn enumerate_family(
         ));
     }
     // A non-real family (`atan(I) + nπ` from `tan² + 1 = 0`) has no real members.
-    if !is_real_finite_point(&offset) {
-        return Ok(());
+    match is_real_finite_point(&offset) {
+        Truth::True => {}
+        Truth::False => return Ok(()),
+        Truth::Unknown => {
+            return Err(computation_failed(
+                op,
+                format!("cannot decide whether the family `{member}` has real members"),
+            ));
+        }
     }
     let (Ok(step_f), Ok(offset_f)) = (step.eval_f64(), offset.eval_f64()) else {
         return Err(computation_failed(
@@ -186,6 +197,7 @@ fn enumerate_family(
             format!("cannot locate the members of the family `{member}` numerically"),
         ));
     };
+    // (a step 0 to its digits: one member; every candidate is tested exactly)
     if step_f == 0.0 {
         out.push(offset);
         return Ok(());
@@ -302,8 +314,20 @@ fn zeros_in_domain(
         }
     }
 
-    points.retain(is_real_finite_point);
-    let mut result = ctx.finite_set(&points).intersection(domain);
+    let mut real_points = Vec::with_capacity(points.len());
+    for p in points {
+        match is_real_finite_point(&p) {
+            Truth::True => real_points.push(p),
+            Truth::False => {}
+            Truth::Unknown => {
+                return Err(computation_failed(
+                    op,
+                    format!("cannot decide whether the zero `{p}` of `{g}` is real"),
+                ));
+            }
+        }
+    }
+    let mut result = ctx.finite_set(&real_points).intersection(domain);
     for fam in families {
         result = result.union(&fam.intersection(domain));
     }
@@ -647,11 +671,13 @@ impl Ex {
         };
         let real = if attained {
             is_real_finite_point(&value)
-        } else {
+        } else if value == ctx.infinity() || value == ctx.neg_infinity() {
             // A limit may be ±∞, but not undefined or non-real.
-            value == ctx.infinity() || value == ctx.neg_infinity() || is_real_finite_point(&value)
+            Truth::True
+        } else {
+            is_real_finite_point(&value)
         };
-        if value.has_unevaluated() || !real {
+        if value.has_unevaluated() || !real.is_true() {
             return Err(computation_failed(
                 op,
                 format!("the value `{value}` at `{var} = {point}` is not a real number"),
@@ -852,7 +878,7 @@ fn continuous_at_closed_endpoints(f: &Ex, var: &Ex, parts: &[Interval<Ex>]) -> b
     let ctx = f.context();
     let check = |e: &Ex, dir: Direction| -> bool {
         let value = f.subs(var, e).eval();
-        if value.has_unevaluated() || !is_real_finite_point(&value) {
+        if value.has_unevaluated() || !is_real_finite_point(&value).is_true() {
             return false;
         }
         f.try_limit_dir(var, e, dir)
@@ -903,8 +929,8 @@ fn interior_pole_breaks_monotonicity(f: &Ex, var: &Ex, domain: &SetEx) -> Truth 
         if left == inf || left == ninf || right == inf || right == ninf {
             return Truth::True;
         }
-        if !(is_real_finite_point(&left)
-            && is_real_finite_point(&right)
+        if !(is_real_finite_point(&left).is_true()
+            && is_real_finite_point(&right).is_true()
             && Truth::from(left.equals(&right)).is_true())
         {
             return Truth::Unknown;

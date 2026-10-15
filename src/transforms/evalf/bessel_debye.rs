@@ -455,6 +455,7 @@ fn modified(
         lg_add(pl.lg_trunc, rounding) - pl.s_low.log2() + 1.0,
         -(wp as f64) + 4.0,
     );
+    // (A certified error bound; a wide one only refuses.)
     if rel > -((prec + 4) as f64) {
         return None;
     }
@@ -501,6 +502,7 @@ fn j_below(
         lg_add(pl.lg_trunc, rounding) - pl.s_low.log2() + 1.0,
         -(wp as f64) + 4.0,
     );
+    // (A certified error bound; a wide one only refuses.)
     if rel > -((prec + 4) as f64) {
         return None;
     }
@@ -556,6 +558,7 @@ fn hankel(
         let rounding = ((10.0 * n + 10.0) * pl.abs_sum).log2() - wp as f64;
         let abs_err = lg_add(lg_add(pl.lg_trunc, rounding) + 1.0, -(wp as f64) + 4.0);
         let lost = -lg(&combo);
+        // (A certified error bound; a wide one asks for more bits.)
         if combo.is_zero() || abs_err + lost > -((prec + 4) as f64) {
             // Near a zero: as many more bits as the value lost (the plan
             // takes more terms, while the expansion allows).

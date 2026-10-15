@@ -70,7 +70,7 @@ const ROUNDED_ALLOWLIST: &[(&str, usize)] = &[
     ("transforms/evalf/zeta.rs", 5),
     ("transforms/heurisch.rs", 1),
     ("transforms/logic.rs", 1),
-    ("transforms/solve.rs", 6),
+    ("transforms/solve.rs", 5),
 ];
 
 /// Files allowed to contain precision casts, with the exact count (0.49:

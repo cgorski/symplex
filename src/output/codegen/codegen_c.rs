@@ -1939,7 +1939,11 @@ static inline double symplex_harmonic(double n) {
         deps: &["util"],
         src: r#"
 static inline double symplex_factorial2(double n) {
-    if (!symplex_is_int(n)) return NAN;
+    if (isnan(n)) return NAN;
+    if (!symplex_is_int(n)) {
+        double e = (symplex_cos_pi(n) - 1.0) / 4.0;
+        return pow(2.0, n / 2.0) * pow(3.141592653589793 / 2.0, e) * tgamma(n / 2.0 + 1.0);
+    }
     if (n >= -1.0) { double acc = 1.0; for (double k = n; k > 1.0; k -= 2.0) acc *= k; return acc; }
     if (symplex_is_even(n)) return NAN;
     double acc = 1.0;

@@ -31,11 +31,16 @@
 //! not where `1 − |s|` underflows the working precision: mpmath at 50
 //! digits gets 28 digits of `∫₀¹ dx/√(1 − x)` and 6 of `∫₀¹ x^(−9/10) dx`
 //! (with an error estimate of `10⁻⁵³` for the first).  Towards an infinite
-//! end it does not stop before its nodes reach `2^(2S)`, where `2^(±S)`
-//! holds the integrand's constants (`Integrand::constant_scale`): terms
-//! with such constants cross over there, and up to 0.52 the walk stopped
-//! at `x ≈ 10⁸` whatever they were (`∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx`, which
-//! diverges, was `1`).
+//! end it does not stop before its nodes reach where the integrand's terms
+//! cross over (`Integrand::crossover_reach`): within `2^(2S)`, where
+//! `2^(±S)` holds the integrand's constants, for orders of growth at least
+//! 1 apart, and near `2^(L/D)` for two terms whose orders differ by `D <
+//! 1` and whose sizes at `x = 2` differ by `2^L`.  Up to 0.52 the walk
+//! stopped at `x ≈ 10⁸` whatever they were (`∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx`,
+//! which diverges, was `1`), and up to 0.53 at `2^(2S)` (`∫₁^∞
+//! x⁻²e^{x^(1/1000)} dx`, which diverges, was `2.7210`); an integrand whose
+//! terms cross over beyond the last node (`t = 12`, `x ≈ 2³⁶⁸⁸³⁶`) is
+//! refused.
 //!
 //! A node whose value underflowed the exponent range (a 0 with an underflow
 //! bound) is *blind*: it bounds the integrand at that node and says nothing
@@ -138,7 +143,9 @@ use crate::base::bigcomplex::{Complex, c_add, c_sub, c_zero};
 use crate::base::budget::{BudgetKind, Work};
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
+use num_traits::{One, Zero};
 
 /// Bits by which the tolerance at working precision `p` is wider than
 /// `2⁻ᵖ` (relative to `Σ|w f|`): `evalf`'s first precision carries about 60
@@ -157,12 +164,18 @@ const MIN_LEVEL: u32 = 4;
 const MAX_LEVEL: u32 = 12;
 /// A side of the walk does not stop before `t = 5/2` (`δ ≈ 10⁻⁸`, `x ≈
 /// 10⁸` on an infinite range), however small its terms — nor, towards an
-/// infinite end, before its nodes reach the scale of the integrand's
-/// constants (see [`Integrand::constant_scale`]).
+/// infinite end, before its nodes reach where the integrand's terms cross
+/// over (see [`Integrand::crossover_reach`]).
 const T_MIN_HALVES: u64 = 5;
 /// Nor does it go beyond `t = 12` (`δ ≈ 10⁻¹¹⁰⁰⁰⁰`): terms that have not
 /// decayed by then belong to a divergent integral.
 const T_MAX_HALVES: u64 = 24;
+
+/// `log₂` of the distance from the centre of an infinite piece reached by
+/// the level-1 node `t = j/2`: `2/δ ≈ e^{π·sinh t}` (`2³⁶⁸⁸³⁶` at `t = 12`).
+fn walk_reach(j: u64) -> f64 {
+    std::f64::consts::PI * (j as f64 / 2.0).sinh() * std::f64::consts::LOG2_E
+}
 /// Most integrand evaluations for one integral (all pieces, refinements
 /// included): the [`Work`] budget of kind
 /// [`BudgetKind::QuadratureEvaluations`].
@@ -319,9 +332,10 @@ impl<'a> Integrand<'a> {
     /// integrand whose constants lie within `2^(±S)` cross over — the roots
     /// of `a·xᵐ = b·xⁿ` — lies within `2^(2S)`, so samples or nodes out to
     /// there see the integrand's features; `e^{x − 10¹⁰⁰⁰ − x²/10³⁰⁰⁰}`
-    /// underflows out to `x ≈ 10¹⁰⁰⁰` and peaks at `10³⁰⁰⁰/2`.  (Not a
-    /// bound for fractional powers: `x^(1/1000)` against `x^(1/999)` crosses
-    /// at `2⁹⁹⁹⁰⁰⁰`.)
+    /// underflows out to `x ≈ 10¹⁰⁰⁰` and peaks at `10³⁰⁰⁰/2`.  For powers
+    /// whose exponents differ by less than 1 that is not far enough
+    /// (`x^(1/1000)` against `x^(1/999)` crosses at `2⁹⁹⁹⁰⁰⁰`): see
+    /// [`Integrand::crossover_reach`].
     pub(super) fn constant_scale(&mut self, w: &mut Wp<'_>) -> f64 {
         self.eval_frontier(w);
         let Some((cache, _)) = self.scratch.get(&w.bits()) else {
@@ -339,6 +353,225 @@ impl<'a> Integrand<'a> {
             }
         }
         scale
+    }
+
+    /// `log₂` of the distance from 0 within which the terms of the
+    /// integrand cross over: `2S` for the [`constant_scale`](Integrand::constant_scale)
+    /// `S` (terms `a·x^m`, `b·x^n` with constants within `2^(±S)` and orders
+    /// at least 1 apart are equal within `2^(2S)`), or more for terms whose
+    /// orders of growth differ by `D < 1` ([`close_reach`](Integrand::close_reach):
+    /// `a·x^m = b·x^n` at `log₂|x| = log₂|b/a|/D`, read off the terms' sizes
+    /// at `x = 2`).  The terms `2x^(1/1000)` and `x^(1/999)` of
+    /// the exponent of `e^{2x^(1/1000) − x^(1/999) − 10⁵}` cross at
+    /// `2⁹⁹⁹⁰⁰⁰`, where the integrand, below `e^{−10⁵}` at every point a
+    /// sample or a node reaches, peaks at `e^{10²⁹⁷}`; up to 0.53 the scale
+    /// of the constants alone (`2S`, 33 bits) was taken as that distance, and
+    /// `integrate_numeric` of it over `[0, ∞)` was `0`.  `∞` for constants
+    /// without a finite value.
+    pub(super) fn crossover_reach(&mut self, w: &mut Wp<'_>) -> f64 {
+        let twice = 2.0 * self.constant_scale(w);
+        twice.max(self.close_reach(w))
+    }
+
+    /// The part of [`crossover_reach`](Integrand::crossover_reach) due to
+    /// terms whose orders of growth differ by less than 1: `log₂|x|` of the
+    /// farthest crossing at a large `|x|` ([`close_orders`](Integrand::close_orders)),
+    /// `−∞` for none.  `a·x^m = b·x^n` (`m > n`) at `log₂|x| = log₂|b/a|/D`,
+    /// read off the terms' sizes `t(2)` at `x = 2`: `(log₂|tₙ(2)| −
+    /// log₂|tₘ(2)|)/D + 1`, a crossing at a small `|x|` when negative.  A
+    /// logarithm `b·ln x` against a small power `a·x^D` meets it `log₂ ln
+    /// x/D` farther out, and their rates of growth meet at `x^D = b/(aD)`,
+    /// `log₂(1/D)/D` farther out (where `ln(x⁻²e^{5x^(1/100)})` turns from
+    /// decreasing to increasing: at `2⁵³²`, although the power is the
+    /// larger term from `x = 2` on).  Where a size is not known, `2S/D` in
+    /// either direction.
+    pub(super) fn close_reach(&mut self, w: &mut Wp<'_>) -> f64 {
+        self.close_points(w)
+            .into_iter()
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    /// `log₂|x|` of the points where terms of close orders of growth meet
+    /// or where their rates do, the latter the extrema of a sum `a·x^m −
+    /// b·x^n` (`m·a·x^m = n·b·x^n`, `log₂(n/m)/D` before they meet): the
+    /// bump of `e^{1.5x^(1/30) − x^(1/29) − 500}`, `e^{1800}` high at
+    /// `x ≈ 2⁴⁶⁶`, lies between the far-tail samples `2²⁵⁶` and `2⁵¹²`, where
+    /// the integrand is below `e^{−400}`, and up to 0.53 `integrate_numeric`
+    /// of it over `[0, ∞)` was `8.9·10⁻²¹⁵`.  See [`close_reach`](Integrand::close_reach).
+    pub(super) fn close_points(&mut self, w: &mut Wp<'_>) -> Vec<f64> {
+        let pairs = self.close_orders();
+        if pairs.is_empty() {
+            return Vec::new();
+        }
+        let twice = 2.0 * self.constant_scale(w);
+        // The terms' sizes at `x = 2` (the nodes' values stay in the cache).
+        let two = small(2);
+        let _ = self.eval(&two, accuracy::EXACT, w);
+        let ln2 = std::f64::consts::LN_2;
+        let size = |cache: &FxHashMap<ExprId, Complex>, m: &Size| -> Option<f64> {
+            let lg = |id: &ExprId| {
+                cache
+                    .get(id)
+                    .map(accuracy::lg_abs)
+                    .filter(|l| l.is_finite())
+            };
+            match m {
+                Size::Of(id) => lg(id),
+                // `|e·ln|b||` from `log₂|b|`.
+                Size::LogOf(b, e) => {
+                    let l = (lg(b)? * ln2 * e).abs().log2();
+                    l.is_finite().then_some(l)
+                }
+            }
+        };
+        let mut points = Vec::new();
+        let cache = self.scratch.get(&w.bits()).map(|s| &s.0);
+        for p in &pairs {
+            let sizes = cache.and_then(|c| Some((size(c, &p.top)?, size(c, &p.other)?)));
+            // `log₂|b/a| = log₂|tₙ(2)/tₘ(2)| + D`, and `log₂|b| ≤
+            // log₂|b·ln 2| + 0.53` for a logarithm.
+            let slack = if p.logarithm { 0.6 } else { 0.0 };
+            let lead = sizes.map_or(twice, |(top, other)| other - top + slack);
+            if p.logarithm {
+                // `a·x^D = b·ln x` at the larger root of `D·L = log₂|b/a| +
+                // log₂(L·ln 2)`, `L = log₂ x` (the logarithm may overtake the
+                // power first): the iteration from above converges to it.
+                let mut l = (lead.max(0.0) + 64.0) / p.gap;
+                for _ in 0..30 {
+                    l = ((lead + (l.max(2.0) * ln2).log2()) / p.gap).max(1.0);
+                }
+                points.push(l + 1.0);
+                points.push((lead - p.gap.log2()) / p.gap + 1.0);
+            } else {
+                let r = lead / p.gap + 1.0;
+                points.push(r);
+                // The rates: `log₂(n/m)/D` earlier, for a lesser order `n > 0`.
+                if let Some(ratio) = p.ratio {
+                    points.push(r + ratio.log2() / p.gap);
+                }
+            }
+        }
+        points.retain(|r| r.is_finite());
+        points
+    }
+
+    /// The pairs of terms of the integrand that compete at infinity with
+    /// orders of growth, as powers of the variable, less than 1 apart (`D =
+    /// 1/999000` for `2x^(1/1000) − x^(1/999)`): in a sum the terms of the
+    /// leading order against the others, in a product the `exp` factors with
+    /// the leading order of exponent against the logarithms of the powers
+    /// (`D = 1/1000` for `x⁻²·e^{x^(1/1000)}`, which decays as `x⁻²` out to
+    /// `2¹⁴²⁰⁰`) and the other `exp` factors.  Orders are exact rationals:
+    /// `x`, a power of a term with an order, a product, a sum, `ln` and the
+    /// bounded functions (order 0); a factor `e^u` whose `u` grows has none,
+    /// nor has any other function, and a sum or product with a term without
+    /// an order is not compared.  At most [`MAX_PAIRS`] pairs (beyond, the
+    /// first ones).
+    fn close_orders(&self) -> Vec<Close> {
+        use num_traits::Signed;
+        let one = Q::one();
+        let depends: FxHashSet<ExprId> = self.dependent.iter().copied().collect();
+        let mut orders: FxHashMap<ExprId, Option<Q>> = FxHashMap::default();
+        orders.insert(self.var, Some(Q::one()));
+        let mut pairs: Vec<Close> = Vec::new();
+        let mut note = |terms: &[(Size, Q, bool)]| {
+            let Some(top) = terms.iter().map(|t| &t.1).max().cloned() else {
+                return;
+            };
+            for (lead, _, _) in terms.iter().filter(|t| t.1 == top) {
+                for (other, p, logarithm) in terms {
+                    let gap = &top - p;
+                    if gap.is_positive() && gap < one && pairs.len() < MAX_PAIRS {
+                        pairs.push(Close {
+                            top: lead.clone(),
+                            other: other.clone(),
+                            gap: crate::base::numeric::ratio_to_f64(&gap).unwrap_or(1.0),
+                            logarithm: *logarithm,
+                            ratio: (p.is_positive() && top.is_positive())
+                                .then(|| crate::base::numeric::ratio_to_f64(&(p / &top)))
+                                .flatten(),
+                        });
+                    }
+                }
+            }
+        };
+        for &id in &self.dependent {
+            let order_of = |c: &ExprId| -> Option<Q> {
+                match orders.get(c) {
+                    Some(o) => o.clone(),
+                    None if depends.contains(c) => None,
+                    None => Some(Q::zero()),
+                }
+            };
+            let dependent = |c: &ExprId| *c == self.var || depends.contains(c);
+            let order = match self.arena.node(id) {
+                ExprNode::Add(children) => {
+                    // A term of order 0 that depends on `x` may grow as a
+                    // logarithm.
+                    let terms: Option<Vec<(Size, Q, bool)>> = children
+                        .iter()
+                        .map(|c| {
+                            order_of(c)
+                                .map(|q| (Size::Of(*c), q.clone(), dependent(c) && q.is_zero()))
+                        })
+                        .collect();
+                    terms.and_then(|terms| {
+                        note(&terms);
+                        terms.into_iter().map(|t| t.1).max()
+                    })
+                }
+                ExprNode::Mul(children) => {
+                    // The exponents of the `exp` factors against each other
+                    // and against the logarithms of the powers.
+                    let logs: Option<Vec<(Size, Q, bool)>> = children
+                        .iter()
+                        .filter(|c| dependent(c))
+                        .filter_map(|c| match self.arena.node(*c) {
+                            ExprNode::Exp(u) => Some(order_of(u).map(|q| {
+                                (
+                                    Size::Of(*u),
+                                    if q.is_positive() { q } else { Q::zero() },
+                                    false,
+                                )
+                            })),
+                            ExprNode::Pow(b, e) => {
+                                let e = crate::base::numeric::ratio_to_f64(self.arena.as_num(*e)?)?;
+                                Some(order_of(c).map(|_| (Size::LogOf(*b, e), Q::zero(), true)))
+                            }
+                            _ if *c == self.var => {
+                                Some(Some((Size::LogOf(self.var, 1.0), Q::zero(), true)))
+                            }
+                            // Bounded or unknown factors: not compared.
+                            _ => None,
+                        })
+                        .collect();
+                    if let Some(logs) = logs
+                        && logs.iter().any(|t| t.1.is_positive())
+                    {
+                        note(&logs);
+                    }
+                    children
+                        .iter()
+                        .map(order_of)
+                        .try_fold(Q::zero(), |s, q| q.map(|q| s + q))
+                }
+                ExprNode::Pow(b, e) => match self.arena.as_num(*e) {
+                    Some(e) => order_of(b).map(|q| q * e),
+                    None => None,
+                },
+                ExprNode::Exp(u) => order_of(u).filter(|q| !q.is_positive()).map(|_| Q::zero()),
+                ExprNode::Neg(u) | ExprNode::Abs(u) => order_of(u),
+                ExprNode::Ln(u) => order_of(u).map(|_| Q::zero()),
+                ExprNode::Sin(_)
+                | ExprNode::Cos(_)
+                | ExprNode::Atan(_)
+                | ExprNode::Tanh(_)
+                | ExprNode::Erf(_) => Some(Q::zero()),
+                _ => None,
+            };
+            orders.insert(id, order);
+        }
+        pairs
     }
 
     /// The highest angular frequency `abs(a)` of a `sin`, `cos` or `tan` of
@@ -378,6 +611,30 @@ impl<'a> Integrand<'a> {
         }
         self.scratch.insert(prec, (cache, errs));
     }
+}
+
+/// Most pairs of terms [`Integrand::close_orders`] reports.
+const MAX_PAIRS: usize = 64;
+
+/// The size of a term at `x = 2` for [`Integrand::crossover_reach`]: a node's
+/// value, or `e·ln|b|` of a power `bᵉ` (a factor `e·ln b` of `ln|f|`).
+#[derive(Clone, Debug)]
+enum Size {
+    Of(ExprId),
+    LogOf(ExprId, f64),
+}
+
+/// Two terms whose orders of growth at infinity are `gap < 1` apart
+/// ([`Integrand::close_orders`]); `logarithm` when the lesser one grows as
+/// a logarithm; `ratio` the lesser order over the greater when both are
+/// positive.
+#[derive(Clone, Debug)]
+struct Close {
+    top: Size,
+    other: Size,
+    gap: f64,
+    logarithm: bool,
+    ratio: Option<f64>,
 }
 
 /// `abs(a)` when `e` is `a·var + b` with a rational `a` and a `b` free of
@@ -680,9 +937,9 @@ pub(super) struct Quad<'a> {
     /// than the integral (the tail of a split infinite range) is not held to
     /// its own relative accuracy.
     abs_floor: ErrExp,
-    /// The scale of the integrand's constants ([`Integrand::constant_scale`]),
+    /// Where the integrand's terms cross over ([`Integrand::crossover_reach`]),
     /// once computed.
-    scale: Option<f64>,
+    reach: Option<f64>,
     /// The integrand's frequency ([`Integrand::frequency`]), once computed.
     frequency: Option<f64>,
 }
@@ -712,18 +969,18 @@ impl<'a> Quad<'a> {
             ends: FxHashMap::default(),
             nodes: FxHashMap::default(),
             abs_floor: accuracy::EXACT,
-            scale: None,
+            reach: None,
             frequency: None,
         }
     }
 
-    /// [`Integrand::constant_scale`] of the body, computed once.
-    fn scale(&mut self, cc: &mut Consts) -> f64 {
-        if let Some(s) = self.scale {
+    /// [`Integrand::crossover_reach`] of the body, computed once.
+    fn reach(&mut self, cc: &mut Consts) -> f64 {
+        if let Some(s) = self.reach {
             return s;
         }
-        let s = self.f.constant_scale(&mut Wp::new(self.pe, cc));
-        self.scale = Some(s);
+        let s = self.f.crossover_reach(&mut Wp::new(self.pe, cc));
+        self.reach = Some(s);
         s
     }
 
@@ -1062,14 +1319,28 @@ impl<'a> Quad<'a> {
         let mut sizes: [Vec<ErrExp>; 2] = [Vec::new(), Vec::new()];
         for (si, side) in [Side::Lo, Side::Hi].into_iter().enumerate() {
             // Towards an infinite end the walk does not stop before its
-            // nodes reach the scale of the integrand's constants
-            // ([`Integrand::constant_scale`]): beyond `x ≈ 10⁸` (`t = 5/2`)
+            // nodes reach where the integrand's terms cross over
+            // ([`Integrand::crossover_reach`]): beyond `x ≈ 10⁸` (`t = 5/2`)
             // a growth set off by a large constant is not seen, and up to
-            // 0.52 `∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx` was `1`.
+            // 0.52 `∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx` was `1`; up to 0.53 the walk
+            // stopped short of the crossing of close powers, and
+            // `∫₁^∞ x⁻²e^{x^(1/1000)} dx`, which diverges, was `2.7210`.  Where
+            // no node reaches, nothing is seen.
             let reach_needed = match (piece, side) {
-                (Piece::Upper(_), Side::Hi) | (Piece::Lower(_), Side::Lo) => 2.0 * self.scale(cc),
+                (Piece::Upper(_), Side::Hi) | (Piece::Lower(_), Side::Lo) => self.reach(cc),
                 _ => f64::NEG_INFINITY,
             };
+            if reach_needed > walk_reach(T_MAX_HALVES) {
+                debug!(
+                    reach_needed,
+                    "quadrature: the terms cross over beyond the nodes"
+                );
+                return Err(not_converged(&format!(
+                    "the integrand's terms cross over near |x| = 2^{reach_needed:.0}, beyond the \
+                     reach of the quadrature's nodes"
+                ))
+                .into());
+            }
             let mut quiet = 0;
             let mut j = 1u64;
             loop {

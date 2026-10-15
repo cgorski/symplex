@@ -1276,7 +1276,9 @@ funcs! {
             conj: Conj::Entire, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::Other,
             constants: Constants::Folded,
-            rt: Runtime::own(Backends::VM_RUST_C).scipy("scipy.special.binom(n, k)"),
+            // Python spells it with the GKP convention (`scipy.special.binom`
+            // is NaN at `C(−2, −4)` and `C(−3, 2)`, 0 and 6 here).
+            rt: Runtime::own(Backends::ALL),
         };
     }
     lib {

@@ -1441,6 +1441,8 @@ fn tail(model: &Model, ctx: &Ctx, n: u64, cc: &mut Consts) -> TailResult {
         for (m, c) in row.iter().enumerate() {
             if !c.exact_zero() {
                 let e = model.pow_at(m) as f64;
+                // (The exponents `β + j` differ by integers: the tolerance
+                // only absorbs the rounding of the same exponent.)
                 let (size, e) = match (model.alt, sf <= min_s + 1e-12) {
                     (true, _) => (-sf, e),
                     (false, false) => (1.0 - sf, e),

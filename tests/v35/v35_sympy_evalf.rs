@@ -154,23 +154,26 @@ fn erf_minus_one_far_from_zero() {
 /// was `2.57061464096165e85*i` — wrong digits and magnitude.  mpmath (dps 20,
 /// 30): `erfc(14j)` = `1 − 5.3472505194277552785e83j`, `erfc(-14j)` = `1 +
 /// 5.34725…e83j`; `gammainc(-3.5, -200.5)` = `0.27008820585226911 −
-/// 5.3264597096208368435e76j` (mpmath's `test_functions2.py`).
+/// 5.3264597096208368435e76j` (mpmath's `test_functions2.py`).  Up to 0.53
+/// the real parts `1` and `0.27…` were left out (one error bound for both
+/// parts, wider than them); since 0.54 `erfc` of an imaginary argument has
+/// an exact real part (`erfc(iy) = 1 − i·erfi(y)`).
 #[test]
 fn erfc_on_the_imaginary_axis_takes_the_right_side() {
     let ctx = Context::new();
     assert_eq!(
         p(&ctx, "erfc(14*I)").eval_decimal(15).unwrap(),
-        "-5.34725051942776e83*i"
+        "1 - 5.34725051942776e83*i"
     );
     assert_eq!(
         p(&ctx, "erfc(-14*I)").eval_decimal(15).unwrap(),
-        "5.34725051942776e83*i"
+        "1 + 5.34725051942776e83*i"
     );
     assert_eq!(
         p(&ctx, "uppergamma(-7/2, -401/2)")
             .eval_decimal(15)
             .unwrap(),
-        "-5.32645970962084e76*i"
+        "0.270088205852269 - 5.32645970962084e76*i"
     );
 }
 

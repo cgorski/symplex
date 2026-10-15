@@ -257,6 +257,7 @@ fn smallest_prime_factors(n: usize) -> Vec<u32> {
 /// `lre = log₂ Re w`, `lw = log₂ abs(w)` (lower bounds), `arg = log₂ e^(abs(τ)·abs(arg w))`.
 /// `None` while `p ≤ 1`.
 fn em_remainder(m: usize, lpoch: f64, p: f64, lre: f64, lw: f64, arg: f64) -> Option<f64> {
+    // (A margin on the side of no bound.)
     if p <= 1.0 + 1e-9 {
         return None;
     }
@@ -341,6 +342,7 @@ pub(super) fn direct_terms(sr: f64, ar: f64, ai: f64, wp: usize) -> Option<usize
 
 /// [`direct_terms`] with at most `max` terms.
 pub(super) fn direct_terms_upto(sr: f64, ar: f64, ai: f64, wp: usize, max: usize) -> Option<usize> {
+    // (Chooses a route: anything else takes the general one.)
     if ai != 0.0 || ar <= 0.0 || sr <= 2.0 || !sr.is_finite() {
         return None;
     }
@@ -904,7 +906,7 @@ pub(super) fn beta_bound(
         return Bound::UNKNOWN;
     }
     let own = lv - prec as f64 - 12.0;
-    if ra == 0.0 && rb == 0.0 {
+    if ba.is_exact() && bb.is_exact() {
         return Bound::both(own);
     }
     let r = ra + rb;
@@ -930,8 +932,9 @@ pub(super) fn beta_bound(
     Bound::both(accuracy::lsum(own, lv + log2_expm1_exp2(d) + 1.0 + 1e-9))
 }
 
-/// `(x, y, r)`: the argument's parts in `f64` and its radius (`0` when exact),
-/// `None` when the bound is unknown or beyond `f64`.  A radius below the
+/// `(x, y, r)`: the argument's parts in `f64` and its radius (`0` when exact;
+/// the callers ask the bound, not `r`, whether it is), `None` when the bound
+/// is unknown or beyond `f64`.  A radius below the
 /// `f64` range is taken as the smallest positive `f64` for the geometric
 /// tests (a negligible overestimate there); the error itself is formed from
 /// the exponent ([`log2_radius`]).  Before 0.45 it underflowed to 0, which
@@ -991,7 +994,7 @@ pub(super) fn zeta_bound(s: &Complex, bs: Bound, v: &Complex, prec: usize) -> Bo
     let Some((x, y, r)) = ball(s, bs) else {
         return Bound::UNKNOWN;
     };
-    let d = if r == 0.0 {
+    let d = if bs.is_exact() {
         None
     } else {
         zeta_ball(x, y, r).map(|(_, d)| d)
@@ -1005,7 +1008,7 @@ pub(super) fn eta_bound(s: &Complex, bs: Bound, v: &Complex, prec: usize) -> Bou
     let Some((x, y, r)) = ball(s, bs) else {
         return Bound::UNKNOWN;
     };
-    let d = if r == 0.0 {
+    let d = if bs.is_exact() {
         None
     } else {
         zeta_ball(x, y, r).map(|(lz, ld)| {
@@ -1022,7 +1025,7 @@ pub(super) fn polygamma_bound(m: u32, z: &Complex, bz: Bound, v: &Complex, prec:
     let Some((x, y, r)) = ball(z, bz) else {
         return Bound::UNKNOWN;
     };
-    let d = if r == 0.0 {
+    let d = if bz.is_exact() {
         None
     } else {
         let p = f64::from(m) + 2.0;
@@ -1043,7 +1046,7 @@ pub(super) fn gamma_bound(z: &Complex, bz: Bound, v: &Complex, prec: usize) -> B
         return Bound::UNKNOWN;
     }
     let own = lv - prec as f64 - 12.0;
-    if r == 0.0 {
+    if bz.is_exact() {
         return Bound::both(own);
     }
     let Some(lpsi) = super::loggamma::log2_psi_bound(x, y, r) else {
@@ -1122,7 +1125,9 @@ fn zeta_ball(x: f64, y: f64, r: f64) -> Option<(f64, f64)> {
         // log₂ ∫_1^N x^(−σ′) dx, then the sums.
         let e = 1.0 - sig;
         let li = if e.abs() < 1e-9 {
-            ln_n.log2()
+            // (N^e − 1)/e = ∫₀^{ln N} e^(et) dt ≤ ln N·N^max(e, 0): a
+            // bound (the cancelling forms below lose it next to e = 0).
+            ln_n.log2() + e.max(0.0) * lg_n
         } else if e > 0.0 {
             // (N^e − 1)/e
             e * lg_n + (-(-e * lg_n).exp2()).ln_1p() * LOG2E - e.log2()

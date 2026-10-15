@@ -86,6 +86,8 @@ pub(crate) fn nsimplify_with_constants(
         return num_expr(arena, q);
     }
 
+    // (nsimplify is an approximation by contract, within the caller's
+    // tolerance: the float tests below only choose the candidate forms)
     let const_vals: Vec<(ExprId, f64)> = constants
         .iter()
         .filter_map(|&c| eval_to_f64(arena, c).map(|v| (c, v)))
@@ -252,6 +254,7 @@ fn find_rational(arena: &mut Arena, val: f64, tol: f64) -> Option<ExprId> {
         p1 = p2;
         q1 = q2;
 
+        // (ends the continued fraction of a float: a heuristic stop)
         let frac = x - a as f64;
         if frac.abs() < 1e-15 {
             break;
@@ -418,6 +421,7 @@ fn find_rational_pair(val: f64, tol: f64) -> Option<(i64, i64)> {
         p1 = p2;
         q1 = q2;
 
+        // (ends the continued fraction of a float: a heuristic stop)
         let frac = x - a as f64;
         if frac.abs() < 1e-15 {
             break;

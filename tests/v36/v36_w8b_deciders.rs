@@ -38,8 +38,14 @@ fn constants_zero_by_an_identity_or_nonzero_below_the_digits() {
     assert_eq!(c.is_zero(), Some(true));
     let tiny = ctx.parse("exp(10^-150) - 1").unwrap();
     assert_eq!(tiny.is_zero(), Some(false));
-    let opaque = ctx.parse("legendre(3/2, E) - 1").unwrap();
+    // (`legendre(3/2, E)` has a value since 0.54: 5.2479; a Legendre
+    // function on its cut `x ≤ −1` has none here.)
+    let opaque = ctx.parse("legendre(3/2, -E) - 1").unwrap();
     assert_eq!(opaque.is_zero(), None);
+    assert_eq!(
+        ctx.parse("legendre(3/2, E) - 1").unwrap().is_zero(),
+        Some(false)
+    );
 }
 
 /// The zero test behind `is_zero` makes no claim for a value that is not a

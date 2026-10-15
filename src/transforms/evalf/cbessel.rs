@@ -489,7 +489,7 @@ fn log2_v(l: usize, abs_w: f64, ph: f64) -> f64 {
 /// The terms of `K_ν(w)`'s expansion needed for a remainder below
 /// `2^−(wp+2)` (simulated in `f64`): `(ℓ, exact)`, `exact` when the
 /// expansion terminates (a half-integer order).
-fn hankel_terms(nr: f64, ni: f64, abs_w: f64, ph: f64, wp: usize) -> Option<(usize, bool)> {
+fn hankel_terms(nr: f64, ni: f64, abs_w: f64, ph: f64, wp: usize) -> Option<usize> {
     if !(abs_w.is_finite() && abs_w > 1.0) {
         return None;
     }
@@ -506,14 +506,13 @@ fn hankel_terms(nr: f64, ni: f64, abs_w: f64, ph: f64, wp: usize) -> Option<(usi
     let mut la = 0.0f64; // log₂ abs(a_k)
     for l in 1..MAX_ASYMPTOTIC {
         let k = l - 1;
+        // (A factor 0 here, a half-integer order, ends the simulation; the
+        // bracket checks the actual next term.)
         let f = (4.0 * n2r - ((2 * k + 1) as f64).powi(2)).hypot(4.0 * n2i);
-        if f == 0.0 {
-            return Some((l, true));
-        }
         let next = la + f.log2() - (8.0 * l as f64).log2();
         let bound = 1.0 + next + log2_v(l, abs_w, ph) + e;
         if bound < target {
-            return Some((l, false));
+            return Some(l);
         }
         if l as f64 > past && next - (l as f64) * abs_w.log2() > la - (k as f64) * abs_w.log2() {
             return None;
@@ -529,16 +528,14 @@ fn hankel_terms(nr: f64, ni: f64, abs_w: f64, ph: f64, wp: usize) -> Option<(usi
 fn hankel_bracket(nu: &Complex, w: &Complex, ph: f64, wp: usize) -> Option<Sum> {
     let (nr, ni) = parts(nu)?;
     let (x, y) = parts(w)?;
-    let (l, exact) = hankel_terms(nr, ni, x.hypot(y), ph, wp)?;
+    let abs_w = x.hypot(y);
+    let l = hankel_terms(nr, ni, abs_w, ph, wp)?;
     let p = wp + guard(l + 2);
     let nu2x4 = ldexp(&c_mul(nu, nu, p + 8, RM), 2);
     let mut sum = new_sum(p);
     let mut t = c_one(p);
     for k in 0..l {
         add_term(&mut sum, &t, p);
-        if k + 1 == l {
-            break;
-        }
         // a_{k+1} = a_k·(4ν² − (2k+1)²)/(8(k+1)), divided by w.
         let sq = BigFloat::from_u64(((2 * k + 1) * (2 * k + 1)) as u64, 64);
         let f = (nu2x4.0.sub(&sq, p, RM), nu2x4.1.clone());
@@ -548,7 +545,18 @@ fn hankel_bracket(nu: &Complex, w: &Complex, ph: f64, wp: usize) -> Option<Sum> 
             p,
         );
     }
-    let _ = exact;
+    // Olver's bound on the actual first neglected term `t = a_ℓ w^(−ℓ)`
+    // (an exact 0 for a half-integer order): the `f64` simulation took a
+    // factor `4ν² − (2k + 1)²` below `10⁻¹⁶` for 0, and up to 0.53
+    // `besselk(1/2 + 10⁻³⁰, 60 + 5i)` was `K_{1/2}`'s value at 40 digits.
+    if !is_zero(&t) {
+        let (n2r, n2i) = (nr * nr - ni * ni, 2.0 * nr * ni);
+        let e = (n2r - 0.25).hypot(n2i) * log2_v(1, abs_w, ph).exp2() * LOG2E;
+        let b = 1.0 + accuracy::lg_abs(&t) + l as f64 * abs_w.log2() + log2_v(l, abs_w, ph) + e;
+        if b.is_nan() || b >= -(wp as f64) - 1.0 {
+            return None;
+        }
+    }
     Some(sum)
 }
 

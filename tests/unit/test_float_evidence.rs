@@ -50,10 +50,15 @@ use syn::visit::Visit;
 /// placement of explicit roots, `ode::residual_verdict`,
 /// `integrate::known_zero` made exact or certified): 70 files, 306, 179.
 const ALLOWLIST: &[(&str, [usize; 2])] = &[
-    ("api/expr_calculus_util_ext.rs", [1, 1]),
-    ("api/expr_funcs.rs", [7, 0]),
-    ("api/expr_ops.rs", [4, 0]),
-    ("api/expr_solve_ext.rs", [7, 0]),
+    // Reviewed in s15h5 (with poly/roots, simplify/nsimplify, eval/atan_sum, domains/linalg,
+    // matrix, matrix_decomp, transforms/sets, solve): what is left steers `f64` APIs (Newton,
+    // nsimplify), only refuses, or reads certified 16-digit values with a margin far above their
+    // error; family index ranges, realness of zeros and roots, `check_solution` and
+    // `compare_numeric` are exact or certified since.
+    ("api/expr_calculus_util_ext.rs", [0, 1]),
+    ("api/expr_funcs.rs", [5, 0]),
+    ("api/expr_ops.rs", [2, 0]),
+    ("api/expr_solve_ext.rs", [6, 0]),
     ("base/bigfloat.rs", [0, 1]),
     ("base/dense_f64.rs", [2, 5]),
     ("base/numeric.rs", [0, 1]),
@@ -100,35 +105,36 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("plotting/svg_plot.rs", [13, 2]),
     ("plotting/textplot.rs", [3, 1]),
     ("plotting/tikz_plot.rs", [1, 1]),
-    ("poly/roots.rs", [2, 3]),
+    ("poly/roots.rs", [0, 1]),
     ("simplify/nsimplify.rs", [4, 0]),
     ("transforms/apart.rs", [7, 0]),
     ("transforms/eval.rs", [8, 3]),
     ("transforms/eval/atan_sum.rs", [2, 1]),
-    ("transforms/evalf.rs", [10, 7]),
+    // The evalf files were reviewed in s15h2: polygamma's order, a Sum's range, J_ν(0), the
+    // f64-radius exactness of the zeta-family bounds, Hankel's termination and E_n's |n − 1| are
+    // exact or certified; what is left guides a route, refuses, or has a certified margin.
+    ("transforms/evalf.rs", [5, 7]),
     ("transforms/evalf/accuracy.rs", [1, 1]),
     ("transforms/evalf/asymsum.rs", [1, 0]),
     ("transforms/evalf/ball.rs", [1, 0]),
     ("transforms/evalf/bessel_debye.rs", [3, 0]),
     ("transforms/evalf/bessel_order.rs", [4, 0]),
-    ("transforms/evalf/cbessel.rs", [0, 1]),
     ("transforms/evalf/cerf.rs", [1, 0]),
     ("transforms/evalf/cexpint.rs", [0, 4]),
-    ("transforms/evalf/cspecial.rs", [1, 1]),
+    ("transforms/evalf/cspecial.rs", [1, 0]),
     ("transforms/evalf/hypsum.rs", [7, 1]),
     ("transforms/evalf/lambertw.rs", [1, 2]),
     ("transforms/evalf/loggamma.rs", [0, 1]),
     ("transforms/evalf/polylog.rs", [4, 3]),
     ("transforms/evalf/quad.rs", [1, 0]),
     ("transforms/evalf/sensitivity.rs", [0, 2]),
-    ("transforms/evalf/zeta.rs", [2, 8]),
+    ("transforms/evalf/zeta.rs", [2, 2]),
     ("transforms/heurisch.rs", [5, 1]),
-    ("transforms/inequalities.rs", [5, 1]),
     // FTC checks and continuity probes guard refusals (reviewed in s15g4); `known_zero` is exact
     // since s14c; real roots, their order and the side of `Ei`'s cut are certified since s15g4.
     ("transforms/integrate.rs", [11, 3]),
-    ("transforms/sets.rs", [11, 3]),
-    ("transforms/solve.rs", [7, 2]),
+    ("transforms/sets.rs", [6, 1]),
+    ("transforms/solve.rs", [4, 2]),
     ("transforms/trig_integ.rs", [4, 1]),
     ("units/inference.rs", [1, 0]),
 ];

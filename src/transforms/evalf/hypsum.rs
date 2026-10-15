@@ -518,6 +518,7 @@ fn ratio_up(a: &BigInt, b: &BigInt) -> f64 {
     let (Some(a), Some(b)) = (a.to_f64(), b.to_f64()) else {
         return f64::INFINITY;
     };
+    // (An upper bound: a denominator lost to `f64` gives `+∞`.)
     if b == 0.0 {
         return f64::INFINITY;
     }
@@ -626,6 +627,9 @@ fn scaled_series(
     }
     if dp == dq {
         let g = ratio_up(&p[dp], &q[dq]);
+        // A certified lower bound: the `1 − 10⁻¹²` covers the three `f64`
+        // roundings of the ratio and of the product (the divergence claim
+        // stands on it); the converse test below only refuses.
         let g_lo = (p[dp].abs().to_f64().unwrap_or(0.0)
             / q[dq].abs().to_f64().unwrap_or(f64::INFINITY))
             * (1.0 - 1e-12);
@@ -666,6 +670,7 @@ fn scaled_series(
         };
         // ρ = |C|·P⁺(k)/Q⁻(k) at the current k (non-increasing in k).
         if let Some((pp, qm)) = tail_parts(p, q, &k) {
+            // (Upper bounds throughout: the tail bound is certified.)
             let rho = c_hi * ratio_up(&pp, &qm);
             if rho < 1.0 {
                 let factor = (rho / (1.0 - rho)).log2().max(-1e6);
@@ -1052,6 +1057,7 @@ fn poly_bounds(p: &Poly, n: &BigInt) -> Option<(f64, f64, usize, bool)> {
         return None;
     }
     let f = |x: &Q| crate::base::numeric::ratio_to_f64(x);
+    // (A lower bound: the margin covers the rounding of the conversion.)
     let low = f(&low)? * (1.0 - 1e-12);
     (low > 0.0).then_some((low, up_linear(f(&upper)?), d, lc.is_positive()))
 }
@@ -1651,6 +1657,7 @@ fn analyse(
         let (dp, dq) = (p.len().checked_sub(1)?, q.len().checked_sub(1)?);
         // Geometric decay or faster: deg P < deg Q, or |C|·|lc P/lc Q| < 1.
         let limit = lg_big(&p[dp].abs())?.1 - lg_big(&q[dq].abs())?.0 + log_c;
+        // (A margin on the side of declining the shortcut.)
         if dp > dq || (dp == dq && limit >= -1e-9) {
             return None;
         }
@@ -1690,6 +1697,7 @@ fn dominated_tail(addends: &[Dominated], m: &BigInt, part: &mut PartFn<'_>) -> O
             up(lg_big(&pp)?.1 - lg_big(&qm)?.0 + d.log_c)
         };
         let lrg = up(lr + d.env.growth(mf));
+        // (Declines; the bound below needs `2^lrg < 1` with a margin.)
         if lrg.is_nan() || lrg >= -1e-9 {
             return None;
         }

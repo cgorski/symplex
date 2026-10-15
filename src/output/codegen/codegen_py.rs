@@ -920,6 +920,28 @@ impl Emitter<'_> {
                     let r = child(a)?;
                     Rendered::atom(format!("math.gamma({} + 1)", r.at(PREC_ADD)))
                 }
+                // `C(n, k)` with the convention of `compile()` and `eval`
+                // (Graham–Knuth–Patashnik): 0 for a negative integer `k`, the
+                // product `Π (n − k + i)/i` for an integer `k ≥ 0` (any `n`:
+                // `C(−3, 2) = 6`), otherwise `Γ(n + 1)/(Γ(k + 1)Γ(n − k + 1))`
+                // with 0 at a pole of the denominator and NaN at one of the
+                // numerator.  `scipy.special.binom` gives NaN for `C(−2, −4)`
+                // and `C(−3, 2)` (0 and 6 here).  NumPy and base Julia have no
+                // gamma: refused below.
+                ExprNode::Binomial(n, k) if self.target == Target::Python => {
+                    let (rn, rk) = (child(n)?, child(k)?);
+                    Rendered::atom(format!(
+                        "(lambda n, k: math.nan if n != n or k != k \
+                         else (0.0 if k < 0 else math.prod([(n - j + i) / i \
+                         for j in [min(k, n - k) if float(n).is_integer() and n >= k else k] \
+                         for i in range(1, int(j) + 1)])) if float(k).is_integer() \
+                         else math.nan if float(n).is_integer() and n < 0 \
+                         else 0.0 if float(n - k).is_integer() and n - k < 0 \
+                         else math.gamma(n + 1) / (math.gamma(k + 1) * math.gamma(n - k + 1)))({}, {})",
+                        rn.at(0),
+                        rk.at(0)
+                    ))
+                }
                 // SymPy's `loggamma`: `math.lgamma` (which is ln|Γ|) for
                 // b > 0, +∞ at the poles (`loggamma(-3) = oo`; `math.lgamma`
                 // raises there), NaN elsewhere left of 0, where the value

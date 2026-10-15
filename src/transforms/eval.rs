@@ -3117,9 +3117,39 @@ fn as_negated_general(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     }
 }
 
+/// The direction of an imaginary infinity.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ImaginaryInfinity {
+    /// `i·∞`.
+    Up,
+    /// `−i·∞`.
+    Down,
+}
+
+/// Is `x` the canonical `i·∞` or `−i·∞`?
+fn imaginary_infinity(arena: &Arena, x: ExprId) -> Option<ImaginaryInfinity> {
+    let ExprNode::Mul(children) = arena.node(x) else {
+        return None;
+    };
+    let (i, inf) = (arena.i_unit, arena.infinity);
+    match **children {
+        [a, b] if a == i && b == inf => Some(ImaginaryInfinity::Up),
+        [c, a, b] if c == arena.neg_one && a == i && b == inf => Some(ImaginaryInfinity::Down),
+        _ => None,
+    }
+}
+
+/// `±q·π·i` (`−` for `negative`).
+fn signed_pi_i(arena: &mut Arena, negative: bool, q: (i64, i64)) -> ExprId {
+    let c = arena.rational(if negative { -q.0 } else { q.0 }, q.1);
+    arena.mul(&[c, arena.pi, arena.i_unit])
+}
+
 /// Exact values of the sine integral.
 ///
-/// * `Si(0) = 0`, `Si(∞) = π/2`, `Si(−∞) = −π/2`
+/// * `Si(0) = 0`, `Si(∞) = π/2`, `Si(−∞) = −π/2`, `Si(±i·∞) = ±i·∞`
+///   (`Si(iy) = i·Shi(y)`, DLMF 6.5.5; SymPy: `Si(oo*I)` → `oo*I`; up to
+///   0.53 it stayed, and `0·Si(i·∞)` was 0)
 /// * odd: `Si(−x) = −Si(x)` (the argument is normalised to a positive
 ///   leading coefficient)
 pub(crate) fn eval_si(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
@@ -3133,6 +3163,9 @@ pub(crate) fn eval_si(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.neg_infinity {
         let neg_half = arena.rational(-1, 2);
         return Some(arena.mul(&[neg_half, arena.pi]));
+    }
+    if imaginary_infinity(arena, x) == Some(ImaginaryInfinity::Up) {
+        return Some(x);
     }
     if x == arena.nan {
         return Some(arena.nan);
@@ -3153,10 +3186,20 @@ pub(crate) fn eval_si(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 /// theirs: those functions are real on both sides.
 ///
 /// `Ci(−x) = Ci(x) + iπ` (for `x > 0`) is *not* applied automatically
-/// because it changes the real/complex character of the expression.
+/// because it changes the real/complex character of the expression; its
+/// limit `Ci(−∞) = iπ` is folded, and `Ci(±i·∞) = ∞ ± iπ/2` (`Ci(iy) =
+/// Chi(y) + iπ/2`, DLMF 6.5.6; mpmath `ci(10**6*1j)` =
+/// 1.5·10⁴³⁴²⁸⁸ + 1.5708i; up to 0.53 they stayed).
 pub(crate) fn eval_ci(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.infinity {
         return Some(arena.zero);
+    }
+    if x == arena.neg_infinity {
+        return Some(signed_pi_i(arena, false, (1, 1)));
+    }
+    if let Some(direction) = imaginary_infinity(arena, x) {
+        let finite = signed_pi_i(arena, direction == ImaginaryInfinity::Down, (1, 2));
+        return Some(arena.add(&[arena.infinity, finite]));
     }
     if x == arena.zero {
         return Some(arena.complex_infinity);
@@ -3168,10 +3211,19 @@ pub(crate) fn eval_ci(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 }
 
 /// Exact values of the exponential integral:
-/// `Ei(−∞) = 0`, `Ei(∞) = ∞`, `Ei(0) = −∞`.
+/// `Ei(−∞) = 0`, `Ei(∞) = ∞`, `Ei(0) = −∞`, `Ei(±i·∞) = ±iπ` (`Ei(iy) =
+/// Ci(y) + i(Si(y) + π/2)`; mpmath `ei(10**6*1j)` = −3.5·10⁻⁷ +
+/// 3.1415917i).
 pub(crate) fn eval_ei(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.neg_infinity {
         return Some(arena.zero);
+    }
+    if let Some(direction) = imaginary_infinity(arena, x) {
+        return Some(signed_pi_i(
+            arena,
+            direction == ImaginaryInfinity::Down,
+            (1, 1),
+        ));
     }
     if x == arena.infinity {
         return Some(arena.infinity);
@@ -3204,6 +3256,12 @@ pub(crate) fn eval_li(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     }
     if x == arena.infinity {
         return Some(arena.infinity);
+    }
+    // `li(−∞)`, `li(±i·∞)`: `Ei(ln x) ~ x/ln x`, whose real and imaginary
+    // parts both diverge, at different rates (mpmath `li(-10**6)` =
+    // −7.4·10⁴ + 1.8·10⁴i): `zoo`.
+    if x == arena.neg_infinity || imaginary_infinity(arena, x).is_some() {
+        return Some(arena.complex_infinity);
     }
     if x == arena.nan {
         return Some(arena.nan);
@@ -3383,6 +3441,11 @@ pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<
     }
     if nr.is_zero() {
         return Some(arena.digamma(x));
+    }
+    // ψ⁽ⁿ⁾(z) ~ (−1)ⁿ⁺¹(n − 1)!/zⁿ → 0 at `∞` and `±i·∞` (SymPy:
+    // `polygamma(1, oo)` → 0; mpmath `polygamma(2, 10**6*1j)` ≈ 10⁻¹²).
+    if x == arena.infinity || imaginary_infinity(arena, x).is_some() {
+        return Some(arena.zero);
     }
     let n_usize: usize = nr.to_integer().try_into().ok()?;
     let xr = arena.as_num(x)?.clone();
@@ -3842,6 +3905,9 @@ fn stirling_args(
 /// Stirling number of the second kind S(n, k), within the digit guard and
 /// the work bound ([`stirling_args`]).
 fn eval_stirling2(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprId> {
+    if let Some(zero) = stirling_negative_k(arena, n_id, k_id) {
+        return Some(zero);
+    }
     let (n, k) = stirling_args(arena, n_id, k_id, false)?;
     let result = crate::domains::combinatorics::stirling2(n, k)?;
     guarded_int(arena, result)
@@ -3850,6 +3916,9 @@ fn eval_stirling2(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprI
 /// Signed Stirling number of the first kind s(n, k), within the digit guard
 /// and the work bound ([`stirling_args`]).
 fn eval_stirling1(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprId> {
+    if let Some(zero) = stirling_negative_k(arena, n_id, k_id) {
+        return Some(zero);
+    }
     let (n, k) = stirling_args(arena, n_id, k_id, true)?;
     let result = crate::domains::combinatorics::stirling1(n, k)?;
     guarded_int(arena, result)
@@ -3861,8 +3930,27 @@ fn eval_stirling1(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprI
 /// about half a second in release).
 const MAX_PARTITION_N: u64 = 40_000;
 
-/// Number of integer partitions p(n), for `n ≤` [`MAX_PARTITION_N`].
+/// Both kinds of Stirling numbers are 0 for an integer `n ≥ 0` and a
+/// negative integer `k` (no partition or permutation of `n` elements has a
+/// negative number of blocks or cycles; the triangles of Graham–Knuth–
+/// Patashnik §6.1 extended by the recurrences).  Up to 0.53
+/// `stirling2(8, −1)` stayed unevaluated (SymPy keeps it too).
+fn stirling_negative_k(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprId> {
+    nonneg_int_arg(arena, n_id)?;
+    let k = arena.as_num(k_id)?;
+    (k.is_integer() && k.is_negative()).then_some(arena.zero)
+}
+
+/// Number of integer partitions p(n), for `n ≤` [`MAX_PARTITION_N`]; 0 for
+/// a negative integer `n` (the coefficients of `Π 1/(1 − xᵏ)`; SymPy:
+/// `partition(−1) = 0`; up to 0.53 it stayed unevaluated).
 fn eval_partition_count(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if arena
+        .as_num(inner)
+        .is_some_and(|r| r.is_integer() && r.is_negative())
+    {
+        return Some(arena.zero);
+    }
     let n = nonneg_int_arg(arena, inner)?;
     if n > MAX_PARTITION_N {
         return None;
@@ -7059,7 +7147,20 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 ///
 /// Exhaustive over [`LibFn`]: a function with no exact rules says so here
 /// rather than in a wildcard arm.
+///
+/// A closed form taken at an argument with `±∞` in it that meets `∞ − ∞`
+/// gives `nan` where the function may have a value: then the node stays
+/// (its values at infinity fold when it is built, `canon::at_infinity`).
 fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
+    let value = eval_lib_fn_closed(arena, f, args)?;
+    if value == arena.nan && !args.contains(&arena.nan) && contains_infinity(arena, args) {
+        return None;
+    }
+    Some(value)
+}
+
+/// The closed forms and exact values of [`eval_lib_fn`].
+fn eval_lib_fn_closed(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
     match f {
         // ── Integer sequences and combinatorial counts ──
         LibFn::Factorial2 => eval_factorial2(arena, args[0]),
@@ -7175,17 +7276,56 @@ fn eval_bessel_at_infinity(
     }
 }
 
-/// Does `id` contain `∞` or `−∞` along the real axis: one of them, and no
-/// `i`, `zoo` or `nan`?  The closed forms of `Γ(s, x)`, `γ(s, x)` and `E₀(x)`,
-/// sums of `e^{−x}·xᵏ` terms, evaluate to `∞ − ∞` or `∞/∞` (`nan`) at such an
-/// argument, where the limit is `0` or `±∞`.  (At an undirected `zoo`,
-/// where the functions have no limit, `nan` is their value; SymPy 1.14
-/// agrees.)
-fn has_real_infinity(arena: &Arena, id: ExprId) -> bool {
-    (walk::contains(arena, id, arena.infinity) || walk::contains(arena, id, arena.neg_infinity))
-        && ![arena.i_unit, arena.complex_infinity, arena.nan]
-            .iter()
-            .any(|&a| walk::contains(arena, id, a))
+/// Does one of `args` contain `∞` or `−∞` (also in `i·∞`, `x·∞`)?  A
+/// closed form is not evaluated there: those of `Γ(s, x)`, `γ(s, x)` and
+/// `E₀(x)`, sums of `e^{−x}·xᵏ` terms, evaluate to `∞ − ∞` or `∞/∞` (`nan`)
+/// where the limit is `0` or `±∞`, `legendre(3, ∞)` gave `∞ − ∞ = nan` up
+/// to 0.53, `jacobi(1, a, b, ∞)` gave `(a + 1)·∞ + (b + 1)·∞`, whose
+/// value at `a = 0`, `b = −3` is `nan` where `P₁^{(0,−3)}(∞) = −∞`.  The
+/// values the functions have there fold when the node is built
+/// (`canon::at_infinity`), and the rest stays (up to 0.53 the closed forms
+/// of `Γ(s, x)` were taken at `±i·∞`).  At an undirected `zoo`, where the
+/// functions have no limit, the closed forms keep giving their `zoo` or
+/// `nan` (SymPy 1.14 agrees).
+fn contains_infinity(arena: &Arena, args: &[ExprId]) -> bool {
+    args.iter().any(|&a| {
+        walk::contains(arena, a, arena.infinity) || walk::contains(arena, a, arena.neg_infinity)
+    })
+}
+
+/// How an orthogonal polynomial is evaluated, by [`contains_infinity`]
+/// ([`expansion`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Expansion {
+    /// A parameter (`n`, `α`, `β`, `m`) is infinite: no closed form.
+    Refused,
+    /// The argument is infinite and the degree may be 2 or more, or a
+    /// parameter is symbolic: the expansion can meet `∞ − ∞`, so only the
+    /// identities that hold at every argument apply (`C_ν^{(1/2)} = P_ν`).
+    /// Up to 0.53 the expansions gave `x³·∞ − x·∞` for `chebyshev_t(3,
+    /// x·∞)`, `nan` for `hermite(3, ∞ + i)` and `(a + 1)·∞ + (b + 1)·∞` for
+    /// `jacobi(1, a, b, ∞)` (`nan` at `a = 0`, `b = −3`, where the value is
+    /// `−∞`).
+    IdentitiesOnly,
+    /// Expanded: a finite argument, or a polynomial of degree 0 or 1 with
+    /// numeric parameters (`hermite(1, ∞ + iπ) = ∞ + 2πi`; [`eval_lib_fn`]
+    /// refuses a `nan` it gives, `0·(x + ∞)` for `C₁^{(0)}`).
+    Expanded,
+}
+
+/// The [`Expansion`] of an orthogonal polynomial of degree `n` with the
+/// parameters `params` at `x`.
+fn expansion(arena: &Arena, params: &[ExprId], n: ExprId, x: ExprId) -> Expansion {
+    if contains_infinity(arena, params) || contains_infinity(arena, &[n]) {
+        return Expansion::Refused;
+    }
+    let low_degree =
+        (n == arena.zero || n == arena.one) && params.iter().all(|&p| arena.as_num(p).is_some());
+    if !low_degree && contains_infinity(arena, &[x]) {
+        Expansion::IdentitiesOnly
+    } else {
+        Expansion::Expanded
+    }
 }
 
 /// Does `id` contain `∞`, `−∞`, `zoo` or `nan`?
@@ -7203,6 +7343,9 @@ fn has_infinity(arena: &Arena, id: ExprId) -> bool {
 /// A classical orthogonal polynomial `p_n(x)` expanded by `expand` when `n`
 /// is a non-negative integer no larger than the configured power limit.
 fn eval_orthopoly(arena: &mut Arena, n: ExprId, x: ExprId, family: OrthoFamily) -> Option<ExprId> {
+    if expansion(arena, &[], n, x) != Expansion::Expanded {
+        return None;
+    }
     let n_num = arena.as_num(n)?;
     if !n_num.is_integer() || n_num.is_negative() {
         return None;
@@ -7304,7 +7447,7 @@ fn eval_expint(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.infinity {
         return Some(arena.zero);
     }
-    if n == arena.zero && !has_real_infinity(arena, x) {
+    if n == arena.zero && !contains_infinity(arena, &[x]) {
         let neg_x = arena.neg(x);
         let e = arena.exp(neg_x);
         let v = arena.div(e, x);
@@ -7618,7 +7761,7 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     {
         return None;
     }
-    if has_real_infinity(arena, x) {
+    if contains_infinity(arena, &[x]) {
         return None;
     }
     let upper = uppergamma_closed(arena, &r, x)?;
@@ -7651,7 +7794,7 @@ fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     }
     let r = as_ratio(arena, s)?;
     // (`Γ(0, x) = E₁(x)` only renames.)
-    if !r.is_zero() && has_real_infinity(arena, x) {
+    if !r.is_zero() && contains_infinity(arena, &[x]) {
         return None;
     }
     uppergamma_closed(arena, &r, x)
@@ -7669,6 +7812,11 @@ fn eval_polylog(arena: &mut Arena, s: ExprId, z: ExprId) -> Option<ExprId> {
         let eta = eval_dirichlet_eta(arena, s)
             .unwrap_or_else(|| apply_named(arena, LibFn::DirichletEta, &[s]));
         return Some(arena.neg(eta));
+    }
+    // `−ln(1 − z)` keeps the finite part of an infinite `z` (`Li₁(2 + i·∞) =
+    // −∞ + iπ/2`); the rational closed forms of `s ≤ 0` would not.
+    if s != arena.one && contains_infinity(arena, &[s, z]) {
+        return None;
     }
     if s == arena.one {
         let one_minus_z = arena.sub(arena.one, z);
@@ -8096,6 +8244,19 @@ fn expand_mul2(arena: &mut Arena, p: ExprId, q: ExprId) -> ExprId {
 /// `(k+1) C_{k+1} = 2(k+a) x C_k − (k+2a−1) C_{k−1}`; `C_n^{(1/2)} = P_n`,
 /// `C_n^{(1)} = U_n`.
 fn eval_gegenbauer(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
+    match expansion(arena, &[a], n, x) {
+        Expansion::Refused => return None,
+        Expansion::IdentitiesOnly => {
+            return match as_ratio(arena, a) {
+                Some(r) if r == Ratio::new(BigInt::one(), BigInt::from(2)) => {
+                    Some(arena.legendre(n, x))
+                }
+                Some(r) if r.is_one() => Some(arena.chebyshev_u(n, x)),
+                _ => None,
+            };
+        }
+        Expansion::Expanded => {}
+    }
     if let (Some(deg), Some(alpha)) = (as_poly_degree(arena, n), as_ratio(arena, a))
         && !(alpha.is_integer() && !alpha.is_positive())
     {
@@ -8161,6 +8322,13 @@ fn expanded_powers(arena: &mut Arena, p: ExprId, n: usize) -> Vec<ExprId> {
 /// terms are merged at each step; distributing the whole `2n`-factor
 /// product at once is exponential in `n`.
 fn eval_jacobi(arena: &mut Arena, n: ExprId, a: ExprId, b: ExprId, x: ExprId) -> Option<ExprId> {
+    match expansion(arena, &[a, b], n, x) {
+        Expansion::Refused => return None,
+        Expansion::IdentitiesOnly => {
+            return (a == arena.zero && b == arena.zero).then(|| arena.legendre(n, x));
+        }
+        Expansion::Expanded => {}
+    }
     if let (Some(deg), Some(ar), Some(br)) = (
         as_poly_degree(arena, n),
         as_ratio(arena, a),
@@ -8224,6 +8392,18 @@ fn eval_jacobi(arena: &mut Arena, n: ExprId, a: ExprId, b: ExprId, x: ExprId) ->
 /// `P_m^m = (−1)^m (2m−1)!! (1−x²)^{m/2}`, `P_{m+1}^m = (2m+1) x P_m^m`,
 /// `(k−m+1) P_{k+1}^m = (2k+1) x P_k^m − (k+m) P_{k−1}^m`.
 fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Option<ExprId> {
+    match expansion(arena, &[m], n, x) {
+        Expansion::Refused => return None,
+        Expansion::IdentitiesOnly => {
+            if m == arena.zero {
+                return Some(arena.legendre(n, x));
+            }
+            // `P_n^m = 0` for integers `|m| > n`.
+            let (deg, order) = (as_poly_degree(arena, n)?, as_ratio(arena, m)?);
+            return (order.is_integer() && order.abs() > q_int(deg as i64)).then_some(arena.zero);
+        }
+        Expansion::Expanded => {}
+    }
     let deg = match as_poly_degree(arena, n) {
         Some(d) => d,
         None => {
@@ -8294,6 +8474,11 @@ fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Op
 /// Generalised Laguerre `L_n^{(a)}(x)` for integer `n ≥ 0` via
 /// `(k+1) L_{k+1} = (2k+1+a−x) L_k − (k+a) L_{k−1}`; `L_n^{(0)} = L_n`.
 fn eval_assoc_laguerre(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
+    match expansion(arena, &[a], n, x) {
+        Expansion::Refused => return None,
+        Expansion::IdentitiesOnly => return (a == arena.zero).then(|| arena.laguerre(n, x)),
+        Expansion::Expanded => {}
+    }
     if let (Some(deg), Some(alpha)) = (as_poly_degree(arena, n), as_ratio(arena, a))
         && !(alpha.is_integer() && alpha.is_negative())
     {
@@ -8363,6 +8548,18 @@ fn eval_betainc(
     if x1 == x2 {
         return Some(arena.zero);
     }
+    // At an infinite bound the closed form is taken only at `±∞` itself, and
+    // kept where its terms do not meet as `∞ − ∞` (`betainc_regularized(1,
+    // 2, −∞, b) = ∞`; up to 0.53 `betainc(3, 2, K(x), ∞)`, whose terms
+    // `t³/3 − t⁴/4` cancel so, was `nan` where the integral is `−∞`): see
+    // the end.
+    let infinite_bound = contains_infinity(arena, &[x1, x2]);
+    let exact = |t: ExprId| {
+        !contains_infinity(arena, &[t]) || t == arena.infinity || t == arena.neg_infinity
+    };
+    if contains_infinity(arena, &[a, b]) || !exact(x1) || !exact(x2) {
+        return None;
+    }
     if x1 == arena.zero && x2 == arena.one {
         if known_nonpositive(arena, a) || known_nonpositive(arena, b) {
             return None;
@@ -8414,7 +8611,8 @@ fn eval_betainc(
     let upper = antiderivative(arena, x2);
     let lower = antiderivative(arena, x1);
     let v = arena.sub(upper, lower);
-    Some(expand_eval(arena, v))
+    let v = expand_eval(arena, v);
+    (!infinite_bound || !walk::contains(arena, v, arena.nan)).then_some(v)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

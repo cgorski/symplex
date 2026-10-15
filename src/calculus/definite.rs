@@ -38,7 +38,11 @@
 //! 5. **Fundamental theorem.** An antiderivative `F` is obtained from the
 //!    indefinite integrator.  Its own discontinuities inside the interval
 //!    (e.g. the `atan(tan(x/2))` jump produced by the Weierstrass
-//!    substitution) are split as well.  Endpoint values are direct
+//!    substitution) are split as well, and so are the exact points where a
+//!    linear complex argument of `ln`, a power, `Ei`, `Ci` or `Chi` crosses
+//!    the cut `(−∞, 0]`, each side taking the branch continued from it
+//!    (`located_crossing`, `side_value`); a crossing that is only sampled
+//!    is refused.  Endpoint values are direct
 //!    substitutions when `F` is continuous there, otherwise **one-sided
 //!    limits**: the approach `x → c⁺` is rewritten as `x = c + 1/u`,
 //!    `u → +∞` (and `x = c − 1/u` for `c⁻`), so that every limit is a
@@ -2058,7 +2062,7 @@ fn evaluate_antiderivative(
     depth: usize,
 ) -> Result<ExprId, SymplexError> {
     let anti = atan_of_complex_line_to_logs(arena, anti, x, p);
-    check_branch_cuts(arena, anti, x, p)?;
+    let mut crossings = check_branch_cuts(arena, anti, x, p)?;
     // Discontinuities of F strictly inside (lo, hi).
     let range = numeric_range(arena, p.lo, p.hi);
     let scan = calculus_util::scan_breakpoints(arena, anti, x, scan_range(p.lo, p.hi, range));
@@ -2094,6 +2098,47 @@ fn evaluate_antiderivative(
             _ => {}
         }
     }
+    // The points where an argument crosses a branch cut: `F` is continued
+    // across each from either side ([`side_value`]), where it is otherwise
+    // continuous.  At an end the value is taken from inside the piece; at a
+    // singular end the limit decides (refused on a cut).
+    crossings.retain(|c| !((c.at == p.lo && p.lo_sing) || (c.at == p.hi && p.hi_sing)));
+    let jumps = inner_points.len();
+    for c in &mut crossings {
+        if c.at == p.lo || c.at == p.hi {
+            continue;
+        }
+        let mut known = None;
+        for (k, &(q, _)) in inner_points.iter().enumerate() {
+            match cmp_points(arena, q, c.at) {
+                Some(Ordering::Equal) if k < jumps => {
+                    return Err(failed(
+                        "the antiderivative is discontinuous where an argument crosses a branch cut",
+                    ));
+                }
+                Some(Ordering::Equal) => known = Some(q),
+                Some(_) => {}
+                None => return Err(failed("cannot order the crossings of the branch cuts")),
+            }
+        }
+        // Crossings at one point share its expression.
+        match known {
+            Some(q) => c.at = q,
+            None => {
+                let v = point_value(arena, c.at);
+                inner_points.push((c.at, v));
+            }
+        }
+    }
+    // The arguments crossing at `at`, each with the side of the axis it lies
+    // on within a piece that ends there (`from_below`) or starts there.
+    let sides_at = |at: ExprId, from_below: bool| -> Vec<(ExprId, SignSet)> {
+        crossings
+            .iter()
+            .filter(|c| c.at == at)
+            .map(|c| (c.arg, if from_below { c.before } else { c.before.neg() }))
+            .collect()
+    };
     if !inner_points.is_empty() {
         if depth >= MAX_DEPTH || inner_points.len() > MAX_PIECES {
             return Err(failed("too many discontinuities of the antiderivative"));
@@ -2104,14 +2149,16 @@ fn evaluate_antiderivative(
         let mut cur_lo = p.lo;
         let mut cur_sing = p.lo_sing;
         for (pt, _) in &inner_points {
+            // A crossing point is no singularity of `F`.
+            let sing = !crossings.iter().any(|c| c.at == *pt);
             sub_pieces.push(Piece {
                 lo: cur_lo,
                 hi: *pt,
                 lo_sing: cur_sing,
-                hi_sing: true,
+                hi_sing: sing,
             });
             cur_lo = *pt;
-            cur_sing = true;
+            cur_sing = sing;
         }
         sub_pieces.push(Piece {
             lo: cur_lo,
@@ -2121,8 +2168,14 @@ fn evaluate_antiderivative(
         });
         let mut total = Vec::new();
         for sp in &sub_pieces {
-            match ftc(arena, anti, x, sp)? {
+            let sides = [sides_at(sp.lo, false), sides_at(sp.hi, true)];
+            match ftc(arena, anti, x, sp, &sides)? {
                 Some(v) => total.push(v),
+                None if sides.iter().any(|s| !s.is_empty()) => {
+                    return Err(failed(
+                        "the antiderivative has no value where an argument crosses a branch cut",
+                    ));
+                }
                 None => return fallback_without_antiderivative(arena, f, x, sp),
             }
         }
@@ -2130,8 +2183,12 @@ fn evaluate_antiderivative(
         return Ok(safe_eval(arena, s));
     }
 
-    match ftc(arena, anti, x, p)? {
+    let sides = [sides_at(p.lo, false), sides_at(p.hi, true)];
+    match ftc(arena, anti, x, p, &sides)? {
         Some(v) => Ok(v),
+        None if sides.iter().any(|s| !s.is_empty()) => Err(failed(
+            "the antiderivative has no value where an argument crosses a branch cut",
+        )),
         None => fallback_without_antiderivative(arena, f, x, p),
     }
 }
@@ -2746,19 +2803,24 @@ fn atan_of_complex_line_to_logs(arena: &mut Arena, anti: ExprId, x: ExprId, p: &
 /// an endpoint).  Otherwise an argument with parameters is refused (its
 /// crossing depends on their values), and a parameter-free one is sampled
 /// on the piece ([`numeric_cut_crossing`]), refused where it crosses and
-/// when the piece has symbolic bounds.
+/// when the piece has symbolic bounds — unless the crossing is located
+/// exactly and the antiderivative continued across it
+/// ([`located_crossing`]): those crossings are returned, for the
+/// Newton–Leibniz difference to be taken on each side of them.
 fn check_branch_cuts(
     arena: &mut Arena,
     anti: ExprId,
     x: ExprId,
     p: &Piece,
-) -> Result<(), SymplexError> {
+) -> Result<Vec<CrossingAt>, SymplexError> {
     let arguments = crossing_arguments(arena, anti, x);
+    let mut crossings = Vec::new();
     if arguments.is_empty() {
-        return Ok(());
+        return Ok(crossings);
     }
     let mut reals = AssumptionCache::new();
     let mut range: Option<Option<Interval<f64>>> = None;
+    let mut ends_on_a_cut: Option<bool> = None;
     for (u, cut) in arguments {
         if cut_crossing_excluded(arena, u, x, cut, p, &mut reals) {
             continue;
@@ -2775,7 +2837,27 @@ fn check_branch_cuts(
                 "cannot tell whether {shown} crosses the antiderivative's branch cut between symbolic bounds"
             )));
         };
-        match numeric_cut_crossing(arena, u, x, cut, r.lower, r.upper) {
+        let sampled = numeric_cut_crossing(arena, u, x, cut, r.lower, r.upper);
+        // Where the samples see a crossing, or an end lies on a cut, an
+        // exact crossing decides; otherwise the samples refuse where they
+        // see one (and the end values where they lie on a cut).
+        let at_an_end = sampled == CutCrossing::None
+            && *ends_on_a_cut.get_or_insert_with(|| {
+                [p.lo, p.hi]
+                    .into_iter()
+                    .any(|e| !is_infinite(arena, e) && endpoint_on_a_cut(arena, anti, x, e, &[]))
+            });
+        if sampled != CutCrossing::None || at_an_end {
+            match located_crossing(arena, anti, u, x, cut, p) {
+                Some(Some(c)) => {
+                    crossings.push(c);
+                    continue;
+                }
+                Some(None) => continue,
+                None => {}
+            }
+        }
+        match sampled {
             CutCrossing::None => {}
             CutCrossing::Near(t) => {
                 return Err(failed(format!(
@@ -2789,17 +2871,207 @@ fn check_branch_cuts(
             }
         }
     }
-    Ok(())
+    Ok(crossings)
 }
 
-/// `F(hi⁻) − F(lo⁺)`.  `Ok(None)` when an endpoint value is unknown.
+/// A crossing of the cut `(−∞, 0]` by an argument of the antiderivative
+/// on a piece (inside it or at an end), located exactly
+/// ([`located_crossing`]).
+#[derive(Clone, Copy, Debug)]
+struct CrossingAt {
+    /// The real point `c` at which the argument lies on the cut.
+    at: ExprId,
+    /// The argument `u`.
+    arg: ExprId,
+    /// The side of the real axis `u` comes from, the sign of `im u` for `x <
+    /// c` (`POSITIVE` or `NEGATIVE`); it leaves on the other.
+    before: SignSet,
+}
+
+/// Where a parameter-free linear argument `u = α·x + β` (`im α` certified
+/// nonzero) of functions of `anti` with the cut `(−∞, 0]` meets the real
+/// axis on the piece `p`, when [`side_value`] continues each of those
+/// functions across the cut: `Some(Some(_))` at a point of the cut (`u(c)`
+/// proved real and negative) inside the piece or at a finite end of it (`at`
+/// is then that end), `Some(None)` when it meets the axis outside the piece
+/// or off the cut (no jump), `None` when that is not decided or the
+/// argument, its cut or a function of it is of another kind.  The point `c
+/// = −im β/im α` is exact: the side of the axis, and so the branch, is known
+/// on either side of it.  (Up to 0.53 an end on the cut was refused: `∫₀¹
+/// ln((1 + i)x − 1) dx`, `−0.2146 + 2.3562i`.)
+fn located_crossing(
+    arena: &mut Arena,
+    anti: ExprId,
+    u: ExprId,
+    x: ExprId,
+    cut: Cut,
+    p: &Piece,
+) -> Option<Option<CrossingAt>> {
+    if cut != Cut::RealBelow(0.0)
+        || !cut_nodes(arena, anti)
+            .iter()
+            .filter(|&&(_, arg, _)| arg == u)
+            .all(|&(n, _, _)| continued_across_cut(arena, n).is_some())
+    {
+        return None;
+    }
+    let LinearCoeffs { slope, intercept } = calculus_util::linear_coeffs_exact(arena, u, x)?;
+    if !walk::free_symbols(arena, slope).is_empty()
+        || !walk::free_symbols(arena, intercept).is_empty()
+    {
+        return None;
+    }
+    let slope_side = crate::transforms::realness::imaginary_part_sign(arena, slope);
+    if slope_side != SignSet::POSITIVE && slope_side != SignSet::NEGATIVE {
+        return None;
+    }
+    let im_slope = arena.im(slope);
+    let im_intercept = arena.im(intercept);
+    let ratio = arena.div(im_intercept, im_slope);
+    let at = arena.neg(ratio);
+    let at = safe_eval(arena, at);
+    if walk::has_unevaluated(arena, at)
+        || crate::transforms::realness::imaginary_part_sign(arena, at) != SignSet::ZERO
+    {
+        return None;
+    }
+    let at = match position_in(arena, at, p.lo, p.hi) {
+        Position::Inside => at,
+        Position::AtLower => p.lo,
+        Position::AtUpper => p.hi,
+        Position::Unknown => return None,
+        Position::Below | Position::Above => return Some(None),
+    };
+    let on_axis = subs::subs(arena, u, x, at);
+    let on_axis = safe_eval(arena, on_axis);
+    if crate::transforms::realness::imaginary_part_sign(arena, on_axis) != SignSet::ZERO {
+        return None;
+    }
+    match sign_of(arena, on_axis)? {
+        Ordering::Less => {}
+        Ordering::Greater => return Some(None),
+        // Through the branch point: a zero of `u` at a real `x`, which the
+        // breakpoint scans split at.
+        Ordering::Equal => return None,
+    }
+    // `im u = im α·(x − c)`.
+    let before = if slope_side == SignSet::POSITIVE {
+        SignSet::NEGATIVE
+    } else {
+        SignSet::POSITIVE
+    };
+    Some(Some(CrossingAt { at, arg: u, before }))
+}
+
+/// How the cut function `node` of an argument `u` on the cut `(−∞, 0]`
+/// continues from below the axis to a point `u = −s` of it, from the value
+/// there: the principal values of `ln`, of powers, `Ci` and `Chi` are the
+/// limits from above, and their continuations from below are `ln u − 2πi`,
+/// `u^a·e^{−2πia}`, `Ci u − 2πi`, `Chi u − 2πi`; `Ei(−s)` is real, the mean
+/// of `Ei(−s ± i0) = Ei(−s) ± iπ`.  `None` for another function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CutContinuation {
+    /// `ln u`, `Ci u`, `Chi u`: above `f(−s)`, below `f(−s) − 2πi`.
+    LogStep,
+    /// `u^a`: above `(−s)^a`, below `(−s)^a·e^{−2πia}`.
+    Power(ExprId),
+    /// `Ei u`: `Ei(−s) ± iπ`.
+    MeanStep,
+}
+
+/// The [`CutContinuation`] of a node of [`cut_nodes`], if known.
+fn continued_across_cut(arena: &Arena, node: ExprId) -> Option<CutContinuation> {
+    match *arena.node(node) {
+        ExprNode::Ln(_) | ExprNode::Ci(_) => Some(CutContinuation::LogStep),
+        ExprNode::Lib(crate::base::libfn::LibFn::Chi, ref args) if args.len() == 1 => {
+            Some(CutContinuation::LogStep)
+        }
+        ExprNode::Pow(_, e) if walk::free_symbols(arena, e).is_empty() => {
+            Some(CutContinuation::Power(e))
+        }
+        ExprNode::Ei(_) => Some(CutContinuation::MeanStep),
+        _ => None,
+    }
+}
+
+/// `F(c)` approached from the side of the axis given for each argument
+/// crossing at `c` (`sides`: `(u, sign of im u)`), when `F` is continuous
+/// there otherwise: each cut function of such a `u` is replaced by its
+/// continuation from that side ([`CutContinuation`]) and `x` by `c`.
+/// `None` when the value is not finite, a function has no known
+/// continuation, or another argument lies on its cut at `c`
+/// ([`endpoint_on_a_cut`]).
+fn side_value(
+    arena: &mut Arena,
+    anti: ExprId,
+    x: ExprId,
+    at: ExprId,
+    sides: &[(ExprId, SignSet)],
+) -> Option<ExprId> {
+    let handled: Vec<ExprId> = sides.iter().map(|&(u, _)| u).collect();
+    if endpoint_on_a_cut(arena, anti, x, at, &handled) {
+        return None;
+    }
+    let mut f = anti;
+    for &(u, side) in sides {
+        let nodes: Vec<ExprId> = cut_nodes(arena, f)
+            .into_iter()
+            .filter(|&(_, arg, _)| arg == u)
+            .map(|(n, _, _)| n)
+            .collect();
+        for n in nodes {
+            let two_pi_i = {
+                let two = arena.int(2);
+                let pi = arena.pi();
+                let i = arena.i_unit();
+                arena.mul(&[two, pi, i])
+            };
+            let below = side == SignSet::NEGATIVE;
+            let replacement = match continued_across_cut(arena, n)? {
+                CutContinuation::LogStep if below => arena.sub(n, two_pi_i),
+                CutContinuation::Power(e) if below => {
+                    let turn = arena.mul(&[e, two_pi_i]);
+                    let turn = arena.neg(turn);
+                    let factor = arena.exp(turn);
+                    arena.mul(&[n, factor])
+                }
+                CutContinuation::LogStep | CutContinuation::Power(_) => n,
+                CutContinuation::MeanStep => {
+                    let half = arena.rational(if below { -1 } else { 1 }, 2);
+                    let step = arena.mul(&[half, two_pi_i]);
+                    arena.add(&[n, step])
+                }
+            };
+            if replacement != n {
+                f = arena.subs_structural(f, n, replacement);
+            }
+        }
+    }
+    let v = subs::subs(arena, f, x, at);
+    let v = safe_eval(arena, v);
+    finite_value(arena, v, x)?;
+    Some(v)
+}
+
+/// `F(hi⁻) − F(lo⁺)`.  `Ok(None)` when an endpoint value is unknown.  An
+/// end at which arguments cross a branch cut (`sides[0]` at `lo`, `sides[1]`
+/// at `hi`: each argument with the side of the axis it lies on inside the
+/// piece) takes the value from that side ([`side_value`]).
 fn ftc(
     arena: &mut Arena,
     anti: ExprId,
     x: ExprId,
     p: &Piece,
+    sides: &[Vec<(ExprId, SignSet)>; 2],
 ) -> Result<Option<ExprId>, SymplexError> {
-    let hi_val = endpoint_value(arena, anti, x, p.hi, Side::FromLeft, p.hi_sing);
+    let sided = |arena: &mut Arena, at: ExprId, sides: &[(ExprId, SignSet)]| {
+        side_value(arena, anti, x, at, sides).map(Extended::Finite)
+    };
+    let hi_val = if sides[1].is_empty() {
+        endpoint_value(arena, anti, x, p.hi, Side::FromLeft, p.hi_sing)
+    } else {
+        sided(arena, p.hi, &sides[1])
+    };
     if let Some(inf @ (Extended::PosInf | Extended::NegInf)) = hi_val {
         let shown = arena.display(p.hi).to_string();
         let dir = if inf == Extended::PosInf {
@@ -2811,7 +3083,11 @@ fn ftc(
             "the antiderivative tends to {dir} as x → {shown}"
         )));
     }
-    let lo_val = endpoint_value(arena, anti, x, p.lo, Side::FromRight, p.lo_sing);
+    let lo_val = if sides[0].is_empty() {
+        endpoint_value(arena, anti, x, p.lo, Side::FromRight, p.lo_sing)
+    } else {
+        sided(arena, p.lo, &sides[0])
+    };
     if let Some(inf @ (Extended::PosInf | Extended::NegInf)) = lo_val {
         let shown = arena.display(p.lo).to_string();
         let dir = if inf == Extended::PosInf {
@@ -2953,7 +3229,7 @@ fn endpoint_value(
             // ln w` cancel when `u`, `w` are on the cut, while the path may
             // reach them from opposite sides (up to 0.52 only a value with
             // an `f64` imaginary part was checked).
-            if numeric.is_some() && endpoint_on_a_cut(arena, anti, x, c) {
+            if numeric.is_some() && endpoint_on_a_cut(arena, anti, x, c, &[]) {
                 return None;
             }
             return Some(Extended::Finite(v));
@@ -2988,15 +3264,23 @@ fn endpoint_value(
 /// from the other side, and the endpoint value is unknown.  Arguments that
 /// are real for real `x`, or whose imaginary part does not depend on `x`,
 /// run along the axis (on the cut or parallel to it) and are fine; so are
-/// arguments with parameters, which [`check_branch_cuts`] has vetted.
-fn endpoint_on_a_cut(arena: &mut Arena, anti: ExprId, x: ExprId, c: ExprId) -> bool {
+/// arguments with parameters, which [`check_branch_cuts`] has vetted, and
+/// those in `skip` (continued from a known side, [`side_value`]).
+fn endpoint_on_a_cut(
+    arena: &mut Arena,
+    anti: ExprId,
+    x: ExprId,
+    c: ExprId,
+    skip: &[ExprId],
+) -> bool {
     let arguments = cut_arguments(arena, anti, x);
     if arguments.is_empty() {
         return false;
     }
     let mut reals = AssumptionCache::new();
     for (u, cut) in arguments {
-        if real_for_real_x(arena, u, x, &mut reals)
+        if skip.contains(&u)
+            || real_for_real_x(arena, u, x, &mut reals)
             || (cut != Cut::ImaginaryOutside
                 && imaginary_part_constant_polynomial(arena, u, x, &mut reals))
         {
@@ -7423,7 +7707,8 @@ fn narrow_crossing(
 /// linear arguments of `sech` (`cosh` under a negative power), whose half-width
 /// `w` (imaginary part, `1/√(2|a₂|)`) is below a tenth of the range (of
 /// `max(1, |centre|)` on an infinite one), each with `centre ± 10w` inside
-/// the range, as exact binary numbers.  A split there makes a narrow peak (`1/(1 + 10⁶(x − c)²)`, `exp(−10⁶(x − c)²)`,
+/// the range, as exact binary numbers; and the maximum of a product of
+/// powers and an exponential ([`envelope_peak`]).  A split there makes a narrow peak (`1/(1 + 10⁶(x − c)²)`, `exp(−10⁶(x − c)²)`,
 /// of width `10⁻³`) the end of two pieces, where the nodes crowd, instead
 /// of a feature between the nodes: before 0.44 `integrate_numeric` of
 /// `exp(−10⁶(x − 2/3)²)·(x + 1)²cos(4x/3)` on `[0, 2]` was `0` with an
@@ -7529,6 +7814,19 @@ fn peak_points(arena: &mut Arena, f: ExprId, x: ExprId, lo: f64, hi: f64) -> Vec
             Source::Pole => {}
         }
     }
+    // On an infinite range the nodes lie at a distance from the finite end
+    // that grows geometrically: a peak is narrow next to that distance.
+    if let Some((c, w)) = envelope_peak(arena, f, x, lo, hi) {
+        let scale = match (lo.is_finite(), hi.is_finite()) {
+            (true, true) => 0.4 * (hi - lo),
+            (true, false) => c - lo,
+            (false, true) => hi - c,
+            (false, false) => c.abs().max(1.0),
+        };
+        if c > lo && c < hi && w < 0.25 * scale {
+            push(c, w);
+        }
+    }
     centres
         .into_iter()
         .filter(|c| c.is_finite())
@@ -7536,6 +7834,139 @@ fn peak_points(arena: &mut Arena, f: ExprId, x: ExprId, lo: f64, hi: f64) -> Vec
             crate::base::numeric::f64_to_ratio_exact(c).map(|q| (arena.num_ratio(q), c))
         })
         .collect()
+}
+
+/// The maximum `c` in `(lo, hi)` of a product `f` of powers `bᵉ` of terms
+/// in `x` and exponentials `e^g` (constant, `sin` and `cos` factors aside),
+/// with the half-width `w = 1/√(−h″(c))` of its logarithm `h = Σ e·ln|b|
+/// + Σ g` there; `None` for another form, a lone Gaussian (whose vertex
+/// [`peak_points`] reads exactly) or an `e^{a·x + b}` alone, and when `h`
+/// has no interior maximum on the samples.  `h` is sampled in `f64` over
+/// the range (at `lo + 2^(k/4)`, `|k| ≤ 400`, towards an infinite end), the
+/// best sample refined by golden-section search: a split point, a guide
+/// whatever its accuracy.  The densities of the distributions are of this
+/// form, and their moment generating and characteristic functions have
+/// their mass in a peak next to the end of `[0, ∞)`: up to 0.53
+/// `eval_decimal` of the moment generating function of a Weibull
+/// distribution of shape `31/2` and scale `6·10⁻⁶` at `t = 50000/3`,
+/// `∫₀^∞ e^{tx}·f(x) dx` with a peak `4·10⁻⁷` wide at `6·10⁻⁶`, was refused
+/// for want of precision (`1.101523493908031`, mpmath).
+fn envelope_peak(arena: &mut Arena, f: ExprId, x: ExprId, lo: f64, hi: f64) -> Option<(f64, f64)> {
+    /// Most nodes of an integrand looked at.
+    const MAX_NODES: usize = 400;
+    /// Samples of a finite range.
+    const SAMPLES: i32 = 512;
+    /// Quarter powers of 2 sampled towards an infinite end, either way.
+    const QUARTERS: i32 = 400;
+    if lo.partial_cmp(&hi) != Some(Ordering::Less)
+        || walk::post_order_ids(arena, f).len() > MAX_NODES
+    {
+        return None;
+    }
+    let x_name = match arena.node(x) {
+        ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
+        _ => return None,
+    };
+    let factors: Vec<ExprId> = match arena.node(f) {
+        ExprNode::Mul(cs) => cs.to_vec(),
+        _ => vec![f],
+    };
+    // `h` with `ln|b|` for its values, with `ln b` for its derivatives.
+    let (mut values, mut formal) = (Vec::new(), Vec::new());
+    let (mut exponentials, mut others) = (0usize, 0usize);
+    for c in factors {
+        if !walk::contains(arena, c, x) {
+            continue;
+        }
+        match arena.node(c).clone() {
+            ExprNode::Exp(g) => {
+                // A Gaussian is read exactly by `peak_points`.
+                if degree_bound(arena, g, x).is_some_and(|d| d == 2) {
+                    return None;
+                }
+                if !degree_bound(arena, g, x).is_some_and(|d| d <= 1) {
+                    others += 1;
+                }
+                exponentials += 1;
+                values.push(g);
+                formal.push(g);
+            }
+            ExprNode::Pow(b, e) if arena.as_num(e).is_some() => {
+                let abs = arena.abs(b);
+                let ln_abs = arena.ln(abs);
+                values.push(arena.mul(&[e, ln_abs]));
+                let ln_b = arena.ln(b);
+                formal.push(arena.mul(&[e, ln_b]));
+                others += 1;
+            }
+            ExprNode::Sin(_) | ExprNode::Cos(_) => {}
+            _ if c == x => {
+                let abs = arena.abs(x);
+                values.push(arena.ln(abs));
+                formal.push(arena.ln(x));
+                others += 1;
+            }
+            _ => return None,
+        }
+    }
+    if exponentials == 0 || others == 0 {
+        return None;
+    }
+    let h = arena.add(&values);
+    let hf = crate::output::lambdify::compile(arena, h, &[&x_name]).ok()?;
+    let hf = |t: f64| hf(&[t]);
+    // Distances from the finite end (or from 0), increasing.
+    let steps: Vec<f64> = (-QUARTERS..=QUARTERS)
+        .map(|k| (f64::from(k) / 4.0).exp2())
+        .collect();
+    let xs: Vec<f64> = match (lo.is_finite(), hi.is_finite()) {
+        (true, true) => (1..SAMPLES)
+            .map(|i| lo + (hi - lo) * f64::from(i) / f64::from(SAMPLES))
+            .collect(),
+        (true, false) => steps.iter().map(|s| lo + s).collect(),
+        (false, true) => steps.iter().rev().map(|s| hi - s).collect(),
+        (false, false) => steps
+            .iter()
+            .rev()
+            .map(|s| -s)
+            .chain(std::iter::once(0.0))
+            .chain(steps.iter().copied())
+            .collect(),
+    };
+    let hs: Vec<f64> = xs.iter().map(|&t| hf(t)).collect();
+    let (best, _) = hs
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.is_finite())
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(Ordering::Equal))?;
+    if best == 0 || best + 1 >= xs.len() {
+        return None;
+    }
+    // Golden-section search between the neighbours of the best sample.
+    let (mut a, mut b) = (xs[best - 1], xs[best + 1]);
+    let ratio = 0.5 * (5f64.sqrt() - 1.0);
+    let (mut c1, mut c2) = (b - ratio * (b - a), a + ratio * (b - a));
+    let (mut h1, mut h2) = (hf(c1), hf(c2));
+    for _ in 0..200 {
+        if b - a <= 4.0 * f64::EPSILON * a.abs().max(b.abs()) {
+            break;
+        }
+        if h1 >= h2 {
+            (b, c2, h2) = (c2, c1, h1);
+            c1 = b - ratio * (b - a);
+            h1 = hf(c1);
+        } else {
+            (a, c1, h1) = (c1, c2, h2);
+            c2 = a + ratio * (b - a);
+            h2 = hf(c2);
+        }
+    }
+    let c = 0.5 * (a + b);
+    let formal = arena.add(&formal);
+    let d1 = crate::transforms::diff::diff(arena, formal, x);
+    let d2 = crate::transforms::diff::diff(arena, d1, x);
+    let curvature = crate::output::lambdify::compile(arena, d2, &[&x_name]).ok()?(&[c]);
+    (curvature.is_finite() && curvature < 0.0).then(|| (c, (-curvature).sqrt().recip()))
 }
 
 /// The points at which `Ex::integrate_numeric_with` splits its `f64`

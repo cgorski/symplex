@@ -15,7 +15,10 @@ use crate::calculus::summation::{self, SumOutcome};
 ///
 /// Returns `Some(result)` if a closed form was found (or the sum was proven
 /// to diverge to `±∞`, in which case the infinity is returned), `None`
-/// otherwise.
+/// otherwise — also for a closed form that holds only under a convergence
+/// condition the assumptions do not decide ([`SumOutcome::Conditional`]):
+/// its `Piecewise` would hold the formal `Sum` in its last branch, which
+/// `eval` would evaluate again (`Ex::summation` returns that `Piecewise`).
 pub(crate) fn eval_sum_symbolic(
     arena: &mut Arena,
     body: ExprId,
@@ -26,7 +29,9 @@ pub(crate) fn eval_sum_symbolic(
     match summation::summation(arena, body, var, lower, upper) {
         SumOutcome::Closed(id) => Some(id),
         SumOutcome::Divergent(Some(inf)) => Some(inf),
-        SumOutcome::Divergent(None) | SumOutcome::Unevaluated => None,
+        SumOutcome::Divergent(None) | SumOutcome::Conditional { .. } | SumOutcome::Unevaluated => {
+            None
+        }
     }
 }
 
@@ -44,7 +49,9 @@ pub(crate) fn eval_product_symbolic(
     match summation::product(arena, body, var, lower, upper) {
         SumOutcome::Closed(id) => Some(id),
         SumOutcome::Divergent(Some(inf)) => Some(inf),
-        SumOutcome::Divergent(None) | SumOutcome::Unevaluated => None,
+        SumOutcome::Divergent(None) | SumOutcome::Conditional { .. } | SumOutcome::Unevaluated => {
+            None
+        }
     }
 }
 

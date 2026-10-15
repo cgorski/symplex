@@ -105,6 +105,7 @@ fn to_f64(x: &BigFloat) -> f64 {
 }
 
 fn from_c64(z: Complex64, prec: usize) -> Complex {
+    // (A starting value: the certified iteration refines it.)
     let im = if z.im == 0.0 {
         BigFloat::new(prec)
     } else {
@@ -279,6 +280,7 @@ fn branch_point_series(
 fn hybrid_start(z: Complex64, real: bool, k: i64) -> Complex64 {
     let c = Complex64::new;
     let (x, y) = (z.re, if real { 0.0 } else { z.im });
+    // (Chooses a starting value only.)
     let imag_sign = if real || y == 0.0 {
         0
     } else if y > 0.0 {
@@ -460,6 +462,7 @@ pub(super) fn error_bound(z: &Complex, bz: Bound, w: &Complex, k: i64, prec: usi
     if !real_arg && accuracy::part_contains_zero(&z.1, bz.im) {
         let lo = to_f64(&z.0) - bz.re.exp2();
         let cut_end = if k == 0 { NEG_INV_E + 1e-9 } else { 1e-300 };
+        // (Only refuses, with a margin.)
         if lo.is_nan() || lo <= cut_end {
             return Bound::UNKNOWN;
         }

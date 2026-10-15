@@ -48,12 +48,19 @@ impl Expr<Numeric> {
     /// series, and a table of classical power series (`Σ xᵏ/k! = eˣ`, `sin`,
     /// `cos`, `atan`, …).
     ///
-    /// Convergence of a geometric series with a *symbolic* ratio is decided
-    /// only when the declared assumptions bound its modulus (`Σ (1/(a + 1))ᵏ
-    /// = 1/a` for a positive `a`); otherwise `Σ_{k≥0} rᵏ` stays
-    /// unevaluated.  Numeric ratios are decided exactly.  Case splits
-    /// respect the declared assumptions too: `Σ_{k=0}^{n} (a + 1)ᵏ` for a
-    /// positive `a` has no `a + 1 = 1` branch.
+    /// An infinite sum with a *symbolic* ratio (`Σ xᵏ`, `Σ k·xᵏ`, `Σ
+    /// xᵏ/k²`, `Σ xᵏ/k`, the table series) whose convergence the declared
+    /// assumptions decide gives the closed form (`Σ (1/(a + 1))ᵏ = 1/a` for
+    /// a positive `a`) or the divergence; otherwise it is
+    /// `Piecewise((closed form, region), (Sum, True))` with the exact
+    /// convergence region: `|x| < 1` for `Σ P(k)·xᵏ`, `|x| ≤ 1` for
+    /// `Σ xᵏ/k² = Li₂(x)`, `|x| ≤ 1 ∧ x ≠ 1` for `Σ xᵏ/k = −ln(1 − x)`
+    /// (`|x| < 1`, sufficient, for `Σ C(k + c, k)·xᵏ`, where the circle
+    /// depends on `c`).  Up to 0.53 these stayed unevaluated.  Numeric
+    /// ratios are decided exactly.  Case splits respect the declared
+    /// assumptions too: `Σ_{k=0}^{n} (a + 1)ᵏ` for a positive `a` has no
+    /// `a + 1 = 1` branch.  `eval` of a formal `Sum` node keeps such a sum
+    /// as it is (the `Piecewise` holds the `Sum` itself).
     ///
     /// Concrete limits with `upper < lower` give the empty sum `0` (SymPy
     /// uses Karr's convention, `Σ_{k=5}^{2} k = −7`); a closed form for a
@@ -89,6 +96,12 @@ impl Expr<Numeric> {
     /// // Σ_{k=1}^{∞} 1/k³ = ζ(3)
     /// let apery = k.powi(-3).summation(&k, &ctx.int(1), &ctx.infinity());
     /// assert_eq!(apery.to_string(), "zeta(3)");
+    ///
+    /// // Σ_{k=1}^{∞} x^k/k² = Li₂(x) where |x| ≤ 1
+    /// let li2 = (x.pow(&k) / k.powi(2)).summation(&k, &ctx.int(1), &ctx.infinity());
+    /// assert!(li2.to_string().starts_with("Piecewise(polylog(2, x) if 1 >= abs(x), "));
+    /// assert_eq!(li2.subs(&x, &ctx.rational(1, 2)).eval().to_string(),
+    ///            "-1/2*ln(2)^2 + 1/12*pi^2");
     /// ```
     #[must_use = "returns the evaluated sum; does not modify in place"]
     pub fn summation(&self, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
@@ -101,6 +114,13 @@ impl Expr<Numeric> {
         let id = match outcome {
             SumOutcome::Closed(id) => id,
             SumOutcome::Divergent(Some(inf)) => inf,
+            SumOutcome::Conditional { value, region } => {
+                let sum = inner
+                    .arena
+                    .intern(ExprNode::Sum(self.raw_id(), var_id, lo_id, hi_id));
+                let otherwise = inner.arena.bool_true;
+                inner.arena.piecewise(&[(value, region), (sum, otherwise)])
+            }
             SumOutcome::Divergent(None) | SumOutcome::Unevaluated => inner
                 .arena
                 .intern(ExprNode::Sum(self.raw_id(), var_id, lo_id, hi_id)),
@@ -110,8 +130,10 @@ impl Expr<Numeric> {
     }
 
     /// Like [`summation`](Self::summation), but returns `Err` when the sum
-    /// diverges ([`SymplexError::Divergent`]) or no closed form was found
-    /// ([`SymplexError::ComputationFailed`]).
+    /// diverges ([`SymplexError::Divergent`]), no closed form was found, or
+    /// the closed form holds only under a convergence condition the
+    /// assumptions do not decide ([`SymplexError::ComputationFailed`], the
+    /// message names the condition).
     ///
     /// # Examples
     ///
@@ -154,6 +176,16 @@ impl Expr<Numeric> {
                 operation: "summation",
                 reason: "the series diverges (terms do not tend to zero)".into(),
             }),
+            SumOutcome::Conditional { value, region } => {
+                let (value, region) = (self.wrap(value), self.wrap(region));
+                Err(SymplexError::ComputationFailed {
+                    operation: "summation",
+                    reason: format!(
+                        "the sum is {value} where {region}, a convergence condition the \
+                         assumptions do not decide"
+                    ),
+                })
+            }
             SumOutcome::Unevaluated => Err(SymplexError::ComputationFailed {
                 operation: "summation",
                 reason: "no closed form found".into(),
@@ -211,9 +243,14 @@ impl Expr<Numeric> {
         let id = match outcome {
             SumOutcome::Closed(id) => id,
             SumOutcome::Divergent(Some(inf)) => inf,
-            SumOutcome::Divergent(None) | SumOutcome::Unevaluated => inner
-                .arena
-                .intern(ExprNode::Product_(self.raw_id(), var_id, lo_id, hi_id)),
+            // (Products have no conditional outcome.)
+            SumOutcome::Divergent(None)
+            | SumOutcome::Conditional { .. }
+            | SumOutcome::Unevaluated => {
+                inner
+                    .arena
+                    .intern(ExprNode::Product_(self.raw_id(), var_id, lo_id, hi_id))
+            }
         };
         drop(inner);
         self.wrap(id)
@@ -244,10 +281,12 @@ impl Expr<Numeric> {
                 operation: "product",
                 reason: "the infinite product diverges".into(),
             }),
-            SumOutcome::Unevaluated => Err(SymplexError::ComputationFailed {
-                operation: "product",
-                reason: "no closed form found".into(),
-            }),
+            SumOutcome::Conditional { .. } | SumOutcome::Unevaluated => {
+                Err(SymplexError::ComputationFailed {
+                    operation: "product",
+                    reason: "no closed form found".into(),
+                })
+            }
         }
     }
 

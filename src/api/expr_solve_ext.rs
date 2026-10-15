@@ -796,6 +796,8 @@ pub fn solve_numeric_system_with(
 
 /// The declared property a computed `f64` value certainly lacks (beyond a
 /// relative tolerance of `10⁻⁹` for signs, `10⁻⁶` for integrality), if any.
+/// (The value is a Newton iterate, an approximation by contract; the
+/// tolerances only decide when to refuse it.)
 pub(crate) fn numeric_violation(
     a: &crate::base::assumptions::Assumptions,
     v: f64,
@@ -910,7 +912,7 @@ fn newton_system(
             }
         };
 
-        // Backtracking line search.
+        // Backtracking line search (steers the iteration only).
         let mut step = 1.0;
         loop {
             let x_new: Vec<f64> = x.iter().zip(&dx).map(|(a, d)| a + step * d).collect();
@@ -1036,7 +1038,7 @@ impl Ex {
         let (families, constants) = self.ode_families(func, var, "solve_ode_ivp")?;
         let accept = |candidate: &Ex| ode_holds_at(self, candidate, func, var, ics);
         if let Some(sol) = linear_cc_lagrange_ivp(self, func, var, ics)
-            && accept(&sol)
+            && !accept(&sol).is_false()
         {
             return Ok(sol);
         }
@@ -1286,12 +1288,17 @@ fn linear_cc_lagrange_ivp(ode: &Ex, func: &Ex, var: &Ex, ics: &[InitialCondition
 }
 
 /// Does `candidate` satisfy the ODE `ode = 0` (in `func(var)`) at the points
-/// of the initial conditions?  Decided numerically; a candidate that cannot
-/// be evaluated there (free constants, a singular point) is not rejected.
-/// This keeps a root of the constants' equations that fits the conditions
+/// of the initial conditions?  The residual there is decided by
+/// [`residual_is_zero`] (exact tests and certified values): `False` (a
+/// certified nonzero digit) rejects the candidate, `Unknown` leaves it to
+/// the caller's preference for proved candidates; a candidate that cannot be
+/// evaluated there (free constants, a singular point) is not rejected.
+/// This rejects a root of the constants' equations that fits the conditions
 /// but not the equation: `y′ = √y`, `y(0) = 1` has `C1 = ±2` for the family
-/// `(x/2 + C1/2)²`, and only `C1 = 2` gives `y′(0) = √y(0)`.
-fn ode_holds_at(ode: &Ex, candidate: &Ex, func: &Ex, var: &Ex, ics: &[InitialCondition]) -> bool {
+/// `(x/2 + C1/2)²`, and only `C1 = 2` gives `y′(0) = √y(0)`.  Up to 0.53 a
+/// residual below `10⁻⁸` counted as 0, so for `y(0) = 10⁻²⁰` the wrong
+/// branch (`y′(0) = −10⁻¹⁰`) passed as well.
+fn ode_holds_at(ode: &Ex, candidate: &Ex, func: &Ex, var: &Ex, ics: &[InitialCondition]) -> Truth {
     let mut chain = vec![func.clone()];
     let mut max_order = 0;
     for k in 1..=MAX_ODE_ORDER {
@@ -1315,16 +1322,19 @@ fn ode_holds_at(ode: &Ex, candidate: &Ex, func: &Ex, var: &Ex, ics: &[InitialCon
             points.push(&ic.x);
         }
     }
-    points.into_iter().all(|x0| {
-        let r = residual.subs(var, x0).eval_complex64();
-        let s = candidate.subs(var, x0).eval_complex64();
-        match (r, s) {
-            (Ok(r), Ok(s)) if r.re.is_finite() && r.im.is_finite() => {
-                r.norm() <= 1e-8 * (1.0 + s.norm())
-            }
-            _ => true,
+    let finite = |e: &Ex| {
+        e.eval_complex64()
+            .is_ok_and(|z| z.re.is_finite() && z.im.is_finite())
+    };
+    let mut holds = Truth::True;
+    for x0 in points {
+        let r = residual.subs(var, x0);
+        if !r.is_constant() || !finite(&r) || !finite(&candidate.subs(var, x0)) {
+            continue;
         }
-    })
+        holds = holds.and(residual_is_zero(&r));
+    }
+    holds
 }
 
 impl Ex {
@@ -1403,7 +1413,7 @@ pub(crate) fn apply_initial_conditions(
     var: &Ex,
     ics: &[InitialCondition],
     operation: &'static str,
-    accept: &dyn Fn(&Ex) -> bool,
+    accept: &dyn Fn(&Ex) -> Truth,
 ) -> Result<Ex, SymplexError> {
     if ics.is_empty() || constants.is_empty() {
         return Ok(general.clone());
@@ -1429,18 +1439,29 @@ pub(crate) fn fit_constants(
     eqs: &[Ex],
     operation: &'static str,
 ) -> Result<Ex, SymplexError> {
-    fit_constants_with(general, constants, eqs, operation, &|_| true)
+    fit_constants_with(general, constants, eqs, operation, &|_| Truth::True)
 }
 
-/// [`fit_constants`], keeping only a fit that `accept` approves (the
-/// substituted solution before simplification); a rejected root of a
-/// nonlinear system makes way for the next one.
+/// The error for a fitted solution that `accept` rejected.
+fn fit_rejected(sol: &Ex, operation: &'static str) -> SymplexError {
+    SymplexError::NoSolution {
+        operation,
+        reason: format!("the fitted solution {sol} does not satisfy the equation"),
+    }
+}
+
+/// [`fit_constants`], keeping only a fit that `accept` does not reject (the
+/// substituted solution before simplification); a root of a nonlinear
+/// system that it rejects makes way for the next one, and one it does not
+/// decide (`Unknown`: a residual zero to every digit the evaluator reaches
+/// but not proved, such as `W(e^{3 + e³}) − e³`) is taken only when no root
+/// is approved.
 pub(crate) fn fit_constants_with(
     general: &Ex,
     constants: &[Ex],
     eqs: &[Ex],
     operation: &'static str,
-    accept: &dyn Fn(&Ex) -> bool,
+    accept: &dyn Fn(&Ex) -> Truth,
 ) -> Result<Ex, SymplexError> {
     // Only constants that actually appear matter.
     let present: Vec<Ex> = constants
@@ -1461,11 +1482,8 @@ pub(crate) fn fit_constants_with(
             for (c, v) in &pairs {
                 sol = sol.subs(c, v);
             }
-            if !accept(&sol) {
-                return Err(SymplexError::NoSolution {
-                    operation,
-                    reason: format!("the fitted solution {sol} does not satisfy the equation"),
-                });
+            if accept(&sol).is_false() {
+                return Err(fit_rejected(&sol, operation));
             }
             // Substituting algebraic constants can swell the expression;
             // bound the work before simplifying.
@@ -1540,7 +1558,7 @@ fn fit_nonlinear(
     eqs: &[Ex],
     constants: &[Ex],
     operation: &'static str,
-    accept: &dyn Fn(&Ex) -> bool,
+    accept: &dyn Fn(&Ex) -> Truth,
 ) -> Result<Ex, SymplexError> {
     let mut stack = vec![FitState {
         sol: general.clone(),
@@ -1548,6 +1566,7 @@ fn fit_nonlinear(
         unsolved: constants.to_vec(),
     }];
     let mut last_error: Option<SymplexError> = None;
+    let mut undecided: Option<Ex> = None;
     let mut explored = 0usize;
     'states: while let Some(state) = stack.pop() {
         explored += 1;
@@ -1585,16 +1604,13 @@ fn fit_nonlinear(
         }
         if open.is_empty() {
             // Constants the conditions do not pin down stay free.
-            if accept(&state.sol) {
-                return Ok(state.sol);
+            match accept(&state.sol) {
+                Truth::True => return Ok(state.sol),
+                Truth::Unknown => {
+                    undecided.get_or_insert(state.sol);
+                }
+                Truth::False => last_error = Some(fit_rejected(&state.sol, operation)),
             }
-            last_error = Some(SymplexError::NoSolution {
-                operation,
-                reason: format!(
-                    "the fitted solution {} does not satisfy the equation",
-                    state.sol
-                ),
-            });
             continue;
         }
         open.sort_by_key(|(n, _)| *n);
@@ -1638,6 +1654,9 @@ fn fit_nonlinear(
             }
         }
         // No open equation could be solved for any of its constants.
+    }
+    if let Some(sol) = undecided {
+        return Ok(sol);
     }
     Err(
         last_error.unwrap_or_else(|| SymplexError::ComputationFailed {

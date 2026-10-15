@@ -234,8 +234,8 @@ fn exp_over(z: &Complex, w: &mut Wp<'_>) -> Complex {
 }
 
 /// `Γ(a)` for `a` off the poles: `arb_gamma_real` for a real `a`,
-/// `gamma_complex` otherwise, to `p` bits relative.
-fn gamma_of(a: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+/// `gamma_complex` otherwise, to `p` bits relative (also `cspecial.rs`).
+pub(super) fn gamma_of(a: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
     let p = w.bits();
     if a.1.is_zero() {
         let af = to_f64(&a.0).unwrap_or(f64::INFINITY).abs();
@@ -273,6 +273,8 @@ fn positive_int(a: &Complex) -> Option<u64> {
 fn remainder_factor(re_a: f64, im_a: f64, theta: f64, n: usize) -> f64 {
     let m = n as f64 + 1.0 - re_a;
     let tau = im_a.abs();
+    // (The side only restricts the rays tried: every ray gives a bound, and
+    // the bound is symmetric in the sign of `θ`.)
     let side = if theta > 0.0 {
         1.0
     } else if theta < 0.0 {
@@ -332,6 +334,8 @@ fn asymptotic_terms(re_a: f64, im_a: f64, abs_z: f64, theta: f64, wp: usize) -> 
         if k >= start && lt + remainder_factor(re_a, im_a, theta, k) < target {
             return Some(k);
         }
+        // (A terminating expansion in `f64`; `asymptotic_bracket` bounds the
+        // actual next term.)
         let f = (re_a - k as f64 - 1.0).hypot(im_a);
         if f == 0.0 {
             return Some(k + 1);
