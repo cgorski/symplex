@@ -522,8 +522,11 @@ impl Expr<Numeric> {
     ///
     /// When evaluated (`.eval()`), if `lower` and `upper` are concrete integers,
     /// the product is computed by substituting each integer value for `var` in
-    /// `body`.  Use [`product_over`](Self::product_over) for closed forms with
-    /// symbolic or infinite bounds.
+    /// `body`; reversed limits follow Karr's convention (`upper = lower − 1` is
+    /// the empty product `1`, and `Π_{k=a}^{b} = 1/Π_{k=b+1}^{a−1}` for `b <
+    /// a − 1`; up to 0.55 every reversed range gave `1`).  Use
+    /// [`product_over`](Self::product_over) for closed forms with symbolic or
+    /// infinite bounds.
     pub fn symbolic_product(body: &Ex, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
         let var_id = body.checked_id(var);
         let lower_id = body.checked_id(lower);
@@ -2648,10 +2651,17 @@ impl Expr<Numeric> {
 
     /// Attempt closed-form evaluation of a hypergeometric sum using Gosper's algorithm.
     ///
-    /// Given a symbolic sum `Σ_{k=lower}^{upper} f(k)`, tries to find a
-    /// hypergeometric antidifference via Gosper's algorithm (1978).
-    /// Returns `Some(result)` with the closed-form expression, or `None`
-    /// if the sum is not Gosper-summable.
+    /// Given a symbolic sum `Σ_{k=lower}^{upper} f(k)` (a `Sum` node), tries
+    /// to find a hypergeometric antidifference via Gosper's algorithm (1978)
+    /// and returns the closed form, or `self` unchanged if the sum is not
+    /// Gosper-summable.  The closed form is checked as
+    /// [`summation`](Self::summation) checks it: at the empty sum and the
+    /// first term (a lower-limit term the antidifference gets wrong is summed
+    /// apart), and below the lower limit with Karr's convention; a form that
+    /// holds only for `upper ≥ h` is returned as `Piecewise((closed form,
+    /// upper ≥ h), (Sum, True))` unless the assumptions decide it.  Up to
+    /// 0.55 the antidifference was returned unchecked:
+    /// `Σ_{k=−1}^{n} C(k + 2, k)/2ᵏ` was `nan`.
     ///
     /// # Examples
     ///
@@ -2661,27 +2671,39 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let k = ctx.symbol("k");
     /// let n = ctx.symbol("n");
-    /// let body = ctx.int(2).pow(&k);
-    /// let s = Ex::symbolic_sum(&body, &k, &ctx.int(0), &n);
-    /// // gosper_sum extracts bounds and body from a Sum node
-    /// let _result = s.gosper_sum(&k);
+    /// // Σ_{k=0}^{n} k·k! = (n + 1)! − 1
+    /// let s = Ex::symbolic_sum(&(&k * &k.factorial()), &k, &ctx.int(0), &n);
+    /// let closed = s.gosper_sum(&k);
+    /// assert_eq!(closed.subs_i64(&n, 4).eval().to_string(), "119");
+    ///
+    /// // C(1, −1) = 0: the lower-limit term is summed apart (it was `nan`)
+    /// let t = ctx.parse("binomial(k + 2, k)/2^k").unwrap();
+    /// let s = Ex::symbolic_sum(&t, &k, &ctx.int(-1), &n).gosper_sum(&k);
+    /// assert_eq!(s.subs_i64(&n, 3).eval().to_string(), "21/4");
     /// ```
     #[must_use]
     pub fn gosper_sum(&self, var: &Ex) -> Ex {
+        use crate::calculus::summation::{self, SumOutcome};
         let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
         let node = inner.arena.node(self.raw_id()).clone();
-        if let crate::base::node::ExprNode::Sum(body, _sum_var, lower, upper) = node {
-            let result =
-                crate::calculus::gosper::gosper_sum(&mut inner.arena, body, var_id, lower, upper);
+        let crate::base::node::ExprNode::Sum(body, _sum_var, lower, upper) = node else {
             drop(inner);
-            if let Some(id) = result {
-                return self.wrap(id);
+            return self.clone();
+        };
+        let id = match summation::gosper_sum_checked(&mut inner.arena, body, var_id, lower, upper) {
+            SumOutcome::Closed(id) => id,
+            SumOutcome::Divergent(Some(inf)) => inf,
+            SumOutcome::Conditional { value, region } => {
+                let otherwise = inner.arena.bool_true;
+                inner
+                    .arena
+                    .piecewise(&[(value, region), (self.raw_id(), otherwise)])
             }
-        } else {
-            drop(inner);
-        }
-        self.clone()
+            SumOutcome::Divergent(None) | SumOutcome::Unevaluated => self.raw_id(),
+        };
+        drop(inner);
+        self.wrap(id)
     }
 
     /// Like [`gosper_sum`](Self::gosper_sum), but returns `Err` if the result
@@ -5717,7 +5739,9 @@ impl Expr<Numeric> {
     /// node expands to an explicit polynomial in `x₁`, `x₂`;
     /// `∂/∂x₂ = x₂^{a−1}(1 − x₂)^{b−1}`, `∂/∂x₁ = −x₁^{a−1}(1 − x₁)^{b−1}`
     /// (parameter derivatives stay formal).  Numerically evaluated for
-    /// `a, b > 0` and `0 ≤ x₁, x₂ ≤ 1`.
+    /// `0 ≤ x₁, x₂ ≤ 1` where the integral converges: a shape `a ≤ 0` needs
+    /// limits above 0, a shape `b ≤ 0` limits below 1 (`betainc(−1/2, 2, 1/4,
+    /// 1/2) = 0.7573593129`; since 0.56).
     ///
     /// ```
     /// use symplex::prelude::*;

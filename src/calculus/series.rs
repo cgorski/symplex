@@ -222,6 +222,10 @@ pub(crate) fn vanishes_identically(arena: &mut Arena, c: ExprId) -> crate::base:
         let verdict = crate::calculus::calculus_util::hidden_zero(arena, c);
         return crate::calculus::calculus_util::zero_reading(verdict);
     }
+    // Not nonzero for generic parameters when piecewise (`0^y`, `δ(1/2, y)`).
+    if crate::simplify::identically_zero::may_vanish_on_a_region(arena, c) {
+        return Truth::Unknown;
+    }
     if walk::has_unevaluated(arena, c)
         || !matches!(arena.node(c), ExprNode::Add(_))
         || walk::post_order_ids(arena, c).len() > MAX_PARAM_ZERO_SIZE
@@ -229,6 +233,41 @@ pub(crate) fn vanishes_identically(arena: &mut Arena, c: ExprId) -> crate::base:
     {
         return Truth::False;
     }
+    let key = (arena.serial(), c);
+    if let Some(t) = VANISHES_MEMO.with(|m| m.borrow().get(&key).copied()) {
+        return t;
+    }
+    let t = sampled_vanishing(arena, c, &syms);
+    VANISHES_MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= VANISHES_MEMO_ENTRIES {
+            m.clear();
+        }
+        m.insert(key, t);
+    });
+    t
+}
+
+/// Most entries of [`VANISHES_MEMO`] before it is cleared.
+const VANISHES_MEMO_ENTRIES: usize = 4096;
+
+thread_local! {
+    /// The verdicts of [`vanishes_identically`] on sums with parameters, by
+    /// (arena serial, constant).  The test is a fixed procedure (samples at
+    /// fixed points and digits, then exact identities), so a repeated
+    /// question has the same answer.  Up to 0.55 the limits taken inside the
+    /// differentiation fallback asked it again for the same coefficient sums
+    /// and sampled `K(y)`, `E(y)` at complex `y` each time: 41 times for one
+    /// sum in `series(elliptic_e(x)·Ei(elliptic_k(x + y)), x, 0, 4)`, and 33 s
+    /// of the 43 s of `series(elliptic_e(x)·Ei(elliptic_pi(x, y)), x, 0, 4)`.
+    static VANISHES_MEMO: std::cell::RefCell<FxHashMap<(u64, ExprId), crate::base::truth::Truth>> =
+        std::cell::RefCell::new(FxHashMap::default());
+}
+
+/// The sampling and the exact confirmation of [`vanishes_identically`] for
+/// a sum `c` with the parameters `syms`.
+fn sampled_vanishing(arena: &mut Arena, c: ExprId, syms: &[ExprId]) -> crate::base::truth::Truth {
+    use crate::base::truth::Truth;
     for sample in 0..2 {
         let mut v = c;
         for (k, &s) in syms.iter().enumerate() {
@@ -281,6 +320,12 @@ pub(crate) fn settle_parametric(arena: &mut Arena, c: ExprId) -> ZeroTest {
     };
     if arena.is_symbol_free(v) {
         return settled;
+    }
+    // A piecewise parameter (`0^y`, `H(y)`, `δ(1/2, y)`, `⌊y⌋`) vanishes on a
+    // region, so it is not nonzero for generic values: `series(acosh(P₂(x))/(x²
+    // + H(y)), x)` divided by `H(y)` (found merging wave 11).
+    if crate::simplify::identically_zero::may_vanish_on_a_region(arena, v) {
+        return ZeroTest::Undecided(v);
     }
     let v = match parameter_parts(arena, v) {
         ParameterParts::Decided(settled) => return settled,
@@ -1311,11 +1356,33 @@ impl TSeries {
         }
     }
 
-    /// `1/a`.  Returns `None` if `a` is zero to the known precision.
+    /// `1/a`.  Returns `None` if `a` is zero to the known precision or its
+    /// leading coefficient is proved 0 (not structurally), and a series
+    /// with nothing known, cut short as `undecided`, if
+    /// that coefficient is 0 to the precision reached but not proved: a
+    /// function value can be 0 without being structurally 0
+    /// (`besselj(−1/2, π/2)`; up to 0.55 `series(1/besselj(−1/2, π/2 + x),
+    /// x, 0, 4)` and the limit at 0 divided by it).
     fn inverse(arena: &mut Arena, a: &TSeries) -> Option<TSeries> {
         let a = a.clone().normalized(arena);
         let v = a.leading_exponent(arena)?;
         let c0 = a.coeffs[0];
+        let c0 = if arena.as_num(c0).is_some() {
+            c0
+        } else {
+            match settle_parametric(arena, c0) {
+                ZeroTest::Nonzero(c) => c,
+                ZeroTest::Zero => return None,
+                ZeroTest::Undecided(_) => {
+                    return Some(TSeries {
+                        shift: -v,
+                        known: -v,
+                        coeffs: Vec::new(),
+                        undecided: true,
+                    });
+                }
+            }
+        };
         let mut rel_known = a.known - v; // relative precision of 1 + w
         let mut undecided = a.undecided;
         // w_i = a_{v+i}/c0 for i ≥ 1
@@ -2669,6 +2736,22 @@ fn locally_real(arena: &mut Arena, u: ExprId, var: ExprId, mode: Mode) -> bool {
                     r(arena, a) && tends_into(arena, a, &inside_unit)
                 }
                 ExprNode::Acosh(a) => r(arena, a) && tends_into(arena, a, &above_one),
+                // `K(m)`, `E(m)` are real for real `m < 1` (since
+                // [`complete_elliptic_at_zero`] they expand at `m → 0`, and
+                // `asin(elliptic_k(x))` on the cut of `asin` was undecided
+                // until the differentiation fallback ran out of time).
+                ExprNode::Lib(
+                    crate::base::libfn::LibFn::EllipticK | crate::base::libfn::LibFn::EllipticE,
+                    ref args,
+                ) if args.len() == 1 => {
+                    let below_one = |arena: &mut Arena, v: ExprId| {
+                        let one = arena.one;
+                        let d = arena.sub(one, v);
+                        let d = eval::eval(arena, d);
+                        constant_sign(arena, d).is_positive().is_true()
+                    };
+                    r(arena, args[0]) && tends_into(arena, args[0], &below_one)
+                }
                 _ => false,
             }
         };
@@ -3149,7 +3232,18 @@ fn structural_series(
             return bessel_series(arena, f, args[0], &u, var);
         }
         ExprNode::Lib(crate::base::libfn::LibFn::EllipticPi, ref args) if args.len() == 2 => {
-            return elliptic_pi_at_small_n(arena, args[0], args[1], var, mode, cache);
+            return match elliptic_pi_at_small_n(arena, args[0], args[1], var, mode, cache) {
+                Err(Obstruction::Unknown) => {
+                    elliptic_pi_at_small_m(arena, args[0], args[1], var, cache)
+                }
+                r => r,
+            };
+        }
+        ExprNode::Lib(
+            f @ (crate::base::libfn::LibFn::EllipticK | crate::base::libfn::LibFn::EllipticE),
+            ref args,
+        ) if args.len() == 1 => {
+            return complete_elliptic_at_zero(arena, f, args[0], cache);
         }
         ref n if n.func_head().is_some_and(has_special_series) => {
             return special_series(arena, &node, var, mode, cache);
@@ -3261,6 +3355,143 @@ fn structural_series(
         _ => None,
     };
     analytic.ok_or(Obstruction::Unknown)
+}
+
+/// `K(m)` and `E(m)` where the parameter `m` tends to 0: `(π/2)·Σₖ
+/// ((½)ₖ/k!)²·mᵏ` and `(π/2)·Σₖ (−½)ₖ(½)ₖ/k!²·mᵏ` (`₂F₁(±½, ½; 1; m)`,
+/// DLMF 19.5.1 and 19.5.2; convergent for `|m| < 1`).  Their derivatives
+/// divide by `m`, so [`compose_at_constant`] cannot expand at this point, and
+/// up to 0.55 `series(elliptic_k(x), x, 0, 4)` stayed unevaluated; in a
+/// product the differentiation fallback of the whole product then asked the
+/// limit engine for its derivatives (`series(elliptic_e(x)·Ei(elliptic_pi(x,
+/// y)), x, 0, 4)` refused after 33 s).  [`Obstruction::Unknown`] when `m` does
+/// not visibly tend to 0: the other routes are tried as before.
+fn complete_elliptic_at_zero(
+    arena: &mut Arena,
+    f: crate::base::libfn::LibFn,
+    m_arg: ExprId,
+    cache: &FxHashMap<ExprId, Option<TSeries>>,
+) -> Result<TSeries, Obstruction> {
+    let m_ts = child(cache, m_arg)?.normalized(arena);
+    if m_ts.shift < 1 || m_ts.coeffs.is_empty() {
+        return Err(Obstruction::Unknown);
+    }
+    // `mᵏ` with `k > known` is beyond the precision.
+    let terms = usize::try_from(m_ts.known.max(0)).map_err(|_| Obstruction::Unknown)? + 1;
+    // `(a)ₖ(½)ₖ/k!²` with `a = ½` (`K`) or `a = −½` (`E`), by its ratio
+    // `(a + k − 1)(k − ½)/k²`.
+    let a = if f == crate::base::libfn::LibFn::EllipticK {
+        Q::new(1.into(), 2.into())
+    } else {
+        Q::new((-1).into(), 2.into())
+    };
+    let half = Q::new(1.into(), 2.into());
+    let half_pi = {
+        let h = rat_expr(arena, half.clone());
+        let pi = arena.pi;
+        arena.mul(&[h, pi])
+    };
+    let mut c = Q::one();
+    let mut coeffs = Vec::with_capacity(terms);
+    for k in 0..terms {
+        if k > 0 {
+            let kq = rat_i(k as i64);
+            c = c * (&a + &kq - Q::one()) * (&kq - &half) / (&kq * &kq);
+        }
+        let ck = rat_expr(arena, c.clone());
+        let term = arena.mul(&[ck, half_pi]);
+        coeffs.push(eval::eval(arena, term));
+    }
+    Ok(TSeries::compose(
+        arena,
+        &|ar: &mut Arena, k: usize| coeffs.get(k).copied().unwrap_or(ar.zero),
+        &m_ts,
+    ))
+}
+
+/// `Π(n | m)` where the parameter `m` tends to 0 and `n` is a constant off
+/// the cut `[1, ∞)` of `Π(n | 0) = π/(2√(1 − n))` (DLMF §19.6): `Σₖ
+/// (½)ₖ/k!·Iₖ(n)·mᵏ` (the expansion of `1/√(1 − m·sin²θ)` under the integral),
+/// `Iₖ(n) = ∫₀^{π/2} sin^{2k}θ/(1 − n·sin²θ) dθ`, `I₀ = π/(2√(1 − n))`,
+/// `n·Iₖ₊₁ = Iₖ − (π/2)·(½)ₖ/k!`.  The derivatives of `Π` in `m` hold `E(m)`,
+/// whose derivative divides by `m`, so the composition rule cannot expand
+/// here; since [`complete_elliptic_at_zero`] the differentiation fallback
+/// went further into the limits of every derivative before it refused
+/// (`series(elliptic_pi(−1, tanh x) + x, x, 0, 4)` 0.4 → 7.7 s in a draft).  A
+/// constant `n` on the cut, or not decided off it, is
+/// [`Obstruction::CutUndecided`] (refused without the fallback; the value
+/// there is a convention of the principal value); an `n` with the variable
+/// or parameters, or `m` not visibly tending to 0, is [`Obstruction::Unknown`].
+fn elliptic_pi_at_small_m(
+    arena: &mut Arena,
+    n_arg: ExprId,
+    m_arg: ExprId,
+    var: ExprId,
+    cache: &FxHashMap<ExprId, Option<TSeries>>,
+) -> Result<TSeries, Obstruction> {
+    let m_ts = child(cache, m_arg)?.normalized(arena);
+    if m_ts.shift < 1
+        || m_ts.coeffs.is_empty()
+        || walk::contains(arena, n_arg, var)
+        || !walk::free_symbols(arena, n_arg).is_empty()
+    {
+        return Err(Obstruction::Unknown);
+    }
+    let n = eval::eval(arena, n_arg);
+    if arena.is_zero_structural(n) || !is_finite_constant(arena, n, var) {
+        return Err(Obstruction::Unknown);
+    }
+    let off_cut = crate::transforms::realness::imaginary_part_sign(arena, n)
+        .is_nonzero()
+        .is_true()
+        || {
+            let one = arena.one;
+            let d = arena.sub(one, n);
+            let d = eval::eval(arena, d);
+            crate::poly::algebraic::sign_checked(arena, d) == Some(1)
+                && crate::poly::algebraic::sign_checked(arena, n).is_some_and(|s| s != 0)
+        };
+    if !off_cut {
+        return Err(Obstruction::CutUndecided);
+    }
+    let terms = usize::try_from(m_ts.known.max(0)).map_err(|_| Obstruction::Unknown)? + 1;
+    let half_pi = {
+        let h = rat_expr(arena, Q::new(1.into(), 2.into()));
+        let pi = arena.pi;
+        arena.mul(&[h, pi])
+    };
+    let inv_n = {
+        let m1 = arena.neg_one;
+        let p = arena.pow(n, m1);
+        eval::eval(arena, p)
+    };
+    let mut i_k = {
+        let one = arena.one;
+        let d = arena.sub(one, n);
+        let s = arena.sqrt(d);
+        let p = arena.div(half_pi, s);
+        eval::eval(arena, p)
+    };
+    // `(½)ₖ/k!`, by its ratio `(k + ½)/(k + 1)`.
+    let mut q = Q::one();
+    let mut coeffs = Vec::with_capacity(terms);
+    for k in 0..terms {
+        let qk = rat_expr(arena, q.clone());
+        let c = arena.mul(&[qk, i_k]);
+        coeffs.push(eval::eval(arena, c));
+        let shifted = arena.mul(&[qk, half_pi]);
+        let d = arena.sub(i_k, shifted);
+        let next = arena.mul(&[d, inv_n]);
+        let next = crate::transforms::expand::expand(arena, next);
+        i_k = eval::eval(arena, next);
+        let kq = rat_i(k as i64);
+        q = q * (&kq + Q::new(1.into(), 2.into())) / (&kq + Q::one());
+    }
+    Ok(TSeries::compose(
+        arena,
+        &|ar: &mut Arena, k: usize| coeffs.get(k).copied().unwrap_or(ar.zero),
+        &m_ts,
+    ))
 }
 
 /// `Π(n | m)` where the characteristic `n` tends to 0: `Σⱼ nʲ·Jⱼ(m)` with
@@ -3764,16 +3995,27 @@ fn sign_series(
     let k = g.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
     let c = g.coeff_at(arena, k);
     // A non-zero constant term of unknown sign: `sign(a + x)` is
-    // `sign(a)` near 0, which the differentiation fallback finds.
+    // `sign(a)` near 0, which the differentiation fallback finds — unless
+    // it is certified non-real: `H` has no value there, and `sign(z) =
+    // z/|z|` is not a function of `z` with a Taylor series.  Up to 0.55 the
+    // fallback was tried and refused slowly (0.5 s for `H(K(π + x))`, at
+    // every precision and in the limits of an enclosing fallback:
+    // `series(Chi(H(elliptic_pi(x, π))), x, 0, 4)` took 8.7 s to refuse).
     let c_positive = match constant_sign(arena, c) {
         SignSet::POSITIVE => true,
         SignSet::NEGATIVE => false,
         _ => {
-            return Err(if k == 0 {
-                Obstruction::Unknown
-            } else {
-                Obstruction::NoExpansion
-            });
+            return Err(
+                if k == 0
+                    && !crate::transforms::realness::imaginary_part_sign(arena, c)
+                        .is_nonzero()
+                        .is_true()
+                {
+                    Obstruction::Unknown
+                } else {
+                    Obstruction::NoExpansion
+                },
+            );
         }
     };
     if !g.coeffs.iter().all(|&co| is_known_real(arena, co)) {
@@ -5966,10 +6208,13 @@ fn log_bessel_series(
 /// (`0⁺`) for expansions at `±∞`, two-sided otherwise.  A limit that does
 /// not exist or is not finite means there is no Taylor expansion.
 ///
-/// `failed_at` is set to the order `k < n` of a coefficient that refused
-/// (a derivative without a value, too large, or without a finite limit):
-/// at every precision above `k` the same derivative refuses the same way
-/// ([`expand_from_side`] does not ask again).
+/// `failed_at` is set to the order `k ≤ n` of a coefficient that refused
+/// (a derivative without a value, too large, or without a finite limit;
+/// at `k = n` the remainder's derivative, unbounded from a side): at every
+/// precision above `k` the same derivative refuses the same way
+/// ([`expand_from_side`] does not ask again).  Up to 0.55 a refusal of the
+/// remainder was not recorded, and `series(Chi(H(elliptic_pi(x, π))), x, 0,
+/// 4)` differentiated `H(Π(x | π))` and took its limits at every precision.
 fn taylor_by_differentiation(
     arena: &mut Arena,
     expr: ExprId,
@@ -5981,7 +6226,7 @@ fn taylor_by_differentiation(
     let side = mode.side;
     let zero = arena.zero;
     let mut refused_at = |k: i64| {
-        if k < n {
+        if k <= n {
             *failed_at = Some(k);
         }
         None
@@ -5995,6 +6240,27 @@ fn taylor_by_differentiation(
     // expanded to `0` from both sides.  With such nodes every coefficient
     // is the limit from the side of the expansion.
     let directional = crate::calculus::limit::has_directional_nodes(arena, expr, var);
+    // `KroneckerDelta(a, b)` is a step in `x` (1 where `a = b`, 0 elsewhere):
+    // its derivatives are 0, and its value at the point is the value nearby
+    // only when `a − b` is a nonzero number there (`KroneckerDelta(1, x)` is 0
+    // near 0).  Where `a − b` vanishes at the point (`KroneckerDelta(0, x)` was
+    // "expanded" to 1) or is not a number (`KroneckerDelta(x, y)`) there is no
+    // Taylor series (found merging wave 11).
+    let steps: Vec<(ExprId, ExprId)> = walk::post_order_ids(arena, expr)
+        .into_iter()
+        .filter_map(|id| match *arena.node(id) {
+            ExprNode::KroneckerDelta(a, b) if walk::contains(arena, id, var) => Some((a, b)),
+            _ => None,
+        })
+        .collect();
+    for (a, b) in steps {
+        let d = arena.sub(a, b);
+        let d0 = crate::transforms::subs::subs(arena, d, var, zero);
+        let d0 = eval::eval(arena, d0);
+        if !arena.as_num(d0).is_some_and(|q| !q.is_zero()) {
+            return refused_at(0);
+        }
+    }
     // Coefficients `0..n` are claimed exact up to `O(xⁿ)`, which needs the
     // `n`-th derivative bounded near the point (Taylor's remainder): its
     // limit is taken too and must be finite.  Without it `1/ln x` "expanded"
@@ -6028,7 +6294,7 @@ fn taylor_by_differentiation(
                 break;
             }
             if !mode.limits {
-                return None;
+                return refused_at(n);
             }
             use crate::calculus::limit::Direction;
             let dirs: &[Direction] = match side {
@@ -6041,7 +6307,7 @@ fn taylor_by_differentiation(
                     crate::calculus::limit::limit_dir_generic(arena, current, var, zero, dir)
                     && !is_finite_constant(arena, lim, var)
                 {
-                    return None;
+                    return refused_at(n);
                 }
             }
             break;

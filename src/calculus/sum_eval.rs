@@ -40,7 +40,9 @@ pub(crate) fn eval_sum_symbolic(
 /// Attempt closed-form evaluation of `Π_{var=lower}^{upper} body`.
 ///
 /// Same contract as [`eval_sum_symbolic`]; called from the `Product_` arm of
-/// `transforms::eval`.
+/// `transforms::eval`.  A closed form that holds only for the upper limits
+/// `n ≥ n₀` the assumptions do not decide (D13: `Π_{k=1}^{n} √(k + 5/2)`,
+/// `n ≥ −3`) is `None`: `eval` keeps the formal `Product`.
 pub(crate) fn eval_product_symbolic(
     arena: &mut Arena,
     body: ExprId,

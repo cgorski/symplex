@@ -197,8 +197,12 @@ fn elliptic_pi_beyond_its_real_range() {
 /// `(1/3, 1/2 + i)` → `1.8109025406424515186598940833296 +
 /// 0.57821800391523147333065927482702j`, `(5/4, −3)` →
 /// `0.43002546026952616151202597978295 − 1.7037678315574018838163037798724j`.
-/// Refused up to 0.54.  Arguments `1 − m`, 1, `1 − n` in no half-plane stay
-/// refused (mpmath integrates there first).
+/// Refused up to 0.54.  Arguments `1 − m`, 1, `1 − n` in no half-plane were
+/// refused up to 0.55 (mpmath integrates there first); since 0.56 they go
+/// through `Π(n | m) = K(m) − Π(m/n | m) + (π/2)/(√(1 − n)√(1 − m/n))`:
+/// `(1/2 − i/3, 2 + i)` → `1.995339437 + 0.9025251621i` (mpmath `ellippi`
+/// and a quadrature on the real path agree to 40 digits; this test pinned
+/// the refusal).
 #[test]
 fn elliptic_pi_of_complex_arguments() {
     let ctx = Context::new();
@@ -226,10 +230,10 @@ fn elliptic_pi_of_complex_arguments() {
     ] {
         assert_eq!(decimal(&ctx, s, 30), want, "{s}");
     }
-    assert!(matches!(
-        parse(&ctx, "elliptic_pi(1/2 - I/3, 2 + I)").eval_decimal(10),
-        Err(SymplexError::Unevaluable { .. })
-    ));
+    assert_eq!(
+        decimal(&ctx, "elliptic_pi(1/2 - I/3, 2 + I)", 10),
+        "1.995339437 + 0.9025251621*i"
+    );
 }
 
 // ── Item 4: an order slot at infinity must be known finite ─────────────────

@@ -1257,8 +1257,14 @@ refutation an exact negative value at a rational point).  A symbolic result
 built from a candidate found numerically or by `solve` is accepted on exact
 evidence: the inverse of a transformed distribution must be real and
 continuous on the whole image and invert the map at one point
-(`wrappers::inverse_on_support`); values are ordered by their exact order
-(`order::exact_order`).
+(`wrappers::inverse_on_support`); its candidates are `solve`'s roots for an
+image variable carrying the image's sign (`wrappers::image_symbol`; never
+redeclare a caller's symbol), a conditional root counts when its condition
+holds on the whole image (`roots_on_image`), and a principal odd root is
+replaced by the real one only when its twin is one of the roots
+(`real_root_form`); values are ordered by their exact order
+(`order::exact_order`).  A decimal read from `evalf` is compared unscaled
+(`inequalities::Decimal`): never form `10^exp` of a sample value.
 
 **Printing complex values.**  A result read as a number (`eval_decimal`,
 `eval_f64`, `eval_complex64`) shows a part unless it is 0 within its error
@@ -1294,7 +1300,10 @@ pursues a part whose ball contains 0 next to a part with its digits to the
 cap before dropping it.  `Π(n | m)` beyond Carlson's half-plane is reached
 by exact transformations (a common rotation, the principal value plus half
 the residue for a real `n > 1`, the split at `1 − m sin²θ = 0`), never by a
-numerical initial integral; what they do not reach is refused.  An
+numerical initial integral; what they do not reach is refused.  `K(m)`,
+`E(m)` for real `m > 1` use the reciprocal-modulus transformation (DLMF
+19.7.3), each part a real integral; Carlson's `R_F`/`R_D`/`R_J` sum the
+degree-5 series of the remainder with a proven bound.  An
 argument that is infinite or undefined only to the working precision is a
 domain error the precision search retries, never a non-convergence.
 
@@ -1337,7 +1346,10 @@ crossing: a linear argument `u = αx + β` meets the real axis at `c = −im
 β/im α`, and when `u(c)` is proved on the cut each cut function of `u` is
 continued from the side `u` comes from (`definite::side_value`: `ln`, `Ci`,
 `Chi` step by `2πi`, `uᵃ` by `e^{2πia}`, `Ei` takes the mean on the axis);
-a crossing found only by sampling refuses.  A polynomial or rational
+a crossing found only by sampling refuses.  The multiple of `2πi` that joins
+the two sides of a spiral antiderivative is an exact integer part
+(`integrate::spiral_turns`), never an `f64`; the singular points of
+`R(e^{λx})` are located exactly (`definite::exp_rational_scan`).  A polynomial or rational
 argument `u = P/Q` meets the real axis at the real roots of `im(P·Q̄)`
 (Sturm isolation; on the cut where `re(P·Q̄) < 0`), located whatever the
 samples see (`definite::located_polynomial_crossings`).  An antiderivative of
@@ -1387,7 +1399,15 @@ point) or a constant with a certified value (`finite_argument`); `Π` folds
 only where the other argument is known not to be 1 (`off_the_pole`).  The
 constructors of `Si`, `Ci`, `Ei`, `li`, `ζ`, `ψ⁽ⁿ⁾` are the `eval_*`
 functions of `transforms/eval.rs`; their values at infinity live there.
-`eval` evaluates no closed form at an argument with `±∞` in it.
+`eval` evaluates no closed form at an argument with `±∞` in it.  A fold
+that holds for every finite value of one argument when another is special
+(`Γ(s, ∞) = 0`, `E_ν(∞) = 0`, `J_ν(∞) = 0`, `γ(s, 0) = 0`) checks that
+argument with `canon::finite_slot`.  A function at `zoo` has no value unless
+tabulated, and one left unevaluated at a `zoo` argument (not a user
+function, not a degree-0 polynomial) makes `0·f` `nan`
+(`canon::unevaluated_at_complex_infinity`).  `Min`/`Max` read their arguments
+as real: `±∞ + c` is `±∞` there, and `+∞` absorbs a `Max`, unless an
+argument is known not to be real.
 
 **Symbols pinned to a value.**  A symbol whose assumptions allow one value
 (`zero`, `even ∧ prime`, a positive integer neither prime nor composite:
@@ -1420,6 +1440,18 @@ symbol finite, every constant part finite, `b^e` with `e ≥ 0` or `b` known
 nonzero, every table function off its `Poles`).  Internal code keeps
 `AssumptionCache::query`, whose generic reading `0·(1/x) = 0` relies on; a
 public finiteness answer must not come from it.
+
+**Piecewise parameters.**  The generic convention covers analytic
+functions of the symbols.  `0^y`, `δ`, `KroneckerDelta`, `H`, `⌊·⌋`, `⌈·⌉`,
+and `min`/`max`/`Piecewise` with a vanishing value do vanish on regions:
+`identically_zero::may_vanish_on_a_region` detects them, `settle_constant`,
+`settle_parametric` and `vanishes_identically` read such a part as
+undecided (never divided by), and `cancel` decides such a divided-out
+denominator.  Being nonzero at a sample point proves nothing for them.  A
+Taylor coefficient never comes from differentiating a step: a
+`KroneckerDelta(a, b)` of the series variable is constant near the point
+only when `a − b` is a nonzero number there.  L'Hôpital's rule and series
+division settle the divisor first.
 
 **Binomial coefficients.**  `C(n, k) = 0` for a negative integer `k` and
 every `n` (Graham–Knuth–Patashnik, SymPy).  A rewrite may use Pascal's rule
@@ -1578,7 +1610,15 @@ sum, at the first term, and below the lower limit term by term
 (`gosper_closed`, `zero_below`).  A closed form undefined as a whole is never
 returned for symbolic limits.  `convergence` decides a symbolic geometric
 base with `summation::modulus_vs_one`, so `is_convergent` agrees with the
-regions `summation` returns.
+regions `summation` returns.  Products follow Karr's convention like sums
+(`Π_a^b = 1/Π_{b+1}^{a−1}` for `b < a − 1`): `product_closed` returns a
+`FiniteClosed` (Gamma ratios and rising factorials hold everywhere; a
+non-integer power holds while the factors below the lower limit keep their
+sign, `sign_run_below`); a rewrite that is an identity of meromorphic
+functions but not of their values at the poles (Legendre duplication with
+factorials) is used only where the assumptions exclude the poles.  A public
+entry point to an algorithm that `summation` checks goes through the checked
+path (`gosper_sum_checked`).
 
 **Per-arena state.**  Memos keyed by an arena use `Arena::serial()`, never
 its address; zero verdicts of constants are memoised under

@@ -80,8 +80,19 @@
 //! limit term by term until the terms are undefined or provably 0 together
 //! with the closed form's dependence on the limit (`gosper_closed`).  Up
 //! to 0.54 a reversed range was the empty sum and every closed form was
-//! claimed for every `n`.  Products keep the empty product `1` for
-//! `hi < lo`.
+//! claimed for every `n`.
+//!
+//! Products follow Karr's convention too (D13): `Π_{k=lo}^{lo−1} f(k)` is
+//! the empty product `1` and `Π_{k=lo}^{hi} f(k) = 1/Π_{k=hi+1}^{lo−1} f(k)`
+//! for `hi < lo − 1` (`Π_{k=5}^{2} k = 1/12`; SymPy's convention), so that
+//! `Π_{a}^{b}·Π_{b+1}^{c} = Π_{a}^{c}` for all integers.  Their closed forms
+//! hold for every integer upper limit the assumptions allow or come with
+//! the condition `hi ≥ h₀` (`product_closed`): the Gamma ratios and rising
+//! factorials hold everywhere, a non-integer power `Π f(k)^e` as far below
+//! the lower limit as `f` keeps its sign (`sign_run_below`), and the
+//! factorial form of `Γ(m + 1/2)` is used only where `m ≥ 0` is known.  Up
+//! to 0.55 a reversed product was the empty product `1` (while the closed
+//! forms of `Π a^{f(k)}` followed Karr through the exponent sum).
 //!
 //! Values without an elementary closed form use the dedicated nodes:
 //! `Σ 1/k³ = ζ(3)` (`Zeta`), `Σ (−1)^k/(2k+1)² = G` (`Catalan`).
@@ -896,7 +907,8 @@ fn combine_outcomes(arena: &mut Arena, a: SumOutcome, b: SumOutcome) -> SumOutco
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The upper limits `hi` for which a closed form of `Σ_{k=lo}^{hi} f(k)`
-/// holds, a reversed range read with Karr's convention (D12).
+/// (or of `Π_{k=lo}^{hi} f(k)`) holds, a reversed range read with Karr's
+/// convention (D12, D13).
 #[derive(Clone, Debug)]
 enum Holds {
     /// Every integer `hi` where the sum is defined: an antidifference
@@ -945,7 +957,8 @@ fn merge_threshold(arena: &mut Arena, list: &mut Vec<ExprId>, h: ExprId) {
     list.push(h);
 }
 
-/// A closed form of a finite sum and the upper limits where it holds.
+/// A closed form of a finite sum (or product) and the upper limits where
+/// it holds.
 #[derive(Clone, Debug)]
 struct FiniteClosed {
     value: ExprId,
@@ -996,15 +1009,30 @@ fn finite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId, hi: Expr
         return SumOutcome::Unevaluated;
     };
     let value = eval::eval(arena, found.value);
-    // A closed form undefined as a whole (a pole of a term the rational
-    // test of `pole_in_range` does not see: `k!/((k + 2)!·(k − 3))` gave
-    // `zoo` for every `n`, the sum is defined for `n < 3`) is no closed form.
+    closed_where_holds(arena, value, found.holds, lo, hi)
+}
+
+/// The outcome of the closed form `value` (evaluated) of a finite sum or
+/// product that holds for the upper limits `holds`: the value where every
+/// threshold holds for every `hi` the assumptions allow, `Unevaluated`
+/// where one is refuted, and otherwise `Conditional` on the open
+/// thresholds `hi ≥ h`.  A closed form undefined as a whole (a pole of a
+/// term the rational test of `pole_in_range` does not see:
+/// `k!/((k + 2)!·(k − 3))` gave `zoo` for every `n`, the sum is defined for
+/// `n < 3`) is no closed form for symbolic limits.
+fn closed_where_holds(
+    arena: &mut Arena,
+    value: ExprId,
+    holds: Holds,
+    lo: ExprId,
+    hi: ExprId,
+) -> SumOutcome {
     if !is_finite_value(arena, value)
         && (as_i64(arena, lo).is_none() || as_i64(arena, hi).is_none())
     {
         return SumOutcome::Unevaluated;
     }
-    let Holds::From(thresholds) = found.holds else {
+    let Holds::From(thresholds) = holds else {
         return SumOutcome::Closed(value);
     };
     let mut open = Vec::new();
@@ -1215,6 +1243,46 @@ fn gosper_closed(
     })
 }
 
+/// `Σ_{k=lo}^{hi} body` by Gosper's algorithm alone, checked as the
+/// dispatcher checks it: a finite range by [`gosper_closed`] (where the
+/// antidifference holds, Karr's convention below the lower limit, the
+/// lower-limit terms it gets wrong summed apart) and [`closed_where_holds`];
+/// `hi = ∞` by the limit of the form checked at the lower limit
+/// ([`gosper_infinite`]).  `Ex::gosper_sum` called Gosper unchecked up to
+/// 0.55: `Σ_{k=−1}^{n} C(k + 2, k)/2ᵏ` was `nan`.
+pub(crate) fn gosper_sum_checked(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+) -> SumOutcome {
+    if !matches!(arena.node(var), ExprNode::Symbol(_)) {
+        return SumOutcome::Unevaluated;
+    }
+    match (classify_bound(arena, lower), classify_bound(arena, upper)) {
+        (Extended::Finite(lo), Extended::Finite(hi)) => {
+            let Some(found) = gosper_closed(arena, body, var, lo, hi) else {
+                return SumOutcome::Unevaluated;
+            };
+            let value = eval::eval(arena, found.value);
+            closed_where_holds(arena, value, found.holds, lo, hi)
+        }
+        (Extended::Finite(lo), Extended::PosInf) => match gosper_infinite(arena, body, var, lo) {
+            Some(SumOutcome::Closed(v)) if !is_finite_value(arena, v) => {
+                if v == arena.infinity || v == arena.neg_infinity {
+                    SumOutcome::Divergent(Some(v))
+                } else {
+                    SumOutcome::Unevaluated
+                }
+            }
+            Some(outcome) => outcome,
+            None => SumOutcome::Unevaluated,
+        },
+        _ => SumOutcome::Unevaluated,
+    }
+}
+
 /// [`gosper_closed`] for the upper limit `bound`, a symbol free of `body`;
 /// without `below`, checked at the lower limit only (`holds` is then
 /// `bound ≥ lo − 1`).
@@ -1297,7 +1365,7 @@ fn gosper_holds(
         return Some(Holds::Everywhere);
     }
     let Some(lo_i) = lo_i else {
-        return Some(Holds::at_least(lo_m1));
+        return Some(symbolic_lower_holds(arena, body, var, lo, bound, s));
     };
     let term_zero = zero_below(arena, body, var);
     let terms = add_terms(arena, s);
@@ -1335,6 +1403,74 @@ fn gosper_holds(
         }
     }
     Some(Holds::at_least(lo_m1))
+}
+
+/// Where Gosper's closed form `s` of `Σ_{k=m}^{N} body` holds for a lower
+/// limit `m` that is a symbol: everywhere the sum is defined when an
+/// integer anchor `c` proves it, else `N ≥ m − 1`.  The term must be
+/// finite at every integer `k ≥ F` and undefined below ([`finite_from`],
+/// [`undefined_below`]; `c = F`), or finite everywhere (`c = 0`); the form
+/// `G` for the lower limit `c` must hold ([`gosper_holds`]: everywhere
+/// for a term finite everywhere), and `s(N) = G(N) − G(m − 1)`
+/// identically, with the parts of `s` in `N` finite for `N ≥ F − 1` and
+/// those in `m` for `m ≥ F`.  Then Karr's additivity `Σ_{m}^{n} =
+/// Σ_{c}^{n} − Σ_{c}^{m−1}` gives `s` wherever no term of the range is
+/// undefined (`Σ_{k=m}^{n} k·k! = (n + 1)! − m!` came with `n ≥ m − 1`
+/// up to 0.55).
+fn symbolic_lower_holds(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    bound: ExprId,
+    s: ExprId,
+) -> Holds {
+    let one = arena.one;
+    let lo_m1 = arena.sub(lo, one);
+    let lo_m1 = eval::eval(arena, lo_m1);
+    let fallback = Holds::at_least(lo_m1);
+    if !matches!(arena.node(lo), ExprNode::Symbol(_)) {
+        return fallback;
+    }
+    let Some(from) = finite_from(arena, body, var) else {
+        return fallback;
+    };
+    let everywhere = from == i64::MIN;
+    if !everywhere && !undefined_below(arena, body, var).is_some_and(|u| u >= from - 1) {
+        return fallback;
+    }
+    let c = arena.int(if everywhere { 0 } else { from });
+    let Some(g) = gosper::gosper_sum(arena, body, var, c, bound) else {
+        return fallback;
+    };
+    match gosper_holds(arena, body, var, c, bound, g, true) {
+        Some(Holds::Everywhere) => {}
+        Some(_) if !everywhere => {}
+        _ => return fallback,
+    }
+    let g_lo = subs::subs(arena, g, bound, lo_m1);
+    let rhs = arena.sub(g, g_lo);
+    if !same_value(arena, s, rhs) {
+        return fallback;
+    }
+    let (n_from, m_from) = if everywhere {
+        (i64::MIN, i64::MIN)
+    } else {
+        (from - 1, from)
+    };
+    for t in add_terms(arena, s) {
+        let (in_n, in_m) = (depends_on(arena, t, bound), depends_on(arena, t, lo));
+        let ok = match (in_n, in_m) {
+            (true, true) => false,
+            (true, false) => finite_from(arena, t, bound).is_some_and(|f| f <= n_from),
+            (false, true) => finite_from(arena, t, lo).is_some_and(|f| f <= m_from),
+            (false, false) => is_finite_value(arena, t),
+        };
+        if !ok {
+            return fallback;
+        }
+    }
+    Holds::Everywhere
 }
 
 /// Is `a` equal to `b` (both evaluated): a zero difference, or one that
@@ -1502,6 +1638,121 @@ fn finite_below(arena: &mut Arena, f: ExprId, v: ExprId) -> Option<i64> {
         }
         _ => None,
     }
+}
+
+/// `⌈a/b⌉` for `b ≥ 1`.
+fn ceil_div(a: i64, b: i64) -> Option<i64> {
+    a.checked_neg()?.div_euclid(b).checked_neg()
+}
+
+/// The least `F` such that `e` is finite at every integer `v ≥ F`
+/// (`i64::MIN`: at every integer), from its shape: every term a product
+/// of factors that are finite from some point on — a polynomial, `b^(αv +
+/// β)` for a nonzero number `b`, `exp` of a linear argument, a positive
+/// power of `C(αv + β, γv + δ)` (integer coefficients), `(αv + β)!` or
+/// `Γ(αv + β)` with integers `α ≥ 1`, `β` (or to a negative power: entire),
+/// a polynomial with rational coefficients to a negative power (above
+/// its greatest integer root).  `None` when the shape shows nothing.
+fn finite_from(arena: &mut Arena, e: ExprId, v: ExprId) -> Option<i64> {
+    let mut bound = i64::MIN;
+    for t in add_terms(arena, e) {
+        for f in mul_factors(arena, t) {
+            bound = bound.max(factor_finite_from(arena, f, v)?);
+        }
+    }
+    Some(bound)
+}
+
+/// [`finite_from`] of one factor.
+fn factor_finite_from(arena: &mut Arena, f: ExprId, v: ExprId) -> Option<i64> {
+    if !depends_on(arena, f, v) {
+        return is_finite_value(arena, f).then_some(i64::MIN);
+    }
+    if sym_poly_in(arena, f, v).is_some() {
+        return Some(i64::MIN);
+    }
+    let f = flatten_exponential(arena, f, v);
+    let (base, exp) = arena.as_base_exp(f);
+    if !depends_on(arena, base, v) {
+        let nonzero = as_rat(arena, base).is_some_and(|r| !r.is_zero());
+        return (nonzero && linear_in_any(arena, exp, v).is_some()).then_some(i64::MIN);
+    }
+    if let ExprNode::Exp(x) = *arena.node(f) {
+        return linear_in_any(arena, x, v).map(|_| i64::MIN);
+    }
+    let e = as_i64(arena, exp)?;
+    match *arena.node(base) {
+        ExprNode::Binomial(top, low) if e > 0 => {
+            integer_linear(arena, low, v)?;
+            if depends_on(arena, top, v) {
+                integer_linear(arena, top, v)?;
+            }
+            Some(i64::MIN)
+        }
+        ExprNode::Factorial(u) | ExprNode::Gamma(u) => {
+            let (a, b) = integer_linear(arena, u, v)?;
+            if a < 1 {
+                return None;
+            }
+            if e < 0 {
+                return Some(i64::MIN);
+            }
+            // `(αv + β)!` is finite for `αv + β ≥ 0`, `Γ(αv + β)` for `αv + β ≥ 1`.
+            let least = if matches!(arena.node(base), ExprNode::Factorial(_)) {
+                0
+            } else {
+                1
+            };
+            ceil_div(least - b, a)
+        }
+        _ if e < 0 => {
+            let p = polybridge::expr_to_poly(arena, base, v)?;
+            let (_, factors) = p.factor_over_z();
+            let mut greatest = i64::MIN;
+            for (fac, _) in factors {
+                if fac.degree() != Some(1) {
+                    continue;
+                }
+                let root = -fac.coeff(0) / fac.coeff(1);
+                if root.is_integer() {
+                    greatest = greatest.max(root.to_integer().to_i64()?.checked_add(1)?);
+                }
+            }
+            Some(greatest)
+        }
+        _ => None,
+    }
+}
+
+/// The greatest `U` such that `e` is undefined (`zoo` or `nan`) at every
+/// integer `v ≤ U`: some term has a factor `(αv + β)!` or `Γ(αv + β)`
+/// (integers `α ≥ 1`, `β`) to a positive power, at a pole there — and a
+/// product or sum with an undefined part is undefined.  `None` when no
+/// term shows one.
+fn undefined_below(arena: &mut Arena, e: ExprId, v: ExprId) -> Option<i64> {
+    let mut bound: Option<i64> = None;
+    for t in add_terms(arena, e) {
+        for f in mul_factors(arena, t) {
+            let (base, exp) = arena.as_base_exp(f);
+            if !as_i64(arena, exp).is_some_and(|p| p > 0) {
+                continue;
+            }
+            let (u, top) = match *arena.node(base) {
+                // `(αv + β)!` is `zoo` for `αv + β ≤ −1`, `Γ(αv + β)` for `≤ 0`.
+                ExprNode::Factorial(u) => (u, -1),
+                ExprNode::Gamma(u) => (u, 0),
+                _ => continue,
+            };
+            let Some((a, b)) = integer_linear(arena, u, v) else {
+                continue;
+            };
+            if a >= 1 {
+                let z = (top - b).div_euclid(a);
+                bound = Some(bound.map_or(z, |old| old.max(z)));
+            }
+        }
+    }
+    bound
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3517,8 +3768,63 @@ fn geometric_poly_infinite(
         apply_euler_operator(arena, &poly, s0, r, y)
     };
     let total = arena.mul(&[c, formula]);
-    let total = eval::eval(arena, total);
+    let mut total = eval::eval(arena, total);
+    if degree <= MAX_EULER_OPERATOR_DEGREE
+        && let Some(shorter) = from_zero_form(arena, body, var, &poly, y, c, lo)
+        && arena.count_ops(shorter) < arena.count_ops(total)
+        && arena.display(shorter).to_string().len() < arena.display(total).to_string().len()
+    {
+        total = shorter;
+    }
     Some(closed_or_conditional(total, region))
+}
+
+/// Most terms [`from_zero_form`] adds or removes at the lower limit.
+const MAX_SHIFT_TERMS: i64 = 8;
+
+/// `Σ_{k≥lo} P(k)·c·yᵏ` as the sum from 0 (`P(y·d/dy)` of `1/(1 − y)`) less
+/// the terms `k = 0, …, lo − 1` (plus `k = lo, …, −1` for `lo < 0`), for an
+/// integer `lo ≠ 0` with `|lo| ≤` [`MAX_SHIFT_TERMS`].  The caller keeps
+/// this form when it is shorter (fewer operations and fewer characters)
+/// than the one from `y^lo/(1 − y)`, which over one denominator can be
+/// much longer: in 0.55 `Σ_{k≥2} k·xᵏ/3ᵏ` printed `x*(-27*x^2 + 6*x*(9*x -
+/// 27))/(-81*x^2 + 486*x - 729)` (0.54: `1/3*x*(-1/3*x + 1)^(-2) - 1/3*x`;
+/// now `3*x*(-x + 3)^(-2) - 1/3*x`).
+fn from_zero_form(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    poly: &[(usize, ExprId)],
+    y: ExprId,
+    c: ExprId,
+    lo: ExprId,
+) -> Option<ExprId> {
+    let lo_i = as_i64(arena, lo)?;
+    if lo_i == 0 || lo_i.unsigned_abs() > MAX_SHIFT_TERMS.unsigned_abs() {
+        return None;
+    }
+    let r = arena.symbol("_r");
+    let one = arena.one;
+    let den = arena.sub(one, r);
+    let s0 = arena.div(one, den);
+    let from_zero = apply_euler_operator(arena, poly, s0, r, y);
+    let mut parts = vec![arena.mul(&[c, from_zero])];
+    let (range, sign) = if lo_i > 0 {
+        (0..lo_i, true)
+    } else {
+        (lo_i..0, false)
+    };
+    for k in range {
+        let ke = arena.int(k);
+        let t = subs::subs(arena, body, var, ke);
+        let t = eval::eval(arena, t);
+        if !is_finite_value(arena, t) {
+            return None;
+        }
+        parts.push(if sign { arena.neg(t) } else { t });
+    }
+    let total = arena.add(&parts);
+    Some(eval::eval(arena, total))
 }
 
 /// Is the symbol-free, non-rational `y` exactly on the unit circle
@@ -4365,7 +4671,10 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
 /// A polynomial multiplier `P(k)` (symbolic coefficients allowed) is applied
 /// through the Euler operator `P(x·d/dx)` exactly as for arithmetico-
 /// geometric sums, so `Σ k·C(k+c,k) xᵏ = (c+1)·x·(1−x)^{−(c+2)}`; a lower
-/// bound `lo > 0` subtracts the skipped leading terms.
+/// bound `lo > 0` subtracts the skipped leading terms, a lower bound `lo <
+/// 0` adds the terms at `k = lo, …, −1` (each evaluated: `C(k + c, k) = 0`
+/// there, Graham–Knuth–Patashnik; up to 0.55 `Σ_{k≥−1} C(k + 2, k)/2ᵏ`
+/// stayed a `Sum`, it is 8).
 ///
 /// Convergence follows this module's geometric-series convention: a
 /// symbolic ratio whose modulus the assumptions do not bound gives the
@@ -4381,7 +4690,7 @@ fn negative_binomial_series(
     lo: ExprId,
 ) -> Option<SumOutcome> {
     let lo_i = as_i64(arena, lo)?;
-    if !(0..=MAX_ENUMERATION_TERMS).contains(&lo_i) {
+    if !(-MAX_ENUMERATION_TERMS..=MAX_ENUMERATION_TERMS).contains(&lo_i) {
         return None;
     }
     let mut consts = Vec::new();
@@ -4498,6 +4807,19 @@ fn negative_binomial_series(
         }
         let s = add_all(arena, &skipped);
         total = arena.sub(total, s);
+    } else if lo_i < 0 {
+        let mut below = Vec::with_capacity(lo_i.unsigned_abs() as usize + 1);
+        below.push(total);
+        for k in lo_i..0 {
+            let ke = arena.int(k);
+            let t = subs::subs(arena, body, var, ke);
+            let t = eval::eval(arena, t);
+            if !is_finite_value(arena, t) {
+                return None;
+            }
+            below.push(t);
+        }
+        total = arena.add(&below);
     }
     let mut total = eval::eval(arena, total);
     if guard == ShiftSign::Undecided {
@@ -5127,6 +5449,12 @@ pub(crate) fn product(
     }
 }
 
+/// `Π_{k=lo}^{hi} body` for finite limits.  Concrete limits are multiplied
+/// out (Karr's convention for `hi < lo − 1`: the reciprocal of the product
+/// over `[hi + 1, lo − 1]`, D13); otherwise [`product_closed`], whose
+/// closed form is returned where it holds for every `hi` the assumptions
+/// allow, and under the condition `hi ≥ h₀` where they do not decide it
+/// ([`closed_where_holds`]).
 fn finite_product(
     arena: &mut Arena,
     body: ExprId,
@@ -5136,20 +5464,75 @@ fn finite_product(
 ) -> SumOutcome {
     if let (Some(a), Some(b)) = (as_i64(arena, lo), as_i64(arena, hi)) {
         if b < a {
-            return SumOutcome::Closed(arena.one);
+            // `b + 1` and `a − 1` stay in range: `b < a`.
+            if b + 1 == a {
+                return SumOutcome::Closed(arena.one);
+            }
+            let lo2 = arena.int(b + 1);
+            let hi2 = arena.int(a - 1);
+            return match finite_product(arena, body, var, lo2, hi2) {
+                SumOutcome::Closed(v) => {
+                    let m1 = arena.neg_one;
+                    let r = arena.pow(v, m1);
+                    SumOutcome::Closed(eval::eval(arena, r))
+                }
+                _ => SumOutcome::Unevaluated,
+            };
         }
         if b - a < MAX_ENUMERATION_TERMS {
             return SumOutcome::Closed(enumerate_product(arena, body, var, a, b));
         }
     }
-    match product_closed(arena, body, var, lo, hi, true) {
-        Some(id) => {
-            let n = gamma_ratio_normalize(arena, id);
-            let n = gamma_to_factorial(arena, n);
-            let n = flatten_nested_pows(arena, n);
-            SumOutcome::Closed(eval::eval(arena, n))
+    let Some(found) = product_closed(arena, body, var, lo, hi, true) else {
+        return SumOutcome::Unevaluated;
+    };
+    let n = gamma_ratio_normalize(arena, found.value);
+    let n = gamma_to_factorial(arena, n);
+    let n = flatten_nested_pows(arena, n);
+    let value = eval::eval(arena, n);
+    let holds = defined_above(arena, body, var, lo, found.holds);
+    closed_where_holds(arena, value, holds, lo, hi)
+}
+
+/// `holds` without the thresholds `hi ≥ h` that only exclude upper limits
+/// where the product is undefined: a factor `f(k₀) = 0` or undefined at an
+/// integer `k₀ < lo` is in Karr's reciprocal range `[hi + 1, lo − 1]` for
+/// every `hi < k₀`, so a threshold `h ≤ k₀` excludes nothing that has a
+/// value (`Π_{k=1}^{n} (−k·√(k + 5/2))` holds for every `n` where it is
+/// defined: the factor at `k = 0` is 0).
+fn defined_above(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId, holds: Holds) -> Holds {
+    let Holds::From(list) = holds else {
+        return holds;
+    };
+    let (Some(lo_i), Some(least)) = (
+        as_i64(arena, lo),
+        list.iter().filter_map(|&h| as_i64(arena, h)).min(),
+    ) else {
+        return Holds::From(list);
+    };
+    let mut cut = None;
+    let mut k = lo_i;
+    while k > least {
+        k -= 1;
+        let ke = arena.int(k);
+        let v = subs::subs(arena, body, var, ke);
+        let v = eval::eval(arena, v);
+        if !is_finite_value(arena, v) || as_rat(arena, v).is_some_and(|r| r.is_zero()) {
+            cut = Some(k);
+            break;
         }
-        None => SumOutcome::Unevaluated,
+    }
+    let Some(cut) = cut else {
+        return Holds::From(list);
+    };
+    let kept: Vec<ExprId> = list
+        .into_iter()
+        .filter(|&h| !as_i64(arena, h).is_some_and(|h| h <= cut))
+        .collect();
+    if kept.is_empty() {
+        Holds::Everywhere
+    } else {
+        Holds::From(kept)
     }
 }
 
@@ -5182,6 +5565,7 @@ fn flatten_nested_pows(arena: &mut Arena, expr: ExprId) -> ExprId {
                     && arena.as_num(nb).is_some()
                     && arena.as_num(ne).is_none()
                 {
+                    let (nb, ne) = unit_fraction_base(arena, nb, ne);
                     if let Some(slot) = numeric_pows.iter_mut().find(|(b, _)| *b == nb) {
                         slot.1.push(ne);
                     } else {
@@ -5194,11 +5578,13 @@ fn flatten_nested_pows(arena: &mut Arena, expr: ExprId) -> ExprId {
                 continue;
             }
             if arena.as_num(base).is_some() && arena.as_num(exp).is_none() {
-                if let Some(slot) = numeric_pows.iter_mut().find(|(b, _)| *b == base) {
-                    slot.1.push(exp);
+                let (nb, ne) = unit_fraction_base(arena, base, exp);
+                changed |= nb != base;
+                if let Some(slot) = numeric_pows.iter_mut().find(|(b, _)| *b == nb) {
+                    slot.1.push(ne);
                     changed = true;
                 } else {
-                    numeric_pows.push((base, vec![exp]));
+                    numeric_pows.push((nb, vec![ne]));
                 }
                 continue;
             }
@@ -5218,10 +5604,31 @@ fn flatten_nested_pows(arena: &mut Arena, expr: ExprId) -> ExprId {
     }
 }
 
+/// `(1/q)^e` as `q^(−e)` for an integer `q ≥ 2` (an identity of principal
+/// powers of a positive base), so that it meets the other powers of `q`
+/// (`(1/2)ⁿ·2ⁿ` was left in `Π (2k − 1)/(2k)`); other bases unchanged.
+fn unit_fraction_base(arena: &mut Arena, base: ExprId, exp: ExprId) -> (ExprId, ExprId) {
+    match as_rat(arena, base) {
+        Some(r) if r.numer().is_one() && *r.denom() > BigInt::one() => {
+            let q = rat_expr(arena, Q::from_integer(r.denom().clone()));
+            let neg = arena.neg(exp);
+            (q, eval::eval(arena, neg))
+        }
+        _ => (base, exp),
+    }
+}
+
 /// `finite`: the product is the finite one up to a symbolic `hi` (not the
 /// partial product of an infinite one, whose limit needs the Gamma form);
 /// a linear factor that vanishes at an integer `k₀ ≥ lo` is then the
 /// rising factorial `(lo + β/α)_{count}` (see [`rational_product`]).
+///
+/// With the upper limits where the closed form holds, a reversed range read
+/// with Karr's convention (D13): the Gamma ratios, rising factorials and
+/// `b^{Σ f(k)}` hold everywhere (`Γ(x + 1) = x·Γ(x)` and `(x)₋ₘ =
+/// 1/((x − 1)⋯(x − m))` are Karr's reciprocals); a non-integer power
+/// holds as far below `lo` as its factors keep the sign the principal
+/// powers need ([`sign_run_below`]).
 fn product_closed(
     arena: &mut Arena,
     body: ExprId,
@@ -5229,26 +5636,35 @@ fn product_closed(
     lo: ExprId,
     hi: ExprId,
     finite: bool,
-) -> Option<ExprId> {
+) -> Option<FiniteClosed> {
     if !depends_on(arena, body, var) {
         let n = range_count(arena, lo, hi);
-        return Some(arena.pow(body, n));
+        return Some(FiniteClosed::everywhere(arena.pow(body, n)));
     }
     match arena.node(body).clone() {
         ExprNode::Mul(ref factors) => {
             let factors: Vec<ExprId> = factors.to_vec();
             let mut parts = Vec::new();
+            let mut holds = Holds::Everywhere;
             for f in factors {
-                parts.push(product_closed(arena, f, var, lo, hi, finite)?);
+                let found = product_closed(arena, f, var, lo, hi, finite)?;
+                parts.push(found.value);
+                holds = holds.and(found.holds, arena);
             }
-            Some(arena.mul(&parts))
+            Some(FiniteClosed {
+                value: arena.mul(&parts),
+                holds,
+            })
         }
         ExprNode::Neg(inner) => {
             let m1 = arena.neg_one;
             let n = range_count(arena, lo, hi);
             let s = arena.pow(m1, n);
             let p = product_closed(arena, inner, var, lo, hi, finite)?;
-            Some(arena.mul(&[s, p]))
+            Some(FiniteClosed {
+                value: arena.mul(&[s, p.value]),
+                holds: p.holds,
+            })
         }
         ExprNode::Pow(base, exp) if !depends_on(arena, exp, var) => {
             // `Π f(k)^e = (Π f(k))^e` for an integer `e`; for another `e` only
@@ -5275,33 +5691,124 @@ fn product_closed(
                     let unit = eval::eval(arena, unit);
                     let count = range_count(arena, lo, hi);
                     let phase = arena.pow(unit, count);
-                    let pe = arena.pow(p, exp);
-                    return Some(arena.mul(&[phase, pe]));
+                    let pe = arena.pow(p.value, exp);
+                    let below = sign_run_below(arena, neg, var, lo, finite);
+                    return Some(FiniteClosed {
+                        value: arena.mul(&[phase, pe]),
+                        holds: p.holds.and(below, arena),
+                    });
                 }
+                let p = product_closed(arena, base, var, lo, hi, finite)?;
+                let value = gamma_ratio_normalize(arena, p.value);
+                let below = sign_run_below(arena, base, var, lo, finite);
+                return Some(FiniteClosed {
+                    value: arena.pow(value, exp),
+                    holds: p.holds.and(below, arena),
+                });
             }
             let p = product_closed(arena, base, var, lo, hi, finite)?;
             // The Gamma ratios cancel inside the power too (the final
             // normalisation sees only the top-level factors).
-            let p = gamma_ratio_normalize(arena, p);
-            Some(arena.pow(p, exp))
+            let value = gamma_ratio_normalize(arena, p.value);
+            Some(FiniteClosed {
+                value: arena.pow(value, exp),
+                holds: p.holds,
+            })
         }
+        // `Π b^{f(k)} = b^{Σ f(k)}` and `Π e^{f(k)} = e^{Σ f(k)}` for every
+        // integer `hi` where the sum's closed form holds (`b^x·b^y = b^{x+y}`
+        // for principal powers of a fixed base), and the sum's closed form
+        // holds for every `hi` the assumptions allow.
         ExprNode::Pow(base, exp) if !depends_on(arena, base, var) => {
             let s = match summation(arena, exp, var, lo, hi) {
                 SumOutcome::Closed(s) if !walk::has_unevaluated(arena, s) => s,
                 _ => return None,
             };
-            Some(arena.pow(base, s))
+            Some(FiniteClosed::everywhere(arena.pow(base, s)))
         }
         ExprNode::Exp(arg) => {
             let s = match summation(arena, arg, var, lo, hi) {
                 SumOutcome::Closed(s) if !walk::has_unevaluated(arena, s) => s,
                 _ => return None,
             };
-            Some(arena.exp(s))
+            Some(FiniteClosed::everywhere(arena.exp(s)))
         }
         _ => rational_product(arena, body, var, lo, hi, finite)
-            .or_else(|| linear_symbolic_product(arena, body, var, lo, hi, finite)),
+            .or_else(|| linear_symbolic_product(arena, body, var, lo, hi, finite))
+            .map(FiniteClosed::everywhere),
     }
+}
+
+/// Most integers below the lower limit at which [`sign_run_below`] reads
+/// the sign of a factor.
+const MAX_SIGN_SCAN: i64 = 64;
+
+/// Where `(Π_{k=lo}^{hi} f(k))^e = Π_{k=lo}^{hi} f(k)^e` holds below the
+/// lower limit, for a non-integer `e` and an `f` positive on `k ≥ lo` (the
+/// principal powers multiply there).  Karr's reversed product `1/Π_{k=hi+1}^{lo−1}`
+/// keeps the identity while the factors `f(hi + 1), …, f(lo − 1)` stay
+/// positive; at the first `k₀ < lo` where `f(k₀) < 0` the two sides differ
+/// by `e^{±2πie} ≠ 1` (`hi = k₀ − 1`), so the identity holds for `hi ≥
+/// k₀`.  A factor 0 or undefined at `k₀` makes the reversed product
+/// undefined for every `hi < k₀`: it holds wherever the product is
+/// defined.  `f(k)` is read exactly at `k = lo − 1, lo − 2, …`; below the
+/// real zeros and poles of a rational `f` its sign no longer changes.  A
+/// sign the scan cannot decide (a parameter) gives the sufficient `hi ≥ k₀`.
+/// (`Π_{k=1}^{n} √(k + 5/2)` holds for `n ≥ −3`: at `n = −4` the factor
+/// `√(−1/2)` makes the two sides differ by their sign.)
+fn sign_run_below(arena: &mut Arena, f: ExprId, var: ExprId, lo: ExprId, finite: bool) -> Holds {
+    if !finite {
+        return Holds::Everywhere;
+    }
+    let one = arena.one;
+    let Some(lo_i) = as_i64(arena, lo) else {
+        let lo_m1 = arena.sub(lo, one);
+        return Holds::at_least(eval::eval(arena, lo_m1));
+    };
+    // Below `−B` (`B` a root bound of a rational `f`) the sign is constant.
+    let floor = rational_root_bound(arena, f, var).and_then(|b| b.checked_neg());
+    for step in 1..=MAX_SIGN_SCAN {
+        let Some(k) = lo_i.checked_sub(step) else {
+            break;
+        };
+        let ke = arena.int(k);
+        let v = subs::subs(arena, f, var, ke);
+        let v = eval::eval(arena, v);
+        if !is_finite_value(arena, v) || as_rat(arena, v).is_some_and(|r| r.is_zero()) {
+            return Holds::Everywhere;
+        }
+        if const_sign(arena, v) != SignSet::POSITIVE {
+            return Holds::at_least(ke);
+        }
+        if floor.is_some_and(|b| k < b) {
+            return Holds::Everywhere;
+        }
+    }
+    let last = lo_i.saturating_sub(MAX_SIGN_SCAN + 1);
+    Holds::at_least(arena.int(last))
+}
+
+/// A bound `B` with every real zero and pole of the rational function `f`
+/// (rational coefficients) in `(−B, B)` (Cauchy's bound), or `None`.
+fn rational_root_bound(arena: &mut Arena, f: ExprId, var: ExprId) -> Option<i64> {
+    let combined = combine_fractions(arena, f);
+    let (n, d) = polybridge::as_numer_denom(arena, combined);
+    let mut bound = 1i64;
+    for p in [n, d] {
+        let p = polybridge::expr_to_poly(arena, p, var)?;
+        let deg = p.degree()?;
+        if deg == 0 {
+            continue;
+        }
+        let lc = p.leading_coeff()?;
+        let b = p.coeffs()[..deg]
+            .iter()
+            .map(|c| (c / lc).abs())
+            .fold(Q::zero(), |m, r| if r > m { r } else { m })
+            + Q::one();
+        bound = bound.max(b.ceil().to_integer().to_i64()?.checked_add(1)?);
+    }
+    Some(bound)
 }
 
 /// Is `f(k)` positive (nonnegative with `allow_zero`) for every integer
@@ -5517,29 +6024,32 @@ fn rational_product(
     }
     let count = range_count(arena, lo, hi);
     let mut factors = Vec::new();
+    // The contents and leading coefficients make one rational base, so that
+    // `Π (k − 1/2)` (content 1/2, factor `2k − 1`) has no `(1/2)ⁿ·2ⁿ`.
+    let mut scale = Q::one();
     for (poly, sign) in [(np, 1i64), (dp, -1i64)] {
         let (content, irreducibles) = poly.factor_over_z();
-        if !content.is_one() {
-            let ce = rat_expr(arena, content);
-            let p = pow_rat(arena, ce, &rat_i(sign));
-            factors.push(arena.pow(p, count));
+        if content.is_zero() {
+            return None;
         }
+        scale *= rat_pow_i(&content, sign);
         for (fac, mult) in irreducibles {
             if fac.degree() != Some(1) {
                 return None;
             }
             let alpha = fac.coeff(1);
             let beta = fac.coeff(0);
-            let e = rat_i(sign * mult as i64);
+            let m = sign.checked_mul(i64::from(mult))?;
+            let e = rat_i(m);
             // Π (αk+β) = α^count · Γ(hi + 1 + β/α) / Γ(lo + β/α)
-            if !alpha.is_one() {
-                let ae = rat_expr(arena, alpha.clone());
-                let ap = pow_rat(arena, ae, &e);
-                factors.push(arena.pow(ap, count));
-            }
+            scale *= rat_pow_i(&alpha, m);
             let shift = rat_expr(arena, &beta / &alpha);
             factors.extend(shifted_factorial_ratio(arena, lo, hi, shift, &e, finite));
         }
+    }
+    if !scale.is_one() {
+        let se = rat_expr(arena, scale);
+        factors.push(arena.pow(se, count));
     }
     Some(arena.mul(&factors))
 }
@@ -5674,11 +6184,19 @@ fn gamma_arg_to_factorial(arena: &mut Arena, arg: ExprId) -> Option<ExprId> {
         let shifted = add_rat(arena, inner, &(const_part - Q::one()));
         return Some(arena.factorial(shifted));
     }
-    // Legendre duplication: Γ(m + 1/2) = (2m)! √π / (4^m m!)  for m = inner + (c − 1/2).
+    // Legendre duplication: Γ(m + 1/2) = (2m)! √π / (4^m m!)  for m = inner + (c − 1/2),
+    // an identity of the values only for `m ≥ 0`: at a negative integer `m`
+    // the right side is `zoo/zoo` (`Π_{k=1}^{n} (2k − 1)` came out
+    // `(2n)!/(2ⁿ·n!)`, `nan` at `n = −1` where Karr's product is `−1`), so
+    // it is used only where the assumptions give `m ≥ 0`.
     let half = Q::new(BigInt::one(), BigInt::from(2));
     let m_shift = &const_part - &half;
     if m_shift.is_integer() && !m_shift.is_negative() {
         let m = add_rat(arena, inner, &m_shift);
+        let zero = arena.zero;
+        if !upper_at_least(arena, m, zero).is_true() {
+            return None;
+        }
         let two = arena.int(2);
         let two_m = arena.mul(&[two, m]);
         let num = arena.factorial(two_m);
@@ -5738,7 +6256,7 @@ fn infinite_product(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) ->
     let Some(pn) = product_closed(arena, body, var, lo, n, false) else {
         return SumOutcome::Unevaluated;
     };
-    let pn = gamma_ratio_normalize(arena, pn);
+    let pn = gamma_ratio_normalize(arena, pn.value);
     // Exact limits only: rational functions of N.
     match rational_limit_at_infinity(arena, pn, n) {
         Some(Some(r)) => SumOutcome::Closed(rat_expr(arena, r)),

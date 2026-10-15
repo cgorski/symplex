@@ -1570,11 +1570,34 @@ fn eval_ball(
             let err = cspecial::bound(arena, id, f, &args, &routed, cache, w);
             CBall::new(routed.value, err)
         }
-        // Elliptic integrals of a non-real parameter report their own bound
-        // (`elliptic.rs`; the sensitivity rules are for real arguments).
-        ExprNode::Lib(f, args) if elliptic::nonreal_args(*f, args, cache) => {
+        // Elliptic integrals of a non-real parameter, or with a complex value
+        // at real arguments, report their own bound (`elliptic.rs`: each part
+        // to its own precision; the sensitivity rules are for real arguments
+        // and the rounding of `finish` is at the value's magnitude).
+        ExprNode::Lib(f, args) if elliptic::takes(*f, args, cache) => {
             let value = eval_node(arena, id, cache, w)?;
             let err = elliptic::bound(arena, id, args, &value, cache, w);
+            CBall::new(value, err)
+        }
+        // `hermite`, `laguerre`, `assoc_laguerre`, `rising_factorial`,
+        // `falling_factorial` of a non-real argument (refused before 0.56).
+        node @ ExprNode::Lib(f, args)
+            if hypergeom::nonreal_args(*f, args, cache)
+                || factorials::nonreal_args(*f, args, cache) =>
+        {
+            let value = match eval_node(arena, id, cache, w) {
+                Ok(value) => value,
+                Err(SymplexError::Unevaluable { .. }) if rounded_onto_pole(node, cache) => {
+                    return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
+                }
+                Err(e) => return Err(e),
+            };
+            let cap = Some(sensitivity::gap_cap(prec));
+            let err = if factorials::exact_product(*f, args, cache, prec) {
+                accuracy::Bound::EXACT
+            } else {
+                sensitivity::complex_route_bound(arena, id, args, &value, cache, cap, w)
+            };
             CBall::new(value, err)
         }
         ExprNode::Beta(a, b)
@@ -4891,6 +4914,13 @@ fn eval_product(
         )));
     }
     let hi_i = range_bound(arena, cache, hi, "Product")?;
+    // Karr's convention: `∏_{lo}^{hi} = 1/∏_{hi+1}^{lo−1}` for `hi < lo − 1`
+    // (it was the empty product, as `eval` had it up to 0.55).
+    let (lo_i, hi_i, reciprocal) = if hi_i < &lo_i - 1 {
+        (&hi_i + 1, &lo_i - 1, true)
+    } else {
+        (lo_i, hi_i, false)
+    };
     let terms = range_terms(&lo_i, &hi_i, "Product")?;
     let post_order = walk::post_order_ids(arena, body);
     let mut factors: Vec<CBall> = Vec::with_capacity(terms as usize);
@@ -4901,7 +4931,32 @@ fn eval_product(
     }
     let factors: Vec<&CBall> = factors.iter().collect();
     debug!(lo = %lo_i, hi = %hi_i, "evalf: Product evaluated");
-    Ok(CBall::product(&factors, prec))
+    let product = CBall::product(&factors, prec);
+    if reciprocal {
+        return reciprocal_ball(&product, prec);
+    }
+    Ok(product)
+}
+
+/// `1/p` with its bound: the rounding of the quotient (`c_div`, a few units
+/// of the last place) and the radius `r` of `p = m ± r` carried by `|1/(m +
+/// δ) − 1/m| ≤ r/(|m|·(|m| − r)) ≤ 2r/|m|²` for `r ≤ |m|/2`.  A ball that
+/// reaches closer to 0 (a factor 0 of Karr's reciprocal product) is refused.
+fn reciprocal_ball(p: &CBall, prec: usize) -> Result<CBall, SymplexError> {
+    let r = p.err.joint();
+    if p.err.is_unknown() || accuracy::contains_zero(&p.mid, accuracy::shift(r, 1.0)) {
+        return Err(unevaluable(
+            "a Product with reversed limits whose reciprocal range has a factor 0 \
+             (Karr's convention: 1/0)",
+        ));
+    }
+    let value = c_div(&c_one(prec), &p.mid, prec, RM);
+    let rounding = accuracy::shift(accuracy::rounding(&value, prec), 4.0);
+    let carried = accuracy::shift(r, 1.0 - 2.0 * accuracy::lg_abs_low(&p.mid));
+    Ok(CBall::new(
+        value,
+        accuracy::Bound::both(accuracy::lsum(carried, rounding)),
+    ))
 }
 
 /// An operand of a relation without a value in the cache of `evalf`.
@@ -8744,6 +8799,12 @@ fn eval_lib_fn(
         | LibFn::BetaInc
         | LibFn::BetaIncRegularized => eval_special_09(f, args, cache, w),
         LibFn::PolyLog => eval_polylog(args, cache, w),
+        // A non-real argument (`factorials.rs`; refused before 0.56).
+        LibFn::RisingFactorial | LibFn::FallingFactorial
+            if factorials::nonreal_args(f, args, cache) =>
+        {
+            factorials::eval_complex(f, args, cache, w)
+        }
         LibFn::RisingFactorial
         | LibFn::FallingFactorial
         | LibFn::Harmonic
@@ -10350,9 +10411,205 @@ fn betainc_reg_diff_wp(
     Ok((diff, lost))
 }
 
+/// `B_{(x1, x2)}(a, b) = ∫_{x1}^{x2} t^{a−1}(1 − t)^{b−1} dt` (`regularized`:
+/// over `B(a, b) = Γ(a)Γ(b)/Γ(a + b)`) for real shapes of which one is `≤ 0`,
+/// where the integral converges: no limit at 0 for `a ≤ 0`, none at 1 for
+/// `b ≤ 0` (refused before 0.56, "requires a, b > 0"; `betainc(−½, 2, ¼, ½)
+/// = 0.7573593129`, mpmath and quadrature).  With a limit at a singular end
+/// the integral diverges and stays refused (mpmath's `betainc` gives a
+/// continuation there, `betainc(−½, 2, 0, ½) = −4.24`, not the integral);
+/// the regularized function is refused where `B(a, b)` is infinite or 0
+/// (a pole of `Γ(a)`, `Γ(b)` or `Γ(a + b)`: no standard value).
+///
+/// The integral is split at ½, and each piece is a power series in the
+/// variable nearer its end: `∫_u^v t^{p−1}(1 − t)^{q−1} dt = Σ_j c_j·I_j` with
+/// `c_j = (1 − q)_j/j!` and `I_j = ∫_u^v t^{p+j−1} dt = (v^{p+j} −
+/// u^{p+j})/(p + j)` (`ln(v/u)` at `p + j = 0`), `0 ≤ u < v ≤ ½`, and the
+/// piece on `[½, 1]` the same in `1 − t` with the shapes exchanged.  Since `I_{j+1} ≤
+/// v·I_j` and `|c_{j+1}/c_j| ≤ 1 + |q|/(j + 1)`, every term after the `j`-th
+/// is at most `ρ = v(1 + |q|/(j + 1))` times the one before, and the sum stops
+/// once `|T_j|·ρ/(1 − ρ)` is below `2^−wp` of the largest term.  The bits lost
+/// to the differences `v^s − u^s`, to a small `p + j`, and to terms of both
+/// signs are measured and made up.
+fn betainc_shape_le_zero(
+    a: &BigFloat,
+    b: &BigFloat,
+    x1: &BigFloat,
+    x2: &BigFloat,
+    regularized: bool,
+    w: &mut Wp<'_>,
+) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
+    let (lo, hi, negate) = match x1.cmp(x2) {
+        Some(c) if c < 0 => (x1, x2, false),
+        Some(c) if c > 0 => (x2, x1, true),
+        _ => return Ok(BigFloat::new(prec)),
+    };
+    let one = BigFloat::from_i32(1, prec);
+    if !bf_strictly_positive(a) && lo.is_zero() {
+        return Err(unevaluable("the integral diverges at 0 for a shape a ≤ 0"));
+    }
+    if !bf_strictly_positive(b) && hi.cmp(&one) == Some(0) {
+        return Err(unevaluable("the integral diverges at 1 for a shape b ≤ 0"));
+    }
+    // B(a, b), when regularized: finite and nonzero.
+    let gamma_pole = |x: &BigFloat| x.is_zero() || (x.is_negative() && x.is_int());
+    let ab = a.add(b, prec + 64, RM);
+    if regularized && (gamma_pole(a) || gamma_pole(b) || gamma_pole(&ab)) {
+        return Err(unevaluable(
+            "B(a, b) is infinite or 0 (a pole of Gamma): no regularized value",
+        ));
+    }
+    let cap = cancellation_cap(prec);
+    let mut extra = 32usize;
+    loop {
+        let wp = prec + extra;
+        let half = BigFloat::from_f64(0.5, wp);
+        let onew = BigFloat::from_i32(1, wp);
+        let mut parts: Vec<BigFloat> = Vec::new();
+        let mut lost = 0usize;
+        if bf_gt(&half, lo) {
+            let v = if bf_gt(hi, &half) { &half } else { hi };
+            let (s, l) = betainc_piece(a, b, lo, v, &mut w.at(wp))?;
+            parts.push(s);
+            lost = lost.max(l);
+        }
+        if bf_gt(hi, &half) {
+            let u = if bf_gt(lo, &half) { lo } else { &half };
+            // 1 − t at the bits of t (exact for t ≥ ½).
+            let p1 = wp + 64 + hi.mantissa_max_bit_len().unwrap_or(wp);
+            let (s, l) = betainc_piece(
+                b,
+                a,
+                &onew.sub(hi, p1, RM),
+                &onew.sub(u, p1, RM),
+                &mut w.at(wp),
+            )?;
+            parts.push(s);
+            lost = lost.max(l);
+        }
+        let mut total = BigFloat::new(wp);
+        for s in &parts {
+            total = total.add(s, wp, RM);
+        }
+        let top = parts.iter().filter_map(|s| s.exponent()).max();
+        if let (Some(t), Some(e)) = (top, total.exponent()) {
+            lost = lost.max(usize::try_from(i64::from(t) - i64::from(e)).unwrap_or(0));
+        } else if !parts.iter().all(BigFloat::is_zero) {
+            lost = lost.max(wp);
+        }
+        if lost + 16 <= extra {
+            let mut v = total;
+            if regularized {
+                let p = wp + 32;
+                let ga = arb_gamma_real(a, &mut w.at(p))?;
+                let gb = arb_gamma_real(b, &mut w.at(p))?;
+                let gab = arb_gamma_real(&a.add(b, p, RM), &mut w.at(p))?;
+                v = v.mul(&gab, wp, RM).div(&ga.mul(&gb, p, RM), wp, RM);
+            }
+            if negate {
+                v = v.neg();
+            }
+            return Ok(round_to(v, prec));
+        }
+        if extra >= cap {
+            return Err(special_exhausted(prec));
+        }
+        extra = (lost + 32).max(2 * extra).min(cap);
+    }
+}
+
+/// `∫_u^v t^{p−1}(1 − t)^{q−1} dt` for `0 ≤ u < v ≤ ½` (`u > 0` when `p ≤
+/// 0`) by the series of [`betainc_shape_le_zero`], and the bits it lost.
+fn betainc_piece(
+    p: &BigFloat,
+    q: &BigFloat,
+    u: &BigFloat,
+    v: &BigFloat,
+    w: &mut Wp<'_>,
+) -> Result<(BigFloat, usize), SymplexError> {
+    let wp = w.bits();
+    let qf = f64_of(q)?.abs();
+    let pf = f64_of(p)?.abs();
+    if !(qf.is_finite() && pf.is_finite()) || qf > 1e5 || pf > 1e15 {
+        return Err(unevaluable("shapes out of range for the series"));
+    }
+    let vf = f64_of(v)?;
+    let one = BigFloat::from_i32(1, wp);
+    // v^p, u^p and then v^{p+j}, u^{p+j} by products.
+    let mut pw = |x: &BigFloat| -> BigFloat {
+        if x.is_zero() {
+            BigFloat::new(wp)
+        } else {
+            p.mul(&x.ln(wp, RM, w.cc), wp, RM).exp(wp, RM, w.cc)
+        }
+    };
+    let (mut vs, mut us) = (pw(v), pw(u));
+    let log_ratio = if u.is_zero() {
+        BigFloat::new(wp)
+    } else {
+        v.div(u, wp, RM).ln(wp, RM, w.cc)
+    };
+    let mut c = one.clone();
+    let mut sum = BigFloat::new(wp);
+    let mut top: Option<i32> = None;
+    let mut lost = 0usize;
+    let limit = 4 * wp + 4 * (qf as usize) + 64;
+    for j in 0..limit {
+        let jb = BigFloat::from_u64(j as u64, wp);
+        let s = p.add(&jb, wp + 64, RM);
+        let ij = if s.is_zero() {
+            log_ratio.clone()
+        } else {
+            let d = vs.sub(&us, wp, RM);
+            // The difference and a small p + j lose bits.
+            if let (Some(ev), Some(ed)) = (vs.exponent(), d.exponent()) {
+                lost = lost.max(usize::try_from(i64::from(ev) - i64::from(ed)).unwrap_or(0));
+            }
+            if let (Some(ep), Some(es)) = (p.exponent(), s.exponent()) {
+                lost = lost.max(usize::try_from(i64::from(ep) - i64::from(es)).unwrap_or(0));
+            }
+            d.div(&s, wp, RM)
+        };
+        let term = c.mul(&ij, wp, RM);
+        sum = sum.add(&term, wp, RM);
+        if let Some(e) = term.exponent().filter(|_| !term.is_zero()) {
+            top = Some(top.map_or(e, |t| t.max(e)));
+        }
+        // c_{j+1} = c_j·(1 − q + j)/(j + 1); a terminating series ends here.
+        let next = one.sub(q, wp, RM).add(&jb, wp, RM);
+        c = c
+            .mul(&next, wp, RM)
+            .div(&BigFloat::from_u64(j as u64 + 1, wp), wp, RM);
+        if c.is_zero() {
+            return Ok((sum, lost));
+        }
+        vs = vs.mul(v, wp, RM);
+        us = us.mul(u, wp, RM);
+        let rho = vf * (1.0 + qf / (j as f64 + 1.0));
+        if rho < 1.0 && !term.is_zero() {
+            let tail = f64::from(term.exponent().unwrap_or(0)) + (rho / (1.0 - rho)).log2();
+            let scale = f64::from(top.unwrap_or(0));
+            if tail < scale - wp as f64 - 4.0 {
+                let total_lost = match (top, sum.exponent()) {
+                    (Some(t), Some(e)) => usize::try_from(i64::from(t) - i64::from(e)).unwrap_or(0),
+                    _ => wp,
+                };
+                // The roundings of c_j accumulate over the terms.
+                let terms = usize::try_from(accuracy::ceil_log2(j + 2)).unwrap_or(0);
+                return Ok((sum, lost.max(total_lost) + terms));
+            }
+        }
+    }
+    Err(unevaluable(
+        "the series did not converge within its term budget",
+    ))
+}
+
 /// Generalised incomplete beta `B_{(x1, x2)}(a, b) = ∫_{x1}^{x2} t^{a−1}(1−t)^{b−1} dt`
 /// (or `I_{(x1, x2)}(a, b) = B_{(x1, x2)}(a, b)/B(a, b)` when `regularized`)
-/// for real `a, b > 0` and `0 ≤ x1, x2 ≤ 1`.
+/// for real `0 ≤ x1, x2 ≤ 1`: shapes `a, b > 0` here, one `≤ 0` by
+/// [`betainc_shape_le_zero`].
 ///
 /// Computed as `I_{x2}(a, b) − I_{x1}(a, b)` ([`betainc_reg_diff_wp`]); when
 /// the two values nearly cancel (`x1 ≈ x2`) the working precision is raised
@@ -10377,16 +10634,17 @@ fn arb_betainc(
     if [a, b, x1, x2].iter().any(|v| v.is_nan() || v.is_inf()) {
         return Err(unevaluable(format!("{name} of special float value")));
     }
-    if !bf_strictly_positive(a) || !bf_strictly_positive(b) {
-        return Err(unevaluable(format!(
-            "{name} requires a, b > 0 for numerical evaluation"
-        )));
-    }
     let one = BigFloat::from_i32(1, prec);
     if [x1, x2].iter().any(|x| x.is_negative() || bf_gt(x, &one)) {
         return Err(unevaluable(format!(
             "{name}: the limits x1, x2 must lie in [0, 1] for numerical evaluation"
         )));
+    }
+    if !bf_strictly_positive(a) || !bf_strictly_positive(b) {
+        return betainc_shape_le_zero(a, b, x1, x2, regularized, w).map_err(|e| match e {
+            SymplexError::Unevaluable { reason } => unevaluable(format!("{name}: {reason}")),
+            other => other,
+        });
     }
     // Orient the limits so that lo < hi; the sign is restored at the end.
     let (lo, hi, negate) = match x1.cmp(x2) {
@@ -11369,21 +11627,22 @@ fn airy_asymptotic(x: &BigFloat, kind: AiryKind, w: &mut Wp<'_>) -> BigFloat {
 
 // ── Elliptic integrals (Carlson symmetric forms) ────────────────────────────────
 
-/// Are `a`, `b`, `c` (and `d`) equal to within `2^{−bits}` relative?
-fn all_close(vals: &[&BigFloat], bits: usize, wp: usize) -> bool {
-    let first = vals[0];
-    vals[1..]
-        .iter()
-        .all(|v| negligible(&v.sub(first, wp, RM), first, bits))
-}
-
-/// Convergence threshold for the Carlson duplication iterations: the
-/// remainder of `R_F`, `R_D`, `R_J` at arguments within relative spread `δ`
-/// of their mean is `O(δ²)` (the Taylor expansions have no linear term), so
-/// a spread of `2^{−wp/2}` already gives `wp` correct bits — and stopping
-/// there avoids stalling on rounding noise in the last bits.
-fn carlson_bits(wp: usize) -> usize {
-    wp / 2 + 8
+/// The deviations `1 − v/μ` of the Carlson arguments `vals` from their
+/// weighted mean `μ` (`None` for `μ = 0`).  The duplication iterations stop
+/// once Carlson's series truncated after degree 5 is within `2^−wp` there
+/// (`elliptic::series_ready`: deviations below `2^−(wp/6 + 2)`); up to 0.55
+/// they ran until the arguments agreed to `2^−(wp/2 + 8)` and took `μ^{−1/2}`
+/// (`μ^{−3/2}`), three times as many steps.
+fn carlson_devs(vals: &[&BigFloat], mu: &BigFloat, wp: usize) -> Option<Vec<Complex>> {
+    if mu.is_zero() {
+        return None;
+    }
+    let one = BigFloat::from_i32(1, wp);
+    Some(
+        vals.iter()
+            .map(|v| (one.sub(&v.div(mu, wp, RM), wp, RM), BigFloat::new(wp)))
+            .collect(),
+    )
 }
 
 /// Carlson `R_C(x, y) = R_F(x, y, y)`, `x ≥ 0`, `y > 0`.
@@ -11436,8 +11695,9 @@ fn carlson_rc(x: &BigFloat, y: &BigFloat, wpc: &mut Wp<'_>) -> BigFloat {
 }
 
 /// Carlson `R_F(x, y, z)` (`x, y, z ≥ 0`, at most one zero) by the
-/// duplication theorem iterated until the arguments coincide to working
-/// precision, where `R_F(μ, μ, μ) = μ^{−1/2}`.
+/// duplication theorem iterated until the arguments are close enough to
+/// their mean `μ` for Carlson's series, `R_F ≈ μ^{−1/2}·(1 − E₂/10 + …)`
+/// ([`carlson_devs`]).
 fn carlson_rf(
     x: &BigFloat,
     y: &BigFloat,
@@ -11447,14 +11707,17 @@ fn carlson_rf(
     let four = BigFloat::from_i32(4, wp);
     let (mut x, mut y, mut z) = (x.clone(), y.clone(), z.clone());
     for _ in 0..(wp * 2 + 200) {
-        if all_close(&[&x, &y, &z], carlson_bits(wp), wp) {
-            // R_F(μ, μ, μ) = μ^{−1/2}, μ = (x + y + z)/3
-            let one = BigFloat::from_i32(1, wp);
-            let mu = x
-                .add(&y, wp, RM)
-                .add(&z, wp, RM)
-                .div(&BigFloat::from_i32(3, wp), wp, RM);
-            return Ok(one.div(&mu.sqrt(wp, RM), wp, RM));
+        // Carlson's series about μ = (x + y + z)/3 (`elliptic::rf_series`).
+        let mu = x
+            .add(&y, wp, RM)
+            .add(&z, wp, RM)
+            .div(&BigFloat::from_i32(3, wp), wp, RM);
+        if let Some(d) = carlson_devs(&[&x, &y, &z], &mu, wp) {
+            let devs: Vec<&Complex> = d.iter().collect();
+            if elliptic::series_ready(&devs, wp) {
+                let s = elliptic::rf_series(&devs, wp).0;
+                return Ok(s.div(&mu.sqrt(wp, RM), wp, RM));
+            }
         }
         let (sx, sy, sz) = (x.sqrt(wp, RM), y.sqrt(wp, RM), z.sqrt(wp, RM));
         let lambda =
@@ -11472,7 +11735,8 @@ fn carlson_rf(
 }
 
 /// Carlson `R_D(x, y, z) = R_J(x, y, z, z)` (`z > 0`) by duplication:
-/// `R_D(x,y,z) = R_D(x',y',z')/4 + 3/(√z (z + λ))`, `R_D(μ,μ,μ) = μ^{−3/2}`.
+/// `R_D(x,y,z) = R_D(x',y',z')/4 + 3/(√z (z + λ))`, the remainder by Carlson's
+/// series about `μ = (x + y + 3z)/5` ([`carlson_devs`]).
 fn carlson_rd(
     x: &BigFloat,
     y: &BigFloat,
@@ -11486,15 +11750,19 @@ fn carlson_rd(
     let mut acc = BigFloat::new(wp);
     let mut scale = one.clone(); // 4^{−k}
     for _ in 0..(wp * 2 + 200) {
-        if all_close(&[&x, &y, &z], carlson_bits(wp), wp) {
-            // R_D(μ, μ, μ) = μ^{−3/2}, μ = (x + y + 3z)/5
-            let mu = x.add(&y, wp, RM).add(&three.mul(&z, wp, RM), wp, RM).div(
-                &BigFloat::from_i32(5, wp),
-                wp,
-                RM,
-            );
-            let tail = one.div(&mu.mul(&mu.sqrt(wp, RM), wp, RM), wp, RM);
-            return Ok(acc.add(&scale.mul(&tail, wp, RM), wp, RM));
+        // Carlson's series about μ = (x + y + 3z)/5 (`elliptic::rj_series`).
+        let mu = x.add(&y, wp, RM).add(&three.mul(&z, wp, RM), wp, RM).div(
+            &BigFloat::from_i32(5, wp),
+            wp,
+            RM,
+        );
+        if let Some(d) = carlson_devs(&[&x, &y, &z], &mu, wp) {
+            let devs = [&d[0], &d[1], &d[2], &d[2], &d[2]];
+            if elliptic::series_ready(&devs, wp) {
+                let s = elliptic::rj_series(&devs, wp).0;
+                let tail = s.div(&mu.mul(&mu.sqrt(wp, RM), wp, RM), wp, RM);
+                return Ok(acc.add(&scale.mul(&tail, wp, RM), wp, RM));
+            }
         }
         let (sx, sy, sz) = (x.sqrt(wp, RM), y.sqrt(wp, RM), z.sqrt(wp, RM));
         let lambda =
@@ -11516,7 +11784,8 @@ fn carlson_rd(
 
 /// Carlson `R_J(x, y, z, p)` for `p > 0` by duplication:
 /// `R_J = R_J(x',y',z',p')/4 + 3 R_C(α², β²)` with
-/// `α = p(√x + √y + √z) + √x√y√z`, `β = √p (p + λ)`, `R_J(μ,μ,μ,μ) = μ^{−3/2}`.
+/// `α = p(√x + √y + √z) + √x√y√z`, `β = √p (p + λ)`, the remainder by
+/// Carlson's series about `μ = (x + y + z + 2p)/5` ([`carlson_devs`]).
 fn carlson_rj(
     x: &BigFloat,
     y: &BigFloat,
@@ -11537,16 +11806,20 @@ fn carlson_rj(
     let mut acc = BigFloat::new(wp);
     let mut scale = one.clone();
     for _ in 0..(wp * 2 + 200) {
-        if all_close(&[&x, &y, &z, &p], carlson_bits(wp), wp) {
-            // R_J(μ, μ, μ, μ) = μ^{−3/2}, μ = (x + y + z + 2p)/5
-            let two_p = p.mul(&BigFloat::from_i32(2, wp), wp, RM);
-            let mu = x.add(&y, wp, RM).add(&z, wp, RM).add(&two_p, wp, RM).div(
-                &BigFloat::from_i32(5, wp),
-                wp,
-                RM,
-            );
-            let tail = one.div(&mu.mul(&mu.sqrt(wp, RM), wp, RM), wp, RM);
-            return Ok(acc.add(&scale.mul(&tail, wp, RM), wp, RM));
+        // Carlson's series about μ = (x + y + z + 2p)/5 (`elliptic::rj_series`).
+        let two_p = p.mul(&BigFloat::from_i32(2, wp), wp, RM);
+        let mu = x.add(&y, wp, RM).add(&z, wp, RM).add(&two_p, wp, RM).div(
+            &BigFloat::from_i32(5, wp),
+            wp,
+            RM,
+        );
+        if let Some(d) = carlson_devs(&[&x, &y, &z, &p], &mu, wp) {
+            let devs = [&d[0], &d[1], &d[2], &d[3], &d[3]];
+            if elliptic::series_ready(&devs, wp) {
+                let s = elliptic::rj_series(&devs, wp).0;
+                let tail = s.div(&mu.mul(&mu.sqrt(wp, RM), wp, RM), wp, RM);
+                return Ok(acc.add(&scale.mul(&tail, wp, RM), wp, RM));
+            }
         }
         let (sx, sy, sz, sp) = (
             x.sqrt(wp, RM),
@@ -11929,8 +12202,16 @@ fn arb_assoc_legendre(
     let order = bf_as_int(m)?
         .filter(|_| m.is_int())
         .ok_or_else(|| unevaluable("assoc_legendre: order must be an integer"))?;
-    if order.abs() > deg {
+    // 0 for `m > n` (a derivative of order `m` of a polynomial of degree
+    // `n`); for `m < −n` the Ferrers function is not 0 (`P₀⁻¹(x) = √((1 −
+    // x)/(1 + x))`; up to 0.56 it was 0 here).
+    if order > deg {
         return Ok(BigFloat::new(prec));
+    }
+    if order < -deg {
+        return Err(unevaluable(
+            "assoc_legendre: an order below minus the degree is not a polynomial",
+        ));
     }
     let wp = prec + 32 + 2 * (deg as f64).log2().ceil().max(0.0) as usize;
     let one = BigFloat::from_i32(1, wp);

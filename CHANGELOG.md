@@ -8,6 +8,116 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+Silent folds at special arguments, finite products for every integer
+bound, transformed distributions, special functions off their real ranges,
+and the integration and series leftovers.  A fold written for `±∞` no
+longer fires at `zoo` (`uppergamma(elliptic_k(besseli(0, 0)), ∞)` was 0
+with `is_zero() = Some(true)`); a piecewise parameter (`0^y`, `H(y)`,
+`⌊y⌋`) is no longer read as a nonzero constant by series and limits; finite
+products follow Karr's convention like sums; `transformed` answers the
+monotone maps it refused (`ln X`, `√X`, `atan X`, `sinh(X + 5)³`); and
+`elliptic_k`, `elliptic_e`, `elliptic_pi`, `elliptic_f`, the orthogonal
+polynomials, rising factorials and `betainc` have values where 0.55
+refused.
+
+### Breaking (behaviour)
+
+- **Reversed limits of a finite product follow Karr's convention (D13).**
+  `Π_{k=a}^{b} f(k)` with `b < a − 1` is `1/Π_{k=b+1}^{a−1} f(k)` (it was 1):
+  `Π_{k=5}^{2} k = 1/12`, as in SymPy, in `product_over`, `eval` and
+  `eval_decimal`; `b = a − 1` stays the empty product.  A closed form for a
+  symbolic upper limit holds for every integer value the assumptions allow,
+  or comes as `Piecewise((form, n ≥ h), (Product, True))`:
+  `Π_{k=1}^{n}(2k − 1)` was `(2n)!/(2ⁿn!)`, `nan` at `n = −1` where the
+  product is −1; it is `2ⁿΓ(n + 1/2)/√π` (and the factorial form for `n`
+  declared non-negative).  Product hunt (3,352 cases × `n = −6…20`): 1,341
+  wrong + 1,217 undefined values → 0.
+- **`Max`/`Min` read their arguments as real:** `+∞` absorbs a `Max` and
+  `±∞ + c` is `±∞` there (`Max(−3, ∞, y) = ∞`, `Min(y + ∞, y) = y`, SymPy:
+  `oo`); an argument known not to be real turns these rules off.
+  `W(±∞ + c)` and `W(c ± i∞)` take the values of `ln`.
+- **Orthogonal polynomials at negative integer degrees** take the values of
+  their defining functions (SymPy's conventions): `P_{−m} = P_{m−1}`, `T_{−m} =
+  T_m`, `U_{−1} = 0`, `U_{−m} = −U_{m−2}`, `L_{−m}(x) = eˣL_{m−1}(−x)`,
+  `P^μ_{−m} = P^μ_{m−1}`; the Jacobi, Gegenbauer and generalised Laguerre
+  families are 0 there.  `assoc_legendre(n, m, x) = 0` only for an integer
+  `m > n` (`P₀⁻¹(x) = √((1 − x)/(1 + x))` was 0).
+- `Ex::gosper_sum` checks Gosper's closed form as `summation` does (a form
+  that holds only for `n ≥ h` comes as a `Piecewise`; `Σ_{k=−1}^{n} C(k + 2,
+  k)/2ᵏ` was `nan`).
+
+### Fixed
+
+- **Folds at a special argument need a finite other argument:** `Γ(s, ∞) =
+  0`, `Γ(s, 0) = Γ(s)`, `γ(s, 0) = 0`, `γ(s, ∞) = Γ(s)`, `E_ν(∞) = 0`, `J_ν(±∞) =
+  0` were applied at `zoo` and at unevaluated poles: `uppergamma(elliptic_k(
+  besseli(0, 0)), ∞)` was 0 with `is_zero() = Some(true)`.  A `nan` argument
+  makes a library function `nan`; a function left unevaluated at `zoo` has
+  no value, so `0·Γ(zoo)`, `0·atan(zoo)`, `0·W(zoo)` are `nan` (were 0, as in
+  SymPy).
+- **A piecewise parameter is not a generic nonzero constant:** `0^y`,
+  `δ(1/2, y)`, and as factors `H(y)`, `⌊y⌋`, `⌈y⌉`, `max(y, 0)` vanish on a
+  region; series and limits treat them as undecided.  `series(sin(x)/(x +
+  0^y), x)` was `x/0^y − …`, `limit(x/min(y, x, 5), x, 0)` was 0,
+  `series(acosh(P₂(x))/(x² + H(y)), x, 0)` divided by `H(y)`: refused now.
+  A series of `KroneckerDelta(x, y)` (a step in `x`) is refused (the value at
+  `x = 0` was substituted).  L'Hôpital's rule and the series route never
+  divide by an unproved zero: `limit(1/besselj(−1/2, π/2 + x), x, 0)` was
+  `1/besselj(−1/2, π/2)` (`J_{−1/2}(π/2) = 0`).
+- `e` and `exp(c)` are related in the exact zero test (an identity in
+  `E^k` and `exp(k)` had `is_zero() = None`); `KroneckerDelta(1/2, n) = 0`
+  for an integer `n`.
+- **Transformed distributions** (`Distribution::transformed`,
+  `RandomVariable::transform`): monotone maps that 0.55 refused are
+  answered, each inverse proved real and continuous on the whole image:
+  `ln X`, `ln(X + 1)`, `√X`, `X^(1/3)`, `atan X`, `asin X`, `asinh X`, `erf X`,
+  maps with several real roots (`X² + X` on a positive support), and
+  principal odd roots replaced by real roots (`sinh(X + 5)³` for a standard
+  normal: `F(−1) = Φ(asinh(−1) − 5) = 2.0344·10⁻⁹`).  Hunt (3,080 seeds,
+  quadrature oracles at two precisions): answered 972 → 2,074, timeouts
+  271 → 0, 0 wrong.
+- **Inequalities with huge sample values hung:** the sign chart of `exp(x³)
+  ≥ 0` turned `≈ 10^434294481` into an exact rational; decimals are compared
+  on their digits and exponents (transforming `U(0, 1)` by `exp((X −
+  1/10)³)` took > 150 s, now 0.1 s).
+- **Special functions off their real ranges:** `assoc_laguerre` with a
+  negative-integer `α`, `hermite`/`laguerre` of complex arguments,
+  `elliptic_f` of a complex `φ` (mpmath's convention), `rising_factorial`/
+  `falling_factorial` of complex arguments, `betainc` with a shape `≤ 0`
+  where the integral converges, `elliptic_pi` with a real `n > 1` and a
+  non-real `m` (`elliptic_pi(E, I) = 0.3345818233 − 1.348376093i`), and
+  `elliptic_k`/`elliptic_e` for real `m > 1` by the reciprocal-modulus
+  transformation (`elliptic_e(10⁶⁰⁰) = 7.853981634e-301 + 1e300·i`; it was
+  refused, and mpmath and SymPy give a wrong real part).  Hunt (1,500 cases,
+  mpmath at 50/80 digits): 0 wrong.  Carlson's degree-5 series in every
+  `R_F`/`R_D`/`R_J` cut the duplication steps about 3×: golden numeric
+  operations −17% CPU.
+- **Rational functions of `e^{λx}` (or `cˣ`) with a non-real rate:** the
+  spiral antiderivative's joining constant is an exact integer part (it was
+  read off an `f64` of the gap, which has no value at a pole and was refused
+  beyond 10¹² turns): `∫ polylog(0, Chi(−3/4)ˣ) dx`, `∫ dx/(e^{(10⁻³⁰+i)x} −
+  3)`, `∫₀³ e^{(1+i)x}/((e^{(1+i)x} − 2)(e^{(1+i)x} + 2i)) dx =
+  −0.4811866230856852581606 − 0.2200400237803276724187i` (mpmath `quad`).
+  `∫ e^{ix}/(e^{ix} − 3) dx` is `−i·ln(1 − e^{ix}/3)` (was `−i·ln(e^{ix} − 3)`,
+  which jumps at `x = π`).
+- **Series of `K(m)`, `E(m)`, `Π(n | m)` at `m → 0`** (DLMF 19.5.1–2): about
+  580 golden series and 77 limits answered; series that gave up slowly since
+  0.55 answer or refuse at once (`elliptic_e(x)·Ei(elliptic_pi(x, y))` 33 s →
+  0.17 s).  Golden series timeouts 98 → 83, golden CPU −10.7%.
+- `Σ_{k≥−1} C(k + 2, k)/2ᵏ = 8` (was kept); Gosper sums with a symbolic lower
+  limit no longer carry a needless condition (`Σ_{k=m}^{n} k·k! = (n + 1)! −
+  m!`); `Σ_{k≥2} k·xᵏ/3ᵏ` prints `3*x*(-x + 3)^(-2) - 1/3*x` again;
+  `eval_decimal` of a long reversed formal `Product` gave 1.
+
+### Known issues
+
+- `0/Γ(zoo)` is 0 (undefined where `f` has no limit at `zoo`); `0/0^y` is 0.
+- A piecewise leading coefficient of exponent 0 is refused although the
+  limit is that coefficient (`limit(H(x + y), x, 0)`).
+- `elliptic_pi(1/2 − i/3, 4 + i/10)` and `elliptic_e(10⁶⁰⁰ + i)` stay refused.
+- Two series compositions are still slower than in 0.53
+  (`gegenbauer(3/2, 0, 2/x)/Shi(elliptic_pi(x, π))`).
+
 ## [0.55.0] - 2026-10-15
 
 Finite sums for every integer bound, per-part error bounds for powers and

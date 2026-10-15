@@ -4092,6 +4092,11 @@ fn try_lhopital(
     if np_zero && dp_zero {
         return try_lhopital(arena, n_prime, d_prime, var, point, depth + 1);
     }
+    // `g′(a)` not proved nonzero (`besselj(−1/2, π/2)`, 0 to every digit) is
+    // never divided by: up to 0.56 `f′(a)/g′(a)` was such a quotient by 0.
+    if !dp_zero && !is_zero_value(arena, dp_val).is_false() {
+        return None;
+    }
 
     if is_finite_constant(arena, np_val, var) && is_finite_constant(arena, dp_val, var) && !dp_zero
     {

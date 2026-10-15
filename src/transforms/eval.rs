@@ -790,6 +790,16 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     }
                 });
 
+                // The empty range `hi = lo − 1` before anything else (a
+                // range with `hi < lo − 1` is the reciprocal of the product
+                // over `[hi + 1, lo − 1]`, Karr's convention: the engine's).
+                if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int)
+                    && hi_val.checked_add(1) == Some(lo_val)
+                {
+                    cache.insert(id, arena.one);
+                    continue;
+                }
+
                 // Try closed-form symbolic evaluation first (Π k = n!, telescoping,
                 // Π a^f(k) = a^Σf, …), mirroring the `Sum` arm above.
                 if let Some(closed) =
@@ -801,10 +811,10 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
 
                 if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int) {
-                    if hi_val < lo_val {
-                        // Empty range: product is 1
-                        arena.one
-                    } else if (hi_val - lo_val) <= 1000 {
+                    if hi_val
+                        .checked_sub(lo_val)
+                        .is_some_and(|d| (0..=1000).contains(&d))
+                    {
                         let mut factors = smallvec::SmallVec::<[ExprId; 8]>::new();
                         for k in lo_val..=hi_val {
                             let k_expr = arena.int(k);
@@ -3533,7 +3543,14 @@ pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<
 /// `i − j` canonicalises to a non-zero number; `nan` with a `nan` index (as
 /// every function of `nan`; before 0.41 `δ(nan, nan)` was `1`, a value for
 /// an undefined comparison — SymPy 1.14 leaves `KroneckerDelta(nan, nan)`).
+/// Also `0` when the assumptions show `i ≠ j`: `i − j` known nonzero, or a
+/// non-integer number plus terms known to be integers (`δ(1/2, n)` for an
+/// integer `n`; SymPy 1.14: 0; up to 0.56 it stayed).  With a plain symbol
+/// `δ(1/2, y)` stays: it is 1 at `y = 1/2` (its generic value is 0, which
+/// the zero tests of series and limits respect: `may_vanish_on_a_region`).
 pub(crate) fn eval_kronecker_delta(arena: &mut Arena, i: ExprId, j: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::truth::Truth;
     if i == arena.nan || j == arena.nan {
         return Some(arena.nan);
     }
@@ -3541,12 +3558,27 @@ pub(crate) fn eval_kronecker_delta(arena: &mut Arena, i: ExprId, j: ExprId) -> O
         return Some(arena.one);
     }
     let d = arena.sub(i, j);
-    let r = arena.as_num(d)?;
-    if r.is_zero() {
-        Some(arena.one)
-    } else {
-        Some(arena.zero)
+    if let Some(r) = arena.as_num(d) {
+        return Some(if r.is_zero() { arena.one } else { arena.zero });
     }
+    let mut cache = AssumptionCache::new();
+    let fraction_plus_integers = match arena.node(d) {
+        ExprNode::Add(terms) => {
+            let terms = terms.clone();
+            terms
+                .first()
+                .and_then(|&t| arena.as_num(t))
+                .is_some_and(|q| !q.is_integer())
+                && terms[1..]
+                    .iter()
+                    .all(|&t| Truth::from(cache.query(arena, t, Props::INTEGER)).is_true())
+        }
+        _ => false,
+    };
+    if fraction_plus_integers || Truth::from(cache.query(arena, d, Props::NONZERO)).is_true() {
+        return Some(arena.zero);
+    }
+    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -7155,7 +7187,15 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 /// A closed form taken at an argument with `±∞` in it that meets `∞ − ∞`
 /// gives `nan` where the function may have a value: then the node stays
 /// (its values at infinity fold when it is built, `canon::at_infinity`).
+/// A `nan` argument makes `nan`, as when the node is built
+/// (`canon::lib_function_value`): up to 0.56 an argument that became `nan`
+/// when evaluated reached the folds of the other one (`uppergamma(s, ∞) =
+/// 0`).  The folds that hold for every finite value of one argument ask it
+/// of that argument ([`finite_slot`](crate::base::canon::finite_slot)).
 fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
+    if args.contains(&arena.nan) {
+        return Some(arena.nan);
+    }
     let value = eval_lib_fn_closed(arena, f, args)?;
     if value == arena.nan && !args.contains(&arena.nan) && contains_infinity(arena, args) {
         return None;
@@ -7265,7 +7305,9 @@ fn eval_bessel_at_infinity(
     order: ExprId,
     x: ExprId,
 ) -> Option<ExprId> {
-    if has_infinity(arena, order) {
+    // An order that is not known finite (`zoo`, an unevaluated pole): no
+    // value (up to 0.56 `besselj(elliptic_pi(π, 1), ∞)` was 0).
+    if !crate::base::canon::finite_slot(arena, order) {
         return None;
     }
     match f {
@@ -7332,18 +7374,6 @@ fn expansion(arena: &Arena, params: &[ExprId], n: ExprId, x: ExprId) -> Expansio
     }
 }
 
-/// Does `id` contain `∞`, `−∞`, `zoo` or `nan`?
-fn has_infinity(arena: &Arena, id: ExprId) -> bool {
-    [
-        arena.infinity,
-        arena.neg_infinity,
-        arena.complex_infinity,
-        arena.nan,
-    ]
-    .iter()
-    .any(|&inf| walk::contains(arena, id, inf))
-}
-
 /// A classical orthogonal polynomial `p_n(x)` expanded by `expand` when `n`
 /// is a non-negative integer no larger than the configured power limit.
 fn eval_orthopoly(arena: &mut Arena, n: ExprId, x: ExprId, family: OrthoFamily) -> Option<ExprId> {
@@ -7351,14 +7381,80 @@ fn eval_orthopoly(arena: &mut Arena, n: ExprId, x: ExprId, family: OrthoFamily) 
         return None;
     }
     let n_num = arena.as_num(n)?;
-    if !n_num.is_integer() || n_num.is_negative() {
+    if !n_num.is_integer() {
         return None;
+    }
+    if n_num.is_negative() {
+        let m = (-n_num.to_integer()).to_u64()?;
+        return classical_at_negative_degree(arena, family, m, x);
     }
     let n_int = n_num.to_integer().to_u64()?;
     if n_int > arena.config.max_pow_exponent as u64 {
         return None;
     }
     ortho_value(arena, &family, n_int as usize, x)
+}
+
+/// The classical orthogonal polynomials at the degree `−m` (`m ≥ 1`), by
+/// the identities of their defining functions (SymPy's conventions; mpmath
+/// `legendre`, `chebyt`, `chebyu` agree): `P_{−m}(x) = P_{m−1}(x)` (the
+/// Legendre function, DLMF 14.9.5), `T_{−m} = T_m`, `U_{−1} = 0`, `U_{−m} =
+/// −U_{m−2}` (`U_n = sin((n + 1)θ)/sin θ`), `L_{−m}(x) = eˣ·L_{m−1}(−x)`
+/// (`L_ν = ₁F₁(−ν; 1; ·)` and Kummer's transformation).  `H_{−m}` is the
+/// Hermite function, not a polynomial (`H_{−1}(x) = (√π/2)·e^{x²}·erfc x`;
+/// SymPy refuses it): it stays.  Up to 0.56 every negative degree stayed.
+fn classical_at_negative_degree(
+    arena: &mut Arena,
+    family: OrthoFamily,
+    m: u64,
+    x: ExprId,
+) -> Option<ExprId> {
+    let max = arena.config.max_pow_exponent as u64;
+    let at = |arena: &mut Arena, family: &OrthoFamily, d: u64, x: ExprId| {
+        (d <= max)
+            .then(|| ortho_value(arena, family, d as usize, x))
+            .flatten()
+    };
+    match family {
+        OrthoFamily::Legendre => at(arena, &family, m - 1, x),
+        OrthoFamily::ChebyshevT => at(arena, &family, m, x),
+        OrthoFamily::ChebyshevU if m == 1 => Some(arena.zero),
+        OrthoFamily::ChebyshevU => {
+            let u = at(arena, &family, m - 2, x)?;
+            Some(arena.neg(u))
+        }
+        OrthoFamily::Laguerre => {
+            let minus_x = arena.neg(x);
+            let l = at(arena, &family, m - 1, minus_x)?;
+            let e = arena.exp(x);
+            Some(arena.mul(&[e, l]))
+        }
+        _ => None,
+    }
+}
+
+/// Is `n` a negative integer and every parameter in `params` finite
+/// ([`finite_slot`](crate::base::canon::finite_slot))?  Then the
+/// parametrised families — Gegenbauer's `C_n^{(λ)}`, Jacobi's
+/// `P_n^{(α,β)}`, the generalised Laguerre `L_n^{(α)}` — are the zero
+/// polynomial: SymPy's convention for Gegenbauer ("for negative n the
+/// polynomials vanish"), the binomial prefactor `C(n + α, n) = 0` of their
+/// hypergeometric forms (DLMF 18.5.7, 18.5.12; `C(r, k) = 0` for a negative
+/// integer `k`, as `binomial`; mpmath `jacobi(−1, 2, 3, 1j)`, `laguerre(−1,
+/// 2, 0.3)` are 0), and what keeps the derivative formulas `Cₙ⁽λ⁾′ =
+/// 2λC₍ₙ₋₁₎⁽λ⁺¹⁾`, `Pₙ⁽α,β⁾′ = ½(n + α + β + 1)P₍ₙ₋₁₎⁽α⁺¹,β⁺¹⁾`,
+/// `Lₙ⁽α⁾′ = −L₍ₙ₋₁₎⁽α⁺¹⁾` right at `n = 0`.  (`C_{−1}^{(1/2)} = 0` while the
+/// Legendre function `P_{−1} = 1`: the identities `C_n^{(1/2)} = P_n`,
+/// `P_n^{(0,0)} = P_n`, `L_n^{(0)} = L_n` hold for `n ≥ 0`, as in SymPy.)  Up to
+/// 0.56 they stayed, and series ended in `K(jacobi(−1, 2, 3, i) + 1)` =
+/// `K(1)` = ∞ or carried coefficients `gegenbauer(−2, 6, 0)`.
+fn zero_polynomial_degree(arena: &Arena, n: ExprId, params: &[ExprId]) -> bool {
+    arena
+        .as_num(n)
+        .is_some_and(|q| q.is_integer() && q.is_negative())
+        && params
+            .iter()
+            .all(|&p| crate::base::canon::finite_slot(arena, p))
 }
 
 /// Intern the library-function node `f(args)` (no folding).
@@ -7448,8 +7544,10 @@ fn eval_erfcinv(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 /// values at `−∞` (`E_0(−∞) = −∞`, `E₁(−∞) = −∞ − iπ`) fold when the
 /// node is rebuilt (`canon::lib_function_value`).
 fn eval_expint(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
+    // For every finite order (up to 0.56 also `expint(zoo, ∞)` and
+    // `expint(elliptic_pi(π, 1), ∞)`: no value).
     if x == arena.infinity {
-        return Some(arena.zero);
+        return crate::base::canon::finite_slot(arena, n).then_some(arena.zero);
     }
     if n == arena.zero && !contains_infinity(arena, &[x]) {
         let neg_x = arena.neg(x);
@@ -7730,6 +7828,10 @@ fn lowergamma_closure_cancels_complex(s: &Q, re: f64, im: f64) -> bool {
 /// stays, and `evalf` computes it by its power series.  An irrational `x`
 /// (`√2/10³⁰`, `π/10¹⁰`) is sized by a 16-digit evaluation.
 fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
+    // Both folds hold for a finite `s` only (`lowergamma(zoo, 0)` was 0).
+    if (x == arena.zero || x == arena.infinity) && !crate::base::canon::finite_slot(arena, s) {
+        return None;
+    }
     if x == arena.zero {
         if known_nonpositive(arena, s) {
             return None;
@@ -7785,6 +7887,12 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
 /// the values at `−∞` (`Γ(2, −∞) = −∞`, `Γ(1/2, −∞) = √π − i·∞`) fold
 /// when the node is rebuilt (`canon::lib_function_value`).
 fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
+    // `Γ(s, ∞) = 0` and `Γ(s, 0) = Γ(s)` for a finite `s` only: up to 0.56
+    // `uppergamma(elliptic_k(besseli(0, 0)), ∞)` (the order evaluates to
+    // `K(1) = zoo`) was 0 and `is_zero()` claimed it.
+    if (x == arena.zero || x == arena.infinity) && !crate::base::canon::finite_slot(arena, s) {
+        return None;
+    }
     if x == arena.infinity {
         return Some(arena.zero);
     }
@@ -8169,6 +8277,8 @@ fn eval_elliptic_pi(arena: &mut Arena, n: ExprId, m: ExprId) -> Option<ExprId> {
             eval_elliptic_k(arena, m).unwrap_or_else(|| apply_named(arena, LibFn::EllipticK, &[m])),
         );
     }
+    // `Π(n | n) = E(n)/(1 − n)` for a finite `n` only (`Π(1 | m) = zoo` for
+    // every `m`, so also in the limit `m → ∞`).
     if n == arena.one {
         return Some(arena.complex_infinity);
     }
@@ -8179,7 +8289,7 @@ fn eval_elliptic_pi(arena: &mut Arena, n: ExprId, m: ExprId) -> Option<ExprId> {
         let denom = arena.mul(&[two, root]);
         return Some(arena.div(arena.pi, denom));
     }
-    if n == m {
+    if n == m && crate::base::canon::finite_slot(arena, n) {
         let e =
             eval_elliptic_e(arena, n).unwrap_or_else(|| apply_named(arena, LibFn::EllipticE, &[n]));
         let one_minus_n = arena.sub(arena.one, n);
@@ -8248,6 +8358,9 @@ fn expand_mul2(arena: &mut Arena, p: ExprId, q: ExprId) -> ExprId {
 /// `(k+1) C_{k+1} = 2(k+a) x C_k − (k+2a−1) C_{k−1}`; `C_n^{(1/2)} = P_n`,
 /// `C_n^{(1)} = U_n`.
 fn eval_gegenbauer(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
+    if zero_polynomial_degree(arena, n, &[a]) {
+        return Some(arena.zero);
+    }
     match expansion(arena, &[a], n, x) {
         Expansion::Refused => return None,
         Expansion::IdentitiesOnly => {
@@ -8326,6 +8439,9 @@ fn expanded_powers(arena: &mut Arena, p: ExprId, n: usize) -> Vec<ExprId> {
 /// terms are merged at each step; distributing the whole `2n`-factor
 /// product at once is exponential in `n`.
 fn eval_jacobi(arena: &mut Arena, n: ExprId, a: ExprId, b: ExprId, x: ExprId) -> Option<ExprId> {
+    if zero_polynomial_degree(arena, n, &[a, b]) {
+        return Some(arena.zero);
+    }
     match expansion(arena, &[a, b], n, x) {
         Expansion::Refused => return None,
         Expansion::IdentitiesOnly => {
@@ -8391,7 +8507,10 @@ fn eval_jacobi(arena: &mut Arena, n: ExprId, a: ExprId, b: ExprId, x: ExprId) ->
 }
 
 /// Associated Legendre `P_n^m(x)` (Condon–Shortley phase) for integer
-/// `n ≥ 0`, integer `m`: zero for `|m| > n`, `P_n^0 = P_n`,
+/// `n ≥ 0`, integer `m`: zero for `m > n` (the `m`-th derivative of a
+/// polynomial of degree `n`; for `m < −n` the Ferrers function is not 0,
+/// `P₀⁻¹(x) = √((1 − x)/(1 + x))`, DLMF 14.5.12, and stays: up to 0.56 it was
+/// 0), `P_n^0 = P_n`,
 /// `P_n^{−m} = (−1)^m (n−m)!/(n+m)! P_n^m`, and for `m > 0`
 /// `P_m^m = (−1)^m (2m−1)!! (1−x²)^{m/2}`, `P_{m+1}^m = (2m+1) x P_m^m`,
 /// `(k−m+1) P_{k+1}^m = (2k+1) x P_k^m − (k+m) P_{k−1}^m`.
@@ -8402,11 +8521,23 @@ fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Op
             if m == arena.zero {
                 return Some(arena.legendre(n, x));
             }
-            // `P_n^m = 0` for integers `|m| > n`.
+            // `P_n^m = 0` for integers `m > n`.
             let (deg, order) = (as_poly_degree(arena, n)?, as_ratio(arena, m)?);
-            return (order.is_integer() && order.abs() > q_int(deg as i64)).then_some(arena.zero);
+            return (order.is_integer() && order > q_int(deg as i64)).then_some(arena.zero);
         }
         Expansion::Expanded => {}
+    }
+    // `P^m_{−ν−1} = P^m_ν` (DLMF 14.9.5): a negative degree `−k` is `k − 1`.
+    if let Some(neg) = arena
+        .as_num(n)
+        .filter(|q| q.is_integer() && q.is_negative())
+        .map(|q| q.to_integer())
+    {
+        let d = arena.num_ratio(Q::from_integer(-neg - 1));
+        return Some(
+            eval_assoc_legendre(arena, d, m, x)
+                .unwrap_or_else(|| apply_named(arena, LibFn::AssocLegendre, &[d, m, x])),
+        );
     }
     let deg = match as_poly_degree(arena, n) {
         Some(d) => d,
@@ -8418,9 +8549,9 @@ fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Op
     let order = match order {
         Some(o) => o,
         None => {
-            // Integer |m| > n ↦ 0; non-integer m stays symbolic.
+            // Integer m > n ↦ 0; m < −n and a non-integer m stay symbolic.
             let r = as_ratio(arena, m)?;
-            return r.is_integer().then_some(arena.zero);
+            return (r.is_integer() && r.is_positive()).then_some(arena.zero);
         }
     };
     if order == 0 {
@@ -8478,6 +8609,9 @@ fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Op
 /// Generalised Laguerre `L_n^{(a)}(x)` for integer `n ≥ 0` via
 /// `(k+1) L_{k+1} = (2k+1+a−x) L_k − (k+a) L_{k−1}`; `L_n^{(0)} = L_n`.
 fn eval_assoc_laguerre(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
+    if zero_polynomial_degree(arena, n, &[a]) {
+        return Some(arena.zero);
+    }
     match expansion(arena, &[a], n, x) {
         Expansion::Refused => return None,
         Expansion::IdentitiesOnly => return (a == arena.zero).then(|| arena.laguerre(n, x)),

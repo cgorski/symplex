@@ -1028,6 +1028,16 @@ fn bessel_x(fun: LibFn, a: &Args<'_>, cc: &mut Consts) -> Sens {
 fn betainc_sens(regularized: bool, i: usize, a: &Args<'_>) -> Sens {
     let (p, q, x1, x2) = (a.x[0], a.x[1], a.x[2], a.x[3]);
     if !pos(p) || !pos(q) {
+        // A shape ≤ 0 (since 0.56): the integrand is not integrable at that
+        // end, and a limit whose ball reaches within 8 radii of it has no
+        // bound; otherwise numerically.
+        let limits = [(x1, a.e[2]), (x2, a.e[3])];
+        let near = |d: &BigFloat, e: f64| !inside(lg(d), e);
+        if (!pos(p) && limits.iter().any(|(x, e)| near(x, *e)))
+            || (!pos(q) && limits.iter().any(|(x, e)| near(&one_minus(x), *e)))
+        {
+            return Sens::Unbounded;
+        }
         return Sens::Numeric;
     }
     let (ln_b_lo, ln_b_hi) = log2_beta_bounds(p, q);
@@ -1160,6 +1170,135 @@ pub(super) fn numeric_change(
     cache: Cache<'_>,
     wpc: &mut Wp<'_>,
 ) -> Option<ErrExp> {
+    let (d, scale) = moved_difference(arena, id, child, e, value, cache, wpc)?;
+    // Scaled back from the move to the radius, doubled.
+    Some(if accuracy::mag(&d).is_none() {
+        EXACT
+    } else {
+        accuracy::lg_abs(&d) - scale + 1.0
+    })
+}
+
+/// How many bits below the modulus a complex route computes a part to its
+/// own precision (`hypergeom.rs`, `factorials.rs`): a part further below
+/// is bounded relative to `2^−gap_cap·|v|` (a part that is 0 exactly but
+/// computed as rounding noise is not pursued to the end of the precision
+/// search, and its ball contains 0).
+pub(super) fn gap_cap(prec: usize) -> usize {
+    2 * prec + 64
+}
+
+/// The bound of a special-function node whose value `v` a complex route
+/// (`elliptic.rs`, `hypergeom.rs`, `factorials.rs`) computed with each part
+/// within `2^−(prec+16)` of itself — or, with `gap_cap = Some(c)`, of
+/// `2^−c·|v|` for a part more than `c` bits below the modulus: its own error
+/// `2^−(prec+12)` relative to each part (to the modulus for a part that is
+/// 0, and to `2^−c·|v|` at least), plus for each inexact argument the change
+/// of the value when it moves by its radius (the node evaluated again; the
+/// function is analytic in each argument there, so moving the real part
+/// measures the derivative): each part's own change for an exactly real
+/// argument, which moves along the real axis only, the change of the whole
+/// value on both parts otherwise.  (A part far below the other keeps its
+/// digits: `E(10⁶⁰⁰)`'s real part `7.85·10⁻³⁰¹` next to `10³⁰⁰i`, with
+/// the parameter rounded.)  The caller has checked that no argument's ball
+/// reaches a cut of the route.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn complex_route_bound(
+    arena: &Arena,
+    id: ExprId,
+    args: &[ExprId],
+    v: &Complex,
+    cache: Cache<'_>,
+    gap_cap: Option<usize>,
+    w: &mut Wp<'_>,
+) -> accuracy::Bound {
+    use accuracy::Bound;
+    let prec = w.bits() as f64;
+    if [&v.0, &v.1].iter().any(|x| x.is_nan() || x.is_inf()) {
+        return Bound::UNKNOWN;
+    }
+    let joint = accuracy::lg_abs(v) - prec - 12.0;
+    let floor = gap_cap.map_or(EXACT, |c| joint - c as f64);
+    let own = |x: &BigFloat| {
+        if x.is_zero() {
+            joint
+        } else {
+            accuracy::lsum(accuracy::part_lg(x) - prec - 12.0, floor)
+        }
+    };
+    // The changes of the parts: an exactly real argument moves along the
+    // real axis only, so each part moves by its own share of `f′·δ`; a
+    // non-real one in any direction, by `|f′|·δ` on both.
+    let (mut re, mut im) = (EXACT, EXACT);
+    for (i, a) in args.iter().enumerate() {
+        let (Some(b), Some(x)) = (cache.bound(a), cache.get(a)) else {
+            return Bound::UNKNOWN;
+        };
+        if b.is_unknown() {
+            return Bound::UNKNOWN;
+        }
+        if b.is_exact() || args[..i].contains(a) {
+            continue;
+        }
+        let real_arg = x.1.is_zero() && accuracy::is_exact(b.im);
+        match numeric_change_parts(arena, id, *a, b.joint(), v, cache, w) {
+            Some((cr, ci)) if real_arg => {
+                re = accuracy::lsum(re, cr);
+                im = accuracy::lsum(im, ci);
+            }
+            Some((cr, ci)) => {
+                let c = accuracy::lsum(cr, ci);
+                re = accuracy::lsum(re, c);
+                im = accuracy::lsum(im, c);
+            }
+            None => return Bound::UNKNOWN,
+        }
+    }
+    if accuracy::is_unknown(re) || accuracy::is_unknown(im) {
+        return Bound::UNKNOWN;
+    }
+    Bound {
+        re: accuracy::lsum(own(&v.0), re),
+        im: accuracy::lsum(own(&v.1), im),
+    }
+}
+
+/// [`numeric_change`] part by part: the change of the real and of the
+/// imaginary part of the value (each scaled back to the radius and doubled).
+#[allow(clippy::too_many_arguments)]
+fn numeric_change_parts(
+    arena: &Arena,
+    id: ExprId,
+    child: ExprId,
+    e: ErrExp,
+    value: &Complex,
+    cache: Cache<'_>,
+    wpc: &mut Wp<'_>,
+) -> Option<(ErrExp, ErrExp)> {
+    let (d, scale) = moved_difference(arena, id, child, e, value, cache, wpc)?;
+    let part = |x: &BigFloat| {
+        if x.is_zero() {
+            EXACT
+        } else {
+            accuracy::part_lg(x) - scale + 1.0
+        }
+    };
+    Some((part(&d.0), part(&d.1)))
+}
+
+/// The difference of node `id`'s value when child `child` (radius `2^e`)
+/// moves by `δ = 2^pe ≥ max(2^e, 4 ulps)`, and `pe − e` (the move over the
+/// radius, `log₂`); `None` when the node evaluates on neither side.
+#[allow(clippy::too_many_arguments)]
+fn moved_difference(
+    arena: &Arena,
+    id: ExprId,
+    child: ExprId,
+    e: ErrExp,
+    value: &Complex,
+    cache: Cache<'_>,
+    wpc: &mut Wp<'_>,
+) -> Option<(Complex, f64)> {
     let prec = wpc.bits();
     let v = cache.get(&child)?;
     let floor = accuracy::mag(v).map_or(e, |m| (m - prec as i64 + 2) as f64);
@@ -1181,13 +1320,7 @@ pub(super) fn numeric_change(
                 continue;
             }
             let hp = prec + 64;
-            let d = c_sub(&w, value, hp, RM);
-            // Scaled back from the move to the radius, doubled.
-            return Some(if accuracy::mag(&d).is_none() {
-                EXACT
-            } else {
-                accuracy::lg_abs(&d) - (pe - e) + 1.0
-            });
+            return Some((c_sub(&w, value, hp, RM), pe - e));
         }
     }
     None

@@ -154,7 +154,10 @@ fn small_numeric_ranges_are_enumerated_exactly() {
     assert_eq!(s.to_string(), "0");
     let s = k.summation(&k, &ctx.int(5), &ctx.int(1));
     assert_eq!(s.to_string(), "-9");
+    // products too (D13, 0.56; it was 1): Π_{k=5}^{1} k = 1/(2·3·4)
     let p = k.product_over(&k, &ctx.int(5), &ctx.int(1));
+    assert_eq!(p.to_string(), "1/24");
+    let p = k.product_over(&k, &ctx.int(5), &ctx.int(4));
     assert_eq!(p.to_string(), "1");
 }
 
@@ -1084,11 +1087,20 @@ fn products_factorial_and_power_forms() {
     let p = (&k * 2).product_over(&k, &one, &n);
     assert_eq!(p.to_string(), "2^n*n!");
     check_closed_prod(&(&k * 2), &k, &n, 1, &p, &[1, 2, 5]);
-    // Π (2k − 1) = (2n)!/(2^n n!)
+    // Π (2k − 1) = 2^n Γ(n + 1/2)/√π for every integer n (D13, 0.56: the
+    // factorial form (2n)!/(2^n n!) is nan at n = −1, where Karr's product is
+    // −1); the factorial form for an n declared non-negative.
     let body = &k * 2 - 1;
     let p = body.product_over(&k, &one, &n);
-    assert_eq!(p.to_string(), "2^(-n)*(2*n)!/n!");
+    assert_eq!(p.to_string(), "2^n*Gamma(n + 1/2)/sqrt(pi)");
     check_closed_prod(&body, &k, &n, 1, &p, &[1, 2, 4, 6]);
+    assert_eq!(p.subs_i64(&n, -1).eval().to_string(), "-1");
+    let m = ctx
+        .symbol_with("m", &[Assumption::Integer, Assumption::NonNegative])
+        .unwrap();
+    let p = body.product_over(&k, &one, &m);
+    assert_eq!(p.to_string(), "2^(-m)*(2*m)!/m!");
+    check_closed_prod(&body, &k, &m, 1, &p, &[1, 2, 4, 6]);
     // Π a^k = a^(n(n+1)/2);  Π e^k = e^(n(n+1)/2);  Π 2^(k²) = 2^(Σ k²)
     let p = a.pow(&k).product_over(&k, &one, &n);
     assert_eq!(p.subs_i64(&n, 4).eval().to_string(), "a^10");

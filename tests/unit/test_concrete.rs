@@ -155,14 +155,15 @@ fn product_squares_1_to_3() {
 
 #[test]
 fn product_empty_range_is_one() {
-    // Product(k, k=5..1) — empty product = 1
+    // Product(k, k=5..4) is the empty product; Product(k, k=5..1) is
+    // 1/(2·3·4) by Karr's convention (D13, 0.56; it was 1).
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let five = ctx.int(5);
-    let one = ctx.int(1);
-    let p = Ex::symbolic_product(&k, &k, &five, &one);
-    let result = p.eval();
-    assert_eq!(format!("{result}"), "1");
+    let p = Ex::symbolic_product(&k, &k, &five, &ctx.int(4));
+    assert_eq!(format!("{}", p.eval()), "1");
+    let p = Ex::symbolic_product(&k, &k, &five, &ctx.int(1));
+    assert_eq!(format!("{}", p.eval()), "1/24");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

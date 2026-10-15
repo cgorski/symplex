@@ -1,7 +1,9 @@
 //! Products and quotients of Γ at real arguments, for the functions `evalf`
 //! had no kernel for (or refused at the poles of Γ): the rising and falling
 //! factorials, the binomial coefficient at the poles, harmonic numbers of a
-//! non-integer argument, and polygamma functions of large order.
+//! non-integer argument, and polygamma functions of large order; and the
+//! rising and falling factorials of non-real arguments ([`eval_complex`],
+//! since 0.56).
 //!
 //! * `rf(x, n) = Γ(x + n)/Γ(x)`, `ff(x, n) = Γ(x + 1)/Γ(x − n + 1)` and
 //!   `C(n, k) = Γ(n + 1)/(Γ(k + 1)·Γ(n − k + 1))` are quotients of Γ
@@ -26,8 +28,12 @@
 //!   1 − f + j)` (`f` the fractional part), which cancel exactly at a
 //!   half-integer `x`.
 
+use super::ball::Cache;
 use super::wp::{RM, Wp};
+use crate::base::bigcomplex::{Complex, c_add, c_div, c_mul, c_sub};
 use crate::base::bigfloat::is_strictly_positive;
+use crate::base::libfn::LibFn;
+use crate::base::node::ExprId;
 use astro_float::BigFloat;
 
 use crate::base::errors::SymplexError;
@@ -216,6 +222,219 @@ pub(super) fn falling_factorial(
     let x1 = exact_sum(x, &int(1), prec);
     let xn1 = exact_sum(&x1, &n.neg(), prec);
     gamma_ratio(&[x1], &[xn1], w)
+}
+
+/// Does `f(args)` go to [`eval_complex`]: `rising_factorial` or
+/// `falling_factorial` with a non-real (finite) argument?
+pub(super) fn nonreal_args(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
+    if !matches!(f, LibFn::RisingFactorial | LibFn::FallingFactorial) {
+        return false;
+    }
+    let vals: Option<Vec<&Complex>> = args.iter().map(|a| cache.get(a)).collect();
+    vals.is_some_and(|vals| {
+        vals.iter().any(|v| !v.1.is_zero())
+            && vals
+                .iter()
+                .all(|v| [&v.0, &v.1].iter().all(|x| !x.is_nan() && !x.is_inf()))
+    })
+}
+
+/// `rf(x, n) = Γ(x + n)/Γ(x)` and `ff(x, n) = Γ(x + 1)/Γ(x − n + 1)` with a
+/// non-real argument (refused before 0.56: "rising_factorial of complex
+/// argument not yet supported"), each part to its own precision (up to
+/// `sensitivity::gap_cap` bits below the modulus).  An integer `|n| ≤ 4096`
+/// is the product `x(x + 1)⋯(x + n − 1)` (`1/((x − 1)⋯(x − |n|))` for `n <
+/// 0`; `ff` with `x − k`), whose relative error is at most `4|n|` units of the
+/// working precision; otherwise `e^{ln Γ(u) − ln Γ(d)}` with the principal
+/// `loggamma` of a non-real argument and `ln|Γ| + iπ⌊x⌋` of a real one (the
+/// branch does not matter in the exponential), at the bits of the
+/// logarithms' magnitude (their absolute error is the value's relative
+/// one).  A pole of `Γ(d)` (a real `d`) makes the value 0, one of `Γ(u)`
+/// infinite (refused).  mpmath: `rf(1 + i, 3) = 10i`, `rf(2, i) =
+/// 0.6529654964 + 0.3430658398i`, `ff(1 + i, 1/2) = 1.198230682 +
+/// 0.4125896629i`.
+pub(super) fn eval_complex(
+    f: LibFn,
+    args: &[ExprId],
+    cache: Cache<'_>,
+    w: &mut Wp<'_>,
+) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
+    let (Some(x), Some(n)) = (
+        args.first().and_then(|a| cache.get(a)),
+        args.get(1).and_then(|a| cache.get(a)),
+    ) else {
+        return Err(unevaluable("rising/falling factorial lost its arguments"));
+    };
+    let rising = f == LibFn::RisingFactorial;
+    let cap = super::sensitivity::gap_cap(prec);
+    let mut extra = 32usize;
+    for _ in 0..4 {
+        let wp = prec + extra;
+        let (value, lost) = complex_quotient(rising, x, n, &mut w.at(wp))?;
+        let gap = part_gap(&value).min(cap);
+        if lost + gap + 16 <= extra {
+            return Ok((
+                super::round_to(value.0, prec),
+                super::round_to(value.1, prec),
+            ));
+        }
+        if lost > 4 * prec + 512 {
+            break;
+        }
+        extra = lost + gap + 32;
+    }
+    Err(unevaluable(format!(
+        "{}: the value cancels beyond the working precision",
+        f.name()
+    )))
+}
+
+/// Is the value of [`eval_complex`] at `prec` bits exact: exact arguments and
+/// an integer `n` whose product (`n = 0`: the empty product 1) rounds
+/// nowhere at `prec` bits?  (`rising_factorial(I, 0) = 1` must stay an
+/// exactly real argument: `rising_factorial(rising_factorial(I, 0), y)` was
+/// refused.)
+pub(super) fn exact_product(f: LibFn, args: &[ExprId], cache: Cache<'_>, prec: usize) -> bool {
+    let (Some(x), Some(n)) = (
+        args.first().and_then(|a| cache.get(a)),
+        args.get(1).and_then(|a| cache.get(a)),
+    ) else {
+        return false;
+    };
+    if !args
+        .iter()
+        .all(|a| cache.bound(a).is_some_and(|b| b.is_exact()))
+    {
+        return false;
+    }
+    let Some(k) = integer_steps(n) else {
+        return false;
+    };
+    if k == 0 {
+        return true;
+    }
+    if k < 0 || [&x.0, &x.1].iter().any(|p| p.inexact()) {
+        return false;
+    }
+    let rising = f == LibFn::RisingFactorial;
+    let mut acc = (BigFloat::from_i32(1, prec), BigFloat::new(prec));
+    for j in 0..k.unsigned_abs() {
+        let offset = BigFloat::from_u64(j, prec);
+        let re = if rising {
+            x.0.add(&offset, prec, RM)
+        } else {
+            x.0.sub(&offset, prec, RM)
+        };
+        acc = c_mul(&acc, &(re, x.1.clone()), prec, RM);
+        if [&acc.0, &acc.1].iter().any(|p| p.inexact()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// An exact integer `n` with `|n| ≤ 4096` (the product route).
+fn integer_steps(n: &Complex) -> Option<i64> {
+    (n.1.is_zero() && (n.0.is_zero() || n.0.is_int()))
+        .then(|| crate::base::bigfloat::to_f64(&n.0).and_then(crate::base::cast::f64_to_i64))
+        .flatten()
+        .filter(|k| k.unsigned_abs() <= 4096)
+}
+
+/// How many bits below the modulus of `v` its smaller nonzero part lies.
+fn part_gap(v: &Complex) -> usize {
+    let e = |x: &BigFloat| {
+        (!x.is_zero())
+            .then(|| x.exponent().map(i64::from))
+            .flatten()
+    };
+    match (e(&v.0), e(&v.1)) {
+        (Some(a), Some(b)) => usize::try_from((a - b).abs()).unwrap_or(usize::MAX / 8),
+        _ => 0,
+    }
+}
+
+/// The quotient of [`eval_complex`] at the working precision, and the bits
+/// its route loses (relative to the modulus).
+fn complex_quotient(
+    rising: bool,
+    x: &Complex,
+    n: &Complex,
+    w: &mut Wp<'_>,
+) -> Result<(Complex, usize), SymplexError> {
+    let wp = w.bits();
+    let one = (BigFloat::from_i32(1, wp), BigFloat::new(wp));
+    if let Some(k) = integer_steps(n) {
+        // x(x + 1)⋯ or x(x − 1)⋯, k factors; 1/((x ∓ 1)⋯) for k < 0.
+        let up = rising == (k > 0);
+        let mut acc = one.clone();
+        for j in 0..k.unsigned_abs() {
+            let off = if k > 0 { j } else { j + 1 };
+            let offset = BigFloat::from_u64(off, wp);
+            let factor = if up {
+                (x.0.add(&offset, wp, RM), x.1.clone())
+            } else {
+                (x.0.sub(&offset, wp, RM), x.1.clone())
+            };
+            acc = c_mul(&acc, &factor, wp, RM);
+        }
+        let lost = usize::try_from(super::accuracy::ceil_log2(k.unsigned_abs() as usize + 1))
+            .unwrap_or(0)
+            + 3;
+        if k >= 0 {
+            return Ok((acc, lost));
+        }
+        if acc.0.is_zero() && acc.1.is_zero() {
+            return Err(unevaluable("the value is infinite (a pole of Gamma)"));
+        }
+        return Ok((c_div(&one, &acc, wp, RM), lost));
+    }
+    // Γ(u)/Γ(d).
+    let (u, d) = if rising {
+        (c_add(x, n, wp, RM), x.clone())
+    } else {
+        let x1 = c_add(x, &one, wp, RM);
+        (x1.clone(), c_sub(&x1, n, wp, RM))
+    };
+    let pole = |z: &Complex| z.1.is_zero() && is_npint(&z.0);
+    if pole(&d) && !pole(&u) {
+        return Ok(((BigFloat::new(wp), BigFloat::new(wp)), 0));
+    }
+    if pole(&u) {
+        return Err(unevaluable("the value is infinite (a pole of Gamma)"));
+    }
+    // A real argument below 2¹⁰: the logarithm of `Γ` itself (`arb_log_gamma`
+    // measures its own cancellation and exhausts the precision at the zeros
+    // 1, 2 of `ln Γ`); its absolute error is `Γ`'s relative one.
+    let log_gamma = |z: &Complex, w: &mut Wp<'_>| -> Result<Complex, SymplexError> {
+        if z.1.is_zero() && z.0.exponent().is_none_or(|e| e > 10) {
+            super::arb_log_gamma(&z.0, w)
+        } else if z.1.is_zero() {
+            let p = w.bits();
+            let g = (super::arb_gamma_real(&z.0, w)?, BigFloat::new(p));
+            Ok(super::c_ln(&g, w))
+        } else {
+            super::loggamma::loggamma_complex(z, w)
+        }
+    };
+    // The logarithms' magnitude first: their absolute error is the value's
+    // relative one.
+    let rough = |z: &Complex, w: &mut Wp<'_>| -> Result<i64, SymplexError> {
+        Ok(super::accuracy::mag(&log_gamma(z, &mut w.at(64))?)
+            .unwrap_or(0)
+            .max(0))
+    };
+    let big = rough(&u, w)?.max(rough(&d, w)?) + 2;
+    let p = wp + usize::try_from(big).unwrap_or(0);
+    let lu = log_gamma(&u, &mut w.at(p))?;
+    let ld = log_gamma(&d, &mut w.at(p))?;
+    let diff = c_sub(&lu, &ld, p, RM);
+    let limit = f64::from(astro_float::EXPONENT_MAX) * std::f64::consts::LN_2;
+    if crate::base::bigfloat::to_f64(&diff.0).is_none_or(|r| r.abs() > limit) {
+        return Err(unevaluable("Gamma quotient beyond the exponent range"));
+    }
+    Ok((super::c_exp(&diff, &mut w.at(wp)), 4))
 }
 
 /// `C(n, k) = Γ(n + 1)/(Γ(k + 1)·Γ(n − k + 1))` through [`gamma_ratio`]:

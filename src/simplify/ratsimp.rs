@@ -777,7 +777,12 @@ pub(crate) fn cancel(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             && walk::post_order_ids(arena, d)
                 .into_iter()
                 .any(|id| matches!(arena.node(id), ExprNode::Add(_)));
-        if !pinned && !(identity && crate::poly::polybridge::may_vanish_identically(arena, d)) {
+        // A piecewise denominator (`0^y`, `δ(1/2, y)`) may be 0 on a region.
+        let region = crate::simplify::identically_zero::may_vanish_on_a_region(arena, d);
+        if !pinned
+            && !region
+            && !(identity && crate::poly::polybridge::may_vanish_identically(arena, d))
+        {
             continue;
         }
         if crate::simplify::identically_zero::vanishes_by_identity(arena, d) {

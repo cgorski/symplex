@@ -371,6 +371,92 @@ pub(crate) fn nonzero_at_a_sample(arena: &mut Arena, e: ExprId) -> bool {
     !walk::has_unevaluated(arena, e) && sample(arena, e) == Sampled::Nonzero
 }
 
+/// May `e`, a quantity with symbols, be 0 on a set of values of its
+/// symbols of positive measure without being 0 identically?  The generic
+/// convention — a quantity with symbols that is not identically zero is
+/// nonzero for almost every value of them, so `x/x = 1` and a series may
+/// divide by a parameter `a` — holds for the analytic functions of the
+/// symbols and fails for the piecewise ones: `0^y` is `0` on the half plane
+/// `re y > 0` (and `zoo`, `nan` elsewhere), `δ(1/2, y)` is `0` except at
+/// `y = 1/2` (its generic value is 0), `H(y)` is `0` for `y < 0`, `⌊y⌋` on
+/// `[0, 1)`, `max(y, 0)` for `y ≤ 0`, `arg(y)` for a real `y > 0`.  Nonzero at
+/// a sample point proves nothing there.
+///
+/// A factor of a product may vanish on a region when it is such a step
+/// (`0^y`, `δ`, `H`, `⌊·⌋`, `⌈·⌉`), a `min`, `max` or `Piecewise` with a
+/// value 0 or one that may (`max(y, 1)` may not), `arg f` of a real `f`, or
+/// `|f|`, `sign f`, `re f`, `im f`, `f̄`, `arg f` or a power `fⁿ` of an `f` that
+/// may; any other factor — a sum or a function — when `0^y`, `δ` or a
+/// Kronecker delta (0 on a half plane or almost everywhere) occurs in it.
+/// A product of symbols, numbers and analytic functions of them may not.
+/// (A sum whose step functions cancel a constant on a region, `H(y) − 1`,
+/// `⌊y⌋ − 1`, or whose parts do for a real argument, `|y| − y`, is not
+/// detected: it keeps the generic reading.)  Up to 0.56 the series engine
+/// and the limits took `0^y` and `δ(1/2, y)` for nonzero parameters
+/// (`series(sin(x)/(x + 0^y), x)` was `x/0^y + …`, wrong for `y > 0`), and
+/// `cancel` divided them out.
+pub(crate) fn may_vanish_on_a_region(arena: &Arena, e: ExprId) -> bool {
+    use crate::base::assumptions::AssumptionCache;
+    // Zero on a half plane or almost everywhere: also inside sums.
+    let generically_zero = |arena: &Arena, id: ExprId| match *arena.node(id) {
+        ExprNode::Pow(b, x) => arena.is_zero_structural(b) && arena.as_num(x).is_none(),
+        ExprNode::KroneckerDelta(..) | ExprNode::DiracDelta(_) => !arena.is_symbol_free(id),
+        _ => false,
+    };
+    let step = |arena: &Arena, id: ExprId| {
+        generically_zero(arena, id)
+            || (matches!(
+                arena.node(id),
+                ExprNode::Heaviside(_) | ExprNode::Floor(_) | ExprNode::Ceiling(_)
+            ) && !arena.is_symbol_free(id))
+    };
+    let mut stack = vec![e];
+    while let Some(f) = stack.pop() {
+        if arena.is_symbol_free(f) {
+            continue;
+        }
+        match *arena.node(f) {
+            ExprNode::Mul(ref fs) => stack.extend(fs.iter().copied()),
+            ExprNode::Neg(g)
+            | ExprNode::Abs(g)
+            | ExprNode::Sign(g)
+            | ExprNode::Re(g)
+            | ExprNode::Im(g)
+            | ExprNode::Conjugate(g) => stack.push(g),
+            ExprNode::Arg(g) => {
+                if Truth::from(AssumptionCache::new().query(arena, g, Props::REAL)).is_true() {
+                    return true;
+                }
+                stack.push(g);
+            }
+            ExprNode::Pow(b, n) if arena.as_num(n).is_some() => stack.push(b),
+            ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
+                if args.iter().any(|&a| arena.is_zero_structural(a)) {
+                    return true;
+                }
+                stack.extend(args.iter().copied());
+            }
+            ExprNode::Piecewise(ref pairs) => {
+                if pairs.iter().any(|&(v, _)| arena.is_zero_structural(v)) {
+                    return true;
+                }
+                stack.extend(pairs.iter().map(|&(v, _)| v));
+            }
+            ExprNode::Symbol(_) => {}
+            _ if step(arena, f) => return true,
+            _ => {
+                if walk::post_order_ids(arena, f)
+                    .into_iter()
+                    .any(|id| generically_zero(arena, id))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Largest `|k|` of a power `exp(m/L)^k` built by [`in_exponentials`].
 /// The conversion to a rational function has its own size budget; up to
 /// 0.33 this was 256, which refused the constants `subs` makes of
@@ -414,8 +500,56 @@ fn exponent_terms(arena: &mut Arena, arg: ExprId) -> Vec<(Q, ExprId)> {
 /// `tanh x·cosh x = sinh x` becomes a polynomial identity in `e^{ix}` or
 /// `e^x` (and `i² = −1`).  Both rewrites are identities over ℂ.  `None`
 /// when a power would exceed [`MAX_EXP_POWER`].
+///
+/// The numeric part of the exponents and the constant `e` are powers of
+/// one unit `t = e^{1/L}` (a dummy symbol, so that the canonical forms do
+/// not turn `t⁻¹` back into `exp(−1)`, an atom of its own next to `e`):
+/// `e = t^L`, `exp(c + …) = t^{cL}·…`.  A polynomial identity in `t` holds
+/// at `t = e^{1/L}`.  Up to 0.56 `e` and `exp(−1)` (what `exp(−E − 1)`
+/// became) were independent, and `(1 + e)·(−((1 + e)·e^{1+e} +
+/// e^{1+e})·e^{−e−1}·e/(1 + e) + e) + e` (0) was not shown to be 0.
 fn in_exponentials(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
     let e = crate::simplify::rewrite::rewrite_as_exp(arena, e);
+    let one = arena.one();
+    let e_const = arena.e_const();
+    // `L` of the numeric part of the exponents (1 for `e` alone).
+    let mut numeric_lcd: Option<BigInt> = None;
+    for id in walk::post_order_ids(arena, e) {
+        match *arena.node(id) {
+            ExprNode::Exp(arg) => {
+                for (c, m) in exponent_terms(arena, arg) {
+                    if m == one {
+                        let l = numeric_lcd.get_or_insert_with(BigInt::one);
+                        *l = l.lcm(c.denom());
+                    }
+                }
+            }
+            ExprNode::E => {
+                numeric_lcd.get_or_insert_with(BigInt::one);
+            }
+            _ => {}
+        }
+    }
+    // `e = t^L` everywhere, in the exponents too (their monomials are read
+    // after it).
+    let (e, unit) = match numeric_lcd {
+        Some(l) => {
+            let t = arena.positive_symbol("__exp_unit");
+            let power = arena.num_ratio(Q::from_integer(l.clone()));
+            let t_l = arena.pow(t, power);
+            let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+            for id in walk::post_order_ids(arena, e) {
+                let out = if id == e_const {
+                    t_l
+                } else {
+                    walk::rebuild_with_cache(arena, id, &cache)
+                };
+                cache.insert(id, out);
+            }
+            (cache.get(&e).copied().unwrap_or(e), Some((t, l)))
+        }
+        None => (e, None),
+    };
     let order = walk::post_order_ids(arena, e);
     let mut lcd: FxHashMap<ExprId, BigInt> = FxHashMap::default();
     for &id in &order {
@@ -436,18 +570,30 @@ fn in_exponentials(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
             ExprNode::Exp(arg) => {
                 let mut factors: Vec<ExprId> = Vec::new();
                 for (c, m) in exponent_terms(arena, arg) {
-                    let l = lcd
-                        .get(&m)
-                        .cloned()
-                        .unwrap_or_else(BigInt::one)
-                        .lcm(c.denom());
-                    let k = (&c * Q::from_integer(l.clone())).to_integer();
+                    let l = match &unit {
+                        Some((_, l)) if m == one => l.clone(),
+                        _ => lcd
+                            .get(&m)
+                            .cloned()
+                            .unwrap_or_else(BigInt::one)
+                            .lcm(c.denom()),
+                    };
+                    let k = &c * Q::from_integer(l.clone());
+                    if !k.is_integer() {
+                        return None;
+                    }
+                    let k = k.to_integer();
                     if k.abs() > BigInt::from(MAX_EXP_POWER) {
                         return None;
                     }
-                    let inv_l = arena.num_ratio(Q::new(BigInt::one(), l));
-                    let base_arg = arena.mul(&[inv_l, m]);
-                    let base = arena.exp(base_arg);
+                    let base = match &unit {
+                        Some((t, _)) if m == one => *t,
+                        _ => {
+                            let inv_l = arena.num_ratio(Q::new(BigInt::one(), l));
+                            let base_arg = arena.mul(&[inv_l, m]);
+                            arena.exp(base_arg)
+                        }
+                    };
                     let k = arena.num_ratio(Q::from_integer(k));
                     factors.push(arena.pow(base, k));
                 }

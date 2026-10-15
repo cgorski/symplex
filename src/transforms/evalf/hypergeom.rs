@@ -28,6 +28,30 @@
 //! `₁F₁(a; b; x) = e^x·₁F₁(b − a; b; −x)` (DLMF 13.2.39).  Up to 0.53 these
 //! values were refused ("degree must be a non-negative integer").
 //!
+//! `assoc_laguerre(ν, −k, x)` with `k` a positive integer has a pole of
+//! `Γ(α + 1)` against one of the series (its lower parameter `1 − k`): the
+//! product is the regularized function (DLMF 13.2.5), and with `(−ν)_k =
+//! (−1)^kΓ(ν + 1)/Γ(ν − k + 1)` the factors cancel to
+//! `L_ν^(−k)(x) = (−x)^k/k!·₁F₁(k − ν; k + 1; x)` (the polynomial identity
+//! `L_n^(−k) = (−x)^k(n − k)!/n!·L_{n−k}^(k)` for any degree; mpmath:
+//! `laguerre(1/2, −1, 3/2) = −2.361474300`).  Refused before 0.56.
+//!
+//! # Complex arguments
+//!
+//! `hermite`, `laguerre` and `assoc_laguerre` with a non-real argument (the
+//! variable, the degree or `α`; refused before 0.56: "orthogonal polynomial
+//! of complex arguments not supported") are entire in the variable and the
+//! degree, and take the same formulas over ℂ: the series summed in complex
+//! arithmetic with the bound of the term ratios from the moduli of the
+//! parameters, Kummer's transformation for `Re z < 0` (not for a terminating
+//! series), the Γ factors by the complex `Γ` (`zeta::gamma_complex`) and
+//! `1/Γ` written as 0 at a pole (an integer degree selects the polynomial,
+//! `H_{2m}(z) = (−1)^m(2m)!/m!·₁F₁(−m; ½; z²)`).  A real negative-integer
+//! degree stays refused, as for real arguments.  Each part is computed to
+//! its own precision (the bits a part lies below the modulus are added, up
+//! to `sensitivity::gap_cap`), and the node's bound is
+//! `sensitivity::complex_route_bound`.
+//!
 //! # Accuracy
 //!
 //! A series `Σ t_k` stops at the first `j` past the parameters' moduli
@@ -41,7 +65,7 @@
 //! the real routines (`sensitivity`: numerically in every argument).
 
 use super::wp::{RM, Wp};
-use crate::base::bigcomplex::Complex;
+use crate::base::bigcomplex::{Complex, c_add, c_div, c_mul, c_sub};
 use crate::base::bigfloat::is_strictly_positive;
 use crate::base::errors::SymplexError;
 use crate::base::libfn::LibFn;
@@ -59,6 +83,9 @@ const MAX_TERMS: usize = 8_000;
 /// Does `f(args)` go to these routines: an orthogonal polynomial of the
 /// families above with a real non-integer degree and real arguments?
 pub(super) fn takes(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
+    if nonreal_args(f, args, cache) {
+        return true;
+    }
     if !matches!(
         f,
         LibFn::Legendre
@@ -82,6 +109,25 @@ pub(super) fn takes(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
             .is_some_and(|n| !n.0.is_zero() && !n.0.is_int() && !n.0.is_nan() && !n.0.is_inf())
 }
 
+/// Does `f(args)` go to the complex routes: `hermite`, `laguerre` or
+/// `assoc_laguerre` with a non-real argument, and a degree that is not a
+/// real negative integer?
+pub(super) fn nonreal_args(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
+    if !matches!(f, LibFn::Hermite | LibFn::Laguerre | LibFn::AssocLaguerre) {
+        return false;
+    }
+    let vals: Option<Vec<&Complex>> = args.iter().map(|a| cache.get(a)).collect();
+    let Some(vals) = vals else {
+        return false;
+    };
+    let finite = |x: &BigFloat| !x.is_nan() && !x.is_inf();
+    vals.iter().any(|v| !v.1.is_zero())
+        && vals.iter().all(|v| finite(&v.0) && finite(&v.1))
+        && vals
+            .first()
+            .is_some_and(|n| !(n.1.is_zero() && n.0.is_int() && n.0.is_negative()))
+}
+
 /// The value of `f(args)` (see [`takes`]), rounded to `prec` bits.
 pub(super) fn eval(
     f: LibFn,
@@ -89,6 +135,9 @@ pub(super) fn eval(
     cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> Result<Complex, SymplexError> {
+    if nonreal_args(f, args, cache) {
+        return eval_complex(f, args, cache, w);
+    }
     let prec = w.bits();
     let v: Vec<BigFloat> = args
         .iter()
@@ -132,6 +181,65 @@ pub(super) fn eval(
         "{}: the value cancels beyond the working precision",
         f.name()
     )))
+}
+
+/// The value of `f(args)` with a non-real argument ([`nonreal_args`]), each
+/// part to its own precision (up to `sensitivity::gap_cap` bits below the
+/// modulus).
+fn eval_complex(
+    f: LibFn,
+    args: &[ExprId],
+    cache: Cache<'_>,
+    w: &mut Wp<'_>,
+) -> Result<Complex, SymplexError> {
+    let prec = w.bits();
+    let v: Vec<Complex> = args
+        .iter()
+        .map(|a| super::get_cached(cache, *a).cloned())
+        .collect::<Result<_, _>>()?;
+    let named = |e: SymplexError| match e {
+        SymplexError::Unevaluable { reason } => {
+            super::unevaluable(format!("{}: {reason}", f.name()))
+        }
+        other => other,
+    };
+    let cap = super::sensitivity::gap_cap(prec);
+    let mut extra = 32usize;
+    for _ in 0..4 {
+        let wp = prec + extra;
+        let mut ww = w.at(wp);
+        let zero = (BigFloat::new(wp), BigFloat::new(wp));
+        let (value, lost) = match f {
+            LibFn::Laguerre => laguerre_c(&v[0], &zero, &v[1], &mut ww),
+            LibFn::AssocLaguerre => laguerre_c(&v[0], &v[1], &v[2], &mut ww),
+            LibFn::Hermite => hermite_c(&v[0], &v[1], &mut ww),
+            _ => return Err(super::unevaluable("not an orthogonal polynomial")),
+        }
+        .map_err(named)?;
+        let gap = part_gap(&value).min(cap);
+        if lost + gap + 16 <= extra {
+            return Ok((
+                super::round_to(value.0, prec),
+                super::round_to(value.1, prec),
+            ));
+        }
+        if lost > 4 * prec + 512 {
+            break;
+        }
+        extra = lost + gap + 32;
+    }
+    Err(super::unevaluable(format!(
+        "{}: the value cancels beyond the working precision",
+        f.name()
+    )))
+}
+
+/// How many bits below the modulus of `v` its smaller nonzero part lies.
+fn part_gap(v: &Complex) -> usize {
+    match (nzmag(&v.0), nzmag(&v.1)) {
+        (Some(a), Some(b)) => usize::try_from((a - b).abs()).unwrap_or(usize::MAX / 8),
+        _ => 0,
+    }
 }
 
 /// `log₂|x|` as an integer (`None` for 0).
@@ -477,7 +585,8 @@ fn f11(
 }
 
 /// `L_ν^(α)(x) = Γ(ν + α + 1)/(Γ(ν + 1)Γ(α + 1))·₁F₁(−ν; α + 1; x)`
-/// (`α = 0`: `₁F₁(−ν; 1; x)`).
+/// (`α = 0`: `₁F₁(−ν; 1; x)`; `α = −k` a negative integer: `(−x)^k/k!·
+/// ₁F₁(k − ν; k + 1; x)`, see the module documentation).
 fn laguerre(
     nu: &BigFloat,
     alpha: &BigFloat,
@@ -486,6 +595,19 @@ fn laguerre(
 ) -> Result<(BigFloat, usize), SymplexError> {
     let wp = w.bits();
     let one = int(1, wp);
+    if let Some(k) = negative_integer(alpha) {
+        let kf = BigFloat::from_u64(k, wp);
+        let (s, top) = f11(&kf.sub(nu, wp, RM), &kf.add(&one, wp, RM), x, w)?;
+        let mut pref = one.clone();
+        for j in 1..=k {
+            pref = pref
+                .mul(&x.neg(), wp, RM)
+                .div(&BigFloat::from_u64(j, wp), wp, RM);
+        }
+        let v = s.mul(&pref, wp, RM);
+        let top = top.and_then(|t| mag(&pref).map(|p| t + p));
+        return Ok((v.clone(), lost(top, &v)));
+    }
     let a1 = alpha.add(&one, wp, RM);
     let (s, top) = f11(&nu.neg(), &a1, x, w)?;
     let l = lost(top, &s);
@@ -496,6 +618,17 @@ fn laguerre(
     let nu1 = nu.add(&one, wp, RM);
     let g = gamma_ratio(&p, &nu1, &a1, w)?;
     Ok((g.mul(&s, wp, RM), l))
+}
+
+/// `k` for `x = −k`, a negative integer (at most `2³²`), exactly.
+fn negative_integer(x: &BigFloat) -> Option<u64> {
+    if x.is_zero() || !x.is_int() || !x.is_negative() {
+        return None;
+    }
+    crate::base::bigfloat::to_f64(&x.neg())
+        .and_then(crate::base::cast::f64_to_i64)
+        .and_then(|v| u64::try_from(v).ok())
+        .filter(|&k| k <= 1 << 32)
 }
 
 /// `H_ν(x) = 2^ν√π·(₁F₁(−ν/2; ½; x²)/Γ((1 − ν)/2) − 2x·₁F₁((1 − ν)/2; 3/2; x²)/Γ(−ν/2))`.
@@ -533,4 +666,240 @@ fn hermite(nu: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<(BigFloat, usi
         RM,
     );
     Ok((d.mul(&scale, wp, RM), l))
+}
+
+// ── Complex arguments ─────────────────────────────────────────────────────────────────────
+
+/// [`mag`], `None` for 0 (a part of a complex number may be 0 exactly).
+fn nzmag(x: &BigFloat) -> Option<i64> {
+    if x.is_zero() { None } else { mag(x) }
+}
+
+/// `log₂` of the larger part of `z` (`None` for 0).
+fn cmag(z: &Complex) -> Option<i64> {
+    match (nzmag(&z.0), nzmag(&z.1)) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Bits lost forming `v` from terms of magnitude up to `2^top`.
+fn lost_c(top: Option<i64>, v: &Complex) -> usize {
+    match (top, cmag(v)) {
+        (Some(t), Some(m)) => usize::try_from(t - m).unwrap_or(0),
+        (Some(_), None) => usize::MAX / 8,
+        _ => 0,
+    }
+}
+
+/// An upper bound of `|z|` in `f64` (`None` beyond its range).
+fn cabs_f64(z: &Complex) -> Option<f64> {
+    Some(abs_f64(&z.0)? + abs_f64(&z.1)?)
+}
+
+/// `z` real and a pole of `Γ`?
+fn cgamma_pole(z: &Complex) -> bool {
+    z.1.is_zero() && gamma_pole(&z.0)
+}
+
+fn cint(n: i32, wp: usize) -> Complex {
+    (int(n, wp), BigFloat::new(wp))
+}
+
+/// `₁F₁(a; b; z) = Σ (a)_k/(b)_k·z^k/k!` over ℂ and the magnitude of its
+/// largest term, stopped as [`series`] (the ratio bound from the moduli of
+/// `a` and `b`: `|a + k| ≤ |a| + k`, `|b + k| ≥ k − |b|`).
+fn series_c(
+    a: &Complex,
+    b: &Complex,
+    z: &Complex,
+    wp: usize,
+) -> Result<(Complex, Option<i64>), SymplexError> {
+    if cgamma_pole(b) {
+        return Err(super::unevaluable(
+            "hypergeometric series with a non-positive integer lower parameter",
+        ));
+    }
+    let za = cabs_f64(z).ok_or_else(|| super::unevaluable("series argument out of range"))?;
+    let amax = cabs_f64(a).unwrap_or(f64::INFINITY);
+    let bmax = cabs_f64(b).unwrap_or(f64::INFINITY);
+    if !amax.is_finite() || !bmax.is_finite() || amax.max(bmax) > 1e15 {
+        return Err(super::unevaluable("hypergeometric parameters out of range"));
+    }
+    let estimate = 3.0 * za + wp as f64 + 4.0 * amax.max(bmax) + 16.0;
+    if estimate.is_nan() || estimate >= MAX_TERMS as f64 {
+        return Err(super::unevaluable(
+            "hypergeometric series beyond its term budget (argument too large)",
+        ));
+    }
+    let mut term = cint(1, wp);
+    let mut sum = cint(1, wp);
+    let mut top = cmag(&term);
+    let threshold = -(wp as f64) - 2.0;
+    for k in 0..MAX_TERMS {
+        let kb = (BigFloat::from_u64(k as u64, wp), BigFloat::new(wp));
+        let num = c_add(a, &kb, wp, RM);
+        let den = c_add(b, &kb, wp, RM);
+        term = c_div(&c_mul(&term, &num, wp, RM), &den, wp, RM);
+        let k1 = BigFloat::from_u64(k as u64 + 1, wp);
+        term = c_mul(&term, z, wp, RM);
+        term = (term.0.div(&k1, wp, RM), term.1.div(&k1, wp, RM));
+        if term.0.is_zero() && term.1.is_zero() {
+            return Ok((sum, top));
+        }
+        sum = c_add(&sum, &term, wp, RM);
+        top = top.max(cmag(&term));
+        let j = (k + 1) as f64;
+        if j <= 2.0 * bmax + 1.0 {
+            continue;
+        }
+        let rho = za * (1.0 + amax / j) / (1.0 - bmax / j) / j;
+        if rho < 1.0 {
+            let tail =
+                cmag(&term).map_or(f64::NEG_INFINITY, |m| m as f64) + (rho / (1.0 - rho)).log2();
+            if tail < top.map_or(0.0, |m| m as f64) + threshold {
+                return Ok((sum, top));
+            }
+        }
+    }
+    Err(super::unevaluable(
+        "hypergeometric series did not converge within its term budget",
+    ))
+}
+
+/// `₁F₁(a; b; z)` over ℂ, by Kummer's transformation for `Re z < 0` unless
+/// the series terminates (`a` a non-positive integer), and the magnitude of
+/// its largest term (times `|e^z|` after the transformation).
+fn f11_c(
+    a: &Complex,
+    b: &Complex,
+    z: &Complex,
+    w: &mut Wp<'_>,
+) -> Result<(Complex, Option<i64>), SymplexError> {
+    let wp = w.bits();
+    if !z.0.is_negative() || cgamma_pole(a) {
+        return series_c(a, b, z, wp);
+    }
+    let ba = c_sub(b, a, wp, RM);
+    let (s, top) = series_c(&ba, b, &(z.0.neg(), z.1.neg()), wp)?;
+    let e = super::c_exp(z, w);
+    let top = top.and_then(|t| cmag(&e).map(|m| t + m + 1));
+    Ok((c_mul(&s, &e, wp, RM), top))
+}
+
+/// `Γ(z)` (`None` at a pole), real or complex.
+fn cgamma(z: &Complex, w: &mut Wp<'_>) -> Result<Option<Complex>, SymplexError> {
+    let wp = w.bits();
+    if cgamma_pole(z) {
+        return Ok(None);
+    }
+    if z.1.is_zero() {
+        return Ok(Some((super::arb_gamma_real(&z.0, w)?, BigFloat::new(wp))));
+    }
+    super::zeta::gamma_complex(z, w).map(Some)
+}
+
+/// `1/Γ(z)`, 0 at a pole.
+fn crgamma(z: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let wp = w.bits();
+    Ok(match cgamma(z, w)? {
+        Some(g) => c_div(&cint(1, wp), &g, wp, RM),
+        None => cint(0, wp),
+    })
+}
+
+/// `L_ν^(α)(z)` over ℂ (see [`laguerre`]), and the bits lost to the largest
+/// term.
+fn laguerre_c(
+    nu: &Complex,
+    alpha: &Complex,
+    z: &Complex,
+    w: &mut Wp<'_>,
+) -> Result<(Complex, usize), SymplexError> {
+    let wp = w.bits();
+    let one = cint(1, wp);
+    let neg_k = if alpha.1.is_zero() {
+        negative_integer(&alpha.0)
+    } else {
+        None
+    };
+    if let Some(k) = neg_k {
+        let kc = (BigFloat::from_u64(k, wp), BigFloat::new(wp));
+        let (s, top) = f11_c(&c_sub(&kc, nu, wp, RM), &c_add(&kc, &one, wp, RM), z, w)?;
+        let mut pref = one.clone();
+        let mz = (z.0.neg(), z.1.neg());
+        for j in 1..=k {
+            let jb = BigFloat::from_u64(j, wp);
+            pref = c_mul(&pref, &mz, wp, RM);
+            pref = (pref.0.div(&jb, wp, RM), pref.1.div(&jb, wp, RM));
+        }
+        let v = c_mul(&s, &pref, wp, RM);
+        let top = top.and_then(|t| cmag(&pref).map(|p| t + p + 1));
+        return Ok((v.clone(), lost_c(top, &v)));
+    }
+    let a1 = c_add(alpha, &one, wp, RM);
+    let (s, top) = f11_c(&(nu.0.neg(), nu.1.neg()), &a1, z, w)?;
+    let l = lost_c(top, &s);
+    if alpha.0.is_zero() && alpha.1.is_zero() {
+        return Ok((s, l));
+    }
+    let p = c_add(nu, &a1, wp, RM);
+    let nu1 = c_add(nu, &one, wp, RM);
+    let g = if [nu, alpha].iter().all(|v| v.1.is_zero()) {
+        (gamma_ratio(&p.0, &nu1.0, &a1.0, w)?, BigFloat::new(wp))
+    } else {
+        let Some(gp) = cgamma(&p, w)? else {
+            return Err(super::unevaluable(
+                "orthogonal polynomial at a pole of its Γ factors",
+            ));
+        };
+        c_mul(
+            &gp,
+            &c_mul(&crgamma(&nu1, w)?, &crgamma(&a1, w)?, wp, RM),
+            wp,
+            RM,
+        )
+    };
+    Ok((c_mul(&g, &s, wp, RM), l))
+}
+
+/// `H_ν(z)` over ℂ (see [`hermite`]; `1/Γ` is 0 at a pole, so an integer
+/// degree gives the polynomial), and the bits lost to the largest term.
+fn hermite_c(nu: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<(Complex, usize), SymplexError> {
+    let wp = w.bits();
+    let half = BigFloat::from_f64(0.5, wp);
+    let z2 = c_mul(z, z, wp, RM);
+    let a1 = (nu.0.mul(&half, wp, RM).neg(), nu.1.mul(&half, wp, RM).neg());
+    let a2 = c_add(&a1, &(half.clone(), BigFloat::new(wp)), wp, RM);
+    let r1 = crgamma(&a2, w)?;
+    let r2 = crgamma(&a1, w)?;
+    let zero = |c: &Complex| c.0.is_zero() && c.1.is_zero();
+    let mut tops = Vec::new();
+    let p1 = if zero(&r1) {
+        cint(0, wp)
+    } else {
+        let (m1, t1) = f11_c(&a1, &(half.clone(), BigFloat::new(wp)), &z2, w)?;
+        tops.push(t1.and_then(|t| cmag(&r1).map(|r| t + r + 1)));
+        c_mul(&m1, &r1, wp, RM)
+    };
+    let p2 = if zero(&r2) {
+        cint(0, wp)
+    } else {
+        let three_half = (BigFloat::from_f64(1.5, wp), BigFloat::new(wp));
+        let (m2, t2) = f11_c(&a2, &three_half, &z2, w)?;
+        let f = c_mul(&c_add(z, z, wp, RM), &r2, wp, RM);
+        tops.push(t2.and_then(|t| cmag(&f).map(|r| t + r + 1)));
+        c_mul(&m2, &f, wp, RM)
+    };
+    let d = c_sub(&p1, &p2, wp, RM);
+    tops.push(cmag(&p1));
+    tops.push(cmag(&p2));
+    let top = tops.into_iter().flatten().max();
+    let l = lost_c(top, &d);
+    // 2^ν√π = e^(ν ln 2)√π.
+    let ln2 = int(2, wp).ln(wp, RM, w.cc);
+    let e = super::c_exp(&(nu.0.mul(&ln2, wp, RM), nu.1.mul(&ln2, wp, RM)), w);
+    let sqrt_pi = w.cc.pi(wp, RM).clone().sqrt(wp, RM);
+    let scale = (e.0.mul(&sqrt_pi, wp, RM), e.1.mul(&sqrt_pi, wp, RM));
+    Ok((c_mul(&d, &scale, wp, RM), l))
 }

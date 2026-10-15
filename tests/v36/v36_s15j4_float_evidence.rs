@@ -82,17 +82,25 @@ fn odd_power_maps_use_the_real_root_below_the_inflection() -> Result<(), Symplex
 /// `x = ±1/2, ±2` (where `y > 0`) and the density at `y = −1` was
 /// `1.0267·10⁻⁵ + 1.0400·10⁻⁵i`, the CDF `−8.64·10⁻⁶ − 3.99·10⁻⁶i` (truly
 /// `Φ(asinh(−1) − 5) = 2.0344·10⁻⁹`, mpmath).  The inverse is now checked
-/// to be real and continuous on the whole image: refused.
+/// to be real and continuous on the whole image, so the principal one is
+/// not used: 0.55 refused the map, and since 0.56 (s15k3) the real cube
+/// root `asinh(∛ȳ) − 5` takes its place (mpmath, 30 and 60 digits:
+/// `F(−1) = 2.0343781878508443596·10⁻⁹`).
 #[test]
-fn a_principal_inverse_that_is_complex_on_part_of_the_image_is_refused() {
+fn a_principal_inverse_that_is_complex_on_part_of_the_image_is_not_used() -> Result<(), SymplexError>
+{
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let g = (&x + 5).sinh().powi(3);
-    let r = Distribution::normal(ctx.int(0), ctx.int(1)).transformed(&x, &g);
-    assert!(
-        matches!(r, Err(SymplexError::NotImplemented(_))),
-        "expected a refusal, got {r:?}"
+    let d = Distribution::normal(ctx.int(0), ctx.int(1)).transformed(&x, &g)?;
+    // `eval_f64` refuses a non-real value.
+    close(
+        d.cdf(&ctx.int(-1)).eval_f64()?,
+        2.034_378_187_850_844_4e-9,
+        1e-13,
+        "cdf",
     );
+    Ok(())
 }
 
 /// The order statistics of a finite parent are enumerated over its values

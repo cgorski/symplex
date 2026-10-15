@@ -225,7 +225,19 @@ impl Expr<Numeric> {
     /// principal powers multiply: for factors positive over the range (and
     /// negative ones, with the phase `((−1)^e)^count`: `Π_{k=1}^{n} √(−k) =
     /// iⁿ·√(n!)`); with factors of both signs (`Π √(k − 3)`) the product
-    /// stays unevaluated.  An empty range (`upper < lower`) gives `1`.
+    /// stays unevaluated.
+    ///
+    /// Reversed limits follow Karr's convention (as SymPy): `upper = lower −
+    /// 1` is the empty product `1`, and `Π_{k=a}^{b} = 1/Π_{k=b+1}^{a−1}`
+    /// for `b < a − 1` (`Π_{k=5}^{2} k = 1/12`; up to 0.55 it was `1`), so
+    /// that `Π_{a}^{b}·Π_{b+1}^{c} = Π_{a}^{c}` for all integers.  A closed
+    /// form for a symbolic upper limit holds for every integer value of it
+    /// the assumptions allow, or it is returned as `Piecewise((closed form,
+    /// upper ≥ h), (Product, True))`: `Π_{k=1}^{n} √(k + 5/2)` holds for `n ≥
+    /// −3` (below, a factor `√(−1/2)` in Karr's reciprocal flips the sign of
+    /// the principal root).  `Π_{k=1}^{n} (2k − 1)` is `2ⁿ·Γ(n + 1/2)/√π`
+    /// for every integer `n` (`−1` at `n = −1`), and `(2n)!/(2ⁿ·n!)` for an
+    /// `n` declared non-negative.
     ///
     /// Returns the formal `Product` node when no closed form is known.
     ///
@@ -247,6 +259,14 @@ impl Expr<Numeric> {
     /// // Π_{k=2}^{∞} (1 − 1/k²) = 1/2
     /// let p = (&ctx.int(1) - &k.powi(-2)).product_over(&k, &ctx.int(2), &ctx.infinity());
     /// assert_eq!(p.to_string(), "1/2");
+    ///
+    /// // Reversed limits: Π_{k=5}^{2} k = 1/(3·4) (Karr's convention)
+    /// assert_eq!(k.product_over(&k, &ctx.int(5), &ctx.int(2)).to_string(), "1/12");
+    ///
+    /// // Π_{k=1}^{n} √(k + 5/2) holds for n ≥ −3 only
+    /// let root = (&k + &ctx.rational(5, 2)).sqrt().product_over(&k, &ctx.int(1), &n);
+    /// assert!(root.to_string().starts_with("Piecewise("));
+    /// assert!(root.to_string().contains("if n >= -3"));
     /// ```
     #[must_use = "returns the evaluated product; does not modify in place"]
     pub fn product_over(&self, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
@@ -259,21 +279,29 @@ impl Expr<Numeric> {
         let id = match outcome {
             SumOutcome::Closed(id) => id,
             SumOutcome::Divergent(Some(inf)) => inf,
-            // (Products have no conditional outcome.)
-            SumOutcome::Divergent(None)
-            | SumOutcome::Conditional { .. }
-            | SumOutcome::Unevaluated => {
+            SumOutcome::Conditional { value, region } => {
+                let formal =
+                    inner
+                        .arena
+                        .intern(ExprNode::Product_(self.raw_id(), var_id, lo_id, hi_id));
+                let otherwise = inner.arena.bool_true;
                 inner
                     .arena
-                    .intern(ExprNode::Product_(self.raw_id(), var_id, lo_id, hi_id))
+                    .piecewise(&[(value, region), (formal, otherwise)])
             }
+            SumOutcome::Divergent(None) | SumOutcome::Unevaluated => inner
+                .arena
+                .intern(ExprNode::Product_(self.raw_id(), var_id, lo_id, hi_id)),
         };
         drop(inner);
         self.wrap(id)
     }
 
     /// Like [`product_over`](Self::product_over), but returns `Err` when the
-    /// product diverges or no closed form was found.
+    /// product diverges, no closed form was found, or the closed form holds
+    /// only for the upper limits `upper ≥ h` and the assumptions do not
+    /// decide that ([`SymplexError::ComputationFailed`], the message names
+    /// the condition).
     pub fn try_product_over(&self, var: &Ex, lower: &Ex, upper: &Ex) -> Result<Ex, SymplexError> {
         let var_id = self.checked_id(var);
         let lo_id = self.checked_id(lower);
@@ -297,12 +325,20 @@ impl Expr<Numeric> {
                 operation: "product",
                 reason: "the infinite product diverges".into(),
             }),
-            SumOutcome::Conditional { .. } | SumOutcome::Unevaluated => {
+            SumOutcome::Conditional { value, region } => {
+                let (value, region) = (self.wrap(value), self.wrap(region));
                 Err(SymplexError::ComputationFailed {
                     operation: "product",
-                    reason: "no closed form found".into(),
+                    reason: format!(
+                        "the product is {value} where {region}, a condition the assumptions \
+                         do not decide"
+                    ),
                 })
             }
+            SumOutcome::Unevaluated => Err(SymplexError::ComputationFailed {
+                operation: "product",
+                reason: "no closed form found".into(),
+            }),
         }
     }
 

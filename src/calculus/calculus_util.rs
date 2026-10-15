@@ -3113,13 +3113,19 @@ impl ZeroTest {
 
 /// `c` after `eval`, and whether it is 0 ([`hidden_zero`]; a constant with
 /// free parameters or without a value is `Nonzero`, see
-/// [`ZeroTest::Nonzero`]).
+/// [`ZeroTest::Nonzero`]).  A piecewise one that may vanish on a region of
+/// its parameters (`0^y`, `δ(1/2, y)`:
+/// [`may_vanish_on_a_region`](crate::simplify::identically_zero::may_vanish_on_a_region))
+/// is `Undecided`: the generic convention does not cover it.
 pub(crate) fn settle_constant(arena: &mut Arena, c: ExprId) -> ZeroTest {
     let v = eval::eval(arena, c);
     if arena.is_zero_structural(v) {
         return ZeroTest::Zero;
     }
     if !walk::free_symbols(arena, v).is_empty() {
+        if crate::simplify::identically_zero::may_vanish_on_a_region(arena, v) {
+            return ZeroTest::Undecided(v);
+        }
         return ZeroTest::Nonzero(v);
     }
     match zero_reading(hidden_zero(arena, v)) {

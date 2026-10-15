@@ -1331,6 +1331,12 @@ fn split_at_breakpoints(
     }
     let range = numeric_range(arena, a, b);
     let scan = calculus_util::scan_breakpoints(arena, f, x, scan_range(a, b, range));
+    if !scan.complete
+        && !scan.opaque
+        && let Some(exact) = exp_rational_scan(arena, f, x)
+    {
+        return build_pieces(arena, &exact, a, b);
+    }
 
     // Opaque nodes (unknown functions, formal integrals, …) cannot be
     // analysed at all — no numeric guard can vouch for them.
@@ -1366,6 +1372,147 @@ fn split_at_breakpoints(
     }
 
     build_pieces(arena, &scan, a, b)
+}
+
+/// Most roots of the denominator in `u` that [`exp_rational_scan`] examines.
+const MAX_EXP_POLES: usize = 8;
+
+/// The singular points of `f = R(e^{L₁}, …, e^{Lₖ})`, every `Lⱼ = rⱼ·α·x +
+/// βⱼ` linear with a rational `rⱼ` and constants `α`, `βⱼ`, for a rate `α`
+/// that is not real, where the solver gives up on a denominator such as
+/// `e^{(1+i)x} + e^{−(1+i)x} − 3`: with `u = e^{λ·x}` (`λ = g·α`, `g` the
+/// gcd of the `rⱼ`) `f` is rational in `u`, and `x` is singular exactly where
+/// `u` meets a root `ρ ≠ 0` of its denominator.  For `re λ ≠ 0`, `|u| = |ρ|`
+/// only at `x_ρ = ln|ρ|/re λ`, and `u = ρ` there exactly when `θ/2π` is an
+/// integer, `θ = im λ·x_ρ − arg ρ` (an exact integer part `n` and the
+/// certified sign of `θ/2π − n` decide it).  For an imaginary `λ`, `u` runs
+/// around the unit circle: no singular point when `|ρ| ≠ 1` is certified.
+/// The scan is complete: these are all the singular points.  `None` when
+/// `f` is not of that form, or a root, an integer part or a sign does not
+/// settle, or `u` meets the circle `|u| = |ρ|` of an imaginary rate.  Up to
+/// 0.55 `∫₀³ dx/(e^{(1+i)x} + e^{−(1+i)x} − 3)` was refused ("could not
+/// determine all singularities").
+fn exp_rational_scan(arena: &mut Arena, f: ExprId, x: ExprId) -> Option<BreakScan> {
+    use num_integer::Integer;
+    let mut exps: Vec<(ExprId, LinearCoeffs<ExprId>)> = Vec::new();
+    for id in walk::post_order_ids(arena, f) {
+        let ExprNode::Exp(arg) = *arena.node(id) else {
+            continue;
+        };
+        if !walk::contains(arena, arg, x) {
+            continue;
+        }
+        let l = calculus_util::linear_coeffs_exact(arena, arg, x)?;
+        if !walk::free_symbols(arena, l.slope).is_empty()
+            || !walk::free_symbols(arena, l.intercept).is_empty()
+        {
+            return None;
+        }
+        exps.push((id, l));
+    }
+    let alpha = exps.first()?.1.slope;
+    let mut ratios: Vec<Q> = Vec::with_capacity(exps.len());
+    for (_, l) in &exps {
+        ratios.push(crate::transforms::integrate::rational_ratio(
+            arena, l.slope, alpha,
+        )?);
+    }
+    let mut num_gcd = BigInt::zero();
+    let mut den_lcm = BigInt::one();
+    for r in &ratios {
+        num_gcd = num_gcd.gcd(r.numer());
+        den_lcm = den_lcm.lcm(r.denom());
+    }
+    if num_gcd.is_zero() {
+        return None;
+    }
+    let g = Q::new(num_gcd, den_lcm);
+    let g_id = arena.num_ratio(g.clone());
+    let lambda = arena.mul(&[g_id, alpha]);
+    let lambda = eval::eval(arena, lambda);
+    if !crate::transforms::realness::imaginary_part_sign(arena, lambda)
+        .is_nonzero()
+        .is_true()
+    {
+        return None;
+    }
+    let u = arena.symbol("__exp_pole_u");
+    let mut in_u = f;
+    for ((node, l), r) in exps.iter().zip(&ratios) {
+        let k = arena.num_ratio(r / &g);
+        let u_k = arena.pow(u, k);
+        let e_beta = arena.exp(l.intercept);
+        let repl = arena.mul(&[e_beta, u_k]);
+        in_u = arena.subs_structural(in_u, *node, repl);
+    }
+    if walk::contains(arena, in_u, x) {
+        return None;
+    }
+    let in_u = eval::eval(arena, in_u);
+    let in_u = crate::transforms::integrate::clear_nested_fractions(arena, in_u, u);
+    let (n, d) = crate::poly::polybridge::as_numer_denom(arena, in_u);
+    crate::poly::polybridge::expr_to_poly(arena, n, u)?;
+    crate::poly::polybridge::expr_to_poly(arena, d, u)?;
+    let mut scan = BreakScan {
+        points: Vec::new(),
+        complete: true,
+        opaque: false,
+        crowded: false,
+        periodic: false,
+    };
+    if !walk::contains(arena, d, u) {
+        return Some(scan);
+    }
+    let cx =
+        crate::transforms::solve::SolveCx::principal(crate::transforms::solve::Domain::Complex);
+    let roots = crate::transforms::solve::solutions(arena, d, u, &cx).points_if_complete()?;
+    if roots.len() > MAX_EXP_POLES {
+        return None;
+    }
+    let re_lambda = arena.re(lambda);
+    let re_lambda = eval::eval(arena, re_lambda);
+    let circle = crate::poly::algebraic::sign_checked(arena, re_lambda)? == 0;
+    let im_lambda = arena.im(lambda);
+    let im_lambda = eval::eval(arena, im_lambda);
+    for rho in roots {
+        if arena.is_zero_structural(rho) {
+            continue;
+        }
+        let abs_rho = arena.abs(rho);
+        let ln_abs_rho = arena.ln(abs_rho);
+        let ln_abs_rho = eval::eval(arena, ln_abs_rho);
+        if circle {
+            if crate::poly::algebraic::sign_checked(arena, ln_abs_rho)? == 0 {
+                return None;
+            }
+            continue;
+        }
+        let at = arena.div(ln_abs_rho, re_lambda);
+        let at = eval::eval(arena, at);
+        let phase = arena.mul(&[im_lambda, at]);
+        let arg_rho = arena.arg(rho);
+        let neg_arg = arena.neg(arg_rho);
+        let theta = arena.add(&[phase, neg_arg]);
+        let two = arena.int(2);
+        let pi = arena.pi();
+        let two_pi = arena.mul(&[two, pi]);
+        let q = arena.div(theta, two_pi);
+        let q = eval::eval(arena, q);
+        let n = arena.floor(q);
+        let n = eval::eval(arena, n);
+        arena.as_num(n).filter(|v| v.is_integer())?;
+        let frac = arena.sub(q, n);
+        let frac = eval::eval(arena, frac);
+        if crate::poly::algebraic::sign_checked(arena, frac)? == 0 {
+            let value = evalf::eval_const_f64(arena, at).filter(|v| v.is_finite())?;
+            scan.points.push(Breakpoint {
+                point: at,
+                value: Some(value),
+                kind: BreakKind::Singular,
+            });
+        }
+    }
+    Some(scan)
 }
 
 /// `points` (each with its value, as [`cmp_values`] takes them) in

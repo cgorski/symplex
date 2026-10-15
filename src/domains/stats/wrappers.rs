@@ -545,9 +545,10 @@ pub struct Transformed {
 impl Transformed {
     /// `h′(y)` for a branch `h`.  A real odd root `sign(u)·|u|^(1/n)`
     /// differentiates to `sign(u)²/(n|u|^(1−1/n))`, 0/0 at `u = 0`;
-    /// `1/g′(h(y))` is the same slope with the pole showing.
+    /// `1/g′(h(y))` is the same slope with the pole showing (for the real
+    /// root of an odd power, and for any branch holding a real root).
     fn branch_slope(&self, h: &Ex, odd_power: bool) -> Ex {
-        if odd_power {
+        if odd_power || holds_sign(h) {
             (self.context().one() / self.map.diff(&self.var).subs(&self.var, h)).simplify()
         } else {
             h.diff(&self.image_var)
@@ -987,6 +988,293 @@ fn odd_power_inverse(g: &Ex, x: &Ex, y: &Ex) -> Option<Ex> {
     Some((root - s).simplify())
 }
 
+/// Does `h` hold a `sign` node (a real root `sign(u)·|u|^(1/n)`)?
+fn holds_sign(h: &Ex) -> bool {
+    let inner = h.inner.read();
+    let arena = &inner.arena;
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![h.raw_id()];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if matches!(arena.node(id), ExprNode::Sign(_)) {
+            return true;
+        }
+        stack.extend(arena.children(id));
+    }
+    false
+}
+
+/// Why [`monotone_inverse`] accepted no inverse.
+enum NoInverse {
+    /// `solve` gave no roots (its error).
+    Solve(SymplexError),
+    /// No real root, or several of which none is proved the inverse.
+    NotSingle,
+    /// The one real root, not proved the inverse on the image.
+    Unproved(Ex),
+}
+
+impl NoInverse {
+    fn into_error(self, g: &Ex, support: &Support) -> SymplexError {
+        not_implemented(match self {
+            NoInverse::Solve(e) => format!("transforming by `{g}`: no inverse found ({e})"),
+            NoInverse::NotSingle => {
+                format!("transforming by `{g}`: the inverse is not a single branch")
+            }
+            NoInverse::Unproved(h) => format!(
+                "transforming by `{g}`: the inverse `{h}` found is not proved real and continuous on the image of {support}, or not to invert the map there"
+            ),
+        })
+    }
+}
+
+/// The inverse of a strictly monotone `g` on the open support, as an
+/// expression in `y`, given the open interior of the image.  `g(x) = y` is
+/// solved for a symbol with the image's sign ([`image_symbol`]), and each
+/// real root is a candidate that [`inverse_on_support`] must accept; then
+/// the real root of `a(x + s)ⁿ + b` for an odd `n` ([`odd_power_inverse`],
+/// injective on ℝ); then a root whose principal odd roots are replaced by
+/// real ones ([`real_root_form`]: `sinh(x + 5)³` on ℝ is inverted by
+/// `asinh(∛ȳ) − 5`, the real cube root, where `solve`'s `asinh(∛y) − 5` is
+/// complex for `y < 0`).  Up to 0.55 `y` was a plain symbol, so the roots of
+/// `ln x = y`, `√x = y`, `x^(1/3) = y` held only under conditions on `y`
+/// (`im y ∈ (−π, π]`, `y ≥ 0`) and `ln x`, `√x` were refused.
+fn monotone_inverse(
+    g: &Ex,
+    x: &Ex,
+    y: &Ex,
+    support: &Interval<Ex>,
+    image: &Interval<Ex>,
+) -> Result<Ex, NoInverse> {
+    let ctx = g.context();
+    let (lo, hi) = (&support.lower, &support.upper);
+    let accepted = |h: &Ex| inverse_on_support(g, x, h, y, lo, hi).is_true();
+    let solved = match image_symbol(&ctx, image, &[g, x, lo, hi]) {
+        Some(yv) => match (g - &yv).solve(x) {
+            Ok(roots) => Ok((roots, yv)),
+            Err(e) => match roots_on_image(g, x, &yv, image) {
+                roots if roots.is_empty() => Err(NoInverse::Solve(e)),
+                roots => Ok((roots, yv)),
+            },
+        },
+        None => Err(NoInverse::NotSingle),
+    };
+    // A strictly monotone real map has one real inverse; `solve` also
+    // lists the complex roots of `x³ = y` (`ω·∛y`), which drop out.
+    let i = ctx.i_unit();
+    let candidates: Vec<Ex> = match &solved {
+        Ok((roots, yv)) => roots
+            .iter()
+            .filter(|h| !h.contains(&i))
+            .map(|h| h.subs(yv, y))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    if let Some(h) = candidates.iter().find(|h| accepted(h)) {
+        return Ok(h.clone());
+    }
+    // A principal odd root is complex where its argument is negative, and
+    // the real root takes over there.
+    if let Some(h) = odd_power_inverse(g, x, y) {
+        return Ok(h);
+    }
+    if let Ok((roots, yv)) = &solved {
+        let real_forms = roots
+            .iter()
+            .filter(|h| !h.contains(&i))
+            .filter_map(|h| real_root_form(h, roots, yv))
+            .map(|h| h.subs(yv, y));
+        for h in real_forms {
+            if accepted(&h) {
+                return Ok(h);
+            }
+        }
+    }
+    match (solved, candidates.as_slice()) {
+        (Err(e), _) => Err(e),
+        (Ok(_), [h]) => Err(NoInverse::Unproved(h.clone())),
+        (Ok(_), _) => Err(NoInverse::NotSingle),
+    }
+}
+
+/// The roots of `g(x) = y` that hold under a condition on `y` which holds
+/// on the whole open image (`atan x = y` has the root `tan y` when `|y| <
+/// π/2`, and the image of a real line under `atan` is `(−π/2, π/2)`):
+/// the image must lie in the set `reduce_inequalities` makes of the
+/// condition.  Empty when the solve is not conditional or no condition is
+/// proved.
+fn roots_on_image(g: &Ex, x: &Ex, yv: &Ex, image: &Interval<Ex>) -> Vec<Ex> {
+    use crate::transforms::solve::{Reason, RootSet, Solutions};
+    let eq = g - yv;
+    let outcome = {
+        let mut inner = eq.inner.write();
+        crate::transforms::solve::solve_classified(&mut inner.arena, eq.raw_id(), x.raw_id())
+    };
+    let Solutions::Refused(Reason::Conditional(groups)) = outcome else {
+        return Vec::new();
+    };
+    let image_set = g
+        .context()
+        .interval(&image.lower, &image.upper, IntervalKind::Open);
+    let mut out = Vec::new();
+    for group in groups {
+        let RootSet::Points(points) = group.roots else {
+            continue;
+        };
+        let cond: BoolEx = eq.wrap_as(group.cond);
+        // (a condition on other parameters too is not decided here)
+        let only_y = cond.free_symbols().iter().all(|s| s == yv);
+        let holds = only_y
+            && SetEx::reduce_inequalities(std::slice::from_ref(&cond), yv)
+                .is_ok_and(|region| Truth::from(image_set.is_subset(&region)).is_true());
+        if holds {
+            out.extend(points.into_iter().map(|p| eq.wrap(p)));
+        }
+    }
+    out
+}
+
+/// The symbol `g(x) = y` is solved for: declared with the sign of the
+/// image's open interior `(a, b)` — positive when `a ≥ 0`, negative when
+/// `b ≤ 0`, real otherwise — so that `solve` decides the principal-branch
+/// conditions of its roots where the sign does (`ln x = y`: `eʸ` for a
+/// real `y`; `√x = y`, `x^(1/3) = y`: `y²`, `y³` for a positive one;
+/// for a plain `y` the roots are conditional and `solve` refuses).  Its
+/// name occurs in none of `avoid` and is new to the context or already
+/// carries exactly these assumptions, so no other symbol's assumptions
+/// change.
+fn image_symbol(ctx: &Context, image: &Interval<Ex>, avoid: &[&Ex]) -> Option<Ex> {
+    use crate::base::assumptions::{Assumption, Assumptions};
+    let (tag, assumption) = if Truth::from(image.lower.is_nonnegative()).is_true() {
+        ("ypos", Assumption::Positive)
+    } else if Truth::from(image.upper.is_nonpositive()).is_true() {
+        ("yneg", Assumption::Negative)
+    } else {
+        ("yreal", Assumption::Real)
+    };
+    let wanted = Assumptions::declare(tag, Assumptions::default(), &[assumption]).ok()?;
+    // (a bound on the names tried; every one taken is not expected)
+    for n in 0..64u32 {
+        let name = if n == 0 {
+            format!("_{tag}")
+        } else {
+            format!("_{tag}{n}")
+        };
+        let declared = {
+            let inner = ctx.inner.read();
+            inner
+                .arena
+                .symbols
+                .get(&name)
+                .map(|sid| inner.arena.symbol_assumptions(sid) == wanted)
+        };
+        let candidate = match declared {
+            None => ctx.symbol_with(&name, &[assumption]).ok()?,
+            Some(true) => ctx.symbol(&name),
+            Some(false) => continue,
+        };
+        if !avoid.iter().any(|e| e.contains(&candidate)) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// `h` with its principal odd roots `u^(p/q)` (`q ≥ 3` odd, `u` depending
+/// on `y`, one `u` and one `q` throughout) replaced by real roots
+/// `(sign(u)·|u|^(1/q))ᵖ`, when that is again a root of the equation
+/// `solve` gave `roots` for (with `h` among them).  It is: for `u ≥ 0` the
+/// real root is the principal one, and for `u < 0` it is `ωᵐ` times it
+/// (`ω = e^(2πi/q)`, `m = (q − 1)/2`), so the new expression takes at
+/// each `y` the value of `h` or of `h` with `u^(p/q) ↦ ω^(mp)·u^(p/q)`,
+/// which must be one of `roots` (an exact identity in `y`).  `None` when
+/// it is not, or `h` has no such roots or several bases.
+fn real_root_form(h: &Ex, roots: &[Ex], y: &Ex) -> Option<Ex> {
+    let OddRadicals { u, q, radicals } = odd_radicals(h, y)?;
+    let ctx = h.context();
+    let m = (q - 1) / 2;
+    let i = ctx.i_unit();
+    // ω^j = cos(2πj/q) + i·sin(2πj/q), its standard values folded
+    let omega_pow = |j: i64| {
+        let angle = ctx.pi() * ctx.rational(2 * j.rem_euclid(q), q);
+        (angle.cos() + &i * angle.sin()).eval()
+    };
+    let rotated: Vec<(Ex, Ex)> = radicals
+        .iter()
+        .map(|(r, p)| (r.clone(), omega_pow(m * p) * r))
+        .collect();
+    let pairs: Vec<(&Ex, &Ex)> = rotated.iter().map(|(a, b)| (a, b)).collect();
+    let twin = h.subs_map(&pairs).expand();
+    let is_root = roots.iter().any(|r| {
+        let r = r.expand();
+        r == twin || Truth::from((&twin - &r).simplify().is_zero()).is_true()
+    });
+    if !is_root {
+        return None;
+    }
+    let real = u.real_root(u32::try_from(q).ok()?).ok()?;
+    let replaced: Vec<(Ex, Ex)> = radicals
+        .iter()
+        .map(|(r, p)| (r.clone(), real.powi(*p)))
+        .collect();
+    let pairs: Vec<(&Ex, &Ex)> = replaced.iter().map(|(a, b)| (a, b)).collect();
+    Some(h.subs_map(&pairs))
+}
+
+/// The principal odd roots of one base in an expression ([`odd_radicals`]).
+struct OddRadicals {
+    /// The base `u`.
+    u: Ex,
+    /// The odd root index `q ≥ 3`.
+    q: i64,
+    /// Each power `u^(p/q)` with its `p`.
+    radicals: Vec<(Ex, i64)>,
+}
+
+/// The powers `u^(p/q)` in `h` with `u` depending on `y` and `q ≥ 3` odd,
+/// when they share one `u` and one `q`.
+fn odd_radicals(h: &Ex, y: &Ex) -> Option<OddRadicals> {
+    let found: Vec<(ExprId, ExprId, i64, i64)> = {
+        let inner = h.inner.read();
+        let arena = &inner.arena;
+        let y_id = y.raw_id();
+        let mut found = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![h.raw_id()];
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) || !crate::base::walk::contains(arena, id, y_id) {
+                continue;
+            }
+            if let ExprNode::Pow(b, e) = arena.node(id)
+                && crate::base::walk::contains(arena, *b, y_id)
+                && let Some(q) = arena.as_num(*e)
+            {
+                let (p, d) = (q.numer(), q.denom());
+                if let (Ok(p), Ok(d)) = (i64::try_from(p), i64::try_from(d))
+                    && d >= 3
+                    && d % 2 == 1
+                {
+                    found.push((id, *b, p, d));
+                }
+            }
+            stack.extend(arena.children(id));
+        }
+        found
+    };
+    let &(_, base, _, q) = found.first()?;
+    if found.iter().any(|&(_, b, _, d)| b != base || d != q) {
+        return None;
+    }
+    let radicals = found.iter().map(|&(id, _, p, _)| (h.wrap(id), p)).collect();
+    Some(OddRadicals {
+        u: h.wrap(base),
+        q,
+        radicals,
+    })
+}
+
 /// Is `h` (an expression in `y`, a root of `g(x) = y` from `solve`) the
 /// inverse of `g` on the whole open support `(lo, hi)`, where `g` is
 /// strictly monotone?  It is when `h` is real and continuous on the image
@@ -1052,7 +1340,51 @@ fn inverse_requirements(h: &Ex, y: &Ex) -> Option<Vec<(ExprId, Need)>> {
         }
         match arena.node(id) {
             ExprNode::Symbol(_) => {}
-            ExprNode::Add(cs) | ExprNode::Mul(cs) => stack.extend(cs.iter().copied()),
+            ExprNode::Add(cs) => stack.extend(cs.iter().copied()),
+            // A real root `sign(a)·|a|^r` (`r > 0`) is continuous where `a`
+            // is, though `sign(a)` alone jumps at `a = 0`: each `sign(a)`
+            // (or a positive power of it) needs such a partner.
+            ExprNode::Mul(cs) => {
+                for &c in cs {
+                    let sign_arg = match arena.node(c) {
+                        ExprNode::Sign(a) => Some(*a),
+                        ExprNode::Pow(b, e) => match arena.node(*b) {
+                            ExprNode::Sign(a)
+                                if arena
+                                    .as_num(*e)
+                                    .is_some_and(|k| k.is_integer() && k.is_positive()) =>
+                            {
+                                Some(*a)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    match sign_arg {
+                        Some(a) => {
+                            let partnered = cs.iter().any(|&d| match arena.node(d) {
+                                ExprNode::Pow(b, e) => {
+                                    matches!(arena.node(*b), ExprNode::Abs(inner) if *inner == a)
+                                        && arena.as_num(*e).is_some_and(|r| r.is_positive())
+                                }
+                                _ => false,
+                            });
+                            if !partnered {
+                                return None;
+                            }
+                            stack.push(a);
+                        }
+                        None => stack.push(c),
+                    }
+                }
+            }
+            // `|a|^r` with `r > 0` is real and continuous where `a` is.
+            ExprNode::Pow(b, e)
+                if matches!(arena.node(*b), ExprNode::Abs(_))
+                    && arena.as_num(*e).is_some_and(|r| r.is_positive()) =>
+            {
+                stack.push(*b);
+            }
             ExprNode::Neg(a)
             | ExprNode::Exp(a)
             | ExprNode::Sin(a)
@@ -1103,7 +1435,14 @@ fn inverse_requirements(h: &Ex, y: &Ex) -> Option<Vec<(ExprId, Need)>> {
                     stack.push(*b);
                 }
             }
-            _ => return None,
+            node => match node.func(arena) {
+                // `erf⁻¹` is real and continuous on `(−1, 1)`.
+                Some((crate::base::func::Func::ErfInv, args)) if args.len() == 1 => {
+                    out.push((args[0], Need::UnitOpen));
+                    stack.push(args[0]);
+                }
+                _ => return None,
+            },
         }
     }
     Some(out)
@@ -1131,6 +1470,17 @@ fn real_and_continuous_on_image(g: &Ex, x: &Ex, h: &Ex, y: &Ex, lo: &Ex, hi: &Ex
     // `a need 0` for every real x in the support: the set where it fails is empty.
     let holds = |a: &Ex, need: Need| -> Truth {
         let ax = a.subs(y, g).subs(x, &xr);
+        // A sign the assumptions give for every real `x` (`e^{x + eˣ} + e⁻¹ > 0`,
+        // where the sign chart cannot evaluate `e^{1000 + e¹⁰⁰⁰}`).  Not for
+        // `≠ 0`: `is_zero` of an expression in `x` reads "not identically 0".
+        let signed = match need {
+            Need::NonNegative => ax.is_nonnegative(),
+            Need::Positive => ax.is_positive(),
+            _ => None,
+        };
+        if Truth::from(signed).is_true() {
+            return Truth::True;
+        }
         let fails = match need {
             Need::NonNegative => ax.lt(&zero),
             Need::Positive => ax.le(&zero),
@@ -1435,13 +1785,16 @@ impl Distribution {
     /// change-of-variables formula.  Recognised shapes: an affine `g`
     /// (delegates to [`affine`](Self::affine)); a continuous `X` with a
     /// strictly monotone `g` on the support whose inverse `solve` finds
-    /// (`eˣ`, `ln x`, `1/x` on a positive support, `x³`, …) and which is
-    /// proved real and continuous on the whole image (the real root for
-    /// `a(x + s)ⁿ + b` with an odd `n`; otherwise refused); `X²`, `|X|`
-    /// and even powers of a continuous `X` (two branches on a support
-    /// symmetric about `0`, one on a support to one side of `0`); and a
-    /// finite table or finite integer range, whose values are mapped and
-    /// merged.  SymPy: `density(g(X))`.
+    /// for an image variable of the image's sign (`eˣ`, `ln x`, `√x`,
+    /// `x^(1/3)`, `1/x` on a positive support, `x³`, `x² + x` on a positive
+    /// support, …) and which is proved real and continuous on the whole
+    /// image and to invert `g` at one point (otherwise refused); the real
+    /// root replaces a principal odd root where that is complex (`x³`,
+    /// `a(x + s)ⁿ + b` with an odd `n`, `sinh(x + 5)³`, `e^((x − 1/10)³)`);
+    /// `X²`, `|X|` and even powers of a continuous `X` (two branches on a
+    /// support symmetric about `0`, one on a support to one side of `0`);
+    /// and a finite table or finite integer range, whose values are mapped
+    /// and merged.  SymPy: `density(g(X))`.
     ///
     /// # Errors
     ///
@@ -1463,6 +1816,10 @@ impl Distribution {
     /// let expected = (-&y / 2).exp() / (2 * ctx.pi() * &y).sqrt();
     /// assert_eq!((sq.density(&y) - expected).simplify(), ctx.int(0));
     /// assert_eq!(sq.mean(), ctx.int(1));
+    /// // ln X for X ~ Exponential(1) has the density e^{y − e^y} on ℝ.
+    /// let e = Distribution::exponential(ctx.int(1)).transformed(&x, &x.ln())?;
+    /// let gumbel = (&y - y.exp()).exp();
+    /// assert_eq!((e.density(&y) - gumbel).simplify(), ctx.int(0));
     /// # Ok::<(), SymplexError>(())
     /// ```
     pub fn transformed(&self, x: &Ex, g: &Ex) -> Result<Distribution, SymplexError> {
@@ -1547,38 +1904,6 @@ impl Distribution {
                 )));
             }
         };
-        let solved = (g - &y)
-            .solve(x)
-            .map_err(|e| not_implemented(format!("transforming by `{g}`: no inverse found ({e})")));
-        // A strictly monotone real map has one real inverse; `solve` also
-        // lists the complex roots of `x³ = y` (`ω·∛y`), which drop out.
-        let i = ctx.i_unit();
-        let principal = solved.and_then(|solutions| {
-            let real: Vec<&Ex> = solutions.iter().filter(|h| !h.contains(&i)).collect();
-            match real.as_slice() {
-                [h] => Ok((*h).clone()),
-                _ => Err(not_implemented(format!(
-                    "transforming by `{g}`: the inverse is not a single branch"
-                ))),
-            }
-        });
-        // The branch must invert g on the whole support: a principal odd
-        // root is complex where its argument is negative, and the real
-        // root takes over there (`a·(x + s)ⁿ + b` for an odd `n` is injective
-        // on ℝ, so its real root inverts it everywhere).
-        let h = match principal {
-            Ok(h) if inverse_on_support(g, x, &h, &y, lo, hi).is_true() => h,
-            principal => match odd_power_inverse(g, x, &y) {
-                Some(h) => h,
-                None => {
-                    let h = principal?;
-                    return Err(not_implemented(format!(
-                        "transforming by `{g}`: the inverse `{h}` found is not proved real and continuous on the image of {support}, or not to invert the map there"
-                    )));
-                }
-            },
-        };
-        let h = &h;
         // The image's ends are one-sided limits of g at the support's ends
         // (finite ends included: `1/x` at 0⁺ is ∞).
         let glo = if is_neg_inf(lo) {
@@ -1591,6 +1916,19 @@ impl Distribution {
         } else {
             g.limit_left(x, hi)
         };
+        let interior = |lower: &Ex, upper: &Ex| Interval {
+            lower: lower.clone(),
+            upper: upper.clone(),
+            kind: IntervalKind::Open,
+        };
+        let image_interior = if increasing {
+            interior(&glo, &ghi)
+        } else {
+            interior(&ghi, &glo)
+        };
+        let h = monotone_inverse(g, x, &y, &interior(lo, hi), &image_interior)
+            .map_err(|e| e.into_error(g, &support))?;
+        let h = &h;
         // The support's openness carries over to the image; a decreasing
         // map swaps the ends with it.  (`from_pieces` opens infinite ends.)
         let mapped = Interval {

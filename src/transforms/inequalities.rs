@@ -2029,8 +2029,8 @@ fn value_sign(arena: &mut Arena, e: ExprId) -> ValueSign {
         return ValueSign::Defined(SignSet::NONREAL);
     }
     let first = parsed.re;
-    if first.is_zero() || first.abs() >= pow10_inv(AMBIGUOUS_EXP) {
-        return real_sign(&first);
+    if first.is_zero() || first.magnitude() >= -(AMBIGUOUS_EXP as i64) {
+        return ValueSign::Defined(SignSet::from_ordering(first.sign()));
     }
     // Tiny: either a genuine small value (`exp(-1000)`) or cancellation
     // noise around an exact zero.  Re-evaluate at twice the precision: a
@@ -2041,33 +2041,37 @@ fn value_sign(arena: &mut Arena, e: ExprId) -> ValueSign {
     let Some(second) = parse_evalf_complex(&text2).map(|p| p.re) else {
         return ValueSign::UNDECIDED;
     };
-    if second.is_zero() || first.is_positive() != second.is_positive() {
+    if second.is_zero() || first.negative != second.negative {
         return ValueSign::UNDECIDED;
     }
-    let diff = (&first - &second).abs();
-    let tol = first.abs() / Ratio::from_integer(BigInt::from(1_000_000));
-    if diff > tol {
+    // |first − second| > |first|/10⁶
+    if first.differs_relatively(&second, 6) {
         return ValueSign::UNDECIDED;
     }
-    real_sign(&first)
+    ValueSign::Defined(SignSet::from_ordering(first.sign()))
 }
 
-/// `10^-k` as an exact rational.
-fn pow10_inv(k: usize) -> Q {
-    Ratio::new(BigInt::one(), num_traits::pow(BigInt::from(10), k))
-}
-
-/// Is the imaginary part negligible relative to `max(1, |re|)`?  A zero
-/// imaginary part is decided without arithmetic: the real part of a value
-/// at a far sample point has hundreds of thousands of digits
-/// (`1001·exp(1001²)` for `x·e^(x²) − 1 > 0`), and the product below took
-/// seconds of `gcd` on it.
+/// Is the imaginary part negligible relative to `max(1, |re|)`?  Decided
+/// on the unscaled decimals ([`Decimal::cmp_abs`]): the real part of a
+/// value at a far sample point has hundreds of thousands of digits
+/// (`1001·exp(1001²)` for `x·e^(x²) − 1 > 0`), and up to 0.55 its exact
+/// rational was formed — `10^(4.3·10⁸)` for `exp(1000³)`, which never
+/// finished (`exp(x³) ≥ 0` hung).
 fn is_negligible_imaginary(p: &ParsedComplex) -> bool {
     if p.im.is_zero() {
         return true;
     }
-    let scale = p.re.abs().max(Ratio::one());
-    p.im.abs() <= scale * pow10_inv(NONREAL_EXP)
+    let one = Decimal::one(false);
+    let scale = if p.re.cmp_abs(&one) == std::cmp::Ordering::Greater {
+        &p.re
+    } else {
+        &one
+    };
+    let bound = Decimal {
+        exp: scale.exp.saturating_sub(NONREAL_EXP as i64),
+        ..scale.clone()
+    };
+    p.im.cmp_abs(&bound) != std::cmp::Ordering::Greater
 }
 
 /// Real value of a variable-free expression as an exact rational (when
@@ -2085,26 +2089,145 @@ fn approx_real(arena: &mut Arena, e: ExprId) -> Option<Q> {
     if !is_negligible_imaginary(&parsed) {
         return None;
     }
-    Some(parsed.re)
+    Some(parsed.re.to_ratio())
 }
 
 // ── evalf output parsing ───────────────────────────────────────────────
 
-/// A parsed `evalf` string, as exact decimal rationals (no overflow or
+/// A parsed `evalf` string, as exact unscaled decimals (no overflow or
 /// underflow for huge / tiny magnitudes).
 struct ParsedComplex {
-    re: Q,
-    im: Q,
+    re: Decimal,
+    im: Decimal,
+}
+
+/// The exact value `±digits·10^exp` of a decimal literal, kept unscaled:
+/// the power of ten of a value at a far sample point cannot be formed
+/// (`exp(1000³) ≈ 10^(4.3·10⁸)`), so signs and comparisons are read from
+/// the digits and the exponent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Decimal {
+    negative: bool,
+    /// Non-negative; 0 for the value 0.
+    digits: BigInt,
+    exp: i64,
+}
+
+impl Decimal {
+    fn zero() -> Decimal {
+        Decimal {
+            negative: false,
+            digits: BigInt::zero(),
+            exp: 0,
+        }
+    }
+
+    fn one(negative: bool) -> Decimal {
+        Decimal {
+            negative,
+            digits: BigInt::one(),
+            exp: 0,
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.digits.is_zero()
+    }
+
+    /// The sign of the value.
+    fn sign(&self) -> std::cmp::Ordering {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        match (self.is_zero(), self.negative) {
+            (true, _) => Equal,
+            (false, true) => Less,
+            (false, false) => Greater,
+        }
+    }
+
+    /// `⌊log₁₀ |v|⌋` of a nonzero value (`|v| ∈ [10^m, 10^(m+1))`).
+    fn magnitude(&self) -> i64 {
+        let len = i64::try_from(self.digits.to_string().len()).unwrap_or(i64::MAX);
+        self.exp.saturating_add(len).saturating_sub(1)
+    }
+
+    /// `(a, b)` with `a/b = |self|/|other|` up to a common power of ten,
+    /// for two values whose exponents differ by at most `max_shift`.
+    fn aligned(&self, other: &Decimal, max_shift: u64) -> Option<(BigInt, BigInt)> {
+        let shift = self.exp.abs_diff(other.exp);
+        if shift > max_shift {
+            return None;
+        }
+        let scale = num_traits::pow(BigInt::from(10), usize::try_from(shift).ok()?);
+        Some(if self.exp >= other.exp {
+            (&self.digits * scale, other.digits.clone())
+        } else {
+            (self.digits.clone(), &other.digits * scale)
+        })
+    }
+
+    /// `|self|` against `|other|`, exactly.  Magnitudes that differ decide
+    /// at once; equal ones leave exponents that differ by the difference of
+    /// the digit counts.
+    fn cmp_abs(&self, other: &Decimal) -> std::cmp::Ordering {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        match (self.is_zero(), other.is_zero()) {
+            (true, true) => return Equal,
+            (true, false) => return Less,
+            (false, true) => return Greater,
+            (false, false) => {}
+        }
+        match self.magnitude().cmp(&other.magnitude()) {
+            Equal => match self.aligned(other, u64::MAX) {
+                Some((a, b)) => a.cmp(&b),
+                None => Equal,
+            },
+            unequal => unequal,
+        }
+    }
+
+    /// `|self − other| > |self|·10^(−k)` for two nonzero values of one
+    /// sign.  Magnitudes two or more apart differ by more than a tenth of
+    /// the larger value.
+    fn differs_relatively(&self, other: &Decimal, k: usize) -> bool {
+        if self.magnitude().abs_diff(other.magnitude()) >= 2 {
+            return true;
+        }
+        match self.aligned(other, u64::MAX) {
+            Some((a, b)) => {
+                let diff = (&a - &b).abs();
+                diff * num_traits::pow(BigInt::from(10), k) > a
+            }
+            None => true,
+        }
+    }
+
+    /// The exact rational (for values whose power of ten can be formed:
+    /// the approximations of critical points).
+    fn to_ratio(&self) -> Q {
+        let ten = BigInt::from(10);
+        let pow = |e: i64| {
+            num_traits::pow(
+                ten.clone(),
+                usize::try_from(e.unsigned_abs()).unwrap_or(usize::MAX),
+            )
+        };
+        let r = if self.exp >= 0 {
+            Ratio::from_integer(&self.digits * pow(self.exp))
+        } else {
+            Ratio::new(self.digits.clone(), pow(self.exp))
+        };
+        if self.negative { -r } else { r }
+    }
 }
 
 /// Parse an `evalf` result: `"1.5"`, `"-2e-7"`, `"i"`, `"2.5*i"`,
 /// `"1.0 + 2.0*i"`, `"1.0 - 2.0*i"`, `"0"`.
 fn parse_evalf_complex(s: &str) -> Option<ParsedComplex> {
     let s = s.trim();
-    if let Some(re) = decimal_to_ratio(s) {
+    if let Some(re) = parse_decimal(s) {
         return Some(ParsedComplex {
             re,
-            im: Ratio::zero(),
+            im: Decimal::zero(),
         });
     }
     let has_i = s.ends_with('i') || s.ends_with('I');
@@ -2114,13 +2237,13 @@ fn parse_evalf_complex(s: &str) -> Option<ParsedComplex> {
     let body = s[..s.len() - 1].trim_end_matches('*').trim();
     // Pure imaginary.
     let pure_im = match body {
-        "" | "+" => Some(Ratio::one()),
-        "-" => Some(-Ratio::<BigInt>::one()),
-        t => decimal_to_ratio(t),
+        "" | "+" => Some(Decimal::one(false)),
+        "-" => Some(Decimal::one(true)),
+        t => parse_decimal(t),
     };
     if let Some(im) = pure_im {
         return Some(ParsedComplex {
-            re: Ratio::zero(),
+            re: Decimal::zero(),
             im,
         });
     }
@@ -2134,18 +2257,24 @@ fn parse_evalf_complex(s: &str) -> Option<ParsedComplex> {
         }
     }
     let idx = split?;
-    let re = decimal_to_ratio(body[..idx].trim())?;
+    let re = parse_decimal(body[..idx].trim())?;
     let im_text: String = body[idx..].chars().filter(|c| !c.is_whitespace()).collect();
     let im = match im_text.as_str() {
-        "+" => Ratio::one(),
-        "-" => -Ratio::<BigInt>::one(),
-        t => decimal_to_ratio(t)?,
+        "+" => Decimal::one(false),
+        "-" => Decimal::one(true),
+        t => parse_decimal(t)?,
     };
     Some(ParsedComplex { re, im })
 }
 
 /// Exact rational value of a decimal literal such as `-12.345e-7`.
+#[cfg(test)]
 fn decimal_to_ratio(text: &str) -> Option<Q> {
+    parse_decimal(text).map(|d| d.to_ratio())
+}
+
+/// The exact value of a decimal literal such as `-12.345e-7`, unscaled.
+fn parse_decimal(text: &str) -> Option<Decimal> {
     let t = text.trim();
     let (negative, t) = match t.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -2170,17 +2299,12 @@ fn decimal_to_ratio(text: &str) -> Option<Q> {
     let digits = format!("{int_part}{frac_part}");
     let digits = if digits.is_empty() { "0" } else { &digits };
     let n: BigInt = digits.parse().ok()?;
-    let scale = exp - frac_part.len() as i64;
-    let ten = BigInt::from(10);
-    let mut r = if scale >= 0 {
-        Ratio::from_integer(n * num_traits::pow(ten, scale.unsigned_abs() as usize))
-    } else {
-        Ratio::new(n, num_traits::pow(ten, scale.unsigned_abs() as usize))
-    };
-    if negative {
-        r = -r;
-    }
-    Some(r)
+    let scale = exp.checked_sub(i64::try_from(frac_part.len()).ok()?)?;
+    Some(Decimal {
+        negative: negative && !n.is_zero(),
+        digits: n,
+        exp: scale,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2483,21 +2607,49 @@ mod tests {
     #[test]
     fn parse_evalf_strings() {
         let r = |p: i64, q: i64| Ratio::new(BigInt::from(p), BigInt::from(q));
-        let p = parse_evalf_complex("-1.5e-3").unwrap();
-        assert_eq!((p.re, p.im), (r(-3, 2000), r(0, 1)));
-        let p = parse_evalf_complex("1.25 - 2.5*i").unwrap();
-        assert_eq!((p.re, p.im), (r(5, 4), r(-5, 2)));
-        let p = parse_evalf_complex("-i").unwrap();
-        assert_eq!((p.re, p.im), (r(0, 1), r(-1, 1)));
-        let p = parse_evalf_complex("3*i").unwrap();
-        assert_eq!((p.re, p.im), (r(0, 1), r(3, 1)));
-        let p = parse_evalf_complex("2e-5 + i").unwrap();
-        assert_eq!((p.re, p.im), (r(1, 50000), r(1, 1)));
+        let parts = |s: &str| {
+            let p = parse_evalf_complex(s).unwrap();
+            (p.re.to_ratio(), p.im.to_ratio())
+        };
+        assert_eq!(parts("-1.5e-3"), (r(-3, 2000), r(0, 1)));
+        assert_eq!(parts("1.25 - 2.5*i"), (r(5, 4), r(-5, 2)));
+        assert_eq!(parts("-i"), (r(0, 1), r(-1, 1)));
+        assert_eq!(parts("3*i"), (r(0, 1), r(3, 1)));
+        assert_eq!(parts("2e-5 + i"), (r(1, 50000), r(1, 1)));
         // Magnitudes beyond f64 stay exact.
         let p = parse_evalf_complex("1.0e500").unwrap();
-        assert!(p.re > r(1, 1));
+        assert!(p.re.to_ratio() > r(1, 1));
         let p = parse_evalf_complex("-2.5e-400").unwrap();
-        assert!(p.re.is_negative() && p.re > r(-1, 1));
+        assert!(p.re.to_ratio().is_negative() && p.re.to_ratio() > r(-1, 1));
+    }
+
+    /// Up to 0.55 a value at a far sample point was turned into its exact
+    /// rational: `exp(1000³)` evaluates to `≈ 1.6·10^434294481`, whose power
+    /// of ten never finished (`exp(x³) ≥ 0` hung).  The unscaled decimals
+    /// compare exactly without it.
+    #[test]
+    fn huge_decimals_compare_without_their_powers() {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        let d = |s: &str| parse_decimal(s).unwrap();
+        let huge = d("1.6e434294481");
+        let tiny = d("-1.6e-434294481");
+        assert_eq!(huge.sign(), Greater);
+        assert_eq!(tiny.sign(), Less);
+        assert_eq!(huge.magnitude(), 434_294_481);
+        assert_eq!(tiny.magnitude(), -434_294_481);
+        assert_eq!(huge.cmp_abs(&d("1")), Greater);
+        assert_eq!(tiny.cmp_abs(&d("1e-24")), Less);
+        assert_eq!(d("0.00150").cmp_abs(&d("1.5e-3")), Equal);
+        assert_eq!(d("9.99e7").cmp_abs(&d("1.0e8")), Less);
+        assert_eq!(d("-0").sign(), Equal);
+        // Relative differences: one part in 10⁶ or more.
+        assert!(!d("1.2345678e-400").differs_relatively(&d("1.23456780000001e-400"), 6));
+        assert!(d("1.2345e-400").differs_relatively(&d("1.2346e-400"), 6));
+        assert!(d("1e-400").differs_relatively(&d("1e-430"), 6));
+        let p = parse_evalf_complex("1.6e434294481 + 2.0e434294400*i").unwrap();
+        assert!(is_negligible_imaginary(&p));
+        let p = parse_evalf_complex("1.6e434294481 + 2.0e434294470*i").unwrap();
+        assert!(!is_negligible_imaginary(&p));
     }
 
     #[test]

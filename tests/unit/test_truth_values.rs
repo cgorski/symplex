@@ -55,7 +55,7 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     // `poly/**` (W10c), `transforms/{eval,evalf,inequalities,sets,solve}` (B3 / evalf).
     ("base/arena.rs", [1, 0, 1, 1, 0]),
     ("base/assumptions.rs", [98, 0, 0, 0, 0]),
-    ("base/canon.rs", [47, 2, 1, 3, 0]),
+    ("base/canon.rs", [46, 2, 1, 3, 0]),
     ("base/complex.rs", [27, 0, 2, 1, 0]),
     ("poly/algebraic.rs", [1, 0, 2, 2, 0]),
     ("poly/dense.rs", [0, 0, 1, 0, 0]),

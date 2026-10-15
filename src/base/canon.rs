@@ -522,8 +522,10 @@ fn cancels_infinite_terms(arena: &Arena, terms: &FxHashMap<ExprId, Q>, merged: &
 ///   folded to `zoo`/`±∞` when interned ([`canon_function`]); a library
 ///   function left unevaluated at an exact infinity (`±∞`, `±i·∞`) where
 ///   it has no finite value the constructors know makes the product `nan`
-///   (also as a denominator: [`library_value_unknown_at_infinity`]); any
-///   other application (`Γ(zoo)`, `f(x)`) is treated as finite here;
+///   (also as a denominator: [`library_value_unknown_at_infinity`]); a
+///   function left unevaluated at `zoo` makes the product `nan`
+///   ([`unevaluated_at_complex_infinity`]); any other application (`f(x)`,
+///   a user function `f(zoo)`) is treated as finite here;
 /// * `0 × d⁻ᵏ → nan` for a denominator `d` (among the factors, or in a
 ///   product or sum among them) that vanishes identically
 ///   ([`factor_vanishes`]: also a constant that is 0, `sin² 1 + cos² 1 −
@@ -612,7 +614,10 @@ fn zero_times_rest<'a>(
         }
     }
     for f in applications {
-        if memo.infinite_or_undefined(arena, f) || not_finite_at_infinity(arena, f) {
+        if memo.infinite_or_undefined(arena, f)
+            || not_finite_at_infinity(arena, f)
+            || unevaluated_at_complex_infinity(arena, f)
+        {
             tracing::debug!("canon_mul: 0 times a function undefined at every point → nan");
             return arena.nan;
         }
@@ -823,6 +828,44 @@ fn not_finite_at_infinity(arena: &Arena, f: ExprId) -> bool {
         _ => false,
     };
     !bounded
+}
+
+/// Is `f` an elementary, special or library function application (not a
+/// user function, not a power) left unevaluated at an argument `zoo`, and
+/// not known finite?  `zoo` has no direction, so no table value applies:
+/// what the constructors fold there is folded (`ln(zoo) = zoo`, `sin(zoo) =
+/// nan`, `Li_s(0) = 0` for every `s`), and what stays is `zoo` or has no
+/// limit (`Γ(zoo)`, `atan(zoo)`, `uppergamma(zoo, ∞)`).  Either way `0·f`
+/// is `nan` (up to 0.56 it was 0; SymPy 1.14 also gives 0, against its
+/// `0·zoo = nan`).  A quotient `0/f` is not decided here: it is 0 where `f`
+/// tends to `zoo` (`W(zoo)`) and has no value where `f` has no limit, so
+/// it keeps the canonical 0.  An orthogonal polynomial of degree 0 is the
+/// constant 1 at every argument and parameter (`eval` folds
+/// `legendre(0, zoo)` and `jacobi(0, zoo, 1, x)` to 1): not counted.
+fn unevaluated_at_complex_infinity(arena: &Arena, f: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::libfn::LibFn;
+    use crate::base::truth::Truth;
+    let node = arena.node(f);
+    let constant_polynomial = matches!(
+        node,
+        ExprNode::Lib(
+            LibFn::Legendre
+                | LibFn::ChebyshevT
+                | LibFn::ChebyshevU
+                | LibFn::Hermite
+                | LibFn::Laguerre
+                | LibFn::Gegenbauer
+                | LibFn::Jacobi
+                | LibFn::AssocLaguerre,
+            args,
+        ) if args.first() == Some(&arena.zero)
+    );
+    !constant_polynomial
+        && !matches!(node, ExprNode::Apply(..) | ExprNode::Pow(..))
+        && application_arguments(arena, node)
+            .is_some_and(|args| args.contains(&arena.complex_infinity))
+        && !Truth::from(AssumptionCache::new().query(arena, f, Props::FINITE)).is_true()
 }
 
 /// Is `f` a library function application at an exact infinity in an axis
@@ -4551,6 +4594,9 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
         // W(−∞) = ∞ + iπ, W(±i·∞) = ∞ ± iπ/2 (`W(z) ~ ln z − ln ln z`; mpmath
         // `lambertw(-10**6)` = 11.35 + 2.89i, tending to `π`; SymPy keeps
         // them).
+        // At `±∞ + c`, `c ± i·∞` (`c` finite) as `ln`, whose imaginary part
+        // `arg z` is `Im W`'s limit: `W(y + ∞) = ∞` (up to 0.56 it stayed,
+        // and `solve(x + W(y + ∞))` refused).
         ExprNode::LambertW(a) => match classify_arg(arena, a) {
             Arg::Rational(q) if q.is_zero() => Folded::int(0),
             Arg::E => Folded::int(1),
@@ -4559,6 +4605,19 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
             Arg::ImaginaryInfinity(neg) => {
                 Folded::InfinitePlus(InfDir::Pos, signed_half(neg), Q::zero())
             }
+            Arg::InfinitePlus(d, ref c) if c.iter().all(|&t| finite_slot(arena, t)) => match d {
+                InfDir::Pos => Folded::Infinity,
+                InfDir::Neg => match finite_part_sign(arena, c, true)? {
+                    Ordering::Equal => return None,
+                    s => Folded::InfinitePlus(InfDir::Pos, signed(s, Q::one()), Q::zero()),
+                },
+                InfDir::NegImag => {
+                    Folded::InfinitePlus(InfDir::Pos, Q::new((-1).into(), 2.into()), Q::zero())
+                }
+                InfDir::PosImag => {
+                    Folded::InfinitePlus(InfDir::Pos, Q::new(1.into(), 2.into()), Q::zero())
+                }
+            },
             Arg::NaN => Folded::NaN,
             // W(−1/e) = −1: the argument is `−exp(−1)`.
             Arg::Other if is_minus_inverse_e(arena, a) => Folded::int(-1),
@@ -5342,12 +5401,22 @@ fn assumed_mul_power(arena: &mut Arena, children: &[ExprId], exp: ExprId, e: &Q)
 /// `Min`/`Max` of numbers and infinities fold when they are built, as
 /// SymPy's: the rational arguments are replaced by their least (greatest),
 /// `+∞` is dropped from a `Min` and `−∞` from a `Max` (identities), `−∞`
-/// absorbs a `Min` and `+∞` a `Max` whose other arguments are real, `nan`
-/// and `zoo` make `nan`, and a single remaining argument is the value: `Min(0, 10)
-/// = 0`, `Max(3, 0, x) = Max(3, x)`, `Min(∞, x) = x`.  Up to 0.40 `Min(0,
-/// 10)` stayed a node until `eval`, and the zero it hid let `ln(x·Min(0,
-/// 10))` pass for finite and `0·∞`-like products for 0.  `None` when
-/// nothing changes.
+/// absorbs a `Min` and `+∞` a `Max` none of whose other arguments is known
+/// to be non-real, `nan` and `zoo` make `nan`, and a single remaining
+/// argument is the value: `Min(0, 10) = 0`, `Max(3, 0, x) = Max(3, x)`,
+/// `Min(∞, x) = x`, `Max(∞, x) = ∞`.  Up to 0.40 `Min(0, 10)` stayed a node
+/// until `eval`, and the zero it hid let `ln(x·Min(0, 10))` pass for finite
+/// and `0·∞`-like products for 0.  `None` when nothing changes.
+///
+/// The arguments of `Min`/`Max` are real where they are defined (the order
+/// is the reals'), so `±∞ + c` for a finite `c` (`y + ∞`, which the sum
+/// keeps for the imaginary part of a plain `y`) is `±∞` there, and `+∞`
+/// absorbs a `Max` whose other arguments may be real (SymPy: `Max(oo, y)` →
+/// `oo`): `Max(−3, ∞, y) = ∞`, `Min(y + ∞, y) = y`.  Up to 0.56 only exact
+/// infinities folded, and a `Max` with `∞` absorbed only arguments known
+/// real, so `tanh(Max(−3, ∞, y))` stayed (it is 1) and `solve` refused
+/// equations holding them.  An argument certified non-real (`ζ(3/7 + i)`)
+/// leaves no point where the order is defined: the node stays.
 fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
     if args.is_empty() {
@@ -5358,22 +5427,39 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
     } else {
         (arena.neg_infinity, arena.infinity)
     };
+    // `zoo` has no order (SymPy: "The argument 'zoo' is not comparable").
+    if args
+        .iter()
+        .any(|&a| a == arena.nan || a == arena.complex_infinity)
+    {
+        return Some(arena.nan);
+    }
+    // An argument known non-real (`∞ + p·i` for a positive `p`, `i`) leaves no
+    // point where the order is defined: the infinities are not dropped or
+    // absorbing then (up to 0.56 `Min(∞, i)` was `i`).
+    let non_real = {
+        use crate::base::truth::Truth;
+        let mut cache = AssumptionCache::new();
+        args.iter()
+            .any(|&a| Truth::from(cache.query(arena, a, Props::EXTENDED_REAL)).is_false())
+    };
     let mut best: Option<(usize, Q)> = None;
     let mut kept: SmallVec<[ExprId; 4]> = SmallVec::new();
     let mut changed = false;
     let mut has_absorbing = false;
     for &a in args {
-        // `zoo` has no order (SymPy: "The argument 'zoo' is not comparable").
-        if a == arena.nan || a == arena.complex_infinity {
-            return Some(arena.nan);
-        }
-        if a == identity {
-            changed = true;
-            continue;
-        }
-        if a == absorbing {
-            has_absorbing = true;
-            continue;
+        match real_infinity(arena, a).filter(|_| !non_real) {
+            // `+∞` in a `Min`, `−∞` in a `Max`.
+            Some(d) if (d == InfDir::Pos) == is_min => {
+                changed = true;
+                continue;
+            }
+            Some(_) => {
+                changed |= a != absorbing;
+                has_absorbing = true;
+                continue;
+            }
+            None => {}
         }
         if let Some(q) = arena.as_num(a) {
             match &mut best {
@@ -5397,11 +5483,14 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
         kept.push(a);
     }
     if has_absorbing {
+        use crate::base::truth::Truth;
         let mut cache = AssumptionCache::new();
-        let all_real = kept
-            .iter()
-            .all(|&a| cache.query(arena, a, Props::REAL) == Some(true));
-        if all_real {
+        let non_real = kept.iter().any(|&a| {
+            arena.is_symbol_free(a)
+                && !Truth::from(cache.query(arena, a, Props::EXTENDED_REAL)).is_true()
+                && arena.part_signs(a).is_some_and(|s| s.im.is_some())
+        });
+        if !non_real {
             return Some(absorbing);
         }
         kept.push(absorbing);
@@ -5421,6 +5510,28 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
         } else {
             ExprNode::Max(kept)
         })),
+        _ => None,
+    }
+}
+
+/// The direction (`Pos`, `Neg`) of `+∞` and `+∞ + c`, `−∞` and `−∞ + c`, `c`
+/// finite ([`finite_slot`] for each of its terms); `None` otherwise.
+fn real_infinity(arena: &Arena, a: ExprId) -> Option<InfDir> {
+    if a == arena.infinity {
+        return Some(InfDir::Pos);
+    }
+    if a == arena.neg_infinity {
+        return Some(InfDir::Neg);
+    }
+    if !matches!(arena.node(a), ExprNode::Add(_)) {
+        return None;
+    }
+    match classify_arg(arena, a) {
+        Arg::InfinitePlus(d @ (InfDir::Pos | InfDir::Neg), c)
+            if c.iter().all(|&t| finite_slot(arena, t)) =>
+        {
+            Some(d)
+        }
         _ => None,
     }
 }
@@ -5863,6 +5974,17 @@ fn slot(arena: &Arena, a: ExprId) -> Slot {
     } else {
         Slot::Finite
     }
+}
+
+/// Is the argument `a` finite as the tables of values read it ([`slot`]):
+/// no `±∞`, `zoo` or `nan` in it, and a number, an argument with symbols
+/// or a constant known finite or with a certified value
+/// ([`finite_argument`])?  The folds of `eval` that hold for every finite
+/// value of one argument when another is special (`Γ(s, ∞) = 0`, `E_ν(∞) =
+/// 0`, `γ(s, 0) = 0`) ask it of that argument: `uppergamma(zoo, ∞)` and
+/// `expint(elliptic_pi(π, 1), ∞)` have no value (up to 0.56 they were 0).
+pub(crate) fn finite_slot(arena: &Arena, a: ExprId) -> bool {
+    slot(arena, a) == Slot::Finite
 }
 
 /// Is the argument `a` (no infinity in it) finite?  A number is, and so is
@@ -6465,8 +6587,9 @@ fn at_infinity(arena: &Arena, f: crate::base::libfn::LibFn, args: &[ExprId]) -> 
             _ => Untabulated,
         },
         LibFn::AssocLegendre => match (s(0), s(1), s(2), num(0), num(1)) {
+            // (`m < −n`: a Ferrers function, not a polynomial; not tabulated.)
             (Slot::Finite, Slot::Finite, Slot::Infinite(t), Some(n), Some(m))
-                if n.is_integer() && !n.is_negative() && m.is_integer() =>
+                if n.is_integer() && !n.is_negative() && m.is_integer() && *m >= -n =>
             {
                 value(assoc_legendre_at_infinity(
                     &n.to_integer(),
