@@ -44,6 +44,16 @@ mod v36_s15h3_integration;
 mod v36_s15h4_constants;
 #[path = "v36/v36_s15h5_float_evidence.rs"]
 mod v36_s15h5_float_evidence;
+#[path = "v36/v36_s15j1_solve.rs"]
+mod v36_s15j1_solve;
+#[path = "v36/v36_s15j2_summation.rs"]
+mod v36_s15j2_summation;
+#[path = "v36/v36_s15j3_evalf.rs"]
+mod v36_s15j3_evalf;
+#[path = "v36/v36_s15j4_float_evidence.rs"]
+mod v36_s15j4_float_evidence;
+#[path = "v36/v36_s15j5_integration.rs"]
+mod v36_s15j5_integration;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
