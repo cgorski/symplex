@@ -8,6 +8,8 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-15
+
 The remaining findings of the 0.51 regression sweeps.  Exact powers with
 huge exponents were truncated to 32 bits (`2^4294967297 − 2` was called
 zero), `evalf`'s route for complex powers left its own rounding out of the
@@ -166,6 +168,36 @@ instead of answered "no solution".
 - `uppergamma(1/2, −∞)` stays unevaluated (it was `√π − i∞`, correct):
   closed forms are no longer evaluated at an infinite argument, where the
   integer-order ones gave `nan`.
+
+### Measured
+
+- `tests/v36/` (0.49–0.52): 33 files.  nextest 14,655 tests (14 skipped),
+  doctests 1,350 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,760 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,013 / 0 wrong / 204 undecided; `--negative-params` 115
+  real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+  MSRV 1.93 passes for all four crates.  `cargo semver-checks` against
+  0.51.0: no semver update required.
+- Golden-output harness (200,000 random expressions × 31 operations):
+  20,105 changes from 0.51, each traced to a fix above and reviewed against
+  mpmath or SymPy (15,503 in `solve`/`solve_set`, of which 14,413 are
+  constants without a proved value now refused; 3,652 from the values at
+  infinity; 614 from `W_k(0) = −∞`; 422 from the Lambert-W inversion);
+  series timeouts at 5 s: 102 → 93.
+- Hunts: huge integer powers 8 wrong + 208 timeouts → 0; complex powers of
+  roots of unity 1,505 wrong → 0; the cut-limit hunter 1,149 → 1,188 of
+  1,188 answered (13 s instead of 28 s); 67 hanging definite integrals of a
+  sweep → 0; the D14 hunt's divergent integrals found 257 → 269 with 4
+  hangs → 0.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s
+  and 4 GB limits, built with debug assertions as CI builds them) on the
+  release code: `fuzz_numdist` 97,634,405 inputs, `fuzz_refine`
+  15,562,573, `fuzz_lambertw` 2,629,018, `fuzz_parser` 1,788,252,
+  `fuzz_exact_matrix` 199,538, `fuzz_eigenvects` 183,881,
+  `fuzz_calculus` 38,548, `fuzz_roundtrip` 35,804, `fuzz_evalf` 28,240,
+  `fuzz_poly` 19,416, `fuzz_simplify` 6,121, `fuzz_integrate` 3,576: 0
+  crashes, 0 timeouts, 0 out-of-memory.
 
 ## [0.51.0] - 2026-10-14
 
