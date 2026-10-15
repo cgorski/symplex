@@ -316,9 +316,14 @@ fn negative_binomial_finite_sum_via_gosper() {
     // hypergeometric ratio of C(k+c, k) is known: (k+c+1)/(k+1).
     // SymPy: [summation(binomial(k+2,k)*Rational(1,2)**k,(k,0,N)) for N in (0,1,4,7)]
     //        = [1, 5/2, 99/16, 121/16]
+    // `n ≥ 0` declared: `C(k + 2, k) = 0` at a negative `k`, so for a plain
+    // `n` the closed form holds for `n ≥ −1` only and comes with that
+    // condition (D12, 0.55).
     let ctx = Context::new();
     let k = ctx.symbol("k");
-    let n = ctx.symbol("n");
+    let n = ctx
+        .symbol_with("n", &[Assumption::Integer, Assumption::NonNegative])
+        .unwrap();
     let half = ctx.rational(1, 2);
     let body = (&k + ctx.int(2)).binomial(&k) * half.pow(&k);
     let s = body.summation(&k, &ctx.int(0), &n);
@@ -391,9 +396,13 @@ fn binomial_theorem_symbolic_n_and_p() {
     // branch (-1/(p - 1))**n*(1 - p)**n = 1;
     //        …*k → n*p*(-1/(p - 1))**(n - 1)*(1 - p)**(n - 1) = n*p;
     //        …*k**2 → n*p*(n*p - p + 1)  (expand: n**2*p**2 - n*p**2 + n*p).
+    // (`n` a non-negative integer, as for the distribution: the identities
+    // hold for `n ≥ 0`, D12.)
     let ctx = Context::new();
     let k = ctx.symbol("k");
-    let n = ctx.symbol("n");
+    let n = ctx
+        .symbol_with("n", &[Assumption::Integer, Assumption::NonNegative])
+        .unwrap();
     let p = ctx.symbol("p");
     let zero = ctx.int(0);
     let pmf = n.binomial(&k) * p.pow(&k) * (ctx.one() - &p).pow(&(&n - &k));

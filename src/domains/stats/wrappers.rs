@@ -7,10 +7,13 @@
 
 use std::fmt;
 
+use num_traits::Signed;
+
 use crate::api::context::Context;
-use crate::api::expr::Ex;
+use crate::api::expr::{BoolEx, Ex, SetEx};
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
+use crate::base::node::{ExprId, ExprNode};
 use crate::base::truth::{SignSet, Truth};
 
 use super::family::{Distribution, Family, Sampler, TailOrders, family_boilerplate};
@@ -984,31 +987,225 @@ fn odd_power_inverse(g: &Ex, x: &Ex, y: &Ex) -> Option<Ex> {
     Some((root - s).simplify())
 }
 
-/// Does `h(g(x₀)) = x₀` hold at a few interior points of `(lo, hi)`?  Ends
-/// or values that do not evaluate leave the check undecided, taken as
-/// passing (the symbolic-parameter case).
-fn inverts_on_support(g: &Ex, x: &Ex, h: &Ex, y: &Ex, lo: &Ex, hi: &Ex) -> bool {
-    let ctx = g.context();
-    let r = |a, b| ctx.rational(a, b);
-    let probes: Vec<Ex> = match (is_neg_inf(lo), is_pos_inf(hi)) {
-        (true, true) => vec![r(-2, 1), r(-1, 2), r(1, 2), r(2, 1)],
-        (false, true) => vec![lo + r(1, 2), lo + r(2, 1)],
-        (true, false) => vec![hi - r(1, 2), hi - r(2, 1)],
-        (false, false) => vec![lo + (hi - lo) * r(1, 4), lo + (hi - lo) * r(3, 4)],
-    };
-    probes.iter().all(|x0| {
-        let Ok(x0v) = x0.eval_f64() else {
-            return true;
-        };
-        let back = h.subs(y, &g.subs(x, x0)).eval();
-        match back.eval_complex64() {
-            Ok(z) => {
-                let err = ((z.re - x0v).powi(2) + z.im.powi(2)).sqrt();
-                err <= 1e-9 * x0v.abs().max(1.0)
-            }
-            Err(_) => true,
+/// Is `h` (an expression in `y`, a root of `g(x) = y` from `solve`) the
+/// inverse of `g` on the whole open support `(lo, hi)`, where `g` is
+/// strictly monotone?  It is when `h` is real and continuous on the image
+/// ([`real_and_continuous_on_image`]) and `h(g(x₀)) = x₀` at one point
+/// ([`inverts_at_a_point`]): the points of the image where `h` agrees with
+/// the inverse are then closed and open in it (a real root of `g = y` near
+/// one in the open support lies in it, and `g` is injective there), and the
+/// image is connected.  Up to 0.54 this was sampled at two to four points
+/// with an `f64` tolerance: the principal `∛(y) + 1/10` passed at `x =
+/// 1/4, 3/4` for `(x − 1/10)³` on `(0, 1)`, and the density came out
+/// complex for `x < 1/10`.
+fn inverse_on_support(g: &Ex, x: &Ex, h: &Ex, y: &Ex, lo: &Ex, hi: &Ex) -> Truth {
+    real_and_continuous_on_image(g, x, h, y, lo, hi).and(inverts_at_a_point(g, x, h, y, lo, hi))
+}
+
+/// What one node of a candidate inverse needs of its argument (in the
+/// image variable) to be real and continuous, or of a subexpression free of
+/// it.
+#[derive(Clone, Copy)]
+enum Need {
+    /// `a ≥ 0` (a power with a positive non-integer exponent).
+    NonNegative,
+    /// `a > 0` (`ln a`; a power with a non-integer or variable exponent).
+    Positive,
+    /// `a ≠ 0` (a negative integer power).
+    NonZero,
+    /// `−1 ≤ a ≤ 1` (`asin`, `acos`).
+    UnitClosed,
+    /// `−1 < a < 1` (`atanh`).
+    UnitOpen,
+    /// `a ≥ 1` (`acosh`).
+    AtLeastOne,
+    /// `a ≥ −1/e` (the principal `W`).
+    LambertW,
+    /// `cos a ≠ 0` (`tan`).
+    TanPole,
+    /// `a^e` with an exponent `e` free of the variable (this id), read by value.
+    ConstantExponent(ExprId),
+    /// A subexpression free of the variable must be real …
+    Real,
+    /// … or positive (the base of a power whose exponent varies).
+    PositiveConstant,
+}
+
+/// The requirements of every node of `h` on the path to `y`, or `None`
+/// when a node is not one whose real line is known here (`Piecewise`,
+/// `floor`, a library function, …: undecided).  Read under the arena's
+/// lock; decided after it is released.
+fn inverse_requirements(h: &Ex, y: &Ex) -> Option<Vec<(ExprId, Need)>> {
+    let inner = h.inner.read();
+    let arena = &inner.arena;
+    let y_id = y.raw_id();
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![h.raw_id()];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
         }
-    })
+        if !crate::base::walk::contains(arena, id, y_id) {
+            out.push((id, Need::Real));
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Symbol(_) => {}
+            ExprNode::Add(cs) | ExprNode::Mul(cs) => stack.extend(cs.iter().copied()),
+            ExprNode::Neg(a)
+            | ExprNode::Exp(a)
+            | ExprNode::Sin(a)
+            | ExprNode::Cos(a)
+            | ExprNode::Sinh(a)
+            | ExprNode::Cosh(a)
+            | ExprNode::Tanh(a)
+            | ExprNode::Atan(a)
+            | ExprNode::Asinh(a)
+            | ExprNode::Abs(a)
+            | ExprNode::Erf(a)
+            | ExprNode::Erfc(a) => stack.push(*a),
+            ExprNode::Ln(a) => {
+                out.push((*a, Need::Positive));
+                stack.push(*a);
+            }
+            ExprNode::Asin(a) | ExprNode::Acos(a) => {
+                out.push((*a, Need::UnitClosed));
+                stack.push(*a);
+            }
+            ExprNode::Atanh(a) => {
+                out.push((*a, Need::UnitOpen));
+                stack.push(*a);
+            }
+            ExprNode::Acosh(a) => {
+                out.push((*a, Need::AtLeastOne));
+                stack.push(*a);
+            }
+            ExprNode::LambertW(a) => {
+                out.push((*a, Need::LambertW));
+                stack.push(*a);
+            }
+            ExprNode::Tan(a) => {
+                out.push((*a, Need::TanPole));
+                stack.push(*a);
+            }
+            ExprNode::Pow(b, e) => {
+                if crate::base::walk::contains(arena, *e, y_id) {
+                    if crate::base::walk::contains(arena, *b, y_id) {
+                        out.push((*b, Need::Positive));
+                        stack.push(*b);
+                    } else {
+                        out.push((*b, Need::PositiveConstant));
+                    }
+                    stack.push(*e);
+                } else {
+                    out.push((*b, Need::ConstantExponent(*e)));
+                    stack.push(*b);
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Is `h` real and continuous on the image of the open support `(lo, hi)`
+/// under `g`?  Each requirement of [`inverse_requirements`] on an argument
+/// `a(y)` is decided at `y = g(x)` over the support by
+/// `reduce_inequalities` (exactly: the set where it fails must be empty);
+/// a subexpression free of `y` must be proved real.  `Unknown` when one is
+/// not decided.
+fn real_and_continuous_on_image(g: &Ex, x: &Ex, h: &Ex, y: &Ex, lo: &Ex, hi: &Ex) -> Truth {
+    let Some(reqs) = inverse_requirements(h, y) else {
+        return Truth::Unknown;
+    };
+    let ctx = g.context();
+    let plain = super::family::fresh_symbol(&ctx, "xr", &[g, h, lo, hi]);
+    let Ok(xr) = ctx.symbol_with(
+        &plain.to_string(),
+        &[crate::base::assumptions::Assumption::Real],
+    ) else {
+        return Truth::Unknown;
+    };
+    let (zero, one) = (ctx.zero(), ctx.one());
+    // `a need 0` for every real x in the support: the set where it fails is empty.
+    let holds = |a: &Ex, need: Need| -> Truth {
+        let ax = a.subs(y, g).subs(x, &xr);
+        let fails = match need {
+            Need::NonNegative => ax.lt(&zero),
+            Need::Positive => ax.le(&zero),
+            Need::NonZero => ax.eq_expr(&zero),
+            _ => return Truth::Unknown,
+        };
+        let empty = |conds: &[BoolEx]| match SetEx::reduce_inequalities(conds, &xr) {
+            Ok(s) => Truth::from(s.is_empty()),
+            Err(_) => Truth::Unknown,
+        };
+        // On the whole line first (the support's ends may be symbolic).
+        if empty(std::slice::from_ref(&fails)).is_true() {
+            return Truth::True;
+        }
+        let mut conds = vec![fails];
+        if !is_neg_inf(lo) {
+            conds.push(xr.gt(lo));
+        }
+        if !is_pos_inf(hi) {
+            conds.push(xr.lt(hi));
+        }
+        empty(&conds)
+    };
+    Truth::all(reqs.into_iter().map(|(id, need)| {
+        let a = h.wrap(id);
+        match need {
+            Need::Real => Truth::from(a.is_real()),
+            Need::PositiveConstant => Truth::from(a.is_positive()),
+            Need::ConstantExponent(e) => match h.wrap(e).as_rational() {
+                Some(q) if q.is_integer() && !q.is_negative() => Truth::True,
+                Some(q) if q.is_integer() => holds(&a, Need::NonZero),
+                Some(q) if q.is_positive() => holds(&a, Need::NonNegative),
+                Some(_) => holds(&a, Need::Positive),
+                None => Truth::from(h.wrap(e).is_real()).and(holds(&a, Need::Positive)),
+            },
+            Need::UnitClosed => {
+                holds(&(&one - &a), Need::NonNegative).and(holds(&(&one + &a), Need::NonNegative))
+            }
+            Need::UnitOpen => {
+                holds(&(&one - &a), Need::Positive).and(holds(&(&one + &a), Need::Positive))
+            }
+            Need::AtLeastOne => holds(&(&a - &one), Need::NonNegative),
+            Need::LambertW => holds(&(&a + (-&one).exp()), Need::NonNegative),
+            Need::TanPole => holds(&a.cos(), Need::NonZero),
+            need => holds(&a, need),
+        }
+    }))
+}
+
+/// Does `h(g(x₀)) = x₀` at one interior point `x₀` of the support?  Proved
+/// exactly when the difference simplifies to 0; otherwise from the
+/// certified value of `h(g(x₀))` (real, `h` being real on the image): a real
+/// root of `g = g(x₀)` other than `x₀` lies outside the support (`g` is
+/// strictly monotone on it), at least as far as the nearer end, so a value
+/// within half that distance of `x₀` is `x₀` and one beyond it is not.  On
+/// the whole line every real root is `x₀`.
+fn inverts_at_a_point(g: &Ex, x: &Ex, h: &Ex, y: &Ex, lo: &Ex, hi: &Ex) -> Truth {
+    let ctx = g.context();
+    let half = ctx.rational(1, 2);
+    let (x0, reach) = match (is_neg_inf(lo), is_pos_inf(hi)) {
+        (true, true) => return Truth::True,
+        (false, true) => (lo + &half, half.clone()),
+        (true, false) => (hi - &half, half.clone()),
+        (false, false) => (lo + (hi - lo) * &half, (hi - lo) * &half),
+    };
+    let diff = (h.subs(y, &g.subs(x, &x0)) - &x0).eval();
+    if Truth::from(diff.simplify().is_zero()).is_true() {
+        return Truth::True;
+    }
+    match (diff.eval_f64(), reach.eval_f64()) {
+        (Ok(d), Ok(r)) if d.is_finite() && r.is_finite() && r > 0.0 => {
+            Truth::from_bool(2.0 * d.abs() < r)
+        }
+        _ => Truth::Unknown,
+    }
 }
 
 /// `a < b`, `a = b` or `a > b` for interval ends (`±∞` included), when
@@ -1238,7 +1435,9 @@ impl Distribution {
     /// change-of-variables formula.  Recognised shapes: an affine `g`
     /// (delegates to [`affine`](Self::affine)); a continuous `X` with a
     /// strictly monotone `g` on the support whose inverse `solve` finds
-    /// (`eˣ`, `ln x`, `1/x` on a positive support, `x³`, …); `X²`, `|X|`
+    /// (`eˣ`, `ln x`, `1/x` on a positive support, `x³`, …) and which is
+    /// proved real and continuous on the whole image (the real root for
+    /// `a(x + s)ⁿ + b` with an odd `n`; otherwise refused); `X²`, `|X|`
     /// and even powers of a continuous `X` (two branches on a support
     /// symmetric about `0`, one on a support to one side of `0`); and a
     /// finite table or finite integer range, whose values are mapped and
@@ -1365,15 +1564,16 @@ impl Distribution {
         });
         // The branch must invert g on the whole support: a principal odd
         // root is complex where its argument is negative, and the real
-        // root takes over there.
+        // root takes over there (`a·(x + s)ⁿ + b` for an odd `n` is injective
+        // on ℝ, so its real root inverts it everywhere).
         let h = match principal {
-            Ok(h) if inverts_on_support(g, x, &h, &y, lo, hi) => h,
+            Ok(h) if inverse_on_support(g, x, &h, &y, lo, hi).is_true() => h,
             principal => match odd_power_inverse(g, x, &y) {
-                Some(h) if inverts_on_support(g, x, &h, &y, lo, hi) => h,
-                _ => {
+                Some(h) => h,
+                None => {
                     let h = principal?;
                     return Err(not_implemented(format!(
-                        "transforming by `{g}`: the inverse `{h}` found is not real on all of {support}"
+                        "transforming by `{g}`: the inverse `{h}` found is not proved real and continuous on the image of {support}, or not to invert the map there"
                     )));
                 }
             },

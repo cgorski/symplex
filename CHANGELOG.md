@@ -8,6 +8,109 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+Finite sums for every integer bound, per-part error bounds for powers and
+exponentials, the float-threshold review of the applied domains, and the
+leftovers of the solver and the integrator.  A finite sum's closed form now
+holds for every integer value of a symbolic bound or comes with its
+condition (`Σ_{k=0}^{n} C(n, k) = 2ⁿ` was `1/2` at `n = −1`; Karr hunt:
+5,111 wrong values → 0), reversed limits follow Karr's convention as SymPy
+does, and a small part of a complex value is no longer lost in the bound of
+a large one (parts dropped at 10 digits 765 → 11 in a hunt).
+
+### Breaking (behaviour)
+
+- **Reversed limits of a finite sum follow Karr's convention (D12).**
+  `Σ_{k=a}^{b} f(k)` with `b < a − 1` is `−Σ_{k=b+1}^{a−1} f(k)` (it was the
+  empty sum 0): `Σ_{k=5}^{2} k = −7`, as in SymPy, in `summation`, `eval` and
+  `eval_decimal`; `b = a − 1` stays the empty sum.  Products keep the empty
+  product `1` for `hi < lo`.
+- **A closed form for a symbolic upper limit holds for every integer value
+  the assumptions allow, or comes with its condition (D12).**
+  `Σ_{k=0}^{n} C(n, k)` was `2ⁿ` for every `n` (`1/2` at `n = −1`, where the
+  sum is empty; SymPy returns `2**n`): now `Piecewise((2ⁿ, n ≥ 0), (Sum,
+  True))` for a plain `n` and `2ⁿ` for `n` declared non-negative; likewise
+  `Σ k·C(n, k)`, `Σ C(n, k)xᵏ = (1 + x)ⁿ`, `Σ_{k=1}^{n} C(n, k) = 2ⁿ − 1`, and
+  Gosper's closed form of a term that vanishes by convention below the lower
+  limit.  `eval` of such a formal `Sum` keeps it; `try_summation` refuses
+  naming the condition.  Antidifferences (Faulhaber, rational functions,
+  telescoping, geometric terms) and Gosper forms checked below the lower
+  limit stay unconditional.  Hunt (4,073 sums × `n = −6…20`, exact partial
+  sums): 5,111 wrong and 655 wrongly undefined values → 0.
+- **Symbols pinned to a value in solving:** a parameter the assumptions pin
+  (`n` even and prime, `z` declared zero) is substituted before solving:
+  `x·(n − 2) = 0` is every `x` (was `[0]`), `(n − 2)x² + x − 1 = 0` gives `[1]`.
+- **A root or constant equation holding an infinity is not claimed:**
+  `x + chebyshev_t(2, y·∞) = 0` gave `[−chebyshev_t(2, y·∞)]` and `x + sin ∞ =
+  0` gave `[−sin ∞]`; `e^{−y·∞} = 0` was "no solution" (0 for `re y > 0`).
+  They are refused unless the expression is known finite.
+- `Distribution::transformed` refuses a map whose inverse is not proved real
+  and continuous on the whole image (`sinh(X + 5)³` for a normal `X`; it gave
+  a complex density).
+
+### Fixed
+
+- **A proved-zero constant factor makes every value a root:** `x·euler_number(5)
+  = 0` and `x·bernoulli(3) = 0` were refused (348 golden cases now "every
+  value", checked by mpmath and DLMF).
+- **Families not linear in `n` in a window are located exactly** (through a
+  chain of monotone steps): `[sin(x²) = 1/2, −7 < x < 7]` gives its 32 roots,
+  `cosh √x = 1/2` gives `{−π²/9}`, `cos(eˣ) = 1/2` its 349 roots in the window
+  (0.54 left them as `ConditionSet`s; 0.53 listed some by extrapolation).
+- An ODE initial-value fit needs a proof that the candidate solves the
+  problem (`W₀(g·eᵍ) = g` for real `g ≥ −1`, or `check_ode_solution`); an
+  undecided candidate is refused.
+- `√x = y` with an imaginary `y` printed the condition `0 > 0 | …`:
+  conditions are simplified.
+- **Each part of a power, an exponential, `sin`, `cos`, `sinh`, `cosh` has
+  its own error bound, and the precision search pursues a part that is 0
+  within its ball.**  `(1 + 10⁻⁴⁵i)²`, `(1 + 10⁻⁴⁵i)^(1/3)`, `2^(10⁻⁴⁵i)`
+  printed `1` at 10 digits; `cos(1 + 10⁻⁵⁰i)` printed `0.5403023059` (it is
+  `0.5403023059 − 8.414709848e-51*i`); `exp(i(π/2 + 10⁻⁴⁵))` printed `i`
+  (`−10⁻⁴⁵ + i`); `Ci(−69·10³⁰π)` printed `3.141592654*i` (`−2.128149205e-65 +
+  3.141592654*i`); `eval_f64` returned the real part of each.  Hunt of 4,000
+  constants next to the axes: parts dropped at 10 digits 765 → 11, real
+  `f64`s returned for non-real values 592 → 6.
+- `ln z` off the positive reals printed wrong digits of a small real part:
+  `ln(1 + 10⁻¹⁵i)` gave `5.00000000000000000000000000063e-31` at 30 digits.
+- A constant with a certified imaginary part below the digits counted as
+  undecided rather than non-real: for a real `x`, `solve_as_set(x − √(2 +
+  e⁻⁹⁰i))` returned that root (now `EmptySet`).
+- `elliptic_pi(n, m)` is evaluated for `m > 1`, `n > 1` (limits from below,
+  as mpmath and SymPy) and for non-real arguments in a half-plane, by
+  Carlson's `R_J` over ℂ (657 new `eval_decimal(30)` values in the golden
+  corpus, 0 wrong); `elliptic_pi(1/2, 2) = 1.532738349 − 2.104133396i`.
+- `besselj(elliptic_k(besseli(0, 0)), ∞)` was built as 0 although `K(1) = ∞`.
+- **Float evidence in the applied domains** (127 comparisons in stats,
+  optimisation, SOS, robotics, quaternions and the code generators
+  classified): `Distribution::transformed` accepted `solve`'s principal
+  inverse after a sampled check: `(X − 1/10)³` for `X ~ Uniform(0, 1)` had the
+  density `−26.457 − 45.824i` at `y = −1/2000` (truly `52.913`); the inverse
+  must now be proved real and continuous on the whole image.  Order
+  statistics of a finite parent ordered values by their `f64`s: the minimum
+  of two draws from `{1 + 10⁻²⁰: ½, 1: ½}` put `3/4` on `1 + 10⁻²⁰` (truly
+  `1/4`).  `Binomial(2⁵³ + 1, p).quantile_f64` was computed for `n = 2⁵³`.
+- **Integration:** `∫₀¹ dx/(e^{(1+10⁻²⁰i)x} − 2)` (`−0.6654466341020272668 −
+  1.5707963267948966192i`), `∫₀¹ dx/(e^{(1+i)x} − 2)` and other rational
+  functions of an exponential with a complex rate were refused: the
+  antiderivative is now continuous on the real line (logarithms rewritten on
+  each side of `|u| = |r|`, joined by an exact `2πi·m`).  Cut crossings of a
+  polynomial argument are located exactly (`∫₋₂¹ ln(x² + (1+i)x − 1) dx`).
+  `Heaviside(cos(…))` integrals at `10¹⁰⁰` took 10–21 s and failed; now ≤ 0.6 s.
+- `series(elliptic_pi(x, m), x, 0, n)` has a rule (`Π(n | m) = Σ nʲJⱼ(m)`):
+  the series that 0.54 made slow (`elliptic_pi(x·y, x + √2)` 6.6 s) answer in
+  under 0.7 s.
+- `is_convergent` agrees with `summation` for a term whose geometric ratio
+  the assumptions bound (`(1/(a + 1))ᵏ` with `a > 0`: `Some(true)`); a ratio
+  written as a division (`/2^k`) takes the same route as `(1/2)^k`.
+
+### Known issues
+
+- Products keep the empty product `1` for `hi < lo` while closed forms of
+  `Π a^{f(k)}` follow Karr's convention (a decision pending).
+- `transformed` refuses `ln x`, `√x`, `x^(1/3)` maps (as in 0.54).
+- Some series of functions of `elliptic_pi` take longer before giving up
+  (`elliptic_e(x)·Ei(elliptic_pi(x, y))` 0.14 → 33 s).
+
 ## [0.54.0] - 2026-10-15
 
 The values of special functions at infinity, symbols pinned to one value,

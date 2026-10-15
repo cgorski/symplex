@@ -2266,7 +2266,9 @@ pub(crate) fn image_set_points_in(
     {
         return Some(Vec::new());
     }
-    let Lattice { step: a, offset: b } = image_linear_parts(arena, var, body)?;
+    let Some(Lattice { step: a, offset: b }) = image_linear_parts(arena, var, body) else {
+        return monotone_members_in(arena, var, body, window);
+    };
     let member = |arena: &mut Arena, k: i64| -> ExprId {
         let kk = arena.int(k);
         let m = crate::transforms::subs::subs(arena, body, var, kk);
@@ -2349,6 +2351,486 @@ pub(crate) fn image_set_points_in(
         }
     }
     Some(points)
+}
+
+/// One step `t ↦ s(t)` of a parametrisation `body = sₘ(…s₁(u)…)` of a
+/// family over a linear `u = a·n + b` ([`monotone_members_in`]).
+#[derive(Clone, Debug)]
+enum Step {
+    /// `c·t + d` for real constants `c ≠ 0`, `d`.
+    Affine { c: ExprId, d: ExprId },
+    /// `tᵏ` for a nonzero integer `k`.
+    IntPow(i64),
+    /// The principal `t^q` for a rational `q` that is not an integer: real
+    /// only for `t ≥ 0` (`arg(t^q) = q·π` for `t < 0`).
+    RatPow(Q),
+    /// `eᵗ`.
+    Exp,
+    /// The principal `ln t`: real only for `t > 0`.
+    Ln,
+}
+
+impl Step {
+    /// Is `s(t)` real for every real `t` where it is defined?
+    fn real_on_the_line(&self) -> bool {
+        !matches!(self, Step::RatPow(_) | Step::Ln)
+    }
+
+    /// Is `s(z)` non-real for every non-real `z` (where defined)?  So that a
+    /// value left non-real by an inner step never becomes real again:
+    /// `ln`, `1/z`, `z^q` for `|q| < 1` and real affine maps; not `z²`
+    /// (`(√−1)² = −1`), not `eᶻ` (`e^{iπ} = −1`).
+    fn keeps_non_real(&self) -> bool {
+        match self {
+            Step::Affine { .. } | Step::Ln => true,
+            Step::IntPow(k) => *k == -1,
+            Step::RatPow(q) => q.abs() < Q::from_integer(1.into()),
+            Step::Exp => false,
+        }
+    }
+}
+
+/// Most steps of a parametrisation [`monotone_members_in`] follows.
+const MAX_PARAMETRISATION_STEPS: usize = 8;
+
+/// The sign of the real constant `e`, one of `NEGATIVE`, `ZERO`, `POSITIVE`
+/// (the end of an interval `±∞` counts as the side of 0 it lies on): exact
+/// for a number, else from a certified value whose imaginary part is
+/// exactly 0
+/// ([`imaginary_part_sign`](crate::transforms::realness::imaginary_part_sign));
+/// `None` when it is not decided.
+fn decided_sign(arena: &mut Arena, e: ExprId) -> Option<crate::base::truth::SignSet> {
+    use crate::base::truth::SignSet;
+    use crate::transforms::evalf::{Settled, ZeroSearch};
+    if e == arena.infinity {
+        return Some(SignSet::POSITIVE);
+    }
+    if e == arena.neg_infinity {
+        return Some(SignSet::NEGATIVE);
+    }
+    if let Some(r) = arena.as_num(e) {
+        return Some(SignSet::from_ordering(r.cmp(&Q::zero())));
+    }
+    if !crate::base::walk::free_symbols(arena, e).is_empty()
+        || crate::transforms::realness::imaginary_part_sign(arena, e) != SignSet::ZERO
+    {
+        return None;
+    }
+    match crate::transforms::evalf::evalf_settled(arena, e, 20, ZeroSearch::Cap) {
+        Ok((z, Settled::Certified)) => Some(if z.0.is_zero() {
+            SignSet::ZERO
+        } else if crate::base::bigfloat::is_strictly_positive(&z.0) {
+            SignSet::POSITIVE
+        } else {
+            SignSet::NEGATIVE
+        }),
+        _ => None,
+    }
+}
+
+/// `body = sₘ(…s₁(u)…)` over a linear `u = a·var + b` (the steps
+/// outermost first, see [`Step`]), each step's constants real.  `None`
+/// when `body` is not such a chain.
+fn parametrisation(arena: &mut Arena, var: ExprId, body: ExprId) -> Option<(Vec<Step>, Lattice)> {
+    use crate::base::walk::has_free_var;
+    use crate::transforms::eval::eval;
+    let real = |arena: &mut Arena, c: ExprId| {
+        crate::transforms::realness::imaginary_part_sign(arena, c)
+            == crate::base::truth::SignSet::ZERO
+    };
+    let mut steps = Vec::new();
+    let mut cur = body;
+    loop {
+        if let Some(lattice) = image_linear_parts(arena, var, cur) {
+            return Some((steps, lattice));
+        }
+        if steps.len() >= MAX_PARAMETRISATION_STEPS {
+            return None;
+        }
+        let step = match arena.node(cur).clone() {
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => {
+                let is_add = matches!(arena.node(cur), ExprNode::Add(_));
+                let (inner, outer): (Vec<ExprId>, Vec<ExprId>) =
+                    ch.iter().partition(|&&t| has_free_var(arena, t, var));
+                let [inner] = inner[..] else {
+                    return None;
+                };
+                cur = inner;
+                let rest = if is_add {
+                    arena.add(&outer)
+                } else {
+                    arena.mul(&outer)
+                };
+                let rest = eval(arena, rest);
+                if !real(arena, rest) {
+                    return None;
+                }
+                if is_add {
+                    Step::Affine {
+                        c: arena.one,
+                        d: rest,
+                    }
+                } else {
+                    match decided_sign(arena, rest) {
+                        Some(s) if s != crate::base::truth::SignSet::ZERO => Step::Affine {
+                            c: rest,
+                            d: arena.zero,
+                        },
+                        _ => return None,
+                    }
+                }
+            }
+            ExprNode::Pow(base, e) => {
+                let q = arena.as_num(e)?.clone();
+                cur = base;
+                if q.is_integer() {
+                    Step::IntPow(q.to_integer().to_i64()?)
+                } else {
+                    Step::RatPow(q)
+                }
+            }
+            ExprNode::Exp(arg) => {
+                cur = arg;
+                Step::Exp
+            }
+            ExprNode::Ln(arg) => {
+                cur = arg;
+                Step::Ln
+            }
+            _ => return None,
+        };
+        steps.push(step);
+    }
+}
+
+/// The preimage of the closed interval `[lo, hi]` (ends real constants or
+/// `±∞`, `lo ≤ hi`) under `step` within the real `t` where `step(t)` is
+/// real, as closed intervals (a superset at the ends is harmless: the
+/// members found are cut to the window exactly).  `None` when an end's sign
+/// is not decided.
+fn step_preimage(
+    arena: &mut Arena,
+    step: &Step,
+    lo: ExprId,
+    hi: ExprId,
+) -> Option<Vec<(ExprId, ExprId)>> {
+    use crate::transforms::eval::eval;
+    const NEG: crate::base::truth::SignSet = crate::base::truth::SignSet::NEGATIVE;
+    const POS: crate::base::truth::SignSet = crate::base::truth::SignSet::POSITIVE;
+    let (zero, inf, ninf) = (arena.zero, arena.infinity, arena.neg_infinity);
+    // `e^(1/k)` of an end `e ≥ 0` (`∞` stays)
+    let root = |arena: &mut Arena, e: ExprId, k: &Q| -> ExprId {
+        if e == inf {
+            return inf;
+        }
+        let r = arena.num_ratio(k.recip());
+        let p = arena.pow(e, r);
+        eval(arena, p)
+    };
+    let positive_part = |arena: &mut Arena| -> Option<Option<(ExprId, ExprId)>> {
+        if decided_sign(arena, hi)? == NEG {
+            return Some(None);
+        }
+        let lo = if decided_sign(arena, lo)? == NEG {
+            zero
+        } else {
+            lo
+        };
+        Some(Some((lo, hi)))
+    };
+    Some(match step.clone() {
+        Step::Affine { c, d } => {
+            let map = |arena: &mut Arena, e: ExprId| -> ExprId {
+                if e == inf || e == ninf {
+                    return e;
+                }
+                let s = arena.sub(e, d);
+                let q = arena.div(s, c);
+                eval(arena, q)
+            };
+            let (a, b) = (map(arena, lo), map(arena, hi));
+            match decided_sign(arena, c)? {
+                s if s == POS => vec![(a, b)],
+                _ => {
+                    let flip = |e: ExprId| match e {
+                        e if e == inf => ninf,
+                        e if e == ninf => inf,
+                        e => e,
+                    };
+                    vec![(flip(b), flip(a))]
+                }
+            }
+        }
+        Step::IntPow(k) if k > 0 && k % 2 == 0 => {
+            let Some((a, b)) = positive_part(arena)? else {
+                return Some(Vec::new());
+            };
+            let k = Q::from_integer(k.into());
+            let (ra, rb) = (root(arena, a, &k), root(arena, b, &k));
+            let neg = |arena: &mut Arena, e: ExprId| -> ExprId {
+                if e == inf {
+                    ninf
+                } else {
+                    let n = arena.neg(e);
+                    eval(arena, n)
+                }
+            };
+            let (na, nb) = (neg(arena, ra), neg(arena, rb));
+            vec![(nb, na), (ra, rb)]
+        }
+        Step::IntPow(k) if k > 0 => {
+            // odd: the real root, increasing on the line
+            let k = Q::from_integer(k.into());
+            let real_root = |arena: &mut Arena, e: ExprId| -> Option<ExprId> {
+                if e == ninf {
+                    return Some(ninf);
+                }
+                if decided_sign(arena, e)? == NEG {
+                    let m = arena.neg(e);
+                    let m = eval(arena, m);
+                    let r = root(arena, m, &k);
+                    let r = arena.neg(r);
+                    Some(eval(arena, r))
+                } else {
+                    Some(root(arena, e, &k))
+                }
+            };
+            vec![(real_root(arena, lo)?, real_root(arena, hi)?)]
+        }
+        Step::IntPow(k) => {
+            // `tᵏ = 1/t^|k|`: the reciprocal, then the positive power
+            let recip = |arena: &mut Arena, e: ExprId| -> ExprId {
+                if e == inf || e == ninf {
+                    return zero;
+                }
+                let one = arena.one;
+                let r = arena.div(one, e);
+                eval(arena, r)
+            };
+            let (slo, shi) = (decided_sign(arena, lo)?, decided_sign(arena, hi)?);
+            let mut pieces = Vec::new();
+            if shi == POS {
+                let upper = if slo == POS { recip(arena, lo) } else { inf };
+                pieces.push((recip(arena, hi), upper));
+            }
+            if slo == NEG {
+                let lower = if shi == NEG { recip(arena, hi) } else { ninf };
+                pieces.push((lower, recip(arena, lo)));
+            }
+            let mut out = Vec::new();
+            for (a, b) in pieces {
+                out.extend(step_preimage(arena, &Step::IntPow(-k), a, b)?);
+            }
+            out
+        }
+        Step::RatPow(q) => {
+            let Some((a, b)) = positive_part(arena)? else {
+                return Some(Vec::new());
+            };
+            if q.is_positive() {
+                vec![(root(arena, a, &q), root(arena, b, &q))]
+            } else {
+                // decreasing on (0, ∞); `0^(1/q) = ∞`, `∞^(1/q) = 0`
+                let upper = if decided_sign(arena, a)? == crate::base::truth::SignSet::ZERO {
+                    inf
+                } else {
+                    root(arena, a, &q)
+                };
+                let lower = if b == inf { zero } else { root(arena, b, &q) };
+                vec![(lower, upper)]
+            }
+        }
+        Step::Exp => {
+            if decided_sign(arena, hi)? != POS {
+                return Some(Vec::new());
+            }
+            let ln = |arena: &mut Arena, e: ExprId| -> ExprId {
+                if e == inf {
+                    return inf;
+                }
+                let l = arena.ln(e);
+                eval(arena, l)
+            };
+            let a = if decided_sign(arena, lo)? == POS {
+                ln(arena, lo)
+            } else {
+                ninf
+            };
+            vec![(a, ln(arena, hi))]
+        }
+        Step::Ln => {
+            let exp = |arena: &mut Arena, e: ExprId| -> ExprId {
+                if e == inf {
+                    return inf;
+                }
+                if e == ninf {
+                    return zero;
+                }
+                let x = arena.exp(e);
+                eval(arena, x)
+            };
+            vec![(exp(arena, lo), exp(arena, hi))]
+        }
+    })
+}
+
+/// The real members in the window of a family `{body : var ∈ ℤ}` that is
+/// not linear in `var` but a chain of monotone pieces over a linear
+/// `u = a·n + b` ([`parametrisation`]: real affine maps, integer and
+/// rational powers, `exp`, `ln`): the window is pulled back step by step
+/// (each step's inverse on the part of the line where it is real and
+/// monotone, `t²` in two pieces), and the members are those of `u` in the
+/// pulled-back intervals, from the exact index range of each
+/// ([`lattice_indices`](crate::transforms::solve::lattice_indices)).  `u` is
+/// real, or `u = i·v` with `v` real under an even power (`(2nπi + πi)² =
+/// −(2nπ + π)²`).  A step that is real only on part of the line (`ln`, a
+/// non-integer power) may be followed only by steps that keep non-real
+/// values non-real, so that no real member comes from outside the
+/// pulled-back intervals.  Each member's realness is decided
+/// ([`imaginary_part_sign`](crate::transforms::realness::imaginary_part_sign)).
+/// `None` when the family is not such a chain, a sign is not decided, or
+/// the index range is unbounded or longer than [`MAX_IMAGE_MEMBERS`].
+///
+/// Up to 0.53 such families were located by a linear extrapolation from two
+/// members in `f64` (`reduce_inequalities([sin(x²) = 1/2, −7 < x < 7])`
+/// listed 24 of its 32 roots); 0.54 left them as the `ConditionSet` (`e^{√x}
+/// = −1`, `cosh √x = 1/2`, `sin(x²) = 1/2` in `(−7, 7)`).
+fn monotone_members_in(
+    arena: &mut Arena,
+    var: ExprId,
+    body: ExprId,
+    window: Window,
+) -> Option<Vec<ExprId>> {
+    use crate::base::truth::SignSet;
+    use crate::transforms::eval::eval;
+    if !window.is_bounded() {
+        return None;
+    }
+    let (mut steps, Lattice { step: a, offset: b }) = parametrisation(arena, var, body)?;
+    let real = |arena: &mut Arena, c: ExprId| {
+        crate::transforms::realness::imaginary_part_sign(arena, c) == SignSet::ZERO
+    };
+    let (a, b) = if real(arena, a) && real(arena, b) {
+        (a, b)
+    } else {
+        // `u = i·v`, `v = −i·u` real, under an even power `uᵏ = (−1)^(k/2)·vᵏ`
+        let i = arena.i_unit;
+        let mi = arena.neg(i);
+        let va = arena.mul(&[mi, a]);
+        let va = eval(arena, va);
+        let vb = arena.mul(&[mi, b]);
+        let vb = eval(arena, vb);
+        let Some(&Step::IntPow(k)) = steps.last() else {
+            return None;
+        };
+        if k % 2 != 0 || !real(arena, va) || !real(arena, vb) {
+            return None;
+        }
+        let sign = if k % 4 == 0 { arena.one } else { arena.neg_one };
+        let last = steps.len() - 1;
+        steps.insert(
+            last,
+            Step::Affine {
+                c: sign,
+                d: arena.zero,
+            },
+        );
+        (va, vb)
+    };
+    // innermost first: once a step is real only on part of the line, every
+    // later one must keep non-real values non-real
+    let mut partial = false;
+    for s in steps.iter().rev() {
+        if partial && !s.keeps_non_real() {
+            return None;
+        }
+        partial |= !s.real_on_the_line();
+    }
+    let mut pieces = vec![(window.lo, window.hi)];
+    for s in &steps {
+        let mut next = Vec::new();
+        for (lo, hi) in pieces {
+            next.extend(step_preimage(arena, s, lo, hi)?);
+        }
+        pieces = next;
+    }
+    let mut indices: Vec<num_bigint::BigInt> = Vec::new();
+    for (lo, hi) in pieces {
+        for k in crate::transforms::solve::lattice_indices(arena, b, a, lo, hi, MAX_IMAGE_MEMBERS)?
+        {
+            if !indices.contains(&k) {
+                indices.push(k);
+            }
+        }
+        if indices.len() > MAX_IMAGE_MEMBERS {
+            return None;
+        }
+    }
+    indices.sort();
+    let mut points = Vec::new();
+    for k in indices {
+        let kk = arena.big_int(k);
+        let m = crate::transforms::subs::subs(arena, body, var, kk);
+        let m = eval(arena, m);
+        let m = even_powers_normalised(arena, m);
+        // (a pole of the family, `1/(2nπ)` at `n = 0`, is no member)
+        if matches!(
+            arena.node(m),
+            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
+        ) {
+            continue;
+        }
+        match crate::transforms::realness::imaginary_part_sign(arena, m) {
+            SignSet::ZERO => {}
+            s if s.is_nonzero().is_true() => continue,
+            _ => return None,
+        }
+        let x = approx_real_f64(arena, m)?;
+        if window.may_contain(x) && !points.contains(&m) {
+            points.push(m);
+        }
+    }
+    Some(points)
+}
+
+/// `m` with each even power `B²ʲ` written over whichever of `B`, `−B` comes
+/// first in the canonical order, so that one value has one form: the
+/// members `(2π − acos(1/3))²` and `(acos(1/3) − 2π)²` of the two families
+/// of `cos √x = 1/3` are one point, which the sets of members must not hold
+/// twice (two forms of one value cannot be ordered, and the window's set
+/// stayed an unevaluated intersection).
+fn even_powers_normalised(arena: &mut Arena, m: ExprId) -> ExprId {
+    let post = crate::base::walk::post_order_ids(arena, m);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match *arena.node(rebuilt) {
+            ExprNode::Pow(b, e)
+                if arena.as_num(e).is_some_and(|q| {
+                    q.is_integer() && num_integer::Integer::is_even(&q.to_integer())
+                }) =>
+            {
+                let nb = arena.neg(b);
+                let nb = crate::transforms::eval::eval(arena, nb);
+                if arena.canonical_cmp(nb, b) == Ordering::Less {
+                    changed = true;
+                    arena.pow(nb, e)
+                } else {
+                    rebuilt
+                }
+            }
+            _ => rebuilt,
+        };
+        if new != id {
+            cache.insert(id, new);
+        }
+    }
+    if !changed {
+        return m;
+    }
+    let out = cache.get(&m).copied().unwrap_or(m);
+    crate::transforms::eval::eval(arena, out)
 }
 
 /// Is the constant `e` certainly nonzero (`Some(true)`), certainly zero

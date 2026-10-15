@@ -277,7 +277,10 @@ pub(crate) fn solve_general_over_c(
 /// may still succeed by another strategy.  (Up to 0.48 the thread-local
 /// flag `PERIOD_CONFLICT`, reset and restored around each general solve.)
 /// The roots of a general solve come back as [`RootSet::Families`].
+/// Parameters pinned to a value by their assumptions are that value
+/// ([`with_pinned_parameters`]).
 fn solve_impl(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Solutions {
+    let expr = with_pinned_parameters(arena, expr, var);
     let outcome = solve_impl_checked(arena, expr, var, cx);
     if outcome.is_nested_periods() {
         return Solutions::refused(Reason::said(Reason::NestedPeriods.text()));
@@ -320,6 +323,40 @@ fn without_congruent_families(arena: &mut Arena, outcome: Solutions) -> Solution
         None => Solutions::Complete(set),
         Some(m) => Solutions::Partial(set, m),
     }
+}
+
+/// `expr` with every parameter (a free symbol other than `var`) whose
+/// assumptions pin it to one value
+/// ([`Assumptions::pinned_value`](crate::base::assumptions::Assumptions::pinned_value):
+/// `0` for `zero`, `2` for an even prime, `1` for a positive integer neither
+/// prime nor composite) replaced by that value.  A factor or a coefficient
+/// in such parameters is then decided like a number: up to 0.54
+/// `solve(x·(n − 2), x)` for an even prime `n` and `solve(x·z, x)` for a `z`
+/// declared zero gave `[0]` (every `x` is a root: the factor is 0, which the
+/// product rule took as nonzero by the generic convention), `solve(n − 2,
+/// x)` and `solve(z·eˣ, x)` "no solution", and `(n − 2)·x² + x − 1` lost
+/// its root `1` to the quadratic formula over a leading coefficient 0.
+/// The unknown keeps its name (its own pinned value is its domain's one
+/// point, which the declared-domain check keeps).  `expr` itself when no
+/// parameter is pinned or when it has a binder (whose bound variable a
+/// substitution could capture).
+fn with_pinned_parameters(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    if arena.free_symbol_mask(expr) == 0 || arena.facts(expr).has_binder() {
+        return expr;
+    }
+    let mut out = expr;
+    for s in crate::base::walk::free_symbols(arena, expr) {
+        if s == var {
+            continue;
+        }
+        if let ExprNode::Symbol(sid) = *arena.node(s)
+            && let Some(v) = arena.symbol_assumptions(sid).pinned_value()
+        {
+            let value = arena.int(v);
+            out = crate::transforms::subs::subs(arena, out, s, value);
+        }
+    }
+    out
 }
 
 /// Is `(a − b)/d` an integer?
@@ -488,7 +525,9 @@ fn without_guarded_non_roots(
     outcome: Solutions,
     cx: &SolveCx,
 ) -> Solutions {
-    let check = |arena: &mut Arena, groups: Vec<Guarded>| -> Vec<Guarded> {
+    // (`None`: a root with an infinity inside a function, not known finite,
+    // which no condition makes a claim: the outcome is refused)
+    let check = |arena: &mut Arena, groups: Vec<Guarded>| -> Option<Vec<Guarded>> {
         let mut out = Vec::with_capacity(groups.len());
         for g in groups {
             let roots = match g.roots {
@@ -498,6 +537,9 @@ fn without_guarded_non_roots(
                         // (evaluated as `finalize_solutions` does the others:
                         // `−e^{ln y}/3` is `−y/3`)
                         let r = crate::transforms::eval::eval(arena, r);
+                        if not_known_finite(arena, r) {
+                            return None;
+                        }
                         if !kept.contains(&r)
                             && !part_at_a_pole(arena, expr, var, r)
                             && !certainly_not_a_root(arena, expr, var, r)
@@ -517,11 +559,18 @@ fn without_guarded_non_roots(
                 roots,
             });
         }
-        out
+        Some(out)
+    };
+    let not_finite = || {
+        Solutions::refused(Reason::said(
+            "a conditional root holds an infinity inside a function and is not known to be finite",
+        ))
     };
     match outcome {
         Solutions::Refused(Reason::Conditional(groups)) => {
-            let groups = check(arena, groups);
+            let Some(groups) = check(arena, groups) else {
+                return not_finite();
+            };
             // (a proof only without periodic functions, whose principal
             // candidates are not all the roots: `tan(x^y)/C(x)` at `x = √π`)
             if groups.is_empty() && has_periodic_atom(arena, expr, var, cx) {
@@ -537,7 +586,13 @@ fn without_guarded_non_roots(
             }
         }
         Solutions::Partial(set, Missing::Alternative(Reason::Conditional(groups))) => {
-            let groups = check(arena, groups);
+            let Some(groups) = check(arena, groups) else {
+                let unknown = Missing::Alternative(Reason::said(
+                    "a conditional root holds an infinity inside a function and is not known to be \
+                     finite",
+                ));
+                return Solutions::Partial(set, unknown);
+            };
             if groups.is_empty() {
                 Solutions::Complete(set)
             } else {
@@ -627,6 +682,7 @@ fn raw_families(
     cx: &SolveCx,
     partial_ok: bool,
 ) -> Option<PeriodicCandidates> {
+    let expr = with_pinned_parameters(arena, expr, var);
     let n = branch_parameter(arena, &[expr, var]);
     // As in `solve_impl`: the families of a general solve, refused when
     // they nest periodic families ([`Reason::NestedPeriods`]); partial
@@ -805,6 +861,85 @@ fn residual_at(arena: &mut Arena, expr: ExprId, var: ExprId, candidate: ExprId) 
             unless_a_pole(arena, r)
         }
     }
+}
+
+/// May a denominator of `f` vanish on a set of positive measure: a power
+/// with a negative or symbolic exponent whose base holds `var` and a
+/// function that is 0 on whole intervals (`δ`, `H`, `⌊·⌋`, `⌈·⌉`, `min`,
+/// `max`, the Kronecker `δ`, a piecewise function; `re`, `im`, `arg`, the
+/// conjugate on parts of the line)?  An analytic base not identically 0, and
+/// its modulus or sign, vanishes only at isolated points (the generic
+/// convention's poles).
+fn denominator_vanishes_on_intervals(arena: &Arena, f: ExprId, var: ExprId) -> bool {
+    let piecewise = |arena: &Arena, b: ExprId| {
+        crate::base::walk::post_order_ids(arena, b)
+            .into_iter()
+            .any(|id| {
+                matches!(
+                    arena.node(id),
+                    ExprNode::DiracDelta(_)
+                        | ExprNode::Heaviside(_)
+                        | ExprNode::Floor(_)
+                        | ExprNode::Ceiling(_)
+                        | ExprNode::Min(_)
+                        | ExprNode::Max(_)
+                        | ExprNode::Re(_)
+                        | ExprNode::Im(_)
+                        | ExprNode::Arg(_)
+                        | ExprNode::Conjugate(_)
+                        | ExprNode::KroneckerDelta(..)
+                        | ExprNode::Piecewise(..)
+                )
+            })
+    };
+    crate::base::walk::post_order_ids(arena, f)
+        .into_iter()
+        .any(|id| match *arena.node(id) {
+            ExprNode::Pow(b, e) => {
+                !arena.as_num(e).is_some_and(|q| !q.is_negative())
+                    && expr_contains_var(arena, b, var)
+                    && piecewise(arena, b)
+            }
+            _ => false,
+        })
+}
+
+/// Does `v` hold `∞`, `−∞`, `zoo` or `nan` outside the formal integrals,
+/// sums, products and limits (whose bounds they may be)?  Unlike
+/// [`has_infinite_term`] it looks inside function arguments:
+/// `chebyshev_t(2, y·∞)`, `Γ(y·∞)`, `sin ∞`.
+fn holds_infinity(arena: &Arena, v: ExprId) -> bool {
+    let mut stack = vec![v];
+    while let Some(e) = stack.pop() {
+        match arena.node(e) {
+            ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity
+            | ExprNode::NaN => return true,
+            ExprNode::Integral(..)
+            | ExprNode::DefiniteIntegral(..)
+            | ExprNode::Limit(..)
+            | ExprNode::Sum(..)
+            | ExprNode::Product_(..)
+            | ExprNode::Series(..) => {}
+            _ => stack.extend(arena.children(e)),
+        }
+    }
+    false
+}
+
+/// Is `v` (evaluated) a value that holds an infinity inside a function
+/// argument ([`holds_infinity`]) and is not known to be finite?  Such a
+/// value is no number the solver can claim: `−chebyshev_t(2, y·∞)` is `−∞`
+/// for every real `y ≠ 0` and undefined at `y = 0`, `−sin ∞` has no value.
+/// The value `eval` folds (`atan ∞ = π/2`, `e^{−y·∞} = 0` for a positive
+/// `y`) has no infinity left.
+fn not_known_finite(arena: &mut Arena, v: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    holds_infinity(arena, v)
+        && !AssumptionCache::new()
+            .query_public(arena, v, Props::FINITE)
+            .is_true()
 }
 
 /// Does the value `at` hold `∞`, `−∞`, `zoo` or `nan`?
@@ -1323,27 +1458,61 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Solu
         // so): neither has the product (`(e^(x/2) + 1)·(e^(x/2) + 2)`; refused
         // before 0.44).  A factor that vanishes identically makes every
         // value a root.
+        // Constant factors: the canonicalizer already folds literal zeros,
+        // and a factor with parameters is taken nonzero (the generic
+        // convention; parameters pinned to a value are substituted by
+        // `solve_impl`).  A symbol-free one, and one with `±∞`, `zoo` or
+        // `nan` inside (`e^{−y·∞}` is 0 for every `y > 0`: no generic
+        // value), must be decided: proved nonzero, the other factors' roots
+        // are the roots; proved 0 (`euler_number(5)`), every value is a root
+        // (refused up to 0.54); without a value (`δ(i)`) or with an
+        // undecided zero test the product is undefined or undecided at every
+        // point (up to 0.52 `δ(i)·x = 0` gave `[0]`), whatever the other
+        // factors.  (The crate's root searches take candidates: there a
+        // factor stays taken nonzero, as before.)
+        if !cx.conditional_roots_as_candidates() {
+            let mut vanishing = false;
+            // (a factor with an infinity in it makes a vanishing one `0·∞`,
+            // undefined: `(x + ∞)·euler_number(5)` has no root)
+            // (and one with a denominator that vanishes on intervals is
+            // undefined there: `x/δ(x)·stirling2(0, 8)` is undefined for every
+            // `x`, not 0)
+            let mut infinite_part = false;
+            for &child in children {
+                infinite_part |= holds_infinity(arena, child)
+                    || (expr_contains_var(arena, child, var)
+                        && denominator_vanishes_on_intervals(arena, child, var));
+                if expr_contains_var(arena, child, var)
+                    || arena.as_num(child).is_some()
+                    || (!crate::base::walk::free_symbols(arena, child).is_empty()
+                        && !holds_infinity(arena, child))
+                {
+                    continue;
+                }
+                match classify_constant(arena, child, var) {
+                    Solutions::Complete(RootSet::All) => vanishing = true,
+                    c if c.is_none_proved() => {}
+                    _ => {
+                        return Solutions::refused(Reason::said(format!(
+                            "cannot decide whether the constant factor {} is nonzero (or has a value)",
+                            arena.display(child)
+                        )));
+                    }
+                }
+            }
+            if vanishing && infinite_part {
+                return Solutions::refused(Reason::said(
+                    "a constant factor is 0 and another factor holds an infinity or a denominator \
+                     that may vanish on intervals (0·∞ is undefined)",
+                ));
+            }
+            if vanishing {
+                return Solutions::Complete(RootSet::All);
+            }
+        }
         let mut product = Solutions::none(Reason::said("no factor of the product has a solution"));
         for &child in children {
             if !expr_contains_var(arena, child, var) {
-                // Constant factor: the canonicalizer already folds literal
-                // zeros, and a factor with parameters is taken nonzero (the
-                // generic convention).  A symbol-free one must be proved
-                // nonzero: one without a value (`δ(i)`) or with an undecided
-                // zero test leaves the product undefined or undecided at
-                // every point (up to 0.52 `δ(i)·x = 0` gave `[0]`).
-                // (The crate's root searches take candidates: there a
-                // factor stays taken nonzero, as before.)
-                if !cx.conditional_roots_as_candidates()
-                    && crate::base::walk::free_symbols(arena, child).is_empty()
-                    && arena.as_num(child).is_none()
-                    && !classify_constant(arena, child, var).is_none_proved()
-                {
-                    return Solutions::refused(Reason::said(format!(
-                        "cannot decide whether the constant factor {} is nonzero (or has a value)",
-                        arena.display(child)
-                    )));
-                }
                 continue;
             }
             let outcome = match polybridge::expr_to_poly(arena, child, var) {
@@ -1656,6 +1825,120 @@ fn lambert_argument(arena: &Arena, w: ExprId) -> Option<ExprId> {
     }
 }
 
+/// `e` with each Lambert W value `W₀(z)` or `W₋₁(z)` at a constant `z = g·e^g`
+/// replaced by `g`, for a real `g` in the range of the branch (`g ≥ −1` for
+/// `W₀`, `g ≤ −1` for `W₋₁`, DLMF 4.13): `W(e) = 1`, `W(e^{3 + e³}) = e³`,
+/// `W(2·ln 2) = ln 2`.  The candidates `g` are the factors of `z` and the
+/// terms of the exponent of an exponential factor of it; `z·e^{−g} − g`
+/// (with `e^{−g}` taken into that exponential) must be proved 0
+/// ([`constant_zero_decision`](crate::transforms::eval::constant_zero_decision)),
+/// `g` proved real and on the side of `−1` the branch takes.  `None` when
+/// nothing is replaced.  For the check of a fitted initial-value solution,
+/// whose residual at the initial point holds such values (`C1 − W(e^{C1}) =
+/// 3` gives `C1 = 3 + e³`, and the residual `e³ − W(e^{3 + e³})`).
+pub(crate) fn lambert_values(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
+    use crate::base::truth::{SignSet, Truth};
+    // (branch, argument) of a W node with a symbol-free argument
+    let branch_of = |arena: &Arena, w: ExprId| -> Option<(i8, ExprId)> {
+        let (k, z) = match arena.node(w) {
+            ExprNode::LambertW(z) => (0, *z),
+            ExprNode::Lib(crate::base::libfn::LibFn::LambertW, args) => match args[..] {
+                [z] => (0, z),
+                [z, k] if k == arena.zero => (0, z),
+                [z, k] if k == arena.neg_one => (-1, z),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        crate::base::walk::free_symbols(arena, z)
+            .is_empty()
+            .then_some((k, z))
+    };
+    let value = |arena: &mut Arena, k: i8, z: ExprId| -> Option<ExprId> {
+        let factors: Vec<ExprId> = match arena.node(z) {
+            ExprNode::Mul(c) => c.to_vec(),
+            _ => vec![z],
+        };
+        let mut candidates: Vec<ExprId> = Vec::new();
+        for &f in &factors {
+            if let ExprNode::Exp(s) = *arena.node(f) {
+                match arena.node(s) {
+                    ExprNode::Add(terms) => candidates.extend(terms.iter().copied()),
+                    _ => candidates.push(s),
+                }
+            } else if f == arena.e_const {
+                candidates.push(arena.one);
+            } else if arena.as_num(f).is_none() {
+                candidates.push(f);
+            }
+        }
+        for g in candidates {
+            // `z·e^{−g} = g`, the `e^{−g}` taken into the first exponential
+            // factor of `z` (`e^{1 + e}·e^{−e} = e`, which the zero tests do not
+            // combine with the atom `e`)
+            let mut quotient: Vec<ExprId> = Vec::with_capacity(factors.len() + 1);
+            let mut absorbed = false;
+            for &f in &factors {
+                match *arena.node(f) {
+                    ExprNode::Exp(s) if !absorbed => {
+                        absorbed = true;
+                        let d = arena.sub(s, g);
+                        quotient.push(arena.exp(d));
+                    }
+                    _ => quotient.push(f),
+                }
+            }
+            if !absorbed {
+                let mg = arena.neg(g);
+                quotient.push(arena.exp(mg));
+            }
+            let q = arena.mul(&quotient);
+            let d = arena.sub(q, g);
+            let d = crate::transforms::eval::eval(arena, d);
+            let zero = arena.is_zero_structural(d)
+                || Truth::from(crate::transforms::eval::constant_zero_decision(arena, d)).is_true();
+            if !zero || crate::transforms::realness::imaginary_part_sign(arena, g) != SignSet::ZERO
+            {
+                continue;
+            }
+            let one = arena.one;
+            let shifted = arena.add(&[g, one]);
+            let side = part_signs(arena, shifted);
+            if side.im == SignSet::ZERO
+                && ((k == 0 && side.re.is_subset(SignSet::NONNEGATIVE))
+                    || (k == -1 && side.re.is_subset(SignSet::NONPOSITIVE)))
+            {
+                return Some(g);
+            }
+        }
+        None
+    };
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match branch_of(arena, rebuilt) {
+            Some((k, z)) => match value(arena, k, z) {
+                Some(g) => {
+                    changed = true;
+                    g
+                }
+                None => rebuilt,
+            },
+            None => rebuilt,
+        };
+        if new != id {
+            cache.insert(id, new);
+        }
+    }
+    if !changed {
+        return None;
+    }
+    let out = cache.get(&e).copied().unwrap_or(e);
+    Some(crate::transforms::eval::eval(arena, out))
+}
+
 /// `e` with every `e^{k·W(z) + s}` (`k` an integer up to 8, `W` any branch
 /// of Lambert W, `z` with `var`) written `(z/W(z))^k·e^s`, and the
 /// arguments `z` so rewritten; `None` when there is none.  Every branch
@@ -1951,9 +2234,18 @@ fn finalize_solutions(
     // The 16-digit values of the constant solutions kept, for the test of
     // equal values written differently.
     let mut values: Vec<Option<num_complex::Complex64>> = Vec::with_capacity(solutions.len());
+    // A candidate with an infinity inside a function and not known finite is
+    // not claimed, nor is it dropped as infinite: up to 0.54 `x +
+    // chebyshev_t(2, y·∞) = 0` gave `[−chebyshev_t(2, y·∞)]` (0.53's "no
+    // solution" came from `eval` expanding `T₂`), `x + sin ∞ = 0` `[−sin ∞]`.
+    let mut not_finite: Option<ExprId> = None;
     for s in solutions {
         let v = crate::transforms::eval::eval(arena, s);
         if has_infinite_term(arena, v) {
+            continue;
+        }
+        if not_known_finite(arena, v) {
+            not_finite.get_or_insert(v);
             continue;
         }
         if out.contains(&v) {
@@ -1974,6 +2266,16 @@ fn finalize_solutions(
         values.push(z);
         out.push(v);
     }
+    let missing = match not_finite {
+        Some(v) => Missing::merged(
+            missing,
+            Some(Missing::Alternative(Reason::said(format!(
+                "the candidate {} holds an infinity inside a function and is not known to be finite",
+                arena.display(v)
+            )))),
+        ),
+        None => missing,
+    };
     if had_candidates && out.is_empty() && missing.is_none() {
         return Solutions::none(Reason::said(
             "every candidate solution is infinite or undefined (e.g. 1/x = 0)",
@@ -2140,6 +2442,34 @@ fn classify_constant(arena: &mut Arena, expr: ExprId, var: ExprId) -> Solutions 
                 )));
             }
         }
+    }
+    // With parameters: zero only on a set of measure zero of their values
+    // (the generic convention), unless an infinity inside a function makes
+    // the value constant on pieces: `e^{−y·∞}` is 0 for every `y > 0`, and
+    // `chebyshev_t(2, y·∞)` has no finite value (up to 0.54 both were "no
+    // solution").  An infinite term makes the value infinite or undefined
+    // for every value of the parameters (`y·∞ + 1`): no solution.
+    if holds_infinity(arena, expanded) && !has_infinite_term(arena, expanded) {
+        use crate::base::assumptions::{AssumptionCache, Props};
+        use crate::base::truth::Truth;
+        let shown = arena.display(expr).to_string();
+        let mut cache = AssumptionCache::new();
+        let zero = Truth::from(cache.query(arena, expanded, Props::ZERO));
+        // (not finite wherever it is defined: infinite, never 0)
+        let infinite = Truth::from(cache.query(arena, expanded, Props::FINITE)).is_false();
+        return match zero {
+            Truth::True => Solutions::Complete(RootSet::All),
+            Truth::False => Solutions::none(Reason::said(format!(
+                "equation reduces to {shown} = 0, which is nonzero"
+            ))),
+            Truth::Unknown if infinite => Solutions::none(Reason::said(format!(
+                "equation reduces to {shown} = 0, which is infinite"
+            ))),
+            Truth::Unknown => Solutions::refused(Reason::said(format!(
+                "cannot decide whether {shown} (an infinity inside a function) is zero for the \
+                 values of the parameters"
+            ))),
+        };
     }
     let shown = arena.display(expr).to_string();
     Solutions::none(Reason::said(format!(

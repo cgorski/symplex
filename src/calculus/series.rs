@@ -2020,6 +2020,12 @@ fn expand_from_side(
     let mut working = order.max(MIN_WORKING_ORDER);
     let mut last_err = None;
     let mut best: Option<TSeries> = None;
+    // The nodes whose differentiation fallback refused at an order below
+    // the precision: a wider window refuses there again.  Up to 0.54
+    // `series(acos(lowergamma(0, x))/assoc_laguerre(1/2, 2, x), x, 0, 4)`
+    // repeated the fallback of the whole quotient (2.7 s) at the precisions
+    // 4, 12 and 28.
+    let mut fallback_refused: FxHashMap<ExprId, i64> = FxHashMap::default();
     for attempt in 0..MAX_PRECISION_ATTEMPTS {
         let mut hidden_valuation = false;
         let mode = Mode {
@@ -2034,6 +2040,7 @@ fn expand_from_side(
             mode,
             &mut hidden_valuation,
             split,
+            &mut fallback_refused,
         ) {
             Ok(ts) if ts.known >= order => return Ok(ts.truncate_known(order)),
             Ok(ts) if mode.partial && leading_term_decided(arena, &ts) => return Ok(ts),
@@ -2113,6 +2120,10 @@ fn leading_term_decided(arena: &mut Arena, ts: &TSeries) -> bool {
 /// precision, so a failure may be curable by widening the window; sets
 /// `split` when the failure was [`Obstruction::Kink`], or
 /// [`Obstruction::Logarithmic`] in a two-sided real expansion.
+/// `fallback_refused` holds the nodes whose differentiation fallback refused
+/// at an order below an earlier pass's precision (see
+/// [`taylor_by_differentiation`]); it is not tried again above that order.
+#[allow(clippy::too_many_arguments)]
 fn expand_with_precision(
     arena: &mut Arena,
     expr: ExprId,
@@ -2121,6 +2132,7 @@ fn expand_with_precision(
     mode: Mode,
     hidden_valuation: &mut bool,
     split: &mut bool,
+    fallback_refused: &mut FxHashMap<ExprId, i64>,
 ) -> Result<TSeries, SymplexError> {
     let order_ids = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, Option<TSeries>> = FxHashMap::default();
@@ -2159,8 +2171,23 @@ fn expand_with_precision(
                         Some(composed) => composed,
                         None if id == expr || fallbacks_used < MAX_FALLBACK_NODES => {
                             fallbacks_used += 1;
-
-                            taylor_by_differentiation(arena, id, var, n, mode)
+                            if fallback_refused.get(&id).is_some_and(|&k| k < n) {
+                                None
+                            } else {
+                                let mut failed_at = None;
+                                let ts = taylor_by_differentiation(
+                                    arena,
+                                    id,
+                                    var,
+                                    n,
+                                    mode,
+                                    &mut failed_at,
+                                );
+                                if let Some(k) = failed_at {
+                                    fallback_refused.insert(id, k);
+                                }
+                                ts
+                            }
                         }
                         None => None,
                     }
@@ -3121,6 +3148,9 @@ fn structural_series(
             }
             return bessel_series(arena, f, args[0], &u, var);
         }
+        ExprNode::Lib(crate::base::libfn::LibFn::EllipticPi, ref args) if args.len() == 2 => {
+            return elliptic_pi_at_small_n(arena, args[0], args[1], var, mode, cache);
+        }
         ref n if n.func_head().is_some_and(has_special_series) => {
             return special_series(arena, &node, var, mode, cache);
         }
@@ -3231,6 +3261,163 @@ fn structural_series(
         _ => None,
     };
     analytic.ok_or(Obstruction::Unknown)
+}
+
+/// `Π(n | m)` where the characteristic `n` tends to 0: `Σⱼ nʲ·Jⱼ(m)` with
+/// `Jⱼ(m) = ∫₀^{π/2} sin^{2j}θ/√(1 − m·sin²θ) dθ` (the expansion of `1/(1 −
+/// n·sin²θ)`, uniform for `|n| < 1`): `J₀ = K(m)`, `J₁ = (K(m) − E(m))/m`,
+/// and `(2j + 1)·m·Jⱼ₊₁ = 2j·(1 + m)·Jⱼ − (2j − 1)·Jⱼ₋₁` (the integral of
+/// `d/dθ(sin^{2j−1}θ·cos θ·√(1 − m·sin²θ))` over the quarter period).  The
+/// series of `K(m)` and `E(m)` are those of [`compose_at_constant`], with its
+/// treatment of their cut `m ≥ 1`; the identity holds for the boundary values
+/// there too (the limit from below, the convention of `evalf`, mpmath and
+/// SymPy: mpmath's `ellippi(1/10, 3/2)` is the sum).  Terms `nʲ` of valuation
+/// at least the precision are dropped.
+///
+/// The derivative of `Π` in `n` divides by `n`, so the composition rule
+/// cannot expand at this point, and up to 0.54 the differentiation fallback
+/// asked the limit engine for every derivative before it refused:
+/// `series(elliptic_pi(x·y, x + y), x, 0, 4)` took 3.8 s and
+/// `elliptic_pi(2x, 1/cosh(x) + 1/2)` 4.1 s once `K` and `E` evaluated off
+/// their real range, and `series(elliptic_pi(x, 1/2), x, 0, 3)` had no
+/// answer.  [`Obstruction::Unknown`] when `n` does not visibly tend to 0 or
+/// `K(m)`, `E(m)` have no series here: the other routes are tried as before.
+fn elliptic_pi_at_small_n(
+    arena: &mut Arena,
+    n_arg: ExprId,
+    m_arg: ExprId,
+    var: ExprId,
+    mode: Mode,
+    cache: &FxHashMap<ExprId, Option<TSeries>>,
+) -> Result<TSeries, Obstruction> {
+    use crate::base::libfn::LibFn;
+    let n_ts = child(cache, n_arg)?.normalized(arena);
+    if n_ts.shift < 1 || n_ts.coeffs.is_empty() {
+        return Err(Obstruction::Unknown);
+    }
+    let m_ts = child(cache, m_arg)?;
+    // `1/m` below: a constant term of `m` that is structurally nonzero.
+    if m_ts.clone().normalized(arena).shift != 0 {
+        return Err(Obstruction::Unknown);
+    }
+    if !walk::contains(arena, m_arg, var) {
+        return elliptic_pi_constant_m(arena, &n_ts, m_arg, var);
+    }
+    let mut undecided = false;
+    let mut of_m = |arena: &mut Arena, f: LibFn| -> Option<TSeries> {
+        let node = arena.lib_apply(f, &[m_arg]);
+        compose_at_constant(arena, node, var, mode, cache, &mut undecided).flatten()
+    };
+    let k_ts = of_m(arena, LibFn::EllipticK);
+    let e_ts = of_m(arena, LibFn::EllipticE);
+    if undecided {
+        return Err(Obstruction::CutUndecided);
+    }
+    let (Some(k_ts), Some(e_ts)) = (k_ts, e_ts) else {
+        return Err(Obstruction::Unknown);
+    };
+    let inv_m = TSeries::inverse(arena, &m_ts).ok_or(Obstruction::Unknown)?;
+    let work = n_ts.known.min(k_ts.known).min(e_ts.known).min(m_ts.known);
+    // `nʲ` has valuation `j·v`: the terms with `j·v < work` count.
+    let jmax = usize::try_from((work - 1).max(0) / n_ts.shift).map_err(|_| Obstruction::Unknown)?;
+    let one = TSeries::constant(arena, arena.one, work);
+    let one_plus_m = TSeries::add(arena, &one, &m_ts);
+    let mut js: Vec<TSeries> = vec![k_ts.clone()];
+    if jmax >= 1 {
+        let neg_e = TSeries::neg(arena, &e_ts);
+        let k_minus_e = TSeries::add(arena, &k_ts, &neg_e);
+        js.push(TSeries::mul(arena, &k_minus_e, &inv_m));
+    }
+    for j in 1..jmax {
+        let jj = j as i64;
+        let a = TSeries::mul(arena, &one_plus_m, &js[j]);
+        let a = scale_rat(arena, &a, rat_i(2 * jj));
+        let b = scale_rat(arena, &js[j - 1], rat_i(1 - 2 * jj));
+        let s = TSeries::add(arena, &a, &b);
+        let s = TSeries::mul(arena, &s, &inv_m);
+        js.push(scale_rat(arena, &s, Q::one() / rat_i(2 * jj + 1)));
+    }
+    let mut acc = js[0].clone();
+    let mut n_pow = n_ts.clone();
+    for (j, jj) in js.iter().enumerate().skip(1) {
+        let term = TSeries::mul(arena, &n_pow, jj);
+        acc = TSeries::add(arena, &acc, &term);
+        if j < jmax {
+            n_pow = TSeries::mul(arena, &n_pow, &n_ts);
+        }
+    }
+    Ok(acc.truncate_known(work))
+}
+
+/// [`elliptic_pi_at_small_n`] for a parameter `m` free of the variable: the
+/// coefficients `Jⱼ = aⱼ·K(m) + bⱼ·E(m)` are constants (`aⱼ`, `bⱼ`
+/// rational in `m` by the recurrence), composed with the series of `n`, with
+/// no zero test of their sums (a coefficient's test samples `K`, `E` at
+/// complex values of the parameters; inside the limits of an enclosing
+/// `floor` or `Ei` the tests took 30 s for `series(floor(elliptic_pi(x,
+/// y))⁻², x, 0, 4)` in a draft).  `K(1) = ∞` (also as `K(bell(0))`): `Π(n |
+/// 1)` has no expansion (a draft gave `nan`).
+fn elliptic_pi_constant_m(
+    arena: &mut Arena,
+    n_ts: &TSeries,
+    m: ExprId,
+    var: ExprId,
+) -> Result<TSeries, Obstruction> {
+    use crate::base::libfn::LibFn;
+    let k = arena.lib_apply(LibFn::EllipticK, &[m]);
+    let e = arena.lib_apply(LibFn::EllipticE, &[m]);
+    for f in [k, e] {
+        let value = eval::eval(arena, f);
+        if !is_finite_constant(arena, value, var) {
+            return Err(Obstruction::Unknown);
+        }
+    }
+    // `nʲ` with `j > known` is beyond the precision.
+    let terms = usize::try_from(n_ts.known.max(0)).map_err(|_| Obstruction::Unknown)? + 1;
+    let inv_m = {
+        let m1 = arena.neg_one;
+        let p = arena.pow(m, m1);
+        eval::eval(arena, p)
+    };
+    let one = arena.one;
+    let one_plus_m = arena.add(&[one, m]);
+    let mut ab: Vec<(ExprId, ExprId)> = vec![(arena.one, arena.zero)];
+    let neg_inv_m = arena.neg(inv_m);
+    let neg_inv_m = eval::eval(arena, neg_inv_m);
+    ab.push((inv_m, neg_inv_m));
+    for j in 1..terms {
+        let jj = j as i64;
+        let c1 = arena.int(2 * jj);
+        let c2 = arena.int(1 - 2 * jj);
+        let d = rat_expr(arena, Q::one() / rat_i(2 * jj + 1));
+        let next = |arena: &mut Arena, cur: ExprId, prev: ExprId| {
+            let a = arena.mul(&[c1, one_plus_m, cur]);
+            let b = arena.mul(&[c2, prev]);
+            let s = arena.add(&[a, b]);
+            let s = arena.mul(&[d, inv_m, s]);
+            let s = crate::transforms::expand::expand(arena, s);
+            eval::eval(arena, s)
+        };
+        let (a_cur, b_cur) = ab[j];
+        let (a_prev, b_prev) = ab[j - 1];
+        let a = next(arena, a_cur, a_prev);
+        let b = next(arena, b_cur, b_prev);
+        ab.push((a, b));
+    }
+    let js: Vec<ExprId> = ab
+        .into_iter()
+        .map(|(a, b)| {
+            let ak = arena.mul(&[a, k]);
+            let be = arena.mul(&[b, e]);
+            let s = arena.add(&[ak, be]);
+            eval::eval(arena, s)
+        })
+        .collect();
+    Ok(TSeries::compose(
+        arena,
+        &|ar: &mut Arena, j: usize| js.get(j).copied().unwrap_or(ar.zero),
+        n_ts,
+    ))
 }
 
 /// `exp`, `sinh`, `cosh` of `a`.  In a log-extended expansion (see
@@ -5778,15 +5965,27 @@ fn log_bessel_series(
 /// coefficient is the *limit* of that derivative at `0` — one-sided
 /// (`0⁺`) for expansions at `±∞`, two-sided otherwise.  A limit that does
 /// not exist or is not finite means there is no Taylor expansion.
+///
+/// `failed_at` is set to the order `k < n` of a coefficient that refused
+/// (a derivative without a value, too large, or without a finite limit):
+/// at every precision above `k` the same derivative refuses the same way
+/// ([`expand_from_side`] does not ask again).
 fn taylor_by_differentiation(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     n: i64,
     mode: Mode,
+    failed_at: &mut Option<i64>,
 ) -> Option<TSeries> {
     let side = mode.side;
     let zero = arena.zero;
+    let mut refused_at = |k: i64| {
+        if k < n {
+            *failed_at = Some(k);
+        }
+        None
+    };
 
     let mut coeffs = Vec::with_capacity(n.max(0) as usize);
     let mut current = expr;
@@ -5806,7 +6005,7 @@ fn taylor_by_differentiation(
         // declared real) has no value at the point; asking `limit` for one
         // sent Gruntz after `Subs(Derivative(…))` for seconds.
         if walk::has_unevaluated(arena, current) {
-            return None;
+            return refused_at(k);
         }
         // Derivatives of nested functions grow exponentially; the limit
         // taken of each (below) expands them, and `atanh(acosh x)³` at
@@ -5814,7 +6013,7 @@ fn taylor_by_differentiation(
         if crate::transforms::pattern::tree_size_capped(arena, current, MAX_FALLBACK_SIZE + 1)
             > MAX_FALLBACK_SIZE
         {
-            return None;
+            return refused_at(k);
         }
         // `safe_substitute` refuses a singular sub-expression instead of
         // letting canonicalisation fold `0·sinh(ln 0)` to `0` (the series
@@ -5851,17 +6050,19 @@ fn taylor_by_differentiation(
             value
         } else {
             if !mode.limits {
-                return None;
+                return refused_at(k);
             }
             let dir = match side {
                 Side::Above => crate::calculus::limit::Direction::Right,
                 Side::Below => crate::calculus::limit::Direction::Left,
                 Side::Both => crate::calculus::limit::Direction::Both,
             };
-            let lim =
-                crate::calculus::limit::limit_dir_generic(arena, current, var, zero, dir).ok()?;
+            let Ok(lim) = crate::calculus::limit::limit_dir_generic(arena, current, var, zero, dir)
+            else {
+                return refused_at(k);
+            };
             if !is_finite_constant(arena, lim, var) {
-                return None;
+                return refused_at(k);
             }
             lim
         };

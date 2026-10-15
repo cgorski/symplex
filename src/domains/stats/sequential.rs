@@ -545,6 +545,7 @@ fn remainder_over_h2(w: f64, l: f64, h: f64) -> f64 {
         for k in 1..=30 {
             term *= z / f64::from(k + 2);
             sum += term;
+            // Float evidence: truncation of an f64 series.
             if term.abs() <= 1e-17 * sum {
                 break;
             }
@@ -576,11 +577,13 @@ fn wald_h(
     inc: BernoulliIncrements,
     drift: f64,
 ) -> Result<f64, SymplexError> {
+    // Float evidence: the f64 drift itself; `h` is continuous in it (see above).
     if drift == 0.0 {
         return Ok(0.0);
     }
     let (ls, lf) = (inc.success, inc.failure);
     let g = |h: f64| w_expm1(p, h * ls) + w_expm1(1.0 - p, h * lf);
+    // Float evidence: the removable singularity of g(h)/h at an f64 `h` of exactly 0.
     let phi = |h: f64| if h == 0.0 { drift } else { g(h) / h };
     // `ls` and `lf` have opposite signs; `h` has the sign of `−drift`.
     let end = if (drift < 0.0) == (ls > 0.0) {
@@ -588,6 +591,7 @@ fn wald_h(
     } else {
         -(-p).ln_1p() / lf
     };
+    // Float evidence: an f64 bracket end that is 0 or infinite cannot be bisected.
     if !end.is_finite() || end == 0.0 {
         return Err(SymplexError::computation_failed(
             op,
@@ -669,12 +673,14 @@ fn wald_approx(
     // (near the merged root).  Take the one with the smaller error bound.
     let err_remainders = 4.0 * f64::EPSILON * (h * ls).abs().max((h * lf).abs());
     let err_drift = f64::EPSILON * ((p * ls).abs() + ((1.0 - p) * lf).abs()) / drift.abs();
+    // Float evidence: the smaller f64 error bound picks the form; `h = 0` has one form.
     let s3 = if h != 0.0 && err_drift < err_remainders {
         -drift / h
     } else {
         remainder_over_h2(p, ls, h) + remainder_over_h2(1.0 - p, lf, h)
     };
     if h.abs() * (b - a) <= 1.0 {
+        // Float evidence: exprel's removable singularity at an f64 `z` of exactly 0.
         let exprel = |z: f64| if z == 0.0 { 1.0 } else { z.exp_m1() / z };
         let (xb, xa) = (b * exprel(b * h), -a * exprel(a * h));
         let s1 = remainder_over_h2(1.0, b, h) / b - remainder_over_h2(1.0, a, h) / a;

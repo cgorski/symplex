@@ -5804,6 +5804,26 @@ fn try_u_substitution(
             if matches!(arena.node(g_integrated), ExprNode::Integral(_, _)) {
                 continue;
             }
+            // `u = e^{λ·x + μ}` with `λ` neither real nor imaginary runs along
+            // a spiral through every direction: a logarithm (or another cut
+            // function) of `u` jumps once per turn.  Up to 0.54 `∫
+            // e^{(1+i)x}/(e^{(1+i)x} − 3) dx` was `ln(e^{(1+i)x} − 3)/(1 + i)`;
+            // the exponential substitution joins such logarithms continuously
+            // ([`spiral_continuous`]).
+            if !is_rational_in(arena, g_integrated, var_sym)
+                && crate::base::walk::post_order_ids(arena, u_expr)
+                    .into_iter()
+                    .any(|id| {
+                        let ExprNode::Exp(l) = *arena.node(id) else {
+                            return false;
+                        };
+                        contains_var(arena, l, var_sym)
+                            && symbolic_linear_coeff_of(arena, l, var, var_sym)
+                                .is_some_and(|(alpha, _)| on_a_spiral(arena, alpha))
+                    })
+            {
+                continue;
+            }
 
             // G(u) — substitute var back to u(x)
             let antideriv = arena.subs_structural(g_integrated, var, u_expr);
@@ -6925,7 +6945,13 @@ fn try_exp_linear_substitution(
     let l = arena.add(&[l, beta0]);
     let gl = arena.mul(&[g_id, l]);
     let res = match exp_rate_is_nonreal_constant(arena, g_id, alpha0) {
-        Truth::True => circle_continuous_in_u(arena, res, u, u_sym, gl)?,
+        Truth::True => match circle_continuous_in_u(arena, res, u, u_sym, gl) {
+            Some(res) => res,
+            None => {
+                let spiral = Spiral { u, u_sym, gl };
+                return spiral_continuous(arena, expr, res, &spiral, &constants, var, var_sym);
+            }
+        },
         Truth::False => res,
         Truth::Unknown => return None,
     };
@@ -6960,6 +6986,21 @@ fn exp_rate_is_nonreal_constant(arena: &mut Arena, g: ExprId, alpha: ExprId) -> 
         .not()
 }
 
+/// Is the constant rate `λ` of `e^{λ·x}` neither real nor imaginary
+/// (both parts certified nonzero)?
+fn on_a_spiral(arena: &mut Arena, lambda: ExprId) -> bool {
+    if !crate::base::walk::free_symbols(arena, lambda).is_empty() {
+        return false;
+    }
+    let lambda = crate::transforms::eval::eval(arena, lambda);
+    let re = arena.re(lambda);
+    let re = crate::transforms::eval::eval(arena, re);
+    crate::transforms::realness::imaginary_part_sign(arena, lambda)
+        .is_nonzero()
+        .is_true()
+        && crate::poly::algebraic::sign_checked(arena, re).is_some_and(|s| s != 0)
+}
+
 /// The answer `res` in `u = e^{gl}` of [`try_exp_linear_substitution`] for a
 /// non-real rate, where `u` leaves the ray along which its logarithms keep
 /// off their cuts: `ln u` becomes `gl` (the continuous logarithm of
@@ -6978,6 +7019,326 @@ fn circle_continuous_in_u(
     let ln_u = arena.ln(u);
     let res = arena.subs_structural(res, ln_u, gl);
     is_rational_in(arena, res, u_sym).then_some(res)
+}
+
+/// The substitution `u = e^{g·l}` of [`try_exp_linear_substitution`]: the
+/// placeholder `u` (the symbol `u_sym`) and the exponent `g·l`, linear in
+/// the variable.
+struct Spiral {
+    u: ExprId,
+    u_sym: SymbolId,
+    gl: ExprId,
+}
+
+/// Most logarithms of distinct linear factors in `u` that
+/// [`spiral_continuous`] makes continuous.
+const MAX_SPIRAL_LOGS: usize = 4;
+
+/// The answer `res` in `u = e^{λ·x + μ}` of [`try_exp_linear_substitution`]
+/// for a rate `λ` that is neither real nor imaginary (both parts certified
+/// nonzero), with the constants `e^{γ}` of `constants` put back: `u` runs
+/// along a spiral from 0 to `∞`, and each `ln(c₁·u + c₀)` with the root `r
+/// = −c₀/c₁ ≠ 0` crosses the cut of `ln` once per turn on one side of the
+/// point `x_r` where `|u| = |r|`, `x_r = (ln|r| − re μ)/re λ`.  It is replaced
+/// by a logarithm with the same derivative that stays off the cut on each
+/// side: `ln(1 − u/r)` where `|u| < |r|`, `λ·x + μ + ln(1 − r/u)` where
+/// `|u| > |r|` (each argument has a positive real part there, `|u/r| ≤ 1`
+/// or `|r/u| ≤ 1`), joined continuously at `x_r` by the constant `±ln(−r) +
+/// 2πi·m`: the two sides differ there by `ln(−r)` up to a multiple of
+/// `2πi`, and the integer `m` is read off a certified value (`m + 1/3`, an
+/// exact integer plus a third, so its digits decide `m`).  Up to a constant
+/// `ln(c₁·u)` is `λ·x + μ`.  The answer is `Piecewise((F₀, x < x₁), …,
+/// (Fₖ, True))` over the points `xⱼ` in increasing order, as
+/// [`try_piecewise_split`] joins its pieces.  `None` (refused, as up to
+/// 0.54) when another function of `u` remains, a logarithm's argument is
+/// not linear in `u`, a constant has parameters, or a value does not settle
+/// (`u = r` at `x_r`: the integrand has a pole on the real line).
+///
+/// `∫₀¹ dx/(e^{(1+10⁻²⁰i)x} − 2)` (`−0.6654466341020272668 −
+/// 1.5707963267948966192i`) and `∫₀¹ dx/(e^{(1+i)x} − 2)` were refused up to
+/// 0.54: no antiderivative continuous on the real line was known.
+#[allow(clippy::too_many_arguments)]
+fn spiral_continuous(
+    arena: &mut Arena,
+    expr: ExprId,
+    res: ExprId,
+    spiral: &Spiral,
+    constants: &[(ExprId, ExprId)],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    use std::cmp::Ordering;
+    let Spiral { u, u_sym, gl } = *spiral;
+    let ln_u = arena.ln(u);
+    let mut res = arena.subs_structural(res, ln_u, gl);
+    for &(e_gamma, kappa) in constants {
+        res = arena.subs_structural(res, kappa, e_gamma);
+    }
+    let res = crate::transforms::eval::eval(arena, res);
+    if crate::base::walk::free_symbols(arena, res)
+        .iter()
+        .any(|&s| s != u && s != var)
+    {
+        return None;
+    }
+    let res = spiral_linear_logs(arena, res, u, u_sym)?;
+    // `g·l = λ·x + μ`.
+    let zero = arena.zero;
+    let mu = crate::transforms::subs::subs(arena, gl, var, zero);
+    let mu = crate::transforms::eval::eval(arena, mu);
+    let lambda = arena.sub(gl, mu);
+    let lambda = arena.div(lambda, var);
+    let lambda = crate::transforms::eval::eval(arena, lambda);
+    if contains_var(arena, lambda, var_sym) {
+        return None;
+    }
+    let re_lambda = arena.re(lambda);
+    let re_lambda = crate::transforms::eval::eval(arena, re_lambda);
+    let growing = match crate::poly::algebraic::sign_checked(arena, re_lambda)? {
+        0 => return None,
+        s => s > 0,
+    };
+    let re_mu = arena.re(mu);
+    let re_mu = crate::transforms::eval::eval(arena, re_mu);
+    // The logarithms of `u`-dependent arguments, each `ln(c₁·u + c₀)`.
+    let mut logs: Vec<(ExprId, Option<ExprId>)> = Vec::new();
+    for id in crate::base::walk::post_order_ids(arena, res) {
+        let ExprNode::Ln(w) = *arena.node(id) else {
+            continue;
+        };
+        if !contains_var(arena, w, u_sym) || logs.iter().any(|&(l, _)| l == id) {
+            continue;
+        }
+        let (c1, c0) = symbolic_linear_coeff_of(arena, w, u, u_sym)?;
+        if arena.is_zero_structural(c0) {
+            logs.push((id, None));
+            continue;
+        }
+        let r = arena.div(c0, c1);
+        let r = arena.neg(r);
+        logs.push((id, Some(crate::transforms::eval::eval(arena, r))));
+    }
+    if logs.is_empty() || logs.len() > MAX_SPIRAL_LOGS {
+        return None;
+    }
+    // Nothing else of `u` but rational functions.
+    let mut probe = res;
+    for (k, &(id, _)) in logs.iter().enumerate() {
+        let stand_in = arena.symbol(&format!("__spiral{k}"));
+        probe = arena.subs_structural(probe, id, stand_in);
+    }
+    if !is_rational_in(arena, probe, u_sym) {
+        return None;
+    }
+    // Per logarithm: the forms left and right of its point and the point.
+    struct Sides {
+        node: ExprId,
+        left: ExprId,
+        right: ExprId,
+        at: Option<ExprId>,
+    }
+    let two_pi_i = {
+        let two = arena.int(2);
+        let pi = arena.pi();
+        let i = arena.i_unit();
+        arena.mul(&[two, pi, i])
+    };
+    let one = arena.one;
+    let mut sides: Vec<Sides> = Vec::with_capacity(logs.len());
+    for &(node, root) in &logs {
+        let Some(r) = root else {
+            sides.push(Sides {
+                node,
+                left: gl,
+                right: gl,
+                at: None,
+            });
+            continue;
+        };
+        let u_over_r = arena.div(u, r);
+        let near = arena.sub(one, u_over_r);
+        let near = arena.ln(near);
+        let r_over_u = arena.div(r, u);
+        let far = arena.sub(one, r_over_u);
+        let far = arena.ln(far);
+        let far = arena.add(&[gl, far]);
+        let abs_r = arena.abs(r);
+        let ln_abs_r = arena.ln(abs_r);
+        let at = arena.sub(ln_abs_r, re_mu);
+        let at = arena.div(at, re_lambda);
+        let at = crate::transforms::eval::eval(arena, at);
+        if !crate::transforms::evalf::eval_const_f64(arena, at).is_some_and(f64::is_finite) {
+            return None;
+        }
+        let (left, right) = if growing { (near, far) } else { (far, near) };
+        // `left − right` at the point is `∓ln(−r) + 2πi·m`.
+        let e_gl = arena.exp(gl);
+        let gap = arena.sub(left, right);
+        let gap = arena.subs_structural(gap, u, e_gl);
+        let gap = crate::transforms::subs::subs(arena, gap, var, at);
+        let neg_r = arena.neg(r);
+        let ln_neg_r = arena.ln(neg_r);
+        let base = if growing {
+            arena.neg(ln_neg_r)
+        } else {
+            ln_neg_r
+        };
+        let turns = arena.sub(gap, base);
+        let turns = arena.div(turns, two_pi_i);
+        let third = arena.rational(1, 3);
+        let shifted = arena.add(&[turns, third]);
+        let shifted = crate::transforms::eval::eval(arena, shifted);
+        // The printed digits of `m + 1/3` are certified, so rounding is exact
+        // well inside the margin of 1/4 checked here (`|m| ≤ 10¹²`).
+        let v = crate::transforms::evalf::eval_const_f64(arena, shifted)?;
+        let m = (v - 1.0 / 3.0).round();
+        if !v.is_finite() || (v - 1.0 / 3.0 - m).abs() > 0.25 || m.abs() > 1e12 {
+            return None;
+        }
+        let m = crate::base::cast::f64_to_i64(m)?;
+        let m = arena.int(m);
+        let jump = arena.mul(&[m, two_pi_i]);
+        let join = arena.add(&[base, jump]);
+        let right = arena.add(&[right, join]);
+        sides.push(Sides {
+            node,
+            left,
+            right,
+            at: Some(at),
+        });
+    }
+    // The distinct points in increasing order (certified comparisons).
+    let mut points: Vec<ExprId> = Vec::new();
+    for s in &sides {
+        let Some(at) = s.at else {
+            continue;
+        };
+        let mut pos = points.len();
+        let mut known = false;
+        for (k, &q) in points.iter().enumerate() {
+            match cmp_roots(arena, at, q)? {
+                Ordering::Equal => {
+                    known = true;
+                    break;
+                }
+                Ordering::Less => {
+                    pos = k;
+                    break;
+                }
+                Ordering::Greater => {}
+            }
+        }
+        if !known {
+            points.insert(pos, at);
+        }
+    }
+    // The index of each logarithm's point in `points`.
+    let mut index: Vec<usize> = Vec::with_capacity(sides.len());
+    for s in &sides {
+        let mut found = 0;
+        if let Some(at) = s.at {
+            let mut hit = None;
+            for (k, &q) in points.iter().enumerate() {
+                if cmp_roots(arena, at, q)? == Ordering::Equal {
+                    hit = Some(k);
+                    break;
+                }
+            }
+            found = hit?;
+        }
+        index.push(found);
+    }
+    let e_gl = arena.exp(gl);
+    let mut out: Vec<(ExprId, ExprId)> = Vec::with_capacity(points.len() + 1);
+    for j in 0..=points.len() {
+        let mut branch = res;
+        for (s, &i) in sides.iter().zip(&index) {
+            // The interval `j` ends at or before the point `i`: its left side
+            // (both forms are `λ·x + μ` for `ln(c₁·u)`).
+            let form = if j <= i { s.left } else { s.right };
+            branch = arena.subs_structural(branch, s.node, form);
+        }
+        let branch = arena.subs_structural(branch, u, e_gl);
+        let branch = crate::transforms::eval::eval(arena, branch);
+        let cond = match points.get(j) {
+            Some(&t) => arena.gt(t, var),
+            None => arena.bool_true,
+        };
+        out.push((branch, cond));
+    }
+    let result = arena.piecewise(&out);
+    if candidate_rejected(arena, expr, result, var, var_sym) {
+        tracing::debug!("integrate: rejecting unverified spiral closed form");
+        return None;
+    }
+    tracing::debug!("integrate: exponential substitution along a spiral, joined continuously");
+    Some(result)
+}
+
+/// `res` (in `u`, from the rational integrator) with every `atan(w)` of a
+/// linear `w` written `(i/2)·(ln(1 − i·w) − ln(1 + i·w))` and every `ln(q)` of
+/// a quadratic `q = a·u² + b·u + c` written `ln(u − r₁) + ln(u − r₂)`, its
+/// roots: the same derivative, and logarithms of linear factors only, as
+/// [`spiral_continuous`] takes them (`∫ dx/(e^{(1+i)x} − 2i)` came out of the
+/// rational integrator with `ln(u² + 4)` and `atan(u/2)`).  `None` for a
+/// coefficient with parameters.
+fn spiral_linear_logs(
+    arena: &mut Arena,
+    res: ExprId,
+    u: ExprId,
+    u_sym: SymbolId,
+) -> Option<ExprId> {
+    let mut out = res;
+    for id in crate::base::walk::post_order_ids(arena, res) {
+        let replacement = match *arena.node(id) {
+            ExprNode::Atan(w) if contains_var(arena, w, u_sym) => {
+                symbolic_linear_coeff_of(arena, w, u, u_sym)?;
+                let i = arena.i_unit();
+                let iw = arena.mul(&[i, w]);
+                let one = arena.one;
+                let minus = arena.sub(one, iw);
+                let plus = arena.add(&[one, iw]);
+                let ln_minus = arena.ln(minus);
+                let ln_plus = arena.ln(plus);
+                let d = arena.sub(ln_minus, ln_plus);
+                let half = arena.rational(1, 2);
+                arena.mul(&[half, i, d])
+            }
+            ExprNode::Ln(q) if contains_var(arena, q, u_sym) => {
+                let Some((a, b, c)) = symbolic_quadratic_coeffs(arena, q, u, u_sym) else {
+                    continue;
+                };
+                if [a, b, c]
+                    .iter()
+                    .any(|&k| !crate::base::walk::free_symbols(arena, k).is_empty())
+                {
+                    return None;
+                }
+                let b2 = arena.mul(&[b, b]);
+                let four = arena.int(4);
+                let ac4 = arena.mul(&[four, a, c]);
+                let disc = arena.sub(b2, ac4);
+                let s = arena.sqrt(disc);
+                let two = arena.int(2);
+                let two_a = arena.mul(&[two, a]);
+                let neg_b = arena.neg(b);
+                let mut logs = Vec::with_capacity(2);
+                for sign in [1, -1] {
+                    let sgn = arena.int(sign);
+                    let ss = arena.mul(&[sgn, s]);
+                    let r = arena.add(&[neg_b, ss]);
+                    let r = arena.div(r, two_a);
+                    let r = crate::transforms::eval::eval(arena, r);
+                    let f = arena.sub(u, r);
+                    logs.push(arena.ln(f));
+                }
+                arena.add(&logs)
+            }
+            _ => continue,
+        };
+        out = arena.subs_structural(out, id, replacement);
+    }
+    Some(crate::transforms::eval::eval(arena, out))
 }
 
 /// `∫ R(e^{iθ₁}, …) dx` for real linear `θⱼ` (an imaginary rate, where
@@ -9891,6 +10252,10 @@ fn real_at_generic_values(arena: &mut Arena, val: ExprId) -> bool {
             bound = crate::transforms::subs::subs(arena, bound, s, value);
         }
         let bound = crate::transforms::eval::eval(arena, bound);
+        // A guide (the step budget of the degenerate case), right either
+        // way: an imaginary part `evalf` keeps is certified nonzero, and one
+        // negligible next to the real part (`e⁻⁵⁰·i` next to 1) reads as real
+        // here, which only leaves the case its full budget.
         match crate::transforms::evalf::evalf_complex(arena, bound, 15) {
             Ok(v) if !crate::transforms::evalf::is_real_to_digits(&v, 12) => {}
             _ => return true,
@@ -13066,6 +13431,11 @@ fn real_domain_points(arena: &mut Arena, f: ExprId, var: ExprId) -> Vec<ExprId> 
     for &(p, q) in FTC_SAMPLE_POINTS.iter().chain(FTC_RETRY_POINTS.iter()) {
         let point = arena.rational(p, q);
         let f_at = crate::transforms::subs::subs(arena, f, var, point);
+        // A guide that can only make the complex round stricter: a point
+        // whose integrand has a certified but negligible imaginary part
+        // (`e⁻⁸⁰·i` next to 1, below the 30 digits) is compared too, where
+        // an analytic `F` still has `F′ = f`; a point left out could only
+        // let a real-parameter form through.
         if numeric_value(arena, f_at)
             .is_some_and(|v| crate::transforms::evalf::is_real_to_digits(&v, FTC_CHECK_DIGITS))
         {
@@ -13248,6 +13618,12 @@ fn ftc_point(
     let Some(f_abs) = crate::transforms::evalf::abs_to_f64(&f_val).filter(|v| v.is_finite()) else {
         return FtcPoint::IntegrandUnevaluable;
     };
+    // `f_real` excuses a difference where `f` is complex (the real-variable
+    // convention, `ln|x|` parts) and admits the point to the complex round.
+    // Reading an imaginary part negligible next to the real part (below the
+    // 30 digits: `e⁻⁸⁰·i` next to 1) as real is the stricter reading, right
+    // either way: such a point excuses nothing, and a candidate whose `F′`
+    // agrees with `f` to the tolerance there still agrees.
     let f_real = crate::transforms::evalf::is_real_to_digits(&f_val, FTC_CHECK_DIGITS);
     let tol = FTC_CHECK_REL_TOL * f_abs.max(1.0);
 

@@ -856,6 +856,7 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
         return Err(invalid(OP, format!("non-finite entry {v}")));
     }
     let scale = cov.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
+    // Float evidence: the documented symmetry tolerance of this f64 API (it only refuses).
     for (i, row) in cov.iter().enumerate() {
         for (j, &below) in row.iter().enumerate().take(i) {
             let above = cov[j][i];
@@ -895,6 +896,7 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
     let mut ratio = Vec::with_capacity(n);
     for &idx in &order {
         let mut v: Vec<f64> = (0..n).map(|i| vectors[i * n + idx]).collect();
+        // Float evidence: the sign convention of an f64 eigenvector (either sign is one).
         if v.iter()
             .find(|c| c.abs() > 1e-12)
             .is_some_and(|lead| *lead < 0.0)

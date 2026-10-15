@@ -665,6 +665,7 @@ fn fit(
     let singular_at_start = || {
         // The information holds squared spreads: name a covariate whose
         // square leaves the f64 range before blaming collinearity.
+        // (Float evidence: an f64 square that underflowed; it only names the culprit.)
         let unrepresentable = design.range.iter().position(|&r| {
             let r2 = r * r;
             r > 0.0 && (r2 == 0.0 || !r2.is_finite())
@@ -724,6 +725,7 @@ fn fit(
         let step = design.spread(&direction);
         let gain = 0.5 * dot(&current.score, &direction);
         let ll_scale = current.ll.abs().max(1.0);
+        // Float evidence: the convergence tests of the f64 Newton iteration.
         let flat = gain <= FLAT_GAIN * ll_scale && step >= FLAT_STEP;
         // A step moving log hazard ratios by ½ or more is never negligible,
         // whatever `tol` says.
@@ -752,6 +754,7 @@ fn fit(
                 .map(|(b, d)| b + lambda * d)
                 .collect();
             let eval = evaluate(&table, xc, &candidate, ties);
+            // Float evidence: the line search of an f64 maximisation.
             if eval.ll.is_finite() && eval.ll >= current.ll - 1e-12 * current.ll.abs() {
                 accepted = Some((candidate, eval));
                 break;

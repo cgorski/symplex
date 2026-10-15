@@ -146,6 +146,7 @@ pub(crate) fn fold_constants_for_emission(
                 by_index.insert(k, v);
             }
             Ok(_) => {}
+            // Float evidence: a certified nonzero imaginary part only refuses.
             Err(_) => match crate::transforms::evalf::evalf_complex64(arena, id) {
                 Ok(z) if z.im != 0.0 && z.re.is_finite() && z.im.is_finite() => {
                     return Err(SymplexError::NotImplemented(format!(
@@ -1307,7 +1308,8 @@ fn expr_to_rust_cse(
             if children.is_empty() {
                 return Ok(format!("0.0{suffix}"));
             }
-            // Filter out zero-valued children (from CSE constant propagation)
+            // Filter out zero-valued children (from CSE constant propagation;
+            // float evidence: the emitted f64 constant is 0.0, so is the term).
             let live: Vec<ExprId> = children
                 .iter()
                 .copied()
@@ -1384,7 +1386,8 @@ fn expr_to_rust_cse(
             if children.is_empty() {
                 return Ok(format!("1.0{suffix}"));
             }
-            // Check for zero-valued children → whole product is 0
+            // Check for zero-valued children → whole product is 0 (float evidence:
+            // the emitted f64 constant is 0.0)
             for &c in children.iter() {
                 if let Some(v) = try_resolve_constant(arena, c, cse_constants)
                     && v == 0.0
@@ -2126,6 +2129,7 @@ fn has_duplicating_emission(arena: &Arena, id: ExprId, options: &CodegenOptions)
 
 /// Format an `f64` as a Rust literal (always includes a decimal point).
 fn format_float(v: f64) -> String {
+    // Float evidence: the spelling of the f64 literal itself.
     if v == 0.0 {
         "0.0".to_string()
     } else if v == 1.0 {
@@ -2577,6 +2581,7 @@ fn emit_unary(
     cse_constants: &FxHashMap<usize, f64>,
 ) -> Result<String, SymplexError> {
     // Constant folding: evaluate at codegen time when the argument is known.
+    // Float evidence: folds the f64 value the emitted code would compute.
     if let Some(val) = try_const_eval_f64(arena, arg)
         && let Some(result) = eval_unary_f64(func, val)
         && (result.is_finite() || result == 0.0)

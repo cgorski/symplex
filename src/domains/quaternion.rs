@@ -387,6 +387,8 @@ impl Quaternion {
             let det_f = v[0][0] * (v[1][1] * v[2][2] - v[1][2] * v[2][1])
                 - v[0][1] * (v[1][0] * v[2][2] - v[1][2] * v[2][0])
                 + v[0][2] * (v[1][0] * v[2][1] - v[1][1] * v[2][0]);
+            // (Float evidence: the f64 value only skips the exact test when det R = 1
+            // to 9 digits; `improper` needs `det R ≠ 1` proved.)
             if (det_f - 1.0).abs() > 1e-9 && ex_is_zero(&(&r.det()? - &one)).is_false() {
                 return improper();
             }
@@ -620,7 +622,8 @@ impl Quaternion {
         // zero `y` there could be neither folded nor evaluated (before 0.41
         // the XYZ angles of `(π/4, −π/2, −3π/4)` gave `φ = atan2(0̃, −1)`,
         // whose `eval_f64` failed with `PrecisionExhausted`).
-        // (Only entries whose `f64` value is 0 or unavailable are tested.)
+        // (Only entries whose `f64` value is 0 or unavailable are tested: a
+        // certified `f64` is 0 for every zero, and a nonzero value is no zero.)
         let entries: Vec<Vec<Ex>> = (0..3)
             .map(|i| {
                 (0..3)

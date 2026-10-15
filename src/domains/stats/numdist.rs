@@ -209,6 +209,7 @@ impl Scaled {
         let (mut m, mut s) = (self.m, self.s);
         for _ in 0..4 {
             let p = (m * f).abs();
+            // Float evidence: an exact 0 factor of this f64 kernel needs no rescaling.
             if p < f64::MIN_POSITIVE && m != 0.0 && f != 0.0 {
                 m *= BIG;
                 s -= 600.0 * std::f64::consts::LN_2;
@@ -237,6 +238,8 @@ impl Scaled {
         if self.m.is_nan() || other.m.is_nan() {
             return Scaled::of(f64::NAN);
         }
+        // Float evidence: f64 arithmetic of this kernel — an exact 0 term, and the
+        // normal range (`1e-290`) where plain addition loses nothing.
         if self.m == 0.0 {
             return other;
         }
@@ -599,6 +602,8 @@ fn gamma_q_cf_scaled_by(a: f64, x: f64, s: f64) -> f64 {
         let an = -i * (i - a) / s / s;
         b += step;
         d = an * d + b;
+        // Float evidence: Lentz's guards against a zero denominator and his
+        // convergence test, internals of the f64 fraction.
         if d.abs() < TINY {
             d = TINY;
         }
@@ -775,6 +780,7 @@ fn gammainc_tails(a: f64, x: f64) -> Tails {
     if a.is_nan() || x.is_nan() || a <= 0.0 || a.is_infinite() || x < 0.0 {
         return Tails::NAN;
     }
+    // Float evidence: the f64 argument itself at 0 (exact for the double given).
     if x == 0.0 {
         return Tails::ZERO;
     }
@@ -842,6 +848,7 @@ pub fn gammainc_upper_regularized_f64(a: f64, x: f64) -> f64 {
 /// `xᵃ/(a B(a, b)) · [1 + a Σ_{n≥1} (1−b)(2−b)⋯(n−b)/n! · xⁿ/(a + n)]`,
 /// for `b ≤ 1` or `b x ≤ 0.7` and `x ≤ 0.7`.
 fn bpser(a: f64, b: f64, x: f64) -> Scaled {
+    // Float evidence: the f64 argument itself at 0.
     if x == 0.0 {
         return Scaled::ZERO;
     }
@@ -899,12 +906,13 @@ fn times_power(f: Scaled, x: f64, p: f64) -> Scaled {
 fn bup(a: f64, b: f64, x: f64, y: f64, n: usize) -> Scaled {
     // The first term xᵃyᵇ/(a B(a, b)): Loader's form, except for a tiny
     // shape, where its stirlerr cancels (|ln a|·ε) and `inv_a_beta` keeps
-    // the shape as a factor.
+    // the shape as a factor.  (Float evidence: a route choice; both forms are right.)
     let t0 = if a.min(b) < 1e-3 {
         power_pair(inv_a_beta(a, b), x, a, y, b)
     } else {
         beta_pref(a, b, x, y).times(1.0 / a)
     };
+    // Float evidence: a prefactor that is exactly 0 in this f64 kernel.
     if t0.m == 0.0 || t0.s == f64::NEG_INFINITY {
         return Scaled::ZERO;
     }
@@ -1214,6 +1222,7 @@ fn bgrat(a: f64, b: f64, x: f64, y: f64) -> Option<Scaled> {
 /// is the smaller tail).
 fn bfrac(a: f64, b: f64, x: f64, y: f64, lambda: f64) -> Scaled {
     let brc = beta_pref(a, b, x, y);
+    // Float evidence: a prefactor that is exactly 0 in this f64 kernel.
     if brc.s == f64::NEG_INFINITY || brc.m == 0.0 {
         return Scaled::ZERO;
     }
@@ -1425,6 +1434,7 @@ fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Direct, bool)> {
                 // recurrence, then finish with the series or bgrat.
                 let mut n = b0.floor();
                 let mut bf = b0 - n;
+                // Float evidence: the fractional part of the f64 shape (exact).
                 if bf == 0.0 {
                     n -= 1.0;
                     bf = 1.0;
@@ -1476,6 +1486,7 @@ fn bratio(a: f64, b: f64, x: f64, y: f64) -> Tails {
     {
         return Tails::NAN;
     }
+    // Float evidence: the f64 arguments themselves at an end of [0, 1].
     if x == 0.0 {
         return Tails::ZERO;
     }
@@ -1678,7 +1689,7 @@ fn snap_to_floats(x: f64, side: Side, tails: impl Fn(f64) -> Tails) -> f64 {
     let per_ulp = (tail(tails(x.next_up())) - here).abs();
     // Neighbouring floats can share one `x/θ` and so one tail value; a tail
     // that misses its level although it does not move within an ulp is the
-    // same regime.
+    // same regime.  (Float evidence: picks the double returned by this f64 API.)
     let misses = (here - ln_level).abs() > 1e-6;
     if !misses && (per_ulp.is_nan() || per_ulp <= 1e-9) {
         return x;
@@ -1815,6 +1826,7 @@ fn solve_increasing(
                 format!("the distribution function is not a number at {v}"),
             ));
         }
+        // Float evidence: Newton's iterate hit the level exactly in f64.
         if gv == 0.0 {
             return Ok(Root { v, dv: 0.0 });
         }
@@ -1825,6 +1837,7 @@ fn solve_increasing(
                 0.0
             };
             best = (v, gv.abs(), corr);
+            // Float evidence (below): the convergence test of the f64 Newton iteration.
         } else if gv.is_finite()
             && best.1 < 0.5
             && best.2.abs() <= QUADRATIC_PHASE * (1.0 + best.0.abs())
@@ -2114,7 +2127,8 @@ pub mod t {
     /// (including an overflowing `x²`) and the power law takes over.
     fn beta_args(ax: f64, df: f64) -> Option<(f64, f64)> {
         let x2 = ax * ax;
-        // `df / ∞ = 0`, so an overflowing `x²` also lands here.
+        // `df / ∞ = 0`, so an overflowing `x²` also lands here.  (Float
+        // evidence: a route choice of the f64 kernel.)
         if df / x2 < POWER_LAW_MAX_R {
             return None;
         }
@@ -2132,7 +2146,8 @@ pub mod t {
     fn log_pref(ax: f64, df: f64) -> f64 {
         let a = 0.5 * df;
         match beta_args(ax, df) {
-            // A tiny ν: 1/B(a, ½) = a·inv_a_beta(a, ½) (Loader's form cancels).
+            // A tiny ν: 1/B(a, ½) = a·inv_a_beta(a, ½) (Loader's form cancels;
+            // float evidence: a route choice, both forms are right).
             Some((x0, y0)) if a < 1e-3 => {
                 power_pair(inv_a_beta(a, 0.5).times(a), x0, a, y0, 0.5).ln()
             }
@@ -2152,6 +2167,7 @@ pub mod t {
         if df.is_infinite() {
             return Tails::of(norm::cdf(x), norm::sf(x));
         }
+        // Float evidence: the f64 argument itself at the centre.
         if x == 0.0 {
             return Tails::of(0.5, 0.5);
         }
@@ -2204,6 +2220,7 @@ pub mod t {
         if df.is_infinite() {
             return norm::pdf(x);
         }
+        // Float evidence: the f64 argument itself at the centre.
         if x == 0.0 {
             return (-lbeta(0.5 * df, 0.5)).exp() / df.sqrt();
         }
@@ -2666,6 +2683,7 @@ pub mod beta {
                 (-y).ln_1p() - y.ln()
             }
         };
+        // Float evidence: the starting variable of the iteration (either converges).
         Ok(match side {
             Side::Lower(pl) => {
                 if x0 > 0.0 && x0 < 1.0 && pl >= 1e-3 {

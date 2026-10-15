@@ -15,10 +15,12 @@ use crate::calculus::summation::{self, SumOutcome};
 ///
 /// Returns `Some(result)` if a closed form was found (or the sum was proven
 /// to diverge to `±∞`, in which case the infinity is returned), `None`
-/// otherwise — also for a closed form that holds only under a convergence
-/// condition the assumptions do not decide ([`SumOutcome::Conditional`]):
-/// its `Piecewise` would hold the formal `Sum` in its last branch, which
-/// `eval` would evaluate again (`Ex::summation` returns that `Piecewise`).
+/// otherwise — also for a closed form that holds only under a condition the
+/// assumptions do not decide ([`SumOutcome::Conditional`]: convergence, or
+/// the upper limits `n ≥ n₀` where a finite sum's closed form holds, so
+/// `eval` of `Σ_{k=0}^{n} C(n, k)` keeps the `Sum` for a plain `n`): its
+/// `Piecewise` would hold the formal `Sum` in its last branch, which `eval`
+/// would evaluate again (`Ex::summation` returns that `Piecewise`).
 pub(crate) fn eval_sum_symbolic(
     arena: &mut Arena,
     body: ExprId,

@@ -1,6 +1,6 @@
-//! Complete and incomplete elliptic integrals `K(m)`, `E(m)` and `F(φ | m)`
-//! where the value or the parameter is not real, by Carlson's symmetric
-//! integrals over ℂ.
+//! Complete and incomplete elliptic integrals `K(m)`, `E(m)`, `F(φ | m)` and
+//! `Π(n | m)` where the value or a parameter is not real, by Carlson's
+//! symmetric integrals over ℂ.
 //!
 //! The real routines of `evalf.rs` (`arb_elliptic_*`) cover a real
 //! parameter with a real value: `m ≤ 1`, and `1 − m sin²φ > 0` for `F`.
@@ -15,7 +15,42 @@
 //! ```
 //!
 //! (DLMF 19.25.1, 19.25.5; the reduction is DLMF 19.2.10), for a real `φ`.
-//! A non-real `φ` and `Π(n | m)` off the real range stay refused.
+//! A non-real `φ` stays refused.
+//!
+//! # The complete integral of the third kind
+//!
+//! ```text
+//! Π(n | m) = R_F(0, 1 − m, 1) + (n/3)·R_J(0, 1 − m, 1, 1 − n)       (DLMF 19.25.2)
+//! ```
+//!
+//! with `R_J` by Carlson's duplication (Carlson 1995, the form with `R_C(1,
+//! 1 + eₘ)` that mpmath's `RJ_calc` uses), which is valid when the
+//! arguments have positive real parts.  Elsewhere mpmath first integrates
+//! numerically along a path into the right half-plane; here exact
+//! transformations do it:
+//!
+//! * arguments `1 − m`, 1, `1 − n` that lie in an open half-plane are
+//!   rotated into the right one, `R_J(x, y, z, p) = q^{3/2}·R_J(qx, qy, qz,
+//!   qp)` (`R_F` with `q^{1/2}`) for `|arg q| < π/2` with `Re(q·w) > 0` for
+//!   each argument `w`: the integral along `[0, ∞)` turned to the ray of
+//!   `1/q` sweeps no singularity, and the principal roots split;
+//! * a real `n > 1` with a real `m < 1`: `Π(n | m) = K(m) − Π(m/n | m) ∓
+//!   i·(π/2)·√(n/((n − 1)(n − m)))` (DLMF 19.6.5 for the real part, the
+//!   principal value; the imaginary part is half the residue at the pole
+//!   `sin²θ = 1/n`);
+//! * a real `m > 1`: the integral over `θ ∈ [0, π/2]` split where `1 − m
+//!   sin²θ` changes sign, `Π(n | m) = Π(n/m | 1/m)/√m − i·Π(n₁ | 1 −
+//!   1/m)/((1 − n)√m)` with `n₁ = n(m − 1)/(m(n − 1))` (the first part by
+//!   the reciprocal-modulus substitution `sin ψ = √m·sin θ`, DLMF 19.7.4;
+//!   the second by `m·sin²θ = 1 + (m − 1)cos²ψ`), for a real or a non-real
+//!   `n`.
+//!
+//! A real `n > 1` with a non-real `m`, and non-real arguments that lie in
+//! no half-plane together with 1, stay refused.  On the cuts the values are
+//! mpmath's (and so SymPy's): the limits from below, `m − i0` and `n − i0`
+//! (`ellippi(1/2, 2) = 1.5327 − 2.1041i`, `ellippi(2, 1/2) = −0.3135 −
+//! 1.8138i`); `n₁` then lies on its cut from above when `n > 1`, since
+//! `dn₁/dn < 0`.  Up to 0.54 every such `Π` was refused.
 //!
 //! # Branch convention
 //!
@@ -40,7 +75,7 @@
 //! the bits they lose.  Each part is then rounded to `prec` bits.
 //!
 //! The node's bound ([`bound`]) for a non-real parameter is its own
-//! `2^−(prec+12)` relative plus, for each inexact argument, the change of
+//! `2^−(prec+12)` relative to each part plus, for each inexact argument, the change of
 //! the value with that argument moved by its radius (evaluated again:
 //! `sensitivity::numeric_change`); a parameter whose ball reaches the cut
 //! `[1, ∞)` with an undecided side has no bound.  An exactly real parameter
@@ -75,6 +110,14 @@ pub(super) fn takes(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
                 return false;
             }
             !m.1.is_zero() || (above_one(&m.0) && !real_f_applies(&phi.0, &m.0))
+        }
+        // `n > 1` or `m > 1` (`n = 1`, `m = 1`: the real routine's infinity),
+        // or a non-real argument.
+        LibFn::EllipticPi => {
+            let (Some(n), Some(m)) = (value(0), value(1)) else {
+                return false;
+            };
+            !n.1.is_zero() || !m.1.is_zero() || above_one(&n.0) || above_one(&m.0)
         }
         _ => false,
     }
@@ -146,9 +189,10 @@ pub(super) fn eval(
             LibFn::EllipticK => (complete_k(arg(0)?, wp)?, 0),
             LibFn::EllipticE => complete_e(arg(0)?, wp)?,
             LibFn::EllipticF => incomplete_f(&arg(0)?.0, arg(1)?, &mut w.at(wp))?,
+            LibFn::EllipticPi => complete_pi(arg(0)?, arg(1)?, &mut w.at(wp))?,
             _ => {
                 return Err(super::unevaluable(
-                    "not an elliptic integral of the first two kinds",
+                    "not a complete or incomplete elliptic integral",
                 ));
             }
         };
@@ -391,6 +435,326 @@ fn incomplete_f(
     Ok((v.clone(), lost_bits(&[&head, &tail], &v)))
 }
 
+/// `x = 1`.
+fn is_one(x: &BigFloat) -> bool {
+    x.cmp(&BigFloat::from_i32(1, 64)) == Some(0)
+}
+
+/// `Π(n | m)` (see the module documentation), and the bits its sums cancel.
+fn complete_pi(n: &Complex, m: &Complex, w: &mut Wp<'_>) -> Result<(Complex, usize), SymplexError> {
+    if [&n.0, &n.1, &m.0, &m.1]
+        .iter()
+        .any(|x| x.is_nan() || x.is_inf())
+    {
+        return Err(super::unevaluable("elliptic_pi of special float value"));
+    }
+    pi_value(n, m, false, w)
+}
+
+/// `Π(n | m)` for the arguments [`takes`] sends here and those of the real
+/// routine (`n < 1`, `m < 1`, real); `above`: a real `n > 1` lies on its cut
+/// from above (`n + i0`; `n − i0` otherwise).
+fn pi_value(
+    n: &Complex,
+    m: &Complex,
+    above: bool,
+    w: &mut Wp<'_>,
+) -> Result<(Complex, usize), SymplexError> {
+    let wp = w.bits();
+    let (n_real, m_real) = (n.1.is_zero(), m.1.is_zero());
+    if m_real && is_one(&m.0) {
+        return Err(super::unevaluable("elliptic_pi(n, 1) is infinite"));
+    }
+    if n_real && is_one(&n.0) {
+        return Err(super::unevaluable("elliptic_pi(1, m) is infinite"));
+    }
+    if m_real && above_one(&m.0) {
+        return pi_split(n, &m.0, w);
+    }
+    if n_real && m_real {
+        if above_one(&n.0) {
+            return pi_beyond_pole(&n.0, &m.0, above, w);
+        }
+        let v = super::arb_elliptic_pi(&n.0, &m.0, w)?;
+        return Ok(((v, BigFloat::new(wp)), 0));
+    }
+    if n_real && above_one(&n.0) {
+        return Err(super::unevaluable(
+            "elliptic_pi: a characteristic n > 1 with a non-real parameter m is not yet supported",
+        ));
+    }
+    pi_principal(n, m, w)
+}
+
+/// `Π(n | m)` for a real `n > 1` and a real `m < 1`: `K(m) − Π(m/n | m) ∓
+/// i·(π/2)·√(n/((n − 1)(n − m)))`, `−` for `n − i0`, `+` for `n + i0`
+/// (`above`).  The real part is the Cauchy principal value (DLMF 19.6.5),
+/// the imaginary part half the residue at the pole `sin²θ = 1/n`.
+fn pi_beyond_pole(
+    n: &BigFloat,
+    m: &BigFloat,
+    above: bool,
+    w: &mut Wp<'_>,
+) -> Result<(Complex, usize), SymplexError> {
+    let wp = w.bits();
+    let k = super::arb_elliptic_k(m, w)?;
+    let p = super::arb_elliptic_pi(&m.div(n, wp, RM), m, w)?;
+    let re = k.sub(&p, wp, RM);
+    let one = BigFloat::from_i32(1, wp);
+    let q = n.div(&n.sub(&one, wp, RM).mul(&n.sub(m, wp, RM), wp, RM), wp, RM);
+    let half_pi = w.cc.pi(wp, RM).div(&BigFloat::from_i32(2, wp), wp, RM);
+    let im = half_pi.mul(&q.sqrt(wp, RM), wp, RM);
+    let im = if above { im } else { im.neg() };
+    let zero = BigFloat::new(wp);
+    let lost = lost_bits(
+        &[&(k, zero.clone()), &(p, zero.clone())],
+        &(re.clone(), zero),
+    );
+    Ok(((re, im), lost))
+}
+
+/// `Π(n | m)` for a real `m > 1` (`m − i0`) and a real or non-real `n`:
+/// `Π(n/m | 1/m)/√m − i·Π(n₁ | 1 − 1/m)/((1 − n)√m)`, `n₁ = n(m − 1)/(m(n −
+/// 1))` (see the module documentation).  At `n = m` both parts are
+/// infinite; the value there is `E(m)/(1 − m)` (DLMF 19.6.1 continued, as
+/// mpmath and `eval`'s rewrite of `elliptic_pi(m, m)` take it).
+fn pi_split(n: &Complex, m: &BigFloat, w: &mut Wp<'_>) -> Result<(Complex, usize), SymplexError> {
+    let wp = w.bits();
+    let zero = BigFloat::new(wp);
+    if n.1.is_zero() && n.0.cmp(m) == Some(0) {
+        let (e, lost) = complete_e(n, wp)?;
+        let one_minus_m = c_sub(&real(1, wp), n, wp, RM);
+        return Ok((c_div(&e, &one_minus_m, wp, RM), lost));
+    }
+    let one = BigFloat::from_i32(1, wp);
+    let inv_m = one.div(m, wp, RM);
+    let n_over_m = (n.0.mul(&inv_m, wp, RM), n.1.mul(&inv_m, wp, RM));
+    let (p1, lost1) = pi_value(&n_over_m, &(inv_m.clone(), zero.clone()), false, w)?;
+    let m_minus_one = (m.sub(&one, wp, RM), zero.clone());
+    let n_minus_one = c_sub(n, &real(1, wp), wp, RM);
+    let n1 = c_div(
+        &c_mul(n, &m_minus_one, wp, RM),
+        &c_mul(&(m.clone(), zero.clone()), &n_minus_one, wp, RM),
+        wp,
+        RM,
+    );
+    let m1 = (one.sub(&inv_m, wp, RM), zero.clone());
+    let n_on_cut_above = n.1.is_zero() && above_one(&n.0);
+    let (p2, lost2) = pi_value(&n1, &m1, n_on_cut_above, w)?;
+    let root_m = m.sqrt(wp, RM);
+    let a = (p1.0.div(&root_m, wp, RM), p1.1.div(&root_m, wp, RM));
+    let one_minus_n = c_sub(&real(1, wp), n, wp, RM);
+    let c = (
+        one_minus_n.0.mul(&root_m, wp, RM),
+        one_minus_n.1.mul(&root_m, wp, RM),
+    );
+    // −i·(u + iv) = v − iu
+    let q = c_div(&p2, &c, wp, RM);
+    let b = (q.1, q.0.neg());
+    let v = c_add(&a, &b, wp, RM);
+    let lost = lost1.max(lost2).max(lost_bits(&[&a, &b], &v));
+    Ok((v, lost))
+}
+
+/// `Π(n | m) = R_F(0, y, 1) + (n/3)·R_J(0, y, 1, p)`, `y = 1 − m`, `p = 1 −
+/// n`, for arguments `y`, 1, `p` in an open half-plane ([`rotation`]),
+/// brought into the right one.
+fn pi_principal(
+    n: &Complex,
+    m: &Complex,
+    w: &mut Wp<'_>,
+) -> Result<(Complex, usize), SymplexError> {
+    let wp = w.bits();
+    let y = c_sub(&real(1, wp), m, wp, RM);
+    let p = c_sub(&real(1, wp), n, wp, RM);
+    if y.0.is_zero() && y.1.is_zero() {
+        return Err(super::unevaluable("elliptic_pi(n, 1) is infinite"));
+    }
+    if p.0.is_zero() && p.1.is_zero() {
+        return Err(super::unevaluable("elliptic_pi(1, m) is infinite"));
+    }
+    let Some(q) = rotation(&[&y, &p], wp) else {
+        return Err(super::unevaluable(
+            "elliptic_pi: the arguments 1 - m, 1 and 1 - n lie in no half-plane: not yet supported",
+        ));
+    };
+    let (y, z, p) = (c_mul(&y, &q, wp, RM), q.clone(), c_mul(&p, &q, wp, RM));
+    let x = real(0, wp);
+    let sq = c_sqrt(&q, wp);
+    let sq3 = c_mul(&c_mul(&sq, &sq, wp, RM), &sq, wp, RM);
+    let f = c_mul(&sq, &rf(&x, &y, &z, wp)?, wp, RM);
+    let j = c_mul(&sq3, &rj(&x, &y, &z, &p, w)?, wp, RM);
+    let t = c_div(&c_mul(n, &j, wp, RM), &real(3, wp), wp, RM);
+    let v = c_add(&f, &t, wp, RM);
+    let lost = lost_bits(&[&f, &t], &v);
+    Ok((v, lost))
+}
+
+/// A factor `q = e^{−iθ}` with `Re(q·w) > 0` for `w = 1` and every
+/// argument of `ws` (none 0 or a negative real), when their arguments lie
+/// within an arc shorter than `π − 0.2` (`θ` its middle, a guide: the margin
+/// covers its `f64` rounding); `None` otherwise.
+fn rotation(ws: &[&Complex], wp: usize) -> Option<Complex> {
+    // Already in the right half-plane: no rotation.
+    if ws
+        .iter()
+        .all(|z| crate::base::bigfloat::is_strictly_positive(&z.0))
+    {
+        return Some(real(1, wp));
+    }
+    let (mut lo, mut hi) = (0.0f64, 0.0f64);
+    for z in ws {
+        let a = angle(z)?;
+        lo = lo.min(a);
+        hi = hi.max(a);
+    }
+    if hi - lo > std::f64::consts::PI - 0.2 {
+        return None;
+    }
+    let theta = (lo + hi) / 2.0;
+    let (s, c) = theta.sin_cos();
+    Some((
+        crate::base::bigfloat::from_f64(c, wp),
+        crate::base::bigfloat::from_f64(-s, wp),
+    ))
+}
+
+/// The argument of `z` in `(−π, π]` as an `f64` (a guide), from its parts
+/// scaled by a common power of two; `None` for 0.
+fn angle(z: &Complex) -> Option<f64> {
+    let e = match (accuracy::part_mag(&z.0), accuracy::part_mag(&z.1)) {
+        (Some(a), Some(b)) => a.max(b),
+        (a, b) => a.or(b)?,
+    };
+    let scaled = |x: &BigFloat| -> f64 {
+        if x.is_zero() {
+            return 0.0;
+        }
+        let mut y = x.clone();
+        let k = x.exponent().map_or(0, i64::from) - e;
+        y.set_exponent(i32::try_from(k).unwrap_or(i32::MIN / 2));
+        crate::base::bigfloat::to_f64(&y).unwrap_or(0.0)
+    };
+    Some(scaled(&z.1).atan2(scaled(&z.0)))
+}
+
+/// Carlson's `R_J(x, y, z, p)` over ℂ by duplication (Carlson 1995, eq.
+/// 2.36–2.39; mpmath's `RJ_calc` without its initial integration):
+///
+/// `R_J = 4⁻ᴹ·R_J(xᴹ, yᴹ, zᴹ, pᴹ) + 6·Σ_{k<M} 4⁻ᵏ·R_C(1, 1 + eₖ)/dₖ`,
+/// `dₖ = (√pₖ + √xₖ)(√pₖ + √yₖ)(√pₖ + √zₖ)`, `eₖ = δ·4⁻³ᵏ/dₖ²`, `δ = (p −
+/// x)(p − y)(p − z)`, until the arguments agree to `2^−(wp/2 + 8)`, where
+/// `R_J(μ, μ, μ, μ) = μ^{−3/2}` with `μ = (x + y + z + 2p)/5` is within
+/// `O(spread²)` (as for [`rd`]).  Valid for arguments with positive real
+/// parts (`x` may be 0); then `|eₖ| < 1` (each factor of `e₀`, `(√p −
+/// √w)/(√p + √w)`, has modulus below 1).
+fn rj(
+    x: &Complex,
+    y: &Complex,
+    z: &Complex,
+    p: &Complex,
+    w: &mut Wp<'_>,
+) -> Result<Complex, SymplexError> {
+    let wp = w.bits();
+    let delta = c_mul(
+        &c_mul(&c_sub(p, x, wp, RM), &c_sub(p, y, wp, RM), wp, RM),
+        &c_sub(p, z, wp, RM),
+        wp,
+        RM,
+    );
+    let (mut x, mut y, mut z, mut p) = (x.clone(), y.clone(), z.clone(), p.clone());
+    let mut sum = real(0, wp);
+    // `4⁻ᵏ`, exactly.
+    let mut scale = BigFloat::from_i32(1, wp);
+    for _ in 0..(wp * 2 + 200) {
+        if close(&[&x, &y, &z, &p], spread_bits(wp), wp) {
+            let two_p = c_add(&p, &p, wp, RM);
+            let mu = c_div(
+                &c_add(&c_add(&c_add(&x, &y, wp, RM), &z, wp, RM), &two_p, wp, RM),
+                &real(5, wp),
+                wp,
+                RM,
+            );
+            let tail = c_div(&real(1, wp), &c_mul(&mu, &c_sqrt(&mu, wp), wp, RM), wp, RM);
+            let tail = (tail.0.mul(&scale, wp, RM), tail.1.mul(&scale, wp, RM));
+            let six = real(6, wp);
+            return Ok(c_add(&c_mul(&six, &sum, wp, RM), &tail, wp, RM));
+        }
+        let (l, sz) = lambda(&x, &y, &z, wp);
+        let (sx, sy, sp) = (c_sqrt(&x, wp), c_sqrt(&y, wp), c_sqrt(&p, wp));
+        let d = c_mul(
+            &c_mul(&c_add(&sp, &sx, wp, RM), &c_add(&sp, &sy, wp, RM), wp, RM),
+            &c_add(&sp, &sz, wp, RM),
+            wp,
+            RM,
+        );
+        let s3 = scale.mul(&scale, wp, RM).mul(&scale, wp, RM);
+        let e = c_div(
+            &(delta.0.mul(&s3, wp, RM), delta.1.mul(&s3, wp, RM)),
+            &c_mul(&d, &d, wp, RM),
+            wp,
+            RM,
+        );
+        let term = c_div(&rc_one(&e, w)?, &d, wp, RM);
+        sum = c_add(
+            &sum,
+            &(term.0.mul(&scale, wp, RM), term.1.mul(&scale, wp, RM)),
+            wp,
+            RM,
+        );
+        x = step(&x, &l, wp);
+        y = step(&y, &l, wp);
+        z = step(&z, &l, wp);
+        p = step(&p, &l, wp);
+        scale = scale.div(&BigFloat::from_i32(4, wp), wp, RM);
+    }
+    Err(SymplexError::ComputationFailed {
+        operation: "evalf",
+        reason: "Carlson R_J did not converge".into(),
+    })
+}
+
+/// `R_C(1, 1 + e) = atan(√e)/√e` for `|e| < 1` (an even function of `√e`,
+/// analytic there): `Σ (−e)ᵏ/(2k + 1)` below `|e| < 2⁻¹`, with a tail
+/// below twice the first term left out, else by the principal `atan`.
+fn rc_one(e: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    let wp = w.bits();
+    let Some(k) = accuracy::mag(e) else {
+        return Ok(real(1, wp));
+    };
+    if k <= -2 {
+        let neg_e = (e.0.neg(), e.1.neg());
+        let mut power = real(1, wp);
+        let mut acc = real(1, wp);
+        let limit = -i64::try_from(wp).unwrap_or(i64::MAX / 4) - 8;
+        for j in 1..(4 * wp + 64) {
+            power = c_mul(&power, &neg_e, wp, RM);
+            let odd = BigFloat::from_i64(2 * j as i64 + 1, wp);
+            acc = c_add(
+                &acc,
+                &(power.0.div(&odd, wp, RM), power.1.div(&odd, wp, RM)),
+                wp,
+                RM,
+            );
+            if accuracy::mag(&power).is_none_or(|m| m < limit) {
+                return Ok(acc);
+            }
+        }
+        return Err(SymplexError::ComputationFailed {
+            operation: "evalf",
+            reason: "Carlson R_C series did not converge".into(),
+        });
+    }
+    if k >= 1 {
+        return Err(super::unevaluable(
+            "Carlson R_J: an argument off its domain",
+        ));
+    }
+    let s = c_sqrt(e, wp);
+    let a = super::c_atan(&s, w);
+    Ok(c_div(&a, &s, wp, RM))
+}
+
 /// The bound of an elliptic-integral node with a non-real argument (see
 /// the module documentation).
 pub(super) fn bound(
@@ -405,8 +769,18 @@ pub(super) fn bound(
     if [&v.0, &v.1].iter().any(|x| x.is_nan() || x.is_inf()) {
         return Bound::UNKNOWN;
     }
-    let own = accuracy::lg_abs(v) - prec as f64 - 12.0;
-    let mut total = own;
+    // The routine's own error, each part within `2^−(prec+12)` of itself
+    // (`eval` adds the bits a smaller part lies below the modulus); a part
+    // that is 0, within that of the modulus.
+    let joint = accuracy::lg_abs(v) - prec as f64 - 12.0;
+    let own = |x: &BigFloat| {
+        if x.is_zero() {
+            joint
+        } else {
+            accuracy::part_lg(x) - prec as f64 - 12.0
+        }
+    };
+    let mut total = accuracy::EXACT;
     // The parameter is the last argument.
     let last = args.len().saturating_sub(1);
     for (i, a) in args.iter().enumerate() {
@@ -430,7 +804,10 @@ pub(super) fn bound(
     if accuracy::is_unknown(total) {
         return Bound::UNKNOWN;
     }
-    Bound::both(total)
+    Bound {
+        re: accuracy::lsum(own(&v.0), total),
+        im: accuracy::lsum(own(&v.1), total),
+    }
 }
 
 /// Does the parameter's ball reach the cut `[1, ∞)` with its imaginary part

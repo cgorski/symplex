@@ -148,9 +148,12 @@ fn small_numeric_ranges_are_enumerated_exactly() {
     assert_eq!(s.to_string(), "25/12");
     let s = k.sin().summation(&k, &ctx.int(1), &ctx.int(2));
     assert_eq!(s.to_string(), "sin(1) + sin(2)");
-    // empty range
-    let s = k.summation(&k, &ctx.int(5), &ctx.int(1));
+    // the empty range; a reversed one by Karr's convention (D12, 0.55; it
+    // was 0): Σ_{k=5}^{1} k = −(2 + 3 + 4)
+    let s = k.summation(&k, &ctx.int(5), &ctx.int(4));
     assert_eq!(s.to_string(), "0");
+    let s = k.summation(&k, &ctx.int(5), &ctx.int(1));
+    assert_eq!(s.to_string(), "-9");
     let p = k.product_over(&k, &ctx.int(5), &ctx.int(1));
     assert_eq!(p.to_string(), "1");
 }
@@ -648,7 +651,20 @@ fn alternating_odd_denominator_constants() {
 fn binomial_identities() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
-    let n = ctx.symbol("n");
+    // The identities hold for `n ≥ 0`; for a plain `n` the closed form
+    // comes with that condition (D12, 0.55: `2ⁿ` is `1/2` at `n = −1`, where
+    // the sum is empty).
+    let plain = ctx.symbol("m");
+    assert_eq!(
+        plain
+            .binomial(&k)
+            .summation(&k, &ctx.int(0), &plain)
+            .to_string(),
+        "Piecewise(2^m if m >= 0, Sum(C(m, k), k=0..m) if True)"
+    );
+    let n = ctx
+        .symbol_with("n", &[Assumption::Integer, Assumption::NonNegative])
+        .unwrap();
     let x = ctx.symbol("x");
     let c = n.binomial(&k);
     let zero = ctx.int(0);
@@ -702,10 +718,13 @@ fn binomial_identities() {
 
 #[test]
 fn binomial_polynomial_weights() {
-    // Σ P(k) C(n,k) x^k for arbitrary polynomials P via the falling-factorial basis.
+    // Σ P(k) C(n,k) x^k for arbitrary polynomials P via the falling-factorial basis
+    // (for `n ≥ 0`: declared, D12).
     let ctx = Context::new();
     let k = ctx.symbol("k");
-    let n = ctx.symbol("n");
+    let n = ctx
+        .symbol_with("n", &[Assumption::Integer, Assumption::NonNegative])
+        .unwrap();
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     let c = n.binomial(&k);

@@ -422,11 +422,13 @@ impl KaplanMeier {
         let z = -norm_ppf((1.0 - confidence) / 2.0);
         let exact = self.survival_at(t);
         let s = q_to_f64(&exact);
-        let se = q_to_f64(&self.variance_at(t)).sqrt();
+        let variance = self.variance_at(t);
+        let se = q_to_f64(&variance).sqrt();
         Ok(match method {
             CiMethod::Linear => Interval::closed((s - z * se).max(0.0), (s + z * se).min(1.0)),
             CiMethod::LogLog => {
-                if !exact.is_positive() || exact >= Q::one() || se == 0.0 {
+                // A zero variance is read from the exact rational, not its square root.
+                if !exact.is_positive() || exact >= Q::one() || variance.is_zero() {
                     Interval::closed(s, s)
                 } else {
                     let ln_s = ln_survival(&exact);

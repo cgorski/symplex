@@ -341,6 +341,8 @@ fn grow_bracket(
             "the distribution function is not a number at {s}"
         )));
     }
+    // Float evidence: an f64 root-bracketing search (a root hit exactly, the first
+    // step's size from an f64 start of exactly 0).
     if gs == 0.0 {
         return Ok((s, s));
     }
@@ -2037,9 +2039,17 @@ impl Distribution {
             ));
         }
         if let Some(d) = self.downcast_ref::<Binomial>() {
+            // `n` must be an integer, decided exactly: an `f64` reading takes
+            // `10 + 10⁻²⁰` for `10` (up to 0.54 `n.fract() != 0.0` decided it).
+            let exact_n = d.n.eval().as_rational().filter(|n| n.is_integer())?;
             let (n, prob) = (num(&d.n)?, num(&d.p)?);
-            if n.fract() != 0.0 {
-                return None;
+            // Past 2⁵³ the double may not be `n` (`2⁵³ + 1` reads `2⁵³`, which the
+            // kernel accepts): its own refusal, for every `n` it cannot represent.
+            if super::data::Q::from_float(n).as_ref() != Some(&exact_n) {
+                return Some(Err(SymplexError::invalid_argument(
+                    "quantile_f64",
+                    format!("n = {exact_n} is not exactly representable as f64 (above 2^53)"),
+                )));
             }
             return Some(level.pick(
                 |p| numdist::binom::ppf(p, n, prob),

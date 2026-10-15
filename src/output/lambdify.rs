@@ -516,6 +516,8 @@ fn fold_constants_before_cse(
         if naive.is_some_and(f64::is_finite) {
             continue;
         }
+        // Float evidence: a certified nonzero imaginary part only refuses; a part
+        // dropped as 0 leaves the subtree to the compiled code (NaN where non-real).
         match crate::transforms::evalf::evalf_complex64(arena, id) {
             Ok(z) if z.im != 0.0 && z.re.is_finite() && z.im.is_finite() => {
                 return Err(SymplexError::NotImplemented(format!(
@@ -641,7 +643,9 @@ impl Program {
                 Instruction::Acosh => un!(|a: f64| a.acosh()),
                 Instruction::Atanh => un!(|a: f64| a.atanh()),
                 // An undefined (NaN) argument stays undefined: `sign(sqrt(-1))`
-                // was 0 and `heaviside(asin(2))` 0.5 before 0.30.
+                // was 0 and `heaviside(asin(2))` 0.5 before 0.30.  (Float evidence:
+                // the `== 0.0` / `!= 0.0` tests below are the f64 semantics of the
+                // compiled function itself — sign, step, booleans, branches.)
                 Instruction::Sign => un!(|a: f64| if a > 0.0 {
                     1.0
                 } else if a < 0.0 {

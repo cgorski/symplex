@@ -2200,7 +2200,35 @@ fn evaluate_adaptive(
                 achieved: 0,
             });
         }
-        if finite && let Some(v) = settle(&value, bound, digits, needed, prec, search) {
+        if finite && let Some((v, zero_part)) = settle(&value, bound, digits, needed, prec, search)
+        {
+            // A part that is 0 within its ball next to a part with its
+            // digits, in a result read as a number, is pursued to the cap
+            // (one evaluation there) before it is dropped: its ball holds
+            // the value's rounding and the error the rest of the expression
+            // carries into it, which the working precision may leave far
+            // above a part that is not 0.  Up to 0.54 it was dropped at
+            // once: `exp(i(π/2 + 10⁻⁴⁵))` printed `i` at 10 digits (its
+            // real part `−10⁻⁴⁵` needs about 190 bits), `Ci(−69·10³⁰π)`
+            // `3.141592654*i` (`−2.13·10⁻⁶⁵`, 250 bits).  Not to the depth
+            // of the zero search of a whole value: a value whose ball still
+            // contains 0 is printed `0`, wrong in every digit if it is not,
+            // while a part dropped next to a part with its digits leaves
+            // the number right to those digits (D3).
+            if zero_part
+                && search == ZeroSearch::Number
+                && beyond.is_none()
+                && !integral
+                && prec < cap
+            {
+                debug!(
+                    prec,
+                    cap, "evalf: a part is zero to the working precision; pursued"
+                );
+                previous = Some((accuracy::mag(&value), prec, err));
+                prec = cap;
+                continue;
+            }
             if let Some(s) = beyond {
                 debug!(prec, scale, "evalf: a value below the exponent range");
                 return Ok(Adaptive::Beyond(extended::Scaled { m: v, ..s }));
@@ -2422,6 +2450,9 @@ fn achieved_digits(acc: Option<f64>, digits: u32) -> u32 {
 /// dropped a negligible part even when it was certified nonzero:
 /// `Chi(−60)` printed `9.68091107e23` at 10 digits (it is `9.68091107·10²³ +
 /// 3.141592654i`), `10³⁰ + i` printed `1e30`.
+///
+/// The flag says that a part was set to 0 although it is not exactly 0
+/// ([`evaluate_adaptive`] pursues such a part of a number to the cap).
 fn settle(
     value: &Complex,
     bound: accuracy::Bound,
@@ -2429,9 +2460,9 @@ fn settle(
     needed: i64,
     prec: usize,
     search: ZeroSearch,
-) -> Option<Complex> {
+) -> Option<(Complex, bool)> {
     if accuracy::mag(value).is_none() {
-        return bound.is_exact().then(|| value.clone());
+        return bound.is_exact().then(|| (value.clone(), false));
     }
     if accuracy::accurate_bits(value, bound.joint())? < needed as f64 {
         return None;
@@ -2461,7 +2492,7 @@ fn settle(
     if zero_im {
         out.1 = BigFloat::new(prec);
     }
-    Some(out)
+    Some((out, zero_re || zero_im))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4791,11 +4822,23 @@ fn eval_sum(
         return hypsum::infinite_sum(arena, body, var, &lo_i, prec, &mut part);
     }
     let hi_i = range_bound(arena, cache, hi, "Sum")?;
+    // Karr's convention: `Σ_{lo}^{hi} = −Σ_{hi+1}^{lo−1}` for `hi < lo − 1`
+    // (it was the empty sum, as `eval` had it up to 0.54).
+    let (lo_i, hi_i, negate) = if hi_i < &lo_i - 1 {
+        (&hi_i + 1, &lo_i - 1, true)
+    } else {
+        (lo_i, hi_i, false)
+    };
     let terms = range_terms(&lo_i, &hi_i, "Sum")?;
     let mut sum = SumAcc::new(prec);
     let mut k = lo_i.clone();
     for _ in 0..terms {
         let CBall { mid: term, err } = evaluate_at_integer(arena, body, &post_order, var, &k, w)?;
+        let term = if negate {
+            (term.0.neg(), term.1.neg())
+        } else {
+            term
+        };
         sum.add(&term, err);
         k += 1;
     }
@@ -8667,9 +8710,10 @@ fn eval_lib_fn(
         LibFn::Erfi if args.len() == 1 && cache.get(&args[0]).is_some_and(|v| !v.1.is_zero()) => {
             cerf::erf_family(cerf::Kind::Erfi, get_cached(cache, args[0])?, w)
         }
-        // `K`, `E`, `F` with a non-real value or parameter (`elliptic.rs`;
-        // refused before 0.54: `elliptic_e(2)`, `elliptic_k(1 + 2i)`).
-        LibFn::EllipticK | LibFn::EllipticE | LibFn::EllipticF
+        // `K`, `E`, `F`, `Π` with a non-real value or parameter (`elliptic.rs`;
+        // refused before 0.54: `elliptic_e(2)`, `elliptic_k(1 + 2i)`; `Π`
+        // before 0.55: `elliptic_pi(1/2, 2)`).
+        LibFn::EllipticK | LibFn::EllipticE | LibFn::EllipticF | LibFn::EllipticPi
             if elliptic::takes(f, args, cache) =>
         {
             elliptic::eval(f, args, cache, w)

@@ -77,12 +77,12 @@ fn elliptic_integrals_off_the_real_range() {
     let x = ctx.symbol("x");
     let c = ctx.parse("elliptic_e(log(3))").unwrap();
     assert_eq!((&x * &c).solve(&x).unwrap().len(), 1);
-    // `Π` off its real range stays refused.
-    assert!(
-        ctx.parse("elliptic_pi(1/2, 2)")
-            .unwrap()
-            .eval_decimal(10)
-            .is_err()
+    // `Π` off its real range was refused here up to 0.54; since 0.55 it has
+    // its value (s15j3, `elliptic.rs`): mpmath `ellippi(1/2, 2)` =
+    // `1.53273834902928 - 2.10413339576824j`.
+    assert_eq!(
+        d(&ctx, "elliptic_pi(1/2, 2)", 10),
+        "1.532738349 - 2.104133396*i"
     );
 }
 

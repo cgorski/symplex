@@ -62,9 +62,15 @@ impl Expr<Numeric> {
     /// `a + 1 = 1` branch.  `eval` of a formal `Sum` node keeps such a sum
     /// as it is (the `Piecewise` holds the `Sum` itself).
     ///
-    /// Concrete limits with `upper < lower` give the empty sum `0` (SymPy
-    /// uses Karr's convention, `Σ_{k=5}^{2} k = −7`); a closed form for a
-    /// symbolic upper limit `n` holds for `n ≥ lower − 1`.
+    /// Reversed limits follow Karr's convention (as SymPy): `upper = lower −
+    /// 1` is the empty sum `0`, and `Σ_{k=a}^{b} = −Σ_{k=b+1}^{a−1}` for `b <
+    /// a − 1` (`Σ_{k=5}^{2} k = −7`; up to 0.54 it was `0`).  A closed form
+    /// for a symbolic upper limit holds for every integer value of it the
+    /// assumptions allow (where no term is at a pole), or it is returned as
+    /// `Piecewise((closed form, upper ≥ h), (Sum, True))`:
+    /// `Σ_{k=0}^{n} C(n, k) = 2ⁿ` holds for `n ≥ 0` only (at `n = −1` the
+    /// sum is empty; SymPy returns `2**n`), and is returned as such for an
+    /// `n` declared non-negative.
     ///
     /// When no closed form is known the formal `Sum` node is returned.
     /// Sums that provably diverge to `±∞` evaluate to `oo` / `-oo`; for
@@ -102,6 +108,15 @@ impl Expr<Numeric> {
     /// assert!(li2.to_string().starts_with("Piecewise(polylog(2, x) if 1 >= abs(x), "));
     /// assert_eq!(li2.subs(&x, &ctx.rational(1, 2)).eval().to_string(),
     ///            "-1/2*ln(2)^2 + 1/12*pi^2");
+    ///
+    /// // Reversed limits: Σ_{k=5}^{2} k = −(3 + 4) (Karr's convention)
+    /// assert_eq!(k.summation(&k, &ctx.int(5), &ctx.int(2)).to_string(), "-7");
+    ///
+    /// // Σ_{k=0}^{n} C(n, k) = 2ⁿ for n ≥ 0; at n = −1 the sum is empty
+    /// let row = ctx.parse("binomial(n, k)").unwrap().summation(&k, &ctx.int(0), &n);
+    /// assert!(row.to_string().starts_with("Piecewise(2^n if n >= 0, "));
+    /// assert_eq!(row.subs_i64(&n, -1).eval().to_string(), "0");
+    /// assert_eq!(row.subs_i64(&n, 5).eval().to_string(), "32");
     /// ```
     #[must_use = "returns the evaluated sum; does not modify in place"]
     pub fn summation(&self, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
@@ -131,9 +146,10 @@ impl Expr<Numeric> {
 
     /// Like [`summation`](Self::summation), but returns `Err` when the sum
     /// diverges ([`SymplexError::Divergent`]), no closed form was found, or
-    /// the closed form holds only under a convergence condition the
-    /// assumptions do not decide ([`SymplexError::ComputationFailed`], the
-    /// message names the condition).
+    /// the closed form holds only under a condition the assumptions do not
+    /// decide — convergence, or the upper limits where a finite sum's closed
+    /// form holds ([`SymplexError::ComputationFailed`], the message names
+    /// the condition).
     ///
     /// # Examples
     ///
@@ -181,8 +197,8 @@ impl Expr<Numeric> {
                 Err(SymplexError::ComputationFailed {
                     operation: "summation",
                     reason: format!(
-                        "the sum is {value} where {region}, a convergence condition the \
-                         assumptions do not decide"
+                        "the sum is {value} where {region}, a condition the assumptions do \
+                         not decide"
                     ),
                 })
             }

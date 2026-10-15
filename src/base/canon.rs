@@ -5562,12 +5562,18 @@ fn lib_function_value(
         args.get(i)
             .is_some_and(|&a| a == arena.infinity || (both && a == arena.neg_infinity))
     };
-    // Argument `i` (an order) has no infinity in it.
+    // Argument `i` (an order) is finite: no infinity in it, and a number,
+    // an argument with symbols or a constant known finite or with a
+    // certified value ([`finite_argument`], as in [`at_infinity`]).  Up to
+    // 0.54 a constant without an infinity in it counted as finite:
+    // `besselj(elliptic_k(besseli(0, 0)), ∞)` and `uppergamma(elliptic_k(
+    // besseli(0, 0)), ∞)` were built as 0, though `K(1) = ∞`.
     let finite_order = |i: usize| {
         args.get(i).is_some_and(|&a| {
             [arena.infinity, arena.neg_infinity, arena.complex_infinity]
                 .iter()
                 .all(|&inf| !crate::base::walk::contains(arena, a, inf))
+                && finite_argument(arena, a)
         })
     };
     Some(match f {

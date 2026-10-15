@@ -1248,7 +1248,17 @@ values only drop members far outside the window (`sets::Window`).  A zero is
 reduced into a period by a certified floor; two critical points are merged
 only when their difference is proved 0; a root from `nroots` is real when
 its certified disk shows it; `compare_numeric` orders only constants proved
-real and `check_solution` answers from `is_zero`.
+real and `check_solution` answers from `is_zero`.  The applied domains were
+reviewed at 0.55: the `f64` thresholds left in `stats/*`, `optimize`,
+`robotics`, `quaternion`, `lambdify` and `codegen` are those `f64` APIs' own
+(convergence, route choices, scipy/statsmodels tolerances), and SOS's steer
+the search (a certificate needs the exact `L·D·Lᵀ` and `verify`, a
+refutation an exact negative value at a rational point).  A symbolic result
+built from a candidate found numerically or by `solve` is accepted on exact
+evidence: the inverse of a transformed distribution must be real and
+continuous on the whole image and invert the map at one point
+(`wrappers::inverse_on_support`); values are ordered by their exact order
+(`order::exact_order`).
 
 **Printing complex values.**  A result read as a number (`eval_decimal`,
 `eval_f64`, `eval_complex64`) shows a part unless it is 0 within its error
@@ -1273,7 +1283,20 @@ an `f64` radius.  A function evaluated beyond the domain of its real
 routine gets the complex value with the convention mpmath and SymPy use on
 the cut (elliptic integrals: the limit from below), and a parameter that is
 continuous for the new route (a non-integer degree) is not `discrete` in
-`sensitivity`.
+`sensitivity`.  Each part of a value has its own bound where the route
+computes it to its own precision: an analytic function at an argument that
+is not exactly real moves each part by its own Cauchy–Riemann combination
+of the radii (`accuracy::analytic_parts`: `exp`, `sin`, `cos`, `sinh`,
+`cosh`), a power is bounded along the route `evalf` takes (`power_parts`),
+and a part is rounded at its own magnitude only where it is a product of
+correctly rounded factors (`own_roundings`).  A result read as a number
+pursues a part whose ball contains 0 next to a part with its digits to the
+cap before dropping it.  `Π(n | m)` beyond Carlson's half-plane is reached
+by exact transformations (a common rotation, the principal value plus half
+the residue for a real `n > 1`, the split at `1 − m sin²θ = 0`), never by a
+numerical initial integral; what they do not reach is refused.  An
+argument that is infinite or undefined only to the working precision is a
+domain error the precision search retries, never a non-convergence.
 
 **Poles of rational factors in integrals.**  A pole of a factor
 `B(x)^(−k)`, `B ∈ ℚ[x]`, is located by Descartes isolation, never through
@@ -1314,7 +1337,14 @@ crossing: a linear argument `u = αx + β` meets the real axis at `c = −im
 β/im α`, and when `u(c)` is proved on the cut each cut function of `u` is
 continued from the side `u` comes from (`definite::side_value`: `ln`, `Ci`,
 `Chi` step by `2πi`, `uᵃ` by `e^{2πia}`, `Ei` takes the mean on the axis);
-a crossing found only by sampling refuses.  On a piece in `[0, ∞)` an
+a crossing found only by sampling refuses.  A polynomial or rational
+argument `u = P/Q` meets the real axis at the real roots of `im(P·Q̄)`
+(Sturm isolation; on the cut where `re(P·Q̄) < 0`), located whatever the
+samples see (`definite::located_polynomial_crossings`).  An antiderivative of
+`R(e^{λx})` for a rate neither real nor imaginary keeps each logarithm in a
+form that stays off its cut on each side of `|e^{λx+μ}| = |r|`, joined
+continuously (`integrate::spiral_continuous`); the definite integrator splits
+a `Piecewise` antiderivative at its conditions in `x`.  On a piece in `[0, ∞)` an
 argument built from `x^q` and `ln x` is real and crosses no cut
 (`real_for_x_in`), without sampling.  Narrow peaks of a product of powers
 and an exponential are split off at the maximum of its logarithm
@@ -1488,9 +1518,19 @@ failing principal candidates never prove "no solution" while other branches
 exist.  A root of a declared domain is returned only when its membership is
 decided or can fail only on a set of measure zero
 (`in_domain_only_for_some_parameters`; an exact realness condition such as
-`A + C·u^(p/q)` real iff `u ≥ 0` becomes a conditional set), and a constant
-factor of a product is proved nonzero before the other factors' roots are
-claimed.  A root returned for a real unknown must be proved real; a constant discriminant or leading coefficient is decided by
+`A + C·u^(p/q)` real iff `u ≥ 0` becomes a conditional set).  The constant
+factors of a product (symbol-free, or holding an infinity) are decided
+first: one proved 0 makes every value a root unless another one has no
+value or an undecided zero test (refused); all proved nonzero, the other
+factors' roots are the roots.  The solvers substitute the pinned values of
+the parameters before solving (`solve::with_pinned_parameters`).  A root,
+or the constant of an equation free of the unknown, that holds `±∞`, `zoo`
+or `nan` inside a function argument (`solve::holds_infinity`; not the bounds
+of formal integrals, sums and limits) is claimed only when known finite.  A
+family not linear in `n` is located in a window by pulling the window back
+through a chain of monotone steps (`sets::monotone_members_in`); a step real
+only on part of the line (`ln`, `t^q`) may be followed only by steps that
+keep non-real values non-real.  A root returned for a real unknown must be proved real; a constant discriminant or leading coefficient is decided by
 `constant_zero_decision`, never by how it looks.  A root is a point of the
 natural domain: every part of the equation is defined there.  The
 evaluator absorbs some poles (`1/zoo = 0`, `zoo^(−k) = 0`), so the check of
@@ -1504,7 +1544,15 @@ certified is not claimed (the outcome is `Partial`).  An equation `c = 0`
 for a constant `c` is "no solution" only when `c` is proved nonzero
 (certified digits, a minimal polynomial, or what `Ex::is_zero` decides);
 otherwise it is refused.  A Lambert-W family of an ODE carries its `W₋₁`
-twin, and `check_ode_solution` rewrites `e^{W(z)} = z/W(z)`.
+twin, and `check_ode_solution` rewrites `e^{W(z)} = z/W(z)`.  A fitted
+initial-value solution needs a proof: its residual at the initial points
+proved 0 (`residual_is_zero`: exact tests, `solve::lambert_values`,
+certified values) or the candidate solving the equation identically
+(`check_ode_solution`); an undecided candidate is refused, never taken for
+lack of a better one (Lagrange's formula for linear constant-coefficient
+equations is exact by construction and is rejected only on a certified
+nonzero residual).  A sector condition `arg y ∈ (a, b]` is written `a <
+arg(y) ∧ arg(y) ≤ b`; `Solutions::under` simplifies conditions.
 
 **Budgets count work.**  An engine's limit counts deterministic work — a
 `Work` charged per step, or a `WorkScope` that counts interns attempted —
@@ -1512,7 +1560,25 @@ never wall-clock time (only a caller's `Budget` deadline may be one) and
 never `node_count()` growth, which depends on what the context already holds
 (up to 0.48 a repeated `series` call got slower each time).  A budget that
 surfaces as an error is `SymplexError::BudgetExhausted { kind }`; add a
-`BudgetKind` per new budget.
+`BudgetKind` per new budget.  An expansion that widens its window does not
+repeat a differentiation fallback that refused at a lower order; a special
+function whose derivative in a parameter divides by it at the point
+(`Π(n | m)` at `n = 0`) gets a structural rule rather than the fallback.
+
+**Finite sums for every integer bound.**  Reversed limits follow Karr's
+convention (`Σ_{a}^{b} = −Σ_{b+1}^{a−1}` for `b < a − 1`; the empty sum for
+`b = a − 1`) in `summation`, `eval` and `evalf` alike.  A closed form for a
+symbolic upper limit must hold for every integer value the assumptions
+allow where the sum is defined; each rule says where it holds
+(`summation::Holds`): an antidifference holds everywhere; a rule proved only
+for `hi ≥ h` (the identities with `C(n, k)`: `n ≥ 0`) says so, and
+`finite_sum` decides `hi ≥ h` from the assumptions or returns
+`SumOutcome::Conditional`; Gosper's antidifference is checked at the empty
+sum, at the first term, and below the lower limit term by term
+(`gosper_closed`, `zero_below`).  A closed form undefined as a whole is never
+returned for symbolic limits.  `convergence` decides a symbolic geometric
+base with `summation::modulus_vs_one`, so `is_convergent` agrees with the
+regions `summation` returns.
 
 **Per-arena state.**  Memos keyed by an arena use `Arena::serial()`, never
 its address; zero verdicts of constants are memoised under

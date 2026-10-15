@@ -113,14 +113,15 @@ fn sum_constants() {
 
 #[test]
 fn sum_empty_range() {
-    // Sum(k, k=5..1) — upper < lower, so empty sum = 0
+    // Sum(k, k=5..4) is the empty sum; Sum(k, k=5..1) is −(2 + 3 + 4) by
+    // Karr's convention (D12, 0.55; it was 0).
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let five = ctx.int(5);
-    let one = ctx.int(1);
-    let s = Ex::symbolic_sum(&k, &k, &five, &one);
-    let result = s.eval();
-    assert_eq!(format!("{result}"), "0");
+    let s = Ex::symbolic_sum(&k, &k, &five, &ctx.int(4));
+    assert_eq!(format!("{}", s.eval()), "0");
+    let s = Ex::symbolic_sum(&k, &k, &five, &ctx.int(1));
+    assert_eq!(format!("{}", s.eval()), "-9");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

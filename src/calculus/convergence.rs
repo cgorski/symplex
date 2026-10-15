@@ -11,7 +11,9 @@
 //! 3. **Exact growth analysis** for hypergeometric-type terms
 //!    `c · (−1)^k · rᵏ · Π(k+β)^p · Π((αk+β)!)^e · Π(αk+β)^(ck+d)`: Stirling's
 //!    formula gives `ln|a_k| = A·k ln k + B·k + C·ln k + O(1)` with *exact*
-//!    rational `A`, `C` and `B ∈ ℚ + Σ ℚ·ln p` (primes `p`).  The sign of
+//!    rational `A`, `C` and `B ∈ ℚ + Σ ℚ·ln p` (primes `p`), plus `ln|x|`
+//!    for a symbolic base `x`, decided as `summation` decides `|x| < 1`
+//!    (`(1/(a + 1))ᵏ` for a positive `a` converges).  The sign of
 //!    `A`, then `B`, then `C` decides — this subsumes the ratio test, the
 //!    root test, the p-series test and the alternating-series test (for
 //!    `A = B = 0` the terms are eventually monotone, so `Σ(−1)^k a_k`
@@ -425,6 +427,53 @@ fn certified_b_sign(arena: &mut Arena, g: &Growth) -> SignSet {
     eval::certified_real_sign(arena, b).map_or(SignSet::UNKNOWN, SignSet::from_ordering)
 }
 
+/// The sign of `b` when it holds `ln|x|` for symbolic bases `x`: `b =
+/// ln|Y|` for `Y = e^{b_rat}·Π p^{qₚ}·Π |c|^a·Π x^a` (rational, constant and
+/// symbolic bases), decided as `summation` decides `|Y| < 1`
+/// ([`summation::modulus_vs_one`]): `Σ xᵏ/k²` converges for `x = a/(a + 1)`
+/// with a positive `a`, diverges for `x = a + 1`.  Up to 0.54 any symbolic
+/// base left `b` undecided, and `is_convergent` returned `None` where
+/// `summation` decided the convergence from the same assumptions.
+fn symbolic_b_sign(arena: &mut Arena, g: &Growth, shape: &TermShape) -> SignSet {
+    let mut factors = Vec::new();
+    if !g.b_rat.is_zero() {
+        let b = arena.num_ratio(g.b_rat.clone());
+        factors.push(arena.exp(b));
+    }
+    for (p, q) in &g.b_logs {
+        if q.is_zero() {
+            continue;
+        }
+        let Ok(p) = i64::try_from(*p) else {
+            return SignSet::UNKNOWN;
+        };
+        let p = arena.int(p);
+        let q = arena.num_ratio(q.clone());
+        factors.push(arena.pow(p, q));
+    }
+    for (base, a) in &g.b_numeric {
+        let modulus = arena.abs(*base);
+        let a = arena.num_ratio(a.clone());
+        factors.push(arena.pow(modulus, a));
+    }
+    // The bases `growth_exponents` could not size (the others are in
+    // `b_rat`, `b_logs` and `b_numeric`).
+    for (base, a) in &shape.bases {
+        if *base == arena.e_const || numeric_abs(arena, *base).is_some() {
+            continue;
+        }
+        let a = arena.num_ratio(a.clone());
+        factors.push(arena.pow(*base, a));
+    }
+    let y = match factors.len() {
+        0 => arena.one,
+        1 => factors[0],
+        _ => arena.mul(&factors),
+    };
+    let y = eval::eval(arena, y);
+    summation::modulus_vs_one(arena, y)
+}
+
 /// Add `q·ln|r|` for a rational `r ≠ 0` to the exact log-sum.
 fn add_log_rational(logs: &mut BTreeMap<u64, Q>, r: &Q, q: &Q) -> Option<()> {
     if r.is_zero() {
@@ -573,7 +622,11 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
     }
     // `b` matters only when `a` = 0 (see `decide_generic`).
     if g.a.is_zero() {
-        g.b_signs = certified_b_sign(arena, &g);
+        g.b_signs = if g.b_symbolic {
+            symbolic_b_sign(arena, &g, &shape)
+        } else {
+            certified_b_sign(arena, &g)
+        };
     }
     trace!(?g, "convergence: growth exponents");
     Some(g)

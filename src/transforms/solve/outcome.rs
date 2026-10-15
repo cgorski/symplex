@@ -373,8 +373,21 @@ impl Solutions {
     /// `cond`), a proof of no root stays one, and an unknown part stays
     /// unknown.  For an inversion that takes a principal branch whose range
     /// the right-hand side meets only for some parameter values (`√f = y`:
-    /// `f = y²` when `−π/2 < arg y ≤ π/2`).
+    /// `f = y²` when `−π/2 < arg y ≤ π/2`).  `cond` is simplified first
+    /// (`logic::simplify_bool`): one that holds for every value leaves the
+    /// outcome as it is, one that never holds leaves no root (up to 0.54
+    /// `√x = y` for an imaginary `y` was refused naming the condition `0 > 0 ∨
+    /// (0 = 0 ∧ −i·y ≥ 0)`).
     pub(crate) fn under(self, arena: &mut Arena, cond: ExprId) -> Self {
+        let cond = crate::transforms::logic::simplify_bool(arena, cond);
+        if cond == arena.bool_true {
+            return self;
+        }
+        if cond == arena.bool_false {
+            return Solutions::none(Reason::said(
+                "the principal branch never reaches the right-hand side",
+            ));
+        }
         let guard = |arena: &mut Arena, reason: Reason| match reason {
             Reason::Conditional(groups) => Reason::Conditional(
                 groups

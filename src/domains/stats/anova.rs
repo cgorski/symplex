@@ -1373,6 +1373,7 @@ impl GaussLegendre {
                 let (p, d) = legendre(m, x);
                 let step = p / d;
                 x -= step;
+                // Float evidence: Newton's convergence test for an f64 quadrature node.
                 if step.abs() < 1e-15 {
                     break;
                 }
@@ -1470,6 +1471,7 @@ fn norm_interval(a: f64, w: f64) -> f64 {
             fact *= (n - 1.0) * n; // (2j)!
             let term = even * hpow / ((n + 1.0) * fact);
             sum += term;
+            // Float evidence: truncation of an f64 series.
             if term.abs() <= 1e-17 * sum.abs() {
                 break;
             }
@@ -1680,6 +1682,7 @@ impl<'r> RangeUpperTable<'r> {
         let (mut num, mut den) = (0.0, 0.0);
         for ((&p, &c), &f) in self.points.iter().zip(&self.weights).zip(values) {
             let d = x - p;
+            // Float evidence: the f64 abscissa is a node (barycentric formula's 0/0).
             if d == 0.0 {
                 (num, den) = (f, 1.0);
                 break;
@@ -1725,6 +1728,7 @@ fn stirling_remainder(x: f64) -> f64 {
         for j in 1..=40 {
             let term = pow / (2 * j + 1) as f64;
             sum += term;
+            // Float evidence: truncation of an f64 series.
             if term <= 1e-17 * sum {
                 break;
             }
@@ -1753,6 +1757,7 @@ fn ln1p_minus_u(u: f64) -> f64 {
             contribution
         };
         term *= u;
+        // Float evidence: truncation of an f64 series.
         if contribution.abs() <= 1e-18 * sum.abs() {
             break;
         }
@@ -1903,6 +1908,7 @@ fn studentized_range_tail_by(
         0.0
     };
     let (mut lo, mut mode, mut hi, mut l_mode) = (t0 - scale, t0, t0 + scale, l0);
+    // Float evidence: the direction of an f64 bracket search (0: start at the mode).
     if dir != 0.0 {
         let l_first = if dir > 0.0 { l_right } else { l_left };
         let (mut prev, mut cur, mut l_cur) = (t0, t0 + dir * scale, l_first);
@@ -2167,6 +2173,7 @@ fn studentized_range_root(
     let root = brent_root(g, bracket.lower, bracket.upper, &opts)
         .map_err(|e| failed(OP, e.to_string()))?
         .exp();
+    // Float evidence: a sanity check of the f64 root (it can only refuse).
     if root.is_finite() && root > 0.0 {
         Ok(root)
     } else {

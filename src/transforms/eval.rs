@@ -720,11 +720,12 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     }
                 });
 
-                // Check for empty range before anything else
+                // The empty range `hi = lo − 1` before anything else (a
+                // range with `hi < lo − 1` is minus the sum over
+                // `[hi + 1, lo − 1]`, Karr's convention: the engine's).
                 if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int)
-                    && hi_val < lo_val
+                    && hi_val.checked_add(1) == Some(lo_val)
                 {
-                    // Empty range: sum is 0
                     cache.insert(id, arena.zero);
                     continue;
                 }
@@ -739,7 +740,10 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
 
                 if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int) {
-                    if (hi_val - lo_val) <= 1000 {
+                    if hi_val
+                        .checked_sub(lo_val)
+                        .is_some_and(|d| (0..=1000).contains(&d))
+                    {
                         let mut terms = smallvec::SmallVec::<[ExprId; 8]>::new();
                         for k in lo_val..=hi_val {
                             let k_expr = arena.int(k);

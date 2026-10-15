@@ -80,6 +80,11 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("calculus/residue.rs", [6, 0]),
     ("calculus/risch/log_to_real.rs", [2, 0]),
     ("calculus/summation.rs", [4, 0]),
+    // Reviewed in s15j4 (with stats/*, optimize, robotics, quaternion, output/lambdify, codegen):
+    // SOS thresholds steer the search (claims are exact: LDLᵀ + `verify`, rational refutation
+    // points); the rest are `f64` APIs' own tests (convergence, exact input values, routes).  The
+    // inverse of a transformed distribution, a binomial `n` and a zero Greenwood variance are
+    // exact since.
     ("domains/certificates/sos.rs", [18, 4]),
     ("domains/linalg.rs", [1, 0]),
     ("domains/matrix.rs", [2, 0]),
@@ -89,14 +94,12 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("domains/robotics.rs", [0, 6]),
     ("domains/stats/anova.rs", [5, 2]),
     ("domains/stats/cox.rs", [2, 1]),
-    ("domains/stats/family.rs", [0, 3]),
+    ("domains/stats/family.rs", [0, 2]),
     ("domains/stats/hypothesis.rs", [11, 1]),
     ("domains/stats/multivariate.rs", [2, 0]),
     ("domains/stats/numdist.rs", [13, 14]),
     ("domains/stats/regression.rs", [3, 5]),
     ("domains/stats/sequential.rs", [1, 5]),
-    ("domains/stats/survival.rs", [0, 1]),
-    ("domains/stats/wrappers.rs", [1, 0]),
     ("output/codegen.rs", [0, 5]),
     ("output/codegen/numeric_rt.rs", [30, 15]),
     ("output/lambdify.rs", [0, 9]),

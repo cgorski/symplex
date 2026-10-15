@@ -134,7 +134,12 @@ fn alternating_k_binomial_sum_is_defined_at_n_zero() {
 #[test]
 fn binomial_sums_from_other_lower_limits() {
     let ctx = Context::new();
-    let (k, n, x) = (ctx.symbol("k"), ctx.symbol("n"), ctx.symbol("x"));
+    // `n` declared a non-negative integer: the identities hold for `n ≥ 0`
+    // (for a plain `n` the closed forms come with `n ≥ 0`, D12, 0.55).
+    let (k, x) = (ctx.symbol("k"), ctx.symbol("x"));
+    let n = ctx
+        .symbol_with("n", &[Assumption::Integer, Assumption::NonNegative])
+        .unwrap();
     let s = ctx
         .parse("binomial(n, k)")
         .unwrap()

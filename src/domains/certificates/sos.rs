@@ -28,6 +28,14 @@
 //! non-negative but not sums of squares (Motzkin's polynomial) come back
 //! as `Unknown`; goals with a negative value are refuted with an exact
 //! rational point.
+//!
+//! **Float evidence.**  The `f64` thresholds of this file (interior-point
+//! convergence, numerical kernels, rounding, integer relations, Newton on
+//! zeros, the descent of the refutation) only steer the search: a wrong
+//! guess costs an `Unknown`, never a claim, since `Proved` needs the exact
+//! `L·D·Lᵀ` and [`SosCertificate::verify`], a face is kept only if the
+//! restricted system is exactly consistent, and `Refuted` needs the goal's
+//! exact value at a rational point to be negative (reviewed in s15j4).
 
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -625,6 +633,7 @@ mod dense {
         for i in 0..n {
             for k in 0..n {
                 let aik = a[i * n + k];
+                // Float evidence: skips an exact 0 of a dense product (a speed-up).
                 if aik == 0.0 {
                     continue;
                 }
@@ -975,6 +984,7 @@ impl SosProblem {
             // μ only has to be small enough to expose the kernel of a
             // rank-deficient face; pushing it further only lets Z⁻¹ blow up.
             let xscale = (0..n).map(|i| x[i * n + i]).fold(0.0, f64::max).max(1.0);
+            // Float evidence: interior-point convergence (a search guide, see the module doc).
             if rp_norm <= 1e-9 * bnorm && rd_norm <= 1e-9 && mu <= 1e-9 * xscale {
                 return Ok(Some(x));
             }
@@ -1082,7 +1092,7 @@ impl SosProblem {
             }
         }
         // Not fully converged: return the best iterate if it is nearly
-        // feasible (the exact rounding step is the real test).
+        // feasible (the exact rounding step is the real test; float evidence: a guide).
         Ok(best.and_then(|(merit, xb)| if merit < 1e-5 { Some(xb) } else { None }))
     }
 
@@ -1210,6 +1220,7 @@ fn rationalize(v: f64, max_den: u64, tol: f64) -> Option<Q> {
             return Some(Q::new(BigInt::from(h1), BigInt::from(k1)));
         }
         let frac = x - a;
+        // Float evidence: the end of an f64 continued fraction (a rounding guess).
         if frac.abs() < 1e-15 {
             break;
         }
@@ -1226,6 +1237,7 @@ fn numeric_kernel(x: &[f64], n: usize) -> Option<(Vec<Vec<f64>>, f64)> {
         vectors: vecs,
     } = dense_f64::sym_eigen(x, n, &SOS_EIGEN).ok()?;
     let lmax = eig.iter().cloned().fold(0.0, f64::max).max(1e-300);
+    // Float evidence: a numerical kernel guides facial reduction (checked exactly).
     let kernel: Vec<usize> = (0..n).filter(|&i| eig[i] < 1e-7 * lmax).collect();
     if kernel.is_empty() || kernel.len() == n {
         return None;
@@ -1266,6 +1278,7 @@ fn rationalize_kernel(rows: &[Vec<f64>], n: usize) -> Option<QMatrix> {
         }) else {
             break;
         };
+        // Float evidence: f64 row reduction of a numerical kernel (a rounding guess).
         if k[p * n + col].abs() < 1e-8 {
             continue;
         }
@@ -1294,6 +1307,7 @@ fn rationalize_kernel(rows: &[Vec<f64>], n: usize) -> Option<QMatrix> {
         let mut exact = Vec::with_capacity(n);
         for c in 0..n {
             let v = k[row * n + c];
+            // Float evidence: a rounding guess, checked exactly downstream.
             let v = if v.abs() < 1e-9 { 0.0 } else { v };
             exact.push(rationalize(v, 1000, 1e-9)?);
         }
@@ -1317,6 +1331,7 @@ fn rationalize_kernel(rows: &[Vec<f64>], n: usize) -> Option<QMatrix> {
 /// `rows`?
 fn in_span(v: &[f64], rows: &[Vec<f64>], tol: f64) -> bool {
     let norm = v.iter().map(|a| a * a).sum::<f64>().sqrt();
+    // Float evidence: filters rounding guesses (the face is checked exactly).
     if norm == 0.0 {
         return true;
     }
@@ -1440,6 +1455,7 @@ fn integer_relations(rows: &[Vec<f64>], n: usize, accuracy: f64) -> Vec<Vec<BigI
     for v in reduced {
         let lf: Vec<f64> = v[..n].iter().map(|x| x.to_f64().unwrap_or(0.0)).collect();
         let lnorm = lf.iter().map(|a| a * a).sum::<f64>().sqrt();
+        // Float evidence: candidate relations only (see the comment above).
         if lnorm == 0.0 || lnorm > 1e4 {
             continue;
         }
@@ -1559,6 +1575,7 @@ fn refine_zero(g: &FloatPoly, start: &[f64]) -> Option<Vec<f64>> {
     for _ in 0..40 {
         let grad = g.gradient(&x);
         let gnorm = grad.iter().map(|v| v * v).sum::<f64>().sqrt();
+        // Float evidence: Newton's convergence on an f64 zero (a guide for the face).
         if gnorm < 1e-14 {
             break;
         }
@@ -1611,6 +1628,7 @@ fn kernel_zeros(g: &Poly, basis: &[Vec<u32>], rows: &[Vec<f64>], n: usize) -> Ve
     let mut zeros: Vec<Vec<f64>> = Vec::new();
     let mut starts: Vec<Vec<f64>> = Vec::new();
     for row in rows {
+        // Float evidence: starting points and de-duplication of f64 zeros (guides).
         if row[one].abs() > 1e-9 {
             starts.push(lin.iter().map(|i| row[i.unwrap_or(0)] / row[one]).collect());
         }
@@ -1681,6 +1699,7 @@ fn rational_face_candidates(x: &[f64], n: usize, goal: &Poly, basis: &[Vec<u32>]
                     }
                 }
                 let norm = w.iter().map(|a| a * a).sum::<f64>().sqrt();
+                // Float evidence: an f64 Gram–Schmidt of candidate directions (guides).
                 if norm > 1e-9 {
                     ortho.push(w.into_iter().map(|a| a / norm).collect());
                 }
@@ -1792,6 +1811,7 @@ fn grid_size(n: usize) -> Option<usize> {
 /// an exact check of the rationalised minimiser.
 fn refute_by_descent(goal: &Poly, best: Option<(Vec<Q>, Q)>) -> Option<(Vec<Q>, Q)> {
     let (start, _) = best?;
+    // Float evidence: `res.fun < −1e-9` only picks points to test; the exact value decides.
     let ctx = goal.context();
     let f = |p: &[f64]| -> f64 {
         let vals: Vec<Ex> = p

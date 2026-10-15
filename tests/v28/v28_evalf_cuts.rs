@@ -259,13 +259,20 @@ fn inverse_functions_just_beyond_their_branch_points_are_evaluated() {
         (format!("acos(1 + {H})"), "1e-30*i"),
         // mpmath: acos(1 - h) = 1.0e-30
         (format!("acos(1 - {H})"), "1e-30"),
-        // mpmath: asin(mpc(1 + h)) = (1.570796326794896619231 - 1.0e-30j)
-        // (the imaginary part is below the 20 printed digits)
-        (format!("asin(1 + {H})"), "1.5707963267948966192"),
+        // mpmath: asin(mpc(1 + h)) = (1.570796326794896619231 - 1.0e-30j).
+        // The imaginary part is certified nonzero once the precision search
+        // pursues a part whose ball contains 0 (0.55, D3); up to 0.54 it was
+        // dropped as below the 20 printed digits (`1.5707963267948966192`).
+        (format!("asin(1 + {H})"), "1.5707963267948966192 - 1e-30*i"),
         // mpmath: acosh(mpc(1 - h)) = (0.0 + 1.0e-30j)
         (format!("acosh(1 - {H})"), "1e-30*i"),
-        // mpmath: acosh(mpc(-1 - h)) = (1.0e-30 + 3.141592653589793238463j)
-        (format!("acosh(-1 - {H})"), "3.1415926535897932385*i"),
+        // mpmath: acosh(mpc(-1 - h)) = (1.0e-30 + 3.141592653589793238463j).
+        // The real part is printed since 0.55, as for `asin(1 + h)` above (up
+        // to 0.54: `3.1415926535897932385*i`).
+        (
+            format!("acosh(-1 - {H})"),
+            "1e-30 + 3.1415926535897932385*i",
+        ),
         // mpmath: atanh(mpc(1 + h)) = (69.77069997038131582996 - 1.570796326794896619231j)
         (
             format!("atanh(1 + {H})"),

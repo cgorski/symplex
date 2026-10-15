@@ -463,6 +463,8 @@ pub fn inverse_kinematics_2dof(l1: f64, l2: f64, target_x: f64, target_y: f64) -
     let scale = [l1, l2, target_x, target_y]
         .iter()
         .fold(0.0_f64, |m, v| m.max(v.abs()));
+    // Float evidence: the `== 0.0` tests below read the caller's f64 inputs
+    // themselves (a zero-length link, all inputs zero), exact for the doubles given.
     if scale == 0.0 {
         // Two zero-length links at the origin: every pair is a solution.
         return vec![(0.0, 0.0)];

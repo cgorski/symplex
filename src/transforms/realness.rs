@@ -33,22 +33,24 @@ enum Unassumed {
 /// First the assumption system: `a + b`, `√2`, `ln 3` are real, `i`,
 /// `√(−2)` are not; `√a` and `√(−a)` are undecided, since a real `a` may
 /// have either sign.  Then, for a constant without parameters,
-/// numerically: its value to `digits` correct digits with an imaginary part
-/// beyond them (two digits of margin) is not real (`√(1/2 − √5/2)`).  If
-/// the imaginary part is within them, `im(c)` is evaluated on its own and
-/// `c` is real when that is a certified exact 0 (`√(3 − √5)`, which the
-/// assumption system leaves open).  `evalf` refuses a value it cannot
-/// certify (`PrecisionExhausted`), and then the answer is `None`; so it is
-/// for a non-zero `im(c)` below the digits, which may be a rounding residue
-/// (the imaginary part `evalf` (0.28) returns for a real `RootOf` root) or
-/// a genuinely tiny imaginary part.  An `im(c)` that is only zero to the
-/// precision reached is no proof: then `eval`'s exact realness tests decide
+/// numerically: a certified evaluation keeps an imaginary part only when
+/// its error ball excludes 0 (`evalf`'s `settle`), so a value with one is
+/// not real (`√(1/2 − √5/2)`), however small that part is next to the real
+/// part.  Otherwise `im(c)` is evaluated on its own: `c` is real when that
+/// is a certified exact 0 (`√(3 − √5)`, which the assumption system
+/// leaves open), and not real when it is certified nonzero.  `evalf`
+/// refuses a value it cannot certify (`PrecisionExhausted`), and then the
+/// answer is `None`.  An `im(c)` that is only zero to the precision
+/// reached is no proof: then `eval`'s exact realness tests decide
 /// ([`constant_facts`](crate::transforms::eval::constant_facts): the exact
 /// conjugation test over radicals and roots of unity, the minimal
 /// polynomial), else `None`.  Up to 0.48 it counted as real:
 /// `Γ(2 + i·d)` with `d = e^{10⁻¹⁵⁰} − 1 − 10⁻¹⁵⁰ ≈ 5·10⁻³⁰¹` (imaginary
 /// part `2.1·10⁻³⁰¹`) was real, and `lim_{x→∞} (Γ(2 + i·d) − 1)·x` was
-/// `0`.
+/// `0`.  Up to 0.54 a certified imaginary part below the digits (relative
+/// to the real part, `is_real_to_digits`) was not read as one, and a
+/// certified nonzero `im(c)` gave `None`: `ln(2 + i·e⁻⁸⁰)` (imaginary part
+/// `9·10⁻³⁶`) was undecided at 30 digits, not "not real".
 pub(crate) fn constant_realness(
     arena: &mut Arena,
     c: ExprId,
@@ -120,10 +122,10 @@ fn constant_realness_with(
         return None;
     }
     // `evalf_complex` returns certified digits or a 0 that is only zero to
-    // the precision reached, which is real to any digits: an imaginary part
-    // beyond the digits is certified.
+    // the precision reached: an imaginary part it keeps is certified
+    // nonzero, however small next to the real part.
     let z = crate::transforms::evalf::evalf_complex(arena, c, digits).ok()?;
-    if !crate::transforms::evalf::is_real_to_digits(&z, digits.saturating_sub(2)) {
+    if !z.1.is_zero() {
         return Some(false);
     }
     let im = arena.im(c);
@@ -134,7 +136,10 @@ fn constant_realness_with(
     let search = crate::transforms::evalf::ZeroSearch::Cap;
     let w = crate::transforms::evalf::evalf_verdict(arena, im, digits, search).ok()?;
     match w.proven() {
-        Some(w) => (w.0.is_zero() && w.1.is_zero()).then_some(true),
+        Some(w) if w.0.is_zero() && w.1.is_zero() => Some(true),
+        // `im(c)` certified nonzero.
+        Some(w) if w.1.is_zero() => Some(false),
+        Some(_) => None,
         None => {
             let facts = crate::transforms::eval::constant_facts(arena, c);
             (Truth::from(facts.query(Props::REAL)).is_true()).then_some(true)

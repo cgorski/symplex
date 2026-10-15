@@ -64,10 +64,24 @@
 //! `n = 0` branch.  A divergence claim needs the term not to vanish
 //! identically: `Σ_{k≥1} x/k` with an unassumed `x` stays unevaluated.
 //!
-//! **Empty ranges.**  Concrete limits with `hi < lo` give the empty sum `0`
-//! and the empty product `1` (SymPy follows Karr's convention instead:
-//! `Σ_{k=5}^{2} k = −7` there).  A closed form for a symbolic upper limit
-//! `n` holds for `n ≥ lo − 1`.
+//! **Reversed ranges: Karr's convention.**  `Σ_{k=lo}^{lo−1} f(k)` is the
+//! empty sum `0` and `Σ_{k=lo}^{hi} f(k) = −Σ_{k=hi+1}^{lo−1} f(k)` for
+//! `hi < lo − 1` (Karr 1981, SymPy's convention: `Σ_{k=5}^{2} k = −7`), so
+//! that `Σ_{a}^{b} + Σ_{b+1}^{c} = Σ_{a}^{c}` for all integers.  A closed
+//! form for a symbolic upper limit holds for every integer value of it the
+//! assumptions allow where the sum is defined (no term at a pole), or it is
+//! returned under the exact condition: `SumOutcome::Conditional` with
+//! the region `hi ≥ h₀`, which `Ex::summation` writes as
+//! `Piecewise((closed form, hi ≥ h₀), (Sum, True))`.  The antidifference
+//! rules (Faulhaber, rational functions, telescoping, geometric terms) hold
+//! everywhere; the binomial identities with `C(n, k)`, `n` the upper limit,
+//! hold for `n ≥ 0` (`Σ_{k=0}^{n} C(n, k) = 2ⁿ` is `1/2` at `n = −1`, where
+//! the sum is empty); Gosper's antidifference is checked below the lower
+//! limit term by term until the terms are undefined or provably 0 together
+//! with the closed form's dependence on the limit (`gosper_closed`).  Up
+//! to 0.54 a reversed range was the empty sum and every closed form was
+//! claimed for every `n`.  Products keep the empty product `1` for
+//! `hi < lo`.
 //!
 //! Values without an elementary closed form use the dedicated nodes:
 //! `Σ 1/k³ = ζ(3)` (`Zeta`), `Σ (−1)^k/(2k+1)² = G` (`Catalan`).
@@ -119,7 +133,9 @@ pub(crate) enum SumOutcome {
     /// assumptions do not decide: `value` is the sum wherever the condition
     /// `region` holds (the exact convergence region of `Σ P(k)·yᵏ`, `Σ
     /// yᵏ/kᵐ`, `Σ yᵏ/k` and the table series; a sufficient one for `Σ C(k +
-    /// c, k)·yᵏ`).  `Ex::summation` returns `Piecewise((value, region),
+    /// c, k)·yᵏ`) — or a finite sum whose closed form holds only for the
+    /// upper limits `hi ≥ h₀` the assumptions do not decide (`region` is
+    /// `hi ≥ h₀`; D12).  `Ex::summation` returns `Piecewise((value, region),
     /// (Sum, True))`; `eval` of a formal `Sum` keeps the node (evaluating
     /// that `Piecewise` would reach its own `Sum` again).
     Conditional {
@@ -479,6 +495,39 @@ fn real_abs_less_than_one(arena: &mut Arena, e: ExprId) -> Truth {
         return Truth::False;
     }
     Truth::Unknown
+}
+
+/// The sign of `|y| − 1` for a ratio `y` with parameters, as the
+/// summation rules decide `|y| < 1` ([`real_abs_less_than_one`]): `NEGATIVE`
+/// inside the unit circle, `POSITIVE` outside, `ZERO` for `y = ±1`,
+/// `UNKNOWN` otherwise.  `convergence::growth_exponents` decides the
+/// exponential rate of a term with a symbolic base by it, so that
+/// `is_convergent` agrees with the conditions `summation` returns (up to
+/// 0.54 `Σ (1/(a + 1))ᵏ` for a positive `a` was undecided there while
+/// `summation` gave `(a + 1)/a`).
+pub(crate) fn modulus_vs_one(arena: &mut Arena, y: ExprId) -> SignSet {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if let Some(r) = const_value(arena, y) {
+        return SignSet::from_ordering(r.abs().cmp(&Q::one()));
+    }
+    match real_abs_less_than_one(arena, y) {
+        Truth::True => return SignSet::NEGATIVE,
+        Truth::False => return SignSet::POSITIVE,
+        Truth::Unknown => {}
+    }
+    let mut cache = AssumptionCache::new();
+    if !Truth::from(cache.query(arena, y, Props::REAL)).is_true() {
+        return SignSet::UNKNOWN;
+    }
+    for side in [arena.one, arena.neg_one] {
+        let d = arena.sub(y, side);
+        let d = eval::eval(arena, d);
+        let d = combine_fractions(arena, d);
+        if Truth::from(cache.query(arena, d, Props::ZERO)).is_true() {
+            return SignSet::ZERO;
+        }
+    }
+    SignSet::UNKNOWN
 }
 
 /// Does the ratio `y` hold a symbol?  Only such a ratio gets a
@@ -846,20 +895,160 @@ fn combine_outcomes(arena: &mut Arena, a: SumOutcome, b: SumOutcome) -> SumOutco
 // Finite sums
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The upper limits `hi` for which a closed form of `Σ_{k=lo}^{hi} f(k)`
+/// holds, a reversed range read with Karr's convention (D12).
+#[derive(Clone, Debug)]
+enum Holds {
+    /// Every integer `hi` where the sum is defined: an antidifference
+    /// `F(hi + 1) − F(lo)` with `F(k + 1) − F(k) = f(k)` at every integer
+    /// where `f` is defined (Faulhaber, rational functions, telescoping,
+    /// geometric terms), or a closed form checked below `lo`
+    /// ([`gosper_closed`]).
+    Everywhere,
+    /// `hi ≥ h` for every threshold `h` of the list: a rule whose identity
+    /// is proved only there (comparable thresholds are merged).
+    From(Vec<ExprId>),
+}
+
+impl Holds {
+    /// `hi ≥ h`.
+    fn at_least(h: ExprId) -> Holds {
+        Holds::From(vec![h])
+    }
+
+    /// Where two closed forms hold together.
+    fn and(self, other: Holds, arena: &mut Arena) -> Holds {
+        match (self, other) {
+            (Holds::Everywhere, h) | (h, Holds::Everywhere) => h,
+            (Holds::From(mut list), Holds::From(more)) => {
+                for h in more {
+                    merge_threshold(arena, &mut list, h);
+                }
+                Holds::From(list)
+            }
+        }
+    }
+}
+
+/// Add the threshold `h` to `list`, keeping the larger of two whose
+/// difference is a rational.
+fn merge_threshold(arena: &mut Arena, list: &mut Vec<ExprId>, h: ExprId) {
+    for slot in list.iter_mut() {
+        let d = arena.sub(h, *slot);
+        if let Some(r) = eval_rat(arena, d) {
+            if r.is_positive() {
+                *slot = h;
+            }
+            return;
+        }
+    }
+    list.push(h);
+}
+
+/// A closed form of a finite sum and the upper limits where it holds.
+#[derive(Clone, Debug)]
+struct FiniteClosed {
+    value: ExprId,
+    holds: Holds,
+}
+
+impl FiniteClosed {
+    fn everywhere(value: ExprId) -> FiniteClosed {
+        FiniteClosed {
+            value,
+            holds: Holds::Everywhere,
+        }
+    }
+}
+
+/// `Σ_{k=lo}^{hi} body` for finite limits.  Concrete limits are summed term
+/// by term (Karr's convention for `hi < lo − 1`: minus the sum over
+/// `[hi + 1, lo − 1]`); otherwise [`finite_closed`], whose closed form is
+/// returned where it holds for every `hi` the assumptions allow, and
+/// under the condition `hi ≥ h₀` where they do not decide it.
 fn finite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId, hi: ExprId) -> SumOutcome {
     if let (Some(a), Some(b)) = (as_i64(arena, lo), as_i64(arena, hi)) {
         if b < a {
-            return SumOutcome::Closed(arena.zero);
+            // `b + 1` and `a − 1` stay in range: `b < a`.
+            if b + 1 == a {
+                return SumOutcome::Closed(arena.zero);
+            }
+            let lo2 = arena.int(b + 1);
+            let hi2 = arena.int(a - 1);
+            let reflected = match pole_in_range(arena, body, var, lo2, hi2) {
+                Some(outcome) => outcome,
+                None => finite_sum(arena, body, var, lo2, hi2),
+            };
+            return match reflected {
+                SumOutcome::Closed(v) => {
+                    let m = arena.neg(v);
+                    SumOutcome::Closed(eval::eval(arena, m))
+                }
+                _ => SumOutcome::Unevaluated,
+            };
         }
-        if b - a < MAX_ENUMERATION_TERMS {
+        if b.checked_sub(a).is_some_and(|d| d < MAX_ENUMERATION_TERMS) {
             tracing::debug!("summation: enumerating {} terms", b - a + 1);
             return SumOutcome::Closed(enumerate_sum(arena, body, var, a, b));
         }
     }
-    match finite_closed(arena, body, var, lo, hi) {
-        Some(id) => SumOutcome::Closed(eval::eval(arena, id)),
-        None => SumOutcome::Unevaluated,
+    let Some(found) = finite_closed(arena, body, var, lo, hi) else {
+        return SumOutcome::Unevaluated;
+    };
+    let value = eval::eval(arena, found.value);
+    // A closed form undefined as a whole (a pole of a term the rational
+    // test of `pole_in_range` does not see: `k!/((k + 2)!·(k − 3))` gave
+    // `zoo` for every `n`, the sum is defined for `n < 3`) is no closed form.
+    if !is_finite_value(arena, value)
+        && (as_i64(arena, lo).is_none() || as_i64(arena, hi).is_none())
+    {
+        return SumOutcome::Unevaluated;
     }
+    let Holds::From(thresholds) = found.holds else {
+        return SumOutcome::Closed(value);
+    };
+    let mut open = Vec::new();
+    for h in thresholds {
+        match upper_at_least(arena, hi, h) {
+            Truth::True => {}
+            Truth::False => return SumOutcome::Unevaluated,
+            Truth::Unknown => open.push(arena.ge(hi, h)),
+        }
+    }
+    if open.is_empty() {
+        return SumOutcome::Closed(value);
+    }
+    let region = arena.and(&open);
+    SumOutcome::Conditional { value, region }
+}
+
+/// Is `hi ≥ h` for every value the assumptions allow?  `True` for a
+/// difference that is a non-negative rational, non-negative by the
+/// assumptions, or an integer above `−1`; `False` for one that is
+/// negative.
+fn upper_at_least(arena: &mut Arena, hi: ExprId, h: ExprId) -> Truth {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let d = arena.sub(hi, h);
+    let d = eval::eval(arena, d);
+    if let Some(r) = as_rat(arena, d) {
+        return Truth::from_bool(!r.is_negative());
+    }
+    let mut cache = AssumptionCache::new();
+    if Truth::from(cache.query(arena, d, Props::NONNEGATIVE)).is_true() {
+        return Truth::True;
+    }
+    if Truth::from(cache.query(arena, d, Props::NEGATIVE)).is_true() {
+        return Truth::False;
+    }
+    if Truth::from(cache.query(arena, d, Props::INTEGER)).is_true() {
+        let one = arena.one;
+        let d1 = arena.add(&[d, one]);
+        let d1 = eval::eval(arena, d1);
+        if Truth::from(cache.query(arena, d1, Props::POSITIVE)).is_true() {
+            return Truth::True;
+        }
+    }
+    Truth::Unknown
 }
 
 fn enumerate_sum(arena: &mut Arena, body: ExprId, var: ExprId, a: i64, b: i64) -> ExprId {
@@ -884,18 +1073,19 @@ fn enumerate_product(arena: &mut Arena, body: ExprId, var: ExprId, a: i64, b: i6
     eval::eval(arena, p)
 }
 
-/// Closed form of a finite sum with (possibly symbolic) bounds.
+/// Closed form of a finite sum with (possibly symbolic) bounds, and the
+/// upper limits where it holds.
 fn finite_closed(
     arena: &mut Arena,
     body: ExprId,
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-) -> Option<ExprId> {
+) -> Option<FiniteClosed> {
     // 0. Body independent of the summation variable.
     if !depends_on(arena, body, var) {
         let n = range_count(arena, lo, hi);
-        return Some(arena.mul(&[body, n]));
+        return Some(FiniteClosed::everywhere(arena.mul(&[body, n])));
     }
 
     let node = arena.node(body).clone();
@@ -904,19 +1094,23 @@ fn finite_closed(
     if let ExprNode::Add(ref terms) = node {
         let terms: Vec<ExprId> = terms.to_vec();
         if let Some(r) = rational_sum_finite(arena, body, var, lo, hi) {
-            return Some(r);
+            return Some(FiniteClosed::everywhere(r));
         }
         if let Some(r) = telescoping_finite(arena, &terms, var, lo, hi) {
-            return Some(r);
+            return Some(FiniteClosed::everywhere(r));
         }
         if let Some(p) = sym_poly_in(arena, body, var) {
-            return Some(faulhaber_sym(arena, &p, lo, hi));
+            return Some(FiniteClosed::everywhere(faulhaber_sym(arena, &p, lo, hi)));
         }
         let mut done = Vec::new();
         let mut failed = Vec::new();
+        let mut holds = Holds::Everywhere;
         for &t in &terms {
             match finite_closed(arena, t, var, lo, hi) {
-                Some(v) => done.push(v),
+                Some(found) => {
+                    done.push(found.value);
+                    holds = holds.and(found.holds, arena);
+                }
                 None => failed.push(t),
             }
         }
@@ -927,7 +1121,10 @@ fn finite_closed(
             let rest = add_all(arena, &failed);
             done.push(arena.intern(ExprNode::Sum(rest, var, lo, hi)));
         }
-        return Some(add_all(arena, &done));
+        return Some(FiniteClosed {
+            value: add_all(arena, &done),
+            holds,
+        });
     }
 
     // 2. Constant-factor extraction.
@@ -939,24 +1136,27 @@ fn finite_closed(
             .partition(|&f| !depends_on(arena, f, var));
         if !consts.is_empty() && !varf.is_empty() {
             let inner = mul_all(arena, &varf);
-            let s = finite_closed(arena, inner, var, lo, hi)?;
+            let found = finite_closed(arena, inner, var, lo, hi)?;
             let mut all = consts;
-            all.push(s);
-            return Some(arena.mul(&all));
+            all.push(found.value);
+            return Some(FiniteClosed {
+                value: arena.mul(&all),
+                holds: found.holds,
+            });
         }
     }
 
     // 3. Polynomial in k (symbolic coefficients allowed).
     if let Some(p) = sym_poly_in(arena, body, var) {
-        return Some(faulhaber_sym(arena, &p, lo, hi));
+        return Some(FiniteClosed::everywhere(faulhaber_sym(arena, &p, lo, hi)));
     }
 
     // 4. Rational function of k.
     if let Some(r) = rational_sum_finite(arena, body, var, lo, hi) {
-        return Some(r);
+        return Some(FiniteClosed::everywhere(r));
     }
     if let Some(r) = symbolic_pole_sum(arena, body, var, lo, hi) {
-        return Some(r);
+        return Some(FiniteClosed::everywhere(r));
     }
 
     // 5. Binomial identities.
@@ -970,12 +1170,338 @@ fn finite_closed(
     }
 
     // 7. Gosper.
-    if let Some(r) = gosper::gosper_sum(arena, body, var, lo, hi) {
+    if let Some(r) = gosper_closed(arena, body, var, lo, hi) {
         tracing::debug!("summation: Gosper succeeded");
         return Some(r);
     }
 
     None
+}
+
+// ── Gosper's closed form below the lower limit ────────────────────────────────────────
+
+/// Most lower-limit terms [`gosper_closed`] sums apart when the
+/// antidifference is undefined at the lower limit.
+const MAX_GOSPER_PEEL: i64 = 4;
+
+/// Most upper limits below `lo − 1` at which [`gosper_holds`] compares the
+/// closed form with the sum.
+const MAX_KARR_SCAN: i64 = 48;
+
+/// `Σ_{k=lo}^{hi} body` by Gosper's antidifference `g`, `g(hi + 1) − g(lo)`,
+/// with the upper limits where it holds ([`gosper_holds`]).  The
+/// certificate `g(k + 1) − g(k) = f(k)` is an identity of rational
+/// functions times the term; at the integers where a factor of the term is
+/// at a pole or vanishes by convention (`C(k + 1, k)` at `k = −1`, `1/k!`
+/// at negative `k`) it may fail.  The closed form is computed for a fresh
+/// upper limit `N`, compared with the sum at `N = lo − 1` (empty) and
+/// `N = lo`, and below; a closed form wrong at the lower limit gets the
+/// lower-limit term summed apart (`Σ_{k=−1}^{n} C(k + 2, k)/2ᵏ` was `nan`
+/// for every `n`).
+fn gosper_closed(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+) -> Option<FiniteClosed> {
+    let bound = subs::fresh_symbol(arena, "__sum_upper", &[body, var, lo, hi]);
+    let found = gosper_to_bound(arena, body, var, lo, bound, true)?;
+    // (The thresholds are integers or `lo − 1`: free of `bound`.)
+    let value = subs::subs(arena, found.value, bound, hi);
+    Some(FiniteClosed {
+        value: eval::eval(arena, value),
+        holds: found.holds,
+    })
+}
+
+/// [`gosper_closed`] for the upper limit `bound`, a symbol free of `body`;
+/// without `below`, checked at the lower limit only (`holds` is then
+/// `bound ≥ lo − 1`).
+fn gosper_to_bound(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    bound: ExprId,
+    below: bool,
+) -> Option<FiniteClosed> {
+    let mut start = lo;
+    let mut peeled = Vec::new();
+    for _ in 0..=MAX_GOSPER_PEEL {
+        let s = gosper::gosper_sum(arena, body, var, start, bound)?;
+        if let Some(holds) = gosper_holds(arena, body, var, start, bound, s, below) {
+            peeled.push(s);
+            let value = add_all(arena, &peeled);
+            return Some(FiniteClosed { value, holds });
+        }
+        let first = as_i64(arena, start)?;
+        let at = arena.int(first);
+        let t = subs::subs(arena, body, var, at);
+        let t = eval::eval(arena, t);
+        if !is_finite_value(arena, t) {
+            return None;
+        }
+        peeled.push(t);
+        start = arena.int(first.checked_add(1)?);
+    }
+    None
+}
+
+/// Where Gosper's closed form `s` of `Σ_{k=lo}^{N} body` holds, `N` a
+/// fresh symbol; `None` when it is wrong at `N = lo − 1` (the empty sum)
+/// or `N = lo`.
+///
+/// Below the lower limit Karr's convention gives `Σ(N) = Σ(N + 1) −
+/// f(N + 1)`; the closed form is compared with it at `N = lo − 2, lo − 3,
+/// …`: a term at a pole makes the sum undefined for every smaller `N`
+/// (it holds everywhere it is defined); a difference gives `N ≥` the last
+/// point that agreed.  The comparison stops early when both sides are
+/// constant below: the terms are 0 there and so is every part of `s` that
+/// depends on `N` ([`zero_below`]: `1/(N + 2)!`, `C(2N, N)`).  An
+/// exponential polynomial `s` (`Σ P(N)·bᵢᴺ`) of an exponential polynomial
+/// term holds everywhere: the difference of two such that vanishes for
+/// every `N ≥ lo − 1` vanishes identically.  Without a lower limit that
+/// is an integer, or without `below`, `N ≥ lo − 1`.
+fn gosper_holds(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    bound: ExprId,
+    s: ExprId,
+    below: bool,
+) -> Option<Holds> {
+    let (zero, one) = (arena.zero, arena.one);
+    let lo_m1 = arena.sub(lo, one);
+    let lo_m1 = eval::eval(arena, lo_m1);
+    let at = subs::subs(arena, s, bound, lo_m1);
+    if !same_value(arena, at, zero) {
+        return None;
+    }
+    let lo_i = as_i64(arena, lo);
+    if lo_i.is_some() {
+        let first = subs::subs(arena, body, var, lo);
+        let first = eval::eval(arena, first);
+        if is_finite_value(arena, first) {
+            let at = subs::subs(arena, s, bound, lo);
+            if !same_value(arena, at, first) {
+                return None;
+            }
+        }
+    }
+    if !below {
+        return Some(Holds::at_least(lo_m1));
+    }
+    if is_exp_poly(arena, s, bound) && is_exp_poly(arena, body, var) {
+        return Some(Holds::Everywhere);
+    }
+    let Some(lo_i) = lo_i else {
+        return Some(Holds::at_least(lo_m1));
+    };
+    let term_zero = zero_below(arena, body, var);
+    let terms = add_terms(arena, s);
+    let varying: Vec<ExprId> = terms
+        .into_iter()
+        .filter(|&t| depends_on(arena, t, bound))
+        .collect();
+    let varying = add_all(arena, &varying);
+    let closed_zero = if depends_on(arena, varying, bound) {
+        zero_below(arena, varying, bound)
+    } else {
+        Some(i64::MAX)
+    };
+    let mut karr = arena.zero;
+    for step in 1..=MAX_KARR_SCAN {
+        let Some(n) = lo_i.checked_sub(1 + step) else {
+            break;
+        };
+        let k = arena.int(n + 1);
+        let t = subs::subs(arena, body, var, k);
+        let t = eval::eval(arena, t);
+        if !is_finite_value(arena, t) {
+            return Some(Holds::Everywhere);
+        }
+        let next = arena.sub(karr, t);
+        karr = eval::eval(arena, next);
+        let ne = arena.int(n);
+        let at = subs::subs(arena, s, bound, ne);
+        if !same_value(arena, at, karr) {
+            let h = arena.int(n + 1);
+            return Some(Holds::at_least(h));
+        }
+        if term_zero.is_some_and(|z| n <= z) && closed_zero.is_some_and(|z| n <= z) {
+            return Some(Holds::Everywhere);
+        }
+    }
+    Some(Holds::at_least(lo_m1))
+}
+
+/// Is `a` equal to `b` (both evaluated): a zero difference, or one that
+/// the simplifier proves 0.  Undefined values are equal to nothing.
+fn same_value(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
+    let a = eval::eval(arena, a);
+    if !is_finite_value(arena, a) || !is_finite_value(arena, b) {
+        return false;
+    }
+    let d = arena.sub(a, b);
+    let d = eval::eval(arena, d);
+    match as_rat(arena, d) {
+        Some(r) => r.is_zero(),
+        None => !walk::has_unevaluated(arena, d) && is_zero_expr(arena, d),
+    }
+}
+
+/// Is `e` an exponential polynomial in `v`, `Σ c·vʲ·Π bᵢ^(aᵢ·v + cᵢ)` with
+/// `v`-free `bᵢ`, `aᵢ`, `cᵢ`?  `C(P(v), m)` for an integer `m ≥ 0` is the
+/// polynomial `P(P − 1)⋯(P − m + 1)/m!` at every integer (GKP).
+fn is_exp_poly(arena: &mut Arena, e: ExprId, v: ExprId) -> bool {
+    let expanded = arena.expand_expr(e);
+    for t in add_terms(arena, expanded) {
+        for f in mul_factors(arena, t) {
+            let f = flatten_exponential(arena, f, v);
+            if !depends_on(arena, f, v) || f == v {
+                continue;
+            }
+            let (base, exp) = arena.as_base_exp(f);
+            let ok = match *arena.node(base) {
+                _ if !depends_on(arena, base, v) => linear_in_any(arena, exp, v).is_some(),
+                ExprNode::Exp(x) => linear_in_any(arena, x, v).is_some(),
+                ExprNode::Binomial(top, m) => {
+                    as_i64(arena, exp).is_some_and(|p| p >= 0)
+                        && as_i64(arena, m).is_some_and(|m| m >= 0)
+                        && sym_poly_in(arena, top, v).is_some()
+                }
+                _ => sym_poly_in(arena, f, v).is_some(),
+            };
+            if !ok {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The largest integer `K` such that `e` evaluates to `0` at every integer
+/// `v ≤ K`, from its shape: every term has a factor that vanishes there —
+/// `1/(αv + β)!`, `1/Γ(αv + β)` (integers `α ≥ 1`, `β`) or `C(a, γv + δ)`
+/// (integers `γ ≥ 1`, `δ`; a negative lower index, Graham–Knuth–Patashnik)
+/// — and every other factor is finite there ([`finite_below`]).  `None`
+/// when the shape shows nothing.
+fn zero_below(arena: &mut Arena, e: ExprId, v: ExprId) -> Option<i64> {
+    let mut bound = i64::MAX;
+    for t in add_terms(arena, e) {
+        let mut zero: Option<i64> = None;
+        let mut finite = i64::MAX;
+        for f in mul_factors(arena, t) {
+            if !depends_on(arena, f, v) {
+                if !is_finite_value(arena, f) {
+                    return None;
+                }
+                continue;
+            }
+            if let Some(z) = vanishes_below(arena, f, v) {
+                zero = Some(zero.map_or(z, |old: i64| old.max(z)));
+                continue;
+            }
+            finite = finite.min(finite_below(arena, f, v)?);
+        }
+        bound = bound.min(zero?.min(finite));
+    }
+    (bound != i64::MAX).then_some(bound)
+}
+
+/// `(α, β)` with `e = α·v + β`, both integers (`α = 0` allowed).
+fn integer_linear(arena: &Arena, e: ExprId, v: ExprId) -> Option<(i64, i64)> {
+    let p = polybridge::expr_to_poly(arena, e, v)?;
+    if p.degree().is_some_and(|d| d > 1) {
+        return None;
+    }
+    let (a, b) = (p.coeff(1), p.coeff(0));
+    if !a.is_integer() || !b.is_integer() {
+        return None;
+    }
+    Some((a.to_integer().to_i64()?, b.to_integer().to_i64()?))
+}
+
+/// The largest `K` such that the factor `f` is 0 at every integer `v ≤ K`
+/// (see [`zero_below`]).
+fn vanishes_below(arena: &mut Arena, f: ExprId, v: ExprId) -> Option<i64> {
+    let f = flatten_exponential(arena, f, v);
+    let (base, exp) = arena.as_base_exp(f);
+    let e = as_i64(arena, exp)?;
+    match *arena.node(base) {
+        // `1/(αv + β)!`: `(αv + β)!` is `zoo` for `αv + β ≤ −1`.
+        ExprNode::Factorial(u) if e < 0 => {
+            let (a, b) = integer_linear(arena, u, v)?;
+            (a >= 1).then(|| (-1 - b).div_euclid(a))
+        }
+        // `1/Γ(αv + β)`: `Γ` is `zoo` for `αv + β ≤ 0`.
+        ExprNode::Gamma(u) if e < 0 => {
+            let (a, b) = integer_linear(arena, u, v)?;
+            (a >= 1).then(|| (-b).div_euclid(a))
+        }
+        // `C(a, γv + δ)` with a negative lower index.
+        ExprNode::Binomial(top, low) if e > 0 => {
+            let (g, d) = integer_linear(arena, low, v)?;
+            if g < 1 || (depends_on(arena, top, v) && integer_linear(arena, top, v).is_none()) {
+                return None;
+            }
+            Some((-1 - d).div_euclid(g))
+        }
+        _ => None,
+    }
+}
+
+/// The largest `K` such that the factor `f` is finite at every integer
+/// `v ≤ K` (`i64::MAX`: everywhere): a polynomial, `b^(αv + β)` for a
+/// nonzero number `b`, a positive power of `C(αv + β, γv + δ)` (integer
+/// coefficients), a polynomial with rational coefficients to a negative
+/// power (below its least integer root), `(αv + β)!` with `α ≤ −1`.
+fn finite_below(arena: &mut Arena, f: ExprId, v: ExprId) -> Option<i64> {
+    if sym_poly_in(arena, f, v).is_some() {
+        return Some(i64::MAX);
+    }
+    let f = flatten_exponential(arena, f, v);
+    let (base, exp) = arena.as_base_exp(f);
+    if !depends_on(arena, base, v) {
+        let nonzero = as_rat(arena, base).is_some_and(|r| !r.is_zero());
+        return (nonzero && linear_in_any(arena, exp, v).is_some()).then_some(i64::MAX);
+    }
+    if let ExprNode::Exp(x) = *arena.node(f) {
+        return linear_in_any(arena, x, v).map(|_| i64::MAX);
+    }
+    let e = as_i64(arena, exp)?;
+    match *arena.node(base) {
+        ExprNode::Binomial(top, low) if e > 0 => {
+            integer_linear(arena, low, v)?;
+            if depends_on(arena, top, v) {
+                integer_linear(arena, top, v)?;
+            }
+            Some(i64::MAX)
+        }
+        ExprNode::Factorial(u) => {
+            let (a, b) = integer_linear(arena, u, v)?;
+            // `αv + β ≥ 0` for `v ≤ ⌊β/|α|⌋`.
+            (a <= -1).then(|| b.div_euclid(-a))
+        }
+        _ if e < 0 => {
+            let p = polybridge::expr_to_poly(arena, base, v)?;
+            let (_, factors) = p.factor_over_z();
+            let mut least = i64::MAX;
+            for (fac, _) in factors {
+                if fac.degree() != Some(1) {
+                    continue;
+                }
+                let root = -fac.coeff(0) / fac.coeff(1);
+                if root.is_integer() {
+                    least = least.min(root.to_integer().to_i64()?);
+                }
+            }
+            Some(least.saturating_sub(1))
+        }
+        _ => None,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2260,14 +2786,17 @@ fn scale_and_tidy(arena: &mut Arena, e: ExprId, q: ExprId) -> ExprId {
 /// `Σ_{k=0}^{n} P(k)·C(n,k)·x^k` for a polynomial `P` (symbolic `k`-free
 /// coefficients allowed) via the falling-factorial basis:
 /// `k^(j)·C(n,k) = n^(j)·C(n−j, k−j)`, so the sum is
-/// `Σ_j s_j·n^(j)·x^j·(1+x)^{n−j}` where `P(k) = Σ_j s_j·k^(j)`.
+/// `Σ_j s_j·n^(j)·x^j·(1+x)^{n−j}` where `P(k) = Σ_j s_j·k^(j)`, for
+/// `n ≥ 0` (at a negative `n` the sum from 0 is 0: empty, or a reversed
+/// range of terms with `C(n, k < 0) = 0`); the case `x = −1` for every
+/// `n`.
 fn binomial_poly_sum(
     arena: &mut Arena,
     body: ExprId,
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-) -> Option<ExprId> {
+) -> Option<FiniteClosed> {
     if as_i64(arena, lo) != Some(0) {
         return None;
     }
@@ -2276,6 +2805,7 @@ fn binomial_poly_sum(
     let mut binomial_n: Option<ExprId> = None;
     let mut x_parts = Vec::new();
     for f in mul_factors(arena, body) {
+        let f = flatten_exponential(arena, f, var);
         if !depends_on(arena, f, var) {
             consts.push(f);
             continue;
@@ -2345,7 +2875,9 @@ fn binomial_poly_sum(
         }
     }
     if x_is_minus_one {
-        return Some(binomial_alternating_cases(arena, &s, n, consts[0]));
+        return Some(FiniteClosed::everywhere(binomial_alternating_cases(
+            arena, &s, n, consts[0],
+        )));
     }
     let mut terms = Vec::new();
     let mut falling = arena.one; // n^(j)
@@ -2368,7 +2900,11 @@ fn binomial_poly_sum(
     let total = add_all(arena, &terms);
     consts.push(total);
     let result = mul_all(arena, &consts);
-    Some(eval::eval(arena, result))
+    let zero = arena.zero;
+    Some(FiniteClosed {
+        value: eval::eval(arena, result),
+        holds: Holds::at_least(zero),
+    })
 }
 
 /// `Σ_{k=0}^{n} P(k)·C(n,k)·(−1)^k` for `P(k) = Σ_j s_j·k^(j)` (falling
@@ -2377,6 +2913,7 @@ fn binomial_poly_sum(
 /// larger `n` — a `Piecewise` on `n`, without the cases the declared
 /// assumptions of `n` exclude.  `Σ_{k=0}^{n} (−1)^k (k + 2) C(n, k)` was
 /// refused; SymPy 1.14 gives `0`, wrong at `n = 0` (`2`) and `n = 1` (`−1`).
+/// It holds at a negative `n` too, where the sum from 0 is 0.
 fn binomial_alternating_cases(
     arena: &mut Arena,
     s: &[Vec<ExprId>],
@@ -2428,15 +2965,16 @@ const MAX_BINOMIAL_LOWER_SHIFT: i64 = 32;
 /// `lo = 0`; an integer `lo ≠ 0` is moved there with its first terms,
 /// `Σ_{k=lo}^{n} = Σ_{k=0}^{n} − Σ_{k=0}^{lo−1}` (`lo > 0`) or
 /// `+ Σ_{k=lo}^{−1}` (`lo < 0`, terms with `C(n, k<0) = 0`).  Both hold for
-/// every `n ≥ 0` (`C(n, k) = 0` for `k > n`).  `Σ_{k=1}^{n} C(n,k)` was
-/// refused; SymPy gives `2ⁿ − 1`.
+/// every integer `n` (Karr's convention), so the result holds where the
+/// identity from 0 does: for `n ≥ 0` ([`binomial_sum_from_zero`]).
+/// `Σ_{k=1}^{n} C(n,k)` was refused; SymPy gives `2ⁿ − 1`.
 fn binomial_sum(
     arena: &mut Arena,
     body: ExprId,
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-) -> Option<ExprId> {
+) -> Option<FiniteClosed> {
     let start = as_i64(arena, lo)?;
     if start == 0 {
         return binomial_sum_from_zero(arena, body, var, lo, hi);
@@ -2457,7 +2995,7 @@ fn binomial_sum(
     } else {
         (start, -1, 1)
     };
-    let mut parts = vec![full];
+    let mut parts = vec![full.value];
     for j in from..=to {
         // C(n, j) as the polynomial n(n−1)⋯(n−j+1)/j! (0 for j < 0):
         // `eval` keeps C(n, 0), C(n, −1) of a symbolic n as they are.
@@ -2484,7 +3022,10 @@ fn binomial_sum(
         parts.push(arena.mul(&[s, t]));
     }
     let total = add_all(arena, &parts);
-    Some(eval::eval(arena, total))
+    Some(FiniteClosed {
+        value: eval::eval(arena, total),
+        holds: full.holds,
+    })
 }
 
 /// Is `e` free of `zoo`, `nan` and infinities (a usable term value)?
@@ -2507,13 +3048,19 @@ fn is_finite_value(arena: &Arena, e: ExprId) -> bool {
     true
 }
 
+/// `Σ_{k=0}^{n}` of `C(n, k)` times a geometric term and a power of `k` or
+/// `1/(k + 1)` (or of `C(n, k)²`): the classical identities, which hold for
+/// `n ≥ 0`.  At a negative `n` the sum is 0 (empty at `n = −1`, otherwise a
+/// reversed range of terms with `C(n, k < 0) = 0`): `C(2n, n)` and the
+/// alternating cases (`[n = 0]`, `−[n = 1]`) are 0 there too and hold for
+/// every `n`; `2ⁿ` is `1/2` at `n = −1`.
 fn binomial_sum_from_zero(
     arena: &mut Arena,
     body: ExprId,
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-) -> Option<ExprId> {
+) -> Option<FiniteClosed> {
     if let Some(r) = binomial_poly_sum(arena, body, var, lo, hi) {
         return Some(r);
     }
@@ -2542,6 +3089,8 @@ fn binomial_sum_from_zero(
     let (q, constant) = split_pow_n(arena, &const_factors, n);
     let has_q = q != one;
     let mut folded_q = false;
+    // (The identity holds at a negative `n` too.)
+    let mut everywhere = false;
     let result = match (e, shape.lin_pows.as_slice(), x) {
         // Σ C(n,k) = 2^n
         (1, [], None) => arena.pow(two, n),
@@ -2577,12 +3126,14 @@ fn binomial_sum_from_zero(
         }
         // Σ C(n,k)² = C(2n, n)
         (2, [], None) => {
+            everywhere = true;
             let two_n = arena.mul(&[two, n]);
             arena.binomial(two_n, n)
         }
         // Σ C(n,k) x^k = (1+x)^n      (x = −1 gives 0 for n ≥ 1, 1 for n = 0)
         (1, [], Some(x)) => {
             if as_rat(arena, x) == Some(-Q::one()) {
+                everywhere = true;
                 let zero = arena.zero;
                 if equality_unreachable(arena, n, zero) {
                     zero
@@ -2608,6 +3159,7 @@ fn binomial_sum_from_zero(
             if as_rat(arena, base).is_some_and(|r| r.is_zero()) {
                 // x = −1: n·x·0^(n−1) is 0·zoo = nan at n = 0, where the
                 // sum is 0 (Σ_{k=0}^{n} k·C(n,k)·(−1)^k = −[n = 1]).
+                everywhere = true;
                 let zero = arena.zero;
                 if equality_unreachable(arena, n, one) {
                     zero
@@ -2628,7 +3180,16 @@ fn binomial_sum_from_zero(
         factors.push(arena.pow(q, n));
     }
     let total = arena.mul(&factors);
-    Some(eval::eval(arena, total))
+    let value = eval::eval(arena, total);
+    Some(if everywhere {
+        FiniteClosed::everywhere(value)
+    } else {
+        let zero = arena.zero;
+        FiniteClosed {
+            value,
+            holds: Holds::at_least(zero),
+        }
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2661,14 +3222,44 @@ fn geometric_split(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Geome
     Some((poly, g.ratio, c))
 }
 
+/// `(b^u)^m` (`exp(u)^m`) for an integer `m`, a `var`-free `b` and a `u`
+/// in `var`, as `b^(m·u)` (`exp(m·u)`), the same value for an integer `m`;
+/// any other factor unchanged.  `1/2ᵏ` is `(2ᵏ)^(−1)`, which the geometric,
+/// binomial and negative-binomial rules read as a polynomial factor: up to
+/// 0.54 `Σ_{k≥0} C(k + c, c)/2ᵏ` stayed a `Sum` while `Σ C(k + c, c)·(1/2)ᵏ`
+/// closed.
+fn flatten_exponential(arena: &mut Arena, f: ExprId, var: ExprId) -> ExprId {
+    let ExprNode::Pow(inner, m) = *arena.node(f) else {
+        return f;
+    };
+    if as_i64(arena, m).is_none() {
+        return f;
+    }
+    match *arena.node(inner) {
+        ExprNode::Pow(b, u) if !depends_on(arena, b, var) && depends_on(arena, u, var) => {
+            let mu = arena.mul(&[m, u]);
+            let mu = eval::eval(arena, mu);
+            arena.pow(b, mu)
+        }
+        ExprNode::Exp(u) if depends_on(arena, u, var) => {
+            let mu = arena.mul(&[m, u]);
+            let mu = eval::eval(arena, mu);
+            arena.exp(mu)
+        }
+        _ => f,
+    }
+}
+
 /// Split `body = rest·Y^k·const` where `Y` collects every exponential
-/// factor `b^(a·k + c)` / `exp(a·k + c)`; `None` without one.
+/// factor `b^(a·k + c)` / `exp(a·k + c)` (also to an integer power,
+/// [`flatten_exponential`]); `None` without one.
 fn geometric_factors(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<GeometricFactors> {
     let factors = mul_factors(arena, body);
     let mut y_parts = Vec::new();
     let mut c_parts = Vec::new();
     let mut p_parts = Vec::new();
     for f in factors {
+        let f = flatten_exponential(arena, f, var);
         if !depends_on(arena, f, var) {
             c_parts.push(f);
             continue;
@@ -2806,28 +3397,45 @@ fn geometric_antidifference(
     arena.mul(&[yk, q])
 }
 
+/// `Σ_{k=lo}^{hi} P(k)·Yᵏ`: the antidifference `Q(k)·Yᵏ` (`Y ≠ 1`; a
+/// `Piecewise` on `Y = 1` for a symbolic ratio), which holds at every
+/// integer limit.
 fn geometric_poly_finite(
     arena: &mut Arena,
     body: ExprId,
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
-) -> Option<ExprId> {
+) -> Option<FiniteClosed> {
     let (poly, y, c) = geometric_split(arena, body, var)?;
     if as_rat(arena, y) == Some(Q::one()) {
         return None; // degenerate; polynomial path applies
     }
     // Numeric ratio with rational coefficients → Gosper gives the tidiest form.
     if as_rat(arena, y).is_some()
-        && let Some(g) = gosper::gosper_sum(arena, body, var, lo, hi)
+        && let Some(g) = gosper_closed(arena, body, var, lo, hi)
     {
         return Some(g);
     }
+    geometric_poly_formula(arena, &poly, y, c, var, lo, hi).map(FiniteClosed::everywhere)
+}
+
+/// The closed form of [`geometric_poly_finite`] by the Euler operator or
+/// the antidifference.
+fn geometric_poly_formula(
+    arena: &mut Arena,
+    poly: &[(usize, ExprId)],
+    y: ExprId,
+    c: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+) -> Option<ExprId> {
     let one = arena.one;
     let hi1 = arena.add(&[hi, one]);
     let degree = poly.iter().map(|(p, _)| *p).max().unwrap_or(0);
     let formula = if degree > MAX_EULER_OPERATOR_DEGREE {
-        let g = geometric_antidifference(arena, &poly, y, var);
+        let g = geometric_antidifference(arena, poly, y, var);
         let g_hi = subs::subs(arena, g, var, hi1);
         let g_lo = subs::subs(arena, g, var, lo);
         let diff = arena.sub(g_hi, g_lo);
@@ -2839,7 +3447,7 @@ fn geometric_poly_finite(
         let num = arena.sub(r_lo, r_hi1);
         let den = arena.sub(one, r);
         let s0 = arena.div(num, den);
-        apply_euler_operator(arena, &poly, s0, r, y)
+        apply_euler_operator(arena, poly, s0, r, y)
     };
     let formula = arena.mul(&[c, formula]);
     if as_rat(arena, y).is_some() || const_value(arena, y).is_some() {
@@ -2860,7 +3468,7 @@ fn geometric_poly_finite(
     }
     // Symbolic ratio: Piecewise on y = 1.  Both conditions are explicit so
     // that `eval` only selects a branch once `y` is known.
-    let poly_sum = faulhaber_sym(arena, &poly, lo, hi);
+    let poly_sum = faulhaber_sym(arena, poly, lo, hi);
     let poly_sum = arena.mul(&[c, poly_sum]);
     let cond = arena.eq_(y, one);
     let ncond = arena.ne_(y, one);
@@ -3635,7 +4243,9 @@ fn eventual_sign(arena: &mut Arena, body: ExprId, var: ExprId) -> SignSet {
 /// `P(N)·r^N` tail with `|r| < 1`).
 fn gosper_infinite(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Option<SumOutcome> {
     let n = arena.symbol("_N");
-    let g = gosper::gosper_sum(arena, body, var, lo, n)?;
+    // (Checked at the lower limit: `Σ_{k≥−1} C(k + 2, k)/2ᵏ` was `nan`.)
+    let g = gosper_to_bound(arena, body, var, lo, n, false)?.value;
+    let g = eval::eval(arena, g);
     let limit = limit_at_infinity(arena, g, n)?;
     Some(SumOutcome::Closed(limit))
 }
@@ -3779,6 +4389,7 @@ fn negative_binomial_series(
     let mut x_parts = Vec::new();
     let mut shift: Option<BinomialShift> = None;
     for f in mul_factors(arena, body) {
+        let f = flatten_exponential(arena, f, var);
         if !depends_on(arena, f, var) {
             consts.push(f);
             continue;
@@ -5526,12 +6137,35 @@ mod tests {
         );
     }
 
+    /// A symbol declared a non-negative integer.
+    fn natural(arena: &mut Arena, name: &str) -> ExprId {
+        use crate::base::assumptions::{Assumption, Assumptions};
+        let mut declared = Assumptions::default()
+            .with(Assumption::Integer)
+            .with(Assumption::NonNegative);
+        declared.normalize_declared();
+        let s = arena.symbol(name);
+        if let ExprNode::Symbol(sid) = *arena.node(s) {
+            arena.set_symbol_assumptions(sid, declared);
+        }
+        s
+    }
+
     #[test]
     fn binomial_identities() {
         let mut arena = Arena::new();
         let k = arena.symbol("k");
-        let n = arena.symbol("n");
+        // The identities hold for `n ≥ 0` (D12): for a plain `n` under that
+        // condition, for an `n` declared non-negative as they are.
+        let m = arena.symbol("m");
         let zero = arena.zero;
+        let bin_m = arena.binomial(m, k);
+        let SumOutcome::Conditional { region, .. } = summation(&mut arena, bin_m, k, zero, m)
+        else {
+            panic!("expected a conditional closed form");
+        };
+        assert_eq!(arena.display(region).to_string(), "m >= 0");
+        let n = natural(&mut arena, "n");
         let bin = arena.binomial(n, k);
         let s = closed(summation(&mut arena, bin, k, zero, n));
         let two = arena.int(2);
@@ -5667,8 +6301,9 @@ mod tests {
             panic!("expected a conditional closed form");
         };
         assert_eq!(arena.display(region).to_string(), "1 > abs(x)");
-        // Binomial theorem with a symbolic exponent offset: Σ C(n,k) p^k (1−p)^(n−k) = 1.
-        let n = arena.symbol("n");
+        // Binomial theorem with a symbolic exponent offset: Σ C(n,k) p^k (1−p)^(n−k) = 1
+        // (for `n ≥ 0`, D12).
+        let n = natural(&mut arena, "n");
         let p = arena.symbol("p");
         let one = arena.one;
         let q = arena.sub(one, p);

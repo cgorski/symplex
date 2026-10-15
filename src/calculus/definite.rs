@@ -2001,7 +2001,9 @@ fn integrate_piece(
     // branches are evaluated individually.  A divergence in an undecided
     // branch is reported as "cannot compute" (the answer depends on the
     // parameter), not as a divergence of the whole integral.
-    if let ExprNode::Piecewise(pairs) = arena.node(anti).clone() {
+    if let ExprNode::Piecewise(pairs) = arena.node(anti).clone()
+        && !pairs.iter().any(|&(_, c)| walk::contains(arena, c, x))
+    {
         let mut live: Vec<(ExprId, ExprId)> = Vec::new();
         for (val, cond) in pairs.iter() {
             match decide_condition(arena, *cond) {
@@ -2061,6 +2063,9 @@ fn evaluate_antiderivative(
     p: &Piece,
     depth: usize,
 ) -> Result<ExprId, SymplexError> {
+    if let Some(split) = piecewise_antiderivative(arena, f, anti, x, p, depth) {
+        return split;
+    }
     let anti = atan_of_complex_line_to_logs(arena, anti, x, p);
     let mut crossings = check_branch_cuts(arena, anti, x, p)?;
     // Discontinuities of F strictly inside (lo, hi).
@@ -2191,6 +2196,162 @@ fn evaluate_antiderivative(
         )),
         None => fallback_without_antiderivative(arena, f, x, p),
     }
+}
+
+/// `F(hi⁻) − F(lo⁺)` for an antiderivative with `Piecewise` nodes whose
+/// conditions compare `x` with constants `tⱼ` (`Piecewise((F₀, x < t₁),
+/// …)`, as the integrator joins the pieces of `|g|`, `sign g` or of a
+/// spiral `e^{λx}`): the piece split at the `tⱼ` inside it, every such node
+/// resolved to its branch at a test point of each part, and the parts'
+/// differences added (each branch is an antiderivative on its part, so this
+/// holds whether or not the branches join continuously).  `None` when no
+/// condition depends on `x`.  Up to 0.54 such a node reached the parameter
+/// branches of [`integrate_piece`], which evaluated every branch over the
+/// whole piece.
+fn piecewise_antiderivative(
+    arena: &mut Arena,
+    f: ExprId,
+    anti: ExprId,
+    x: ExprId,
+    p: &Piece,
+    depth: usize,
+) -> Option<Result<ExprId, SymplexError>> {
+    let nodes: Vec<ExprId> = walk::post_order_ids(arena, anti)
+        .into_iter()
+        .filter(|&id| match arena.node(id) {
+            ExprNode::Piecewise(pairs) => pairs.iter().any(|&(_, c)| walk::contains(arena, c, x)),
+            _ => false,
+        })
+        .collect();
+    if nodes.is_empty() {
+        return None;
+    }
+    Some(split_piecewise_antiderivative(
+        arena, f, anti, x, p, depth, &nodes,
+    ))
+}
+
+/// [`piecewise_antiderivative`] for the `Piecewise` `nodes` of `anti`.
+fn split_piecewise_antiderivative(
+    arena: &mut Arena,
+    f: ExprId,
+    anti: ExprId,
+    x: ExprId,
+    p: &Piece,
+    depth: usize,
+    nodes: &[ExprId],
+) -> Result<ExprId, SymplexError> {
+    let unsplittable = || {
+        failed(
+            "the antiderivative is piecewise in the variable with conditions it cannot be split at",
+        )
+    };
+    // The constants the conditions compare `x` with.
+    let mut ends: Vec<ExprId> = Vec::new();
+    for &id in nodes {
+        let ExprNode::Piecewise(pairs) = arena.node(id).clone() else {
+            continue;
+        };
+        for &(_, cond) in pairs.iter() {
+            if !walk::contains(arena, cond, x) {
+                continue;
+            }
+            let t = match *arena.node(cond) {
+                ExprNode::Gt(a, b) | ExprNode::Ge(a, b)
+                    if b == x && !walk::contains(arena, a, x) =>
+                {
+                    a
+                }
+                ExprNode::Gt(a, b) | ExprNode::Ge(a, b)
+                    if a == x && !walk::contains(arena, b, x) =>
+                {
+                    b
+                }
+                _ => return Err(unsplittable()),
+            };
+            if !walk::free_symbols(arena, t).is_empty() {
+                return Err(unsplittable());
+            }
+            if !ends.contains(&t) {
+                ends.push(t);
+            }
+        }
+    }
+    let mut inner: Vec<(ExprId, Option<f64>)> = Vec::new();
+    for t in ends {
+        match position_in(arena, t, p.lo, p.hi) {
+            Position::Inside => {
+                let v = point_value(arena, t);
+                inner.push((t, v));
+            }
+            Position::Unknown => return Err(unsplittable()),
+            _ => {}
+        }
+    }
+    if depth >= MAX_DEPTH || inner.len() > MAX_PIECES {
+        return Err(failed("too many pieces of the antiderivative"));
+    }
+    let inner = sort_points(arena, inner).ok_or_else(unsplittable)?;
+    let mut bounds: Vec<ExprId> = Vec::with_capacity(inner.len() + 2);
+    bounds.push(p.lo);
+    bounds.extend(inner.iter().map(|&(t, _)| t));
+    bounds.push(p.hi);
+    let last = bounds.len() - 2;
+    let mut total = Vec::with_capacity(bounds.len() - 1);
+    for (k, w) in bounds.windows(2).enumerate() {
+        let piece = Piece {
+            lo: w[0],
+            hi: w[1],
+            lo_sing: k == 0 && p.lo_sing,
+            hi_sing: k == last && p.hi_sing,
+        };
+        let mid = test_point(arena, piece.lo, piece.hi).ok_or_else(unsplittable)?;
+        // Outer nodes first: a branch may hold an inner one.
+        let mut resolved = anti;
+        for &id in nodes.iter().rev() {
+            let ExprNode::Piecewise(pairs) = arena.node(id).clone() else {
+                continue;
+            };
+            let mut chosen = None;
+            for &(val, cond) in pairs.iter() {
+                let at = subs::subs(arena, cond, x, mid);
+                match decide_condition(arena, at) {
+                    Truth::True => {
+                        chosen = Some(val);
+                        break;
+                    }
+                    Truth::False => {}
+                    Truth::Unknown => return Err(unsplittable()),
+                }
+            }
+            let val = chosen.ok_or_else(unsplittable)?;
+            resolved = arena.subs_structural(resolved, id, val);
+        }
+        if piecewise_antiderivative_nodes_left(arena, resolved, x) {
+            return Err(unsplittable());
+        }
+        let resolved = safe_eval(arena, resolved);
+        total.push(evaluate_antiderivative(
+            arena,
+            f,
+            resolved,
+            x,
+            &piece,
+            depth + 1,
+        )?);
+    }
+    let s = arena.add(&total);
+    Ok(safe_eval(arena, s))
+}
+
+/// Does `e` still hold a `Piecewise` with a condition on `x`?
+fn piecewise_antiderivative_nodes_left(arena: &Arena, e: ExprId, x: ExprId) -> bool {
+    walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Piecewise(pairs) => pairs.iter().any(|&(_, c)| walk::contains(arena, c, x)),
+            _ => false,
+        })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2857,6 +3018,13 @@ fn check_branch_cuts(
                 None => {}
             }
         }
+        // A polynomial or rational argument is located exactly whatever the
+        // samples saw: two crossings between neighbouring samples leave no
+        // trace in them.
+        if let Some(found) = located_polynomial_crossings(arena, anti, u, x, cut, p, r) {
+            crossings.extend(found);
+            continue;
+        }
         match sampled {
             CutCrossing::None => {}
             CutCrossing::Near(t) => {
@@ -2961,6 +3129,205 @@ fn located_crossing(
         SignSet::POSITIVE
     };
     Some(Some(CrossingAt { at, arg: u, before }))
+}
+
+/// Highest degree of `P·Q̄` for which [`located_polynomial_crossings`] solves
+/// for the points where `im u` vanishes.
+const MAX_CROSSING_DEGREE: usize = 8;
+
+/// The crossings of the real axis by a parameter-free argument `u = P(x)/Q(x)`
+/// (`P`, `Q` polynomials whose product `P·Q̄`, `Q̄` with the conjugate
+/// coefficients, has rational real and imaginary parts `M` and `N`) on the
+/// piece `p` (`range` its values): `im u = N/|Q|²` for real `x`, so `u` meets
+/// the real axis exactly at the real roots of `N`, isolated by Sturm
+/// sequences and solved exactly, and lies on the cut there when `re u =
+/// M/|Q|² < 0`.  The sides are the signs of `N` between the isolating
+/// intervals (rational points); a root where `N` keeps its sign (the axis
+/// touched from one side) is no crossing inside the piece.  `Some(vec![])`
+/// when `N` has no root in the range (proved, for any cut on the real axis),
+/// the [`CrossingAt`]s of [`located_crossing`] for the cut `(−∞, 0]` when
+/// every function of `u` continues across it, `None` when the argument is of
+/// another form or a root is not decided (on the branch point `u = 0`, a
+/// pole, not solved): the caller's samples decide as before.  Up to 0.54
+/// such an argument was only sampled: `ln(x² + (1 + i)x − 1)` on `[−2, 1]`
+/// was refused for its crossing at 0, and a crossing pair closer than the
+/// samples went unseen.
+fn located_polynomial_crossings(
+    arena: &mut Arena,
+    anti: ExprId,
+    u: ExprId,
+    x: ExprId,
+    cut: Cut,
+    p: &Piece,
+    range: Interval<f64>,
+) -> Option<Vec<CrossingAt>> {
+    use crate::poly::sturm::SturmChain;
+    if cut == Cut::ImaginaryOutside {
+        return None;
+    }
+    let (num, den) = crate::poly::polybridge::as_numer_denom(arena, u);
+    let pc = calculus_util::poly_coeffs_symbolic(arena, num, x)?;
+    let qc = calculus_util::poly_coeffs_symbolic(arena, den, x)?;
+    if pc.len() + qc.len() < 3 || pc.len() + qc.len() - 1 > MAX_CROSSING_DEGREE + 1 {
+        return None;
+    }
+    if pc
+        .iter()
+        .chain(&qc)
+        .any(|&c| !walk::free_symbols(arena, c).is_empty())
+    {
+        return None;
+    }
+    // `P·Q̄ = M + i·N` coefficient by coefficient.
+    let len = pc.len() + qc.len() - 1;
+    let mut re_c: Vec<Ratio<BigInt>> = Vec::with_capacity(len);
+    let mut im_c: Vec<Ratio<BigInt>> = Vec::with_capacity(len);
+    for k in 0..len {
+        let mut terms = Vec::new();
+        for (i, &a) in pc.iter().enumerate() {
+            if let Some(&b) = k.checked_sub(i).and_then(|j| qc.get(j)) {
+                let b = arena.conjugate(b);
+                terms.push(arena.mul(&[a, b]));
+            }
+        }
+        let s = arena.add(&terms);
+        let s = crate::transforms::expand::expand(arena, s);
+        let s = eval::eval(arena, s);
+        let re = arena.re(s);
+        let re = eval::eval(arena, re);
+        let im = arena.im(s);
+        let im = eval::eval(arena, im);
+        re_c.push(arena.as_num(re)?.clone());
+        im_c.push(arena.as_num(im)?.clone());
+    }
+    let n_poly = crate::poly::Poly::from_coeffs(im_c.clone());
+    if n_poly.degree().unwrap_or(0) == 0 {
+        // `im u` is a nonzero constant or `u` is real: it never crosses.
+        return Some(Vec::new());
+    }
+    let chain = SturmChain::new(&n_poly);
+    // The roots of `N` in (a rational enclosure of) the range.
+    let enclose = |v: f64, below: bool| -> Option<Ratio<BigInt>> {
+        if !v.is_finite() {
+            return None;
+        }
+        let w = if below {
+            v.floor() - 1.0
+        } else {
+            v.ceil() + 1.0
+        };
+        crate::base::numeric::f64_to_ratio_exact(w)
+    };
+    if let (Some(a), Some(b)) = (enclose(range.lower, true), enclose(range.upper, false))
+        && chain.count_roots_in_closed(&a, &b) == 0
+    {
+        return Some(Vec::new());
+    }
+    if cut != Cut::RealBelow(0.0)
+        || !cut_nodes(arena, anti)
+            .iter()
+            .filter(|&&(_, arg, _)| arg == u)
+            .all(|&(n, _, _)| continued_across_cut(arena, n).is_some())
+    {
+        return None;
+    }
+    // Isolating intervals separated strictly, then a rational point
+    // between each two (where `N` is not 0).
+    let mut ivs = chain.isolate_all_real_roots();
+    let two = Ratio::from_integer(BigInt::from(2));
+    for _ in 0..64 {
+        if ivs.windows(2).all(|w| w[0].upper < w[1].lower) {
+            break;
+        }
+        ivs = ivs
+            .iter()
+            .map(|iv| {
+                let half = (iv.upper.clone() - iv.lower.clone()) / two.clone();
+                chain.refine_interval(iv, &half)
+            })
+            .collect();
+    }
+    if !ivs.windows(2).all(|w| w[0].upper < w[1].lower) {
+        return None;
+    }
+    let one = Ratio::from_integer(BigInt::from(1));
+    let mut signs: Vec<SignSet> = Vec::with_capacity(ivs.len() + 1);
+    for k in 0..=ivs.len() {
+        let t = match (k.checked_sub(1).and_then(|j| ivs.get(j)), ivs.get(k)) {
+            (None, Some(next)) => next.lower.clone() - one.clone(),
+            (Some(prev), None) => prev.upper.clone() + one.clone(),
+            (Some(prev), Some(next)) => (prev.upper.clone() + next.lower.clone()) / two.clone(),
+            (None, None) => return None,
+        };
+        let v = n_poly.eval(&t);
+        signs.push(if v.is_positive() {
+            SignSet::POSITIVE
+        } else if v.is_negative() {
+            SignSet::NEGATIVE
+        } else {
+            return None;
+        });
+    }
+    let mut n_terms = Vec::with_capacity(im_c.len());
+    for (k, c) in im_c.iter().enumerate() {
+        let c = arena.num_ratio(c.clone());
+        let e = arena.int(k as i64);
+        let xk = arena.pow(x, e);
+        n_terms.push(arena.mul(&[c, xk]));
+    }
+    let n_expr = arena.add(&n_terms);
+    let roots = crate::transforms::solve::known_real_roots(arena, n_expr, x);
+    if roots.len() != ivs.len() {
+        return None;
+    }
+    let mut m_terms = Vec::with_capacity(re_c.len());
+    for (k, c) in re_c.iter().enumerate() {
+        let c = arena.num_ratio(c.clone());
+        let e = arena.int(k as i64);
+        let xk = arena.pow(x, e);
+        m_terms.push(arena.mul(&[c, xk]));
+    }
+    let m_expr = arena.add(&m_terms);
+    let mut found = Vec::new();
+    for c in roots {
+        if !walk::free_symbols(arena, c).is_empty() {
+            return None;
+        }
+        // The interval holding `c`: `lower < c ≤ upper` (a point: `c` itself).
+        let mut slot = None;
+        for (k, iv) in ivs.iter().enumerate() {
+            let lo = arena.num_ratio(iv.lower.clone());
+            let hi = arena.num_ratio(iv.upper.clone());
+            let above_lo = iv.lower == iv.upper || cmp_points(arena, c, lo)? == Ordering::Greater;
+            if above_lo && cmp_points(arena, c, hi)? != Ordering::Greater {
+                slot = Some(k);
+                break;
+            }
+        }
+        let k = slot?;
+        let (before, after) = (signs[k], signs[k + 1]);
+        let at = match position_in(arena, c, p.lo, p.hi) {
+            Position::Inside if before == after => continue,
+            Position::Inside => c,
+            Position::AtLower => p.lo,
+            Position::AtUpper => p.hi,
+            Position::Below | Position::Above => continue,
+            Position::Unknown => return None,
+        };
+        let re_at = subs::subs(arena, m_expr, x, c);
+        let re_at = safe_eval(arena, re_at);
+        match sign_of(arena, re_at)? {
+            Ordering::Less => {}
+            Ordering::Greater => continue,
+            Ordering::Equal => return None,
+        }
+        // `before` is the side for `x < at`; a piece starting at `at` lies on
+        // the side `after`, which [`evaluate_antiderivative`] reads as
+        // `before.neg()`.
+        let before = if at == p.lo { after.neg() } else { before };
+        found.push(CrossingAt { at, arg: u, before });
+    }
+    Some(found)
 }
 
 /// How the cut function `node` of an argument `u` on the cut `(−∞, 0]`
@@ -4631,9 +4998,16 @@ fn try_special_integrand(
     }
 
     // ── Heaviside factor ────────────────────────────────────────────
+    // Of a linear argument: the interval truncated.  Any other argument is
+    // split at its sign changes below, as `|·|` and `sign` are: up to 0.54
+    // `H(cos(x/3 + 1/2))` over `[10¹⁰⁰, 10¹⁰⁰ + 200]` was refused here, and
+    // `evalf`, which asks for this closed form first on such far bounds,
+    // spent 18 s in a quadrature whose nodes next to each step lose the
+    // 333 bits of `x/3`.
     for (i, &fac) in factors.iter().enumerate() {
         if let ExprNode::Heaviside(g) = arena.node(fac).clone()
             && walk::contains(arena, g, x)
+            && calculus_util::linear_coeffs_exact(arena, g, x).is_some()
         {
             let rest: Vec<ExprId> = factors
                 .iter()

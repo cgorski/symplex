@@ -1036,9 +1036,23 @@ impl Ex {
             let _ = self.checked_id(&ic.value);
         }
         let (families, constants) = self.ode_families(func, var, "solve_ode_ivp")?;
-        let accept = |candidate: &Ex| ode_holds_at(self, candidate, func, var, ics);
+        // A fitted candidate is taken only when its residual at the initial
+        // points is proved 0 there, or it solves the equation identically
+        // (`check_ode_solution` proves that by identities only, among them
+        // `e^{W(z)} = z/W(z)`; at a point where every part is finite the
+        // residual is then 0).
+        let accept = |candidate: &Ex| match ode_holds_at(self, candidate, func, var, ics) {
+            Truth::Unknown if self.check_ode_solution(candidate, func, var) => Truth::True,
+            decided => decided,
+        };
+        // Lagrange's formula for a linear equation with constant
+        // coefficients is exact by construction (the unique solution of the
+        // linear problem, from the exact characteristic roots): the check is
+        // a guard that rejects it on a certified nonzero residual only (its
+        // `RootOf` residuals are rarely decided, and proving them took
+        // minutes).
         if let Some(sol) = linear_cc_lagrange_ivp(self, func, var, ics)
-            && !accept(&sol).is_false()
+            && !ode_holds_at(self, &sol, func, var, ics).is_false()
         {
             return Ok(sol);
         }
@@ -1289,15 +1303,18 @@ fn linear_cc_lagrange_ivp(ode: &Ex, func: &Ex, var: &Ex, ics: &[InitialCondition
 
 /// Does `candidate` satisfy the ODE `ode = 0` (in `func(var)`) at the points
 /// of the initial conditions?  The residual there is decided by
-/// [`residual_is_zero`] (exact tests and certified values): `False` (a
-/// certified nonzero digit) rejects the candidate, `Unknown` leaves it to
-/// the caller's preference for proved candidates; a candidate that cannot be
-/// evaluated there (free constants, a singular point) is not rejected.
+/// [`residual_is_zero`] (exact tests, the values of Lambert W at `g·e^g`,
+/// certified values): `True` is a proof, `False` (a certified nonzero
+/// digit) rejects the candidate, `Unknown` leaves it to the caller (the
+/// fits refuse it unless the candidate solves the equation identically); a
+/// candidate that cannot be evaluated there (free constants, a singular
+/// point) is not rejected.
 /// This rejects a root of the constants' equations that fits the conditions
 /// but not the equation: `y′ = √y`, `y(0) = 1` has `C1 = ±2` for the family
 /// `(x/2 + C1/2)²`, and only `C1 = 2` gives `y′(0) = √y(0)`.  Up to 0.53 a
 /// residual below `10⁻⁸` counted as 0, so for `y(0) = 10⁻²⁰` the wrong
-/// branch (`y′(0) = −10⁻¹⁰`) passed as well.
+/// branch (`y′(0) = −10⁻¹⁰`) passed as well; up to 0.54 a residual zero to
+/// every digit but not proved was taken when no candidate was proved.
 fn ode_holds_at(ode: &Ex, candidate: &Ex, func: &Ex, var: &Ex, ics: &[InitialCondition]) -> Truth {
     let mut chain = vec![func.clone()];
     let mut max_order = 0;
@@ -1450,12 +1467,23 @@ fn fit_rejected(sol: &Ex, operation: &'static str) -> SymplexError {
     }
 }
 
-/// [`fit_constants`], keeping only a fit that `accept` does not reject (the
+/// The error for a fitted solution that `accept` did not decide.
+fn fit_undecided(sol: &Ex, operation: &'static str) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation,
+        reason: format!(
+            "cannot prove that the fitted solution {sol} satisfies the equation at the initial \
+             point (its residual is not shown to be 0)"
+        ),
+    }
+}
+
+/// [`fit_constants`], keeping only a fit that `accept` approves (the
 /// substituted solution before simplification); a root of a nonlinear
-/// system that it rejects makes way for the next one, and one it does not
-/// decide (`Unknown`: a residual zero to every digit the evaluator reaches
-/// but not proved, such as `W(e^{3 + e³}) − e³`) is taken only when no root
-/// is approved.
+/// system that it rejects or does not decide makes way for the next one.
+/// One it does not decide (`Unknown`: a residual zero to every digit the
+/// evaluator reaches but not proved) is never taken: up to 0.54 it was
+/// taken when no root was approved, so the claim rested on digits.
 pub(crate) fn fit_constants_with(
     general: &Ex,
     constants: &[Ex],
@@ -1482,8 +1510,10 @@ pub(crate) fn fit_constants_with(
             for (c, v) in &pairs {
                 sol = sol.subs(c, v);
             }
-            if accept(&sol).is_false() {
-                return Err(fit_rejected(&sol, operation));
+            match accept(&sol) {
+                Truth::True => {}
+                Truth::False => return Err(fit_rejected(&sol, operation)),
+                Truth::Unknown => return Err(fit_undecided(&sol, operation)),
             }
             // Substituting algebraic constants can swell the expression;
             // bound the work before simplifying.
@@ -1523,21 +1553,37 @@ struct FitState {
 
 /// Is the constant-free residual `eq` zero?  Decided structurally, then by
 /// [`Ex::is_zero`] of its simplified form (exact tests and certified
-/// values); `Unknown` otherwise.
+/// values), then the same after the values of Lambert W at `g·e^g`
+/// ([`lambert_values`](crate::transforms::solve::lambert_values): `W(e^{3 +
+/// e³}) = e³`); `Unknown` otherwise.
 ///
 /// Up to 0.49 a residual whose `f64` value was below `10⁻¹⁰` in modulus
 /// counted as zero, so contradictory initial conditions were accepted:
 /// `y′ = y`, `y(0) = 0`, `y′(0) = e^{−10⁻⁵⁰⁰⁰} − 1` (`≈ −10⁻⁵⁰⁰⁰ ≠ 0`)
 /// gave `y = 0`.
 fn residual_is_zero(eq: &Ex) -> Truth {
-    if eq.is_zero_structural() {
-        return Truth::True;
+    let decide = |e: &Ex| -> Truth {
+        if e.is_zero_structural() {
+            return Truth::True;
+        }
+        let s = e.simplify();
+        if s.is_zero_structural() {
+            return Truth::True;
+        }
+        Truth::from(s.is_zero())
+    };
+    match decide(eq) {
+        Truth::Unknown => {}
+        decided => return decided,
     }
-    let s = eq.simplify();
-    if s.is_zero_structural() {
-        return Truth::True;
+    let rewritten = {
+        let mut inner = eq.inner.write();
+        crate::transforms::solve::lambert_values(&mut inner.arena, eq.raw_id())
+    };
+    match rewritten {
+        Some(w) => decide(&eq.wrap(w)),
+        None => Truth::Unknown,
     }
-    Truth::from(s.is_zero())
 }
 
 /// Solve the equations `eqs = 0`, nonlinear in `constants`, and substitute
@@ -1566,7 +1612,6 @@ fn fit_nonlinear(
         unsolved: constants.to_vec(),
     }];
     let mut last_error: Option<SymplexError> = None;
-    let mut undecided: Option<Ex> = None;
     let mut explored = 0usize;
     'states: while let Some(state) = stack.pop() {
         explored += 1;
@@ -1606,9 +1651,7 @@ fn fit_nonlinear(
             // Constants the conditions do not pin down stay free.
             match accept(&state.sol) {
                 Truth::True => return Ok(state.sol),
-                Truth::Unknown => {
-                    undecided.get_or_insert(state.sol);
-                }
+                Truth::Unknown => last_error = Some(fit_undecided(&state.sol, operation)),
                 Truth::False => last_error = Some(fit_rejected(&state.sol, operation)),
             }
             continue;
@@ -1654,9 +1697,6 @@ fn fit_nonlinear(
             }
         }
         // No open equation could be solved for any of its constants.
-    }
-    if let Some(sol) = undecided {
-        return Ok(sol);
     }
     Err(
         last_error.unwrap_or_else(|| SymplexError::ComputationFailed {

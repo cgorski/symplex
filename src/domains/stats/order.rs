@@ -358,7 +358,31 @@ fn finite_table(dist: &Distribution) -> Result<Option<Vec<(Ex, Ex)>>, SymplexErr
         })?;
         keyed.push((key, v));
     }
+    // The `f64` keys only pre-sort: distinct values can share a key (`1` and
+    // `1 + 10⁻²⁰`, integers beyond 2⁵³, `√2` and its double), which up to
+    // 0.54 kept them in the order given and swapped their order-statistic
+    // masses.  Each adjacent pair is confirmed exactly and a pair out of
+    // order is moved back (an insertion sort, linear on sorted input).
     keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for i in 1..keyed.len() {
+        let mut j = i;
+        while j > 0 {
+            match exact_order(&keyed[j - 1].1, &keyed[j].1) {
+                Some(std::cmp::Ordering::Greater) => {
+                    keyed.swap(j - 1, j);
+                    j -= 1;
+                }
+                Some(_) => break,
+                None => {
+                    return Err(invalid(format!(
+                        "cannot order the values `{}` and `{}` of a finite parent",
+                        keyed[j - 1].1,
+                        keyed[j].1
+                    )));
+                }
+            }
+        }
+    }
     let table = keyed
         .into_iter()
         .map(|(_, v)| {
@@ -367,6 +391,15 @@ fn finite_table(dist: &Distribution) -> Result<Option<Vec<(Ex, Ex)>>, SymplexErr
         })
         .collect();
     Ok(Some(table))
+}
+
+/// The order of two numeric values, exactly: rationals compared, others by
+/// the exact or certified sign of their difference; `None` when undecided.
+fn exact_order(a: &Ex, b: &Ex) -> Option<std::cmp::Ordering> {
+    if let (Some(x), Some(y)) = (a.as_rational(), b.as_rational()) {
+        return Some(x.cmp(&y));
+    }
+    super::family::sign_of(&(a - b)).to_ordering()
 }
 
 /// The exact table of the `k`-th of `n` draws from a finite parent.

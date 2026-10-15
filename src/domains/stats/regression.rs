@@ -1171,6 +1171,7 @@ impl BinaryOutcome for i64 {
 
 impl BinaryOutcome for f64 {
     fn as_outcome(self) -> Option<bool> {
+        // Float evidence: the user's f64 datum itself must be exactly 0 or 1.
         if self == 0.0 {
             Some(false)
         } else if self == 1.0 {
@@ -1878,6 +1879,7 @@ impl Standardization {
         let p = design.first().map_or(0, Vec::len);
         let n = design.len() as f64;
         let is_constant = |a: usize| design.iter().all(|r| r[a] == design[0][a]);
+        // Float evidence: a constant column of the user's f64 design, read exactly.
         let constant = (0..p)
             .find(|&a| design[0][a] != 0.0 && is_constant(a))
             .map(|a| (a, design[0][a]));
@@ -2026,6 +2028,7 @@ impl RootInformation {
             *d += v * v;
         }
         for j in 0..q {
+            // Float evidence: an exact 0 needs no Givens rotation (f64 QR internals).
             if z[j] == 0.0 {
                 continue;
             }
@@ -2045,6 +2048,7 @@ impl RootInformation {
     /// numerically singular.
     fn covariance_factor(&self, a_map: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
         let q = self.diag.len();
+        // Float evidence: "numerically singular" of an f64 fit (it can only refuse).
         if (0..q).any(|j| {
             let rjj = self.r[j][j];
             !(rjj.is_finite() && rjj > ROOT_PIVOT_REL_TOL * self.diag[j].sqrt())
@@ -2105,6 +2109,7 @@ fn mapped_wald_summary(
         .iter()
         .map(|row| {
             let top = row.iter().fold(0.0_f64, |t, v| t.max(v.abs()));
+            // Float evidence: an exactly 0 f64 row has norm 0 (no scaling).
             if top == 0.0 || !top.is_finite() {
                 return top;
             }
@@ -2143,6 +2148,7 @@ fn mnlogit_root_information(design: &[Vec<f64>], k: usize, beta: &[f64]) -> Root
             tail[j] = tail[j + 1] + pr[j];
         }
         for col in 1..k {
+            // Float evidence: an f64 probability that is exactly 0 (0/0 avoided).
             if tail[col + 1] == 0.0 {
                 // Every later category (and the reference) has π = 0.
                 continue;
@@ -2336,6 +2342,7 @@ fn newton_categorical(
         let mut accepted = None;
         for _ in 0..40 {
             let trial: Vec<f64> = params.iter().zip(&dir).map(|(b, d)| b + t * d).collect();
+            // Float evidence: the line search of an f64 maximisation.
             if let Some(next) = evaluate(&trial)
                 && next.ll.is_finite()
                 && next.ll >= cur.ll - 1e-10 * (1.0 + cur.ll.abs())
@@ -2364,6 +2371,7 @@ fn newton_categorical(
         }
         // statsmodels' `_check_perfect_pred`: every observation predicted
         // to within 1e-8 means the likelihood is maximised only at infinity.
+        // (Float evidence: statsmodels' tolerance of the f64 fit; it only refuses.)
         if max_own_category_miss(&cur.probs, y) <= 1e-8 {
             return Err(failed(
                 op,

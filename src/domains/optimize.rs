@@ -34,6 +34,10 @@
 //!   the best point found is never thrown away.
 //! * Polynomial coefficients are always in **ascending** degree:
 //!   `[c₀, c₁, …, c_d]` represents `c₀ + c₁·x + … + c_d·x^d`.
+//! * Float evidence: the comparisons of `f64` values with `0.0` or a
+//!   tolerance here are the routines' own (a root hit exactly, a sign
+//!   change, a convergence test, a degenerate input); every result is an
+//!   `f64` answer of an `f64` API, never an exact claim (reviewed in s15j4).
 //!
 //! ```
 //! use symplex::optimize::{brent_root, nelder_mead, MinimizeOpts, RootOpts};
@@ -237,6 +241,7 @@ fn check_bracket(
             ),
         ));
     }
+    // Float evidence: an endpoint that is a root of the f64 function exactly.
     if fa == 0.0 {
         return Ok(Some(a));
     }
@@ -339,6 +344,7 @@ pub fn brent_root(
             let h = 0.5 * (c - b);
             if h.is_finite() { h } else { 0.5 * c - 0.5 * b }
         };
+        // Float evidence: Brent's convergence test (an exact f64 root ends it too).
         if xm.abs() <= tol1 || fb == 0.0 || adjacent_floats(b, c) {
             if fb.abs() > f_ends {
                 return Err(singular_sign_change(OP, b, fb, f_ends));
@@ -498,6 +504,8 @@ pub fn bisect(
         if !fm.is_finite() {
             return Err(failed(OP, format!("f({mid}) = {fm} is not finite")));
         }
+        // Float evidence: bisection on the f64 signs (a midpoint root, the halving
+        // side, the tolerance of the caller's `RootOpts`).
         if fm == 0.0 {
             return Ok(mid);
         }
@@ -590,6 +598,7 @@ pub fn newton_root(
                 format!("f({x:e}) = {fx:e} is not finite; the iteration diverged"),
             ));
         }
+        // Float evidence: Newton's iterate is an exact f64 root; a zero slope stops it.
         if fx == 0.0 {
             return Ok(x);
         }
@@ -693,6 +702,7 @@ pub fn grow_bracket(
             ),
         ));
     }
+    // Float evidence: a sign change (or an exact root) of the f64 function.
     let bracketed = |fa: f64, fb: f64| fa == 0.0 || fb == 0.0 || (fa > 0.0) != (fb > 0.0);
     for _ in 0..max_doublings {
         if bracketed(fa, fb) {
@@ -963,6 +973,7 @@ pub fn nelder_mead(
     vertices.push((x0.to_vec(), f0));
     for i in 0..n {
         let mut p = x0.to_vec();
+        // Float evidence: the size of the initial simplex (scipy's rule).
         p[i] = if opts.initial_step > 0.0 {
             p[i] + opts.initial_step
         } else if p[i] != 0.0 {
@@ -1367,6 +1378,7 @@ impl Default for DeOpts {
 /// Population-convergence test for differential evolution.
 fn population_converged(energies: &[f64], tol: f64) -> bool {
     let n = energies.len() as f64;
+    // Float evidence: an empty population (a count, exact).
     if n == 0.0 {
         return true;
     }
@@ -1694,6 +1706,7 @@ pub fn poly_fit(xs: &[f64], ys: &[f64], degree: usize) -> Result<Vec<f64>, Sympl
     } else {
         (0.5 * x_min + 0.5 * x_max, 0.5 * x_max - 0.5 * x_min)
     };
+    // Float evidence: all f64 abscissae equal (the data themselves, exact).
     if half == 0.0 {
         // One distinct abscissa carries only a constant.
         if degree > 0 {

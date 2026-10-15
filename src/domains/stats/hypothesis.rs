@@ -1031,6 +1031,7 @@ impl HypergeomNumeric {
                 }
             }
             sum += term;
+            // Float evidence: truncation of the f64 tail sum (the documented numeric route).
             if term < HYPERGEOM_TAIL_CUTOFF * sum {
                 break;
             }
@@ -1061,6 +1062,8 @@ impl HypergeomNumeric {
         if self.symmetric() {
             return Some(self.lo + self.hi - a);
         }
+        // Float evidence: the numeric route's documented tie convention (scipy's, tighter);
+        // the exact route below the threshold compares exact weights.
         let target = self.ln_shape(a) + HYPERGEOM_TIE_TOL;
         let m = self.mode;
         let mut acc = LogProduct::default();
@@ -1093,6 +1096,7 @@ impl HypergeomNumeric {
         if self.symmetric() {
             return Some(self.lo + self.hi - a);
         }
+        // Float evidence: as in `cutoff_above`.
         let target = self.ln_shape(a) + HYPERGEOM_TIE_TOL;
         let m = self.mode;
         let mut acc = LogProduct::default();
@@ -1170,6 +1174,7 @@ impl Default for LogProduct {
 
 impl LogProduct {
     fn renormalise(&mut self) {
+        // Float evidence: keeps the f64 mantissa in range; the value is unchanged.
         if self.acc < 1e-250 || self.acc > 1e250 {
             self.shift += self.acc.ln();
             self.acc = 1.0;
@@ -3236,6 +3241,7 @@ fn kolmogorov_sf(x: f64) -> f64 {
             let kf = f64::from(k);
             let term = (-2.0 * kf * kf * x * x).exp();
             s += if k % 2 == 1 { term } else { -term };
+            // Float evidence: truncation of an f64 series (the next term is below e^{-6}·term).
             if term < 1e-18 {
                 break;
             }
@@ -3873,6 +3879,8 @@ pub fn permutation_test(
     }
     let n1 = x.len();
     let mut pooled: Vec<f64> = x.iter().chain(y).copied().collect();
+    // Float evidence: ties of an f64 statistic recomputed in another order count as
+    // ties (scipy's `permutation_test` convention, tighter); a Monte-Carlo p-value.
     let slack = 1e-14 * observed.abs();
     let (mut count_ge, mut count_le) = (0usize, 0usize);
     for _ in 0..n_permutations {
@@ -4232,6 +4240,7 @@ pub fn sample_size_t_test_two_sample(
     if power <= alpha {
         return Err(invalid(OP, "the target power must exceed alpha"));
     }
+    // Float evidence: the f64 argument itself (a zero effect is invalid input).
     if effect_size == 0.0 {
         return Err(invalid(OP, "a zero effect has no finite sample size"));
     }
