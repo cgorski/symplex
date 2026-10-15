@@ -24,6 +24,16 @@ mod v36_s14f3_definite;
 mod v36_s14f4_solve;
 #[path = "v36/v36_s14f5_matrix_ode.rs"]
 mod v36_s14f5_matrix_ode;
+#[path = "v36/v36_s15g1_undefined.rs"]
+mod v36_s15g1_undefined;
+#[path = "v36/v36_s15g2_solve.rs"]
+mod v36_s15g2_solve;
+#[path = "v36/v36_s15g3_quadrature.rs"]
+mod v36_s15g3_quadrature;
+#[path = "v36/v36_s15g4_float_evidence.rs"]
+mod v36_s15g4_float_evidence;
+#[path = "v36/v36_s15g5_conventions.rs"]
+mod v36_s15g5_conventions;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
