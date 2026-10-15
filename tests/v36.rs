@@ -64,6 +64,16 @@ mod v36_s15k3_stats;
 mod v36_s15k4_functions;
 #[path = "v36/v36_s15k5_integration.rs"]
 mod v36_s15k5_integration;
+#[path = "v36/v36_s15l1_fuzz_stats.rs"]
+mod v36_s15l1_fuzz_stats;
+#[path = "v36/v36_s15l2_families.rs"]
+mod v36_s15l2_families;
+#[path = "v36/v36_s15l3_tests.rs"]
+mod v36_s15l3_tests;
+#[path = "v36/v36_s15l4_models.rs"]
+mod v36_s15l4_models;
+#[path = "v36/v36_s15l5_numerics.rs"]
+mod v36_s15l5_numerics;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
