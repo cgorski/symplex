@@ -8,6 +8,8 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-10-15
+
 The silent wrong answers left after 0.52, and the open conventions decided
 with one rule: an answer is a claim, and a claim must hold for every value it
 covers.  A root that holds only for some values of a parameter now comes with
@@ -136,6 +138,13 @@ non-real value is never printed or returned as its real part.
   verdicts no longer depend on the order in which symbols were created.
 - `ConditionSet(x, True)` simplifies to the domain of `x`.
 
+### Changed
+
+- Definite integrals over a range in `[0, ∞)` whose antiderivative has
+  arguments built from `x^q` and `ln x` are known not to cross a branch cut
+  without sampling: `∫₁^∞ x^(−3/4)/(1 + x²) dx` takes 37 ms (206 ms in 0.52;
+  the certified sampling of the float-evidence review had made it 338 ms).
+
 ### Known issues
 
 - A symbol declared even and prime is not known to be 2: `(⌈n⌉ − n)/(n − 2)` is
@@ -143,6 +152,27 @@ non-real value is never printed or returned as its real part.
 - `Chi(−x)`, `Eₙ(−x)`, `Γ(0, −x)` and `besselk(0, −x)` for `|x| ≳ 127` still
   drop their O(1) imaginary part at 10 or 16 digits (a joint error bound of
   both parts); `im(expint(1, −160))` prints `0` (true `−π`).
+
+### Measured
+
+- `tests/v36/` (0.49–0.53): 43 files.  nextest 14,703 tests (14 skipped),
+  doctests 1,352 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,760 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,013 / 0 wrong / 204 undecided; `--negative-params` 115
+  real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+  MSRV 1.93 passes for all four crates.  `cargo semver-checks` against
+  0.52.0: no semver update required.
+- Golden-output harness (200,000 random expressions × 31 operations): 8,626
+  changes from 0.52, each traced to a fix above and reviewed against mpmath
+  or SymPy (6,737 in `solve`/`solve_set`: conditional roots, constant
+  factors, reason texts; 1,459 from values at `−∞` and undefined quotients;
+  380 from the binomial convention and printed parts).
+- Hunts: radical equations 829 wrong-domain roots → 0; zero tests 373 → 82;
+  functions at `±∞` 23 → 0; constants with huge and O(1) parts: dropped
+  parts at 10 digits 170 → 41; definite integrals: 5 wrong classes → 0 and
+  28 D14 integrals answered; stats refusals of 0.48: answered again.
+- Replay of the `fuzz_calculus` corpus (2,664 inputs): 114 s on 0.52 → 78 s.
 
 ## [0.52.0] - 2026-10-15
 

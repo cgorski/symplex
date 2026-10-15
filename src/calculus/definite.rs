@@ -2329,6 +2329,18 @@ fn cancelling_log_steps(arena: &mut Arena, anti: ExprId) -> Vec<ExprId> {
 /// proves real, and sums, products, integer powers, `exp`, `sin`, `cos`,
 /// `tan`, `sinh`, `cosh`, `tanh`, `atan`, `|·|` of such.  Conservative.
 fn real_for_real_x(arena: &mut Arena, e: ExprId, x: ExprId, reals: &mut AssumptionCache) -> bool {
+    real_for_x_in(arena, e, x, reals, false)
+}
+
+/// [`real_for_real_x`], and with `nonnegative_x` for `x ≥ 0` only: then
+/// also `x^q` for every rational `q` and `ln x` (real where defined).
+fn real_for_x_in(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+    reals: &mut AssumptionCache,
+    nonnegative_x: bool,
+) -> bool {
     let mut stack = vec![e];
     let mut seen = rustc_hash::FxHashSet::default();
     while let Some(id) = stack.pop() {
@@ -2351,6 +2363,8 @@ fn real_for_real_x(arena: &mut Arena, e: ExprId, x: ExprId, reals: &mut Assumpti
         match arena.node(id).clone() {
             ExprNode::Add(children) | ExprNode::Mul(children) => stack.extend(children),
             ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(|r| r.is_integer()) => stack.push(b),
+            ExprNode::Pow(b, e) if nonnegative_x && b == x && arena.as_num(e).is_some() => {}
+            ExprNode::Ln(b) if nonnegative_x && b == x => {}
             ExprNode::Neg(u)
             | ExprNode::Exp(u)
             | ExprNode::Sin(u)
@@ -2373,7 +2387,8 @@ fn real_for_real_x(arena: &mut Arena, e: ExprId, x: ExprId, reals: &mut Assumpti
 ///
 /// - A real `u` ([`real_for_real_x`]) moves along the real axis: it may run
 ///   along a cut on it, where the principal value is the limit from one
-///   side and continuous, but never across one.
+///   side and continuous, but never across one.  On a piece in `[0, ∞)`
+///   that includes `x^q` and `ln x` ([`real_for_x_in`]).
 /// - For a cut on the real axis it suffices that `im u` does not depend on
 ///   `x`: `u = c + g(x)` with `g` real and `c` constant (`ln(x + a + i)`).
 /// - A linear `u = α·x + β` runs along a straight segment, which meets the
@@ -2399,6 +2414,11 @@ fn cut_crossing_excluded(
     reals: &mut AssumptionCache,
 ) -> bool {
     if real_for_real_x(arena, u, x, reals) {
+        return true;
+    }
+    // On a piece in `[0, ∞)` a `u` built from `x^q` and `ln x` is real too:
+    // `∫₁^∞ x^(−3/4)/(1 + x²) dx` has the arguments `x^(1/2) ± √(2 − √2)·x^(1/4) + 1`.
+    if piece_nonnegative(arena, p, reals) && real_for_x_in(arena, u, x, reals, true) {
         return true;
     }
     if cut != Cut::ImaginaryOutside && imaginary_part_constant_polynomial(arena, u, x, reals) {
@@ -2433,6 +2453,17 @@ fn cut_crossing_excluded(
         && [p.lo, p.hi]
             .into_iter()
             .any(|e| meets_axis_off_the_cut(arena, u, x, e, cut, reals))
+}
+
+/// Do both ends of the piece `p` lie in `[0, ∞]` (proved)?
+fn piece_nonnegative(arena: &Arena, p: &Piece, reals: &mut AssumptionCache) -> bool {
+    [p.lo, p.hi].into_iter().all(|e| {
+        e == arena.infinity
+            || arena.as_num(e).is_some_and(|q| !q.is_negative())
+            || (walk::free_symbols(arena, e).is_empty()
+                && Truth::from(reals.query(arena, e, Props::NONNEGATIVE)).is_true()
+                && Truth::from(reals.query(arena, e, Props::FINITE)).is_true())
+    })
 }
 
 /// Is `u` a polynomial in `x` whose coefficients other than the constant
@@ -2607,7 +2638,16 @@ fn numeric_cut_crossing(
             Cut::RealAbove(bound) => along > bound,
             Cut::RealOutside | Cut::ImaginaryOutside => along.abs() > 1.0,
         };
-        let side = crate::transforms::realness::imaginary_part_sign(arena, transversal);
+        // `evalf_complex64` gives a part other than `0.0` only when the
+        // part is certified nonzero (its ball excludes 0), with that sign;
+        // only a `0.0` part needs the exact test (an exact 0 or undecided).
+        let side = if s > 0.0 {
+            SignSet::POSITIVE
+        } else if s < 0.0 {
+            SignSet::NEGATIVE
+        } else {
+            crate::transforms::realness::imaginary_part_sign(arena, transversal)
+        };
         if side == SignSet::REAL {
             return CutCrossing::Undecided(t);
         }
@@ -3224,7 +3264,14 @@ fn asymptotic_log_shift(
     // imaginary part below `10⁻¹²` of the value counted as 0, so a slope
     // `−1 − i·ε` was on the cut (`ln|a| + iπ` for the `ln|a| − iπ` it tends
     // to), and an intercept `−i·ε` on the axis.
-    let slope_side = crate::transforms::realness::imaginary_part_sign(arena, slope);
+    // A part of `evalf_complex64` other than `0.0` is certified nonzero.
+    let slope_side = if a.im > 0.0 {
+        SignSet::POSITIVE
+    } else if a.im < 0.0 {
+        SignSet::NEGATIVE
+    } else {
+        crate::transforms::realness::imaginary_part_sign(arena, slope)
+    };
     if slope_side == SignSet::REAL {
         return None;
     }
