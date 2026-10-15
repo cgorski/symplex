@@ -34,6 +34,16 @@ mod v36_s15g3_quadrature;
 mod v36_s15g4_float_evidence;
 #[path = "v36/v36_s15g5_conventions.rs"]
 mod v36_s15g5_conventions;
+#[path = "v36/v36_s15h1_infinity.rs"]
+mod v36_s15h1_infinity;
+#[path = "v36/v36_s15h2_evalf.rs"]
+mod v36_s15h2_evalf;
+#[path = "v36/v36_s15h3_integration.rs"]
+mod v36_s15h3_integration;
+#[path = "v36/v36_s15h4_constants.rs"]
+mod v36_s15h4_constants;
+#[path = "v36/v36_s15h5_float_evidence.rs"]
+mod v36_s15h5_float_evidence;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
