@@ -518,9 +518,12 @@ fn cancels_infinite_terms(arena: &Arena, terms: &FxHashMap<ExprId, Q>, merged: &
 ///   factors that have not been processed yet, or among the bases already
 ///   collected;
 /// * otherwise `0 × anything → 0`.  Applications at exact arguments where
-///   they are infinite (`ln(0)`, `exp(∞)`, `Γ(−1)`) were folded to `zoo`/`∞`
-///   when interned ([`canon_function`]); any other application (`Γ(zoo)`,
-///   `f(x)`) is treated as finite here;
+///   they are infinite (`ln(0)`, `exp(∞)`, `Γ(−1)`, `besseli(1, −∞)`) were
+///   folded to `zoo`/`±∞` when interned ([`canon_function`]); a library
+///   function whose values at `±∞` fold, left unevaluated at `±∞`, has no
+///   known value and makes the product `nan` (also as a denominator:
+///   [`library_value_unknown_at_infinity`]); any other application
+///   (`Γ(zoo)`, `f(x)`) is treated as finite here;
 /// * `0 × d⁻ᵏ → nan` for a denominator `d` (among the factors, or in a
 ///   product or sum among them) that vanishes identically
 ///   ([`factor_vanishes`]: also a constant that is 0, `sin² 1 + cos² 1 −
@@ -534,7 +537,10 @@ fn cancels_infinite_terms(arena: &Arena, terms: &FxHashMap<ExprId, Q>, merged: &
 ///   point: a positive power of a sum with a term over such a denominator,
 ///   `(1/d + 2)²`, or a function at such an argument, `sin(c/d)` with `c/d
 ///   = zoo` ([`everywhere`]).  Up to 0.34 `0·sin((√2 + e)/(sin² 1 + cos² 1 −
-///   1))` was `0` (`0·nan`; SymPy 1.14 gives `0`, deliberately different).
+///   1))` was `0` (`0·nan`; SymPy 1.14 gives `0`, deliberately different);
+/// * `0 × δ(c) → nan`, `0 × H(c) → nan` (also over them) for a constant `c`
+///   proved non-real, where they have no value
+///   ([`distribution_without_value`]).
 ///
 /// `saw_infinity` reports whether an infinity was already consumed from the
 /// factor list before the coefficient became zero; `remaining` are the
@@ -577,6 +583,12 @@ fn zero_times_rest<'a>(
             ExprNode::Pow(base, e) if outside && arena.as_num(*e).is_some() => {
                 stack.push((*base, outside));
             }
+            ExprNode::DiracDelta(_) | ExprNode::Heaviside(_)
+                if outside && distribution_without_value(arena, id) =>
+            {
+                tracing::debug!("canon_mul: 0 times δ or H at a non-real constant → nan");
+                return arena.nan;
+            }
             node if outside && application_arguments(arena, node).is_some() => {
                 applications.push(id);
             }
@@ -590,7 +602,11 @@ fn zero_times_rest<'a>(
     }
     let mut memo = EverywhereMemo::default();
     for d in denominators {
-        if memo.zero_or_undefined(arena, d) || vanishes_by_function_identity(arena, d) {
+        if library_value_unknown_at_infinity(arena, d)
+            || distribution_without_value(arena, d)
+            || memo.zero_or_undefined(arena, d)
+            || vanishes_by_function_identity(arena, d)
+        {
             tracing::debug!("canon_mul: 0 over an identically zero or undefined denominator → nan");
             return arena.nan;
         }
@@ -634,6 +650,24 @@ fn vanishes_by_function_identity(arena: &mut Arena, d: ExprId) -> bool {
     candidates
         .into_iter()
         .any(|s| arena.vanishes_by_identity(s))
+}
+
+/// Is `f` a `δ(c)` or `H(c)` at a constant `c` proved non-real (by the
+/// assumptions, or a certified nonzero imaginary part)?  The distributions
+/// have values only at real arguments (SymPy 1.14: `Heaviside(I)` raises
+/// "defined only for real values"), so `0·δ(i)` is not 0 (up to 0.52 it
+/// was, and `x·δ(i)` vanished at `x = 0`).  At an argument with symbols (a
+/// generic real point) or of undecided realness the product keeps folding
+/// to 0.
+fn distribution_without_value(arena: &Arena, f: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::truth::Truth;
+    let (ExprNode::DiracDelta(a) | ExprNode::Heaviside(a)) = *arena.node(f) else {
+        return false;
+    };
+    is_numeric_constant(arena, a)
+        && (Truth::from(AssumptionCache::new().query(arena, a, Props::REAL)).is_false()
+            || arena.part_signs(a).is_some_and(|s| s.im.is_some()))
 }
 
 fn symbol_is_infinite(arena: &Arena, id: ExprId) -> bool {
@@ -734,12 +768,18 @@ fn infinite_direction(arena: &Arena, arg: ExprId) -> Option<(Q, Q)> {
 /// for `|a| ≥ |b|` and grow otherwise; `Γ(z)` and `z!` grow for `a > 0`,
 /// tend to 0 for `a = 0` and for `a < 0`, `b ≠ 0`, and meet the poles for
 /// `a < 0`, `b = 0`.  A direction of unknown value (`x·∞`) is not known
-/// finite.  Any other function (`ln Γ`, the library functions) keeps
-/// counting as finite unless the assumptions say otherwise.
+/// finite.  A library function whose values at `±∞` fold, left unevaluated
+/// at `±∞`, is not known finite either
+/// ([`library_value_unknown_at_infinity`]).  Any other function (`ln Γ`,
+/// `atan`, user functions) keeps counting as finite unless the assumptions
+/// say otherwise.
 fn not_finite_at_infinity(arena: &Arena, f: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     let (inf, ninf) = (arena.infinity, arena.neg_infinity);
     let Some(a) = arena.node(f).unary_arg_if(examined_at_infinity) else {
+        if library_value_unknown_at_infinity(arena, f) {
+            return true;
+        }
         let infinite_argument = application_arguments(arena, arena.node(f)).is_some_and(|args| {
             args.iter().any(|&a| {
                 crate::base::walk::contains(arena, a, inf)
@@ -775,6 +815,62 @@ fn not_finite_at_infinity(arena: &Arena, f: ExprId) -> bool {
         _ => false,
     };
     !bounded
+}
+
+/// Is `f` an application at `±∞` of a library function whose values at
+/// `±∞` fold when it is built ([`folds_at_infinity`]), left unevaluated, and
+/// not known finite?  Every value the constructors know there folds
+/// ([`lib_function_value`]: `J_ν(∞) = 0`, `I_ν(−∞) = (−1)^ν·∞`, `Chi(−∞) =
+/// ∞ + iπ`); what stays is infinite or has no limit (`I_ν(−∞)` of a
+/// symbolic order, `Ai′(−∞)`, which oscillates without bound), so `0·f`
+/// and `0/f` are not folded to 0: they are `nan`, as `0·cosh(x·∞)` is.  Up
+/// to 0.52 `0·besseli(nu, −∞)` and `0·airyaiprime(−∞)` were 0.  Other
+/// library functions (orthogonal polynomials, `B_x(a, b)`, `W_k`, …), and
+/// these at another infinite argument (`x − ∞`, `i·∞`), keep counting as
+/// finite: their values there are not folded (`U₀(∞) = 1`, `F(0 | ∞) =
+/// 0`), so an unfolded one is no sign of an infinite value.
+fn library_value_unknown_at_infinity(arena: &Arena, f: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::truth::Truth;
+    let ExprNode::Lib(lib, args) = arena.node(f) else {
+        return false;
+    };
+    folds_at_infinity(*lib)
+        && args
+            .iter()
+            .any(|&a| a == arena.infinity || a == arena.neg_infinity)
+        && !Truth::from(AssumptionCache::new().query(arena, f, Props::FINITE)).is_true()
+}
+
+/// The library functions whose values at `±∞` [`lib_function_value`] folds
+/// wherever they have one (for every order with no infinity in it, or every
+/// rational order): the Bessel functions, `E_ν`, `Γ(s, x)`, `γ(s, x)`, the
+/// Airy functions, `K(m)`, `E(m)`, `Chi`, `Shi`, `erfi`, the Fresnel
+/// integrals and `η`.
+fn folds_at_infinity(f: crate::base::libfn::LibFn) -> bool {
+    use crate::base::libfn::LibFn;
+    matches!(
+        f,
+        LibFn::BesselJ
+            | LibFn::BesselY
+            | LibFn::BesselI
+            | LibFn::BesselK
+            | LibFn::ExpInt
+            | LibFn::UpperGamma
+            | LibFn::LowerGamma
+            | LibFn::AiryAi
+            | LibFn::AiryBi
+            | LibFn::AiryAiPrime
+            | LibFn::AiryBiPrime
+            | LibFn::EllipticK
+            | LibFn::EllipticE
+            | LibFn::Chi
+            | LibFn::Shi
+            | LibFn::Erfi
+            | LibFn::FresnelS
+            | LibFn::FresnelC
+            | LibFn::DirichletEta
+    )
 }
 
 /// What a subexpression is at every point, as far as the rare paths of the
@@ -1905,6 +2001,9 @@ pub(crate) fn vanishes_identically_as_factor(arena: &mut Arena, f: ExprId) -> bo
 /// symplex's `together`, `ratsimp` and `simplify` give `nan` for `0/0`),
 /// and up to 0.33 so were `(exp(2x) − exp(x)²)/(exp(2x) − exp(x)²)` (SymPy:
 /// `nan`, it folds `exp(x)**2`) and `(sin² 1 + cos² 1 − 1)/(sin² 1 + cos² 1 − 1)`.
+/// A base that vanishes by an identity of its functions
+/// ([`vanishes_by_function_identity`]) too: up to 0.52 `(sin²x + cos²x −
+/// 1)·(y + 1)/(sin²x + cos²x − 1)` was `y + 1` in every operation.
 /// Only a base whose exponents have both signs is tested (a symbol at no
 /// cost: it holds no sum).
 fn cancels_vanishing_sum(
@@ -1925,7 +2024,9 @@ fn cancels_vanishing_sum(
         })
         .map(|(&b, _)| b)
         .collect();
-    mixed.into_iter().any(|b| factor_vanishes(arena, b))
+    mixed
+        .into_iter()
+        .any(|b| factor_vanishes(arena, b) || vanishes_by_function_identity(arena, b))
 }
 
 /// Does `d` hold a function application or another non-rational generator
@@ -3327,6 +3428,10 @@ enum Folded {
     InfinitePlus(InfDir, Q, Q),
     /// A value already built (a directed infinity `e^c·∞`).
     Built(ExprId),
+    /// `Γ(s)` for the argument `s` (`lowergamma(s, ∞)`).
+    Gamma(ExprId),
+    /// `q·√π + d·∞` (`uppergamma(1/2, −∞) = √π − i·∞`).
+    SqrtPiPlus(Q, InfDir),
     ComplexInfinity,
     NaN,
 }
@@ -4470,10 +4575,12 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
             (Arg::Rational(n), Arg::Rational(k)) if k.is_integer() => {
                 // C(n, k) = Γ(n+1)/(Γ(k+1)·Γ(n−k+1)).  For n ≥ 0 an integer
                 // the value is 0 unless 0 ≤ k ≤ n; for a non-integer n,
-                // 1/Γ(k+1) = 0 at a negative k.  A negative integer n is left
-                // alone (the pole of Γ(n+1) makes it a limit; see `eval`).
+                // 1/Γ(k+1) = 0 at a negative k.  A negative integer k gives 0
+                // for every n (Graham–Knuth–Patashnik, as `eval` since 0.53:
+                // Pascal's rule for all integers); a negative integer n with
+                // k ≥ 0 is left to `eval`.
                 let vanishes = if n.is_integer() {
-                    !n.is_negative() && (k.is_negative() || k > n)
+                    k.is_negative() || (!n.is_negative() && k > n)
                 } else {
                     k.is_negative()
                 };
@@ -4548,6 +4655,23 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
             canon_add(arena, &terms)
         }
         Folded::Built(id) => id,
+        Folded::Gamma(s) => arena.gamma(s),
+        Folded::SqrtPiPlus(q, d) => {
+            let half = arena.intern_num(Q::new(1.into(), 2.into()));
+            let half = arena.intern(ExprNode::Num(half));
+            let root_pi = arena.pow(arena.pi, half);
+            let c = arena.intern_num(q);
+            let c = arena.intern(ExprNode::Num(c));
+            let finite = canon_mul(arena, &[c, root_pi]);
+            let i = arena.i_unit;
+            let infinite = match d {
+                InfDir::Pos => arena.infinity,
+                InfDir::Neg => arena.neg_infinity,
+                InfDir::PosImag => canon_mul(arena, &[i, arena.infinity]),
+                InfDir::NegImag => canon_mul(arena, &[arena.neg_one, i, arena.infinity]),
+            };
+            canon_add(arena, &[finite, infinite])
+        }
         Folded::ComplexInfinity => arena.complex_infinity,
         Folded::NaN => arena.nan,
     })
@@ -5395,6 +5519,48 @@ fn lib_function_value(
         }
         LibFn::BesselI if at_infinity(1, false) && num(0).is_some() => Folded::Infinity,
         LibFn::Erfi | LibFn::Shi if at_infinity(0, true) => Folded::NegInfinity,
+        // The values at `−∞` of a rational order, by the principal branches
+        // `evalf` uses (on a cut the value from above: `I_ν(−x) =
+        // e^{iπν}I_ν(x)`), and `E(±∞)`: see the helpers.  Up to 0.52 they
+        // stayed, and `0·besseli(1, −∞)`, `0·Chi(−∞)` were 0.
+        LibFn::BesselI if args.get(1) == Some(&arena.neg_infinity) && num(0).is_some() => {
+            bessel_i_at_minus_infinity(num(0)?)
+        }
+        // `K_ν(−x) = e^{−iπν}K_ν(x) − iπI_ν(x)` (DLMF 10.34.2): the first term
+        // tends to 0, the second to `−i·∞` for every real `ν`.
+        LibFn::BesselK if args.get(1) == Some(&arena.neg_infinity) && num(0).is_some() => {
+            Folded::ImaginaryInfinity(true)
+        }
+        LibFn::ExpInt if args.get(1) == Some(&arena.neg_infinity) && num(0).is_some() => {
+            expint_at_minus_infinity(num(0)?)
+        }
+        LibFn::UpperGamma if args.get(1) == Some(&arena.neg_infinity) && num(0).is_some() => {
+            upper_gamma_at_minus_infinity(num(0)?)
+        }
+        LibFn::LowerGamma
+            if args.get(1) == Some(&arena.neg_infinity)
+                && num(0).is_some_and(Signed::is_positive) =>
+        {
+            lower_gamma_at_minus_infinity(num(0)?)
+        }
+        // `γ(s, ∞) = Γ(s)`, `S(±∞) = C(±∞) = ±1/2`, `η(∞) = 1` (as `eval`).
+        LibFn::LowerGamma if at_infinity(1, false) && finite_order(0) => {
+            Folded::Gamma(*args.first()?)
+        }
+        LibFn::FresnelS | LibFn::FresnelC if at_infinity(0, false) => Folded::ratio(1, 2),
+        LibFn::FresnelS | LibFn::FresnelC if at_infinity(0, true) => Folded::ratio(-1, 2),
+        LibFn::DirichletEta if at_infinity(0, false) => Folded::int(1),
+        // `E(m) ~ √(−m)` for `m → −∞`; for `m → +∞` the real part tends to 0
+        // and the imaginary part to `±∞` by the side of the cut `[1, ∞)`
+        // (mpmath `ellipe(10**6)` = 0.000785 + 999.996i; `evalf` takes no
+        // side there), so only the undirected `zoo` holds.
+        LibFn::EllipticE if at_infinity(0, false) => Folded::ComplexInfinity,
+        LibFn::EllipticE if at_infinity(0, true) => Folded::Infinity,
+        // `Chi(−x) = Chi(x) + iπ` (the `ln` in `Chi`; mpmath `chi(-1000)` =
+        // 9.86·10⁴³⁰ + 3.14159i): `∞ + iπ`, as `ln(−∞)` (SymPy 1.14: `oo`).
+        LibFn::Chi if args.first() == Some(&arena.neg_infinity) => {
+            Folded::InfinitePlus(InfDir::Pos, Q::one(), Q::zero())
+        }
         // `W_k(0) = −∞` for a branch `k ≠ 0` (as `eval`; SymPy 1.14
         // `LambertW(0, 1)` → -oo), so that `0·W₁(0)` is `0·∞`: up to 0.51
         // `(x·W₁(x))` at `x = 0` was `0`.
@@ -5403,6 +5569,131 @@ fn lib_function_value(
         }
         _ => return None,
     })
+}
+
+/// `I_ν(−∞)` for a rational order: `I_ν(−x) = e^{iπν}·I_ν(x)` with `I_ν(x) ~
+/// e^x/√(2πx)` (DLMF 10.40.1), so `(−1)ⁿ·∞` for an integer `n` (SymPy 1.14:
+/// `besseli(1, -oo)` → `-oo`), `(−1)ᵏ·i·∞` for `ν = k + 1/2` (the real
+/// part is 0: `I_{1/2}(z) = √(2/(πz))·sinh z`), and `zoo` for any other
+/// order (the direction `e^{iπν}` is off the axes).
+fn bessel_i_at_minus_infinity(nu: &Q) -> Folded {
+    use num_integer::Integer;
+    if nu.is_integer() {
+        return if nu.to_integer().is_even() {
+            Folded::Infinity
+        } else {
+            Folded::NegInfinity
+        };
+    }
+    match half_integer_part(nu) {
+        Some(k) => Folded::ImaginaryInfinity(k.is_odd()),
+        None => Folded::ComplexInfinity,
+    }
+}
+
+/// `E_ν(−∞)` for a rational order.  `E_ν(−x) ~ −e^x/x` for every `ν` (DLMF
+/// 8.20.2); the imaginary part is `−π` for `ν = 1` (`E₁(−x) = −Ei(x) −
+/// iπ`), 0 for an integer `ν ≤ 0` (`E_ν` is elementary and real there),
+/// `x^{ν−1}·sin(π(ν−1))·Γ(1−ν) → 0` for a non-integer `ν < 1`, and
+/// unbounded for `ν > 1` (`−πx^{n−1}/(n−1)!` for an integer `n`; mpmath
+/// `expint(2, -1000)` = −1.97·10⁴³¹ − 3141.59i): `−∞ − iπ`, `−∞`, `zoo`.
+fn expint_at_minus_infinity(nu: &Q) -> Folded {
+    if nu.is_one() {
+        Folded::InfinitePlus(InfDir::Neg, -Q::one(), Q::zero())
+    } else if *nu < Q::one() {
+        Folded::NegInfinity
+    } else {
+        Folded::ComplexInfinity
+    }
+}
+
+/// `Γ(s, −∞)` for a rational `s`, from `Γ(s, −x) = Γ(s) + e^{iπ(s−1)}·R(x)`
+/// with a real `R(x) ~ x^{s−1}e^x → +∞` (`γ(s, −x) = (−x)^s·Σ xᵏ/(k!(s +
+/// k))`, DLMF 8.7.1): `(−1)^{n−1}·∞` for an integer `n ≥ 1` (SymPy 1.14:
+/// `uppergamma(3, -oo)` → nan, from its closed form); for `s = −m ≤ 0`
+/// (DLMF 8.4.15, `E₁(−x) = −Ei(x) − iπ`) `(−1)^{m+1}·(∞ + iπ/m!)` (SymPy:
+/// `uppergamma(-1, -oo)` → 0); for `s = k + 1/2` the factor is `∓i`, so
+/// `Γ(s) − (−1)ᵏ·i·∞` with the exact real part `Γ(s)` (`Γ(1/2, −x) =
+/// √π − i√π·erfi(√x)`); `zoo` otherwise.  `|m|`, `|k|` above 100 give `zoo`.
+fn upper_gamma_at_minus_infinity(s: &Q) -> Folded {
+    use num_integer::Integer;
+    if s.is_integer() {
+        let n = s.to_integer();
+        if n.is_positive() {
+            return if n.is_odd() {
+                Folded::Infinity
+            } else {
+                Folded::NegInfinity
+            };
+        }
+        let Some(m) = (-n).to_u32().filter(|&m| m <= 100) else {
+            return Folded::ComplexInfinity;
+        };
+        let factorial = (1..=m).fold(BigInt::one(), |acc, j| acc * j);
+        let (direction, sign) = if m % 2 == 1 {
+            (InfDir::Pos, BigInt::one())
+        } else {
+            (InfDir::Neg, -BigInt::one())
+        };
+        return Folded::InfinitePlus(direction, Q::new(sign, factorial), Q::zero());
+    }
+    let Some(k) = half_integer_part(s) else {
+        return Folded::ComplexInfinity;
+    };
+    let Some(gamma) = k.to_i64().and_then(half_integer_gamma_over_sqrt_pi) else {
+        return Folded::ComplexInfinity;
+    };
+    let direction = if k.is_even() {
+        InfDir::NegImag
+    } else {
+        InfDir::PosImag
+    };
+    Folded::SqrtPiPlus(gamma, direction)
+}
+
+/// `γ(s, −∞)` for a positive rational `s`: `γ(s, −x) = −e^{iπ(s−1)}·R(x)`
+/// (see [`upper_gamma_at_minus_infinity`]), so `(−1)ⁿ·∞` for an integer
+/// `n` (SymPy 1.14: `lowergamma(2, -oo)` → `oo`), `(−1)ᵏ·i·∞` for `s = k +
+/// 1/2` (no real part; SymPy: `lowergamma(1/2, -oo)` → `oo*I`), `zoo`
+/// otherwise.
+fn lower_gamma_at_minus_infinity(s: &Q) -> Folded {
+    use num_integer::Integer;
+    if s.is_integer() {
+        return if s.to_integer().is_even() {
+            Folded::Infinity
+        } else {
+            Folded::NegInfinity
+        };
+    }
+    match half_integer_part(s) {
+        Some(k) => Folded::ImaginaryInfinity(k.is_odd()),
+        None => Folded::ComplexInfinity,
+    }
+}
+
+/// `k` when `q = k + 1/2` for an integer `k`.
+fn half_integer_part(q: &Q) -> Option<BigInt> {
+    (q.denom() == &BigInt::from(2)).then(|| (q - Q::new(1.into(), 2.into())).to_integer())
+}
+
+/// `Γ(k + 1/2)/√π` for an integer `|k| ≤ 100`, from `Γ(1/2) = √π` and
+/// `Γ(s + 1) = s·Γ(s)`: `1/2` for `k = 1`, `−2` for `k = −1`.
+fn half_integer_gamma_over_sqrt_pi(k: i64) -> Option<Q> {
+    if k.unsigned_abs() > 100 {
+        return None;
+    }
+    let half = Q::new(1.into(), 2.into());
+    let mut q = Q::one();
+    for j in 0..k.unsigned_abs() {
+        let j = Q::from_integer(BigInt::from(j));
+        q = if k > 0 {
+            q_mul(&q, &(j + &half))
+        } else {
+            // Γ(s − 1) = Γ(s)/(s − 1) from s = 1/2 − j.
+            q / (-(j + &half))
+        };
+    }
+    Some(q)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

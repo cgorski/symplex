@@ -69,7 +69,7 @@ expr.textplot(&x, -2.0, 2.0);          // Result<String>  (all plotting methods)
 
 ## Pattern 4 — Queries → `Option`
 
-Three-valued questions return `Option<bool>` (yes / no / cannot decide) and structural queries return `Option<T>`:
+Three-valued questions return `Option<bool>` (yes / no / cannot decide) and structural queries return `Option<T>`.  For an expression with symbols, `is_real`, the sign queries, `is_zero`, `is_integer` and `is_rational` are about the points where it is defined (`(1/x).is_real()` is `Some(true)` for a real `x`); `is_finite` is about every point, poles included (`(1/x).is_finite()` is `None` for a real `x`, `Some(true)` for a positive one):
 
 ```rust
 # use symplex::prelude::*;

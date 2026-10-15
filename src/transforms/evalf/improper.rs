@@ -23,12 +23,33 @@
 //! when `g` does not decay.  An `f64` value is trusted when that mass beyond
 //! `2¹⁶` is below its tolerance, or when the mass beyond `2¹⁰²⁴` (`> f64::MAX`)
 //! is and the compiled body agrees with the certified values at the samples
-//! within the `f64` range and at `2¹⁰⁰⁰` (no cut-off by overflow).  It is a
-//! heuristic as the quadrature's own error estimate is — a decay that sets in
-//! only beyond `2²⁰⁴⁸` is not seen — but the cut-off by overflow, behind
-//! every wrong value of the divergence hunt, is.  An integrand refused here
-//! goes to the arbitrary-precision quadrature, whose tanh-sinh walk samples it
-//! out to `x ≈ 10¹¹⁰⁰⁰⁰` and refuses terms that do not decay.
+//! within the `f64` range and at `2¹⁰⁰⁰` (no cut-off by overflow).
+//!
+//! What the integrand does beyond the last sample is not read from the
+//! samples.  A sample that underflowed the exponent range bounds the value
+//! there and nothing else — `e^{x − 10¹⁰⁰⁰}` is below `2^(−10³⁰⁰⁰)` at
+//! every sample and diverges — and a growth set off by a constant beyond
+//! `2²⁰⁴⁸` is not seen at all (`x⁻²e^{x/10⁷⁰⁰}` looks like `x⁻²` there):
+//! up to 0.52 `∫₀^∞ e^{−x}·e^{x²/10¹⁴⁰⁰ − 10¹⁰} dx` and
+//! `∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx`, both divergent, were `0` and `1`, and
+//! `e^{x − 10¹⁰⁰⁰}` was refused only because `exp` gave no bound at its
+//! samples.  So the integrand's constants must lie within `2^(±1024)`
+//! (`quad::Integrand::constant_scale`: terms with constants within `2^(±S)`
+//! cross over within `2^(2S)`, and the samples reach `2²⁰⁴⁸`), and the
+//! exact limit of `x·f(x)` at the end ([`tail_decay`]) must be 0 when a
+//! sample measured nothing (it underflowed, or was read as 0 below
+//! [`NEGLIGIBLE`]), and not proved nonzero when every sample measured a
+//! value (an oscillation such as `1/((1 + x⁴)(2 + cos(x/3)))` has no
+//! limit for the engine, and its samples show the decay).  It stays a
+//! heuristic as the quadrature's own error estimate is — a bump between
+//! the last sample and the asymptotic regime made by fractional powers
+//! alone (`e^{2x^(1/1000) − x^(1/999) − 10⁵}` peaks near `2^999000`), or a
+//! decay that sets in only beyond `2²⁰⁴⁸`, is not seen — but the cut-off
+//! by overflow, behind every wrong value of the divergence hunt, any growth
+//! at the end and the features of large constants are.  An integrand
+//! refused here goes to the arbitrary-precision quadrature, whose tanh-sinh
+//! walk samples it out to `x ≈ 10¹¹⁰⁰⁰⁰` and refuses terms that do not
+//! decay.
 //!
 //! # Divergence
 //!
@@ -110,7 +131,10 @@ fn segment(e0: i32, g0: ErrExp, e1: i32, g1: ErrExp) -> (ErrExp, f64) {
 /// Can an `f64` quadrature of `body` (in `var`) over a range infinite
 /// towards `+∞` (`upper`) or `−∞`, which evaluates the integrand by
 /// `compiled`, have seen all of its integral beyond `|x| = 2¹⁶` but
-/// `allowed`?  See the module documentation.
+/// `allowed`?  The samples say so ([`samples_trusted`]), and the exact
+/// limit of `x·f(x)` at the end ([`tail_decay`]) is 0 when a sample
+/// measured nothing (it underflowed, or fell below [`NEGLIGIBLE`]), and is
+/// not proved nonzero otherwise.  See the module documentation.
 pub(super) fn f64_tail_trusted(
     arena: &Arena,
     body: ExprId,
@@ -120,13 +144,128 @@ pub(super) fn f64_tail_trusted(
     allowed: f64,
     cc: &mut Consts,
 ) -> bool {
+    match samples_trusted(arena, body, var, upper, compiled, allowed, cc) {
+        Sampled::Refused => false,
+        Sampled::Measured => tail_decay(arena, body, var, upper) != TailDecay::Persists,
+        Sampled::Negligible => tail_decay(arena, body, var, upper) == TailDecay::Vanishes,
+    }
+}
+
+/// What the certified samples of [`samples_trusted`] say of an `f64` tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sampled {
+    /// They do not bound its mass by the tolerance.
+    Refused,
+    /// They bound it, every sample a value (or an exact 0).
+    Measured,
+    /// They bound it, but some sample measured nothing: a value that
+    /// underflowed, or one below [`NEGLIGIBLE`], read as 0.
+    Negligible,
+}
+
+/// What the exact limit of `x·f(x)` at an infinite end says of an
+/// integrand `f` ([`tail_decay`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TailDecay {
+    /// The limit is 0: `f` decays faster than `1/x`.
+    Vanishes,
+    /// The limit is infinite or a certified nonzero number: `∫ f` diverges
+    /// at that end (comparison with `1/x`).
+    Persists,
+    /// No limit was found, or it was not decided.
+    Unknown,
+}
+
+/// The memo of [`tail_decay`]: an integral's tail is checked again at every
+/// working precision and for each bound of a family of integrals of one
+/// density (`P(X > x)` in a quantile search).
+type DecayKey = (u64, ExprId, ExprId, bool);
+
+thread_local! {
+    static DECAYS: std::cell::RefCell<Vec<(DecayKey, TailDecay)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Verdicts kept.
+const DECAY_MEMO_CAP: usize = 16;
+
+/// The limit of `x·f(x)` as `x → +∞` (`upper`) or `−∞`, `f` being `body`
+/// in `var`, computed exactly in a private arena.  What an integrand does
+/// beyond the last point a quadrature sampled is not read from the values
+/// there — an underflow at every one of them, a growth set off by a constant
+/// beyond them — which say nothing of it: `e^{x − 10¹⁰⁰⁰}` is below
+/// `2^(−10³⁰⁰⁰)` out to `x = 2²⁰⁴⁸` and diverges, and `x⁻²e^{x/10⁷⁰⁰}`
+/// looks like `x⁻²` there.
+fn tail_decay(arena: &Arena, body: ExprId, var: ExprId, upper: bool) -> TailDecay {
+    let key = (arena.serial(), body, var, upper);
+    if let Some(known) = DECAYS.with(|m| m.borrow().iter().find(|e| e.0 == key).map(|e| e.1)) {
+        return known;
+    }
+    let decay = limit_of_x_f(arena, body, var, upper);
+    debug!(
+        upper,
+        ?decay,
+        "evalf: the integrand's decay at an infinite end"
+    );
+    DECAYS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= DECAY_MEMO_CAP {
+            m.remove(0);
+        }
+        m.push((key, decay));
+    });
+    decay
+}
+
+/// [`tail_decay`], computed.
+fn limit_of_x_f(arena: &Arena, body: ExprId, var: ExprId, upper: bool) -> TailDecay {
+    if walk::post_order_ids(arena, body).len() > MAX_NODES {
+        return TailDecay::Unknown;
+    }
+    let mut pa = Arena::with_config(arena.config.clone());
+    let mut map = rustc_hash::FxHashMap::default();
+    let body = crate::base::compact::transfer_subtree(arena, &mut pa, body, &mut map);
+    let var = crate::base::compact::transfer_subtree(arena, &mut pa, var, &mut map);
+    let u = crate::transforms::subs::fresh_symbol(&mut pa, "__improper_u", &[body]);
+    let at = if upper { u } else { pa.neg(u) };
+    let fu = crate::transforms::subs::subs(&mut pa, body, var, at);
+    let h = pa.mul(&[fu, u]);
+    let h = crate::transforms::eval::eval(&mut pa, h);
+    let inf = pa.infinity();
+    match pa.limit_expr(h, u, inf) {
+        Ok(l) if l == pa.zero() => TailDecay::Vanishes,
+        Ok(l) if nonzero_limit(&pa, l) => TailDecay::Persists,
+        _ => TailDecay::Unknown,
+    }
+}
+
+/// [`f64_tail_trusted`] by the certified samples alone.
+fn samples_trusted(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    upper: bool,
+    compiled: &dyn Fn(f64) -> f64,
+    allowed: f64,
+    cc: &mut Consts,
+) -> Sampled {
     if allowed.is_nan() || allowed < 0.0 {
-        return false;
+        return Sampled::Refused;
     }
     // An eighth of the tolerance for each of the far mass and the
     // differences.
     let lg_allowed = allowed.log2() - 3.0;
     let mut f = Integrand::new(arena, body, var);
+    // The samples must reach where the integrand's terms cross over.
+    let last = f64::from(EXPONENTS[EXPONENTS.len() - 1]);
+    if 2.0 * f.constant_scale(&mut Wp::new(PREC, cc)) > last {
+        debug!(
+            upper,
+            "evalf: constants beyond the reach of the far-tail samples"
+        );
+        return Sampled::Refused;
+    }
+    let negligible = std::cell::Cell::new(false);
     // `log₂` of a bound on `|x·f(x)|` at `x = ±2^e`, and `f(x)`.
     let mut sample = |e: i32| -> Option<(ErrExp, (BigFloat, BigFloat))> {
         let x = scale2(&small(1), e);
@@ -156,14 +295,25 @@ pub(super) fn f64_tail_trusted(
         let size = accuracy::lsum(accuracy::lg_abs(&v), b.joint());
         let g = accuracy::shift(size, f64::from(e));
         debug!(e, upper, g, "evalf: the far tail of an f64 quadrature");
-        Some((if g < NEGLIGIBLE { accuracy::EXACT } else { g }, v))
+        if g < NEGLIGIBLE {
+            negligible.set(true);
+            return Some((accuracy::EXACT, v));
+        }
+        Some((g, v))
+    };
+    let verdict = || {
+        if negligible.get() {
+            Sampled::Negligible
+        } else {
+            Sampled::Measured
+        }
     };
     let mut samples: Vec<(i32, ErrExp, (BigFloat, BigFloat))> = Vec::new();
     let mut mid = accuracy::EXACT;
     let mut far = accuracy::EXACT;
     for &e in &EXPONENTS {
         let Some((g, v)) = sample(e) else {
-            return false;
+            return Sampled::Refused;
         };
         if let Some(&(pe, pg, _)) = samples.last() {
             let (mass, alpha) = segment(pe, pg, e, g);
@@ -181,7 +331,7 @@ pub(super) fn f64_tail_trusted(
                 accuracy::UNKNOWN
             };
             if accuracy::lsum(accuracy::lsum(mid, far), rest) <= lg_allowed {
-                return true;
+                return verdict();
             }
             if e == EXPONENTS[EXPONENTS.len() - 1] {
                 far = accuracy::lsum(far, rest);
@@ -191,12 +341,12 @@ pub(super) fn f64_tail_trusted(
     }
     // The mass beyond `2¹⁶` matters.  Beyond `2¹⁰²⁴` no `f64` node lies.
     if far > lg_allowed {
-        return false;
+        return Sampled::Refused;
     }
     // Within the `f64` range the compiled body must agree with the certified
     // values, up to a difference that carries no mass.
     let Some((g_last, v_last)) = sample(F64_LAST) else {
-        return false;
+        return Sampled::Refused;
     };
     let span = f64::from(F64_LAST - EXPONENTS[0]) * std::f64::consts::LN_2;
     let floor = lg_allowed - span.log2();
@@ -209,7 +359,7 @@ pub(super) fn f64_tail_trusted(
         let t = f64::from(*e).exp2();
         let c = compiled(if upper { t } else { -t });
         if !c.is_finite() {
-            return false;
+            return Sampled::Refused;
         }
         let d = c_sub(
             v,
@@ -219,10 +369,10 @@ pub(super) fn f64_tail_trusted(
         );
         let diff = accuracy::shift(accuracy::lg_abs(&d), f64::from(*e));
         if diff > (g + AGREEMENT).max(floor) {
-            return false;
+            return Sampled::Refused;
         }
     }
-    true
+    verdict()
 }
 
 /// Where the comparison tests of [`divergence`] look: a finite point

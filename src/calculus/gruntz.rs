@@ -1750,6 +1750,7 @@ pub(crate) fn hidden_rational(arena: &mut Arena, c: ExprId) -> Option<ExprId> {
             return None;
         }
         (h0, h1, k0, k1) = (h1, h2, k1, k2);
+        // A guess, proved below by `hidden_zero` (certified) or dropped.
         if (v - h1 as f64 / k1 as f64).abs() <= 1e-12 * v.abs().max(1.0) {
             let q = arena.rational(h1, k1);
             let d = arena.sub(c, q);

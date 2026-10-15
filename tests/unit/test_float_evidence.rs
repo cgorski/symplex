@@ -59,10 +59,15 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("base/numeric.rs", [0, 1]),
     ("calculus/calculus_util.rs", [1, 3]),
     ("calculus/convergence.rs", [2, 0]),
-    ("calculus/definite.rs", [24, 26]),
+    // Reviewed in s15g4: what is left are the quadrature internals, refusal checks and certified
+    // margins; cut crossings, the `ln²` coefficients at infinity and the side of the negative axis
+    // are certified since.
+    ("calculus/definite.rs", [16, 22]),
     ("calculus/gruntz.rs", [3, 0]),
-    ("calculus/limit.rs", [5, 0]),
-    // `radical_char_roots`, `is_real_radical`, `real_imag_parts`, `CEx::is_zero` (review queue);
+    ("calculus/limit.rs", [4, 0]),
+    // `radical_char_roots` (the Sturm count decides; margins refuse), `is_real_radical` (radicals
+    // of rationals), `real_imag_parts`, `CEx::is_zero` (certified margin or `Unknown`),
+    // `is_real_constant` (selects a method that is right either way): reviewed in s15g4;
     // `residual_verdict` is certified since s14c.
     ("calculus/ode.rs", [8, 4]),
     // `analytic_at_zero`: branch cuts and poles of Γ/ψ read from an `f64` correctly rounded from a
@@ -97,7 +102,7 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("plotting/tikz_plot.rs", [1, 1]),
     ("poly/roots.rs", [2, 3]),
     ("simplify/nsimplify.rs", [4, 0]),
-    ("transforms/apart.rs", [8, 0]),
+    ("transforms/apart.rs", [7, 0]),
     ("transforms/eval.rs", [8, 3]),
     ("transforms/eval/atan_sum.rs", [2, 1]),
     ("transforms/evalf.rs", [10, 7]),
@@ -119,11 +124,12 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("transforms/evalf/zeta.rs", [2, 8]),
     ("transforms/heurisch.rs", [5, 1]),
     ("transforms/inequalities.rs", [5, 1]),
-    // FTC checks and continuity probes guard refusals (review queue); `known_zero` is exact since s14c.
-    ("transforms/integrate.rs", [17, 4]),
+    // FTC checks and continuity probes guard refusals (reviewed in s15g4); `known_zero` is exact
+    // since s14c; real roots, their order and the side of `Ei`'s cut are certified since s15g4.
+    ("transforms/integrate.rs", [11, 3]),
     ("transforms/sets.rs", [11, 3]),
     ("transforms/solve.rs", [7, 2]),
-    ("transforms/trig_integ.rs", [5, 1]),
+    ("transforms/trig_integ.rs", [4, 1]),
     ("units/inference.rs", [1, 0]),
 ];
 

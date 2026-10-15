@@ -219,14 +219,20 @@ pub(super) fn falling_factorial(
 }
 
 /// `C(n, k) = Γ(n + 1)/(Γ(k + 1)·Γ(n − k + 1))` through [`gamma_ratio`]:
-/// the limit where poles of Γ meet (`C(−7, 2500) = C(2506, 6)`, `C(n, k) = 0`
-/// for a negative integer `k` and a non-integer `n`).
+/// the limit where poles of Γ meet (`C(−7, 2500) = C(2506, 6)`).  For a
+/// negative integer `k` it is 0 for every `n` (Graham–Knuth–Patashnik, as
+/// `eval` and `compile`): at a negative integer `n` too, where the quotient
+/// of Γ has no limit (mpmath's, along `n − k` fixed, gave `C(−2, −4) = 3`
+/// up to 0.52).
 pub(super) fn binomial(
     n: &BigFloat,
     k: &BigFloat,
     w: &mut Wp<'_>,
 ) -> Result<BigFloat, SymplexError> {
     let prec = w.bits();
+    if k.is_int() && k.is_negative() && !k.is_zero() {
+        return Ok(BigFloat::new(prec));
+    }
     let n1 = exact_sum(n, &int(1), prec);
     let k1 = exact_sum(k, &int(1), prec);
     let nk1 = exact_sum(&n1, &k.neg(), prec);

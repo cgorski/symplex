@@ -8,6 +8,142 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+The silent wrong answers left after 0.52, and the open conventions decided
+with one rule: an answer is a claim, and a claim must hold for every value it
+covers.  A root that holds only for some values of a parameter now comes with
+its exact condition (`solve_as_set`) instead of being returned as if it always
+held (829 wrong of 16,000 radical equations → 0); undefined values are no
+longer folded away (`0·besseli(1, −∞)`, `cancel` of `0/(sin²x + cos²x − 1)`);
+a review of the 129 decisions the calculus code made by comparing floats with
+thresholds found five wrong definite integrals; an `f64` quadrature over an
+infinite range is trusted only where the integrand is proved to decay; and a
+non-real value is never printed or returned as its real part.
+
+### Breaking (behaviour)
+
+- **A root that holds only for some values of the parameters is refused by
+  `solve` and given with its exact condition by `solve_as_set`.**  `√x = y`
+  is `{y²} ∩ ConditionSet(x, re(y) > 0 | re(y) = 0 & im(y) ≥ 0)`, or
+  `ConditionSet(x, y ≥ 0) ∩ {y²}` for a real `y` (`{9}` at `y = 3`, `EmptySet`
+  at `y = −1`); SymPy 1.14 gives `[y**2]`, wrong at `y = −1`, and 0.51–0.52
+  gave the `ConditionSet` of the equation.  A `ConditionSet` whose condition
+  does not involve its variable is every value when the condition holds and
+  nothing otherwise.  The same applies to the other principal powers and the
+  roots of `t = x^(1/L)`, to `ln x = y` (`−π < im y ≤ π`; `[e^y]` was wrong at
+  `y = 4i`), to `asin`/`acos`/`atan`/`acosh` with a real parameter, to `W(2x)
+  = y` (`y ≥ −1`) and to `x^c = 0` (`re c > 0`).  For a real (positive,
+  integer, …) unknown, a root whose membership can fail on a set of positive
+  measure is refused: `x² = y` for real `x`, `y` gave `[±√y]`; `solve_as_set`
+  gives `{±√y} ∩ ConditionSet(x, y ≥ 0)`.  A root that fails only on a set of
+  measure zero is kept (the generic convention of denominators).  Radical
+  hunt (16,000 solves): wrong-domain answers 829 → 0.
+- **A constant factor of a product must be proved nonzero** before the other
+  factors' roots are claimed: `δ(i)·x = 0` gave `[0]`, and so did
+  `x·euler_number(5)`, whose factor is 0.  Constants the evaluator cannot
+  decide (`x·bessely(1/2, 2)`) are now refused; deciding more of them is
+  planned.
+- **A quotient whose denominator vanishes identically is `nan` in every
+  operation.**  `cancel` treats `sin x` and `cos x` as independent unknowns:
+  `cancel(((x + 1)² − x² − 2x − 1)/(sin²x + cos²x − 1))` was `0` (SymPy 1.14
+  too), while `ratsimp`, `simplify` and `expand` gave `nan`.  A denominator
+  that `cancel` divides out and that holds a function is decided first: zero
+  by an identity → `nan`, undecided → the input unchanged.  The constructors
+  know `exp(c·ln g) = g^c` and `ln(g^c) = c·ln g` for a positive `g`, so
+  `(⌈n⌉ − n)/(e^{ln p} − p + cosh²x − sinh²x − 1)` (was `0`, with `is_zero() =
+  Some(true)`) and `T/T` for `T = sin²x + cos²x − 1` (was `1`) are `nan`.
+  Zero-test hunts: 373 wrong → 82 (all of them a symbol declared even and
+  prime, see below).
+- **A non-real value is never printed or returned as its real part.**
+  `eval_decimal` and `eval_complex64` drop a part only when its error ball
+  contains 0: `Chi(−60).eval_decimal(10)` was `9.68091107e23` (now
+  `9.68091107e23 + 3.141592654*i`, as SymPy's `N`), `10^30 + I` was `1e30`.
+  `eval_f64` returns `ComputationFailed` for a value with a certified nonzero
+  imaginary part (it returned the real part), and `compile`/`to_rust_fn`/
+  `to_c_fn` refuse such a constant as they refused `asin(2)`.  Hunt of 3,000
+  constants: parts dropped at 10 digits 170 → 41 (the rest have a joint
+  error bound, see below), real `f64`s returned for non-real values 73 → 22.
+- **`binomial(n, k) = 0` for a negative integer `k`, for every `n`**
+  (Graham–Knuth–Patashnik; SymPy 1.14): Pascal's rule then holds for all
+  integers, the symmetry `C(n, k) = C(n, n − k)` only for `n ≥ 0`.
+  `binomial(−2, −4)` was kept by `eval` and `3` numerically, `binomial(−7, −9)`
+  was `28`, and `Σ_{k≥0} C(k − 3, −3)/2ᵏ` was `1/4`; all are 0.
+- **`is_finite` is a statement about every point**, the pole detector: for a
+  real `x`, `1/x`, `x⁻²`, `tan x`, `ln x`, `1/(x − 1)`, `Γ(x)`, `e^{1/x}` and
+  `1/sin x` had `is_finite() = Some(true)` and now give `None` (unless the
+  assumptions exclude the pole: `1/p` for a positive `p` stays finite).
+  Realness, sign and integrality keep reading the points where the
+  expression is defined: `(1/x).is_real()` is `Some(true)` for a real `x`.
+
+### Fixed
+
+- **Values of library functions at `−∞` are folded when built**, so
+  `0·f(−∞)` is `nan`: `0·besseli(1, −∞)`, `0·besselk(1, −∞)`,
+  `0·expint(1, −∞)`, `0·uppergamma(2, −∞)`, `0·elliptic_e(±∞)` and
+  `0·Chi(−∞)` were 0.  The values follow the principal branches `evalf`
+  uses: `I_n(−∞) = (−1)ⁿ∞`, `I_{k+1/2}(−∞) = (−1)ᵏ·i∞`, `K_ν(−∞) = −i∞`,
+  `E₁(−∞) = −∞ − iπ`, `Γ(n, −∞) = (−1)^{n−1}∞`, `Γ(k + 1/2, −∞) = Γ(k +
+  1/2) ∓ i∞` (`uppergamma(1/2, −∞) = √π − i∞` again; unevaluated in 0.52),
+  `γ(n, −∞) = (−1)ⁿ∞`, `E(−∞) = ∞`, `Chi(−∞) = ∞ + iπ`, `zoo` where the
+  direction is off the axes; also `fresnels(±∞) = fresnelc(±∞) = ±1/2`,
+  `lowergamma(s, ∞) = Γ(s)`, `dirichlet_eta(∞) = 1` when built.  `0·f` and
+  `0/f` are `nan` for such a function left unevaluated at `±∞`
+  (`airyaiprime(−∞)`), and `0·DiracDelta(I)`, `0·Heaviside(1 + I)` are `nan`.
+  Hunt of 520 functions at `±∞`: 23 wrong → 0.
+- **Definite integrals no longer decided by `f64` thresholds** (the review of
+  the 129 float comparisons of the calculus code: 22 removed, every kept one
+  commented).  Wrong in 0.52, now refused or right:
+  `∫₀^∞ (ln(x+1)/(x²+1) + e⁻⁶⁰·ln(x+1)/(x+2)) dx` was `1.46036…` (it
+  diverges: a `ln²` coefficient `e⁻⁶⁰/2` counted as 0);
+  `∫₀¹ ln((1+i)x − 1 − i/2) dx` was `−2.1518 − 1.8169i` (true `−0.5810 −
+  0.2461i`; the cut crossing at a sample point was skipped; likewise `√` and
+  `1/√`); `∫₀² e^{(1+i)x}/(x − 1 + 10⁻¹⁴i) dx` was the value with the pole on
+  the other side of the axis; `∫₀² dx/(x − 1 − i·e⁻⁵⁰)` was `Divergent`
+  (true `iπ`: a pole with an imaginary part below the printed digits was taken
+  as real); `∫ sign((x−1)(x−1−10⁻¹⁵)) dx` missed the interval between the
+  roots.  `Ei(u) − ln u` (and `Ci`, `Chi`) does not jump across the cut: 28
+  integrals of the D14 sweep that 0.52 refused now evaluate.
+- **An `f64` quadrature over an infinite range is trusted only where the
+  integrand is known to decay.**  `∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx` was `1` and
+  `∫₀^∞ e^{−x}e^{x²/10¹⁴⁰⁰ − 10¹⁰} dx` was `0`; both diverge.  The integrand's
+  constants must lie within the reach of the far-tail samples, and the exact
+  limit of `x·f(x)` at the end must be 0 when a sample measured nothing.
+  `eval_f64` of `∫₀¹ sin(10⁶x)e^{−10⁸(x−½)²} dx` was `−1.9·10⁻²⁸` (true
+  below `10⁻¹⁰⁸⁹`): a quadrature none of whose nodes saw a value that did not
+  underflow is refused.
+- **The stats refusals since 0.49 are answered again:** the mgf and
+  characteristic function of `Weibull(6·10⁻⁶, 31/2)` at `50000/3`
+  (`1.1015234939080316`, `0.9953023726429218 + 0.0965116910974865i`), the mgf
+  of `Weibull(8·10⁶/7, 15/2)` at `−7/(4·10⁷)` (`0.829187505465502`), and
+  `NegativeBinomial(9, 10⁻¹⁸).quantile_f64(0.5)` = `8.668951184370373·10¹⁸`
+  (mpmath at 30/60 digits).  `exp` of an argument far below the exponent
+  range has an error bound whatever its radius; the bound of
+  `betainc_regularized` knows `B(8.7·10¹⁸, 9)` closely.  A quadrature that
+  cannot resolve an oscillation refuses at once (a Weibull characteristic
+  function hung 11 s, now refused in 1.4 s; `∫₀^∞ cos(5·10⁷x)e^{−x} dx` is
+  evaluated from its closed form).
+- `cos(3x + 1)² + cos(3x + 1) − 6 = 0` for a real `x`: no solution (refused);
+  `f^c = 0` for a symbolic `c`: `[0]` when `re c > 0` is decided; the "no
+  solution" reason no longer says "no real solutions" for a complex unknown.
+- **Lambert W with the unknown inside and outside:** `C1·e^{W(2/C1)} = 2` →
+  `[2/e]`, `C1 − W(e^{C1}) = 3` → `[3 + e³]` (were refused), so initial values
+  on Lambert-W ODE families are fitted: `y′ = (3y − x)/(x + y)`, `y(1) = 3` →
+  `x + 2e^{W(ex) − 1}` (mpmath `odefun`: `y(2) = 4.909466435122129…`); all 27
+  such IVPs of the ODE hunter.
+- `(−b)^n` for an exact integer `n` beyond `i32` is `(−1)ⁿ·bⁿ`: it went
+  through `exp(n·Log(−b))` and kept a rounding-noise imaginary part as exact.
+- `Ex::equals`' sampling and the zero test's sample points are seeded from
+  structure (sort keys, symbol names), no longer from internal ids: the
+  verdicts no longer depend on the order in which symbols were created.
+- `ConditionSet(x, True)` simplifies to the domain of `x`.
+
+### Known issues
+
+- A symbol declared even and prime is not known to be 2: `(⌈n⌉ − n)/(n − 2)` is
+  `0`.
+- `Chi(−x)`, `Eₙ(−x)`, `Γ(0, −x)` and `besselk(0, −x)` for `|x| ≳ 127` still
+  drop their O(1) imaginary part at 10 or 16 digits (a joint error bound of
+  both parts); `im(expint(1, −160))` prints `0` (true `−π`).
+
 ## [0.52.0] - 2026-10-15
 
 The remaining findings of the 0.51 regression sweeps.  Exact powers with

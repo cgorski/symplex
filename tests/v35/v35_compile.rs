@@ -187,12 +187,13 @@ fn integrals_follow_the_nan_rule_and_limits() {
         assert!(f(&[-1.0]).is_finite(), "{name}(-1) is real");
     }
     let at = |name: &str, x: f64| compiled(&ctx, name)(&[x]);
-    // `Chi(-60)` = 9.68e23 + πi (mpmath `chi(-60)`): `eval_f64` returns the
-    // real part, its imaginary part being below the 16th digit, but the
-    // value is not real, and the compiled `Chi` is NaN on the whole
-    // negative axis rather than switching to real values below x ≈ −38.
+    // `Chi(-60)` = 9.68e23 + πi (mpmath `chi(-60)`): the value is not real,
+    // and the compiled `Chi` is NaN on the whole negative axis rather than
+    // switching to real values below x ≈ −38.  Since 0.53 `eval_f64` refuses
+    // it too (its imaginary part is certified nonzero, D3); up to 0.52 it
+    // returned the real part, the imaginary part lying below the 16th digit.
     let v = ctx.from_f64(-60.0).unwrap();
-    assert!(v.chi().eval_f64().is_ok());
+    assert!(v.chi().eval_f64().is_err());
     assert!(at("Chi", -60.0).is_nan());
     assert_eq!(at("Ci", 0.0), f64::NEG_INFINITY);
     assert_eq!(at("Chi", 0.0), f64::NEG_INFINITY);

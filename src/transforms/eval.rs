@@ -3016,25 +3016,46 @@ fn gaussian_equal(arena: &Arena, a: ExprId, b: ExprId) -> Option<bool> {
 }
 
 fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::truth::Truth;
+    // `C(n, k) = 0` for a negative integer `k` and every finite `n`, the
+    // convention of Graham, Knuth and Patashnik (*Concrete Mathematics*
+    // §5.1) and SymPy: it keeps Pascal's rule `C(r, k) = C(r − 1, k) +
+    // C(r − 1, k − 1)` for every integer `k`, which the summation
+    // algorithms rely on; the symmetry `C(n, k) = C(n, n − k)` then holds
+    // for `n ≥ 0` only.  (At two negative integers the function of two
+    // variables has no limit: along `k` fixed it is 0, along `n − k` fixed
+    // mpmath's `binomial(−2, −4) = 3`.)  Up to 0.52 a negative integer `n`
+    // was left alone here and `evalf` gave mpmath's value, so `eval` kept
+    // `binomial(−2, −4)` while `evalf` printed 3 and `compile` 0.  An `n`
+    // with symbols is a finite value (the generic convention, `0·x = 0`); a
+    // constant `n` must be known finite: one without a value (`min(√2,
+    // E₂(−3))`, `nan`) or infinite leaves the coefficient without one.
+    let mut cache = AssumptionCache::new();
+    let mut known = |id: ExprId, p: Props| Truth::from(cache.query(arena, id, p));
+    let negative_integer_k = match arena.as_num(k) {
+        Some(q) => q.is_integer() && q.is_negative(),
+        None => known(k, Props::INTEGER)
+            .and(known(k, Props::NEGATIVE))
+            .is_true(),
+    };
+    let finite_n = if walk::free_symbols(arena, n).is_empty() {
+        known(n, Props::FINITE).is_true()
+    } else {
+        !known(n, Props::FINITE).is_false()
+    };
+    if negative_integer_k && finite_n {
+        return Some(arena.zero);
+    }
     let nr = arena.as_num(n)?.clone();
     let kr = arena.as_num(k)?.clone();
     if !kr.is_integer() {
         return None;
     }
-    // `n(n − 1)⋯(n − k + 1)/k!` for a rational `n` and an integer `k ≥ 0`, and
-    // `0` for a negative integer `k` unless `n` is a negative integer too
+    // `n(n − 1)⋯(n − k + 1)/k!` for a rational `n` and an integer `k ≥ 0`
     // (SymPy and mpmath agree: `binomial(−1, 3) = −1`, `binomial(7/2, 2) =
-    // 35/8`, `binomial(5, −1) = 0`).  Both negative integers is where the
-    // conventions part — SymPy `binomial(−7, −9) = 0`, mpmath's limit (and
-    // Kronenburg's extension) `28`, which `evalf` follows — so that is left
-    // as it is.  Before 0.37 only `0 ≤ k`, `0 ≤ n` integers folded, and
+    // 35/8`).  Before 0.37 only `0 ≤ k`, `0 ≤ n` integers folded, and
     // `binomial(−1, 3)` was not even evaluable numerically.
-    if kr.is_negative() {
-        if nr.is_integer() && nr.is_negative() {
-            return None;
-        }
-        return Some(arena.zero);
-    }
     if !nr.is_integer() || nr.is_negative() {
         let k_u64: u64 = kr.to_integer().try_into().ok()?;
         let falling = exact_factorial_power(arena, &nr, k_u64, -1)?;
@@ -7275,8 +7296,10 @@ fn eval_erfcinv(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 }
 
 /// `E_n(∞) = 0`, `E_n(0) = 1/(n−1)` for `n > 1`, `E_0(x) = e^{−x}/x`.
-/// `E_0` at another infinite argument stays (up to 0.51 `e^{−x}/x` there
-/// gave `∞/∞`: `expint(0, −∞)` was `nan`, its limit is `−∞`).
+/// `E_0` at another infinite argument is not rewritten (up to 0.51 `e^{−x}/x`
+/// there gave `∞/∞`: `expint(0, −∞)` was `nan`, its limit is `−∞`); the
+/// values at `−∞` (`E_0(−∞) = −∞`, `E₁(−∞) = −∞ − iπ`) fold when the
+/// node is rebuilt (`canon::lib_function_value`).
 fn eval_expint(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.infinity {
         return Some(arena.zero);
@@ -7611,7 +7634,9 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
 /// the analytic continuation, not this integral), so the fold at `x = 0` is
 /// refused for `s` known to be non-positive.  The closed forms are not
 /// taken at another infinite argument (up to 0.51 `(x + 1)·e^{−x}` at
-/// `x = −∞` gave `nan` for `uppergamma(2, −∞)`, whose limit is `−∞`).
+/// `x = −∞` gave `nan` for `uppergamma(2, −∞)`, whose limit is `−∞`);
+/// the values at `−∞` (`Γ(2, −∞) = −∞`, `Γ(1/2, −∞) = √π − i·∞`) fold
+/// when the node is rebuilt (`canon::lib_function_value`).
 fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.infinity {
         return Some(arena.zero);

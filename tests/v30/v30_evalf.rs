@@ -134,12 +134,15 @@ fn cancellation_inside_an_argument_is_pursued_like_a_root() {
     // A pole of Γ reached by a cancellation: `1 − cos(10⁻¹⁰⁰) = 5·10⁻²⁰¹`.
     // mpmath: `mp.dps=1500; gamma(1 - cos(mpf(10)**-100))` → `2.0e+200`.
     assert_eq!(dec(&ctx, "gamma(1 - cos(10^(-100)))", 16).unwrap(), "2e200");
-    // The side of a cut decided by a part that cancels 660 bits.
-    // mpmath: `mp.dps=1500; sqrt(mpc(-64, sin(1+8*mpf(10)**-200)-sin(1)))` →
-    // `(3.3e-201 + 8.0j)`: the real part is negligible at 16 digits.
+    // The side of a cut decided by a part that cancels 660 bits.  The real
+    // part `(sin(1 + 8·10⁻²⁰⁰) − sin 1)/16 = cos(1)·10⁻²⁰⁰/2 + O(10⁻⁴⁰⁰)`
+    // is certified nonzero, so since 0.53 it is printed (D3; up to 0.52 it
+    // was dropped as negligible next to `8i`, `8*i`).  mpmath:
+    // `mp.dps=1500; sqrt(mpc(-64, sin(1+8*mpf(10)**-200)-sin(1)))` →
+    // `(2.701511529340699e-201 + 8.0j)`.
     assert_eq!(
         dec(&ctx, "sqrt(-64 + I*(sin(1 + 8*10^(-200)) - sin(1)))", 16).unwrap(),
-        "8*i"
+        "2.701511529340699e-201 + 8*i"
     );
 }
 

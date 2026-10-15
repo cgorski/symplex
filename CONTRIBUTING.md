@@ -1230,7 +1230,25 @@ literal ≤ 10⁻³ or a same-file constant bound to one; `zero`: `==`/`!=`
 against `0.0`); counts may only shrink, and the table is the review queue.
 Poles of rational functions carry the certified sign of their real part
 (`PoleView::re_sign`); a residue's pole order counts a coefficient as zero
-only when proved (`residue::coefficient_is_zero`).
+only when proved (`residue::coefficient_is_zero`).  The calculus files were
+reviewed at 0.53: what is left there guides quadrature, refuses, or reads a
+certified 16-digit value with a margin far above its error, and each site
+says so in a comment.  Which side of the real axis a constant lies on is
+`realness::imaginary_part_sign` (a `SignSet`; `REAL` means undecided, so
+refuse); `expr_to_f64` refuses a constant whose certified evaluation keeps a
+nonzero imaginary part, however small.  Sampled checks certify the sign at
+every sample and never skip a sample at 0.  `ln u` next to `Ei/Ci/Chi(u)`
+with coefficients summing to 0 does not jump across the cut
+(`definite::cancelling_log_steps`).
+
+**Printing complex values.**  A result read as a number (`eval_decimal`,
+`eval_f64`, `eval_complex64`) shows a part unless it is 0 within its error
+ball: `settle` zeroes a part whose ball contains 0 and certifies the digits
+of every other part, however small next to the other; `eval_f64` refuses a
+nonzero imaginary part.  "Negligible next to the other part"
+(`is_negligible_part`, `is_real_to_digits`) is an approximate reading for
+heuristics, never an output rule.  A part dropped because a joint ball is
+wide is a bound to tighten in the route that computed it.
 
 **Poles of rational factors in integrals.**  A pole of a factor
 `B(x)^(−k)`, `B ∈ ℚ[x]`, is located by Descartes isolation, never through
@@ -1243,6 +1261,21 @@ integral whose quadrature refuses is evaluated from its closed form
 (`definite::closed_form`, sought once per integral); a closed-form ball is
 raised in precision until it certifies the working precision, since
 `evalf` reads an integral's ball around 0 as an integral equal to 0.
+
+**Quadrature tails and underflow.**  What an integrand does beyond the last
+point a quadrature sampled is never read from the samples.  An `f64` tail is
+trusted only when the integrand's constants lie within the samples' reach
+(`quad::Integrand::constant_scale`: terms whose constants lie within `2^(±S)`
+cross over within `2^(2S)`) and the exact limit of `x·f(x)` at the end
+(`improper::tail_decay`) is 0 when a sample measured nothing, and not proved
+nonzero otherwise.  The arbitrary-precision walk towards an infinite end
+does not stop before its nodes reach `2^(2S)`.  A node value that underflowed
+bounds the integrand at that node and nothing else: a rule none of whose
+nodes saw a value does not converge, and a quadrature none of whose pieces
+did is refused.  `exp` of a ball wholly below the exponent range is bounded
+by `e^(Re z + r)`.  A finite piece whose oscillation no bisection could
+resolve refuses at once (`Quad::unresolvable`), leaving the closed form its
+turn.
 
 **Poles of powers.**  `b^e` is claimed complex, real, rational,
 non-negative or finite only off the pole at `b = 0`: for a symbol-free `b`
@@ -1259,7 +1292,39 @@ as `W_k(0) = −∞`) that `eval` folds are also folded when the node is built
 `0·f(∞)` as `0·∞` before the canonical `0·x = 0` applies: up to 0.51
 `0/besselj(1, ∞)` and `0·airybi(∞)` were 0.  A closed form is not
 evaluated at an infinite argument (`uppergamma(2, −∞)` gave `nan` from
-`(x + 1)e^{−x}`).
+`(x + 1)e^{−x}`).  Since 0.53 the constructors also fold the values at `−∞`
+of a rational order and `E(±∞)` by the principal branches `evalf` uses: a
+directed infinity with its exact finite part where the limit has one
+(`E₁(−∞) = −∞ − iπ`, `Γ(1/2, −∞) = √π − i∞`), `zoo` otherwise.  A library
+function in `canon::folds_at_infinity` left unevaluated at `±∞` has no value
+the constructors know, so `0·f` and `0/f` are `nan`, as are `0·δ(c)` and
+`0·H(c)` for a non-real constant `c`; add a function to `folds_at_infinity`
+only together with all its folds.
+
+**Identically zero denominators.**  A quotient whose denominator vanishes
+identically is `nan` in every operation.  An operation whose polynomial
+arithmetic treats functions as independent unknowns (`cancel`) decides each
+denominator it divides out that holds a function
+(`simplify::ratsimp::cancel`): residue nonzero or certified nonzero → the
+result; zero by an identity → the `1/0` arithmetic; undecided → the input
+unchanged.  A new identity between generators goes into
+`polybridge::generator_residue`, which must stay a ring homomorphism; that is
+how the canonical `0·d⁻¹` and `s·s⁻¹` see the zero.
+
+**Queries: two readings.**  For an expression with symbols, `real`, the
+signs, `zero`, `integer`, `rational` and `complex` are about the points where
+it is defined (the natural domain, the solvers' reading): `(1/x).is_real()` is
+true for a real `x`.  `finite`/`infinite` in the public API (`Ex::query`,
+`Ex::is_finite`, `Context::query`) are about every point — the pole detector:
+`AssumptionCache::query_public` answers them with `finite_everywhere` (every
+symbol finite, every constant part finite, `b^e` with `e ≥ 0` or `b` known
+nonzero, every table function off its `Poles`).  Internal code keeps
+`AssumptionCache::query`, whose generic reading `0·(1/x) = 0` relies on; a
+public finiteness answer must not come from it.
+
+**Binomial coefficients.**  `C(n, k) = 0` for a negative integer `k` and
+every `n` (Graham–Knuth–Patashnik, SymPy).  A rewrite may use Pascal's rule
+for all integers, the symmetry `C(n, k) = C(n, n − k)` only for `n ≥ 0`.
 
 When only coprimality or the degree of a gcd is needed, use modular images
 (`modgcd::main_gcd_degree_bound`, `coprime_certified`), not a full gcd: an
@@ -1282,7 +1347,10 @@ order that never reaches output (dedup, a sorted list used as a set or a
 key): `ArenaOrder(id)`, documented as arbitrary.  Hashing and memo keys:
 `id.index()`.  `tests/unit/test_id_order.rs` counts `index()` calls and
 `ArenaOrder` constructions per file and rejects `index()` inside ordering
-closures.
+closures.  A hash that chooses something that can reach output (a sample
+point, an RNG seed) hashes structure — the sort key, a symbol's name — never
+`index()`: up to 0.52 `Ex::equals`' sampling depended on the order in which
+symbols were created.
 
 **Checked casts** (`src/base/cast.rs`).  Do not convert an `f64` to an
 integer with `as` after `floor`/`ceil`/`round`/`trunc`: the cast saturates
@@ -1326,13 +1394,25 @@ to an empty one is a refusal, not a proof.  There is no `is_empty` and no
 conversion that collapses "no solution", "every value" and "refused" into an
 empty list; callers pick a named policy (`points_if_complete()`,
 `known_real_roots()`).  An inversion that takes a principal branch (`f^(p/q)
-= c → f = c^(q/p)`, a root `t₀` of `t = x^(1/L)`) claims the root only when
-`c` (or `t₀`) lies in that branch's range: for a value with parameters
-`principal_power_preimage` decides from the exact argument range
-(`arg_range`, declared signs and the branch, no evaluation); undecided means
-refuse in the public solvers, a candidate only for `known_real_roots`
-(`SolveCx::as_candidates`).  A root returned for a real unknown must be
-proved real; a constant discriminant or leading coefficient is decided by
+= c → f = c^(q/p)`, a root `t₀` of `t = x^(1/L)`, `ln`, `asin`, `acos`,
+`atan`, the inverse hyperbolics, `W₀`) claims the root only when `c` (or
+`t₀`) lies in that branch's range: for a value with parameters the
+assumptions decide where they can (`principal_power_preimage`,
+`peel_principal_inverse`, from the exact argument range, no evaluation).
+Otherwise the public solvers get the root with its exact condition on the
+parameters (`Solutions::under` → `Reason::Conditional(Vec<Guarded>)`):
+`Ex::solve` refuses, `Ex::solve_as_set` writes `{root} ∩ ConditionSet(x,
+cond)`, and `known_real_roots` keeps it as a candidate
+(`SolveCx::as_candidates`); where no exact condition exists, the solve is
+refused.  A conditional outcome is a refusal for every consumer of lists;
+`Missing::merged` keeps an unknown alternative over a conditional one, and
+failing principal candidates never prove "no solution" while other branches
+exist.  A root of a declared domain is returned only when its membership is
+decided or can fail only on a set of measure zero
+(`in_domain_only_for_some_parameters`; an exact realness condition such as
+`A + C·u^(p/q)` real iff `u ≥ 0` becomes a conditional set), and a constant
+factor of a product is proved nonzero before the other factors' roots are
+claimed.  A root returned for a real unknown must be proved real; a constant discriminant or leading coefficient is decided by
 `constant_zero_decision`, never by how it looks.  A root is a point of the
 natural domain: every part of the equation is defined there.  The
 evaluator absorbs some poles (`1/zoo = 0`, `zoo^(−k) = 0`), so the check of

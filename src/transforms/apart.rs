@@ -857,7 +857,8 @@ fn try_log_to_real_numeric(
         }
         let (re_i, im_i) = complex_vals[i];
 
-        // Irrational real root.
+        // Irrational real root (a guess: the root is verified exactly, `D(r)
+        // = 0`, before it is used).
         if im_i.abs() < tol {
             let root_exact = nsimplify_extended(arena, re_i, 1e-9);
             if !is_clean_expr(arena, root_exact) {
@@ -872,18 +873,23 @@ fn try_log_to_real_numeric(
             }
             let (n_re, _) = eval_poly_complex_f64(remainder, re_i, 0.0);
             let (d_re, _) = eval_poly_complex_f64(denom_deriv, re_i, 0.0);
+            // Refuses only.
             if d_re.abs() < 1e-15 {
                 return None;
             }
             let res_f64 = n_re / d_re;
-            if res_f64.abs() > tol {
+            // The term is left out only for a residue that is exactly 0
+            // (`N(r) = 0`); up to 0.52 one below `10⁻¹⁰` in `f64` was left out
+            // unchecked.  A tiny nonzero residue has no clean guess and
+            // fails the exact check below.
+            let n_at_root = poly_eval_alg(arena, remainder, root_exact);
+            if !alg_is_zero(arena, n_at_root) {
                 let res_exact = nsimplify_extended(arena, res_f64, 1e-9);
                 if !is_clean_expr(arena, res_exact) {
                     return None;
                 }
                 // Exact check: res · D'(r) = N(r).
                 let dd_at_root = poly_eval_alg(arena, denom_deriv, root_exact);
-                let n_at_root = poly_eval_alg(arena, remainder, root_exact);
                 let lhs = arena.mul(&[res_exact, dd_at_root]);
                 let diff = arena.sub(lhs, n_at_root);
                 if !alg_is_zero(arena, diff) {
@@ -904,6 +910,8 @@ fn try_log_to_real_numeric(
                 continue;
             }
             let (re_j, im_j) = complex_vals[j];
+            // A guess: the quadratic built from root `i` must divide `D`
+            // exactly below.
             if (re_i - re_j).abs() < tol && (im_i + im_j).abs() < tol {
                 conj_idx = Some(j);
                 break;
@@ -960,6 +968,7 @@ fn try_log_to_real_numeric(
             let (n_re, n_im) = eval_poly_complex_f64(remainder, alpha, beta);
             let (d_re, d_im) = eval_poly_complex_f64(denom_deriv, alpha, beta);
             let mag_sq = d_re * d_re + d_im * d_im;
+            // Refuses only.
             if mag_sq < 1e-20 {
                 return None;
             }
@@ -1041,6 +1050,7 @@ fn eval_poly_complex_f64(poly: &Poly, z_re: f64, z_im: f64) -> (f64, f64) {
 /// Convert an `f64` to a high-precision rational expression suitable for
 /// `nsimplify`.
 fn f64_to_rational_expr(arena: &mut Arena, val: f64) -> ExprId {
+    // A guess for `nsimplify`; its callers verify the result exactly.
     if val.abs() < 1e-15 {
         return arena.zero;
     }

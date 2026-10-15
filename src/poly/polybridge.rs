@@ -1280,6 +1280,9 @@ const RESIDUE_EXPONENT_SALT: u64 = 0x1405_7B7E_F767_814F;
 /// [`generator_residue`]): unrelated to the units of the exponentials.
 const RESIDUE_ANGLE_SALT: u64 = 0x2F3B_9D07_A6C1_E485;
 
+/// Salt of the values of `ln g` (see [`log_residue`]).
+const RESIDUE_LOG_SALT: u64 = 0x6A09_E667_F3BC_C909;
+
 /// `a·b mod p` for the Mersenne prime `p = 2⁶¹ − 1`: `2⁶¹ ≡ 1`, so the
 /// high bits fold onto the low ones (twice, for any `u64` operands), and
 /// one subtraction finishes — the value of `(a·b) % p` without a 128-bit
@@ -1458,6 +1461,11 @@ fn residue_integer_sqrt(n: &BigInt) -> Residue {
     value
 }
 
+/// The key of the unit `ρ_g` of a generator `g` (a hash of its id).
+fn generator_key(g: ExprId) -> u64 {
+    u64::from(g.index()) ^ RESIDUE_GENERATOR_SALT
+}
+
 /// Is the value of the generator `g` the plain `ρ_g^D` (not an exponential,
 /// `e`, a rational power or a number, whose values are derived)?
 fn is_plain_generator(arena: &Arena, g: ExprId) -> bool {
@@ -1486,6 +1494,14 @@ fn is_plain_generator(arena: &Arena, g: ExprId) -> bool {
 ///   exponent (its factors without the rational coefficient `cⱼ`; `m = 1`
 ///   for a number), and `e` is `ρ_1^D`: the identities `exp(2x) = exp(x)²`,
 ///   `exp(x + y) = exp(x)·exp(y)`, `exp(2) = e²` hold among the residues;
+///   a term `c·ln g` of the exponent, `g` a plain generator, contributes
+///   `ρ_g^(c·D)`, the value of `g^c` (`exp(c·Log g) = g^c` for the principal
+///   power): `exp(ln p) − p` has residue 0 (up to 0.52 it did not, and
+///   `0/(exp(ln p) − p + cosh²x − sinh²x − 1)` was `0`);
+/// * `ln g` for a plain generator `g` is a value `λ_g` keyed by `g`, and
+///   `ln(g^c)` is `c·λ_g` for a rational `c` when `g` is positive by the
+///   assumptions: `ln(p²) − 2·ln p` has residue 0 for a positive `p`
+///   ([`log_residue`]);
 /// * `g^q` for a rational non-integer `q` and a plain generator `g` is
 ///   `ρ_g^(q·D)`: `(√x)² = x`, `√x·x^(3/2) = x²` hold (principal powers
 ///   satisfy `g^a·g^b = g^(a+b)` and `(g^a)^n = g^(a·n)` for integer `n`);
@@ -1511,12 +1527,7 @@ fn is_plain_generator(arena: &Arena, g: ExprId) -> bool {
 /// the generators that respects those identities: an expression zero by
 /// them has residue 0; a nonzero one rarely does.
 fn generator_residue(arena: &Arena, id: ExprId) -> Residue {
-    let plain = |g: ExprId| {
-        residue_pow(
-            residue_unit(u64::from(g.index()) ^ RESIDUE_GENERATOR_SALT),
-            RESIDUE_ROOT_SCALE,
-        )
-    };
+    let plain = |g: ExprId| residue_pow(residue_unit(generator_key(g)), RESIDUE_ROOT_SCALE);
     let derived = match arena.node(id) {
         ExprNode::ImaginaryUnit => return (0, 1),
         ExprNode::E => Some(residue_pow(
@@ -1524,6 +1535,7 @@ fn generator_residue(arena: &Arena, id: ExprId) -> Residue {
             RESIDUE_ROOT_SCALE,
         )),
         ExprNode::Exp(u) => exp_residue(arena, *u),
+        ExprNode::Ln(u) => log_residue(arena, *u),
         ExprNode::Sin(u) | ExprNode::Cos(u) | ExprNode::Tan(u) => {
             if let Some(t) = exponent_unit(arena, *u, RESIDUE_ANGLE_SALT) {
                 return circular_residue(arena.node(id), t);
@@ -1536,12 +1548,9 @@ fn generator_residue(arena: &Arena, id: ExprId) -> Residue {
             }
             None
         }
-        ExprNode::Pow(g, q) if is_plain_generator(arena, *g) => arena.as_num(*q).and_then(|q| {
-            residue_scaled_power(
-                residue_unit(u64::from(g.index()) ^ RESIDUE_GENERATOR_SALT),
-                q,
-            )
-        }),
+        ExprNode::Pow(g, q) if is_plain_generator(arena, *g) => arena
+            .as_num(*q)
+            .and_then(|q| residue_scaled_power(residue_unit(generator_key(*g)), q)),
         ExprNode::Pow(n, q) => {
             if let (Some(n), Some(q)) = (arena.as_num(*n), arena.as_num(*q))
                 && let Some(value) = numeric_radical_residue(n, q)
@@ -1593,6 +1602,59 @@ fn circular_residue(node: &ExprNode, t: u64) -> Residue {
     }
 }
 
+/// The residue of `ln u` (see [`generator_residue`]): `λ_g` (a unit keyed
+/// by `g`) for a plain generator `g`, and `c·λ_g` for `u = g^c` with a
+/// rational `c` and `g` positive by the assumptions (`Log(g^c) = c·Log g`
+/// for a positive real `g`); `None` for any other argument.
+fn log_residue(arena: &Arena, u: ExprId) -> Option<u64> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::truth::Truth;
+    let unit = |g: ExprId| {
+        residue_pow(
+            residue_unit(residue_hash(generator_key(g) ^ RESIDUE_LOG_SALT)),
+            RESIDUE_ROOT_SCALE,
+        )
+    };
+    if is_plain_generator(arena, u) {
+        return Some(unit(u));
+    }
+    let ExprNode::Pow(g, c) = *arena.node(u) else {
+        return None;
+    };
+    let c = arena.as_num(c)?;
+    if !is_plain_generator(arena, g)
+        || !Truth::from(AssumptionCache::new().query(arena, g, Props::POSITIVE)).is_true()
+    {
+        return None;
+    }
+    let p = BigInt::from(RESIDUE_PRIME);
+    let modp = |n: &BigInt| num_traits::ToPrimitive::to_u64(&n.mod_floor(&p));
+    let (num, den) = (modp(c.numer())?, modp(c.denom())?);
+    if den == 0 {
+        return None;
+    }
+    Some(residue_mul(
+        unit(g),
+        residue_mul(num, residue_pow(den, RESIDUE_PRIME - 2)),
+    ))
+}
+
+/// `(c, g)` when the term `t` is `c·ln g` for a rational `c` and a plain
+/// generator `g` ([`is_plain_generator`]).
+fn log_of_plain_generator(arena: &Arena, t: ExprId) -> Option<(crate::base::numeric::Q, ExprId)> {
+    let (coeff, log) = match arena.node(t) {
+        ExprNode::Mul(children) => match **children {
+            [c, l] => (arena.as_num(c)?.clone(), l),
+            _ => return None,
+        },
+        _ => (crate::base::numeric::Q::one(), t),
+    };
+    match *arena.node(log) {
+        ExprNode::Ln(g) if is_plain_generator(arena, g) => Some((coeff, g)),
+        _ => None,
+    }
+}
+
 /// The residue of `exp(u)` (see [`generator_residue`]), `None` when a
 /// coefficient of the exponent times `D` is not an integer.
 fn exp_residue(arena: &Arena, u: ExprId) -> Option<u64> {
@@ -1615,6 +1677,16 @@ fn exponent_unit(arena: &Arena, u: ExprId, salt: u64) -> Option<u64> {
         if let ExprNode::Neg(inner) = arena.node(t) {
             t = *inner;
             sign = -sign;
+        }
+        // `exp(c·ln g) = g^c` (the principal power) for a plain generator `g`.
+        if salt == RESIDUE_EXPONENT_SALT
+            && let Some((coeff, g)) = log_of_plain_generator(arena, t)
+        {
+            value = residue_mul(
+                value,
+                residue_scaled_power(residue_unit(generator_key(g)), &(coeff * sign))?,
+            );
+            continue;
         }
         let (coeff, key) = match arena.node(t) {
             ExprNode::Num(nid) => (arena.num(*nid).clone(), salt),

@@ -933,6 +933,10 @@ fn general_solve_set(
     };
     match outcome {
         Solutions::Refused(Reason::NotFound) => None,
+        // roots under a condition on the parameters: an exact set
+        conditional if conditional.is_conditional() => {
+            Some(GeneralSet::Set(conditional.into_set(arena, var, expr)))
+        }
         Solutions::Refused(_) => Some(GeneralSet::Refused),
         // (the union with the condition set; `Solutions::into_set`)
         partial @ Solutions::Partial(..) => {

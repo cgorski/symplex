@@ -276,6 +276,10 @@ impl SolveCx {
     /// The public solvers (`Ex::solve`, `reduce_inequalities`) and the
     /// callers that need every root and only roots (residues, partial
     /// fractions) refuse instead, since 0.51: their roots are claims.
+    /// Since 0.53 the solver carries such a root with its exact condition
+    /// on the parameters where it has one (`Reason::Conditional`):
+    /// `Ex::solve` still refuses, `Ex::solve_as_set` gives `{y²} ∩
+    /// ConditionSet(x, y ≥ 0)` for `√x = y` with a real `y`.
     pub(crate) fn conditional_roots_as_candidates(&self) -> bool {
         self.candidates
     }
@@ -364,6 +368,32 @@ impl SolveCx {
         } else {
             Domain::Real
         }
+    }
+
+    /// An assumption cache for the facts of a value free of the unknown
+    /// (the right-hand side of an inversion): its symbols as declared, and
+    /// those without declared assumptions taken real under
+    /// [`Params::Real`] (the root searches and `reduce_inequalities`, where
+    /// `ln x = a` is `x = e^a` for every real `a`).
+    pub(crate) fn parameter_cache(
+        &self,
+        arena: &Arena,
+        e: ExprId,
+    ) -> crate::base::assumptions::AssumptionCache {
+        use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
+        let mut cache = AssumptionCache::new();
+        if self.params == Params::Real {
+            for s in crate::base::walk::free_symbols(arena, e) {
+                if let ExprNode::Symbol(sid) = *arena.node(s)
+                    && arena.symbol_assumptions(sid) == Assumptions::default()
+                {
+                    let mut real = Assumptions::default();
+                    real.known_true |= Props::REAL;
+                    cache.set_symbol_assumptions(s, real);
+                }
+            }
+        }
+        cache
     }
 
     /// Is `e` certainly real for the unknown `var` in `unknown` (intersected

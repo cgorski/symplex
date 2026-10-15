@@ -40,11 +40,27 @@
 //! [`RootSet::Families`] holds its points and its families (the roots that
 //! contain the integer parameter `n`) in the order found.
 //!
+//! # Roots under a condition on the parameters
+//!
+//! A root that holds only when the parameters satisfy a condition
+//! (`√x = y` has the root `y²` only for `−π/2 < arg y ≤ π/2`, and none
+//! otherwise) is a claim no list can carry: [`Reason::Conditional`] holds
+//! such roots with their exact condition ([`Guarded`]).  For every
+//! consumer of roots it is a refusal (`Ex::solve` refuses, the crate's
+//! root searches see no root); [`Solutions::into_set`] writes it as
+//! `{y²} ∩ ConditionSet(x, cond)`, the roots when `cond` holds and `∅`
+//! otherwise (a `ConditionSet` whose condition does not involve its
+//! variable is all of the variable's domain or nothing).  Up to 0.52 the
+//! solve was refused and the set was the `ConditionSet` of the equation;
+//! up to 0.50 the root was returned for every value (SymPy 1.14:
+//! `solve(sqrt(x) - y, x)` → `[y**2]`, wrong for `y = −1`).
+//!
 //! # Sets
 //!
 //! [`Solutions::into_set`] is SymPy's `solveset` convention: a complete
 //! outcome is its set, a partial one the set united with the condition set
-//! `{x : f(x) = 0}`, a refusal the condition set alone.
+//! `{x : f(x) = 0}`, a refusal the condition set alone (a conditional one
+//! its guarded roots).
 
 use std::borrow::Cow;
 
@@ -94,8 +110,43 @@ pub(crate) enum RootSet {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Missing {
     /// An alternative — a branch of an inverse function, a factor of a
-    /// product — whose roots were not found.
+    /// product — whose roots were not found (or, for
+    /// [`Reason::Conditional`], hold only under a condition).
     Alternative(Reason),
+}
+
+impl Missing {
+    /// What two alternatives lack together: conditional roots of both are
+    /// kept together, and an alternative whose roots are not known at all
+    /// wins over conditional ones (the set is then not known).  Up to 0.52
+    /// the first of the two was kept, which was enough while every missing
+    /// part meant "not known".
+    pub(crate) fn merged(a: Option<Missing>, b: Option<Missing>) -> Option<Missing> {
+        match (a, b) {
+            (None, b) => b,
+            (a, None) => a,
+            (
+                Some(Missing::Alternative(Reason::Conditional(mut g))),
+                Some(Missing::Alternative(Reason::Conditional(h))),
+            ) => {
+                g.extend(h);
+                Some(Missing::Alternative(Reason::Conditional(g)))
+            }
+            (Some(Missing::Alternative(Reason::Conditional(_))), b) => b,
+            (a, _) => a,
+        }
+    }
+}
+
+/// Roots that solve the equation exactly when `cond`, a condition on the
+/// parameters only, holds (see [`Reason::Conditional`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Guarded {
+    /// The condition on the parameters (free of the unknown).
+    pub(crate) cond: ExprId,
+    /// The roots when it holds: [`RootSet::Points`] or
+    /// [`RootSet::Families`].
+    pub(crate) roots: RootSet,
 }
 
 /// Why a set of roots is empty or a solve claims nothing.
@@ -116,6 +167,10 @@ pub(crate) enum Reason {
     NestedPeriods,
     /// In words, for the user.
     Said(Cow<'static, str>),
+    /// The roots hold only when a condition on the parameters holds, and
+    /// there is no root otherwise: an exact set ([`Solutions::into_set`])
+    /// but no list (see the [module documentation](self)).  Never empty.
+    Conditional(Vec<Guarded>),
 }
 
 impl Reason {
@@ -136,7 +191,37 @@ impl Reason {
                  parameters",
             ),
             Reason::Said(s) => s.clone(),
+            Reason::Conditional(_) => Cow::Borrowed(
+                "the roots hold only for some values of the parameters (solve_as_set gives them \
+                 with their condition)",
+            ),
         }
+    }
+
+    /// [`text`](Self::text), naming the roots and conditions of a
+    /// [`Reason::Conditional`].
+    pub(crate) fn text_in(&self, arena: &Arena) -> Cow<'static, str> {
+        let Reason::Conditional(groups) = self else {
+            return self.text();
+        };
+        let shown: Vec<String> = groups
+            .iter()
+            .map(|g| {
+                let roots: Vec<String> = g
+                    .roots
+                    .roots()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|&r| arena.display(r).to_string())
+                    .collect();
+                format!("{} only when {}", roots.join(", "), arena.display(g.cond))
+            })
+            .collect();
+        Cow::Owned(format!(
+            "the roots hold only for some values of the parameters: {} (no root otherwise; \
+             solve_as_set gives the conditional set)",
+            shown.join("; ")
+        ))
     }
 }
 
@@ -270,10 +355,80 @@ impl Solutions {
             }
             out
         };
+        // conditional roots are roots too (their conditions are on the
+        // parameters only, unchanged by a change of the unknown)
         match self {
             Solutions::Complete(set) => Solutions::Complete(set.map_roots(&mut map)),
-            Solutions::Partial(set, m) => Solutions::Partial(set.map_roots(&mut map), m),
-            refused @ Solutions::Refused(_) => refused,
+            Solutions::Partial(set, Missing::Alternative(reason)) => {
+                let set = set.map_roots(&mut map);
+                Solutions::Partial(set, Missing::Alternative(map_guarded(reason, &mut map)))
+            }
+            Solutions::Refused(reason) => Solutions::Refused(map_guarded(reason, &mut map)),
+        }
+    }
+
+    /// The same outcome holding only when `cond` (a condition on the
+    /// parameters) does, and with no root otherwise: its roots become
+    /// [`Reason::Conditional`] (conditions already there are joined with
+    /// `cond`), a proof of no root stays one, and an unknown part stays
+    /// unknown.  For an inversion that takes a principal branch whose range
+    /// the right-hand side meets only for some parameter values (`√f = y`:
+    /// `f = y²` when `−π/2 < arg y ≤ π/2`).
+    pub(crate) fn under(self, arena: &mut Arena, cond: ExprId) -> Self {
+        let guard = |arena: &mut Arena, reason: Reason| match reason {
+            Reason::Conditional(groups) => Reason::Conditional(
+                groups
+                    .into_iter()
+                    .map(|g| Guarded {
+                        cond: if g.cond == cond {
+                            cond
+                        } else {
+                            arena.and(&[cond, g.cond])
+                        },
+                        roots: g.roots,
+                    })
+                    .collect(),
+            ),
+            other => other,
+        };
+        match self {
+            Solutions::Complete(RootSet::Empty(reason)) => {
+                Solutions::Complete(RootSet::Empty(reason))
+            }
+            Solutions::Complete(RootSet::All) => Solutions::Refused(Reason::NotFound),
+            Solutions::Complete(roots) => {
+                Solutions::Refused(Reason::Conditional(vec![Guarded { cond, roots }]))
+            }
+            Solutions::Partial(roots, Missing::Alternative(reason)) => {
+                let known = Solutions::Refused(Reason::Conditional(vec![Guarded { cond, roots }]));
+                known.union(Solutions::Refused(guard(arena, reason)))
+            }
+            Solutions::Refused(reason) => Solutions::Refused(guard(arena, reason)),
+        }
+    }
+
+    /// Is this a [`Reason::Conditional`] refusal (roots under a condition,
+    /// none otherwise)?
+    pub(crate) fn is_conditional(&self) -> bool {
+        matches!(self, Solutions::Refused(Reason::Conditional(_)))
+    }
+
+    /// The same outcome with conditional roots ([`Reason::Conditional`])
+    /// taken as not found: for the outcome of a substituted equation (`t =
+    /// eˣ`, `t = tan(x/2)`, `t = x^(1/L)`) whose roots are mapped back by
+    /// solving `g(x) = t₀` rather than by a map of the roots, so that a
+    /// conditional root in `t` is never read as one in `x`.
+    pub(crate) fn without_conditions(self) -> Self {
+        let plain = |reason: Reason| match reason {
+            Reason::Conditional(_) => Reason::NotFound,
+            other => other,
+        };
+        match self {
+            Solutions::Partial(set, Missing::Alternative(reason)) => {
+                Solutions::Partial(set, Missing::Alternative(plain(reason)))
+            }
+            Solutions::Refused(reason) => Solutions::Refused(plain(reason)),
+            complete => complete,
         }
     }
 
@@ -314,7 +469,7 @@ impl Solutions {
             (Some(a), Some(b)) => Some(a.union(b)),
             (a, b) => a.or(b),
         };
-        let missing = a_missing.or(b_missing);
+        let missing = Missing::merged(a_missing, b_missing);
         match (set, missing) {
             (Some(set), None) => Solutions::Complete(set),
             (Some(set), Some(m)) if set.roots().is_some() => Solutions::Partial(set, m),
@@ -342,10 +497,24 @@ impl Solutions {
             RootSet::Points(roots) => RootSet::Families { roots, n },
             other => other,
         };
+        let sort_reason = |reason: Reason| match reason {
+            Reason::Conditional(groups) => Reason::Conditional(
+                groups
+                    .into_iter()
+                    .map(|g| Guarded {
+                        cond: g.cond,
+                        roots: sort(g.roots),
+                    })
+                    .collect(),
+            ),
+            other => other,
+        };
         match self {
             Solutions::Complete(set) => Solutions::Complete(sort(set)),
-            Solutions::Partial(set, m) => Solutions::Partial(sort(set), m),
-            refused @ Solutions::Refused(_) => refused,
+            Solutions::Partial(set, Missing::Alternative(reason)) => {
+                Solutions::Partial(sort(set), Missing::Alternative(sort_reason(reason)))
+            }
+            Solutions::Refused(reason) => Solutions::Refused(sort_reason(reason)),
         }
     }
 
@@ -354,23 +523,63 @@ impl Solutions {
     /// set, a finite set, the finite set of the points united with an image
     /// set `{f(n) : n ∈ ℤ}` per family, simplified); a partial one that set
     /// united with `ConditionSet(var, Eq(expr, 0))`; a refusal the condition
-    /// set alone.
+    /// set alone.  Roots under a condition ([`Reason::Conditional`]) are
+    /// `roots ∩ ConditionSet(var, cond)`, in place of that condition set.
     pub(crate) fn into_set(self, arena: &mut Arena, var: ExprId, expr: ExprId) -> ExprId {
         let condition = |arena: &mut Arena| {
             let zero = arena.zero;
             let cond = arena.eq_(expr, zero);
             arena.intern(ExprNode::ConditionSet(var, cond))
         };
+        let unknown = |arena: &mut Arena, reason: Reason| match reason {
+            Reason::Conditional(groups) => guarded_set(arena, var, groups),
+            _ => condition(arena),
+        };
         match self {
             Solutions::Complete(set) => set.into_set(arena),
-            Solutions::Partial(set, _) => {
+            Solutions::Partial(set, Missing::Alternative(reason)) => {
                 let known = set.into_set(arena);
-                let unknown = condition(arena);
+                let unknown = unknown(arena, reason);
                 arena.set_union(&[known, unknown])
             }
-            Solutions::Refused(_) => condition(arena),
+            Solutions::Refused(reason) => unknown(arena, reason),
         }
     }
+}
+
+/// `reason` with the roots of a [`Reason::Conditional`] mapped by `map`.
+fn map_guarded(reason: Reason, map: &mut dyn FnMut(Vec<ExprId>) -> Vec<ExprId>) -> Reason {
+    match reason {
+        Reason::Conditional(groups) => Reason::Conditional(
+            groups
+                .into_iter()
+                .map(|g| Guarded {
+                    cond: g.cond,
+                    roots: g.roots.map_roots(&mut |r| map(r)),
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// The set of conditional roots: `⋃ roots ∩ ConditionSet(var, cond)`.
+fn guarded_set(arena: &mut Arena, var: ExprId, groups: Vec<Guarded>) -> ExprId {
+    let mut parts: Vec<ExprId> = Vec::with_capacity(groups.len());
+    for g in groups {
+        let cond = crate::transforms::logic::simplify_bool(arena, g.cond);
+        if cond == arena.bool_false {
+            continue;
+        }
+        let roots = g.roots.into_set(arena);
+        if cond == arena.bool_true {
+            parts.push(roots);
+            continue;
+        }
+        let when = arena.intern(ExprNode::ConditionSet(var, cond));
+        parts.push(arena.set_intersection(&[roots, when]));
+    }
+    arena.set_union(&parts)
 }
 
 impl RootSet {

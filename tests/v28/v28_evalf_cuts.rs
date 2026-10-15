@@ -45,10 +45,12 @@ fn a_hidden_imaginary_part_decides_the_negative_real_axis_cut() {
         (format!("arg(-1 + I*{H})"), "3.1415926535897932385"),
         // mpmath: log(-1 - 1j*h) = (1.25e-121 - 3.141592653589793238463j)
         (format!("log(-1 - I*{H})"), "-3.1415926535897932385*i"),
-        // mpmath: sqrt(-4 - 1j*h) = (1.25e-61 - 2.0j)
-        (format!("sqrt(-4 - I*{H})"), "-2*i"),
+        // mpmath: sqrt(-4 - 1j*h) = (1.25e-61 - 2.0j).  The real part `h/4`
+        // is certified nonzero, so since 0.53 it is printed (D3); up to 0.52
+        // it was dropped as negligible next to `2i` (`-2*i`).
+        (format!("sqrt(-4 - I*{H})"), "1.25e-61 - 2*i"),
         // mpmath: sqrt(-4 + 1j*h) = (1.25e-61 + 2.0j)
-        (format!("sqrt(-4 + I*{H})"), "2*i"),
+        (format!("sqrt(-4 + I*{H})"), "1.25e-61 + 2*i"),
         // mpmath: power(-8 - 1j*h, mpf(1)/3) = (1.0 - 1.732050807568877293527j)
         (format!("(-8 - I*{H})^(1/3)"), "1 - 1.7320508075688772935*i"),
         // mpmath: power(-8 + 1j*h, mpf(1)/3) = (1.0 + 1.732050807568877293527j)
@@ -99,7 +101,11 @@ fn a_hidden_perpendicular_part_decides_the_inverse_function_cuts() {
             "1.3169578969248167086 - 3.1415926535897932385*i",
         ),
         // mpmath: acosh(mpf(1)/2 - 1j*h) = (5.773502691896257645091e-61 - 1.047197551196597746154j)
-        (format!("acosh(1/2 - I*{H})"), "-1.0471975511965977462*i"),
+        // (the certified real part `2h/√3` printed since 0.53; dropped before)
+        (
+            format!("acosh(1/2 - I*{H})"),
+            "5.7735026918962576451e-61 - 1.0471975511965977462*i",
+        ),
         // mpmath: atan(2j - h) = (-1.570796326794896619231 + 0.5493061443340548456976j)
         (
             format!("atan(2*I - {H})"),

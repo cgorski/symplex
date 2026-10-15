@@ -30,7 +30,23 @@
 //! `x^(−9/10)`).  The walk outwards stops where the terms are negligible,
 //! not where `1 − |s|` underflows the working precision: mpmath at 50
 //! digits gets 28 digits of `∫₀¹ dx/√(1 − x)` and 6 of `∫₀¹ x^(−9/10) dx`
-//! (with an error estimate of `10⁻⁵³` for the first).
+//! (with an error estimate of `10⁻⁵³` for the first).  Towards an infinite
+//! end it does not stop before its nodes reach `2^(2S)`, where `2^(±S)`
+//! holds the integrand's constants (`Integrand::constant_scale`): terms
+//! with such constants cross over there, and up to 0.52 the walk stopped
+//! at `x ≈ 10⁸` whatever they were (`∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx`, which
+//! diverges, was `1`).
+//!
+//! A node whose value underflowed the exponent range (a 0 with an underflow
+//! bound) is *blind*: it bounds the integrand at that node and says nothing
+//! of its size next to it.  A rule none of whose nodes saw a value does not
+//! converge (the other rule is tried; a value seen beats none), and a
+//! quadrature none of whose pieces did is refused: the mass, if any, lies
+//! between the nodes — the moment generating function of a Weibull
+//! distribution of shape `31/2` and scale `6·10⁻⁶` has all its mass within
+//! `10⁻⁶` of `6·10⁻⁶` and underflows at every node of `[0, 1]` and
+//! `[1, ∞)`.  (Up to 0.52 such nodes had no bound at all, `exp` of a
+//! ball beyond `2⁹` wide refusing even far below the exponent range.)
 //!
 //! The integrand is the symbolic body, evaluated at each node by `evalf`'s
 //! own node evaluator with its error bounds (the nodes that do not depend on
@@ -54,9 +70,12 @@
 //! by neither within its share of the work is bisected, as mpmath's
 //! `quadsubdiv` does, and an infinite one loses a finite piece next to its
 //! end (`[a, ∞)` at `max(a + 1, 2a)`) — the algebraic map converges slowly on
-//! an exponentially decaying integrand, and the tail left is small.  A piece
-//! integrated after others needs only a share of their tolerance in absolute
-//! terms.
+//! an exponentially decaying integrand, and the tail left is small.  A
+//! finite piece over which a `sin`/`cos`/`tan` of a linear argument
+//! oscillates more often than any bisection could resolve refuses the
+//! integral at once (`Quad::unresolvable`) instead of spending the work
+//! budget on it (and the closed form is sought next).  A piece integrated
+//! after others needs only a share of their tolerance in absolute terms.
 //!
 //! # What is certified
 //!
@@ -118,7 +137,7 @@ use crate::base::arena::Arena;
 use crate::base::bigcomplex::{Complex, c_add, c_sub, c_zero};
 use crate::base::budget::{BudgetKind, Work};
 use crate::base::errors::SymplexError;
-use crate::base::node::ExprId;
+use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 
 /// Bits by which the tolerance at working precision `p` is wider than
@@ -137,7 +156,9 @@ const MIN_LEVEL: u32 = 4;
 /// The deepest level (`h = 2⁻¹²`).
 const MAX_LEVEL: u32 = 12;
 /// A side of the walk does not stop before `t = 5/2` (`δ ≈ 10⁻⁸`, `x ≈
-/// 10⁸` on an infinite range), however small its terms.
+/// 10⁸` on an infinite range), however small its terms — nor, towards an
+/// infinite end, before its nodes reach the scale of the integrand's
+/// constants (see [`Integrand::constant_scale`]).
 const T_MIN_HALVES: u64 = 5;
 /// Nor does it go beyond `t = 12` (`δ ≈ 10⁻¹¹⁰⁰⁰⁰`): terms that have not
 /// decayed by then belong to a divergent integral.
@@ -150,6 +171,10 @@ const MAX_EVALS: u64 = 30_000;
 const MAX_PIECES: usize = 64;
 /// Deepest bisection of a piece.
 const MAX_DEPTH: u32 = 8;
+/// Periods of an oscillation beyond which a piece is not resolved: a
+/// Gauss–Legendre rule of `n` points needs about `πP/2` of them for `P`
+/// periods, and the highest degree has 192.
+const MAX_PERIODS_PER_PIECE: f64 = 256.0;
 /// The absolute tolerance a piece may stop at is `2^−FLOOR_SHARE` of the
 /// tolerance of the pieces done before it (see `Quad::abs_floor`).
 const FLOOR_SHARE: f64 = 6.0;
@@ -246,22 +271,7 @@ impl<'a> Integrand<'a> {
         w: &mut Wp<'_>,
     ) -> Result<CBall, SymplexError> {
         let prec = w.bits();
-        if !self.scratch.contains_key(&prec) {
-            if self.scratch.len() >= MAX_PRECISIONS {
-                self.scratch.clear();
-            }
-            let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
-            let mut errs = ErrMap::default();
-            for (c, order) in &self.frontier {
-                if let Ok(CBall { mid: v, err: b }) =
-                    evaluate_tree(self.arena, *c, order, None, false, w)
-                {
-                    cache.insert(*c, v);
-                    errs.insert(*c, b);
-                }
-            }
-            self.scratch.insert(prec, (cache, errs));
-        }
+        self.eval_frontier(w);
         let Some((cache, errs)) = self.scratch.get_mut(&prec) else {
             return Err(internal("integrand cache"));
         };
@@ -302,6 +312,103 @@ impl<'a> Integrand<'a> {
         let bound = errs.get(&self.root).copied().unwrap_or(Bound::UNKNOWN);
         Ok(CBall::new(value, bound))
     }
+
+    /// The scale of the integrand's constants: the largest `abs(log₂ abs(c))`
+    /// over its variable-free parts `c` (evaluated at `w`'s precision; 0
+    /// for none, `∞` for one without a finite value).  Where the terms of an
+    /// integrand whose constants lie within `2^(±S)` cross over — the roots
+    /// of `a·xᵐ = b·xⁿ` — lies within `2^(2S)`, so samples or nodes out to
+    /// there see the integrand's features; `e^{x − 10¹⁰⁰⁰ − x²/10³⁰⁰⁰}`
+    /// underflows out to `x ≈ 10¹⁰⁰⁰` and peaks at `10³⁰⁰⁰/2`.  (Not a
+    /// bound for fractional powers: `x^(1/1000)` against `x^(1/999)` crosses
+    /// at `2⁹⁹⁹⁰⁰⁰`.)
+    pub(super) fn constant_scale(&mut self, w: &mut Wp<'_>) -> f64 {
+        self.eval_frontier(w);
+        let Some((cache, _)) = self.scratch.get(&w.bits()) else {
+            return f64::INFINITY;
+        };
+        let mut scale = 0.0f64;
+        for (c, _) in &self.frontier {
+            let Some(v) = cache.get(c) else {
+                return f64::INFINITY;
+            };
+            for part in [&v.0, &v.1] {
+                if !part.is_zero() {
+                    scale = scale.max(accuracy::part_lg(part).abs());
+                }
+            }
+        }
+        scale
+    }
+
+    /// The highest angular frequency `abs(a)` of a `sin`, `cos` or `tan` of
+    /// a linear argument `a·x + b` in the integrand (0 for none): it
+    /// oscillates `abs(a)·w/(2π)` times over a piece of width `w`.
+    fn frequency(&self) -> f64 {
+        let mut top = 0.0f64;
+        for &id in &self.dependent {
+            if let ExprNode::Sin(a) | ExprNode::Cos(a) | ExprNode::Tan(a) = self.arena.node(id)
+                && let Some(c) = linear_coefficient(self.arena, *a, self.var)
+            {
+                top = top.max(c);
+            }
+        }
+        top
+    }
+
+    /// The values of the variable-free parts at `w`'s precision, computed
+    /// once ([`Integrand::eval`]).
+    fn eval_frontier(&mut self, w: &mut Wp<'_>) {
+        let prec = w.bits();
+        if self.scratch.contains_key(&prec) {
+            return;
+        }
+        if self.scratch.len() >= MAX_PRECISIONS {
+            self.scratch.clear();
+        }
+        let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
+        let mut errs = ErrMap::default();
+        for (c, order) in &self.frontier {
+            if let Ok(CBall { mid: v, err: b }) =
+                evaluate_tree(self.arena, *c, order, None, false, w)
+            {
+                cache.insert(*c, v);
+                errs.insert(*c, b);
+            }
+        }
+        self.scratch.insert(prec, (cache, errs));
+    }
+}
+
+/// `abs(a)` when `e` is `a·var + b` with a rational `a` and a `b` free of
+/// `var` (`var`, `a·var`, or a sum of one such term and constants).
+fn linear_coefficient(arena: &Arena, e: ExprId, var: ExprId) -> Option<f64> {
+    let term = |t: ExprId| -> Option<f64> {
+        if t == var {
+            return Some(1.0);
+        }
+        let ExprNode::Mul(children) = arena.node(t) else {
+            return None;
+        };
+        let mut coefficient = 1.0f64;
+        let mut found = false;
+        for &c in children.iter() {
+            if c == var && !found {
+                found = true;
+            } else {
+                coefficient *= crate::base::numeric::ratio_to_f64(arena.as_num(c)?)?.abs();
+            }
+        }
+        found.then_some(coefficient)
+    };
+    if let ExprNode::Add(children) = arena.node(e) {
+        let mut dependent = children.iter().filter(|&&c| walk::contains(arena, c, var));
+        let (Some(&t), None) = (dependent.next(), dependent.next()) else {
+            return None;
+        };
+        return term(t);
+    }
+    term(e)
 }
 
 /// Is `body` (in `var`, both in `arena`, no other free symbol) bounded away
@@ -455,12 +562,15 @@ struct Placed {
     which: Option<usize>,
 }
 
-/// The weighted value of a node: `W·f(x)`, a bound on its error, and
-/// whether `f(x)` was exactly real.
+/// The weighted value of a node: `W·f(x)`, a bound on its error, whether
+/// `f(x)` was exactly real, and whether it was seen: not a 0 that
+/// underflowed the exponent range ([`underflowed`]), which says nothing of
+/// the integrand's size next to the node.
 struct Term {
     value: Complex,
     err: ErrExp,
     real: bool,
+    seen: bool,
 }
 
 /// The result of one piece.
@@ -478,6 +588,10 @@ struct PieceOut {
     /// The most bits two successive levels agreed to, relative to
     /// `Σ|W f|`.
     digits: f64,
+    /// Some node was seen ([`Term::seen`]).  A piece where none was is
+    /// blind: its sum is 0 and its bound that of the underflows, whatever
+    /// lies between the nodes (see [`Quad::run`]).
+    seen: bool,
 }
 
 /// The result of a quadrature: the sum, its error bound (`log₂`), whether
@@ -490,6 +604,13 @@ pub(super) struct RunOut {
     pub(super) real: bool,
     pub(super) converged: bool,
     pub(super) discretisation: bool,
+}
+
+/// Is the integrand's value `v ± b` at a node a 0 that underflowed the
+/// exponent range (no measurement of its size, unlike an exact 0 or a 0
+/// within a rounding error)?
+fn underflowed(v: &Complex, b: Bound) -> bool {
+    v.0.is_zero() && v.1.is_zero() && accuracy::is_underflow(b.joint())
 }
 
 /// `log₂|x|` (−∞ for 0).
@@ -559,6 +680,11 @@ pub(super) struct Quad<'a> {
     /// than the integral (the tail of a split infinite range) is not held to
     /// its own relative accuracy.
     abs_floor: ErrExp,
+    /// The scale of the integrand's constants ([`Integrand::constant_scale`]),
+    /// once computed.
+    scale: Option<f64>,
+    /// The integrand's frequency ([`Integrand::frequency`]), once computed.
+    frequency: Option<f64>,
 }
 
 impl<'a> Quad<'a> {
@@ -586,7 +712,19 @@ impl<'a> Quad<'a> {
             ends: FxHashMap::default(),
             nodes: FxHashMap::default(),
             abs_floor: accuracy::EXACT,
+            scale: None,
+            frequency: None,
         }
+    }
+
+    /// [`Integrand::constant_scale`] of the body, computed once.
+    fn scale(&mut self, cc: &mut Consts) -> f64 {
+        if let Some(s) = self.scale {
+            return s;
+        }
+        let s = self.f.constant_scale(&mut Wp::new(self.pe, cc));
+        self.scale = Some(s);
+        s
     }
 
     /// A quarter of the evaluations: a first try that has a fallback.
@@ -860,7 +998,13 @@ impl<'a> Quad<'a> {
                     let target = budget.max(size - (self.pe as f64 - 8.0));
                     let real = accuracy::exactly_real(&fv, fb);
                     if err <= target || p >= self.p_cap {
-                        return Ok(Term { value, err, real });
+                        let seen = !underflowed(&fv, fb);
+                        return Ok(Term {
+                            value,
+                            err,
+                            real,
+                            seen,
+                        });
                     }
                     let deficit = (err - target).clamp(0.0, 1e6).ceil() as usize;
                     placed.need.max(p + deficit + 16)
@@ -905,6 +1049,7 @@ impl<'a> Quad<'a> {
         let mut additions = 0usize;
         let centre = self.term(piece, &half, None, None, 1, accuracy::EXACT, cc)?;
         real &= centre.real;
+        let mut seen = centre.seen;
         l1 = accuracy::lsum(
             l1,
             accuracy::lsum(accuracy::lg_abs(&centre.value), centre.err),
@@ -916,6 +1061,15 @@ impl<'a> Quad<'a> {
         // two in a row are negligible (and not before `t = 3`).
         let mut sizes: [Vec<ErrExp>; 2] = [Vec::new(), Vec::new()];
         for (si, side) in [Side::Lo, Side::Hi].into_iter().enumerate() {
+            // Towards an infinite end the walk does not stop before its
+            // nodes reach the scale of the integrand's constants
+            // ([`Integrand::constant_scale`]): beyond `x ≈ 10⁸` (`t = 5/2`)
+            // a growth set off by a large constant is not seen, and up to
+            // 0.52 `∫₁^∞ x⁻²e^{x/10⁷⁰⁰} dx` was `1`.
+            let reach_needed = match (piece, side) {
+                (Piece::Upper(_), Side::Hi) | (Piece::Lower(_), Side::Lo) => 2.0 * self.scale(cc),
+                _ => f64::NEG_INFINITY,
+            };
             let mut quiet = 0;
             let mut j = 1u64;
             loop {
@@ -932,6 +1086,7 @@ impl<'a> Quad<'a> {
                 let budget = accuracy::shift(l1, -((self.pe as f64) + 8.0));
                 let t = self.term(piece, &half, Some(side), Some(node.as_ref()), 1, budget, cc)?;
                 real &= t.real;
+                seen |= t.seen;
                 let size = accuracy::lsum(accuracy::lg_abs(&t.value), t.err);
                 l1 = accuracy::lsum(l1, size);
                 rerr = accuracy::lsum(rerr, t.err);
@@ -944,7 +1099,11 @@ impl<'a> Quad<'a> {
                 } else {
                     quiet = 0;
                 }
-                if quiet >= 2 && j >= T_MIN_HALVES {
+                // `log₂` of the distance of the node from the centre on an
+                // infinite piece, `2/δ`.
+                let reach = 1.0 - lg(&node.delta);
+                if quiet >= 2 && (j >= T_MAX_HALVES || (j >= T_MIN_HALVES && reach >= reach_needed))
+                {
                     break;
                 }
                 j += 1;
@@ -1001,6 +1160,7 @@ impl<'a> Quad<'a> {
                     let t =
                         self.term(piece, &half, Some(side), Some(node.as_ref()), k, budget, cc)?;
                     real &= t.real;
+                    seen |= t.seen;
                     level_l1 =
                         accuracy::lsum(level_l1, accuracy::lsum(accuracy::lg_abs(&t.value), t.err));
                     level_err = accuracy::lsum(level_err, t.err);
@@ -1047,6 +1207,7 @@ impl<'a> Quad<'a> {
             discretisation,
             real,
             digits,
+            seen,
         })
     }
 
@@ -1157,6 +1318,7 @@ impl<'a> Quad<'a> {
             discretisation: true,
             real: true,
             digits: 0.0,
+            seen: false,
         };
         let mut rel_hist: Vec<ErrExp> = Vec::new();
         for m in 2..=MAX_GL_DEGREE {
@@ -1169,6 +1331,7 @@ impl<'a> Quad<'a> {
             let mut l1 = accuracy::EXACT;
             let mut rerr = accuracy::EXACT;
             let mut real = true;
+            let mut seen = false;
             for (r, w) in list.iter() {
                 for sign in [false, true] {
                     self.work.charge(1, "evalf")?;
@@ -1207,6 +1370,7 @@ impl<'a> Quad<'a> {
                         accuracy::shift(1.0 - psum as f64, size),
                     );
                     real &= accuracy::exactly_real(&fv, fb);
+                    seen |= !underflowed(&fv, fb);
                     l1 = accuracy::lsum(l1, accuracy::lsum(size, err));
                     rerr = accuracy::lsum(rerr, err);
                     sum = c_add(&sum, &value, psum, RM);
@@ -1230,6 +1394,7 @@ impl<'a> Quad<'a> {
             out.value = sum.clone();
             out.l1 = l1;
             out.real = real;
+            out.seen = seen;
             if out.converged {
                 break;
             }
@@ -1252,6 +1417,7 @@ impl<'a> Quad<'a> {
         let mut real = true;
         let mut converged = true;
         let mut discretisation = true;
+        let mut seen = false;
         let mut count = pieces.len();
         // Pieces with their bisection depth, and whether to try
         // Gauss–Legendre first (a parent on which tanh-sinh resolved nothing).
@@ -1285,11 +1451,18 @@ impl<'a> Quad<'a> {
                 if !gl {
                     ts_digits = out.digits;
                 }
-                let done = out.converged || !out.discretisation;
-                if best
-                    .as_ref()
-                    .is_none_or(|b| out.converged || out.err < b.err)
-                {
+                // A blind rule (no node had a value) converges on nothing
+                // (its underflow bounds also pass for an accuracy limit):
+                // the other rule, whose nodes lie elsewhere, may see the
+                // integrand, and a value seen beats none.
+                let done = (out.converged || !out.discretisation) && out.seen;
+                if best.as_ref().is_none_or(|b| {
+                    if out.seen == b.seen {
+                        out.converged || out.err < b.err
+                    } else {
+                        out.seen
+                    }
+                }) {
                     if gl && out.converged {
                         debug!(depth, "quadrature: Gauss–Legendre converged");
                     }
@@ -1307,6 +1480,17 @@ impl<'a> Quad<'a> {
                 && depth < MAX_DEPTH
                 && count < MAX_PIECES
                 && self.work.left() > self.work.cap() / 8;
+            if bisect && let Some(periods) = self.unresolvable(&piece, depth, cc) {
+                debug!(
+                    depth,
+                    periods, "quadrature: a piece oscillates beyond resolution"
+                );
+                return Err(not_converged(&format!(
+                    "the integrand oscillates about {periods:.3e} times over a piece of the range, \
+                     more than the quadrature resolves"
+                ))
+                .into());
+            }
             if bisect {
                 let osc = ts_digits < 8.0;
                 count += 1;
@@ -1351,6 +1535,11 @@ impl<'a> Quad<'a> {
             real &= out.real;
             converged &= out.converged;
             discretisation &= out.converged || out.discretisation;
+            seen |= out.seen;
+        }
+        if !seen {
+            debug!("quadrature: every node underflowed");
+            return Err(not_converged(BLIND).into());
         }
         debug!(
             pieces = count,
@@ -1372,6 +1561,32 @@ impl<'a> Quad<'a> {
             converged,
             discretisation,
         })
+    }
+
+    /// The number of times the integrand oscillates over `piece`, when no
+    /// bisection from `depth` on could resolve it: more than
+    /// [`MAX_PERIODS_PER_PIECE`] over each of the pieces of [`MAX_DEPTH`],
+    /// or more than [`MAX_PIECES`] such pieces hold ([`Integrand::frequency`];
+    /// `None` for an infinite piece or no oscillation known).  Up to 0.52
+    /// such a piece was bisected until the evaluations ran out: `eval_f64` of
+    /// the characteristic function of a Weibull distribution of shape `1/200`
+    /// at `t = −5·10⁷` spent 11 s on `∫₀^∞ cos(5·10⁷x)·f(x) dx`.
+    fn unresolvable(&mut self, piece: &Piece, depth: u32, cc: &mut Consts) -> Option<f64> {
+        let Piece::Finite(a, b) = piece else {
+            return None;
+        };
+        let frequency = *self.frequency.get_or_insert_with(|| self.f.frequency());
+        if frequency <= 0.0 {
+            return None;
+        }
+        let p = 64;
+        let (av, _) = self.end_value(a, &mut Wp::new(p, cc)).ok()?;
+        let (bv, _) = self.end_value(b, &mut Wp::new(p, cc)).ok()?;
+        let width = super::f64_of(&bv.sub(&av, p, RM)).ok()?.abs();
+        let periods = frequency * width / std::f64::consts::TAU;
+        let finest = periods / f64::from(MAX_DEPTH.saturating_sub(depth)).exp2();
+        let most = MAX_PERIODS_PER_PIECE * MAX_PIECES as f64;
+        (finest > MAX_PERIODS_PER_PIECE || periods > most).then_some(periods)
     }
 
     /// The split point of an infinite piece from its finite end `e`:
@@ -1411,6 +1626,10 @@ impl<'a> Quad<'a> {
         Ok(End::Float(scale2(&av.add(&bv, p, RM), -1)))
     }
 }
+
+/// Why a quadrature none of whose nodes had a value is refused.
+const BLIND: &str = "the integrand underflowed the exponent range at every node: its mass, \
+                     if any, lies between them";
 
 /// Why a quadrature whose terms do not decay is refused.
 const NOT_DECAYING: &str = "the integrand does not decay towards an end of the interval (the \

@@ -6001,6 +6001,7 @@ fn varies_numerically_uncached(arena: &mut Arena, q: ExprId, var: ExprId) -> boo
     ) else {
         return false;
     };
+    // Only skips `trigsimp`: the coefficient is right either way.
     scale.is_finite() && gap.is_finite() && gap > 1e-8 * scale.max(1.0)
 }
 
@@ -6908,10 +6909,10 @@ fn try_exp_linear_substitution(
     let l = arena.mul(&[alpha0, var]);
     let l = arena.add(&[l, beta0]);
     let gl = arena.mul(&[g_id, l]);
-    let res = if exp_rate_is_nonreal_constant(arena, g_id, alpha0) {
-        circle_continuous_in_u(arena, res, u, u_sym, gl)?
-    } else {
-        res
+    let res = match exp_rate_is_nonreal_constant(arena, g_id, alpha0) {
+        Truth::True => circle_continuous_in_u(arena, res, u, u_sym, gl)?,
+        Truth::False => res,
+        Truth::Unknown => return None,
     };
     let e_gl = arena.exp(gl);
     let mut back = arena.subs_structural(res, u, e_gl);
@@ -6928,13 +6929,20 @@ fn try_exp_linear_substitution(
 
 /// Is the rate `g·α` of `u = e^{g·(α·x + β)}` a constant that is not real?
 /// Then `u` does not run along a ray for real `x`: on the unit circle for an
-/// imaginary rate, on a spiral otherwise.
-fn exp_rate_is_nonreal_constant(arena: &mut Arena, g: ExprId, alpha: ExprId) -> bool {
+/// imaginary rate, on a spiral otherwise.  `True` when its imaginary part
+/// is certified nonzero, `False` when it is proved 0 or the rate has
+/// parameters (read as real, as before 0.53), `Unknown` for a constant
+/// whose imaginary part does not settle.  Up to 0.52 an imaginary part
+/// below `10⁻¹²` of the rate counted as 0.
+fn exp_rate_is_nonreal_constant(arena: &mut Arena, g: ExprId, alpha: ExprId) -> Truth {
     let rate = arena.mul(&[g, alpha]);
     let rate = crate::transforms::eval::eval(arena, rate);
-    crate::base::walk::free_symbols(arena, rate).is_empty()
-        && crate::transforms::evalf::evalf_complex64(arena, rate)
-            .is_ok_and(|z| z.im.is_finite() && z.im.abs() > 1e-12 * z.norm())
+    if !crate::base::walk::free_symbols(arena, rate).is_empty() {
+        return Truth::False;
+    }
+    crate::transforms::realness::imaginary_part_sign(arena, rate)
+        .is_zero()
+        .not()
 }
 
 /// The answer `res` in `u = e^{gl}` of [`try_exp_linear_substitution`] for a
@@ -6975,7 +6983,7 @@ fn try_exp_imaginary_to_trig(
         {
             let (alpha, _) = symbolic_linear_coeff_of(arena, arg, var, var_sym)?;
             let one = arena.one;
-            if !exp_rate_is_nonreal_constant(arena, one, alpha) {
+            if !exp_rate_is_nonreal_constant(arena, one, alpha).is_true() {
                 return None;
             }
             let re = arena.re(alpha);
@@ -8962,10 +8970,14 @@ fn real_roots(arena: &mut Arena, g: ExprId, var: ExprId) -> Option<Vec<ExprId>> 
             Some(v) if v.is_finite() => roots.push(s),
             Some(_) => return None,
             None => {
+                // A complex root only when its imaginary part is certified
+                // nonzero (an `f64` one may be the residue of a real root).
                 let value = crate::transforms::eval::eval(arena, s);
-                match crate::transforms::evalf::evalf_complex64(arena, value) {
-                    Ok(z) if z.im != 0.0 && z.re.is_finite() && z.im.is_finite() => {} // complex root
-                    _ => return None,
+                if !crate::transforms::realness::imaginary_part_sign(arena, value)
+                    .is_nonzero()
+                    .is_true()
+                {
+                    return None;
                 }
             }
         }
@@ -9291,6 +9303,7 @@ fn try_abs_sign_product(
             let sample = crate::transforms::subs::subs(arena, g, var, arena.zero);
             let sample = crate::transforms::eval::eval(arena, sample);
             let sgn = crate::transforms::evalf::eval_const_f64(arena, sample)?;
+            // A nonzero printed digit is certified; 0 refuses.
             if sgn == 0.0 || !sgn.is_finite() {
                 return None;
             }
@@ -9317,6 +9330,19 @@ fn try_abs_sign_product(
 
 /// Most real kinks [`try_piecewise_split`] splits the line at.
 const MAX_SPLIT_POINTS: usize = 6;
+
+/// The order of the real constants `r` and `w`: equal when they are the
+/// same node, otherwise by the certified sign of `w − r`
+/// ([`sign_checked`](crate::poly::algebraic::sign_checked), exact 0
+/// included); `None` when that does not settle.
+fn cmp_roots(arena: &mut Arena, r: ExprId, w: ExprId) -> Option<std::cmp::Ordering> {
+    if r == w {
+        return Some(std::cmp::Ordering::Equal);
+    }
+    let d = arena.sub(w, r);
+    let d = crate::transforms::eval::eval(arena, d);
+    crate::poly::algebraic::sign_checked(arena, d).map(|s| 0.cmp(&s))
+}
 
 /// `∫ f dx` for an `f` holding `|g|`, `sign(g)`, `H(g)`, `min(g₁, g₂)`,
 /// `max(g₁, g₂)` of functions real on the real line whose sign changes
@@ -9360,18 +9386,35 @@ fn try_piecewise_split(
         return None;
     }
     // Breakpoints: numeric roots, sorted; or one symbolic root.
-    let mut points: Vec<(ExprId, f64)> = Vec::new();
+    // The numeric roots, distinct and in increasing order.
+    let mut points: Vec<ExprId> = Vec::new();
     let mut symbolic: Option<(ExprId, ExprId)> = None;
     for &(_, g) in &kinks {
         match real_roots(arena, g, var) {
             Some(rs) => {
+                // Placed by exact or certified comparison ([`cmp_roots`]):
+                // up to 0.52 roots within `10⁻¹²` of each other were
+                // merged and the rest sorted by `f64` values, and `∫ sign((x
+                // − 1)(x − 1 − 10⁻¹⁵)) dx` lost the interval between them.
                 for r in rs {
-                    let v = crate::transforms::evalf::eval_const_f64(arena, r)?;
-                    if !points
-                        .iter()
-                        .any(|&(_, w)| (w - v).abs() <= 1e-12 * v.abs().max(1.0))
-                    {
-                        points.push((r, v));
+                    crate::transforms::evalf::eval_const_f64(arena, r)?;
+                    let mut at = points.len();
+                    let mut known = false;
+                    for (k, &w) in points.iter().enumerate() {
+                        match cmp_roots(arena, r, w)? {
+                            std::cmp::Ordering::Equal => {
+                                known = true;
+                                break;
+                            }
+                            std::cmp::Ordering::Less => {
+                                at = k;
+                                break;
+                            }
+                            std::cmp::Ordering::Greater => {}
+                        }
+                    }
+                    if !known {
+                        points.insert(at, r);
                     }
                 }
             }
@@ -9392,10 +9435,9 @@ fn try_piecewise_split(
     if points.len() > MAX_SPLIT_POINTS {
         return None;
     }
-    points.sort_by(|p, q| p.1.partial_cmp(&q.1).unwrap_or(std::cmp::Ordering::Equal));
     let breaks: Vec<ExprId> = match symbolic {
         Some((r, _)) => vec![r],
-        None => points.iter().map(|&(r, _)| r).collect(),
+        None => points,
     };
     if breaks.is_empty() {
         return None;
@@ -9428,6 +9470,7 @@ fn try_piecewise_split(
                     let at = crate::transforms::subs::subs(arena, g, var, sample);
                     let at = crate::transforms::eval::eval(arena, at);
                     let v = crate::transforms::evalf::eval_const_f64(arena, at)?;
+                    // A nonzero printed digit is certified; 0 refuses.
                     if v == 0.0 || !v.is_finite() {
                         return None;
                     }
@@ -9904,6 +9947,8 @@ fn nonreal_value_of_real_symbol(arena: &mut Arena, sym: ExprId, val: ExprId) -> 
     };
     crate::transforms::realness::symbol_declared_real(arena, sid)
         && crate::base::walk::free_symbols(arena, val).is_empty()
+        // Certified beyond `10⁻⁹` of a 16-digit value; a smaller imaginary
+        // part keeps the case.
         && crate::transforms::evalf::evalf_complex64(arena, val)
             .is_ok_and(|z| z.im.is_finite() && z.im.abs() > 1e-9 * z.norm().max(1.0))
 }
@@ -10355,6 +10400,7 @@ fn delta_simple_roots(arena: &mut Arena, f: ExprId, g: ExprId, var: ExprId) -> O
         let slope = crate::transforms::subs::subs(arena, dg, var, r);
         let slope = crate::transforms::eval::eval(arena, slope);
         let s = crate::transforms::evalf::eval_const_f64(arena, slope)?;
+        // A nonzero printed digit is certified; 0 (a double root?) refuses.
         if s == 0.0 || !s.is_finite() {
             return None;
         }
@@ -10803,10 +10849,15 @@ fn ci_real_on_real_line(arena: &mut Arena, e: ExprId, var: ExprId, var_sym: Symb
         let Some((k, b)) = symbolic_linear_coeff_of(arena, w, var, var_sym) else {
             continue;
         };
+        // Proved real: `ln|w| − ln w` is locally constant only for a real
+        // `w` (up to 0.52 an imaginary part below `10⁻¹²` of the value was
+        // taken for 0).
         let real = |arena: &mut Arena, c: ExprId| {
-            crate::base::walk::free_symbols(arena, c).is_empty()
+            crate::transforms::realness::imaginary_part_sign(arena, c)
+                .is_zero()
+                .is_true()
                 && crate::transforms::evalf::evalf_complex64(arena, c)
-                    .is_ok_and(|z| z.re.is_finite() && z.im.abs() <= 1e-12 * z.norm().max(1.0))
+                    .is_ok_and(|z| z.re.is_finite())
         };
         if !real(arena, k) || !real(arena, b) {
             continue;
@@ -10849,29 +10900,35 @@ fn ei_continuous_on_real_line(
             continue;
         }
         let (p, q) = symbolic_linear_coeff_of(arena, z, var, var_sym)?;
-        let (Ok(pv), Ok(qv)) = (
-            crate::transforms::evalf::evalf_complex64(arena, p),
-            crate::transforms::evalf::evalf_complex64(arena, q),
-        ) else {
+        // Where the argument meets the real axis, and on which side of the
+        // branch point, by certified signs.  Up to 0.52 they were `f64`
+        // values within `10⁻¹²`: a crossing `2·10⁻¹⁴` left of 0 counted as
+        // off the cut, and `∫₀² e^{(1+i)x}/(x − 1 + 10⁻¹⁴i) dx` (`4.7265 +
+        // 2.6665i`) was `−9.6453 + 11.8945i`, the jump `2πi·e^{1+i}` of `Ei`
+        // at `x ≈ 1` left in.
+        use crate::base::truth::SignSet;
+        let p_side = crate::transforms::realness::imaginary_part_sign(arena, p);
+        if p_side == SignSet::REAL {
             return None;
-        };
-        let tiny = 1e-12 * (pv.norm() + qv.norm()).max(1.0);
-        if pv.im.abs() <= tiny {
+        }
+        if p_side == SignSet::ZERO {
             continue;
         }
-        let x0 = -qv.im / pv.im;
-        let zero_c = -qv / pv;
-        if zero_c.im.abs() <= 1e-12 * zero_c.norm().max(1.0) {
+        let zero_c = arena.div(q, p);
+        let zero_c = arena.neg(zero_c);
+        let zero_c = crate::transforms::expand::expand(arena, zero_c);
+        let zero_c = crate::transforms::eval::eval(arena, zero_c);
+        let c_side = crate::transforms::realness::imaginary_part_sign(arena, zero_c);
+        if c_side == SignSet::REAL {
+            return None;
+        }
+        if c_side == SignSet::ZERO {
             // The zero `c` of the argument is real: `Ei(z) − ln z` is entire
             // and `ln|x − c|` the real logarithm, whose singularities cancel
             // between the terms where the integrand is finite at `c`
             // (`∫ e^{−x}·sin x/x dx` stepped by `π` at 0 with the principal
             // logarithms of `Ei((−1 ± i)·x)`, found by the hunt).
-            let c = arena.div(q, p);
-            let c = arena.neg(c);
-            let c = crate::transforms::expand::expand(arena, c);
-            let c = crate::transforms::eval::eval(arena, c);
-            let x_minus_c = arena.sub(var, c);
+            let x_minus_c = arena.sub(var, zero_c);
             let abs = arena.abs(x_minus_c);
             let ln_abs = arena.ln(abs);
             let ln_z = arena.ln(z);
@@ -10880,11 +10937,21 @@ fn ei_continuous_on_real_line(
             out = arena.subs_structural(out, id, continuous);
             continue;
         }
-        if pv.re * x0 + qv.re >= -tiny {
+        // At the real `x₀ = −im q/im p` the argument is `re(p·x₀ + q) =
+        // −im(p̄·q)/im p`: on the cut (negative) when `im(p̄·q)` has the sign
+        // of `im p`.
+        let p_bar = arena.conjugate(p);
+        let pq = arena.mul(&[p_bar, q]);
+        let pq = crate::transforms::expand::expand(arena, pq);
+        let pq = crate::transforms::eval::eval(arena, pq);
+        let cross_side = crate::transforms::realness::imaginary_part_sign(arena, pq);
+        if cross_side == SignSet::REAL || cross_side == SignSet::ZERO {
+            return None;
+        }
+        if cross_side != p_side {
             continue;
         }
         // c = −q·p̄/(p·p̄), so that a Gaussian rational comes out as `a + b·i`.
-        let p_bar = arena.conjugate(p);
         let num = arena.mul(&[q, p_bar]);
         let num = crate::transforms::expand::expand(arena, num);
         let den = arena.mul(&[p, p_bar]);
@@ -12633,6 +12700,8 @@ fn jumps_at_argument_poles(
     {
         return false;
     }
+    // A check that can only reject a candidate: its `f64` tolerances below
+    // decide nothing else.
     let mut poles: Vec<f64> = Vec::new();
     for id in crate::base::walk::post_order_ids(arena, big_f) {
         let arg = match arena.node(id) {

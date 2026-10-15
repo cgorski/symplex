@@ -29,7 +29,7 @@
 //! | `a₁ · … · aₙ` | per part, from `(a + bi)(c + di) = (ac − bd) + (ad + bc)i`: each product `x·y` contributes `abs(x)·err(y) + abs(y)·err(x) + err(x)·err(y)` and its rounding, and none at all when a factor is an exact 0 |
 //! | `b^q` (rational literal `q`) | `abs(b^q)·abs(q)·ρ·(1 − ρ)^(−abs(q − 1))`, `ρ = r/abs(b)` (the mean value theorem, for every `q`); a positive power of a value indistinguishable from 0 is bounded by `2·(2r)^q`, a negative one has no bound |
 //! | `b^e` | `abs(b^e)·(e^(r_w) − 1)` with `r_w` the error of `e·ln b`, plus `abs(b^e)·abs(e)·(abs(ln abs(b)) + abs(arg b))·2^(3 − prec)` when `evalf` forms `exp(e·Log b)` at `prec` bits (the roundings of `Log b` and of the product: exact `b` and `e` do not make it exact) |
-//! | `exp z` | `abs(exp z)·(e^r − 1)`, no bound beyond `r = 512` |
+//! | `exp z` | `abs(exp z)·(e^r − 1)`, no bound beyond `r = 512` unless the whole ball lies below the exponent range (`e^(Re z + r)`) |
 //! | `ln z`, `arg z`, `atan2` | `r/(abs(z) − r)`; no bound when `z` is indistinguishable from 0; `arg` of an exactly real, certainly positive `z` is exactly 0 |
 //! | `sin`, `cos` / `sinh`, `cosh` | `r·cosh(abs(im z) + r)` / `r·cosh(abs(re z) + r)` — exactly `r` for `sin`, `cos` of a real argument; `r` of a rational `abs(q) ≥ 1` under `sin`, `cos`, `tan` is its rounding at `prec + log₂ abs(q)` bits (it is converted again, `evalf::trig_arg`) |
 //! | `tan`, `tanh` | `r·(1 + w²)`, `w = (T + t)/(1 − T·t)`, `T = abs(f(z))`, `t = tan r`; no bound when `r·T > 1/8` (the ball reaches an eighth of the distance to a pole); `r` for a real `tanh` |
@@ -1086,6 +1086,31 @@ pub(super) enum NodeBound {
     Propagated(Bound),
 }
 
+/// The bound of a value of `e^w` computed as 0 for every `w` within `2^j`
+/// of a `z` whose real part is `re`, when the whole ball lies below the
+/// exponent range: `|e^w| ≤ e^(Re z + 2^j)`.  `None` when part of the ball
+/// may reach the range, or the radius is exact (another rule) or unknown.
+/// Up to 0.52 a radius beyond `2⁹` gave no bound even there: the nodes of
+/// `∫₀^∞ e^{tx}·f(x) dx` for a Weibull density `f` where the exponent is
+/// `−10⁷⁸ ± 2⁹³` (`x ≈ 1/2`, shape `31/2`, scale `6·10⁻⁶`) refused the
+/// quadrature of its moment generating function.
+fn exp_ball_below_range(re: &BigFloat, j: ErrExp) -> Option<ErrExp> {
+    if is_exact(j) || is_unknown(j) || !re.is_negative() || re.is_inf() || re.is_nan() {
+        return None;
+    }
+    // `abs(Re z) ≥ 2^lo`; `Re z + 2^j` read no further than `−10³⁰⁰` (an
+    // `f64`), and at most `−2^(lo − 1)` for a radius below half of it.
+    let lo = part_lg_low(re);
+    let below = if lo < 996.0 && j < 996.0 {
+        let (depth, radius) = (lo.exp2(), j.exp2());
+        (radius < depth).then_some(radius - depth)
+    } else {
+        (j < lo - 1.0).then(|| -(lo - 1.0).min(996.0).exp2())
+    }?;
+    let e = up(below * std::f64::consts::LOG2_E);
+    (e < UNDERFLOW).then_some(e.max(-LIMIT))
+}
+
 /// The bound rules of the nodes (the module documentation's table), one
 /// method per node kind, on the argument's ball.
 impl<Z: Borrow<Complex>> Ball<Z> {
@@ -1107,6 +1132,12 @@ impl<Z: Borrow<Complex>> Ball<Z> {
             } else {
                 up(UNDERFLOW + j.exp2() * std::f64::consts::LOG2_E)
             };
+            let im = if exactly_real(z, b) { EXACT } else { e };
+            return NodeBound::Final(Bound { re: e, im });
+        }
+        if lv == f64::NEG_INFINITY
+            && let Some(e) = exp_ball_below_range(&z.0, j)
+        {
             let im = if exactly_real(z, b) { EXACT } else { e };
             return NodeBound::Final(Bound { re: e, im });
         }

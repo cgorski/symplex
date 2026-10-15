@@ -62,11 +62,13 @@ fn incomplete_gamma_at_zero_refuses_nonpositive_s() {
     assert_eq!(zero.lowergamma(&k).eval(), zero);
     assert_eq!(zero.uppergamma(&k).eval(), k.gamma());
     // Γ(s, ∞) = 0 and γ(s, ∞) = Γ(s) are untouched (SymPy: lowergamma(-1/2, oo) = -2*sqrt(pi)).
+    // Since 0.53 `γ(s, ∞) = Γ(s)` folds when built and `eval` then reaches
+    // `Γ(−1/2) = −2√π` (this line pinned the unevaluated `Gamma(-1/2)`).
     let inf = ctx.infinity();
     assert_eq!(inf.uppergamma(&ctx.rational(-1, 2)).eval(), zero);
     assert_eq!(
         inf.lowergamma(&ctx.rational(-1, 2)).eval(),
-        ctx.rational(-1, 2).gamma()
+        ctx.rational(-1, 2).gamma().eval()
     );
 }
 

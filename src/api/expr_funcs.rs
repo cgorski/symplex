@@ -753,6 +753,19 @@ impl Expr<Numeric> {
     /// Creates a `Binomial(self, k)` node. For non-negative integer
     /// arguments, `.eval()` will compute the exact value.
     ///
+    /// The coefficient is `Γ(n + 1)/(Γ(k + 1)·Γ(n − k + 1))` where that is
+    /// defined (`C(n, k) = n(n − 1)⋯(n − k + 1)/k!` for an integer `k ≥ 0`
+    /// and any `n`), and **0 for a negative integer `k` and every `n`**,
+    /// the convention of Graham, Knuth and Patashnik (*Concrete
+    /// Mathematics* §5.1) and SymPy.  It keeps Pascal's rule `C(n, k) =
+    /// C(n − 1, k) + C(n − 1, k − 1)` for every integer `k`; the symmetry
+    /// `C(n, k) = C(n, n − k)` holds for integers `n ≥ 0` only (`C(−2, −4)
+    /// = 0` but `C(−2, 2) = 3`).  Where `n` and `k` are both negative
+    /// integers the function of two variables has no limit, so this is a
+    /// convention; `eval`, `eval_decimal`/`eval_f64` and `compile` agree on
+    /// it (up to 0.52 `eval` kept `C(−2, −4)` and `eval_f64` gave mpmath's
+    /// `3`).
+    ///
     /// # Examples
     ///
     /// ```
@@ -761,6 +774,11 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let result = ctx.int(10).binomial(&ctx.int(3)).eval();
     /// assert_eq!(format!("{result}"), "120");
+    /// // A negative integer k gives 0 for every n.
+    /// let c = ctx.int(-2).binomial(&ctx.int(-4));
+    /// assert_eq!(c.eval(), ctx.int(0));
+    /// assert_eq!(c.eval_f64().unwrap(), 0.0);
+    /// assert_eq!(ctx.symbol("n").binomial(&ctx.int(-1)).eval(), ctx.int(0));
     /// ```
     #[must_use]
     pub fn binomial(&self, k: &Ex) -> Ex {
@@ -1125,6 +1143,34 @@ impl Expr<Numeric> {
     /// Returns `Some(true)` if provably true, `Some(false)` if provably
     /// false, or `None` if unknown.
     ///
+    /// **Two readings for an expression with symbols.**  Realness, sign,
+    /// zeroness, integrality and rationality are claims about the points
+    /// of the symbols' domain (their declared assumptions) where the
+    /// expression is defined, its *natural domain* — the reading the
+    /// solvers use, where the poles of `tan` are not roots:
+    /// `(1/x).is_real()` is `Some(true)` for a real `x`, although `1/x` has
+    /// no value at 0 (SymPy 1.14: `None`, and `is_extended_real` `True`).
+    /// Finiteness is about *every* point of the domain, the poles
+    /// included: [`is_finite`](Self::is_finite) is the pole detector,
+    /// `(1/x).is_finite()` is `None` for a real `x` and `Some(true)` for a
+    /// nonzero (or positive) one, `tan(x).is_finite()` is `None`.  Up to
+    /// 0.52 finiteness used the natural-domain reading too, and `1/x`,
+    /// `tan x`, `ln x`, `Γ(x)` and `1/(x − 1)` were called finite for a
+    /// real `x`.  A constant has no "elsewhere": both readings agree (`1/0`
+    /// is `zoo`, not real and not finite).
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+    /// let inv = ctx.one() / &x;
+    /// assert_eq!(inv.is_real(), Some(true)); // where it is defined
+    /// assert_eq!(inv.is_finite(), None); // a pole at x = 0
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    /// assert_eq!((ctx.one() / &p).is_finite(), Some(true));
+    /// assert_eq!(p.tan().is_finite(), None);
+    /// ```
+    ///
     /// The assumption system answers from the structure of the expression.
     /// For a constant (no free symbols) the sign, zero and realness
     /// properties it leaves open are decided as `eval` decides `x > 0`,
@@ -1144,7 +1190,8 @@ impl Expr<Numeric> {
             inner
                 .assumptions
                 .lock()
-                .query(&inner.arena, self.raw_id(), prop)
+                .query_public(&inner.arena, self.raw_id(), prop)
+                .to_option()
         };
         if known.is_some() || !Self::VALUE_DECIDED.contains(prop) {
             return known;
@@ -1238,7 +1285,9 @@ impl Expr<Numeric> {
     /// Query whether this expression is real.
     ///
     /// Returns `Some(true)` if provably real, `Some(false)` if
-    /// provably not real, or `None` if unknown.
+    /// provably not real, or `None` if unknown.  For an expression with
+    /// symbols: real wherever it is defined (its natural domain, see
+    /// [`query`](Self::query)); `1/x` is real for a real `x`.
     #[must_use]
     pub fn is_real(&self) -> Option<bool> {
         self.query(Props::REAL)
@@ -1265,7 +1314,11 @@ impl Expr<Numeric> {
     /// Query whether this expression is finite.
     ///
     /// Returns `Some(true)` if provably finite, `Some(false)` if
-    /// provably not finite, or `None` if unknown.
+    /// provably not finite, or `None` if unknown.  For an expression with
+    /// symbols, finite at *every* point of their domain, poles included
+    /// (see [`query`](Self::query)): `(1/x).is_finite()` is `None` for a
+    /// real `x` (up to 0.52 `Some(true)`) and `Some(true)` for a positive
+    /// one.
     #[must_use]
     pub fn is_finite(&self) -> Option<bool> {
         self.query(Props::FINITE)
@@ -2862,6 +2915,12 @@ impl Expr<Numeric> {
     /// Returns the expression unchanged if there is no common factor (a
     /// single quotient keeps its form).
     ///
+    /// A denominator that vanishes identically makes the quotient `nan`, as
+    /// in [`ratsimp`](Self::ratsimp): the quotient of `(x + 1)² − x² − 2x − 1`
+    /// by `sin²x + cos²x − 1` is `nan` (0.52 and SymPy 1.14: `0`).  A
+    /// divided-out denominator with functions that can be proved neither
+    /// zero nor nonzero leaves the input unchanged.
+    ///
     /// # Examples
     ///
     /// ```
@@ -2886,7 +2945,7 @@ impl Expr<Numeric> {
         let _span = debug_span!("cancel", expr = ?self.raw_id(), var = ?var_id).entered();
         let id = {
             let mut inner = self.inner.write();
-            crate::poly::paramfield::cancel_full(&mut inner.arena, self.raw_id(), var_id)
+            crate::simplify::ratsimp::cancel(&mut inner.arena, self.raw_id(), var_id)
         };
         self.wrap(id)
     }
@@ -3376,9 +3435,17 @@ impl Expr<Numeric> {
     /// violates one (by the assumption system, or for a constant by a
     /// certified evaluation) is left out — for a positive `x`, `x² − 4`
     /// gives `[2]` and `x + 3` gives `[]`; for an integer `m`, `2m − 3`
-    /// gives `[]` — and a root whose membership is not decided is kept
-    /// (`x − a` for a plain `a`).  Up to 0.42 the assumptions of `var` were
-    /// ignored (`[2, −2]`, `[−3]`, `[3/2]`).
+    /// gives `[]`.  Up to 0.42 the assumptions of `var` were ignored (`[2,
+    /// −2]`, `[−3]`, `[3/2]`).  A root with parameters whose membership the
+    /// assumptions do not decide is refused when it may fail on a set of
+    /// parameter values of positive measure — `x − a` for a positive `x`,
+    /// `x² − y` for a real `x` and `y` (`±√y`, real only for `y ≥ 0`) —
+    /// and kept when only a set of measure zero is at stake (`x − a` for a
+    /// nonzero `x`); up to 0.52 every such root was kept.  Likewise a root
+    /// that solves the equation only for some parameter values (`√x = y`:
+    /// `y²` when `y ≥ 0`) is refused unless the assumptions decide;
+    /// [`solve_as_set`](Ex::solve_as_set) gives such roots with their
+    /// condition.
     ///
     /// # Errors
     ///
@@ -3842,6 +3909,13 @@ impl Expr<Numeric> {
     ///   `sin(x) = 2` the families `asin 2 + 2nπ`, `π − asin 2 + 2nπ`, and
     ///   `|x| = 1` (a circle) or `x·eˣ = 1` (every branch of Lambert W) are
     ///   not solved;
+    /// - roots that solve the equation only when the parameters satisfy a
+    ///   condition, with it: `√x = y` for a real `y` is `{y²} ∩
+    ///   ConditionSet(x, y ≥ 0)` (a `ConditionSet` whose condition does not
+    ///   involve `x` is every value of `x` when it holds and nothing
+    ///   otherwise); for a real `x`, `x² = y` is `{√y, −√y} ∩
+    ///   ConditionSet(x, y ≥ 0)`.  Up to 0.52 these were the
+    ///   `ConditionSet` of the equation, and `ℝ ∩ {√y, −√y}`;
     /// - `UniversalSet` when the equation is the identity `0 = 0`,
     /// - `EmptySet` when the equation is provably unsatisfiable,
     /// - `ConditionSet(x, Eq(self, 0))` when no root was found or the
@@ -3873,6 +3947,10 @@ impl Expr<Numeric> {
     /// // Not solved in closed form: the set is not known, not empty.
     /// let s = format!("{}", (&x - &x.cos()).solve_as_set(&x));
     /// assert!(s.starts_with("ConditionSet"), "{s}");
+    /// // A root only for some values of the parameter: with its condition.
+    /// let _y = ctx.symbol_with("y", &[Assumption::Real]).unwrap();
+    /// let root = ctx.parse("sqrt(x) - y").unwrap().solve_as_set(&x);
+    /// assert_eq!(format!("{root}"), "ConditionSet(x, y >= 0) ∩ {y^2}");
     /// ```
     pub fn solve_as_set(&self, var: &Ex) -> SetEx {
         let var_id = self.checked_id(var);
@@ -4182,6 +4260,25 @@ impl Expr<Numeric> {
     /// assert!(matches!(q.eval_decimal(20), Err(SymplexError::PrecisionExhausted { .. })));
     /// ```
     ///
+    /// A complex value prints as `a + b*i` with `digits` significant digits
+    /// in each part.  A part is left out only when it is consistent with 0
+    /// (its error ball contains 0, so it lies below the printed digits of
+    /// the value); a part certified nonzero is printed however small it is
+    /// next to the other one (SymPy's `N` agrees).  Up to 0.52 a part below
+    /// the printed digits of the other was dropped even when it was
+    /// certified: `Chi(−60)` printed `9.68091107e23` at 10 digits and
+    /// `10³⁰ + i` printed `1e30`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let chi = ctx.parse("Chi(-60)").unwrap();
+    /// assert_eq!(chi.eval_decimal(10).unwrap(), "9.68091107e23 + 3.141592654*i");
+    /// assert_eq!(ctx.parse("10^30 + I").unwrap().eval_decimal(10).unwrap(), "1e30 + i");
+    /// // An imaginary part that is 0 within its error is not printed.
+    /// assert_eq!(ctx.parse("exp(I*pi/7)^7").unwrap().eval_decimal(10).unwrap(), "-1");
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns [`SymplexError::FreeSymbol`] if the expression contains
@@ -4246,11 +4343,18 @@ impl Expr<Numeric> {
     /// # Errors
     ///
     /// Returns the same errors as [`eval_decimal`](Ex::eval_decimal), plus a
-    /// [`SymplexError::ComputationFailed`] if the value is not real to the
-    /// digits evaluated: its imaginary part is not negligible next to its
-    /// real part (below the 16th digit of the real part), however small it
-    /// is in absolute terms (`sqrt(−10⁻⁴⁰)` is refused).  Use
+    /// [`SymplexError::ComputationFailed`] if the value is not real: its
+    /// imaginary part is certified nonzero (its error ball excludes 0),
+    /// however small it is in absolute terms (`sqrt(−10⁻⁴⁰)` is refused)
+    /// and however small next to the real part (`Chi(−60)`, `9.68·10²³ + πi`,
+    /// is refused; up to 0.52 an imaginary part below the 16th digit of the
+    /// real part was dropped and the real part returned).  An imaginary
+    /// part that is 0 within its error is 0 (`exp(iπ)` is `−1.0`).  Use
     /// [`eval_complex64`](Ex::eval_complex64) for complex values.
+    /// [`compile`](Ex::compile) follows the same rule: its real closure
+    /// gives NaN where a value is not real at run time, and a constant
+    /// subexpression that is not real is refused (`Chi(−60)` too, which up
+    /// to 0.52 was folded to its real part).
     ///
     /// A nonzero value below the exponent range of the arbitrary-precision
     /// floats, which [`eval_decimal`](Ex::eval_decimal) refuses, is `0.0`
@@ -4281,7 +4385,10 @@ impl Expr<Numeric> {
     /// Uses 16 decimal digits of precision internally. Returns both the
     /// real and imaginary parts, correctly handling complex expressions
     /// like `sqrt(-1)` → `Complex64::new(0.0, 1.0)`.  Real results have
-    /// `im == 0.0`.
+    /// `im == 0.0`.  Each part is its own correctly rounded value: a part
+    /// is `0.0` only when it is 0 within its error, and a part certified
+    /// nonzero keeps its value however small next to the other (up to 0.52
+    /// `Chi(−60)` had `im == 0.0`; it is `π`).
     ///
     /// # Errors
     ///
@@ -4357,7 +4464,10 @@ impl Expr<Numeric> {
     /// * [`SymplexError::NotImplemented`] for a constant subexpression whose
     ///   value is not real ("the constant … is not real": `asin(2)`,
     ///   `atanh(9)`, `(−8)^(1/3)`, `loggamma(−5/2)`), which a real-valued
-    ///   function cannot represent.
+    ///   function cannot represent — since 0.53 also one whose certified
+    ///   imaginary part is tiny next to its real part (`Chi(−60)`, `9.68·10²³
+    ///   + πi`), which [`eval_f64`](Self::eval_f64) used to return as its real
+    ///   part and `compile` folded to it.
     /// * [`SymplexError::Unevaluable`] for the `DiracDelta` of a constant
     ///   without a value (`DiracDelta(0)`, `DiracDelta(I)`).
     /// * [`SymplexError::InvalidArgument`] for duplicate parameter names.

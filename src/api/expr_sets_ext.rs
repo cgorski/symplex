@@ -473,6 +473,12 @@ impl Expr<SetValued> {
     /// is `(2, ∞)` for a positive `x`, `x² < 4` is `{−1, 0, 1}` for an
     /// integer one.  Up to 0.42 the assumptions of `var` were ignored.
     ///
+    /// An order relation is defined only between reals, so `var` and every
+    /// other symbol in an inequality are read as real, whatever their
+    /// declared assumptions (`x > a` is about real `x` and `a`); SymPy's
+    /// `reduce_inequalities` reads them the same way.  Equations among the
+    /// conditions are solved over the reals as well.
+    ///
     /// # Errors
     ///
     /// * `InvalidArgument` — `var` is not a symbol, `conds` is empty, or a

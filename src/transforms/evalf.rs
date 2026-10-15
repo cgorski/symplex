@@ -2175,7 +2175,7 @@ fn evaluate_adaptive(
                 achieved: 0,
             });
         }
-        if finite && let Some(v) = settle(&value, bound, digits, needed, prec) {
+        if finite && let Some(v) = settle(&value, bound, digits, needed, prec, search) {
             if let Some(s) = beyond {
                 debug!(prec, scale, "evalf: a value below the exponent range");
                 return Ok(Adaptive::Beyond(extended::Scaled { m: v, ..s }));
@@ -2388,12 +2388,22 @@ fn achieved_digits(acc: Option<f64>, digits: u32) -> u32 {
 /// at 16 digits (truly `−7.373306…·10⁻¹⁸`), `Ci(x) + i·(e^(10⁻¹⁶) − 1 −
 /// 10⁻¹⁶)` printed an imaginary part `5.00000000000000016666666671757·10⁻³³`
 /// at 30 digits (truly `…6666666666667·10⁻³³`).
+///
+/// A result read as a number ([`ZeroSearch::Number`]: [`evalf`],
+/// `Ex::eval_f64`, `Ex::eval_complex64`) shows every part whose ball
+/// excludes 0, however small next to the other, so such a part needs its
+/// digits too; for the other searches a part negligible next to the other
+/// is kept as computed (its digits are not read).  Up to 0.52 the printer
+/// dropped a negligible part even when it was certified nonzero:
+/// `Chi(−60)` printed `9.68091107e23` at 10 digits (it is `9.68091107·10²³ +
+/// 3.141592654i`), `10³⁰ + i` printed `1e30`.
 fn settle(
     value: &Complex,
     bound: accuracy::Bound,
     digits: u32,
     needed: i64,
     prec: usize,
+    search: ZeroSearch,
 ) -> Option<Complex> {
     if accuracy::mag(value).is_none() {
         return bound.is_exact().then(|| value.clone());
@@ -2410,7 +2420,9 @@ fn settle(
         if accuracy::part_contains_zero(p, e) {
             return Some(true);
         }
-        if is_negligible_part(p, other, digits) || accuracy::is_exact(e) {
+        if accuracy::is_exact(e)
+            || (search != ZeroSearch::Number && is_negligible_part(p, other, digits))
+        {
             return Some(false);
         }
         (accuracy::part_lg_low(p) - e >= needed as f64).then_some(false)
@@ -2684,19 +2696,22 @@ pub(crate) fn distance_to_f64(a: &Complex, b: &Complex) -> Option<f64> {
 }
 
 /// Is `z` real to `digits` digits — its imaginary part zero or negligible
-/// next to its real part, the criterion by which [`evalf`] prints a real
-/// number?
+/// next to its real part ([`is_negligible_part`])?  An approximate reading
+/// for the heuristics of the crate: since 0.53 [`evalf`] prints an
+/// imaginary part whenever its ball excludes 0, however small.
 pub(crate) fn is_real_to_digits(z: &Complex, digits: u32) -> bool {
     is_negligible_part(&z.1, &z.0, digits)
 }
 
-/// One part of a complex result as an `f64`: `0.0` when it is negligible
-/// next to the other part (the criterion `format_complex` uses to print a
-/// real or a pure-imaginary number), otherwise the correctly rounded
-/// value; an infinite part is refused, as the decimal route refuses to
-/// parse `oo`.
-fn finite_part_to_f64(part: &BigFloat, other: &BigFloat, digits: u32) -> Result<f64, SymplexError> {
-    if is_negligible_part(part, other, digits) {
+/// One part of a settled result ([`settle`] with [`ZeroSearch::Number`])
+/// as an `f64`: `0.0` when it is 0 (its ball contained 0), otherwise the
+/// correctly rounded value, however small next to the other part (the
+/// parts `format_complex` prints); an infinite part is refused, as the
+/// decimal route refuses to parse `oo`.  Up to 0.52 a part negligible
+/// next to the other was `0.0` even when certified nonzero:
+/// `eval_complex64(Chi(−60))` had the imaginary part `0.0` (it is `π`).
+fn finite_part_to_f64(part: &BigFloat) -> Result<f64, SymplexError> {
+    if part.is_zero() {
         return Ok(0.0);
     }
     if part.is_inf() {
@@ -2710,9 +2725,11 @@ fn finite_part_to_f64(part: &BigFloat, other: &BigFloat, digits: u32) -> Result<
 /// Evaluate `expr` to a [`Complex64`] at the precision behind
 /// `Ex::eval_complex64` (16 digits, 128 working bits), rounding each part
 /// straight from the `BigFloat` result — the string-free counterpart of
-/// `evalf(arena, expr, 16)` followed by a parse.  A part that is
-/// negligible next to the other (below the printed precision) is `0.0`,
-/// exactly as it would be absent from the printed number.
+/// `evalf(arena, expr, 16)` followed by a parse.  A part whose ball
+/// contains 0 is `0.0`, exactly as it is absent from the printed number;
+/// a part certified nonzero has its own correctly rounded value, however
+/// small next to the other (since 0.53; `Chi(−60)` had the imaginary
+/// part `0.0`).
 ///
 /// The direct rounding is correct to the last bit; the decimal route
 /// rounded to 16 significant digits first, which can land one ulp away.
@@ -2732,8 +2749,8 @@ pub(crate) fn evalf_complex64(arena: &Arena, expr: ExprId) -> Result<Complex64, 
         F64_DIGITS
     };
     let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Number)?;
-    let re = finite_part_to_f64(&z.0, &z.1, digits)?;
-    let im = finite_part_to_f64(&z.1, &z.0, digits)?;
+    let re = finite_part_to_f64(&z.0)?;
+    let im = finite_part_to_f64(&z.1)?;
     Ok(Complex64::new(re, im))
 }
 
@@ -2743,12 +2760,13 @@ pub(crate) fn evalf_complex64(arena: &Arena, expr: ExprId) -> Result<Complex64, 
 /// # Errors
 ///
 /// As [`evalf_complex64`]; [`SymplexError::ComputationFailed`] when the
-/// value is not real to the digits evaluated — its imaginary part is not
-/// negligible next to its real part (the criterion by which [`evalf`]
-/// prints a real number), however small it is.  Before 0.30 an imaginary
-/// part up to `1e-15` in absolute value was dropped: `sqrt(−10⁻⁴⁰)`
-/// (`10⁻²⁰·i`) was `0.0`, and `ln(1 + 6·10⁻¹⁶)·(1 + 2·10⁻¹²·i)` lost
-/// an imaginary part of `2·10⁻¹²` of its value.
+/// value is not real: its imaginary part is certified nonzero (its ball
+/// excludes 0), however small it is next to the real part.  Before 0.30 an
+/// imaginary part up to `1e-15` in absolute value was dropped:
+/// `sqrt(−10⁻⁴⁰)` (`10⁻²⁰·i`) was `0.0`, and `ln(1 + 6·10⁻¹⁶)·(1 +
+/// 2·10⁻¹²·i)` lost an imaginary part of `2·10⁻¹²` of its value; up to
+/// 0.52 one negligible next to the real part (below its 16th digit) was
+/// dropped: `Chi(−60)` (`9.68·10²³ + πi`) was `9.68·10²³`.
 pub(crate) fn evalf_f64(arena: &Arena, expr: ExprId) -> Result<f64, SymplexError> {
     let digits = if contains_definite_integral(arena, expr) {
         QUADRATURE_F64_DIGITS
@@ -2756,8 +2774,20 @@ pub(crate) fn evalf_f64(arena: &Arena, expr: ExprId) -> Result<f64, SymplexError
         F64_DIGITS
     };
     let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Number)?;
-    if !is_negligible_part(&z.1, &z.0, digits) {
-        let im = f64_of(&z.1).unwrap_or(f64::NAN);
+    if !z.1.is_zero() {
+        // The `f64` of the part, or its decimal where that is 0 or infinite
+        // (an imaginary part certified nonzero below or beyond `f64`).
+        let im = match f64_of(&z.1) {
+            Ok(v)
+                if matches!(
+                    v.classify(),
+                    std::num::FpCategory::Normal | std::num::FpCategory::Subnormal
+                ) =>
+            {
+                v.to_string()
+            }
+            _ => format_decimal(&z.1, 6).unwrap_or_else(|_| "?".to_owned()),
+        };
         return Err(SymplexError::ComputationFailed {
             operation: "eval_f64",
             reason: format!(
@@ -2765,7 +2795,7 @@ pub(crate) fn evalf_f64(arena: &Arena, expr: ExprId) -> Result<f64, SymplexError
             ),
         });
     }
-    finite_part_to_f64(&z.0, &z.1, digits)
+    finite_part_to_f64(&z.0)
 }
 
 /// Evaluate a constant (variable-free) arena expression to `f64`.
@@ -3314,6 +3344,35 @@ fn eval_node(
             // representable results such as 4^(1/2); see `bf_pow`.)
             if b_is_real && e_is_real && is_sign_positive(&b.0) {
                 return Ok((bf_pow(&b.0, &e.0, w), BigFloat::new(prec)));
+            }
+
+            // Negative real base, exact integer exponent beyond `i32`:
+            // `(−r)^n = (−1)ⁿ·rⁿ`, real, as the bound of this node says (an
+            // exact imaginary part: `accuracy::power_bound`).  Through
+            // `exp(n·Log b)` the imaginary part was the rounding residue of
+            // `n·π` under that exact bound, a "certified" nonzero part, which
+            // the printer shows since 0.53: `(−(1 + 2⁻⁵²))^(2⁵³ + 1)` came out
+            // `−7.389056099 + 2.814264205e-22*i` (up to 0.52 the part was
+            // dropped as negligible next to the real part).
+            if b_is_real
+                && b.0.is_negative()
+                && e_is_real
+                && e.0.is_int()
+                && cache.err(exp).is_exact()
+            {
+                let magnitude = bf_pow(&b.0.abs(), &e.0, w);
+                let mut half = e.0.clone();
+                let even = match half.exponent() {
+                    Some(x) => {
+                        half.set_exponent(x - 1);
+                        half.is_int()
+                    }
+                    None => true,
+                };
+                return Ok((
+                    if even { magnitude } else { magnitude.neg() },
+                    BigFloat::new(prec),
+                ));
             }
 
             // Negative real base, half-integer exponent n/2:
@@ -11940,25 +11999,29 @@ fn is_negligible_part(part: &BigFloat, other: &BigFloat, digits: u32) -> bool {
 
 /// Format a complex result as a string.
 ///
-/// If the imaginary part is negligible, formats as a real number.
-/// If the real part is negligible, formats as a pure imaginary number.
-/// Otherwise formats as `a + b*i` or `a - b*i`.
+/// A part that is 0 is not printed: a real number, a pure imaginary
+/// number, or `a + b*i` / `a - b*i`.  [`settle`] has set to 0 every part
+/// whose ball contains 0 (it is below the printed digits of the value)
+/// and certified the digits of every other part, however small next to
+/// the other one, so a part certified nonzero is always printed (SymPy's
+/// `N` agrees: `Chi(−60)` is `9.68091107·10²³ + 3.141592654i` at 10
+/// digits).  Up to 0.52 a part negligible next to the other
+/// ([`is_negligible_part`]) was dropped whatever its ball: `Chi(−60)`
+/// printed `9.68091107e23`, `10³⁰ + i` printed `1e30` and `1 + 10³⁰·i`
+/// printed `1e30*i`.
 fn format_complex(z: &Complex, digits: u32) -> Result<String, SymplexError> {
     let re = &z.0;
     let im = &z.1;
 
-    let re_negligible = is_negligible_part(re, im, digits);
-    let im_negligible = is_negligible_part(im, re, digits);
-
-    if re_negligible && im_negligible {
+    if re.is_zero() && im.is_zero() {
         return Ok("0".to_string());
     }
 
-    if im_negligible {
+    if im.is_zero() {
         return format_decimal(re, digits);
     }
 
-    if re_negligible {
+    if re.is_zero() {
         // Pure imaginary.
         let im_str = format_decimal(im, digits)?;
         return if im_str == "1" {

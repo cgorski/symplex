@@ -478,6 +478,8 @@ fn const_arg(arena: &mut Arena, d: ExprId) -> Option<ExprId> {
     }
     let theta = theta?;
     let v = crate::transforms::evalf::evalf_f64(arena, theta).ok()?;
+    // Certified inside `(−π, π)` by a margin far above the error; nearer
+    // `±π`, undecided.
     (v.abs() < std::f64::consts::PI - 1e-9).then_some(theta)
 }
 
@@ -3831,6 +3833,11 @@ pub(crate) fn continuation_across_cut(
 
 /// `⌊−l⌋` for a negative real constant `l` that is not an integer (`None`
 /// for an integer, or a value too close to one to tell).
+///
+/// The floor and the ceiling of `−l` from `eval` (exact, or the integers
+/// its certified value lies strictly between); `−l` is not an integer when
+/// they differ.  Up to 0.52 the floor was that of a 16-digit `f64`, whose
+/// last digit is a unit near `10¹⁵`.
 pub(crate) fn floor_of_negated(arena: &mut Arena, l: ExprId) -> Option<i64> {
     use num_traits::ToPrimitive;
     if let Some(r) = arena.as_num(l) {
@@ -3839,12 +3846,19 @@ pub(crate) fn floor_of_negated(arena: &mut Arena, l: ExprId) -> Option<i64> {
         }
         return (-r).floor().to_integer().to_i64();
     }
-    let v = crate::transforms::evalf::evalf_f64(arena, l).ok()?;
-    let m = -v;
-    if !m.is_finite() || m > 1e15 || (m - m.round()).abs() < 1e-9 {
+    let neg = arena.neg(l);
+    let floor = arena.floor(neg);
+    let floor = crate::transforms::eval::eval(arena, floor);
+    let ceiling = arena.ceiling(neg);
+    let ceiling = crate::transforms::eval::eval(arena, ceiling);
+    let integer = |r: &crate::base::numeric::Q| r.is_integer().then(|| r.to_integer());
+    let f = arena.as_num(floor).and_then(integer)?;
+    let c = arena.as_num(ceiling).and_then(integer)?;
+    if f == c {
         return None;
     }
-    Some(m.floor() as i64)
+    // Callers add 1.
+    f.to_i64().filter(|n| n.checked_add(1).is_some())
 }
 
 /// Where a function composed in [`unary_with_asymptotes`] has its branch

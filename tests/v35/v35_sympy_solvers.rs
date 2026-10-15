@@ -449,12 +449,34 @@ fn inversions_of_erf_lambert_atan2_powers_and_binomials() {
         parse(&ctx, "erf(x) - 1").solve(&x),
         Err(SymplexError::NoSolution { .. })
     ));
+    // `W(2t) = y`: `t = y·e^y/2` only for `y` in the range of `W₀` (for a
+    // real `y`: `y ≥ −1`; `W₀(−5e⁻⁵) ≈ −0.0349 ≠ −5`).  Up to 0.52 the
+    // root was returned for a plain `y` (SymPy 1.14 too); since 0.53 it is
+    // refused, given under its condition for a real `y`, and returned for a
+    // positive one.
     let y = ctx.symbol("y");
+    let t = ctx.symbol("t");
+    let r = parse(&ctx, "LambertW(2*t) - y").solve(&t);
+    assert!(
+        matches!(r, Err(SymplexError::ComputationFailed { .. })),
+        "{r:?}"
+    );
+    let _ = y;
+    let ctx = Context::new();
+    let _y = ctx.symbol_with("y", &[Assumption::Real]).unwrap();
+    let t = ctx.symbol("t");
+    assert_eq!(
+        parse(&ctx, "LambertW(2*t) - y")
+            .solve_as_set(&t)
+            .to_string(),
+        "ConditionSet(t, y >= -1) ∩ {1/2*y*exp(y)}"
+    );
+    let ctx = Context::new();
+    let _y = ctx.symbol_with("y", &[Assumption::Positive]).unwrap();
     let t = ctx.symbol("t");
     let got = parse(&ctx, "LambertW(2*t) - y").solve(&t).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].to_string(), "1/2*y*exp(y)");
-    let _ = y;
 }
 
 /// The poles inside a factor came back as roots: `d·(1 + 1/d) = 0` with

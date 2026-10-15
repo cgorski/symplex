@@ -736,6 +736,90 @@ pub(crate) fn ratsimp_zero_denominator(arena: &mut Arena, expr: ExprId) -> Optio
     Some(out)
 }
 
+/// `Ex::cancel`: [`cancel_full`](crate::poly::paramfield::cancel_full),
+/// whose polynomial arithmetic reads functions as independent
+/// indeterminates, checked against the denominators it divided out.  A
+/// denominator that vanishes by an identity of its functions (`sin²x +
+/// cos²x − 1`) makes the quotient undefined at every point: up to 0.52
+/// `cancel(((x + 1)² − x² − 2x − 1)/(sin²x + cos²x − 1))` was `0` and with
+/// `+ y` it was `y`, while `ratsimp`, `simplify` and `expand` gave `nan`
+/// (SymPy 1.14's `cancel`: `0`).  Each denominator of `expr` that holds a
+/// sum and a function and is missing from the result is decided first,
+/// as the canonical `0·d⁻¹` decides it: not 0 as a rational function of
+/// its related generators (the residue test,
+/// [`may_vanish_identically`](crate::poly::polybridge::may_vanish_identically):
+/// `sin x − 1`, `⌊x⌋ + 5`) → the result stands; zero by an identity
+/// ([`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity))
+/// → the value of `expr` in the arithmetic of `1/0`
+/// ([`undefined_by_vanishing_denominator`](crate::simplify::simplify_engine::undefined_by_vanishing_denominator):
+/// `nan` for `0/0`); certified nonzero at a sample point
+/// ([`nonzero_at_a_sample`](crate::simplify::identically_zero::nonzero_at_a_sample))
+/// → the result stands; undecided → `expr` unchanged (no claim).  A
+/// denominator in the symbols alone is a polynomial the arithmetic decides
+/// exactly.
+pub(crate) fn cancel(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    let result = crate::poly::paramfield::cancel_full(arena, expr, var);
+    if result == expr || result == arena.nan || result == arena.complex_infinity {
+        return result;
+    }
+    let after: FxHashSet<ExprId> = denominator_bases(arena, result).into_iter().collect();
+    let dropped: Vec<ExprId> = denominator_bases(arena, expr)
+        .into_iter()
+        .filter(|&d| {
+            !after.contains(&d)
+                && may_vanish_by_identity(arena, d)
+                && walk::post_order_ids(arena, d)
+                    .into_iter()
+                    .any(|id| matches!(arena.node(id), ExprNode::Add(_)))
+        })
+        .collect();
+    for d in dropped {
+        if !crate::poly::polybridge::may_vanish_identically(arena, d) {
+            continue;
+        }
+        if crate::simplify::identically_zero::vanishes_by_identity(arena, d) {
+            tracing::debug!("cancel: a divided-out denominator vanishes by an identity");
+            return crate::simplify::simplify_engine::undefined_by_vanishing_denominator(
+                arena, expr,
+            )
+            .unwrap_or(expr);
+        }
+        if !crate::simplify::identically_zero::nonzero_at_a_sample(arena, d) {
+            tracing::debug!("cancel: a divided-out denominator is not decided; input kept");
+            return expr;
+        }
+    }
+    result
+}
+
+/// The bases of the negative integer powers in the rational skeleton of
+/// `expr` (its sums, products, negations and integer powers, not inside a
+/// generator), each once, nested ones included.
+fn denominator_bases(arena: &Arena, expr: ExprId) -> Vec<ExprId> {
+    let mut out: Vec<ExprId> = Vec::new();
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack = vec![expr];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Add(children) | ExprNode::Mul(children) => stack.extend(children.iter()),
+            ExprNode::Neg(child) => stack.push(*child),
+            ExprNode::Pow(base, e) => {
+                if let Some(n) = integer_exponent(arena, *e) {
+                    if n < 0 && !out.contains(base) {
+                        out.push(*base);
+                    }
+                    stack.push(*base);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// [`to_rational_function`], setting `zero_denominator` when the base of
 /// a negative power is the zero polynomial, with the nodes of `vanishing`
 /// taking their [`Vanishing`] values (`0`, or the fraction `1/0`).

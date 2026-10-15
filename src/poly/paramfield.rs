@@ -1050,7 +1050,9 @@ fn inadmissible(arena: &Arena, expr: ExprId) -> bool {
     })
 }
 
-/// `Ex::cancel`: [`cancel`] (rational coefficients, a single quotient) when
+/// The polynomial part of `Ex::cancel` (which then decides the
+/// denominators divided out here: `simplify::ratsimp::cancel`): [`cancel`]
+/// (rational coefficients, a single quotient) when
 /// it changes the expression; otherwise sums and nested fractions are
 /// combined ([`together_deep`]) and cancelled, over `ℚ(α)` when the
 /// coefficients hold algebraic numbers only ([`cancel_algebraic`]), else as

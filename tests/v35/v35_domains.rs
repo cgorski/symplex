@@ -103,8 +103,11 @@ fn constant_roots_are_decided_by_certified_evaluation() {
 /// of the cube roots (it decides only `a**(1/3)`, not real for a negative
 /// `a`), `[]`.  The root kept, `(−1/2 + i√3/2)·∛a`, is `−|a|^(1/3)`: the
 /// principal `∛a` of a negative `a` is `|a|^(1/3)·e^{iπ/3}`.  A root whose
-/// membership cannot be decided is kept (`x − a` for a plain `a`), as
-/// SymPy keeps it.
+/// membership cannot be decided was kept up to 0.52 (`x − c` for a plain
+/// `c` and a positive `x`: `[c]`, as SymPy keeps it), a claim wrong for
+/// every `c` that is not positive — a set of positive measure; since 0.53
+/// it is refused (decision D8) and `solve_as_set` gives `(0, ∞) ∩ {c}`.
+/// For a nonzero `x` (failure only at `c = 0`, measure zero) it is kept.
 #[test]
 fn parametric_roots_are_decided_by_the_assumptions() {
     let ctx = Context::new();
@@ -116,7 +119,18 @@ fn parametric_roots_are_decided_by_the_assumptions() {
     );
     assert!(parse(&ctx, "x + a").solve(&x).unwrap().is_empty());
     let _c = ctx.symbol("c");
-    assert_eq!(shown(&parse(&ctx, "x - c").solve(&x).unwrap()), ["c"]);
+    let r = parse(&ctx, "x - c").solve(&x);
+    assert!(
+        matches!(r, Err(SymplexError::ComputationFailed { .. })),
+        "{r:?}"
+    );
+    assert_eq!(
+        parse(&ctx, "x - c").solve_as_set(&x).to_string(),
+        "(0, oo) ∩ {c}"
+    );
+    let ctx_nz = Context::new();
+    let xnz = ctx_nz.symbol_with("x", &[Assumption::NonZero]).unwrap();
+    assert_eq!(shown(&parse(&ctx_nz, "x - c").solve(&xnz).unwrap()), ["c"]);
 
     let ctx = Context::new();
     let x = ctx.symbol_with("x", &[Assumption::Negative]).unwrap();

@@ -133,7 +133,7 @@ A query that cannot be decided says so (`None`) rather than guessing, and a deci
 
 ### Pattern 4: Queries → `Option`
 
-Three-valued queries return `Option` — the answer might be yes, no, or "can't determine":
+Three-valued queries return `Option` — the answer might be yes, no, or "can't determine".  For an expression with symbols, `is_real`, the signs and `is_zero` are about the points where it is defined (`(1/x).is_real()` is `Some(true)` for a real `x`), while `is_finite` is about every point, poles included (`(1/x).is_finite()` is `None` for a real `x`).  A complex value prints every part that is not 0 within its error, however small next to the other (`Chi(−60)` = `9.68091107e23 + 3.141592654*i`), and `eval_f64` refuses a value whose imaginary part is certified nonzero:
 
 ```rust
 # use symplex::prelude::*;

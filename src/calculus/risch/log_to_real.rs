@@ -529,7 +529,9 @@ pub(crate) fn log_to_real(
         used[idx] = true;
 
         // Find and mark the conjugate root (same Re, opposite Im).
-        // Conjugate matching uses f64 sum-to-zero heuristic.
+        // Conjugate matching uses f64 sum-to-zero heuristic (a wrong match
+        // leaves a wrong candidate, which `integrate`'s certified FTC check
+        // rejects).
         let v_f64 = crate::transforms::evalf::eval_const_f64(arena, v_val)?;
         for j in (idx + 1)..roots.len() {
             if used[j] {

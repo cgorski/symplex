@@ -93,8 +93,13 @@ fn re_and_im_of_a_possibly_infinite_value_are_extended_real() {
 /// `sinh y`, `cosh y`, `asinh y`, `acosh y`, `asin y`, `acos y`, `tanh y`,
 /// `atan y`, `atanh y` were finite whatever `y`; for an `ExtendedReal` `y`
 /// at `y = oo`: `sinh oo = cosh oo = asinh oo = acosh oo = oo`,
-/// `asin oo = −oo·i`, `acos oo = oo·i` (SymPy).  They are finite for a
-/// finite argument, so for an undeclared one.
+/// `asin oo = −oo·i`, `acos oo = oo·i` (SymPy).  The six without poles are
+/// finite for a finite argument, so for an undeclared one (a finite complex
+/// number).  `tanh`, `atanh` and `atan` have poles in the complex plane
+/// (`iπ/2`, `±1`, `±i`), so since 0.53 `is_finite`, which is about every
+/// point (D7), is `None` for them at an undeclared argument (up to 0.52
+/// `Some(true)`, which claimed `tanh(iπ/2)` finite) and `Some(true)` at a
+/// real one for `tanh` and `atan`.
 #[test]
 fn hyperbolic_and_inverse_trig_functions_of_infinite_arguments_are_not_finite() {
     let ctx = Context::new();
@@ -111,12 +116,18 @@ fn hyperbolic_and_inverse_trig_functions_of_infinite_arguments_are_not_finite() 
         |e| e.acos(),
         |e| e.atan(),
     ];
-    for f in fs {
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
+    for (k, f) in fs.into_iter().enumerate() {
         let e = f(&y);
         assert_eq!(e.is_finite(), None, "{e}");
         let e = f(&x);
-        assert_eq!(e.is_finite(), Some(true), "{e}");
+        let with_poles = matches!(k, 2 | 5 | 8);
+        let want = if with_poles { None } else { Some(true) };
+        assert_eq!(e.is_finite(), want, "{e}");
     }
+    assert_eq!(r.tanh().is_finite(), Some(true));
+    assert_eq!(r.atan().is_finite(), Some(true));
+    assert_eq!(r.atanh().is_finite(), None);
 }
 
 /// `ln p` and `ln Γ(p)` for `p` declared positive and infinite were real;

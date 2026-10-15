@@ -244,7 +244,8 @@ pub(crate) fn singularities(
             && val >= range.lower
             && val <= range.upper
         {
-            // Deduplicate
+            // Deduplicate (`f64` points for plots and quadrature splits: a
+            // guide).
             if !sing_points.iter().any(|&v| (v - val).abs() < 1e-12) {
                 sing_points.push(val);
             }
@@ -661,6 +662,7 @@ fn integer_part(arena: &mut Arena, t: ExprId, ceiling: bool) -> Option<BigInt> {
 
 /// The slope and intercept of `lin` as `f64`s, when both evaluate.
 fn linear_f64(arena: &mut Arena, lin: LinearCoeffs<ExprId>) -> Option<LinearCoeffs<f64>> {
+    // Guide values only (see [`Breakpoint::value`]).
     let slope = expr_to_f64(arena, lin.slope).filter(|v| v.is_finite() && *v != 0.0)?;
     let intercept = expr_to_f64(arena, lin.intercept).filter(|v| v.is_finite())?;
     Some(LinearCoeffs { slope, intercept })
@@ -1015,7 +1017,19 @@ fn push_integer_family(
     }
 }
 
-/// Try to evaluate an ExprId to f64.
+/// The value of the real constant `expr` as an `f64` (from its 16-digit
+/// value); `None` when it does not evaluate or is not real.
+///
+/// The printed value omits an imaginary part below its digits, so a
+/// value without `i` is checked: a constant the assumption system does
+/// not prove real is refused when its certified evaluation keeps an
+/// imaginary part (`evalf` keeps a part next to a much larger one only
+/// when its error ball excludes 0, so that part is certified nonzero).
+/// Up to 0.52 `1 + i·e⁻⁵⁰` was the real point `1`: the pole of `1/(x − 1
+/// − i·e⁻⁵⁰)` lay on `[0, 2]`, and the integral, `iπ` to 21 digits, was
+/// `Divergent`.  An imaginary part that is only 0 to the precision
+/// reached is not decided here (callers that need realness proved use
+/// [`constant_realness_as_declared`](crate::transforms::realness::constant_realness_as_declared)).
 pub(crate) fn expr_to_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
     let evaled = eval::eval(arena, expr);
     // Try exact rational first
@@ -1028,7 +1042,25 @@ pub(crate) fn expr_to_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
     if s.contains('I') || s.contains('i') {
         return None;
     }
-    s.trim().parse::<f64>().ok()
+    let v = s.trim().parse::<f64>().ok()?;
+    if imaginary_part_shown_nonzero(arena, evaled) {
+        return None;
+    }
+    Some(v)
+}
+
+/// Does the symbol-free constant `c`, not proved real by the assumption
+/// system, have an imaginary part that its certified 16-digit evaluation
+/// keeps (certified nonzero, see [`expr_to_f64`])?
+fn imaginary_part_shown_nonzero(arena: &mut Arena, c: ExprId) -> bool {
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    if Truth::from(cache.query(arena, c, crate::base::assumptions::Props::REAL)).is_true() {
+        return false;
+    }
+    matches!(
+        evalf::evalf_settled(arena, c, 16, evalf::ZeroSearch::Number),
+        Ok((z, evalf::Settled::Certified)) if !z.1.is_zero()
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -142,6 +142,61 @@ fn constant_realness_with(
     }
 }
 
+/// The sign of `im c` for a symbol-free constant `c`, proved: `ZERO` for
+/// a constant the assumption system proves real, otherwise the sign of
+/// the imaginary part of its certified evaluation (`evalf` keeps a part
+/// next to a much larger one only when its error ball excludes 0), or of
+/// `im c` evaluated on its own (a certified exact 0 included).
+/// [`SignSet::REAL`](crate::base::truth::SignSet::REAL) when undecided: an
+/// imaginary part 0 to the precision reached, a constant with symbols or
+/// one that does not evaluate.
+///
+/// Which side of the real axis a value lies on decides the side of a
+/// branch cut; up to 0.52 the definite integrator read an `f64` imaginary
+/// part below `10⁻¹²` of the value as 0 (on the axis), and the integrator
+/// a crossing of `Ei`'s cut `2·10⁻¹⁴` left of its branch point as one off
+/// the cut: `∫₀² e^{(1+i)x}/(x − 1 + 10⁻¹⁴i) dx` (`4.7265 + 2.6665i`) was
+/// `−9.6453 + 11.8945i`, off by `2πi·e^{1+i}`.
+pub(crate) fn imaginary_part_sign(arena: &mut Arena, c: ExprId) -> crate::base::truth::SignSet {
+    use crate::base::truth::SignSet;
+    if !walk::free_symbols(arena, c).is_empty() || walk::has_unevaluated(arena, c) {
+        return SignSet::REAL;
+    }
+    let mut cache = AssumptionCache::new();
+    if Truth::from(cache.query(arena, c, Props::REAL)).is_true() {
+        return SignSet::ZERO;
+    }
+    let sign = |p: &astro_float::BigFloat| {
+        if crate::base::bigfloat::is_strictly_positive(p) {
+            SignSet::POSITIVE
+        } else {
+            SignSet::NEGATIVE
+        }
+    };
+    use crate::transforms::evalf::{self, Settled, ZeroSearch};
+    if let Ok((z, Settled::Certified)) = evalf::evalf_settled(arena, c, 16, ZeroSearch::Cap)
+        && !z.1.is_zero()
+    {
+        return sign(&z.1);
+    }
+    let im = arena.im(c);
+    let im = crate::transforms::eval::eval(arena, im);
+    if arena.is_zero_structural(im) {
+        return SignSet::ZERO;
+    }
+    if walk::has_unevaluated(arena, im) {
+        return SignSet::REAL;
+    }
+    match evalf::evalf_verdict(arena, im, 16, ZeroSearch::Cap)
+        .ok()
+        .and_then(crate::base::truth::Verdict::proven)
+    {
+        Some(w) if w.0.is_zero() && w.1.is_zero() => SignSet::ZERO,
+        Some(w) if w.1.is_zero() => sign(&w.0),
+        _ => SignSet::REAL,
+    }
+}
+
 /// Is the symbol `s` declared real (directly or through a declaration that
 /// implies it, such as `positive` or `integer`)?  A symbol without
 /// declared assumptions is not: it is a complex parameter in the crate's

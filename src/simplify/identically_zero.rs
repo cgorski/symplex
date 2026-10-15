@@ -173,6 +173,13 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// FNV-1a of a symbol name: the seed of its sample values.
+fn name_hash(name: &str) -> u64 {
+    name.bytes().fold(0xCBF2_9CE4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01B3)
+    })
+}
+
 /// Is `n` a prime (a positive integer with exactly two divisors)?
 fn small_prime(n: i64) -> bool {
     n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| n % d != 0)
@@ -216,10 +223,18 @@ fn integer_admissible(props: &crate::base::assumptions::Assumptions, n: i64) -> 
 /// is 0) was `ratsimp`ed and `simplify`d to `0` (it is `nan`, as for an
 /// even `n`).  An integer keeps its former value when that one is
 /// admissible, else takes the first admissible of `±1, ±2, …`.
+///
+/// The values are picked by a hash of the symbol's name, not of its id:
+/// up to 0.52 the id's allocation number chose them, so whether a sample
+/// met a zero of the expression depended on the order in which the
+/// context had created its symbols.
 fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
-    let props = match arena.node(sym) {
-        ExprNode::Symbol(sid) => arena.symbol_assumptions(*sid),
-        _ => crate::base::assumptions::Assumptions::default(),
+    let (props, name_hash) = match arena.node(sym) {
+        ExprNode::Symbol(sid) => (
+            arena.symbol_assumptions(*sid),
+            name_hash(arena.symbol_name(*sid)),
+        ),
+        _ => (crate::base::assumptions::Assumptions::default(), 0),
     };
     let has = |p: Props| Truth::from(props.query(p)).is_true();
     let lacks = |p: Props| Truth::from(props.query(p)).is_false();
@@ -229,7 +244,7 @@ fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
     if has(Props::ZERO) {
         return Some(arena.zero);
     }
-    let h = mix(u64::from(sym.index()) ^ k.wrapping_mul(0xD6E8_FEB8_6659_FD93));
+    let h = mix(name_hash ^ k.wrapping_mul(0xD6E8_FEB8_6659_FD93));
     let pick = |table: &[i64], salt: u32| table[((h >> salt) % table.len() as u64) as usize];
     let sign: i64 = if has(Props::NEGATIVE) || has(Props::NONPOSITIVE) {
         -1
@@ -794,6 +809,53 @@ mod tests {
             assert_eq!(sample_value(arena, inf.raw_id(), point), None);
             let v = sample_value(arena, noninteger.raw_id(), point).unwrap();
             assert!(arena.as_num(v).is_some_and(|q| !q.is_integer()));
+        }
+    }
+
+    /// The sample values come from the symbol's name, not from its id: the
+    /// same in a context that created the symbols in the other order after
+    /// unrelated expressions.  (Up to 0.52 the hash read `SymbolId::index`,
+    /// the allocation number, so the points — and whether a sample met a
+    /// zero of the expression — depended on the context's history.)
+    #[test]
+    fn sample_points_do_not_depend_on_creation_order() {
+        use crate::base::assumptions::Assumption as A;
+        let samples = |noise: bool, x_first: bool| -> Vec<String> {
+            let ctx = crate::api::context::Context::new();
+            if noise {
+                for i in 0..23 {
+                    let s = ctx.symbol(&format!("w{i}"));
+                    let _ = (&s + i).exp() * &s;
+                }
+            }
+            let names: [(&str, &[A]); 3] = [("x", &[]), ("y", &[A::Real]), ("m", &[A::Integer])];
+            let order: Vec<usize> = if x_first {
+                vec![0, 1, 2]
+            } else {
+                vec![2, 1, 0]
+            };
+            let syms: Vec<_> = order
+                .iter()
+                .map(|&i| (i, ctx.symbol_with(names[i].0, names[i].1).unwrap()))
+                .collect();
+            let mut out = vec![String::new(); 3];
+            for (i, s) in syms {
+                let mut inner = s.inner.write();
+                let arena = &mut inner.arena;
+                for point in 0..SAMPLE_POINTS {
+                    let v = sample_value(arena, s.raw_id(), point).unwrap();
+                    out[i].push_str(&format!("{} ", arena.display(v)));
+                }
+            }
+            out
+        };
+        let reference = samples(false, true);
+        for (noise, x_first) in [(false, false), (true, true), (true, false)] {
+            assert_eq!(
+                samples(noise, x_first),
+                reference,
+                "noise {noise}, x first {x_first}"
+            );
         }
     }
 }

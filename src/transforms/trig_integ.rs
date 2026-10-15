@@ -928,14 +928,25 @@ fn placement(arena: &mut Arena, z: ExprId) -> Option<Placement> {
         if !scale.is_finite() || scale == 0.0 {
             return None;
         }
-        let tol = 1e-9 * scale;
-        if v.im.abs() <= tol {
+        // On the real axis only when proved real: up to 0.52 an imaginary
+        // part below `10⁻⁹` of the value was taken for 0, so `−1 − 10⁻¹⁰i`
+        // counted as on the cut of `ln`, where [`log_end`] corrects the
+        // principal value by the side of the cut (`−2πi` from below) — of a
+        // principal logarithm that is already the one from below.
+        let axis = crate::transforms::realness::imaginary_part_sign(arena, z);
+        if axis == crate::base::truth::SignSet::REAL {
+            return None;
+        }
+        if axis == crate::base::truth::SignSet::ZERO {
             return Some(if v.re > 0.0 {
                 Placement::Positive
             } else {
                 Placement::Negative
             });
         }
+        // The sign of the real part with a margin far above the error of
+        // the 16-digit value; inside it, 0 (`end_value` then refuses).
+        let tol = 1e-9 * scale;
         let re_sign = if v.re > tol {
             1
         } else if v.re < -tol {
@@ -943,6 +954,7 @@ fn placement(arena: &mut Arena, z: ExprId) -> Option<Placement> {
         } else {
             0
         };
+        // At a branch point `±i` of `atan`: refuse.
         if re_sign == 0 && (v.im.abs() - 1.0).abs() <= 1e-9 {
             return None;
         }
@@ -1064,6 +1076,8 @@ fn log_end(
         }
         let z = crate::transforms::evalf::evalf_complex64(arena, c).ok()?;
         let im = z.im.abs();
+        // Beyond `10⁻¹²` of a 16-digit value the side is certified; a
+        // smaller imaginary part refuses.
         if im.is_nan() || im <= 1e-12 * z.norm().max(1.0) {
             return None;
         }

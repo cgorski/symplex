@@ -5385,6 +5385,12 @@ struct SymForcingTerm {
 
 /// Is `e` a real constant: free of symbols and of `i`, with a finite real
 /// value?
+///
+/// The `f64` test only selects the real-split method of
+/// [`particular_for_group_sym`], whose coefficients are rational in the
+/// constants and stay right for a non-real one (s15g4: with
+/// `asin(1 + 10⁻⁴⁰)`, imaginary part `−1.4·10⁻²⁰`, as the frequency the
+/// residual is 0).
 fn is_real_constant(arena: &Arena, e: ExprId) -> bool {
     crate::base::walk::free_symbols(arena, e).is_empty()
         && real_radical_form(arena, e)
@@ -5465,6 +5471,7 @@ fn parse_forcing_term_sym(arena: &mut Arena, term: ExprId, var: ExprId) -> Optio
                 if !arena.is_zero_structural(offset) {
                     return None;
                 }
+                // The sign of a nonzero certified digit; 0 refuses.
                 let negative = crate::transforms::evalf::evalf_complex64(arena, freq)
                     .ok()
                     .filter(|z| z.re != 0.0)?
@@ -5969,6 +5976,7 @@ fn radical_char_roots(
     for &k in &order[..n_real] {
         is_real[k] = true;
     }
+    // Checks of the exact parts against the values: they can only refuse.
     let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * (1.0 + b.abs());
     let i_unit = arena.i_unit;
     let mut used = vec![false; deg];
@@ -6039,6 +6047,8 @@ fn real_imag_parts(arena: &mut Arena, z: ExprId) -> (ExprId, ExprId) {
         for &id in &post {
             let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
             let new = match *arena.node(rebuilt) {
+                // Certified negative beyond the margin; nearer 0 the part
+                // stays unresolved and the caller refuses.
                 ExprNode::Pow(b, e)
                     if arena
                         .as_num(e)
@@ -6102,6 +6112,9 @@ fn is_real_radical(arena: &Arena, u: ExprId) -> bool {
     if !real_radical_form(arena, u) || !crate::base::walk::free_symbols(arena, u).is_empty() {
         return false;
     }
+    // The constants are radicals of rationals from the solver: realness
+    // follows from every base being positive (a certified value beyond the
+    // margin), innermost first; the `f64` imaginary parts only confirm it.
     let positive = |b: ExprId| {
         crate::transforms::evalf::evalf_complex64(arena, b)
             .is_ok_and(|z| z.im == 0.0 && z.re > 1e-12 * (1.0 + z.re.abs()))

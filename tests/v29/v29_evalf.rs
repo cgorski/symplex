@@ -161,11 +161,15 @@ fn eval_f64_refuses_a_value_that_is_not_real() {
         t.eval_f64(),
         Err(SymplexError::ComputationFailed { .. })
     ));
-    // A negligible imaginary part is still dropped.
-    assert_eq!(
-        ctx.parse("1 + I*10^(-30)").unwrap().eval_f64().unwrap(),
-        1.0
-    );
+    // An imaginary part negligible next to the real part but certified
+    // nonzero (here exact) is refused too since 0.53 (D3); up to 0.52
+    // `1 + 10⁻³⁰·i` gave `1.0`.  `eval_complex64` keeps it.
+    let u = ctx.parse("1 + I*10^(-30)").unwrap();
+    assert!(matches!(
+        u.eval_f64(),
+        Err(SymplexError::ComputationFailed { .. })
+    ));
+    assert_eq!(u.eval_complex64().unwrap(), Complex64::new(1.0, 1e-30));
 }
 
 // ── Values hidden by cancellation beyond the old cap ────────────────────────

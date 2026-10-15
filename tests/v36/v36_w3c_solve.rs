@@ -138,8 +138,11 @@ fn general_solve_keeps_the_real_line_for_a_real_unknown() {
 /// S3-B3.  For a real `xr` and a plain parameter `a`, `exp(a·xr) + 1` was
 /// "no solution" (`solve`) and `EmptySet` (`solve_as_set`): the parameter
 /// was taken real.  A plain `a` may be complex, and `a = iπ`, `xr = 1`
-/// solves it (exact: `e^(iπ) = −1`); now `solve` gives the principal root
-/// `iπ/a` and `solve_as_set` the real members of `(2n + 1)πi/a`.  Likewise
+/// solves it (exact: `e^(iπ) = −1`); `solve_as_set` gives the real members
+/// of `(2n + 1)πi/a`.  From 0.50 to 0.52 `solve` gave the principal root
+/// `iπ/a`, which is real only for an imaginary `a` (a set of measure zero):
+/// since 0.53 it refuses (decision D8, a root of a real unknown real only
+/// for some parameter values).  Likewise
 /// `cos(a·xr) − 3` (`a = i·acosh 3`, `xr = 1`: `cos(i·acosh 3) = cosh(acosh
 /// 3) = 3`, checked in double precision).
 #[test]
@@ -152,10 +155,16 @@ fn a_plain_parameter_may_be_complex() {
         .subs(&xr, &ctx.int(1))
         .eval();
     assert!(at.is_zero_structural(), "{at}");
-    let roots = e.solve(&xr).unwrap();
-    assert_eq!(roots.len(), 1);
-    assert_eq!(roots[0].to_string(), "pi*I/a");
-    assert_ne!(e.solve_as_set(&xr).to_string(), "EmptySet");
+    let r = e.solve(&xr);
+    assert!(
+        matches!(r, Err(SymplexError::ComputationFailed { .. })),
+        "{r:?}"
+    );
+    assert!(!is_no_solution(&r), "{r:?}");
+    assert_eq!(
+        e.solve_as_set(&xr).to_string(),
+        "(-oo, oo) ∩ ImageSet(Lambda(_n, 2*_n*pi*I/a + pi*I/a), Integers)"
+    );
     let c = parse(&ctx, "cos(a*xr) - 3");
     let at = c
         .subs(&ctx.symbol("a"), &parse(&ctx, "I*acosh(3)"))
@@ -173,8 +182,10 @@ fn a_plain_parameter_may_be_complex() {
 /// (`|i·1| = 1`, exact).  A complex `a·xr` is not `±1`: for a real `xr`,
 /// `|a·xr|² = (re(a)² + im(a)²)·xr² = 1`, so `xr = ±1/√(re(a)² +
 /// im(a)²)` (`±1/|a|`; at `a = i`: `±1`).  Likewise `|xr − a| = 1` is
-/// `(xr − re a)² + (im a)² = 1` (at `a = i/2`: `xr = ±√3/2`).  For a
-/// real `a` both are unchanged.
+/// `(xr − re a)² + (im a)² = 1` (at `a = i/2`: `xr = ±√3/2`), whose roots
+/// `re a ± √(1 − (im a)²)` are real only for `|im a| ≤ 1` (at `a = 2i`
+/// there is none): since 0.53 `solve` refuses them (D8) and `solve_as_set`
+/// gives them under that condition.  For a real `a` both are unchanged.
 #[test]
 fn modulus_with_a_plain_parameter_is_not_plus_minus() {
     let ctx = Context::new();
@@ -195,13 +206,24 @@ fn modulus_with_a_plain_parameter_is_not_plus_minus() {
     }
     assert_ne!(e.solve_as_set(&xr).to_string(), "(-oo, oo) ∩ {1/a, -1/a}");
     let shift = parse(&ctx, "Abs(xr - a) - 1");
-    let roots = shift.solve(&xr).unwrap();
-    assert_eq!(roots.len(), 2, "{roots:?}");
+    let r = shift.solve(&xr);
+    assert!(
+        matches!(r, Err(SymplexError::ComputationFailed { .. })),
+        "{r:?}"
+    );
+    let set = shift.solve_as_set(&xr).to_string();
+    assert!(
+        set.starts_with("ConditionSet(xr, -4*im(a)^2 + 4 >= 0) ∩ {"),
+        "{set}"
+    );
     let half_i = parse(&ctx, "I/2");
+    let at_half_i = shift.subs(&a, &half_i);
+    let roots = at_half_i.solve(&xr).unwrap();
+    assert_eq!(roots.len(), 2, "{roots:?}");
     for r in &roots {
-        let v = r.subs(&a, &half_i).eval_f64().unwrap();
+        let v = r.eval_f64().unwrap();
         assert!((v.abs() - 3f64.sqrt() / 2.0).abs() < 1e-12, "{r}: {v}");
-        assert_numeric_root(&shift.subs(&a, &half_i), &xr, &r.subs(&a, &half_i));
+        assert_numeric_root(&at_half_i, &xr, r);
     }
 }
 

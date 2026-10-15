@@ -1370,6 +1370,24 @@ fn next_rational(rng: &mut SplitMix64) -> (i64, i64) {
     (p, q)
 }
 
+/// A hash of the structure of `id` (FNV-1a over its sort key: symbol
+/// names, numbers and node kinds, see [`Arena::sort_key`]), never of its
+/// allocation number, so that the sample points of [`Ex::probably_equal`]
+/// do not depend on the order in which the context created symbols and
+/// expressions.  Up to 0.52 the seed mixed the two expression ids:
+/// `sqrt(x²).probably_equal(x, 1)` answered according to whether `x` or `y`
+/// had been created first.
+///
+/// [`Arena::sort_key`]: crate::base::arena::Arena::sort_key
+fn structural_hash(arena: &crate::base::arena::Arena, id: crate::base::node::ExprId) -> u64 {
+    arena
+        .sort_key(id)
+        .iter()
+        .fold(0xCBF2_9CE4_8422_2325_u64, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01B3)
+        })
+}
+
 impl Ex {
     // ── Extraction ─────────────────────────────────────────────────────
 
@@ -1643,9 +1661,12 @@ impl Ex {
     /// * `None` — no sample point could be evaluated (domain errors at
     ///   every point) and the symbolic test was inconclusive.
     ///
-    /// Sample points are drawn from a fixed-seed generator keyed on the two
-    /// expressions, so results are reproducible.  `samples == 0` is treated
-    /// as `1`.
+    /// Sample points are drawn from a fixed-seed generator keyed on the
+    /// structure of the two expressions (symbol names, numbers, node kinds),
+    /// so results are reproducible and do not depend on the order in which
+    /// symbols and expressions were created (up to 0.52 the seed came from
+    /// expression ids, and a one-sample verdict could change with the
+    /// context's history).  `samples == 0` is treated as `1`.
     ///
     /// # Examples
     ///
@@ -1673,10 +1694,13 @@ impl Ex {
             return None;
         }
         let ctx = self.context();
-        let seed = 0x5EED_0000_0000_0000_u64
-            ^ (u64::from(self.raw_id().index()) << 32)
-            ^ u64::from(other_id.index())
-            ^ (samples as u64).rotate_left(17);
+        let seed = {
+            let inner = self.inner.read();
+            0x5EED_0000_0000_0000_u64
+                ^ structural_hash(&inner.arena, self.raw_id()).rotate_left(32)
+                ^ structural_hash(&inner.arena, other_id)
+                ^ (samples as u64).rotate_left(17)
+        };
         let mut rng = SplitMix64::new(seed);
         let samples = samples.max(1);
         let mut confirmed = 0usize;

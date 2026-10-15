@@ -116,6 +116,18 @@ whose zero test is undecided, or that has no value (`DiracDelta(I)`), gives
 a `ConditionSet` (and `solve` refuses).  Unions of real intervals are
 printed in ascending order of their lower ends.
 
+A root that holds only for some values of a parameter is not returned as if
+it always held.  `√x = y` has the root `y²` only when `y` lies in the range
+of the principal square root: `solve` refuses (SymPy's `[y**2]` is wrong at
+`y = −1`), and `solve_as_set` gives the root with its exact condition,
+`ConditionSet(x, y >= 0) ∩ {y^2}` for a real `y` — a condition without `x` in
+it means "this set if the condition holds, otherwise nothing", so
+substituting `y = 3` gives `{9}` and `y = −1` gives `EmptySet`.  Declared
+assumptions decide the condition when they can: with `y` positive, `solve`
+returns `[y²]`.  The same holds for a real unknown whose root is real only
+for some parameter values (`x² = y`), and for `ln`, the inverse
+trigonometric functions and Lambert W.
+
 ```rust
 use symplex::prelude::*;
 

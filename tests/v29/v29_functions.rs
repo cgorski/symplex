@@ -480,8 +480,11 @@ fn binomial_at_the_poles_of_gamma() {
     let ctx = Context::new();
     // mpmath (dps 50, 70): binomial(-7, 2500) = 341942019002818626.0
     check(&ctx, "binomial(-7, 2500)", 30, "341942019002818626");
-    // mpmath (dps 50, 70): binomial(-7, -9) = 28.0
-    check(&ctx, "binomial(-7, -9)", 20, "28");
+    // Two negative integers: 0 for every `n` when `k < 0` (Graham–Knuth–
+    // Patashnik; SymPy 1.14 `binomial(-7, -9)` = 0), as `eval` and `compile`
+    // say since 0.53; up to 0.52 this was mpmath's limit along `n − k`
+    // fixed, `binomial(-7, -9)` = 28.0.
+    check(&ctx, "binomial(-7, -9)", 20, "0");
     // mpmath: binomial(mpf(7)/2, -3) = 0.0; binomial(sqrt(2), -3) = 0.0
     check(&ctx, "binomial(7/2, -3)", 20, "0");
     check(&ctx, "binomial(sqrt(2), -3)", 20, "0");

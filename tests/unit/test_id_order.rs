@@ -32,15 +32,12 @@ use syn::visit::Visit;
 /// Files allowed to call `ExprId::index()`, with the exact count.  Paths
 /// are relative to `src/`.
 const INDEX_ALLOWLIST: &[(&str, usize)] = &[
-    // `Ex::equals`' sampling seed, mixed from the two ids (see the
-    // found-not-fixed note in the 0.49 report: a structural seed is wave 2).
-    ("api/expr_ops.rs", 2),
+    // (0.53: `Ex::probably_equal` and the zero test's sample values are
+    // seeded from structure — sort keys, symbol names — no longer from ids.)
     // The name of a fresh symbol standing for a geometric base: identity only.
     ("calculus/z_transform.rs", 1),
     // Residue hashing of generators for the modular zero test: identity only.
-    ("poly/polybridge.rs", 4),
-    // Hash of a symbol picking its test values in the zero test.
-    ("simplify/identically_zero.rs", 1),
+    ("poly/polybridge.rs", 3),
     // Quadrature failure memo key.
     ("transforms/evalf/quad.rs", 4),
 ];

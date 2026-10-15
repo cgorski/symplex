@@ -56,6 +56,7 @@ use rustc_hash::FxHashMap;
 use crate::base::arena::Arena;
 use crate::base::func::{Constants, Func, Poles, RealOn};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::truth::Truth;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Props — property flags
@@ -1174,6 +1175,120 @@ impl AssumptionCache {
         let entry = self.cache.entry(id).or_default();
         entry.merge(&assumptions);
         entry.query(prop)
+    }
+
+    /// A query as the public API answers it (`Ex::query`, `Ex::is_finite`,
+    /// `Context::query`): [`query`](Self::query), except for `finite` and
+    /// `infinite` of an expression with symbols.
+    ///
+    /// The properties of an expression with symbols are claims about the
+    /// points of its symbols' domain where it is defined, its natural
+    /// domain: `1/x` is real for a real `x` (the reading of the solvers,
+    /// where the poles of `tan` are not roots, and of the rules of this
+    /// module, in which `real` and `complex` imply `finite`).  Finiteness
+    /// is about every point of the domain, the poles included: `is_finite`
+    /// is the pole detector, `None` for `1/x` with a real `x` and `true`
+    /// for a nonzero `x` ([`finite_everywhere`](Self::finite_everywhere)).
+    /// Up to 0.52 it answered in the natural-domain reading and called
+    /// `1/x`, `tan x`, `ln x`, `Γ(x)` and `1/(x − 1)` finite for a real `x`.
+    /// A constant has no "elsewhere": the two readings agree.
+    pub(crate) fn query_public(&mut self, arena: &Arena, id: ExprId, prop: Props) -> Truth {
+        let finiteness = Props::FINITE | Props::INFINITE;
+        if !prop.intersects(finiteness) || is_constant(arena, id) {
+            return Truth::from(self.query(arena, id, prop));
+        }
+        let everywhere = self.finite_everywhere(arena, id);
+        let mut facts = self.cache.get(&id).copied().unwrap_or_default();
+        let infinite = facts.known_true.contains(Props::INFINITE);
+        facts.known_true.remove(finiteness);
+        facts.known_false.remove(finiteness);
+        if everywhere.is_true() {
+            facts.known_true |= Props::FINITE;
+            facts.known_false |= Props::INFINITE;
+        } else if everywhere.is_false() {
+            facts.known_false |= Props::FINITE;
+            if infinite {
+                facts.known_true |= Props::INFINITE;
+            }
+        }
+        Truth::from(facts.query(prop))
+    }
+
+    /// Is `e` finite at every point of its symbols' domain, poles included?
+    ///
+    /// `False` when the rules of this module find it not finite (infinite
+    /// wherever it is defined: `oo + x`); `True` when they find it finite
+    /// and no node of it can meet a pole or a point where it is undefined:
+    /// no symbol is declared possibly infinite (an undeclared one is a
+    /// finite complex number), every constant part is known finite,
+    /// a power `b^e` has `e ≥ 0` or `b` known nonzero, a function of the
+    /// table is off its [`Poles`] (`ln u` and `Ei u` need `u ≠ 0`, `Γ(u)`
+    /// needs `u` positive, non-integer or non-real; `atan u` and `tanh u`
+    /// have their poles off the real axis); `Unknown` otherwise (`tan x`,
+    /// an unevaluated node, a user function).
+    fn finite_everywhere(&mut self, arena: &Arena, e: ExprId) -> Truth {
+        match Truth::from(self.query(arena, e, Props::FINITE)) {
+            Truth::True => {}
+            other => return other,
+        }
+        let mut stack = vec![e];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let known = |s: &mut Self, c: ExprId, p: Props| Truth::from(s.query(arena, c, p));
+            if is_constant(arena, id) {
+                if !known(self, id, Props::FINITE).is_true() {
+                    return Truth::Unknown;
+                }
+                continue;
+            }
+            let off_poles = match arena.node(id) {
+                // An undeclared symbol is a finite complex number (as in
+                // `may_be_infinite`); one declared possibly infinite is not.
+                ExprNode::Symbol(_) => {
+                    let _ = known(self, id, Props::FINITE);
+                    self.cache
+                        .get(&id)
+                        .is_some_and(|a| !symbol_may_be_infinite(a))
+                }
+                ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+                &ExprNode::Pow(b, x) => known(self, x, Props::NONNEGATIVE)
+                    .or(known(self, b, Props::NONZERO))
+                    .is_true(),
+                node => match node.func(arena) {
+                    Some((f, args)) => self.off_poles(arena, f, &args),
+                    None => false,
+                },
+            };
+            if !off_poles {
+                return Truth::Unknown;
+            }
+            arena.node(id).for_each_child(|c| stack.push(c));
+        }
+        Truth::True
+    }
+
+    /// Are the arguments `args` of `f` known to be off its poles
+    /// ([`Poles`]) at every point of their domain?
+    fn off_poles(&mut self, arena: &Arena, f: Func, args: &[ExprId]) -> bool {
+        let mut known = |c: ExprId, p: Props| Truth::from(self.query(arena, c, p));
+        let arg = |i: u8| args.get(usize::from(i)).copied();
+        match f.spec().poles {
+            Poles::None => true,
+            Poles::Zero(i) => arg(i).is_some_and(|c| known(c, Props::NONZERO).is_true()),
+            Poles::NonPositiveIntegers(which) => which.iter().filter_map(|&i| arg(i)).all(|c| {
+                known(c, Props::POSITIVE).is_true()
+                    || known(c, Props::INTEGER).is_false()
+                    || known(c, Props::REAL).is_false()
+            }),
+            // `atan` at `±i`, `tanh` at `i(π/2 + kπ)`.
+            Poles::Other if matches!(f, Func::Atan | Func::Tanh) => {
+                arg(0).is_some_and(|c| known(c, Props::REAL).is_true())
+            }
+            Poles::One(_) | Poles::Other => false,
+        }
     }
 
     /// Compute, bottom-up and without recursion, every node below `root`

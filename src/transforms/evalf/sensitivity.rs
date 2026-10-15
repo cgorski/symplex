@@ -255,14 +255,35 @@ fn ln_gamma_f64(x: &BigFloat) -> (f64, f64) {
     (v, 1e-9 + 1e-14 * (v.abs() + shift.abs() + z * z.ln().abs()))
 }
 
-/// Lower and upper bounds on `log₂ B(p, q)` for `p, q > 0`.
+/// Lower and upper bounds on `log₂ B(p, q)` for `p, q > 0`: from the three
+/// `ln Γ` of [`ln_gamma_f64`], and with `s ≤ g` the smaller and the greater
+/// shape also as `ln Γ(s) − (ln Γ(g + s) − ln Γ(g))`, the difference
+/// bounded by the mean value theorem, `s·(ln g − 1/g) < ln Γ(g + s) −
+/// ln Γ(g) < s·ln(g + s)` (`ln y − 1/y < ψ(y) < ln y` for `y > 0`); the
+/// tighter of each.  The first alone is wide for a great `g`: each `ln Γ` is
+/// known to `10⁻¹⁴·g ln g`, and up to 0.52 `B(8.7·10¹⁸, 9)` had a bound
+/// `2^(±2.2·10⁷)`, so `betainc_regularized(8.7·10¹⁸, 9, 0, 1 − 10⁻¹⁸)` (the
+/// survival function of a negative binomial with `p = 10⁻¹⁸` at its
+/// median) was refused.
 fn log2_beta_bounds(p: &BigFloat, q: &BigFloat) -> (f64, f64) {
     let s = sum(p, q);
     let (a, ea) = ln_gamma_f64(p);
     let (b, eb) = ln_gamma_f64(q);
     let (c, ec) = ln_gamma_f64(&s);
     let (v, err) = (a + b - c, ea + eb + ec);
-    ((v - err) * LOG2E, (v + err) * LOG2E)
+    let (mut lo, mut hi) = (v - err, v + err);
+    let (small, great) = if f(p) <= f(q) { (p, q) } else { (q, p) };
+    let (sf, gf) = (f(small), f(great));
+    if sf > 0.0 && gf.is_finite() {
+        let (ls, es) = ln_gamma_f64(small);
+        let d_lo = sf * (gf.ln() - 1.0 / gf);
+        let d_hi = sf * (gf + sf).ln();
+        // The `f64` roundings of `s`, `g`, the logarithms and the products.
+        let margin = 1e-12 * (1.0 + ls.abs() + d_lo.abs().max(d_hi.abs()));
+        lo = lo.max(ls - es - d_hi - margin);
+        hi = hi.min(ls + es - d_lo + margin);
+    }
+    (lo * LOG2E, hi * LOG2E)
 }
 
 /// `log₂` of the distance from `x` to the nearest pole of `Γ` (the

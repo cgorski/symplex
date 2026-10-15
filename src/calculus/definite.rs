@@ -350,7 +350,8 @@ fn contradicted_by_quadrature(
         return false;
     }
     // The value as `evalf_f64` reads it: real when the imaginary part is
-    // below the 16th digit of the real part.
+    // below the 16th digit of the real part.  (This check can only refuse
+    // a closed form, so an `f64` reading is enough.)
     let Some(v) = value
         .filter(|z| z.im == 0.0 || z.im.abs() <= 1e-16 * z.re.abs())
         .map(|z| z.re)
@@ -427,6 +428,7 @@ fn contradicted_by_quadrature(
     // it said 0 for `[10²⁰, 10²⁰ + 4]`, one `f64`.
     let moved = bound_rounding(arena, a, lo) + bound_rounding(arena, b, hi);
     let tol = (1e-6 * q.value.abs().max(1.0)).max(100.0 * q.error) + 2.0 * moved * peak.get();
+    // Only a refusal rests on this comparison.
     let contradicted = (v - q.value).abs() > tol;
     if contradicted {
         tracing::debug!(
@@ -1009,6 +1011,7 @@ const SEPARATION: f64 = 64.0 * POINT_VALUE_ACCURACY;
 /// finite and further apart than [`SEPARATION`] relatively; `None` when the
 /// values cannot show it.
 fn separated(pv: f64, qv: f64) -> Option<Ordering> {
+    // A value 0 shows no relative gap: the certified sign decides then.
     if pv == 0.0 || qv == 0.0 || !pv.is_finite() || !qv.is_finite() {
         return None;
     }
@@ -1210,6 +1213,7 @@ fn non_real_for_real_integrand(
     let Some(z) = value else {
         return false;
     };
+    // Only a refusal rests on it (a value clearly off the real axis).
     if !z.im.is_finite() || z.im.abs() <= 1e-10 * z.norm().max(1.0) {
         return false;
     }
@@ -1828,15 +1832,21 @@ fn sign_changes_explained(
         let Ok(func) = crate::output::lambdify::compile(arena, w_eval, &[&x_name]) else {
             return Truth::Unknown;
         };
+        // The last sample with a nonzero value: a sample exactly on a zero
+        // is skipped, and the sign change through it is judged between its
+        // neighbours (up to 0.52 neither pair was compared, so a zero the
+        // solver did not locate at a sample point passed the guard).
         let mut prev: Option<(f64, f64)> = None;
         for &t in &grid {
             let v = func(&[t]);
             if !v.is_finite() {
                 return Truth::Unknown;
             }
+            // A guide only (`f64` samples): the guard's `False` refuses.
+            if v == 0.0 {
+                continue;
+            }
             if let Some((pt, pv)) = prev
-                && pv != 0.0
-                && v != 0.0
                 && (pv < 0.0) != (v < 0.0)
             {
                 // The known values are within `2⁻⁴⁶` of their points: at
@@ -2149,6 +2159,18 @@ enum Cut {
 /// in `anti`, with their cuts.
 fn cut_arguments(arena: &Arena, anti: ExprId, x: ExprId) -> Vec<(ExprId, Cut)> {
     let mut out: Vec<(ExprId, Cut)> = Vec::new();
+    for (_, u, cut) in cut_nodes(arena, anti) {
+        if walk::contains(arena, u, x) && !out.contains(&(u, cut)) {
+            out.push((u, cut));
+        }
+    }
+    out
+}
+
+/// The nodes of the principal-branch functions in `anti`: `(node,
+/// argument, cut)`.
+fn cut_nodes(arena: &Arena, anti: ExprId) -> Vec<(ExprId, ExprId, Cut)> {
+    let mut out: Vec<(ExprId, ExprId, Cut)> = Vec::new();
     let mut stack = vec![anti];
     let mut seen = rustc_hash::FxHashSet::default();
     while let Some(id) = stack.pop() {
@@ -2193,15 +2215,112 @@ fn cut_arguments(arena: &Arena, anti: ExprId, x: ExprId) -> Vec<(ExprId, Cut)> {
             }
             _ => None,
         };
-        if let Some((u, cut)) = found
-            && walk::contains(arena, u, x)
-            && !out.contains(&(u, cut))
-        {
-            out.push((u, cut));
+        if let Some((u, cut)) = found {
+            out.push((id, u, cut));
         }
         node.for_each_child(|c| stack.push(c));
     }
     out
+}
+
+/// [`cut_arguments`] without the arguments whose steps across the cut
+/// cancel ([`cancelling_log_steps`]): the arguments where `F` may jump
+/// inside the interval.
+fn crossing_arguments(arena: &mut Arena, anti: ExprId, x: ExprId) -> Vec<(ExprId, Cut)> {
+    let mut out = cut_arguments(arena, anti, x);
+    let cancelled = cancelling_log_steps(arena, anti);
+    out.retain(|&(u, cut)| !(cut == Cut::RealBelow(0.0) && cancelled.contains(&u)));
+    out
+}
+
+/// The arguments `u` of `ln`, `Ei`, `Ci`, `Chi` in `anti` whose steps
+/// across the negative axis cancel: `u` is the argument of no other
+/// function with a cut, of at least two of these nodes, each of them a
+/// factor of a term of `anti` multiplied out, and the coefficients of
+/// those terms add up to 0 exactly.  Each of these functions is `±iπ`
+/// plus the same function off the axis on either side (`ln(−t ± i0) = ln t
+/// ± iπ`; `Ei(u) − ln u`, `Ci(u) − ln u`, `Chi(u) − ln u` are entire), so
+/// the sum steps by `2πi·Σ cⱼ = 0` across the cut.  The integrator writes
+/// `Ei(u) − ln u + ln(x − c)` for an `Ei` whose argument crosses the cut
+/// (`integrate::ei_continuous_on_real_line`); up to 0.52 the crossing of
+/// `∫₀^∞ e⁻ˣ·sin x/(x² + 1) dx` passed the check only because it fell on a
+/// sample point (`x = 1`), where samples were not compared.  (Only for
+/// crossings inside an interval: on the axis itself `Ei` has its real
+/// value, not the principal `ln`'s `+iπ`.)
+fn cancelling_log_steps(arena: &mut Arena, anti: ExprId) -> Vec<ExprId> {
+    let nodes = cut_nodes(arena, anti);
+    let is_log_step = |arena: &Arena, n: ExprId| match arena.node(n) {
+        ExprNode::Ln(_) | ExprNode::Ei(_) | ExprNode::Ci(_) => true,
+        ExprNode::Lib(crate::base::libfn::LibFn::Chi, args) => args.len() == 1,
+        _ => false,
+    };
+    let log_steps: Vec<(ExprId, ExprId)> = nodes
+        .iter()
+        .filter(|&&(n, _, _)| is_log_step(arena, n))
+        .map(|&(n, u, _)| (u, n))
+        .collect();
+    let other: Vec<ExprId> = nodes
+        .iter()
+        .filter(|&&(n, _, _)| !is_log_step(arena, n))
+        .map(|&(_, u, _)| u)
+        .collect();
+    let mut candidates: Vec<ExprId> = Vec::new();
+    for &(u, _) in &log_steps {
+        let nodes = log_steps.iter().filter(|&&(v, _)| v == u).count();
+        if nodes >= 2 && !other.contains(&u) && !candidates.contains(&u) {
+            candidates.push(u);
+        }
+    }
+    if candidates.is_empty() {
+        return candidates;
+    }
+    let expanded = expand::expand(arena, anti);
+    let terms: Vec<ExprId> = match arena.node(expanded) {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![expanded],
+    };
+    candidates.retain(|&u| {
+        let nodes: Vec<ExprId> = log_steps
+            .iter()
+            .filter(|&&(v, _)| v == u)
+            .map(|&(_, n)| n)
+            .collect();
+        let mut coefficients: Vec<ExprId> = Vec::new();
+        for &t in &terms {
+            let factors: Vec<ExprId> = match arena.node(t) {
+                ExprNode::Mul(fs) => fs.to_vec(),
+                _ => vec![t],
+            };
+            let mut found: Option<usize> = None;
+            for (k, &f) in factors.iter().enumerate() {
+                if nodes.contains(&f) {
+                    if found.is_some() {
+                        return false;
+                    }
+                    found = Some(k);
+                } else if nodes.iter().any(|&n| walk::contains(arena, f, n)) {
+                    // Nested in another function: no simple step.
+                    return false;
+                }
+            }
+            if let Some(k) = found {
+                let rest: Vec<ExprId> = factors
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != k)
+                    .map(|(_, &f)| f)
+                    .collect();
+                coefficients.push(arena.mul(&rest));
+            }
+        }
+        if coefficients.len() < 2 {
+            return false;
+        }
+        let total = arena.add(&coefficients);
+        let total = safe_eval(arena, total);
+        arena.is_zero_structural(total)
+    });
+    candidates
 }
 
 /// Is `e` real at every real `x` where it is defined, under the declared
@@ -2301,6 +2420,7 @@ fn cut_crossing_excluded(
     }
     // A line through 0 meets the real axis only at 0: the branch point of
     // a cut `(−∞, 0]`, off a cut `[b, ∞)` with `b > 0`.
+    // `b` is the table's branch point of the function, not a computed value.
     let through_origin_ok = match cut {
         Cut::RealBelow(b) => b == 0.0,
         Cut::RealAbove(b) => b > 0.0,
@@ -2421,12 +2541,32 @@ fn meets_axis_off_the_cut(
     }
 }
 
+/// What [`numeric_cut_crossing`] found on a piece.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CutCrossing {
+    /// No crossing at the samples.
+    None,
+    /// A crossing of the cut near `x = t`, or `u(t)` on the cut.
+    Near(f64),
+    /// The side of the axis at the sample `x = t` is not decided.
+    Undecided(f64),
+}
+
 /// The first sample point of `[lo, hi]` ([`guard_grid`]) where the
 /// parameter-free `u` crosses `cut`: its transversal coordinate (`im u`
 /// for a cut on the real axis, `re u` for one on the imaginary axis)
 /// changes sign between two samples, at a point (linear interpolation) of
-/// the cut.  Coordinates within `1e-12·max(1, |u|)` of 0 count as 0 (no
-/// sign), so a real `u` with a rounding residue does not cross.
+/// the cut, or is 0 at a sample on the cut.
+///
+/// The sign of the transversal coordinate at a sample is certified
+/// ([`imaginary_part_sign`](crate::transforms::realness::imaginary_part_sign)),
+/// an exact 0 included; a sign that does not settle is
+/// [`CutCrossing::Undecided`].  Up to 0.52 a
+/// coordinate below `10⁻¹²·max(1, |u|)` counted as 0 and a sample at 0
+/// was skipped, so a crossing at a sample point or by a tiny imaginary
+/// part went unseen: `∫₀¹ ln((1 + i)x − 1 − i/2) dx` (the argument crosses
+/// the cut at the sample `x = 1/2`; `−0.5810 − 0.2461i`) was `−2.1518 −
+/// 1.8169i`.
 fn numeric_cut_crossing(
     arena: &mut Arena,
     u: ExprId,
@@ -2434,8 +2574,9 @@ fn numeric_cut_crossing(
     cut: Cut,
     lo: f64,
     hi: f64,
-) -> Option<f64> {
-    let mut prev: Option<(f64, f64, f64)> = None;
+) -> CutCrossing {
+    // The last sample off the axis: (x, transversal value, along value, side).
+    let mut prev: Option<(f64, f64, f64, SignSet)> = None;
     for t in guard_grid(lo, hi) {
         let Some(q) = crate::base::numeric::f64_to_ratio_exact(t) else {
             prev = None;
@@ -2452,31 +2593,51 @@ fn numeric_cut_crossing(
             prev = None;
             continue;
         }
-        let tiny = 1e-12 * z.norm().max(1.0);
-        let (s, c) = match cut {
-            Cut::ImaginaryOutside => (z.re, z.im),
-            _ => (z.im, z.re),
+        let (s, c, transversal) = match cut {
+            Cut::ImaginaryOutside => {
+                // `re u = im(i·u)`.
+                let i = arena.i_unit();
+                let iu = arena.mul(&[i, ut]);
+                (z.re, z.im, eval::eval(arena, iu))
+            }
+            _ => (z.im, z.re, ut),
         };
-        let s = if s.abs() <= tiny { 0.0 } else { s };
-        if let Some((t0, s0, c0)) = prev
-            && s0 != 0.0
-            && s != 0.0
-            && (s0 < 0.0) != (s < 0.0)
+        let on_cut = |along: f64| match cut {
+            Cut::RealBelow(bound) => along < bound,
+            Cut::RealAbove(bound) => along > bound,
+            Cut::RealOutside | Cut::ImaginaryOutside => along.abs() > 1.0,
+        };
+        let side = crate::transforms::realness::imaginary_part_sign(arena, transversal);
+        if side == SignSet::REAL {
+            return CutCrossing::Undecided(t);
+        }
+        if side == SignSet::ZERO {
+            // On the axis: on the cut it may cross there; off it, any
+            // crossing at this sample is off the cut.
+            if on_cut(c) {
+                return CutCrossing::Near(t);
+            }
+            prev = None;
+            continue;
+        }
+        if let Some((t0, s0, c0, side0)) = prev
+            && side0 != side
         {
-            let w = s0 / (s0 - s);
-            let along = c0 + w * (c - c0);
-            let on_cut = match cut {
-                Cut::RealBelow(bound) => along < bound,
-                Cut::RealAbove(bound) => along > bound,
-                Cut::RealOutside | Cut::ImaginaryOutside => along.abs() > 1.0,
+            // The certified signs differ; the `f64` values only place the
+            // crossing (a value that is 0 in `f64` puts it at its sample).
+            let w = if s0 == s {
+                0.5
+            } else {
+                (s0 / (s0 - s)).clamp(0.0, 1.0)
             };
-            if on_cut {
-                return Some(t0 + w * (t - t0));
+            let along = c0 + w * (c - c0);
+            if on_cut(along) {
+                return CutCrossing::Near(t0 + w * (t - t0));
             }
         }
-        prev = Some((t, s, c));
+        prev = Some((t, s, c, side));
     }
-    None
+    CutCrossing::None
 }
 
 /// `F` with every `atan(u)` whose argument may cross the cut of `atan`
@@ -2552,7 +2713,7 @@ fn check_branch_cuts(
     x: ExprId,
     p: &Piece,
 ) -> Result<(), SymplexError> {
-    let arguments = cut_arguments(arena, anti, x);
+    let arguments = crossing_arguments(arena, anti, x);
     if arguments.is_empty() {
         return Ok(());
     }
@@ -2574,10 +2735,18 @@ fn check_branch_cuts(
                 "cannot tell whether {shown} crosses the antiderivative's branch cut between symbolic bounds"
             )));
         };
-        if let Some(t) = numeric_cut_crossing(arena, u, x, cut, r.lower, r.upper) {
-            return Err(failed(format!(
-                "the antiderivative is discontinuous near x = {t:.6}, where {shown} crosses a branch cut"
-            )));
+        match numeric_cut_crossing(arena, u, x, cut, r.lower, r.upper) {
+            CutCrossing::None => {}
+            CutCrossing::Near(t) => {
+                return Err(failed(format!(
+                    "the antiderivative is discontinuous near x = {t:.6}, where {shown} crosses a branch cut"
+                )));
+            }
+            CutCrossing::Undecided(t) => {
+                return Err(failed(format!(
+                    "cannot tell on which side of the branch cut {shown} lies at x = {t:.6}"
+                )));
+            }
         }
     }
     Ok(())
@@ -2739,9 +2908,12 @@ fn endpoint_value(
         if let Some(numeric) = finite_value(arena, v, x)
             && (!singular || !has_jump_node(arena, anti))
         {
-            // A complex value at a point of a cut may be the principal
-            // value from the wrong side.
-            if numeric.is_some_and(|z| z.im != 0.0) && endpoint_on_a_cut(arena, anti, x, c) {
+            // A value at a point of a cut may be the principal value from
+            // the wrong side, a real one too: the principal `±iπ` of `ln u −
+            // ln w` cancel when `u`, `w` are on the cut, while the path may
+            // reach them from opposite sides (up to 0.52 only a value with
+            // an `f64` imaginary part was checked).
+            if numeric.is_some() && endpoint_on_a_cut(arena, anti, x, c) {
                 return None;
             }
             return Some(Extended::Finite(v));
@@ -2798,6 +2970,8 @@ fn endpoint_on_a_cut(arena: &mut Arena, anti: ExprId, x: ExprId, c: ExprId) -> b
         let Ok(z) = evalf::evalf_complex64(arena, at) else {
             return true;
         };
+        // The tolerance only widens a refusal: an end value near a cut is
+        // unknown.
         let tiny = 1e-12 * z.norm().max(1.0);
         let on_cut = match cut {
             Cut::RealBelow(b) => z.im.abs() <= tiny && z.re < b,
@@ -2888,9 +3062,13 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<Extended<Exp
 /// `γ`.  The antiderivative of `ln(x + c)/D(x)` is such a sum of `Li₂` and
 /// products of logarithms at the roots of `D`, whose `ln²u` terms cancel
 /// only in the sum: `∫₀^∞ ln(x + 1)/(x² + 1) dx = π·ln 2/4 + G` was refused up
-/// to 0.46.  The sums are decided exactly, or for a parameter-free `g` to
-/// 30 digits (the closed form then faces the quadrature check of
-/// [`integrate_definite`]).
+/// to 0.46.  The sums are decided exactly, or for a parameter-free `g` by a
+/// certified zero test ([`calculus_util::hidden_zero`]); a sum that is 0
+/// only to the precision reached is no proof.  Up to 0.52 a sum below
+/// `10⁻²⁵` at 30 digits counted as 0, and `∫₀^∞ (ln(x + 1)/(x² + 1) +
+/// e⁻⁶⁰·ln(x + 1)/(x + 2)) dx`, which diverges (its `ln²u` coefficient is
+/// `e⁻⁶⁰/2`), was `1.4604`: the quadrature check of [`integrate_definite`]
+/// does not run on an infinite range.
 fn log_polylog_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<ExprId> {
     let has_target = walk::post_order_ids(arena, g).into_iter().any(|id| {
         matches!(arena.node(id), ExprNode::Lib(crate::base::libfn::LibFn::PolyLog, args)
@@ -3000,10 +3178,9 @@ fn log_polylog_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<ExprId> 
         let s = safe_eval(arena, s);
         arena.is_zero_structural(s)
             || (walk::free_symbols(arena, s).is_empty()
-                && evalf::evalf_complex(arena, s, 30)
-                    .ok()
-                    .and_then(|v| evalf::abs_to_f64(&v))
-                    .is_some_and(|m| m < 1e-25))
+                && calculus_util::hidden_zero(arena, s)
+                    .proven()
+                    .is_some_and(|t| t.is_true()))
     };
     if !vanishes(arena, &sq) || !vanishes(arena, &lin) {
         return None;
@@ -3043,12 +3220,23 @@ fn asymptotic_log_shift(
     if a.norm().is_nan() || a.norm() <= 0.0 {
         return None;
     }
-    if a.re < 0.0 && a.im.abs() <= 1e-12 * a.norm() {
+    // The axis and the side are decided by certified signs: up to 0.52 an
+    // imaginary part below `10⁻¹²` of the value counted as 0, so a slope
+    // `−1 − i·ε` was on the cut (`ln|a| + iπ` for the `ln|a| − iπ` it tends
+    // to), and an intercept `−i·ε` on the axis.
+    let slope_side = crate::transforms::realness::imaginary_part_sign(arena, slope);
+    if slope_side == SignSet::REAL {
+        return None;
+    }
+    if slope_side == SignSet::ZERO && a.re < 0.0 {
         if !walk::free_symbols(arena, intercept).is_empty() {
             return None;
         }
-        let b = evalf::evalf_complex64(arena, intercept).ok()?;
-        let on_axis = b.im.abs() <= 1e-12 * b.norm().max(1.0);
+        let side = crate::transforms::realness::imaginary_part_sign(arena, intercept);
+        if side == SignSet::REAL {
+            return None;
+        }
+        let on_axis = side == SignSet::ZERO;
         if avoid_positive_axis && on_axis {
             return None;
         }
@@ -3056,7 +3244,7 @@ fn asymptotic_log_shift(
         let ln_abs = arena.ln(abs_a);
         let pi = arena.pi();
         let i = arena.i_unit();
-        let sg = arena.int(if b.im < 0.0 && !on_axis { -1 } else { 1 });
+        let sg = arena.int(if side == SignSet::NEGATIVE { -1 } else { 1 });
         let i_pi = arena.mul(&[sg, i, pi]);
         return Some(arena.add(&[ln_abs, i_pi]));
     }
@@ -3132,6 +3320,7 @@ fn numeric_limit_sanity(arena: &mut Arena, g: ExprId, u: ExprId, l: ExprId) -> b
     let scale = lv.abs().max(1.0);
     let d3 = (g3 - lv).abs();
     let d6 = (g6 - lv).abs();
+    // A sanity check that can only reject the engine's limit.
     if d6 <= 1e-3 * scale {
         return true;
     }
@@ -3725,18 +3914,22 @@ fn linear_log_group(
         if a.norm().is_nan() || a.norm() <= 0.0 {
             continue;
         }
-        let tiny = 1e-12 * a.norm();
-        let value = if a.re < 0.0 && a.im.abs() <= tiny {
+        // Along the negative axis (`im a` proved 0) or off it, decided by
+        // certified signs (see [`asymptotic_log_shift`]).
+        let slope_side = crate::transforms::realness::imaginary_part_sign(arena, slope);
+        if slope_side == SignSet::REAL {
+            continue;
+        }
+        let value = if slope_side == SignSet::ZERO && a.re < 0.0 {
             // Along the negative axis: ln|a| + ln u ± iπ by the side of b.
-            let below = walk::free_symbols(arena, intercept).is_empty()
-                && evalf::evalf_complex64(arena, intercept)
-                    .is_ok_and(|b| b.im < -1e-12 * b.norm().max(1.0));
-            let above_or_on = walk::free_symbols(arena, intercept).is_empty()
-                && evalf::evalf_complex64(arena, intercept)
-                    .is_ok_and(|b| b.im >= -1e-12 * b.norm().max(1.0));
-            if !below && !above_or_on {
+            if !walk::free_symbols(arena, intercept).is_empty() {
                 return none;
             }
+            let side = crate::transforms::realness::imaginary_part_sign(arena, intercept);
+            if side == SignSet::REAL {
+                return none;
+            }
+            let below = side == SignSet::NEGATIVE;
             let abs_a = arena.neg(slope);
             let ln_abs = arena.ln(abs_a);
             let pi = arena.pi();
@@ -3777,6 +3970,8 @@ enum SineIntegral {
 /// must be provably positive or provably non-real (a parameter-free value
 /// whose imaginary part is not negligible).
 fn integral_function_at(arena: &mut Arena, kind: SineIntegral, v: ExprId) -> LimVal {
+    // An imaginary part above `10⁻⁹` of a 16-digit value is certified;
+    // a smaller one refuses.
     let off_cut = kind == SineIntegral::Si
         || sign_of(arena, v) == Some(Ordering::Greater)
         || (walk::free_symbols(arena, v).is_empty()
@@ -3795,8 +3990,8 @@ fn integral_function_at(arena: &mut Arena, kind: SineIntegral, v: ExprId) -> Lim
 
 /// The sign of `im c` for a constant `c`: `0` when `c` is provably real,
 /// otherwise from the assumptions on the imaginary part of the real/imaginary
-/// split, or numerically for a parameter-free `c` whose imaginary part is
-/// not negligible.
+/// split, or for a parameter-free `c` by certified evaluation
+/// ([`imaginary_part_sign`](crate::transforms::realness::imaginary_part_sign)).
 ///
 /// A single atom when decided, otherwise [`SignSet::REAL`] (an imaginary
 /// part is real; its sign is unknown).
@@ -3805,17 +4000,7 @@ fn imaginary_sign(arena: &mut Arena, c: ExprId) -> SignSet {
         return SignSet::ZERO;
     }
     if walk::free_symbols(arena, c).is_empty() {
-        let Ok(z) = evalf::evalf_complex64(arena, c) else {
-            return SignSet::REAL;
-        };
-        if !z.im.is_finite() || z.im.abs() <= 1e-9 * z.norm().max(1.0) {
-            return SignSet::REAL;
-        }
-        return if z.im > 0.0 {
-            SignSet::POSITIVE
-        } else {
-            SignSet::NEGATIVE
-        };
+        return crate::transforms::realness::imaginary_part_sign(arena, c);
     }
     let parts = crate::base::complex::decompose(arena, c);
     if !parts.exact {
@@ -6319,6 +6504,7 @@ fn gk15_with(f: &dyn Fn(f64) -> f64, a: f64, b: f64, raw: bool) -> (f64, f64, f6
     let result = k15 * half;
     let resasc = resasc * half.abs();
     let mut err = ((k15 - g7) * half).abs();
+    // QUADPACK's error heuristic (an `f64` estimate, judged by the caller).
     if !raw && resasc != 0.0 && err != 0.0 {
         err = resasc * (200.0 * err / resasc).powf(1.5).min(1.0);
     }
@@ -6579,6 +6765,7 @@ fn smoothed_pieces(
     let plain = |g: &dyn Fn(f64) -> f64, lo: f64, hi: f64, x: Option<&dyn Fn(f64) -> f64>| {
         quadrature_finite_report(g, lo, hi, &share, raw, Floor::Relative(x))
     };
+    // The bounds pick the smoothing map; the estimate is right either way.
     let (first, second) = match (a.is_finite(), b.is_finite()) {
         (true, true) if a == 0.0 => (smooth(f, 0.5 * b), plain(f, 0.5 * b, b, None)),
         (true, true) if b == 0.0 => {
@@ -7005,6 +7192,7 @@ fn locate_crossings(
         let (v0, v1, v2) = (vs[j - 1], vs[j], vs[j + 1]);
         let a = ((v2 - v1) / (t2 - t1) - (v1 - v0) / (t1 - t0)) / (t2 - t0);
         let b = (v1 - v0) / (t1 - t0) - a * (t0 + t1);
+        // A flat parabola refines nothing (the guide only).
         if a == 0.0 || !a.is_finite() || !b.is_finite() {
             continue;
         }
@@ -7063,6 +7251,7 @@ fn locate_crossings(
             if !between && !close(lv, level) && !close(rv, level) {
                 continue;
             }
+            // The levels are integers, exactly.
             let h = if level == 0.0 {
                 g
             } else {
@@ -7077,6 +7266,7 @@ fn locate_crossings(
             spend(budget)?;
             let sl = crossing_value(arena, h, x, l).ok_or_else(unlocatable)?;
             let sr = crossing_value(arena, h, x, r).ok_or_else(unlocatable)?;
+            // `crossing_value` is 0 only for a certified zero.
             if sl == 0.0 {
                 // On the level: a crossing unless it is the lower end.
                 if k > 0 && !out.iter().any(|&(p, _)| p == l) {
@@ -7132,6 +7322,7 @@ fn narrow_crossing(
     max_steps: u32,
     budget: &mut usize,
 ) -> Result<Option<(ExprId, f64)>, SymplexError> {
+    // Values of `crossing_value`: 0 only for a certified zero.
     if (lv < 0.0) == (rv < 0.0) || lv == 0.0 || rv == 0.0 {
         return Ok(None);
     }
@@ -7228,6 +7419,7 @@ fn peak_points(arena: &mut Arena, f: ExprId, x: ExprId, lo: f64, hi: f64) -> Vec
         } else {
             centre.abs().max(1.0)
         };
+        // Where the quadrature splits (a guide).
         half_width != 0.0 && centre > lo && centre < hi && half_width.abs() < 0.1 * scale
     };
     // A peak at `c` of half-width `w` splits at `c` and at `c ± 10w`: the
@@ -7327,6 +7519,7 @@ pub(crate) fn quadrature_split_points(
             .map(|(_, v)| v)
             .collect();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    // Cuts of an `f64` quadrature closer than its resolution are one cut.
     points.dedup_by(|a, b| (*a - *b).abs() <= 1e-14 * a.abs().max(1.0));
     Ok(points)
 }
@@ -7551,6 +7744,7 @@ fn smoothed<'a>(f: &'a dyn Fn(f64) -> f64, a: f64, b: f64) -> impl Fn(f64) -> f6
     let width = b - a;
     move |t: f64| {
         let ds = 30.0 * t * t * (1.0 - t) * (1.0 - t);
+        // The map's derivative is 0 at the ends: the weight is 0 there.
         if ds == 0.0 {
             return 0.0;
         }
@@ -7648,6 +7842,8 @@ fn quadrature_finite_report(
     // Segments narrower than this cannot be bisected meaningfully: the
     // Kronrod nodes would round onto the endpoints in `f64`.
     let min_width = 1e-12 * (b - a).abs().max(a.abs()).max(b.abs()).max(1.0);
+    // The resolution of `f64` nodes: a segment past it is unresolved and the
+    // caller refuses or falls back.
     let too_narrow = |lo: f64, hi: f64| -> bool {
         let width = (hi - lo).abs();
         match floor {

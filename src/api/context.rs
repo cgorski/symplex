@@ -276,7 +276,11 @@ impl Context {
     /// Query a mathematical property of an expression.
     ///
     /// Returns `Some(true)` if the property is provably true,
-    /// `Some(false)` if provably false, or `None` if unknown.
+    /// `Some(false)` if provably false, or `None` if unknown.  The
+    /// structural answer of [`Ex::query`](crate::api::expr::Expr::query)
+    /// (without its value-based decisions for constants), in the same two
+    /// readings: realness and signs where the expression is defined,
+    /// finiteness at every point, poles included.
     ///
     /// # Panics
     ///
@@ -298,7 +302,8 @@ impl Context {
         inner
             .assumptions
             .lock()
-            .query(&inner.arena, self.own_id(ex), prop)
+            .query_public(&inner.arena, self.own_id(ex), prop)
+            .to_option()
     }
 
     /// Creates an integer expression.

@@ -785,7 +785,24 @@ fn eval_node(
         ExprNode::ConditionSet(var, cond) => {
             let c = crate::transforms::logic::simplify_bool(arena, cond);
             if c == arena.bool_true {
-                SetVal::Exact(RankSet::full())
+                // Every value of `var` in its declared domain: for a plain
+                // symbol the universal set, not the real line `RankSet::full`
+                // stands for (up to 0.52 `ConditionSet(x, y ≥ 0)` at `y = 1`
+                // simplified to `(−∞, ∞)` for a complex `x`).
+                match declared_domain_set(arena, var, false) {
+                    DeclaredDomain::Unrestricted => SetVal::Sym(arena.universal_set),
+                    DeclaredDomain::Set(d) => {
+                        let (ninf, inf) = (arena.neg_infinity, arena.infinity);
+                        if d == arena.interval(ninf, inf, IntervalKind::Open) {
+                            SetVal::Exact(RankSet::full())
+                        } else {
+                            SetVal::Sym(d)
+                        }
+                    }
+                    DeclaredDomain::Unsupported => {
+                        SetVal::Sym(arena.intern(ExprNode::ConditionSet(var, c)))
+                    }
+                }
             } else if c == arena.bool_false {
                 SetVal::Exact(RankSet::empty())
             } else if c == cond {
@@ -2933,6 +2950,32 @@ pub(crate) fn restrict_set_to_domain(
     out.extend(decided_sets);
     match domain {
         DeclaredDomain::Set(d) => {
+            // For a real `var`, a member real exactly under a condition on
+            // the parameters (`±√y` for a real `y`: `y ≥ 0`) is written
+            // with it: `{√y, −√y} ∩ ConditionSet(x, y ≥ 0)`, the members if
+            // `y ≥ 0` and `∅` otherwise (up to 0.52 `ℝ ∩ {√y, −√y}`, the
+            // same set less legibly).
+            let (ninf, inf) = (arena.neg_infinity, arena.infinity);
+            let line = arena.interval(ninf, inf, IntervalKind::Open);
+            if d == line {
+                let mut groups: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+                let mut plain: Vec<ExprId> = Vec::with_capacity(undecided.len());
+                for e in std::mem::take(&mut undecided) {
+                    match crate::transforms::solve::realness_condition(arena, e) {
+                        Some(cond) => match groups.iter_mut().find(|g| g.0 == cond) {
+                            Some(g) => g.1.push(e),
+                            None => groups.push((cond, vec![e])),
+                        },
+                        None => plain.push(e),
+                    }
+                }
+                undecided = plain;
+                for (cond, members) in groups {
+                    let members = arena.finite_set(&members);
+                    let when = arena.intern(ExprNode::ConditionSet(var, cond));
+                    out.push(arena.set_intersection(&[members, when]));
+                }
+            }
             if !undecided.is_empty() {
                 rest.push(arena.finite_set(&undecided));
             }

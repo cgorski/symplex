@@ -266,6 +266,8 @@ fn heurisch_attempt(
 
         let abs_diff = (orig_val - deriv_val).abs();
         let scale = orig_val.abs().max(1.0);
+        // A pre-filter: `integrate` judges the answer with its certified
+        // FTC check (`accept_or_unevaluated`).
         if abs_diff / scale > 1e-6 {
             verified = false;
             break;
@@ -496,6 +498,7 @@ fn eval_monomial_deriv(comp_vals: &[f64], comp_deriv_vals: &[f64], monomial: &Mo
         //   e_i · (V_i^{e_i - 1} / V_i^{e_i}) · full_product · dV_i/dx
         //   = e_i · (1/V_i) · full_product · dV_i/dx
         //   = e_i · full_product / V_i · dV_i/dx
+        // Avoids dividing by an underflowed value (numerics of a guess).
         if comp_vals[i].abs() < 1e-300 {
             // Near-zero component value: compute without dividing.
             let mut partial = 1.0;
@@ -727,7 +730,8 @@ fn rationalize(x: f64, max_denom: i64) -> Option<(i64, i64)> {
         return None;
     }
 
-    // Handle zero.
+    // Handle zero.  (Rational guesses: the candidate built from them is
+    // checked, here and by `integrate`.)
     if x.abs() < 1e-12 {
         return Some((0, 1));
     }

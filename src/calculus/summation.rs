@@ -419,6 +419,8 @@ fn abs_less_than_one(arena: &mut Arena, e: ExprId) -> Truth {
         return Truth::False;
     }
     let a = f.abs();
+    // A margin far above the error of the certified 16-digit value; inside
+    // it, undecided.
     if a < 1.0 - 1e-9 {
         Truth::True
     } else if a > 1.0 + 1e-9 {
@@ -541,6 +543,7 @@ fn power_of_real_is_not_one(arena: &mut Arena, e: ExprId) -> bool {
             let base_ok = match as_rat(arena, b) {
                 Some(r) => r.is_positive() && !r.is_one(),
                 None => {
+                    // `b ≠ 1` certified (a 16-digit value beyond the margin).
                     walk::free_symbols(arena, b).is_empty()
                         && crate::transforms::evalf::eval_const_f64(arena, b)
                             .is_some_and(|f| f > 0.0 && (f - 1.0).abs() > 1e-9)
@@ -2742,7 +2745,8 @@ fn geometric_poly_finite(
     if as_rat(arena, y).is_some() || const_value(arena, y).is_some() {
         return Some(formula);
     }
-    // A real constant ratio away from 1 (`e²`, `e⁻¹`) needs no case split.
+    // A real constant ratio away from 1 (`e²`, `e⁻¹`) needs no case split
+    // (`y ≠ 1` certified: a 16-digit value beyond the margin).
     if walk::free_symbols(arena, y).is_empty()
         && crate::transforms::evalf::eval_const_f64(arena, y)
             .is_some_and(|f| (f - 1.0).abs() > 1e-9)

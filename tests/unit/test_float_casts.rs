@@ -42,7 +42,6 @@ const ROUNDED_ALLOWLIST: &[(&str, usize)] = &[
     ("base/bernoulli.rs", 2),
     ("base/canon.rs", 1),
     ("base/dense_f64.rs", 1),
-    ("calculus/limit.rs", 1),
     ("domains/ntheory.rs", 2),
     ("domains/stats/anova.rs", 3),
     ("domains/stats/hypothesis.rs", 2),

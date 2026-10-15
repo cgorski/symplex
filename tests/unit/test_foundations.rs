@@ -373,8 +373,11 @@ fn binomial_k_greater_than_n_is_zero() {
 #[test]
 fn binomial_negative_stays_unevaluated() {
     // Since 0.37 a negative upper index with a non-negative lower one folds
-    // to the generalised binomial (SymPy: `binomial(-1, 2)` → `1`); both
-    // negative stays unevaluated (SymPy 0, mpmath 28 for `C(-7, -9)`).
+    // to the generalised binomial (SymPy: `binomial(-1, 2)` → `1`).  Both
+    // negative stayed unevaluated up to 0.52 (SymPy 0, mpmath 28 for
+    // `C(-7, -9)`); since 0.53 a negative integer lower index gives 0 for
+    // every upper one (Graham–Knuth–Patashnik, SymPy), in `eval`, `evalf`
+    // and `compile` alike.
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let neg = arena.int(-1);
@@ -387,7 +390,7 @@ fn binomial_negative_stays_unevaluated() {
         let expr = arena.binomial(neg7, neg9);
         let result = arena.eval_expr(expr);
         let s = arena.display(result).to_string();
-        assert!(s.contains("C("), "C(-7,-9) should stay unevaluated: {s}");
+        assert_eq!(s, "0", "C(-7,-9) is 0 by the convention");
     });
 }
 

@@ -786,6 +786,8 @@ fn limit_comparison_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option
     if !l1v.is_finite() {
         return None;
     }
+    // A certified digit makes the limit nonzero; a smaller one is decided
+    // below only when exactly 0.
     if l1v.abs() > 1e-12 {
         let v = value_at(arena, k_times, var, 1_000_000)?;
         return ((v - l1v).abs() <= 0.5 * l1v.abs()).then_some(Convergence::Diverges);

@@ -281,16 +281,27 @@ fn bessel_functions_at_the_turning_point() {
 /// `-8.16365076190089e-670`; `mp.dps=400` (and 800): `re(polylog(1000,3))-3`
 /// = `8.39937256652897e-301`, `polylog(1038, mpf(-9)/10)+mpf(9)/10` =
 /// `2.75010654509099e-313`.
+///
+/// Since 0.53 the value prints its certified imaginary part (D3: a part is
+/// left out only when it is 0 within its error); up to 0.52 `polylog(300,
+/// 3)` printed `3`, `polylog(10000, 3)` `3` and `polylog(1000, 19/10)`
+/// `1.9`.  mpmath (dps 50 and 80) of the closed form `−π·(ln z)^(s−1)/Γ(s)`:
+/// `s = 10000, z = 3` → `-2.796125038803716e-35247`; `s = 1000, z = 19/10`
+/// → `-3.320813646712525e-2757`; `s = 1000, z = 3` →
+/// `-4.967224248207288e-2524`.
 #[test]
 fn polylog_of_a_large_order() {
     let ctx = Context::new();
     for (src, want) in [
-        ("polylog(300, 3)", "3"),
-        ("polylog(10000, 3)", "3"),
-        ("polylog(1000, 19/10)", "1.9"),
+        ("polylog(300, 3)", "3 - 5.02295632264378e-600*i"),
+        ("polylog(10000, 3)", "3 - 2.79612503880372e-35247*i"),
+        ("polylog(1000, 19/10)", "1.9 - 3.32081364671253e-2757*i"),
         ("im(polylog(300, 3))", "-5.02295632264378e-600"),
         ("im(polylog(300, 19/10))", "-8.16365076190089e-670"),
-        ("polylog(1000, 3) - 3", "8.39937256652897e-301"),
+        (
+            "polylog(1000, 3) - 3",
+            "8.39937256652897e-301 - 4.96722424820729e-2524*i",
+        ),
         ("polylog(1038, -9/10) + 9/10", "2.75010654509099e-313"),
     ] {
         assert_eq!(dec(&ctx, src, 15).unwrap(), want, "{src}");
