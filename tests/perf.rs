@@ -4,5 +4,7 @@
 
 #[path = "perf/perf_analysis.rs"]
 mod perf_analysis;
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "perf/simplify_perf_test.rs"]
 mod simplify_perf_test;

@@ -2,6 +2,8 @@
 //! module per track). Run one module with e.g.
 //! `cargo test --test v18 v18_layout::`.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v18/v18_cox.rs"]
 mod v18_cox;
 #[path = "v18/v18_layout.rs"]

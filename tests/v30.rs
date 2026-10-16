@@ -4,6 +4,8 @@
 //! the open items of the 0.30 hand-off.  Every reference value cites the
 //! oracle call that produced it.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v30/v30_evalf.rs"]
 mod v30_evalf;
 #[path = "v30/v30_hunts.rs"]

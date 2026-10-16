@@ -2,6 +2,8 @@
 //! regressions found by the 0.21 differential audit (simplify, series,
 //! apart, integrate, numdist, solve) and the coverage gaps it exposed.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v21/v21_apart.rs"]
 mod v21_apart;
 #[path = "v21/v21_coverage.rs"]

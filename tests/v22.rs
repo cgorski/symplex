@@ -4,6 +4,8 @@
 //! The findings come from `fuzz_simplify` comparing complex values at real
 //! and complex points.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v22/v22_evalf.rs"]
 mod v22_evalf;
 #[path = "v22/v22_integrate.rs"]

@@ -3,6 +3,8 @@
 //! `cargo test --test v02 v02_sets_algebra::`.
 
 mod common;
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 
 #[path = "v02/v02_backends_c.rs"]
 mod v02_backends_c;

@@ -2,6 +2,8 @@
 //! module per review track). Run one module with e.g.
 //! `cargo test --test v11 v11_special_fixes::`.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v11/v11_calculus_algebraic_fixes.rs"]
 mod v11_calculus_algebraic_fixes;
 #[path = "v11/v11_output_fixes.rs"]

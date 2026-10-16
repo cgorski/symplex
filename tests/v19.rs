@@ -1,5 +1,7 @@
 //! Feature tests written alongside the 0.20 APIs (`tests/v19/*.rs`).
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v19/v19_kernel.rs"]
 mod v19_kernel;
 #[path = "v19/v19_mnlogit.rs"]

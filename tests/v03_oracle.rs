@@ -4,6 +4,8 @@
 
 #[path = "v02_oracle_common/mod.rs"]
 mod oracle_common;
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 
 #[path = "v03_oracle/v03_oracle_linprog.rs"]
 mod v03_oracle_linprog;

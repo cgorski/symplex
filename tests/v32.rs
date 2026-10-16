@@ -3,6 +3,8 @@
 //! 0.32 hand-off.  Every reference value cites the oracle call that
 //! produced it.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v32/v32_norms.rs"]
 mod v32_norms;
 #[path = "v32/v32_series.rs"]

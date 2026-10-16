@@ -2,6 +2,8 @@
 //! `tests/v02_oracle_*.rs` file). The shared runner
 //! (`tests/v02_oracle_common/mod.rs`) is included here once.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 mod v02_oracle_common;
 
 #[path = "v02_oracle/v02_oracle_calculus.rs"]

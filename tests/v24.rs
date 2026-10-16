@@ -4,6 +4,8 @@
 //! that keep any integrand or expansion from exhausting memory, panics
 //! reachable from user input, and `(a^b)^c = a^(bc)` for integer `c`.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v24/v24_canon.rs"]
 mod v24_canon;
 #[path = "v24/v24_integrate.rs"]

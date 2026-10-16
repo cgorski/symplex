@@ -4,6 +4,8 @@
 //! are intentionally duplicated across rounds — see `tests/README.md`.
 
 mod common;
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 
 #[path = "legacy/bugfinder1_edge_cases.rs"]
 mod bugfinder1_edge_cases;

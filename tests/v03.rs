@@ -2,6 +2,8 @@
 //! former `tests/v03_*.rs` file). Run one module with e.g.
 //! `cargo test --test v03 v03_linprog::`.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v03/v03_assumptions_poly.rs"]
 mod v03_assumptions_poly;
 #[path = "v03/v03_certificates.rs"]

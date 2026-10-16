@@ -3,11 +3,15 @@
 //! `cargo test --test unit test_known_answers::`.
 
 mod common;
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 
 #[path = "unit/test_advanced.rs"]
 mod test_advanced;
 #[path = "unit/test_advanced_control.rs"]
 mod test_advanced_control;
+#[path = "unit/test_alloc_bounds.rs"]
+mod test_alloc_bounds;
 #[path = "unit/test_alpha_fixes.rs"]
 mod test_alpha_fixes;
 #[path = "unit/test_api_coverage.rs"]
@@ -66,6 +70,8 @@ mod test_cycle7_8;
 mod test_cycle9_10;
 #[path = "unit/test_data_export.rs"]
 mod test_data_export;
+#[path = "unit/test_decimal_roundtrip.rs"]
+mod test_decimal_roundtrip;
 #[path = "unit/test_definite_poly.rs"]
 mod test_definite_poly;
 #[path = "unit/test_delta_laplace_depth.rs"]
@@ -74,6 +80,8 @@ mod test_delta_laplace_depth;
 mod test_dim_macro;
 #[path = "unit/test_display_quality.rs"]
 mod test_display_quality;
+#[path = "unit/test_divisors.rs"]
+mod test_divisors;
 #[path = "unit/test_dynamics.rs"]
 mod test_dynamics;
 #[path = "unit/test_dynamics_scale.rs"]
@@ -286,6 +294,8 @@ mod test_solve_cancel;
 mod test_solve_trig;
 #[path = "unit/test_solver_utils.rs"]
 mod test_solver_utils;
+#[path = "unit/test_special_atoms.rs"]
+mod test_special_atoms;
 #[path = "unit/test_special_elem.rs"]
 mod test_special_elem;
 #[path = "unit/test_special_extended.rs"]
@@ -316,6 +326,8 @@ mod test_sturm;
 mod test_sum_closed;
 #[path = "unit/test_sympy_cross_validation.rs"]
 mod test_sympy_cross_validation;
+#[path = "unit/test_timing_asserts.rs"]
+mod test_timing_asserts;
 #[path = "unit/test_trig_hyp.rs"]
 mod test_trig_hyp;
 #[path = "unit/test_trig_power_integ.rs"]

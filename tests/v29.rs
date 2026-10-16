@@ -6,6 +6,8 @@
 //! campaign, and the open items of the 0.29 hand-off.  Every reference
 //! value cites the oracle call that produced it.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v29/v29_algebra.rs"]
 mod v29_algebra;
 #[path = "v29/v29_api_domains.rs"]

@@ -2,6 +2,8 @@
 //! module per feature). Run one module with e.g.
 //! `cargo test --test v04 v04_polyhedron::`.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v04/v04_polyhedron.rs"]
 mod v04_polyhedron;
 #[path = "v04/v04_polytope.rs"]

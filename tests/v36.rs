@@ -2,6 +2,8 @@
 //! (`tests/v36/*.rs`): one file per workstream.  Every reference value
 //! cites the oracle call that produced it.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v36/v36_b1_definite.rs"]
 mod v36_b1_definite;
 #[path = "v36/v36_b2_limits.rs"]
@@ -74,6 +76,18 @@ mod v36_s15l3_tests;
 mod v36_s15l4_models;
 #[path = "v36/v36_s15l5_numerics.rs"]
 mod v36_s15l5_numerics;
+#[path = "v36/v36_s15m1_value_class.rs"]
+mod v36_s15m1_value_class;
+#[path = "v36/v36_s15m2_divisors.rs"]
+mod v36_s15m2_divisors;
+#[path = "v36/v36_s15m3_alloc.rs"]
+mod v36_s15m3_alloc;
+#[path = "v36/v36_s15m4_perf.rs"]
+mod v36_s15m4_perf;
+#[path = "v36/v36_s15m5_values.rs"]
+mod v36_s15m5_values;
+#[path = "v36/v36_s15n1_limit_power.rs"]
+mod v36_s15n1_limit_power;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]

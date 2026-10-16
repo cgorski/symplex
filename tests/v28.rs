@@ -6,6 +6,8 @@
 //! load-robust timing tests, panics on caller input, binder-aware
 //! substitution and the evaluator's error bounds.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v28/v28_api.rs"]
 mod v28_api;
 #[path = "v28/v28_audit_2a.rs"]

@@ -2,6 +2,8 @@
 //! hunt after 0.38.  Every reference value cites the oracle call that
 //! produced it.
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v35/v35_applied.rs"]
 mod v35_applied;
 #[path = "v35/v35_assumptions.rs"]

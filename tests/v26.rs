@@ -4,6 +4,8 @@
 //! mpmath, every bug found pinned against its oracle (each value cites the
 //! call that produced it).
 
+#[path = "perf_assert/mod.rs"]
+mod perf_assert;
 #[path = "v26/v26_hypothesis.rs"]
 mod v26_hypothesis;
 #[path = "v26/v26_numdist.rs"]
