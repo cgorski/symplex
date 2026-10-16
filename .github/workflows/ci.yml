@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # On demand, e.g. on a release tag whose push run a later push cancelled.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref.
 concurrency:
