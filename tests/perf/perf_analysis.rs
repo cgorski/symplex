@@ -1,14 +1,17 @@
 //! Performance analysis: Does a 10× slowdown to `.simplify()` actually matter?
 //!
-//! This test answers the question with REAL wall-clock numbers, not theory.
+//! This test answers the question with REAL measured numbers (thread CPU
+//! time, `perf_assert::CpuTimer`), not theory.
 //!
 //! This is a **benchmark, not a test** (prints timings, asserts nothing,
 //! ~40 s in a debug build) and is therefore `#[ignore]`d by default.  Run with:
 //!   cd symplex && cargo test --test perf perf_analysis:: --release -- --ignored --nocapture 2>&1
 
 use std::hint::black_box;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -19,11 +22,11 @@ fn bench_n<F: FnMut()>(n: u32, mut f: F) -> Duration {
     for _ in 0..5 {
         f();
     }
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for _ in 0..n {
         f();
     }
-    start.elapsed() / n
+    start.cpu() / n
 }
 
 /// Time a closure over ITERATIONS runs, returning average.
@@ -73,7 +76,7 @@ fn ratio_str(a: Duration, b: Duration) -> String {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "benchmark: prints wall-clock timings only (~40 s in debug); run with --ignored --nocapture --release"]
+#[ignore = "benchmark: prints timings only (thread CPU time) (~40 s in debug); run with --ignored --nocapture --release"]
 fn perf_analysis_all() {
     println!();
     println!("══════════════════════════════════════════════════════════════════════════");
@@ -341,11 +344,11 @@ fn perf_analysis_all() {
             });
             report("subs+eval+simplify                       x1000 avg", avg);
 
-            let start = Instant::now();
+            let start = CpuTimer::start();
             for _ in 0..100 {
                 let _ = black_box(expr.subs(&x, &five).eval().simplify());
             }
-            let total = start.elapsed();
+            let total = start.cpu();
             println!("  => 100 calls (ODE-solver-like):  {}", fmt_duration(total));
         }
 
@@ -363,11 +366,11 @@ fn perf_analysis_all() {
             });
             report("trig_id.subs(pi/4).eval.simplify         x1000 avg", avg);
 
-            let start = Instant::now();
+            let start = CpuTimer::start();
             for _ in 0..100 {
                 let _ = black_box(expr.subs(&x, &pi_over_4).eval().simplify());
             }
-            let total = start.elapsed();
+            let total = start.cpu();
             println!("  => 100 calls (ODE-solver-like):  {}", fmt_duration(total));
         }
 
@@ -779,13 +782,13 @@ fn perf_analysis_all() {
             let _ = black_box(expr.subs(&x, &five).eval().simplify());
         }
 
-        let start = Instant::now();
+        let start = CpuTimer::start();
         for _ in 0..100 {
             for expr in &exprs {
                 let _ = black_box(expr.subs(&x, &five).eval().simplify());
             }
         }
-        let elapsed = start.elapsed();
+        let elapsed = start.cpu();
         println!(
             "  Total for 500 subs+eval+simplify:      {}",
             fmt_duration(elapsed)
@@ -812,13 +815,13 @@ fn perf_analysis_all() {
             let _ = black_box(expr.subs(&x, &five).eval().simplify());
         }
 
-        let start = Instant::now();
+        let start = CpuTimer::start();
         for _ in 0..100 {
             for expr in &exprs {
                 let _ = black_box(expr.subs(&x, &five).eval().simplify());
             }
         }
-        let elapsed = start.elapsed();
+        let elapsed = start.cpu();
         println!(
             "  Total for 500 subs+eval+full_simplify: {}",
             fmt_duration(elapsed)
@@ -833,23 +836,23 @@ fn perf_analysis_all() {
         symplex::syms!(ctx; x, y);
 
         let ode1 = expr!(ctx, diff(y, x) - y);
-        let start = Instant::now();
+        let start = CpuTimer::start();
         let _ = black_box(ode1.solve_ode(&y, &x));
-        let t1 = start.elapsed();
+        let t1 = start.cpu();
         println!("  y' = y:                    {}", fmt_duration(t1));
 
         let dy = y.formal_diff(&x);
         let d2y = dy.formal_diff(&x);
         let ode2 = &d2y + &y;
-        let start = Instant::now();
+        let start = CpuTimer::start();
         let _ = black_box(ode2.solve_ode(&y, &x));
-        let t2 = start.elapsed();
+        let t2 = start.cpu();
         println!("  y'' + y = 0:               {}", fmt_duration(t2));
 
         let ode3 = &(&d2y + &(&dy * 3)) + &(&y * 2);
-        let start = Instant::now();
+        let start = CpuTimer::start();
         let _ = black_box(ode3.solve_ode(&y, &x));
-        let t3 = start.elapsed();
+        let t3 = start.cpu();
         println!("  y'' + 3y' + 2y = 0:       {}", fmt_duration(t3));
     }
 

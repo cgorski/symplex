@@ -18,7 +18,7 @@
 //! digits for the tails scipy cannot represent, Python `fractions.Fraction`
 //! / `math.comb` for exact rationals, and hand counts for the life tables.
 
-use std::time::Instant;
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
@@ -34,6 +34,8 @@ use symplex::stats::hypothesis::{
 };
 use symplex::stats::sequential::{Decision, Sprt};
 use symplex::stats::survival::{KaplanMeier, Observation};
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 type R = Result<(), SymplexError>;
 
@@ -93,12 +95,11 @@ fn fisher_million_cell_table_matches_scipy_to_1e9() {
     //   pmf(a) = 0.00079788241651866600629 — also math.comb exactly (64 s) — so scipy's Boost CDF
     //   is the one 2.6e-10 off here; both bounds are asserted.
     let table = [[1_000_000, 1_000_007], [999_997, 1_000_000]];
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let two = fisher(table, Alternative::TwoSided);
     let less = fisher(table, Alternative::Less);
     let greater = fisher(table, Alternative::Greater);
-    let elapsed = t0.elapsed();
-    assert!(elapsed.as_secs_f64() < 1.0, "took {elapsed:?}");
+    t0.assert_within(Duration::from_secs(1), "three tests");
     let (p2, pl, pg) = (
         two.p_value_f64().unwrap(),
         less.p_value_f64().unwrap(),
@@ -124,11 +125,11 @@ fn fisher_large_symmetric_table_underflows_like_scipy_but_keeps_the_logarithm() 
     // mpmath (40 digits, mp.binomial): log10 P(X ≥ 5000) = -511.52156068351288907,
     //   log10 two-sided = -511.22053068784890788 (n₁ = n₂: the mirror point is 2000, p = 2·P(X ≥ 5000))
     let table = [[5000, 3000], [2000, 6000]];
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let two = fisher(table, Alternative::TwoSided);
     let less = fisher(table, Alternative::Less);
     let greater = fisher(table, Alternative::Greater);
-    assert!(t0.elapsed().as_secs_f64() < 1.0);
+    t0.assert_within(Duration::from_secs(1), "three tests");
     assert_eq!(two.p_value_f64().unwrap(), 0.0);
     assert_eq!(less.p_value_f64().unwrap(), 1.0);
     assert_eq!(greater.p_value_f64().unwrap(), 0.0);
@@ -157,12 +158,12 @@ fn fisher_one_sided_large_tables_match_scipy() {
     // mpmath: 0.99999999999843778998 / 2.4158828010763862201e-12 / 0.99989286696313542882 / 0.00012379717886806690641
     let a = [[1200, 900], [1000, 1150]];
     let b = [[3000, 2900], [2800, 3100]];
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let al = fisher(a, Alternative::Less).p_value_f64().unwrap();
     let ag = fisher(a, Alternative::Greater).p_value_f64().unwrap();
     let bl = fisher(b, Alternative::Less).p_value_f64().unwrap();
     let bg = fisher(b, Alternative::Greater).p_value_f64().unwrap();
-    assert!(t0.elapsed().as_secs_f64() < 1.0);
+    t0.assert_within(Duration::from_secs(1), "four tests");
     rel_close(al, 0.999_999_999_998_438_1, 1e-9);
     rel_close(ag, 2.415_882_801_076_381_3e-12, 1e-9);
     rel_close(bl, 0.999_892_866_963_136, 1e-9);
@@ -232,14 +233,11 @@ fn fisher_exact_path_is_still_exact_up_to_the_threshold_and_fast() {
     // [[1000, 999], [999, 1000]]: n = n₁ = n₂ = 1999, support 0..=1999 = 2 000 points → exact rationals.
     // P(X ≥ 1000) = 1/2 exactly (symmetric about 999.5); two-sided 1; less (Fraction) 0.52522028814176322083.
     let t = [[1000, 999], [999, 1000]];
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let greater = fisher(t, Alternative::Greater);
     let two = fisher(t, Alternative::TwoSided);
     let less = fisher(t, Alternative::Less);
-    assert!(
-        t0.elapsed().as_secs_f64() < 1.0,
-        "exact path at 2 000 points"
-    );
+    t0.assert_within(Duration::from_secs(1), "exact path at 2 000 points");
     assert_eq!(greater.p_value_exact(), Some(q(1, 2)));
     assert_eq!(two.p_value_exact(), Some(Q::one()));
     let pl = less.p_value_exact().unwrap();
@@ -272,11 +270,11 @@ fn fisher_far_tail_of_a_million_cell_table_keeps_a_finite_logarithm() {
     // [[2, 10⁶], [10⁶, 3]]: a = 2 lies 5·10⁵ lattice steps below the mode.
     // mpmath (30 digits): log10 P(X ≤ 2) = -602029.32707963603468.
     let t = [[2, 1_000_000], [1_000_000, 3]];
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let less = fisher(t, Alternative::Less);
     let greater = fisher(t, Alternative::Greater);
     let two = fisher(t, Alternative::TwoSided);
-    assert!(t0.elapsed().as_secs_f64() < 1.0);
+    t0.assert_within(Duration::from_secs(1), "three tests");
     assert_eq!(less.p_value_f64().unwrap(), 0.0);
     assert_eq!(greater.p_value_exact(), Some(Q::one()));
     close(less.p_value_log10().unwrap(), -602_029.327_079_636, 1e-6);
@@ -291,11 +289,11 @@ fn fisher_billion_cell_table_runs_in_milliseconds() {
     // Beyond every oracle (p ≈ 10^(-6·10⁸)); the point is that it returns at all, with the
     // tails decided (scipy gives 1.0 / 0.0 / 0.0 as well).
     let t = [[1_000_000_000, 1], [1, 1_000_000_000]];
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let less = fisher(t, Alternative::Less);
     let greater = fisher(t, Alternative::Greater);
     let two = fisher(t, Alternative::TwoSided);
-    assert!(t0.elapsed().as_secs_f64() < 1.0);
+    t0.assert_within(Duration::from_secs(1), "three tests");
     assert_eq!(less.p_value_exact(), Some(Q::one()));
     assert_eq!(greater.p_value_f64().unwrap(), 0.0);
     assert_eq!(two.p_value_f64().unwrap(), 0.0);
@@ -597,11 +595,12 @@ fn negative_binomial_with_rational_r_quantile_matches_scipy_and_is_fast() -> R {
     // scipy.stats.nbinom.ppf([0.9, 0.999, 0.05, 0.5], 1.5, 1/3) = [7, 19, 0, 2]
     let ctx = Context::new();
     let nb = Distribution::negative_binomial(ctx.rational(3, 2), ctx.rational(1, 3));
-    let t0 = Instant::now();
-    let q90 = nb.quantile_f64(0.9)?;
-    let elapsed = t0.elapsed();
+    let q90 = assert_fast!(
+        Duration::from_millis(500),
+        nb.quantile_f64(0.9),
+        "quantile_f64(0.9) (was ~4 s)"
+    )?;
     assert_eq!(q90, 7.0);
-    assert!(elapsed.as_secs_f64() < 0.5, "took {elapsed:?} (was ~4 s)");
     assert_eq!(nb.quantile_f64(0.999)?, 19.0);
     assert_eq!(nb.quantile_f64(0.05)?, 0.0);
     assert_eq!(nb.quantile_f64(0.5)?, 2.0);

@@ -9,20 +9,11 @@
 //! numerically to any precision), and the closed form is bounded by a
 //! node budget — "expression swell" is an error, never a spin.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
 use symplex::rsolve::rsolve_linear;
 
-/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
-/// shared CI runners (`CI` is set), which are several times slower and noisy.
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::assert_fast;
 
 /// `a(k)` from the closed form.
 fn seq_at(sol: &Ex, n: &Ex, k: i64) -> f64 {
@@ -51,9 +42,8 @@ fn check_closed_form(coeffs_i: &[i64], ics_i: &[i64], upto: usize, budget: Durat
     let n = ctx.symbol("n");
     let coeffs: Vec<Ex> = coeffs_i.iter().map(|&c| ctx.int(c)).collect();
     let ics: Vec<Ex> = ics_i.iter().map(|&c| ctx.int(c)).collect();
-    let t = Instant::now();
-    let sol = rsolve_linear(&coeffs, None, &n, &ics).expect("closed form");
-    assert!(t.elapsed() < budget, "rsolve took {:?}", t.elapsed());
+    let sol = assert_fast!(budget, rsolve_linear(&coeffs, None, &n, &ics), "rsolve")
+        .expect("closed form");
     let want = iterate(
         &coeffs_i.iter().map(|&c| c as f64).collect::<Vec<_>>(),
         &ics_i.iter().map(|&c| c as f64).collect::<Vec<_>>(),
@@ -72,20 +62,20 @@ fn check_closed_form(coeffs_i: &[i64], ics_i: &[i64], upto: usize, budget: Durat
 #[test]
 fn irreducible_cubic_terminates_quickly_and_matches_recurrence() {
     // r³ − r² + 5r − 6: one real irrational root and a complex pair.
-    let sol = check_closed_form(&[-6, 5, -1, 1], &[1, 0, 0], 10, time_budget(2));
+    let sol = check_closed_form(&[-6, 5, -1, 1], &[1, 0, 0], 10, Duration::from_secs(2));
     assert!(format!("{sol}").contains("RootOf"), "{sol}");
 }
 
 #[test]
 fn irreducible_cubic_with_three_real_roots() {
     // r³ − 3r + 1 (casus irreducibilis).
-    check_closed_form(&[1, -3, 0, 1], &[1, 2, 3], 10, time_budget(2));
+    check_closed_form(&[1, -3, 0, 1], &[1, 2, 3], 10, Duration::from_secs(2));
 }
 
 #[test]
 fn irreducible_quartic_characteristic_polynomial() {
     // r⁴ + r + 1 has no rational roots and is irreducible over ℚ.
-    check_closed_form(&[1, 1, 0, 0, 1], &[1, 0, 0, 0], 10, time_budget(2));
+    check_closed_form(&[1, 1, 0, 0, 1], &[1, 0, 0, 0], 10, Duration::from_secs(2));
 }
 
 #[test]
@@ -93,9 +83,11 @@ fn general_solution_of_irreducible_cubic_uses_rootof_and_three_constants() {
     let ctx = Context::new();
     let n = ctx.symbol("n");
     let coeffs = [ctx.int(-6), ctx.int(5), ctx.int(-1), ctx.int(1)];
-    let t = Instant::now();
-    let g = rsolve_linear(&coeffs, None, &n, &[]).unwrap();
-    assert!(t.elapsed() < time_budget(2));
+    let g = assert_fast!(
+        Duration::from_secs(2),
+        rsolve_linear(&coeffs, None, &n, &[])
+    )
+    .unwrap();
     for k in 1..=3 {
         assert!(g.contains(&ctx.symbol(&format!("C{k}"))), "{g}");
     }

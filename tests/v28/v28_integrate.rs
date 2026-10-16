@@ -19,9 +19,11 @@
 //! Each antiderivative is judged by `F′ = f` at sample points (complex
 //! values allowed, as the Rubi harness does).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// `F′ = f` at `x = p/q` for each point, relatively to `1e-10`.
 fn assert_derivative_matches(f: &Ex, big_f: &Ex, x: &Ex, ctx: &Context, points: &[(i64, i64)]) {
@@ -74,16 +76,9 @@ fn atan_of_sqrt_x_minus_x9_integrates_in_seconds() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = ctx.parse("atan(sqrt(x) - x^9)").unwrap();
-    let t = Instant::now();
-    let big_f = f.integrate(&x);
-    let elapsed = t.elapsed();
+    let big_f = assert_fast!(Duration::from_secs(20), f.integrate(&x), "∫ {f} dx");
     assert!(!big_f.has_unevaluated(), "∫ {f} dx = {big_f}");
     assert_derivative_matches(&f, &big_f, &x, &ctx, &[(1, 3), (7, 5), (-5, 7)]);
-    // Generous for a loaded machine.
-    assert!(
-        elapsed < Duration::from_secs(20),
-        "∫ {f} dx took {elapsed:?}"
-    );
 }
 
 #[test]

@@ -6,38 +6,24 @@
 //! concatenation of the children's keys (2^depth bytes), which made step 23
 //! take tens of seconds.  Keys are now bounded.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
 
-/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
-/// shared CI runners (`CI` is set), which are several times slower and noisy.
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::{CpuTimer, assert_fast};
 
-fn doubling(depth: usize) -> (Ex, Duration) {
+fn doubling(depth: usize) -> Ex {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let mut e = x;
-    let start = Instant::now();
     for _ in 0..depth {
         e = e.sin() + e.cos();
     }
-    (e, start.elapsed())
+    e
 }
 
 #[test]
 fn sin_cos_doubling_depth_30_is_fast() {
-    let (e, elapsed) = doubling(30);
-    assert!(
-        elapsed < time_budget(2),
-        "depth-30 doubling took {elapsed:?}"
-    );
+    let e = assert_fast!(Duration::from_secs(2), doubling(30), "depth-30 doubling");
     // Still a well-formed expression: two summands, both function nodes.
     assert_eq!(e.args().len(), 2);
 }
@@ -46,7 +32,7 @@ fn sin_cos_doubling_depth_30_is_fast() {
 fn doubling_ordering_is_deterministic_across_contexts() {
     // The bounded key must still give the same canonical order for the
     // same structure regardless of arena allocation history.
-    let (a, _) = doubling(12);
+    let a = doubling(12);
     let ctx = Context::new();
     // Warm the second context with unrelated nodes so ExprIds differ.
     let y = ctx.symbol("y");
@@ -65,7 +51,7 @@ fn deep_sums_of_wide_products_stay_fast() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let start = Instant::now();
+    let start = CpuTimer::start();
     let mut p = &x + &y;
     let mut q = &x - &y;
     for _ in 0..25 {
@@ -74,8 +60,7 @@ fn deep_sums_of_wide_products_stay_fast() {
         p = np;
         q = nq;
     }
-    let elapsed = start.elapsed();
-    assert!(elapsed < time_budget(2), "took {elapsed:?}");
+    start.assert_within(Duration::from_secs(2), "25 squarings");
     // (Do not display `p`: its unfolded tree, and hence the string, has
     // ~2^25 nodes.  Structural queries stay cheap.)
     // p*q + q*p + 1 combines to 2*p*q + 1.

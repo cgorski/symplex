@@ -158,7 +158,7 @@ fn simplify_factorial_mul(arena: &mut Arena, original: ExprId, children: &[ExprI
                     let replacement = if k == 1 {
                         n_arg
                     } else {
-                        let mut factors = Vec::with_capacity(k as usize);
+                        let mut factors = Vec::with_capacity(crate::base::cast::clamped_len(k, 20));
                         for i in 1..=k {
                             let offset = arena.int(i);
                             let factor = arena.add(&[d_arg, offset]);

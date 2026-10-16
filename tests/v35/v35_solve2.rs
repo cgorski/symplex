@@ -6,8 +6,12 @@
 //! solution substituted back, SymPy 1.14 (`solve`, `solveset`, `factor`)
 //! or mpmath 1.3 (`findroot`, `polyroots`) at 25 digits.
 
+use std::time::Duration;
+
 use symplex::num_complex::Complex64;
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 fn parse(ctx: &Context, s: &str) -> Ex {
     ctx.parse(s).unwrap()
@@ -423,10 +427,8 @@ fn inequality_with_a_lambert_monomial_zero() {
     let ctx = Context::new();
     let x = real_x(&ctx);
     let e = parse(&ctx, "x*exp(x^2) - 1");
-    let t0 = std::time::Instant::now();
-    let set = e.solve_gt(&x);
+    let set = assert_fast!(Duration::from_secs(5), e.solve_gt(&x));
     assert_eq!(set.to_string(), "(exp(-1/2*W(2)), oo)");
-    assert!(t0.elapsed().as_secs_f64() < 5.0, "{:?}", t0.elapsed());
     assert_eq!(set.contains(&ctx.int(1)), Some(true));
     assert_eq!(set.contains(&ctx.rational(13, 20)), Some(false));
     assert_eq!(set.contains(&ctx.rational(131, 200)), Some(true));

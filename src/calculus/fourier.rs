@@ -58,7 +58,10 @@ fn has_non_finite(arena: &Arena, e: ExprId) -> bool {
 ///
 /// A coefficient whose integrand has no closed antiderivative is kept as a
 /// `DefiniteIntegral` node, so the result reports `has_unevaluated()` and
-/// still evaluates numerically.
+/// still evaluates numerically.  Beyond [`MAX_TERMS`] harmonics (each costs
+/// two integrations) the harmonics stay a formal `Sum` ([`formal_harmonics`]).
+///
+/// [`MAX_TERMS`]: crate::base::cast::MAX_TERMS
 pub(crate) fn fourier_series(arena: &mut Arena, expr: ExprId, var: ExprId, n_terms: u32) -> ExprId {
     let pi = arena.pi;
     let two = arena.int(2);
@@ -67,6 +70,11 @@ pub(crate) fn fourier_series(arena: &mut Arena, expr: ExprId, var: ExprId, n_ter
     let definite = integral_over_period(arena, expr, var);
     let a0 = arena.div(definite, pi);
     let a0_half = arena.div(a0, two);
+
+    if crate::base::cast::bounded_len(n_terms, crate::base::cast::MAX_TERMS).is_none() {
+        let harmonics = formal_harmonics(arena, expr, var, n_terms);
+        return arena.add(&[a0_half, harmonics]);
+    }
 
     let mut terms = vec![a0_half];
 
@@ -95,4 +103,30 @@ pub(crate) fn fourier_series(arena: &mut Arena, expr: ExprId, var: ExprId, n_ter
 
     let result = arena.add(&terms);
     crate::transforms::eval::eval(arena, result)
+}
+
+/// `Σ_{n=1}^{N} (aₙ cos(nx) + bₙ sin(nx))` as a formal `Sum` over a dummy
+/// harmonic index `_n`, with the coefficients formal integrals over
+/// `[−π, π]`: the series [`fourier_series`] does not compute term by term
+/// (up to 0.57 `fourier_series(x, x, 2³¹ − 1)` asked for 34 GB for its
+/// coefficient lists and aborted the process).
+fn formal_harmonics(arena: &mut Arena, expr: ExprId, var: ExprId, n_terms: u32) -> ExprId {
+    let pi = arena.pi;
+    let neg_pi = arena.neg(pi);
+    let n = arena.symbol("_n");
+    let nx = arena.mul(&[n, var]);
+    let cos_nx = arena.cos(nx);
+    let sin_nx = arena.sin(nx);
+    let mut parts = Vec::with_capacity(2);
+    for trig in [cos_nx, sin_nx] {
+        let integrand = arena.mul(&[expr, trig]);
+        let integral =
+            crate::calculus::definite::unevaluated_definite(arena, integrand, var, neg_pi, pi);
+        let coefficient = arena.div(integral, pi);
+        parts.push(arena.mul(&[coefficient, trig]));
+    }
+    let body = arena.add(&parts);
+    let one = arena.one;
+    let hi = arena.int(i64::from(n_terms));
+    arena.make(crate::base::node::ExprNode::Sum(body, n, one, hi))
 }

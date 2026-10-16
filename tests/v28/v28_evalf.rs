@@ -3,12 +3,14 @@
 //! oracle quoted next to it (inputs exact: `mpf(1)/mpf(10)**30`, never a
 //! decimal literal).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use symplex::linprog::Q;
 use symplex::prelude::*;
+
+use crate::perf_assert::cpu_time;
 
 fn rel_close(got: f64, want: f64, tol: f64) {
     assert!(
@@ -113,12 +115,10 @@ fn a_huge_rational_converts_in_linear_time() {
     rel_close(x.eval_f64().unwrap(), reference, 1e-15);
     let (mut t_eval, mut t_ref) = (Duration::ZERO, Duration::ZERO);
     for _ in 0..5 {
-        let t = Instant::now();
-        let v = x.eval_f64().unwrap();
-        t_eval += t.elapsed();
-        let t = Instant::now();
-        let r = q.to_f64().unwrap();
-        t_ref += t.elapsed();
+        let (v, t) = cpu_time(|| x.eval_f64().unwrap());
+        t_eval += t;
+        let (r, t) = cpu_time(|| q.to_f64().unwrap());
+        t_ref += t;
         assert_eq!(v.to_bits(), r.to_bits());
     }
     assert!(

@@ -126,7 +126,9 @@ use crate::base::numeric::Q;
 use crate::base::truth::SignSet;
 use crate::base::truth::Truth;
 use crate::base::walk;
-use crate::calculus::calculus_util::{ZeroTest, settle_constant};
+use crate::calculus::calculus_util::{
+    NonzeroExpr, ZeroDecision, ZeroTest, div_by, recip, settle_constant,
+};
 use crate::transforms::{eval, subs};
 
 /// Maximum number of sub-expressions expanded by differentiation before the
@@ -147,7 +149,7 @@ const MAX_INT_POWER: i64 = 64;
 /// `exp(−x^N)` made [`TSeries::compose`] allocate 137 GB and abort the
 /// process.  Beyond it the leading term is not seen and the caller widens
 /// its window or refuses.
-const MAX_DENSE_KNOWN: i64 = 1 << 14;
+const MAX_DENSE_KNOWN: i64 = crate::base::cast::MAX_SERIES_TERMS as i64;
 
 /// Minimum internal working precision of the engine.
 const MIN_WORKING_ORDER: i64 = 4;
@@ -317,38 +319,8 @@ fn sampled_vanishing(arena: &mut Arena, c: ExprId, syms: &[ExprId]) -> crate::ba
     }
 }
 
-/// [`settle_constant`], and `Zero` for a constant that vanishes identically
-/// in its parameters ([`vanishes_identically`]); `Undecided` also for one
-/// that is 0 at the samples without an exact confirmation.  The
-/// symbol-free coefficients of the parameter parts are decided first
-/// ([`parameter_parts`]): `−ω·(−1)^(5/6) + ω·∛(−1)·i` is 0.
-pub(crate) fn settle_parametric(arena: &mut Arena, c: ExprId) -> ZeroTest {
-    let settled = settle_constant(arena, c);
-    let ZeroTest::Nonzero(v) = settled else {
-        return settled;
-    };
-    if arena.is_symbol_free(v) {
-        return settled;
-    }
-    // A piecewise parameter (`0^y`, `H(y)`, `δ(1/2, y)`, `⌊y⌋`) vanishes on a
-    // region, so it is not nonzero for generic values: `series(acosh(P₂(x))/(x²
-    // + H(y)), x)` divided by `H(y)` (found merging wave 11).
-    if crate::simplify::identically_zero::may_vanish_on_a_region(arena, v) {
-        return ZeroTest::Undecided(v);
-    }
-    let v = match parameter_parts(arena, v) {
-        ParameterParts::Decided(settled) => return settled,
-        ParameterParts::Sum(v) => v,
-    };
-    match vanishes_identically(arena, v) {
-        crate::base::truth::Truth::True => ZeroTest::Zero,
-        crate::base::truth::Truth::False => settled,
-        crate::base::truth::Truth::Unknown => ZeroTest::Undecided(v),
-    }
-}
-
 /// A constant with parameters after [`parameter_parts`].
-enum ParameterParts {
+pub(crate) enum ParameterParts {
     /// Decided by the coefficients of its parameter parts.
     Decided(ZeroTest),
     /// A sum of two or more parameter parts whose coefficients are not
@@ -370,8 +342,9 @@ enum ParameterParts {
 /// Up to 0.51 the coefficient `−ω·(−1)^(5/6) + ω·∛(−1)·i` of
 /// `lim_{x→−∞} x^(4/3)·(tan u − u)`, `u = x^(−5/2)·ln(−x)`, was sampled as a
 /// whole, 0 at the samples without a proof, and the limit (`0`) was
-/// refused; and a product `ω·k` was taken for nonzero whatever `k`.
-fn parameter_parts(arena: &mut Arena, c: ExprId) -> ParameterParts {
+/// refused; and a product `ω·k` was taken for nonzero whatever `k`.  Step 4
+/// of [`ZeroDecision::decide`].
+pub(crate) fn parameter_parts(arena: &mut Arena, c: ExprId) -> ParameterParts {
     let terms: smallvec::SmallVec<[ExprId; 8]> = match arena.node(c) {
         ExprNode::Add(ts) => ts.iter().copied().collect(),
         _ => smallvec::smallvec![c],
@@ -1046,8 +1019,16 @@ fn series_at_infinity_integer(
     negative: bool,
 ) -> Result<ExprId, SymplexError> {
     let t = arena.symbol("_t");
-    let one = arena.one;
-    let inv_t = arena.div(one, t);
+    let (Some(t_var), Some(x_var)) = (
+        NonzeroExpr::variable(arena, t),
+        NonzeroExpr::variable(arena, var),
+    ) else {
+        return Err(SymplexError::ComputationFailed {
+            operation: "series_at_infinity",
+            reason: "the variable is not a symbol".into(),
+        });
+    };
+    let inv_t = recip(arena, t_var);
     let inv_t = if negative { arena.neg(inv_t) } else { inv_t };
     let in_t = subs::subs(arena, expr, var, inv_t);
     // t = ±1/x → 0⁺ only, so fractional powers of t^(even) are
@@ -1060,7 +1041,7 @@ fn series_at_infinity_integer(
     let ln_x = arena.ln(ln_arg);
     let minus_ln_x = arena.neg(ln_x);
     let poly = subs::subs(arena, poly, log_t, minus_ln_x);
-    let inv_x = arena.div(one, var);
+    let inv_x = recip(arena, x_var);
     let inv_x = if negative { arena.neg(inv_x) } else { inv_x };
     let back = subs::subs(arena, poly, t, inv_x);
     let result = eval::eval(arena, back);
@@ -1162,7 +1143,7 @@ pub(crate) struct TSeries {
     known: i64,
     coeffs: Vec<ExprId>,
     /// `known` was cut short by a coefficient that is 0 to the precision
-    /// reached but proved neither 0 nor nonzero ([`ZeroTest::Undecided`]),
+    /// reached but proved neither 0 nor nonzero ([`ZeroDecision::Undecided`]),
     /// here or in an operand: a wider window computes the same coefficient,
     /// so an expansion left without a known term is refused at once.
     undecided: bool,
@@ -1196,7 +1177,10 @@ impl TSeries {
         TSeries {
             shift: 0,
             known,
-            coeffs: vec![arena.zero; known.max(0) as usize],
+            coeffs: vec![
+                arena.zero;
+                crate::base::cast::clamped_len(known, crate::base::cast::MAX_SERIES_TERMS)
+            ],
             undecided: false,
         }
     }
@@ -1262,7 +1246,7 @@ impl TSeries {
     }
 
     /// `a + b`.  A coefficient that is 0 to the precision reached but not
-    /// proved either way ([`ZeroTest::Undecided`]) ends the known part:
+    /// proved either way ([`ZeroDecision::Undecided`]) ends the known part:
     /// the sum is exact only below its exponent (so it is never taken for
     /// a leading coefficient, nor dropped).  Likewise in [`mul`](Self::mul)
     /// and [`inverse`](Self::inverse).
@@ -1270,7 +1254,10 @@ impl TSeries {
         let shift = a.shift.min(b.shift);
         let mut known = a.known.min(b.known);
         let mut undecided = a.undecided || b.undecided;
-        let mut coeffs = Vec::with_capacity((known - shift).max(0) as usize);
+        let mut coeffs = Vec::with_capacity(crate::base::cast::clamped_len(
+            known.saturating_sub(shift),
+            crate::base::cast::MAX_SERIES_TERMS,
+        ));
         let mut cut = None;
         for e in shift..known {
             let ca = a.coeff_at(arena, e);
@@ -1280,8 +1267,8 @@ impl TSeries {
                 coeffs.push(eval::eval(arena, s));
                 continue;
             }
-            match settle_parametric(arena, s) {
-                ZeroTest::Undecided(_) => {
+            match ZeroDecision::decide(arena, s) {
+                ZeroDecision::Undecided(_) => {
                     cut = Some(e);
                     break;
                 }
@@ -1351,8 +1338,8 @@ impl TSeries {
                 1 => eval::eval(arena, terms[0]),
                 _ => {
                     let s = arena.add(&terms);
-                    match settle_parametric(arena, s) {
-                        ZeroTest::Undecided(_) => {
+                    match ZeroDecision::decide(arena, s) {
+                        ZeroDecision::Undecided(_) => {
                             known = shift + idx as i64;
                             undecided = true;
                             break;
@@ -1381,13 +1368,12 @@ impl TSeries {
         let a = a.clone().normalized(arena);
         let v = a.leading_exponent(arena)?;
         let c0 = a.coeffs[0];
-        let c0 = if arena.as_num(c0).is_some() {
-            c0
-        } else {
-            match settle_parametric(arena, c0) {
-                ZeroTest::Nonzero(c) => c,
-                ZeroTest::Zero => return None,
-                ZeroTest::Undecided(_) => {
+        let c0 = match NonzeroExpr::number(arena, c0) {
+            Some(c) => c,
+            None => match ZeroDecision::decide(arena, c0) {
+                ZeroDecision::Nonzero(c) => c,
+                ZeroDecision::Zero => return None,
+                ZeroDecision::Undecided(_) => {
                     return Some(TSeries {
                         shift: -v,
                         known: -v,
@@ -1395,17 +1381,19 @@ impl TSeries {
                         undecided: true,
                     });
                 }
-            }
+            },
         };
         let mut rel_known = a.known - v; // relative precision of 1 + w
         let mut undecided = a.undecided;
         // w_i = a_{v+i}/c0 for i ≥ 1
         let inv_c0 = {
-            let m1 = arena.neg_one;
-            let p = arena.pow(c0, m1);
+            let p = recip(arena, c0);
             eval::eval(arena, p)
         };
-        let mut w: Vec<ExprId> = Vec::with_capacity(rel_known.max(0) as usize);
+        let mut w: Vec<ExprId> = Vec::with_capacity(crate::base::cast::clamped_len(
+            rel_known,
+            crate::base::cast::MAX_SERIES_TERMS,
+        ));
         w.push(arena.one);
         for i in 1..rel_known {
             let ai = a.coeff_at(arena, v + i);
@@ -1429,8 +1417,8 @@ impl TSeries {
                 _ => arena.add(&terms),
             };
             let ns = arena.neg(s);
-            match settle_parametric(arena, ns) {
-                ZeroTest::Undecided(_) => {
+            match ZeroDecision::decide(arena, ns) {
+                ZeroDecision::Undecided(_) => {
                     rel_known = n as i64;
                     undecided = true;
                     break;
@@ -1625,8 +1613,9 @@ impl FnKind {
                 let re = rat_expr(arena, r);
                 let two = arena.int(2);
                 let pi = arena.pi;
-                let sp = arena.sqrt(pi);
-                let f = arena.div(two, sp);
+                let m_half = arena.rational(-1, 2);
+                let rsp = arena.pow(pi, m_half);
+                let f = arena.mul(&[two, rsp]);
                 let v = arena.mul(&[re, f]);
                 eval::eval(arena, v)
             }
@@ -1861,6 +1850,27 @@ enum Obstruction {
     /// …`, not the value `iπ` on the cut).  The precision is widened; at the
     /// widest it is a refusal.
     CutUndecided,
+}
+
+/// The constant `c` a rule divides by (the constant term `u₀` of the
+/// argument of `ln u` or `u^α`, the parameter `m` of `Π(n | m)`), shown
+/// nonzero ([`ZeroDecision::decide`]).  [`Obstruction::Unknown`] when it is
+/// proved 0 (the rule does not apply; the other routes are tried) and
+/// [`Obstruction::NoExpansion`] when it is undecided: neither a regular
+/// point nor a singular one is shown, so the expansion is refused at once,
+/// as for an undecided branch point ([`inverse_at_branch_point`]).  Up to
+/// 0.57 `series(√(x + H(y)), x)` was `√H(y) + x/(2√H(y)) + …`,
+/// `series(ln(x + besselj(−1/2, π/2)), x)` divided by that zero, and so
+/// did the recurrence of `Π(x | m)` for such an `m`.
+fn rule_divisor(arena: &mut Arena, c: ExprId) -> Result<NonzeroExpr, Obstruction> {
+    if let Some(d) = NonzeroExpr::number(arena, c) {
+        return Ok(d);
+    }
+    match ZeroDecision::decide(arena, c) {
+        ZeroDecision::Nonzero(d) => Ok(d),
+        ZeroDecision::Zero => Err(Obstruction::Unknown),
+        ZeroDecision::Undecided(_) => Err(Obstruction::NoExpansion),
+    }
 }
 
 /// [`expand_with_mode`] for a function that must be *meromorphic* at `0`
@@ -2178,10 +2188,10 @@ fn leading_term_decided(arena: &mut Arena, ts: &TSeries) -> bool {
         if arena.is_zero_structural(c) {
             continue;
         }
-        let c = match settle_parametric(arena, c) {
-            ZeroTest::Zero => continue,
-            ZeroTest::Nonzero(c) => c,
-            ZeroTest::Undecided(_) => return false,
+        let c = match ZeroDecision::decide(arena, c) {
+            ZeroDecision::Zero => continue,
+            ZeroDecision::Nonzero(c) => c.id(),
+            ZeroDecision::Undecided(_) => return false,
         };
         return walk::free_symbols(arena, c).is_empty()
             && [
@@ -3517,15 +3527,16 @@ fn elliptic_pi_at_small_m(
         arena.mul(&[h, pi])
     };
     let inv_n = {
-        let m1 = arena.neg_one;
-        let p = arena.pow(n, m1);
+        let n = rule_divisor(arena, n)?;
+        let p = recip(arena, n);
         eval::eval(arena, p)
     };
     let mut i_k = {
         let one = arena.one;
         let d = arena.sub(one, n);
         let s = arena.sqrt(d);
-        let p = arena.div(half_pi, s);
+        let s = rule_divisor(arena, s)?;
+        let p = div_by(arena, half_pi, s);
         eval::eval(arena, p)
     };
     // `(½)ₖ/k!`, by its ratio `(k + ½)/(k + 1)`.
@@ -3662,8 +3673,8 @@ fn elliptic_pi_constant_m(
     // `nʲ` with `j > known` is beyond the precision.
     let terms = usize::try_from(n_ts.known.max(0)).map_err(|_| Obstruction::Unknown)? + 1;
     let inv_m = {
-        let m1 = arena.neg_one;
-        let p = arena.pow(m, m1);
+        let m = rule_divisor(arena, m)?;
+        let p = recip(arena, m);
         eval::eval(arena, p)
     };
     let one = arena.one;
@@ -3784,8 +3795,7 @@ fn apply_exp_like(arena: &mut Arena, kind: FnKind, a: &TSeries, mode: Mode) -> O
 /// whose expansion is out of reach (`√(−l)`, `ln(−l)`) none.
 fn log_linear_part(arena: &mut Arena, u0: ExprId, l: ExprId) -> Option<(Q, ExprId)> {
     let t = arena.symbol(LOG_GROWTH_PLACEHOLDER);
-    let one = arena.one;
-    let inv_t = arena.div(one, t);
+    let inv_t = recip(arena, NonzeroExpr::variable(arena, t)?);
     let g = subs::subs(arena, u0, l, inv_t);
     let g = arena.mul(&[t, g]);
     let g = eval::eval(arena, g);
@@ -4130,8 +4140,8 @@ fn is_known_real(arena: &Arena, c: ExprId) -> bool {
 }
 
 fn is_zero_const(arena: &mut Arena, c: ExprId) -> crate::base::truth::Truth {
-    match settle_parametric(arena, c) {
-        ZeroTest::Nonzero(v) if arena.as_num(v).is_some_and(|r| r.is_zero()) => {
+    match ZeroDecision::decide(arena, c) {
+        ZeroDecision::Nonzero(v) if arena.as_num(v.id()).is_some_and(|r| r.is_zero()) => {
             crate::base::truth::Truth::True
         }
         settled => settled.is_zero(),
@@ -4177,11 +4187,13 @@ fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
             // A hidden zero of `sin`/`cos` (`u0 = π/(24π − 2) − 12π²/(24π −
             // 2) = −π/2`) must show, or the valuation is wrong.
             let su = arena.sin(u0);
-            let su = settle_parametric(arena, su);
+            let su = ZeroDecision::decide(arena, su);
             let cu = arena.cos(u0);
-            let cu = settle_parametric(arena, cu);
-            let (ZeroTest::Zero | ZeroTest::Nonzero(_), ZeroTest::Zero | ZeroTest::Nonzero(_)) =
-                (su, cu)
+            let cu = ZeroDecision::decide(arena, cu);
+            let (
+                ZeroDecision::Zero | ZeroDecision::Nonzero(_),
+                ZeroDecision::Zero | ZeroDecision::Nonzero(_),
+            ) = (su, cu)
             else {
                 return None;
             };
@@ -4255,7 +4267,7 @@ fn tan_at_pole(arena: &mut Arena, kind: FnKind, u0: ExprId, w: &TSeries) -> Opti
     } else {
         arena.cos(u0)
     };
-    if settle_parametric(arena, cosine) != ZeroTest::Zero {
+    if ZeroDecision::decide(arena, cosine) != ZeroDecision::Zero {
         return None;
     }
     let t = TSeries::compose(
@@ -5022,8 +5034,8 @@ fn apply_ln(
     let below = cut_below(arena, u0, &w, mode, arg)?;
     // ln(u0 + w) = ln u0 + ln(1 + w/u0)
     let inv_u0 = {
-        let m1 = arena.neg_one;
-        let p = arena.pow(u0, m1);
+        let u0 = rule_divisor(arena, u0)?;
+        let p = recip(arena, u0);
         eval::eval(arena, p)
     };
     let w_over = TSeries::scale(arena, &w, inv_u0);
@@ -5170,8 +5182,8 @@ fn pow_rational(
         false
     };
     let inv_u0 = {
-        let m1 = arena.neg_one;
-        let p = arena.pow(u0, m1);
+        let u0 = rule_divisor(arena, u0)?;
+        let p = recip(arena, u0);
         eval::eval(arena, p)
     };
     let w_over = TSeries::scale(arena, &w, inv_u0);
@@ -5806,8 +5818,8 @@ fn special_series(
                 let rsp = {
                     let pi = arena.pi;
                     let sp = arena.sqrt(pi);
-                    let one = arena.one;
-                    let q = arena.div(one, sp);
+                    let sp = NonzeroExpr::structural(arena, sp).ok_or(Obstruction::Unknown)?;
+                    let q = recip(arena, sp);
                     eval::eval(arena, q)
                 };
                 s = TSeries::scale(arena, &s, rsp);
@@ -6039,7 +6051,8 @@ fn power_asymptotic_series(
         let rsp = {
             let pi = arena.pi;
             let sp = arena.sqrt(pi);
-            let q = arena.div(one, sp);
+            let sp = NonzeroExpr::structural(arena, sp).ok_or(Obstruction::Unknown)?;
+            let q = recip(arena, sp);
             eval::eval(arena, q)
         };
         s = TSeries::scale(arena, &s, rsp);
@@ -6248,8 +6261,8 @@ fn log_bessel_series(
         let sum = TSeries::add(arena, &prod, &s);
         let two_over_pi = {
             let two = arena.int(2);
-            let pi = arena.pi;
-            let q = arena.div(two, pi);
+            let pi = NonzeroExpr::structural(arena, arena.pi).ok_or(Obstruction::Unknown)?;
+            let q = div_by(arena, two, pi);
             eval::eval(arena, q)
         };
         Ok(Some(TSeries::scale(arena, &sum, two_over_pi)))
@@ -6288,7 +6301,10 @@ fn taylor_by_differentiation(
         None
     };
 
-    let mut coeffs = Vec::with_capacity(n.max(0) as usize);
+    let mut coeffs = Vec::with_capacity(crate::base::cast::clamped_len(
+        n,
+        crate::base::cast::MAX_SERIES_TERMS,
+    ));
     let mut current = expr;
     let mut factorial = Q::one();
     // At a discontinuity of `sign`, `H`, `⌊·⌋`, … the value at the point is

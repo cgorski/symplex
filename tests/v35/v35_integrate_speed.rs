@@ -6,9 +6,11 @@
 //! after integrating), and a time limit generous for a debug build on a
 //! loaded CI machine.  The times quoted are release builds (CPU seconds).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// The Rubi harness's parameter values.
 const PARAMS: [(&str, (i64, i64)); 7] = [
@@ -27,10 +29,7 @@ fn integrate_within(src: &str, limit: Duration, closed: bool) {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = ctx.parse(src).unwrap();
-    let t0 = Instant::now();
-    let big_f = f.integrate(&x);
-    let dt = t0.elapsed();
-    assert!(dt < limit, "∫ {src} took {dt:?}");
+    let big_f = assert_fast!(limit, f.integrate(&x), "∫ {src}");
     if !closed {
         assert!(big_f.has_unevaluated(), "∫ {src} = {big_f}");
         return;

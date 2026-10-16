@@ -7,8 +7,10 @@ use super::common;
 
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Instant;
+use std::time::Duration;
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. LARGE EXPRESSIONS — polynomial with 100+ terms
@@ -30,14 +32,11 @@ fn build_large_poly(ctx: &Context, x: &Ex, n: i64) -> Ex {
 fn large_poly_100_terms_construction() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let poly = build_large_poly(&ctx, &x, 100);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[large_poly_100] construction: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "constructing 100-term poly took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "constructing 100-term poly");
     // Sanity: should contain x
     assert!(poly.contains(&x), "poly should contain x");
     let s = format!("{poly}");
@@ -49,14 +48,11 @@ fn large_poly_100_terms_differentiate() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let poly = build_large_poly(&ctx, &x, 100);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let dp = poly.diff(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[large_poly_100] diff: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "differentiating 100-term poly took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "differentiating 100-term poly");
     // d/dx of constant term (1) disappears; d/dx of 2*x gives 2
     // The derivative should still mention x (terms from x^2 onward).
     assert!(dp.contains(&x), "derivative should still contain x");
@@ -67,14 +63,11 @@ fn large_poly_100_terms_integrate() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let poly = build_large_poly(&ctx, &x, 100);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let integ = poly.integrate(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[large_poly_100] integrate: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "integrating 100-term poly took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "integrating 100-term poly");
     let s = format!("{integ}");
     assert!(
         !s.contains("Integral"),
@@ -87,14 +80,11 @@ fn large_poly_100_terms_simplify() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let poly = build_large_poly(&ctx, &x, 100);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let simp = poly.simplify();
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[large_poly_100] simplify: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "simplifying 100-term poly took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "simplifying 100-term poly");
     // Simplification of a polynomial should preserve values
     for &pt in &[0i64, 1, -1, 5] {
         let v_orig = common::eval_at_i64(&poly, &x, pt);
@@ -111,14 +101,11 @@ fn large_poly_100_terms_expand() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let poly = build_large_poly(&ctx, &x, 100);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let expanded = poly.expand();
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[large_poly_100] expand: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "expanding 100-term poly took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "expanding 100-term poly");
     // Expanding an already-expanded polynomial should be identity (or equivalent)
     let v1 = common::eval_at_i64(&poly, &x, 3);
     let v2 = common::eval_at_i64(&expanded, &x, 3);
@@ -163,14 +150,11 @@ fn build_nested_sin(x: &Ex, depth: usize) -> Ex {
 fn deep_nesting_50_sin_construction() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let deep = build_nested_sin(&x, 50);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[deep_nest_50] construction: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 10,
-        "constructing 50-deep sin nest took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(10), "constructing 50-deep sin nest");
     assert!(deep.contains(&x), "nested sin should contain x");
 }
 
@@ -179,14 +163,11 @@ fn deep_nesting_50_sin_display() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let deep = build_nested_sin(&x, 50);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let s = format!("{deep}");
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[deep_nest_50] display: {elapsed:?} (len={})", s.len());
-    assert!(
-        elapsed.as_secs() < 10,
-        "displaying 50-deep sin took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(10), "displaying 50-deep sin");
     // Should contain many "sin(" substrings
     let sin_count = s.matches("sin(").count();
     assert!(
@@ -202,14 +183,11 @@ fn deep_nesting_50_sin_differentiate() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let deep = build_nested_sin(&x, 50);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let deriv = deep.diff(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[deep_nest_50] diff: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "differentiating 50-deep sin took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "differentiating 50-deep sin");
     // The derivative should still contain x (chain rule produces cos*cos*...*1)
     assert!(
         deriv.contains(&x),
@@ -233,14 +211,11 @@ fn deep_nesting_100_sin_no_stack_overflow() {
         "expected >= 100 sin( occurrences"
     );
     // Differentiating 100 levels — should still not blow the stack
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let _deriv = deep.diff(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[deep_nest_100] diff: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 60,
-        "differentiating 100-deep sin took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(60), "differentiating 100-deep sin");
 }
 
 #[test]
@@ -248,14 +223,11 @@ fn deep_nesting_simplify_does_not_crash() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let deep = build_nested_sin(&x, 30);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let simp = deep.simplify();
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[deep_nest_30] simplify: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "simplifying 30-deep sin took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "simplifying 30-deep sin");
     // sin(sin(...(x))) at x=0 should give 0
     let v_orig = common::eval_at_i64(&deep, &x, 0);
     let v_simp = common::eval_at_i64(&simp, &x, 0);
@@ -279,13 +251,13 @@ fn deep_nesting_mixed_functions() {
             _ => expr.abs(), // avoid ln of negative
         };
     }
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let _deriv = expr.diff(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[deep_mixed_40] diff: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "differentiating 40-deep mixed nest took too long: {elapsed:?}"
+    t0.assert_within(
+        Duration::from_secs(30),
+        "differentiating 40-deep mixed nest",
     );
 }
 
@@ -467,16 +439,13 @@ fn thread_safety_concurrent_serde() {
 fn memory_create_and_drop_100k_expressions() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     for i in 0..100_000i64 {
         let _ = &x.powi(i % 50) + ctx.int(i);
     }
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[memory_100k] create+drop: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 60,
-        "creating 100K expressions took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(60), "creating 100K expressions");
     // If we got here without OOM, the test passes.
     // The context should still be usable.
     let test = &x + 1;
@@ -487,7 +456,7 @@ fn memory_create_and_drop_100k_expressions() {
 fn memory_create_and_drop_complex_expressions() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     for i in 0..10_000i64 {
         // Each iteration builds a moderately complex expression and drops it
         let expr = (&x.powi(3) + &x.powi(2) * ctx.int(i) - &x * ctx.int(i * 2) + ctx.int(i))
@@ -495,12 +464,9 @@ fn memory_create_and_drop_complex_expressions() {
             .exp();
         let _ = format!("{expr}"); // force materialization
     }
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[memory_10k_complex] create+display+drop: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 60,
-        "creating 10K complex expressions took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(60), "creating 10K complex expressions");
 }
 
 #[test]
@@ -508,18 +474,15 @@ fn memory_repeated_diff_integration_no_leak() {
     // Repeatedly differentiate/integrate to create lots of intermediate nodes
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     for _ in 0..1_000 {
         let expr = &x.powi(5) + &x.powi(3) - &x;
         let d = expr.diff(&x);
         let _ = d.integrate(&x);
     }
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[memory_repeated_calc] 1000 diff+integrate: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 60,
-        "1000 diff+integrate took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(60), "1000 diff+integrate");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -663,14 +626,11 @@ fn factor_x8_minus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.powi(8) - 1;
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let factored = expr.factor(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[factor] x^8 - 1: {elapsed:?} → {factored}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "factoring x^8-1 took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "factoring x^8-1");
     for &pt in &[-3i64, -1, 0, 1, 3] {
         let vo = common::eval_at_i64(&expr, &x, pt);
         let vf = common::eval_at_i64(&factored, &x, pt);
@@ -686,14 +646,11 @@ fn factor_x10_minus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.powi(10) - 1;
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let factored = expr.factor(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[factor] x^10 - 1: {elapsed:?} → {factored}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "factoring x^10-1 took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "factoring x^10-1");
     for &pt in &[-2i64, 0, 1, 2, 3] {
         let vo = common::eval_at_i64(&expr, &x, pt);
         let vf = common::eval_at_i64(&factored, &x, pt);
@@ -709,14 +666,11 @@ fn factor_x20_minus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.powi(20) - 1;
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let factored = expr.factor(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[factor] x^20 - 1: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 60,
-        "factoring x^20-1 took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(60), "factoring x^20-1");
 
     let s = format!("{factored}");
     eprintln!("[factor] x^20 - 1 → {s}");
@@ -762,12 +716,12 @@ fn cancel_x10_minus_1_over_x5_minus_1() {
     let numer = &x.powi(10) - 1;
     let denom = &x.powi(5) - 1;
     let frac = &numer / &denom;
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let cancelled = frac.cancel(&x);
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     let s = format!("{cancelled}");
     eprintln!("[cancel] (x^10-1)/(x^5-1): {elapsed:?} → {s}");
-    assert!(elapsed.as_secs() < 30, "cancel took too long: {elapsed:?}");
+    t0.assert_within(Duration::from_secs(30), "cancel");
 
     // Verify: should equal x^5 + 1 at various points (avoiding x=1 where denom=0)
     for &pt in &[0i64, 2, 3, -1, -2] {
@@ -814,7 +768,7 @@ fn simplify_idempotent_100_times_polynomial() {
 
     let mut current = expr.simplify();
     let first_form = format!("{current}");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     for i in 1..100 {
         let next = current.simplify();
         let next_form = format!("{next}");
@@ -824,12 +778,9 @@ fn simplify_idempotent_100_times_polynomial() {
         );
         current = next;
     }
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[idempotent] 99 simplify iterations: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "99 simplify iterations took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "99 simplify iterations");
 }
 
 #[test]
@@ -841,7 +792,7 @@ fn simplify_idempotent_100_times_trig() {
     let mut current = expr.simplify();
     let first_form = format!("{current}");
     eprintln!("[idempotent_trig] sin^2+cos^2 simplifies to: {first_form}");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     for i in 1..100 {
         let next = current.simplify();
         let next_form = format!("{next}");
@@ -851,12 +802,9 @@ fn simplify_idempotent_100_times_trig() {
         );
         current = next;
     }
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[idempotent_trig] 99 iterations: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "99 trig simplify iterations took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "99 trig simplify iterations");
 }
 
 #[test]
@@ -889,9 +837,9 @@ fn simplify_does_not_slow_down() {
     let mut times = Vec::with_capacity(20);
     let mut current = expr.clone();
     for _ in 0..20 {
-        let t0 = Instant::now();
+        let t0 = CpuTimer::start();
         current = current.simplify();
-        times.push(t0.elapsed());
+        times.push(t0.cpu());
     }
     // The last iteration should not be more than 10x the first
     // (allowing generous margin for JIT / cache effects)
@@ -1018,14 +966,11 @@ fn expand_product_of_binomials() {
     for i in 2..=10 {
         product = &product * &(&x + i);
     }
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let expanded = product.expand();
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[expand_binomials_10] {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "expanding product of 10 binomials took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "expanding product of 10 binomials");
 
     // Verify: at x=0, product = 1*2*3*...*10 = 10!
     let v0 = common::eval_at_i64(&expanded, &x, 0);
@@ -1042,14 +987,11 @@ fn expand_high_power_binomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = (&x + 1).powi(15);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let expanded = expr.expand();
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[expand_(x+1)^15] {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "expanding (x+1)^15 took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "expanding (x+1)^15");
     // At x=1: (1+1)^15 = 32768
     let v1 = common::eval_at_i64(&expanded, &x, 1);
     assert!(
@@ -1093,17 +1035,14 @@ fn eval_f64_many_times() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.powi(3) + &x.sin() * 2 - ctx.rational(1, 3);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     for i in -500..=500 {
         let _val = i as f64 / 100.0;
         let _ = expr.subs(&x, &ctx.rational(i, 100)).eval_f64();
     }
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[eval_f64_1000] {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "1000 eval_f64 calls took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "1000 eval_f64 calls");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1187,7 +1126,7 @@ fn high_order_derivative_sin() {
 #[test]
 fn many_contexts_independent() {
     // Create 100 independent contexts, build expressions in each
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     for i in 0..100 {
         let ctx = Context::new();
         let x = ctx.symbol("x");
@@ -1196,12 +1135,9 @@ fn many_contexts_independent() {
         let _ = expr.simplify();
         let _ = format!("{expr}");
     }
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[many_contexts_100] {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "100 independent contexts took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(30), "100 independent contexts");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1238,9 +1174,9 @@ fn free_symbols_large_expression() {
     for (i, s) in symbols.iter().enumerate() {
         expr = &expr + &(s.powi(2) + ctx.int(i as i64));
     }
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let free = expr.free_symbols();
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!(
         "[free_symbols_50] {elapsed:?}, found {} symbols",
         free.len()
@@ -1362,17 +1298,14 @@ fn rapid_clone_and_drop() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.powi(5).sin().exp() + x.cos().powi(3);
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     for _ in 0..100_000 {
         let cloned = expr.clone();
         drop(cloned);
     }
-    let elapsed = t0.elapsed();
+    let elapsed = t0.cpu();
     eprintln!("[rapid_clone_drop] 100K iterations: {elapsed:?}");
-    assert!(
-        elapsed.as_secs() < 10,
-        "100K clone+drop took too long: {elapsed:?}"
-    );
+    t0.assert_within(Duration::from_secs(10), "100K clone+drop");
     // Original should still be usable
     let s = format!("{expr}");
     assert!(!s.is_empty());

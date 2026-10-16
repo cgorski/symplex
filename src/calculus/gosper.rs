@@ -630,7 +630,10 @@ fn factorial_shift_ratio(arena: &mut Arena, a: ExprId, s: i64) -> Option<(ExprId
         return None;
     }
     let one = arena.one;
-    let mut factors = Vec::with_capacity(s.unsigned_abs() as usize);
+    let mut factors = Vec::with_capacity(crate::base::cast::bounded_len(
+        s.unsigned_abs(),
+        MAX_FACTORIAL_SHIFT,
+    )?);
     if s > 0 {
         for j in 1..=s {
             let je = arena.int(j);

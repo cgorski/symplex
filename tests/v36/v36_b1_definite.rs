@@ -2,7 +2,11 @@
 //! Every test says what was wrong before and cites its oracle.
 
 #![allow(unused_imports)]
+use std::time::Duration;
+
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 /// `∫ f dx` over `[lo, hi]` (strings parsed in `ctx`) by `integrate_definite`,
 /// evaluated to 20 digits.
@@ -124,10 +128,10 @@ fn gamma_of_a_huge_multiple_refuses_fast() {
     let x = ctx.symbol("x");
     let f = ctx.parse("gamma(9*10^18*x)").unwrap();
     let (lo, hi) = (ctx.int(-1), ctx.int(1));
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     assert!(f.integrate_numeric(&x, &lo, &hi).is_err());
     assert!(f.definite_integral_node(&x, &lo, &hi).eval_f64().is_err());
-    assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+    start.assert_within(Duration::from_secs(30), "both refusals");
 }
 
 /// The kinks of `sign(cos x² − 1/7)` on `[0, 3]`: the principal solve gives

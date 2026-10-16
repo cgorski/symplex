@@ -13,12 +13,14 @@
 // Reference values are quoted at the 17 digits mpmath printed them.
 #![allow(clippy::excessive_precision)]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
 use symplex::stats::numdist::{
     beta, betainc_regularized_f64, binom, chi2, gamma, norm, poisson, t,
 };
+
+use crate::perf_assert::CpuTimer;
 
 /// Relative closeness, absolute when the reference is (essentially) zero.
 fn close(actual: f64, expected: f64, rel: f64, label: &str) {
@@ -438,7 +440,7 @@ fn norm_cdf_normal_range_around_the_erfc_switch() {
 /// Now an `InvalidArgument` naming the 2⁵³ limit, within the time guard.
 #[test]
 fn discrete_ppf_above_2_53_is_an_error_not_a_hang() {
-    let start = Instant::now();
+    let start = CpuTimer::start();
     let r = poisson::ppf(0.5, 1e17);
     err_is_invalid(r, "poisson::ppf(0.5, 1e17)");
     err_is_invalid(poisson::ppf(0.5, 1e300), "poisson::ppf(0.5, 1e300)");
@@ -459,11 +461,7 @@ fn discrete_ppf_above_2_53_is_an_error_not_a_hang() {
         }
         other => panic!("expected InvalidArgument, got {other:?}"),
     }
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "the rejections took {:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(2), "the rejections");
 }
 
 /// Below the limit the search terminates and lands on the exact lattice
@@ -483,7 +481,7 @@ fn discrete_ppf_above_2_53_is_an_error_not_a_hang() {
 /// (`P(X ≤ n/2) = ½ + ½P(X = n/2)`), scipy agrees.
 #[test]
 fn discrete_ppf_on_a_1e15_lattice_terminates_and_matches_mpmath() -> Result<(), SymplexError> {
-    let start = Instant::now();
+    let start = CpuTimer::start();
     assert_eq!(poisson::ppf(0.975, 1e15)?, 1000000061979504.0);
     assert_eq!(poisson::ppf(0.5, 1e15)?, 1e15);
     assert_eq!(binom::ppf(0.5, 1e15, 0.5)?, 500000000000000.0);
@@ -491,11 +489,7 @@ fn discrete_ppf_on_a_1e15_lattice_terminates_and_matches_mpmath() -> Result<(), 
     // the defining inequalities hold in the kernel's own CDF
     assert!(poisson::cdf(1000000061979504.0, 1e15) >= 0.975);
     assert!(poisson::cdf(1000000061979503.0, 1e15) < 0.975);
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "the four quantiles took {:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(2), "the four quantiles");
     Ok(())
 }
 

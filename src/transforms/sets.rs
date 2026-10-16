@@ -3650,11 +3650,12 @@ fn real_roots_set(arena: &mut Arena, roots: &[ExprId]) -> ExprId {
             keep.push(ev);
             continue;
         }
-        // Constant that is not a finite real: complex or unevaluable.
-        match crate::transforms::evalf::evalf(arena, ev, 16) {
-            Ok(s) if s.contains('I') || s.contains('i') => {}
-            Ok(_) => keep.push(ev),
-            Err(_) => keep.push(ev),
+        // Constant that is not a finite real: complex (an imaginary part its
+        // value keeps is certified nonzero; up to 0.57 the printed decimal
+        // was searched for `i`) or unevaluable.
+        match crate::transforms::evalf::const_value(arena, ev, 16) {
+            Ok(v) if v.im_sign().is_nonzero().is_true() => {}
+            Ok(_) | Err(_) => keep.push(ev),
         }
     }
     arena.finite_set(&keep)
@@ -4115,7 +4116,9 @@ fn periodic_points_in(
     Some(points)
 }
 
-/// A 16-digit approximation of a real constant (`±∞` for the infinities).
+/// A 16-digit approximation of a real constant (`±∞` for the infinities):
+/// the `f64` correctly rounded from its 17-digit value (up to 0.57 the
+/// printed decimal was parsed).
 fn approx_real_f64(arena: &mut Arena, e: ExprId) -> Option<f64> {
     if e == arena.infinity {
         return Some(f64::INFINITY);
@@ -4126,8 +4129,9 @@ fn approx_real_f64(arena: &mut Arena, e: ExprId) -> Option<f64> {
     if let Some(r) = arena.as_num(e) {
         return num_traits::ToPrimitive::to_f64(r);
     }
-    let s = crate::transforms::evalf::evalf(arena, e, 17).ok()?;
-    s.trim().parse::<f64>().ok()
+    crate::transforms::evalf::const_value(arena, e, 17)
+        .ok()?
+        .to_f64()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

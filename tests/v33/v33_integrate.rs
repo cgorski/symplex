@@ -1,8 +1,10 @@
 //! The integrator's search: a by-parts cycle, the order of the `|g|` rule,
 //! and sums whose terms need different whole-integrand strategies.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// `F′ = f` at a few real points (30-digit evaluation).
 fn assert_antiderivative(ctx: &Context, f: &Ex, big_f: &Ex, x: &Ex) {
@@ -29,9 +31,7 @@ fn abs_and_root_over_a_cubic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = ctx.parse("(sqrt(x) + abs(x))/(x + x^(-2) + 1)").unwrap();
-    let t = Instant::now();
-    let big_f = f.integrate(&x);
-    assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
+    let big_f = assert_fast!(Duration::from_secs(20), f.integrate(&x));
     assert!(!big_f.has_unevaluated(), "{big_f}");
     assert_antiderivative(&ctx, &f, &big_f, &x);
 }

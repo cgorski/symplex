@@ -342,7 +342,8 @@ fn thirty_groups() -> Vec<Vec<symplex::stats::data::Q>> {
 /// the p-values are those of the per-pair integral to its own accuracy.
 #[test]
 fn tukey_hsd_shares_one_range_tail_across_its_pairs() {
-    use std::time::{Duration, Instant};
+    use crate::perf_assert::cpu_time;
+    use std::time::Duration;
     use symplex::stats::anova::{studentized_range_quantile, studentized_range_sf, tukey_hsd};
     let ctx = Context::new();
     let groups = thirty_groups();
@@ -390,16 +391,16 @@ fn tukey_hsd_shares_one_range_tail_across_its_pairs() {
     let twelve: Vec<_> = groups[..12].to_vec();
     let (mut t_tukey, mut t_single) = (Duration::ZERO, Duration::ZERO);
     for round in 0..3 {
-        let t = Instant::now();
-        let r = tukey_hsd(&ctx, &twelve, 0.95).unwrap();
-        t_tukey += t.elapsed();
+        let (r, t) = cpu_time(|| tukey_hsd(&ctx, &twelve, 0.95).unwrap());
+        t_tukey += t;
         assert_eq!(r.len(), 66);
-        let t = Instant::now();
-        for j in 0..6 {
-            let q = 1.0 + 0.7 * j as f64 + 0.1 * round as f64;
-            studentized_range_sf(q, 12, 78.0).unwrap();
-        }
-        t_single += t.elapsed();
+        let ((), t) = cpu_time(|| {
+            for j in 0..6 {
+                let q = 1.0 + 0.7 * j as f64 + 0.1 * round as f64;
+                studentized_range_sf(q, 12, 78.0).unwrap();
+            }
+        });
+        t_single += t;
     }
     eprintln!("tukey(12 groups) {t_tukey:?} vs 6 single tails {t_single:?}");
     assert!(

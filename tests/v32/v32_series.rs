@@ -1,8 +1,10 @@
 //! Series with a logarithmic singularity: `x^x`, `x·ln x`, `ln x` inside
 //! other functions.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// The nightly `fuzz_calculus` slow unit of 2026-09-30: `series(sinh(x^x),
 /// x, 0, 3)` has no two-sided expansion (`x^x = e^(x·ln x)` is
@@ -45,16 +47,14 @@ fn logarithmic_singularities_refuse_at_once() {
             let src = f.replace('G', &format!("({g})"));
             let e = ctx.parse(&src).unwrap();
             for dir in [Direction::Both, Direction::Right, Direction::Left] {
-                let t = Instant::now();
-                let s = e.series_dir(&x, &zero, 3, dir);
                 // 3 s per call: the two-sided `asin(exp(−1/x))` takes ~1 s in
                 // a debug build alone and reached 2.0 s under a 64-way
                 // parallel test run (0.47); `atan(x^(x²))`, 2.8 s before the
                 // fix, is 6 ms.
-                assert!(
-                    t.elapsed() < Duration::from_secs(3),
-                    "{src} {dir:?} took {:?}",
-                    t.elapsed()
+                let s = assert_fast!(
+                    Duration::from_secs(3),
+                    e.series_dir(&x, &zero, 3, dir),
+                    "{src} {dir:?}"
                 );
                 // (sinh(ln x) = (x − 1/x)/2 and exp(ln x) = x do expand.)
                 if dir == Direction::Both && matches!(g, "x^x" | "x*ln(x)" | "x^x - 1" | "x^(x^2)")
@@ -64,14 +64,13 @@ fn logarithmic_singularities_refuse_at_once() {
             }
         }
     }
-    let t = Instant::now();
     assert!(
-        ctx.parse("sinh(x^x)")
-            .unwrap()
-            .try_series(&x, &zero, 3)
-            .is_err()
+        assert_fast!(
+            Duration::from_secs(2),
+            ctx.parse("sinh(x^x)").unwrap().try_series(&x, &zero, 3)
+        )
+        .is_err()
     );
-    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
 }
 
 /// Logarithms that cancel still give a two-sided expansion: it is the
@@ -186,16 +185,13 @@ fn function_of_a_logarithmic_argument_from_one_side() {
     assert_eq!(r.to_string(), "-1/(x*ln(x)) + 1/3*x*ln(x)");
     // Still refused where the argument itself tends to infinity: atan(ln x).
     for src in ["atan(ln(x))", "acos(ln(x))"] {
-        let t = Instant::now();
-        let r = ctx
-            .parse(src)
-            .unwrap()
-            .series_dir(&x, &zero, 3, Direction::Right);
-        assert!(r.has_unevaluated(), "{src}: {r}");
-        assert!(
-            t.elapsed() < Duration::from_secs(2),
-            "{src}: {:?}",
-            t.elapsed()
+        let r = assert_fast!(
+            Duration::from_secs(2),
+            ctx.parse(src)
+                .unwrap()
+                .series_dir(&x, &zero, 3, Direction::Right),
+            "{src}"
         );
+        assert!(r.has_unevaluated(), "{src}: {r}");
     }
 }

@@ -2,9 +2,11 @@
 //! Every test says what was wrong before and cites its oracle.
 
 #![allow(unused_imports)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// `c(a) = sin(1)·(a − 1153/877)·(a − 1789/2311)`, multiplied out: a
 /// constant in the positive parameter `a` that vanishes at exactly two
@@ -166,9 +168,11 @@ fn a_radical_spelled_two_ways_does_not_widen_the_expansion() {
     let f = ctx
         .parse("(sqrt(tanh(x)) - sqrt(tanh(-1/3)))/(x + 1/3)")
         .unwrap();
-    let t = Instant::now();
-    let l = f.try_limit(&x, &ctx.rational(-1, 3)).unwrap();
-    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    let l = assert_fast!(
+        Duration::from_secs(5),
+        f.try_limit(&x, &ctx.rational(-1, 3))
+    )
+    .unwrap();
     let z = l.eval_complex64().unwrap();
     assert!(
         z.re.abs() < 1e-12 && (z.im + 0.790_649_435_247_292_4).abs() < 1e-12,
@@ -177,9 +181,7 @@ fn a_radical_spelled_two_ways_does_not_widen_the_expansion() {
     let g = ctx
         .parse("(sqrt(x + besselk(1/2, 1)) - sqrt(sqrt(pi/2)*exp(-1)))/x")
         .unwrap();
-    let t = Instant::now();
-    let _ = g.try_limit(&x, &ctx.int(0));
-    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    let _ = assert_fast!(Duration::from_secs(5), g.try_limit(&x, &ctx.int(0)));
 }
 
 /// `Quantity::is_zero`/`equals` return `bool` and mean "proved": an

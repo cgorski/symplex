@@ -2,7 +2,11 @@
 //! Every test says what was wrong before and cites its oracle.
 
 #![allow(unused_imports)]
+use std::time::Duration;
+
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, cpu_time};
 
 fn parse(ctx: &Context, src: &str) -> Ex {
     ctx.parse(src).unwrap()
@@ -50,13 +54,13 @@ fn integer_powers_beyond_u32_exponents_are_not_truncated() {
 #[test]
 fn powers_of_large_rationals_are_decided_or_refused_at_once() {
     let ctx = Context::new();
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let e = parse(&ctx, "1000000007^1000000007 - 2");
     assert_ne!(e.is_positive(), Some(false));
     assert_ne!(e.is_zero(), Some(true));
     let z = parse(&ctx, "(1/10^6)^2000000016*(1 + I)");
     assert_ne!(z.is_real(), Some(true));
-    assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
+    start.assert_within(Duration::from_secs(20), "both decisions");
 }
 
 /// The bound on exact powers keeps the exact zero test of algebraic
@@ -238,17 +242,15 @@ fn acos_of_a_negated_trigonometric_value_folds() {
 fn integer_part_of_a_constant_is_computed_once() {
     let ctx = Context::new();
     let e = parse(&ctx, "ceiling(Chi(400))");
-    let start = std::time::Instant::now();
-    let exact = e.eval();
-    let cold = start.elapsed();
+    let (exact, cold) = cpu_time(|| e.eval());
     assert_eq!(exact.to_string().len(), 171);
     assert!(exact.to_string().starts_with("6543236408537138671246974"));
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let d = e.eval_decimal(16).unwrap();
     let f = e.eval_f64().unwrap();
     let c = e.eval_complex64().unwrap();
     let d30 = e.eval_decimal(30).unwrap();
-    let warm = start.elapsed();
+    let warm = start.cpu();
     assert_eq!(d, "6.543236408537139e170");
     assert!(d30.starts_with("6.54323640853713867124697"), "{d30}");
     assert!((f / 6.543_236_408_537_139e170 - 1.0).abs() < 1e-15);

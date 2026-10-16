@@ -79,6 +79,10 @@ pub(crate) enum FactKey {
     /// power `x^e` of a constant (`assumptions`' `certified_nonzero`;
     /// `NONZERO` when proved, `UNKNOWN` when not).
     NonzeroValue,
+    /// Is `x` (no `±∞`, `zoo`, `nan` in it) finite: `value_class`'s
+    /// `ValueClass::of` (`UNKNOWN`, any finite sign, when proved by the
+    /// assumptions or a certified value; `EMPTY` when not proved).
+    Finite,
 }
 
 /// The `sym_bits` entry of a symbol name without a `Symbol` node.

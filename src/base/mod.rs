@@ -25,4 +25,5 @@ pub(crate) mod sort_key;
 pub(crate) mod stage;
 pub(crate) mod symbol;
 pub mod truth;
+pub(crate) mod value_class;
 pub(crate) mod walk;

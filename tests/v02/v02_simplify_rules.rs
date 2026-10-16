@@ -7,6 +7,8 @@
 use symplex::macros::{RewriteOpts, RewriteStrategy, Rule, RuleSet};
 use symplex::prelude::*;
 
+use crate::perf_assert::assert_fast;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -532,9 +534,7 @@ fn rewrite_node_count_guard_stops_exploding_rules() {
     // sin(a_) → sin(a_)·sin(a_ + 1)·sin(a_ + 2): exponential growth.
     let rhs = &a.sin() * &(&a + 1).sin() * &(&a + 2).sin();
     let rules = RuleSet::from_rules(vec![Rule::new("boom", &a.sin(), &rhs)]);
-    let start = std::time::Instant::now();
-    let out = x.sin().rewrite(&rules);
-    assert!(start.elapsed().as_secs() < 5, "took {:?}", start.elapsed());
+    let out = assert_fast!(std::time::Duration::from_secs(5), x.sin().rewrite(&rules));
     assert!(out.count_ops() <= 100_000);
 }
 

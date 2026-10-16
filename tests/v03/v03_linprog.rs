@@ -20,6 +20,8 @@ use symplex::linprog::{
 use symplex::matrix::Matrix;
 use symplex::prelude::*;
 
+use crate::perf_assert::{CpuTimer, assert_fast};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Test-side problem description + exact certificate checking
 // ═══════════════════════════════════════════════════════════════════════════
@@ -462,9 +464,7 @@ fn beale_cycling_example_terminates_with_correct_optimum() {
             qi(0),
         )
         .eq(vec![qi(0), qi(0), qi(1), qi(0), qi(0), qi(1), qi(0)], qi(1));
-    let t0 = std::time::Instant::now();
-    let sol = s.solve_checked();
-    assert!(t0.elapsed() < std::time::Duration::from_secs(2));
+    let sol = assert_fast!(Duration::from_secs(2), s.solve_checked());
     assert_eq!(sol.objective, Some(q(-5, 4)));
     assert_eq!(
         sol.x,
@@ -1281,14 +1281,14 @@ fn budget_max_pivots_stops_a_solve_that_needs_more() {
 #[test]
 fn budget_deadline_is_absolute_and_checked_before_the_first_pivot() {
     let p = two_pivot_problem();
-    let started = Instant::now();
+    let started = CpuTimer::start();
     let sol = p
         .clone()
         .with_budget(Budget::within(Duration::ZERO))
         .solve()
         .unwrap();
     assert_eq!(sol.status, LpStatus::BudgetExhausted);
-    assert!(started.elapsed() < Duration::from_secs(1));
+    started.assert_within(Duration::from_secs(1), "a solve with a zero time budget");
     let sol = p
         .clone()
         .with_budget(Budget::deadline(Instant::now() - Duration::from_millis(1)))
@@ -1507,12 +1507,10 @@ fn scaled_data_lands_in_every_cell_type_and_agrees() {
     // 2^100 BigInt.
     for bits in [0u32, 20, 50, 100] {
         let scale = Ratio::from_integer(BigInt::from(1) << bits);
-        let t0 = Instant::now();
-        let sol = base(&scale).solve_checked();
-        assert!(
-            t0.elapsed() < Duration::from_secs(2),
-            "2^{bits}: {:?}",
-            t0.elapsed()
+        let sol = assert_fast!(
+            Duration::from_secs(2),
+            base(&scale).solve_checked(),
+            "2^{bits}"
         );
         assert_eq!(sol.status, LpStatus::Optimal, "2^{bits}");
         assert_eq!(sol.x, reference.x, "2^{bits}: the optimum is scale-free");
@@ -1566,13 +1564,7 @@ fn larger_transportation_problem_is_fast_and_integral() {
         }
         s = s.eq(row, qi(dem));
     }
-    let t0 = std::time::Instant::now();
-    let sol = s.solve_checked();
-    assert!(
-        t0.elapsed() < std::time::Duration::from_secs(5),
-        "{:?}",
-        t0.elapsed()
-    );
+    let sol = assert_fast!(Duration::from_secs(5), s.solve_checked());
     assert_eq!(sol.status, LpStatus::Optimal);
     assert!(
         sol.x.iter().all(|v| v.is_integer()),

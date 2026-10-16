@@ -231,8 +231,10 @@ fn y_degree(exp: &[u32], ys: &[usize]) -> u32 {
     ys.iter().map(|&j| exp[j]).sum()
 }
 
-/// `p(x, y + a)`: each `yⱼ` (index `ys[j]`) replaced by `yⱼ + aⱼ`.
-fn shift<O: MonomialOrd>(p: &MultiPoly<O>, ys: &[usize], a: &[Q]) -> MultiPoly<O> {
+/// `p(x, y + a)`: each `yⱼ` (index `ys[j]`) replaced by `yⱼ + aⱼ`; `None`
+/// beyond degree [`MAX_DENSE_DEGREE`](crate::base::cast::MAX_DENSE_DEGREE)
+/// in a shifted variable (the powers of `aⱼ` are tabulated densely).
+fn shift<O: MonomialOrd>(p: &MultiPoly<O>, ys: &[usize], a: &[Q]) -> Option<MultiPoly<O>> {
     let nv = p.num_vars();
     let mut cur = p.clone();
     for (&j, aj) in ys.iter().zip(a) {
@@ -244,7 +246,9 @@ fn shift<O: MonomialOrd>(p: &MultiPoly<O>, ys: &[usize], a: &[Q]) -> MultiPoly<O
             let e = exp[j];
             // Σₖ C(e, k) aʲ^{e−k} yⱼ^k
             let mut binom = BigInt::one();
-            let mut apow: Vec<Q> = Vec::with_capacity(e as usize + 1);
+            let mut apow: Vec<Q> = Vec::with_capacity(
+                crate::base::cast::bounded_len(e, crate::base::cast::MAX_DENSE_DEGREE)? + 1,
+            );
             let mut t = Q::one();
             for _ in 0..=e {
                 apow.push(t.clone());
@@ -263,7 +267,7 @@ fn shift<O: MonomialOrd>(p: &MultiPoly<O>, ys: &[usize], a: &[Q]) -> MultiPoly<O
         cur = MultiPoly::from_terms(nv, acc.into_iter().collect())
             .unwrap_or_else(|| MultiPoly::zero(nv));
     }
-    cur
+    Some(cur)
 }
 
 /// Terms of `p` of total degree at most `max` in `ys`.
@@ -387,8 +391,8 @@ fn factor_square_free<O: MonomialOrd>(g: &MultiPoly<O>, x: usize) -> Option<Vec<
     let (a, us) = best?;
 
     // 3. Hensel lifting at the origin of the shifted variables.
-    let gs = shift(g, &ys, &a);
-    let ls = shift(&lc, &ys, &a);
+    let gs = shift(g, &ys, &a)?;
+    let ls = shift(&lc, &ys, &a)?;
     let l0 = ls
         .terms()
         .find(|(e, _)| y_degree(e, &ys) == 0)
@@ -493,12 +497,10 @@ fn factor_square_free<O: MonomialOrd>(g: &MultiPoly<O>, x: usize) -> Option<Vec<
         found.push(normalize(&cur));
     }
     let neg: Vec<Q> = a.iter().map(|v| -v).collect();
-    Some(
-        found
-            .iter()
-            .map(|h| normalize(&shift(h, &ys, &neg)))
-            .collect(),
-    )
+    found
+        .iter()
+        .map(|h| shift(h, &ys, &neg).map(|s| normalize(&s)))
+        .collect()
 }
 
 /// Advance `idx` (strictly increasing indices below `n`) to the next

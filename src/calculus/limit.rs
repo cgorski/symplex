@@ -54,7 +54,7 @@ use crate::base::extended::Extended;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::truth::Truth;
-use crate::calculus::calculus_util::hidden_zero;
+use crate::calculus::calculus_util::{NonzeroExpr, ZeroDecision, div_by, hidden_zero, recip};
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
 const MAX_LHOPITAL: usize = 5;
@@ -483,11 +483,13 @@ fn const_arg(arena: &mut Arena, d: ExprId) -> Option<ExprId> {
     (v.abs() < std::f64::consts::PI - 1e-9).then_some(theta)
 }
 
-/// `d/|d|`, the value of `sign` at the infinity `d·∞`.
-fn unit_direction(arena: &mut Arena, d: ExprId) -> ExprId {
+/// `d/|d|`, the value of `sign` at the infinity `d·∞`; `None` when `|d|`
+/// is not shown nonzero (a direction that is 0 is no direction).
+fn unit_direction(arena: &mut Arena, d: ExprId) -> Option<ExprId> {
     let a = arena.abs(d);
-    let q = arena.div(d, a);
-    crate::transforms::eval::eval(arena, q)
+    let a = ZeroDecision::decide(arena, a).nonzero()?;
+    let q = div_by(arena, d, a);
+    Some(crate::transforms::eval::eval(arena, q))
 }
 
 /// Is `g` real for every `var` near the limit point along the approach?
@@ -590,6 +592,7 @@ fn approach_substitute(arena: &mut Arena, ap: &Approach, t: ExprId, right: bool)
     } else if ap.point == arena.neg_infinity() {
         arena.neg(t)
     } else {
+        // `1/t` of the dummy symbol: a function of it, not a value.
         let one = arena.one();
         let inv = arena.div(one, t);
         let shift = if right { inv } else { arena.neg(inv) };
@@ -1581,12 +1584,16 @@ fn expansion_cost_estimate(arena: &Arena, e: ExprId) -> f64 {
 /// Three-valued: `Unknown` for a value that is 0 to the precision reached
 /// but not proved either way.  A continuity guard reads it as "may be 0"
 /// (`!is_false()`: no direct substitution), a claim of a zero needs
-/// `is_true()`.
+/// `is_true()`.  Decided by [`ZeroDecision::decide`], the zero test of the
+/// divisors: a product with an undecided constant factor is `Unknown` (up to
+/// 0.57 `y·besselj(−1/2, π/2)` was nonzero for a generic `y`, and
+/// `limit((x + 1)/(y·besselj(−1/2, π/2 + x) + x), x, 0)` was the quotient
+/// `1/(y·besselj(−1/2, π/2))` by that zero).
 fn is_zero_value(arena: &mut Arena, v: ExprId) -> crate::base::truth::Truth {
     if arena.is_zero_structural(v) {
         return crate::base::truth::Truth::True;
     }
-    crate::calculus::series::vanishes_identically(arena, v)
+    ZeroDecision::decide(arena, v).is_zero()
 }
 
 /// A "definite" constant: numeric, or a symbolic constant with a known sign.
@@ -3030,7 +3037,7 @@ fn try_compose(
                             let i = arena.i_unit();
                             arena.neg(i)
                         }
-                        Axis::Other => unit_direction(arena, inf.dir),
+                        Axis::Other => unit_direction(arena, inf.dir)?,
                     };
                     return finite_result(arena, v, var);
                 }
@@ -3294,7 +3301,8 @@ fn sum_of_limits(
         && a.axis != b.axis
     {
         // `|a/b| → ∞` or `0`, tried both ways round (the quotient with the
-        // dominant term below has a finite limit more often).
+        // dominant term below has a finite limit more often).  A quotient of
+        // two infinite terms whose limit is taken next, not of values.
         let mut order = None;
         for (num, den, first) in [(*tb, *ta, false), (*ta, *tb, true)] {
             let q = arena.div(num, den);
@@ -3637,7 +3645,9 @@ pub(crate) fn branch_cut_of(arena: &Arena, id: ExprId) -> Option<(ExprId, Branch
 /// is the principal value on its whole open half-plane and on the part of
 /// the cut the principal value is continuous with (checked against mpmath
 /// at 3,960 points).  `None` for `ln Γ`, and at a branch point (`±i` for
-/// `asinh`, `atan`; `−1` for `acosh`) reached along the cut.
+/// `asinh`, `atan`; `−1` for `acosh`) reached along the cut.  `1/u` in the
+/// forms of `atanh`, `atan` is of an argument near `l` with `|l| > 1`: a
+/// function of the variable, not a division by a value.
 pub(crate) fn continuation_across_cut(
     arena: &mut Arena,
     id: ExprId,
@@ -3916,8 +3926,11 @@ fn one_sided_gruntz(
 ) -> Result<LimVal, SymplexError> {
     // w → +∞ along the reals: declared positive, like Gruntz's own variable.
     let w = arena.positive_symbol(LIM_DUMMY);
-    let one = arena.one();
-    let inv_w = arena.div(one, w);
+    let w_var = NonzeroExpr::variable(arena, w).ok_or_else(|| SymplexError::ComputationFailed {
+        operation: "limit",
+        reason: "the substitution dummy is not a symbol".into(),
+    })?;
+    let inv_w = recip(arena, w_var);
     let shift = if right { inv_w } else { arena.neg(inv_w) };
     let sub_point = arena.add(&[point, shift]);
     let e = crate::transforms::subs::subs(arena, expr, var, sub_point);
@@ -4094,20 +4107,28 @@ fn try_lhopital(
     }
     // `g′(a)` not proved nonzero (`besselj(−1/2, π/2)`, 0 to every digit) is
     // never divided by: up to 0.56 `f′(a)/g′(a)` was such a quotient by 0.
-    if !dp_zero && !is_zero_value(arena, dp_val).is_false() {
-        return None;
-    }
+    let dp_nonzero = if dp_zero {
+        None
+    } else {
+        match ZeroDecision::decide(arena, dp_val) {
+            ZeroDecision::Nonzero(d) => Some(d),
+            ZeroDecision::Zero | ZeroDecision::Undecided(_) => return None,
+        }
+    };
 
-    if is_finite_constant(arena, np_val, var) && is_finite_constant(arena, dp_val, var) && !dp_zero
+    if let Some(dp) = dp_nonzero
+        && is_finite_constant(arena, np_val, var)
+        && is_finite_constant(arena, dp_val, var)
     {
-        let result_ratio = arena.div(np_val, dp_val);
+        let result_ratio = div_by(arena, np_val, dp);
         let result = crate::transforms::eval::eval(arena, result_ratio);
         if is_finite_constant(arena, result, var) {
             return Some(result);
         }
     }
 
-    // Combined ratio as a fallback.
+    // Combined ratio as a fallback: a quotient of functions, whose value at
+    // the point is `eval`'s (`c/0` is `zoo`, not finite).
     let ratio = arena.div(n_prime, d_prime);
     let subst = crate::transforms::subs::subs(arena, ratio, var, point);
     let evaled = crate::transforms::eval::eval(arena, subst);
@@ -4634,7 +4655,8 @@ fn imaginary_part_by_reflection(arena: &mut Arena, e: ExprId, t: ExprId) -> Opti
     let diff = arena.sub(e, reflected);
     let two = arena.int(2);
     let two_i = arena.mul(&[two, i]);
-    let im = arena.div(diff, two_i);
+    let two_i = NonzeroExpr::structural(arena, two_i)?;
+    let im = div_by(arena, diff, two_i);
     let im = crate::transforms::eval::eval(arena, im);
     // Over a common denominator the leading terms cancel exactly
     // (`e^t/(a + iπ) − e^t/(a − iπ)`), which the Gruntz algorithm cannot
@@ -4725,17 +4747,22 @@ pub(crate) fn limit_at_infinity(
         let n_deg = crate::poly::polybridge::poly_degree(arena, orig_numer, var);
         let d_deg = crate::poly::polybridge::poly_degree(arena, orig_denom, var);
 
-        if let (Some(nd), Some(dd)) = (n_deg, d_deg) {
+        // The degree of the denominator is that of a leading coefficient
+        // shown nonzero: `H(y)·x² + 1` has degree 0 for `y < 0`.
+        if let (Some(nd), Some(dd)) = (n_deg, d_deg)
+            && let Some(d_lead) = crate::poly::polybridge::poly_coefficients(arena, orig_denom, var)
+                .and_then(|dc| dc.last().copied())
+                .and_then(|d| ZeroDecision::decide(arena, d).nonzero())
+        {
             if nd < dd {
                 return Ok(arena.zero());
             }
             if nd == dd {
                 let n_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_numer, var);
-                let d_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_denom, var);
-                if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs)
-                    && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last())
+                if let Some(nc) = n_coeffs
+                    && let Some(n_lead) = nc.last()
                 {
-                    let ratio = arena.div(*n_lead, *d_lead);
+                    let ratio = div_by(arena, *n_lead, d_lead);
                     let result = crate::transforms::eval::eval(arena, ratio);
                     if is_finite_result(arena, result) {
                         return Ok(result);
@@ -4744,10 +4771,9 @@ pub(crate) fn limit_at_infinity(
             }
             if nd > dd {
                 let n_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_numer, var);
-                let d_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_denom, var);
-                if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs)
-                    && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last())
-                    && let (Some(nr), Some(dr)) = (arena.as_num(*n_lead), arena.as_num(*d_lead))
+                if let Some(nc) = n_coeffs
+                    && let Some(n_lead) = nc.last()
+                    && let (Some(nr), Some(dr)) = (arena.as_num(*n_lead), arena.as_num(d_lead.id()))
                 {
                     let ratio_positive = nr.is_positive() == dr.is_positive();
                     // For x → -∞, an odd degree difference flips the sign
@@ -4776,8 +4802,11 @@ pub(crate) fn limit_at_infinity(
     // ── Strategy 1: Substitution x = 1/t, then together+cancel ──
     // x = ±1/t with t → 0⁺: t is positive.
     let t = arena.positive_symbol("__limit_t");
-    let one = arena.one();
-    let t_inv = arena.div(one, t);
+    let t_var = NonzeroExpr::variable(arena, t).ok_or_else(|| SymplexError::ComputationFailed {
+        operation: "limit",
+        reason: "the substitution dummy is not a symbol".into(),
+    })?;
+    let t_inv = recip(arena, t_var);
 
     let sub_expr = if positive {
         arena.subs_structural(expr, var, t_inv)

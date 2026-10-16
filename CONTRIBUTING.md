@@ -938,9 +938,23 @@ TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
 
 ### Timeouts and granularity
 
-- Every test must finish in well under a second in debug mode; suites that
-  exercise budgets (Gruntz, rewrite, eigenvalue swell) assert wall-clock bounds
-  with `std::time::Instant` (see `tests/v02/v02_transforms_limits.rs`).
+- Every test must finish in well under a second in debug mode.  A test
+  that bounds the time of a call — a budget (Gruntz, rewrite, eigenvalue
+  swell), a refusal "at once", a fast path — uses the group's `perf_assert`
+  module (`tests/perf_assert/mod.rs`, declared in every group root that
+  times something; `use crate::perf_assert::{assert_fast, CpuTimer,
+  cpu_time};`): `assert_fast!(Duration::from_secs(2), e.series(&x, &zero,
+  6))` fails the test if the expression took more than the budget ×
+  `SYMPLEX_TEST_TIME_SCALE` of the **thread's CPU time** and returns the
+  value; `CpuTimer::start()` … `.assert_within(budget, "what")` for a region
+  spanning several statements; `cpu_time(|| …)` to compare two workloads.
+  Never `Instant::now()`/`.elapsed()` in a test: a wall-clock bound measures
+  the machine (CI failed on 2.02 s against a 2 s bound), and
+  `tests/unit/test_timing_asserts.rs` fails on a new one.  A budget should
+  be ≥ 5× the CPU time measured alone; CI sets `SYMPLEX_TEST_TIME_SCALE=2`.
+  Prefer a structural assertion where one exists; the time bound is the
+  backstop.  Work on another thread is invisible to the thread's clock (a
+  `CpuTimer` is `!Send`): time it inside that thread.
 - Keep one mathematical fact per test function. Long "kitchen sink" tests
   hide which behaviour regressed and defeat `--skip`/filtering.
 - Property tests that skip cases must use `common::BailCounter` and call
@@ -1327,6 +1341,21 @@ degree-5 series of the remainder with a proven bound.  An
 argument that is infinite or undefined only to the working precision is a
 domain error the precision search retries, never a non-convergence.
 
+**Numeric values of constants** (`evalf::const_value`,
+`tests/unit/test_decimal_roundtrip.rs`).  Library code reads the value of a
+symbol-free constant as a `ConstValue` — the value `evalf` prints, held as
+its settled parts: `re_sign`/`im_sign` (certified for a part that is shown;
+`ZERO` only for a certified 0; `REAL` = undecided), `re_decimal` (the printed
+digits as an unscaled `Decimal`: compare on digits and exponent, form the
+rational only within a cap, `to_ratio(max_exp)`), and `to_f64` (correctly
+rounded, real values only, for display and guides).  Never print a decimal
+and parse it back: a round trip rounds twice, forms `10^exp` of a sample
+value (`exp(1000³)` has a decimal exponent of 4.3·10⁸) and loses what the
+text does not show (an imaginary part below the printed digits).  User text
+goes through `output::parse` or `Decimal::parse` (written exponent capped at
+±10000).  The ratchet counts per file the float parses of text and the
+decimal printouts read in functions that do not return the string.
+
 **Poles of rational factors in integrals.**  A pole of a factor
 `B(x)^(−k)`, `B ∈ ℚ[x]`, is located by Descartes isolation, never through
 the root's closed form: comparing or taking limits at a root in radicals
@@ -1422,12 +1451,29 @@ functions of `transforms/eval.rs`; their values at infinity live there.
 `eval` evaluates no closed form at an argument with `±∞` in it.  A fold
 that holds for every finite value of one argument when another is special
 (`Γ(s, ∞) = 0`, `E_ν(∞) = 0`, `J_ν(∞) = 0`, `γ(s, 0) = 0`) checks that
-argument with `canon::finite_slot`.  A function at `zoo` has no value unless
+argument with `ValueClass::of(arena, a).is_finite_proved()`.  A function at `zoo` has no value unless
 tabulated, and one left unevaluated at a `zoo` argument (not a user
 function, not a degree-0 polynomial) makes `0·f` `nan`
 (`canon::unevaluated_at_complex_infinity`).  `Min`/`Max` read their arguments
 as real: `±∞ + c` is `±∞` there, and `+∞` absorbs a `Max`, unless an
 argument is known not to be real.
+
+**Special values are classified, not compared** (`src/base/value_class.rs`,
+`tests/unit/test_special_atoms.rs`).  Whether a value is finite, `±∞`, a
+directed infinity, `zoo`, `nan` or unknown is decided by `ValueClass`, never
+by comparing with `arena.infinity` and its siblings: a fold at a literal
+atom matches on `ValueClass::special_atom(arena, x)` (an O(1) identity test;
+the `match` says what happens at each atom, so a fold written for `±∞`
+cannot fire at `zoo`); a fold that holds for every finite value of one
+argument asks `ValueClass::of(arena, a).is_finite_proved()` (a number, a
+named constant, an argument with symbols, or a symbol-free constant known
+finite by the assumptions or with a certified value; memoised under
+`FactKey::Finite`); "an infinity inside" is `value_class::holds_special_atom`,
+`holds_real_infinity` (no closed form is evaluated there) or
+`holds_special_atom_outside_formal` (a candidate value; the bounds of formal
+integrals, sums and limits are not its infinities).  The ratchet counts the
+raw comparisons left per file (identity checks that decide nothing, each
+commented, and the calculus files, which migrate with their deciders).
 
 **Symbols pinned to a value.**  A symbol whose assumptions allow one value
 (`zero`, `even ∧ prime`, a positive integer neither prime nor composite:
@@ -1464,14 +1510,29 @@ public finiteness answer must not come from it.
 **Piecewise parameters.**  The generic convention covers analytic
 functions of the symbols.  `0^y`, `δ`, `KroneckerDelta`, `H`, `⌊·⌋`, `⌈·⌉`,
 and `min`/`max`/`Piecewise` with a vanishing value do vanish on regions:
-`identically_zero::may_vanish_on_a_region` detects them, `settle_constant`,
-`settle_parametric` and `vanishes_identically` read such a part as
-undecided (never divided by), and `cancel` decides such a divided-out
-denominator.  Being nonzero at a sample point proves nothing for them.  A
+`identically_zero::may_vanish_on_a_region` detects them, `ZeroDecision::decide`
+and `vanishes_identically` read such a part as undecided (never divided by),
+and `cancel` decides such a divided-out denominator.  Being nonzero at a sample point proves nothing for them.  A
 Taylor coefficient never comes from differentiating a step: a
 `KroneckerDelta(a, b)` of the series variable is constant near the point
-only when `a − b` is a nonzero number there.  L'Hôpital's rule and series
-division settle the divisor first.
+only when `a − b` is a nonzero number there.
+
+**Divisors carry their proof** (`calculus_util::NonzeroExpr`,
+`tests/unit/test_divisors.rs`).  The series, limit and Gruntz engines divide
+only by a `NonzeroExpr`, which only the deciders build:
+`ZeroDecision::decide` (the one zero test of a coefficient, a leading term,
+a derivative value or a direction: the structural test, `hidden_zero` for a
+constant, a piecewise part undecided, the parameter parts, the identity test
+of `vanishes_identically`), `NonzeroExpr::number`, `structural` (a product of
+powers of numbers and the named constants) or `variable` (the dummy of `x =
+a ± 1/t`); the quotient is built with `div_by` or `recip`.  An undecided
+divisor ends the rule (`series::rule_divisor`: refused at once), never a
+division.  The ratchet counts the `.div(…)` and `pow(…, −1)` left in the
+three files (quotients of functions whose limit is taken next, and
+identities, each commented).  Gruntz's variable stands for `−ln ω` after a
+move up: every expansion in `ω`, ramified or not, writes it through the
+engine's `l = ln ω` (`variable_as_log_omega`), and the engine never takes an
+exponential or power of `l` for a constant (`series::hides_var_power`).
 
 **Binomial coefficients.**  `C(n, k) = 0` for a negative integer `k` and
 every `n` (Graham–Knuth–Patashnik, SymPy).  A rewrite may use Pascal's rule
@@ -1529,6 +1590,25 @@ polynomials of powers), with checked conversions (`u32::try_from`, never
 `as`); beyond the bound the decider returns `None`.  Up to 0.51
 `rational_pow` cast the exponent `as u32`: `2^(2³² + 1)` became `2`, so
 `2^4294967297 − 2` was called zero, and `1000000007^1000000007 − 2` hung.
+
+**Allocation lengths from the data** (`src/base/cast.rs`,
+`tests/unit/test_alloc_bounds.rs`).  A length read from the input — a
+degree, an exponent, a valuation, a pole order, a number of terms — that
+sizes a `vec![x; n]`, a `with_capacity(n)`, a `resize(n)` or a loop that
+pushes `n` items is bounded first: `cast::bounded_len(n, cap)` (from any
+integer type, `&BigInt` or an integral `&Q`; `None` when negative or beyond
+the cap), and the routine refuses beyond (an error, `None`, the unevaluated
+form); `cast::clamped_len` only where the caller lowers its own bookkeeping
+or the length is a capacity hint for a loop bounded elsewhere.  An
+allocation failure aborts the process and nothing can catch it: up to 0.57
+`x^(9·10¹⁰)`'s dense coefficients (360 GB), the series of `exp(−x^N)`
+(137 GB), the pole order of `z/(z − 1)^N` and the harmonics of a Fourier
+series did.  The shared caps live in `cast` (`MAX_DENSE_DEGREE` 2¹⁶,
+`MAX_SERIES_TERMS` 2¹⁴, `MAX_TERMS` 2²⁰, `MAX_DENSE_LIST` 2²⁴,
+`MAX_POWER_BITS`); a routine with a tighter work bound passes its own.  A
+public function whose result is a list as long as its input
+(`primes_up_to`) has a `try_` twin that reports the refusal.  A length
+computed into a `let` first is not seen by the ratchet: review it.
 
 **The BigFloat boundary** (`src/base/bigfloat.rs`).  astro-float's
 `BigFloat::pow` and `BigFloat::log` never return when the exact result is

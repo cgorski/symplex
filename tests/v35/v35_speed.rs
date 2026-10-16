@@ -5,9 +5,11 @@
 //! is checked against the oracle cited: mpmath 1.3 at 40 digits along
 //! `a ± 10⁻³⁰`, SymPy 1.14 as a second opinion.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 const B: Direction = Direction::Both;
 const L: Direction = Direction::Left;
@@ -22,12 +24,10 @@ fn value_within(src: &str, point: &str, dir: Direction, (re, im): (f64, f64), bo
         .unwrap_or_else(|e| panic!("`{src}` does not parse: {e}"));
     let x = ctx.symbol("x");
     let p = ctx.parse(point).unwrap();
-    let t0 = Instant::now();
-    let r = f.try_limit_dir(&x, &p, dir);
-    let dt = t0.elapsed();
-    assert!(
-        dt < bound,
-        "limit of `{src}` at {point} {dir:?} took {dt:?}"
+    let r = assert_fast!(
+        bound,
+        f.try_limit_dir(&x, &p, dir),
+        "limit of `{src}` at {point} {dir:?}"
     );
     let got = r.unwrap_or_else(|e| panic!("limit of `{src}` at {point} {dir:?} failed: {e}"));
     let z = got.eval_complex64().unwrap();
@@ -119,10 +119,10 @@ fn atanh_of_a_power_tower_on_its_cut() {
     let x = ctx.symbol("x");
     let pi = ctx.parse("pi").unwrap();
     let f = ctx.parse("1/(cos(x^x) - cos(pi^pi))").unwrap();
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let right = f.try_limit_dir(&x, &pi, R).unwrap();
     let left = f.try_limit_dir(&x, &pi, L).unwrap();
-    assert!(t0.elapsed() < bound);
+    t0.assert_within(bound, "both one-sided limits");
     assert_eq!(right, ctx.parse("oo").unwrap());
     assert_eq!(left, ctx.parse("-oo").unwrap());
 }

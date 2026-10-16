@@ -125,9 +125,10 @@ fn cyclotomic_polynomial(n: i64) -> Option<Vec<Q>> {
     let divisors: Vec<i64> = (1..=n).filter(|d| n % d == 0).collect();
     let mut phis: FxHashMap<i64, Poly> = FxHashMap::default();
     for &d in &divisors {
-        let mut c = vec![Q::zero(); usize::try_from(d).ok()? + 1];
+        let deg = crate::base::cast::bounded_len(d, MAX_N)?;
+        let mut c = vec![Q::zero(); deg + 1];
         c[0] = -Q::one();
-        c[usize::try_from(d).ok()?] = Q::one();
+        c[deg] = Q::one();
         let mut p = Poly::from_coeffs(c);
         for e in divisors.iter().filter(|&&e| e < d && d % e == 0) {
             p = p.div_exact(phis.get(e)?)?;

@@ -8,7 +8,7 @@
 //! crate against an independent reference computed in this file, through
 //! the public API only.
 
-use std::time::Instant;
+use std::time::Duration;
 
 use symplex::multipoly::{GrevLex, MultiPoly};
 use symplex::num_bigint::BigInt;
@@ -17,6 +17,8 @@ use symplex::num_traits::{One, Signed, Zero};
 use symplex::poly_ex::Poly;
 use symplex::prelude::*;
 use symplex::stats::Rng;
+
+use crate::perf_assert::assert_fast;
 
 type Q = Ratio<BigInt>;
 
@@ -240,13 +242,12 @@ fn degree_30_gcd_with_degree_10_common_factor_is_fast_in_debug() {
     let b = ref_mul(&random_poly(&mut rng, 20, false), &g);
     let ea = ex_from_coeffs(&ctx, &x, &a);
     let eb = ex_from_coeffs(&ctx, &x, &b);
-    let start = Instant::now();
-    let got = ea.poly_gcd(&eb, &x).unwrap();
-    let elapsed = start.elapsed();
-    assert!(
-        elapsed.as_secs_f64() < 2.0,
-        "degree-30 gcd took {elapsed:?} (Euclid over ℚ took a third of a second and more)"
-    );
+    let got = assert_fast!(
+        Duration::from_secs(2),
+        ea.poly_gcd(&eb, &x),
+        "degree-30 gcd (Euclid over ℚ took a third of a second and more)"
+    )
+    .unwrap();
     assert_eq!(got.degree(&x), Some(10));
     // Still the monic Euclid gcd.
     assert_eq!(coeffs_of(&got, &x), ref_gcd_euclid(&a, &b));
@@ -446,10 +447,7 @@ fn interpolation_at_31_points_is_fast_in_debug() {
     let pts: Vec<(Ex, Ex)> = (0..=30i64)
         .map(|k| (ctx.int(k), ctx.rational(k * k * k - 7 * k + 3, k + 1)))
         .collect();
-    let start = Instant::now();
-    let ip = Ex::poly_interpolate(&pts, &x).unwrap();
-    let elapsed = start.elapsed();
-    assert!(elapsed.as_secs_f64() < 2.0, "took {elapsed:?}");
+    let ip = assert_fast!(Duration::from_secs(2), Ex::poly_interpolate(&pts, &x)).unwrap();
     assert_eq!(ip.degree(&x), Some(30));
     // It really interpolates.
     for k in [0i64, 7, 30] {

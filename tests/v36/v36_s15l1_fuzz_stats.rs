@@ -5,8 +5,12 @@
 //! regression test.
 
 #![allow(unused_imports)]
+use std::time::Duration;
+
 use symplex::prelude::*;
 use symplex::stats::Distribution;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 // ── Parameter validation ────────────────────────────────────────────────────
 
@@ -110,10 +114,10 @@ fn binomial_cdf_with_a_long_dyadic_probability_is_fast() {
     let ctx = Context::new();
     let p = ctx.from_f64(1e-9).unwrap();
     let d = Distribution::binomial(ctx.int(290_000), p);
-    let t = std::time::Instant::now();
+    let t = CpuTimer::start();
     let c = d.cdf(&ctx.int(0)).eval_f64().unwrap();
     let s = d.sf(&ctx.int(0)).eval_f64().unwrap();
-    assert!(t.elapsed().as_secs_f64() < 5.0, "{:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(5), "cdf and sf at 0");
     // The mpmath values to 20 digits, as the nearest doubles.
     assert!((c / 0.999_710_042_045_790_5 - 1.0).abs() < 1e-15, "{c}");
     assert!((s / 2.899_579_542_094_966e-4 - 1.0).abs() < 1e-14, "{s}");
@@ -250,14 +254,17 @@ fn transformed_large_table_merges_without_quadratic_memory() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let u = Distribution::discrete_uniform(ctx.one(), ctx.int(2000));
-    let t = std::time::Instant::now();
+    let t = CpuTimer::start();
     let y = u.transformed(&x, &x.powi(3)).unwrap();
     let at = ctx.int(1600).powi(3);
     assert_eq!(y.cdf(&at), ctx.rational(4, 5));
     assert_eq!(y.sf(&at), ctx.rational(1, 5));
     assert_eq!(y.density(&at), ctx.rational(1, 2000));
     assert_eq!(y.density(&(at + 1)), ctx.zero());
-    assert!(t.elapsed().as_secs_f64() < 20.0, "{:?}", t.elapsed());
+    t.assert_within(
+        Duration::from_secs(20),
+        "the transformed table and four queries",
+    );
     let half = ctx.rational(1, 2);
     let table = Distribution::try_finite(
         &ctx,
@@ -288,7 +295,8 @@ fn transformed_large_table_merges_without_quadratic_memory() {
 fn negative_binomial_upper_quantile_is_a_fast_exact_search() {
     let ctx = Context::new();
     let nb = Distribution::negative_binomial(ctx.int(994), ctx.rational(1, 10));
-    let t = std::time::Instant::now();
-    assert_eq!(nb.isf_f64(0.25).unwrap(), 9146.0);
-    assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+    assert_eq!(
+        assert_fast!(Duration::from_secs(2), nb.isf_f64(0.25)).unwrap(),
+        9146.0
+    );
 }

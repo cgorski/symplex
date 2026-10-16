@@ -21,6 +21,8 @@ use symplex::ntheory::{
 };
 use symplex::prelude::*;
 
+use crate::perf_assert::assert_fast;
+
 fn bi(n: i64) -> BigInt {
     BigInt::from(n)
 }
@@ -251,9 +253,10 @@ fn factorint_required_inputs() {
     );
     let p = big("1000000000000037");
     let q = big("1000000000000091");
-    let start = std::time::Instant::now();
-    assert_eq!(factorint(&p * &q), vec![(p, 1), (q, 1)]);
-    assert!(start.elapsed().as_secs() < 20, "took {:?}", start.elapsed());
+    assert_eq!(
+        assert_fast!(std::time::Duration::from_secs(20), factorint(&p * &q)),
+        vec![(p, 1), (q, 1)]
+    );
 }
 
 #[test]

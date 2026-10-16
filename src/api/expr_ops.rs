@@ -1041,15 +1041,17 @@ impl Context {
     /// `2500`, `"-1.25e-2"` → `-1/80`.
     ///
     /// Accepts `[+|-] digits [. digits] [(e|E) [+|-] digits]` with
-    /// arbitrary length; nothing is rounded.  (The general
-    /// [`parse`](Self::parse) also reads decimals exactly, but it accepts
-    /// whole expressions; this method rejects anything that is not a plain
-    /// number.)
+    /// arbitrary length and a written exponent of at most `10000` in
+    /// absolute value, as [`parse`](Self::parse) does; nothing is rounded.
+    /// (The general parser also reads decimals exactly, but it accepts whole
+    /// expressions; this method rejects anything that is not a plain
+    /// number.)  Up to 0.57 the exponent was not bounded:
+    /// `decimal_str("1e999999999")` formed `10^999999999` and did not return.
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] if the string is not a decimal
-    /// literal.
+    /// literal or its exponent exceeds `10000` in absolute value.
     ///
     /// # Examples
     ///
@@ -1064,12 +1066,22 @@ impl Context {
     /// assert_eq!(format!("{}", ctx.decimal_str(".5").unwrap()), "1/2");
     /// assert!(ctx.decimal_str("1/2").is_err());
     /// assert!(ctx.decimal_str("abc").is_err());
+    /// assert!(ctx.decimal_str("1e10001").is_err());
     /// ```
     pub fn decimal_str(&self, s: &str) -> Result<Ex, SymplexError> {
-        let r = parse_decimal_exact(s).ok_or_else(|| SymplexError::InvalidArgument {
+        let bad = || SymplexError::InvalidArgument {
             operation: "decimal_str",
-            reason: format!("{s:?} is not a decimal literal ([+-]digits[.digits][e[+-]digits])"),
-        })?;
+            reason: format!(
+                "{s:?} is not a decimal literal ([+-]digits[.digits][e[+-]digits], the exponent \
+                 within ±{MAX_LITERAL_EXPONENT})"
+            ),
+        };
+        let d =
+            crate::transforms::evalf::Decimal::parse(s, MAX_LITERAL_EXPONENT).ok_or_else(bad)?;
+        // The exponent of the value is the written one less the digits after
+        // the point: bounded by the literal itself.
+        let cap = MAX_LITERAL_EXPONENT.saturating_add(u64::try_from(s.len()).unwrap_or(u64::MAX));
+        let r = d.to_ratio(cap).ok_or_else(bad)?;
         Ok(self.from_ratio(r))
     }
 
@@ -1294,55 +1306,9 @@ impl Context {
     }
 }
 
-/// Parse `[+-]digits[.digits][(e|E)[+-]digits]` into an exact rational.
-fn parse_decimal_exact(s: &str) -> Option<Q> {
-    let s = s.trim();
-    let (negative, rest) = match s.as_bytes().first()? {
-        b'-' => (true, &s[1..]),
-        b'+' => (false, &s[1..]),
-        _ => (false, s),
-    };
-    // Split off the exponent.
-    let (mantissa, exp) = match rest.find(['e', 'E']) {
-        Some(pos) => {
-            let e: i64 = rest[pos + 1..].parse().ok()?;
-            // Reject "1e+" style junk that i64::parse would accept? It does
-            // not: "+"/"" fail to parse, which is what we want.
-            (&rest[..pos], e)
-        }
-        None => (rest, 0),
-    };
-    let (int_part, frac_part) = match mantissa.split_once('.') {
-        Some((i, f)) => (i, f),
-        None => (mantissa, ""),
-    };
-    if int_part.is_empty() && frac_part.is_empty() {
-        return None;
-    }
-    if !int_part.bytes().all(|b| b.is_ascii_digit())
-        || !frac_part.bytes().all(|b| b.is_ascii_digit())
-    {
-        return None;
-    }
-    let digits = format!("{int_part}{frac_part}");
-    let mut numer: BigInt = if digits.is_empty() {
-        BigInt::zero()
-    } else {
-        digits.parse().ok()?
-    };
-    if negative {
-        numer = -numer;
-    }
-    // value = numer · 10^(exp − frac_len)
-    let scale = exp - frac_part.len() as i64;
-    let ten = BigInt::from(10);
-    let value = if scale >= 0 {
-        Ratio::from_integer(numer * num_traits::pow(ten, usize::try_from(scale).ok()?))
-    } else {
-        Ratio::new(numer, num_traits::pow(ten, usize::try_from(-scale).ok()?))
-    };
-    Some(value)
-}
+/// The largest written exponent [`Context::decimal_str`] reads, as the
+/// expression parser (`output::parse`, `1e10000`).
+const MAX_LITERAL_EXPONENT: u64 = 10_000;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Ex — numeric extraction, comparison, evaluation helpers
@@ -2314,14 +2280,19 @@ mod tests {
         assert_eq!(format!("{}", x.sin().eval_at(&[(&x, &ctx.zero())])), "0");
     }
 
-    // ── parse_decimal_exact edge cases ─────────────────────────────────
+    // ── decimal_str exponents ───────────────────────────────────────────
 
     #[test]
-    fn parse_decimal_exact_large_exponent() {
-        let r = parse_decimal_exact("1e30").unwrap();
+    fn decimal_str_large_exponent() {
+        let ctx = Context::new();
+        let r = ctx.decimal_str("1e30").unwrap().as_rational().unwrap();
         assert_eq!(*r.numer(), BigInt::from(10).pow(30));
-        let r = parse_decimal_exact("1e-30").unwrap();
+        let r = ctx.decimal_str("1e-30").unwrap().as_rational().unwrap();
         assert_eq!(*r.denom(), BigInt::from(10).pow(30));
-        assert!(parse_decimal_exact("1e99999999999999999999").is_none());
+        assert!(ctx.decimal_str("1e10000").is_ok());
+        // Beyond the parser's exponent range: refused, not formed.
+        assert!(ctx.decimal_str("1e10001").is_err());
+        assert!(ctx.parse("1e10001").is_err());
+        assert!(ctx.decimal_str("1e99999999999999999999").is_err());
     }
 }

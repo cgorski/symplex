@@ -24,7 +24,7 @@
 // deliberately: the loops are the textbook algorithms.
 #![allow(clippy::needless_range_loop)]
 
-use std::time::Instant;
+use std::time::Duration;
 
 use symplex::decompositions::Lu;
 use symplex::linprog::{q, qi};
@@ -33,6 +33,8 @@ use symplex::num_rational::Ratio;
 use symplex::num_traits::{One, Zero};
 use symplex::prelude::*;
 use symplex::stats::multivariate::pca;
+
+use crate::perf_assert::assert_fast;
 
 type Q = Ratio<BigInt>;
 
@@ -802,20 +804,16 @@ fn equality_and_debug_ignore_the_cache() {
 #[test]
 fn rational_paths_are_fast_enough() {
     let ctx = Context::new();
-    let budget = std::time::Duration::from_secs(2);
+    let budget = Duration::from_secs(2);
 
     let cov = QMatrix::from_fn(6, 6, |i, j| qi(if i == j { 3 } else { 1 })).unwrap();
-    let t = Instant::now();
-    let p = pca(&ctx, &cov).unwrap();
-    assert!(t.elapsed() < budget, "pca 6×6 took {:?}", t.elapsed());
+    let p = assert_fast!(budget, pca(&ctx, &cov), "pca 6×6").unwrap();
     assert_eq!(p.eigenvalues[0], ctx.int(8));
     assert!(p.eigenvalues[1..].iter().all(|v| *v == ctx.int(2)));
 
     let a8 = int_matrix(&ctx, 8, 8, 1);
     let lam = ctx.symbol("lambda");
-    let t = Instant::now();
-    let cp = a8.char_poly(&lam).unwrap();
-    assert!(t.elapsed() < budget, "char_poly 8×8 took {:?}", t.elapsed());
+    let cp = assert_fast!(budget, a8.char_poly(&lam), "char_poly 8×8").unwrap();
     assert_eq!(
         cp,
         ref_char_poly_coeffs(&a8)
@@ -827,15 +825,11 @@ fn rational_paths_are_fast_enough() {
 
     let a = int_matrix(&ctx, 20, 20, 2);
     let b = int_matrix(&ctx, 20, 20, 3);
-    let t = Instant::now();
-    let c = a.matmul(&b).unwrap();
-    assert!(t.elapsed() < budget, "matmul 20×20 took {:?}", t.elapsed());
+    let c = assert_fast!(budget, a.matmul(&b), "matmul 20×20").unwrap();
     assert_eq!(c, ref_matmul(&a, &b));
 
     let a15 = int_matrix(&ctx, 15, 15, 4);
-    let t = Instant::now();
-    let lu = a15.lu().unwrap();
-    assert!(t.elapsed() < budget, "lu 15×15 took {:?}", t.elapsed());
+    let lu = assert_fast!(budget, a15.lu(), "lu 15×15").unwrap();
     let reference = ref_lu(&a15).unwrap();
     assert_eq!(lu.perm, reference.perm);
     assert_eq!(lu.l, reference.l);

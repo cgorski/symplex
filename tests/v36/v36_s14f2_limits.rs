@@ -2,7 +2,11 @@
 //! Every test says what was wrong before and cites its oracle.
 
 #![allow(unused_imports)]
+use std::time::Duration;
+
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 fn dir(d: &str) -> Direction {
     match d {
@@ -240,12 +244,13 @@ fn tanh_at_a_pole_of_tanh_is_a_laurent_series() {
 /// coefficient of `x⁻²` is `1/(3i)`, of real part 0 exactly.
 #[test]
 fn tanh_of_an_imaginary_pole_has_no_series() {
-    let t = std::time::Instant::now();
     assert_eq!(
-        series_of("tanh(gamma(-1 - 3*I*x^2))", "0", 3, "-"),
+        assert_fast!(
+            Duration::from_secs(30),
+            series_of("tanh(gamma(-1 - 3*I*x^2))", "0", 3, "-")
+        ),
         "REFUSED"
     );
-    assert!(t.elapsed().as_secs() < 30, "{:?}", t.elapsed());
 }
 
 /// `J₀(acos π)` is real: `acos π = i·ln(π + √(π² − 1))` and `J₀(iy) =

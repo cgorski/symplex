@@ -12,7 +12,7 @@
 //! oracle call that produced it (SymPy 1.14, mpmath 1.3.0 at the stated
 //! `mp.dps`, NumPy `roots`).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::control::{is_routh_stable, routh_array};
 use symplex::num_bigint::BigInt;
@@ -20,6 +20,8 @@ use symplex::num_rational::Ratio;
 use symplex::prelude::*;
 use symplex::quaternion::{EulerConvention, Quaternion};
 use symplex::rsolve::{rsolve_first_order, rsolve_linear};
+
+use crate::perf_assert::assert_fast;
 
 type Q = Ratio<BigInt>;
 
@@ -198,13 +200,12 @@ fn high_order_recurrences_fit_their_initial_values_without_swelling() {
         let coeffs: Vec<Ex> = c.iter().map(|&v| ctx.int(v)).collect();
         let init: Vec<Ex> = ics.iter().map(|&v| ctx.int(v)).collect();
         let f = forcing.map(|(src, _)| ctx.parse(src).unwrap());
-        let start = Instant::now();
-        let sol = rsolve_linear(&coeffs, f.as_ref(), &n, &init).unwrap();
-        assert!(
-            start.elapsed() < Duration::from_secs(20),
-            "{c:?} took {:?}",
-            start.elapsed()
-        );
+        let sol = assert_fast!(
+            Duration::from_secs(20),
+            rsolve_linear(&coeffs, f.as_ref(), &n, &init),
+            "{c:?}"
+        )
+        .unwrap();
         let cq: Vec<Q> = c.iter().map(|&v| q(v, 1)).collect();
         let iq: Vec<Q> = ics.iter().map(|&v| q(v, 1)).collect();
         let want = match forcing {
@@ -234,9 +235,11 @@ fn partial_initial_values_over_a_cubic_and_a_gaussian_factor() {
     let coeffs: Vec<Ex> = c.iter().map(|v| ctx.from_ratio(v.clone())).collect();
     let ics = [0i64, -1, 1, 1, -2, 2];
     let init: Vec<Ex> = ics.iter().map(|&v| ctx.int(v)).collect();
-    let start = Instant::now();
-    let sol = rsolve_linear(&coeffs, None, &n, &init).unwrap();
-    assert!(start.elapsed() < Duration::from_secs(20));
+    let sol = assert_fast!(
+        Duration::from_secs(20),
+        rsolve_linear(&coeffs, None, &n, &init)
+    )
+    .unwrap();
     // C1 is a(6): give it a value and compare with the iteration.
     let c1 = ctx.symbol("C1");
     let fixed = sol.subs(&c1, &ctx.rational(5, 7));

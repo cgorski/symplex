@@ -33,7 +33,9 @@ use crate::base::func::{Elementary, Family, Func, InternalFn};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::truth::Truth;
-use crate::calculus::calculus_util::{ZeroTest, settle_constant};
+use crate::calculus::calculus_util::{
+    NonzeroExpr, ZeroDecision, ZeroTest, div_by, recip, settle_constant,
+};
 
 /// Maximum recursion depth for the Gruntz algorithm.  The depth grows with
 /// the nesting of the expression as well as with the algorithm's own
@@ -231,7 +233,10 @@ fn budgeted_series(
         reason: "pole detected at expansion point".into(),
     };
 
-    let mut terms: Vec<ExprId> = Vec::with_capacity(order as usize);
+    let mut terms: Vec<ExprId> = Vec::with_capacity(crate::base::cast::clamped_len(
+        i64::from(order),
+        crate::base::cast::MAX_SERIES_TERMS,
+    ));
     let mut deriv = expr;
     let mut factorial = Ratio::from_integer(BigInt::from(1));
     for k in 0..order {
@@ -462,7 +467,13 @@ fn last_resort_series(
         let uq = arena.pow(u, qe);
         let g = crate::transforms::subs::subs(arena, f, w, uq);
         let g = crate::transforms::eval::eval(arena, g);
-        let lv = arena.div(logw, qe);
+        let q_div = NonzeroExpr::number(arena, qe).ok_or_else(|| {
+            crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: "a ramification index of 0".into(),
+            }
+        })?;
+        let lv = div_by(arena, logw, q_div);
         let lv = crate::transforms::eval::eval(arena, lv);
         (g, u, lv)
     };
@@ -623,7 +634,7 @@ fn is_rational_zero(arena: &mut Arena, c: ExprId) -> bool {
 }
 
 /// A coefficient of a leading-term search after the zero test
-/// ([`settle_parametric`](crate::calculus::series::settle_parametric)):
+/// ([`ZeroDecision::decide`]):
 /// `0` when proved 0, the value when proved nonzero (or with parameters),
 /// an error when it is 0 to the precision reached and proved neither — it
 /// can be neither skipped nor taken for the leading term.
@@ -631,8 +642,8 @@ fn settled_coefficient(
     arena: &mut Arena,
     c: ExprId,
 ) -> Result<ExprId, crate::base::errors::SymplexError> {
-    match crate::calculus::series::settle_parametric(arena, c) {
-        ZeroTest::Undecided(v) => Err(crate::base::errors::SymplexError::ComputationFailed {
+    match ZeroDecision::decide(arena, c) {
+        ZeroDecision::Undecided(v) => Err(crate::base::errors::SymplexError::ComputationFailed {
             operation: "gruntz::leadterm",
             reason: format!(
                 "cannot decide whether the coefficient {} is 0",
@@ -641,6 +652,23 @@ fn settled_coefficient(
         }),
         settled => Ok(settled.value(arena)),
     }
+}
+
+/// The leading coefficient `c` of a leading term a rule divides by, shown
+/// nonzero ([`ZeroDecision::decide`]); an error when it is not.
+fn coefficient_divisor(
+    arena: &mut Arena,
+    c: ExprId,
+) -> Result<NonzeroExpr, crate::base::errors::SymplexError> {
+    ZeroDecision::decide(arena, c).nonzero().ok_or_else(|| {
+        crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::leadterm",
+            reason: format!(
+                "cannot divide by the coefficient {}: not shown to be nonzero",
+                arena.display(c)
+            ),
+        }
+    })
 }
 
 /// `Some(K)` if the truncated Laurent engine shows `f = O(ωᴷ)` with
@@ -670,10 +698,10 @@ fn vanishes_to_positive_order(
             }
             let c = with_logw(arena, c, l, logw);
             // An undecided coefficient is not shown to vanish.
-            match crate::calculus::series::settle_parametric(arena, c) {
-                ZeroTest::Zero => false,
-                ZeroTest::Nonzero(v) => !is_rational_zero(arena, v),
-                ZeroTest::Undecided(_) => true,
+            match ZeroDecision::decide(arena, c) {
+                ZeroDecision::Zero => false,
+                ZeroDecision::Nonzero(v) => !is_rational_zero(arena, v.id()),
+                ZeroDecision::Undecided(_) => true,
             }
         })
     };
@@ -862,6 +890,8 @@ fn compare(
 
     let la = log_of(arena, a);
     let lb = log_of(arena, b);
+    // A quotient of two functions of `x` whose limit is taken next, not a
+    // division by a value.
     let ratio = arena.div(la, lb);
 
     tracing::trace!("gruntz::compare: computing limitinf of log ratio");
@@ -1177,6 +1207,7 @@ fn mrv(
             // `Γ(x + 1)/(x·Γ(x))` failed.
             if li_is_inf && contains_log_gamma(arena, arg) {
                 let ln_x = arena.ln(x);
+                // A function of `x` whose limit is taken next.
                 let ratio = arena.div(arg, ln_x);
                 if let Ok(c) = limitinf(arena, ratio, x, depth + 1, budget)
                     && arena.as_num(c).is_some_and(|r| !r.is_zero())
@@ -1829,14 +1860,11 @@ fn rewrite(
 
     // If sig > 0 (g → ∞), use w = 1/g, so log(w) = -g_exp
     // If sig < 0 (g → 0), use w = g, so log(w) = g_exp
-    let w_actual = if sig >= 0 {
+    if sig >= 0 {
         tracing::debug!("gruntz::rewrite: g → ∞, using ω = 1/g (so ω → 0)");
-        arena.div(arena.one(), wsym) // w → 1/wsym effectively makes wsym = 1/w
     } else {
         tracing::debug!("gruntz::rewrite: g → 0, using ω = g (already → 0)");
-        wsym
-    };
-    let _ = w_actual; // used conceptually
+    }
 
     // Build the rewrite table: for each (f = exp(f_exp), dummy_f) in omega:
     //   c = lim(f_exp / g_exp)
@@ -1871,6 +1899,7 @@ fn rewrite(
             ExprNode::Exp(inner) => inner,
             _ => f_exp,
         };
+        // A quotient of functions of `x` (`g_exp → ±∞`), not of values.
         let ratio = arena.div(f_exp_orig, g_exp);
         let c = limitinf(arena, ratio, x, depth + 1, budget)?;
         let c = hidden_rational(arena, c).unwrap_or(c);
@@ -2436,6 +2465,7 @@ fn log_w_part(
     if !crate::base::walk::contains(arena, c, x) || !crate::base::walk::contains(arena, logw, x) {
         return Ok(None);
     }
+    // Functions of `x` (`ln ω → −∞`) whose quotient's limit is taken next.
     let ratio = arena.div(c, logw);
     let k = match limitinf(arena, ratio, x, depth + 1, budget) {
         Ok(k) => k,
@@ -2638,7 +2668,8 @@ fn unary_leadterm(
             // Γ(t) ≈ 1/t and ψ(t) ≈ −1/t near the origin.
             if matches!(template, ExprNode::Gamma(_) | ExprNode::Digamma(_)) {
                 let neg_e = arena.neg(e_in);
-                let inv_c = arena.pow(c_in, arena.neg_one());
+                let c_in = coefficient_divisor(arena, c_in)?;
+                let inv_c = recip(arena, c_in);
                 let inv_c = crate::transforms::eval::eval(arena, inv_c);
                 let coeff = if matches!(template, ExprNode::Gamma(_)) {
                     inv_c
@@ -2705,6 +2736,8 @@ fn unary_leadterm(
                         reason: "Γ evaluated exactly at a pole".into(),
                     });
                 }
+                // `δ → 0` is a function of `ω`, not a value: `leadterm` finds
+                // the leading term of `1/δ` next.
                 let inv_delta = arena.pow(delta, arena.neg_one());
                 let approx = arena.mul(&[coeff, inv_delta]);
                 return leadterm(arena, approx, w, logw, x, depth + 1, budget);
@@ -2802,9 +2835,9 @@ fn unary_leadterm(
     };
     match template {
         ExprNode::Atan(_) => {
-            let two = arena.int(2);
+            let half = arena.rational(1, 2);
             let pi = arena.pi();
-            let half_pi = arena.div(pi, two);
+            let half_pi = arena.mul(&[half, pi]);
             let v = if pos { half_pi } else { arena.neg(half_pi) };
             Ok((v, zero))
         }
@@ -4137,6 +4170,8 @@ fn rewrite_tractable_pass(
             cache.insert(id, m);
             continue;
         }
+        // Identities of functions of `x`: their quotients (`sin u/cos u`,
+        // `Tanh`, `Binomial`, `Atan2` below) are not divisions by a value.
         let new = match node {
             ExprNode::Tan(u) => {
                 let s = arena.sin(u);
@@ -4148,16 +4183,16 @@ fn rewrite_tractable_pass(
                 let ep = arena.exp(u);
                 let em = arena.exp(neg_u);
                 let diff = arena.sub(ep, em);
-                let two = arena.int(2);
-                arena.div(diff, two)
+                let half = arena.rational(1, 2);
+                arena.mul(&[diff, half])
             }
             ExprNode::Cosh(u) => {
                 let neg_u = arena.neg(u);
                 let ep = arena.exp(u);
                 let em = arena.exp(neg_u);
                 let sum = arena.add(&[ep, em]);
-                let two = arena.int(2);
-                arena.div(sum, two)
+                let half = arena.rational(1, 2);
+                arena.mul(&[sum, half])
             }
             ExprNode::Tanh(u) => {
                 let two = arena.int(2);
@@ -4203,8 +4238,8 @@ fn rewrite_tractable_pass(
                 let lp = arena.ln(p);
                 let lm = arena.ln(m);
                 let diff = arena.sub(lp, lm);
-                let two = arena.int(2);
-                arena.div(diff, two)
+                let half = arena.rational(1, 2);
+                arena.mul(&[diff, half])
             }
             // At ±∞ the error functions and `Ei`, `li` separate their
             // exponential factor from an internal function with a power
@@ -4411,7 +4446,10 @@ fn rewrite_tractable_pass(
                     let d = arena.sub(pu, tail);
                     let five = arena.int(5);
                     let s5 = arena.sqrt(five);
-                    arena.div(d, s5)
+                    match NonzeroExpr::structural(arena, s5) {
+                        Some(s5) => div_by(arena, d, s5),
+                        None => rebuilt,
+                    }
                 } else {
                     arena.add(&[pu, tail])
                 }
@@ -4544,6 +4582,8 @@ fn rewrite_tractable_pass(
 /// asymptotic series the series engine knows:
 /// `erfc z = e^{−z²}E(z)`, `erfc z = 2 − e^{−z²}E(−z)`, `erf z = 1 − erfc z`,
 /// `Ei z = e^z F(z)`, `li z = Ei(ln z) = z·F(ln z)` (`z → +∞` only).
+/// Its reciprocals (`1/z`, `π/(2u)`) are of an argument tending to
+/// infinity, functions of `x`, not divisions by a value.
 ///
 /// Follows SymPy's `_eval_rewrite_as_tractable` of `erf`, `erfc`, `Ei`
 /// and the helper functions `_erfs`, `_eis` in
@@ -4649,7 +4689,8 @@ fn special_asymptotic_arg(arena: &Arena, node: &ExprNode, x: ExprId) -> Option<E
 /// same expansion to every order in `1/u` and differ by the exponentially
 /// smaller `(2/π) sin(νπ) Kν(u)`, which the expansion cannot see.  Before,
 /// all of these were refused ("a function of unknown growth"):
-/// `limit(Chi(x)·x·e^{−x}, x, ∞)` is `1/2`.
+/// `limit(Chi(x)·x·e^{−x}, x, ∞)` is `1/2`.  The reciprocals (`u⁻¹`,
+/// `π/(2u)`) are of the argument `u → ∞`, functions of `x`.
 fn special_asymptotic_rewrite(
     arena: &mut Arena,
     node: &ExprNode,
@@ -5301,9 +5342,12 @@ fn real_special_values_as_symbols(
                 if matches!(sign_at_inf(arena, a, x, depth + 1, budget), Ok(1)) {
                     Some(true)
                 } else {
-                    let e_inv = arena.pow(arena.e_const(), arena.neg_one());
-                    let d = arena.add(&[a, e_inv]);
-                    matches!(sign_at_inf(arena, d, x, depth + 1, budget), Ok(1)).then_some(false)
+                    NonzeroExpr::structural(arena, arena.e_const()).and_then(|e| {
+                        let e_inv = recip(arena, e);
+                        let d = arena.add(&[a, e_inv]);
+                        matches!(sign_at_inf(arena, d, x, depth + 1, budget), Ok(1))
+                            .then_some(false)
+                    })
                 }
             }
             // Positive when its series in `1/u` is (`Ei u = e^u·F(u)`, `F > 0`
@@ -5870,8 +5914,13 @@ fn gruntz_with_budget(
     let z0_display = arena.display(z0).to_string();
     tracing::debug!(expr = %e_display, z0 = %z0_display, "gruntz: finite-point limit, substituting z = z0 + 1/x");
     let x = fresh_positive_dummy(arena, budget);
-    let one = arena.one();
-    let inv_x = arena.div(one, x);
+    let x_var = NonzeroExpr::variable(arena, x).ok_or_else(|| {
+        crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz",
+            reason: "the substitution dummy is not a symbol".into(),
+        }
+    })?;
+    let inv_x = recip(arena, x_var);
     let z0_plus_inv_x = arena.add(&[z0, inv_x]);
     let e_sub = crate::transforms::subs::subs(arena, e, z, z0_plus_inv_x);
     let sub_display = arena.display(e_sub).to_string();

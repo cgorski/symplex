@@ -3,7 +3,11 @@
 //! non-real number.  Reference values cite the mpmath call (exact rational
 //! inputs, two `mp.dps` settings agreeing) or the SymPy call.
 
+use std::time::Duration;
+
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 fn dec(ctx: &Context, src: &str, digits: u32) -> Result<String, SymplexError> {
     ctx.parse(src).unwrap().eval_decimal(digits)
@@ -310,14 +314,13 @@ fn zero_test_of_principal_roots() {
 #[test]
 fn zeta_of_a_huge_negative_argument_is_refused_at_once() {
     let ctx = Context::new();
-    let t = std::time::Instant::now();
     assert!(
-        ctx.parse("zeta(erfi(-1000))")
-            .unwrap()
-            .eval_decimal(16)
-            .is_err()
+        assert_fast!(
+            Duration::from_secs(5),
+            ctx.parse("zeta(erfi(-1000))").unwrap().eval_decimal(16)
+        )
+        .is_err()
     );
-    assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());
     assert_eq!(
         ctx.parse("zeta(-101/2)").unwrap().eval_decimal(16).unwrap(),
         "2.399094238135732e24"

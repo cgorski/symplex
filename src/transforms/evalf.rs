@@ -94,6 +94,7 @@ mod cerf;
 mod cexpint;
 mod conjugate;
 mod cspecial;
+mod decimal;
 mod elliptic;
 mod emsum;
 mod exact;
@@ -118,6 +119,7 @@ mod zeta;
 /// A complex number represented as (real_part, imaginary_part).
 use crate::base::bigcomplex::Complex;
 
+pub(crate) use decimal::Decimal;
 pub(crate) use quad::nonzero_on;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -145,28 +147,19 @@ pub(crate) use quad::nonzero_on;
 /// the exponent range ([`Adaptive::Hidden`]; before 0.35 such values printed
 /// `0`: `sin²1 + cos²1 − 1 + exp(−10¹⁰)`).
 pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, SymplexError> {
-    evalf_with(arena, expr, digits, ZeroSearch::Number, Underflow::Refuse)
-}
-
-/// What a decimal result does with a nonzero number below the exponent
-/// range ([`Adaptive::Underflow`]).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Underflow {
-    /// Refuse it ([`underflow_error`]): 0 is not one of its digits.
-    Refuse,
-    /// Print `0`, for a caller that reads the result as an `f64`, whose
-    /// correctly rounded value it is.
-    Zero,
+    evalf_with(arena, expr, digits, ZeroSearch::Number)
 }
 
 /// [`evalf`] with the [`ZeroSearch`] `search` for a value that is zero to
-/// the working precision, and the [`Underflow`] policy `underflow`.
+/// the working precision.  A nonzero number below the exponent range
+/// ([`Adaptive::Underflow`]) is refused ([`underflow_error`]): 0 is not one
+/// of its digits.  (Up to 0.57 `eval_const_f64` printed it `0` here and
+/// parsed the string; it reads the value directly since.)
 fn evalf_with(
     arena: &Arena,
     expr: ExprId,
     digits: u32,
     search: ZeroSearch,
-    underflow: Underflow,
 ) -> Result<String, SymplexError> {
     // Convert decimal digits to binary precision with guard bits.
     // log2(10) ≈ 3.3219, so we use digits * 3.4 + 64 extra bits.
@@ -218,14 +211,6 @@ fn evalf_with(
 
     match evaluate_adaptive(arena, expr, digits, search, &mut cc)? {
         Adaptive::Settled(result, _) => format_complex(&result, digits),
-        Adaptive::Underflow(_)
-        | Adaptive::Beyond(_)
-        | Adaptive::Undecided
-        | Adaptive::Hidden { .. }
-            if underflow == Underflow::Zero =>
-        {
-            Ok("0".to_owned())
-        }
         Adaptive::Underflow(_) | Adaptive::Beyond(_) => Err(underflow_error()),
         Adaptive::Undecided => Err(undecided_error()),
         Adaptive::Hidden { below_range: true } => Err(hidden_error()),
@@ -2733,6 +2718,112 @@ pub(crate) fn evalf_verdict(
     Ok(Verdict::new(z, evidence))
 }
 
+/// The numeric value of a symbol-free constant read for a decision: the
+/// value [`evalf`] prints at `digits` digits, held as its settled parts —
+/// no decimal string is formatted and read back.
+///
+/// Each part is 0 when its error ball contained 0 and otherwise carries
+/// `digits` certified significant digits, however small next to the other
+/// part ([`settle`] with [`ZeroSearch::Number`]), so the sign of a part that
+/// is not 0 is certified ([`re_sign`](Self::re_sign),
+/// [`im_sign`](Self::im_sign)).  Its views:
+///
+/// * the decimal digits of the real part, exactly those [`evalf`] prints,
+///   kept unscaled ([`Decimal`]: the value of `exp(1000³)` has a decimal
+///   exponent of 4.3·10⁸, whose power of ten cannot be formed);
+/// * the `f64` of a real value, correctly rounded from its real part
+///   ([`to_f64`](Self::to_f64)) — for display and guides: it carries no
+///   error bound.
+///
+/// Up to 0.57 the crate read the decimal string back (`parse::<f64>`, an
+/// exact rational of the decimal), which rounded twice (16 digits, then an
+/// `f64`: an ulp away from the value) and made every caller re-derive the
+/// imaginary part from the text.  `tests/unit/test_decimal_roundtrip.rs`
+/// keeps such round trips from coming back.
+#[derive(Clone, Debug)]
+pub(crate) struct ConstValue {
+    z: Complex,
+    settled: Settled,
+    digits: u32,
+}
+
+impl ConstValue {
+    /// The certified sign of the real part: `POSITIVE` or `NEGATIVE` when it
+    /// is not 0 (its ball excludes 0), `ZERO` when the whole value is
+    /// certified 0, and `REAL` (undecided) for a part that is 0 within its
+    /// ball — next to a nonzero imaginary part, or in a value zero only to
+    /// the precision reached.
+    pub(crate) fn re_sign(&self) -> crate::base::truth::SignSet {
+        self.part_sign(&self.z.0)
+    }
+
+    /// The certified sign of the imaginary part (as
+    /// [`re_sign`](Self::re_sign)).  A part that is 0 next to a nonzero real
+    /// part is only below the precision of the value: realness is proved by
+    /// `im(x)` evaluated on its own (`realness::imaginary_part_sign`).
+    pub(crate) fn im_sign(&self) -> crate::base::truth::SignSet {
+        self.part_sign(&self.z.1)
+    }
+
+    fn part_sign(&self, part: &BigFloat) -> crate::base::truth::SignSet {
+        use crate::base::truth::SignSet;
+        if !part.is_zero() {
+            return if is_strictly_positive(part) {
+                SignSet::POSITIVE
+            } else {
+                SignSet::NEGATIVE
+            };
+        }
+        if self.settled == Settled::Certified && self.z.0.is_zero() && self.z.1.is_zero() {
+            SignSet::ZERO
+        } else {
+            SignSet::REAL
+        }
+    }
+
+    /// The real part to the digits [`evalf`] prints, as an unscaled
+    /// [`Decimal`]; `None` only for a part without a finite value.
+    pub(crate) fn re_decimal(&self) -> Option<Decimal> {
+        Decimal::of(&self.z.0, self.digits)
+    }
+
+    /// The value as an `f64`, correctly rounded from its real part (`±∞`
+    /// beyond the `f64` range, `0.0` below it), for display and guides;
+    /// `None` when the value has a nonzero imaginary part (however small:
+    /// it is certified) or no finite value.
+    pub(crate) fn to_f64(&self) -> Option<f64> {
+        if !self.z.1.is_zero() {
+            return None;
+        }
+        finite_part_to_f64(&self.z.0).ok()
+    }
+}
+
+/// The value [`evalf`] prints for the variable-free `expr` at `digits`
+/// digits, as a [`ConstValue`] — the API for reading the numeric value of a
+/// constant inside the crate.  The same evaluation as [`evalf`]: a value
+/// that is zero to the precision reached is pursued as for a result read as
+/// a number ([`ZeroSearch::Number`]) and is then 0, and a number below the
+/// exponent range is refused (its sign, when known, is in
+/// [`evalf_settled`]).
+///
+/// # Errors
+///
+/// As [`evalf`].
+pub(crate) fn const_value(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+) -> Result<ConstValue, SymplexError> {
+    match evalf_adaptive_value(arena, expr, digits, ZeroSearch::Number)? {
+        Adaptive::Settled(z, settled) => Ok(ConstValue { z, settled, digits }),
+        Adaptive::Underflow(_) | Adaptive::Beyond(_) => Err(underflow_error()),
+        Adaptive::Undecided => Err(undecided_error()),
+        Adaptive::Hidden { below_range: true } => Err(hidden_error()),
+        Adaptive::Hidden { below_range: false } => Err(hidden_deep_error(digits)),
+    }
+}
+
 /// `ln x` for a positive real constant `x`, from a 16-digit evaluation;
 /// `None` when `x` has free symbols, does not evaluate, or is not a
 /// positive real number.  Accurate far beyond `f64` range (`x = 10⁻⁴⁰⁰`
@@ -2920,14 +3011,19 @@ pub(crate) fn eval_const_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
         return Some(result);
     }
 
-    // Fall back to arbitrary-precision evaluation to 16 decimal digits,
-    // then parse the resulting string.  The `evalf` call takes `&Arena`
-    // (immutable), which Rust allows via automatic reborrowing of our
-    // `&mut Arena`.
-    match evalf_with(arena, evaled, 16, ZeroSearch::Cap, Underflow::Zero) {
-        Ok(s) => {
-            let result = s.parse::<f64>().ok();
-            tracing::trace!(?result, decimal_str = %s, "eval_const_f64: evalf path");
+    // Fall back to arbitrary-precision evaluation to 16 decimal digits, the
+    // `f64` rounded straight from the real part (up to 0.57 the 16-digit
+    // decimal was printed and parsed, which can land an ulp away).  A value
+    // below the exponent range, or zero to the precision reached, is `0.0`,
+    // its correctly rounded `f64`; a nonzero imaginary part refuses.
+    match evalf_value(arena, evaled, 16, ZeroSearch::Cap) {
+        Ok((z, _)) => {
+            let result = if z.1.is_zero() {
+                finite_part_to_f64(&z.0).ok()
+            } else {
+                None
+            };
+            tracing::trace!(?result, "eval_const_f64: evalf path");
             result
         }
         Err(e) => {
@@ -4791,17 +4887,16 @@ fn range_bound(
 
 /// The number of terms of `lo..=hi` (0 when empty), refused beyond
 /// [`MAX_RANGE_TERMS`].
-fn range_terms(lo: &BigInt, hi: &BigInt, what: &str) -> Result<u32, SymplexError> {
+fn range_terms(lo: &BigInt, hi: &BigInt, what: &str) -> Result<usize, SymplexError> {
     if hi < lo {
         return Ok(0);
     }
     let n = hi - lo + 1;
-    match u32::try_from(n) {
-        Ok(n) if n <= MAX_RANGE_TERMS + 1 => Ok(n),
-        _ => Err(unevaluable(format!(
+    crate::base::cast::bounded_len(&n, MAX_RANGE_TERMS + 1).ok_or_else(|| {
+        unevaluable(format!(
             "{what} range too large for numerical evaluation (> {MAX_RANGE_TERMS} terms)"
-        ))),
-    }
+        ))
+    })
 }
 
 /// A running sum of values with error bounds: per part, the terms' bounds
@@ -4972,7 +5067,7 @@ fn eval_product(
     };
     let terms = range_terms(&lo_i, &hi_i, "Product")?;
     let post_order = walk::post_order_ids(arena, body);
-    let mut factors: Vec<CBall> = Vec::with_capacity(terms as usize);
+    let mut factors: Vec<CBall> = Vec::with_capacity(terms);
     let mut k = lo_i.clone();
     for _ in 0..terms {
         factors.push(evaluate_at_integer(arena, body, &post_order, var, &k, w)?);
@@ -12701,8 +12796,8 @@ fn format_decimal(val: &BigFloat, digits: u32) -> Result<String, SymplexError> {
             Ok(s)
         }
     } else if adj_exp >= 0 && (adj_exp as usize) < n + 6 {
-        // Small integer — pad with trailing zeros.
-        let mut s = String::with_capacity(adj_exp as usize + 2);
+        // Small integer — pad with trailing zeros (`adj_exp < n + 6`).
+        let mut s = String::with_capacity(n + 8);
         s.push_str(sign_str);
         for &ch in &digit_chars {
             s.push(ch);
@@ -12713,8 +12808,8 @@ fn format_decimal(val: &BigFloat, digits: u32) -> Result<String, SymplexError> {
         }
         Ok(s)
     } else if (-4..0).contains(&adj_exp) {
-        // Small fraction like 0.00123.
-        let mut s = String::with_capacity(n + (-adj_exp) as usize + 3);
+        // Small fraction like 0.00123 (`−4 ≤ adj_exp < 0`).
+        let mut s = String::with_capacity(n + 7);
         s.push_str(sign_str);
         s.push_str("0.");
         let leading_zeros = (-adj_exp - 1) as usize;
@@ -13699,5 +13794,55 @@ mod tests {
             "{n}"
         );
         assert!(n > 200, "{n}");
+    }
+
+    /// The `f64` of a constant is rounded once, from its value.  Up to 0.57
+    /// `eval_const_f64(√2)` parsed the 16-digit decimal `1.414213562373095`
+    /// and was `1.4142135623730949`, an ulp below `SQRT_2` (the correctly
+    /// rounded value; mpmath `sqrt(2)` = 1.41421356237309504880).
+    #[test]
+    fn const_values_round_once() {
+        let mut a = Arena::new();
+        let two = a.int(2);
+        let r2 = a.sqrt(two);
+        assert_eq!(eval_const_f64(&mut a, r2), Some(std::f64::consts::SQRT_2));
+        let v = const_value(&a, r2, 16).unwrap();
+        assert_eq!(v.to_f64(), Some(std::f64::consts::SQRT_2));
+        assert_eq!(v.re_sign(), crate::base::truth::SignSet::POSITIVE);
+        assert_eq!(v.re_decimal(), Decimal::parse("1.414213562373095", 10));
+    }
+
+    /// The parts of a value are read with their certified signs: an
+    /// imaginary part far below the real one is kept, and the value has no
+    /// real `f64` (up to 0.52 the printout dropped it; up to 0.57 callers
+    /// searched the printout for `i`).  A value zero only to the precision
+    /// reached has parts of undecided sign.
+    #[test]
+    fn const_value_parts_carry_certified_signs() {
+        use crate::base::truth::SignSet;
+        let mut a = Arena::new();
+        let m60 = a.int(-60);
+        let tiny = a.exp(m60);
+        let im = a.mul(&[tiny, a.i_unit]);
+        let z = a.add(&[a.one, im]);
+        let v = const_value(&a, z, 30).unwrap();
+        assert_eq!(v.re_sign(), SignSet::POSITIVE);
+        assert_eq!(v.im_sign(), SignSet::POSITIVE);
+        assert_eq!(v.to_f64(), None);
+        assert!(Decimal::of(&v.z.1, 30).is_some_and(|d| d.magnitude() == -27));
+        let zero = const_value(&a, a.zero, 30).unwrap();
+        assert_eq!(zero.re_sign(), SignSet::ZERO);
+        assert_eq!(zero.to_f64(), Some(0.0));
+        // √2·√3 − √6 is not simplified here: zero to the precision reached.
+        let (two, three, six) = (a.int(2), a.int(3), a.int(6));
+        let (r2, r3, r6) = (a.sqrt(two), a.sqrt(three), a.sqrt(six));
+        let p = a.mul(&[r2, r3]);
+        let neg = a.neg(r6);
+        let d = a.add(&[p, neg]);
+        if let Ok(v) = const_value(&a, d, 16)
+            && v.settled == Settled::ZeroToPrecision
+        {
+            assert_eq!(v.re_sign(), SignSet::REAL);
+        }
     }
 }

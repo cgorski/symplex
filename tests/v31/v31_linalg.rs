@@ -3,10 +3,12 @@
 //! arithmetic, eigenvalues and eigenvectors of 3×3 matrices with algebraic
 //! entries.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::decompositions::Qr;
 use symplex::num_complex::Complex64;
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 fn p(ctx: &Context, s: &str) -> Ex {
     ctx.parse(s).unwrap_or_else(|e| panic!("{s}: {e}"))
@@ -181,9 +183,7 @@ fn symbolic_complex_qr_is_exact_and_fast() {
             ],
         ],
     );
-    let t = Instant::now();
-    let Qr { q, r } = a.qr().unwrap();
-    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    let Qr { q, r } = assert_fast!(Duration::from_secs(10), a.qr()).unwrap();
     assert!(q.to_string().len() + r.to_string().len() < 60_000);
     let s = ctx.symbol("a");
     for v in ["3/7 + 2/5*I", "-5/3 + 1/9*I", "2", "-1/2*I"] {
@@ -376,9 +376,7 @@ fn cardano_eigenvalues_of_an_irreducible_algebraic_cubic() {
             &["1", "0", "sqrt(3)"],
         ],
     );
-    let t = Instant::now();
-    let ev = a.eigenvals_with_multiplicity().unwrap();
-    assert!(t.elapsed() < Duration::from_secs(10));
+    let ev = assert_fast!(Duration::from_secs(10), a.eigenvals_with_multiplicity()).unwrap();
     let numpy = [
         Complex64::new(0.5308416895386172, 0.5135364694189363),
         Complex64::new(1.5880374690632757, -1.0431340564906013),

@@ -8,6 +8,65 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+Five recurring idioms that kept producing bugs are replaced by types and
+functions, each with a ratchet test that keeps the old idiom from coming
+back.  Special values (`±∞`, `zoo`, `nan`) are classified by one decider
+(`ValueClass`) instead of 263 hand-written comparisons; the series, limit and
+Gruntz engines divide only by a proof-carrying `NonzeroExpr`; lengths read
+from the input are bounded before they size an allocation (no input aborts
+the process any more in a 9,956-case hunt; 119 did); performance assertions
+in the tests measure CPU time, not wall-clock time; and the library reads
+the value of a constant from the value, never from its printed decimal.
+
+### Breaking (behaviour)
+
+- `Context::decimal_str` refuses a written exponent beyond `±10000`, as
+  `Context::parse` does (`"1e100000000"` did not return).
+- Series and limits refuse where a rule would divide by a value not proved
+  nonzero: `series(H(log(y, 5))^x)` was `1 + x·ln H + …` (wrong for `y < 1`,
+  where `H = 0`); `series(ln(x + J))` with `J = besselj(−1/2, π/2) = 0` was
+  `ln J + x/J − …`; `series(elliptic_pi(x, H(y)))` divided by `m`.  Two
+  answers that were right for every parameter value are refused with them
+  (`limit((x − H(y))^x, x, 0) = 1`).
+- `primes_up_to`, `quadratic_residues` and `binomial_coefficients_list`
+  return an empty list beyond their documented size caps (they aborted the
+  process); `try_primes_up_to`, `try_quadratic_residues`,
+  `try_binomial_coefficients_list` report the refusal.
+
+### Fixed
+
+- **Process aborts on huge inputs** (a hunt of 9,956 cases through the
+  public API: 119 aborts and 9 panics → 0 aborts):
+  `inverse_z_transform(z/(z − 1)^N)` for `N ≥ 2³¹`, `fourier_series_on(x, …,
+  2³¹ − 1)`, `Poly::all_coeffs(x^(2³¹ − 1) − 1)`, `Σ_{k≥1} 1/k^(2⁵³)` (a
+  144 PB Bernoulli table; now `ζ(2⁵³)`), `∏_{k=−10}^{2⁶³−1} k` (now 0),
+  `MultiPoly::gcd(x^(2³¹ − 1) − 1, …)`.
+- `inverse_z_transform(z/(z − 1)^22)` was `−n⋯(n − 20)/4249290049419214848`
+  (21! had wrapped in an `i64`); it is `C(n, 21)`, and `z/(z − 1)^100` was
+  `zoo`.
+- `∞^zoo` and `(−∞)^zoo` are `nan` (they stayed unevaluated); `(−∞)^n` for
+  an odd `n > 2⁶³` was `∞` (the parity was read from a saturated `i64`).
+- Inequalities with a non-real expression: `x + i·e⁻⁶⁰ > 0` was
+  `(−i·e⁻⁶⁰, ∞)` (an imaginary part below `10⁻²⁰` of the value was taken
+  for 0), now `EmptySet`; `x − exp(10⁹) > 0` hung (formed
+  `10^434294452`), now refused at once.
+- Internal `f64` guides of constants are rounded once (`√2` was
+  `1.4142135623730949`).
+
+### Changed
+
+- Tests: the 97 wall-clock assertions in 80 test files measure the CPU time
+  of the test's thread (`tests/perf_assert`, `assert_fast!`, budgets scaled
+  by `SYMPLEX_TEST_TIME_SCALE`; CI sets 2).  The full suite passes with 56
+  extra busy processes on the host, where the base tree failed one test.
+- New ratchets in `tests/unit/`: `test_special_atoms` (raw comparisons with
+  `±∞`/`zoo`/`nan`: 263 → 167, the rest in the calculus files and
+  identity checks), `test_divisors` (divisions in series/limit/Gruntz: 47 →
+  18, each commented), `test_alloc_bounds` (data-sized allocations: 37 → 4),
+  `test_timing_asserts` (wall-clock measurements in tests: 526 → 11, the
+  `Budget` deadlines), `test_decimal_roundtrip` (decimal printouts parsed
+  back: 29 → 15, the review queue).
+
 ## [0.57.0] - 2026-10-16
 
 Statistics hardening.  The statistics modules were checked systematically

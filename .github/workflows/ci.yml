@@ -87,6 +87,11 @@ jobs:
   test:
     name: Test (stable)
     runs-on: ubuntu-latest
+    env:
+      # Performance assertions in tests measure the CPU time of their own
+      # thread (`tests/perf_assert`); a shared runner's slower cores get a
+      # factor 2 on every budget.
+      SYMPLEX_TEST_TIME_SCALE: "2"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

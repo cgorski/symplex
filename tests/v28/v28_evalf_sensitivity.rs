@@ -16,11 +16,13 @@
 // Reference values are quoted at the digits mpmath printed them.
 #![allow(clippy::excessive_precision)]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use num_traits::{Signed, Zero};
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 /// A decimal string as `m·10^e` with `m` an integer.
 fn decimal(s: &str) -> (BigInt, i64) {
@@ -420,7 +422,7 @@ fn loggamma_next_to_a_pole() {
 #[test]
 fn expint_of_a_huge_order_does_not_panic() {
     let ctx = Context::new();
-    let t = Instant::now();
+    let t = CpuTimer::start();
     let r = ctx
         .parse("expint(10^20/3, 1/7)")
         .expect("parse")
@@ -429,7 +431,7 @@ fn expint_of_a_huge_order_does_not_panic() {
         r.is_ok() || matches!(r, Err(SymplexError::PrecisionExhausted { .. })),
         "{r:?}"
     );
-    assert!(t.elapsed() < Duration::from_secs(20));
+    t.assert_within(Duration::from_secs(20), "expint(10^20/3, 1/7)");
     // mpmath: gammainc(-300 - mpf(1)/3, mpf(1)/7), dps 60 and 120
     let r = "1.86749104572282322624604969628091496187007034480563954996332e+251";
     certified_at(&ctx, "uppergamma(-300 - 1/3, 1/7)", &[16, 30, 50], r);
@@ -447,7 +449,7 @@ fn expint_of_a_huge_order_does_not_panic() {
 #[test]
 fn gamma_of_a_large_rational_is_evaluated_numerically() {
     let ctx = Context::new();
-    let t = Instant::now();
+    let t = CpuTimer::start();
     let cases = [
         (
             // mpmath: gamma(3000 + mpf(1)/3), dps 60 and 120
@@ -488,7 +490,7 @@ fn gamma_of_a_large_rational_is_evaluated_numerically() {
     for (src, r) in cases {
         certified_at(&ctx, src, &[16, 30], r);
     }
-    assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(30), "the certified values");
     for src in [
         "gamma(3000 + 1/3)",
         "factorial(3000)",
@@ -501,11 +503,11 @@ fn gamma_of_a_large_rational_is_evaluated_numerically() {
     // evaluates it numerically (since 0.30, through a Γ quotient in log
     // space; it was an error).  mpmath (dps 60, 120):
     //   rf(mpf(1)/3, 3000) = 7.44597208021948398785705484736e+9127
-    let t = Instant::now();
+    let t = CpuTimer::start();
     let e = ctx.parse("rising_factorial(1/3, 3000)").expect("parse");
     assert!(e.eval().as_rational().is_none());
     assert_eq!(e.eval_decimal(16).unwrap(), "7.445972080219484e9127");
-    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(5), "rising_factorial(1/3, 3000)");
 }
 
 /// Within the guard the exact values are unchanged.

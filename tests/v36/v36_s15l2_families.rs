@@ -2,8 +2,12 @@
 //! Every test says what was wrong before and cites its oracle.
 
 #![allow(unused_imports)]
+use std::time::Duration;
+
 use symplex::prelude::*;
 use symplex::stats::Distribution;
+
+use crate::perf_assert::assert_fast;
 
 fn close(actual: f64, expected: f64, rel: f64, label: &str) {
     assert!(
@@ -112,9 +116,10 @@ fn lattice_quantiles_without_a_closed_cdf_are_decided_exactly() -> Result<(), Sy
     assert_eq!(h.quantile_f64(3.0 / 998.0)?, 4.0);
     assert_eq!(h.isf_f64(1e-5)?, 17.0);
     let nb = Distribution::negative_binomial(ctx.int(5000), ctx.rational(7, 54));
-    let t0 = std::time::Instant::now();
-    assert_eq!(nb.quantile_f64(1e-20)?, 29060.0);
-    assert!(t0.elapsed().as_secs() < 10, "took {:?}", t0.elapsed());
+    assert_eq!(
+        assert_fast!(Duration::from_secs(10), nb.quantile_f64(1e-20))?,
+        29060.0
+    );
     Ok(())
 }
 
@@ -282,9 +287,10 @@ fn binomial_tails_beyond_the_exact_budget() {
     assert_eq!(digits(&b.sf(&k), 30), "0.499940529196210839429070661652");
     let near_one = 1 - ctx.int(10).powi(-18);
     let b = Distribution::binomial(ctx.int(1_000_000), near_one);
-    let t0 = std::time::Instant::now();
-    assert_eq!(digits(&b.cdf(&ctx.int(0)), 10), "1e-18000000");
-    assert!(t0.elapsed().as_secs() < 10, "took {:?}", t0.elapsed());
+    assert_eq!(
+        assert_fast!(Duration::from_secs(10), digits(&b.cdf(&ctx.int(0)), 10)),
+        "1e-18000000"
+    );
 }
 
 /// A level that a jump of the binomial CDF matches to rounding: `F(0) =

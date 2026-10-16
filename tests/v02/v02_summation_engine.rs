@@ -8,16 +8,7 @@
 
 use symplex::prelude::*;
 
-/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
-/// shared CI runners (`CI` is set), which are several times slower and noisy.
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::assert_fast;
 
 /// Σ_{k=lo}^{hi} body(k) by brute force (exact).
 fn brute_sum(body: &Ex, k: &Ex, lo: i64, hi: i64) -> Ex {
@@ -400,9 +391,10 @@ fn telescoping_beyond_shift_cap_uses_harmonic_numbers() {
     let k = ctx.symbol("k");
     let n = ctx.symbol("n");
     let body = &ctx.int(1) / &(&k * &(&k + 250));
-    let start = std::time::Instant::now();
-    let s = body.summation(&k, &ctx.int(1), &n);
-    assert!(start.elapsed() < time_budget(2));
+    let s = assert_fast!(
+        std::time::Duration::from_secs(2),
+        body.summation(&k, &ctx.int(1), &n)
+    );
     assert!(!s.has_unevaluated(), "{s}");
     // Two harmonic terms plus the constant H_250/250 (a large exact rational).
     assert_eq!(s.to_string().matches("harmonic").count(), 2, "{s}");

@@ -1115,7 +1115,9 @@ impl Poly {
 
     /// Dense coefficient list of a univariate polynomial, highest degree
     /// first and with zeros included (SymPy `all_coeffs`); `None` unless
-    /// there is exactly one generator.  The zero polynomial gives `[0]`.
+    /// there is exactly one generator, and beyond degree `2²⁴` (a dense
+    /// list of `x^(2³¹ − 1)` would take 34 GB).  The zero polynomial gives
+    /// `[0]`.
     ///
     /// # Examples
     ///
@@ -1136,8 +1138,9 @@ impl Poly {
         }
         let terms = self.ex_terms();
         let deg = terms.keys().map(|e| e[0]).max().unwrap_or(0);
+        let len = crate::base::cast::bounded_len(deg, crate::base::cast::MAX_DENSE_LIST)? + 1;
         let zero = self.ctx.zero();
-        let mut out = vec![zero; deg as usize + 1];
+        let mut out = vec![zero; len];
         for (e, c) in terms {
             out[(deg - e[0]) as usize] = c.clone();
         }

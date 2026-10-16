@@ -7,9 +7,11 @@
 //! Each test says what was wrong before; every reference value cites the
 //! oracle call that produced it (mpmath 1.3.0 at `mp.dps = 30`, SymPy 1.14).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 /// `|a − b| ≤ tol·max(1, |b|)` for the value of `e` against `expected`.
 fn assert_close(e: &Ex, expected: f64, tol: f64, what: &str) {
@@ -229,7 +231,7 @@ fn branch_point_series_terminate() {
     // |f| during this work), atanh(acosh x)³ at −1, acosh((x − 1/2)·sign x) at 0.
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let start = Instant::now();
+    let start = CpuTimer::start();
     let s = ctx
         .parse("abs(ln(2 + x))")
         .unwrap()
@@ -250,11 +252,7 @@ fn branch_point_series_terminate() {
         .parse("acosh((x - 1/2)*sign(x))")
         .unwrap()
         .series(&x, &ctx.int(0), 5);
-    assert!(
-        start.elapsed() < Duration::from_secs(60),
-        "took {:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(60), "the three series");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -484,7 +482,7 @@ fn gosper_cancels_the_polynomial_factors_of_the_term() {
 fn huge_integer_sequences_stay_symbolic() {
     // Each of these ran for more than 20 s in `eval` (release) before 0.30.
     let ctx = Context::new();
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for f in [
         "fibonacci(10^7)",
         "lucas(10^7)",
@@ -504,11 +502,7 @@ fn huge_integer_sequences_stay_symbolic() {
     }
     // zeta(−n) = −B_{n+1}/(n+1) went through the same recurrence.
     let _ = ctx.parse("zeta(-100001)").unwrap().eval();
-    assert!(
-        start.elapsed() < Duration::from_secs(20),
-        "took {:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(20), "the symbolic sequences");
 }
 
 #[test]
@@ -560,7 +554,7 @@ fn beta_of_huge_integers_is_a_small_binomial() {
     // beta(8, 87178291200) = 1.510649529514917539788258e-84,
     // beta(10**8, 17) = 2.092276143302666672974289e-123.
     let ctx = Context::new();
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for (f, want) in [
         ("beta(6, 10^7)", "1.199998200001679998740001e-40"),
         ("beta(10^12, 3)", "1.999999999994000000000014e-36"),
@@ -572,11 +566,7 @@ fn beta_of_huge_integers_is_a_small_binomial() {
         assert_eq!(e.eval_decimal(25).unwrap(), want, "{f}");
     }
     assert_eq!(ctx.parse("beta(3, 4)").unwrap().eval().to_string(), "1/60");
-    assert!(
-        start.elapsed() < Duration::from_secs(20),
-        "took {:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(20), "the beta values");
 }
 
 #[test]
@@ -591,7 +581,7 @@ fn orthogonal_polynomials_of_high_degree() {
     // gegenbauer(200, 1/3, 1/7) = -0.015689837250617792596,
     // laguerre(200, 1/3, 1/7) = -0.8757101127726804008133.
     let ctx = Context::new();
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for (f, want) in [
         ("legendre(1000, 1/3)", "0.01961873093750094969323576"),
         ("jacobi(200, 1/3, 1/5, 1/7)", "-0.05650541080748525966745"),
@@ -620,11 +610,7 @@ fn orthogonal_polynomials_of_high_degree() {
     // Refused within the guard instead of built.
     let e = ctx.parse("chebyshev_t(1000, 1/10^20)").unwrap().eval();
     assert!(e.to_string().starts_with("chebyshev_t"), "{e}");
-    assert!(
-        start.elapsed() < Duration::from_secs(120),
-        "took {:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(120), "the orthogonal polynomials");
 }
 
 #[test]
@@ -727,10 +713,10 @@ fn polygamma_closed_forms_do_not_cancel_beyond_evalf() {
             .contains("polygamma")
     );
     // n! beyond the digit guard: polygamma(10^5, 1/2) built 10^5! (it hung).
-    let start = Instant::now();
+    let start = CpuTimer::start();
     let e = ctx.parse("polygamma(10^5, 1/2)").unwrap().eval();
     assert!(e.to_string().contains("polygamma"), "{e}");
-    assert!(start.elapsed() < Duration::from_secs(5));
+    start.assert_within(Duration::from_secs(5), "polygamma(10^5, 1/2)");
 }
 
 #[test]

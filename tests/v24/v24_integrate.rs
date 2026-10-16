@@ -10,9 +10,11 @@
 //! antiderivative here is checked by `F′ = f` at points on both sides of
 //! every real pole.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 /// `F = ∫ f` is a closed form with `F′ = f` at every `x` in `points`.
 fn antiderivative_at(f: &Ex, x: &Ex, points: &[Ex]) -> Ex {
@@ -53,12 +55,10 @@ fn repeated_resultant_factors_integrate_quickly_and_compactly() {
         ("x^3/(x^8+2*x^4+5)", "1/8*atan(1/2*x^4 + 1/2)"),
     ] {
         let f = ctx.parse(src).unwrap();
-        let t = Instant::now();
-        let big_f = antiderivative_at(&f, &x, &pts);
-        assert!(
-            t.elapsed() < Duration::from_secs(2),
-            "∫ {src}: {:?}",
-            t.elapsed()
+        let big_f = assert_fast!(
+            Duration::from_secs(2),
+            antiderivative_at(&f, &x, &pts),
+            "∫ {src}"
         );
         assert_eq!(big_f.to_string(), want, "∫ {src}");
     }
@@ -139,12 +139,10 @@ fn polynomials_over_quadratics_with_transcendental_coefficients() {
         "x^3/(pi*x^2+1)",
         "(x^2+1)/(x^2+sqrt(2)*x+3)",
     ] {
-        let t = Instant::now();
-        antiderivative_at(&ctx.parse(src).unwrap(), &x, &pts);
-        assert!(
-            t.elapsed() < Duration::from_secs(2),
-            "∫ {src}: {:?}",
-            t.elapsed()
+        assert_fast!(
+            Duration::from_secs(2),
+            antiderivative_at(&ctx.parse(src).unwrap(), &x, &pts),
+            "∫ {src}"
         );
     }
 }
@@ -174,13 +172,7 @@ fn huge_exponents_are_refused_not_expanded() {
     let x = ctx.symbol("x");
     for src in ["1/(x^1000000000+1)", "x^1000000000/(x+1)"] {
         let f = ctx.parse(src).unwrap();
-        let t = Instant::now();
-        let big_f = f.integrate(&x);
-        assert!(
-            t.elapsed() < Duration::from_secs(2),
-            "∫ {src}: {:?}",
-            t.elapsed()
-        );
+        let big_f = assert_fast!(Duration::from_secs(2), f.integrate(&x), "∫ {src}");
         assert!(big_f.has_unevaluated(), "∫ {src} = {big_f}");
     }
 }
@@ -194,7 +186,7 @@ fn expansions_beyond_the_term_limit_are_left_unexpanded() {
         acc * (ctx.symbol(&format!("y{i}")) + 1)
     });
     const { assert!(1usize << 21 > EXPAND_TERM_LIMIT) };
-    let t = Instant::now();
+    let t = CpuTimer::start();
     assert_eq!(product.expand(), product);
     // C(104, 4) ≈ 4.6·10⁶ terms: a multinomial power.
     let (a, b, c, d) = (
@@ -205,7 +197,7 @@ fn expansions_beyond_the_term_limit_are_left_unexpanded() {
     );
     let power = (&a + &b + &c + &d + 1).powi(100);
     assert_eq!(power.expand(), power);
-    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(2), "two refused expansions");
     // Below the limit nothing changes: (a + b)³ has 4 terms.
     assert_eq!(
         (&a + &b).powi(3).expand(),

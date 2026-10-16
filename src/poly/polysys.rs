@@ -132,7 +132,9 @@ fn solve_triangular(
         {
             continue;
         }
-        let u = univariate_in(p, last_var);
+        let Some(u) = univariate_in(p, last_var) else {
+            return Err("a univariate basis element beyond the dense degree cap".into());
+        };
         if u.degree() == Some(0) {
             return Ok(vec![]);
         }
@@ -189,14 +191,16 @@ fn solve_triangular(
 }
 
 /// A multivariate polynomial that only involves `var_idx`, as a dense
-/// univariate polynomial.
-fn univariate_in(poly: &MultiPoly<Lex>, var_idx: usize) -> crate::poly::Poly {
+/// univariate polynomial; `None` beyond degree
+/// [`MAX_DENSE_DEGREE`](crate::base::cast::MAX_DENSE_DEGREE).
+fn univariate_in(poly: &MultiPoly<Lex>, var_idx: usize) -> Option<crate::poly::Poly> {
     let max_deg = poly.terms().map(|(exp, _)| exp[var_idx]).max().unwrap_or(0);
-    let mut coeffs = vec![Ratio::<BigInt>::zero(); max_deg as usize + 1];
+    let len = crate::base::cast::bounded_len(max_deg, crate::base::cast::MAX_DENSE_DEGREE)? + 1;
+    let mut coeffs = vec![Ratio::<BigInt>::zero(); len];
     for (exp, coeff) in poly.terms() {
         coeffs[exp[var_idx] as usize] += coeff;
     }
-    crate::poly::Poly::from_coeffs(coeffs)
+    Some(crate::poly::Poly::from_coeffs(coeffs))
 }
 
 /// Find all rational roots of a univariate polynomial: the linear factors

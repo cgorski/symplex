@@ -1,8 +1,10 @@
 //! Radicals of integers with thousands of digits.
 
 use num_bigint::BigInt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 fn mersenne(ctx: &Context, p: u32) -> Ex {
     let m: BigInt = (BigInt::from(1) << p) - 1;
@@ -29,14 +31,13 @@ fn radicals_of_huge_integers_are_fast() {
         mersenne(&ctx, 3217),
         mersenne(&ctx, 2203),
     );
-    let t = Instant::now();
+    let t = CpuTimer::start();
     let r1 = a.sqrt();
     let r2 = (&a / &b).sqrt();
     let r3 = (&a.powi(2) * &c).sqrt();
     let r4 = (&a * 3).cbrt();
     let r5 = (&a.powi(3) * 5).cbrt();
-    let elapsed = t.elapsed();
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    t.assert_within(Duration::from_secs(5), "five radicals");
     assert_eq!(r1.powi(2), a);
     assert_eq!(r2.powi(2), &a / &b);
     assert_eq!(r3.powi(2), &a.powi(2) * &c);

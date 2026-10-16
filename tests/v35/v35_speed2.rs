@@ -6,9 +6,11 @@
 //! substitution, or against the oracle cited).  The times quoted are release
 //! builds, CPU of the operation alone: 0.43, 0.45, and now.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// `∫ src dx` within `limit`, its answer checked by differentiation (or
 /// unevaluated, when `closed` is false).
@@ -16,10 +18,7 @@ fn integrate_within(src: &str, limit: Duration, closed: bool) {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = ctx.parse(src).unwrap();
-    let t0 = Instant::now();
-    let big_f = f.integrate(&x);
-    let dt = t0.elapsed();
-    assert!(dt < limit, "∫ {src} took {dt:?}");
+    let big_f = assert_fast!(limit, f.integrate(&x), "∫ {src}");
     if !closed {
         assert!(big_f.has_unevaluated(), "∫ {src} = {big_f}");
         return;
@@ -96,10 +95,8 @@ fn number_field_atoms_located_without_zero_tests() {
         let ctx = Context::new();
         let x = ctx.symbol("x");
         let f = ctx.parse(src).unwrap();
-        let t0 = Instant::now();
-        let roots = f.solve(&x).unwrap_or_else(|e| panic!("solve {src}: {e}"));
-        let dt = t0.elapsed();
-        assert!(dt < bound, "solve {src} took {dt:?}");
+        let roots = assert_fast!(bound, f.solve(&x), "solve {src}")
+            .unwrap_or_else(|e| panic!("solve {src}: {e}"));
         assert_eq!(roots.len(), want.len(), "solve {src}: {roots:?}");
         for w in want {
             let w = ctx.parse(w).unwrap();
@@ -127,10 +124,7 @@ fn factorials_are_never_zero() {
         "v4!!!!!!!!!!!!!!!!!!!!!!!33**i!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!33**i/0a-9!v",
     ] {
         let ctx = Context::new();
-        let t0 = Instant::now();
-        let e = symplex::parse::parse(&ctx, src).unwrap();
-        let dt = t0.elapsed();
-        assert!(dt < bound, "parse {src} took {dt:?}");
+        let e = assert_fast!(bound, symplex::parse::parse(&ctx, src), "parse {src}").unwrap();
         assert_eq!(e, ctx.parse("zoo").unwrap(), "{src}");
     }
 }
@@ -160,11 +154,11 @@ fn acosh_on_the_imaginary_axis() {
     let z = ctx.parse("re(acosh(I*x))").unwrap();
     assert!(format!("{z}").contains("re("), "{z}");
     let f = ctx.parse("1/(acosh(2*I + I*x) - acosh(2*I))").unwrap();
-    let t0 = Instant::now();
-    let r = f.try_limit_dir(&x, &ctx.int(0), Direction::Right);
-    let dt = t0.elapsed();
     // Debug build: 0.25 s for the test (0.45: 104 s for this limit).
-    assert!(dt < Duration::from_secs(5), "limit took {dt:?}");
+    let r = assert_fast!(
+        Duration::from_secs(5),
+        f.try_limit_dir(&x, &ctx.int(0), Direction::Right)
+    );
     assert_eq!(r.unwrap(), ctx.parse("oo").unwrap());
 }
 
@@ -180,9 +174,7 @@ fn realness_of_a_visibly_complex_value_is_decided_numerically() {
     let e = ctx
         .parse("acosh((((1/1000000000000*I + 13/4)^(-3/4))^(-3/2))^(-3/2))")
         .unwrap();
-    let t = std::time::Instant::now();
-    let v = e.eval();
-    assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+    let v = assert_fast!(Duration::from_secs(2), e.eval());
     let z = v.eval_complex64().unwrap();
     // mpmath: acosh(((mpc(13/4, 1e-12)**(-0.75))**(-1.5))**(-1.5))
     assert!((z.im + 1.433_530_793_143_204_9).abs() < 1e-12, "{z}");

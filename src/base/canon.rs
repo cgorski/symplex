@@ -69,6 +69,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::{Q, q_add, q_mul};
+use crate::base::value_class::{self, ValueClass};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Add
@@ -457,6 +458,7 @@ fn has_real_direction(arena: &Arena, key: ExprId) -> bool {
     };
     let mut cache = AssumptionCache::new();
     children.iter().all(|&c| {
+        // (identity: the factor `∞` itself, beside the direction)
         c == arena.infinity
             || arena.as_num(c).is_some()
             || cache.query(arena, c, Props::REAL) == Some(true)
@@ -728,8 +730,9 @@ fn infinite_direction(arena: &Arena, arg: ExprId) -> Option<(Q, Q)> {
         match arena.node(t) {
             ExprNode::Infinity => Some((Q::one(), Q::zero())),
             ExprNode::NegInfinity => Some((-Q::one(), Q::zero())),
-            ExprNode::Mul(cs) if cs.contains(&arena.infinity) => {
+            ExprNode::Mul(cs) if is_directed_infinity(arena, t) => {
                 let (mut re, mut im) = (Q::one(), Q::zero());
+                // (identity: the factors of the direction, beside `∞`)
                 for &c in cs.iter().filter(|&&c| c != arena.infinity) {
                     let (a, b) = gaussian_value(arena, c)?;
                     (re, im) = (
@@ -751,9 +754,7 @@ fn infinite_direction(arena: &Arena, arg: ExprId) -> Option<(Q, Q)> {
                         return None;
                     }
                     found = Some(d);
-                } else if crate::base::walk::contains(arena, t, arena.infinity)
-                    || crate::base::walk::contains(arena, t, arena.neg_infinity)
-                {
+                } else if value_class::holds_real_infinity(arena, t) {
                     return None;
                 }
             }
@@ -787,21 +788,18 @@ fn infinite_direction(arena: &Arena, arg: ExprId) -> Option<(Q, Q)> {
 /// say otherwise.
 fn not_finite_at_infinity(arena: &Arena, f: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
-    let (inf, ninf) = (arena.infinity, arena.neg_infinity);
     let Some(a) = arena.node(f).unary_arg_if(examined_at_infinity) else {
         if library_value_unknown_at_infinity(arena, f) {
             return true;
         }
         let infinite_argument = application_arguments(arena, arena.node(f)).is_some_and(|args| {
-            args.iter().any(|&a| {
-                crate::base::walk::contains(arena, a, inf)
-                    || crate::base::walk::contains(arena, a, ninf)
-            })
+            args.iter()
+                .any(|&a| value_class::holds_real_infinity(arena, a))
         });
         return infinite_argument
             && AssumptionCache::new().query(arena, f, Props::FINITE) == Some(false);
     };
-    if !crate::base::walk::contains(arena, a, inf) && !crate::base::walk::contains(arena, a, ninf) {
+    if !value_class::holds_real_infinity(arena, a) {
         return false;
     }
     if AssumptionCache::new().query(arena, f, Props::FINITE) == Some(true) {
@@ -863,8 +861,10 @@ fn unevaluated_at_complex_infinity(arena: &Arena, f: ExprId) -> bool {
     );
     !constant_polynomial
         && !matches!(node, ExprNode::Apply(..) | ExprNode::Pow(..))
-        && application_arguments(arena, node)
-            .is_some_and(|args| args.contains(&arena.complex_infinity))
+        && application_arguments(arena, node).is_some_and(|args| {
+            args.iter()
+                .any(|&a| ValueClass::special_atom(arena, a) == Some(ValueClass::ComplexInf))
+        })
         && !Truth::from(AssumptionCache::new().query(arena, f, Props::FINITE)).is_true()
 }
 
@@ -1756,6 +1756,7 @@ fn directed_infinity(arena: &mut Arena, negative: bool, factors: &[ExprId]) -> E
 /// [`directed_infinity`])?  Its coefficient-free part is the key under which
 /// [`canon_add`] collects it.
 pub(crate) fn is_directed_infinity(arena: &Arena, id: ExprId) -> bool {
+    // (identity: the shape `c·∞`; its class is `ValueClass::of`'s)
     matches!(arena.node(id), ExprNode::Mul(ch) if ch.contains(&arena.infinity))
 }
 
@@ -2787,7 +2788,11 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     }
 
     // NaN propagation.
-    if base == arena.nan || exp == arena.nan {
+    let (base_class, exp_class) = (
+        ValueClass::special_atom(arena, base),
+        ValueClass::special_atom(arena, exp),
+    );
+    if base_class == Some(ValueClass::NaN) || exp_class == Some(ValueClass::NaN) {
         return arena.nan;
     }
 
@@ -2804,10 +2809,10 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
 
     // x^0 → 1, except for indeterminate forms ∞^0, (-∞)^0, zoo^0.
     if exp == arena.zero {
-        if base == arena.infinity || base == arena.neg_infinity || base == arena.complex_infinity {
-            return arena.nan;
-        }
-        return arena.one;
+        return match base_class {
+            Some(_) => arena.nan,
+            None => arena.one,
+        };
     }
 
     // x^1 → x.
@@ -2815,126 +2820,41 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return base;
     }
 
-    // 1^x → 1.
+    // 1^x → 1, also for `x = ±∞, zoo` (the exact power of the number 1, as
+    // IEEE `pow(1, ∞)`; the limit form `1^∞` is the business of `limit`).
     if base == arena.one {
         return arena.one;
     }
 
-    // 0^(positive numeric) → 0.
-    if base == arena.zero
-        && let Some(e) = arena.as_num(exp)
-        && e.is_positive()
-    {
-        return arena.zero;
+    // 0^q for a numeric q ≠ 0, 0^±∞, 0^zoo, and 0^z for a non-numeric
+    // exponent whose real part has a known sign.
+    if base == arena.zero {
+        if let Some(e) = arena.as_num(exp) {
+            if e.is_positive() {
+                return arena.zero;
+            }
+            // (division by zero)
+            if e.is_negative() {
+                return arena.complex_infinity;
+            }
+        }
+        match exp_class {
+            Some(ValueClass::PosInf) => return arena.zero,
+            Some(ValueClass::NegInf) => return arena.complex_infinity,
+            // (indeterminate)
+            Some(ValueClass::ComplexInf) => return arena.nan,
+            _ => {}
+        }
+        if let Some(value) = zero_power(arena, exp) {
+            return value;
+        }
     }
-    // 0^(negative numeric) → ComplexInfinity (division by zero).
-    if base == arena.zero
-        && let Some(e) = arena.as_num(exp)
-        && e.is_negative()
-    {
-        return arena.complex_infinity;
-    }
-    // 0^∞ → 0.
-    if base == arena.zero && exp == arena.infinity {
-        return arena.zero;
-    }
-    // 0^(-∞) → ComplexInfinity.
-    if base == arena.zero && exp == arena.neg_infinity {
-        return arena.complex_infinity;
-    }
-    // 0^zoo → NaN (indeterminate).
-    if base == arena.zero && exp == arena.complex_infinity {
-        return arena.nan;
-    }
-    // 0^z for a non-numeric exponent whose real part has a known sign.
-    if base == arena.zero
-        && let Some(value) = zero_power(arena, exp)
+
+    // The powers of `∞`, `−∞`, `zoo`.
+    if let Some(class) = base_class
+        && let Some(value) = special_atom_power(arena, class, exp, exp_class)
     {
         return value;
-    }
-
-    // ── Positive infinity base ─────────────────────────────────────
-    // ∞^(positive numeric) → ∞.
-    if base == arena.infinity
-        && let Some(e) = arena.as_num(exp)
-        && e.is_positive()
-    {
-        return arena.infinity;
-    }
-    // ∞^(negative numeric) → 0.
-    if base == arena.infinity
-        && let Some(e) = arena.as_num(exp)
-        && e.is_negative()
-    {
-        return arena.zero;
-    }
-    // ∞^∞ → ∞.
-    if base == arena.infinity && exp == arena.infinity {
-        return arena.infinity;
-    }
-    // ∞^(-∞) → 0.
-    if base == arena.infinity && exp == arena.neg_infinity {
-        return arena.zero;
-    }
-
-    // ── Negative infinity base ─────────────────────────────────────
-    // (-∞)^(positive integer) → ±∞ by parity.
-    if base == arena.neg_infinity
-        && let Some(e) = arena.as_num(exp)
-        && e.is_integer()
-        && e.is_positive()
-    {
-        let n: i64 = e.to_integer().try_into().unwrap_or(0);
-        return if n % 2 == 0 {
-            arena.infinity
-        } else {
-            arena.neg_infinity
-        };
-    }
-    // (−∞)^q for a positive non-integer rational q: ∞ in the direction of
-    // (−1)^q on the principal branch, `√(−∞) = i·∞`, `(−∞)^(1/3) =
-    // (−1)^(1/3)·∞` (SymPy: `sqrt(-oo)` → `oo*I`, `(-oo)**Rational(1, 3)` →
-    // `oo*(-1)**(1/3)`).  Before 0.30 the power stayed an atom.
-    if base == arena.neg_infinity
-        && let Some(e) = arena.as_num(exp)
-        && e.is_positive()
-        && !e.is_integer()
-    {
-        let unit = canon_pow(arena, arena.neg_one, exp);
-        return canon_mul(arena, &[unit, arena.infinity]);
-    }
-    // (-∞)^(negative numeric) → 0 (magnitude → 0 regardless of direction).
-    if base == arena.neg_infinity
-        && let Some(e) = arena.as_num(exp)
-        && e.is_negative()
-    {
-        return arena.zero;
-    }
-    // (-∞)^∞ → NaN, (-∞)^(-∞) → NaN (indeterminate: ∞ is not an integer).
-    if base == arena.neg_infinity && (exp == arena.infinity || exp == arena.neg_infinity) {
-        return arena.nan;
-    }
-
-    // ── Complex infinity (zoo) base ────────────────────────────────
-    // zoo^(positive numeric) → zoo.
-    if base == arena.complex_infinity
-        && let Some(e) = arena.as_num(exp)
-        && e.is_positive()
-    {
-        return arena.complex_infinity;
-    }
-    // zoo^(negative numeric) → 0.
-    if base == arena.complex_infinity
-        && let Some(e) = arena.as_num(exp)
-        && e.is_negative()
-    {
-        return arena.zero;
-    }
-    // zoo^zoo, zoo^∞, zoo^(-∞) → NaN.
-    if base == arena.complex_infinity
-        && (exp == arena.complex_infinity || exp == arena.infinity || exp == arena.neg_infinity)
-    {
-        return arena.nan;
     }
 
     // Both numeric → try to evaluate.
@@ -2979,6 +2899,70 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
 /// `None` when the exponent's sign or realness is not known (`0^x` for an
 /// unknown `x` stays).  Before 0.30 `0^I`, `0^π` and `0^(−1 + i)` stayed
 /// as atoms, and `evalf` gave `0` for the first and the last.
+/// `b^e` for a special atom `b` (`∞`, `−∞`, `zoo`; a `nan` is propagated
+/// before): by the sign of a rational `e`, `∞^e` is `∞` or 0, `zoo^e` is
+/// `zoo` or 0, `(−∞)^e` is 0 or `∞` in the direction `(−1)^e`; `∞^∞ = ∞`,
+/// `∞^(−∞) = 0`; an infinite exponent of `−∞` or `zoo`, and a `zoo`
+/// exponent of any infinity, is `nan` (`e^{e·ln b}` has no limit; up to
+/// 0.57 `∞^zoo` and `(−∞)^zoo` stayed).  `None` for any other exponent.
+fn special_atom_power(
+    arena: &mut Arena,
+    base: ValueClass,
+    exp: ExprId,
+    exp_class: Option<ValueClass>,
+) -> Option<ExprId> {
+    let e = arena.as_num(exp).cloned();
+    let positive = e.as_ref().is_some_and(Signed::is_positive);
+    let negative = e.as_ref().is_some_and(Signed::is_negative);
+    match base {
+        ValueClass::PosInf => match exp_class {
+            _ if positive => Some(arena.infinity),
+            _ if negative => Some(arena.zero),
+            Some(ValueClass::PosInf) => Some(arena.infinity),
+            Some(ValueClass::NegInf) => Some(arena.zero),
+            Some(ValueClass::ComplexInf) => Some(arena.nan),
+            _ => None,
+        },
+        ValueClass::NegInf => match exp_class {
+            // (−∞)^n → ±∞ by the parity of a positive integer n.
+            _ if positive && e.as_ref().is_some_and(Ratio::is_integer) => {
+                Some(if num_integer::Integer::is_even(&e?.to_integer()) {
+                    arena.infinity
+                } else {
+                    arena.neg_infinity
+                })
+            }
+            // (−∞)^q for a positive non-integer rational q: ∞ in the
+            // direction of (−1)^q on the principal branch, `√(−∞) = i·∞`,
+            // `(−∞)^(1/3) = (−1)^(1/3)·∞` (SymPy: `sqrt(-oo)` → `oo*I`,
+            // `(-oo)**Rational(1, 3)` → `oo*(-1)**(1/3)`).  Before 0.30 the
+            // power stayed an atom.
+            _ if positive => {
+                let unit = canon_pow(arena, arena.neg_one, exp);
+                Some(canon_mul(arena, &[unit, arena.infinity]))
+            }
+            // (magnitude → 0 regardless of direction)
+            _ if negative => Some(arena.zero),
+            // (indeterminate: ∞ is not an integer; `zoo` has no direction)
+            Some(ValueClass::PosInf | ValueClass::NegInf | ValueClass::ComplexInf) => {
+                Some(arena.nan)
+            }
+            _ => None,
+        },
+        ValueClass::ComplexInf => match exp_class {
+            _ if positive => Some(arena.complex_infinity),
+            _ if negative => Some(arena.zero),
+            Some(ValueClass::PosInf | ValueClass::NegInf | ValueClass::ComplexInf) => {
+                Some(arena.nan)
+            }
+            _ => None,
+        },
+        ValueClass::Finite | ValueClass::DirectedInf | ValueClass::NaN | ValueClass::Unknown => {
+            None
+        }
+    }
+}
+
 fn zero_power(arena: &mut Arena, exp: ExprId) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
     if arena.as_num(exp).is_some() {
@@ -3587,6 +3571,7 @@ fn classify_arg(arena: &Arena, id: ExprId) -> Arg {
                 [a] if a == i => Arg::ImaginaryMultiple(q),
                 [a, b] if (a == pi && b == i) || (a == i && b == pi) => Arg::ImaginaryPiMultiple(q),
                 // A directed infinity keeps only the sign of its coefficient.
+                // (identity: the spelling `q·i·∞`)
                 [a, b] if a == i && b == arena.infinity => Arg::ImaginaryInfinity(q.is_negative()),
                 _ => Arg::Other,
             }
@@ -3737,7 +3722,9 @@ pub(crate) fn reciprocal_function(arena: &mut Arena, name: &str, arg: ExprId) ->
         // `_asech_table`), asech(±∞ + c) = ∓sign(Im c)·iπ/2 for `Im c ≠ 0`;
         // `zoo` and an unknown side have no single limit (`nan`).  Up to 0.43
         // all were `acosh(0)` (whose value is iπ/2).
-        "asech" if arg == arena.complex_infinity => arena.nan,
+        "asech" if ValueClass::special_atom(arena, arg) == Some(ValueClass::ComplexInf) => {
+            arena.nan
+        }
         "asech" if infinite.is_some() => {
             let upper = infinite.and_then(|inf| {
                 if inf.imaginary {
@@ -3849,15 +3836,13 @@ fn inverse_trig_pi_multiple(arena: &Arena, id: ExprId) -> Option<Q> {
             a,
             &[(0, 1, 1, 2), (-1, 1, 1, 1), (1, 2, 1, 3), (-1, 2, 2, 3)],
         ),
-        ExprNode::Atan(a) => {
-            if a == arena.infinity {
-                return Some(Q::new(BigInt::from(1), BigInt::from(2)));
-            }
-            if a == arena.neg_infinity {
-                return Some(Q::new(BigInt::from(-1), BigInt::from(2)));
-            }
-            (a, &[(1, 1, 1, 4), (-1, 1, -1, 4)])
-        }
+        ExprNode::Atan(a) => match ValueClass::special_atom(arena, a) {
+            Some(ValueClass::PosInf) => return Some(Q::new(BigInt::from(1), BigInt::from(2))),
+            Some(ValueClass::NegInf) => return Some(Q::new(BigInt::from(-1), BigInt::from(2))),
+            // (`atan(zoo)` has no limit; `nan` is folded by the constructor)
+            Some(_) => return None,
+            None => (a, &[(1, 1, 1, 4), (-1, 1, -1, 4)]),
+        },
         _ => return None,
     };
     let v = arena.as_num(a)?;
@@ -3931,10 +3916,11 @@ fn nonzero_factors_of_directed_infinity(arena: &Arena, a: ExprId) -> Option<Smal
     let ExprNode::Mul(children) = arena.node(a) else {
         return None;
     };
-    if !children.contains(&arena.infinity) {
+    if !is_directed_infinity(arena, a) {
         return None;
     }
     let mut cache = AssumptionCache::new();
+    // (identity: the factors of the direction, beside `∞`)
     let factors: SmallVec<[ExprId; 4]> = children
         .iter()
         .copied()
@@ -4605,19 +4591,24 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
             Arg::ImaginaryInfinity(neg) => {
                 Folded::InfinitePlus(InfDir::Pos, signed_half(neg), Q::zero())
             }
-            Arg::InfinitePlus(d, ref c) if c.iter().all(|&t| finite_slot(arena, t)) => match d {
-                InfDir::Pos => Folded::Infinity,
-                InfDir::Neg => match finite_part_sign(arena, c, true)? {
-                    Ordering::Equal => return None,
-                    s => Folded::InfinitePlus(InfDir::Pos, signed(s, Q::one()), Q::zero()),
-                },
-                InfDir::NegImag => {
-                    Folded::InfinitePlus(InfDir::Pos, Q::new((-1).into(), 2.into()), Q::zero())
+            Arg::InfinitePlus(d, ref c)
+                if c.iter()
+                    .all(|&t| ValueClass::of(arena, t).is_finite_proved()) =>
+            {
+                match d {
+                    InfDir::Pos => Folded::Infinity,
+                    InfDir::Neg => match finite_part_sign(arena, c, true)? {
+                        Ordering::Equal => return None,
+                        s => Folded::InfinitePlus(InfDir::Pos, signed(s, Q::one()), Q::zero()),
+                    },
+                    InfDir::NegImag => {
+                        Folded::InfinitePlus(InfDir::Pos, Q::new((-1).into(), 2.into()), Q::zero())
+                    }
+                    InfDir::PosImag => {
+                        Folded::InfinitePlus(InfDir::Pos, Q::new(1.into(), 2.into()), Q::zero())
+                    }
                 }
-                InfDir::PosImag => {
-                    Folded::InfinitePlus(InfDir::Pos, Q::new(1.into(), 2.into()), Q::zero())
-                }
-            },
+            }
             Arg::NaN => Folded::NaN,
             // W(−1/e) = −1: the argument is `−exp(−1)`.
             Arg::Other if is_minus_inverse_e(arena, a) => Folded::int(-1),
@@ -5428,10 +5419,12 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
         (arena.neg_infinity, arena.infinity)
     };
     // `zoo` has no order (SymPy: "The argument 'zoo' is not comparable").
-    if args
-        .iter()
-        .any(|&a| a == arena.nan || a == arena.complex_infinity)
-    {
+    if args.iter().any(|&a| {
+        matches!(
+            ValueClass::special_atom(arena, a),
+            Some(ValueClass::NaN | ValueClass::ComplexInf)
+        )
+    }) {
         return Some(arena.nan);
     }
     // An argument known non-real (`∞ + p·i` for a positive `p`, `i`) leaves no
@@ -5515,20 +5508,22 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
 }
 
 /// The direction (`Pos`, `Neg`) of `+∞` and `+∞ + c`, `−∞` and `−∞ + c`, `c`
-/// finite ([`finite_slot`] for each of its terms); `None` otherwise.
+/// finite ([`ValueClass::is_finite_proved`] for each of its terms; `Min`
+/// and `Max` read `c` as real); `None` otherwise.
 fn real_infinity(arena: &Arena, a: ExprId) -> Option<InfDir> {
-    if a == arena.infinity {
-        return Some(InfDir::Pos);
-    }
-    if a == arena.neg_infinity {
-        return Some(InfDir::Neg);
+    if let Some(sign) = ValueClass::special_atom(arena, a).and_then(ValueClass::real_infinity) {
+        return Some(match sign {
+            value_class::Sign::Positive => InfDir::Pos,
+            value_class::Sign::Negative => InfDir::Neg,
+        });
     }
     if !matches!(arena.node(a), ExprNode::Add(_)) {
         return None;
     }
     match classify_arg(arena, a) {
         Arg::InfinitePlus(d @ (InfDir::Pos | InfDir::Neg), c)
-            if c.iter().all(|&t| finite_slot(arena, t)) =>
+            if c.iter()
+                .all(|&t| ValueClass::of(arena, t).is_finite_proved()) =>
         {
             Some(d)
         }
@@ -5663,29 +5658,36 @@ fn lib_function_value(
     if !args.iter().any(|&a| special(a)) {
         return None;
     }
-    if args.contains(&arena.nan) {
+    if args
+        .iter()
+        .any(|&a| ValueClass::special_atom(arena, a) == Some(ValueClass::NaN))
+    {
         return Some(Folded::NaN);
     }
     let num = |i: usize| args.get(i).and_then(|&a| arena.as_num(a));
     let is = |i: usize, v: i64| num(i).is_some_and(|q| *q == Q::from_integer(BigInt::from(v)));
-    // Argument `i` is `+∞` (or `−∞` too, with `both`).
-    let at_infinity = |i: usize, both: bool| {
+    // The special atom argument `i` is, if any.
+    let class = |i: usize| {
         args.get(i)
-            .is_some_and(|&a| a == arena.infinity || (both && a == arena.neg_infinity))
+            .and_then(|&a| ValueClass::special_atom(arena, a))
     };
-    // Argument `i` (an order) is finite: no infinity in it, and a number,
-    // an argument with symbols or a constant known finite or with a
-    // certified value ([`finite_argument`], as in [`at_infinity`]).  Up to
-    // 0.54 a constant without an infinity in it counted as finite:
-    // `besselj(elliptic_k(besseli(0, 0)), ∞)` and `uppergamma(elliptic_k(
-    // besseli(0, 0)), ∞)` were built as 0, though `K(1) = ∞`.
+    let neg_infinity = |i: usize| class(i) == Some(ValueClass::NegInf);
+    // Argument `i` is `+∞` (or `−∞` too, with `both`).
+    let at_infinity = |i: usize, both: bool| match class(i) {
+        Some(ValueClass::PosInf) => true,
+        Some(ValueClass::NegInf) => both,
+        _ => false,
+    };
+    // Argument `i` (an order) is finite ([`ValueClass::is_finite_proved`]:
+    // no infinity in it, and a number, an argument with symbols or a
+    // constant known finite or with a certified value, as in
+    // [`at_infinity`]).  Up to 0.54 a constant without an infinity in it
+    // counted as finite: `besselj(elliptic_k(besseli(0, 0)), ∞)` and
+    // `uppergamma(elliptic_k(besseli(0, 0)), ∞)` were built as 0, though
+    // `K(1) = ∞`.
     let finite_order = |i: usize| {
-        args.get(i).is_some_and(|&a| {
-            [arena.infinity, arena.neg_infinity, arena.complex_infinity]
-                .iter()
-                .all(|&inf| !crate::base::walk::contains(arena, a, inf))
-                && finite_argument(arena, a)
-        })
+        args.get(i)
+            .is_some_and(|&a| ValueClass::of(arena, a).is_finite_proved())
     };
     Some(match f {
         LibFn::BesselJ | LibFn::BesselI if is(1, 0) && num(0)?.is_positive() => Folded::int(0),
@@ -5741,7 +5743,7 @@ fn lib_function_value(
         }
         LibFn::AiryAi | LibFn::EllipticK if at_infinity(0, true) => Folded::int(0),
         LibFn::AiryAiPrime if at_infinity(0, false) => Folded::int(0),
-        LibFn::AiryBi if args.first() == Some(&arena.neg_infinity) => Folded::int(0),
+        LibFn::AiryBi if neg_infinity(0) => Folded::int(0),
         // Likewise the infinite values `eval` knows, so that `0·f(∞)` is
         // `0·∞`: `Bi`, `Bi′`, `Chi` at `+∞`, `erfi`, `Shi` at `±∞`, `I_ν`
         // of a rational order at `+∞` (SymPy 1.14: `airybi(oo)`, `Chi(oo)`,
@@ -5757,24 +5759,17 @@ fn lib_function_value(
         // `evalf` uses (on a cut the value from above: `I_ν(−x) =
         // e^{iπν}I_ν(x)`), and `E(±∞)`: see the helpers.  Up to 0.52 they
         // stayed, and `0·besseli(1, −∞)`, `0·Chi(−∞)` were 0.
-        LibFn::BesselI if args.get(1) == Some(&arena.neg_infinity) && num(0).is_some() => {
+        LibFn::BesselI if neg_infinity(1) && num(0).is_some() => {
             bessel_i_at_minus_infinity(num(0)?)
         }
         // `K_ν(−x) = e^{−iπν}K_ν(x) − iπI_ν(x)` (DLMF 10.34.2): the first term
         // tends to 0, the second to `−i·∞` for every real `ν`.
-        LibFn::BesselK if args.get(1) == Some(&arena.neg_infinity) && num(0).is_some() => {
-            Folded::ImaginaryInfinity(true)
-        }
-        LibFn::ExpInt if args.get(1) == Some(&arena.neg_infinity) && num(0).is_some() => {
-            expint_at_minus_infinity(num(0)?)
-        }
-        LibFn::UpperGamma if args.get(1) == Some(&arena.neg_infinity) && num(0).is_some() => {
+        LibFn::BesselK if neg_infinity(1) && num(0).is_some() => Folded::ImaginaryInfinity(true),
+        LibFn::ExpInt if neg_infinity(1) && num(0).is_some() => expint_at_minus_infinity(num(0)?),
+        LibFn::UpperGamma if neg_infinity(1) && num(0).is_some() => {
             upper_gamma_at_minus_infinity(num(0)?)
         }
-        LibFn::LowerGamma
-            if args.get(1) == Some(&arena.neg_infinity)
-                && num(0).is_some_and(Signed::is_positive) =>
-        {
+        LibFn::LowerGamma if neg_infinity(1) && num(0).is_some_and(Signed::is_positive) => {
             lower_gamma_at_minus_infinity(num(0)?)
         }
         // `γ(s, ∞) = Γ(s)`, `S(±∞) = C(±∞) = ±1/2`, `η(∞) = 1` (as `eval`).
@@ -5792,9 +5787,7 @@ fn lib_function_value(
         LibFn::EllipticE if at_infinity(0, true) => Folded::Infinity,
         // `Chi(−x) = Chi(x) + iπ` (the `ln` in `Chi`; mpmath `chi(-1000)` =
         // 9.86·10⁴³⁰ + 3.14159i): `∞ + iπ`, as `ln(−∞)` (SymPy 1.14: `oo`).
-        LibFn::Chi if args.first() == Some(&arena.neg_infinity) => {
-            Folded::InfinitePlus(InfDir::Pos, Q::one(), Q::zero())
-        }
+        LibFn::Chi if neg_infinity(0) => Folded::InfinitePlus(InfDir::Pos, Q::one(), Q::zero()),
         // `W_k(0) = −∞` for a branch `k ≠ 0` (as `eval`; SymPy 1.14
         // `LambertW(0, 1)` → -oo), so that `0·W₁(0)` is `0·∞`: up to 0.51
         // `(x·W₁(x))` at `x = 0` was `0`.
@@ -5933,10 +5926,12 @@ fn half_integer_gamma_over_sqrt_pi(k: i64) -> Option<Q> {
 // ── Library functions at infinite arguments ────────────────────────────────────────────
 
 /// An argument of a library function as [`at_infinity`] reads it: finite
-/// (no infinity, `zoo` or `nan` in it, and [`finite_argument`]), an exact
-/// infinity `iᵏ·∞` in an axis direction (`k` quarter turns: `+∞`, `i·∞`,
-/// `−∞`, `−i·∞`), or anything else (`x + ∞`, `(1 + i)·∞`, `zoo`, an
-/// unevaluated pole `elliptic_pi(π, 1)`).
+/// ([`ValueClass::is_finite_proved`]: no infinity, `zoo` or `nan` in it, and
+/// a number, an argument with symbols or a constant known finite or with a
+/// certified value), an exact infinity `iᵏ·∞` in an axis direction (`k`
+/// quarter turns: `+∞`, `i·∞`, `−∞`, `−i·∞`), or anything else (`x + ∞`,
+/// `(1 + i)·∞`, `zoo`, an unevaluated pole `elliptic_pi(π, 1)`).  Up to H1b
+/// `elliptic_f(elliptic_pi(π, 1), ∞)` folded to 0 (`Π(π | 1) = −∞`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Slot {
     Finite,
@@ -5944,61 +5939,19 @@ enum Slot {
     Other,
 }
 
-/// The [`Slot`] of the argument `a`.
+/// The [`Slot`] of the argument `a`, from its [`ValueClass`].
 fn slot(arena: &Arena, a: ExprId) -> Slot {
-    if a == arena.infinity {
-        return Slot::Infinite(0);
-    }
-    if a == arena.neg_infinity {
-        return Slot::Infinite(2);
-    }
-    if matches!(arena.node(a), ExprNode::Mul(cs) if cs.contains(&arena.infinity)) {
-        return match classify_arg(arena, a) {
+    match ValueClass::of(arena, a) {
+        ValueClass::Finite => Slot::Finite,
+        ValueClass::PosInf => Slot::Infinite(0),
+        ValueClass::NegInf => Slot::Infinite(2),
+        ValueClass::DirectedInf => match classify_arg(arena, a) {
             Arg::ImaginaryInfinity(false) => Slot::Infinite(1),
             Arg::ImaginaryInfinity(true) => Slot::Infinite(3),
             _ => Slot::Other,
-        };
+        },
+        ValueClass::ComplexInf | ValueClass::NaN | ValueClass::Unknown => Slot::Other,
     }
-    let special = [
-        arena.infinity,
-        arena.neg_infinity,
-        arena.complex_infinity,
-        arena.nan,
-    ];
-    if special
-        .iter()
-        .any(|&s| crate::base::walk::contains(arena, a, s))
-        || !finite_argument(arena, a)
-    {
-        Slot::Other
-    } else {
-        Slot::Finite
-    }
-}
-
-/// Is the argument `a` finite as the tables of values read it ([`slot`]):
-/// no `±∞`, `zoo` or `nan` in it, and a number, an argument with symbols
-/// or a constant known finite or with a certified value
-/// ([`finite_argument`])?  The folds of `eval` that hold for every finite
-/// value of one argument when another is special (`Γ(s, ∞) = 0`, `E_ν(∞) =
-/// 0`, `γ(s, 0) = 0`) ask it of that argument: `uppergamma(zoo, ∞)` and
-/// `expint(elliptic_pi(π, 1), ∞)` have no value (up to 0.56 they were 0).
-pub(crate) fn finite_slot(arena: &Arena, a: ExprId) -> bool {
-    slot(arena, a) == Slot::Finite
-}
-
-/// Is the argument `a` (no infinity in it) finite?  A number is, and so is
-/// an argument with symbols (a generic point, as everywhere in the table);
-/// a symbol-free constant must be known finite or have a certified value
-/// ([`Arena::part_signs`]): an unevaluated pole is not.  Up to H1b
-/// `elliptic_f(elliptic_pi(π, 1), ∞)` folded to 0 (`Π(π | 1) = −∞`).
-fn finite_argument(arena: &Arena, a: ExprId) -> bool {
-    use crate::base::assumptions::{AssumptionCache, Props};
-    use crate::base::truth::Truth;
-    arena.as_num(a).is_some()
-        || !arena.is_symbol_free(a)
-        || Truth::from(AssumptionCache::new().query(arena, a, Props::FINITE)).is_true()
-        || arena.part_signs(a).is_some()
 }
 
 /// `Π(n | iᵗ·∞) = Π(iᵗ·∞ | m) = 0` ([`at_infinity`]) holds off the pole
@@ -6019,8 +5972,7 @@ fn off_the_pole(arena: &mut Arena, f: crate::base::libfn::LibFn, args: &[ExprId]
         .filter(|&a| {
             arena.as_num(a).is_none()
                 && arena.is_symbol_free(a)
-                && !crate::base::walk::contains(arena, a, arena.infinity)
-                && !crate::base::walk::contains(arena, a, arena.neg_infinity)
+                && !value_class::holds_real_infinity(arena, a)
         })
         .collect();
     constants.into_iter().all(|a| {
@@ -6322,10 +6274,10 @@ fn parametrised_at_infinity(
 fn at_infinity(arena: &Arena, f: crate::base::libfn::LibFn, args: &[ExprId]) -> AtInfinity {
     use crate::base::libfn::LibFn;
     use AtInfinity::{NoFiniteValue, Untabulated, Value};
+    // (a cheap filter: `±∞`, or a product with `∞` that may be `±i·∞`)
     let candidate = |a: ExprId| {
-        a == arena.infinity
-            || a == arena.neg_infinity
-            || matches!(arena.node(a), ExprNode::Mul(cs) if cs.contains(&arena.infinity))
+        ValueClass::special_atom(arena, a).is_some_and(|c| c.real_infinity().is_some())
+            || is_directed_infinity(arena, a)
     };
     if !args.iter().any(|&a| candidate(a)) {
         return Untabulated;

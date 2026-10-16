@@ -8,7 +8,7 @@
 //! and the scipy number is quoted alongside.  Nothing below was computed by
 //! hand.
 
-use std::time::Instant;
+use std::time::Duration;
 
 use symplex::prelude::*;
 use symplex::stats::Distribution;
@@ -18,6 +18,8 @@ use symplex::stats::numdist::{
     beta, betainc_regularized_f64, binom, chi2, f, gamma, gammainc_lower_regularized_f64,
     gammainc_upper_regularized_f64, norm, poisson, t,
 };
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 /// Relative closeness, absolute when the reference is (essentially) zero.
 fn close(actual: f64, expected: f64, rel: f64, label: &str) {
@@ -535,14 +537,13 @@ fn student_t_quantile_is_fast() -> Result<(), SymplexError> {
     let q = t10.quantile_f64(0.975)?;
     // scipy: t.ppf(0.975, 10) = 2.228138851986274; mpmath (40 dps) 2.22813885198627475
     close(q, 2.228138851986274, 1e-14, "t.ppf(0.975, 10)");
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for _ in 0..10 {
         let _ = t10.quantile_f64(0.975)?;
     }
-    let per_call = start.elapsed() / 10;
-    assert!(
-        per_call.as_secs_f64() < 5e-3,
-        "student_t(10).quantile_f64(0.975) took {per_call:?} per call"
+    start.assert_within(
+        Duration::from_millis(50),
+        "ten calls of student_t(10).quantile_f64(0.975)",
     );
     // The same 20 points through `confidence_interval_mean` (Brent on the
     // 128-bit expression took ≈ 407 ms in debug and gave
@@ -550,9 +551,11 @@ fn student_t_quantile_is_fast() -> Result<(), SymplexError> {
     let x = from_i64(&[
         5, 7, 8, 9, 10, 12, 13, 15, 16, 18, 20, 22, 19, 20, 22, 20, 21, 23, 25, 27,
     ]);
-    let start = Instant::now();
-    let ci = confidence_interval_mean(&x, 0.95)?;
-    let elapsed = start.elapsed();
+    let ci = assert_fast!(
+        Duration::from_millis(20),
+        confidence_interval_mean(&x, 0.95),
+        "confidence_interval_mean on 20 points"
+    )?;
     close(
         ci.lower,
         13.603630327955615,
@@ -564,10 +567,6 @@ fn student_t_quantile_is_fast() -> Result<(), SymplexError> {
         19.59636967204439,
         1e-11,
         "confidence_interval_mean upper",
-    );
-    assert!(
-        elapsed.as_secs_f64() < 2e-2,
-        "confidence_interval_mean on 20 points took {elapsed:?}"
     );
     Ok(())
 }

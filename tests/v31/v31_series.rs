@@ -1,8 +1,10 @@
 //! Series at the branch points of the inverse trigonometric and hyperbolic
 //! functions.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 /// The nightly `fuzz_calculus` input of 2026-09-28: `series(asin(x²), x,
 /// 1, 4)` has no two-sided expansion (a square-root branch point), and it
@@ -29,14 +31,12 @@ fn two_sided_series_at_a_branch_point_is_refused_at_once() {
         ("atan(I*x^3)", 1),
     ] {
         let e = ctx.parse(src).unwrap();
-        let t = Instant::now();
-        let r = e.try_series(&x, &ctx.int(point), 4);
-        assert!(r.is_err(), "{src} at {point}: {r:?}");
-        assert!(
-            t.elapsed() < Duration::from_secs(2),
-            "{src} at {point} took {:?}",
-            t.elapsed()
+        let r = assert_fast!(
+            Duration::from_secs(2),
+            e.try_series(&x, &ctx.int(point), 4),
+            "{src} at {point}"
         );
+        assert!(r.is_err(), "{src} at {point}: {r:?}");
     }
 }
 
@@ -115,11 +115,11 @@ fn hidden_branch_point_is_recognised() {
     let x = ctx.symbol("x");
     let e = x.asin().asin();
     let point = ctx.int(1).sin();
-    let t = Instant::now();
+    let t = CpuTimer::start();
     assert!(e.try_series(&x, &point, 3).is_err());
     let left = e.series_dir(&x, &point, 2, Direction::Left);
     assert!(!left.has_unevaluated(), "{left}");
-    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(2), "two series");
     let xv = &point - &ctx.rational(1, 10_000_000);
     let want = e.subs(&x, &xv).eval_f64().unwrap();
     let got = left.subs(&x, &xv).eval_f64().unwrap();

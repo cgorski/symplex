@@ -165,14 +165,15 @@ fn deadline_cuts_the_sdp_short_and_never_changes_an_answer_that_fits() {
     let two_squares = ((&x - 1).powi(2) + (&y - 1).powi(2)).expand();
     for goal in [&pd, &two_squares] {
         let free = sos(goal, &xy);
-        let started = Instant::now();
-        let out = prove_sos(
-            goal,
-            &xy,
-            &SosOpts::default().with_time_limit(Duration::ZERO),
+        let out = crate::perf_assert::assert_fast!(
+            Duration::from_secs(1),
+            prove_sos(
+                goal,
+                &xy,
+                &SosOpts::default().with_time_limit(Duration::ZERO),
+            )
         )
         .unwrap();
-        assert!(started.elapsed() < Duration::from_secs(1));
         match &out {
             SosOutcome::Unknown(u) => {
                 assert!(u.reason.starts_with("budget exhausted: deadline"), "{u}");

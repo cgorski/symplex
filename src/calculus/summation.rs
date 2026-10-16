@@ -1000,9 +1000,9 @@ fn finite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId, hi: Expr
                 _ => SumOutcome::Unevaluated,
             };
         }
-        if b.checked_sub(a).is_some_and(|d| d < MAX_ENUMERATION_TERMS) {
-            tracing::debug!("summation: enumerating {} terms", b - a + 1);
-            return SumOutcome::Closed(enumerate_sum(arena, body, var, a, b));
+        if let Some(v) = enumerate_sum(arena, body, var, a, b) {
+            tracing::debug!("summation: enumerated {} terms", b - a + 1);
+            return SumOutcome::Closed(v);
         }
     }
     let Some(found) = finite_closed(arena, body, var, lo, hi) else {
@@ -1079,26 +1079,46 @@ fn upper_at_least(arena: &mut Arena, hi: ExprId, h: ExprId) -> Truth {
     Truth::Unknown
 }
 
-fn enumerate_sum(arena: &mut Arena, body: ExprId, var: ExprId, a: i64, b: i64) -> ExprId {
-    let mut terms = Vec::with_capacity((b - a + 1) as usize);
+/// The number of terms of `a..=b` (`a ≤ b`) when it is at most
+/// [`MAX_ENUMERATION_TERMS`]; `None` beyond (and when `b − a` overflows).
+fn enumeration_len(a: i64, b: i64) -> Option<usize> {
+    let n = b.checked_sub(a)?.checked_add(1)?;
+    crate::base::cast::bounded_len(n, MAX_ENUMERATION_TERMS)
+}
+
+/// `Σ_{k=a}^{b} body` term by term (`a ≤ b`), or `None` beyond
+/// [`MAX_ENUMERATION_TERMS`] terms.
+fn enumerate_sum(arena: &mut Arena, body: ExprId, var: ExprId, a: i64, b: i64) -> Option<ExprId> {
+    let mut terms = Vec::with_capacity(enumeration_len(a, b)?);
     for k in a..=b {
         let kk = arena.int(k);
         let t = subs::subs(arena, body, var, kk);
         terms.push(eval::eval(arena, t));
     }
     let s = add_all(arena, &terms);
-    eval::eval(arena, s)
+    Some(eval::eval(arena, s))
 }
 
-fn enumerate_product(arena: &mut Arena, body: ExprId, var: ExprId, a: i64, b: i64) -> ExprId {
-    let mut factors = Vec::with_capacity((b - a + 1) as usize);
+/// `∏_{k=a}^{b} body` factor by factor (`a ≤ b`), or `None` beyond
+/// [`MAX_ENUMERATION_TERMS`] factors.  Up to 0.57 the caller tested
+/// `b − a < MAX_ENUMERATION_TERMS` unchecked: `∏_{k=−10}^{2⁶³−1} k`
+/// wrapped to a negative difference and asked for `2⁶³` slots (a
+/// capacity-overflow panic).
+fn enumerate_product(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    a: i64,
+    b: i64,
+) -> Option<ExprId> {
+    let mut factors = Vec::with_capacity(enumeration_len(a, b)?);
     for k in a..=b {
         let kk = arena.int(k);
         let t = subs::subs(arena, body, var, kk);
         factors.push(eval::eval(arena, t));
     }
     let p = mul_all(arena, &factors);
-    eval::eval(arena, p)
+    Some(eval::eval(arena, p))
 }
 
 /// Closed form of a finite sum with (possibly symbolic) bounds, and the
@@ -2336,18 +2356,38 @@ pub(crate) fn euler_number(n: usize) -> BigInt {
     e[n].clone()
 }
 
+/// The largest exponent `p` of a `p`-series whose closed form needs the
+/// Bernoulli number `B_p` (`ζ(p)`, even `p`) or the Euler number `E_{p−1}`
+/// (`β(p)`, odd `p`): `B₃₀₀₀₀` takes seconds (`ntheory::bernoulli` and
+/// `ntheory::euler_number` have the same bound).  Beyond it `ζ(p)` stays a
+/// node and `β(p)` is refused: up to 0.57 `Σ_{k≥1} 1/k^(2⁵³)` asked the
+/// tangent-number table behind `B_p` for 144 PB and aborted the process,
+/// and `1/k^65536` ran for minutes.  The closed forms that need only the
+/// powers `2^p`, `j^(−p)` are bounded by the bits of those powers
+/// ([`exact_power_exponent`]).
+const MAX_EXACT_SERIES_EXPONENT: usize = 30_000;
+
+/// Whether `2^p` (and `j^p` for the shifts `j ≤ MAX_TELESCOPE_SHIFT`) may be
+/// formed exactly: `p` within [`cast::MAX_POWER_BITS`](crate::base::cast::MAX_POWER_BITS),
+/// the bit bound of exact powers.
+fn exact_power_exponent(p: usize) -> bool {
+    crate::base::cast::bounded_len(p, crate::base::cast::MAX_POWER_BITS).is_some()
+}
+
 /// Exact value of `ζ(p)` for integer `p ≥ 2`.
 ///
 /// Even `p` gives the elementary closed form (`ζ(2) = π²/6`, `ζ(4) = π⁴/90`,
-/// …, via Bernoulli numbers); odd `p ≥ 3` has no elementary closed form and
-/// is returned as the `Zeta(p)` node (`ζ(3)` is Apéry's constant).
-/// Returns `None` for `p < 2` (the harmonic series diverges).
+/// …, via Bernoulli numbers) up to [`MAX_EXACT_SERIES_EXPONENT`]; odd
+/// `p ≥ 3` has no elementary closed form and is returned as the `Zeta(p)`
+/// node (`ζ(3)` is Apéry's constant), as is an even `p` beyond the bound.
+/// Returns `None` for `p < 2` (the harmonic series diverges) and beyond
+/// `i64`.
 pub(crate) fn zeta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
     if p < 2 {
         return None;
     }
-    if p % 2 == 1 {
-        let pe = arena.int(p as i64);
+    if p % 2 == 1 || p > MAX_EXACT_SERIES_EXPONENT {
+        let pe = arena.int(i64::try_from(p).ok()?);
         return Some(arena.zeta(pe));
     }
     let r = zeta_even_rational(p / 2);
@@ -2364,6 +2404,9 @@ fn eta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
         let two = arena.int(2);
         return Some(arena.ln(two));
     }
+    if !exact_power_exponent(p) {
+        return None;
+    }
     let z = zeta_value(arena, p)?;
     let factor = Q::one() - rat_pow_i(&rat_i(2), 1 - p as i64);
     let fe = rat_expr(arena, factor);
@@ -2378,7 +2421,7 @@ fn dirichlet_beta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
     if p == 2 {
         return Some(arena.catalan);
     }
-    if p.is_multiple_of(2) {
+    if p.is_multiple_of(2) || p > MAX_EXACT_SERIES_EXPONENT {
         return None;
     }
     let m = (p - 1) / 2;
@@ -2406,7 +2449,8 @@ fn hurwitz_zeta_closed(arena: &mut Arena, m: usize, q: &Q) -> Option<ExprId> {
     }
     if q.is_integer() {
         let qi = q.to_integer().to_i64()?;
-        if qi > MAX_TELESCOPE_SHIFT {
+        // `j^(−m)` for `j < q` is exact.
+        if qi > MAX_TELESCOPE_SHIFT || (qi > 1 && !exact_power_exponent(m)) {
             return None;
         }
         let z = zeta_value(arena, m)?;
@@ -2422,7 +2466,7 @@ fn hurwitz_zeta_closed(arena: &mut Arena, m: usize, q: &Q) -> Option<ExprId> {
     let two_q = q * rat_i(2);
     if two_q.is_integer() {
         let n = ((q - Q::new(BigInt::one(), BigInt::from(2))).to_integer()).to_i64()?;
-        if !(0..=MAX_TELESCOPE_SHIFT).contains(&n) {
+        if !(0..=MAX_TELESCOPE_SHIFT).contains(&n) || !exact_power_exponent(m) {
             return None;
         }
         let z = zeta_value(arena, m)?;
@@ -4581,7 +4625,7 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
     if !exp.is_integer() {
         return None;
     }
-    let p = (-exp.to_integer().to_i64()?) as usize;
+    let p = usize::try_from(-exp.to_integer()).ok()?;
     let lo_r = const_value(arena, lo)?;
     let q = &lo_r + &beta; // first argument k+β
     let value = if !shape.alternating {
@@ -4799,7 +4843,8 @@ fn negative_binomial_series(
     consts.push(f);
     let mut total = mul_all(arena, &consts);
     if lo_i > 0 {
-        let mut skipped = Vec::with_capacity(lo_i as usize);
+        let mut skipped =
+            Vec::with_capacity(crate::base::cast::bounded_len(lo_i, MAX_ENUMERATION_TERMS)?);
         for k in 0..lo_i {
             let ke = arena.int(k);
             let t = subs::subs(arena, body, var, ke);
@@ -4808,7 +4853,9 @@ fn negative_binomial_series(
         let s = add_all(arena, &skipped);
         total = arena.sub(total, s);
     } else if lo_i < 0 {
-        let mut below = Vec::with_capacity(lo_i.unsigned_abs() as usize + 1);
+        let mut below = Vec::with_capacity(
+            crate::base::cast::bounded_len(lo_i.unsigned_abs(), MAX_ENUMERATION_TERMS)? + 1,
+        );
         below.push(total);
         for k in lo_i..0 {
             let ke = arena.int(k);
@@ -5479,8 +5526,8 @@ fn finite_product(
                 _ => SumOutcome::Unevaluated,
             };
         }
-        if b - a < MAX_ENUMERATION_TERMS {
-            return SumOutcome::Closed(enumerate_product(arena, body, var, a, b));
+        if let Some(v) = enumerate_product(arena, body, var, a, b) {
+            return SumOutcome::Closed(v);
         }
     }
     let Some(found) = product_closed(arena, body, var, lo, hi, true) else {

@@ -3,9 +3,11 @@
 //! mpmath (the evalf hunt after 0.46).  Every doc comment gives the value
 //! before and the oracle: SymPy 1.14, or mpmath 1.3 at two precisions.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 fn p(ctx: &Context, s: &str) -> Ex {
     ctx.parse(s)
@@ -94,14 +96,13 @@ fn convergent_improper_integrals_keep_their_values() {
         ("x^(-6/5)", "1", "oo", 5.0),
         ("1/(x^2 + 1)^(3/4)", "-oo", "oo", 5.244_115_108_584_239),
     ] {
-        let t0 = Instant::now();
-        let v = integral(&ctx, body, lo, hi).eval_f64().unwrap();
+        let v = assert_fast!(
+            Duration::from_secs(5),
+            integral(&ctx, body, lo, hi).eval_f64(),
+            "∫ {body}"
+        )
+        .unwrap();
         assert!((v - want).abs() < 1e-12 * want, "∫ {body} = {v}");
-        assert!(
-            t0.elapsed() < Duration::from_secs(5),
-            "∫ {body} took {:?}",
-            t0.elapsed()
-        );
         let v = p(&ctx, body)
             .integrate_numeric(&x, &p(&ctx, lo), &p(&ctx, hi))
             .unwrap();
@@ -214,7 +215,7 @@ fn floor_and_ceiling_of_real_constants() {
 #[test]
 fn floor_of_huge_and_tiny_constants_is_quick() {
     let ctx = Context::new();
-    let t = std::time::Instant::now();
+    let t = CpuTimer::start();
     for s in ["floor(Shi(factorial(12)))", "ceiling(exp(10^7))"] {
         let e = p(&ctx, s).eval();
         assert!(
@@ -230,11 +231,7 @@ fn floor_of_huge_and_tiny_constants_is_quick() {
     ] {
         assert_eq!(p(&ctx, s).eval().to_string(), want, "{s}");
     }
-    assert!(
-        t.elapsed() < std::time::Duration::from_secs(20),
-        "{:?}",
-        t.elapsed()
-    );
+    t.assert_within(Duration::from_secs(20), "six floors and ceilings");
 }
 
 /// Before: `log(8, 2)` was `ln(8)/ln(2)`, `beta(1, 5/2)` and `beta(1/2,
@@ -348,10 +345,8 @@ fn ferrari_radicands_are_decided_real_quickly() {
         &ctx,
         "-9*x^7 - 3*x^6 + 99*x^5 - 75*x^4 - 52*x^3 - 180*x^2 + 180*x - 20",
     );
-    let t0 = Instant::now();
-    let roots = poly.solve(&x).unwrap();
+    let roots = assert_fast!(Duration::from_secs(20), poly.solve(&x)).unwrap();
     assert_eq!(roots.len(), 7);
-    assert!(t0.elapsed() < Duration::from_secs(20), "{:?}", t0.elapsed());
     for r in &roots {
         let v = poly.subs(&x, r).eval_complex64().unwrap();
         assert!(v.norm() < 1e-8, "{r}: {v}");

@@ -61,6 +61,9 @@ syn = { version = "2", default-features = false, features = ["parsing", "printin
 quote = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-test = "0.2"
+# `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` for the CPU-time budgets of
+# `tests/perf_assert/mod.rs`; already in the graph through parking_lot_core.
+libc = "0.2"
 
 [[bench]]
 name = "canonicalization"

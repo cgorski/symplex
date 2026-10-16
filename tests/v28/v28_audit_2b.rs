@@ -42,7 +42,7 @@
 // Reference values are quoted at the digits mpmath printed them.
 #![allow(clippy::excessive_precision)]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use symplex::errors::Degeneracy;
@@ -538,12 +538,12 @@ fn cox_accessors_scale_as_n_log_n() {
     let work = |n: usize| {
         let (obs, x, _) = sample(n, 11, 1_000_000);
         move || {
-            let t = Instant::now();
+            let t = crate::perf_assert::CpuTimer::start();
             let fit = cox_ph(&obs, &x, &CoxOpts::default()).expect("fit");
             let m = fit.martingale_residuals();
             let c = fit.concordance().expect("usable pairs");
             assert!(m.iter().all(|v| v.is_finite()) && c > Q::from_integer(0.into()));
-            t.elapsed()
+            t.cpu()
         }
     };
     let (small, large) = interleaved_totals(5, work(400), work(3_200));

@@ -23,11 +23,13 @@
 // Reference values are quoted at the 20 digits mpmath printed them.
 #![allow(clippy::excessive_precision)]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
 use symplex::stats::hypothesis::{power_t_test_two_sample, sample_size_t_test_two_sample};
 use symplex::stats::{Distribution, Family, Kind, Piece, Support, same_family};
+
+use crate::perf_assert::cpu_time;
 
 /// `1 − 2⁻⁵³`, the largest double below `1`; `1 − p = 2⁻⁵³` exactly.
 const TOP: f64 = 1.0 - f64::EPSILON / 2.0;
@@ -296,19 +298,20 @@ fn hypergeometric_quantile_and_cdf_add_the_masses() {
     assert_eq!(h.quantile_f64(TOP).unwrap(), 10.0);
     let (mut quantile, mut cdf, mut reference) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
     for _ in 0..3 {
-        let t = Instant::now();
-        assert_eq!(h.quantile_f64(0.5).unwrap(), 4.0);
-        quantile += t.elapsed();
-        let t = Instant::now();
+        let (q, t) = cpu_time(|| h.quantile_f64(0.5).unwrap());
+        quantile += t;
+        assert_eq!(q, 4.0);
+        let (c, t) = cpu_time(|| h.cdf(&ctx.int(4)));
+        cdf += t;
         // Python: sum(Fraction(comb(20, k)*comb(30, 10 - k), comb(50, 10)) for k in range(5))
         //   = 13522236/20963833 (scipy: hypergeom.cdf(4, 50, 20, 10) = 0.645026889882208)
-        assert_eq!(h.cdf(&ctx.int(4)), ctx.rational(13_522_236, 20_963_833));
-        cdf += t.elapsed();
-        let t = Instant::now();
-        let total: f64 = (0..=10)
-            .map(|k| h.density(&ctx.int(k)).eval_f64().unwrap())
-            .sum();
-        reference += t.elapsed();
+        assert_eq!(c, ctx.rational(13_522_236, 20_963_833));
+        let (total, t) = cpu_time(|| {
+            (0..=10)
+                .map(|k| h.density(&ctx.int(k)).eval_f64().unwrap())
+                .sum::<f64>()
+        });
+        reference += t;
         close(total, 1.0, 1e-14, "Σ pmf");
     }
     assert!(

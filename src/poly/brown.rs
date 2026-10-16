@@ -100,8 +100,10 @@ struct Ctx {
 /// The gcd of the non-zero integer polynomials `f` and `g` in `nv`
 /// variables (lex-ordered [`ZMap`]s) by Brown's modular algorithm, with
 /// integer content `gcd(content f, content g)` and positive leading
-/// coefficient; `None` when the evaluation grid exceeds [`MAX_IMAGES`] or
-/// the work bound is reached (the caller then uses another method).
+/// coefficient; `None` when the evaluation grid exceeds [`MAX_IMAGES`], a
+/// degree exceeds [`MAX_DENSE_LIST`](crate::base::cast::MAX_DENSE_LIST)
+/// (the univariate images are dense), or the work bound is reached (the
+/// caller then uses another method).
 pub(crate) fn brown_gcd(nv: usize, f: &ZMap, g: &ZMap) -> Option<ZMap> {
     let cf = modgcd::content(f.values());
     let cg = modgcd::content(g.values());
@@ -116,6 +118,15 @@ pub(crate) fn brown_gcd(nv: usize, f: &ZMap, g: &ZMap) -> Option<ZMap> {
     let mut present: Vec<usize> = (0..nv)
         .filter(|&v| deg_in(f, v) > 0 || deg_in(g, v) > 0)
         .collect();
+    // Every dense image below (`image_degree_bounds`, `run_poly`,
+    // `lc_main`) is sized by a degree of `f` or `g`: bounded here, once.
+    let dense = |v: &usize| {
+        let top = deg_in(f, *v).max(deg_in(g, *v));
+        crate::base::cast::bounded_len(top, crate::base::cast::MAX_DENSE_LIST).is_some()
+    };
+    if !present.iter().all(dense) {
+        return None;
+    }
     if present.is_empty() {
         return Some(ZMap::from([(Exps::from_elem(0, nv), ch)]));
     }

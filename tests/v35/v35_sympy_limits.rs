@@ -6,7 +6,11 @@
 //! `x = 10ᵏ` (`k = 5 … 40`, off-grid points `1.37·10ᵏ + 1/3`) or `a ± 10⁻ᵏ`
 //! at `40 + 3k` digits, SymPy 1.14 as a second opinion.
 
+use std::time::Duration;
+
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 fn lim(ctx: &Context, src: &str, point: &str, dir: Direction) -> Result<Ex, SymplexError> {
     let f = ctx
@@ -186,9 +190,10 @@ fn special_functions_at_infinity() {
 #[test]
 fn acosh_on_the_imaginary_axis_is_fast() {
     let ctx = Context::new();
-    let t = std::time::Instant::now();
-    same(&ctx, "1/(acosh(2*I + I*x) - acosh(2*I))", "0", L, "-oo");
-    assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+    assert_fast!(
+        Duration::from_secs(5),
+        same(&ctx, "1/(acosh(2*I + I*x) - acosh(2*I))", "0", L, "-oo")
+    );
 }
 
 /// Before: `0` for every series of order 0 (test_issue_14037; SymPy

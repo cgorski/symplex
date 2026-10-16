@@ -722,7 +722,7 @@ fn result_fits_i64_but_intermediates_overflow() {
 fn bigint_delegation_is_practical() {
     // Show that delegating crt_i64 → crt (BigInt) is fast enough.
     // 1000 iterations of CRT with 3 moduli should be < 1 second.
-    use std::time::Instant;
+    use crate::perf_assert::CpuTimer;
 
     let remainders = [2i64, 3, 5];
     let moduli = [7i64, 11, 13];
@@ -730,11 +730,11 @@ fn bigint_delegation_is_practical() {
     let m_big: Vec<BigInt> = moduli.iter().map(|&m| bi(m)).collect();
 
     let iters = 10_000;
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for _ in 0..iters {
         let _ = crt(&r_big, &m_big);
     }
-    let elapsed = start.elapsed();
+    let elapsed = start.cpu();
 
     eprintln!(
         "\n  BigInt CRT delegation: {} iterations in {:?} ({:.1} µs/iter)",
@@ -744,11 +744,11 @@ fn bigint_delegation_is_practical() {
     );
 
     // Also time the i64 path for comparison (with small moduli that work).
-    let start2 = Instant::now();
+    let start2 = CpuTimer::start();
     for _ in 0..iters {
         let _ = crt_i64(&remainders, &moduli);
     }
-    let elapsed2 = start2.elapsed();
+    let elapsed2 = start2.cpu();
 
     eprintln!(
         "  i64 CRT:              {} iterations in {:?} ({:.1} µs/iter)",

@@ -850,10 +850,10 @@ fn try_normalized_forward(
                 let Ok(kk) = u32::try_from(kq.to_integer()) else {
                     return Ok(None);
                 };
-                if kk > 32 {
+                let Some(len) = crate::base::cast::bounded_len(kk, 32u32) else {
                     return Ok(None);
-                }
-                let mut terms = Vec::with_capacity(kk as usize + 1);
+                };
+                let mut terms = Vec::with_capacity(len + 1);
                 for j in 0..kk {
                     let jj = arena.int(-i64::from(j));
                     terms.push(arena.add(&[top, jj]));
@@ -1591,6 +1591,15 @@ fn try_trig_inverse_general(
     Some(crate::transforms::eval::eval(arena, r))
 }
 
+/// The highest pole order `m` of `z/(z − a)^m` that [`try_extended_inverse`]
+/// inverts: the falling factorial of `C(n, m − 1)` has `m − 1` factors.  It
+/// is the degree bound of `polybridge::expr_to_poly`, so a higher order is
+/// refused by the exact rational route too (below it, that route would
+/// expand `(z − a)^m`).  Up to 0.57 the factors were collected into a vector
+/// of `m` slots (`z/(z − 1)^(2³¹ − 1)` asked for 8 GB and aborted the
+/// process).
+const MAX_POLE_ORDER: usize = crate::poly::polybridge::MAX_EXPR_POLY_DEGREE;
+
 /// Extended inverse entries.
 ///
 /// * `z^{−k} → δ[n − k]` and `z^{−k} X(z) → x[n−k] H(n−k)` (delay);
@@ -1690,6 +1699,13 @@ fn try_extended_inverse(
         if delay < 0 {
             return Ok(None); // improper: leave to partial fractions
         }
+        // The falling factorial below has `m − 1` factors.
+        let Some(order) = crate::base::cast::bounded_len(m, MAX_POLE_ORDER) else {
+            return Err(SymplexError::ComputationFailed {
+                operation: "inverse_z_transform",
+                reason: format!("pole of order {m}: at most {MAX_POLE_ORDER} are inverted"),
+            });
+        };
         // C(n, m−1) written as the falling factorial n(n−1)…(n−m+2)/(m−1)!,
         // which evaluates to 0 for 0 ≤ n < m−1 (a `Binomial` node with
         // k > n does not currently evaluate).
@@ -1699,13 +1715,15 @@ fn try_extended_inverse(
         let base = if m == 1 {
             arena.pow(a, n_var)
         } else {
-            let mut factors = Vec::with_capacity(m as usize);
+            let mut factors = Vec::with_capacity(order + 1);
             for j in 0..(m - 1) {
                 let jj = arena.int(j as i64);
                 factors.push(arena.sub(n_var, jj));
             }
-            let fact: i64 = (1..m as i64).product();
-            let inv_fact = arena.rational(1, fact);
+            // (m − 1)! exactly: up to 0.57 an `i64` product, which wrapped
+            // from m = 22 (`z/(z − 1)^22` gave `−n⋯(n − 20)/4249290049419214848`).
+            let fact = crate::base::combinatorics::factorial(m - 1);
+            let inv_fact = arena.num_ratio(Ratio::new(BigInt::from(1), fact));
             factors.push(inv_fact);
             factors.push(a_pow);
             arena.mul(&factors)

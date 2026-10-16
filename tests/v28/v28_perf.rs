@@ -8,26 +8,29 @@
 //! load.  The two differ by a large factor the other way when the fast
 //! path is not taken, and the bound sits near the geometric mean.
 //! (Checked with 64 timing-test processes at once on 16 cores: best-of-N
-//! rounds, or a short reference against one long run, failed there.)
+//! rounds, or a short reference against one long run, failed there.)  The
+//! times are CPU times of the thread doing the work (`perf_assert`), which
+//! a loaded machine does not stretch by the time spent waiting for a core.
 //!
 //! Reference values: SymPy 1.14 by the call quoted next to each.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use symplex::prelude::*;
 use symplex::stats::hypothesis::{Alternative, pearson_test};
 
+use crate::perf_assert::{CpuTimer, cpu_time};
+
 fn big(s: &str) -> BigInt {
     s.parse().expect("integer literal")
 }
 
-/// Wall-clock time of `f` and its result.
+/// Thread CPU time of `f` and its result.
 fn timed<T>(f: impl FnOnce() -> T) -> (Duration, T) {
-    let t = Instant::now();
-    let out = f();
-    (t.elapsed(), out)
+    let (out, t) = cpu_time(f);
+    (t, out)
 }
 
 /// `f` run on a fresh thread, whose radical memo (thread-local) is empty.
@@ -186,14 +189,14 @@ fn pearson_test_on_large_integers_factors_its_radicand_once() {
     let run = |x: &[BigRational], y: &[BigRational], times: usize| {
         let (x, y) = (x.to_vec(), y.to_vec());
         on_fresh_thread(move || {
-            let t = Instant::now();
+            let t = CpuTimer::start();
             let mut last = None;
             for _ in 0..times {
                 let ctx = Context::new();
                 let r = pearson_test(&ctx, &x, &y, Alternative::TwoSided);
                 last = Some(r.map(|r| format!("{}", r.statistic)));
             }
-            (t.elapsed(), last)
+            (t.cpu(), last)
         })
     };
     let mut statistic = None;

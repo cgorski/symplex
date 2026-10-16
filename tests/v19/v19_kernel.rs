@@ -20,7 +20,7 @@
 //! `src/domains/exact_kernel.rs` (`kernels_report_a_failed_cell_operation`,
 //! `i128_division_rejects_inexact_operands`).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -28,6 +28,8 @@ use num_traits::{One, Zero};
 use symplex::linprog::Q;
 use symplex::matrix::{QMatrix, ZMatrix};
 use symplex::prelude::SymplexError;
+
+use crate::perf_assert::{CpuTimer, cpu_time};
 
 struct Lcg(u64);
 
@@ -95,11 +97,10 @@ fn row_scaled(a: &QMatrix) -> (QMatrix, Vec<Q>) {
     (scaled, scales)
 }
 
-/// `f()`, with its wall-clock time added to `total`.
+/// `f()`, with its thread CPU time added to `total`.
 fn clocked<T>(total: &mut Duration, f: impl FnOnce() -> T) -> T {
-    let t = Instant::now();
-    let out = f();
-    *total += t.elapsed();
+    let (out, t) = cpu_time(f);
+    *total += t;
     out
 }
 
@@ -251,7 +252,7 @@ fn rref_rank_nullspace_agree_with_bigint_only_and_naive_paths() {
 
 #[test]
 fn inv_solve_det_agree_with_bigint_only_path() {
-    let started = Instant::now();
+    let started = CpuTimer::start();
     let mut g = Lcg(99);
     for (name, a, min_det_bits) in square_cases() {
         let n = a.nrows();
@@ -300,11 +301,7 @@ fn inv_solve_det_agree_with_bigint_only_path() {
             assert_eq!(z.rank(), n, "{name}: ZMatrix::rank");
         }
     }
-    assert!(
-        started.elapsed().as_secs() < 5,
-        "kernel tests took {:?}",
-        started.elapsed()
-    );
+    started.assert_within(Duration::from_secs(5), "kernel tests");
 }
 
 /// Singular and degenerate shapes through the escalating kernel: the

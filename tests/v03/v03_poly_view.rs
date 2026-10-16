@@ -11,15 +11,7 @@ use symplex::poly_ex::Poly;
 use symplex::polysys::linsolve_matrix;
 use symplex::prelude::*;
 
-/// Wall-clock hang guard (scaled up on shared CI runners).
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::CpuTimer;
 
 fn s<T: std::fmt::Display>(e: &T) -> String {
     format!("{e}")
@@ -1174,15 +1166,11 @@ fn sign_tests_agree_with_dense_sampling() {
 #[test]
 fn sign_tests_are_fast_on_a_degree_20_polynomial() {
     let (ctx, x, _y) = ctx_xy();
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let f = (x.powi(2) + 1).powi(10) - &x * 3;
     let r = f.poly_is_positive_on(&x, &ctx.int(1), &ctx.infinity());
     assert_eq!(r, Some(true));
-    assert!(
-        start.elapsed() < time_budget(5),
-        "took {:?}",
-        start.elapsed()
-    );
+    start.assert_within(std::time::Duration::from_secs(5), "the sign test");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

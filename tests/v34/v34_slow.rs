@@ -4,22 +4,20 @@
 //! Every call must finish well within its limit with the value it had
 //! before (or SymPy's, where it changed).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use num_traits::Pow;
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 /// Generous for a debug build on a loaded CI machine: the release times
 /// are milliseconds.
 const LIMIT: Duration = Duration::from_secs(5);
 
 fn timed<T>(what: &str, f: impl FnOnce() -> T) -> T {
-    let t0 = Instant::now();
-    let r = f();
-    let dt = t0.elapsed();
-    assert!(dt < LIMIT, "{what} took {dt:?}");
-    r
+    assert_fast!(LIMIT, f(), "{what}")
 }
 
 /// Before: 2.9 s of CPU in a release build (a 13,000-digit `v`: more than
@@ -116,7 +114,7 @@ fn special_values_at_huge_rational_multiples_of_pi_are_quick() {
 #[test]
 fn erfc_of_an_argument_beyond_the_f64_range_is_quick() {
     let ctx = symplex::prelude::Context::new();
-    let t = std::time::Instant::now();
+    let t = CpuTimer::start();
     let r = ctx.parse("erfc(Shi(5040))").unwrap().eval_decimal(16);
     assert!(
         matches!(r, Err(symplex::prelude::SymplexError::Unevaluable { ref reason }) if reason.contains("underflows")),
@@ -129,5 +127,5 @@ fn erfc_of_an_argument_beyond_the_f64_range_is_quick() {
             .unwrap(),
         "1"
     );
-    assert!(t.elapsed().as_secs_f64() < 5.0, "{:?}", t.elapsed());
+    t.assert_within(LIMIT, "erfc and erf of Shi(5040)");
 }

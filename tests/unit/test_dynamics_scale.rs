@@ -3,12 +3,12 @@
 //! Experiment 1: 3-DOF planar arm — full Lagrangian dynamics
 //! Experiment 2: 6-DOF PUMA-like spatial arm — FK chain, Jacobian, codegen
 
-use std::time::Instant;
-
 use symplex::dynamics::{GeneralizedCoordinate, euler_lagrange, manipulator_equation, mass_matrix};
 use symplex::matrix::{Matrix, jacobian};
 use symplex::prelude::*;
 use symplex::robotics::{DhLink, dh_matrix, fk_chain, fk_position};
+
+use crate::perf_assert::CpuTimer;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -80,7 +80,7 @@ fn experiment_3dof_planar_arm_dynamics() {
 
     // ── Step 1: Forward kinematics — COM positions ───────────────────────
     println!("Step 1: Building COM positions for 3 links...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
 
     // Link 1 COM: midpoint of link 1
     //   x1 = (L1/2) cos(q1)
@@ -104,7 +104,7 @@ fn experiment_3dof_planar_arm_dynamics() {
     let x3 = &(&l1 * &q1.cos()) + &(&(&l2 * &q12.cos()) + &(&(&half * &l3) * &q123.cos()));
     let y3 = &(&l1 * &q1.sin()) + &(&(&l2 * &q12.sin()) + &(&(&half * &l3) * &q123.sin()));
 
-    let fk_time = t0.elapsed();
+    let fk_time = t0.cpu();
     println!("  FK positions built in {:?}", fk_time);
     println!("  x3 ops={}, terms={}", x3.count_ops(), x3.term_count());
     println!("  y3 ops={}, terms={}", y3.count_ops(), y3.term_count());
@@ -114,7 +114,7 @@ fn experiment_3dof_planar_arm_dynamics() {
     // ẋ_i = Σ_j (∂x_i/∂q_j) · q̇_j
     // We compute these using the chain rule manually.
     println!("\nStep 2: Building COM velocities...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
 
     // Link 1 velocity
     //   ẋ1 = ∂x1/∂q1 · qd1  = -(L1/2) sin(q1) · qd1
@@ -134,13 +134,13 @@ fn experiment_3dof_planar_arm_dynamics() {
     let xd3 = &(&(&x3.diff(&q1) * &qd1) + &(&x3.diff(&q2) * &qd2)) + &(&x3.diff(&q3) * &qd3);
     let yd3 = &(&(&y3.diff(&q1) * &qd1) + &(&y3.diff(&q2) * &qd2)) + &(&y3.diff(&q3) * &qd3);
 
-    let vel_time = t0.elapsed();
+    let vel_time = t0.cpu();
     println!("  Velocities built in {:?}", vel_time);
     println!("  xd3 ops={}, terms={}", xd3.count_ops(), xd3.term_count());
 
     // ── Step 3: Kinetic energy T = ½ Σ m_i (ẋ_i² + ẏ_i²) ──────────────
     println!("\nStep 3: Building kinetic energy T...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
 
     let v1_sq = &(&xd1 * &xd1) + &(&yd1 * &yd1);
     let v2_sq = &(&xd2 * &xd2) + &(&yd2 * &yd2);
@@ -149,15 +149,15 @@ fn experiment_3dof_planar_arm_dynamics() {
     let ke =
         &(&(&half * &m1) * &v1_sq) + &(&(&(&half * &m2) * &v2_sq) + &(&(&half * &m3) * &v3_sq));
 
-    let ke_build_time = t0.elapsed();
+    let ke_build_time = t0.cpu();
     println!("  T built in {:?}", ke_build_time);
     println!("  T ops={}, terms={}", ke.count_ops(), ke.term_count());
 
     // ── Step 3b: Expand T so derivatives work on polynomial-like form ────
     println!("\nStep 3b: Expanding T...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let ke_expanded = ke.expand();
-    let ke_expand_time = t0.elapsed();
+    let ke_expand_time = t0.cpu();
     println!("  T expanded in {:?}", ke_expand_time);
     println!(
         "  T_expanded ops={}, terms={}",
@@ -167,21 +167,21 @@ fn experiment_3dof_planar_arm_dynamics() {
 
     // ── Step 4: Potential energy V = Σ m_i g y_i ────────────────────────
     println!("\nStep 4: Building potential energy V...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
 
     let pe = &(&(&m1 * &g_sym) * &y1) + &(&(&(&m2 * &g_sym) * &y2) + &(&(&m3 * &g_sym) * &y3));
 
-    let pe_build_time = t0.elapsed();
+    let pe_build_time = t0.cpu();
     println!("  V built in {:?}", pe_build_time);
     println!("  V ops={}, terms={}", pe.count_ops(), pe.term_count());
 
     // ── Step 5: Mass matrix M(q) ────────────────────────────────────────
     println!("\nStep 5: Computing mass matrix M(q) via ∂²T/∂q̇ᵢ∂q̇ⱼ...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
 
     let mm = mass_matrix(&ke_expanded, &[&qd1, &qd2, &qd3]).unwrap();
 
-    let mm_time = t0.elapsed();
+    let mm_time = t0.cpu();
     println!("  Mass matrix computed in {:?}", mm_time);
     assert_eq!(mm.shape(), (3, 3));
     println!(
@@ -201,7 +201,7 @@ fn experiment_3dof_planar_arm_dynamics() {
 
     // ── Step 6: Euler-Lagrange equations ────────────────────────────────
     println!("\nStep 6: Computing Euler-Lagrange equations...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
 
     let coords: [GeneralizedCoordinate<'_>; 3] = [
         GeneralizedCoordinate {
@@ -222,7 +222,7 @@ fn experiment_3dof_planar_arm_dynamics() {
     ];
     let eqs = euler_lagrange(&ke_expanded, &pe, &coords);
 
-    let el_time = t0.elapsed();
+    let el_time = t0.cpu();
     println!("  Euler-Lagrange computed in {:?}", el_time);
     assert_eq!(eqs.len(), 3);
     for (i, eq) in eqs.iter().enumerate() {
@@ -235,9 +235,9 @@ fn experiment_3dof_planar_arm_dynamics() {
 
     // ── Step 7: Simplify one mass matrix entry with trigsimp ────────────
     println!("\nStep 7: Simplifying M[0,0] with trigsimp...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let m00_simplified = mm.get(0, 0).simplify_trig();
-    let trigsimp_time = t0.elapsed();
+    let trigsimp_time = t0.cpu();
     println!("  trigsimp(M[0,0]) completed in {:?}", trigsimp_time);
     println!(
         "  Before: ops={}, terms={}",
@@ -347,10 +347,10 @@ fn experiment_3dof_planar_arm_dynamics() {
 
     // ── Step 9: Full manipulator equation ────────────────────────────────
     println!("\nStep 9: Computing full manipulator equation M, C, g...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let manip =
         manipulator_equation(&ke_expanded, &pe, &[&q1, &q2, &q3], &[&qd1, &qd2, &qd3]).unwrap();
-    let manip_time = t0.elapsed();
+    let manip_time = t0.cpu();
     println!("  manipulator_equation() completed in {:?}", manip_time);
     assert_eq!(manip.mass.shape(), (3, 3));
     assert_eq!(manip.coriolis.shape(), (3, 3));
@@ -427,10 +427,10 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     // | 5     | q5 | 0  | 0  | π/2   |
     // | 6     | q6 | 0  | 0  | 0     |
     println!("Step 1: Building 6 DH matrices individually...");
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
 
     let _t1 = dh_matrix(&q1, &zero, &zero, &half_pi);
-    let t1_time = t0.elapsed();
+    let t1_time = t0.cpu();
     println!("  T1 built in {:?}", t1_time);
 
     let _t2 = dh_matrix(&q2, &zero, &a2, &zero);
@@ -439,12 +439,12 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     let _t5 = dh_matrix(&q5, &zero, &zero, &half_pi);
     let _t6 = dh_matrix(&q6, &zero, &zero, &zero);
 
-    let dh_matrices_time = t0.elapsed();
+    let dh_matrices_time = t0.cpu();
     println!("  All 6 DH matrices built in {:?}", dh_matrices_time);
 
     // ── Step 2: FK chain multiplication ──────────────────────────────────
     println!("\nStep 2: Computing FK chain T0_6 = T1·T2·T3·T4·T5·T6...");
-    let t0_time = Instant::now();
+    let t0_time = CpuTimer::start();
 
     let dh_params: [DhLink<'_>; 6] = [
         DhLink {
@@ -485,7 +485,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
         },
     ];
     let fk_total = fk_chain(&dh_params);
-    let fk_chain_time = t0_time.elapsed();
+    let fk_chain_time = t0_time.cpu();
     println!("  FK chain computed in {:?}", fk_chain_time);
     assert_eq!(fk_total.shape(), (4, 4));
 
@@ -514,11 +514,11 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // ── Step 3: Extract end-effector position ────────────────────────────
     println!("\nStep 3: Extracting end-effector position (px, py, pz)...");
-    let t0_pos = Instant::now();
+    let t0_pos = CpuTimer::start();
     let px = fk_total.get(0, 3).clone();
     let py = fk_total.get(1, 3).clone();
     let pz = fk_total.get(2, 3).clone();
-    let pos_time = t0_pos.elapsed();
+    let pos_time = t0_pos.cpu();
     println!("  Position extracted in {:?}", pos_time);
     println!("  px: ops={}, terms={}", px.count_ops(), px.term_count());
     println!("  py: ops={}, terms={}", py.count_ops(), py.term_count());
@@ -526,11 +526,11 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // ── Step 4: Compute the position Jacobian (3×6) ──────────────────────
     println!("\nStep 4: Computing 3×6 position Jacobian...");
-    let t0_jac = Instant::now();
+    let t0_jac = CpuTimer::start();
 
     let jac = jacobian(&[&px, &py, &pz], &[&q1, &q2, &q3, &q4, &q5, &q6]).unwrap();
 
-    let jac_time = t0_jac.elapsed();
+    let jac_time = t0_jac.cpu();
     println!("  Jacobian computed in {:?}", jac_time);
     assert_eq!(jac.shape(), (3, 6));
     println!(
@@ -550,7 +550,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // ── Step 5: Eval the FK chain ────────────────────────────────────────
     println!("\nStep 5: Evaluating FK at numeric values...");
-    let t0_eval = Instant::now();
+    let t0_eval = CpuTimer::start();
     let fk_eval = |e: &Ex| -> f64 {
         e.subs(&q1, &ctx.rational(3, 10))
             .subs(&q2, &ctx.rational(5, 10))
@@ -567,7 +567,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     let px_num = fk_eval(&px);
     let py_num = fk_eval(&py);
     let pz_num = fk_eval(&pz);
-    let eval_time = t0_eval.elapsed();
+    let eval_time = t0_eval.cpu();
     println!("  Eval completed in {:?}", eval_time);
     println!("  End-effector position: ({px_num:.6}, {py_num:.6}, {pz_num:.6})");
 
@@ -579,9 +579,9 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // ── Step 6: Eval the FK chain via fk_position ────────────────────────
     println!("\nStep 6: Cross-check with fk_position()...");
-    let t0_fkp = Instant::now();
+    let t0_fkp = CpuTimer::start();
     let (fpx, fpy, fpz) = fk_position(&dh_params);
-    let fkp_time = t0_fkp.elapsed();
+    let fkp_time = t0_fkp.cpu();
     println!("  fk_position() computed in {:?}", fkp_time);
 
     let fpx_num = fk_eval(&fpx);
@@ -594,9 +594,9 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // ── Step 7: Simplify a Jacobian entry ────────────────────────────────
     println!("\nStep 7: Simplifying J[0,0] with trigsimp...");
-    let t0_trig = Instant::now();
+    let t0_trig = CpuTimer::start();
     let j00_simplified = jac.get(0, 0).simplify_trig();
-    let trig_jac_time = t0_trig.elapsed();
+    let trig_jac_time = t0_trig.cpu();
     println!("  trigsimp(J[0,0]) in {:?}", trig_jac_time);
     println!(
         "  Before: ops={}, terms={}",
@@ -611,9 +611,9 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // ── Step 8: Try eval on the FK matrix ────────────────────────────────
     println!("\nStep 8: Evaluating expanded FK entries...");
-    let t0_expand = Instant::now();
+    let t0_expand = CpuTimer::start();
     let px_expanded = px.expand();
-    let expand_time = t0_expand.elapsed();
+    let expand_time = t0_expand.cpu();
     println!(
         "  px.expand() in {:?}, ops={}, terms={}",
         expand_time,
@@ -623,14 +623,14 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // ── Step 9: Code generation for the Jacobian ─────────────────────────
     println!("\nStep 9: Generating Rust code for the 3×6 Jacobian...");
-    let t0_codegen = Instant::now();
+    let t0_codegen = CpuTimer::start();
 
     let code_result = jac.to_rust_fn(
         "puma_jacobian",
         &["q1", "q2", "q3", "q4", "q5", "q6", "a2", "d4"],
     );
 
-    let codegen_time = t0_codegen.elapsed();
+    let codegen_time = t0_codegen.cpu();
     match &code_result {
         Ok(code) => {
             println!("  Codegen completed in {:?}", codegen_time);
@@ -650,13 +650,13 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // ── Step 10: Code generation for the FK position ─────────────────────
     println!("\nStep 10: Generating Rust code for FK position (3 expressions)...");
-    let t0_codegen2 = Instant::now();
+    let t0_codegen2 = CpuTimer::start();
     let pos_matrix = Matrix::new(vec![vec![px.clone(), py.clone(), pz.clone()]]).unwrap();
     let pos_code_result = pos_matrix.to_rust_fn(
         "puma_fk_position",
         &["q1", "q2", "q3", "q4", "q5", "q6", "a2", "d4"],
     );
-    let codegen2_time = t0_codegen2.elapsed();
+    let codegen2_time = t0_codegen2.cpu();
     match &pos_code_result {
         Ok(code) => {
             println!("  Position codegen completed in {:?}", codegen2_time);
@@ -722,7 +722,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
         },
     ];
 
-    let t0_dyn = Instant::now();
+    let t0_dyn = CpuTimer::start();
 
     let (_, _p1y, p1z) = fk_position(&dh_1);
     let (_, _p2y, p2z) = fk_position(&dh_2);
@@ -733,14 +733,14 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     let g_sym = ctx.symbol("g");
     let pe_6 = &(&(&m1 * &g_sym) * &p1z) + &(&(&(&m2 * &g_sym) * &p2z) + &(&(&m3 * &g_sym) * &p3z));
 
-    let dyn_setup_time = t0_dyn.elapsed();
+    let dyn_setup_time = t0_dyn.cpu();
     println!("  6-DOF potential energy built in {:?}", dyn_setup_time);
     println!("  V ops={}, terms={}", pe_6.count_ops(), pe_6.term_count());
 
     // Build kinetic energy using the position Jacobian approach
     // T = ½ Σ mᵢ Jᵢᵀ Jᵢ integrated over qdot
     // For simplicity, compute velocity components by differentiating positions
-    let t0_ke6 = Instant::now();
+    let t0_ke6 = CpuTimer::start();
 
     let q_vars_3 = [q1.clone(), q2.clone(), q3.clone()];
     let (p1x, p1y, p1z) = fk_position(&dh_1);
@@ -770,14 +770,14 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     let ke3 = compute_link_ke(&p3x, &p3y, &p3z, &m3);
     let ke_6 = &(&ke1 + &ke2) + &ke3;
 
-    let ke6_time = t0_ke6.elapsed();
+    let ke6_time = t0_ke6.cpu();
     println!("  Spatial KE (3 joints) built in {:?}", ke6_time);
     println!("  T ops={}, terms={}", ke_6.count_ops(), ke_6.term_count());
 
     // Expand before mass_matrix extraction
-    let t0_expand6 = Instant::now();
+    let t0_expand6 = CpuTimer::start();
     let ke_6_expanded = ke_6.expand();
-    let expand6_time = t0_expand6.elapsed();
+    let expand6_time = t0_expand6.cpu();
     println!(
         "  T expanded in {:?}, ops={}, terms={}",
         expand6_time,
@@ -786,9 +786,9 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     );
 
     // Mass matrix for the 3-joint spatial arm
-    let t0_mm6 = Instant::now();
+    let t0_mm6 = CpuTimer::start();
     let mm_6 = mass_matrix(&ke_6_expanded, &[&qd1, &qd2, &qd3]).unwrap();
-    let mm6_time = t0_mm6.elapsed();
+    let mm6_time = t0_mm6.cpu();
     println!("  mass_matrix() for spatial 3-DOF in {:?}", mm6_time);
     assert_eq!(mm_6.shape(), (3, 3));
     println!(

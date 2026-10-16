@@ -799,9 +799,18 @@ impl EcmStage2 {
     /// The plan for the primes in `[b1, b2]`; `b1` even and at least 8.
     fn new(b1: u64, b2: u64) -> Self {
         let d = b2.isqrt().min(b1 / 2 - 1);
+        // `d ≤ √B2` from the fixed schedule; a plan beyond the cap would be
+        // stage 1 only (no giant steps).
+        let Some(width) = crate::base::cast::bounded_len(d, crate::base::cast::MAX_TERMS) else {
+            return EcmStage2 {
+                half_width: d,
+                b1,
+                deltas: Vec::new(),
+            };
+        };
         let sieve = BitSieve::new(b2 + 2 * d);
         let mut deltas = Vec::new();
-        let mut seen = vec![false; d as usize];
+        let mut seen = vec![false; width];
         let mut r = b1 + 2 * d;
         while r < b2 + 2 * d {
             let mut step: Vec<u32> = Vec::new();
@@ -2671,8 +2680,15 @@ pub fn iroot(n: impl Into<BigInt>, k: u32) -> Option<BigInt> {
 /// Returns all primes up to (and including) `limit` using the Sieve of
 /// Eratosthenes.
 ///
-/// This function always uses `i64` because the sieve must be bounded by
-/// available memory.
+/// # Refusal
+///
+/// A `limit` of `2³² − 1` or more is not sieved (the list alone has
+/// 203,280,221 entries below `2³²`): the vector is then **empty although
+/// primes exist**.  Callers that may pass such limits use
+/// [`try_primes_up_to`], which reports the refusal as an `Err`;
+/// [`primerange`] lists the primes of a window.  (Up to 0.57 the sieve
+/// beyond `2³²` took a byte per number: `primes_up_to(2³² + 1)` asked for
+/// 4 GB, `primes_up_to(2⁵³)` for 9 PB, and the process aborted.)
 ///
 /// # Examples
 ///
@@ -2681,19 +2697,42 @@ pub fn iroot(n: impl Into<BigInt>, k: u32) -> Option<BigInt> {
 /// assert_eq!(primes_up_to(20), vec![2, 3, 5, 7, 11, 13, 17, 19]);
 /// ```
 pub fn primes_up_to(limit: i64) -> Vec<i64> {
+    try_primes_up_to(limit).unwrap_or_default()
+}
+
+/// [`primes_up_to`] with the oversized case reported: every prime up to
+/// (and including) `limit` (empty for `limit < 2`).
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] for `limit ≥ 2³² − 1`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::try_primes_up_to;
+/// assert_eq!(try_primes_up_to(10).unwrap(), vec![2, 3, 5, 7]);
+/// assert!(try_primes_up_to(1 << 40).is_err());
+/// ```
+pub fn try_primes_up_to(limit: i64) -> Result<Vec<i64>, SymplexError> {
     if limit < 2 {
-        return vec![];
+        return Ok(vec![]);
     }
-    if limit < u32::MAX as i64 {
-        return sieve_u32(limit as u32 + 1)
-            .into_iter()
-            .map(i64::from)
-            .collect();
+    // `u32::MAX` bounds the sieve: `limit + 1` fits it.
+    let Some(n) =
+        crate::base::cast::bounded_len(limit, u32::MAX - 1).and_then(|n| u32::try_from(n + 1).ok())
+    else {
+        return Err(list_too_long("primes_up_to", "primes up to", &limit));
+    };
+    Ok(sieve_u32(n).into_iter().map(i64::from).collect())
+}
+
+/// The refusal of a function whose list would exceed its documented bound.
+fn list_too_long(operation: &'static str, what: &str, n: &dyn std::fmt::Display) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation,
+        reason: format!("the {what} {n} are too many to list"),
     }
-    segmented_sieve(2, limit as u64 + 1)
-        .into_iter()
-        .map(|p| p as i64)
-        .collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3012,15 +3051,13 @@ fn roots_count(parts: &[PrimePowerRoots]) -> BigInt {
 /// [`MAX_LISTED_ROOTS`].
 fn list_roots(parts: &[PrimePowerRoots]) -> Option<Vec<BigInt>> {
     let total = roots_count(parts);
-    if total > BigInt::from(MAX_LISTED_ROOTS) {
-        return None;
-    }
-    if total.is_zero() {
+    let len = crate::base::cast::bounded_len(&total, MAX_LISTED_ROOTS)?;
+    if len == 0 {
         // Some part is empty; the others' combinations are never formed.
         return Some(vec![]);
     }
     let n: BigInt = parts.iter().map(|p| &p.pk).product();
-    let mut out = Vec::with_capacity(total.to_usize()?);
+    let mut out = Vec::with_capacity(len);
     for class in combine_classes(parts) {
         let reps = (&n / &class.modulus).to_u64()?;
         let mut x = class.residue;
@@ -4697,9 +4734,9 @@ fn nthroot_mod_prime_divisor(s: &BigInt, q: &BigInt, p: &BigInt) -> Option<Vec<B
         }
     }
     // All q roots: r · ζ^i with ζ = g^{(p−1)/q} a primitive q-th root of unity.
-    let count = q.to_u64().filter(|&c| c <= MAX_ROOTS_MOD_PRIME)?;
+    let count = crate::base::cast::bounded_len(q, MAX_ROOTS_MOD_PRIME)?;
     let zeta = g.modpow(&(&pm1 / q), p);
-    let mut out = Vec::with_capacity(usize::try_from(count).ok()?);
+    let mut out = Vec::with_capacity(count);
     let mut cur = r;
     for _ in 0..count {
         out.push(cur.clone());
@@ -4713,8 +4750,14 @@ fn nthroot_mod_prime_divisor(s: &BigInt, q: &BigInt, p: &BigInt) -> Option<Vec<B
 /// The quadratic residues modulo `n`: the sorted distinct values of
 /// `x² mod n` for `0 ≤ x < n` (SymPy `quadratic_residues`).  Includes `0`.
 ///
-/// Brute force over `x ≤ n/2`; `n` must fit in `u64` (the result has
-/// `Θ(n)` entries anyway) and `n < 1` gives an empty vector.
+/// Brute force over `x ≤ n/2`; `n < 1` gives an empty vector.
+///
+/// # Refusal
+///
+/// For `n ≥ 2²⁶` (the squares are listed first: 2²⁵ of them) the vector
+/// is **empty although residues exist**; use [`try_quadratic_residues`] to
+/// tell, and [`is_quad_residue`] for one value.  (Up to 0.57
+/// `quadratic_residues(2³¹ − 1)` asked for 8 GB and aborted the process.)
 ///
 /// # Examples
 ///
@@ -4728,17 +4771,38 @@ fn nthroot_mod_prime_divisor(s: &BigInt, q: &BigInt, p: &BigInt) -> Option<Vec<B
 /// assert_eq!(to_i(quadratic_residues(1)), vec![0]);
 /// ```
 pub fn quadratic_residues(n: impl Into<BigInt>) -> Vec<BigInt> {
+    try_quadratic_residues(n).unwrap_or_default()
+}
+
+/// [`quadratic_residues`] with the oversized case reported: the sorted
+/// distinct values of `x² mod n` (empty for `n < 1`).
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] for `n ≥ 2²⁶`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::try_quadratic_residues;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(try_quadratic_residues(5).unwrap(), vec![BigInt::from(0), BigInt::from(1), BigInt::from(4)]);
+/// assert!(try_quadratic_residues(1u64 << 40).is_err());
+/// ```
+pub fn try_quadratic_residues(n: impl Into<BigInt>) -> Result<Vec<BigInt>, SymplexError> {
     let n: BigInt = n.into();
     if n < BigInt::one() {
-        return vec![];
+        return Ok(vec![]);
     }
-    let Some(nu) = n.to_u64() else {
-        return vec![];
-    };
-    let mut squares: Vec<u64> = (0..=nu / 2).map(|x| mod_mul_u64(x, x, nu)).collect();
+    let too_many = || list_too_long("quadratic_residues", "quadratic residues modulo", &n);
+    let nu = n.to_u64().ok_or_else(too_many)?;
+    let half = crate::base::cast::bounded_len(nu / 2, (1u64 << 25) - 1).ok_or_else(too_many)?;
+    let mut squares: Vec<u64> = Vec::with_capacity(half + 1);
+    squares.extend((0..=nu / 2).map(|x| mod_mul_u64(x, x, nu)));
     squares.sort_unstable();
     squares.dedup();
-    squares.into_iter().map(BigInt::from).collect()
+    Ok(squares.into_iter().map(BigInt::from).collect())
 }
 
 /// Does `xⁿ ≡ a (mod m)` have a solution?  (SymPy `is_nthpow_residue`.)
@@ -5304,7 +5368,7 @@ pub fn primorial(n: u64) -> BigInt {
     if n == 0 {
         return BigInt::one();
     }
-    if n <= 10_000_000 {
+    if let Some(count) = crate::base::cast::bounded_len(n, 10_000_000u64) {
         let bound = if n < 6 {
             12
         } else {
@@ -5312,7 +5376,7 @@ pub fn primorial(n: u64) -> BigInt {
             (nf * (nf.ln() + nf.ln().ln())).ceil() as u64 + 10
         };
         let sieve = BitSieve::new(bound);
-        let mut primes = Vec::with_capacity(n as usize);
+        let mut primes = Vec::with_capacity(count);
         let mut k = 2u64;
         while k <= bound && (primes.len() as u64) < n {
             if sieve.is_prime(k) {
@@ -5414,6 +5478,14 @@ pub fn is_amicable(a: impl Into<BigInt>, b: impl Into<BigInt>) -> bool {
 /// Row `n` of Pascal's triangle, `[C(n,0), C(n,1), …, C(n,n)]` (SymPy
 /// `binomial_coefficients_list`).
 ///
+/// # Refusal
+///
+/// The row is the dense coefficient list of `(1 + x)ⁿ`: beyond
+/// `n = 2¹⁶` (where it holds about 2³¹ bits) the vector is **empty**; use
+/// [`try_binomial_coefficients_list`] to tell, and
+/// [`binomial`] for one coefficient.  (Up
+/// to 0.57 `binomial_coefficients_list(2³¹ − 1)` aborted the process.)
+///
 /// # Examples
 ///
 /// ```
@@ -5426,21 +5498,47 @@ pub fn is_amicable(a: impl Into<BigInt>, b: impl Into<BigInt>) -> bool {
 /// assert_eq!(to_i(binomial_coefficients_list(6)), vec![1, 6, 15, 20, 15, 6, 1]);
 /// ```
 pub fn binomial_coefficients_list(n: u32) -> Vec<BigInt> {
+    try_binomial_coefficients_list(n).unwrap_or_default()
+}
+
+/// [`binomial_coefficients_list`] with the oversized case reported.
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] for `n > 2¹⁶`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::try_binomial_coefficients_list;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(try_binomial_coefficients_list(2).unwrap(), vec![BigInt::from(1), BigInt::from(2), BigInt::from(1)]);
+/// assert!(try_binomial_coefficients_list(1 << 20).is_err());
+/// ```
+pub fn try_binomial_coefficients_list(n: u32) -> Result<Vec<BigInt>, SymplexError> {
+    let Some(len) = crate::base::cast::bounded_len(n, crate::base::cast::MAX_DENSE_DEGREE) else {
+        return Err(list_too_long(
+            "binomial_coefficients_list",
+            "binomial coefficients of degree",
+            &n,
+        ));
+    };
     let n = u64::from(n);
-    let mut row = Vec::new();
+    let mut row = Vec::with_capacity(len + 1);
     let mut c = BigInt::one();
     row.push(c.clone());
     for k in 0..n {
         c = c * BigInt::from(n - k) / BigInt::from(k + 1);
         row.push(c.clone());
     }
-    row
+    Ok(row)
 }
 
 /// The binomial coefficients of `(x + y)ⁿ` keyed by exponent pair (SymPy
 /// `binomial_coefficients`, which returns the dictionary
 /// `{(k₁, k₂): C(n, k₁)}` with `k₁ + k₂ = n`).  Returned as pairs sorted
-/// by `k₁`.
+/// by `k₁`; empty beyond `n = 2¹⁶`, as [`binomial_coefficients_list`].
 ///
 /// # Examples
 ///

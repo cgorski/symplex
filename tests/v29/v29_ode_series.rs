@@ -8,8 +8,12 @@
 //! substitution: the residual, with the constants set to rational values,
 //! must vanish at rational points to 30 digits.
 
+use std::time::Duration;
+
 use symplex::matrix::Matrix;
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 /// The ODE text with `D1Y`, `D2Y` standing for `y′`, `y″` in `x`.
 fn ode(ctx: &Context, text: &str) -> Ex {
@@ -169,11 +173,11 @@ fn real_roots_with_huge_denominators_are_fast() {
         .collect::<Vec<_>>()
         .join(" + ");
     let p = ctx.parse(&text).unwrap();
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     assert_eq!(p.count_real_roots(&x), Some(2));
     let ivs = p.real_roots_isolate(&x);
     assert_eq!(ivs.len(), 2);
-    assert!(start.elapsed().as_secs() < 60, "took {:?}", start.elapsed());
+    start.assert_within(Duration::from_secs(60), "count and isolate");
     let (lo0, hi0) = (
         ivs[0].lower.eval_f64().unwrap(),
         ivs[0].upper.eval_f64().unwrap(),

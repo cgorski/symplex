@@ -8,9 +8,11 @@
 //! points and by `F(b) − F(a)` against the value of the integral on an
 //! interval free of poles (mpmath's `quad`, quoted with each test).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// `∫ src dx`: evaluated, `F′ = f` at the real sample points where `f` is
 /// real (`F′ − f` as one expression), and displayed as `expected`.
@@ -195,12 +197,14 @@ fn logarithm_over_a_quintic_root_sum() {
 #[test]
 fn quartic_factor_with_large_radicals_stays_implicit() {
     let src = "ln(-x)*(-x^2 + 2*x - 2)/(x^4 - x^2 + 2*x + 1)";
-    let t0 = Instant::now();
-    antiderivative(
-        src,
-        "RootSum(__rs_t^4 - __rs_t^2 + 2*__rs_t + 1, __rs_t -> (-71/106*__rs_t^3 + 49/106*__rs_t^2 + 23/106*__rs_t - 131/106)*(ln(-x)*ln(-x/__rs_t + 1) + polylog(2, x/__rs_t)))",
+    assert_fast!(
+        Duration::from_secs(10),
+        antiderivative(
+            src,
+            "RootSum(__rs_t^4 - __rs_t^2 + 2*__rs_t + 1, __rs_t -> (-71/106*__rs_t^3 + 49/106*__rs_t^2 + 23/106*__rs_t - 131/106)*(ln(-x)*ln(-x/__rs_t + 1) + polylog(2, x/__rs_t)))",
+        ),
+        "the antiderivative and its checks"
     );
-    assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
     definite(src, "-3", "-2", -0.453_055_957_465_777);
     definite(src, "-1", "-1/2", -1.270_155_513_994_199);
 }
@@ -234,10 +238,7 @@ fn rational_functions_are_not_integrated_by_parts() {
         let ctx = Context::new();
         let x = ctx.symbol("x");
         let f = ctx.parse(src).unwrap();
-        let t0 = Instant::now();
-        let big_f = f.integrate(&x);
-        let dt = t0.elapsed();
-        assert!(dt < Duration::from_secs(15), "∫ {src} took {dt:?}");
+        let big_f = assert_fast!(Duration::from_secs(15), f.integrate(&x), "∫ {src}");
         assert!(!big_f.has_unevaluated(), "∫ {src} dx = {big_f}");
         let residual = &big_f.diff(&x) - &f;
         for point in ["1/3", "7/5", "-5/7"] {

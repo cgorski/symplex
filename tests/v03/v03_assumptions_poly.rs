@@ -4,6 +4,8 @@
 
 use symplex::prelude::*;
 
+use crate::perf_assert::CpuTimer;
+
 fn signs(e: &Ex) -> (Option<bool>, Option<bool>, Option<bool>, Option<bool>) {
     (
         e.is_positive(),
@@ -134,13 +136,12 @@ fn high_degree_is_decided_and_fast() {
     let ctx = Context::new();
     let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     // x^20 + x^10 + 1 > 0 on ℝ.
-    let t = std::time::Instant::now();
+    let t = CpuTimer::start();
     let p = &x.powi(20) + &x.powi(10) + 1;
     assert_eq!(p.is_positive(), Some(true));
-    assert!(
-        t.elapsed() < std::time::Duration::from_secs(2),
-        "{:?}",
-        t.elapsed()
+    t.assert_within(
+        std::time::Duration::from_secs(2),
+        "the sign of x^20 + x^10 + 1",
     );
     // Beyond the degree guard the answer is simply unknown, never wrong.
     let big = &x.powi(30) + 1;

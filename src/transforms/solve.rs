@@ -69,6 +69,7 @@ use num_traits::{One, Signed, Zero};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
+use crate::base::value_class;
 use crate::poly::Poly;
 use crate::poly::polybridge;
 
@@ -904,39 +905,21 @@ fn denominator_vanishes_on_intervals(arena: &Arena, f: ExprId, var: ExprId) -> b
         })
 }
 
-/// Does `v` hold `∞`, `−∞`, `zoo` or `nan` outside the formal integrals,
-/// sums, products and limits (whose bounds they may be)?  Unlike
-/// [`has_infinite_term`] it looks inside function arguments:
-/// `chebyshev_t(2, y·∞)`, `Γ(y·∞)`, `sin ∞`.
-fn holds_infinity(arena: &Arena, v: ExprId) -> bool {
-    let mut stack = vec![v];
-    while let Some(e) = stack.pop() {
-        match arena.node(e) {
-            ExprNode::Infinity
-            | ExprNode::NegInfinity
-            | ExprNode::ComplexInfinity
-            | ExprNode::NaN => return true,
-            ExprNode::Integral(..)
-            | ExprNode::DefiniteIntegral(..)
-            | ExprNode::Limit(..)
-            | ExprNode::Sum(..)
-            | ExprNode::Product_(..)
-            | ExprNode::Series(..) => {}
-            _ => stack.extend(arena.children(e)),
-        }
-    }
-    false
-}
-
-/// Is `v` (evaluated) a value that holds an infinity inside a function
-/// argument ([`holds_infinity`]) and is not known to be finite?  Such a
-/// value is no number the solver can claim: `−chebyshev_t(2, y·∞)` is `−∞`
-/// for every real `y ≠ 0` and undefined at `y = 0`, `−sin ∞` has no value.
-/// The value `eval` folds (`atan ∞ = π/2`, `e^{−y·∞} = 0` for a positive
-/// `y`) has no infinity left.
+/// Is `v` (evaluated) a value that holds `±∞`, `zoo` or `nan` outside the
+/// bounds of formal integrals, sums and limits
+/// ([`value_class::holds_special_atom_outside_formal`]; then its
+/// [`ValueClass`](value_class::ValueClass) is never `Finite`) and is not finite at every point by
+/// the assumptions (the public reading)?  Such a value is no number the
+/// solver can claim: `−chebyshev_t(2, y·∞)` is `−∞` for every real `y ≠ 0`
+/// and undefined at `y = 0`, `−sin ∞` has no value.  The value `eval` folds
+/// (`atan ∞ = π/2`, `e^{−y·∞} = 0` for a positive `y`) has no infinity
+/// left.  A constant without a special atom keeps the generic reading
+/// (finite): `ValueClass::of(..).is_finite_proved()` would refuse the
+/// unevaluated pole `elliptic_pi(π, 1)`, but also every root `evalf`
+/// cannot certify (`erfinv(9/4)`, `besselj(1/2, π) = 0`; 229 golden roots).
 fn not_known_finite(arena: &mut Arena, v: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
-    holds_infinity(arena, v)
+    value_class::holds_special_atom_outside_formal(arena, v)
         && !AssumptionCache::new()
             .query_public(arena, v, Props::FINITE)
             .is_true()
@@ -1479,13 +1462,13 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, cx: &SolveCx) -> Solu
             // `x`, not 0)
             let mut infinite_part = false;
             for &child in children {
-                infinite_part |= holds_infinity(arena, child)
+                infinite_part |= value_class::holds_special_atom_outside_formal(arena, child)
                     || (expr_contains_var(arena, child, var)
                         && denominator_vanishes_on_intervals(arena, child, var));
                 if expr_contains_var(arena, child, var)
                     || arena.as_num(child).is_some()
                     || (!crate::base::walk::free_symbols(arena, child).is_empty()
-                        && !holds_infinity(arena, child))
+                        && !value_class::holds_special_atom_outside_formal(arena, child))
                 {
                     continue;
                 }
@@ -2449,7 +2432,9 @@ fn classify_constant(arena: &mut Arena, expr: ExprId, var: ExprId) -> Solutions 
     // `chebyshev_t(2, y·∞)` has no finite value (up to 0.54 both were "no
     // solution").  An infinite term makes the value infinite or undefined
     // for every value of the parameters (`y·∞ + 1`): no solution.
-    if holds_infinity(arena, expanded) && !has_infinite_term(arena, expanded) {
+    if value_class::holds_special_atom_outside_formal(arena, expanded)
+        && !has_infinite_term(arena, expanded)
+    {
         use crate::base::assumptions::{AssumptionCache, Props};
         use crate::base::truth::Truth;
         let shown = arena.display(expr).to_string();
@@ -2493,7 +2478,7 @@ fn expr_contains_var(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
 /// (`2¹⁶`): up to 0.56 the breakpoint scan of the density of `F(1.5·10¹⁰,
 /// 3/5)` (a factor `x^(7.5·10⁹ − 1)`) asked for a 360 GB coefficient vector
 /// and aborted the process.
-const MAX_DENSE_POLY_DEGREE: usize = 1 << 16;
+const MAX_DENSE_POLY_DEGREE: usize = crate::base::cast::MAX_DENSE_DEGREE;
 
 /// Extract ascending coefficients of `expr` viewed as a polynomial in
 /// `var`, allowing arbitrary var-free symbolic coefficients.
@@ -3677,9 +3662,9 @@ pub(crate) fn integers_around(
                 // `eval` leaves the floor open: the certified 20-digit value
                 // places `q` within one of an integer (far below 2⁴⁰, its
                 // error is far below 1), and the range is widened by one more
-                let v = crate::transforms::evalf::evalf(arena, q, 20)
+                let v = crate::transforms::evalf::const_value(arena, q, 20)
                     .ok()
-                    .and_then(|s| s.trim().parse::<f64>().ok())
+                    .and_then(|v| v.to_f64())
                     .filter(|v| v.abs() < 1_099_511_627_776.0)?;
                 let k = crate::base::cast::f64_to_i64(v.floor())?;
                 floors.push(BigInt::from(k) - BigInt::one());
@@ -7232,12 +7217,13 @@ fn binomials_as_polynomials(arena: &mut Arena, expr: ExprId, var: ExprId) -> Opt
         else {
             continue;
         };
-        let Some(kk) =
-            num_traits::ToPrimitive::to_i64(&kk).filter(|v| (0..=MAX_BINOMIAL_POLY).contains(v))
-        else {
+        let Some(kk) = num_traits::ToPrimitive::to_i64(&kk) else {
             continue;
         };
-        let mut factors: Vec<ExprId> = Vec::with_capacity(kk as usize + 1);
+        let Some(len) = crate::base::cast::bounded_len(kk, MAX_BINOMIAL_POLY) else {
+            continue;
+        };
+        let mut factors: Vec<ExprId> = Vec::with_capacity(len + 1);
         let mut fact = BigInt::one();
         for j in 0..kk {
             let jj = arena.int(j);

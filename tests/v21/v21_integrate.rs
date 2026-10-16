@@ -19,7 +19,11 @@
 // The reference values are quoted with sympy's 17 significant digits.
 #![allow(clippy::excessive_precision)]
 
+use std::time::Duration;
+
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// The rational sample points `p = n/d` shared by every table below:
 /// `Rational(1,3), Rational(-5,7), Rational(13,11), Rational(-17,5)`.
@@ -733,14 +737,8 @@ fn failing_integration_search_is_bounded() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = (x.sin() + x.ln()).sqrt() * x.exp().atan();
-    let started = std::time::Instant::now();
-    let big_f = f.integrate(&x);
+    let big_f = assert_fast!(Duration::from_secs(10), f.integrate(&x));
     assert!(big_f.has_unevaluated(), "{big_f}");
-    assert!(
-        started.elapsed().as_secs() < 10,
-        "took {:?}",
-        started.elapsed()
-    );
 }
 
 /// Found by `fuzz_integrate` (0.22.3): `∫ |atan(−1)/cos x| dx` came back as
@@ -869,9 +867,7 @@ fn arctangent_of_a_radical_polynomial_is_fast_and_compact() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = (x.sqrt() - x.powi(3)).atan();
-    let started = std::time::Instant::now();
-    let big_f = f.integrate(&x);
-    let elapsed = started.elapsed();
+    let big_f = assert_fast!(Duration::from_secs(20), f.integrate(&x));
     assert!(!big_f.has_unevaluated(), "{big_f}");
     assert!(
         big_f.to_string().len() < 2_000,
@@ -887,5 +883,4 @@ fn arctangent_of_a_radical_polynomial_is_fast_and_compact() {
             "F′({v}) = {dv}, f = {fv}"
         );
     }
-    assert!(elapsed.as_secs() < 20, "took {elapsed:?}");
 }

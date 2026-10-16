@@ -10,9 +10,11 @@
 //! its answer checked against the oracle cited: mpmath 1.3 at 40 digits
 //! along `a ± 10⁻²⁰` or `x = 10ᵏ`, SymPy 1.14 as a second opinion.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 const B: Direction = Direction::Both;
 const R: Direction = Direction::Right;
@@ -24,10 +26,11 @@ fn limit_within(ctx: &Context, src: &str, point: &str, dir: Direction, bound: Du
         .unwrap_or_else(|e| panic!("`{src}` does not parse: {e}"));
     let x = ctx.symbol("x");
     let p = ctx.parse(point).unwrap();
-    let t0 = Instant::now();
-    let r = f.try_limit_dir(&x, &p, dir);
-    let dt = t0.elapsed();
-    assert!(dt < bound, "limit of `{src}` at {point} took {dt:?}");
+    let r = assert_fast!(
+        bound,
+        f.try_limit_dir(&x, &p, dir),
+        "limit of `{src}` at {point}"
+    );
     r.unwrap_or_else(|e| panic!("limit of `{src}` at {point} {dir:?} failed: {e}"))
 }
 
@@ -127,7 +130,7 @@ fn inverse_functions_of_a_power_tower_on_their_cuts() {
 #[test]
 fn nested_inverse_cosines_at_zero() {
     let ctx = Context::new();
-    let t0 = Instant::now();
+    let t0 = CpuTimer::start();
     let bound = Duration::from_secs(8);
     let got = limit_within(&ctx, "acos(acos(acos(x)))/x^2", "0", B, bound);
     let want = ctx.parse("acos(acos(pi/2))*oo").unwrap().eval();
@@ -135,8 +138,7 @@ fn nested_inverse_cosines_at_zero() {
     let got = limit_within(&ctx, "acos(acos(acos(acos(x))))/x^2", "0", B, bound);
     let want = ctx.parse("acos(acos(acos(pi/2)))*oo").unwrap().eval();
     assert_eq!(got, want);
-    let dt = t0.elapsed();
-    assert!(dt < bound, "the two limits took {dt:?}");
+    t0.assert_within(bound, "the two limits");
 }
 
 /// Before: did not return in 20 s (a debug build), now 2 ms.  The argument
@@ -157,10 +159,11 @@ fn atan_of_a_cube_root_tending_to_complex_infinity() {
     let f = ctx
         .parse("-pi/2*x^(-3) + x^(-3)*atan(cbrt(-x^(-3)))")
         .unwrap();
-    let t0 = Instant::now();
-    let s = f.try_series_dir(&x, &ctx.int(0), 4, R).unwrap();
-    let dt = t0.elapsed();
-    assert!(dt < Duration::from_secs(10), "series took {dt:?}");
+    let s = assert_fast!(
+        Duration::from_secs(10),
+        f.try_series_dir(&x, &ctx.int(0), 4, R)
+    )
+    .unwrap();
     let want = ctx
         .parse("1/5*(-1)^(-2/3)*x^2 - (-1)^(-1/3)*x^(-2) - 1/3")
         .unwrap()
@@ -279,10 +282,11 @@ fn last_resort_expansions_are_bounded() {
     let one = ctx.int(1);
     for src in ["sign(asin(asin(x)))", "abs(asin(asin(x)))"] {
         let f = ctx.parse(src).unwrap();
-        let t0 = Instant::now();
-        let s = f.try_series(&x, &one, 3);
-        let dt = t0.elapsed();
-        assert!(dt < Duration::from_secs(60), "series of {src} took {dt:?}");
+        let s = assert_fast!(
+            Duration::from_secs(60),
+            f.try_series(&x, &one, 3),
+            "series of {src}"
+        );
         assert!(
             s.is_err(),
             "series of {src} at 1 = {:?}",

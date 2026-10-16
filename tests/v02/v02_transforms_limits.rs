@@ -13,16 +13,7 @@
 
 use symplex::prelude::*;
 
-/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
-/// shared CI runners (`CI` is set), which are several times slower and noisy.
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::assert_fast;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Harness
@@ -1146,10 +1137,11 @@ fn pathological_inputs_return_within_budget() {
         (x.pow(&x.pow(&x.pow(&x))) / x.exp().exp().exp(), inf.clone()),
     ];
     for (e, p) in &cases {
-        let t0 = std::time::Instant::now();
-        let r = e.limit_right(&x, p);
-        let elapsed = t0.elapsed();
-        assert!(elapsed < time_budget(2), "{e}: took {elapsed:?}");
+        let r = assert_fast!(
+            std::time::Duration::from_secs(2),
+            e.limit_right(&x, p),
+            "{e}"
+        );
         assert_no_internal_symbols(&r, &format!("{e}"));
         let s = format!("{r}");
         assert!(!s.contains("zoo") && !s.contains("nan"), "{s}");

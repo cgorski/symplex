@@ -4,8 +4,12 @@
 //! expectations of non-polynomials, joint `E[e^L]`, `E[cos L]`,
 //! `E[sin L]` (`symplex::stats`).
 
+use std::time::Duration;
+
 use symplex::prelude::*;
 use symplex::stats::{self, Distribution, RandomVariable};
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 fn close(actual: f64, want: f64, rel: f64, label: &str) {
     assert!(
@@ -93,12 +97,14 @@ fn negative_binomial_long_cdf_sums_and_quantiles() {
     let ctx = Context::new();
     let r = |a, b| ctx.rational(a, b);
     let slow = Distribution::negative_binomial(r(1, 593), r(793, 870));
-    let t0 = std::time::Instant::now();
-    assert_eq!(slow.cdf(&ctx.int(1000)).eval_f64().unwrap(), 1.0);
-    assert!(
-        t0.elapsed().as_secs() < 5,
-        "cdf(1000) took {:?}",
-        t0.elapsed()
+    assert_eq!(
+        assert_fast!(
+            Duration::from_secs(5),
+            slow.cdf(&ctx.int(1000)).eval_f64(),
+            "cdf(1000)"
+        )
+        .unwrap(),
+        1.0
     );
     let wide = Distribution::negative_binomial(r(15, 2), r(1, 1_000_000));
     assert_eq!(wide.quantile_f64(0.5).unwrap(), 7_169_422.0);
@@ -336,7 +342,7 @@ fn joint_exponentials_of_linear_forms() {
     let x = RandomVariable::new(&ctx, "X", Distribution::poisson(r(1, 2)));
     let y = RandomVariable::new(&ctx, "Y", Distribution::poisson(r(3, 1)));
     let (xs, ys) = (x.symbol().clone(), y.symbol().clone());
-    let t0 = std::time::Instant::now();
+    let t0 = CpuTimer::start();
     let c = stats::expectation(&[&x, &y], &(&xs + &ys).cos()).unwrap();
     close(
         c.eval_f64().unwrap(),
@@ -344,7 +350,7 @@ fn joint_exponentials_of_linear_forms() {
         1e-13,
         "E[cos(X + Y)]",
     );
-    assert!(t0.elapsed().as_secs() < 5);
+    t0.assert_within(Duration::from_secs(5), "E[cos(X + Y)]");
     let s = stats::expectation(&[&x, &y], &(&xs - 2 * &ys + 1).sin()).unwrap();
     close(
         s.eval_f64().unwrap(),

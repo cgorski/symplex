@@ -9,16 +9,7 @@
 
 use symplex::prelude::*;
 
-/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
-/// shared CI runners (`CI` is set), which are several times slower and noisy.
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::CpuTimer;
 
 /// Relation of the table entries (`expr rel 0`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -359,7 +350,7 @@ fn run_rows(range: std::ops::Range<usize>) {
     let x = ctx.symbol("x");
     let rows = table(&ctx, &x);
     for (name, expr, rel, expected) in rows.into_iter().skip(range.start).take(range.len()) {
-        let t = std::time::Instant::now();
+        let t = CpuTimer::start();
         let sol = check(&ctx, &x, &expr, rel);
         if !expected.is_empty() {
             assert_eq!(
@@ -368,13 +359,8 @@ fn run_rows(range: std::ops::Range<usize>) {
                 "display of the solution of {name}"
             );
         }
-        // Hang guard only: a row normally takes well under a second, but the
-        // whole suite running in parallel can stretch one to ~2.5 s.
-        assert!(
-            t.elapsed() < time_budget(5),
-            "{name} took {:?}",
-            t.elapsed()
-        );
+        // Hang guard only: a row normally takes well under a second.
+        t.assert_within(std::time::Duration::from_secs(5), name);
     }
 }
 

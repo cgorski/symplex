@@ -770,7 +770,7 @@ pub(crate) fn poly_coeffs_symbolic(
 /// `algebraic::MAX_POWER_BITS`): up to 0.56 the density of
 /// `Weibull(51/8, 9·10¹⁰)` (a factor `x^(9·10¹⁰ − 1)`) asked for a
 /// coefficient vector of `9·10¹⁰` entries and aborted the process.
-const MAX_DENSE_DEGREE: usize = 1 << 16;
+const MAX_DENSE_DEGREE: usize = crate::base::cast::MAX_DENSE_DEGREE;
 
 /// Split a single product term into `(k, coefficient)` such that
 /// `term = coefficient · var^k` with the coefficient free of `var`.
@@ -1026,17 +1026,18 @@ fn push_integer_family(
     }
 }
 
-/// The value of the real constant `expr` as an `f64` (from its 16-digit
-/// value); `None` when it does not evaluate or is not real.
+/// The value of the real constant `expr` as an `f64` (correctly rounded
+/// from its 16-digit value, [`evalf::const_value`]); `None` when it does
+/// not evaluate or is not real.
 ///
-/// The printed value omits an imaginary part below its digits, so a
-/// value without `i` is checked: a constant the assumption system does
-/// not prove real is refused when its certified evaluation keeps an
-/// imaginary part (`evalf` keeps a part next to a much larger one only
-/// when its error ball excludes 0, so that part is certified nonzero).
-/// Up to 0.52 `1 + i·e⁻⁵⁰` was the real point `1`: the pole of `1/(x − 1
-/// − i·e⁻⁵⁰)` lay on `[0, 2]`, and the integral, `iπ` to 21 digits, was
-/// `Divergent`.  An imaginary part that is only 0 to the precision
+/// A constant whose value keeps an imaginary part is refused, however
+/// small the part: `evalf` keeps a part next to a much larger one only when
+/// its error ball excludes 0, so that part is certified nonzero.  Up to
+/// 0.52 `1 + i·e⁻⁵⁰` was the real point `1` (the printed decimal omitted
+/// the part): the pole of `1/(x − 1 − i·e⁻⁵⁰)` lay on `[0, 2]`, and the
+/// integral, `iπ` to 21 digits, was `Divergent`; up to 0.57 the decimal was
+/// printed, searched for `i` and parsed, and the value evaluated a second
+/// time for the part.  An imaginary part that is only 0 to the precision
 /// reached is not decided here (callers that need realness proved use
 /// [`constant_realness_as_declared`](crate::transforms::realness::constant_realness_as_declared)).
 pub(crate) fn expr_to_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
@@ -1047,29 +1048,7 @@ pub(crate) fn expr_to_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
         return r.to_f64();
     }
     // Fall back to numerical evaluation
-    let s = evalf::evalf(arena, evaled, 16).ok()?;
-    if s.contains('I') || s.contains('i') {
-        return None;
-    }
-    let v = s.trim().parse::<f64>().ok()?;
-    if imaginary_part_shown_nonzero(arena, evaled) {
-        return None;
-    }
-    Some(v)
-}
-
-/// Does the symbol-free constant `c`, not proved real by the assumption
-/// system, have an imaginary part that its certified 16-digit evaluation
-/// keeps (certified nonzero, see [`expr_to_f64`])?
-fn imaginary_part_shown_nonzero(arena: &mut Arena, c: ExprId) -> bool {
-    let mut cache = crate::base::assumptions::AssumptionCache::new();
-    if Truth::from(cache.query(arena, c, crate::base::assumptions::Props::REAL)).is_true() {
-        return false;
-    }
-    matches!(
-        evalf::evalf_settled(arena, c, 16, evalf::ZeroSearch::Number),
-        Ok((z, evalf::Settled::Certified)) if !z.1.is_zero()
-    )
+    evalf::const_value(arena, evaled, 16).ok()?.to_f64()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3078,20 +3057,21 @@ fn extreme_constant(arena: &mut Arena, args: &[ExprId], min: bool) -> Option<Exp
         .then_some(arg)
 }
 
-/// A constant after the zero test of [`settle_constant`].
+/// A constant after the zero test of [`settle_constant`], the first steps of
+/// [`ZeroDecision::decide`] (without the identity test of the parameter
+/// parts): a reading of a value to keep, drop or compare, never a divisor —
+/// a divisor is a [`NonzeroExpr`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ZeroTest {
     /// Proved 0, exactly or by a certified evaluation.
     Zero,
     /// The evaluated constant, not 0: proved nonzero, or a constant with
     /// free parameters, which is taken as nonzero for generic values of
-    /// them (the generic-solution convention; [`settle_parametric`]
+    /// them (the generic-solution convention; [`ZeroDecision::decide`]
     /// recognises the ones that vanish identically).  So is a constant
     /// without a value — one `evalf` cannot evaluate or with an
     /// unevaluated part (`legendre(3/2, e) − 1`): it is opaque like a
     /// parameter, and there is no numerical hint that it vanishes.
-    ///
-    /// [`settle_parametric`]: crate::calculus::series::settle_parametric
     Nonzero(ExprId),
     /// The evaluated constant, 0 to the precision reached (at the sample
     /// points of its parameters, if any) but proved neither 0 nor nonzero:
@@ -3101,16 +3081,6 @@ pub(crate) enum ZeroTest {
 }
 
 impl ZeroTest {
-    /// `True` for `Zero`, `False` for `Nonzero`, `Unknown` for `Undecided`.
-    pub(crate) fn is_zero(self) -> crate::base::truth::Truth {
-        use crate::base::truth::Truth;
-        match self {
-            ZeroTest::Zero => Truth::True,
-            ZeroTest::Nonzero(_) => Truth::False,
-            ZeroTest::Undecided(_) => Truth::Unknown,
-        }
-    }
-
     /// `0` for `Zero`, the evaluated constant otherwise.
     pub(crate) fn value(self, arena: &Arena) -> ExprId {
         match self {
@@ -3157,6 +3127,232 @@ pub(crate) fn zero_reading(
         (Some(t), _) => t,
         (None, Truth::True) => Truth::Unknown,
         (None, Truth::False | Truth::Unknown) => Truth::False,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Proof-carrying divisors
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// An expression shown to be nonzero: the only divisor the series, limit
+/// and Gruntz engines divide by ([`div_by`], [`recip`]).
+///
+/// A series coefficient, a leading term or a derivative at a point can be 0
+/// without looking like it: `besselj(−1/2, π/2)` (0 to every digit, not
+/// proved), `H(y)`, `0^y` or `⌊y⌋` (0 on a region of the parameter).  Each
+/// site used to pick its own zero test before dividing, and some picked
+/// none: up to 0.57 `series(ln(x + besselj(−1/2, π/2)), x)` was `ln
+/// J + x/J − …` and `series(√(x + H(y)), x)` was `√H(y) + x/(2√H(y)) + …`
+/// (both divided by a zero: `ln x` and `√x` have no Taylor series), as were
+/// `series(Π(x | m))` for such an `m`, L'Hôpital's quotient by
+/// `J_{1/2}(π)` and the series reciprocal of `besselj(−1/2, π/2 + x)` before
+/// them.  The field is private: a value of this type exists only where a
+/// decider below has shown the divisor nonzero, and the ratchet
+/// `tests/unit/test_divisors.rs` counts the divisions those engines still
+/// build by hand.
+///
+/// # Which constructor
+///
+/// | Divisor | Constructor | Cost |
+/// |---|---|---|
+/// | a coefficient, a leading term, a value at a point, a direction | [`ZeroDecision::decide`] | `eval`, then the zero test of [`hidden_zero`] (memoised) or of the parameters |
+/// | a nonzero number (`2`, `−1/3`) | [`NonzeroExpr::number`] | O(1) |
+/// | a product of powers of nonzero numbers and the named constants (`√π`, `2i`, `e⁻¹`) | [`NonzeroExpr::structural`] | one walk, no evaluation |
+/// | the dummy symbol of a substitution `x = a + 1/t` (an indeterminate, not a value) | [`NonzeroExpr::variable`] | O(1) |
+///
+/// What "nonzero" means is the convention of [`ZeroTest::Nonzero`]: proved
+/// for a constant without symbols that has a value; for a constant with
+/// parameters, not identically zero in them (nonzero for generic values,
+/// the generic-solution convention) and not piecewise — a part that may
+/// vanish on a region (`0^y`, `δ`, `H`, `⌊·⌋`, `min`/`max`:
+/// [`may_vanish_on_a_region`](crate::simplify::identically_zero::may_vanish_on_a_region))
+/// is never generic.
+///
+/// Quotients that are not divisions by a value keep `Arena::div` with a
+/// comment: a quotient of two functions of the variable that forms a new
+/// limit problem (`f′/g′` before its limit, `ln a/ln b` in Gruntz's
+/// comparison), and identities of functions (`tan u = sin u/cos u`,
+/// `erfi u = e^{u²}·E(u²)/u` for `u → ∞`).
+///
+/// # Example
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// let zero = ctx.int(0);
+/// // `H(y)` is 0 for `y < 0`: `ln(x + H(y))` has no series there.
+/// let e = ctx.parse("log(x + Heaviside(y))").unwrap();
+/// assert!(e.try_series(&x, &zero, 4).is_err());
+/// // A generic parameter is a nonzero divisor.
+/// let e = ctx.parse("log(x + y)").unwrap();
+/// assert_eq!(
+///     e.try_series(&x, &zero, 2).unwrap().to_string(),
+///     "x/y + ln(y)"
+/// );
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct NonzeroExpr(ExprId);
+
+impl NonzeroExpr {
+    /// The divisor.
+    pub(crate) fn id(self) -> ExprId {
+        self.0
+    }
+
+    /// `c` if it is a nonzero number.
+    pub(crate) fn number(arena: &Arena, c: ExprId) -> Option<Self> {
+        arena
+            .as_num(c)
+            .is_some_and(|r| !num_traits::Zero::is_zero(r))
+            .then_some(NonzeroExpr(c))
+    }
+
+    /// `c` if its canonical form is a product of powers of nonzero numbers
+    /// and the named constants `π`, `e`, `i`, `γ`, `G`, `φ` (`√π`, `2i`,
+    /// `e⁻¹`, `√5`): nonzero without evaluation, the structural shortcut of
+    /// [`hidden_zero`].
+    pub(crate) fn structural(arena: &Arena, c: ExprId) -> Option<Self> {
+        walk::post_order_ids(arena, c)
+            .into_iter()
+            .all(|id| match arena.node(id) {
+                ExprNode::Num(_) => Self::number(arena, id).is_some(),
+                ExprNode::Pi
+                | ExprNode::E
+                | ExprNode::ImaginaryUnit
+                | ExprNode::EulerGamma
+                | ExprNode::Catalan
+                | ExprNode::GoldenRatio
+                | ExprNode::Mul(_)
+                | ExprNode::Pow(..)
+                | ExprNode::Neg(_) => true,
+                _ => false,
+            })
+            .then_some(NonzeroExpr(c))
+    }
+
+    /// The symbol `s` as an indeterminate: the dummy `t` of a substitution
+    /// `x = a ± 1/t` or `x = 1/t`, the variable of an expansion.  Dividing by
+    /// it builds a function of it, not a quotient by a value.  `None` for
+    /// anything but a symbol.
+    pub(crate) fn variable(arena: &Arena, s: ExprId) -> Option<Self> {
+        matches!(arena.node(s), ExprNode::Symbol(_)).then_some(NonzeroExpr(s))
+    }
+}
+
+/// `n/d` (`n·d⁻¹`, as `Arena::div` builds it) for a divisor shown nonzero.
+pub(crate) fn div_by(arena: &mut Arena, n: ExprId, d: NonzeroExpr) -> ExprId {
+    arena.div(n, d.0)
+}
+
+/// `1/d` (`d⁻¹`) for a divisor shown nonzero.
+pub(crate) fn recip(arena: &mut Arena, d: NonzeroExpr) -> ExprId {
+    let m1 = arena.neg_one();
+    arena.pow(d.0, m1)
+}
+
+/// A constant (or a coefficient with parameters) after the zero test of
+/// [`ZeroDecision::decide`]: the reading of [`ZeroTest`] with the nonzero
+/// value carried as a divisor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZeroDecision {
+    /// Proved 0, exactly or by a certified evaluation, or identically 0 in
+    /// its parameters.
+    Zero,
+    /// The evaluated constant, nonzero (see [`NonzeroExpr`] for the
+    /// convention on parameters).
+    Nonzero(NonzeroExpr),
+    /// The evaluated constant, 0 to the precision reached (at the sample
+    /// points of its parameters, if any) or piecewise in its parameters, but
+    /// proved neither 0 nor nonzero: a caller may keep it as a value, but
+    /// may not divide by it, take it for a leading coefficient, or drop it.
+    Undecided(ExprId),
+}
+
+impl ZeroDecision {
+    /// Is `c` zero?  The one entry point for a divisor, applied in order:
+    ///
+    /// 1. `eval`, and the structural test (`0` is `Zero`);
+    /// 2. a constant without symbols: [`hidden_zero`], read by
+    ///    [`zero_reading`] (a proof decides; 0 to the precision reached and
+    ///    not proved is `Undecided`; a constant without a value is opaque
+    ///    like a parameter, `Nonzero`);
+    /// 3. with symbols, a piecewise part that may vanish on a region of
+    ///    the parameters
+    ///    ([`may_vanish_on_a_region`](crate::simplify::identically_zero::may_vanish_on_a_region):
+    ///    `0^y`, `H(y)`, `δ(1/2, y)`, `⌊y⌋`) is `Undecided` — up to 0.56
+    ///    `series(acosh(P₂(x))/(x² + H(y)), x)` divided by `H(y)`;
+    /// 4. the parameter parts: the symbol-free coefficients `kₗ` of `c = Σ
+    ///    kₗ·mₗ` are decided by step 2 and the groups proved 0 dropped
+    ///    ([`parameter_parts`](crate::calculus::series::parameter_parts)): `ω·k`
+    ///    is `Zero` when `k` is proved 0, `Undecided` when `k` is not
+    ///    decided, never "nonzero";
+    /// 5. two or more parts left: whether they cancel identically
+    ///    ([`vanishes_identically`](crate::calculus::series::vanishes_identically):
+    ///    sampled within the assumptions, confirmed exactly).
+    pub(crate) fn decide(arena: &mut Arena, c: ExprId) -> Self {
+        use crate::calculus::series::{ParameterParts, parameter_parts, vanishes_identically};
+        if arena.is_zero_structural(c) {
+            return ZeroDecision::Zero;
+        }
+        if let Some(d) = NonzeroExpr::number(arena, c) {
+            return ZeroDecision::Nonzero(d);
+        }
+        let v = match settle_constant(arena, c) {
+            ZeroTest::Zero => return ZeroDecision::Zero,
+            ZeroTest::Undecided(v) => return ZeroDecision::Undecided(v),
+            // `settle_constant` has applied steps 1–3.
+            ZeroTest::Nonzero(v) => v,
+        };
+        if arena.is_symbol_free(v) {
+            return ZeroDecision::Nonzero(NonzeroExpr(v));
+        }
+        let sum = match parameter_parts(arena, v) {
+            ParameterParts::Decided(t) => return Self::from_test(t),
+            ParameterParts::Sum(sum) => sum,
+        };
+        match vanishes_identically(arena, sum) {
+            Truth::True => ZeroDecision::Zero,
+            Truth::False => ZeroDecision::Nonzero(NonzeroExpr(v)),
+            Truth::Unknown => ZeroDecision::Undecided(sum),
+        }
+    }
+
+    /// A result of the deciders behind [`decide`](Self::decide) as a
+    /// decision.
+    fn from_test(t: ZeroTest) -> Self {
+        match t {
+            ZeroTest::Zero => ZeroDecision::Zero,
+            ZeroTest::Nonzero(v) => ZeroDecision::Nonzero(NonzeroExpr(v)),
+            ZeroTest::Undecided(v) => ZeroDecision::Undecided(v),
+        }
+    }
+
+    /// `True` for `Zero`, `False` for `Nonzero`, `Unknown` for `Undecided`.
+    pub(crate) fn is_zero(self) -> Truth {
+        match self {
+            ZeroDecision::Zero => Truth::True,
+            ZeroDecision::Nonzero(_) => Truth::False,
+            ZeroDecision::Undecided(_) => Truth::Unknown,
+        }
+    }
+
+    /// The divisor, when shown nonzero.
+    pub(crate) fn nonzero(self) -> Option<NonzeroExpr> {
+        match self {
+            ZeroDecision::Nonzero(d) => Some(d),
+            ZeroDecision::Zero | ZeroDecision::Undecided(_) => None,
+        }
+    }
+
+    /// `0` for `Zero`, the evaluated constant otherwise.
+    pub(crate) fn value(self, arena: &Arena) -> ExprId {
+        match self {
+            ZeroDecision::Zero => arena.zero,
+            ZeroDecision::Nonzero(d) => d.0,
+            ZeroDecision::Undecided(v) => v,
+        }
     }
 }
 

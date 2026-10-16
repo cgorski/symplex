@@ -228,15 +228,11 @@ fn multinomial_expand_is_idempotent() {
 fn expand_binomial_50_is_fast() {
     let ctx = Context::new();
     symplex::syms!(ctx; a, b);
-    let start = std::time::Instant::now();
-    let expr = (&a + &b).powi(50).expand();
-    let elapsed = start.elapsed();
-    assert_eq!(expr.term_count(), 51, "(a+b)^50 should have 51 terms");
-    assert!(
-        elapsed.as_millis() < 2000,
-        "expand (a+b)^50 should complete quickly, took {:?}",
-        elapsed
+    let expr = crate::perf_assert::assert_fast!(
+        std::time::Duration::from_secs(2),
+        (&a + &b).powi(50).expand()
     );
+    assert_eq!(expr.term_count(), 51, "(a+b)^50 should have 51 terms");
 }
 
 #[test]

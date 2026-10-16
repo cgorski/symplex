@@ -11,6 +11,8 @@ use symplex::factor_zassenhaus::{
 use symplex::multipoly::MultiPoly;
 use symplex::prelude::*;
 
+use crate::perf_assert::assert_fast;
+
 fn poly(coeffs: &[i64]) -> Poly {
     Poly::from_coeffs(
         coeffs
@@ -266,14 +268,12 @@ fn poly_cyclotomic_products_up_to_60() {
 
 #[test]
 fn poly_x105_minus_1_in_reasonable_time() {
-    let start = std::time::Instant::now();
-    let factors = assert_reconstructs(&x_pow_n_minus_1(105));
-    assert_eq!(factors.len(), 8);
-    assert!(
-        start.elapsed().as_secs() < 30,
-        "x^105 − 1 took {:?}",
-        start.elapsed()
+    let factors = assert_fast!(
+        std::time::Duration::from_secs(30),
+        assert_reconstructs(&x_pow_n_minus_1(105)),
+        "x^105 − 1"
     );
+    assert_eq!(factors.len(), 8);
 }
 
 #[test]

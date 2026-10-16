@@ -503,8 +503,13 @@ pub(crate) fn coprime_certified<'a>(
         'vars: for &v in &common {
             for _ in 0..CERTIFY_POINTS {
                 let point: Vec<u64> = (0..nv).map(|_| 1 + rng.next_u64() % (p - 1)).collect();
-                let fi = univariate_image(field, f, &fr, v, &point, df[v]);
-                let gi = univariate_image(field, g, &gr, v, &point, dg[v]);
+                let (Some(fi), Some(gi)) = (
+                    univariate_image(field, f, &fr, v, &point, df[v]),
+                    univariate_image(field, g, &gr, v, &point, dg[v]),
+                ) else {
+                    // Beyond the dense cap: not certified.
+                    return false;
+                };
                 if fi.last() == Some(&0) && gi.last() == Some(&0) {
                     continue;
                 }
@@ -526,7 +531,8 @@ pub(crate) fn coprime_certified<'a>(
 
 /// The image in `𝔽ₚ[x_v]` of the terms `t` (their residues `r` modulo
 /// `p`) with the other variables at `point`: the coefficients of
-/// `x_v⁰, …, x_v^deg`, `deg` at least the degree of `t` in `x_v`.
+/// `x_v⁰, …, x_v^deg`, `deg` at least the degree of `t` in `x_v`; `None`
+/// beyond degree [`MAX_DENSE_LIST`](crate::base::cast::MAX_DENSE_LIST).
 fn univariate_image(
     field: Fp64,
     t: &[(&[u32], &BigInt)],
@@ -534,8 +540,9 @@ fn univariate_image(
     v: usize,
     point: &[u64],
     deg: u32,
-) -> Vec<u64> {
-    let mut out = vec![0u64; deg as usize + 1];
+) -> Option<Vec<u64>> {
+    let mut out =
+        vec![0u64; crate::base::cast::bounded_len(deg, crate::base::cast::MAX_DENSE_LIST)? + 1];
     for ((e, _), &c) in t.iter().zip(r) {
         if c == 0 {
             continue;
@@ -549,7 +556,7 @@ fn univariate_image(
         let slot = &mut out[e[v] as usize];
         *slot = field.add(slot, &val);
     }
-    out
+    Some(out)
 }
 
 /// An upper bound on the degree in `x₀` of `gcd(f, g)` in `ℤ[x₀, …, xₙ₋₁]`
@@ -591,11 +598,11 @@ pub(crate) fn main_gcd_degree_bound(
         let gr: Vec<u64> = g.iter().map(|(_, c)| residue(c, p)).collect();
         for _ in 0..CERTIFY_POINTS {
             let point: Vec<u64> = (0..nv).map(|_| 1 + rng.next_u64() % (p - 1)).collect();
-            let fi = univariate_image(field, f, &fr, 0, &point, df);
+            let fi = univariate_image(field, f, &fr, 0, &point, df)?;
             if fi.last() == Some(&0) {
                 continue;
             }
-            let gi = univariate_image(field, g, &gr, 0, &point, dg);
+            let gi = univariate_image(field, g, &gr, 0, &point, dg)?;
             let fp = PolyIn::from_coeffs(field, fi);
             let k = fp
                 .gcd(&PolyIn::from_coeffs(field, gi))
@@ -737,8 +744,9 @@ pub(crate) fn heu_gcd(nv: usize, f: &ZMap, g: &ZMap) -> Option<HeuGcd> {
 /// One evaluation/interpolation round of [`heu_gcd`] at `ξ = xi` for inputs
 /// without common integer content.
 fn heu_attempt(nv: usize, f: &ZMap, g: &ZMap, xi: &BigInt) -> Attempt {
-    let ff = eval_last(nv, f, xi);
-    let gg = eval_last(nv, g, xi);
+    let (Some(ff), Some(gg)) = (eval_last(nv, f, xi), eval_last(nv, g, xi)) else {
+        return Attempt::Failed;
+    };
     if ff.is_empty() || gg.is_empty() {
         return Attempt::Retry;
     }
@@ -780,9 +788,12 @@ fn heu_attempt(nv: usize, f: &ZMap, g: &ZMap, xi: &BigInt) -> Attempt {
 }
 
 /// `p(…, ξ)`: the last of the `nv ≥ 1` variables evaluated at `xi` (the
-/// result has `nv − 1` variables).
-fn eval_last(nv: usize, p: &ZMap, xi: &BigInt) -> ZMap {
-    let top = p.keys().map(|e| e[nv - 1]).max().unwrap_or(0) as usize;
+/// result has `nv − 1` variables); `None` beyond degree
+/// [`MAX_DENSE_DEGREE`](crate::base::cast::MAX_DENSE_DEGREE) in it (the
+/// powers of `ξ` are tabulated, and `ξ^deg` has `deg·log₂ ξ` bits).
+fn eval_last(nv: usize, p: &ZMap, xi: &BigInt) -> Option<ZMap> {
+    let top = p.keys().map(|e| e[nv - 1]).max().unwrap_or(0);
+    let top = crate::base::cast::bounded_len(top, crate::base::cast::MAX_DENSE_DEGREE)?;
     let mut pows = Vec::with_capacity(top + 1);
     let mut acc = BigInt::one();
     for _ in 0..=top {
@@ -795,7 +806,7 @@ fn eval_last(nv: usize, p: &ZMap, xi: &BigInt) -> ZMap {
         *out.entry(Exps::from_slice(&e[..nv - 1])).or_default() += term;
     }
     out.retain(|_, c| !c.is_zero());
-    out
+    Some(out)
 }
 
 /// The polynomial in one more (last) variable whose coefficients are the
@@ -845,7 +856,10 @@ fn zmap_div_scalar(p: &ZMap, c: &BigInt) -> ZMap {
 }
 
 /// `f / h` in `ℤ[x₁, …, xₙ]` (`h ≠ 0`), `None` unless exact with integer
-/// coefficients.  Lexicographic division by the leading term of `h`; the
+/// coefficients, or when the quotient would have more terms than both `f`
+/// and [`MAX_TERMS`](crate::base::cast::MAX_TERMS) (`(x^(2³¹) − 1)/(x − 1)`
+/// has `2³¹`; every caller reads `None` as "no certificate", never as "does
+/// not divide").  Lexicographic division by the leading term of `h`; the
 /// trailing terms and the partial degrees are checked first, and a
 /// remainder term above a partial degree of `f` ends the division (every
 /// term of `q·h` for a part `q` of an exact quotient stays within them).
@@ -868,10 +882,11 @@ pub(crate) fn zmap_div_exact(f: &ZMap, h: &ZMap) -> Option<ZMap> {
     if df.iter().zip(&dh).any(|(a, b)| a < b) {
         return None;
     }
+    let max_terms = f.len().max(crate::base::cast::MAX_TERMS);
     let mut r = f.clone();
     let mut q = ZMap::new();
     while let Some((e, c)) = r.last_key_value() {
-        if e.iter().zip(he).any(|(a, b)| a < b) {
+        if e.iter().zip(he).any(|(a, b)| a < b) || q.len() >= max_terms {
             return None;
         }
         let qe: Exps = e.iter().zip(he).map(|(a, b)| a - b).collect();

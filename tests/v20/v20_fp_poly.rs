@@ -10,8 +10,6 @@
 //! `PolyIn` primitives are checked against SymPy (`.venv/bin/python`,
 //! SymPy 1.14.0 — the call is cited beside each value).
 
-use std::time::Instant;
-
 use symplex::factor_zassenhaus::modpoly::{DivRem, ExtendedGcd, Fp64, PolyIn, RingOps};
 use symplex::factor_zassenhaus::traits::{EuclideanDomain, IntegralCoeff, Ring};
 use symplex::factor_zassenhaus::{GenPoly, Poly, factor_mod_p, factor_zassenhaus_with_content};
@@ -19,6 +17,8 @@ use symplex::ntheory::polynomial_congruence;
 use symplex::num_bigint::{BigInt, BigUint};
 use symplex::num_rational::Ratio;
 use symplex::prelude::*;
+
+use crate::perf_assert::cpu_time;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -566,16 +566,14 @@ fn factoring_timing_report() {
         let p = poly(c);
         let mut best = std::time::Duration::MAX;
         for _ in 0..reps {
-            let t = Instant::now();
-            let _ = factor_zassenhaus_with_content(&p);
-            best = best.min(t.elapsed());
+            let (_, t) = cpu_time(|| factor_zassenhaus_with_content(&p));
+            best = best.min(t);
         }
         let e = ex_from(&ctx, c, &x);
         let mut best_ex = std::time::Duration::MAX;
         for _ in 0..reps {
-            let t = Instant::now();
-            let _ = e.factor(&x);
-            best_ex = best_ex.min(t.elapsed());
+            let (_, t) = cpu_time(|| e.factor(&x));
+            best_ex = best_ex.min(t);
         }
         total_min += best;
         println!("TIME {name:40} poly {best:?}  ex {best_ex:?}");
@@ -583,9 +581,8 @@ fn factoring_timing_report() {
     let x105 = poly(&xn_minus_1(105));
     let mut best = std::time::Duration::MAX;
     for _ in 0..3 {
-        let t = Instant::now();
-        let _ = factor_zassenhaus_with_content(&x105);
-        best = best.min(t.elapsed());
+        let (_, t) = cpu_time(|| factor_zassenhaus_with_content(&x105));
+        best = best.min(t);
     }
     println!("TIME {:40} poly {best:?}", "x^105-1");
     println!("TIME ALL(poly, sum of mins) {total_min:?}");

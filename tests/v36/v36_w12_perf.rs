@@ -43,18 +43,14 @@ fn structural_queries_on_a_deep_dag_are_constant_time() {
     let e = sin_cos_chain(&ctx, 10_000);
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let start = std::time::Instant::now();
+    let start = crate::perf_assert::CpuTimer::start();
     for _ in 0..2_000 {
         assert!(!e.has_unevaluated());
         assert_eq!(e.free_symbols(), vec![x.clone()]);
         assert!(!e.is_constant());
         assert!(!e.contains(&y));
     }
-    let elapsed = start.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "8,000 queries took {elapsed:?}"
-    );
+    start.assert_within(std::time::Duration::from_secs(5), "8,000 queries");
 }
 
 /// Free symbols when a context has more than 63 symbols: the first 63

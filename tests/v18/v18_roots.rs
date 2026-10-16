@@ -22,12 +22,14 @@
 //! 0.17861784566414687
 //! ```
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::num_bigint::BigInt;
 use symplex::num_rational::Ratio;
 use symplex::prelude::*;
 use symplex::stats::Rng;
+
+use crate::perf_assert::assert_fast;
 
 /// Generous bound for a debug build (measured: ≈ 1.3 s for degree 40 and
 /// ≈ 2.3 s for degree 50 on a laptop).
@@ -49,8 +51,8 @@ fn binomial_tail(ctx: &Context, n: usize, k: usize, denom: i64) -> (Ex, Ex) {
 
 /// The Clopper–Pearson lower bound as `root_of`: the unique root in
 /// `(0, 1)`, whose index among the ascending real roots is the number of
-/// real roots below `0`.  Returns the root and the time `root_of` took.
-fn tail_root(ctx: &Context, n: usize, k: usize) -> (Ex, Duration) {
+/// real roots below `0`.  `root_of` must finish within `BUDGET`.
+fn tail_root(ctx: &Context, n: usize, k: usize) -> Ex {
     let (poly, p) = binomial_tail(ctx, n, k, 40);
     assert_eq!(poly.degree(&p), Some(n));
     assert_eq!(
@@ -61,11 +63,8 @@ fn tail_root(ctx: &Context, n: usize, k: usize) -> (Ex, Duration) {
     let below = poly
         .count_real_roots_in(&p, &ctx.neg_infinity(), &ctx.zero())
         .expect("polynomial");
-    let t = Instant::now();
-    let root = poly
-        .root_of(&p, below)
-        .expect("root_of names the root of the degree-n tail polynomial");
-    (root, t.elapsed())
+    assert_fast!(BUDGET, poly.root_of(&p, below), "root_of")
+        .expect("root_of names the root of the degree-n tail polynomial")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -75,8 +74,7 @@ fn tail_root(ctx: &Context, n: usize, k: usize) -> (Ex, Duration) {
 #[test]
 fn root_of_degree_40_binomial_tail_matches_scipy() {
     let ctx = Context::new();
-    let (root, took) = tail_root(&ctx, 40, 12);
-    assert!(took < BUDGET, "root_of took {took:?}");
+    let root = tail_root(&ctx, 40, 12);
     assert!(format!("{root}").starts_with("RootOf("), "{root}");
     // scipy.stats.beta.ppf(1/40, 12, 29)
     let v = root.eval_f64().expect("RootOf evaluates");
@@ -86,8 +84,7 @@ fn root_of_degree_40_binomial_tail_matches_scipy() {
 #[test]
 fn root_of_degree_50_binomial_tail_matches_scipy() {
     let ctx = Context::new();
-    let (root, took) = tail_root(&ctx, 50, 15);
-    assert!(took < BUDGET, "root_of took {took:?}");
+    let root = tail_root(&ctx, 50, 15);
     assert!(format!("{root}").starts_with("RootOf("), "{root}");
     // scipy.stats.beta.ppf(1/40, 15, 36)
     let v = root.eval_f64().expect("RootOf evaluates");
@@ -100,13 +97,7 @@ fn real_roots_and_isolation_at_degree_40() {
     let (poly, p) = binomial_tail(&ctx, 40, 12, 40);
     // Isolation to width 1/1024 used to take ~17 s here (rational Horner
     // over a Cauchy-bound interval of width > 10⁸).
-    let t = Instant::now();
-    let iv = poly.real_roots_isolate(&p);
-    assert!(
-        t.elapsed() < BUDGET,
-        "real_roots_isolate took {:?}",
-        t.elapsed()
-    );
+    let iv = assert_fast!(BUDGET, poly.real_roots_isolate(&p));
     assert_eq!(iv.len(), 2);
     let roots = poly.real_roots(&p).expect("all real roots are named");
     assert_eq!(roots.len(), 2);

@@ -592,7 +592,7 @@ fn budget_hit(out: &PolyhedronOutcome) -> Option<symplex::certificates::BudgetHi
 
 #[test]
 fn pivot_budget_stops_the_search_quickly_and_names_the_limit() {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use symplex::certificates::BudgetHit;
     let f = Fixture::new();
     let (ctx, j, r, t) = (&f.ctx, &f.j, &f.r, &f.t);
@@ -614,19 +614,16 @@ fn pivot_budget_stops_the_search_quickly_and_names_the_limit() {
             prove_nonnegative_on_polyhedron(goal, hyps, param, &PolyhedronOpts::default()).unwrap(),
         );
         // Three pivots do not get through the first stage LP.
-        let started = Instant::now();
-        let out = prove_nonnegative_on_polyhedron(
-            goal,
-            hyps,
-            param,
-            &PolyhedronOpts::default().with_max_pivots(3),
+        let out = crate::perf_assert::assert_fast!(
+            Duration::from_secs(2),
+            prove_nonnegative_on_polyhedron(
+                goal,
+                hyps,
+                param,
+                &PolyhedronOpts::default().with_max_pivots(3),
+            )
         )
         .unwrap();
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "{:?}",
-            started.elapsed()
-        );
         assert_eq!(budget_hit(&out), Some(BudgetHit::MaxPivots), "{out:?}");
         let PolyhedronOutcome::Unknown(u) = &out else {
             panic!("{out:?}");
@@ -1086,15 +1083,14 @@ fn many_hypotheses_certify_quickly_with_staging() {
     for k in 1..=6i64 {
         hyps.push((j * k + 1) * t - j * r - ctx.rational(k, 2 * k + 1));
     }
-    let start = std::time::Instant::now();
+    let start = crate::perf_assert::CpuTimer::start();
     for k in 1..=6i64 {
         let goal = (j * k + 1) * t * 3 - j * r * 3 - ctx.rational(3 * k, 2 * k + 1) + &half - r;
         let c = f.prove(&goal, &hyps, Some(1));
         assert!(c.lambda_is_one() || c.verify());
     }
-    assert!(
-        start.elapsed().as_secs() < 20,
-        "six certificates over ten facets took {:?}",
-        start.elapsed()
+    start.assert_within(
+        std::time::Duration::from_secs(20),
+        "six certificates over ten facets",
     );
 }

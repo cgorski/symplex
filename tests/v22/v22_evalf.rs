@@ -14,9 +14,11 @@
 #![allow(clippy::excessive_precision)]
 
 use std::f64::consts::{FRAC_PI_2, PI};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// `z` agrees with `re + im·i` to a relative `1e-14` of `|re + im·i|`.
 fn close_c(z: Complex64, re: f64, im: f64, label: &str) {
@@ -320,12 +322,6 @@ fn nested_cosh_at_a_complex_point_is_refused_promptly() {
     let x = ctx.symbol("x");
     let f = x.powi(2).cosh().cosh().cosh();
     let at = ctx.rational(1, 3) + ctx.i_unit() * 4;
-    let t = Instant::now();
-    let r = f.subs(&x, &at).eval_decimal(30);
+    let r = assert_fast!(Duration::from_secs(5), f.subs(&x, &at).eval_decimal(30));
     assert!(r.is_err(), "cosh(cosh(cosh(x^2))) at 1/3+4i: {r:?}");
-    assert!(
-        t.elapsed() < Duration::from_secs(5),
-        "took {:?}",
-        t.elapsed()
-    );
 }

@@ -10,6 +10,8 @@
 #![allow(unused_imports)]
 use symplex::prelude::*;
 
+use crate::perf_assert::assert_fast;
+
 fn p(ctx: &Context, s: &str) -> Ex {
     ctx.parse(s).unwrap()
 }
@@ -148,8 +150,9 @@ fn powers_with_puiseux_exponents_at_infinity() {
 fn series_without_a_pole_is_refused_without_the_pole_retries() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let start = std::time::Instant::now();
-    let s = p(&ctx, "(atan(ln(x)))^(1/2)").series(&x, &ctx.int(0), 3);
+    let s = assert_fast!(
+        std::time::Duration::from_secs(5),
+        p(&ctx, "(atan(ln(x)))^(1/2)").series(&x, &ctx.int(0), 3)
+    );
     assert!(s.has_unevaluated(), "{s}");
-    assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
 }

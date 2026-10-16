@@ -5,22 +5,20 @@
 //! the value it had before; the reference values are SymPy 1.14's
 //! (`target/scratch/pp/py/*.py` in the work tree that produced them).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use num_traits::Pow;
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// Generous for a debug build on a loaded CI machine: the release times
 /// are milliseconds.
 const LIMIT: Duration = Duration::from_secs(5);
 
 fn timed<T>(what: &str, f: impl FnOnce() -> T) -> T {
-    let t0 = Instant::now();
-    let r = f();
-    let dt = t0.elapsed();
-    assert!(dt < LIMIT, "{what} took {dt:?}");
-    r
+    assert_fast!(LIMIT, f(), "{what}")
 }
 
 /// `7^k + c`, a deterministic stand-in for a random huge integer.

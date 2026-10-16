@@ -4,9 +4,13 @@
 //! 1.14 (`factor_list`, `groebner`), or the number of distinct solutions
 //! of a zero-dimensional system (the quotient dimension of its radical).
 
+use std::time::Duration;
+
 use symplex::num_complex::Complex64;
 use symplex::polysys::solve_system_ex;
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 fn parse(ctx: &Context, s: &str) -> Ex {
     ctx.parse(s).unwrap()
@@ -163,10 +167,12 @@ fn lex_basis_of_the_unit_ideal_is_immediate() {
     .iter()
     .map(|s| parse(&ctx, s))
     .collect();
-    let start = std::time::Instant::now();
-    let basis = Ex::groebner(&polys, &vars, MonomialOrder::Lex).unwrap();
+    let basis = assert_fast!(
+        Duration::from_secs(20),
+        Ex::groebner(&polys, &vars, MonomialOrder::Lex)
+    )
+    .unwrap();
     assert_eq!(basis, vec![ctx.int(1)]);
-    assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
 }
 
 /// A power `x^1000000000` was built by a billion multiplications in the
@@ -183,7 +189,7 @@ fn huge_degrees_do_not_hang() {
     use symplex::multipoly::MonomialOrder;
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let big = parse(&ctx, "x^1000000000 - y^2");
     assert_eq!(big.factor_all(), big);
     assert!(big.gcd_all(&(&x - 1)).is_none());
@@ -196,7 +202,10 @@ fn huge_degrees_do_not_hang() {
     assert_eq!(basis, vec![f, g]);
     let many = solve_system_ex(&[parse(&ctx, "x^5000 - 1"), &y - 1], &vars);
     assert!(many.is_err(), "{many:?}");
-    assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
+    start.assert_within(
+        Duration::from_secs(20),
+        "factor, gcd, two bases, two systems",
+    );
 }
 
 /// The Swinnerton-Dyer polynomial `SD₅ = ∏(x ± √2 ± √3 ± √5 ± √7 ±

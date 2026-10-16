@@ -14,7 +14,11 @@
 //! (it folds a numerator to 0 before it looks at a denominator):
 //! deliberately different, as in the 0.34 tests.
 
+use std::time::Duration;
+
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 fn show(e: &Ex) -> String {
     format!("{e}")
@@ -240,7 +244,7 @@ fn a_zero_over_a_radical_of_an_identity_zero_is_undefined() {
 #[test]
 fn costly_constants_zero_by_an_identity_are_zero() {
     let u = "besselj(10^5,1)";
-    let t = std::time::Instant::now();
+    let t = CpuTimer::start();
     assert_eq!(parse(&format!("(sin({u})^2+cos({u})^2-1)*zoo")), "nan");
     assert_eq!(
         parse(&format!(
@@ -254,7 +258,7 @@ fn costly_constants_zero_by_an_identity_are_zero() {
         parse("(sin(gamma(10^5))^2+cos(gamma(10^5))^2-2)*zoo"),
         "zoo"
     );
-    assert!(t.elapsed().as_secs() < 30, "took {:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(30), "five identities");
 }
 
 /// Before (debug build): `ratsimp` 119 s, `expand` 113 s, `simplify` 107 s
@@ -271,7 +275,7 @@ fn costly_constants_zero_by_an_identity_are_zero() {
 fn identity_tests_never_evaluate_costly_parts() {
     let ctx = Context::new();
     let u = "jacobi(999, 1/3, 1/5, 1/7)";
-    let t = std::time::Instant::now();
+    let t = CpuTimer::start();
     let e = ctx
         .parse(&format!("((x+1)^2-x^2-2*x-1)/(sin({u})^2+cos({u})^2-1)"))
         .unwrap();
@@ -285,7 +289,7 @@ fn identity_tests_never_evaluate_costly_parts() {
         .parse(&format!("((x+1)^2-x^2-2*x-1)/(sin({v})^2+cos({v})^2-1)"))
         .unwrap();
     assert_eq!(show(&g.simplify_trig()), "nan");
-    assert!(t.elapsed().as_secs() < 30, "took {:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(30), "the identity tests");
 }
 
 /// What SymPy does too stays as it was: like terms collected over a `T`

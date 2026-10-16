@@ -9,8 +9,10 @@
 //! *values* the benchmarks compute, so a regression in the simplifier on
 //! these inputs is still caught by the regular suite.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 const ITERATIONS: u32 = 100;
 
@@ -22,11 +24,11 @@ fn bench<F: FnMut()>(mut f: F) -> (Duration, Duration) {
     for _ in 0..5 {
         f();
     }
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for _ in 0..ITERATIONS {
         f();
     }
-    let total = start.elapsed();
+    let total = start.cpu();
     let avg = total / ITERATIONS;
     (total, avg)
 }

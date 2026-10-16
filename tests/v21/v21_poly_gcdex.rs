@@ -5,9 +5,11 @@
 //! `ExtendedGcd { x, y, gcd }`.  Equality with the Euclidean reference on
 //! random inputs is pinned in-crate (`zpoly::tests`).
 
-use std::time::Instant;
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 fn assert_same(label: &str, got: &Ex, want: &Ex) {
     assert_eq!(
@@ -59,9 +61,7 @@ fn gcdex_of_forty_digit_coefficients_is_fast_and_exact() {
     let a = (0..9).fold(ctx.int(0), |acc, k| acc + big(k + 1) * x.powi(k));
     let b = (0..10).fold(ctx.int(0), |acc, k| acc + big(3 * k - 11) * x.powi(k));
     let (a, b) = ((a * &common).expand(), (b * &common).expand());
-    let started = Instant::now();
-    let e = a.poly_gcdex(&b, &x).unwrap();
-    let elapsed = started.elapsed();
+    let e = assert_fast!(Duration::from_millis(1500), a.poly_gcdex(&b, &x)).unwrap();
     let bezout = (&e.x * &a + &e.y * &b).expand();
     assert_same("bezout", &bezout, &e.gcd);
     assert_eq!(
@@ -70,5 +70,4 @@ fn gcdex_of_forty_digit_coefficients_is_fast_and_exact() {
         "{}",
         e.gcd
     );
-    assert!(elapsed.as_millis() < 1500, "gcdex took {elapsed:?}");
 }

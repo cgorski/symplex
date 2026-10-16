@@ -11,8 +11,10 @@
 // Reference values are quoted at the precision mpmath printed them.
 #![allow(clippy::excessive_precision)]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
+
+use crate::perf_assert::{CpuTimer, cpu_time};
 
 fn decimal(e: &Ex, digits: u32) -> String {
     e.eval_decimal(digits)
@@ -97,9 +99,8 @@ fn jacobi_symbolic_parameters_expand_in_polynomial_time() {
     let expand = |n: i64| {
         let ctx = Context::new();
         let (x, a, b) = (ctx.symbol("x"), ctx.symbol("a"), ctx.symbol("b"));
-        let t = Instant::now();
-        let p = x.jacobi(&ctx.int(n), &a, &b).eval();
-        (t.elapsed(), p)
+        let (p, t) = cpu_time(|| x.jacobi(&ctx.int(n), &a, &b).eval());
+        (t, p)
     };
     let block_of_7 = || -> Duration { (0..BLOCK).map(|_| expand(7).0).sum() };
     let before = block_of_7();
@@ -136,7 +137,7 @@ fn symbolic_parameter_degree_is_capped_at_16() {
     let ctx = Context::new();
     let (x, a, b) = (ctx.symbol("x"), ctx.symbol("a"), ctx.symbol("b"));
     // Above the cap the node is returned unevaluated — quickly.
-    let t = Instant::now();
+    let t = CpuTimer::start();
     let j = x.jacobi(&ctx.int(17), &a, &b).eval();
     assert_eq!(format!("{j}"), "jacobi(17, a, b, x)");
     let g = x.gegenbauer(&ctx.int(17), &a).eval();
@@ -145,7 +146,7 @@ fn symbolic_parameter_degree_is_capped_at_16() {
     assert_eq!(format!("{l}"), "assoc_laguerre(17, a, x)");
     let big = x.jacobi(&ctx.int(1000), &a, &b).eval();
     assert_eq!(format!("{big}"), "jacobi(1000, a, b, x)");
-    assert!(t.elapsed() < Duration::from_secs(1));
+    t.assert_within(Duration::from_secs(1), "four refusals");
     // At the cap they still expand.
     // mpmath 1.3: gegenbauer(16, 1/3, 2/5) = 0.0856623638834248792109214848533
     let g16 = x.gegenbauer(&ctx.int(16), &a).eval();
@@ -403,13 +404,13 @@ fn airy_derivatives_at_zero_are_finite() {
 #[test]
 fn dirichlet_eta_huge_negative_integer_is_cheap() {
     let ctx = Context::new();
-    let t = Instant::now();
+    let t = CpuTimer::start();
     // η(−2k) = 0 exactly (trivial zeros of ζ); SymPy: dirichlet_eta(-1000000) = 0.
     assert_eq!(ctx.int(-1_000_000).dirichlet_eta().eval(), ctx.int(0));
     // Odd: the Bernoulli number B_{1000000} is not computed; left alone.
     let e = ctx.int(-999_999).dirichlet_eta().eval();
     assert_eq!(format!("{e}"), "dirichlet_eta(-999999)");
-    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(1), "η(−10⁶) and η(−999999)");
     // Within the cap the exact values are unchanged: η(−3) = −1/8 (SymPy: -1/8),
     // η(−63) = (1 − 2^64) ζ(−63) with ζ(−63) = −B₆₄/64.
     assert_eq!(ctx.int(-3).dirichlet_eta().eval(), ctx.rational(-1, 8));

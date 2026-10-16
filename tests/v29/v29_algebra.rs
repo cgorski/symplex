@@ -7,9 +7,13 @@
 //! Each test says what was wrong before; every reference value cites the
 //! identity checked or the SymPy call that produced it.
 
+use std::time::Duration;
+
 use symplex::num_bigint::BigInt;
 use symplex::num_rational::BigRational;
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 fn q(n: i64, d: i64) -> BigRational {
     BigRational::new(BigInt::from(n), BigInt::from(d))
@@ -188,9 +192,7 @@ fn generic_symbolic_rank_is_fast_and_full() {
         .map(|i| (0..6).map(|j| ctx.symbol(&format!("a{i}{j}"))).collect())
         .collect();
     let m = Matrix::new(rows).unwrap();
-    let t0 = std::time::Instant::now();
-    assert_eq!(m.rank(), 6);
-    assert!(t0.elapsed().as_secs() < 20, "{:?}", t0.elapsed());
+    assert_eq!(assert_fast!(Duration::from_secs(20), m.rank()), 6);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -427,9 +429,11 @@ fn polynomial_system_with_radical_solutions_does_not_hang() {
         ctx.parse("-4*x*y + 3*x").unwrap(),
         ctx.parse("x^2 - 4*y*z").unwrap(),
     ];
-    let t0 = std::time::Instant::now();
-    let sols = symplex::polysys::solve_system_ex(&eqs, &[x.clone(), y.clone(), z.clone()]).unwrap();
-    assert!(t0.elapsed().as_secs() < 30, "{:?}", t0.elapsed());
+    let sols = assert_fast!(
+        Duration::from_secs(30),
+        symplex::polysys::solve_system_ex(&eqs, &[x.clone(), y.clone(), z.clone()])
+    )
+    .unwrap();
     assert_eq!(sols.len(), 6);
     for s in &sols {
         for e in &eqs {

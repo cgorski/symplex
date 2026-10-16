@@ -11,13 +11,15 @@
 // Reference values are quoted at the 17 digits mpmath printed them.
 #![allow(clippy::excessive_precision)]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
 use symplex::stats::numdist::{
     beta, betainc_regularized_f64, binom, chi2, f, gamma, gammainc_lower_regularized_f64,
     gammainc_upper_regularized_f64, poisson, t,
 };
+
+use crate::perf_assert::CpuTimer;
 
 /// Relative closeness.
 fn close(actual: f64, expected: f64, rel: f64, label: &str) {
@@ -419,15 +421,11 @@ fn beta_upper_quantile_with_a_huge_second_shape() -> Result<(), SymplexError> {
 fn gamma_quantiles_for_huge_shapes() -> Result<(), SymplexError> {
     assert_eq!(gamma::ppf(0.3, 1e30, 1.0)?, 9.999999999999995e29);
     assert_eq!(gamma::ppf(0.5, 1e300, 1.0)?, 1e300);
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for _ in 0..100 {
         let _ = gamma::ppf(0.5, 1e300, 1.0)?;
     }
-    assert!(
-        start.elapsed() < Duration::from_secs(1),
-        "{:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(1), "100 quantiles");
     Ok(())
 }
 
@@ -440,15 +438,11 @@ fn gamma_quantiles_for_huge_shapes() -> Result<(), SymplexError> {
 #[test]
 fn gamma_tails_near_f64_max() {
     assert_eq!(gamma::sf(f64::MAX, 1e300, 1.0), 0.0);
-    let start = Instant::now();
+    let start = CpuTimer::start();
     for _ in 0..100 {
         assert_eq!(chi2::cdf(f64::MAX, 1e300), 1.0);
     }
-    assert!(
-        start.elapsed() < Duration::from_secs(1),
-        "{:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(1), "100 tails");
 }
 
 /// `t::ppf(1e-300, 1e100)`: 0.26 failed ("did not converge in 200 steps") —

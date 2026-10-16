@@ -1410,20 +1410,23 @@ impl<O: MonomialOrd> MultiPoly<O> {
             return Some(Self::constant(nv, Ratio::from_integer(c)));
         }
         // Both in the same single variable: dense, `z_gcd` (Brown's modular
-        // algorithm for large inputs).
+        // algorithm for large inputs), up to `cast::MAX_DENSE_LIST` (up to
+        // 0.57 `x^(2³¹ − 1) − 1` asked for a 68 GB coefficient vector).
         let (vf, vg) = (f.variables_present(), g.variables_present());
+        let dense = |t: &[(&[u32], &BigInt)], v: usize| -> Option<Vec<BigInt>> {
+            let n = t.iter().map(|(e, _)| e[v]).max().unwrap_or(0);
+            let len = crate::base::cast::bounded_len(n, crate::base::cast::MAX_DENSE_LIST)?;
+            let mut out = vec![BigInt::zero(); len + 1];
+            for (e, x) in t {
+                out[e[v] as usize] = (*x).clone();
+            }
+            Some(out)
+        };
         if let ([v], [w]) = (vf.as_slice(), vg.as_slice())
             && v == w
+            && let (Some(df), Some(dg)) = (dense(&ft, *v), dense(&gt, *v))
         {
-            let dense = |t: &[(&[u32], &BigInt)]| -> Vec<BigInt> {
-                let n = t.iter().map(|(e, _)| e[*v] as usize).max().unwrap_or(0);
-                let mut out = vec![BigInt::zero(); n + 1];
-                for (e, x) in t {
-                    out[e[*v] as usize] = (*x).clone();
-                }
-                out
-            };
-            let h = zpoly::z_gcd(&dense(&ft), &dense(&gt));
+            let h = zpoly::z_gcd(&df, &dg);
             if !h.is_empty() {
                 let terms = h
                     .into_iter()

@@ -602,8 +602,8 @@ impl Expr<Numeric> {
     ///
     /// # Errors
     ///
-    /// * `InvalidArgument` if `var` is not a symbol or the interval is
-    ///   degenerate.
+    /// * `InvalidArgument` if `var` is not a symbol, the interval is
+    ///   degenerate, or `n_terms` exceeds `2²⁰`.
     /// * `ComputationFailed` if a coefficient integral has no closed form.
     ///
     /// ```
@@ -652,6 +652,16 @@ impl Expr<Numeric> {
                 reason: format!("the interval [{lower}, {upper}] must have positive length"),
             });
         }
+        let Some(n_len) = crate::base::cast::bounded_len(n_terms, crate::base::cast::MAX_TERMS)
+        else {
+            return Err(SymplexError::InvalidArgument {
+                operation: "fourier_series_on",
+                reason: format!(
+                    "{n_terms} harmonics requested; at most {} are computed",
+                    crate::base::cast::MAX_TERMS
+                ),
+            });
+        };
         let _span =
             debug_span!("fourier_series_on", expr = ?self.raw_id(), var = ?var_id).entered();
 
@@ -675,8 +685,8 @@ impl Expr<Numeric> {
             upper: upper.clone(),
             period,
             a0,
-            an: Vec::with_capacity(n_terms as usize),
-            bn: Vec::with_capacity(n_terms as usize),
+            an: Vec::with_capacity(n_len),
+            bn: Vec::with_capacity(n_len),
         };
         for k in 1..=n_terms {
             let a = check(series.raw_coefficient(k, false), format!("a_{k}"))?;

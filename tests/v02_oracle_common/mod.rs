@@ -24,21 +24,26 @@
 //! every subcategory and prints a summary row plus every non-PASS case.
 //!
 //! Every fixture is processed on its own thread with a wall-clock budget
-//! (`FIXTURE_TIMEOUT`); a fixture that does not finish counts as FAIL
-//! ("HANG") — a non-terminating library call is a bug, and this keeps one
-//! bad case from stalling CI.  A panic inside a fixture is also a FAIL.
+//! (`FIXTURE_TIMEOUT`, scaled by `SYMPLEX_TEST_TIME_SCALE`); a fixture that
+//! does not finish counts as FAIL ("HANG") — a non-terminating library call
+//! is a bug, and this keeps one bad case from stalling CI.  A panic inside a
+//! fixture is also a FAIL.  The summary row reports the fixtures' CPU time.
 
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use serde_json::Value;
 use symplex::prelude::*;
 
+use crate::perf_assert::{cpu_time, scaled};
+
 pub const TOLERANCE: f64 = 1e-6;
-/// Wall-clock budget per fixture (each `#[test]` must stay well under 10 s).
-pub const FIXTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+/// Wall-clock budget per fixture before `SYMPLEX_TEST_TIME_SCALE` (each
+/// `#[test]` must stay well under 10 s).  A hang guard, not a speed test.
+pub const FIXTURE_TIMEOUT: Duration = Duration::from_secs(4);
 
 // ── Fixture file ───────────────────────────────────────────────────────
 
@@ -262,23 +267,29 @@ pub fn run(
 }
 
 /// Run `process` on a fresh context on its own thread with a wall-clock
-/// budget.  Hangs and panics are reported as `Status::Fail`.
-fn process_bounded(process: &Processor, fx: &'static Fixture) -> Status {
+/// budget, and the CPU time the thread spent.  Hangs and panics are
+/// reported as `Status::Fail`.
+fn process_bounded(process: &Processor, fx: &'static Fixture) -> (Status, Duration) {
     let (tx, rx) = std::sync::mpsc::channel();
     let p = process.clone();
     std::thread::spawn(move || {
         let ctx = Context::new();
-        let _ = tx.send(p(&ctx, fx));
+        let _ = tx.send(cpu_time(|| p(&ctx, fx)));
     });
-    match rx.recv_timeout(FIXTURE_TIMEOUT) {
-        Ok(status) => status,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Status::Fail(format!(
-            "HANG: no result within {:.0}s (thread abandoned)",
-            FIXTURE_TIMEOUT.as_secs_f64()
-        )),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Status::Fail("PANIC while processing the fixture (see stderr)".into())
-        }
+    let limit = scaled(FIXTURE_TIMEOUT);
+    match rx.recv_timeout(limit) {
+        Ok(done) => done,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (
+            Status::Fail(format!(
+                "HANG: no result within {:.0}s (thread abandoned)",
+                limit.as_secs_f64()
+            )),
+            limit,
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (
+            Status::Fail("PANIC while processing the fixture (see stderr)".into()),
+            Duration::ZERO,
+        ),
     }
 }
 
@@ -313,7 +324,7 @@ pub fn run_fixtures(
     let process: Processor = std::sync::Arc::new(process);
     let mut stats = Stats::default();
     let mut lines: Vec<String> = Vec::new();
-    let start = std::time::Instant::now();
+    let mut cpu = Duration::ZERO;
     let label = match subcategory {
         Some(s) => format!("{category}:{s}"),
         None => category.to_string(),
@@ -330,7 +341,11 @@ pub fn run_fixtures(
             .map(|(_, _, _, reason)| *reason);
         let status = match fx.oracle_missing() {
             Some(reason) => Status::SkippedOracle(reason),
-            None => process_bounded(&process, fx),
+            None => {
+                let (status, spent) = process_bounded(&process, fx);
+                cpu += spent;
+                status
+            }
         };
         match status {
             Status::Pass if known.is_some() => {
@@ -383,9 +398,8 @@ pub fn run_fixtures(
             }
         }
     }
-    let elapsed = start.elapsed();
     println!(
-        "{:<36} pass={:>3} fail={:>3} known_bug={:>2} not_impl={:>3} no_api={:>2} skipped_oracle={:>2}  ({:.2}s, {})",
+        "{:<36} pass={:>3} fail={:>3} known_bug={:>2} not_impl={:>3} no_api={:>2} skipped_oracle={:>2}  ({:.2}s CPU, {})",
         label,
         stats.pass,
         stats.fail,
@@ -393,7 +407,7 @@ pub fn run_fixtures(
         stats.not_impl,
         stats.no_api,
         stats.skipped_oracle,
-        elapsed.as_secs_f64(),
+        cpu.as_secs_f64(),
         generated_by
     );
     for l in &lines {

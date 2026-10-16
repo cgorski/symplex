@@ -5,19 +5,17 @@
 //! Every call must finish well within its time limit with the right value or
 //! an honest refusal.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 /// Generous for a debug build on CI: the release times are milliseconds.
 const LIMIT: Duration = Duration::from_secs(5);
 
 fn timed<T>(what: &str, f: impl FnOnce() -> T) -> T {
-    let t0 = Instant::now();
-    let r = f();
-    let dt = t0.elapsed();
-    assert!(dt < LIMIT, "{what} took {dt:?}");
-    r
+    assert_fast!(LIMIT, f(), "{what}")
 }
 
 fn dec(ctx: &Context, s: &str) -> Result<String, SymplexError> {

@@ -7,23 +7,18 @@
 //!   were four different expressions.  Positive rational bases are now
 //!   split and denominators rationalised at construction (SymPy's form).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::prelude::*;
+
+use crate::perf_assert::assert_fast;
 
 fn s(e: &Ex) -> String {
     format!("{e}")
 }
 
 fn timed<T>(limit_ms: u64, what: &str, f: impl FnOnce() -> T) -> T {
-    let t = Instant::now();
-    let r = f();
-    let dt = t.elapsed();
-    assert!(
-        dt < Duration::from_millis(limit_ms),
-        "{what} took {dt:?} (limit {limit_ms} ms)"
-    );
-    r
+    assert_fast!(Duration::from_millis(limit_ms), f(), "{what}")
 }
 
 #[test]

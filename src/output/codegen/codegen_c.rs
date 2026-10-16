@@ -879,11 +879,11 @@ impl<'a> CEmitter<'a> {
                     1 => b,
                     -1 => format!("({} / {b})", self.lit(1.0)),
                     2..=4 if simple => {
-                        let reps = vec![b.as_str(); n as usize];
+                        let reps: Vec<&str> = (0..n).map(|_| b.as_str()).collect();
                         format!("({})", reps.join(" * "))
                     }
                     -4..=-2 if simple => {
-                        let reps = vec![b.as_str(); (-n) as usize];
+                        let reps: Vec<&str> = (n..0).map(|_| b.as_str()).collect();
                         format!("({} / ({}))", self.lit(1.0), reps.join(" * "))
                     }
                     _ => format!("{}({b}, {})", self.mf("pow"), self.lit(n as f64)),

@@ -7,6 +7,8 @@
 //! right and the library wrong, the test records the library's value.
 
 #![allow(unused_imports)]
+use std::time::Duration;
+
 use symplex::linprog::{q, qi};
 use symplex::prelude::*;
 use symplex::stats::data::{Q, from_i64};
@@ -15,6 +17,8 @@ use symplex::stats::estimation::{
     proportion_interval_exact,
 };
 use symplex::stats::hypothesis::*;
+
+use crate::perf_assert::CpuTimer;
 
 fn rel_close(a: f64, b: f64, tol: f64) -> bool {
     (a - b).abs() <= tol * b.abs()
@@ -148,7 +152,7 @@ fn sample_size_two_proportions_beyond_two_to_the_forty() {
 #[test]
 fn clopper_pearson_exact_refuses_large_n_at_once() {
     let ctx = Context::new();
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let r = proportion_interval_exact(
         &ctx,
         41_220,
@@ -165,7 +169,7 @@ fn clopper_pearson_exact_refuses_large_n_at_once() {
         IntervalMethod::ClopperPearson,
     );
     assert!(is_computation_failed(&r));
-    assert!(start.elapsed().as_secs() < 5);
+    start.assert_within(Duration::from_secs(5), "two refusals");
     // k = 0 / k = n at any n: the closed forms 1 − (α/2)^{1/n} / (α/2)^{1/n}
     // (RootOf nodes before 0.57, which at n = 183 took more than a minute).
     let ci = proportion_interval_exact(
@@ -185,7 +189,7 @@ fn clopper_pearson_exact_refuses_large_n_at_once() {
         (0.025_f64.ln() / 200.0).exp(),
         1e-14
     ));
-    assert!(start.elapsed().as_secs() < 10);
+    start.assert_within(Duration::from_secs(10), "two refusals and two closed forms");
     let ci = proportion_interval_exact(&ctx, 3, 10, &q(95, 100), IntervalMethod::ClopperPearson)
         .unwrap();
     assert!(rel_close(

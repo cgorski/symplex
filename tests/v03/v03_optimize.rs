@@ -7,6 +7,7 @@ use num_bigint::BigInt;
 use num_rational::Ratio;
 use std::cell::Cell;
 use std::f64::consts::PI;
+use std::time::Duration;
 use symplex::optimize::{
     DeOpts, LinearFit, MinimizeOpts, RootOpts, ScalarMinimum, bisect, brent_root,
     differential_evolution, eval_poly, golden_section, linear_fit, minimize_scalar, nelder_mead,
@@ -14,16 +15,7 @@ use symplex::optimize::{
 };
 use symplex::prelude::*;
 
-/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
-/// shared CI runners (`CI` is set), which are several times slower and noisy.
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::CpuTimer;
 
 fn q(p: i64, d: i64) -> Ratio<BigInt> {
     Ratio::new(BigInt::from(p), BigInt::from(d))
@@ -254,7 +246,7 @@ fn newton_cube_root_of_two() {
 
 #[test]
 fn newton_diverging_start_is_error_not_hang() {
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let e = newton_root(
         f64::atan,
         |x| 1.0 / (1.0 + x * x),
@@ -262,7 +254,7 @@ fn newton_diverging_start_is_error_not_hang() {
         &RootOpts::default(),
     );
     assert!(e.is_err(), "{e:?}");
-    assert!(start.elapsed() < time_budget(1));
+    start.assert_within(Duration::from_secs(1), "the diverging Newton iteration");
 }
 
 #[test]
@@ -605,12 +597,12 @@ fn brent_min_monotone_function_returns_endpoint_region() {
 
 #[test]
 fn de_rastrigin_2d_default_seed() {
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let bounds = [Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)];
     let r = differential_evolution(rastrigin, &bounds, &DeOpts::default()).unwrap();
     assert!(r.fun < 1e-6, "{r:?}");
     assert!(r.x.iter().all(|x| x.abs() < 1e-3), "{:?}", r.x);
-    assert!(start.elapsed() < time_budget(2), "{:?}", start.elapsed());
+    start.assert_within(Duration::from_secs(2), "differential evolution");
 }
 
 #[test]
@@ -627,7 +619,7 @@ fn de_is_deterministic_for_a_seed() {
 
 #[test]
 fn de_different_seeds_all_converge() {
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let bounds = [Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)];
     let mut results = Vec::new();
     for seed in [1u64, 7, 42, 2024] {
@@ -642,7 +634,7 @@ fn de_different_seeds_all_converge() {
     // Different seeds explore differently: the evaluation counts should not all agree.
     let first = results[0].evaluations;
     assert!(results.iter().any(|r| r.evaluations != first));
-    assert!(start.elapsed() < time_budget(4), "{:?}", start.elapsed());
+    start.assert_within(Duration::from_secs(4), "four seeds");
 }
 
 #[test]
@@ -1281,7 +1273,7 @@ fn ex_minimize_scalar_numeric_extra_symbol_is_error() {
 
 #[test]
 fn ex_minimize_global_numeric_rastrigin() {
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let two_pi = ctx.pi() * 2;
@@ -1295,7 +1287,7 @@ fn ex_minimize_global_numeric_rastrigin() {
         .unwrap();
     assert!(r.fun < 1e-6, "{r:?}");
     assert!(r.x.iter().all(|v| v.abs() < 1e-3), "{:?}", r.x);
-    assert!(start.elapsed() < time_budget(2), "{:?}", start.elapsed());
+    start.assert_within(Duration::from_secs(2), "minimize_global_numeric");
 }
 
 #[test]

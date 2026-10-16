@@ -3,7 +3,11 @@
 //! values: mpmath 1.3 (`python3 -c "from mpmath import *; mp.dps = 45;
 //! print(…)"`), each cited at its test.
 
+use std::time::Duration;
+
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 /// `eval_decimal(digits)` of `src`, which must start with `want`.
 fn starts(src: &str, digits: u32, want: &str) {
@@ -433,7 +437,7 @@ fn long_products_keep_their_bound() {
 #[test]
 fn gamma_beyond_the_exponent_range_is_refused_quickly() {
     let ctx = Context::new();
-    let t = std::time::Instant::now();
+    let t = CpuTimer::start();
     let src = "3!e*bi2(vi/(05407/5*04890**01+9926/70**i)!!5014!0)6!iv!!0)6!iv";
     assert!(symplex::parse::parse(&ctx, src).is_err());
     for src in [
@@ -446,7 +450,7 @@ fn gamma_beyond_the_exponent_range_is_refused_quickly() {
             "{src}: {r:?}"
         );
     }
-    assert!(t.elapsed().as_secs() < 20, "{:?}", t.elapsed());
+    t.assert_within(Duration::from_secs(20), "the parse error and the refusals");
     starts_c(
         "gamma(1000000 + 3*I)",
         15,

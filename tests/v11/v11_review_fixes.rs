@@ -3,13 +3,15 @@
 //! fallbacks and the ratchet.  Reference values cite SymPy 1.14
 //! (`symplex/.venv/bin/python`).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use num_bigint::BigInt;
 use symplex::certificates::{BudgetHit, SosOpts, SosOutcome, prove_sos};
 use symplex::discrete::{convolution_ntt, intt, ntt};
 use symplex::prelude::*;
 use symplex::syms;
+
+use crate::perf_assert::assert_fast;
 
 fn b(v: &[i64]) -> Vec<BigInt> {
     v.iter().map(|&t| BigInt::from(t)).collect()
@@ -28,14 +30,17 @@ fn sos_time_limit_covers_the_newton_pruning_stage() {
     // Dense degree-6 goal in three variables: 84 candidate monomials of
     // degree ≤ 3, one LP each, before the SDP would even start.
     let goal = (&x.powi(2) + &y.powi(2) + &z.powi(2) + 1).powi(3);
-    let t0 = Instant::now();
-    let out = prove_sos(
-        &goal,
-        &[x.clone(), y.clone(), z.clone()],
-        &SosOpts::default().with_time_limit(Duration::ZERO),
+    // Generous: the refutation grid (343 exact evaluations) runs first.
+    let out = assert_fast!(
+        Duration::from_secs(10),
+        prove_sos(
+            &goal,
+            &[x.clone(), y.clone(), z.clone()],
+            &SosOpts::default().with_time_limit(Duration::ZERO),
+        ),
+        "a zero limit"
     )
     .unwrap();
-    let elapsed = t0.elapsed();
     match out {
         SosOutcome::Unknown(u) => {
             assert_eq!(
@@ -47,11 +52,6 @@ fn sos_time_limit_covers_the_newton_pruning_stage() {
         }
         other => panic!("expected Unknown(budget exhausted), got {other}"),
     }
-    // Generous: the refutation grid (343 exact evaluations) runs first.
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "a zero limit took {elapsed:?}"
-    );
     // Without a limit the same goal is proved — the pruning budget only
     // *keeps* monomials when it is hit, never drops one.
     let full = prove_sos(&goal, &[x, y, z], &SosOpts::default()).unwrap();

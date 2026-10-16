@@ -43,9 +43,11 @@
 
 use num_bigint::BigInt;
 use num_traits::{Signed, Zero};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use symplex::prelude::*;
 use symplex::stats::numdist::{self, gammainc_upper_regularized_f64};
+
+use crate::perf_assert::cpu_time;
 
 /// A decimal string as `m·10^e` with `m` an integer.
 fn decimal(s: &str) -> (BigInt, i64) {
@@ -367,13 +369,11 @@ fn uppergamma_below_the_mean_of_a_large_shape_does_not_hang() {
     let reference = "1.949490703618700374867759201318328652e+43606475";
     let (mut t_upper, mut t_lower) = (Duration::ZERO, Duration::ZERO);
     for _ in 0..3 {
-        let t = Instant::now();
-        let s = upper.eval_decimal(30).expect("uppergamma");
-        t_upper += t.elapsed();
+        let (s, t) = cpu_time(|| upper.eval_decimal(30).expect("uppergamma"));
+        t_upper += t;
         assert_certified(&s, 30, reference, "uppergamma(6.8e6, 6.77e6)");
-        let t = Instant::now();
-        let _ = lower.eval_decimal(30).expect("lowergamma");
-        t_lower += t.elapsed();
+        let (_, t) = cpu_time(|| lower.eval_decimal(30).expect("lowergamma"));
+        t_lower += t;
     }
     assert!(
         t_upper < t_lower * 30 + Duration::from_millis(200),

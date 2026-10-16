@@ -210,7 +210,10 @@ fn de_moivre(arena: &mut Arena, n: i64, arg: ExprId, odd_powers: bool) -> ExprId
     let sin_x = arena.sin(arg);
     let cos_x = arena.cos(arg);
     let mut binom = BigInt::one(); // C(n, k), updated incrementally
-    let mut terms = Vec::with_capacity((n as usize).div_ceil(2));
+    // `2 ≤ n ≤ 20` (`integer_multiple`); the capacity is a hint.
+    let mut terms = Vec::with_capacity(
+        crate::base::cast::clamped_len(n, crate::base::cast::MAX_TERMS).div_ceil(2),
+    );
     for k in 0..=n {
         if k > 0 {
             binom = binom * BigInt::from(n - k + 1) / BigInt::from(k);

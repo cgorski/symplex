@@ -192,14 +192,16 @@ pub(crate) fn nsimplify(arena: &mut Arena, expr: ExprId, tolerance: f64) -> Expr
     expr // Nothing found — return original
 }
 
-/// Evaluate an expression to f64 using the evalf machinery.
+/// Evaluate an expression to f64 using the evalf machinery: the `f64`
+/// correctly rounded from its 16-digit value (up to 0.57 the printed
+/// decimal was parsed, an ulp away at times).
 ///
 /// Returns `None` if the expression cannot be numerically evaluated
-/// (e.g. it contains free symbols).
+/// (e.g. it contains free symbols) or is not real.
 fn eval_to_f64(arena: &Arena, expr: ExprId) -> Option<f64> {
-    // Use 16-digit precision, parse the string result.
-    let s = crate::transforms::evalf::evalf(arena, expr, 16).ok()?;
-    s.parse::<f64>().ok()
+    crate::transforms::evalf::const_value(arena, expr, 16)
+        .ok()?
+        .to_f64()
 }
 
 /// Find a rational approximation p/q using continued fraction convergents.

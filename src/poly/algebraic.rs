@@ -170,7 +170,7 @@ const VERIFY_TOLERANCE_BITS: i32 = 128;
 /// folds.  `canon` folds integer powers of up to 5,000 digits (about 16,600
 /// bits, `EvalConfig::max_result_digits`) with exponents up to 1,000, so
 /// the powers left for this module are the larger ones.
-const MAX_POWER_BITS: u64 = 1 << 16;
+const MAX_POWER_BITS: u64 = crate::base::cast::MAX_POWER_BITS;
 
 /// The largest degree `q·deg m` of the polynomial `m(t^q)` (or `t^q − r^p`)
 /// that [`minpoly_pow`] factors for `a^{p/q}`, and the largest `|p|` it

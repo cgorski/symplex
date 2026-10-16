@@ -7,15 +7,7 @@ use num_rational::Ratio;
 use proptest::prelude::*;
 use symplex::prelude::*;
 
-/// Wall-clock hang guard (scaled up on shared CI runners).
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 fn s(e: &Ex) -> String {
     format!("{e}")
@@ -456,18 +448,14 @@ fn solve_plain_symbolic_linear_unchanged() {
 fn moderately_large_rational_expression_is_fast() {
     let ctx = Context::new();
     let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     // Σ_{k=1..6} (x + k y)/(x + k z + y)
     let mut e = ctx.zero();
     for k in 1..=6 {
         e += (&x + &y * k) / (&x + &z * k + &y);
     }
     let r = e.ratsimp();
-    assert!(
-        start.elapsed() < time_budget(5),
-        "ratsimp took {:?}",
-        start.elapsed()
-    );
+    start.assert_within(std::time::Duration::from_secs(5), "ratsimp");
     assert_same_function(&r, &e, &[&x, &y, &z], "six fractions");
     let (n, d) = r.as_numer_denom();
     assert_eq!(d.expand().degree(&z), Some(6), "denominator {d}");
@@ -531,9 +519,7 @@ proptest! {
         if e.has_unevaluated() || s(&e).contains("zoo") || s(&e).contains("nan") {
             return Ok(());
         }
-        let start = std::time::Instant::now();
-        let r = e.ratsimp();
-        prop_assert!(start.elapsed() < time_budget(5), "ratsimp took {:?} on {e}", start.elapsed());
+        let r = assert_fast!(std::time::Duration::from_secs(5), e.ratsimp(), "ratsimp on {e}");
         let pts = [rat(px, qx), rat(py, qy)];
         if let (Some(ve), Some(vr)) = (value_at(&e, &[&x, &y], &pts), value_at(&r, &[&x, &y], &pts)) {
             prop_assert_eq!(ve, vr, "{} → {} at {:?}", e, r, pts);

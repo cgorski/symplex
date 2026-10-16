@@ -14,8 +14,12 @@
 //! 1.3 at two precisions that agree, SymPy 1.14).
 
 use num_bigint::BigInt;
+use std::time::Duration;
+
 use num_traits::Signed;
 use symplex::prelude::*;
+
+use crate::perf_assert::CpuTimer;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -448,7 +452,7 @@ fn a_cardano_formula_compiles_to_its_own_value() {
 #[test]
 fn erfcinv_of_a_deep_cancellation_is_fast() {
     let ctx = Context::new();
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     // mpmath: mp.dps = 400 and 800; u = sin(1 + mpf(10)**-150) - sin(1);
     // x = erfinv(1 - u); x, sin(x), cbrt(x)
     let cases = [
@@ -468,11 +472,7 @@ fn erfcinv_of_a_deep_cancellation_is_fast() {
     for (src, want) in cases {
         complex_certified(&ctx, src, 60, want, "0");
     }
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(10),
-        "{:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(10), "the certified evaluations");
 }
 
 /// Before: `uppergamma(10²⁰/3, 10²⁰/3)` ran Legendre's continued fraction
@@ -486,7 +486,7 @@ fn erfcinv_of_a_deep_cancellation_is_fast() {
 #[test]
 fn incomplete_gamma_of_huge_equal_arguments() {
     let ctx = Context::new();
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     for src in [
         "uppergamma(10^20/3, 10^20/3)",
         "lowergamma(10^20/3, 10^20/3)",
@@ -499,7 +499,7 @@ fn incomplete_gamma_of_huge_equal_arguments() {
             other => panic!("{src}: {other:?}"),
         }
     }
-    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    start.assert_within(Duration::from_secs(2), "the refusals");
     let v = ctx
         .parse("uppergamma(10^7, 10^7)")
         .unwrap()

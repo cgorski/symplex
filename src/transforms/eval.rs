@@ -69,6 +69,7 @@ use crate::base::arena::Arena;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::value_class::{self, ValueClass};
 use crate::base::walk;
 
 mod atan_sum;
@@ -2259,8 +2260,8 @@ fn eval_lambertw(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.one);
     }
 
-    // W(∞) = ∞
-    if inner == arena.infinity {
+    // W(∞) = ∞ (W(−∞), W(±i·∞), W(nan) fold when built)
+    if ValueClass::special_atom(arena, inner) == Some(ValueClass::PosInf) {
         tracing::debug!("eval: LambertW(∞) = ∞");
         return Some(arena.infinity);
     }
@@ -3170,19 +3171,21 @@ pub(crate) fn eval_si(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         return Some(arena.zero);
     }
-    if x == arena.infinity {
-        let half = arena.rational(1, 2);
-        return Some(arena.mul(&[half, arena.pi]));
-    }
-    if x == arena.neg_infinity {
-        let neg_half = arena.rational(-1, 2);
-        return Some(arena.mul(&[neg_half, arena.pi]));
+    match ValueClass::special_atom(arena, x) {
+        Some(ValueClass::PosInf) => {
+            let half = arena.rational(1, 2);
+            return Some(arena.mul(&[half, arena.pi]));
+        }
+        Some(ValueClass::NegInf) => {
+            let neg_half = arena.rational(-1, 2);
+            return Some(arena.mul(&[neg_half, arena.pi]));
+        }
+        Some(ValueClass::NaN) => return Some(arena.nan),
+        // (`zoo`: no limit; `−i·∞` is the odd rule's)
+        _ => {}
     }
     if imaginary_infinity(arena, x) == Some(ImaginaryInfinity::Up) {
         return Some(x);
-    }
-    if x == arena.nan {
-        return Some(arena.nan);
     }
     if let Some(y) = as_negated_general(arena, x) {
         let si_y = arena.si(y);
@@ -3205,11 +3208,12 @@ pub(crate) fn eval_si(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 /// Chi(y) + iπ/2`, DLMF 6.5.6; mpmath `ci(10**6*1j)` =
 /// 1.5·10⁴³⁴²⁸⁸ + 1.5708i; up to 0.53 they stayed).
 pub(crate) fn eval_ci(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
-    if x == arena.infinity {
-        return Some(arena.zero);
-    }
-    if x == arena.neg_infinity {
-        return Some(signed_pi_i(arena, false, (1, 1)));
+    match ValueClass::special_atom(arena, x) {
+        Some(ValueClass::PosInf) => return Some(arena.zero),
+        Some(ValueClass::NegInf) => return Some(signed_pi_i(arena, false, (1, 1))),
+        Some(ValueClass::NaN) => return Some(arena.nan),
+        // (`zoo`: no limit)
+        _ => {}
     }
     if let Some(direction) = imaginary_infinity(arena, x) {
         let finite = signed_pi_i(arena, direction == ImaginaryInfinity::Down, (1, 2));
@@ -3217,9 +3221,6 @@ pub(crate) fn eval_ci(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     }
     if x == arena.zero {
         return Some(arena.complex_infinity);
-    }
-    if x == arena.nan {
-        return Some(arena.nan);
     }
     None
 }
@@ -3229,8 +3230,12 @@ pub(crate) fn eval_ci(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 /// Ci(y) + i(Si(y) + π/2)`; mpmath `ei(10**6*1j)` = −3.5·10⁻⁷ +
 /// 3.1415917i).
 pub(crate) fn eval_ei(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
-    if x == arena.neg_infinity {
-        return Some(arena.zero);
+    match ValueClass::special_atom(arena, x) {
+        Some(ValueClass::NegInf) => return Some(arena.zero),
+        Some(ValueClass::PosInf) => return Some(arena.infinity),
+        Some(ValueClass::NaN) => return Some(arena.nan),
+        // (`zoo`: no limit)
+        _ => {}
     }
     if let Some(direction) = imaginary_infinity(arena, x) {
         return Some(signed_pi_i(
@@ -3239,14 +3244,8 @@ pub(crate) fn eval_ei(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
             (1, 1),
         ));
     }
-    if x == arena.infinity {
-        return Some(arena.infinity);
-    }
     if x == arena.zero {
         return Some(arena.neg_infinity);
-    }
-    if x == arena.nan {
-        return Some(arena.nan);
     }
     None
 }
@@ -3268,17 +3267,18 @@ pub(crate) fn eval_li(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.one {
         return Some(arena.neg_infinity);
     }
-    if x == arena.infinity {
-        return Some(arena.infinity);
-    }
     // `li(−∞)`, `li(±i·∞)`: `Ei(ln x) ~ x/ln x`, whose real and imaginary
     // parts both diverge, at different rates (mpmath `li(-10**6)` =
     // −7.4·10⁴ + 1.8·10⁴i): `zoo`.
-    if x == arena.neg_infinity || imaginary_infinity(arena, x).is_some() {
-        return Some(arena.complex_infinity);
+    match ValueClass::special_atom(arena, x) {
+        Some(ValueClass::PosInf) => return Some(arena.infinity),
+        Some(ValueClass::NegInf) => return Some(arena.complex_infinity),
+        Some(ValueClass::NaN) => return Some(arena.nan),
+        // (`zoo`: no limit)
+        _ => {}
     }
-    if x == arena.nan {
-        return Some(arena.nan);
+    if imaginary_infinity(arena, x).is_some() {
+        return Some(arena.complex_infinity);
     }
     if x == arena.e_const {
         return Some(arena.ei(arena.one));
@@ -3327,11 +3327,11 @@ const MAX_EXACT_ZETA_EVEN: i64 = 200;
 /// * `ζ(2k) = (−1)^{k+1} B₂ₖ (2π)^{2k} / (2·(2k)!)` = `π²/6, π⁴/90, …`
 /// * `ζ(2k+1)` for `k ≥ 1` stays symbolic.
 pub(crate) fn eval_zeta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
-    if s == arena.infinity {
-        return Some(arena.one);
-    }
-    if s == arena.nan {
-        return Some(arena.nan);
+    match ValueClass::special_atom(arena, s) {
+        Some(ValueClass::PosInf) => return Some(arena.one),
+        Some(ValueClass::NaN) => return Some(arena.nan),
+        // (`ζ(−∞)`, `ζ(zoo)`: no limit)
+        _ => {}
     }
     let r = arena.as_num(s)?.clone();
     if !r.is_integer() {
@@ -3446,7 +3446,10 @@ pub(crate) fn eval_digamma(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 ///   `ψ⁽ⁿ⁾(x+1) = ψ⁽ⁿ⁾(x) + (−1)ⁿ n!/x^{n+1}`
 /// * poles at non-positive integers → `z∞`
 pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
-    if n == arena.nan || x == arena.nan {
+    if [n, x]
+        .iter()
+        .any(|&a| ValueClass::special_atom(arena, a) == Some(ValueClass::NaN))
+    {
         return Some(arena.nan);
     }
     let nr = arena.as_num(n)?.clone();
@@ -3458,7 +3461,9 @@ pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<
     }
     // ψ⁽ⁿ⁾(z) ~ (−1)ⁿ⁺¹(n − 1)!/zⁿ → 0 at `∞` and `±i·∞` (SymPy:
     // `polygamma(1, oo)` → 0; mpmath `polygamma(2, 10**6*1j)` ≈ 10⁻¹²).
-    if x == arena.infinity || imaginary_infinity(arena, x).is_some() {
+    if ValueClass::special_atom(arena, x) == Some(ValueClass::PosInf)
+        || imaginary_infinity(arena, x).is_some()
+    {
         return Some(arena.zero);
     }
     let n_usize: usize = nr.to_integer().try_into().ok()?;
@@ -3551,7 +3556,10 @@ pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<
 pub(crate) fn eval_kronecker_delta(arena: &mut Arena, i: ExprId, j: ExprId) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
     use crate::base::truth::Truth;
-    if i == arena.nan || j == arena.nan {
+    if [i, j]
+        .iter()
+        .any(|&a| ValueClass::special_atom(arena, a) == Some(ValueClass::NaN))
+    {
         return Some(arena.nan);
     }
     if i == j {
@@ -5838,7 +5846,7 @@ fn reciprocal_at_zero(
     evaluated: ExprId,
     cache: &FxHashMap<ExprId, ExprId>,
 ) -> Option<ExprId> {
-    if evaluated != arena.complex_infinity {
+    if ValueClass::special_atom(arena, evaluated) != Some(ValueClass::ComplexInf) {
         return None;
     }
     let factors: Vec<ExprId> = match arena.node(original) {
@@ -6338,12 +6346,15 @@ fn extremum_of_real_constants(arena: &mut Arena, args: &[ExprId], min: bool) -> 
 fn eval_atan2_infinite(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
     use std::cmp::Ordering;
-    let is_inf = |arena: &Arena, id: ExprId| id == arena.infinity || id == arena.neg_infinity;
-    if is_inf(arena, y) == is_inf(arena, x) {
+    let real_infinity =
+        |id: ExprId| ValueClass::special_atom(arena, id).and_then(ValueClass::real_infinity);
+    let (y_inf, x_inf) = (real_infinity(y), real_infinity(x));
+    if y_inf.is_some() == x_inf.is_some() {
         return None;
     }
-    let finite = if is_inf(arena, y) { x } else { y };
+    let finite = if y_inf.is_some() { x } else { y };
     let mut cache = AssumptionCache::new();
+    // (`REAL` is finite and real)
     if cache.query(arena, finite, Props::REAL) != Some(true) {
         return None;
     }
@@ -6358,17 +6369,14 @@ fn eval_atan2_infinite(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<ExprId
     } else {
         arena.sign_of_real_constant(finite)?
     };
-    let angle: Q = if is_inf(arena, x) {
-        if x == arena.infinity {
-            Q::zero()
-        } else if sign == Ordering::Less {
-            -Q::one()
-        } else {
-            Q::one()
-        }
-    } else {
-        let half = Ratio::new(BigInt::from(1), BigInt::from(2));
-        if y == arena.infinity { half } else { -half }
+    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+    let angle: Q = match (y_inf, x_inf) {
+        (_, Some(value_class::Sign::Positive)) => Q::zero(),
+        (_, Some(value_class::Sign::Negative)) if sign == Ordering::Less => -Q::one(),
+        (_, Some(value_class::Sign::Negative)) => Q::one(),
+        (Some(value_class::Sign::Positive), None) => half,
+        (Some(value_class::Sign::Negative), None) => -half,
+        (None, None) => return None,
     };
     Some(pi_times(arena, angle))
 }
@@ -7184,20 +7192,28 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 /// Exhaustive over [`LibFn`]: a function with no exact rules says so here
 /// rather than in a wildcard arm.
 ///
-/// A closed form taken at an argument with `±∞` in it that meets `∞ − ∞`
-/// gives `nan` where the function may have a value: then the node stays
-/// (its values at infinity fold when it is built, `canon::at_infinity`).
+/// A closed form taken at an argument with `±∞` in it
+/// ([`value_class::holds_real_infinity`]) that meets `∞ − ∞` gives `nan`
+/// where the function may have a value: then the node stays (its values at
+/// infinity fold when it is built, `canon::at_infinity`).
 /// A `nan` argument makes `nan`, as when the node is built
 /// (`canon::lib_function_value`): up to 0.56 an argument that became `nan`
 /// when evaluated reached the folds of the other one (`uppergamma(s, ∞) =
 /// 0`).  The folds that hold for every finite value of one argument ask it
-/// of that argument ([`finite_slot`](crate::base::canon::finite_slot)).
+/// of that argument ([`ValueClass::is_finite_proved`]).
 fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
-    if args.contains(&arena.nan) {
+    if args
+        .iter()
+        .any(|&a| ValueClass::special_atom(arena, a) == Some(ValueClass::NaN))
+    {
         return Some(arena.nan);
     }
     let value = eval_lib_fn_closed(arena, f, args)?;
-    if value == arena.nan && !args.contains(&arena.nan) && contains_infinity(arena, args) {
+    if ValueClass::special_atom(arena, value) == Some(ValueClass::NaN)
+        && args
+            .iter()
+            .any(|&a| value_class::holds_real_infinity(arena, a))
+    {
         return None;
     }
     Some(value)
@@ -7307,23 +7323,26 @@ fn eval_bessel_at_infinity(
 ) -> Option<ExprId> {
     // An order that is not known finite (`zoo`, an unevaluated pole): no
     // value (up to 0.56 `besselj(elliptic_pi(π, 1), ∞)` was 0).
-    if !crate::base::canon::finite_slot(arena, order) {
+    if !ValueClass::of(arena, order).is_finite_proved() {
         return None;
     }
-    match f {
-        LibFn::BesselJ | LibFn::BesselY if x == arena.infinity || x == arena.neg_infinity => {
+    match (f, ValueClass::special_atom(arena, x)) {
+        (LibFn::BesselJ | LibFn::BesselY, Some(ValueClass::PosInf | ValueClass::NegInf)) => {
             Some(arena.zero)
         }
-        LibFn::BesselK if x == arena.infinity => Some(arena.zero),
-        LibFn::BesselI if x == arena.infinity && arena.as_num(order).is_some() => {
+        (LibFn::BesselK, Some(ValueClass::PosInf)) => Some(arena.zero),
+        (LibFn::BesselI, Some(ValueClass::PosInf)) if arena.as_num(order).is_some() => {
             Some(arena.infinity)
         }
         _ => None,
     }
 }
 
-/// Does one of `args` contain `∞` or `−∞` (also in `i·∞`, `x·∞`)?  A
-/// closed form is not evaluated there: those of `Γ(s, x)`, `γ(s, x)` and
+/// How an orthogonal polynomial is evaluated, by whether an argument holds
+/// `±∞` ([`expansion`]).
+///
+/// No closed form is evaluated at an argument holding `∞` or `−∞` (also in
+/// `i·∞`, `x·∞`: [`value_class::holds_real_infinity`]): those of `Γ(s, x)`, `γ(s, x)` and
 /// `E₀(x)`, sums of `e^{−x}·xᵏ` terms, evaluate to `∞ − ∞` or `∞/∞` (`nan`)
 /// where the limit is `0` or `±∞`, `legendre(3, ∞)` gave `∞ − ∞ = nan` up
 /// to 0.53, `jacobi(1, a, b, ∞)` gave `(a + 1)·∞ + (b + 1)·∞`, whose
@@ -7333,14 +7352,6 @@ fn eval_bessel_at_infinity(
 /// of `Γ(s, x)` were taken at `±i·∞`).  At an undirected `zoo`, where the
 /// functions have no limit, the closed forms keep giving their `zoo` or
 /// `nan` (SymPy 1.14 agrees).
-fn contains_infinity(arena: &Arena, args: &[ExprId]) -> bool {
-    args.iter().any(|&a| {
-        walk::contains(arena, a, arena.infinity) || walk::contains(arena, a, arena.neg_infinity)
-    })
-}
-
-/// How an orthogonal polynomial is evaluated, by [`contains_infinity`]
-/// ([`expansion`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Expansion {
     /// A parameter (`n`, `α`, `β`, `m`) is infinite: no closed form.
@@ -7362,12 +7373,16 @@ enum Expansion {
 /// The [`Expansion`] of an orthogonal polynomial of degree `n` with the
 /// parameters `params` at `x`.
 fn expansion(arena: &Arena, params: &[ExprId], n: ExprId, x: ExprId) -> Expansion {
-    if contains_infinity(arena, params) || contains_infinity(arena, &[n]) {
+    if params
+        .iter()
+        .any(|&p| value_class::holds_real_infinity(arena, p))
+        || value_class::holds_real_infinity(arena, n)
+    {
         return Expansion::Refused;
     }
     let low_degree =
         (n == arena.zero || n == arena.one) && params.iter().all(|&p| arena.as_num(p).is_some());
-    if !low_degree && contains_infinity(arena, &[x]) {
+    if !low_degree && value_class::holds_real_infinity(arena, x) {
         Expansion::IdentitiesOnly
     } else {
         Expansion::Expanded
@@ -7434,7 +7449,7 @@ fn classical_at_negative_degree(
 }
 
 /// Is `n` a negative integer and every parameter in `params` finite
-/// ([`finite_slot`](crate::base::canon::finite_slot))?  Then the
+/// ([`ValueClass::is_finite_proved`])?  Then the
 /// parametrised families — Gegenbauer's `C_n^{(λ)}`, Jacobi's
 /// `P_n^{(α,β)}`, the generalised Laguerre `L_n^{(α)}` — are the zero
 /// polynomial: SymPy's convention for Gegenbauer ("for negative n the
@@ -7454,7 +7469,7 @@ fn zero_polynomial_degree(arena: &Arena, n: ExprId, params: &[ExprId]) -> bool {
         .is_some_and(|q| q.is_integer() && q.is_negative())
         && params
             .iter()
-            .all(|&p| crate::base::canon::finite_slot(arena, p))
+            .all(|&p| ValueClass::of(arena, p).is_finite_proved())
 }
 
 /// Intern the library-function node `f(args)` (no folding).
@@ -7493,11 +7508,10 @@ fn eval_erfi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         return Some(arena.zero);
     }
-    if x == arena.infinity {
-        return Some(arena.infinity);
-    }
-    if x == arena.neg_infinity {
-        return Some(arena.neg_infinity);
+    // (the atom itself: `erfi(±∞) = ±∞`; `nan` folds when built; `zoo`: no
+    // limit)
+    if ValueClass::special_atom(arena, x).is_some_and(|c| c.real_infinity().is_some()) {
+        return Some(x);
     }
     if let Some(y) = as_negated_general(arena, x) {
         let e = apply_named(arena, LibFn::Erfi, &[y]);
@@ -7546,10 +7560,12 @@ fn eval_erfcinv(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 fn eval_expint(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
     // For every finite order (up to 0.56 also `expint(zoo, ∞)` and
     // `expint(elliptic_pi(π, 1), ∞)`: no value).
-    if x == arena.infinity {
-        return crate::base::canon::finite_slot(arena, n).then_some(arena.zero);
+    if ValueClass::special_atom(arena, x) == Some(ValueClass::PosInf) {
+        return ValueClass::of(arena, n)
+            .is_finite_proved()
+            .then_some(arena.zero);
     }
-    if n == arena.zero && !contains_infinity(arena, &[x]) {
+    if n == arena.zero && !value_class::holds_real_infinity(arena, x) {
         let neg_x = arena.neg(x);
         let e = arena.exp(neg_x);
         let v = arena.div(e, x);
@@ -7571,11 +7587,10 @@ fn eval_shi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         return Some(arena.zero);
     }
-    if x == arena.infinity {
-        return Some(arena.infinity);
-    }
-    if x == arena.neg_infinity {
-        return Some(arena.neg_infinity);
+    // (the atom itself: `Shi(±∞) = ±∞`; `nan` folds when built; `zoo`: no
+    // limit)
+    if ValueClass::special_atom(arena, x).is_some_and(|c| c.real_infinity().is_some()) {
+        return Some(x);
     }
     if let Some(y) = as_negated_general(arena, x) {
         let e = apply_named(arena, LibFn::Shi, &[y]);
@@ -7590,10 +7605,8 @@ fn eval_chi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         return Some(arena.complex_infinity);
     }
-    if x == arena.infinity {
-        return Some(arena.infinity);
-    }
-    None
+    // (`Chi(−∞) = ∞ + iπ` and `nan` fold when built; `zoo`: no limit)
+    (ValueClass::special_atom(arena, x) == Some(ValueClass::PosInf)).then_some(arena.infinity)
 }
 
 /// Fresnel `S`/`C`: `0 ↦ 0`, `±∞ ↦ ±1/2`, odd.
@@ -7601,11 +7614,11 @@ fn eval_fresnel(arena: &mut Arena, f: LibFn, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         return Some(arena.zero);
     }
-    if x == arena.infinity {
-        return Some(arena.rational(1, 2));
-    }
-    if x == arena.neg_infinity {
-        return Some(arena.rational(-1, 2));
+    match ValueClass::special_atom(arena, x) {
+        Some(ValueClass::PosInf) => return Some(arena.rational(1, 2)),
+        Some(ValueClass::NegInf) => return Some(arena.rational(-1, 2)),
+        // (`nan` folds when built; `zoo`: no limit)
+        _ => {}
     }
     if let Some(y) = as_negated_general(arena, x) {
         let e = apply_named(arena, f, &[y]);
@@ -7663,7 +7676,8 @@ fn uppergamma_closed(arena: &mut Arena, s: &Q, x: ExprId) -> Option<ExprId> {
         let n: i64 = s.to_integer().try_into().ok()?;
         if n >= 1 {
             // Γ(n, x) = (n−1)! e^{−x} Σ_{k<n} x^k/k!
-            let mut terms: Vec<ExprId> = Vec::with_capacity(n as usize);
+            let mut terms: Vec<ExprId> =
+                Vec::with_capacity(crate::base::cast::bounded_len(n, MAX_SPECIAL_EXPANSION)?);
             let mut inv_fact = Ratio::<BigInt>::one();
             for k in 0..n {
                 if k > 0 {
@@ -7705,10 +7719,8 @@ fn uppergamma_closed(arena: &mut Arena, s: &Q, x: ExprId) -> Option<ExprId> {
 /// visible here — so folds that hold for `s > 0` are kept for them, which
 /// the Gamma-distribution CDF `γ(k, 0)/Γ(k) = 0` relies on.)
 fn known_nonpositive(arena: &Arena, s: ExprId) -> bool {
-    if s == arena.neg_infinity {
-        return true;
-    }
-    arena.as_num(s).is_some_and(|r| !r.is_positive())
+    ValueClass::special_atom(arena, s) == Some(ValueClass::NegInf)
+        || arena.as_num(s).is_some_and(|r| !r.is_positive())
 }
 
 /// Bits the closed form `γ(s, x) = Γ(s) − Γ(s, x)` may lose to cancellation
@@ -7829,7 +7841,8 @@ fn lowergamma_closure_cancels_complex(s: &Q, re: f64, im: f64) -> bool {
 /// (`√2/10³⁰`, `π/10¹⁰`) is sized by a 16-digit evaluation.
 fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     // Both folds hold for a finite `s` only (`lowergamma(zoo, 0)` was 0).
-    if (x == arena.zero || x == arena.infinity) && !crate::base::canon::finite_slot(arena, s) {
+    let at_infinity = ValueClass::special_atom(arena, x) == Some(ValueClass::PosInf);
+    if (x == arena.zero || at_infinity) && !ValueClass::of(arena, s).is_finite_proved() {
         return None;
     }
     if x == arena.zero {
@@ -7838,7 +7851,7 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
         }
         return Some(arena.zero);
     }
-    if x == arena.infinity {
+    if at_infinity {
         return Some(arena.gamma(s));
     }
     let r = as_ratio(arena, s)?;
@@ -7867,7 +7880,7 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     {
         return None;
     }
-    if contains_infinity(arena, &[x]) {
+    if value_class::holds_real_infinity(arena, x) {
         return None;
     }
     let upper = uppergamma_closed(arena, &r, x)?;
@@ -7890,10 +7903,11 @@ fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     // `Γ(s, ∞) = 0` and `Γ(s, 0) = Γ(s)` for a finite `s` only: up to 0.56
     // `uppergamma(elliptic_k(besseli(0, 0)), ∞)` (the order evaluates to
     // `K(1) = zoo`) was 0 and `is_zero()` claimed it.
-    if (x == arena.zero || x == arena.infinity) && !crate::base::canon::finite_slot(arena, s) {
+    let at_infinity = ValueClass::special_atom(arena, x) == Some(ValueClass::PosInf);
+    if (x == arena.zero || at_infinity) && !ValueClass::of(arena, s).is_finite_proved() {
         return None;
     }
-    if x == arena.infinity {
+    if at_infinity {
         return Some(arena.zero);
     }
     if x == arena.zero {
@@ -7906,7 +7920,7 @@ fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     }
     let r = as_ratio(arena, s)?;
     // (`Γ(0, x) = E₁(x)` only renames.)
-    if !r.is_zero() && contains_infinity(arena, &[x]) {
+    if !r.is_zero() && value_class::holds_real_infinity(arena, x) {
         return None;
     }
     uppergamma_closed(arena, &r, x)
@@ -7927,7 +7941,10 @@ fn eval_polylog(arena: &mut Arena, s: ExprId, z: ExprId) -> Option<ExprId> {
     }
     // `−ln(1 − z)` keeps the finite part of an infinite `z` (`Li₁(2 + i·∞) =
     // −∞ + iπ/2`); the rational closed forms of `s ≤ 0` would not.
-    if s != arena.one && contains_infinity(arena, &[s, z]) {
+    if s != arena.one
+        && (value_class::holds_real_infinity(arena, s)
+            || value_class::holds_real_infinity(arena, z))
+    {
         return None;
     }
     if s == arena.one {
@@ -8127,7 +8144,8 @@ fn eval_dirichlet_eta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
         let two = arena.int(2);
         return Some(arena.ln(two));
     }
-    if s == arena.infinity {
+    // (`η(−∞)`, `η(zoo)`: no limit; `nan` folds when built)
+    if ValueClass::special_atom(arena, s) == Some(ValueClass::PosInf) {
         return Some(arena.one);
     }
     let r = as_ratio(arena, s)?;
@@ -8198,16 +8216,15 @@ fn eval_airy(arena: &mut Arena, f: LibFn, x: ExprId) -> Option<ExprId> {
             }
         });
     }
-    if x == arena.infinity {
-        return Some(match f {
+    match ValueClass::special_atom(arena, x) {
+        Some(ValueClass::PosInf) => Some(match f {
             LibFn::AiryAi | LibFn::AiryAiPrime => arena.zero,
             _ => arena.infinity,
-        });
+        }),
+        Some(ValueClass::NegInf) if matches!(f, LibFn::AiryAi | LibFn::AiryBi) => Some(arena.zero),
+        // (`Ai′(−∞)`, `Bi′(−∞)` oscillate without bound; `zoo`: no limit)
+        _ => None,
     }
-    if x == arena.neg_infinity && matches!(f, LibFn::AiryAi | LibFn::AiryBi) {
-        return Some(arena.zero);
-    }
-    None
 }
 
 /// `K(0) = π/2`, `K(1) = z∞`, `K(1/2) = Γ(1/4)²/(4√π)`, `K(±∞) = 0`.
@@ -8218,7 +8235,7 @@ fn eval_elliptic_k(arena: &mut Arena, m: ExprId) -> Option<ExprId> {
     if m == arena.one {
         return Some(arena.complex_infinity);
     }
-    if m == arena.infinity || m == arena.neg_infinity {
+    if ValueClass::special_atom(arena, m).is_some_and(|c| c.real_infinity().is_some()) {
         return Some(arena.zero);
     }
     if let Some(r) = as_ratio(arena, m)
@@ -8289,7 +8306,7 @@ fn eval_elliptic_pi(arena: &mut Arena, n: ExprId, m: ExprId) -> Option<ExprId> {
         let denom = arena.mul(&[two, root]);
         return Some(arena.div(arena.pi, denom));
     }
-    if n == m && crate::base::canon::finite_slot(arena, n) {
+    if n == m && ValueClass::of(arena, n).is_finite_proved() {
         let e =
             eval_elliptic_e(arena, n).unwrap_or_else(|| apply_named(arena, LibFn::EllipticE, &[n]));
         let one_minus_n = arena.sub(arena.one, n);
@@ -8691,11 +8708,18 @@ fn eval_betainc(
     // 2, −∞, b) = ∞`; up to 0.53 `betainc(3, 2, K(x), ∞)`, whose terms
     // `t³/3 − t⁴/4` cancel so, was `nan` where the integral is `−∞`): see
     // the end.
-    let infinite_bound = contains_infinity(arena, &[x1, x2]);
+    let infinite_bound =
+        value_class::holds_real_infinity(arena, x1) || value_class::holds_real_infinity(arena, x2);
+    // (finite, or `±∞` itself)
     let exact = |t: ExprId| {
-        !contains_infinity(arena, &[t]) || t == arena.infinity || t == arena.neg_infinity
+        !value_class::holds_real_infinity(arena, t)
+            || ValueClass::special_atom(arena, t).is_some_and(|c| c.real_infinity().is_some())
     };
-    if contains_infinity(arena, &[a, b]) || !exact(x1) || !exact(x2) {
+    if value_class::holds_real_infinity(arena, a)
+        || value_class::holds_real_infinity(arena, b)
+        || !exact(x1)
+        || !exact(x2)
+    {
         return None;
     }
     if x1 == arena.zero && x2 == arena.one {
@@ -8719,7 +8743,10 @@ fn eval_betainc(
         Ratio::one()
     };
     // Antiderivative coefficients c_k of t^{a+k}, k = 0..b−1.
-    let mut coeffs: Vec<Q> = Vec::with_capacity(b_int as usize);
+    let mut coeffs: Vec<Q> = Vec::with_capacity(crate::base::cast::bounded_len(
+        b_int,
+        MAX_BETAINC_POLY_PARAM,
+    )?);
     let mut binom = BigInt::one();
     for k in 0..b_int {
         if k > 0 {
@@ -8750,6 +8777,8 @@ fn eval_betainc(
     let lower = antiderivative(arena, x1);
     let v = arena.sub(upper, lower);
     let v = expand_eval(arena, v);
+    // (a `nan` anywhere in the value: `∞ − ∞` met; an infinity in it is the
+    // value's own, so not `value_class::holds_special_atom`)
     (!infinite_bound || !walk::contains(arena, v, arena.nan)).then_some(v)
 }
 

@@ -14781,8 +14781,9 @@ mod tests {
         let val = arena.rational(numer, denom);
         let substituted = crate::transforms::subs::subs(arena, expr, var, val);
         let evaled = crate::transforms::eval::eval(arena, substituted);
-        let s = crate::transforms::evalf::evalf(arena, evaled, 15).ok()?;
-        s.parse::<f64>().ok()
+        crate::transforms::evalf::const_value(arena, evaled, 15)
+            .ok()?
+            .to_f64()
     }
 
     /// Helper: verify FTC at multiple points — d/dx(F(x)) ≈ f(x).

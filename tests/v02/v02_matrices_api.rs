@@ -1,19 +1,12 @@
 //! symplex 0.2 — `Matrix` API consistency: dummy-free eigen family,
 //! `Result` fallibility, std traits, accessors.
 
+use std::time::Duration;
+
 use symplex::matrix::Matrix;
 use symplex::prelude::*;
 
-/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
-/// shared CI runners (`CI` is set), which are several times slower and noisy.
-fn time_budget(secs: u64) -> std::time::Duration {
-    let mult = if std::env::var_os("CI").is_some() {
-        5
-    } else {
-        1
-    };
-    std::time::Duration::from_secs(secs * mult)
-}
+use crate::perf_assert::CpuTimer;
 
 fn mi(ctx: &Context, rows: &[&[i64]]) -> Matrix {
     Matrix::from_i64(ctx, rows).unwrap()
@@ -255,7 +248,7 @@ fn jordan_form_two_nilpotent_blocks() {
 fn cubic_eigenvalues_use_rootof_and_finish_fast() {
     let ctx = Context::new();
     let m = matrix![ctx, [4, 1, 2], [1, 3, 1], [2, 1, 5]];
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let ev = m.eigenvals().unwrap();
     assert_eq!(ev.len(), 3);
     for e in &ev {
@@ -282,10 +275,9 @@ fn cubic_eigenvalues_use_rootof_and_finish_fast() {
             assert!(v.abs() < 1e-9, "P D P⁻¹ ≠ A at ({i},{j}): {v}");
         }
     }
-    assert!(
-        start.elapsed() < time_budget(30),
-        "took {:?}",
-        start.elapsed()
+    start.assert_within(
+        Duration::from_secs(30),
+        "eigenvalues, diagonalisation and checks",
     );
 }
 
@@ -370,7 +362,7 @@ fn budget_rejects_huge_inputs_quickly() {
         vec![ctx.int(1), e.clone()],
     ])
     .unwrap();
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     assert!(is_swell(m.det()));
     assert!(is_swell(m.inv()));
     assert!(is_swell(m.solve(&matrix![ctx, [1], [1]])));
@@ -379,7 +371,7 @@ fn budget_rejects_huge_inputs_quickly() {
     assert!(is_swell(m.jordan_form()));
     assert!(is_swell(m.matrix_exp()));
     assert!(is_swell(m.qr()));
-    assert!(start.elapsed() < time_budget(2), "{:?}", start.elapsed());
+    start.assert_within(Duration::from_secs(2), "eight refusals");
 }
 
 #[test]
@@ -387,7 +379,7 @@ fn budget_passes_ordinary_symbolic_work() {
     let ctx = Context::new();
     let syms: Vec<Ex> = (0..25).map(|k| ctx.symbol(&format!("a{k}"))).collect();
     let m = Matrix::from_fn(5, 5, |i, j| syms[i * 5 + j].clone()).unwrap();
-    let start = std::time::Instant::now();
+    let start = CpuTimer::start();
     let d = m.det().unwrap();
     assert_eq!(d.term_count(), 120);
     let lam = ctx.symbol("lambda");
@@ -395,7 +387,10 @@ fn budget_passes_ordinary_symbolic_work() {
     // Leading term (−λ)⁵ present, constant term is det(A).
     assert!(cp.contains(&lam.powi(5)), "{cp}");
     assert_eq!(cp.subs(&lam, &ctx.zero()).expand(), d.expand());
-    assert!(start.elapsed() < time_budget(2), "{:?}", start.elapsed());
+    start.assert_within(
+        Duration::from_secs(2),
+        "det and char_poly of a symbolic 5×5",
+    );
 }
 
 #[test]

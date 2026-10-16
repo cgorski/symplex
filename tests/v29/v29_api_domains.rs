@@ -7,13 +7,15 @@
 //! reference algorithms, numeric evaluation at rational points).  Every
 //! test says what was wrong before; every reference value cites its oracle.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use symplex::combinatorics::{catalan, derangements, stirling1, stirling2};
 use symplex::dynamics::{GeneralizedCoordinate, euler_lagrange, manipulator_equation};
 use symplex::num_bigint::BigInt;
 use symplex::prelude::*;
 use symplex::robotics::inverse_kinematics_2dof;
+
+use crate::perf_assert::{CpuTimer, assert_fast};
 
 /// `a` and `b` agree at a few rational points (both evaluate there).
 fn same_value(ctx: &Context, a: &Ex, b: &Ex, vars: &[&Ex]) -> bool {
@@ -63,12 +65,10 @@ fn a_rewrite_top_down_and_innermost_terminate_on_self_reproducing_rules() {
             RewriteStrategy::Innermost,
             RewriteStrategy::BottomUp,
         ] {
-            let start = Instant::now();
-            let out = subject.rewrite_with(&rules, &RewriteOpts::default().strategy(strategy));
-            assert!(
-                start.elapsed() < Duration::from_secs(20),
-                "{strategy:?} took {:?}",
-                start.elapsed()
+            let out = assert_fast!(
+                Duration::from_secs(20),
+                subject.rewrite_with(&rules, &RewriteOpts::default().strategy(strategy)),
+                "{strategy:?}"
             );
             assert_ne!(out, subject, "{strategy:?} did not rewrite");
             if !identity {
@@ -137,18 +137,14 @@ fn b_poly_eval_of_huge_degree_at_one() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let p = Poly::from_terms(&ctx, &[&x], vec![(vec![u32::MAX], ctx.int(3))]).unwrap();
-    let start = Instant::now();
+    let start = CpuTimer::start();
     assert_eq!(p.eval(&[&ctx.int(1)]).unwrap(), ctx.int(3));
     assert_eq!(p.eval_gen(&x, &ctx.int(1)).unwrap().to_ex(), ctx.int(3));
     assert_eq!(
         p.eval(&[&ctx.int(2)]).unwrap(),
         3 * ctx.int(2).powi(i64::from(u32::MAX))
     );
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        start.elapsed()
-    );
+    start.assert_within(Duration::from_secs(10), "three evaluations");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
