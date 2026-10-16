@@ -727,10 +727,16 @@ fn series_with_pole_retry(
 /// direct expansion of `expr` failed?  Decided from the limits of
 /// `g = (var − point)·expr` from the side(s) of `side`:
 ///
-/// * `g → 0` from each side: `expr` has no pole.  From
+/// * `g → 0` from a side: `expr` has no pole.  From
 ///   `xᵏ·f = S + O(xⁿ⁺ᵏ)`, a term `c·x⁻ʲ` (`j ≥ 1`) of `S/xᵏ` would make
-///   `g` tend to `c` or diverge, so `S/xᵏ` would be a power series, which
-///   the direct attempt would have found.
+///   `g` tend to `c` or diverge from that side, so `S/xᵏ` would be a power
+///   series (`S` is common to both sides), which the direct attempt would
+///   have found.  One side suffices, so a `0` from the right answers
+///   without the left: `sqrt(atan(ln x))` at `0`, whose `g` from the left
+///   is refused (the side of the cut of `√` is undecided), was retried
+///   five times, each retry taking the limits of ever larger derivatives
+///   of `xᵏ·f` (1.2 s to refuse; 18 s in the CI `fuzz_calculus` build with
+///   debug assertions).
 /// * two-sided, `g` tends to different finite limits from the two sides:
 ///   every `xᵏ·f = xᵏ⁻¹·g` has different coefficients of `xᵏ⁻¹` from the
 ///   two sides, so none has a two-sided expansion.
@@ -763,12 +769,10 @@ fn retry_cannot_help(
     let mut limits = Vec::with_capacity(dirs.len());
     for &dir in dirs {
         match crate::calculus::limit::limit_dir_generic(arena, scaled, var, point, dir) {
+            Ok(v) if arena.is_zero_structural(v) => return true,
             Ok(v) if is_finite_constant(arena, v, var) => limits.push(v),
             _ => return false,
         }
-    }
-    if limits.iter().all(|&v| arena.is_zero_structural(v)) {
-        return true;
     }
     match limits[..] {
         [right, left] => {
@@ -2213,12 +2217,15 @@ fn expand_with_precision(
 ) -> Result<TSeries, SymplexError> {
     let order_ids = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, Option<TSeries>> = FxHashMap::default();
+    let mut hidden: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
     let mut fallbacks_used = 0usize;
     for id in order_ids {
         if cache.contains_key(&id) {
             continue;
         }
-        let ts = if !walk::contains(arena, id, var) {
+        let constant =
+            !walk::contains(arena, id, var) && !hides_var_power(arena, id, mode, &mut hidden);
+        let ts = if constant {
             Some(TSeries::constant(arena, id, n))
         } else if id == var {
             Some(TSeries::var(arena, n))
@@ -2246,6 +2253,9 @@ fn expand_with_precision(
                             return Err(no_expansion_error(arena, id));
                         }
                         Some(composed) => composed,
+                        // (Differentiating in `var` takes a power of `var` in
+                        // disguise for a constant again.)
+                        None if hidden.contains(&id) => None,
                         None if id == expr || fallbacks_used < MAX_FALLBACK_NODES => {
                             fallbacks_used += 1;
                             if fallback_refused.get(&id).is_some_and(|&k| k < n) {
@@ -2311,6 +2321,39 @@ fn expand_with_precision(
                 .into(),
         }),
     }
+}
+
+/// In a log-extended expansion ([`Mode::log_var`]), is the `var`-free node
+/// `id` a power of `var` in disguise: an exponential (or a power) whose
+/// argument has `l = ln|var|` (`e^{m·l} = |var|^m`, [`apply_exp_like`]), or
+/// a node with one below it (`hidden`, filled in post order)?  Such a node
+/// is expanded by its structural rule, never taken for a constant of order
+/// 0.  Gruntz writes its variable through `l` (`x = −l` after a move up):
+/// `ω·e^{−l} − 1`, which is 0, had the leading term `−1`, and
+/// `lim_{x→∞} x·(x^{e^{x^{−3/2}} − 1} − 1)` was `−∞` (it is 0).
+fn hides_var_power(
+    arena: &Arena,
+    id: ExprId,
+    mode: Mode,
+    hidden: &mut rustc_hash::FxHashSet<ExprId>,
+) -> bool {
+    let Some(l) = mode.log_var else {
+        return false;
+    };
+    if !walk::contains(arena, id, l) {
+        return false;
+    }
+    let hides = match *arena.node(id) {
+        ExprNode::Exp(a) | ExprNode::Sinh(a) | ExprNode::Cosh(a) | ExprNode::Tanh(a) => {
+            walk::contains(arena, a, l)
+        }
+        ExprNode::Pow(_, e) => walk::contains(arena, e, l),
+        _ => false,
+    } || arena.children(id).iter().any(|c| hidden.contains(c));
+    if hides {
+        hidden.insert(id);
+    }
+    hides
 }
 
 /// Stand-in for the argument of `f` in [`compose_at_constant`].
@@ -3189,7 +3232,10 @@ fn structural_series(
         }
         ExprNode::Pow(base, exp) => {
             let b = child(cache, base)?;
-            if !walk::contains(arena, exp, var) {
+            // (An exponent with `ln|var|` is `var`-dependent: see `hides_var_power`.)
+            if !walk::contains(arena, exp, var)
+                && !mode.log_var.is_some_and(|l| walk::contains(arena, exp, l))
+            {
                 let e = arena.as_num(exp).cloned().ok_or(Obstruction::Unknown)?;
                 if e.is_integer() {
                     let ei = e.to_integer().to_i64().ok_or(Obstruction::Unknown)?;

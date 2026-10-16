@@ -453,12 +453,6 @@ fn last_resort_series(
     let f = combine_exponentials(arena, f, w);
     budget.charge_size(arena, f)?;
     let q = ramification_index(arena, f, w);
-    let lw = log_omega_symbol(arena);
-    let f = if q == 1 {
-        variable_as_log_omega(arena, f, logw, lw)
-    } else {
-        f
-    };
     let (g, var, log_var) = if q == 1 {
         (f, w, logw)
     } else {
@@ -472,6 +466,13 @@ fn last_resort_series(
         let lv = crate::transforms::eval::eval(arena, lv);
         (g, u, lv)
     };
+    // (`l` stands for `ln var`, which is `log_var`.)  The variable is
+    // written through `l` in the ramified expansion too (`x = −q·ln u` after
+    // a move up): left beside `u` it was a constant, and `x^(e^{√x} − 1)`
+    // at `0⁺`, rewritten as `e^{x + e^{√ω}·ln ω}`, got the leading term
+    // `eˣ·ω` — a coefficient of the class of `ω` — and the limit 0 (it is 1).
+    let l = log_omega_symbol(arena);
+    let g = variable_as_log_omega(arena, g, log_var, l);
     // The orders of the first attempt (`ω⁴`, `ω¹⁰`), after a cheap one in
     // `u`; a long expansion costs more of the budget.
     let orders = if q == 1 {
@@ -479,8 +480,6 @@ fn last_resort_series(
     } else {
         [8, 4 * q, 10 * q]
     };
-    // (`l` stands for `ln var`, which is `log_var`.)
-    let l = log_omega_symbol(arena);
     let mut tried = 0;
     for order in orders {
         let order = order.min(MAX_RAMIFIED_ORDER);
