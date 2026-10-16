@@ -10,7 +10,7 @@ Or add it directly to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-symplex = "0.56"
+symplex = "0.57"
 ```
 
 ## Minimum Supported Rust Version

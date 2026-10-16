@@ -8,6 +8,8 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-16
+
 Statistics hardening.  The statistics modules were checked systematically
 for the first time: a new fuzz target checks the symbolic distribution layer
 by properties decided exactly or from certified digits; every family and
@@ -94,6 +96,15 @@ exact tests with ties) the tests record it.
 - **Models:** least-squares and Tukey confidence/prediction limits for data
   near the ends of the `f64` range are rooted from the exact variance (they
   were single points near `10⁻¹⁶⁰` and refused near `10¹⁶⁰`).
+- **Limits of powers whose exponent tends to 0 at a fractional-power rate**
+  (found by the CI fuzz run on 0.56.0, present since at least 0.52):
+  `lim_{x→0⁺} x^{e^{√x} − 1}`, `x^{cosh √x}/x`, `x^{e^{∛x} − 1}` were 0 (they
+  are 1), `x^{1−e^{−√x}} + x^{2(1−e^{−√x})}` was ∞ (it is 2), and at ∞
+  `x·(x^{e^{x^{−3/2}} − 1} − 1)` was −∞ (it is 0).  Gruntz's ramified last
+  resort kept the limit variable as a constant next to `u = √ω`, and the
+  series engine took `e^{−ln ω}` for a constant.  Class hunt (2,376 cases,
+  mpmath at two precisions): 496 wrong and 28 refused → 0 wrong.
+  `series(√(atan(ln x)), x, 0, 3)` took 1.2 s to stay unevaluated (now 2 ms).
 
 ### Known issues
 
@@ -103,6 +114,31 @@ exact tests with ties) the tests record it.
 - Cox standard errors carry a relative error of about `κ²·10⁻¹⁶` (documented).
 - Fisher's exact test on large tables reports a dyadic `f64` p-value through
   `p_value_exact()`.
+
+### Measured
+
+- `tests/v36/` (0.49–0.57): 65 files.  nextest 14,882 tests (14 skipped),
+  doctests 1,353 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,760 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,153 / 0 wrong / 64; `--negative-params` 115 real_verified,
+  0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+  MSRV 1.93 passes for all four crates.  `cargo semver-checks` against
+  0.56.0: no semver update required (`DegenerateData` extends the `#[non_exhaustive]` `SymplexError`).
+- Golden-output harness (200,000 random expressions × 31 operations): no
+  changes from 0.56 (the statistics modules are outside it; series
+  timeouts 89 → 80).
+- Statistics hunts: families 77,530 comparisons (28 wrong fixed, 541
+  refusals answered, 7 left, listed above); hypothesis tests 27,000 cases (0
+  wrong after; scipy's exact rank tests wrong on 183); models 32,500 cases (0
+  wrong after); `fuzz_stats` campaigns on the development hosts.
+- Fuzzing (64-core x86-64 machine, all 13 targets, two forks each, 10 s and
+  4 GB limits, debug assertions as CI builds them): `fuzz_numdist`
+  89,516,582 inputs, `fuzz_refine` 13,444,813, `fuzz_lambertw` 2,411,979,
+  `fuzz_parser` 1,645,836, `fuzz_exact_matrix` 181,267, `fuzz_eigenvects`
+  155,595, `fuzz_stats` 144,093, `fuzz_calculus` 41,753, `fuzz_evalf` 24,032,
+  `fuzz_roundtrip` 17,481, `fuzz_poly` 17,074, `fuzz_simplify` 2,777,
+  `fuzz_integrate` 906: 0 crashes, 0 timeouts, 0 out-of-memory.
 
 ## [0.56.0] - 2026-10-16
 
