@@ -16,13 +16,13 @@
 //!
 //! | function | method | relative accuracy |
 //! |---|---|---|
-//! | [`betainc_regularized_f64`] | the dispatch of TOMS 708 (DiDonato & Morris 1992): power series `bpser`, the recurrence `bup`, the asymptotic expansion `bgrat` for a large first and small second parameter, the continued fraction `bfrac`, and the two-large-parameter expansion `basym` (both shapes above 100 and `x` within `3 %` of the mean, in `λ = a − (a + b)x`); each tail computed directly where it is the smaller one.  A shape below 1 is kept as a factor, never as `ln` of it in an exponent: `1/(a B(a, b))` from `ln Γ(1 + t)` (through `gam1`, the Taylor series of `1/Γ(1 + t)`, DLMF 5.7.1) and `ln Γ(a + b) − ln Γ(a)` without cancellation (the `algdiv` of DiDonato & Morris).  The distance from the mean, `(a + b)x − a`, is formed without rounding `a + b` or the product (two-sum and a fused multiply-add) | ≈ 1e-15 typical, ≤ 3e-14 for a tail ≥ 1e-10 (shapes from `1e-300` to `1e16`: largest measured 2e-14); in a smaller tail `P` the rounding of its logarithm, up to ≈ 8·ε·\|ln P\| (1e-13 at 1e-100, 3.5e-13 at 1e-277).  Measured on 4600 random and extreme cases against mpmath at ≥ 35 digits (positive-term series where its hypergeometric route fails).  `a + b` must be a double (`NaN` beyond) |
+//! | [`betainc_regularized_f64`] | the dispatch of TOMS 708 (DiDonato & Morris 1992): power series `bpser`, the recurrence `bup`, the asymptotic expansion `bgrat` for a large first and small second parameter, the continued fraction `bfrac`, and the two-large-parameter expansion `basym` (both shapes above 100 and `x` within `3 %` of the mean, in `λ = a − (a + b)x`); each tail computed directly where it is the smaller one.  A shape below 1 is kept as a factor, never as `ln` of it in an exponent: `1/(a B(a, b))` from `ln Γ(1 + t)` (through `gam1`, the Taylor series of `1/Γ(1 + t)`, DLMF 5.7.1) and `ln Γ(a + b) − ln Γ(a)` without cancellation (the `algdiv` of DiDonato & Morris).  The distance from the mean, `(a + b)x − a`, is formed without rounding `a + b` or the product (two-sum and a fused multiply-add).  A huge shape next to a small one never subtracts two logarithms of size `ln b`: the recurrence's term ratio, `ln(a/(nx))` in Loader's prefactor, `ln Γ(a + b) − ln Γ(a) − b ln ν` in `bgrat` and the series' leading term `(x(a + b))ᵃ…` are formed as products first (up to 0.58 `1e-12` off at shapes near `1e241`) | ≈ 1e-15 typical, ≤ 3e-14 for a tail ≥ 1e-10 (shapes from `1e-300` to `1e300`: largest measured 1.4e-14); in a smaller tail `P` the rounding of its logarithm, up to ≈ 8·ε·\|ln P\| (1e-13 at 1e-100, 3.5e-13 at 1e-277).  Measured on 4600 random and extreme cases against mpmath at ≥ 35 digits (positive-term series where its hypergeometric route fails).  `a + b` must be a double (`NaN` beyond) |
 //! | [`gammainc_lower_regularized_f64`], [`gammainc_upper_regularized_f64`] | a dispatch on `a`: below 1, the Taylor route of DiDonato & Morris (1986, §2) for `x < 1.1` (each tail formed where it is the smaller one) and Legendre's continued fraction beyond, with the prefactor `a(1 + gam1(a))·e^{a ln x − x}`; below `GAMMA_TEMME_MIN_A = 1e6`, or for `x` beyond both 40 standard deviations and `a/2` from `a`, the power series for `x < a + 1` and Lentz's continued fraction otherwise (rescaled by `x` beyond `10¹⁰⁰`), with the prefactor `xᵃe⁻ˣ/Γ(a)` directly for `a ≤ 10` and through Loader's `bd0` and the Stirling remainder above (no cancellation for large `a`); from `a = 1e6` on and within that window, Temme's uniform asymptotic expansion (DLMF 8.12) truncated after `c₁/a`, its `½ erfc(z)` and correction term sharing one exponential so the tail stays correct into the subnormal range | ≈ 1e-15 for `a ≤ 1e4`, also for `a` down to `1e-300`; rising as `√a·ε` to ≈ 3e-14 just below `a = 1e6` (the rounding of the `O(√a)` terms of the series and fraction), ≈ 6e-15 in Temme's range (to `a = 1e15`), all for a tail ≥ 1e-10; in a smaller tail `P` the rounding of its logarithm, up to ≈ 5·ε·\|ln P\| (2.3e-13 at 1e-241) |
 //! | `norm` | Cody's `erfc`, continued by `erfcx(x)·e^{−x²}` where Cody's approximation stops (`x > 26.5`, the subnormal range: `Φ(x)` is non-zero down to `x ≈ −38.5`) / the crate's `erfcinv` | ≈ 1e-16 (the precision of a subnormal result in the subnormal range) |
 //! | `t` | `½ I_{ν/(ν + x²)}(ν/2, ½)`; once `ν/x² < 1e-290` (so for `|x|` beyond `≈ 1e145`, where `x²` would soon overflow) the power law `½ (ν/x²)^{ν/2} / ((ν/2) B(ν/2, ½))`, the power as `ν^{ν/2}·|x|^{−ν}` while that is a normal double and from `ln(ν/x²)` below, so the tail is right up to `|x| = f64::MAX` (`P(T > 1e200) = 3.2e-101` for `ν = ½`) | ≈ 1e-15; ≈ 1e-13 in the power-law region where the tail is subnormal (`|ν/2 · ln(ν/x²)| · ε`) |
 //! | `f` | `I_z(d₁/2, d₂/2)` with `z = d₁x/(d₁x + d₂)`, `y = 1 − z` formed directly; where `z` or `y` is below the normal range (`d₁x` under- or overflows, or a shape is extreme) the power series of the small tail from `ln z` (`ln y`) and `d₂z` (`d₁y`), never from the subnormal argument (`d₂z`, `d₁y` formed without logarithms where they are normal doubles, the prefactor then `e^{p ln v − ln Γ(1 + p) + (ln Γ(q + p) − ln Γ(q) − p ln q)}`: up to 0.58 two exponents of size `p·700` cancelled, and `f::isf(1e-20, 3e300, 42/11)` was `1.6e-13` off), and the other tail as `−expm1` of its logarithm | as the incomplete beta |
-//! | `gamma`, `f`: the argument | the tails at the exact argument of the kernel, `x/θ` (gamma) and `d₁x/(d₁x + d₂)` (F), not at its rounding: near the mean of large shapes a tail moves by `κ ≈ √k·z` times a relative change of its argument (`|x − k|` beyond), so the rounding alone cost `1.6e-12` (gamma, `k = 1.7e7`, `z = −4.2`; scipy the same) and `3.3e-9` (F, shapes near `1e13`).  The rounding error is recovered exactly (the remainder of a quotient and the error of a product by fused multiply-adds, of a sum by two-sum) and enters Temme's distance from the mean, or moves the tails by the density to second order (`Tails::shifted`) | as the kernels at an exact argument; measured at shapes `1e3`–`1e15` within 22 standard deviations of the mean against mpmath at 30 and 50 digits (gamma, χ², Poisson, beta, binomial, t, F; 700 cases): ≤ 1.4e-14 for a tail ≥ 1e-10, ≤ 1.4e-13 down to 1e-290 |
-//! | quantiles | safeguarded Newton on the logarithm of the relevant tail, in a log or logit variable, from a Cornish–Fisher / Wilson–Hilferty start; the root's last Newton correction applied in `x` itself (the log variable cannot resolve it); the gamma for shapes from `1e10` on directly in `x` from the Cornish–Fisher expansion `k + z√k + (z² − 1)/3 + (z³ − 7z)/(36√k)`; where one float step moves the tail by more than `1e-9` (shapes ≳ 1e20), the float next to the crossing of the level | ≈ 1e-15·κ, the CDF's accuracy times the conditioning `κ = |∂ln x/∂ln p|` (`Beta(1/1000, 3)`'s median `2.08e-302`, `κ = 1000`, to `1.1e-13`: the logarithm of `x` holds no more in `f64`); at a subnormal level ≈ `ε·|ln p|·κ` (the logarithm of the level is rounded) |
+//! | `gamma`, `f`, `binom`, `poisson`: the argument | the tails at the exact argument of the kernel, `x/θ` (gamma) and `d₁x/(d₁x + d₂)` (F), not at its rounding, and at the exact shapes `n − k`, `k + 1` beyond `2⁵³`: near the mean of large shapes a tail moves by `κ ≈ √k·z` times a relative change of its argument (`|x − k|` beyond), so the rounding alone cost `1.6e-12` (gamma, `k = 1.7e7`, `z = −4.2`; scipy the same) and `3.3e-9` (F, shapes near `1e13`), and from shapes of about `1e28` on it moves the tail by more than itself (up to 0.58 `f::cdf(1, 3e156, 3.5e166)` was `0`, truly `½`; `2e-7` for the binomial at `n = 2.7e17`).  The distance from the mean is formed from the inputs — `ab(1 − x)/(ax + b)` for the F (`a`, `b` the half degrees of freedom), `(n + 1)p − (k + 1)` for the binomial, `λ − (k + 1)` for the Poisson, `(x − kθ)/θ` for the gamma, each rounded about once — and taken by the two-large-shapes expansion and Temme's directly; the other routes are moved by the density to second order (`Tails::shifted`, not for a tail whose logarithm is beyond `1e12`) | as the kernels at an exact argument; measured against mpmath at 30 and 50 digits at shapes `1e3`–`1e15` within 22 standard deviations of the mean (gamma, χ², Poisson, beta, binomial, t, F; 700 cases): ≤ 1.4e-14 for a tail ≥ 1e-10, ≤ 1.4e-13 down to 1e-290; and with every parameter up to `1e300` (14,416 cases of eight families: near the centre, at the rounded mean ± 5 ulps, in the tails): ≤ 1.3e-14 for a tail ≥ 1e-10, ≤ 2.4e-13 down to 1e-300 |
+//! | quantiles | safeguarded Newton on the logarithm of the relevant tail, in a log or logit variable, from a Cornish–Fisher / Wilson–Hilferty start; the root's last Newton correction applied in `x` itself (the log variable cannot resolve it); the gamma for shapes from `1e10` on directly in `x` from the Cornish–Fisher expansion `k + z√k + (z² − 1)/3 + (z³ − 7z)/(36√k)`; where one float step moves the tail by more than `1e-9` (shapes ≳ 1e20), the float next to the crossing of the level, found by steps of 1, 2, 4, … floats and bisection where the solver's root is far from it in floats (beyond shapes of `1e30` the distribution lies within an ulp of its mean) | ≈ 1e-15·κ, the CDF's accuracy times the conditioning `κ = |∂ln x/∂ln p|` (`Beta(1/1000, 3)`'s median `2.08e-302`, `κ = 1000`, to `1.1e-13`: the logarithm of `x` holds no more in `f64`); at a subnormal level ≈ `ε·|ln p|·κ` (the logarithm of the level is rounded) |
 //!
 //! Every tail is carried with its logarithm (a mantissa and an exponent
 //! until the end), so a tail below the smallest double still has one: the
@@ -259,6 +259,11 @@ impl Scaled {
     }
 }
 
+/// The largest `|ln T|` of a tail [`Tails::shifted`] moves: beyond it the
+/// logarithms of the tail and the density carry more than `10⁻⁴` of
+/// rounding in their difference.
+const SHIFT_MAX_LN: f64 = 1e12;
+
 /// Both tails of a distribution function at one point, each computed
 /// directly where it is the smaller one, with their logarithms (`ln_lower`,
 /// `ln_upper`) — finite, and accurate, where the tail itself is subnormal
@@ -340,17 +345,37 @@ impl Tails {
     /// ½h²L″ = δ(1 + ½(g − δ))`, where `δ = hL′ = ±h·f/T` (`+` for the lower
     /// tail): the second-order term keeps the step right where one ulp moves
     /// a far tail by more than its own size (`δ` beyond 1).
+    ///
+    /// A tail below the normal range, or one the step takes out of it, moves
+    /// through its logarithm: `t·eˢ` is `0·∞` for a tail that underflowed
+    /// to 0 while its logarithm and the step are finite.  A tail whose
+    /// logarithm is beyond [`SHIFT_MAX_LN`] stays: `ln_f − ln_t` is then no
+    /// longer the logarithm of the density ratio (its rounding, `ε·|ln t|`,
+    /// exceeds 10⁻⁴), and the tail is `0` with a logarithm the step would
+    /// move by a few `ε` of itself (up to 0.58 the step came out infinite and
+    /// `gamma::cdf(2.2e35, 2.8e37, 2.26)` and `f::cdf(4.1e-5, 2e91, 1.8e121)`
+    /// were `NaN`).  A step that is not a normal double (`h = 0`) leaves the
+    /// tails bit for bit.
     fn shifted(self, h: f64, ln_f: f64, g: f64) -> Tails {
         let step = |t: f64, ln_t: f64, sign: f64| -> (f64, f64) {
-            let delta = sign * h * (ln_f - ln_t).exp();
-            let s = delta * (1.0 + 0.5 * (g - delta));
-            if !(ln_t.is_finite() && s.is_finite()) {
+            if !(ln_t.is_finite() && ln_t >= -SHIFT_MAX_LN) {
                 return (t, ln_t);
             }
-            (
-                t.mul_add(s.exp_m1(), t).clamp(0.0, 1.0),
-                (ln_t + s).min(0.0),
-            )
+            let delta = sign * h * (ln_f - ln_t).exp();
+            let s = delta * (1.0 + 0.5 * (g - delta));
+            if !s.is_finite() {
+                return (t, ln_t);
+            }
+            let ln_moved = (ln_t + s).min(0.0);
+            let moved = t.mul_add(s.exp_m1(), t);
+            let in_range =
+                t >= f64::MIN_POSITIVE && moved.is_finite() && moved >= f64::MIN_POSITIVE;
+            let moved = if s.is_normal() && !in_range {
+                ln_moved.exp()
+            } else {
+                moved
+            };
+            (moved.clamp(0.0, 1.0), ln_moved)
         };
         let (lower, ln_lower) = step(self.lower, self.ln_lower, 1.0);
         let (upper, ln_upper) = step(self.upper, self.ln_upper, -1.0);
@@ -508,6 +533,11 @@ fn mean_offset(a: f64, b: f64, s: f64, c: f64) -> f64 {
 /// + ½ ln(ab/(2πn))`, in which the two `bd0` differences `nx − a` and
 /// `ny − b` are the same number up to sign and are formed once, without
 /// rounding ([`mean_offset`]).  `−∞` when `x` or `y` is `0`.
+///
+/// `ln(small/(n·s))` is the logarithm of the quotient where `n·s` and the
+/// quotient are normal doubles: as `ln(small/n) − ln s` two logarithms of
+/// size `ln n` cancel, and `bd0` multiplies their rounding by `small` — up
+/// to 0.58 `I_x(52.5, 4.1·10¹⁶¹)` at `x = 3.2·10⁻¹⁶²` was `10⁻¹²` off.
 fn log_beta_pref(a: f64, b: f64, x: f64, y: f64) -> f64 {
     if x <= 0.0 || y <= 0.0 {
         return f64::NEG_INFINITY;
@@ -517,7 +547,13 @@ fn log_beta_pref(a: f64, b: f64, x: f64, y: f64) -> f64 {
     let ln_l = (-s).ln_1p();
     let ns = n * s;
     let d = mean_offset(a, b, s, small);
-    let t_small = bd0_with(small, ns, -d, (small / n).ln() - s.ln());
+    let ratio = small / ns;
+    let ln_ratio = if ns.is_normal() && ratio.is_normal() {
+        ratio.ln()
+    } else {
+        (small / n).ln() - s.ln()
+    };
+    let t_small = bd0_with(small, ns, -d, ln_ratio);
     let nl = n - ns;
     let t_large = bd0_with(large, nl, d, (large / n).ln() - ln_l);
     // ln(ab/n): the product underflows for two tiny shapes (1e-111·5e-283),
@@ -899,12 +935,28 @@ pub fn gammainc_upper_regularized_f64(a: f64, x: f64) -> f64 {
 /// `I_x(a, b)` by the power series
 /// `xᵃ/(a B(a, b)) · [1 + a Σ_{n≥1} (1−b)(2−b)⋯(n−b)/n! · xⁿ/(a + n)]`,
 /// for `b ≤ 1` or `b x ≤ 0.7` and `x ≤ 0.7`.
+///
+/// For `a ≤ 1 < 10 ≤ b` the leading term is
+/// `(x(a + b))ᵃ·e^{(b − ½) ln(1 + a/b) − a + stirlerr(a + b) − stirlerr(b)}/Γ(1 + a)`,
+/// the Stirling form of `Γ(a + b)/Γ(b)` with its `a ln(a + b)` joined to
+/// `a ln x`: apart, the two exponents are `≈ a ln b` and cancel (up to 0.58
+/// the t tail at `ν = 4.6·10²²⁸` next to the centre was `4·10⁻¹⁴` off).
 fn bpser(a: f64, b: f64, x: f64) -> Scaled {
     // Float evidence: the f64 argument itself at 0.
     if x == 0.0 {
         return Scaled::ZERO;
     }
-    let lead = times_power(inv_a_beta(a, b), x, a);
+    let lead = if a <= 1.0 && b >= 10.0 {
+        let xn = x * (a + b);
+        let ln_xn = if xn.is_normal() {
+            xn.ln()
+        } else {
+            x.ln() + (a + b).ln()
+        };
+        Scaled::exp(a * ln_xn + (b - 0.5) * (a / b).ln_1p() - a + stirlerr_diff(b, a) - lgamma1p(a))
+    } else {
+        times_power(inv_a_beta(a, b), x, a)
+    };
     let tol = EPS / a;
     let mut n = 0.0;
     let mut sum = 0.0;
@@ -955,6 +1007,10 @@ fn times_power(f: Scaled, x: f64, p: f64) -> Scaled {
 /// `I_x(a, b) − I_x(a + n, b)` for an integer `n ≥ 1`: the sum of the `n`
 /// positive terms `x^{a+j} yᵇ / ((a + j) B(a + j, b))`, accumulated
 /// relative to the largest so far so that no term over- or underflows.
+/// The ratio of consecutive terms, `x(a + b + j)/(a + 1 + j)`, is formed
+/// as that product while it is a normal double: as `ln x + ln((a + b +
+/// j)/(a + 1 + j))` two logarithms of size `ln b` cancel at every step (up
+/// to 0.58 `I_x(39.09, 6.4·10²⁴¹)` next to its mean was `10⁻¹²` off).
 fn bup(a: f64, b: f64, x: f64, y: f64, n: usize) -> Scaled {
     // The first term xᵃyᵇ/(a B(a, b)): Loader's form, except for a tiny
     // shape, where its stirlerr cancels (|ln a|·ε) and `inv_a_beta` keeps
@@ -977,7 +1033,12 @@ fn bup(a: f64, b: f64, x: f64, y: f64, n: usize) -> Scaled {
     let mut sum = 1.0;
     for j in 1..n {
         let jf = (j - 1) as f64;
-        log_t += lnx + ((apb + jf) / (ap1 + jf)).ln();
+        let ratio = x * (apb + jf) / (ap1 + jf);
+        log_t += if ratio.is_normal() {
+            ratio.ln()
+        } else {
+            lnx + ((apb + jf) / (ap1 + jf)).ln()
+        };
         if log_t > max {
             sum = sum * (max - log_t).exp() + 1.0;
             max = log_t;
@@ -1225,9 +1286,17 @@ fn bgrat(a: f64, b: f64, x: f64, y: f64) -> Option<Scaled> {
         m: b * (1.0 + gam1(b)),
         s: b * z.ln() - z,
     };
+    // ln Γ(a + b) − ln Γ(a) − b ln ν: both parts are `≈ b ln a` (555·b at
+    // `a = 10²⁴¹`), so for `a ≥ 10` the Stirling form of the ratio takes
+    // `b ln((a + b)/ν) = b ln(1 + (b + 1)/(2ν))` in place of the two.
+    let ln_ratio_nu = if a >= 10.0 {
+        (a - 0.5) * (b / a).ln_1p() - b + stirlerr_diff(a, b) + b * (0.5 * (b + 1.0) / nu).ln_1p()
+    } else {
+        ln_gamma_ratio(a, b) - b * nu.ln()
+    };
     let u = Scaled {
         m: r.m,
-        s: r.s + ln_gamma_ratio(a, b) - b * nu.ln(),
+        s: r.s + ln_ratio_nu,
     };
     let v = 0.25 / (nu * nu);
     let t2 = lnx * 0.25 * lnx;
@@ -1432,11 +1501,25 @@ enum Direct {
     Upper(Scaled),
 }
 
+/// A route of [`bratio_route`]: the tail it computed directly, whether it
+/// swapped the shapes, and whether it read the argument only through its
+/// distance `λ` from the mean (`basym`: then the tails are those at the
+/// argument the given `λ` describes).
+struct Route {
+    side: Direct,
+    swap: bool,
+    through_lambda: bool,
+}
+
 /// The TOMS 708 dispatch for `I_x(a, b)`, `a, b > 0`, `0 < x < 1`,
 /// `y = 1 − x`: chooses the route, and the tail it computes directly, from
 /// the sizes of `a`, `b` and the position of `x` relative to the mean.
-/// `None` when `bgrat` fails.
-fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Direct, bool)> {
+/// `exact` is the distance `λ = a − (a + b)x` of the exact argument when
+/// the caller formed it from its own inputs ([`bratio_at`]); it decides the
+/// side of the mean and is the argument of `basym`.  `None` when `bgrat`
+/// fails.
+fn bratio_route(a: f64, b: f64, x: f64, y: f64, exact: Option<f64>) -> Option<Route> {
+    let mut through_lambda = false;
     let (side, swap) = if a.min(b) <= 1.0 {
         let swap = x > 0.5;
         let (a0, b0, x0, y0) = if swap { (b, a, y, x) } else { (a, b, x, y) };
@@ -1467,16 +1550,21 @@ fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Direct, bool)> {
         // without rounding (a + b) or its product ([`mean_offset`]) — basym's
         // exponent is ≈ λ²/2 (1/a + 1/b), so an error ε·a in λ was 10⁻¹¹ of
         // the tail at shapes near 3·10⁷ (0.28 chose by a > b).
-        let lambda = if x <= y {
+        let rounded = if x <= y {
             -mean_offset(a, b, x, a)
         } else {
             mean_offset(a, b, y, b)
         };
+        // The continued fraction reads `λ` next to `x` and `y` and takes the
+        // one formed from them; `basym` reads only `λ`, the exact one.  The
+        // two differ in sign only within the rounding of the smaller
+        // argument (`ε` times the smaller shape).
+        let lambda = exact.filter(|l| l.is_finite()).unwrap_or(rounded);
         let swap = lambda < 0.0;
-        let (a0, b0, x0, y0, lambda) = if swap {
-            (b, a, y, x, -lambda)
+        let (a0, b0, x0, y0, lambda, rounded) = if swap {
+            (b, a, y, x, -lambda, -rounded)
         } else {
-            (a, b, x, y, lambda)
+            (a, b, x, y, lambda, rounded)
         };
         let side = if b0 < 40.0 {
             if b0 * x0 <= 0.7 {
@@ -1504,26 +1592,42 @@ fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Direct, bool)> {
                 }
                 Direct::Lower(w)
             }
-        } else if a0 > b0 {
-            if b0 <= 100.0 || lambda > 0.03 * b0 {
-                Direct::Lower(bfrac(a0, b0, x0, y0, lambda))
-            } else {
-                Direct::Lower(basym(a0, b0, lambda))
-            }
-        } else if a0 <= 100.0 || lambda > 0.03 * a0 {
-            Direct::Lower(bfrac(a0, b0, x0, y0, lambda))
+        } else if a0.min(b0) <= 100.0 || lambda > 0.03 * a0.min(b0) {
+            Direct::Lower(bfrac(a0, b0, x0, y0, rounded))
         } else {
+            through_lambda = true;
             Direct::Lower(basym(a0, b0, lambda))
         };
         (side, swap)
     };
-    Some((side, swap))
+    Some(Route {
+        side,
+        swap,
+        through_lambda,
+    })
 }
 
 /// `(I_x(a, b), 1 − I_x(a, b))` for `a, b > 0` and `x + y = 1`, each tail
 /// computed directly where it is the smaller one.  `NaN` for invalid
 /// arguments.
 fn bratio(a: f64, b: f64, x: f64, y: f64) -> Tails {
+    bratio_at(a, b, x, y, None).0
+}
+
+/// [`bratio`] at the exact argument whose distance from the mean is
+/// `exact = a − (a + b)·xₑ` (`xₑ` the exact lower argument, of which `x`,
+/// `y` are roundings), formed by the caller from its own inputs; and
+/// whether the tails are those at `xₑ` (`true`) or still at `x`.  Near the
+/// mean of two large shapes a tail moves by `κ ≈ √(min(a, b))·(1 + |z|)`
+/// times a relative change of its argument, so from shapes of about `10²⁸`
+/// on one rounding of `x` moves it by more than itself: up to 0.58
+/// `f::cdf(1, 3.0·10¹⁵⁶, 3.5·10¹⁶⁶)` was `0` (truly `0.5 − O(10⁻⁷⁸)`, the
+/// argument is the mean) and `binom::cdf` beyond `n = 2⁵³` (where `n − k` is
+/// rounded) `2·10⁻⁷` off at `n = 2.7·10¹⁷`.  The two-large-shapes expansion
+/// reads the argument only through `λ`, so it takes the exact one; the
+/// other routes are taken at `x` (the caller moves their tails by the
+/// density, [`Tails::shifted`]).
+fn bratio_at(a: f64, b: f64, x: f64, y: f64, exact: Option<f64>) -> (Tails, bool) {
     // `a + b` must be a double: every route forms it (0.26 returned 0 and
     // 1 for both tails of Beta(f64::MAX, f64::MAX)).
     if a.is_nan()
@@ -1536,14 +1640,14 @@ fn bratio(a: f64, b: f64, x: f64, y: f64) -> Tails {
         || !(0.0..=1.0).contains(&x)
         || !(0.0..=1.0).contains(&y)
     {
-        return Tails::NAN;
+        return (Tails::NAN, false);
     }
     // Float evidence: the f64 arguments themselves at an end of [0, 1].
     if x == 0.0 {
-        return Tails::ZERO;
+        return (Tails::ZERO, false);
     }
     if y == 0.0 {
-        return Tails::ONE;
+        return (Tails::ONE, false);
     }
     if x < f64::MIN_POSITIVE {
         // A subnormal `x` (and `y = 1`): the routes form products of it with
@@ -1551,20 +1655,22 @@ fn bratio(a: f64, b: f64, x: f64, y: f64) -> Tails {
         // enters the tail), so the small-argument series of the F kernel
         // takes it, from `ln x`.  Up to 0.57 `I_{5·10⁻³²⁴}(4.5·10⁻⁹, 10⁻³)`
         // was `0.9999921289941`, truly `0.99999212888009403` (mpmath).
-        return f::tails_from_small_arg(f::small_arg_series(a, b, x.ln(), direct_if_normal(b * x)));
+        let w = f::small_arg_series(a, b, x.ln(), direct_if_normal(b * x));
+        return (f::tails_from_small_arg(w), false);
     }
     if y < f64::MIN_POSITIVE {
-        return f::tails_from_small_arg(f::small_arg_series(b, a, y.ln(), direct_if_normal(a * y)))
-            .flipped();
+        let w = f::small_arg_series(b, a, y.ln(), direct_if_normal(a * y));
+        return (f::tails_from_small_arg(w).flipped(), false);
     }
-    let Some((side, swap)) = bratio_route(a, b, x, y) else {
-        return Tails::NAN;
+    let Some(route) = bratio_route(a, b, x, y, exact) else {
+        return (Tails::NAN, false);
     };
-    let tails = match side {
+    let tails = match route.side {
         Direct::Lower(w) => Tails::from_lower(w),
         Direct::Upper(w1) => Tails::from_upper(w1),
     };
-    if swap { tails.flipped() } else { tails }
+    let tails = if route.swap { tails.flipped() } else { tails };
+    (tails, route.through_lambda)
 }
 
 /// `v` for [`f::small_arg_series`]: formed directly (a few ulps) when it is a
@@ -1729,6 +1835,71 @@ fn log_ratio(value: f64, ln_value: f64, target: f64, ln_target: f64) -> f64 {
     }
 }
 
+/// The position of `x` in the order of the floats (`−0` just below `+0`):
+/// consecutive floats have consecutive keys.
+fn float_key(x: f64) -> i128 {
+    let b = x.to_bits().cast_signed();
+    i128::from(if b < 0 { b ^ i64::MAX } else { b })
+}
+
+/// The float with [`float_key`] `k` (a key of a finite float).
+fn key_float(k: i128) -> f64 {
+    let b = i64::try_from(k).unwrap_or(0);
+    let b = if b < 0 { b ^ i64::MAX } else { b };
+    f64::from_bits(b.cast_unsigned())
+}
+
+/// The crossing pair of [`snap_to_floats`] when it lies more than its walk
+/// away from `x`: steps of 1, 2, 4, … floats until the level is crossed,
+/// then bisection on the floats in between — at most about 128 tails.  The
+/// solver's root can be far from it in floats where the whole distribution
+/// lies within an ulp of its mean (shapes beyond `10³⁰`: `beta::ppf(0.957,
+/// 1.1e67, 4.6e297)` stopped thousands of floats above the crossing, its cdf
+/// `1`).  `None` when a tail is undecided (`NaN`) or the finite floats run out.
+fn far_crossing(x: f64, done: &impl Fn(f64) -> Option<bool>) -> Option<(f64, f64)> {
+    let (min_key, max_key) = (float_key(f64::MIN), float_key(f64::MAX));
+    let at = |k: i128| done(key_float(k));
+    let k = float_key(x);
+    let (mut lo, mut hi) = if at(k)? {
+        let mut hi = k;
+        let mut step: i128 = 1;
+        loop {
+            let lo = (hi - step).max(min_key);
+            if !at(lo)? {
+                break (lo, hi);
+            }
+            if lo == min_key {
+                return None;
+            }
+            hi = lo;
+            step *= 2;
+        }
+    } else {
+        let mut lo = k;
+        let mut step: i128 = 1;
+        loop {
+            let hi = (lo + step).min(max_key);
+            if at(hi)? {
+                break (lo, hi);
+            }
+            if hi == max_key {
+                return None;
+            }
+            lo = hi;
+            step *= 2;
+        }
+    };
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if at(mid)? {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some((key_float(lo), key_float(hi)))
+}
+
 /// The float nearest the quantile where one float step changes the tail by
 /// more than `10⁻⁹` relative (or the tail misses its level): from the
 /// solver's `x`, step by single floats against the family's own `tails`
@@ -1790,7 +1961,7 @@ fn snap_to_floats(x: f64, side: Side, tails: impl Fn(f64) -> Tails) -> f64 {
             None => return start,
         }
     }
-    let Some((lo, hi)) = crossing else {
+    let Some((lo, hi)) = crossing.or_else(|| far_crossing(x, &done)) else {
         return start;
     };
     let (d_lo, d_hi) = (
@@ -2898,7 +3069,7 @@ pub mod beta {
 /// The F distribution with `d₁, d₂ > 0` degrees of freedom.
 pub mod f {
     use super::{
-        EPS, Eval, Scaled, Side, Tails, beta, bratio, check_level, check_positive, inv_a_beta,
+        EPS, Eval, Scaled, Side, Tails, beta, bratio_at, check_level, check_positive, inv_a_beta,
         lgamma, lgamma_small, log_beta_pref, log_ratio, nearest_tail, nearest_tail_upper,
         outside_float_range, snap_to_floats, solve_increasing, stirlerr_diff,
         upper_from_leading_lower,
@@ -2951,12 +3122,53 @@ pub mod f {
             let lower = small_arg_series(a, b, args.ln_z, v);
             return tails_from_small_arg(lower);
         }
-        // The tails at the exact beta argument: `h` moves them by the density
-        // of Beta(a, b) at `z` (`argument_shift`).
+        // The tails at the exact beta argument: the two-large-shapes route
+        // takes its exact distance from the mean, the others are moved by
+        // the density of Beta(a, b) at `z` (`argument_shift`).
+        let lambda = mean_distance(x, a, b, &args);
+        let (tails, at_exact) = bratio_at(a, b, args.z, args.y, Some(lambda));
+        if at_exact {
+            return tails;
+        }
         let h = argument_shift(x, d1, d2, args.z, args.y);
         let ln_f = log_beta_pref(a, b, args.z, args.y) - args.ln_z - args.ln_y;
         let g = h * ((a - 1.0) / args.z - (b - 1.0) / args.y);
-        bratio(a, b, args.z, args.y).shifted(h, ln_f, g)
+        tails.shifted(h, ln_f, g)
+    }
+
+    /// The distance of the exact beta argument `zₑ = ax/(ax + b)` from the
+    /// mean of Beta(a, b) in the units of the shapes, `λ = a − (a + b)zₑ =
+    /// ab(1 − x)/(ax + b)`, from the F argument itself (`λ = 0` at `x = 1`):
+    /// `a(1 − x)` and `ax + b` as exact pairs (two-sum, fused multiply-adds)
+    /// and the quotient's remainder, so `λ` is rounded about once — the
+    /// two-large-shapes expansion's exponent `≈ λ²/2·(1/a + 1/b)` doubles
+    /// its relative error.  `a − (a + b)z` from the rounded `z` carries
+    /// `ε·a`, `ε·√a` standard deviations.  Where a product overflows,
+    /// `a·y·(1 − x)` or `b·z·(1/x − 1)` from the arguments (a few ulps).
+    fn mean_distance(x: f64, a: f64, b: f64, args: &BetaArgs) -> f64 {
+        // 1 − x = t + t_lo and ax + b = den + den_lo exactly (Knuth's two-sum).
+        let t = 1.0 - x;
+        let tb = t - 1.0;
+        let t_lo = (1.0 - (t - tb)) + (-x - tb);
+        let num = a * t;
+        let num_lo = a.mul_add(t, -num) + a * t_lo;
+        let p = a * x;
+        let den = p + b;
+        let db = den - p;
+        let den_lo = ((p - (den - db)) + (b - db)) + a.mul_add(x, -p);
+        let q = num / den;
+        // num/den = q + (r + num_lo − q·den_lo)/den to second order, `r` the
+        // exact remainder of the quotient.
+        let r = (-q).mul_add(den, num);
+        let corr = (r + num_lo - q * den_lo) / den;
+        let lambda = b.mul_add(q, b * corr);
+        if num.is_finite() && den.is_finite() && lambda.is_finite() {
+            lambda
+        } else if x <= 2.0 {
+            a * args.y * (1.0 - x)
+        } else {
+            b * args.z * (1.0 / x - 1.0)
+        }
     }
 
     /// The rounding of the beta arguments of [`tails`] as a shift `h` of the
@@ -2968,7 +3180,7 @@ pub mod f {
     /// quadrature at 30 and 50 digits).  The exact arguments are `z + δz`,
     /// `y + δy`, from the remainders of the quotients and the rounding errors
     /// of the product and the sum (fused multiply-adds and Knuth's two-sum);
-    /// [`bratio`] takes the smaller of `z`, `y` as exact, so the shift is `δz`
+    /// [`bratio_at`] takes the smaller of `z`, `y` as exact, so the shift is `δz`
     /// when `z ≤ y` and `−δy` otherwise.  `0` where [`BetaArgs`] did not
     /// form the quotients directly (an argument out of the normal range).
     fn argument_shift(x: f64, d1: f64, d2: f64, z: f64, y: f64) -> f64 {
@@ -3232,8 +3444,8 @@ pub mod f {
 /// The binomial distribution with `n` trials and success probability `p`.
 pub mod binom {
     use super::{
-        Tails, bratio, check_lattice_param, check_level, discrete_quantile, invalid, nearest_tail,
-        nearest_tail_upper, norm,
+        Tails, bratio_at, check_lattice_param, check_level, discrete_quantile, invalid,
+        nearest_tail, nearest_tail_upper, norm,
     };
     use crate::base::errors::SymplexError;
 
@@ -3248,8 +3460,21 @@ pub mod binom {
         if kf >= n {
             return Tails::ONE;
         }
-        // P(X ≤ k) = I_{1−p}(n − k, k + 1)
-        bratio(n - kf, kf + 1.0, 1.0 - p, p)
+        // P(X ≤ k) = I_{1−p}(n − k, k + 1), at the distance from the mean
+        // `λ = (n + 1)p − (k + 1)` formed from `n`, `k`, `p` themselves:
+        // beyond `n = 2⁵³` the shapes `n − k`, `k + 1` are rounded, by up to
+        // `ε·n` — `ε·√n` standard deviations (`binom::cdf(7.4e16,
+        // 1.3e17, 0.55)` was `4·10⁻⁸` off).
+        bratio_at(n - kf, kf + 1.0, 1.0 - p, p, Some(mean_distance(kf, n, p))).0
+    }
+
+    /// `(n + 1)p − (k + 1)`: `np` as the exact pair of a product (a fused
+    /// multiply-add), `np − k` exact near the mean (Sterbenz), so `λ` is
+    /// good to a few ulps of the largest of `np − k`, `p − 1`.
+    fn mean_distance(k: f64, n: f64, p: f64) -> f64 {
+        let np = n * p;
+        let np_lo = n.mul_add(p, -np);
+        (np - k) + ((p - 1.0) + np_lo)
     }
 
     /// `P(X ≤ ⌊k⌋)`.  `scipy.stats.binom.cdf(k, n, p)`.
@@ -3320,8 +3545,8 @@ pub mod binom {
 /// The Poisson distribution with rate `λ > 0`.
 pub mod poisson {
     use super::{
-        Tails, check_lattice_param, check_level, check_positive, discrete_quantile, gammainc_tails,
-        nearest_tail, nearest_tail_upper, norm,
+        Tails, check_lattice_param, check_level, check_positive, discrete_quantile,
+        gammainc_tails_at, nearest_tail, nearest_tail_upper, norm,
     };
     use crate::base::errors::SymplexError;
 
@@ -3336,8 +3561,15 @@ pub mod poisson {
         if kf == f64::INFINITY {
             return Tails::ONE;
         }
-        // P(X ≤ k) = Q(k + 1, λ)
-        gammainc_tails(kf + 1.0, rate).flipped()
+        // P(X ≤ k) = Q(k + 1, λ).  Beyond 2⁵³ the shape `k + 1` is rounded,
+        // by `e` (exact: `a − k` is): near the mean a shape off by `e` is an
+        // argument off by `−e` (the distance `λ − a` of Temme's expansion, to
+        // a relative `e/a`), and one unit there is `|z|/√λ` of the tail
+        // (`poisson::cdf(2.6587481374085252e16, 2.6587484297296892e16)` was
+        // `1.1·10⁻⁷` off).  Elsewhere `e = 0`, or the tail is far below the range.
+        let a = kf + 1.0;
+        let e = 1.0 - (a - kf);
+        gammainc_tails_at(a, rate, -e).flipped()
     }
 
     /// `P(X ≤ ⌊k⌋)`.  `scipy.stats.poisson.cdf(k, mu)`.

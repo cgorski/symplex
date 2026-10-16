@@ -22,6 +22,9 @@ printed as `0`, `solve` no longer claims roots at an infinite value, limits
 and series see hidden zeros inside functions of parameters, `Max`/`Min` of a
 non-real argument is `nan`, and the findings of the nightly fuzzing are fixed
 (the `gamma` and `F` kernels at the exact argument, three slow refusals).
+Limits stop at the poles of the function table, the crate's own root
+searches see periodic exponentials, and the `numdist` kernels hold to
+`10⁻¹⁴` for every parameter up to `10³⁰⁰`.
 
 ### Breaking (behaviour)
 
@@ -53,6 +56,28 @@ non-real argument is `nan`, and the findings of the nightly fuzzing are fixed
 - `MultiPoly::gcd`/`lcm` no longer panic on exponents near `2³¹` (they
   return the content's gcd / zero); `MultiPoly::try_gcd`/`try_lcm` report the
   refusal.
+
+- **Limits by substitution stop at the poles in the function table**
+  (`limit::tabulated_pole`): `limit(beta(x, y), x, 0)` was `B(0, y)` (a value at
+  a pole of `Γ(x)`; now refused), `limit(x·B(x, 3x), x, 0)` was 0 (it is
+  `4/3`), `limit(B(x − 1, 1 + 2x), x, 0)` was `B(−1, 1)` (it is `−3`),
+  `uppergamma(−1/2, x¹²)` at 0 was `uppergamma(−1/2, 0)` (it is `∞`); values that
+  hold on only part of the parameter space (`Γ(y, 0) = Γ(y)`, `Li_y(1) = ζ(y)`)
+  are refused.  About 1,000 golden limit pairs change (35 to a correct value,
+  the rest to a refusal), each checked with mpmath.
+- **The crate's real-root searches no longer take the principal roots of a
+  periodic exponential for all real zeros:** `∫₁³ dx/((−1)^x − 1)` was `−2`
+  (a pole at 2), `∫₂⁶ dx/(iˣ − 1)` was `−4`, `singularities(1/((−1)^x − 1), [0,
+  10])` was `{0}` (it is `{0, 2, …, 10}`).  `Ex::solve` for a real unknown
+  finds the real roots of `a^{αx+β} = c` on every branch: `(−2)^x = 4` gives
+  `[2]` (was `[]`).  Hunt (1,844 equations with negative and complex bases):
+  0 wrong (base: 119 missing real roots).
+- `statistic_exact()`/`p_value_exact()` are `None` for the models'
+  likelihood-ratio, Wald and score tests (their `f64` statistic was read as a
+  rational); the descriptive statistics in `data` report a constant sample, a
+  zero MAD or all pairs tied as `DegenerateData { kind: ZeroVariance }`.
+- `0/0^y` (and `0·0^(−y)`, `0/(x·0^y)`) is `Piecewise((0, re(y) < 0 ∨ y = 0),
+  (nan, True))`: it was 0, a claim valid on half the parameter space.
 
 ### Fixed
 
@@ -121,6 +146,45 @@ non-real argument is `nan`, and the findings of the nightly fuzzing are fixed
   expands into 160 MB (24 s → 0.1 ms); `∫ dx/(x(x − √2))` (rational functions
   with algebraic coefficients); an integral across a pole of `R(e^{λx})` is
   `Divergent` when the comparison test proves it.
+
+- **`numdist` kernels at extreme shapes:** `f::cdf(1, 3·10¹⁵⁶, 3.5·10¹⁶⁶)` was 0
+  (it is ½), binomial and Poisson CDFs beyond `2⁵³` were up to `2·10⁻⁷` off, F
+  and gamma tails below the range were NaN (a regression of the previous
+  merge, caught by fuzzing), one huge shape next to a small one lost `10⁻¹²`,
+  and quantiles where the distribution lies within an ulp of its mean
+  returned the wrong float.  The asymptotic routes read their argument
+  through its distance from the mean, formed from the caller's inputs.
+  14,416 cases up to `10³⁰⁰` against mpmath: 1,234 wrong → 0 (`≤ 1.3·10⁻¹⁴` for
+  tails `≥ 10⁻¹⁰`); `fuzz_numdist` draws parameters up to `10³⁰⁰`.
+- **Values at `zoo` fold the same when built and after `eval`:**
+  `0·polylog(−1, zoo)` was `nan` when built and 0 after `eval`;
+  `legendre(3, zoo) − legendre(3, zoo)` was 0 (it is `nan`); `eval` takes no
+  value from a closed form at a `zoo` argument the table does not cover.
+- **A small part next to a large one keeps its digits; one below the range
+  is refused:** `Ei(−1000 + i)` printed `3.14159…i` (it is `−2.7355·10⁻⁴³⁸ +
+  3.14159…i`); `Ei(−10¹⁰ + i)` is refused.
+- **Definite integrals of `R(cˣ)` and `R(e^{iωx})`:** `∫₋₂⁰ dx/(e^{iπx} + 1)`
+  was 2, `∫₋₄⁰ dx/(iˣ + 1)` was 4 (both cross a pole: `Divergent`);
+  `∫₀² (1+i)ˣ/((1+i)ˣ − 1 − i) dx` is `Divergent` (refused), `∫₀³ dx/((1+i)ˣ +
+  (1+i)^{−x} − 3) = −1.46040728048514706694976666762 −
+  0.370428831572808417120953222459i` (refused).
+- `elliptic_e(10⁶⁰⁰ + i) = 1.28539816339744830961566084582e-300 − 1e300·i`
+  (refused: the error of a non-real argument now moves each part by its own
+  share, Cauchy–Riemann).
+- **Slow paths:** the CDF of a finite table (a 100,000-sided die under `x³`:
+  49 s → 1.5 s in the fuzz build), the Student-t characteristic-function
+  check of `fuzz_stats` (10 s → 9 ms), the incomplete beta near its centre at
+  shapes `10⁹`–`3·10¹⁷` (`F(10¹⁶, 10¹⁶).cdf(1)` refused after 20 s; now 1.3 ms,
+  by Laplace's method with a certified truncation bound), series refusals at a
+  simple pole (only the first pole retry is made).
+- `formal_series` coefficients beyond `2¹⁴`, the dense views of multivariate
+  factorisation beyond `2²⁴` and `param_rational`'s exponent overflow refuse
+  instead of allocating or panicking (`factor_multivariate(y·x^(2²⁵) + y)` laid
+  out 2 GB).
+- `Max`/`Min`'s non-real check is memoised (`FactKey::NonReal`): golden CPU
+  −0.6 %.
+- The `fuzz_calculus` missing-root check exempts periodic exponentials
+  (`(−1)^x`): `solve` returns their principal roots.
 
 ### Changed
 

@@ -2093,7 +2093,25 @@ fn check_mgf(d: &Distribution, ctx: &Context, th: &Theory, r: &mut Src, b: &Budg
     {
         fail!("mgf: cf({s0}) = {z} but mgf(i·{s0}) = {w}\n  cf = {cf}\n  mgf(it) = {mi}");
     }
-    if continuous && let Some(pieces) = &pieces {
+    // The quadrature of `cos(sx)·f`, `sin(sx)·f` does not converge when a
+    // tail of `f` decays more slowly than `|x|⁻²` (`StudentT(1/7)`: refused
+    // after 2.8 s per part, 10 s in this build); for an even density the
+    // sine part is 0 by symmetry, which the quadrature's relative test cannot
+    // confirm (`StudentT(7/2)`: refused after 1.9 s).
+    let heavy = d.family().tail_orders().is_some_and(|o| {
+        [o.left, o.right]
+            .iter()
+            .flatten()
+            .any(|r| val(r).is_none_or(|r| r < 1.0))
+    });
+    let even = continuous && (d.density(&-&x) - d.density(&x)).simplify() == ctx.zero();
+    if even && z.im.abs() > 1e-12 {
+        fail!("mgf: Im cf({s0}) = {} for an even density: cf = {cf}", z.im);
+    }
+    if continuous
+        && !heavy
+        && let Some(pieces) = &pieces
+    {
         let (cs, sn) = (
             (&s0 * &x).cos() * d.density(&x),
             (&s0 * &x).sin() * d.density(&x),
@@ -2107,7 +2125,7 @@ fn check_mgf(d: &Distribution, ctx: &Context, th: &Theory, r: &mut Src, b: &Budg
             z.re,
             1e-8,
         )?;
-        if b.left() {
+        if b.left() && !even {
             integral_agrees(
                 &format!("mgf: Im cf({s0}) = {z}"),
                 &sn,

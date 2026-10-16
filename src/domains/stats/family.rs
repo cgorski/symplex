@@ -1272,10 +1272,35 @@ impl Distribution {
         let support = self.support();
         if let Some(values) = support.as_points() {
             // Σ pᵢ · [vᵢ ≤ x]: decided where possible, else a Heaviside.
+            // Rationals are compared as such and values that certified
+            // `f64`s separate by those, before the sign of `x − vᵢ` (up to
+            // 0.58 one interned difference and sign query per atom).
+            let numeric = x.free_symbols().is_empty();
+            let xq = x.as_rational();
+            let xf = if numeric { x.eval_f64().ok() } else { None };
             let mut acc = self.context().zero();
             for v in &values {
                 let p = self.0.density(v);
-                match (x - v).is_nonnegative() {
+                let decided = match (&xq, v.as_rational()) {
+                    (Some(a), Some(b)) => Some(b <= *a),
+                    _ if numeric => {
+                        let vf = v.eval_f64().ok();
+                        match (xf, vf) {
+                            (Some(a), Some(b))
+                                if super::wrappers::certified_apart(Some(a), Some(b)) =>
+                            {
+                                Some(b < a)
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let below = match decided {
+                    Some(b) => Some(b),
+                    None => (x - v).is_nonnegative(),
+                };
+                match below {
                     Some(true) => acc += p,
                     Some(false) => {}
                     None => acc += p * (x - v).heaviside(),

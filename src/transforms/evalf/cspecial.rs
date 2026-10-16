@@ -210,10 +210,12 @@ pub(super) fn eval(f: Fun, args: &[&Complex], w: &mut Wp<'_>) -> Result<Complex,
 }
 
 /// A value of [`eval`] with the [`CutRule`] that gave its parts (`None`:
-/// the general route, one bound for both parts).
+/// the general route, one bound for both parts, but for a part the route
+/// computed on its own: `own`).
 pub(super) struct Routed {
     pub(super) value: Complex,
     cut: Option<CutRule>,
+    own: Option<cexpint::OwnPart>,
 }
 
 /// [`eval`], saying which route gave the value ([`bound`] needs it).
@@ -228,29 +230,43 @@ pub(super) fn eval_routed(
         return Ok(Routed {
             value,
             cut: Some(rule),
+            own: None,
         });
     }
+    let (value, own) = general_parts(f, args, w)?;
     Ok(Routed {
-        value: general(f, args, w)?,
+        value,
         cut: None,
+        own,
     })
 }
 
 /// The general route of `f` (the module documentation of `cexpint.rs`,
 /// `cbessel.rs`, `cerf.rs`).
 fn general(f: Fun, args: &[&Complex], w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+    general_parts(f, args, w).map(|(value, _)| value)
+}
+
+/// [`general`], with the part of the value the route computed on its own
+/// ([`cexpint::OwnPart`]: `Ei`, `li`, `γ(a, z)`).
+fn general_parts(
+    f: Fun,
+    args: &[&Complex],
+    w: &mut Wp<'_>,
+) -> Result<(Complex, Option<cexpint::OwnPart>), SymplexError> {
+    let alone = |v: Result<Complex, SymplexError>| v.map(|value| (value, None));
     match f {
         Fun::Ei => cexpint::ei(args[0], w),
         Fun::Li => cexpint::li(args[0], w),
-        Fun::Trig(kind) => cexpint::trig_integral(kind, args[0], w),
-        Fun::ExpInt => cexpint::expint(args[0], args[1], w),
-        Fun::UpperGamma => cexpint::upper_gamma(args[0], args[1], w),
+        Fun::Trig(kind) => alone(cexpint::trig_integral(kind, args[0], w)),
+        Fun::ExpInt => alone(cexpint::expint(args[0], args[1], w)),
+        Fun::UpperGamma => alone(cexpint::upper_gamma(args[0], args[1], w)),
         Fun::LowerGamma => cexpint::lower_gamma(args[0], args[1], w),
-        Fun::Bessel(kind) => super::cbessel::bessel(kind, args[0], args[1], w),
-        Fun::Airy(kind) => super::cbessel::airy(kind, args[0], w),
-        Fun::Binomial => binomial(args[0], args[1], w),
-        Fun::FresnelS => super::cerf::fresnel(true, args[0], w),
-        Fun::FresnelC => super::cerf::fresnel(false, args[0], w),
+        Fun::Bessel(kind) => alone(super::cbessel::bessel(kind, args[0], args[1], w)),
+        Fun::Airy(kind) => alone(super::cbessel::airy(kind, args[0], w)),
+        Fun::Binomial => alone(binomial(args[0], args[1], w)),
+        Fun::FresnelS => alone(super::cerf::fresnel(true, args[0], w)),
+        Fun::FresnelC => alone(super::cerf::fresnel(false, args[0], w)),
     }
 }
 
@@ -867,6 +883,24 @@ fn lsum(a: f64, b: f64) -> f64 {
     hi + (lo - hi).exp2().ln_1p() * LOG2E
 }
 
+/// The route's own bound of a value one part of which it computed on its
+/// own ([`cexpint::OwnPart`]): that part's error is below `2^(largest − prec
+/// − 12)` (or the `joint` bound, whichever is smaller), the other part keeps
+/// the joint bound.  (A part whose sum underflowed was refused by the
+/// route.)
+fn own_part(part: cexpint::OwnPart, joint: f64, prec: usize) -> Bound {
+    let e = if part.largest.is_finite() {
+        (part.largest - prec as f64 - 12.0).min(joint)
+    } else {
+        joint
+    };
+    if part.imaginary {
+        Bound { re: joint, im: e }
+    } else {
+        Bound { re: e, im: joint }
+    }
+}
+
 /// The cut of `f` in its last argument, given the other arguments (none for
 /// an entire function or an integer order of `J`, `I`).
 fn cut_of(f: Fun, vals: &[&Complex]) -> Option<Cut> {
@@ -922,9 +956,10 @@ pub(super) fn bound(
     // An exact-0 imaginary part is the value only where `f` is real.
     let real = all_real && v.1.is_zero() && real_valued(f, &vals);
     let finish = |b: Bound| if real { Bound::real(b.re) } else { b };
-    let mut total = match routed.cut {
-        Some(rule) => own_on_cut(rule, v, prec),
-        None => Bound::both(own),
+    let mut total = match (routed.cut, routed.own) {
+        (Some(rule), _) => own_on_cut(rule, v, prec),
+        (None, Some(part)) => own_part(part, own, prec),
+        (None, None) => Bound::both(own),
     };
     if bs.iter().all(|b| b.is_exact()) {
         return finish(total);

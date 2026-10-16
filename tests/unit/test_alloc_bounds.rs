@@ -43,7 +43,9 @@ use syn::visit::Visit;
 /// Files allowed to contain cast-sized allocations, with the exact count
 /// (0.58: 4, down from 37 at 0.57).  0.59 sees lengths bound through a
 /// `let`: 46 more sites in 20 files, of which 16 (in 9 files) are bounded
-/// since and 30 are listed here (34 in 12 files in all).  Paths are
+/// since and 30 are listed here (34 in 12 files in all; 30 in 10 once the
+/// dense views of `factor_hensel`/`factor_zassenhaus` and the coefficient
+/// prefix of `formal_series` were bounded).  Paths are
 /// relative to `src/`.
 /// Each entry says where its lengths are bounded, or that it is a review
 /// item.
@@ -51,10 +53,6 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // `sym_bits.resize(i + 1)`: `i` is the index of a symbol this arena has
     // interned (the table grows with the symbol table).
     ("base/arena.rs", 1),
-    // `Source::Compose` / `Source::Reversion`: `k + 1` and `k` entries, the
-    // size of the coefficient prefix `coeffs(0, k)` the same call has just
-    // computed (the prefix itself is the review item: a user's `coeff(k)`).
-    ("calculus/formal_series.rs", 2),
     // Another agent's write set at 0.59 (series orders and known prefixes):
     // review queue.
     ("calculus/series.rs", 4),
@@ -69,12 +67,10 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // by degrees of the inputs, which `brown_gcd` bounds by
     // `cast::MAX_DENSE_LIST` on entry.
     ("poly/brown.rs", 7),
-    // Dense univariate views (`to_uni`, `multipoly_to_uni`) of a factor in
-    // one variable, and the coefficient lists of the Hensel error by
-    // monomial: the degree is the data's (`u32`); review queue (their
-    // callers return `Poly`, not `Option`).
-    ("poly/factor_hensel.rs", 2),
-    ("poly/factor_zassenhaus.rs", 1),
+    // The coefficient lists of the Hensel error by monomial: degrees in `x`
+    // below `n`, the degree of the image `image_in_x` laid out within
+    // `cast::MAX_DENSE_LIST` just before.
+    ("poly/factor_hensel.rs", 1),
     // `Li_{−n}(z)`: `n ≤ MAX_SPECIAL_EXPANSION` by `as_int_in` just above.
     ("transforms/eval.rs", 1),
     // Another agent's write set at 0.59 (lengths from the working precision

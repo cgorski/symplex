@@ -1267,12 +1267,17 @@ pub(super) fn gap_cap(prec: usize) -> usize {
 /// 0, and to `2^−c·|v|` at least), plus for each inexact argument the change
 /// of the value when it moves by its radius (the node evaluated again; the
 /// function is analytic in each argument there, so moving the real part
-/// measures the derivative): each part's own change for an exactly real
-/// argument, which moves along the real axis only, the change of the whole
-/// value on both parts otherwise.  (A part far below the other keeps its
-/// digits: `E(10⁶⁰⁰)`'s real part `7.85·10⁻³⁰¹` next to `10³⁰⁰i`, with
-/// the parameter rounded.)  The caller has checked that no argument's ball
-/// reaches a cut of the route.
+/// measures the derivative): for the radius of the argument's real part each
+/// part moves by its own share of that change, for the radius of its
+/// imaginary part by the other part's (`∂f/∂y = i·f′`), as
+/// `accuracy::analytic_parts` does for the elementary functions; an exactly
+/// real argument, or one with an exact imaginary part, moves along a
+/// horizontal line only.  (A part far below the other keeps its digits:
+/// `E(10⁶⁰⁰)`'s real part `7.85·10⁻³⁰¹` next to `10³⁰⁰i`, with the
+/// parameter rounded, and since 0.59 `E(10⁶⁰⁰ + i)`'s `1.29·10⁻³⁰⁰`, which
+/// up to 0.58 the move of a non-real argument by `|f′|·radius` on both parts
+/// swamped.)  The caller has checked that no argument's ball reaches a cut
+/// of the route.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn complex_route_bound(
     arena: &Arena,
@@ -1297,12 +1302,15 @@ pub(super) fn complex_route_bound(
             accuracy::lsum(accuracy::part_lg(x) - prec - 12.0, floor)
         }
     };
-    // The changes of the parts: an exactly real argument moves along the
-    // real axis only, so each part moves by its own share of `f′·δ`; a
-    // non-real one in any direction, by `|f′|·δ` on both.
+    // The changes of the parts: a horizontal move of the argument measures
+    // each part's share of `f′·δ`; the radius of the argument's real part
+    // moves each part by its own share, that of its imaginary part by the
+    // other part's (`∂f/∂y = i·f′`).  An argument with an exact imaginary
+    // part (an exactly real one, `10⁶⁰⁰ + i`) moves along a horizontal line
+    // only.  (Up to 0.58 a non-real argument moved both parts by `|f′|·δ`.)
     let (mut re, mut im) = (EXACT, EXACT);
     for (i, a) in args.iter().enumerate() {
-        let (Some(b), Some(x)) = (cache.bound(a), cache.get(a)) else {
+        let (Some(b), Some(_)) = (cache.bound(a), cache.get(a)) else {
             return Bound::UNKNOWN;
         };
         if b.is_unknown() {
@@ -1311,19 +1319,18 @@ pub(super) fn complex_route_bound(
         if b.is_exact() || args[..i].contains(a) {
             continue;
         }
-        let real_arg = x.1.is_zero() && accuracy::is_exact(b.im);
-        match numeric_change_parts(arena, id, *a, b.joint(), v, cache, w) {
-            Some((cr, ci)) if real_arg => {
-                re = accuracy::lsum(re, cr);
-                im = accuracy::lsum(im, ci);
-            }
-            Some((cr, ci)) => {
-                let c = accuracy::lsum(cr, ci);
-                re = accuracy::lsum(re, c);
-                im = accuracy::lsum(im, c);
-            }
-            None => return Bound::UNKNOWN,
-        }
+        let j = b.joint();
+        let Some((cr, ci)) = numeric_change_parts(arena, id, *a, j, v, cache, w) else {
+            return Bound::UNKNOWN;
+        };
+        re = accuracy::lsum(
+            re,
+            accuracy::lsum(moved_by(cr, b.re, j), moved_by(ci, b.im, j)),
+        );
+        im = accuracy::lsum(
+            im,
+            accuracy::lsum(moved_by(ci, b.re, j), moved_by(cr, b.im, j)),
+        );
     }
     if accuracy::is_unknown(re) || accuracy::is_unknown(im) {
         return Bound::UNKNOWN;
@@ -1331,6 +1338,16 @@ pub(super) fn complex_route_bound(
     Bound {
         re: accuracy::lsum(own(&v.0), re),
         im: accuracy::lsum(own(&v.1), im),
+    }
+}
+
+/// A change `c` measured for a move by `2^j`, for a move by the radius `2^r ≤
+/// 2^j` (none for an exact `r`).
+fn moved_by(c: ErrExp, r: ErrExp, j: ErrExp) -> ErrExp {
+    if accuracy::is_exact(r) {
+        EXACT
+    } else {
+        accuracy::shift(c, r - j)
     }
 }
 

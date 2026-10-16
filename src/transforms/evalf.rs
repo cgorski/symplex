@@ -10772,6 +10772,265 @@ fn betainc_switch_point(a: &BigFloat, b: &BigFloat, wp: usize) -> BigFloat {
     a_plus_1.div(&a_plus_b_plus_2, wp, RM)
 }
 
+/// From this many continued-fraction steps by the estimate
+/// ([`betainc_cf_steps`], a lower bound: the fraction takes up to 7 times
+/// as many) on, [`betainc_tails_central`] is tried first.  Below it the
+/// fraction takes milliseconds.
+const BETAINC_CENTRAL_MIN_STEPS: f64 = 2_000.0;
+
+/// The central route applies within this many standard deviations of the
+/// mode; beyond, the continued fraction needs a few hundred steps at most.
+const BETAINC_CENTRAL_MAX_Z: f64 = 6.0;
+
+/// The most Taylor terms the central route takes (beyond, it declines and
+/// the continued fraction is used).
+const BETAINC_CENTRAL_MAX_TERMS: usize = 160;
+
+/// Both tails `(I_x(a, b), I_{1−x}(b, a))` for large shapes (`a, b > 2`)
+/// and `x` within [`BETAINC_CENTRAL_MAX_Z`] standard deviations of the mode,
+/// where the continued fraction needs about `(min(a, b)·wp²)^{1/3}` steps
+/// (`2·10⁶` at shapes `10¹⁶`: up to 0.58 `F(10¹⁶, 10¹⁶).cdf(1)` ran
+/// 20 s to refuse).  `None` where the route does not apply or cannot
+/// certify its truncation, and the caller uses the fraction.
+///
+/// The integrand `t^{a−1}(1 − t)^{b−1}` is taken relative to its value at
+/// the mode `t₀ = (a − 1)/N`, `N = a + b − 2`, in the variable
+/// `u = (t − t₀)/σ`, `σ² = t₀(1 − t₀)/N`: it is `e^{−u²/2}·E(u)`, `E =
+/// exp ψ`, `ψ(u) = Σ_{k≥3} d_k uᵏ`, `d_k = ((−1)^{k−1}(1 − t₀)s^{k−2} −
+/// t₀ r^{k−2})/k`, `s = σ/t₀`, `r = σ/(1 − t₀)` (Laplace's method with
+/// the convergent Taylor series of `E` instead of an asymptotic one).  `E`
+/// is analytic for `|u| < min(t₀, 1 − t₀)/σ`, so its coefficients `c_k`
+/// (`k c_k = Σ j d_j c_{k−j}`) obey Cauchy's bound `|c_k| ≤ M(ρ)/ρᵏ` with
+/// `ln M(ρ) ≤ Σ |d_k| ρᵏ`.  `L = Σ_{k<K} c_k ∫_{−∞}^{v} uᵏ e^{−u²/2}`
+/// and `R = Σ_{k<K} c_k ∫_{v}^{∞} …` (`v = (x − t₀)/σ`, the moments by
+/// their recurrence from `erfc`) give `I_x = L/(L + R)` and `I_{1−x}(b, a) =
+/// R/(L + R)` (no Beta function is formed).  Their error, each bounded and
+/// required below `2^−(wp+8)` of the value: the truncation on `|u| ≤ U`
+/// (`√(2π)·M(ρ)(U/ρ)^K/(1 − U/ρ)`), the integrand beyond `±U` (concave
+/// in the exponent: `e^{−U²/2 + B(U)}/(U − B′(U))`, `B(U) ≥ |ψ|`, `B′(U) ≥
+/// |ψ′|` on `|u| ≤ U`), and the polynomial's Gaussian moments beyond `±U`.
+/// The roundings of the recurrences are covered by guard bits from their
+/// absolute-value twins.  The bounds are `f64` guides with 1 % slack.
+fn betainc_tails_central(
+    a: &BigFloat,
+    b: &BigFloat,
+    x: &BigFloat,
+    w: &mut Wp<'_>,
+) -> Result<Option<(BigFloat, BigFloat)>, SymplexError> {
+    use std::f64::consts::{LN_2, PI};
+    let wp = w.bits();
+    let (a_f, b_f) = (f64_of(a)?, f64_of(b)?);
+    let n_f = a_f + b_f - 2.0;
+    if !(a_f > 2.0 && b_f > 2.0 && n_f.is_finite()) {
+        return Ok(None);
+    }
+    let (t0_f, s1_f) = ((a_f - 1.0) / n_f, (b_f - 1.0) / n_f);
+    let sigma_f = (t0_f * s1_f / n_f).sqrt();
+    // The radii of convergence of E on the two sides (the ends 0 and 1).
+    let (r0, r1) = (t0_f / sigma_f, s1_f / sigma_f);
+    if !(sigma_f > 0.0 && r0.min(r1) > 64.0) {
+        return Ok(None);
+    }
+    // v = (x − t₀)/σ at a relative 2^−p: t₀ to the bits that resolve x − t₀,
+    // and N, a − 1, b − 1 exact for integer shapes.
+    let mode = |p: usize| {
+        let pn = p + magnitude_bits(n_f) + 8;
+        let pt = pn + magnitude_bits(1.0 / sigma_f);
+        let one = BigFloat::from_i32(1, pn);
+        let am1 = a.sub(&one, pn, RM);
+        let bm1 = b.sub(&one, pn, RM);
+        let n = am1.add(&bm1, pn, RM);
+        let t0 = am1.div(&n, pt, RM);
+        let s1 = bm1.div(&n, pt, RM);
+        let sigma = t0.mul(&s1, p, RM).div(&n, p, RM).sqrt(p, RM);
+        let v = x.sub(&t0, pt, RM).div(&sigma, p, RM);
+        (t0, s1, sigma, v)
+    };
+    let z = f64_of(&mode(64).3)?;
+    if z.is_nan() || z.abs() > BETAINC_CENTRAL_MAX_Z {
+        return Ok(None);
+    }
+    let steps = betainc_cf_steps(a_f, b_f, z.abs() * sigma_f, wp + 30);
+    if steps < BETAINC_CENTRAL_MIN_STEPS {
+        return Ok(None);
+    }
+    // ln of the target absolute error: 2^−(wp+10) of a lower bound of the
+    // smaller side (Mills' ratio; ∫_1^∞ e^{−u²/2} for |v| < 1).
+    let ln_side = -z * z / 2.0 + (z.abs().max(1.0) / (z * z + 1.0)).ln() - LN_2;
+    let ln_eps = ln_side - (wp as f64 + 10.0) * LN_2;
+    // Σ_{j≥1} q₀ʲ(1 − t₀) + q₁ʲ t₀ at q = (ρ/r₀, ρ/r₁): |ψ| ≤ ρ²/3·S,
+    // |ψ′| ≤ ρ·S on |u| ≤ ρ.
+    let geo = |rho: f64| {
+        let (q0, q1) = (rho / r0, rho / r1);
+        1.01 * (s1_f * q0 / (1.0 - q0) + t0_f * q1 / (1.0 - q1))
+    };
+    // Terms for the truncation at radius ρ of Cauchy's bound.
+    let terms_at = |u: f64, rho: f64| -> f64 {
+        let ln_m = rho * rho / 3.0 * geo(rho);
+        let ln_tail = ln_m + (2.0 * PI).sqrt().ln() - (1.0 - u / rho).ln() - ln_eps;
+        (ln_tail / (rho / u).ln()).ceil().max(1.0)
+    };
+    let best_terms = |u: f64| -> Option<(f64, f64)> {
+        let mut best: Option<(f64, f64)> = None;
+        let mut rho = 1.5 * u;
+        while rho < 0.5 * r0.min(r1) {
+            let k = terms_at(u, rho);
+            if best.is_none_or(|(bk, _)| k < bk) {
+                best = Some((k, rho));
+            }
+            rho *= 1.25;
+        }
+        best
+    };
+    let mut u_cut = (z * z + 2.0 * LN_2 * (wp as f64 + 24.0)).sqrt() + 1.0;
+    let Some((mut k_f, mut rho)) = best_terms(u_cut) else {
+        return Ok(None);
+    };
+    if u_cut * u_cut < 2.0 * k_f {
+        u_cut = (2.0 * k_f).sqrt();
+        let Some(again) = best_terms(u_cut) else {
+            return Ok(None);
+        };
+        (k_f, rho) = again;
+    }
+    if !(k_f <= BETAINC_CENTRAL_MAX_TERMS as f64 && u_cut * u_cut >= 2.0 * k_f) {
+        return Ok(None);
+    }
+    let Some(terms) = crate::base::cast::f64_to_i64(k_f).and_then(|k| usize::try_from(k).ok())
+    else {
+        return Ok(None);
+    };
+    // The integrand beyond ±U, both sides alike.
+    let s_u = geo(u_cut);
+    let (b_u, bp_u) = (u_cut * u_cut / 3.0 * s_u, u_cut * s_u);
+    if !u_cut.is_finite() || !bp_u.is_finite() || u_cut <= 1.01 * bp_u {
+        return Ok(None);
+    }
+    // The three bounds as logarithms (at thousands of bits they are below
+    // the range of an `f64`).
+    let ln_beyond = -u_cut * u_cut / 2.0 + b_u - (u_cut - bp_u).ln();
+    let ln_m = rho * rho / 3.0 * geo(rho);
+    let ln_truncation = (2.0 * PI).sqrt().ln() + ln_m + (terms as f64) * (u_cut / rho).ln()
+        - (1.0 - u_cut / rho).ln();
+    // Absolute-value twins in f64: D_k ≥ |d_k|, C_k ≥ |c_k|, A_k ≥ both
+    // moments of uᵏ; they bound the roundings and the moments beyond ±U.
+    let (sf, rf) = (1.0 / r0, 1.0 / r1);
+    let mut d_abs = vec![0.0f64; terms];
+    for (k, d) in d_abs.iter_mut().enumerate().skip(3) {
+        let j = (k - 2) as i32;
+        *d = 1.01 * (s1_f * sf.powi(j) + t0_f * rf.powi(j)) / k as f64;
+    }
+    let mut c_abs = vec![0.0f64; terms];
+    c_abs[0] = 1.0;
+    for k in 1..terms {
+        let s: f64 = (3..=k).map(|j| j as f64 * d_abs[j] * c_abs[k - j]).sum();
+        c_abs[k] = s / k as f64;
+    }
+    let e_f = (-z * z / 2.0).exp();
+    let mut a_abs = vec![0.0f64; terms];
+    a_abs[0] = (2.0 * PI).sqrt();
+    if terms > 1 {
+        a_abs[1] = 1.0;
+    }
+    for k in 2..terms {
+        a_abs[k] = (k - 1) as f64 * a_abs[k - 2] + z.abs().powi((k - 1) as i32) * e_f;
+    }
+    let outside: f64 = (0..terms)
+        .map(|k| {
+            c_abs[k] * u_cut.powi(k as i32 - 1)
+                / (1.0 - (k as f64 - 1.0).max(0.0) / (u_cut * u_cut))
+        })
+        .sum();
+    let ln_outside = outside.ln() - u_cut * u_cut / 2.0;
+    let rounding_mass: f64 = (0..terms)
+        .map(|k| 8.0 * ((k + 2) * (k + 2)) as f64 * c_abs[k] * a_abs[k])
+        .sum();
+    let ln_top = ln_truncation.max(ln_beyond).max(ln_outside);
+    let ln_err = ln_top
+        + ((ln_truncation - ln_top).exp()
+            + (ln_beyond - ln_top).exp()
+            + (ln_outside - ln_top).exp())
+        .ln()
+        + 0.01;
+    if !(ln_err.is_finite() && rounding_mass.is_finite()) {
+        return Ok(None);
+    }
+    // Guard bits for the roundings: 2^−q·rounding_mass below the target.
+    let q = wp + 48 + magnitude_bits(rounding_mass / ln_side.exp());
+    let (t0, s1, sigma, v) = mode(q);
+    let s = sigma.div(&t0, q, RM);
+    let r = sigma.div(&s1, q, RM);
+    let one = BigFloat::from_i32(1, q);
+    // d_k (k ≥ 3), then c_k by k c_k = Σ j d_j c_{k−j}.
+    let mut d = vec![BigFloat::new(q); terms];
+    let (mut sp, mut rp) = (s.clone(), r.clone());
+    for (k, dk) in d.iter_mut().enumerate().skip(3) {
+        let left = s1.mul(&sp, q, RM);
+        let right = t0.mul(&rp, q, RM);
+        let num = if k % 2 == 1 {
+            left.sub(&right, q, RM)
+        } else {
+            left.neg().sub(&right, q, RM)
+        };
+        *dk = num.div(&BigFloat::from_i128(k as i128, q), q, RM);
+        sp = sp.mul(&s, q, RM);
+        rp = rp.mul(&r, q, RM);
+    }
+    let mut c = vec![BigFloat::new(q); terms];
+    c[0] = one.clone();
+    for k in 1..terms {
+        let mut acc = BigFloat::new(q);
+        for j in 3..=k {
+            let t = d[j]
+                .mul(&c[k - j], q, RM)
+                .mul(&BigFloat::from_i128(j as i128, q), q, RM);
+            acc = acc.add(&t, q, RM);
+        }
+        c[k] = acc.div(&BigFloat::from_i128(k as i128, q), q, RM);
+    }
+    // The moments over (−∞, v] and [v, ∞).
+    let half = one.div(&BigFloat::from_i32(2, q), q, RM);
+    let e = v.mul(&v, q, RM).mul(&half, q, RM).neg().exp(q, RM, w.cc);
+    let sqrt_half_pi = w.cc.pi(q, RM).clone().mul(&half, q, RM).sqrt(q, RM);
+    let arg = v.mul(&half.sqrt(q, RM), q, RM);
+    let (Ok(erfc_hi), Ok(erfc_lo)) = (
+        arb_erfc(&arg, &mut w.at(q)),
+        arb_erfc(&arg.neg(), &mut w.at(q)),
+    ) else {
+        return Ok(None);
+    };
+    let mut lower_m = vec![BigFloat::new(q); terms];
+    let mut upper_m = vec![BigFloat::new(q); terms];
+    lower_m[0] = sqrt_half_pi.mul(&erfc_lo, q, RM);
+    upper_m[0] = sqrt_half_pi.mul(&erfc_hi, q, RM);
+    if terms > 1 {
+        lower_m[1] = e.neg();
+        upper_m[1] = e.clone();
+    }
+    let mut vpow = v.mul(&e, q, RM);
+    for k in 2..terms {
+        let km1 = BigFloat::from_i128((k - 1) as i128, q);
+        lower_m[k] = km1.mul(&lower_m[k - 2], q, RM).sub(&vpow, q, RM);
+        upper_m[k] = km1.mul(&upper_m[k - 2], q, RM).add(&vpow, q, RM);
+        vpow = vpow.mul(&v, q, RM);
+    }
+    let mut lo_sum = BigFloat::new(q);
+    let mut hi_sum = BigFloat::new(q);
+    for ((ck, lm), um) in c.iter().zip(&lower_m).zip(&upper_m) {
+        lo_sum = lo_sum.add(&ck.mul(lm, q, RM), q, RM);
+        hi_sum = hi_sum.add(&ck.mul(um, q, RM), q, RM);
+    }
+    let (lo_f, hi_f) = (f64_of(&lo_sum)?, f64_of(&hi_sum)?);
+    let enough = |s: f64| s > 0.0 && ln_err <= s.ln() - (wp as f64 + 8.0) * LN_2;
+    if !(enough(lo_f) && enough(hi_f)) {
+        return Ok(None);
+    }
+    let total = lo_sum.add(&hi_sum, q, RM);
+    let lower = round_to(lo_sum.div(&total, q, RM), wp);
+    let upper = round_to(hi_sum.div(&total, q, RM), wp);
+    Ok(Some((lower, upper)))
+}
+
 /// `(I_x(a, b), I_{1−x}(b, a))` for `a, b > 0`, `0 < x < 1`: both tails of
 /// the regularised incomplete beta function, each to a relative error of
 /// about `2^−wp`.
@@ -10796,6 +11055,9 @@ fn betainc_tails_wp(
     w: &mut Wp<'_>,
 ) -> Result<(BigFloat, BigFloat), SymplexError> {
     let wp = w.bits();
+    if let Some(tails) = betainc_tails_central(a, b, x, w)? {
+        return Ok(tails);
+    }
     let direct_lower = !bf_gt(x, &betainc_switch_point(a, b, wp));
     let first = if direct_lower { a } else { b };
     let ab_bits = magnitude_bits(f64_of(&a.add(b, 64, RM))?);

@@ -439,7 +439,15 @@ impl TestResult {
     }
 
     /// The statistic as an exact rational when it is one (`U`, `H`, `χ²`,
-    /// `F`, counts and proportions).
+    /// `F`, counts and proportions).  `None` for a statistic that is not a
+    /// rational, and for one computed in floating point: the
+    /// likelihood-ratio, Wald and score tests of the fitted models
+    /// ([`LikelihoodFit::llr_test`](crate::stats::regression::LikelihoodFit::llr_test),
+    /// the Cox model's `wald_test` / `score_test`) write their `f64`
+    /// statistic `s` as `exp(ℓ)`, `ℓ = ln s` in `f64`, and its p-value
+    /// through it (up to 0.58 the statistic was the dyadic rational of the
+    /// `f64`, returned here as if exact).  A statistic such a fit computes as
+    /// at most `0` is reported as `0`, with p-value `1`.
     #[must_use]
     pub fn statistic_exact(&self) -> Option<Q> {
         self.statistic.as_rational()

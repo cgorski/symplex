@@ -1335,14 +1335,14 @@ fn split_at_breakpoints(
     if let Some(reason) = pole_divergence(arena, f, x, a, b) {
         return Err(divergent(reason));
     }
+    // `R(e^{λx})` with a rate that is not real: its singular points located
+    // exactly, before the solver's (which may write `x = 1` as `(½ ln 2 +
+    // iπ/4)/(iπ/4 + ln √2)`, a point the comparisons do not place).
     let range = numeric_range(arena, a, b);
-    let scan = calculus_util::scan_breakpoints(arena, f, x, scan_range(a, b, range));
-    if !scan.complete
-        && !scan.opaque
-        && let Some(exact) = exp_rational_scan(arena, f, x)
-    {
+    if let Some(exact) = exp_rational_scan(arena, f, x, scan_range(a, b, range)) {
         return build_pieces(arena, &exact, a, b);
     }
+    let scan = calculus_util::scan_breakpoints(arena, f, x, scan_range(a, b, range));
 
     // Opaque nodes (unknown functions, formal integrals, …) cannot be
     // analysed at all — no numeric guard can vouch for them.
@@ -1383,6 +1383,10 @@ fn split_at_breakpoints(
 /// Most roots of the denominator in `u` that [`exp_rational_scan`] examines.
 const MAX_EXP_POLES: usize = 8;
 
+/// Most members of a lattice of poles on the unit circle (an imaginary rate)
+/// that [`exp_rational_scan`] lists in the range.
+const MAX_CIRCLE_POLES: usize = 256;
+
 /// The singular points of `f = R(e^{L₁}, …, e^{Lₖ})`, every `Lⱼ = rⱼ·α·x +
 /// βⱼ` linear with a rational `rⱼ` and constants `α`, `βⱼ`, for a rate `α`
 /// that is not real, where the solver gives up on a denominator such as
@@ -1391,19 +1395,31 @@ const MAX_EXP_POLES: usize = 8;
 /// `u` meets a root `ρ ≠ 0` of its denominator.  For `re λ ≠ 0`, `|u| = |ρ|`
 /// only at `x_ρ = ln|ρ|/re λ`, and `u = ρ` there exactly when `θ/2π` is an
 /// integer, `θ = im λ·x_ρ − arg ρ` (an exact integer part `n` and the
-/// certified sign of `θ/2π − n` decide it).  For an imaginary `λ`, `u` runs
-/// around the unit circle: no singular point when `|ρ| ≠ 1` is certified.
-/// The scan is complete: these are all the singular points.  `None` when
-/// `f` is not of that form, or a root, an integer part or a sign does not
-/// settle, or `u` meets the circle `|u| = |ρ|` of an imaginary rate.  Up to
+/// certified sign of `θ/2π − n` decide it).  For an imaginary `λ = iω`, `u`
+/// runs around the unit circle: no singular point when `|ρ| ≠ 1` is
+/// certified, and for `|ρ| = 1` the lattice `x = (arg ρ + 2πk)/ω` over the
+/// exact bounds of the finite `range` (`solve::lattice_indices`; up to 0.58
+/// the solver's principal root alone: `∫₋₂⁰ dx/(e^{iπx} + 1)` was `2`, across
+/// the pole at `x = −1`).  The scan is complete: these are all the singular
+/// points.  `None` when `f` is not of that form, or a root, an integer part
+/// or a sign does not settle, or the lattice has no finite range.  Up to
 /// 0.55 `∫₀³ dx/(e^{(1+i)x} + e^{−(1+i)x} − 3)` was refused ("could not
-/// determine all singularities").
-fn exp_rational_scan(arena: &mut Arena, f: ExprId, x: ExprId) -> Option<BreakScan> {
+/// determine all singularities").  A power `c^L` of a constant `c ≠ 0` is
+/// `e^{L·ln c}` (the principal power): up to 0.58 `∫₀² (1+i)ˣ/((1+i)ˣ − 1 − i)
+/// dx` (a pole at `x = 1`) and `∫₀³ dx/((1+i)ˣ + (1+i)⁻ˣ − 3)` were refused.
+fn exp_rational_scan(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    range: Option<ScanRange>,
+) -> Option<BreakScan> {
     use num_integer::Integer;
     let mut exps: Vec<(ExprId, LinearCoeffs<ExprId>)> = Vec::new();
     for id in walk::post_order_ids(arena, f) {
-        let ExprNode::Exp(arg) = *arena.node(id) else {
-            continue;
+        let (arg, base) = match *arena.node(id) {
+            ExprNode::Exp(arg) => (arg, None),
+            ExprNode::Pow(c, g) if c != arena.e_const() => (g, Some(c)),
+            _ => continue,
         };
         if !walk::contains(arena, arg, x) {
             continue;
@@ -1414,6 +1430,26 @@ fn exp_rational_scan(arena: &mut Arena, f: ExprId, x: ExprId) -> Option<BreakSca
         {
             return None;
         }
+        let l = match base {
+            None => l,
+            Some(c) => {
+                if !walk::free_symbols(arena, c).is_empty()
+                    || !arena
+                        .part_signs(c)
+                        .is_some_and(|s| s.re.is_some() || s.im.is_some())
+                {
+                    return None;
+                }
+                let ln_c = arena.ln(c);
+                let ln_c = eval::eval(arena, ln_c);
+                let slope = arena.mul(&[l.slope, ln_c]);
+                let intercept = arena.mul(&[l.intercept, ln_c]);
+                LinearCoeffs {
+                    slope: eval::eval(arena, slope),
+                    intercept: eval::eval(arena, intercept),
+                }
+            }
+        };
         exps.push((id, l));
     }
     let alpha = exps.first()?.1.slope;
@@ -1457,8 +1493,11 @@ fn exp_rational_scan(arena: &mut Arena, f: ExprId, x: ExprId) -> Option<BreakSca
     let in_u = eval::eval(arena, in_u);
     let in_u = crate::transforms::integrate::clear_nested_fractions(arena, in_u, u);
     let (n, d) = crate::poly::polybridge::as_numer_denom(arena, in_u);
-    crate::poly::polybridge::expr_to_poly(arena, n, u)?;
-    crate::poly::polybridge::expr_to_poly(arena, d, u)?;
+    // Polynomials in `u` over the constants (`u − 1 − i` from `(1+i)ˣ`).
+    if !arena.is_zero_structural(n) {
+        calculus_util::poly_coeffs_symbolic(arena, n, u)?;
+    }
+    calculus_util::poly_coeffs_symbolic(arena, d, u)?;
     let mut scan = BreakScan {
         points: Vec::new(),
         complete: true,
@@ -1489,12 +1528,53 @@ fn exp_rational_scan(arena: &mut Arena, f: ExprId, x: ExprId) -> Option<BreakSca
         let ln_abs_rho = eval::eval(arena, ln_abs_rho);
         if circle {
             if crate::poly::algebraic::sign_checked(arena, ln_abs_rho)? == 0 {
-                return None;
+                // `u = e^{iωx}` meets `ρ` on the unit circle wherever `ωx = arg ρ
+                // + 2πk`: every member of the lattice in the range.
+                let r = range.as_ref()?;
+                let arg_rho = arena.arg(rho);
+                let offset = arena.div(arg_rho, im_lambda);
+                let offset = eval::eval(arena, offset);
+                let two = arena.int(2);
+                let pi = arena.pi();
+                let two_pi = arena.mul(&[two, pi]);
+                let step = arena.div(two_pi, im_lambda);
+                let step = eval::eval(arena, step);
+                let ks = crate::transforms::solve::lattice_indices(
+                    arena,
+                    offset,
+                    step,
+                    r.exact.lower,
+                    r.exact.upper,
+                    MAX_CIRCLE_POLES,
+                )?;
+                for k in ks {
+                    let k = arena.num_ratio(Q::from_integer(k));
+                    let sk = arena.mul(&[step, k]);
+                    let at = arena.add(&[offset, sk]);
+                    let at = eval::eval(arena, at);
+                    let value = evalf::eval_const_f64(arena, at).filter(|v| v.is_finite())?;
+                    scan.points.push(Breakpoint {
+                        point: at,
+                        value: Some(value),
+                        kind: BreakKind::Singular,
+                    });
+                }
             }
             continue;
         }
         let at = arena.div(ln_abs_rho, re_lambda);
-        let at = eval::eval(arena, at);
+        let mut at = eval::eval(arena, at);
+        // `ln 2/ln √2` (`(1+i)ˣ = 2i`) is 2 once the logarithms of the
+        // positive constants are expanded.
+        if arena.as_num(at).is_none() {
+            let n = crate::simplify::log_expand::expand_log(arena, ln_abs_rho);
+            let d = crate::simplify::log_expand::expand_log(arena, re_lambda);
+            let q = arena.div(n, d);
+            let q = eval::eval(arena, q);
+            if arena.as_num(q).is_some() {
+                at = q;
+            }
+        }
         let phase = arena.mul(&[im_lambda, at]);
         let arg_rho = arena.arg(rho);
         let neg_arg = arena.neg(arg_rho);
@@ -2145,7 +2225,8 @@ fn integrate_piece(
     let anti = crate::transforms::integrate::integrate(arena, f, x);
     let anti = safe_eval(arena, anti);
     if walk::has_unevaluated(arena, anti) {
-        return fallback_without_antiderivative(arena, f, x, p);
+        let r = fallback_without_antiderivative(arena, f, x, p);
+        return divergent_at_singular_end(arena, f, x, p, r);
     }
 
     // Parametric antiderivatives come wrapped in a Piecewise over the

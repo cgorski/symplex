@@ -98,7 +98,11 @@
 //! The node's bound ([`bound`]), for every case these routines take, is
 //! their own `2^−(prec+12)` relative to each part plus, for each inexact
 //! argument, the change of the value with that argument moved by its radius
-//! (`sensitivity::complex_route_bound`); none when an argument's ball
+//! (`sensitivity::complex_route_bound`: the radius of the argument's real
+//! part moves each part by its own share, since 0.59 also off the axis,
+//! where `E(10⁶⁰⁰ + i) = 1.29·10⁻³⁰⁰ − 10³⁰⁰i` was refused, and a part far
+//! below the other is computed up to [`MAX_PART_GAP`] bits below the
+//! modulus); none when an argument's ball
 //! reaches a cut with an undecided side: the parameter's `[1, ∞)`, `Π`'s
 //! characteristic's `[1, ∞)`, the cut of `√(1 − m/n)` in [`pi_involution`],
 //! and those of a non-real `φ`.  (Up to 0.55 a complex value at real
@@ -237,7 +241,7 @@ pub(super) fn eval(
         if need <= extra {
             return Ok((super::round_to(v.0, prec), super::round_to(v.1, prec)));
         }
-        if need > 4 * prec + 512 {
+        if need > (4 * prec + 512).max(MAX_PART_GAP) {
             break;
         }
         extra = need + 16;
@@ -247,6 +251,15 @@ pub(super) fn eval(
         f.name()
     )))
 }
+
+/// The most bits [`eval`] adds to the precision for a part far below the
+/// other, whatever the precision asked for: off the axis the routes compute
+/// both parts relative to the modulus, and a part `2^g` below it needs `g`
+/// bits more (`E(10⁶⁰⁰ + i) = 1.29·10⁻³⁰⁰ − 10³⁰⁰i`, 2,000 bits; up to 0.58
+/// it was refused beyond `4·prec + 512`).  The imaginary part of `(R_F −
+/// R_D/3)(0, 1/m, 1)` in the split of `E(m)` at `t = 1/m` cancels the same
+/// bits, so no route avoids them.
+const MAX_PART_GAP: usize = 4096;
 
 /// How many bits below the modulus of `v` its smaller nonzero part lies.
 fn part_gap(v: &Complex) -> usize {

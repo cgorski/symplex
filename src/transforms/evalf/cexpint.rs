@@ -613,8 +613,14 @@ fn upper_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexErro
     })
 }
 
-/// `γ(a, z)` at working precision `wp` (`a` not a non-positive integer).
-fn lower_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+/// `γ(a, z)` at working precision `wp` (`a` not a non-positive integer),
+/// with its imaginary part for a real `a` by the asymptotic expansion
+/// ([`OwnPart`]).
+fn lower_at(
+    a: &Complex,
+    z: &Complex,
+    w: &mut Wp<'_>,
+) -> Result<(Sum, Option<OwnPart>), SymplexError> {
     let wp = w.bits();
     if nonpositive_int(a).is_some() || (a.1.is_zero() && a.0.is_int() && a.0.is_negative()) {
         return Err(super::infinite(
@@ -623,10 +629,13 @@ fn lower_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexErro
     }
     if is_zero(z) {
         if is_strictly_positive(&a.0) {
-            return Ok(Sum {
-                value: c_zero(wp),
-                largest: f64::NEG_INFINITY,
-            });
+            return Ok((
+                Sum {
+                    value: c_zero(wp),
+                    largest: f64::NEG_INFINITY,
+                },
+                None,
+            ));
         }
         // As for `Γ(a, 0)`: `γ(a, z) ~ z^a/a`.
         return Err(super::singular_unless_oscillating(
@@ -639,12 +648,24 @@ fn lower_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexErro
         let pref = power_exp(z, &shift(a, -1, p), true, &mut w.at(p));
         let up = c_mul(&pref, &b.value, p, RM);
         let g = gamma_of(a, &mut w.at(p))?;
-        return Ok(Sum {
-            largest: (accuracy::lg_abs(&pref) + b.largest).max(accuracy::lg_abs(&g)),
-            value: c_sub(&g, &up, p, RM),
+        let upper = accuracy::lg_abs(&pref) + b.largest;
+        // `Γ(a)` is real (exactly: `gamma_of`), so `Im γ = −Im Γ(a, z)`.
+        let own = (a.1.is_zero() && g.1.is_zero()).then_some(OwnPart {
+            imaginary: true,
+            largest: upper,
         });
+        if own.is_some() && is_zero(&up) && !z.1.is_zero() {
+            return Err(part_below_range("the imaginary part of lowergamma"));
+        }
+        return Ok((
+            Sum {
+                largest: upper.max(accuracy::lg_abs(&g)),
+                value: c_sub(&g, &up, p, RM),
+            },
+            own,
+        ));
     }
-    lower_series(a, z, w)
+    Ok((lower_series(a, z, w)?, None))
 }
 
 /// `E_n(z) = z^(n−1)Γ(1 − n, z)` at working precision `wp`, `z ≠ 0`.
@@ -691,6 +712,18 @@ fn e1_at(z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
     expint_at(&one, z, w)
 }
 
+/// The refusal of a value one part of which the route computes on its own
+/// ([`OwnPart`]) and found below the exponent range (the sum that is that
+/// part underflowed to 0) while the other part is within it: refused as a
+/// whole value below the range is, never printed 0.
+fn part_below_range(part: &str) -> SymplexError {
+    super::unevaluable(format!(
+        "{part} lies below the arbitrary-precision exponent range (its magnitude is below \
+         2^{:e}) next to a part within it: not printed as 0",
+        f64::from(astro_float::EXPONENT_MIN)
+    ))
+}
+
 /// `iπ` or `−iπ` (`negative`), halved when `halve`.
 fn i_pi(negative: bool, halve: bool, w: &mut Wp<'_>) -> Complex {
     let p = w.bits();
@@ -701,16 +734,47 @@ fn i_pi(negative: bool, halve: bool, w: &mut Wp<'_>) -> Complex {
     (BigFloat::new(p), if negative { pi.neg() } else { pi })
 }
 
-/// `Ei(z)` for a non-real `z` at working precision `wp`: `−E1(−z) ± iπ`.
-fn ei_at(z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
+/// A part of a value that its route computes on its own next to an exact
+/// constant: the real part of `Ei(z) = ±iπ − E1(−z)` (and of `li`), the
+/// imaginary part of `γ(a, z) = Γ(a) − Γ(a, z)` for a real `a` by the
+/// asymptotic expansion.  It is (up to sign) that part of the sum `E1(−z)`,
+/// `Γ(a, z)` alone, whose error is below `2^(largest − prec − 12)` at the
+/// precision `prec` of the value (the sum is formed to `2^−wp` of its
+/// largest term at a `wp ≥ prec + 32`), however small next to the other
+/// part: `Ei(−1000 + i) = −2.7·10⁻⁴³⁸ + 3.14…i`.  When the sum underflowed
+/// to 0 the part lies below the exponent range next to one within it, and
+/// the value is refused ([`part_below_range`]; `Ei(−10¹⁰ + i)`, real part
+/// `−5.0·10^(−4342944830)`).  Up to 0.58 one bound, relative to the
+/// modulus, held both parts, and such a part was printed 0.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct OwnPart {
+    /// The imaginary part (else the real part).
+    pub(super) imaginary: bool,
+    /// `log₂` of the largest term of the sum.
+    pub(super) largest: f64,
+}
+
+/// `Ei(z)` for a non-real `z` at working precision `wp`: `−E1(−z) ± iπ`,
+/// with its real part ([`OwnPart`]).
+fn ei_at(z: &Complex, w: &mut Wp<'_>) -> Result<(Sum, OwnPart), SymplexError> {
     let wp = w.bits();
     let e = e1_at(&c_neg(z), w)?;
     let p = wp + 8;
+    if is_zero(&e.value) {
+        return Err(part_below_range("the real part of Ei"));
+    }
     let ip = i_pi(z.1.is_negative() && !z.1.is_zero(), false, &mut w.at(p));
-    Ok(Sum {
-        largest: e.largest.max(2.0),
-        value: c_sub(&ip, &e.value, p, RM),
-    })
+    let own = OwnPart {
+        imaginary: false,
+        largest: e.largest,
+    };
+    Ok((
+        Sum {
+            largest: e.largest.max(2.0),
+            value: c_sub(&ip, &e.value, p, RM),
+        },
+        own,
+    ))
 }
 
 /// Which trigonometric or hyperbolic integral.
@@ -876,21 +940,28 @@ pub(super) fn upper_gamma(
     super::zeta::with_loss(w, &mut |wp, cc| upper_at(a, z, &mut Wp::new(wp, cc)))
 }
 
-/// `γ(a, z)` (complex), as [`upper_gamma`].
+/// `γ(a, z)` (complex), as [`upper_gamma`], with the part it computes on
+/// its own ([`OwnPart`]).
 pub(super) fn lower_gamma(
     a: &Complex,
     z: &Complex,
     w: &mut Wp<'_>,
-) -> Result<Complex, SymplexError> {
+) -> Result<(Complex, Option<OwnPart>), SymplexError> {
     let prec = w.bits();
     if special_input(a) || special_input(z) {
         return Err(super::unevaluable("lowergamma of special float value"));
     }
     if is_zero(z) && is_strictly_positive(&a.0) {
-        return Ok(c_zero(prec + 16));
+        return Ok((c_zero(prec + 16), None));
     }
     tracing::debug!(prec, "evalf: lowergamma at a complex argument");
-    super::zeta::with_loss(w, &mut |wp, cc| lower_at(a, z, &mut Wp::new(wp, cc)))
+    let mut own = None;
+    let value = super::zeta::with_loss(w, &mut |wp, cc| {
+        let (sum, part) = lower_at(a, z, &mut Wp::new(wp, cc))?;
+        own = part;
+        Ok(sum)
+    })?;
+    Ok((value, own))
 }
 
 /// `E_n(z)` (complex), as [`upper_gamma`].
@@ -919,38 +990,57 @@ pub(super) fn expint(n: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Complex
     super::zeta::with_loss(w, &mut |wp, cc| expint_at(n, z, &mut Wp::new(wp, cc)))
 }
 
-/// `Ei(z)` for a non-real `z`, as [`upper_gamma`].
-pub(super) fn ei(z: &Complex, w: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+/// `Ei(z)` for a non-real `z`, as [`upper_gamma`], with its real part
+/// ([`OwnPart`]).
+pub(super) fn ei(z: &Complex, w: &mut Wp<'_>) -> Result<(Complex, Option<OwnPart>), SymplexError> {
     let prec = w.bits();
     if special_input(z) {
         return Err(super::unevaluable("Ei of special float value"));
     }
     tracing::debug!(prec, "evalf: Ei at a complex argument");
-    super::zeta::with_loss(w, &mut |wp, cc| ei_at(z, &mut Wp::new(wp, cc)))
+    let mut own = None;
+    let value = super::zeta::with_loss(w, &mut |wp, cc| {
+        let (sum, part) = ei_at(z, &mut Wp::new(wp, cc))?;
+        own = Some(part);
+        Ok(sum)
+    })?;
+    Ok((value, own))
 }
 
-/// `li(z) = Ei(ln z)` for `z` off `[0, ∞)`, as [`upper_gamma`].
-pub(super) fn li(z: &Complex, wpc: &mut Wp<'_>) -> Result<Complex, SymplexError> {
+/// `li(z) = Ei(ln z)` for `z` off `[0, ∞)`, as [`upper_gamma`], with its
+/// real part ([`OwnPart`]: the rounding of `ln z` moves it by `abs(z)` times
+/// that rounding at most).
+pub(super) fn li(
+    z: &Complex,
+    wpc: &mut Wp<'_>,
+) -> Result<(Complex, Option<OwnPart>), SymplexError> {
     let prec = wpc.bits();
     if special_input(z) {
         return Err(super::unevaluable("li of special float value"));
     }
     if is_zero(z) {
-        return Ok(c_zero(prec + 16));
+        return Ok((c_zero(prec + 16), None));
     }
     tracing::debug!(prec, "evalf: li at a complex argument");
-    super::zeta::with_loss(wpc, &mut |wp, cc| {
+    let mut own = None;
+    let value = super::zeta::with_loss(wpc, &mut |wp, cc| {
         // The rounding of ln z moves Ei by abs(e^w/w)·abs(Δw) ≤ abs(z)·2^−wp.
         let w = ln_c(z, &mut Wp::new(wp + 16, cc));
         if is_zero(&w) {
             return Err(super::unevaluable("li(1) is -∞"));
         }
-        let e = ei_at(&w, &mut Wp::new(wp, cc))?;
+        let (e, part) = ei_at(&w, &mut Wp::new(wp, cc))?;
+        let lz = accuracy::lg_abs(z);
+        own = Some(OwnPart {
+            imaginary: false,
+            largest: part.largest.max(lz),
+        });
         Ok(Sum {
-            largest: e.largest.max(accuracy::lg_abs(z)),
+            largest: e.largest.max(lz),
             value: e.value,
         })
-    })
+    })?;
+    Ok((value, own))
 }
 
 /// `Si`, `Ci`, `Shi` or `Chi` (complex), as [`upper_gamma`].

@@ -1511,14 +1511,18 @@ fn ordinal_measures_on_all_tied_and_perfectly_ordered_data() -> R {
         (c.concordant, c.discordant, c.ties_x, c.ties_y, c.ties_both),
         (0, 0, 8, 0, 2)
     );
-    is_invalid(goodman_kruskal_gamma(&xc, &yv));
-    is_invalid(somers_d(&xc, &yv, Dependent::Y));
-    is_invalid(kendall_tau_c(&xc, &yv));
+    // Every pair tied: degenerate data since 0.59 (was InvalidArgument).
+    is_degenerate(goodman_kruskal_gamma(&xc, &yv), Degeneracy::ZeroVariance);
+    is_degenerate(somers_d(&xc, &yv, Dependent::Y), Degeneracy::ZeroVariance);
+    is_degenerate(kendall_tau_c(&xc, &yv), Degeneracy::ZeroVariance);
     // With x as the dependent variable the denominator is T_x = 8: D = 0 (scipy returns nan here).
     assert_eq!(somers_d(&xc, &yv, Dependent::X)?, Q::zero());
     assert_eq!(somers_d(&xc, &yv, Dependent::Symmetric)?, Q::zero());
     // Both constant: every pair tied on both.
-    is_invalid(somers_d(&xc, &xc, Dependent::Symmetric));
+    is_degenerate(
+        somers_d(&xc, &xc, Dependent::Symmetric),
+        Degeneracy::ZeroVariance,
+    );
     // Perfect negative association with ties: x = [1,1,2,2,3,3], y = [3,3,2,2,1,1]
     // scipy: kendalltau(variant='c') -1.0, somersd -1.0; Fraction: C 0, D 12, T_xy 3
     let xn = from_i64(&[1, 1, 2, 2, 3, 3]);

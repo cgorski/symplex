@@ -32,7 +32,9 @@
 //!    application at an exact argument where it is infinite (`ln(0)`,
 //!    `exp(∞)`) never reaches here: it is folded when interned (see
 //!    *Function applications* below).  Other applications (`Γ(zoo)`,
-//!    `f(x)`) count as finite.
+//!    `f(x)`) count as finite.  A denominator `0^y` (0 on a half plane) is
+//!    not a generic nonzero value: `0/0^y` is a `Piecewise` (see
+//!    `zero_times_rest`).
 //! 7. `NaN` propagation.
 //! 8. `±∞` absorbs factors of known sign; factors of unknown direction
 //!    stay: `x·∞`, `−i·∞` (a *directed infinity*, see
@@ -547,23 +549,46 @@ fn cancels_infinite_terms(arena: &Arena, terms: &FxHashMap<ExprId, Q>, merged: &
 ///   1))` was `0` (`0·nan`; SymPy 1.14 gives `0`, deliberately different);
 /// * `0 × δ(c) → nan`, `0 × H(c) → nan` (also over them) for a constant `c`
 ///   proved non-real, where they have no value
-///   ([`distribution_without_value`]).
+///   ([`distribution_without_value`]);
+/// * a denominator `0^e` whose exponent's sign the constructors cannot
+///   decide (`0^y`; also a factor `0^(−y)`, its reciprocal) is not a
+///   generic nonzero value: it is 0 on the half plane `re e > 0`.  The
+///   quotient is `0` only where every such denominator is nonzero, and `nan`
+///   elsewhere ([`zero_times_zero_powers`]): `0/0^y` is `Piecewise((0, (0 >
+///   re(y)) | Eq(y, 0)), (nan, True))`.  Up to 0.58 it was 0, right only for
+///   `re y < 0` (and `y = 0`).  (Any other factor `0^e` keeps the canonical
+///   `0·f = 0` of a finite-looking factor: the exact zero coefficients of an
+///   expansion at `0^e` rely on it.)
+/// * a `Piecewise` factor or denominator distributes the zero over its
+///   pieces ([`zero_times_piecewise`]).
 ///
 /// `saw_infinity` reports whether an infinity was already consumed from the
 /// factor list before the coefficient became zero; `remaining` are the
 /// other factors (bases with a positive exponent among them), `denominators`
-/// the bases collected with a negative exponent.
+/// the bases collected with a negative exponent, `zero_exponents` the
+/// exponents of the factors `0^e` collected (under the base 0).
 fn zero_times_rest<'a>(
     arena: &mut Arena,
     saw_infinity: bool,
     remaining: impl IntoIterator<Item = &'a ExprId>,
     denominators: impl IntoIterator<Item = ExprId>,
+    zero_exponents: impl IntoIterator<Item = ExprId>,
 ) -> ExprId {
     if saw_infinity {
         return arena.nan;
     }
     let mut denominators: SmallVec<[ExprId; 4]> = denominators.into_iter().collect();
     let mut applications: SmallVec<[ExprId; 4]> = SmallVec::new();
+    // The exponents `e` of the denominators `0^e` met, also as a factor
+    // `0^(−e)` ([`reciprocal_zero_power`]).
+    let mut zero_powers: SmallVec<[ExprId; 2]> = SmallVec::new();
+    for e in zero_exponents {
+        if let Some(d) = reciprocal_zero_power(arena, e) {
+            zero_powers.push(d);
+        }
+    }
+    // The `Piecewise` factors (`true`) and denominators (`false`) met.
+    let mut piecewise: SmallVec<[(ExprId, bool); 2]> = SmallVec::new();
     // (node, outside every negative power?): only there is a negative
     // power a denominator of the product (`(1/d + 2)⁻¹` is finite).
     let mut stack: SmallVec<[(ExprId, bool); 16]> =
@@ -590,6 +615,13 @@ fn zero_times_rest<'a>(
             ExprNode::Pow(base, e) if outside && arena.as_num(*e).is_some() => {
                 stack.push((*base, outside));
             }
+            ExprNode::Pow(base, e) if outside && arena.is_zero_structural(*base) => {
+                let e = *e;
+                if let Some(d) = reciprocal_zero_power(arena, e) {
+                    zero_powers.push(d);
+                }
+            }
+            ExprNode::Piecewise(_) if outside => piecewise.push((id, true)),
             ExprNode::DiracDelta(_) | ExprNode::Heaviside(_)
                 if outside && distribution_without_value(arena, id) =>
             {
@@ -618,6 +650,10 @@ fn zero_times_rest<'a>(
             tracing::debug!("canon_mul: 0 over an identically zero or undefined denominator → nan");
             return arena.nan;
         }
+        push_zero_powers(arena, d, &mut zero_powers);
+        if matches!(arena.node(d), ExprNode::Piecewise(_)) {
+            piecewise.push((d, false));
+        }
     }
     for f in applications {
         if memo.infinite_or_undefined(arena, f)
@@ -628,7 +664,118 @@ fn zero_times_rest<'a>(
             return arena.nan;
         }
     }
-    arena.zero
+    let zero = zero_times_zero_powers(arena, &zero_powers);
+    zero_times_piecewise(arena, zero, &piecewise)
+}
+
+/// `z` (0, or the `Piecewise` of [`zero_times_zero_powers`]) times the
+/// `Piecewise` factors (`true`) and denominators (`false`) of a product
+/// with the coefficient 0: `0·Piecewise((vᵢ, cᵢ))` is `Piecewise((0·vᵢ,
+/// cᵢ))` (one value when they agree), and so is `0/Piecewise(…)` with
+/// `0/vᵢ`.  A `Piecewise` is not a generic finite value: `0·(0/0^y)` is
+/// `0/0^y`'s `Piecewise((0, …), (nan, True))` itself, as when the product is
+/// built at once, and `0/(0/0^y)` is `nan` (`0/0`, `0/nan`).
+fn zero_times_piecewise(arena: &mut Arena, z: ExprId, piecewise: &[(ExprId, bool)]) -> ExprId {
+    let zero = arena.zero;
+    let mut result = z;
+    for &(p, factor) in piecewise {
+        let ExprNode::Piecewise(pairs) = arena.node(p).clone() else {
+            continue;
+        };
+        let mut values: SmallVec<[(ExprId, ExprId); 3]> = SmallVec::new();
+        for (v, c) in pairs {
+            let v = if factor {
+                v
+            } else {
+                canon_pow(arena, v, arena.neg_one)
+            };
+            values.push((canon_mul(arena, &[zero, v]), c));
+        }
+        let Some(&(first, _)) = values.first() else {
+            continue;
+        };
+        let q = if values.iter().all(|&(v, _)| v == first) {
+            first
+        } else {
+            arena.piecewise(&values)
+        };
+        if q == zero {
+            continue;
+        }
+        result = if result == zero {
+            q
+        } else {
+            canon_mul(arena, &[result, q])
+        };
+    }
+    result
+}
+
+/// `−e` when the exponent `e` of a factor `0^e` has a negative numeric
+/// coefficient: `0^(−y)` is the reciprocal of `0^y` (`zoo` for `re y > 0`,
+/// 0 for `re y < 0`, 1 at `y = 0`), and `0·0^(−y)` is `0/0^y`.  Any other
+/// factor `0^e` keeps the generic reading of a factor (`0·0^y = 0`; the exact
+/// zero coefficients of an expansion at `0^y` rely on it).
+fn reciprocal_zero_power(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
+    let negated = match arena.node(e) {
+        ExprNode::Neg(_) => true,
+        ExprNode::Mul(children) => children
+            .first()
+            .and_then(|&c| arena.as_num(c))
+            .is_some_and(Signed::is_negative),
+        _ => false,
+    };
+    negated.then(|| canon_neg(arena, e))
+}
+
+/// The exponents `e` of the powers `0^e` among the factors of the
+/// denominator `d` (a product of positive numeric powers: `(0^y)^(1/2)·x`).
+/// (`canon_pow` folds `0^e` for a numeric `e` and for an `e` whose real
+/// part has a known sign: what stays is undecided.)
+fn push_zero_powers(arena: &Arena, d: ExprId, zero_powers: &mut SmallVec<[ExprId; 2]>) {
+    let mut stack: SmallVec<[ExprId; 8]> = smallvec![d];
+    while let Some(id) = stack.pop() {
+        match *arena.node(id) {
+            ExprNode::Mul(ref children) => stack.extend(children.iter().copied()),
+            ExprNode::Pow(base, e) if arena.is_zero_structural(base) => zero_powers.push(e),
+            ExprNode::Pow(base, e) if arena.as_num(e).is_some_and(Signed::is_positive) => {
+                stack.push(base);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `0` over finite denominators and the powers `0^e` of [`zero_times_rest`]
+/// (their exponents `e`): `0^e` is 0 for `re e > 0`, `zoo` for `re e < 0`, 1
+/// at `e = 0` and `nan` elsewhere on `re e = 0`, so the quotient is `0`
+/// where each is nonzero and has a value (`re e < 0` or `e = 0`), and `nan`
+/// elsewhere: `Piecewise((0, condition), (nan, True))`.  No such power: `0`.
+/// The generic convention does not cover them (they vanish on a half plane
+/// and are never divided by: CONTRIBUTING, "Piecewise parameters"), and a
+/// value right on one half plane only is not folded to.
+fn zero_times_zero_powers(arena: &mut Arena, zero_powers: &[ExprId]) -> ExprId {
+    if zero_powers.is_empty() {
+        return arena.zero;
+    }
+    tracing::debug!("canon_mul: 0 over a power 0^e of undecided sign → Piecewise");
+    let zero = arena.zero;
+    let mut conditions: SmallVec<[ExprId; 2]> = SmallVec::new();
+    for &e in zero_powers {
+        let re = arena.re(e);
+        let half_plane = arena.gt(zero, re);
+        let at_zero = arena.eq_(e, zero);
+        let mut either = [half_plane, at_zero];
+        either.sort_by(|a, b| arena.sort_key(*a).cmp(arena.sort_key(*b)));
+        let condition = arena.or(&either);
+        if !conditions.contains(&condition) {
+            conditions.push(condition);
+        }
+    }
+    conditions.sort_by(|a, b| arena.sort_key(*a).cmp(arena.sort_key(*b)));
+    let condition = arena.and(&conditions);
+    let (nan, otherwise) = (arena.nan, arena.bool_true);
+    arena.piecewise(&[(zero, condition), (nan, otherwise)])
 }
 
 /// Does a sum of the denominator `d` ([`zero_candidate_sums`]) vanish by an
@@ -841,28 +988,34 @@ fn not_finite_at_infinity(arena: &Arena, f: ExprId) -> bool {
 /// is `nan` (up to 0.56 it was 0; SymPy 1.14 also gives 0, against its
 /// `0·zoo = nan`).  A quotient `0/f` is 0 where `f` tends to `zoo`
 /// (`W(zoo)`) and has no value where `f` has no limit
-/// ([`without_limit_at_complex_infinity`]).  An orthogonal polynomial of degree 0 is the
-/// constant 1 at every argument and parameter (`eval` folds
-/// `legendre(0, zoo)` and `jacobi(0, zoo, 1, x)` to 1): not counted.
+/// ([`without_limit_at_complex_infinity`]).  An orthogonal polynomial of
+/// degree 0 is a constant at every argument (`eval` folds `legendre(−1,
+/// zoo)` and `jacobi(2, −3, 0, zoo)` to 1: [`AtComplexInfinity::Constant`]),
+/// and of degree 0 in its variable at every parameter (`legendre(0, zoo)`,
+/// `jacobi(0, zoo, 1, x)`): not counted.
 fn unevaluated_at_complex_infinity(arena: &Arena, f: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     use crate::base::libfn::LibFn;
     use crate::base::truth::Truth;
     let node = arena.node(f);
-    let constant_polynomial = matches!(
-        node,
+    let constant_polynomial = match node {
         ExprNode::Lib(
             LibFn::Legendre
-                | LibFn::ChebyshevT
-                | LibFn::ChebyshevU
-                | LibFn::Hermite
-                | LibFn::Laguerre
-                | LibFn::Gegenbauer
-                | LibFn::Jacobi
-                | LibFn::AssocLaguerre,
+            | LibFn::ChebyshevT
+            | LibFn::ChebyshevU
+            | LibFn::Hermite
+            | LibFn::Laguerre
+            | LibFn::Gegenbauer
+            | LibFn::Jacobi
+            | LibFn::AssocLaguerre,
             args,
-        ) if args.first() == Some(&arena.zero)
-    );
+        ) if args.first() == Some(&arena.zero) => true,
+        ExprNode::Lib(lib, args) => matches!(
+            at_complex_infinity(arena, *lib, args),
+            Some(AtComplexInfinity::Constant)
+        ),
+        _ => false,
+    };
     !constant_polynomial
         && !matches!(node, ExprNode::Apply(..) | ExprNode::Pow(..))
         && application_arguments(arena, node).is_some_and(|args| {
@@ -886,11 +1039,11 @@ fn without_limit_at_complex_infinity(arena: &Arena, d: ExprId) -> bool {
 
 /// Does `f` tend to `zoo` (`|f| → ∞` in every direction) as its argument
 /// `zoo` is approached: `W_k(z) ∼ ln z` (any branch `k` known finite),
-/// `asin`, `acos`, `asinh`, `acosh` (`∼ ±ln 2z` up to `±i`), and the
-/// classical orthogonal polynomials of a positive integer degree in their
-/// variable (`legendre`, `chebyshev_t`, `chebyshev_u`, `hermite`, `laguerre`,
-/// `assoc_laguerre` with a finite `α`; their leading coefficient is not 0)?
-/// Only the variable slot may be `zoo`.
+/// `asin`, `acos`, `asinh`, `acosh` (`∼ ±ln 2z` up to `±i`), and
+/// `assoc_laguerre` of a positive integer degree with a symbolic finite `α`
+/// (leading coefficient `(−1)ⁿ/n!`; with numeric parameters it, and the
+/// other orthogonal polynomials, fold to `zoo` when built:
+/// [`at_complex_infinity`])?  Only the variable slot may be `zoo`.
 fn tends_to_complex_infinity(arena: &Arena, f: ExprId) -> bool {
     use crate::base::libfn::LibFn;
     let zoo = |a: ExprId| ValueClass::special_atom(arena, a) == Some(ValueClass::ComplexInf);
@@ -911,18 +1064,237 @@ fn tends_to_complex_infinity(arena: &Arena, f: ExprId) -> bool {
             [z, k] => zoo(z) && finite(k),
             _ => false,
         },
-        ExprNode::Lib(
-            LibFn::Legendre
-            | LibFn::ChebyshevT
-            | LibFn::ChebyshevU
-            | LibFn::Hermite
-            | LibFn::Laguerre,
-            args,
-        ) => matches!(**args, [n, z] if positive_degree(n) && zoo(z)),
         ExprNode::Lib(LibFn::AssocLaguerre, args) => {
             matches!(**args, [n, a, z] if positive_degree(n) && finite(a) && zoo(z))
         }
         _ => false,
+    }
+}
+
+/// What a library function is at `zoo` ([`at_complex_infinity`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AtComplexInfinity {
+    /// `zoo`: `abs(f) → ∞` in every direction.
+    ComplexInfinity,
+    /// The integer it tends to in every direction (`Li₀(zoo) = −1`,
+    /// `Li_{−k}(zoo) = 0`, the zero polynomial 0).
+    Integer(i64),
+    /// A polynomial of degree 0 in its variable: its value anywhere, which
+    /// `eval` takes at 0.  The node stays when it is built, and counts as
+    /// finite ([`unevaluated_at_complex_infinity`]).
+    Constant,
+}
+
+/// The value of the library function `f` at `args` when an argument is
+/// `zoo`, the point at infinity without a direction, where the function
+/// tends to one value in every direction; `None` where the table has no
+/// entry (the node stays, and `0·f` is `nan`:
+/// [`unevaluated_at_complex_infinity`]).  Folded when the node is built
+/// ([`canon_function`]) and by `eval` (`eval::at_complex_infinity`, which
+/// also takes the constant of a polynomial of degree 0), so that the two
+/// read `0·f`, `0/f` and `f − f` alike.
+///
+/// | function at `zoo` | value |
+/// |---|---|
+/// | `P_n`, `T_n`, `U_n`, `H_n`, `L_n`, `L_n^(α)`, `C_n^(λ)`, `P_n^(a,b)` with numeric parameters, `P_n^m` (`0 ≤ m ≤ n`) | `zoo` for a degree `d ≥ 1` (`abs(p(z)) → ∞` in every direction; `abs((1 − z²)^(m/2))` grows like `abs(z)^m`); [`AtComplexInfinity::Constant`] for `d = 0`; 0 for the zero polynomial ([`polynomial_degree`]) |
+/// | `B_(x₁, x₂)(a, b)`, `I_(x₁, x₂)(a, b)`, positive integer shapes, one limit `zoo`, the other finite | `zoo` (a polynomial of degree `a + b − 1` in the limit) |
+/// | `Li_s(z)`, integer `s` | `−1` for `s = 0` (`z/(1 − z)`), `0` for `s < 0` (a rational function of degree `−s` over `(1 − z)^(1−s)`), `zoo` for `s ≥ 1` (`abs(ln(−z))^s/s!`) |
+/// | `F(φ \| 0) = φ`, `Π(n \| 0) = π/(2√(1 − n))` | `zoo` at `φ = zoo`, `0` at `n = zoo` |
+///
+/// Up to 0.58 the closed forms met `zoo + zoo` and gave `nan`:
+/// `legendre(3, zoo)`, `chebyshev_t(3, zoo)`, `betainc(1, 2, 0, zoo)`,
+/// `polylog(−1, zoo)` (which tends to 0) were `nan` (mpmath:
+/// `abs(P₃(10⁸e^{it}))` = `2.5·10²⁴` in every direction,
+/// `abs(Li₋₁(10⁸e^{it}))` ≤ `10⁻⁸`).  The constructors fold the table as
+/// `eval` does: had only `eval` folded it, `0·polylog(−1, zoo)` would be
+/// `nan` when built (`eval`: `0·0 = 0`) and `legendre(3, zoo) − legendre(3,
+/// zoo)` 0 (`eval`: `zoo − zoo = nan`).  The incomplete gamma functions and
+/// `E₀(z) = e^{−z}/z` have no limit at `zoo` (`e^{−z}` grows for `Re z <
+/// 0`): they stay.
+pub(crate) fn at_complex_infinity(
+    arena: &Arena,
+    f: crate::base::libfn::LibFn,
+    args: &[ExprId],
+) -> Option<AtComplexInfinity> {
+    use crate::base::libfn::LibFn;
+    let zoo = |a: ExprId| ValueClass::special_atom(arena, a) == Some(ValueClass::ComplexInf);
+    if !args.iter().any(|&a| zoo(a)) {
+        return None;
+    }
+    let (&last, front) = args.split_last()?;
+    if zoo(last) && front.iter().all(|&a| !zoo(a)) {
+        let max = BigInt::from(arena.config.max_pow_exponent);
+        if let Some(degree) = polynomial_degree(arena, f, front, &max) {
+            return Some(match degree {
+                Some(d) if d >= BigInt::one() => AtComplexInfinity::ComplexInfinity,
+                Some(_) => AtComplexInfinity::Constant,
+                None => AtComplexInfinity::Integer(0),
+            });
+        }
+    }
+    // A numeric integer argument.
+    let int = |a: ExprId| {
+        arena
+            .as_num(a)
+            .filter(|q| q.is_integer())
+            .map(|q| q.to_integer())
+    };
+    match f {
+        LibFn::BetaInc | LibFn::BetaIncRegularized => {
+            let positive_integer = |a: ExprId| int(a).is_some_and(|k| k.is_positive());
+            let &[a, b, x1, x2] = args else {
+                return None;
+            };
+            (positive_integer(a)
+                && positive_integer(b)
+                && (zoo(x1) != zoo(x2))
+                && [x1, x2]
+                    .iter()
+                    .all(|&x| zoo(x) || ValueClass::of(arena, x).is_finite_proved()))
+            .then_some(AtComplexInfinity::ComplexInfinity)
+        }
+        LibFn::PolyLog if zoo(last) && front.len() == 1 => {
+            let s = int(args[0])?;
+            Some(if s.is_zero() {
+                AtComplexInfinity::Integer(-1)
+            } else if s.is_negative() {
+                AtComplexInfinity::Integer(0)
+            } else {
+                AtComplexInfinity::ComplexInfinity
+            })
+        }
+        // `F(φ | 0) = φ`, `Π(n | 0) = π/(2√(1 − n))` (DLMF 19.6.1).
+        LibFn::EllipticF => match *args {
+            [phi, m] if zoo(phi) && arena.is_zero_structural(m) => {
+                Some(AtComplexInfinity::ComplexInfinity)
+            }
+            _ => None,
+        },
+        LibFn::EllipticPi => match *args {
+            [n, m] if zoo(n) && arena.is_zero_structural(m) => Some(AtComplexInfinity::Integer(0)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The degree in its variable of the orthogonal polynomial `f` with the
+/// numeric degree and parameters `params` (all the arguments but the
+/// variable), up to `max`: `Some(Some(d))`, `Some(None)` for the zero
+/// polynomial, `None` when `f` is no polynomial there (`H_{−m}`, `L_{−m}` and
+/// the rest, a symbolic parameter, a degree beyond `max`).
+///
+/// Negative degrees as `eval::classical_at_negative_degree` and
+/// `eval::zero_polynomial_degree` read them (`P_{−m} = P_{m−1}`, `T_{−m} =
+/// T_m`, `U_{−m} = −U_{m−2}`, `U_{−1} = 0`; `C`, `P^(a,b)`, `L^(α)` vanish).
+/// The parametrised families from their coefficients, which are
+/// polynomials in the parameters: `C_n^(λ)(x) = Σ_k (−1)^k
+/// (λ)_{n−k}/(k!(n − 2k)!)·(2x)^{n−2k}` (DLMF 18.5.10), `P_n^(a,b)(x) =
+/// Σ_m (−n)_m (n + a + b + 1)_m (a + m + 1)_{n−m}/(n! m!)·((1 − x)/2)^m`
+/// (DLMF 18.5.7 with `(a + 1)_n/(a + 1)_m` cancelled), `L_n^(α)` of leading
+/// coefficient `(−1)ⁿ/n!`; `P_n^m` for `0 ≤ m ≤ n` grows like `abs(z)^n`,
+/// and vanishes for `m > n ≥ 0`.  Up to 0.58 `gegenbauer(3, −2, zoo)` was
+/// `nan` (`C₃^(−2)(x) = −4x`).
+fn polynomial_degree(
+    arena: &Arena,
+    f: crate::base::libfn::LibFn,
+    params: &[ExprId],
+    max: &BigInt,
+) -> Option<Option<BigInt>> {
+    use crate::base::libfn::LibFn;
+    let n = arena
+        .as_num(*params.first()?)
+        .filter(|q| q.is_integer())?
+        .to_integer();
+    if &n.abs() > max {
+        return None;
+    }
+    // Degree 0 is the constant 1 at every parameter (`P₀ = T₀ = U₀ = H₀ =
+    // L₀ = C₀^(λ) = P₀^(a,b) = L₀^(α) = 1`).
+    if n.is_zero()
+        && matches!(
+            f,
+            LibFn::Legendre
+                | LibFn::ChebyshevT
+                | LibFn::ChebyshevU
+                | LibFn::Hermite
+                | LibFn::Laguerre
+                | LibFn::Gegenbauer
+                | LibFn::Jacobi
+                | LibFn::AssocLaguerre
+        )
+    {
+        return Some(Some(n));
+    }
+    let q = |k: usize| params.get(k).and_then(|&p| arena.as_num(p));
+    // `(r)_j = 0`: `r` an integer `≤ 0` with `j > −r`.
+    let vanishes = |r: &Q, j: &BigInt| r.is_integer() && !r.is_positive() && *j > -r.to_integer();
+    let degree = |d: BigInt| Some(Some(d).filter(|d| !d.is_negative()));
+    match f {
+        _ if !n.is_negative()
+            && matches!(
+                f,
+                LibFn::Legendre
+                    | LibFn::ChebyshevT
+                    | LibFn::ChebyshevU
+                    | LibFn::Hermite
+                    | LibFn::Laguerre
+            ) =>
+        {
+            degree(n)
+        }
+        LibFn::Legendre => degree(-n - 1),
+        LibFn::ChebyshevT => degree(-n),
+        LibFn::ChebyshevU => degree(-n - 2),
+        LibFn::AssocLaguerre => {
+            q(1)?;
+            degree(if n.is_negative() { BigInt::from(-1) } else { n })
+        }
+        LibFn::Gegenbauer => {
+            let l = q(1)?;
+            if n.is_negative() {
+                return Some(None);
+            }
+            // The first `k` with `(λ)_{n−k} ≠ 0`.
+            let k = if l.is_integer() && !l.is_positive() {
+                (&n + l.to_integer()).max(BigInt::zero())
+            } else {
+                BigInt::zero()
+            };
+            degree(if BigInt::from(2) * &k > n {
+                BigInt::from(-1)
+            } else {
+                &n - BigInt::from(2) * k
+            })
+        }
+        LibFn::Jacobi => {
+            let (a, b) = (q(1)?, q(2)?);
+            if n.is_negative() {
+                return Some(None);
+            }
+            let s = Q::from_integer(&n + BigInt::one()) + a + b;
+            let top = n.to_u64()?;
+            let m = (0..=top).rev().find(|&m| {
+                let m = BigInt::from(m);
+                let shifted = a + Q::from_integer(&m + BigInt::one());
+                !vanishes(&s, &m) && !vanishes(&shifted, &(&n - &m))
+            });
+            degree(m.map_or(BigInt::from(-1), BigInt::from))
+        }
+        LibFn::AssocLegendre => {
+            let m = q(1).filter(|m| m.is_integer())?.to_integer();
+            if m.is_negative() {
+                return None;
+            }
+            // `P^m_{−ν−1} = P^m_ν` (DLMF 14.9.5), as `eval` reads it.
+            let n = if n.is_negative() {
+                -n - BigInt::one()
+            } else {
+                n
+            };
+            degree(if m > n { BigInt::from(-1) } else { n })
+        }
+        _ => None,
     }
 }
 
@@ -1249,25 +1621,38 @@ fn application_at_special_values(
     }
 }
 
+/// The bases collected in `canon_mul`, split for [`zero_times_rest`].
+struct SplitBases {
+    /// The bases without a negative numeric exponent.
+    positive: SmallVec<[ExprId; 8]>,
+    /// The bases with one: the denominators.
+    negative: SmallVec<[ExprId; 4]>,
+    /// The exponents `e` of the factors `0^e` (collected under the base 0,
+    /// which is no factor itself).
+    zero_exponents: SmallVec<[ExprId; 2]>,
+}
+
 /// The bases collected in `canon_mul`: those without and those with a
-/// negative numeric exponent.
-fn split_bases(
-    arena: &Arena,
-    bases: &FxHashMap<ExprId, SmallVec<[ExprId; 4]>>,
-) -> (SmallVec<[ExprId; 8]>, SmallVec<[ExprId; 4]>) {
-    let mut positive: SmallVec<[ExprId; 8]> = SmallVec::new();
-    let mut negative: SmallVec<[ExprId; 4]> = SmallVec::new();
+/// negative numeric exponent, and the exponents of the factors `0^e`.
+fn split_bases(arena: &Arena, bases: &FxHashMap<ExprId, SmallVec<[ExprId; 4]>>) -> SplitBases {
+    let mut split = SplitBases {
+        positive: SmallVec::new(),
+        negative: SmallVec::new(),
+        zero_exponents: SmallVec::new(),
+    };
     for (&b, exps) in bases {
-        if exps
+        if arena.is_zero_structural(b) {
+            split.zero_exponents.extend(exps.iter().copied());
+        } else if exps
             .iter()
             .any(|&e| arena.as_num(e).is_some_and(Signed::is_negative))
         {
-            negative.push(b);
+            split.negative.push(b);
         } else {
-            positive.push(b);
+            split.positive.push(b);
         }
     }
-    (positive, negative)
+    split
 }
 
 /// `r·sign(r) → |r|` among the collected `bases` of a product (both factors
@@ -1437,12 +1822,13 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
                     // 0 × rest: `nan` if any infinity/NaN is involved
                     // (already seen, still on the stack, or hidden in a
                     // collected base), otherwise `0`.
-                    let (positive, negative) = split_bases(arena, &bases);
+                    let split = split_bases(arena, &bases);
                     return zero_times_rest(
                         arena,
                         saw_infinity,
-                        stack.iter().chain(positive.iter()),
-                        negative,
+                        stack.iter().chain(split.positive.iter()),
+                        split.negative,
+                        split.zero_exponents,
                     );
                 }
             }
@@ -1463,8 +1849,14 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 
     // If coefficient became zero during processing.
     if coeff.is_zero() {
-        let (positive, negative) = split_bases(arena, &bases);
-        return zero_times_rest(arena, saw_infinity, positive.iter(), negative);
+        let split = split_bases(arena, &bases);
+        return zero_times_rest(
+            arena,
+            saw_infinity,
+            split.positive.iter(),
+            split.negative,
+            split.zero_exponents,
+        );
     }
 
     if cancels_vanishing_sum(arena, &bases) {
@@ -1685,7 +2077,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 
     // Re-check for zero after absorbing numeric factors.
     if coeff.is_zero() {
-        return zero_times_rest(arena, saw_infinity, result_args.iter(), []);
+        return zero_times_rest(arena, saw_infinity, result_args.iter(), [], []);
     }
 
     // Now prepend the numeric coefficient (if not 1, or if there are
@@ -4804,11 +5196,15 @@ fn canon_function_exact(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
         },
         ExprNode::Lib(f, ref args) => match lib_function_value(arena, f, args) {
             Some(v) => v,
-            None => match at_infinity(arena, f, args) {
-                AtInfinity::Value(v) if off_the_pole(arena, f, args) => v,
-                AtInfinity::Value(_) | AtInfinity::NoFiniteValue | AtInfinity::Untabulated => {
-                    return None;
-                }
+            None => match at_complex_infinity(arena, f, args) {
+                Some(AtComplexInfinity::ComplexInfinity) => Folded::ComplexInfinity,
+                Some(AtComplexInfinity::Integer(k)) => Folded::int(k),
+                Some(AtComplexInfinity::Constant) | None => match at_infinity(arena, f, args) {
+                    AtInfinity::Value(v) if off_the_pole(arena, f, args) => v,
+                    AtInfinity::Value(_) | AtInfinity::NoFiniteValue | AtInfinity::Untabulated => {
+                        return None;
+                    }
+                },
             },
         },
         _ => return None,
@@ -5498,9 +5894,7 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
         args.iter().any(|&a| {
             let real = Truth::from(cache.query(arena, a, Props::EXTENDED_REAL));
             real.is_false()
-                || (!real.is_true()
-                    && arena.is_symbol_free(a)
-                    && arena.part_signs(a).is_some_and(|s| s.im.is_some()))
+                || (!real.is_true() && arena.is_symbol_free(a) && certified_nonreal(arena, a))
         })
     };
     if non_real {
@@ -5589,6 +5983,30 @@ fn real_infinity(arena: &Arena, a: ExprId) -> Option<InfDir> {
         }
         _ => None,
     }
+}
+
+/// Is the symbol-free constant `x` certified non-real by its value (an
+/// imaginary part certified nonzero: [`Arena::part_signs`])?  `Min`/`Max`
+/// ask it at every construction of a node with such an argument the
+/// assumptions do not decide (each `eval`, `subs` and rebuild), and the
+/// answer is an evaluation: it is memoised under
+/// [`FactKey::NonReal`](crate::base::arena::FactKey::NonReal) (`NONREAL`
+/// when proved, `UNKNOWN` when not).  Up to 0.58 it was evaluated anew each
+/// time (about 1% of the CPU time of the golden corpus).
+fn certified_nonreal(arena: &Arena, x: ExprId) -> bool {
+    use crate::base::arena::FactKey;
+    use crate::base::truth::SignSet;
+    if let Some(signs) = arena.constant_fact(x, FactKey::NonReal) {
+        return signs.is_subset(SignSet::NONREAL);
+    }
+    let nonreal = arena.part_signs(x).is_some_and(|s| s.im.is_some());
+    let signs = if nonreal {
+        SignSet::NONREAL
+    } else {
+        SignSet::UNKNOWN
+    };
+    arena.remember_constant_fact(x, FactKey::NonReal, signs);
+    nonreal
 }
 
 /// Drop the arguments of a `Min` (`Max`) that another one is known to be at

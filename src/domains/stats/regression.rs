@@ -1540,11 +1540,17 @@ pub fn logit<B: BinaryOutcome>(
 // Maximum-likelihood fits: the shared summaries
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A `χ²_df` test of an `f64` statistic as a [`TestResult`]: the statistic
-/// exactly, `P(χ²_df ≥ statistic)` through [`chi_squared_sf`] (`1` for a
-/// non-positive statistic), the degrees of freedom, and the alternative
-/// the caller reports.  Behind [`LikelihoodFit::llr_test`] and the Cox
-/// model's likelihood-ratio / Wald / score trio.
+/// A `χ²_df` test of an `f64` statistic `s` as a [`TestResult`]: the
+/// statistic as `exp(ℓ)` with `ℓ = ln s` its `f64` logarithm (within
+/// `(|ℓ| + 1)·2⁻⁵³` of `s`, relatively), `P(χ²_df ≥ exp(ℓ))` through
+/// [`chi_squared_sf`], the degrees of freedom, and the alternative the
+/// caller reports.  Behind [`LikelihoodFit::llr_test`] and the Cox model's
+/// likelihood-ratio / Wald / score trio.  The statistic of a fit is known
+/// only to floating point, so it is never written as a rational:
+/// [`TestResult::statistic_exact`] and [`TestResult::p_value_exact`] are
+/// `None` (up to 0.58 they returned the dyadic rational of the `f64`, as if
+/// exact).  A statistic at most 0 — the fit at the null, or a rounding below
+/// it — is reported as `0` with p-value `1`.
 ///
 /// # Errors
 ///
@@ -1555,8 +1561,18 @@ pub(crate) fn chi_squared_test_result(
     df: usize,
     alternative: Alternative,
 ) -> Result<TestResult, SymplexError> {
+    if statistic.is_nan() {
+        return Err(invalid(
+            "chi_squared_test",
+            "the statistic is NaN (the fit produced no number)",
+        ));
+    }
     let positive = statistic > 0.0;
-    let statistic = ctx.from_f64(statistic)?;
+    let statistic = if positive {
+        ctx.from_f64(statistic.ln())?.exp()
+    } else {
+        ctx.zero()
+    };
     let p_value = if positive {
         chi_squared_sf(ctx, df, &statistic)
     } else {

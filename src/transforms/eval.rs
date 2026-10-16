@@ -7158,7 +7158,14 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 /// when evaluated reached the folds of the other one (`uppergamma(s, ∞) =
 /// 0`).  The folds that hold for every finite value of one argument ask it
 /// of that argument ([`ValueClass::is_finite_proved`]).  At a `zoo`
-/// argument the tabulated values come first ([`at_complex_infinity`]).
+/// argument the tabulated values are the only ones ([`at_complex_infinity`],
+/// folded when the node is built too): no value is taken from a closed form
+/// there (an identity to another library function at `zoo` is), and an
+/// untabulated node stays, as it does when built, so that `0·f` and `f − f`
+/// read the same before and after `eval`.  Up to 0.58 a closed form gave
+/// `nan` or `zoo` (`uppergamma(2, zoo)`, `jacobi(1, zoo, 0, 0)`,
+/// `gegenbauer(1, zoo, 2)`) or 0 (`betainc(zoo, 0, 1, 1)`) where the
+/// built node stayed: `f − f` was 0 when built and `nan` after `eval`.
 fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
     if args
         .iter()
@@ -7169,7 +7176,20 @@ fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
     if let Some(value) = at_complex_infinity(arena, f, args) {
         return Some(value);
     }
+    let at_zoo = args
+        .iter()
+        .any(|&a| ValueClass::special_atom(arena, a) == Some(ValueClass::ComplexInf));
     let value = eval_lib_fn_closed(arena, f, args)?;
+    // At `zoo` an identity to another library function there
+    // (`assoc_legendre(ν, 0, z) = legendre(ν, z)`) is kept, a value is not;
+    // `lambertw(z, k)` is the call form of `W_k`, rewritten to its node.
+    if at_zoo
+        && f != LibFn::LambertW
+        && !matches!(arena.node(value), ExprNode::Lib(_, a)
+            if a.iter().any(|&c| ValueClass::special_atom(arena, c) == Some(ValueClass::ComplexInf)))
+    {
+        return None;
+    }
     if ValueClass::special_atom(arena, value) == Some(ValueClass::NaN)
         && args
             .iter()
@@ -7180,167 +7200,27 @@ fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
     Some(value)
 }
 
-/// The value of the library function `f` at `args` when its variable is
-/// `zoo`, the point at infinity without a direction, where the function
-/// tends to one value in every direction; `None` elsewhere (the closed form
-/// is taken as before: `zoo` or `nan`).
-///
-/// | function at `zoo` | value |
-/// |---|---|
-/// | `P_n`, `T_n`, `U_n`, `H_n`, `L_n`, `L_n^(α)`, `C_n^(λ)`, `P_n^(a,b)` with numeric parameters, `P_n^m` (`0 ≤ m ≤ n`) | `zoo` for a degree `d ≥ 1` (`abs(p(z)) → ∞` in every direction; `abs((1 − z²)^(m/2))` grows like `abs(z)^m`); the constant `p(0)` for `d = 0` or the zero polynomial ([`polynomial_degree`]) |
-/// | `B_(x₁, x₂)(a, b)`, `I_(x₁, x₂)(a, b)`, positive integer shapes, one limit `zoo`, the other finite | `zoo` (a polynomial of degree `a + b − 1` in the limit) |
-/// | `Li_s(z)`, integer `s` | `−1` for `s = 0` (`z/(1 − z)`), `0` for `s < 0` (a rational function of degree `−s` over `(1 − z)^(1−s)`), `zoo` for `s ≥ 1` (`abs(ln(−z))^s/s!`) |
-///
-/// Up to 0.58 the closed
-/// forms met `zoo + zoo` and gave `nan`: `legendre(3, zoo)`,
-/// `chebyshev_t(3, zoo)`, `betainc(1, 2, 0, zoo)`, `polylog(−1, zoo)` (which
-/// tends to 0) were `nan` (mpmath: `abs(P₃(10⁸e^{it}))` = `2.5·10²⁴` in every
-/// direction, `abs(Li₋₁(10⁸e^{it}))` ≤ `10⁻⁸`).  The incomplete gamma
-/// functions and `E₀(z) = e^{−z}/z` have no limit at `zoo` (`e^{−z}` grows
-/// for `Re z < 0`): they stay `nan`.
+/// The value of the library function `f` at `args` when an argument is
+/// `zoo`: the table of `canon::at_complex_infinity`, which also folds it
+/// when the node is built (`zoo`, an integer), and the constant of a
+/// polynomial of degree 0 in its variable, taken at 0 (the node of such a
+/// polynomial stays when built, and counts as finite).  `None` where the
+/// table has no entry.
 fn at_complex_infinity(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
-    let zoo = |a: ExprId| ValueClass::special_atom(arena, a) == Some(ValueClass::ComplexInf);
-    let (&last, front) = args.split_last()?;
-    if !args.iter().any(|&a| zoo(a)) {
-        return None;
-    }
-    // A numeric integer argument.
-    let int = |a: ExprId| -> Option<BigInt> {
-        arena
-            .as_num(a)
-            .filter(|q| q.is_integer())
-            .map(|q| q.to_integer())
-    };
-    if zoo(last) && front.iter().all(|&a| !zoo(a)) {
-        let max = BigInt::from(arena.config.max_pow_exponent);
-        if let Some(degree) = polynomial_degree(arena, f, front, &max) {
-            if degree.is_some_and(|d| d >= BigInt::one()) {
-                return Some(arena.complex_infinity);
+    use crate::base::canon::AtComplexInfinity;
+    Some(
+        match crate::base::canon::at_complex_infinity(arena, f, args)? {
+            AtComplexInfinity::ComplexInfinity => arena.complex_infinity,
+            AtComplexInfinity::Integer(k) => arena.int(k),
+            AtComplexInfinity::Constant => {
+                let mut at_zero = args.to_vec();
+                if let Some(x) = at_zero.last_mut() {
+                    *x = arena.zero;
+                }
+                return eval_lib_fn_closed(arena, f, &at_zero);
             }
-            // A constant: its value anywhere.
-            let mut at_zero = args.to_vec();
-            if let Some(x) = at_zero.last_mut() {
-                *x = arena.zero;
-            }
-            return eval_lib_fn_closed(arena, f, &at_zero);
-        }
-    }
-    let grows = match f {
-        LibFn::BetaInc | LibFn::BetaIncRegularized => {
-            let positive_integer = |a: ExprId| int(a).is_some_and(|k| k.is_positive());
-            let (x1, x2) = (args[2], args[3]);
-            positive_integer(args[0])
-                && positive_integer(args[1])
-                && (zoo(x1) != zoo(x2))
-                && [x1, x2]
-                    .iter()
-                    .all(|&x| zoo(x) || ValueClass::of(arena, x).is_finite_proved())
-        }
-        LibFn::PolyLog if zoo(last) && front.len() == 1 => {
-            return match int(args[0])? {
-                s if s.is_zero() => Some(arena.neg_one),
-                s if s.is_negative() => Some(arena.zero),
-                _ => Some(arena.complex_infinity),
-            };
-        }
-        _ => false,
-    };
-    grows.then_some(arena.complex_infinity)
-}
-
-/// The degree in its variable of the orthogonal polynomial `f` with the
-/// numeric degree and parameters `params` (all the arguments but the
-/// variable), up to `max`: `Some(Some(d))`, `Some(None)` for the zero
-/// polynomial, `None` when `f` is no polynomial there (`H_{−m}`, `L_{−m}` and
-/// the rest, a symbolic parameter, a degree beyond `max`).
-///
-/// Negative degrees as [`classical_at_negative_degree`] and
-/// [`zero_polynomial_degree`] read them (`P_{−m} = P_{m−1}`, `T_{−m} = T_m`,
-/// `U_{−m} = −U_{m−2}`, `U_{−1} = 0`; `C`, `P^(a,b)`, `L^(α)` vanish).  The
-/// parametrised families from their coefficients, which are polynomials in
-/// the parameters: `C_n^(λ)(x) = Σ_k (−1)^k (λ)_{n−k}/(k!(n − 2k)!)·(2x)^{n−2k}`
-/// (DLMF 18.5.10), `P_n^(a,b)(x) = Σ_m (−n)_m (n + a + b + 1)_m (a + m +
-/// 1)_{n−m}/(n! m!)·((1 − x)/2)^m` (DLMF 18.5.7 with `(a + 1)_n/(a + 1)_m`
-/// cancelled), `L_n^(α)` of leading coefficient `(−1)ⁿ/n!`; `P_n^m` for `0 ≤
-/// m ≤ n` grows like `abs(z)^n`, and vanishes for `m > n ≥ 0`.  Up to 0.58
-/// `gegenbauer(3, −2, zoo)` was `nan` (`C₃^(−2)(x) = −4x`).
-fn polynomial_degree(
-    arena: &Arena,
-    f: LibFn,
-    params: &[ExprId],
-    max: &BigInt,
-) -> Option<Option<BigInt>> {
-    let n = arena
-        .as_num(*params.first()?)
-        .filter(|q| q.is_integer())?
-        .to_integer();
-    if &n.abs() > max {
-        return None;
-    }
-    let q = |k: usize| params.get(k).and_then(|&p| arena.as_num(p));
-    // `(r)_j = 0`: `r` an integer `≤ 0` with `j > −r`.
-    let vanishes = |r: &Q, j: &BigInt| r.is_integer() && !r.is_positive() && *j > -r.to_integer();
-    let degree = |d: BigInt| Some(Some(d).filter(|d| !d.is_negative()));
-    match f {
-        _ if !n.is_negative()
-            && matches!(
-                f,
-                LibFn::Legendre
-                    | LibFn::ChebyshevT
-                    | LibFn::ChebyshevU
-                    | LibFn::Hermite
-                    | LibFn::Laguerre
-            ) =>
-        {
-            degree(n)
-        }
-        LibFn::Legendre => degree(-n - 1),
-        LibFn::ChebyshevT => degree(-n),
-        LibFn::ChebyshevU => degree(-n - 2),
-        LibFn::AssocLaguerre => {
-            q(1)?;
-            degree(if n.is_negative() { BigInt::from(-1) } else { n })
-        }
-        LibFn::Gegenbauer => {
-            let l = q(1)?;
-            if n.is_negative() {
-                return Some(None);
-            }
-            // The first `k` with `(λ)_{n−k} ≠ 0`.
-            let k = if l.is_integer() && !l.is_positive() {
-                (&n + l.to_integer()).max(BigInt::zero())
-            } else {
-                BigInt::zero()
-            };
-            degree(if BigInt::from(2) * &k > n {
-                BigInt::from(-1)
-            } else {
-                &n - BigInt::from(2) * k
-            })
-        }
-        LibFn::Jacobi => {
-            let (a, b) = (q(1)?, q(2)?);
-            if n.is_negative() {
-                return Some(None);
-            }
-            let s = Q::from_integer(&n + BigInt::one()) + a + b;
-            let top = n.to_u64()?;
-            let m = (0..=top).rev().find(|&m| {
-                let m = BigInt::from(m);
-                let shifted = a + Q::from_integer(&m + BigInt::one());
-                !vanishes(&s, &m) && !vanishes(&shifted, &(&n - &m))
-            });
-            degree(m.map_or(BigInt::from(-1), BigInt::from))
-        }
-        LibFn::AssocLegendre => {
-            let m = q(1).filter(|m| m.is_integer())?.to_integer();
-            if n.is_negative() || m.is_negative() {
-                return None;
-            }
-            degree(if m > n { BigInt::from(-1) } else { n })
-        }
-        _ => None,
-    }
+        },
+    )
 }
 
 /// The closed forms and exact values of [`eval_lib_fn`].

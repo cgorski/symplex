@@ -1213,9 +1213,20 @@ pub fn check_solve(lhs: &E, rhs: &E) -> V {
             real_sols.push(sv.0);
         }
     }
-    // missing real roots (non-periodic equations only)
+    // missing real roots (non-periodic equations only).  `solve` returns the
+    // principal roots of a periodic equation; besides the trigonometric
+    // functions, a power of a negative or non-real base, or an exponential of
+    // an imaginary argument, is periodic in a real `x` (`(−1)^x = e^{iπx}`:
+    // `−1/(−1)^x = −1` has the roots `2n`, and `solve` gives `[0]`).
     let s = g.to_string();
-    if s.contains("sin") || s.contains("cos") || s.contains("tan") || s.contains("sign") {
+    let periodic_power = s.contains("(-") && s.contains(")^");
+    if s.contains("sin")
+        || s.contains("cos")
+        || s.contains("tan")
+        || s.contains("sign")
+        || s.contains('I')
+        || periodic_power
+    {
         return V::Ok;
     }
     for r0 in real_roots_by_sampling(&|t| g.ev(t)) {

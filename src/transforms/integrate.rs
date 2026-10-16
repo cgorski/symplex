@@ -7069,7 +7069,9 @@ fn try_exp_linear_substitution(
 
 /// `a/b` when it is a rational number: `eval` of the quotient, or else of its
 /// real and imaginary parts (`eval` keeps `(1 + i)/(−i − 1)` a quotient, and
-/// up to 0.55 `∫ dx/(e^{(1+i)x} + e^{−(1+i)x} − 3)` stayed unevaluated).
+/// up to 0.55 `∫ dx/(e^{(1+i)x} + e^{−(1+i)x} − 3)` stayed unevaluated), or
+/// else the rational with a small denominator next to its value for which
+/// `a − q·b` is exactly 0 ([`confirmed_rational_ratio`]).
 pub(crate) fn rational_ratio(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<Q> {
     let r = arena.div(a, b);
     let r = crate::transforms::eval::eval(arena, r);
@@ -7081,11 +7083,32 @@ pub(crate) fn rational_ratio(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<
     }
     let (re, im) = crate::base::complex::as_real_imag(arena, r);
     let im = crate::transforms::eval::eval(arena, im);
-    if !arena.is_zero_structural(im) {
-        return None;
+    if arena.is_zero_structural(im) {
+        let re = crate::transforms::eval::eval(arena, re);
+        if let Some(q) = arena.as_num(re) {
+            return Some(q.clone());
+        }
     }
-    let re = crate::transforms::eval::eval(arena, re);
-    arena.as_num(re).cloned()
+    confirmed_rational_ratio(arena, a, b, r)
+}
+
+/// Largest denominator [`confirmed_rational_ratio`] tries.
+const MAX_RATIO_DENOMINATOR: u64 = 64;
+
+/// The rational `q` (denominator at most [`MAX_RATIO_DENOMINATOR`]) nearest
+/// the value of the constant `r = a/b` when `a − q·b` evaluates to an exact
+/// 0: the value only proposes `q`, the exact difference decides.  `eval`
+/// keeps a quotient of constant sums (`(−½ ln 2 − iπ/4)/(½ ln 2 + iπ/4)`)
+/// as it is, and up to 0.58 `∫ dx/((1 + i)ˣ + (1 + i)⁻ˣ − 3)` and `∫ dx/(e^{(1 +
+/// iπ)x} + e^{−(1 + iπ)x} − 3)` stayed unevaluated.
+fn confirmed_rational_ratio(arena: &mut Arena, a: ExprId, b: ExprId, r: ExprId) -> Option<Q> {
+    let z = crate::transforms::evalf::evalf_complex64(arena, r).ok()?;
+    let q = crate::base::numeric::f64_to_ratio_approx(z.re, MAX_RATIO_DENOMINATOR)?;
+    let q_id = arena.num_ratio(q.clone());
+    let qb = arena.mul(&[q_id, b]);
+    let d = arena.sub(a, qb);
+    let d = crate::transforms::eval::eval(arena, d);
+    arena.is_zero_structural(d).then_some(q)
 }
 
 /// Is the rate `g·α` of `u = e^{g·(α·x + β)}` a constant that is not real?

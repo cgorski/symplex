@@ -87,6 +87,10 @@ pub(crate) enum FactKey {
     /// `value_class`'s `ValueClass::of` (`UNKNOWN` when proved, `EMPTY`
     /// when not).
     Infinite,
+    /// Is `x` non-real by a certified value (a nonzero imaginary part):
+    /// `canon`'s `certified_nonreal`, asked by `Min`/`Max` (`NONREAL` when
+    /// proved, `UNKNOWN` when not).
+    NonReal,
 }
 
 /// The `sym_bits` entry of a symbol name without a `Symbol` node.

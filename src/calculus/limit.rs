@@ -1009,6 +1009,12 @@ fn limit_val_parts(
         return Ok(LimVal::exact(v));
     }
 
+    // (a′) `B(a, b)` at a pole, which the engines do not expand (its
+    // derivative stays unevaluated): `Γ(a)·Γ(b)/Γ(a + b)`.
+    if let Some(e) = beta_poles_as_gamma(arena, expr, var, point) {
+        return limit_val_parts(arena, e, var, point, dir, depth + 1, perpendicular);
+    }
+
     // (b) Compositional rule.
     if depth < MAX_COMPOSE_DEPTH
         && let Some(r) = try_compose(arena, expr, var, point, dir, depth)
@@ -1273,6 +1279,13 @@ fn contains_hidden_singularity(arena: &Arena, root: ExprId) -> bool {
             ExprNode::Gamma(a) | ExprNode::Digamma(a) if is_nonpositive_integer(arena, *a) => {
                 return true;
             }
+            // A function with parameters at an integer `≤ 0` where its `Poles`
+            // facet puts poles, infinite for every value of them (`B(0, y)`,
+            // `γ(0, y)`, `ψ⁽ʸ⁾(0)`): up to 0.58 `limit(B(δ(x), y))` was `B(0, y)`.
+            // (A constant is left to its value: `B(−1, 1) = −1`.)
+            _ if !arena.is_symbol_free(id) && at_nonpositive_integer_pole(arena, node) => {
+                return true;
+            }
             ExprNode::Factorial(a) => {
                 if let Some(r) = arena.as_num(*a)
                     && r.is_integer()
@@ -1517,6 +1530,13 @@ fn substitute_continuous(
             }
         }
 
+        // A function of the `funcs!` table with an argument where its
+        // `Poles` facet puts a pole ([`tabulated_pole`]).
+        let pole = tabulated_pole(arena, &node, var, |arena, c| val_of(arena, &values, c));
+        if pole == TabulatedPole::Pole {
+            return None;
+        }
+
         // Node-specific continuity checks on the *argument* values.
         match node {
             ExprNode::Piecewise(_) => return None,
@@ -1558,20 +1578,6 @@ fn substitute_continuous(
             ExprNode::Asinh(a) | ExprNode::Atan(a) => {
                 let av = val_of(arena, &values, a);
                 if on_branch_cut(arena, BranchCut::ImaginaryAxis, av) {
-                    return None;
-                }
-            }
-            ExprNode::Gamma(a) | ExprNode::Digamma(a) => {
-                let av = val_of(arena, &values, a);
-                if is_nonpositive_integer(arena, av) {
-                    return None;
-                }
-            }
-            // `B(a, b) = Γ(a)·Γ(b)/Γ(a + b)` at a pole of `Γ(a)` or `Γ(b)`
-            // (`B(x, y) ~ 1/x`): `H(B(x, y))` at 0 is no step at `B(0, y)`.
-            ExprNode::Beta(a, b) if steps == StepArguments::Generic => {
-                let (av, bv) = (val_of(arena, &values, a), val_of(arena, &values, b));
-                if is_nonpositive_integer(arena, av) || is_nonpositive_integer(arena, bv) {
                     return None;
                 }
             }
@@ -1675,10 +1681,219 @@ fn substitute_continuous(
         if is_singular(arena, v) {
             return None;
         }
+        // At a place where the facet has a pole for some values of the other
+        // arguments, a value is taken only when the constructors fold it to
+        // a constant proved finite and only the argument at that place
+        // varies: `J₁(0) = 0`, `Li₂(1) = π²/6`, `Γ(2, 0) = 1`, but not
+        // `K_y(0)`, `Γ(y, 0) = Γ(y)` (infinite for `re y < 0`), `Li_y(1) =
+        // ζ(y)` (for `re y > 1` only), nor `J_x(0)` at `x = 0` (`J₀(0) = 1`,
+        // the limit from the right is 0).
+        if let TabulatedPole::Possible(slot) = pole {
+            let others_fixed = node
+                .children()
+                .iter()
+                .enumerate()
+                .all(|(i, &c)| i == slot || !crate::base::walk::contains(arena, c, var));
+            if !others_fixed
+                || !arena.is_symbol_free(v)
+                || !ValueClass::of(arena, v).is_finite_proved()
+            {
+                return None;
+            }
+        }
         values.insert(id, v);
     }
 
     values.get(&expr).copied()
+}
+
+/// `expr` with every `B(a, b)` whose `a` or `b` is an integer `≤ 0` at the
+/// finite `point` written `Γ(a)·Γ(b)/Γ(a + b)`, the form the limit engines
+/// expand (`B(x, y) ~ 1/x`, `x·B(x, y) → 1`, `B(x − 1, 1 + 2x) → −3` at
+/// `0`); `None` when there is no such `B`.
+fn beta_poles_as_gamma(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+) -> Option<ExprId> {
+    let at_point = |arena: &mut Arena, c: ExprId| {
+        let s = crate::transforms::subs::subs(arena, c, var, point);
+        crate::transforms::eval::eval(arena, s)
+    };
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut changed = false;
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        if let ExprNode::Beta(a, b) = *arena.node(id)
+            && crate::base::walk::contains(arena, id, var)
+        {
+            let (av, bv) = (at_point(arena, a), at_point(arena, b));
+            if is_nonpositive_integer(arena, av) || is_nonpositive_integer(arena, bv) {
+                let a = cache.get(&a).copied().unwrap_or(a);
+                let b = cache.get(&b).copied().unwrap_or(b);
+                let (ga, gb) = (arena.gamma(a), arena.gamma(b));
+                let sum = arena.add(&[a, b]);
+                let gs = arena.gamma(sum);
+                let num = arena.mul(&[ga, gb]);
+                // An identity of functions whose limit is taken next (`Γ`
+                // has no zeros).
+                let ratio = arena.div(num, gs);
+                cache.insert(id, ratio);
+                changed = true;
+                continue;
+            }
+        }
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        cache.insert(id, rebuilt);
+    }
+    if !changed {
+        return None;
+    }
+    let out = cache.get(&expr).copied().unwrap_or(expr);
+    Some(crate::transforms::eval::eval(arena, out))
+}
+
+/// Is `node` a function of the `funcs!` table with an integer `≤ 0` where
+/// its [`Poles`](crate::base::func::Poles) facet has poles?
+fn at_nonpositive_integer_pole(arena: &Arena, node: &ExprNode) -> bool {
+    use crate::base::func::Poles;
+    let Some((f, args)) = node.func(arena) else {
+        return false;
+    };
+    match f.spec().poles {
+        Poles::NonPositiveIntegers(which) => which.iter().any(|&i| {
+            args.get(usize::from(i))
+                .is_some_and(|&a| is_nonpositive_integer(arena, a))
+        }),
+        _ => false,
+    }
+}
+
+/// Where a function of the `funcs!` table stands, at the values of its
+/// arguments at the point, relative to the poles its
+/// [`Poles`](crate::base::func::Poles) facet lists ([`tabulated_pole`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabulatedPole {
+    /// No argument is where the facet puts a pole (or the node is no
+    /// function of the table).
+    Off,
+    /// An argument is an integer `≤ 0` where the facet has poles there
+    /// (`Γ`, `ln Γ`, `ψ`, `ψ⁽ᵐ⁾`, `B`, `γ(s, ·)`): a pole, or a finite value
+    /// only by a cancellation of poles that another path through the point
+    /// does not keep (`B(x − 1, 1 + 2x) → −3` at 0, where `B(−1, 1) = −1`).
+    Pole,
+    /// The argument in this slot (in node order) is where the facet's
+    /// `Zero`/`One` puts a pole for some values of the others (`J_ν(0)`,
+    /// `Γ(s, 0)`, `Li_s(1)`, `Eₙ(0)`, `ln 0`), or may be.
+    Possible(usize),
+}
+
+/// [`TabulatedPole`] of `node` whose children have the values `value_of`
+/// gives at the point.  A `NonPositiveIntegers` place is a pole at an exact
+/// integer `≤ 0` and wherever the value is not proved nonzero
+/// ([`is_zero_value`]: a symbol is a generic point, `Γ(y)` is off its
+/// poles, but `max(0, y)` is 0 for every `y ≤ 0`); `Zero`/`One` places are
+/// possible wherever the argument is not proved to differ from `0`/`1`,
+/// unless the other argument, free of the limit variable `var`, makes the
+/// function finite and continuous there ([`regular_at_pole_place`]:
+/// `J₁(min(y, 0))`).
+///
+/// Up to 0.58 direct substitution checked the poles of `Γ` and `ψ` only:
+/// `limit(B(x, y), x, 0)` was the value `B(0, y)` at a pole (`B(x, y) ~
+/// 1/x`), `limit(x·B(x, y))` and `limit(x·B(erf x, γ))` were 0 (`1` and
+/// `√π/2`), `limit(γ(x, 1))` was `γ(0, 1)` (`γ(s, 1) ~ 1/s`),
+/// `limit(K_y(x))` was `K_y(0)` (infinite for every `y`).
+fn tabulated_pole(
+    arena: &mut Arena,
+    node: &ExprNode,
+    var: ExprId,
+    mut value_of: impl FnMut(&mut Arena, ExprId) -> ExprId,
+) -> TabulatedPole {
+    use crate::base::func::Poles;
+    let Some((f, args)) = node.func(arena) else {
+        return TabulatedPole::Off;
+    };
+    let at = |arena: &mut Arena,
+              value_of: &mut dyn FnMut(&mut Arena, ExprId) -> ExprId,
+              i: u8|
+     -> Option<(usize, ExprId)> {
+        let slot = usize::from(i);
+        args.get(slot).map(|&a| (slot, value_of(arena, a)))
+    };
+    match f.spec().poles {
+        Poles::None | Poles::Other => TabulatedPole::Off,
+        Poles::NonPositiveIntegers(which) => {
+            for &i in which {
+                if let Some((_, v)) = at(arena, &mut value_of, i)
+                    && (is_nonpositive_integer(arena, v) || place_may_be_zero(arena, v))
+                {
+                    return TabulatedPole::Pole;
+                }
+            }
+            TabulatedPole::Off
+        }
+        Poles::Zero(i) | Poles::One(i) => {
+            let Some((slot, v)) = at(arena, &mut value_of, i) else {
+                return TabulatedPole::Off;
+            };
+            let d = if matches!(f.spec().poles, Poles::One(_)) {
+                let one = arena.one();
+                let d = arena.sub(v, one);
+                crate::transforms::eval::eval(arena, d)
+            } else {
+                v
+            };
+            if !place_may_be_zero(arena, d) {
+                return TabulatedPole::Off;
+            }
+            // (the parameter fixed: `J_x(0)` at `x = 0` is no `J₀(0) = 1`)
+            let parameter = match (slot, args.first()) {
+                (1, Some(&p)) if !crate::base::walk::contains(arena, p, var) => {
+                    Some(value_of(arena, p))
+                }
+                _ => None,
+            };
+            if parameter.is_some_and(|p| regular_at_pole_place(arena, f, p)) {
+                TabulatedPole::Off
+            } else {
+                TabulatedPole::Possible(slot)
+            }
+        }
+    }
+}
+
+/// May the value `v` of an argument at a pole place be 0 there: a number
+/// that is 0, or a value [`is_zero_value`] does not prove nonzero — a
+/// constant, a value with symbols that vanishes on a region of them
+/// (`max(0, y)`), or one identically 0 (`L_y(0) − 1`: `K(L_y(x))` at 0 is
+/// `K(1) = ∞`).  A value with symbols nonzero for generic values of them
+/// (`y`) is a generic point.
+fn place_may_be_zero(arena: &mut Arena, v: ExprId) -> bool {
+    if let Some(q) = arena.as_num(v) {
+        return q.is_zero();
+    }
+    !is_zero_value(arena, v).is_false()
+}
+
+/// Is the function `f` finite and continuous at its `Poles` facet's place
+/// in its second argument for the exact value `p` of its first: `J_ν`,
+/// `I_ν` of an integer order (entire: DLMF 10.2.2, 10.25.2, `J_{−n} =
+/// (−1)ⁿJₙ`) or of an order `ν > 0` (`(z/2)^ν` times an entire function);
+/// `Γ(s, z)` at 0 for `s > 0` (`Γ(s) − γ(s, z)`, `γ(s, z) ~ zˢ/s`, DLMF
+/// 8.7.3); `E_p(0)` for `p > 1` (`1/(p − 1)`, DLMF 8.19.6); `Li_s(1)` for `s >
+/// 1` (`ζ(s)`, DLMF 25.12.10).
+fn regular_at_pole_place(arena: &Arena, f: crate::base::func::Func, p: ExprId) -> bool {
+    use crate::base::func::Func;
+    let Some(p) = arena.as_num(p) else {
+        return false;
+    };
+    let one = Q::from_integer(BigInt::from(1));
+    match f {
+        Func::BesselJ | Func::BesselI => p.is_integer() || p.is_positive(),
+        Func::UpperGamma => p.is_positive(),
+        Func::ExpInt | Func::PolyLog => *p > one,
+        _ => false,
+    }
 }
 
 /// Largest tree the one-sided Gruntz preprocessing expands.
@@ -3100,7 +3315,9 @@ fn try_compose(
             match kind_of(arena, l)? {
                 Kind::Infinite(inf) => gamma_of_infinite(arena, inf, a, &ap, false),
                 Kind::Finite(l) => {
-                    if is_nonpositive_integer(arena, l) {
+                    // (also a limit 0 in disguise: `Γ(L_y(x) − 1)` at 0 was
+                    // `Γ(L_y(0) − 1) = Γ(0)`)
+                    if is_nonpositive_integer(arena, l) || place_may_be_zero(arena, l) {
                         return None;
                     }
                     let v = arena.gamma(l);
@@ -3135,7 +3352,7 @@ fn try_compose(
                 },
                 Kind::Finite(l) => {
                     if matches!(node, ExprNode::LogGamma(_) | ExprNode::Digamma(_))
-                        && is_nonpositive_integer(arena, l)
+                        && (is_nonpositive_integer(arena, l) || place_may_be_zero(arena, l))
                     {
                         return None;
                     }

@@ -699,8 +699,11 @@ fn series_with_pole_retry(
         arena.node(point),
         ExprNode::Infinity | ExprNode::NegInfinity
     ) || !matches!(arena.node(var), ExprNode::Symbol(_))
-        || retry_cannot_help(arena, expr, var, point, mode.side)
     {
+        return Err(err);
+    }
+    let retries = useful_retries(arena, expr, var, point, mode.side);
+    if retries == 0 {
         return Err(err);
     }
     let x_minus_a = if arena.is_zero_structural(point) {
@@ -708,7 +711,7 @@ fn series_with_pole_retry(
     } else {
         arena.sub(var, point)
     };
-    for k in 1u32..=5 {
+    for k in 1u32..=retries {
         let k_id = arena.int(k as i64);
         let multiplier = arena.pow(x_minus_a, k_id);
         let modified = arena.mul(&[expr, multiplier]);
@@ -723,11 +726,11 @@ fn series_with_pole_retry(
     Err(err)
 }
 
-/// Can the retries of [`series_with_pole_retry`] not succeed where the
-/// direct expansion of `expr` failed?  Decided from the limits of
-/// `g = (var − point)·expr` from the side(s) of `side`:
+/// The most retries of [`series_with_pole_retry`] that can succeed where the
+/// direct expansion of `expr` failed: 0, 1 or all 5.  Decided from the
+/// limits of `g = (var − point)·expr` from the side(s) of `side`:
 ///
-/// * `g → 0` from a side: `expr` has no pole.  From
+/// * `g → 0` from a side: `expr` has no pole (no retry).  From
 ///   `xᵏ·f = S + O(xⁿ⁺ᵏ)`, a term `c·x⁻ʲ` (`j ≥ 1`) of `S/xᵏ` would make
 ///   `g` tend to `c` or diverge from that side, so `S/xᵏ` would be a power
 ///   series (`S` is common to both sides), which the direct attempt would
@@ -739,21 +742,23 @@ fn series_with_pole_retry(
 ///   debug assertions).
 /// * two-sided, `g` tends to different finite limits from the two sides:
 ///   every `xᵏ·f = xᵏ⁻¹·g` has different coefficients of `xᵏ⁻¹` from the
-///   two sides, so none has a two-sided expansion.
+///   two sides, so none has a two-sided expansion (no retry).
+/// * `g` tends to finite limits otherwise: the pole is at most simple, and
+///   `xᵏ·f = xᵏ⁻¹·g` for `k ≥ 2` has an expansion only if the bounded `g`
+///   (the first retry) has one, so only that retry is made.  Up to 0.58
+///   `series(5/(3x·ln x·atanh(atanh x)), x, 1, 4)` (`g → 10i/(3π)`, and
+///   `g` has no expansion in powers: `atanh(atanh x)` is a function of
+///   `ln(1 − x)`) went through all five retries (0.3 s, 4.4 s in a debug
+///   build).
 ///
 /// Each retry asks the limit engine for the limits of ever larger
 /// derivatives: `series(atan(exp(−1/x)), x, 0, 3)` (limits 0 and π/2)
 /// took 0.14 s to refuse, `acos(ln x)` from the left (unbounded, but only
 /// logarithmically) 0.14 s, `ln(1 + exp(−1/x))` (`≈ −1/x` from the left,
-/// `0` from the right) 60 ms.  A limit that cannot be determined answers
-/// `false`.
-fn retry_cannot_help(
-    arena: &mut Arena,
-    expr: ExprId,
-    var: ExprId,
-    point: ExprId,
-    side: Side,
-) -> bool {
+/// `0` from the right) 60 ms.  A limit that cannot be determined (or an
+/// infinite one: a pole of higher order) allows all five.
+fn useful_retries(arena: &mut Arena, expr: ExprId, var: ExprId, point: ExprId, side: Side) -> u32 {
+    const ALL: u32 = 5;
     use crate::calculus::limit::Direction;
     let dirs: &[Direction] = match side {
         Side::Above => &[Direction::Right],
@@ -769,19 +774,19 @@ fn retry_cannot_help(
     let mut limits = Vec::with_capacity(dirs.len());
     for &dir in dirs {
         match crate::calculus::limit::limit_dir_generic(arena, scaled, var, point, dir) {
-            Ok(v) if arena.is_zero_structural(v) => return true,
+            Ok(v) if arena.is_zero_structural(v) => return 0,
             Ok(v) if is_finite_constant(arena, v, var) => limits.push(v),
-            _ => return false,
+            _ => return ALL,
         }
     }
-    match limits[..] {
-        [right, left] => {
-            let d = arena.sub(right, left);
-            let d = eval::eval(arena, d);
-            crate::calculus::limit::const_sign(arena, d).is_some_and(|s| s != 0)
+    if let [right, left] = limits[..] {
+        let d = arena.sub(right, left);
+        let d = eval::eval(arena, d);
+        if crate::calculus::limit::const_sign(arena, d).is_some_and(|s| s != 0) {
+            return 0;
         }
-        _ => false,
     }
+    1
 }
 
 /// The expansion at a finite `point` (or `±∞`) in the given [`Mode`].

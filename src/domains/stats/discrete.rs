@@ -236,16 +236,110 @@ fn geometric_tail_domain(p: &Ex) -> Option<Interval<Ex>> {
 
 /// An explicit finite table `P(X = vᵢ) = pᵢ` (SymPy `FiniteRV`); the values
 /// need not be integers.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Finite {
-    /// `(value, probability)` pairs, in the order given.
+    /// `(value, probability)` pairs, in the order given.  The lookups of
+    /// the pmf and the CDF are indexed at their first use: change the
+    /// table before querying the family (a [`Distribution`] holds it
+    /// immutably).
     pub table: Vec<(Ex, Ex)>,
     ctx: Context,
+    lookups: std::sync::OnceLock<TableIndex>,
+}
+
+impl fmt::Debug for Finite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Finite")
+            .field("table", &self.table)
+            .field("ctx", &self.ctx)
+            .finish()
+    }
 }
 
 impl PartialEq for Finite {
     fn eq(&self, other: &Self) -> bool {
         self.table == other.table
+    }
+}
+
+/// The lookups of a [`Finite`] table: the position of each value (by
+/// identity, and by value when every value is a rational) and, when every
+/// value and every mass is a rational, the values in increasing order with
+/// their cumulative masses.  Up to 0.58 the CDF asked the pmf once per
+/// atom and each lookup scanned the table: `P(Y ≤ y)` for `Y = X³`, `X` a
+/// 100,000-sided die, took 3.4 s (a `fuzz_stats` input 49.7 s).
+#[derive(Clone, Debug)]
+struct TableIndex {
+    /// The length of the table indexed (a table changed afterwards is
+    /// read without the index).
+    len: usize,
+    /// The first position of each value, keyed by its context and node
+    /// (what `Ex` equality compares).
+    by_value: std::collections::HashMap<ValueKey, usize>,
+    /// The first position of each rational value, when all are rational.
+    by_rational: Option<std::collections::HashMap<Q, usize>>,
+    /// The distinct values in increasing order and `P(X ≤ value)`.
+    cumulative: Option<Cumulative>,
+}
+
+/// The identity of an expression: its context and its node.
+type ValueKey = (crate::base::node::CtxId, crate::base::node::ExprId);
+
+fn value_key(e: &Ex) -> ValueKey {
+    (e.ctx_id(), e.id())
+}
+
+/// Sorted rational values of a table with `masses[i] = P(X ≤ values[i])`.
+#[derive(Clone, Debug)]
+struct Cumulative {
+    values: Vec<Q>,
+    masses: Vec<Q>,
+}
+
+impl TableIndex {
+    fn build(table: &[(Ex, Ex)]) -> Self {
+        let mut by_value = std::collections::HashMap::with_capacity(table.len());
+        for (i, (v, _)) in table.iter().enumerate() {
+            by_value.entry(value_key(v)).or_insert(i);
+        }
+        let rationals: Option<Vec<Q>> = table.iter().map(|(v, _)| v.as_rational()).collect();
+        let by_rational = rationals.as_ref().map(|qs| {
+            let mut m = std::collections::HashMap::with_capacity(qs.len());
+            for (i, q) in qs.iter().enumerate() {
+                m.entry(q.clone()).or_insert(i);
+            }
+            m
+        });
+        let cumulative = rationals.and_then(|qs| {
+            let masses: Option<Vec<Q>> = table.iter().map(|(_, p)| p.as_rational()).collect();
+            let mut pairs: Vec<(Q, Q)> = qs.into_iter().zip(masses?).collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut values: Vec<Q> = Vec::with_capacity(pairs.len());
+            let mut cum: Vec<Q> = Vec::with_capacity(pairs.len());
+            let mut acc = Q::zero();
+            for (v, p) in pairs {
+                acc += p;
+                // Equal values (an unvalidated table) share one entry.
+                if values.last() == Some(&v) {
+                    if let Some(last) = cum.last_mut() {
+                        *last = acc.clone();
+                    }
+                } else {
+                    values.push(v);
+                    cum.push(acc.clone());
+                }
+            }
+            Some(Cumulative {
+                values,
+                masses: cum,
+            })
+        });
+        TableIndex {
+            len: table.len(),
+            by_value,
+            by_rational,
+            cumulative,
+        }
     }
 }
 
@@ -256,7 +350,15 @@ impl Finite {
         Finite {
             table,
             ctx: ctx.clone(),
+            lookups: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The index of the table, `None` if the table changed since it was
+    /// built.
+    fn lookups(&self) -> Option<&TableIndex> {
+        let ix = self.lookups.get_or_init(|| TableIndex::build(&self.table));
+        (ix.len == self.table.len()).then_some(ix)
     }
 }
 
@@ -291,11 +393,26 @@ impl Family for Finite {
             // call compared `k` with every atom before it by `equals`, and
             // the CDF of `√X` for a 2000-sided die made two million
             // evaluations (fuzz_stats timed out).  The values are distinct
-            // (`try_finite`), so the atom found is the only one.
-            if let Some((_, p)) = self.table.iter().find(|(v, _)| v == k) {
+            // (`try_finite`), so the atom found is the only one.  Both
+            // lookups go through the table's index (up to 0.58 a scan).
+            let kq = k.as_rational();
+            if let Some(ix) = self.lookups() {
+                if let Some((_, p)) = ix
+                    .by_value
+                    .get(&value_key(k))
+                    .and_then(|&i| self.table.get(i))
+                {
+                    return p.clone();
+                }
+                if let (Some(by_q), Some(q)) = (&ix.by_rational, &kq) {
+                    return by_q
+                        .get(q)
+                        .and_then(|&i| self.table.get(i))
+                        .map_or_else(|| self.ctx.zero(), |(_, p)| p.clone());
+                }
+            } else if let Some((_, p)) = self.table.iter().find(|(v, _)| v == k) {
                 return p.clone();
             }
-            let kq = k.as_rational();
             let kf = k.eval_f64().ok();
             let mut decided = true;
             for (v, p) in &self.table {
@@ -323,6 +440,20 @@ impl Family for Finite {
             .collect();
         let refs: Vec<(&Ex, &BoolEx)> = pairs.iter().map(|(a, b)| (a, b)).collect();
         Ex::piecewise(&refs)
+    }
+
+    // The cumulative masses at a rational `x` when every value and mass
+    // is a rational (a binary search of the sorted values); `None`
+    // otherwise (the CDF is then the sum of the masses at or below `x`,
+    // `Distribution::cdf`).
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let cum = self.lookups()?.cumulative.as_ref()?;
+        let xq = x.as_rational()?;
+        let below = cum.values.partition_point(|v| *v <= xq);
+        Some(match below.checked_sub(1).and_then(|i| cum.masses.get(i)) {
+            Some(m) => self.ctx.from_ratio(m.clone()),
+            None => self.ctx.zero(),
+        })
     }
 
     fn mean(&self) -> Option<Ex> {

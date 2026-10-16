@@ -30,6 +30,14 @@
 //!   linearly, where definition 6 (and this module) stops at the sample
 //!   minimum and maximum.
 //! * Ties in ranks take the average rank (`scipy.stats.rankdata`).
+//! * A statistic undefined for the data — a constant sample where it
+//!   divides by a variance or a spread (Pearson's and Spearman's
+//!   correlations, Kendall's τ, skewness, kurtosis, z-scores, the MAD
+//!   outlier rule), every pair tied (Goodman–Kruskal's γ, Somers' D,
+//!   Stuart's τ-c) — is [`SymplexError::DegenerateData`] with
+//!   [`Degeneracy::ZeroVariance`], as in the tests and the models; shape
+//!   errors (lengths, too few observations) stay
+//!   [`SymplexError::InvalidArgument`].
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -37,7 +45,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use super::common::{invalid, qi, qu};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
-use crate::base::errors::SymplexError;
+use crate::base::errors::{Degeneracy, SymplexError};
 use crate::base::interval::Interval;
 pub use crate::base::numeric::Q;
 
@@ -172,18 +180,37 @@ pub fn covariance(x: &[Q], y: &[Q], ddof: Ddof) -> Result<Q, SymplexError> {
     Ok(s / div)
 }
 
+/// [`SymplexError::DegenerateData`] with [`Degeneracy::ZeroVariance`]: the
+/// data make the statistic undefined (a constant sample, every pair tied).
+fn zero_variance(op: &'static str, reason: &str) -> SymplexError {
+    SymplexError::degenerate(op, Degeneracy::ZeroVariance, reason)
+}
+
 /// Pearson's correlation coefficient `cov(x, y) / (σₓ σᵧ)` as an exact
 /// expression (the divisor cancels).  `statistics.correlation`.
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if either sample is constant.
+/// [`SymplexError::DegenerateData`] with [`Degeneracy::ZeroVariance`] if
+/// either sample is constant (up to 0.58 `InvalidArgument`);
+/// [`SymplexError::InvalidArgument`] for samples of different lengths or an
+/// empty one.
+///
+/// ```
+/// use symplex::errors::Degeneracy;
+/// use symplex::prelude::*;
+/// use symplex::stats::data::{from_i64, pearson};
+///
+/// let ctx = Context::new();
+/// let err = pearson(&ctx, &from_i64(&[2, 2, 2]), &from_i64(&[1, 2, 3])).unwrap_err();
+/// assert_eq!(err.degeneracy(), Some(Degeneracy::ZeroVariance));
+/// ```
 pub fn pearson(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     let sxy = covariance(x, y, Ddof::Population)?;
     let sxx = variance(x, Ddof::Population)?;
     let syy = variance(y, Ddof::Population)?;
     if sxx.is_zero() || syy.is_zero() {
-        return Err(invalid(
+        return Err(zero_variance(
             "pearson",
             "correlation with a constant sample is undefined",
         ));
@@ -420,8 +447,9 @@ pub fn spearman(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// pairs, or a constant sample.
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than two
+/// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`])
+/// for a constant sample.
 pub fn kendall_tau(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     const OP: &str = "kendall_tau";
     if x.len() != y.len() {
@@ -436,7 +464,7 @@ pub fn kendall_tau(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> 
     let not_tied_x = &untied + BigInt::from(c.ties_y);
     let not_tied_y = &untied + BigInt::from(c.ties_x);
     if not_tied_x.is_zero() || not_tied_y.is_zero() {
-        return Err(invalid(
+        return Err(zero_variance(
             OP,
             "Kendall's τ with a constant sample is undefined",
         ));
@@ -454,7 +482,7 @@ pub fn kendall_tau(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> 
 pub fn skewness(ctx: &Context, data: &[Q]) -> Result<Ex, SymplexError> {
     let (m2, m3) = (central_moment(data, 2)?, central_moment(data, 3)?);
     if m2.is_zero() {
-        return Err(invalid(
+        return Err(zero_variance(
             "skewness",
             "skewness of a constant sample is undefined",
         ));
@@ -467,7 +495,7 @@ pub fn skewness(ctx: &Context, data: &[Q]) -> Result<Ex, SymplexError> {
 pub fn kurtosis(data: &[Q]) -> Result<Q, SymplexError> {
     let (m2, m4) = (central_moment(data, 2)?, central_moment(data, 4)?);
     if m2.is_zero() {
-        return Err(invalid(
+        return Err(zero_variance(
             "kurtosis",
             "kurtosis of a constant sample is undefined",
         ));
@@ -506,7 +534,7 @@ pub fn zscores(ctx: &Context, data: &[Q], ddof: Ddof) -> Result<Vec<Ex>, Symplex
     let m = mean(data)?;
     let s = std(ctx, data, ddof)?;
     if variance(data, ddof)?.is_zero() {
-        return Err(invalid(
+        return Err(zero_variance(
             "zscores",
             "z-scores of a constant sample are undefined",
         ));
@@ -588,7 +616,7 @@ pub fn mad_outliers(data: &[Q], threshold: &Q) -> Result<Vec<usize>, SymplexErro
     let m = median(data)?;
     let mad = median_abs_deviation(data)?;
     if mad.is_zero() {
-        return Err(invalid(
+        return Err(zero_variance(
             "mad_outliers",
             "the median absolute deviation is zero",
         ));
@@ -809,13 +837,14 @@ fn count_pairs(x: &[Q], y: &[Q]) -> ConcordanceCounts {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// observations, or no untied pair (`C + D = 0`).
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than two
+/// observations; [`SymplexError::DegenerateData`]
+/// ([`Degeneracy::ZeroVariance`]) when no pair is untied (`C + D = 0`).
 pub fn goodman_kruskal_gamma(x: &[Q], y: &[Q]) -> Result<Q, SymplexError> {
     let c = concordance_counts(x, y)?;
     let untied = c.concordant + c.discordant;
     if untied == 0 {
-        return Err(invalid(
+        return Err(zero_variance(
             "goodman_kruskal_gamma",
             "every pair is tied on one of the variables, γ is undefined",
         ));
@@ -861,9 +890,10 @@ pub enum Dependent {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// observations, or a zero denominator (the independent variable
-/// constant).
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than two
+/// observations; [`SymplexError::DegenerateData`]
+/// ([`Degeneracy::ZeroVariance`]) for a zero denominator (the independent
+/// variable constant).
 pub fn somers_d(x: &[Q], y: &[Q], dependent: Dependent) -> Result<Q, SymplexError> {
     let c = concordance_counts(x, y)?;
     let diff = qu(c.concordant) - qu(c.discordant);
@@ -874,7 +904,7 @@ pub fn somers_d(x: &[Q], y: &[Q], dependent: Dependent) -> Result<Q, SymplexErro
         Dependent::Symmetric => qu(untied) + (qu(c.ties_x) + qu(c.ties_y)) / qi(2),
     };
     if denom.is_zero() {
-        return Err(invalid(
+        return Err(zero_variance(
             "somers_d",
             "the independent variable is constant, Somers' D is undefined",
         ));
@@ -899,13 +929,14 @@ pub fn somers_d(x: &[Q], y: &[Q], dependent: Dependent) -> Result<Q, SymplexErro
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// observations, or a constant variable (`m = 1`).
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than two
+/// observations; [`SymplexError::DegenerateData`]
+/// ([`Degeneracy::ZeroVariance`]) for a constant variable (`m = 1`).
 pub fn kendall_tau_c(x: &[Q], y: &[Q]) -> Result<Q, SymplexError> {
     let c = concordance_counts(x, y)?;
     let m = frequencies(x).len().min(frequencies(y).len());
     if m < 2 {
-        return Err(invalid(
+        return Err(zero_variance(
             "kendall_tau_c",
             "a constant variable has no rank correlation",
         ));

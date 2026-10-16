@@ -247,8 +247,10 @@ fn enumerate_family(
 /// The real zeros of `g` (with respect to `var`) inside `domain`.
 ///
 /// Uses `solve` for non-periodic equations and `solve_general` when `g`
-/// contains `sin`/`cos`/`tan` of `var`; periodic families are enumerated
-/// on bounded domains and represented as `{var | g = 0}` otherwise.
+/// contains `sin`/`cos`/`tan` of `var` or an exponential whose other
+/// branches hold real zeros (`(−1)^x`: `solve::has_periodic_exponential`);
+/// periodic families are enumerated on bounded domains and represented as
+/// `{var | g = 0}` otherwise.
 fn zeros_in_domain(
     g: &Ex,
     var: &Ex,
@@ -258,8 +260,13 @@ fn zeros_in_domain(
     let ctx = g.context();
     let var_id = g.checked_id(var);
     let periodic = {
-        let inner = g.inner.read();
+        let mut inner = g.inner.write();
         util::has_trig_of(&inner.arena, g.raw_id(), var_id)
+            || crate::transforms::solve::has_periodic_exponential(
+                &mut inner.arena,
+                g.raw_id(),
+                var_id,
+            )
     };
 
     let mut points: Vec<Ex> = Vec::new();

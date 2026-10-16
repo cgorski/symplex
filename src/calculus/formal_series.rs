@@ -77,6 +77,7 @@ use num_traits::{One, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::arena::Arena;
+use crate::base::cast;
 use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
@@ -413,6 +414,28 @@ fn contains_singular(arena: &Arena, id: ExprId) -> bool {
         || walk::contains(arena, id, arena.complex_infinity)
         || walk::contains(arena, id, arena.infinity)
         || walk::contains(arena, id, arena.neg_infinity)
+}
+
+/// The most coefficients past the valuation a series computes (its prefix
+/// is memoised, and composition and reversion lay it out densely):
+/// `cast::MAX_SERIES_TERMS`.  Up to 0.58 a user's `coefficient(k)` built
+/// the whole prefix `a_v … a_k`, and `coefficient(10¹²)` asked the allocator
+/// for terabytes.
+const MAX_COEFFICIENTS: usize = cast::MAX_SERIES_TERMS;
+
+/// The stand-in `Res_{var=point} f·(var − point)^−(k+1)` for the `k`-th
+/// coefficient beyond [`MAX_COEFFICIENTS`] (the derivative form of
+/// [`taylor_standin`] has `k` nested nodes).
+fn residue_standin(arena: &mut Arena, f: ExprId, var: ExprId, point: ExprId, k: i64) -> ExprId {
+    let base = if arena.is_zero_structural(point) {
+        var
+    } else {
+        arena.sub(var, point)
+    };
+    let e = arena.int(k.saturating_add(1).saturating_neg());
+    let p = arena.pow(base, e);
+    let body = arena.mul(&[f, p]);
+    arena.intern(ExprNode::Residue(body, var, point))
 }
 
 /// The unevaluated `k`-th Taylor coefficient `Subs(dᵏ f/dxᵏ, x, point)/k!`,
@@ -1270,7 +1293,12 @@ impl FormalPowerSeries {
     /// [`truncate`](Self::truncate) to see the negative powers.  Where no
     /// coefficient exists (a [refused](Self::is_refused) series) it is an
     /// unevaluated stand-in; [`try_coefficient`](Self::try_coefficient)
-    /// returns `Err` instead.
+    /// returns `Err` instead.  A series computes the coefficients up to 2¹⁴
+    /// indices past its first (the earlier ones are needed for the later):
+    /// beyond, a polynomial's own coefficient, the stand-in `Res_{x=a} f·(x −
+    /// a)^−(k+1)` for a series the expansion engine computes or that is
+    /// refused, `nan` for the others (a closed form, arithmetic of series),
+    /// and `Err` from `try_coefficient` except for a polynomial.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -1329,6 +1357,9 @@ impl FormalPowerSeries {
         let Ok(idx) = usize::try_from(k.saturating_sub(self.valuation)) else {
             return zero;
         };
+        let Some(idx) = cast::bounded_len(idx, MAX_COEFFICIENTS) else {
+            return self.beyond_cap(k);
+        };
         let mut memo = lock(&self.memo);
         while memo.len() <= idx {
             let next = self.valuation + memo.len() as i64;
@@ -1336,6 +1367,33 @@ impl FormalPowerSeries {
             memo.push(c);
         }
         memo[idx]
+    }
+
+    /// The coefficient of index `k` more than [`MAX_COEFFICIENTS`] past the
+    /// valuation, which is not computed: a polynomial's own entry (exact), a
+    /// [`residue_standin`] for a series expanded by the engine or refused,
+    /// `nan` for the others (never exact).
+    fn beyond_cap(&self, k: i64) -> Coeff {
+        let mut inner = self.ctx.inner.write();
+        let arena = &mut inner.arena;
+        let id = match &self.source {
+            Source::Polynomial(c) => {
+                let id = usize::try_from(k)
+                    .ok()
+                    .and_then(|k| c.get(k).copied())
+                    .unwrap_or(self.zero);
+                return Coeff { id, exact: true };
+            }
+            Source::Refused { expr, .. } => residue_standin(arena, *expr, self.var, self.point, k),
+            Source::Engine { expr, svar, .. } => residue_standin(arena, *expr, *svar, self.zero, k),
+            _ => arena.nan,
+        };
+        Coeff { id, exact: false }
+    }
+
+    /// Is the range `lo..=hi` longer than [`MAX_COEFFICIENTS`]?
+    fn beyond_cap_range(lo: i64, hi: i64) -> bool {
+        hi >= lo && cast::bounded_len(hi.abs_diff(lo), MAX_COEFFICIENTS).is_none()
     }
 
     /// Coefficients of indices `lo..=hi`.
@@ -1536,8 +1594,11 @@ impl FormalPowerSeries {
             }
             Source::Compose(f, g) => {
                 // Σ_{n≤k} f_n · (g^n)_k with g_j = 0 for j ≤ 0.
-                let Ok(ku) = usize::try_from(k) else {
+                if k < 0 {
                     return zero;
+                }
+                let Some(ku) = cast::bounded_len(k, MAX_COEFFICIENTS) else {
+                    return self.beyond_cap(k);
                 };
                 let fs = f.coeffs(0, k);
                 let gs = g.coeffs(0, k);
@@ -1565,8 +1626,11 @@ impl FormalPowerSeries {
             }
             Source::Reversion(f) => {
                 // Lagrange inversion: [x^k] g = (1/k) [x^{k−1}] (x/f(x))^k, k ≥ 1.
-                let Ok(ku) = usize::try_from(k) else {
+                if k < 0 {
                     return zero;
+                }
+                let Some(ku) = cast::bounded_len(k, MAX_COEFFICIENTS) else {
+                    return self.beyond_cap(k);
                 };
                 if ku == 0 {
                     return zero;
@@ -1776,10 +1840,11 @@ impl FormalPowerSeries {
     pub fn try_truncate(&self, n: usize) -> Result<Ex, SymplexError> {
         self.ensure_usable("fps_truncate", true)?;
         let end = self.index_end(n);
-        if self
-            .coeffs(self.valuation, end - 1)
-            .iter()
-            .any(|c| !c.exact)
+        if Self::beyond_cap_range(self.valuation, end - 1)
+            || self
+                .coeffs(self.valuation, end - 1)
+                .iter()
+                .any(|c| !c.exact)
         {
             return Err(SymplexError::ComputationFailed {
                 operation: "fps_truncate",
@@ -1808,6 +1873,11 @@ impl FormalPowerSeries {
                 .intern(ExprNode::Series(*expr, self.var, self.point, order));
         }
         let end = self.index_end(n);
+        // More terms than a series computes: not computed (`try_truncate`
+        // refuses).
+        if Self::beyond_cap_range(self.valuation, end - 1) {
+            return self.ctx.inner.read().arena.nan;
+        }
         let coeffs = self.coeffs(self.valuation, end - 1);
         let mut inner = self.ctx.inner.write();
         let arena = &mut inner.arena;

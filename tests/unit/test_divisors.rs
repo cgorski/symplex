@@ -45,10 +45,12 @@ use syn::visit::Visit;
 
 /// The covered files (relative to `src/`) with their exact counts `[div,
 /// recip]` (the columns of the module doc).  At 0.57.0, before the
-/// migration: series 8 + 5, limit 9 + 2, Gruntz 17 + 6 (47 sites).
+/// migration: series 8 + 5, limit 9 + 2, Gruntz 17 + 6 (47 sites).  0.59:
+/// limit + 1, the identity `B(a, b) = Γ(a)Γ(b)/Γ(a + b)` at a pole of `B`
+/// (`limit::beta_poles_as_gamma`).
 const COVERED: &[(&str, [usize; 2])] = &[
     ("calculus/gruntz.rs", [9, 4]),
-    ("calculus/limit.rs", [3, 2]),
+    ("calculus/limit.rs", [4, 2]),
     ("calculus/series.rs", [0, 0]),
 ];
 

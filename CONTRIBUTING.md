@@ -1355,7 +1355,22 @@ quotient or product of its inputs takes the tail at the exact value
 (recover the rounding with fused multiply-adds and feed it into the
 expansion, `numdist::Tails::shifted`).  A continued fraction keeps its
 argument apart from 1 at the bits of its parameters and refuses at once
-when its calibrated step estimate exceeds the budget.
+when its calibrated step estimate exceeds the budget.  An expansion that
+reads its argument through the distance from the mean takes that distance
+formed from the caller's inputs (`numdist::bratio_at`): beyond shapes of
+about `10²⁸` one rounding of the argument moves the tail by more than
+itself.  Never subtract two logarithms of the size of a huge shape; form the
+product or quotient first.  A routine whose series or fraction needs work
+that grows with a parameter gets a route whose cost does not (the
+incomplete beta near its mode: Laplace's method with the Taylor series of
+the integrand and Cauchy's estimate), bounds every truncation in logarithms,
+and declines when it cannot certify.  A route that computes one part on its
+own next to an exact constant (`Ei = ±iπ − E₁(−z)`) bounds that part by its
+own sum's error and refuses when it underflows; the error of a non-real
+argument moves each part by its own share (Cauchy–Riemann,
+`sensitivity::moved_by`).  Exact accessors (`statistic_exact`,
+`p_value_exact`) of an `f64` route are `None`: the value is written as
+`exp(ℓ)`, never as the dyadic rational of a float.
 
 **Numeric values of constants** (`evalf::const_value`,
 `tests/unit/test_decimal_roundtrip.rs`).  Library code reads the value of a
@@ -1490,6 +1505,17 @@ finite by the assumptions or with a certified value; memoised under
 integrals, sums and limits are not its infinities).  The ratchet counts the
 raw comparisons left per file (identity checks that decide nothing, each
 commented, and the calculus files, which migrate with their deciders).
+Direct substitution in a limit never stops where the `Poles` facet of the
+`funcs!` table puts a pole (`limit::tabulated_pole`): at an integer `≤ 0` (or
+a value not proved nonzero) it refuses, and at a `0`/`1` place it accepts
+only a value folded to a proved-finite constant or a parameter that makes
+the function regular there; `B` at a pole is rewritten as a ratio of `Γ`
+(`beta_poles_as_gamma`).  At `zoo` the library functions are tabulated by
+their limit in every direction (`canon::at_complex_infinity`), folded when the
+node is built and by `eval` alike; `eval` takes no value from a closed form
+at a `zoo` argument the table does not cover.  A product with the
+coefficient 0 over `0^e` of undecided sign is `Piecewise((0, re(e) < 0 ∨ e =
+0), (nan, True))`.
 
 **Symbols pinned to a value.**  A symbol whose assumptions allow one value
 (`zero`, `even ∧ prime`, a positive integer neither prime nor composite:
@@ -1699,7 +1725,13 @@ point (a branch point such as `acos` at 1); one whose own value is not
 certified is not claimed (the outcome is `Partial`).  An equation `c = 0`
 for a constant `c` is "no solution" only when `c` is proved nonzero
 (certified digits, a minimal polynomial, or what `Ex::is_zero` decides);
-otherwise it is refused.  A Lambert-W family of an ODE carries its `W₋₁`
+otherwise it is refused.  `e^u`, `a^u`, `sinh`, `cosh`, `tanh` of an
+argument not known real are periodic on ℝ: the crate's own root searches
+(integration, `singularities`) get their principal roots as `Partial`
+(`SolveCx::lists_every_real_root`), callers listing zeros in a window ask
+`solve::has_periodic_exponential`, and for a real unknown and a linear
+exponent the real roots on every branch are exact
+(`real_roots_on_every_branch`); `Ex::solve` keeps the principal roots.  A Lambert-W family of an ODE carries its `W₋₁`
 twin, and `check_ode_solution` rewrites `e^{W(z)} = z/W(z)`.  A fitted
 initial-value solution needs a proof: its residual at the initial points
 proved 0 (`residual_is_zero`: exact tests, `solve::lambert_values`,

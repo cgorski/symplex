@@ -2752,8 +2752,12 @@ fn data_moments_of_a_rational_sample_with_negatives_and_a_tie() {
     is_invalid(variance(&[qi(3)], Ddof::Sample));
     is_invalid(variance(&[], Ddof::Population));
     assert_eq!(variance(&[qi(3)], Ddof::Population).unwrap(), qi(0));
-    is_invalid(skewness(&ctx, &from_i64(&[4, 4, 4])));
-    is_invalid(kurtosis(&[qi(3)]));
+    // A constant sample is degenerate data since 0.59 (was InvalidArgument).
+    is_degenerate(
+        skewness(&ctx, &from_i64(&[4, 4, 4])),
+        Degeneracy::ZeroVariance,
+    );
+    is_degenerate(kurtosis(&[qi(3)]), Degeneracy::ZeroVariance);
     is_invalid(mean(&[]));
     is_invalid(central_moment(&[], 2));
 }
@@ -2786,8 +2790,15 @@ fn data_covariance_and_correlations_exact() {
     assert!(tie_sizes(&from_i64(&[1, 2, 3])).is_empty());
     assert!(ranks(&[]).is_empty());
     is_invalid(covariance(&r, &s[..7], Ddof::Sample));
-    is_invalid(pearson(&ctx, &r, &from_i64(&[1; 8])));
-    is_invalid(kendall_tau(&ctx, &r, &from_i64(&[1; 8])));
+    // A constant sample is degenerate data since 0.59 (was InvalidArgument); shape errors stay.
+    is_degenerate(
+        pearson(&ctx, &r, &from_i64(&[1; 8])),
+        Degeneracy::ZeroVariance,
+    );
+    is_degenerate(
+        kendall_tau(&ctx, &r, &from_i64(&[1; 8])),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(kendall_tau(&ctx, &r[..1], &s[..1]));
     is_invalid(spearman(&ctx, &r, &s[..7]));
 }
@@ -2853,7 +2864,11 @@ fn data_robust_statistics_means_and_outliers() {
     close(z[4].eval_f64().unwrap(), 1.427_454_060_986_856_2, 1e-12);
     assert_eq!((&z[4] * &z[4]).simplify(), ctx.rational(21_175, 10_392));
     close(z[0].eval_f64().unwrap(), -1.271_731_799_788_290_2, 1e-12);
-    is_invalid(zscores(&ctx, &from_i64(&[2, 2]), Ddof::Sample));
+    // Degenerate data since 0.59 (was InvalidArgument).
+    is_degenerate(
+        zscores(&ctx, &from_i64(&[2, 2]), Ddof::Sample),
+        Degeneracy::ZeroVariance,
+    );
     // P = [1/2, 2, 9/4, 8, 3]: scipy gmean = 2.22064303492292 (= 54^(1/5)); statistics.harmonic_mean = 72/49
     let p = vec![q(1, 2), qi(2), q(9, 4), qi(8), qi(3)];
     let g = geometric_mean(&ctx, &p).unwrap();
@@ -2900,7 +2915,11 @@ fn data_robust_statistics_means_and_outliers() {
         Vec::<usize>::new()
     );
     assert_eq!(mad_outliers(&t, &qi(1)).unwrap(), vec![0, 9]);
-    is_invalid(mad_outliers(&from_i64(&[2, 2, 2, 9]), &q(7, 2)));
+    // A zero MAD is degenerate data since 0.59 (was InvalidArgument).
+    is_degenerate(
+        mad_outliers(&from_i64(&[2, 2, 2, 9]), &q(7, 2)),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]

@@ -109,7 +109,7 @@ pub(crate) fn factor_primitive<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<Vec<M
             0 => {}
             1 => {
                 let v = present[0];
-                let (_, fs) = factor_zassenhaus_with_content(&to_uni(&g, v));
+                let (_, fs) = factor_zassenhaus_with_content(&to_uni(&g, v)?);
                 for (h, k) in fs {
                     out.push((from_uni(&h, v, nv), m * k));
                 }
@@ -203,14 +203,17 @@ fn square_free_in<O: MonomialOrd>(p: &MultiPoly<O>, x: usize) -> Option<Vec<(Mul
     Some(out)
 }
 
-/// A polynomial in the single variable `v` as a dense `Poly`.
-fn to_uni<O: MonomialOrd>(p: &MultiPoly<O>, v: usize) -> Poly {
-    let deg = p.degree_in(v) as usize;
+/// A polynomial in the single variable `v` as a dense `Poly`; `None` beyond
+/// degree [`MAX_DENSE_LIST`](crate::base::cast::MAX_DENSE_LIST) (up to 0.58
+/// the vector was sized by the `u32` degree, which a factor of degree near
+/// `2³¹` in a sparse input asked the allocator for).
+fn to_uni<O: MonomialOrd>(p: &MultiPoly<O>, v: usize) -> Option<Poly> {
+    let deg = crate::base::cast::bounded_len(p.degree_in(v), crate::base::cast::MAX_DENSE_LIST)?;
     let mut coeffs = vec![Q::zero(); deg + 1];
     for (exp, c) in p.terms() {
         coeffs[exp[v] as usize] += c;
     }
-    Poly::from_coeffs(coeffs)
+    Some(Poly::from_coeffs(coeffs))
 }
 
 /// A dense `Poly` as a polynomial in the variable `v` of `nv`.
@@ -311,8 +314,9 @@ fn mul_trunc<O: MonomialOrd>(
     MultiPoly::from_terms(nv, acc.into_iter().collect())
 }
 
-/// `p` with each `yⱼ` (index `ys[j]`) set to `aⱼ`, as a polynomial in `x`.
-fn image_in_x<O: MonomialOrd>(p: &MultiPoly<O>, x: usize, ys: &[usize], a: &[Q]) -> Poly {
+/// `p` with each `yⱼ` (index `ys[j]`) set to `aⱼ`, as a polynomial in `x`
+/// (`None` as for [`to_uni`]).
+fn image_in_x<O: MonomialOrd>(p: &MultiPoly<O>, x: usize, ys: &[usize], a: &[Q]) -> Option<Poly> {
     let mut cur = p.clone();
     for (&j, aj) in ys.iter().zip(a) {
         cur = cur.eval_var(j, aj);
@@ -334,7 +338,7 @@ fn factor_square_free<O: MonomialOrd>(g: &MultiPoly<O>, x: usize) -> Option<Vec<
         .filter(|&v| v != x)
         .collect();
     if ys.is_empty() {
-        let (_, fs) = factor_zassenhaus_with_content(&to_uni(g, x));
+        let (_, fs) = factor_zassenhaus_with_content(&to_uni(g, x)?);
         return Some(
             fs.into_iter()
                 .flat_map(|(h, k)| std::iter::repeat_n(from_uni(&h, x, nv), k as usize))
@@ -360,11 +364,11 @@ fn factor_square_free<O: MonomialOrd>(g: &MultiPoly<O>, x: usize) -> Option<Vec<
                 })
                 .collect()
         };
-        let l0 = image_in_x(&lc, x, &ys, &a);
+        let l0 = image_in_x(&lc, x, &ys, &a)?;
         if l0.is_zero() {
             continue;
         }
-        let u = image_in_x(g, x, &ys, &a);
+        let u = image_in_x(g, x, &ys, &a)?;
         if u.degree() != Some(n as usize) || u.is_squarefree() != Some(true) {
             continue;
         }

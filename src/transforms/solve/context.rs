@@ -257,6 +257,18 @@ impl SolveCx {
         self.all_branches
     }
 
+    /// Is this a principal solve of the crate's root searches
+    /// ([`Request::Real`]), whose callers read a complete outcome as every
+    /// zero on the real line?  They extend the principal roots of `sin`,
+    /// `cos`, `tan` to their families themselves (`calculus_util::push_zeros`
+    /// marks such a scan periodic), but see no period in `e^u`, `a^u`,
+    /// `sinh u`, `cosh u`, `tanh u` of an argument `u` not real for a real
+    /// unknown (`e^{iπx} = (−1)^x`), whose other branches reach real values of
+    /// the unknown too: there the principal roots are only some of the roots.
+    pub(crate) fn lists_every_real_root(&self) -> bool {
+        self.request == Request::Real && self.form == Form::Principal
+    }
+
     /// This context for a caller that takes the roots as candidate points
     /// ([`conditional_roots_as_candidates`](Self::conditional_roots_as_candidates)).
     pub(crate) fn as_candidates(self) -> Self {

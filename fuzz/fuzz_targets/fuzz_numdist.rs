@@ -18,10 +18,13 @@
 //!   branch); for discrete ones `cdf(k) ≥ p > cdf(k − 1)`.
 //!
 //! Parameters are drawn log-uniformly: shapes mostly from 1e-3 to 1e9, and
-//! one draw in four from 1e-300 to 1e300 (1e15 for the beta and F) (0.27:
-//! tiny shapes had negative tails, huge ones non-converging quantiles); `n`, rates from 1 to 1e17
-//! (past 2⁵³ the discrete quantiles must refuse, not loop); `x` absolute or
-//! relative to the shape; `p` from the full range including subnormals.
+//! one draw in four from 1e-300 to 1e300 (0.27: tiny shapes had negative
+//! tails, huge ones non-converging quantiles; the beta and F stopped at 1e15
+//! up to 0.58, which hid `f::cdf(1, 3e156, 3.5e166) = 0` and `NaN` tails);
+//! `n`, rates from 1 to 1e17 (past 2⁵³ the discrete quantiles must refuse,
+//! not loop), one draw in four (`n`) or eight (rates) up to 1e300; `x`
+//! absolute or relative to the shape; `p` from the full range including
+//! subnormals.
 //! The discrete `isf` is checked like `ppf`: `sf(k) ≤ q < sf(k − 1)`.
 #![no_main]
 
@@ -236,11 +239,10 @@ fuzz_target!(|data: &[u8]| {
             check_quantile(&format!("{l} isf"), sf, |q| gamma::isf(q, shape, scale), q);
         }
         4 => {
-            // Beta and F shapes beyond ~1e15 put the distribution inside the
-            // rounding of its f64 argument (`(a + b)x`, `d₁x/(d₁x + d₂)`): the
-            // computed cdf is then not monotone at the ulp level, and a
-            // quantile can only be good to its relative accuracy (module docs).
-            let (a, bb) = (b.shape(1e-3, 1e7, 1e15), b.shape(1e-3, 1e7, 1e15));
+            // Shapes beyond ~1e30 put the distribution inside one ulp of its
+            // mean: the cdf steps from ~0 to ~1 between neighbouring floats
+            // there, and the quantile checks fall back to the bracket.
+            let (a, bb) = (b.shape(1e-3, 1e7, 1e300), b.shape(1e-3, 1e7, 1e300));
             let x = f64::from(b.u16()) / 65536.0;
             let (cdf, sf) = (|x| beta::cdf(x, a, bb), |x| beta::sf(x, a, bb));
             let label = format!("beta({a:e}, {bb:e})");
@@ -249,7 +251,7 @@ fuzz_target!(|data: &[u8]| {
             check_quantile(&format!("{label} isf"), sf, |q| beta::isf(q, a, bb), q);
         }
         5 => {
-            let (d1, d2) = (b.shape(1e-2, 1e8, 1e15), b.shape(1e-2, 1e8, 1e15));
+            let (d1, d2) = (b.shape(1e-2, 1e8, 1e300), b.shape(1e-2, 1e8, 1e300));
             let x = b.point(1e-6, 1e6, 1.0);
             let (cdf, sf) = (|x| f::cdf(x, d1, d2), |x| f::sf(x, d1, d2));
             let l = format!("f({d1:e}, {d2:e})");
@@ -258,7 +260,12 @@ fuzz_target!(|data: &[u8]| {
             check_quantile(&format!("{l} isf"), sf, |q| f::isf(q, d1, d2), q);
         }
         6 => {
-            let n = b.log_range(1.0, 1e17).floor();
+            let n = if b.u8() % 4 == 0 {
+                b.log_range(1e17, 1e300)
+            } else {
+                b.log_range(1.0, 1e17)
+            }
+            .floor();
             let pr = b.log_range(1e-9, 1.0).min(1.0 - 1e-9);
             let k = (n * f64::from(b.u16()) / 65535.0).floor();
             let (cdf, sf) = (|k| binom::cdf(k, n, pr), |k| binom::sf(k, n, pr));
@@ -268,10 +275,10 @@ fuzz_target!(|data: &[u8]| {
             check_discrete_isf(&l, sf, binom::isf(q, n, pr), q);
         }
         _ => {
-            let rate = if b.u8() % 4 == 0 {
-                b.log_range(1e-300, 1e-6)
-            } else {
-                b.log_range(1e-6, 1e17)
+            let rate = match b.u8() % 8 {
+                0 | 1 => b.log_range(1e-300, 1e-6),
+                2 => b.log_range(1e17, 1e300),
+                _ => b.log_range(1e-6, 1e17),
             };
             let k = (rate * b.log_range(1e-3, 10.0)).floor();
             let (cdf, sf) = (|k| poisson::cdf(k, rate), |k| poisson::sf(k, rate));

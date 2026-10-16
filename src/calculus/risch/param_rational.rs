@@ -1389,11 +1389,16 @@ fn coprime_basis(ctx: &Ctx, d: &GP, cands: &[GP]) -> Option<Vec<GP>> {
 /// `p` (monic, a product of powers of basis elements) written as `λ⁻¹`
 /// times a product of powers of polynomials with coefficients in
 /// `ℚ[p₁, …]` (`x + a/b` as `b·x + a`): returns the product and `λ`, or
-/// `p` expanded and `λ = 1` when `p` is not such a product.
+/// `p` expanded and `λ = 1` when `p` is not such a product, or when a
+/// common denominator or `λ` has an exponent beyond `u32` (up to 0.58 the
+/// refused lcm was 0, which scaled the factor to 0, and the product
+/// panicked).
 fn factored_expr(arena: &mut Arena, ctx: &Ctx, p: &GP, basis: &[GP]) -> (ExprId, PFrac) {
+    let unfactored = |arena: &mut Arena| (ctx.poly_expr(arena, p), PFrac::one());
     let mut rest = p.clone();
     let mut factors: Vec<ExprId> = Vec::new();
-    let mut lambda = PFrac::one();
+    // λ, a polynomial: the product of the `lᵐ` below.
+    let mut lambda = MP::from_int(ctx.nv(), 1);
     for e in basis {
         let mut m = 0u32;
         while rest.degree() >= e.degree()
@@ -1404,23 +1409,32 @@ fn factored_expr(arena: &mut Arena, ctx: &Ctx, p: &GP, basis: &[GP]) -> (ExprId,
         }
         if m > 0 {
             // e = raw/l with l the lcm of its coefficients' denominators.
-            let l = e
-                .coeffs()
-                .iter()
-                .fold(MP::from_int(ctx.nv(), 1), |acc, c| match c {
-                    PFrac::Frac(f) if f.1.as_constant().is_none() => {
+            let mut l = Some(MP::from_int(ctx.nv(), 1));
+            for c in e.coeffs() {
+                if let PFrac::Frac(f) = c
+                    && f.1.as_constant().is_none()
+                {
+                    l = l.and_then(|acc| {
                         if gcd_affordable(&acc, &f.1) {
-                            MP::lcm(&acc, &f.1)
+                            MP::try_lcm(&acc, &f.1)
                         } else {
-                            acc.mul(&f.1)
+                            acc.try_mul(&f.1)
                         }
-                    }
-                    _ => acc,
-                });
+                    });
+                }
+            }
+            let Some(l) = l else {
+                return unfactored(arena);
+            };
+            for _ in 0..m {
+                match lambda.try_mul(&l) {
+                    Some(next) => lambda = next,
+                    None => return unfactored(arena),
+                }
+            }
             let l = PFrac::from_mp(l);
             let raw = e.scale(&l);
             let e_id = ctx.poly_expr(arena, &raw);
-            lambda = lambda.mul(&l.pow_usize(m as usize));
             factors.push(if m == 1 {
                 e_id
             } else {
@@ -1430,8 +1444,9 @@ fn factored_expr(arena: &mut Arena, ctx: &Ctx, p: &GP, basis: &[GP]) -> (ExprId,
         }
     }
     if rest.degree() != Some(0) || !rest.coeff(0).is_one() || factors.is_empty() {
-        return (ctx.poly_expr(arena, p), PFrac::one());
+        return unfactored(arena);
     }
+    let lambda = PFrac::from_mp(lambda);
     let product = if factors.len() == 1 {
         factors[0]
     } else {

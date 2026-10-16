@@ -183,8 +183,10 @@ fn roots_at_an_unevaluated_pole_are_refused() {
 /// `gegenbauer(3, −2, zoo)`, `gegenbauer(3, −1, zoo)`, `jacobi(2, −3, 0, zoo)`,
 /// `betainc(1, 2, 0, zoo)`, `polylog(−1, zoo)`, `polylog(0, zoo)` were `nan`
 /// (`zoo + zoo` in the expanded closed form).  `E₀(z) = e^{−z}/z` and the
-/// incomplete gamma functions have no limit at `zoo` and stay `nan`, and
-/// `x + chebyshev_t(3, zoo) = 0` keeps its "no solution".
+/// incomplete gamma functions have no limit at `zoo` and stay unevaluated
+/// (changed in 0.59 from `nan`: `eval` takes no closed form at an untabulated
+/// `zoo` argument, so that the node reads as when it is built, where `f − f`
+/// is 0; s15q3), and `x + chebyshev_t(3, zoo) = 0` keeps its "no solution".
 ///
 /// Oracle: the explicit polynomials (SymPy 1.14 `legendre`, `chebyshevt`,
 /// `laguerre`, `assoc_laguerre`; DLMF 18.5.10 for `C₃^(−2)(x) = −4x`,
@@ -211,9 +213,9 @@ fn values_at_zoo_follow_the_limit_in_every_direction() {
         ("polylog(-1, zoo)", "0"),
         ("polylog(0, zoo)", "-1"),
         ("polylog(2, zoo)", "zoo"),
-        ("expint(0, zoo)", "nan"),
-        ("uppergamma(2, zoo)", "nan"),
-        ("lowergamma(2, zoo)", "nan"),
+        ("expint(0, zoo)", "expint(0, zoo)"),
+        ("uppergamma(2, zoo)", "uppergamma(2, zoo)"),
+        ("lowergamma(2, zoo)", "lowergamma(2, zoo)"),
     ] {
         assert_eq!(parse(&ctx, src).eval().to_string(), value, "{src}");
     }

@@ -119,6 +119,38 @@ pub(crate) fn known_real_roots(arena: &mut Arena, expr: ExprId, var: ExprId) -> 
     .claimed_points()
 }
 
+/// Does `expr` hold `e^u`, `a^u` (a constant base), `sinh u`, `cosh u` or
+/// `tanh u` of an argument `u` with `var` not known to be real for a real
+/// `var` (`(−1)^x = e^{iπx}`), whose real zeros a principal solve lists one
+/// period of, as it does for `sin`, `cos`, `tan` (see
+/// [`SolveCx::lists_every_real_root`])?  A caller that needs every real
+/// zero in a window takes the families of the general solve for such an
+/// expression: up to 0.58 `Ex::singularities(1/((−1)^x − 1), x, [0, 10])`
+/// was `{0}`, the principal root, for `{0, 2, 4, 6, 8, 10}`.
+pub(crate) fn has_periodic_exponential(arena: &mut Arena, expr: ExprId, var: ExprId) -> bool {
+    let cx = SolveCx::principal(Domain::Real);
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        let periodic = match *arena.node(id) {
+            ExprNode::Exp(u) | ExprNode::Sinh(u) | ExprNode::Cosh(u) | ExprNode::Tanh(u) => {
+                expr_contains_var(arena, u, var) && !cx.real_for_real_var(arena, u, var)
+            }
+            ExprNode::Pow(b, u)
+                if !expr_contains_var(arena, b, var) && expr_contains_var(arena, u, var) =>
+            {
+                let ln_b = arena.ln(b);
+                let ln_b = crate::transforms::eval::eval(arena, ln_b);
+                let exponent = arena.mul(&[u, ln_b]);
+                !cx.real_for_real_var(arena, exponent, var)
+            }
+            _ => false,
+        };
+        if periodic {
+            return true;
+        }
+    }
+    false
+}
+
 /// Why the public solvers (`Ex::solve`, `Ex::solve_general`) return no
 /// list of roots ([`roots_or_refusal`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2816,6 +2848,152 @@ fn two_pi_i_n(arena: &mut Arena, n: ExprId) -> ExprId {
     arena.mul(&[two, pi, i, n])
 }
 
+/// The outcome of a principal inversion of `e^u = c` (or `a^f = c`, `u =
+/// f·ln a`) at an exponent `u` not known to be real for a real unknown, in
+/// the crate's root searches ([`SolveCx::lists_every_real_root`]): the
+/// principal branch of the logarithm is one of those that real values of
+/// the unknown reach (`(−1)^x = 1` at every even `x`), so its roots are
+/// only some of the roots — [`Partial`](Solutions::Partial), and no root on
+/// it is no proof.  Up to 0.58 it was complete: the real zeros of `(−1)^x −
+/// 1` were `[0]`, and `∫₁³ dx/((−1)^x − 1)` (a pole at 2) was `−2`,
+/// `∫₂⁶ dx/(i^x − 1)` (a pole at 4) `−4`.  Other solves keep the principal
+/// roots, which `Ex::solve` documents.
+fn principal_branch_only(principal: Solutions, cx: &SolveCx) -> Solutions {
+    if !cx.lists_every_real_root() {
+        return principal;
+    }
+    principal.union(Solutions::refused(Reason::said(
+        "the other branches of the logarithm (an exponent not real for a real unknown) may hold \
+         real roots",
+    )))
+}
+
+/// `e` (evaluated) with every `ln q`, `q` a positive rational, written
+/// `k·ln r − k′·ln r′` for `q = r^k/r′^{k′}` with `r`, `r′` not perfect powers
+/// ([`perfect_power_base`]), and logarithms expanded (`ln √2 = ln(2)/2`):
+/// sums and quotients of such logarithms then cancel exactly (`ln 4 − ln 2 =
+/// ln 2`).
+fn logs_of_rationals_reduced(arena: &mut Arena, e: ExprId) -> ExprId {
+    let e = arena.expand_log_expr(e);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let reduced = match *arena.node(id) {
+            ExprNode::Ln(a) => arena
+                .as_num(a)
+                .filter(|q| q.is_positive() && !q.is_one())
+                .cloned()
+                .and_then(|q| {
+                    let (n, d) = (
+                        Q::from_integer(q.numer().clone()),
+                        Q::from_integer(q.denom().clone()),
+                    );
+                    let mut terms = Vec::with_capacity(2);
+                    for (part, sign) in [(n, 1i64), (d, -1i64)] {
+                        if part.is_one() {
+                            continue;
+                        }
+                        let (r, k) = perfect_power_base(&part)?;
+                        let r = arena.num_ratio(Q::from_integer(r));
+                        let ln_r = arena.ln(r);
+                        let k = arena.int(sign * k);
+                        terms.push(arena.mul(&[k, ln_r]));
+                    }
+                    Some(arena.add(&terms))
+                }),
+            _ => None,
+        };
+        let out = match reduced {
+            Some(r) => r,
+            None => crate::base::walk::rebuild_with_cache(arena, id, &cache),
+        };
+        cache.insert(id, out);
+    }
+    let out = cache.get(&e).copied().unwrap_or(e);
+    crate::transforms::eval::eval(arena, out)
+}
+
+/// The real roots of `e^u = c` on every branch of the logarithm (`u = ln c
+/// + 2πik`), for an unknown `x` real in `cx` (the crate's root searches, a
+/// symbol declared real), `u = α·x + β` with symbol-free `α`, `β`, and a
+/// symbol-free `c ≠ 0`.  For a real `x`, `|e^u| = e^{re α·x + re β}` must be
+/// `|c|` and `im α·x + im β − arg c` a multiple of `2π`:
+///
+/// - `re α ≠ 0`: the one candidate `x₀ = (ln|c| − re β)/re α`, a root exactly
+///   when `k = (im α·x₀ + im β − arg c)/2π` is an integer (its certified
+///   integer part and the sign of the rest): `(−2)^x = 4` has the one real
+///   root 2, on the branch `k = 1` (up to 0.58 `Ex::solve` for a real `x`
+///   gave `[]`, the principal root `ln 4/(ln 2 + iπ)` not being real), and
+///   `(−2)^x = 3` none;
+/// - `re α = 0` (a real period `2π/im α`): no root when `ln|c| ≠ re β`
+///   (`(−1)^x = 2`), infinitely many otherwise, which are not listed
+///   (`None`).
+///
+/// `None` also when a sign or an integer part does not settle.
+fn real_roots_on_every_branch(
+    arena: &mut Arena,
+    u: ExprId,
+    c: ExprId,
+    var: ExprId,
+    cx: &SolveCx,
+) -> Option<Solutions> {
+    use crate::poly::algebraic::sign_checked;
+    use crate::transforms::eval::eval;
+    if cx.unknown_may_be_nonreal(arena, var) {
+        return None;
+    }
+    let constant = |arena: &Arena, e: ExprId| {
+        crate::base::walk::free_symbols(arena, e).is_empty()
+            && !value_class::holds_special_atom(arena, e)
+    };
+    if !constant(arena, c) || arena.is_zero_structural(c) {
+        return None;
+    }
+    let (alpha, beta) = linear_rate(arena, u, var)?;
+    if !constant(arena, alpha) || !constant(arena, beta) {
+        return None;
+    }
+    let part = |arena: &mut Arena, e: ExprId, imaginary: bool| {
+        let p = if imaginary { arena.im(e) } else { arena.re(e) };
+        eval(arena, p)
+    };
+    let (re_a, im_a) = (part(arena, alpha, false), part(arena, alpha, true));
+    let (re_b, im_b) = (part(arena, beta, false), part(arena, beta, true));
+    // (logarithms of rationals as multiples of the logarithms of their
+    // bases, so that `(ln 4 − ln 2)/ln √2` is 2)
+    let re_a = logs_of_rationals_reduced(arena, re_a);
+    let abs_c = arena.abs(c);
+    let ln_abs_c = arena.ln(abs_c);
+    let modulus = arena.sub(ln_abs_c, re_b);
+    let modulus = eval(arena, modulus);
+    let modulus = logs_of_rationals_reduced(arena, modulus);
+    if sign_checked(arena, re_a)? == 0 {
+        return match sign_checked(arena, modulus)? {
+            0 => None,
+            _ => Some(Solutions::none(Reason::NoPreimage)),
+        };
+    }
+    let x0 = arena.div(modulus, re_a);
+    let x0 = eval(arena, x0);
+    let arg_c = arena.arg(c);
+    let neg_arg_c = arena.neg(arg_c);
+    let phase = arena.mul(&[im_a, x0]);
+    let theta = arena.add(&[phase, im_b, neg_arg_c]);
+    let two = arena.int(2);
+    let pi = arena.pi;
+    let two_pi = arena.mul(&[two, pi]);
+    let k = arena.div(theta, two_pi);
+    let k = eval(arena, k);
+    let n = arena.floor(k);
+    let n = eval(arena, n);
+    arena.as_num(n).filter(|q| q.is_integer())?;
+    let frac = arena.sub(k, n);
+    let frac = eval(arena, frac);
+    match sign_checked(arena, frac)? {
+        0 => Some(Solutions::found(vec![x0])),
+        _ => Some(Solutions::none(Reason::NoPreimage)),
+    }
+}
+
 /// Try to solve `expr = 0` by algebraic inversion.
 /// Restructures as `f(x) = c` and inverts `f`.
 ///
@@ -2979,6 +3157,13 @@ fn solve_by_peeling(
             if !real_inner && period_in_use(arena, rhs, cx) {
                 return Solutions::refused(Reason::NestedPeriods);
             }
+            if period.is_none() && !real_inner {
+                if let Some(every) = real_roots_on_every_branch(arena, inner, rhs, var, cx) {
+                    return every;
+                }
+                let principal = solve_by_peeling(arena, inner, ln_rhs, var, cx);
+                return principal_branch_only(principal, cx);
+            }
             let new_rhs = match period {
                 Some(n) if !real_inner => {
                     let p = two_pi_i_n(arena, n);
@@ -3137,6 +3322,29 @@ fn solve_by_peeling(
                 // f = (ln rhs + 2πin)/ln a.  Before 0.31 `(−1)^x = 1` gave
                 // only `x = 0` from `solve_general` (the family is `2n`),
                 // `(−1)^x = −1` only `1`.
+                // A principal solve of `a^f = exp(f·ln a)` at a non-real
+                // `f·ln a` (`(−1)^x = 1`): the principal branch of the
+                // logarithm is one of those real values of `var` reach.
+                let nonreal_exponent = if period.is_none() {
+                    let ln_base = arena.ln(inner_base);
+                    let ln_base = crate::transforms::eval::eval(arena, ln_base);
+                    let prod = arena.mul(&[inner_exp, ln_base]);
+                    (!cx.real_for_real_var(arena, prod, var)).then(|| {
+                        let u = crate::transforms::expand::expand(arena, prod);
+                        crate::transforms::eval::eval(arena, u)
+                    })
+                } else {
+                    None
+                };
+                if let Some(u) = nonreal_exponent
+                    && let Some(every) = real_roots_on_every_branch(arena, u, rhs, var, cx)
+                {
+                    return every;
+                }
+                let principal_only = |outcome: Solutions| match nonreal_exponent {
+                    Some(_) => principal_branch_only(outcome, cx),
+                    None => outcome,
+                };
                 if let Some(n) = period {
                     let ln_base = arena.ln(inner_base);
                     let ln_base = crate::transforms::eval::eval(arena, ln_base);
@@ -3174,7 +3382,9 @@ fn solve_by_peeling(
                             tracing::debug!(
                                 "solve_by_peeling: integer log shortcut, base^{k} = rhs"
                             );
-                            return solve_by_peeling(arena, inner_exp, k_expr, var, cx);
+                            return principal_only(solve_by_peeling(
+                                arena, inner_exp, k_expr, var, cx,
+                            ));
                         }
                         if power > r_int {
                             break;
@@ -3187,7 +3397,7 @@ fn solve_by_peeling(
                 let ln_base = arena.ln(inner_base);
                 let ln_rhs = principal_ln(arena, rhs);
                 let new_rhs = arena.div(ln_rhs, ln_base);
-                return solve_by_peeling(arena, inner_exp, new_rhs, var, cx);
+                return principal_only(solve_by_peeling(arena, inner_exp, new_rhs, var, cx));
             }
 
             // f^c = rhs for a constant irrational real c (`x^π = 2`): the
@@ -3258,7 +3468,16 @@ fn solve_by_peeling(
                     let b2 = arena.add(&[other, p]);
                     peel_two_branches(arena, inner, b1, b2, var, cx)
                 }
-                _ => solve_by_peeling(arena, inner, asinh_rhs, var, cx),
+                Some(_) => solve_by_peeling(arena, inner, asinh_rhs, var, cx),
+                None => {
+                    let real_inner = cx.real_for_real_var(arena, inner, var);
+                    let principal = solve_by_peeling(arena, inner, asinh_rhs, var, cx);
+                    if real_inner {
+                        principal
+                    } else {
+                        principal_branch_only(principal, cx)
+                    }
+                }
             }
         }
         // cosh(f(x)) = rhs → f(x) = ±acosh(rhs) (+ 2πin for a non-real f)
@@ -3285,7 +3504,14 @@ fn solve_by_peeling(
                 }
                 _ => (acosh_rhs, neg_acosh),
             };
-            peel_two_branches(arena, inner, b1, b2, var, cx)
+            let outcome = peel_two_branches(arena, inner, b1, b2, var, cx);
+            // (`cosh(iπx) = 1` at every even `x`: up to 0.58 `∫₁³ dx/(cosh(iπx)
+            // − 1)` was 0 across the double pole at 2)
+            if period.is_none() && !real_inner {
+                principal_branch_only(outcome, cx)
+            } else {
+                outcome
+            }
         }
         // tanh(f(x)) = rhs → f(x) = atanh(rhs) (+ iπn for a non-real f)
         ExprNode::Tanh(inner) => {
@@ -3293,14 +3519,20 @@ fn solve_by_peeling(
                 return Solutions::refused(Reason::NestedPeriods);
             }
             let atanh_rhs = arena.atanh(rhs);
+            let real_inner = cx.real_for_real_var(arena, inner, var);
             let new_rhs = match period {
-                Some(n) if !cx.real_for_real_var(arena, inner, var) => {
+                Some(n) if !real_inner => {
                     let i_pi_n = arena.mul(&[arena.i_unit, arena.pi, n]);
                     arena.add(&[atanh_rhs, i_pi_n])
                 }
                 _ => atanh_rhs,
             };
-            solve_by_peeling(arena, inner, new_rhs, var, cx)
+            let outcome = solve_by_peeling(arena, inner, new_rhs, var, cx);
+            if period.is_none() && !real_inner {
+                principal_branch_only(outcome, cx)
+            } else {
+                outcome
+            }
         }
         // asinh(f) = rhs → f = sinh(rhs), acosh(f) = rhs → f = cosh(rhs),
         // atanh(f) = rhs → f = tanh(rhs): valid when rhs lies in the range
