@@ -8,6 +8,8 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-10-16
+
 Silent folds at special arguments, finite products for every integer
 bound, transformed distributions, special functions off their real ranges,
 and the integration and series leftovers.  A fold written for `±∞` no
@@ -117,6 +119,32 @@ refused.
 - `elliptic_pi(1/2 − i/3, 4 + i/10)` and `elliptic_e(10⁶⁰⁰ + i)` stay refused.
 - Two series compositions are still slower than in 0.53
   (`gegenbauer(3/2, 0, 2/x)/Shi(elliptic_pi(x, π))`).
+
+### Measured
+
+- `tests/v36/` (0.49–0.56): 58 files.  nextest 14,826 tests (14 skipped),
+  doctests 1,352 — run on a 64-core x86-64 machine.
+- Rubi harness: 30,760 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,153 / 0 wrong / 64 undecided (56,016 / 201 in 0.55);
+  `--negative-params` 115 real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+  MSRV 1.93 passes for all four crates.  `cargo semver-checks` against
+  0.55.0: no semver update required.
+- Golden-output harness (200,000 random expressions × 31 operations):
+  18,264 changes from 0.55 (12,664 from the folds at special arguments and
+  negative-degree polynomials, 4,874 newly evaluable special functions, 651
+  series and integrals, 48 series refused by the step and piecewise rules,
+  9 interactions), each checked against mpmath or SymPy.
+- Hunts: products 1,341 wrong + 1,217 undefined → 0; transformed
+  distributions answered 972 → 2,074 (0 wrong); special functions 1,500
+  cases 0 wrong; golden series timeouts 98 → 83, golden numeric CPU −17%.
+- Fuzzing (64-core x86-64 machine, all 12 targets, two forks each, 10 s and
+  4 GB limits, debug assertions as CI builds them): `fuzz_numdist`
+  90,701,763 inputs, `fuzz_refine` 13,640,738, `fuzz_lambertw` 2,457,700,
+  `fuzz_parser` 1,571,209, `fuzz_exact_matrix` 179,336, `fuzz_eigenvects`
+  160,676, `fuzz_calculus` 41,605, `fuzz_evalf` 26,451, `fuzz_poly` 17,220,
+  `fuzz_roundtrip` 17,314, `fuzz_simplify` 3,361, `fuzz_integrate` 986: 0
+  crashes, 0 timeouts, 0 out-of-memory.
 
 ## [0.55.0] - 2026-10-15
 
