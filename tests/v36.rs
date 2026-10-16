@@ -88,6 +88,16 @@ mod v36_s15m4_perf;
 mod v36_s15m5_values;
 #[path = "v36/v36_s15n1_limit_power.rs"]
 mod v36_s15n1_limit_power;
+#[path = "v36/v36_s15p1_evalf.rs"]
+mod v36_s15p1_evalf;
+#[path = "v36/v36_s15p2_limits.rs"]
+mod v36_s15p2_limits;
+#[path = "v36/v36_s15p3_queues.rs"]
+mod v36_s15p3_queues;
+#[path = "v36/v36_s15p4_stats.rs"]
+mod v36_s15p4_stats;
+#[path = "v36/v36_s15p5_functions.rs"]
+mod v36_s15p5_functions;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
