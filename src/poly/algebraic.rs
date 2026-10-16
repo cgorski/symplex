@@ -381,10 +381,7 @@ fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(
     let prec = VERIFY_PREC_BITS;
     let rm = RoundingMode::None;
     let p: i64 = exp.numer().try_into().ok()?;
-    let q: usize = exp.denom().try_into().ok()?;
-    if q > MAX_POWER_DEGREE {
-        return None;
-    }
+    let q = crate::base::cast::bounded_len(exp.denom(), MAX_POWER_DEGREE)?;
 
     // A rational base `r > 0`: `r^{p/q}` is a root of `t^q − r^p` directly.
     if let AlgExpr::Rat(r) = base

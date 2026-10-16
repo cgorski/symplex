@@ -132,7 +132,8 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("transforms/evalf/quad.rs", [1, 0]),
     ("transforms/evalf/sensitivity.rs", [0, 2]),
     ("transforms/evalf/zeta.rs", [2, 2]),
-    ("transforms/heurisch.rs", [5, 1]),
+    // 0.59: the `denom == 0.0` test of `eval_node_f64` went with its decimal round trip.
+    ("transforms/heurisch.rs", [5, 0]),
     // FTC checks and continuity probes guard refusals (reviewed in s15g4); `known_zero` is exact
     // since s14c; real roots, their order and the side of `Ei`'s cut are certified since s15g4.
     ("transforms/integrate.rs", [11, 3]),

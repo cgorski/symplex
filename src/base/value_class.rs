@@ -48,9 +48,17 @@
 //!   generic point, as everywhere in the tables of values: `1/x` is finite
 //!   away from its pole).  A symbol-free constant without a special atom is
 //!   finite when the assumptions prove it (`AssumptionCache::query`,
-//!   `FINITE`) or its value certifies ([`Arena::part_signs`]); otherwise it
-//!   is `Unknown` — an unevaluated pole looks like any other constant.
-//!   This answer is memoised under `FactKey::Finite`.
+//!   `FINITE`) or its value certifies ([`Arena::part_signs`]).
+//! - **Infinite by evaluation.**  A constant that is not finite and whose
+//!   own value `evalf` proves infinite (`SymplexError::Infinite`, a
+//!   function at a pole of exact arguments: `elliptic_pi(π, 1)` is `−∞`,
+//!   `Ci(0)` unevaluated) is [`Infinite`](ValueClass::Infinite), its
+//!   direction not decided.  One whose evaluation meets such a value inside
+//!   (`1/elliptic_pi(π, 1)`) is `Unknown`, as with an atom inside; a
+//!   constant `evalf` cannot evaluate for another reason (`erfinv(9/4)`) is
+//!   `Unknown` too.  Up to 0.58 an unevaluated pole was `Unknown` like any
+//!   other constant without a value.  These answers are memoised under
+//!   `FactKey::Finite` and `FactKey::Infinite`.
 //! - **Everything else** holding a special atom (`∞ + i`, `sin ∞`,
 //!   `chebyshev_t(2, y·∞)`, a formal integral with an infinite bound) is
 //!   `Unknown`: `of` does not decide finiteness through an infinity.  A
@@ -102,6 +110,10 @@ pub(crate) enum ValueClass {
     ComplexInf,
     /// `nan`, no value.
     NaN,
+    /// Proved infinite by its evaluation (`SymplexError::Infinite`): an
+    /// unevaluated pole such as `elliptic_pi(π, 1)` (`−∞`), the direction
+    /// not decided.
+    Infinite,
     /// Not decided: it may be finite, infinite or undefined (`y·∞`, `∞ + i`,
     /// `sin ∞`, an unevaluated pole).
     Unknown,
@@ -246,9 +258,10 @@ fn gaussian_rational(arena: &Arena, x: ExprId) -> Option<GaussianRational> {
 }
 
 /// [`ValueClass::of`] for a symbol-free constant without a special atom:
-/// finite when the assumptions prove it or its value certifies.  Memoised
-/// under [`FactKey::Finite`] (`UNKNOWN`, any finite sign, when proved;
-/// `EMPTY` when not).
+/// finite when the assumptions prove it or its value certifies, infinite
+/// when its own value is ([`infinite_constant`]).  Memoised under
+/// [`FactKey::Finite`] (`UNKNOWN`, any finite sign, when proved; `EMPTY`
+/// when not).
 fn finite_constant(arena: &Arena, x: ExprId) -> ValueClass {
     use crate::base::assumptions::{AssumptionCache, Props};
     use crate::base::truth::Truth;
@@ -269,9 +282,35 @@ fn finite_constant(arena: &Arena, x: ExprId) -> ValueClass {
     };
     if finite {
         ValueClass::Finite
+    } else if infinite_constant(arena, x) {
+        ValueClass::Infinite
     } else {
         ValueClass::Unknown
     }
+}
+
+/// Is the constant `x`, not proved finite, itself infinite by its
+/// evaluation: it meets a value proved infinite ([`Arena::meets_infinity`])
+/// and none of its arguments does (otherwise the infinity is inside,
+/// `1/elliptic_pi(π, 1)`, and `x` may be anything).  Memoised under
+/// [`FactKey::Infinite`] (`UNKNOWN` when proved, `EMPTY` when not).
+fn infinite_constant(arena: &Arena, x: ExprId) -> bool {
+    if let Some(memo) = arena.constant_fact(x, FactKey::Infinite) {
+        return !memo.is_empty();
+    }
+    let infinite = arena.meets_infinity(x)
+        && !arena
+            .node(x)
+            .children()
+            .iter()
+            .any(|&c| arena.meets_infinity(c));
+    let memo = if infinite {
+        SignSet::UNKNOWN
+    } else {
+        SignSet::EMPTY
+    };
+    arena.remember_constant_fact(x, FactKey::Infinite, memo);
+    infinite
 }
 
 /// Does `x` hold `∞`, `−∞`, `zoo` or `nan` anywhere inside (also in the
@@ -388,6 +427,23 @@ mod tests {
         assert!(holds_special_atom(&a, zoo_sum));
         assert!(!holds_real_infinity(&a, zoo_sum));
         assert!(!holds_special_atom(&a, inv));
+    }
+
+    #[test]
+    fn poles_proved_by_evaluation() {
+        let mut a = Arena::new();
+        let pi = a.pi;
+        let pole = a.lib_apply(crate::base::libfn::LibFn::EllipticPi, &[pi, a.one]);
+        assert_eq!(ValueClass::of(&a, pole), ValueClass::Infinite);
+        assert!(!ValueClass::of(&a, pole).is_finite_proved());
+        assert_eq!(ValueClass::of(&a, pole).real_infinity(), None);
+        // The infinity inside: not the value's class.
+        let inv = a.pow(pole, a.neg_one);
+        assert_eq!(ValueClass::of(&a, inv), ValueClass::Unknown);
+        // Off the pole: finite.
+        let half = a.rational(1, 2);
+        let off = a.lib_apply(crate::base::libfn::LibFn::EllipticPi, &[half, half]);
+        assert_eq!(ValueClass::of(&a, off), ValueClass::Finite);
     }
 
     #[test]

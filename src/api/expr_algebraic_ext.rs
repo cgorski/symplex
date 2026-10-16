@@ -673,7 +673,8 @@ impl Expr<Numeric> {
     /// content equal to the gcd of the inputs' integer contents once their
     /// denominators are cleared — for polynomials over ℤ this is exactly
     /// the gcd over ℤ (`gcd(2x, 4x) = 2x`).  `gcd(0, 0) = 0`; two rational
-    /// constants give their integer gcd.
+    /// constants give their integer gcd.  `None` also when the gcd cannot be
+    /// computed ([`MultiPoly::try_gcd`]: exponents near `2³¹`).
     ///
     /// # Examples
     ///
@@ -690,7 +691,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn gcd_all(&self, other: &Ex) -> Option<Ex> {
-        self.multipoly_binary(other, MultiPoly::gcd)
+        self.multipoly_binary(other, MultiPoly::try_gcd)
     }
 
     /// Polynomial least common multiple of `self` and `other` over ℚ in
@@ -698,7 +699,8 @@ impl Expr<Numeric> {
     ///
     /// Same preconditions and normalisation as [`gcd_all`](Self::gcd_all):
     /// `lcm = a·b / gcd(a, b)` computed on the integer-normalised inputs,
-    /// so `lcm(2x, 4x) = 4x`; zero if either input is zero.
+    /// so `lcm(2x, 4x) = 4x`; zero if either input is zero; `None` also
+    /// when it cannot be computed ([`MultiPoly::try_lcm`]).
     ///
     /// # Examples
     ///
@@ -714,14 +716,14 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn lcm_all(&self, other: &Ex) -> Option<Ex> {
-        self.multipoly_binary(other, MultiPoly::lcm)
+        self.multipoly_binary(other, MultiPoly::try_lcm)
     }
 
     /// Shared driver of `gcd_all` / `lcm_all`.
     fn multipoly_binary(
         &self,
         other: &Ex,
-        op: fn(&MultiPoly<GrevLex>, &MultiPoly<GrevLex>) -> MultiPoly<GrevLex>,
+        op: fn(&MultiPoly<GrevLex>, &MultiPoly<GrevLex>) -> Option<MultiPoly<GrevLex>>,
     ) -> Option<Ex> {
         let other_id = self.checked_id(other);
         // Convert under a read lock, compute unlocked, intern under a write
@@ -734,7 +736,7 @@ impl Expr<Numeric> {
             let b = expr_to_multipoly(arena, other_id, &gens)?;
             (gens, a, b)
         };
-        let result = op(&a, &b);
+        let result = op(&a, &b)?;
         let id = {
             let mut inner = self.inner.write();
             multipoly_to_expr(&mut inner.arena, &result, &gens)

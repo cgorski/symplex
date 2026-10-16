@@ -214,6 +214,65 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
     expand_with(arena, expr, &ExpandOpts::default())
 }
 
+/// A bound on the terms [`expand`] distributes in `expr`: the sum, over the
+/// distinct products and integer powers of sums in the DAG (function
+/// arguments included), of the terms each multiplies out into — the
+/// product of its factors' term counts for a product, `C(n + k − 1, k − 1)`
+/// for a `k`-term sum to the power `n` (up to the exponent `expand`
+/// multiplies out), counting a sum as the sum of its terms' counts and any
+/// other node as one term.  `cap + 1` once the sum passes `cap`.  One pass
+/// over the DAG, so a caller with a work budget can refuse an expansion
+/// before paying for it: up to 0.57 Gruntz's rewrite in
+/// `series(1/(ln x·atanh(atanh x)), x, 1, 4)` distributed products of
+/// `5·10⁵` terms for 40 s before the limit was refused.
+///
+/// ```text
+/// (a + b)²·(c + d + e)  →  3 (the square) + 3·3 (the product) = 12
+/// ```
+pub(crate) fn expansion_terms_bound(arena: &Arena, expr: ExprId, cap: usize) -> usize {
+    let over = cap.saturating_add(1);
+    let max_expand = arena.config.max_pow_exponent.min(200);
+    let mut terms: FxHashMap<ExprId, usize> = FxHashMap::default();
+    let mut total: usize = 0;
+    for id in walk::post_order_ids(arena, expr) {
+        let count = |c: &ExprId| terms.get(c).copied().unwrap_or(1);
+        let (n, distributed) = match arena.node(id) {
+            ExprNode::Add(ch) => (ch.iter().map(count).fold(0, usize::saturating_add), false),
+            ExprNode::Mul(ch) => (ch.iter().map(count).fold(1, usize::saturating_mul), true),
+            ExprNode::Neg(inner) => (count(inner), false),
+            ExprNode::Pow(b, e) => {
+                let k = count(b);
+                let n = arena
+                    .as_num(*e)
+                    .filter(|r| r.is_integer() && r.is_positive())
+                    .and_then(|r| usize::try_from(r.to_integer()).ok())
+                    .filter(|&n| n <= max_expand && k > 1);
+                match n {
+                    // C(n + k − 1, k − 1), built as in `try_multinomial_expand`.
+                    Some(n) => {
+                        let mut c: usize = 1;
+                        for j in 1..=(k - 1).min(n) {
+                            c = c.checked_mul(n + k - j).map_or(over, |v| (v / j).min(over));
+                        }
+                        (c, true)
+                    }
+                    None => (1, false),
+                }
+            }
+            _ => (1, false),
+        };
+        let n = n.min(over);
+        if distributed && n > 1 {
+            total = total.saturating_add(n);
+            if total > cap {
+                return over;
+            }
+        }
+        terms.insert(id, n);
+    }
+    total
+}
+
 /// The set of nodes reachable from `root` through `Add`/`Mul`/`Pow`
 /// edges only (the "algebraic skeleton"), used for `deep = false`.
 fn algebraic_skeleton(arena: &Arena, root: ExprId) -> FxHashSet<ExprId> {

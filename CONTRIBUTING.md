@@ -1340,6 +1340,22 @@ numerical initial integral; what they do not reach is refused.  `K(m)`,
 degree-5 series of the remainder with a proven bound.  An
 argument that is infinite or undefined only to the working precision is a
 domain error the precision search retries, never a non-convergence.
+**Underflow and infinity are outcomes, not zeros.**  A value below the
+exponent range is refused by `eval_decimal` ("below the range") and is
+`0.0` only through `eval_f64`'s documented rule; a route's 0 from exact
+arguments is an exact zero only where the function cannot underflow
+(`accuracy::underflowed`/`underflow_nonzero` list the functions that can and
+give their sign).  A value with no finite value or limit is
+`SymplexError::Infinite` (raised only where the route speaks about its own
+value, at exact arguments), read by `ValueClass::Infinite` and
+`Arena::meets_infinity`; a solver never claims a candidate whose value is
+infinite.  A `log₂` of an argument next to 1 is taken from `1 − t`
+(`ln_1p`), never from the rounded `t`.  An `f64` kernel whose argument is a
+quotient or product of its inputs takes the tail at the exact value
+(recover the rounding with fused multiply-adds and feed it into the
+expansion, `numdist::Tails::shifted`).  A continued fraction keeps its
+argument apart from 1 at the bits of its parameters and refuses at once
+when its calibrated step estimate exceeds the budget.
 
 **Numeric values of constants** (`evalf::const_value`,
 `tests/unit/test_decimal_roundtrip.rs`).  Library code reads the value of a
@@ -1517,6 +1533,14 @@ Taylor coefficient never comes from differentiating a step: a
 `KroneckerDelta(a, b)` of the series variable is constant near the point
 only when `a − b` is a nonzero number there.
 
+**Hidden zeros inside functions of parameters.**  `ZeroDecision::decide`
+also decides the symbol-free pieces of a constant with parameters (`J` in
+`sin(y·J)`): a piece proved 0 is replaced by 0, and a piece 0 only to the
+precision reached counts as nonzero only if the constant is nonzero both
+with and without it.  A step function (`H`, `sign`) at an argument nonzero
+for generic parameters is read as continuous only with its exact condition
+attached (`Piecewise((H(y), y ≠ 0))`).
+
 **Divisors carry their proof** (`calculus_util::NonzeroExpr`,
 `tests/unit/test_divisors.rs`).  The series, limit and Gruntz engines divide
 only by a `NonzeroExpr`, which only the deciders build:
@@ -1686,13 +1710,22 @@ equations is exact by construction and is rejected only on a certified
 nonzero residual).  A sector condition `arg y ∈ (a, b]` is written `a <
 arg(y) ∧ arg(y) ≤ b`; `Solutions::under` simplifies conditions.
 
+**Logging is lazy.**  A debug line formats an expression through the macro
+(`tracing::debug!(e = %arena.display(e))`), never by building a string
+first: up to 0.57 Gruntz spent 79 % of a fuzz input's time formatting lines
+that were switched off.
+
 **Budgets count work.**  An engine's limit counts deterministic work — a
 `Work` charged per step, or a `WorkScope` that counts interns attempted —
 never wall-clock time (only a caller's `Budget` deadline may be one) and
 never `node_count()` growth, which depends on what the context already holds
 (up to 0.48 a repeated `series` call got slower each time).  A budget that
 surfaces as an error is `SymplexError::BudgetExhausted { kind }`; add a
-`BudgetKind` per new budget.  An expansion that widens its window does not
+`BudgetKind` per new budget.  Gruntz charges its zero tests to its budget
+(`EvaluationScope`), an engine's `expand` is charged by the terms it
+distributes (`expand::expansion_terms_bound`, refused beyond its cap), and a
+series that needs more than `MAX_WORKING_ORDER` terms is refused at once; a
+tree-size bound does not bound an expansion.  An expansion that widens its window does not
 repeat a differentiation fallback that refused at a lower order; a special
 function whose derivative in a parameter divides by it at the point
 (`Π(n | m)` at `n = 0`) gets a structural rule rather than the fallback.

@@ -1913,16 +1913,24 @@ pub(crate) fn algebraic_eigenvectors(
     for (sf, _) in f.squarefree_factors()? {
         gs.extend(tower.kp_split_by_norm(&sf)?);
     }
+    // `Some(true)` when the 30-digit value of `g(λ)` is 0 (no part with
+    // certified digits; up to 0.58 the printout was compared with `"0"`).
+    let shows_zero = |e: &Ex| -> Option<bool> {
+        let e = e.eval();
+        let guard = e.inner.read();
+        let v = crate::transforms::evalf::const_value(&guard.arena, e.raw_id(), 30).ok()?;
+        Some(!v.re_sign().is_nonzero().is_true() && !v.im_sign().is_nonzero().is_true())
+    };
     let mut which: Option<usize> = None;
     for (idx, g) in gs.iter().enumerate() {
-        match at_lam(g.coeffs()).eval_decimal(30) {
-            Ok(s) if s == "0" => {
+        match shows_zero(&at_lam(g.coeffs())) {
+            Some(true) => {
                 if which.replace(idx).is_some() {
                     return None;
                 }
             }
-            Ok(_) => {}
-            Err(_) => return None,
+            Some(false) => {}
+            None => return None,
         }
     }
     let g = gs.swap_remove(which?);
@@ -2412,7 +2420,7 @@ pub(crate) fn hermitian_gram_schmidt(cols: &[Vec<Ex>], normalize: bool) -> Optio
         let mut l = one_p.clone();
         for f in col {
             if f.den != l && f.den.as_constant().is_none() {
-                l = Mp::lcm(&l, &f.den);
+                l = Mp::try_lcm(&l, &f.den)?;
             }
         }
         let lbar = tower.conj_poly(&l, &perm)?;
@@ -2562,7 +2570,7 @@ fn rref_solve_algebraic(
             let mut lcm = Mp::from_int(tower.nvars(), 1);
             for f in &fr {
                 if f.den != lcm && f.den.as_constant().is_none() {
-                    lcm = Mp::lcm(&lcm, &f.den);
+                    lcm = Mp::try_lcm(&lcm, &f.den)?;
                 }
             }
             let mut out = Vec::with_capacity(fr.len());

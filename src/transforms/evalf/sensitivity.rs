@@ -265,7 +265,18 @@ fn ln_gamma_f64(x: &BigFloat) -> (f64, f64) {
 /// `2^(±2.2·10⁷)`, so `betainc_regularized(8.7·10¹⁸, 9, 0, 1 − 10⁻¹⁸)` (the
 /// survival function of a negative binomial with `p = 10⁻¹⁸` at its
 /// median) was refused.
-fn log2_beta_bounds(p: &BigFloat, q: &BigFloat) -> (f64, f64) {
+///
+/// Beyond [`BETA_WIDE`] both are wider than a bit (`2^(±2.7·10⁵)` at
+/// `B(1.21·10¹⁷, 7.388·10¹³)`), and `ln B` is taken in arbitrary precision
+/// ([`log2_beta_wp`]) instead.
+fn log2_beta_bounds(p: &BigFloat, q: &BigFloat, cc: &mut Consts) -> (f64, f64) {
+    if f(p) + f(q) > BETA_WIDE
+        && let Some(v) = log2_beta_wp(p, q, cc)
+    {
+        // The roundings of the conversion to `f64` and of `· log₂ e`.
+        let margin = 4.0 * f64::EPSILON * v.abs() + 1e-6;
+        return (v - margin, v + margin);
+    }
     let s = sum(p, q);
     let (a, ea) = ln_gamma_f64(p);
     let (b, eb) = ln_gamma_f64(q);
@@ -284,6 +295,49 @@ fn log2_beta_bounds(p: &BigFloat, q: &BigFloat) -> (f64, f64) {
         hi = hi.min(ls + es - d_lo + margin);
     }
     (lo * LOG2E, hi * LOG2E)
+}
+
+/// The shape sum `a + b` from which the incomplete beta's bounds take
+/// `ln B` and the integrand in arbitrary precision: `2³²`, where the `f64`
+/// terms `a·log₂ t` and the `ln Γ` bounds start to lose a fraction of a bit.
+const BETA_WIDE: f64 = 4_294_967_296.0;
+
+/// `log₂ B(p, q)` for `p, q > 0` from `evalf`'s `ln_beta_wp` at [`LP`] bits
+/// past the magnitude of its `ln Γ` terms (an absolute error near `2⁻¹²⁸`
+/// before the conversion to `f64`).  `None` if it fails.
+fn log2_beta_wp(p: &BigFloat, q: &BigFloat, cc: &mut Consts) -> Option<f64> {
+    let v = super::ln_beta_wp(p, q, &mut Wp::new(LP, cc)).ok()?;
+    let v = super::f64_of(&v).ok()?;
+    v.is_finite().then_some(v * LOG2E)
+}
+
+/// `log₂` of the regularised integrand `t^{p−1} u^{q−1} / B(p, q)` at a limit
+/// `t` (`u = 1 − t` exact) for shapes beyond [`BETA_WIDE`], in arbitrary
+/// precision: near the mode its terms, of size `p·|log₂ t|` (`10¹⁴` bits
+/// for `p ≈ 10¹⁷`), cancel to `log₂(1/σ)`, and in `f64` the rounding of
+/// `log₂ t` alone moves `p·log₂ t` by tens of bits.  Up to 0.58 the bound
+/// built from `f64` terms was `2^268610` for
+/// `betainc_regularized(1.21·10¹⁷, 7.388·10¹³, 0, 3025000/3026847)`
+/// (`0.49999998454291586439`, mpmath), refused after 64 s.  `None` if a
+/// logarithm fails.
+fn log2_density_wp(p: &BigFloat, q: &BigFloat, t: &BigFloat, cc: &mut Consts) -> Option<f64> {
+    let u = one_minus(t);
+    if !pos(t) || !pos(&u) {
+        return None;
+    }
+    let (pf, qf) = (f(p), f(q));
+    let size = pf * lg(t).abs() + qf * lg(&u).abs() + (pf + qf) * (pf + qf).log2() + 2.0;
+    if !size.is_finite() {
+        return None;
+    }
+    let wp = LP + super::magnitude_bits(size) + 8;
+    let (p1, q1) = (diff(p, &int(1)), diff(q, &int(1)));
+    let terms = p1
+        .mul(&t.ln(wp, RM, cc), wp, RM)
+        .add(&q1.mul(&u.ln(wp, RM, cc), wp, RM), wp, RM);
+    let ln_b = super::ln_beta_wp(p, q, &mut Wp::new(LP, cc)).ok()?;
+    let v = super::f64_of(&terms.sub(&ln_b, wp, RM)).ok()?;
+    v.is_finite().then_some(v * LOG2E)
 }
 
 /// `log₂` of the distance from `x` to the nearest pole of `Γ` (the
@@ -630,7 +684,7 @@ fn lib_sens(fun: LibFn, i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
         LibFn::EllipticF => elliptic_f_sens(i, a, cc),
         LibFn::EllipticPi => elliptic_pi_sens(i, a),
         LibFn::BetaInc | LibFn::BetaIncRegularized => {
-            betainc_sens(fun == LibFn::BetaIncRegularized, i, a)
+            betainc_sens(fun == LibFn::BetaIncRegularized, i, a, cc)
         }
         LibFn::Legendre
         | LibFn::ChebyshevT
@@ -1025,7 +1079,7 @@ fn bessel_x(fun: LibFn, a: &Args<'_>, cc: &mut Consts) -> Sens {
 ///   (and symmetrically at 1) — an `x` that rounds to 1 had a derivative of
 ///   `∞` there and was taken as exact.
 /// * A shape: see [`beta_shape`].
-fn betainc_sens(regularized: bool, i: usize, a: &Args<'_>) -> Sens {
+fn betainc_sens(regularized: bool, i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
     let (p, q, x1, x2) = (a.x[0], a.x[1], a.x[2], a.x[3]);
     if !pos(p) || !pos(q) {
         // A shape ≤ 0 (since 0.56): the integrand is not integrable at that
@@ -1040,7 +1094,7 @@ fn betainc_sens(regularized: bool, i: usize, a: &Args<'_>) -> Sens {
         }
         return Sens::Numeric;
     }
-    let (ln_b_lo, ln_b_hi) = log2_beta_bounds(p, q);
+    let (ln_b_lo, ln_b_hi) = log2_beta_bounds(p, q, cc);
     // The integrand over B(a, b), bounded above.
     let norm = if regularized { ln_b_lo } else { 0.0 };
     if i >= 2 {
@@ -1074,7 +1128,24 @@ fn betainc_sens(regularized: bool, i: usize, a: &Args<'_>) -> Sens {
         // multiplied into an exponent).
         let variation =
             ((pf - 1.0).abs() * shrink(e - lt) + (qf - 1.0).abs() * shrink(e - lu)) * LN2;
-        return Sens::Deriv((pf - 1.0) * lt + (qf - 1.0) * lu - norm + variation * LOG2E);
+        // `log₂ t` next to 1 from `1 − t` (`log₂(1 − 10⁻⁹⁰)` is 0 in `f64`,
+        // and `(p − 1)·log₂ t` for `p = 5·10⁹⁹` is `−7.2·10⁹`: up to 0.58 the
+        // bound kept `2^313` of an integrand below `2^(−2³¹)`, and the
+        // underflowed tail of `t(10¹⁰⁰).sf(10⁵)` printed `0`).
+        let near_one = |l_other: f64, other: &BigFloat, l: f64| {
+            if l_other < -1.0 {
+                (-f(other)).ln_1p() * LOG2E
+            } else {
+                l
+            }
+        };
+        let (log_t, log_u) = (near_one(lu, &u, lt), near_one(lt, t, lu));
+        let wide = regularized && pf + qf > BETA_WIDE;
+        let density = match wide.then(|| log2_density_wp(p, q, t, cc)).flatten() {
+            Some(d) => d + 4.0 * f64::EPSILON * d.abs() + 1e-6,
+            None => (pf - 1.0) * log_t + (qf - 1.0) * log_u - norm,
+        };
+        return Sens::Deriv(density + variation * LOG2E);
     }
     let (lo, hi) = if x1.cmp(x2).is_some_and(|c| c > 0) {
         (x2, x1)

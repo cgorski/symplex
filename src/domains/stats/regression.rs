@@ -2019,7 +2019,19 @@ struct Standardization {
 impl Standardization {
     /// The change for `design` (`n × p`, `n ≥ 1`); `thresholds_absorb_shift`
     /// centres every non-constant column.
-    fn new(design: &[Vec<f64>], thresholds_absorb_shift: bool) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for a column that varies only on a
+    /// scale `s` below `2⁻¹⁰²⁴` (subnormal regressors): its coefficient and
+    /// standard error are of order `1/s`, beyond the `f64` range.  Up to 0.58
+    /// the column kept its raw scale, its squares underflowed in the
+    /// information matrix, and the fit was refused as a collinear design.
+    fn new(
+        op: &'static str,
+        design: &[Vec<f64>],
+        thresholds_absorb_shift: bool,
+    ) -> Result<Self, SymplexError> {
         let p = design.first().map_or(0, Vec::len);
         let n = design.len() as f64;
         let is_constant = |a: usize| design.iter().all(|r| r[a] == design[0][a]);
@@ -2053,18 +2065,27 @@ impl Standardization {
                     .sum::<f64>()
                     / n)
                     .sqrt();
+            // Float evidence: the f64 range itself (`1/s` overflows), not a tolerance.
+            if s > 0.0 && !(1.0 / s).is_finite() {
+                return Err(invalid(
+                    op,
+                    format!(
+                        "column {a} of the design varies only on a scale of {s:e} (below 2^-1024): its coefficient and standard error, of order 1/scale, lie beyond the f64 range; rescale the regressor"
+                    ),
+                ));
+            }
             // A column this cannot rescale keeps its raw scale (the
             // Cholesky factorisation then judges it).
-            if m.is_finite() && s > 0.0 && s.is_finite() && (1.0 / s).is_finite() {
+            if m.is_finite() && s > 0.0 && s.is_finite() {
                 center[a] = m;
                 scale[a] = s;
             }
         }
-        Self {
+        Ok(Self {
             center,
             scale,
             constant,
-        }
+        })
     }
 
     fn apply(&self, design: &[Vec<f64>]) -> Vec<Vec<f64>> {
@@ -2855,7 +2876,7 @@ fn fit_multinomial(
 ) -> Result<MultinomialFit, SymplexError> {
     let k = data.counts.len();
     let p = data.design.first().map_or(0, Vec::len);
-    let change = Standardization::new(&data.design, false);
+    let change = Standardization::new(op, &data.design, false)?;
     let design = change.apply(&data.design);
     let a_map = block_diagonal(&change.linear_predictor_map(), k - 1);
     let evaluate = |gamma: &[f64]| Some(mnlogit_evaluate(&design, &data.y, k, gamma));
@@ -3331,7 +3352,7 @@ pub fn ologit(y: &[usize], x: &[Vec<f64>], opts: &LogitOpts) -> Result<OrderedLo
         cum += c;
         start[p + j] = (cum as f64 / (n - cum) as f64).ln();
     }
-    let change = Standardization::new(&data.design, true);
+    let change = Standardization::new(OP, &data.design, true)?;
     let design = change.apply(&data.design);
     let a_map = change.ordered_map(k - 1);
     let evaluate = |par: &[f64]| ologit_evaluate(&design, &data.y, k, par);

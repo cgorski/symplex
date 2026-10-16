@@ -408,12 +408,11 @@ mod tests {
         let twenty = a.int(20);
         let mul = a.mul(&[twenty, x]);
         let sin_20x = a.sin(mul);
-        let t = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let e = expand_trig(&mut a, sin_20x);
-        assert!(
-            t.elapsed() < std::time::Duration::from_millis(500),
-            "expand_trig(sin(20x)) took {:?}",
-            t.elapsed()
+        timer.assert_within(
+            std::time::Duration::from_millis(500),
+            "expand_trig(sin(20x))",
         );
         assert!(display(&a, e).len() < 400);
     }

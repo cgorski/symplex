@@ -65,6 +65,7 @@ jobs:
             target/stats_oracle/report.md
             target/stats_oracle/dump.tsv
             target/stats_oracle/verdicts.tsv
+            target/stats_oracle/timings.tsv
             target/stats_oracle/timing.txt
           if-no-files-found: ignore
           retention-days: 30

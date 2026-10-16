@@ -2394,8 +2394,10 @@ pub struct PairwiseTTest {
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than two groups, a group
-/// with fewer than two observations, a pair of constant groups, or
-/// `alpha ∉ (0, 1)`.
+/// with fewer than two observations, or `alpha ∉ (0, 1)`;
+/// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+/// pair of constant groups (up to 0.58 `InvalidArgument`, while one-way
+/// ANOVA and Tukey's HSD said `DegenerateData` since 0.57).
 pub fn pairwise_t_tests(
     ctx: &Context,
     groups: &[Vec<Q>],

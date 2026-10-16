@@ -204,7 +204,7 @@ impl Cyclotomic {
 
     /// `ζʲ`.
     fn zeta(&self, j: i64) -> Base {
-        let e = usize::try_from(j.rem_euclid(self.n)).unwrap_or(0);
+        let e = crate::base::cast::bounded_len(j.rem_euclid(self.n), self.n).unwrap_or(0);
         let mut v = vec![Q::zero(); (e + 1).max(self.phi)];
         v[e] = Q::one();
         self.reduce(v)

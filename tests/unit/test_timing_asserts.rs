@@ -18,8 +18,12 @@
 //! | `elapsed` | a method call `.elapsed()`, `.duration_since(…)`, `.checked_duration_since(…)` or `.saturating_duration_since(…)`, except `duration_since(UNIX_EPOCH)` (a timestamp, as in the names of temporary directories) |
 //!
 //! Every `.rs` file under `tests/` is scanned except `tests/perf_assert/`
-//! (the helper).  Macro bodies are scanned as expressions when they parse
-//! as a comma-separated list (`assert!`, `format!`), and token by token
+//! (the helper), and the `#[cfg(test)]` items and modules of the files
+//! under `src/` (since 0.59; their helper is the same file, compiled into
+//! the library's test build as `crate::base::perf_assert` — the library's
+//! own deadlines and stage timings are not tests and are not counted).
+//! Macro bodies are scanned as expressions when they parse as a
+//! comma-separated list (`assert!`, `format!`), and token by token
 //! otherwise (`proptest! { … }`).
 //!
 //! What may stay: an `Instant` built as a deadline for the library's
@@ -38,22 +42,29 @@ use syn::punctuated::Punctuated;
 use syn::visit::Visit;
 
 /// Per-file counts `[now, elapsed]` (the columns of the module doc).
-/// Paths are relative to `tests/`.  At the wave-12 merge (0.57
-/// development): 225 `now` and 301 `elapsed` sites in 85 files (97
-/// wall-clock bounds in 80 of them, the rest the reports of benchmarks and
-/// the interleaved comparisons of `v28_perf`); after the migration to
-/// `perf_assert`, 9 and 2 in 5 files.
+/// Paths are relative to the crate root.  At the wave-12 merge (0.57
+/// development): 225 `now` and 301 `elapsed` sites in 85 files under
+/// `tests/` (97 wall-clock bounds in 80 of them, the rest the reports of
+/// benchmarks and the interleaved comparisons of `v28_perf`); after the
+/// `perf_assert`, 9 and 2 in 5 files.  The test modules of `src/` had 22
+/// and 24 in 13 files at 0.58 (14 wall-clock bounds in 8 files, 4 reports
+/// of a measured time, 4 deadlines); 4 and 0 in 3 files at 0.59.
 const ALLOWLIST: &[(&str, [usize; 2])] = &[
+    // `Instant` deadlines (past, far future) for `Budget` and
+    // `PolyhedronOpts` in the unit tests of the budget API itself.
+    ("src/base/budget.rs", [2, 0]),
+    ("src/domains/certificates/polyhedron.rs", [1, 0]),
+    ("src/domains/linprog.rs", [1, 0]),
     // `Instant` deadlines (past, now, far future) for `Budget` / `SosOpts` /
     // `PolyhedronOpts`: the library's deadlines are wall-clock by contract.
-    ("v03/v03_linprog.rs", [2, 0]),
-    ("v04/v04_polyhedron.rs", [1, 0]),
-    ("v04/v04_sos.rs", [1, 0]),
-    ("v20/v20_base.rs", [4, 0]),
+    ("tests/v03/v03_linprog.rs", [2, 0]),
+    ("tests/v04/v04_polyhedron.rs", [1, 0]),
+    ("tests/v04/v04_sos.rs", [1, 0]),
+    ("tests/v20/v20_base.rs", [4, 0]),
     // The statistics-oracle dump (`STATS_ORACLE_OUT`) logs each row's wall
     // time for `run_dump.py`; the row runs on a worker thread, and nothing
     // is asserted.
-    ("v36/v36_s15l5_oracle.rs", [1, 2]),
+    ("tests/v36/v36_s15l5_oracle.rs", [1, 2]),
 ];
 
 const COLUMNS: [&str; 2] = ["now", "elapsed"];
@@ -114,9 +125,23 @@ struct Scanner {
     /// The function being scanned (for the site labels).
     fn_names: Vec<String>,
     sites: [Vec<String>; 2],
+    /// Count only inside `#[cfg(test)]` items (the files of `src/`).
+    tests_only: bool,
+    /// How many `#[cfg(test)]` items enclose the current node.
+    in_test: usize,
+}
+
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(|a| a.path().is_ident("cfg") && a.to_token_stream().to_string().contains("test"))
 }
 
 impl Scanner {
+    fn counting(&self) -> bool {
+        !self.tests_only || self.in_test > 0
+    }
+
     fn label(&self, what: &dyn ToTokens) -> String {
         let text = what.to_token_stream().to_string();
         let short: String = text.chars().take(90).collect();
@@ -128,6 +153,21 @@ impl Scanner {
 }
 
 impl<'ast> Visit<'ast> for Scanner {
+    fn visit_item(&mut self, i: &'ast syn::Item) {
+        let test = match i {
+            syn::Item::Fn(x) => is_cfg_test(&x.attrs),
+            syn::Item::Impl(x) => is_cfg_test(&x.attrs),
+            syn::Item::Mod(x) => is_cfg_test(&x.attrs),
+            syn::Item::Const(x) => is_cfg_test(&x.attrs),
+            syn::Item::Static(x) => is_cfg_test(&x.attrs),
+            syn::Item::Trait(x) => is_cfg_test(&x.attrs),
+            _ => false,
+        };
+        self.in_test += usize::from(test);
+        syn::visit::visit_item(self, i);
+        self.in_test -= usize::from(test);
+    }
+
     fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
         self.fn_names.push(f.sig.ident.to_string());
         syn::visit::visit_item_fn(self, f);
@@ -135,13 +175,17 @@ impl<'ast> Visit<'ast> for Scanner {
     }
 
     fn visit_impl_item_fn(&mut self, m: &'ast syn::ImplItemFn) {
+        let test = is_cfg_test(&m.attrs);
+        self.in_test += usize::from(test);
         self.fn_names.push(m.sig.ident.to_string());
         syn::visit::visit_impl_item_fn(self, m);
         self.fn_names.pop();
+        self.in_test -= usize::from(test);
     }
 
     fn visit_expr_call(&mut self, c: &'ast syn::ExprCall) {
-        if let syn::Expr::Path(p) = &*c.func
+        if self.counting()
+            && let syn::Expr::Path(p) = &*c.func
             && is_instant_now(&p.path)
         {
             let l = self.label(c);
@@ -152,7 +196,8 @@ impl<'ast> Visit<'ast> for Scanner {
 
     fn visit_expr_method_call(&mut self, m: &'ast syn::ExprMethodCall) {
         let name = m.method.to_string();
-        if MEASURING_METHODS.contains(&name.as_str())
+        if self.counting()
+            && MEASURING_METHODS.contains(&name.as_str())
             && !(name == "duration_since" && is_unix_epoch(&m.args))
         {
             let l = self.label(m);
@@ -168,6 +213,7 @@ impl<'ast> Visit<'ast> for Scanner {
                     self.visit_expr(e);
                 }
             }
+            Err(_) if !self.counting() => {}
             Err(_) => {
                 let counts = token_counts(&mac.tokens.to_string());
                 let name = mac.path.to_token_stream().to_string();
@@ -212,23 +258,54 @@ fn token_scan_counts_wall_clock_reads_in_macro_bodies() {
     );
 }
 
+/// The detector of the `src/` root: only `#[cfg(test)]` items count.
+#[test]
+fn src_scan_counts_only_test_code() {
+    let file: syn::File = syn::parse_str(
+        r#"
+        fn deadline() -> Instant { Instant::now() }
+        impl Meter { fn spent(&self) -> Duration { self.start.elapsed() } }
+        #[cfg(test)]
+        mod tests {
+            fn t() { let s = Instant::now(); assert!(s.elapsed() < D); }
+        }
+        #[cfg(test)]
+        fn helper() { let _ = std::time::Instant::now(); }
+        "#,
+    )
+    .expect("parses");
+    let mut scanner = Scanner {
+        tests_only: true,
+        ..Scanner::default()
+    };
+    scanner.visit_file(&file);
+    assert_eq!([scanner.sites[0].len(), scanner.sites[1].len()], [2, 1]);
+}
+
 #[test]
 fn wall_clock_measurements_in_tests_do_not_grow() {
-    let tests = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tests = root.join("tests");
     let helper = tests.join("perf_assert");
     let mut files = Vec::new();
-    collect_rs_files(tests, &mut files);
+    collect_rs_files(&tests, &mut files);
     files.retain(|p| !p.starts_with(&helper));
+    let mut src_files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut src_files);
+    files.extend(src_files);
     files.sort();
 
     let mut found: BTreeMap<String, [Vec<String>; 2]> = BTreeMap::new();
     for path in &files {
         let rel = path
-            .strip_prefix(tests)
-            .expect("file is under tests/")
+            .strip_prefix(root)
+            .expect("file is under the crate root")
             .to_string_lossy()
             .replace('\\', "/");
-        let mut scanner = Scanner::default();
+        let mut scanner = Scanner {
+            tests_only: rel.starts_with("src/"),
+            ..Scanner::default()
+        };
         scanner.visit_file(&parse(path));
         found.insert(rel, scanner.sites);
     }

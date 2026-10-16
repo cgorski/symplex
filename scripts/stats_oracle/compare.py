@@ -22,6 +22,8 @@ import fnmatch
 import math
 import multiprocessing
 import os
+import re
+import resource
 import signal
 import sys
 import time
@@ -42,6 +44,10 @@ import refs  # noqa: E402
 FAILURES = {"SYMPLEX_WRONG", "SCIPY_WRONG", "UNRESOLVED", "REFUSED", "PANIC", "HANG", "CRASH", "BADROW",
             "MISSING"}
 DPS = (40, 60)
+# Extra digits for the row being judged: the most digits of a number in its parameters or argument (capped),
+# so that a reference whose terms are of that size (x − loc with x ≈ 10^300, Γ terms of a shape 10^212) does not
+# cancel to the same wrong value at both precisions.  Set per row by judge_row_inner.
+GUARD = 0
 ORACLE_TIMEOUT = int(os.environ.get("STATS_ORACLE_MP_TIMEOUT", "120"))
 
 
@@ -191,13 +197,13 @@ def mp_twice(fn):
     """fn() at two precisions; (value, agreeing digits).  Strings ("inf", ...) pass through."""
     vals = []
     for dps in DPS:
-        with mp.workdps(dps):
+        with mp.workdps(dps + GUARD):
             v = fn()
         if v is None or isinstance(v, str):
             return v, 999
         vals.append(v)
     a, b = vals
-    with mp.workdps(DPS[1]):
+    with mp.workdps(DPS[1] + GUARD):
         a, b = to_mp(a), to_mp(b)
         if a == b:
             return b, 999
@@ -275,6 +281,9 @@ def judge_nonfinite(row, output, val, scipy_val, mp_exact):
                 truth = mp_exact()
         except (Timeout, ZeroDivisionError, ValueError, OverflowError):
             truth = None
+    # An mpf infinity or NaN (a density's `mp.inf` at a pole) is that symbol.
+    if isinstance(truth, mp.mpf) and not mp.isfinite(truth):
+        truth = "nan" if mp.isnan(truth) else ("inf" if truth > 0 else "-inf")
     sci = None if scipy_val is None else ("nan" if math.isnan(scipy_val) else "inf" if scipy_val == math.inf
                                           else "-inf" if scipy_val == -math.inf else "finite")
     if isinstance(truth, str):
@@ -505,12 +514,23 @@ def quantile_verdict(row, output, val):
                 prev = max((a for a in atoms if a < x), default=None)
             else:
                 prev = x - 1
-            c, s = (to_mp(t) for t in tails(x))
             levm = refs.M(lev)
-            if upper:
-                ok = s <= levm and (prev is None or to_mp(tails(prev)[1]) > levm)
-            else:
-                ok = c >= levm and (prev is None or to_mp(tails(prev)[0]) < levm)
+
+            def condition(k, before):
+                c, s = (to_mp(t) for t in tails(k))
+                if upper:
+                    return s <= levm and (before is None or to_mp(tails(before)[1]) > levm)
+                return c >= levm and (before is None or to_mp(tails(before)[0]) < levm)
+
+            ok = condition(x, prev)
+            if not ok and fam != "finite" and abs(v) >= 2.0 ** 53:
+                # Beyond 2^53 the quantile is returned as its nearest double: some integer that rounds to
+                # it must be the quantile (DiscreteUniform(-1e17, -1e17 + 1) at 0.95 is -1e17 + 1).
+                half = F(math.ulp(v)) / 2
+                k = math.ceil(x - half)
+                while k <= x + half and not ok:
+                    ok = float(k) == v and condition(F(k), F(k - 1))
+                    k += 1
             scipy_ok = sci is not None and sci == v
             cls = "AGREE" if ok and (sci is None or scipy_ok or not math.isfinite(sci)) else (
                 "SYMPLEX_WRONG" if not ok else "SCIPY_WRONG")
@@ -688,6 +708,45 @@ def ranks(xs):
     return r
 
 
+def rank_sum_counts(ranks2, k):
+    """Counts of the k-subsets of the doubled ranks `ranks2` by their sum (the exact distribution of a
+    rank sum given the ties; from L3's oracle, wave 12)."""
+    total = sum(ranks2)
+    dp = [[0] * (total + 1) for _ in range(k + 1)]
+    dp[0][0] = 1
+    for r in ranks2:
+        for j in range(k, 0, -1):
+            prev, cur = dp[j - 1], dp[j]
+            for s in range(total, r - 1, -1):
+                if prev[s - r]:
+                    cur[s] += prev[s - r]
+    return dp[k]
+
+
+def signed_rank_counts(ranks2):
+    """Counts of the sign patterns of the doubled ranks by the sum of the positive ones."""
+    total = sum(ranks2)
+    dp = [0] * (total + 1)
+    dp[0] = 1
+    for r in ranks2:
+        for s in range(total, r - 1, -1):
+            if dp[s - r]:
+                dp[s] += dp[s - r]
+    return dp
+
+
+def exact_tail(counts, obs, alt):
+    """P(S <= obs) (less), P(S >= obs) (greater), or min(1, 2 min of the two), exactly."""
+    tot = sum(counts)
+    le = F(sum(counts[:obs + 1]), tot)
+    ge = F(sum(counts[obs:]), tot)
+    if alt == "less":
+        return le
+    if alt == "greater":
+        return ge
+    return min(F(1), 2 * min(le, ge))
+
+
 def tie_sum(xs):
     c = Counter(xs)
     return sum(t ** 3 - t for t in c.values())
@@ -819,6 +878,10 @@ def test_mp(row):
         rk = ranks(x + y)
         u1 = sum(rk[:n1]) - F(n1 * (n1 + 1), 2)
         out["statistic"] = lambda: u1
+        if f["method"] == "exact" and n1 and n2 and n1 + n2 <= 60:
+            # The exact distribution of the rank sum given the ties (doubled midranks).
+            r2 = [int(2 * v) for v in rk]
+            out["pvalue"] = lambda: exact_tail(rank_sum_counts(r2, n1), int(2 * sum(rk[:n1])), alt)
         if f["method"] != "exact":
             n = n1 + n2
             var = F(n1 * n2, 12) * ((n + 1) - F(tie_sum(x + y), n * (n - 1)))
@@ -846,14 +909,25 @@ def test_mp(row):
             tm = sum(r for r, v in zip(rk, d) if v < 0)
             out["statistic"] = (lambda: min(tp, tm)) if alt == "two-sided" else (lambda: tp)
             var = (F(n * (n + 1) * (2 * n + 1)) - F(tie_sum([abs(v) for v in d]), 2)) / 24
+            if f["method"] == "exact" and n <= 100:
+                # The exact distribution of T+ given the ties (doubled midranks, all sign patterns).
+                r2 = [int(2 * v) for v in rk]
+                out["pvalue"] = lambda: exact_tail(signed_rank_counts(r2), int(2 * tp), alt)
             def pv():
                 num = tp - F(n * (n + 1), 4)
                 if f["method"] == "asymptotic_cc":
-                    num = num - F(1, 2) * (1 if num > 0 else -1 if num < 0 else 0)
+                    # Towards the null mean for two-sided, in the alternative's direction one-sided.
+                    if alt == "greater":
+                        num -= F(1, 2)
+                    elif alt == "less":
+                        num += F(1, 2)
+                    else:
+                        num = num - F(1, 2) * (1 if num > 0 else -1 if num < 0 else 0)
                 if var <= 0:
                     return None
                 return refs.p_tail_z(refs.M(num) / mp.sqrt(refs.M(var)), alt)
-            out["pvalue"] = pv
+            if f["method"] != "exact":
+                out["pvalue"] = pv
     elif t == "kruskal_wallis":
         groups = [refs.qlist(g) for g in f["groups"].split(":")]
         allv = [v for g in groups for v in g]
@@ -946,6 +1020,15 @@ def solve_exact(X, y):
     return beta, inv
 
 
+def spans_constant(X):
+    """statsmodels' `k_constant` decided exactly: the vector of ones lies in the column space (an added
+    intercept, a constant column, a full set of dummies)."""
+    if not X or not X[0]:
+        return False
+    b, _ = solve_exact(X, [F(1)] * len(X))
+    return b is not None and all(sum(bi * v for bi, v in zip(b, r)) == 1 for r in X)
+
+
 def model_mp(row):
     y, X = refs.model_design(row)
     beta, inv = solve_exact(X, y)
@@ -954,9 +1037,13 @@ def model_mp(row):
     n, p = len(y), len(beta)
     fitted = [sum(b * v for b, v in zip(beta, r)) for r in X]
     ssr = sum((a - b) ** 2 for a, b in zip(y, fitted))
-    ybar = sum(y) / n
+    # Centred TSS with a constant in the design, uncentred without (statsmodels, R).
+    k_const = 1 if spans_constant(X) else 0
+    ybar = sum(y) / n if k_const else F(0)
     tss = sum((a - ybar) ** 2 for a in y)
     dfr = n - p
+    if dfr <= 0:
+        return {}
     s2 = ssr / dfr
     out = {}
     for i in range(p):
@@ -965,10 +1052,11 @@ def model_mp(row):
         tval = (lambda i=i: refs.M(beta[i]) / mp.sqrt(refs.M(s2 * inv[i][i])))
         out[f"t.{i}"] = tval
         out[f"p.{i}"] = (lambda tval=tval: refs.p_tail_t(tval(), dfr, "two-sided"))
-    r2 = 1 - ssr / tss
-    out["rsquared"] = lambda: r2
-    out["rsquared_adj"] = lambda: 1 - F(n - 1, dfr) * (1 - r2)
-    dfm = p - 1
+    r2 = 1 - ssr / tss if tss else None
+    if r2 is not None:
+        out["rsquared"] = lambda: r2
+        out["rsquared_adj"] = lambda: 1 - F(n - k_const, dfr) * (1 - r2)
+    dfm = p - k_const
     if dfm > 0 and ssr > 0:
         fval = ((tss - ssr) / dfm) / s2
         out["fvalue"] = lambda: fval
@@ -995,9 +1083,17 @@ def judge_row(item):
     return item[0].id, time.time() - t0, verdicts
 
 
+def guard_digits(row):
+    """The digits of the longest integer in the row's parameters and argument, at most 400."""
+    runs = re.findall(r"\d+", f"{row.params} {row.arg}")
+    return min(400, max((len(r.lstrip("0")) for r in runs), default=0))
+
+
 def judge_row_inner(item):
+    global GUARD
     row, outs = item
-    mp.mp.dps = 50
+    GUARD = guard_digits(row) if row.kind == "dist" else 0
+    mp.mp.dps = 50 + GUARD
     warnings.filterwarnings("ignore")
     signal.signal(signal.SIGALRM, _alarm)
     signal.alarm(ORACLE_TIMEOUT)
@@ -1026,68 +1122,86 @@ def judge_row_inner(item):
         signal.alarm(0)
 
 
-def _worker(tasks, done):
+MEM_GB = int(os.environ.get("STATS_ORACLE_MP_MEM_GB", "8"))
+
+
+def _worker(tasks, done, slot):
+    """Judge rows from `tasks`.  `slot` (shared memory: row index, start time) says which row the process is
+    on, written before the row starts: a message through a queue is sent by a feeder thread, which never runs
+    while a reference holds the interpreter in one long C-level operation, so the row's start went unseen and
+    the hard limit never applied (a reference ran for 30 minutes and 16 GB)."""
+    if MEM_GB > 0:
+        lim = MEM_GB << 30
+        resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
     while True:
         item = tasks.get()
         if item is None:
             return
-        done.put(("start", os.getpid(), item[0].id))
-        done.put(("result", os.getpid(), judge_row(item)))
+        idx, row_item = item
+        slot[1] = time.time()
+        slot[0] = idx
+        result = judge_row(row_item)
+        slot[0] = -1
+        # A SimpleQueue writes in this thread: a kill (only while a row runs) never interrupts it.
+        done.put((idx, result))
 
 
 def run_pool(items, jobs, hard_limit):
     """judge_row over items in `jobs` processes.  SIGALRM bounds a row's Python code; a row stuck in one
     C-level operation (a huge integer power) is killed with its process after `hard_limit` seconds and
-    recorded as an oracle timeout, and a fresh process takes over."""
+    recorded as an oracle timeout, and a fresh process takes over; a reference beyond `MEM_GB`
+    (`STATS_ORACLE_MP_MEM_GB`) of address space fails (`oracle error MemoryError`)."""
     ctx = multiprocessing.get_context("fork")
-    tasks, done = ctx.Queue(), ctx.Queue()
-    by_id = {row.id: (row, outs) for row, outs in items}
-    for item in items:
-        tasks.put(item)
+    tasks, done = ctx.Queue(), ctx.SimpleQueue()
+    for n, item in enumerate(items):
+        tasks.put((n, item))
     workers = {}
 
     def spawn():
-        p = ctx.Process(target=_worker, args=(tasks, done), daemon=True)
+        slot = ctx.Array("d", [-1.0, 0.0], lock=False)
+        p = ctx.Process(target=_worker, args=(tasks, done, slot), daemon=True)
         p.start()
-        workers[p.pid] = [p, None, 0.0]
+        workers[p.pid] = (p, slot)
 
     for _ in range(max(1, min(jobs, len(items)))):
         spawn()
-    results, pending = [], len(items)
-    import queue
-    while pending:
-        try:
-            kind, pid, payload = done.get(timeout=5)
-        except queue.Empty:
-            kind = None
-        if kind == "start" and pid in workers:
-            workers[pid][1], workers[pid][2] = payload, time.time()
-        elif kind == "result":
-            results.append(payload)
-            pending -= 1
-            if pid in workers:
-                workers[pid][1] = None
+    results, finished = [], set()
+
+    def give_up(n, elapsed, why):
+        if n in finished:
+            return
+        finished.add(n)
+        row, outs = items[n]
+        results.append((row.id, elapsed, [Verdict(row.id, o, "UNRESOLVED", v[:120], "", "", why)
+                                          for o, v in outs.items()]))
+
+    while len(finished) < len(items):
+        got = False
+        while not done.empty():
+            n, payload = done.get()
+            got = True
+            if n not in finished:
+                finished.add(n)
+                results.append(payload)
+        if not got:
+            time.sleep(0.2)
         now = time.time()
-        for pid, (p, rid, t0) in list(workers.items()):
-            if rid is not None and now - t0 > hard_limit:
+        for pid, (p, slot) in list(workers.items()):
+            n, t0 = int(slot[0]), slot[1]
+            if n >= 0 and now - t0 > hard_limit:
                 p.kill()
                 p.join()
                 del workers[pid]
-                row, outs = by_id[rid]
-                results.append((rid, now - t0, [Verdict(rid, o, "UNRESOLVED", v[:120], "", "", "oracle timeout")
-                                              for o, v in outs.items()]))
-                pending -= 1
+                give_up(n, now - t0, "oracle timeout")
                 spawn()
-            elif not p.is_alive() and rid is not None:
+            elif not p.is_alive():
                 del workers[pid]
-                row, outs = by_id[rid]
-                results.append((rid, now - t0, [Verdict(rid, o, "UNRESOLVED", v[:120], "", "", "oracle crashed")
-                                              for o, v in outs.items()]))
-                pending -= 1
+                if n >= 0:
+                    give_up(n, now - t0, "oracle crashed")
                 spawn()
     for _ in workers:
         tasks.put(None)
-    for p, _, _ in workers.values():
+    for p, _ in workers.values():
         p.join(timeout=5)
         if p.is_alive():
             p.kill()
@@ -1118,6 +1232,8 @@ def main():
     ap.add_argument("--allowlist", type=Path)
     ap.add_argument("--report", type=Path, required=True)
     ap.add_argument("--verdicts", type=Path, help="write every verdict as TSV")
+    ap.add_argument("--timings", type=Path,
+                    help="write the seconds each row's references took (id, s), to budget the seed set")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     args = ap.parse_args()
     t0 = time.time()
@@ -1130,6 +1246,10 @@ def main():
     results.sort(key=lambda r: order[r[0]])
     verdicts = [v for _, _, vs in results for v in vs]
     oracle_time = sorted(((t, i) for i, t, _ in results), reverse=True)
+    if args.timings:
+        with open(args.timings, "w", encoding="utf-8") as fh:
+            for i, t, _ in results:
+                fh.write(f"{i}\t{t:.3f}\n")
     extra = sorted(set(dump) - set(rows))
     counts = Counter()
     by_kind = defaultdict(Counter)

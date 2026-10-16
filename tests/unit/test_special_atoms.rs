@@ -19,7 +19,8 @@
 //! argument", `holds_special_atom`/`holds_real_infinity` for "an infinity
 //! inside".  What is left are identity checks that decide nothing (the
 //! factor `∞` beside the direction of `c·∞`, a constructor's own atoms) and
-//! the calculus files whose comparisons are migrated with their deciders.
+//! the review queue of the other files (`limit`, `gruntz`, `definite` and
+//! the `contains` helpers of `series` were migrated at 0.59).
 //!
 //! Two counts, both syntactic (no types are available to a linter):
 //!
@@ -44,8 +45,9 @@ use syn::visit::Visit;
 const OWNER: &str = "base/value_class.rs";
 
 /// Files allowed to compare with the special atoms, with the exact count
-/// (0.58: 167, down from 263 — `canon.rs` 50 → 4, `eval.rs` 50 → 0).  Paths
-/// are relative to `src/`.
+/// (0.58: 167, down from 263 — `canon.rs` 50 → 4, `eval.rs` 50 → 0; 0.59:
+/// 81 — `limit.rs` 39, `gruntz.rs` 26, `definite.rs` 21 → 0).  Paths are
+/// relative to `src/`.
 const COMPARE_ALLOWLIST: &[(&str, usize)] = &[
     ("api/expr_calculus_util_ext.rs", 16),
     ("api/expr_integrate_ext.rs", 2),
@@ -53,12 +55,7 @@ const COMPARE_ALLOWLIST: &[(&str, usize)] = &[
     // factor `∞` beside the direction of `c·∞`, the spelling `q·i·∞`.
     ("base/canon.rs", 4),
     ("calculus/convergence.rs", 7),
-    // The calculus files migrate with their deciders (`NonzeroExpr`, the
-    // limit points): frozen.
-    ("calculus/definite.rs", 21),
-    ("calculus/gruntz.rs", 26),
     ("calculus/laplace.rs", 1),
-    ("calculus/limit.rs", 39),
     ("calculus/residue.rs", 1),
     ("calculus/summation.rs", 3),
     // `Ex` comparisons of support ends with `ctx.infinity()`.
@@ -76,14 +73,13 @@ const COMPARE_ALLOWLIST: &[(&str, usize)] = &[
 ];
 
 /// Files allowed to test for the special atoms with `contains`, with the
-/// exact count (0.58: 18, down from 32 — `canon.rs` 11 → 1, `eval.rs` 5 → 1).
+/// exact count (0.58: 18, down from 32 — `canon.rs` 11 → 1, `eval.rs` 5 → 1;
+/// 0.59: 6 — the `contains_singular_atom` helpers of `gruntz.rs`, `limit.rs`
+/// and `series.rs` are `value_class::holds_special_atom`).
 const CONTAINS_ALLOWLIST: &[(&str, usize)] = &[
     // `is_directed_infinity`: the shape `c·∞` (identity).
     ("base/canon.rs", 1),
     ("calculus/formal_series.rs", 4),
-    ("calculus/gruntz.rs", 4),
-    ("calculus/limit.rs", 4),
-    ("calculus/series.rs", 4),
     // `betainc` at an infinite bound: a `nan` in the antiderivative's value.
     ("transforms/eval.rs", 1),
 ];

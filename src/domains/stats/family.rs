@@ -404,12 +404,16 @@ impl CompensatedSum {
 
 /// The sign of `e`: the symbolic tests first, then, for a constant they
 /// cannot decide (`3 − √2 − 10⁻¹⁰⁰`, `10¹⁰⁰ − √2`), the sign of its value —
-/// which `evalf` gets right whenever the value is not `0` (read from its
-/// decimal expansion, which does not underflow as an `f64` would).
+/// which `evalf` gets right whenever the value is not `0` (the certified
+/// sign of its real part, `evalf::const_value`, which does not underflow as
+/// an `f64` would).
 /// A single atom when decided; [`SignSet::UNKNOWN`] (nothing known, not
 /// even realness) for a symbolic `e` of unknown sign, a non-real or
 /// unevaluable constant, or a constant that evaluates to `0` without being
-/// known to be `0`.
+/// known to be `0`.  Up to 0.58 the sign was read from the first character
+/// of the 5-digit printout, which shows the imaginary unit as `i`, not the
+/// `I` it was searched for: a non-real constant read as the sign of its
+/// real part (`2 + i` positive), or positive when purely imaginary (`2i`).
 pub(crate) fn sign_of(e: &Ex) -> SignSet {
     if Truth::from(e.is_zero()).is_true() {
         return SignSet::ZERO;
@@ -423,20 +427,19 @@ pub(crate) fn sign_of(e: &Ex) -> SignSet {
     if !e.free_symbols().is_empty() {
         return SignSet::UNKNOWN;
     }
-    let Ok(digits) = e.eval_decimal(5) else {
+    let ev = e.eval();
+    let guard = ev.inner.read();
+    let Ok(value) = crate::transforms::evalf::const_value(&guard.arena, ev.raw_id(), 5) else {
         return SignSet::UNKNOWN;
     };
-    let magnitude = digits.trim_start_matches('-');
-    if digits.contains('I')
-        || !magnitude.starts_with(|c: char| c.is_ascii_digit())
-        || magnitude.trim_start_matches(['0', '.']).is_empty()
-    {
+    if value.im_sign().is_nonzero().is_true() {
         return SignSet::UNKNOWN;
     }
-    if digits.starts_with('-') {
-        SignSet::NEGATIVE
+    let re = value.re_sign();
+    if re == SignSet::POSITIVE || re == SignSet::NEGATIVE {
+        re
     } else {
-        SignSet::POSITIVE
+        SignSet::UNKNOWN
     }
 }
 

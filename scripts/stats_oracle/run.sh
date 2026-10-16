@@ -30,7 +30,7 @@ dumped=$(date +%s)
 rc=0
 "$PY" scripts/stats_oracle/compare.py --cases scripts/stats_oracle/cases --dump "$OUT/dump.tsv" \
     --allowlist scripts/stats_oracle/allowlist.tsv --report "$OUT/report.md" \
-    --verdicts "$OUT/verdicts.tsv" --jobs "$JOBS" || rc=$?
+    --verdicts "$OUT/verdicts.tsv" --timings "$OUT/timings.tsv" --jobs "$JOBS" || rc=$?
 done_=$(date +%s)
 echo "timing: build $((built - start)) s, dump $((dumped - built)) s, compare $((done_ - dumped)) s" \
     | tee "$OUT/timing.txt"

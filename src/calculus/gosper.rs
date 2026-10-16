@@ -1061,9 +1061,9 @@ mod tests {
             p = &p * &kp1;
             q = &q * &Poly::x();
         }
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let (a, b, c) = gosper_normal(&p, &q).unwrap();
-        assert!(start.elapsed().as_secs_f64() < 1.0, "normal form too slow");
+        timer.assert_within(std::time::Duration::from_secs(1), "normal form");
         assert_eq!(a, Poly::from_int(2));
         assert_eq!(b, Poly::from_int(1));
         assert_eq!(c, q);
@@ -1076,9 +1076,12 @@ mod tests {
         // identity), and the certificate for c = 1 does not exist.
         let p = Poly::from_coeffs(vec![r(1000), r(1)]);
         let q = Poly::x();
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let (a, b, c) = gosper_normal(&p, &q).unwrap();
-        assert!(start.elapsed().as_secs_f64() < 2.0);
+        timer.assert_within(
+            std::time::Duration::from_secs(2),
+            "normal form beyond the cap",
+        );
         assert_eq!(c, Poly::from_int(1));
         for kv in 1..=5 {
             let k_val = r(kv);
@@ -1451,9 +1454,12 @@ mod tests {
         let a = Poly::from_int(1);
         let b = Poly::from_int(1);
         let c = Poly::monomial(r(1), MAX_CERTIFICATE_DEGREE + 6);
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         assert!(gosper_certificate(&a, &b, &c).is_none());
-        assert!(start.elapsed().as_secs_f64() < 1.0);
+        timer.assert_within(
+            std::time::Duration::from_secs(1),
+            "certificate beyond the cap",
+        );
         // Just under the cap is still attempted (and solved).
         let c = Poly::monomial(r(1), 8);
         assert!(gosper_certificate(&a, &b, &c).is_some());

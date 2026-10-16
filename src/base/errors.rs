@@ -65,6 +65,31 @@ pub enum SymplexError {
         reason: String,
     },
 
+    /// Numerical evaluation met a value that is infinite: `∞`, `−∞`,
+    /// `zoo`, or a function at a pole or singularity of exact arguments
+    /// (`elliptic_pi(π, 1)`, `Ci(0)`, `polylog(1, 1)`), in the expression
+    /// or inside it (`1/elliptic_pi(π, 1)`).  Up to 0.58 these were
+    /// [`Unevaluable`](Self::Unevaluable) like a value that could not be
+    /// computed, and `solve(x − elliptic_pi(π, 1), x)` claimed the root
+    /// `elliptic_pi(π, 1) = −∞`; the message is unchanged.  A singular
+    /// point met only by an argument that rounded onto it is no such claim.
+    ///
+    /// ```
+    /// use symplex::errors::SymplexError;
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let pole = ctx.parse("elliptic_pi(pi, 1)").unwrap();
+    /// assert!(matches!(pole.eval_decimal(15), Err(SymplexError::Infinite { .. })));
+    /// let near = ctx.parse("elliptic_k(1 - 10^-60)").unwrap();
+    /// assert!(near.eval_decimal(15).is_ok());
+    /// ```
+    #[error("cannot evaluate: {reason}")]
+    Infinite {
+        /// Which value is infinite.
+        reason: String,
+    },
+
     /// A symbolic computation could not produce a result.
     ///
     /// The `operation` field names the operation that failed (e.g., "limit",

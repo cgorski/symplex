@@ -83,6 +83,10 @@ pub(crate) enum FactKey {
     /// `ValueClass::of` (`UNKNOWN`, any finite sign, when proved by the
     /// assumptions or a certified value; `EMPTY` when not proved).
     Finite,
+    /// Is `x`, a constant not proved finite, infinite by its evaluation:
+    /// `value_class`'s `ValueClass::of` (`UNKNOWN` when proved, `EMPTY`
+    /// when not).
+    Infinite,
 }
 
 /// The `sym_bits` entry of a symbol name without a `Symbol` node.
@@ -1357,7 +1361,10 @@ impl Arena {
             "contradictory assumptions declared on symbol `{}`: {a}",
             self.symbols.name(id)
         );
-        if consistent {
+        // Re-declaring the same set (every `positive_symbol` call) changes
+        // no fact: the memo stays.  Up to 0.58 it was cleared each time, so
+        // a limit or series that made dummies re-evaluated its constants.
+        if consistent && self.symbols.get_assumptions(id) != a {
             self.constant_facts.get_mut().clear();
             self.symbols.set_assumptions(id, a);
         }
@@ -2694,6 +2701,13 @@ impl Arena {
         crate::transforms::eval::certified_part_signs(self, expr)
     }
 
+    /// Does the evaluation of the symbol-free `expr` meet a value proved
+    /// infinite (`eval::meets_infinity`: an unevaluated pole such as
+    /// `elliptic_pi(π, 1)`, itself or inside)?
+    pub(crate) fn meets_infinity(&self, expr: ExprId) -> bool {
+        crate::transforms::eval::meets_infinity(self, expr)
+    }
+
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.
     ///
     /// Returns the string representation of the result, or an error if the
@@ -2704,6 +2718,17 @@ impl Arena {
         digits: u32,
     ) -> Result<String, crate::base::errors::SymplexError> {
         crate::transforms::evalf::evalf(self, expr, digits)
+    }
+
+    /// The `f64` of the symbol-free `expr`, correctly rounded from its
+    /// `digits`-digit value (`evalf::const_value`; `±∞` beyond the `f64`
+    /// range); `None` when it does not evaluate or its imaginary part is
+    /// certified nonzero.  For guides and orderings: it carries no error
+    /// bound.  No decimal is printed and parsed.
+    pub(crate) fn const_f64(&self, expr: ExprId, digits: u32) -> Option<f64> {
+        crate::transforms::evalf::const_value(self, expr, digits)
+            .ok()?
+            .to_f64()
     }
 
     /// Generate a Rust function as a string from an expression.
@@ -3143,13 +3168,16 @@ mod tests {
             Arena::hash_num(&Ratio::new(BigInt::from(2), BigInt::from(3)))
         );
         // Two coprime 6,000-digit terms: milliseconds.
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let q = Ratio::new(
             BigInt::from(7).pow(7000u32) + 2,
             BigInt::from(5).pow(8500u32) + 3,
         );
         let _ = Arena::hash_num(&q);
-        assert!(start.elapsed().as_secs() < 2, "took {:?}", start.elapsed());
+        timer.assert_within(
+            std::time::Duration::from_secs(2),
+            "hash of a 6,000-digit ratio",
+        );
     }
 
     #[test]

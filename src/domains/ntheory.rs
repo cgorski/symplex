@@ -6277,9 +6277,7 @@ mod tests {
         let q = big("1000000000000091");
         assert!(isprime(p.clone()) && isprime(q.clone()));
         let n = &p * &q;
-        let start = std::time::Instant::now();
-        let f = factorint(n.clone());
-        let elapsed = start.elapsed();
+        let (f, elapsed) = crate::base::perf_assert::cpu_time(|| factorint(n.clone()));
         assert_eq!(f, vec![(p, 1), (q, 1)]);
         eprintln!("30-digit semiprime factored in {elapsed:?}");
     }
@@ -6292,9 +6290,7 @@ mod tests {
     fn factorint_2_pow_128_plus_1() {
         // 2^128 + 1 = 59649589127497217 × 5704689200685129054721
         let n: BigInt = (BigInt::one() << 128usize) + 1;
-        let start = std::time::Instant::now();
-        let f = factorint(n.clone());
-        let elapsed = start.elapsed();
+        let (f, elapsed) = crate::base::perf_assert::cpu_time(|| factorint(n.clone()));
         assert_eq!(
             f,
             vec![
@@ -6316,9 +6312,8 @@ mod tests {
         let q = big("100000000000000000039");
         assert!(isprime(p.clone()) && isprime(q.clone()));
         let n = &p * &q;
-        let start = std::time::Instant::now();
-        let f = factorint(n);
-        eprintln!("40-digit semiprime factored in {:?}", start.elapsed());
+        let (f, elapsed) = crate::base::perf_assert::cpu_time(|| factorint(n));
+        eprintln!("40-digit semiprime factored in {elapsed:?}");
         assert_eq!(f, vec![(p, 1), (q, 1)]);
     }
 

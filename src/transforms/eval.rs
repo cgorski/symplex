@@ -1546,6 +1546,13 @@ pub(crate) fn certified_real_sign(arena: &Arena, x: ExprId) -> Option<std::cmp::
     }
 }
 
+/// Does the evaluation of the symbol-free constant `x` meet a value proved
+/// infinite (`evalf::meets_infinity`): `x` itself or a part its value
+/// needs?  `Arena::meets_infinity` delegates here.
+pub(crate) fn meets_infinity(arena: &Arena, x: ExprId) -> bool {
+    walk::free_symbols(arena, x).is_empty() && crate::transforms::evalf::meets_infinity(arena, x)
+}
+
 /// The signs of the real and imaginary parts of the symbol-free constant
 /// `x` from one certified 16-digit value: a part is settled when it is
 /// nonzero and within `2⁴⁰` of the larger part, far inside the digits the
@@ -2809,12 +2816,21 @@ fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Opti
     }
     let mut digits = 25u32;
     let (value, ulp) = loop {
-        let printed = crate::transforms::evalf::evalf(arena, x, digits).ok()?;
-        let parts = DecimalParts::of(&printed)?;
-        let exponent = parts.leading_exponent()?;
-        if exponent < -5 && parts.is_nonzero() {
+        // The digits `evalf` prints, without the string (up to 0.58 the
+        // printout was split and parsed).
+        let cv = crate::transforms::evalf::const_value(arena, x, digits).ok()?;
+        if cv.im_sign().is_nonzero().is_true() {
+            return None;
+        }
+        let parts = cv.re_decimal()?;
+        let exponent = if parts.is_zero() {
+            -1
+        } else {
+            parts.magnitude()
+        };
+        if exponent < -5 && !parts.is_zero() {
             // 0 < |x| < 10⁻⁵.
-            let n = match (parts.negative, ceiling) {
+            let n = match (parts.is_negative(), ceiling) {
                 (false, false) | (true, true) => 0,
                 (false, true) => 1,
                 (true, false) => -1,
@@ -2822,7 +2838,7 @@ fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Opti
             return Some(arena.int(n));
         }
         if exponent + 20 < i64::from(digits) {
-            break parts.value_and_ulp()?;
+            break decimal_value_and_ulp(&parts)?;
         }
         if digits > 25 {
             return None;
@@ -2869,81 +2885,22 @@ thread_local! {
 /// The entries [`INTEGER_PART_MEMO`] holds before it is cleared.
 const INTEGER_PART_MEMO_ENTRIES: usize = 256;
 
-/// A decimal `evalf` printed (`-2.5e+3`, `3.14`), split into its sign,
-/// digits and exponent; `None` for anything else (a complex value).
-struct DecimalParts<'a> {
-    negative: bool,
-    int_part: &'a str,
-    frac_part: &'a str,
-    exp: i64,
-}
-
-impl<'a> DecimalParts<'a> {
-    fn of(s: &'a str) -> Option<Self> {
-        let s = s.trim();
-        let (mantissa, exp) = match s.split_once('e') {
-            Some((m, e)) => (m, e.trim_start_matches('+').parse::<i64>().ok()?),
-            None => (s, 0),
-        };
-        let negative = mantissa.starts_with('-');
-        let mantissa = mantissa.trim_start_matches(['-', '+']);
-        let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-        if int_part.is_empty()
-            || !int_part
-                .bytes()
-                .chain(frac_part.bytes())
-                .all(|b| b.is_ascii_digit())
-        {
-            return None;
-        }
-        Some(DecimalParts {
-            negative,
-            int_part,
-            frac_part,
-            exp,
-        })
-    }
-
-    /// Is a digit other than 0 printed?
-    fn is_nonzero(&self) -> bool {
-        self.int_part
-            .bytes()
-            .chain(self.frac_part.bytes())
-            .any(|b| b != b'0')
-    }
-
-    /// The decimal exponent of the leading digit (an upper bound when the
-    /// integer part is 0).
-    fn leading_exponent(&self) -> Option<i64> {
-        self.exp
-            .checked_add(i64::try_from(self.int_part.trim_start_matches('0').len()).ok()?)?
-            .checked_sub(1)
-    }
-
-    /// The exact value and a unit in the last digit.  It costs a power of
-    /// ten of the size of the exponent: callers bound that first.
-    fn value_and_ulp(&self) -> Option<(Q, Q)> {
-        let digits: BigInt = format!("{}{}", self.int_part, self.frac_part)
-            .parse()
-            .ok()?;
-        let shift = self
-            .exp
-            .checked_sub(i64::try_from(self.frac_part.len()).ok()?)?;
-        let p = num_traits::pow(
-            BigInt::from(10),
-            usize::try_from(shift.unsigned_abs()).ok()?,
-        );
-        let ulp = if shift >= 0 {
-            Q::from_integer(p)
-        } else {
-            Q::new(BigInt::one(), p)
-        };
-        let mut value = Q::from_integer(digits) * &ulp;
-        if self.negative {
-            value = -value;
-        }
-        Some((value, ulp))
-    }
+/// The exact value of the decimal `d` (the digits `evalf` prints) and a
+/// unit in its last nonzero digit.  It costs a power of ten of the size of
+/// the exponent: callers bound that first.  (Up to 0.58 the printed string
+/// was split and parsed.)
+fn decimal_value_and_ulp(d: &crate::transforms::evalf::Decimal) -> Option<(Q, Q)> {
+    let shift = d.exponent();
+    let p = num_traits::pow(
+        BigInt::from(10),
+        usize::try_from(shift.unsigned_abs()).ok()?,
+    );
+    let ulp = if shift >= 0 {
+        Q::from_integer(p)
+    } else {
+        Q::new(BigInt::one(), p)
+    };
+    Some((d.to_ratio(shift.unsigned_abs())?, ulp))
 }
 
 /// `B(a, b) = Γ(a)Γ(b)/Γ(a + b)` for rationals `a`, `b` none of which nor
@@ -7200,13 +7157,17 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 /// (`canon::lib_function_value`): up to 0.56 an argument that became `nan`
 /// when evaluated reached the folds of the other one (`uppergamma(s, ∞) =
 /// 0`).  The folds that hold for every finite value of one argument ask it
-/// of that argument ([`ValueClass::is_finite_proved`]).
+/// of that argument ([`ValueClass::is_finite_proved`]).  At a `zoo`
+/// argument the tabulated values come first ([`at_complex_infinity`]).
 fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
     if args
         .iter()
         .any(|&a| ValueClass::special_atom(arena, a) == Some(ValueClass::NaN))
     {
         return Some(arena.nan);
+    }
+    if let Some(value) = at_complex_infinity(arena, f, args) {
+        return Some(value);
     }
     let value = eval_lib_fn_closed(arena, f, args)?;
     if ValueClass::special_atom(arena, value) == Some(ValueClass::NaN)
@@ -7217,6 +7178,169 @@ fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
         return None;
     }
     Some(value)
+}
+
+/// The value of the library function `f` at `args` when its variable is
+/// `zoo`, the point at infinity without a direction, where the function
+/// tends to one value in every direction; `None` elsewhere (the closed form
+/// is taken as before: `zoo` or `nan`).
+///
+/// | function at `zoo` | value |
+/// |---|---|
+/// | `P_n`, `T_n`, `U_n`, `H_n`, `L_n`, `L_n^(α)`, `C_n^(λ)`, `P_n^(a,b)` with numeric parameters, `P_n^m` (`0 ≤ m ≤ n`) | `zoo` for a degree `d ≥ 1` (`abs(p(z)) → ∞` in every direction; `abs((1 − z²)^(m/2))` grows like `abs(z)^m`); the constant `p(0)` for `d = 0` or the zero polynomial ([`polynomial_degree`]) |
+/// | `B_(x₁, x₂)(a, b)`, `I_(x₁, x₂)(a, b)`, positive integer shapes, one limit `zoo`, the other finite | `zoo` (a polynomial of degree `a + b − 1` in the limit) |
+/// | `Li_s(z)`, integer `s` | `−1` for `s = 0` (`z/(1 − z)`), `0` for `s < 0` (a rational function of degree `−s` over `(1 − z)^(1−s)`), `zoo` for `s ≥ 1` (`abs(ln(−z))^s/s!`) |
+///
+/// Up to 0.58 the closed
+/// forms met `zoo + zoo` and gave `nan`: `legendre(3, zoo)`,
+/// `chebyshev_t(3, zoo)`, `betainc(1, 2, 0, zoo)`, `polylog(−1, zoo)` (which
+/// tends to 0) were `nan` (mpmath: `abs(P₃(10⁸e^{it}))` = `2.5·10²⁴` in every
+/// direction, `abs(Li₋₁(10⁸e^{it}))` ≤ `10⁻⁸`).  The incomplete gamma
+/// functions and `E₀(z) = e^{−z}/z` have no limit at `zoo` (`e^{−z}` grows
+/// for `Re z < 0`): they stay `nan`.
+fn at_complex_infinity(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
+    let zoo = |a: ExprId| ValueClass::special_atom(arena, a) == Some(ValueClass::ComplexInf);
+    let (&last, front) = args.split_last()?;
+    if !args.iter().any(|&a| zoo(a)) {
+        return None;
+    }
+    // A numeric integer argument.
+    let int = |a: ExprId| -> Option<BigInt> {
+        arena
+            .as_num(a)
+            .filter(|q| q.is_integer())
+            .map(|q| q.to_integer())
+    };
+    if zoo(last) && front.iter().all(|&a| !zoo(a)) {
+        let max = BigInt::from(arena.config.max_pow_exponent);
+        if let Some(degree) = polynomial_degree(arena, f, front, &max) {
+            if degree.is_some_and(|d| d >= BigInt::one()) {
+                return Some(arena.complex_infinity);
+            }
+            // A constant: its value anywhere.
+            let mut at_zero = args.to_vec();
+            if let Some(x) = at_zero.last_mut() {
+                *x = arena.zero;
+            }
+            return eval_lib_fn_closed(arena, f, &at_zero);
+        }
+    }
+    let grows = match f {
+        LibFn::BetaInc | LibFn::BetaIncRegularized => {
+            let positive_integer = |a: ExprId| int(a).is_some_and(|k| k.is_positive());
+            let (x1, x2) = (args[2], args[3]);
+            positive_integer(args[0])
+                && positive_integer(args[1])
+                && (zoo(x1) != zoo(x2))
+                && [x1, x2]
+                    .iter()
+                    .all(|&x| zoo(x) || ValueClass::of(arena, x).is_finite_proved())
+        }
+        LibFn::PolyLog if zoo(last) && front.len() == 1 => {
+            return match int(args[0])? {
+                s if s.is_zero() => Some(arena.neg_one),
+                s if s.is_negative() => Some(arena.zero),
+                _ => Some(arena.complex_infinity),
+            };
+        }
+        _ => false,
+    };
+    grows.then_some(arena.complex_infinity)
+}
+
+/// The degree in its variable of the orthogonal polynomial `f` with the
+/// numeric degree and parameters `params` (all the arguments but the
+/// variable), up to `max`: `Some(Some(d))`, `Some(None)` for the zero
+/// polynomial, `None` when `f` is no polynomial there (`H_{−m}`, `L_{−m}` and
+/// the rest, a symbolic parameter, a degree beyond `max`).
+///
+/// Negative degrees as [`classical_at_negative_degree`] and
+/// [`zero_polynomial_degree`] read them (`P_{−m} = P_{m−1}`, `T_{−m} = T_m`,
+/// `U_{−m} = −U_{m−2}`, `U_{−1} = 0`; `C`, `P^(a,b)`, `L^(α)` vanish).  The
+/// parametrised families from their coefficients, which are polynomials in
+/// the parameters: `C_n^(λ)(x) = Σ_k (−1)^k (λ)_{n−k}/(k!(n − 2k)!)·(2x)^{n−2k}`
+/// (DLMF 18.5.10), `P_n^(a,b)(x) = Σ_m (−n)_m (n + a + b + 1)_m (a + m +
+/// 1)_{n−m}/(n! m!)·((1 − x)/2)^m` (DLMF 18.5.7 with `(a + 1)_n/(a + 1)_m`
+/// cancelled), `L_n^(α)` of leading coefficient `(−1)ⁿ/n!`; `P_n^m` for `0 ≤
+/// m ≤ n` grows like `abs(z)^n`, and vanishes for `m > n ≥ 0`.  Up to 0.58
+/// `gegenbauer(3, −2, zoo)` was `nan` (`C₃^(−2)(x) = −4x`).
+fn polynomial_degree(
+    arena: &Arena,
+    f: LibFn,
+    params: &[ExprId],
+    max: &BigInt,
+) -> Option<Option<BigInt>> {
+    let n = arena
+        .as_num(*params.first()?)
+        .filter(|q| q.is_integer())?
+        .to_integer();
+    if &n.abs() > max {
+        return None;
+    }
+    let q = |k: usize| params.get(k).and_then(|&p| arena.as_num(p));
+    // `(r)_j = 0`: `r` an integer `≤ 0` with `j > −r`.
+    let vanishes = |r: &Q, j: &BigInt| r.is_integer() && !r.is_positive() && *j > -r.to_integer();
+    let degree = |d: BigInt| Some(Some(d).filter(|d| !d.is_negative()));
+    match f {
+        _ if !n.is_negative()
+            && matches!(
+                f,
+                LibFn::Legendre
+                    | LibFn::ChebyshevT
+                    | LibFn::ChebyshevU
+                    | LibFn::Hermite
+                    | LibFn::Laguerre
+            ) =>
+        {
+            degree(n)
+        }
+        LibFn::Legendre => degree(-n - 1),
+        LibFn::ChebyshevT => degree(-n),
+        LibFn::ChebyshevU => degree(-n - 2),
+        LibFn::AssocLaguerre => {
+            q(1)?;
+            degree(if n.is_negative() { BigInt::from(-1) } else { n })
+        }
+        LibFn::Gegenbauer => {
+            let l = q(1)?;
+            if n.is_negative() {
+                return Some(None);
+            }
+            // The first `k` with `(λ)_{n−k} ≠ 0`.
+            let k = if l.is_integer() && !l.is_positive() {
+                (&n + l.to_integer()).max(BigInt::zero())
+            } else {
+                BigInt::zero()
+            };
+            degree(if BigInt::from(2) * &k > n {
+                BigInt::from(-1)
+            } else {
+                &n - BigInt::from(2) * k
+            })
+        }
+        LibFn::Jacobi => {
+            let (a, b) = (q(1)?, q(2)?);
+            if n.is_negative() {
+                return Some(None);
+            }
+            let s = Q::from_integer(&n + BigInt::one()) + a + b;
+            let top = n.to_u64()?;
+            let m = (0..=top).rev().find(|&m| {
+                let m = BigInt::from(m);
+                let shifted = a + Q::from_integer(&m + BigInt::one());
+                !vanishes(&s, &m) && !vanishes(&shifted, &(&n - &m))
+            });
+            degree(m.map_or(BigInt::from(-1), BigInt::from))
+        }
+        LibFn::AssocLegendre => {
+            let m = q(1).filter(|m| m.is_integer())?.to_integer();
+            if n.is_negative() || m.is_negative() {
+                return None;
+            }
+            degree(if m > n { BigInt::from(-1) } else { n })
+        }
+        _ => None,
+    }
 }
 
 /// The closed forms and exact values of [`eval_lib_fn`].
@@ -7416,8 +7540,9 @@ fn eval_orthopoly(arena: &mut Arena, n: ExprId, x: ExprId, family: OrthoFamily) 
 /// Legendre function, DLMF 14.9.5), `T_{−m} = T_m`, `U_{−1} = 0`, `U_{−m} =
 /// −U_{m−2}` (`U_n = sin((n + 1)θ)/sin θ`), `L_{−m}(x) = eˣ·L_{m−1}(−x)`
 /// (`L_ν = ₁F₁(−ν; 1; ·)` and Kummer's transformation).  `H_{−m}` is the
-/// Hermite function, not a polynomial (`H_{−1}(x) = (√π/2)·e^{x²}·erfc x`;
-/// SymPy refuses it): it stays.  Up to 0.56 every negative degree stayed.
+/// Hermite function, not a polynomial: [`hermite_function_closed`] (SymPy
+/// refuses it; up to 0.58 it stayed).  Up to 0.56 every negative degree
+/// stayed.
 fn classical_at_negative_degree(
     arena: &mut Arena,
     family: OrthoFamily,
@@ -7444,8 +7569,76 @@ fn classical_at_negative_degree(
             let e = arena.exp(x);
             Some(arena.mul(&[e, l]))
         }
+        OrthoFamily::Hermite => hermite_function_closed(arena, m, x),
         _ => None,
     }
+}
+
+/// The Hermite function of degree `−m` (`1 ≤ m ≤` [`MAX_SPECIAL_EXPANSION`])
+/// in closed form, `H_{−m}(x) = A_m(x)·√π·e^{x²}·erfc(x) + B_m(x)` with
+/// `A_m`, `B_m ∈ ℚ[x]`: `H_{−m}(x) = (√π/2)·e^{x²}·i^{m−1}erfc(x)`, the
+/// repeated integral of `erfc` (DLMF 7.18.2; DLMF 12.7.6 with `H_ν(x) =
+/// 2^{ν/2}e^{x²/2}U(−ν − ½, √2x)`), and `A`, `B` from `H_0 = 1`, `H_{−1} =
+/// (√π/2)·e^{x²}·erfc x` by the recurrence `H_{ν+1} = 2xH_ν − 2νH_{ν−1}`
+/// of the Hermite functions (DLMF 18.9.1 continued; mpmath's `hermite(−1,
+/// 1/2) = 0.4244363835`, `hermite(−3, −1/2) = 0.9541049656`): `H_{−k−1} =
+/// (H_{−k+1} − 2x·H_{−k})/(2k)`, so `H_{−2} = 1/2 − (√π/2)·x·e^{x²}·erfc x`.
+/// `None` beyond the bound and at an argument holding a special atom (no
+/// closed form is evaluated there).  Up to 0.58 `hermite(−m, x)` stayed and
+/// `evalf` refused it.
+fn hermite_function_closed(arena: &mut Arena, m: u64, x: ExprId) -> Option<ExprId> {
+    let m = crate::base::cast::bounded_len(m, MAX_SPECIAL_EXPANSION)?;
+    if m == 0 || value_class::holds_special_atom(arena, x) {
+        return None;
+    }
+    // (A_k, B_k) for k = 0 and k = 1, coefficients by degree.
+    let half = Q::new(BigInt::one(), BigInt::from(2));
+    let mut prev: (Vec<Q>, Vec<Q>) = (Vec::new(), vec![Q::one()]);
+    let mut cur: (Vec<Q>, Vec<Q>) = (vec![half], Vec::new());
+    for k in 1..m {
+        // (p − 2x·c)/(2k), coefficientwise.
+        let step = |p: &[Q], c: &[Q]| -> Vec<Q> {
+            let scale = Q::from_integer(BigInt::from(2 * k));
+            let mut out: Vec<Q> = p.to_vec();
+            for (i, ci) in c.iter().enumerate() {
+                let t = ci * Q::from_integer(BigInt::from(2));
+                match out.get_mut(i + 1) {
+                    Some(o) => *o -= t,
+                    None => {
+                        while out.len() < i + 1 {
+                            out.push(Q::zero());
+                        }
+                        out.push(-t);
+                    }
+                }
+            }
+            out.iter().map(|o| o / &scale).collect()
+        };
+        let next = (step(&prev.0, &cur.0), step(&prev.1, &cur.1));
+        prev = std::mem::replace(&mut cur, next);
+    }
+    let poly = |arena: &mut Arena, coeffs: &[Q]| -> ExprId {
+        let mut terms: Vec<ExprId> = Vec::with_capacity(coeffs.len());
+        for (i, c) in coeffs.iter().enumerate() {
+            if c.is_zero() {
+                continue;
+            }
+            let c = arena.num_ratio(c.clone());
+            let k = arena.int(i64::try_from(i).unwrap_or(i64::MAX));
+            let xk = arena.pow(x, k);
+            terms.push(arena.mul(&[c, xk]));
+        }
+        arena.add(&terms)
+    };
+    let a = poly(arena, &cur.0);
+    let b = poly(arena, &cur.1);
+    let two = arena.int(2);
+    let x2 = arena.pow(x, two);
+    let e = arena.exp(x2);
+    let erfc = arena.erfc(x);
+    let sqrt_pi = arena.sqrt(arena.pi);
+    let head = arena.mul(&[a, sqrt_pi, e, erfc]);
+    Some(arena.add(&[head, b]))
 }
 
 /// Is `n` a negative integer and every parameter in `params` finite
@@ -7661,13 +7854,85 @@ fn shift_uppergamma(arena: &mut Arena, base: Q, base_val: ExprId, k: i64, x: Exp
     eval(arena, expanded)
 }
 
+/// Most terms the expanded closed form of `Γ(s, x)` (or `γ(s, x)`) may have
+/// ([`closed_form_stays_small`]).
+const MAX_GAMMA_CLOSED_FORM_TERMS: u64 = 1 << 12;
+
+/// A bound on the number of terms `expand` makes of `x`: a sum adds its
+/// terms' counts, a product multiplies them, a power `bᵉ` with a positive
+/// integer `e` has at most `C(e + t − 1, t − 1)` terms for a `b` of `t`
+/// terms (the monomials of degree `e` in `t` unknowns), anything else is one
+/// term; saturating at `cap + 1`.
+fn expanded_terms_bound(arena: &Arena, x: ExprId, cap: u64) -> u64 {
+    let over = cap.saturating_add(1);
+    let mut terms: FxHashMap<ExprId, u64> = FxHashMap::default();
+    for id in walk::post_order_ids(arena, x) {
+        let of = |c: &ExprId| terms.get(c).copied().unwrap_or(1);
+        let t = match arena.node(id) {
+            ExprNode::Add(cs) => cs.iter().map(of).fold(0u64, u64::saturating_add),
+            ExprNode::Mul(cs) => cs.iter().map(of).fold(1u64, u64::saturating_mul),
+            ExprNode::Neg(c) => of(c),
+            ExprNode::Pow(b, e) => match arena.as_num(*e) {
+                Some(q) if q.is_integer() && q.is_positive() => {
+                    let e = q.to_integer().to_u64().unwrap_or(u64::MAX);
+                    multisets_bound(of(b), e, over)
+                }
+                _ => 1,
+            },
+            _ => 1,
+        };
+        terms.insert(id, t.min(over));
+    }
+    terms.get(&x).copied().unwrap_or(1)
+}
+
+/// `C(d + t − 1, d)`, the number of monomials of degree `d` in `t` unknowns,
+/// saturating at `over`.
+fn multisets_bound(t: u64, d: u64, over: u64) -> u64 {
+    if t <= 1 || d == 0 {
+        return 1;
+    }
+    let mut c: u128 = 1;
+    for k in 1..=u128::from(d) {
+        // c·(t − 1 + k)/k stays an integer: C(t − 1 + k, k).
+        c = c * (u128::from(t) - 1 + k) / k;
+        if c >= u128::from(over) {
+            return over;
+        }
+    }
+    u64::try_from(c).unwrap_or(over)
+}
+
+/// Does the expanded closed form of `Γ(s, x)` stay below
+/// [`MAX_GAMMA_CLOSED_FORM_TERMS`] terms?  Its powers of `x` reach the degree
+/// `d = ⌊s − ½⌋` (`s − 1` for an integer, which bounds the half-integer
+/// powers `x^{s−1}` of a half-integer `s` too; none for `s ≤ 0`), and
+/// for an `x` of at most `t` terms after expansion the powers `x⁰, …, xᵈ`
+/// expand into at most `C(d + t, d)` monomials.  Beyond the bound `Γ(s, x)`
+/// stays (`evalf` computes it): up to 0.58 `uppergamma(8, a₁ + … + a₂₅)`
+/// expanded `x⁷` into `C(32, 7) = 3.4·10⁶` products (24 s, 160 MB of
+/// output; the G-test on a 5 × 5 table hung on it).
+fn closed_form_stays_small(arena: &Arena, s: &Q, x: ExprId) -> bool {
+    let d = (s - Q::new(BigInt::one(), BigInt::from(2))).floor();
+    if !d.is_positive() {
+        return true;
+    }
+    let d = d.to_integer().to_u64().unwrap_or(u64::MAX);
+    let cap = MAX_GAMMA_CLOSED_FORM_TERMS;
+    let t = expanded_terms_bound(arena, x, cap);
+    // Σ_{k ≤ d} C(k + t − 1, k) = C(d + t, d), the monomials of degree d in
+    // t + 1 unknowns.
+    multisets_bound(t.saturating_add(1), d, cap.saturating_add(1)) <= cap
+}
+
 /// Closed form of `Γ(s, x)` for integer or half-integer `s` with
-/// `|s| ≤ MAX_SPECIAL_EXPANSION`: bases `Γ(1, x) = e^{−x}`,
+/// `|s| ≤ MAX_SPECIAL_EXPANSION` whose expansion stays small
+/// ([`closed_form_stays_small`]): bases `Γ(1, x) = e^{−x}`,
 /// `Γ(0, x) = E₁(x)`, `Γ(1/2, x) = √π erfc(√x)`.
 fn uppergamma_closed(arena: &mut Arena, s: &Q, x: ExprId) -> Option<ExprId> {
     let two = BigInt::from(2);
     let bound = Ratio::from_integer(BigInt::from(MAX_SPECIAL_EXPANSION));
-    if s.abs() > bound {
+    if s.abs() > bound || !closed_form_stays_small(arena, s, x) {
         return None;
     }
     let neg_x = arena.neg(x);

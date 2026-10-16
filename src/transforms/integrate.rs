@@ -502,7 +502,7 @@ fn integrate_stages_once(
     // If the rule-based integrator returned an unevaluated Integral node,
     // try the Risch tower (exact method for exp/ln integrands) before
     // falling back to the heuristic integrator.
-    if let ExprNode::Integral(_, _) = arena.node(result) {
+    let result = if let ExprNode::Integral(_, _) = arena.node(result) {
         match stage!(
             arena,
             "risch_tower",
@@ -535,7 +535,21 @@ fn integrate_stages_once(
         }
     } else {
         result
+    };
+
+    // Last: a rational function over constants, as parameters (only where
+    // every other stage left the integral, so their answers keep their form).
+    if let ExprNode::Integral(_, _) = arena.node(result)
+        && let Some(r) = stage!(
+            arena,
+            "rational_over_constants",
+            expr,
+            try_rational_over_constants(arena, expr, var, var_sym)
+        )
+    {
+        return accept_or_unevaluated(arena, expr, r, var, var_sym);
     }
+    result
 }
 
 /// A stage's answer `candidate` for `∫ f d(var)` in the form in which
@@ -2700,6 +2714,91 @@ fn try_rational_with_constant_coefficients(
     }
     tracing::debug!("integrate: a rational function over ℚ times constants, piece by piece");
     Some(arena.add(&parts))
+}
+
+/// Most distinct constants [`try_rational_over_constants`] turns into
+/// parameters.
+const MAX_CONSTANT_PARAMETERS: usize = 4;
+
+/// `∫ R(x) dx` for a rational function with constant coefficients that are
+/// not all rational in its denominator (`1/(x·(x − √2))`, `1/((x − e)(x +
+/// π))`): each maximal subterm free of symbols that is not a number (`√2`,
+/// `π`) becomes a fresh parameter, the integrator over `ℚ(p₁, …)` integrates,
+/// and the constants are put back.  Its answer `F` has `F′ = R` as an
+/// identity of rational functions of `x` and the parameters, so the
+/// constants may replace the parameters wherever no denominator of `F`
+/// vanishes at them (relations such as `√2² = 2` are lost, never used); an
+/// answer that becomes undefined there (a `nan`, `zoo`), or that the numeric
+/// check of every candidate rejects, gives `None`.  Up to 0.58 `∫ dx/(x·(x −
+/// √2))` was unevaluated (the integrator over `ℚ` refuses `√2`, the one over
+/// `ℚ(p₁, …)` takes symbols only), and with it `∫ dx/(eˣ − √2)`; SymPy
+/// 1.14: `√2·ln(x − √2)/2 − √2·ln(x)/2`.
+fn try_rational_over_constants(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    if !is_rational_in(arena, expr, var_sym) {
+        return None;
+    }
+    let mut constants: Vec<ExprId> = Vec::new();
+    let mut stack = vec![expr];
+    while let Some(id) = stack.pop() {
+        if arena.as_num(id).is_some() {
+            continue;
+        }
+        if crate::base::walk::free_symbols(arena, id).is_empty() {
+            if !constants.contains(&id) {
+                if constants.len() == MAX_CONSTANT_PARAMETERS {
+                    return None;
+                }
+                constants.push(id);
+            }
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Add(cs) | ExprNode::Mul(cs) => stack.extend(cs.iter().copied()),
+            ExprNode::Pow(b, e) => stack.extend([*b, *e]),
+            ExprNode::Neg(c) => stack.push(*c),
+            _ => {}
+        }
+    }
+    if constants.is_empty() {
+        return None;
+    }
+    let params: Vec<ExprId> = (0..constants.len())
+        .map(|i| arena.symbol(&format!("__rational_constant{i}")))
+        .collect();
+    let mut in_params = expr;
+    for (&c, &p) in constants.iter().zip(&params) {
+        in_params = arena.subs_structural(in_params, c, p);
+    }
+    if constants
+        .iter()
+        .any(|&c| crate::base::walk::contains(arena, in_params, c))
+    {
+        return None;
+    }
+    let big_f = crate::calculus::risch::try_risch_rational_params(arena, in_params, var)?;
+    if crate::base::walk::has_unevaluated(arena, big_f) {
+        return None;
+    }
+    let mut back = big_f;
+    for (&c, &p) in constants.iter().zip(&params) {
+        back = arena.subs_structural(back, p, c);
+    }
+    let back = crate::transforms::eval::eval(arena, back);
+    if crate::base::value_class::holds_special_atom(arena, back)
+        || params
+            .iter()
+            .any(|&p| crate::base::walk::contains(arena, back, p))
+        || candidate_rejected(arena, expr, back, var, var_sym)
+    {
+        return None;
+    }
+    tracing::debug!("integrate: a rational function over constants as parameters");
+    Some(back)
 }
 
 /// `∫ A(sin u, cos u) du` for `A = R(sin u, cos u)·√(1 + ε·w)^p` (`w` = `sin u`
@@ -8626,7 +8725,9 @@ fn try_poly_times_half_power(
     // Unknowns: R = r_0 + … + r_m x^m (m = pd − qd + 1, or pd for linear Q), c.
     let m: i64 = if qd == 2 { pd as i64 - 1 } else { pd as i64 };
     let with_c = qd == 2;
-    let n_unknowns = (m + 1).max(0) as usize + usize::from(with_c);
+    // The dense system has n² entries and costs n³ steps: refused beyond
+    // 2¹⁰ unknowns (up to 0.58 its rows were sized by the degree of `P̃`).
+    let n_unknowns = crate::base::cast::bounded_len(m + 1, 1usize << 10)? + usize::from(with_c);
     let n_eq = pd + 1;
     if n_unknowns != n_eq {
         return None;
@@ -8638,7 +8739,7 @@ fn try_poly_times_half_power(
         if i < 0 {
             break;
         }
-        let iu = i as usize;
+        let iu = crate::base::cast::bounded_len(i, n_unknowns)?;
         // basis monomial x^i for R
         let mut mono = vec![Q::zero(); iu + 1];
         mono[iu] = Q::one();

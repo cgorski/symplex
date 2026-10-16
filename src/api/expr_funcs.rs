@@ -4308,9 +4308,14 @@ impl Expr<Numeric> {
     /// Returns [`SymplexError::FreeSymbol`] if the expression contains
     /// unbound symbols (e.g., `x.eval_decimal(10)` without substituting a value).
     ///
+    /// Returns [`SymplexError::Infinite`] if the value is infinite or needs
+    /// one that is: `∞`, `zoo`, a function at a pole of exact arguments
+    /// (`elliptic_pi(π, 1)`, `expint(1, 0)`, `1/elliptic_pi(π, 1)`; up to 0.58
+    /// `Unevaluable`).
+    ///
     /// Returns [`SymplexError::Unevaluable`] if the expression contains
-    /// nodes that cannot be evaluated to a finite number (infinity, NaN,
-    /// imaginary unit, unevaluated derivatives/integrals, user functions),
+    /// nodes that cannot be evaluated to a finite number (NaN,
+    /// unevaluated derivatives/integrals, user functions),
     /// or if its value lies beyond the exponent range of the
     /// arbitrary-precision floats (about `2^(±2.1·10⁹)`): a value that
     /// overflows it (`exp(10¹⁰)`), and since 0.32 a value that is certainly

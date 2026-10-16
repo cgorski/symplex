@@ -6856,7 +6856,11 @@ fn radical_nonzero_by_value(e: &Ex) -> bool {
             .map(|i| ctx.rational(31 + 17 * i + 7 * k, 11 + 4 * k + 3 * i))
             .collect();
         let subs: Vec<(&Ex, &Ex)> = syms.iter().zip(vals.iter()).collect();
-        matches!(e.subs_map(&subs).eval_decimal(12), Ok(s) if s != "0")
+        // A part with certified digits (up to 0.58: the printout was not `"0"`).
+        let at = e.subs_map(&subs).eval();
+        let guard = at.inner.read();
+        crate::transforms::evalf::const_value(&guard.arena, at.raw_id(), 12)
+            .is_ok_and(|v| v.re_sign().is_nonzero().is_true() || v.im_sign().is_nonzero().is_true())
     })
 }
 
@@ -7868,9 +7872,9 @@ mod tests {
             ctx.int(((i * 7 + j * 3) % 5) as i64 + if i == j { 2 } else { 0 })
         })
         .unwrap();
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let cp = m.char_poly(&lam).unwrap();
-        assert!(start.elapsed().as_secs() < 5, "char_poly too slow");
+        timer.assert_within(std::time::Duration::from_secs(5), "char_poly");
         assert_eq!(
             cp.degree(&lam),
             Some(5),
@@ -7895,13 +7899,9 @@ mod tests {
             .map(|i| (0..5).map(|j| ctx.symbol(&format!("a{i}{j}"))).collect())
             .collect();
         let m = Matrix::new(syms).unwrap();
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let coeffs = m.char_poly_coeffs().unwrap();
-        assert!(
-            start.elapsed().as_secs() < 20,
-            "5×5 symbolic char poly took {:?}",
-            start.elapsed()
-        );
+        timer.assert_within(std::time::Duration::from_secs(20), "5×5 symbolic char poly");
         assert_eq!(coeffs.len(), 6);
         // det(A − λI) = −λ⁵ + tr·λ⁴ − … + det, so c_5 = −1, c_4 = +trace, c_0 = det (120 terms)
         assert_eq!(coeffs[5], ctx.int(-1));

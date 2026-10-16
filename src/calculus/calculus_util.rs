@@ -1685,15 +1685,22 @@ pub(crate) fn hidden_zero(
         );
     }
     // Only symbol-free constants without unevaluated parts are memoised.
+    if !walk::free_symbols(arena, c).is_empty() || walk::has_unevaluated(arena, c) {
+        return Verdict::new(Truth::Unknown, Evidence::Approximate);
+    }
+    // Past the allowance of an [`EvaluationScope`]: undecided, as a value 0
+    // to the precision reached (never "no value", which reads as nonzero),
+    // and not memoised.  Charged before the memo is read, so that the
+    // outcome does not depend on what the arena has seen.
+    if !EvaluationScope::charge(arena, c) {
+        return Verdict::new(Truth::True, Evidence::Approximate);
+    }
     if let Some(signs) = arena.constant_fact(c, FactKey::HiddenZero) {
         return match signs {
             SignSet::ZERO => Verdict::new(Truth::True, Evidence::Certified),
             SignSet::NONZERO => Verdict::new(Truth::False, Evidence::Certified),
             _ => Verdict::new(Truth::True, Evidence::Approximate),
         };
-    }
-    if !walk::free_symbols(arena, c).is_empty() || walk::has_unevaluated(arena, c) {
-        return Verdict::new(Truth::Unknown, Evidence::Approximate);
     }
     let verdict = hidden_zero_uncached(arena, c);
     let signs = match (verdict.proven(), verdict.value) {
@@ -1706,6 +1713,86 @@ pub(crate) fn hidden_zero(
         arena.remember_constant_fact(c, FactKey::HiddenZero, signs);
     }
     verdict
+}
+
+thread_local! {
+    /// The units of evaluation work charged by [`hidden_zero`] on this
+    /// thread while an [`EvaluationScope`] is open, and the count at which
+    /// the innermost scope stops them.
+    static EVALUATIONS: std::cell::Cell<(u64, Option<u64>)> =
+        const { std::cell::Cell::new((0, None)) };
+}
+
+/// Distinct nodes of a constant per unit of evaluation work
+/// ([`EvaluationScope`]).
+const NODES_PER_EVALUATION_UNIT: usize = 64;
+
+/// A bound on the work of [`hidden_zero`] (each call a certified `evalf` of
+/// a constant, or its memo: the costly step of the series engine's zero
+/// tests) while the scope lives, in units of [`NODES_PER_EVALUATION_UNIT`]
+/// distinct nodes of the constants tested (a smaller constant is free):
+/// the tighter of `cap` and what an enclosing scope has left.  Every call
+/// is charged, also one the memo answers, so the outcome does not depend on
+/// what the arena has seen.  Past the bound `hidden_zero` answers
+/// "undecided" without evaluating, so the caller refuses, and the scope
+/// stays spent.  Gruntz's [`Budget`](crate::calculus::gruntz) holds one and
+/// charges the units to its work at each step; up to 0.58 they were not
+/// counted, and `limit(E1(digamma(x))^Ei(x), x, 0, −)` evaluated
+/// coefficients of its series (polynomials in `ζ(k)` and `γ` of a thousand
+/// distinct nodes, each `ζ` at 166 bits) for over 25 s.  Scopes nest
+/// (dropped in the reverse order of entering, as locals are).
+#[derive(Debug)]
+pub(crate) struct EvaluationScope {
+    /// The stop count of the enclosing scope, restored on drop.
+    outer: Option<u64>,
+    /// The count when the scope was entered.
+    start: u64,
+}
+
+impl EvaluationScope {
+    /// Open a scope allowing `cap` more units.
+    pub(crate) fn enter(cap: u64) -> Self {
+        let (made, outer) = EVALUATIONS.get();
+        let end = made.saturating_add(cap);
+        let end = outer.map_or(end, |o| o.min(end));
+        EVALUATIONS.set((made, Some(end)));
+        EvaluationScope { outer, start: made }
+    }
+
+    /// The units charged since the scope was entered (by it and by the
+    /// scopes inside it).
+    pub(crate) fn made(&self) -> u64 {
+        EVALUATIONS.get().0.saturating_sub(self.start)
+    }
+
+    /// Charge the evaluation of the constant `c`; `false` when the
+    /// innermost scope has no room for it (it is then spent).  Without an
+    /// open scope nothing is counted.
+    fn charge(arena: &Arena, c: ExprId) -> bool {
+        let (made, end) = EVALUATIONS.get();
+        let Some(end) = end else {
+            return true;
+        };
+        let room = end.saturating_sub(made);
+        // `evalf` evaluates each distinct node once: the cost is the size of
+        // the DAG, not of the tree (which a shared sub-expression can make
+        // exponentially larger).
+        let size = walk::post_order_ids(arena, c).len();
+        let units = (size / NODES_PER_EVALUATION_UNIT) as u64;
+        if units > room {
+            EVALUATIONS.set((end, Some(end)));
+            return false;
+        }
+        EVALUATIONS.set((made + units, Some(end)));
+        true
+    }
+}
+
+impl Drop for EvaluationScope {
+    fn drop(&mut self) {
+        let (made, _) = EVALUATIONS.get();
+        EVALUATIONS.set((made, self.outer));
+    }
 }
 
 /// [`hidden_zero`] of a symbol-free constant without unevaluated parts,
@@ -3291,8 +3378,25 @@ impl ZeroDecision {
     /// 5. two or more parts left: whether they cancel identically
     ///    ([`vanishes_identically`](crate::calculus::series::vanishes_identically):
     ///    sampled within the assumptions, confirmed exactly).
+    ///
+    /// Before steps 4–5, a constant with parameters is searched for hidden
+    /// zeros inside its functions ([`hidden_parts`]): its maximal
+    /// symbol-free parts (`J` in `sin(y·J)`) are decided by
+    /// [`hidden_zero`]; one proved 0 is replaced by 0, and one 0 to the
+    /// precision reached but not proved makes the constant `Nonzero` only
+    /// when it is nonzero both as it stands and with that part replaced by
+    /// 0 (`y + J` is; `sin(y·J)` is `Undecided`).  Up to 0.58 steps 4–5 saw
+    /// only symbol-free *factors*: `cos(y·J + π/2) = −sin(y·J)` (`J =
+    /// besselj(−1/2, π/2) = 0`) was nonzero for a generic `y`, and
+    /// `limit(tan(π/2 + y·besselj(−1/2, π/2 + x)), x, 0)` was the value
+    /// `tan(y·J + π/2)` at a pole.
     pub(crate) fn decide(arena: &mut Arena, c: ExprId) -> Self {
-        use crate::calculus::series::{ParameterParts, parameter_parts, vanishes_identically};
+        Self::decide_with(arena, c, HIDDEN_PART_ROUNDS)
+    }
+
+    /// [`decide`](Self::decide), replacing hidden zeros of the parameter
+    /// parts at most `rounds` more times.
+    fn decide_with(arena: &mut Arena, c: ExprId, rounds: u8) -> Self {
         if arena.is_zero_structural(c) {
             return ZeroDecision::Zero;
         }
@@ -3308,6 +3412,32 @@ impl ZeroDecision {
         if arena.is_symbol_free(v) {
             return ZeroDecision::Nonzero(NonzeroExpr(v));
         }
+        if rounds > 0 {
+            match hidden_parts(arena, v) {
+                HiddenParts::None => {}
+                HiddenParts::Proved(w) => return Self::decide_with(arena, w, rounds - 1),
+                // `v` is one of two values: as it stands (the part a nonzero
+                // constant) or `w` (the part 0).
+                HiddenParts::Undecided(w) => {
+                    let at_zero = Self::decide_with(arena, w, 0);
+                    return match (at_zero, Self::by_parameter_parts(arena, v)) {
+                        (ZeroDecision::Nonzero(_), ZeroDecision::Nonzero(d)) => {
+                            ZeroDecision::Nonzero(d)
+                        }
+                        (ZeroDecision::Zero, ZeroDecision::Zero) => ZeroDecision::Zero,
+                        _ => ZeroDecision::Undecided(v),
+                    };
+                }
+                HiddenParts::Several => return ZeroDecision::Undecided(v),
+            }
+        }
+        Self::by_parameter_parts(arena, v)
+    }
+
+    /// Steps 4–5 of [`decide`](Self::decide) for the evaluated constant `v`
+    /// with parameters.
+    fn by_parameter_parts(arena: &mut Arena, v: ExprId) -> Self {
+        use crate::calculus::series::{ParameterParts, parameter_parts, vanishes_identically};
         let sum = match parameter_parts(arena, v) {
             ParameterParts::Decided(t) => return Self::from_test(t),
             ParameterParts::Sum(sum) => sum,
@@ -3356,6 +3486,157 @@ impl ZeroDecision {
     }
 }
 
+/// How many times [`ZeroDecision::decide`] replaces the hidden zeros of a
+/// constant's parameter parts and decides again (a replaced part can
+/// uncover another: `sin(y·(J + sin(y·J)))`).
+const HIDDEN_PART_ROUNDS: u8 = 3;
+
+/// The hidden zeros [`hidden_parts`] found in a constant with parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HiddenParts {
+    /// No maximal symbol-free part is 0 or undecided.
+    None,
+    /// The constant with its parts proved 0 replaced by 0, evaluated.
+    Proved(ExprId),
+    /// The constant with its one part that is 0 to the precision reached,
+    /// not proved, replaced by 0, evaluated.
+    Undecided(ExprId),
+    /// Two or more parts 0 to the precision reached, not proved.
+    Several,
+}
+
+/// Most entries of [`HIDDEN_PARTS_MEMO`] before it is cleared.
+const HIDDEN_PARTS_MEMO_ENTRIES: usize = 4096;
+
+thread_local! {
+    /// The results of [`hidden_parts`] by (arena serial, constant): the
+    /// series engine decides the same coefficients in every product and sum
+    /// it forms, and a part `evalf` cannot evaluate is not memoised by
+    /// [`hidden_zero`].
+    static HIDDEN_PARTS_MEMO: std::cell::RefCell<rustc_hash::FxHashMap<(u64, ExprId), HiddenParts>> =
+        std::cell::RefCell::new(rustc_hash::FxHashMap::default());
+}
+
+/// The maximal symbol-free parts of the evaluated constant `v` with
+/// parameters that are hidden zeros: each argument without symbols of a
+/// node with symbols (`J` in `sin(y·J)`, `√6 − √2·√3` in `y^(√6 −
+/// √2·√3)`), the symbol-free terms of a sum together, decided by
+/// [`hidden_zero`] read by [`zero_reading`] (numbers, and products of
+/// powers of numbers and named constants, are skipped: canonical forms
+/// decide them).  Parts proved 0 are replaced first; otherwise one part
+/// that is 0 to the precision reached but not proved.  Memoised per arena.
+fn hidden_parts(arena: &mut Arena, v: ExprId) -> HiddenParts {
+    let key = (arena.serial(), v);
+    if let Some(h) = HIDDEN_PARTS_MEMO.with(|m| m.borrow().get(&key).copied()) {
+        return h;
+    }
+    let h = hidden_parts_uncached(arena, v);
+    HIDDEN_PARTS_MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= HIDDEN_PARTS_MEMO_ENTRIES {
+            m.clear();
+        }
+        m.insert(key, h);
+    });
+    h
+}
+
+/// [`hidden_parts`], not memoised.
+fn hidden_parts_uncached(arena: &mut Arena, v: ExprId) -> HiddenParts {
+    // (part, what replaces the part's node when the part is 0)
+    let mut proved: Vec<(ExprId, ExprId)> = Vec::new();
+    let mut undecided: Vec<(ExprId, ExprId)> = Vec::new();
+    let mut seen: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    let mut stack = vec![v];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let mut parts: smallvec::SmallVec<[(ExprId, ExprId, ExprId); 4]> =
+            smallvec::SmallVec::new();
+        if let ExprNode::Add(ts) = arena.node(id).clone() {
+            // The terms grouped by their factor with symbols (`1` for a
+            // symbol-free term): the coefficient of a group of two or more
+            // terms is a part (`asinh 2 − ln(2 + √5)` in `y·asinh 2 − y·ln(2
+            // + √5)`), replaced by dropping the group; the coefficient of a
+            // single term is met inside it.
+            type Group = (ExprId, smallvec::SmallVec<[(ExprId, ExprId); 2]>);
+            let mut groups: Vec<Group> = Vec::new();
+            for &t in &ts {
+                let (k, m) = if arena.is_symbol_free(t) {
+                    (t, arena.one())
+                } else if let ExprNode::Mul(fs) = arena.node(t).clone() {
+                    let (k, m): (
+                        smallvec::SmallVec<[ExprId; 4]>,
+                        smallvec::SmallVec<[ExprId; 4]>,
+                    ) = fs.iter().copied().partition(|&f| arena.is_symbol_free(f));
+                    (arena.mul(&k), arena.mul(&m))
+                } else {
+                    (arena.one(), t)
+                };
+                match groups.iter_mut().find(|g| g.0 == m) {
+                    Some(g) => g.1.push((t, k)),
+                    None => groups.push((m, smallvec::smallvec![(t, k)])),
+                }
+            }
+            for (m, members) in groups {
+                let symbol_free = m == arena.one();
+                if !symbol_free {
+                    stack.extend(members.iter().map(|&(t, _)| t));
+                    if members.len() < 2 {
+                        continue;
+                    }
+                }
+                let ks: smallvec::SmallVec<[ExprId; 2]> = members.iter().map(|&(_, k)| k).collect();
+                let part = arena.add(&ks);
+                let rest: Vec<ExprId> = ts
+                    .iter()
+                    .copied()
+                    .filter(|t| !members.iter().any(|&(u, _)| u == *t))
+                    .collect();
+                let without = arena.add(&rest);
+                let (node, replacement) = match members.as_slice() {
+                    [(t, _)] => (*t, arena.zero),
+                    _ => (id, without),
+                };
+                parts.push((part, node, replacement));
+            }
+        } else {
+            let mut children: smallvec::SmallVec<[ExprId; 4]> = smallvec::SmallVec::new();
+            arena.node(id).for_each_child(|c| children.push(c));
+            for c in children {
+                if arena.is_symbol_free(c) {
+                    parts.push((c, c, arena.zero));
+                } else {
+                    stack.push(c);
+                }
+            }
+        }
+        for (part, node, replacement) in parts {
+            if arena.as_num(part).is_some() || NonzeroExpr::structural(arena, part).is_some() {
+                continue;
+            }
+            match zero_reading(hidden_zero(arena, part)) {
+                Truth::True => proved.push((node, replacement)),
+                Truth::Unknown => undecided.push((node, replacement)),
+                Truth::False => {}
+            }
+        }
+    }
+    let replaced = |arena: &mut Arena, pairs: &[(ExprId, ExprId)]| {
+        let w = crate::transforms::subs::subs_map(arena, v, pairs);
+        eval::eval(arena, w)
+    };
+    if !proved.is_empty() {
+        return HiddenParts::Proved(replaced(arena, &proved));
+    }
+    match undecided.as_slice() {
+        [] => HiddenParts::None,
+        [pair] => HiddenParts::Undecided(replaced(arena, &[*pair])),
+        _ => HiddenParts::Several,
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3366,6 +3647,37 @@ mod tests {
     use crate::base::arena::Arena;
     use crate::base::node::ExprNode;
     use std::f64::consts::PI;
+
+    /// A constant of more than one unit of evaluation work is undecided
+    /// past the allowance of an [`EvaluationScope`] (never "no value",
+    /// which would read as nonzero), certified nonzero without one, and an
+    /// inner scope's allowance ends with it.
+    #[test]
+    fn evaluation_scope_bounds_the_zero_tests() {
+        let mut arena = Arena::new();
+        let terms: Vec<ExprId> = (2..60)
+            .map(|k| {
+                let n = arena.int(k);
+                let r = arena.sqrt(n);
+                let l = arena.ln(n);
+                arena.mul(&[r, l])
+            })
+            .collect();
+        let c = arena.add(&terms);
+        assert!(walk::post_order_ids(&arena, c).len() > 2 * NODES_PER_EVALUATION_UNIT);
+        {
+            let _outer = EvaluationScope::enter(1_000);
+            {
+                let inner = EvaluationScope::enter(1);
+                let v = hidden_zero(&mut arena, c);
+                assert_eq!(zero_reading(v), Truth::Unknown);
+                assert!(inner.made() >= 1);
+            }
+            // The outer scope has room again (the inner one spent only its own).
+            assert_eq!(zero_reading(hidden_zero(&mut arena, c)), Truth::False);
+        }
+        assert_eq!(zero_reading(hidden_zero(&mut arena, c)), Truth::False);
+    }
 
     /// Helper: get the SymbolId for an ExprId that is a Symbol.
     fn sym_id(arena: &Arena, expr: ExprId) -> SymbolId {

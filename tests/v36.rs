@@ -88,6 +88,8 @@ mod v36_s15m4_perf;
 mod v36_s15m5_values;
 #[path = "v36/v36_s15n1_limit_power.rs"]
 mod v36_s15n1_limit_power;
+#[path = "v36/v36_s15n2_fuzz.rs"]
+mod v36_s15n2_fuzz;
 #[path = "v36/v36_s15p1_evalf.rs"]
 mod v36_s15p1_evalf;
 #[path = "v36/v36_s15p2_limits.rs"]

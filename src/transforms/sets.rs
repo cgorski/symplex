@@ -2918,7 +2918,7 @@ fn merge_class(arena: &mut Arena, class: &LatticeClass) -> Option<Vec<ExprId>> {
             return None;
         }
     }
-    let pu = usize::try_from(p).ok()?;
+    let pu = crate::base::cast::bounded_len(p, MAX_MERGE_RESIDUES)?;
     let mut covered_by_family = vec![false; pu];
     for (&qi, &oi) in steps.iter().zip(&offsets) {
         let mut r = oi.rem_euclid(qi);

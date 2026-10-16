@@ -71,15 +71,11 @@ fn fisher(table: [[usize; 2]; 2], alt: Alternative) -> TestResult {
     fisher_exact(&ctx, table, alt).unwrap_or_else(|e| panic!("fisher_exact({table:?}): {e}"))
 }
 
-/// The numeric route's p-value is `ctx.from_f64(p)`: a dyadic rational.
-fn is_dyadic(r: &TestResult) -> bool {
-    match r.p_value_exact() {
-        Some(p) => {
-            let d = p.denom();
-            d.is_one() || (d & (d - BigInt::one())).is_zero()
-        }
-        None => false,
-    }
+/// The numeric route's p-value is an approximation and says so: no exact
+/// rational (up to 0.58 it was `ctx.from_f64(p)`, a dyadic rational that
+/// `p_value_exact` returned as if exact; this helper checked for that).
+fn is_approximate(r: &TestResult) -> bool {
+    r.p_value_exact().is_none()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -113,7 +109,7 @@ fn fisher_million_cell_table_matches_scipy_to_1e9() {
     rel_close(pg, 0.501_196_819_435_882_5, 1e-13);
     // P(X ≤ a) + P(X ≥ a) − 1 = pmf(a).
     rel_close(pl + pg - 1.0, 0.000_797_882_416_518_666, 1e-9);
-    assert!(is_dyadic(&two) && is_dyadic(&less) && is_dyadic(&greater));
+    assert!(is_approximate(&two) && is_approximate(&less) && is_approximate(&greater));
     // The odds ratio stays exact: 10¹² / ((10⁶ + 7)(10⁶ − 3)).
     let stat = two.statistic_exact().unwrap();
     assert_eq!(stat, Q::new(big("1000000000000"), big("1000003999979")));
@@ -146,7 +142,9 @@ fn fisher_large_symmetric_table_underflows_like_scipy_but_keeps_the_logarithm() 
         "{}",
         two.p_value_decimal(6).unwrap()
     );
-    assert_eq!(less.p_value_exact(), Some(Q::one()));
+    // P(X ≤ 5000) = 1 − P(X ≥ 5001), within 10⁻⁵¹¹ of 1 but not 1: up to
+    // 0.58 it was the exact rational 1.
+    assert_eq!(less.p_value_exact(), None);
 }
 
 #[test]
@@ -198,7 +196,10 @@ fn fisher_numeric_route_agrees_with_exact_arithmetic_just_above_the_threshold() 
     //   [[1000, 1500], [1000, 1500]]: less = greater = 0.51151464835212214196, two-sided 1 (a is the mode)
     let t = [[1050, 950], [950, 1050]];
     let r = fisher(t, Alternative::Less);
-    assert!(is_dyadic(&r), "numeric route gives a dyadic p");
+    assert!(
+        is_approximate(&r),
+        "the numeric route's p is not an exact rational"
+    );
     rel_close(r.p_value_f64().unwrap(), 0.999_299_665_420_307_3, 1e-13);
     rel_close(
         fisher(t, Alternative::Greater).p_value_f64().unwrap(),
@@ -276,7 +277,10 @@ fn fisher_far_tail_of_a_million_cell_table_keeps_a_finite_logarithm() {
     let two = fisher(t, Alternative::TwoSided);
     t0.assert_within(Duration::from_secs(1), "three tests");
     assert_eq!(less.p_value_f64().unwrap(), 0.0);
-    assert_eq!(greater.p_value_exact(), Some(Q::one()));
+    // P(X ≥ 2) = 1 − P(X ≤ 1), 1 to 6·10⁵ digits but not 1: an approximation, no
+    // exact rational (up to 0.58 the exact 1).
+    assert_eq!(greater.p_value_exact(), None);
+    assert_eq!(greater.p_value_f64().unwrap(), 1.0);
     close(less.p_value_log10().unwrap(), -602_029.327_079_636, 1e-6);
     assert!(less.p_value_decimal(8).unwrap().ends_with("e-602030"));
     // The far-side cutoff adds a comparable mass: ln p₂ ≥ ln p_less, and p₂ ≤ 2·p_less-ish.
@@ -294,7 +298,9 @@ fn fisher_billion_cell_table_runs_in_milliseconds() {
     let greater = fisher(t, Alternative::Greater);
     let two = fisher(t, Alternative::TwoSided);
     t0.assert_within(Duration::from_secs(1), "three tests");
-    assert_eq!(less.p_value_exact(), Some(Q::one()));
+    // P(X ≤ 10⁹) = 1 − P(X = 10⁹ + 1): not exactly 1 (up to 0.58 the exact 1).
+    assert_eq!(less.p_value_exact(), None);
+    assert_eq!(less.p_value_f64().unwrap(), 1.0);
     assert_eq!(greater.p_value_f64().unwrap(), 0.0);
     assert_eq!(two.p_value_f64().unwrap(), 0.0);
     let lg = greater.p_value_log10().unwrap();

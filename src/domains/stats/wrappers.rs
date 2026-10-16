@@ -1886,32 +1886,65 @@ impl Distribution {
             // entry.  Up to 0.56 every pair was compared by `equals`, each
             // comparison interning a difference: `X⁵` of a hypergeometric on
             // 19,532 atoms exhausted 2 GB.
+            //
+            // An image that is not a rational is compared by `equals` only
+            // with the entries its value does not already separate it from
+            // ([`certified_apart`]): those in its own and the neighbouring
+            // buckets of [`value_bucket`], and those without a value.  Up to
+            // 0.57 each was compared with every entry: `√X` of a 2000-sided
+            // die made two million `equals` calls (fuzz_stats timed out
+            // after 30 s).
             let mut table: Vec<(Ex, Ex)> = Vec::new();
             let mut rational_at: std::collections::HashMap<crate::base::numeric::Q, usize> =
                 std::collections::HashMap::new();
-            let mut others: Vec<usize> = Vec::new();
+            let mut values_at: Vec<Option<ValueKey>> = Vec::new();
+            let mut buckets: std::collections::HashMap<(bool, i64), Vec<usize>> =
+                std::collections::HashMap::new();
+            // Entries that are not rationals and have no bucket.
+            let mut unvalued: Vec<usize> = Vec::new();
             for v in &values {
                 let image = g.subs(x, v).eval();
                 let mass = self.density(v).eval();
-                let same = |i: &usize| Truth::from(table[*i].0.equals(&image)).is_true();
                 let rational = image.as_rational();
-                let found = match &rational {
-                    Some(q) => rational_at
-                        .get(q)
-                        .copied()
-                        .or_else(|| others.iter().copied().find(same)),
-                    None => (0..table.len()).find(same),
+                let value = value_key(&image);
+                let bucket = value.and_then(|k| Some((k.tiny, value_bucket(k.f)?)));
+                let same = |i: &usize| {
+                    !keys_apart(values_at[*i], value)
+                        && Truth::from(table[*i].0.equals(&image)).is_true()
                 };
+                let found = match (&rational, bucket) {
+                    (Some(q), _) => rational_at.get(q).copied(),
+                    (None, _) => None,
+                }
+                .or_else(|| match bucket {
+                    Some((tiny, k)) => (k - 1..=k + 1)
+                        .filter_map(|k| buckets.get(&(tiny, k)))
+                        .flatten()
+                        .copied()
+                        .filter(|&i| rational.is_none() || table[i].0.as_rational().is_none())
+                        .chain(unvalued.iter().copied())
+                        .find(same),
+                    None if rational.is_some() => unvalued
+                        .iter()
+                        .copied()
+                        .chain(buckets.values().flatten().copied())
+                        .filter(|&i| table[i].0.as_rational().is_none())
+                        .find(same),
+                    None => (0..table.len()).find(same),
+                });
                 match found {
                     Some(i) => table[i].1 = (&table[i].1 + mass).simplify(),
                     None => {
-                        match rational {
-                            Some(q) => {
-                                rational_at.insert(q, table.len());
-                            }
-                            None => others.push(table.len()),
+                        let i = table.len();
+                        if let Some(q) = rational {
+                            rational_at.insert(q, i);
+                        }
+                        match bucket {
+                            Some(k) => buckets.entry(k).or_default().push(i),
+                            None => unvalued.push(i),
                         }
                         table.push((image, mass));
+                        values_at.push(value);
                     }
                 }
             }
@@ -2186,6 +2219,73 @@ fn live_even_branches(
 /// The inverse branches of an even shape `x²`, `|x|`, `x^{2k}` (as
 /// expressions in `y`): `±√y`, `±y`, `±y^{1/(2k)}`, the non-negative
 /// branch first.
+/// Do two `eval_f64` values prove their constants different?  Each is the
+/// certified value correctly rounded, so it lies within an ulp (`≤ ε·|v|`
+/// for a normal double) of the constant: values farther apart than four
+/// times `ε` of the larger magnitude cannot belong to one number.  `false`
+/// (undecided) for a missing value or one outside the normal range.
+pub(super) fn certified_apart(a: Option<f64>, b: Option<f64>) -> bool {
+    let (Some(a), Some(b)) = (a, b) else {
+        return false;
+    };
+    if !(a.is_normal() && b.is_normal()) {
+        return false;
+    }
+    (a - b).abs() > 4.0 * f64::EPSILON * a.abs().max(b.abs())
+}
+
+/// What separates an image of [`Distribution::transformed`] from others: its
+/// `eval_f64` (`f`, `tiny = false`) when that is a normal double, else for
+/// a real value below the normal range (`eval_f64` is `0` or subnormal) the
+/// `eval_f64` of `ln |image|` (`tiny = true`).  Both are certified values
+/// correctly rounded, so equal images get equal keys; `exp(−k)` of a
+/// 7000-sided die underflowed, and its 6255 images were compared pairwise.
+#[derive(Clone, Copy, Debug)]
+struct ValueKey {
+    tiny: bool,
+    f: f64,
+}
+
+fn value_key(image: &Ex) -> Option<ValueKey> {
+    let v = image.eval_f64().ok()?;
+    if v.is_normal() {
+        return Some(ValueKey { tiny: false, f: v });
+    }
+    if !v.is_finite() {
+        return None;
+    }
+    let l = image.abs().ln().eval_f64().ok()?;
+    l.is_normal().then_some(ValueKey { tiny: true, f: l })
+}
+
+/// Are the images of two keys proved different?  A value below the normal
+/// range and one at least four times its bottom are; two values (or two
+/// logarithms) by [`certified_apart`].
+fn keys_apart(a: Option<ValueKey>, b: Option<ValueKey>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) if a.tiny != b.tiny => {
+            let normal = if a.tiny { b.f } else { a.f };
+            normal.abs() >= 4.0 * f64::MIN_POSITIVE
+        }
+        (Some(a), Some(b)) => certified_apart(Some(a.f), Some(b.f)),
+        _ => false,
+    }
+}
+
+/// The bucket of a normal `f64` among runs of 32 consecutive doubles (in
+/// the order of their values), `None` otherwise: two values that
+/// [`certified_apart`] cannot separate (at most about 8 doubles apart) lie
+/// in the same or neighbouring buckets.
+fn value_bucket(v: f64) -> Option<i64> {
+    if !v.is_normal() {
+        return None;
+    }
+    let bits = i64::from_ne_bytes(v.to_bits().to_ne_bytes());
+    // Monotone in `v`: the sign-magnitude bits of a negative value reversed.
+    let ordered = if bits < 0 { i64::MIN - bits } else { bits };
+    Some(ordered >> 5)
+}
+
 fn even_branches(x: &Ex, g: &Ex, y: &Ex, ctx: &Context) -> Option<Vec<Ex>> {
     if *g == x.abs() {
         return Some(vec![y.clone(), -y]);

@@ -78,12 +78,14 @@ fn compile_refuses_a_constant_dirac_delta_at_zero() {
 /// "precision exhausted" (requested 30 digits, achieved 0).
 ///
 /// Oracle: mpmath 1.3 `expint(1, 0)` = `+inf`, `expint(2, 0)` = 1, `e1(1e-30)`
-/// = 68.50033712491983765993323155044952379699.
+/// = 68.50033712491983765993323155044952379699.  (Since 0.59 the refusal is
+/// `SymplexError::Infinite`, an infinite value told from one that cannot
+/// be computed; it was `Unevaluable`.)
 #[test]
 fn expint_one_at_zero_is_a_pole() {
     let err = decimal("expint(1, 0)", 30).unwrap_err();
     assert!(
-        matches!(err, SymplexError::Unevaluable { .. }) && err.to_string().contains("diverges"),
+        matches!(err, SymplexError::Infinite { .. }) && err.to_string().contains("diverges"),
         "{err:?}"
     );
     assert_eq!(decimal("expint(2, 0)", 30).unwrap(), "1");

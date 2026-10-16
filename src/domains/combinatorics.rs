@@ -73,6 +73,14 @@ fn too_large(log2_lower: f64) -> bool {
     log2_lower > MAX_RESULT_BITS as f64
 }
 
+/// The most cells `n·k` of a Stirling triangle (`S(i, j)` or `s(i, j)` for
+/// `i ≤ n`, `j ≤ k`, each a big addition) that [`stirling1`] and
+/// [`stirling2`] build; beyond it they return `None`.  The size guard
+/// passes a small result for `k` close to `n` (`S(n, n − 2)` has about
+/// `4·log₂ n` bits), whose triangle has `n` rows of `k + 1` entries: up to
+/// 0.58 `stirling2(2⁴⁰, 2⁴⁰ − 2)` asked for 35 TB and aborted.
+const MAX_TRIANGLE_CELLS: u64 = 1 << 32;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Stirling numbers of the second kind: S(n, k)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -86,8 +94,9 @@ fn too_large(log2_lower: f64) -> bool {
 /// base cases `S(0, 0) = 1` and `S(n, 0) = S(0, k) = 0` for `n, k > 0`.
 ///
 /// Returns `Some(0)` for negative inputs or when `k > n`.
-/// Returns `None` if the inputs don't fit in `u64` or the result would
-/// exceed [`MAX_RESULT_BITS`].
+/// Returns `None` if the inputs don't fit in `u64`, the result would
+/// exceed [`MAX_RESULT_BITS`], or the explicit sum's powers `jⁿ` would and
+/// the triangle has more than 2³² cells (`k` close to a huge `n`).
 ///
 /// # Examples
 ///
@@ -111,43 +120,47 @@ pub fn stirling2(n: impl Into<BigInt>, k: impl Into<BigInt>) -> Option<BigInt> {
     if too_large(log2_stirling2_lower(n, k)) {
         return None;
     }
-    Some(stirling2_u64(n, k))
+    stirling2_u64(n, k)
 }
 
-fn stirling2_u64(n: u64, k: u64) -> BigInt {
+fn stirling2_u64(n: u64, k: u64) -> Option<BigInt> {
     // Base cases
     if k > n {
-        return BigInt::zero();
+        return Some(BigInt::zero());
     }
     if n == 0 && k == 0 {
-        return BigInt::one();
+        return Some(BigInt::one());
     }
     if k == 0 || n == 0 {
-        return BigInt::zero();
+        return Some(BigInt::zero());
     }
 
     // Fast paths (closed-form, O(1) or O(n) — work for any u64 n)
     if k == 1 || k == n {
-        return BigInt::one();
+        return Some(BigInt::one());
     }
     if k == 2 {
         // S(n, 2) = 2^(n-1) - 1
-        return (BigInt::one() << (n - 1) as usize) - BigInt::one();
+        return Some((BigInt::one() << (n - 1) as usize) - BigInt::one());
     }
     if k == n - 1 {
         // S(n, n-1) = C(n, 2) = n*(n-1)/2
-        return BigInt::from(n) * BigInt::from(n - 1) / BigInt::from(2);
+        return Some(BigInt::from(n) * BigInt::from(n - 1) / BigInt::from(2));
     }
 
     // General case: S(n, k) = (1/k!)·Σⱼ (−1)^(k−j)·C(k, j)·jⁿ (DLMF
     // 26.8.6), k powers and one exact division, in the memory of the
     // result.  Up to 0.39 the triangle S(i, j), j ≤ k, was built row by
     // row: n·k big additions and a row of k values of up to the result's
-    // size (`stirling2(100000, 50)` ran for minutes).  The guard of
-    // `stirling2` keeps n below 2³² for k ≥ 3.
+    // size (`stirling2(100000, 50)` ran for minutes).  The powers `jⁿ`
+    // are bounded like the result (`k` close to `n`: a small result whose
+    // terms are not); beyond, the triangle, within its own bound.
     let Ok(exponent) = u32::try_from(n) else {
         return stirling2_by_rows(n, k);
     };
+    if too_large(n as f64 * (k as f64).log2()) {
+        return stirling2_by_rows(n, k);
+    }
     let mut sum = BigInt::zero();
     let mut binom = BigInt::one(); // C(k, j)
     for j in 0..=k {
@@ -161,14 +174,17 @@ fn stirling2_u64(n: u64, k: u64) -> BigInt {
             sum -= term;
         }
     }
-    sum / crate::base::combinatorics::factorial(k)
+    Some(sum / crate::base::combinatorics::factorial(k))
 }
 
 /// `S(n, k)` from the triangle `S(i, j) = j·S(i−1, j) + S(i−1, j−1)`, row
-/// by row (`O(n·k)` additions).
-fn stirling2_by_rows(n: u64, k: u64) -> BigInt {
-    let n = n as usize;
-    let k = k as usize;
+/// by row (`O(n·k)` additions); `None` beyond [`MAX_TRIANGLE_CELLS`].
+fn stirling2_by_rows(n: u64, k: u64) -> Option<BigInt> {
+    if n.checked_mul(k)? > MAX_TRIANGLE_CELLS {
+        return None;
+    }
+    let n = usize::try_from(n).ok()?;
+    let k = crate::base::cast::bounded_len(k, crate::base::cast::MAX_TERMS)?;
 
     let mut prev = vec![BigInt::zero(); k + 1];
     prev[0] = BigInt::one(); // S(0, 0) = 1
@@ -182,7 +198,7 @@ fn stirling2_by_rows(n: u64, k: u64) -> BigInt {
         prev = curr;
     }
 
-    prev[k].clone()
+    Some(prev[k].clone())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -202,8 +218,9 @@ fn stirling2_by_rows(n: u64, k: u64) -> BigInt {
 /// powers: `x^{(n)} = Σ_k s(n, k) x^k`.
 ///
 /// Returns `Some(0)` for negative inputs or when `k > n`.
-/// Returns `None` if the inputs don't fit in `u64` or the result would
-/// exceed [`MAX_RESULT_BITS`].
+/// Returns `None` if the inputs don't fit in `u64`, the result would
+/// exceed [`MAX_RESULT_BITS`], or its triangle has more than 2³² cells
+/// (`k` close to a huge `n`).
 ///
 /// # Examples
 ///
@@ -233,37 +250,37 @@ pub fn stirling1(n: impl Into<BigInt>, k: impl Into<BigInt>) -> Option<BigInt> {
     if too_large(lower) {
         return None;
     }
-    Some(stirling1_u64(n, k))
+    stirling1_u64(n, k)
 }
 
-fn stirling1_u64(n: u64, k: u64) -> BigInt {
+fn stirling1_u64(n: u64, k: u64) -> Option<BigInt> {
     // Base cases
     if k > n {
-        return BigInt::zero();
+        return Some(BigInt::zero());
     }
     if n == 0 && k == 0 {
-        return BigInt::one();
+        return Some(BigInt::one());
     }
     if k == 0 || n == 0 {
-        return BigInt::zero();
+        return Some(BigInt::zero());
     }
 
     // Fast paths (closed-form — work for any u64 n)
     if k == n {
-        return BigInt::one();
+        return Some(BigInt::one());
     }
     if k == n - 1 {
         // s(n, n-1) = -C(n, 2) = -n*(n-1)/2
-        return -(BigInt::from(n) * BigInt::from(n - 1) / BigInt::from(2));
+        return Some(-(BigInt::from(n) * BigInt::from(n - 1) / BigInt::from(2)));
     }
     if k == 1 {
         // s(n, 1) = (-1)^{n-1} * (n-1)!, by binary splitting (up to 0.39 a
         // running product: `stirling1(10⁶, 1)` ran for minutes).
         let fact = crate::base::combinatorics::factorial(n - 1);
         if (n - 1).is_multiple_of(2) {
-            return fact;
+            return Some(fact);
         } else {
-            return -fact;
+            return Some(-fact);
         }
     }
 
@@ -277,15 +294,21 @@ fn stirling1_u64(n: u64, k: u64) -> BigInt {
         // triangle below ran for every k: `stirling1(100000, 3)`, n·k big
         // additions, took minutes.)
         let k = k as usize;
-        return falling_product_low(1, n - 1, k - 1)
-            .get(k - 1)
-            .cloned()
-            .unwrap_or_default();
+        return Some(
+            falling_product_low(1, n - 1, k - 1)
+                .get(k - 1)
+                .cloned()
+                .unwrap_or_default(),
+        );
     }
 
-    // General case: build triangle row by row.
-    let n = n as usize;
-    let k = k as usize;
+    // General case: build triangle row by row, within
+    // `MAX_TRIANGLE_CELLS` (`k` close to a huge `n`: a small result).
+    if n.checked_mul(k)? > MAX_TRIANGLE_CELLS {
+        return None;
+    }
+    let n = usize::try_from(n).ok()?;
+    let k = crate::base::cast::bounded_len(k, crate::base::cast::MAX_TERMS)?;
 
     let mut prev = vec![BigInt::zero(); k + 1];
     prev[0] = BigInt::one(); // s(0, 0) = 1
@@ -299,7 +322,7 @@ fn stirling1_u64(n: u64, k: u64) -> BigInt {
         prev = curr;
     }
 
-    prev[k].clone()
+    Some(prev[k].clone())
 }
 
 /// Largest `k` for which [`stirling1`] multiplies out the falling

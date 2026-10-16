@@ -72,8 +72,13 @@ fn hermite_and_laguerre_of_complex_arguments_are_evaluated() {
         decimal(&ctx, "hermite(I, 1/2)", 14),
         "1.1209910338556 + 0.57355221587807*i"
     );
-    // A real negative-integer degree stays refused, as for a real argument.
-    assert!(refused(&ctx, "hermite(-2, 1 + I)"));
+    // A real negative-integer degree: the Hermite function (0.59; this line
+    // pinned the refusal before).  mpmath `hermite(-2, 1+1j)` =
+    // `0.045398250501088844941216184277386 - 0.085543290649844570641729700868037j`.
+    assert_eq!(
+        decimal(&ctx, "hermite(-2, 1 + I)", 30),
+        "0.0453982505010888449412161842774 - 0.085543290649844570641729700868*i"
+    );
 }
 
 /// mpmath `ellipf(1+1j, 0.5)` = `0.804237254059707722231450497249 +

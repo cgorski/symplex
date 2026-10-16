@@ -608,12 +608,9 @@ pub fn frobenius_number(values: &[u64]) -> Option<i128> {
         return i128::try_from(value).ok();
     }
     let a = vals[0];
-    if a > 10_000_000 {
-        return None;
-    }
     // Round-robin algorithm (Böcker–Lipták): dist[r] = smallest representable
     // number ≡ r (mod a).
-    let a_us = a as usize;
+    let a_us = crate::base::cast::bounded_len(a, 10_000_000u64)?;
     let mut dist: Vec<u128> = vec![u128::MAX; a_us];
     dist[0] = 0;
     for &v in &vals[1..] {

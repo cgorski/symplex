@@ -327,10 +327,12 @@ fn evalf_at_16_and_30_digits() {
 fn evalf_domain_errors_are_errors_not_panics() {
     let ctx = Context::new();
     let p = |s: &str| ctx.parse(s).unwrap();
-    // a ≤ 0 (non-integer parameters so that no exact fold intervenes).
+    // a ≤ 0 (non-integer parameters so that no exact fold intervenes).  The
+    // integral of the positive t^(-3/2)·(1 - t)² from 0 diverges to +∞:
+    // since 0.59 `SymplexError::Infinite` (it was `Unevaluable`).
     assert!(matches!(
         p("betainc(-1/2, 3, 0, 1/2)").eval_f64(),
-        Err(SymplexError::Unevaluable { .. })
+        Err(SymplexError::Infinite { .. })
     ));
     assert!(matches!(
         p("betainc_regularized(3/2, 0, 0, 1/2)").eval_f64(),

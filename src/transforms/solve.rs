@@ -538,7 +538,9 @@ fn without_guarded_non_roots(
                         // (evaluated as `finalize_solutions` does the others:
                         // `−e^{ln y}/3` is `−y/3`)
                         let r = crate::transforms::eval::eval(arena, r);
-                        if not_known_finite(arena, r) {
+                        // (or whose value meets an unevaluated pole,
+                        // `evalf::meets_infinity`, as in `finalize_solutions`)
+                        if not_known_finite(arena, r) || arena.meets_infinity(r) {
                             return None;
                         }
                         if !kept.contains(&r)
@@ -914,9 +916,11 @@ fn denominator_vanishes_on_intervals(arena: &Arena, f: ExprId, var: ExprId) -> b
 /// and undefined at `y = 0`, `−sin ∞` has no value.  The value `eval` folds
 /// (`atan ∞ = π/2`, `e^{−y·∞} = 0` for a positive `y`) has no infinity
 /// left.  A constant without a special atom keeps the generic reading
-/// (finite): `ValueClass::of(..).is_finite_proved()` would refuse the
-/// unevaluated pole `elliptic_pi(π, 1)`, but also every root `evalf`
-/// cannot certify (`erfinv(9/4)`, `besselj(1/2, π) = 0`; 229 golden roots).
+/// (finite): `ValueClass::of(..).is_finite_proved()` would refuse every
+/// root `evalf` cannot certify (`erfinv(9/4)`, `besselj(1/2, π) = 0`; 229
+/// golden roots).  An unevaluated pole (`elliptic_pi(π, 1)`) is refused by
+/// its evaluation instead, which proves it infinite
+/// (`evalf::meets_infinity`; read in [`finalize_solutions`]).
 fn not_known_finite(arena: &mut Arena, v: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     value_class::holds_special_atom_outside_formal(arena, v)
@@ -2222,6 +2226,12 @@ fn finalize_solutions(
     // chebyshev_t(2, y·∞) = 0` gave `[−chebyshev_t(2, y·∞)]` (0.53's "no
     // solution" came from `eval` expanding `T₂`), `x + sin ∞ = 0` `[−sin ∞]`.
     let mut not_finite: Option<ExprId> = None;
+    // Nor is a candidate whose value meets an unevaluated pole (`evalf`'s
+    // `SymplexError::Infinite`): up to 0.58 `x − elliptic_pi(π, 1)` gave
+    // `[elliptic_pi(π, 1)]`, which is `−∞`, and `x·elliptic_pi(π, 1) − 1`
+    // `[1/elliptic_pi(π, 1)]`.  A candidate `evalf` cannot evaluate for
+    // another reason (`erfinv(9/4)`) is no evidence of an infinity.
+    let mut infinite: Option<ExprId> = None;
     for s in solutions {
         let v = crate::transforms::eval::eval(arena, s);
         if has_infinite_term(arena, v) {
@@ -2234,10 +2244,20 @@ fn finalize_solutions(
         if out.contains(&v) {
             continue;
         }
+        let evaluation = constant_evaluation(arena, v);
+        if matches!(
+            evaluation,
+            Some(Err(crate::base::errors::SymplexError::Infinite { .. }))
+        ) {
+            infinite.get_or_insert(v);
+            continue;
+        }
         // One value in several forms is one solution: up to 0.46 `t³` for
         // the three roots `t` of a cubic in `t = x^(1/3)` came back as
         // `100√2·π/481` and two radical forms of the same number.
-        let z = constant_value_f64(arena, v);
+        let z = evaluation
+            .and_then(Result::ok)
+            .filter(|z| z.re.is_finite() && z.im.is_finite());
         if let Some(z) = z
             && out
                 .iter()
@@ -2254,6 +2274,16 @@ fn finalize_solutions(
             missing,
             Some(Missing::Alternative(Reason::said(format!(
                 "the candidate {} holds an infinity inside a function and is not known to be finite",
+                arena.display(v)
+            )))),
+        ),
+        None => missing,
+    };
+    let missing = match infinite {
+        Some(v) => Missing::merged(
+            missing,
+            Some(Missing::Alternative(Reason::said(format!(
+                "the value of the candidate {} meets an infinity (a function at a pole)",
                 arena.display(v)
             )))),
         ),
@@ -2291,6 +2321,18 @@ fn has_infinite_term(arena: &Arena, v: ExprId) -> bool {
 /// transcendental form (not a rational, not a `RootOf`: those are
 /// distinct by construction), for [`finalize_solutions`].
 fn constant_value_f64(arena: &mut Arena, v: ExprId) -> Option<num_complex::Complex64> {
+    constant_evaluation(arena, v)?
+        .ok()
+        .filter(|z| z.re.is_finite() && z.im.is_finite())
+}
+
+/// The evaluation behind [`constant_value_f64`], with its error (an
+/// infinity met, `SymplexError::Infinite`, is read by
+/// [`finalize_solutions`]); `None` for a candidate it does not evaluate.
+fn constant_evaluation(
+    arena: &mut Arena,
+    v: ExprId,
+) -> Option<Result<num_complex::Complex64, crate::base::errors::SymplexError>> {
     if arena.as_num(v).is_some()
         || !crate::base::walk::free_symbols(arena, v).is_empty()
         || crate::base::walk::post_order_ids(arena, v)
@@ -2299,9 +2341,7 @@ fn constant_value_f64(arena: &mut Arena, v: ExprId) -> Option<num_complex::Compl
     {
         return None;
     }
-    crate::transforms::evalf::evalf_complex64(arena, v)
-        .ok()
-        .filter(|z| z.re.is_finite() && z.im.is_finite())
+    Some(crate::transforms::evalf::evalf_complex64(arena, v))
 }
 
 /// Are two 16-digit values ([`constant_value_f64`]) close enough to be
@@ -6580,7 +6620,7 @@ fn without_common_factors_multi(
     }
     let mut changed = false;
     for _ in 0..64 {
-        let g = crate::poly::multipoly::MultiPoly::gcd(&n, &d);
+        let g = crate::poly::multipoly::MultiPoly::try_gcd(&n, &d)?;
         if g.total_degree().unwrap_or(0) == 0 {
             break;
         }

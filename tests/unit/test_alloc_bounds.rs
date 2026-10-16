@@ -22,13 +22,18 @@
 //!
 //! whose `len` contains an `as usize` cast, a `to_usize()` call, or a
 //! `try_into()` / `try_from(…)` conversion outside a call to
-//! `bounded_len(…)` / `clamped_len(…)`.  A length computed into a `let`
-//! first is not seen: the review of a migrated site checks that the `let`
-//! goes through `bounded_len` too.
+//! `bounded_len(…)` / `clamped_len(…)` — or names a local bound by a `let`
+//! (in the same function, earlier) whose value does, directly or through
+//! another such local (`let k = d as usize; let n = k + 1; vec![0; n]`).
+//! A later `let` of the same name without a cast (`let n =
+//! bounded_len(n, CAP)?`) clears it.  Up to 0.58 only the length
+//! expression itself was read, and about forty sites hid their cast in a
+//! `let` (`combinatorics::stirling*_by_rows`, `BitSieve::new`, the dense
+//! coefficient lists of `integrate` and `poly`).
 //!
 //! `#[cfg(test)]` items and modules are skipped.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -36,13 +41,49 @@ use quote::ToTokens;
 use syn::visit::Visit;
 
 /// Files allowed to contain cast-sized allocations, with the exact count
-/// (0.58: 4, down from 37 at 0.57).  Paths are relative to `src/`.  Each
-/// entry says where its lengths are bounded.
+/// (0.58: 4, down from 37 at 0.57).  0.59 sees lengths bound through a
+/// `let`: 46 more sites in 20 files, of which 16 (in 9 files) are bounded
+/// since and 30 are listed here (34 in 12 files in all).  Paths are
+/// relative to `src/`.
+/// Each entry says where its lengths are bounded, or that it is a review
+/// item.
 const ALLOWLIST: &[(&str, usize)] = &[
+    // `sym_bits.resize(i + 1)`: `i` is the index of a symbol this arena has
+    // interned (the table grows with the symbol table).
+    ("base/arena.rs", 1),
+    // `Source::Compose` / `Source::Reversion`: `k + 1` and `k` entries, the
+    // size of the coefficient prefix `coeffs(0, k)` the same call has just
+    // computed (the prefix itself is the review item: a user's `coeff(k)`).
+    ("calculus/formal_series.rs", 2),
+    // Another agent's write set at 0.59 (series orders and known prefixes):
+    // review queue.
+    ("calculus/series.rs", 4),
+    // The sieves: `sieve_u32` has a `u32` limit, `BitSieve::new` the ECM
+    // parameter table's `B₁`/`B₂` and the prime-index bound 10⁷, and
+    // `segmented_sieve` a width ≤ 10⁷ (`primerange`) or a segment.
+    ("domains/ntheory.rs", 3),
+    // Another agent's write set at 0.59: review queue.
+    ("domains/stats/anova.rs", 1),
     // The dense images of Brown's gcd (`image_degree_bounds`, `run_poly`,
-    // `lc_main`) are sized by degrees of the inputs, which `brown_gcd`
-    // bounds by `cast::MAX_DENSE_LIST` on entry.
-    ("poly/brown.rs", 4),
+    // `lc_main`, the evaluation points and images of `gcd_mod_p`) are sized
+    // by degrees of the inputs, which `brown_gcd` bounds by
+    // `cast::MAX_DENSE_LIST` on entry.
+    ("poly/brown.rs", 7),
+    // Dense univariate views (`to_uni`, `multipoly_to_uni`) of a factor in
+    // one variable, and the coefficient lists of the Hensel error by
+    // monomial: the degree is the data's (`u32`); review queue (their
+    // callers return `Poly`, not `Option`).
+    ("poly/factor_hensel.rs", 2),
+    ("poly/factor_zassenhaus.rs", 1),
+    // `Li_{−n}(z)`: `n ≤ MAX_SPECIAL_EXPANSION` by `as_int_in` just above.
+    ("transforms/eval.rs", 1),
+    // Another agent's write set at 0.59 (lengths from the working precision
+    // and the Riemann–Siegel term count): review queue.
+    ("transforms/evalf.rs", 7),
+    ("transforms/evalf/rszeta.rs", 3),
+    // Another agent's write set at 0.59 (dense coefficient lists of the
+    // Risch-type routes): review queue.
+    ("transforms/integrate.rs", 2),
 ];
 
 /// Functions whose arguments are bounded lengths: casts inside them are
@@ -61,6 +102,124 @@ fn site(e: &impl ToTokens) -> String {
         format!("{}…", s.chars().take(120).collect::<String>())
     } else {
         s
+    }
+}
+
+/// Methods through which a value keeps being the number it was computed
+/// from (`n.max(m)`, `n.checked_add(1)?`, `x.ok()?`): the spine of a
+/// length.  Any other call (`v.len()`, `f(n as usize)`) yields a new value;
+/// `a.min(b)` is cast-sized only when both are, `clamp` never.
+const SPINE_METHODS: &[&str] = &[
+    "ok",
+    "unwrap",
+    "expect",
+    "unwrap_or",
+    "unwrap_or_default",
+    "unwrap_or_else",
+    "max",
+    "abs",
+    "unsigned_abs",
+    "div_ceil",
+    "next_power_of_two",
+    "pow",
+    "saturating_add",
+    "saturating_sub",
+    "saturating_mul",
+    "checked_add",
+    "checked_sub",
+    "checked_mul",
+    "checked_div",
+    "wrapping_add",
+    "wrapping_sub",
+];
+
+/// Is the value of `e` computed from an unchecked conversion or from one
+/// of the `locals` along its spine: casts, arithmetic, `?`, `Some(…)`,
+/// branches, and the [`SPINE_METHODS`]?  `bounded_len`/`clamped_len` end
+/// the spine (checked), and so does any other call: its result is not the
+/// converted number (`round_decimal_digits(d, n as usize)` is a digit list).
+fn spine_is_cast(e: &syn::Expr, locals: &HashSet<String>) -> bool {
+    let tail = |b: &syn::Block| match b.stmts.last() {
+        Some(syn::Stmt::Expr(x, None)) => spine_is_cast(x, locals),
+        _ => false,
+    };
+    match e {
+        syn::Expr::Cast(c) => {
+            c.ty.to_token_stream().to_string() == "usize" || spine_is_cast(&c.expr, locals)
+        }
+        syn::Expr::Paren(x) => spine_is_cast(&x.expr, locals),
+        syn::Expr::Group(x) => spine_is_cast(&x.expr, locals),
+        syn::Expr::Try(x) => spine_is_cast(&x.expr, locals),
+        syn::Expr::Unary(x) => spine_is_cast(&x.expr, locals),
+        syn::Expr::Reference(x) => spine_is_cast(&x.expr, locals),
+        // `deg − μ + 1`, `n / k`: what is taken away does not size the result.
+        syn::Expr::Binary(b) => {
+            spine_is_cast(&b.left, locals)
+                || (!matches!(
+                    b.op,
+                    syn::BinOp::Sub(_)
+                        | syn::BinOp::Div(_)
+                        | syn::BinOp::Rem(_)
+                        | syn::BinOp::Shr(_)
+                ) && spine_is_cast(&b.right, locals))
+        }
+        syn::Expr::Tuple(t) => t.elems.iter().any(|x| spine_is_cast(x, locals)),
+        syn::Expr::Block(b) => tail(&b.block),
+        syn::Expr::If(i) => {
+            tail(&i.then_branch)
+                || i.else_branch
+                    .as_ref()
+                    .is_some_and(|(_, x)| spine_is_cast(x, locals))
+        }
+        syn::Expr::Match(m) => m.arms.iter().any(|a| spine_is_cast(&a.body, locals)),
+        syn::Expr::Path(p) => {
+            p.qself.is_none()
+                && p.path.segments.len() == 1
+                && locals.contains(&p.path.segments[0].ident.to_string())
+        }
+        syn::Expr::MethodCall(m) => {
+            let name = m.method.to_string();
+            if BOUNDERS.contains(&name.as_str()) || name == "clamp" {
+                false
+            } else if name == "min" {
+                spine_is_cast(&m.receiver, locals)
+                    && m.args.iter().all(|a| spine_is_cast(a, locals))
+            } else if matches!(name.as_str(), "to_usize" | "try_into") {
+                true
+            } else if SPINE_METHODS.contains(&name.as_str()) {
+                spine_is_cast(&m.receiver, locals)
+                    || m.args.iter().any(|a| spine_is_cast(a, locals))
+            } else {
+                false
+            }
+        }
+        syn::Expr::Call(c) => match &*c.func {
+            syn::Expr::Path(p) => {
+                let name = p.path.segments.last().map(|s| s.ident.to_string());
+                match name.as_deref() {
+                    Some(n) if BOUNDERS.contains(&n) => false,
+                    Some("try_from" | "try_into" | "to_usize") => true,
+                    Some("Some" | "Ok") => c.args.iter().any(|a| spine_is_cast(a, locals)),
+                    _ => false,
+                }
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// The names a `let` pattern binds (`n`, `mut n`, `n: usize`, `Some(n)`,
+/// `(a, b)`).
+fn bound_names(p: &syn::Pat, out: &mut Vec<String>) {
+    match p {
+        syn::Pat::Ident(i) => out.push(i.ident.to_string()),
+        syn::Pat::Type(t) => bound_names(&t.pat, out),
+        syn::Pat::Reference(r) => bound_names(&r.pat, out),
+        syn::Pat::Paren(x) => bound_names(&x.pat, out),
+        syn::Pat::Tuple(t) => t.elems.iter().for_each(|e| bound_names(e, out)),
+        syn::Pat::TupleStruct(t) => t.elems.iter().for_each(|e| bound_names(e, out)),
+        _ => {}
     }
 }
 
@@ -108,13 +267,30 @@ fn has_cast(e: &syn::Expr) -> bool {
 #[derive(Default)]
 struct Finder {
     sites: Vec<String>,
+    /// Per enclosing function: the locals whose value holds an unchecked
+    /// conversion.
+    cast_locals: Vec<HashSet<String>>,
 }
 
 impl Finder {
+    fn is_cast_sized(&self, len: &syn::Expr) -> bool {
+        has_cast(len)
+            || self
+                .cast_locals
+                .last()
+                .is_some_and(|l| spine_is_cast(len, l))
+    }
+
     fn check(&mut self, what: &str, len: &syn::Expr, whole: &impl ToTokens) {
-        if has_cast(len) {
+        if self.is_cast_sized(len) {
             self.sites.push(format!("{what}: {}", site(whole)));
         }
+    }
+
+    fn in_fn(&mut self, visit: impl FnOnce(&mut Self)) {
+        self.cast_locals.push(HashSet::new());
+        visit(self);
+        self.cast_locals.pop();
     }
 }
 
@@ -147,7 +323,32 @@ impl<'ast> Visit<'ast> for Finder {
 
     fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
         if !is_cfg_test(&f.attrs) {
-            syn::visit::visit_impl_item_fn(self, f);
+            self.in_fn(|s| syn::visit::visit_impl_item_fn(s, f));
+        }
+    }
+
+    fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+        self.in_fn(|s| syn::visit::visit_item_fn(s, f));
+    }
+
+    fn visit_local(&mut self, l: &'ast syn::Local) {
+        syn::visit::visit_local(self, l);
+        let mut names = Vec::new();
+        bound_names(&l.pat, &mut names);
+        let empty = HashSet::new();
+        let locals = self.cast_locals.last().unwrap_or(&empty);
+        let cast = l
+            .init
+            .as_ref()
+            .is_some_and(|i| spine_is_cast(&i.expr, locals));
+        if let Some(locals) = self.cast_locals.last_mut() {
+            for n in names {
+                if cast {
+                    locals.insert(n);
+                } else {
+                    locals.remove(&n);
+                }
+            }
         }
     }
 
@@ -279,6 +480,26 @@ fn detector_sees_each_form() {
             let ok3 = Vec::with_capacity(v.len() + 1);
             let h = format!("{:?}", vec![1u8; n as usize]);
         }
+        fn through_lets(d: u32, b: &BigInt) -> Option<()> {
+            let k = d as usize;
+            let m = k + 1;
+            let a = vec![0u8; m];
+            let Some(t) = b.to_usize() else { return None };
+            let c: Vec<u8> = Vec::with_capacity(t);
+            let k = cast::bounded_len(d, 10)?;
+            let ok4 = vec![0u8; k + 1];
+            let s = v.len();
+            let ok5 = Vec::<u8>::with_capacity(s);
+            let (digits, carry) = round(&m, d as usize);
+            let w = digits.len();
+            let ok7 = String::with_capacity(w + 2);
+            let q = usize::try_from(d).ok()?.max(100);
+            let e = vec![0u8; q];
+            let r = (d as usize).min(100);
+            let ok8 = vec![0u8; r];
+            None
+        }
+        fn other_fn(k: usize) { let ok6 = vec![0u8; k]; }
         #[cfg(test)]
         mod tests {
             fn t(n: i64) { let _ = Vec::with_capacity(n as usize); }
@@ -287,5 +508,5 @@ fn detector_sees_each_form() {
     let file = syn::parse_file(src).expect("parses");
     let mut f = Finder::default();
     f.visit_file(&file);
-    assert_eq!(f.sites.len(), 6, "{:#?}", f.sites);
+    assert_eq!(f.sites.len(), 9, "{:#?}", f.sites);
 }

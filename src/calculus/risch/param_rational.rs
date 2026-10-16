@@ -254,7 +254,11 @@ fn gcd_mp(a: &MP, b: &MP) -> MP {
         return one;
     }
     let t = std::time::Instant::now();
-    let g = MP::gcd(a, b);
+    let Some(g) = MP::try_gcd(a, b) else {
+        // Refused (exponents near 2³¹): abandoned like a gcd beyond the bound.
+        abandon();
+        return one;
+    };
     let ms = t.elapsed().as_millis();
     if ms > 50 {
         let degs = |p: &MP| {
@@ -565,7 +569,8 @@ impl Ctx {
     /// `p ∈ ℚ[x, p₁, …]` (variable 0 is `x`) as a polynomial in `x`.
     fn to_gp(&self, p: &MP) -> Option<GP> {
         let nv = self.nv();
-        let deg = p.degree_in(0) as usize;
+        let deg =
+            crate::base::cast::bounded_len(p.degree_in(0), crate::base::cast::MAX_DENSE_DEGREE)?;
         let mut buckets: Vec<Vec<(Vec<u32>, Q)>> = vec![Vec::new(); deg + 1];
         for (e, c) in p.terms() {
             buckets[e[0] as usize].push((e[1..].to_vec(), c.clone()));
@@ -591,7 +596,7 @@ impl Ctx {
             if let PFrac::Frac(f) = c
                 && f.1.as_constant().is_none()
             {
-                l = MP::lcm(&l, &f.1);
+                l = MP::try_lcm(&l, &f.1)?;
             }
         }
         let mut terms: Vec<(Vec<u32>, Q)> = Vec::new();

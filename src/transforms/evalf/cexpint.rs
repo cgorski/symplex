@@ -584,7 +584,10 @@ fn upper_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexErro
                 value: g,
             });
         }
-        return Err(super::unevaluable(
+        // Infinite for `Re a < 0` (`Γ(a, z) ~ −z^a/a`); at `Re a = 0`, `a ≠ 0`,
+        // `z^a` oscillates: no limit.
+        return Err(super::singular_unless_oscillating(
+            a,
             "uppergamma(a, 0) with Re a ≤ 0 is infinite",
         ));
     }
@@ -614,7 +617,7 @@ fn upper_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexErro
 fn lower_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexError> {
     let wp = w.bits();
     if nonpositive_int(a).is_some() || (a.1.is_zero() && a.0.is_int() && a.0.is_negative()) {
-        return Err(super::unevaluable(
+        return Err(super::infinite(
             "lowergamma at a non-positive integer order is infinite",
         ));
     }
@@ -625,7 +628,9 @@ fn lower_at(a: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, SymplexErro
                 largest: f64::NEG_INFINITY,
             });
         }
-        return Err(super::unevaluable(
+        // As for `Γ(a, 0)`: `γ(a, z) ~ z^a/a`.
+        return Err(super::singular_unless_oscillating(
+            a,
             "lowergamma(a, 0) with Re a ≤ 0 is infinite",
         ));
     }
@@ -903,7 +908,12 @@ pub(super) fn expint(n: &Complex, z: &Complex, w: &mut Wp<'_>) -> Result<Complex
                 prec + 16,
             ));
         }
-        return Err(super::unevaluable("expint(n, 0) with Re n ≤ 1 is infinite"));
+        // `E_n(z) ~ Γ(1 − n)·z^(n−1)`: infinite for `Re n < 1` and `n = 1`, no
+        // limit at `Re n = 1`, `n ≠ 1`.
+        return Err(super::singular_unless_oscillating(
+            &shift(n, -1, prec + 64),
+            "expint(n, 0) with Re n ≤ 1 is infinite",
+        ));
     }
     tracing::debug!(prec, "evalf: expint at a complex argument");
     super::zeta::with_loss(w, &mut |wp, cc| expint_at(n, z, &mut Wp::new(wp, cc)))
@@ -958,7 +968,7 @@ pub(super) fn trig_integral(
     if is_zero(z) {
         return match kind {
             TrigInt::Si | TrigInt::Shi => Ok(c_zero(prec + 16)),
-            _ => Err(super::unevaluable("Ci(0) and Chi(0) are -∞")),
+            _ => Err(super::infinite("Ci(0) and Chi(0) are -∞")),
         };
     }
     tracing::debug!(

@@ -458,7 +458,7 @@ fn nonpositive(n: u64, z: &Complex, wp: usize) -> Result<Sum, SymplexError> {
     let one = BigFloat::from_i32(1, 64);
     let omz = (one.sub(&z.0, super::exact_bits(&z.0, wp), RM), z.1.neg());
     if omz.0.is_zero() && omz.1.is_zero() {
-        return Err(super::unevaluable("polylog(s, 1) diverges for s ≤ 1"));
+        return Err(super::infinite("polylog(s, 1) diverges for s ≤ 1"));
     }
     let w = c_div(z, &omz, wp, RM);
     let mut k_fact = BigInt::from(1);
@@ -505,7 +505,7 @@ fn nonpositive_poles(n: u64, z: &Complex, w: &mut Wp<'_>) -> Result<Sum, Symplex
     let mu_abs = accuracy::lg_abs(&mu).exp2();
     // (Refuses.)
     if !mu_abs.is_finite() || mu_abs == 0.0 {
-        return Err(super::unevaluable("polylog(s, 1) diverges for s ≤ 1"));
+        return Err(super::infinite("polylog(s, 1) diverges for s ≤ 1"));
     }
     // The fewest K ≥ 1 whose tail is below 2^(−wp−12) of n!/abs(μ)^(n+1).
     let mut kmax: u64 = 1;
@@ -683,7 +683,14 @@ pub(super) fn polylog_complex_order(
         if super::bf_gt(&s.0, &BigFloat::from_i32(1, 64)) {
             return super::zeta::zeta_complex(s, w);
         }
-        return Err(super::unevaluable("polylog(s, 1) diverges for Re s <= 1"));
+        // Infinite for `Re s < 1` (`Li_s(z) ~ Γ(1 − s)(−ln z)^(s−1)`); at `Re s
+        // = 1` the term `(−ln z)^(iτ)` oscillates: no limit.
+        let reason = "polylog(s, 1) diverges for Re s <= 1";
+        return Err(if super::bf_gt(&BigFloat::from_i32(1, 64), &s.0) {
+            super::infinite(reason)
+        } else {
+            super::unevaluable(reason)
+        });
     }
     if sigma.abs().max(tau.abs()) > 1.0e4 {
         return Err(super::unevaluable(

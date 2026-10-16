@@ -830,6 +830,20 @@ pub(super) fn extend(
                 prec,
             )
         }
+        // `B(a, b)` of positive real shapes beyond the range
+        // (`evalf::beta_beyond`): `e^(ln B)` ([`beta_scaled`]).  Before 0.59
+        // `ln(beta(10¹², 10¹²))` (`−1386294361132.4406172689`, mpmath) was
+        // refused: `B` lies below the range, its logarithm does not.  Its
+        // ordinary value is 0 with an underflow bound (the documented rule of
+        // `eval_f64`) or a range error; either edge calls this rule.
+        ExprNode::Beta(a, b) if left_range => {
+            let (x, xb) = cx.ordinary(*a)?;
+            let (y, yb) = cx.ordinary(*b)?;
+            if !(accuracy::exactly_real(x, xb) && accuracy::exactly_real(y, yb)) {
+                return None;
+            }
+            finish_node(beta_scaled(&x.0, xb.re, &y.0, yb.re, w)?, id, prec)
+        }
         // `erf s = 2/√π·(s − s³/3 + s⁵/10 + O(s⁷))`: the series with `2/√π`
         // a factor of the monomials, keyed by this node (below the range, it
         // is no factor in range of a product).  Before 0.36 it was
@@ -1293,6 +1307,43 @@ fn gamma_scaled(x: &BigFloat, xe: ErrExp, factorial: bool, w: &mut Wp<'_>) -> Op
     } else {
         (xf.ln() + 1.0625f64.ln()).log2() + xe + 1.0
     };
+    exp_scaled(
+        &(l, BigFloat::new(wp)),
+        Bound::real(accuracy::lsum(round, arg)),
+        w,
+    )
+}
+
+/// `B(a, b)` for positive real shapes with error radii `2^ae`, `2^be`, held
+/// scaled: `e^(ln B)` with `ln B` from `evalf::ln_beta_wp`.  A shape moves
+/// `ln B` by `|ψ(a) − ψ(a + b)| < ln(1 + b/a) + 1/a` per unit (`ln y − 1/y <
+/// ψ(y) < ln y`), doubled for the ball, which must lie within a sixteenth
+/// of the shape.
+fn beta_scaled(
+    a: &BigFloat,
+    ae: ErrExp,
+    b: &BigFloat,
+    be: ErrExp,
+    w: &mut Wp<'_>,
+) -> Option<Scaled> {
+    let prec = w.bits();
+    let (af, bf) = (super::f64_of(a).ok()?, super::f64_of(b).ok()?);
+    if !(af > 0.0 && bf > 0.0 && af.is_finite() && bf.is_finite()) {
+        return None;
+    }
+    let mut arg = accuracy::EXACT;
+    for (s, other, e) in [(af, bf, ae), (bf, af, be)] {
+        if accuracy::is_exact(e) {
+            continue;
+        }
+        if accuracy::is_unknown(e) || e > s.log2() - 4.0 {
+            return None;
+        }
+        arg = accuracy::lsum(arg, ((other / s).ln_1p() + 1.0 / s).log2() + e + 1.0);
+    }
+    let wp = prec + 64;
+    let l = super::ln_beta_wp(a, b, &mut w.at(wp)).ok()?;
+    let round = -(prec as f64) - 8.0;
     exp_scaled(
         &(l, BigFloat::new(wp)),
         Bound::real(accuracy::lsum(round, arg)),

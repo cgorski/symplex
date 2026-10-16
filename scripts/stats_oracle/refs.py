@@ -461,7 +461,7 @@ def disc_cdf_sf(fam, P, x):
 def cont_pdf(fam, P, x):
     X = M(x)
     p = [M(v) for v in P]
-    if fam == "normal": return mp.npdf(X, p[0], p[1])
+    if fam == "normal": return mp.npdf(M((x - P[0]) / P[1])) / p[1]
     if fam == "uniform": return 1 / (p[1] - p[0]) if P[0] <= x <= P[1] else mp.mpf(0)
     if fam == "exponential": return p[0] * mp.exp(-p[0] * X) if x >= 0 else mp.mpf(0)
     if fam in ("gamma", "chi_squared"):
@@ -475,10 +475,11 @@ def cont_pdf(fam, P, x):
         if x == 0: return mp.inf if a < 1 else (b if a == 1 else mp.mpf(0))
         if x == 1: return mp.inf if b < 1 else (a if b == 1 else mp.mpf(0))
         return mp.exp((a - 1) * mp.log(X) + (b - 1) * mp.log(M(1 - x)) - mp.log(mp.beta(a, b)))
-    if fam == "cauchy": return 1 / (mp.pi * p[1] * (1 + ((X - p[0]) / p[1]) ** 2))
-    if fam == "laplace": return mp.exp(-abs(X - p[0]) / p[1]) / (2 * p[1])
+    # (x − loc)/scale exactly first: x and loc of 300 digits differing by 2 cancel in mpf.
+    if fam == "cauchy": return 1 / (mp.pi * p[1] * (1 + M((x - P[0]) / P[1]) ** 2))
+    if fam == "laplace": return mp.exp(-abs(M((x - P[0]) / P[1]))) / (2 * p[1])
     if fam == "logistic":
-        e = mp.exp(-abs(X - p[0]) / p[1])
+        e = mp.exp(-abs(M((x - P[0]) / P[1])))
         return e / (p[1] * (1 + e) ** 2)
     if fam == "log_normal":
         if x <= 0: return mp.mpf(0)
@@ -514,7 +515,7 @@ def cont_cdf_sf(fam, P, x):
     p = [M(v) for v in P]
     one, zero = mp.mpf(1), mp.mpf(0)
     if fam == "normal":
-        z = (X - p[0]) / p[1]
+        z = M((x - P[0]) / P[1])
         return ncdf(z), ncdf(-z)
     if fam == "uniform":
         a, b = P
@@ -531,14 +532,14 @@ def cont_cdf_sf(fam, P, x):
     if fam == "beta":
         return ibeta_pair(P[0], P[1], x)
     if fam == "cauchy":
-        z = (X - p[0]) / p[1]
+        z = M((x - P[0]) / P[1])
         return mp.atan2(1, -z) / mp.pi, mp.atan2(1, z) / mp.pi
     if fam == "laplace":
-        z = (X - p[0]) / p[1]
+        z = M((x - P[0]) / P[1])
         if z < 0: return mp.exp(z) / 2, 1 - mp.exp(z) / 2
         return 1 - mp.exp(-z) / 2, mp.exp(-z) / 2
     if fam == "logistic":
-        z = (X - p[0]) / p[1]
+        z = M((x - P[0]) / P[1])
         return 1 / (1 + mp.exp(-z)), 1 / (1 + mp.exp(z))
     if fam == "log_normal":
         if x <= 0: return zero, one
@@ -755,6 +756,10 @@ def entropy(fam, P):
             mu, var, _, _ = disc_moments(fam, P)
             lo = max(0, int(mu - 40 * mp.sqrt(var) - 50))
             hi = int(mu + 40 * mp.sqrt(var) + 50)
+            if fam == "negative_binomial" and P[1] < 1:
+                # The tail decays like (1 − p)^k whatever the mean: with r = 5e-30, p = 0.25 the
+                # window above stopped at k = 50, where (3/4)^k is 6e-7 (an entropy 3e-8 off).
+                hi += int(mp.mpf(80) * mp.log(10) / -mp.log(M(1 - P[1]))) + 1
             ws = [disc_pmf(fam, P, k) for k in range(lo, hi + 1)]
         else:
             lo, hi = disc_support(fam, P)

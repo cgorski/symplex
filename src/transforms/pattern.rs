@@ -2588,9 +2588,9 @@ mod tests {
         let p = pat(&a, root);
         let terms: Vec<ExprId> = (0..40).map(|i| a.symbol(&format!("t{i}"))).collect();
         let subj = a.add(&terms);
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let results = match_all(&mut a, &p, subj, false, usize::MAX, 500);
-        assert!(start.elapsed().as_millis() < 500);
+        timer.assert_within(std::time::Duration::from_millis(500), "match_all");
         assert!(
             results.len() < 500,
             "budget must bound the enumeration: {}",

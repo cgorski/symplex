@@ -20,6 +20,13 @@ pub mod interval;
 pub mod libfn;
 pub(crate) mod node;
 pub mod numeric;
+/// The CPU-time assertions of the integration tests (`tests/perf_assert/`,
+/// one file for both) for the `#[cfg(test)]` modules of `src/`:
+/// `CpuTimer::start()` … `.assert_within(budget, what)`, `cpu_time`.  See
+/// CONTRIBUTING.md, "Timeouts and granularity".
+#[cfg(test)]
+#[path = "../../tests/perf_assert/mod.rs"]
+pub(crate) mod perf_assert;
 pub mod rng;
 pub(crate) mod sort_key;
 pub(crate) mod stage;

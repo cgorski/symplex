@@ -18,6 +18,8 @@ PYTHON=.venv/bin/python scripts/stats_oracle/run.sh          # → target/stats_
 |---|---|
 | `cases/*.tsv` | the seed set: one case per row (format below); every `.tsv` here is read |
 | `gen_cases.py` | writes `cases/{families,kernels,tests,models}.tsv` from a fixed seed (`--check`: are the committed files current?) |
+| `cases/l2_families.tsv`, `l3_tests.tsv`, `l4_models.tsv` | draws of the wave-12 differential hunters, exported as data (below) |
+| `cases/p4_regressions.tsv` | hand-written reproducers of fixed slow or refused routes |
 | `../../tests/v36/v36_s15l5_oracle.rs` | the dumper: the test `v36_s15l5_numerics::oracle::stats_oracle_dump`, active when `STATS_ORACLE_CASES` and `STATS_ORACLE_OUT` are set (otherwise it checks a few built-in rows) |
 | `run_dump.py` | runs the dumper in parallel shards, resumes after a row that hangs or crashes |
 | `compare.py`, `refs.py` | the comparison: scipy / statsmodels mappings and the mpmath formulas |
@@ -50,6 +52,31 @@ To add cases from a hunter (the families, tests and models hunters of wave 12),
 export its interesting draws as rows in a new file `cases/<prefix>_<topic>.tsv`;
 nothing else changes.  A new family, method or test needs a line in the
 dumper's `match` and its references in `refs.py` / `compare.py`.
+
+The three hunter files are such exports (wave 14): 5 cases per family from
+each of the families hunter's two sets, 40 draws per test kind, 150 seeds of
+the model kinds, less the rows the oracle cannot judge within the budget
+(references taking more than 8 s, or that mpmath cannot settle at two
+precisions, and exact quantiles of families without a closed one).  The
+failures they keep are allowlisted from that run's verdicts (scipy and
+statsmodels errors with the mpmath or exact value, symplex's known refusals
+with the reason each stays):
+
+* `l2_families.tsv` — the families hunter's cases (extreme shapes and scales
+  to `10^(±300)`, points in the far tails, levels to `10⁻³⁰⁰`, counts past
+  `2⁵³`), every method of each sampled case;
+* `l3_tests.tsv` — the hypothesis-test hunter's draws of the 21 kinds the
+  oracle judges (one- and two-sample t-tests, proportions, binomial, Fisher,
+  Mann–Whitney and Wilcoxon exact and asymptotic — the paired Wilcoxon as
+  the one-sample test of the differences — Kruskal–Wallis, χ², Pearson,
+  Spearman), with ties, constant samples, huge offsets and tiny scales;
+* `l4_models.tsv` — the model hunter's unweighted least-squares fits and
+  one-way ANOVAs (near-collinear and collinear designs, constant columns,
+  `n ≤ p`, perfect fits, scaling `2^(±500)`, offsets).
+
+`compare.py --timings FILE` (and `run.sh`, into `timings.tsv`) writes the
+seconds each row's references took: the nightly job has a budget of about 20
+minutes on a 4-core runner, and a new case file is sampled to fit it.
 
 ## Dump rows
 

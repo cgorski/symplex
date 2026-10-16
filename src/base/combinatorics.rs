@@ -168,7 +168,7 @@ fn binomial_by_prime_powers(n: u64, j: u64) -> BigInt {
     };
     push(2);
     // Sieve of Eratosthenes over the odd numbers: bit i stands for 2i + 1.
-    let half = usize::try_from(n.div_ceil(2)).unwrap_or(0);
+    let half = crate::base::cast::bounded_len(n.div_ceil(2), KUMMER_MAX_N).unwrap_or(0);
     let mut composite = vec![0u64; half.div_ceil(64)];
     let is_composite = |c: &[u64], i: usize| c[i / 64] >> (i % 64) & 1 == 1;
     for i in 1..half {

@@ -36,6 +36,15 @@
 //! `L_n^(−k) = (−x)^k(n − k)!/n!·L_{n−k}^(k)` for any degree; mpmath:
 //! `laguerre(1/2, −1, 3/2) = −2.361474300`).  Refused before 0.56.
 //!
+//! `hermite(−m, x)` for a positive integer `m` is the Hermite function
+//! `(√π/2)·e^{x²}·i^{m−1}erfc(x)` (DLMF 7.18.2 and 12.7.6 with `H_ν(x) =
+//! 2^{ν/2}e^{x²/2}U(−ν − ½, √2x)`), not a polynomial; the formula of the
+//! table holds there with `Γ` at the positive `m/2`, `(m + 1)/2`, and for a
+//! large positive `x` its two terms cancel (`e^{x²}` against the value's
+//! `1/x^m`): the bits lost are measured as everywhere, and `eval` writes
+//! the closed form in `erfc` for `m ≤ 64`, which `evalf` takes without
+//! cancellation.  Refused before 0.59.
+//!
 //! # Complex arguments
 //!
 //! `hermite`, `laguerre` and `assoc_laguerre` with a non-real argument (the
@@ -47,7 +56,8 @@
 //! series), the Γ factors by the complex `Γ` (`zeta::gamma_complex`) and
 //! `1/Γ` written as 0 at a pole (an integer degree selects the polynomial,
 //! `H_{2m}(z) = (−1)^m(2m)!/m!·₁F₁(−m; ½; z²)`).  A real negative-integer
-//! degree stays refused, as for real arguments.  Each part is computed to
+//! degree stays refused for `laguerre` and `assoc_laguerre`, as for real
+//! arguments; `hermite` takes it (the Hermite function, below).  Each part is computed to
 //! its own precision (the bits a part lies below the modulus are added, up
 //! to `sensitivity::gap_cap`), and the node's bound is
 //! `sensitivity::complex_route_bound`.
@@ -81,7 +91,8 @@ use super::ball::Cache;
 const MAX_TERMS: usize = 8_000;
 
 /// Does `f(args)` go to these routines: an orthogonal polynomial of the
-/// families above with a real non-integer degree and real arguments?
+/// families above with a real non-integer degree and real arguments, or
+/// the Hermite function of a negative integer degree ([`hermite_function`])?
 pub(super) fn takes(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
     if nonreal_args(f, args, cache) {
         return true;
@@ -104,14 +115,28 @@ pub(super) fn takes(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
         return false;
     };
     vals.iter().all(|v| v.1.is_zero())
-        && vals
-            .first()
-            .is_some_and(|n| !n.0.is_zero() && !n.0.is_int() && !n.0.is_nan() && !n.0.is_inf())
+        && vals.first().is_some_and(|n| {
+            !n.0.is_zero()
+                && (!n.0.is_int() || hermite_function(f, &n.0))
+                && !n.0.is_nan()
+                && !n.0.is_inf()
+        })
+}
+
+/// Is `f` `hermite` with a negative integer degree `ν`?  `H_ν` is then the
+/// Hermite function, not a polynomial: `H_{−m}(x) = (√π/2)·e^{x²}·i^{m−1}
+/// erfc(x)` (the repeated integral of `erfc`, DLMF 7.18; `H_{−1}(x) =
+/// (√π/2)·e^{x²}·erfc x`), and the hypergeometric form above holds with both
+/// `Γ` at positive arguments (`m/2`, `(m + 1)/2`); mpmath's `hermite` takes
+/// it there.  Up to 0.58 such degrees were refused ("degree must be a
+/// non-negative integer").
+fn hermite_function(f: LibFn, nu: &BigFloat) -> bool {
+    f == LibFn::Hermite && nu.is_int() && nu.is_negative()
 }
 
 /// Does `f(args)` go to the complex routes: `hermite`, `laguerre` or
 /// `assoc_laguerre` with a non-real argument, and a degree that is not a
-/// real negative integer?
+/// real negative integer (except for `hermite`, [`hermite_function`])?
 pub(super) fn nonreal_args(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
     if !matches!(f, LibFn::Hermite | LibFn::Laguerre | LibFn::AssocLaguerre) {
         return false;
@@ -123,9 +148,9 @@ pub(super) fn nonreal_args(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool 
     let finite = |x: &BigFloat| !x.is_nan() && !x.is_inf();
     vals.iter().any(|v| !v.1.is_zero())
         && vals.iter().all(|v| finite(&v.0) && finite(&v.1))
-        && vals
-            .first()
-            .is_some_and(|n| !(n.1.is_zero() && n.0.is_int() && n.0.is_negative()))
+        && vals.first().is_some_and(|n| {
+            !(n.1.is_zero() && n.0.is_int() && n.0.is_negative()) || hermite_function(f, &n.0)
+        })
 }
 
 /// The value of `f(args)` (see [`takes`]), rounded to `prec` bits.

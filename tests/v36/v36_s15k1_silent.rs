@@ -248,7 +248,9 @@ fn orthogonal_polynomials_at_negative_degrees() {
         ("gegenbauer(-1, 1/2, z)", "0"),
         ("assoc_laguerre(-1, 2, z)", "0"),
         ("assoc_legendre(-2, 1, z)", "-sqrt(-z^2 + 1)"),
-        ("hermite(-1, z)", "hermite(-1, z)"),
+        // The Hermite function (0.59; this row pinned "stays" before):
+        // `H_{−1}(z) = (√π/2)·e^{z²}·erfc z` (DLMF 7.18, 12.7.6).
+        ("hermite(-1, z)", "1/2*sqrt(pi)*exp(z^2)*erfc(z)"),
     ] {
         assert_eq!(parse(&ctx, src).eval().to_string(), value, "{src}");
     }

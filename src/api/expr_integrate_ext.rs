@@ -605,19 +605,30 @@ impl Expr<Numeric> {
     /// [`integrate_numeric_decimal`](Self::integrate_numeric_decimal) to 17
     /// digits, read as an `f64` with an error of two units in its last place
     /// (`2⁻⁶⁰`, the radius `evalf` returns 0 within, for 0); its error when
-    /// it fails, [`SymplexError::Unevaluable`] when the value is not real.
+    /// it fails, [`SymplexError::Unevaluable`] when the value is not real or
+    /// lies beyond the `f64` range.  The `f64` is rounded once from the
+    /// value (up to 0.58 its 17-digit decimal was parsed, and a real value
+    /// beyond `f64::MAX` was reported "not a real number").
     fn certified_quadrature(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Result<QuadResult, SymplexError> {
         let node = self.definite_integral_node(var, lo, hi).eval();
-        let printed = {
+        let certified = {
             let guard = node.inner.read();
-            crate::transforms::evalf::evalf_quadrature(&guard.arena, node.raw_id(), 17, false)
+            crate::transforms::evalf::const_value_quadrature(&guard.arena, node.raw_id(), 17, false)
         }?;
-        let not_real = || SymplexError::Unevaluable {
-            reason: format!("the integral is not a real number: {printed}"),
+        let Some(value) = certified.to_f64() else {
+            return Err(SymplexError::Unevaluable {
+                reason: "the integral is not a real number: its imaginary part is certified \
+                         nonzero"
+                    .into(),
+            });
         };
-        let value: f64 = printed.parse().map_err(|_| not_real())?;
         if !value.is_finite() {
-            return Err(not_real());
+            let magnitude = certified.re_decimal().map_or(0, |d| d.magnitude());
+            return Err(SymplexError::Unevaluable {
+                reason: format!(
+                    "the integral (about 10^{magnitude} in magnitude) is beyond the f64 range"
+                ),
+            });
         }
         Ok(QuadResult {
             value,

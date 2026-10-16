@@ -1988,9 +1988,7 @@ mod tests {
     #[test]
     fn factor_x105_minus_1() {
         let n = 105;
-        let start = std::time::Instant::now();
-        let fs = factor_z(&xn_minus_1(n));
-        let elapsed = start.elapsed();
+        let (fs, elapsed) = crate::base::perf_assert::cpu_time(|| factor_z(&xn_minus_1(n)));
         assert_eq!(product(&fs), xn_minus_1(n));
         assert_eq!(fs.len(), 8); // τ(105) = 8
         // Φ_105 has degree 48 and is famous for having a coefficient −2.

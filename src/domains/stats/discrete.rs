@@ -285,11 +285,23 @@ impl Family for Finite {
     // hypergeometric), which calls it once per value, exhausted 2.7 GB.
     fn density(&self, k: &Ex) -> Ex {
         if k.free_symbols().is_empty() {
+            // An atom of the table itself (the CDF asks once per atom) is
+            // found by identity, and atoms whose certified values differ
+            // from `k` are not compared (`certified_apart`): up to 0.57 each
+            // call compared `k` with every atom before it by `equals`, and
+            // the CDF of `√X` for a 2000-sided die made two million
+            // evaluations (fuzz_stats timed out).  The values are distinct
+            // (`try_finite`), so the atom found is the only one.
+            if let Some((_, p)) = self.table.iter().find(|(v, _)| v == k) {
+                return p.clone();
+            }
             let kq = k.as_rational();
+            let kf = k.eval_f64().ok();
             let mut decided = true;
             for (v, p) in &self.table {
                 let same = match (&kq, v.as_rational()) {
                     (Some(a), Some(b)) => Truth::from_bool(*a == b),
+                    _ if super::wrappers::certified_apart(kf, v.eval_f64().ok()) => Truth::False,
                     _ => Truth::from(k.equals(v)),
                 };
                 if same.is_true() {

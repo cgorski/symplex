@@ -1335,7 +1335,10 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// candidate is verified by exact division of both inputs, so a wrong
     /// answer is never returned.  If every evaluation point fails, the GCD
     /// is computed by the recursive primitive PRS (contents in the main
-    /// variable, primitive pseudo-remainders), which always succeeds.
+    /// variable, primitive pseudo-remainders), which succeeds unless an
+    /// exponent of its intermediate products overflows `u32` (exponents
+    /// near `2³¹`, which the modular routes refuse to lay out densely):
+    /// see [`try_gcd`](Self::try_gcd).
     /// Before 0.30 the constant `1` was returned then ("no common factor
     /// found"), and that happens for inputs of modest size: the GCD of two
     /// products sharing the factor `7z + 34` in four variables with
@@ -1372,23 +1375,55 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// assert_eq!(MultiPoly::gcd(&f, &g), s);
     /// assert_eq!(MultiPoly::gcd(&x, &y), MultiPoly::from_int(2, 1));
     /// ```
+    ///
+    /// # Refusal
+    ///
+    /// When [`try_gcd`](Self::try_gcd) refuses, the GCD of the integer
+    /// contents of the inputs (a common divisor, not necessarily the
+    /// greatest).  Up to 0.58 that case panicked (`x^(2³¹)·y + 1` and
+    /// `x^(2³¹)·y − 1`: the exponent-overflow assertion of
+    /// [`mul`](Self::mul) in the PRS).
     pub fn gcd(a: &Self, b: &Self) -> Self {
+        Self::try_gcd(a, b).unwrap_or_else(|| {
+            let content = |p: &Self| p.clear_denominators().1.integer_content();
+            Self::constant(
+                a.num_vars,
+                Ratio::from_integer(num_integer::gcd(content(a), content(b))),
+            )
+        })
+    }
+
+    /// [`gcd`](Self::gcd), or `None` when it cannot be computed: an
+    /// exponent of an intermediate product of the PRS fallback would
+    /// overflow `u32` (the pseudo-remainder of `x^(2³¹)·y + 1` by
+    /// `x^(2³¹)·y − 1` multiplies by the leading coefficient `x^(2³¹)`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let s = x.add(&y);
+    /// assert_eq!(MultiPoly::try_gcd(&s.mul(&x), &s.mul(&y)), Some(s));
+    /// ```
+    pub fn try_gcd(a: &Self, b: &Self) -> Option<Self> {
         if a.num_vars != b.num_vars {
-            return Self::from_int(a.num_vars, 1);
+            return Some(Self::from_int(a.num_vars, 1));
         }
         match (a.is_zero(), b.is_zero()) {
-            (true, true) => return Self::zero(a.num_vars),
-            (true, false) => return b.normalized_over_z(),
-            (false, true) => return a.normalized_over_z(),
+            (true, true) => return Some(Self::zero(a.num_vars)),
+            (true, false) => return Some(b.normalized_over_z()),
+            (false, true) => return Some(a.normalized_over_z()),
             (false, false) => {}
         }
         let (_, az) = a.clear_denominators();
         let (_, bz) = b.clear_denominators();
         let h = match Self::gcd_z_fast(&az, &bz) {
             Some(h) => h,
-            None => Self::gcd_prs(&az, &bz),
+            None => Self::gcd_prs(&az, &bz)?,
         };
-        if h.leading_is_negative() { h.neg() } else { h }
+        Some(if h.leading_is_negative() { h.neg() } else { h })
     }
 
     /// The GCD of two non-zero integer polynomials by the modular
@@ -1472,25 +1507,26 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// primitive pseudo-remainder sequence of the primitive parts (Knuth,
     /// TAOCP vol. 2, §4.6.1, Algorithm E; Geddes–Czapor–Labahn,
     /// *Algorithms for Computer Algebra*, §7.3).  The fallback of
-    /// [`gcd`](Self::gcd) when every heuristic evaluation point fails.
-    fn gcd_prs(f: &Self, g: &Self) -> Self {
+    /// [`gcd`](Self::gcd) when every heuristic evaluation point fails;
+    /// `None` when an exponent of a product overflows `u32`.
+    fn gcd_prs(f: &Self, g: &Self) -> Option<Self> {
         let nv = f.num_vars;
         if f.is_zero() {
-            return g.normalized_over_z();
+            return Some(g.normalized_over_z());
         }
         if g.is_zero() {
-            return f.normalized_over_z();
+            return Some(f.normalized_over_z());
         }
         let mut present = f.variables_present();
         present.extend(g.variables_present());
         let Some(v) = present.into_iter().max() else {
             // Two integer constants.
             let c = num_integer::gcd(f.integer_content(), g.integer_content());
-            return Self::constant(nv, Ratio::from_integer(c));
+            return Some(Self::constant(nv, Ratio::from_integer(c)));
         };
-        let (cf, pf) = f.content_in(v);
-        let (cg, pg) = g.content_in(v);
-        let c = Self::gcd(&cf, &cg);
+        let (cf, pf) = f.content_in(v)?;
+        let (cg, pg) = g.content_in(v)?;
+        let c = Self::try_gcd(&cf, &cg)?;
         let (mut a, mut b) = if pf.degree_in(v) >= pg.degree_in(v) {
             (pf, pg)
         } else {
@@ -1503,12 +1539,12 @@ impl<O: MonomialOrd> MultiPoly<O> {
                 a = Self::from_int(nv, 1);
                 break;
             }
-            let r = a.prem_in(&b, v);
+            let r = a.prem_in(&b, v)?;
             a = b;
-            b = if r.is_zero() { r } else { r.content_in(v).1 };
+            b = if r.is_zero() { r } else { r.content_in(v)?.1 };
         }
-        let h = c.mul(&a);
-        if h.leading_is_negative() { h.neg() } else { h }
+        let h = c.try_mul(&a)?;
+        Some(if h.leading_is_negative() { h.neg() } else { h })
     }
 
     /// The coefficient of `v^k` as a polynomial in the other variables.
@@ -1525,35 +1561,42 @@ impl<O: MonomialOrd> MultiPoly<O> {
 
     /// `(content, primitive part)` with respect to the variable `v`: the
     /// content is the GCD over ℤ of the coefficients in `v` (with positive
-    /// leading coefficient), and `self = content · primitive part`.
-    fn content_in(&self, v: usize) -> (Self, Self) {
+    /// leading coefficient), and `self = content · primitive part`; `None`
+    /// when a GCD is refused ([`try_gcd`](Self::try_gcd)).  The
+    /// coefficients are those of the exponents of `v` present, in ascending
+    /// order (up to 0.58 every exponent up to the degree was tried, 2³¹
+    /// empty coefficients for `x^(2³¹) − 1`).
+    fn content_in(&self, v: usize) -> Option<(Self, Self)> {
         let mut content = Self::zero(self.num_vars);
-        for k in 0..=self.degree_in(v) {
+        let exponents: std::collections::BTreeSet<u32> =
+            self.terms.keys().map(|e| e.exps[v]).collect();
+        for k in exponents {
             let c = self.coeff_in(v, k);
             if !c.is_zero() {
-                content = Self::gcd(&content, &c);
+                content = Self::try_gcd(&content, &c)?;
             }
         }
         if content.leading_is_negative() {
             content = content.neg();
         }
-        match self.div_exact(&content) {
+        Some(match self.div_exact(&content) {
             Some(p) => (content, p),
             // The content divides every coefficient; unreachable.
             None => (Self::from_int(self.num_vars, 1), self.clone()),
-        }
+        })
     }
 
     /// [`content_in`](Self::content_in) as named fields.
-    pub(crate) fn split_content_in(&self, v: usize) -> ContentSplit<O> {
-        let (content, primitive) = self.content_in(v);
-        ContentSplit { content, primitive }
+    pub(crate) fn split_content_in(&self, v: usize) -> Option<ContentSplit<O>> {
+        let (content, primitive) = self.content_in(v)?;
+        Some(ContentSplit { content, primitive })
     }
 
     /// Pseudo-remainder of `self` by `b` in the variable `v`:
     /// `lc(b)^(deg a − deg b + 1)·self` reduced modulo `b`, with leading
-    /// coefficients taken in `v` (polynomials in the other variables).
-    fn prem_in(&self, b: &Self, v: usize) -> Self {
+    /// coefficient taken in `v` (polynomials in the other variables);
+    /// `None` when an exponent of a product overflows `u32`.
+    fn prem_in(&self, b: &Self, v: usize) -> Option<Self> {
         let db = b.degree_in(v);
         let lcb = b.coeff_in(v, db);
         let one = Ratio::from_integer(BigInt::one());
@@ -1563,9 +1606,11 @@ impl<O: MonomialOrd> MultiPoly<O> {
             let lcr = r.coeff_in(v, dr);
             let mut e = vec![0u32; self.num_vars];
             e[v] = dr - db;
-            r = r.mul(&lcb).sub(&b.mul(&lcr).mul_monomial(&one, &e));
+            r = r
+                .try_mul(&lcb)?
+                .sub(&b.try_mul(&lcr)?.try_mul_monomial(&one, &e)?);
         }
-        r
+        Some(r)
     }
 
     /// Least common multiple `a · b / gcd(a, b)` (integer-normalised like
@@ -1581,18 +1626,46 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// let g = y.mul(&y);                 // y²
     /// assert_eq!(MultiPoly::lcm(&f, &g), x.mul(&y).mul(&y));
     /// ```
+    ///
+    /// # Refusal
+    ///
+    /// When [`try_lcm`](Self::try_lcm) refuses, the zero polynomial (a
+    /// common multiple, not the least).  Up to 0.58 that case panicked.
     pub fn lcm(a: &Self, b: &Self) -> Self {
-        if a.is_zero() || b.is_zero() {
-            return Self::zero(a.num_vars);
+        Self::try_lcm(a, b).unwrap_or_else(|| Self::zero(a.num_vars))
+    }
+
+    /// [`lcm`](Self::lcm), or `None` when it cannot be computed: the
+    /// numbers of variables differ, the GCD is refused
+    /// ([`try_gcd`](Self::try_gcd)) or an exponent of `a·b` overflows `u32`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// assert_eq!(MultiPoly::try_lcm(&x.mul(&y), &y.mul(&y)), Some(x.mul(&y).mul(&y)));
+    /// // The product has the exponent 2³² of `x`, beyond `u32`.
+    /// let big = x.pow(1 << 31).mul(&y);
+    /// let one = MultiPoly::from_int(2, 1);
+    /// assert_eq!(MultiPoly::try_lcm(&big.add(&one), &big.sub(&one)), None);
+    /// ```
+    pub fn try_lcm(a: &Self, b: &Self) -> Option<Self> {
+        if a.num_vars != b.num_vars {
+            return None;
         }
-        let g = Self::gcd(a, b);
+        if a.is_zero() || b.is_zero() {
+            return Some(Self::zero(a.num_vars));
+        }
+        let g = Self::try_gcd(a, b)?;
         let az = a.normalized_over_z();
         let bz = b.normalized_over_z();
-        let prod = az.mul(&bz);
-        match prod.div_exact(&g) {
+        let prod = az.try_mul(&bz)?;
+        Some(match prod.div_exact(&g) {
             Some(l) => l,
             None => prod,
-        }
+        })
     }
 }
 
@@ -2241,7 +2314,7 @@ mod tests {
         let g = h.mul(&ga);
         let want = z.scale(&rat(84)).add(&c(408));
         assert_eq!(MultiPoly::gcd(&f, &g), want);
-        assert_eq!(MultiPoly::gcd_prs(&f, &g), want);
+        assert_eq!(MultiPoly::gcd_prs(&f, &g), Some(want));
     }
 
     #[test]

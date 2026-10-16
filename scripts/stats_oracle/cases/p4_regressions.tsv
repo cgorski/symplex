@@ -1,0 +1,12 @@
+# Reproducers of wave 14 (session 15, P4): slow or refused statistics routes, kept in the seed set.
+# (Kept out: references mpmath cannot settle within the budget -- I_x at shapes 1e17, the F root at
+# d1 = 3e300, Fisher beyond 2 000 support points; tests/v36/v36_s15p4_stats.rs pins those values.)
+# id	kind	target	params	method	arg
+p4.nbinom.quantile_f64	dist	negative_binomial	67200,1/1000000	quantile_f64	0.5
+p4.nbinom.isf_f64	dist	negative_binomial	67200,1/1000000	isf_f64	0.025
+p4.binomial.cdf	dist	binomial	1000000,13/100	cdf	500000
+p4.binomial.sf	dist	binomial	1000000,13/100	sf	500000
+p4.binomial.cdf.mean	dist	binomial	1000000,13/100	cdf	130000
+p4.beta.quantile_f64.tiny_shape	dist	beta	1/1000,3	quantile_f64	0.5
+p4.kernel.beta.ppf.tiny_shape	kernel	beta.ppf	0.5,0.001,3.0	-	-
+p4.fisher.numeric.far	test	fisher_exact	table=5000,3000:2000,6000;alt=less	-	-

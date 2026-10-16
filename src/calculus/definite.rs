@@ -76,6 +76,7 @@ use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::truth::{SignSet, Truth};
+use crate::base::value_class::{Sign, ValueClass};
 use crate::base::walk;
 use crate::calculus::calculus_util::{
     self, BreakKind, BreakScan, Breakpoint, LinearCoeffs, POINT_VALUE_ACCURACY, ScanRange,
@@ -690,7 +691,7 @@ fn log_rational_tail_inverted(
     b: ExprId,
     depth: usize,
 ) -> Option<ExprId> {
-    if b != arena.infinity() {
+    if ValueClass::special_atom(arena, b) != Some(ValueClass::PosInf) {
         return None;
     }
     let c = arena.as_num(a)?.clone();
@@ -961,16 +962,20 @@ fn integrate_pieces(
 
 /// Is `id` `+∞` or `−∞`?
 fn is_infinite(arena: &Arena, id: ExprId) -> bool {
-    id == arena.infinity() || id == arena.neg_infinity()
+    real_infinity(arena, id).is_some()
+}
+
+/// The direction of `id` when it is the atom `+∞` or `−∞`.
+fn real_infinity(arena: &Arena, id: ExprId) -> Option<Sign> {
+    ValueClass::special_atom(arena, id).and_then(ValueClass::real_infinity)
 }
 
 /// Numeric value of a constant expression (±∞ allowed), or `None`.
 fn point_value(arena: &mut Arena, id: ExprId) -> Option<f64> {
-    if id == arena.infinity() {
-        return Some(f64::INFINITY);
-    }
-    if id == arena.neg_infinity() {
-        return Some(f64::NEG_INFINITY);
+    match real_infinity(arena, id) {
+        Some(Sign::Positive) => return Some(f64::INFINITY),
+        Some(Sign::Negative) => return Some(f64::NEG_INFINITY),
+        None => {}
     }
     if !walk::free_symbols(arena, id).is_empty() {
         return None;
@@ -1062,7 +1067,9 @@ fn cmp_values(
     }
     if is_infinite(arena, p) || is_infinite(arena, q) {
         // One infinite, other symbolic-but-finite.
-        if p == arena.infinity() || q == arena.neg_infinity() {
+        if real_infinity(arena, p) == Some(Sign::Positive)
+            || real_infinity(arena, q) == Some(Sign::Negative)
+        {
             return Some(Ordering::Greater);
         }
         return Some(Ordering::Less);
@@ -1084,11 +1091,10 @@ fn sign_of(arena: &mut Arena, id: ExprId) -> Option<Ordering> {
     if let Some(r) = arena.as_num(id) {
         return Some(r.cmp(&Ratio::zero()));
     }
-    if id == arena.infinity() {
-        return Some(Ordering::Greater);
-    }
-    if id == arena.neg_infinity() {
-        return Some(Ordering::Less);
+    match real_infinity(arena, id) {
+        Some(Sign::Positive) => return Some(Ordering::Greater),
+        Some(Sign::Negative) => return Some(Ordering::Less),
+        None => {}
     }
     if walk::free_symbols(arena, id).is_empty() {
         if has_bad_atom(arena, id) {
@@ -2029,8 +2035,8 @@ fn integrate_piece(
     if depth > MAX_DEPTH {
         return Err(failed("interval splitting exceeded the maximum depth"));
     }
-    let lo_is_neg_inf = p.lo == arena.neg_infinity();
-    let hi_is_pos_inf = p.hi == arena.infinity();
+    let lo_is_neg_inf = real_infinity(arena, p.lo) == Some(Sign::Negative);
+    let hi_is_pos_inf = real_infinity(arena, p.hi) == Some(Sign::Positive);
 
     // ── (−∞, ∞): parity, then split at 0 ────────────────────────────
     if lo_is_neg_inf && hi_is_pos_inf {
@@ -2163,7 +2169,8 @@ fn integrate_piece(
             }
         }
         if live.len() == 1 {
-            return evaluate_antiderivative(arena, f, live[0].0, x, p, depth);
+            let r = evaluate_antiderivative(arena, f, live[0].0, x, p, depth);
+            return divergent_at_singular_end(arena, f, x, p, r);
         }
         let mut out: Vec<(ExprId, ExprId)> = Vec::with_capacity(live.len());
         let mut all_divergent = !live.is_empty();
@@ -2195,7 +2202,8 @@ fn integrate_piece(
         return Ok(arena.piecewise(&out));
     }
 
-    evaluate_antiderivative(arena, f, anti, x, p, depth)
+    let r = evaluate_antiderivative(arena, f, anti, x, p, depth);
+    divergent_at_singular_end(arena, f, x, p, r)
 }
 
 /// `F(hi⁻) − F(lo⁺)` for a specific antiderivative `F`, after splitting
@@ -2823,7 +2831,7 @@ fn cut_crossing_excluded(
 /// Do both ends of the piece `p` lie in `[0, ∞]` (proved)?
 fn piece_nonnegative(arena: &Arena, p: &Piece, reals: &mut AssumptionCache) -> bool {
     [p.lo, p.hi].into_iter().all(|e| {
-        e == arena.infinity
+        real_infinity(arena, e) == Some(Sign::Positive)
             || arena.as_num(e).is_some_and(|q| !q.is_negative())
             || (walk::free_symbols(arena, e).is_empty()
                 && Truth::from(reals.query(arena, e, Props::NONNEGATIVE)).is_true()
@@ -3652,10 +3660,10 @@ fn fallback_without_antiderivative(
 /// if `x·f(x)` does.
 fn diverges_near(arena: &mut Arena, f: ExprId, x: ExprId, c: ExprId, side: Side) -> bool {
     let u = fresh_symbol(arena, "defd", 0);
-    let h = if c == arena.infinity() {
+    let h = if real_infinity(arena, c) == Some(Sign::Positive) {
         let xf = arena.mul(&[x, f]);
         subs::subs(arena, xf, x, u)
-    } else if c == arena.neg_infinity() {
+    } else if real_infinity(arena, c) == Some(Sign::Negative) {
         let xf = arena.mul(&[x, f]);
         let neg_u = arena.neg(u);
         subs::subs(arena, xf, x, neg_u)
@@ -3677,9 +3685,90 @@ fn diverges_near(arena: &mut Arena, f: ExprId, x: ExprId, c: ExprId, side: Side)
     let h = safe_eval(arena, h);
     match limit_pos_inf(arena, h, u) {
         Some(Extended::PosInf | Extended::NegInf) => true,
-        Some(Extended::Finite(v)) => sign_of(arena, v).is_some_and(|s| s != Ordering::Equal),
-        None => false,
+        // A non-real limit `L ≠ 0` diverges too: `f = L/(x − c) + o(1/|x −
+        // c|)`, so `|∫ f|` grows like `|L|·ln(1/ε)` (up to 0.58 only a real
+        // `L` counted, and `∫₀¹ dx/(e^{(1+i)x} − 1)` was refused).
+        Some(Extended::Finite(v)) => {
+            sign_of(arena, v).is_some_and(|s| s != Ordering::Equal)
+                || arena
+                    .part_signs(v)
+                    .is_some_and(|s| s.re.is_some() || s.im.is_some())
+        }
+        None => nonreal_nonzero_limit(arena, h, u),
     }
+}
+
+/// Is the limit of `h` as `u → ∞` a constant with a certified nonzero
+/// imaginary part (one [`limit_pos_inf`] does not take: its sanity check
+/// samples a real function)?  The limit engine's exact value, confirmed by
+/// two complex samples (`u = 2²⁰`, `2⁴⁰`): the distance to it shrinks and
+/// ends below `2^−10` of its modulus (a guard against an engine slip, as
+/// [`numeric_growth_sanity`] is for infinite limits).
+fn nonreal_nonzero_limit(arena: &mut Arena, h: ExprId, u: ExprId) -> bool {
+    if walk::free_symbols(arena, h).iter().any(|&s| s != u)
+        || has_unbounded_oscillation(arena, h, u)
+    {
+        return false;
+    }
+    let inf = arena.infinity();
+    let Ok(l) = crate::calculus::limit::limit(arena, h, u, inf) else {
+        return false;
+    };
+    if !walk::free_symbols(arena, l).is_empty()
+        || crate::base::value_class::holds_special_atom(arena, l)
+        || !arena.part_signs(l).is_some_and(|s| s.im.is_some())
+    {
+        return false;
+    }
+    let Ok(lv) = evalf::evalf_complex64(arena, l) else {
+        return false;
+    };
+    let mut distances = Vec::with_capacity(2);
+    for k in [20, 40] {
+        let two = arena.int(2);
+        let e = arena.int(k);
+        let at = arena.pow(two, e);
+        let hk = subs::subs(arena, h, u, at);
+        let Ok(hv) = evalf::evalf_complex64(arena, hk) else {
+            return false;
+        };
+        distances.push((hv - lv).norm());
+    }
+    let scale = lv.norm();
+    distances[1] <= distances[0] && distances[1] * 1024.0 <= scale && scale.is_finite()
+}
+
+/// `result` of a piece, or `Divergent` where it failed otherwise and the
+/// integrand is not integrable at a singular end of the piece
+/// ([`diverges_near`]): the antiderivative may have no value the engine can
+/// read there (a `Piecewise` in `x`, a complex infinity), while the
+/// comparison test decides.  Up to 0.58 `∫₋₁¹ polylog(0, Chi(−3/4)ˣ) dx` and
+/// `∫₀¹ dx/(e^{(1+i)x} − 1)` (a pole at 0) were refused.
+fn divergent_at_singular_end(
+    arena: &mut Arena,
+    f: ExprId,
+    x: ExprId,
+    p: &Piece,
+    result: Result<ExprId, SymplexError>,
+) -> Result<ExprId, SymplexError> {
+    let Err(e) = result else {
+        return result;
+    };
+    if matches!(e, SymplexError::Divergent { .. }) {
+        return Err(e);
+    }
+    for (end, sing, side) in [
+        (p.lo, p.lo_sing, Side::FromRight),
+        (p.hi, p.hi_sing, Side::FromLeft),
+    ] {
+        if sing && diverges_near(arena, f, x, end, side) {
+            let shown = arena.display(end).to_string();
+            return Err(divergent(format!(
+                "the integrand is not integrable near x = {shown}"
+            )));
+        }
+    }
+    Err(e)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3760,7 +3849,7 @@ fn endpoint_value(
         let g = safe_eval(arena, g);
         return limit_pos_inf(arena, g, u);
     }
-    if c == arena.infinity() {
+    if real_infinity(arena, c) == Some(Sign::Positive) {
         return limit_pos_inf(arena, anti, x);
     }
     // c = −∞: x = −u.
@@ -3867,8 +3956,8 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<Extended<Exp
             if !walk::free_symbols(arena, l).is_empty() {
                 return None;
             }
-            if l == arena.infinity() || l == arena.neg_infinity() {
-                let sign: i8 = if l == arena.infinity() { 1 } else { -1 };
+            if let Some(direction) = real_infinity(arena, l) {
+                let sign: i8 = if direction == Sign::Positive { 1 } else { -1 };
                 if numeric_growth_sanity(arena, g, u, sign) {
                     return Some(if sign > 0 {
                         Extended::PosInf
@@ -5803,11 +5892,13 @@ fn classify_interval(arena: &mut Arena, a: ExprId, b: ExprId) -> IntervalShape {
     let same =
         |arena: &mut Arena, p: ExprId, q: ExprId| cmp_points(arena, p, q) == Some(Ordering::Equal);
 
-    if a == arena.neg_infinity() && b == arena.infinity() {
+    if real_infinity(arena, a) == Some(Sign::Negative)
+        && real_infinity(arena, b) == Some(Sign::Positive)
+    {
         return IntervalShape::FullLine;
     }
     if same(arena, a, zero) {
-        if b == arena.infinity() {
+        if real_infinity(arena, b) == Some(Sign::Positive) {
             return IntervalShape::ZeroInf;
         }
         if same(arena, b, one) {

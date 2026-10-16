@@ -56,6 +56,11 @@
 //!   m) + (π/2)/(√(1 − n)·√(1 − m/n))` with the two principal roots taken
 //!   apart ([`pi_involution`], DLMF 19.7.8 continued); the arguments of
 //!   `Π(m/n | m)` then lie in a half-plane.
+//! * a non-real `m` with `Re m > 1` that neither of these reaches (`m` next
+//!   to the cut `(1, ∞)`, `Π(½ − i/3 | 4 + i/10)`; since 0.59): the split of
+//!   the third bullet continued off the axis, the path of `t = sin²θ`
+//!   moved through the branch point `1/m` ([`pi_split_off_axis`]), with the
+//!   residue at `t = 1/n` when the move sweeps the pole.
 //!
 //! What none of them reaches is refused.  On the cuts the values are
 //! mpmath's (and so SymPy's): the limits from below, `m − i0` and `n − i0`
@@ -108,6 +113,7 @@ use crate::base::bigcomplex::{Complex, c_abs, c_add, c_div, c_mul, c_sub};
 use crate::base::errors::SymplexError;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 use astro_float::BigFloat;
 
 /// Does `f(args)` go to these routines?  `K`, `E` of a non-real parameter
@@ -472,7 +478,7 @@ fn rd(x: &Complex, y: &Complex, z: &Complex, wp: usize) -> Result<Complex, Sympl
 fn one_minus(m: &Complex, wp: usize, what: &str) -> Result<Complex, SymplexError> {
     let y = c_sub(&real(1, wp), m, wp, RM);
     if y.0.is_zero() && y.1.is_zero() {
-        return Err(super::unevaluable(format!("{what}(1) is infinite")));
+        return Err(super::infinite(format!("{what}(1) is infinite")));
     }
     Ok(y)
 }
@@ -696,10 +702,10 @@ fn pi_value(
     let wp = w.bits();
     let (n_real, m_real) = (n.1.is_zero(), m.1.is_zero());
     if m_real && is_one(&m.0) {
-        return Err(super::unevaluable("elliptic_pi(n, 1) is infinite"));
+        return Err(super::infinite("elliptic_pi(n, 1) is infinite"));
     }
     if n_real && is_one(&n.0) {
-        return Err(super::unevaluable("elliptic_pi(1, m) is infinite"));
+        return Err(super::infinite("elliptic_pi(1, m) is infinite"));
     }
     if m_real && above_one(&m.0) {
         return pi_split(n, &m.0, w);
@@ -711,10 +717,157 @@ fn pi_value(
         let v = super::arb_elliptic_pi(&n.0, &m.0, w)?;
         return Ok(((v, BigFloat::new(wp)), 0));
     }
+    if uses_off_axis_split(n, m, w.bits()) {
+        return pi_split_off_axis(n, m, above, w);
+    }
     if uses_involution(n, m, w.bits()) {
         return pi_involution(n, m, above, w);
     }
     pi_principal(n, m, w)
+}
+
+/// Does [`pi_value`] take `Π(n | m)` through [`pi_split_off_axis`]: a
+/// non-real `m` with `Re m > 1`, where neither `1 − m`, 1, `1 − n` nor the
+/// arguments `1 − m`, 1, `1 − m/n` of [`pi_involution`]'s `Π(m/n | m)` lie in
+/// a half-plane (so that no other route reaches it)?  (`Re m > 1` keeps the
+/// parameters `1/m`, `1 − 1/m` of the split's parts below 1 in real part,
+/// where this route is not taken again.)
+fn uses_off_axis_split(n: &Complex, m: &Complex, wp: usize) -> bool {
+    if m.1.is_zero() || !above_one(&m.0) || !needs_involution(n, m, wp) {
+        return false;
+    }
+    let y = c_sub(&real(1, wp), m, wp, RM);
+    let t = c_sub(&real(1, wp), &c_div(m, n, wp, RM), wp, RM);
+    rotation(&[&y, &t], wp).is_none()
+}
+
+/// `Π(n | m)` for a non-real `m` ([`uses_off_axis_split`]): the split of
+/// [`pi_split`] continued off the real axis,
+///
+/// ```text
+/// Π(n | m) = Π(n/m | 1/m)/√m + √(1 − 1/m)/((1 − n)·√(1 − m))·Π(n₁ | 1 − 1/m) + σ·2πi·Res,
+/// n₁ = n(m − 1)/(m(n − 1)),
+/// ```
+///
+/// every root principal.  With `t = sin²θ`, `Π(n | m) = ½∫₀¹ dt/((1 − nt)√t
+/// √(1 − t)√(1 − mt))` along `[0, 1]`; the path is moved to `0 → t₀ → 1`
+/// through the branch point `t₀ = 1/m` (off the real axis): the cut `t₀·[1,
+/// ∞)` of `√(1 − mt)` leaves the triangle `0, 1, t₀` at its vertex and
+/// those of `√t`, `√(1 − t)` meet it only at 0 and 1, so the only
+/// singularity the move may sweep is the pole `t = 1/n`.  On `[0, t₀]`, `t =
+/// t₀s` gives the first part (`1 − mt = 1 − s`); on `[t₀, 1]`, `t = 1 − (1
+/// − 1/m)r` gives `1 − nt = (1 − n)(1 − n₁r)`, `1 − mt = (1 − m)(1 − r)`
+/// and the second.  A pole `1/n` inside the triangle adds its residue,
+/// `Res = −1/(2n·√P·√(1 − P)·√(1 − m/n))` at `P = 1/n` (the principal
+/// branches are analytic inside), with `σ = sign(Im t₀)` (the boundary `0 →
+/// 1 → t₀` runs counterclockwise for `Im t₀ > 0`); a pole on or near its
+/// boundary (`n/m` or `n₁` on the cut `[1, ∞)` of its part) is refused.  A
+/// real `n > 1` puts the pole on `[0, 1]` itself: the value is the limit
+/// `n ∓ i0` (`above`: `n + i0`), whose pole lies just above (below) the
+/// segment, so inside the triangle exactly when `t₀` is on that side.  For
+/// a real `m > 1` approached from below it is [`pi_split`]'s identity.
+/// mpmath (and a quadrature along `[0, π/2]`): `Π(½ − i/3 | 4 + i/10) =
+/// 1.33515537350355 + 1.30525487404705i`, `Π(2 + i | 2 − i/1000) =
+/// 2.78305593932435 + 2.02073751897057i`.  Refused up to 0.58 ("the
+/// arguments 1 - m, 1 and 1 - n lie in no half-plane").
+fn pi_split_off_axis(
+    n: &Complex,
+    m: &Complex,
+    above: bool,
+    w: &mut Wp<'_>,
+) -> Result<(Complex, usize), SymplexError> {
+    let wp = w.bits();
+    let one = real(1, wp);
+    let t0 = c_div(&one, m, wp, RM);
+    let on_path = n.1.is_zero() && above_one(&n.0);
+    let inside = if on_path {
+        t0.1.is_negative() == above
+    } else {
+        match pole_in_triangle(n, &t0, wp) {
+            Truth::True => true,
+            Truth::False => false,
+            Truth::Unknown => {
+                return Err(super::unevaluable(
+                    "elliptic_pi: the pole 1/n is on the boundary of the moved path",
+                ));
+            }
+        }
+    };
+    let m1 = c_sub(&one, &t0, wp, RM);
+    let n_over_m = c_mul(n, &t0, wp, RM);
+    let n1 = c_div(&c_mul(n, &m1, wp, RM), &c_sub(n, &one, wp, RM), wp, RM);
+    let (p1, lost1) = pi_value(&n_over_m, &t0, false, w)?;
+    let (p2, lost2) = pi_value(&n1, &m1, false, w)?;
+    let a = c_mul(&c_sqrt(&t0, wp), &p1, wp, RM);
+    let den = c_mul(
+        &c_sub(&one, n, wp, RM),
+        &c_sqrt(&c_sub(&one, m, wp, RM), wp),
+        wp,
+        RM,
+    );
+    let b = c_mul(&c_div(&c_sqrt(&m1, wp), &den, wp, RM), &p2, wp, RM);
+    let mut parts = vec![a, b];
+    if inside {
+        // σ·2πi·Res = ∓πi/(n·√P·√(1 − P)·√(1 − m/n)), P = 1/n.
+        let p = c_div(&one, n, wp, RM);
+        let roots = c_mul(
+            &c_mul(
+                &c_sqrt(&p, wp),
+                &c_sqrt(&c_sub(&one, &p, wp, RM), wp),
+                wp,
+                RM,
+            ),
+            &c_sqrt(&c_sub(&one, &c_mul(m, &p, wp, RM), wp, RM), wp),
+            wp,
+            RM,
+        );
+        let pi = w.cc.pi(wp, RM).clone();
+        let pi_i = if t0.1.is_negative() {
+            (BigFloat::new(wp), pi)
+        } else {
+            (BigFloat::new(wp), pi.neg())
+        };
+        parts.push(c_div(&pi_i, &c_mul(n, &roots, wp, RM), wp, RM));
+    }
+    let v = parts.iter().fold(real(0, wp), |s, t| c_add(&s, t, wp, RM));
+    let refs: Vec<&Complex> = parts.iter().collect();
+    let lost = lost1.max(lost2).max(lost_bits(&refs, &v));
+    Ok((v, lost))
+}
+
+/// The barycentric coordinates `(α, β, γ)` of `P = 1/n` in the triangle
+/// `1, t₀, 0` (`P = α + βt₀`, `γ = 1 − α − β`) for a non-real `t₀`.
+fn barycentric(n: &Complex, t0: &Complex, wp: usize) -> [BigFloat; 3] {
+    let p = c_div(&real(1, wp), n, wp, RM);
+    let beta = p.1.div(&t0.1, wp, RM);
+    let alpha = p.0.sub(&beta.mul(&t0.0, wp, RM), wp, RM);
+    let gamma = BigFloat::from_i32(1, wp)
+        .sub(&alpha, wp, RM)
+        .sub(&beta, wp, RM);
+    [alpha, beta, gamma]
+}
+
+/// Is the pole `1/n` inside the triangle `0, 1, t₀` (`True`), outside it
+/// (`False`), or within `2^−(wp/2)` of its boundary in a barycentric
+/// coordinate (`Unknown`)?
+fn pole_in_triangle(n: &Complex, t0: &Complex, wp: usize) -> Truth {
+    let coords = barycentric(n, t0, wp);
+    let scale = coords
+        .iter()
+        .filter_map(accuracy::part_mag)
+        .max()
+        .unwrap_or(0)
+        .max(0);
+    let limit = scale - i64::try_from(wp / 2).unwrap_or(i64::MAX / 4);
+    let clear = |c: &BigFloat| accuracy::part_mag(c).is_some_and(|e| e > limit);
+    if coords.iter().any(|c| c.is_negative() && clear(c)) {
+        return Truth::False;
+    }
+    if coords.iter().all(|c| !c.is_negative() && clear(c)) {
+        Truth::True
+    } else {
+        Truth::Unknown
+    }
 }
 
 /// Does [`pi_value`] take `Π(n | m)` through [`pi_involution`]: a non-real
@@ -870,10 +1023,10 @@ fn pi_principal(
     let y = c_sub(&real(1, wp), m, wp, RM);
     let p = c_sub(&real(1, wp), n, wp, RM);
     if y.0.is_zero() && y.1.is_zero() {
-        return Err(super::unevaluable("elliptic_pi(n, 1) is infinite"));
+        return Err(super::infinite("elliptic_pi(n, 1) is infinite"));
     }
     if p.0.is_zero() && p.1.is_zero() {
-        return Err(super::unevaluable("elliptic_pi(1, m) is infinite"));
+        return Err(super::infinite("elliptic_pi(1, m) is infinite"));
     }
     let Some(q) = rotation(&[&y, &p], wp) else {
         return Err(super::unevaluable(
@@ -1098,6 +1251,7 @@ pub(super) fn bound(
             on_cut_undecided(n, *bn)
                 || near_one(n, *bn)
                 || involution_cut_undecided(n, *bn, m, *bm, w.bits())
+                || split_pole_undecided(n, *bn, m, *bm, w.bits())
         }
         (LibFn::EllipticF, [(phi, bp), (m, bm)]) => f_cut_undecided(phi, *bp, m, *bm, w),
         _ => false,
@@ -1145,6 +1299,50 @@ fn involution_cut_undecided(n: &Complex, bn: Bound, m: &Complex, bm: Bound, prec
     let t = c_sub(&real(1, wp), &q, wp, RM);
     accuracy::part_contains_zero(&t.1, r)
         && (t.0.is_negative() || accuracy::part_contains_zero(&t.0, r))
+}
+
+/// Is `Π(n | m)` taken through [`pi_split_off_axis`] with `m`'s ball reaching
+/// the real axis, or with the pole `P = 1/n` within its error of the
+/// boundary of the triangle `0, 1, t₀ = 1/m` (a barycentric coordinate that
+/// decides inside or outside within the radius it may move by)?
+fn split_pole_undecided(n: &Complex, bn: Bound, m: &Complex, bm: Bound, prec: usize) -> bool {
+    let wp = prec + 32;
+    if !uses_off_axis_split(n, m, wp) || (bn.is_exact() && bm.is_exact()) {
+        return false;
+    }
+    if accuracy::part_contains_zero(&m.1, bm.im) {
+        return true;
+    }
+    // An exactly real `n > 1` (the pole on the path): the convention `n − i0`
+    // decides, with the side of `t₀` decided above.
+    if n.1.is_zero() && accuracy::is_exact(bn.im) && above_one(&n.0) {
+        return false;
+    }
+    let t0 = c_div(&real(1, wp), m, wp, RM);
+    let coords = barycentric(n, &t0, wp);
+    // |ΔP| ≤ 2|Δn|/|n|², |Δt₀| ≤ 2|Δm|/|m|²; with β = Im P/Im t₀ and α = Re P −
+    // β·Re t₀ a coordinate moves by at most (|ΔP| + (1 + |β|)|Δt₀|)·(1 +
+    // |t₀|)/|Im t₀|, doubled.
+    let beta = accuracy::lsum(0.0, accuracy::part_lg(&coords[1]));
+    let r = accuracy::lsum(
+        bn.joint() - 2.0 * accuracy::lg_abs_low(n) + 1.0,
+        bm.joint() - 2.0 * accuracy::lg_abs_low(m) + 1.0 + beta,
+    ) + accuracy::lsum(0.0, accuracy::lg_abs(&t0))
+        - accuracy::part_lg_low(&t0.1)
+        + 1.0;
+    let negative = coords
+        .iter()
+        .filter(|c| c.is_negative())
+        .map(accuracy::part_lg_low)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if negative > f64::NEG_INFINITY {
+        return negative <= r;
+    }
+    coords
+        .iter()
+        .map(accuracy::part_lg_low)
+        .fold(f64::INFINITY, f64::min)
+        <= r
 }
 
 /// For `F(φ | m)`: does the ball of `1 − m sin²φ₀` reach within 8 radii of

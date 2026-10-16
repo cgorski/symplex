@@ -74,7 +74,7 @@ use super::family::Distribution;
 use super::sample::Rng;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
-use crate::base::errors::SymplexError;
+use crate::base::errors::{Degeneracy, SymplexError};
 use crate::base::interval::Interval;
 use crate::calculus::definite::{QuadOpts, quadrature};
 use crate::domains::optimize::partition_point_by;
@@ -427,7 +427,12 @@ impl TestResult {
     }
 
     /// The p-value as an exact rational when it is one (the discrete exact
-    /// tests: binomial, Fisher, McNemar, sign, exact rank tests).
+    /// tests: binomial, Fisher, McNemar, sign, exact rank tests).  `None`
+    /// for a p-value that is not a rational: an exact expression of a
+    /// continuous reference distribution, or a numerical approximation —
+    /// [`fisher_exact`] beyond [`FISHER_EXACT_NUMERIC_THRESHOLD`] support
+    /// points, whose p-value is never written as a rational (up to 0.58 it
+    /// was the dyadic rational of an `f64`, returned here as if exact).
     #[must_use]
     pub fn p_value_exact(&self) -> Option<Q> {
         self.p_value.as_rational()
@@ -643,6 +648,14 @@ fn result(
         df,
         alternative: alt,
     }
+}
+
+/// [`SymplexError::DegenerateData`] with [`Degeneracy::ZeroVariance`]: a
+/// variance the statistic divides by is zero for these data (a constant
+/// sample, every observation tied).  As the models report it since 0.57;
+/// up to 0.58 the tests here said `InvalidArgument`.
+fn zero_variance(op: &'static str, reason: &str) -> SymplexError {
+    SymplexError::degenerate(op, Degeneracy::ZeroVariance, reason)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1043,18 +1056,18 @@ impl HypergeomNumeric {
         ln_start + sum.ln()
     }
 
-    /// `ln P(X ≤ a)` (`Down`) or `ln P(X ≥ a)` (`Up`): the outer tail when
-    /// `a` lies beyond the mode in that direction, else one minus the
-    /// opposite outer tail.
-    fn ln_tail(&self, a: usize, dir: Walk) -> f64 {
+    /// `P(X ≤ a)` (`Down`) or `P(X ≥ a)` (`Up`): the outer tail when `a`
+    /// lies beyond the mode in that direction, else one minus the opposite
+    /// outer tail; exactly `1` only when the tail is the whole support.
+    fn ln_tail(&self, a: usize, dir: Walk) -> NumericP {
         let m = self.mode;
         match dir {
-            Walk::Down if a >= self.hi => 0.0,
-            Walk::Up if a <= self.lo => 0.0,
-            Walk::Down if a < m => self.ln_outer_tail(a, Walk::Down) - self.ln_total,
-            Walk::Up if a > m => self.ln_outer_tail(a, Walk::Up) - self.ln_total,
-            Walk::Down => (-(self.ln_outer_tail(a + 1, Walk::Up) - self.ln_total).exp()).ln_1p(),
-            Walk::Up => (-(self.ln_outer_tail(a - 1, Walk::Down) - self.ln_total).exp()).ln_1p(),
+            Walk::Down if a >= self.hi => NumericP::One,
+            Walk::Up if a <= self.lo => NumericP::One,
+            Walk::Down if a < m => NumericP::Ln(self.ln_outer_tail(a, Walk::Down) - self.ln_total),
+            Walk::Up if a > m => NumericP::Ln(self.ln_outer_tail(a, Walk::Up) - self.ln_total),
+            Walk::Down => NumericP::one_minus(self.ln_outer_tail(a + 1, Walk::Up) - self.ln_total),
+            Walk::Up => NumericP::one_minus(self.ln_outer_tail(a - 1, Walk::Down) - self.ln_total),
         }
     }
 
@@ -1128,15 +1141,21 @@ impl HypergeomNumeric {
         }
     }
 
-    /// `ln p` of Fisher's test at `a` (in the support) for `alt`.
-    fn ln_p_value(&self, a: usize, alt: Alternative) -> f64 {
+    /// The p-value of Fisher's test at `a` (in the support) for `alt`.
+    /// Two-sided, the tables no more likely than `a` are all of them when
+    /// `a` is the mode, or when the far cutoff is the mode itself (a tie
+    /// under the route's tolerance): exactly `1` there.  Otherwise the two
+    /// tails leave out the mode, whose mass (at least `10⁻¹⁰` of the total
+    /// for any table of `usize` cells) is far above the walk's error, so a
+    /// sum that rounds to `1` is one of these cases.
+    fn ln_p_value(&self, a: usize, alt: Alternative) -> NumericP {
         match alt {
             Alternative::Less => self.ln_tail(a, Walk::Down),
             Alternative::Greater => self.ln_tail(a, Walk::Up),
             Alternative::TwoSided => {
                 let m = self.mode;
                 if a == m {
-                    return 0.0;
+                    return NumericP::One;
                 }
                 let (near, far) = if a < m {
                     (
@@ -1150,10 +1169,53 @@ impl HypergeomNumeric {
                     )
                 };
                 match far {
-                    Some(far) => log_add_exp(near, far).min(0.0),
+                    Some(far) => {
+                        let ln_p = log_add_exp(near.ln(), far.ln());
+                        if ln_p < 0.0 {
+                            NumericP::Ln(ln_p)
+                        } else {
+                            NumericP::One
+                        }
+                    }
                     None => near,
                 }
             }
+        }
+    }
+}
+
+/// A p-value of [`fisher_exact`]'s numeric route, as the walk knows it.
+#[derive(Clone, Copy, Debug)]
+enum NumericP {
+    /// Exactly `1`: the tail is the whole support, or the two-sided p-value
+    /// at the mode (every table is no more likely than it).
+    One,
+    /// `p = e^ℓ` with `ℓ < 0` an `f64` (in floating point, about `10⁻¹²`
+    /// relative).
+    Ln(f64),
+    /// `p = 1 − e^λ` with `e^λ` below the smallest positive `f64`, so `ln p`
+    /// rounds to `0` (a far tail on the other side of the mode); `λ` is an
+    /// `f64`.
+    OneMinus(f64),
+}
+
+impl NumericP {
+    /// `1 − e^λ` for the opposite tail `e^λ`.
+    fn one_minus(ln_q: f64) -> Self {
+        let ln_p = (-ln_q.exp()).ln_1p();
+        if ln_p < 0.0 {
+            NumericP::Ln(ln_p)
+        } else {
+            NumericP::OneMinus(ln_q)
+        }
+    }
+
+    /// `ln p` in floating point (`0` for `p` within `2⁻¹⁰⁷⁴` of `1`).
+    fn ln(self) -> f64 {
+        match self {
+            NumericP::One => 0.0,
+            NumericP::Ln(ln_p) => ln_p,
+            NumericP::OneMinus(ln_q) => (-ln_q.exp()).ln_1p(),
         }
     }
 }
@@ -1212,20 +1274,22 @@ fn log_add_exp(a: f64, b: f64) -> f64 {
     hi + (lo - hi).exp().ln_1p()
 }
 
-/// A numeric p-value known through its logarithm, as an expression: the
-/// dyadic `ctx.from_f64(p)` when `p` is a normal `f64`, else `exp(ln p)`
-/// (with `ln p` dyadic) so that [`PValue::p_value_log10`] and
-/// [`PValue::p_value_decimal`] stay informative where `p_value_f64`
-/// underflows to `0.0`.
-fn numeric_p_value(ctx: &Context, ln_p: f64) -> Result<Ex, SymplexError> {
-    if ln_p == f64::NEG_INFINITY {
-        return Ok(ctx.zero());
-    }
-    let p = ln_p.exp().min(1.0);
-    if p >= f64::MIN_POSITIVE {
-        ctx.from_f64(p)
-    } else {
-        Ok(ctx.from_f64(ln_p)?.exp())
+/// A numeric p-value as an expression that is never a rational unless it
+/// is exactly `1`: `exp(ℓ)` with the `f64` logarithm `ℓ`, or `exp(−e^λ)`
+/// next to `1`.  An `f64` read as a (dyadic) rational would claim an exact
+/// value — [`TestResult::p_value_exact`] returned it up to 0.58 — and the
+/// logarithm keeps [`PValue::p_value_log10`] and
+/// [`PValue::p_value_decimal`] informative where `p_value_f64` underflows
+/// to `0.0`.
+fn numeric_p_value(ctx: &Context, p: NumericP) -> Result<Ex, SymplexError> {
+    match p {
+        NumericP::One => Ok(ctx.one()),
+        NumericP::Ln(ln_p) if ln_p.is_finite() && ln_p < 0.0 => Ok(ctx.from_f64(ln_p)?.exp()),
+        NumericP::OneMinus(ln_q) if ln_q.is_finite() => Ok((-ctx.from_f64(ln_q)?.exp()).exp()),
+        _ => Err(SymplexError::computation_failed(
+            "fisher_exact",
+            format!("the numeric p-value is not a probability ({p:?})"),
+        )),
     }
 }
 
@@ -1241,12 +1305,18 @@ fn numeric_p_value(ctx: &Context, ln_p: f64) -> Result<Ex, SymplexError> {
 /// p-value is an exact rational from `BigInt` binomials.  Above it — cells
 /// in the `10⁴`–`10¹¹` range — the p-value is numeric: the pmf is walked
 /// from its mode with the exact ratio `f(x+1)/f(x)`, each tail summed
-/// outwards from its inner end, and the result is `ctx.from_f64(p)`
-/// (dyadic, so [`TestResult::p_value_exact`] is `Some` but not the exact
-/// rational), agreeing with scipy to `1e-9` relative or better.  Below
-/// `1e-308` the expression is `exp(ln p)` so that
+/// outwards from its inner end, agreeing with scipy to `1e-9` relative or
+/// better.  The p-value is then an approximation and says so:
+/// [`TestResult::p_value_exact`] is `None` (it is `Some` exactly when the
+/// p-value is the exact rational, which on this route is only a tail that
+/// is the whole support, `p = 1`).  The expression is `exp(ℓ)` with `ℓ`
+/// the `f64` logarithm (`exp(−e^λ)` next to `1`), so that
 /// [`p_value_log10`](TestResult::p_value_log10) stays finite where
-/// [`p_value_f64`](TestResult::p_value_f64) is `0.0`.  The two-sided
+/// [`p_value_f64`](TestResult::p_value_f64) is `0.0`; its
+/// [`p_value_decimal`](TestResult::p_value_decimal) digits beyond the
+/// ninth are those of the approximation.  Up to 0.58 the p-value was the
+/// dyadic rational of an `f64`, which `p_value_exact` returned as if exact
+/// (and `P(X ≤ a)` far above the mode was an exact `1`).  The two-sided
 /// cutoff on the far side of the mode compares floating pmf values with a
 /// `1e-11` relative tolerance except for a symmetric distribution
 /// (`n₁ = n₂` or `2n = N`), whose mirror point is exact.  `[[10⁶, 10⁶ +
@@ -1265,6 +1335,7 @@ fn numeric_p_value(ctx: &Context, ln_p: f64) -> Result<Ex, SymplexError> {
 /// // A large table takes the numeric route: scipy 0.9992021157304142 (mpmath 0.99920211598773724586)
 /// let big = fisher_exact(&ctx, [[1_000_000, 1_000_007], [999_997, 1_000_000]], Alternative::TwoSided)?;
 /// assert!((big.p_value_f64()? - 0.999_202_115_987_737_2).abs() < 1e-12);
+/// assert_eq!(big.p_value_exact(), None); // an approximation, not an exact rational
 /// # Ok::<(), SymplexError>(())
 /// ```
 ///
@@ -2196,8 +2267,8 @@ fn normal_result(ctx: &Context, stat: &RootRatio, alt: Alternative) -> TestResul
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for fewer than two observations or a
-/// constant sample (zero variance).
+/// [`SymplexError::InvalidArgument`] for fewer than two observations;
+/// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a constant sample (up to 0.58 `InvalidArgument`).
 pub fn t_test_one_sample(
     ctx: &Context,
     x: &[Q],
@@ -2209,7 +2280,7 @@ pub fn t_test_one_sample(
     let n = x.len();
     let var = data::variance(x, Ddof::Sample)?;
     if var.is_zero() {
-        return Err(invalid(OP, "the sample is constant (zero variance)"));
+        return Err(zero_variance(OP, "the sample is constant (zero variance)"));
     }
     let stat = RootRatio {
         num: data::mean(x)? - mu0,
@@ -2257,8 +2328,9 @@ pub fn t_test_one_sample(
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for an empty sample, fewer than three
-/// observations in all (`equal_var`), a sample with fewer than two
-/// observations (Welch), or two constant samples.
+/// observations in all (`equal_var`), or a sample with fewer than two
+/// observations (Welch); [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for two
+/// constant samples (up to 0.58 `InvalidArgument`).
 pub fn t_test_two_sample(
     ctx: &Context,
     x: &[Q],
@@ -2281,7 +2353,10 @@ pub fn t_test_two_sample(
         }
         let (ss1, ss2) = (data::sum_of_squares(x)?, data::sum_of_squares(y)?);
         if ss1.is_zero() && ss2.is_zero() {
-            return Err(invalid(OP, "both samples are constant (zero variance)"));
+            return Err(zero_variance(
+                OP,
+                "both samples are constant (zero variance)",
+            ));
         }
         let df = qu(n1 + n2 - 2);
         let pooled = (ss1 + ss2) / &df;
@@ -2293,7 +2368,10 @@ pub fn t_test_two_sample(
             data::variance(y, Ddof::Sample)?,
         );
         if v1.is_zero() && v2.is_zero() {
-            return Err(invalid(OP, "both samples are constant (zero variance)"));
+            return Err(zero_variance(
+                OP,
+                "both samples are constant (zero variance)",
+            ));
         }
         let (a, b) = (&v1 / qu(n1), &v2 / qu(n2));
         let var = &a + &b;
@@ -2322,8 +2400,9 @@ pub fn t_test_two_sample(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// pairs, or constant differences.
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than two
+/// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for constant
+/// differences (up to 0.58 `InvalidArgument`).
 pub fn t_test_paired(
     ctx: &Context,
     x: &[Q],
@@ -2335,7 +2414,10 @@ pub fn t_test_paired(
     let d: Vec<Q> = x.iter().zip(y).map(|(a, b)| a - b).collect();
     check_sample(OP, "the paired sample", &d, 2)?;
     if data::variance(&d, Ddof::Sample)?.is_zero() {
-        return Err(invalid(OP, "the differences are constant (zero variance)"));
+        return Err(zero_variance(
+            OP,
+            "the differences are constant (zero variance)",
+        ));
     }
     t_test_one_sample(ctx, &d, &Q::zero(), alt)
 }
@@ -2406,8 +2488,9 @@ pub fn z_test_proportion(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for an empty sample, `k > n`, or a
-/// pooled proportion of `0` or `1` (zero variance).
+/// [`SymplexError::InvalidArgument`] for an empty sample or `k > n`;
+/// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a pooled
+/// proportion of `0` or `1` (up to 0.58 `InvalidArgument`).
 pub fn z_test_two_proportions(
     ctx: &Context,
     k1: usize,
@@ -2425,7 +2508,7 @@ pub fn z_test_two_proportions(
     }
     let pooled = (qu(k1) + qu(k2)) / (qu(n1) + qu(n2));
     if pooled.is_zero() || pooled.is_one() {
-        return Err(invalid(
+        return Err(zero_variance(
             OP,
             "the pooled proportion is 0 or 1 (zero variance)",
         ));
@@ -2469,7 +2552,7 @@ fn cross_moments(
     let sxx = data::variance(x, Ddof::Population)?;
     let syy = data::variance(y, Ddof::Population)?;
     if sxx.is_zero() || syy.is_zero() {
-        return Err(invalid(op, "a constant sample has no correlation"));
+        return Err(zero_variance(op, "a constant sample has no correlation"));
     }
     Ok(CrossMoments { sxy, sxx, syy })
 }
@@ -2492,14 +2575,16 @@ fn cross_moments(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than three
-/// pairs, a constant sample, or `|r| = 1` (infinite `t`).
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than three
+/// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+/// constant sample or `|r| = 1` (no residual variance: infinite `t`; up to
+/// 0.58 `InvalidArgument`).
 pub fn pearson_t_statistic(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     const OP: &str = "pearson_t_statistic";
     let CrossMoments { sxy, sxx, syy } = cross_moments(OP, x, y, 3)?;
     let resid = &sxx * &syy - square(&sxy);
     if resid.is_zero() {
-        return Err(invalid(OP, "|r| = 1, the t statistic is infinite"));
+        return Err(zero_variance(OP, "|r| = 1, the t statistic is infinite"));
     }
     let var = resid / qu(x.len() - 2);
     Ok((ex(ctx, &sxy) / ex(ctx, &var).sqrt()).simplify())
@@ -2531,8 +2616,9 @@ pub fn pearson_t_statistic(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, Symple
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than three
-/// pairs, or a constant sample.
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than three
+/// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+/// constant sample (up to 0.58 `InvalidArgument`).
 pub fn pearson_test(
     ctx: &Context,
     x: &[Q],
@@ -2976,8 +3062,9 @@ fn continuity_shift(num: &Q, alt: Alternative) -> Q {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for an empty sample or a pooled
-/// sample that is constant (`Asymptotic`);
+/// [`SymplexError::InvalidArgument`] for an empty sample;
+/// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a pooled sample
+/// that is constant (`Asymptotic`; up to 0.58 `InvalidArgument`);
 /// [`SymplexError::ComputationFailed`] for `Exact` with ties beyond its
 /// work budget (about `10⁸` big-integer additions: `N ≈ 100` with
 /// `n₁ = N/2`).
@@ -3037,7 +3124,7 @@ pub fn mann_whitney_u(
             let n = n1 + n2;
             let var = &n1n2 / qi(12) * (qu(n + 1) - tie_term_of(&pooled) / qmul(n, n - 1));
             if !var.is_positive() {
-                return Err(invalid(OP, "every observation is identical"));
+                return Err(zero_variance(OP, "every observation is identical"));
             }
             let mut num = &u1 - &n1n2 / qi(2);
             if continuity {
@@ -3085,8 +3172,10 @@ pub fn mann_whitney_u(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths or no non-zero
-/// differences; [`SymplexError::ComputationFailed`] for `Exact` with ties
+/// [`SymplexError::InvalidArgument`] for unequal lengths;
+/// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for no non-zero
+/// differences (up to 0.58 `InvalidArgument`);
+/// [`SymplexError::ComputationFailed`] for `Exact` with ties
 /// beyond its work budget (`n(n + 1)` doubled-rank cells times `n`
 /// additions, `10⁸`: `n ≈ 450`).
 pub fn wilcoxon_signed_rank(
@@ -3107,7 +3196,7 @@ pub fn wilcoxon_signed_rank(
     let d: Vec<Q> = d.into_iter().filter(|v| !v.is_zero()).collect();
     let n = d.len();
     if n == 0 {
-        return Err(invalid(OP, "every difference is zero"));
+        return Err(zero_variance(OP, "every difference is zero"));
     }
     let abs: Vec<Q> = d.iter().map(Signed::abs).collect();
     let ranks = data::ranks(&abs);
@@ -3155,7 +3244,7 @@ pub fn wilcoxon_signed_rank(
         RankMethod::Asymptotic { continuity } => {
             let var = (pronic(n) * (qi(2) * qu(n) + Q::one()) - tie_term_of(&abs) / qi(2)) / qi(24);
             if !var.is_positive() {
-                return Err(invalid(OP, "the variance of the rank sum is zero"));
+                return Err(zero_variance(OP, "the variance of the rank sum is zero"));
             }
             let mut num = &r_plus - pronic(n) / qi(4);
             if continuity {
@@ -3193,8 +3282,9 @@ pub fn wilcoxon_signed_rank(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for fewer than two groups, an empty
-/// group, or identical observations throughout.
+/// [`SymplexError::InvalidArgument`] for fewer than two groups or an empty
+/// group; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for identical
+/// observations throughout (up to 0.58 `InvalidArgument`).
 pub fn kruskal_wallis(ctx: &Context, groups: &[Vec<Q>]) -> Result<TestResult, SymplexError> {
     const OP: &str = "kruskal_wallis";
     let k = groups.len();
@@ -3217,7 +3307,7 @@ pub fn kruskal_wallis(ctx: &Context, groups: &[Vec<Q>]) -> Result<TestResult, Sy
     let h = qi(12) / pronic(n) * ssbn - qi(3) * qu(n + 1);
     let correction = Q::one() - tie_term_of(&pooled) / cubic_minus_linear(n);
     if correction.is_zero() {
-        return Err(invalid(OP, "every observation is identical"));
+        return Err(zero_variance(OP, "every observation is identical"));
     }
     let h = h / correction;
     Ok(TestResult {
@@ -3253,7 +3343,8 @@ pub fn kruskal_wallis(ctx: &Context, groups: &[Vec<Q>]) -> Result<TestResult, Sy
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than three treatments, no
-/// blocks, ragged blocks, or ties within every block throughout.
+/// blocks, or ragged blocks; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`])
+/// for ties within every block throughout (up to 0.58 `InvalidArgument`).
 pub fn friedman(ctx: &Context, blocks: &[Vec<Q>]) -> Result<TestResult, SymplexError> {
     const OP: &str = "friedman";
     let n = blocks.len();
@@ -3281,7 +3372,7 @@ pub fn friedman(ctx: &Context, blocks: &[Vec<Q>]) -> Result<TestResult, SymplexE
     }
     let correction = Q::one() - ties / (cubic_minus_linear(k) * qu(n));
     if correction.is_zero() {
-        return Err(invalid(OP, "every block is constant"));
+        return Err(zero_variance(OP, "every block is constant"));
     }
     let ssbn = column_sums.iter().fold(Q::zero(), |acc, r| acc + r * r);
     let nk1 = qmul(n, k + 1);
@@ -3318,8 +3409,9 @@ pub fn friedman(ctx: &Context, blocks: &[Vec<Q>]) -> Result<TestResult, SymplexE
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than three
-/// pairs, or a constant sample.
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than three
+/// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+/// constant sample (up to 0.58 `InvalidArgument`).
 pub fn spearman_test(
     ctx: &Context,
     x: &[Q],
@@ -3335,7 +3427,10 @@ pub fn spearman_test(
     let sxx = data::variance(&rx, Ddof::Population)?;
     let syy = data::variance(&ry, Ddof::Population)?;
     if sxx.is_zero() || syy.is_zero() {
-        return Err(invalid(OP, "a constant sample has no rank correlation"));
+        return Err(zero_variance(
+            OP,
+            "a constant sample has no rank correlation",
+        ));
     }
     let rho = data::spearman(ctx, x, y)?;
     let df = qu(n - 2);
@@ -3398,7 +3493,8 @@ pub fn spearman_test(
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// pairs, a constant sample, or ties with `exact`.
+/// pairs, or ties with `exact`; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`])
+/// for a constant sample (up to 0.58 `InvalidArgument`).
 pub fn kendall_test(
     ctx: &Context,
     x: &[Q],
@@ -3433,7 +3529,10 @@ pub fn kendall_test(
     let (xtie, x0, x1) = tie_stats(&data::tie_sizes(x));
     let (ytie, y0, y1) = tie_stats(&data::tie_sizes(y));
     if xtie == tot || ytie == tot {
-        return Err(invalid(OP, "a constant sample has no rank correlation"));
+        return Err(zero_variance(
+            OP,
+            "a constant sample has no rank correlation",
+        ));
     }
     let tau = data::kendall_tau(ctx, x, y)?;
     if !exact {
@@ -3444,7 +3543,7 @@ pub fn kendall_test(
             var += &x0 * &y0 / (qi(9) * &m * (&nq - qi(2)));
         }
         if !var.is_positive() {
-            return Err(invalid(OP, "the variance of the statistic is zero"));
+            return Err(zero_variance(OP, "the variance of the statistic is zero"));
         }
         let stat = RootRatio {
             num: qu(con) - qu(dis),
@@ -3632,7 +3731,8 @@ pub fn ks_one_sample(
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for a sample with fewer than two
-/// observations or two constant samples.
+/// observations; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for two
+/// constant samples (up to 0.58 `InvalidArgument`).
 pub fn cohens_d(ctx: &Context, x: &[Q], y: &[Q], pooled: bool) -> Result<Ex, SymplexError> {
     const OP: &str = "cohens_d";
     check_sample(OP, "the first sample", x, 2)?;
@@ -3648,7 +3748,10 @@ pub fn cohens_d(ctx: &Context, x: &[Q], y: &[Q], pooled: bool) -> Result<Ex, Sym
         (&v1 + &v2) / qi(2)
     };
     if var.is_zero() {
-        return Err(invalid(OP, "both samples are constant (zero variance)"));
+        return Err(zero_variance(
+            OP,
+            "both samples are constant (zero variance)",
+        ));
     }
     let num = data::mean(x)? - data::mean(y)?;
     Ok(RootRatio { num, var }.to_ex(ctx))
@@ -3701,15 +3804,16 @@ pub fn hedges_g(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for an empty `x`, fewer than two
-/// observations in `y`, or a constant `y`.
+/// [`SymplexError::InvalidArgument`] for an empty `x` or fewer than two
+/// observations in `y`; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for
+/// a constant `y` (up to 0.58 `InvalidArgument`).
 pub fn glass_delta(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     const OP: &str = "glass_delta";
     check_sample(OP, "the first sample", x, 1)?;
     check_sample(OP, "the control sample", y, 2)?;
     let var = data::variance(y, Ddof::Sample)?;
     if var.is_zero() {
-        return Err(invalid(
+        return Err(zero_variance(
             OP,
             "the control sample is constant (zero variance)",
         ));
@@ -3763,8 +3867,9 @@ pub fn rank_biserial(u1: &Q, n1: usize, n2: usize) -> Result<Q, SymplexError> {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for fewer than two groups, an empty
-/// group, or identical observations throughout.
+/// [`SymplexError::InvalidArgument`] for fewer than two groups or an empty
+/// group; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for identical
+/// observations throughout (up to 0.58 `InvalidArgument`).
 pub fn eta_squared(groups: &[Vec<Q>]) -> Result<Q, SymplexError> {
     const OP: &str = "eta_squared";
     let super::anova::GroupSums {
@@ -3774,7 +3879,7 @@ pub fn eta_squared(groups: &[Vec<Q>]) -> Result<Q, SymplexError> {
     } = super::anova::sums_of_squares(OP, groups)?;
     let total = &ss_between + &ss_within;
     if total.is_zero() {
-        return Err(invalid(OP, "every observation is identical"));
+        return Err(zero_variance(OP, "every observation is identical"));
     }
     Ok(ss_between / total)
 }

@@ -24,13 +24,13 @@
 //! (`Ex::eval_decimal`, the p-value printers).  A call inside a closure
 //! counts for the enclosing function.
 //!
-//! What is left is the review queue: user text that is not an evaluation
-//! (`plotting/data_export`), and round trips in files other agents owned
-//! when the ratchet was written (canon, eval, fu, residue, linalg, matrix,
-//! the stats family signs, `poly/roots`, the certified quadrature).  The
-//! counts are exact: a file may not gain a site, and a file that loses one
-//! must have its entry tightened (the failure message prints the table to
-//! paste).  Files without an entry must have no site.
+//! What is left is user text that is not an evaluation
+//! (`plotting/data_export`); the review queue of 0.58 (canon, eval,
+//! residue, linalg, matrix, the stats family signs, `poly/roots`, the
+//! certified quadrature, heurisch) was migrated at 0.59.  The counts are
+//! exact: a file may not gain a site, and a file that loses one must have
+//! its entry tightened (the failure message prints the table to paste).
+//! Files without an entry must have no site.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -45,29 +45,13 @@ use syn::visit::Visit;
 /// 0.57.0: 16 files, 12 `parse`, 17 `string`; M5 migrated `inequalities`
 /// (0 + 3), `sets` (1 + 2), `solve`, `evalf`, `nsimplify` and
 /// `calculus_util` (1 + 1 each) to `evalf::const_value`: 10 files, 7, 8.
+/// 0.59 (P3) migrated the other nine (`certified_quadrature`, `canon`'s turn
+/// estimate and interval ends, `residue`'s finiteness test, the zero tests
+/// of `linalg` and `matrix`, `stats::family::sign_of`, `poly::roots`,
+/// `eval::integer_part_of_constant`, `heurisch::eval_node_f64`): 1 file, 1, 0.
 const ALLOWLIST: &[(&str, [usize; 2])] = &[
-    // `certified_quadrature`: the 17-digit decimal of `evalf_quadrature` parsed as an `f64`.
-    ("api/expr_integrate_ext.rs", [1, 1]),
-    // `canon_pow`'s turn estimate and a start value: 20- and 17-digit decimals parsed (M1's file).
-    ("base/canon.rs", [2, 2]),
-    // `evaluates_finitely`: the printout searched for `inf`/`nan`.
-    ("calculus/residue.rs", [0, 1]),
-    // The zero test of a minimal-polynomial factor at `λ` compares the printout with `"0"`.
-    ("domains/linalg.rs", [0, 1]),
-    // A determinant's zero test at sample points compares the printout with `"0"`.
-    ("domains/matrix.rs", [0, 1]),
-    // `numeric_sign`: the sign read from the first character of a 5-digit printout.
-    ("domains/stats/family.rs", [0, 1]),
     // A table cell (user text, not an evaluation) exported as JSON `null` when it reads as ±inf/NaN.
     ("plotting/data_export.rs", [1, 0]),
-    // `bigfloat_to_f64` through `Display` (byte-identity-sensitive file; `bigfloat::to_f64` is the
-    // replacement).
-    ("poly/roots.rs", [1, 0]),
-    // `integer_part_of_constant` reads the printed digits (`DecimalParts`; M1's file).
-    ("transforms/eval.rs", [0, 1]),
-    // `eval_node_f64`: a rational's numerator and denominator to `f64` through their decimal
-    // (`numeric::ratio_to_f64` is the replacement).
-    ("transforms/heurisch.rs", [2, 0]),
 ];
 
 const COLUMNS: [&str; 2] = ["parse", "string"];

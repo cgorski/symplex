@@ -17,6 +17,11 @@ from the input are bounded before they size an allocation (no input aborts
 the process any more in a 9,956-case hunt; 119 did); performance assertions
 in the tests measure CPU time, not wall-clock time; and the library reads
 the value of a constant from the value, never from its printed decimal.
+On top of that: values below the exponent range are refused instead of
+printed as `0`, `solve` no longer claims roots at an infinite value, limits
+and series see hidden zeros inside functions of parameters, `Max`/`Min` of a
+non-real argument is `nan`, and the findings of the nightly fuzzing are fixed
+(the `gamma` and `F` kernels at the exact argument, three slow refusals).
 
 ### Breaking (behaviour)
 
@@ -32,6 +37,22 @@ the value of a constant from the value, never from its printed decimal.
   return an empty list beyond their documented size caps (they aborted the
   process); `try_primes_up_to`, `try_quadratic_residues`,
   `try_binomial_coefficients_list` report the refusal.
+- **`Max`/`Min` of an argument certified non-real is `nan`** (they read
+  their arguments as real): `max(1, I)`, `min(x, I)` stayed (16,256 golden
+  pairs, checked by a real-only oracle).
+- **A value with no finite value is `SymplexError::Infinite`** (new variant;
+  the enum is `#[non_exhaustive]`): `eval_decimal` of `expint(1, 0)`,
+  `elliptic_k(1)`, `elliptic_pi(n, 1)` was `Unevaluable`.
+- Zero-variance errors in the hypothesis tests (t-tests and
+  `pairwise_t_tests`, z, correlation and rank tests, effect sizes) and the
+  reliability coefficients are `DegenerateData { kind: ZeroVariance }` (were
+  `InvalidArgument`).
+- `p_value_exact()` is `None` on Fisher's numeric route (more than 2,000
+  support points): the p-value was an `f64` written as a rational, and a tail
+  within `10⁻⁵¹¹` of 1 came back as the exact 1.
+- `MultiPoly::gcd`/`lcm` no longer panic on exponents near `2³¹` (they
+  return the content's gcd / zero); `MultiPoly::try_gcd`/`try_lcm` report the
+  refusal.
 
 ### Fixed
 
@@ -52,6 +73,54 @@ the value of a constant from the value, never from its printed decimal.
   `10^434294452`), now refused at once.
 - Internal `f64` guides of constants are rounded once (`√2` was
   `1.4142135623730949`).
+- **Values below the exponent range are refused, not printed as `0`:**
+  `betainc_regularized(1.4·10³⁰, 18, 0, ½).eval_decimal(30)` was `"0"` with
+  `is_zero() = Some(true)` (it is about `10^(−4·10²⁹)`), likewise `lowergamma`,
+  `Beta(18, 1.4·10³⁰).sf(½)` and `t(10¹⁰⁰).sf(10⁵)`; `eval_f64` gives `0.0` by
+  its documented rule and `is_zero()` is `Some(false)`.  Underflow hunt
+  (44,140 cases): 330 changed, each proved below `2^(−2³¹)` by an mpmath bound.
+- **`solve` no longer claims a root whose value is infinite:** `x −
+  elliptic_pi(π, 1) = 0` gave `[elliptic_pi(π, 1)]` (`−∞`), likewise `x·Π − 1`
+  and `x² − Π`.
+- Closed forms at `zoo` (polynomials of degree `≥ 1`, `Li_s` of integer
+  order) are `zoo` or their limit: `legendre(3, zoo)` was `nan` (it is `zoo`),
+  `polylog(0, zoo)` is `−1`.
+- **Limits with a hidden zero inside a function of a parameter:**
+  `limit(tan(π/2 + y·besselj(−1/2, π/2 + x)), x, 0)` was `tan(y·J + π/2)` (a
+  pole: `J = 0`), `limit(x/(x + sin(yJ)), x, 0, +)` a wrong `Piecewise`; both
+  are refused, and a piece proved 0 is replaced by 0
+  (`limit(1/(x + sin(y(asinh 2 − ln(2 + √5)))), x, 0, +) = ∞`).  `f(y·c)` hunt
+  (1,240 cases): 234 wrong → 0.
+- `limit(H(x + y), x, 0)` is `Piecewise((H(y), y ≠ 0))` (refused since 0.56).
+- Slow refusals: Gruntz counts its zero tests against its work budget
+  (`limit(E1(ψ(x))^Ei(x), x, 0, −)` ran over 40 s, now 1.5 s);
+  `series(x⁵·√(atan(ln x)), x, 0, 8)` 0.7 s → 3 ms; expansions needing more
+  than 1,024 terms are refused at once (`series(sin x, x, 0, 2³¹)`);
+  `series(5/(3x·ln x·atanh(atanh x)), x, 1, 4)` (CI fuzz) over 40 s → 0.4 s:
+  Gruntz formatted expressions for disabled debug lines and multiplied out
+  products of `5·10⁵` terms.
+- **`numdist::gamma` and `numdist::f` take their tails at the exact argument**
+  (`x/θ`, `d₁x/(d₁x + d₂)`), recovering its rounding by fused multiply-adds:
+  near the mean of a large shape the rounding alone cost `1.6·10⁻¹²` (gamma,
+  `k = 1.7·10⁷`; scipy has the same error) and `3.3·10⁻⁹` (F, shapes near
+  `10¹³`).  The incomplete beta kernel is right at a subnormal argument.
+  Every kernel is now within `1.4·10⁻¹⁴` for tails `≥ 10⁻¹⁰` (696 cases,
+  mpmath at 30 and 50 digits).
+- `betainc_regularized(1.21·10¹⁷, 7.388·10¹³, 0, 3025000/3026847)` is
+  `0.49999998454291586439` (refused after 64 s); `F(3·10¹²⁸, 1)` at its
+  `10⁻³⁰⁰` quantile 5.7 s → 9 ms; `loggamma(1 + 10⁻⁷⁰)` evaluates;
+  `ln(beta(10¹², 10¹²)) = −1386294361132.44061726894374662` (refused: `B` is
+  below the range, its logarithm is not); `logit` with subnormal regressors
+  says why it refuses.
+- `transformed` of a finite table no longer compares every image with every
+  other (`√X` of a 2000-sided die timed out; 28 ms); `Uniform(0,1).cdf(2+i)`
+  was 1 (a printout was searched for `I`).
+- `hermite(−m, x)` evaluates (`H₋₁ = (√π/2)e^{x²}erfc x`, DLMF 12.7);
+  `elliptic_pi` next to the cut `(1, ∞)` with a non-real `m`
+  (`elliptic_pi(1/2 − i/3, 4 + i/10)`); `uppergamma(8, a₁ + … + a₂₅)` no longer
+  expands into 160 MB (24 s → 0.1 ms); `∫ dx/(x(x − √2))` (rational functions
+  with algebraic coefficients); an integral across a pole of `R(e^{λx})` is
+  `Divergent` when the comparison test proves it.
 
 ### Changed
 
@@ -65,7 +134,15 @@ the value of a constant from the value, never from its printed decimal.
   18, each commented), `test_alloc_bounds` (data-sized allocations: 37 → 4),
   `test_timing_asserts` (wall-clock measurements in tests: 526 → 11, the
   `Budget` deadlines), `test_decimal_roundtrip` (decimal printouts parsed
-  back: 29 → 15, the review queue).
+  back: 29 → 1, user text); the review queues emptied: raw special-atom
+  comparisons 263 → 81 (limit, Gruntz and definite migrated), allocation
+  lengths followed through `let` (16 more bounded, 30 allowlisted with
+  reasons), wall-clock asserts in `src/` test modules on CPU time.
+- The nightly statistics oracle's seed set: 8,143 cases (17,911 values) from
+  the families, hypothesis-test and model hunters, 217 known scipy errors
+  allowlisted with their mpmath values.
+- Rubi harness: 30,768 verified (+8, rational integrands with algebraic
+  coefficients).
 
 ## [0.57.0] - 2026-10-16
 

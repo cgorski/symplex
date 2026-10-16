@@ -151,6 +151,12 @@ impl Decimal {
         self.negative && !self.is_zero()
     }
 
+    /// The exponent `e` of `±digits·10^e`: `10^e` is a unit in the last
+    /// nonzero digit (`1` for the value 0).
+    pub(crate) fn exponent(&self) -> i64 {
+        self.exp
+    }
+
     /// `⌊log₁₀ |v|⌋` of a nonzero value (`|v| ∈ [10^m, 10^(m+1))`).
     pub(crate) fn magnitude(&self) -> i64 {
         let len = i64::try_from(self.digits.to_string().len()).unwrap_or(i64::MAX);

@@ -116,7 +116,7 @@ pub(crate) fn factor_primitive<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<Vec<M
             }
             _ => {
                 let x = main_variable(&g, &present);
-                let split = g.split_content_in(x);
+                let split = g.split_content_in(x)?;
                 let (c, p) = (split.content, split.primitive);
                 if c.total_degree().unwrap_or(0) > 0 {
                     work.push((normalize(&c), m));
@@ -181,7 +181,7 @@ fn main_variable<O: MonomialOrd>(g: &MultiPoly<O>, present: &[usize]) -> usize {
 /// `(sᵢ, i)` with `p = c · ∏ sᵢ^i`, each `sᵢ` normalized.
 fn square_free_in<O: MonomialOrd>(p: &MultiPoly<O>, x: usize) -> Option<Vec<(MultiPoly<O>, u32)>> {
     let dp = p.partial_derivative(x);
-    let g = MultiPoly::gcd(p, &dp);
+    let g = MultiPoly::try_gcd(p, &dp)?;
     if g.degree_in(x) == 0 {
         return Some(vec![(normalize(p), 1)]);
     }
@@ -191,7 +191,7 @@ fn square_free_in<O: MonomialOrd>(p: &MultiPoly<O>, x: usize) -> Option<Vec<(Mul
     let mut out = Vec::new();
     let mut i = 1u32;
     while b.degree_in(x) > 0 {
-        let a = MultiPoly::gcd(&b, &d);
+        let a = MultiPoly::try_gcd(&b, &d)?;
         if a.degree_in(x) > 0 {
             out.push((normalize(&a), i));
         }
@@ -475,7 +475,7 @@ fn factor_square_free<O: MonomialOrd>(g: &MultiPoly<O>, x: usize) -> Option<Vec<
                 cand = mul_trunc(&cand, &hs[remaining[k]], &ys, bound)?;
             }
             if target.div_exact(&cand).is_some() {
-                let h = normalize(&cand.split_content_in(x).primitive);
+                let h = normalize(&cand.split_content_in(x)?.primitive);
                 if h.degree_in(x) > 0
                     && let Some(q) = cur.div_exact(&h)
                 {

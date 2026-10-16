@@ -36,7 +36,7 @@
 //! | `tan`, `tanh` | `r·(1 + w²)`, `w = (T + t)/(1 − T·t)`, `T = abs(f(z))`, `t = tan r`; no bound when `r·T > 1/8` (the ball reaches an eighth of the distance to a pole); `r` for a real `tanh` |
 //! | `atan`, `asin`, `acos`, `asinh`, `acosh`, `atanh` | `r·Π(dᵢ − r)^(−k)` with the distances `dᵢ` to the two branch points (`abs(f′) = Π abs(z − pᵢ)^(−k)`); within a few error radii of a square-root branch point `p` the Hölder bound `2.06·√(2·(abs(z − p) + r))`, and no bound near a logarithmic one |
 //! | `sign`, `floor`, `ceiling`, `heaviside`, `DiracDelta`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold (0 for `DiracDelta`, whose value at an exact 0 or a non-real argument is refused, and unknown at an argument not exactly real) |
-//! | special functions `f(x₁, …, xₙ)` | `2·Σᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing; a 0 from exact nonzero arguments is an underflow for the functions that vanish at no rational point (`erfc`, `Γ`, `Ei`, `Ai`, `Bi`, `I_ν`, `K_ν`, `Γ(s, x)`, `E_ν`) and for `J_ν` with `ν > abs(x)`, exact otherwise |
+//! | special functions `f(x₁, …, xₙ)` | `2·Σᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing; a 0 from exact nonzero arguments is an underflow for the functions that vanish at no rational point (`erfc`, `Γ`, `Ei`, `Ai`, `Bi`, `I_ν`, `K_ν`, `Γ(s, x)`, `E_ν`), for `J_ν` with `ν > abs(x)`, and for `γ(s, x)`, `B(a, b)`, `B_(x₁, x₂)(a, b)` and `I_(x₁, x₂)(a, b)` where they have no zero (positive shapes, `x > 0`, `x₁ ≠ x₂` in `[0, 1]`), exact otherwise |
 //!
 //! The sensitivity `abs(∂f/∂x)` of a special function — its condition number
 //! `abs(∂ ln f/∂ ln x)` times `abs(f/x)`, which can be huge: `I_x(a, b)` near
@@ -1941,10 +1941,26 @@ fn finish(
 /// (the first positive zero `j_{ν,1}` exceeds `ν`, DLMF 10.21.3, and
 /// `J_n(−x) = (−1)ⁿ J_n(x)`).  Before 0.35 a `J_ν` below the range was
 /// refused where it arose: `1 + besselj(10⁹, 1)` was refused, truly `1`.
+///
+/// Nor are the integrals of a positive function over a nonempty interval:
+/// `γ(s, x)` for real `s > 0`, `x > 0`, `B(a, b)` for real `a, b > 0`, and
+/// `B_(x₁, x₂)(a, b)`, `I_(x₁, x₂)(a, b)` for real `a, b > 0` and real limits
+/// `x₁ ≠ x₂` in `[0, 1]` ([`betainc_sign`]).  Their routes return 0 there
+/// only when a prefactor `exp(…)` fell below the exponent range.  Up to 0.58
+/// such a 0 was exact: `betainc_regularized(1.4·10³⁰, 18, 0, ½)` printed
+/// `0` (truly `≈ 10^(−4.2·10²⁹)`), as did `lowergamma(10¹⁰, ½)` (truly
+/// `1.39·10^(−3010299967)`).
 fn underflowed(arena: &Arena, id: ExprId, cache: Cache<'_>) -> bool {
     let nonzero = |c: &ExprId| cache.get(c).is_some_and(|v| mag(v).is_some());
     match arena.node(id) {
         ExprNode::Lib(LibFn::BesselJ, args) => bessel_j_zero_free(args, cache),
+        ExprNode::Lib(LibFn::BetaInc | LibFn::BetaIncRegularized, args) => {
+            betainc_sign(args, cache).is_some()
+        }
+        ExprNode::Lib(LibFn::LowerGamma, args) => {
+            matches!(**args, [s, x] if positive_real(s, cache) && positive_real(x, cache))
+        }
+        ExprNode::Beta(a, b) => positive_real(*a, cache) && positive_real(*b, cache),
         ExprNode::Exp(_) => true,
         ExprNode::Mul(children) => children.iter().all(nonzero),
         ExprNode::Pow(base, _) => nonzero(base),
@@ -1966,6 +1982,42 @@ fn underflowed(arena: &Arena, id: ExprId, cache: Cache<'_>) -> bool {
             ) && args.last().is_some_and(nonzero)
         }
         _ => false,
+    }
+}
+
+/// Is the value of `c` a finite real number `> 0`?
+fn positive_real(c: ExprId, cache: Cache<'_>) -> bool {
+    cache
+        .get(&c)
+        .is_some_and(|v| v.1.is_zero() && is_finite(v) && super::bf_strictly_positive(&v.0))
+}
+
+/// The sign of `B_(x₁, x₂)(a, b)` and of `I_(x₁, x₂)(a, b)` (arguments
+/// `[a, b, x₁, x₂]`) where they have no zero: real shapes `a, b > 0` and
+/// real limits `x₁ ≠ x₂` in `[0, 1]` — the integral of the positive
+/// `t^(a−1)(1 − t)^(b−1)` (over `B(a, b) > 0`) from `x₁` to `x₂`, positive
+/// for `x₁ < x₂`.  `None` elsewhere (`B(a, b)` changes sign with the
+/// shapes, and the limits may coincide).
+fn betainc_sign(args: &[ExprId], cache: Cache<'_>) -> Option<Nonzero> {
+    let [a, b, x1, x2] = *args else {
+        return None;
+    };
+    let real = |c: ExprId| {
+        cache
+            .get(&c)
+            .filter(|v| v.1.is_zero() && is_finite(v))
+            .map(|v| &v.0)
+    };
+    let (x1, x2) = (real(x1)?, real(x2)?);
+    let one = BigFloat::from_i32(1, 64);
+    let in_unit = |x: &BigFloat| !x.is_negative() && x.cmp(&one).is_some_and(|c| c <= 0);
+    if !(positive_real(a, cache) && positive_real(b, cache) && in_unit(x1) && in_unit(x2)) {
+        return None;
+    }
+    match x1.cmp(x2)? {
+        c if c < 0 => Some(Nonzero::Positive),
+        c if c > 0 => Some(Nonzero::Negative),
+        _ => None,
     }
 }
 
@@ -2119,6 +2171,10 @@ pub(super) fn underflow_nonzero(
             }
         }
         ExprNode::Gamma(c) | ExprNode::Factorial(c) => finite(*c).then_some(Nonzero::Unsigned),
+        // Positive shapes ([`underflowed`]): `B(a, b) > 0`.
+        ExprNode::Beta(a, b) => {
+            (underflowed(arena, id, cache) && exact(*a) && exact(*b)).then_some(Nonzero::Positive)
+        }
         ExprNode::Ei(c) => match real_sign(*c) {
             Some(Nonzero::Negative) => Some(Nonzero::Negative),
             _ => (exact(*c) && status(*c).is_some()).then_some(Nonzero::Unsigned),
@@ -2126,6 +2182,14 @@ pub(super) fn underflow_nonzero(
         ExprNode::Lib(f, args) => {
             if !underflowed(arena, id, cache) || !args.iter().all(|&c| exact(c)) {
                 return None;
+            }
+            // The integrals of a positive function ([`underflowed`]): `γ(s,
+            // x) > 0`, the incomplete beta functions by the order of the
+            // limits.
+            match f {
+                LibFn::LowerGamma => return Some(Nonzero::Positive),
+                LibFn::BetaInc | LibFn::BetaIncRegularized => return betainc_sign(args, cache),
+                _ => {}
             }
             // At a positive real variable and a real order or parameter:
             // `Ai`, `K_ν`, `Γ(s, x)`, `E_ν(x)` are positive, `Ai′` is

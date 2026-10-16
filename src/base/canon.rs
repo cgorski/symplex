@@ -284,13 +284,16 @@ fn merges_undefined_terms(arena: &mut Arena, keys: &[ExprId]) -> bool {
     if vanishing_check_active() {
         return false;
     }
-    let mut seen: SmallVec<[ExprId; 4]> = SmallVec::new();
+    // A set, not a list: a sum of n terms collected into few keys merges
+    // about n times, and a linear `contains` made this quadratic (the
+    // expansion of a power in Gruntz's rewrite of `1/(ln x·atanh(atanh x))`
+    // at `x = 1` spent 40 s here).
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
     let mut memo = EverywhereMemo::default();
     for &key in keys {
-        if seen.contains(&key) {
+        if !seen.insert(key) {
             continue;
         }
-        seen.push(key);
         if term_infinite_or_undefined(arena, &mut memo, key) {
             return true;
         }
@@ -608,6 +611,7 @@ fn zero_times_rest<'a>(
     for d in denominators {
         if library_value_unknown_at_infinity(arena, d)
             || distribution_without_value(arena, d)
+            || without_limit_at_complex_infinity(arena, d)
             || memo.zero_or_undefined(arena, d)
             || vanishes_by_function_identity(arena, d)
         {
@@ -835,9 +839,9 @@ fn not_finite_at_infinity(arena: &Arena, f: ExprId) -> bool {
 /// nan`, `Li_s(0) = 0` for every `s`), and what stays is `zoo` or has no
 /// limit (`Γ(zoo)`, `atan(zoo)`, `uppergamma(zoo, ∞)`).  Either way `0·f`
 /// is `nan` (up to 0.56 it was 0; SymPy 1.14 also gives 0, against its
-/// `0·zoo = nan`).  A quotient `0/f` is not decided here: it is 0 where `f`
-/// tends to `zoo` (`W(zoo)`) and has no value where `f` has no limit, so
-/// it keeps the canonical 0.  An orthogonal polynomial of degree 0 is the
+/// `0·zoo = nan`).  A quotient `0/f` is 0 where `f` tends to `zoo`
+/// (`W(zoo)`) and has no value where `f` has no limit
+/// ([`without_limit_at_complex_infinity`]).  An orthogonal polynomial of degree 0 is the
 /// constant 1 at every argument and parameter (`eval` folds
 /// `legendre(0, zoo)` and `jacobi(0, zoo, 1, x)` to 1): not counted.
 fn unevaluated_at_complex_infinity(arena: &Arena, f: ExprId) -> bool {
@@ -866,6 +870,60 @@ fn unevaluated_at_complex_infinity(arena: &Arena, f: ExprId) -> bool {
                 .any(|&a| ValueClass::special_atom(arena, a) == Some(ValueClass::ComplexInf))
         })
         && !Truth::from(AssumptionCache::new().query(arena, f, Props::FINITE)).is_true()
+}
+
+/// Is the denominator `d` a function left unevaluated at `zoo`
+/// ([`unevaluated_at_complex_infinity`]) that does not tend to `zoo` there
+/// ([`tends_to_complex_infinity`])?  Then `0/d` has no value: `Γ` grows
+/// along the positive axis and tends to 0 along the imaginary one, `atan`,
+/// `erf` tend to different constants in different directions,
+/// `uppergamma(zoo, ∞)` has no order: `0/Γ(zoo)`, `0/atan(zoo)` are `nan`
+/// (up to 0.58 they were 0, as in SymPy 1.14).  Where `|d| → ∞` in every
+/// direction `0/d` is `0/zoo = 0`.
+fn without_limit_at_complex_infinity(arena: &Arena, d: ExprId) -> bool {
+    unevaluated_at_complex_infinity(arena, d) && !tends_to_complex_infinity(arena, d)
+}
+
+/// Does `f` tend to `zoo` (`|f| → ∞` in every direction) as its argument
+/// `zoo` is approached: `W_k(z) ∼ ln z` (any branch `k` known finite),
+/// `asin`, `acos`, `asinh`, `acosh` (`∼ ±ln 2z` up to `±i`), and the
+/// classical orthogonal polynomials of a positive integer degree in their
+/// variable (`legendre`, `chebyshev_t`, `chebyshev_u`, `hermite`, `laguerre`,
+/// `assoc_laguerre` with a finite `α`; their leading coefficient is not 0)?
+/// Only the variable slot may be `zoo`.
+fn tends_to_complex_infinity(arena: &Arena, f: ExprId) -> bool {
+    use crate::base::libfn::LibFn;
+    let zoo = |a: ExprId| ValueClass::special_atom(arena, a) == Some(ValueClass::ComplexInf);
+    let finite = |a: ExprId| ValueClass::of(arena, a).is_finite_proved();
+    let positive_degree = |n: ExprId| {
+        arena
+            .as_num(n)
+            .is_some_and(|q| q.is_integer() && q.is_positive())
+    };
+    match arena.node(f) {
+        ExprNode::LambertW(z)
+        | ExprNode::Asin(z)
+        | ExprNode::Acos(z)
+        | ExprNode::Asinh(z)
+        | ExprNode::Acosh(z) => zoo(*z),
+        ExprNode::Lib(LibFn::LambertW, args) => match **args {
+            [z] => zoo(z),
+            [z, k] => zoo(z) && finite(k),
+            _ => false,
+        },
+        ExprNode::Lib(
+            LibFn::Legendre
+            | LibFn::ChebyshevT
+            | LibFn::ChebyshevU
+            | LibFn::Hermite
+            | LibFn::Laguerre,
+            args,
+        ) => matches!(**args, [n, z] if positive_degree(n) && zoo(z)),
+        ExprNode::Lib(LibFn::AssocLaguerre, args) => {
+            matches!(**args, [n, a, z] if positive_degree(n) && finite(a) && zoo(z))
+        }
+        _ => false,
+    }
 }
 
 /// Is `f` a library function application at an exact infinity in an axis
@@ -2957,9 +3015,11 @@ fn special_atom_power(
             }
             _ => None,
         },
-        ValueClass::Finite | ValueClass::DirectedInf | ValueClass::NaN | ValueClass::Unknown => {
-            None
-        }
+        ValueClass::Finite
+        | ValueClass::DirectedInf
+        | ValueClass::NaN
+        | ValueClass::Infinite
+        | ValueClass::Unknown => None,
     }
 }
 
@@ -4031,7 +4091,7 @@ fn principal_angle(arena: &mut Arena, c: ExprId) -> Option<ExprId> {
         canon_pow(arena, two_pi, neg_one)
     };
     let turns = canon_mul(arena, &[shifted, two_pi_inv]);
-    let estimate: f64 = arena.evalf_expr(turns, 20).ok()?.trim().parse().ok()?;
+    let estimate = arena.const_f64(turns, 20)?;
     if !estimate.is_finite() || estimate.abs() > 1e12 {
         return None;
     }
@@ -5406,8 +5466,10 @@ fn assumed_mul_power(arena: &mut Arena, children: &[ExprId], exp: ExprId, e: &Q)
 /// `oo`): `Max(−3, ∞, y) = ∞`, `Min(y + ∞, y) = y`.  Up to 0.56 only exact
 /// infinities folded, and a `Max` with `∞` absorbed only arguments known
 /// real, so `tanh(Max(−3, ∞, y))` stayed (it is 1) and `solve` refused
-/// equations holding them.  An argument certified non-real (`ζ(3/7 + i)`)
-/// leaves no point where the order is defined: the node stays.
+/// equations holding them.  An argument certified non-real (`i`, `ζ(3/7 +
+/// i)`, a symbol declared non-real) leaves no point where the order is
+/// defined: `nan`, as for `zoo` (SymPy raises "not comparable"; up to 0.58
+/// `Max(1, i)` and `Min(∞, i)` stayed nodes, which `0·Max(1, i)` read as 0).
 fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
     if args.is_empty() {
@@ -5427,21 +5489,29 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
     }) {
         return Some(arena.nan);
     }
-    // An argument known non-real (`∞ + p·i` for a positive `p`, `i`) leaves no
-    // point where the order is defined: the infinities are not dropped or
-    // absorbing then (up to 0.56 `Min(∞, i)` was `i`).
+    // An argument known non-real (`∞ + p·i` for a positive `p`, `i`, a
+    // constant with a certified nonzero imaginary part) leaves no point where
+    // the order is defined (up to 0.56 `Min(∞, i)` was `i`).
     let non_real = {
         use crate::base::truth::Truth;
         let mut cache = AssumptionCache::new();
-        args.iter()
-            .any(|&a| Truth::from(cache.query(arena, a, Props::EXTENDED_REAL)).is_false())
+        args.iter().any(|&a| {
+            let real = Truth::from(cache.query(arena, a, Props::EXTENDED_REAL));
+            real.is_false()
+                || (!real.is_true()
+                    && arena.is_symbol_free(a)
+                    && arena.part_signs(a).is_some_and(|s| s.im.is_some()))
+        })
     };
+    if non_real {
+        return Some(arena.nan);
+    }
     let mut best: Option<(usize, Q)> = None;
     let mut kept: SmallVec<[ExprId; 4]> = SmallVec::new();
     let mut changed = false;
     let mut has_absorbing = false;
     for &a in args {
-        match real_infinity(arena, a).filter(|_| !non_real) {
+        match real_infinity(arena, a) {
             // `+∞` in a `Min`, `−∞` in a `Max`.
             Some(d) if (d == InfDir::Pos) == is_min => {
                 changed = true;
@@ -5476,17 +5546,7 @@ fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<Expr
         kept.push(a);
     }
     if has_absorbing {
-        use crate::base::truth::Truth;
-        let mut cache = AssumptionCache::new();
-        let non_real = kept.iter().any(|&a| {
-            arena.is_symbol_free(a)
-                && !Truth::from(cache.query(arena, a, Props::EXTENDED_REAL)).is_true()
-                && arena.part_signs(a).is_some_and(|s| s.im.is_some())
-        });
-        if !non_real {
-            return Some(absorbing);
-        }
-        kept.push(absorbing);
+        return Some(absorbing);
     }
     if let Some((idx, q)) = best {
         let nid = arena.intern_num(q);
@@ -5950,7 +6010,9 @@ fn slot(arena: &Arena, a: ExprId) -> Slot {
             Arg::ImaginaryInfinity(true) => Slot::Infinite(3),
             _ => Slot::Other,
         },
-        ValueClass::ComplexInf | ValueClass::NaN | ValueClass::Unknown => Slot::Other,
+        ValueClass::ComplexInf | ValueClass::NaN | ValueClass::Infinite | ValueClass::Unknown => {
+            Slot::Other
+        }
     }
 }
 
@@ -6819,7 +6881,7 @@ impl LowerEnd {
                 Some(LowerEnd::Finite(f, Some(q)))
             }
             _ if arena.is_symbol_free(start) => {
-                let f: f64 = arena.evalf_expr(start, 17).ok()?.trim().parse().ok()?;
+                let f = arena.const_f64(start, 17)?;
                 f.is_finite().then_some(LowerEnd::Finite(f, None))
             }
             _ => None,
@@ -7797,13 +7859,9 @@ mod tests {
     fn scaling_1000_term_sum() {
         let mut a = Arena::new();
         let symbols: Vec<ExprId> = (0..1000).map(|i| s(&mut a, &format!("x{i}"))).collect();
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let result = a.add(&symbols);
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed.as_millis() < 500,
-            "1000-term sum took {elapsed:?}, expected < 500ms"
-        );
+        timer.assert_within(std::time::Duration::from_millis(500), "1000-term sum");
         if let ExprNode::Add(args) = a.node(result) {
             assert_eq!(args.len(), 1000);
         }

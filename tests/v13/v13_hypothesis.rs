@@ -29,6 +29,7 @@ fn s_of(r: &TestResult) -> f64 {
 
 /// `DegenerateData` of the given kind (up to 0.56 these cases were
 /// `InvalidArgument` or `ComputationFailed`).
+#[track_caller]
 fn is_degenerate<T: std::fmt::Debug>(r: Result<T, SymplexError>, kind: Degeneracy) {
     match r {
         Err(SymplexError::DegenerateData { kind: k, .. }) if k == kind => {}
@@ -36,6 +37,7 @@ fn is_degenerate<T: std::fmt::Debug>(r: Result<T, SymplexError>, kind: Degenerac
     }
 }
 
+#[track_caller]
 fn is_invalid<T: std::fmt::Debug>(r: Result<T, SymplexError>) {
     match r {
         Err(SymplexError::InvalidArgument { .. }) => {}
@@ -481,25 +483,28 @@ fn t_test_paired_matches_scipy_and_the_one_sample_test_of_differences() {
 #[test]
 fn t_tests_reject_degenerate_input() {
     let ctx = Context::new();
-    is_invalid(t_test_one_sample(
-        &ctx,
-        &from_i64(&[3, 3, 3]),
-        &qi(0),
-        Alternative::TwoSided,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        t_test_one_sample(&ctx, &from_i64(&[3, 3, 3]), &qi(0), Alternative::TwoSided),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(t_test_one_sample(
         &ctx,
         &from_i64(&[3]),
         &qi(0),
         Alternative::TwoSided,
     ));
-    is_invalid(t_test_two_sample(
-        &ctx,
-        &from_i64(&[1, 1]),
-        &from_i64(&[2, 2]),
-        true,
-        Alternative::TwoSided,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        t_test_two_sample(
+            &ctx,
+            &from_i64(&[1, 1]),
+            &from_i64(&[2, 2]),
+            true,
+            Alternative::TwoSided,
+        ),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(t_test_two_sample(
         &ctx,
         &from_i64(&[1]),
@@ -513,12 +518,16 @@ fn t_tests_reject_degenerate_input() {
         &from_i64(&[2, 3, 4]),
         Alternative::TwoSided,
     ));
-    is_invalid(t_test_paired(
-        &ctx,
-        &from_i64(&[1, 2, 3]),
-        &from_i64(&[2, 3, 4]),
-        Alternative::TwoSided,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        t_test_paired(
+            &ctx,
+            &from_i64(&[1, 2, 3]),
+            &from_i64(&[2, 3, 4]),
+            Alternative::TwoSided,
+        ),
+        Degeneracy::ZeroVariance,
+    );
     // One constant sample is fine when the other varies.
     assert!(
         t_test_two_sample(
@@ -566,14 +575,11 @@ fn z_tests_for_proportions_match_statsmodels() {
         &qi(1),
         Alternative::TwoSided,
     ));
-    is_invalid(z_test_two_proportions(
-        &ctx,
-        0,
-        10,
-        0,
-        10,
-        Alternative::TwoSided,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        z_test_two_proportions(&ctx, 0, 10, 0, 10, Alternative::TwoSided),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -734,13 +740,17 @@ fn mann_whitney_with_ties_uses_the_tie_correction() {
     // method='exact' applies the no-ties distribution: 0.1205905205905206).
     let r = mann_whitney_u(&ctx, &x, &y, Alternative::TwoSided, RankMethod::Exact).unwrap();
     assert_eq!(r.p_value_exact(), Some(q(238, 2145)));
-    is_invalid(mann_whitney_u(
-        &ctx,
-        &from_i64(&[1, 1]),
-        &from_i64(&[1]),
-        Alternative::TwoSided,
-        RankMethod::Asymptotic { continuity: true },
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        mann_whitney_u(
+            &ctx,
+            &from_i64(&[1, 1]),
+            &from_i64(&[1]),
+            Alternative::TwoSided,
+            RankMethod::Asymptotic { continuity: true },
+        ),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(mann_whitney_u(
         &ctx,
         &[],
@@ -830,13 +840,17 @@ fn wilcoxon_one_sample_ties_and_validation() {
     let r =
         wilcoxon_signed_rank(&ctx, &dt, None, Alternative::TwoSided, RankMethod::Exact).unwrap();
     assert_eq!(r.p_value_exact(), Some(q(33, 128)));
-    is_invalid(wilcoxon_signed_rank(
-        &ctx,
-        &from_i64(&[0, 0]),
-        None,
-        Alternative::TwoSided,
-        RankMethod::Exact,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        wilcoxon_signed_rank(
+            &ctx,
+            &from_i64(&[0, 0]),
+            None,
+            Alternative::TwoSided,
+            RankMethod::Exact,
+        ),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(wilcoxon_signed_rank(
         &ctx,
         &dt,
@@ -877,10 +891,11 @@ fn kruskal_wallis_matches_scipy() {
     let r = kruskal_wallis(&ctx, &g3).unwrap();
     assert_eq!(r.statistic_exact(), Some(q(373, 100)));
     close(p_of(&r), 0.154_896_209_884_906_6, 1e-12);
-    is_invalid(kruskal_wallis(
-        &ctx,
-        &[from_i64(&[1, 1]), from_i64(&[1, 1])],
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        kruskal_wallis(&ctx, &[from_i64(&[1, 1]), from_i64(&[1, 1])]),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(kruskal_wallis(&ctx, &[from_i64(&[1, 2])]));
     is_invalid(kruskal_wallis(&ctx, &[from_i64(&[1, 2]), vec![]]));
 }
@@ -912,10 +927,11 @@ fn friedman_matches_scipy() {
     close(p_of(&r), 0.268_262_453_469_960_9, 1e-12);
     is_invalid(friedman(&ctx, &[from_i64(&[1, 2]), from_i64(&[2, 1])]));
     is_invalid(friedman(&ctx, &[from_i64(&[1, 2, 3]), from_i64(&[2, 1])]));
-    is_invalid(friedman(
-        &ctx,
-        &[from_i64(&[1, 1, 1]), from_i64(&[2, 2, 2])],
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        friedman(&ctx, &[from_i64(&[1, 1, 1]), from_i64(&[2, 2, 2])]),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -961,12 +977,16 @@ fn spearman_test_matches_scipy() {
     )
     .unwrap();
     assert_eq!(r.p_value, ctx.one());
-    is_invalid(spearman_test(
-        &ctx,
-        &from_i64(&[1, 1, 1]),
-        &from_i64(&[1, 2, 3]),
-        Alternative::TwoSided,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        spearman_test(
+            &ctx,
+            &from_i64(&[1, 1, 1]),
+            &from_i64(&[1, 2, 3]),
+            Alternative::TwoSided,
+        ),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(spearman_test(
         &ctx,
         &from_i64(&[1, 2]),
@@ -1003,13 +1023,17 @@ fn kendall_test_exact_and_asymptotic_match_scipy() {
     close(s_of(&r), -0.471_404_520_791_031_6, 1e-12);
     close(p_of(&r), 0.282_745_459_932_774_67, 1e-12);
     is_invalid(kendall_test(&ctx, &xt, &yt, Alternative::TwoSided, true));
-    is_invalid(kendall_test(
-        &ctx,
-        &from_i64(&[1, 1, 1]),
-        &from_i64(&[1, 2, 3]),
-        Alternative::TwoSided,
-        false,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        kendall_test(
+            &ctx,
+            &from_i64(&[1, 1, 1]),
+            &from_i64(&[1, 2, 3]),
+            Alternative::TwoSided,
+            false,
+        ),
+        Degeneracy::ZeroVariance,
+    );
     // scipy: kendalltau(xk, yk, method='exact') → (0.7333333333333333, 0.002212852733686067 = 803/362880);
     //        alternative='greater' → 0.0011064263668430336 = 803/725760
     let xk = from_f64(&[1.2, 2.3, 3.1, 4.8, 5.0, 6.2, 7.7, 8.1, 9.4, 10.0]).unwrap();
@@ -1208,8 +1232,16 @@ fn cohens_d_hedges_g_glass_delta_match_numpy() {
     // Exactness: d² is rational.
     let d = cohens_d(&ctx, &x, &y, true).unwrap();
     assert!(d.powi(2).simplify().as_rational().is_some());
-    is_invalid(cohens_d(&ctx, &from_i64(&[1, 1]), &from_i64(&[2, 2]), true));
-    is_invalid(glass_delta(&ctx, &x, &from_i64(&[2, 2])));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        cohens_d(&ctx, &from_i64(&[1, 1]), &from_i64(&[2, 2]), true),
+        Degeneracy::ZeroVariance,
+    );
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        glass_delta(&ctx, &x, &from_i64(&[2, 2])),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -1255,7 +1287,11 @@ fn eta_squared_matches_anova() {
         from_i64(&[13, 9, 11, 8, 7, 12]),
     ];
     assert_eq!(eta_squared(&g).unwrap(), q(84, 152));
-    is_invalid(eta_squared(&[from_i64(&[1, 1]), from_i64(&[1, 1])]));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        eta_squared(&[from_i64(&[1, 1]), from_i64(&[1, 1])]),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

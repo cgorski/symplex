@@ -62,6 +62,7 @@ fn s_of(r: &TestResult) -> f64 {
 
 /// `DegenerateData` of the given kind (up to 0.56 these cases were
 /// `InvalidArgument` or `ComputationFailed`).
+#[track_caller]
 fn is_degenerate<T: std::fmt::Debug>(r: Result<T, SymplexError>, kind: Degeneracy) {
     match r {
         Err(SymplexError::DegenerateData { kind: k, .. }) if k == kind => {}
@@ -69,6 +70,7 @@ fn is_degenerate<T: std::fmt::Debug>(r: Result<T, SymplexError>, kind: Degenerac
     }
 }
 
+#[track_caller]
 fn is_invalid<T: std::fmt::Debug>(r: Result<T, SymplexError>) {
     match r {
         Err(SymplexError::InvalidArgument { .. }) => {}
@@ -591,13 +593,11 @@ fn t_test_two_sample_one_constant_sample_and_very_unbalanced_sizes() {
     close(s_of(&r), -4.949_747_468_305_833, 1e-12);
     close(p_of(&r), 0.000_105_455_218_270_788_08, 1e-12);
     assert_eq!(r.df, Some(ctx.from_ratio(q(304, 17))));
-    is_invalid(t_test_two_sample(
-        &ctx,
-        &xc,
-        &from_i64(&[7, 7]),
-        false,
-        Alternative::TwoSided,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        t_test_two_sample(&ctx, &xc, &from_i64(&[7, 7]), false, Alternative::TwoSided),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -618,7 +618,11 @@ fn t_test_paired_with_a_zero_difference() {
     let one = t_test_one_sample(&ctx, &d, &qi(0), Alternative::Greater).unwrap();
     assert_eq!(one, r);
     is_invalid(t_test_paired(&ctx, &bef, &aft[..7], Alternative::TwoSided));
-    is_invalid(t_test_paired(&ctx, &bef, &bef, Alternative::TwoSided));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        t_test_paired(&ctx, &bef, &bef, Alternative::TwoSided),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -663,22 +667,16 @@ fn z_tests_for_proportions_new_counts_all_alternatives() {
         &qi(1),
         Alternative::TwoSided,
     ));
-    is_invalid(z_test_two_proportions(
-        &ctx,
-        0,
-        10,
-        0,
-        10,
-        Alternative::TwoSided,
-    ));
-    is_invalid(z_test_two_proportions(
-        &ctx,
-        10,
-        10,
-        10,
-        10,
-        Alternative::TwoSided,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        z_test_two_proportions(&ctx, 0, 10, 0, 10, Alternative::TwoSided),
+        Degeneracy::ZeroVariance,
+    );
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        z_test_two_proportions(&ctx, 10, 10, 10, 10, Alternative::TwoSided),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(z_test_two_proportions(
         &ctx,
         11,
@@ -717,7 +715,11 @@ fn anova_one_way_unbalanced_four_groups_exact() {
     assert_eq!(r.eta_squared, qi(0));
     close(r.p_value_f64().unwrap(), 1.0, 1e-15);
     // η² alone rejects an all-identical sample; ANOVA rejects zero within variance.
-    is_invalid(eta_squared(&[from_i64(&[2, 2]), from_i64(&[2])]));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        eta_squared(&[from_i64(&[2, 2]), from_i64(&[2])]),
+        Degeneracy::ZeroVariance,
+    );
     is_degenerate(
         anova_one_way(&ctx, &[from_i64(&[1, 1]), from_i64(&[3, 3])]),
         Degeneracy::ZeroVariance,
@@ -861,13 +863,17 @@ fn mann_whitney_degenerate_sizes_and_central_statistic() {
     .unwrap();
     assert_eq!(r.p_value_exact(), Some(q(1, 10)));
     // All identical: the asymptotic variance vanishes.
-    is_invalid(mann_whitney_u(
-        &ctx,
-        &from_i64(&[2, 2]),
-        &from_i64(&[2]),
-        Alternative::TwoSided,
-        asym(true),
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        mann_whitney_u(
+            &ctx,
+            &from_i64(&[2, 2]),
+            &from_i64(&[2]),
+            Alternative::TwoSided,
+            asym(true),
+        ),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(mann_whitney_u(
         &ctx,
         &[],
@@ -957,13 +963,11 @@ fn wilcoxon_paired_with_zeros_and_ties_matches_the_difference_form_and_sign_coun
     let e =
         wilcoxon_signed_rank(&ctx, &x, Some(&y), Alternative::TwoSided, RankMethod::Exact).unwrap();
     assert_eq!(e.p_value_exact(), Some(q(5, 64)));
-    is_invalid(wilcoxon_signed_rank(
-        &ctx,
-        &x,
-        Some(&x),
-        Alternative::TwoSided,
-        asym(true),
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        wilcoxon_signed_rank(&ctx, &x, Some(&x), Alternative::TwoSided, asym(true)),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(wilcoxon_signed_rank(
         &ctx,
         &x,
@@ -1033,7 +1037,11 @@ fn kruskal_wallis_four_unbalanced_groups_with_ties() {
     let r = kruskal_wallis(&ctx, &[from_i64(&[1]), from_i64(&[2])]).unwrap();
     assert_eq!(r.statistic_exact(), Some(qi(1)));
     close(p_of(&r), 0.317_310_507_862_914_1, 1e-12);
-    is_invalid(kruskal_wallis(&ctx, &[from_i64(&[4, 4]), from_i64(&[4])]));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        kruskal_wallis(&ctx, &[from_i64(&[4, 4]), from_i64(&[4])]),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -1055,10 +1063,11 @@ fn friedman_five_blocks_four_treatments_with_ties() {
     let r = friedman(&ctx, &[from_i64(&[1, 2, 3])]).unwrap();
     assert_eq!(r.statistic_exact(), Some(qi(2)));
     close(p_of(&r), 0.367_879_441_171_442_45, 1e-12);
-    is_invalid(friedman(
-        &ctx,
-        &[from_i64(&[1, 1, 1]), from_i64(&[5, 5, 5])],
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        friedman(&ctx, &[from_i64(&[1, 1, 1]), from_i64(&[5, 5, 5])]),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(friedman(&ctx, &[]));
 }
 
@@ -1118,12 +1127,11 @@ fn spearman_test_perfect_negative_and_minimal_n() {
         &from_i64(&[2, 1]),
         Alternative::TwoSided,
     ));
-    is_invalid(spearman_test(
-        &ctx,
-        &from_i64(&[2, 2, 2]),
-        &x,
-        Alternative::TwoSided,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        spearman_test(&ctx, &from_i64(&[2, 2, 2]), &x, Alternative::TwoSided),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -1215,13 +1223,17 @@ fn kendall_ties_asymptotic_and_exact_boundary_cases() {
     assert_eq!(r.p_value_exact(), Some(q(5, 8)));
     let r = kendall_test(&ctx, &i4, &y0, Alternative::Less, true).unwrap();
     assert_eq!(r.p_value_exact(), Some(q(5, 8)));
-    is_invalid(kendall_test(
-        &ctx,
-        &from_i64(&[2, 2, 2]),
-        &i4[..3],
-        Alternative::TwoSided,
-        false,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        kendall_test(
+            &ctx,
+            &from_i64(&[2, 2, 2]),
+            &i4[..3],
+            Alternative::TwoSided,
+            false,
+        ),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -1317,13 +1329,16 @@ fn effect_sizes_x8_y6_exact_squares_match_numpy() {
     assert_eq!((&gl * &gl).simplify(), ctx.rational(242, 327));
     // Glass's Δ needs only one treatment observation; a constant control is rejected.
     assert!(glass_delta(&ctx, &from_i64(&[9]), &y).is_ok());
-    is_invalid(glass_delta(&ctx, &x, &from_i64(&[4, 4])));
-    is_invalid(cohens_d(
-        &ctx,
-        &from_i64(&[1, 1]),
-        &from_i64(&[2, 2]),
-        false,
-    ));
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        glass_delta(&ctx, &x, &from_i64(&[4, 4])),
+        Degeneracy::ZeroVariance,
+    );
+    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    is_degenerate(
+        cohens_d(&ctx, &from_i64(&[1, 1]), &from_i64(&[2, 2]), false),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]

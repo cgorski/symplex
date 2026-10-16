@@ -7448,7 +7448,7 @@ fn rational_riccati_particulars(a: &RatFn) -> Option<Vec<RatFn>> {
     // d-vectors: (d_0 … d_N, d_{−1}).
     let mut d_choices: Vec<(Vec<Q>, Q)> = Vec::new();
     if val_inf < 0 {
-        let n = usize::try_from(-val_inf / 2).ok()?;
+        let n = crate::base::cast::bounded_len(-val_inf / 2, crate::base::cast::MAX_SERIES_TERMS)?;
         let r = laurent_at_infinity(a, n + 2)?;
         // ser(j) = coefficient of x^j = r_{2N − j}.
         let ser = |j: i64| -> Q {

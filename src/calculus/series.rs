@@ -127,7 +127,7 @@ use crate::base::truth::SignSet;
 use crate::base::truth::Truth;
 use crate::base::walk;
 use crate::calculus::calculus_util::{
-    NonzeroExpr, ZeroDecision, ZeroTest, div_by, recip, settle_constant,
+    EvaluationScope, NonzeroExpr, ZeroDecision, ZeroTest, div_by, recip, settle_constant,
 };
 use crate::transforms::{eval, subs};
 
@@ -156,6 +156,17 @@ const MIN_WORKING_ORDER: i64 = 4;
 
 /// Number of precision-escalation rounds before giving up on a deep pole.
 const MAX_PRECISION_ATTEMPTS: usize = 3;
+
+/// The highest working precision (terms of every intermediate series) an
+/// expansion is carried out at; a request beyond it, or an escalation past
+/// it (a pole of order `N` widens the window by `N`), is refused at once.
+/// The work of a composition grows like the cube of the terms: `sin x` to
+/// order 1,000 takes 1 s, to 2,000 8 s, to 4,000 38 s, and up to 0.58
+/// `series(sin x, x, 0, 2³¹)`, `series(x^(−N) + eˣ, x, 0, 3)`,
+/// `sin(x)/x^N` and `1/sin(x)^N` (`N = 65537`) and
+/// `series_at_infinity(sin(1/x), x, 65537)` ran for hours (with little
+/// memory: [`MAX_DENSE_KNOWN`] bounds only the allocation).
+const MAX_WORKING_ORDER: i64 = 1 << 10;
 
 /// Interns one expansion of Gruntz's last resort
 /// ([`expand_leading_last_resort`]) may attempt before its compositions
@@ -495,6 +506,7 @@ pub(crate) fn series(
     point: ExprId,
     order: u32,
 ) -> Result<ExprId, SymplexError> {
+    let _evaluations = EvaluationScope::enter(SERIES_EVALUATION_UNITS);
     let mode = Mode {
         side: Side::Both,
         log_var: None,
@@ -505,6 +517,20 @@ pub(crate) fn series(
     };
     series_with_pole_retry(arena, expr, var, point, order, mode)
 }
+
+/// The evaluation work ([`EvaluationScope`] units: 64 distinct nodes of a
+/// constant tested for zero) one call of [`series`], [`series_dir`],
+/// [`series_at_infinity`] or [`laurent_series`] may spend, the limits of
+/// its differentiation fallback included; beyond it a coefficient is
+/// undecided and the expansion refused.  Up to 0.58 `series(gegenbauer(3/2,
+/// 0, 2/x)/Shi(Π(x | π)), x, 0, 4)` and `series(arg(Shi(jacobi(3/2, 0, 3,
+/// x))), x, 0, 4)` ran for minutes (0.53: 0.3 s and 75 s), testing
+/// coefficients of thousands of distinct nodes holding the complex `K(π)`,
+/// `E(π)` in every pole retry; now about 6 s each.  A smaller budget refuses
+/// them sooner but makes expansions that succeed slower: a refused first
+/// attempt sends `series(Π(−x | x − π)/x, x, 0, 4)` (1.1 s) through the
+/// retries for 11 s.
+const SERIES_EVALUATION_UNITS: u64 = 10_000;
 
 /// [`series`] as `var → point` from one side, log-extended:
 /// [`Direction::Right`] (`var > point`; the result may contain
@@ -527,6 +553,7 @@ pub(crate) fn series_dir(
     dir: crate::calculus::limit::Direction,
 ) -> Result<ExprId, SymplexError> {
     use crate::calculus::limit::Direction;
+    let _evaluations = EvaluationScope::enter(SERIES_EVALUATION_UNITS);
     let mode = match dir {
         Direction::Both => return series(arena, expr, var, point, order),
         Direction::Right => Mode {
@@ -835,6 +862,7 @@ pub(crate) fn series_at_infinity(
     order: u32,
     negative: bool,
 ) -> Result<ExprId, SymplexError> {
+    let _evaluations = EvaluationScope::enter(SERIES_EVALUATION_UNITS);
     let err = match series_at_infinity_integer(arena, expr, var, order, negative) {
         Ok(s) => return Ok(s),
         Err(e) => e,
@@ -1061,10 +1089,7 @@ fn series_at_infinity_integer(
 
 /// `true` if the expression contains `∞`, `−∞`, `zoo`, or `NaN` anywhere.
 fn contains_singular_atom(arena: &Arena, id: ExprId) -> bool {
-    walk::contains(arena, id, arena.infinity)
-        || walk::contains(arena, id, arena.neg_infinity)
-        || walk::contains(arena, id, arena.complex_infinity)
-        || walk::contains(arena, id, arena.nan)
+    crate::base::value_class::holds_special_atom(arena, id)
 }
 
 /// Compute a Laurent series expansion of `expr` in `var` around `point`.
@@ -1084,6 +1109,7 @@ pub(crate) fn laurent_series(
     point: ExprId,
     order: u32,
 ) -> Result<ExprId, SymplexError> {
+    let _evaluations = EvaluationScope::enter(SERIES_EVALUATION_UNITS);
     let mode = Mode {
         side: Side::Both,
         log_var: None,
@@ -2109,6 +2135,13 @@ fn expand_from_side(
     // sub-expression is visible (at precision 1 the variable itself would
     // truncate to nothing and `1/x` could not be expanded).
     let mut working = order.max(MIN_WORKING_ORDER);
+    let beyond_working_order = || SymplexError::ComputationFailed {
+        operation: "series",
+        reason: format!("the expansion needs more than {MAX_WORKING_ORDER} terms"),
+    };
+    if working > MAX_WORKING_ORDER {
+        return Err(beyond_working_order());
+    }
     let mut last_err = None;
     let mut best: Option<TSeries> = None;
     // The nodes whose differentiation fallback refused at an order below
@@ -2149,16 +2182,25 @@ fn expand_from_side(
             }
             Ok(ts) => {
                 // Precision was lost through poles; increase and retry.
-                working += order - ts.known + 1;
+                working = working
+                    .saturating_add(order.saturating_sub(ts.known))
+                    .saturating_add(1);
                 if mode.partial && best.as_ref().is_none_or(|b| b.known < ts.known) {
                     best = Some(ts);
+                }
+                if working > MAX_WORKING_ORDER {
+                    last_err = Some(beyond_working_order());
+                    break;
                 }
             }
             Err(e) if hidden_valuation && !*split => {
                 // A sub-expression's leading term lay beyond the working
                 // window (e.g. `1/(x⁵ + x⁶)` at low order): widen and retry.
+                working = working.saturating_mul(2).saturating_add(4);
+                if working > MAX_WORKING_ORDER {
+                    return Err(e);
+                }
                 last_err = Some(e);
-                working = working * 2 + 4;
             }
             Err(e) => return Err(e),
         }
@@ -2369,6 +2411,74 @@ fn hides_var_power(
 /// Stand-in for the argument of `f` in [`compose_at_constant`].
 const COMPOSE_PLACEHOLDER: &str = "__series_u";
 
+/// `f(arg)` in a log-extended expansion from above when `arg` is a function
+/// of `ln var` alone (`atan(ln x)`, `√(atan(ln x))`): with `l = ln var` it
+/// is the constant `f(arg[ln var → l])` of the expansion, exactly, known to
+/// `known` terms.  Only for an `f` whose values at such an argument are of a
+/// lower class than every power of `var` (the inverse trigonometric and
+/// hyperbolic functions, `ln`, a power with a numeric exponent; never one
+/// that hides a power, as `e^l = var` or `tanh l` do,
+/// [`hides_var_power`]), and an `arg` without a hidden power either.  That
+/// constant is Gruntz's (`limits` off: a coefficient of a lower class); in
+/// a series, whose coefficients are polynomials in `l`, the node is `O(1)`
+/// with no term known (`x⁵·atan(ln x)` to order 4 is still 0, `atan(ln x)`
+/// itself is refused).  `None` otherwise (the differentiation fallback is
+/// tried as before).
+///
+/// The fallback cannot expand such a node (`f(ln x)′ = f′(ln x)/x` is
+/// unbounded at `0⁺`), and each refusal took the limits of its
+/// derivatives: up to 0.58 `series(x⁵·√(atan(ln x)), x, 0, 8)` took 0.7 s
+/// to refuse.
+fn function_of_log(
+    arena: &mut Arena,
+    id: ExprId,
+    arg: ExprId,
+    var: ExprId,
+    mode: Mode,
+    known: i64,
+) -> Option<Option<TSeries>> {
+    let l = mode.log_var?;
+    if mode.side != Side::Above {
+        return None;
+    }
+    let log_class = match *arena.node(id) {
+        ExprNode::Atan(_)
+        | ExprNode::Asinh(_)
+        | ExprNode::Acosh(_)
+        | ExprNode::Atanh(_)
+        | ExprNode::Asin(_)
+        | ExprNode::Acos(_)
+        | ExprNode::Ln(_) => true,
+        ExprNode::Pow(b, e) => b == arg && arena.as_num(e).is_some(),
+        _ => false,
+    };
+    if !log_class {
+        return None;
+    }
+    let ln_var = arena.ln(var);
+    let a = subs::subs(arena, arg, ln_var, l);
+    let a = eval::eval(arena, a);
+    if walk::contains(arena, a, var) {
+        return None;
+    }
+    let mut hidden = rustc_hash::FxHashSet::default();
+    if walk::post_order_ids(arena, a)
+        .into_iter()
+        .any(|n| hides_var_power(arena, n, mode, &mut hidden))
+    {
+        return None;
+    }
+    if mode.limits {
+        return Some(Some(TSeries::zero(arena, 0)));
+    }
+    let f = subs::subs(arena, id, arg, a);
+    let f = eval::eval(arena, f);
+    if walk::contains(arena, f, var) || contains_singular_atom(arena, f) {
+        return None;
+    }
+    Some(Some(TSeries::constant(arena, f, known)))
+}
+
 /// `f(u)` for a node with no structural rule and one `var`-dependent
 /// argument whose expansion `u = u₀ + w` (`w → 0`) is known:
 /// `Σ f⁽ᵏ⁾(u₀)/k!·wᵏ`, with the Taylor coefficients of `f` at the constant
@@ -2437,7 +2547,7 @@ fn compose_at_constant(
     let has_log =
         |arena: &Arena, c: ExprId| mode.log_var.is_some_and(|l| walk::contains(arena, c, l));
     if has_log(arena, u0) {
-        return None;
+        return function_of_log(arena, id, arg, var, mode, u.known);
     }
     let definite = w.coeffs.iter().any(|&c| has_log(arena, c));
     let refuse = if definite { Some(None) } else { None };
@@ -6294,6 +6404,7 @@ fn taylor_by_differentiation(
 ) -> Option<TSeries> {
     let side = mode.side;
     let zero = arena.zero;
+
     let mut refused_at = |k: i64| {
         if k <= n {
             *failed_at = Some(k);
@@ -6743,9 +6854,9 @@ mod tests {
         let opx = a.add(&[one, x]);
         let big = a.int(MAX_INT_POWER + 36); // 100
         let f = a.pow(opx, big);
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let s = series(&mut a, f, x, zero, 3).unwrap();
-        assert!(start.elapsed().as_secs_f64() < 1.0);
+        timer.assert_within(std::time::Duration::from_secs(1), "series of (1 + x)^100");
         assert_eq!(display(&a, s), "4950*x^2 + 100*x + 1");
         // negative: (1+x)^(-70) = 1 − 70x + 2485x²
         let neg = a.int(-(MAX_INT_POWER + 6));
@@ -6801,9 +6912,9 @@ mod tests {
         );
         // A genuine failure is still reported after the bounded retries.
         let l = a.ln(x);
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         assert!(series(&mut a, l, x, zero, 1).is_err());
-        assert!(start.elapsed().as_secs_f64() < 1.0);
+        timer.assert_within(std::time::Duration::from_secs(1), "series of ln x refused");
     }
 
     #[test]

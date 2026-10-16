@@ -1544,7 +1544,7 @@ mod tests {
             })
             .collect();
         let p = Poly::from_coeffs(coeffs);
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let chain = SturmChain::new(&p);
         let ivs = chain.isolate_all_real_roots();
         let width = q(1, 1024);
@@ -1553,7 +1553,10 @@ mod tests {
             assert!(fine.width() <= width);
             assert_eq!(chain.count_roots_in(&fine.lower, &fine.upper), 1);
         }
-        assert!(start.elapsed().as_secs() < 30, "took {:?}", start.elapsed());
+        timer.assert_within(
+            std::time::Duration::from_secs(30),
+            "isolation and refinement",
+        );
         assert_eq!(chain.count_real_roots(), ivs.len());
         assert_eq!(chain.count_real_roots(), HUGE_DENOMINATORS_ROOTS);
     }
@@ -1596,7 +1599,7 @@ mod tests {
     fn degree_40_tail_isolation_is_fast_and_correct() {
         let f = binomial_tail(40, 12, 40);
         assert_eq!(f.degree(), Some(40));
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let chain = SturmChain::new(&f);
         let ivs = chain.isolate_all_real_roots();
         assert_eq!(ivs.len(), 2, "{ivs:?}");
@@ -1605,7 +1608,10 @@ mod tests {
             .iter()
             .map(|iv| chain.refine_interval(iv, &width))
             .collect();
-        assert!(start.elapsed().as_secs() < 5, "took {:?}", start.elapsed());
+        timer.assert_within(
+            std::time::Duration::from_secs(5),
+            "isolation and refinement",
+        );
         for (iv, fine) in ivs.iter().zip(&refined) {
             assert!(&fine.upper - &fine.lower <= width);
             assert!(iv.lower <= fine.lower && fine.upper <= iv.upper);
@@ -1662,10 +1668,10 @@ mod tests {
             -big(5901, 0),
             r(1),
         ]);
-        let start = std::time::Instant::now();
+        let timer = crate::base::perf_assert::CpuTimer::start();
         let chain = SturmChain::new(&p);
         let n = chain.count_real_roots();
-        assert!(start.elapsed().as_secs() < 5, "took {:?}", start.elapsed());
+        timer.assert_within(std::time::Duration::from_secs(5), "count_real_roots");
         // SymPy: count_roots() = 2, count_roots(0, None) = 2,
         // count_roots(-1, 10**6) = 1 (a root in (0, 1), one near 7^5901).
         assert_eq!(n, 2);

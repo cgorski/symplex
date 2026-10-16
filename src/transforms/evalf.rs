@@ -231,6 +231,18 @@ pub(crate) fn evalf_quadrature(
     evalf(arena, expr, digits)
 }
 
+/// [`const_value`] with every definite integral evaluated by the quadrature
+/// rule the caller chose (as [`evalf_quadrature`]).
+pub(crate) fn const_value_quadrature(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+    gauss_legendre: bool,
+) -> Result<ConstValue, SymplexError> {
+    let _rule = quad::RuleGuard::set(gauss_legendre);
+    const_value(arena, expr, digits)
+}
+
 /// Can an `f64` quadrature of `body` (in `var`) from `a` to `b` (`±∞`
 /// allowed), which evaluates the integrand by `compiled`, have seen its
 /// integral beyond `|x| = 2¹⁶` to within `allowed`?  Always for a finite
@@ -401,7 +413,9 @@ fn evaluate_tree_full(
                 None => Ok(ball),
             }
         });
-        if evaluated.is_err() && incomplete_gamma_beyond(arena, id, cache) {
+        if evaluated.is_err()
+            && (incomplete_gamma_beyond(arena, id, cache) || beta_beyond(arena, id, cache))
+        {
             overflowed = true;
         }
         // A value outside the exponent range, or a function of one, held
@@ -476,9 +490,7 @@ fn evaluate_tree_full(
         // 2·10⁻⁵⁰)³`, infinite at 128 bits): no value yet, as in
         // `eval_ball` for an inexact zero.
         let evaluated = match evaluated {
-            Err(SymplexError::Unevaluable { .. }) if tainted_child() => {
-                Ok(CBall::unknown(c_zero(prec)))
-            }
+            Err(e) if domain_error(&e) && tainted_child() => Ok(CBall::unknown(c_zero(prec))),
             other => other,
         };
         match evaluated {
@@ -541,6 +553,7 @@ fn evaluate_tree_full(
                 balls.insert(id, CBall::new(value, e));
             }
             Err(e) => {
+                let e = certified_infinity(arena.node(id), e, Cache::Balls(&balls));
                 let e = root_cause(arena.node(id), e, &failed);
                 // A value above the exponent range held scaled is refused at
                 // the root only: its parent may bring it back.
@@ -1257,6 +1270,24 @@ fn incomplete_gamma_beyond(arena: &Arena, id: ExprId, cache: Cache<'_>) -> bool 
     }
 }
 
+/// A `B(a, b)` of positive real shapes on the `exp(ln B)` route
+/// ([`BETA_VIA_LN_MIN`], [`beta_wp`]) whose ordinary evaluation failed: its
+/// value lies beyond the exponent range (`B(10¹², 10¹²) ≈ 2^(−2·10¹²)`),
+/// where `extended` holds it scaled from [`ln_beta_wp`] — so that
+/// `ln(beta(10¹², 10¹²))` is evaluated (refused up to 0.58).
+fn beta_beyond(arena: &Arena, id: ExprId, cache: Cache<'_>) -> bool {
+    let ExprNode::Beta(a, b) = arena.node(id) else {
+        return false;
+    };
+    let shape = |c: &ExprId| {
+        cache
+            .get(c)
+            .filter(|v| v.1.is_zero() && bf_strictly_positive(&v.0))
+            .and_then(|v| f64_of(&v.0).ok())
+    };
+    matches!((shape(a), shape(b)), (Some(x), Some(y)) if x + y >= BETA_VIA_LN_MIN)
+}
+
 /// The error of a node whose value `value` has an infinite part although
 /// its arguments are finite: the value overflows the exponent range of
 /// `BigFloat` (`Γ(10²⁰/3)`, `exp(10¹⁶)`, a product of such numbers), or is
@@ -1489,7 +1520,7 @@ fn eval_ball(
                 Ok(value) => value,
                 // `W_k(0)` for `k ≠ 0` at an argument only 0 to the working
                 // precision: no value yet (as in the arm below).
-                Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache) => {
+                Err(e) if domain_error(&e) && inexact_zero_child(node, cache) => {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
@@ -1570,7 +1601,7 @@ fn eval_ball(
                 Ok(routed) => routed,
                 // A domain error at 0 for an argument only 0 to the working
                 // precision (as in the arm below).
-                Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache) => {
+                Err(e) if domain_error(&e) && inexact_zero_child(node, cache) => {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
@@ -1595,7 +1626,7 @@ fn eval_ball(
         {
             let value = match eval_node(arena, id, cache, w) {
                 Ok(value) => value,
-                Err(SymplexError::Unevaluable { .. }) if rounded_onto_pole(node, cache) => {
+                Err(e) if domain_error(&e) && rounded_onto_pole(node, cache) => {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
@@ -1631,8 +1662,9 @@ fn eval_ball(
                 Ok(value) => value,
                 // An argument that cancelled to 0 or rounded onto 1 (as in
                 // the arm below).
-                Err(SymplexError::Unevaluable { .. })
-                    if inexact_zero_child(node, cache) || rounded_onto_pole(node, cache) =>
+                Err(e)
+                    if domain_error(&e)
+                        && (inexact_zero_child(node, cache) || rounded_onto_pole(node, cache)) =>
                 {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
@@ -1654,7 +1686,7 @@ fn eval_ball(
             let value = match eval_node(arena, id, cache, w) {
                 Ok(value) => value,
                 // An argument that rounded onto 1 (as in the arm above).
-                Err(SymplexError::Unevaluable { .. }) if rounded_onto_pole(node, cache) => {
+                Err(e) if domain_error(&e) && rounded_onto_pole(node, cache) => {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
                 Err(e) => return Err(e),
@@ -1719,9 +1751,10 @@ fn eval_ball(
                 // −∞`.  Nor does a pole met by an inexact argument that
                 // rounded onto it (`ζ(1 + 10⁻⁴⁵)`: `1 + 10⁻⁴⁵` is 1 at 128
                 // bits).
-                Err(SymplexError::Unevaluable { .. })
-                    if inexact_zero_child(arena.node(id), cache)
-                        || rounded_onto_pole(arena.node(id), cache) =>
+                Err(e)
+                    if domain_error(&e)
+                        && (inexact_zero_child(arena.node(id), cache)
+                            || rounded_onto_pole(arena.node(id), cache)) =>
                 {
                     return Ok(CBall::new(c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
@@ -2868,6 +2901,19 @@ pub(crate) fn evalf_complex(
     evalf_value(arena, expr, digits, ZeroSearch::Cap).map(|(z, _)| z)
 }
 
+/// Does the evaluation of the variable-free `expr` meet a value proved
+/// infinite ([`SymplexError::Infinite`]: a function at a pole of exact
+/// arguments, `∞`, `zoo`) — `expr` itself (`elliptic_pi(π, 1)`) or a part
+/// its value needs (`1/elliptic_pi(π, 1)`, `√elliptic_pi(π, 1)`)?  `false`
+/// when it evaluates, and when it cannot be evaluated for another reason
+/// (`erfinv(9/4)`): that is no evidence of an infinity.
+pub(crate) fn meets_infinity(arena: &Arena, expr: ExprId) -> bool {
+    matches!(
+        evalf_settled(arena, expr, F64_DIGITS, ZeroSearch::Cap),
+        Err(SymplexError::Infinite { .. })
+    )
+}
+
 /// `|z|` rounded to an `f64`: `+∞` beyond the `f64` range, `0.0` below it;
 /// `None` for NaN.
 pub(crate) fn abs_to_f64(z: &Complex) -> Option<f64> {
@@ -3135,9 +3181,7 @@ fn eval_node(
                 });
             }
             if val.0.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Ci(0) is zoo".into(),
-                });
+                return Err(infinite("Ci(0) is zoo"));
             }
             debug!(prec, "evalf: Ci via series/asymptotic");
             let x_abs = val.0.abs();
@@ -3157,9 +3201,7 @@ fn eval_node(
                 });
             }
             if val.0.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Ei(0) is -∞".into(),
-                });
+                return Err(infinite("Ei(0) is -∞"));
             }
             debug!(prec, "evalf: Ei via series/asymptotic");
             let r = arb_ei(&val.0, w)?;
@@ -3178,9 +3220,7 @@ fn eval_node(
             let wp = prec + 32;
             let ln_x = val.0.ln(wp, RM, w.cc);
             if ln_x.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "li(1) is -∞".into(),
-                });
+                return Err(infinite("li(1) is -∞"));
             }
             debug!(prec, "evalf: li via Ei(ln x)");
             let r = arb_ei(&ln_x, w)?;
@@ -3274,9 +3314,7 @@ fn eval_node(
         }
 
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
-            Err(SymplexError::Unevaluable {
-                reason: "cannot evaluate infinity to finite precision".into(),
-            })
+            Err(infinite("cannot evaluate infinity to finite precision"))
         }
 
         // x! = Γ(x + 1) for every real x off the poles (x = −1, −2, …);
@@ -3557,12 +3595,11 @@ fn eval_node(
                 if e.1.is_zero() && is_strictly_positive(&e.0) {
                     return Ok(c_zero(prec));
                 }
-                return Err(SymplexError::Unevaluable {
-                    reason: if e.1.is_zero() {
-                        "cannot evaluate infinity to finite precision".into()
-                    } else {
-                        "0 to a non-real power has no value".into()
-                    },
+                // `0^e` for a negative `e` is `zoo`.
+                return Err(if e.1.is_zero() {
+                    infinite("cannot evaluate infinity to finite precision")
+                } else {
+                    unevaluable("0 to a non-real power has no value")
                 });
             }
 
@@ -5946,7 +5983,15 @@ fn arb_log_gamma(x: &BigFloat, w: &mut Wp<'_>) -> Result<Complex, SymplexError> 
         return Err(unevaluable("LogGamma of special float value"));
     }
     if (x.is_int() || x.is_zero()) && !bf_strictly_positive(x) {
-        return Err(unevaluable("LogGamma at non-positive integer pole"));
+        return Err(infinite("LogGamma at non-positive integer pole"));
+    }
+    // The zeros at 1 and 2 are exact: a value 0 is no cancellation to make
+    // up, and the argument's error ball decides the precision.  Up to 0.58
+    // the loss was measured against a value of 0 and the loop ran to the cap:
+    // `loggamma(1 + 10⁻⁷⁰)`, whose argument rounds to 1 at the first
+    // precision, was `PrecisionExhausted` (mpmath `−5.7722…·10⁻⁷¹`).
+    if x.is_int() && matches!(f64_of(x), Ok(v) if v == 1.0 || v == 2.0) {
+        return Ok((BigFloat::new(prec), BigFloat::new(prec)));
     }
     let exact = x.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64;
     let cap = cancellation_cap(prec);
@@ -6083,9 +6128,7 @@ fn arb_digamma(x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
 /// `2^−wp` of it.
 fn digamma_wp(x: &BigFloat, w: &mut Wp<'_>) -> Result<(BigFloat, BigFloat), SymplexError> {
     let wp = w.bits();
-    let pole = || SymplexError::Unevaluable {
-        reason: "Digamma at non-positive integer pole".into(),
-    };
+    let pole = || infinite("Digamma at non-positive integer pole");
     let exact = x.mantissa_max_bit_len().unwrap_or(wp).max(wp) + 64;
     let one = BigFloat::from_i32(1, wp);
     if x.is_negative() {
@@ -6291,9 +6334,7 @@ fn arb_gamma_real(x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError
     let prec = w.bits();
     // The poles: the non-positive integers, exactly.
     if x.is_zero() || (x.is_negative() && x.is_int()) {
-        return Err(SymplexError::Unevaluable {
-            reason: "Gamma at non-positive integer pole".into(),
-        });
+        return Err(infinite("Gamma at non-positive integer pole"));
     }
 
     if !x.is_negative() {
@@ -6321,9 +6362,7 @@ fn arb_gamma_real(x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError
             sin_pi_x = sin_pi_x.neg();
         }
         if sin_pi_x.is_zero() {
-            return Err(SymplexError::Unevaluable {
-                reason: "Gamma at non-positive integer pole".into(),
-            });
+            return Err(infinite("Gamma at non-positive integer pole"));
         }
 
         let denom = sin_pi_x.mul(&gamma_1mx, prec, RM);
@@ -7545,9 +7584,7 @@ fn arb_si_ci(
         return if want_si {
             Ok((BigFloat::new(prec), BigFloat::new(prec)))
         } else {
-            Err(SymplexError::Unevaluable {
-                reason: "Ci(0) is zoo".into(),
-            })
+            Err(infinite("Ci(0) is zoo"))
         };
     }
     if !want_si && x.is_negative() {
@@ -7815,9 +7852,7 @@ fn arb_zeta(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let s_f64 = f64_of(s)?;
     // The pole exactly (before 0.30 in `f64`, where `1 + 10⁻⁴⁵` is 1).
     if *s == BigFloat::from_i32(1, 64) {
-        return Err(SymplexError::Unevaluable {
-            reason: "zeta(1) is a pole".into(),
-        });
+        return Err(infinite("zeta(1) is a pole"));
     }
     let mut wp = prec + 32;
 
@@ -7909,9 +7944,7 @@ fn arb_zeta_borwein(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexErr
     let one_minus_s = BigFloat::from_i32(1, 64).sub(s, exact_bits(s, wp), RM);
     let denom_factor = one_minus_pow2(&one_minus_s, w);
     if denom_factor.is_zero() {
-        return Err(SymplexError::Unevaluable {
-            reason: "zeta(1) is a pole".into(),
-        });
+        return Err(infinite("zeta(1) is a pole"));
     }
     Ok(eta.div(&denom_factor, wp, RM))
 }
@@ -8137,9 +8170,7 @@ fn polygamma_wp(n: u32, x: &BigFloat, wp: usize) -> Result<(BigFloat, BigFloat),
     let mut steps: usize = 0;
     while xw.sub(&threshold, wp, RM).is_negative() {
         if xw.is_zero() {
-            return Err(SymplexError::Unevaluable {
-                reason: "polygamma at non-positive integer pole".into(),
-            });
+            return Err(infinite("polygamma at non-positive integer pole"));
         }
         let p = xw.powi(n_us + 1, wp, RM);
         let inv = one.div(&p, wp, RM);
@@ -8807,6 +8838,111 @@ fn unevaluable(reason: impl Into<String>) -> SymplexError {
     }
 }
 
+/// The refusal of a value that is infinite at the arguments the route
+/// received ([`SymplexError::Infinite`]): a pole or a logarithmic
+/// singularity.  The claim stands only where those arguments are exact
+/// ([`certified_infinity`]); a route says it only where the function has
+/// no finite value or limit there (`Γ(a, 0)` for `Re a < 0`, not `Re a =
+/// 0`, where it oscillates).
+fn infinite(reason: impl Into<String>) -> SymplexError {
+    SymplexError::Infinite {
+        reason: reason.into(),
+    }
+}
+
+/// The refusal of `f(a, 0)` for a function that behaves like `z^a` at 0
+/// (`Γ(a, z)`, `γ(a, z)`, `E_n(z)` with `a = n − 1`) where `Re a ≤ 0`:
+/// infinite for `Re a < 0` and `a = 0` (a logarithm), no value at `Re a = 0`,
+/// `a ≠ 0`, where `|z^a|` stays bounded and its argument turns without end.
+fn singular_unless_oscillating(a: &Complex, reason: &str) -> SymplexError {
+    if a.0.is_negative() || (a.0.is_zero() && a.1.is_zero()) {
+        infinite(reason)
+    } else {
+        unevaluable(reason)
+    }
+}
+
+/// Is `e` a refusal at the point the arguments' values give — no value
+/// there ([`SymplexError::Unevaluable`]) or an infinite one
+/// ([`SymplexError::Infinite`])?  Met at an argument only rounded onto that
+/// point, it says nothing of the true argument (see [`eval_ball`]).
+fn domain_error(e: &SymplexError) -> bool {
+    matches!(
+        e,
+        SymplexError::Unevaluable { .. } | SymplexError::Infinite { .. }
+    )
+}
+
+/// `e`, the error of node `node`, with an infinity claim that does not rest
+/// on exact arguments read as no value ([`SymplexError::Unevaluable`]):
+/// the route saw the arguments' values, and an argument within its error
+/// of a pole may lie off it.  `Π(n | 1)` and `Π(1 | m)` are infinite
+/// whatever the other argument (`elliptic_pi(π, 1) = −∞`): the argument at
+/// 1 must be exact.  The claim stands only for the nodes whose routes say
+/// it of their own value ([`own_infinity`]): another route may meet a pole
+/// of a function it calls where its own value is finite (`B(−3, 1) = −1/3`
+/// through `Γ(−3)/Γ(−2)`, `E(1) = 1`), and a definite integral is never
+/// infinite here (a value of its integrand or of an antiderivative at a
+/// point is not its value).
+fn certified_infinity(node: &ExprNode, e: SymplexError, cache: Cache<'_>) -> SymplexError {
+    let SymplexError::Infinite { reason } = e else {
+        return e;
+    };
+    let exact = |c: &ExprId| cache.get(c).is_some() && cache.err(c).is_exact();
+    let certified = own_infinity(node)
+        && match node {
+            ExprNode::Lib(LibFn::EllipticPi, args) => args.iter().any(|c| {
+                exact(c)
+                    && cache.get(c).is_some_and(|v| {
+                        v.1.is_zero() && v.0.cmp(&BigFloat::from_i32(1, 64)) == Some(0)
+                    })
+            }),
+            _ => node.children().iter().all(exact),
+        };
+    if certified {
+        SymplexError::Infinite { reason }
+    } else {
+        SymplexError::Unevaluable { reason }
+    }
+}
+
+/// Does every infinity claim ([`infinite`]) the routes of `node` can make
+/// concern the value of `node` itself: `∞`, `−∞`, `zoo`, `0` to a negative
+/// power, `Γ`, `x!`, `ln Γ`, `ψ`, `ψ⁽ⁿ⁾` and `ζ` at their poles, `Ci`, `Chi`,
+/// `Ei` at 0, `li` at 1, `Γ(s, 0)`, `γ(s, ·)` and `E_n(0)` where they
+/// diverge, `Li_s(1)` for `s ≤ 1`, `K(1)`, the complete `Π(n | 1)`,
+/// `Π(1 | m)`, and the incomplete beta integrals at a divergent end?
+fn own_infinity(node: &ExprNode) -> bool {
+    match node {
+        ExprNode::Infinity
+        | ExprNode::NegInfinity
+        | ExprNode::ComplexInfinity
+        | ExprNode::Pow(..)
+        | ExprNode::Gamma(_)
+        | ExprNode::Factorial(_)
+        | ExprNode::LogGamma(_)
+        | ExprNode::Digamma(_)
+        | ExprNode::Polygamma(..)
+        | ExprNode::Zeta(_)
+        | ExprNode::Ci(_)
+        | ExprNode::Ei(_)
+        | ExprNode::Li(_) => true,
+        ExprNode::Lib(LibFn::EllipticPi, args) => args.len() == 2,
+        ExprNode::Lib(f, _) => matches!(
+            f,
+            LibFn::Chi
+                | LibFn::UpperGamma
+                | LibFn::LowerGamma
+                | LibFn::ExpInt
+                | LibFn::PolyLog
+                | LibFn::EllipticK
+                | LibFn::BetaInc
+                | LibFn::BetaIncRegularized
+        ),
+        _ => false,
+    }
+}
+
 /// A series exhausted its term budget without meeting the negligibility
 /// test; the partial sum is *not* returned.
 fn series_did_not_converge(operation: &'static str, max_terms: usize) -> SymplexError {
@@ -9122,7 +9258,7 @@ fn eval_special_09(
         LibFn::Shi => real(arb_shi_chi(&v[0], true, w)?),
         LibFn::Chi => {
             if v[0].is_zero() {
-                return Err(unevaluable("Chi(0) is zoo"));
+                return Err(infinite("Chi(0) is zoo"));
             }
             let chi = arb_shi_chi(&v[0].abs(), false, w)?;
             if v[0].is_negative() {
@@ -9719,10 +9855,16 @@ fn lowergamma_series_sum(
     // (`x < s + 1`): so it needs at least the `k` where `(d·k + k(k + 1)/2)/x`
     // reaches `t = wp·ln 2 − ln((s + 1)/(d + 1))`.  Beyond the budget,
     // refuse at once (up to 0.56 a shape near `10¹⁴` at its mean ran the ten
-    // million terms, 10–20 s, at every precision tried).
+    // million terms, 10–20 s, at every precision tried).  The partial sum
+    // after `k` terms is also at most `k + 1` times the first, so `t` is at
+    // least `wp·ln 2 − ln(budget + 1)`: far below the mean of a huge shape
+    // `(s + 1)/(d + 1)` exceeds `2^wp`, and up to 0.57 the first bound alone
+    // was void there (`Gamma(8·10¹⁹⁰, …)` at its quantile of `10⁻³⁰⁰` ran the
+    // ten million terms).
     let s_f = f64_of(s)?;
     let d = s_f - x_f;
-    let t = wp as f64 * std::f64::consts::LN_2 - ((s_f + 1.0) / (d + 1.0)).ln();
+    let ratio = ((s_f + 1.0) / (d + 1.0)).min(max_terms as f64 + 1.0);
+    let t = wp as f64 * std::f64::consts::LN_2 - ratio.ln();
     if d > -1.0 && t > 0.0 {
         let b = d + 0.5;
         let needed = (b * b + 2.0 * x_f * t).sqrt() - b;
@@ -10034,7 +10176,7 @@ fn arb_uppergamma(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat
     }
     if x.is_zero() {
         if !bf_strictly_positive(s) {
-            return Err(unevaluable("uppergamma(s, 0) diverges for s ≤ 0"));
+            return Err(infinite("uppergamma(s, 0) diverges for s ≤ 0"));
         }
         let s_f = f64_of(s)?;
         let wp = wp + lngamma_bits(s, s_f);
@@ -10047,7 +10189,10 @@ fn arb_uppergamma(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat
 /// Lower incomplete gamma `γ(s, x)` for real `s > 0`, `x ≥ 0`: the series
 /// for `x < s + 1`, `Γ(s) − Γ(s, x)` beyond, where `P(s, x) ≥ P(s, s + 1)
 /// > 0.51` (mpmath, over `s` from `10⁻²⁷` to `10³`, rising towards ½ + … for
-/// larger `s`) and at most a bit cancels.
+/// larger `s`) and at most a bit cancels.  For `x > 0` the result is 0 only
+/// when the series' prefactor `xˢe⁻ˣ` underflowed: an underflow, not an
+/// exact 0 (`accuracy::underflowed`; up to 0.58 `lowergamma(10¹⁰, ½)`
+/// printed `0`).
 fn arb_lowergamma(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let prec = w.bits();
     if x.is_nan() || s.is_nan() || s.is_inf() || x.is_inf_neg() {
@@ -10073,6 +10218,18 @@ fn arb_lowergamma(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat
         incomplete_gamma_overflows(s, "lowergamma")?;
     }
     if bf_lt(x, &s.add(&BigFloat::from_i32(1, 64), exact_bits(s, wp), RM)) {
+        // γ(s, x) ≥ xˢe⁻ˣ/s, the first term of the series: beyond the
+        // exponent range, refuse before summing (up to 0.57 the Poisson
+        // survival function `P(27625247160, 2.7625247…10¹⁰)`, about
+        // `2^(9.2·10¹¹)·½/k!`, summed two million terms first).
+        let x_f = f64_of(x)?;
+        let lg = (s_f * x_f.ln() - x_f - s_f.ln()) * std::f64::consts::LOG2_E;
+        if lg - 3.0 > f64::from(astro_float::EXPONENT_MAX) {
+            return Err(unevaluable(format!(
+                "lowergamma: the value (at least 2^{lg:.3e}) overflows the arbitrary-precision \
+                 exponent range"
+            )));
+        }
         let r = lowergamma_series(s, x, &mut w.at(wp)).map_err(requested_at(prec))?;
         return Ok(round_to(r, prec));
     }
@@ -10100,7 +10257,7 @@ fn arb_expint(n: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, Sy
         // out `1/0`, refused as "precision exhausted".)
         let n_minus_1 = n.sub(&one, wp, RM);
         if !is_strictly_positive(&n_minus_1) {
-            return Err(unevaluable("expint(n, 0) diverges for n ≤ 1"));
+            return Err(infinite("expint(n, 0) diverges for n ≤ 1"));
         }
         return Ok(round_to(one.div(&n_minus_1, wp, RM), prec));
     }
@@ -10130,7 +10287,7 @@ fn arb_shi_chi(x: &BigFloat, want_shi: bool, w: &mut Wp<'_>) -> Result<BigFloat,
         return if want_shi {
             Ok(BigFloat::new(prec))
         } else {
-            Err(unevaluable("Chi(0) is zoo"))
+            Err(infinite("Chi(0) is zoo"))
         };
     }
     let wp = prec + 32;
@@ -10394,12 +10551,14 @@ fn ln_beta_wp(a: &BigFloat, b: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, Sy
 /// `B(a, b) = Γ(a)Γ(b)/Γ(a+b)` at working precision `wp` for `a, b > 0`, as
 /// `exp(ln B(a, b))`: the three gamma values need not be representable
 /// (`Γ(10⁸)` is beyond the exponent range, `B(10⁸, 10⁸) = 2^{−2·10⁸}` is
-/// not).
+/// not).  0 when `ln B` lies below the exponent range: the accuracy layer
+/// holds it as the underflow of a positive number (`accuracy::underflowed`;
+/// up to 0.58 refused as "beyond the exponent range" in `eval_f64` too).
 fn beta_wp(a: &BigFloat, b: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let wp = w.bits();
     let v = ln_beta_wp(a, b, w)?.exp(wp, RM, w.cc);
-    // `exp` of an exponent beyond the range is 0 or ∞, not the value.
-    if v.is_zero() || v.is_inf() || v.is_nan() {
+    // `exp` of an exponent above the range is ∞, not the value.
+    if v.is_inf() || v.is_nan() {
         return Err(unevaluable(
             "Beta: the value lies beyond the arbitrary-precision exponent range",
         ));
@@ -10424,10 +10583,20 @@ const BETA_VIA_LN_MIN: f64 = 67_108_864.0;
 ///
 /// Returns the fraction `1/(1 + d₁/…)` only (the prefactor is applied by
 /// the caller).  Converges quickly for `x < (a+1)/(a+b+2)`.  Evaluated with
-/// `log₂(2·budget) + 8` guard bits for the roundings of its steps; the
-/// shape-dependent part of the budget, `10·√(a + b)`, is capped at `2·10⁶`
-/// steps (seconds; shapes near `10¹⁴` still converge within it, and
-/// beyond it the fraction is refused rather than run for minutes).
+/// `log₂(2·budget) + 8` guard bits for the roundings of its steps and the
+/// bits of `a + b`: near the switch point `1 − (a + b)x/(a + 1)` cancels
+/// them, and where the mass lies within `1/a` of 1 they are the bits that
+/// keep `x` away from 1.  Up to 0.57 the fraction rounded `x` to the working
+/// precision alone: the survival function of `F(3·10¹²⁸, 1)` at `7.3·10⁻⁴`,
+/// `I_y(1.5·10¹²⁸, ½)` with `1 − y = 4.6·10⁻¹²⁶`, ran its fraction at `y = 1`,
+/// which does not converge, through its 2·10⁶ steps (5.7 s) before the
+/// evaluation was refused; it converges in about ten steps at the bits of
+/// `a + b`.
+///
+/// The shape-dependent part of the step budget, `10·√(a + b)`, is capped
+/// at `2·10⁶` steps (seconds), and a fraction that needs more by
+/// [`betainc_cf_steps`] is refused before its first step (up to 0.57
+/// `F(10²⁰, 10²⁰).cdf(1)` ran 18 s to refuse).
 fn betainc_cf(
     a: &BigFloat,
     b: &BigFloat,
@@ -10436,10 +10605,22 @@ fn betainc_cf(
 ) -> Result<BigFloat, SymplexError> {
     let wp = w.bits();
     let ab_f = f64_of(&a.add(b, 64, RM))?;
-    // The number of steps grows like √(max(a, b)) before the linear
-    // convergence phase; budget generously.
     let max_iter = (40 * wp + 2000).saturating_add((10.0 * ab_f.abs().sqrt()).min(2e6) as usize);
-    let wp = wp + magnitude_bits(2.0 * max_iter as f64) + 8;
+    // The convergence test as before; the steps also carry the bits of a + b.
+    let tol = wp + magnitude_bits(2.0 * max_iter as f64) + 8;
+    let wp = tol + magnitude_bits(ab_f);
+    let below = betainc_switch_point(a, b, wp).sub(x, wp, RM);
+    // Float evidence: a work estimate that can only refuse (an `f64` guide).
+    let need = betainc_cf_steps(f64_of(a)?, f64_of(b)?, f64_of(&below)?, tol);
+    if need > max_iter as f64 {
+        return Err(SymplexError::ComputationFailed {
+            operation: "evalf",
+            reason: format!(
+                "continued fraction for the incomplete beta function: about {need:.1e} steps \
+                 needed, {max_iter} allowed"
+            ),
+        });
+    }
     let (a, b, x) = (
         &at_precision(a, wp),
         &at_precision(b, wp),
@@ -10493,7 +10674,7 @@ fn betainc_cf(
         let del = step(&aa, &mut c, &mut d);
         h = h.mul(&del, wp, RM);
         let dev = del.sub(&one, wp, RM);
-        if negligible(&dev, &one, wp) {
+        if negligible(&dev, &one, tol) {
             converged = true;
             break;
         }
@@ -10510,11 +10691,32 @@ fn betainc_cf(
     Ok(h)
 }
 
+/// An estimate from below of the steps [`betainc_cf`] needs to converge to
+/// `tol` bits, `delta` below its switch point `(a + 1)/(a + b + 2)`: an
+/// `f64` guide that can only refuse.  Measured with mpmath's Lentz steps
+/// (shapes `10⁴`–`10¹⁶`, `b/a` from `10⁻⁶` to `10²`, 74 to 235 bits): at the
+/// switch point `0.39–0.41·(m·tol²)^{1/3}` steps, `m = min(a, b)` (up to
+/// `0.65·(…)` when `b` is the smaller); `z = delta/σ` standard deviations
+/// below it (`σ² = ab/(a + b)³`) `12.7–15.7·tol/z²` once that is the
+/// smaller.  The estimate, `0.8` of the harmonic combination of
+/// `0.39·(m·tol²)^{1/3}` and `12·tol/z²`, lies below every measured count
+/// (221 counts of at least 20 steps: between 0.14 and 0.92 of it).
+fn betainc_cf_steps(a: f64, b: f64, delta: f64, tol: usize) -> f64 {
+    let tol = tol as f64;
+    let at_switch = 0.39 * (a.min(b) * tol * tol).cbrt();
+    let n = a + b;
+    let sigma = (a / n * (b / n) / n).sqrt();
+    let z = delta / sigma;
+    0.8 / (1.0 / at_switch + z * z / (12.0 * tol))
+}
+
 /// `x^a y^b / (a B(a, b))` for `0 < x < 1`, `y = 1 − x`, as one
 /// exponential of `a ln x + b ln y − ln a − ln B(a, b)`: the exponent is
 /// formed with the bits of its magnitude as guard, so that its absolute
 /// error — the relative error of the result — is `2^−wp`, and `ln B` comes
-/// from [`ln_beta_wp`].  0.28 formed `x^a`, `y^b` and
+/// from [`ln_beta_wp`].  0 when the exponent lies below the exponent range:
+/// a tail that is 0 for no other reason, which the accuracy layer holds as
+/// a nonzero number (`accuracy::underflowed`).  0.28 formed `x^a`, `y^b` and
 /// `B(a, b) = Γ(a)Γ(b)/Γ(a + b)` separately: `Γ(10⁸)` is beyond the exponent
 /// range, and `betainc_regularized(10⁸ + ⅓, 10⁸ + 1/7, 0, ½)` was refused.
 fn betainc_prefactor(
@@ -10722,16 +10924,26 @@ fn betainc_shape_le_zero(
         _ => return Ok(BigFloat::new(prec)),
     };
     let one = BigFloat::from_i32(1, prec);
-    if !bf_strictly_positive(a) && lo.is_zero() {
-        return Err(unevaluable("the integral diverges at 0 for a shape a ≤ 0"));
-    }
-    if !bf_strictly_positive(b) && hi.cmp(&one) == Some(0) {
-        return Err(unevaluable("the integral diverges at 1 for a shape b ≤ 0"));
-    }
     // B(a, b), when regularized: finite and nonzero.
     let gamma_pole = |x: &BigFloat| x.is_zero() || (x.is_negative() && x.is_int());
     let ab = a.add(b, prec + 64, RM);
-    if regularized && (gamma_pole(a) || gamma_pole(b) || gamma_pole(&ab)) {
+    let b_pole = regularized && (gamma_pole(a) || gamma_pole(b) || gamma_pole(&ab));
+    // The integral of a positive function diverges: infinite, unless it is
+    // divided by a `B(a, b)` that is infinite or 0 as well.
+    let diverges = |reason: &str| {
+        if b_pole {
+            unevaluable(reason)
+        } else {
+            infinite(reason)
+        }
+    };
+    if !bf_strictly_positive(a) && lo.is_zero() {
+        return Err(diverges("the integral diverges at 0 for a shape a ≤ 0"));
+    }
+    if !bf_strictly_positive(b) && hi.cmp(&one) == Some(0) {
+        return Err(diverges("the integral diverges at 1 for a shape b ≤ 0"));
+    }
+    if b_pole {
         return Err(unevaluable(
             "B(a, b) is infinite or 0 (a pole of Gamma): no regularized value",
         ));
@@ -10891,7 +11103,10 @@ fn betainc_piece(
 /// the two values nearly cancel (`x1 ≈ x2`) the working precision is raised
 /// by the number of bits lost and the difference recomputed, until the
 /// loss is covered — or refused beyond [`cancellation_cap`].  0.28 returned
-/// its third attempt whatever it had lost.
+/// its third attempt whatever it had lost.  For `x1 ≠ x2` the result is 0
+/// only when the tails underflowed ([`betainc_prefactor`]): an underflow,
+/// not an exact 0 (`accuracy::underflowed`; up to 0.58
+/// `betainc_regularized(1.4·10³⁰, 18, 0, ½)` printed `0`).
 #[allow(clippy::too_many_arguments)]
 fn arb_betainc(
     a: &BigFloat,
@@ -10919,6 +11134,7 @@ fn arb_betainc(
     if !bf_strictly_positive(a) || !bf_strictly_positive(b) {
         return betainc_shape_le_zero(a, b, x1, x2, regularized, w).map_err(|e| match e {
             SymplexError::Unevaluable { reason } => unevaluable(format!("{name}: {reason}")),
+            SymplexError::Infinite { reason } => infinite(format!("{name}: {reason}")),
             other => other,
         });
     }
@@ -11129,7 +11345,7 @@ fn polylog_nonpositive(n: usize, z: &BigFloat, wp: usize) -> Result<(BigFloat, f
     let one = BigFloat::from_i32(1, wp);
     let one_minus_z = one.sub(z, wp, RM);
     if one_minus_z.is_zero() {
-        return Err(unevaluable("polylog(s, 1) diverges for s ≤ 1"));
+        return Err(infinite("polylog(s, 1) diverges for s ≤ 1"));
     }
     let w = z.div(&one_minus_z, wp, RM);
     let row = stirling2_row(n as u64 + 1)?;
@@ -11612,7 +11828,7 @@ fn arb_polylog(s: &BigFloat, z: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, S
             return Ok(round_to(eta.neg(), prec));
         }
         if !bf_gt(s, &one) {
-            return Err(unevaluable("polylog(s, 1) diverges for s ≤ 1"));
+            return Err(infinite("polylog(s, 1) diverges for s ≤ 1"));
         }
         let zeta = arb_zeta(s, &mut w.at(wp))?;
         return Ok(round_to(zeta, prec));
@@ -12148,7 +12364,7 @@ fn arb_elliptic_k(m: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError
     let wp = prec + 32;
     let y = one_minus_m(m, wp, "elliptic_k")?;
     if y.is_zero() {
-        return Err(unevaluable("elliptic_k(1) is infinite"));
+        return Err(infinite("elliptic_k(1) is infinite"));
     }
     let _ = w.cc;
     let r = carlson_rf(&BigFloat::new(wp), &y, &BigFloat::from_i32(1, wp), wp)?;
@@ -12228,7 +12444,7 @@ fn arb_elliptic_pi(n: &BigFloat, m: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloa
     let zero = BigFloat::new(wp);
     let y = one_minus_m(m, wp, "elliptic_pi")?;
     if y.is_zero() {
-        return Err(unevaluable("elliptic_pi(n, 1) is infinite"));
+        return Err(infinite("elliptic_pi(n, 1) is infinite"));
     }
     let p = one.sub(n, wp, RM);
     let rf = carlson_rf(&zero, &y, &one, wp)?;

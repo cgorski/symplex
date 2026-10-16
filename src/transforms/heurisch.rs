@@ -117,7 +117,8 @@ fn heurisch_attempt(
         .collect();
 
     // ── Step 4: Degree bound ───────────────────────────────────────
-    let degree_bound = compute_degree_bound(arena, &components, var_sym) + degree_offset;
+    let degree_bound =
+        compute_degree_bound(arena, &components, var_sym).saturating_add(degree_offset);
     tracing::debug!(
         "heurisch: degree bound total={}, offset={}",
         degree_bound,
@@ -394,8 +395,11 @@ fn compute_degree_bound(arena: &Arena, components: &[ExprId], var_sym: SymbolId)
                     && let Some(r) = arena.as_num(exp)
                     && r.is_integer()
                 {
-                    let d = r.to_integer().to_string().parse::<i64>().unwrap_or(1);
-                    max_poly_degree = max_poly_degree.max(d.unsigned_abs() as usize);
+                    // A degree beyond `usize` is beyond any bound (up to
+                    // 0.58 one beyond `i64` was read as 1 from its decimal).
+                    let d = num_traits::ToPrimitive::to_usize(r.to_integer().magnitude())
+                        .unwrap_or(usize::MAX);
+                    max_poly_degree = max_poly_degree.max(d);
                 }
                 if contains_var(arena, exp, var_sym) {
                     has_transcendental = true;
@@ -417,7 +421,7 @@ fn compute_degree_bound(arena: &Arena, components: &[ExprId], var_sym: SymbolId)
 
     let a = if has_transcendental { 1 } else { 0 };
     let b = max_poly_degree;
-    a + b + 1
+    b.saturating_add(a + 1)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -551,15 +555,15 @@ fn eval_node_f64(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, f64>) -> f
 
     match node {
         ExprNode::Num(nid) => {
+            // The nearest `f64`, `±∞` beyond the range.  Up to 0.58 the
+            // numerator and denominator were printed and parsed: `inf/inf`
+            // (NaN) for a rational with both beyond `10³⁰⁸`.
             let r = arena.num(nid);
-            // Convert rational to f64.
-            let numer: f64 = r.numer().to_string().parse().unwrap_or(f64::NAN);
-            let denom: f64 = r.denom().to_string().parse().unwrap_or(f64::NAN);
-            if denom == 0.0 {
-                f64::NAN
+            crate::base::numeric::ratio_to_f64(r).unwrap_or(if num_traits::Signed::is_negative(r) {
+                f64::NEG_INFINITY
             } else {
-                numer / denom
-            }
+                f64::INFINITY
+            })
         }
 
         ExprNode::Symbol(_) => {

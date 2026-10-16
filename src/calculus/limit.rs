@@ -54,6 +54,7 @@ use crate::base::extended::Extended;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::truth::Truth;
+use crate::base::value_class::{self, ValueClass};
 use crate::calculus::calculus_util::{NonzeroExpr, ZeroDecision, div_by, hidden_zero, recip};
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
@@ -587,9 +588,9 @@ fn re_sign_of(arena: &mut Arena, inf: &Infinite) -> Option<i32> {
 /// `var` near the limit point as an expression in the positive dummy `t →
 /// ∞`: `t`, `−t`, or `a ± 1/t`.
 fn approach_substitute(arena: &mut Arena, ap: &Approach, t: ExprId, right: bool) -> ExprId {
-    if ap.point == arena.infinity() {
+    if ValueClass::special_atom(arena, ap.point) == Some(ValueClass::PosInf) {
         t
-    } else if ap.point == arena.neg_infinity() {
+    } else if ValueClass::special_atom(arena, ap.point) == Some(ValueClass::NegInf) {
         arena.neg(t)
     } else {
         // `1/t` of the dummy symbol: a function of it, not a value.
@@ -659,10 +660,110 @@ pub(crate) fn limit_dir(
     point: ExprId,
     dir: Direction,
 ) -> Result<ExprId, SymplexError> {
-    let value = limit_dir_generic(arena, expr, var, point, dir)?;
-    Ok(guard_degenerate_parameters(
-        arena, expr, var, point, dir, value,
-    ))
+    let (value, steps) = match limit_dir_generic(arena, expr, var, point, dir) {
+        Ok(v) => (v, Vec::new()),
+        Err(e) => generic_step_value(arena, expr, var, point).ok_or(e)?,
+    };
+    let guarded = guard_degenerate_parameters(arena, expr, var, point, dir, value);
+    Ok(with_step_conditions(arena, guarded, value, &steps))
+}
+
+/// The value of `expr` at the finite `point` when it is continuous there
+/// for generic values of its parameters, with `H` and `sign` read at an
+/// argument nonzero for generic parameters ([`StepArguments::Generic`]),
+/// and those arguments' values at the point: `H(x + y)` at `0` is `H(y)`
+/// where `y ≠ 0` ([`with_step_conditions`]; the case `y = 0` is
+/// [`guard_degenerate_parameters`]'s).  The generic engines read `H(y)` as
+/// a coefficient that may vanish on a region (it is no leading term), so
+/// up to 0.58 they refused such limits (0.55: `Piecewise((H(y), y ≠ 0))`);
+/// a step is never read so for an internal limit (`limit_dir_generic`:
+/// the Taylor coefficients of the differentiation fallback, a leading
+/// term).
+fn generic_step_value(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+) -> Option<(ExprId, Vec<ExprId>)> {
+    // A point or an expression holding an infinity is the generic engines'
+    // (`infinite_constant_limit`).
+    if crate::base::value_class::holds_special_atom(arena, point)
+        || crate::base::value_class::holds_special_atom(arena, expr)
+        || !has_directional_nodes(arena, expr, var)
+    {
+        return None;
+    }
+    let mut steps = Vec::new();
+    let v = substitute_continuous(arena, expr, var, point, StepArguments::Generic, &mut steps)?;
+    // `min`/`max` have no value at an argument that is not real
+    // (`min(x + ln i, H(x − y), 1)` is undefined for every `x`).
+    let unordered = crate::base::walk::post_order_ids(arena, v)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Min(args) | ExprNode::Max(args) => {
+                args.iter().any(|&a| !inner_known_real(arena, a))
+            }
+            _ => false,
+        });
+    (!unordered && is_finite_limit_value(arena, v, var)).then_some((v, steps))
+}
+
+/// `guarded` (the limit `value` after [`guard_degenerate_parameters`]) with
+/// `value` claimed only where each of the `steps` (the arguments of `H`
+/// and `sign` read by [`generic_step_value`], at the point) is nonzero: the
+/// exact condition of continuity, also where the guard does not look (two
+/// parameters, `H(x + y)` at `1`, whose jump is at `y = −1`).  The guard's
+/// own cases come first.
+fn with_step_conditions(
+    arena: &mut Arena,
+    guarded: ExprId,
+    value: ExprId,
+    steps: &[ExprId],
+) -> ExprId {
+    if steps.is_empty() {
+        return guarded;
+    }
+    let zero = arena.zero;
+    let mut conds: Vec<ExprId> = Vec::with_capacity(steps.len() + 1);
+    for &a in steps {
+        // `a ≠ 0` as one condition per factor that can vanish: numbers, the
+        // named constants, exponentials and negative powers (nonzero where
+        // defined) dropped, so `−y/π ≠ 0` is `y ≠ 0`.
+        let factors: Vec<ExprId> = match arena.node(a) {
+            ExprNode::Mul(fs) => fs.to_vec(),
+            _ => vec![a],
+        };
+        for f in factors {
+            let never_zero = NonzeroExpr::structural(arena, f).is_some()
+                || match *arena.node(f) {
+                    ExprNode::Exp(_) => true,
+                    ExprNode::Pow(_, e) => arena.as_num(e).is_some_and(|r| r.is_negative()),
+                    _ => false,
+                };
+            if !never_zero {
+                conds.push(arena.ne_(f, zero));
+            }
+        }
+    }
+    let mut pairs: Vec<(ExprId, ExprId)> = match arena.node(guarded) {
+        ExprNode::Piecewise(ps) if guarded != value => ps.iter().copied().collect(),
+        _ => Vec::new(),
+    };
+    if let Some(&(v, cond)) = pairs.last()
+        && v == value
+    {
+        pairs.pop();
+        match arena.node(cond) {
+            ExprNode::And(cs) => conds.extend(cs.iter().copied()),
+            _ if cond == arena.bool_true() => {}
+            _ => conds.push(cond),
+        }
+    }
+    conds.sort_unstable_by(|&a, &b| arena.canonical_cmp(a, b));
+    conds.dedup();
+    let cond = arena.and(&conds);
+    pairs.push((value, cond));
+    arena.piecewise(&pairs)
 }
 
 /// [`limit_dir`] for a generic value of every other symbol: a symbolic
@@ -864,15 +965,19 @@ fn limit_val_parts(
         };
     }
 
-    if point == arena.nan() || point == arena.complex_infinity() {
+    if matches!(
+        ValueClass::special_atom(arena, point),
+        Some(ValueClass::NaN | ValueClass::ComplexInf)
+    ) {
         return Err(fail("limit point must be finite or ±∞"));
     }
 
     // A directed infinity `d·∞` (`i·∞`): `var = d·t` with `t → +∞`, as
     // SymPy reads it.  Before, the point was taken for a finite one, and
     // `limit(besselj(1, x), x, i·∞)` failed.
-    if point != arena.infinity()
-        && point != arena.neg_infinity()
+    if ValueClass::special_atom(arena, point)
+        .and_then(ValueClass::real_infinity)
+        .is_none()
         && is_infinite_form(arena, point)
         && let Some((d, o)) = split_infinite(arena, point)
         && arena.is_zero_structural(o)
@@ -890,8 +995,8 @@ fn limit_val_parts(
         return r.map(LimVal::exact);
     }
 
-    if point == arena.infinity() || point == arena.neg_infinity() {
-        let positive = point == arena.infinity();
+    if let Some(sign) = ValueClass::special_atom(arena, point).and_then(ValueClass::real_infinity) {
+        let positive = sign == value_class::Sign::Positive;
         return limit_at_infinity_dir(arena, expr, var, positive, depth, perpendicular);
     }
 
@@ -982,10 +1087,10 @@ fn contains_infinite_constant(arena: &Arena, e: ExprId) -> bool {
 
 /// `t = c·(±∞)` with `c` free of infinite constants: `Some(±c)`.
 fn infinite_term_coefficient(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
-    if t == arena.infinity() {
+    if ValueClass::special_atom(arena, t) == Some(ValueClass::PosInf) {
         return Some(arena.one());
     }
-    if t == arena.neg_infinity() {
+    if ValueClass::special_atom(arena, t) == Some(ValueClass::NegInf) {
         return Some(arena.neg_one());
     }
     let ExprNode::Mul(factors) = arena.node(t).clone() else {
@@ -995,9 +1100,9 @@ fn infinite_term_coefficient(arena: &mut Arena, t: ExprId) -> Option<ExprId> {
     let mut rest = Vec::with_capacity(factors.len());
     let mut infinities = 0;
     for f in factors {
-        if f == arena.infinity() {
+        if ValueClass::special_atom(arena, f) == Some(ValueClass::PosInf) {
             infinities += 1;
-        } else if f == arena.neg_infinity() {
+        } else if ValueClass::special_atom(arena, f) == Some(ValueClass::NegInf) {
             infinities += 1;
             sign = -sign;
         } else if contains_infinite_constant(arena, f) {
@@ -1092,12 +1197,10 @@ fn infinite_constant_limit(
             None => refuse(),
         },
         ExprNode::Pow(b, e) if !contains_infinite_constant(arena, b) => {
-            let up = if e == arena.infinity() {
-                true
-            } else if e == arena.neg_infinity() {
-                false
-            } else {
-                return refuse();
+            let up = match ValueClass::special_atom(arena, e).and_then(ValueClass::real_infinity) {
+                Some(value_class::Sign::Positive) => true,
+                Some(value_class::Sign::Negative) => false,
+                None => return refuse(),
             };
             if !eventually_real(arena, b, &ap) {
                 return refuse();
@@ -1131,11 +1234,10 @@ fn infinite_constant_limit(
 /// `e^{2i}·oo`, `1 + I·oo`; see [`LimVal`]), but `∞` buried inside another
 /// expression (`exp(oo)`, `atan(oo)`) is not.
 pub(crate) fn is_valid_limit_value(arena: &Arena, id: ExprId, var: ExprId) -> bool {
-    if id == arena.nan() || id == arena.complex_infinity() {
-        return false;
-    }
-    if id == arena.infinity() || id == arena.neg_infinity() {
-        return true;
+    match ValueClass::special_atom(arena, id) {
+        Some(ValueClass::NaN | ValueClass::ComplexInf) => return false,
+        Some(ValueClass::PosInf | ValueClass::NegInf) => return true,
+        _ => {}
     }
     if crate::base::walk::contains(arena, id, var) || contains_dummy(arena, id) {
         return false;
@@ -1203,19 +1305,12 @@ fn contains_hidden_singularity(arena: &Arena, root: ExprId) -> bool {
 
 /// `true` if the expression contains `∞`, `−∞`, `zoo`, or `NaN` anywhere.
 fn contains_singular_atom(arena: &Arena, id: ExprId) -> bool {
-    crate::base::walk::contains(arena, id, arena.infinity())
-        || crate::base::walk::contains(arena, id, arena.neg_infinity())
-        || crate::base::walk::contains(arena, id, arena.complex_infinity())
-        || crate::base::walk::contains(arena, id, arena.nan())
+    value_class::holds_special_atom(arena, id)
 }
 
 /// `true` if `id` is `±∞`, `zoo`, or `NaN`, or contains one of them.
 fn is_singular(arena: &Arena, id: ExprId) -> bool {
-    id == arena.infinity()
-        || id == arena.neg_infinity()
-        || id == arena.complex_infinity()
-        || id == arena.nan()
-        || contains_singular_atom(arena, id)
+    contains_singular_atom(arena, id)
 }
 
 /// `true` if the expression contains an internal dummy symbol (`__gw…`,
@@ -1245,8 +1340,12 @@ fn same_value(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
     if a == b {
         return true;
     }
-    let a_inf = a == arena.infinity() || a == arena.neg_infinity();
-    let b_inf = b == arena.infinity() || b == arena.neg_infinity();
+    let a_inf = ValueClass::special_atom(arena, a)
+        .and_then(ValueClass::real_infinity)
+        .is_some();
+    let b_inf = ValueClass::special_atom(arena, b)
+        .and_then(ValueClass::real_infinity)
+        .is_some();
     if a_inf || b_inf {
         return false;
     }
@@ -1343,6 +1442,39 @@ pub(crate) fn safe_substitute(
     var: ExprId,
     point: ExprId,
 ) -> Option<ExprId> {
+    substitute_continuous(
+        arena,
+        expr,
+        var,
+        point,
+        StepArguments::Numbers,
+        &mut Vec::new(),
+    )
+}
+
+/// Where [`substitute_continuous`] takes `H` and `sign` to be continuous.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepArguments {
+    /// At an argument whose value at the point is a nonzero number.
+    Numbers,
+    /// Also at a value with parameters that is nonzero for generic values
+    /// of them and not piecewise ([`is_zero_value`] `False`): `H(x + y)` at
+    /// `0` is `H(y)` for every `y ≠ 0`.  Only the limit itself reads steps
+    /// so ([`generic_step_value`]): a value there is no Taylor coefficient.
+    Generic,
+}
+
+/// [`safe_substitute`], reading `H` and `sign` at their arguments as
+/// `steps` says; the values of the arguments read generically go to
+/// `generic`.
+fn substitute_continuous(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    steps: StepArguments,
+    generic: &mut Vec<ExprId>,
+) -> Option<ExprId> {
     let post = crate::base::walk::post_order_ids(arena, expr);
     let mut values: FxHashMap<ExprId, ExprId> = FxHashMap::default();
 
@@ -1435,6 +1567,14 @@ pub(crate) fn safe_substitute(
                     return None;
                 }
             }
+            // `B(a, b) = Γ(a)·Γ(b)/Γ(a + b)` at a pole of `Γ(a)` or `Γ(b)`
+            // (`B(x, y) ~ 1/x`): `H(B(x, y))` at 0 is no step at `B(0, y)`.
+            ExprNode::Beta(a, b) if steps == StepArguments::Generic => {
+                let (av, bv) = (val_of(arena, &values, a), val_of(arena, &values, b));
+                if is_nonpositive_integer(arena, av) || is_nonpositive_integer(arena, bv) {
+                    return None;
+                }
+            }
             // `li 0 = 0` is the limit only from the right: on the cut
             // `(−∞, 0)` `li` takes its values from above, `li(−ε) → iπ`
             // (mpmath).  Before, `li(−x)` at `0⁺` was `0`.
@@ -1501,8 +1641,16 @@ pub(crate) fn safe_substitute(
             // (`⌊1/2 + i·x⌋` at `0`, which was `0`).
             ExprNode::Sign(a) | ExprNode::Heaviside(a) | ExprNode::DiracDelta(a) => {
                 let av = val_of(arena, &values, a);
-                match arena.as_num(av) {
-                    Some(r) if !r.is_zero() => {}
+                let number = arena.as_num(av).map(|r| !r.is_zero());
+                match number {
+                    Some(true) => {}
+                    None if steps == StepArguments::Generic
+                        && !matches!(node, ExprNode::DiracDelta(_))
+                        && !arena.is_symbol_free(av)
+                        && is_zero_value(arena, av).is_false() =>
+                    {
+                        generic.push(av);
+                    }
                     _ => return None,
                 }
                 if !matches!(node, ExprNode::Sign(_)) && !inner_known_real(arena, a) {
@@ -1625,13 +1773,16 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
     if let Some(r) = arena.as_num(e) {
         return Some(sign_of_ratio(r));
     }
-    if e == arena.pi() || e == arena.e_const() || e == arena.infinity() {
+    match ValueClass::special_atom(arena, e) {
+        Some(ValueClass::PosInf) => return Some(1),
+        Some(ValueClass::NegInf) => return Some(-1),
+        Some(ValueClass::NaN | ValueClass::ComplexInf) => return None,
+        _ => {}
+    }
+    if e == arena.pi() || e == arena.e_const() {
         return Some(1);
     }
-    if e == arena.neg_infinity() {
-        return Some(-1);
-    }
-    if e == arena.nan() || e == arena.complex_infinity() || e == arena.i_unit() {
+    if e == arena.i_unit() {
         return None;
     }
     let evaled = crate::transforms::eval::eval(arena, e);
@@ -4079,8 +4230,9 @@ fn try_lhopital(
     let n_is_zero = arena.is_zero_structural(n_at_point);
     let d_is_zero = arena.is_zero_structural(d_at_point);
 
-    let n_is_inf = n_at_point == arena.infinity() || n_at_point == arena.neg_infinity();
-    let d_is_inf = d_at_point == arena.infinity() || d_at_point == arena.neg_infinity();
+    let real_inf = |x| ValueClass::special_atom(arena, x).and_then(ValueClass::real_infinity);
+    let n_is_inf = real_inf(n_at_point).is_some();
+    let d_is_inf = real_inf(d_at_point).is_some();
 
     // Only apply L'Hôpital to genuine indeterminate forms: 0/0 or ∞/∞.
     if !((n_is_zero && d_is_zero) || (n_is_inf && d_is_inf)) {
@@ -4268,7 +4420,10 @@ fn with_imaginary_part(
     depth: usize,
 ) -> Result<LimVal, SymplexError> {
     let undetermined = || fail("the imaginary part of an infinite limit could not be determined");
-    if value != arena.infinity() && value != arena.neg_infinity() {
+    if ValueClass::special_atom(arena, value)
+        .and_then(ValueClass::real_infinity)
+        .is_none()
+    {
         if let Some(axis) = imaginary_axis_infinity(arena, value) {
             let up = axis == Axis::ImagPos;
             // `±i·∞` (an imaginary leading coefficient): `∓i·e → +∞`, whose
@@ -4492,7 +4647,10 @@ fn imaginary_arguments_as_real(arena: &mut Arena, e: ExprId, t: ExprId) -> ExprI
 /// Is `v` an infinity on an axis, `±∞` or `±i·∞` (whose perpendicular
 /// part [`with_imaginary_part`] searches)?
 fn is_axis_infinity(arena: &Arena, v: ExprId) -> bool {
-    if v == arena.infinity() || v == arena.neg_infinity() {
+    if ValueClass::special_atom(arena, v)
+        .and_then(ValueClass::real_infinity)
+        .is_some()
+    {
         return true;
     }
     let i = arena.i_unit();
