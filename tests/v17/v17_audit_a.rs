@@ -32,6 +32,7 @@
 
 use num_bigint::BigInt;
 use symplex::Interval;
+use symplex::errors::Degeneracy;
 use symplex::linprog::{Q, q, qi};
 use symplex::prelude::*;
 use symplex::stats::aggregation::*;
@@ -57,6 +58,15 @@ fn p_of(r: &TestResult) -> f64 {
 
 fn s_of(r: &TestResult) -> f64 {
     r.statistic_f64().unwrap()
+}
+
+/// `DegenerateData` of the given kind (up to 0.56 these cases were
+/// `InvalidArgument` or `ComputationFailed`).
+fn is_degenerate<T: std::fmt::Debug>(r: Result<T, SymplexError>, kind: Degeneracy) {
+    match r {
+        Err(SymplexError::DegenerateData { kind: k, .. }) if k == kind => {}
+        other => panic!("expected DegenerateData({kind:?}), got {other:?}"),
+    }
 }
 
 fn is_invalid<T: std::fmt::Debug>(r: Result<T, SymplexError>) {
@@ -708,7 +718,10 @@ fn anova_one_way_unbalanced_four_groups_exact() {
     close(r.p_value_f64().unwrap(), 1.0, 1e-15);
     // η² alone rejects an all-identical sample; ANOVA rejects zero within variance.
     is_invalid(eta_squared(&[from_i64(&[2, 2]), from_i64(&[2])]));
-    is_invalid(anova_one_way(&ctx, &[from_i64(&[1, 1]), from_i64(&[3, 3])]));
+    is_degenerate(
+        anova_one_way(&ctx, &[from_i64(&[1, 1]), from_i64(&[3, 3])]),
+        Degeneracy::ZeroVariance,
+    );
 }
 
 #[test]
@@ -790,13 +803,10 @@ fn mann_whitney_asymptotic_with_and_without_continuity_and_with_ties() {
     close(p_of(&r), 0.201_312_621_116_576_6, 1e-12);
     let r = mann_whitney_u(&ctx, &xt, &yt, Alternative::TwoSided, asym(false)).unwrap();
     close(p_of(&r), 0.352_404_525_612_093_1, 1e-12);
-    is_invalid(mann_whitney_u(
-        &ctx,
-        &xt,
-        &yt,
-        Alternative::TwoSided,
-        RankMethod::Exact,
-    ));
+    // Exact with ties (an error before 0.57): enumeration of the C(11, 6)
+    // splits gives 94/231 (scipy method='exact': 0.42857142857142855).
+    let r = mann_whitney_u(&ctx, &xt, &yt, Alternative::TwoSided, RankMethod::Exact).unwrap();
+    assert_eq!(r.p_value_exact(), Some(q(94, 231)));
 }
 
 #[test]
@@ -941,14 +951,12 @@ fn wilcoxon_paired_with_zeros_and_ties_matches_the_difference_form_and_sign_coun
     let s = sign_test(&ctx, &d, &qi(0), Alternative::TwoSided).unwrap();
     assert_eq!(s.statistic_exact(), Some(qi(2)));
     assert_eq!(s.p_value_exact(), Some(q(37, 128)));
-    // Ties in |d| forbid the exact method; every difference zero is an error.
-    is_invalid(wilcoxon_signed_rank(
-        &ctx,
-        &x,
-        Some(&y),
-        Alternative::TwoSided,
-        RankMethod::Exact,
-    ));
+    // Ties in |d| with the exact method (an error before 0.57): enumeration
+    // of the 2⁸ sign patterns of the average ranks gives 5/64; every
+    // difference zero is an error.
+    let e =
+        wilcoxon_signed_rank(&ctx, &x, Some(&y), Alternative::TwoSided, RankMethod::Exact).unwrap();
+    assert_eq!(e.p_value_exact(), Some(q(5, 64)));
     is_invalid(wilcoxon_signed_rank(
         &ctx,
         &x,

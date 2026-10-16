@@ -201,6 +201,12 @@ enum Tail {
 /// (A band, not a tolerance: it never moves the answer.)
 const TIE_BAND: f64 = 1.0 / 17_592_186_044_416.0;
 
+/// Relative half-width (`2⁻³⁰`) of the band around a level within which a
+/// lattice kernel's `f64` answer is decided again exactly
+/// ([`Distribution::settle_kernel_tie`]): wider than [`TIE_BAND`], as the
+/// kernel evaluates the distribution at the parameters rounded to doubles.
+const KERNEL_TIE_BAND: f64 = 1.0 / 1_073_741_824.0;
+
 /// A quantile level, named by the tail it bounds: `Lower(p)` asks for
 /// the quantile at `p` ([`Distribution::quantile_f64`], the smallest atom
 /// with `F(k) ≥ p`), `Upper(q)` for the upper-tail quantile at `q`
@@ -1700,14 +1706,13 @@ impl Distribution {
     /// closed-form quantile, a walk of the compiled mass function, the
     /// mean).  A family without a closed form for that tail
     /// (`NegativeBinomial` has a survival function but no CDF,
-    /// `Hypergeometric` neither) is walked instead: the mass function
-    /// accumulated from the end where the tail starts (upward from the
-    /// lower end for `F(k) ≥ p`, downward from a finite upper end for
-    /// `S(k) ≤ q`), summed exactly wherever the `f64` sum lies within
-    /// `2⁻⁴⁴` of the level.  An upper level on a lattice unbounded above
-    /// with neither closed form is walked upward and resolved only to the
-    /// rounding of the sum (`n·2⁻⁵³`).  A table of listed values is summed
-    /// like a walk.  Parameters must evaluate numerically.
+    /// `Hypergeometric` neither) takes its guess from a walk of the
+    /// compiled mass function accumulated from the end where the tail
+    /// starts (upward from the lower end for `F(k) ≥ p`, downward from a
+    /// finite upper end for `S(k) ≤ q`), and decides each probe on the
+    /// exact sum of its masses.  A table of listed values is summed
+    /// like a walk, exactly wherever the `f64` sum lies within `2⁻⁴⁴` of
+    /// the level.  Parameters must evaluate numerically.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -1850,12 +1855,14 @@ impl Distribution {
         support: &Support,
     ) -> Result<f64, SymplexError> {
         // A tail may still fold to a number at one point (`F(0) = ½` for a
-        // Student t of any ν), but not along the search.
-        if let Some((name, _)) = self
-            .parameters()
-            .into_iter()
-            .find(|(_, e)| !e.free_symbols().is_empty())
-        {
+        // Student t of any ν), but not along the search.  A transformed
+        // law's map is an expression in its own (bound) variable: only a
+        // second symbol in it is a parameter (up to 0.56 every `transformed`
+        // distribution refused, "the parameter map is symbolic").
+        if let Some((name, _)) = self.parameters().into_iter().find(|(name, e)| {
+            let free = e.free_symbols().len();
+            if *name == "map" { free > 1 } else { free > 0 }
+        }) {
             return Err(SymplexError::Unevaluable {
                 reason: format!("quantile_f64: the parameter {name} is symbolic"),
             });
@@ -2051,17 +2058,44 @@ impl Distribution {
                     format!("n = {exact_n} is not exactly representable as f64 (above 2^53)"),
                 )));
             }
-            return Some(level.pick(
+            // A `p` next to 1 whose double has lost the digits of `1 − p`
+            // (`1 − 10⁻¹⁸` rounds to `1.0`): the kernel would invert another
+            // distribution, so the exact search decides (up to 0.56
+            // `Binomial(10, 1 − 10⁻¹⁸).quantile_f64(1e-20)` was 10, truly 9).
+            // Float evidence: an f64 comparison that only picks the route.
+            let q_exact = (self.context().one() - &d.p).eval_f64().ok()?;
+            if ((1.0 - prob) - q_exact).abs() > q_exact * KERNEL_TIE_BAND {
+                return None;
+            }
+            let k = level.pick(
                 |p| numdist::binom::ppf(p, n, prob),
                 |q| numdist::binom::isf(q, n, prob),
-            ));
+            );
+            return Some(k.and_then(|k| {
+                self.settle_kernel_tie(
+                    level,
+                    k,
+                    |j| numdist::binom::cdf(j, n, prob),
+                    |j| numdist::binom::sf(j, n, prob),
+                    n,
+                )
+            }));
         }
         if let Some(d) = self.downcast_ref::<Poisson>() {
             let rate = num(&d.rate)?;
-            return Some(level.pick(
+            let k = level.pick(
                 |p| numdist::poisson::ppf(p, rate),
                 |q| numdist::poisson::isf(q, rate),
-            ));
+            );
+            return Some(k.and_then(|k| {
+                self.settle_kernel_tie(
+                    level,
+                    k,
+                    |j| numdist::poisson::cdf(j, rate),
+                    |j| numdist::poisson::sf(j, rate),
+                    f64::INFINITY,
+                )
+            }));
         }
         // `aX + b` of a density: the inner quantile at the same level
         // (`a > 0`), or at the reflected one (`a < 0`: `P(aX + b ≤ x) =
@@ -2080,6 +2114,47 @@ impl Distribution {
             return Some(d.inner.quantile_at(at).map(|x| a * x + b));
         }
         None
+    }
+
+    /// The answer `k` of a lattice kernel (`numdist`'s binomial and Poisson
+    /// inversions on `0..=hi`), which decided the tails at `k` and `k − 1`
+    /// in `f64`, for the parameters rounded to doubles: where either lies
+    /// within `2⁻³⁰` of the level (the rounding of `p` moves `F` by about
+    /// `n·ε`), the exact search from `k` decides instead (two exact probes
+    /// when `k` is right).  Up to 0.56 a level that a jump of `F` matches to
+    /// rounding was decided in `f64`: `Binomial(100, 999/1000)` has
+    /// `F(0) = 10⁻³⁰⁰` exactly, the double nearest `1e-300` lies above it
+    /// (the kernel's `F(0)`, for `p = 0.999` rounded, lies above both), and
+    /// `quantile_f64(1e-300)` was `0`, not `1`.
+    fn settle_kernel_tie(
+        &self,
+        level: Level,
+        k: f64,
+        cdf: impl Fn(f64) -> f64,
+        sf: impl Fn(f64) -> f64,
+        hi: f64,
+    ) -> Result<f64, SymplexError> {
+        let near = level.nearest();
+        let tail = |j: f64| match near {
+            Level::Lower(_) => cdf(j),
+            Level::Upper(_) => sf(j),
+        };
+        let lvl = match near {
+            Level::Lower(p) | Level::Upper(p) => p,
+        };
+        // Float evidence: an f64 band that only chooses between the kernel's
+        // answer and the exact search, which agree whenever the kernel is right.
+        let undecided = |j: f64| {
+            j >= 0.0 && {
+                let t = tail(j);
+                !(t.is_finite() && lvl >= f64::MIN_POSITIVE)
+                    || (t / lvl - 1.0).abs() <= KERNEL_TIE_BAND
+            }
+        };
+        if undecided(k) || undecided(k - 1.0) {
+            return self.lattice_search(near, k, 0.0, hi);
+        }
+        Ok(k)
     }
 
     /// [`quantile_f64`](Self::quantile_f64) / [`isf_f64`](Self::isf_f64)
@@ -2105,12 +2180,18 @@ impl Distribution {
             let k0 = self.lattice_guess(asked, level, lo, hi)?;
             return self.lattice_search(level, k0, lo, hi);
         }
-        if let Some(k) = self.lattice_walk(level, lo, hi, false)? {
-            return Ok(k);
-        }
-        // Neither a closed form nor a walk: decide each probe on the summed
-        // CDF (exact, and slow).
-        self.lattice_search(level, self.mean_f64().unwrap_or(f64::NAN), lo, hi)
+        // No closed form: the walk of the compiled mass function guesses,
+        // and the search decides each probe on the summed CDF (exact; two
+        // probes when the guess is right).  Up to 0.56 the walk decided
+        // alone, in `f64`: the compiled masses of `Hypergeometric(10²⁰,
+        // 5.6·10¹⁹, 17)` overflowed (`C(10²⁰, 17)` is `∞`, a mass `x/∞ = 0`),
+        // the walk summed zeros to the end of the support, and the quantile
+        // at `p = 3/998` was `17` (truly `4`).
+        let k0 = match self.lattice_walk(level, lo, hi)? {
+            Some(k) => k,
+            None => self.mean_f64().unwrap_or(f64::NAN),
+        };
+        self.lattice_search(level, k0, lo, hi)
     }
 
     /// The closed-form mean as a finite `f64`.
@@ -2184,82 +2265,65 @@ impl Distribution {
         {
             return Ok(v);
         }
-        if let Ok(Some(k)) = self.lattice_walk(level, lo, hi, true) {
+        if let Ok(Some(k)) = self.lattice_walk(level, lo, hi) {
             return Ok(k);
         }
         Ok(self.mean_f64().unwrap_or(f64::NAN))
     }
 
-    /// Walk the lattice `lo..=hi` accumulating the mass function from the
-    /// end where the tail named by `level` starts, to the first point
-    /// where it crosses: upward from a finite `lo` for `F(k) ≥ p`,
-    /// downward from a finite `hi` for `S(k) ≤ q`.  Both are sums of
-    /// positive terms, kept to a couple of ulps by compensated summation
-    /// beyond the few ulps of each compiled term; where the `f64` sum lies
-    /// within [`TIE_BAND`] of the level the decision is taken on the exact
-    /// sum of the masses instead.  An upper level on a lattice unbounded
-    /// above is walked upward comparing `F(k)` with `1 − q` — resolved only
-    /// to the sum's rounding, and stopped at `1 − 4·2⁻⁵²`.  The mass
-    /// function is compiled to `f64` when every node has a kernel, else (and
-    /// wherever a compiled value is not finite) evaluated exactly at each
-    /// atom.  A `guess` (for [`lattice_search`](Self::lattice_search), which
-    /// decides exactly) needs the compiled mass function and decides in
-    /// `f64` throughout.  `None` when no direction applies or the walk
-    /// exceeds `LATTICE_WALK_LIMIT` atoms.
-    fn lattice_walk(
-        &self,
-        level: Level,
-        lo: f64,
-        hi: f64,
-        guess: bool,
-    ) -> Result<Option<f64>, SymplexError> {
+    /// A guess for [`lattice_search`](Self::lattice_search), which decides
+    /// exactly: walk the lattice `lo..=hi` accumulating the mass function,
+    /// compiled to `f64`, from the end where the tail named by `level`
+    /// starts, to the first point where it crosses — upward from a finite
+    /// `lo` for `F(k) ≥ p`, downward from a finite `hi` for `S(k) ≤ q`;
+    /// an upper level on a lattice unbounded above upward comparing `F(k)`
+    /// with `1 − q` (stopped at `1 − 4·2⁻⁵²`).  A compiled mass that is
+    /// not finite is evaluated exactly, at most `LATTICE_WALK_EXACT` times.
+    /// Only a guess: a compiled mass may have lost every digit to an
+    /// overflow inside it (`C(10²⁰, 17)/C(10²⁰, 17)` compiles to `∞/∞`,
+    /// one of `10³⁰⁰/∞` to `0`).  `None` when the mass function does not
+    /// compile, no direction applies, or the walk exceeds
+    /// `LATTICE_WALK_LIMIT` atoms or `LATTICE_WALK_EXACT` exact masses.
+    fn lattice_walk(&self, level: Level, lo: f64, hi: f64) -> Result<Option<f64>, SymplexError> {
         const LATTICE_WALK_LIMIT: usize = 100_000;
+        const LATTICE_WALK_EXACT: usize = 64;
         let ctx = self.context();
         let k_var = self.fresh_var("k", &[]);
-        let compiled = self
+        let Some(compiled) = self
             .0
             .density(&k_var)
             .compile(&[k_var.to_string().as_str()])
-            .ok();
-        if compiled.is_none() && guess {
+            .ok()
+        else {
             return Ok(None);
-        }
-        let exact_pmf =
-            |k: f64| -> Result<Ex, SymplexError> { Ok(self.0.density(&ctx.from_f64(k)?).eval()) };
-        let pmf = |k: f64| -> Result<f64, SymplexError> {
-            match compiled.as_ref().map(|f| f.call(&[k])) {
-                Some(v) if v.is_finite() => Ok(v),
-                _ => exact_pmf(k)?.eval_f64(),
-            }
         };
-        // Has the tail crossed, from its `f64` sum `t` — or, within the
-        // band of a walk that answers, from the exact sum of f over a..=b?
-        let decide = |t: f64, a: f64, b: f64| -> Result<bool, SymplexError> {
-            let c = level.crossed_f64(t);
-            if c.is_known() {
-                return Ok(c.is_true());
+        let exact_left = std::cell::Cell::new(LATTICE_WALK_EXACT);
+        // `None`: the exact masses are used up.
+        let pmf = |k: f64| -> Result<Option<f64>, SymplexError> {
+            let v = compiled.call(&[k]);
+            if v.is_finite() {
+                return Ok(Some(v));
             }
-            if guess {
-                return Ok(match level {
-                    Level::Lower(p) => t >= p,
-                    Level::Upper(q) => t <= q,
-                });
+            if exact_left.get() == 0 {
+                return Ok(None);
             }
-            let mut acc = ctx.zero();
-            let mut j = a;
-            while j <= b {
-                acc += exact_pmf(j)?;
-                j += 1.0;
-            }
-            level.crossed(&acc)
+            exact_left.set(exact_left.get() - 1);
+            Ok(Some(self.0.density(&ctx.from_f64(k)?).eval().eval_f64()?))
+        };
+        let decide = |t: f64| match level {
+            Level::Lower(p) => t >= p,
+            Level::Upper(q) => t <= q,
         };
         let mut acc = CompensatedSum::default();
         match level {
             Level::Lower(_) if lo.is_finite() => {
                 let mut k = lo;
                 for _ in 0..LATTICE_WALK_LIMIT {
-                    acc.add(pmf(k)?);
-                    if decide(acc.value(), lo, k)? || k >= hi {
+                    let Some(m) = pmf(k)? else {
+                        return Ok(None);
+                    };
+                    acc.add(m);
+                    if decide(acc.value()) || k >= hi {
                         return Ok(Some(k));
                     }
                     k += 1.0;
@@ -2273,8 +2337,11 @@ impl Distribution {
                     if k <= lo {
                         return Ok(Some(k));
                     }
-                    acc.add(pmf(k)?);
-                    if !decide(acc.value(), k, hi)? {
+                    let Some(m) = pmf(k)? else {
+                        return Ok(None);
+                    };
+                    acc.add(m);
+                    if !decide(acc.value()) {
                         return Ok(Some(k));
                     }
                     k -= 1.0;
@@ -2285,7 +2352,10 @@ impl Distribution {
                 let target = (1.0 - q).min(1.0 - 4.0 * f64::EPSILON);
                 let mut k = lo;
                 for _ in 0..LATTICE_WALK_LIMIT {
-                    acc.add(pmf(k)?);
+                    let Some(m) = pmf(k)? else {
+                        return Ok(None);
+                    };
+                    acc.add(m);
                     if acc.value() >= target {
                         return Ok(Some(k));
                     }

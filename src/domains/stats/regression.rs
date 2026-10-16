@@ -24,6 +24,34 @@
 //! are `f64` (a Brent root of the exact CDF).  Logistic regression has no
 //! closed form and is fitted numerically in `f64`.
 //!
+//! # Numerical guarantees
+//!
+//! * **Least squares** has no conditioning caveat: a nearly collinear
+//!   design (`XᵀX` with a condition number of `10²⁶` in the tests) gives
+//!   the exact coefficients of the data as given, where `f64` solvers lose
+//!   every digit; the price is the size of the rationals.  Exact rational
+//!   data give exact results; data read from `f64` are the exact binary
+//!   fractions those doubles are.  Confidence and prediction limits are
+//!   `f64` numbers rooted from the exact variance, accurate to a few ulps
+//!   for data of any magnitude whose limits fit in an `f64`.
+//! * **Logistic fits** ([`logit`], [`mnlogit`], [`ologit`]) iterate on a
+//!   standardised design and take the covariance from the square-root
+//!   information, so coefficients and standard errors carry about
+//!   `κ·10⁻¹⁶` relative error, `κ` the condition number of the
+//!   standardised design; a design with `κ` beyond about `10⁶` (an
+//!   information Cholesky pivot below `10⁻¹²` of its diagonal) is refused
+//!   as collinear.  statsmodels, inverting the formed information, loses
+//!   `κ²·10⁻¹⁶` and answers far past that point.
+//! * **The Cox model** ([`cox_ph`](super::cox::cox_ph)) inverts the formed
+//!   information of its centred covariates: coefficients as accurate as
+//!   above, standard errors to about `κ²·10⁻¹⁶` (the condition number
+//!   of the information), the same refusal threshold.
+//! * **Degenerate data** — a rank-deficient design, (quasi-)complete
+//!   separation, a constant response, a variance a statistic divides by
+//!   being zero, no events — is an error
+//!   [`SymplexError::DegenerateData`] whose [`Degeneracy`] says which, never
+//!   a fit with huge or undefined numbers.
+//!
 //! The maximum-likelihood fits — [`Logit`], [`MnLogit`], [`OrderedLogit`]
 //! and [`CoxModel`](super::cox::CoxModel) — share two traits:
 //! [`LikelihoodFit`] (information criteria, pseudo-`R²`, the
@@ -60,7 +88,7 @@ use super::hypothesis::{self, Alternative, TestResult};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::dense_f64::{self, dot as dot_f64};
-use crate::base::errors::SymplexError;
+use crate::base::errors::{Degeneracy, SymplexError};
 use crate::base::interval::Interval;
 use crate::base::numeric::ratio_to_f64;
 use crate::domains::exact_matrix::QMatrix;
@@ -73,8 +101,86 @@ fn failed(op: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::computation_failed(op, reason)
 }
 
+fn degenerate(op: &'static str, kind: Degeneracy, reason: impl Into<String>) -> SymplexError {
+    SymplexError::degenerate(op, kind, reason)
+}
+
 fn to_f64(op: &'static str, q: &Q) -> Result<f64, SymplexError> {
     ratio_to_f64(q).ok_or_else(|| failed(op, format!("{q} does not fit in an f64")))
+}
+
+/// `√q` as an `f64` for an exact `q ≥ 0`, taken from the rational itself:
+/// `q = m·4ᵏ` exactly with `½ < m < 8`, so `√q = √m·2ᵏ` is representable
+/// whenever the root is, although `q` (a variance: the square of the
+/// data's scale) may over- or underflow `f64` — converting `q` first made
+/// every interval of a fit of data near `10⁻¹⁶⁰` a single point and refused
+/// one near `10¹⁶⁰`.
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for a negative `q`;
+/// [`SymplexError::ComputationFailed`] when the root itself overflows, or
+/// underflows to `0` while `q > 0`.
+pub(super) fn sqrt_to_f64(op: &'static str, q: &Q) -> Result<f64, SymplexError> {
+    if q.is_negative() {
+        return Err(invalid(
+            op,
+            format!("cannot take the square root of {q} < 0"),
+        ));
+    }
+    if q.is_zero() {
+        return Ok(0.0);
+    }
+    // ⌊log₂ q⌋ is e or e − 1; halve it towards −∞ so that m ∈ [1/2, 8).
+    let e = i64::try_from(q.numer().bits()).unwrap_or(i64::MAX)
+        - i64::try_from(q.denom().bits()).unwrap_or(i64::MAX);
+    let k = e.div_euclid(2);
+    let shift = usize::try_from(2 * k.unsigned_abs()).map_err(|_| {
+        failed(
+            op,
+            format!("the square root of a number of 2^{e} does not fit in an f64"),
+        )
+    })?;
+    let m = if k >= 0 {
+        Q::new(q.numer().clone(), q.denom() << shift)
+    } else {
+        Q::new(q.numer() << shift, q.denom().clone())
+    };
+    let root_m = to_f64(op, &m)?.sqrt();
+    let k = i32::try_from(k).map_err(|_| {
+        failed(
+            op,
+            format!("the square root of a number of 2^{e} does not fit in an f64"),
+        )
+    })?;
+    // 2ᵏ in two factors, so that neither leaves the range on its own.
+    let root = root_m * 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+    if root.is_finite() && root > 0.0 {
+        Ok(root)
+    } else {
+        Err(failed(
+            op,
+            format!("the square root of a number of 2^{e} does not fit in an f64"),
+        ))
+    }
+}
+
+/// `center ± half` as a closed `f64` interval, refused when an end leaves
+/// the `f64` range (an infinite end is not a confidence limit).
+pub(super) fn centered_interval(
+    op: &'static str,
+    center: f64,
+    half: f64,
+) -> Result<Interval<f64>, SymplexError> {
+    let (lo, hi) = (center - half, center + half);
+    if lo.is_finite() && hi.is_finite() {
+        Ok(Interval::closed(lo, hi))
+    } else {
+        Err(failed(
+            op,
+            format!("the interval {center:e} ± {half:e} does not fit in an f64"),
+        ))
+    }
 }
 
 fn dot(a: &[Q], b: &[Q]) -> Q {
@@ -300,8 +406,9 @@ fn normal_equations(
     let xtwx = xt.matmul(&wx)?;
     let xtwy = xt.matmul(&column_vector(op, &wy)?)?;
     let xtx_inv = xtwx.inv().map_err(|_| {
-        invalid(
+        degenerate(
             op,
+            Degeneracy::Collinear,
             format!(
                 "the design matrix is rank deficient (rank {} of {p} columns): drop a collinear regressor",
                 x.rank()
@@ -448,8 +555,9 @@ fn fit_least_squares(
             .fold(Q::zero(), |acc, (i, v)| acc + weight(i) * v * v)
     };
     if tss.is_zero() {
-        return Err(invalid(
+        return Err(degenerate(
             op,
+            Degeneracy::ConstantResponse,
             "the response is constant (zero total sum of squares): R² is undefined",
         ));
     }
@@ -505,8 +613,10 @@ fn fit_least_squares(
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] if `y` is empty, `x` has a different
-/// number of rows or ragged rows, the design has no columns, `n ≤ p`,
-/// `XᵀX` is singular (collinear regressors), or `y` is constant.
+/// number of rows or ragged rows, the design has no columns, or `n ≤ p`;
+/// [`SymplexError::DegenerateData`] if `XᵀX` is singular (collinear
+/// regressors: [`Degeneracy::Collinear`]) or `y` is constant
+/// ([`Degeneracy::ConstantResponse`]).
 pub fn ols(y: &[Q], x: &[Vec<Q>], add_intercept: bool) -> Result<Ols, SymplexError> {
     fit_least_squares("ols", y, x, None, add_intercept)
 }
@@ -556,8 +666,9 @@ pub fn simple_linear_regression(x: &[Q], y: &[Q]) -> Result<Ols, SymplexError> {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for mismatched lengths, `n < degree +
-/// 1`, or a singular Vandermonde system (too few distinct `x`).
+/// [`SymplexError::InvalidArgument`] for mismatched lengths or `n < degree +
+/// 1`; [`SymplexError::DegenerateData`] ([`Degeneracy::Collinear`]) for a
+/// singular Vandermonde system (too few distinct `x`).
 pub fn polyfit(x: &[Q], y: &[Q], degree: usize) -> Result<Vec<Q>, SymplexError> {
     const OP: &str = "polyfit";
     if x.len() != y.len() {
@@ -600,13 +711,15 @@ pub fn polyfit(x: &[Q], y: &[Q], degree: usize) -> Result<Vec<Q>, SymplexError> 
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if `XᵀX` is singular.
+/// [`SymplexError::DegenerateData`] ([`Degeneracy::Collinear`]) if `XᵀX`
+/// is singular.
 pub fn hat_matrix(design: &QMatrix) -> Result<QMatrix, SymplexError> {
     const OP: &str = "hat_matrix";
     let xt = design.transpose();
     let xtx_inv = xt.matmul(design)?.inv().map_err(|_| {
-        invalid(
+        degenerate(
             OP,
+            Degeneracy::Collinear,
             format!(
                 "the design matrix is rank deficient (rank {} of {} columns)",
                 design.rank(),
@@ -625,8 +738,10 @@ pub fn hat_matrix(design: &QMatrix) -> Result<QMatrix, SymplexError> {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for ragged rows, too few observations,
-/// a constant column, or exactly collinear columns (infinite VIF).
+/// [`SymplexError::InvalidArgument`] for ragged rows or too few
+/// observations; [`SymplexError::DegenerateData`]
+/// ([`Degeneracy::Collinear`]) for a constant column or exactly collinear
+/// columns (infinite VIF).
 pub fn vif(x: &[Vec<Q>]) -> Result<Vec<Q>, SymplexError> {
     const OP: &str = "vif";
     let n = x.len();
@@ -653,11 +768,18 @@ pub fn vif(x: &[Vec<Q>]) -> Result<Vec<Q>, SymplexError> {
                         .collect()
                 })
                 .collect();
-            let fit = fit_least_squares(OP, &target, &others, None, true)
-                .map_err(|e| invalid(OP, format!("column {j}: {e}")))?;
+            let fit = fit_least_squares(OP, &target, &others, None, true).map_err(|e| {
+                // A constant column (a constant "response" here) is
+                // collinear with the intercept.
+                match e.degeneracy() {
+                    Some(_) => degenerate(OP, Degeneracy::Collinear, format!("column {j}: {e}")),
+                    None => invalid(OP, format!("column {j}: {e}")),
+                }
+            })?;
             if fit.r_squared.is_one() {
-                return Err(invalid(
+                return Err(degenerate(
                     OP,
+                    Degeneracy::Collinear,
                     format!(
                         "column {j} is an exact linear combination of the others (infinite VIF)"
                     ),
@@ -756,8 +878,9 @@ impl Ols {
 
     fn require_residual_variance(&self, op: &'static str) -> Result<(), SymplexError> {
         if self.ssr.is_zero() {
-            return Err(invalid(
+            return Err(degenerate(
                 op,
+                Degeneracy::ZeroVariance,
                 "the fit is perfect (SSR = 0): σ̂² = 0 and the statistic is undefined",
             ));
         }
@@ -768,7 +891,8 @@ impl Ols {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] for a perfect fit (`SSR = 0`).
+    /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+    /// perfect fit (`SSR = 0`).
     pub fn t_statistics(&self, ctx: &Context) -> Result<Vec<Ex>, SymplexError> {
         self.require_residual_variance("t_statistics")?;
         Ok(self
@@ -784,7 +908,8 @@ impl Ols {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] for a perfect fit (`SSR = 0`).
+    /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+    /// perfect fit (`SSR = 0`).
     pub fn p_values(&self, ctx: &Context) -> Result<Vec<Ex>, SymplexError> {
         self.require_residual_variance("p_values")?;
         Ok(self
@@ -816,7 +941,8 @@ impl Ols {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] for a perfect fit (`SSR = 0`).
+    /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+    /// perfect fit (`SSR = 0`).
     pub fn coefficient_tests(&self, ctx: &Context) -> Result<Vec<TestResult>, SymplexError> {
         let stats = self.t_statistics(ctx)?;
         let ps = self.p_values(ctx)?;
@@ -837,7 +963,8 @@ impl Ols {
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for an intercept-only model
-    /// (`df_model = 0`) or a perfect fit.
+    /// (`df_model = 0`); [`SymplexError::DegenerateData`]
+    /// ([`Degeneracy::ZeroVariance`]) for a perfect fit.
     pub fn f_statistic(&self) -> Result<Q, SymplexError> {
         const OP: &str = "f_statistic";
         if self.df_model == 0 {
@@ -890,12 +1017,16 @@ impl Ols {
 
     /// `β̂_j ± t_{(1+c)/2, n−p} · se_j` for every coefficient
     /// (`conf_int(alpha = 1 − c)`).  The limits are `f64`, so no context is
-    /// needed.
+    /// needed; `se_j` is rooted from the exact variance, so the limits keep
+    /// their digits for data of any magnitude whose limits are `f64`
+    /// numbers.
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for `confidence ∉ (0, 1)`; the
-    /// quantile's error if it does not converge.
+    /// quantile's error if it does not converge;
+    /// [`SymplexError::ComputationFailed`] when a coefficient or a limit
+    /// does not fit in an `f64`.
     pub fn conf_int(&self, confidence: f64) -> Result<Vec<Interval<f64>>, SymplexError> {
         const OP: &str = "conf_int";
         check_confidence(OP, confidence)?;
@@ -903,11 +1034,7 @@ impl Ols {
         self.coefficients
             .iter()
             .zip(self.cov_params.diagonal())
-            .map(|(b, v)| {
-                let b = to_f64(OP, b)?;
-                let se = to_f64(OP, &v)?.sqrt();
-                Ok(Interval::closed(b - t * se, b + t * se))
-            })
+            .map(|(b, v)| centered_interval(OP, to_f64(OP, b)?, t * sqrt_to_f64(OP, &v)?))
             .collect()
     }
 
@@ -943,19 +1070,22 @@ impl Ols {
         Ok(dot(&row, &self.coefficients))
     }
 
-    /// `(ŷ₀, x₀ᵀ(XᵀWX)⁻¹x₀, t)` shared by the two intervals.
-    fn interval_parts(
+    /// `ŷ₀ ± t·√(σ̂² (extra + x₀ᵀ(XᵀWX)⁻¹x₀))`, the variance formed exactly
+    /// and rooted from the rational ([`sqrt_to_f64`]); `extra` is `0` for
+    /// the mean response and `1` for a new observation.
+    fn interval_at(
         &self,
         op: &'static str,
         x_row: &[Q],
         confidence: f64,
-    ) -> Result<(f64, f64, f64), SymplexError> {
+        extra: Q,
+    ) -> Result<Interval<f64>, SymplexError> {
         check_confidence(op, confidence)?;
         let row = self.design_row(op, x_row)?;
         let yhat = to_f64(op, &dot(&row, &self.coefficients))?;
-        let factor = to_f64(op, &quadratic_form(&self.xtx_inv, &row))?;
+        let variance = &self.mse_resid * (extra + quadratic_form(&self.xtx_inv, &row));
         let t = t_two_sided(op, self.df_resid as f64, confidence)?;
-        Ok((yhat, factor, t))
+        centered_interval(op, yhat, t * sqrt_to_f64(op, &variance)?)
     }
 
     /// Confidence interval for the mean response at `x_row`:
@@ -965,16 +1095,19 @@ impl Ols {
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for a wrong `x_row` length or
-    /// `confidence ∉ (0, 1)`.
+    /// `confidence ∉ (0, 1)`; [`SymplexError::ComputationFailed`] when `ŷ₀`
+    /// or a limit does not fit in an `f64`.
     pub fn confidence_interval_mean_response(
         &self,
         x_row: &[Q],
         confidence: f64,
     ) -> Result<Interval<f64>, SymplexError> {
-        const OP: &str = "confidence_interval_mean_response";
-        let (yhat, factor, t) = self.interval_parts(OP, x_row, confidence)?;
-        let se = (to_f64(OP, &self.mse_resid)? * factor).sqrt();
-        Ok(Interval::closed(yhat - t * se, yhat + t * se))
+        self.interval_at(
+            "confidence_interval_mean_response",
+            x_row,
+            confidence,
+            Q::zero(),
+        )
     }
 
     /// Prediction interval for a new observation at `x_row`:
@@ -990,10 +1123,7 @@ impl Ols {
         x_row: &[Q],
         confidence: f64,
     ) -> Result<Interval<f64>, SymplexError> {
-        const OP: &str = "prediction_interval";
-        let (yhat, factor, t) = self.interval_parts(OP, x_row, confidence)?;
-        let se = (to_f64(OP, &self.mse_resid)? * (1.0 + factor)).sqrt();
-        Ok(Interval::closed(yhat - t * se, yhat + t * se))
+        self.interval_at("prediction_interval", x_row, confidence, Q::one())
     }
 
     /// The hat matrix `H = X(XᵀWX)⁻¹XᵀW` with `ŷ = Hy`, exact (`W = I` for
@@ -1035,8 +1165,8 @@ impl Ols {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] for a perfect fit or an
-    /// observation with leverage `1`.
+    /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+    /// perfect fit or an observation with leverage `1`.
     pub fn cooks_distance(&self) -> Result<Vec<Q>, SymplexError> {
         const OP: &str = "cooks_distance";
         self.require_residual_variance(OP)?;
@@ -1048,8 +1178,10 @@ impl Ols {
             .map(|(i, (h, e))| {
                 let one_minus = Q::one() - h;
                 if one_minus.is_zero() {
-                    return Err(invalid(
+                    // Var(eᵢ) = σ²(1 − hᵢᵢ) = 0.
+                    return Err(degenerate(
                         OP,
+                        Degeneracy::ZeroVariance,
                         format!("observation {i} has leverage 1: Cook's distance is undefined"),
                     ));
                 }
@@ -1063,12 +1195,14 @@ impl Ols {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] if every residual is zero.
+    /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) if
+    /// every residual is zero.
     pub fn durbin_watson(&self) -> Result<Q, SymplexError> {
         let denom = self.residuals.iter().fold(Q::zero(), |acc, e| acc + e * e);
         if denom.is_zero() {
-            return Err(invalid(
+            return Err(degenerate(
                 "durbin_watson",
+                Degeneracy::ZeroVariance,
                 "every residual is zero: the statistic is undefined",
             ));
         }
@@ -1085,12 +1219,14 @@ impl Ols {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] for a perfect fit (`SSR = 0`).
+    /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
+    /// perfect fit (`SSR = 0`).
     pub fn log_likelihood(&self, ctx: &Context) -> Result<Ex, SymplexError> {
         const OP: &str = "log_likelihood";
         if self.ssr.is_zero() {
-            return Err(invalid(
+            return Err(degenerate(
                 OP,
+                Degeneracy::ZeroVariance,
                 "the fit is perfect (SSR = 0): the Gaussian log-likelihood is unbounded",
             ));
         }
@@ -1299,10 +1435,10 @@ fn softplus(x: f64) -> f64 {
 /// Perfect (complete or quasi-complete) separation — where the likelihood
 /// has no finite maximiser and statsmodels emits `PerfectSeparationWarning`
 /// / `ConvergenceWarning` with huge coefficients — is reported as
-/// [`SymplexError::ComputationFailed`]: either every observation is
-/// predicted to within `1e-8` (statsmodels' perfect-prediction check), or
-/// the iteration fails to converge while fitted probabilities reach `0`
-/// or `1`, or the Hessian becomes singular.
+/// [`SymplexError::DegenerateData`] with [`Degeneracy::Separation`]:
+/// either every observation is predicted to within `1e-8` (statsmodels'
+/// perfect-prediction check), or the iteration fails to converge while
+/// fitted probabilities reach `0` or `1`, or the Hessian becomes singular.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -1321,12 +1457,18 @@ fn softplus(x: f64) -> f64 {
 ///
 /// # Errors
 ///
-/// - [`SymplexError::InvalidArgument`] for an empty or non-binary `y`, a
-///   constant `y`, mismatched or ragged `x`, non-finite entries, `n ≤ p`,
-///   collinear regressors (numerically: the information matrix of the
-///   standardised design is singular to `1e-12` relative), `max_iter = 0`,
-///   or a `tol` that is not finite and positive.
-/// - [`SymplexError::ComputationFailed`] for perfect separation (see above).
+/// - [`SymplexError::InvalidArgument`] for an empty or non-binary `y`,
+///   mismatched or ragged `x`, non-finite entries, `n ≤ p`, `max_iter =
+///   0`, or a `tol` that is not finite and positive.
+/// - [`SymplexError::DegenerateData`] for a constant `y`
+///   ([`Degeneracy::ConstantResponse`]), collinear regressors
+///   ([`Degeneracy::Collinear`]; numerically: the information matrix of
+///   the standardised design is singular to `1e-12` relative, i.e. a
+///   condition number of that design beyond about `10⁶`), or perfect
+///   separation ([`Degeneracy::Separation`], see above).
+/// - [`SymplexError::ComputationFailed`] when no step along the Newton
+///   direction increases the likelihood, or the Hessian at the estimate is
+///   singular.
 pub fn logit<B: BinaryOutcome>(
     y: &[B],
     x: &[Vec<f64>],
@@ -1350,8 +1492,9 @@ pub fn logit<B: BinaryOutcome>(
         .collect::<Result<_, _>>()?;
     let successes = classes.iter().filter(|&&c| c == 1).count();
     if successes == 0 || successes == n {
-        return Err(invalid(
+        return Err(degenerate(
             OP,
+            Degeneracy::ConstantResponse,
             "y is constant (all successes or all failures): the coefficients are not identified",
         ));
     }
@@ -1757,8 +1900,9 @@ fn categorical_data(
     }
     let max_label = y.iter().copied().max().unwrap_or(0);
     if max_label == 0 {
-        return Err(invalid(
+        return Err(degenerate(
             op,
+            Degeneracy::ConstantResponse,
             "y is constant (every observation is in category 0): need at least two categories",
         ));
     }
@@ -2317,13 +2461,15 @@ fn newton_categorical(
         iterations = iter;
         let Some(l) = information_cholesky(&cur.info) else {
             return Err(if iter == 1 {
-                invalid(
+                degenerate(
                     op,
+                    Degeneracy::Collinear,
                     "the design matrix is rank deficient (numerically: collinear or nearly collinear regressors): drop a collinear regressor",
                 )
             } else {
-                failed(
+                degenerate(
                     op,
+                    Degeneracy::Separation,
                     format!(
                         "the Hessian became singular: complete or quasi-complete separation, the maximum-likelihood estimate does not exist ({} is diverging)",
                         culprit(&params)
@@ -2361,8 +2507,9 @@ fn newton_categorical(
         params = trial;
         cur = next;
         if params.iter().any(|b| !b.is_finite()) {
-            return Err(failed(
+            return Err(degenerate(
                 op,
+                Degeneracy::Separation,
                 format!(
                     "the coefficients diverged: perfect separation, the maximum-likelihood estimate does not exist ({} is diverging)",
                     culprit(&params)
@@ -2373,8 +2520,9 @@ fn newton_categorical(
         // to within 1e-8 means the likelihood is maximised only at infinity.
         // (Float evidence: statsmodels' tolerance of the f64 fit; it only refuses.)
         if max_own_category_miss(&cur.probs, y) <= 1e-8 {
-            return Err(failed(
+            return Err(degenerate(
                 op,
+                Degeneracy::Separation,
                 format!(
                     "perfect separation: every observation is predicted exactly (1 − π̂ ≤ 1e-8), the maximum-likelihood estimate does not exist ({} is diverging)",
                     culprit(&params)
@@ -2387,8 +2535,9 @@ fn newton_categorical(
         }
     }
     if !converged && has_degenerate_probability(&cur.probs) {
-        return Err(failed(
+        return Err(degenerate(
             op,
+            Degeneracy::Separation,
             format!(
                 "no convergence in {} iterations while fitted probabilities reached 0 or 1: complete or quasi-complete separation, the maximum-likelihood estimate does not exist ({} is diverging)",
                 opts.max_iter,
@@ -2592,8 +2741,9 @@ fn mnlogit_evaluate(design: &[Vec<f64>], y: &[usize], k: usize, beta: &[f64]) ->
 ///
 /// Perfect (complete or quasi-complete) separation — no finite maximiser;
 /// statsmodels returns enormous coefficients with a `ConvergenceWarning` —
-/// is reported as [`SymplexError::ComputationFailed`] naming the diverging
-/// coefficient: either every observation is predicted to within `1e-8`,
+/// is reported as [`SymplexError::DegenerateData`]
+/// ([`Degeneracy::Separation`]) naming the diverging coefficient: either
+/// every observation is predicted to within `1e-8`,
 /// or the iteration fails to converge while a fitted probability reaches
 /// `0` or `1`, or the Hessian becomes singular.
 ///
@@ -2617,11 +2767,16 @@ fn mnlogit_evaluate(design: &[Vec<f64>], y: &[usize], k: usize, beta: &[f64]) ->
 ///
 /// # Errors
 ///
-/// - [`SymplexError::InvalidArgument`] for an empty `y`, fewer than two
-///   categories, a category in `0..k` with no observations, mismatched or
-///   ragged `x`, non-finite entries, `n ≤ (k − 1)p`, collinear regressors,
-///   or `max_iter = 0` / a `tol` that is not finite and positive.
-/// - [`SymplexError::ComputationFailed`] for perfect separation (see above).
+/// - [`SymplexError::InvalidArgument`] for an empty `y`, a category in
+///   `0..k` with no observations, mismatched or ragged `x`, non-finite
+///   entries, `n ≤ (k − 1)p`, or `max_iter = 0` / a `tol` that is not
+///   finite and positive.
+/// - [`SymplexError::DegenerateData`] for a single category
+///   ([`Degeneracy::ConstantResponse`]), collinear regressors
+///   ([`Degeneracy::Collinear`], numerically as for [`logit`]) or perfect
+///   separation ([`Degeneracy::Separation`], see above).
+/// - [`SymplexError::ComputationFailed`] when no step along the Newton
+///   direction increases the likelihood.
 pub fn mnlogit(
     y: &[usize],
     x: &[Vec<f64>],
@@ -3139,10 +3294,12 @@ fn ordered_probabilities(theta: &[f64], eta: f64) -> Vec<f64> {
 ///   categories, a category in `0..k` with no observations (statsmodels
 ///   silently relabels a numpy `y` with `np.unique`, and fails on an
 ///   explicitly declared empty level: its start value `ln 0 = −∞`),
-///   mismatched or ragged `x`, non-finite entries, a constant column,
-///   `n ≤ p + k − 1`, collinear regressors, or `max_iter = 0` / a `tol` that is not finite and positive.
-/// - [`SymplexError::ComputationFailed`] for perfect separation, as
-///   [`mnlogit`].
+///   mismatched or ragged `x`, non-finite entries, `n ≤ p + k − 1`, or
+///   `max_iter = 0` / a `tol` that is not finite and positive.
+/// - [`SymplexError::DegenerateData`] for a single category
+///   ([`Degeneracy::ConstantResponse`]), a constant column or collinear
+///   regressors ([`Degeneracy::Collinear`]), or perfect separation
+///   ([`Degeneracy::Separation`]), as [`mnlogit`].
 pub fn ologit(y: &[usize], x: &[Vec<f64>], opts: &LogitOpts) -> Result<OrderedLogit, SymplexError> {
     const OP: &str = "ologit";
     let data = categorical_data(OP, y, x, false, opts)?;
@@ -3151,8 +3308,9 @@ pub fn ologit(y: &[usize], x: &[Vec<f64>], opts: &LogitOpts) -> Result<OrderedLo
     let p = data.design.first().map_or(0, Vec::len);
     let q = p + k - 1;
     if let Some(a) = (0..p).find(|&a| data.design.iter().all(|r| r[a] == data.design[0][a])) {
-        return Err(invalid(
+        return Err(degenerate(
             OP,
+            Degeneracy::Collinear,
             format!(
                 "column {a} of x is constant: the thresholds play the intercept's role, drop it"
             ),

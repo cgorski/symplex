@@ -37,11 +37,67 @@ fn numeric(e: &Ex) -> Option<Q> {
     e.eval().as_rational()
 }
 
+/// A symbol-free parameter that is not a rational (`√2/2`, `π`): its order
+/// and integrality are decided by the (certified) queries.  Up to 0.56 the
+/// checks below read only rationals, and `Bernoulli(√2)`, `Binomial(√2, ½)`
+/// and `Geometric(−π/4)` were accepted.
+fn constant(e: &Ex) -> bool {
+    e.free_symbols().is_empty()
+}
+
+/// A symbol-free constant that is certainly not an integer: the query says
+/// so, or `e − ⌊e⌋` is certified nonzero (an integer-valued constant whose
+/// floor cannot be decided is not refuted).
+fn not_an_integer(e: &Ex) -> bool {
+    Truth::from(e.is_integer()).is_false()
+        || super::family::sign_of(&(e - e.floor()).eval())
+            .is_nonzero()
+            .is_true()
+}
+
+/// `e < 0`, `e > 0`, `e > 1` proved.
+fn proved_negative(e: &Ex) -> bool {
+    Truth::from(e.is_negative()).is_true()
+}
+
+fn proved_positive(e: &Ex) -> bool {
+    Truth::from(e.is_positive()).is_true()
+}
+
+fn proved_above_one(e: &Ex) -> bool {
+    proved_positive(&(e - 1))
+}
+
+/// `ln a` for a positive `a` as `2 atanh((a − 1)/(a + 1))`, so that
+/// `exp(k·ln a + …)` stays an exponential (the canonical form turns
+/// `exp(k ln a)` into the power `aᵏ`, which leaves the exponent range of the
+/// arbitrary-precision floats long before the mass it is a factor of does).
+fn ln_kept(a: &Ex) -> Ex {
+    let ctx = a.context();
+    ctx.int(2) * ((a - ctx.one()) / (a + ctx.one())).atanh()
+}
+
+/// Does `k·log₂ a` exceed `2²⁶` for numeric `k`, `a` (an `f64` estimate that
+/// only picks between two equal forms)?  Then `aᵏ` approaches the exponent
+/// range (`2^(±2³¹)`) and a mass is written in log space.
+fn power_beyond_range(a: &Ex, k: &Ex) -> bool {
+    if !(a.free_symbols().is_empty() && k.free_symbols().is_empty()) {
+        return false;
+    }
+    match (a.eval_f64(), k.eval_f64()) {
+        (Ok(a), Ok(k)) => a > 0.0 && (k * a.log2()).abs() > f64::from(1u32 << 26),
+        _ => false,
+    }
+}
+
 /// Reject a numeric probability outside `[0, 1]`; accept symbolic ones.
 fn require_probability(p: &Ex, what: &str) -> Result<(), SymplexError> {
-    if let Some(q) = numeric(p)
-        && (q < Q::zero() || q > Q::one())
-    {
+    super::continuous::require_finite(p, what)?;
+    let outside = match numeric(p) {
+        Some(q) => q < Q::zero() || q > Q::one(),
+        None => constant(p) && (proved_negative(p) || proved_above_one(p)),
+    };
+    if outside {
         return Err(invalid(format!("{what} must lie in [0, 1], got `{p}`")));
     }
     Ok(())
@@ -50,9 +106,12 @@ fn require_probability(p: &Ex, what: &str) -> Result<(), SymplexError> {
 /// Reject a numeric probability outside `(0, 1]` (`allow_one`) or `(0, 1)`;
 /// accept symbolic ones.
 fn require_probability_positive(p: &Ex, what: &str, allow_one: bool) -> Result<(), SymplexError> {
-    if let Some(q) = numeric(p)
-        && (q <= Q::zero() || q > Q::one() || (!allow_one && q == Q::one()))
-    {
+    super::continuous::require_finite(p, what)?;
+    let outside = match numeric(p) {
+        Some(q) => q <= Q::zero() || q > Q::one() || (!allow_one && q == Q::one()),
+        None => constant(p) && (Truth::from(p.is_positive()).is_false() || proved_above_one(p)),
+    };
+    if outside {
         let range = if allow_one { "(0, 1]" } else { "(0, 1)" };
         return Err(invalid(format!("{what} must lie in {range}, got `{p}`")));
     }
@@ -62,9 +121,12 @@ fn require_probability_positive(p: &Ex, what: &str, allow_one: bool) -> Result<(
 /// Reject a numeric count that is not a non-negative integer; accept
 /// symbolic ones.
 fn require_count(n: &Ex, what: &str) -> Result<(), SymplexError> {
-    if let Some(q) = numeric(n)
-        && (!q.is_integer() || q < Q::zero())
-    {
+    super::continuous::require_finite(n, what)?;
+    let bad = match numeric(n) {
+        Some(q) => !q.is_integer() || q < Q::zero(),
+        None => constant(n) && (proved_negative(n) || not_an_integer(n)),
+    };
+    if bad {
         return Err(invalid(format!(
             "{what} must be a non-negative integer, got `{n}`"
         )));
@@ -74,9 +136,12 @@ fn require_count(n: &Ex, what: &str) -> Result<(), SymplexError> {
 
 /// Reject a numeric value that is not an integer; accept symbolic ones.
 fn require_integer(e: &Ex, what: &str) -> Result<(), SymplexError> {
-    if let Some(q) = numeric(e)
-        && !q.is_integer()
-    {
+    super::continuous::require_finite(e, what)?;
+    let bad = match numeric(e) {
+        Some(q) => !q.is_integer(),
+        None => constant(e) && not_an_integer(e),
+    };
+    if bad {
         return Err(invalid(format!("{what} must be an integer, got `{e}`")));
     }
     Ok(())
@@ -84,9 +149,11 @@ fn require_integer(e: &Ex, what: &str) -> Result<(), SymplexError> {
 
 /// Reject numeric `a`, `b` with `a > b`; accept when either is symbolic.
 fn require_le(a: &Ex, b: &Ex, what: &str) -> Result<(), SymplexError> {
-    if let (Some(x), Some(y)) = (numeric(a), numeric(b))
-        && x > y
-    {
+    let exceeds = match (numeric(a), numeric(b)) {
+        (Some(x), Some(y)) => x > y,
+        _ => constant(a) && constant(b) && proved_positive(&(a - b)),
+    };
+    if exceeds {
         return Err(invalid(format!("{what}: `{a}` exceeds `{b}`")));
     }
     Ok(())
@@ -212,7 +279,28 @@ impl Family for Finite {
     }
 
     // Piecewise((pᵢ, k = vᵢ), …, (0, True)): the value 0 off the table.
+    // A numeric `k` gets its mass directly when every comparison is decided
+    // (rationals compared as such): up to 0.56 each call built the whole
+    // Piecewise, and the CDF of a table of 19,532 values (`X⁵` of a
+    // hypergeometric), which calls it once per value, exhausted 2.7 GB.
     fn density(&self, k: &Ex) -> Ex {
+        if k.free_symbols().is_empty() {
+            let kq = k.as_rational();
+            let mut decided = true;
+            for (v, p) in &self.table {
+                let same = match (&kq, v.as_rational()) {
+                    (Some(a), Some(b)) => Truth::from_bool(*a == b),
+                    _ => Truth::from(k.equals(v)),
+                };
+                if same.is_true() {
+                    return p.clone();
+                }
+                decided &= same.is_false();
+            }
+            if decided {
+                return self.ctx.zero();
+            }
+        }
         let zero = self.ctx.zero();
         let true_ = self.ctx.bool_true();
         let pairs: Vec<(Ex, BoolEx)> = self
@@ -410,11 +498,20 @@ impl Family for Binomial {
     // (the sum by `summation`).
     fn cdf(&self, k: &Ex) -> Option<Ex> {
         let (n, p, k) = self.numeric_at(k)?;
+        let ctx = self.context();
         if k < 0 {
-            return Some(self.context().zero());
+            return Some(ctx.zero());
         }
         let to = u64::try_from(k).ok()?.min(n);
-        Some(self.context().from_ratio(binomial_mass(n, &p, 0, to)?))
+        if let Some(mass) = binomial_mass(n, &p, 0, to) {
+            return Some(ctx.from_ratio(mass));
+        }
+        if to >= n {
+            return Some(ctx.one());
+        }
+        // Beyond the exact budget: I_{1−p}(n − k, k + 1), not a polynomial
+        // for such a large n (`eval` expands only parameters up to 20).
+        Some(self.incomplete_beta_tail(to, true))
     }
 
     // Σ_{j=⌊k⌋+1}^{n} C(n, j) pʲ (1−p)ⁿ⁻ʲ: the upper sum itself, a sum of
@@ -439,6 +536,7 @@ impl Family for Binomial {
             if let Some(mass) = binomial_mass(n, &p, from, n) {
                 return Some(ctx.from_ratio(mass));
             }
+            return Some(self.incomplete_beta_tail(from - 1, false));
         }
         let t = fresh_symbol(&ctx, "j", &[k, &self.n, &self.p]);
         // `⌊k⌋ + 1` folded for a numeric k (an unevaluated `floor` makes the
@@ -452,6 +550,24 @@ impl Family for Binomial {
 }
 
 impl Binomial {
+    /// `P(X ≤ k)` (`lower`) as `I_{1−p}(n − k, k + 1)`, or `P(X > k)` as
+    /// `I_p(k + 1, n − k)`, for `0 ≤ k < n`: the regularised incomplete beta
+    /// (DLMF 8.17.5), each tail without cancellation.  The route beyond
+    /// [`binomial_mass`]'s budget: up to 0.56 the generic sum of `10¹⁷`
+    /// masses was refused ("Sum range too large"), and the exact
+    /// `Binomial(10⁶, 1 − 10⁻¹⁸).cdf(0)`, a rational of 6·10⁷ bits, ran
+    /// beyond 20 s.
+    fn incomplete_beta_tail(&self, k: u64, lower: bool) -> Ex {
+        let ctx = self.context();
+        let k1 = ctx.from_ratio(Q::from_integer((k + 1).into()));
+        let rest = &self.n - &k1 + ctx.one();
+        if lower {
+            (ctx.one() - &self.p).betainc_regularized(&rest, &k1, &ctx.zero())
+        } else {
+            self.p.betainc_regularized(&k1, &rest, &ctx.zero())
+        }
+    }
+
     /// `n`, `p` and `⌊k⌋` when all three are numeric, `n` a
     /// non-negative integer and `p` a rational in `[0, 1]`.
     fn numeric_at(&self, k: &Ex) -> Option<(u64, Q, i64)> {
@@ -470,6 +586,17 @@ impl Binomial {
 /// Work allowed to [`binomial_mass`], in bit operations: steps times the
 /// size of a term (about 0.1 s in a release build).
 const BINOMIAL_MASS_BUDGET: u64 = 1 << 32;
+
+/// The largest denominator `Dⁿ` [`binomial_mass`] forms, in bits
+/// (`n·log₂ D`): the exact mass is a rational of that size, and every
+/// later operation on it (`1 − F`, a comparison with the level of a
+/// quantile) reduces by a gcd that is quadratic in it.  Up to 0.56 only the
+/// work budget applied, which a single step never exceeds:
+/// `Binomial(290000, p).cdf(0)` with `p` the double `1e-9` (a 79-bit
+/// dyadic) formed a 23-million-bit rational and ran for minutes, and
+/// `Binomial(10⁶, 1 − 10⁻¹⁸).cdf(0)` (`Dⁿ` of 6·10⁷ bits) hung.  Beyond it
+/// the generic route keeps the sum symbolic, for `evalf`.
+const BINOMIAL_MASS_MAX_BITS: u64 = 1 << 16;
 
 /// `Σ_{j=a}^{b} C(n, j) pʲ (1−p)ⁿ⁻ʲ` exactly, for an integer `n`, a
 /// rational `p = P/D ∈ [0, 1]` and `a ≤ b ≤ n`: the integer terms
@@ -495,7 +622,8 @@ fn binomial_mass(n: u64, p: &Q, a: u64, b: u64) -> Option<Q> {
         return Some(if b == n { Q::one() } else { Q::zero() });
     }
     let size = n.saturating_mul(d.bits().max(1));
-    if (b - a + 1).saturating_mul(size) > BINOMIAL_MASS_BUDGET
+    if size > BINOMIAL_MASS_MAX_BITS
+        || (b - a + 1).saturating_mul(size) > BINOMIAL_MASS_BUDGET
         || a.saturating_mul(size) > BINOMIAL_MASS_BUDGET
     {
         return None;
@@ -534,7 +662,15 @@ impl Family for Poisson {
         Support::integers(&ctx, Some(ctx.zero()), None)
     }
 
+    // λᵏ e^{−λ}/k!, for numeric k and λ whose λᵏ approaches the exponent
+    // range as exp(k ln λ − λ − ln Γ(k + 1)) (`ln_kept`, `loggamma`): up to
+    // 0.56 the mass of Poisson(10¹⁸) at 10¹⁸ (4·10⁻¹⁰) was refused, λᵏ
+    // overflowing.
     fn density(&self, k: &Ex) -> Ex {
+        if power_beyond_range(&self.rate, k) {
+            let ctx = self.context();
+            return (k * ln_kept(&self.rate) - &self.rate - (k + ctx.one()).log_gamma()).exp();
+        }
         self.rate.pow(k) * (-&self.rate).exp() / k.factorial()
     }
 
@@ -807,13 +943,26 @@ impl Family for Hypergeometric {
     }
 
     // nm/N
+    // n m / N; the empty population (N = 0, so n = m = 0) is the point mass
+    // at 0, where the formula is 0/0 (NaN up to 0.56).
     fn mean(&self) -> Option<Ex> {
+        if numeric(&self.population).is_some_and(|q| q.is_zero()) {
+            return Some(self.context().zero());
+        }
         Some((&self.draws * &self.successes / &self.population).simplify())
     }
 
-    // n (m/N) ((N−m)/N) ((N−n)/(N−1))
+    // n (m/N) ((N−m)/N) ((N−n)/(N−1)); 0 for a population of one, whose
+    // only draw is determined (the formula is 0/0 there, and up to 0.56
+    // the variance of Hypergeometric(1, 1, 1) was NaN).
     fn variance(&self) -> Option<Ex> {
+        if numeric(&self.population).is_some_and(|q| q <= Q::one()) {
+            return Some(self.context().zero());
+        }
         let (n, m, big_n) = (&self.draws, &self.successes, &self.population);
+        if numeric(big_n).is_some_and(|v| v.is_one()) {
+            return Some(self.context().zero());
+        }
         Some(
             (n * (m / big_n)
                 * ((big_n - m) / big_n)
@@ -822,9 +971,17 @@ impl Family for Hypergeometric {
         )
     }
 
-    // Factorial moments E[X^{(k)}] = n^{(k)} m^{(k)} / N^{(k)}.
+    // Factorial moments E[X^{(k)}] = n^{(k)} m^{(k)} / N^{(k)}: 0 once k
+    // exceeds a numeric n or m (X ≤ min(n, m)), where the ratio can be 0/0.
     fn raw_moment(&self, n: u32) -> Option<Ex> {
         raw_moment_from_factorial_moments(n, &self.context(), |k| {
+            let kq = Q::from_integer(k.into());
+            if [&self.draws, &self.successes]
+                .iter()
+                .any(|e| numeric(e).is_some_and(|q| q < kq))
+            {
+                return self.context().zero();
+            }
             falling_factorial(&self.draws, k) * falling_factorial(&self.successes, k)
                 / falling_factorial(&self.population, k)
         })
@@ -925,6 +1082,8 @@ impl Distribution {
         let mut total = Q::zero();
         let mut all_numeric = true;
         for (v, p) in &table {
+            super::continuous::require_finite(v, "a value")?;
+            super::continuous::require_finite(p, "a probability")?;
             match p.eval().as_rational() {
                 Some(q) => {
                     if q < Q::zero() {
@@ -932,11 +1091,27 @@ impl Distribution {
                     }
                     total += q;
                 }
-                None => all_numeric = false,
+                None => {
+                    if constant(p) && proved_negative(p) {
+                        return Err(invalid(format!("probability of `{v}` is negative: `{p}`")));
+                    }
+                    all_numeric = false;
+                }
             }
         }
         if all_numeric && total != Q::one() {
             return Err(invalid(format!("the probabilities sum to {total}, not 1")));
+        }
+        // Symbol-free masses that are not all rational (`√2/2`, `1 − √2/2`):
+        // their sum is decided by the zero test.
+        if !all_numeric && table.iter().all(|(_, p)| constant(p)) {
+            let mut sum = ctx.zero();
+            for (_, p) in &table {
+                sum += p;
+            }
+            if Truth::from((sum - 1).is_zero()).is_false() {
+                return Err(invalid("the probabilities do not sum to 1"));
+            }
         }
         for (i, (v, _)) in table.iter().enumerate() {
             for (w, _) in &table[i + 1..] {

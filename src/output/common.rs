@@ -123,7 +123,9 @@ pub(crate) fn estimate_display_degree(arena: &Arena, id: ExprId) -> u32 {
             for &child in children.iter() {
                 let d = estimate_display_degree(arena, child);
                 if d > 0 {
-                    total_degree += d;
+                    // Saturating: `x^2678128640·y^2678128640` overflowed
+                    // (a panic with overflow checks, up to 0.56).
+                    total_degree = total_degree.saturating_add(d);
                 }
             }
             total_degree

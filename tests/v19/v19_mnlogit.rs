@@ -17,6 +17,7 @@
 //! * statsmodels' `llnull` is itself a Newton fit (≈ 3e-9 off the closed
 //!   form `Σ n_j ln(n_j/n)`); the closed form is cited from mpmath.
 
+use symplex::errors::Degeneracy;
 use symplex::prelude::*;
 use symplex::stats::hypothesis::Alternative;
 use symplex::stats::regression::{LogitOpts, logit, mnlogit, ologit};
@@ -518,12 +519,16 @@ fn mnlogit_detects_complete_separation() {
     let x: Vec<Vec<f64>> = (1..=9).map(|i| vec![f64::from(i)]).collect();
     let y = [0, 0, 0, 1, 1, 1, 2, 2, 2];
     match mnlogit(&y, &x, true, &LogitOpts::default()) {
-        Err(SymplexError::ComputationFailed { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("separation"), "{reason}");
             assert!(reason.contains("category"), "{reason}");
             assert!(reason.contains("covariate 0"), "{reason}");
         }
-        other => panic!("expected ComputationFailed, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     let generous = LogitOpts {
         max_iter: 2000,
@@ -531,7 +536,10 @@ fn mnlogit_detects_complete_separation() {
     };
     assert!(matches!(
         mnlogit(&y, &x, true, &generous),
-        Err(SymplexError::ComputationFailed { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            ..
+        })
     ));
 }
 
@@ -544,11 +552,15 @@ fn mnlogit_detects_quasi_complete_separation() {
         .collect();
     let y = [0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 2, 2, 2, 1, 0, 2];
     match mnlogit(&y, &x, true, &LogitOpts::default()) {
-        Err(SymplexError::ComputationFailed { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("separation"), "{reason}");
             assert!(reason.contains("category 2"), "{reason}");
         }
-        other => panic!("expected ComputationFailed, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
 }
 
@@ -564,7 +576,10 @@ fn mnlogit_rejects_invalid_input() {
     ));
     assert!(matches!(
         mnlogit(&[0; 24], &x, true, &opts),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ConstantResponse,
+            ..
+        })
     ));
     let gap: Vec<usize> = y.iter().map(|&c| if c == 1 { 2 } else { c }).collect();
     match mnlogit(&gap, &x, true, &opts) {
@@ -594,10 +609,14 @@ fn mnlogit_rejects_invalid_input() {
     ));
     let dup: Vec<Vec<f64>> = x.iter().map(|r| vec![r[0], 2.0 * r[0]]).collect();
     match mnlogit(&y, &dup, true, &opts) {
-        Err(SymplexError::InvalidArgument { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("rank deficient"), "{reason}");
         }
-        other => panic!("expected InvalidArgument, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     assert!(
         mnlogit(
@@ -946,11 +965,15 @@ fn ologit_detects_complete_separation() {
     let x: Vec<Vec<f64>> = (1..=9).map(|i| vec![f64::from(i)]).collect();
     let y = [0, 0, 0, 1, 1, 1, 2, 2, 2];
     match ologit(&y, &x, &LogitOpts::default()) {
-        Err(SymplexError::ComputationFailed { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("separation"), "{reason}");
             assert!(reason.contains("covariate 0"), "{reason}");
         }
-        other => panic!("expected ComputationFailed, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     let generous = LogitOpts {
         max_iter: 2000,
@@ -958,7 +981,10 @@ fn ologit_detects_complete_separation() {
     };
     assert!(matches!(
         ologit(&y, &x, &generous),
-        Err(SymplexError::ComputationFailed { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            ..
+        })
     ));
 }
 
@@ -1003,7 +1029,10 @@ fn ologit_rejects_invalid_input() {
     ));
     assert!(matches!(
         ologit(&[0; 20], &x, &opts),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ConstantResponse,
+            ..
+        })
     ));
     assert!(matches!(
         ologit(&y[..19], &x, &opts),
@@ -1019,10 +1048,14 @@ fn ologit_rejects_invalid_input() {
     assert!(ologit(&y, &empty_rows, &opts).is_err());
     let with_const: Vec<Vec<f64>> = x.iter().map(|r| vec![1.0, r[0]]).collect();
     match ologit(&y, &with_const, &opts) {
-        Err(SymplexError::InvalidArgument { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("column 0 of x is constant"), "{reason}");
         }
-        other => panic!("expected InvalidArgument, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     assert!(matches!(
         ologit(&[0, 1, 2], &x[..3], &opts),
@@ -1030,10 +1063,14 @@ fn ologit_rejects_invalid_input() {
     ));
     let dup: Vec<Vec<f64>> = x.iter().map(|r| vec![r[0], 2.0 * r[0]]).collect();
     match ologit(&y, &dup, &opts) {
-        Err(SymplexError::InvalidArgument { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("rank deficient"), "{reason}");
         }
-        other => panic!("expected InvalidArgument, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     assert!(
         ologit(

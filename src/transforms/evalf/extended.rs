@@ -805,6 +805,31 @@ pub(super) fn extend(
             let sinh = matches!(arena.node(id), ExprNode::Sinh(_));
             hyperbolic_above(&cx, id, *c, sinh, w, ab)
         }
+        // `Γ(s, x)`, `γ(s, x)` of exact arguments whose value left the range
+        // (`evalf::incomplete_gamma_beyond`): `e^(ln Γ(s, x))` from
+        // `evalf::ln_incomplete_gamma`, correct to `2^−(prec + 8)` in the
+        // exponent.  Before 0.57 `lowergamma(s, s)/Γ(s)` at `s = 2.312·10⁸` —
+        // the CDF of `Gamma(s, 1)` at its mean, `0.50000875` — was refused
+        // ("overflows the exponent range") although it lies in `[0, 1]`.
+        // (Near the centre the series needs `√(2s·prec·ln 2)` terms: beyond
+        // `s ≈ 10⁹–10¹⁰` it is refused at once, `ln_incomplete_gamma`.)
+        ExprNode::Lib(f @ (LibFn::UpperGamma | LibFn::LowerGamma), args)
+            if edge.overflowed && args.len() == 2 =>
+        {
+            let (s, sb) = cx.ordinary(args[0])?;
+            let (x, xb) = cx.ordinary(args[1])?;
+            if !(sb.is_exact() && xb.is_exact() && s.1.is_zero() && x.1.is_zero()) {
+                return None;
+            }
+            let upper = *f == LibFn::UpperGamma;
+            let l = super::ln_incomplete_gamma(&s.0, &x.0, upper, &mut w.at(prec + 64)).ok()?;
+            let bound = Bound::real(-(prec as f64) - 8.0);
+            finish_node(
+                exp_scaled(&(l, BigFloat::new(prec + 64)), bound, w)?,
+                id,
+                prec,
+            )
+        }
         // `erf s = 2/√π·(s − s³/3 + s⁵/10 + O(s⁷))`: the series with `2/√π`
         // a factor of the monomials, keyed by this node (below the range, it
         // is no factor in range of a product).  Before 0.36 it was

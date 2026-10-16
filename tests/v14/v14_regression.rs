@@ -3,6 +3,7 @@
 //! `fractions.Fraction` Gauss–Jordan on the normal equations in the same script
 //! and cross-checked against the statsmodels floats.
 
+use symplex::errors::Degeneracy;
 use symplex::linprog::{q, qi};
 use symplex::num_traits::{One, Zero};
 use symplex::prelude::*;
@@ -324,7 +325,10 @@ fn ols_simple_hat_matrix_is_symmetric_idempotent_projection() {
     let bad = QMatrix::from_i64(&[&[1, 2], &[2, 4], &[3, 6]]).unwrap();
     assert!(matches!(
         hat_matrix(&bad),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            ..
+        })
     ));
 }
 
@@ -1100,7 +1104,10 @@ fn polyfit_interpolates_with_degree_plus_one_points_and_validates() {
     let yd = from_i64(&[1, 2, 3, 4]);
     assert!(matches!(
         polyfit(&xd, &yd, 2),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            ..
+        })
     ));
     assert_eq!(polyfit(&xd, &yd, 1).unwrap(), vec![q(-1, 2), qi(2)]);
 }
@@ -1130,7 +1137,10 @@ fn vif_three_regressors_exact() {
     let dup = rows(&[&[1, 2], &[2, 4], &[3, 6], &[5, 10]]);
     assert!(matches!(
         vif(&dup),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            ..
+        })
     ));
     assert!(vif(&[]).is_err());
 }
@@ -1185,10 +1195,14 @@ fn ols_rejects_n_le_p_and_rank_deficiency() {
         .map(|r| vec![r[0].clone(), r[0].clone() * qi(2)])
         .collect();
     match ols(&y, &dup, true) {
-        Err(SymplexError::InvalidArgument { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("rank deficient"), "{reason}");
         }
-        other => panic!("expected InvalidArgument, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     // Constant regressor plus intercept is also collinear.
     let konst: Vec<Vec<Q>> = (0..8).map(|_| vec![qi(3)]).collect();
@@ -1197,7 +1211,10 @@ fn ols_rejects_n_le_p_and_rank_deficiency() {
     let flat = vec![qi(4); 8];
     assert!(matches!(
         ols(&flat, &x, true),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ConstantResponse,
+            ..
+        })
     ));
 }
 
@@ -1217,7 +1234,10 @@ fn ols_perfect_fit_has_zero_residual_variance() {
     assert_eq!(fit.standard_errors(&ctx), vec![ctx.zero(), ctx.zero()]);
     assert!(matches!(
         fit.t_statistics(&ctx),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ZeroVariance,
+            ..
+        })
     ));
     assert!(fit.p_values(&ctx).is_err());
     assert!(fit.f_statistic().is_err());
@@ -1516,10 +1536,14 @@ fn logit_detects_complete_separation() {
     let x: Vec<Vec<f64>> = (1..=8).map(|i| vec![f64::from(i)]).collect();
     let y = vec![0u8, 0, 0, 0, 1, 1, 1, 1];
     match logit(&y, &x, true, &LogitOpts::default()) {
-        Err(SymplexError::ComputationFailed { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("separation"), "{reason}");
         }
-        other => panic!("expected ComputationFailed, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     // Still detected with a generous iteration budget.
     let opts = LogitOpts {
@@ -1528,7 +1552,10 @@ fn logit_detects_complete_separation() {
     };
     assert!(matches!(
         logit(&y, &x, true, &opts),
-        Err(SymplexError::ComputationFailed { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            ..
+        })
     ));
 }
 
@@ -1541,10 +1568,14 @@ fn logit_detects_quasi_complete_separation() {
         .collect();
     let y = vec![0u8, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1];
     match logit(&y, &x, true, &LogitOpts::default()) {
-        Err(SymplexError::ComputationFailed { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("separation"), "{reason}");
         }
-        other => panic!("expected ComputationFailed, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     assert!(matches!(
         logit(
@@ -1556,7 +1587,10 @@ fn logit_detects_quasi_complete_separation() {
                 tol: 1e-10
             }
         ),
-        Err(SymplexError::ComputationFailed { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            ..
+        })
     ));
 }
 
@@ -1571,7 +1605,10 @@ fn logit_rejects_invalid_input() {
     ));
     assert!(matches!(
         logit(&[1u8; 16], &x, true, &opts),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ConstantResponse,
+            ..
+        })
     ));
     assert!(matches!(
         logit(&y[..15], &x, true, &opts),
@@ -1583,16 +1620,25 @@ fn logit_rejects_invalid_input() {
     let mut nan = x.clone();
     nan[2][0] = f64::NAN;
     assert!(logit(&y, &nan, true, &opts).is_err());
+    // The first three outcomes are all equal: a constant response is
+    // reported before n ≤ p (DegenerateData since 0.57).
     assert!(matches!(
         logit(&y[..3], &x[..3], true, &opts),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ConstantResponse,
+            ..
+        })
     ));
     let dup: Vec<Vec<f64>> = x.iter().map(|r| vec![r[0], 2.0 * r[0]]).collect();
     match logit(&y, &dup, true, &opts) {
-        Err(SymplexError::InvalidArgument { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("rank deficient"), "{reason}");
         }
-        other => panic!("expected InvalidArgument, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     let empty_rows: Vec<Vec<f64>> = vec![vec![]; 16];
     assert!(logit(&y, &empty_rows, false, &opts).is_err());

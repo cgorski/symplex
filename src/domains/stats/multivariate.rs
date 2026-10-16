@@ -44,7 +44,7 @@ use num_traits::{Signed, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::dense_f64::{self, EigenOpts, EigenTol, OnExhaust};
-use crate::base::errors::SymplexError;
+use crate::base::errors::{Degeneracy, SymplexError};
 use crate::base::truth::Truth;
 use crate::domains::exact_matrix::QMatrix;
 use crate::domains::matrix::Matrix;
@@ -608,7 +608,8 @@ pub fn covariance_matrix(data: &[Vec<Q>], ddof: Ddof) -> Result<QMatrix, Symplex
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if `data` is empty or jagged, or a
+/// [`SymplexError::InvalidArgument`] if `data` is empty or jagged;
+/// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) if a
 /// variable is constant (its correlation is undefined — even with itself,
 /// so a single constant variable is refused too rather than given the
 /// diagonal `1`; `numpy.corrcoef` returns `nan`).
@@ -617,8 +618,9 @@ pub fn correlation_matrix(ctx: &Context, data: &[Vec<Q>]) -> Result<Matrix, Symp
     let (_, p) = check_data(OP, data)?;
     let cols: Vec<Vec<Q>> = (0..p).map(|j| column(data, j)).collect();
     if let Some(j) = cols.iter().position(|c| c.iter().all(|v| v == &c[0])) {
-        return Err(invalid(
+        return Err(SymplexError::degenerate(
             OP,
+            Degeneracy::ZeroVariance,
             format!("variable {j} is constant, so its correlations are undefined"),
         ));
     }
@@ -684,7 +686,8 @@ pub struct Pca {
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] if `cov` is not symmetric positive
-/// semidefinite; [`SymplexError::ComputationFailed`] if the eigenvalues
+/// semidefinite; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) if it is
+/// zero; [`SymplexError::ComputationFailed`] if the eigenvalues
 /// cannot be found, ordered numerically, or an eigenspace is defective.
 pub fn pca(ctx: &Context, cov: &QMatrix) -> Result<Pca, SymplexError> {
     const OP: &str = "pca";
@@ -700,7 +703,11 @@ pub fn pca(ctx: &Context, cov: &QMatrix) -> Result<Pca, SymplexError> {
     let n = cov.nrows();
     let trace = cov.diagonal().iter().fold(Q::zero(), |acc, v| acc + v);
     if trace.is_zero() {
-        return Err(invalid(OP, "the covariance matrix is zero"));
+        return Err(SymplexError::degenerate(
+            OP,
+            Degeneracy::ZeroVariance,
+            "the covariance matrix is zero",
+        ));
     }
     let m = cov.to_matrix(ctx);
     let eigen = m

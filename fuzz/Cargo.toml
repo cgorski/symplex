@@ -44,6 +44,11 @@ path = "fuzz_targets/fuzz_numdist.rs"
 doc = false
 
 [[bin]]
+name = "fuzz_stats"
+path = "fuzz_targets/fuzz_stats.rs"
+doc = false
+
+[[bin]]
 name = "fuzz_poly"
 path = "fuzz_targets/fuzz_poly.rs"
 doc = false

@@ -2489,10 +2489,17 @@ fn expr_contains_var(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
 // Symbolic-coefficient polynomial solving
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The highest degree [`symbolic_poly_coeffs`] lists coefficients up to
+/// (`2¹⁶`): up to 0.56 the breakpoint scan of the density of `F(1.5·10¹⁰,
+/// 3/5)` (a factor `x^(7.5·10⁹ − 1)`) asked for a 360 GB coefficient vector
+/// and aborted the process.
+const MAX_DENSE_POLY_DEGREE: usize = 1 << 16;
+
 /// Extract ascending coefficients of `expr` viewed as a polynomial in
 /// `var`, allowing arbitrary var-free symbolic coefficients.
 ///
-/// Returns `None` if `var` appears in a non-polynomial position.
+/// Returns `None` if `var` appears in a non-polynomial position, or if its
+/// degree exceeds `MAX_DENSE_POLY_DEGREE`.
 pub(crate) fn symbolic_poly_coeffs(
     arena: &mut Arena,
     expr: ExprId,
@@ -2506,6 +2513,13 @@ pub(crate) fn symbolic_poly_coeffs(
     let mut buckets: Vec<Vec<ExprId>> = Vec::new();
     for term in terms {
         let (deg, coeff) = term_degree_coeff(arena, term, var)?;
+        // A dense list of coefficients up to the degree: beyond a bound no
+        // caller can use, refused.  Up to 0.56 `x^23258988544` (the density
+        // of an F distribution with `d₁ = 46517977088`, met by the breakpoint
+        // scan of a quadrature) asked for a 1.1 TB vector and aborted.
+        if deg > MAX_DENSE_POLY_DEGREE {
+            return None;
+        }
         if buckets.len() <= deg {
             buckets.resize_with(deg + 1, Vec::new);
         }

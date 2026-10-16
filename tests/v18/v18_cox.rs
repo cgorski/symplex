@@ -12,6 +12,7 @@
 //! def fit(t, s, X, ties): return PHReg(np.array(t, float), np.array(X, float), status=np.array(s), ties=ties).fit(method="newton", maxiter=200, tol=1e-12)
 //! ```
 
+use symplex::errors::Degeneracy;
 use symplex::linprog::{q, qi};
 use symplex::prelude::*;
 use symplex::stats::cox::{BaselineHazardRow, CoxModel, CoxOpts, Ties, cox_ph, cox_ph_stratified};
@@ -970,12 +971,16 @@ fn monotone_likelihood_is_reported_naming_the_covariate() {
         .map(|i| vec![if i < 4 { 1.0 } else { 0.0 }])
         .collect();
     match cox_ph(&obs, &x, &CoxOpts::default()) {
-        Err(SymplexError::ComputationFailed { operation, reason }) => {
+        Err(SymplexError::DegenerateData {
+            operation,
+            kind: Degeneracy::Separation,
+            reason,
+        }) => {
             assert_eq!(operation, "cox_ph");
             assert!(reason.contains("monotone likelihood"), "{reason}");
             assert!(reason.contains("covariate 0"), "{reason}");
         }
-        other => panic!("expected ComputationFailed, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
     // Two covariates, only the second separating: the message names covariate 1.
     let x2: Vec<Vec<f64>> = (0..8)
@@ -987,10 +992,14 @@ fn monotone_likelihood_is_reported_naming_the_covariate() {
         })
         .collect();
     match cox_ph(&obs, &x2, &CoxOpts::default()) {
-        Err(SymplexError::ComputationFailed { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("covariate 1"), "{reason}");
         }
-        other => panic!("expected ComputationFailed, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
 }
 
@@ -999,10 +1008,14 @@ fn collinear_covariates_are_reported_as_a_singular_information_matrix() {
     let (obs, x) = d1();
     let x2: Vec<Vec<f64>> = x.iter().map(|r| vec![r[0], 2.0 * r[0]]).collect();
     match cox_ph(&obs, &x2, &CoxOpts::default()) {
-        Err(SymplexError::ComputationFailed { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("singular"), "{reason}");
         }
-        other => panic!("expected ComputationFailed, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
 }
 
@@ -1037,7 +1050,7 @@ fn rejects_invalid_input() {
     ));
     assert!(matches!(
         cox_ph(&obs, &vec![vec![1.5]; 10], &o),
-        Err(SymplexError::InvalidArgument { reason, .. }) if reason.contains("constant")
+        Err(SymplexError::DegenerateData { kind: Degeneracy::Collinear, reason, .. }) if reason.contains("constant")
     ));
     let censored: Vec<Observation> = obs
         .iter()
@@ -1048,7 +1061,7 @@ fn rejects_invalid_input() {
         .collect();
     assert!(matches!(
         cox_ph(&censored, &x, &o),
-        Err(SymplexError::InvalidArgument { reason, .. }) if reason.contains("no events")
+        Err(SymplexError::DegenerateData { kind: Degeneracy::NoEvents, reason, .. }) if reason.contains("no events")
     ));
     assert!(matches!(
         cox_ph(&obs, &x, &CoxOpts { max_iter: 0, ..o }),

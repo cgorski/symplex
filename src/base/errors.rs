@@ -162,6 +162,81 @@ pub enum SymplexError {
         /// How the eigenvectors fell short.
         reason: String,
     },
+
+    /// The data are degenerate for the model or statistic asked for: the
+    /// estimate or statistic does not exist for them (it is infinite or
+    /// undefined), and [`Degeneracy`] says why, so that a pipeline can
+    /// react — drop an aliased regressor, switch to a penalised fit, skip a
+    /// constant group — without reading the message.  Since 0.57 the
+    /// regression, ANOVA, survival and Cox fits report these cases with
+    /// this variant (up to 0.56 they were `InvalidArgument` or
+    /// `ComputationFailed`; the reasons are unchanged).
+    ///
+    /// ```
+    /// use symplex::errors::{Degeneracy, SymplexError};
+    /// use symplex::stats::regression::{logit, LogitOpts};
+    ///
+    /// // Every x > 0 is a success: the likelihood has no finite maximiser.
+    /// let y = [false, false, false, true, true, true];
+    /// let x: Vec<Vec<f64>> = [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0].iter().map(|&v| vec![v]).collect();
+    /// let err = logit(&y, &x, true, &LogitOpts::default()).unwrap_err();
+    /// assert!(matches!(err, SymplexError::DegenerateData { kind: Degeneracy::Separation, .. }));
+    /// ```
+    #[error("{operation}: degenerate data ({}): {reason}", kind.describe())]
+    DegenerateData {
+        /// The operation that met the data.
+        operation: &'static str,
+        /// How the data are degenerate.
+        kind: Degeneracy,
+        /// What exactly was found (which column, group or coefficient).
+        reason: String,
+    },
+}
+
+/// How data are degenerate for a model ([`SymplexError::DegenerateData`]).
+///
+/// Exact methods (least squares and ANOVA over ℚ, Kaplan–Meier, the
+/// log-rank test) decide these exactly.  The `f64` maximum-likelihood
+/// fits (logistic and Cox regression) decide [`Collinear`](Self::Collinear)
+/// numerically, to the threshold each documents, and
+/// [`Separation`](Self::Separation) by the signature of a diverging
+/// Newton iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Degeneracy {
+    /// The design is rank deficient: a regressor (covariate) is a linear
+    /// combination of the others — a duplicated or constant column next to
+    /// an intercept, a full set of dummies, a covariate constant within
+    /// every risk set — so its coefficient is not identified.
+    Collinear,
+    /// The likelihood has no finite maximiser, so some coefficient is
+    /// infinite: complete or quasi-complete separation of the outcomes in a
+    /// logistic model, a monotone partial likelihood in a Cox model.
+    Separation,
+    /// The response takes a single value: there is no variation to model
+    /// (a constant `y` in least squares, a single outcome class).
+    ConstantResponse,
+    /// A variance the statistic divides by is zero — a perfect fit, groups
+    /// without within-group variation, a constant variable — so the
+    /// statistic is undefined.
+    ZeroVariance,
+    /// No events were observed (every subject censored): a survival
+    /// comparison or hazard model has no information.
+    NoEvents,
+}
+
+impl Degeneracy {
+    /// A short description, used in the error message.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Degeneracy::Collinear => "collinear design",
+            Degeneracy::Separation => "separation",
+            Degeneracy::ConstantResponse => "constant response",
+            Degeneracy::ZeroVariance => "zero variance",
+            Degeneracy::NoEvents => "no events",
+        }
+    }
 }
 
 impl SymplexError {
@@ -182,6 +257,30 @@ impl SymplexError {
         SymplexError::ComputationFailed {
             operation,
             reason: reason.into(),
+        }
+    }
+
+    /// [`DegenerateData`](Self::DegenerateData) for `operation`: the data
+    /// admit no estimate or statistic of the kind asked for.
+    pub fn degenerate(
+        operation: &'static str,
+        kind: Degeneracy,
+        reason: impl Into<String>,
+    ) -> Self {
+        SymplexError::DegenerateData {
+            operation,
+            kind,
+            reason: reason.into(),
+        }
+    }
+
+    /// The [`Degeneracy`] of a [`DegenerateData`](Self::DegenerateData)
+    /// error, `None` for every other variant.
+    #[must_use]
+    pub fn degeneracy(&self) -> Option<Degeneracy> {
+        match self {
+            SymplexError::DegenerateData { kind, .. } => Some(*kind),
+            _ => None,
         }
     }
 }

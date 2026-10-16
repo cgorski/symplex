@@ -33,8 +33,31 @@ fn invalid(reason: impl Into<String>) -> SymplexError {
     SymplexError::invalid_argument("stats", reason)
 }
 
-/// Reject a numeric parameter that is not positive; accept symbolic ones.
+/// Reject a symbol-free parameter that is not a finite real number (`±∞`,
+/// `zoo`, NaN, `1 + i`); accept symbolic ones.  Up to 0.56 every `try_`
+/// constructor accepted `Normal(∞, 1)`, `Normal(0, NaN)` and `Normal(i, 1)`.
+pub(crate) fn require_finite(e: &Ex, what: &str) -> Result<(), SymplexError> {
+    if !e.free_symbols().is_empty() {
+        return Ok(());
+    }
+    let ctx = e.context();
+    let v = e.eval();
+    if v == ctx.nan()
+        || v == ctx.complex_infinity()
+        || Truth::from(v.is_finite()).is_false()
+        || Truth::from(v.is_real()).is_false()
+    {
+        return Err(invalid(format!(
+            "{what} must be a finite real number, got `{e}`"
+        )));
+    }
+    Ok(())
+}
+
+/// Reject a numeric parameter that is not positive (or not a finite real
+/// number); accept symbolic ones.
 pub(crate) fn require_positive(e: &Ex, what: &str) -> Result<(), SymplexError> {
+    require_finite(e, what)?;
     match e.is_positive() {
         Some(false) => Err(invalid(format!("{what} must be positive, got `{e}`"))),
         _ => Ok(()),
@@ -70,6 +93,7 @@ fn gamma_sampler(shape: &Ex, scale: &Ex) -> Result<Sampler, SymplexError> {
 
 /// Reject a numeric parameter that is negative; accept symbolic ones.
 fn require_nonnegative(e: &Ex, what: &str) -> Result<(), SymplexError> {
+    require_finite(e, what)?;
     match e.is_negative() {
         Some(true) => Err(invalid(format!("{what} must be non-negative, got `{e}`"))),
         _ => Ok(()),
@@ -121,6 +145,58 @@ fn one_at_zero(t: &Ex, value: Ex) -> Ex {
             (&value, &t.ne_expr(&ctx.zero())),
             (&ctx.one(), &ctx.bool_true()),
         ]),
+    }
+}
+
+/// `e^{iθ}`, for a numeric `θ` as `cos θ + i sin θ` of the exact `θ`: each part
+/// a real function evaluated to its own relative accuracy.  `exp(iθ)` takes
+/// the imaginary part of its argument at the working precision, refuses it
+/// as inexact beyond `2⁶⁴`, and bounds both parts by the modulus: up to 0.56
+/// the characteristic function of `Cauchy(3, 5·10⁻¹⁰⁰)` at `−4·10⁹⁸` was
+/// refused, and that of `Normal(−1, 1.75·10³⁰⁰)` at `4·10⁻³⁰²/7` printed
+/// as real (its imaginary part, `−5.7·10⁻³⁰²`, dropped).  A symbolic `θ` keeps
+/// `e^{iθ}`.
+fn unit_phase(theta: &Ex) -> Ex {
+    let ctx = theta.context();
+    if theta.free_symbols().is_empty() {
+        let th = theta.eval();
+        th.cos() + ctx.i_unit() * th.sin()
+    } else {
+        (ctx.i_unit() * theta).exp()
+    }
+}
+
+/// Is `x` a number beyond `2²⁰`, where `Γ(x)` approaches the exponent range
+/// of the arbitrary-precision floats (it leaves it from `x ≈ 10⁸` on)?
+fn beyond_gamma_range(x: &Ex) -> bool {
+    x.free_symbols().is_empty()
+        && sign_of(&(x - x.context().int(1 << 20)))
+            .is_positive()
+            .is_true()
+}
+
+/// `ln Γ(x)`: `loggamma(x)` for a numeric `x` beyond `2²⁰`, else `ln Γ(x)`
+/// as written (`loggamma` has zeros at 1 and 2, next to which its value
+/// cancels: it does not evaluate at `1 + 10⁻¹⁰⁰`).  Up to 0.56 the entropy of
+/// `Gamma(5·10²⁹, 8)` was refused (`Γ(5·10²⁹)` overflows).
+fn ln_gamma(x: &Ex) -> Ex {
+    if beyond_gamma_range(x) {
+        x.log_gamma()
+    } else {
+        x.gamma().ln()
+    }
+}
+
+/// `ln B(a, b)`: `ln Γ(a) + ln Γ(b) − ln Γ(a + b)` (`loggamma`) when `a + b`
+/// is a number beyond `2²⁰`, where `B` may leave the exponent range
+/// (`B(10³⁰⁰, 10³⁰⁰)`), else `ln B(a, b)` as written: up to 0.56 the
+/// entropies of the Beta, Student t and F families with such shapes were
+/// refused.
+fn log_beta(a: &Ex, b: &Ex) -> Ex {
+    if beyond_gamma_range(&(a + b)) {
+        a.log_gamma() + b.log_gamma() - (a + b).log_gamma()
+    } else {
+        a.beta(b).ln()
     }
 }
 
@@ -224,6 +300,12 @@ impl Family for Normal {
         Some((&self.mean * t + self.std.powi(2) * t.powi(2) / ctx.int(2)).exp())
     }
 
+    // e^{iμt} e^{−σ²t²/2} (the mgf at it), the phase by `unit_phase`.
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(unit_phase(&(&self.mean * t)) * (-(self.std.powi(2) * t.powi(2)) / ctx.int(2)).exp())
+    }
+
     // μ + σ√2 · erfinv(2p − 1)
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         let ctx = self.context();
@@ -291,6 +373,19 @@ impl Family for Uniform {
     // (e^{bt} − e^{at}) / ((b−a) t)
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         Some(((&self.hi * t).exp() - (&self.lo * t).exp()) / ((&self.hi - &self.lo) * t))
+    }
+
+    // e^{i(a+b)t/2} sin((b−a)t/2) / ((b−a)t/2), the mgf at it with the
+    // difference of exponentials taken about the midpoint: (e^{ibt} −
+    // e^{iat})/(i(b−a)t) cancels when (b−a)t is small next to bt, and up
+    // to 0.56 the characteristic function of U(19/9, 19/9 + 1/(9·10²⁹)) at
+    // t = −10²⁹/3 was refused ("precision exhausted").
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let mid = (&self.lo + &self.hi) * &half * t;
+        let h = (&self.hi - &self.lo) * &half * t;
+        Some(unit_phase(&mid) * one_at_zero(t, h.sin() / &h))
     }
 
     // a + p(b − a)
@@ -448,13 +543,13 @@ impl Family for Gamma {
         Some(Interval::open(ctx.neg_infinity(), ctx.one() / &self.scale))
     }
 
-    // k + ln θ + ln Γ(k) + (1 − k) ψ(k)
+    // k + ln θ + ln Γ(k) + (1 − k) ψ(k) (`ln_gamma`: `loggamma` for a huge k).
     fn entropy(&self) -> Option<Ex> {
         let ctx = self.context();
         Some(
             &self.shape
                 + self.scale.ln()
-                + self.shape.gamma().ln()
+                + ln_gamma(&self.shape)
                 + (ctx.one() - &self.shape) * self.shape.digamma(),
         )
     }
@@ -621,7 +716,7 @@ impl Family for Beta {
     fn entropy(&self) -> Option<Ex> {
         let s = &self.alpha + &self.beta;
         Some(
-            self.alpha.beta(&self.beta).ln()
+            log_beta(&self.alpha, &self.beta)
                 - (&self.alpha - 1) * self.alpha.digamma()
                 - (&self.beta - 1) * self.beta.digamma()
                 + (&s - 2) * s.digamma(),
@@ -709,10 +804,28 @@ impl Family for Cauchy {
         Some(ctx.rational(1, 2) - (d / &self.scale).atan() / ctx.pi())
     }
 
-    // x₀ + γ tan(π(p − ½))
+    // x₀ + γ tan(π(p − ½)), for a numeric p written as x₀ − γ cot(πp)
+    // below ½ and x₀ + γ cot(π(1 − p)) above (tan(π(p − ½)) = −cot(πp)):
+    // next to a pole of tan the argument π(p − ½) is a difference of two
+    // numbers that agree to all but the digits of p, and up to 0.56
+    // `Cauchy(9/10, 1).quantile(10⁻³⁰⁰)` (and `quantile_f64(1e-300)`) did
+    // not evaluate; cot of the small πp keeps its relative accuracy.
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         let ctx = self.context();
-        Some(&self.location + &self.scale * (ctx.pi() * (p - ctx.rational(1, 2))).tan())
+        let half = ctx.rational(1, 2);
+        if p.free_symbols().is_empty() {
+            match sign_of(&(p - &half)).to_ordering() {
+                Some(Ordering::Less) => {
+                    return Some(&self.location - &self.scale * (ctx.pi() * p).cot());
+                }
+                Some(Ordering::Greater) => {
+                    let q = (ctx.one() - p).eval();
+                    return Some(&self.location + &self.scale * (ctx.pi() * q).cot());
+                }
+                _ => {}
+            }
+        }
+        Some(&self.location + &self.scale * (ctx.pi() * (p - half)).tan())
     }
 
     // No moments: the density decays like |x|^{−2} in both tails.
@@ -729,6 +842,9 @@ impl Family for Cauchy {
     // generic route E[e^{itX}] stayed an integral whose integrand (with
     // `i` in it) does not compile for quadrature.
     fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        if t.free_symbols().is_empty() {
+            return Some(unit_phase(&(&self.location * t)) * (-(&self.scale * t.abs())).exp());
+        }
         let ctx = self.context();
         Some((ctx.i_unit() * &self.location * t - &self.scale * t.abs()).exp())
     }
@@ -811,6 +927,12 @@ impl Family for Laplace {
     fn mgf_domain(&self) -> Option<Interval<Ex>> {
         let r = self.context().one() / &self.scale;
         Some(Interval::open(-&r, r))
+    }
+
+    // e^{iμt} / (1 + b²t²) (the mgf at it), the phase by `unit_phase`.
+    fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(unit_phase(&(&self.mean * t)) / (ctx.one() + self.scale.powi(2) * t.powi(2)))
     }
 
     // μ − b sign(p − ½) ln(1 − 2|p − ½|)
@@ -906,7 +1028,7 @@ impl Family for Logistic {
     fn characteristic_function(&self, t: &Ex) -> Option<Ex> {
         let ctx = self.context();
         let pst = ctx.pi() * &self.scale * t;
-        Some((ctx.i_unit() * &self.mean * t).exp() * one_at_zero(t, &pst / pst.sinh()))
+        Some(unit_phase(&(&self.mean * t)) * one_at_zero(t, &pst / pst.sinh()))
     }
 
     // μ + s ln(p/(1 − p))
@@ -1154,12 +1276,19 @@ impl Family for FDistribution {
         Support::half_line(self.context().zero())
     }
 
+    // (d₁/d₂)^{d₁/2} x^{d₁/2−1} (1 + d₁x/d₂)^{−(d₁+d₂)/2} / B(d₁/2, d₂/2),
+    // SymPy's √((d₁x)^{d₁} d₂^{d₂}/(d₁x + d₂)^{d₁+d₂}) / (x B) rearranged so
+    // that no factor is a power of d₂ to the d₂ and the behaviour at 0 is
+    // the one power of x: up to 0.56 the density at 0 of F(4/5, 10¹⁰/3) was
+    // NaN (the limit through d₂^{d₂} was not found; it is +∞ for d₁ < 2).
     fn density(&self, x: &Ex) -> Ex {
         let ctx = self.context();
         let half = ctx.rational(1, 2);
-        let num = (&self.d1 * x).pow(&self.d1) * self.d2.pow(&self.d2)
-            / (&self.d1 * x + &self.d2).pow(&(&self.d1 + &self.d2));
-        num.sqrt() / (x * (&self.d1 * &half).beta(&(&self.d2 * &half)))
+        let a = &self.d1 * &half;
+        (&self.d1 / &self.d2).pow(&a)
+            * x.pow(&(&a - 1))
+            * (ctx.one() + &self.d1 * x / &self.d2).pow(&(-(&self.d1 + &self.d2) * &half))
+            / a.beta(&(&self.d2 * &half))
     }
 
     // d₂ / (d₂ − 2) for d₂ > 2.
@@ -1219,7 +1348,7 @@ impl Family for FDistribution {
         let b = &self.d2 / ctx.int(2);
         let s = &a + &b;
         Some(
-            (&self.d2 / &self.d1).ln() + a.beta(&b).ln()
+            (&self.d2 / &self.d1).ln() + log_beta(&a, &b)
                 - (&a - 1) * a.digamma()
                 - (&b + 1) * b.digamma()
                 + &s * s.digamma(),
@@ -1668,6 +1797,7 @@ impl Distribution {
     ///
     /// [`SymplexError::InvalidArgument`] if `std` is a number `≤ 0`.
     pub fn try_normal(mean: Ex, std: Ex) -> Result<Distribution, SymplexError> {
+        require_finite(&mean, "the mean")?;
         require_positive(&std, "the standard deviation")?;
         Ok(Distribution::normal(mean, std))
     }
@@ -1694,6 +1824,8 @@ impl Distribution {
     /// assert!(Distribution::try_uniform(ctx.int(1), ctx.int(1)).is_err());
     /// ```
     pub fn try_uniform(lo: Ex, hi: Ex) -> Result<Distribution, SymplexError> {
+        require_finite(&lo, "the lower end")?;
+        require_finite(&hi, "the upper end")?;
         require_positive(&(&hi - &lo), "the width `b − a`")?;
         Ok(Distribution::uniform(lo, hi))
     }
@@ -1781,6 +1913,7 @@ impl Distribution {
     ///
     /// [`SymplexError::InvalidArgument`] if `scale` is a number `≤ 0`.
     pub fn try_cauchy(location: Ex, scale: Ex) -> Result<Distribution, SymplexError> {
+        require_finite(&location, "the location")?;
         require_positive(&scale, "the scale")?;
         Ok(Distribution::cauchy(location, scale))
     }
@@ -1798,6 +1931,7 @@ impl Distribution {
     ///
     /// [`SymplexError::InvalidArgument`] if `scale` is a number `≤ 0`.
     pub fn try_laplace(mean: Ex, scale: Ex) -> Result<Distribution, SymplexError> {
+        require_finite(&mean, "the location")?;
         require_positive(&scale, "the scale")?;
         Ok(Distribution::laplace(mean, scale))
     }
@@ -1815,6 +1949,7 @@ impl Distribution {
     ///
     /// [`SymplexError::InvalidArgument`] if `scale` is a number `≤ 0`.
     pub fn try_logistic(mean: Ex, scale: Ex) -> Result<Distribution, SymplexError> {
+        require_finite(&mean, "the location")?;
         require_positive(&scale, "the scale")?;
         Ok(Distribution::logistic(mean, scale))
     }
@@ -1832,6 +1967,7 @@ impl Distribution {
     ///
     /// [`SymplexError::InvalidArgument`] if `sigma` is a number `≤ 0`.
     pub fn try_log_normal(mu: Ex, sigma: Ex) -> Result<Distribution, SymplexError> {
+        require_finite(&mu, "the mean of ln X")?;
         require_positive(&sigma, "the standard deviation of ln X")?;
         Ok(Distribution::log_normal(mu, sigma))
     }
@@ -1923,6 +2059,9 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if the parameters are numbers
     /// with `hi ≤ lo` or `mode` outside `[lo, hi]`.
     pub fn try_triangular(lo: Ex, hi: Ex, mode: Ex) -> Result<Distribution, SymplexError> {
+        require_finite(&lo, "the lower end")?;
+        require_finite(&hi, "the upper end")?;
+        require_finite(&mode, "the mode")?;
         require_positive(&(&hi - &lo), "the width `b − a`")?;
         require_nonnegative(&(&mode - &lo), "`c − a` (the mode must lie in [a, b])")?;
         require_nonnegative(&(&hi - &mode), "`b − c` (the mode must lie in [a, b])")?;

@@ -31,7 +31,7 @@ use super::common::{
 };
 use crate::api::context::Context;
 use crate::api::expr::Ex;
-use crate::base::errors::SymplexError;
+use crate::base::errors::{Degeneracy, SymplexError};
 use crate::base::interval::Interval;
 use crate::base::truth::Truth;
 use crate::domains::stats::data::Q;
@@ -487,9 +487,11 @@ pub enum CiMethod {
 /// # Errors
 ///
 /// - [`SymplexError::InvalidArgument`] for an empty sample, a negative
-///   time, fewer than two groups, mismatched lengths, a label in `0..k`
-///   with no observations, or no events at all.
-/// - [`SymplexError::ComputationFailed`] when the covariance matrix is
+///   time, fewer than two groups, mismatched lengths, or a label in `0..k`
+///   with no observations.
+/// - [`SymplexError::DegenerateData`] for no events at all
+///   ([`Degeneracy::NoEvents`]), or ([`Degeneracy::ZeroVariance`]) when
+///   the covariance matrix is
 ///   singular: some group has nobody at risk at any event time (all of it
 ///   censored before the first event), so its `O − E` is identically `0`
 ///   and the `χ²(k − 1)` reference does not apply (`survdiff` raises
@@ -580,15 +582,20 @@ pub fn log_rank_test(
         }
     }
     if !any_event {
-        return Err(invalid(OP, "no events were observed"));
+        return Err(SymplexError::degenerate(
+            OP,
+            Degeneracy::NoEvents,
+            "no events were observed",
+        ));
     }
     // (O − E)ᵀ V⁻¹ (O − E) through an exact solve.
     let vm = crate::prelude::QMatrix::new(v).map_err(|e| invalid(OP, e.to_string()))?;
     let rhs = crate::prelude::QMatrix::new(diff.iter().map(|d| vec![d.clone()]).collect())
         .map_err(|e| invalid(OP, e.to_string()))?;
     let x = vm.solve(&rhs).map_err(|_| {
-        SymplexError::computation_failed(
+        SymplexError::degenerate(
             OP,
+            Degeneracy::ZeroVariance,
             "the log-rank covariance matrix is singular (a group has no risk set at every event time)",
         )
     })?;
@@ -628,8 +635,9 @@ pub fn exponential_rate(obs: &[Observation]) -> Result<Q, SymplexError> {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for an empty sample, a negative time,
-/// or no events.
+/// [`SymplexError::InvalidArgument`] for an empty sample or a negative
+/// time; [`SymplexError::DegenerateData`] ([`Degeneracy::NoEvents`]) for
+/// no events.
 pub fn mean_event_time(obs: &[Observation]) -> Result<Q, SymplexError> {
     const OP: &str = "mean_event_time";
     validate(OP, obs)?;
@@ -639,7 +647,11 @@ pub fn mean_event_time(obs: &[Observation]) -> Result<Q, SymplexError> {
         .map(|o| o.time.clone())
         .collect();
     if events.is_empty() {
-        return Err(invalid(OP, "no events were observed"));
+        return Err(SymplexError::degenerate(
+            OP,
+            Degeneracy::NoEvents,
+            "no events were observed",
+        ));
     }
     let n = events.len();
     Ok(events.into_iter().fold(Q::zero(), |a, t| a + t) / qu(n))

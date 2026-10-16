@@ -48,7 +48,14 @@
 //! * There is no intercept: it is absorbed by the baseline hazard.
 //! * Covariates are `f64`; a fit is numerical, so the coefficients,
 //!   standard errors and residuals are `f64`.  Counts, event times and the
-//!   concordance index are exact.
+//!   concordance index are exact.  The coefficients carry about `κ·10⁻¹⁶`
+//!   relative error and the standard errors, from the inverse of the
+//!   formed information, about `κ²·10⁻¹⁶`, `κ` the condition number of
+//!   the centred covariates (shifts and scales of a covariate cost
+//!   nothing); beyond `κ ≈ 10⁶` the design is refused as collinear
+//!   ([`Degeneracy::Collinear`]).  A monotone likelihood is
+//!   [`Degeneracy::Separation`], an all-censored sample
+//!   [`Degeneracy::NoEvents`].
 
 use super::common::{information_cholesky, invalid, qu, wald_summary};
 use super::data::Q;
@@ -57,7 +64,7 @@ use super::regression::{LikelihoodFit, WaldFit, chi_squared_test_result};
 use super::survival::Observation;
 use crate::api::context::Context;
 use crate::base::dense_f64::{self, dot};
-use crate::base::errors::SymplexError;
+use crate::base::errors::{Degeneracy, SymplexError};
 use crate::base::interval::Interval;
 
 /// A Newton step that still moves the log hazard ratios of two subjects
@@ -81,6 +88,10 @@ const MAX_HALVINGS: u32 = 30;
 
 fn failed(op: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::computation_failed(op, reason)
+}
+
+fn degenerate(op: &'static str, kind: Degeneracy, reason: impl Into<String>) -> SymplexError {
+    SymplexError::degenerate(op, kind, reason)
 }
 
 /// How tied event times enter the partial likelihood.
@@ -531,21 +542,28 @@ fn validate(
         return Err(invalid(op, format!("x[{i}][{j}] is not finite")));
     }
     if let Some(j) = (0..p).find(|&j| x.iter().all(|r| r[j] == x[0][j])) {
-        return Err(invalid(
+        return Err(degenerate(
             op,
+            Degeneracy::Collinear,
             format!("covariate {j} is constant: its coefficient is not identified"),
         ));
     }
     if !obs.iter().any(|o| o.event) {
-        return Err(invalid(op, "no events were observed"));
+        return Err(degenerate(
+            op,
+            Degeneracy::NoEvents,
+            "no events were observed",
+        ));
     }
     if opts.max_iter == 0 {
         return Err(invalid(op, "max_iter must be positive"));
     }
-    if opts.tol.is_nan() || opts.tol <= 0.0 {
+    // An infinite tolerance declared convergence at the first step that
+    // moved the log hazard ratios by less than ½, short of the maximum.
+    if !(opts.tol > 0.0 && opts.tol.is_finite()) {
         return Err(invalid(
             op,
-            format!("tol must be positive, got {}", opts.tol),
+            format!("tol must be finite and positive, got {}", opts.tol),
         ));
     }
     Ok(p)
@@ -609,14 +627,19 @@ fn validate(
 /// # Errors
 ///
 /// - [`SymplexError::InvalidArgument`] for no observations, mismatched or
-///   ragged `x`, no covariates, a non-finite covariate, a constant
-///   covariate column, no events, or `max_iter = 0` / `tol ≤ 0`.
+///   ragged `x`, no covariates, a non-finite covariate, or `max_iter = 0` /
+///   a `tol` that is not finite and positive.
+/// - [`SymplexError::DegenerateData`] for a constant covariate column or
+///   an information matrix at `β = 0` that is singular — collinear
+///   covariates, or a covariate constant within every risk set; for this
+///   `f64` fit, a Cholesky pivot below `10⁻¹²` of its diagonal, i.e. a
+///   condition number of the centred covariates beyond about `10⁶`
+///   ([`Degeneracy::Collinear`]); no events ([`Degeneracy::NoEvents`]);
+///   a monotone likelihood (see above; the message names the covariate:
+///   [`Degeneracy::Separation`]).
 /// - [`SymplexError::ComputationFailed`] when the information matrix at
-///   `β = 0` is singular (collinear covariates, or a covariate constant
-///   within every risk set) or not representable (a covariate whose
-///   squared spread overflows or underflows `f64`), when the likelihood is
-///   monotone (see above;
-///   the message names the covariate), or when `max_iter` steps do not
+///   `β = 0` is not representable (a covariate whose squared spread
+///   overflows or underflows `f64`), or when `max_iter` steps do not
 ///   converge.
 pub fn cox_ph(
     obs: &[Observation],
@@ -678,8 +701,9 @@ fn fit(
                     design.range[j]
                 ),
             ),
-            None => failed(
+            None => degenerate(
                 op,
+                Degeneracy::Collinear,
                 "the information matrix at β = 0 is singular: a covariate is collinear with the others or constant within every risk set",
             ),
         }
@@ -688,8 +712,9 @@ fn fit(
     let score_statistic = dense_f64::quadratic_form(&l0, p, &current.score);
 
     let monotone = |j: usize, beta_j: f64, detail: String| {
-        failed(
+        degenerate(
             op,
+            Degeneracy::Separation,
             format!(
                 "monotone likelihood: the partial likelihood has no finite maximiser ({detail}); the subjects are separated along a direction dominated by covariate {j} (β = {beta_j:.4e} and running off): every subject with a larger value of that combination of the covariates fails before every subject with a smaller one, or the reverse, so the estimate is infinite"
             ),
@@ -783,8 +808,9 @@ fn fit(
             }
         }
         if beta.iter().any(|b| !b.is_finite()) {
-            return Err(failed(
+            return Err(degenerate(
                 op,
+                Degeneracy::Separation,
                 "the coefficients diverged: the partial likelihood has no finite maximiser",
             ));
         }

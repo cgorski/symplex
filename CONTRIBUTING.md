@@ -1092,7 +1092,27 @@ nightly and on demand (`workflow_dispatch`, with the time per target as an
 input): one job per target, the corpus cached between nights, a failing
 input uploaded as an artifact with its decoded expression in the log.  A red
 nightly is a bug report: reproduce it with `fuzz/README.md`, pin it as a
-regression test, fix the cause.
+regression test, fix the cause.  `fuzz_stats` checks the symbolic
+distributions by properties decided exactly or from certified digits; a
+quadrature that disagrees is re-decided by the certified
+`integrate_numeric_decimal`, a refusal is skipped (never a failure), and a
+slow refusal is a timeout and a finding.
+
+`.github/workflows/stats-oracle.yml` runs the statistics oracle nightly and
+on demand (`scripts/stats_oracle/README.md`): a release build evaluates the
+seed set in `scripts/stats_oracle/cases/` (families × methods, the
+`numdist` kernels, hypothesis tests, least squares), and `compare.py`
+checks every value against mpmath at two precisions, with scipy and
+statsmodels (pinned in `requirements.txt`) judged at their own inputs.  A
+red run is a bug report: `SYMPLEX_WRONG` is a wrong value (pin it as a test,
+fix the cause); `SCIPY_WRONG` is scipy's error (add it to `allowlist.tsv`
+with the mpmath value and a reason, and keep a symplex test recording it);
+`REFUSED` is a refusal where a value exists (fix it or allowlist it with
+the reason); `HANG`/`PANIC`/`CRASH` are bugs.  Reproduce locally with
+`scripts/stats_oracle/run.sh`.  New statistics code gets cases in the seed
+set (data files `cases/<prefix>_*.tsv`, its scipy mapping and mpmath formula
+in `refs.py`); run the oracle before a release that touches `stats` or the
+special functions it uses (`betainc`, `gammainc`, `erfc`, `erfinv`, `ln Γ`).
 
 `RUSTFLAGS=-D warnings` is set globally, so a new warning anywhere fails CI.
 Before opening a PR run at least `cargo fmt --all`, `cargo clippy --all-targets`,
@@ -1674,6 +1694,23 @@ what the generic algorithm returns.
 the stored `Monomial::total_degree`.  Dense multivariate gcds with large
 coefficients go to Brown's modular algorithm (`poly/brown.rs`), verified by
 trial division.
+
+**Degenerate data** — a rank-deficient design, (quasi-)complete separation,
+a constant response, a variance a statistic divides by being zero, no
+events — is `SymplexError::DegenerateData { kind: Degeneracy, .. }`, decided
+exactly by the exact methods and by the documented numerical threshold in
+the `f64` fits; shape and range errors stay `InvalidArgument`, an iteration
+that fails on valid data `ComputationFailed`.  An `f64` value derived from an
+exact variance is rooted from the rational (`regression::sqrt_to_f64`): a
+variance is the square of the data's scale and leaves the range first.
+Discrete quantiles are decided on exact masses; an `f64` walk or a lattice
+kernel's answer within `2⁻³⁰` of the level only guesses.  A `try_`
+constructor decides a symbol-free parameter by the certified queries
+(finiteness, realness, sign, integrality by the sign of `x − ⌊x⌋`), never by
+`as_rational` alone.  Dense layouts derived from data are bounded
+(`solve::MAX_DENSE_POLY_DEGREE`, `series::MAX_DENSE_KNOWN`,
+`discrete::BINOMIAL_MASS_MAX_BITS`); beyond them the routine refuses or
+keeps the value symbolic.
 
 **Branch on error variants, never on message text.**  A failure callers act
 on gets a variant (`BudgetExhausted`, `ExpressionSwell`,

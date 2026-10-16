@@ -3,7 +3,8 @@ name: Fuzz
 # Nightly coverage-guided fuzzing (cargo-fuzz / libFuzzer).  One job per
 # target, so a failure names its target and carries only its own artifact.
 # The targets check exact identities (exact_matrix, poly), probability
-# invariants (numdist), value preservation (simplify) and F′ = f
+# invariants (numdist) and the properties of the symbolic distributions
+# (stats), value preservation (simplify) and F′ = f
 # (integrate), evalf self-consistency (evalf), the calculus routines
 # against numerical oracles (calculus) and the display/parse round trip
 # (roundtrip) — see fuzz/README.md.  A failing job uploads the crashing
@@ -35,6 +36,7 @@ jobs:
       matrix:
         target:
           - fuzz_numdist
+          - fuzz_stats
           - fuzz_exact_matrix
           - fuzz_poly
           - fuzz_simplify

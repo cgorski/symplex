@@ -598,7 +598,10 @@ fn fit_error_cases() {
     assert!(fit_normal(&ctx, &empty).is_err());
     assert!(fit_normal(&ctx, &ints(&[3, 3, 3])).is_err());
     assert!(fit_exponential(&ctx, &ints(&[1, -2])).is_err());
-    assert!(fit_exponential(&ctx, &ints(&[0, 2])).is_err());
+    // A zero is an exponential observation (0.57; scipy expon.fit([0, 2], floc=0)
+    // = (0, 1.0)); only an all-zero sample has no finite rate.
+    assert!(fit_exponential(&ctx, &ints(&[0, 2])).is_ok());
+    assert!(fit_exponential(&ctx, &ints(&[0, 0])).is_err());
     assert!(fit_poisson(&ctx, &[q(1, 2)]).is_err());
     assert!(fit_poisson(&ctx, &ints(&[0, 0])).is_err());
     assert!(fit_bernoulli(&ctx, &ints(&[0, 1, 2])).is_err());

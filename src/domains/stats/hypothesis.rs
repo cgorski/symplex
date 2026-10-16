@@ -462,7 +462,11 @@ p_value_accessors!(TestResult);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RankMethod {
     /// The exact permutation distribution of the statistic (an exact
-    /// rational p-value).  Only valid without ties.
+    /// rational p-value).  With ties, the exact distribution *given the
+    /// ties* (of the average ranks, as R's `coin` and `exactRankTests`;
+    /// scipy's `method='exact'` uses the no-ties distribution, which is not
+    /// the distribution of the statistic then), within a work budget
+    /// (a [`SymplexError::ComputationFailed`] beyond it).
     Exact,
     /// The normal approximation with the tie correction, optionally with the
     /// continuity correction (`scipy`'s `use_continuity` / `correction`).
@@ -1828,6 +1832,49 @@ pub fn chi_square_goodness_of_fit(
     })
 }
 
+/// Degrees of freedom up to which [`chi_squared_sf_of_sum`] writes the χ²
+/// tail out as a finite sum; above, `ν/2` exceeds the bound (64) under
+/// which `eval` expands `uppergamma(ν/2, ·)`, so the plain form is safe.
+const CHI2_FINITE_SUM_MAX_DF: usize = 128;
+
+/// `P(χ²_ν ≥ 2x)` for an exact `x` that is a *sum* (the `G/2 = Σ O ln(O/E)`
+/// of [`g_test`]), as the finite sum the regularized upper incomplete gamma
+/// function equals at integer and half-integer `ν/2`: `e^{−x} Σ_{k<ν/2}
+/// x^k/k!` for even `ν`, `erfc(√x) + e^{−x}/√π · Σ_{j=1}^{(ν−1)/2} a_j
+/// x^{j−½}` with `a_j = 4^j j!/(2j)! = √π/Γ(j+½)` for odd `ν`.  `eval`
+/// rewrites `uppergamma(ν/2, x)/Γ(ν/2)` into the same closed form but
+/// *expanded*, and `x^k` of a sum of `m` logarithms expands into
+/// `C(m+k−1, k)` terms: before 0.57 the G-test of a 5 × 5 table (`ν = 16`,
+/// up to 25 logarithms, split further into logarithms of primes) hung or
+/// exhausted memory, and `ν = 12` took seconds.  All terms are positive,
+/// so the sum loses nothing to cancellation.
+fn chi_squared_sf_of_sum(ctx: &Context, df: usize, x: &Ex) -> Result<Ex, SymplexError> {
+    if df > CHI2_FINITE_SUM_MAX_DF {
+        return Ok(chi_squared_sf(ctx, df, &(ctx.int(2) * x)));
+    }
+    let half_df = usize_to_i64("g_test", df / 2)?;
+    let decay = (-x.clone()).exp();
+    let mut sum = ctx.zero();
+    let mut coef = Q::one();
+    if df.is_multiple_of(2) {
+        for k in 0..half_df {
+            if k > 0 {
+                coef /= qi(k);
+            }
+            sum += ex(ctx, &coef) * x.powi(k);
+        }
+        Ok(decay * sum)
+    } else {
+        let half = ctx.rational(1, 2);
+        for j in 1..=half_df {
+            // a_j = a_{j−1} · 2/(2j − 1), a_0 = 1
+            coef = coef * qi(2) / qi(2 * j - 1);
+            sum += ex(ctx, &coef) * x.pow(&(ctx.int(j) - &half));
+        }
+        Ok(x.sqrt().erfc() + decay * sum / ctx.pi().sqrt())
+    }
+}
+
 /// The likelihood-ratio (G) test of independence on an `r × c` table:
 /// `G = 2 Σ Oᵢⱼ ln(Oᵢⱼ/Eᵢⱼ)` (cells with `O = 0` contribute `0`), an exact
 /// expression, with `P(χ²_{(r−1)(c−1)} ≥ G)`.  No continuity correction:
@@ -1879,9 +1926,9 @@ pub fn g_test(ctx: &Context, table: &[Vec<Q>]) -> Result<TestResult, SymplexErro
         });
     }
     let sum = terms.into_iter().fold(ctx.zero(), |acc, t| acc + t);
-    let statistic = ctx.int(2) * sum;
+    let statistic = ctx.int(2) * &sum;
     Ok(TestResult {
-        p_value: chi_squared_sf(ctx, df, &statistic),
+        p_value: chi_squared_sf_of_sum(ctx, df, &sum)?,
         statistic,
         df: Some(ctx.int(df as i64)),
         alternative: Alternative::TwoSided,
@@ -2178,6 +2225,11 @@ pub fn t_test_one_sample(
 /// `ν = (s₁²/n₁ + s₂²/n₂)² / ((s₁²/n₁)²/(n₁−1) + (s₂²/n₂)²/(n₂−1))`, an exact
 /// rational.  `scipy.stats.ttest_ind(x, y, equal_var, alternative)`.
 ///
+/// The pooled test needs only `n₁ + n₂ ≥ 3`: a single observation
+/// contributes nothing to `s²ₚ` (its `(nᵢ − 1)sᵢ²` is `0`), so `x = [5]`
+/// against `y = [1, 2, 3]` is the test with `df = 2` that scipy computes
+/// (refused before 0.57).  Welch's test needs both variances.
+///
 /// ```
 /// use symplex::prelude::*;
 /// use symplex::linprog::q;
@@ -2193,13 +2245,20 @@ pub fn t_test_one_sample(
 /// assert!((r.statistic_f64()? - -5.529_270_507_777_645).abs() < 1e-12);
 /// assert!((r.p_value_f64()? - 0.001_793_879_912_454_281_1).abs() < 1e-12);
 /// assert_eq!(r.df, Some(ctx.from_ratio(q(3_527_433_605, 624_240_481))));
+/// // A single observation against a sample: scipy ttest_ind([5], [1, 2, 3])
+/// //   → statistic 2.598076211353316 (= 3√3/2), pvalue 0.12168993434632014
+/// let r = t_test_two_sample(&ctx, &from_i64(&[5]), &from_i64(&[1, 2, 3]), true, Alternative::TwoSided)?;
+/// assert_eq!(r.df, Some(ctx.int(2)));
+/// assert!((r.statistic_f64()? - 2.598_076_211_353_316).abs() < 1e-12);
+/// assert!((r.p_value_f64()? - 0.121_689_934_346_320_14).abs() < 1e-12);
 /// # Ok::<(), SymplexError>(())
 /// ```
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if either sample has fewer than two
-/// observations or both are constant.
+/// [`SymplexError::InvalidArgument`] for an empty sample, fewer than three
+/// observations in all (`equal_var`), a sample with fewer than two
+/// observations (Welch), or two constant samples.
 pub fn t_test_two_sample(
     ctx: &Context,
     x: &[Q],
@@ -2208,23 +2267,34 @@ pub fn t_test_two_sample(
     alt: Alternative,
 ) -> Result<TestResult, SymplexError> {
     const OP: &str = "t_test_two_sample";
-    check_sample(OP, "the first sample", x, 2)?;
-    check_sample(OP, "the second sample", y, 2)?;
+    let least = if equal_var { 1 } else { 2 };
+    check_sample(OP, "the first sample", x, least)?;
+    check_sample(OP, "the second sample", y, least)?;
     let (n1, n2) = (x.len(), y.len());
-    let (v1, v2) = (
-        data::variance(x, Ddof::Sample)?,
-        data::variance(y, Ddof::Sample)?,
-    );
     let num = data::mean(x)? - data::mean(y)?;
-    if v1.is_zero() && v2.is_zero() {
-        return Err(invalid(OP, "both samples are constant (zero variance)"));
-    }
     if equal_var {
+        if n1 + n2 < 3 {
+            return Err(invalid(
+                OP,
+                "the pooled test needs at least three observations in all",
+            ));
+        }
+        let (ss1, ss2) = (data::sum_of_squares(x)?, data::sum_of_squares(y)?);
+        if ss1.is_zero() && ss2.is_zero() {
+            return Err(invalid(OP, "both samples are constant (zero variance)"));
+        }
         let df = qu(n1 + n2 - 2);
-        let pooled = (qu(n1 - 1) * &v1 + qu(n2 - 1) * &v2) / &df;
+        let pooled = (ss1 + ss2) / &df;
         let var = pooled * (qu(n1).recip() + qu(n2).recip());
         Ok(student_result(ctx, &df, &RootRatio { num, var }, alt))
     } else {
+        let (v1, v2) = (
+            data::variance(x, Ddof::Sample)?,
+            data::variance(y, Ddof::Sample)?,
+        );
+        if v1.is_zero() && v2.is_zero() {
+            return Err(invalid(OP, "both samples are constant (zero variance)"));
+        }
         let (a, b) = (&v1 / qu(n1), &v2 / qu(n2));
         let var = &a + &b;
         let df = &var * &var / (&a * &a / qu(n1 - 1) + &b * &b / qu(n2 - 1));
@@ -2651,6 +2721,163 @@ fn exact_table_too_large(op: &'static str) -> SymplexError {
     invalid(op, "the exact distribution's table is too large for usize")
 }
 
+/// Budget of the exact rank distributions with ties: at most this many
+/// big-integer additions (about a second in a release build)...
+const EXACT_TIES_MAX_WORK: usize = 100_000_000;
+/// ...and at most this many table entries.
+const EXACT_TIES_MAX_CELLS: usize = 20_000_000;
+
+/// The error for an exact distribution with ties beyond the budget.
+fn exact_ties_too_large(op: &'static str) -> SymplexError {
+    SymplexError::computation_failed(
+        op,
+        "the exact distribution with ties exceeds the work budget for this many \
+         observations; use RankMethod::Asymptotic",
+    )
+}
+
+/// A group of equal values in a ranked sample: `size` values share the
+/// average rank `r`, a half-integer, stored doubled (`doubled_rank = 2r`).
+#[derive(Clone, Copy)]
+struct TieGroup {
+    size: usize,
+    doubled_rank: usize,
+}
+
+/// The tie groups of a sample (singletons included), in increasing order
+/// of value.
+fn doubled_rank_groups(values: &[Q]) -> Vec<TieGroup> {
+    let mut sorted: Vec<&Q> = values.iter().collect();
+    sorted.sort();
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < sorted.len() {
+        let mut j = i;
+        while j < sorted.len() && sorted[j] == sorted[i] {
+            j += 1;
+        }
+        // Positions i + 1 ..= j (1-based) share the rank (i + 1 + j)/2.
+        groups.push(TieGroup {
+            size: j - i,
+            doubled_rank: i + 1 + j,
+        });
+        i = j;
+    }
+    groups
+}
+
+/// `C(t, c)` for `c = 0..=k`, exactly.
+fn binomial_row(t: usize, k: usize) -> Vec<BigInt> {
+    let mut row = Vec::with_capacity(k + 1);
+    let mut c = BigInt::one();
+    row.push(c.clone());
+    for i in 1..=k.min(t) {
+        c = c * BigInt::from(t + 1 - i) / BigInt::from(i);
+        row.push(c.clone());
+    }
+    row
+}
+
+/// `Σ t·(2r)` over the groups (twice the total rank, `N(N + 1)`) plus one:
+/// the size of a table indexed by a doubled rank sum.
+fn doubled_rank_table_size(groups: &[TieGroup]) -> Option<usize> {
+    groups
+        .iter()
+        .try_fold(0usize, |acc, g| {
+            acc.checked_add(g.size.checked_mul(g.doubled_rank)?)
+        })?
+        .checked_add(1)
+}
+
+/// Frequencies of `2R`, twice the rank sum of `m` items drawn from a pooled
+/// sample with the tie groups `groups`, every `m`-subset equally likely:
+/// choosing `c` of a group's `t` tied items adds `c·2r` in `C(t, c)` ways.
+/// This is the exact conditional (permutation) distribution of the
+/// Mann–Whitney statistic given the ties (`U = R − m(m+1)/2`).  `None`
+/// beyond [`EXACT_TIES_MAX_WORK`] / [`EXACT_TIES_MAX_CELLS`].
+fn tied_rank_sum_frequencies(groups: &[TieGroup], m: usize) -> Option<Vec<BigInt>> {
+    let size = doubled_rank_table_size(groups)?;
+    let cells = size.checked_mul(m.checked_add(1)?)?;
+    let choices = groups.iter().map(|g| g.size.min(m)).sum::<usize>();
+    let work = choices.checked_mul(m)?.checked_mul(size)?;
+    if cells > EXACT_TIES_MAX_CELLS || work > EXACT_TIES_MAX_WORK {
+        return None;
+    }
+    let mut table = vec![vec![BigInt::zero(); size]; m + 1];
+    table[0][0] = BigInt::one();
+    for &TieGroup {
+        size: t,
+        doubled_rank: r2,
+    } in groups
+    {
+        let ways = binomial_row(t, m);
+        // Descending `j`: `table[j − c]` still holds the counts without
+        // this group when `table[j]` reads it.
+        for j in (1..=m).rev() {
+            let (lower, upper) = table.split_at_mut(j);
+            let target = &mut upper[0];
+            for c in 1..=t.min(j) {
+                let shift = c * r2;
+                let source = &lower[j - c];
+                for s in shift..size {
+                    if !source[s - shift].is_zero() {
+                        target[s] += &ways[c] * &source[s - shift];
+                    }
+                }
+            }
+        }
+    }
+    table.pop()
+}
+
+/// Frequencies of `2T⁺` over the `2ⁿ` equally likely sign patterns of the
+/// average ranks of `|d|` with the tie groups `groups`: making `c` of a
+/// group's `t` tied ranks positive adds `c·2r` in `C(t, c)` ways.  The
+/// exact conditional distribution of the signed-rank statistic given the
+/// ties.  `None` beyond the budget.
+fn tied_signed_rank_frequencies(groups: &[TieGroup]) -> Option<Vec<BigInt>> {
+    let size = doubled_rank_table_size(groups)?;
+    let n = groups.iter().map(|g| g.size).sum::<usize>();
+    if size > EXACT_TIES_MAX_CELLS || n.checked_mul(size)? > EXACT_TIES_MAX_WORK {
+        return None;
+    }
+    let mut table = vec![BigInt::zero(); size];
+    table[0] = BigInt::one();
+    let mut reach = 0;
+    for &TieGroup {
+        size: t,
+        doubled_rank: r2,
+    } in groups
+    {
+        let ways = binomial_row(t, t);
+        reach += t * r2;
+        // Descending `s`: `table[s − c·2r]` (`c ≥ 1`) is not yet updated.
+        for s in (r2..=reach).rev() {
+            let mut add = BigInt::zero();
+            for c in 1..=t.min(s / r2) {
+                let from = &table[s - c * r2];
+                if !from.is_zero() {
+                    add += &ways[c] * from;
+                }
+            }
+            table[s] += add;
+        }
+    }
+    Some(table)
+}
+
+/// The p-value of an exact rank statistic from the tails `P(S ≤ s)` and
+/// `P(S ≥ s)` of its distribution: `Less`, `Greater`, or two-sided the
+/// doubled smaller tail `min(1, 2 min(≤, ≥))` (scipy's convention for its
+/// exact and permutation tests).
+fn exact_tail_p_value(le: Q, ge: Q, alt: Alternative) -> Q {
+    match alt {
+        Alternative::Less => le,
+        Alternative::Greater => ge,
+        Alternative::TwoSided => (le.min(ge) * qi(2)).min(Q::one()),
+    }
+}
+
 /// Mahonian numbers `M(n, k)`, `k = 0..=cmax`: permutations of `n` with `k`
 /// inversions (Kendall, "Rank Correlation Methods", ch. 5).
 fn inversion_counts(n: usize, cmax: usize) -> Vec<BigInt> {
@@ -2717,7 +2944,13 @@ fn continuity_shift(num: &Q, alt: Alternative) -> Q {
 /// pooled sample, `U₁ = R₁ − n₁(n₁+1)/2` is the statistic (for `x`; `U₂ =
 /// n₁n₂ − U₁`).  `Exact`: the p-value is `P(U ≥ U₁)` (`Greater`), `P(U ≥
 /// U₂)` (`Less`) or `min(1, 2 P(U ≥ max(U₁, U₂)))` from the exact
-/// distribution of `U` (no ties allowed), an exact rational.  `Asymptotic`:
+/// distribution of `U`, an exact rational.  With ties, `Exact` uses the
+/// exact distribution of `U` given the ties (all `C(N, n₁)` splits of the
+/// pooled average ranks equally likely; `P(U ≤ U₁)` / `P(U ≥ U₁)`, and
+/// two-sided the doubled smaller tail, since that distribution need not be
+/// symmetric) — exact where scipy (1.18, `method='exact'`) applies the
+/// no-ties distribution and the normal approximation is poor at small
+/// samples; R's `wilcox.test` refuses.  `Asymptotic`:
 /// `z = (U₁ − n₁n₂/2 ∓ ½) / σ` with `σ² = n₁n₂/12 · ((N+1) − Σ(t³−t)/(N(N−1)))`
 /// (tie correction) and the normal tail.
 /// `scipy.stats.mannwhitneyu(x, y, use_continuity, alternative, method)`.
@@ -2743,8 +2976,11 @@ fn continuity_shift(num: &Q, alt: Alternative) -> Q {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for an empty sample, ties with
-/// `Exact`, or a pooled sample that is constant (`Asymptotic`).
+/// [`SymplexError::InvalidArgument`] for an empty sample or a pooled
+/// sample that is constant (`Asymptotic`);
+/// [`SymplexError::ComputationFailed`] for `Exact` with ties beyond its
+/// work budget (about `10⁸` big-integer additions: `N ≈ 100` with
+/// `n₁ = N/2`).
 pub fn mann_whitney_u(
     ctx: &Context,
     x: &[Q],
@@ -2766,9 +3002,20 @@ pub fn mann_whitney_u(
     match method {
         RankMethod::Exact => {
             if !data::tie_sizes(&pooled).is_empty() {
-                return Err(invalid(
-                    OP,
-                    "the exact method needs a pooled sample without ties",
+                // The exact permutation distribution given the ties, of
+                // 2R₁ = 2U₁ + n₁(n₁ + 1).
+                let groups = doubled_rank_groups(&pooled);
+                let freq = tied_rank_sum_frequencies(&groups, n1)
+                    .ok_or_else(|| exact_ties_too_large(OP))?;
+                let k = rank_statistic_to_index(OP, &(&u1 * qi(2) + pronic(n1)))?;
+                let total = sum_big(&freq);
+                let (le, ge) = (cdf_of(&freq, &total, k), sf_of(&freq, &total, k));
+                return Ok(result(
+                    ctx,
+                    statistic,
+                    exact_tail_p_value(le, ge, alt),
+                    None,
+                    alt,
                 ));
             }
             let u = match alt {
@@ -2811,9 +3058,12 @@ pub fn mann_whitney_u(
 /// are dropped (`zero_method='wilcox'`); `|d|` is ranked with average
 /// ranks; `T⁺`, `T⁻` are the rank sums of the positive and negative
 /// differences.  The statistic is `min(T⁺, T⁻)` two-sided and `T⁺`
-/// one-sided.  `Exact` (no ties in `|d|`): `P(T⁺ ≤ T⁺)` (`Less`), `P(T⁺ ≥
+/// one-sided.  `Exact`: `P(T⁺ ≤ T⁺)` (`Less`), `P(T⁺ ≥
 /// T⁺)` (`Greater`), `min(1, 2 min(cdf, sf))` two-sided, from the `2ⁿ` sign
-/// patterns, an exact rational.  `Asymptotic`: `z = (T⁺ − n(n+1)/4 ∓ ½)/σ`
+/// patterns, an exact rational; with ties in `|d|`, from the sign
+/// patterns of the average ranks (the exact distribution given the ties,
+/// symmetric about `n(n+1)/4`), where scipy 1.18 applies the no-ties
+/// distribution.  `Asymptotic`: `z = (T⁺ − n(n+1)/4 ∓ ½)/σ`
 /// with `σ² = (n(n+1)(2n+1) − Σ(t³−t)/2)/24` and the normal tail.
 /// `scipy.stats.wilcoxon(x, y, correction, alternative, method)`.
 ///
@@ -2835,8 +3085,10 @@ pub fn mann_whitney_u(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, no non-zero
-/// differences, or ties in `|d|` with `Exact`.
+/// [`SymplexError::InvalidArgument`] for unequal lengths or no non-zero
+/// differences; [`SymplexError::ComputationFailed`] for `Exact` with ties
+/// beyond its work budget (`n(n + 1)` doubled-rank cells times `n`
+/// additions, `10⁸`: `n ≈ 450`).
 pub fn wilcoxon_signed_rank(
     ctx: &Context,
     x: &[Q],
@@ -2874,9 +3126,19 @@ pub fn wilcoxon_signed_rank(
     match method {
         RankMethod::Exact => {
             if !data::tie_sizes(&abs).is_empty() {
-                return Err(invalid(
-                    OP,
-                    "the exact method needs |differences| without ties",
+                // The exact distribution of 2T⁺ over the sign patterns of
+                // the average ranks.
+                let freq = tied_signed_rank_frequencies(&doubled_rank_groups(&abs))
+                    .ok_or_else(|| exact_ties_too_large(OP))?;
+                let k = rank_statistic_to_index(OP, &(&r_plus * qi(2)))?;
+                let total = BigInt::one() << n;
+                let (le, ge) = (cdf_of(&freq, &total, k), sf_of(&freq, &total, k));
+                return Ok(result(
+                    ctx,
+                    statistic,
+                    exact_tail_p_value(le, ge, alt),
+                    None,
+                    alt,
                 ));
             }
             let k = rank_statistic_to_index(OP, &r_plus)?;
@@ -4041,10 +4303,11 @@ fn smallest_n_with_power(
     target: f64,
     power: impl Fn(usize) -> Result<f64, SymplexError>,
 ) -> Result<usize, SymplexError> {
-    // 2^40 on 64-bit targets; on 32-bit ones (wasm32) the search stops at
-    // `usize::MAX / 2`, which no power calculation reaches either.
-    const CAP: usize = if usize::BITS >= 41 {
-        1 << 40
+    // 2^53 on 64-bit targets, the last `n` that converts to `f64` exactly;
+    // on 32-bit ones (wasm32) `usize::MAX / 2`.  (2^40 before 0.57, which
+    // refused real answers: `p₁ − p₂ = 10⁻⁶` needs `3.6·10¹²` per group.)
+    const CAP: usize = if usize::BITS >= 54 {
+        1 << 53
     } else {
         usize::MAX / 2
     };
@@ -4064,7 +4327,7 @@ fn smallest_n_with_power(
     if n >= CAP {
         return Err(SymplexError::computation_failed(
             op,
-            "the required sample size exceeds 2^40",
+            "the required sample size exceeds 2^53",
         ));
     }
     Ok(n)

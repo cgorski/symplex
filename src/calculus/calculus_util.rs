@@ -715,9 +715,9 @@ pub(crate) fn linear_coeffs_exact(
 /// `var` with coefficients that may be arbitrary `var`-free expressions.
 ///
 /// The expression is expanded first.  Returns `None` if some term is not
-/// of the form `c · var^k` with `k` a non-negative integer, or if the
+/// of the form `c · var^k` with `k` a non-negative integer, if the
 /// polynomial is identically zero (the empty coefficient list would be
-/// ambiguous).
+/// ambiguous), or if its degree exceeds [`MAX_DENSE_DEGREE`].
 pub(crate) fn poly_coeffs_symbolic(
     arena: &mut Arena,
     expr: ExprId,
@@ -734,6 +734,9 @@ pub(crate) fn poly_coeffs_symbolic(
     let mut buckets: Vec<Vec<ExprId>> = Vec::new();
     for term in terms {
         let (k, coeff) = split_term_power(arena, term, var)?;
+        if k > MAX_DENSE_DEGREE {
+            return None;
+        }
         while buckets.len() <= k {
             buckets.push(Vec::new());
         }
@@ -762,6 +765,12 @@ pub(crate) fn poly_coeffs_symbolic(
     }
     Some(result)
 }
+
+/// The largest degree [`poly_coeffs_symbolic`] lays out densely (`2¹⁶`, as
+/// `algebraic::MAX_POWER_BITS`): up to 0.56 the density of
+/// `Weibull(51/8, 9·10¹⁰)` (a factor `x^(9·10¹⁰ − 1)`) asked for a
+/// coefficient vector of `9·10¹⁰` entries and aborted the process.
+const MAX_DENSE_DEGREE: usize = 1 << 16;
 
 /// Split a single product term into `(k, coefficient)` such that
 /// `term = coefficient · var^k` with the coefficient free of `var`.

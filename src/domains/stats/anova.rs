@@ -60,10 +60,10 @@ use super::common::{
 use super::data::{self, Q};
 use super::hypothesis::{self, Alternative, PValue, TestResult, p_value_accessors};
 use super::numdist::norm::{pdf as norm_pdf, sf as norm_sf};
-use super::regression::ols;
+use super::regression::{centered_interval, ols, sqrt_to_f64};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
-use crate::base::errors::SymplexError;
+use crate::base::errors::{Degeneracy, SymplexError};
 use crate::base::interval::{Bounds, Interval};
 use crate::base::numeric::ratio_to_f64;
 use crate::domains::exact_matrix::QMatrix;
@@ -198,7 +198,8 @@ p_value_accessors!(AnovaResult);
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than two groups, an empty
-/// group, `N ≤ k`, or zero within-group variance.
+/// group or `N ≤ k`; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for zero
+/// within-group variance.
 pub fn anova_one_way(ctx: &Context, groups: &[Vec<Q>]) -> Result<AnovaResult, SymplexError> {
     const OP: &str = "anova_one_way";
     let GroupSums {
@@ -214,7 +215,11 @@ pub fn anova_one_way(ctx: &Context, groups: &[Vec<Q>]) -> Result<AnovaResult, Sy
         ));
     }
     if ss_within.is_zero() {
-        return Err(invalid(OP, "the within-group variance is zero"));
+        return Err(SymplexError::degenerate(
+            OP,
+            Degeneracy::ZeroVariance,
+            "the within-group variance is zero",
+        ));
     }
     let (df_between, df_within) = (k - 1, n - k);
     let f = (&ss_between / qu(df_between)) / (&ss_within / qu(df_within));
@@ -813,8 +818,9 @@ pub fn anova_two_way(ctx: &Context, data: &TwoWayData) -> Result<TwoWayAnova, Sy
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] if every cell has a single observation
-/// (no residual degrees of freedom), the response is constant, or the
-/// within-cell variance is zero.
+/// (no residual degrees of freedom); [`SymplexError::DegenerateData`] if
+/// the response is constant ([`Degeneracy::ConstantResponse`]) or the
+/// within-cell variance is zero ([`Degeneracy::ZeroVariance`]).
 pub fn anova_two_way_with(
     ctx: &Context,
     data: &TwoWayData,
@@ -834,7 +840,11 @@ pub fn anova_two_way_with(
     let grand_mean = data::mean(&y)?;
     let ss_total = centred_ss(&y);
     if ss_total.is_zero() {
-        return Err(invalid(OP, "the response is constant"));
+        return Err(SymplexError::degenerate(
+            OP,
+            Degeneracy::ConstantResponse,
+            "the response is constant",
+        ));
     }
     let cell_means = data
         .cells
@@ -853,8 +863,9 @@ pub fn anova_two_way_with(
         .flatten()
         .fold(Q::zero(), |acc, c| acc + centred_ss(c));
     if rss_full.is_zero() {
-        return Err(invalid(
+        return Err(SymplexError::degenerate(
             OP,
+            Degeneracy::ZeroVariance,
             "the within-cell variance is zero: F is undefined",
         ));
     }
@@ -1210,8 +1221,9 @@ fn mauchly(
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than two subjects or
-/// conditions, ragged rows, or zero error variance (every subject's profile
-/// is a shift of the condition means).
+/// conditions, or ragged rows; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for
+/// zero error variance (every subject's profile is a shift of the condition
+/// means).
 pub fn anova_repeated_measures(
     ctx: &Context,
     subjects_by_condition: &[Vec<Q>],
@@ -1264,8 +1276,9 @@ pub fn anova_repeated_measures(
             .fold(Q::zero(), |acc, m| acc + sq(&(m - &grand_mean)));
     let ss_error = &ss_total - &ss_conditions - &ss_subjects;
     if !ss_error.is_positive() {
-        return Err(invalid(
+        return Err(SymplexError::degenerate(
             OP,
+            Degeneracy::ZeroVariance,
             "the error variance is zero (every subject's profile is a shift of the condition means): F is undefined",
         ));
     }
@@ -2252,7 +2265,8 @@ pub struct PairwiseComparison {
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than two groups, an empty
-/// group, `N ≤ k`, zero within-group variance, or `confidence ∉ (0, 1)`;
+/// group, `N ≤ k`, or `confidence ∉ (0, 1)`; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`])
+/// for zero within-group variance;
 /// [`SymplexError::ComputationFailed`] if a difference, standard error or
 /// statistic does not fit in an `f64` (the limits and p-values are `f64`).
 pub fn tukey_hsd(
@@ -2283,7 +2297,11 @@ pub fn tukey_hsd(
         .collect::<Result<Vec<_>, _>>()?;
     let ss_within = groups.iter().fold(Q::zero(), |acc, g| acc + centred_ss(g));
     if ss_within.is_zero() {
-        return Err(invalid(OP, "the within-group variance is zero"));
+        return Err(SymplexError::degenerate(
+            OP,
+            Degeneracy::ZeroVariance,
+            "the within-group variance is zero",
+        ));
     }
     let mse = ss_within / qu(df);
     let df_f = df as f64;
@@ -2300,8 +2318,10 @@ pub fn tukey_hsd(
             let var = &mse / qi(2) * (qu(groups[i].len()).recip() + qu(groups[j].len()).recip());
             let se = ex(ctx, &var).sqrt();
             let statistic = ex(ctx, &diff.abs()) / &se;
-            let (diff_f, se_f) = (to_f64(OP, &diff)?, to_f64(OP, &var)?.sqrt());
-            let stat_f = to_f64(OP, &(&diff * &diff / &var))?.sqrt();
+            // Roots of the exact rationals: `var` is the square of the
+            // data's scale and leaves the f64 range before `se` does.
+            let (diff_f, se_f) = (to_f64(OP, &diff)?, sqrt_to_f64(OP, &var)?);
+            let stat_f = sqrt_to_f64(OP, &(&diff * &diff / &var))?;
             let p_adj = studentized_range_tail_by(stat_f, k, df_f, Tail::Upper, &upper)?;
             out.push(PairwiseComparison {
                 i,
@@ -2310,7 +2330,7 @@ pub fn tukey_hsd(
                 se,
                 statistic,
                 p_adj,
-                ci: Interval::closed(diff_f - q_crit * se_f, diff_f + q_crit * se_f),
+                ci: centered_interval(OP, diff_f, q_crit * se_f)?,
             });
         }
     }

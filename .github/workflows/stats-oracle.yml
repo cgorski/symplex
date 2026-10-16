@@ -1,0 +1,70 @@
+name: Stats oracle
+
+# Nightly differential check of the statistics modules against scipy,
+# statsmodels and mpmath (scripts/stats_oracle/README.md).  A fixed seed set
+# (scripts/stats_oracle/cases/*.tsv: distribution families x methods, the
+# f64 kernels, hypothesis tests, regressions) is evaluated by symplex in a
+# release build; every value symplex claims (certified decimals to their last
+# digit, f64 routes to their documented tolerance, exact rationals exactly)
+# is checked against mpmath at two precisions, and scipy / statsmodels are
+# judged against mpmath at their own inputs.  A failure that is not on the
+# allowlist (scripts/stats_oracle/allowlist.tsv, each entry with its mpmath
+# value and a reason) turns the run red; the job summary lists it.
+
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stats-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  oracle:
+    name: scipy / statsmodels / mpmath
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/stats_oracle/requirements.txt
+      - name: Install the references
+        run: python -m pip install -r scripts/stats_oracle/requirements.txt
+      # Seed-set check, release build of the dumper, dump, comparison.
+      - name: Run the oracle
+        env:
+          PYTHON: python
+        run: sh scripts/stats_oracle/run.sh target/stats_oracle
+      - name: Report
+        if: always()
+        run: |
+          if [ -f target/stats_oracle/report.md ]; then
+            cat target/stats_oracle/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "the oracle stopped before its comparison; see the log of the previous step" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload the dump and the verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stats-oracle
+          path: |
+            target/stats_oracle/report.md
+            target/stats_oracle/dump.tsv
+            target/stats_oracle/verdicts.tsv
+            target/stats_oracle/timing.txt
+          if-no-files-found: ignore
+          retention-days: 30

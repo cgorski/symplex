@@ -2,6 +2,7 @@
 //! SymPy 1.14 (`symplex/.venv/bin/python`).  Every reference number below was
 //! produced by the call quoted next to it; nothing was computed by hand.
 
+use symplex::errors::Degeneracy;
 use symplex::linprog::{Q, q, qi};
 use symplex::prelude::*;
 use symplex::stats::anova::anova_one_way;
@@ -24,6 +25,15 @@ fn p_of(r: &TestResult) -> f64 {
 
 fn s_of(r: &TestResult) -> f64 {
     r.statistic_f64().unwrap()
+}
+
+/// `DegenerateData` of the given kind (up to 0.56 these cases were
+/// `InvalidArgument` or `ComputationFailed`).
+fn is_degenerate<T: std::fmt::Debug>(r: Result<T, SymplexError>, kind: Degeneracy) {
+    match r {
+        Err(SymplexError::DegenerateData { kind: k, .. }) if k == kind => {}
+        other => panic!("expected DegenerateData({kind:?}), got {other:?}"),
+    }
 }
 
 fn is_invalid<T: std::fmt::Debug>(r: Result<T, SymplexError>) {
@@ -598,7 +608,10 @@ fn anova_one_way_matches_scipy_with_exact_sums_of_squares() {
     // Validation.
     is_invalid(anova_one_way(&ctx, &[from_i64(&[1, 2])]));
     is_invalid(anova_one_way(&ctx, &[from_i64(&[1, 2]), vec![]]));
-    is_invalid(anova_one_way(&ctx, &[from_i64(&[1, 1]), from_i64(&[2, 2])]));
+    is_degenerate(
+        anova_one_way(&ctx, &[from_i64(&[1, 1]), from_i64(&[2, 2])]),
+        Degeneracy::ZeroVariance,
+    );
     is_invalid(anova_one_way(&ctx, &[from_i64(&[1]), from_i64(&[2])]));
 }
 
@@ -716,13 +729,11 @@ fn mann_whitney_with_ties_uses_the_tie_correction() {
     )
     .unwrap();
     close(p_of(&r), 0.051_196_275_907_187_05, 1e-12);
-    is_invalid(mann_whitney_u(
-        &ctx,
-        &x,
-        &y,
-        Alternative::TwoSided,
-        RankMethod::Exact,
-    ));
+    // Exact with ties (an error before 0.57): the distribution of U given the
+    // ties; enumeration of the C(15, 8) splits gives 238/2145 (scipy's
+    // method='exact' applies the no-ties distribution: 0.1205905205905206).
+    let r = mann_whitney_u(&ctx, &x, &y, Alternative::TwoSided, RankMethod::Exact).unwrap();
+    assert_eq!(r.p_value_exact(), Some(q(238, 2145)));
     is_invalid(mann_whitney_u(
         &ctx,
         &from_i64(&[1, 1]),
@@ -814,13 +825,11 @@ fn wilcoxon_one_sample_ties_and_validation() {
     .unwrap();
     assert_eq!(r.statistic_exact(), Some(qi(33)));
     close(p_of(&r), 0.105_552_672_842_401_72, 1e-12);
-    is_invalid(wilcoxon_signed_rank(
-        &ctx,
-        &dt,
-        None,
-        Alternative::TwoSided,
-        RankMethod::Exact,
-    ));
+    // Exact with ties (an error before 0.57): enumeration of the 2⁹ sign
+    // patterns of the average ranks gives 33/128 (scipy exact: 0.25).
+    let r =
+        wilcoxon_signed_rank(&ctx, &dt, None, Alternative::TwoSided, RankMethod::Exact).unwrap();
+    assert_eq!(r.p_value_exact(), Some(q(33, 128)));
     is_invalid(wilcoxon_signed_rank(
         &ctx,
         &from_i64(&[0, 0]),

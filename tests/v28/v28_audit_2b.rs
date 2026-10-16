@@ -45,6 +45,7 @@
 use std::time::{Duration, Instant};
 
 use num_bigint::BigInt;
+use symplex::errors::Degeneracy;
 use symplex::linprog::{Q, q, qi};
 use symplex::prelude::*;
 use symplex::stats::Distribution;
@@ -75,11 +76,15 @@ fn opts(ties: Ties) -> CoxOpts {
     }
 }
 
-/// A `ComputationFailed` whose reason diagnoses a monotone likelihood and
+/// A `DegenerateData` (`Separation`; `ComputationFailed` up to 0.56) whose reason diagnoses a monotone likelihood and
 /// names `covariate`.
 fn assert_monotone(r: Result<CoxModel, SymplexError>, covariate: usize, label: &str) {
     match r {
-        Err(SymplexError::ComputationFailed { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("monotone likelihood"), "{label}: {reason}");
             assert!(
                 reason.contains(&format!("covariate {covariate}")),
@@ -752,7 +757,8 @@ fn log_rank_p_values_far_below_1e_minus_16() -> R {
 
 /// Documented now: a group whose members are all censored before the
 /// first event has nobody at risk at any event time, its `O − E` is `0`
-/// and the covariance matrix singular — a `ComputationFailed` (statsmodels
+/// and the covariance matrix singular — `DegenerateData` with `ZeroVariance`
+/// (`ComputationFailed` up to 0.56; statsmodels
 /// `survdiff([5, 6, 7, 1, 2], [1, 1, 0, 0, 0], [0, 0, 0, 1, 1])` raises
 /// `LinAlgError: Singular matrix`).
 #[test]
@@ -761,6 +767,9 @@ fn log_rank_with_a_group_never_at_risk_is_a_documented_error() {
     let obs = Observation::from_i64(&[5, 6, 7, 1, 2], &[true, true, false, false, false]);
     assert!(matches!(
         log_rank_test(&ctx, &obs, &[0, 0, 0, 1, 1]),
-        Err(SymplexError::ComputationFailed { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ZeroVariance,
+            ..
+        })
     ));
 }

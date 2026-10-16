@@ -13,6 +13,7 @@
 //! numpy (`symplex/.venv/bin/python`).
 
 use symplex::certificates::{SosOpts, prove_sos};
+use symplex::errors::Degeneracy;
 use symplex::linprog::q;
 use symplex::optimize::poly_fit;
 use symplex::polysys::solve_numeric_system;
@@ -61,7 +62,10 @@ fn logit_doc_values_unchanged() {
     let collinear: Vec<Vec<f64>> = x.iter().map(|r| vec![r[0], 2.0 * r[0]]).collect();
     assert!(matches!(
         logit(&y, &collinear, true, &LogitOpts::default()),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            ..
+        })
     ));
 }
 

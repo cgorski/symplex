@@ -8,6 +8,7 @@
 //! arithmetic on the integer data (never from `Fraction(float)`).  The
 //! exact oracle call is quoted in a comment above each assertion.
 
+use symplex::errors::Degeneracy;
 use symplex::linprog::{q, qi};
 use symplex::num_traits::{One, Signed, Zero};
 use symplex::prelude::*;
@@ -66,6 +67,15 @@ fn col(x: &[i64]) -> Vec<Vec<Q>> {
 
 fn qs(entries: &[(i64, i64)]) -> Vec<Q> {
     entries.iter().map(|&(n, d)| q(n, d)).collect()
+}
+
+/// `DegenerateData` of the given kind (up to 0.56 these cases were
+/// `InvalidArgument` or `ComputationFailed`).
+fn is_degenerate<T: std::fmt::Debug>(r: Result<T, SymplexError>, kind: Degeneracy) {
+    match r {
+        Err(SymplexError::DegenerateData { kind: k, .. }) if k == kind => {}
+        other => panic!("expected DegenerateData({kind:?}), got {other:?}"),
+    }
 }
 
 fn is_invalid<T: std::fmt::Debug>(r: Result<T, SymplexError>) {
@@ -484,7 +494,7 @@ fn r2_influence_diagnostics_and_vif() -> R {
         .iter()
         .map(|r| vec![r[0].clone(), &r[0] * qi(3)])
         .collect();
-    is_invalid(vif(&dup));
+    is_degenerate(vif(&dup), Degeneracy::Collinear);
     Ok(())
 }
 
@@ -728,18 +738,24 @@ fn regression_error_paths_are_documented_errors_not_panics() -> R {
         .map(|r| vec![r[0].clone(), qi(2) * &r[0] + qi(1)])
         .collect();
     match ols(&y, &collinear, true) {
-        Err(SymplexError::InvalidArgument { reason, .. }) => {
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Collinear,
+            reason,
+            ..
+        }) => {
             assert!(reason.contains("rank deficient"), "{reason}");
         }
-        other => panic!("expected InvalidArgument, got {other:?}"),
+        other => panic!("expected DegenerateData, got {other:?}"),
     }
-    is_invalid(hat_matrix(&QMatrix::from_i64(&[
-        &[1, 2],
-        &[2, 4],
-        &[3, 6],
-    ])?));
+    is_degenerate(
+        hat_matrix(&QMatrix::from_i64(&[&[1, 2], &[2, 4], &[3, 6]])?),
+        Degeneracy::Collinear,
+    );
     // Constant response.
-    is_invalid(ols(&vec![qi(5); 10], &x, true));
+    is_degenerate(
+        ols(&vec![qi(5); 10], &x, true),
+        Degeneracy::ConstantResponse,
+    );
     // WLS: a zero weight, a negative weight, a wrong length.
     let mut w = r3_weights();
     w[3] = Q::zero();
@@ -756,10 +772,10 @@ fn regression_error_paths_are_documented_errors_not_panics() -> R {
     // A perfect fit keeps the exact pieces and errors on the undefined ones.
     let perfect = ols(&from_i64(&[1, 3, 5, 7]), &col(&[0, 1, 2, 3]), true)?;
     assert!(perfect.ssr.is_zero());
-    is_invalid(perfect.p_values(&ctx));
-    is_invalid(perfect.cooks_distance());
-    is_invalid(perfect.durbin_watson());
-    is_invalid(perfect.bic(&ctx));
+    is_degenerate(perfect.p_values(&ctx), Degeneracy::ZeroVariance);
+    is_degenerate(perfect.cooks_distance(), Degeneracy::ZeroVariance);
+    is_degenerate(perfect.durbin_watson(), Degeneracy::ZeroVariance);
+    is_degenerate(perfect.bic(&ctx), Degeneracy::ZeroVariance);
     Ok(())
 }
 
@@ -773,7 +789,7 @@ fn polyfit_with_repeated_abscissae_and_exact_cubic() -> R {
     assert_eq!(polyfit(&x, &y, 1)?, vec![q(-4, 3), qi(4)]);
     assert_eq!(polyfit(&x, &y, 2)?, vec![qi(2), qi(0), qi(1)]);
     // Degree 3 needs four distinct abscissae: the Vandermonde system is singular.
-    is_invalid(polyfit(&x, &y, 3));
+    is_degenerate(polyfit(&x, &y, 3), Degeneracy::Collinear);
     // Fewer points than degree + 1, mismatched lengths.
     is_invalid(polyfit(&x[..2], &y[..2], 2));
     is_invalid(polyfit(&x, &y[..5], 1));
@@ -912,12 +928,18 @@ fn logit_separation_constant_predictor_and_invalid_input() -> R {
     let y = [0i64, 0, 0, 0, 1, 1, 1, 1];
     assert!(matches!(
         logit(&y, &x, true, &LogitOpts::default()),
-        Err(SymplexError::ComputationFailed { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::Separation,
+            ..
+        })
     ));
     // A constant predictor plus the intercept is collinear.
     let yc = [1u8, 0, 0, 1, 1, 0, 1, 1, 1, 0];
     let konst = vec![vec![2.0]; 10];
-    is_invalid(logit(&yc, &konst, true, &LogitOpts::default()));
+    is_degenerate(
+        logit(&yc, &konst, true, &LogitOpts::default()),
+        Degeneracy::Collinear,
+    );
     // The same constant predictor without an intercept is an intercept-only model:
     // statsmodels Logit(y, 2·1).fit().params = 0.2027325540540823 (= ln(6/4)/2), llf -6.730116670092564
     let fit = logit(&yc, &konst, false, &LogitOpts::default())?;
@@ -927,7 +949,10 @@ fn logit_separation_constant_predictor_and_invalid_input() -> R {
     assert_eq!((fit.df_model, fit.df_resid), (0, 9));
     // Invalid input: non-binary y, constant y, n ≤ p, empty, non-finite x, max_iter 0, tol ≤ 0.
     is_invalid(logit(&[0u8, 2, 1], &x[..3], true, &LogitOpts::default()));
-    is_invalid(logit(&[1u8; 8], &x, true, &LogitOpts::default()));
+    is_degenerate(
+        logit(&[1u8; 8], &x, true, &LogitOpts::default()),
+        Degeneracy::ConstantResponse,
+    );
     is_invalid(logit(&[0u8, 1], &x[..2], true, &LogitOpts::default()));
     is_invalid(logit::<u8>(&[], &[], true, &LogitOpts::default()));
     let mut nan = x.clone();
@@ -1966,9 +1991,12 @@ fn two_way_error_paths() -> R {
     is_invalid(anova_two_way(&ctx, &saturated));
     // Constant response; zero within-cell variance with a real effect.
     let flat = TwoWayData::from_i64(&[&[&[3, 3], &[3, 3]], &[&[3, 3], &[3, 3]]])?;
-    is_invalid(anova_two_way(&ctx, &flat));
+    is_degenerate(anova_two_way(&ctx, &flat), Degeneracy::ConstantResponse);
     let zero_within = TwoWayData::from_i64(&[&[&[1, 1], &[2, 2]], &[&[4, 4], &[9, 9]]])?;
-    is_invalid(anova_two_way_with(&ctx, &zero_within, SsType::TypeIII));
+    is_degenerate(
+        anova_two_way_with(&ctx, &zero_within, SsType::TypeIII),
+        Degeneracy::ZeroVariance,
+    );
     Ok(())
 }
 
@@ -2581,7 +2609,10 @@ fn log_rank_identical_groups_three_groups_and_validation() -> R {
     is_invalid(log_rank_test(&ctx, &obs, &gap));
     is_invalid(log_rank_test(&ctx, &obs, &groups[..19]));
     let none = Observation::from_i64(&[1, 2, 3, 4], &[false; 4]);
-    is_invalid(log_rank_test(&ctx, &none, &[0, 0, 1, 1]));
+    is_degenerate(
+        log_rank_test(&ctx, &none, &[0, 0, 1, 1]),
+        Degeneracy::NoEvents,
+    );
     Ok(())
 }
 
@@ -2594,7 +2625,7 @@ fn exponential_rate_and_mean_event_time_exact() -> R {
     // All censored: rate 0 but no mean event time; zero total time is rejected.
     let cens = Observation::from_i64(&[1, 4, 6], &[false; 3]);
     assert_eq!(exponential_rate(&cens)?, Q::zero());
-    is_invalid(mean_event_time(&cens));
+    is_degenerate(mean_event_time(&cens), Degeneracy::NoEvents);
     is_invalid(exponential_rate(&Observation::from_i64(
         &[0, 0],
         &[true, false],

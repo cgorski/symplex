@@ -416,6 +416,9 @@ fn evaluate_tree_full(
                 None => Ok(ball),
             }
         });
+        if evaluated.is_err() && incomplete_gamma_beyond(arena, id, cache) {
+            overflowed = true;
+        }
         // A value outside the exponent range, or a function of one, held
         // scaled (`extended`).
         let mut extended_value = false;
@@ -1254,6 +1257,21 @@ fn evaluation_arguments(arena: &Arena, id: ExprId) -> smallvec::SmallVec<[ExprId
     out
 }
 
+/// An incomplete gamma function `Γ(s, x)` or `γ(s, x)` of a shape
+/// `s ≥ 2²⁰` whose ordinary evaluation failed: its value may lie beyond the
+/// exponent range (`Γ(s)` leaves it from `s ≈ 7.8·10⁷` on; the series and
+/// the fraction form `xˢe⁻ˣ`), where `extended` holds it scaled from
+/// [`ln_incomplete_gamma`] — so that `uppergamma(s, x)/Γ(s)` is evaluated.
+fn incomplete_gamma_beyond(arena: &Arena, id: ExprId, cache: Cache<'_>) -> bool {
+    match arena.node(id) {
+        ExprNode::Lib(LibFn::UpperGamma | LibFn::LowerGamma, args) if args.len() == 2 => cache
+            .get(&args[0])
+            .and_then(|v| f64_of(&v.0).ok())
+            .is_some_and(|s| s >= 1_048_576.0),
+        _ => false,
+    }
+}
+
 /// The error of a node whose value `value` has an infinite part although
 /// its arguments are finite: the value overflows the exponent range of
 /// `BigFloat` (`Γ(10²⁰/3)`, `exp(10¹⁶)`, a product of such numbers), or is
@@ -1296,6 +1314,11 @@ fn range_error(
             LibFn::AiryBiPrime => "airybiprime",
             LibFn::RisingFactorial => "rising_factorial",
             LibFn::Subfactorial => "subfactorial",
+            // `xˢe⁻ˣ` of the series or the fraction overflowed (since
+            // 0.57: an infinity went on, and `uppergamma(s, x)/Γ(s)` was
+            // `PrecisionExhausted` for `s ≥ 10⁸`, `x > s + 1`).
+            LibFn::UpperGamma => "uppergamma",
+            LibFn::LowerGamma => "lowergamma",
             _ => return None,
         },
         _ => return None,
@@ -3248,6 +3271,15 @@ fn eval_node(
                 });
                 return Ok((product.div(&k_factorial, prec, RM), BigFloat::new(prec)));
             }
+            // Any other quotient of Gamma values beyond the range: in log
+            // space ([`factorials::gamma_ratio`]).  Up to 0.56 the NaN went
+            // on and was refused (`PrecisionExhausted`): the mass function
+            // `C(k + r − 1, k)·pʳ(1 − p)ᵏ` of `NegativeBinomial(10⁷/999999,
+            // 10⁻⁶)` at `k = 1000000100`, `1.398·10⁻⁴¹⁹`.
+            if result.is_nan() || result.is_inf() {
+                let r = factorials::gamma_ratio(&[n_plus_1], &[k_plus_1, n_minus_k_plus_1], w)?;
+                return Ok((r, BigFloat::new(prec)));
+            }
             Ok((result, BigFloat::new(prec)))
         }
 
@@ -3313,6 +3345,20 @@ fn eval_node(
             if !a_val.1.is_zero() || !b_val.1.is_zero() {
                 debug!(prec, "evalf: Beta of complex arguments");
                 return zeta::beta_complex(a_val, b_val, w);
+            }
+            // Positive shapes whose Gamma values may leave the exponent range
+            // (`Γ(x)` overflows from `x ≈ 7.8·10⁷` on): `exp(ln B)`, the
+            // `ln Γ` differences carrying the bits of their magnitude.  Up to
+            // 0.56 `B(2.694, 6.062·10¹⁸) = 3.858·10⁻⁵¹` was refused
+            // (`Γ(b)/Γ(a + b)` of two overflowing values), and with it the
+            // density of a Student t with `ν ≥ 10⁸` degrees of freedom, and `B(7/20, 1.25·10⁹)`, the
+            // constant of the `F(7/10, 2.5·10⁹)` density.
+            if bf_strictly_positive(&a_val.0)
+                && bf_strictly_positive(&b_val.0)
+                && f64_of(&a_val.0.add(&b_val.0, 64, RM))? >= BETA_VIA_LN_MIN
+            {
+                debug!(prec, "evalf: Beta via ln Beta");
+                return Ok((beta_wp(&a_val.0, &b_val.0, w)?, BigFloat::new(prec)));
             }
             // Beta(a,b) = Gamma(a)*Gamma(b)/Gamma(a+b) at arbitrary precision.
             debug!(prec, "evalf: Beta via arbitrary-precision Gamma");
@@ -3388,7 +3434,10 @@ fn eval_node(
                     if n >= 0 {
                         return Ok((b.0.powi(n as usize, prec, RM), BigFloat::new(prec)));
                     } else {
-                        let pow_pos = b.0.powi((-n) as usize, prec, RM);
+                        // `unsigned_abs`: `-n` overflows at `n = i32::MIN`
+                        // (`2^(−2³¹)`, the tail of `Exponential(ln 2)` at
+                        // `2³¹`; a panic with overflow checks up to 0.56).
+                        let pow_pos = b.0.powi(n.unsigned_abs() as usize, prec, RM);
                         let one_bf = BigFloat::from_i32(1, prec);
                         return Ok((one_bf.div(&pow_pos, prec, RM), BigFloat::new(prec)));
                     }
@@ -9475,6 +9524,19 @@ fn gamma_prefactor(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloa
 /// fraction is evaluated with `log₂(budget) + 8` guard bits for the
 /// roundings of its steps.
 fn uppergamma_cf(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
+    let (h, wp) = uppergamma_cf_fraction(s, x, w)?;
+    let (s, x) = (&at_precision(s, wp), &at_precision(x, wp));
+    let pref = gamma_prefactor(s, x, &mut w.at(wp))?;
+    Ok(pref.mul(&h, wp, RM))
+}
+
+/// The fraction `1/(x + 1 − s − …)` of [`uppergamma_cf`] (without the
+/// prefactor `x^s e^{−x}`), and the precision it was evaluated at.
+fn uppergamma_cf_fraction(
+    s: &BigFloat,
+    x: &BigFloat,
+    w: &mut Wp<'_>,
+) -> Result<(BigFloat, usize), SymplexError> {
     let wp = w.bits();
     let s_f = f64_of(s)?;
     let max_iter = (40 * wp + 2000).saturating_add((64.0 * s_f.abs().cbrt()).min(2e6) as usize);
@@ -9525,8 +9587,7 @@ fn uppergamma_cf(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat,
             ),
         });
     }
-    let pref = gamma_prefactor(s, x, &mut w.at(wp))?;
-    Ok(pref.mul(&h, wp, RM))
+    Ok((h, wp))
 }
 
 /// Series for `γ(s, x) = x^s e^{−x} Σ_{k≥0} x^k / (s (s+1) … (s+k))`,
@@ -9540,8 +9601,40 @@ fn lowergamma_series(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFl
     if x.is_zero() {
         return Ok(BigFloat::new(wp));
     }
+    let (sum, wp) = lowergamma_series_sum(s, x, w)?;
+    let (s, x) = (&at_precision(s, wp), &at_precision(x, wp));
+    let pref = gamma_prefactor(s, x, &mut w.at(wp))?;
+    Ok(pref.mul(&sum, wp, RM))
+}
+
+/// The sum `Σ x^k / (s (s+1) … (s+k))` of [`lowergamma_series`] (without
+/// the prefactor `x^s e^{−x}`), for `x > 0`, and the precision it was
+/// evaluated at.
+fn lowergamma_series_sum(
+    s: &BigFloat,
+    x: &BigFloat,
+    w: &mut Wp<'_>,
+) -> Result<(BigFloat, usize), SymplexError> {
+    let wp = w.bits();
     let x_f = f64_of(x)?;
     let max_terms = ((2.0 * x_f).min(1e7) as usize).saturating_add(wp + 50);
+    // The terms fall by `Π_{j ≤ k} x/(s + j) ≥ e^{−(d·k + k(k + 1)/2)/x}` (`d =
+    // s − x > −1`, `ln(1 + u) ≤ u`), and the sum stops once a term is below
+    // `2^{−wp}` of the sum, at most `(s + 1)/(d + 1)` times the first term
+    // (`x < s + 1`): so it needs at least the `k` where `(d·k + k(k + 1)/2)/x`
+    // reaches `t = wp·ln 2 − ln((s + 1)/(d + 1))`.  Beyond the budget,
+    // refuse at once (up to 0.56 a shape near `10¹⁴` at its mean ran the ten
+    // million terms, 10–20 s, at every precision tried).
+    let s_f = f64_of(s)?;
+    let d = s_f - x_f;
+    let t = wp as f64 * std::f64::consts::LN_2 - ((s_f + 1.0) / (d + 1.0)).ln();
+    if d > -1.0 && t > 0.0 {
+        let b = d + 0.5;
+        let needed = (b * b + 2.0 * x_f * t).sqrt() - b;
+        if needed > max_terms as f64 {
+            return Err(series_did_not_converge("lowergamma", max_terms));
+        }
+    }
     let wp = wp + magnitude_bits(max_terms as f64) + 8;
     let (s, x) = (&at_precision(s, wp), &at_precision(x, wp));
     let one = BigFloat::from_i32(1, wp);
@@ -9560,9 +9653,85 @@ fn lowergamma_series(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFl
     if !converged {
         return Err(series_did_not_converge("lowergamma", max_terms));
     }
-    let pref = gamma_prefactor(s, x, &mut w.at(wp))?;
-    Ok(pref.mul(&sum, wp, RM))
+    Ok((sum, wp))
 }
+
+/// `ln Γ(s, x)` (`upper`) or `ln γ(s, x)` for `s ≥ 2`, `x > 0`, to an
+/// absolute error below `2^−(prec + 8)` (the relative error of the value):
+/// the value itself may lie far beyond the exponent range — `Γ(s)`
+/// overflows from `s ≈ 7.8·10⁷` on — so it is assembled from logarithms.
+/// `L = s ln x − x` (the prefactor), plus `ln` of the series sum of
+/// [`lowergamma_series`] (`x < s + 1`) or of the fraction of
+/// [`uppergamma_cf`] (`x ≥ s + 1`); the other function is `ln Γ(s) +
+/// ln(1 − R)`, with `R = e^{L + ln(·) − ln Γ(s)}` the regularised
+/// function computed directly: at most `P(s, s + 1) ≤ P(2, 3) = 1 − 4/e³ <
+/// 0.81` or `Q(s, s + 1) < 0.49` (see [`arb_lowergamma`]; both near ½ for
+/// the huge shapes this is for), so `1 − R` cancels at most three bits.  Every term is
+/// formed with the bits of the largest magnitude, `s·|ln x| + x + ln Γ(s)`,
+/// as guard.  For [`extended`]'s scaled values: `uppergamma(s, x)/Γ(s)`, the
+/// survival function of a gamma, χ² or Poisson family, at shapes beyond
+/// `10⁸`.
+fn ln_incomplete_gamma(
+    s: &BigFloat,
+    x: &BigFloat,
+    upper: bool,
+    w: &mut Wp<'_>,
+) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
+    let s_f = f64_of(s)?;
+    let x_f = f64_of(x)?;
+    if !(s_f >= 2.0 && bf_strictly_positive(x)) || !x_f.is_finite() {
+        return Err(unevaluable(
+            "ln_incomplete_gamma: needs s ≥ 2 and a finite x > 0",
+        ));
+    }
+    let mag = s_f * ln_magnitude(x) + x_f + lngamma_magnitude(s, s_f) + 2.0;
+    let wp = prec + magnitude_bits(mag) + 24;
+    let series = bf_lt(x, &s.add(&BigFloat::from_i32(1, 64), exact_bits(s, wp), RM));
+    // The steps the series or the fraction will take, from the decay of
+    // the terms (`Σ_{j ≤ k} ln((s + j)/x) ≈ (d·k + k²/2)/x` reaching `wp·ln 2`,
+    // `d = s − x`) or the fraction's `27·s^{1/3}` near `x = s + 1`: beyond
+    // `LN_INCOMPLETE_GAMMA_MAX_STEPS` the value is refused at once rather
+    // than after seconds at every precision tried (an estimate that only
+    // decides an early refusal).
+    let steps = if series {
+        let d = s_f - x_f;
+        (d * d + 2.0 * x_f * wp as f64 * std::f64::consts::LN_2).sqrt() - d
+    } else if x_f - s_f < 10.0 * s_f.sqrt() {
+        27.0 * s_f.cbrt()
+    } else {
+        0.0
+    };
+    if steps > LN_INCOMPLETE_GAMMA_MAX_STEPS {
+        return Err(special_exhausted(prec));
+    }
+    let (sw, xw) = (at_precision(s, wp), at_precision(x, wp));
+    let l_pref = sw.mul(&xw.ln(wp, RM, w.cc), wp, RM).sub(&xw, wp, RM);
+    let (part, pwp) = if series {
+        lowergamma_series_sum(&sw, &xw, &mut w.at(wp))?
+    } else {
+        uppergamma_cf_fraction(&sw, &xw, &mut w.at(wp))?
+    };
+    if !bf_strictly_positive(&part) {
+        return Err(special_exhausted(prec));
+    }
+    let direct = l_pref.add(&part.ln(pwp.max(wp), RM, w.cc), wp, RM);
+    if series != upper {
+        return Ok(direct);
+    }
+    let lg = stirling_log_gamma(&sw, &mut w.at(wp))?;
+    let r = direct.sub(&lg, wp, RM).exp(wp, RM, w.cc);
+    let rest = BigFloat::from_i32(1, wp).sub(&r, wp, RM);
+    if !bf_strictly_positive(&rest) {
+        return Err(special_exhausted(prec));
+    }
+    Ok(lg.add(&rest.ln(wp, RM, w.cc), wp, RM))
+}
+
+/// The most series terms or fraction steps [`ln_incomplete_gamma`] takes
+/// (about a second in a release build); near the centre of a shape beyond
+/// `≈ 10¹⁰` the series needs more.
+const LN_INCOMPLETE_GAMMA_MAX_STEPS: f64 = 1e6;
 
 /// `Γ(s, x)` at working precision `wp` for real `s`, `x > 0`, to a relative
 /// error of about `2^−wp`:
@@ -10133,8 +10302,20 @@ fn ln_beta_wp(a: &BigFloat, b: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, Sy
 /// not).
 fn beta_wp(a: &BigFloat, b: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let wp = w.bits();
-    Ok(ln_beta_wp(a, b, w)?.exp(wp, RM, w.cc))
+    let v = ln_beta_wp(a, b, w)?.exp(wp, RM, w.cc);
+    // `exp` of an exponent beyond the range is 0 or ∞, not the value.
+    if v.is_zero() || v.is_inf() || v.is_nan() {
+        return Err(unevaluable(
+            "Beta: the value lies beyond the arbitrary-precision exponent range",
+        ));
+    }
+    Ok(v)
 }
+
+/// From this `a + b` on, the `Beta` node of positive shapes is `exp(ln B)`
+/// ([`beta_wp`]) rather than `Γ(a)Γ(b)/Γ(a + b)`: `2²⁶`, below
+/// `x ≈ 7.8·10⁷` where `Γ(x)` leaves the exponent range.
+const BETA_VIA_LN_MIN: f64 = 67_108_864.0;
 
 /// The continued fraction of the regularised incomplete beta function
 /// (DLMF 8.17.22; evaluated by the modified Lentz algorithm of Thompson &

@@ -43,6 +43,7 @@
 #![allow(clippy::excessive_precision)]
 
 use num_bigint::BigInt;
+use symplex::errors::Degeneracy;
 use symplex::linprog::{Q, q, qi};
 use symplex::prelude::*;
 use symplex::stats::Rng;
@@ -59,6 +60,15 @@ fn close(actual: f64, expected: f64, rel: f64, label: &str) {
         "{label}: got {actual:e}, expected {expected:e} (rel {:.1e})",
         (actual / expected - 1.0).abs()
     );
+}
+
+/// `DegenerateData` of the given kind (up to 0.56 these cases were
+/// `InvalidArgument` or `ComputationFailed`).
+fn is_degenerate<T: std::fmt::Debug>(r: Result<T, SymplexError>, kind: Degeneracy) {
+    match r {
+        Err(SymplexError::DegenerateData { kind: k, .. }) if k == kind => {}
+        other => panic!("expected DegenerateData({kind:?}), got {other:?}"),
+    }
 }
 
 fn is_invalid<T: std::fmt::Debug>(r: Result<T, SymplexError>) {
@@ -515,8 +525,14 @@ fn multivariate_normal_sample_with_a_huge_count_is_an_error() {
 #[test]
 fn correlation_matrix_refuses_a_single_constant_variable() {
     let ctx = Context::new();
-    is_invalid(correlation_matrix(&ctx, &[vec![qi(1)], vec![qi(1)]]));
-    is_invalid(correlation_matrix(&ctx, &[vec![qi(3)]]));
+    is_degenerate(
+        correlation_matrix(&ctx, &[vec![qi(1)], vec![qi(1)]]),
+        Degeneracy::ZeroVariance,
+    );
+    is_degenerate(
+        correlation_matrix(&ctx, &[vec![qi(3)]]),
+        Degeneracy::ZeroVariance,
+    );
     let r = correlation_matrix(&ctx, &[vec![qi(1)], vec![qi(2)]]).unwrap();
     assert_eq!(r[(0, 0)], ctx.one());
 }

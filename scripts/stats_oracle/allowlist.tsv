@@ -1,0 +1,27 @@
+# Known disagreements of the nightly statistics oracle (scripts/stats_oracle/README.md).
+# id-glob <TAB> output-glob <TAB> class <TAB> mpmath value <TAB> reason
+# A failure is allowlisted when its class matches and both globs match (fnmatch).  Every entry
+# needs a reason; an entry nothing matches any more is reported as stale.  scipy is 1.18.1,
+# statsmodels 0.15.0 (requirements.txt); mpmath values at 40 and 60 digits.
+#
+# scipy wrong, symplex right
+dist.student_t.2.mean	*	SCIPY_WRONG	nan	StudentT(3/5) has no mean: both tails diverge (nu <= 1), so it is undefined (NaN); scipy gives inf.
+dist.f.0.isf_f64.0	f64	SCIPY_WRONG	16413.318786974674539	F(9, 617/10).isf(1e-100): scipy gives inf; the upper quantile is finite (root of the F tail).
+dist.f.5.isf_f64.1	f64	SCIPY_WRONG	4.0911550001098494621e+141	F(93/20, 1).isf(1.18e-71): scipy gives inf; the upper quantile is finite.
+kernel.f.isf.384	f64	SCIPY_WRONG	556.09287909337093174	f.isf(5.97e-77, 0.615, 2.25e5): scipy gives inf; the upper quantile is finite.
+kernel.f.isf.390	f64	SCIPY_WRONG	69.676503420610669569	f.isf(1.92e-262, 19, 2.62e4): scipy gives inf; the upper quantile is finite.
+kernel.t.ppf.178	f64	SCIPY_WRONG	2.4679583827339421662e+221	t.ppf(0.975, df=0.005839): scipy gives 5.12e152, 69 orders of magnitude low; numdist's answer is the root of the t tail.
+dist.binomial.5.isf_f64.1	f64	SCIPY_WRONG	42	Binomial(100, 1/1000).isf(1e-100): the smallest k with P(X > k) <= 1e-100 is 42 (exact tail sums); scipy forms ppf(1 - q) = ppf(1.0) and answers n = 100.
+kernel.binom.isf.472	f64	SCIPY_WRONG	7	binom.isf(2.7e-90, 27, 1.03e-13): the smallest k with P(X > k) <= q is 7; scipy answers n = 27 (ppf(1 - q) with 1 - q = 1.0).
+dist.binomial.1.entropy	*	SCIPY_WRONG	1.9420680747045651249e-7	Binomial(10, 1e-9) entropy: scipy 1.18.1 is off by 1.2e-8 relative (its sum of -p ln p loses digits next to a point mass).
+
+dist.binomial.2.variance	*	SCIPY_WRONG	9.999999707180685931385816e-9	Binomial(10, 1 - 1e-9) variance: scipy is off by 1.1e-7 relative even at its rounded p (symplex's exact value at the exact p is 9.99999999e-9).
+dist.hypergeometric.1.skewness	*	SCIPY_WRONG	nan	Hypergeometric(7, 7, 4) is a point mass (variance 0): skewness 0/0 is undefined; scipy gives inf.
+dist.hypergeometric.1.kurtosis	*	SCIPY_WRONG	nan	Hypergeometric(7, 7, 4) is a point mass: kurtosis 0/0 is undefined; scipy gives -inf (excess) .
+dist.discrete_uniform.0.skewness	*	SCIPY_WRONG	nan	DiscreteUniform(9, 9) is a point mass: skewness 0/0 is undefined; scipy gives 0.
+dist.discrete_uniform.0.kurtosis	*	SCIPY_WRONG	nan	DiscreteUniform(9, 9) is a point mass: kurtosis 0/0 is undefined; scipy gives -inf (excess).
+#
+# symplex refuses (found in wave 12, stats layer: src/domains/stats/discrete.rs)
+dist.binomial.6.cdf.2	*	REFUSED	1.0	Binomial(10^6, 13/100).cdf(500000): binomial_mass declines this size, the generic route is a Sum of 500001 terms and evalf refuses more than 10,000 (truly 1 - 2.78e-172243).
+dist.binomial.6.sf.2	*	REFUSED	2.7846903790687475755e-172243	Binomial(10^6, 13/100).sf(500000): as the cdf, a Sum of 500000 terms.
+dist.binomial.6.entropy	*	REFUSED	7.2369519607771632759	Binomial(10^6, 13/100) entropy: a Sum of 10^6 + 1 terms.

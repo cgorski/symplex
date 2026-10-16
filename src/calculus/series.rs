@@ -140,6 +140,15 @@ const MAX_FALLBACK_SIZE: usize = 1_500;
 /// exponents use the binomial series.
 const MAX_INT_POWER: i64 = 64;
 
+/// The highest exponent a series built from a constant stores coefficients
+/// up to.  Lowering `known` keeps a series exact below it, and a dense
+/// vector up to a huge exponent cannot be formed: up to 0.56 the valuation
+/// `N` of `x^N` (`N = 34278473728`, a Weibull shape) carried into
+/// `exp(−x^N)` made [`TSeries::compose`] allocate 137 GB and abort the
+/// process.  Beyond it the leading term is not seen and the caller widens
+/// its window or refuses.
+const MAX_DENSE_KNOWN: i64 = 1 << 14;
+
 /// Minimum internal working precision of the engine.
 const MIN_WORKING_ORDER: i64 = 4;
 
@@ -1179,6 +1188,7 @@ impl TSeries {
     }
 
     fn zero(arena: &Arena, known: i64) -> Self {
+        let known = known.min(MAX_DENSE_KNOWN);
         TSeries {
             shift: 0,
             known,
@@ -1189,7 +1199,7 @@ impl TSeries {
 
     fn constant(arena: &Arena, c: ExprId, known: i64) -> Self {
         let mut s = Self::zero(arena, known);
-        if known > 0 {
+        if s.known > 0 {
             s.coeffs[0] = c;
         }
         s
@@ -1197,7 +1207,7 @@ impl TSeries {
 
     fn var(arena: &Arena, known: i64) -> Self {
         let mut s = Self::zero(arena, known);
-        if known > 1 {
+        if s.known > 1 {
             s.coeffs[1] = arena.one;
         }
         s
@@ -1478,7 +1488,7 @@ impl TSeries {
 
     /// `Σ_n f_n · w^n` for a series `w` with valuation ≥ 1.
     fn compose(arena: &mut Arena, f: &dyn Fn(&mut Arena, usize) -> ExprId, w: &TSeries) -> TSeries {
-        let known = w.known;
+        let known = w.known.min(MAX_DENSE_KNOWN);
         if known <= 0 {
             return TSeries {
                 shift: known,

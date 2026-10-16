@@ -390,8 +390,10 @@ fn clopper_pearson_k_zero_lower_end_is_exact_zero() {
     let ci = proportion_interval_exact(&ctx, 0, 10, &q(95, 100), IntervalMethod::ClopperPearson)
         .unwrap();
     assert_eq!(ci.lower, ctx.int(0));
-    assert!(format!("{}", ci.upper).starts_with("RootOf("));
-    // (1 − p)^10 = 1/40 ⇒ p = 1 − 40^(−1/10): beta.ppf(0.975, 1, 10)
+    // (1 − p)^10 = 1/40 ⇒ p = 1 − 40^(−1/10), in that closed form since 0.57
+    // (a RootOf before): beta.ppf(0.975, 1, 10)
+    let closed = ctx.one() - ctx.rational(1, 40).pow(&ctx.rational(1, 10));
+    assert_eq!(ci.upper, closed);
     close(ev(&ci.upper), 0.3084971078187608, 1e-12);
     close(ev(&ci.upper), 1.0 - 40f64.powf(-0.1), 1e-14);
 }
@@ -402,8 +404,8 @@ fn clopper_pearson_k_equals_n_upper_end_is_exact_one() {
     let ci = proportion_interval_exact(&ctx, 10, 10, &q(95, 100), IntervalMethod::ClopperPearson)
         .unwrap();
     assert_eq!(ci.upper, ctx.int(1));
-    assert!(format!("{}", ci.lower).starts_with("RootOf("));
-    // p^10 = 1/40: beta.ppf(0.025, 10, 1)
+    // p^10 = 1/40 ⇒ p = 40^(−1/10) (a RootOf before 0.57): beta.ppf(0.025, 10, 1)
+    assert_eq!(ci.lower, ctx.rational(1, 40).pow(&ctx.rational(1, 10)));
     close(ev(&ci.lower), 0.6915028921812392, 1e-12);
     close(ev(&ci.lower), 40f64.powf(-0.1), 1e-14);
 }

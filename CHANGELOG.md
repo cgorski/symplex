@@ -8,6 +8,102 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+Statistics hardening.  The statistics modules were checked systematically
+for the first time: a new fuzz target checks the symbolic distribution layer
+by properties decided exactly or from certified digits; every family and
+method was compared with scipy.stats and mpmath (77,530 comparisons, extreme
+shapes and far tails); the hypothesis tests, intervals and estimators with
+scipy/statsmodels and exact arithmetic (27,000 cases); the models
+(regression, ANOVA, survival, Cox, multivariate) with statsmodels, exact
+rationals and stress inputs (32,500 cases); and a nightly workflow keeps
+comparing them.  Wrong answers, hangs and process aborts found that way are
+fixed; where scipy or statsmodels is wrong (tails, near-collinear designs,
+exact tests with ties) the tests record it.
+
+### Added
+
+- **`fuzz_stats`**, property fuzzing of the symbolic distribution layer (in
+  the `fuzz.yml` matrix): the 23 families and finite tables with exact
+  parameters (dyadics, powers of ten up to `10^±300`, irrational constants;
+  one draw in eight invalid), sometimes affine, truncated, an order
+  statistic, a mixture or a monotone transform, checked for parameter
+  validation, the density real, `≥ 0` and integrating (summing) to 1, `cdf`/
+  `sf` in `[0, 1]`, monotone and complementary, `cdf′ = pdf`, quantiles both
+  ways (lattice: `cdf(k) ≥ p > cdf(k − 1)` exactly), moments against
+  integrals (divergent moments never finite), `mgf`/`cf` against their
+  integrals and `mgf′(0)`, the `numdist` kernels against the symbolic
+  `cdf`/`sf`, order statistics against enumeration, `sum_distribution`
+  closures and `transformed`.
+- **The nightly statistics oracle** (`.github/workflows/stats-oracle.yml`,
+  `scripts/stats_oracle/`): 4,133 cases over the 23 families and their
+  methods, the `numdist` kernels, hypothesis tests and least-squares fits,
+  compared with scipy 1.18.1, statsmodels 0.15.0 and mpmath (40 and 60
+  digits as the referee); certified decimals must be right to the 30th
+  digit, `f64` routes to their documented tolerance, exact rationals
+  exactly; known scipy errors are allowlisted with their mpmath values.
+- **`SymplexError::DegenerateData { operation, kind: Degeneracy, reason }`**
+  (`Degeneracy`: `Collinear`, `Separation`, `ConstantResponse`,
+  `ZeroVariance`, `NoEvents`; `#[non_exhaustive]`), so callers can tell
+  degenerate data from non-convergence and invalid input without reading
+  messages.
+- Exact Mann–Whitney and Wilcoxon tests with ties (`RankMethod::Exact` was an
+  error with ties; scipy's `method='exact'` is wrong on such data, e.g.
+  41/231 for the exact 40/231).
+
+### Breaking (behaviour)
+
+- Degenerate data in the statistical models (rank-deficient designs,
+  separation, constant responses, zero-variance groups, no events) returns
+  `DegenerateData` (it was `InvalidArgument` or `ComputationFailed`, with
+  the same reason text).  `CoxOpts::tol` must be finite.
+- `try_` constructors reject non-finite, non-real and irrational invalid
+  parameters: `Normal(∞, 1)`, `Normal(i, 1)`, `Uniform(−∞, 0)`,
+  `Bernoulli(√2)`, `Binomial(√2, ½)`, `Geometric(−π/4)` and tables with an
+  irrational mass `−√2/2` were accepted.
+- Exact Clopper–Pearson intervals with `0 < k < n` are refused beyond `n =
+  120` (`estimation::CLOPPER_PEARSON_EXACT_MAX_TRIALS`; they hung at `n =
+  435,511`); `k = 0` and `k = n` have closed forms for every `n`.
+
+### Fixed
+
+- **Process aborts:** a density with a huge power (`Weibull(51/8, 9·10¹⁰)`,
+  `F(1.5·10¹⁰, 3/5)` mgf; a Weibull of shape `3·10¹⁰` in a mixture) asked
+  the series engine or the polynomial layout for 3 GB to 1 TB and aborted;
+  dense layouts are capped at `2¹⁶` coefficients and a stored series at
+  `2¹⁴` terms.
+- **Discrete quantiles decided on exact masses:**
+  `Hypergeometric(10²⁰, …, 17).quantile_f64(3/998)` was 17 (truly 4),
+  `Binomial(100, 999/1000).quantile_f64(1e-300)` 0 (truly 1; scipy also 0),
+  `Binomial(10, 1 − 10⁻¹⁸).quantile_f64(1e-20)` 10 (truly 9);
+  `NegativeBinomial(5000, 7/54).quantile_f64(1e-20)` hung (29060 in 0.1 s);
+  `Binomial(290000, 1e-9).cdf(0)` ran for minutes.
+- `Hypergeometric(1, m, n)` variance 0 (was NaN); the F density at 0 for
+  `d₁ < 2` is `+∞` (was NaN); an imaginary part of a characteristic function
+  below the digits of the real part is kept.
+- **Now answered:** Cauchy far-tail quantiles; characteristic functions with
+  huge phases; `B(a, b)` for huge shapes (`B(1347/500, 6.062·10¹⁸) =
+  3.858·10⁻⁵¹`, the Student t density at `ν = 10⁹`); entropies with huge
+  shapes; the Poisson mass at huge rates (scipy: `poisson(1e18).pmf(1e18) =
+  1.0`; it is `3.989·10⁻¹⁰`); binomial CDF/SF beyond the exact sum's budget;
+  binomials of huge non-integer arguments (negative-binomial masses);
+  incomplete gamma at shapes beyond `10⁸` (`Gamma(10⁸, 1).sf(10⁸ + 2·10⁴)`).
+- **Hypothesis tests and estimators:** `g_test` hung or ran out of memory
+  for tables with `ν ≥ 12`; the pooled two-sample t-test refused a sample of
+  size 1; sample sizes were capped at `2⁴⁰`; `fit_exponential` refused
+  zeros; `fit_log_normal` hung on hundreds of observations.
+- **Models:** least-squares and Tukey confidence/prediction limits for data
+  near the ends of the `f64` range are rooted from the exact variance (they
+  were single points near `10⁻¹⁶⁰` and refused near `10¹⁶⁰`).
+
+### Known issues
+
+- `betainc_regularized` values below the exponent range print `0` in a few
+  cases instead of being refused (`Beta(18, 1.4·10³⁰).sf(1/2)`); the `f64`
+  quantile kernels lose up to `1.7·10⁻¹³` relative at extreme shapes.
+- Cox standard errors carry a relative error of about `κ²·10⁻¹⁶` (documented).
+- Fisher's exact test on large tables reports a dyadic `f64` p-value through
+  `p_value_exact()`.
+
 ## [0.56.0] - 2026-10-16
 
 Silent folds at special arguments, finite products for every integer

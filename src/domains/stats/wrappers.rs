@@ -285,6 +285,28 @@ impl Affine {
         (y - &self.b) / &self.a
     }
 
+    /// A discrete inner law with listed values (a table, or a mixture with
+    /// one), not only the integer lattice: `P(X ≥ x)` is not `P(X > ⌈x⌉ − 1)`
+    /// there (up to 0.56 `−X` of a mixture of a binomial and the table
+    /// `{9/8, 5/4}` counted the atom `9/8` in `P(X ≥ 5/4)`).
+    fn listed_values(&self) -> bool {
+        self.inner.kind() == Kind::Discrete
+            && self
+                .inner
+                .support()
+                .pieces()
+                .iter()
+                .any(|p| matches!(p, Piece::Point(_)))
+    }
+
+    /// `P(X = x)` for the discrete inner law, membership decided piece by
+    /// piece; `None` when it cannot be (a symbolic `x`).
+    fn atom_mass(&self, x: &Ex) -> Option<Ex> {
+        self.inner
+            .probability_of(&Support::points(vec![x.clone()]))
+            .ok()
+    }
+
     /// The image of the inner support.
     fn image(&self) -> Support {
         let inner = self.inner.support();
@@ -385,6 +407,11 @@ impl Family for Affine {
             family.cdf(&x)?;
             Some(self.inner.cdf_on_support(&x))
         } else {
+            // With listed values, P(X ≥ x) = P(X > x) + P(X = x).
+            if self.listed_values() {
+                let atom = self.atom_mass(&x)?;
+                return Some(self.inner.sf(&x) + atom);
+            }
             let ctx = self.context();
             // P(aX + b ≤ y) = P(X ≥ x): P(X > x) for a density; on the
             // lattice P(X > ⌈x⌉ − 1) (for an integer x that is P(X > x − 1),
@@ -409,6 +436,11 @@ impl Family for Affine {
             }
             Some(self.inner.sf_on_support(&x))
         } else {
+            // With listed values, P(X < x) = P(X ≤ x) − P(X = x).
+            if self.listed_values() {
+                let atom = self.atom_mass(&x)?;
+                return Some(self.inner.cdf(&x) - atom);
+            }
             let ctx = self.context();
             // P(aX + b > y) = P(X < x): F(x) for a density, F(⌈x⌉ − 1) on
             // the lattice.
@@ -1849,16 +1881,38 @@ impl Distribution {
             .as_points()
             .or_else(|| self.enumerate_lattice())
         {
+            // A rational image is merged through a map keyed by its value;
+            // only an image that is not a rational is compared with every
+            // entry.  Up to 0.56 every pair was compared by `equals`, each
+            // comparison interning a difference: `X⁵` of a hypergeometric on
+            // 19,532 atoms exhausted 2 GB.
             let mut table: Vec<(Ex, Ex)> = Vec::new();
+            let mut rational_at: std::collections::HashMap<crate::base::numeric::Q, usize> =
+                std::collections::HashMap::new();
+            let mut others: Vec<usize> = Vec::new();
             for v in &values {
                 let image = g.subs(x, v).eval();
                 let mass = self.density(v).eval();
-                match table
-                    .iter_mut()
-                    .find(|(w, _)| Truth::from(w.equals(&image)).is_true())
-                {
-                    Some((_, p)) => *p = (&*p + mass).simplify(),
-                    None => table.push((image, mass)),
+                let same = |i: &usize| Truth::from(table[*i].0.equals(&image)).is_true();
+                let rational = image.as_rational();
+                let found = match &rational {
+                    Some(q) => rational_at
+                        .get(q)
+                        .copied()
+                        .or_else(|| others.iter().copied().find(same)),
+                    None => (0..table.len()).find(same),
+                };
+                match found {
+                    Some(i) => table[i].1 = (&table[i].1 + mass).simplify(),
+                    None => {
+                        match rational {
+                            Some(q) => {
+                                rational_at.insert(q, table.len());
+                            }
+                            None => others.push(table.len()),
+                        }
+                        table.push((image, mass));
+                    }
                 }
             }
             return Ok(Distribution::finite(&ctx, table));

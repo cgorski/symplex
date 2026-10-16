@@ -17,6 +17,7 @@
 //! * `G3`: the three groups of the `anova_one_way` doc example (n = 6 each);
 //!   `G3U`: three groups of sizes 4, 3, 5.
 
+use symplex::errors::Degeneracy;
 use symplex::linprog::{q, qi};
 use symplex::prelude::*;
 use symplex::stats::anova::{
@@ -477,13 +478,19 @@ fn two_way_invalid_inputs() {
     let constant = TwoWayData::from_i64(&[&[&[2, 2], &[2, 2]], &[&[2, 2], &[2, 2]]]).unwrap();
     assert!(matches!(
         anova_two_way(&ctx, &constant),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ConstantResponse,
+            ..
+        })
     ));
     // Cells constant but different: zero within-cell variance.
     let zero_resid = TwoWayData::from_i64(&[&[&[1, 1], &[2, 2]], &[&[3, 3], &[5, 5]]]).unwrap();
     assert!(matches!(
         anova_two_way(&ctx, &zero_resid),
-        Err(SymplexError::InvalidArgument { .. })
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ZeroVariance,
+            ..
+        })
     ));
 }
 
@@ -727,12 +734,22 @@ fn rm_invalid_inputs() {
     invalid(vec![from_i64(&[1, 2, 3])]);
     invalid(vec![from_i64(&[1]), from_i64(&[2])]);
     invalid(vec![from_i64(&[1, 2]), from_i64(&[2, 3, 4])]);
-    // Every subject's profile is a shift of the same curve: SS_error = 0.
-    invalid(vec![
-        from_i64(&[1, 3, 4]),
-        from_i64(&[2, 4, 5]),
-        from_i64(&[5, 7, 8]),
-    ]);
+    // Every subject's profile is a shift of the same curve: SS_error = 0
+    // (DegenerateData since 0.57).
+    assert!(matches!(
+        anova_repeated_measures(
+            &ctx,
+            &[
+                from_i64(&[1, 3, 4]),
+                from_i64(&[2, 4, 5]),
+                from_i64(&[5, 7, 8]),
+            ]
+        ),
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ZeroVariance,
+            ..
+        })
+    ));
     invalid(vec![]);
 }
 
@@ -883,7 +900,14 @@ fn tukey_hsd_invalid_inputs() {
     invalid(vec![from_i64(&[1, 2, 3])], 0.95);
     invalid(vec![from_i64(&[1, 2, 3]), vec![]], 0.95);
     invalid(vec![from_i64(&[1]), from_i64(&[2])], 0.95);
-    invalid(vec![from_i64(&[2, 2]), from_i64(&[3, 3])], 0.95);
+    // Zero within-group variance (DegenerateData since 0.57).
+    assert!(matches!(
+        tukey_hsd(&ctx, &[from_i64(&[2, 2]), from_i64(&[3, 3])], 0.95),
+        Err(SymplexError::DegenerateData {
+            kind: Degeneracy::ZeroVariance,
+            ..
+        })
+    ));
     invalid(g3(), 1.0);
     invalid(g3(), 0.0);
 }

@@ -129,6 +129,26 @@ fn positive_root(v: &Ex) -> Ex {
 /// so that sums of logarithms of rational data combine into one canonical
 /// linear form in `ln p`.  Factoring is bounded; a large composite left
 /// over is kept as a single `ln`.
+/// Most distinct logarithms ([`ln_q`] atoms) for which [`fit_log_normal`]
+/// collects `σ̂²` into a quadratic form.
+const LOG_NORMAL_COLLECT_MAX_ATOMS: usize = 24;
+
+/// The number of distinct logarithms [`ln_q`] writes the data in: the
+/// small primes and the cofactors of every numerator and denominator.
+fn log_atom_count(data: &[Q]) -> usize {
+    let mut atoms = std::collections::BTreeSet::new();
+    for x in data {
+        for side in [x.numer(), x.denom()] {
+            let (factors, cofactor) = crate::domains::ntheory::factorint_bounded(side, 64);
+            atoms.extend(factors.into_iter().map(|(p, _)| p));
+            if cofactor > BigInt::one() {
+                atoms.insert(cofactor);
+            }
+        }
+    }
+    atoms.len()
+}
+
 fn ln_q(ctx: &Context, x: &Q) -> Ex {
     let side = |n: &BigInt, sign: i64| -> Ex {
         let (factors, cofactor) = crate::domains::ntheory::factorint_bounded(n, 64);
@@ -289,14 +309,28 @@ pub fn fit_normal(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexErro
 }
 
 /// MLE of `Exponential(λ)`: `λ̂ = 1/x̄ = n / Σ xᵢ`, exact.
-/// `scipy.stats.expon.fit(data, floc=0)` returns `(0, 1/λ̂)`.
+/// `scipy.stats.expon.fit(data, floc=0)` returns `(0, 1/λ̂)`.  Zeros
+/// are observations like any other (`0` is in the support; refused before
+/// 0.57).
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] unless every observation is positive.
+/// [`SymplexError::InvalidArgument`] for an empty sample, a negative
+/// observation, or all observations `0` (`λ̂ = ∞`).
 pub fn fit_exponential(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    require_positive_data("fit_exponential", data)?;
-    let rate = data::mean(data)?.recip();
+    const OP: &str = "fit_exponential";
+    nonempty(OP, data)?;
+    if data.iter().any(Signed::is_negative) {
+        return Err(invalid(
+            OP,
+            "fit_exponential needs non-negative observations",
+        ));
+    }
+    let mean = data::mean(data)?;
+    if mean.is_zero() {
+        return Err(invalid(OP, "all-zero data give λ̂ = ∞"));
+    }
+    let rate = mean.recip();
     Distribution::try_exponential(ctx.from_ratio(rate))
 }
 
@@ -430,11 +464,31 @@ pub fn fit_log_normal(ctx: &Context, data: &[Q]) -> Result<Distribution, Symplex
     let n = ex_usize(ctx, data.len());
     let logs: Vec<Ex> = data.iter().map(|x| ln_q(ctx, x)).collect();
     let mu = (logs.iter().fold(ctx.zero(), |acc, l| acc + l) / &n).simplify();
-    let var = (logs
-        .iter()
-        .fold(ctx.zero(), |acc, l| acc + (l - &mu).powi(2))
-        / &n)
-        .simplify();
+    // Collected, `σ̂²` is a quadratic form in the logarithms: `m(m + 1)/2`
+    // terms for `m` distinct prime (or cofactor) logarithms.  Beyond
+    // `LOG_NORMAL_COLLECT_MAX_ATOMS` (data from `from_f64` have one
+    // cofactor per observation) it is written as `(1/n) Σ rᵢ² − r̄²` with
+    // `rᵢ = ln(xᵢ/x₁)`, which evaluates in `O(n)` logarithms of ratios near
+    // the spread: before 0.57 the collected form of 300 such observations
+    // ran for minutes, and `Σ (ln xᵢ − μ̂)²` re-evaluates `μ̂` in every term.
+    let var = if log_atom_count(data) <= LOG_NORMAL_COLLECT_MAX_ATOMS {
+        (logs
+            .iter()
+            .fold(ctx.zero(), |acc, l| acc + (l - &mu).powi(2))
+            / &n)
+            .simplify()
+    } else {
+        let Some(first) = data.first() else {
+            return Err(invalid(OP, "needs at least one observation"));
+        };
+        let ratios: Vec<Ex> = data
+            .iter()
+            .map(|x| ctx.from_ratio(x / first).ln())
+            .collect();
+        let sum = ratios.iter().fold(ctx.zero(), |acc, r| acc + r);
+        let squares = ratios.iter().fold(ctx.zero(), |acc, r| acc + r.powi(2));
+        squares / &n - (sum / &n).powi(2)
+    };
     Distribution::try_log_normal(mu, positive_root(&var))
 }
 
@@ -1436,6 +1490,12 @@ fn binomial_tail_root(
     })
 }
 
+/// The most trials [`proportion_interval_exact`] names Clopper–Pearson
+/// ends for when `0 < k < n`: each end is a root of a degree-`n` integer
+/// polynomial whose isolation and factorisation take about 2 s at `n = 90`,
+/// 20 s at `n = 120` and 36 s at `n = 150` (release build) and grow steeply.
+pub const CLOPPER_PEARSON_EXACT_MAX_TRIALS: usize = 120;
+
 /// A two-sided confidence interval for the success probability behind
 /// `successes` out of `trials` at the rational level `confidence`, with
 /// exact endpoints (the `f64` [`proportion_interval`] rounds).  With
@@ -1456,9 +1516,13 @@ fn binomial_tail_root(
 /// The Clopper–Pearson endpoints cost a Sturm isolation and a
 /// factorisation over ℤ of a degree-`n` polynomial: exact, but `O(n)`
 /// degree root isolation with coefficients around `C(n, n/2) 2ⁿ`, so
-/// tens of trials are the practical range (beyond `n ≈ 40` the crate may
-/// not certify the factorisation and reports [`SymplexError::ComputationFailed`]).
-/// For large `n` use the `f64` function.
+/// tens of trials are the practical range: about 2 s at `n = 90` (release
+/// build), and more than [`CLOPPER_PEARSON_EXACT_MAX_TRIALS`] trials are
+/// refused at once with [`SymplexError::ComputationFailed`] (before 0.57
+/// `n = 435 511` built the polynomial and hung).  For large `n` use the
+/// `f64` function, whose ends come from the Beta quantiles.  At `k = 0` and
+/// `k = n` the tail is a single power and the free end has the closed form
+/// `1 − (α/2)^{1/n}` / `(α/2)^{1/n}` for any `n` (a `RootOf` before 0.57).
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -1489,7 +1553,7 @@ fn binomial_tail_root(
 /// `method = Jeffreys` (its ends are Beta quantiles at half-integer
 /// shapes, which are not algebraic numbers);
 /// [`SymplexError::ComputationFailed`] if a Clopper–Pearson root cannot be
-/// named (see above).
+/// named or `trials > CLOPPER_PEARSON_EXACT_MAX_TRIALS` (see above).
 pub fn proportion_interval_exact(
     ctx: &Context,
     successes: usize,
@@ -1515,6 +1579,26 @@ pub fn proportion_interval_exact(
         }
     }
     let half_alpha = (Q::one() - confidence) / qu(2);
+    // k = 0 or k = n: the tail is a single power, (1 − p)ⁿ = α/2 or pⁿ = α/2.
+    let boundary = ctx
+        .from_ratio(half_alpha.clone())
+        .pow(&(ctx.one() / ex_usize(ctx, trials)));
+    if successes == 0 {
+        return Ok(Interval::closed(ctx.zero(), ctx.one() - boundary));
+    }
+    if successes == trials {
+        return Ok(Interval::closed(boundary, ctx.one()));
+    }
+    if trials > CLOPPER_PEARSON_EXACT_MAX_TRIALS {
+        return Err(SymplexError::computation_failed(
+            OP,
+            format!(
+                "the exact Clopper–Pearson ends are roots of degree-{trials} polynomials; \
+                 more than {CLOPPER_PEARSON_EXACT_MAX_TRIALS} trials are not attempted \
+                 (use proportion_interval)"
+            ),
+        ));
+    }
     let lower = if successes == 0 {
         ctx.zero()
     } else {

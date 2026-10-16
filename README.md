@@ -1025,7 +1025,7 @@ Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen
 
 ## Requirements
 
-Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~14,000 tests (`cargo nextest run`), ~1,300 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.56, with a per-file ratchet); `fuzz/` checks properties nightly.
+Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~14,000 tests (`cargo nextest run`), ~1,300 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.56, with a per-file ratchet); `fuzz/` checks properties nightly (13 targets, including the symbolic distributions), and a nightly statistics oracle ([`scripts/stats_oracle/`](scripts/stats_oracle/README.md)) compares the distributions, hypothesis tests and least-squares fits with scipy, statsmodels and mpmath.
 
 ## License
 
