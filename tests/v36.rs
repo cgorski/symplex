@@ -100,6 +100,16 @@ mod v36_s15p3_queues;
 mod v36_s15p4_stats;
 #[path = "v36/v36_s15p5_functions.rs"]
 mod v36_s15p5_functions;
+#[path = "v36/v36_s15q1_silent.rs"]
+mod v36_s15q1_silent;
+#[path = "v36/v36_s15q2_stats.rs"]
+mod v36_s15q2_stats;
+#[path = "v36/v36_s15q3_consistency.rs"]
+mod v36_s15q3_consistency;
+#[path = "v36/v36_s15q4_perf.rs"]
+mod v36_s15q4_perf;
+#[path = "v36/v36_s15q5_functions.rs"]
+mod v36_s15q5_functions;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
