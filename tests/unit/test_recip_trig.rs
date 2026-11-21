@@ -92,6 +92,16 @@ fn sinc_is_sin_over_x() {
     assert_eq!(x.sinc(), &x.sin() / &x);
 }
 
+#[test]
+fn sinc_at_zero_is_one_not_nan() {
+    // Documented `sinc(0) = 1`; used to build `sin(0)/0 = NaN`.
+    let ctx = Context::new();
+    assert_eq!(ctx.int(0).sinc(), ctx.one());
+    assert_eq!(ctx.parse("0.0").unwrap().sinc(), ctx.one());
+    // Nonzero numeric arguments are unchanged.
+    assert_eq!(ctx.parse("pi").unwrap().sinc(), ctx.int(0));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Eval at known points
 // ═══════════════════════════════════════════════════════════════════════════

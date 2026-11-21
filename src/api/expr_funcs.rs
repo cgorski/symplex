@@ -405,6 +405,11 @@ impl Expr<Numeric> {
     /// Cardinal sine: `sinc(x) = sin(x)/x`, with `sinc(0) = 1` (requires limit).
     #[must_use]
     pub fn sinc(&self) -> Ex {
+        // Removable singularity: a literally-zero argument would build
+        // `sin(0)/0 = 0/0 = NaN`, but the limit (and the documented value) is 1.
+        if self.is_zero_structural() {
+            return self.context().one();
+        }
         &self.sin() / self
     }
 
