@@ -6,7 +6,6 @@ rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
 description = "Exact symbolic mathematics for Rust: calculus, summation, solving, linear algebra, transforms, compile-time dimensional analysis, and Rust/C code generation"
 repository = "https://github.com/cgorski/symplex"
-homepage = "https://github.com/cgorski/symplex"
 documentation = "https://docs.rs/symplex"
 readme = "README.md"
 keywords = ["symbolic", "math", "cas", "codegen", "robotics"]

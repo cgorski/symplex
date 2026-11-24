@@ -110,8 +110,20 @@ mod v36_s15q3_consistency;
 mod v36_s15q4_perf;
 #[path = "v36/v36_s15q5_functions.rs"]
 mod v36_s15q5_functions;
+#[path = "v36/v36_s15r1_zero_powers.rs"]
+mod v36_s15r1_zero_powers;
+#[path = "v36/v36_s15r2_limits.rs"]
+mod v36_s15r2_limits;
+#[path = "v36/v36_s15r3_bounds.rs"]
+mod v36_s15r3_bounds;
+#[path = "v36/v36_s15r4_values.rs"]
+mod v36_s15r4_values;
+#[path = "v36/v36_s15r5_stats.rs"]
+mod v36_s15r5_stats;
 #[path = "v36/v36_s16_fuzz_findings.rs"]
 mod v36_s16_fuzz_findings;
+#[path = "v36/v36_s16r6_slow.rs"]
+mod v36_s16r6_slow;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]
