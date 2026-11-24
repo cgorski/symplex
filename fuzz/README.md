@@ -123,3 +123,16 @@ $B/fuzz_integrate -max_total_time=30 -timeout=20 \
 Then: reproduce the finding as a regression test in `tests/` (with the oracle
 value cited, as everywhere else), fix the root cause, rebuild, replay the
 artifact, and only then escalate the bursts (30 s → 2 min → 5 min).
+
+### Slow inputs found by the Fuzz run on the 0.60.0 release commit (open)
+
+All three take the same time in 0.59.0; none is a wrong value.  Times are
+for the plain fuzz build (`-s none -O -a`) on a 64-core x86-64 machine; CI
+builds with AddressSanitizer on a shared runner (about 7× slower, 30 s
+limit).
+
+| Input (base64) | Case | Time |
+|---|---|---|
+| `KgsBCjDsDjVADouL` (the timeout) | `FDistribution(11, d₂ ≈ 2.2·10⁻²⁴⁹)`, `mgf(−1/8)` | 5.5 s |
+| `uymICuU9PQ==` | `StudentT(ν ≈ 6.6·10²³⁸)` against its `numdist` kernel | 5.4 s |
+| `AAoAAADOzs7Ozis=` | `StudentT(1)` truncated to `±3.2·10²⁹⁹`, density checks | minutes |

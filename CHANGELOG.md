@@ -8,6 +8,17 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Known issues
+
+- Found by the Fuzz run on the 0.60.0 release commit, slow and not wrong,
+  and equally slow in 0.59.0 (inputs and times in `fuzz/README.md`): the
+  moment generating function of `FDistribution(11, d₂)` with
+  `d₂ ≈ 2.2·10⁻²⁴⁹` at `−1/8` takes 5.5 s (over the 30 s limit of the
+  nightly run under the sanitizer: `fuzz_stats` is red on it until it is
+  fast or refused fast); the comparison of `StudentT(ν ≈ 6.6·10²³⁸)` with
+  its double-precision kernel takes 5.4 s; the density checks of a Cauchy
+  law truncated to `±3.2·10²⁹⁹` take minutes.
+
 ## [0.60.0] - 2026-11-24
 
 A reorganisation of the source, and seven fixes.  The eight largest source
