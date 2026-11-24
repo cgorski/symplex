@@ -75,7 +75,7 @@ Operations where "unchanged" or "unevaluated" is a valid result. These never fai
 # let expr = x.sin();
 expr.simplify();       // might return input unchanged
 expr.expand();         // might return input unchanged
-expr.eval();           // sin(pi/4) → sqrt(2)/2; symbolic expr → unchanged
+expr.eval();           // sin(pi/4) → 1/2*sqrt(2); symbolic expr → unchanged
 expr.diff(&x);         // might return Derivative(expr, x) if it can't differentiate
 expr.integrate(&x);    // might return Integral(expr, x) if no closed form
 expr.limit(&x, &a);    // might return Limit(expr, x, a)
@@ -98,7 +98,7 @@ let anti = expr.try_integrate(&x)?;
 # Ok::<(), SymplexError>(())
 ```
 
-The `try_` variant calls the base method, then checks `has_unevaluated()`. There is zero code duplication between the two.
+The `try_` variant runs the same engine as the base method and then refuses any result for which `has_unevaluated()` is true, so the two cannot disagree. It also refuses a result that only carries an unevaluated node over from its input: `Sum(sin(k^2), k, 1, m)*exp(-t)` has the Laplace transform `Sum(sin(k^2), k=1..m)/(s + 1)` from `laplace`, and `try_laplace` returns `Err`.
 
 Available: `try_diff`, `try_integrate`, `try_integrate_definite`, `try_limit`, `try_limit_left`/`right`/`dir`, `try_series`, `try_series_at_infinity`, `try_maclaurin`, `try_summation`, `try_product_over`, `try_laplace`, `try_inverse_laplace`, `try_residue`, `try_gosper_sum`, `try_solve_ode`, `try_solve_gt`/`ge`/`lt`/`le`.
 
@@ -125,11 +125,11 @@ expr.integrate_numeric(&x, &a, &b);   // Err if the quadrature does not converge
 
 Solvers whose failure is a mathematical fact also use `Result`: `solve` returns `Err(InfiniteSolutions)` for an identity and `Err(NoSolution)` for a contradiction or range violation (`|x| = −1`, or `sin x = 2` for an `x` declared real — a symbol without assumptions is complex, and `sin x = 2` has the roots `asin 2`, `π − asin 2`); `linsolve` returns `Ok(LinearSolution::Inconsistent)` because inconsistency is a legitimate answer, but `Err(InvalidArgument)` for non-linear input.
 
-A list of roots from `solve` is always complete in the unknown's domain.  When only some branches could be solved — `sin(x − x⁴) = 0` (the roots of `x⁴ − x + kπ` are not all found), `|x| = 1` for a complex `x` (a circle, not two points) — `solve` returns `Err(ComputationFailed)` naming the roots it found, and `solve_as_set` returns them united with a `ConditionSet` for the rest.  An answer is never "the part we could do" presented as the whole.
+A list of roots from `solve` is meant to be complete in the unknown's domain: inside the solvers every step returns `Complete`, `Partial` or `Refused` (the `Solutions` type), and only `Complete` becomes `Ok`.  When only some branches could be solved — `sin(x − x⁴) = 0` (the roots of `x⁴ − x + kπ` are not all found), `|x| = 1` for a complex `x` (a circle, not two points) — `solve` returns `Err(ComputationFailed)` naming the roots it found, and `solve_as_set` returns them united with a `ConditionSet` for the rest, so that "the part we could do" is not presented as the whole.  An empty list means that the equation has roots, none of them in the declared domain of the unknown (`x + 3` for a positive `x`).
 
 ### Three-valued answers and what counts as a proof
 
-A query that cannot be decided says so (`None`) rather than guessing, and a decision is made only on a proof: exact algebra (canonical forms, minimal polynomials, identities such as `Γ(p)Γ(1 − p) = π/sin πp`) or certified numerics (an error-bounded evaluation that excludes 0).  A floating-point value, a number that is 0 only to the working precision, or zeros at random sample points may guide which method to try, but never decide an answer: `lim_{x→∞} (e^{−10⁻¹⁵⁰} − 1)·x` is `−∞` (that constant is −10⁻¹⁵⁰, not 0), and a limit or series whose leading coefficient cannot be decided is refused.  Internally these answers are `symplex::base::truth::Truth` (three-valued, with no implicit reading of "unknown") and `SignSet`; the public queries return `Option<bool>`.
+A query that cannot be decided says so (`None`) rather than guessing, and a decision is made only on a proof: exact algebra (canonical forms, minimal polynomials, identities such as `Γ(p)Γ(1 − p) = π/sin πp`) or certified numerics (an error-bounded evaluation that excludes 0).  A floating-point value, a number that is 0 only to the working precision, or zeros at random sample points may guide which method to try, but are not meant to decide an answer (a rule kept by review and by a ratchet that counts the float comparisons left in the source, `tests/unit/test_float_evidence.rs`; the remaining ones are listed there with their reasons): `lim_{x→∞} (e^{−10⁻¹⁵⁰} − 1)·x` is `−∞` (that constant is −10⁻¹⁵⁰, not 0), and a limit or series whose leading coefficient cannot be decided is refused.  Internally these answers are `symplex::base::truth::Truth` (three-valued, with no implicit reading of "unknown") and `SignSet`; the public queries return `Option<bool>`.
 
 ### Pattern 4: Queries → `Option`
 
@@ -171,7 +171,7 @@ matrix.minor(0, 0);     // Err if out of range (the sub-matrix is minor_matrix)
 
 ## Unevaluated Forms
 
-When symplex cannot compute a closed-form result, it returns an unevaluated symbolic node. This is a deliberate design choice — the library never returns a wrong answer or silently drops a computation.
+When symplex cannot compute a closed-form result, it returns an unevaluated symbolic node. This is a deliberate design choice: an unevaluated node says "not computed", where the alternatives would be a guessed answer or a silently dropped computation.
 
 ```rust
 # use symplex::prelude::*;
@@ -183,7 +183,7 @@ let result = expr!(ctx, x^x).integrate(&x);
 println!("{result}");   // Integral(x^x, x)
 ```
 
-The expression `Integral(x^x, x)` is not an error — it is a truthful representation of the mathematical object "the integral of x^x with respect to x." It can be:
+The expression `Integral(x^x, x)` is not an error — it stands for the mathematical object "the integral of x^x with respect to x." It can be:
 
 - Displayed as text or LaTeX
 - Substituted into larger expressions
@@ -197,9 +197,9 @@ Common unevaluated forms:
 | `Derivative(f, x)` | Derivative that couldn't be computed |
 | `Integral(f, x)` | Antiderivative not found |
 | `Integral(f, x, a, b)` | Definite integral that could not be decided (`DefiniteIntegral` node; `eval_f64` evaluates it numerically) |
-| `Limit(f, x, a)` | Limit couldn't be determined (including a two-sided limit whose one-sided limits differ) |
+| `Limit(f, x, a)` | Limit couldn't be determined (including a two-sided limit whose one-sided limits differ, and an expression that has no value near the point, such as `x^2*expint(1, 0)`) |
 | `Series(f, x, a, n)` | Series expansion failed |
-| `Sum(f, k, a, b)` / `Product_(f, k, a, b)` | No closed form for the sum / product |
+| `Sum(f, k=a..b)` / `Product(f, k=a..b)` | No closed form for the sum / product |
 | `LaplaceTransform(f, t, s)` | Not in the Laplace table |
 | `re(z)`, `im(z)`, `conjugate(z)`, `arg(z)` | Realness of `z` unknown |
 | `stirling2(n, k)` | Stirling number with symbolic arguments |
@@ -220,7 +220,7 @@ let config = EvalConfig {
 let ctx = Context::with_config(config);
 ```
 
-When a computation exceeds these limits, the result stays in unevaluated form rather than consuming unbounded memory. For example, `2^5000` with `max_pow_exponent = 1000` remains as `2^5000` (a `Pow` node) instead of computing a 1,505-digit number.
+When a computation exceeds these limits, the result stays in unevaluated form rather than consuming unbounded memory. For example, `2^5000` with `max_pow_exponent = 1000` remains as `2^5000` (a `Pow` node) instead of computing a 1,506-digit number.
 
 ## Assumptions
 

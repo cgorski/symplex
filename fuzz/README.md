@@ -65,7 +65,7 @@ instead of cancelling the job.
 
 `fuzz_stats` has three temporary skips.  Each keeps a known slow path of
 the library out of the nightly run, so that the run reports new findings;
-remove each skip with its fix.  All three are still in the harness at 0.59:
+remove each skip with its fix.  All three are still in the harness at 0.60:
 
 - It does not transform a lattice of more than 20,000 atoms into a table
   (`MAX_TRANSFORMED_ATOMS`): the table costs one certified evaluation per
@@ -86,18 +86,19 @@ remove each skip with its fix.  All three are still in the harness at 0.59:
 The nightly runs on the tree before 0.58 found no wrong answer, only inputs
 that are right and slow: seconds in a fuzz build without the sanitizer, and
 CI (AddressSanitizer on a shared runner, several times slower) stops an
-input after 30 s.  These are the ones 0.58 left open, and what 0.59 did.
-The times are those of the fuzz build without the sanitizer at 0.58, then
-of a release build (for `fuzz_evalf`, the five evaluations of its check):
+input after 30 s.  These are the ones 0.58 left open, and what 0.59 and
+0.60 did.  The times are those of the fuzz build without the sanitizer at
+0.58, then of a release build (for `fuzz_evalf`, the five evaluations of
+its check):
 
-| Input | Fuzz build, 0.58 | Release build | At 0.59 |
+| Input | Fuzz build, 0.58 | Release build | State at 0.60 |
 |---|---|---|---|
-| `fuzz_calculus` `bc61d72d0ea7`: `limit(abs((x − 1)^tanh(x − 1))^(x − 1), x, 1, −)`, a refusal | 5.6 s | 1.2 s → 0.05 s | **fixed** (the same refusal, at once) |
-| `fuzz_evalf`: `polylog(−3/2, −1 + 10⁻⁷⁰)` | 5.1 s | 0.91 s → 0.07 s | **fixed** |
-| `fuzz_evalf`: `floor(erfc(√2) − 1 + erf(√2))` | 7 s | refused after 1.0 s → `0` in 0.01 s | **fixed** |
-| `fuzz_evalf`: `sinh(W(−1/e + 3·10⁻³⁰⁰))` | 3.8 s | 0.42 s → 0.01 s | **fixed** |
-| `fuzz_evalf`: `zeta(−2 + 10⁻³⁰⁰)` | 2.7 s | 0.44 s → 0.005 s | **fixed** |
-| `fuzz_calculus` `c9feedf1241f`: `series(atanh(π^x + x^(3/2)), x, 1, 4)`, right | 6.7 s | 1.8 s | open |
+| `fuzz_calculus` `bc61d72d0ea7`: `limit(abs((x − 1)^tanh(x − 1))^(x − 1), x, 1, −)`, a refusal | 5.6 s | 1.2 s → 0.05 s | **fixed** in 0.59 (the same refusal, at once) |
+| `fuzz_evalf`: `polylog(−3/2, −1 + 10⁻⁷⁰)` | 5.1 s | 0.91 s → 0.07 s | **fixed** in 0.59 |
+| `fuzz_evalf`: `floor(erfc(√2) − 1 + erf(√2))` | 7 s | refused after 1.0 s → `0` in 0.01 s | **fixed** in 0.59 |
+| `fuzz_evalf`: `sinh(W(−1/e + 3·10⁻³⁰⁰))` | 3.8 s | 0.42 s → 0.01 s | **fixed** in 0.59 |
+| `fuzz_evalf`: `zeta(−2 + 10⁻³⁰⁰)` | 2.7 s | 0.44 s → 0.005 s | **fixed** in 0.59 |
+| `fuzz_calculus` `c9feedf1241f`: `series(atanh(π^x + x^(3/2)), x, 1, 4)`, right | 6.7 s | 1.83 s → 0.001 s | **fixed** in 0.60 (the same expansion; built as CI builds the target, with AddressSanitizer, 57 s → 0.5 s) |
 | `fuzz_stats`: `√X` of a 100,000-sided die, the transform into a table | 5.5 s | 1.4 s | open; kept out by `MAX_TRANSFORMED_ATOMS` |
 | `fuzz_stats`: `Hypergeometric(2000000, 1875000, 1875000)`, whose tails are sums of 125,001 masses | a timeout: seconds per tail, minutes per quantile | — | open; kept out by `tails_are_long_sums` |
 | `fuzz_stats`: `integrate_numeric((x − μ)·f(x), 0, ∞)` for `LogNormal(0, 8π²/3)`, a refusal | 5.1 s | — | open; no longer asked (the mean is above `10⁸`) |

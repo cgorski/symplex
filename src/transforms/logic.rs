@@ -185,8 +185,9 @@ fn fold_rel(arena: &mut Arena, rel: Rel) -> ExprId {
 /// relation between them stays: up to 0.41 `i·π > ln(−1)` was folded to
 /// `False`, `i·π ≥ ln(−1)` and `i·π < ln(−1) + 1` to `True`, from the
 /// order of their real difference.  Asked only of a relation about to be
-/// decided.
-fn known_nonreal(arena: &Arena, cache: &mut AssumptionCache, e: ExprId) -> bool {
+/// decided (here, and by the inequality solvers of a side or a bound they
+/// are about to place on the real line).
+pub(crate) fn known_nonreal(arena: &Arena, cache: &mut AssumptionCache, e: ExprId) -> bool {
     use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
     if Truth::from(cache.query(arena, e, Props::EXTENDED_REAL)).is_false()
         || Truth::from(cache.query(arena, e, Props::IMAGINARY)).is_true()
@@ -1450,7 +1451,9 @@ fn restricted_domain(arena: &mut Arena, sym: ExprId) -> Option<Domain> {
         parts.push(arena.set_union(&[below, above]));
     }
     let set = match parts.len() {
-        0 => arena.universal_set,
+        // the whole real line (the universal set is not it: the set
+        // evaluator keeps `U \ A` as it is)
+        0 => arena.interval(ninf, inf, open),
         _ => {
             let meet = arena.set_intersection(&parts);
             crate::transforms::sets::simplify_set(arena, meet)
@@ -1603,17 +1606,32 @@ fn holds_admissible_integer(
 /// Are the relational pairs mutually independent and unconstrained?
 ///
 /// True when every pair `(a, b)` has `a - b` linear in a single free
-/// symbol (no restricting assumptions) that occurs in no other pair.
+/// symbol (no restricting assumptions) that occurs in no other pair, and
+/// no side that is certainly not real or real at isolated values only.
 /// Then every pair can realise each of `<`, `=`, `>` independently of the
 /// others, and propositional answers are exact.
 fn pairs_independent(arena: &mut Arena, f: &Formula) -> bool {
     let mut used: FxHashSet<ExprId> = FxHashSet::default();
+    let mut cache = AssumptionCache::new();
     for &(a, b) in &f.pair_keys {
+        // Only real sides realise `<` and `>`: a pair with a side that is
+        // certainly not real is no free choice, whatever the difference is
+        // (up to 0.59 `t + i > i` was satisfiable).
+        if known_nonreal(arena, &mut cache, a) || known_nonreal(arena, &mut cache, b) {
+            return false;
+        }
         let d = arena.sub(a, b);
         let d = crate::transforms::eval::eval(arena, d);
         let syms = crate::base::walk::free_symbols(arena, d);
         if syms.len() != 1 || !symbol_is_free(arena, syms[0]) || !used.insert(syms[0]) {
             return false;
+        }
+        // Nor is one with a side that is real at isolated values of the
+        // symbol only (`t + i > 2t + i`: nowhere).
+        for side in [a, b] {
+            if crate::transforms::inequalities::real_points(arena, side, syms[0]).is_some() {
+                return false;
+            }
         }
         match crate::poly::polybridge::expr_to_poly(arena, d, syms[0]) {
             Some(p) if p.degree() == Some(1) => {}
@@ -1718,8 +1736,11 @@ fn univariate_status(arena: &mut Arena, root: ExprId) -> Option<(bool, bool)> {
         let set = sets::reduce_inequalities(arena, &[root], var).ok()?;
         let empty = sets::is_empty(arena, set).to_option()?;
         let full = sets::is_full(arena, set).to_option()?;
-        // Only trust the answer when the set is exactly known.
-        sets::as_intervals(arena, set)?;
+        // Only trust the answer when the set is exactly known (intervals,
+        // or the universal set of a formula that holds for every value).
+        if !sets::is_exact(arena, set) {
+            return None;
+        }
         return Some((empty, full));
     }
     let [var] = syms[..] else {
@@ -1727,7 +1748,9 @@ fn univariate_status(arena: &mut Arena, root: ExprId) -> Option<(bool, bool)> {
     };
     let domain = restricted_domain(arena, var)?;
     let set = sets::reduce_inequalities(arena, &[root], var).ok()?;
-    sets::as_intervals(arena, set)?;
+    if !sets::is_exact(arena, set) {
+        return None;
+    }
     let (Domain::Reals(d) | Domain::Integers(d, _)) = domain;
     let meet = arena.set_intersection(&[d, set]);
     let inside = sets::simplify_set(arena, meet);

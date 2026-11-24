@@ -80,7 +80,7 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use ball::{Balls, CBall, Cache};
 use tracing::debug;
-use wp::{Guard, Prec, RM, Wp};
+use wp::{Guard, Prec, RM, Recurred, Summed, Wp};
 
 mod accuracy;
 mod asymsum;
@@ -1568,6 +1568,9 @@ fn eval_ball(
     w: &mut Wp<'_>,
 ) -> Result<CBall, SymplexError> {
     let prec = w.bits();
+    // What a route charges to its value is this node's (`wp.rs`, "A route's
+    // own error").
+    w.clear_own();
     // `erfinv`, `erfcinv` next to the ends of their domains, from the exact
     // complement of the argument (`cspecial.rs`; refused before 0.45).
     if let Some(r) = cspecial::inverse_erf_end(arena, arena.node(id), cache, w) {
@@ -3556,6 +3559,11 @@ fn eval_node(
             }
             debug!(prec, "evalf: li via Ei(ln x)");
             let r = arb_ei(&ln_x, w)?;
+            // `ln x` is rounded at `wp` bits and `Ei′(ln x) = x/ln x`: the
+            // value is within `x·2^(1 − wp)` of `li(x)`, whatever its size
+            // (next to its zero `1.4513…`, where up to 0.59 the 166-bit
+            // dyadic nearest the zero was wrong from the 28th digit of 30).
+            w.charge(accuracy::part_lg(&val.0) + 1.0 - wp as f64);
             Ok((r, BigFloat::new(prec)))
         }
         ExprNode::Zeta(inner) => {

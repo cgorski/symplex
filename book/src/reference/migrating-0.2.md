@@ -1,5 +1,7 @@
 # Migrating from 0.1 to 0.2
 
+> *Historical page: it describes the upgrade named in the title as it was published. Some of the names on the "after" side have changed again since — see [What's New since 0.13](../whats-new-since-0.13.md) and the CHANGELOG.*
+
 symplex 0.2 is a breaking release. Most changes are mechanical (a `Result` where there was an `Option`, a dropped dummy argument); a few change *results* because 0.1 was wrong. The full list is in the [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md#breaking); this page shows the code.
 
 ## `compile` returns `Result`

@@ -764,3 +764,243 @@ fn solve_with_rational_entries() {
     assert_eq!(format!("{}", x.get(0, 0)), "1/2");
     assert_eq!(format!("{}", x.get(1, 0)), "1/2");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ratchet: root lists that may be incomplete (session 17, T2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Ratchet over `src/`: the places that read a list of roots which may not
+/// be all of them.  See CONTRIBUTING.md, "Type rules that keep bug classes
+/// out" ("a list of roots is complete or says it is not"), and
+/// `Spectrum` in `src/domains/matrix/eigen.rs`.
+///
+/// Up to 0.59 `Matrix::eigenvals` returned the eigenvalues it had found as a
+/// plain list (B-C11-01): the two helpers behind it called the public
+/// convenience `solve_or_empty`, which turns every refusal into `[]`.  The
+/// eigenvalues now travel as a `Spectrum` (`Complete` or `Partial`), and
+/// this test counts, per file, the four constructs through which a
+/// possibly incomplete list can still be read:
+///
+/// | column | construct | what it loses |
+/// |---|---|---|
+/// | `known` | a call of `solve::known_real_roots` | a refusal, an identity and conditional roots all become `[]` (the documented policy of the crate's root *searches*) |
+/// | `claimed` | a call of `Solutions::claimed_points` outside `transforms/solve/outcome.rs` | a partial outcome gives its points, a refusal `[]` |
+/// | `or_empty` | a call of `solve_or_empty` (not its definitions) | every error becomes `[]`; the target is 0 in library code — the one left is the public `Equation::solve_or_empty` delegating to `Ex::solve_or_empty` |
+/// | `partial` | the name `Spectrum::Partial` outside `domains/matrix/eigen.rs` | a consumer that takes the eigenvalues found although some are missing, and says why that is enough |
+///
+/// The counts are exact: a file may not gain a site (use
+/// `Spectrum::all`, `Solutions::points_if_complete`,
+/// `solve_classified*` and match the outcome), and a file that loses one
+/// must have its entry tightened; the failure message prints the table to
+/// paste.  Comment lines and `#[cfg(test)] mod` test modules are not
+/// scanned.
+#[test]
+fn partial_root_lists_are_not_read_as_complete() {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    /// Per-file counts `[known, claimed, or_empty, partial]`; paths relative
+    /// to `src/`.  Fixed at the base of wave 18 (aceccb8 + T2): 16 `known`
+    /// in 13 files, 10 `claimed` in 6, 1 `or_empty`, 1 `partial`.
+    const ALLOWLIST: &[(&str, [usize; 4])] = &[
+        // The public `Equation::solve_or_empty`, delegating to `Ex::solve_or_empty`.
+        ("api/eq.rs", [0, 0, 1, 0]),
+        ("base/arena.rs", [1, 0, 0, 0]),
+        ("calculus/calculus_util.rs", [1, 0, 0, 0]),
+        ("calculus/definite/branch_cuts.rs", [1, 0, 0, 0]),
+        ("calculus/limit.rs", [1, 0, 0, 0]),
+        ("calculus/ode/systems.rs", [1, 0, 0, 0]),
+        ("calculus/risch/log_to_real.rs", [1, 0, 0, 0]),
+        ("calculus/risch/mod.rs", [1, 0, 0, 0]),
+        ("calculus/summation.rs", [1, 0, 0, 0]),
+        // `StateSpace::is_stable`: one pole proved in the closed right
+        // half-plane decides "not stable" whatever the missing poles are;
+        // "stable" is never concluded from a partial spectrum.
+        ("domains/control.rs", [0, 0, 0, 1]),
+        ("poly/polysys.rs", [0, 2, 0, 0]),
+        ("transforms/apart.rs", [1, 0, 0, 0]),
+        ("transforms/inequalities.rs", [1, 2, 0, 0]),
+        ("transforms/integrate.rs", [1, 0, 0, 0]),
+        ("transforms/integrate/piecewise.rs", [3, 0, 0, 0]),
+        ("transforms/integrate/special.rs", [2, 0, 0, 0]),
+        ("transforms/sets.rs", [0, 2, 0, 0]),
+        ("transforms/solve.rs", [0, 2, 0, 0]),
+        ("transforms/solve/declared.rs", [0, 1, 0, 0]),
+        ("transforms/solve/rational_exp.rs", [0, 1, 0, 0]),
+    ];
+
+    /// The counts of one line (trimmed) of the file `rel`.
+    fn count_line(rel: &str, line: &str) -> [usize; 4] {
+        if line.starts_with("//") {
+            return [0; 4];
+        }
+        let n = |needle: &str| line.matches(needle).count();
+        [
+            if line.contains("fn known_real_roots") {
+                0
+            } else {
+                n("known_real_roots(")
+            },
+            if rel == "transforms/solve/outcome.rs" {
+                0
+            } else {
+                n(".claimed_points()")
+            },
+            if line.contains("fn solve_or_empty") {
+                0
+            } else {
+                n("solve_or_empty(")
+            },
+            if rel == "domains/matrix/eigen.rs" {
+                0
+            } else {
+                n("Spectrum::Partial")
+            },
+        ]
+    }
+
+    /// The lines of a source file before its `#[cfg(test)] mod` test module.
+    fn library_lines(text: &str) -> Vec<&str> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut end = lines.len();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.trim_start().starts_with("#[cfg(test)]") {
+                continue;
+            }
+            let item = lines[i + 1..]
+                .iter()
+                .map(|l| l.trim_start())
+                .find(|l| !l.starts_with("#["));
+            if item.is_some_and(|l| l.starts_with("mod ") || l.starts_with("pub(crate) mod ")) {
+                end = i;
+                break;
+            }
+        }
+        lines.into_iter().take(end).collect()
+    }
+
+    // The detection itself.
+    assert_eq!(
+        count_line("a.rs", "let r = known_real_roots(arena, e, x);"),
+        [1, 0, 0, 0]
+    );
+    assert_eq!(
+        count_line(
+            "a.rs",
+            "pub(crate) fn known_real_roots(arena: &mut Arena) {"
+        ),
+        [0; 4]
+    );
+    assert_eq!(
+        count_line("a.rs", "// known_real_roots(arena, e, x) in a comment"),
+        [0; 4]
+    );
+    assert_eq!(
+        count_line("a.rs", "let p = outcome.claimed_points();"),
+        [0, 1, 0, 0]
+    );
+    assert_eq!(
+        count_line("transforms/solve/outcome.rs", "self.claimed_points()"),
+        [0; 4]
+    );
+    assert_eq!(
+        count_line("a.rs", "let roots = f.solve_or_empty(var);"),
+        [0, 0, 1, 0]
+    );
+    assert_eq!(
+        count_line(
+            "a.rs",
+            "pub fn solve_or_empty(&self, var: &Ex) -> Vec<Ex> {"
+        ),
+        [0; 4]
+    );
+    assert_eq!(
+        count_line("a.rs", "Spectrum::Partial { found, .. } => found,"),
+        [0, 0, 0, 1]
+    );
+    assert_eq!(
+        count_line(
+            "domains/matrix/eigen.rs",
+            "Spectrum::Partial { found, missing }"
+        ),
+        [0; 4]
+    );
+    assert_eq!(
+        library_lines("fn a() {}\n#[cfg(test)]\nmod tests {\n}\n").len(),
+        1
+    );
+
+    let src = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut dirs = vec![src.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("readable directory entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+
+    let mut counts: BTreeMap<String, [usize; 4]> = BTreeMap::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(src)
+            .expect("file is under src/")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let mut total = [0usize; 4];
+        for line in library_lines(&text) {
+            let c = count_line(&rel, line.trim());
+            for (t, c) in total.iter_mut().zip(c) {
+                *t += c;
+            }
+        }
+        if total != [0; 4] {
+            counts.insert(rel, total);
+        }
+    }
+
+    let allowed: BTreeMap<&str, [usize; 4]> = ALLOWLIST.iter().copied().collect();
+    let names = ["known", "claimed", "or_empty", "partial"];
+    let mut violations: Vec<String> = Vec::new();
+    for (rel, count) in &counts {
+        let allowance = allowed.get(rel.as_str()).copied().unwrap_or([0; 4]);
+        for ((found, allow), name) in count.iter().zip(allowance).zip(names) {
+            if *found > allow {
+                violations.push(format!(
+                    "{rel}: {found} `{name}` site(s), allowed {allow} — read a complete root list \
+                     or match the outcome (CONTRIBUTING.md, \"Type rules that keep bug classes \
+                     out\")"
+                ));
+            } else if *found < allow {
+                violations.push(format!(
+                    "{rel}: {found} `{name}` site(s), allowed {allow} — tighten the allowlist"
+                ));
+            }
+        }
+    }
+    for (rel, allowance) in &allowed {
+        if !counts.contains_key(*rel) {
+            violations.push(format!(
+                "{rel}: allowlisted {allowance:?} but no site found — tighten the allowlist"
+            ));
+        }
+    }
+    if !violations.is_empty() {
+        let mut report = String::from("partial-root-list ratchet failed:\n");
+        for v in &violations {
+            report.push_str(&format!("  {v}\n"));
+        }
+        report.push_str("\nper-file counts [known, claimed, or_empty, partial] to paste:\n");
+        for (rel, count) in &counts {
+            report.push_str(&format!("        (\"{rel}\", {count:?}),\n"));
+        }
+        panic!("{report}");
+    }
+}

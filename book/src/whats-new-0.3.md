@@ -1,5 +1,7 @@
 # What's New in 0.3
 
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
 symplex 0.3 is an additive release. Nothing in the public API changed signature; the [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md) has the complete list, and the [behaviour changes](#behaviour-changes) at the end of this page are the only things an upgrading program might notice.
 
 The theme of the release is **polynomials and certificates as data**. 0.2 could *tell* you that `(x + 1)² = 2(x + 1) + (x² − 1)`; 0.3 lets you *ask* for the multipliers — exactly, over ℚ, with non-negativity constraints if you need them — and hand back a proof a reader can check by expanding. Around that core sit four new public modules: `poly_ex` (the `Poly` view), `linprog` (exact simplex), `normalforms` (Hermite and Smith forms over ℤ) and `optimize` (deterministic `f64` root finding, minimisation and fitting).

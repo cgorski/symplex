@@ -1,6 +1,8 @@
 # What's New in 0.7
 
-symplex 0.7.0 is a **breaking** release whose theme is the shape of the API rather than new mathematics: one result type for every certificate search, a `Certificate` trait, option structs that can grow without breaking anyone, a library that is verified not to panic, and a much faster exact polytope core. [Migrating from 0.6 to 0.7](./reference/migrating-0.7.md) lists every change with its one-line fix; the [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md) has the details.
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
+symplex 0.7.0 is a **breaking** release whose theme is the shape of the API rather than new mathematics: one result type for every certificate search, a `Certificate` trait, option structs that can grow without breaking anyone, a library whose source is scanned for panicking constructs by a ratchet test, and a much faster exact polytope core. [Migrating from 0.6 to 0.7](./reference/migrating-0.7.md) lists every change with its one-line fix; the [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md) has the details.
 
 ## One `Outcome` for every prover
 
@@ -27,7 +29,7 @@ under the familiar aliases `BoxOutcome`, `HalfLineOutcome`, `PolyhedronOutcome`,
 
 `LeanOpts`, `PolyhedronOpts` and `SosOpts` are `#[non_exhaustive]`: construct them with `::default()` and the `with_*` builders (all three now have one per field), or assign fields on a `mut` default. Adding an option is no longer a breaking change — the 0.4 → 0.5 `LeanOpts` episode does not repeat.
 
-## Verified not to panic
+## A ratchet against panics
 
 `CONTRIBUTING.md` now spells out a practical no-panic policy (validate at the boundary, `Result` for failure, `Option` for absence, `debug_assert!` for invariants, `std`-style `try_` siblings for indexing) and a **ratchet test** enforces it over `src/`: 108 `unwrap`/`expect`/`unreachable!` sites in library code were removed, one of them a reachable panic (`wronskian` on an expression-budget overflow), and the allowlist is down to the two documented logic errors, the arena's `u32` index conversion and a compile-time assertion macro. The methods that could fail on user-supplied shapes now say so in their types (`StateSpace::{controllability_matrix, observability_matrix, discretize_zoh, riccati_residual, ackermann}`, `robotics::homogeneous`, the `dynamics` functions); `char_poly` and `wronskian` return NaN on an ill-shaped model and have `try_` siblings.
 

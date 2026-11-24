@@ -23,11 +23,11 @@ fn main() {
 }
 ```
 
-`expand()` no longer splits `(x·y)^a` for symbols of unknown sign — that identity fails over ℂ. `expand_power_base(true)` forces it when you know it is safe.
+`expand()` does not split `(x·y)^a` for symbols of unknown sign — that identity fails over ℂ. `expand_power_base(true)` forces it when you know it is safe.
 
 ## Factoring
 
-Univariate factoring over ℤ uses **Berlekamp–Zassenhaus** (any degree; 0.1 was limited to small Kronecker degrees). Multivariate factoring uses Kronecker substitution. `factor_list` returns the content and `(factor, multiplicity)` pairs.
+Univariate factoring over ℤ uses **Berlekamp–Zassenhaus** (any degree). Multivariate factoring uses Kronecker substitution, or evaluation and Hensel lifting where the substituted polynomial would be too large; a factorisation is returned only after it has been multiplied back. `factor_list` returns the content and `(factor, multiplicity)` pairs.
 
 ```rust
 use symplex::prelude::*;
@@ -68,7 +68,7 @@ fn main() {
 
 ### Rational normal form: `ratsimp`
 
-New in 0.3, `ratsimp` is the canonical form for rational expressions in *all* variables at once: a single fraction `P/Q` with common polynomial factors cancelled (multivariate GCD), integer-primitive numerator and denominator, and a positive leading coefficient in `Q`. Non-rational subexpressions (`sin x`, `π`, `√x`) are treated as opaque indeterminates, exactly like SymPy's `cancel`. `simplify_rational` now produces the same normal form, and `solve` uses it for solutions with symbolic coefficients.
+`ratsimp` is the canonical form for rational expressions in *all* variables at once: a single fraction `P/Q` with common polynomial factors cancelled (multivariate GCD), integer-primitive numerator and denominator, and a positive leading coefficient in `Q`. Non-rational subexpressions (`sin x`, `π`, `√x`) are treated as opaque indeterminates, exactly like SymPy's `cancel`. `simplify_rational` produces the same normal form, and `solve` uses it for solutions with symbolic coefficients.
 
 ```rust
 use symplex::prelude::*;
@@ -96,7 +96,7 @@ fn main() {
 
 ## Polynomial algebra on `Ex`
 
-New in 0.2 (rational coefficients unless noted): `resultant`, `discriminant`, `sqf_list`, `square_free_part`, `is_squarefree`, `poly_div`/`poly_quo`/`poly_rem`, `poly_gcdex`, `poly_gcd`/`poly_lcm`, `decompose`, `content_primitive`, `leading_coeff`, `monic`, `poly_compose`, `poly_shift`, `poly_reverse`, `poly_interpolate`, `count_real_roots`, `real_roots_isolate`, `nroots`. All return `Option`/`Result` and give `None` for non-polynomial input. Since 0.3, `degree`, `coeffs`, `coeff`, `leading_coeff` and `is_polynomial` also accept symbolic (parameter) coefficients, and `poly_is_nonnegative_on` / `poly_is_positive_on` decide the sign of a polynomial on an interval exactly (see [Polynomials as Data](./polynomials.md#sign-of-a-polynomial-on-an-interval)).
+The methods (rational coefficients unless noted): `resultant`, `discriminant`, `sqf_list`, `square_free_part`, `is_squarefree`, `poly_div`/`poly_quo`/`poly_rem`, `poly_gcdex`, `poly_gcd`/`poly_lcm`, `decompose`, `content_primitive`, `leading_coeff`, `monic`, `poly_compose`, `poly_shift`, `poly_reverse`, `poly_interpolate`, `count_real_roots`, `real_roots_isolate`, `nroots`. All return `Option`/`Result` and give `None` for non-polynomial input. `degree`, `coeffs`, `coeff`, `leading_coeff` and `is_polynomial` also accept symbolic (parameter) coefficients, and `poly_is_nonnegative_on` / `poly_is_positive_on` decide the sign of a polynomial on an interval exactly (see [Polynomials as Data](./polynomials.md#sign-of-a-polynomial-on-an-interval)).
 
 ```rust
 use symplex::prelude::*;
@@ -133,13 +133,12 @@ fn main() {
 }
 ```
 
-Since 0.18 these scale to high degree: root isolation and counting
+These scale to high degree: root isolation and counting
 evaluate signs in `ℤ[x]` and `real_roots` / `root_of` start the numeric
 root finder behind a `RootOf` index from the Newton polygon of the
 coefficients, so the root in `(0, 1)` of a degree-50 binomial-tail
-polynomial (`stats::estimation::proportion_interval_exact`) is named in
-a few seconds even in a debug build — previously `root_of` gave `None`
-at degree ≥ 40.  `root_of` names only the requested root, so prefer it to
+polynomial (`stats::estimation::proportion_interval_exact`) can be
+named.  `root_of` names only the requested root, so prefer it to
 `real_roots(&x)[k]` for one root of a large polynomial.  Should the
 factorisation over ℤ not be certified complete (an exhausted
 recombination budget, not a matter of degree), `RootOf(g, k)` names a

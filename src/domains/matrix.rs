@@ -55,7 +55,7 @@ use num_bigint::BigInt;
 use num_rational::Rational64;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 // Re-export codegen option types so users can access them from the public
 // `symplex::matrix` module (the `codegen` module itself is pub(crate)).
@@ -68,6 +68,7 @@ use crate::domains::exact_matrix::PERMANENT_MAX_DIM;
 
 mod eigen;
 mod zero_test;
+pub(crate) use eigen::Spectrum;
 use eigen::*;
 pub(crate) use zero_test::*;
 
@@ -1786,21 +1787,75 @@ impl Matrix {
     /// assert!((sum - 12.0).abs() < 1e-9); // Σλ = tr(A)
     /// ```
     ///
-    /// If the solver cannot find every root, the multiplicities sum to less
-    /// than `n` and a warning is logged.
+    /// The multiplicities sum to `n`: the list is every eigenvalue or the
+    /// call is an error.  (Up to 0.59 the roots of a factor that was not
+    /// solved were left out and a warning was logged: a 6×6 matrix with the
+    /// characteristic polynomial `(λ − 1)·(λ⁵ − a·λ − 1)` had the
+    /// eigenvalues `[(1, 1)]`.)
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = ctx.symbol("a");
+    /// let i = |k: i64| ctx.int(k);
+    /// // One block with the characteristic polynomial (λ − 2)·(λ⁵ − a·λ − 1);
+    /// // the quintic has no roots in closed form.
+    /// let m = Matrix::new(vec![
+    ///     vec![i(0), i(-1), i(0), i(0), i(0), i(2)],
+    ///     vec![i(0), i(0), i(1), i(0), i(0), i(0)],
+    ///     vec![i(0), i(0), i(0), i(1), i(0), i(0)],
+    ///     vec![i(0), i(0), i(0), i(0), i(1), i(0)],
+    ///     vec![i(1), &a + 1, i(0), i(0), i(0), i(-1)],
+    ///     vec![i(0), i(-2), i(1), i(0), i(0), i(2)],
+    /// ])
+    /// .unwrap();
+    /// assert!(matches!(
+    ///     m.eigenvals_with_multiplicity(),
+    ///     Err(SymplexError::ComputationFailed { .. })
+    /// ));
+    /// // With a number for `a` every eigenvalue has an exact form.
+    /// let ev = m.subs(&a, &ctx.int(3)).eigenvals_with_multiplicity().unwrap();
+    /// assert_eq!(ev.iter().map(|(_, k)| *k).sum::<usize>(), 6);
+    /// ```
     ///
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] if no eigenvalue could be found.
+    /// - [`SymplexError::ComputationFailed`] if the eigenvalues are not all
+    ///   found: the characteristic polynomial has a factor without roots in
+    ///   closed form (an irreducible one of degree above 4 whose
+    ///   coefficients are not rational numbers), or a multiplicity was not
+    ///   established.  The message names the eigenvalues that were found.
     pub fn eigenvals_with_multiplicity(&self) -> Result<Vec<(Ex, usize)>, SymplexError> {
+        self.spectrum()?.all("eigenvals")
+    }
+
+    /// The eigenvalues found, with their algebraic multiplicities, and
+    /// whether they are all of them ([`Spectrum`]): for a caller inside the
+    /// crate that can use a part of the spectrum (one eigenvalue proved in
+    /// the closed right half-plane decides that a system is not stable).
+    /// Everything else takes [`eigenvals_with_multiplicity`](Self::eigenvals_with_multiplicity).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if the matrix is not square, and
+    /// whatever the characteristic polynomial reports (expression swell).
+    pub(crate) fn spectrum(&self) -> Result<Spectrum, SymplexError> {
         self.require_square("eigenvals")?;
         let lam = self.fresh_symbol("lambda");
-        let pairs = self.eigen_pairs(&lam)?;
-        Ok(pairs
-            .into_iter()
-            .map(|(v, m)| (self.hide_dummy(&v, &lam), m))
-            .collect())
+        Ok(self.eigen_pairs(&lam)?.map(|v| self.hide_dummy(v, &lam)))
+    }
+
+    /// Every eigenvalue with its multiplicity, written with the dummy
+    /// `lam`, or the error of an incomplete spectrum (which names the
+    /// eigenvalues found, the dummy hidden).
+    fn complete_eigen_pairs(&self, lam: &Ex) -> Result<Vec<(Ex, usize)>, SymplexError> {
+        let spectrum = self.eigen_pairs(lam)?;
+        if spectrum.is_complete() {
+            return spectrum.all("eigenvals");
+        }
+        spectrum.map(|v| self.hide_dummy(v, lam)).all("eigenvals")
     }
 
     /// Internal: eigenvalue/multiplicity pairs expressed with the dummy `lam`.
@@ -1813,7 +1868,11 @@ impl Matrix {
     /// eigenvalues of `diag(1, 2i)` came from the quadratic formula as
     /// `√(−3 − 4i)/2 + 1/2 + i` and its conjugate, whose `A − λI` had no
     /// decidable zero pivot (no eigenvectors).
-    fn eigen_pairs(&self, lam: &Ex) -> Result<Vec<(Ex, usize)>, SymplexError> {
+    ///
+    /// The result is a [`Spectrum`]: complete when the multiplicities sum to
+    /// `n` (checked here once more for the whole matrix), partial when a
+    /// block's characteristic polynomial has a factor that was not solved.
+    fn eigen_pairs(&self, lam: &Ex) -> Result<Spectrum, SymplexError> {
         let n = self.nrows;
         if n > 1 && self.as_qmatrix().is_none() {
             let adj: Vec<Vec<usize>> = (0..n)
@@ -1825,24 +1884,18 @@ impl Matrix {
                 .collect();
             let comps = crate::base::graph::strongly_connected_components(&adj);
             if comps.len() > 1 {
-                let mut out: Vec<(Ex, usize)> = Vec::new();
+                let mut out = Spectrum::of(Vec::new(), 0);
                 for c in &comps {
-                    let pairs = if let [k] = c.as_slice() {
-                        vec![(self.rows[*k][*k].eval(), 1)]
+                    let block = if let [k] = c.as_slice() {
+                        Spectrum::of(vec![(self.rows[*k][*k].eval(), 1)], 1)
                     } else {
                         self.extract(c, c)?.eigen_pairs_irreducible(lam)?
                     };
-                    for (v, m) in pairs {
-                        match out
-                            .iter_mut()
-                            .find(|(w, _)| *w == v || pivot_is_zero(&(w.clone() - v.clone())))
-                        {
-                            Some((_, k)) => *k += m,
-                            None => out.push((v, m)),
-                        }
-                    }
+                    out = out.joined(block, |w, v| {
+                        w == v || pivot_is_zero(&(w.clone() - v.clone()))
+                    });
                 }
-                return Ok(out);
+                return Ok(out.checked_for(n));
             }
         }
         self.eigen_pairs_irreducible(lam)
@@ -1850,7 +1903,7 @@ impl Matrix {
 
     /// [`eigen_pairs`](Self::eigen_pairs) from the whole characteristic
     /// polynomial.
-    fn eigen_pairs_irreducible(&self, lam: &Ex) -> Result<Vec<(Ex, usize)>, SymplexError> {
+    fn eigen_pairs_irreducible(&self, lam: &Ex) -> Result<Spectrum, SymplexError> {
         let n = self.nrows;
         let coeffs = self.char_poly_coeffs()?;
         let cp = {
@@ -1868,19 +1921,23 @@ impl Matrix {
         // discriminant) beats the generic solver, whose `√(−ω²)` forms
         // stop `A − λI` pivots from cancelling.
         let symbolic = coeffs.iter().any(|c| c.expr_type() != ExprType::Number);
-        let mut pairs = if n <= 2 && symbolic {
-            low_degree_roots(&coeffs)
+        let mut spectrum = if n <= 2 && symbolic {
+            Spectrum::of(low_degree_roots(&coeffs), n)
         } else if let Some(split) = symbolic.then(|| symbolic_factor_roots(&cp, lam)).flatten() {
-            split
+            split.checked_for(n)
         } else {
-            eigvals_with_multiplicity(&cp, lam)
+            eigvals_with_multiplicity(&cp, lam, n)
         };
-        let mut total: usize = pairs.iter().map(|(_, m)| *m).sum();
+
+        // Each fallback below is taken when the spectrum so far is not
+        // complete, and only when its own is.
 
         // Closed-form fallback for low degree with symbolic coefficients.
-        if total < n && n <= 2 {
-            pairs = low_degree_roots(&coeffs);
-            total = pairs.iter().map(|(_, m)| *m).sum();
+        if !spectrum.is_complete() && n <= 2 {
+            let closed = Spectrum::of(low_degree_roots(&coeffs), n);
+            if closed.is_complete() {
+                spectrum = closed;
+            }
         }
 
         // Coefficients in ℚ(√p…, i): square-free factors and the factors
@@ -1889,11 +1946,13 @@ impl Matrix {
         // binomials here, so every 3×3 matrix with algebraic entries whose
         // characteristic polynomial was not `λ³ − c` was refused, even one
         // with `det A = 0` (`λ·(λ² + bλ + c)`).
-        if total < n
+        if !spectrum.is_complete()
             && let Some(alg) = crate::domains::linalg::algebraic_poly_roots(&coeffs)
         {
-            pairs = alg;
-            total = n;
+            let alg = Spectrum::of(alg, n);
+            if alg.is_complete() {
+                spectrum = alg;
+            }
         }
 
         // An irreducible cubic or quartic with symbolic coefficients: in
@@ -1902,44 +1961,37 @@ impl Matrix {
         // every symbolic 3×3 or 4×4 matrix whose characteristic polynomial
         // did not factor was refused ("could not solve the characteristic
         // polynomial"), and so were its poles, eigenvectors and `exp`.
-        if total < n
+        if !spectrum.is_complete()
             && symbolic
             && (3..=4).contains(&n)
             && let Some(roots) = squarefree_parametric_roots(&cp, &coeffs, lam)
         {
-            pairs = roots.into_iter().map(|r| (r, 1)).collect();
-            total = n;
+            let radical = Spectrum::of(roots.into_iter().map(|r| (r, 1)).collect(), n);
+            if radical.is_complete() {
+                spectrum = radical;
+            }
         }
 
-        if pairs.is_empty() {
-            return Err(failed(
-                "eigenvals",
-                "could not solve the characteristic polynomial: it has an irreducible factor \
-                 with symbolic coefficients of degree above 4 (or a quartic one whose radical \
-                 roots did not check at sample values of the symbols)",
-            ));
-        }
-        if total < n {
-            warn!(
-                "eigenvals: found algebraic multiplicity {} for a {}×{} matrix — \
-                 characteristic polynomial may have factors beyond solver capability",
-                total, n, n
-            );
-        }
-        Ok(pairs)
+        // Complete, or partial: the caller decides what a part is worth
+        // (`Spectrum::all` is the error of the public functions).  Up to
+        // 0.59 a short list was returned as it was, with a log line.
+        Ok(spectrum)
     }
 
     /// Eigenvalues, repeated according to algebraic multiplicity.
     ///
-    /// For an `n × n` matrix whose characteristic polynomial the solver
-    /// can fully handle this list has exactly `n` entries.  See
+    /// For an `n × n` matrix this list has exactly `n` entries: when the
+    /// eigenvalues are not all found the call is an error (up to 0.59 a
+    /// shorter list came back).  See
     /// [`eigenvals_with_multiplicity`](Self::eigenvals_with_multiplicity)
-    /// for the grouped form and for the handling of unsolvable factors.
+    /// for the grouped form and for the forms of the eigenvalues.
     ///
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] if no eigenvalue could be found.
+    /// - [`SymplexError::ComputationFailed`] if the eigenvalues are not all
+    ///   found (see
+    ///   [`eigenvals_with_multiplicity`](Self::eigenvals_with_multiplicity)).
     ///
     /// # Examples
     ///
@@ -1973,12 +2025,16 @@ impl Matrix {
     ///
     /// Returns a list of `(eigenvalue, algebraic_multiplicity, eigenvectors)`
     /// tuples.  Each eigenvector is a column-vector [`Matrix`]; the number
-    /// of vectors is the geometric multiplicity.
+    /// of vectors is the geometric multiplicity.  The algebraic
+    /// multiplicities sum to `n` (up to 0.59 the eigenvalues of a factor
+    /// that was not solved were left out, with their vectors).
     ///
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] if no eigenvalue could be found.
+    /// - [`SymplexError::ComputationFailed`] if the eigenvalues are not all
+    ///   found (see
+    ///   [`eigenvals_with_multiplicity`](Self::eigenvals_with_multiplicity)).
     ///
     /// # Examples
     ///
@@ -1999,7 +2055,7 @@ impl Matrix {
         let n = self.nrows;
         debug!(n, "eigenvects: computing for {}×{} matrix", n, n);
         let lam = self.fresh_symbol("lambda");
-        let eigen_pairs = self.eigen_pairs(&lam)?;
+        let eigen_pairs = self.complete_eigen_pairs(&lam)?;
         let eye = Matrix::identity(&self.ctx(), n)?;
 
         let mut result = Vec::new();
@@ -2172,9 +2228,9 @@ impl Matrix {
     ///   SymPy's `is_diagonalizable` — for rational functions of the
     ///   symbols over `ℚ(radicals, i)` at an eigenvalue of that kind, whose
     ///   zero tests are exact: `[[x, 1], [0, x]]` was `None` before 0.38).
-    /// - `None` — the eigenvalue solver could not find all eigenvalues, or
-    ///   the entries are symbolic and an eigenspace dimension could not be
-    ///   established.
+    /// - `None` — the eigenvalue solver could not find all eigenvalues (a
+    ///   part of the spectrum decides nothing here), or the entries are
+    ///   symbolic and an eigenspace dimension could not be established.
     ///
     /// # Examples
     ///
@@ -2219,9 +2275,15 @@ impl Matrix {
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] if the matrix is not
-    ///   diagonalizable, the eigenvalue solver could not find all
-    ///   eigenvalues, or the eigenvectors exceed [`EXPRESSION_BUDGET`].
+    /// - [`SymplexError::NotDiagonalizable`] if an eigenvalue has fewer
+    ///   eigenvectors than its algebraic multiplicity.  Every eigenvalue is
+    ///   known when this is reported (up to 0.59 a matrix whose spectrum
+    ///   was only partly found was called not diagonalizable:
+    ///   "insufficient eigenvectors found").
+    /// - [`SymplexError::ComputationFailed`] if the eigenvalue solver could
+    ///   not find all eigenvalues.
+    /// - [`SymplexError::ExpressionSwell`] if the eigenvectors exceed
+    ///   [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -2603,7 +2665,9 @@ impl Matrix {
     /// `RootOf` values: before 0.38 `matrix_exp` of a 4×4 integer matrix
     /// with an irreducible quartic characteristic polynomial was refused
     /// ("expression swell").  `Ok(None)` when the eigenvalues are not
-    /// distinct (or not all found).
+    /// distinct; the error of
+    /// [`eigenvals_with_multiplicity`](Self::eigenvals_with_multiplicity)
+    /// when they are not all found.
     pub(crate) fn sylvester_function(
         &self,
         op: &'static str,
@@ -2620,7 +2684,8 @@ impl Matrix {
     /// such radicals is exponential — before 0.44 `matrix_exp` of a 4×4
     /// Hermitian matrix over `ℚ(√2, √3, i)` with an irreducible quartic
     /// characteristic polynomial ran for minutes.  `Ok(None)` otherwise (also
-    /// when the eigenvalues are not found: the caller's route reports that).
+    /// when the eigenvalues are not all found: the caller's route reports
+    /// that).
     /// With `nonsingular`, also `Ok(None)` when an eigenvalue is zero (the
     /// logarithm: the caller's route reports the singular matrix).
     ///

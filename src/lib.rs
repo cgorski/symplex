@@ -1,4 +1,4 @@
-//! **symplex** — a fast, correct symbolic mathematics library for Rust.
+//! **symplex** — symbolic mathematics for Rust.
 //!
 //! Expressions are exact (`Ratio<BigInt>` arithmetic, hash-consed in a
 //! [`Context`](prelude::Context) arena) and the library can differentiate,
@@ -10,36 +10,50 @@
 //! normal form (`ratsimp`), solve linear programs exactly with dual values
 //! and Farkas certificates, compute Hermite and Smith normal forms of
 //! integer matrices, run numerical root finding and minimisation, apply
-//! Laplace/Fourier/Mellin/Z transforms, and generate optimized Rust or C99
-//! code. See the [README](https://github.com/cgorski/symplex) and
-//! [The Symplex Book](https://cgorski.github.io/symplex/) for a guided tour,
-//! and `CHANGELOG.md` for every release's changes (breaking changes first,
-//! under `### Breaking`).
+//! Laplace/Fourier/Mellin/Z transforms, prove polynomial inequalities with
+//! certificates that export to Lean 4, compute with random variables and
+//! statistics on data, and generate Rust, C99, Python, NumPy or Julia code.
+//! See the [README](https://github.com/cgorski/symplex) and
+//! [The Symplex Book](https://cgorski.github.io/symplex/) for a guided tour
+//! (its *Known Limitations* page lists what is missing and what is known to
+//! be imperfect), and `CHANGELOG.md` for every release's changes (breaking
+//! changes first, under `### Breaking`).  Before 1.0 the API is not frozen:
+//! a minor release may break it or change a result.
 //!
-//! Symplex is designed around seven principles:
+//! Symplex is designed around seven principles (the README's "Design
+//! Principles" has the full list, with the test or type behind each):
 //!
-//! 1. **Construction is cheap, evaluation is explicit.** Constructors only
-//!    canonicalize (flatten, sort, combine). No expansion, no function
-//!    evaluation, no identity application. Call `.eval()`, `.expand()`, or
-//!    `.simplify()` when *you* choose.
+//! 1. **Construction is cheap, evaluation is explicit.** Constructors
+//!    canonicalize (flatten, sort, combine like terms) and fold the values
+//!    that are exact at once (`sin(0)`, `cos(pi)`); they do not expand, and
+//!    nothing else is rewritten until you call `.eval()`, `.expand()` or
+//!    `.simplify()`.
 //!
-//! 2. **Never silently wrong.** Operations return `Result::Err`, an
-//!    unevaluated node, or `None` instead of a guess: `∫₋₁¹ dx/x²` is
-//!    `Err(Divergent)`, `solve(x − x)` is `Err(InfiniteSolutions)`, `re(z)` stays
-//!    `re(z)` until `z` is known to be real. Structural substitution by default.
+//! 2. **A refusal rather than a guess.** Operations return `Result::Err`, an
+//!    unevaluated node, or `None` where they cannot establish an answer:
+//!    `∫₋₁¹ dx/x²` is `Err(Divergent)`, `solve(x − x)` is
+//!    `Err(InfiniteSolutions)`, `re(z)` stays `re(z)` until `z` is known to
+//!    be real. Structural substitution by default.  This is an aim, tested
+//!    against oracles, not a proof: each release's CHANGELOG lists the wrong
+//!    answers found since the last one.
 //!
-//! 3. **One representation per concept.** One assumption system. One polynomial
-//!    type. One number type. One solve function.
+//! 3. **One representation per concept.** One number type in expressions
+//!    (`Ratio<BigInt>`; there is no floating-point node), one assumption
+//!    system, one error type ([`SymplexError`](prelude::SymplexError)).
 //!
 //! 4. **Thread-safe from day one.** Expression handles are `Send + Sync`.
 //!
-//! 5. **No recursive tree walks.** All traversals use explicit stacks.
+//! 5. **Explicit stacks in the core walks.** Construction, printing,
+//!    evaluation and substitution do not recurse (tested on expressions
+//!    nested 2,000 deep); the parser refuses nesting beyond 128 levels, and
+//!    the algorithms that call themselves stop at depth limits.
 //!
-//! 6. **The compiler is the API contract.** `pub` = stable. `pub(crate)` = internal.
-//!    `Ex`, `BoolEx` and `SetEx` are distinct types.
+//! 6. **The types are the API contract.** `pub` is the API, `pub(crate)` is
+//!    internal. `Ex`, `BoolEx` and `SetEx` are distinct types.
 //!
-//! 7. **Extensible without inheritance.** Custom functions via registered rules
-//!    ([`Rule`](prelude::Rule), [`RuleSet`](prelude::RuleSet)).
+//! 7. **Extensible without inheritance.** Your own rewrite rules
+//!    ([`Rule`](prelude::Rule), [`RuleSet`](prelude::RuleSet)) and undefined
+//!    functions (`Context::apply`).
 //!
 //! # API model
 //!
@@ -96,7 +110,7 @@
 //! [`XorShift64Star`] are at the root too; [`base`] exposes the foundation
 //! layer.
 //!
-//! New in 0.3: [`poly_ex`] (the [`Poly`](prelude::Poly) view of an
+//! Among them: [`poly_ex`] (the [`Poly`](prelude::Poly) view of an
 //! expression), [`linprog`] (exact simplex), [`normalforms`] (Hermite /
 //! Smith normal forms, integer kernels) and [`optimize`] (Brent,
 //! Nelder–Mead, differential evolution, least-squares fitting).

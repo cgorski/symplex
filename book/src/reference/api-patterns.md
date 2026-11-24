@@ -28,7 +28,7 @@ Check with `has_unevaluated()`. Note that `RootOf` and `RootSum` are exact algeb
 
 ## Pattern 2 — `try_` twin returns `Result<Ex>`
 
-Every Pattern-1 method that can produce an unevaluated form has a `try_` twin that returns `Err` instead. The twin calls the base method and checks `has_unevaluated()`, so there is no behavioural drift between the two.
+Every Pattern-1 method that can produce an unevaluated form has a `try_` twin that returns `Err` instead. The twin runs the same engine and checks `has_unevaluated()` on the result, so the two cannot disagree; it also refuses a result that merely carries an unevaluated node over from its input.
 
 ```rust
 # use symplex::prelude::*;
@@ -127,6 +127,8 @@ Solvers distinguish "no method" from "the answer is: none" or "the answer is: al
 |------|---------|----------------|
 | `solve` | identity | `Err(SymplexError::InfiniteSolutions { .. })` |
 | `solve` | contradiction / range violation | `Err(SymplexError::NoSolution { .. })` |
+| `solve` | roots exist, none in the declared domain of the unknown | `Ok(vec![])` |
+| `solve` | only some of the roots found | `Err(SymplexError::ComputationFailed { .. })` naming them; `solve_as_set` returns them ∪ a `ConditionSet` |
 | `solve_system_ex` | positive-dimensional | `Err(InfiniteSolutions)` |
 | `linsolve` | contradictory system | `Ok(LinearSolution::Inconsistent)` |
 | `linsolve` | under-determined | `Ok(LinearSolution::Parametric { .. })` |

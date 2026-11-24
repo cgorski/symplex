@@ -4,7 +4,7 @@ Integer functions live in `symplex::ntheory`, `symplex::diophantine` and `symple
 
 ## Primality and factorization
 
-0.2 replaces trial division with **Pollard–Brent rho** (Montgomery `u128` arithmetic) plus **ECM** for `BigInt`, and deterministic Miller–Rabin with the **BPSW** test (no Carmichael false positives).
+`factorint` combines trial division by the primes below 2¹⁶, a perfect-power check, **Pollard–Brent rho** (machine words for `n < 2⁶⁴`) and Lenstra's **ECM** for larger composites. `isprime` is deterministic for `n < 3.3·10²⁴` (Miller–Rabin with the first 13 prime bases) and uses the **Baillie–PSW** test beyond that: no BPSW counterexample is known (none exists below 2⁶⁴), but for larger `n` "prime" is then a probable-prime verdict, not a proof. Carmichael numbers such as 561 are recognised as composite.
 
 ```rust
 use num_bigint::BigInt;
@@ -116,9 +116,9 @@ Factoring over ℤ (Berlekamp–Zassenhaus), multivariate factoring, resultants,
 
 See `cargo run --example factoring_and_ntheory`, `number_theory` and `crypto_rsa`.
 
-## More number theory and discrete transforms (0.9.1)
+## More number theory and discrete transforms
 
-0.9.1 fills in the rest of SymPy's `ntheory` residue toolbox and adds an exact `symplex::discrete` module.
+The rest of SymPy's `ntheory` residue toolbox, and the exact `symplex::discrete` module.
 
 ### Higher power residues and polynomial congruences
 

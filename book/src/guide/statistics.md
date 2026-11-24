@@ -1,6 +1,6 @@
 # Probability and Statistics
 
-New in 0.11. `symplex::stats` is the counterpart of SymPy's `sympy.stats`: a **random variable** is a symbol together with a **distribution**, and the usual queries — mean, variance, moments, probabilities of events, density, CDF, moment generating function, quantile — are computed *exactly*, as expressions, wherever the distribution's parameters are exact.
+`symplex::stats` is the counterpart of SymPy's `sympy.stats`: a **random variable** is a symbol together with a **distribution**, and the usual queries — mean, variance, moments, probabilities of events, density, CDF, moment generating function, quantile — are computed *exactly*, as expressions, wherever the distribution's parameters are exact.
 
 ```rust
 use symplex::prelude::*;
@@ -25,7 +25,7 @@ fn main() -> Result<(), SymplexError> {
 * Every distribution family knows its **support**, its **density** (or probability mass function) as an expression in a free variable, and closed forms for whatever moments it has. The generic machinery — `RandomVariable::expectation`, `probability`, `cdf`, `mgf` — falls back to the crate's exact `integrate_definite` / `summation` over the support, so `E[g(X)]` works for any `g` the integrator can handle. For a polynomial `g` the closed-form raw moments are used directly (exact and cheap).
 * **Parameters are expressions.** Rational parameters give exact rational answers; symbolic parameters give symbolic answers (`E[X] = μ`, `Var[Gamma(k, θ)] = kθ²`). Parameter *validity* (`σ > 0`, `0 ≤ p ≤ 1`, `a < b`) is checked for numeric parameters by the `try_` constructors (`Distribution::try_normal(…) -> Result`); the unchecked constructors (`Distribution::normal(…)`) accept anything, and for symbolic parameters validity is the caller's promise.
 * Nothing is numerical by default. `RandomVariable::sample` is the only randomness in the symbolic layer; the data modules' bootstrap/permutation tests, `MarkovChain::sample_path` and `MultivariateNormal` sampling take an explicit seeded `Rng`. `stats::Rng` is a seeded, reproducible SplitMix64 so Monte-Carlo sanity checks are deterministic.
-* A result that does not exist is never a number. `Cauchy` has no mean: `x.mean()` returns the divergent integral **unevaluated** (`has_unevaluated()` is `true`), and `try_integrate_definite` on `x·f(x)` says `Err(Divergent)`.
+* A moment that does not exist is not given a finite value. `Cauchy` has no mean: `x.mean()` is `nan` (and `try_integrate_definite` on `x·f(x)` says `Err(Divergent)`); a moment that diverges to infinity is `oo` (the variance of `StudentT(2)`, `E[X³]` for `Pareto(1, 3)`).
 
 | Query | SymPy | Returns |
 |-------|-------|---------|
@@ -61,7 +61,7 @@ Every family is a struct (`stats::Normal`, `stats::Gamma`, …) implementing the
 | `Laplace(μ, b)` | `laplace(mean, scale)` | ℝ | all moments (even central moments `n! bⁿ`), piecewise cdf, mgf, quantile |
 | `Logistic(μ, s)` | `logistic(mean, scale)` | ℝ | all moments (via Bernoulli numbers), cdf, mgf `e^{μt} B(1−st, 1+st)`, quantile `μ + s ln(p/(1−p))` |
 | `LogNormal(μ, σ)` | `log_normal(mu, sigma)` | `(0, ∞)` | moments `e^{nμ + n²σ²/2}`, cdf (`erf`), quantile (`erfinv`); no mgf |
-| `StudentT(ν)` | `student_t(dof)` | ℝ | mean `0` (`ν > 1`), variance `ν/(ν−2)` (`ν > 2`), even moments for `n < ν`; cdf closed-form via the regularized incomplete beta (elementary for odd `ν`); no mgf, no quantile |
+| `StudentT(ν)` | `student_t(dof)` | ℝ | mean `0` (`ν > 1`), variance `ν/(ν−2)` (`ν > 2`), even moments for `n < ν`; cdf closed-form via the regularized incomplete beta; no mgf, no quantile |
 | `FDistribution(d₁, d₂)` | `f_distribution(d1, d2)` | `(0, ∞)` | mean `d₂/(d₂−2)` (`d₂ > 2`), variance (`d₂ > 4`), moments for `n < d₂/2`; cdf via the regularized incomplete beta `I_{d₁x/(d₁x+d₂)}(d₁/2, d₂/2)`; no mgf, no quantile |
 | `Weibull(λ, k)` | `weibull(scale, shape)` | `[0, ∞)` | moments `λⁿ Γ(1 + n/k)`, cdf `1 − e^{−(x/λ)ᵏ}`, quantile `λ(−ln(1−p))^{1/k}`; no mgf |
 | `Pareto(x_m, α)` | `pareto(scale, shape)` | `[x_m, ∞)` | moments `α x_mⁿ/(α−n)` for `n < α`, cdf `1 − (x_m/x)^α`, quantile `x_m (1−p)^{−1/α}`; no mgf |
@@ -69,7 +69,7 @@ Every family is a struct (`stats::Normal`, `stats::Gamma`, …) implementing the
 
 SymPy's `Weibull(alpha, beta)` has `alpha` = scale `λ` and `beta` = shape `k`; symplex names them `scale` and `shape`.
 
-Where a closed form is missing the generic route takes over: `Beta(2, 3).cdf(x)` is the regularized incomplete beta, a polynomial for integer shapes — `3x⁴ − 8x³ + 6x²`; `StudentT(5).cdf(1)` simplifies to `7√5/(27π) + atan(√5/5)/π + ½`; `LogNormal.probability(…)` stays an unevaluated integral because the exact integrator does not close `∫ e^{−(ln x−μ)²/2σ²}/x` (the closed-form `cdf` is available instead). A moment that does not exist — `E[X³]` for `Pareto(1, 3)`, `E[X⁶]` for `StudentT(5)` — is likewise returned as the (divergent) integral, never as a number.
+Where a closed form is missing the generic route takes over: `Beta(2, 3).cdf(x)` is the regularized incomplete beta, a polynomial for integer shapes — `3x⁴ − 8x³ + 6x²`; `StudentT(5).cdf(1)` is `-1/2*betainc_regularized(5/2, 1/2, 0, 5/6) + 1`; a `LogNormal` probability goes through the family's `cdf` (`P(L < 2)` for `LogNormal(0, 1)` is `1/2*erf(1/2*sqrt(2)*ln(2)) + 1/2`). A moment that does not exist — `E[X³]` for `Pareto(1, 3)`, `E[X⁶]` for `StudentT(5)` — is `oo`, not a finite number.
 
 ```rust
 use symplex::prelude::*;
@@ -85,8 +85,8 @@ fn main() -> Result<(), SymplexError> {
     println!("{}", x.variance());                               // 1/9
     println!("{}", x.moment(3));                                // 2/9      E[X³] = 3!/3³
     println!("{}", x.skewness());                               // 2
-    println!("{}", x.cdf(&v));                                  // -exp(-3*v) + 1
-    println!("{}", x.mgf(&t));                                  // 3/(-t + 3)
+    println!("{}", x.cdf(&v));                                  // Piecewise(0 if 0 > v, -exp(-3*v) + 1 if True)
+    println!("{}", x.mgf(&t));                                  // Piecewise(3/(-t + 3) if 3 > t, oo if True)
     println!("{}", x.quantile(&p).unwrap());                    // -1/3*ln(-p + 1)
     println!("{}", x.probability(&x.symbol().gt(&ctx.one()))?); // exp(-3)
 
@@ -95,19 +95,19 @@ fn main() -> Result<(), SymplexError> {
     println!("{}", g.mean());                                   // 6
     println!("{}", g.moment(3));                                // 480      2³ · 3·4·5
     println!("{}", g.cdf(&ctx.int(4)));                         // -5*exp(-2) + 1
-    println!("{}", g.mgf(&t));                                  // (-2*t + 1)^(-3)
+    println!("{}", g.mgf(&t));                                  // Piecewise((-2*t + 1)^(-3) if 1/2 > t, oo if True)
 
     // Beta(2, 3): no closed CDF on the family, but the integral is a polynomial.
     let b = RandomVariable::new(&ctx, "B", Distribution::beta(ctx.int(2), ctx.int(3)));
     println!("{}", b.mean());                                   // 2/5
-    println!("{}", b.cdf(&v).expand());                         // 3*v^4 - 8*v^3 + 6*v^2
+    println!("{}", b.cdf(&v).expand());                         // Piecewise(0 if 0 > v, 3*v^4 - 8*v^3 + 6*v^2 if 1 > v, 1 if True)
     println!("{}", b.probability(&b.symbol().lt(&ctx.rational(1, 2)))?); // 11/16
 
     // Cauchy(1, 2): a CDF and quantile, but no mean.
     let c = RandomVariable::new(&ctx, "C", Distribution::cauchy(ctx.int(1), ctx.int(2)));
     println!("{}", c.cdf(&ctx.int(3)).simplify());              // 3/4
     println!("{}", c.median().unwrap().simplify());             // 1
-    println!("{}", c.mean().has_unevaluated());                 // true  — the divergent integral, unevaluated
+    println!("{}", c.mean());                                   // nan  — the mean does not exist
     Ok(())
 }
 ```
@@ -131,11 +131,11 @@ fn main() {
 
     let nu = ctx.symbol_with("nu", &[Assumption::Positive]).unwrap();
     let t = RandomVariable::new(&ctx, "T", Distribution::student_t(nu.clone()));
-    println!("{}", t.variance());   // nu/(nu - 2)                        (valid for ν > 2)
+    println!("{}", t.variance());   // Piecewise(nu/(nu - 2) if nu > 2, oo if nu > 1, nan if True)
 }
 ```
 
-For `StudentT` and `Pareto` the family returns the closed form for a symbolic parameter (its validity — `n < ν`, `n < α` — is the caller's promise) and `None` when a numeric parameter says the moment does not exist, so `Distribution::student_t(ctx.int(2)).family().variance()` is `None` and `RandomVariable::variance` falls through to the divergent integral.
+For `StudentT` and `Pareto` a moment with a symbolic parameter carries its condition as a `Piecewise` (above: the closed form for `ν > 2`, `oo` for `1 < ν ≤ 2`, `nan` otherwise). With a numeric parameter for which the moment does not exist the family has no closed form — `Distribution::student_t(ctx.int(2)).family().variance()` is `None` — and `RandomVariable::variance` answers `oo`.
 
 ### Differential entropy
 
@@ -182,9 +182,9 @@ Distributions compose. `x.given(&event)` is SymPy's `given(X, cond)`: the same s
 # let b = Distribution::exponential(ctx.int(2));
 let n = RandomVariable::new(&ctx, "N", Distribution::normal(ctx.int(0), ctx.int(1)));
 let half = n.given(&n.symbol().gt(&ctx.int(0)))?;         // N | N > 0
-half.mean();                                             // √(2/π)
+half.mean();                                             // 2/sqrt(2*pi)
 let sq = n.transform("S", &n.symbol().powi(2))?;          // N² ~ χ²(1)
-sq.density(&y);                                          // e^{−y/2}/√(2πy)
+sq.density(&y);                                          // exp(-1/2*y)/(sqrt(y)*sqrt(2*pi))
 let m = Distribution::mixture(&[(ctx.rational(1, 4), a), (ctx.rational(3, 4), b)])?;
 # assert_eq!(RandomVariable::new(&ctx, "M", m).mean(), ctx.rational(3, 8));
 # Ok::<(), SymplexError>(())
@@ -217,7 +217,7 @@ The joint model is **independence**: `stats::expectation(&[&x, &y], &g)` compute
 
 ## Analysis of variance on data
 
-`stats::anova` holds every analysis of variance — `anova_one_way` (moved here from `hypothesis` in 0.18) and its extensions to factorial and repeated-measures designs — with the same contract as the rest of the data statistics: every quantity that is a rational function of the observations — sums of squares, `F`, `η²`, the sphericity `ε`s, Mauchly's `W` — is an exact `Q`, and p-values are exact expressions (`betainc_regularized` for an `F` tail, `uppergamma` for a χ² tail) evaluated with `eval_f64` when you ask.  The reference implementations named in `tests/v17/v17_anova.rs` are statsmodels' `anova_lm` / `AnovaRM`, pingouin's `rm_anova` / `epsilon` / `sphericity` and scipy's `tukey_hsd`; every number printed below is asserted there.
+`stats::anova` holds every analysis of variance — `anova_one_way` and its extensions to factorial and repeated-measures designs — with the same contract as the rest of the data statistics: every quantity that is a rational function of the observations — sums of squares, `F`, `η²`, the sphericity `ε`s, Mauchly's `W` — is an exact `Q`, and p-values are exact expressions (`betainc_regularized` for an `F` tail, `uppergamma` for a χ² tail) evaluated with `eval_f64` when you ask.  The reference implementations named in `tests/v17/v17_anova.rs` are statsmodels' `anova_lm` / `AnovaRM`, pingouin's `rm_anova` / `epsilon` / `sphericity` and scipy's `tukey_hsd`; every number printed below is asserted there.
 
 **Two-way ANOVA.** A `TwoWayData` holds the observations by cell (`cells[a][b]` = replicates; build it from nested vectors, `from_i64`, or long-form `Observation { a, b, y }` rows).  Cell sizes may differ.  A 2 × 3 design with three replicates per cell:
 
@@ -338,13 +338,13 @@ fit.concordance()?;          // 31/38 — Harrell's C, exactly
 # assert_eq!(fit.concordance()?, q(31, 38));
 fit.coefficients;            // [0.8759809887649096]      statsmodels PHReg(..., ties='efron').fit().params
 fit.standard_errors;         // [0.3809028296542367]      bse
-fit.p_values;                // [0.021462431348704628]    two-sided normal
+fit.p_values;                // [0.02146243134870449]     two-sided normal (an `f64`: the last digits are rounding)
 fit.log_likelihood;          // -8.465216276861835        llf;  fit.null_log_likelihood = -12.108680299521524
 # Ok::<(), SymplexError>(())
 ```
 
-The fit is numerical (`f64` coefficients, standard errors, residuals), so this is one of the places where the crate is not exact; what *is* exact is kept so: event times are `Q`, and the concordance index is a ratio of pair counts — `(concordant + ½ tied) / usable` over the pairs `tᵢ < tⱼ` with `i` an event — returned as a rational.  `llr_test`, `wald_test` and `score_test` return `TestResult`s (the trio `summary(coxph)` prints; `df = p`), so `p_value_log10` and friends work on them; for a single `0/1` covariate under Breslow ties with no tied event times the score statistic *is* the log-rank statistic of `log_rank_test`, which the tests assert.  `conf_int(c)` gives Wald intervals for `β` and `hazard_ratio_conf_int(c)` the same exponentiated; `baseline_hazard()` is the Breslow estimator `dₜ / Σ_{Rₜ} exp(xⱼᵀβ̂)` with its running sum; `schoenfeld_residuals()` (one row per event) and `martingale_residuals()` (one per subject, summing to zero) are the two diagnostics you plot; `predict_partial_hazard(&x₀)` is `exp(x₀ᵀβ̂)`.  `cox_ph_stratified(&obs, &x, &strata, &opts)` sums the partial likelihood over strata, each with its own baseline hazard.  A monotone likelihood (every subject with the larger covariate value fails before every subject with the smaller one, so `β̂ → ∞`; `coxph` warns "beta may be infinite") is a `ComputationFailed` that names the covariate, as `logit` does for separation.  Every number above is asserted against statsmodels 0.15 in `tests/v18/v18_cox.rs`, including the Freireich 6-MP data (`β̂ = −1.5721` Efron, `−1.5092` Breslow, as in R).
+The fit is numerical (`f64` coefficients, standard errors, residuals), so this is one of the places where the crate is not exact; what *is* exact is kept so: event times are `Q`, and the concordance index is a ratio of pair counts — `(concordant + ½ tied) / usable` over the pairs `tᵢ < tⱼ` with `i` an event — returned as a rational.  `llr_test`, `wald_test` and `score_test` return `TestResult`s (the trio `summary(coxph)` prints; `df = p`), so `p_value_log10` and friends work on them; for a single `0/1` covariate under Breslow ties with no tied event times the score statistic *is* the log-rank statistic of `log_rank_test`, which the tests assert.  `conf_int(c)` gives Wald intervals for `β` and `hazard_ratio_conf_int(c)` the same exponentiated; `baseline_hazard()` is the Breslow estimator `dₜ / Σ_{Rₜ} exp(xⱼᵀβ̂)` with its running sum; `schoenfeld_residuals()` (one row per event) and `martingale_residuals()` (one per subject, summing to zero) are the two diagnostics you plot; `predict_partial_hazard(&x₀)` is `exp(x₀ᵀβ̂)`.  `cox_ph_stratified(&obs, &x, &strata, &opts)` sums the partial likelihood over strata, each with its own baseline hazard.  A monotone likelihood (every subject with the larger covariate value fails before every subject with the smaller one, so `β̂ → ∞`; `coxph` warns "beta may be infinite") is `Err(DegenerateData)` with `Degeneracy::Separation`, naming the covariate, as `logit` returns for separation.  Every number above is asserted against statsmodels 0.15 in `tests/v18/v18_cox.rs`, including the Freireich 6-MP data (`β̂ = −1.5721` Efron, `−1.5092` Breslow, as in R).
 
 ## What is exact and what is not
 
-Everything above is symbolic: rational parameters give rational or closed-form answers, and symbolic parameters stay symbolic (`E[X] = μ`). Two honest gaps: the integrator does not close every density integral (`LogNormal` probabilities stay as an `Integral` although its closed-form `cdf` is available — `probability` uses the `cdf` first), and infinite sums with *symbolic* parameters may stay as a `Sum`. `RandomVariable::sample` is the only randomness in the symbolic layer (seeded through `stats::Rng` so results reproduce); the data modules' bootstrap/permutation tests, `MarkovChain::sample_path` and `MultivariateNormal` sampling take an explicit seeded `Rng`.
+Everything above is symbolic: rational parameters give rational or closed-form answers, and symbolic parameters stay symbolic (`E[X] = μ`). Two gaps: the integrator does not close every density integral, so an expectation of a function outside its reach comes back as an unevaluated `Integral` (check `has_unevaluated()`), and infinite sums with *symbolic* parameters may stay as a `Sum`. At extreme parameters a value can be refused rather than computed (a gamma or χ² tail with a shape from about `4.5·10⁹`, `F` and `Beta` densities with both shapes huge, a windowed sum beyond 65,536 terms): see [Known Limitations](../reference/known-limitations.md). `RandomVariable::sample` is the only randomness in the symbolic layer (seeded through `stats::Rng` so results reproduce); the data modules' bootstrap/permutation tests, `MarkovChain::sample_path` and `MultivariateNormal` sampling take an explicit seeded `Rng`.

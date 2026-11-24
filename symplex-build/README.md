@@ -10,8 +10,8 @@ Add to your firmware crate's `Cargo.toml`:
 
 ```toml
 [build-dependencies]
-symplex-build = "0.3"
-symplex = "0.3"
+symplex-build = "0.60"
+symplex = "0.60"
 ```
 
 Then in `build.rs`:

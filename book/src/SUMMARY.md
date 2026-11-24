@@ -62,6 +62,7 @@
 
 - [API Patterns](./reference/api-patterns.md)
 - [Error Handling](./reference/error-handling.md)
+- [Known Limitations](./reference/known-limitations.md)
 - [Migrating from 0.11 to 0.12](./reference/migrating-0.12.md)
 - [Migrating from 0.6 to 0.7](./reference/migrating-0.7.md)
 - [Migrating from 0.3 to 0.4](./reference/migrating-0.4.md)

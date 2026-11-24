@@ -59,11 +59,11 @@ fn main() {
     symplex::syms!(ctx; x);
 
     println!("{}", expr!(ctx, x * exp(x)).integrate(&x));        // x*exp(x) - exp(x)
-    println!("{}", expr!(ctx, 1 / (x^2 - 1)).integrate(&x));     // partial fractions
+    println!("{}", expr!(ctx, 1 / (x^2 - 1)).integrate(&x));     // -1/2*ln(abs(x + 1)) + 1/2*ln(abs(x - 1))
     println!("{}", expr!(ctx, sin(x)^3).integrate(&x));
     println!("{}", expr!(ctx, 1 / (x^2 + 1)).integrate(&x));     // atan(x)
 
-    // No closed form (exp(x^2) has one since 0.9: 1/2*sqrt(pi)*erfi(x)): honest unevaluated form
+    // No closed form: the result is the unevaluated node (exp(x^2) has one: 1/2*sqrt(pi)*erfi(x))
     let hard = expr!(ctx, x^x).integrate(&x);
     println!("{hard}   unevaluated: {}", hard.has_unevaluated());   // Integral(x^x, x)   unevaluated: true
     assert!(expr!(ctx, x^x).try_integrate(&x).is_err());
@@ -72,7 +72,9 @@ fn main() {
 
 ## Limits
 
-`limit(&x, &point)` uses the Gruntz algorithm (with a work budget so it cannot hang). 0.2 adds **one-sided limits**: `limit_left`, `limit_right`, `limit_dir(&x, &a, Direction::Left)`. The two-sided `limit` returns an unevaluated `Limit` node when the one-sided limits differ.
+`limit(&x, &point)` uses the Gruntz algorithm, under a work budget: a limit that would take too much work is refused instead of running on. **One-sided limits** are `limit_left`, `limit_right` and `limit_dir(&x, &a, Direction::Left)`. The two-sided `limit` returns an unevaluated `Limit` node when the one-sided limits differ.
+
+A limit is also refused when a part of the expression has no value near the point. `expint(1, 0)` (`E₁(0)`) is infinite, so `x^2*expint(1, 0)` is not a number at any `x`, and its limit at 0 is the unevaluated `Limit(x^2*expint(1, 0), x, 0)`, not `0`; `try_limit` returns `Err(ComputationFailed)` with the reason "a part of the expression has no value at any point". The same holds when a step function inside the expression puts a function at a pole near the point (`x^2*expint(1, Heaviside(x - 1))` at 0).
 
 ```rust
 use symplex::prelude::*;
@@ -107,7 +109,7 @@ fn main() {
 
     println!("{}", x.exp().series(&x, &ctx.int(0), 5));
     // 1/24*x^4 + 1/6*x^3 + 1/2*x^2 + x + 1
-    println!("{}", (1 / &x.sin()).series(&x, &ctx.int(0), 4));     // Laurent: 1/x + x/6 + …
+    println!("{}", (1 / &x.sin()).series(&x, &ctx.int(0), 4));     // Laurent: 7/360*x^3 + 1/x + 1/6*x
     println!("{}", (&(&x.powi(2) + 1).sqrt() - &x).series_at_infinity(&x, 4));
     // -1/8*x^(-3) + 1/(2*x)
 }
@@ -132,7 +134,7 @@ fn main() {
 }
 ```
 
-## Analysing a function (0.9)
+## Analysing a function
 
 The `calculus.util` family from SymPy lives directly on `Ex`. Every method works over the reals, takes the variable explicitly, and describes domains and results with `SetEx` (intervals, finite sets, unions) so they compose with the sets API.
 
@@ -193,7 +195,7 @@ fn main() {
 
 A few things to know:
 
-- **Exact first.** Extremum candidates (stationary points, closed endpoints, endpoint limits) are compared with `equals` and the sign of their difference; the only numeric step orders two candidates that are already *proven* distinct. Polynomial and rational derivatives are decided by Sturm sequences (`Poly::is_nonnegative_on`); other derivatives go through the assumption system and the inequality solver, and anything undecided is `None` or `Err(NotImplemented)` — never a guess.
+- **Exact first.** Extremum candidates (stationary points, closed endpoints, endpoint limits) are compared with `equals` and the sign of their difference; the only numeric step orders two candidates that are already *proven* distinct. Polynomial and rational derivatives are decided by Sturm sequences (`Poly::is_nonnegative_on`); other derivatives go through the assumption system and the inequality solver, and anything undecided is `None` or `Err(NotImplemented)` rather than a guess.
 - **Periodic families.** Zeros of `sin`, `cos`, `tan` are enumerated inside a bounded domain (`tan(x).singularities(&x, Some(&[0, 10]))` is `{pi/2, 3*pi/2, 5*pi/2}`); on an unbounded domain the infinite family is returned as a condition set such as `ConditionSet(x, cos(x) == 0)` rather than truncated to the principal branches.
 - **Continuity is required** by `maximum`, `minimum` and `function_range`: singularities inside the domain, or discontinuous / opaque nodes (`floor`, `sign`, `Piecewise`, unknown functions), give `Err(NotImplemented)`. `abs` kinks are fine and are included among the candidates.
 - **Deliberate differences from SymPy.** `is_strictly_increasing(x³, ℝ)` is `Some(true)` (SymPy tests `ℝ ⊆ {f' > 0}` and answers `None`); `is_monotonic` is the three-valued *or* of increasing and decreasing (SymPy asks whether `f'` has no zeros, so `x³` is `False` there); `periodicity(sin(x)²)` is the fundamental period `pi` (SymPy: `2*pi`).

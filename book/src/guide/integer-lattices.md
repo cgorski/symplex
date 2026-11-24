@@ -1,10 +1,10 @@
 # Integer Lattices and Normal Forms
 
-`symplex::normalforms` works with matrices over **ℤ**: Hermite normal form (in both the row and the column convention), Smith normal form, integer kernels, unimodularity and lattice determinants. Everything is exact `BigInt` arithmetic. Inputs are ordinary `Matrix` values whose entries must be integer literals — a fraction, a symbol or an unevaluated constant is an `InvalidArgument` error, never a silent rounding — and results come back as integer `Matrix` values in the same context.
+`symplex::normalforms` works with matrices over **ℤ**: Hermite normal form (in both the row and the column convention), Smith normal form, integer kernels, unimodularity and lattice determinants. Everything is exact `BigInt` arithmetic. Inputs are ordinary `Matrix` values whose entries must be integer literals — a fraction, a symbol or an unevaluated constant is an `InvalidArgument` error, not a silent rounding — and results come back as integer `Matrix` values in the same context.
 
 The most common operations are also available as methods: `Matrix::hermite_normal_form`, `Matrix::smith_normal_form`, `Matrix::integer_nullspace`.
 
-Since 0.3.5 the algorithms live on [`ZMatrix`](./matrices.md#exact-matrices-over-ℚ-and-ℤ-qmatrix-and-zmatrix), a plain `BigInt` matrix with no expression arena behind it; the `normalforms` functions convert a `Matrix` to a `ZMatrix`, run the same code and convert back. When your data is already integer, call `ZMatrix::hermite_normal_form()` and friends directly — they return `ZMatrix` values and need no `Context`, and the row/column conventions are identical.
+The algorithms live on [`ZMatrix`](./matrices.md#exact-matrices-over-ℚ-and-ℤ-qmatrix-and-zmatrix), a plain `BigInt` matrix with no expression arena behind it; the `normalforms` functions convert a `Matrix` to a `ZMatrix`, run the same code and convert back. When your data is already integer, call `ZMatrix::hermite_normal_form()` and friends directly — they return `ZMatrix` values and need no `Context`, and the row/column conventions are identical.
 
 ## Hermite normal form (row style): `H = U·A`
 

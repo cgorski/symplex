@@ -1,5 +1,7 @@
 # What's New in 0.13 / 0.14
 
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
 **0.14** continues on data: `stats::reliability` (Cronbach's α, KR-20,
 split-half, item analysis, κ confidence intervals and tests, Cochran's Q,
 Somers' D / Goodman–Kruskal γ, χ² residuals, Pearson inference),

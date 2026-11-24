@@ -52,7 +52,7 @@ use syn::visit::Visit;
 const ALLOWLIST: &[(&str, [usize; 5])] = &[
     // ── Files owned by other steps of wave 5 (current counts) ─────────────
     // `base/{arena,canon}.rs` (W12, byte identity), `base/{assumptions,complex}.rs`,
-    // `poly/**` (W10c), `transforms/{eval,evalf,inequalities,sets,solve}` (B3 / evalf).
+    // `poly/**` (W10c), `transforms/{eval,evalf,solve}` (B3 / evalf).
     ("base/arena.rs", [1, 0, 1, 1, 0]),
     ("base/assumptions.rs", [98, 0, 0, 0, 0]),
     ("base/canon.rs", [14, 0, 0, 2, 0]),

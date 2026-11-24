@@ -4,7 +4,7 @@ symplex has one error type, `SymplexError` (in the prelude; `#[non_exhaustive]`,
 
 ## Variants
 
-The enum has fifteen variants (`src/base/errors.rs`, 0.59); the two newest are `Infinite` (0.58) and `DegenerateData` (0.57).
+The enum has fifteen variants (`src/base/errors.rs`); the two newest are `Infinite` (0.58) and `DegenerateData` (0.57).
 
 | Variant | Fields | Raised by |
 |---------|--------|-----------|
@@ -201,6 +201,35 @@ The base methods (`integrate`, `limit`, `summation`, …) return an unevaluated 
 
 - **Interactive / exploratory code**: use the base method and print the result; an `Integral(…)` node is informative.
 - **Pipelines and code generation**: use `try_` so that a missing closed form stops the pipeline instead of producing a function that calls `Integral`.
+
+## Why a call is refused
+
+A refusal — an unevaluated node, `Err(ComputationFailed)`, `None` from a query, `Unknown` from a prover — means that the engine could not *establish* an answer, not that none exists. The usual reasons, which the `reason` text of the `try_` twin's error names:
+
+- **No method applies**: no rule, table entry or algorithm covers the input.
+- **Something the answer depends on is undecided**: a sign or a zero test that neither the assumptions nor an error-bounded evaluation settles, a parameter that may be complex. Declaring what you know (`Positive`, `Real`, `Integer`) is usually the way forward.
+- **The answer would hold only in part**: `solve` found some of the roots, a root exists only for some parameter values, a rewrite is valid on one branch only.
+- **The expression has no value there.** `expint(1, 0)` is infinite, so `x^2*expint(1, 0)` is not a number at any `x` and has no limit at 0 — although `0·c = 0` for every number `c`:
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let e = ctx.parse("x^2*expint(1, 0)").unwrap();
+    println!("{}", e.limit(&x, &ctx.int(0)));           // Limit(x^2*expint(1, 0), x, 0)
+    match e.try_limit(&x, &ctx.int(0)) {
+        Err(SymplexError::ComputationFailed { operation, reason }) => println!("{operation}: {reason}"),
+        other => println!("{other:?}"),
+    }
+    // limit: a part of the expression has no value at any point
+}
+```
+
+- **A work budget ran out** (`BudgetExhausted`, or a `reason` that names the budget). Budgets count work, not time, so the same call is refused on every machine.
+
+The cases that are refused today and are known to have an answer are listed under [Known Limitations](./known-limitations.md).
 
 ## `Option` is not an error
 

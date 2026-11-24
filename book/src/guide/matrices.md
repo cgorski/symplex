@@ -39,7 +39,7 @@ Element-wise helpers: `map`, `map_indexed`, `subs`, `subs_map`, `eval`, `expand`
 
 ## Selecting sub-matrices and exact conversion
 
-New in 0.3: `extract(&rows, &cols)` (SymPy's `Matrix.extract`; indices may repeat or reorder), `select_rows`, `select_cols`, `delete_row`, `delete_col`; the three-valued structure test `is_integer_matrix` (a companion to the existing `is_zero`); `nnz` (structurally non-zero entries); and lossless conversions to and from the `num` types — `to_rational_rows`, `to_bigint_rows`, `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (each `f64` becomes the *exact* dyadic rational it represents) — which is how a `Matrix` is handed to the exact [LP solver](./exact-lp.md) and the [integer normal forms](./integer-lattices.md). (As elsewhere on this page, multi-row matrix output is compacted onto one line in the comments; a single-row matrix really does print as `[[…]]`.)
+Sub-matrices and conversions: `extract(&rows, &cols)` (SymPy's `Matrix.extract`; indices may repeat or reorder), `select_rows`, `select_cols`, `delete_row`, `delete_col`; the three-valued structure test `is_integer_matrix` (a companion to `is_zero`); `nnz` (structurally non-zero entries); and lossless conversions to and from the `num` types — `to_rational_rows`, `to_bigint_rows`, `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (each `f64` becomes the *exact* dyadic rational it represents) — which is how a `Matrix` is handed to the exact [LP solver](./exact-lp.md) and the [integer normal forms](./integer-lattices.md). (As elsewhere on this page, multi-row matrix output is compacted onto one line in the comments; a single-row matrix really does print as `[[…]]`.)
 
 ```rust
 use symplex::prelude::*;
@@ -80,7 +80,7 @@ fn main() {
 
 ## Eigenvalues, eigenvectors, Jordan form
 
-In 0.2 the eigen family takes **no dummy variable**. `eigenvals` returns eigenvalues with repetition, `eigenvals_with_multiplicity` returns `(value, multiplicity)` pairs, `eigenvects` returns `(value, multiplicity, basis)`, `diagonalize` returns `Diagonalization { p, d }`, `jordan_form` returns `JordanForm { p, j }`, and `is_diagonalizable` is `Option<bool>`. Use `char_poly(&λ)` / `char_poly_coeffs()` when you want the polynomial itself.
+The eigen family takes **no dummy variable**. `eigenvals` returns eigenvalues with repetition, `eigenvals_with_multiplicity` returns `(value, multiplicity)` pairs, `eigenvects` returns `(value, multiplicity, basis)`, `diagonalize` returns `Diagonalization { p, d }`, `jordan_form` returns `JordanForm { p, j }`, and `is_diagonalizable` is `Option<bool>`. Use `char_poly(&λ)` / `char_poly_coeffs()` when you want the polynomial itself.
 
 ```rust
 use symplex::prelude::*;
@@ -105,7 +105,7 @@ fn main() {
 
 ### `RootOf` eigenvalues
 
-When the characteristic polynomial has an irreducible cubic or quartic factor without a compact radical form, 0.2 returns exact `RootOf(poly, index)` eigenvalues instead of Cardano/Ferrari expressions with nested complex cube roots (which made every downstream step swell). They evaluate numerically and are not counted as unevaluated. An `EXPRESSION_BUDGET` guard aborts computations whose intermediate expressions grow beyond bounds.
+When the characteristic polynomial has an irreducible cubic or quartic factor without a compact radical form, the eigenvalues are exact `RootOf(poly, index)` nodes instead of Cardano/Ferrari expressions with nested complex cube roots (which make every downstream step swell). They evaluate numerically and are not counted as unevaluated. An `EXPRESSION_BUDGET` guard aborts computations whose intermediate expressions grow beyond bounds.
 
 ```rust
 use symplex::prelude::*;
@@ -132,11 +132,11 @@ Every factorisation returns a named struct from `symplex::decompositions` (all i
 | `qr()` | `Qr { q, r }` with `A = Q·R`, exact radicals | — |
 | `matrix_decomp::gram_schmidt(&vectors, normalize)` | orthogonal (or orthonormal) basis | linearly independent input |
 | `rref()` | `(R, pivot_columns)` | — |
-| `pinv()` | Moore–Penrose pseudo-inverse (any rank, 0.9) | — |
+| `pinv()` | Moore–Penrose pseudo-inverse (any rank) | — |
 | `diagonalize()` | `Diagonalization { p, d }` with `A = P·D·P⁻¹` | square, diagonalizable |
 | `jordan_form()` | `JordanForm { p, j }` with `A = P·J·P⁻¹` | square |
-| `rank_decomposition()` (0.9) | `RankDecomposition { c, f }` with `A = C·F`, `rank A` columns/rows | non-zero |
-| `hessenberg()` (0.9) | `Hessenberg { h, p }` with `H = P⁻¹AP` upper Hessenberg, no radicals | square |
+| `rank_decomposition()` | `RankDecomposition { c, f }` with `A = C·F`, `rank A` columns/rows | non-zero |
+| `hessenberg()` | `Hessenberg { h, p }` with `H = P⁻¹AP` upper Hessenberg, no radicals | square |
 
 ```rust
 use symplex::prelude::*;
@@ -229,7 +229,7 @@ fn main() {
 
 ## Exact matrices over ℚ and ℤ: `QMatrix` and `ZMatrix`
 
-`Matrix` stores expressions, and every entry operation goes through the expression arena (canonicalisation, hash-consing, a write lock). That is what you want for symbolic matrices and pure overhead for numeric ones. 0.3.5 adds `QMatrix` (entries `Ratio<BigInt>`) and `ZMatrix` (entries `BigInt`) — both in the prelude and in `symplex::matrix` — as plain row-major `Vec<T>` matrices with the same shape rules, indexing, `Display`/`Debug` layout and `Result`-returning arithmetic as `Matrix`.
+`Matrix` stores expressions, and every entry operation goes through the expression arena (canonicalisation, hash-consing, a write lock). That is what you want for symbolic matrices and pure overhead for numeric ones. `QMatrix` (entries `Ratio<BigInt>`) and `ZMatrix` (entries `BigInt`) — both in the prelude and in `symplex::matrix` — are plain row-major `Vec<T>` matrices with the same shape rules, indexing, `Display`/`Debug` layout and `Result`-returning arithmetic as `Matrix`.
 
 All rational eliminations are **fraction-free**: the rows are scaled to integers and reduced with Bareiss's Gauss–Jordan variant, whose intermediate entries are minors of the input, so every division is exact and no gcd runs in the inner loop. On a 60×72 integer matrix that is about 40× faster than Gauss–Jordan over `Ratio<BigInt>` and two orders of magnitude faster than the same elimination over expressions.
 
@@ -288,11 +288,11 @@ fn main() {
 }
 ```
 
-You rarely need to convert by hand: `Matrix::{rref, rank, nullspace, columnspace, rowspace, left_nullspace, det, inv, solve, solve_least_squares, pinv}` (and, since 0.21, `char_poly_coeffs`, `matmul`, `trace`, `lu`), `linsolve` / `linsolve_matrix` and every function in `symplex::normalforms` detect all-rational input and route through `QMatrix`/`ZMatrix` themselves, returning the same `Matrix` results as before (the RREF is unique, so pivots and entries are identical). A single symbolic entry sends the whole matrix down the expression path. Use the exact types directly when the data is numeric from the start — LP formulations, coefficient matrices from `Poly::coefficient_matrix`, lattices — to skip the arena round trip.
+You rarely need to convert by hand: `Matrix::{rref, rank, nullspace, columnspace, rowspace, left_nullspace, det, inv, solve, solve_least_squares, pinv, char_poly_coeffs, matmul, trace, lu}`, `linsolve` / `linsolve_matrix` and every function in `symplex::normalforms` detect all-rational input and route through `QMatrix`/`ZMatrix` themselves, returning the same `Matrix` results as the expression path (the RREF is unique, so pivots and entries are identical). A single symbolic entry sends the whole matrix down the expression path. Use the exact types directly when the data is numeric from the start — LP formulations, coefficient matrices from `Poly::coefficient_matrix`, lattices — to skip the arena round trip.
 
 ## Integer normal forms
 
-For a matrix of integer literals, 0.3 adds `hermite_normal_form` (row style, `H = U·A`), `smith_normal_form` (`S = U·A·V`, invariant factors) and `integer_nullspace` (a ℤ-basis of the integer kernel) as methods, with the transform-returning and column-convention variants in `symplex::normalforms`. Non-integer entries are an `InvalidArgument` error, not a rounding.
+For a matrix of integer literals there are `hermite_normal_form` (row style, `H = U·A`), `smith_normal_form` (`S = U·A·V`, invariant factors) and `integer_nullspace` (a ℤ-basis of the integer kernel) as methods, with the transform-returning and column-convention variants in `symplex::normalforms`. Non-integer entries are an `InvalidArgument` error, not a rounding.
 
 ```rust
 use symplex::prelude::*;
@@ -340,9 +340,9 @@ fn main() {
 
 See `cargo run --example matrix_decompositions`, `matrix_algebra`, `exact_matrices`, `control_system` and `integer_lattices`.
 
-## More decompositions and utilities (0.9)
+## More decompositions and utilities
 
-0.9 fills in the remaining everyday SymPy matrix methods. As elsewhere, rational input is routed through `QMatrix`/`ZMatrix` and is exact; symbolic input follows the same *structural* pivoting rules as `rref` and `lu` (a symbolic pivot whose value cannot be decided is assumed non-zero, so the result holds generically).
+These are the remaining everyday SymPy matrix methods. As elsewhere, rational input is routed through `QMatrix`/`ZMatrix` and is exact; symbolic input follows the same *structural* pivoting rules as `rref` and `lu` (a symbolic pivot whose value cannot be decided is assumed non-zero, so the result holds generically).
 
 ### Singular values and condition number
 
@@ -365,7 +365,7 @@ fn main() {
 
 ### Pseudo-inverse for any rank, rank factorisation
 
-`pinv()` no longer requires full column rank. It uses the full-rank factorisation `A = C·F` returned by `rank_decomposition()` — `C` holds the pivot columns of `A`, `F` the non-zero rows of `rref(A)` — and `A⁺ = Fᵀ(FFᵀ)⁻¹(CᵀC)⁻¹Cᵀ`; full-column-rank matrices still take the classical `(AᵀA)⁻¹Aᵀ`, and the zero matrix maps to the zero matrix of the transposed shape. `rank_decomposition` itself is an error only for the zero matrix (rank 0 has no non-empty factors).
+`pinv()` does not require full column rank. It uses the full-rank factorisation `A = C·F` returned by `rank_decomposition()` — `C` holds the pivot columns of `A`, `F` the non-zero rows of `rref(A)` — and `A⁺ = Fᵀ(FFᵀ)⁻¹(CᵀC)⁻¹Cᵀ`; full-column-rank matrices still take the classical `(AᵀA)⁻¹Aᵀ`, and the zero matrix maps to the zero matrix of the transposed shape. `rank_decomposition` itself is an error only for the zero matrix (rank 0 has no non-empty factors).
 
 ```rust
 use symplex::prelude::*;

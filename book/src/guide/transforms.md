@@ -4,7 +4,7 @@ Laplace, Fourier, Mellin and Z transforms, Fourier series, and one-sided limits.
 
 ## Laplace
 
-`laplace(&t, &s)` and `inverse_laplace(&s, &t)` are table-driven with linearity, shifting, scaling, differentiation, integration and `f(t)/t` rules. 0.2 extends the tables (Bessel `J₀`, `tⁿe^(−at)`, `sinh`/`cosh`, `erf` where possible, `1/√s`, delayed step functions) and adds the initial- and final-value theorems.
+`laplace(&t, &s)` and `inverse_laplace(&s, &t)` are table-driven with linearity, shifting, scaling, differentiation, integration and `f(t)/t` rules. The tables include Bessel `J₀`, `tⁿe^(−at)`, `sinh`/`cosh`, `erf` where possible, `1/√s` and delayed step functions; `laplace_initial_value` and `laplace_final_value` are the initial- and final-value theorems.
 
 ```rust
 use symplex::prelude::*;
@@ -24,7 +24,7 @@ fn main() {
 
     println!("{}", (&s / (&s.powi(2) + &s * 2 + 5)).inverse_laplace(&s, &t)); // -1/2*sin(2*t)*exp(-t) + cos(2*t)*exp(-t)
     println!("{}", ((&s * -2).exp() / &s).inverse_laplace(&s, &t));           // H(t - 2)
-    println!("{}", (1 / &s.sqrt()).inverse_laplace(&s, &t));                  // t^(-1/2)/sqrt(pi)
+    println!("{}", (1 / &s.sqrt()).inverse_laplace(&s, &t));                  // 1/(sqrt(t)*sqrt(pi))
 
     let f = (&s + 1) / (&s * (&s.powi(2) + &s * 2 + 5));
     println!("{}", f.laplace_initial_value(&s).unwrap());                     // 0   (f(0⁺))
@@ -83,9 +83,32 @@ fn main() {
 }
 ```
 
+## A variable bound inside the expression
+
+The index of a `Sum` or `Product`, the variable of a definite `Integral` and the variable of a `Limit` are *bound*: inside that node the name does not mean the transform variable, and the node as a whole is a constant of the transform. The Laplace, Fourier, Mellin and Z transforms (and their inverses) treat it so: they do not rewrite inside such a node, and they do not count its bound occurrences as dependence on the variable.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; t, s, x);
+    // The sum over t is a constant (9/2); only sin(3t) is transformed.
+    let f = ctx.parse("Sum(Heaviside(t + 1), t, -3, 3)*sin(3*t)").unwrap();
+    println!("{}", f.laplace(&t, &s));                          // 3*Sum(H(t + 1), t=-3..3)/(s^2 + 9)
+    let g = ctx.parse("Sum(Heaviside(x + 1), x, -3, 3)*exp(-x)").unwrap();
+    println!("{}", g.mellin_transform(&x, &s).unwrap().0);      // 9/2*Gamma(s)
+    // A sum over another index is transformed term by term.
+    let h = ctx.parse("Sum(exp(-k*t), k, 1, 3)").unwrap();
+    println!("{}", h.laplace(&t, &s));                          // 1/(s + 1) + 1/(s + 2) + 1/(s + 3)
+}
+```
+
+Up to 0.59 the first two came out wrong (`21/(s^2 + 9)` and `7*Gamma(s)`): the step functions inside the sums were read at the transform variable. One limit remains: the Fourier and Mellin transforms refuse a result that would still hold an unevaluated node, even a constant one — `Sum(sin(k^2), k, 1, m)*exp(-x^2)` has no `fourier_transform`, while `laplace` keeps such a constant as a factor.
+
 ## Fourier series
 
-`fourier_series_on(&x, &lower, &upper, n_terms)` computes exact coefficients as definite integrals, so `sign`, `|x|`, sawtooth and piecewise waves work (0.1 returned wrong coefficients for these). The `FourierSeries` exposes `a0`, `coefficient_a(k)`, `coefficient_b(k)`, complex `coefficient_c(k)`, `omega0()`, `n_terms()` and `truncate(n)`. `fourier_series(&x, n)` is the `[−π, π]` shorthand.
+`fourier_series_on(&x, &lower, &upper, n_terms)` computes exact coefficients as definite integrals, so `sign`, `|x|`, sawtooth and piecewise waves work. The `FourierSeries` exposes `a0`, `coefficient_a(k)`, `coefficient_b(k)`, complex `coefficient_c(k)`, `omega0()`, `n_terms()` and `truncate(n)`. `fourier_series(&x, n)` is the `[−π, π]` shorthand.
 
 ```rust
 use symplex::prelude::*;
@@ -124,7 +147,7 @@ fn main() {
 
 ## One-sided limits
 
-`limit_left`, `limit_right` and `limit_dir(&x, &a, Direction::{Left, Right})` were added in 0.2, with `try_` twins. The two-sided `limit` returns an unevaluated `Limit` node when the one-sided limits disagree, rather than picking one.
+`limit_left`, `limit_right` and `limit_dir(&x, &a, Direction::{Left, Right})` take the limit from one side; each has a `try_` twin. The two-sided `limit` returns an unevaluated `Limit` node when the one-sided limits disagree, rather than picking one.
 
 ```rust
 use symplex::prelude::*;

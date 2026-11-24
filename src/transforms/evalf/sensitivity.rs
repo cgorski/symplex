@@ -1420,6 +1420,12 @@ fn moved_difference(
 /// once more for the first-order approximation.  [`EXACT`] when every
 /// argument is exact, [`UNKNOWN`] when an argument has no bound or the
 /// sensitivity to it cannot be bounded.
+///
+/// Plus what the route that computed `value` charged to it (`Wp::charge`:
+/// the error of a sum that cancels, which no argument's error explains):
+/// the whole bound when every argument is exact.  Up to 0.59 that was
+/// `EXACT`, and `besselj(0, x)` at a dyadic `x` next to a zero was certified
+/// to two ulps of a value known to a third of its bits.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn special_error(
     arena: &Arena,
@@ -1428,6 +1434,8 @@ pub(super) fn special_error(
     cache: Cache<'_>,
     w: &mut Wp<'_>,
 ) -> ErrExp {
+    // Taken first: the evaluations at moved arguments below charge again.
+    let own = w.take_own();
     let node = arena.node(id);
     let kids = node.children();
     let mut x = Vec::with_capacity(kids.len());
@@ -1445,7 +1453,7 @@ pub(super) fn special_error(
         e.push(radius(b.joint()));
     }
     if joint.iter().all(|&j| accuracy::is_exact(j)) {
-        return EXACT;
+        return own;
     }
     let args = Args { x, e, v: &value.0 };
     let mut contributions: Vec<ErrExp> = Vec::new();
@@ -1489,5 +1497,5 @@ pub(super) fn special_error(
     // Twice the sum of the contributions (the factor 2 of the module
     // documentation; before 0.30 `2^(⌈log₂ k⌉ + 1)` times the largest).
     let total = contributions.into_iter().fold(EXACT, accuracy::lsum);
-    accuracy::shift(total, 1.0)
+    accuracy::lsum(accuracy::shift(total, 1.0), own)
 }

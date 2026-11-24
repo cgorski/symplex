@@ -12,8 +12,8 @@ Before the translation table, a few structural differences to be aware of:
 | Types | Everything is an `Expr` at runtime | `Ex` (numeric), `BoolEx` (boolean), `SetEx` (set-valued) — distinct at compile time |
 | Arithmetic | Python operators on SymPy objects | Rust operators on `&Ex` references (or use `expr!` macro) |
 | Evaluation | `simplify()` is the catch-all | `eval()` for exact reduction, `simplify()` for multi-strategy simplification to a fixpoint, `simplify_traced()` to see what fired |
-| Failure | Returns unevaluated or raises exception | Returns unevaluated `Ex` (Pattern 1) or `Result` (Patterns 2–5); never raises |
-| Realness | Symbols are complex unless `real=True`; `re(z)` stays symbolic | The same: a symbol without assumptions may be complex, every function takes its principal branch, and `simplify`/`expand_log`/`log_combine`/`powdenest` apply real-only identities only under assumptions (since 0.23; see [The Domain Model](../getting-started/key-concepts.md#the-domain-model)) |
+| Failure | Returns unevaluated or raises exception | Returns unevaluated `Ex` (Pattern 1) or `Result` (Patterns 2–5); there are no exceptions, and the few documented panics are caller errors (mixing two contexts, an out-of-range matrix index) |
+| Realness | Symbols are complex unless `real=True`; `re(z)` stays symbolic | The same: a symbol without assumptions may be complex, every function takes its principal branch, and `simplify`/`expand_log`/`log_combine`/`powdenest` apply real-only identities only under assumptions (see [The Domain Model](../getting-started/key-concepts.md#the-domain-model)) |
 | Floats | `Float` type exists alongside exact | No float type in expressions; floats only via `eval_f64()` |
 | Printing | `pprint()`, `latex()`, `str()` | `println!("{expr}")`, `expr.to_latex()` |
 
@@ -143,7 +143,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `p.LC()`, `p.LM()`, `p.LT()` | `p.leading_coeff()`, `p.leading_monomial()`, `p.leading_term()` |
 | `p.degree(x)`, `p.total_degree()`, `p.degree_list()` | `p.degree_in(&x)`, `p.total_degree()`, `p.degree_list()` |
 | `p.all_coeffs()` (univariate, highest first) | `p.all_coeffs()` → `Option<Vec<Ex>>` |
-| `degree(e, x)`, `Poly(e, x).coeffs()`, `e.coeff(x, 2)`, `LC(e, x)` | `e.degree(&x)`, `e.coeffs(&x)` (ascending), `e.coeff(&x, 2)`, `e.leading_coeff(&x)` — symbolic coefficients allowed since 0.3 |
+| `degree(e, x)`, `Poly(e, x).coeffs()`, `e.coeff(x, 2)`, `LC(e, x)` | `e.degree(&x)`, `e.coeffs(&x)` (ascending), `e.coeff(&x, 2)`, `e.leading_coeff(&x)` — symbolic coefficients allowed |
 | `p.eval({x: 1, y: 2})`, `p.eval(x, 2)` | `p.eval(&[&one, &two])?`, `p.eval_gen(&x, &two)?` |
 | `p.as_expr()` | `p.to_ex()` |
 | `p + q`, `p * q`, `p ** 3`, `p.diff(x)` | `p.add(&q)?`, `p.mul(&q)?`, `p.pow(3)?`, `p.derivative(&x)?` |
@@ -169,7 +169,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `reduce_inequalities([x > 0, x <= 5], x)` | `reduce_inequalities(&[x.gt(&zero), x.le(&five)], &x)?` → `SetEx` |
 | `linsolve([eq1, eq2], [x, y])` | `linsolve(&[eq1, eq2], &[x, y])?` → `LinearSolution::{Unique, Parametric, Inconsistent}` |
 | `linsolve((A, b), x1, x2)` | `linsolve_matrix(&a, &b)?` (unknowns are named `x1, x2, …`; singular and inconsistent systems handled) |
-| `solve(a*x**2 + b*x + c, x)` (parametric) | `(a x² + b x + c).solve(&x)?` — results are `ratsimp`'d since 0.3 |
+| `solve(a*x**2 + b*x + c, x)` (parametric) | `(a x² + b x + c).solve(&x)?` — results are `ratsimp`'d |
 | `sympy.solvers.simplex.lpmax(f, constraints)` / `lpmin` | `LpProblem::maximize(c).le(row, rhs)….solve()?` / `LpProblem::minimize` — exact over ℚ, see [Exact Linear Programming](../guide/exact-lp.md) |
 | `sympy.solvers.simplex.linprog(c, A, b, A_eq, b_eq, bounds)` | `linprog::linprog(&c, &a_ub, &b_ub, &a_eq, &b_eq, &bounds)?` |
 | `scipy.optimize.linprog(c, A_ub, b_ub, A_eq, b_eq)` | `linprog::linprog(…)` (exact) or `linprog_matrix(Objective::Minimize, &c, Some(&a_ub), Some(&b_ub), None, None)?` |
@@ -419,7 +419,7 @@ let dy = y.formal_diff(&x);
 // y' + 2y = 0
 let ode = &dy + &y * 2;
 let solution = ode.solve_ode(&y, &x);
-println!("{solution}");   // y = C1*exp(-2*x)
+println!("{solution}");   // C1*exp(-2*x)
 ```
 
 symplex supports 16 ODE classes: simple separable, full separable, first-order linear (constant and variable coefficient), exact, integrating factor, Bernoulli, Riccati (`solve_riccati` with a particular solution), Euler–Cauchy, homogeneous-coefficient, second-order constant-coefficient (homogeneous and non-homogeneous), nth-order constant-coefficient, reduction of order, variation of parameters, and Clairaut. Initial-value problems use `solve_ode_ivp`; linear systems `x' = Ax` use `ode::solve_ode_system_ivp`.
@@ -438,8 +438,9 @@ symplex supports 16 ODE classes: simple separable, full separable, first-order l
 - `rsolve` for polynomial/rational/hypergeometric coefficients (symplex has constant-coefficient linear and first-order recurrences)
 - `hyper`, `meijerg` and the Meijer-G integration engine
 - `Eq` as a first-class expression in every API (symplex has `Equation` with `solve`, `solve_for`, arithmetic, and `eq!`, accepted by `linsolve`)
-- Pretty-printing with Unicode box drawing (`pprint`) — symplex has `pretty()` / `pretty_ascii()`
 - `O()` notation for series remainders
+- Systems of nonlinear equations beyond polynomial systems with finitely many solutions (`nonlinsolve`)
+- LaTeX and Mathematica input (`parse_latex`, `parse_mathematica`)
 
 ### In symplex but not SymPy
 
@@ -447,7 +448,7 @@ symplex supports 16 ODE classes: simple separable, full separable, first-order l
 - Compile-time expression type safety (`Ex` / `BoolEx` / `SetEx`)
 - Thread-safe contexts (`Send + Sync`, no GIL)
 - Optimized Rust *and* C99 code generation with CSE and an embedded special-function runtime (`to_rust_fn`, `to_c_fn`)
-- Compiled closures for fast numerical evaluation (`compile`, `compile_many`)
+- Proofs of polynomial inequalities (Handelman, Pólya, sums of squares) re-verified in exact arithmetic, with Lean 4 / Mathlib export (`symplex::certificates`)
 - Exact `RootOf` eigenvalues for irreducible cubic/quartic characteristic polynomials
 - Exact linear programming over ℚ with shadow prices and Farkas certificates (`symplex::linprog`)
 - Exact sign of a polynomial on an interval (`poly_is_nonnegative_on`, Sturm-based)

@@ -12,7 +12,7 @@ use symplex::prelude::*;
 let ctx = Context::new();
 ```
 
-You can create multiple contexts if you need isolated environments (e.g., separate user sessions on a server). Expressions from different contexts cannot be mixed — the library enforces this at runtime.
+You can create multiple contexts if you need isolated environments (e.g., separate user sessions on a server). Expressions from different contexts cannot be mixed: an operation on two of them panics with a message naming both contexts (see [Key Concepts](./key-concepts.md#why-contexts-exist)).
 
 ## Defining Symbols
 
@@ -113,7 +113,7 @@ println!("{}", f.to_latex());       // x^{2} + 2x + 1
 
 ### Symbolic evaluation
 
-`.eval()` applies exact simplification rules — reducing `sin(pi/4)` to `sqrt(2)/2`, `exp(ln(x))` to `x`, computing `5!` to `120`, and so on — without any floating-point approximation.  (Values that are rational or infinite at an exact argument, such as `sin(0)`, `cos(pi)` or `ln(0)`, are folded as soon as the expression is built.)
+`.eval()` applies exact simplification rules — reducing `sin(pi/4)` to `1/2*sqrt(2)`, `exp(ln(x))` to `x`, computing `5!` to `120`, and so on — without any floating-point approximation.  (Values that are rational or infinite at an exact argument, such as `sin(0)`, `cos(pi)` or `ln(0)`, are folded as soon as the expression is built.)
 
 ```rust
 # use symplex::prelude::*;

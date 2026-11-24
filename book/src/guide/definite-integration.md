@@ -1,6 +1,6 @@
 # Definite Integration and Quadrature
 
-New in 0.2. The 0.1 method `definite_integral` computed `F(b) − F(a)` from an antiderivative, which is wrong whenever the integrand has a singularity inside `[a, b]` (`∫₋₁¹ dx/x²` came out as `−2`). It has been replaced by three methods with precise contracts.
+A definite integral is not `F(b) − F(a)` from an antiderivative: that is wrong whenever the integrand has a singularity inside `[a, b]` (`∫₋₁¹ dx/x²` would come out as `−2`). There are three methods with precise contracts.
 
 | Method | Returns | Use when |
 |--------|---------|----------|
@@ -17,7 +17,7 @@ New in 0.2. The 0.1 method `definite_integral` computed `F(b) − F(a)` from an 
 5. Resolves `Abs`, `Sign`, `Heaviside`, `DiracDelta` and `Piecewise` integrands by splitting at their breakpoints.
 6. Consults a table of classical improper integrals (Gaussian, Dirichlet, Fresnel, `xⁿe⁻ˣ`, `x/(eˣ−1)`, `ln x`, `1/(1+x⁴)`, …) whose entries may carry symbolic parameters guarded by assumptions; the table is tried before an antiderivative is.
 
-If none of this decides the integral, the result is an unevaluated `DefiniteIntegral` node, displayed `Integral(f, x, a, b)` — never a guessed finite number.
+If none of this decides the integral, the result is an unevaluated `DefiniteIntegral` node, displayed `Integral(f, x, a, b)`, rather than a guessed finite number.
 
 ```rust
 use symplex::prelude::*;
@@ -126,6 +126,24 @@ fn main() {
 ```
 
 Conditionally convergent oscillatory tails such as `∫₀^∞ sin(x)/x dx` are beyond plain adaptive quadrature and also return an error; use `integrate_definite` (which knows the closed form) for those.
+
+For more than `f64` digits, `integrate_numeric_decimal(&x, &points, digits, rule)` integrates from the first of `points` to the last (split at the points in between) by arbitrary-precision tanh-sinh or Gauss–Legendre quadrature and returns a decimal string:
+
+```rust
+use symplex::definite::QuadRule;
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x);
+    // ∫₀¹ x^(−9/10) dx = 10: an endpoint singularity
+    let f = x.pow(&ctx.rational(-9, 10));
+    let v = f.integrate_numeric_decimal(&x, &[&ctx.int(0), &ctx.int(1)], 30, QuadRule::TanhSinh).unwrap();
+    assert_eq!(v, "10");
+}
+```
+
+Both quadratures know the integrand only at their nodes. The error of `integrate_numeric` is an estimate (the difference of the two rules), and `integrate_numeric_decimal` accepts a value when two successive levels agree: neither is a proof. A feature much narrower than the spacing of the nodes — a tall thin spike, a breakpoint that rounding moves — can be missed without an error, so give such points in `points` (or split the interval yourself) when you know them.
 
 For integrating a plain Rust closure, `symplex::definite::quadrature(&f, a, b, &opts)` exposes the same algorithm and returns the same `QuadResult`.
 

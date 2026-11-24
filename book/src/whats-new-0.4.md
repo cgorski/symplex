@@ -1,5 +1,7 @@
 # What's New in 0.4
 
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
 symplex 0.4.0 is a minor release with two mechanical breaking changes. The [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md) has the complete list, and [Migrating from 0.3 to 0.4](./reference/migrating-0.4.md) shows the two source changes an upgrading program may need.
 
 The theme is **certificates on parametric polyhedra** — the question a decision procedure asks thousands of times when its cells move with a parameter — together with the exact geometry of the cells themselves. It builds directly on the 0.3.5 exact matrix core and integer-pivoting simplex: each certificate is a few small exact LPs, and each takes milliseconds.

@@ -18,8 +18,11 @@
 //! - **Assumption queries:** acquire outer `read()` + inner `assumptions.lock()`
 //!   — concurrent arena reads, serialized cache writes.
 //!
-//! Lock ordering is inherent in the nesting: outer first, inner second.
-//! Deadlock is structurally impossible.
+//! Lock ordering is inherent in the nesting: outer first, inner second, so
+//! the library's own code cannot deadlock on these two locks.  The outer
+//! lock is not re-entrant: a closure given to
+//! [`Context::with_arena_mut`] that uses an `Ex` or a `Context` of the
+//! same context deadlocks (see the warning there).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};

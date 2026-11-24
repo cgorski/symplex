@@ -1,5 +1,7 @@
 # Migrating from 0.6 to 0.7
 
+> *Historical page: it describes the upgrade named in the title as it was published. Some of the names on the "after" side have changed again since — see [What's New since 0.13](../whats-new-since-0.13.md) and the CHANGELOG.*
+
 Every breaking change in 0.7.0, with the one-line fix. Code that only pattern-matches `Proved(c)` and `Refuted { point, value, .. }` on `PolyhedronOutcome` / `SosOutcome`, builds options with `::default()` and the `with_*` builders, and calls the inherent certificate methods compiles unchanged.
 
 ## Outcomes

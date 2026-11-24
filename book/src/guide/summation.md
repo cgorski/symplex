@@ -1,6 +1,6 @@
 # Summation and Series
 
-New in 0.2: a summation engine on `Ex` (`summation`, `product_over`), convergence tests, asymptotic series, and an `Ex`-based `FormalPowerSeries`.
+This chapter covers the summation engine on `Ex` (`summation`, `product_over`), convergence tests, and the `Ex`-based `FormalPowerSeries`. There is no Zeilberger algorithm and no hypergeometric closed form: a sum outside the methods below stays an unevaluated `Sum`.
 
 ## Finite sums
 

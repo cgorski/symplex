@@ -1,5 +1,7 @@
 # Migrating from 0.3 to 0.4
 
+> *Historical page: it describes the upgrade named in the title as it was published. Some of the names on the "after" side have changed again since — see [What's New since 0.13](../whats-new-since-0.13.md) and the CHANGELOG.*
+
 symplex 0.4 is a minor release with two source-level breaking changes, both mechanical. Everything else is additive; results of existing operations are unchanged. The full list is in the [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md), and `cargo semver-checks check-release --baseline-version 0.3.5 --release-type minor` reports exactly these two.
 
 ## `roots_count_real` → `count_real_roots_in`

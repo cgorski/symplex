@@ -1,6 +1,6 @@
 # What's New since 0.13
 
-One page for the releases 0.14 to 0.59.  For each release it names the two or three changes a user
+One page for the releases 0.14 to 0.60.  For each release it names the two or three changes a user
 must know, changes of behaviour first, in the words of that release's entry in the
 [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md).  The CHANGELOG has the rest:
 every breaking change under `### Breaking`, every fix with the oracle that confirmed it, and the
@@ -12,7 +12,61 @@ wrong is corrected, or a claim that could not be proved is refused (an `Err`, an
 `ConditionSet`).  A program that upgrades across several releases should read the parts marked
 **Behaviour** or **Breaking**.
 
-## 0.59 (this release)
+## 0.60 (this release)
+
+- **Behaviour — digits next to a zero.**  `eval_decimal` and `eval_f64` printed wrong trailing
+  digits for a Bessel `J`, `Y` or `I` function, an Airy function, `Ci`, `Chi`, `li` or an orthogonal
+  polynomial of a large degree when the argument is exactly representable and lies next to a zero of
+  the function: `besselj(0, 164953124686495525949401102535850027511/2^121)` at 16 digits was
+  `1.072899793541053e-38` and is `1.072899793541027e-38`.  The digits printed there are now covered
+  by an absolute error bound; no value became a refusal, and values away from zeros are unchanged.
+- **Behaviour — transforms and bound variables.**  A variable that is bound inside the expression —
+  the index of a `Sum` or `Product`, the variable of a definite `Integral` or of a `Limit` — is not
+  the transform variable.  The Laplace, Fourier and Mellin transforms (and the inverse Fourier
+  transform) returned wrong results for such inputs, because they rewrote step functions inside the
+  bound part: `laplace(Sum(Heaviside(t + 1), t, -3, 3)*sin(3*t), t, s)` was `21/(s^2 + 9)` and is
+  `3*Sum(H(t + 1), t=-3..3)/(s^2 + 9)` (the sum is 9/2);
+  `mellin_transform(Sum(Heaviside(x + 1), x, -3, 3)*exp(-x), x, s)` was `7*Gamma(s)` and is
+  `9/2*Gamma(s)`.  A `RootOf` in the transform variable is a constant of the Fourier and Mellin
+  transforms (it was refused).  The Z transform and the inverse Laplace and Z transforms were
+  right, and a sum over another index is transformed term by term as before.  See
+  [Transforms](./guide/transforms.md#a-variable-bound-inside-the-expression).
+- **Behaviour — limits.**  A function that stands at a pole and has no value there — `expint(1, 0)`,
+  `uppergamma(0, 0)` — is not a factor of a limit: `limit(x^2*expint(1, 0), x, 0)` was `0` and
+  `limit(expint(1, 0)/x, x, oo)` was `0`; both are refused (an unevaluated `Limit`; `try_limit`
+  gives the reason "a part of the expression has no value at any point").  The same holds where a
+  step function puts the function at its pole near the point (`x^2*expint(1, Heaviside(x - 1))` at
+  0).  A limit whose value is right except where a parameter puts a function at a pole carries the
+  condition: `limit((y - x)/expint(1, y), x, 0)` is `Piecewise(y/expint(1, y) if y != 0)`.  The
+  infinities the constructors fold are unchanged (`x^2*besselk(0, 0)` at 0 is `oo`).
+- **Behaviour — subsets of the reals.**  `SetEx::is_subset` / `is_superset` against the real line
+  (or any set that evaluates to it) answered `Some(true)` whatever the set held.  The members must
+  now be proved real: `{I}`, the solution set `{2nπi}` of `exp(x) = 1` and `UniversalSet` are not
+  subsets of `reals` (`Some(false)`), and `{x}` for a symbol without assumptions is `None`.
+- **Behaviour — sets and members that are not real.**  A set of real numbers (an interval, the real
+  line) contained, absorbed or removed elements that are not real: `{I}.difference(reals)` was
+  `EmptySet` and is `{I}`, `({I} ∪ reals).simplify()` was `(-oo, oo)` and is `(-oo, oo) ∪ {I}`, and
+  `(abs(t) + I).try_solve_gt(t)` was `(-I, oo) ∪ (-oo, I)` and is `EmptySet`.  An element must now
+  be proved real; where it is not known to be real (a symbol without assumptions) the set expression
+  stays as it is, and `UniversalSet` is no longer taken for the real line (`UniversalSet \ {0}`
+  stays).
+- **Behaviour — eigenvalues and stability.**  `Matrix::eigenvals` (and `eigenvects`, `diagonalize`,
+  `StateSpace::poles`) returned only the eigenvalues it had found when a factor of the
+  characteristic polynomial had no roots in closed form; now the list is complete or the call is an
+  error that names the eigenvalues found (`StateSpace::poles` is empty, the new `try_poles` gives
+  the error), and a matrix of rational numbers always gets its whole spectrum, with `RootOf`
+  eigenvalues.  `StateSpace::is_stable` and `is_routh_stable` decide from proved signs: a system
+  with the pole `-exp(-1000)` was called unstable and is stable, and `is_routh_stable` is `None`
+  where a coefficient with symbols is not proved real (a symbol without assumptions may be complex:
+  declare it real).
+- **Faster.**  `series(atanh(pi^x + x^(3/2)), x, 1, 4)` — the slow input of the nightly fuzzing that
+  0.59 listed as open — takes about a millisecond instead of 1.8 s in a release build, and the same
+  series to order 12 or 20, refused before, is expanded.
+- For contributors: the eight largest source files are split into a parent and child modules (no
+  public path changed), and the printers, the parser and the sort key read function names from the
+  one table of functions (`Func`).  See `CONTRIBUTING.md`.
+
+## 0.59
 
 - **Behaviour — powers of 0.**  `0^y` with a symbolic exponent is 0 for `re y > 0`, 1 at `y = 0` and
   `zoo` for `re y < 0`, and results keep that case distinction: `0^y·0^(−y)` was `1` and is
@@ -28,9 +82,10 @@ wrong is corrected, or a claim that could not be proved is refused (an `Err`, an
   twin that reports the refusal (`try_coefficients`, `try_fibonacci`, `try_lucas`, `try_primorial`,
   `try_primorial_up_to`, `discrete::try_convolution_cyclic`).  `Context::from_tree` no longer
   overflows the stack on a deeply nested tree.
-- **Behaviour — numerical evaluation.**  A real or imaginary part that is certainly not 0 is never
-  dropped, also below the exponent range: `1 + i·exp(−10¹⁰)` printed `1` and is now refused
-  (`SymplexError::Unevaluable`).
+- **Behaviour — numerical evaluation.**  A real or imaginary part that is certainly not 0 is refused
+  rather than dropped when it lies below the exponent range: `1 + i·exp(−10¹⁰)` printed `1` and is
+  now `SymplexError::Unevaluable`.  (Some such parts are still dropped; see
+  [Known Limitations](./reference/known-limitations.md).)
 - New values: `evalf` of long sums whose terms peak far from their ends (the entropy of
   `Binomial(10⁵, 13/100)`), densities of `F` and Student t with huge degrees of freedom, integrals
   of rational functions of `c^x` for a complex `c`, `singularities` of a solution family with a

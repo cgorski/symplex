@@ -1,5 +1,7 @@
 # What's New in 0.9 and 0.10
 
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
 symplex 0.9.0 is a **comprehensiveness** release — additive over 0.8.2 — driven by a module-by-module survey of the crate against SymPy 1.14. Four areas got a first thorough pass; every new function is tested against reference values from that SymPy. The [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md) has the full list.
 
 ## Algebraic numbers and polynomial algebra

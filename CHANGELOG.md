@@ -8,6 +8,709 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-11-24
+
+A reorganisation of the source, and seven fixes.  The eight largest source
+files, between 8,500 and 15,400 lines each, are split into a parent and
+child modules of one topic each.  The code was moved, not edited: every
+path, every result and every test name is what it was, and a contributor
+who looks for the Riccati solver, the Bessel kernels or the Lambert-W
+equations opens a file of that name instead of searching 15,000 lines.  How
+a function is written and ordered — its name, the names the parser reads,
+its LaTeX, two-dimensional and MathML forms, the leading bytes of its sort
+key — is data of its entry in the function table, read by the four
+printers, the parser and the sort key, which each had an arm per function:
+adding a function no longer means finding its name in six files.  The
+helpers of the Laplace, Z, Fourier and Mellin transforms have one home, and
+the set deciders answer in the three-valued `Truth` inside the crate.
+For a user, the most serious first: `eval_decimal` and `eval_f64` printed
+wrong trailing digits next to a zero of a Bessel or Airy function, of `Ci`,
+`Chi` or `li`, or of an orthogonal polynomial evaluated by its recurrence,
+at an exactly representable argument, and now print digits covered by an
+absolute bound (no value became a refusal); a set of real numbers — an
+interval, ℝ — no longer contains, absorbs or removes an element that is not
+proved real (`{I} \ ℝ` was `EmptySet`, `{I} ∪ ℝ` simplified to `(-oo, oo)`,
+`|t| + i > 0` had the solution set `(-I, oo) ∪ (-oo, I)`), and `is_subset`
+no longer calls a set with non-real members a subset of the reals;
+`eigenvals` and what is built on it return the whole spectrum or an error,
+never a shorter list, and `StateSpace::is_stable` and `is_routh_stable`
+decide from proved signs; the Laplace, Fourier and Mellin transforms were
+wrong for an expression in which the transform variable also occurs bound
+(the index of a `Sum`, the variable of an `Integral` or a `Limit` inside it)
+and are right or refused; a limit through a constant that stands at a pole
+of its function (`x²·E1(0)`) was `0` and is refused; and the series that
+failed the nightly fuzzing by its running time takes a millisecond.
+
+### Breaking (behaviour)
+
+- **A variable bound inside an expression is not the transform variable.**
+  The Laplace, Fourier and Mellin transforms and the inverse Fourier
+  transform returned wrong results for an expression in which the transform
+  variable also occurs bound — as the index of a `Sum` or `Product`, the
+  variable of a definite `Integral` or of a `Limit`.  Their passes that
+  rewrite the function being transformed (`Piecewise` into Heaviside steps,
+  which agrees almost everywhere but not at the breakpoints a bound index
+  runs through; steps read on the positive axis, where the Laplace and
+  Mellin integrals live) walked into such binders, and the Fourier and
+  Mellin transforms counted a bound occurrence as dependence on the
+  variable.  Old → new, each checked against mpmath's `quad` of the
+  defining integral at 20 and 40 digits (the constants from their
+  definitions, `H(0) = 1/2`):
+  `laplace(Sum(Piecewise(1 if t < 2, 0 if True), t, 1, 3)*exp(-2*t), t, s)`
+  was `3/(2*(s + 2))` and is `Sum(…)/(s + 2)` (the sum is 1);
+  `laplace(Sum(Heaviside(t + 1), t, -3, 3)*sin(3*t), t, s)` was `21/(s^2 +
+  9)` and is `3*Sum(…)/(s^2 + 9)` (the sum is 9/2);
+  `laplace(Integral(Heaviside(t + 1), t, -3, 3)*t^2, t, s)` was `12*s^(-3)`
+  and is `2*s^(-3)*Integral(…)` (the integral is 4);
+  `laplace(exp(-Sum(Heaviside(-t - 1), t, -3, 3)*t), t, s)` was `1/s` and is
+  `1/(s + Sum(…))` (the sum is 5/2); `laplace(Product(Heaviside(t + 3) + 1,
+  t, -3, 0)*Heaviside(t - 1), t, s)` was `16*exp(-s)/s` and is
+  `exp(-s)*Product(…)/s` (the product is 12); `laplace(Limit(Heaviside(t +
+  1), t, -2)*exp(-t) + t, t, s)` was `s^(-2) + Limit(1, t, -2)/(s + 1)` and
+  keeps `Limit(Heaviside(t + 1), t, -2)` (which is 0);
+  `fourier_transform(Sum(Piecewise(1 if x < 2, 0 if True), x, 1,
+  3)*exp(-x^2), x, w)` was `3/2*sqrt(pi)*exp(-1/4*w^2)` and is
+  `sqrt(pi)*exp(-1/4*w^2)`, and its inverse transform likewise
+  (`3*exp(-1/4*x^2)/(4*sqrt(pi))` → `exp(-1/4*x^2)/(2*sqrt(pi))`);
+  `fourier_transform(Sum(Piecewise(x if x <= 2, 0 if True), x, 1, 3)/(x^2 +
+  1), x, w)` was `2*exp(-abs(w))*pi` and is `3*exp(-abs(w))*pi`;
+  `mellin_transform(Sum(Heaviside(x + 1), x, -3, 3)*exp(-x), x, s)` was
+  `7*Gamma(s)` and is `9/2*Gamma(s)`; `mellin_transform(Sum(Piecewise(1 if x
+  < 2, 0 if True), x, 1, 3)/(1 + x), x, s)` was `3*pi/(2*sin(s*pi))` and is
+  `pi/sin(s*pi)`; `mellin_transform(Product(Heaviside(x + 3) + 1, x, -3,
+  0)*Heaviside(1 - x)*x, x, s)` was `16/(s + 1)` and is `12/(s + 1)`.  Three
+  wrong results became refusals: `mellin_transform(sin(x)/x +
+  Sum(Heaviside(-x - 1), x, -3, 3), x, s)` returned the transform of
+  `sin(x)/x` alone (the constant 5/2 has no Mellin transform);
+  `fourier_transform(Integral(Heaviside(x + 1), x, -3, 3), x, w)` was
+  `-6*exp(w*I)*I/w` (the constant 4 was taken for a function with compact
+  support; the transform is `8π·δ(w)`), and the same constant times
+  `Heaviside(x + 1) - Heaviside(x - 1)` was `-6*exp(w*I)*I/w +
+  6*exp(-w*I)*I/w` (10.0977 at `w = 1`; it is `8 sin(w)/w`, 6.7318) — the
+  Fourier transform returns no result that holds an unevaluated integral
+  (*Known issues*).  The Z transform and the inverse Laplace and Z
+  transforms were right, and a binder of another variable is unaffected
+  (`Sum(exp(-k*t), k, 1, 3)` transforms term by term as before).  The text
+  of the refusal changed for constants with a bound variable that the
+  Fourier and Mellin transforms still refuse ("no transform rule applies to
+  …" became "result would require a distribution that cannot be represented
+  (e.g. δ′)" or "result still depends on the variable").  Differential run
+  (6,527 generated inputs through the eight transforms, 0.59 against this
+  tree): the 4,447 inputs without a bound occurrence of the variable are
+  identical; of the 2,080 with one, 527 differ — 72 wrong results are
+  right, 2 are refused although the same input without the binder is
+  answered (*Known issues*), 4 answers that had dropped a term are refused
+  as the input without the binder is, 28 refusals are answered (see
+  *Fixed*) and 421 refusals have another text.
+- **A function at a pole place is no factor of a limit.**  A constant that
+  is a function of the table standing where its `Poles` facet has a pole,
+  and that the constructors leave unevaluated — `E1(0)`, `expint(1/2, 0)`,
+  `uppergamma(0, 0)`, `uppergamma(−1/2, 0)`, `lowergamma(−1/2, 0)`,
+  `polylog(0, 1)` before `eval`, `B(π, −1)`, or with a parameter
+  `besselk(y, 0)`, `besselj(y, 0)`, `expint(y, 0)`, `B(0, y)` — has no
+  value, and an expression that holds one has no limit.  Up to 0.59 a
+  factor tending to 0 annihilated it (`0·c = 0`) before any rule looked at
+  it: `limit(x²·E1(0), x, 0)` was `0` from every side,
+  `limit(sin(x)·uppergamma(0, 0) + 1, x, 0)` was `1`, `limit(E1(0)/x, x,
+  ∞)` was `0`, `limit(x + E1(0), x, ∞)` was `∞`; all are refused ("a part
+  of the expression has no value at any point").  The values the
+  constructors fold at such a place are unchanged (`expint(2, 0) = 1`,
+  `uppergamma(1/2, 0) = √π`, `besselj(1, 0) = 0`), as are the signed
+  infinities they fold (`x²·besselk(0, 0)` is `∞`, `x²·Ei(0)` is `−∞`, as
+  `x²·∞` is), and a numeric `B(a, b)` whose pole cancels in
+  `Γ(a)·Γ(b)/Γ(a + b)` (`B(−3, 1) = −1/3`).  A limit whose generic value was right keeps it with the exact
+  condition where a parameter puts a function at such a place: `limit((y −
+  x)/E1(y), x, 0)` is `Piecewise((y/E1(y), y ≠ 0))`.
+- **The same where a step function reaches the pole place.**
+  `limit(x²·E1(Heaviside(x − 1)), x, 0)`, `limit(x²·uppergamma(0, floor(x +
+  1/2)), x, 0)`, `limit(x²·E1(KroneckerDelta(x, 0)), x, 0)` and
+  `limit(x²·E1(DiracDelta(x + 1)), x, 0)` were `0`,
+  `limit(sin(x)·lowergamma(−1/2, Max(x − 1, 0)) + 1, x, 0)` was `1`, and
+  `limit(x²·E1(KroneckerDelta(x + 1, −1)), x, 0, '+')` was `0` although the
+  two-sided limit was refused since 0.59: the step is constant near the
+  point, at the value where the function has its pole.  All are refused.
+  Hunt (6,193 limits: constants at pole places, and 32 step functions
+  inside 55 functions with a pole at the step's value; mpmath at 40 digits
+  at four distances from the point): 761 had a finite answer where the
+  expression has no finite value at any nearby point; none has now, and no
+  right answer became a refusal.  In the golden corpus 147 results change,
+  all through these two rules: 119 "values" of expressions that hold a
+  function at a pole place are refused (118 limits, and the series of
+  `log(uppergamma(0, betainc_regularized(2, 0, x, x)), 3)`, which was
+  `ln(uppergamma(0, 0))/ln 3`); 11 limits that were right on part of the
+  parameter range only are refused (`(y − x) + uppergamma(y, erf(0))` was
+  `y + Γ(y)`, which holds for `re y > 0`); 11 limits at infinity that were
+  `∞` next to such a constant are refused (`E1(0) + x`, which is `∞` in the
+  extended-real reading: see *Known issues*); 5 keep their value with the
+  exact condition attached; and one wrong value is unchanged but for an
+  attached condition (*Known issues*).
+- **`SetEx::is_subset` and `is_superset` against the real line.**  A set
+  was a subset of ℝ, or of any set that evaluates to the whole line,
+  whatever it held: the evaluator did not tell ℝ from the universal set,
+  and "everything is a subset of the universal set" was applied to ℝ.  The
+  members must now be proved real.  `{I}.is_subset(reals)`, `{1,
+  I}.is_subset(reals)`, `{sqrt(-2), 3}.is_subset(reals)`, the solution set
+  `{2nπi : n ∈ ℤ}` of `exp(x) − 1` and `UniversalSet.is_subset(reals)` were
+  `Some(true)` and are `Some(false)`; `{x}.is_subset(reals)` for a symbol
+  `x` without assumptions was `Some(true)` and is `None`; the same holds
+  with `reals ∪ {5}` on the right.  Unchanged, `Some(true)`: `{r}` for a
+  real symbol `r`, `{2kπ}`, `{k²}`, `(0, oo)`, `[x, x + 1]` and `∅` in the
+  reals, every set in `UniversalSet`, and `ConditionSet(x, x > 1)` in the
+  reals for a plain `x` (the order relation forces a real `x`).
+  Differential run of this change alone, before the set fixes below (6,600
+  generated set, formula and solver cases, 237,988 lines of output): 130
+  lines differ, all subset verdicts — 42 from true to false (the subset
+  holds `I`, `1 + I`, `acos(2)`, `zoo`, `−oo`, or is the universal set) and
+  88 from true to undecided (members not known real).
+- **A set of real numbers contains, absorbs and removes only what is proved
+  real.**  An interval, the real line `ℝ = (−∞, ∞)` and every set in normal
+  form hold real numbers only, and the set evaluator now asks for the proof
+  (`transforms/sets.rs`, "Real members"): an element proved real is compared
+  with the ends; one that is certainly not real (`i`, `acos 2`, `p·i` for a
+  positive `p`, `±∞`, `zoo`) is not a member; for one not known to be real
+  (a symbol without assumptions, `√a`, `nan`) the membership is undecided
+  and the expression stays.  Changed outputs, old → new.  Differences: `{i}
+  \ ℝ` was `EmptySet` and is `{I}`; `{1, i, x} \ ℝ` is `{I} ∪ ({x} \ (-oo,
+  oo))`; `{x} \ ℝ` for a plain `x` and `{2nπi} \ ℝ` stay (all were
+  `EmptySet`); SymPy 1.14: `{I}`, `Union(Complement({x}, Reals), {I})`.
+  Unions: `({i} ∪ ℝ).simplify()` was `(-oo, oo)` and is `(-oo, oo) ∪ {I}`;
+  likewise `{x} ∪ ℝ`, `{2nπi} ∪ ℝ`, `{zoo} ∪ ℝ`; `inf`, `sup` and `measure`
+  of a set with a member off the line are `None` (were `-oo`, `oo`, `oo`),
+  and `contains(i)` of such a union is `Some(true)` (was `None`); `{i} △ ℝ`
+  is `(-oo, oo) ∪ {I}` (was `(-oo, oo) \ {I}`).  Intersections: `{i} ∩ ((−∞,
+  0] ∪ (0, ∞))` was `{I}` and is `EmptySet`; `ℝ ∩ {x | x = cos x}` keeps its
+  `ℝ` for a plain `x`; `{i} ∩ [0, 1]`, `{i} \ [0, 1]`, `[0, 1] \ {i}` are
+  `EmptySet`, `{I}`, `[0, 1]` (were left unevaluated).  Complements:
+  `absolute_complement` is taken in ℝ: `{i}ᶜ` is `(-oo, oo)` and `({i}ᶜ)ᶜ`
+  is `EmptySet` (was `{I}`); `({x}ᶜ)ᶜ` is `(-oo, oo) ∩ {x}` for a plain `x`
+  (was `{x}`); `(Aᶜ)ᶜ = A` for sets of real numbers as before.  Membership:
+  `[i, i + 1].contains(i + 1/2)` was `Some(true)` and is `Some(false)`; `{1,
+  2}.contains(i)`, `[x, x + 1].contains(i)` and `{i} ⊆ [0, 1]` are
+  `Some(false)` (were `None`); `ℝ.contains(r + π)` is `Some(true)` for a
+  real `r` (was `None`).  Constants: a constant is a point of the line only
+  when it is proved real (the assumptions, or a certified imaginary part):
+  `1 + i·(sin²1 + cos²1 − 1 + e⁻⁵⁰⁰⁰)`, whose imaginary part reads as 0 at
+  every precision reached, was the point `1` of `[0, 2]` and is undecided.
+- **`UniversalSet` is not the real line.**  The evaluator gave the two one
+  value.  `UniversalSet \ {0}` was `(-oo, 0) ∪ (0, oo)` and stays
+  `UniversalSet \ {0}` (it holds `i`); `UniversalSet \ ℝ` was `EmptySet`;
+  `inf`, `sup`, `measure`, `closure`, `interior`, `boundary`, `as_intervals`
+  of `UniversalSet` are `None` (were those of ℝ).  Exact: `U \ U = ∅`, `A \
+  U = ∅`, `U \ (U \ A) = A`, `A ∩ (U \ X) = A \ X`, `A \ (U \ X) = A ∩ X`.
+  The declared domain of a nonzero symbol that is not declared real is
+  `UniversalSet \ {0}`: `(z² + a).solve_as_set(z)` was `{√(−a), −√(−a)} ∩
+  ((−∞, 0) ∪ (0, ∞))` — real roots only — and is `{sqrt(-a), -sqrt(-a)} \
+  {0}`.
+- **An order relation with a side that is not real holds nowhere.**  `(|t| +
+  i).try_solve_gt(t)` was `(-I, oo) ∪ (-oo, I)` and is `EmptySet` (so are
+  `<`, `≥`, `≤`, and `|t| + acos 2 > 0`): the shortcut `c·|a·t + b| + d rel
+  0 ⇔ |a·t + b| rel k` took `k = −d/c` for a real bound.  Through
+  `reduce_inequalities` / `solve_for`: `|t| > i` was `(I, oo) ∪ (-oo, -I)`,
+  `t + i > i` was `(0, oo)`, `t + i > 2t + i` was `(-oo, 0)` — all
+  `EmptySet` — and `i·t > i·t − 1` was `UniversalSet` and is `{0}`; `(t + i
+  > i).satisfiable()` was `Some(true)`.  SymPy 1.14 raises "Invalid
+  comparison of non-real".  A bound not known to be real is refused: `(|t| −
+  √a).try_solve_lt(t)` for a plain `a` was `(-sqrt(a), sqrt(a))` and is an
+  error (`solve_lt` returns the `ConditionSet`), as `t − √a > 0` always was;
+  `|t| − x < 0` is still `(-x, x)` (a plain parameter is read as real).
+- **A list of eigenvalues is complete or the call is an error.**
+  `Matrix::eigenvals`, `eigenvals_with_multiplicity` and `eigenvects`
+  returned the eigenvalues they had found when a factor of the
+  characteristic polynomial had no roots in closed form, with a log line: a
+  6×6 matrix with the characteristic polynomial `(λ − 1)·(λ⁵ − a·λ − 1)` had
+  the eigenvalues `[1]` and one eigenvector, `diagonalize` called it
+  `NotDiagonalizable` ("insufficient eigenvectors found") and
+  `StateSpace::poles` listed one pole for six states.  The multiplicities
+  now sum to the size of the matrix or the result is
+  `Err(ComputationFailed)`, whose message names the eigenvalues that were
+  found ("found 1 of its 6 roots (1), the other 5 are not known");
+  `diagonalize`, `jordan_form`, `matrix_exp`, the matrix functions,
+  `singular_values` and `condition_number` report that error,
+  `is_diagonalizable` is `None`, and `StateSpace::poles` is empty
+  (`try_poles` gives the reason).  A matrix of rational numbers always has
+  its whole spectrum: an irreducible factor of any degree has the exact
+  roots `RootOf(factor, k)`.
+- **`StateSpace::is_stable` and `is_routh_stable` answer from proved
+  signs.**  `is_stable` compared the `f64` value of each pole with `0.0`; a
+  pole below the range of `f64` rounds to `−0.0`, and `−0.0 >= 0.0`: `A =
+  [[−e^(−1000)]]` and the pair `−e^(−1000) ± i` were `Some(false)` and are
+  `Some(true)`.  The sign of the real part of a pole is now the one the
+  certified queries prove (`Some(true)` needs every pole found and proved in
+  the open left half-plane, `Some(false)` one pole proved on the axis — an
+  exact zero, not a tolerance — or to its right); a pole with symbols is
+  decided by the assumption system (`[[−1 + i·k]]`, `k > 0`: `None` →
+  `Some(true)`).  `is_routh_stable` read a coefficient or table entry that
+  was not positive and not zero as negative, also when it was not real: `i·s
+  + 1 − i` (root `1 + i`) was `Some(true)`, `s + 1 + i` (root `−1 − i`)
+  `Some(false)`, `i·s² + 2i·s + i − 100` (a root with real part `+6.07`)
+  `Some(true)`; they are `Some(false)`, `Some(true)`, `Some(false)`.  It now
+  needs every coefficient proved real and the leading one of proved sign; a
+  polynomial with constant coefficients that are not all real is decided
+  through `p·p̄`, any polynomial by the sum of its roots where that proves a
+  root with a real part `≥ 0`, and the answer is `None` otherwise — a
+  refusal where 0.59 answered, because a symbol without assumptions may be
+  complex (`s³ + s² − s + K` with a plain `K`: `Some(false)` → `None`;
+  declare `K` real).
+- **Trailing digits next to a zero of a real special function.**
+  `eval_decimal` and `eval_f64` of `besselj`, `bessely`, `Ci`, `Chi`, the
+  Airy functions, `li`, `besseli` of a negative non-integer order and the
+  orthogonal polynomials of a large integer degree, at an exactly
+  representable argument next to a zero of the function, print other
+  trailing digits than 0.59 did — the right ones (the list is under
+  *Fixed*): `besselj(0, 164953124686495525949401102535850027511/2^121)` at
+  16 digits was `1.072899793541053e-38` and is `1.072899793541027e-38`.  No
+  value became a refusal, and the 5,280 values of the same routes compared
+  away from zeros are byte-identical.
+
+### Added
+
+- `StateSpace::try_poles`: the poles, or the error that says why they are
+  not all known (as `TransferFunction::try_poles`).
+
+### Fixed
+
+- **A `RootOf` in the transform variable is a constant of the Fourier and
+  Mellin transforms.**  `fourier_transform(RootOf(x^5 - x + 1, 0)*exp(-x^2),
+  x, w)` was refused ("no transform rule applies"); it is
+  `sqrt(pi)*exp(-1/4*w^2)*RootOf(x^5 - x + 1, 0)`.  Likewise
+  `mellin_transform(RootOf(x^3 + x + 1, 0)*exp(-x^2), x, s)`
+  (`1/2*Gamma(1/2*s)` times the root, for `re(s) > 0`),
+  `inverse_mellin_transform(RootOf(s^5 - s + 1, 0)*gamma(s), s, x)`
+  (`exp(-x)` times the root) and `inverse_fourier_transform(RootOf(w^3 + w +
+  1, 0)/(w^2 + 1), w, x)` (`1/2*exp(-abs(x))` times the root).  The Laplace
+  transform already answered these; it now also goes on where a bound step
+  had made it give up: `laplace((1 - cos(t/2))/t*Sum(Heaviside(t + 1), t,
+  -3, 3), t, s)` came back unevaluated and is `1/2*ln(1/4*s^(-2) + 1)` times
+  the sum.
+- **`series(atanh(π^x + x^(3/2)), x, 1, 4)`** (the input `c9feedf1241f` of
+  the nightly fuzzing, listed as open under 0.59) takes 1 ms instead of
+  1.8 s (0.5 s instead of 57 s as CI builds the fuzz target, with
+  AddressSanitizer).  Two causes.  The argument lies on the cut of `atanh`,
+  and a power with a constant base (`π^(x + 1)`) was not shown real near
+  the point, so the expansion was repeated with 12 and with 28 terms: a
+  constant is now its own limit.  And every zero test of a coefficient
+  evaluated the whole coefficient again at 30 digits, although it is built
+  from coefficients tested before (713 tests on constants of up to 5,200
+  distinct nodes): the test now first encloses the constant by interval
+  arithmetic on the certified enclosures of its parts, kept per node, and
+  evaluates as before only where the enclosure contains 0.  The same series
+  to order 12 or 20, refused up to 0.59 after 4.2 s and 5.4 s (the tests
+  used up the evaluation budget), is expanded in 14 ms and 80 ms;
+  `series(ln(2^x + x^π − 5)·atanh(π^x + x^(3/2)), x, 1, 6)`, refused after
+  4.3 s, is expanded in 3 ms; `limit(Chi(acsch(π − x)), x, ∞)`, refused by
+  that budget, is refused in 0.08 s instead of 0.45 s.  The limit and
+  series operations of the golden corpus take 20 % less CPU time (46.9 s →
+  37.7 s for 8,000 cases), and 7 of their 35 harness timeouts finish.
+- **Digits next to a zero of a real special function are certified by an
+  absolute bound.**  `besselj`, `bessely`, `Ci`, `Chi`, `airyai`, `airybi`,
+  `airyaiprime`, `airybiprime`, `li`, `besseli` of a negative non-integer
+  order and the orthogonal polynomials of a large integer degree compute
+  their value as a sum that cancels — an alternating series, `cos ω·P − sin
+  ω·Q`, `γ + ln x + Σ`, the end of a three-term recurrence — to an absolute
+  accuracy of about `2^(−prec − 40)`, and the bound was two ulps of the
+  *result*.  At an exactly representable argument (a dyadic rational, so
+  that the argument brings no error of its own) next to a zero the result is
+  small, and its trailing digits were printed without being covered, by
+  `eval_decimal` and by `eval_f64`.  Old → new: `besselj(0,
+  28117251920540589153062978256639537926577956413888/2^163)` at 30 digits
+  `6.49874092411216031186725338065e-51` → `…338325e-51`; next to the 20th
+  zero (the Hankel expansion), `besselj(0,
+  164953124686495525949401102535850027511/2^121)` at 16 digits
+  `1.072899793541053e-38` → `1.072899793541027e-38` (`eval_f64` likewise);
+  `bessely(0, 83581708755083798884794722849114268496462373033861/2^166)` at
+  30 digits `-2.31612143674128605044602699707e-51` → `…044115419236e-51`;
+  `bessely(1/2, x)` (= `−J_(−1/2)`) next to `3π/2` `…130537e-51` →
+  `…130886e-51`; `Ci(150343892697503437547800758175296216755/2^120)` (the
+  zero at 113.9, asymptotic expansion) at 16 digits `-8.880722468532212e-40`
+  → `-8.880722468443551e-40`; `Ci(x)` and `Ci(−x)` next to 0.6165 at 30
+  digits from the 25th digit;
+  `Chi(178247584439155322669533330017089363757/2^128)` at 16 digits
+  `-1.464288802275449e-39` → `-1.464288802275443e-39` (and `Chi(−x)`);
+  `airyai(-27337182469139736116683211541402392898793557384887/2^163)` at 30
+  digits `-1.98879268556479007370830765028e-50` →
+  `-1.9887926855647900737080324357e-50`;
+  `airybi(-137865860165465727328921580036660048953/2^121)` (the 80th zero)
+  at 16 digits `1.269913975064016e-37` → `1.269913975063954e-37`;
+  `airyaiprime`, `airybiprime` next to their first zeros at 30 digits from
+  the 21st and 23rd digit;
+  `li(33938856210460179588780149376788169124828439945919/2^164)` at 30
+  digits `…490625093e-50` → `…490625023e-50`; `besseli(-3/2,
+  28053316752121428210351574332014715515080983425197/2^164)` `…559942e-50` →
+  `…559945e-50`; `legendre(100,
+  17798794606925014998078840683233776870609402119942521049963006112341786/2^235)`
+  at 50 digits `4.6124217044228027324163396646113…e-71` →
+  `4.6124217044228027324163396714093…e-71`, and likewise `chebyshev_t`,
+  `chebyshev_u`, `hermite`, `laguerre`, `gegenbauer`, `assoc_laguerre`,
+  `assoc_legendre` of degree 40 and more at such an argument (below that
+  `eval` folds a polynomial of a rational exactly).  The routes now state
+  the absolute error of what they summed — the sizes of the terms
+  (`wp::Summed`), the envelope of a recurrence (`wp::Recurred`), charged to
+  the working precision they were called with (`Wp::charge`, `Wp::carry`;
+  `transforms/evalf/wp.rs`, "A route's own error") —
+  `sensitivity::special_error` adds it to the node's bound
+  (`cspecial::bound` on the cut), and the adaptive loop raises the precision
+  until the requested digits are certified, or refuses.  No zero is
+  detected.  Measured on 28,539 arguments next to zeros (dyadic and decimal,
+  16/30/50 digits and `eval_f64`, against mpmath at two precisions):
+  56/554/550/56 wrong before, 0 after; refusals unchanged (175/160/231, and
+  the complex values in `eval_f64`).  Away from zeros nothing changes: 5,280
+  values of the same routes are byte-identical, at +0.45 % CPU on that batch
+  (one exponent read per term); the golden corpus is unchanged (empty diff)
+  and its CPU time within noise (+0.02 %).
+- **`{i}.difference(reals)`, `({i} ∪ reals).simplify()`, `(|t| +
+  i).try_solve_gt(t)`** (the three results under *Breaking*), with their
+  neighbours: the set evaluator took every operand next to "the whole line"
+  for a set of real numbers, and read realness off a comparison or a
+  16-digit value.  A differential probe of 13,400 generated cases (set
+  algebra over real, non-real, non-finite and unassumed members; the
+  solvers; inequalities with sides that are not real) against a membership
+  oracle by definition (mpmath, 110 digits, real and non-real test points):
+  118,453 lines differ from the tree before this fix; with the same input,
+  50,921 were wrong and are right or refused, 11,439 were refused and are
+  right, 4,725 are right in another form, 2,816 are right answers now left
+  unevaluated or refused (members real but not proved real, such as `x·conj
+  x`), and none is refuted.  The golden harness (6.2 million pairs) is
+  unchanged.
+- **`eigenvals` of a matrix whose characteristic polynomial has a factor
+  that is not solved, and stability read from `f64` values** (the results
+  under *Breaking*).  The two helpers behind `eigenvals` called
+  `solve_or_empty`, which turns every refusal into `[]`, and the roots of a
+  factor that was not solved were dropped behind a log line.  The
+  eigenvalues now travel inside the crate as a `Spectrum` — `Complete` when
+  the multiplicities sum to the size of the matrix, `Partial { found,
+  missing }` otherwise — which has no `len` and no iterator: a consumer
+  takes all of them or the error, or says why a part is enough
+  (`StateSpace::is_stable`: one pole proved in the closed right half-plane
+  decides "not stable"; "stable" needs them all).  An irreducible factor
+  over ℚ whose solve fails, or returns a number of roots other than its
+  degree, gets its exact roots anyway (`−b/a`, the quadratic formula,
+  `RootOf(factor, k)` from degree 3 on).  Hunt of the spectra (1,564
+  matrices up to 8×8: companion blocks of degrees 1–7 with rational,
+  parametric, algebraic and transcendental coefficients, repeated and
+  squared factors, as blocks and conjugated into one block; oracle: SymPy's
+  exact characteristic polynomial and its factors, their roots at 50
+  digits): 0.59 returned a short list for 123 of them, 0.60 for none; the
+  1,171 complete spectra agree with the oracle in count, multiplicities and
+  values.  Hunt of the verdicts (957 systems of 1–7 states: poles at ±
+  values down to `e^(−1000)`, at exact zeros, pairs on and next to the axis,
+  integer companions, a parameter `k > 0`; oracle: mpmath eigenvalues at 650
+  and 1,300 digits): 0.59 gave 30 verdicts against the oracle and decided
+  837, 0.60 gives none against it and decides 912 (43 of the 45 left open
+  depend on `k`).
+
+### Changed
+
+- **The eight largest source files are split into a parent and child
+  modules.**  `transforms/integrate.rs` (15,385 lines), `evalf.rs`,
+  `solve.rs`, `eval.rs`, `calculus/definite.rs`, `ode.rs`, `base/canon.rs`
+  and `domains/matrix.rs` (88,769 lines together) are now eight parents
+  (32,036 lines) and 66 new child modules in `transforms/integrate/`,
+  `transforms/evalf/`, `transforms/solve/`, `transforms/eval/`,
+  `calculus/definite/`, `calculus/ode/`, `base/canon/` and
+  `domains/matrix/` (one family of rules, one equation class or one kernel
+  family per file; CONTRIBUTING.md, "The split files", lists them).  The
+  largest file of `src/` is now `domains/ntheory.rs` with 7,136 lines.  No
+  public path, no behaviour and no test name changed: a child starts with
+  `use super::*;`, its parent imports it with a glob, and the inline test
+  modules stayed in the parents.  The proof: a comparison of every
+  top-level item before and after — 1,801 items, 1,366 of them in a new
+  file, each present once and textually equal but for the visibility
+  `pub(super)` added to 555 items and fields that a parent or a sibling
+  names, and for rustfmt's re-wrapping of those lines; the 36 child
+  modules that existed are byte-identical; `cargo nextest list` names the
+  same 15,099 tests before and after; the golden-output harness shows no
+  changed pair of 6.2 million; the Rubi harness, the byte-identity check
+  and the doctests give the results of 0.59.  Cost: CPU time of the golden
+  run +0.2 %, of the test suite +0.3 %, of the Rubi check −1.1 %; a clean
+  release build takes 62.7 s as before.
+- **Ratchet tables moved with the code.**  The per-file allowlists of the
+  ratchets `test_float_casts`, `test_float_evidence`, `test_truth_values`,
+  `test_special_atoms` and `test_alloc_bounds` (`tests/unit/`) have rows
+  for the child modules; the sum over a parent and its children is the old
+  row in every column.  `test_layering` counts distinct upward targets per
+  file, so its list grows from 29 to 41 files and its total from 85 to 94
+  while no module gained a dependency (the union over a parent and its
+  children is the old set).  `test_homogeneous_tuples` reads `pub` and
+  `pub(crate)` as the public surface; `pub(super)`, which reaches one
+  module tree, is no longer counted.  `THIRD-PARTY-NOTICES.md` names the
+  child files (16 rows).
+- **The printers, the parser and the sort key read the function table.**
+  Internal, no output changed.  `output/display.rs`, `output/latex.rs`,
+  `output/pretty.rs`, `output/mathml.rs` and `base/sort_key.rs` each have
+  one `match` arm for every function node (`func_nodes!() =>`, a pattern
+  kept next to `ExprNode::func_head` in `base/func.rs`; the matches stay
+  exhaustive) where they had one arm per function — 45 in `display.rs`, 45
+  and a list of 12 heads in `latex.rs`, 36 in `pretty.rs`, 45 and two lists
+  in `mathml.rs`, 45 in `sort_key.rs` — and `output/parse.rs` looks a call
+  name up with `Func::parsed` and builds it with `Arena::func` where
+  `call_1`/`call_2` had 42 arms; its list of 94 known names keeps the 36
+  that are not functions of the table (`sqrt`, `cot`, `Integral`, …).  The
+  table gains two facets, `pretty` (the layout of the two-dimensional
+  printer: a function without an arm used to fall to a wildcard arm) and
+  `mathml` (the MathML head: `arcsin`, `sgn`, `Γ`), and the predicate
+  `Func::bare_argument` (the functions `parse_implicit` applies without
+  parentheses, a list of 31 names before).  The sort-key bytes are the
+  `sort` facet, unchanged; the constants `FN_SIN` … `FN_KRONECKER_DELTA`,
+  `RANK_MIN` and `RANK_MAX` of `sort_key.rs` are gone.  New ratchet
+  `tests/unit/test_func_names.rs`: the string literals of those six files
+  that spell a function of the table (its name, its name in lower case, a
+  parse name) are counted against an allowlist — 14 remain (Greek letters
+  of symbol names, Euler's `γ`, and `log(x, b)`, a quotient), down from
+  274.  Proved by an empty golden diff, byte-identical sort keys, and a
+  probe that prints every form of every function and every parse of every
+  name on the old and the new tree (8,241 expressions; identical output).
+  A function node costs 2 ns more to key (11 → 13 ns) and up to 5 % more
+  to print (a second dispatch; the differences between two builds of the
+  same code are of that size); parsing is as fast as before.
+- **One home for the helpers of the integral transforms.**  The helpers
+  the Laplace, Z, Fourier and Mellin transforms each had a copy of — the
+  dependence test, `linear_in` (`a·v + b`, four copies), `split_independent`
+  / `split_factors`, `extract_linear_coeff`, `require_symbol`, `param_sign`,
+  `need_sign`, `fail` — live in `calculus/transform_util.rs`, with one
+  reading of "depends on the variable" (free occurrences) and a walk that
+  does not enter the scope of a binder of the variable; the four modules
+  lost 575 lines, and `linear_in` no longer recurses.  The last test of
+  `tests/v36/v36_s17a_transforms.rs` keeps the four modules from growing a
+  private copy of a shared helper, or a structural dependence test, again.
+- **Set verdicts are `Truth` inside the crate.**  The deciders of
+  `transforms/sets.rs` (membership, emptiness, fullness, subset,
+  disjointness, open/closed, image-set membership and realness — 16
+  functions), the integer-domain test of `transforms/logic.rs` and their
+  callers in `inequalities.rs` and `solve/context.rs` return and combine
+  `Truth` instead of `Option<bool>`; the two local Kleene helpers
+  `and3`/`or3` are gone (`Truth::and`/`or`/`all`/`any`), three `match`es
+  name their undecided arm, and `inequalities::sign_of` returns a
+  `SignSet`.  The public queries (`SetEx::contains`, `is_subset`,
+  `is_disjoint`, `is_empty`, `is_open`, `is_closed`) keep `Option<bool>` and
+  convert once with `Truth::to_option`.  The translation alone changes no
+  output (golden harness: no changed pair; the differential run of 6,600
+  set, formula and solver cases is identical before the subset fix).  The
+  truth-value ratchet loses these four files, and with the three transform
+  modules that shared a sign helper its totals go from 257 to 234
+  comparisons with `Some(bool)`, from 50 to 31 internal functions that
+  return `Option<bool>` and from 26 to 23 sign encodings.
+- Internal: `calculus_util::enclosure` (certified complex rectangles of
+  constants: outward-rounded `f64` interval arithmetic for sums, products,
+  integer powers and rationals, one `evalf` at 20 digits for any other
+  node; a thread-local memo keyed by arena serial and node), asked by
+  `hidden_zero` before its ladder.  `limit::holds_valueless_part` takes the
+  variable and covers constants at pole places (`constant_at_pole`); Gruntz
+  asks it at its entries (`refuse_valueless`) and after resolving steps
+  (`rewrite_tractable`: the guard 0.59 had for `KroneckerDelta`, for every
+  step).
+- Tests: `tests/v36/v36_s17a_transforms.rs` (13 tests), five tests in
+  `tests/v36/v36_s15r2_limits.rs` (the series and the limits at pole
+  places), `tests/unit/test_sets.rs::a_subset_of_the_reals_has_real_members`,
+  and unit tests of `transform_util`, of the enclosures and of the function
+  table.
+- Tests of the three fixes merged last: `tests/v36/v36_s17n1_zeros.rs` (10
+  tests), `v36_s17b_sets.rs` (6) and `v36_s17b_spectrum.rs` (11), unit tests
+  of `evalf/wp.rs` (`a_sum_charges_its_terms`,
+  `a_recurrence_charges_its_envelope`), and a new ratchet,
+  `partial_root_lists_are_not_read_as_complete` in
+  `tests/unit/test_matrix_linalg.rs`: exact per-file counts of the four ways
+  a list of roots that may be incomplete is still read (16 calls of
+  `solve::known_real_roots`, 10 of `Solutions::claimed_points`, 1 of
+  `solve_or_empty`, 1 use of `Spectrum::Partial`), which may only shrink.
+
+### Infrastructure
+
+- The GitHub Actions the workflows use are raised to their current major
+  versions (five pull requests of Dependabot, merged after 0.59.0):
+  `actions/cache` 4 → 6 (the corpus cache of `fuzz.yml`),
+  `actions/upload-artifact` 4 → 7 (`fuzz.yml`, `stats-oracle.yml`),
+  `actions/setup-python` 5 → 7 (`stats-oracle.yml`), `actions/deploy-pages`
+  4 → 5 and `actions/upload-pages-artifact` 3 → 5 (`deploy-book.yml`).
+
+### Known issues
+
+- **Numerical evaluation next to zeros.**  The bound of a three-term
+  recurrence (`wp::Recurred`) is, like the other bounds of
+  `evalf/accuracy.rs`, an estimate with a margin, not interval arithmetic (0
+  wrong of the 2,571 polynomial values of degree 90 to 1,000 in the hunt).
+  A part far below the other is not printed, without a sign that it is not
+  0: `Ci(-x)` for `x` the first zero of `Ci` to 500 bits and more prints
+  `3.141592653589793*i` (the real part is about `1e-150`).  Refusals next to
+  a zero of `J` or `Y` of a large order (the Debye route) are not monotone
+  in the digits: `besselj(1000, 200273630423430773792713/10^20)` prints at
+  16 and 30 digits and is `PrecisionExhausted` at 50.  `beta(x, -5/2)` for
+  `x` within `1e-39` of the zero 1/2 is `Unevaluable` at 16 digits and has a
+  value at 30 and 50.  `assoc_legendre(7/2, 1, x)` is `Unevaluable` (no
+  route for a non-integer degree with an order).  A zero rounded to 1140
+  bits is refused (`PrecisionExhausted`) at every digit count while the same
+  zero to 1160 or 1500 bits is evaluated at 16 digits (the search ends 1024
+  bits above its first precision, where the 1140-bit argument has just
+  become exact).  Not hunted: the values of these routes inside quadrature
+  nodes and sums.  All but the first are as in 0.59.
+- **Integral transforms.**  The Fourier and Mellin transforms refuse every
+  result that holds an unevaluated node, also a formal constant free of the
+  variable, and with a misleading text: `fourier_transform(Sum(sin(k^2), k,
+  1, m)*exp(-x^2), x, w)` is an error ("result would require a distribution
+  that cannot be represented (e.g. δ′)"), `mellin_transform(Sum(sin(k^2),
+  k, 1, m)*exp(-x), x, s)` likewise ("result still depends on the
+  variable"), where `laplace` returns `Sum(sin(k^2), k=1..m)/(s + 1)`.
+  That is why the two Fourier transforms of `Integral(Heaviside(x + 1), x,
+  -3, 3)` listed above are refused rather than answered.  `Ex::try_laplace`
+  and `try_inverse_laplace` report "could not compute" whenever the result
+  holds an unevaluated node, also for such a constant.  `eval` leaves
+  `Integral(Heaviside(x + 1), x, -3, 3)` (4) and `Limit(Heaviside(t + 1),
+  t, -2)` (0) unevaluated.  A formal sum of zeros is not folded (`Sum(0,
+  t=1..m)` inside a result), and Laplace prints `exp(-7/3*s)*exp(7/3*s)`
+  uncombined in one result (the value is right).
+- **Sets.**  A side of an inequality that is not real through a constant
+  without a literal `i`, next to the variable, is not seen: `(t +
+  acos(2)).gt(2*t + acos(2)).solve_for(t)` is `(-oo, 0)` and `satisfiable`
+  is `Some(true)` (the relation holds nowhere: `acos 2 ≈ 1.317i`); with a
+  literal `i` (`t + i > 2t + i`) or with the constant alone on a side (`t +
+  acos(2) > acos(2)`) the result is `EmptySet`.  The assumption engine does
+  not prove some realness facts, and the set stays undecided: `{p + I} \ ℝ`
+  for a positive `p` stays `{p + I} \ (-oo, oo)` (it is `{p + I}`),
+  `{x*conjugate(x)} ∪ ℝ` keeps its point (it is ℝ), `reals.contains(p + I)`
+  is `None`.  A constant that is real by an identity the certified zero test
+  does not find is no point of the line any more: for `e = 1 + i·(sin²1 +
+  cos²1 − 1)` (= 1), `[0, 2].contains(e)` is `None` (was `Some(true)`,
+  right) and `{e} ∪ [0, 2]` keeps `{e}`; and the proof costs time (1,200 set
+  operations with 3–7 irrational ends: 95 ms → 221 ms).  An interval with an
+  end that is certainly not real can still be built: `ctx.interval(I, 2*I,
+  Closed)` is `[I, 2*I]` (its `is_empty` and `contains(1)` are `None`).
+  Undecided where an answer exists: `ConditionSet(x, x > 1).contains(I)`,
+  `{1, I}.contains(1 + I)`, `{I}.is_disjoint(reals)` and `({I} \
+  reals).is_empty()` are `None`, and `{-I} ∩ {2*I}` stays unevaluated.
+- **Eigenvalues and stability.**  The eigenvalues are an error where the
+  crate has no exact form for the roots of a factor of the characteristic
+  polynomial: an irreducible factor with symbolic coefficients of degree 5
+  or more, a quintic over `ℚ(√2, i)` (`λ⁵ − 2λ³ − 3λ² + 3λ + √2·i`), a
+  factor of degree 3 or more with `π`, `e` or `ln 2` in it — there is no
+  `RootOf` over an algebraic or transcendental coefficient field.
+  `StateSpace::is_controllable` and `is_observable` return a `bool` from the
+  generic rank: for `A = diag(1, 2)`, `B = (k, 1)ᵀ` with a plain `k` and `C
+  = (1, 1)`, `is_controllable()` is `true` although it is false at `k = 0`,
+  and `false` also means "the matrix could not be computed".
+  `is_routh_stable` with complex coefficients that hold symbols is `None`
+  (`p·p̄` is taken for constants only); `StateSpace::is_stable` decides such
+  systems from the poles.  `Matrix::diagonalize` still returns
+  `NotDiagonalizable` when `eigenvects` has fewer vectors than the
+  multiplicity because zero tests of symbolic entries were undecided, the
+  case in which `is_diagonalizable` answers `None` (by reading).  Slow, in
+  0.59 and now alike: `eigenvects` and `diagonalize` of 5×5 and 6×6 matrices
+  with `π`, `e`, `ln 2` entries (some without an answer in 13 minutes), and
+  `is_stable` of a 6-state system with pairs `x ± i·w`, `x` of size `10⁻⁴⁰⁰`
+  (none in 5 minutes).  By reading, no wrong result known: the path for
+  matrices that are not rational takes the solver's list for distinct roots
+  and checks the sum of the multiplicities against the degree;
+  `matrix_decomp::RealAxis::negative` decides by `f64` thresholds that an
+  eigenvalue in Cardano form is real and negative; `solve_ode_system_eigen`
+  keeps one eigenvalue of a conjugate pair by an `f64` sign (below the range
+  of `f64` it refuses); and the 16 call sites of `known_real_roots` still
+  read a list that may be incomplete (the new ratchet counts them).
+- **Limits and series.**  `eval` folds `polylog(s, 1)` to `zeta(s)` for
+  every `s` (`polylog(0, 1)` is `−1/2`), which holds for `re s > 1` only,
+  and `uppergamma(y, 0)` to `Gamma(y)` for a plain `y` (as in 0.59); limits
+  are protected only where the unevaluated form reaches them.  `eval` does
+  not fold `expint(n, 0) = +∞` for `n ≤ 1` as it folds `Ei(0)` and
+  `besselk(0, 0)`, so `limit(x²·besselk(0, 0), x, 0)` is `∞` while
+  `limit(x²·E1(0), x, 0)` is refused, and the 11 limits of the golden
+  corpus that were `∞` are refused.  The series engine keeps a constant at
+  a pole as a coefficient (`series(x^2*E1(0), x, 0, 4)` is `x^2*expint(1,
+  0)`).  An integer-valued argument that is not proved positive is taken
+  for a generic point: `limit(gamma(floor(y) − 3 + x), x, 0)` is
+  `Gamma(floor(y) − 3)`, a pole for every `y < 4`, and
+  `limit(x·gamma(floor(y) − 3), x, 0)` is 0.  `limit((y − 1)·uppergamma(0,
+  x) + x, x, 0, '−')` is `sign(y − 1)·∞` without its finite part (as in
+  0.59).  One limit of the golden corpus through `betainc`, which has no
+  pole facet, keeps a wrong value.  `limit(Chi(acsch(π − x)), x, ∞)` is
+  still refused by the evaluation budget.
+- **Printing and parsing**, found while the printers were moved to the
+  table and kept as they were: the two-dimensional printer writes
+  `lgamma(x)` for `LogGamma(x)` and, in ASCII mode, `psi(x)` for
+  `Digamma(x)`, which the parser does not read (`sgn` and `ceil`, its other
+  two heads of its own, parse); its ASCII `floor(x)` and `ceil(x)` have
+  parentheses that do not grow with a tall argument, and seven node-backed
+  functions (`min`, `max`, `atan2`, `H`, `DiracDelta`, `B`, `C`) and every
+  library function print on one line there.  LaTeX prints `asinh(x)^2` as
+  `\operatorname{asinh}^{2}\left(x\right)`, MathML as `(asinh(x))²`.  A
+  `min` or `max` of one argument (built through the arena, never by the
+  parser) prints `min(x)`, which does not parse back.  `lambertw(x, y, z)`
+  is refused with a hint meant for undefined functions.
+  `parse_implicit("arcsec x")` is the product `arcsec*x` although
+  `parse_implicit("arccot x")` is `acot(x)`.
+- **The slow series of the nightly fuzzing is fixed** (see *Fixed*);
+  **`fuzz_stats` still skips three things**, each a slow path that is open,
+  as in 0.59: lattices of more than 20,000 atoms are not transformed into
+  tables (`MAX_TRANSFORMED_ATOMS`; 1.4 s for 100,000 atoms); a lattice of
+  more than 4,096 atoms whose tails the library can only sum mass by mass
+  is not checked (`tails_are_long_sums`, `MAX_SUMMED_ATOMS`: a
+  hypergeometric law beyond the exact bounds, minutes for a quantile); and
+  without a finite variance the first moment is checked only while `|mean|
+  ≤ 10⁸` (`integrate_numeric` takes 5 s to refuse the cancellation at
+  `10¹⁵⁰` of `LogNormal(0, 8π²/3)`).
+
+### Measured
+
+- `tests/v36/` (0.49–0.60): 87 files.  nextest 15,164 tests (15 skipped),
+  doctests 1,381 — run on a 64-core x86-64 machine; as CI runs the suite
+  (`cargo nextest run --profile ci`, the UI snapshots apart): 15,163 passed.
+  14 ratchet tests.
+- Rubi harness: 30,768 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,153 / 0 wrong / 64; `--negative-params` 115 real_verified,
+  0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical
+  (checked for the split alone, for the function table alone, for the set
+  and the matrix changes, and for the release tree).  MSRV 1.93 passes for
+  all four crates.  `cargo semver-checks` against 0.59.0: no semver update
+  required (`StateSpace::try_poles` is an addition).
+- The split: 54,637 non-blank lines moved into 66 new child modules, 555
+  `pub(super)` insertions, nothing else edited — proved by a move checker
+  (the line multiset of each of the eight files is conserved; every child
+  is a run of the parent's lines in the parent's order), by identical test
+  names (`cargo nextest list`), by an empty golden diff and by byte
+  identity.  CPU of the golden run +0.2 %, of the suite +0.3 %, of Rubi
+  −1 %; a release build from clean takes the same 63 s.  The largest file
+  has 7,136 lines (was 15,385).
+- Golden-output harness (200,000 random expressions × 31 operations): 147
+  changed pairs from 0.59 (series 1, limit0 66, limitoo 80), all from the
+  limits through a constant at a pole, every one classified (119 fixes, 11
+  values that held on part of a parameter's range and are now refused, 11
+  right infinite answers lost to a refusal, 5 unchanged values with a
+  condition attached, 1 unchanged); none from the split, the function
+  table, the transforms, the sets, the evaluation next to zeros or the
+  spectrum (6,199,973 pairs compared; 27 timeouts of the harness, 36 at
+  0.59).  Series and limits of the harness take 37.7 s of CPU on seeds
+  0..8000 (46.9 s at 0.59).
+- Hunts: digits next to zeros of special functions and orthogonal
+  polynomials (about 28,500 points, mpmath at 150 and 230 digits): wrong
+  digits at 16 / 30 / 50 digits and in `eval_f64` 56 / 554 / 550 / 56 → 0,
+  no new refusal, +0.02 % CPU on the golden run; transforms of expressions
+  with binders (6,527 cases, quadrature of the defining integral at two
+  precisions): 72 wrong → right, 27 refusals → right, 6 wrong → refused;
+  set operations with non-real members (13,400 cases, pointwise membership
+  oracle): 21,804 result lines wrong → right, 29,117 wrong → refused,
+  11,439 refused → right, 2,816 right answers lost to an unevaluated form,
+  0 new results refuted; spectra (1,564 matrices, numeric eigenvalues at 50
+  digits): 123 short lists returned as complete → 0; stability (957
+  systems): 30 verdicts against the oracle → 0; limits through a constant
+  at a pole (6,193 limits): 761 finite answers where no finite value
+  exists → 0.  Statistics oracle 8,156 cases, 0 unexplained failures.
+- Printers and parser: for every function of the table and each arity, the
+  display, pretty, LaTeX, MathML and JSON forms, the sort-key bytes and the
+  parse of the display form — 116,565 lines, byte-identical before and
+  after.  Hand-kept function names outside the table: 274 → 14 (Greek
+  letters of symbol names and `log(x, b)`).
+- Fuzzing (64-core x86-64 machine, all 13 targets, two forks each, 10 s and
+  4 GB limits, debug assertions as CI builds them) on the release code:
+  `fuzz_numdist` 66,493,713 inputs, `fuzz_refine` 13,700,299,
+  `fuzz_lambertw` 2,606,445, `fuzz_parser` 916,713, `fuzz_exact_matrix`
+  188,069, `fuzz_eigenvects` 165,571, `fuzz_evalf` 57,244, `fuzz_calculus`
+  44,144, `fuzz_stats` 29,820, `fuzz_roundtrip` 17,551, `fuzz_poly` 15,687,
+  `fuzz_simplify` 3,410, `fuzz_integrate` 2,341: 0 crashes, 0 timeouts, 0
+  out-of-memory.  Built as CI builds them (AddressSanitizer), 20 forks for
+  fifteen minutes with a 15 s limit: `fuzz_evalf` 468,851 inputs,
+  `fuzz_calculus` 279,864, `fuzz_stats` 161,373, none failing.
+- The slow series of the nightly fuzzing, `series(atanh(π^x + x^(3/2)), x,
+  1, 4)`: 1.83 s → 0.001 s in a release build, 56.5 s → 0.44 s as CI
+  builds the fuzzer (the Fuzz run on 0.59.0 failed on it).  Still skipped
+  by the statistics fuzzer: the three cases under *Known issues*.
+
 ## [0.59.0] - 2026-11-24
 
 Wrong answers, crashes and slow cases at the edges of what 0.58 covered.  A

@@ -665,7 +665,12 @@ pub(super) fn arb_expint(
 /// returned for any real `x`).
 ///
 /// * `|x| ≤ 40`: `Shi(x) = Σ x^{2k+1}/((2k+1)(2k+1)!)`,
-///   `Chi(x) = γ + ln x + Σ_{k≥1} x^{2k}/((2k)(2k)!)` — all terms positive.
+///   `Chi(x) = γ + ln x + Σ_{k≥1} x^{2k}/((2k)(2k)!)` — all terms of the
+///   series positive; `γ + ln x` cancels against it next to the zero
+///   `0.5238…` of `Chi`, so the sum's error is charged to `w` as a part of
+///   its three summands (`wp.rs`, "A route's own error"; up to 0.59
+///   `Chi(x)` for the 128-bit dyadic `x` nearest the zero printed 14
+///   correct digits of 16).
 /// * larger `|x|`: `Shi = (Ei(x) − Ei(−x))/2`, `Chi = (Ei(x) + Ei(−x))/2`.
 pub(super) fn arb_shi_chi(
     x: &BigFloat,
@@ -724,16 +729,25 @@ pub(super) fn arb_shi_chi(
             let ln_x = xw.ln(wp, RM, w.cc);
             let mut u = BigFloat::from_i32(1, wp); // x^{2k}/(2k)!
             let mut sum = BigFloat::new(wp);
+            let mut terms = 0usize;
             for k in 1..max_terms {
                 let d = BigFloat::from_i128((2 * k as i128 - 1) * (2 * k as i128), wp);
                 u = u.mul(&x2, wp, RM).div(&d, wp, RM);
                 let term = u.div(&BigFloat::from_i128(2 * k as i128, wp), wp, RM);
                 sum = sum.add(&term, wp, RM);
+                terms = k;
                 if negligible(&term, &sum, wp) {
                     converged = true;
                     break;
                 }
             }
+            // The series, `terms` terms of one sign, is one of three
+            // summands that cancel next to the zero of `Chi`.
+            w.charge(
+                Summed::of(&[&gamma, &ln_x, &sum])
+                    .steps(terms)
+                    .error(wp, 0.0),
+            );
             gamma.add(&ln_x, wp, RM).add(&sum, wp, RM)
         };
         if !converged {

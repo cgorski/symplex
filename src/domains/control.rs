@@ -11,8 +11,8 @@
 //!
 //! G(s) = num(s) / den(s) — a ratio of polynomials in the Laplace variable s.
 
-use crate::base::truth::Truth;
-use crate::domains::matrix::Matrix;
+use crate::base::truth::{SignSet, Truth};
+use crate::domains::matrix::{Matrix, Spectrum};
 use crate::prelude::*;
 
 /// Ascending coefficients of `expr` viewed as a polynomial in `var`,
@@ -95,6 +95,130 @@ fn try_roots_with_multiplicity(
             roots.len()
         ),
     ))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Proved signs
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The signs the value of `e` can have, as far as the certified queries
+/// prove them: [`Ex::is_real`], [`Ex::is_negative`], [`Ex::is_positive`],
+/// [`Ex::is_zero`], [`Ex::is_nonnegative`] and [`Ex::is_nonpositive`] (the
+/// assumption system, and for a constant its certified value and the exact
+/// zero tests).  A single atom is a proof; [`SignSet::UNKNOWN`] says
+/// nothing.
+///
+/// A verdict about a system is read from this and from nothing weaker: no
+/// `f64` value takes part.  (Up to 0.59 the stability test compared
+/// `eval_f64()` with `0.0`: the correctly rounded value of `−e^(−1000)` is
+/// `−0.0`, which is `>= 0.0`.)
+fn queried_sign(e: &Ex) -> SignSet {
+    let narrow =
+        |signs: SignSet, answer: Option<bool>, yes: SignSet, no: SignSet| match Truth::from(answer)
+        {
+            Truth::True => signs.intersect(yes),
+            Truth::False => signs.intersect(no),
+            Truth::Unknown => signs,
+        };
+    let nonreal = SignSet::NONREAL;
+    let mut signs = SignSet::UNKNOWN;
+    signs = narrow(signs, e.is_real(), SignSet::REAL, nonreal);
+    signs = narrow(
+        signs,
+        e.is_negative(),
+        SignSet::NEGATIVE,
+        SignSet::NONNEGATIVE.union(nonreal),
+    );
+    if signs.is_single() {
+        return signs;
+    }
+    signs = narrow(
+        signs,
+        e.is_positive(),
+        SignSet::POSITIVE,
+        SignSet::NONPOSITIVE.union(nonreal),
+    );
+    if signs.is_single() {
+        return signs;
+    }
+    signs = narrow(signs, e.is_zero(), SignSet::ZERO, SignSet::NONZERO);
+    if signs.is_single() {
+        return signs;
+    }
+    signs = narrow(
+        signs,
+        e.is_nonnegative(),
+        SignSet::NONNEGATIVE,
+        SignSet::NEGATIVE.union(nonreal),
+    );
+    signs = narrow(
+        signs,
+        e.is_nonpositive(),
+        SignSet::NONPOSITIVE,
+        SignSet::POSITIVE.union(nonreal),
+    );
+    // Contradictory answers prove nothing.
+    if signs.is_empty() {
+        SignSet::UNKNOWN
+    } else {
+        signs
+    }
+}
+
+/// [`queried_sign`] of `e` and — where that leaves more than one sign — of
+/// `e.eval().simplify()` (the effort of the matrix module's
+/// `ex_is_positive`).
+fn proved_sign(e: &Ex) -> SignSet {
+    let signs = queried_sign(e);
+    if signs.is_single() {
+        return signs;
+    }
+    let signs = signs.intersect(queried_sign(&e.eval().simplify()));
+    if signs.is_empty() {
+        SignSet::UNKNOWN
+    } else {
+        signs
+    }
+}
+
+/// [`proved_sign`], and where it leaves more than one sign the exact zero
+/// test of the matrix module (rational functions over `ℚ(radicals, i)`,
+/// number fields): a zero that the queries do not see is still a proved
+/// zero.
+fn proved_sign_or_zero(e: &Ex) -> SignSet {
+    let signs = proved_sign(e);
+    if signs.is_single() {
+        return signs;
+    }
+    let signs = match crate::domains::matrix::ex_is_zero(e) {
+        Truth::True => signs.intersect(SignSet::ZERO),
+        Truth::False => signs.intersect(SignSet::NONZERO),
+        Truth::Unknown => signs,
+    };
+    if signs.is_empty() {
+        SignSet::UNKNOWN
+    } else {
+        signs
+    }
+}
+
+/// Largest real part (tree nodes) that [`real_part_sign`] simplifies and
+/// hands to the exact zero test when the queries leave its sign open.  A
+/// pole in Cardano's radicals of the symbols has thousands of nodes, and
+/// simplifying it takes longer than the Routh table that decides instead.
+const SIGN_EFFORT_NODES: usize = 400;
+
+/// The proved signs of the real part of `z` (those of `re z`): `NEGATIVE`
+/// puts `z` in the open left half-plane, `ZERO` on the imaginary axis — a
+/// proved zero, not a value below a tolerance.
+fn real_part_sign(z: &Ex) -> SignSet {
+    let re = z.re().eval();
+    let signs = queried_sign(&re);
+    let size = crate::domains::matrix::tree_size_capped(&re, SIGN_EFFORT_NODES);
+    if signs.is_single() || size > SIGN_EFFORT_NODES {
+        return signs;
+    }
+    proved_sign_or_zero(&re)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -234,10 +358,47 @@ impl StateSpace {
 
     /// Poles of the system (eigenvalues of A), repeated with multiplicity.
     ///
-    /// Returns an empty vector if the eigenvalue solver cannot find any
-    /// root of the characteristic polynomial.
+    /// The list has one pole per state, or it is empty: when the
+    /// eigenvalues are not all found (a factor of the characteristic
+    /// polynomial without roots in closed form) no pole is returned, never
+    /// a part of them — as [`TransferFunction::poles`].  (Up to 0.59 the
+    /// poles that were found came back alone: a 6-state system with the
+    /// characteristic polynomial `(s − 1)·(s⁵ − a·s − 1)` had the poles
+    /// `[1]`.)  [`try_poles`](Self::try_poles) says why.
     pub fn poles(&self) -> Vec<Ex> {
-        self.a.eigenvals().unwrap_or_default()
+        self.try_poles().unwrap_or_default()
+    }
+
+    /// [`poles`](Self::poles), or the error that says why they are not all
+    /// known.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] when the eigenvalues of `A` are
+    /// not all found (the message names the ones that were), and whatever
+    /// [`Matrix::eigenvals`] reports.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let ss = StateSpace::new(
+    ///     matrix![ctx, [0, 1], [-2, -3]],
+    ///     matrix![ctx, [0], [1]],
+    ///     matrix![ctx, [1, 0]],
+    ///     matrix![ctx, [0]],
+    /// )
+    /// .unwrap();
+    /// let mut poles = ss.try_poles().unwrap();
+    /// poles.sort_by_key(|p| p.to_string());
+    /// assert_eq!(poles, vec![ctx.int(-1), ctx.int(-2)]);
+    /// ```
+    pub fn try_poles(&self) -> Result<Vec<Ex>, SymplexError> {
+        self.a
+            .eigenvals()
+            .map_err(|e| crate::domains::matrix::reop(e, "StateSpace::try_poles"))
     }
 
     /// Characteristic polynomial: det(sI - A).
@@ -381,30 +542,64 @@ impl StateSpace {
     /// Returns `Some(false)` if any pole can be shown to have non-negative real part.
     /// Returns `None` if stability cannot be determined symbolically.
     ///
-    /// Numeric poles are decided by certified evaluation.  When some pole
-    /// is symbolic (or not found), the Routh–Hurwitz test
+    /// Every verdict is a proof.  `Some(true)` needs every pole — the
+    /// multiplicities of the eigenvalues found sum to the number of states
+    /// — with the sign of its real part proved negative; `Some(false)`
+    /// needs one pole whose real part is proved positive or proved zero (a
+    /// pole on the imaginary axis is decided by an exact zero, not by a
+    /// tolerance).  The signs are those of the certified queries
+    /// ([`Ex::is_negative`], [`Ex::is_zero`], … of `re(pole)`): the
+    /// assumption system for a pole with symbols, a certified value and the
+    /// exact zero tests for a constant.  Up to 0.59 the `f64` value of a
+    /// pole was compared with `0.0`, and a pole below the range of `f64`
+    /// read as `−0.0 >= 0.0`: `A = [[−e^(−1000)]]` was `Some(false)`.
+    ///
+    /// When the poles do not decide (a real part of undecided sign, or
+    /// poles not found), the Routh–Hurwitz test
     /// [`is_routh_stable`] decides from the coefficients of `det(sI − A)`,
     /// as SymPy's `get_asymptotic_stability_conditions` does: `A =
     /// [[−k, 1], [0, −k − 1]]` with `k > 0` is stable (before 0.41 every
     /// symbolic pole gave `None`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let system = |a: Matrix| {
+    ///     StateSpace::new(a, matrix![ctx, [1]], matrix![ctx, [1]], matrix![ctx, [0]]).unwrap()
+    /// };
+    /// let tiny = ctx.parse("exp(-1000)").unwrap();
+    /// // a pole at −e^(−1000): in the open left half-plane
+    /// let stable = system(Matrix::new(vec![vec![-&tiny]]).unwrap());
+    /// assert_eq!(stable.is_stable(), Some(true));
+    /// let unstable = system(Matrix::new(vec![vec![tiny]]).unwrap());
+    /// assert_eq!(unstable.is_stable(), Some(false));
+    /// // a pole at 0: not asymptotically stable
+    /// assert_eq!(system(matrix![ctx, [0]]).is_stable(), Some(false));
+    /// ```
     pub fn is_stable(&self) -> Option<bool> {
-        let poles = self.poles();
-        let mut undecided = poles.len() < self.num_states();
-        for pole in &poles {
-            // Try real evaluation first
-            if let Ok(val) = pole.eval_f64() {
-                if val >= 0.0 {
-                    return Some(false);
-                }
-            } else if let Ok(z) = pole.eval_complex64() {
-                if z.re >= 0.0 {
-                    return Some(false);
-                }
-            } else {
-                undecided = true;
+        let (poles, complete) = match self.a.spectrum() {
+            Ok(Spectrum::Complete(all)) => (all, true),
+            // One pole proved in the closed right half-plane decides "not
+            // stable" whatever the missing poles are; "stable" needs them
+            // all, so a part of the spectrum never proves it.
+            Ok(Spectrum::Partial { found, .. }) => (found, false),
+            Err(_) => (Vec::new(), false),
+        };
+        let mut all_negative = complete;
+        for (pole, _) in &poles {
+            let sign = real_part_sign(pole);
+            if sign.is_nonnegative().is_true() {
+                return Some(false);
+            }
+            if !sign.is_negative().is_true() {
+                // not proved in the open left half-plane
+                all_negative = false;
             }
         }
-        if !undecided {
+        if all_negative {
             return Some(true);
         }
         let s = self.a.fresh_symbol("s");
@@ -1167,52 +1362,144 @@ fn routh_table(coeffs: &[Ex]) -> Result<RouthTable, SymplexError> {
 /// coefficients whose table entries are undecidable: `s³ + (k − 1)·s² −
 /// k·s + 1` with `k > 0` (before 0.41 `None`: the sign of `k − 1` is
 /// unknown).
+///
+/// The criterion is one of **real** polynomials of a known degree, and
+/// every verdict is a proof: the leading coefficient must be proved
+/// nonzero, every coefficient proved real (a symbol without assumptions
+/// may be complex: declare it real or positive), and every sign read from
+/// the table proved — otherwise the answer is `None`.  A polynomial `p`
+/// with constant coefficients that are not all real is decided through
+/// `p·p̄` (`p̄` with the conjugate coefficients): its coefficients are real,
+/// and its roots are those of `p` and their conjugates, with the same real
+/// parts.  And whatever the coefficients are, the roots sum to
+/// `−aₙ₋₁/aₙ`: when the real part of that quotient is proved `≤ 0`, one
+/// root has a real part `≥ 0` and the answer is `Some(false)`.  Up to 0.59
+/// a coefficient or table entry that was not positive and not zero counted
+/// as negative, also when it was not real: `i·s + 1 − i` (root `1 + i`)
+/// was `Some(true)` and `s + 1 + i` (root `−1 − i`) `Some(false)`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::control::is_routh_stable;
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// let i = ctx.i_unit();
+/// // s² + 3s + 2 = (s + 1)(s + 2)
+/// assert_eq!(is_routh_stable(&[ctx.int(1), ctx.int(3), ctx.int(2)]), Some(true));
+/// // s² + 1: roots ±i on the axis
+/// assert_eq!(is_routh_stable(&[ctx.int(1), ctx.int(0), ctx.int(1)]), Some(false));
+/// // i·s + 1 − i: the root is 1 + i
+/// assert_eq!(is_routh_stable(&[i.clone(), &ctx.int(1) - &i]), Some(false));
+/// // s + 1 + i: the root is −1 − i
+/// assert_eq!(is_routh_stable(&[ctx.int(1), &ctx.int(1) + &i]), Some(true));
+/// // a symbol without assumptions may be complex: not decided
+/// let k = ctx.symbol("k");
+/// assert_eq!(is_routh_stable(&[ctx.int(1), ctx.int(1), k]), None);
+/// ```
 pub fn is_routh_stable(coeffs: &[Ex]) -> Option<bool> {
-    // The only errors are an empty or zero coefficient list: not stable.
-    let Ok(table) = routh_table(coeffs) else {
-        return Some(false);
+    routh_verdict(coeffs, true).to_option()
+}
+
+/// [`is_routh_stable`]; with `complex`, a polynomial with constant
+/// coefficients not all proved real is decided through `p·p̄` (once: the
+/// coefficients of the product are real, and when that is not proved there
+/// is no verdict).
+/// `True`: every root is proved in the open left half-plane; `False`: a
+/// root is proved to have a real part `≥ 0`; `Unknown`: neither.
+fn routh_verdict(coeffs: &[Ex], complex: bool) -> Truth {
+    let mut significant = coeffs.iter().skip_while(|c| is_exact_zero(c));
+    // An empty or zero coefficient list: not stable.
+    let Some(lead) = significant.next() else {
+        return Truth::False;
+    };
+    let rest: Vec<&Ex> = significant.collect();
+    let lead_sign = proved_sign(lead);
+    if rest.is_empty() {
+        // A constant: no roots when it is not zero.
+        return match lead_sign.is_nonzero() {
+            Truth::True => Truth::True,
+            Truth::False | Truth::Unknown => Truth::Unknown,
+        };
+    }
+
+    // Whatever the coefficients are, the roots sum to −aₙ₋₁/aₙ: when the
+    // real part of that quotient is proved ≤ 0, a root has a real part ≥ 0.
+    if lead_sign.is_nonzero().is_true()
+        && real_part_sign(&(rest[0] / lead)).is_nonpositive().is_true()
+    {
+        return Truth::False;
+    }
+
+    // From here on the criterion of real polynomials: every coefficient is
+    // proved real and the degree is known (the leading coefficient has a
+    // proved sign).
+    let signs: Vec<SignSet> = rest.iter().map(|c| proved_sign_or_zero(c)).collect();
+    if !lead_sign.is_real().is_true() || !signs.iter().all(|s| s.is_real().is_true()) {
+        // Through p·p̄ for constants only: with symbols the table of twice
+        // the degree swells, and its entries are rarely decided.
+        if !complex || !lead.is_constant() || !rest.iter().all(|c| c.is_constant()) {
+            return Truth::Unknown;
+        }
+        // p·p̄, highest power first: cₖ = Σ aᵢ·conj(aₖ₋ᵢ).
+        let p: Vec<&Ex> = std::iter::once(lead).chain(rest.iter().copied()).collect();
+        let zero = lead.context().zero();
+        let product: Vec<Ex> = (0..2 * p.len() - 1)
+            .map(|k| {
+                let mut c = zero.clone();
+                for (i, a) in p.iter().enumerate() {
+                    if let Some(b) = k.checked_sub(i).and_then(|j| p.get(j)) {
+                        c = &c + &(*a * &b.conjugate());
+                    }
+                }
+                c.expand()
+            })
+            .collect();
+        return routh_verdict(&product, false);
+    }
+    let (same, opposite) = if lead_sign == SignSet::POSITIVE {
+        (SignSet::POSITIVE, SignSet::NEGATIVE)
+    } else if lead_sign == SignSet::NEGATIVE {
+        (SignSet::NEGATIVE, SignSet::POSITIVE)
+    } else {
+        return Truth::Unknown;
     };
     // Necessary condition: a Hurwitz polynomial has all its coefficients
     // nonzero and of the leading coefficient's sign (see above).
-    let mut nonzero = coeffs.iter().skip_while(|c| is_exact_zero(c));
-    if let Some(lead) = nonzero.next()
-        && crate::domains::matrix::ex_is_zero(lead).is_false()
-        && let lead_positive @ (Truth::True | Truth::False) =
-            crate::domains::matrix::ex_is_positive(lead)
+    if signs
+        .iter()
+        .any(|s| s.is_in(SignSet::ZERO.union(opposite)).is_true())
     {
-        for c in nonzero {
-            let wrong_sign = crate::domains::matrix::ex_is_positive(c) == lead_positive.not()
-                && crate::domains::matrix::ex_is_zero(c).is_false();
-            if is_exact_zero(c) || wrong_sign {
-                return Some(false);
-            }
-        }
+        return Truth::False;
     }
+    // The table, built only now (its entries swell with symbolic
+    // coefficients).  Its only errors are an empty or zero list.
+    let Ok(table) = routh_table(coeffs) else {
+        return Truth::False;
+    };
+    // A zero in the first column (proved): a root with a real part ≥ 0,
+    // whatever the entries above it are — one of them being zero says the
+    // same.
     if table.degenerate {
-        return Some(false);
+        return Truth::False;
     }
 
-    // All first-column entries must have the same sign; the signs are
-    // decided exactly (certified evaluation), not by an f64 threshold.
-    let mut first_sign: Option<bool> = None;
+    // All first-column entries must have the sign of the leading
+    // coefficient.  Each is a rational function of real coefficients, so
+    // it is real where it has a value; its sign must be proved (certified
+    // evaluation, the assumption system), from the top: an entry of the
+    // opposite sign below entries of proved sign is a sign change.
     for row in &table.rows {
-        let entry = &row[0];
-        // `None`: can't decide symbolically.
-        let positive = match crate::domains::matrix::ex_is_positive(entry) {
-            Truth::True => true,
-            Truth::False => false,
-            Truth::Unknown => return None,
-        };
-        if !positive && !crate::domains::matrix::ex_is_zero(entry).is_false() {
-            return None;
+        let sign = proved_sign(&row[0]).intersect(SignSet::REAL);
+        if sign == opposite {
+            return Truth::False;
         }
-        match first_sign {
-            None => first_sign = Some(positive),
-            Some(s) if s != positive => return Some(false), // Sign change → unstable
-            Some(_) => {}
+        if sign != same {
+            return Truth::Unknown;
         }
     }
-    Some(true)
+    Truth::True
 }
 
 #[cfg(test)]

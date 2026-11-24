@@ -1,10 +1,10 @@
 # Complex Analysis and Special Functions
 
-New in 0.2. symplex is a CAS over ℂ: a symbol with no assumptions may be complex, and the library refuses to pretend otherwise.  Every multivalued function takes its principal branch — in `eval`, in numerical evaluation and in every rewrite (since 0.23; before, `eval` took the real odd root of a negative number and some simplifications assumed real arguments).  [The Domain Model](../getting-started/key-concepts.md#the-domain-model) lists which identities need which assumptions.
+symplex is a CAS over ℂ: a symbol with no assumptions may be complex, and nothing treats it as real without being told.  Every multivalued function takes its principal branch — in `eval`, in numerical evaluation and in every rewrite.  [The Domain Model](../getting-started/key-concepts.md#the-domain-model) lists which identities need which assumptions.
 
 ## re, im, conjugate, arg
 
-`Ex::{re, im, conjugate, arg}` are constructed with as much evaluation as the structure and assumptions allow. For a symbol declared `Real` the parts are immediate; for an unassumed symbol you get an unevaluated `re(z)` node (0.1 silently assumed every symbol real — a wrong answer for `conjugate(z)`).
+`Ex::{re, im, conjugate, arg}` are constructed with as much evaluation as the structure and assumptions allow. For a symbol declared `Real` the parts are immediate; for an unassumed symbol you get an unevaluated `re(z)` node.
 
 ```rust
 use symplex::prelude::*;
@@ -86,26 +86,26 @@ fn main() {
 }
 ```
 
-Current gaps, stated plainly: `abs(3 + 4i)` is not folded to `5` by `eval`/`simplify` (use `abs_squared()`), and `ln(i)` / `i^i` stay symbolic (evaluate with `eval_decimal`).
+`abs(3 + 4i)` evaluates to `5` and `ln(i)` to `1/2*pi*I`. A current gap: `i^i` (which is `e^(−π/2)`) stays `I^I` under `eval` and `simplify`; evaluate it with `eval_decimal`.
 
 ## Complex infinity
 
 `1/0` evaluates to complex infinity `zoo` (`Context::complex_infinity()`), distinct from the signed real infinities `oo` and `-oo`. The parser accepts `zoo`.
 
-## New constants
+## Constants
 
 | Constant | `Context` method | Notes |
 |----------|------------------|-------|
 | γ (Euler–Mascheroni) | `euler_gamma()` | rationality unknown → assumption system leaves it open |
 | G (Catalan) | `catalan()` | positive, real, finite |
-| φ (golden ratio) | `golden_ratio()` | algebraic; `nsimplify` recognises `φ² − φ − 1 = 0`, `simplify` does not yet |
+| φ (golden ratio) | `golden_ratio()` | algebraic; `(φ² − φ − 1).equals(&0)` is `Some(true)`, but `simplify` does not fold it to `0` |
 | ∞̃ | `complex_infinity()` | `zoo` |
 
 All evaluate to arbitrary precision with `eval_decimal(digits)`.
 
 ## Special functions
 
-0.2 adds `si`, `ci`, `ei`, `li`, `zeta`, `polygamma(n, x)` and `kronecker_delta(i, j)`, with exact special values, derivative rules and `evalf`; `Digamma` folds at positive integers and half-integers; Bessel `I`/`K` and orthogonal polynomials of any degree evaluate numerically; all Bessel functions and orthogonal polynomials have derivative rules.
+`si`, `ci`, `ei`, `li`, `zeta`, `polygamma(n, x)` and `kronecker_delta(i, j)` have exact special values, derivative rules and `evalf`; `Digamma` folds at positive integers and half-integers; the Bessel functions and orthogonal polynomials of any degree evaluate numerically and have derivative rules.
 
 ```rust
 use symplex::prelude::*;
@@ -134,14 +134,14 @@ fn main() {
 }
 ```
 
-The parser accepts all of these by name (`re`, `im`, `conjugate`/`conj`, `arg`, `si`, `ci`, `ei`, `li`, `zeta`, `polygamma`, `zoo`), and `compile()` / `to_rust_fn` / `to_c_fn` support Γ, lnΓ, ψ, erf/erfc, W, B, Bessel and orthogonal polynomials.
+The parser accepts all of these by name (`re`, `im`, `conjugate`/`conj`, `arg`, `si`, `ci`, `ei`, `li`, `zeta`, `polygamma`, `zoo`), and `compile()` / `to_rust_fn` / `to_c_fn` support Γ, lnΓ, ψ, erf/erfc, W, B, Bessel, `Si`/`Ci`/`Ei`/`li` and the classical orthogonal polynomials (`zeta` and `polygamma` are not compiled: `Err(NotImplemented)`).
 
 See `cargo run --example complex_analysis` for the full tour.
 
-## More special functions (0.9)
+## More special functions
 
-0.9 adds the remaining SymPy special functions that show up as integration
-results and in physics.  All of them are `Apply` nodes with SymPy's names, so
+These are the special functions that show up as integration results and in
+physics.  All of them are `Apply` nodes with SymPy's names, so
 they print, parse (`ctx.parse("erfi(x)")`) and serialise like `besselj`; the
 method lives on the *argument* and takes the parameters first, as with
 `x.bessel_j(&nu)`.
@@ -153,7 +153,7 @@ method lives on the *argument* and takes the parameters first, as with
 | Shi, Chi | `x.shi()`, `x.chi()` | `Shi(0) = 0`, odd; `Chi(0) = −∞` | `sinh x/x`, `cosh x/x` |
 | Fresnel S, C | `x.fresnels()`, `x.fresnelc()` | `S(0) = 0`, `S(±∞) = ±1/2`, odd | `sin(πx²/2)`, `cos(πx²/2)` |
 | γ(s,x), Γ(s,x) | `x.lowergamma(&s)`, `x.uppergamma(&s)` | closed forms for integer and half-integer `s` (`Γ(1,x) = e^{−x}`, `Γ(0,x) = E₁(x)`, `Γ(½,x) = √π erfc(√x)`, …) | `±x^{s−1}e^{−x}` |
-| Liₛ(z) | `z.polylog(&s)` | `Liₛ(0) = 0`, `Liₛ(1) = ζ(s)`, `Liₛ(−1) = −η(s)`, `Li₁ = −ln(1−z)`, `Li₀ = z/(1−z)`, `Li₋ₙ` rational, `Li₂(½)` | `Liₛ₋₁(z)/z` |
+| Liₛ(z) | `z.polylog(&s)` | `Liₛ(0) = 0`, `Liₛ(1) = ζ(s)` (true for `Re s > 1`; `eval` applies it for every `s`, so `polylog(0, 1)` folds to `−1/2` although `Li₀` has a pole at 1 — a known defect), `Liₛ(−1) = −η(s)`, `Li₁ = −ln(1−z)`, `Li₀ = z/(1−z)`, `Li₋ₙ` rational, `Li₂(½)` | `Liₛ₋₁(z)/z` |
 | η(s) | `s.dirichlet_eta()` | `η(1) = ln 2`, `η(s) = (1−2^{1−s})ζ(s)` when `ζ(s)` folds | formal |
 | Ai, Bi, Ai′, Bi′ | `x.airyai()`, `x.airybi()`, `x.airyaiprime()`, `x.airybiprime()` | values at `0` in terms of `Γ(⅓)`, `Γ(⅔)`; limits at `±∞` | `Ai′ = airyaiprime`, `Ai″ = x·Ai` |
 | K(m), E(m) | `m.elliptic_k()`, `m.elliptic_e()` | `K(0) = E(0) = π/2`, `E(1) = 1`, `K(1) = z∞`, `K(½) = Γ(¼)²/(4√π)` | `(E − (1−m)K)/(2m(1−m))`, `(E − K)/(2m)` |
@@ -163,15 +163,18 @@ method lives on the *argument* and takes the parameters first, as with
 `assoc_legendre` uses the Condon–Shortley phase like SymPy (`P₁¹(x) = −√(1−x²)`);
 the elliptic integrals take the parameter `m = k²`.
 
-Everything evaluates numerically to arbitrary precision (`eval_decimal(40)`
-agrees with mpmath) for real arguments in the real domain: the error-function
-family by series / asymptotics / Halley iteration, `Eₙ`, `γ`, `Γ` by series
-and Legendre's continued fraction, `Liₛ` by the direct series or the
-expansion in `ln z` (any real `z ≠ 1` for `s ≤ 0`, `|z| ≤ 1` otherwise),
-Airy by Maclaurin series with guard bits or the large-`|x|` asymptotic
-expansions, and the elliptic integrals by Carlson's symmetric forms
-(`n < 1`, `m < 1`).  Arguments outside these domains (complex `Liₛ`, `K(m > 1)`,
-`erfinv(|y| ≥ 1)`, …) return `Err(Unevaluable)`.
+Everything evaluates numerically to arbitrary precision (the tests compare
+`eval_decimal(40)` with mpmath), at complex arguments and beyond the real
+domains too: `polylog(2, 1/2 + I/3)`, `erfi(1 + I)`, `airyai(1 + I)` and
+`elliptic_k(2)` (a complex value) all print their digits.  The methods: the
+error-function family by series / asymptotics / Halley iteration, `Eₙ`, `γ`,
+`Γ` by series and Legendre's continued fraction, `Liₛ` by the direct series
+or the expansion in `ln z`, Airy by Maclaurin series with guard bits or the
+large-`|x|` asymptotic expansions, and the elliptic integrals by Carlson's
+symmetric forms.  A point where the function has no value is an error
+(`erfinv` outside `(−1, 1)` is `Err(Unevaluable)`, a pole is
+`Err(Infinite)`), and so is a parameter range that is not implemented
+(`Err(NotImplemented)`).
 
 ```rust
 use symplex::prelude::*;
@@ -194,5 +197,10 @@ fn main() {
 ```
 
 `to_lean` returns `NotImplemented` for all of these (Mathlib has no standard
-spelling), and `compile` / `to_rust_fn` / `to_c_fn` report the missing runtime
-rather than generating code.
+spelling).  Code generation covers part of the list: `to_rust_fn` / `to_c_fn`
+emit `erfi`, `erfinv`, `Shi`, `Chi`, the Fresnel integrals and the complete
+elliptic integrals `K`, `E` with their runtime helpers; `compile()` evaluates
+those and also the incomplete gamma functions and the Gegenbauer, Jacobi and
+associated Legendre / Laguerre polynomials.  `expint`, `polylog`,
+`dirichlet_eta`, the Airy functions and the elliptic `F`, `Π` are not
+compiled by any back end: `Err(NotImplemented)` naming the function.

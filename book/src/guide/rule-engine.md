@@ -1,6 +1,6 @@
 # The Rule Engine
 
-New in 0.2: the pattern-matching engine behind `simplify` is public. You can write your own rewrite rules, apply them to a fixpoint or a single pass, trace what fired, and interleave them with the built-in simplifier.
+The pattern-matching engine behind `simplify` is public. You can write your own rewrite rules, apply them to a fixpoint or a single pass, trace what fired, and interleave them with the built-in simplifier.
 
 Everything lives in the prelude: `Rule`, `RuleSet`, `Bindings`, `RewriteOpts`, `RewriteStrategy`, `Step`, and the `Ex` methods `rewrite`, `rewrite_once`, `rewrite_traced`, `rewrite_with`, `rewrite_with_traced`, `simplify_with_rules`, `simplify_traced`.
 
@@ -148,10 +148,12 @@ fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let a = ctx.symbol("a_");
-    let sinh_def = (&a.exp() - &(-&a).exp()) / 2;
-    let extra = RuleSet::from_rules(vec![Rule::new("sinh_def", &a.sinh(), &sinh_def)]);
-    let e = &x.sinh() - &(&x.exp() - &(-&x).exp()) / 2;
-    println!("{}", e.simplify());                    // unchanged: simplify does not know sinh_def
+    // Two functions the library knows nothing about, and the identity f² + g² = 1.
+    let f = |e: &Ex| ctx.apply("f", &[e.clone()]).unwrap();
+    let g = |e: &Ex| ctx.apply("g", &[e.clone()]).unwrap();
+    let extra = RuleSet::from_rules(vec![Rule::new("f_sq", &f(&a).powi(2), &(1 - &g(&a).powi(2)))]);
+    let e = &f(&x).powi(2) + &g(&x).powi(2) - 1;
+    println!("{}", e.simplify());                    // f(x)^2 + g(x)^2 - 1   (unchanged)
     println!("{}", e.simplify_with_rules(&extra));   // 0
 }
 ```

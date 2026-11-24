@@ -22,6 +22,13 @@ pub(super) enum AiryKind {
 /// * beyond, with `ζ = (2/3)|x|^{3/2}`: the asymptotic expansions
 ///   DLMF 9.7.5–9.7.12 (`u_k`, `v_k = −(6k+1)/(6k−1) u_k`), whose optimal
 ///   truncation error is `~e^{−2ζ}`.
+///
+/// For `x < 0` both forms are sums that cancel next to a zero of the
+/// function: their error, a part of the terms and not of the value, is
+/// charged to `w` (`wp.rs`, "A route's own error").  Up to 0.59
+/// `airyai(x)` for the 166-bit dyadic `x` nearest the first zero was wrong
+/// from the 22nd digit of 30, and for the 128-bit one nearest the 30th
+/// zero from the 14th of 16.
 pub(super) fn arb_airy(
     x: &BigFloat,
     kind: AiryKind,
@@ -43,7 +50,10 @@ pub(super) fn arb_airy(
         {
             return Err(special_exhausted(prec));
         }
-        return Ok(round_to(airy_asymptotic(x, kind, &mut w.at(base_wp)), prec));
+        return Ok(round_to(
+            w.carry(base_wp, |ww| airy_asymptotic(x, kind, ww)),
+            prec,
+        ));
     }
 
     let wp = Prec::new(base_wp)
@@ -91,6 +101,8 @@ pub(super) fn arb_airy(
     } else {
         (ax_f * 2.0) as usize + wp + 40
     };
+    // What enters the two series.
+    let mut seen = Summed::of(&[&f_sum, &g_sum]);
     for k in 1..=max_terms {
         let k3 = 3 * k as i128;
         fk = fk
@@ -112,12 +124,20 @@ pub(super) fn arb_airy(
         };
         f_sum = f_sum.add(&tf, wp, RM);
         g_sum = g_sum.add(&tg, wp, RM);
+        seen.term(&tf);
+        seen.term(&tg);
         if negligible(&tf, &one, wp + 4) && negligible(&tg, &one, wp + 4) {
             break;
         }
     }
     let a = c1.mul(&f_sum, wp, RM);
     let b = c2.mul(&g_sum, wp, RM);
+    // For `x < 0` each series cancels within itself, and `c₁ f` against
+    // `c₂ g` (wholly, next to a zero); for `x > 0` `c₁ f − c₂ g` cancels all
+    // but `e^(−2ζ)` of itself, which the guard bits make up.  `c₁`, `c₂`,
+    // `√3 c₁`, `√3 c₂ < 1`, `√3 < 2`.
+    w.charge(seen.error(wp, 0.0));
+    w.charge(Summed::of(&[&a, &b]).error(wp, 1.0));
     let r = match kind {
         AiryKind::Ai | AiryKind::AiPrime => a.sub(&b, wp, RM),
         AiryKind::Bi | AiryKind::BiPrime => three.sqrt(wp, RM).mul(&a.add(&b, wp, RM), wp, RM),
@@ -240,6 +260,15 @@ pub(super) fn airy_asymptotic(x: &BigFloat, kind: AiryKind, w: &mut Wp<'_>) -> B
     let c = theta.cos(wp, RM, w.cc);
     let sp_minus_cq = s.mul(&p, wp, RM).sub(&c.mul(&q, wp, RM), wp, RM);
     let cp_plus_sq = c.mul(&p, wp, RM).add(&s.mul(&q, wp, RM), wp, RM);
+    // The combinations cancel next to a zero: `P`, `Q` are sums of the
+    // `coeffs`, cut below `2^(−wp)` (the caller's switch), `sin θ` and
+    // `cos θ` good to `2^(−wp)`; times `|x|^(±1/4)/√π`.
+    let amp = if derivative {
+        accuracy::part_lg(&x_quarter)
+    } else {
+        -accuracy::part_lg_low(&x_quarter)
+    };
+    w.charge(Summed::of(&[&p, &q]).steps(coeffs.len()).error(wp, amp));
     match kind {
         AiryKind::Ai => sp_minus_cq.div(&sqrt_pi.mul(&x_quarter, wp, RM), wp, RM),
         AiryKind::Bi => cp_plus_sq.div(&sqrt_pi.mul(&x_quarter, wp, RM), wp, RM),

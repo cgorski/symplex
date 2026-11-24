@@ -175,6 +175,17 @@ pub(super) fn arb_si_ci(
             si = si.neg();
         }
         let ci = f.mul(&sin_x, wp, RM).sub(&g.mul(&cos_x, wp, RM), wp, RM);
+        if !want_si {
+            // `f sin x − g cos x` cancels next to a zero of `Ci`: its error is
+            // a part of `|f| + |g|`, not of the value (`wp.rs`, "A route's own
+            // error"; up to 0.59 `Ci(x)` for the 128-bit dyadic `x` nearest
+            // the zero at 113.9 printed 11 correct digits of 16).  `f` and
+            // `g` are sums of at most `2·wp + 100` terms, cut at their
+            // smallest: the remainder is at most the first term left out
+            // (DLMF 6.12(ii)), `√(2πx)·e^(−x)/x`, below `√(4.4·wp)·2^(−wp)` of
+            // `f` from the switch on.
+            w.charge(Summed::of(&[&f, &g]).steps(2 * wp + 100).error(wp, 0.0));
+        }
         return Ok((round_to(si, prec), round_to(ci, prec)));
     }
 
@@ -219,10 +230,12 @@ pub(super) fn arb_si_ci(
         let ln_x = xw.ln(wp, RM, w.cc);
         let mut sum = BigFloat::new(wp);
         let mut u = BigFloat::from_i32(1, wp);
+        let mut seen = Summed::new();
         for k in 1..max_terms {
             let d = BigFloat::from_i128((2 * k as i128 - 1) * (2 * k as i128), wp);
             u = u.mul(&x2, wp, RM).div(&d, wp, RM);
             let term = u.div(&BigFloat::from_i128(2 * k as i128, wp), wp, RM);
+            seen.term(&term);
             if k % 2 == 0 {
                 sum = sum.add(&term, wp, RM);
             } else {
@@ -234,6 +247,13 @@ pub(super) fn arb_si_ci(
                 break;
             }
         }
+        // The series cancels within itself, and `γ + ln x` against it
+        // (wholly, next to a zero of `Ci`): the error is a part of the
+        // terms, not of the value (`wp.rs`, "A route's own error"; up to
+        // 0.59 `Ci(x)` for the 166-bit dyadic `x` nearest the first zero was
+        // wrong from the 25th digit of 30).
+        w.charge(seen.error(wp, 0.0));
+        w.charge(Summed::of(&[&gamma, &ln_x, &sum]).error(wp, 0.0));
         let ci = gamma.add(&ln_x, wp, RM).add(&sum, wp, RM);
         round_to(ci, prec)
     };

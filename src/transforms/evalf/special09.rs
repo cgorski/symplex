@@ -415,7 +415,7 @@ fn eval_orthopoly(
         n = n_round,
         "evalf: orthogonal polynomial via recurrence"
     );
-    let result = arb_orthopoly(kind, n_round as u64, &x_val.0, prec);
+    let result = arb_orthopoly(kind, n_round as u64, &x_val.0, w);
     Ok((result, BigFloat::new(prec)))
 }
 

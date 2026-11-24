@@ -668,11 +668,211 @@ fn quartic_roots_verified(coeffs: &[Ex], roots: &[Ex]) -> bool {
     })
 }
 // ═══════════════════════════════════════════════════════════════════════════
+// The spectrum: complete, or said not to be
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The eigenvalues found (the roots found of a polynomial), each with its
+/// algebraic multiplicity, and whether they are all of them.
+///
+/// A list of roots is complete or says it is not.  Up to 0.59 the roots of
+/// a factor of the characteristic polynomial that was not solved were
+/// dropped with a log line, and the short list travelled as a plain `Vec`:
+/// `eigenvals` of a 6×6 matrix with the characteristic polynomial `(λ −
+/// 1)·(λ⁵ − a·λ − 1)` was `Ok([1])`, `eigenvects` one vector, and
+/// `diagonalize` reported `NotDiagonalizable` (B-C11-01).
+///
+/// The type has no `len`, no iterator and no conversion to a list: a
+/// consumer takes [`all`](Self::all) (every eigenvalue, or the error), or
+/// matches the variants and says why a part is enough for it.  It is built
+/// only here, by [`of`](Self::of), which checks the multiplicities against
+/// the degree; `tests/unit/test_matrix_linalg.rs`
+/// (`partial_root_lists_are_not_read_as_complete`) counts the places that
+/// name a variant outside this file.
+#[must_use]
+#[derive(Clone, Debug)]
+pub(crate) enum Spectrum {
+    /// Every eigenvalue: the multiplicities sum to `n`.
+    Complete(Vec<(Ex, usize)>),
+    /// Some eigenvalues are not known: `missing` of them, counted with
+    /// multiplicity, are not in `found` (`found` may be empty; `missing`
+    /// is at least 1).
+    Partial {
+        /// The eigenvalues that were found, each an eigenvalue with at
+        /// least the multiplicity listed.
+        found: Vec<(Ex, usize)>,
+        /// How many eigenvalues, with multiplicity, are missing.
+        missing: usize,
+    },
+}
+
+impl Spectrum {
+    /// The spectrum of a polynomial of degree `n` (an `n × n` matrix) from
+    /// the roots found for it: complete exactly when their multiplicities
+    /// sum to `n`.  Multiplicities beyond `n` are a contradiction (one root
+    /// listed in two forms, or a multiplicity too high), so none of them is
+    /// claimed.
+    pub(super) fn of(pairs: Vec<(Ex, usize)>, n: usize) -> Spectrum {
+        let total: usize = pairs.iter().map(|(_, m)| *m).sum();
+        match total.cmp(&n) {
+            std::cmp::Ordering::Equal => Spectrum::Complete(pairs),
+            std::cmp::Ordering::Less => Spectrum::Partial {
+                found: pairs,
+                missing: n - total,
+            },
+            std::cmp::Ordering::Greater => {
+                debug!(
+                    total,
+                    n, "Spectrum::of: more roots than the degree — none is claimed"
+                );
+                Spectrum::Partial {
+                    found: Vec::new(),
+                    missing: n,
+                }
+            }
+        }
+    }
+
+    /// Are these all the eigenvalues?
+    pub(crate) fn is_complete(&self) -> bool {
+        matches!(self, Spectrum::Complete(_))
+    }
+
+    /// The eigenvalues found and the number missing.
+    fn into_parts(self) -> (Vec<(Ex, usize)>, usize) {
+        match self {
+            Spectrum::Complete(pairs) => (pairs, 0),
+            Spectrum::Partial { found, missing } => (found, missing),
+        }
+    }
+
+    /// Every eigenvalue with its multiplicity, or the error that says how
+    /// many are missing and names the ones found.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] for a partial spectrum.
+    pub(crate) fn all(self, operation: &'static str) -> Result<Vec<(Ex, usize)>, SymplexError> {
+        match self {
+            Spectrum::Complete(pairs) => Ok(pairs),
+            Spectrum::Partial { found, missing } => {
+                Err(incomplete_spectrum(operation, &found, missing))
+            }
+        }
+    }
+
+    /// The same spectrum with every eigenvalue rewritten by `f` (a
+    /// renaming: the values do not change).
+    pub(super) fn map(self, f: impl Fn(&Ex) -> Ex) -> Spectrum {
+        let rename = |pairs: Vec<(Ex, usize)>| pairs.into_iter().map(|(v, m)| (f(&v), m)).collect();
+        match self {
+            Spectrum::Complete(pairs) => Spectrum::Complete(rename(pairs)),
+            Spectrum::Partial { found, missing } => Spectrum::Partial {
+                found: rename(found),
+                missing,
+            },
+        }
+    }
+
+    /// The spectrum of `pᵐ` from that of `p`.
+    fn scaled(self, m: usize) -> Spectrum {
+        let (found, missing) = self.into_parts();
+        let found: Vec<(Ex, usize)> = found.into_iter().map(|(v, k)| (v, k * m)).collect();
+        match missing {
+            0 => Spectrum::Complete(found),
+            _ => Spectrum::Partial {
+                found,
+                missing: missing * m,
+            },
+        }
+    }
+
+    /// The spectrum of a product `p·q` (of a block-triangular matrix) from
+    /// those of `p` and `q` (of its diagonal blocks), `self` first: complete
+    /// when both are.  A root of `q` that `same` finds among those of `p`
+    /// adds its multiplicity there.
+    pub(super) fn joined(self, other: Spectrum, same: impl Fn(&Ex, &Ex) -> bool) -> Spectrum {
+        let (mut found, missing) = self.into_parts();
+        let (more, more_missing) = other.into_parts();
+        for (v, m) in more {
+            match found.iter_mut().find(|(w, _)| same(w, &v)) {
+                Some((_, k)) => *k += m,
+                None => found.push((v, m)),
+            }
+        }
+        match missing + more_missing {
+            0 => Spectrum::Complete(found),
+            missing => Spectrum::Partial { found, missing },
+        }
+    }
+
+    /// The same spectrum checked against the size `n` of the matrix it was
+    /// computed for ([`of`](Self::of) on the eigenvalues found): whatever
+    /// the steps before reported, it is complete only when the
+    /// multiplicities sum to `n`.
+    pub(super) fn checked_for(self, n: usize) -> Spectrum {
+        Spectrum::of(self.into_parts().0, n)
+    }
+}
+
+/// The error of an incomplete spectrum: how many eigenvalues are missing,
+/// and the ones found.
+fn incomplete_spectrum(
+    operation: &'static str,
+    found: &[(Ex, usize)],
+    missing: usize,
+) -> SymplexError {
+    const WHY: &str = "it has an irreducible factor with symbolic coefficients of degree above \
+                       4 (or a quartic one whose radical roots did not check at sample values \
+                       of the symbols)";
+    if found.is_empty() {
+        return SymplexError::computation_failed(
+            operation,
+            format!("could not solve the characteristic polynomial: {WHY}"),
+        );
+    }
+    // The eigenvalues found, shortened: a root in radicals can fill a page.
+    const SHOWN: usize = 6;
+    const WIDTH: usize = 60;
+    let mut names: Vec<String> = found
+        .iter()
+        .take(SHOWN)
+        .map(|(v, m)| {
+            let text = v.to_string();
+            let text = if text.chars().count() > WIDTH {
+                let head: String = text.chars().take(WIDTH).collect();
+                format!("{head}…")
+            } else {
+                text
+            };
+            if *m == 1 {
+                text
+            } else {
+                format!("{text} (×{m})")
+            }
+        })
+        .collect();
+    if found.len() > SHOWN {
+        names.push("…".into());
+    }
+    let known: usize = found.iter().map(|(_, m)| *m).sum();
+    SymplexError::computation_failed(
+        operation,
+        format!(
+            "could not solve the characteristic polynomial: found {known} of its {} roots \
+             ({}), the other {missing} are not known — {WHY}, or a root whose multiplicity \
+             was not established",
+            known + missing,
+            names.join(", "),
+        ),
+    )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Eigenvalue multiplicity via polynomial factoring
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Extract eigenvalues with algebraic multiplicities from a characteristic
-/// polynomial.
+/// polynomial of degree `degree` in `var`.
 ///
 /// **Primary path:** convert to `Poly`, call `factor_over_z()` (Yun's
 /// square-free decomposition) for exact `(factor, multiplicity)` pairs;
@@ -681,22 +881,37 @@ fn quartic_roots_verified(coeffs: &[Ex], roots: &[Ex]) -> bool {
 /// **Fallback:** if the polynomial has non-rational coefficients,
 /// `expr_to_poly` returns `None`; then derivative-based multiplicity
 /// detection is used on whatever roots the generic solver finds.
-pub(super) fn eigvals_with_multiplicity(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
-    if let Some(pairs) = eigvals_via_poly_factor(char_poly, var)
-        && !pairs.is_empty()
-    {
-        debug!(
-            count = pairs.len(),
-            "eigvals_with_multiplicity: used Poly::factor_over_z path"
-        );
-        return pairs;
-    }
+///
+/// The result says whether the roots are all of them ([`Spectrum`]).
+pub(super) fn eigvals_with_multiplicity(char_poly: &Ex, var: &Ex, degree: usize) -> Spectrum {
+    let exact = match eigvals_via_poly_factor(char_poly, var).map(|s| s.checked_for(degree)) {
+        Some(spectrum) if spectrum.is_complete() => {
+            debug!("eigvals_with_multiplicity: used Poly::factor_over_z path");
+            return spectrum;
+        }
+        other => other,
+    };
     debug!("eigvals_with_multiplicity: falling back to derivative-based detection");
-    eigvals_via_derivative(char_poly, var)
+    let fallback = eigvals_via_derivative(char_poly, var, degree);
+    match exact {
+        // Neither is complete: the factors solved exactly are the better part.
+        Some(Spectrum::Partial { found, missing })
+            if !fallback.is_complete() && !found.is_empty() =>
+        {
+            Spectrum::Partial { found, missing }
+        }
+        _ => fallback,
+    }
 }
 
 /// Primary multiplicity path: convert to Poly, factor, solve each factor.
-fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>> {
+///
+/// Every irreducible factor over ℚ has an exact root list: a rational, the
+/// quadratic formula, radicals when they are compact, and `RootOf(factor,
+/// k)` otherwise — also when the solver does not return as many roots as
+/// the degree (an irreducible polynomial has that many distinct ones).  Up
+/// to 0.59 the roots of such a factor were dropped.
+fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Spectrum> {
     let inner = char_poly.inner.read();
     let arena = &inner.arena;
     let poly = crate::poly::polybridge::expr_to_poly(arena, char_poly.raw_id(), var.raw_id())?;
@@ -707,11 +922,13 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
     drop(inner);
 
     let mut eigen_pairs: Vec<(Ex, usize)> = Vec::new();
+    let mut total_degree = 0usize;
     for (factor, mult) in &factors {
         let degree = factor.degree().unwrap_or(0);
         if degree == 0 {
             continue;
         }
+        total_degree += degree * *mult as usize;
         if degree == 1 {
             let coeffs = factor.coeffs();
             let a = &coeffs[1];
@@ -730,6 +947,7 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             crate::poly::polybridge::poly_to_expr(&mut write_inner.arena, factor, var.raw_id());
         drop(write_inner);
         let factor_ex = char_poly.wrap(factor_expr);
+        let root_ofs = || -> Vec<Ex> { (0..degree).map(|i| root_of(&factor_ex, var, i)).collect() };
         let roots = if (3..=4).contains(&degree) && !radical_form_is_compact(factor) {
             // Irreducible cubic/quartic without a compact radical form: the
             // Cardano/Ferrari expressions (nested complex cube roots) make
@@ -740,17 +958,38 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
                 degree,
                 "eigvals_via_poly_factor: irreducible factor without compact radicals → RootOf"
             );
-            (0..degree).map(|i| root_of(&factor_ex, var, i)).collect()
+            root_ofs()
         } else {
-            factor_ex.solve_or_empty(var)
+            // The factor is irreducible over ℚ: it has `degree` distinct
+            // roots, and a solve that fails or lists another number of
+            // them has not listed its roots.
+            match factor_ex.solve(var) {
+                Ok(roots) if roots.len() == degree => roots,
+                unsolved => {
+                    debug!(
+                        degree,
+                        solved = unsolved.is_ok(),
+                        "eigvals_via_poly_factor: the solver did not list the roots of a factor"
+                    );
+                    match degree {
+                        1 => {
+                            let c = factor.coeffs();
+                            vec![char_poly.context().from_ratio(-(&c[0] / &c[1]))]
+                        }
+                        2 => {
+                            let ctx = char_poly.context();
+                            let c: Vec<Ex> = factor
+                                .coeffs()
+                                .iter()
+                                .map(|q| ctx.from_ratio(q.clone()))
+                                .collect();
+                            low_degree_roots(&c).into_iter().map(|(r, _)| r).collect()
+                        }
+                        _ => root_ofs(),
+                    }
+                }
+            }
         };
-        if roots.is_empty() {
-            warn!(
-                "eigenvals: irreducible factor of degree {} yielded no roots — \
-                 eigenvalues from this factor are missing",
-                degree
-            );
-        }
         trace!(
             degree,
             root_count = roots.len(),
@@ -760,11 +999,15 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             roots.len(),
             mult
         );
+        if roots.len() != degree {
+            // Not the root list of this factor: none of it is claimed.
+            continue;
+        }
         for r in roots {
             eigen_pairs.push((r, *mult as usize));
         }
     }
-    Some(eigen_pairs)
+    Some(Spectrum::of(eigen_pairs, total_degree))
 }
 
 /// Eigenvalues of a characteristic polynomial with symbolic coefficients
@@ -779,29 +1022,36 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
 /// ("could not solve the characteristic polynomial"; SymPy: `{0: 3,
 /// y² + 6x + 6: 1}`), and a reducible quadratic factor could come back
 /// from the quadratic formula with its roots in disguise.
-pub(super) fn symbolic_factor_roots(cp: &Ex, lam: &Ex) -> Option<Vec<(Ex, usize)>> {
+///
+/// The result is the [`Spectrum`] of the product: a factor whose roots are
+/// not all found (an irreducible one of degree above 4 with symbolic
+/// coefficients) leaves it partial.  Up to 0.59 its roots were left out of
+/// a plain list: `(λ − 1)·(λ⁵ − a·λ − 1)` had the roots `[1]`.
+pub(super) fn symbolic_factor_roots(cp: &Ex, lam: &Ex) -> Option<Spectrum> {
     let (_, factors) = cp.factor_list_all();
     if factors.len() < 2 && factors.iter().all(|(_, m)| *m < 2) {
         return None;
     }
-    let mut out: Vec<(Ex, usize)> = Vec::new();
+    let mut out = Spectrum::of(Vec::new(), 0);
     for (f, m) in &factors {
         let coeffs = f.coeffs(lam)?;
+        let Some(degree) = coeffs.len().checked_sub(1).filter(|d| *d > 0) else {
+            continue;
+        };
         let parametric = coeffs.iter().any(|c| !c.free_symbols().is_empty());
-        let roots = match coeffs.len() {
-            0 | 1 => continue,
-            2 | 3 => low_degree_roots(&coeffs),
+        let in_radicals =
+            |rs: Vec<Ex>| Spectrum::of(rs.into_iter().map(|r| (r, 1)).collect(), degree);
+        let roots = match degree {
+            1 | 2 => Spectrum::of(low_degree_roots(&coeffs), degree),
             // An irreducible symbolic cubic or quartic factor: in radicals
             // (before 0.44 its roots were missing from the result).
-            4 | 5 if parametric => match parametric_radical_roots(&coeffs) {
-                Some(rs) => rs.into_iter().map(|r| (r, 1)).collect(),
-                None => eigvals_with_multiplicity(&f.expand(), lam),
+            3 | 4 if parametric => match parametric_radical_roots(&coeffs) {
+                Some(rs) => in_radicals(rs),
+                None => eigvals_with_multiplicity(&f.expand(), lam, degree),
             },
-            _ => eigvals_with_multiplicity(&f.expand(), lam),
+            _ => eigvals_with_multiplicity(&f.expand(), lam, degree),
         };
-        for (r, k) in roots {
-            out.push((r, k * *m as usize));
-        }
+        out = out.joined(roots.scaled(*m as usize), |_, _| false);
     }
     Some(out)
 }
@@ -864,10 +1114,18 @@ fn radical_form_is_compact(f: &crate::poly::dense::Poly) -> bool {
 /// Fallback: derivative-based multiplicity detection.
 ///
 /// For each root `r`, finds the smallest `k` such that `p^(k)(r) ≠ 0`.
-fn eigvals_via_derivative(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
-    let all_roots = char_poly.solve_or_empty(var);
+///
+/// The roots are those the solver lists for the whole polynomial; when it
+/// refuses (a factor it cannot solve, roots it found "but not necessarily
+/// all") none is known.  A multiplicity is counted only as far as the
+/// derivatives vanish structurally, so it is never too high, and the
+/// [`Spectrum`] is complete only when the multiplicities reach `degree`.
+fn eigvals_via_derivative(char_poly: &Ex, var: &Ex, degree: usize) -> Spectrum {
+    let Ok(all_roots) = char_poly.solve(var) else {
+        return Spectrum::of(Vec::new(), degree);
+    };
     if all_roots.is_empty() {
-        return Vec::new();
+        return Spectrum::of(Vec::new(), degree);
     }
     let mut unique_roots: Vec<Ex> = Vec::new();
     for root in &all_roots {
@@ -893,7 +1151,7 @@ fn eigvals_via_derivative(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
         let mult = if mult == 0 { 1 } else { mult };
         eigen_pairs.push((root.clone(), mult));
     }
-    eigen_pairs
+    Spectrum::of(eigen_pairs, degree)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

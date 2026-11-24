@@ -1,5 +1,7 @@
 # What's New in 0.2
 
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
 symplex 0.2.0 is a large release. This page is the tour; the complete list — including every breaking change and its replacement — is in the [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md), and the [migration guide](./reference/migrating-0.2.md) walks through the code changes you will need.
 
 The theme of the release is **never silently wrong**. Several 0.1 operations guessed (`∫₋₁¹ dx/x² = −2`, `re(z) = z`, `solve(x − x) = []`); in 0.2 they return an `Err`, an unevaluated node, or `None`.

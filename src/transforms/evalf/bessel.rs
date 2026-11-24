@@ -144,6 +144,11 @@ fn hankel_threshold(wp: usize, order_abs: f64) -> f64 {
 ///
 /// Returns `None` when the expansion does not reach `wp` bits at this
 /// `x` (the caller then uses the power series).
+///
+/// The combination cancels next to a zero: its absolute error, a part of
+/// `|P| + |Q|` and not of the value, is charged to `w` (`wp.rs`, "A route's
+/// own error").  Up to 0.59 `besselj(0, x)` for the 128-bit dyadic `x`
+/// nearest the 20th zero printed 13 correct digits of 16.
 pub(super) fn bessel_jy_hankel(
     order: &BigFloat,
     x: &BigFloat,
@@ -188,6 +193,12 @@ pub(super) fn bessel_jy_hankel(
             .mul(&p_val, wp, RM)
             .add(&cos_phase.mul(&q_val, wp, RM), wp, RM)
     };
+    // The phase is good to `2^(3 − w.bits())` (its `log₂ x` leading bits are
+    // the extra ones of `wp`), `P` and `Q` to their rounding and to the
+    // first term left out, below `2^(−wp)` of them: the combination to that
+    // much of `|P| + |Q|`, however small it is.
+    let own = Summed::of(&[&p_val, &q_val]).error(w.bits(), accuracy::part_lg(&amplitude));
+    w.charge(own);
     Some(amplitude.mul(&combo, wp, RM))
 }
 
@@ -415,7 +426,7 @@ fn arb_bessel_j_classic(
                 j
             });
         }
-        if let Some(j) = bessel_jy_hankel(order, x, true, &mut w.at(wp)) {
+        if let Some(j) = w.carry(wp, |ww| bessel_jy_hankel(order, x, true, ww)) {
             return Ok(round_to(j, prec));
         }
     }
@@ -490,6 +501,9 @@ fn arb_bessel_j_classic(
             (prefix, BigFloat::from_i32(1, wp).div(&gamma_nu1, wp, RM))
         };
         sum = sum.add(&term, wp, RM);
+        // What enters the sum (`wp.rs`, "A route's own error").
+        let mut seen = Summed::new();
+        seen.term(&term);
 
         // The terms peak near k ≈ |x|/2 and then decay super-exponentially;
         // `|x| + wp` comfortably covers the tail down to 2^{-wp}.
@@ -512,6 +526,7 @@ fn arb_bessel_j_classic(
             }
 
             sum = sum.add(&term, wp, RM);
+            seen.term(&term);
         }
 
         let r = prefix.mul(&sum, wp, RM);
@@ -522,6 +537,9 @@ fn arb_bessel_j_classic(
                     .into(),
             });
         }
+        // The alternating sum cancels (wholly, next to a zero of `J_ν`): its
+        // error is a part of its terms, not of the value.
+        w.charge(seen.error(wp, accuracy::part_lg(&prefix)));
         Ok(round_to(r, prec))
     }
 }
@@ -577,12 +595,21 @@ fn bessel_y_from_j(
         let (s, c) = (t.sin(wp, RM, ww.cc), t.cos(wp, RM, ww.cc));
         let jc = jp.mul(&c, wp, RM);
         let num = jc.sub(&jm, wp, RM);
+        // What the two series charged to their values is the difference's
+        // (`|cos νπ| ≤ 1`), and `cos νπ`, known to `2^(1 − wp)·νπ`, is
+        // multiplied by `J_ν`: next to a zero of `J_{−ν}` where `cos νπ` is
+        // small neither shows in the loss measured below.
+        let own = accuracy::lsum(
+            ww.take_own(),
+            accuracy::part_lg(&jp) + accuracy::part_lg(&t) + 2.0 - wp as f64,
+        );
         let e = |v: &BigFloat| v.exponent().map_or(i64::MIN / 4, i64::from);
         // Bits lost in the difference, and in `sin νπ` (its argument's
         // rounding is relative to `νπ`, not to the sine).
         let lost = (e(&jc).max(e(&jm)) - e(&num)).max(0) + (e(&t) - e(&s)).max(0) + 4;
         let lost = usize::try_from(lost).unwrap_or(usize::MAX / 8);
         if lost + 16 <= extra {
+            w.charge(own - accuracy::part_lg_low(&s));
             return Ok(round_to(num.div(&s, wp, RM), prec));
         }
         if lost > 4 * prec + 512 {
@@ -631,7 +658,7 @@ fn arb_bessel_y_classic(
     }
 
     if x_f64 >= hankel_threshold(wp, order_f64.abs())
-        && let Some(y) = bessel_jy_hankel(order, x, false, &mut w.at(wp))
+        && let Some(y) = w.carry(wp, |ww| bessel_jy_hankel(order, x, false, ww))
     {
         tracing::trace!("arb_bessel_y: used Hankel P/Q expansion");
         return Ok(round_to(y, prec));
@@ -727,6 +754,8 @@ fn arb_bessel_y_classic(
     let mut series = BigFloat::new(wp);
     let two_gamma = euler_gamma.mul(&two, wp, RM);
     let max_terms = (x_f64.abs() * 2.0) as usize + wp + 40;
+    // What enters the series (`wp.rs`, "A route's own error").
+    let mut seen = Summed::new();
     for k in 0..=max_terms {
         if k > 0 {
             let k_bf = BigFloat::from_i128(k as i128, wp);
@@ -739,6 +768,7 @@ fn arb_bessel_y_classic(
         let psi_sum = h_k.add(&h_nk, wp, RM).sub(&two_gamma, wp, RM);
         let term = psi_sum.mul(&pow, wp, RM).mul(&inv_fact, wp, RM);
         series = series.add(&term, wp, RM);
+        seen.term(&term);
         if k > 2
             && let (Some(t_exp), Some(s_exp)) = (term.exponent(), series.exponent())
             && (s_exp as i64 - t_exp as i64) > wp as i64
@@ -747,11 +777,20 @@ fn arb_bessel_y_classic(
             break;
         }
     }
-    let series_term = inv_pi
-        .mul(&x_half.powi(n, wp, RM), wp, RM)
-        .mul(&series, wp, RM)
-        .neg();
+    let series_factor = inv_pi.mul(&x_half.powi(n, wp, RM), wp, RM);
+    let series_term = series_factor.mul(&series, wp, RM).neg();
 
+    // The series cancels within itself, and the three parts against each
+    // other (wholly, next to a zero of `Y_n`): the error is a part of the
+    // terms and of the parts, not of the value.  The finite part is a sum
+    // of `n` terms of one sign; `J_n` has an error of its own, below
+    // `2^(−wp)`, that the log term multiplies by `(2/π)·ln(x/2)`.
+    w.charge(seen.error(wp, accuracy::part_lg(&series_factor)));
+    w.charge(
+        Summed::of(&[&finite, &log_term, &series_term, &ln_x_half])
+            .steps(n)
+            .error(wp, 0.0),
+    );
     let y = finite.add(&log_term, wp, RM).add(&series_term, wp, RM);
     Ok(round_to(y, prec))
 }
@@ -825,8 +864,13 @@ fn large_order_refused(what: &str, order: f64, x: f64) -> SymplexError {
 /// Ascending series for `I_ν(x)` at working precision `wp`:
 /// `I_ν(x) = (x/2)^ν Σ_{k≥0} (x²/4)^k / (k! Γ(ν+k+1))`.
 ///
-/// All terms are positive for `x > 0`, so no cancellation occurs; the
-/// number of terms is `O(|x| + wp)`.
+/// The terms have one sign from `ν + k + 1 > 0` on — all of them for
+/// `ν > −1` and for an integer order; for a negative order that is not an
+/// integer the first ones cancel against the rest (`I_(−3/2)` has a zero
+/// at 1.1997), so the sum's error is charged to `w` as a part of its
+/// terms (`wp.rs`, "A route's own error"; up to 0.59 `besseli(−3/2, x)`
+/// for the 234-bit dyadic `x` nearest that zero was wrong from the 27th
+/// digit of 50).  The number of terms is `O(|x| + wp)`.
 fn bessel_i_series(
     order: &BigFloat,
     x: &BigFloat,
@@ -912,6 +956,8 @@ fn bessel_i_series(
 
     // term_{k+1} = term_k · (x²/4) / ((k+1)(ν+k+1))
     let mut sum = term.clone();
+    let mut seen = Summed::new();
+    seen.term(&term);
     let max_terms = (x_f64 * 2.0) as usize + wp + 40;
     for k in 1..=max_terms {
         let k_bf = BigFloat::from_i128(k as i128, wp);
@@ -919,6 +965,7 @@ fn bessel_i_series(
         let denom = k_bf.mul(&nu_plus_k, wp, RM);
         term = term.mul(&x_half_sq, wp, RM).div(&denom, wp, RM);
         sum = sum.add(&term, wp, RM);
+        seen.term(&term);
         if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
             && (s_exp as i64 - t_exp as i64) > wp as i64
         {
@@ -933,6 +980,7 @@ fn bessel_i_series(
                 .into(),
         });
     }
+    w.charge(seen.error(wp, accuracy::part_lg(&prefix)));
     Ok(r)
 }
 
@@ -1058,7 +1106,7 @@ fn arb_bessel_i_classic(
             return Err(special_exhausted(prec));
         }
     }
-    let r = bessel_i_series(order, x, &mut w.at(wp))?;
+    let r = w.carry(wp, |ww| bessel_i_series(order, x, ww))?;
     Ok(round_to(r, prec))
 }
 

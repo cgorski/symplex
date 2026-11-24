@@ -1,6 +1,6 @@
 # Sets and Logic
 
-`SetEx` (set-valued expressions) and `BoolEx` (boolean expressions) are distinct types from `Ex`, checked at compile time. 0.2 gives both a real algebra.
+`SetEx` (set-valued expressions) and `BoolEx` (boolean expressions) are distinct types from `Ex`, checked at compile time. Each has an algebra of its own.
 
 ## Building sets
 
@@ -57,6 +57,11 @@ fn main() {
     println!("{:?}", a.intersection(&ctx.interval(&ctx.int(6), &ctx.int(7), IntervalKind::Closed)).is_empty()); // Some(true)
     println!("{:?} {:?}", b.is_open(), a.is_closed());                              // Some(false) Some(true)
 
+    // A subset of the reals must have members that are proved real.
+    let (i, reals) = (ctx.i_unit(), ctx.reals());
+    println!("{:?} {:?}", ctx.finite_set(&[i]).is_subset(&reals), ctx.finite_set(&[x.clone()]).is_subset(&reals));
+    // Some(false) None   (a plain x may be complex)
+
     let ab = a.union(&b).simplify();
     println!("{} {} {}", ab.inf().unwrap(), ab.sup().unwrap(), ab.measure().unwrap());   // 0 10 10
     println!("{} {} {}", a.boundary().unwrap(), b.closure().unwrap(), a.interior().unwrap());
@@ -110,7 +115,7 @@ fn main() {
 }
 ```
 
-The boolean simplifier does not yet recognise every consensus pattern (`(p ∧ q) ∨ (p ∧ ¬q)` stays as written), but `is_tautology` on the equivalence proves it.
+`simplify` is not a minimiser: it applies absorption, complementation and the simple consensus pattern (`(p ∧ q) ∨ (p ∧ ¬q)` becomes `p`), and a formula it leaves as written can still be compared with another through `is_tautology` on their equivalence. The DPLL search handles formulas of up to 24 atoms; beyond that the queries answer `None`.
 
 ## Relations and assumptions
 
@@ -149,7 +154,7 @@ fn main() {
 
 ## Assumptions as values
 
-`Assumptions` is a pair of `Props` bitflags (known true / known false) with forward-chaining inference. `implies` compares two assumption sets; `Assumption::negate` gives the `Not*` variant; `Props::EXTENDED_REAL` is new in 0.2 (`is_real` and `is_finite` are both `None` for an `ExtendedReal` symbol, since it may be ±∞).
+`Assumptions` is a pair of `Props` bitflags (known true / known false) with forward-chaining inference. `implies` compares two assumption sets; `Assumption::negate` gives the `Not*` variant; `Props::EXTENDED_REAL` is the real line with `±∞`: `is_real` and `is_finite` are both `None` for an `ExtendedReal` symbol, since it may be ±∞. The bare flag `Props::POSITIVE` implies extended-real, not finite (`oo` is positive); a *symbol* declared `Assumption::Positive` is finite and real as well.
 
 ```rust
 use symplex::prelude::*;
@@ -157,7 +162,7 @@ use symplex::prelude::*;
 fn main() {
     let mut positive = Assumptions::default();
     positive.assert_true(Props::POSITIVE);
-    println!("{positive}");   // commutative, complex, real, positive, nonnegative, nonzero, finite, …
+    println!("{positive}");   // commutative, positive, nonnegative, nonzero, extended_real, !imaginary, !negative, !nonpositive, !zero
     let nonneg = Assumptions { known_true: Props::NONNEGATIVE, ..Assumptions::default() };
     assert!(positive.implies(&nonneg));
     println!("{:?}", Assumption::Positive.negate());     // NotPositive

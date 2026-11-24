@@ -1,5 +1,7 @@
 # What's New in 0.5
 
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
 symplex 0.5.0 is a small minor release driven by the first hours of use of the 0.4 polyhedron certificates. Two mechanical breaking changes: `PolyhedronOutcome::Refuted` gained a `param_value` field, so patterns that destructure it need `..` (or the new field), and `LeanOpts` gained two fields (use `..Default::default()` or the `with_*` builders, as recommended since 0.4). Everything else is additive; the [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md) has the list.
 
 ## A prover over a fixed hypothesis set

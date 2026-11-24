@@ -63,7 +63,7 @@ repository that anyone could reasonably flag, so:
 - [The API Model](#the-api-model)
 - [Expression Nodes](#expression-nodes)
 - [How to Add a New Function](#how-to-add-a-new-function)
-- [How to Add a New Node Type](#how-to-add-a-new-node-type)
+- [How to Add a New Node Type](#how-to-add-a-new-node-type-unevaluated-form)
 - [Testing](#testing)
 - [Continuous Integration](#continuous-integration)
 - [Code Style](#code-style)
@@ -79,7 +79,7 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (about 15,100 tests; a few minutes in debug)
+# Run the test suite (about 15,130 tests; a few minutes in debug)
 cargo test
 # ... or, recommended: one process per test with per-test timeouts
 # (`.config/nextest.toml`; `cargo install cargo-nextest`)
@@ -171,7 +171,7 @@ numbers.
 
 ## Architecture
 
-The source code (about 414,000 lines of Rust at 0.59) is organized into 10
+The source code (about 415,000 lines of Rust at 0.60) is organized into 10
 directories under `src/`. Each directory is a layer in the dependency
 hierarchy — modules may depend on layers below them but should not reach
 upward.
@@ -179,8 +179,9 @@ upward.
 ```
 src/
 ├── base/         Expression nodes (node.rs, 96 variants), arena (hash-consing), symbol.rs (name
-│                 interning), tree traversal (walk.rs), canonicalization, assumptions, sort keys,
-│                 compaction, numeric.rs (exact f64 ↔ rational, the exact rational `Q`),
+│                 interning), tree traversal (walk.rs), canonicalization (canon.rs + canon/, see
+│                 "The split files"), assumptions, sort keys, compaction,
+│                 numeric.rs (exact f64 ↔ rational, the exact rational `Q`),
 │                 bigcomplex.rs (BigFloat complex pairs), bernoulli.rs, complex.rs (Complex64
 │                 helpers), errors.rs, config.rs (EvalConfig, EXPRESSION_BUDGET), and the shared
 │                 value types of 0.15–0.21: interval.rs (Interval/Bounds), extended.rs (Extended),
@@ -190,7 +191,8 @@ src/
 │                 architecture: func.rs (Func/FuncSpec: one identity and fact table for all
 │                 101 functions; generates LibFn), truth.rs (Truth, SignSet, Evidence,
 │                 Verdict), cast.rs (checked float→integer), bigfloat.rs (the astro-float
-│                 boundary); node.rs's shape methods come from symplex-macros' NodeShape derive
+│                 boundary), value_class.rs (ValueClass: finite, ±∞, a directed infinity, zoo,
+│                 nan); node.rs's shape methods come from symplex-macros' NodeShape derive
 ├── poly/         traits.rs (Ring/Field/EuclideanDomain hierarchy, the `poly_gcd` hook),
 │                 dense.rs/generic.rs (GenPoly<C>), zpoly.rs (ℤ-scaled forms, gcd_via_z),
 │                 modpoly.rs (𝔽ₚ[x]: Fp64, PolyIn<R>), interp.rs (Newton divided differences),
@@ -199,27 +201,35 @@ src/
 │                 number fields ℚ(α) (algebraic.rs), ratfn.rs, multipoly.rs (sparse multivariate;
 │                 heuristic gcd/lcm, content, denominators), polybridge.rs (Ex ↔ polynomial,
 │                 incl. symbolic-coefficient term collection)
-├── transforms/   diff, integrate (+ heurisch, trig_integ, apart), eval, evalf, expand, solve,
-│                 inequalities, pattern.rs (AC matcher), subs, solve/ (context.rs: SolveCx and
-│                 Domain; outcome.rs: Solutions),
+├── transforms/   diff, expand, subs, inequalities, pattern.rs (AC matcher), realness.rs (realness
+│                 of constants); integrate.rs + integrate/ (12 files, one family of rules each)
+│                 + heurisch, trig_integ, apart; eval.rs + eval/ (9 files: exact values and zero
+│                 tests); evalf.rs + evalf/ (49 files: the numeric kernels); solve.rs + solve/
+│                 (9 files: context.rs with SolveCx and Domain, outcome.rs with Solutions, and
+│                 the solving strategies) — for these four see "The split files";
 │                 sets.rs (set-algebra normal form), logic.rs (boolean simplifier, DPLL,
 │                 piecewise), rsolve.rs (recurrences)
 ├── simplify/     simplify_engine (multi-strategy fixpoint + tracing), rewrite.rs, trig/hyp
 │                 (fu.rs, trigsimp, trig_expand, trig_combine), powsimp/radsimp (powdenest,
 │                 sqrtdenest), log_expand/log_combine, combsimp, nsimplify, refine, factor_terms,
 │                 ratsimp.rs (rational-function normal form over opaque indeterminates)
-├── calculus/     definite.rs (definite/improper integration, GK15 quadrature), summation.rs (+ the sum_eval shim eval() calls),
-│                 gosper.rs, convergence.rs, series.rs, formal_series.rs, finite_diff.rs,
-│                 limit.rs + gruntz.rs, residue.rs, laplace.rs, fourier.rs (series),
-│                 fourier_transform.rs, mellin.rs, z_transform.rs, ode.rs, risch/ (tower,
-│                 hermite, rde, rothstein_trager, log_to_real)
+├── calculus/     definite.rs + definite/ (definite/improper integration, GK15 quadrature) and
+│                 ode.rs + ode/ (see "The split files"), summation.rs (+ the sum_eval shim eval()
+│                 calls), gosper.rs, convergence.rs, series.rs, formal_series.rs, finite_diff.rs,
+│                 limit.rs + gruntz.rs, calculus_util.rs (domain analysis, breakpoints, the zero
+│                 tests of constants: hidden_zero, ZeroDecision, NonzeroExpr), residue.rs,
+│                 laplace.rs, fourier.rs (series), fourier_transform.rs, mellin.rs,
+│                 z_transform.rs, transform_util.rs (0.60: what the four integral transforms
+│                 share; the bound-variable rule), risch/ (tower, hermite, rde,
+│                 rothstein_trager, log_to_real)
 ├── output/       display, pretty, latex, mathml, parse, tree (JSON), common.rs (shared print
 │                 ordering), cse, lambdify (stack-VM compile), lean.rs (Mathlib rendering) +
 │                 lean_proof.rs (structured tactic proofs), codegen.rs (Rust) +
 │                 codegen/{codegen_c.rs (C99), codegen_py.rs (Python), numeric_rt.rs (shared f64
 │                 special-function runtime), rt_embed.rs (embedding `mod symplex_rt`)}
 ├── plotting/     Adaptive sampling, textplot, SVG, TikZ, data export, RK4
-├── domains/      matrix.rs + matrix_decomp.rs (QR, Cholesky, LDL, Gram–Schmidt, structure
+├── domains/      matrix.rs + matrix/ (zero_test.rs, eigen.rs; see "The split files") +
+│                 matrix_decomp.rs (QR, Cholesky, LDL, Gram–Schmidt, structure
 │                 tests, norms, hessian, wronskian, 0.3 selection/conversion helpers),
 │                 decompositions.rs (named results of factorisations and normal forms),
 │                 exact_kernel.rs (0.20: the Cell trait over i64/i128/W256/BigInt, resumable
@@ -311,6 +321,113 @@ gains a new upward target module (or when the allowlist is no longer
 tight).  Prefer moving code down a layer or routing through the façade to
 extending the allowlist.
 
+### The split files
+
+Since 0.60 the eight files that had grown largest (8,500 to 15,400 lines
+each at 0.59) are a parent `x.rs` and child modules `x/<child>.rs`.  The
+parent keeps the entry points, the dispatcher and the inline `mod tests`; a
+child holds one family of rules, one class of equations or one family of
+kernels.  A child begins with `use super::*;` and its parent imports it
+with a glob, so a path such as `canon::at_infinity` or
+`definite::side_value` — in this document, in doc comments and in the code
+— resolves as before the split although the item lives in a child file:
+`grep -rn "fn side_value" src/calculus/definite*` finds it.
+
+- **`base/canon.rs`** keeps `canon_add`, `canon_mul`, `canon_pow`,
+  `canon_neg`, the radicals, the arithmetic of infinities and the
+  predicates the constructors need (`may_vanish_on_a_region`,
+  `at_complex_infinity`, `known_sign`).  `canon/`: `mul_vanishing` (sums
+  and factors that vanish identically; `with_pinned_values`),
+  `special_values` (`canon_function`: functions at exact special
+  arguments), `assumed` (values under the assumptions on symbols;
+  `lib_function_value`), `infinite_args` (library functions at `±∞` and
+  `±i·∞`: `at_infinity`), `sets` (the set constructors), `verify`
+  (`verify_canonical`).
+- **`transforms/integrate.rs`** keeps the entry point `integrate`, the
+  budgets, the stages and the acceptance of a candidate, the memo, the
+  choice of parts and the dispatcher (`integrate_node`,
+  `integrate_node_uncached`).  `integrate/`: `standard_forms` (`(x² ±
+  a²)ⁿ`, completed squares, linear over quadratic), `trig_rational`
+  (rational functions of `sin` and `cos`: Weierstrass, Bioche),
+  `rational_constants` (rational functions with `i` or constants in the
+  coefficients), `u_substitution`, `substitution` (logarithms,
+  exponentials, radicals; the spiral antiderivatives of `R(e^{λx})`),
+  `mobius` (radicals of a Möbius function), `algebraic` (`P(x)·Q(x)^{k/2}`),
+  `products` (by parts, product-to-sum), `piecewise` (`|g|`, `sign`, `H`,
+  `Piecewise`), `special` (the special-function table), `biquadratic`,
+  `verify` (the check of a candidate antiderivative; nested powers over
+  the reals).
+- **`transforms/eval.rs`** keeps the dispatcher `eval`.  `eval/`:
+  `trig_radicals` (trigonometric values in radicals; `eval_exp`, `eval_ln`,
+  `eval_abs`, `eval_sign`, the inverse and the hyperbolic functions),
+  `integer_sequences` (the factorial family, Fibonacci, Bernoulli,
+  harmonic, Stirling and Bell numbers — and `eval_sin`, `eval_cos`,
+  `eval_tan`), `lib_values` (`eval_lib_fn`: the library functions),
+  `special02` (`Si`, `Ci`, `Ei`, `li`, `ζ`, `ψ`, `ψ⁽ⁿ⁾`, `δᵢⱼ`), `orthopoly`
+  (the classical orthogonal polynomials), `digit_guard` (size guards of
+  exact values, `eval_factorial`, `eval_gamma`, relations between constants
+  and `constant_zero_decision`), `quadratic_tower` (the zero test in towers
+  of square roots; `eval_log_gamma`, `eval_erf`, `eval_lambertw`,
+  `eval_beta`, `eval_binomial`), and the two older modules `atan_sum` and
+  `cyclotomic` (exact zero tests).
+- **`transforms/evalf.rs`** keeps the entry points, the adaptive precision
+  loop, the `f64` results, `eval_node` and `const_value`.  `evalf/` has 49
+  files: to the 31 it had (`wp`, `ball`, `accuracy`, `quad`, `improper`,
+  `windowsum`, …) the split added `integral` (definite integrals),
+  `subtree` (`Sum`, `Product`, `Piecewise`, `RootOf`, `RootSum`), `celem`
+  (complex arithmetic), `f64_special` (`f64` helpers), `gamma` (Stirling's
+  series), `constants` (Euler's `γ`), `erf`, `bessel`, `expint` (the
+  trigonometric, exponential and logarithmic integrals), `zeta_polygamma`,
+  `orthopoly`, `special09`, `incgamma`, `betainc`, `polylog_eta`, `airy`,
+  `carlson` (elliptic integrals) and `format` (decimal output).
+- **`transforms/solve.rs`** keeps the entry points (`solve_classified`,
+  `solve_general`, `known_real_roots`), the checks of candidates
+  (`residual_at`, `part_at_a_pole`), `solve_raw` and the polynomials with
+  symbolic coefficients.  `solve/`: `context` (`SolveCx`, `Domain`),
+  `outcome` (`Solutions`), `closed_forms` (degrees 1 to 4, rational roots),
+  `peeling` (inversion, principal branches, families and their real
+  members), `change_of_var`, `rational_exp` (rational equations;
+  exponential, hyperbolic and half-angle substitutions; sums of
+  logarithms), `lambert`, `declared` (declared domains of the unknown),
+  `algebraic_roots` (polynomials with algebraic-number coefficients).
+- **`calculus/definite.rs`** keeps `integrate_definite`, the closed form,
+  the pieces and breakpoints, the poles of rational factors and the residue
+  routes.  `definite/`: `branch_cuts` (cut crossings of the
+  antiderivative), `endpoints` (endpoint values and one-sided limits),
+  `special_integrands` (`δ`, `H`, `|·|`, `sign`, `Piecewise`, `floor`),
+  `known_values` (the table of known definite integrals), `gauss_kronrod`
+  (the GK15 quadrature: `QuadOpts`, `QuadResult`, `quadrature`).
+- **`calculus/ode.rs`** keeps `dsolve`, the normal forms and the elementary
+  first- and second-order routes.  `ode/`: `separable`,
+  `linear_exact_homog` (first-order linear, exact, homogeneous
+  coefficients), `reducible` (no explicit `x`), `bernoulli_euler`
+  (Bernoulli, Euler–Cauchy), `variation` (variation of parameters),
+  `const_coeff` (linear with constant coefficients, any order),
+  `clairaut_riccati`, `classify` (`classify_ode`), `verify`
+  (`checkodesol`), `systems` (`solve_ode_system`).
+- **`domains/matrix.rs`** keeps the `Matrix` type and its methods.
+  `matrix/`: `zero_test` (the three-valued scalar tests, shared with
+  `matrix_decomp` and `quaternion`), `eigen` (root formulas for
+  characteristic polynomials, multiplicities, Jordan helpers).
+
+**Splitting another file.**  A split moves text and edits nothing.  The
+child starts with `use super::*;`, the parent declares `mod <child>;` and
+imports it with a glob (`use`, `pub(crate) use` or `pub use`: the widest
+visibility a moved item has), so every path that resolved before still
+resolves; the inline `mod tests` stays in the parent, so no test changes
+its name.  The only edit allowed to a moved line is `pub(super)` on an
+item, field or method that the parent or a sibling names (doc links count:
+CI builds the private docs with `-D warnings`).  A child must not have the
+name of a function or type of its parent, or a doc link to it is ambiguous
+(rustdoc: "both a function and a module"): hence
+`definite/gauss_kronrod.rs` beside `fn quadrature` and
+`canon/infinite_args.rs` beside `fn at_infinity`.  Prove the move before
+anything else is run: every top-level item of the old file is found once,
+textually equal up to `pub(super)`, in the parent or a child (compare
+before rustfmt, and item by item after it); `cargo nextest list` prints
+the same test names; and the rows of the ratchet tables move with the
+code (see "Type rules that keep bug classes out").
+
 ### Key Types
 
 | Type | Location | Purpose |
@@ -318,7 +435,7 @@ extending the allowlist.
 | `ExprNode` | `src/base/node.rs` | The expression tree — 96 variants (Add, Mul, Sin, Integral, Re/Im/Conjugate/Arg, Zeta, Polygamma, RootOf, RootSum, Interval, etc.) |
 | `Arena` | `src/base/arena.rs` | Hash-consed expression storage. All nodes live here. |
 | `ExprId` | `src/base/node.rs` | A handle into the arena (equality and hashing only: no order — see "Identifiers have no order"). This is how expressions are referenced internally. |
-| `Func` / `FuncSpec` | `src/base/func.rs` | One identity for every function (dedicated nodes, `LibFn` library functions, internal helpers) and its table of facts: names, arity, sort sub-rank, LaTeX, conjugation, real domain, parity, poles. See "How to Add a New Function". |
+| `Func` / `FuncSpec` | `src/base/func.rs` | One identity for every function (dedicated nodes, `LibFn` library functions, internal helpers) and its table of facts: names, arity, sort bytes, the LaTeX, two-dimensional and MathML forms, conjugation, real domain, parity, poles, constant folding, numeric back ends. See "How to Add a New Function". |
 | `Truth`, `SignSet`, `Evidence`, `Verdict<T>` | `src/base/truth.rs` | Three-valued decisions, the set of signs a finite value can have, and how a decision was established. See "Decisions: `Truth`, signs and evidence". |
 | `SolveCx`, `Domain`, `Solutions` | `src/transforms/solve/{context,outcome}.rs` | The domain of the unknown, passed explicitly through the solvers, and their outcome (`Complete` / `Partial` / `Refused`). See "Solving". |
 | `Work`, `WorkScope`, `BudgetKind` | `src/base/budget.rs` | Deterministic work budgets carried by the arena. See "Budgets count work". |
@@ -330,7 +447,7 @@ extending the allowlist.
 | `RationalFn` | `src/poly/ratfn.rs` | Rational function `p(x)/q(x)` in ℚ(x). Implements `Field`, enabling `GenPoly<RationalFn>`. |
 | `AlgExpr` (internal) | `src/poly/algebraic.rs` | Arena-free tree of an algebraic number (rationals, roots, field operations) used by `minimal_polynomial`: resultants eliminate the radicals, the candidate factor is verified at high precision. |
 | `MultiPoly` | `src/poly/multipoly.rs` | Sparse multivariate polynomial. |
-| `Matrix` | `src/domains/matrix.rs` | Symbolic matrix (Vec of Vec of Ex); decompositions in `matrix_decomp.rs`. |
+| `Matrix` | `src/domains/matrix.rs` | Symbolic matrix (Vec of Vec of Ex); its scalar zero tests and eigenvalue helpers in `matrix/`, decompositions in `matrix_decomp.rs`. |
 | `Rule` / `RuleSet` | `src/api/expr_rules_ext.rs` | Public rewrite rules over `Pattern` (`src/transforms/pattern.rs`). |
 | `CompiledFn` | `src/output/lambdify.rs` | Stack-VM compiled numeric closure (`Clone + Send + Sync`). |
 | `LinearSolution` | `src/api/expr_solve_ext.rs` | `Unique` / `Parametric` / `Inconsistent` result of `linsolve`. |
@@ -676,7 +793,9 @@ to `is_unevaluated_node` in `arena.rs`.
 **Sort keys** are bytes in the arena's pool (`SortKey = [u8]`).  Their
 bytes, and the digest of a truncated key (one `FxHasher` write of the full
 key, big-endian), are byte-identity critical: a change must show identical
-keys on every node of the Rubi arenas.
+keys on every node of the Rubi arenas.  The leading bytes of a function's
+key are its `sort` facet in `funcs!` (`SortSub`); since 0.60 `sort_key.rs`
+has no arm per function.
 
 **Internal functions** of an algorithm (the series engine's asymptotic
 helpers) are `ExprNode::Internal(InternalFn, args)` nodes declared in the
@@ -712,7 +831,8 @@ the 8 internal asymptotic helpers of the limit engine (`ExprNode::Internal`,
 which no name builds) — has one identity, `Func`, and one entry in the
 `funcs!` table of `src/base/func.rs`.  Code that treats a family of
 functions uniformly asks `Func::elementary()` (sin…atanh, exp, ln) or
-`Func::is_special()` through `ExprNode::func`, instead of an or-pattern of
+`Func::is_special()` through `ExprNode::func_head` (or `ExprNode::func`,
+which also returns the arguments), instead of an or-pattern of
 variants; a list without a family gets a predicate on `Func` and a test that
 it selects the intended set.  The entry is a
 `FuncSpec` struct literal with every field mandatory, so a function that
@@ -723,6 +843,8 @@ forgets a facet does not compile:
 Erfi => FuncSpec {
     name: "erfi", parse: &[], arity: Exactly(1), sort: Named,
     tex: Tex::Call(r"\operatorname{erfi}"),
+    pretty: Pretty::Flat,          // no two-dimensional layout of its own
+    mathml: Mml::Name,             // `<mi>erfi</mi>`
     conj: Conj::Entire,            // f(conj z) = conj f(z) everywhere (DLMF 7.4.2)
     real_on: RealOn::Reals,        // real for real x
     parity: Odd(Coefficient),      // must match today's sign extraction (a test checks it)
@@ -733,14 +855,32 @@ Erfi => FuncSpec {
 };
 ```
 
-The data facets — names (display, parser aliases, LaTeX layout), argument
-count, sort sub-rank (node-backed functions keep their historical byte; a
-test checks uniqueness), conjugation rule, the real-argument domain on which
-the function is real, parity, poles, constant folding, and `rt` (which `f64`
-back ends evaluate it and with which runtime kernel) — are read from the
-table by every consumer (`conjugate`, evalf's conjugate pairing, the
-assumption system, LaTeX, `compile`, `to_rust_fn`, `to_c_fn`, the Python
-printers), so two consumers can no longer disagree.
+The data facets — the name, the parser's further names, the argument count,
+the sort bytes (node-backed functions keep their historical byte; a test
+checks uniqueness), the LaTeX layout, the layout of the two-dimensional
+printer (`pretty`), the MathML head (`mathml`), the conjugation rule, the
+real-argument domain on which the function is real, parity, poles, constant
+folding, and `rt` (which `f64` back ends evaluate it and with which runtime
+kernel) — are read from the table by every consumer (`Display`,
+`to_latex`, `pretty`, `to_mathml`, the parser, the sort key, `conjugate`,
+evalf's conjugate pairing, the assumption system, `compile`, `to_rust_fn`,
+`to_c_fn`, the Python printers), so two consumers can no longer disagree
+and a new function cannot forget one.
+
+**Names and printed forms (since 0.60).**  The four printers and
+`sort_key.rs` have one arm for every function node, `func_nodes!() => …`,
+which asks `node.func_head()` for the `Func` and reads `spec()`; up to 0.59
+each had an arm per function that repeated the name, the layout or the
+byte.  A printed form that is not data is a case keyed by `Func` inside
+that arm, with a comment: the postfix `n!` and `lambertw(x, k)` printed as
+`W(x, k)` in `display.rs`; the notations marked `Pretty::Own` (`|x|`, an
+overline, `ψ⁽ⁿ⁾`) in `pretty.rs` and `Mml::Own` in `mathml.rs`.  The
+parser reads a call name with `Func::parsed(name, n)` (the `name`, compared
+ignoring ASCII case, or a `parse` name, at an argument count the function
+accepts) and builds the call with `Arena::func`.  Do not write a function's
+name as a string literal in those six files:
+`tests/unit/test_func_names.rs` counts the literals that spell one (see
+"A function's name is written once").
 
 **`rt`.**  `Runtime::NONE` (optionally `.scipy("…")` for the Python printer)
 when there is no `f64` routine.  Otherwise
@@ -770,12 +910,15 @@ limit rules, code generation (`output/codegen.rs`, `codegen/`,
 
 **A library function** is one `lib` entry in `funcs!` (that also adds the
 `LibFn` variant); the compiler then lists the exhaustive matches that need an
-arm.  Add its evaluation, derivative and printing where the compiler and the
-tests point, and tests in the current group (`tests/v36/`).
+arm.  Add its evaluation and derivative where the compiler and the tests
+point (its printed forms, parser names and sort key are the entry), and
+tests in the current group (`tests/v36/`).
 
-**A node-backed function** needs a `node` entry with its `sort_key.rs` byte,
-the `ExprNode` variant (the derive generates its shape), an arm in
-`ExprNode::func`, `Arena::func` and `Arena::make`, and the steps below.
+**A node-backed function** needs a `node` entry with an unused `sort` byte,
+the `ExprNode` variant (the derive generates its shape), its variant in
+`func_nodes!` and its arm in `ExprNode::func_head` (both in `func.rs`; the
+compiler checks one against the other), an arm in `Arena::func` (its helper
+`node_func`) and in `Arena::make`, and the steps below.
 
 Example of a node-backed function: adding `cot(x)` (cotangent).
 
@@ -802,35 +945,50 @@ display, or special evaluation rules), add to `ExprNode`:
 
 1. **`src/base/node.rs`**: Add variant `Cot(ExprId)` to the enum (the
    `NodeShape` derive generates its shape methods; give binders their
-   attribute).  Add its `funcs!` entry in `src/base/func.rs` and its arms in
-   `ExprNode::func`, `Arena::func` and `Arena::make` (all exhaustive).
+   attribute).  Add its `funcs!` entry in `src/base/func.rs` — the entry is
+   also its display name, its parser names, its LaTeX, two-dimensional and
+   MathML forms and its sort bytes — its variant in `func_nodes!`, and its
+   arms in `ExprNode::func_head`, `Arena::func` and `Arena::make` (all
+   exhaustive).
 
-2. **`src/base/sort_key.rs`**: Add a sub-rank byte (unique; the `func.rs`
-   tests check it) and match arm.  Sort keys are byte-identity critical: never
-   renumber an existing function.
+2. **`src/base/sort_key.rs`**: nothing (the `sort` facet: an unused byte;
+   the `func.rs` tests check uniqueness).  Sort keys are byte-identity
+   critical: never renumber an existing function.
 
 3. **`src/base/walk.rs`, `src/base/compact.rs`**: nothing (generated).
 
 4. **`src/base/assumptions.rs`**: nothing for realness, parity and poles (the
    facets); add a handler only for facts the table cannot express.
 
-5. **`src/output/display.rs`**: Add display formatting.
+5. **`src/output/display.rs`**: nothing (the `name` facet), unless the
+   function is not written `name(args)`.
 
-6. **`src/output/latex.rs`**: Add LaTeX rendering.
+6. **`src/output/latex.rs`**, **`pretty.rs`**, **`mathml.rs`**: nothing (the
+   `tex`, `pretty` and `mathml` facets); a notation the facets cannot
+   express is a case in the file's `func_nodes!()` arm.
 
 7. **`src/output/tree.rs`**: Add `ExprTree::Cot` variant + serialization.
 
-8. **`src/output/parse.rs`**: Add `"cot"` to the function name dispatch.
+8. **`src/output/parse.rs`**: nothing (the `name` and `parse` facets;
+   `Func::bare_argument` if `parse_implicit` should read `cot x`).  Only a
+   name that is not a function of the table — a composition such as `sqrt`
+   — is an arm of `call_1` … `call_4` and an entry of `OTHER_CALL_NAMES`.
 
 9. **`src/transforms/diff.rs`**: Add differentiation rule:
    `d/dx cot(f) = -csc²(f) · f'`.
 
-10. **`src/transforms/eval.rs`**: Add evaluation for known values
-    (e.g., `cot(π/4) = 1`).
+10. **`src/transforms/eval.rs`** (the arm of `eval`) and the fold itself in
+    a file of **`src/transforms/eval/`** — the elementary functions in
+    `trig_radicals.rs` (`eval_sin`, `eval_cos` and `eval_tan` in
+    `integer_sequences.rs`), the library functions in `lib_values.rs`: add
+    evaluation for known values (e.g., `cot(π/4) = 1`).
 
-11. **`src/transforms/evalf.rs`**: Add numerical evaluation.
+11. **`src/transforms/evalf.rs`** (the arm of `eval_node`) and a kernel in
+    a file of **`src/transforms/evalf/`**: add numerical evaluation.
 
-12. **`src/transforms/integrate.rs`**: Add integration rule if known.
+12. **`src/transforms/integrate.rs`** (the dispatcher
+    `integrate_node_uncached`) and the rule in the matching file of
+    **`src/transforms/integrate/`**: add an integration rule if known.
 
 13. **`src/api/expr_funcs.rs`**: Add the public method on `Expr<Numeric>`.
 
@@ -846,8 +1004,9 @@ display, or special evaluation rules), add to `ExprNode`:
 16. **`src/base/complex.rs`**: nothing for conjugation (the `conj` facet);
     `re`/`im` rules if the function has a closed form for them.
 
-17. **`src/output/parse.rs`** round-trip: `parse(&ctx, &format!("{expr}"))`
-    must reproduce the node.
+17. **Round trip**: `parse(&ctx, &format!("{expr}"))` must reproduce the
+    node; `parse_of_display_and_of_every_name_builds_the_same_node` (in
+    `func.rs`) checks it for every function of the table.
 
 18. **Tests**: Add tests in an appropriate test file (see below).
 
@@ -858,18 +1017,28 @@ display, or special evaluation rules), add to `ExprNode`:
 Unevaluated nodes represent computations that couldn't produce a closed form.
 For example, `Limit(body, var, point)` represents `lim_{var→point} body`.
 
-Follow the same steps as adding a new function (above), plus:
+Follow the steps for a new node above, with these differences: such a node
+is not a function of the table, so it has no `funcs!` entry and its printed
+forms, its parser arm and its sort rank are written by hand, as they were
+for every node up to 0.59.
 
-1. Add it to `is_unevaluated_node` in `src/base/arena.rs` (the per-node
+1. Add its variant to `non_func_nodes!` in `src/base/func.rs` (the `None`
+   arm of `ExprNode::func_head`, whose match is exhaustive: a new variant
+   must say whether it is a function), and give it an arm in
+   `sort_key.rs`, `display.rs`, `latex.rs` and `mathml.rs` (`pretty.rs`
+   falls back to the one-line form).
+
+2. Add it to `is_unevaluated_node` in `src/base/arena.rs` (the per-node
    facts that `walk::has_unevaluated` reads are computed from it).
 
-2. Consider adding it to `ExprType::Unevaluated` in `src/api/expr.rs`.
+3. Consider adding it to `ExprType::Unevaluated` in `src/api/expr.rs`.
 
-3. The Display should show the formal notation:
+4. The Display should show the formal notation:
    `Limit(f, x, 0)` or `\lim_{x \to 0} f` in LaTeX.
 
-4. The parser in `src/output/parse.rs` should be able to parse the Display
-   output back (round-trip).
+5. The parser in `src/output/parse.rs` should be able to parse the Display
+   output back (round-trip): an arm of `call_2` … `call_4` and an entry of
+   `OTHER_CALL_NAMES`.
 
 ---
 
@@ -879,7 +1048,7 @@ Follow the same steps as adding a new function (above), plus:
 
 Tests are in `tests/` (integration tests: about 12,100 `#[test]` functions
 in about 590 source files) and inline `#[cfg(test)]` modules (about 3,000
-unit tests).  At 0.59 `cargo nextest run` runs about 15,100 tests (15 more
+unit tests).  At 0.60 `cargo nextest run` runs about 15,130 tests (15 more
 are skipped: the `#[ignore]`d ones), and `cargo test --doc` about 1,370
 doctests: the API examples and the Rust blocks of `README.md` and the book
 (`src/doctests.rs` includes `README.md` and every book chapter, so
@@ -891,18 +1060,18 @@ former top-level file is a module of its group, so a test is addressed as
 `<module>::<test>` inside `--test <group>`.  Up to 0.34 each minor release
 got a `vNN` group of its own (`v23` holds the 0.24 tests); since then a
 group spans several releases (`v34`: 0.35–0.38, `v35`: 0.39–0.46, `v36`:
-0.49–0.59) and new tests go into the newest one.  `tests/README.md` lists
+0.49–0.60) and new tests go into the newest one.  `tests/README.md` lists
 every group's modules:
 
 | Binary (`--test …`) | Sources | What they test |
 |---------------------|---------|----------------|
 | `v04` | `tests/v04/v04_<area>.rs` | One suite per 0.4–0.6 feature: `polyhedron` (parametric polyhedron certificates; emitted Lean pinned to the Mathlib-compiled `tests/fixtures/polyhedron_certificates.lean`), `polytope`, `sos` (pinned to `tests/fixtures/sos_certificates.lean`) |
-| `v09` … `v36` | `tests/vNN/vNN_<area>.rs` (1–83 modules each) | Feature and regression suites of 0.9 → 0.59 (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …; from `v21` on mostly regressions found by audits, differential hunts and the nightly fuzzing, each test citing its oracle). `v36` is the current group |
+| `v09` … `v36` | `tests/vNN/vNN_<area>.rs` (1–87 modules each) | Feature and regression suites of 0.9 → 0.60 (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …; from `v21` on mostly regressions found by audits, differential hunts and the nightly fuzzing, each test citing its oracle). `v36` is the current group |
 | `v03` | `tests/v03/v03_<area>.rs` (11 modules, ~480 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize`, `certificates`, `assumptions_poly`, `exact_matrix`, `user_notes` |
 | `v03_oracle` | `tests/v03_oracle/v03_oracle_*.rs` | SymPy oracle for the 0.3 API (`tests/fixtures/v03_cross_validation.json`) |
 | `v02` | `tests/v02/v02_<area>_<topic>.rs` (62 modules, ~1,050 tests) | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `basefix_*`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `numfix_*`, `sets_*`, `simplify_*`, `solvefix_*`, `solving_*`, `summation_*`, `transforms_*` |
 | `v02_oracle` | `tests/v02_oracle/v02_oracle_*.rs` | SymPy oracle for the 0.2 API (`tests/fixtures/v02_cross_validation.json`); see `tests/README.md` |
-| `unit` | `tests/unit/test_*.rs` (169 modules, ~3,990 tests) | Unit-style suites per module / feature, e.g. `test_known_answers` (256 exact symbolic results against textbook answers), `test_sympy_cross_validation` (263 fixtures against SymPy 1.14, `tests/fixtures/sympy_cross_validation.json`), `test_correctness_audit` (108 fixtures: FTC verification, definite integrals, `tests/fixtures/new_capabilities.json`), `test_cross_context` (cross-context safety guards), `test_ode_comprehensive` (ODE solver classes), `test_rootof` (RootOf solver + numerical evaluation), `test_hard_math` (edge cases and negative tests) |
+| `unit` | `tests/unit/test_*.rs` (170 modules, ~3,990 tests) | Unit-style suites per module / feature, and the fourteen source ratchets (see "Type rules that keep bug classes out"), e.g. `test_known_answers` (256 exact symbolic results against textbook answers), `test_sympy_cross_validation` (263 fixtures against SymPy 1.14, `tests/fixtures/sympy_cross_validation.json`), `test_correctness_audit` (108 fixtures: FTC verification, definite integrals, `tests/fixtures/new_capabilities.json`), `test_cross_context` (cross-context safety guards), `test_ode_comprehensive` (ODE solver classes), `test_rootof` (RootOf solver + numerical evaluation), `test_hard_math` (edge cases and negative tests) |
 | `legacy` | `tests/legacy/{round*_*,math*_bugs,bugfinder*,*_validation,…}.rs` (23 modules) | Regression suites from bug-hunting rounds |
 | `proptests` | `tests/proptests/{proptest_*,test_proptest_new,test_quality_props,test_units_proptest}.rs` (~150 properties) | Algebraic axioms, idempotence, value preservation, round-trips. `<stem>.proptest-regressions` files live next to the sources |
 | `perf` | `tests/perf/{simplify_perf_test,perf_analysis}.rs` | `#[ignore]`d benchmarks (`--release -- --ignored --nocapture`) |
@@ -1287,8 +1456,11 @@ where a type does it for free, not to wrap every pair.  It is
 **enforced** by `tests/unit/test_homogeneous_tuples.rs`, a `syn`-based
 ratchet over `src/` that fails when a file's public surface gains a tuple
 with a repeated element type beyond its allowlisted count (and when an
-allowlisted file loses one without the allowlist being tightened).  Each
-allowlist entry names its kept sites and the convention that justifies them.
+allowlisted file loses one without the allowlist being tightened).  The
+surface is what `pub` and `pub(crate)` expose; since 0.60 `pub(super)`,
+which reaches one module tree (a split file and its children), is as
+private as an item of an unsplit file.  Each allowlist entry names its kept
+sites and the convention that justifies them.
 
 The shared types this produced live in `src/base/interval.rs` and
 `src/base/extended.rs` and are in the prelude:
@@ -1312,9 +1484,23 @@ map use `Interval::reversed` rather than swapping fields by hand.
 
 The 0.49 refactor replaced several conventions that had each produced
 silent wrong answers with types, and freezes what is left with ratchet tests
-(`tests/unit/`: thirteen at 0.59, with exact per-file counts that may only
-shrink; eleven parse `src/` with `syn`, `test_layering` and `test_no_panics`
-scan the text).
+(`tests/unit/`: fourteen at 0.60 — `test_alloc_bounds`,
+`test_canonical_construction`, `test_decimal_roundtrip`, `test_divisors`,
+`test_float_casts`, `test_float_evidence`, `test_func_names`,
+`test_homogeneous_tuples`, `test_id_order`, `test_layering`,
+`test_no_panics`, `test_special_atoms`, `test_timing_asserts`,
+`test_truth_values` — with exact per-file counts that may only shrink;
+twelve parse the sources with `syn`, `test_layering` and `test_no_panics`
+scan the text; since 0.60 one more ratchet of this kind is one function of
+`test_matrix_linalg.rs`, `partial_root_lists_are_not_read_as_complete`, see
+"Solving").  A per-file ratchet table moves with the code (since 0.60,
+when the eight largest files were split): when code moves from one file to
+another its rows move with it, and the sum over a parent and its children
+is conserved in every column by a pure move — a count that changes proves
+that the move edited something.  Two ratchets are not sums:
+`test_layering` counts distinct upward targets per file (the union over a
+parent and its children is conserved), and `test_homogeneous_tuples` looks
+at `pub` and `pub(crate)` items only.
 
 **Decisions: `Truth`, signs and evidence** (`src/base/truth.rs`).  An
 internal yes/no/undecided answer is a `Truth`, not an `Option<bool>`: it has
@@ -1325,7 +1511,48 @@ refuted, or a `match` over the three cases).  Combine answers with
 finite value can have are a `SignSet` ({< 0, 0, > 0, non-real}) with
 exhaustively tested `neg`/`add`/`mul`/`recip`/`pow_int`; infinities are not
 signs — decide finiteness first.  The public query API keeps `Option<bool>`
-(Pattern 4); convert at the boundary.
+(Pattern 4); convert at the boundary.  Since 0.60 that conversion has one
+name, `Truth::to_option`: a public query ends in `.to_option()` (the
+`SetEx` queries), and an `Option`-returning internal function that
+propagates an undecided verdict writes `.to_option()?`.  A value from a
+decider that still returns `Option<bool>` (`Assumptions::query`,
+`solve::assumptions_hold`, `realness::constant_realness_as_declared`) is
+wrapped at the call: `Truth::from(q).is_true()`.  The set deciders answer
+in `Truth` (`sets::set_contains`, `is_subset`, `is_empty`, …), and
+`transforms/sets.rs`, `logic.rs`, `inequalities.rs` and `solve/context.rs`
+have no entry left in `tests/unit/test_truth_values.rs`: combine verdicts
+with `and`/`or`/`all`/`any` (an explicit loop with `acc.and(..)` where
+every operand must still be evaluated), read a memo of verdicts with
+`sets::verdict_of` (an operand not reached is `Unknown`), and test an
+interval end with `sets::inside_end`.
+Membership in a real set needs the element proved real (since 0.60;
+`transforms/sets.rs`, "Real members").  An interval, the real line `(−∞, ∞)`
+and the evaluator's normal form (`RankSet`, `SetVal::Exact`) are sets of
+real numbers; finite sets, image sets and condition sets may hold members
+off the line, and `UniversalSet` (`SetVal::Universe`) holds everything — it
+is not the line, and nothing true of one may be concluded for the other.
+Whatever a real set does to an element — contain it, absorb it in a union,
+remove it in a difference, cut it in an intersection, bound it in an
+inequality — goes through a three-valued realness test: `member_realness`
+for an element (`±∞` and `zoo` are no real numbers, `nan` is undecided, a
+symbol without assumptions is not known to be real), `members_real` for a
+whole operand.  Proved real: compare.  Certainly not real: not a member
+(`{i} \ ℝ = {i}`, `[0, 1] ∩ {i} = ∅`).  Undecided: the membership is
+undecided and the set expression stays as it is (`{x} ∪ ℝ` keeps `x`, `{x} \
+ℝ` and `ℝ ∩ {x}` stay) — never simplify on "not known to be non-real", and
+never read realness off a comparison (`i + 1/2 − i > 0` orders nothing) or
+off a 16-digit value (`numeric_value` ranks a non-rational constant only
+when it is proved real).  A shortcut on "the exact part is the whole line"
+(`is_real_line()`) must say what it does with the opaque parts
+(`parts_beyond_the_line`, `parts_minus_real`, `meet_with_line`).  An order
+relation holds only between real numbers: the inequality solvers return the
+empty set where a side is certainly not real (`logic::known_nonreal` for a
+constant side or bound, `inequalities::real_points` for a side with the
+variable), take a plain parameter for real, and refuse a bound whose
+realness is undecided.  Up to 0.59 the evaluator gave ℝ and the universal
+set one value and asked none of this: `{i} ⊆ ℝ` was true, `{i} \ ℝ = ∅`,
+`{i} ∪ ℝ = ℝ`, `U \ {0} = ℝ \ {0}`, and `|t| + i > 0` held on `(−i, ∞) ∪
+(−∞, i)`.
 
 Only `Evidence::Exact` or `Evidence::Certified` may justify a claim (a
 returned value, a dropped term, a leading coefficient, `Inconsistent`, a
@@ -1343,7 +1570,12 @@ integer parts; a principal root list of a periodic composition sets
 trusts its error estimate across a kink.  Limits: a rule resolves a
 reals-only function (`floor`, `ceiling`, `H`, `δ`, `min`, `max`) only for an
 argument proved real near the point; the Gruntz `ω` must be positive — split
-non-real exponents, and never test non-realness by "contains `i`".
+non-real exponents, and never test non-realness by "contains `i`".  A part
+free of the variable is its own limit (`series::locally_real`, since 0.60):
+never ask `limit::safe_substitute` for the value of an expression without
+the variable, it has none to give (up to 0.59 the constant base of `π^(x +
+1)` was therefore not shown real beside a cut, and the series was expanded
+three times).
 
 Use `evalf_verdict(..).proven()` or `evalf_settled` with
 `Settled::Certified` for a numeric proof; `evalf_complex`, `eval_const_f64`
@@ -1353,7 +1585,16 @@ explicitly.  Zero tests of constants in limits and
 series go through `calculus_util::hidden_zero` (`Verdict<Truth>`): an
 undecided coefficient may be kept as a value but never divided by, dropped,
 or taken as a leading term; new exact rewrites go in `exact_rewrites`, each
-an identity of the principal values wherever both sides are finite.  Logs
+an identity of the principal values wherever both sides are finite.  Since
+0.60 `hidden_zero` asks `calculus_util::enclosure` before its ladder: a
+certified complex rectangle of the constant, by outward-rounded `f64`
+interval arithmetic on the memoised enclosures of the operands of sums,
+products, integer powers and rationals, and one `evalf` at 20 digits for
+any other node.  A rectangle that excludes 0 is the certified "nonzero";
+anything else — 0 inside, no enclosure — goes through the ladder unchanged,
+so the fast path never decides a zero and never changes an answer (the
+coefficients of a composed series are built from coefficients tested
+before; up to 0.59 each test evaluated its whole constant again).  Logs
 and powers of a constant are rewritten only where its value is certified on
 an axis (`values_on_axes`: `ln`, `√`, `(e^z)^q` by their principal values),
 logarithms combine only over certified positive reals (`logs_combined`),
@@ -1417,6 +1658,24 @@ replaced by the real one only when its twin is one of the roots
 (`real_root_form`); values are ordered by their exact order
 (`order::exact_order`).  A decimal read from `evalf` is compared unscaled
 (`inequalities::Decimal`): never form `10^exp` of a sample value.
+A public verdict needs a certified sign (since 0.60).  A function that
+answers yes/no about a mathematical object (stable, positive definite,
+inside, convergent) reads signs as `SignSet`s proved by the certified
+deciders (`Ex::is_negative`/`is_positive`/`is_zero`/`is_real`,
+`evalf::const_value(..).re_sign()`, an exact zero test;
+`control::proved_sign` and `real_part_sign` are the pattern), never from
+`eval_f64()` or `eval_complex64()` compared with `0.0`: the correctly
+rounded `f64` of a nonzero value can be `±0.0`, and a real part that is
+exactly 0 comes back as rounding noise of either sign (up to 0.59
+`StateSpace::is_stable` called `A = [[−e^(−1000)]]` unstable: `−0.0 >=
+0.0`).  "On the boundary" is a proved zero, not a tolerance; an undecided
+sign makes the verdict `None`, and a verdict about every element of a set
+(every pole) needs the set complete.  A theorem about real polynomials
+(Routh–Hurwitz, Descartes, Sturm) is applied only to coefficients proved
+real — "not positive and not zero" is not "negative" for a complex number,
+and a symbol without assumptions may be complex (`control::routh_verdict`;
+up to 0.59 `is_routh_stable` called `i·s + 1 − i`, with the root `1 + i`,
+stable).
 
 **Printing complex values.**  A result read as a number (`eval_decimal`,
 `eval_f64`, `eval_complex64`) shows a part unless it is 0 within its error
@@ -1609,7 +1868,8 @@ evaluated at an infinite argument (`uppergamma(2, −∞)` gave `nan` from
 of a rational order and `E(±∞)` by the principal branches `evalf` uses: a
 directed infinity with its exact finite part where the limit has one
 (`E₁(−∞) = −∞ − iπ`, `Γ(1/2, −∞) = √π − i∞`), `zoo` otherwise.  A library
-function in `canon::folds_at_infinity` left unevaluated at `±∞` has no value
+function whose values at `±∞` fold, left unevaluated at `±∞`
+(`canon::library_value_unknown_at_infinity`), has no value
 the constructors know, so `0·f` and `0/f` are `nan`, as are `0·δ(c)` and
 `0·H(c)` for a non-real constant `c`.  Since 0.54 every function of the
 `funcs!` table is tabulated at the exact infinities `±∞`, `±i·∞`, argument
@@ -1625,7 +1885,8 @@ is folded.  A finite slot is a number, an argument with symbols (a generic
 point) or a constant with a certified value (`finite_argument`); `Π` folds
 only where the other argument is known not to be 1 (`off_the_pole`).  The
 constructors of `Si`, `Ci`, `Ei`, `li`, `ζ`, `ψ⁽ⁿ⁾` are the `eval_*`
-functions of `transforms/eval.rs`; their values at infinity live there.
+functions of `transforms/eval/special02.rs`; their values at infinity live
+there.
 `eval` evaluates no closed form at an argument with `±∞` in it.  A fold
 that holds for every finite value of one argument when another is special
 (`Γ(s, ∞) = 0`, `E_ν(∞) = 0`, `J_ν(∞) = 0`) checks that
@@ -1674,8 +1935,20 @@ poles at `s = 0, −1, …` and at `z = 0` unless `re s > 0`); a fold at such a
 place needs the condition proved (`γ(s, 0) = 0` only for `re s > 0` known:
 a positive number, the assumptions, a certified value), never "not known
 to fail".  A constant at a pole of its order for every argument (`γ(−n,
-c)`) is no limit value.  What `0` and `zoo` times a quantity that vanishes
-on a region are (`0/0^e`, `0/H(y)`) is under "Piecewise parameters".
+c)`) is no limit value.  Since 0.60 the same holds for every constant that
+is a function of the table at a pole place of its facet and is not folded
+to a value proved finite (`E₁(0)`, `Γ(0, 0)`, `γ(−1/2, 0)`, `K_y(0)`): it
+has no value, and an expression that holds one has no limit
+(`limit::holds_valueless_part`, asked at the entry of `limit_val_parts`
+and by Gruntz at its entries, `refuse_valueless`).  The limit rules
+multiply limits, and the canonical `0·c = 0` annihilates such a constant
+before a validation of the product can see it (up to 0.59 `limit(x²·E₁(0),
+x, 0)` was 0): validate the factors, not the product.  The signed
+infinities the constructors fold keep their extended-real reading
+(`x²·K₀(0)` is `∞`), and a numeric `B(a, b)` whose pole cancels in its `Γ`
+ratio keeps its value (`B(−3, 1) = −1/3`).  What `0` and `zoo` times a
+quantity that vanishes on a region are (`0/0^e`, `0/H(y)`) is under
+"Piecewise parameters".
 
 **Symbols pinned to a value.**  A symbol whose assumptions allow one value
 (`zero`, `even ∧ prime`, a positive integer neither prime nor composite:
@@ -1747,6 +2020,14 @@ takes on a region (`max(c, y)` at `c` and at `y`, `H(y)` at 0 and 1):
 point as its limit only where `a − b` is a nonzero number there
 (`limit::substitute_continuous`); Gruntz rewrites it to 0 where `a − b` has
 an eventual sign, and refuses where that leaves the expression at a pole.
+Since 0.60 that check follows every rewriting of a step by its value near
+the point — `H`, `sign`, `⌊·⌋`, `⌈·⌉`, `min`, `max`, `Piecewise`, `δ`,
+`KroneckerDelta`; in Gruntz's `rewrite_tractable`, in `eval` after the
+positive variable is substituted, in `refine` under `x > 0` — because each
+can put a function at a pole place: ask `limit::holds_valueless_part` on
+the rewritten expression, not only for the delta (up to 0.59
+`limit(x²·E₁(KroneckerDelta(x + 1, −1)), x, 0, '+')` was 0 while the
+two-sided limit was refused).
 
 **Hidden zeros inside functions of parameters.**  `ZeroDecision::decide`
 also decides the symbol-free pieces of a constant with parameters (`J` in
@@ -1811,6 +2092,30 @@ question and never read another decider's key (up to 0.48 two deciders used
 colliding hand-picked `u8` keys, and `is_positive` answered according to
 what had been computed before).
 
+**A function's name is written once** (`src/base/func.rs`,
+`tests/unit/test_func_names.rs`; since 0.60).  How a function is written
+and ordered — its name, the names the parser reads, its LaTeX layout, its
+layout in the two-dimensional printer, its MathML head, the leading bytes
+of its sort key — is data of its `funcs!` entry, and the code that needs it
+reads the entry: `display.rs`, `latex.rs`, `pretty.rs`, `mathml.rs` and
+`sort_key.rs` have one arm `func_nodes!() =>` for all function nodes (a
+second arm for a function node is an unreachable pattern, a warning that
+CI's `-D warnings` refuses), and the parser asks `Func::parsed`.  Up to
+0.59 each of them had an arm per function (45 in each of `display.rs`,
+`latex.rs`, `mathml.rs` and `sort_key.rs`, 36 in `pretty.rs`, 42 in the
+parser) and the parser a list of 94 known names, which tests over
+`Func::ALL` kept equal to the table; the two-dimensional printer spelled
+four functions its own way (`lgamma`, `sgn`, `psi`, `ceil`: kept, and now
+visible in the `pretty` facet beside the name).  The ratchet parses those
+six files with `syn` and counts the string literals (in expressions,
+patterns and macro arguments) that equal a function's name, its name in
+lower case or one of its parse names; the allowlist names each literal
+that stays and why (Greek letters of symbol names, `log(x, b)`: 14, down
+from 274), and may only shrink.  A notation that is not data is a case
+keyed by `Func` inside the one arm, commented; a fact the table lacks
+becomes a facet (every entry is a struct literal written in full, so the
+compiler lists the entries to extend), not a second list.
+
 **Identifiers have no order.**  `ExprId`, `SymbolId` and `NumId` are handles:
 equality and hashing only.  Their numbers are allocation order, so sorting by
 them made results depend on the order in which symbols were created
@@ -1825,6 +2130,32 @@ point, an RNG seed) hashes structure — the sort key, a symbol's name — never
 `index()`: up to 0.52 `Ex::equals`' sampling depended on the order in which
 symbols were created.
 
+**A bound variable is another variable** (`src/calculus/transform_util.rs`;
+since 0.60).  The integral transforms (`calculus/{laplace, z_transform,
+fourier_transform, mellin}.rs`) keep their shared helpers in
+`transform_util.rs` and no copies: `depends_on`, `split_factors` /
+`split_independent`, `linear_in` (`a·v + b`), `extract_linear_coeff`, the
+entry checks `require_symbol` / `symbol_id`, `param_sign`, `need_sign`,
+`fail`.  An occurrence of the transform variable that a binder has bound
+(the index of a `Sum`, the variable of a definite `Integral`, of a `Limit`,
+of a `RootOf`: `walk::binder`) is another variable: (1) a transform asks
+`depends_on` (free occurrences) about its variable, never `walk::contains`;
+(2) a pass that rewrites the function being transformed into something
+equal only as a function of that variable — `Piecewise` into steps (equal
+almost everywhere), a step read on `t > 0` — walks `scope_post_order` and
+rebuilds with `rebuild_in_scope`, a search through sub-expressions pushes
+`for_each_child_in_scope`, and a test "is there a step in it?" is
+`any_in_scope`: none of them enters the operands a binder of the variable
+scopes over.  Up to 0.59 the four copies had drifted (Laplace and Z asked
+for free occurrences, Fourier and Mellin for any) and every rewriting pass
+walked into binders: `laplace(Sum(Piecewise(1 if t < 2, 0 if True), t, 1,
+3)*exp(-2*t), t, s)` was `3/(2(s + 2))`, with the sum, which is 1, taken
+for 3/2.  `the_transform_modules_share_their_helpers`
+(`tests/v36/v36_s17a_transforms.rs`) fails when one of the four modules
+defines a helper of that list or gains a call of `walk::contains` (the
+four that are left, in `fourier_transform.rs`, look for the imaginary
+unit).
+
 **Checked casts** (`src/base/cast.rs`).  Do not convert an `f64` to an
 integer with `as` after `floor`/`ceil`/`round`/`trunc`: the cast saturates
 (`1e19 as i64 == i64::MAX`, `NaN as i64 == 0`) and the `± 1` that usually
@@ -1832,7 +2163,7 @@ follows wraps (up to 0.48 `∫₋₁¹ floor(10¹⁹x)/10¹⁹` was 0).  Use
 `cast::f64_to_i64` (exact or `None`) or `cast::integer_span` (a float range
 widened to integers, with a length cap).  `tests/unit/test_float_casts.rs`
 counts these casts and the `(f64 expr) as usize + …` guard-bit pattern per
-files.  Differences of `i64` exponents and scales are `saturating_*` or taken
+file.  Differences of `i64` exponents and scales are `saturating_*` or taken
 in `f64`.
 
 **Exact arithmetic has size bounds.**  An exact power, or any intermediate
@@ -1927,8 +2258,10 @@ value or an undecided zero test (refused); all proved nonzero, the other
 factors' roots are the roots.  The solvers substitute the pinned values of
 the parameters before solving (`solve::with_pinned_parameters`).  A root,
 or the constant of an equation free of the unknown, that holds `±∞`, `zoo`
-or `nan` inside a function argument (`solve::holds_infinity`; not the bounds
-of formal integrals, sums and limits) is claimed only when known finite.  A
+or `nan` inside a function argument
+(`value_class::holds_special_atom_outside_formal`, asked by
+`solve::not_known_finite`; not the bounds of formal integrals, sums and
+limits) is claimed only when known finite.  A
 family not linear in `n` is located in a window by pulling the window back
 through a chain of monotone steps (`sets::monotone_members_in`); a step real
 only on part of the line (`ln`, `t^q`) may be followed only by steps that
@@ -1967,6 +2300,26 @@ consumer that lists the real members of a family in a window never drops
 it because its offset is not real (up to 0.58 `singularities(1/((−2)^x −
 4), x, [0, 10])` was empty).  A polynomial in `c^x` for any constant base
 `c ≠ 0` is solved in `t = c^x` when every exponential has that base.
+A list of roots is complete or says it is not (since 0.60;
+`domains::matrix::Spectrum`,
+`tests/unit/test_matrix_linalg.rs::partial_root_lists_are_not_read_as_complete`).
+The eigenvalues of a matrix travel inside the crate as a `Spectrum` —
+`Complete` when the multiplicities sum to `n` (checked by `Spectrum::of`; a
+`Spectrum` is built only in `domains/matrix/eigen.rs`), `Partial { found,
+missing }` otherwise — which has no `len` and no iterator: a consumer takes
+`all(operation)` (every eigenvalue or `ComputationFailed`, naming the ones
+found) or matches `Partial` and says why a part is enough
+(`StateSpace::is_stable`: one pole proved in the closed right half-plane
+decides "not stable"; nothing is ever proved from the poles that are
+missing).  A public function returns all the roots or an error / its
+documented refusal value (`StateSpace::poles`: none), never a shorter list
+that looks complete; up to 0.59 `eigenvals` did, behind a `warn!`.  Do not
+call `solve_or_empty` in library code (it turns every refusal into `[]`):
+call `Ex::solve` and treat an error, or a number of roots other than the
+degree of an irreducible factor, as "this factor's roots are missing".  The
+ratchet counts per file the four ways a possibly incomplete list is still
+read (`known_real_roots`, `Solutions::claimed_points`, `solve_or_empty`,
+`Spectrum::Partial`); the counts are exact and may only shrink.
 
 **Logging is lazy.**  A debug line formats an expression through the macro
 (`tracing::debug!(e = %arena.display(e))`), never by building a string
@@ -1995,7 +2348,14 @@ degrees or a multiplicity is counted and refused beyond a bound
 (`MultiPoly::prem_in`: `MAX_PREM_STEPS`); and a verification never repeats
 a product once per unit of a multiplicity: monomial factors add exponents,
 the others are raised by `try_pow` (`factor_multivariate`), a power of `x`
-is a shift (`factor_zassenhaus`).
+is a shift (`factor_zassenhaus`).  Since 0.60: a zero test charges its
+`EvaluationScope` whether a memo, an enclosure or the ladder answers it,
+and a new fast path of `hidden_zero` goes behind the charge.  The charges
+are the work accounting of the series engine's compositions: an attempt
+that postponed the zero tests removed them, and a 28-term composition was
+multiplied out to its end before the budget could refuse it.  An engine
+that makes fewer tests charges the work it does instead (`charge_size`,
+`charge_expansion`), or the budget no longer bounds it.
 
 **Finite sums for every integer bound.**  Reversed limits follow Karr's
 convention (`Σ_{a}^{b} = −Σ_{b+1}^{a−1}` for `b < a − 1`; the empty sum for
@@ -2059,7 +2419,34 @@ A route's own rounding belongs in its bound: exact inputs make a node's
 *propagated* error 0, not its computation (`b^x` formed as `exp(x·Log b)`
 rounds `Log b`; `accuracy::pow_rounding`), and a part is exact only where
 the route provably yields an exact 0 (up to 0.51 the rounding of `8π` made
-`(−1)^(8 + 2i)` certified non-real).  Exact tables that do not depend on
+`(−1)^(8 + 2i)` certified non-real).
+Since 0.60: a bound read off the result's own size is not a bound for a sum
+that cancels.  A real route returns a bare `BigFloat` and the node's bound
+gives it two ulps of that value (`accuracy::finish`): true of a value formed
+by correctly rounded operations and of a sum of one sign, false of an
+alternating series, of `cos ω·P − sin ω·Q`, of `γ + ln x + Σ`, of the end of
+a three-term recurrence — formed at `wp` bits from terms of size `2^t` they
+are known to `2^(t − wp)` whatever they cancel to, and next to a zero of the
+function that is anything (up to 0.59 `besselj`, `bessely`, `Ci`, `Chi`, the
+Airy functions, `li`, `besseli` of a negative order and `legendre` of a
+large degree printed uncertified trailing digits at a dyadic argument next
+to a zero).  Such a route states the absolute error of what it summed and
+charges it to the `Wp` it was called with: the terms to a `wp::Summed`
+(`term`, `of`, `steps`), the values of a recurrence to a `wp::Recurred`
+(`step` with the growth of the family's norm), then `w.charge(seen.error(wp,
+scale))` immediately before it returns; `sensitivity::special_error` adds
+the charge to the node's propagated error (`cspecial::bound` on the cut),
+and `evaluate_adaptive` raises the precision until the digits are certified,
+or refuses.  `Wp::at` drops a charge (the value is an ingredient: its user
+says what it does to the error), `Wp::carry` keeps it (the value is returned
+as it is).  Do not detect zeros, and do not derive the bound from the
+result; a route that measures its loss and repeats with the bits made up
+(`arb_ei`, `arb_log_gamma`, `arb_jacobi`) needs no charge.  A zero that the
+structure gives exactly keeps a bound of the value's size
+(`orthopoly::odd_member_scale`: an odd polynomial next to 0).  A family is
+only in this class when every argument is exactly representable: test with
+dyadic orders and parameters (a parameter `1/3` carries its own rounding and
+hides the route's).  Exact tables that do not depend on
 the argument (Borwein's `d_k`, the coefficients of `W` at its branch point)
 are built once per thread and on demand (`borwein_d`,
 `lambertw::BranchPointCoefficients`; since 0.59), in integer arithmetic

@@ -1,5 +1,7 @@
 # Migrating from 0.11 to 0.12
 
+> *Historical page: it describes the upgrade named in the title as it was published. Some of the names on the "after" side have changed again since — see [What's New since 0.13](../whats-new-since-0.13.md) and the CHANGELOG.*
+
 0.12 redesigns the *representation* of distributions in `symplex::stats`;
 the query API on `RandomVariable` is unchanged.  Every break has a one-line
 fix.

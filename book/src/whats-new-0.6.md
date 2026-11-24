@@ -1,5 +1,7 @@
 # What's New in 0.6
 
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
 symplex 0.6.0 is an additive release with one theme: **sums of squares**. The [CHANGELOG](https://github.com/cgorski/symplex/blob/main/CHANGELOG.md) has the details.
 
 ## `prove_sos`
@@ -10,7 +12,7 @@ Under the hood this is the Peyrl–Parrilo pipeline made exact and self-containe
 
 Goals with real zeros only have singular Gram matrices, which rounding cannot hit; the search then performs **facial reduction**, reading the kernel off the numerical solution and making it exact — directly when the kernel is a rational subspace, otherwise through its integer relations (LLL on the kernel lattice, after Newton-refining the zeros of the goal to double precision) — before restricting to that face and solving again. Sums of two or three random squares with irrational common zeros come back as exactly those squares (119 of 120 random cases through degree 6).
 
-`Refuted { point, value }` carries an exact point where the goal is negative; a goal that is non-negative but not a sum of squares (Motzkin's polynomial) is `Unknown`, never `Proved`.
+`Refuted { point, value }` carries an exact point where the goal is negative; a goal that is non-negative but not a sum of squares (Motzkin's polynomial) is `Unknown`, not `Proved`.
 
 ## Lean export
 

@@ -1,5 +1,7 @@
 # What's New in 0.12
 
+> *Historical page: it describes the release as it was published. Names and results may have changed since — see [What's New since 0.13](./whats-new-since-0.13.md) and the CHANGELOG.*
+
 **Statistics, redesigned to compose.**  A distribution is now a
 [`Family`](guide/statistics.md#continuous-families) — a struct with its
 support, density and closed forms — behind an opaque `Distribution`

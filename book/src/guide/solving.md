@@ -6,16 +6,17 @@ Single equations, general (periodic) solutions, linear and polynomial systems, n
 
 `solve(&x)` returns `Result<Vec<Ex>>`. Polynomials are solved through quartic by radicals; degree ≥ 5 gives `RootOf` nodes (exact, numerically evaluable, and *not* counted as unevaluated). Transcendental equations use inversion peeling and Lambert W. Results are evaluated, so `asin(1/2)` comes back as `π/6`.
 
-The 0.2 contract is that `solve` never lies:
+What each outcome of `solve` means:
 
 | Situation | Result |
 |-----------|--------|
-| Finitely many solutions | `Ok(vec![…])` |
+| Finitely many solutions, all found | `Ok(vec![…])` |
+| The equation has roots, none of them in the declared domain of the unknown (`x + 3 = 0` for a positive `x`) | `Ok(vec![])` |
 | Identity (`x − x = 0`) | `Err(SymplexError::InfiniteSolutions { .. })` |
 | Contradiction (`0·x + 1 = 0`) or range violation (`|x| = −1`, `eˣ = 0`; `sin x = 2`, `eˣ = −1` for a real `x`) | `Err(SymplexError::NoSolution { .. })` |
-| Solver has no method | `Err(SymplexError::ComputationFailed { .. })` |
+| Solver has no method, or found only some of the roots (the reason names them) | `Err(SymplexError::ComputationFailed { .. })` |
 
-A symbol without assumptions is complex: `eˣ = −1` gives its principal root `[iπ]` and `sin x = 2` gives `[asin 2, π − asin 2]` (as SymPy's `solve`; up to 0.47 both were `NoSolution`). Declare the symbol real for the real roots only.
+A symbol without assumptions is complex: `eˣ = −1` gives its principal root `[iπ]` and `sin x = 2` gives `[asin 2, π − asin 2]` (as SymPy's `solve`). Declare the symbol real for the real roots only.
 
 `solve_or_empty` maps every error to an empty vector when you do not care why.
 
@@ -42,7 +43,7 @@ fn main() {
 
 ### Symbolic coefficients are returned in rational normal form
 
-Since 0.3, when the coefficients of a linear or quadratic equation are themselves parameters, the solutions (and the quadratic discriminant) are passed through [`ratsimp`](./algebra.md#rational-normal-form-ratsimp). A parametric equation whose coefficients are fractions therefore comes back as **one cancelled fraction**, not a fraction of fractions. The values are the same as in 0.2; only the printed form changed.
+When the coefficients of a linear or quadratic equation are themselves parameters, the solutions (and the quadratic discriminant) are passed through [`ratsimp`](./algebra.md#rational-normal-form-ratsimp). A parametric equation whose coefficients are fractions therefore comes back as **one cancelled fraction**, not a fraction of fractions.
 
 ```rust
 use symplex::prelude::*;
@@ -74,7 +75,7 @@ fn main() {
 
 `solve` returns principal branches. `solve_general` returns the complete solution families of periodic equations, expressed with a fresh integer-assumed parameter (`n`, or `n1`, `n2`, … if `n` is taken). `GeneralSolution::instance(k)` substitutes a concrete integer.
 
-Like `solve` and `solve_as_set`, `solve_general` works in the declared domain of the unknown: for a plain symbol that is ℂ, so `eˣ = −1` gives `2nπi + iπ` and `eˣ = 1` gives `2nπi`; declare the unknown real (`ctx.symbol_with("x", &[Assumption::Real])`) for the real families.  Parameters without assumptions may be complex too: for a real `x`, `e^{a·x} + 1 = 0` has the solution `iπ/a`.  A list of roots is always complete — when only some branches could be solved, `solve` and `solve_general` fail with `ComputationFailed` naming the roots found, and `solve_as_set` returns them united with a `ConditionSet`.
+Like `solve` and `solve_as_set`, `solve_general` works in the declared domain of the unknown: for a plain symbol that is ℂ, so `eˣ = −1` gives `2nπi + iπ` and `eˣ = 1` gives `2nπi`; declare the unknown real (`ctx.symbol_with("x", &[Assumption::Real])`) for the real families.  Parameters without assumptions may be complex too: for a real `x`, `e^{a·x} + 1 = 0` has the solution `iπ/a`.  A list of roots is meant to be complete: when only some branches could be solved, `solve` and `solve_general` fail with `ComputationFailed` naming the roots found, and `solve_as_set` returns them united with a `ConditionSet`.
 
 ```rust
 use symplex::prelude::*;
@@ -89,7 +90,7 @@ fn main() {
     println!("{:?}", fam.parameters);    // [Ex(n)]
     println!("{:?}", fam.instance(1));   // [Ex(13/6*pi), Ex(17/6*pi)]
     let tan = (&x.tan() - 1).solve_general(&x).unwrap();
-    println!("{}", tan.solutions[0]);    // n*pi + 1/4*pi  (parameter name may differ)
+    println!("{}", tan.solutions[0]);    // n1*pi + 1/4*pi  (`n` is taken by the family above)
 }
 ```
 
@@ -102,15 +103,13 @@ union of a finite set and *image sets* `{f(n) : n ∈ ℤ}` — SymPy's
 are merged (`2nπ ∪ 2nπ + π = nπ`), poles on a family are removed
 (`sin(x)/x`), and a plain symbol ranges over ℂ (`exp(x) = 1` is solved by
 every `2nπi`; declare the variable real for the real solution set).  An
-equation that cannot be solved is a `ConditionSet`, never a partial list.
-Before 0.40 the periodic sets were the principal solutions only
-(`sin(x)` gave `{0, pi}`).
+equation that cannot be solved is a `ConditionSet` rather than a partial list.
 
 A root is a point where every part of the equation is defined: the poles
 of `tan` and `tanh` and the zeros of a denominator are never roots, even
 where the substituted expression evaluates to a number
-(`solve_as_set(1/tan(x))` is `EmptySet`, as SymPy's `solveset`; before
-0.52 it was `{nπ + π/2}`).  An equation `c = 0` whose left side is a
+(`solve_as_set(1/tan(x))` is `EmptySet`, as SymPy's `solveset`).  An
+equation `c = 0` whose left side is a
 constant is "no solution" only when `c` is proved nonzero; a constant
 whose zero test is undecided, or that has no value (`DiracDelta(I)`), gives
 a `ConditionSet` (and `solve` refuses).  Unions of real intervals are
@@ -178,7 +177,7 @@ fn main() {
 
     let sol = linsolve(&[&x + &y + &z - 6, &x - &y - 2], &vars).unwrap();
     if let LinearSolution::Parametric { solution, free } = &sol {
-        println!("{solution:?} free {free:?}");   // x = -z/2 + 4, y = -z/2 + 2, z = z; free [z]
+        println!("{solution:?} free {free:?}");   // [(Ex(x), Ex(-1/2*z + 4)), (Ex(y), Ex(-1/2*z + 2)), (Ex(z), Ex(z))] free [Ex(z)]
     }
     println!("{}", sol.get(&x).unwrap());         // -1/2*z + 4
 
@@ -250,7 +249,7 @@ fn main() {
 
 ## Ordinary differential equations
 
-Build the ODE as an expression in `y` and `y.formal_diff(&x)` (nested for higher orders) and call `solve_ode(&y, &x)`. `classify_ode` names the class; 0.2 supports 16: simple/full separable, first-order linear (constant/variable coefficient), exact, integrating factor, Bernoulli, Riccati, Euler–Cauchy, homogeneous-coefficient, second-order constant-coefficient (homogeneous/non-homogeneous), variation of parameters, reduction of order, **nth-order constant-coefficient**, and **Clairaut**.
+Build the ODE as an expression in `y` and `y.formal_diff(&x)` (nested for higher orders) and call `solve_ode(&y, &x)`. `classify_ode` names the class; there are 16: simple/full separable, first-order linear (constant/variable coefficient), exact, integrating factor, Bernoulli, Riccati, Euler–Cauchy, homogeneous-coefficient, second-order constant-coefficient (homogeneous/non-homogeneous), variation of parameters, reduction of order, **nth-order constant-coefficient**, and **Clairaut**.
 
 `solve_ode_ivp(&y, &x, &[InitialCondition { order: k, x: x0, value }, …])` pins the constants with conditions `y^(k)(x0) = value`. `solve_riccati` takes a known particular solution. `ode::solve_ode_system_ivp(&A, &t, &x0)` solves `x' = A x` with initial state.
 
@@ -277,7 +276,7 @@ fn main() {
 
     let third = &d2.formal_diff(&x) - &d1;                   // y''' − y' = 0
     println!("{:?} {}", third.classify_ode(&y, &x), third.solve_ode(&y, &x));
-    // NthOrderLinearConstCoeff C1 + C2*exp(x) + C3*exp(-x)
+    // NthOrderLinearConstCoeff C1*exp(x) + C2 + C3*exp(-x)
 
     let clairaut = &y - &x * &d1 - &d1.powi(2);              // y = x y' + (y')²
     println!("{:?} {}", clairaut.classify_ode(&y, &x), clairaut.solve_ode(&y, &x));   // Clairaut C1^2 + C1*x

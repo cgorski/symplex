@@ -637,9 +637,13 @@ impl Expr<Numeric> {
     }
 
     /// Numerically integrate `self` in `var` from the first of `points` to
-    /// the last, split at the points in between, to `digits` correct
-    /// significant digits — mpmath's `quad(f, [a, p₁, …, b])` with
-    /// symplex's certification.  The bounds may be expressions or `±∞`.
+    /// the last, split at the points in between, to `digits` significant
+    /// digits — mpmath's `quad(f, [a, p₁, …, b])` with symplex's error
+    /// tracking.  The bounds may be expressions or `±∞`.  The digits are
+    /// those on which two successive quadrature levels agree: an error
+    /// estimate, not a proof.  The quadrature knows the integrand only at
+    /// its nodes, so a feature much narrower than their spacing (a tall
+    /// thin spike) can be missed without an error.
     ///
     /// Each piece is an unevaluated definite integral evaluated as
     /// [`eval_decimal`](Self::eval_decimal) evaluates one: by

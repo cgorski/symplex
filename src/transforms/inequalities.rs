@@ -749,6 +749,26 @@ fn try_solve_nonreal_inequality(
     Some(Ok(arena.finite_set(&kept)))
 }
 
+/// The real `var` at which a side of an order relation is real, for a side
+/// with non-real coefficients: the real zeros of its imaginary part where
+/// it has a value (the points [`try_solve_nonreal_inequality`] finds for `side
+/// ≥ 0` and for `side < 0`).  `None` when the side has no `i` or is real
+/// for every real `var` (no restriction), or its parts are not found.  The
+/// relation holds at such points only, whatever the difference of the two
+/// sides is: up to 0.59 `t + i > 2t + i` was `(−∞, 0)`.
+pub(crate) fn real_points(
+    arena: &mut Arena,
+    side: ExprId,
+    var: ExprId,
+) -> Option<Result<ExprId, SymplexError>> {
+    let at_or_above = try_solve_nonreal_inequality(arena, side, var, Relation::Ge)?;
+    let below = try_solve_nonreal_inequality(arena, side, var, Relation::Lt)?;
+    Some(match (at_or_above, below) {
+        (Ok(a), Ok(b)) => Ok(arena.set_union(&[a, b])),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    })
+}
+
 /// The set of real `var` where every expression of `sides` is defined
 /// (denominators nonzero, radicands of fractional powers nonnegative,
 /// `ln` arguments positive, …), when it may be smaller than that of
@@ -2127,8 +2147,8 @@ fn real_taking_symbols_real(arena: &Arena, e: ExprId) -> bool {
 /// - `|f| > k`  → `f < -k ∪ f > k` → union of two rays
 ///
 /// Returns `None` if the expression does not have this shape, `a·x + b`
-/// is not certainly real, or the sign of the leading coefficient `a`
-/// cannot be determined.
+/// or the bound `k` is not certainly real, or the sign of the leading
+/// coefficient `a` cannot be determined.
 fn try_solve_abs_inequality(
     arena: &mut Arena,
     expr: ExprId,
@@ -2215,6 +2235,17 @@ fn try_solve_abs_inequality(
     let neg_d = arena.neg(d);
     let k = arena.div(neg_d, coeff);
     let k = crate::transforms::eval::eval(arena, k);
+    // `|f| rel k` is solved between the bounds `±k` on the real line, which
+    // needs a real `k` (plain parameters taken real, as for `a` and `b`).
+    // A `k` that is certainly not real makes `c·|f| + d` real nowhere, and
+    // a relation holds only where its sides are real (the module docs):
+    // the set is empty.  An undecided `k` is not this shape.  Up to 0.59
+    // `k` was not asked: `|t| + i > 0` was `(−i, ∞) ∪ (−∞, i)`.
+    if !real_taking_symbols_real(arena, k) {
+        let mut cache = crate::base::assumptions::AssumptionCache::new();
+        return crate::transforms::logic::known_nonreal(arena, &mut cache, k)
+            .then_some(arena.empty_set);
+    }
     let rel = if c_sign.is_negative().is_true() {
         flip(rel)
     } else {

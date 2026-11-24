@@ -1,6 +1,6 @@
 # Numerical Optimisation
 
-`symplex::optimize` is a small, dependable set of `f64` routines — bracketed root finding, derivative-free minimisation, global search in a box, least-squares fitting, the trapezoidal rule — plus `Ex` methods that compile an expression with [`compile`](./code-generation.md) and hand the closure to the matching routine. It fills the gap between "I have an exact symbolic answer" and "I need a number now and the equation has no closed form".
+`symplex::optimize` is a small set of `f64` routines — bracketed root finding, derivative-free minimisation, global search in a box, least-squares fitting, the trapezoidal rule — plus `Ex` methods that compile an expression with [`compile`](./code-generation.md) and hand the closure to the matching routine. It fills the gap between "I have an exact symbolic answer" and "I need a number now and the equation has no closed form".
 
 Three conventions hold everywhere in the module:
 
@@ -10,7 +10,7 @@ Three conventions hold everywhere in the module:
 
 ## Bracketing roots
 
-`brent_root(f, a, b, &opts)` is Brent–Dekker: inverse quadratic interpolation, secant and bisection steps chosen adaptively, so it converges superlinearly on smooth functions and never slower than bisection. `bisect` is the bullet-proof fallback. Both require `f(a)·f(b) < 0` and return a point within `xtol + rtol·|x|` of a sign change (`RootOpts::default()` is `xtol = 2e-12`, `rtol = 4ε`, `max_iter = 100`). `newton_root(f, df, x0, &opts)` polishes from a point and detects divergence instead of looping.
+`brent_root(f, a, b, &opts)` is Brent–Dekker: inverse quadratic interpolation, secant and bisection steps chosen adaptively, so it converges superlinearly on smooth functions and never slower than bisection. `bisect` is the plain fallback. Both require `f(a)·f(b) < 0` and return a point within `xtol + rtol·|x|` of a sign change (`RootOpts::default()` is `xtol = 2e-12`, `rtol = 4ε`, `max_iter = 100`). `newton_root(f, df, x0, &opts)` polishes from a point and detects divergence instead of looping.
 
 On an `Ex`, `find_root_bracket(&x, a, b)` compiles and brackets in one call; free symbols other than `x` are a `FreeSymbol` error, not a silent `NaN`.
 
@@ -241,7 +241,7 @@ fn main() {
 }
 ```
 
-When you have the integrand as an expression rather than samples, `integrate_numeric` (adaptive Gauss–Kronrod, [Definite Integration](./definite-integration.md)) is both faster and far more accurate.
+When you have the integrand as an expression rather than samples, `integrate_numeric` (adaptive Gauss–Kronrod, [Definite Integration](./definite-integration.md)) is usually both faster and far more accurate.
 
 ## When to prefer the symbolic solvers
 

@@ -55,7 +55,7 @@ fn main() {
 
 ## Exact conversions
 
-Named constructors convert from other units with **exact rational** factors: `Length::inches(&x)`, `Length::miles(&x)`, `Force::pound_force(&x)`, `Pressure::psi(&x)`, `Energy::btu(&x)`, `Volume::us_gallons(&x)`, … (about 100 in total). The result is in SI.
+Named constructors convert from other units with **exact rational** factors: `Length::inches(&x)`, `Length::miles(&x)`, `Force::pound_force(&x)`, `Pressure::psi(&x)`, `Energy::btu(&x)`, `Volume::us_gallons(&x)`, … (about 120 constructors in total). The result is in SI.
 
 ```rust
 use symplex::prelude::*;

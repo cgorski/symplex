@@ -512,10 +512,13 @@ fn on_cut(
         }
 
         CutRule::Trig(kind) => {
-            // The real routines' errors are the node's, as on the real path.
+            // The real routines' errors are the node's, as on the real path:
+            // what they charge to their sum (`Wp::carry`) is the real part's
+            // ([`bound`]).  Up to 0.59 it was dropped, and `Chi(−x)` next to
+            // the zero of `Chi` had its real part certified to two ulps.
             let re = match kind {
-                TrigInt::Chi => super::arb_shi_chi(&x, false, &mut w.at(p))?,
-                _ => super::arb_si_ci(&x, false, &mut w.at(p))?.1,
+                TrigInt::Chi => w.carry(p, |ww| super::arb_shi_chi(&x, false, ww))?,
+                _ => w.carry(p, |ww| super::arb_si_ci(&x, false, ww))?.1,
             };
             (re, w.cc.pi(p, RM).clone())
         }
@@ -984,6 +987,10 @@ pub(super) fn bound(
         (None, Some(part)) => own_part(part, own, prec),
         (None, None) => Bound::both(own),
     };
+    // What a real routine charged to the sum it returned as the real part
+    // (`CutRule::Trig`; taken before the moved evaluations below charge
+    // again).
+    total.re = accuracy::lsum(total.re, w.take_own());
     if bs.iter().all(|b| b.is_exact()) {
         return finish(total);
     }

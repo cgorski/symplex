@@ -23,7 +23,14 @@ pub(super) enum OrthoPoly {
 /// * Chebyshev T/U: `T_{k+1} = 2x T_k − T_{k−1}` (`T_1 = x`, `U_1 = 2x`)
 /// * Hermite (physicists'): `H_{k+1} = 2x H_k − 2k H_{k−1}`
 /// * Laguerre: `(k+1) L_{k+1} = (2k+1−x) L_k − k L_{k−1}`
-pub(super) fn arb_orthopoly(kind: OrthoPoly, n: u64, x: &BigFloat, prec: usize) -> BigFloat {
+///
+/// The last value is a difference of two terms of the size of its
+/// neighbours: its error, a part of the recurrence's envelope and not of
+/// the value (next to a zero), is charged to `w` (`wp::Recurred`).  The
+/// norms of `P_k`, `T_k`, `U_k`, `L_k` do not grow with `k`; that of `H_k`
+/// grows by `√(2(k+1))` per step.
+pub(super) fn arb_orthopoly(kind: OrthoPoly, n: u64, x: &BigFloat, w: &mut Wp<'_>) -> BigFloat {
+    let prec = w.bits();
     let wp = prec + 32 + (n as f64).log2().ceil().max(0.0) as usize;
     let one = BigFloat::from_i32(1, wp);
     let two = BigFloat::from_i32(2, wp);
@@ -38,6 +45,7 @@ pub(super) fn arb_orthopoly(kind: OrthoPoly, n: u64, x: &BigFloat, prec: usize) 
         OrthoPoly::ChebyshevU | OrthoPoly::Hermite => two.mul(&xw, wp, RM),
         OrthoPoly::Laguerre => one.sub(&xw, wp, RM),
     };
+    let mut seen = Recurred::new(&[&p_prev, &p_curr]);
     for k in 1..n {
         let k_bf = BigFloat::from_i128(k as i128, wp);
         let kp1 = BigFloat::from_i128(k as i128 + 1, wp);
@@ -64,10 +72,32 @@ pub(super) fn arb_orthopoly(kind: OrthoPoly, n: u64, x: &BigFloat, prec: usize) 
                 a.sub(&b, wp, RM).div(&kp1, wp, RM)
             }
         };
+        let growth = match kind {
+            OrthoPoly::Hermite => 0.5 * (2.0 * (k as f64 + 1.0)).log2(),
+            _ => 0.0,
+        };
+        seen.step(growth, &next);
         p_prev = p_curr;
         p_curr = next;
     }
+    let symmetric = !matches!(kind, OrthoPoly::Laguerre);
+    w.charge(seen.error(wp, odd_member_scale(symmetric && n % 2 == 1, n, &xw)));
     round_to(p_curr, prec)
+}
+
+/// `log₂` of the factor `min(1, n·|x|)` by which the error of the member of
+/// degree `n` of a family symmetric in `x` is below its envelope's when the
+/// member is `odd`: the roundings of the even members reach it through an
+/// odd polynomial of `x` (at most `n·|x|` of its size, Bernstein's
+/// inequality), and its own steps are differences of terms with the factor
+/// `x`.  So `P_n(x) ≈ P_n′(0)·x` next to 0 keeps a bound that is a part of
+/// the value, and an exact 0 at `x = 0` stays exact.
+fn odd_member_scale(odd: bool, n: u64, x: &BigFloat) -> f64 {
+    if odd {
+        (accuracy::part_lg(x) + (n as f64).log2().max(0.0)).min(0.0)
+    } else {
+        0.0
+    }
 }
 
 // ── Orthogonal polynomials with parameters ───────────────────────────────────────
@@ -101,6 +131,12 @@ pub(super) fn arb_gegenbauer(
     }
     let mut prev = one.clone();
     let mut curr = two.mul(a, wp, RM).mul(x, wp, RM);
+    // The norm of `C_k^(a)` grows by at most `(k + 2a)/(k + 1)` per step
+    // (`C_k^(a)(1) = Γ(k + 2a)/(k!·Γ(2a))`); see `arb_orthopoly`.
+    let a_f = f64_of(a).unwrap_or(f64::NAN);
+    // (`C_0 = 1` enters `C_2` with the factor `a`: the envelope starts at
+    // `C_1 = 2ax`, so that a small `a` keeps a bound of the values' size.)
+    let mut seen = Recurred::new(&[&curr]);
     for k in 1..deg {
         let k_bf = BigFloat::from_i128(k as i128, wp);
         let t1 = two
@@ -112,9 +148,14 @@ pub(super) fn arb_gegenbauer(
         let next = t1
             .sub(&t2, wp, RM)
             .div(&BigFloat::from_i128(k as i128 + 1, wp), wp, RM);
+        seen.step(
+            ((k as f64 + 2.0 * a_f).abs() / (k as f64 + 1.0)).log2(),
+            &next,
+        );
         prev = curr;
         curr = next;
     }
+    w.charge(seen.error(wp, odd_member_scale(deg % 2 == 1, deg, x)));
     Ok(round_to(curr, prec))
 }
 
@@ -353,6 +394,10 @@ pub(super) fn arb_assoc_legendre(
     } else {
         prev.clone()
     };
+    // The norm of `P_k^m` grows by at most `√((k + m + 1)/(k − m + 1))` per
+    // step in the degree (`‖P_k^m‖² = 2·(k + m)!/((2k + 1)·(k − m)!)`); see
+    // `arb_orthopoly`.
+    let mut seen = Recurred::new(&[&prev, &curr]);
     for k in (mu + 1)..deg_u {
         let t1 = BigFloat::from_i128(2 * k as i128 + 1, wp)
             .mul(x, wp, RM)
@@ -361,17 +406,25 @@ pub(super) fn arb_assoc_legendre(
         let next = t1
             .sub(&t2, wp, RM)
             .div(&BigFloat::from_i128((k - mu + 1) as i128, wp), wp, RM);
+        seen.step(
+            0.5 * ((k + mu + 1) as f64 / (k - mu + 1) as f64).log2(),
+            &next,
+        );
         prev = curr;
         curr = next;
     }
+    let mut own = seen.error(wp, odd_member_scale((deg_u - mu) % 2 == 1, deg_u as u64, x));
     if order < 0 {
         // P_n^{−μ} = (−1)^μ (n−μ)!/(n+μ)! P_n^μ
         let mut ratio = factorial_bigint(deg_u - mu) / factorial_bigint(deg_u + mu);
         if mu % 2 == 1 {
             ratio = -ratio;
         }
-        curr = curr.mul(&ratio_to_bigfloat(&ratio, wp), wp, RM);
+        let ratio = ratio_to_bigfloat(&ratio, wp);
+        own = accuracy::shift(own, accuracy::part_lg(&ratio));
+        curr = curr.mul(&ratio, wp, RM);
     }
+    w.charge(own);
     Ok(round_to(curr, prec))
 }
 
@@ -392,6 +445,10 @@ pub(super) fn arb_assoc_laguerre(
     }
     let mut prev = one.clone();
     let mut curr = one.add(a, wp, RM).sub(x, wp, RM);
+    // The norm of `L_k^(a)` grows by `√((k + a + 1)/(k + 1))` per step
+    // (`‖L_k^(a)‖² = Γ(k + a + 1)/k!`); see `arb_orthopoly`.
+    let a_f = f64_of(a).unwrap_or(f64::NAN);
+    let mut seen = Recurred::new(&[&prev, &curr]);
     for k in 1..deg {
         let k_bf = BigFloat::from_i128(k as i128, wp);
         let coeff = BigFloat::from_i128(2 * k as i128 + 1, wp)
@@ -402,9 +459,14 @@ pub(super) fn arb_assoc_laguerre(
         let next = t1
             .sub(&t2, wp, RM)
             .div(&BigFloat::from_i128(k as i128 + 1, wp), wp, RM);
+        seen.step(
+            0.5 * ((k as f64 + a_f + 1.0).abs() / (k as f64 + 1.0)).log2(),
+            &next,
+        );
         prev = curr;
         curr = next;
     }
+    w.charge(seen.error(wp, 0.0));
     Ok(round_to(curr, prec))
 }
 

@@ -1,13 +1,29 @@
 //! Set algebra: interval arithmetic, membership, subset tests, inf/sup, measure.
 //!
-//! Sets in symplex are subsets of the real line built from the set nodes in
-//! `ExprNode`: `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`,
-//! `SetComplement` (relative complement `A \ B`), `EmptySet`,
-//! `UniversalSet` (identified with ℝ for the purposes of this module),
-//! `ConditionSet` and `ImageSet` (the image `{f(n) : n ∈ ℤ}` of the
+//! Sets in symplex are built from the set nodes in `ExprNode`: `Interval`,
+//! `FiniteSet`, `SetUnion`, `SetIntersection`, `SetComplement` (relative
+//! complement `A \ B`), `EmptySet`, `UniversalSet` (every value, real or
+//! not), `ConditionSet` and `ImageSet` (the image `{f(n) : n ∈ ℤ}` of the
 //! integers: periodic solution families, see [Image sets](#image-sets)).
-//! Finite sets may hold non-real elements (the roots `±i` of `x² + 1`);
-//! intervals are real.
+//! Intervals are sets of real numbers, and so is the normal form; finite
+//! sets, image sets and condition sets may hold members that are not real
+//! (the roots `±i` of `x² + 1`, the family `2nπi`), and the universal set
+//! holds them all.
+//!
+//! # Real members
+//!
+//! An interval, the real line `(−∞, ∞)` and every set in normal form hold
+//! real numbers only, so whatever they do to an element — contain it,
+//! absorb it in a union, remove it in a difference — needs the element
+//! **proved real** (`member_realness`, three-valued; `members_real` for a
+//! whole operand): proved real, it is compared with the ends; certainly
+//! not real (`i`, `±∞`, `zoo`), it is not a member; undecided (a symbol
+//! without assumptions), the membership is undecided and the expression
+//! stays as it is — `{i} ∪ ℝ` and `{x} ∪ ℝ` keep their points, `{i} \ ℝ` is
+//! `{i}`, `{x} \ ℝ` stays, `ℝ ∩ {x}` keeps its `ℝ`.  Up to 0.59 the evaluator
+//! gave the universal set and the real line one value, and its shortcuts
+//! on "the whole line" took every operand for a set of real numbers: `{i} ∪
+//! ℝ` was `(−∞, ∞)`, `{i} \ ℝ` was `∅`, and `U \ {0}` was `ℝ \ {0}`.
 //!
 //! Construction is structural — `[0, 2] ∩ [1, 3]` is stored as a
 //! `SetIntersection` node.  This module provides the *evaluator*:
@@ -114,6 +130,14 @@ type Pos = Extended<usize>;
 /// Returns the evaluated id (e.g. `sqrt(4)` → `2`) together with its
 /// value.  Returns `None` for symbolic expressions, infinities, `NaN`,
 /// complex results, or anything that cannot be evaluated numerically.
+///
+/// The value places the expression on the real line (the rank table, the
+/// order of two constants), so a constant that is not a rational number
+/// must be **proved** real ([`member_realness`]: by the assumptions or a
+/// certified imaginary part).  Its 16-digit value alone is no proof: an
+/// imaginary part that is zero only to the precision reached reads as 0
+/// there, and up to 0.59 `1 + i·(sin²1 + cos²1 − 1 + e⁻⁵⁰⁰⁰)` was the
+/// point `1` of `[0, 2]`.
 fn numeric_value(arena: &mut Arena, id: ExprId) -> Option<(ExprId, Val)> {
     let ev = crate::transforms::eval::eval(arena, id);
     match arena.node(ev) {
@@ -133,6 +157,10 @@ fn numeric_value(arena: &mut Arena, id: ExprId) -> Option<(ExprId, Val)> {
             }
             let f = crate::transforms::evalf::eval_const_f64(arena, ev)?;
             if !f.is_finite() {
+                return None;
+            }
+            // not proved real: no place on the line
+            if !member_realness(arena, ev).is_true() {
                 return None;
             }
             Some((ev, Val::Approx(f)))
@@ -514,13 +542,19 @@ impl RankSet {
 /// The value of a set node after evaluation.
 #[derive(Clone, Debug)]
 enum SetVal {
-    /// Fully evaluated normal form.
+    /// Fully evaluated normal form: a set of real numbers.
     Exact(RankSet),
     /// `exact ∪ syms` where every element of `syms` is an opaque,
-    /// already-simplified set expression (non-empty list).
+    /// already-simplified set expression (non-empty list).  The opaque
+    /// parts may hold members that are not real.
     Mixed(RankSet, Vec<ExprId>),
     /// Opaque, already-simplified set expression.
     Sym(ExprId),
+    /// The universal set: every value, real or not.  It is not
+    /// `Exact(RankSet::full())`, which is the real line: up to 0.59 the two
+    /// had one value, and what holds for one was concluded for the other
+    /// (`{i} \ ℝ = ∅`, `{i} ∪ ℝ = ℝ`, `U \ {0} = ℝ \ {0}`).
+    Universe,
 }
 
 impl SetVal {
@@ -535,8 +569,13 @@ impl SetVal {
         matches!(self, SetVal::Exact(rs) if rs.is_empty())
     }
 
-    fn is_known_full(&self) -> bool {
+    /// Is the value exactly the real line `(−∞, ∞)`?
+    fn is_real_line(&self) -> bool {
         matches!(self, SetVal::Exact(rs) if rs.is_full())
+    }
+
+    fn is_universe(&self) -> bool {
+        matches!(self, SetVal::Universe)
     }
 }
 
@@ -570,6 +609,7 @@ fn rankset_to_expr(arena: &mut Arena, table: &Table, rs: &RankSet) -> ExprId {
 
 fn setval_to_expr(arena: &mut Arena, table: &Table, v: &SetVal) -> ExprId {
     match v {
+        SetVal::Universe => arena.universal_set,
         SetVal::Exact(rs) => rankset_to_expr(arena, table, rs),
         SetVal::Mixed(rs, syms) => {
             let mut parts: Vec<ExprId> = Vec::with_capacity(syms.len() + 1);
@@ -660,7 +700,7 @@ fn eval_node(
 ) -> SetVal {
     match arena.node(id).clone() {
         ExprNode::EmptySet => SetVal::Exact(RankSet::empty()),
-        ExprNode::UniversalSet => SetVal::Exact(RankSet::full()),
+        ExprNode::UniversalSet => SetVal::Universe,
 
         ExprNode::Interval(a, b, kind) => match (table.pos_of(a), table.pos_of(b)) {
             (Some(lo), Some(hi)) => {
@@ -707,6 +747,8 @@ fn eval_node(
             let mut syms: Vec<ExprId> = Vec::new();
             for c in children {
                 match vals.get(&c) {
+                    // the universal set absorbs every set
+                    Some(SetVal::Universe) => return SetVal::Universe,
                     Some(SetVal::Exact(rs)) => exact = exact.union(rs),
                     Some(SetVal::Mixed(rs, s)) => {
                         exact = exact.union(rs);
@@ -716,68 +758,29 @@ fn eval_node(
                     None => syms.push(c),
                 }
             }
-            finish_union(exact, syms)
+            finish_union(arena, exact, syms)
         }
 
         ExprNode::SetIntersection(children) => {
-            let mut exact: Option<RankSet> = None;
-            let mut opaque: Vec<ExprId> = Vec::new();
-            let line_child = children
-                .iter()
-                .any(|&c| matches!(arena.node(c), ExprNode::Interval(..)));
+            // An operand `U \ X` of the universal set `U` takes `X` out of
+            // the meet of the others: `A ∩ (U \ X) = A \ X` (the domain of
+            // a nonzero symbol not declared real is `U \ {0}`).
+            let mut operands: Vec<SetVal> = Vec::with_capacity(children.len());
+            let mut removed: Vec<SetVal> = Vec::new();
             for c in children {
-                match vals.get(&c) {
-                    Some(SetVal::Exact(rs)) => {
-                        exact = Some(match exact {
-                            Some(e) => e.intersection(rs),
-                            None => rs.clone(),
-                        });
-                    }
-                    Some(v) => opaque.push(setval_to_expr(arena, table, v)),
-                    None => opaque.push(c),
+                if let ExprNode::SetComplement(u, x) = *arena.node(c)
+                    && vals.get(&u).is_some_and(SetVal::is_universe)
+                {
+                    removed.push(vals.get(&x).cloned().unwrap_or(SetVal::Sym(x)));
+                } else {
+                    operands.push(vals.get(&c).cloned().unwrap_or(SetVal::Sym(c)));
                 }
             }
-            match exact {
-                Some(e) if e.is_empty() => SetVal::Exact(RankSet::empty()),
-                Some(e) if opaque.is_empty() => SetVal::Exact(e),
-                Some(e) => {
-                    let mut parts = Vec::with_capacity(opaque.len() + 1);
-                    // The real line adds nothing to sets of real numbers,
-                    // but it cuts an image set whose members are not all
-                    // real (`√(2nπ + π/6)` is imaginary for `n < 0`): before
-                    // 0.45 `ℝ ∩ {√(2nπ + π/6)}` lost its `ℝ`, and the solution
-                    // set of `sin(x²) = 1/2` for a real `x` held `i·√(11π/6)`.
-                    // Likewise a finite set with members not known to be
-                    // real (`±√(−a)` for a plain `a`), whose members that are
-                    // certainly not real are dropped: up to 0.46 the real
-                    // solutions of `x² + a = 0` were `{√(−a), −√(−a)}`,
-                    // imaginary for `a > 0` (SymPy: `{−√(−a), √(−a)} ∩ ℝ`).
-                    let mut opaque = opaque;
-                    let mut undecided_finite = false;
-                    if e.is_full() && line_child {
-                        for p in opaque.iter_mut() {
-                            let (cut, undecided) = cut_finite_to_line(arena, *p);
-                            if cut == arena.empty_set {
-                                return SetVal::Exact(RankSet::empty());
-                            }
-                            *p = cut;
-                            undecided_finite |= undecided;
-                        }
-                    }
-                    let keep_line = e.is_full()
-                        && line_child
-                        && (undecided_finite
-                            || opaque.iter().any(|&p| {
-                                contains_image_set(arena, p) && !all_members_real(arena, p)
-                            }));
-                    if !e.is_full() || keep_line {
-                        parts.push(rankset_to_expr(arena, table, &e));
-                    }
-                    parts.extend(opaque);
-                    SetVal::Sym(arena.set_intersection(&parts))
-                }
-                None => SetVal::Sym(arena.set_intersection(&opaque)),
+            let mut meet = meet_vals(arena, table, operands);
+            for vx in &removed {
+                meet = difference_vals(arena, table, &meet, vx);
             }
+            meet
         }
 
         ExprNode::SetComplement(a, b) => {
@@ -794,7 +797,7 @@ fn eval_node(
                 // stands for (up to 0.52 `ConditionSet(x, y ≥ 0)` at `y = 1`
                 // simplified to `(−∞, ∞)` for a complex `x`).
                 match declared_domain_set(arena, var, false) {
-                    DeclaredDomain::Unrestricted => SetVal::Sym(arena.universal_set),
+                    DeclaredDomain::Unrestricted => SetVal::Universe,
                     DeclaredDomain::Set(d) => {
                         let (ninf, inf) = (arena.neg_infinity, arena.infinity);
                         if d == arena.interval(ninf, inf, IntervalKind::Open) {
@@ -820,10 +823,112 @@ fn eval_node(
     }
 }
 
-fn finish_union(exact: RankSet, mut syms: Vec<ExprId>) -> SetVal {
-    if exact.is_full() {
-        return SetVal::Exact(exact);
+/// `⋂ operands` (the universal set for no operand).
+fn meet_vals(arena: &mut Arena, table: &Table, operands: Vec<SetVal>) -> SetVal {
+    let mut exact: Option<RankSet> = None;
+    let mut others: Vec<SetVal> = Vec::new();
+    for v in operands {
+        match v {
+            // the universal set cuts nothing
+            SetVal::Universe => {}
+            SetVal::Exact(rs) => {
+                exact = Some(match exact {
+                    Some(e) => e.intersection(&rs),
+                    None => rs,
+                });
+            }
+            SetVal::Mixed(..) | SetVal::Sym(_) => others.push(v),
+        }
     }
+    let Some(e) = exact else {
+        return match others.len() {
+            // every operand is the universal set
+            0 => SetVal::Universe,
+            1 => others.swap_remove(0),
+            _ => {
+                let mut opaque: Vec<ExprId> = Vec::with_capacity(others.len());
+                for v in &others {
+                    opaque.push(setval_to_expr(arena, table, v));
+                }
+                SetVal::Sym(arena.set_intersection(&opaque))
+            }
+        };
+    };
+    if e.is_empty() {
+        return SetVal::Exact(e);
+    }
+    let mut opaque: Vec<ExprId> = Vec::with_capacity(others.len());
+    for v in &others {
+        // An operand that holds every number of `e` cuts nothing: `e ∩ (R ∪
+        // S) = e` for `e ⊆ R` (`[0, 1] ∩ (ℝ ∪ {i})`).
+        if let SetVal::Mixed(rs, _) = v
+            && e.is_subset(rs)
+        {
+            continue;
+        }
+        opaque.push(setval_to_expr(arena, table, v));
+    }
+    if opaque.is_empty() {
+        return SetVal::Exact(e);
+    }
+    if e.is_full() {
+        return match meet_with_line(arena, table, opaque) {
+            Some(meet) => SetVal::Sym(meet),
+            None => SetVal::Exact(RankSet::empty()),
+        };
+    }
+    // A set of real numbers meets no member that is certainly not real
+    // (`[0, 1] ∩ {i} = ∅`).
+    if matches!(cut_parts_to_line(arena, &mut opaque), LineCut::Empty) {
+        return SetVal::Exact(RankSet::empty());
+    }
+    let mut parts = Vec::with_capacity(opaque.len() + 1);
+    parts.push(rankset_to_expr(arena, table, &e));
+    parts.extend(opaque);
+    SetVal::Sym(arena.set_intersection(&parts))
+}
+
+/// What [`cut_parts_to_line`] left of the finite sets among the parts of an
+/// intersection with a set of real numbers.
+enum LineCut {
+    /// A part lost every member: the meet is empty.
+    Empty,
+    /// Every member left is proved real.
+    Real,
+    /// A member not known to be real is left.
+    Undecided,
+}
+
+/// The opaque `parts` of an intersection with a set of real numbers, each
+/// with the members of its finite sets that are certainly not real dropped
+/// ([`cut_finite_to_line`]).
+fn cut_parts_to_line(arena: &mut Arena, parts: &mut [ExprId]) -> LineCut {
+    let mut undecided_finite = false;
+    for p in parts.iter_mut() {
+        let (cut, undecided) = cut_finite_to_line(arena, *p);
+        if cut == arena.empty_set {
+            return LineCut::Empty;
+        }
+        *p = cut;
+        undecided_finite |= undecided;
+    }
+    if undecided_finite {
+        LineCut::Undecided
+    } else {
+        LineCut::Real
+    }
+}
+
+/// `exact ∪ ⋃ syms`.  When the exact part is the whole real line it absorbs
+/// what is proved to lie on it and nothing else
+/// ([`parts_beyond_the_line`]): up to 0.59 it absorbed every part, and
+/// `{i} ∪ ℝ`, `{x} ∪ ℝ` for a plain `x` and `{2nπi} ∪ ℝ` were `(−∞, ∞)`.
+fn finish_union(arena: &mut Arena, exact: RankSet, syms: Vec<ExprId>) -> SetVal {
+    let mut syms = if exact.is_full() {
+        parts_beyond_the_line(arena, syms)
+    } else {
+        syms
+    };
     let mut seen = FxHashSet::default();
     syms.retain(|s| seen.insert(*s));
     if syms.is_empty() {
@@ -831,6 +936,163 @@ fn finish_union(exact: RankSet, mut syms: Vec<ExprId>) -> SetVal {
     } else {
         SetVal::Mixed(exact, syms)
     }
+}
+
+/// What the opaque `parts` of a union add to the real line: a part whose
+/// members are all proved real adds nothing, a finite set adds its members
+/// that are not proved real, and any other part stays whole (a member not
+/// proved real may lie off the line, so the line does not absorb it).
+fn parts_beyond_the_line(arena: &mut Arena, parts: Vec<ExprId>) -> Vec<ExprId> {
+    let mut out = Vec::with_capacity(parts.len());
+    for p in parts {
+        if let ExprNode::FiniteSet(elems) = arena.node(p).clone() {
+            let mut kept: Vec<ExprId> = Vec::with_capacity(elems.len());
+            for &e in &elems {
+                // not proved real: kept beside the line
+                if !element_realness(arena, e).is_true() {
+                    kept.push(e);
+                }
+            }
+            if kept.len() == elems.len() {
+                out.push(p);
+            } else if !kept.is_empty() {
+                out.push(arena.finite_set(&kept));
+            }
+        } else if !members_real(arena, p).is_true() {
+            // not proved to be a set of real numbers
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// `ℝ ∩ ⋂ opaque` for opaque (already simplified) parts; `None` when the
+/// meet is empty.
+///
+/// The real line adds nothing to a set of real numbers, but it cuts every
+/// other set.  The members of finite sets that are certainly not real are
+/// dropped, and the line is kept unless one part is proved to hold real
+/// numbers only ([`members_real`]): a finite set with a member not known
+/// to be real (`±√(−a)` for a plain `a`: up to 0.46 the real solutions of
+/// `x² + a = 0` were `{√(−a), −√(−a)}`, imaginary for `a > 0`; SymPy: `{−√(−a),
+/// √(−a)} ∩ ℝ`), an image set whose members are not all real (`√(2nπ + π/6)`
+/// is imaginary for `n < 0`: before 0.45 `ℝ ∩ {√(2nπ + π/6)}` lost its `ℝ`),
+/// and, since 0.60, every other part not proved real (the condition set of
+/// a variable not declared real: up to 0.59 `ℝ ∩ {x | x = cos x}` lost its
+/// `ℝ` for a plain `x`).  Up to 0.59 the cut was made only next to an
+/// operand written as an interval: `((−∞, 0] ∪ (0, ∞)) ∩ {i}` was `{i}`.
+fn meet_with_line(arena: &mut Arena, table: &Table, mut opaque: Vec<ExprId>) -> Option<ExprId> {
+    let undecided_finite = match cut_parts_to_line(arena, &mut opaque) {
+        LineCut::Empty => return None,
+        LineCut::Real => false,
+        LineCut::Undecided => true,
+    };
+    let mut keep_line = undecided_finite
+        || opaque
+            .iter()
+            .any(|&p| contains_image_set(arena, p) && !all_members_real(arena, p));
+    if !keep_line {
+        // (each part is asked until one is proved real)
+        let mut proved = false;
+        for &p in &opaque {
+            if members_real(arena, p).is_true() {
+                proved = true;
+                break;
+            }
+        }
+        keep_line = !proved;
+    }
+    let mut parts = Vec::with_capacity(opaque.len() + 1);
+    if keep_line {
+        parts.push(rankset_to_expr(arena, table, &RankSet::full()));
+    }
+    parts.extend(opaque);
+    Some(arena.set_intersection(&parts))
+}
+
+/// `d \ ⋃ parts` for a set `d` of real numbers and opaque `parts`.  Only a
+/// real number can be taken out of `d`: the members of finite sets that are
+/// certainly not real are forgotten (`[0, 1] \ {i} = [0, 1]`).
+fn real_minus_parts(arena: &mut Arena, table: &Table, d: RankSet, parts: &[ExprId]) -> SetVal {
+    if d.is_empty() {
+        return SetVal::Exact(d);
+    }
+    let mut removed: Vec<ExprId> = Vec::with_capacity(parts.len());
+    for &s in parts {
+        if let ExprNode::FiniteSet(elems) = arena.node(s).clone() {
+            let mut kept: Vec<ExprId> = Vec::with_capacity(elems.len());
+            for &e in &elems {
+                // not refuted: it may be a real number of `d`
+                if !element_realness(arena, e).is_false() {
+                    kept.push(e);
+                }
+            }
+            if kept.len() == elems.len() {
+                removed.push(s);
+            } else if !kept.is_empty() {
+                removed.push(arena.finite_set(&kept));
+            }
+        } else {
+            removed.push(s);
+        }
+    }
+    if removed.is_empty() {
+        return SetVal::Exact(d);
+    }
+    let d_expr = rankset_to_expr(arena, table, &d);
+    let s_expr = arena.set_union(&removed);
+    SetVal::Sym(arena.set_complement(d_expr, s_expr))
+}
+
+/// `(⋃ parts) \ B` for opaque `parts` and a non-empty set `B` of real
+/// numbers (`eb`), as the parts of a union.  A member is removed only when
+/// it is proved to be in `B`, which needs it proved real: a member of a
+/// finite set that is certainly not real is not in `B` and stays, one
+/// proved real is removed by the whole line (and stays under the complement
+/// of a smaller `B`, like an undecided one), and a part other than a
+/// finite set is removed by the line when all its members are proved real.
+/// Up to 0.59 the line removed everything: `{i} \ ℝ`, `{x} \ ℝ` for a plain
+/// `x` and `{2nπi} \ ℝ` were `∅`.
+fn parts_minus_real(
+    arena: &mut Arena,
+    table: &Table,
+    parts: &[ExprId],
+    eb: &RankSet,
+) -> Vec<ExprId> {
+    let line = eb.is_full();
+    let mut free: Vec<ExprId> = Vec::new();
+    let mut under: Vec<ExprId> = Vec::new();
+    for &s in parts {
+        if let ExprNode::FiniteSet(elems) = arena.node(s).clone() {
+            let mut kept: Vec<ExprId> = Vec::with_capacity(elems.len());
+            for &e in &elems {
+                match element_realness(arena, e) {
+                    Truth::False => free.push(e),
+                    Truth::True if line => {}
+                    // a real number not located in a part of the line, or
+                    // a member not known to be real
+                    Truth::True | Truth::Unknown => kept.push(e),
+                }
+            }
+            if kept.len() == elems.len() {
+                under.push(s);
+            } else if !kept.is_empty() {
+                under.push(arena.finite_set(&kept));
+            }
+        } else if !(line && members_real(arena, s).is_true()) {
+            under.push(s);
+        }
+    }
+    let mut out: Vec<ExprId> = Vec::with_capacity(2);
+    if !free.is_empty() {
+        out.push(arena.finite_set(&free));
+    }
+    if !under.is_empty() {
+        let s_expr = arena.set_union(&under);
+        let b_expr = rankset_to_expr(arena, table, eb);
+        out.push(arena.set_complement(s_expr, b_expr));
+    }
+    out
 }
 
 /// Evaluate `A \ B`.
@@ -848,42 +1110,91 @@ fn eval_difference(
     if a == b {
         return SetVal::Exact(RankSet::empty());
     }
-    // ∅ \ B = ∅ ;  A \ ∅ = A ;  A \ U = ∅
-    if va.is_known_empty() || vb.is_known_full() {
+    // ∅ \ B = ∅ ;  A \ U = ∅ for the universal set `U` (the real line removes
+    // the real numbers only: `{i} \ ℝ = {i}`)
+    if va.is_known_empty() || vb.is_universe() {
+        return SetVal::Exact(RankSet::empty());
+    }
+    // A \ ∅ = A
+    if vb.is_known_empty() {
+        return va.clone();
+    }
+    if let ExprNode::SetComplement(u, x) = *arena.node(b) {
+        let vu = vals.get(&u);
+        // A \ (U \ X) = A ∩ X for the universal set `U`; with `A = U`,
+        // (Xᶜ)ᶜ = X.
+        if vu.is_some_and(SetVal::is_universe) {
+            let vx = vals.get(&x).cloned().unwrap_or(SetVal::Sym(x));
+            return meet_vals(arena, table, vec![va.clone(), vx]);
+        }
+        // ℝ \ (ℝ \ X) = ℝ ∩ X, which is `X` for a set of real numbers
+        if va.is_real_line() && vu.is_some_and(SetVal::is_real_line) {
+            let vx = vals.get(&x).cloned().unwrap_or(SetVal::Sym(x));
+            if let SetVal::Mixed(..) | SetVal::Sym(_) = vx {
+                let x_expr = setval_to_expr(arena, table, &vx);
+                if members_real(arena, x_expr).is_true() {
+                    return vx;
+                }
+            }
+            return match vx {
+                SetVal::Universe => va.clone(),
+                SetVal::Exact(rs) => SetVal::Exact(rs),
+                SetVal::Mixed(rs, syms) => {
+                    let s = arena.set_union(&syms);
+                    match meet_with_line(arena, table, vec![s]) {
+                        Some(m) => finish_union(arena, rs, vec![m]),
+                        None => SetVal::Exact(rs),
+                    }
+                }
+                SetVal::Sym(s) => match meet_with_line(arena, table, vec![s]) {
+                    Some(m) => SetVal::Sym(m),
+                    None => SetVal::Exact(RankSet::empty()),
+                },
+            };
+        }
+    }
+    difference_vals(arena, table, va, vb)
+}
+
+/// `A \ B` from the values of `A` and `B`.
+fn difference_vals(arena: &mut Arena, table: &Table, va: &SetVal, vb: &SetVal) -> SetVal {
+    if va.is_known_empty() {
         return SetVal::Exact(RankSet::empty());
     }
     if vb.is_known_empty() {
         return va.clone();
     }
-    // (Aᶜ)ᶜ = A :  U \ (U \ X) = X
-    if va.is_known_full()
-        && let ExprNode::SetComplement(u, x) = arena.node(b).clone()
-        && vals.get(&u).is_some_and(|v| v.is_known_full())
-    {
-        return vals.get(&x).cloned().unwrap_or(SetVal::Sym(x));
-    }
-
     match (va, vb) {
+        (_, SetVal::Universe) => SetVal::Exact(RankSet::empty()),
+        // U \ B: the normal form holds real numbers only, and says nothing
+        // of the other values of `U`.  Up to 0.59 `U \ {0}` was `ℝ \ {0}`.
+        (SetVal::Universe, _) => {
+            let b_expr = setval_to_expr(arena, table, vb);
+            let u = arena.universal_set;
+            SetVal::Sym(arena.set_complement(u, b_expr))
+        }
         (SetVal::Exact(ea), SetVal::Exact(eb)) => SetVal::Exact(ea.difference(eb)),
         (SetVal::Exact(ea), SetVal::Mixed(eb, sb)) => {
             // A \ (E ∪ S) = (A \ E) \ S
             let d = ea.difference(eb);
-            if d.is_empty() {
-                return SetVal::Exact(d);
-            }
-            let d_expr = rankset_to_expr(arena, table, &d);
-            let s_expr = arena.set_union(sb);
-            SetVal::Sym(arena.set_complement(d_expr, s_expr))
+            real_minus_parts(arena, table, d, sb)
         }
+        (SetVal::Exact(ea), SetVal::Sym(sb)) => real_minus_parts(arena, table, ea.clone(), &[*sb]),
         (SetVal::Mixed(ea, sa), SetVal::Exact(eb)) => {
             // (E ∪ S) \ B = (E \ B) ∪ (S \ B)
             let d = ea.difference(eb);
-            let s_expr = arena.set_union(sa);
-            let b_expr = rankset_to_expr(arena, table, eb);
-            let rest = arena.set_complement(s_expr, b_expr);
-            finish_union(d, vec![rest])
+            let rest = parts_minus_real(arena, table, sa, eb);
+            finish_union(arena, d, rest)
         }
-        _ => {
+        (SetVal::Sym(sa), SetVal::Exact(eb)) => {
+            let rest = parts_minus_real(arena, table, &[*sa], eb);
+            match rest.len() {
+                0 => SetVal::Exact(RankSet::empty()),
+                1 => SetVal::Sym(rest[0]),
+                _ => SetVal::Mixed(RankSet::empty(), rest),
+            }
+        }
+        (SetVal::Mixed(..) | SetVal::Sym(_), SetVal::Mixed(..) | SetVal::Sym(_)) => {
             let a_expr = setval_to_expr(arena, table, va);
             let b_expr = setval_to_expr(arena, table, vb);
             if a_expr == b_expr {
@@ -929,10 +1240,12 @@ pub(crate) fn symmetric_difference(arena: &mut Arena, a: ExprId, b: ExprId) -> E
     simplify_set(arena, u)
 }
 
-/// Absolute complement `ℝ \ a` in normal form.
+/// Absolute complement `ℝ \ a` in normal form.  (Built on the real line:
+/// up to 0.59 on `UniversalSet`, which the evaluator took for the line.)
 pub(crate) fn absolute_complement(arena: &mut Arena, a: ExprId) -> ExprId {
-    let u = arena.universal_set;
-    let c = arena.set_complement(u, a);
+    let (ninf, pinf) = (arena.neg_infinity, arena.infinity);
+    let line = arena.interval(ninf, pinf, IntervalKind::Open);
+    let c = arena.set_complement(line, a);
     simplify_set(arena, c)
 }
 
@@ -966,8 +1279,11 @@ pub(crate) fn cmp_exprs(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<Order
 
 /// Is `elem` an element of the set `set`?
 ///
-/// The literal `UniversalSet` contains everything; the real line
-/// `(-∞, ∞)` contains an element only if it is known to be real.
+/// The literal `UniversalSet` contains everything.  An interval, the real
+/// line `(-∞, ∞)` and every set in normal form hold real numbers only: an
+/// element is a member only when it is proved real ([`member_realness`]),
+/// one that is certainly not real (`i`, `±∞`, `zoo`) is not a member, and
+/// for one not known to be real the question is undecided.
 pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Truth {
     if set == arena.universal_set {
         return Truth::True;
@@ -977,38 +1293,55 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Trut
     let elem_ev = ev.table.ev(elem);
     let (order, _) = collect(arena, &[set]);
     let mut memo: FxHashMap<ExprId, Truth> = FxHashMap::default();
+    // Is the element a real number?  Asked once, and only of an element
+    // without a place on the line.
+    let mut elem_real: Option<Truth> = None;
+    let mut realness = |arena: &mut Arena| -> Truth {
+        *elem_real.get_or_insert_with(|| member_realness(arena, elem_ev))
+    };
 
     for &id in &order {
         // Exact fast path.
-        if let Some(rs) = ev.vals.get(&id).and_then(SetVal::exact) {
-            let r = match elem_pos {
+        let known = match ev.vals.get(&id) {
+            Some(SetVal::Universe) => Some(Truth::True),
+            Some(SetVal::Exact(rs)) => Some(match elem_pos {
                 Some(p @ Pos::Finite(_)) => Truth::from_bool(rs.contains(p)),
                 Some(_) => Truth::False, // ±∞ is never a member of a real set
-                None => {
-                    if rs.is_empty() {
-                        Truth::False
-                    } else if rs.is_full() && is_known_real(arena, elem_ev) {
-                        Truth::True
-                    } else if matches!(arena.node(id), ExprNode::Interval(..))
-                        && certainly_nonreal(arena, elem_ev)
-                    {
-                        // an interval holds real numbers only
-                        Truth::False
-                    } else {
-                        Truth::Unknown
-                    }
-                }
-            };
+                None if rs.is_empty() => Truth::False,
+                // a set of real numbers: all of them, when it is the line
+                None => match realness(arena) {
+                    Truth::False => Truth::False,
+                    Truth::True if rs.is_full() => Truth::True,
+                    Truth::True | Truth::Unknown => Truth::Unknown,
+                },
+            }),
+            Some(SetVal::Mixed(..) | SetVal::Sym(_)) | None => None,
+        };
+        if let Some(r) = known {
             memo.insert(id, r);
             continue;
         }
         let r = match arena.node(id).clone() {
             ExprNode::EmptySet => Truth::False,
             ExprNode::UniversalSet => Truth::True,
+            // An interval holds real numbers only, whatever its ends: an
+            // element that is certainly not real is not compared with them
+            // (up to 0.59 `i + 1/2 ∈ [i, i + 1]` held by the order of the
+            // differences).  The order of an element not known to be real
+            // is taken where the interval is defined (`x ∈ [x, x + 1]`).
             ExprNode::Interval(a, b, kind) => {
-                let lo = cmp_exprs(arena, a, elem_ev);
-                let hi = cmp_exprs(arena, elem_ev, b);
-                inside_end(lo, kind.lower_open()).and(inside_end(hi, kind.upper_open()))
+                let real = match elem_pos {
+                    Some(Pos::Finite(_)) => Truth::True,
+                    Some(Pos::NegInf | Pos::PosInf) => Truth::False,
+                    None => realness(arena),
+                };
+                if real.is_false() {
+                    Truth::False
+                } else {
+                    let lo = cmp_exprs(arena, a, elem_ev);
+                    let hi = cmp_exprs(arena, elem_ev, b);
+                    inside_end(lo, kind.lower_open()).and(inside_end(hi, kind.upper_open()))
+                }
             }
             ExprNode::FiniteSet(elems) => {
                 let mut any_unknown = false;
@@ -1086,9 +1419,33 @@ fn inside_end(order: Option<Ordering>, open: bool) -> Truth {
     }
 }
 
-/// Is `e` real: a certified evaluation for a constant, the assumptions of
-/// its symbols otherwise.
+/// Is `e` a real number: a certified evaluation for a constant, the
+/// assumptions of its symbols otherwise (a symbol without assumptions is
+/// not known to be real).  `±∞` and `zoo` are not real numbers; `nan` is no
+/// value, and nothing is decided for it.
+///
+/// This is the test every membership in a set of real numbers goes
+/// through — an interval, the real line, a set in normal form: proved real,
+/// the element is compared with the ends; certainly not real, it is not a
+/// member; undecided, the membership is, and the set expression that asks
+/// stays as it is.
 fn member_realness(arena: &mut Arena, e: ExprId) -> Truth {
+    use crate::base::value_class::ValueClass;
+    match ValueClass::special_atom(arena, e) {
+        Some(ValueClass::NaN) => return Truth::Unknown,
+        // an infinity is no real number
+        Some(ValueClass::PosInf | ValueClass::NegInf | ValueClass::ComplexInf) => {
+            return Truth::False;
+        }
+        // (the other classes are no atoms)
+        Some(
+            ValueClass::Finite
+            | ValueClass::DirectedInf
+            | ValueClass::Infinite
+            | ValueClass::Unknown,
+        )
+        | None => {}
+    }
     if is_known_real(arena, e) {
         return Truth::True;
     }
@@ -1099,6 +1456,16 @@ fn member_realness(arena: &mut Arena, e: ExprId) -> Truth {
         ));
     }
     Truth::from(cache.query(arena, e, crate::base::assumptions::Props::REAL))
+}
+
+/// Is the member `e` of a finite set a real number?  A member with a real
+/// numeric value is; any other is asked of [`member_realness`].
+fn element_realness(arena: &mut Arena, e: ExprId) -> Truth {
+    if numeric_value(arena, e).is_some() {
+        Truth::True
+    } else {
+        member_realness(arena, e)
+    }
 }
 
 /// A part of an intersection with the real line, with the members of its
@@ -1187,6 +1554,7 @@ fn structural_is_empty(arena: &Arena, vals: &FxHashMap<ExprId, SetVal>, root: Ex
     for &id in &order {
         // (`None`: no exact value, the structure decides)
         let known = match vals.get(&id) {
+            Some(SetVal::Universe) => Some(Truth::False),
             Some(SetVal::Exact(rs)) => Some(Truth::from_bool(rs.is_empty())),
             Some(SetVal::Mixed(rs, _)) if !rs.is_empty() => Some(Truth::False),
             _ => None,
@@ -1236,15 +1604,25 @@ pub(crate) fn is_empty(arena: &mut Arena, set: ExprId) -> Truth {
     structural_is_empty(arena, &ev.vals, set)
 }
 
-/// Is the set the whole real line?
+/// Does the set hold the whole real line (the line itself, the line with
+/// other members, or the universal set)?
 pub(crate) fn is_full(arena: &mut Arena, set: ExprId) -> Truth {
     let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     match ev.vals.get(&set) {
+        Some(SetVal::Universe) => Truth::True,
         Some(SetVal::Exact(rs)) => Truth::from_bool(rs.is_full()),
         Some(SetVal::Mixed(rs, _)) if rs.is_full() => Truth::True,
         _ => Truth::Unknown,
     }
+}
+
+/// Is the set known exactly: a set of real numbers in normal form (what
+/// [`as_intervals`] lists) or the universal set?
+pub(crate) fn is_exact(arena: &mut Arena, set: ExprId) -> bool {
+    let set = resolve_image_sets(arena, set);
+    let ev = evaluate(arena, &[set], &[]);
+    matches!(ev.vals.get(&set), Some(SetVal::Exact(_) | SetVal::Universe))
 }
 
 /// Is `a ⊆ b`?
@@ -1256,29 +1634,35 @@ pub(crate) fn is_subset(arena: &mut Arena, a: ExprId, b: ExprId) -> Truth {
     let (Some(va), Some(vb)) = (ev.vals.get(&a), ev.vals.get(&b)) else {
         return Truth::Unknown;
     };
-    if va.is_known_empty() {
+    // ∅ ⊆ B ;  A ⊆ U
+    if va.is_known_empty() || vb.is_universe() {
         return Truth::True;
     }
-    // ── FIX (wave 17, A3; not part of the `Truth` translation) ──────────────────
-    // `b` evaluates to the whole line.  That is the real line or the
-    // universal set, which the evaluator does not tell apart, so it proves
-    // `a ⊆ b` only for the universal set itself or for an `a` whose members
-    // are all real.  Up to 0.59 it proved it for every `a`: `{i} ⊆ ℝ`,
-    // `{2nπi} ⊆ ℝ` and `{x} ⊆ ℝ` for a plain `x` were `Some(true)`.
-    if vb.is_known_full() {
-        if b == arena.universal_set {
-            return Truth::True;
-        }
-        return match members_real(arena, a) {
-            Truth::True => Truth::True,
-            // a member that is certainly not real, and `b` holds reals only
-            Truth::False if members_real(arena, b).is_true() => Truth::False,
-            Truth::False | Truth::Unknown => Truth::Unknown,
-        };
-    }
-    // ── end of the fix ──────────────────────────────────────────────────────────
     if let (Some(ea), Some(eb)) = (va.exact(), vb.exact()) {
         return Truth::from_bool(ea.is_subset(eb));
+    }
+    // The real line holds every member of `a` that is proved real, and a
+    // set of real numbers holds no member that is certainly not real.  Up
+    // to 0.59 everything was a subset of a `b` that evaluated to the whole
+    // line: `{i} ⊆ ℝ`, `{2nπi} ⊆ ℝ` and `{x} ⊆ ℝ` for a plain `x` were
+    // `Some(true)` (fixed at 0.60 with the set verdicts in `Truth`).
+    let holds_the_line = match vb {
+        SetVal::Exact(rs) | SetVal::Mixed(rs, _) => rs.is_full(),
+        SetVal::Sym(_) | SetVal::Universe => false,
+    };
+    let reals_only = vb.exact().is_some();
+    if holds_the_line || reals_only {
+        match members_real(arena, a) {
+            Truth::True if holds_the_line => return Truth::True,
+            Truth::False if reals_only => return Truth::False,
+            Truth::True | Truth::False | Truth::Unknown => {}
+        }
+    }
+    // The real numbers of `a` among those of `b`.
+    if let (Some(ea), SetVal::Mixed(eb, _)) = (va.exact(), vb)
+        && ea.is_subset(eb)
+    {
+        return Truth::True;
     }
     // {…} ⊆ {…} structurally (element identity).
     if let (ExprNode::FiniteSet(xa), ExprNode::FiniteSet(xb)) = (arena.node(a), arena.node(b))
@@ -1313,9 +1697,10 @@ pub(crate) fn is_subset(arena: &mut Arena, a: ExprId, b: ExprId) -> Truth {
 /// family with a non-real step or offset, the universal set); `Unknown`
 /// otherwise.  Bottom-up over the set structure (no recursion).
 ///
-/// Part of the wave-17 fix of [`is_subset`].  [`all_members_real`] is the
-/// two-valued test of the normal form (a symbol declared real is not a
-/// real member there); it is left as it is.
+/// The set-level form of [`member_realness`]: the real line absorbs,
+/// removes or contains a whole part only when this is `True`.
+/// [`all_members_real`] is the older two-valued test of the normal form (a
+/// symbol declared real is not a real member there); it is left as it is.
 fn members_real(arena: &mut Arena, set: ExprId) -> Truth {
     let (order, _) = collect(arena, &[set]);
     let mut memo: FxHashMap<ExprId, Truth> = FxHashMap::default();
@@ -1328,12 +1713,7 @@ fn members_real(arena: &mut Arena, set: ExprId) -> Truth {
             ExprNode::FiniteSet(elems) => {
                 let mut acc = Truth::True;
                 for &e in &elems {
-                    let real = if numeric_value(arena, e).is_some() {
-                        Truth::True
-                    } else {
-                        member_realness(arena, e)
-                    };
-                    acc = acc.and(real);
+                    acc = acc.and(element_realness(arena, e));
                 }
                 acc
             }
@@ -1366,9 +1746,10 @@ fn members_real(arena: &mut Arena, set: ExprId) -> Truth {
                     Truth::Unknown
                 }
             }
-            // the values of the variable: real when it is declared real
-            ExprNode::ConditionSet(var, _) => {
-                if is_known_real(arena, var) {
+            // the values of the variable: real when it is declared real,
+            // or when the condition puts it in an order relation
+            ExprNode::ConditionSet(var, cond) => {
+                if is_known_real(arena, var) || condition_orders_the_variable(arena, var, cond) {
                     Truth::True
                 } else {
                     Truth::Unknown
@@ -1379,6 +1760,21 @@ fn members_real(arena: &mut Arena, set: ExprId) -> Truth {
         memo.insert(id, r);
     }
     verdict_of(&memo, set)
+}
+
+/// Does the condition of `{var | cond}` hold for a real `var` only: an order
+/// relation with `var` itself as a side, alone or in a conjunction?  (An
+/// order relation holds only between real numbers: `{x | x > 1}` is a set
+/// of real numbers whatever the assumptions of `x`.)
+fn condition_orders_the_variable(arena: &Arena, var: ExprId, cond: ExprId) -> bool {
+    let orders = |c: ExprId| match *arena.node(c) {
+        ExprNode::Gt(a, b) | ExprNode::Ge(a, b) => a == var || b == var,
+        _ => false,
+    };
+    match arena.node(cond) {
+        ExprNode::And(ch) => ch.iter().any(|&c| orders(c)),
+        _ => orders(cond),
+    }
 }
 
 /// Is `a ∩ b = ∅`?
@@ -1394,8 +1790,22 @@ pub(crate) fn is_disjoint(arena: &mut Arena, a: ExprId, b: ExprId) -> Truth {
     if va.is_known_empty() || vb.is_known_empty() {
         return Truth::True;
     }
+    // U ∩ B = B
+    if va.is_universe() {
+        return structural_is_empty(arena, &ev.vals, b);
+    }
+    if vb.is_universe() {
+        return structural_is_empty(arena, &ev.vals, a);
+    }
     if let (Some(ea), Some(eb)) = (va.exact(), vb.exact()) {
         return Truth::from_bool(ea.intersection(eb).is_empty());
+    }
+    // A real number of both (the real parts of sets with other members).
+    if let (SetVal::Exact(ea) | SetVal::Mixed(ea, _), SetVal::Exact(eb) | SetVal::Mixed(eb, _)) =
+        (va, vb)
+        && !ea.intersection(eb).is_empty()
+    {
+        return Truth::False;
     }
     if a == b {
         // A ∩ A = A: disjoint from itself only if empty.
@@ -1478,8 +1888,10 @@ pub(crate) fn is_open(arena: &mut Arena, set: ExprId) -> Truth {
     let ev = evaluate(arena, &[set], &[]);
     match ev.vals.get(&set) {
         None => Truth::Unknown,
+        // (open and closed in every topology)
+        Some(SetVal::Universe) => Truth::True,
         Some(SetVal::Exact(rs)) => Truth::from_bool(rs.is_open()),
-        Some(_) => match arena.node(set) {
+        Some(SetVal::Mixed(..) | SetVal::Sym(_)) => match arena.node(set) {
             // A non-empty finite set is never open.
             ExprNode::FiniteSet(e) if !e.is_empty() => Truth::False,
             _ => Truth::Unknown,
@@ -1492,8 +1904,9 @@ pub(crate) fn is_closed(arena: &mut Arena, set: ExprId) -> Truth {
     let ev = evaluate(arena, &[set], &[]);
     match ev.vals.get(&set) {
         None => Truth::Unknown,
+        Some(SetVal::Universe) => Truth::True,
         Some(SetVal::Exact(rs)) => Truth::from_bool(rs.is_closed()),
-        Some(_) => match arena.node(set) {
+        Some(SetVal::Mixed(..) | SetVal::Sym(_)) => match arena.node(set) {
             ExprNode::FiniteSet(_) => Truth::True,
             _ => Truth::Unknown,
         },
@@ -1553,6 +1966,7 @@ pub(crate) fn as_finite_set(arena: &mut Arena, set: ExprId) -> Option<Vec<ExprId
             ExprNode::FiniteSet(elems) => Some(elems.iter().copied().collect()),
             _ => None,
         },
+        SetVal::Universe => None,
     }
 }
 
@@ -3788,6 +4202,24 @@ fn atom_to_set(
     var: ExprId,
     periodic: &mut Vec<PeriodicAtom>,
 ) -> Result<ExprId, SymplexError> {
+    // An order relation holds only between real numbers.  A finite side
+    // free of `var` that is certainly not real makes it hold nowhere,
+    // whatever the difference of the sides is: up to 0.59 `x + i > i` was
+    // `(0, ∞)` and `|x| > i` was `(i, ∞) ∪ (−∞, −i)`.  (An equation is
+    // about the difference alone.)
+    if !is_eq {
+        use crate::base::value_class::ValueClass;
+        let mut cache = crate::base::assumptions::AssumptionCache::new();
+        for (side, other) in [(lhs, rhs), (rhs, lhs)] {
+            if !crate::base::walk::contains(arena, side, var)
+                && crate::base::walk::contains(arena, other, var)
+                && ValueClass::of(arena, side).is_finite_proved()
+                && crate::transforms::logic::known_nonreal(arena, &mut cache, side)
+            {
+                return Ok(arena.empty_set);
+            }
+        }
+    }
     // A side ±∞ against a finite side in `var`: decided by the sign of
     // the infinity, wherever the finite side is defined (`−∞ < x` is ℝ;
     // up to 0.46 "does not involve the variable and cannot be decided").
@@ -3831,17 +4263,37 @@ fn atom_to_set(
     let set = atom_to_set_of_difference(arena, lhs, rhs, rel, is_eq, var, periodic)?;
     let d = arena.sub(lhs, rhs);
     let d = crate::transforms::eval::eval(arena, d);
-    match crate::transforms::inequalities::lost_domain(arena, &[lhs, rhs], d, var) {
+    let mut set = match crate::transforms::inequalities::lost_domain(arena, &[lhs, rhs], d, var) {
         Ok(Some(domain)) => {
             let meet = arena.set_intersection(&[set, domain]);
-            Ok(simplify_set(arena, meet))
+            simplify_set(arena, meet)
         }
-        Ok(None) => Ok(set),
-        Err(e) => Err(SymplexError::ComputationFailed {
-            operation: "reduce_inequalities",
-            reason: format!("could not find where both sides are defined: {e}"),
-        }),
+        Ok(None) => set,
+        Err(e) => {
+            return Err(SymplexError::ComputationFailed {
+                operation: "reduce_inequalities",
+                reason: format!("could not find where both sides are defined: {e}"),
+            });
+        }
+    };
+    // The order holds only where both sides are real, which `lhs − rhs` can
+    // forget as well: a side with non-real coefficients is real at the
+    // zeros of its imaginary part only (up to 0.59 `t + i > 2t + i` was
+    // `(−∞, 0)`, and `i·t > i·t − 1`, which holds at `t = 0` alone, every
+    // value).
+    if !is_eq {
+        for side in [lhs, rhs] {
+            if let Some(real_at) = crate::transforms::inequalities::real_points(arena, side, var) {
+                let real_at = real_at.map_err(|e| SymplexError::ComputationFailed {
+                    operation: "reduce_inequalities",
+                    reason: format!("could not find where a side is real: {e}"),
+                })?;
+                let meet = arena.set_intersection(&[set, real_at]);
+                set = simplify_set(arena, meet);
+            }
+        }
     }
+    Ok(set)
 }
 
 /// What `d = 0` is as an equation between rational functions of the

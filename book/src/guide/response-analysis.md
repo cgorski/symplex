@@ -181,8 +181,8 @@ gold_screening(&labels, &gold, &q(2, 3))?;          // pass / fail per rater on 
 The Clopper–Pearson interval is the exact one (statsmodels
 `proportion_confint(method='beta')`); Wilson, Agresti–Coull and Wald are
 the usual approximations.  The proportion intervals are interval
-*estimates*, so since 0.18 they live in `stats::estimation` beside the
-mean intervals (the old `stats::aggregation` paths were removed in 0.22).
+*estimates*, so they live in `stats::estimation` beside the mean
+intervals.
 A rater's accuracy against chance is an exact binomial test (below).
 
 ### Exact intervals
@@ -260,8 +260,8 @@ exact tests).  The family:
 | Data | Tests |
 |---|---|
 | Two means | `t_test_one_sample`, `t_test_two_sample` (Student or Welch), `t_test_paired`; the t interval for a mean is `estimation::confidence_interval_mean(&x, 0.95)` |
-| Several means | `anova::anova_one_way` → `AnovaResult { f, df_between, df_within, p_value, ss_between, ss_within, eta_squared }` (in `stats::anova` with the factorial and repeated-measures designs since 0.18) |
-| Two proportions / one proportion | `z_test_proportion`, `z_test_two_proportions` (renamed from `two_proportion_z_test` in 0.18; the old name was removed in 0.22), `binomial_test` (exact) |
+| Several means | `anova::anova_one_way` → `AnovaResult { f, df_between, df_within, p_value, ss_between, ss_within, eta_squared }` (in `stats::anova` with the factorial and repeated-measures designs) |
+| Two proportions / one proportion | `z_test_proportion`, `z_test_two_proportions`, `binomial_test` (exact) |
 | Ranks / ordinal scores | `mann_whitney_u` (exact or asymptotic with tie correction), `wilcoxon_signed_rank`, `kruskal_wallis`, `friedman`, `spearman_test`, `kendall_test` |
 | Categorical tables | `chi_square_independence` (with Yates), `chi_square_goodness_of_fit`, `g_test`, `fisher_exact` (exact up to a 2 000-point support, numeric above), `mcnemar_test` (exact or χ²), `sign_test`; `counts(&[&[i64]])` / `counts_usize(&[Vec<usize>])` build the table (the latter from a `confusion_matrix`) |
 | Which cells drive a χ²? | `expected_counts`, `chi2_contributions`, `standardized_residuals`, `adjusted_residuals` (Haberman) |
@@ -357,11 +357,11 @@ columns of a `RatingTable`:
 
 Every coefficient that is a rational function of the scores is an exact
 rational (Cronbach's α, KR-20); the ones with roots are exact
-expressions.  Since 0.18 `stats::reliability` holds *only* scale
-reliability and item analysis; its former neighbours moved to the module
-their rule names (the old paths were removed in 0.22):
+expressions.  `stats::reliability` holds *only* scale reliability and
+item analysis; the neighbouring questions are answered in the module
+their rule names:
 
-| Question | Function (0.18 home) |
+| Question | Function |
 |---|---|
 | Agreement inference | `agreement::{cohen_kappa_ci}` (Fleiss–Cohen–Everitt variance, exact), `kappa_test` (H₀: κ = 0), `cohen_kappa_maximum` (the κ the marginals allow), `cochrans_q` (many raters, binary items) |
 | Ordinal association | `data::{goodman_kruskal_gamma, somers_d, kendall_tau_c, concordance_counts}` |

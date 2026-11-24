@@ -1,6 +1,6 @@
 # Polynomials as Data
 
-An `Ex` is a tree. When you know an expression *is* a polynomial in some symbols, you usually want a different view of it: a finite list of `(monomial, coefficient)` pairs that you can index, iterate, multiply, evaluate exactly, and lay out as a matrix. In 0.3 that view is `Poly` (`symplex::poly_ex::Poly`), reached from any expression with `as_poly(&[&x, &y])`.
+An `Ex` is a tree. When you know an expression *is* a polynomial in some symbols, you usually want a different view of it: a finite list of `(monomial, coefficient)` pairs that you can index, iterate, multiply, evaluate exactly, and lay out as a matrix. That view is `Poly` (`symplex::poly_ex::Poly`), reached from any expression with `as_poly(&[&x, &y])`.
 
 Two things distinguish `Poly` from the rational-coefficient machinery in `symplex::multipoly`:
 
@@ -51,7 +51,7 @@ Other structural queries: `is_zero`, `is_ground` (constant), `is_univariate`, `i
 
 ## Symbolic coefficients
 
-Any symbol that is *not* a generator becomes part of the coefficients. The same expression can be viewed with different generator lists, and the plain `Ex` methods `degree`, `coeffs`, `coeff`, `leading_coeff` and `is_polynomial` now accept parameter coefficients too (in 0.2 they required rational coefficients).
+Any symbol that is *not* a generator becomes part of the coefficients. The same expression can be viewed with different generator lists, and the plain `Ex` methods `degree`, `coeffs`, `coeff`, `leading_coeff` and `is_polynomial` accept parameter coefficients too.
 
 ```rust
 use symplex::prelude::*;
@@ -92,7 +92,7 @@ fn main() {
 }
 ```
 
-Note the two orderings: `Ex::coeffs` is **ascending** (`[a₀, a₁, …]`, unchanged from 0.2), while `Poly::all_coeffs` is **descending** with zeros filled in, matching SymPy's `all_coeffs()`.
+Note the two orderings: `Ex::coeffs` is **ascending** (`[a₀, a₁, …]`), while `Poly::all_coeffs` is **descending** with zeros filled in, matching SymPy's `all_coeffs()`.
 
 ## Exact evaluation and arithmetic
 
@@ -131,7 +131,7 @@ fn main() {
 }
 ```
 
-Since 0.18 a `Poly` whose coefficients are all rational literals is held as an exact `MultiPoly<Lex>` rather than as one `Ex` per monomial, and `add`/`sub`/`mul`/`pow`/`scale`/`derivative`/`eval`/`eval_gen` between such polynomials run on rationals without touching the expression arena (products and powers accumulate integer numerators over a common denominator and reduce once). The representation is invisible: `terms()`, `Display`, `to_ex()` and `to_multipoly()` report exactly what they did before, a symbolic coefficient switches the polynomial to the `Ex` form, and mixed operations convert the exact side. Expect roughly 5–15× on dense products and 10–30× on exact evaluation compared with 0.17.
+A `Poly` whose coefficients are all rational literals is held as an exact `MultiPoly<Lex>` rather than as one `Ex` per monomial, and `add`/`sub`/`mul`/`pow`/`scale`/`derivative`/`eval`/`eval_gen` between such polynomials run on rationals without touching the expression arena (products and powers accumulate integer numerators over a common denominator and reduce once). The representation is invisible: `terms()`, `Display`, `to_ex()` and `to_multipoly()` report the same thing for both forms, a symbolic coefficient switches the polynomial to the `Ex` form, and mixed operations convert the exact side.
 
 ## Coefficient matrices and exact linear systems
 
@@ -185,7 +185,7 @@ When the multipliers must be **non-negative** — the situation in every positiv
 
 ## Rational normal form: `ratsimp`
 
-`ratsimp` puts a rational expression into a canonical `P/Q`: one fraction, common factors cancelled by a multivariate GCD, integer-primitive numerator and denominator, and a positive leading coefficient in `Q`. Maximal non-rational subexpressions (`sin x`, `π`, `√x`) are treated as opaque indeterminates, exactly as SymPy's `cancel` does. `simplify_rational` is now the same normal form.
+`ratsimp` puts a rational expression into a canonical `P/Q`: one fraction, common factors cancelled by a multivariate GCD, integer-primitive numerator and denominator, and a positive leading coefficient in `Q`. Maximal non-rational subexpressions (`sin x`, `π`, `√x`) are treated as opaque indeterminates, exactly as SymPy's `cancel` does. `simplify_rational` is the same normal form.
 
 ```rust
 use symplex::prelude::*;
@@ -322,9 +322,9 @@ fn main() {
 
 See `cargo run --example polynomials` for the complete program these snippets are drawn from.
 
-## Algebraic numbers and polynomial algebra (0.9)
+## Algebraic numbers and polynomial algebra
 
-0.9 adds a layer of `Ex` methods over the exact engines above, so the common polynomial-algebra questions no longer need a detour through `Poly`/`MultiPoly`. Every method takes and returns `Ex`; the ones that answer a *query* return `Option` (`None` when the input is not of the required shape), the ones that validate caller-supplied structure return `Result`.
+A layer of `Ex` methods sits over the exact engines above, so the common polynomial-algebra questions need no detour through `Poly`/`MultiPoly`. Every method takes and returns `Ex`; the ones that answer a *query* return `Option` (`None` when the input is not of the required shape), the ones that validate caller-supplied structure return `Result`.
 
 ### Minimal polynomials
 
@@ -444,7 +444,7 @@ fn main() -> Result<(), SymplexError> {
 
 ### Resultants and discriminants with symbolic coefficients
 
-`resultant` and `discriminant` (0.2) require every coefficient to be rational. `resultant_symbolic` and `discriminant_symbolic` accept parameter coefficients: they build the Sylvester matrix over `Ex` entries, take its determinant with `Matrix::det`, and expand, so the answer is a polynomial in the parameters. `discriminant_symbolic` is division-free (the leading coefficient is eliminated with one row operation before the determinant).
+`resultant` and `discriminant` require every coefficient to be rational. `resultant_symbolic` and `discriminant_symbolic` accept parameter coefficients: they build the Sylvester matrix over `Ex` entries, take its determinant with `Matrix::det`, and expand, so the answer is a polynomial in the parameters. `discriminant_symbolic` is division-free (the leading coefficient is eliminated with one row operation before the determinant).
 
 ```rust
 use symplex::prelude::*;

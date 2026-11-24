@@ -29,7 +29,7 @@ fn main() {
 
     let g = &x.sin().powi(2) + &(&x * 2 + &y).exp() * 3;
     let grad = Ex::compile_many(&[&g.diff(&x), &g.diff(&y)], &["x", "y"]).unwrap();
-    println!("{:?}", grad.call_vec(&[0.5, 0.25]));                  // [21.97…, 10.59…]
+    println!("{:?}", grad.call_vec(&[0.5, 0.25]));                  // [21.78…, 10.47…]
 }
 ```
 
@@ -146,7 +146,7 @@ fn main() {
 }
 ```
 
-`cargo run --example c_codegen` generates C for a special-function expression, compiles it with `cc` if available, and checks that the C program agrees with the compiled Rust closure to ~1e-13.
+`cargo run --example c_codegen` generates C for a special-function expression, compiles it with `cc` if available, and prints the difference between the C program's values and the compiled Rust closure's.
 
 ## Matrices
 
@@ -173,13 +173,13 @@ fn main() {
 
 ## Build-time generation and `no_std`
 
-The [`symplex-build`](https://github.com/cgorski/symplex/tree/main/symplex-build) crate runs the CAS in `build.rs`: register scalar and matrix functions, choose `no_std`, `f32`, companion tests, and write everything to `$OUT_DIR`. Its cfg-gated `mod math` covers every function the 0.2 Rust backend can emit (`sin` … `atanh`, `powi`/`powf`, `atan2`, `min`/`max`, `expm1`, `log1p`, `log2`, `exp2`, `fma`, `sin_cos`).
+The [`symplex-build`](https://github.com/cgorski/symplex/tree/main/symplex-build) crate runs the CAS in `build.rs`: register scalar and matrix functions, choose `no_std`, `f32`, companion tests, and write everything to `$OUT_DIR`. Its cfg-gated `mod math` covers the elementary functions the Rust back end emits (`sin` … `atanh`, `powi`/`powf`, `atan2`, `min`/`max`, `expm1`, `log1p`, `log2`, `exp2`, `fma`, `sin_cos`).
 
 ## Other outputs
 
-`to_latex()`, `pretty()`/`pretty_ascii()`, `to_json()`/`Context::from_json`, and plotting (`textplot`, `to_svg`, `to_tikz`, `plot_data`, `eval_table` — all `Result` in 0.2). See `cargo run --example latex_output`.
+`to_latex()`, `pretty()`/`pretty_ascii()`, `to_json()`/`Context::from_json`, and plotting (`textplot`, `to_svg`, `to_tikz`, `plot_data`, `eval_table` — all `Result`). See `cargo run --example latex_output`.
 
-## More targets and interchange (0.9.1)
+## More targets and interchange
 
 ### Python, NumPy and Julia
 
