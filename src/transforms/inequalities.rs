@@ -356,23 +356,24 @@ fn solve_periodic_inequality(
         } else {
             &first_shifted
         };
-        let mut decision: Option<bool> = None;
+        // (`Unknown`: no probe yet; `probe_ratios` gives at least one)
+        let mut decision = Truth::Unknown;
         for r in probe_ratios(Some(lo), Some(hi))? {
             let p = arena.num_ratio(r);
-            let here = sample_satisfies(arena, &branch, var, p, rel)?;
+            let here = Truth::from_bool(sample_satisfies(arena, &branch, var, p, rel)?);
             match decision {
-                None => decision = Some(here),
-                Some(d) if d != here => {
+                Truth::Unknown => decision = here,
+                d if d != here => {
                     return Err(failed(format!(
                         "the sign of {} changes between two consecutive critical points \
                          (a zero or a pole was not found)",
                         arena.display(expr)
                     )));
                 }
-                Some(_) => {}
+                Truth::True | Truth::False => {}
             }
         }
-        arc_in.push(decision.unwrap_or(false));
+        arc_in.push(decision.is_true());
     }
     let mut point_in: Vec<bool> = Vec::with_capacity(k);
     for c in &points {
@@ -868,10 +869,10 @@ pub(crate) fn general_solution_set(
             for p in poles {
                 match crate::transforms::sets::set_contains(arena, g_set, p) {
                     // written as the set writes its member (`π`, not `√(π²)`)
-                    Some(true) => excluded
+                    Truth::True => excluded
                         .push(crate::transforms::sets::member_form(arena, g_set, p).unwrap_or(p)),
-                    Some(false) => {}
-                    None => return None,
+                    Truth::False => {}
+                    Truth::Unknown => return None,
                 }
             }
             if excluded.is_empty() {
@@ -1190,24 +1191,25 @@ fn sign_chart(
         let lo = if i == 0 { None } else { Some(&points[i - 1]) };
         let hi = points.get(i);
         let probes = probe_ratios(lo, hi)?;
-        let mut decision: Option<bool> = None;
+        // (`Unknown`: no probe yet; `probe_ratios` gives at least one)
+        let mut decision = Truth::Unknown;
         for p_ratio in probes {
             let p = arena.num_ratio(p_ratio.clone());
             let branch = branch_for(&branches, &kink_points, &p_ratio);
-            let here = sample_satisfies(arena, branch, var, p, rel)?;
+            let here = Truth::from_bool(sample_satisfies(arena, branch, var, p, rel)?);
             match decision {
-                None => decision = Some(here),
-                Some(d) if d != here => {
+                Truth::Unknown => decision = here,
+                d if d != here => {
                     return Err(failed(format!(
                         "the sign of {} changes between two consecutive critical points \
                          (a zero or a pole was not found)",
                         arena.display(expr)
                     )));
                 }
-                Some(_) => {}
+                Truth::True | Truth::False => {}
             }
         }
-        interval_in.push(decision.unwrap_or(false));
+        interval_in.push(decision.is_true());
     }
     let mut point_in: Vec<bool> = Vec::with_capacity(n);
     for c in &points {
@@ -1506,13 +1508,13 @@ fn merge_point(
             break;
         }
         let d = arena.sub(c.id, np.id);
-        match crate::transforms::eval::constant_zero_decision(arena, d) {
-            Some(true) => {
+        match Truth::from(crate::transforms::eval::constant_zero_decision(arena, d)) {
+            Truth::True => {
                 same = Some(i);
                 break;
             }
-            Some(false) => {}
-            None => {
+            Truth::False => {}
+            Truth::Unknown => {
                 return Err(failed(format!(
                     "cannot decide whether the critical points {} and {} are equal",
                     arena.display(c.id),
@@ -1614,10 +1616,14 @@ fn domain_constraints(
                     }
                 } else {
                     // Constant, non-rational exponent (e.g. x^π).
-                    match sign_of(arena, exp) {
-                        Some(1) => push(base, ConstraintKind::NonNegative),
-                        Some(_) => push(base, ConstraintKind::Positive),
-                        None => {
+                    let exp_sign = sign_of(arena, exp);
+                    match (
+                        exp_sign.is_positive().is_true(),
+                        exp_sign.is_negative().is_true(),
+                    ) {
+                        (true, _) => push(base, ConstraintKind::NonNegative),
+                        (false, true) => push(base, ConstraintKind::Positive),
+                        (false, false) => {
                             return Err(failed(format!(
                                 "exponent {} has unknown sign",
                                 arena.display(exp)
@@ -2107,7 +2113,7 @@ fn real_taking_symbols_real(arena: &Arena, e: ExprId) -> bool {
             cache.set_symbol_assumptions(s, real);
         }
     }
-    cache.query(arena, e, Props::REAL) == Some(true)
+    Truth::from(cache.query(arena, e, Props::REAL)).is_true()
 }
 
 /// Try to solve `expr rel 0` when `expr` has the shape `c·|a·x + b| + d`
@@ -2201,11 +2207,19 @@ fn try_solve_abs_inequality(
         1 => rest[0],
         _ => arena.add(&rest),
     };
-    let c_sign = sign_of(arena, coeff)?;
+    // (a coefficient not proved positive or negative: not this shape)
+    let c_sign = sign_of(arena, coeff);
+    if !c_sign.is_in(SignSet::NONZERO_REAL).is_true() {
+        return None;
+    }
     let neg_d = arena.neg(d);
     let k = arena.div(neg_d, coeff);
     let k = crate::transforms::eval::eval(arena, k);
-    let rel = if c_sign < 0 { flip(rel) } else { rel };
+    let rel = if c_sign.is_negative().is_true() {
+        flip(rel)
+    } else {
+        rel
+    };
 
     // If k is a known negative number, |f| < k is empty and |f| > k is ℝ.
     if let Some(kv) = arena.as_num(k).cloned()
@@ -2220,7 +2234,10 @@ fn try_solve_abs_inequality(
     }
 
     // Endpoints in x: f = ±k  ⇒  x = (±k - b)/a
-    let a_sign = sign_of(arena, a)?;
+    let a_sign = sign_of(arena, a);
+    if !a_sign.is_in(SignSet::NONZERO_REAL).is_true() {
+        return None;
+    }
     let k_minus_b = arena.sub(k, b);
     let neg_k = arena.neg(k);
     let neg_k_minus_b = arena.sub(neg_k, b);
@@ -2228,7 +2245,7 @@ fn try_solve_abs_inequality(
     let x_lo = arena.div(neg_k_minus_b, a);
     let x_hi = crate::transforms::eval::eval(arena, x_hi);
     let x_lo = crate::transforms::eval::eval(arena, x_lo);
-    let (lo, hi) = if a_sign > 0 {
+    let (lo, hi) = if a_sign.is_positive().is_true() {
         (x_lo, x_hi)
     } else {
         (x_hi, x_lo)
@@ -2260,24 +2277,27 @@ fn flip(rel: Relation) -> Relation {
     }
 }
 
-/// Sign of a var-free expression: `Some(1)`, `Some(-1)`, or `None` if
-/// unknown (symbolic without a determinable sign, or zero).
-fn sign_of(arena: &mut Arena, e: ExprId) -> Option<i8> {
+/// The strict sign of a var-free expression: [`SignSet::POSITIVE`] or
+/// [`SignSet::NEGATIVE`] when decided, and [`SignSet::UNKNOWN`] (no claim)
+/// otherwise: a symbolic value without a determinable sign, zero, a value
+/// that is not real or not finite.  The callers need a nonzero real sign,
+/// so nothing else is told apart.
+fn sign_of(arena: &mut Arena, e: ExprId) -> SignSet {
     let ev = crate::transforms::eval::eval(arena, e);
     if let Some(r) = arena.as_num(ev) {
         return if r.is_positive() {
-            Some(1)
+            SignSet::POSITIVE
         } else if r.is_negative() {
-            Some(-1)
+            SignSet::NEGATIVE
         } else {
-            None
+            SignSet::UNKNOWN
         };
     }
     match value_sign(arena, ev) {
-        ValueSign::Defined(SignSet::POSITIVE) => return Some(1),
-        ValueSign::Defined(SignSet::NEGATIVE) => return Some(-1),
+        ValueSign::Defined(SignSet::POSITIVE) => return SignSet::POSITIVE,
+        ValueSign::Defined(SignSet::NEGATIVE) => return SignSet::NEGATIVE,
         undecided if undecided.undecided() => {}
-        _ => return None,
+        _ => return SignSet::UNKNOWN,
     }
     // Symbolic: consult stored symbol assumptions for a bare symbol.
     if let ExprNode::Symbol(sid) = arena.node(ev) {
@@ -2285,15 +2305,15 @@ fn sign_of(arena: &mut Arena, e: ExprId) -> Option<i8> {
         if a.known_true
             .contains(crate::base::assumptions::Props::POSITIVE)
         {
-            return Some(1);
+            return SignSet::POSITIVE;
         }
         if a.known_true
             .contains(crate::base::assumptions::Props::NEGATIVE)
         {
-            return Some(-1);
+            return SignSet::NEGATIVE;
         }
     }
-    None
+    SignSet::UNKNOWN
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

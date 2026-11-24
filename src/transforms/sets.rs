@@ -25,7 +25,8 @@
 //! (`A ∪ ∅ = A`, `A ∩ U = A`, `A ∪ A = A`, `A ∩ ∅ = ∅`, `A \ A = ∅`,
 //! `(Aᶜ)ᶜ = A`, flattening, deduplication, deterministic ordering).
 //!
-//! All queries are three-valued (`Option<bool>`): `None` means "cannot be
+//! All queries are three-valued ([`Truth`]; `Option<bool>` at the public
+//! API, converted with [`Truth::to_option`]): `Unknown` means "cannot be
 //! decided", never "false".
 //!
 //! # Image sets
@@ -74,6 +75,7 @@ use crate::base::extended::Extended;
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::truth::Truth;
 
 /// Relative tolerance below which two floating-point endpoint
 /// approximations are considered "too close to order safely".
@@ -966,34 +968,34 @@ pub(crate) fn cmp_exprs(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<Order
 ///
 /// The literal `UniversalSet` contains everything; the real line
 /// `(-∞, ∞)` contains an element only if it is known to be real.
-pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Option<bool> {
+pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Truth {
     if set == arena.universal_set {
-        return Some(true);
+        return Truth::True;
     }
     let ev = evaluate(arena, &[set], &[elem]);
     let elem_pos = ev.table.pos_of(elem);
     let elem_ev = ev.table.ev(elem);
     let (order, _) = collect(arena, &[set]);
-    let mut memo: FxHashMap<ExprId, Option<bool>> = FxHashMap::default();
+    let mut memo: FxHashMap<ExprId, Truth> = FxHashMap::default();
 
     for &id in &order {
         // Exact fast path.
         if let Some(rs) = ev.vals.get(&id).and_then(SetVal::exact) {
             let r = match elem_pos {
-                Some(p @ Pos::Finite(_)) => Some(rs.contains(p)),
-                Some(_) => Some(false), // ±∞ is never a member of a real set
+                Some(p @ Pos::Finite(_)) => Truth::from_bool(rs.contains(p)),
+                Some(_) => Truth::False, // ±∞ is never a member of a real set
                 None => {
                     if rs.is_empty() {
-                        Some(false)
+                        Truth::False
                     } else if rs.is_full() && is_known_real(arena, elem_ev) {
-                        Some(true)
+                        Truth::True
                     } else if matches!(arena.node(id), ExprNode::Interval(..))
                         && certainly_nonreal(arena, elem_ev)
                     {
                         // an interval holds real numbers only
-                        Some(false)
+                        Truth::False
                     } else {
-                        None
+                        Truth::Unknown
                     }
                 }
             };
@@ -1001,22 +1003,12 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
             continue;
         }
         let r = match arena.node(id).clone() {
-            ExprNode::EmptySet => Some(false),
-            ExprNode::UniversalSet => Some(true),
+            ExprNode::EmptySet => Truth::False,
+            ExprNode::UniversalSet => Truth::True,
             ExprNode::Interval(a, b, kind) => {
                 let lo = cmp_exprs(arena, a, elem_ev);
                 let hi = cmp_exprs(arena, elem_ev, b);
-                let l_ok = lo.map(|o| match o {
-                    Ordering::Less => true,
-                    Ordering::Equal => !kind.lower_open(),
-                    Ordering::Greater => false,
-                });
-                let h_ok = hi.map(|o| match o {
-                    Ordering::Less => true,
-                    Ordering::Equal => !kind.upper_open(),
-                    Ordering::Greater => false,
-                });
-                and3(l_ok, h_ok)
+                inside_end(lo, kind.lower_open()).and(inside_end(hi, kind.upper_open()))
             }
             ExprNode::FiniteSet(elems) => {
                 let mut any_unknown = false;
@@ -1032,32 +1024,20 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
                     }
                 }
                 if found {
-                    Some(true)
+                    Truth::True
                 } else if any_unknown {
-                    None
+                    Truth::Unknown
                 } else {
-                    Some(false)
+                    Truth::False
                 }
             }
             ExprNode::SetUnion(children) => {
-                let mut acc = Some(false);
-                for c in children {
-                    acc = or3(acc, memo.get(&c).copied().flatten());
-                }
-                acc
+                Truth::any(children.iter().map(|&c| verdict_of(&memo, c)))
             }
             ExprNode::SetIntersection(children) => {
-                let mut acc = Some(true);
-                for c in children {
-                    acc = and3(acc, memo.get(&c).copied().flatten());
-                }
-                acc
+                Truth::all(children.iter().map(|&c| verdict_of(&memo, c)))
             }
-            ExprNode::SetComplement(a, b) => {
-                let ia = memo.get(&a).copied().flatten();
-                let ib = memo.get(&b).copied().flatten();
-                and3(ia, ib.map(|x| !x))
-            }
+            ExprNode::SetComplement(a, b) => verdict_of(&memo, a).and(verdict_of(&memo, b).not()),
             // `{x | cond}` for `x` in its declared domain: up to 0.42 a
             // value outside it was a member when it met the condition
             // (`−7 ∈ {x | x³ − 9x < 0}` for a prime `x`).
@@ -1065,36 +1045,60 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
                 let c = crate::transforms::subs::subs(arena, cond, var, elem_ev);
                 let c = crate::transforms::logic::simplify_bool(arena, c);
                 if c == arena.bool_false {
-                    Some(false)
+                    Truth::False
                 } else {
-                    match crate::transforms::solve::assumptions_hold(arena, var, elem_ev) {
-                        Some(false) => Some(false),
-                        Some(true) if c == arena.bool_true => Some(true),
-                        _ => None,
+                    let in_domain = Truth::from(crate::transforms::solve::assumptions_hold(
+                        arena, var, elem_ev,
+                    ));
+                    match in_domain {
+                        Truth::False => Truth::False,
+                        Truth::True if c == arena.bool_true => Truth::True,
+                        // in the domain with an undecided condition, or an
+                        // undecided domain: no claim
+                        Truth::True | Truth::Unknown => Truth::Unknown,
                     }
                 }
             }
             ExprNode::ImageSet(var, body) => image_set_contains(arena, var, body, elem_ev),
-            _ => None,
+            _ => Truth::Unknown,
         };
         memo.insert(id, r);
     }
-    memo.get(&set).copied().flatten()
+    verdict_of(&memo, set)
+}
+
+/// The verdict a bottom-up pass recorded for the operand `id`; `Unknown`
+/// for one it did not reach.
+fn verdict_of(memo: &FxHashMap<ExprId, Truth>, id: ExprId) -> Truth {
+    memo.get(&id).copied().unwrap_or(Truth::Unknown)
+}
+
+/// Is a point on the inner side of an interval end?  `order` compares the
+/// lower end with the point, or the point with the upper end: `Less` is
+/// inside, `Equal` is inside a closed end, and an undecided order is
+/// `Unknown`.
+fn inside_end(order: Option<Ordering>, open: bool) -> Truth {
+    match order {
+        Some(Ordering::Less) => Truth::True,
+        Some(Ordering::Equal) => Truth::from_bool(!open),
+        Some(Ordering::Greater) => Truth::False,
+        None => Truth::Unknown,
+    }
 }
 
 /// Is `e` real: a certified evaluation for a constant, the assumptions of
 /// its symbols otherwise.
-fn member_realness(arena: &mut Arena, e: ExprId) -> Option<bool> {
+fn member_realness(arena: &mut Arena, e: ExprId) -> Truth {
     if is_known_real(arena, e) {
-        return Some(true);
+        return Truth::True;
     }
     let mut cache = crate::base::assumptions::AssumptionCache::new();
     if crate::base::walk::free_symbols(arena, e).is_empty() {
-        return crate::transforms::realness::constant_realness_as_declared(
+        return Truth::from(crate::transforms::realness::constant_realness_as_declared(
             arena, e, 20, &mut cache,
-        );
+        ));
     }
-    cache.query(arena, e, crate::base::assumptions::Props::REAL)
+    Truth::from(cache.query(arena, e, crate::base::assumptions::Props::REAL))
 }
 
 /// A part of an intersection with the real line, with the members of its
@@ -1107,9 +1111,9 @@ fn cut_finite_to_line(arena: &mut Arena, p: ExprId) -> (ExprId, bool) {
         let mut undecided = false;
         for &m in elems {
             match member_realness(arena, m) {
-                Some(true) => kept.push(m),
-                Some(false) => {}
-                None => {
+                Truth::True => kept.push(m),
+                Truth::False => {}
+                Truth::Unknown => {
                     undecided = true;
                     kept.push(m);
                 }
@@ -1155,144 +1159,141 @@ fn certainly_nonreal(arena: &mut Arena, id: ExprId) -> bool {
         return false;
     }
     let mut cache = crate::base::assumptions::AssumptionCache::new();
-    crate::transforms::realness::constant_realness_as_declared(arena, id, 20, &mut cache)
-        == Some(false)
+    Truth::from(crate::transforms::realness::constant_realness_as_declared(
+        arena, id, 20, &mut cache,
+    ))
+    .is_false()
 }
 
 fn is_known_real(arena: &Arena, id: ExprId) -> bool {
     match arena.node(id) {
         ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => true,
-        ExprNode::Symbol(sid) => {
+        ExprNode::Symbol(sid) => Truth::from(
             arena
                 .symbol_assumptions(*sid)
-                .query(crate::base::assumptions::Props::REAL)
-                == Some(true)
-        }
+                .query(crate::base::assumptions::Props::REAL),
+        )
+        .is_true(),
         _ => false,
     }
-}
-
-/// Kleene `a ∧ b` on the `Option<bool>` of the membership tests
-/// ([`Truth::and`](crate::base::truth::Truth::and)).
-fn and3(a: Option<bool>, b: Option<bool>) -> Option<bool> {
-    crate::base::truth::Truth::from(a)
-        .and(crate::base::truth::Truth::from(b))
-        .to_option()
-}
-
-/// Kleene `a ∨ b` on the `Option<bool>` of the membership tests
-/// ([`Truth::or`](crate::base::truth::Truth::or)).
-fn or3(a: Option<bool>, b: Option<bool>) -> Option<bool> {
-    crate::base::truth::Truth::from(a)
-        .or(crate::base::truth::Truth::from(b))
-        .to_option()
 }
 
 /// Structural emptiness for sets that could not be evaluated exactly.
 ///
 /// Bottom-up over the set structure (explicit post-order, no recursion).
-fn structural_is_empty(
-    arena: &Arena,
-    vals: &FxHashMap<ExprId, SetVal>,
-    root: ExprId,
-) -> Option<bool> {
+fn structural_is_empty(arena: &Arena, vals: &FxHashMap<ExprId, SetVal>, root: ExprId) -> Truth {
     let (order, _) = collect(arena, &[root]);
-    let mut memo: FxHashMap<ExprId, Option<bool>> = FxHashMap::default();
+    let mut memo: FxHashMap<ExprId, Truth> = FxHashMap::default();
     for &id in &order {
+        // (`None`: no exact value, the structure decides)
         let known = match vals.get(&id) {
-            Some(SetVal::Exact(rs)) => Some(Some(rs.is_empty())),
-            Some(SetVal::Mixed(rs, _)) if !rs.is_empty() => Some(Some(false)),
+            Some(SetVal::Exact(rs)) => Some(Truth::from_bool(rs.is_empty())),
+            Some(SetVal::Mixed(rs, _)) if !rs.is_empty() => Some(Truth::False),
             _ => None,
         };
         let r = if let Some(k) = known {
             k
         } else {
             match arena.node(id) {
-                ExprNode::EmptySet => Some(true),
-                ExprNode::UniversalSet => Some(false),
+                ExprNode::EmptySet => Truth::True,
+                ExprNode::UniversalSet => Truth::False,
                 // The image of the (non-empty) integers.
-                ExprNode::ImageSet(..) => Some(false),
-                ExprNode::FiniteSet(elems) => Some(elems.is_empty()),
+                ExprNode::ImageSet(..) => Truth::False,
+                ExprNode::FiniteSet(elems) => Truth::from_bool(elems.is_empty()),
                 ExprNode::SetUnion(children) => {
-                    let mut acc = Some(true);
-                    for c in children {
-                        let e = memo.get(c).copied().flatten();
-                        acc = and3(acc, e);
-                    }
-                    acc
+                    Truth::all(children.iter().map(|&c| verdict_of(&memo, c)))
                 }
                 ExprNode::SetIntersection(children) => {
-                    if children
-                        .iter()
-                        .any(|c| memo.get(c).copied().flatten() == Some(true))
-                    {
-                        Some(true)
+                    // an empty operand proves it; operands that are not
+                    // empty prove nothing about their meet
+                    if children.iter().any(|&c| verdict_of(&memo, c).is_true()) {
+                        Truth::True
                     } else {
-                        None
+                        Truth::Unknown
                     }
                 }
                 ExprNode::SetComplement(a, b) => {
-                    let ea = memo.get(a).copied().flatten();
-                    let eb = memo.get(b).copied().flatten();
-                    match (ea, eb) {
-                        (Some(true), _) => Some(true),
-                        (Some(false), Some(true)) => Some(false),
-                        _ => None,
+                    match (verdict_of(&memo, *a), verdict_of(&memo, *b)) {
+                        (Truth::True, _) => Truth::True,
+                        (Truth::False, Truth::True) => Truth::False,
+                        (Truth::False, Truth::False | Truth::Unknown) | (Truth::Unknown, _) => {
+                            Truth::Unknown
+                        }
                     }
                 }
-                _ => None,
+                _ => Truth::Unknown,
             }
         };
         memo.insert(id, r);
     }
-    memo.get(&root).copied().flatten()
+    verdict_of(&memo, root)
 }
 
 /// Is the set empty?
-pub(crate) fn is_empty(arena: &mut Arena, set: ExprId) -> Option<bool> {
+pub(crate) fn is_empty(arena: &mut Arena, set: ExprId) -> Truth {
     let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
     structural_is_empty(arena, &ev.vals, set)
 }
 
 /// Is the set the whole real line?
-pub(crate) fn is_full(arena: &mut Arena, set: ExprId) -> Option<bool> {
+pub(crate) fn is_full(arena: &mut Arena, set: ExprId) -> Truth {
     let set = resolve_image_sets(arena, set);
     let ev = evaluate(arena, &[set], &[]);
-    match ev.vals.get(&set)? {
-        SetVal::Exact(rs) => Some(rs.is_full()),
-        SetVal::Mixed(rs, _) if rs.is_full() => Some(true),
-        _ => None,
+    match ev.vals.get(&set) {
+        Some(SetVal::Exact(rs)) => Truth::from_bool(rs.is_full()),
+        Some(SetVal::Mixed(rs, _)) if rs.is_full() => Truth::True,
+        _ => Truth::Unknown,
     }
 }
 
 /// Is `a ⊆ b`?
-pub(crate) fn is_subset(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool> {
+pub(crate) fn is_subset(arena: &mut Arena, a: ExprId, b: ExprId) -> Truth {
     if a == b {
-        return Some(true);
+        return Truth::True;
     }
     let ev = evaluate(arena, &[a, b], &[]);
-    let va = ev.vals.get(&a)?;
-    let vb = ev.vals.get(&b)?;
-    if va.is_known_empty() || vb.is_known_full() {
-        return Some(true);
+    let (Some(va), Some(vb)) = (ev.vals.get(&a), ev.vals.get(&b)) else {
+        return Truth::Unknown;
+    };
+    if va.is_known_empty() {
+        return Truth::True;
     }
+    // ── FIX (wave 17, A3; not part of the `Truth` translation) ──────────────────
+    // `b` evaluates to the whole line.  That is the real line or the
+    // universal set, which the evaluator does not tell apart, so it proves
+    // `a ⊆ b` only for the universal set itself or for an `a` whose members
+    // are all real.  Up to 0.59 it proved it for every `a`: `{i} ⊆ ℝ`,
+    // `{2nπi} ⊆ ℝ` and `{x} ⊆ ℝ` for a plain `x` were `Some(true)`.
+    if vb.is_known_full() {
+        if b == arena.universal_set {
+            return Truth::True;
+        }
+        return match members_real(arena, a) {
+            Truth::True => Truth::True,
+            // a member that is certainly not real, and `b` holds reals only
+            Truth::False if members_real(arena, b).is_true() => Truth::False,
+            Truth::False | Truth::Unknown => Truth::Unknown,
+        };
+    }
+    // ── end of the fix ──────────────────────────────────────────────────────────
     if let (Some(ea), Some(eb)) = (va.exact(), vb.exact()) {
-        return Some(ea.is_subset(eb));
+        return Truth::from_bool(ea.is_subset(eb));
     }
     // {…} ⊆ {…} structurally (element identity).
     if let (ExprNode::FiniteSet(xa), ExprNode::FiniteSet(xb)) = (arena.node(a), arena.node(b))
         && xa.iter().all(|e| xb.contains(e))
     {
-        return Some(true);
+        return Truth::True;
     }
     // {…} ⊆ B with image sets in B: element by element.
     if let ExprNode::FiniteSet(xa) = arena.node(a).clone()
         && contains_image_set(arena, b)
     {
-        let mut acc = Some(true);
+        // (every element is asked, as before: no short circuit)
+        let mut acc = Truth::True;
         for e in xa {
-            acc = and3(acc, set_contains(arena, b, e));
+            acc = acc.and(set_contains(arena, b, e));
         }
         return acc;
     }
@@ -1301,31 +1302,106 @@ pub(crate) fn is_subset(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool>
         && !ea.is_empty()
         && vb.is_known_empty()
     {
-        return Some(false);
+        return Truth::False;
     }
-    None
+    Truth::Unknown
+}
+
+/// Is every member of the set expression `set` real?  `True`: every member
+/// is proved real (intervals, real numbers and symbols, real families);
+/// `False`: some member is certainly not real (`i` in a finite set, a
+/// family with a non-real step or offset, the universal set); `Unknown`
+/// otherwise.  Bottom-up over the set structure (no recursion).
+///
+/// Part of the wave-17 fix of [`is_subset`].  [`all_members_real`] is the
+/// two-valued test of the normal form (a symbol declared real is not a
+/// real member there); it is left as it is.
+fn members_real(arena: &mut Arena, set: ExprId) -> Truth {
+    let (order, _) = collect(arena, &[set]);
+    let mut memo: FxHashMap<ExprId, Truth> = FxHashMap::default();
+    for &id in &order {
+        let r = match arena.node(id).clone() {
+            // an interval holds real numbers only
+            ExprNode::EmptySet | ExprNode::Interval(..) => Truth::True,
+            // it holds `i`
+            ExprNode::UniversalSet => Truth::False,
+            ExprNode::FiniteSet(elems) => {
+                let mut acc = Truth::True;
+                for &e in &elems {
+                    let real = if numeric_value(arena, e).is_some() {
+                        Truth::True
+                    } else {
+                        member_realness(arena, e)
+                    };
+                    acc = acc.and(real);
+                }
+                acc
+            }
+            // a step or an offset that is certainly not real gives a member
+            // that is not (at index 0 or 1); otherwise a body that is real
+            // for every index (`n²`, `eⁿ` for the integer `n`)
+            ExprNode::ImageSet(v, b) => image_set_is_real(arena, v, b).or_else(|| {
+                let mut cache = crate::base::assumptions::AssumptionCache::new();
+                let real = cache.query(arena, b, crate::base::assumptions::Props::REAL);
+                if Truth::from(real).is_true() {
+                    Truth::True
+                } else {
+                    Truth::Unknown
+                }
+            }),
+            ExprNode::SetUnion(ch) => Truth::all(ch.iter().map(|&c| verdict_of(&memo, c))),
+            // a part of a real set is real; operands with members that are
+            // not real may still meet in real ones only
+            ExprNode::SetIntersection(ch) => {
+                if ch.iter().any(|&c| verdict_of(&memo, c).is_true()) {
+                    Truth::True
+                } else {
+                    Truth::Unknown
+                }
+            }
+            ExprNode::SetComplement(a, _) => {
+                if verdict_of(&memo, a).is_true() {
+                    Truth::True
+                } else {
+                    Truth::Unknown
+                }
+            }
+            // the values of the variable: real when it is declared real
+            ExprNode::ConditionSet(var, _) => {
+                if is_known_real(arena, var) {
+                    Truth::True
+                } else {
+                    Truth::Unknown
+                }
+            }
+            _ => Truth::Unknown,
+        };
+        memo.insert(id, r);
+    }
+    verdict_of(&memo, set)
 }
 
 /// Is `a ∩ b = ∅`?
-pub(crate) fn is_disjoint(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<bool> {
+pub(crate) fn is_disjoint(arena: &mut Arena, a: ExprId, b: ExprId) -> Truth {
     if contains_image_set(arena, a) || contains_image_set(arena, b) {
         let both = arena.set_intersection(&[a, b]);
         return is_empty(arena, both);
     }
     let ev = evaluate(arena, &[a, b], &[]);
-    let va = ev.vals.get(&a)?;
-    let vb = ev.vals.get(&b)?;
+    let (Some(va), Some(vb)) = (ev.vals.get(&a), ev.vals.get(&b)) else {
+        return Truth::Unknown;
+    };
     if va.is_known_empty() || vb.is_known_empty() {
-        return Some(true);
+        return Truth::True;
     }
     if let (Some(ea), Some(eb)) = (va.exact(), vb.exact()) {
-        return Some(ea.intersection(eb).is_empty());
+        return Truth::from_bool(ea.intersection(eb).is_empty());
     }
     if a == b {
         // A ∩ A = A: disjoint from itself only if empty.
         return structural_is_empty(arena, &ev.vals, a);
     }
-    None
+    Truth::Unknown
 }
 
 /// Greatest lower bound (`-∞` for sets unbounded below); `None` if the
@@ -1398,26 +1474,28 @@ pub(crate) fn boundary(arena: &mut Arena, set: ExprId) -> Option<ExprId> {
 }
 
 /// Is the set open (in ℝ)?
-pub(crate) fn is_open(arena: &mut Arena, set: ExprId) -> Option<bool> {
+pub(crate) fn is_open(arena: &mut Arena, set: ExprId) -> Truth {
     let ev = evaluate(arena, &[set], &[]);
-    match ev.vals.get(&set)? {
-        SetVal::Exact(rs) => Some(rs.is_open()),
-        _ => match arena.node(set) {
+    match ev.vals.get(&set) {
+        None => Truth::Unknown,
+        Some(SetVal::Exact(rs)) => Truth::from_bool(rs.is_open()),
+        Some(_) => match arena.node(set) {
             // A non-empty finite set is never open.
-            ExprNode::FiniteSet(e) if !e.is_empty() => Some(false),
-            _ => None,
+            ExprNode::FiniteSet(e) if !e.is_empty() => Truth::False,
+            _ => Truth::Unknown,
         },
     }
 }
 
 /// Is the set closed (in ℝ)?
-pub(crate) fn is_closed(arena: &mut Arena, set: ExprId) -> Option<bool> {
+pub(crate) fn is_closed(arena: &mut Arena, set: ExprId) -> Truth {
     let ev = evaluate(arena, &[set], &[]);
-    match ev.vals.get(&set)? {
-        SetVal::Exact(rs) => Some(rs.is_closed()),
-        _ => match arena.node(set) {
-            ExprNode::FiniteSet(_) => Some(true),
-            _ => None,
+    match ev.vals.get(&set) {
+        None => Truth::Unknown,
+        Some(SetVal::Exact(rs)) => Truth::from_bool(rs.is_closed()),
+        Some(_) => match arena.node(set) {
+            ExprNode::FiniteSet(_) => Truth::True,
+            _ => Truth::Unknown,
         },
     }
 }
@@ -1842,21 +1920,28 @@ pub(crate) fn periodic_interval_set(
 /// Is `elem` in the [`IntervalFamily`] `fam`: in `I(k)` for the integer `k`
 /// that its value places it in (or a neighbour), decided exactly by
 /// [`cmp_exprs`]; `false` for an element that is certainly not real.
-fn interval_family_contains(arena: &mut Arena, fam: &IntervalFamily, elem: ExprId) -> Option<bool> {
+fn interval_family_contains(arena: &mut Arena, fam: &IntervalFamily, elem: ExprId) -> Truth {
     if certainly_nonreal(arena, elem) {
-        return Some(false);
+        return Truth::False;
     }
-    let x = approx_real_f64(arena, elem)?;
-    let lo = approx_real_f64(arena, fam.lo)?;
-    let step = approx_real_f64(arena, fam.step)?;
+    let Some(x) = approx_real_f64(arena, elem) else {
+        return Truth::Unknown;
+    };
+    let Some(lo) = approx_real_f64(arena, fam.lo) else {
+        return Truth::Unknown;
+    };
+    let Some(step) = approx_real_f64(arena, fam.step) else {
+        return Truth::Unknown;
+    };
     if !x.is_finite() || !lo.is_finite() || !step.is_finite() || step <= 0.0 {
-        return None;
+        return Truth::Unknown;
     }
     let k0 = ((x - lo) / step).floor();
     if !k0.is_finite() || k0.abs() > 1e12 {
-        return None;
+        return Truth::Unknown;
     }
-    let mut acc = Some(false);
+    // (all three candidates are asked, as before: no short circuit)
+    let mut acc = Truth::False;
     for k in [k0 as i64 - 1, k0 as i64, k0 as i64 + 1] {
         let kk = arena.int(k);
         let shift = arena.mul(&[fam.step, kk]);
@@ -1864,17 +1949,9 @@ fn interval_family_contains(arena: &mut Arena, fam: &IntervalFamily, elem: ExprI
         let a = crate::transforms::eval::eval(arena, a);
         let b = arena.add(&[fam.hi, shift]);
         let b = crate::transforms::eval::eval(arena, b);
-        let l_ok = cmp_exprs(arena, a, elem).map(|o| match o {
-            Ordering::Less => true,
-            Ordering::Equal => !fam.kind.lower_open(),
-            Ordering::Greater => false,
-        });
-        let h_ok = cmp_exprs(arena, elem, b).map(|o| match o {
-            Ordering::Less => true,
-            Ordering::Equal => !fam.kind.upper_open(),
-            Ordering::Greater => false,
-        });
-        acc = or3(acc, and3(l_ok, h_ok));
+        let l_ok = inside_end(cmp_exprs(arena, a, elem), fam.kind.lower_open());
+        let h_ok = inside_end(cmp_exprs(arena, elem, b), fam.kind.upper_open());
+        acc = acc.or(l_ok.and(h_ok));
     }
     acc
 }
@@ -1991,14 +2068,9 @@ pub(crate) fn contains_image_set(arena: &Arena, set: ExprId) -> bool {
 }
 
 /// Is `elem` = `body` at `var = k` (an integer node)?  Exactly, or by a
-/// certified digit of the difference; `None` when that cannot be decided.
-fn member_at(
-    arena: &mut Arena,
-    var: ExprId,
-    body: ExprId,
-    elem: ExprId,
-    k: ExprId,
-) -> Option<bool> {
+/// certified digit of the difference; `Unknown` when that cannot be
+/// decided.
+fn member_at(arena: &mut Arena, var: ExprId, body: ExprId, elem: ExprId, k: ExprId) -> Truth {
     let m = crate::transforms::subs::subs(arena, body, var, k);
     let m = crate::transforms::eval::eval(arena, m);
     same_value(arena, elem, m)
@@ -2006,29 +2078,36 @@ fn member_at(
 
 /// Are the expressions `p` and `q` equal?  Exactly (structurally after
 /// evaluation), by a certified digit of `p − q`, or by an identity when
-/// the difference is zero to the digits reached (`√(π²) = π`); `None`
+/// the difference is zero to the digits reached (`√(π²) = π`); `Unknown`
 /// when undecided.
-fn same_value(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<bool> {
+fn same_value(arena: &mut Arena, p: ExprId, q: ExprId) -> Truth {
     use crate::transforms::eval::eval;
     use crate::transforms::evalf::{Settled, ZeroSearch};
     if p == q {
-        return Some(true);
+        return Truth::True;
     }
     let d = arena.sub(p, q);
     let d = eval(arena, d);
     if d == arena.zero {
-        return Some(true);
+        return Truth::True;
     }
     if !crate::base::walk::free_symbols(arena, d).is_empty()
         || crate::base::walk::has_unevaluated(arena, d)
     {
-        return None;
+        return Truth::Unknown;
     }
     match crate::transforms::evalf::evalf_settled(arena, d, 20, ZeroSearch::Deep) {
-        Ok((z, Settled::Certified)) if !(z.0.is_zero() && z.1.is_zero()) => Some(false),
+        Ok((z, Settled::Certified)) if !(z.0.is_zero() && z.1.is_zero()) => Truth::False,
         // Zero to the digits reached: exactly 0 by an identity (`√(π²) − π`)?
-        Ok(_) => arena.vanishes_by_identity(d).then_some(true),
-        Err(_) => None,
+        // (An identity proves equality; none found proves nothing.)
+        Ok(_) => {
+            if arena.vanishes_by_identity(d) {
+                Truth::True
+            } else {
+                Truth::Unknown
+            }
+        }
+        Err(_) => Truth::Unknown,
     }
 }
 
@@ -2040,37 +2119,39 @@ fn same_value(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<bool> {
 fn integer_test(
     arena: &mut Arena,
     t: ExprId,
-    at: impl FnOnce(&mut Arena, ExprId) -> Option<bool>,
-) -> Option<bool> {
+    at: impl FnOnce(&mut Arena, ExprId) -> Truth,
+) -> Truth {
     use crate::base::walk;
     if let Some(q) = arena.as_num(t) {
-        return Some(q.is_integer());
+        return Truth::from_bool(q.is_integer());
     }
     if matches!(
         arena.node(t),
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
     ) || walk::has_unevaluated(arena, t)
     {
-        return None;
+        return Truth::Unknown;
     }
     if !walk::free_symbols(arena, t).is_empty() {
         let mut cache = crate::base::assumptions::AssumptionCache::new();
-        return cache.query(arena, t, crate::base::assumptions::Props::INTEGER);
+        return Truth::from(cache.query(arena, t, crate::base::assumptions::Props::INTEGER));
     }
-    let z = crate::transforms::evalf::evalf_complex64(arena, t).ok()?;
+    let Ok(z) = crate::transforms::evalf::evalf_complex64(arena, t) else {
+        return Truth::Unknown;
+    };
     if !z.re.is_finite() || !z.im.is_finite() {
-        return None;
+        return Truth::Unknown;
     }
     let scale = 1.0 + z.re.abs();
     if z.im.abs() > NEAR_INTEGER * scale {
-        return Some(false);
+        return Truth::False;
     }
     if z.re.abs() > 1e12 {
-        return None;
+        return Truth::Unknown;
     }
     let k = z.re.round();
     if (z.re - k).abs() > NEAR_INTEGER * scale {
-        return Some(false);
+        return Truth::False;
     }
     let k = arena.int(k as i64);
     at(arena, k)
@@ -2080,31 +2161,31 @@ fn integer_test(
 /// a·var + b` at `var = (elem − b)/a`, which must be an integer
 /// ([`integer_test`]).  Otherwise `body = elem` is solved for `var`: a member
 /// when a solution is an integer; not one when the equation is polynomial
-/// in `var` (so the solutions are all of them) and none is.  `None` when
+/// in `var` (so the solutions are all of them) and none is.  `Unknown` when
 /// undecided.
 pub(crate) fn image_set_contains(
     arena: &mut Arena,
     var: ExprId,
     body: ExprId,
     elem: ExprId,
-) -> Option<bool> {
+) -> Truth {
     use crate::transforms::eval::eval;
     if !matches!(arena.node(var), ExprNode::Symbol(_)) {
-        return None;
+        return Truth::Unknown;
     }
     if matches!(
         arena.node(elem),
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
     ) {
-        return Some(false);
+        return Truth::False;
     }
     if crate::base::walk::has_unevaluated(arena, elem) || arena.node(elem).is_set_node() {
-        return None;
+        return Truth::Unknown;
     }
     if arena.node(body).is_set_node() {
         return match interval_family(arena, var, body) {
             Some(fam) => interval_family_contains(arena, &fam, elem),
-            None => None,
+            None => Truth::Unknown,
         };
     }
     if !crate::base::walk::has_free_var(arena, body, var) {
@@ -2122,9 +2203,9 @@ pub(crate) fn image_set_contains(
     let eq = eval(arena, eq);
     let outcome = crate::transforms::solve::solve_classified(arena, eq, var);
     match outcome {
-        Solutions::Complete(RootSet::All) => Some(true),
-        Solutions::Complete(RootSet::Empty(_)) => Some(false),
-        Solutions::Refused(_) => None,
+        Solutions::Complete(RootSet::All) => Truth::True,
+        Solutions::Complete(RootSet::Empty(_)) => Truth::False,
+        Solutions::Refused(_) => Truth::Unknown,
         found => {
             // (Principal roots: every root only for a polynomial equation.)
             let complete = matches!(found, Solutions::Complete(_))
@@ -2132,12 +2213,16 @@ pub(crate) fn image_set_contains(
             let mut undecided = !complete;
             for s in found.claimed_points() {
                 match integer_test(arena, s, |arena, k| member_at(arena, var, body, elem, k)) {
-                    Some(true) => return Some(true),
-                    Some(false) => {}
-                    None => undecided = true,
+                    Truth::True => return Truth::True,
+                    Truth::False => {}
+                    Truth::Unknown => undecided = true,
                 }
             }
-            if undecided { None } else { Some(false) }
+            if undecided {
+                Truth::Unknown
+            } else {
+                Truth::False
+            }
         }
     }
 }
@@ -2155,7 +2240,7 @@ pub(crate) fn member_form(arena: &mut Arena, set: ExprId, p: ExprId) -> Option<E
         match arena.node(part).clone() {
             ExprNode::FiniteSet(elems) => {
                 for e in elems {
-                    if same_value(arena, e, p) == Some(true) {
+                    if same_value(arena, e, p).is_true() {
                         return Some(e);
                     }
                 }
@@ -2174,7 +2259,7 @@ pub(crate) fn member_form(arena: &mut Arena, set: ExprId, p: ExprId) -> Option<E
                     found.set(Some(k));
                     r
                 });
-                if member == Some(true) {
+                if member.is_true() {
                     let k = found.get().unwrap_or(t);
                     let m = crate::transforms::subs::subs(arena, body, var, k);
                     return Some(eval(arena, m));
@@ -2274,7 +2359,7 @@ pub(crate) fn image_set_points_in(
         let m = crate::transforms::subs::subs(arena, body, var, kk);
         eval(arena, m)
     };
-    let real_family = image_set_is_real(arena, var, body) == Some(true);
+    let real_family = image_set_is_real(arena, var, body).is_true();
     let (a_re, a_im) = crate::base::complex::as_real_imag(arena, a);
     let a_im = eval(arena, a_im);
     let (b_re, b_im) = crate::base::complex::as_real_imag(arena, b);
@@ -2309,8 +2394,10 @@ pub(crate) fn image_set_points_in(
         let m_im = eval(arena, m_im);
         if m_im != arena.zero {
             return match is_nonzero_constant(arena, m_im) {
-                Some(true) => Some(Vec::new()),
-                _ => None,
+                Truth::True => Some(Vec::new()),
+                // an imaginary part that is 0 without being written 0, or
+                // an undecided one: refused
+                Truth::False | Truth::Unknown => None,
             };
         }
         let m_re = eval(arena, m_re);
@@ -2323,8 +2410,9 @@ pub(crate) fn image_set_points_in(
     }
     if b_im != arena.zero {
         return match is_nonzero_constant(arena, b_im) {
-            Some(true) => Some(Vec::new()),
-            _ => None,
+            Truth::True => Some(Vec::new()),
+            // as above: refused
+            Truth::False | Truth::Unknown => None,
         };
     }
     if !window.is_bounded() {
@@ -2833,21 +2921,21 @@ fn even_powers_normalised(arena: &mut Arena, m: ExprId) -> ExprId {
     crate::transforms::eval::eval(arena, out)
 }
 
-/// Is the constant `e` certainly nonzero (`Some(true)`), certainly zero
-/// (`Some(false)`), or undecided?
-fn is_nonzero_constant(arena: &mut Arena, e: ExprId) -> Option<bool> {
+/// Is the constant `e` certainly nonzero (`True`), certainly zero
+/// (`False`), or undecided?
+fn is_nonzero_constant(arena: &mut Arena, e: ExprId) -> Truth {
     use crate::transforms::evalf::{Settled, ZeroSearch};
     if e == arena.zero {
-        return Some(false);
+        return Truth::False;
     }
     if !crate::base::walk::free_symbols(arena, e).is_empty()
         || crate::base::walk::has_unevaluated(arena, e)
     {
-        return None;
+        return Truth::Unknown;
     }
     match crate::transforms::evalf::evalf_settled(arena, e, 20, ZeroSearch::Deep) {
-        Ok((z, Settled::Certified)) => Some(!(z.0.is_zero() && z.1.is_zero())),
-        Ok((_, Settled::ZeroToPrecision)) | Err(_) => None,
+        Ok((z, Settled::Certified)) => Truth::from_bool(!(z.0.is_zero() && z.1.is_zero())),
+        Ok((_, Settled::ZeroToPrecision)) | Err(_) => Truth::Unknown,
     }
 }
 
@@ -3041,7 +3129,7 @@ fn merge_union_parts(arena: &mut Arena, parts: &[ExprId]) -> Vec<ExprId> {
             let mut member = false;
             for &f in &merged {
                 if let ExprNode::ImageSet(v, body) = *arena.node(f)
-                    && image_set_contains(arena, v, body, e) == Some(true)
+                    && image_set_contains(arena, v, body, e).is_true()
                 {
                     member = true;
                     break;
@@ -3095,7 +3183,7 @@ fn real_image_sets(arena: &mut Arena, set: ExprId) -> ExprId {
         let ExprNode::ImageSet(var, body) = *arena.node(id) else {
             continue;
         };
-        if image_set_is_real(arena, var, body) == Some(true) {
+        if image_set_is_real(arena, var, body).is_true() {
             continue;
         }
         let line = Window::line(arena);
@@ -3109,22 +3197,21 @@ fn real_image_sets(arena: &mut Arena, set: ExprId) -> ExprId {
 
 /// Is every member of the linear family `{body : var ∈ ℤ}` real (real step
 /// and offset)?
-fn image_set_is_real(arena: &mut Arena, var: ExprId, body: ExprId) -> Option<bool> {
+fn image_set_is_real(arena: &mut Arena, var: ExprId, body: ExprId) -> Truth {
+    use crate::transforms::realness::constant_realness_as_declared;
     if matches!(arena.node(body), ExprNode::Interval(..)) {
         // the points of real intervals
-        return Some(true);
+        return Truth::True;
     }
-    let Lattice { step: a, offset: b } = image_linear_parts(arena, var, body)?;
+    let Some(Lattice { step: a, offset: b }) = image_linear_parts(arena, var, body) else {
+        return Truth::Unknown;
+    };
     // exactly by the assumptions, else by a certified evaluation (an
     // unassumed parameter is complex)
     let mut cache = crate::base::assumptions::AssumptionCache::new();
-    let ra = crate::transforms::realness::constant_realness_as_declared(arena, a, 20, &mut cache);
-    let rb = crate::transforms::realness::constant_realness_as_declared(arena, b, 20, &mut cache);
-    match (ra, rb) {
-        (Some(true), Some(true)) => Some(true),
-        (Some(false), _) | (_, Some(false)) => Some(false),
-        _ => None,
-    }
+    let ra = Truth::from(constant_realness_as_declared(arena, a, 20, &mut cache));
+    let rb = Truth::from(constant_realness_as_declared(arena, b, 20, &mut cache));
+    ra.and(rb)
 }
 
 /// `⋂ parts` where some parts contain image sets (see [Image sets](#image-sets)).
@@ -3146,9 +3233,9 @@ fn intersect_image_parts(arena: &mut Arena, parts: &[ExprId]) -> ExprId {
         let mut decided = true;
         for e in elems {
             match set_contains(arena, img_set, e) {
-                Some(true) => kept.push(e),
-                Some(false) => {}
-                None => {
+                Truth::True => kept.push(e),
+                Truth::False => {}
+                Truth::Unknown => {
                     decided = false;
                     break;
                 }
@@ -3187,7 +3274,7 @@ fn all_real_image_parts(arena: &mut Arena, set: ExprId) -> bool {
         _ => vec![set],
     };
     parts.into_iter().all(|p| match arena.node(p).clone() {
-        ExprNode::ImageSet(v, b) => image_set_is_real(arena, v, b) == Some(true),
+        ExprNode::ImageSet(v, b) => image_set_is_real(arena, v, b).is_true(),
         ExprNode::FiniteSet(elems) => elems.iter().all(|&e| numeric_value(arena, e).is_some()),
         ExprNode::EmptySet => true,
         _ => false,
@@ -3230,7 +3317,7 @@ fn all_members_real(arena: &mut Arena, set: ExprId) -> bool {
             // `A \ B` is real when `A` is
             ExprNode::SetComplement(a, _) => get(&real, a),
             ExprNode::FiniteSet(elems) => elems.iter().all(|&e| numeric_value(arena, e).is_some()),
-            ExprNode::ImageSet(v, b) => image_set_is_real(arena, v, b) == Some(true),
+            ExprNode::ImageSet(v, b) => image_set_is_real(arena, v, b).is_true(),
             _ => false,
         };
         real.insert(id, r);
@@ -3246,7 +3333,9 @@ fn complement_image_parts(arena: &mut Arena, a: ExprId, b: ExprId) -> ExprId {
     {
         let mut kept = Vec::with_capacity(elems.len());
         for e in elems {
-            if set_contains(arena, a, e) != Some(false) {
+            // not refuted: a point is forgotten only when it is proved
+            // not to be a member of `a`
+            if !set_contains(arena, a, e).is_false() {
                 kept.push(e);
             }
         }
@@ -3342,10 +3431,10 @@ fn declared_domain_set_with(
     let Some(a) = crate::transforms::solve::declared_domain(arena, var) else {
         return DeclaredDomain::Unrestricted;
     };
-    if a.query(Props::REAL) == Some(false) || a.known_true.intersects(Props::IMAGINARY) {
+    if Truth::from(a.query(Props::REAL)).is_false() || a.known_true.intersects(Props::IMAGINARY) {
         return DeclaredDomain::Unsupported;
     }
-    let integer = a.query(Props::INTEGER) == Some(true);
+    let integer = Truth::from(a.query(Props::INTEGER)).is_true();
     let kind = Props::RATIONAL | Props::IRRATIONAL | Props::ALGEBRAIC | Props::TRANSCENDENTAL;
     let unsupported = if integer {
         a.known_true
@@ -3361,11 +3450,11 @@ fn declared_domain_set_with(
     if unsupported {
         return DeclaredDomain::Unsupported;
     }
-    let real = a.query(Props::REAL) == Some(true) || real_line;
+    let real = Truth::from(a.query(Props::REAL)).is_true() || real_line;
     let (zero, inf, ninf) = (arena.zero, arena.infinity, arena.neg_infinity);
     let open = IntervalKind::Open;
-    let holds = |p: Props| a.query(p) == Some(true);
-    let fails = |p: Props| a.query(p) == Some(false);
+    let holds = |p: Props| Truth::from(a.query(p)).is_true();
+    let fails = |p: Props| Truth::from(a.query(p)).is_false();
     let mut parts: Vec<ExprId> = Vec::new();
     if holds(Props::POSITIVE) || (real && fails(Props::NONPOSITIVE)) {
         parts.push(arena.interval(zero, inf, open));
@@ -3415,7 +3504,7 @@ fn declared_domain_set_with(
             arena.universal_set
         };
         parts.push(arena.set_complement(all, origin));
-    } else if a.query(Props::REAL) == Some(true) && parts.is_empty() && !real_line {
+    } else if Truth::from(a.query(Props::REAL)).is_true() && parts.is_empty() && !real_line {
         parts.push(arena.interval(ninf, inf, open));
     }
     if parts.is_empty() {
@@ -3463,19 +3552,24 @@ pub(crate) fn restrict_set_to_domain(
         match arena.node(p).clone() {
             ExprNode::FiniteSet(elems) => {
                 for e in elems {
-                    match assumptions_hold(arena, var, e) {
-                        Some(true) => decided.push(e),
-                        Some(false) => {}
-                        None => {
+                    match Truth::from(assumptions_hold(arena, var, e)) {
+                        Truth::True => decided.push(e),
+                        Truth::False => {}
+                        Truth::Unknown => {
                             // A member that is exactly 0 without being
                             // written 0 is 0 (up to 0.46 `x − atan(1/2) −
                             // atan(1/3) + π/4` for a positive `x` gave
                             // `(0, ∞) ∩ {atan(1/2) + atan(1/3) − π/4}`).
                             let z = crate::transforms::solve::exact_zero_form(arena, e);
-                            match (z != e).then(|| assumptions_hold(arena, var, z)).flatten() {
-                                Some(true) => decided.push(z),
-                                Some(false) => {}
-                                None => undecided.push(e),
+                            let exact = if z != e {
+                                Truth::from(assumptions_hold(arena, var, z))
+                            } else {
+                                Truth::Unknown
+                            };
+                            match exact {
+                                Truth::True => decided.push(z),
+                                Truth::False => {}
+                                Truth::Unknown => undecided.push(e),
                             }
                         }
                     }
@@ -3620,10 +3714,10 @@ pub(crate) fn restrict_real_set_to_domain(
             };
             let mut kept = Vec::with_capacity(elems.len());
             for e in elems {
-                match crate::transforms::solve::assumptions_hold(arena, var, e) {
-                    Some(true) => kept.push(e),
-                    Some(false) => {}
-                    None => return None,
+                match Truth::from(crate::transforms::solve::assumptions_hold(arena, var, e)) {
+                    Truth::True => kept.push(e),
+                    Truth::False => {}
+                    Truth::Unknown => return None,
                 }
             }
             Some(arena.finite_set(&kept))
@@ -3750,6 +3844,17 @@ fn atom_to_set(
     }
 }
 
+/// What `d = 0` is as an equation between rational functions of the
+/// variable (not a truth value: "not rational" is no undecided case).
+enum RationalForm {
+    /// `d` is not a quotient of polynomials in the variable.
+    NotRational,
+    /// A rational function whose numerator is the zero polynomial.
+    ZeroNumerator,
+    /// A rational function with a nonzero numerator.
+    NonzeroNumerator,
+}
+
 /// [`atom_to_set`] for `lhs − rhs` alone.
 fn atom_to_set_of_difference(
     arena: &mut Arena,
@@ -3766,9 +3871,10 @@ fn atom_to_set_of_difference(
     let d = crate::transforms::eval::eval(arena, d);
 
     if !crate::base::walk::contains(arena, d, var) {
-        // Constant condition (with respect to `var`).
-        let holds = arena.as_num(d).cloned().map(|r| {
-            if is_eq {
+        // Constant condition (with respect to `var`): decided for a
+        // number only.
+        let holds = match arena.as_num(d).cloned() {
+            Some(r) => Truth::from_bool(if is_eq {
                 r.is_zero()
             } else {
                 match rel {
@@ -3777,12 +3883,13 @@ fn atom_to_set_of_difference(
                     Relation::Lt => r.is_negative(),
                     Relation::Le => !r.is_positive(),
                 }
-            }
-        });
+            }),
+            None => Truth::Unknown,
+        };
         return match holds {
-            Some(true) => Ok(arena.universal_set),
-            Some(false) => Ok(arena.empty_set),
-            None => Err(SymplexError::InvalidArgument {
+            Truth::True => Ok(arena.universal_set),
+            Truth::False => Ok(arena.empty_set),
+            Truth::Unknown => Err(SymplexError::InvalidArgument {
                 operation: "reduce_inequalities",
                 reason: "condition does not involve the variable and cannot be decided".into(),
             }),
@@ -3863,8 +3970,7 @@ fn atom_to_set_of_difference(
             };
         // No root is an answer for a rational function (the solver finds
         // every root of a polynomial numerator); before 0.30 only for a
-        // polynomial, so `−1/(x² + 7x + 12) = 0` was an error.  `None`: not
-        // a rational function; `Some(true)`: one with the zero numerator.
+        // polynomial, so `−1/(x² + 7x + 12) = 0` was an error.
         let rational = {
             let combined = crate::poly::polybridge::together(arena, d);
             let (n, den) = crate::poly::polybridge::as_numer_denom(arena, combined);
@@ -3872,14 +3978,15 @@ fn atom_to_set_of_difference(
                 crate::poly::polybridge::expr_to_poly(arena, n, var),
                 crate::poly::polybridge::expr_to_poly(arena, den, var),
             ) {
-                (Some(pn), Some(_)) => Some(pn.is_zero()),
-                _ => None,
+                (Some(pn), Some(_)) if pn.is_zero() => RationalForm::ZeroNumerator,
+                (Some(_), Some(_)) => RationalForm::NonzeroNumerator,
+                _ => RationalForm::NotRational,
             }
         };
-        if rational == Some(true) {
+        if matches!(rational, RationalForm::ZeroNumerator) {
             return identity(arena);
         }
-        if roots.is_empty() && rational.is_none() {
+        if roots.is_empty() && matches!(rational, RationalForm::NotRational) {
             return Err(SymplexError::ComputationFailed {
                 operation: "reduce_inequalities",
                 reason: "could not solve the equation".into(),
@@ -4373,20 +4480,20 @@ mod tests {
         let one = arena.one;
         let half = arena.rational(1, 2);
         let x = arena.symbol("x");
-        assert_eq!(set_contains(&mut arena, a, zero), Some(false));
-        assert_eq!(set_contains(&mut arena, a, one), Some(true));
-        assert_eq!(set_contains(&mut arena, a, half), Some(true));
-        assert_eq!(set_contains(&mut arena, a, x), None);
+        assert_eq!(set_contains(&mut arena, a, zero), Truth::False);
+        assert_eq!(set_contains(&mut arena, a, one), Truth::True);
+        assert_eq!(set_contains(&mut arena, a, half), Truth::True);
+        assert_eq!(set_contains(&mut arena, a, x), Truth::Unknown);
         let e = arena.empty_set;
-        assert_eq!(set_contains(&mut arena, e, x), Some(false));
+        assert_eq!(set_contains(&mut arena, e, x), Truth::False);
         // symbolic interval, exact difference
         let xp1 = arena.add(&[x, arena.one]);
         let sym = arena.interval(x, xp1, Closed);
-        assert_eq!(set_contains(&mut arena, sym, x), Some(true));
-        assert_eq!(set_contains(&mut arena, sym, xp1), Some(true));
+        assert_eq!(set_contains(&mut arena, sym, x), Truth::True);
+        assert_eq!(set_contains(&mut arena, sym, xp1), Truth::True);
         let two = arena.int(2);
         let xp2 = arena.add(&[x, two]);
-        assert_eq!(set_contains(&mut arena, sym, xp2), Some(false));
+        assert_eq!(set_contains(&mut arena, sym, xp2), Truth::False);
     }
 
     #[test]
@@ -4398,8 +4505,8 @@ mod tests {
         let cs = arena.intern(ExprNode::ConditionSet(x, cond));
         let five = arena.int(5);
         let m5 = arena.int(-5);
-        assert_eq!(set_contains(&mut arena, cs, five), Some(true));
-        assert_eq!(set_contains(&mut arena, cs, m5), Some(false));
+        assert_eq!(set_contains(&mut arena, cs, five), Truth::True);
+        assert_eq!(set_contains(&mut arena, cs, m5), Truth::False);
     }
 
     #[test]
@@ -4408,18 +4515,18 @@ mod tests {
         let a = iv(&mut arena, 0, 1, Closed);
         let b = iv(&mut arena, 0, 2, Closed);
         let c = iv(&mut arena, 3, 4, Closed);
-        assert_eq!(is_subset(&mut arena, a, b), Some(true));
-        assert_eq!(is_subset(&mut arena, b, a), Some(false));
-        assert_eq!(is_disjoint(&mut arena, a, c), Some(true));
-        assert_eq!(is_disjoint(&mut arena, a, b), Some(false));
-        assert_eq!(is_empty(&mut arena, a), Some(false));
+        assert_eq!(is_subset(&mut arena, a, b), Truth::True);
+        assert_eq!(is_subset(&mut arena, b, a), Truth::False);
+        assert_eq!(is_disjoint(&mut arena, a, c), Truth::True);
+        assert_eq!(is_disjoint(&mut arena, a, b), Truth::False);
+        assert_eq!(is_empty(&mut arena, a), Truth::False);
         let e = arena.set_intersection(&[a, c]);
-        assert_eq!(is_empty(&mut arena, e), Some(true));
+        assert_eq!(is_empty(&mut arena, e), Truth::True);
         let x = arena.symbol("x");
         let one = arena.one;
         let sym = arena.interval(x, one, Closed);
-        assert_eq!(is_empty(&mut arena, sym), None);
-        assert_eq!(is_subset(&mut arena, sym, sym), Some(true));
+        assert_eq!(is_empty(&mut arena, sym), Truth::Unknown);
+        assert_eq!(is_subset(&mut arena, sym, sym), Truth::True);
     }
 
     #[test]
@@ -4452,9 +4559,9 @@ mod tests {
         assert_eq!(i, a);
         let b = boundary(&mut arena, a).unwrap();
         assert_eq!(display(&arena, b), "{0, 1}");
-        assert_eq!(is_open(&mut arena, a), Some(true));
-        assert_eq!(is_closed(&mut arena, a), Some(false));
-        assert_eq!(is_closed(&mut arena, c), Some(true));
+        assert_eq!(is_open(&mut arena, a), Truth::True);
+        assert_eq!(is_closed(&mut arena, a), Truth::False);
+        assert_eq!(is_closed(&mut arena, c), Truth::True);
     }
 
     #[test]

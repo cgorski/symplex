@@ -2837,6 +2837,18 @@ fn locally_real(arena: &mut Arena, u: ExprId, var: ExprId, mode: Mode) -> bool {
         if a == var {
             return inside(arena, zero);
         }
+        // A constant is its own limit (the base of `π^(x + 1)`).  Up to 0.59
+        // the substitution below, which has no value for an expression
+        // without `var`, refused it: `π^x + x^(3/2)` at 1 was not shown
+        // real, and `series(atanh(π^x + x^(3/2)), x, 1, 4)` (on the cut of
+        // `atanh`) was expanded three times, at last with 28 terms (1.8 s).
+        if !walk::contains(arena, a, var) {
+            let v = eval::eval(arena, a);
+            return mode.log_var.is_none_or(|l| !walk::contains(arena, v, l))
+                && crate::calculus::limit::is_finite_limit_value(arena, v, var)
+                && crate::calculus::limit::inner_known_real(arena, v)
+                && inside(arena, v);
+        }
         let jumps = walk::post_order_ids(arena, a).into_iter().any(|n| {
             matches!(
                 arena.node(n),

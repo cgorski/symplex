@@ -35,6 +35,7 @@ use num_traits::Signed;
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
+use crate::base::func::{Func, func_nodes};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
@@ -463,96 +464,11 @@ fn expand_expr(
             stack.push(WorkItem::Lit("-"));
         }
 
-        // ── Built-in functions ─────────────────────────────────────
-        ExprNode::Sin(x) => push_func("sin", x, stack),
-        ExprNode::Cos(x) => push_func("cos", x, stack),
-        ExprNode::Tan(x) => push_func("tan", x, stack),
-        ExprNode::Exp(x) => push_func("exp", x, stack),
-        ExprNode::Ln(x) => push_func("ln", x, stack),
-        ExprNode::Abs(x) => push_func("abs", x, stack),
-        ExprNode::Asin(x) => push_func("asin", x, stack),
-        ExprNode::Acos(x) => push_func("acos", x, stack),
-        ExprNode::Atan(x) => push_func("atan", x, stack),
-        ExprNode::Atan2(y, x) => {
-            stack.push(WorkItem::Lit(")"));
-            stack.push(WorkItem::Expr(x, 0));
-            stack.push(WorkItem::Lit(", "));
-            stack.push(WorkItem::Expr(y, 0));
-            stack.push(WorkItem::Lit("atan2("));
-        }
-        ExprNode::Sinh(x) => push_func("sinh", x, stack),
-        ExprNode::Cosh(x) => push_func("cosh", x, stack),
-        ExprNode::Tanh(x) => push_func("tanh", x, stack),
-        ExprNode::Asinh(x) => push_func("asinh", x, stack),
-        ExprNode::Acosh(x) => push_func("acosh", x, stack),
-        ExprNode::Atanh(x) => push_func("atanh", x, stack),
-        ExprNode::Sign(x) => push_func("sign", x, stack),
-        ExprNode::Heaviside(x) => push_func("H", x, stack),
-        ExprNode::DiracDelta(x) => push_func("DiracDelta", x, stack),
-        ExprNode::Gamma(x) => push_func("Gamma", x, stack),
-        ExprNode::LogGamma(x) => push_func("LogGamma", x, stack),
-        ExprNode::Digamma(x) => push_func("Digamma", x, stack),
-        ExprNode::Erf(x) => push_func("erf", x, stack),
-        ExprNode::Erfc(x) => push_func("erfc", x, stack),
-        ExprNode::LambertW(x) => push_func("W", x, stack),
-        ExprNode::Beta(a, b) => {
-            stack.push(WorkItem::Lit(")"));
-            stack.push(WorkItem::Expr(b, 0));
-            stack.push(WorkItem::Lit(", "));
-            stack.push(WorkItem::Expr(a, 0));
-            stack.push(WorkItem::Lit("B("));
-        }
-
-        // ── Complex analysis ────────────────────────────────────────────
-        ExprNode::Re(x) => push_func("re", x, stack),
-        ExprNode::Im(x) => push_func("im", x, stack),
-        ExprNode::Conjugate(x) => push_func("conjugate", x, stack),
-        ExprNode::Arg(x) => push_func("arg", x, stack),
-
-        // ── Special functions (0.2) ──────────────────────────────────────
-        ExprNode::Si(x) => push_func("Si", x, stack),
-        ExprNode::Ci(x) => push_func("Ci", x, stack),
-        ExprNode::Ei(x) => push_func("Ei", x, stack),
-        ExprNode::Li(x) => push_func("li", x, stack),
-        ExprNode::Zeta(x) => push_func("zeta", x, stack),
-        ExprNode::Polygamma(n, x) => {
-            stack.push(WorkItem::Lit(")"));
-            stack.push(WorkItem::Expr(x, 0));
-            stack.push(WorkItem::Lit(", "));
-            stack.push(WorkItem::Expr(n, 0));
-            stack.push(WorkItem::Lit("polygamma("));
-        }
-        ExprNode::KroneckerDelta(i, j) => {
-            stack.push(WorkItem::Lit(")"));
-            stack.push(WorkItem::Expr(j, 0));
-            stack.push(WorkItem::Lit(", "));
-            stack.push(WorkItem::Expr(i, 0));
-            stack.push(WorkItem::Lit("KroneckerDelta("));
-        }
-        ExprNode::Floor(x) => push_func("floor", x, stack),
-        ExprNode::Ceiling(x) => push_func("ceiling", x, stack),
-
-        // ── Min / Max ──────────────────────────────────────────────
-        ExprNode::Min(ref args) => {
-            stack.push(WorkItem::Lit(")"));
-            for (i, &arg) in args.iter().enumerate().rev() {
-                stack.push(WorkItem::Expr(arg, 0));
-                if i > 0 {
-                    stack.push(WorkItem::Lit(", "));
-                }
-            }
-            stack.push(WorkItem::Lit("min("));
-        }
-        ExprNode::Max(ref args) => {
-            stack.push(WorkItem::Lit(")"));
-            for (i, &arg) in args.iter().enumerate().rev() {
-                stack.push(WorkItem::Expr(arg, 0));
-                if i > 0 {
-                    stack.push(WorkItem::Lit(", "));
-                }
-            }
-            stack.push(WorkItem::Lit("max("));
-        }
+        // ── Functions of the `funcs!` table ────────────────────────
+        // Node-backed, library and internal functions alike: `name(args)`
+        // with the name the table gives (see `push_call` for the two
+        // notations that are not that call).
+        func_nodes!() => push_call(arena, &node, stack),
 
         // ── Sum / Product ──────────────────────────────────────────
         ExprNode::Sum(body, var, lo, hi) => {
@@ -578,29 +494,6 @@ fn expand_expr(
             stack.push(WorkItem::Lit("Product("));
         }
 
-        // ── Combinatorial ──────────────────────────────────────────
-        ExprNode::Factorial(inner) => {
-            // Display as "inner!" with parentheses if inner is compound or
-            // a signed / fractional literal (`(-12/7)!`: `-12/7!` re-parses
-            // as `-12/(7!)`).
-            let needs_parens = !arena.node(inner).is_atom() || num_base_needs_parens(arena, inner);
-            if needs_parens {
-                stack.push(WorkItem::Lit(")!"));
-                stack.push(WorkItem::Expr(inner, 0));
-                stack.push(WorkItem::Lit("("));
-            } else {
-                stack.push(WorkItem::Lit("!"));
-                stack.push(WorkItem::Expr(inner, 0));
-            }
-        }
-        ExprNode::Binomial(n, k) => {
-            stack.push(WorkItem::Lit(")"));
-            stack.push(WorkItem::Expr(k, 0));
-            stack.push(WorkItem::Lit(", "));
-            stack.push(WorkItem::Expr(n, 0));
-            stack.push(WorkItem::Lit("C("));
-        }
-
         // ── Apply (user-defined function) ──────────────────────────
         ExprNode::Apply(sym_id, ref args) => {
             // Push in reverse: name ( arg1 , arg2 , ... )
@@ -613,37 +506,6 @@ fn expand_expr(
             }
             stack.push(WorkItem::Lit("("));
             stack.push(WorkItem::Owned(arena.symbol_name(sym_id).to_owned()));
-        }
-
-        // ── Library function ───────────────────────────────────────────────
-        ExprNode::Lib(f, ref args) => {
-            stack.push(WorkItem::Lit(")"));
-            for (i, &arg) in args.iter().enumerate().rev() {
-                stack.push(WorkItem::Expr(arg, 0));
-                if i > 0 {
-                    stack.push(WorkItem::Lit(", "));
-                }
-            }
-            stack.push(WorkItem::Lit("("));
-            // `lambertw(x, k)` prints as the principal branch does, `W(x, k)`
-            // (the parser reads both back).
-            stack.push(WorkItem::Lit(match f {
-                crate::base::libfn::LibFn::LambertW => "W",
-                _ => f.name(),
-            }));
-        }
-
-        // ── Internal function (`__ei_asym`), as the `Apply` it was ──
-        ExprNode::Internal(f, ref args) => {
-            stack.push(WorkItem::Lit(")"));
-            for (i, &arg) in args.iter().enumerate().rev() {
-                stack.push(WorkItem::Expr(arg, 0));
-                if i > 0 {
-                    stack.push(WorkItem::Lit(", "));
-                }
-            }
-            stack.push(WorkItem::Lit("("));
-            stack.push(WorkItem::Lit(f.name()));
         }
 
         // ── Calculus forms ─────────────────────────────────────────
@@ -930,10 +792,47 @@ fn expand_expr(
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Push a function call `name(arg)` onto the stack in reverse order.
-fn push_func(name: &'static str, arg: ExprId, stack: &mut Vec<WorkItem>) {
+/// Push a function of the `funcs!` table (a node matched by `func_nodes!()`)
+/// onto the stack in reverse order: `name(a, b, …)`, the name read from the
+/// table.  Up to 0.59 each node-backed function had an arm of its own that
+/// repeated its name.
+///
+/// Two notations are not that call (the table's documented exceptions,
+/// which `display_uses_the_spec_name` checks): `n!` is postfix, and the
+/// library function `lambertw(x, k)` prints under the name of the principal
+/// branch, `W(x, k)` (the parser reads both back).
+fn push_call(arena: &Arena, node: &ExprNode, stack: &mut Vec<WorkItem>) {
+    // `func_nodes!()` is exactly the nodes that have a head.
+    let Some(f) = node.func_head() else {
+        return;
+    };
+    let args = node.children();
+    if let (Func::Factorial, &[inner]) = (f, args.as_slice()) {
+        // Display as "inner!" with parentheses if inner is compound or
+        // a signed / fractional literal (`(-12/7)!`: `-12/7!` re-parses
+        // as `-12/(7!)`).
+        let needs_parens = !arena.node(inner).is_atom() || num_base_needs_parens(arena, inner);
+        if needs_parens {
+            stack.push(WorkItem::Lit(")!"));
+            stack.push(WorkItem::Expr(inner, 0));
+            stack.push(WorkItem::Lit("("));
+        } else {
+            stack.push(WorkItem::Lit("!"));
+            stack.push(WorkItem::Expr(inner, 0));
+        }
+        return;
+    }
+    let name = match f {
+        Func::LambertW => Func::LambertW0.spec().name,
+        _ => f.spec().name,
+    };
     stack.push(WorkItem::Lit(")"));
-    stack.push(WorkItem::Expr(arg, 0));
+    for (i, &arg) in args.iter().enumerate().rev() {
+        stack.push(WorkItem::Expr(arg, 0));
+        if i > 0 {
+            stack.push(WorkItem::Lit(", "));
+        }
+    }
     stack.push(WorkItem::Lit("("));
     stack.push(WorkItem::Lit(name));
 }

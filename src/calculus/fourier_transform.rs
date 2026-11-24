@@ -57,6 +57,10 @@ use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::calculus::transform_util::{
+    Factors, Linear, depends_on, fail, for_each_child_in_scope, linear_in, need_sign, param_sign,
+    rebuild_in_scope, require_symbol, scope_post_order, split_factors,
+};
 
 /// Maximum nesting of rule applications (shift → scale → shift …).
 const MAX_RULE_DEPTH: usize = 6;
@@ -94,29 +98,6 @@ pub enum FourierConvention {
     /// `F(ν) = ∫ f(t) e^{−2πiνt} dt`, `f(t) = ∫ F(ν) e^{2πiνt} dν`
     /// (ordinary frequency `ν` in hertz).
     Ordinary,
-}
-
-fn fail(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation,
-        reason: reason.into(),
-    }
-}
-
-fn require_symbol(
-    arena: &Arena,
-    id: ExprId,
-    operation: &'static str,
-    what: &str,
-) -> Result<(), SymplexError> {
-    if matches!(arena.node(id), ExprNode::Symbol(_)) {
-        Ok(())
-    } else {
-        Err(SymplexError::InvalidArgument {
-            operation,
-            reason: format!("{what} must be a symbol, got {}", arena.display(id)),
-        })
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -241,7 +222,7 @@ fn validate(
     src: ExprId,
     op: &'static str,
 ) -> Result<ExprId, SymplexError> {
-    if crate::base::walk::contains(arena, f, src) {
+    if depends_on(arena, f, src) {
         return Err(fail(op, "result still depends on the source variable"));
     }
     if crate::base::walk::has_unevaluated(arena, f) {
@@ -273,17 +254,19 @@ fn finish(arena: &mut Arena, f: ExprId, var: ExprId) -> ExprId {
 /// expanded, when the step-free part then cancels: the terms that remain
 /// all carry steps of the other direction, with the numeric thresholds
 /// returned.  `None` when a step is not `H(±(t − c))` with a numeric `c`
-/// or the step-free part does not cancel.
+/// or the step-free part does not cancel.  Only steps in the scope of `t`
+/// are steps of the function: one under a binder of `t` belongs to a
+/// constant, which has no compact support.
 fn one_sided_steps(
     arena: &mut Arena,
     f: ExprId,
     t: ExprId,
     rising: bool,
 ) -> Option<(ExprId, Vec<Q>)> {
-    let post = crate::base::walk::post_order_ids(arena, f);
+    let post = scope_post_order(arena, f, t);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
     for id in post {
-        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let rebuilt = rebuild_in_scope(arena, id, t, &cache);
         let new = match arena.node(rebuilt).clone() {
             ExprNode::Heaviside(arg) => {
                 let (up, theta) = heaviside_kind(arena, arg, t)?;
@@ -319,7 +302,7 @@ fn one_sided_steps(
     let mut free = Vec::new();
     let mut thresholds = Vec::new();
     for term in terms {
-        let steps: Vec<ExprId> = crate::base::walk::post_order_ids(arena, term)
+        let steps: Vec<ExprId> = scope_post_order(arena, term, t)
             .into_iter()
             .filter_map(|id| match arena.node(id) {
                 ExprNode::Heaviside(a) => Some(*a),
@@ -395,7 +378,7 @@ fn compact_support_via_laplace(
         let e = arena.exp(arg);
         arena.mul(&[e, fw])
     };
-    if crate::base::walk::contains(arena, fw, s) || crate::base::walk::contains(arena, fw, t) {
+    if depends_on(arena, fw, s) || depends_on(arena, fw, t) {
         return None;
     }
     Some(crate::transforms::eval::eval(arena, fw))
@@ -439,7 +422,7 @@ fn collect_delta_terms(arena: &mut Arena, f: ExprId, var: ExprId) -> ExprId {
             .map(|(_, &c)| c)
             .collect();
         let coeff = arena.mul(&rest);
-        if crate::base::walk::contains(arena, coeff, var) {
+        if depends_on(arena, coeff, var) {
             others.push(t);
             continue;
         }
@@ -544,65 +527,11 @@ fn i_times(arena: &mut Arena, e: ExprId) -> ExprId {
 // ═══════════════════════════════════════════════════════════════════════════
 // Linear-argument analysis
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// Decompose `expr = a·v + b` with `a`, `b` free of `v`. Returns `None` if
-/// `expr` is not linear in `v`.
-fn linear_in(arena: &mut Arena, expr: ExprId, v: ExprId) -> Option<(ExprId, ExprId)> {
-    if expr == v {
-        return Some((arena.one(), arena.zero()));
-    }
-    if !crate::base::walk::contains(arena, expr, v) {
-        return Some((arena.zero(), expr));
-    }
-    match arena.node(expr).clone() {
-        ExprNode::Neg(inner) => {
-            let (a, b) = linear_in(arena, inner, v)?;
-            Some((arena.neg(a), arena.neg(b)))
-        }
-        ExprNode::Mul(children) => {
-            let mut coeff: SmallVec<[ExprId; 4]> = SmallVec::new();
-            let mut seen_v = false;
-            for &c in &children {
-                if c == v {
-                    if seen_v {
-                        return None;
-                    }
-                    seen_v = true;
-                } else if crate::base::walk::contains(arena, c, v) {
-                    return None;
-                } else {
-                    coeff.push(c);
-                }
-            }
-            if !seen_v {
-                return None;
-            }
-            let a = if coeff.is_empty() {
-                arena.one()
-            } else {
-                arena.mul(&coeff)
-            };
-            Some((a, arena.zero()))
-        }
-        ExprNode::Add(children) => {
-            let mut a_terms: SmallVec<[ExprId; 4]> = SmallVec::new();
-            let mut b_terms: SmallVec<[ExprId; 4]> = SmallVec::new();
-            for &c in &children {
-                let (a, b) = linear_in(arena, c, v)?;
-                if !arena.is_zero_structural(a) {
-                    a_terms.push(a);
-                }
-                if !arena.is_zero_structural(b) {
-                    b_terms.push(b);
-                }
-            }
-            let a = arena.add(&a_terms);
-            let b = arena.add(&b_terms);
-            Some((a, b))
-        }
-        _ => None,
-    }
-}
+//
+// `linear_in` (`a·v + b`), `split_factors`, the dependence test
+// `depends_on` and the sign and error helpers are in
+// `calculus::transform_util`, shared with the Laplace, Z and Mellin
+// transforms.
 
 /// Split a constant `c` into `(real part, imaginary part)` under the
 /// convention that all symbols are real: `c = re + i·im` structurally.
@@ -651,22 +580,6 @@ fn split_real_imag(arena: &mut Arena, c: ExprId) -> (ExprId, ExprId) {
     }
 }
 
-/// Sign of a real parameter via numbers and assumptions.
-fn param_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
-    crate::calculus::limit::const_sign(arena, e)
-}
-
-/// Error for a parameter whose sign is needed but unknown.
-fn need_sign(op: &'static str, arena: &Arena, e: ExprId, cond: &str) -> SymplexError {
-    fail(
-        op,
-        format!(
-            "requires {cond} (declare the sign of {} with Assumption::Positive / Assumption::Negative)",
-            arena.display(e)
-        ),
-    )
-}
-
 /// `n!` as an expression.
 fn factorial_expr(arena: &mut Arena, n: u64) -> ExprId {
     let mut result = BigInt::from(1u64);
@@ -693,41 +606,24 @@ fn power_of(arena: &Arena, factor: ExprId, v: ExprId) -> Option<u64> {
     None
 }
 
-/// Split a `Mul` (or single factor) into `(constant factors, v-dependent factors)`.
-fn split_factors(arena: &Arena, expr: ExprId, v: ExprId) -> (Vec<ExprId>, Vec<ExprId>) {
-    let children: Vec<ExprId> = match arena.node(expr) {
-        ExprNode::Mul(ch) => ch.iter().copied().collect(),
-        _ => vec![expr],
-    };
-    let mut consts = Vec::new();
-    let mut deps = Vec::new();
-    for c in children {
-        if crate::base::walk::contains(arena, c, v) {
-            deps.push(c);
-        } else {
-            consts.push(c);
-        }
-    }
-    (consts, deps)
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Result clean-up: δ normalisation, sifting, Euler pairs
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// `δ(a·v + b) → δ(v + b/a)/|a|` for every delta with a linear argument in `v`.
+/// `δ(a·v + b) → δ(v + b/a)/|a|` for every delta with a linear argument in
+/// `v`, in the scope of `v` (not under a binder of `v`).
 fn normalize_deltas(arena: &mut Arena, f: ExprId, v: ExprId) -> ExprId {
-    let post = crate::base::walk::post_order_ids(arena, f);
+    let post = scope_post_order(arena, f, v);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
     for &id in &post {
-        if !crate::base::walk::contains(arena, id, v) {
+        if !depends_on(arena, id, v) {
             cache.insert(id, id);
             continue;
         }
-        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let rebuilt = rebuild_in_scope(arena, id, v, &cache);
         let new = match arena.node(rebuilt).clone() {
             ExprNode::DiracDelta(arg) => match linear_in(arena, arg, v) {
-                Some((a, b)) if a != arena.one() && !arena.is_zero_structural(a) => {
+                Some(Linear { a, b }) if a != arena.one() && !arena.is_zero_structural(a) => {
                     let shift = arena.div(b, a);
                     let inner = arena.add(&[v, shift]);
                     let delta = arena.dirac_delta(inner);
@@ -780,7 +676,7 @@ fn sift_term(arena: &mut Arena, term: ExprId, v: ExprId) -> ExprId {
     let mut delta_idx = None;
     for (idx, &c) in children.iter().enumerate() {
         if let ExprNode::DiracDelta(arg) = arena.node(c).clone()
-            && let Some((a, b)) = linear_in(arena, arg, v)
+            && let Some(Linear { a, b }) = linear_in(arena, arg, v)
             && a == arena.one()
         {
             point = Some(arena.neg(b));
@@ -793,7 +689,7 @@ fn sift_term(arena: &mut Arena, term: ExprId, v: ExprId) -> ExprId {
     };
     let mut new_children = Vec::with_capacity(children.len());
     for (idx, &c) in children.iter().enumerate() {
-        if idx == delta_idx || !crate::base::walk::contains(arena, c, v) {
+        if idx == delta_idx || !depends_on(arena, c, v) {
             new_children.push(c);
         } else {
             let at = crate::transforms::subs::subs(arena, c, v, point);
@@ -891,7 +787,7 @@ fn condition_indicator(arena: &mut Arena, cond: ExprId, v: ExprId) -> Option<Exp
 
 /// Indicator of `expr > 0` where `expr` is `a·v + b` or `c − |v|` / `|v| − c`.
 fn positive_indicator(arena: &mut Arena, expr: ExprId, v: ExprId) -> Option<ExprId> {
-    if let Some((a, b)) = linear_in(arena, expr, v) {
+    if let Some(Linear { a, b }) = linear_in(arena, expr, v) {
         if arena.is_zero_structural(a) {
             // Constant condition (e.g. the trailing `true` written as `1 > 0`).
             return match param_sign(arena, b) {
@@ -909,7 +805,7 @@ fn positive_indicator(arena: &mut Arena, expr: ExprId, v: ExprId) -> Option<Expr
             let mut consts = Vec::new();
             let mut deps = Vec::new();
             for c in ch {
-                if crate::base::walk::contains(arena, c, v) {
+                if depends_on(arena, c, v) {
                     deps.push(c);
                 } else {
                     consts.push(c);
@@ -938,7 +834,7 @@ fn positive_indicator(arena: &mut Arena, expr: ExprId, v: ExprId) -> Option<Expr
                     && abs_inner.is_none()
                 {
                     abs_inner = Some(inner);
-                } else if crate::base::walk::contains(arena, f, v) {
+                } else if depends_on(arena, f, v) {
                     return None;
                 } else {
                     rest.push(f);
@@ -951,7 +847,7 @@ fn positive_indicator(arena: &mut Arena, expr: ExprId, v: ExprId) -> Option<Expr
     // |αv + β| = |α|·|v − m| with m = −β/α (numeric α ≠ 0); before 0.31
     // only |v| itself was accepted and `Piecewise((1, |t − 2| < 1), (0, True))`
     // was refused.
-    let (alpha, beta) = linear_in(arena, inner, v)?;
+    let Linear { a: alpha, b: beta } = linear_in(arena, inner, v)?;
     let alpha_q = arena.as_num(alpha).cloned()?;
     if alpha_q.is_zero() {
         return None;
@@ -996,19 +892,26 @@ fn expr_or_lin(arena: &mut Arena, a: ExprId, b: ExprId, v: ExprId) -> ExprId {
 
 /// Replace every `Piecewise` node whose conditions involve `v` by its
 /// Heaviside form (see [`piecewise_to_heaviside`]).  Shared with the
-/// Laplace transform.
+/// Laplace and Mellin transforms.
+///
+/// The two forms agree as functions of the transform variable — almost
+/// everywhere, not at the breakpoints (`H(0) = 1/2`) — so a `Piecewise`
+/// under a binder of `v` is left alone
+/// ([`scope_post_order`]):
+/// up to 0.59 `Σ_{v=1}^{3} Piecewise(1 if v < 2, 0 if True)`, which is 1,
+/// became `Σ_{v=1}^{3} H(2 − v) = 3/2` in all three transforms.
 pub(crate) fn eliminate_piecewise(
     arena: &mut Arena,
     expr: ExprId,
     v: ExprId,
     op: &'static str,
 ) -> Result<ExprId, SymplexError> {
-    let post = crate::base::walk::post_order_ids(arena, expr);
+    let post = scope_post_order(arena, expr, v);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
     for &id in &post {
-        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let rebuilt = rebuild_in_scope(arena, id, v, &cache);
         let new = match arena.node(rebuilt).clone() {
-            ExprNode::Piecewise(pairs) if crate::base::walk::contains(arena, rebuilt, v) => {
+            ExprNode::Piecewise(pairs) if depends_on(arena, rebuilt, v) => {
                 piecewise_to_heaviside(arena, &pairs, v).ok_or_else(|| {
                     fail(
                         op,
@@ -1076,7 +979,7 @@ pub(crate) fn simplify_heaviside_products(arena: &mut Arena, f: ExprId, v: ExprI
 /// Classify `H(arg)` with `arg = a·v + b`, numeric `a ≠ 0`: returns
 /// `(rising, threshold)` meaning `H(v − θ)` (rising) or `H(θ − v)`.
 fn heaviside_kind(arena: &mut Arena, arg: ExprId, v: ExprId) -> Option<(bool, Q)> {
-    let (a, b) = linear_in(arena, arg, v)?;
+    let Linear { a, b } = linear_in(arena, arg, v)?;
     let a = arena.as_num(a).cloned()?;
     let b = arena.as_num(b).cloned()?;
     if a.is_zero() {
@@ -1199,14 +1102,14 @@ fn forward(
     }
 
     // ── Constant: c → 2π c δ(ω) ──
-    if !crate::base::walk::contains(arena, expr, t) {
+    if !depends_on(arena, expr, t) {
         let tp = two_pi(arena);
         let d = arena.dirac_delta(w);
         return Ok(arena.mul(&[expr, tp, d]));
     }
 
     // ── Constant factors ──
-    let (consts, deps) = split_factors(arena, expr, t);
+    let Factors { consts, deps } = split_factors(arena, expr, t);
     if !consts.is_empty() {
         let body = arena.mul(&deps);
         let f = forward(arena, body, t, w, depth)?;
@@ -1382,7 +1285,7 @@ fn forward_unary(
     match node.clone() {
         // δ(a t + b) → e^{iωb/a}/|a|
         ExprNode::DiracDelta(arg) => {
-            let Some((a, b)) = linear_in(arena, arg, t) else {
+            let Some(Linear { a, b }) = linear_in(arena, arg, t) else {
                 return Ok(None);
             };
             if arena.is_zero_structural(a) {
@@ -1408,7 +1311,7 @@ fn forward_unary(
             Ok(Some(arena.add(&[pd, r])))
         }
         ExprNode::Heaviside(arg) => {
-            let Some((a, b)) = linear_in(arena, arg, t) else {
+            let Some(Linear { a, b }) = linear_in(arena, arg, t) else {
                 return Ok(None);
             };
             if a == arena.neg_one() && arena.is_zero_structural(b) {
@@ -1441,7 +1344,7 @@ fn forward_unary(
         }
         // sin(ω₀ t) → iπ[δ(ω+ω₀) − δ(ω−ω₀)],  cos(ω₀ t) → π[δ(ω−ω₀) + δ(ω+ω₀)]
         ExprNode::Sin(arg) | ExprNode::Cos(arg) => {
-            let Some((w0, b)) = linear_in(arena, arg, t) else {
+            let Some(Linear { a: w0, b }) = linear_in(arena, arg, t) else {
                 return Ok(None);
             };
             if !arena.is_zero_structural(b) {
@@ -1503,7 +1406,7 @@ fn forward_unary(
                 };
             }
             // e^{(iω₀) t + b} → e^b 2π δ(ω − ω₀);  real exponentials need a step.
-            if let Some((a, b)) = linear_in(arena, arg, t) {
+            if let Some(Linear { a, b }) = linear_in(arena, arg, t) {
                 let (re, im) = split_real_imag(arena, a);
                 if arena.is_zero_structural(re) {
                     let tp = two_pi(arena);
@@ -1600,7 +1503,7 @@ fn neg_coeff_times_square(arena: &mut Arena, arg: ExprId, t: ExprId) -> Option<E
         _ => return None,
     };
     let _ = sq;
-    if crate::base::walk::contains(arena, coeff, t) {
+    if depends_on(arena, coeff, t) {
         return None;
     }
     Some(crate::transforms::eval::eval(arena, coeff))
@@ -1633,14 +1536,14 @@ fn forward_product(
             ExprNode::Pow(base, e) if base == t && e == arena.neg_one() => inv_t = true,
             ExprNode::Heaviside(arg) => {
                 if let Some(lin) = linear_in(arena, arg, t) {
-                    steps.push(lin);
+                    steps.push((lin.a, lin.b));
                 } else {
                     others.push(k);
                 }
             }
             ExprNode::Exp(arg) => {
                 if let Some(lin) = linear_in(arena, arg, t) {
-                    exp_lin.push(lin);
+                    exp_lin.push((lin.a, lin.b));
                 } else {
                     others.push(k);
                 }
@@ -1747,7 +1650,7 @@ fn forward_product(
         && (others.len() > 1 || !steps.is_empty() || !exp_lin.is_empty() || inv_t)
     {
         let trig = others[idx];
-        if let Some((w0, b)) = linear_in(arena, arg, t)
+        if let Some(Linear { a: w0, b }) = linear_in(arena, arg, t)
             && arena.is_zero_structural(b)
             && !crate::base::walk::contains(arena, w0, i)
         {
@@ -1790,7 +1693,7 @@ fn forward_product(
     // ── sinc: sin(a t)/t → π sign(a) [H(ω + |a|) − H(ω − |a|)] ──
     if inv_t && t_power == 0 && steps.is_empty() && exp_lin.is_empty() && others.len() == 1 {
         if let ExprNode::Sin(arg) = arena.node(others[0]).clone()
-            && let Some((a, b)) = linear_in(arena, arg, t)
+            && let Some(Linear { a, b }) = linear_in(arena, arg, t)
             && arena.is_zero_structural(b)
         {
             let pi = arena.pi();
@@ -1932,27 +1835,19 @@ fn shift_scale_candidates(arena: &Arena, expr: ExprId, v: ExprId) -> (Vec<ExprId
         match node {
             ExprNode::Add(ch) if ch.contains(&v) => {
                 let rest: Vec<ExprId> = ch.iter().copied().filter(|&c| c != v).collect();
-                if !rest.is_empty()
-                    && rest
-                        .iter()
-                        .all(|&c| !crate::base::walk::contains(arena, c, v))
-                {
+                if !rest.is_empty() && rest.iter().all(|&c| !depends_on(arena, c, v)) {
                     shifts.push(id);
                 }
             }
             ExprNode::Mul(ch) if ch.contains(&v) => {
                 let rest: Vec<ExprId> = ch.iter().copied().filter(|&c| c != v).collect();
-                if !rest.is_empty()
-                    && rest
-                        .iter()
-                        .all(|&c| !crate::base::walk::contains(arena, c, v))
-                {
+                if !rest.is_empty() && rest.iter().all(|&c| !depends_on(arena, c, v)) {
                     scales.push(id);
                 }
             }
             _ => {}
         }
-        node.for_each_child(|c| stack.push(c));
+        for_each_child_in_scope(arena, id, v, |c| stack.push(c));
     }
     (shifts, scales)
 }
@@ -1970,7 +1865,7 @@ fn try_shift_scale(
 
     // Shift: f(v) = g(v − v₀) with g(u) = f(u + v₀). At most three candidates.
     for add_id in shifts.into_iter().take(3) {
-        let Some((a, c)) = linear_in(arena, add_id, src) else {
+        let Some(Linear { a, b: c }) = linear_in(arena, add_id, src) else {
             continue;
         };
         if a != arena.one() {
@@ -2005,7 +1900,7 @@ fn try_shift_scale(
 
     // Scaling: f(v) = g(a v) with g(u) = f(u / a) → F(ω) = G(ω/a)/|a|.
     for mul_id in scales.into_iter().take(3) {
-        let Some((a, _)) = linear_in(arena, mul_id, src) else {
+        let Some(Linear { a, .. }) = linear_in(arena, mul_id, src) else {
             continue;
         };
         if a == arena.one() || crate::base::walk::contains(arena, a, i) {
@@ -2069,12 +1964,12 @@ fn inverse(
     }
 
     // Constant c → c δ(t)
-    if !crate::base::walk::contains(arena, expr, w) {
+    if !depends_on(arena, expr, w) {
         let d = arena.dirac_delta(t);
         return Ok(arena.mul(&[expr, d]));
     }
 
-    let (consts, deps) = split_factors(arena, expr, w);
+    let Factors { consts, deps } = split_factors(arena, expr, w);
     if !consts.is_empty() {
         let body = arena.mul(&deps);
         let f = inverse(arena, body, w, t, depth)?;
@@ -2123,7 +2018,7 @@ fn inverse_unary(
     match node.clone() {
         // δ(ω − ω₀) → e^{iω₀t}/(2π)
         ExprNode::DiracDelta(arg) => {
-            let Some((a, b)) = linear_in(arena, arg, w) else {
+            let Some(Linear { a, b }) = linear_in(arena, arg, w) else {
                 return Ok(None);
             };
             if arena.is_zero_structural(a) {
@@ -2154,7 +2049,7 @@ fn inverse_unary(
             Ok(Some(arena.add(&[half_d, r])))
         }
         ExprNode::Heaviside(arg) => {
-            let Some((a, b)) = linear_in(arena, arg, w) else {
+            let Some(Linear { a, b }) = linear_in(arena, arg, w) else {
                 return Ok(None);
             };
             if a == arena.neg_one() && arena.is_zero_structural(b) {
@@ -2202,7 +2097,7 @@ fn inverse_unary(
                 };
             }
             // e^{−iωt₀} alone → δ(t − t₀)
-            if let Some((a, b)) = linear_in(arena, arg, w)
+            if let Some(Linear { a, b }) = linear_in(arena, arg, w)
                 && arena.is_zero_structural(b)
             {
                 let (re, im) = split_real_imag(arena, a);
@@ -2216,7 +2111,7 @@ fn inverse_unary(
         }
         // cos(aω) / sin(aω): cos(aω) = (e^{iaω} + e^{−iaω})/2 → [δ(t + a) + δ(t − a)]/2
         ExprNode::Cos(arg) | ExprNode::Sin(arg) => {
-            let Some((a, b)) = linear_in(arena, arg, w) else {
+            let Some(Linear { a, b }) = linear_in(arena, arg, w) else {
                 return Ok(None);
             };
             if !arena.is_zero_structural(b) {
@@ -2253,7 +2148,7 @@ fn inverse_rational(
     const OP: &str = "inverse_fourier_transform";
     let i = arena.i_unit();
     let two = arena.int(2);
-    let (consts, deps) = split_factors(arena, expr, w);
+    let Factors { consts, deps } = split_factors(arena, expr, w);
     let _ = consts;
     // Find a single Pow(base, −n) with the rest being ω-powers.
     let mut pow_part: Option<(ExprId, u64)> = None;
@@ -2283,7 +2178,7 @@ fn inverse_rational(
     }
 
     // base = i·ω − a  (linear in ω with imaginary slope)
-    if let Some((slope, c)) = linear_in(arena, base, w)
+    if let Some(Linear { a: slope, b: c }) = linear_in(arena, base, w)
         && w_power == 0
     {
         let (re, im) = split_real_imag(arena, slope);
@@ -2362,7 +2257,7 @@ fn inverse_rational(
         if ok {
             for &c in &ch {
                 if c != w2 {
-                    if crate::base::walk::contains(arena, c, w) {
+                    if depends_on(arena, c, w) {
                         ok = false;
                     } else {
                         a2 = Some(c);
@@ -2423,7 +2318,7 @@ fn inverse_product(
         match arena.node(k).clone() {
             ExprNode::Pow(base, e) if base == w && e == arena.neg_one() => inv_w = true,
             ExprNode::Exp(arg) => {
-                if let Some((a, b)) = linear_in(arena, arg, w)
+                if let Some(Linear { a, b }) = linear_in(arena, arg, w)
                     && arena.is_zero_structural(b)
                 {
                     let (re, im) = split_real_imag(arena, a);
@@ -2464,7 +2359,7 @@ fn inverse_product(
     // ── sin(aω)/ω → [H(t + a) − H(t − a)]/2 ──
     if inv_w && w_power == 0 && others.len() == 1 {
         if let ExprNode::Sin(arg) = arena.node(others[0]).clone()
-            && let Some((a, b)) = linear_in(arena, arg, w)
+            && let Some(Linear { a, b }) = linear_in(arena, arg, w)
             && arena.is_zero_structural(b)
         {
             let (sgn, abs_a) = match param_sign(arena, a) {
@@ -2710,7 +2605,7 @@ mod tests {
         let three = a.int(3);
         let e = a.mul(&[three, t]);
         let e = a.add(&[e, c]);
-        let (slope, off) = linear_in(&mut a, e, t).unwrap();
+        let Linear { a: slope, b: off } = linear_in(&mut a, e, t).unwrap();
         assert_eq!(slope, three);
         assert_eq!(off, c);
         let two = a.int(2);

@@ -56,6 +56,7 @@ use smallvec::SmallVec;
 use crate::api::context::Context;
 use crate::api::expr::{BoolEx, Ex};
 use crate::base::arena::Arena;
+use crate::base::func::Func;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
@@ -338,52 +339,16 @@ fn is_bool_node(arena: &Arena, id: ExprId) -> bool {
     )
 }
 
-/// Every function name the call tables (`call_1` … `call_4`, `min`/`max`,
-/// `Sum`/`Product`) accept by a dedicated arm, lower-cased; the library
-/// functions ([`LibFn`]) are known by their registry names.  Used by
-/// [`parse_implicit`] to tell `sin(x)` (a call) from `f(x)` (a product).
-const KNOWN_FUNCTIONS: &[&str] = &[
+/// The call names the parser reads that are not functions of the `funcs!`
+/// table, lower-cased: the compositions that have no node of their own
+/// (`sqrt`, `cbrt`, the reciprocal trigonometric and hyperbolic functions
+/// and their inverses, `E1`) and the calculus, set and binder forms.  The
+/// functions of the table are known by their `name` and `parse` facets
+/// ([`Func::is_parse_name`]); up to 0.59 this list repeated those 58 names.
+const OTHER_CALL_NAMES: &[&str] = &[
     // call_1
-    "sin",
-    "cos",
-    "tan",
-    "exp",
-    "ln",
-    "log",
     "sqrt",
     "cbrt",
-    "abs",
-    "asin",
-    "arcsin",
-    "acos",
-    "arccos",
-    "atan",
-    "arctan",
-    "sinh",
-    "cosh",
-    "tanh",
-    "asinh",
-    "arcsinh",
-    "acosh",
-    "arccosh",
-    "atanh",
-    "arctanh",
-    "sign",
-    "sgn",
-    "floor",
-    "ceil",
-    "ceiling",
-    "gamma",
-    "erf",
-    "erfc",
-    "heaviside",
-    "diracdelta",
-    "dirac_delta",
-    "lambertw",
-    "w",
-    "factorial",
-    "digamma",
-    "loggamma",
     "cot",
     "sec",
     "csc",
@@ -402,16 +367,6 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "arcsech",
     "acsch",
     "arccsch",
-    "re",
-    "im",
-    "conjugate",
-    "conj",
-    "arg",
-    "si",
-    "ci",
-    "ei",
-    "li",
-    "zeta",
     "e1",
     // call_2
     "rootof",
@@ -419,14 +374,6 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "imageset",
     "integral",
     "derivative",
-    "atan2",
-    "polygamma",
-    "kroneckerdelta",
-    "kronecker_delta",
-    "binomial",
-    "c",
-    "beta",
-    "b",
     // call_3
     "limit",
     "laplacetransform",
@@ -436,21 +383,24 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "subs",
     // call_4
     "series",
-    // variadic / binder forms
-    "min",
-    "max",
+    // binder forms
     "sum",
     "product",
     "piecewise",
 ];
 
+/// Is `name_lower` a call name the parser reads: a function of the
+/// `funcs!` table by its `name` or one of its `parse` names, or one of
+/// [`OTHER_CALL_NAMES`]?  Used by [`parse_implicit`] to tell `sin(x)` (a
+/// call) from `f(x)` (a product), and by [`builtin_call`].
 fn is_known_function(name_lower: &str) -> bool {
-    KNOWN_FUNCTIONS.contains(&name_lower) || lib_fn_by_name(name_lower).is_some()
+    Func::is_parse_name(name_lower) || OTHER_CALL_NAMES.contains(&name_lower)
 }
 
-/// The library function a (lower-cased) call name denotes.  `lambertw` is
-/// excluded: the parser builds the dedicated `LambertW` node for `lambertw(x)`
-/// and `Arena::lambertw_branch` for `lambertw(x, k)`.
+/// The library function a (lower-cased) call name denotes, for the report
+/// of a call the table does not read ([`Parser::unread_call`]).  `lambertw`
+/// is excluded, as it was while the parser built `lambertw(x)` and
+/// `lambertw(x, k)` by arms of its own.
 fn lib_fn_by_name(name_lower: &str) -> Option<LibFn> {
     LibFn::from_name_ignore_ascii_case(name_lower).filter(|f| *f != LibFn::LambertW)
 }
@@ -520,58 +470,30 @@ pub(crate) fn reciprocal_function(arena: &mut Arena, name: &str, arg: ExprId) ->
 }
 
 /// Textbook one-argument functions that [`parse_implicit`] applies without
-/// parentheses (`sin x`).  Deliberately excludes short names that are also
+/// parentheses (`sin x`): the functions of the table that say so
+/// ([`Func::bare_argument`]), under each of their names, and the
+/// compositions below.  Deliberately excludes short names that are also
 /// common variables (`re`, `im`, `arg`, `li`, `w`, `zeta`, `chi`, …).
 fn is_implicit_unary_function(name_lower: &str) -> bool {
-    matches!(
-        name_lower,
-        "sin"
-            | "cos"
-            | "tan"
-            | "cot"
-            | "sec"
-            | "csc"
-            | "sinh"
-            | "cosh"
-            | "tanh"
-            | "coth"
-            | "sech"
-            | "csch"
-            | "asin"
-            | "acos"
-            | "atan"
-            | "acot"
-            | "asec"
-            | "acsc"
-            | "acoth"
-            | "asech"
-            | "acsch"
-            | "arcsin"
-            | "arccos"
-            | "arctan"
-            | "arccot"
-            | "asinh"
-            | "acosh"
-            | "atanh"
-            | "arcsinh"
-            | "arccosh"
-            | "arctanh"
-            | "exp"
-            | "ln"
-            | "log"
-            | "sqrt"
-            | "cbrt"
-            | "abs"
-            | "floor"
-            | "ceil"
-            | "ceiling"
-            | "sign"
-            | "sgn"
-            | "gamma"
-            | "erf"
-            | "erfc"
-            | "factorial"
-    )
+    Func::parsed(name_lower, 1).is_some_and(Func::bare_argument)
+        || matches!(
+            name_lower,
+            "cot"
+                | "sec"
+                | "csc"
+                | "coth"
+                | "sech"
+                | "csch"
+                | "acot"
+                | "asec"
+                | "acsc"
+                | "acoth"
+                | "asech"
+                | "acsch"
+                | "arccot"
+                | "sqrt"
+                | "cbrt"
+        )
 }
 
 /// The named constants (`pi`, `e`, `I`, `inf`, …), or `None` for a symbol.
@@ -1327,7 +1249,7 @@ impl<'a> Parser<'a> {
                     let saved = std::mem::replace(&mut self.app_arg, true);
                     let arg = self.parse_expr(arena, BP_MUL.0);
                     self.app_arg = saved;
-                    return self.call_1(arena, &name, &name_lower, arg?);
+                    return self.call_with_args(arena, &name, &name_lower, &[arg?]);
                 }
                 match constant_of(arena, &name) {
                     Some(c) => Ok(c),
@@ -1428,9 +1350,9 @@ impl<'a> Parser<'a> {
     }
 
     /// The call `name(args)` of a function, its arguments parsed (`name_lower`
-    /// is `name` in lower case): the table of known functions by argument
-    /// count, then the library functions and the undefined functions the
-    /// context knows ([`Parser::lib_call`]).
+    /// is `name` in lower case): a function of the `funcs!` table, then the
+    /// other forms by argument count (`call_1` … `call_4`), then the
+    /// undefined functions the context knows ([`Parser::unread_call`]).
     fn call_with_args(
         &self,
         arena: &mut Arena,
@@ -1438,20 +1360,27 @@ impl<'a> Parser<'a> {
         name_lower: &str,
         args: &[ExprId],
     ) -> Result<ExprId, ParseError> {
-        // Variadic functions.
-        if matches!(name_lower, "min" | "max") {
+        // Variadic functions: the parser asks for two arguments, although
+        // the nodes hold any positive number.
+        if let Some(f) = [Func::Min, Func::Max]
+            .into_iter()
+            .find(|f| f.reads(name_lower))
+        {
             if args.len() < 2 {
                 return Err(ParseError {
                     message: format!("function '{}' requires at least 2 arguments", name),
                     position: self.lexer.pos,
                 });
             }
-            let ids: SmallVec<[ExprId; 4]> = args.iter().copied().collect();
-            return Ok(arena.intern(if name_lower == "min" {
-                ExprNode::Min(ids)
-            } else {
-                ExprNode::Max(ids)
-            }));
+            return self.table_call(arena, f, args);
+        }
+
+        // A function of the `funcs!` table, by its name or one of its parse
+        // names (`asin`/`arcsin`, `C`/`binomial`, `besselj`, …) at an
+        // argument count it accepts.  Up to 0.59 `call_1` and `call_2` had an
+        // arm per node-backed function that repeated its names.
+        if let Some(f) = Func::parsed(name_lower, args.len()) {
+            return self.table_call(arena, f, args);
         }
 
         match *args {
@@ -1459,7 +1388,7 @@ impl<'a> Parser<'a> {
             [a, b] => self.call_2(arena, name, name_lower, a, b),
             [a, b, c] => self.call_3(arena, name, name_lower, a, b, c),
             [a, b, c, d] => self.call_4(arena, name, name_lower, a, b, c, d),
-            _ => self.lib_call(arena, name, name_lower, args, || {
+            _ => self.unread_call(arena, name, name_lower, args, || {
                 let n = args.len();
                 format!(
                     "unknown {n}-argument function '{}'. Only min and max take more than 4 arguments",
@@ -1467,6 +1396,17 @@ impl<'a> Parser<'a> {
                 )
             }),
         }
+    }
+
+    /// `f(args)` for a function of the table and an argument count it
+    /// accepts, built as the constructors build it ([`Arena::func`]).
+    fn table_call(
+        &self,
+        arena: &mut Arena,
+        f: Func,
+        args: &[ExprId],
+    ) -> Result<ExprId, ParseError> {
+        arena.func(f, args).map_err(|e| self.error(e.to_string()))
     }
 
     /// `Eq`/`Ne`/`Lt`/`Le`/`Gt`/`Ge(a, b)`, `And`/`Or(a, b, …)`, `Not(a)`
@@ -1632,7 +1572,7 @@ impl<'a> Parser<'a> {
                 self.make_sum_product(arena, name, name_lower, arg, arg2, arg3, arg4)
             }
             // `jacobi(n, a, b, x)`, `betainc(a, b, x1, x2)`, `betainc_regularized(a, b, x1, x2)`.
-            _ => self.lib_call(arena, name, name_lower, &[arg, arg2, arg3, arg4], || {
+            _ => self.unread_call(arena, name, name_lower, &[arg, arg2, arg3, arg4], || {
                 format!(
                     "unknown 4-argument function '{}'. Supported: Series, Sum, Product, Integral, \
                      jacobi, betainc, betainc_regularized",
@@ -1642,13 +1582,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A library special function by its registry name, in the arity it
-    /// declares (`besselj(n, x)`, `expint(n, x)`, `gegenbauer(n, a, x)`,
-    /// `jacobi(n, a, b, x)`, `fibonacci(n)`, …); else, for a name that is
-    /// no library function, the undefined function the context knows by
-    /// that name ([`declared_function`]); otherwise the error the call
-    /// table would have reported.
-    fn lib_call(
+    /// A call that neither the `funcs!` table nor a call table reads: for
+    /// a name that is no library function, the undefined function the
+    /// context knows by that name ([`declared_function`]); otherwise the
+    /// error `unknown` (a library function is here with an argument count
+    /// it does not accept).
+    fn unread_call(
         &self,
         arena: &mut Arena,
         name: &str,
@@ -1657,11 +1596,6 @@ impl<'a> Parser<'a> {
         unknown: impl FnOnce() -> String,
     ) -> Result<ExprId, ParseError> {
         let lib = lib_fn_by_name(name_lower);
-        if let Some(f) = lib
-            && f.arity().accepts(args.len())
-        {
-            return Ok(arena.lib_apply(f, args));
-        }
         if lib.is_none()
             && let Some(sid) = declared_function(arena, name)
         {
@@ -1709,7 +1643,7 @@ impl<'a> Parser<'a> {
                 Ok(crate::transforms::subs::subs(arena, arg, arg2, arg3))
             }
             // Orthogonal polynomials with a parameter: (n, param, x).
-            _ => self.lib_call(arena, name, name_lower, &[arg, arg2, arg3], || {
+            _ => self.unread_call(arena, name, name_lower, &[arg, arg2, arg3], || {
                 format!(
                     "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, \
                      InverseLaplaceTransform, Residue, DSolve, RootOf, Subs, min, max, \
@@ -1729,6 +1663,8 @@ impl<'a> Parser<'a> {
         arg2: ExprId,
     ) -> Result<ExprId, ParseError> {
         match name_lower {
+            // `log(x, base)` is a quotient, not the function `ln`, whose
+            // parse name `log` takes one argument.
             "log" => {
                 // log(x, base) = ln(x) / ln(base)
                 let ln_x = arena.ln(arg);
@@ -1761,21 +1697,12 @@ impl<'a> Parser<'a> {
                 self.bound_symbol(arena, name, arg2)?;
                 Ok(arena.intern(ExprNode::Derivative(arg, arg2)))
             }
-            "atan2" => Ok(arena.atan2(arg, arg2)),
-            // The branch `k` of Lambert W, `W(x, k)` (SymPy's `LambertW(x, k)`);
-            // `W(x, 0)` is the principal branch `W(x)`.
-            "lambertw" | "w" => Ok(arena.lambertw_branch(arg, arg2)),
-            "polygamma" => Ok(arena.polygamma(arg, arg2)),
-            "kroneckerdelta" | "kronecker_delta" => Ok(arena.kronecker_delta(arg, arg2)),
-            // Combinatorics / special functions (`C(n, k)` and `B(a, b)` are
-            // the display forms).
-            "binomial" | "c" => Ok(arena.binomial(arg, arg2)),
-            "beta" | "b" => Ok(arena.beta(arg, arg2)),
-            // Library functions with a parameter first, as in SymPy and in
-            // the display: Bessel `(order, x)`, `expint`/`lowergamma`/
-            // `uppergamma`/`polylog` `(s, x)`, `elliptic_f`/`elliptic_pi`,
-            // the classical orthogonal polynomials `(n, x)`, …
-            _ => self.lib_call(arena, name, name_lower, &[arg, arg2], || {
+            // (The two-argument functions of the table were read before:
+            // `atan2`, `polygamma`, `C(n, k)`, `B(a, b)`, the branch `k` of
+            // Lambert W `W(x, k)`, and the library functions with a parameter
+            // first, as in SymPy and in the display: Bessel `(order, x)`,
+            // `expint`/`lowergamma`/`uppergamma`/`polylog` `(s, x)`, …)
+            _ => self.unread_call(arena, name, name_lower, &[arg, arg2], || {
                 format!(
                     "unknown 2-argument function '{}'. Supported: log, atan2, lambertw, \
                      polygamma, binomial, beta, besselj, bessely, besseli, besselk, expint, lowergamma, \
@@ -1844,41 +1771,13 @@ impl<'a> Parser<'a> {
         // `H(x)`, the display name of Heaviside (exact case, and only while
         // the context has no undefined function `H`: `h(x)` stays free for
         // one, unlike the case-insensitive `C`/`B`/`W` aliases).
-        if name == "H" && declared_function(arena, name).is_none() {
-            return Ok(arena.intern(crate::base::node::ExprNode::Heaviside(arg)));
+        if name == Func::Heaviside.spec().name && declared_function(arena, name).is_none() {
+            return self.table_call(arena, Func::Heaviside, &[arg]);
         }
+        // (The one-argument functions of the table were read before.)
         match name_lower {
-            "sin" => Ok(arena.sin(arg)),
-            "cos" => Ok(arena.cos(arg)),
-            "tan" => Ok(arena.tan(arg)),
-            "exp" => Ok(arena.exp(arg)),
-            "ln" | "log" => Ok(arena.ln(arg)),
             "sqrt" => Ok(arena.sqrt(arg)),
             "cbrt" => Ok(arena.cbrt(arg)),
-            "abs" => Ok(arena.abs(arg)),
-            "asin" | "arcsin" => Ok(arena.asin(arg)),
-            "acos" | "arccos" => Ok(arena.acos(arg)),
-            "atan" | "arctan" => Ok(arena.atan(arg)),
-            "sinh" => Ok(arena.sinh(arg)),
-            "cosh" => Ok(arena.cosh(arg)),
-            "tanh" => Ok(arena.tanh(arg)),
-            "asinh" | "arcsinh" => Ok(arena.asinh(arg)),
-            "acosh" | "arccosh" => Ok(arena.acosh(arg)),
-            "atanh" | "arctanh" => Ok(arena.atanh(arg)),
-            "sign" | "sgn" => Ok(arena.sign(arg)),
-            "floor" => Ok(arena.floor(arg)),
-            "ceil" | "ceiling" => Ok(arena.ceiling(arg)),
-            "gamma" => Ok(arena.intern(crate::base::node::ExprNode::Gamma(arg))),
-            "erf" => Ok(arena.intern(crate::base::node::ExprNode::Erf(arg))),
-            "erfc" => Ok(arena.intern(crate::base::node::ExprNode::Erfc(arg))),
-            "heaviside" => Ok(arena.intern(crate::base::node::ExprNode::Heaviside(arg))),
-            "diracdelta" | "dirac_delta" => {
-                Ok(arena.intern(crate::base::node::ExprNode::DiracDelta(arg)))
-            }
-            "lambertw" | "w" => Ok(arena.intern(crate::base::node::ExprNode::LambertW(arg))),
-            "factorial" => Ok(arena.intern(crate::base::node::ExprNode::Factorial(arg))),
-            "digamma" => Ok(arena.intern(crate::base::node::ExprNode::Digamma(arg))),
-            "loggamma" => Ok(arena.intern(crate::base::node::ExprNode::LogGamma(arg))),
             // Reciprocal trig / hyperbolic functions and their inverses (no
             // dedicated nodes; the same forms `Ex::cot` & co. build).
             "cot" | "sec" | "csc" | "coth" | "sech" | "csch" => {
@@ -1890,26 +1789,12 @@ impl<'a> Parser<'a> {
             "acoth" | "arccoth" => Ok(reciprocal_function(arena, "acoth", arg)),
             "asech" | "arcsech" => Ok(reciprocal_function(arena, "asech", arg)),
             "acsch" | "arccsch" => Ok(reciprocal_function(arena, "acsch", arg)),
-            // Complex analysis
-            "re" => Ok(arena.re(arg)),
-            "im" => Ok(arena.im(arg)),
-            "conjugate" | "conj" => Ok(arena.conjugate(arg)),
-            "arg" => Ok(arena.arg(arg)),
-            // Special functions (0.2)
-            "si" => Ok(arena.si(arg)),
-            "ci" => Ok(arena.ci(arg)),
-            "ei" => Ok(arena.ei(arg)),
-            "li" => Ok(arena.li(arg)),
-            "zeta" => Ok(arena.zeta(arg)),
             // `E1(x) = expint(1, x)`.
             "e1" => {
                 let one = arena.one;
                 Ok(arena.lib_apply(LibFn::ExpInt, &[one, arg]))
             }
-            // One-argument library functions: `erfi`, `erfinv`, `erfcinv`,
-            // `Shi`, `Chi`, `fresnels`, `fresnelc`, `dirichlet_eta`, the Airy
-            // functions, `elliptic_k`, `elliptic_e`, the integer sequences, …
-            _ => self.lib_call(arena, name, name_lower, &[arg], || {
+            _ => self.unread_call(arena, name, name_lower, &[arg], || {
                 format!(
                     "unknown function '{}'. Supported: sin, cos, tan, cot, sec, csc, exp, ln, log, \
                      sqrt, cbrt, abs, asin, acos, atan, acot, sinh, cosh, tanh, coth, sech, csch, \
@@ -2960,9 +2845,28 @@ mod tests {
 
     #[test]
     fn known_functions_table_matches_call_tables() {
-        // Every name in `KNOWN_FUNCTIONS` is accepted by some call table.
+        // Every call name — a name of the `funcs!` table or one of
+        // `OTHER_CALL_NAMES` — is accepted at some argument count.  (Up to
+        // 0.59 the list `KNOWN_FUNCTIONS` held both kinds, and this test
+        // compared it with the arms of the call tables.)
+        let mut names: Vec<String> = OTHER_CALL_NAMES.iter().map(|s| (*s).to_owned()).collect();
+        for &f in Func::ALL {
+            let spec = f.spec();
+            let own = spec.name.to_ascii_lowercase();
+            for name in spec.parse.iter().copied().chain([own.as_str()]) {
+                if f.reads(name) {
+                    // A name is in the table or in the list, never in both.
+                    assert!(
+                        !OTHER_CALL_NAMES.contains(&name),
+                        "`{name}` is listed twice"
+                    );
+                    names.push(name.to_owned());
+                }
+            }
+        }
         let ctx = Context::new();
-        for name in KNOWN_FUNCTIONS {
+        for name in &names {
+            assert!(is_known_function(name), "`{name}` is not known");
             let ok = [
                 format!("{name}(x)"),
                 format!("{name}(x, y)"),
@@ -2977,7 +2881,7 @@ mod tests {
             .any(|s| parse(&ctx, s).is_ok());
             assert!(ok, "`{name}` is listed but no arity parses");
         }
-        for name in KNOWN_FUNCTIONS {
+        for name in &names {
             assert!(
                 !is_implicit_unary_function(name) || parse(&ctx, &format!("{name}(x)")).is_ok(),
                 "`{name}` is applied implicitly but is not a unary function"

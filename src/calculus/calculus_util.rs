@@ -1702,6 +1702,14 @@ pub(crate) fn hidden_zero(
             _ => Verdict::new(Truth::True, Evidence::Approximate),
         };
     }
+    // A certified enclosure that excludes 0 is the proof the evaluation
+    // below would find, without evaluating the parts of `c` again that
+    // earlier constants shared ([`enclosure`]).  It only ever answers
+    // "nonzero"; anything else goes through the ladder as before.
+    if enclosure(arena, c).is_some_and(Enclosure::excludes_zero) {
+        arena.remember_constant_fact(c, FactKey::HiddenZero, SignSet::NONZERO);
+        return Verdict::new(Truth::False, Evidence::Certified);
+    }
     let verdict = hidden_zero_uncached(arena, c);
     let signs = match (verdict.proven(), verdict.value) {
         (Some(Truth::True), _) => Some(SignSet::ZERO),
@@ -1793,6 +1801,435 @@ impl Drop for EvaluationScope {
         let (made, _) = EVALUATIONS.get();
         EVALUATIONS.set((made, self.outer));
     }
+}
+
+// ── Certified enclosures of constants ─────────────────────────────────────────────
+
+/// A closed interval `[lo, hi]` of real numbers with finite `f64` ends,
+/// `lo ≤ hi`: one part of an [`Enclosure`].  Every operation rounds
+/// outwards (an `f64` operation is within half an ulp of the exact result,
+/// so the neighbouring floats enclose it); an operand that is exactly 0
+/// leaves the other exact, so a real constant keeps the imaginary part
+/// `[0, 0]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Span {
+    lo: f64,
+    hi: f64,
+}
+
+impl Span {
+    /// `[0, 0]`.
+    const ZERO: Span = Span { lo: 0.0, hi: 0.0 };
+
+    /// `[v, v]` for a finite `v`.
+    fn point(v: f64) -> Option<Span> {
+        v.is_finite().then_some(Span { lo: v, hi: v })
+    }
+
+    /// `[lo, hi]` widened by one float at each end: the enclosure of a
+    /// result whose ends were computed as `lo` and `hi` rounded to nearest.
+    /// `None` beyond the `f64` range (or for a NaN).
+    fn outward(lo: f64, hi: f64) -> Option<Span> {
+        let (lo, hi) = (lo.next_down(), hi.next_up());
+        (lo.is_finite() && hi.is_finite() && lo <= hi).then_some(Span { lo, hi })
+    }
+
+    /// Is this `[0, 0]`?
+    fn is_zero(self) -> bool {
+        self.lo >= 0.0 && self.hi <= 0.0
+    }
+
+    /// Does the interval lie on one side of 0?
+    fn excludes_zero(self) -> bool {
+        self.lo > 0.0 || self.hi < 0.0
+    }
+
+    fn neg(self) -> Span {
+        Span {
+            lo: -self.hi,
+            hi: -self.lo,
+        }
+    }
+
+    fn add(self, o: Span) -> Option<Span> {
+        if self.is_zero() {
+            return Some(o);
+        }
+        if o.is_zero() {
+            return Some(self);
+        }
+        Span::outward(self.lo + o.lo, self.hi + o.hi)
+    }
+
+    fn mul(self, o: Span) -> Option<Span> {
+        if self.is_zero() || o.is_zero() {
+            return Some(Span::ZERO);
+        }
+        let p = [
+            self.lo * o.lo,
+            self.lo * o.hi,
+            self.hi * o.lo,
+            self.hi * o.hi,
+        ];
+        Span::outward(
+            p.iter().copied().fold(f64::INFINITY, f64::min),
+            p.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        )
+    }
+
+    /// `self/d` for a `d` above 0; `None` for any other `d`.
+    fn div_by_positive(self, d: Span) -> Option<Span> {
+        if d.lo <= 0.0 {
+            return None;
+        }
+        if self.is_zero() {
+            return Some(Span::ZERO);
+        }
+        let q = [
+            self.lo / d.lo,
+            self.lo / d.hi,
+            self.hi / d.lo,
+            self.hi / d.hi,
+        ];
+        Span::outward(
+            q.iter().copied().fold(f64::INFINITY, f64::min),
+            q.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        )
+    }
+
+    /// The squares of the members.
+    fn square(self) -> Option<Span> {
+        if self.is_zero() {
+            return Some(Span::ZERO);
+        }
+        let (a, b) = (self.lo * self.lo, self.hi * self.hi);
+        let hi = a.max(b).next_up();
+        let lo = if self.excludes_zero() {
+            a.min(b).next_down().max(0.0)
+        } else {
+            0.0
+        };
+        (hi.is_finite() && lo <= hi).then_some(Span { lo, hi })
+    }
+
+    /// The integer `n`: exact up to `2⁵³`, the two floats around it
+    /// beyond (`None` beyond the `f64` range).
+    fn of_integer(n: &BigInt) -> Option<Span> {
+        use num_traits::{Signed, ToPrimitive};
+        /// The bits of an `f64` mantissa.
+        const MANTISSA_BITS: u64 = 53;
+        /// The largest exponent of an `f64` (`2¹⁰²³` is finite).
+        const MAX_EXPONENT: u64 = 1023;
+        let magnitude = n.magnitude();
+        let bits = magnitude.bits();
+        let span = if bits <= MANTISSA_BITS {
+            // (exact: below 2⁵³)
+            Span::point(magnitude.to_u64()? as f64)?
+        } else {
+            // The top 53 bits `t`: `t·2ˢ ≤ |n| < (t + 1)·2ˢ`, both ends
+            // floats (`t + 1 ≤ 2⁵³`, times a power of two).
+            let shift = bits - MANTISSA_BITS;
+            if bits > MAX_EXPONENT {
+                return None;
+            }
+            let top = (magnitude >> shift).to_u64()?;
+            let scale = f64::from_bits((MAX_EXPONENT + shift) << (MANTISSA_BITS - 1));
+            Span {
+                lo: top as f64 * scale,
+                hi: (top + 1) as f64 * scale,
+            }
+        };
+        Some(if n.is_negative() { span.neg() } else { span })
+    }
+
+    /// The rational `q`.
+    fn of_rational(q: &Ratio<BigInt>) -> Option<Span> {
+        let n = Span::of_integer(q.numer())?;
+        if q.is_integer() {
+            return Some(n);
+        }
+        n.div_by_positive(Span::of_integer(q.denom())?)
+    }
+}
+
+/// A rectangle of the complex plane that holds the value of a constant:
+/// its real part in `re`, its imaginary part in `im` ([`enclosure`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Enclosure {
+    re: Span,
+    im: Span,
+}
+
+impl Enclosure {
+    /// Is 0 outside the rectangle, so that the constant is proved nonzero?
+    fn excludes_zero(self) -> bool {
+        self.re.excludes_zero() || self.im.excludes_zero()
+    }
+
+    fn real(re: Span) -> Enclosure {
+        Enclosure { re, im: Span::ZERO }
+    }
+
+    fn neg(self) -> Enclosure {
+        Enclosure {
+            re: self.re.neg(),
+            im: self.im.neg(),
+        }
+    }
+
+    fn add(self, o: Enclosure) -> Option<Enclosure> {
+        Some(Enclosure {
+            re: self.re.add(o.re)?,
+            im: self.im.add(o.im)?,
+        })
+    }
+
+    fn mul(self, o: Enclosure) -> Option<Enclosure> {
+        Some(Enclosure {
+            re: self.re.mul(o.re)?.add(self.im.mul(o.im)?.neg())?,
+            im: self.re.mul(o.im)?.add(self.im.mul(o.re)?)?,
+        })
+    }
+
+    /// `1/z` for every member `z`; `None` unless the squared modulus is
+    /// shown positive.
+    fn recip(self) -> Option<Enclosure> {
+        if self.im.is_zero() {
+            if !self.re.excludes_zero() {
+                return None;
+            }
+            // (`1/x` is decreasing on each side of 0)
+            return Some(Enclosure::real(Span::outward(
+                1.0 / self.re.hi,
+                1.0 / self.re.lo,
+            )?));
+        }
+        let modulus = self.re.square()?.add(self.im.square()?)?;
+        Some(Enclosure {
+            re: self.re.div_by_positive(modulus)?,
+            im: self.im.neg().div_by_positive(modulus)?,
+        })
+    }
+
+    /// `zⁿ` for every member `z` (`n ≥ 1`), by repeated squaring.
+    fn pow(self, n: u32) -> Option<Enclosure> {
+        let (mut result, mut base, mut k) = (None, self, n);
+        while k > 0 {
+            if k & 1 == 1 {
+                result = Some(match result {
+                    None => base,
+                    Some(r) => Enclosure::mul(r, base)?,
+                });
+            }
+            k >>= 1;
+            if k > 0 {
+                base = base.mul(base)?;
+            }
+        }
+        result
+    }
+
+    /// The rectangle around a value `z` that `evalf` certified to
+    /// [`ENCLOSURE_DIGITS`] digits: the error of the value as a whole is
+    /// below `2⁻⁷⁰·|z|` (the joint bound `evalf` settles on), also where a
+    /// part was set to 0 as below the precision or kept as computed next to
+    /// a larger one, and the conversion of a part to an `f64` moves it by
+    /// half an ulp at most; [`ENCLOSURE_RADIUS`] of `|re| + |im|` covers
+    /// both.  `None` for a part beyond or below the normal `f64` range (the
+    /// stand-in for a value below the exponent range has no digits).
+    fn of_certified(z: &crate::base::bigcomplex::Complex) -> Option<Enclosure> {
+        use crate::base::bigfloat::to_f64;
+        if z.0.is_zero() && z.1.is_zero() {
+            // (a certified value with both parts 0 is exactly 0)
+            return Some(Enclosure::real(Span::ZERO));
+        }
+        let (re, im) = (to_f64(&z.0)?, to_f64(&z.1)?);
+        if (!z.0.is_zero() && !re.is_normal()) || (!z.1.is_zero() && !im.is_normal()) {
+            return None;
+        }
+        let radius = (re.abs() + im.abs()) * ENCLOSURE_RADIUS;
+        if !radius.is_normal() {
+            return None;
+        }
+        Some(Enclosure {
+            re: Span::outward(re - radius, re + radius)?,
+            im: Span::outward(im - radius, im + radius)?,
+        })
+    }
+}
+
+/// Digits to which [`enclosure`] evaluates a part it has no arithmetic for.
+const ENCLOSURE_DIGITS: u32 = 20;
+
+/// The half-width of the enclosure of such a part, relative to `|re| +
+/// |im|` of its `f64` value: `2⁻⁵⁰` ([`Enclosure::of_certified`]).
+const ENCLOSURE_RADIUS: f64 = 1.0 / (1u64 << 50) as f64;
+
+/// Largest integer exponent [`enclosure`] multiplies out.
+const MAX_ENCLOSURE_POWER: u32 = 1 << 12;
+
+/// Most nodes one call of [`enclosure`] encloses.
+const MAX_ENCLOSURE_NODES: usize = 1 << 16;
+
+/// Most entries of [`ENCLOSURES`] before it is cleared.
+const ENCLOSURE_MEMO_ENTRIES: usize = 1 << 17;
+
+thread_local! {
+    /// The results of [`enclosure`] by (arena serial, constant), `None` for
+    /// a constant without one.
+    static ENCLOSURES: std::cell::RefCell<rustc_hash::FxHashMap<(u64, ExprId), Option<Enclosure>>> =
+        std::cell::RefCell::new(rustc_hash::FxHashMap::default());
+}
+
+/// How [`enclosure`] encloses a node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnclosedAs {
+    /// The sum of its operands.
+    Sum,
+    /// The product of its operands.
+    Product,
+    /// Minus its operand.
+    Negation,
+    /// Its operand to this nonzero integer power.
+    Power(i64),
+    /// A rational number.
+    Number,
+    /// `i`.
+    ImaginaryUnit,
+    /// Anything else: evaluated as a whole.
+    Part,
+}
+
+/// A certified enclosure of the value of the constant `c`, or `None` when
+/// there is none (free symbols, an unevaluated part, an infinity, a `δ`, a
+/// part `evalf` cannot certify, a value beyond the `f64` range).
+///
+/// Sums, products, negations, integer powers and rational numbers are
+/// enclosed by interval arithmetic on the enclosures of their operands;
+/// every other node (`π`, `ln π`, `π^(3/2)`, `atanh(1 + π)`) is evaluated
+/// once with certified digits ([`Enclosure::of_certified`]).  The results
+/// are memoised per node and arena, so a constant built from constants
+/// already enclosed costs its new nodes only.
+///
+/// That is the point: the series engine decides every coefficient of every
+/// product and sum it forms, each built from coefficients decided before,
+/// and [`hidden_zero`] evaluated each of them as a whole — the 713 zero
+/// tests of `series(atanh(π^x + x^(3/2)), x, 1, 4)` (polynomials in `π`
+/// and `ln π` of up to 5,200 distinct nodes at a working order of 28) were
+/// 800,000 node evaluations at 100 bits, 90 % of its 1.8 s up to 0.59.
+/// A nonzero coefficient without deep cancellation (53 bits less what the
+/// arithmetic loses) is now proved nonzero from the intervals; one whose
+/// enclosure contains 0 is decided as before.
+fn enclosure(arena: &mut Arena, c: ExprId) -> Option<Enclosure> {
+    let serial = arena.serial();
+    let known = |id: ExprId| ENCLOSURES.with(|m| m.borrow().get(&(serial, id)).copied());
+    if let Some(e) = known(c) {
+        return e;
+    }
+    ENCLOSURES.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= ENCLOSURE_MEMO_ENTRIES {
+            m.clear();
+        }
+    });
+    let mut stack = vec![c];
+    let mut made = 0usize;
+    while let Some(&id) = stack.last() {
+        if known(id).is_some() {
+            stack.pop();
+            continue;
+        }
+        let mut operands: smallvec::SmallVec<[ExprId; 8]> = smallvec::SmallVec::new();
+        let shape = match arena.node(id) {
+            ExprNode::Add(cs) => {
+                operands.extend(cs.iter().copied());
+                EnclosedAs::Sum
+            }
+            ExprNode::Mul(cs) => {
+                operands.extend(cs.iter().copied());
+                EnclosedAs::Product
+            }
+            ExprNode::Neg(a) => {
+                operands.push(*a);
+                EnclosedAs::Negation
+            }
+            ExprNode::Pow(b, e) => {
+                use num_traits::ToPrimitive;
+                let n = arena
+                    .as_num(*e)
+                    .filter(|q| q.is_integer())
+                    .and_then(|q| q.numer().to_i64())
+                    .filter(|&n| n != 0 && n.unsigned_abs() <= u64::from(MAX_ENCLOSURE_POWER));
+                match n {
+                    Some(n) => {
+                        operands.push(*b);
+                        EnclosedAs::Power(n)
+                    }
+                    None => EnclosedAs::Part,
+                }
+            }
+            ExprNode::Num(_) => EnclosedAs::Number,
+            ExprNode::ImaginaryUnit => EnclosedAs::ImaginaryUnit,
+            _ => EnclosedAs::Part,
+        };
+        // The operands not yet enclosed come first.
+        let pending = stack.len();
+        stack.extend(operands.iter().copied().filter(|&o| known(o).is_none()));
+        if stack.len() > pending {
+            continue;
+        }
+        made += 1;
+        if made > MAX_ENCLOSURE_NODES {
+            return None;
+        }
+        let of = |o: ExprId| known(o).flatten();
+        let value = match shape {
+            EnclosedAs::Sum => operands
+                .iter()
+                .try_fold(Enclosure::real(Span::ZERO), |s, &o| s.add(of(o)?)),
+            EnclosedAs::Product => {
+                let mut factors = operands.iter().map(|&o| of(o));
+                match factors.next() {
+                    Some(first) => factors.try_fold(first?, |p, f| p.mul(f?)),
+                    None => None,
+                }
+            }
+            EnclosedAs::Negation => operands.first().and_then(|&o| of(o)).map(Enclosure::neg),
+            EnclosedAs::Power(n) => operands.first().and_then(|&o| of(o)).and_then(|b| {
+                let p = b.pow(u32::try_from(n.unsigned_abs()).ok()?)?;
+                if n < 0 { p.recip() } else { Some(p) }
+            }),
+            EnclosedAs::Number => arena
+                .as_num(id)
+                .and_then(Span::of_rational)
+                .map(Enclosure::real),
+            EnclosedAs::ImaginaryUnit => {
+                Span::point(1.0).map(|im| Enclosure { re: Span::ZERO, im })
+            }
+            EnclosedAs::Part => enclosed_part(arena, id),
+        };
+        ENCLOSURES.with(|m| m.borrow_mut().insert((serial, id), value));
+        stack.pop();
+    }
+    known(c).flatten()
+}
+
+/// The [`enclosure`] of a node it has no arithmetic for, from its value
+/// certified by `evalf`: a constant with a value and a zero question (no
+/// free symbol, no unevaluated part, no infinity or NaN, no `δ`: what
+/// [`hidden_zero`] itself makes no claim about).
+fn enclosed_part(arena: &mut Arena, id: ExprId) -> Option<Enclosure> {
+    if !arena.is_symbol_free(id)
+        || walk::has_unevaluated(arena, id)
+        || has_dirac_delta(arena, id)
+        || without_zero_question(arena, id)
+    {
+        return None;
+    }
+    let z = evalf::evalf_verdict(arena, id, ENCLOSURE_DIGITS, evalf::ZeroSearch::Cap)
+        .ok()?
+        .proven()?;
+    Enclosure::of_certified(&z)
 }
 
 /// [`hidden_zero`] of a symbol-free constant without unevaluated parts,
@@ -4028,5 +4465,173 @@ mod tests {
             hidden_zero(&mut arena, delta_two).proven(),
             Some(Truth::True)
         );
+    }
+
+    /// Is the rational `q` inside the span (exactly: the ends of a span
+    /// are dyadic rationals)?
+    fn holds(span: Span, q: &Ratio<BigInt>) -> bool {
+        let exact = |v: f64| Ratio::<BigInt>::from_float(v).unwrap();
+        exact(span.lo) <= *q && *q <= exact(span.hi)
+    }
+
+    /// The span of an integer or a rational holds it, exactly where an
+    /// `f64` does (below `2⁵³`) and within one float of each end beyond;
+    /// beyond the `f64` range there is none.
+    #[test]
+    fn the_span_of_a_rational_holds_it() {
+        use num_traits::Pow;
+        let big = |b: u32, e: u32| BigInt::from(b).pow(e);
+        let small = BigInt::from((1i64 << 53) - 1);
+        assert_eq!(
+            Span::of_integer(&small),
+            Span::point(((1i64 << 53) - 1) as f64)
+        );
+        let factorial_28: BigInt = (1..=28).map(BigInt::from).product();
+        for n in [
+            BigInt::from((1i64 << 53) + 1),
+            -BigInt::from((1i64 << 53) + 1),
+            factorial_28.clone(),
+            big(3, 200),
+            -big(10, 300),
+            big(2, 1022),
+        ] {
+            let s = Span::of_integer(&n).unwrap();
+            assert!(holds(s, &Ratio::from_integer(n.clone())), "{n}");
+            // (one float wide)
+            assert!(s.hi <= s.lo.next_up(), "{n}");
+        }
+        assert_eq!(Span::of_integer(&big(2, 1023)), None);
+        assert_eq!(Span::of_integer(&big(10, 400)), None);
+        for q in [
+            Ratio::new(BigInt::from(1), BigInt::from(3)),
+            Ratio::new(BigInt::from(-7), factorial_28),
+            Ratio::new(big(3, 200), big(7, 150)),
+            Ratio::new(-big(10, 300), big(3, 5)),
+        ] {
+            let s = Span::of_rational(&q).unwrap();
+            assert!(holds(s, &q), "{q}");
+            assert!(s.excludes_zero(), "{q}");
+        }
+    }
+
+    /// Interval arithmetic rounds outwards: the exact sum, product, square
+    /// and reciprocal of members are inside, a reciprocal of a span with 0
+    /// in it does not exist, and an exact 0 stays exact.
+    #[test]
+    fn span_arithmetic_rounds_outwards() {
+        let q = |n: i64, d: i64| Ratio::new(BigInt::from(n), BigInt::from(d));
+        let (a, b) = (q(1, 3), q(-22, 7));
+        let (sa, sb) = (
+            Span::of_rational(&a).unwrap(),
+            Span::of_rational(&b).unwrap(),
+        );
+        assert!(holds(sa.add(sb).unwrap(), &(&a + &b)));
+        assert!(holds(sa.mul(sb).unwrap(), &(&a * &b)));
+        assert!(holds(sb.square().unwrap(), &(&b * &b)));
+        assert!(holds(sa.div_by_positive(sb.neg()).unwrap(), &(&a / -&b)));
+        assert_eq!(sa.div_by_positive(sb), None);
+        let around_zero = Span { lo: -1.0, hi: 2.0 };
+        assert_eq!(around_zero.square().unwrap().lo, 0.0);
+        assert_eq!(Enclosure::real(around_zero).recip(), None);
+        let r = Enclosure::real(sb).recip().unwrap();
+        assert!(holds(r.re, &q(-7, 22)) && r.im.is_zero());
+        // 1/(a + b·i) = (a − b·i)/(a² + b²)
+        let z = Enclosure { re: sa, im: sb };
+        let r = z.recip().unwrap();
+        let m = &a * &a + &b * &b;
+        assert!(holds(r.re, &(&a / &m)) && holds(r.im, &(-&b / &m)));
+        // (a + b·i)³
+        let p = z.pow(3).unwrap();
+        let re = &a * &a * &a - q(3, 1) * &a * &b * &b;
+        let im = q(3, 1) * &a * &a * &b - &b * &b * &b;
+        assert!(holds(p.re, &re) && holds(p.im, &im));
+        assert_eq!(sa.mul(Span::ZERO), Some(Span::ZERO));
+        assert_eq!(sa.add(Span::ZERO), Some(sa));
+        assert_eq!(Span::outward(f64::MAX, f64::MAX), None);
+    }
+
+    /// The enclosure of a constant holds its value (`evalf` at 30 digits)
+    /// and is narrow; where it excludes 0, [`hidden_zero`] is the certified
+    /// "nonzero" the evaluation of the whole constant gives
+    /// ([`hidden_zero_uncached`]).  The constants are coefficients of
+    /// `series(atanh(π^x + x^(3/2)), x, 1, 4)`, complex values, and parts
+    /// evaluated as a whole.
+    #[test]
+    fn an_enclosure_holds_the_value_of_its_constant() {
+        use crate::base::bigfloat::to_f64;
+        use crate::base::truth::Truth;
+        let ctx = crate::api::context::Context::new();
+        for src in [
+            "pi",
+            "ln(pi)*pi + 3/2",
+            "(1 - (1 + pi)^2)^(-2)*(ln(pi)*pi + 3/2)^2*(1 + pi) + (ln(pi)^2*pi/2 + 3/8)/(1 - (1 + pi)^2)",
+            "(2 + 3*I)^(-3)*sqrt(2) - I/7",
+            "atanh(1 + pi)*zeta(3) - exp(-5)/28",
+            "I*pi^(3/2) - gamma(1/3)^5",
+            "besselj(0, 1)^12 - 10^(-9)",
+        ] {
+            let c = ctx.parse(src).unwrap().raw_id();
+            ctx.with_arena_mut(|arena| {
+                let c = eval::eval(arena, c);
+                let e = enclosure(arena, c).unwrap_or_else(|| panic!("no enclosure of {src}"));
+                let z = evalf::evalf_verdict(arena, c, 30, evalf::ZeroSearch::Cap)
+                    .unwrap()
+                    .proven()
+                    .unwrap();
+                let (re, im) = (to_f64(&z.0).unwrap(), to_f64(&z.1).unwrap());
+                assert!(e.re.lo <= re && re <= e.re.hi, "{src}: {e:?} {re}");
+                assert!(e.im.lo <= im && im <= e.im.hi, "{src}: {e:?} {im}");
+                let scale = re.abs() + im.abs();
+                assert!(e.re.hi - e.re.lo <= 1e-9 * scale, "{src}: {e:?}");
+                assert!(e.im.hi - e.im.lo <= 1e-9 * scale, "{src}: {e:?}");
+                assert!(e.excludes_zero(), "{src}: {e:?}");
+                assert_eq!(hidden_zero_uncached(arena, c).proven(), Some(Truth::False));
+                assert_eq!(hidden_zero(arena, c).proven(), Some(Truth::False));
+            });
+        }
+    }
+
+    /// An enclosure never decides a zero, nor a value it cannot separate
+    /// from 0: `sin²1 + cos²1 − 1` (0 by an identity) and `e^(−10⁻³⁰) − 1 +
+    /// 10⁻³⁰` (`5·10⁻⁶¹`, below the 53 bits of the intervals) go through
+    /// the ladder of [`hidden_zero`] as before; a constant without a zero
+    /// question, with a `δ` or with a symbol has no enclosure.
+    #[test]
+    fn an_enclosure_with_zero_inside_decides_nothing() {
+        use crate::base::truth::Truth;
+        let ctx = crate::api::context::Context::new();
+        let _y = ctx.symbol("y");
+        for (src, expected) in [
+            ("sin(1)^2 + cos(1)^2 - 1", Some(Truth::True)),
+            ("exp(-10^(-30)) - 1 + 10^(-30)", Some(Truth::False)),
+            ("asinh(2) - ln(2 + sqrt(5))", Some(Truth::True)),
+        ] {
+            let c = ctx.parse(src).unwrap().raw_id();
+            ctx.with_arena_mut(|arena| {
+                let c = eval::eval(arena, c);
+                let e = enclosure(arena, c).unwrap_or_else(|| panic!("no enclosure of {src}"));
+                assert!(!e.excludes_zero(), "{src}: {e:?}");
+                assert_eq!(hidden_zero(arena, c).proven(), expected, "{src}");
+            });
+        }
+        for src in ["pi + y", "pi*exp(10000)", "exp(-10000) + I"] {
+            let c = ctx.parse(src).unwrap().raw_id();
+            ctx.with_arena_mut(|arena| assert_eq!(enclosure(arena, c), None, "{src}"));
+        }
+        ctx.with_arena_mut(|arena| {
+            let zoo_pi = arena.mul(&[arena.complex_infinity, arena.pi]);
+            let oo_plus = arena.add(&[arena.infinity, arena.one]);
+            let delta = arena.dirac_delta(arena.i_unit);
+            let delta_plus = arena.add(&[delta, arena.one]);
+            for c in [
+                arena.complex_infinity,
+                arena.nan,
+                zoo_pi,
+                oo_plus,
+                delta_plus,
+            ] {
+                assert_eq!(enclosure(arena, c), None);
+            }
+        });
     }
 }

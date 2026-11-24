@@ -22,7 +22,7 @@ use num_traits::Signed;
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
-use crate::base::func::{Func, Tex, TexPiece};
+use crate::base::func::{Elementary, Family, Func, Tex, TexPiece, func_nodes};
 
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
@@ -429,30 +429,24 @@ fn render_num_value(r: &Q) -> String {
 // Node expansion
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Push a LaTeX function call `\name\left(arg\right)` onto the stack.
-/// If `id` is a trig/hyperbolic function node, return (`\funcname`, arg).
+/// If `id` is a trigonometric or hyperbolic function node or an inverse of
+/// one, return (`\funcname`, arg): the functions whose powers print as
+/// `\sin^{n}\left(x\right)`.  The head is the `tex` facet's (up to 0.59 a
+/// second list of the twelve heads).
 fn trig_func_parts(arena: &Arena, id: ExprId) -> Option<(&'static str, ExprId)> {
-    match arena.node(id) {
-        ExprNode::Sin(x) => Some((r"\sin", *x)),
-        ExprNode::Cos(x) => Some((r"\cos", *x)),
-        ExprNode::Tan(x) => Some((r"\tan", *x)),
-        ExprNode::Sinh(x) => Some((r"\sinh", *x)),
-        ExprNode::Cosh(x) => Some((r"\cosh", *x)),
-        ExprNode::Tanh(x) => Some((r"\tanh", *x)),
-        ExprNode::Asin(x) => Some((r"\arcsin", *x)),
-        ExprNode::Acos(x) => Some((r"\arccos", *x)),
-        ExprNode::Atan(x) => Some((r"\arctan", *x)),
-        ExprNode::Asinh(x) => Some((r"\operatorname{asinh}", *x)),
-        ExprNode::Acosh(x) => Some((r"\operatorname{acosh}", *x)),
-        ExprNode::Atanh(x) => Some((r"\operatorname{atanh}", *x)),
+    let node = arena.node(id);
+    let f = node.func_head()?;
+    match f.elementary()? {
+        Elementary::Trig
+        | Elementary::InverseTrig
+        | Elementary::Hyperbolic
+        | Elementary::InverseHyperbolic => {}
+        Elementary::Exp | Elementary::Ln => return None,
+    }
+    match (f.spec().tex, node.children().as_slice()) {
+        (Tex::Call(head), &[arg]) => Some((head, arg)),
         _ => None,
     }
-}
-
-fn push_latex_func(name: &'static str, arg: ExprId, stack: &mut Vec<LatexItem>) {
-    stack.push(LatexItem::Lit(r"\right)"));
-    stack.push(LatexItem::Expr(arg));
-    stack.push(LatexItem::Owned(format!("{}\\left(", name)));
 }
 
 /// Push `head\left(args[0], args[1], …\right)` (reverse order).
@@ -467,21 +461,35 @@ fn push_latex_call(head: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) {
     stack.push(LatexItem::Owned(format!("{head}\\left(")));
 }
 
-/// LaTeX for the library special functions and the internal asymptotic
-/// heads, from the `tex` facet of the function table (SymPy's notations:
-/// `\operatorname{erfi}`, `\operatorname{E}_{n}`, `J_{\nu}\left(x\right)`,
-/// `T_{n}\left(x\right)`, `F_{n}`, `{x}^{\left(n\right)}`,
-/// `F\left(\phi\middle| m\right)`, …).
+/// LaTeX for a function of the `funcs!` table (a node matched by
+/// `func_nodes!()`), from its `tex` facet: `\sin\left(x\right)`,
+/// `\left|x\right|`, `\binom{n}{k}`, `n!`, and SymPy's notations for the
+/// library functions (`\operatorname{erfi}`, `\operatorname{E}_{n}`,
+/// `J_{\nu}\left(x\right)`, `T_{n}\left(x\right)`, `F_{n}`,
+/// `{x}^{\left(n\right)}`, `F\left(\phi\middle| m\right)`, …).  Up to 0.59
+/// only the library and internal functions were rendered from the facet;
+/// each node-backed function had an arm that repeated its layout.
 ///
-/// Returns `false` (pushing nothing) for a call of the wrong arity, which
-/// prints as a user function.
-fn push_lib_fn_latex(
-    arena: &Arena,
-    name: Func,
-    args: &[ExprId],
-    stack: &mut Vec<LatexItem>,
-) -> bool {
-    if !name.spec().arity.accepts(args.len()) {
+/// A library or internal node whose argument count its function does not
+/// accept (no constructor builds one) prints as a call under its name.
+fn push_func_latex(arena: &Arena, node: &ExprNode, stack: &mut Vec<LatexItem>) {
+    // `func_nodes!()` is exactly the nodes that have a head.
+    let Some(f) = node.func_head() else {
+        return;
+    };
+    let args = node.children();
+    if !push_tex_facet(arena, f, &args, stack) {
+        push_latex_call(f.spec().name, &args, stack);
+    }
+}
+
+/// Push the `tex` layout of `name(args)`.  Returns `false` (pushing
+/// nothing) for a library or internal call of the wrong arity and for a
+/// layout that names an argument the call does not have.  A node-backed
+/// function has the argument count of its variant, and `min`/`max` print
+/// as `\min\left(…\right)` whatever their count.
+fn push_tex_facet(arena: &Arena, name: Func, args: &[ExprId], stack: &mut Vec<LatexItem>) -> bool {
+    if name.family() != Family::Node && !name.spec().arity.accepts(args.len()) {
         return false;
     }
     let group = |stack: &mut Vec<LatexItem>, arg: ExprId| {
@@ -733,149 +741,8 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
             }
         }
 
-        // ── Trig functions ─────────────────────────────────────────
-        ExprNode::Sin(x) => push_latex_func(r"\sin", x, stack),
-        ExprNode::Cos(x) => push_latex_func(r"\cos", x, stack),
-        ExprNode::Tan(x) => push_latex_func(r"\tan", x, stack),
-        ExprNode::Asin(x) => push_latex_func(r"\arcsin", x, stack),
-        ExprNode::Acos(x) => push_latex_func(r"\arccos", x, stack),
-        ExprNode::Atan(x) => push_latex_func(r"\arctan", x, stack),
-        ExprNode::Sinh(x) => push_latex_func(r"\sinh", x, stack),
-        ExprNode::Cosh(x) => push_latex_func(r"\cosh", x, stack),
-        ExprNode::Tanh(x) => push_latex_func(r"\tanh", x, stack),
-        ExprNode::Asinh(x) => push_latex_func(r"\operatorname{asinh}", x, stack),
-        ExprNode::Acosh(x) => push_latex_func(r"\operatorname{acosh}", x, stack),
-        ExprNode::Atanh(x) => push_latex_func(r"\operatorname{atanh}", x, stack),
-
-        // ── Transcendental ─────────────────────────────────────────
-        ExprNode::Exp(x) => push_latex_func(r"\exp", x, stack),
-        ExprNode::Ln(x) => push_latex_func(r"\ln", x, stack),
-
-        // ── Special functions ──────────────────────────────────────
-        ExprNode::Sign(x) => push_latex_func(r"\operatorname{sgn}", x, stack),
-        ExprNode::Heaviside(x) => push_latex_func(r"\operatorname{H}", x, stack),
-        ExprNode::DiracDelta(x) => push_latex_func(r"\delta", x, stack),
-        ExprNode::Gamma(x) => push_latex_func(r"\Gamma", x, stack),
-        ExprNode::LogGamma(x) => push_latex_func(r"\ln \Gamma", x, stack),
-        ExprNode::Digamma(x) => push_latex_func(r"\psi", x, stack),
-        ExprNode::Erf(x) => push_latex_func(r"\operatorname{erf}", x, stack),
-        ExprNode::Erfc(x) => push_latex_func(r"\operatorname{erfc}", x, stack),
-        ExprNode::LambertW(x) => push_latex_func(r"\operatorname{W}", x, stack),
-
-        // ── Complex analysis ────────────────────────────────────────────
-        ExprNode::Re(x) => push_latex_func(r"\Re", x, stack),
-        ExprNode::Im(x) => push_latex_func(r"\Im", x, stack),
-        ExprNode::Conjugate(x) => {
-            stack.push(LatexItem::Lit("}"));
-            stack.push(LatexItem::Expr(x));
-            stack.push(LatexItem::Lit(r"\overline{"));
-        }
-        ExprNode::Arg(x) => push_latex_func(r"\arg", x, stack),
-
-        // ── Special functions (0.2) ──────────────────────────────────────
-        ExprNode::Si(x) => push_latex_func(r"\operatorname{Si}", x, stack),
-        ExprNode::Ci(x) => push_latex_func(r"\operatorname{Ci}", x, stack),
-        ExprNode::Ei(x) => push_latex_func(r"\operatorname{Ei}", x, stack),
-        ExprNode::Li(x) => push_latex_func(r"\operatorname{li}", x, stack),
-        ExprNode::Zeta(x) => push_latex_func(r"\zeta", x, stack),
-        ExprNode::Polygamma(n, x) => {
-            // \psi^{(n)}\left(x\right)
-            stack.push(LatexItem::Lit(r"\right)"));
-            stack.push(LatexItem::Expr(x));
-            stack.push(LatexItem::Lit(r")}\left("));
-            stack.push(LatexItem::Expr(n));
-            stack.push(LatexItem::Lit(r"\psi^{("));
-        }
-        ExprNode::KroneckerDelta(i, j) => {
-            // \delta_{i j}
-            stack.push(LatexItem::Lit("}"));
-            stack.push(LatexItem::Expr(j));
-            stack.push(LatexItem::Lit(" "));
-            stack.push(LatexItem::Expr(i));
-            stack.push(LatexItem::Lit(r"\delta_{"));
-        }
-
-        // ── Abs: \left|x\right| ───────────────────────────────────
-        ExprNode::Abs(x) => {
-            stack.push(LatexItem::Lit(r"\right|"));
-            stack.push(LatexItem::Expr(x));
-            stack.push(LatexItem::Lit(r"\left|"));
-        }
-
-        // ── Floor / Ceiling ────────────────────────────────────────
-        ExprNode::Floor(x) => {
-            stack.push(LatexItem::Lit(r"\rfloor"));
-            stack.push(LatexItem::Expr(x));
-            stack.push(LatexItem::Lit(r"\lfloor "));
-        }
-        ExprNode::Ceiling(x) => {
-            stack.push(LatexItem::Lit(r"\rceil"));
-            stack.push(LatexItem::Expr(x));
-            stack.push(LatexItem::Lit(r"\lceil "));
-        }
-
-        // ── Factorial: n! ──────────────────────────────────────────
-        ExprNode::Factorial(x) => {
-            if arena.node(x).is_atom() {
-                stack.push(LatexItem::Lit("!"));
-                stack.push(LatexItem::Expr(x));
-            } else {
-                stack.push(LatexItem::Lit(r"\right)!"));
-                stack.push(LatexItem::Expr(x));
-                stack.push(LatexItem::Lit(r"\left("));
-            }
-        }
-
-        // ── Binomial: \binom{n}{k} ────────────────────────────────
-        ExprNode::Binomial(n, k) => {
-            stack.push(LatexItem::Lit("}"));
-            stack.push(LatexItem::Expr(k));
-            stack.push(LatexItem::Lit("}{"));
-            stack.push(LatexItem::Expr(n));
-            stack.push(LatexItem::Lit(r"\binom{"));
-        }
-
-        // ── Beta: \mathrm{B}(a, b) ────────────────────────────────
-        ExprNode::Beta(a, b) => {
-            stack.push(LatexItem::Lit(r"\right)"));
-            stack.push(LatexItem::Expr(b));
-            stack.push(LatexItem::Lit(", "));
-            stack.push(LatexItem::Expr(a));
-            stack.push(LatexItem::Lit(r"\mathrm{B}\left("));
-        }
-
-        // ── Atan2 ──────────────────────────────────────────────────
-        ExprNode::Atan2(y, x) => {
-            stack.push(LatexItem::Lit(r"\right)"));
-            stack.push(LatexItem::Expr(x));
-            stack.push(LatexItem::Lit(", "));
-            stack.push(LatexItem::Expr(y));
-            stack.push(LatexItem::Lit(r"\operatorname{atan2}\left("));
-        }
-
-        // ── Min / Max ──────────────────────────────────────────────
-        ExprNode::Min(ref args) => {
-            let args = args.clone();
-            stack.push(LatexItem::Lit(r"\right)"));
-            for (i, &arg) in args.iter().enumerate().rev() {
-                stack.push(LatexItem::Expr(arg));
-                if i > 0 {
-                    stack.push(LatexItem::Lit(", "));
-                }
-            }
-            stack.push(LatexItem::Lit(r"\min\left("));
-        }
-        ExprNode::Max(ref args) => {
-            let args = args.clone();
-            stack.push(LatexItem::Lit(r"\right)"));
-            for (i, &arg) in args.iter().enumerate().rev() {
-                stack.push(LatexItem::Expr(arg));
-                if i > 0 {
-                    stack.push(LatexItem::Lit(", "));
-                }
-            }
-            stack.push(LatexItem::Lit(r"\max\left("));
-        }
+        // ── Functions of the `funcs!` table: the `tex` facet ───────
+        func_nodes!() => push_func_latex(arena, &node, stack),
 
         // ── Sum / Product ──────────────────────────────────────────
         ExprNode::Sum(body, var, lo, hi) => {
@@ -1052,23 +919,6 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
                 }
             }
             stack.push(LatexItem::Owned(format!("{}\\left(", name)));
-        }
-
-        // ── Library function ───────────────────────────────────────────────
-        ExprNode::Lib(f, ref args) => {
-            let args = args.clone();
-            if !push_lib_fn_latex(arena, Func::from(f), &args, stack) {
-                push_latex_call(f.name(), &args, stack);
-            }
-        }
-
-        // ── Internal function (`__ei_asym`): from its `tex` facet, as its
-        //    head is not valid TeX ──
-        ExprNode::Internal(f, ref args) => {
-            let args = args.clone();
-            if !push_lib_fn_latex(arena, Func::from(f), &args, stack) {
-                push_latex_call(f.name(), &args, stack);
-            }
         }
 
         // ── Piecewise ──────────────────────────────────────────────

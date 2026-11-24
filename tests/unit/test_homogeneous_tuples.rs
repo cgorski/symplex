@@ -18,6 +18,8 @@
 //! are always destructured by a pattern that names each field at the site.
 //! Trait *implementations* are skipped (their signatures belong to the
 //! trait, which is checked); `#[cfg(test)]` items and modules are skipped.
+//! So are `pub(super)` and `pub(in path)` items: they are visible to one
+//! module tree, not to the crate.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -155,8 +157,16 @@ impl<'ast> Visit<'ast> for Finder<'_> {
     }
 }
 
+/// The surface is what `pub` and `pub(crate)` expose.  `pub(super)` and
+/// `pub(in path)` reach one module tree only — the helpers a file shares
+/// with the child modules it was split into — and are as private as an item
+/// of an unsplit file.
 fn is_public(vis: &syn::Visibility) -> bool {
-    !matches!(vis, syn::Visibility::Inherited)
+    match vis {
+        syn::Visibility::Inherited => false,
+        syn::Visibility::Restricted(r) => r.path.is_ident("crate"),
+        syn::Visibility::Public(_) => true,
+    }
 }
 
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {

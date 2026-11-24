@@ -62,6 +62,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::truth::Truth;
 
 /// Where the unknown of a solve ranges, intersected with its declared
 /// assumptions (see the [module documentation](self)).
@@ -91,7 +92,7 @@ impl Domain {
         };
         let mut declared = arena.symbol_assumptions(sid);
         declared.forward_chain();
-        if declared.query(Props::REAL) == Some(true) {
+        if Truth::from(declared.query(Props::REAL)).is_true() {
             Domain::Real
         } else {
             Domain::Complex
@@ -334,7 +335,10 @@ impl SolveCx {
             return false;
         }
         match *arena.node(var) {
-            ExprNode::Symbol(sid) => arena.symbol_assumptions(sid).query(Props::REAL) != Some(true),
+            // not proved real: it may be non-real
+            ExprNode::Symbol(sid) => {
+                !Truth::from(arena.symbol_assumptions(sid).query(Props::REAL)).is_true()
+            }
             _ => true,
         }
     }
@@ -363,7 +367,10 @@ impl SolveCx {
             return false;
         }
         match *arena.node(var) {
-            ExprNode::Symbol(sid) => arena.symbol_assumptions(sid).query(Props::REAL) != Some(true),
+            // not proved real: it may be non-real
+            ExprNode::Symbol(sid) => {
+                !Truth::from(arena.symbol_assumptions(sid).query(Props::REAL)).is_true()
+            }
             _ => true,
         }
     }
@@ -434,6 +441,6 @@ impl SolveCx {
                 }
             }
         }
-        cache.query(arena, e, Props::REAL) == Some(true)
+        Truth::from(cache.query(arena, e, Props::REAL)).is_true()
     }
 }

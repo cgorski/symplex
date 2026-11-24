@@ -1532,15 +1532,17 @@ fn integer_end(arena: &mut Arena, end: ExprId, open: bool, upper: bool) -> Resul
 }
 
 /// Does the set (exact, as intervals) hold an integer with every declared
-/// property of `a`?  `None` when an end is not compared exactly, or an
+/// property of `a`?  `Unknown` when an end is not compared exactly, or an
 /// interval holds too many integers to enumerate while a primality
 /// property is declared.
 fn holds_admissible_integer(
     arena: &mut Arena,
     set: ExprId,
     a: &crate::base::assumptions::Assumptions,
-) -> Option<bool> {
-    let intervals = crate::transforms::sets::as_intervals(arena, set)?;
+) -> Truth {
+    let Some(intervals) = crate::transforms::sets::as_intervals(arena, set) else {
+        return Truth::Unknown;
+    };
     // The admissible integers are, above 2 and below −2, either none or
     // infinitely many (sign and parity are periodic there, and there are
     // infinitely many primes and composites of either parity but 2): a
@@ -1550,10 +1552,14 @@ fn holds_admissible_integer(
     let unbounded_below = (-FAR - 16..-FAR).any(|n| integer_admissible(a, n));
     let primality = a.query(Props::PRIME).is_some() || a.query(Props::COMPOSITE).is_some();
     for iv in intervals {
-        let lo = integer_end(arena, iv.lower, iv.kind.lower_open(), false).ok()?;
-        let hi = integer_end(arena, iv.upper, iv.kind.upper_open(), true).ok()?;
+        let Ok(lo) = integer_end(arena, iv.lower, iv.kind.lower_open(), false) else {
+            return Truth::Unknown;
+        };
+        let Ok(hi) = integer_end(arena, iv.upper, iv.kind.upper_open(), true) else {
+            return Truth::Unknown;
+        };
         if (hi.is_none() && unbounded_above) || (lo.is_none() && unbounded_below) {
-            return Some(true);
+            return Truth::True;
         }
         // Every admissible integer of an unbounded end lies in a bounded
         // range: primes and composites above 1, a finite set within ±2.
@@ -1567,7 +1573,7 @@ fn holds_admissible_integer(
             continue;
         }
         if primality && lo.abs().max(hi.abs()) > MAX_PRIMALITY_TESTED {
-            return None;
+            return Truth::Unknown;
         }
         if hi - lo >= MAX_INTEGERS_ENUMERATED {
             // Without primality, admissibility is a matter of sign and
@@ -1575,7 +1581,7 @@ fn holds_admissible_integer(
             // every admissible kind it holds.  Primes are not enumerated
             // that far.
             if primality {
-                return None;
+                return Truth::Unknown;
             }
             let near_zero = (-2..=2).filter(|n| (lo..=hi).contains(n));
             if (lo..lo + 4)
@@ -1583,15 +1589,15 @@ fn holds_admissible_integer(
                 .chain(near_zero)
                 .any(|n| integer_admissible(a, n))
             {
-                return Some(true);
+                return Truth::True;
             }
             continue;
         }
         if (lo..=hi).any(|n| integer_admissible(a, n)) {
-            return Some(true);
+            return Truth::True;
         }
     }
-    Some(false)
+    Truth::False
 }
 
 /// Are the relational pairs mutually independent and unconstrained?
@@ -1710,8 +1716,8 @@ fn univariate_status(arena: &mut Arena, root: ExprId) -> Option<(bool, bool)> {
     }
     if let Some(var) = single_variable(arena, root) {
         let set = sets::reduce_inequalities(arena, &[root], var).ok()?;
-        let empty = sets::is_empty(arena, set)?;
-        let full = sets::is_full(arena, set)?;
+        let empty = sets::is_empty(arena, set).to_option()?;
+        let full = sets::is_full(arena, set).to_option()?;
         // Only trust the answer when the set is exactly known.
         sets::as_intervals(arena, set)?;
         return Some((empty, full));
@@ -1731,12 +1737,12 @@ fn univariate_status(arena: &mut Arena, root: ExprId) -> Option<(bool, bool)> {
     sets::as_intervals(arena, outside)?;
     match domain {
         Domain::Reals(_) => Some((
-            sets::is_empty(arena, inside)?,
-            sets::is_empty(arena, outside)?,
+            sets::is_empty(arena, inside).to_option()?,
+            sets::is_empty(arena, outside).to_option()?,
         )),
         Domain::Integers(_, a) => {
-            let some_inside = holds_admissible_integer(arena, inside, &a)?;
-            let some_outside = holds_admissible_integer(arena, outside, &a)?;
+            let some_inside = holds_admissible_integer(arena, inside, &a).to_option()?;
+            let some_outside = holds_admissible_integer(arena, outside, &a).to_option()?;
             Some((!some_inside, !some_outside))
         }
     }

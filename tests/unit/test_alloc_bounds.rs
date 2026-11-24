@@ -73,14 +73,16 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // `cast::MAX_DENSE_LIST` just before.
     ("poly/factor_hensel.rs", 1),
     // `Li_{−n}(z)`: `n ≤ MAX_SPECIAL_EXPANSION` by `as_int_in` just above.
-    ("transforms/eval.rs", 1),
+    ("transforms/eval/lib_values.rs", 1),
     // Another agent's write set at 0.58 (lengths from the working precision
     // and the Riemann–Siegel term count): review queue.
-    ("transforms/evalf.rs", 5),
+    ("transforms/evalf/polylog_eta.rs", 3),
     ("transforms/evalf/rszeta.rs", 3),
+    ("transforms/evalf/zeta_polygamma.rs", 2),
     // Another agent's write set at 0.58 (dense coefficient lists of the
     // Risch-type routes): review queue.
-    ("transforms/integrate.rs", 2),
+    ("transforms/integrate/rational_constants.rs", 1),
+    ("transforms/integrate/special.rs", 1),
 ];
 
 /// Functions whose arguments are bounded lengths: casts inside them are

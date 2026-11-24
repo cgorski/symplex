@@ -4039,6 +4039,32 @@ fn rewrite_tractable(
             })
     };
     let had_delta = delta(arena, e);
+    // Likewise every other step the passes below replace by its eventual
+    // value (`H`, `sign`, `⌊·⌋`, `⌈·⌉`, `min`, `max`, `Piecewise`, `δ`): up to
+    // 0.59 only the delta was looked at, and `x²·E₁(H(x − 1))`, `x²·Γ(0,
+    // ⌊x + 1/2⌋)`, `sin(x)·γ(−1/2, max(x − 1, 0)) + 1` at 0 were `0`, `0`
+    // and `1`: the constant left at the pole was a finite factor of a
+    // term tending to 0.
+    let steps = |arena: &Arena, e: ExprId| {
+        crate::base::walk::post_order_ids(arena, e)
+            .into_iter()
+            .filter(|&id| {
+                matches!(
+                    arena.node(id),
+                    ExprNode::KroneckerDelta(..)
+                        | ExprNode::Heaviside(_)
+                        | ExprNode::Sign(_)
+                        | ExprNode::Floor(_)
+                        | ExprNode::Ceiling(_)
+                        | ExprNode::Min(_)
+                        | ExprNode::Max(_)
+                        | ExprNode::Piecewise(_)
+                        | ExprNode::DiracDelta(_)
+                ) && crate::base::walk::contains(arena, id, x)
+            })
+            .count()
+    };
+    let steps_before = steps(arena, e);
     let mut e = e;
     for _ in 0..MAX_TRACTABLE_PASSES {
         let (r, continued) = rewrite_tractable_pass(arena, e, x, depth, budget)?;
@@ -4047,14 +4073,17 @@ fn rewrite_tractable(
             break;
         }
     }
-    if had_delta && !delta(arena, e) {
+    let resolved_delta = had_delta && !delta(arena, e);
+    if resolved_delta || steps(arena, e) < steps_before {
         let v = crate::transforms::eval::eval(arena, e);
-        if contains_singular_atom(arena, v)
-            || crate::calculus::limit::contains_hidden_singularity(arena, v)
+        if (resolved_delta
+            && (contains_singular_atom(arena, v)
+                || crate::calculus::limit::contains_hidden_singularity(arena, v)))
+            || crate::calculus::limit::holds_valueless_part(arena, v, x)
         {
             return Err(crate::base::errors::SymplexError::ComputationFailed {
                 operation: "gruntz",
-                reason: "a KroneckerDelta at its eventual value leaves a function at a pole".into(),
+                reason: "a step function at its eventual value leaves a function at a pole".into(),
             });
         }
     }
@@ -5909,10 +5938,32 @@ pub(crate) fn limit_pos_inf(
     x: ExprId,
 ) -> Result<ExprId, crate::base::errors::SymplexError> {
     let mut budget = Budget::new();
+    refuse_valueless(arena, e, x)?;
     let r = limitinf_directed(arena, e, x, 0, &mut budget, true)?;
     let r = validate_result(arena, r, x)?;
     // `e^{½ ln 2 + ½ ln π}` (from Stirling's constant) is `√2·√π`.
     Ok(simplify_exp_log(arena, r))
+}
+
+/// Refuse an expression that holds a part without a value at any `x`
+/// ([`holds_valueless_part`](crate::calculus::limit::holds_valueless_part)).
+/// The substitution of the positive variable folds a step to its value
+/// (`sign(1/x) − 1` and `KroneckerDelta(1/x, 0)` are 0), which can put a
+/// function at a pole: up to 0.59 `limit(x²·E₁(KroneckerDelta(x, 0)), x,
+/// 0)` and `limit(x²·γ(sign(x) − 1, 2), x, 0, '+')` were `0` (the constants
+/// `E₁(0)` and `γ(0, 2)` were finite coefficients of `x²`).
+fn refuse_valueless(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+) -> Result<(), crate::base::errors::SymplexError> {
+    if crate::calculus::limit::holds_valueless_part(arena, e, x) {
+        return Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz",
+            reason: "a part of the expression has no value at any point".into(),
+        });
+    }
+    Ok(())
 }
 
 /// [`real_for_generic_parameters`] for the positive variable `x → ∞`, with
@@ -5966,6 +6017,7 @@ fn gruntz_with_budget(
         let x = fresh_positive_dummy(arena, budget);
         let e_sub = crate::transforms::subs::subs(arena, e, z, x);
         let e_sub = crate::transforms::eval::eval(arena, e_sub);
+        refuse_valueless(arena, e_sub, x)?;
         let r = limitinf_directed(arena, e_sub, x, 0, budget, true)?;
         let r = validate_result(arena, r, x)?;
         let r = simplify_exp_log(arena, r);
@@ -5977,6 +6029,7 @@ fn gruntz_with_budget(
         let x = fresh_positive_dummy(arena, budget);
         let neg_x = arena.neg(x);
         let e_sub = crate::transforms::subs::subs(arena, e, z, neg_x);
+        refuse_valueless(arena, e_sub, x)?;
         let r = limitinf_directed(arena, e_sub, x, 0, budget, true)?;
         let r = validate_result(arena, r, x)?;
         let r = simplify_exp_log(arena, r);
@@ -6004,6 +6057,7 @@ fn gruntz_with_budget(
     let e_simplified = crate::transforms::eval::eval(arena, e_simplified);
 
     tracing::debug!(simplified = %arena.display(e_simplified), "gruntz: finite-point expression simplified, calling limitinf");
+    refuse_valueless(arena, e_simplified, x)?;
     let r = limitinf_directed(arena, e_simplified, x, 0, budget, true)?;
     let r = validate_result(arena, r, x)?;
     let r = simplify_exp_log(arena, r);

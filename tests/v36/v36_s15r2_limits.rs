@@ -490,3 +490,215 @@ fn a_dominated_constant_is_never_the_value_of_a_max() {
     // max(0, y) = 0 for every y ≤ 0
     assert!(lim("csc(Max(x, y))", Direction::Both).is_err());
 }
+
+// ── Wave 17 (A4), item 1: the zero tests of a composition ──────────────────
+
+/// The nightly fuzz input `c9feedf1241f`: `series(atanh(π^x + x^(3/2)), x,
+/// 1, 4)` took 1.8 s in a release build up to 0.59 (6.7 s in the fuzz build,
+/// beyond the 30 s of CI's sanitizer build).  The argument `1 + π + …` lies
+/// on the cut of `atanh`, and `π^(x + 1)` was not shown real near the point
+/// (`series::locally_real` asked for the limit of the constant base `π` by
+/// a substitution that has no value for an expression without the
+/// variable), so the expansion was repeated at 12 and at 28 terms, where
+/// the composition made 713 zero tests of constants of up to 5,200 nodes.
+/// Now the base is its own limit (one round, 4 terms: 1 ms in a release
+/// build).  Oracle: the first coefficient is `u′(1)/(1 − u(1)²)` with `u =
+/// π^x + x^(3/2)`, `u(1) = 1 + π`, `u′(1) = π·ln π + 3/2` (the chain rule);
+/// mpmath `diff(lambda x: atanh(pi**x + x**1.5), 1)` =
+/// −0.315504324130479471566….
+#[test]
+fn a_constant_base_keeps_a_power_real_beside_a_cut() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = ctx.parse("atanh(pi^x + x^(3/2))").unwrap();
+    let s = assert_fast!(Duration::from_secs(2), f.series(&x, &ctx.int(1), 4));
+    assert!(!s.has_unevaluated(), "{s}");
+    let c1 = s.diff(&x).subs(&x, &ctx.int(1)).eval_f64().unwrap();
+    let pi = std::f64::consts::PI;
+    let expected = (pi * pi.ln() + 1.5) / (1.0 - (1.0 + pi) * (1.0 + pi));
+    assert!((c1 - expected).abs() < 1e-13, "{c1} {expected}");
+    assert!((c1 + 0.315_504_324_130_479_47).abs() < 1e-13, "{c1}");
+    // the same hole with other constant bases and functions on a cut
+    for src in [
+        "acosh(E^x + sqrt(x))",
+        "asin(pi^x + x^(1/3))",
+        "acoth(1/2 + (1/3)^x*sqrt(x)/7)",
+    ] {
+        let f = ctx.parse(src).unwrap();
+        let s = assert_fast!(Duration::from_secs(2), f.series(&x, &ctx.int(1), 4));
+        assert!(!s.has_unevaluated(), "{src}: {s}");
+    }
+}
+
+/// The same series to order 12 was REFUSED after 4.2 s (release) up to 0.59
+/// and to order 20 after 5.4 s: at 28 terms the zero tests used up the
+/// evaluation budget of the series.  Each test evaluated its whole
+/// coefficient again; now a coefficient is enclosed by interval arithmetic
+/// on the enclosures of the coefficients it is built from
+/// (`calculus_util::enclosure`), and the series takes 14 ms (order 20: 80
+/// ms).  Oracle: mpmath `atanh(pi**x + x**1.5)` at `x = 21/20` is
+/// `0.231171227651578283… − 1.5707963…i` (the Taylor polynomial of degree
+/// 11 differs from it by `c₁₂·0.05¹² ≈ 10⁻¹⁶`).
+#[test]
+fn the_zero_tests_of_a_composition_do_not_evaluate_its_coefficients_again() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = ctx.parse("atanh(pi^x + x^(3/2))").unwrap();
+    let s = assert_fast!(Duration::from_secs(5), f.series(&x, &ctx.int(1), 12));
+    assert!(!s.has_unevaluated(), "{s}");
+    let v = s.subs(&x, &ctx.rational(21, 20)).eval_complex64().unwrap();
+    assert!((v.re - 0.231_171_227_651_578_28).abs() < 1e-12, "{v}");
+    assert!((v.im + std::f64::consts::FRAC_PI_2).abs() < 1e-12, "{v}");
+}
+
+/// `limit(Chi(acsch(π − x)), x, ∞)` (golden case 64720) is refused when the
+/// evaluation budget of Gruntz's series is spent, after 984 zero tests of
+/// polynomials in `π` (0.45 s in a release build up to 0.59).  The tests
+/// and their charges are the same, each is now an interval product (0.08 s).
+/// A first attempt at the series above made the composition decide its sums
+/// only at the end; that removed the charges, and this limit multiplied out
+/// its whole 28-term composition before it was refused (7.7 s).  The true
+/// limit is infinite (`Chi(u) ~ γ + ln u` as `u → 0`; mpmath
+/// `chi(-1e-20)` = −45.4744861949…), so the refusal is no wrong answer.
+#[test]
+fn a_refusal_by_the_evaluation_budget_stays_within_it() {
+    let r = assert_fast!(
+        Duration::from_secs(8),
+        lim_at("Chi(acsch(pi - x))", "oo", Direction::Both)
+    );
+    assert!(r.is_err(), "{r:?}");
+}
+
+// ── Wave 17 (A4), item 2: a function at a pole place of its facet ──────────
+
+/// A constant that is a function of the table at a pole place of its
+/// `Poles` facet, not folded to a value, is no factor of a limit.  Up to
+/// 0.59 a factor tending to 0 annihilated it (`0·c = 0`) before any rule
+/// looked at it: `limit(x²·E₁(0), x, 0)` was `0` from every side,
+/// `limit(sin(x)·Γ(0, 0) + 1, x, 0)` was `1`, `limit(E₁(0)/x, x, ∞)` was `0`.
+/// The expression has no value at any `x`, so the limit is refused.
+/// Oracle (the definitions): mpmath `e1(0) = +inf`, `expint(1/2, 0) = +inf`,
+/// `expint(-1, 0) = +inf`, `gammainc(0, 0)` and `gammainc(-1, 0)` raise
+/// "gamma function pole"; the integrals `Γ(s, 0)` and `γ(s, 0)` diverge for
+/// `re s ≤ 0` (DLMF 8.2.1–8.2.2, `γ(s, z) ~ zˢ/s`; mpmath's `gammainc(-0.5,
+/// 0)` is the continuation `Γ(−1/2)`, and symplex's own `evalf` refuses:
+/// "uppergamma(s, 0) diverges for s ≤ 0"); `K_ν(0)` is infinite for every
+/// `ν` (DLMF 10.30.2–10.30.3).
+#[test]
+fn a_function_at_a_pole_place_is_no_finite_factor() {
+    let dirs = [Direction::Both, Direction::Right, Direction::Left];
+    for f in [
+        "E1(0)",
+        "expint(1/2, 0)",
+        "expint(-1, 0)",
+        "uppergamma(0, 0)",
+        "uppergamma(-1, 0)",
+        "uppergamma(-1/2, 0)",
+        "lowergamma(-1/2, 0)",
+        "lowergamma(0, 0)",
+        "besselk(y, 0)",
+    ] {
+        for shape in ["x^2*F", "sin(x)*F + 1", "(1 - cos(x))*F - x", "F + x"] {
+            let src = shape.replace('F', f);
+            for dir in dirs {
+                assert!(lim(&src, dir).is_err(), "{src} {dir:?}");
+            }
+        }
+        for shape in ["F/x", "F*exp(-x)"] {
+            let src = shape.replace('F', f);
+            assert!(lim_at(&src, "oo", Direction::Both).is_err(), "{src}");
+        }
+    }
+    // The values the constructors fold at such a place stay values:
+    // E₂(0) = 1, Γ(1/2, 0) = √π, J₁(0) = 0, γ(1/2, 0) = 0 (mpmath
+    // `expint(2, 0) = 1.0`, `gammainc(0.5, 0) = 1.7724…`, `besselj(1, 0) = 0`).
+    assert_eq!(lim("x^2*expint(2, 0) + 3", Direction::Both).unwrap(), "3");
+    assert_eq!(
+        lim("x + uppergamma(1/2, 0)", Direction::Both).unwrap(),
+        "sqrt(pi)"
+    );
+    assert_eq!(
+        lim("cos(x)*besselj(1, 0) + 2", Direction::Both).unwrap(),
+        "2"
+    );
+    assert_eq!(
+        lim("x^2 + lowergamma(1/2, 0)", Direction::Both).unwrap(),
+        "0"
+    );
+    // and a regular argument is a factor as before
+    assert_eq!(lim("x^2*E1(1)", Direction::Both).unwrap(), "0");
+    // A numeric `B` whose pole cancels in its Γ ratio is left to its value:
+    // B(−3, 1) = Γ(−3)·Γ(1)/Γ(−2) = −1/3 (mpmath `beta(-3, 1)` =
+    // −0.3333…; golden cases 87616, 91657, 154444).  B(−2, 3) is a pole
+    // (Γ(1) is finite).
+    assert_eq!(lim("x^2*beta(-3, 1) + 2", Direction::Both).unwrap(), "2");
+    assert!(lim("x^2*beta(-2, 3) + 2", Direction::Both).is_err());
+}
+
+/// The same when the pole place is reached because an inner step function
+/// took its value: `KroneckerDelta(x + 1, −1)`, `H(x − 1)`, `⌊x + 1/2⌋`,
+/// `⌈x − 1/2⌉`, `sign(x + 1) − 1`, `max(x − 1, 0)` and `min(x + 1, 0)` are 0
+/// at every `x` near 0 (`KroneckerDelta(x, 0)` at every `x ≠ 0`), so
+/// `x²·E₁(step)` is `x²·E₁(0)` there.  Up to 0.59 only the delta was
+/// guarded, and only on the paths that go through Gruntz's rewriting of
+/// steps: the limit from the right of `x²·E₁(KroneckerDelta(x + 1, −1))` was
+/// `0` (the assumption `x > 0` folds the delta first), as were all three
+/// limits of `x²·E₁(H(x − 1))`, `x²·Γ(0, ⌊x + 1/2⌋)`, `x²·E₁(KroneckerDelta(x,
+/// 0))`; `sin(x)·γ(−1/2, max(x − 1, 0)) + 1` was `1`.  Hunt: 6,193 inputs
+/// (58 constants at or beside a pole place in 8 shapes from 3 sides and 3
+/// shapes at `∞`; 21 steps constant near 0 in the 33, 12 or 10 functions
+/// with a pole at their value, 3 shapes, 3 sides; 11 steps that jump at 0
+/// in 34 functions from each side), oracle: the input by mpmath at `x =
+/// ±10⁻³, ±10⁻⁶, ±10⁻⁹, ±10⁻¹²` (`10³ … 10¹²` at `∞`).  Up to 0.59: 761
+/// finite answers at inputs without a finite value at any sample; none
+/// now.  The 968 right answers, the 4,026 refusals and the 438 infinite
+/// answers at such inputs (`x²·K₀(0) = +∞`: the constructors fold `K₀(0)`,
+/// `Ei(0)`, `li(1)`, `atanh(1)` to signed infinities) are unchanged.
+#[test]
+fn a_step_at_its_value_may_leave_a_function_at_a_pole() {
+    let dirs = [Direction::Both, Direction::Right, Direction::Left];
+    for step in [
+        "KroneckerDelta(x + 1, -1)",
+        "Heaviside(x - 1)",
+        "floor(x + 1/2)",
+        "ceiling(x - 1/2)",
+        "sign(x + 1) - 1",
+        "Max(x - 1, 0)",
+        "Min(x + 1, 0)",
+        "KroneckerDelta(x, 0)",
+        // (`δ(a) = 0` for a real `a ≠ 0`: the R2 notes' open item 8,
+        // `x²·E₁(δ(x + 1))` at 0 was `0` from every side)
+        "DiracDelta(x + 1)",
+    ] {
+        for f in [
+            "E1(S)",
+            "expint(1/2, S)",
+            "uppergamma(0, S)",
+            "lowergamma(-1/2, S)",
+            "lowergamma(S, 1)",
+        ] {
+            let f = f.replace('S', step);
+            for shape in ["x^2*F", "sin(x)*F + 1"] {
+                let src = shape.replace('F', &f);
+                for dir in dirs {
+                    assert!(lim(&src, dir).is_err(), "{src} {dir:?}");
+                }
+            }
+        }
+    }
+    // `sign(x) − 1` is 0 from the right only; from the left it is −2, and
+    // `E₁(−2)` is a finite value on the cut (mpmath `e1(-2)` = `−4.954… −
+    // 3.14159…i`): 0·E₁(−2) = 0.
+    assert!(lim("x^2*E1(sign(x) - 1)", Direction::Right).is_err());
+    assert_eq!(lim("x^2*E1(sign(x) - 1)", Direction::Left).unwrap(), "0");
+    // Where the value of the step is a regular place, the limit is taken:
+    // 0·E₁(1), 0·E₂(0) + 1.
+    assert_eq!(
+        lim("x^2*E1(1 + Heaviside(x - 1))", Direction::Both).unwrap(),
+        "0"
+    );
+    assert_eq!(
+        lim("x^2*expint(2, floor(x + 1/2)) + 1", Direction::Both).unwrap(),
+        "1"
+    );
+}

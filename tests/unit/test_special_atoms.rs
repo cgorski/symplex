@@ -53,7 +53,8 @@ const COMPARE_ALLOWLIST: &[(&str, usize)] = &[
     ("api/expr_integrate_ext.rs", 2),
     // Identity checks that decide nothing (each says so in a comment): the
     // factor `∞` beside the direction of `c·∞`, the spelling `q·i·∞`.
-    ("base/canon.rs", 4),
+    ("base/canon.rs", 2),
+    ("base/canon/special_values.rs", 2),
     ("calculus/convergence.rs", 7),
     ("calculus/laplace.rs", 1),
     ("calculus/residue.rs", 1),
@@ -81,7 +82,7 @@ const CONTAINS_ALLOWLIST: &[(&str, usize)] = &[
     ("base/canon.rs", 1),
     ("calculus/formal_series.rs", 4),
     // `betainc` at an infinite bound: a `nan` in the antiderivative's value.
-    ("transforms/eval.rs", 1),
+    ("transforms/eval/lib_values.rs", 1),
 ];
 
 const ATOMS: &[&str] = &["infinity", "neg_infinity", "complex_infinity", "nan"];

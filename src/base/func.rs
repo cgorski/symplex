@@ -37,12 +37,18 @@
 //! and arities as before the list existed — and `From<LibFn> for Func`.
 //!
 //! Only facets that are *data*, uniform across the representations, live in
-//! the spec: the name, the parser's further names, the argument count, the
-//! sort-key sub-rank and the LaTeX layout, and six facets with semantics,
-//! each read by the code that used to keep a list of its own:
+//! the spec: the argument count, six facets of how a function is written and
+//! ordered, and six facets with semantics, each read by the code that used
+//! to keep a list of its own:
 //!
 //! | Facet | Says | Read by |
 //! |---|---|---|
+//! | `name` | the head of the call notation | `Display` (`output/display.rs`), the JSON form, the parser |
+//! | `parse` | the further names the parser reads | the parser ([`Func::parsed`]) |
+//! | [`SortSub`] (`sort`) | the leading bytes of the sort key | `base/sort_key.rs` |
+//! | [`Tex`] | the LaTeX layout | `output/latex.rs` |
+//! | [`Pretty`] | the layout of the two-dimensional printer | `output/pretty.rs` |
+//! | [`Mml`] (`mathml`) | the head in Presentation MathML | `output/mathml.rs` |
 //! | [`Conj`] | where `conj f(z…) = f(conj z…)` | `conjugate` (`base/complex.rs`), `evalf`'s exact-realness signatures |
 //! | [`RealOn`] | on which arguments `f` is real | the assumption system (`compute_func`) |
 //! | [`Parity`] | `f(−z) = ±f(z)`, and how the sign is extracted today | a test against `canon`/`eval` |
@@ -59,6 +65,15 @@
 //! the cut).  Algorithms (evaluation, derivatives, series, integration)
 //! stay in their modules as exhaustive `match f: Func` arms.
 //!
+//! Up to 0.59 the six facets of writing were also written a second time:
+//! one `match` arm per node-backed function in each printer and in the sort
+//! key, an arm per name in the parser and a list of 94 known names — about
+//! 215 arms that tests over [`Func::ALL`] proved equal to the table.  Each
+//! of those files now has one arm, `func_nodes!() =>`, that reads the facet,
+//! with a hand-written case only where a notation is not data (the postfix
+//! `n!`, bars, an overline); `tests/unit/test_func_names.rs` counts the
+//! string literals that still spell a function outside this file.
+//!
 //! # Which entry point
 //!
 //! | Need | Use |
@@ -66,6 +81,8 @@
 //! | which function a node applies, and to what | [`ExprNode::func`] (`None` for non-functions and user functions) |
 //! | build `f(args)` as today's constructors do (canonical folds included) | [`Arena::func`] (arity-checked) |
 //! | a function's data | [`Func::spec`] |
+//! | one `match` arm for every function node (a printer, the sort key) | `func_nodes!()`, then [`ExprNode::func_head`] |
+//! | the function a call name denotes | [`Func::parsed`] (the parser's lookup by `name` and `parse`) |
 //! | the public library-function type | [`LibFn`] (`Func::from`, [`Func::as_lib`]) |
 //!
 //! # Corner cases
@@ -95,9 +112,11 @@
 //!   function builds that function (`apply("sin", [x])` is `sin(x)`,
 //!   `apply("bell", [3])` the Bell number); `Apply` means a user function
 //!   (or an internal head), never a library function.
-//! - **Sort keys.**  [`SortSub`] reproduces the hand-assigned bytes of
-//!   `sort_key.rs` exactly.  `Binomial` and `Asin` share byte 8 (since
-//!   0.13; byte identity keeps it), the one allowlisted duplicate.
+//! - **Sort keys.**  [`SortSub`] holds the bytes that were assigned by hand
+//!   in `sort_key.rs` until 0.59, unchanged: keys are byte-identity
+//!   critical, so a byte is never renumbered and a new function takes an
+//!   unused one.  `Binomial` and `Asin` share byte 8 (since 0.13; byte
+//!   identity keeps it), the one allowlisted duplicate.
 //! - **`Min`/`Max`** take any positive number of arguments
 //!   ([`ArgCount::AtLeast`]); one argument folds to itself.  The parser asks
 //!   for two.
@@ -124,7 +143,9 @@
 //! [`Context::apply`]: crate::api::context::Context::apply
 
 use std::fmt;
+use std::sync::LazyLock;
 
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 #[cfg(test)]
 use smallvec::smallvec;
@@ -193,8 +214,8 @@ impl fmt::Display for ArgCount {
 }
 
 /// Where a function's nodes sort: the leading bytes of their sort key,
-/// before the arguments' keys (see `sort_key.rs`, whose bytes these
-/// reproduce; a test compares them for every [`Func`]).
+/// before the arguments' keys.  `sort_key.rs` writes them from here (up to
+/// 0.59 it had an arm per function with the same byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum SortSub {
     /// The function rank (100), then this byte.
@@ -212,10 +233,11 @@ pub(crate) enum SortSub {
 /// notation of SymPy's `latex()` where it has one (`T_{n}\left(x\right)`,
 /// `F_{n}`, `{x}^{\left(n\right)}` for the rising and
 /// `{\left(x\right)}_{n}` for the falling factorial, the combinatorial
-/// convention).  The LaTeX printer renders the library functions from it;
-/// a test checks the node-backed ones against their own printer arms.  Up to
-/// 0.49 library functions without a notation printed their names, and an
-/// underscore in one was a subscript (`rising_factorial\left(x, y\right)`).
+/// convention).  The LaTeX printer renders every function from it (up to
+/// 0.59 the library functions only; each node-backed function had a printer
+/// arm of its own).  Up to 0.49 library functions without a notation printed
+/// their names, and an underscore in one was a subscript
+/// (`rising_factorial\left(x, y\right)`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Tex {
     /// `head\left(a, b, …\right)`.
@@ -237,6 +259,65 @@ pub(crate) enum TexPiece {
     /// The argument at this position, in `\left(…\right)` unless it is an
     /// atom (the base of `{x}^{\left(n\right)}`, the operand of `!n`).
     Group(u8),
+}
+
+/// How the two-dimensional printer (`output/pretty.rs`) lays a call out.
+/// Up to 0.59 its match had one arm per function it knew and a wildcard arm
+/// for the others, so a new function printed flat without anyone deciding
+/// it; the heads that differ from the name (`lgamma`, `sgn`, `psi`, `ceil`)
+/// were spelled there only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Pretty {
+    /// No layout of its own: the one-line `Display` text.
+    Flat,
+    /// `name(arg)` around the laid-out argument (one argument).
+    Call,
+    /// As [`Call`](Self::Call) under heads that are not the name: `unicode`
+    /// in Unicode mode, `ascii` in ASCII mode (`Γ`/`Gamma`, `ψ`/`psi`).
+    Heads {
+        /// The head in Unicode mode.
+        unicode: &'static str,
+        /// The head in ASCII mode.
+        ascii: &'static str,
+    },
+    /// The laid-out argument between two pieces of text on its baseline
+    /// (`⌊x⌋`; in ASCII mode `floor(x)`, whose parentheses do not grow with
+    /// the argument as those of [`Call`](Self::Call) do).
+    Brackets {
+        /// The delimiters in Unicode mode.
+        unicode: Delims,
+        /// The delimiters in ASCII mode.
+        ascii: Delims,
+    },
+    /// A notation written in `pretty.rs`: bars (`|x|`), an overline, the
+    /// postfix `!`, a superscript order (`ψ⁽ⁿ⁾`), `δ(i,j)`.
+    Own,
+}
+
+/// The text before and after a bracketed argument ([`Pretty::Brackets`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Delims {
+    /// The text before the argument.
+    pub(crate) open: &'static str,
+    /// The text after the argument.
+    pub(crate) close: &'static str,
+}
+
+/// The head of a call in Presentation MathML (`output/mathml.rs`), applied
+/// to the arguments with the invisible apply operator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Mml {
+    /// `<mi>name</mi>`: the head is the function's name.
+    Name,
+    /// `<mi>…</mi>` around another identifier (`arcsin`, `sgn`) or a
+    /// character reference (`&#x393;` for `Γ`); trusted markup, not escaped.
+    Head(&'static str),
+    /// `<msub><mi>…</mi>order</msub>` applied to the argument: the first of
+    /// two arguments is an index (`J_ν(x)`).
+    Indexed(&'static str),
+    /// A notation written in `mathml.rs` (bars, floor brackets, an overbar,
+    /// the postfix `!`, a binomial, `ln Γ`, `ψ⁽ⁿ⁾`, `δ_ij`, `W_k`).
+    Own,
 }
 
 /// A branch cut: where, in the values of one argument, a function's
@@ -642,14 +723,6 @@ impl Runtime {
 /// (a struct literal without `..`), so a new field is a compile error
 /// until each function says what it is.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "`parse`, `sort` and `parity` are read by the tests over `Func::ALL`; the \
-                  parser, sort keys and sign extraction migrate to them later"
-    )
-)]
 pub(crate) struct FuncSpec {
     /// The name: the head `Display` prints in call notation (`sin`,
     /// `Gamma`, `W`, `C`), for a library function the head of its JSON
@@ -666,6 +739,10 @@ pub(crate) struct FuncSpec {
     pub(crate) sort: SortSub,
     /// The LaTeX layout.
     pub(crate) tex: Tex,
+    /// The layout of the two-dimensional printer.
+    pub(crate) pretty: Pretty,
+    /// The head in Presentation MathML.
+    pub(crate) mathml: Mml,
     /// Where complex conjugation commutes with the function.
     pub(crate) conj: Conj,
     /// Where the function is real.
@@ -809,10 +886,6 @@ macro_rules! funcs {
             /// Every function: the node-backed ones in `ExprNode` order, the
             /// library functions in [`LibFn::ALL`] order, then the internal
             /// ones.
-            #[cfg_attr(
-                not(test),
-                expect(dead_code, reason = "iterated by the tests; by the table consumers in W6")
-            )]
             pub(crate) const ALL: &[Func] = &[
                 $( Func::$N, )* $( Func::$L, )* $( Func::$I, )*
             ];
@@ -825,6 +898,7 @@ macro_rules! funcs {
             ];
 
             /// The function's data.
+            #[inline]
             pub(crate) const fn spec(self) -> &'static FuncSpec {
                 &Self::SPECS[self as usize]
             }
@@ -903,6 +977,7 @@ funcs! {
         /// Minimum `min(a, b, …)`.
         Min => FuncSpec {
             name: "min", parse: &[], arity: AtLeast(1), sort: Rank(130), tex: Tex::Call(r"\min"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Of real arguments only (the order of ℝ).
             conj: Conj::No, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
@@ -911,6 +986,7 @@ funcs! {
         /// Maximum `max(a, b, …)`.
         Max => FuncSpec {
             name: "max", parse: &[], arity: AtLeast(1), sort: Rank(132), tex: Tex::Call(r"\max"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -919,6 +995,10 @@ funcs! {
         Floor => FuncSpec {
             name: "floor", parse: &[], arity: Exactly(1), sort: Function(20),
             tex: Tex::Layout(&[Lit(r"\lfloor "), Arg(0), Lit(r"\rfloor")]),
+            pretty: Pretty::Brackets {
+                unicode: Delims { open: "⌊", close: "⌋" },
+                ascii: Delims { open: "floor(", close: ")" },
+            }, mathml: Mml::Own,
             // SymPy's `floor(x + iy) = floor(x) + i·floor(y)` does not reflect:
             // `floor(−y) ≠ −floor(y)`.
             conj: Conj::No, real_on: RealOn::IntegerValued, parity: Neither, poles: Poles::None,
@@ -929,6 +1009,10 @@ funcs! {
         Ceiling => FuncSpec {
             name: "ceiling", parse: &["ceil"], arity: Exactly(1), sort: Function(21),
             tex: Tex::Layout(&[Lit(r"\lceil "), Arg(0), Lit(r"\rceil")]),
+            pretty: Pretty::Brackets {
+                unicode: Delims { open: "⌈", close: "⌉" },
+                ascii: Delims { open: "ceil(", close: ")" },
+            }, mathml: Mml::Own,
             conj: Conj::No, real_on: RealOn::IntegerValued, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -936,6 +1020,7 @@ funcs! {
         /// Sine.
         Sin => FuncSpec {
             name: "sin", parse: &[], arity: Exactly(1), sort: Function(0), tex: Tex::Call(r"\sin"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Negation), poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -943,6 +1028,7 @@ funcs! {
         /// Cosine.
         Cos => FuncSpec {
             name: "cos", parse: &[], arity: Exactly(1), sort: Function(1), tex: Tex::Call(r"\cos"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Even(Negation), poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -950,6 +1036,7 @@ funcs! {
         /// Tangent.
         Tan => FuncSpec {
             name: "tan", parse: &[], arity: Exactly(1), sort: Function(2), tex: Tex::Call(r"\tan"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             // Poles at π/2 + kπ; real and finite for a real argument by the
             // generic convention of its own handler (`compute_trig`).
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Negation), poles: Poles::Other,
@@ -959,6 +1046,7 @@ funcs! {
         /// Exponential `eˣ`.
         Exp => FuncSpec {
             name: "exp", parse: &[], arity: Exactly(1), sort: Function(3), tex: Tex::Call(r"\exp"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -966,6 +1054,7 @@ funcs! {
         /// Natural logarithm (`log(x)` with one argument).
         Ln => FuncSpec {
             name: "ln", parse: &["log"], arity: Exactly(1), sort: Function(4), tex: Tex::Call(r"\ln"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::OffCut(NEG0), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(0),
             constants: Constants::Folded,
@@ -975,6 +1064,7 @@ funcs! {
         Abs => FuncSpec {
             name: "abs", parse: &[], arity: Exactly(1), sort: Function(6),
             tex: Tex::Layout(&[Lit(r"\left|"), Arg(0), Lit(r"\right|")]),
+            pretty: Pretty::Own, mathml: Mml::Own,
             conj: Conj::Entire, real_on: RealOn::Everywhere, parity: Even(Canonical),
             poles: Poles::None,
             constants: Constants::Folded,
@@ -984,6 +1074,7 @@ funcs! {
         Asin => FuncSpec {
             name: "asin", parse: &["arcsin"], arity: Exactly(1), sort: Function(8),
             tex: Tex::Call(r"\arcsin"),
+            pretty: Pretty::Call, mathml: Mml::Head("arcsin"),
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::OutsideUnitInterval }),
             real_on: RealOn::UnitInterval { closed: true }, parity: Odd(SymbolFree),
             poles: Poles::None,
@@ -994,6 +1085,7 @@ funcs! {
         Acos => FuncSpec {
             name: "acos", parse: &["arccos"], arity: Exactly(1), sort: Function(9),
             tex: Tex::Call(r"\arccos"),
+            pretty: Pretty::Call, mathml: Mml::Head("arccos"),
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::OutsideUnitInterval }),
             real_on: RealOn::UnitInterval { closed: true }, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
@@ -1003,6 +1095,7 @@ funcs! {
         Atan => FuncSpec {
             name: "atan", parse: &["arctan"], arity: Exactly(1), sort: Function(10),
             tex: Tex::Call(r"\arctan"),
+            pretty: Pretty::Call, mathml: Mml::Head("arctan"),
             // Poles at ±i.
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::ImaginaryOutsideUnit }),
             real_on: RealOn::Reals, parity: Odd(SymbolFree), poles: Poles::Other,
@@ -1013,6 +1106,7 @@ funcs! {
         Atan2 => FuncSpec {
             name: "atan2", parse: &[], arity: Exactly(2), sort: Function(19),
             tex: Tex::Call(r"\operatorname{atan2}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Of real arguments only.
             conj: Conj::No, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
@@ -1021,6 +1115,7 @@ funcs! {
         /// Hyperbolic sine.
         Sinh => FuncSpec {
             name: "sinh", parse: &[], arity: Exactly(1), sort: Function(11), tex: Tex::Call(r"\sinh"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Negation), poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -1028,6 +1123,7 @@ funcs! {
         /// Hyperbolic cosine.
         Cosh => FuncSpec {
             name: "cosh", parse: &[], arity: Exactly(1), sort: Function(12), tex: Tex::Call(r"\cosh"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Even(Negation), poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -1035,6 +1131,7 @@ funcs! {
         /// Hyperbolic tangent.
         Tanh => FuncSpec {
             name: "tanh", parse: &[], arity: Exactly(1), sort: Function(13), tex: Tex::Call(r"\tanh"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             // Poles at i(π/2 + kπ).
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Negation), poles: Poles::Other,
             constants: Constants::Folded,
@@ -1044,6 +1141,7 @@ funcs! {
         Asinh => FuncSpec {
             name: "asinh", parse: &["arcsinh"], arity: Exactly(1), sort: Function(14),
             tex: Tex::Call(r"\operatorname{asinh}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::ImaginaryOutsideUnit }),
             real_on: RealOn::Reals, parity: Odd(SymbolFree), poles: Poles::None,
             constants: Constants::Folded,
@@ -1053,6 +1151,7 @@ funcs! {
         Acosh => FuncSpec {
             name: "acosh", parse: &["arccosh"], arity: Exactly(1), sort: Function(15),
             tex: Tex::Call(r"\operatorname{acosh}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::BelowOne }),
             real_on: RealOn::AtLeastOne, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
@@ -1062,6 +1161,7 @@ funcs! {
         Atanh => FuncSpec {
             name: "atanh", parse: &["arctanh"], arity: Exactly(1), sort: Function(16),
             tex: Tex::Call(r"\operatorname{atanh}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             // Poles at ±1.
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::OutsideUnitInterval }),
             real_on: RealOn::UnitInterval { closed: false }, parity: Odd(SymbolFree),
@@ -1073,6 +1173,7 @@ funcs! {
         Sign => FuncSpec {
             name: "sign", parse: &["sgn"], arity: Exactly(1), sort: Function(18),
             tex: Tex::Call(r"\operatorname{sgn}"),
+            pretty: Pretty::Heads { unicode: "sgn", ascii: "sgn" }, mathml: Mml::Head("sgn"),
             // `sign z = z/|z|` (SymPy's `sign._eval_conjugate`).
             conj: Conj::Entire, real_on: RealOn::IntegerValued, parity: Odd(Canonical),
             poles: Poles::None,
@@ -1083,6 +1184,7 @@ funcs! {
         Heaviside => FuncSpec {
             name: "H", parse: &["heaviside"], arity: Exactly(1), sort: Function(28),
             tex: Tex::Call(r"\operatorname{H}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Of real arguments.
             conj: Conj::No, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
@@ -1092,6 +1194,7 @@ funcs! {
         DiracDelta => FuncSpec {
             name: "DiracDelta", parse: &["dirac_delta"], arity: Exactly(1), sort: Function(29),
             tex: Tex::Call(r"\delta"),
+            pretty: Pretty::Flat, mathml: Mml::Head("&#x3B4;"),
             // A distribution: 0 off the origin, no value at it.
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Even(AutoSign::Never),
             poles: Poles::Other,
@@ -1101,6 +1204,7 @@ funcs! {
         /// Real part.
         Re => FuncSpec {
             name: "re", parse: &[], arity: Exactly(1), sort: Function(31), tex: Tex::Call(r"\Re"),
+            pretty: Pretty::Call, mathml: Mml::Head("&#x211C;"),
             conj: Conj::Entire, real_on: RealOn::Everywhere, parity: Odd(Canonical),
             poles: Poles::None,
             constants: Constants::Folded,
@@ -1109,6 +1213,7 @@ funcs! {
         /// Imaginary part.
         Im => FuncSpec {
             name: "im", parse: &[], arity: Exactly(1), sort: Function(32), tex: Tex::Call(r"\Im"),
+            pretty: Pretty::Call, mathml: Mml::Head("&#x2111;"),
             // `im z̄ = −im z`.
             conj: Conj::No, real_on: RealOn::Everywhere, parity: Odd(Canonical), poles: Poles::None,
             constants: Constants::Folded,
@@ -1118,6 +1223,7 @@ funcs! {
         Conjugate => FuncSpec {
             name: "conjugate", parse: &["conj"], arity: Exactly(1), sort: Function(33),
             tex: Tex::Layout(&[Lit(r"\overline{"), Arg(0), Lit("}")]),
+            pretty: Pretty::Own, mathml: Mml::Own,
             conj: Conj::Entire, real_on: RealOn::Custom, parity: Odd(Canonical), poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::NONE,
@@ -1125,6 +1231,7 @@ funcs! {
         /// Principal argument `arg(z) ∈ (−π, π]`.
         Arg => FuncSpec {
             name: "arg", parse: &[], arity: Exactly(1), sort: Function(34), tex: Tex::Call(r"\arg"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             // `arg z̄ = −arg z` off the cut.
             conj: Conj::No, real_on: RealOn::Everywhere, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
@@ -1133,6 +1240,7 @@ funcs! {
         /// Gamma function.
         Gamma => FuncSpec {
             name: "Gamma", parse: &[], arity: Exactly(1), sort: Function(22), tex: Tex::Call(r"\Gamma"),
+            pretty: Pretty::Heads { unicode: "Γ", ascii: "Gamma" }, mathml: Mml::Head("&#x393;"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[0]),
             constants: Constants::Folded,
@@ -1142,6 +1250,7 @@ funcs! {
         LogGamma => FuncSpec {
             name: "LogGamma", parse: &[], arity: Exactly(1), sort: Function(23),
             tex: Tex::Call(r"\ln \Gamma"),
+            pretty: Pretty::Heads { unicode: "lgamma", ascii: "lgamma" }, mathml: Mml::Own,
             conj: Conj::OffCut(NEG0), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[0]),
             constants: Constants::Folded,
@@ -1150,6 +1259,7 @@ funcs! {
         /// Digamma `ψ(x)`.
         Digamma => FuncSpec {
             name: "Digamma", parse: &[], arity: Exactly(1), sort: Function(24), tex: Tex::Call(r"\psi"),
+            pretty: Pretty::Heads { unicode: "ψ", ascii: "psi" }, mathml: Mml::Head("&#x3C8;"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither,
             poles: Poles::NonPositiveIntegers(&[0]),
             constants: Constants::Folded,
@@ -1159,6 +1269,7 @@ funcs! {
         Erf => FuncSpec {
             name: "erf", parse: &[], arity: Exactly(1), sort: Function(25),
             tex: Tex::Call(r"\operatorname{erf}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(SymbolFree), poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -1167,6 +1278,7 @@ funcs! {
         Erfc => FuncSpec {
             name: "erfc", parse: &[], arity: Exactly(1), sort: Function(26),
             tex: Tex::Call(r"\operatorname{erfc}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::own(Backends::ALL),
@@ -1176,6 +1288,7 @@ funcs! {
         LambertW0 => FuncSpec {
             name: "W", parse: &["lambertw"], arity: Exactly(1), sort: Function(30),
             tex: Tex::Call(r"\operatorname{W}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             // `W₀(z̄) = conj W₀(z)` off the cut `(−∞, −1/e]`, which no consumer
             // tests; real on `[−1/e, ∞)` (DLMF §4.13), claimed on `[0, ∞)`.
             conj: Conj::No, real_on: RealOn::NonNegativeReals, parity: Neither, poles: Poles::None,
@@ -1186,6 +1299,7 @@ funcs! {
         Beta => FuncSpec {
             name: "B", parse: &["beta"], arity: Exactly(2), sort: Function(27),
             tex: Tex::Call(r"\mathrm{B}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `Γ(a)Γ(b)/Γ(a + b)`; real for real arguments as SymPy's `beta`.
             // Zero where `a + b` is a pole and `a`, `b` are not: `B(1/2, −1/2)`
             // stays unfolded.
@@ -1198,6 +1312,7 @@ funcs! {
         Si => FuncSpec {
             name: "Si", parse: &[], arity: Exactly(1), sort: Function(35),
             tex: Tex::Call(r"\operatorname{Si}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Canonical), poles: Poles::None,
             constants: Constants::Folded,
             rt: Runtime::helper(Kernel::Unary("sin_integral"), Backends::VM_RUST_C)
@@ -1207,6 +1322,7 @@ funcs! {
         Ci => FuncSpec {
             name: "Ci", parse: &[], arity: Exactly(1), sort: Function(36),
             tex: Tex::Call(r"\operatorname{Ci}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             // `Ci(−x) = Ci(x) + iπ` for `x > 0` (DLMF §6.4).
             conj: Conj::OffCut(NEG0), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(0),
@@ -1218,6 +1334,7 @@ funcs! {
         Ei => FuncSpec {
             name: "Ei", parse: &[], arity: Exactly(1), sort: Function(37),
             tex: Tex::Call(r"\operatorname{Ei}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             // Real on the whole real line (the principal value on the cut,
             // where the reflection holds too; tested off it only).
             conj: Conj::OffCut(NEG0), real_on: RealOn::Reals, parity: Neither, poles: Poles::Zero(0),
@@ -1229,6 +1346,7 @@ funcs! {
         Li => FuncSpec {
             name: "li", parse: &[], arity: Exactly(1), sort: Function(38),
             tex: Tex::Call(r"\operatorname{li}"),
+            pretty: Pretty::Call, mathml: Mml::Name,
             // `li z = Ei(ln z)` is cut along `(−∞, 0]` only (real on `(0, 1)`);
             // `(−∞, 1]` is the sufficient test `evalf` has used since 0.45.
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::BelowOne }),
@@ -1239,6 +1357,7 @@ funcs! {
         /// Riemann zeta.
         Zeta => FuncSpec {
             name: "zeta", parse: &[], arity: Exactly(1), sort: Function(39), tex: Tex::Call(r"\zeta"),
+            pretty: Pretty::Heads { unicode: "ζ", ascii: "zeta" }, mathml: Mml::Head("&#x3B6;"),
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::One(0),
             constants: Constants::Folded,
             rt: Runtime::NONE.scipy("scipy.special.zeta(s)"),
@@ -1247,6 +1366,7 @@ funcs! {
         Polygamma => FuncSpec {
             name: "polygamma", parse: &[], arity: Exactly(2), sort: Function(40),
             tex: Tex::Layout(&[Lit(r"\psi^{("), Arg(0), Lit(r")}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Own, mathml: Mml::Own,
             // Meromorphic in `x` for an order `m ≥ 0`; for other real orders
             // (`ζ(m + 1, x)`-like, real for `x > 0` in mpmath's and SymPy's
             // definitions) cut along `x ≤ 0`.
@@ -1261,6 +1381,7 @@ funcs! {
             name: "KroneckerDelta", parse: &["kronecker_delta"], arity: Exactly(2),
             sort: Function(41),
             tex: Tex::Layout(&[Lit(r"\delta_{"), Arg(0), Lit(" "), Arg(1), Lit("}")]),
+            pretty: Pretty::Own, mathml: Mml::Own,
             // 0 or 1: `δ(ī, j̄) = δ(i, j)`.
             conj: Conj::Entire, real_on: RealOn::Custom, parity: Neither, poles: Poles::None,
             constants: Constants::Folded,
@@ -1270,6 +1391,7 @@ funcs! {
         Factorial => FuncSpec {
             name: "factorial", parse: &[], arity: Exactly(1), sort: Function(7),
             tex: Tex::Postfix("!"),
+            pretty: Pretty::Own, mathml: Mml::Own,
             // `Γ(x + 1)`: poles at the negative integers, so claimed real on
             // `[0, ∞)` only (SymPy: real for a non-negative or non-integer `x`).
             conj: Conj::Entire, real_on: RealOn::NonNegativeReals, parity: Neither,
@@ -1281,6 +1403,7 @@ funcs! {
         Binomial => FuncSpec {
             name: "C", parse: &["binomial"], arity: Exactly(2), sort: Function(8),
             tex: Tex::Layout(&[Lit(r"\binom{"), Arg(0), Lit("}{"), Arg(1), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Own,
             // `Γ(n + 1)/(Γ(k + 1)Γ(n − k + 1))`, meromorphic; an integer for
             // non-negative integers.
             conj: Conj::Entire, real_on: RealOn::NonNegativeIntegers, parity: Neither,
@@ -1297,6 +1420,7 @@ funcs! {
         Factorial2 => FuncSpec {
             name: "factorial2", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Postfix("!!"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Integers (SymPy's extension to ℂ is not evaluated here); `(−2k)!!`
             // is infinite.
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
@@ -1309,6 +1433,7 @@ funcs! {
         Subfactorial => FuncSpec {
             name: "subfactorial", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Layout(&[Lit("!"), Group(0)]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // SymPy's extension `Γ(n + 1, −1)/e` sits on the cut of `Γ(a, ·)`.
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::Other,
@@ -1319,6 +1444,7 @@ funcs! {
         RisingFactorial => FuncSpec {
             name: "rising_factorial", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("{"), Group(0), Lit(r"}^{\left("), Arg(1), Lit(r"\right)}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `Γ(x + n)/Γ(x)` (DLMF §5.2(iii)): a polynomial in `x` for an
             // integer `n ≥ 0`.
             conj: Conj::Entire, real_on: RealOn::Polynomial { degree: 1 }, parity: Neither,
@@ -1331,6 +1457,7 @@ funcs! {
         FallingFactorial => FuncSpec {
             name: "falling_factorial", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit(r"{\left("), Arg(0), Lit(r"\right)}_{"), Arg(1), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `Γ(x + 1)/Γ(x − n + 1)`.
             conj: Conj::Entire, real_on: RealOn::Polynomial { degree: 1 }, parity: Neither,
             poles: Poles::Other,
@@ -1342,6 +1469,7 @@ funcs! {
         Fibonacci => FuncSpec {
             name: "fibonacci", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Layout(&[Lit("F_{"), Arg(0), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Binet's `(φˣ − cos(πx)φ⁻ˣ)/√5` at real `x` (`evalf`).
             conj: Conj::No, real_on: RealOn::RealLine, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1351,6 +1479,7 @@ funcs! {
         Lucas => FuncSpec {
             name: "lucas", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Layout(&[Lit("L_{"), Arg(0), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::RealLine, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
             rt: Runtime::helper(Kernel::Unary("lucas"), Backends::VM_RUST_C),
@@ -1359,6 +1488,7 @@ funcs! {
         Bernoulli => FuncSpec {
             name: "bernoulli", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Layout(&[Lit("B_{"), Arg(0), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `−s·ζ(1 − s)` at real `s` (`evalf`), entire and real on ℝ.  The
             // exact `bernoulli(1)` is its value `+1/2` (SymPy ≥ 1.12; until
             // 0.49 it was `−1/2`, a jump of the continuous extension, which
@@ -1375,6 +1505,7 @@ funcs! {
         Harmonic => FuncSpec {
             name: "harmonic", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Layout(&[Lit("H_{"), Arg(0), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `ψ(x + 1) + γ`: poles at the negative integers.
             conj: Conj::No, real_on: RealOn::NonNegativeReals, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1384,6 +1515,7 @@ funcs! {
         Catalan => FuncSpec {
             name: "catalan", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Layout(&[Lit("C_{"), Arg(0), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `Γ(2x + 1)/(Γ(x + 1)Γ(x + 2))`: poles at `x = −1/2, −3/2, …`.
             conj: Conj::No, real_on: RealOn::NonNegativeReals, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1393,6 +1525,7 @@ funcs! {
         Bell => FuncSpec {
             name: "bell", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Layout(&[Lit("B_{"), Arg(0), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1402,6 +1535,7 @@ funcs! {
         EulerNumber => FuncSpec {
             name: "euler_number", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Layout(&[Lit("E_{"), Arg(0), Lit("}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // By Hurwitz zeta functions at real `s` (`evalf`), entire.
             conj: Conj::No, real_on: RealOn::RealLine, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1411,6 +1545,7 @@ funcs! {
         Stirling1 => FuncSpec {
             name: "stirling1", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit(r"\left[{"), Arg(0), Lit(r" \atop "), Arg(1), Lit(r"}\right]")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1420,6 +1555,7 @@ funcs! {
         Stirling2 => FuncSpec {
             name: "stirling2", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit(r"\left\{{"), Arg(0), Lit(r" \atop "), Arg(1), Lit(r"}\right\}")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1429,6 +1565,7 @@ funcs! {
         PartitionCount => FuncSpec {
             name: "partition_count", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call("p"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::NonNegativeIntegers, parity: Neither,
             poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1444,6 +1581,7 @@ funcs! {
             tex: Tex::Layout(&[
                 Lit(r"\operatorname{W}_{"), Arg(1), Lit(r"}\left("), Arg(0), Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Own,
             // `W_k(z̄) = conj W_{−k}(z)`, another branch; `W_{−1}` is real on
             // `[−1/e, 0)`; `W_k(0) = −∞` for `k ≠ 0` (DLMF §4.13).
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
@@ -1456,6 +1594,7 @@ funcs! {
         BesselJ => FuncSpec {
             name: "besselj", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("J_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Indexed("J"),
             // Entire in `x` for an integer order, else `(x/2)^ν·(entire)`
             // (DLMF §10.2(ii)); infinite at 0 for some orders.
             conj: Conj::IntegerOrderOffCut { cut: NEG1, nonnegative: false },
@@ -1468,6 +1607,7 @@ funcs! {
         BesselY => FuncSpec {
             name: "bessely", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("Y_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Indexed("Y"),
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(1),
             constants: Constants::Evaluated,
@@ -1478,6 +1618,7 @@ funcs! {
         BesselI => FuncSpec {
             name: "besseli", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("I_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Indexed("I"),
             conj: Conj::IntegerOrderOffCut { cut: NEG1, nonnegative: false },
             real_on: RealOn::BesselOrder, parity: Neither, poles: Poles::Zero(1),
             constants: Constants::Evaluated,
@@ -1488,6 +1629,7 @@ funcs! {
         BesselK => FuncSpec {
             name: "besselk", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("K_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Indexed("K"),
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(1),
             constants: Constants::Evaluated,
@@ -1500,6 +1642,7 @@ funcs! {
         Legendre => FuncSpec {
             name: "legendre", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("P_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // A polynomial for an integer degree `n ≥ 0`; `₂F₁(−ν, ν + 1; 1;
             // (1 − x)/2)`, infinite at `x = −1`, otherwise.
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
@@ -1512,6 +1655,7 @@ funcs! {
         ChebyshevT => FuncSpec {
             name: "chebyshev_t", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("T_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1522,6 +1666,7 @@ funcs! {
         ChebyshevU => FuncSpec {
             name: "chebyshev_u", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("U_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1532,6 +1677,7 @@ funcs! {
         Hermite => FuncSpec {
             name: "hermite", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("H_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Entire in `x` for every degree (DLMF §12.7, §18.5).
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::None,
@@ -1543,6 +1689,7 @@ funcs! {
         Laguerre => FuncSpec {
             name: "laguerre", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit("L_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `₁F₁(−ν; 1; x)`, entire in `x` for every degree.
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::None,
@@ -1556,6 +1703,7 @@ funcs! {
         Erfi => FuncSpec {
             name: "erfi", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{erfi}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Coefficient),
             poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1566,6 +1714,7 @@ funcs! {
         ErfInv => FuncSpec {
             name: "erfinv", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{erf}^{-1}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Defined on `(−1, 1)` here (the continuation of the inverse of
             // `erf` is many-valued); `±∞` at `±1`.
             conj: Conj::No, real_on: RealOn::UnitInterval { closed: false },
@@ -1578,6 +1727,7 @@ funcs! {
         ErfcInv => FuncSpec {
             name: "erfcinv", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{erfc}^{-1}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Real on `(0, 2)`, which the assumption system cannot express;
             // `±∞` at 0 and 2.
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
@@ -1591,6 +1741,7 @@ funcs! {
             tex: Tex::Layout(&[
                 Lit(r"\operatorname{E}_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `E_n(0)` is infinite for `n ≤ 1` (DLMF §8.19).
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(1),
@@ -1601,6 +1752,7 @@ funcs! {
         Shi => FuncSpec {
             name: "Shi", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{Shi}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Coefficient),
             poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1611,6 +1763,7 @@ funcs! {
         Chi => FuncSpec {
             name: "Chi", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{Chi}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `Chi(−x) = Chi(x) + iπ` for `x > 0` (DLMF §6.2).
             conj: Conj::OffCut(NEG0), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(0),
@@ -1621,6 +1774,7 @@ funcs! {
         /// Fresnel sine integral `S(x)`.
         FresnelS => FuncSpec {
             name: "fresnels", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call("S"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Coefficient),
             poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1630,6 +1784,7 @@ funcs! {
         /// Fresnel cosine integral `C(x)`.
         FresnelC => FuncSpec {
             name: "fresnelc", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call("C"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Odd(Coefficient),
             poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1639,6 +1794,7 @@ funcs! {
         /// Lower incomplete gamma `γ(s, x)`.
         LowerGamma => FuncSpec {
             name: "lowergamma", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call(r"\gamma"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `γ(s, x) = xˢ·(entire)`, poles at `s = 0, −1, …` (DLMF §8.2), and
             // `γ(s, x) ~ xˢ/s` at `x = 0` (DLMF 8.7.1): 0 only for `re s > 0`.
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
@@ -1649,6 +1805,7 @@ funcs! {
         /// Upper incomplete gamma `Γ(s, x)`.
         UpperGamma => FuncSpec {
             name: "uppergamma", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call(r"\Gamma"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Entire in `s` for `x ≠ 0`; `Γ(s, 0) = Γ(s)`.
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
             poles: Poles::Zero(1),
@@ -1661,6 +1818,7 @@ funcs! {
             tex: Tex::Layout(&[
                 Lit(r"\operatorname{Li}_{"), Arg(0), Lit(r"}\left("), Arg(1), Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Cut along `z ∈ [1, ∞)` (DLMF §25.12); `Li_s(1) = ζ(s)`.
             conj: Conj::OffCut(Cut { arg: 1, line: CutLine::AtLeastOne }),
             real_on: RealOn::BelowOne, parity: Neither, poles: Poles::One(1),
@@ -1671,6 +1829,7 @@ funcs! {
         DirichletEta => FuncSpec {
             name: "dirichlet_eta", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\eta"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `(1 − 2^{1−s})·ζ(s)`, entire.
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1682,6 +1841,7 @@ funcs! {
         AiryAi => FuncSpec {
             name: "airyai", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{Ai}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
             rt: Runtime::NONE.scipy("scipy.special.airy(x)[0]"),
@@ -1690,6 +1850,7 @@ funcs! {
         AiryBi => FuncSpec {
             name: "airybi", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{Bi}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
             rt: Runtime::NONE.scipy("scipy.special.airy(x)[2]"),
@@ -1698,6 +1859,7 @@ funcs! {
         AiryAiPrime => FuncSpec {
             name: "airyaiprime", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{Ai}^\prime"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
             rt: Runtime::NONE.scipy("scipy.special.airy(x)[1]"),
@@ -1706,6 +1868,7 @@ funcs! {
         AiryBiPrime => FuncSpec {
             name: "airybiprime", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{Bi}^\prime"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Entire, real_on: RealOn::Reals, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
             rt: Runtime::NONE.scipy("scipy.special.airy(x)[3]"),
@@ -1715,6 +1878,7 @@ funcs! {
         /// Complete elliptic integral of the first kind `K(m)`.
         EllipticK => FuncSpec {
             name: "elliptic_k", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call("K"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Cut along `m ∈ [1, ∞)`, `K(1) = ∞` (DLMF §19.2(i)).
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::AtLeastOne }),
             real_on: RealOn::BelowOne, parity: Neither, poles: Poles::One(0),
@@ -1725,6 +1889,7 @@ funcs! {
         /// Complete elliptic integral of the second kind `E(m)`.
         EllipticE => FuncSpec {
             name: "elliptic_e", parse: &[], arity: Exactly(1), sort: Named, tex: Tex::Call("E"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::OffCut(Cut { arg: 0, line: CutLine::AtLeastOne }),
             real_on: RealOn::BelowOne, parity: Neither, poles: Poles::None,
             constants: Constants::Evaluated,
@@ -1735,6 +1900,7 @@ funcs! {
         EllipticF => FuncSpec {
             name: "elliptic_f", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit(r"F\left("), Arg(0), Lit(r"\middle| "), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // The cuts in `φ` are not tabulated; real for real `φ` and `m < 1`.
             conj: Conj::No, real_on: RealOn::BelowOne, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1744,6 +1910,7 @@ funcs! {
         EllipticPi => FuncSpec {
             name: "elliptic_pi", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Layout(&[Lit(r"\Pi\left("), Arg(0), Lit(r"\middle| "), Arg(1), Lit(r"\right)")]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // Cut in both arguments; real for `n, m < 1` (two bounds).
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1758,6 +1925,7 @@ funcs! {
                 Lit("C_{"), Arg(0), Lit(r"}^{\left("), Arg(1), Lit(r"\right)}\left("), Arg(2),
                 Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // A polynomial in `α` and `x` for an integer `n ≥ 0` (DLMF §18.5);
             // not entire for `n < 0` (mpmath: a `₂F₁` cut at `x ≤ −1`).
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
@@ -1772,6 +1940,7 @@ funcs! {
                 Lit("P_{"), Arg(0), Lit(r"}^{\left("), Arg(1), Lit(","), Arg(2),
                 Lit(r"\right)}\left("), Arg(3), Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1784,6 +1953,7 @@ funcs! {
                 Lit("P_{"), Arg(0), Lit(r"}^{\left("), Arg(1), Lit(r"\right)}\left("), Arg(2),
                 Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // The factor `(1 − x²)^{m/2}`: for an odd `m` real on `[−1, 1]` only.
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1796,6 +1966,7 @@ funcs! {
                 Lit("L_{"), Arg(0), Lit(r"}^{\left("), Arg(1), Lit(r"\right)}\left("), Arg(2),
                 Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::Polynomial { degree: 0 }, real_on: RealOn::Polynomial { degree: 0 },
             parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1810,6 +1981,7 @@ funcs! {
                 Lit(r"\operatorname{B}_{("), Arg(2), Lit(", "), Arg(3), Lit(r")}\left("), Arg(0),
                 Lit(", "), Arg(1), Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             // `∫ t^{a−1}(1 − t)^{b−1} dt` from `x₁` to `x₂`: real for `x₁, x₂ ∈ [0, 1]`.
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
@@ -1823,6 +1995,7 @@ funcs! {
                 Lit(r"\operatorname{I}_{("), Arg(2), Lit(", "), Arg(3), Lit(r")}\left("), Arg(0),
                 Lit(", "), Arg(1), Lit(r"\right)"),
             ]),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE
@@ -1838,6 +2011,7 @@ funcs! {
         ErfcxAsym => FuncSpec {
             name: "__erfcx_asym", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{\_\_erfcx\_asym}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1846,6 +2020,7 @@ funcs! {
         EiAsym => FuncSpec {
             name: "__ei_asym", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{\_\_ei\_asym}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1854,6 +2029,7 @@ funcs! {
         Erfix2Asym => FuncSpec {
             name: "__erfix2_asym", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{\_\_erfix2\_asym}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1862,6 +2038,7 @@ funcs! {
         Erfcx2Asym => FuncSpec {
             name: "__erfcx2_asym", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{\_\_erfcx2\_asym}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1870,6 +2047,7 @@ funcs! {
         BesselIAsym => FuncSpec {
             name: "__besseli_asym", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Call(r"\operatorname{\_\_besseli\_asym}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1878,6 +2056,7 @@ funcs! {
         BesselKAsym => FuncSpec {
             name: "__besselk_asym", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Call(r"\operatorname{\_\_besselk\_asym}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1886,6 +2065,7 @@ funcs! {
         UpperGammaAsym => FuncSpec {
             name: "__uppergamma_asym", parse: &[], arity: Exactly(2), sort: Named,
             tex: Tex::Call(r"\operatorname{\_\_uppergamma\_asym}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1894,6 +2074,7 @@ funcs! {
         ZetaAsym => FuncSpec {
             name: "__zeta_asym", parse: &[], arity: Exactly(1), sort: Named,
             tex: Tex::Call(r"\operatorname{\_\_zeta\_asym}"),
+            pretty: Pretty::Flat, mathml: Mml::Name,
             conj: Conj::No, real_on: RealOn::Unclaimed, parity: Neither, poles: Poles::Other,
             constants: Constants::Evaluated,
             rt: Runtime::NONE,
@@ -1905,6 +2086,122 @@ funcs! {
 // The view and the constructor
 // ---------------------------------------------------------------------------
 
+/// The pattern of the nodes that apply a function of the table: the 43
+/// node-backed variants, `Lib` and `Internal` — exactly the nodes for which
+/// [`ExprNode::func_head`] is `Some` (a test proves the two partition
+/// `ExprNode` at compile time).  The printers and the sort key have one arm
+/// `func_nodes!() =>` that reads the function's facets, so their matches
+/// stay exhaustive over `ExprNode` without an arm per function.
+macro_rules! func_nodes {
+    () => {
+        $crate::base::node::ExprNode::Min(..)
+            | $crate::base::node::ExprNode::Max(..)
+            | $crate::base::node::ExprNode::Floor(..)
+            | $crate::base::node::ExprNode::Ceiling(..)
+            | $crate::base::node::ExprNode::Sin(..)
+            | $crate::base::node::ExprNode::Cos(..)
+            | $crate::base::node::ExprNode::Tan(..)
+            | $crate::base::node::ExprNode::Exp(..)
+            | $crate::base::node::ExprNode::Ln(..)
+            | $crate::base::node::ExprNode::Abs(..)
+            | $crate::base::node::ExprNode::Asin(..)
+            | $crate::base::node::ExprNode::Acos(..)
+            | $crate::base::node::ExprNode::Atan(..)
+            | $crate::base::node::ExprNode::Atan2(..)
+            | $crate::base::node::ExprNode::Sinh(..)
+            | $crate::base::node::ExprNode::Cosh(..)
+            | $crate::base::node::ExprNode::Tanh(..)
+            | $crate::base::node::ExprNode::Asinh(..)
+            | $crate::base::node::ExprNode::Acosh(..)
+            | $crate::base::node::ExprNode::Atanh(..)
+            | $crate::base::node::ExprNode::Sign(..)
+            | $crate::base::node::ExprNode::Heaviside(..)
+            | $crate::base::node::ExprNode::DiracDelta(..)
+            | $crate::base::node::ExprNode::Re(..)
+            | $crate::base::node::ExprNode::Im(..)
+            | $crate::base::node::ExprNode::Conjugate(..)
+            | $crate::base::node::ExprNode::Arg(..)
+            | $crate::base::node::ExprNode::Gamma(..)
+            | $crate::base::node::ExprNode::LogGamma(..)
+            | $crate::base::node::ExprNode::Digamma(..)
+            | $crate::base::node::ExprNode::Erf(..)
+            | $crate::base::node::ExprNode::Erfc(..)
+            | $crate::base::node::ExprNode::LambertW(..)
+            | $crate::base::node::ExprNode::Beta(..)
+            | $crate::base::node::ExprNode::Si(..)
+            | $crate::base::node::ExprNode::Ci(..)
+            | $crate::base::node::ExprNode::Ei(..)
+            | $crate::base::node::ExprNode::Li(..)
+            | $crate::base::node::ExprNode::Zeta(..)
+            | $crate::base::node::ExprNode::Polygamma(..)
+            | $crate::base::node::ExprNode::KroneckerDelta(..)
+            | $crate::base::node::ExprNode::Factorial(..)
+            | $crate::base::node::ExprNode::Binomial(..)
+            | $crate::base::node::ExprNode::Lib(..)
+            | $crate::base::node::ExprNode::Internal(..)
+    };
+}
+pub(crate) use func_nodes;
+
+/// The pattern of the nodes that apply no function of the table (the `None`
+/// arm of [`ExprNode::func_head`]): atoms, arithmetic, relations, binders,
+/// sets, and `Apply` (a user function).
+macro_rules! non_func_nodes {
+    () => {
+        $crate::base::node::ExprNode::Apply(..)
+            | $crate::base::node::ExprNode::Num(..)
+            | $crate::base::node::ExprNode::Symbol(..)
+            | $crate::base::node::ExprNode::Pi
+            | $crate::base::node::ExprNode::E
+            | $crate::base::node::ExprNode::ImaginaryUnit
+            | $crate::base::node::ExprNode::EulerGamma
+            | $crate::base::node::ExprNode::Catalan
+            | $crate::base::node::ExprNode::GoldenRatio
+            | $crate::base::node::ExprNode::PhysicalConstant(..)
+            | $crate::base::node::ExprNode::Infinity
+            | $crate::base::node::ExprNode::NegInfinity
+            | $crate::base::node::ExprNode::ComplexInfinity
+            | $crate::base::node::ExprNode::NaN
+            | $crate::base::node::ExprNode::Add(..)
+            | $crate::base::node::ExprNode::Mul(..)
+            | $crate::base::node::ExprNode::Pow(..)
+            | $crate::base::node::ExprNode::Neg(..)
+            | $crate::base::node::ExprNode::BoolTrue
+            | $crate::base::node::ExprNode::BoolFalse
+            | $crate::base::node::ExprNode::Gt(..)
+            | $crate::base::node::ExprNode::Ge(..)
+            | $crate::base::node::ExprNode::Eq_(..)
+            | $crate::base::node::ExprNode::Ne(..)
+            | $crate::base::node::ExprNode::And(..)
+            | $crate::base::node::ExprNode::Or(..)
+            | $crate::base::node::ExprNode::Not(..)
+            | $crate::base::node::ExprNode::Piecewise(..)
+            | $crate::base::node::ExprNode::Derivative(..)
+            | $crate::base::node::ExprNode::Integral(..)
+            | $crate::base::node::ExprNode::DefiniteIntegral(..)
+            | $crate::base::node::ExprNode::Sum(..)
+            | $crate::base::node::ExprNode::Product_(..)
+            | $crate::base::node::ExprNode::Limit(..)
+            | $crate::base::node::ExprNode::Series(..)
+            | $crate::base::node::ExprNode::LaplaceTransform(..)
+            | $crate::base::node::ExprNode::InverseLaplaceTransform(..)
+            | $crate::base::node::ExprNode::Residue(..)
+            | $crate::base::node::ExprNode::RootOf(..)
+            | $crate::base::node::ExprNode::RootSum(..)
+            | $crate::base::node::ExprNode::DSolve(..)
+            | $crate::base::node::ExprNode::ConditionSet(..)
+            | $crate::base::node::ExprNode::EmptySet
+            | $crate::base::node::ExprNode::UniversalSet
+            | $crate::base::node::ExprNode::Interval(..)
+            | $crate::base::node::ExprNode::FiniteSet(..)
+            | $crate::base::node::ExprNode::SetUnion(..)
+            | $crate::base::node::ExprNode::SetIntersection(..)
+            | $crate::base::node::ExprNode::SetComplement(..)
+            | $crate::base::node::ExprNode::Subs(..)
+            | $crate::base::node::ExprNode::ImageSet(..)
+    };
+}
+
 impl ExprNode {
     /// The function this node applies, without its arguments: the head of
     /// [`ExprNode::func`] (`None` for a node that is not a function
@@ -1913,6 +2210,7 @@ impl ExprNode {
     ///
     /// The match is exhaustive over `ExprNode`: a new variant must say here
     /// whether it is a function.
+    #[deny(unreachable_patterns)]
     pub(crate) const fn func_head(&self) -> Option<Func> {
         match self {
             ExprNode::Min(_) => Some(Func::Min),
@@ -1960,57 +2258,7 @@ impl ExprNode {
             ExprNode::Binomial(..) => Some(Func::Binomial),
             ExprNode::Lib(lib, _) => Some(lib.func()),
             ExprNode::Internal(g, _) => Some(g.func()),
-            ExprNode::Apply(..)
-            | ExprNode::Num(_)
-            | ExprNode::Symbol(_)
-            | ExprNode::Pi
-            | ExprNode::E
-            | ExprNode::ImaginaryUnit
-            | ExprNode::EulerGamma
-            | ExprNode::Catalan
-            | ExprNode::GoldenRatio
-            | ExprNode::PhysicalConstant(..)
-            | ExprNode::Infinity
-            | ExprNode::NegInfinity
-            | ExprNode::ComplexInfinity
-            | ExprNode::NaN
-            | ExprNode::Add(_)
-            | ExprNode::Mul(_)
-            | ExprNode::Pow(..)
-            | ExprNode::Neg(_)
-            | ExprNode::BoolTrue
-            | ExprNode::BoolFalse
-            | ExprNode::Gt(..)
-            | ExprNode::Ge(..)
-            | ExprNode::Eq_(..)
-            | ExprNode::Ne(..)
-            | ExprNode::And(_)
-            | ExprNode::Or(_)
-            | ExprNode::Not(_)
-            | ExprNode::Piecewise(_)
-            | ExprNode::Derivative(..)
-            | ExprNode::Integral(..)
-            | ExprNode::DefiniteIntegral(..)
-            | ExprNode::Sum(..)
-            | ExprNode::Product_(..)
-            | ExprNode::Limit(..)
-            | ExprNode::Series(..)
-            | ExprNode::LaplaceTransform(..)
-            | ExprNode::InverseLaplaceTransform(..)
-            | ExprNode::Residue(..)
-            | ExprNode::RootOf(..)
-            | ExprNode::RootSum(..)
-            | ExprNode::DSolve(..)
-            | ExprNode::ConditionSet(..)
-            | ExprNode::EmptySet
-            | ExprNode::UniversalSet
-            | ExprNode::Interval(..)
-            | ExprNode::FiniteSet(_)
-            | ExprNode::SetUnion(_)
-            | ExprNode::SetIntersection(_)
-            | ExprNode::SetComplement(..)
-            | ExprNode::Subs(..)
-            | ExprNode::ImageSet(..) => None,
+            non_func_nodes!() => None,
         }
     }
 
@@ -2052,6 +2300,115 @@ impl Func {
     /// [`Context::apply`]: crate::api::context::Context::apply
     pub(crate) fn is_internal_name(name: &str) -> bool {
         Func::is_internal_head(name)
+    }
+
+    /// Does the parser read the call name `name` (compared ignoring ASCII
+    /// case) as this function: is it the function's `name` or one of its
+    /// `parse` names?  Two kinds of name are never read: the head of an
+    /// internal function, and Heaviside's display name `H`, which the
+    /// parser reads only as written and only while the context has no
+    /// undefined function `H` (`output/parse.rs` decides that; `h(x)` stays
+    /// free for a user function).
+    pub(crate) fn reads(self, name: &str) -> bool {
+        let spec = self.spec();
+        match self.family() {
+            Family::Internal => false,
+            Family::Node | Family::Lib => {
+                (!matches!(self, Func::Heaviside) && spec.name.eq_ignore_ascii_case(name))
+                    || spec.parse.iter().any(|p| p.eq_ignore_ascii_case(name))
+            }
+        }
+    }
+
+    /// The function the parser reads the call `name(…)` with `n` arguments
+    /// as: the first function of the table, in [`Func::ALL`] order, that
+    /// [`reads`](Self::reads) the name and accepts the count.  A test checks
+    /// that the names are unambiguous: only `lambertw`/`w` with one argument
+    /// name two functions (the principal-branch node and the library
+    /// function), and those build the same node.
+    ///
+    /// The lookup is one probe of a hash index of the lower-case names
+    /// ([`PARSE_INDEX`], built on first use), where the `match` on the name
+    /// it replaces was a sequence of string comparisons.
+    pub(crate) fn parsed(name: &str, n: usize) -> Option<Func> {
+        Func::readers(name)
+            .iter()
+            .copied()
+            .find(|f| f.spec().arity.accepts(n))
+    }
+
+    /// Is `name` a call name the parser reads as a function of the table,
+    /// at some argument count?
+    pub(crate) fn is_parse_name(name: &str) -> bool {
+        !Func::readers(name).is_empty()
+    }
+
+    /// The functions that [`read`](Self::reads) the call name `name`, in
+    /// [`Func::ALL`] order.
+    fn readers(name: &str) -> &'static [Func] {
+        let found = if name.bytes().any(|b| b.is_ascii_uppercase()) {
+            PARSE_INDEX.get(name.to_ascii_lowercase().as_str())
+        } else {
+            // The parser's case: it has lower-cased the name already.
+            PARSE_INDEX.get(name)
+        };
+        found.map_or(&[], |readers| readers.as_slice())
+    }
+
+    /// Is this one of the textbook one-argument functions that the
+    /// implicit-multiplication parser applies without parentheses (`sin x`,
+    /// `ln 2x`): the 14 elementary functions and `abs`, `floor`, `ceiling`,
+    /// `sign`, `Γ`, `erf`, `erfc`, `factorial`?  Functions whose names are
+    /// also common variables (`re`, `im`, `arg`, `li`, `W`, `zeta`, `Chi`,
+    /// …) are not.  Exhaustive, as [`Func::elementary`]; up to 0.59 a list
+    /// of 31 names in the parser.
+    pub(crate) const fn bare_argument(self) -> bool {
+        match self {
+            Func::Sin
+            | Func::Cos
+            | Func::Tan
+            | Func::Asin
+            | Func::Acos
+            | Func::Atan
+            | Func::Sinh
+            | Func::Cosh
+            | Func::Tanh
+            | Func::Asinh
+            | Func::Acosh
+            | Func::Atanh
+            | Func::Exp
+            | Func::Ln
+            | Func::Abs
+            | Func::Floor
+            | Func::Ceiling
+            | Func::Sign
+            | Func::Gamma
+            | Func::Erf
+            | Func::Erfc
+            | Func::Factorial => true,
+            Func::Min
+            | Func::Max
+            | Func::Atan2
+            | Func::Heaviside
+            | Func::DiracDelta
+            | Func::Re
+            | Func::Im
+            | Func::Conjugate
+            | Func::Arg
+            | Func::LogGamma
+            | Func::Digamma
+            | Func::LambertW0
+            | Func::Beta
+            | Func::Si
+            | Func::Ci
+            | Func::Ei
+            | Func::Li
+            | Func::Zeta
+            | Func::Polygamma
+            | Func::KroneckerDelta
+            | Func::Binomial
+            | non_node_funcs!() => false,
+        }
     }
 
     /// The family of an elementary transcendental function: `Some` for the
@@ -2157,6 +2514,26 @@ impl Func {
         }
     }
 }
+
+/// The parser's index: each call name it reads as a function of the table,
+/// in lower case, with the functions that read it in [`Func::ALL`] order
+/// (one, but for `lambertw` and `w`).  Derived from the `name` and `parse`
+/// facets through [`Func::reads`] on first use; it holds no fact of its own.
+static PARSE_INDEX: LazyLock<FxHashMap<String, SmallVec<[Func; 2]>>> = LazyLock::new(|| {
+    let mut index: FxHashMap<String, SmallVec<[Func; 2]>> = FxHashMap::default();
+    for &f in Func::ALL {
+        let spec = f.spec();
+        for name in spec.parse.iter().copied().chain([spec.name]) {
+            if f.reads(name) {
+                let readers = index.entry(name.to_ascii_lowercase()).or_default();
+                if !readers.contains(&f) {
+                    readers.push(f);
+                }
+            }
+        }
+    }
+    index
+});
 
 /// The family of an elementary transcendental function ([`Func::elementary`]).
 /// The algorithms keep their own finer private kinds (`TrigKind`, …) where
@@ -2453,6 +2830,10 @@ mod tests {
     /// (a) The node `Arena::func` builds has exactly the sort key that the
     /// spec's sub-rank predicts, followed by its arguments' keys: the bytes
     /// of `sort_key.rs` by construction, for every function.
+    /// (a) The sort key of `f(args)` is the bytes of the `sort` facet, then
+    /// the keys of the arguments.  (Up to 0.59 this compared the facet with
+    /// the hand-written arm of `sort_key.rs`; the arm now reads the facet,
+    /// and the test pins what the bytes mean.)
     #[test]
     fn sort_keys_follow_the_spec() {
         for &f in Func::ALL {
@@ -2668,6 +3049,282 @@ mod tests {
         assert_eq!(
             fact.to_latex(),
             render_tex(Func::Factorial.spec().tex, &[x1.to_latex()], false)
+        );
+    }
+
+    /// `func_nodes!()` is exactly the nodes that have a head: with the
+    /// `None` arm of `func_head` it partitions `ExprNode` (checked by the
+    /// compiler: the match below is exhaustive and has no unreachable
+    /// pattern), so the one arm `func_nodes!() =>` of a printer never meets
+    /// a node without a function.
+    #[test]
+    fn func_nodes_is_exactly_the_nodes_with_a_head() {
+        #[deny(unreachable_patterns)]
+        fn is_func_node(node: &ExprNode) -> bool {
+            match node {
+                func_nodes!() => true,
+                non_func_nodes!() => false,
+            }
+        }
+        for &f in Func::ALL {
+            let (ctx, _syms, e) = built(f, sample_count(f));
+            ctx.with_arena_mut(|a| {
+                let node = a.node(e.raw_id());
+                assert!(is_func_node(node), "{f:?}");
+                assert_eq!(node.func_head(), Some(f), "{f:?}");
+            });
+        }
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let user = ctx
+            .apply("f", std::slice::from_ref(&x))
+            .unwrap_or_else(|e| panic!("{e}"));
+        for e in [x.clone(), &x + 1, x.pow(&x), ctx.int(2), user] {
+            ctx.with_arena_mut(|a| {
+                let node = a.node(e.raw_id());
+                assert!(!is_func_node(node), "{e}");
+                assert_eq!(node.func_head(), None, "{e}");
+            });
+        }
+    }
+
+    /// The parser's lookup: every name a function reads, at every count it
+    /// accepts, denotes that function and no other — but `lambertw(x)` and
+    /// `w(x)`, which are the principal-branch node under the names of the
+    /// library function too (both build the same node).  Internal heads and
+    /// Heaviside's display name are not read.
+    #[test]
+    fn parse_names_are_unambiguous() {
+        for &f in Func::ALL {
+            let spec = f.spec();
+            let mut names: Vec<String> = spec.parse.iter().map(|s| (*s).to_owned()).collect();
+            names.push(spec.name.to_owned());
+            names.push(spec.name.to_ascii_lowercase());
+            names.push(spec.name.to_ascii_uppercase());
+            for name in &names {
+                let read = f.reads(name);
+                let internal = f.family() == Family::Internal;
+                let display_h = f == Func::Heaviside && name.eq_ignore_ascii_case("H");
+                assert_eq!(read, !internal && !display_h, "{f:?} {name}");
+                assert_eq!(Func::is_parse_name(name), read, "{name}");
+                for n in 0..=5 {
+                    let expected = if !read || !spec.arity.accepts(n) {
+                        // No other function has this name at any count.
+                        match (f, n) {
+                            (Func::LambertW0, 2) => Some(Func::LambertW),
+                            _ => None,
+                        }
+                    } else if f == Func::LambertW && n == 1 {
+                        Some(Func::LambertW0)
+                    } else {
+                        Some(f)
+                    };
+                    assert_eq!(
+                        Func::parsed(name, n),
+                        expected,
+                        "{name} with {n} argument(s)"
+                    );
+                }
+            }
+        }
+        assert_eq!(Func::parsed("h", 1), None);
+        assert_eq!(Func::parsed("log", 2), None);
+        assert_eq!(Func::parsed("sqrt", 1), None);
+        // The two functions `lambertw(x)` names build one node.
+        let (_ctx, _syms, e) = built(Func::LambertW, 1);
+        assert_eq!(e.to_string(), "W(t)");
+    }
+
+    /// `bare_argument` selects the 22 functions whose 31 names the
+    /// implicit-multiplication parser listed up to 0.59.
+    #[test]
+    fn bare_argument_is_the_old_list() {
+        let old: std::collections::HashSet<Func> = [
+            "sin",
+            "cos",
+            "tan",
+            "sinh",
+            "cosh",
+            "tanh",
+            "asin",
+            "acos",
+            "atan",
+            "arcsin",
+            "arccos",
+            "arctan",
+            "asinh",
+            "acosh",
+            "atanh",
+            "arcsinh",
+            "arccosh",
+            "arctanh",
+            "exp",
+            "ln",
+            "log",
+            "abs",
+            "floor",
+            "ceil",
+            "ceiling",
+            "sign",
+            "sgn",
+            "gamma",
+            "erf",
+            "erfc",
+            "factorial",
+        ]
+        .iter()
+        .map(|name| Func::parsed(name, 1).unwrap_or_else(|| panic!("{name}")))
+        .collect();
+        assert_eq!(old.len(), 22);
+        assert_eq!(selected(Func::bare_argument), old);
+        // Every name of a selected function was in the list.
+        let ctx = Context::new();
+        for &f in &old {
+            let spec = f.spec();
+            for name in spec.parse.iter().copied().chain([spec.name]) {
+                let src = format!("{name} x");
+                let e = ctx
+                    .parse_implicit(&src)
+                    .unwrap_or_else(|e| panic!("{src}: {e}"));
+                ctx.with_arena_mut(|a| {
+                    assert_eq!(a.node(e.raw_id()).func_head(), Some(f), "{src}");
+                });
+            }
+        }
+        assert!(
+            ctx.parse_implicit("zeta x")
+                .is_ok_and(|e| e.to_string() == "x*zeta")
+        );
+    }
+
+    /// (f) The two-dimensional printer lays every function out as its
+    /// `pretty` facet says, in both modes; a function without a layout
+    /// prints its `Display` text.  The five notations that are code in
+    /// `pretty.rs` are pinned here.
+    #[test]
+    fn pretty_is_the_spec_form() {
+        let mut own = Vec::new();
+        for &f in Func::ALL {
+            let n = sample_count(f);
+            let (_ctx, _syms, e) = built(f, n);
+            let spec = f.spec();
+            let (unicode, ascii) = match spec.pretty {
+                Pretty::Flat => (e.to_string(), e.to_string()),
+                Pretty::Call => (format!("{}(t)", spec.name), format!("{}(t)", spec.name)),
+                Pretty::Heads { unicode, ascii } => {
+                    (format!("{unicode}(t)"), format!("{ascii}(t)"))
+                }
+                Pretty::Brackets { unicode, ascii } => (
+                    format!("{}t{}", unicode.open, unicode.close),
+                    format!("{}t{}", ascii.open, ascii.close),
+                ),
+                Pretty::Own => {
+                    own.push(f);
+                    let (unicode, ascii) = match f {
+                        Func::Abs => ("│t│", "|t|".to_owned()),
+                        Func::Conjugate => ("‾\nt", format!("{}(t)", spec.name)),
+                        Func::Polygamma => (" (t)   \nψ   (x)", format!("{}(t, x)", spec.name)),
+                        Func::KroneckerDelta => ("δ(t,x)", format!("{}(t, x)", spec.name)),
+                        Func::Factorial => ("t!", "t!".to_owned()),
+                        _ => panic!("{f:?} is `Pretty::Own` without a notation in pretty.rs"),
+                    };
+                    (unicode.to_owned(), ascii)
+                }
+            };
+            if !matches!(spec.pretty, Pretty::Flat | Pretty::Own) {
+                assert_eq!(n, 1, "{f:?}: a one-argument layout");
+            }
+            assert_eq!(e.pretty(), unicode, "{f:?}");
+            assert_eq!(e.pretty_ascii(), ascii, "{f:?}");
+        }
+        assert_eq!(
+            own,
+            [
+                Func::Abs,
+                Func::Conjugate,
+                Func::Polygamma,
+                Func::KroneckerDelta,
+                Func::Factorial
+            ]
+        );
+        // The heads that are not the name (kept as they were printed up to
+        // 0.59, although `Display` and the parser spell them differently).
+        let head = |f: Func| match f.spec().pretty {
+            Pretty::Heads { ascii, .. } => ascii,
+            Pretty::Brackets { ascii, .. } => ascii.open,
+            _ => "",
+        };
+        assert_eq!(head(Func::LogGamma), "lgamma");
+        assert_eq!(head(Func::Digamma), "psi");
+        assert_eq!(head(Func::Sign), "sgn");
+        assert_eq!(head(Func::Ceiling), "ceil(");
+    }
+
+    /// (g) Presentation MathML applies the head of the `mathml` facet; the
+    /// ten notations that are code in `mathml.rs` are not a call under the
+    /// name.  Names are printed unescaped: they are identifiers.
+    #[test]
+    fn mathml_is_the_spec_head() {
+        const APPLY: &str = "<mo>&#x2061;</mo>";
+        let mut own = Vec::new();
+        for &f in Func::ALL {
+            let n = sample_count(f);
+            let (_ctx, syms, e) = built(f, n);
+            let spec = f.spec();
+            assert!(
+                spec.name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "{f:?}: the name needs escaping in XML"
+            );
+            let inner = |x: &Ex| {
+                let xml = x.to_mathml().unwrap_or_else(|err| panic!("{err}"));
+                let open = xml.find('>').map_or(0, |i| i + 1);
+                xml[open..xml.len() - "</math>".len()].to_owned()
+            };
+            let args: Vec<String> = syms.iter().map(inner).collect();
+            let call = |head: &str, args: &[String]| {
+                format!(
+                    "<mrow>{head}{APPLY}<mrow><mo>(</mo>{}<mo>)</mo></mrow></mrow>",
+                    args.join("<mo>,</mo>")
+                )
+            };
+            let expected = match spec.mathml {
+                Mml::Name => call(&format!("<mi>{}</mi>", spec.name), &args),
+                Mml::Head(head) => call(&format!("<mi>{head}</mi>"), &args),
+                Mml::Indexed(letter) => {
+                    assert_eq!(n, 2, "{f:?}");
+                    call(
+                        &format!("<msub><mi>{letter}</mi>{}</msub>", args[0]),
+                        &args[1..],
+                    )
+                }
+                Mml::Own => {
+                    own.push(f);
+                    assert_ne!(
+                        inner(&e),
+                        call(&format!("<mi>{}</mi>", spec.name), &args),
+                        "{f:?} is `Mml::Own` without a notation in mathml.rs"
+                    );
+                    continue;
+                }
+            };
+            assert_eq!(inner(&e), expected, "{f:?}");
+        }
+        assert_eq!(
+            own,
+            [
+                Func::Floor,
+                Func::Ceiling,
+                Func::Abs,
+                Func::Conjugate,
+                Func::LogGamma,
+                Func::Polygamma,
+                Func::KroneckerDelta,
+                Func::Factorial,
+                Func::Binomial,
+                Func::LambertW,
+            ]
         );
     }
 

@@ -30,7 +30,7 @@ use rustc_hash::FxHashMap;
 use crate::api::expr::{Expr, Sort};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
-use crate::base::libfn::LibFn;
+use crate::base::func::{Elementary, Func, Mml, func_nodes};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
@@ -469,20 +469,26 @@ fn signed_term(arena: &Arena, id: ExprId, cache: &Cache) -> Result<(bool, String
     }
 }
 
-/// `sin`, `cos`, … as `<mi>` heads for the trig-power form.
+/// `sin`, `cos`, … as `<mi>` heads for the trig-power form
+/// `sin²(x)`: the trigonometric and hyperbolic functions and the inverse
+/// trigonometric ones, under the head their `mathml` facet gives.  (Not the
+/// inverse hyperbolic ones, as before the facet existed: their powers print
+/// as `(asinh(x))²`, although `to_latex` writes `\operatorname{asinh}^{2}`.)
 fn trig_head(node: &ExprNode) -> Option<(&'static str, ExprId)> {
-    Some(match node {
-        ExprNode::Sin(x) => ("sin", *x),
-        ExprNode::Cos(x) => ("cos", *x),
-        ExprNode::Tan(x) => ("tan", *x),
-        ExprNode::Sinh(x) => ("sinh", *x),
-        ExprNode::Cosh(x) => ("cosh", *x),
-        ExprNode::Tanh(x) => ("tanh", *x),
-        ExprNode::Asin(x) => ("arcsin", *x),
-        ExprNode::Acos(x) => ("arccos", *x),
-        ExprNode::Atan(x) => ("arctan", *x),
-        _ => return None,
-    })
+    let f = node.func_head()?;
+    match f.elementary()? {
+        Elementary::Trig | Elementary::Hyperbolic | Elementary::InverseTrig => {}
+        Elementary::InverseHyperbolic | Elementary::Exp | Elementary::Ln => return None,
+    }
+    let head = match f.spec().mathml {
+        Mml::Name => f.spec().name,
+        Mml::Head(head) => head,
+        Mml::Indexed(_) | Mml::Own => return None,
+    };
+    match node.children().as_slice() {
+        &[x] => Some((head, x)),
+        _ => None,
+    }
 }
 
 fn render_pow(
@@ -593,9 +599,6 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
     for &id in &order {
         let node = arena.node(id);
         let child = |c: &ExprId| cached(&cache, *c);
-        let func = |name: &str, c: &ExprId| -> Result<String, SymplexError> {
-            Ok(apply(&mi(name), &[&child(c)?]))
-        };
         let xml = match node {
             // ── Atoms ──────────────────────────────────────────────────
             ExprNode::Num(nid) => number(arena.num(*nid)),
@@ -649,93 +652,19 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
             }
             ExprNode::Pow(base, exp) => render_pow(arena, *base, *exp, &cache)?,
 
-            // ── Elementary functions ───────────────────────────────────
-            ExprNode::Sin(a) => func("sin", a)?,
-            ExprNode::Cos(a) => func("cos", a)?,
-            ExprNode::Tan(a) => func("tan", a)?,
-            ExprNode::Asin(a) => func("arcsin", a)?,
-            ExprNode::Acos(a) => func("arccos", a)?,
-            ExprNode::Atan(a) => func("arctan", a)?,
-            ExprNode::Sinh(a) => func("sinh", a)?,
-            ExprNode::Cosh(a) => func("cosh", a)?,
-            ExprNode::Tanh(a) => func("tanh", a)?,
-            ExprNode::Asinh(a) => func("asinh", a)?,
-            ExprNode::Acosh(a) => func("acosh", a)?,
-            ExprNode::Atanh(a) => func("atanh", a)?,
-            ExprNode::Exp(a) => func("exp", a)?,
-            ExprNode::Ln(a) => func("ln", a)?,
-            ExprNode::Sign(a) => func("sgn", a)?,
-            ExprNode::Heaviside(a) => func("H", a)?,
-            ExprNode::DiracDelta(a) => apply(&ident("delta"), &[&child(a)?]),
-            ExprNode::Gamma(a) => apply(&ident("Gamma"), &[&child(a)?]),
-            ExprNode::LogGamma(a) => apply(
-                &mrow(&format!("{}{}", mi("ln"), ident("Gamma"))),
-                &[&child(a)?],
-            ),
-            ExprNode::Digamma(a) => apply(&ident("psi"), &[&child(a)?]),
-            ExprNode::Erf(a) => func("erf", a)?,
-            ExprNode::Erfc(a) => func("erfc", a)?,
-            ExprNode::LambertW(a) => func("W", a)?,
-            ExprNode::Re(a) => func("&#x211C;", a)?,
-            ExprNode::Im(a) => func("&#x2111;", a)?,
-            ExprNode::Conjugate(a) => format!("<mover>{}<mo>&#xAF;</mo></mover>", child(a)?),
-            ExprNode::Arg(a) => func("arg", a)?,
-            ExprNode::Si(a) => func("Si", a)?,
-            ExprNode::Ci(a) => func("Ci", a)?,
-            ExprNode::Ei(a) => func("Ei", a)?,
-            ExprNode::Li(a) => func("li", a)?,
-            ExprNode::Zeta(a) => apply(&ident("zeta"), &[&child(a)?]),
-            ExprNode::Polygamma(n, a) => {
-                let head = format!("<msup>{}{}</msup>", ident("psi"), paren(&child(n)?));
-                apply(&head, &[&child(a)?])
-            }
-            ExprNode::KroneckerDelta(i, j) => format!(
-                "<msub>{}{}</msub>",
-                ident("delta"),
-                mrow(&format!("{}{}", child(i)?, child(j)?))
-            ),
-            ExprNode::Abs(a) => mrow(&format!("{}{}{}", mo("|"), child(a)?, mo("|"))),
-            ExprNode::Floor(a) => mrow(&format!("<mo>&#x230A;</mo>{}<mo>&#x230B;</mo>", child(a)?)),
-            ExprNode::Ceiling(a) => {
-                mrow(&format!("<mo>&#x2308;</mo>{}<mo>&#x2309;</mo>", child(a)?))
-            }
-            ExprNode::Factorial(a) => {
-                let xml = child(a)?;
-                let body = if arena.node(*a).is_atom() {
-                    xml
-                } else {
-                    paren(&xml)
-                };
-                mrow(&format!("{body}{}", mo("!")))
-            }
-            ExprNode::Binomial(n, k) => mrow(&format!(
-                "<mo>(</mo><mfrac linethickness=\"0\">{}{}</mfrac><mo>)</mo>",
-                child(n)?,
-                child(k)?
-            )),
-            ExprNode::Beta(a, b) => apply(&mi("B"), &[&child(a)?, &child(b)?]),
-            ExprNode::Atan2(y, x) => apply(&mi("atan2"), &[&child(y)?, &child(x)?]),
-            ExprNode::Min(args) => {
-                let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
-                let refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
-                apply(&mi("min"), &refs)
-            }
-            ExprNode::Max(args) => {
-                let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
-                let refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
-                apply(&mi("max"), &refs)
+            // ── Functions of the `funcs!` table: the `mathml` facet ────
+            func_nodes!() => {
+                let rendered: Vec<String> = node
+                    .children()
+                    .iter()
+                    .map(child)
+                    .collect::<Result<_, _>>()?;
+                render_function(arena, node, &rendered)
             }
             ExprNode::Apply(sid, args) => {
                 let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
-                render_apply(None, arena.symbol_name(*sid), &rendered)
-            }
-            ExprNode::Lib(f, args) => {
-                let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
-                render_apply(Some(*f), f.name(), &rendered)
-            }
-            ExprNode::Internal(f, args) => {
-                let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
-                render_apply(None, f.name(), &rendered)
+                let refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
+                apply(&mi(&escape(arena.symbol_name(*sid))), &refs)
             }
 
             // ── Calculus ───────────────────────────────────────────────
@@ -919,81 +848,80 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
     cached(&cache, expr)
 }
 
-/// A library or user `Apply` node: Bessel functions as `J_n(x)`, everything
-/// else — the other library functions and user functions alike — as
-/// `<mi>name</mi><mo>&#x2061;</mo><mo>(</mo>args<mo>)</mo>`.
-///
-/// Exhaustive over [`LibFn`]: a new library function renders as a plain
-/// call unless it is given a notation here.
-fn render_apply(lib: Option<LibFn>, name: &str, args: &[String]) -> String {
+/// The `<mi>` head of a function whose `mathml` facet is an identifier.
+fn head_of(f: Func) -> String {
+    match f.spec().mathml {
+        Mml::Head(head) => mi(head),
+        Mml::Name | Mml::Indexed(_) | Mml::Own => mi(f.spec().name),
+    }
+}
+
+/// A function of the `funcs!` table (a node matched by `func_nodes!()`)
+/// with its arguments rendered: the head its `mathml` facet gives, applied
+/// with the invisible apply operator — `<mi>sin</mi>`, `<mi>arcsin</mi>`,
+/// `<mi>&#x393;</mi>`, the Bessel functions as `J_n(x)` — or one of the
+/// notations below.  Up to 0.59 each node-backed function had an arm that
+/// repeated its head, and the library functions an exhaustive list.
+fn render_function(arena: &Arena, node: &ExprNode, args: &[String]) -> String {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    // The branch `k` of Lambert W, `W_k(x)`.
-    if lib == Some(LibFn::LambertW) {
-        if let [x, k] = refs.as_slice() {
-            return apply(&format!("<msub>{}{k}</msub>", mi("W")), &[x]);
-        }
-        return apply(&mi("W"), &refs);
-    }
-    let bessel = match lib {
-        Some(LibFn::BesselJ) => Some("J"),
-        Some(LibFn::BesselY) => Some("Y"),
-        Some(LibFn::BesselI) => Some("I"),
-        Some(LibFn::BesselK) => Some("K"),
-        Some(
-            LibFn::Factorial2
-            | LibFn::Subfactorial
-            | LibFn::RisingFactorial
-            | LibFn::FallingFactorial
-            | LibFn::Fibonacci
-            | LibFn::Lucas
-            | LibFn::Bernoulli
-            | LibFn::Harmonic
-            | LibFn::Catalan
-            | LibFn::Bell
-            | LibFn::EulerNumber
-            | LibFn::Stirling1
-            | LibFn::Stirling2
-            | LibFn::PartitionCount
-            | LibFn::LambertW
-            | LibFn::Legendre
-            | LibFn::ChebyshevT
-            | LibFn::ChebyshevU
-            | LibFn::Hermite
-            | LibFn::Laguerre
-            | LibFn::Erfi
-            | LibFn::ErfInv
-            | LibFn::ErfcInv
-            | LibFn::ExpInt
-            | LibFn::Shi
-            | LibFn::Chi
-            | LibFn::FresnelS
-            | LibFn::FresnelC
-            | LibFn::LowerGamma
-            | LibFn::UpperGamma
-            | LibFn::PolyLog
-            | LibFn::DirichletEta
-            | LibFn::AiryAi
-            | LibFn::AiryBi
-            | LibFn::AiryAiPrime
-            | LibFn::AiryBiPrime
-            | LibFn::EllipticK
-            | LibFn::EllipticE
-            | LibFn::EllipticF
-            | LibFn::EllipticPi
-            | LibFn::Gegenbauer
-            | LibFn::Jacobi
-            | LibFn::AssocLegendre
-            | LibFn::AssocLaguerre
-            | LibFn::BetaInc
-            | LibFn::BetaIncRegularized,
-        )
-        | None => None,
+    // `func_nodes!()` is exactly the nodes that have a head.
+    let Some(f) = node.func_head() else {
+        return mrow("");
     };
-    if let (Some(letter), [order, arg]) = (bessel, refs.as_slice()) {
-        let head = format!("<msub>{}{order}</msub>", mi(letter));
-        return apply(&head, &[arg]);
+    let spec = f.spec();
+    let plain = |head: &str| apply(&mi(head), &refs);
+    match spec.mathml {
+        Mml::Name => plain(spec.name),
+        Mml::Head(head) => plain(head),
+        Mml::Indexed(letter) => match refs.as_slice() {
+            &[order, arg] => apply(&format!("<msub>{}{order}</msub>", mi(letter)), &[arg]),
+            _ => plain(spec.name),
+        },
+        // The notations that are not a call under a head, by function.
+        Mml::Own => match (f, refs.as_slice()) {
+            (Func::Abs, &[a]) => mrow(&format!("{}{a}{}", mo("|"), mo("|"))),
+            (Func::Floor, &[a]) => mrow(&format!("<mo>&#x230A;</mo>{a}<mo>&#x230B;</mo>")),
+            (Func::Ceiling, &[a]) => mrow(&format!("<mo>&#x2308;</mo>{a}<mo>&#x2309;</mo>")),
+            (Func::Conjugate, &[a]) => format!("<mover>{a}<mo>&#xAF;</mo></mover>"),
+            // Postfix `n!`.
+            (Func::Factorial, &[a]) => {
+                let atom = node
+                    .children()
+                    .first()
+                    .is_some_and(|&c| arena.node(c).is_atom());
+                let body = if atom { a.to_owned() } else { paren(a) };
+                mrow(&format!("{body}{}", mo("!")))
+            }
+            (Func::Binomial, &[n, k]) => mrow(&format!(
+                "<mo>(</mo><mfrac linethickness=\"0\">{n}{k}</mfrac><mo>)</mo>"
+            )),
+            // `ln Γ`: the heads of `ln` and of `Γ`.
+            (Func::LogGamma, &[a]) => apply(
+                &mrow(&format!("{}{}", head_of(Func::Ln), head_of(Func::Gamma))),
+                &[a],
+            ),
+            // `ψ⁽ⁿ⁾(x)`: the head of the digamma function with the order
+            // as a superscript.
+            (Func::Polygamma, &[n, a]) => {
+                let head = format!("<msup>{}{}</msup>", head_of(Func::Digamma), paren(n));
+                apply(&head, &[a])
+            }
+            // `δ_ij`.
+            (Func::KroneckerDelta, &[i, j]) => {
+                format!("<msub>{}{}</msub>", mi("&#x3B4;"), mrow(&format!("{i}{j}")))
+            }
+            // The branch `k` of Lambert W, `W_k(x)`, under the head of the
+            // principal branch.
+            (Func::LambertW, &[x, k]) => apply(
+                &format!("<msub>{}{k}</msub>", head_of(Func::LambertW0)),
+                &[x],
+            ),
+            (Func::LambertW, _) => apply(&head_of(Func::LambertW0), &refs),
+            // A function declared `Own` without a notation here (a test in
+            // `func.rs` lists the ten): a call under its name.
+            _ => plain(spec.name),
+        },
     }
-    apply(&mi(&escape(name)), &refs)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

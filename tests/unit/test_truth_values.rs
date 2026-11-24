@@ -55,7 +55,10 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     // `poly/**` (W10c), `transforms/{eval,evalf,inequalities,sets,solve}` (B3 / evalf).
     ("base/arena.rs", [1, 0, 1, 1, 0]),
     ("base/assumptions.rs", [98, 0, 0, 0, 0]),
-    ("base/canon.rs", [46, 2, 1, 3, 0]),
+    ("base/canon.rs", [14, 0, 0, 2, 0]),
+    ("base/canon/assumed.rs", [26, 0, 1, 0, 0]),
+    ("base/canon/mul_vanishing.rs", [1, 2, 0, 0, 0]),
+    ("base/canon/special_values.rs", [5, 0, 0, 1, 0]),
     ("base/complex.rs", [27, 0, 2, 1, 0]),
     ("poly/algebraic.rs", [1, 0, 2, 2, 0]),
     ("poly/dense.rs", [0, 0, 1, 0, 0]),
@@ -65,13 +68,17 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     ("poly/polysys.rs", [5, 0, 2, 0, 0]),
     ("poly/sturm.rs", [0, 0, 0, 1, 0]),
     ("poly/zerodim.rs", [1, 0, 0, 0, 0]),
-    ("transforms/eval.rs", [22, 0, 8, 2, 0]),
+    ("transforms/eval/digit_guard.rs", [1, 0, 7, 1, 0]),
+    ("transforms/eval/quadratic_tower.rs", [2, 0, 1, 0, 0]),
+    ("transforms/eval/special02.rs", [1, 0, 0, 0, 0]),
+    ("transforms/eval/trig_radicals.rs", [18, 0, 0, 1, 0]),
     ("transforms/evalf.rs", [0, 1, 0, 0, 0]),
-    ("transforms/inequalities.rs", [1, 2, 0, 1, 0]),
-    ("transforms/sets.rs", [18, 0, 18, 0, 0]),
-    ("transforms/solve.rs", [27, 0, 1, 0, 0]),
+    ("transforms/solve.rs", [2, 0, 0, 0, 0]),
+    ("transforms/solve/declared.rs", [17, 0, 1, 0, 0]),
+    ("transforms/solve/lambert.rs", [2, 0, 0, 0, 0]),
+    ("transforms/solve/peeling.rs", [2, 0, 0, 0, 0]),
+    ("transforms/solve/rational_exp.rs", [4, 0, 0, 0, 0]),
     ("transforms/solve/algebraic_roots.rs", [0, 0, 0, 1, 0]),
-    ("transforms/solve/context.rs", [4, 0, 0, 0, 0]),
     // `risch/param_rational.rs`: kept for the planned `PFrac` rewrite (the site is in `nonnegative(&PFrac)`).
     ("calculus/risch/param_rational.rs", [1, 0, 0, 0, 0]),
     // ── Kept, with the reason ──────────────────────────────────────────────
@@ -81,9 +88,7 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     // (truth.rs, "Infinities"): needs a typed extended sign.
     ("calculus/definite.rs", [0, 0, 0, 1, 0]),
     // `param_sign`: `limit::const_sign` of a transform parameter (see limit.rs).
-    ("calculus/fourier_transform.rs", [0, 0, 0, 1, 0]),
-    ("calculus/laplace.rs", [0, 0, 0, 1, 0]),
-    ("calculus/mellin.rs", [0, 0, 0, 1, 0]),
+    ("calculus/transform_util.rs", [0, 0, 0, 1, 0]),
     // `eventual_sign_at_inf -> Option<i32>`: the sign of the leading coefficient (`−1` for
     // `−x + i`), not a `SignSet` atom.
     ("calculus/gruntz.rs", [0, 0, 0, 1, 0]),
@@ -101,8 +106,6 @@ const ALLOWLIST: &[(&str, [usize; 5])] = &[
     // their caller is eval.rs.
     ("transforms/eval/atan_sum.rs", [0, 0, 1, 0, 0]),
     ("transforms/eval/cyclotomic.rs", [0, 0, 4, 0, 0]),
-    // `holds_admissible_integer`: `?`-propagated into `univariate_status`'s `Option`.
-    ("transforms/logic.rs", [0, 0, 1, 0, 0]),
     // `constant_realness*`: called from solve.rs and sets.rs.
     ("transforms/realness.rs", [0, 0, 3, 0, 0]),
 ];

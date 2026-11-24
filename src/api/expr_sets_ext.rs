@@ -164,7 +164,7 @@ impl Expr<SetValued> {
     pub fn contains(&self, elem: &Ex) -> Option<bool> {
         let elem_id = self.checked_id(elem);
         let mut inner = self.inner.write();
-        crate::transforms::sets::set_contains(&mut inner.arena, self.raw_id(), elem_id)
+        crate::transforms::sets::set_contains(&mut inner.arena, self.raw_id(), elem_id).to_option()
     }
 
     /// Is `self ⊆ other`?  Three-valued.
@@ -184,7 +184,7 @@ impl Expr<SetValued> {
     pub fn is_subset(&self, other: &SetEx) -> Option<bool> {
         let other_id = self.checked_id(other);
         let mut inner = self.inner.write();
-        crate::transforms::sets::is_subset(&mut inner.arena, self.raw_id(), other_id)
+        crate::transforms::sets::is_subset(&mut inner.arena, self.raw_id(), other_id).to_option()
     }
 
     /// Is `self ⊇ other`?  Three-valued.
@@ -209,7 +209,7 @@ impl Expr<SetValued> {
     pub fn is_disjoint(&self, other: &SetEx) -> Option<bool> {
         let other_id = self.checked_id(other);
         let mut inner = self.inner.write();
-        crate::transforms::sets::is_disjoint(&mut inner.arena, self.raw_id(), other_id)
+        crate::transforms::sets::is_disjoint(&mut inner.arena, self.raw_id(), other_id).to_option()
     }
 
     /// Is the set empty?  Three-valued.
@@ -228,7 +228,7 @@ impl Expr<SetValued> {
     #[must_use]
     pub fn is_empty(&self) -> Option<bool> {
         let mut inner = self.inner.write();
-        crate::transforms::sets::is_empty(&mut inner.arena, self.raw_id())
+        crate::transforms::sets::is_empty(&mut inner.arena, self.raw_id()).to_option()
     }
 
     /// Greatest lower bound (`-oo` when unbounded below).
@@ -351,14 +351,14 @@ impl Expr<SetValued> {
     #[must_use]
     pub fn is_open(&self) -> Option<bool> {
         let mut inner = self.inner.write();
-        crate::transforms::sets::is_open(&mut inner.arena, self.raw_id())
+        crate::transforms::sets::is_open(&mut inner.arena, self.raw_id()).to_option()
     }
 
     /// Is the set closed in ℝ?  Three-valued.
     #[must_use]
     pub fn is_closed(&self) -> Option<bool> {
         let mut inner = self.inner.write();
-        crate::transforms::sets::is_closed(&mut inner.arena, self.raw_id())
+        crate::transforms::sets::is_closed(&mut inner.arena, self.raw_id()).to_option()
     }
 
     /// Normal-form accessor: the pieces of the set as [`Interval<Ex>`]s in

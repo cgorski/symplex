@@ -51,10 +51,14 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("base/complex.rs", 2),
     // Function analysis prints candidates for its error messages.
     ("calculus/calculus_util.rs", 1),
-    // Numeric quadrature compiles the integrand.
+    // Numeric quadrature compiles the integrand (`definite.rs` and the two of its
+    // child modules that evaluate it at points).
     ("calculus/definite.rs", 1),
-    // ODE systems use `Matrix` and `linsolve`.
-    ("calculus/ode.rs", 2),
+    ("calculus/definite/endpoints.rs", 1),
+    ("calculus/definite/gauss_kronrod.rs", 1),
+    // ODE systems use `Matrix` (imported by `ode.rs` for its child modules) and `linsolve`.
+    ("calculus/ode.rs", 1),
+    ("calculus/ode/systems.rs", 1),
     // Certificates, polytopes and stats work on the public `Poly` view.
     ("domains/certificates.rs", 1),
     ("domains/certificates/outcome.rs", 1),
@@ -76,14 +80,25 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("simplify/factor_terms.rs", 1),
     // `apart` rationalises coefficients.
     ("transforms/apart.rs", 1),
-    // `eval` folds `Sum`/`Product` through the summation engine, `Integral` through Risch, and binomials through combinatorics.
-    ("transforms/eval.rs", 3),
-    // `evalf` integrates numerically, compiles, and evaluates combinatorial functions.
-    ("transforms/evalf.rs", 3),
+    // `eval` folds `Sum`/`Product` through the summation engine and `Integral` through Risch;
+    // its child modules fold binomials and the combinatorial sequences through combinatorics.
+    ("transforms/eval.rs", 2),
+    ("transforms/eval/integer_sequences.rs", 1),
+    ("transforms/eval/lib_values.rs", 1),
+    // `evalf` integrates numerically and compiles (`evalf/integral.rs`; the module
+    // documentation of `evalf.rs` links to the definite integrator), and evaluates
+    // combinatorial functions (`evalf/polylog_eta.rs`).
+    ("transforms/evalf.rs", 1),
+    ("transforms/evalf/integral.rs", 2),
+    ("transforms/evalf/polylog_eta.rs", 1),
     // `expand` delegates trig/log expansion to the simplifiers.
     ("transforms/expand.rs", 2),
-    // `integrate` calls Risch and the simplifier.
+    // `integrate` calls Risch (and so do four of its child modules) and the simplifier.
     ("transforms/integrate.rs", 2),
+    ("transforms/integrate/mobius.rs", 1),
+    ("transforms/integrate/rational_constants.rs", 1),
+    ("transforms/integrate/special.rs", 1),
+    ("transforms/integrate/verify.rs", 1),
     // `logic` simplifies relational atoms with the numeric engine.
     ("transforms/logic.rs", 1),
     // The pattern matcher is the engine behind `RuleSet` and the simplifier.
@@ -92,6 +107,7 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("transforms/rsolve.rs", 1),
     // `solve` normalises with `ratsimp`.
     ("transforms/solve.rs", 1),
+    ("transforms/solve/peeling.rs", 1),
 ];
 
 fn layer_of(rel: &str) -> Option<usize> {

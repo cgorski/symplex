@@ -67,14 +67,18 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     // Reviewed in s15g4: what is left are the quadrature internals, refusal checks and certified
     // margins; cut crossings, the `ln²` coefficients at infinity and the side of the negative axis
     // are certified since.
-    ("calculus/definite.rs", [16, 22]),
+    ("calculus/definite.rs", [5, 5]),
+    ("calculus/definite/branch_cuts.rs", [0, 1]),
+    ("calculus/definite/endpoints.rs", [6, 0]),
+    ("calculus/definite/gauss_kronrod.rs", [5, 15]),
+    ("calculus/definite/special_integrands.rs", [0, 1]),
     ("calculus/gruntz.rs", [3, 0]),
     ("calculus/limit.rs", [4, 0]),
     // `radical_char_roots` (the Sturm count decides; margins refuse), `is_real_radical` (radicals
     // of rationals), `real_imag_parts`, `CEx::is_zero` (certified margin or `Unknown`),
     // `is_real_constant` (selects a method that is right either way): reviewed in s15g4;
     // `residual_verdict` is certified since s14c.
-    ("calculus/ode.rs", [8, 4]),
+    ("calculus/ode/const_coeff.rs", [8, 4]),
     // `analytic_at_zero`: branch cuts and poles of Γ/ψ read from an `f64` correctly rounded from a
     // 128-bit value, with margins of 1e-12: a value inside a margin refuses (s14c audit).
     ("calculus/residue.rs", [6, 0]),
@@ -87,7 +91,7 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     // exact since.
     ("domains/certificates/sos.rs", [18, 4]),
     ("domains/linalg.rs", [1, 0]),
-    ("domains/matrix.rs", [2, 0]),
+    ("domains/matrix/eigen.rs", [2, 0]),
     ("domains/matrix_decomp.rs", [2, 0]),
     ("domains/optimize.rs", [2, 11]),
     ("domains/quaternion.rs", [1, 1]),
@@ -111,12 +115,15 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("poly/roots.rs", [0, 1]),
     ("simplify/nsimplify.rs", [4, 0]),
     ("transforms/apart.rs", [7, 0]),
-    ("transforms/eval.rs", [8, 3]),
     ("transforms/eval/atan_sum.rs", [2, 1]),
+    ("transforms/eval/lib_values.rs", [0, 1]),
+    ("transforms/eval/quadratic_tower.rs", [3, 2]),
+    ("transforms/eval/special02.rs", [1, 0]),
+    ("transforms/eval/trig_radicals.rs", [4, 0]),
     // The evalf files were reviewed in s15h2: polygamma's order, a Sum's range, J_ν(0), the
     // f64-radius exactness of the zeta-family bounds, Hankel's termination and E_n's |n − 1| are
     // exact or certified; what is left guides a route, refuses, or has a certified margin.
-    ("transforms/evalf.rs", [5, 7]),
+    ("transforms/evalf.rs", [2, 1]),
     ("transforms/evalf/accuracy.rs", [1, 1]),
     ("transforms/evalf/asymsum.rs", [1, 0]),
     ("transforms/evalf/ball.rs", [1, 0]),
@@ -126,19 +133,27 @@ const ALLOWLIST: &[(&str, [usize; 2])] = &[
     ("transforms/evalf/cexpint.rs", [0, 4]),
     ("transforms/evalf/cspecial.rs", [1, 0]),
     ("transforms/evalf/hypsum.rs", [7, 1]),
+    ("transforms/evalf/integral.rs", [2, 6]),
     ("transforms/evalf/lambertw.rs", [1, 2]),
     ("transforms/evalf/loggamma.rs", [0, 1]),
     ("transforms/evalf/polylog.rs", [4, 3]),
     ("transforms/evalf/quad.rs", [1, 0]),
     ("transforms/evalf/sensitivity.rs", [0, 2]),
     ("transforms/evalf/zeta.rs", [2, 2]),
+    ("transforms/evalf/zeta_polygamma.rs", [1, 0]),
     // 0.58: the `denom == 0.0` test of `eval_node_f64` went with its decimal round trip.
     ("transforms/heurisch.rs", [5, 0]),
     // FTC checks and continuity probes guard refusals (reviewed in s15g4); `known_zero` is exact
     // since s14c; real roots, their order and the side of `Ei`'s cut are certified since s15g4.
-    ("transforms/integrate.rs", [11, 3]),
+    ("transforms/integrate/piecewise.rs", [1, 2]),
+    ("transforms/integrate/special.rs", [0, 1]),
+    ("transforms/integrate/trig_rational.rs", [1, 0]),
+    ("transforms/integrate/u_substitution.rs", [1, 0]),
+    ("transforms/integrate/verify.rs", [8, 0]),
     ("transforms/sets.rs", [6, 1]),
-    ("transforms/solve.rs", [4, 2]),
+    ("transforms/solve.rs", [1, 0]),
+    ("transforms/solve/declared.rs", [2, 0]),
+    ("transforms/solve/lambert.rs", [1, 2]),
     ("transforms/trig_integ.rs", [4, 1]),
     ("units/inference.rs", [1, 0]),
 ];

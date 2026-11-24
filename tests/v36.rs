@@ -126,6 +126,10 @@ mod v36_s16_fuzz_findings;
 mod v36_s16r6_slow;
 #[path = "v36/v36_s17a_transforms.rs"]
 mod v36_s17a_transforms;
+#[path = "v36/v36_s17b_sets.rs"]
+mod v36_s17b_sets;
+#[path = "v36/v36_s17b_spectrum.rs"]
+mod v36_s17b_spectrum;
 #[path = "v36/v36_s17n1_zeros.rs"]
 mod v36_s17n1_zeros;
 #[path = "v36/v36_w10_poly.rs"]

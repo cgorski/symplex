@@ -955,3 +955,69 @@ fn count_ops_of_interval() {
     let ops = i.as_ex().count_ops();
     assert!(ops >= 1, "interval should count as at least 1 op: {ops}");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Subsets of the real line (wave 17)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `A ⊆ ℝ` needs the members of `A` to be real.  Up to 0.59 `is_subset`
+/// answered `Some(true)` whenever the right-hand side evaluated to the whole
+/// line, whatever `A` held: `{i} ⊆ ℝ`, `{1, i} ⊆ ℝ`, `{√(−2), 3} ⊆ ℝ`,
+/// `{2kπi : k ∈ ℤ} ⊆ ℝ`, `UniversalSet ⊆ ℝ` (all false: each set holds a
+/// number that is not real, and `reals.contains(i)` is `Some(false)`), and
+/// `{x} ⊆ ℝ`, `{kπ + x} ⊆ ℝ` for a plain (complex) `x` (not decidable).
+/// Oracle: the definition, with `i ∉ ℝ` (the family holds `2πi` at `k =
+/// 1`, the universal set holds `i`).  SymPy 1.14 as a second opinion:
+/// `FiniteSet(I).is_subset(S.Reals)`, `FiniteSet(1, I)…` and
+/// `FiniteSet(sqrt(-2), 3)…` are `False`, `FiniteSet(x).is_subset(S.Reals)`
+/// is `None`, `FiniteSet(r)…` for a real `r` is `True`; it leaves
+/// `ImageSet(Lambda(n, 2*n*pi*I), S.Integers)` and `S.UniversalSet`
+/// undecided (`None`), never `True`.
+#[test]
+fn a_subset_of_the_reals_has_real_members() {
+    let ctx = Context::new();
+    let i = ctx.int(-1).sqrt();
+    let pi = ctx.pi();
+    let x = ctx.symbol("x");
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
+    let k = ctx.symbol("k");
+    let reals = ctx.reals();
+    let line_and_five = reals.union(&ctx.finite_set(&[ctx.int(5)]));
+    let imaginary_family = (&(&ctx.int(2) * &k) * &(&pi * &i)).image_set(&k).unwrap();
+    let real_family = (&(&ctx.int(2) * &k) * &pi).image_set(&k).unwrap();
+    let shifted_family = (&(&k * &pi) + &x).image_set(&k).unwrap();
+
+    // Not subsets (before: `Some(true)` each).
+    for a in [
+        ctx.finite_set(std::slice::from_ref(&i)),
+        ctx.finite_set(&[ctx.int(1), i.clone()]),
+        ctx.finite_set(&[ctx.int(-2).sqrt(), ctx.int(3)]),
+        imaginary_family.clone(),
+        ctx.universal_set(),
+    ] {
+        assert_eq!(a.is_subset(&reals), Some(false), "{a} ⊆ ℝ");
+        assert_eq!(reals.is_superset(&a), Some(false), "ℝ ⊇ {a}");
+        assert_eq!(a.is_subset(&line_and_five), Some(false), "{a} ⊆ ℝ ∪ {{5}}");
+        // every set is a subset of the universal set
+        assert_eq!(a.is_subset(&ctx.universal_set()), Some(true), "{a} ⊆ U");
+    }
+    // Not decided (before: `Some(true)` each).
+    for a in [ctx.finite_set(std::slice::from_ref(&x)), shifted_family] {
+        assert_eq!(a.is_subset(&reals), None, "{a} ⊆ ℝ");
+        assert_eq!(a.is_subset(&ctx.universal_set()), Some(true), "{a} ⊆ U");
+    }
+    // Subsets, as before.
+    for a in [
+        ctx.finite_set(std::slice::from_ref(&r)),
+        ctx.finite_set(&[ctx.int(2).sqrt(), pi.clone()]),
+        real_family,
+        k.powi(2).image_set(&k).unwrap(),
+        ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open),
+        ctx.interval(&x, &(&x + &ctx.int(1)), IntervalKind::Closed),
+        ctx.empty_set(),
+        reals.clone(),
+    ] {
+        assert_eq!(a.is_subset(&reals), Some(true), "{a} ⊆ ℝ");
+        assert_eq!(a.is_subset(&line_and_five), Some(true), "{a} ⊆ ℝ ∪ {{5}}");
+    }
+}

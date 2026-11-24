@@ -982,7 +982,7 @@ fn limit_val_parts(
     // A part without a value at any `x` (`γ(−n, u)`: a pole of `γ` in its
     // order whatever `u`) leaves the expression without one: up to 0.58
     // `limit(x − γ(0, 48), x, ∞)` was `−γ(0, 48) + ∞`.
-    if holds_valueless_part(arena, expr) {
+    if holds_valueless_part(arena, expr, var) {
         return Err(fail("a part of the expression has no value at any point"));
     }
 
@@ -1447,18 +1447,72 @@ pub(crate) fn is_finite_limit_value(arena: &Arena, id: ExprId, var: ExprId) -> b
     is_valid_limit_value(arena, id, var) && !contains_singular_atom(arena, id)
 }
 
-/// Does `e` hold `γ(−n, u)`, `n = 0, 1, …`, which has no value for any `u`
-/// (see [`contains_hidden_singularity`])?
-fn holds_valueless_part(arena: &Arena, e: ExprId) -> bool {
-    crate::base::walk::post_order_ids(arena, e)
-        .into_iter()
-        .any(|id| {
-            let node = arena.node(id);
-            matches!(
-                node,
-                ExprNode::Lib(crate::base::libfn::LibFn::LowerGamma, _)
-            ) && at_nonpositive_integer_pole(arena, node)
-        })
+/// Does `e` hold a part without a value at any value of `var`:
+///
+/// * `γ(−n, u)`, `n = 0, 1, …`, which has none for any `u` (see
+///   [`contains_hidden_singularity`]);
+/// * a constant (a part free of `var`) that is a function of the `funcs!`
+///   table at a pole place of its [`Poles`](crate::base::func::Poles) facet
+///   ([`constant_at_pole`]): `E₁(0)`, `Γ(0, 0)`, `γ(−1/2, 0)`, `K_y(0)`.
+///
+/// Such an expression has no value near any point, so it has no limit.  The
+/// rules below multiply and add limits: up to 0.59 a factor tending to 0
+/// annihilated such a constant before any rule looked at it (the canonical
+/// `0·c = 0`), and `limit(x²·E₁(0), x, 0)` was `0`, as was the limit from the
+/// right of `x²·E₁(KroneckerDelta(x + 1, −1))`, whose delta the assumption
+/// `x > 0` folds to 0 (`E₁(0) = +∞`: mpmath `e1(0)`).
+pub(crate) fn holds_valueless_part(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
+    use crate::base::func::Poles;
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let node = arena.node(id);
+        let Some((f, _)) = node.func(arena) else {
+            continue;
+        };
+        if matches!(f.spec().poles, Poles::None | Poles::Other) {
+            continue;
+        }
+        if matches!(f, crate::base::func::Func::LowerGamma)
+            && at_nonpositive_integer_pole(arena, node)
+        {
+            return true;
+        }
+        if !crate::base::walk::contains(arena, id, var) && constant_at_pole(arena, id, var) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Is the constant `id` (free of `var`) a function of the `funcs!` table
+/// with an argument where its [`Poles`](crate::base::func::Poles) facet puts
+/// a pole ([`tabulated_pole`]: an integer `≤ 0`, or a `0`/`1` place that the
+/// other argument does not make regular), and not a value proved finite?
+/// The constructors fold the finite values (`J₁(0) = 0`, `E₂(0) = 1`,
+/// `Γ(1/2, 0) = √π`) and the signed infinities (`Ei(0) = −∞`); what is left
+/// unevaluated at such a place (`E₁(0)`, `Γ(0, 0)`, `γ(−1/2, 0)`) or holds
+/// a parameter (`K_y(0)`, infinite for every `y`; `J_y(0)`, 0 or infinite)
+/// is no value.
+///
+/// A numeric `B(a, b)` with one argument an integer `≤ 0` is left to the
+/// value its `Γ` ratio has where that pole cancels, as the constructors
+/// leave it (`B(−1, 1) = −1`): `a + b` an integer `≤ 0` too (`B(−3, 1) =
+/// Γ(−3)·Γ(1)/Γ(−2) = −1/3`, mpmath `beta(-3, 1)`).
+fn constant_at_pole(arena: &mut Arena, id: ExprId, var: ExprId) -> bool {
+    let node = arena.node(id).clone();
+    if let ExprNode::Beta(a, b) = node
+        && let (Some(a), Some(b)) = (arena.as_num(a), arena.as_num(b))
+    {
+        let at_pole = |q: &Q| q.is_integer() && !q.is_positive();
+        if at_pole(a) != at_pole(b) && at_pole(&(a + b)) {
+            return false;
+        }
+    }
+    match tabulated_pole(arena, &node, var, |_, c| c) {
+        TabulatedPole::Off => false,
+        TabulatedPole::Pole | TabulatedPole::Possible(_) => {
+            !(arena.is_symbol_free(id) && ValueClass::of(arena, id).is_finite_proved())
+        }
+    }
 }
 
 /// Detect symbolic forms that `eval` leaves untouched but that denote

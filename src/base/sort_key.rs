@@ -38,6 +38,7 @@
 
 use std::hash::Hasher;
 
+use crate::base::func::{SortSub, func_nodes};
 use crate::base::node::{ExprId, ExprNode, NumId, SymbolId};
 
 // ---------------------------------------------------------------------------
@@ -80,12 +81,6 @@ const RANK_PIECEWISE: u8 = 118;
 
 /// Rank byte for formal derivative nodes.
 const RANK_DERIVATIVE: u8 = 120;
-
-/// Rank byte for n-ary minimum.
-const RANK_MIN: u8 = 130;
-
-/// Rank byte for n-ary maximum.
-const RANK_MAX: u8 = 132;
 
 /// Rank byte for formal integral nodes.
 const RANK_INTEGRAL: u8 = 140;
@@ -144,46 +139,12 @@ const RANK_SPECIAL: u8 = 210;
 // Function discriminant bytes (used within the RANK_FUNCTION class)
 // ---------------------------------------------------------------------------
 
-const FN_SIN: u8 = 0;
-const FN_COS: u8 = 1;
-const FN_TAN: u8 = 2;
-const FN_EXP: u8 = 3;
-const FN_LN: u8 = 4;
-const FN_ABS: u8 = 6;
-const FN_ASIN: u8 = 8;
-const FN_ACOS: u8 = 9;
-const FN_ATAN: u8 = 10;
-const FN_SINH: u8 = 11;
-const FN_COSH: u8 = 12;
-const FN_TANH: u8 = 13;
-const FN_ASINH: u8 = 14;
-const FN_ACOSH: u8 = 15;
-const FN_ATANH: u8 = 16;
+// The sub-rank byte of each function of the `funcs!` table is its `sort`
+// facet (`SortSub::Function`, in `base/func.rs`): 0–4, 6–16 and 18–41 are
+// taken (8 twice, by `asin` and by the binomial coefficient, since 0.13).
+// `Apply`, and with it every library and internal function
+// (`SortSub::Named`), has the byte below, followed by the name.
 const FN_APPLY: u8 = 17;
-const FN_SIGN: u8 = 18;
-const FN_ATAN2: u8 = 19;
-const FN_FLOOR: u8 = 20;
-const FN_CEILING: u8 = 21;
-const FN_GAMMA: u8 = 22;
-const FN_LOG_GAMMA: u8 = 23;
-const FN_DIGAMMA: u8 = 24;
-const FN_ERF: u8 = 25;
-const FN_ERFC: u8 = 26;
-const FN_BETA: u8 = 27;
-const FN_HEAVISIDE: u8 = 28;
-const FN_DIRAC_DELTA: u8 = 29;
-const FN_LAMBERT_W: u8 = 30;
-const FN_RE: u8 = 31;
-const FN_IM: u8 = 32;
-const FN_CONJUGATE: u8 = 33;
-const FN_ARG: u8 = 34;
-const FN_SI: u8 = 35;
-const FN_CI: u8 = 36;
-const FN_EI: u8 = 37;
-const FN_LI: u8 = 38;
-const FN_ZETA: u8 = 39;
-const FN_POLYGAMMA: u8 = 40;
-const FN_KRONECKER_DELTA: u8 = 41;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -345,259 +306,34 @@ pub fn compute_sort_key<'k>(
             out.extend_from_slice(get_key(*hi));
         }
 
-        // -- unary functions -------------------------------------------------
-        ExprNode::Sin(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_SIN);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Cos(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_COS);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Tan(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_TAN);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Exp(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_EXP);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Ln(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_LN);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Abs(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ABS);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Asin(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ASIN);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Acos(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ACOS);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Atan(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ATAN);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Atan2(y, x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ATAN2);
-            out.extend_from_slice(get_key(*y));
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Sinh(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_SINH);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Cosh(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_COSH);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Tanh(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_TANH);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Asinh(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ASINH);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Acosh(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ACOSH);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Atanh(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ATANH);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Sign(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_SIGN);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Heaviside(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_HEAVISIDE);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::DiracDelta(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_DIRAC_DELTA);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Gamma(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_GAMMA);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::LogGamma(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_LOG_GAMMA);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Digamma(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_DIGAMMA);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Erf(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ERF);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Erfc(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ERFC);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::LambertW(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_LAMBERT_W);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        // -- complex analysis ------------------------------------------------
-        ExprNode::Re(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_RE);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Im(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_IM);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Conjugate(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_CONJUGATE);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Arg(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ARG);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        // -- special functions (0.2) -----------------------------------------
-        ExprNode::Si(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_SI);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Ci(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_CI);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Ei(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_EI);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Li(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_LI);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Zeta(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ZETA);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Polygamma(n, x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_POLYGAMMA);
-            out.extend_from_slice(get_key(*n));
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::KroneckerDelta(i, j) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_KRONECKER_DELTA);
-            out.extend_from_slice(get_key(*i));
-            out.extend_from_slice(get_key(*j));
-        }
-
-        ExprNode::Beta(a, b) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_BETA);
-            out.extend_from_slice(get_key(*a));
-            out.extend_from_slice(get_key(*b));
-        }
-
-        ExprNode::Floor(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_FLOOR);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Ceiling(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_CEILING);
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Min(children) => {
-            out.push(RANK_MIN);
-            for &child in children {
-                out.extend_from_slice(get_key(child));
+        // -- functions of the `funcs!` table ---------------------------------
+        // Node-backed, library and internal functions alike: the leading
+        // bytes are the function's `sort` facet, then come the keys of the
+        // arguments in order.  (Up to 0.59 one arm per function repeated its
+        // byte; the bytes are byte-identity critical and never change.)
+        func_nodes!() => {
+            // `func_nodes!()` is exactly the nodes that have a head.
+            if let Some(f) = node.func_head() {
+                let spec = f.spec();
+                match spec.sort {
+                    SortSub::Function(sub) => {
+                        out.push(RANK_FUNCTION);
+                        out.push(sub);
+                    }
+                    SortSub::Rank(rank) => out.push(rank),
+                    // The key of an `Apply` of that name (which the library
+                    // and internal functions were until 0.49): they sort by
+                    // name among themselves and with user functions, with a
+                    // null byte between the name and the arguments.
+                    SortSub::Named => {
+                        out.push(RANK_FUNCTION);
+                        out.push(FN_APPLY);
+                        out.extend_from_slice(spec.name.as_bytes());
+                        out.push(0x00);
+                    }
+                }
             }
-        }
-
-        ExprNode::Max(children) => {
-            out.push(RANK_MAX);
-            for &child in children {
-                out.extend_from_slice(get_key(child));
-            }
+            node.for_each_child(|child| out.extend_from_slice(get_key(child)));
         }
 
         ExprNode::Sum(body, var, lo, hi) => {
@@ -623,30 +359,6 @@ pub fn compute_sort_key<'k>(
             // alphabetically among themselves.
             out.extend_from_slice(get_sym_name(*sym).as_bytes());
             // Null byte separator to avoid ambiguity between name and args.
-            out.push(0x00);
-            for &arg in args {
-                out.extend_from_slice(get_key(arg));
-            }
-        }
-
-        // Byte-identical to the `Apply` key the library functions had until
-        // 0.49 (they sort by name among themselves and with user functions).
-        ExprNode::Lib(lib, args) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_APPLY);
-            out.extend_from_slice(lib.name().as_bytes());
-            out.push(0x00);
-            for &arg in args {
-                out.extend_from_slice(get_key(arg));
-            }
-        }
-
-        // Byte-identical to the `Apply` key the internal functions had until
-        // 0.49.
-        ExprNode::Internal(f, args) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_APPLY);
-            out.extend_from_slice(f.name().as_bytes());
             out.push(0x00);
             for &arg in args {
                 out.extend_from_slice(get_key(arg));
@@ -716,20 +428,6 @@ pub fn compute_sort_key<'k>(
             out.push(RANK_SPECIAL);
             out.push(SPECIAL_NEG);
             out.extend_from_slice(get_key(*x));
-        }
-
-        // -- combinatorial ---------------------------------------------------
-        ExprNode::Factorial(x) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ABS + 1); // slot after last built-in function
-            out.extend_from_slice(get_key(*x));
-        }
-
-        ExprNode::Binomial(n, k) => {
-            out.push(RANK_FUNCTION);
-            out.push(FN_ABS + 2);
-            out.extend_from_slice(get_key(*n));
-            out.extend_from_slice(get_key(*k));
         }
 
         // -- boolean atoms ---------------------------------------------------

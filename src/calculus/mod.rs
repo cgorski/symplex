@@ -16,4 +16,5 @@ pub mod risch;
 pub(crate) mod series;
 pub(crate) mod sum_eval;
 pub mod summation;
+pub(crate) mod transform_util;
 pub mod z_transform;
