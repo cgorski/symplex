@@ -77,7 +77,7 @@ jobs:
           tool: cargo-fuzz
       # The corpus grows across nights: restore the newest one for this
       # target, save the grown one under a fresh key.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
