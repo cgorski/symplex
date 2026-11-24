@@ -66,6 +66,7 @@ repository that anyone could reasonably flag, so:
 - [How to Add a New Node Type](#how-to-add-a-new-node-type-unevaluated-form)
 - [Testing](#testing)
 - [Continuous Integration](#continuous-integration)
+- [Pull Requests](#pull-requests)
 - [Code Style](#code-style)
 - [Common Pitfalls](#common-pitfalls)
 
@@ -1415,7 +1416,39 @@ hang* (the input as a complete snippet, what symplex returns, what is right
 and how you know) and *Refusal or missing feature*.  An input that crashes,
 hangs or exhausts memory through the parser or the JSON import is reported
 privately, as [`SECURITY.md`](SECURITY.md) describes, not in a public
-issue.  Every change is reviewed by the maintainer (`.github/CODEOWNERS`).
+issue.  Every change is reviewed by the maintainer (`.github/CODEOWNERS`);
+what happens to a pull request is described in the next section.
+
+---
+
+## Pull Requests
+
+Every pull request gets an answer, and none is closed in silence.
+
+1. **A reply that thanks you.**  The maintainer comments on every pull
+   request from a person, whatever becomes of it.
+2. **A check of the work.**  We read the change, run the whole gate with it
+   applied (the suite, the lints, the golden outputs when results can
+   change) and check each new expected value against its oracle.  A
+   library disagreeing with symplex is a reason to look, not yet a proof.
+3. **One of three outcomes, each said in a comment:**
+   - *Complete* — it does what it says, with a test that names its oracle,
+     and the gate is green: it is merged with your authorship, and the
+     comment says which release carries it.
+   - *Not complete, but we can finish it and it fits the current plan* — we
+     finish it on top of your commits, which stay yours, and the comment
+     says what was added and why (a wider case, a missing test, a doc
+     line).
+   - *We cannot complete it, or it does not fit* — the comment says why,
+     and what would make it mergeable or where the idea is tracked.  Then
+     it is closed.
+4. **A note when it ships.**  When the release that contains the change is
+   published, the pull request (and the issue it fixes) gets a line with
+   the version.
+
+Pull requests opened by bots (the monthly updates of GitHub Actions) are
+merged once every workflow passes with them, or closed with the reason;
+they get no thanks.
 
 ---
 
