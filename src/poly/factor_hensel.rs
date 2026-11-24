@@ -74,11 +74,17 @@ const MAX_TERMS: usize = 400_000;
 
 /// Factor a primitive integer polynomial with positive leading coefficient
 /// (in the order `O`) involving at least one variable into irreducible
-/// factors over ℤ, listed with repetition.  Every factor is primitive with
-/// positive leading coefficient, and their product is `f`.
+/// factors over ℤ with their multiplicities (a factor may be listed more
+/// than once).  Every factor is primitive with positive leading
+/// coefficient, and the product of their powers is `f`.  Up to 0.58 the
+/// factors were listed with repetition: a variable of the monomial content
+/// `x^N` was cloned `N` times.
 ///
-/// `None` if the method gives up (see the module documentation).
-pub(crate) fn factor_primitive<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<Vec<MultiPoly<O>>> {
+/// `None` if the method gives up (see the module documentation) or a
+/// multiplicity is beyond `u32`.
+pub(crate) fn factor_primitive<O: MonomialOrd>(
+    f: &MultiPoly<O>,
+) -> Option<Vec<(MultiPoly<O>, u32)>> {
     let nv = f.num_vars();
     let mut work: Vec<(MultiPoly<O>, u32)> = vec![(f.clone(), 1)];
     let mut out: Vec<(MultiPoly<O>, u32)> = Vec::new();
@@ -97,7 +103,7 @@ pub(crate) fn factor_primitive<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<Vec<M
             }
             for (i, &e) in mono.iter().enumerate() {
                 if e > 0 {
-                    out.push((MultiPoly::var(nv, i), m * e));
+                    out.push((MultiPoly::var(nv, i), m.checked_mul(e)?));
                 }
             }
             MultiPoly::from_terms(nv, terms)?
@@ -111,7 +117,7 @@ pub(crate) fn factor_primitive<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<Vec<M
                 let v = present[0];
                 let (_, fs) = factor_zassenhaus_with_content(&to_uni(&g, v)?);
                 for (h, k) in fs {
-                    out.push((from_uni(&h, v, nv), m * k));
+                    out.push((from_uni(&h, v, nv), m.checked_mul(k)?));
                 }
             }
             _ => {
@@ -122,8 +128,9 @@ pub(crate) fn factor_primitive<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<Vec<M
                     work.push((normalize(&c), m));
                 }
                 for (s, k) in square_free_in(&p, x)? {
+                    let mk = m.checked_mul(k)?;
                     if s.degree_in(x) == 0 {
-                        work.push((normalize(&s), m * k));
+                        work.push((normalize(&s), mk));
                         continue;
                     }
                     for h in factor_square_free(&s, x)? {
@@ -131,22 +138,16 @@ pub(crate) fn factor_primitive<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<Vec<M
                             // A univariate piece (the parts are primitive in
                             // `x`, so this is a polynomial in `x` alone):
                             // factor it on the work list.
-                            work.push((h, m * k));
+                            work.push((h, mk));
                         } else {
-                            out.push((h, m * k));
+                            out.push((h, mk));
                         }
                     }
                 }
             }
         }
     }
-    let mut result = Vec::new();
-    for (g, m) in out {
-        for _ in 0..m {
-            result.push(g.clone());
-        }
-    }
-    Some(result)
+    Some(out)
 }
 
 /// Integer primitive part with positive leading coefficient.

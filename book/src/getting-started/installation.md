@@ -10,7 +10,7 @@ Or add it directly to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-symplex = "0.58"
+symplex = "0.59"
 ```
 
 ## Minimum Supported Rust Version
@@ -29,18 +29,17 @@ rustup update stable
 
 ## Platform Support
 
-symplex is pure Rust with no C dependencies. It builds on any platform that Rust targets, including:
+symplex is pure Rust with no C dependencies and no `unsafe` code, so it is expected to build wherever Rust does. What is tested is narrower:
 
-- **Linux** (x86_64, aarch64)
-- **macOS** (x86_64, Apple Silicon)
-- **Windows** (x86_64)
-- **WebAssembly** (via `wasm-pack` — see the `symplex-wasm` crate)
+- **Linux x86_64** — the only platform on which CI builds the crates and runs the tests.
+- **WebAssembly** (`wasm32-unknown-unknown`) — CI type-checks the `symplex-wasm` crate for this target; the test suite does not run there.
+- **macOS, Windows, Linux aarch64** — not tested in CI.
 
-All dependencies are MIT or Apache-2.0 licensed. There are no LGPL, GPL, or proprietary dependencies.
+The dependencies carry permissive licences only: MIT, Apache-2.0 (some with the LLVM exception), BSD-2-Clause and Unicode-3.0 — the list `deny.toml` allows and `cargo deny` checks in CI. There are no LGPL, GPL, or proprietary dependencies.
 
 ## Feature Flags
 
-symplex currently has no optional feature flags. All functionality is included by default. This may change in future releases as the library grows.
+symplex has no optional feature flags, by design: every capability is always present (CONTRIBUTING.md, "Feature flags: one crate, no knobs"). Only `symplex-wasm` has one, for its panic hook.
 
 ## Companion Crates
 
@@ -57,7 +56,9 @@ The library depends on the following crates, all of which are widely used in the
 | Crate | Purpose |
 |-------|---------|
 | `num-bigint`, `num-rational`, `num-traits`, `num-integer` | Arbitrary-precision arithmetic |
+| `num-complex` | `Complex64` for complex `f64` values |
 | `smallvec` | Stack-allocated small vectors for expression nodes |
+| `rustc-hash`, `bitflags` | Hash maps for the expression arena; flag sets for assumptions |
 | `parking_lot` | Fast reader-writer locks for thread-safe contexts |
 | `astro-float` | Arbitrary-precision floating-point for numerical evaluation |
 | `serde`, `serde_json` | JSON serialization of expressions |

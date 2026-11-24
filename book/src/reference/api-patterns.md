@@ -140,7 +140,7 @@ Solvers distinguish "no method" from "the answer is: none" or "the answer is: al
 
 ## Contexts
 
-Everything belongs to a `Context`. Mixing expressions from different contexts panics with a clear message (treated as a logic error like indexing out of bounds). The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`) are documented under `# Panics` on each item and counted by the same ratchet. `Context` is `Clone`; clones share the arena. `Context::compact(&roots)` garbage-collects into a fresh context.
+Everything belongs to a `Context`. Mixing expressions from different contexts panics with a clear message (treated as a logic error like indexing out of bounds). The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. an out-of-range `m[(i, j)]`, `Context::symbol("")`) are documented under `# Panics` on each item and counted by the same ratchet. `Context` is `Clone`; clones share the arena. `Context::compact(&roots)` garbage-collects into a fresh context.
 
 ## Naming conventions
 

@@ -56,7 +56,10 @@ fn folds_at_a_special_argument_need_a_finite_other_argument() {
         ("uppergamma(s, oo)", "0"),
         ("expint(3, oo)", "0"),
         ("lowergamma(3, oo)", "2"),
-        ("lowergamma(s, 0)", "0"),
+        // (`γ(s, 0) = 0` holds for `re s > 0` only: since 0.59 a plain `s`
+        // does not fold; up to 0.58 this line pinned `lowergamma(s, 0)` → 0)
+        ("lowergamma(3, 0)", "0"),
+        ("lowergamma(s, 0)", "lowergamma(s, 0)"),
         ("besselj(n, oo)", "0"),
     ] {
         assert_eq!(parse(&ctx, src).eval().to_string(), value, "{src}");
@@ -157,8 +160,21 @@ fn piecewise_parameters_are_not_generic_nonzero_constants() {
     ] {
         let e = parse(&ctx, src);
         assert!(e.try_series(&x, &zero, 4).is_err(), "series of {src}");
-        assert!(e.try_limit(&x, &zero).is_err(), "limit of {src}");
+        // (0.59: the limit with a constant power `0^y` is taken case by
+        // case of `re y`, below; it was refused from 0.57.)
+        if src != "sin(x)/(x + 0^y)" {
+            assert!(e.try_limit(&x, &zero).is_err(), "limit of {src}");
+        }
     }
+    // `sin(x)/x → 1` for `re y > 0`, `sin(x)/(x + 1) → 0` at `y = 0`,
+    // `sin(x)/(x + zoo) = 0` for `re y < 0` (wave 16, R1.3).
+    assert_eq!(
+        parse(&ctx, "sin(x)/(x + 0^y)")
+            .try_limit(&x, &zero)
+            .unwrap()
+            .to_string(),
+        "Piecewise(1 if re(y) > 0, 0 if 0 > re(y) | y == 0)"
+    );
     let c = parse(&ctx, "0^y*(x + 1)/(0^y*(x + 2))");
     assert_eq!(c.cancel(&x).to_string(), c.to_string());
     let generic = parse(&ctx, "1/(x + y)");

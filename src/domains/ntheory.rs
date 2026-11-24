@@ -4029,8 +4029,16 @@ pub fn egyptian_fraction(r: &Q) -> Option<Vec<BigInt>> {
 
 /// Fibonacci number `Fₙ` (`F₀ = 0, F₁ = 1`), extended to negative indices
 /// by `F₋ₙ = (−1)ⁿ⁺¹ Fₙ`.  Fast doubling, `O(log n)` big-integer
-/// multiplications.  The value has about `0.694·|n|` bits (an index in the
-/// billions needs gigabytes): the caller bounds `n`.
+/// multiplications.  The value has about `0.694·|n|` bits.
+///
+/// # Refusal
+///
+/// An index beyond `±2²⁷` (a value of 93 million bits, 17 s) is not
+/// computed: the result is then **`0`, which is not the value** (`Fₙ ≠ 0`
+/// for `n ≠ 0`).  Callers that may pass such indices use
+/// [`try_fibonacci`], which reports the refusal as an `Err`.  (Up to 0.58
+/// the caller had to bound `n`: `fibonacci(2⁴⁰)`, a value of 95 GB, ran
+/// until the memory was exhausted.)
 ///
 /// # Examples
 ///
@@ -4043,21 +4051,55 @@ pub fn egyptian_fraction(r: &Q) -> Option<Vec<BigInt>> {
 /// assert_eq!(fibonacci(100).to_string(), "354224848179261915075");
 /// ```
 pub fn fibonacci(n: impl Into<BigInt>) -> BigInt {
-    crate::base::combinatorics::fibonacci(index_i128(&n.into()))
+    try_fibonacci(n).unwrap_or_default()
 }
 
-/// `n` as an `i128`, saturated (the sequences above take an index beyond
-/// `u64` as `±u64::MAX`, as they always did).
-fn index_i128(n: &BigInt) -> i128 {
-    n.to_i128().unwrap_or(if n.is_negative() {
-        i128::MIN
-    } else {
-        i128::MAX
-    })
+/// [`fibonacci`] with the oversized case reported.
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] for `|n| > 2²⁷`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::try_fibonacci;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(try_fibonacci(10).unwrap(), BigInt::from(55));
+/// assert!(try_fibonacci(1i64 << 40).is_err());
+/// ```
+pub fn try_fibonacci(n: impl Into<BigInt>) -> Result<BigInt, SymplexError> {
+    let n = sequence_index("fibonacci", &n.into())?;
+    Ok(crate::base::combinatorics::fibonacci(n))
+}
+
+/// The largest `|n|` for which [`fibonacci`] and [`lucas`] are computed:
+/// `2²⁷` (a value of 93 million bits, 28 million digits).
+const MAX_FIBONACCI_INDEX: u64 = 1 << 27;
+
+/// The index of [`fibonacci`] / [`lucas`] within [`MAX_FIBONACCI_INDEX`], or
+/// the refusal.
+fn sequence_index(operation: &'static str, n: &BigInt) -> Result<i128, SymplexError> {
+    n.to_i64()
+        .filter(|k| k.unsigned_abs() <= MAX_FIBONACCI_INDEX)
+        .map(i128::from)
+        .ok_or_else(|| SymplexError::ComputationFailed {
+            operation,
+            reason: format!(
+                "an index of {} bits is beyond ±2^27: the value would have more than 93 million bits",
+                n.bits()
+            ),
+        })
 }
 
 /// Lucas number `Lₙ` (`L₀ = 2, L₁ = 1`), extended to negative indices by
 /// `L₋ₙ = (−1)ⁿ Lₙ`.
+///
+/// # Refusal
+///
+/// As [`fibonacci`]: beyond `±2²⁷` the result is **`0`, which is not the
+/// value** (no Lucas number is 0); [`try_lucas`] reports the refusal.
 ///
 /// # Examples
 ///
@@ -4070,7 +4112,27 @@ fn index_i128(n: &BigInt) -> i128 {
 /// assert_eq!(lucas(-3), BigInt::from(-4));
 /// ```
 pub fn lucas(n: impl Into<BigInt>) -> BigInt {
-    crate::base::combinatorics::lucas(index_i128(&n.into()))
+    try_lucas(n).unwrap_or_default()
+}
+
+/// [`lucas`] with the oversized case reported.
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] for `|n| > 2²⁷`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::try_lucas;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(try_lucas(10).unwrap(), BigInt::from(123));
+/// assert!(try_lucas(1i64 << 40).is_err());
+/// ```
+pub fn try_lucas(n: impl Into<BigInt>) -> Result<BigInt, SymplexError> {
+    let n = sequence_index("lucas", &n.into())?;
+    Ok(crate::base::combinatorics::lucas(n))
 }
 
 /// Bernoulli number `Bₙ` as an exact rational, with the convention
@@ -5348,9 +5410,15 @@ fn product_tree(mut values: Vec<BigInt>) -> BigInt {
 /// The product of the first `n` primes, `pₙ#` (SymPy `primorial(n)`,
 /// i.e. `nth=True`).  `primorial(0) = 1` (SymPy rejects `n < 1`).
 ///
-/// Sieves up to the Rosser–Schoenfeld bound for `n ≤ 10⁷` and walks
-/// [`nextprime`] beyond that (correct, but slow — the result has millions
-/// of digits anyway).
+/// Sieves up to the Rosser–Schoenfeld bound for the `n`-th prime.
+///
+/// # Refusal
+///
+/// Beyond `n = 5·10⁶` (a value of 124 million bits) the product is not
+/// formed: the result is then **`0`, which is not the value** (a primorial
+/// is at least 1).  Callers that may pass such `n` use [`try_primorial`],
+/// which reports the refusal as an `Err`.  (Up to 0.58 a larger `n` walked
+/// [`nextprime`] `n` times: `primorial(2⁴⁰)` never returned.)
 ///
 /// # Examples
 ///
@@ -5365,40 +5433,79 @@ fn product_tree(mut values: Vec<BigInt>) -> BigInt {
 /// assert_eq!(primorial(20).to_string(), "557940830126698960967415390");
 /// ```
 pub fn primorial(n: u64) -> BigInt {
+    try_primorial(n).unwrap_or_default()
+}
+
+/// The largest `n` for which [`primorial`] forms the product: `5·10⁶`
+/// (`pₙ = 86,028,121`; the value has 124 million bits).
+const MAX_PRIMORIAL_INDEX: u64 = 5_000_000;
+
+/// [`primorial`] with the oversized case reported.
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] for `n > 5·10⁶`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::try_primorial;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(try_primorial(5).unwrap(), BigInt::from(2310));
+/// assert!(try_primorial(1 << 40).is_err());
+/// ```
+pub fn try_primorial(n: u64) -> Result<BigInt, SymplexError> {
     if n == 0 {
-        return BigInt::one();
+        return Ok(BigInt::one());
     }
-    if let Some(count) = crate::base::cast::bounded_len(n, 10_000_000u64) {
-        let bound = if n < 6 {
-            12
-        } else {
-            let nf = n as f64;
-            (nf * (nf.ln() + nf.ln().ln())).ceil() as u64 + 10
-        };
-        let sieve = BitSieve::new(bound);
-        let mut primes = Vec::with_capacity(count);
-        let mut k = 2u64;
-        while k <= bound && (primes.len() as u64) < n {
-            if sieve.is_prime(k) {
-                primes.push(BigInt::from(k));
-            }
-            k += if k == 2 { 1 } else { 2 };
+    let Some(count) = crate::base::cast::bounded_len(n, MAX_PRIMORIAL_INDEX) else {
+        return Err(SymplexError::ComputationFailed {
+            operation: "primorial",
+            reason: format!(
+                "the product of the first {n} primes is beyond n = 5·10^6: it would have more \
+                 than 124 million bits"
+            ),
+        });
+    };
+    let bound = if n < 6 {
+        12
+    } else {
+        let nf = n as f64;
+        (nf * (nf.ln() + nf.ln().ln())).ceil() as u64 + 10
+    };
+    let sieve = BitSieve::new(bound);
+    let mut primes = Vec::with_capacity(count);
+    let mut k = 2u64;
+    while k <= bound && (primes.len() as u64) < n {
+        if sieve.is_prime(k) {
+            primes.push(BigInt::from(k));
         }
-        if primes.len() as u64 == n {
-            return product_tree(primes);
-        }
+        k += if k == 2 { 1 } else { 2 };
     }
-    let mut primes = Vec::new();
+    if primes.len() as u64 == n {
+        return Ok(product_tree(primes));
+    }
+    // The bound holds the `n`-th prime (Rosser–Schoenfeld), so this walk
+    // of at most `MAX_PRIMORIAL_INDEX` steps is not reached.
+    let mut primes = Vec::with_capacity(count);
     let mut p = BigInt::from(2);
-    for _ in 0..n {
+    for _ in 0..count {
         primes.push(p.clone());
         p = nextprime(p);
     }
-    product_tree(primes)
+    Ok(product_tree(primes))
 }
 
 /// The product of all primes `≤ n` (SymPy `primorial(n, nth=False)`).
 /// `1` for `n < 2`.
+///
+/// # Refusal
+///
+/// As [`primorial`]: beyond `n = 86,028,121` (the `5·10⁶`-th prime; a
+/// value of 124 million bits) the result is **`0`, which is not the
+/// value**; [`try_primorial_up_to`] reports the refusal.  (Up to 0.58
+/// `primorial_up_to(2³¹)` listed 10⁸ primes and multiplied them.)
 ///
 /// # Examples
 ///
@@ -5412,11 +5519,44 @@ pub fn primorial(n: u64) -> BigInt {
 /// assert_eq!(primorial_up_to(100).to_string(), "2305567963945518424753102147331756070");
 /// ```
 pub fn primorial_up_to(n: impl Into<BigInt>) -> BigInt {
+    try_primorial_up_to(n).unwrap_or_default()
+}
+
+/// The largest `n` of [`primorial_up_to`]: the prime of index
+/// [`MAX_PRIMORIAL_INDEX`].
+const MAX_PRIMORIAL_BOUND: u64 = 86_028_121;
+
+/// [`primorial_up_to`] with the oversized case reported.
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] for `n > 86,028,121`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::try_primorial_up_to;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(try_primorial_up_to(10).unwrap(), BigInt::from(210));
+/// assert!(try_primorial_up_to(1u64 << 40).is_err());
+/// ```
+pub fn try_primorial_up_to(n: impl Into<BigInt>) -> Result<BigInt, SymplexError> {
     let n: BigInt = n.into();
     if n < BigInt::from(2) {
-        return BigInt::one();
+        return Ok(BigInt::one());
     }
-    product_tree(primerange(2, n + BigInt::one()))
+    if n > BigInt::from(MAX_PRIMORIAL_BOUND) {
+        return Err(SymplexError::ComputationFailed {
+            operation: "primorial_up_to",
+            reason: format!(
+                "the product of the primes up to a bound of {} bits is beyond 86028121: it would \
+                 have more than 124 million bits",
+                n.bits()
+            ),
+        });
+    }
+    Ok(product_tree(primerange(2, n + BigInt::one())))
 }
 
 /// Is `n` a Carmichael number (SymPy `is_carmichael`)?  Korselt's

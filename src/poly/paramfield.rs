@@ -17,6 +17,7 @@
 //! algebraic numbers (`√2`, `i`, …; the gcd over the number field,
 //! [`numfield`]), which SymPy does with `extension=`.
 
+use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -77,22 +78,57 @@ pub(crate) trait ParamPolicy: Clone + fmt::Debug + PartialEq {
         let _ = (num, den);
         true
     }
+    /// A product of the field arithmetic has an exponent beyond `u32`
+    /// ([`MultiPoly::try_mul`] refused): the computation cannot go on.
+    /// After this call [`abandoned`](Self::abandoned) is true, so that
+    /// every element counts as zero and every loop ends, and the owner of
+    /// the computation discards its result (the integrator at its next
+    /// budget check, `apart` at [`ppoly_size_ok`] / [`papoly_size_ok`]).
+    /// Up to 0.58 such a product was the asserting [`MultiPoly::mul`]: a
+    /// panic.
+    fn overflow();
     /// Does every element count as zero (an attempt abandoned)?
-    fn abandoned() -> bool {
-        false
-    }
+    fn abandoned() -> bool;
 }
 
 /// Exact arithmetic with no budget: the field of `cancel` and `apart`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Exact;
 
+thread_local! {
+    /// Has a product of the computation over [`PFrac<Exact>`] in progress on
+    /// this thread left the exponent range ([`ParamPolicy::overflow`])?
+    /// Cleared where such a computation starts ([`rational_in_var`],
+    /// [`ParamAlgField::new`]); in a thread-local because the field
+    /// operations (the [`Ring`]/[`Field`] traits) take no context, as the
+    /// integrator's budget is.
+    static EXACT_OVERFLOW: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A computation over [`PFrac<Exact>`] starts: no product has overflowed.
+fn begin_exact() {
+    EXACT_OVERFLOW.with(|c| c.set(false));
+}
+
 impl ParamPolicy for Exact {
     fn gcd(a: &MPoly, b: &MPoly) -> MPoly {
+        let one = MPoly::from_int(a.num_vars(), 1);
         if a.as_constant().is_some() || b.as_constant().is_some() {
-            return MPoly::from_int(a.num_vars(), 1);
+            return one;
         }
-        MPoly::gcd(a, b)
+        // Refused (an exponent of the PRS beyond `u32`): like a product.
+        MPoly::try_gcd(a, b).unwrap_or_else(|| {
+            Self::overflow();
+            one
+        })
+    }
+
+    fn overflow() {
+        EXACT_OVERFLOW.with(|c| c.set(true));
+    }
+
+    fn abandoned() -> bool {
+        EXACT_OVERFLOW.with(Cell::get)
     }
 }
 
@@ -119,6 +155,17 @@ fn div_mp(a: &MPoly, g: &MPoly) -> Option<MPoly> {
         return Some(a.clone());
     }
     a.div_exact(g)
+}
+
+/// `a·b` in the field arithmetic of the policy `P`; `None`, after telling
+/// the policy ([`ParamPolicy::overflow`]), when an exponent of the product
+/// is beyond `u32`.
+fn mul_mp<P: ParamPolicy>(a: &MPoly, b: &MPoly) -> Option<MPoly> {
+    let p = a.try_mul(b);
+    if p.is_none() {
+        P::overflow();
+    }
+    p
 }
 
 impl<P: ParamPolicy> PFrac<P> {
@@ -219,11 +266,13 @@ impl<P: ParamPolicy> PFrac<P> {
         }
     }
 
+    /// Within the size budget, in a computation that was not abandoned.
     fn size_ok(&self) -> bool {
-        match self {
-            PFrac::Const(_) => true,
-            PFrac::Frac(f) => within_budget(&f.0) && within_budget(&f.1),
-        }
+        !P::abandoned()
+            && match self {
+                PFrac::Const(_) => true,
+                PFrac::Frac(f) => within_budget(&f.0) && within_budget(&f.1),
+            }
     }
 
     /// Both operands as `num/den` over the same variables.
@@ -244,14 +293,22 @@ impl<P: ParamPolicy> PFrac<P> {
         let henrici = || {
             let g = P::gcd(ad, bd);
             let (ad1, bd1) = (div_mp(ad, &g)?, div_mp(bd, &g)?);
-            let num = an.mul(&bd1).add(&bn.mul(&ad1));
+            let num = mul_mp::<P>(an, &bd1)?.add(&mul_mp::<P>(bn, &ad1)?);
             let g2 = P::gcd(&num, &g);
             Some(PFrac::finish(
                 div_mp(&num, &g2)?,
-                div_mp(&ad1.mul(bd), &g2)?,
+                div_mp(&mul_mp::<P>(&ad1, bd)?, &g2)?,
             ))
         };
-        henrici().unwrap_or_else(|| PFrac::canon(an.mul(bd).add(&bn.mul(ad)), ad.mul(bd)))
+        let plain = || {
+            let num = mul_mp::<P>(an, bd)?.add(&mul_mp::<P>(bn, ad)?);
+            Some(PFrac::canon(num, mul_mp::<P>(ad, bd)?))
+        };
+        // `None` from both: a product overflowed, the computation is
+        // abandoned and every element is zero.
+        henrici()
+            .or_else(plain)
+            .unwrap_or_else(|| PFrac::Const(qzero()))
     }
 
     /// Henrici's product: `(an/g₁·bn/g₂)/(ad/g₂·bd/g₁)` with
@@ -264,11 +321,15 @@ impl<P: ParamPolicy> PFrac<P> {
         let henrici = || {
             let g1 = P::gcd(an, bd);
             let g2 = P::gcd(bn, ad);
-            let num = div_mp(an, &g1)?.mul(&div_mp(bn, &g2)?);
-            let den = div_mp(ad, &g2)?.mul(&div_mp(bd, &g1)?);
+            let num = mul_mp::<P>(&div_mp(an, &g1)?, &div_mp(bn, &g2)?)?;
+            let den = mul_mp::<P>(&div_mp(ad, &g2)?, &div_mp(bd, &g1)?)?;
             Some(PFrac::finish(num, den))
         };
-        henrici().unwrap_or_else(|| PFrac::canon(an.mul(bn), ad.mul(bd)))
+        let plain = || Some(PFrac::canon(mul_mp::<P>(an, bn)?, mul_mp::<P>(ad, bd)?));
+        // `None` from both: as in `add_frac`.
+        henrici()
+            .or_else(plain)
+            .unwrap_or_else(|| PFrac::Const(qzero()))
     }
 }
 
@@ -365,7 +426,7 @@ fn mul_budget(a: &MPoly, b: &MPoly) -> Option<MPoly> {
     if a.num_terms().saturating_mul(b.num_terms()) > MAX_PRODUCT_WORK {
         return None;
     }
-    let p = a.mul(b);
+    let p = a.try_mul(b)?;
     within_budget(&p).then_some(p)
 }
 
@@ -403,6 +464,7 @@ pub(crate) fn rational_in_var(
     var: ExprId,
     params: Params,
 ) -> Option<RationalInVar> {
+    begin_exact();
     let (n, d) = fraction_parts(arena, expr);
     let gens = numfield::generators(arena, &[n, d]);
     let mut others: Vec<ExprId> = Vec::new();
@@ -513,19 +575,23 @@ pub(crate) fn to_ppoly(p: &MPoly) -> PPoly {
     PPoly::from_coeffs(coeffs)
 }
 
-/// Is every coefficient of `f` within the size budget?
+/// Is every coefficient of `f` within the size budget, and the computation
+/// it comes from not abandoned ([`ParamPolicy::overflow`]: every element
+/// is zero then, and a zero polynomial has no coefficient to fail the
+/// test)?
 pub(crate) fn ppoly_size_ok(f: &PPoly) -> bool {
-    f.coeffs().iter().all(PFrac::size_ok)
+    !Exact::abandoned() && f.coeffs().iter().all(PFrac::size_ok)
 }
 
 /// `f` written as `N/c` with `N ∈ ℚ[var, y]` and `c ∈ ℚ[y]` (the lcm of
-/// the coefficient denominators), both as polynomials in `nv` variables.
-pub(crate) fn ppoly_over_common_denominator(f: &PPoly, nv: usize) -> PolyFraction {
+/// the coefficient denominators), both as polynomials in `nv` variables;
+/// `None` when an exponent of `c` or `N` would be beyond `u32`.
+pub(crate) fn ppoly_over_common_denominator(f: &PPoly, nv: usize) -> Option<PolyFraction> {
     let mut c = MPoly::from_int(nv, 1);
     for co in f.coeffs() {
         let d = co.parts(nv).denom;
         if d.total_degree().unwrap_or(0) > 0 {
-            c = MPoly::lcm(&c, &d);
+            c = MPoly::try_lcm(&c, &d)?;
         }
     }
     // Rational denominators: the lcm of all of them.
@@ -538,22 +604,24 @@ pub(crate) fn ppoly_over_common_denominator(f: &PPoly, nv: usize) -> PolyFractio
     let mut num = MPoly::zero(nv);
     for (k, co) in f.coeffs().iter().enumerate() {
         let PolyFraction { numer: n, denom: d } = co.parts(nv);
-        let Some(m) = c.div_exact(&d) else {
+        if n.is_zero() {
             continue;
-        };
+        }
+        // `d` divides the lcm `c`.
+        let m = c.div_exact(&d)?;
         let mut e = vec![0u32; nv];
-        e[0] = k as u32;
-        num = num.add(&n.mul(&m).mul_monomial(&qone(), &e));
+        *e.first_mut()? = u32::try_from(k).ok()?;
+        num = num.add(&n.try_mul(&m)?.try_mul_monomial(&qone(), &e)?);
     }
     if !One::is_one(&l) {
         let lq = Q::from_integer(l);
         num = num.scale(&lq);
         c = c.scale(&lq);
     }
-    PolyFraction {
+    Some(PolyFraction {
         numer: num,
         denom: c,
-    }
+    })
 }
 
 /// Integer-primitive `p/q` with the lexicographically leading coefficient
@@ -689,8 +757,13 @@ impl Ring for PAlg {
         PAlg::Base(PFrac::one())
     }
 
+    /// As for [`PFrac`], every element counts as zero once the computation
+    /// is abandoned ([`ParamPolicy::overflow`]).
     fn is_zero(&self) -> bool {
-        matches!(self, PAlg::Base(c) if c.is_zero())
+        match self {
+            PAlg::Base(c) => c.is_zero(),
+            PAlg::Elt(..) => Exact::abandoned(),
+        }
     }
 
     fn is_one(&self) -> bool {
@@ -767,9 +840,10 @@ impl Field for PAlg {
 /// A polynomial in the main variable over `ℚ(y)(α)`.
 pub(crate) type PAPoly = GenPoly<PAlg>;
 
-/// Is every coefficient of `f` within the size budget?
+/// Is every coefficient of `f` within the size budget, and the computation
+/// not abandoned (see [`ppoly_size_ok`])?
 pub(crate) fn papoly_size_ok(f: &PAPoly) -> bool {
-    f.coeffs().iter().all(PAlg::size_ok)
+    !Exact::abandoned() && f.coeffs().iter().all(PAlg::size_ok)
 }
 
 /// Largest degree in the main variable of a [`PAPoly`] built from an
@@ -798,6 +872,7 @@ impl ParamAlgField {
         params: &[ExprId],
         atoms: &[ExprId],
     ) -> Option<Self> {
+        begin_exact();
         let ext = ExtField::for_atoms(arena, atoms)?;
         let m = ext.field.modulus();
         let mp = PPoly::from_coeffs(m.coeffs().iter().map(|c| PFrac::Const(c.clone())).collect());
@@ -934,8 +1009,9 @@ impl ParamAlgField {
     /// The expression of `f` over a common denominator in the parameters:
     /// `(Σᵢ Nᵢ·bᵢ)/c` with `Nᵢ ∈ ℚ[var, y]`, `c ∈ ℚ[y]` (factored) and the
     /// `bᵢ` the basis of `ℚ(α)` its elements are written in
-    /// ([`ExtField::written_basis`]).
-    pub(crate) fn poly_to_expr(&self, arena: &mut Arena, f: &PAPoly) -> ExprId {
+    /// ([`ExtField::written_basis`]); `None` when an exponent of the common
+    /// denominator or a numerator would be beyond `u32`.
+    pub(crate) fn poly_to_expr(&self, arena: &mut Arena, f: &PAPoly) -> Option<ExprId> {
         let nv = self.nv();
         let d = self.ext.field.degree();
         // The coefficients of αʲ as polynomials in `var` over ℚ(y).
@@ -952,20 +1028,21 @@ impl ParamAlgField {
         let parts: Vec<PolyFraction> = per_power
             .iter()
             .map(|p| ppoly_over_common_denominator(p, nv))
-            .collect();
+            .collect::<Option<_>>()?;
         let mut c = MPoly::from_int(nv, 1);
         for p in &parts {
             if !p.numer.is_zero() {
-                c = MPoly::lcm(&c, &p.denom);
+                c = MPoly::try_lcm(&c, &p.denom)?;
             }
         }
         let numers: Vec<MPoly> = parts
             .iter()
             .map(|p| match c.div_exact(&p.denom) {
-                Some(m) => p.numer.mul(&m),
-                None => MPoly::zero(nv),
+                Some(m) => p.numer.try_mul(&m),
+                // Only a zero numerator's denominator is outside the lcm.
+                None => Some(MPoly::zero(nv)),
             })
-            .collect();
+            .collect::<Option<_>>()?;
         let (basis, transform) = self.ext.written_basis(arena);
         let mut coords: Vec<MPoly> = match &transform {
             Some(inv) => inv
@@ -1020,7 +1097,7 @@ impl ParamAlgField {
             1 => terms[0],
             _ => arena.add(&terms),
         };
-        match c.as_constant() {
+        Some(match c.as_constant() {
             Some(q) => {
                 let inv = arena.num_ratio(qone() / q);
                 arena.mul(&[inv, numer])
@@ -1029,7 +1106,7 @@ impl ParamAlgField {
                 let ce = factored_expr(arena, &c, &self.vars);
                 arena.div(numer, ce)
             }
-        }
+        })
     }
 }
 
@@ -1189,6 +1266,74 @@ mod tests {
         // (a − 1)·1/(a − 1) = 1
         let h = Ring::mul(&f, &PFrac::from_poly(&a.sub(&one)));
         assert!(h.is_one());
+    }
+
+    /// Up to 0.58 the field arithmetic multiplied with the asserting
+    /// `MultiPoly::mul`: `a^(2³¹)·a^(2³¹)`, `a^(2³¹) + 1/(a^(2³¹) + 1)`
+    /// and `1/(a^(2³¹) + 1)²` panicked ("MultiPoly::mul: exponent
+    /// overflow": the exponent `2³²` does not fit `u32`).  Now the
+    /// computation is abandoned: the result is zero, every element counts
+    /// as zero (so the loops of the polynomial algorithms end), and the
+    /// size test that guards a result fails until the next computation
+    /// starts.
+    #[test]
+    fn pfrac_product_beyond_u32_exponents_abandons() {
+        let a: MPoly = MPoly::var(2, 1);
+        let one = MPoly::from_int(2, 1);
+        let big = a.pow(1 << 31);
+        let unit = PPoly::constant(PFrac::one());
+        let cases: [(PFrac, PFrac, bool); 3] = [
+            (PFrac::from_poly(&big), PFrac::from_poly(&big), true),
+            (
+                PFrac::from_poly(&big),
+                PFrac::finish(one.clone(), big.add(&one)),
+                false,
+            ),
+            (
+                PFrac::finish(one.clone(), big.add(&one)),
+                PFrac::finish(one.clone(), big.add(&one)),
+                true,
+            ),
+        ];
+        for (f, g, product) in cases {
+            begin_exact();
+            assert!(!Exact::abandoned() && ppoly_size_ok(&unit));
+            assert!(!f.is_zero() && !g.is_zero());
+            let r = if product {
+                Ring::mul(&f, &g)
+            } else {
+                Ring::add(&f, &g)
+            };
+            assert!(r.is_zero() && r.as_const().is_some());
+            assert!(Exact::abandoned());
+            // Everything is zero now, and no result passes the size test,
+            // not even a polynomial without coefficients.
+            assert!(f.is_zero());
+            assert!(!ppoly_size_ok(&unit) && !ppoly_size_ok(&PPoly::zero()));
+            assert!(!papoly_size_ok(&PAPoly::zero()));
+        }
+        // The next computation starts clean, and exponents that fit are
+        // exact: a^(2³⁰)·a^(2³⁰) = a^(2³¹).
+        begin_exact();
+        let half = PFrac::<Exact>::from_poly(&a.pow(1 << 30));
+        assert_eq!(Ring::mul(&half, &half), PFrac::from_poly(&big));
+        assert!(!Exact::abandoned() && ppoly_size_ok(&unit));
+        // The common denominator of a polynomial's coefficients refuses
+        // the same way: lcm(a^(2³¹) + 1, a^(2³¹) − 1) has the exponent 2³².
+        let f = PPoly::from_coeffs(vec![
+            PFrac::finish(one.clone(), big.add(&one)),
+            PFrac::finish(one.clone(), big.sub(&one)),
+        ]);
+        assert!(ppoly_over_common_denominator(&f, 2).is_none());
+        let g = PPoly::from_coeffs(vec![
+            PFrac::finish(one.clone(), a.add(&one)),
+            PFrac::finish(one.clone(), a.sub(&one)),
+        ]);
+        let PolyFraction { numer, denom } = ppoly_over_common_denominator(&g, 2).unwrap();
+        assert_eq!(denom, a.mul(&a).sub(&one));
+        // (a − 1) + (a + 1)·x
+        let x = MPoly::var(2, 0);
+        assert_eq!(numer, a.sub(&one).add(&a.add(&one).mul(&x)));
     }
 
     #[test]

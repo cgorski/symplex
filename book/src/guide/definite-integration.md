@@ -15,7 +15,7 @@ New in 0.2. The 0.1 method `definite_integral` computed `F(b) − F(a)` from an 
 3. Handles infinite bounds the same way.
 4. Applies symmetry shortcuts (odd integrand on a symmetric interval, periodicity).
 5. Resolves `Abs`, `Sign`, `Heaviside`, `DiracDelta` and `Piecewise` integrands by splitting at their breakpoints.
-6. If no antiderivative exists, consults a table of ~30 classical improper integrals (Gaussian, Dirichlet, Fresnel, `xⁿe⁻ˣ`, `x/(eˣ−1)`, `ln x`, `1/(1+x⁴)`, …) whose entries may carry symbolic parameters guarded by assumptions.
+6. Consults a table of classical improper integrals (Gaussian, Dirichlet, Fresnel, `xⁿe⁻ˣ`, `x/(eˣ−1)`, `ln x`, `1/(1+x⁴)`, …) whose entries may carry symbolic parameters guarded by assumptions; the table is tried before an antiderivative is.
 
 If none of this decides the integral, the result is an unevaluated `DefiniteIntegral` node, displayed `Integral(f, x, a, b)` — never a guessed finite number.
 

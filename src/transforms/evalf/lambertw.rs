@@ -218,25 +218,53 @@ fn branch_point_offset(z: &Complex, w: &mut Wp<'_>) -> (Complex, usize) {
 }
 
 /// The coefficients `u_l` of `W = Σ u_l p^l` at the branch point
-/// (Corless et al.; mpmath's recurrence): `−1, 1, −1/3, 11/72, −43/540, …`.
-fn branch_point_coefficients(n: usize) -> Vec<Q> {
-    let q = |a: i64, b: i64| Q::new(BigInt::from(a), BigInt::from(b));
-    let mut u = vec![q(-1, 1), q(1, 1)];
-    let mut a = vec![q(2, 1), q(-1, 1)];
-    for l in 2..n {
-        let mut al = Q::zero();
-        for j in 2..l {
-            al += &u[j] * &u[l + 1 - j];
+/// (Corless et al.; mpmath's recurrence): `−1, 1, −1/3, 11/72, −43/540, …`,
+/// with the auxiliary sequence of the recurrence; extended on demand.
+struct BranchPointCoefficients {
+    u: Vec<Q>,
+    a: Vec<Q>,
+}
+
+thread_local! {
+    /// The coefficients computed so far (exact rationals, the same for
+    /// every argument).  Up to 0.58 the first 64 were formed for every
+    /// evaluation next to the branch point — 2,000 products of rationals with
+    /// growing numerators, 22 ms — although a series whose terms fall by
+    /// `abs(p)` takes a handful: `W(−1/e + 3·10⁻³⁰⁰)` at 16 digits (four
+    /// evaluations, at 128 to 1,152 bits) spent 88 of its 89 ms there.
+    static BRANCH_POINT: std::cell::RefCell<BranchPointCoefficients> =
+        const { std::cell::RefCell::new(BranchPointCoefficients { u: Vec::new(), a: Vec::new() }) };
+}
+
+impl BranchPointCoefficients {
+    /// `u_l`, extending the sequences up to it.
+    fn get(&mut self, l: usize) -> Q {
+        let q = |a: i64, b: i64| Q::new(BigInt::from(a), BigInt::from(b));
+        if self.u.is_empty() {
+            self.u = vec![q(-1, 1), q(1, 1)];
+            self.a = vec![q(2, 1), q(-1, 1)];
         }
-        let li = i64::try_from(l).unwrap_or(i64::MAX);
-        let ul = q(li - 1, li + 1) * (&u[l - 2] / q(2, 1) + &a[l - 2] / q(4, 1))
-            - &al / q(2, 1)
-            - &u[l - 1] / q(li + 1, 1);
-        a.push(al);
-        u.push(ul);
+        while self.u.len() <= l {
+            let (u, a) = (&self.u, &self.a);
+            let l = u.len();
+            let mut al = Q::zero();
+            for j in 2..l {
+                al += &u[j] * &u[l + 1 - j];
+            }
+            let li = i64::try_from(l).unwrap_or(i64::MAX);
+            let ul = q(li - 1, li + 1) * (&u[l - 2] / q(2, 1) + &a[l - 2] / q(4, 1))
+                - &al / q(2, 1)
+                - &u[l - 1] / q(li + 1, 1);
+            self.a.push(al);
+            self.u.push(ul);
+        }
+        self.u[l].clone()
     }
-    u.truncate(n);
-    u
+}
+
+/// `u_l` of [`BranchPointCoefficients`].
+fn branch_point_coefficient(l: usize) -> Q {
+    BRANCH_POINT.with(|c| c.borrow_mut().get(l))
 }
 
 /// The series `Σ u_l p^l` with `p = ±√(2e·δ)` (`−` on the branches other
@@ -256,10 +284,10 @@ fn branch_point_series(
         p = (p.0.neg(), p.1.neg());
     }
     let n = cancel.clamp(2, 64);
-    let coeffs = branch_point_coefficients(n);
     let mut s = c_zero(wp);
     let mut pl = int(1, wp);
-    for u in &coeffs {
+    for l in 0..n {
+        let u = &branch_point_coefficient(l);
         let term = c_mul(&real(super::ratio_to_bigfloat(u, wp), wp), &pl, wp, RM);
         s = c_add(&s, &term, wp, RM);
         if accuracy::mag(&term).is_none_or(|m| m < -tol) {

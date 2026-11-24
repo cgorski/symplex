@@ -380,7 +380,82 @@ fn asymptotic_bracket(a: &Complex, z: &Complex, wp: usize) -> Option<Sum> {
     Some(sum)
 }
 
-// ── Series ──────────────────────────────────────────────────────────────────
+// ── Below the exponent range ──────────────────────────────────────────────────
+
+/// `Γ(a, z)` or `E_n(z)` where its asymptotic expansion converges and its
+/// prefactor lies below the exponent range: the value is `e^exponent ·
+/// bracket`, certainly not 0 (`e^w` never is, and the bracket `1 + u₁/z + …`
+/// is known to `2^−wp` of its largest term, without cancellation).
+pub(super) struct BelowForm {
+    /// `(a − 1)·Ln z − z` (for `E_n`: `−Ln z − z`), to an absolute `2^−wp`.
+    pub(super) exponent: Complex,
+    /// `Σ_{k<n} u_k z^(−k)`, to a relative `2^(4−wp)`.
+    pub(super) bracket: Complex,
+}
+
+/// [`BelowForm`] of `Γ(a, z)` (`a = order`), or of `E_n(z)` (`expint`, `n =
+/// order`), at working precision `wp` — or `None` when the value is not below
+/// the exponent range, or not by this expansion.  The complex routes return
+/// such a value as 0 within an underflow bound (`cspecial::eval_routed`,
+/// `cerf::erf_family`) and `extended` holds it scaled; up to 0.58 the
+/// prefactor's 0 was read as a total cancellation, and `E1(10¹⁰ + i)`,
+/// `expint(2, 10¹⁰ − i)`, `uppergamma(−1/2, 10¹⁰ + i)`, `erfc(10⁵ + i)` were
+/// refused with `PrecisionExhausted` (mpmath, with unbounded exponents:
+/// `e1(mpc(10**10, 1))` = `(5.01…e-4342944830 − 7.81…e-4342944830j)`).
+pub(super) fn below_range(
+    expint: bool,
+    order: &Complex,
+    z: &Complex,
+    w: &mut Wp<'_>,
+) -> Option<BelowForm> {
+    let wp = w.bits();
+    let (or, oi) = parts(order)?;
+    let (x, y) = parts(z)?;
+    // `c`: the power of `z` in the prefactor `z^c·e^(−z)`.
+    let (cr, ci) = if expint { (-1.0, 0.0) } else { (or - 1.0, oi) };
+    let abs_z = x.hypot(y);
+    // A gate in `f64`: `log₂` of the prefactor is far from the bottom of the
+    // range for every argument but the largest.
+    let lg = (cr * abs_z.ln() - ci * y.atan2(x) - x) * LOG2E;
+    if lg.is_nan() || lg > f64::from(astro_float::EXPONENT_MIN) / 2.0 {
+        return None;
+    }
+    let p = wp + 8;
+    let a = if expint {
+        (plus_int(&order.0.neg(), 1, p), order.1.neg())
+    } else {
+        order.clone()
+    };
+    let b = asymptotic_bracket(&a, z, wp)?;
+    // No cancellation in the bracket: its value is not 0.
+    let lb = accuracy::lg_abs(&b.value);
+    if !(lb.is_finite() && lb >= b.largest - 4.0) {
+        return None;
+    }
+    let c = if expint {
+        (BigFloat::from_i32(-1, 64), BigFloat::new(64))
+    } else {
+        shift(&a, -1, p)
+    };
+    // The exponent as `power_exp` forms it.
+    let size = cr.hypot(ci) * (abs_z.log2().abs() * std::f64::consts::LN_2 + 4.0) + abs_z;
+    let pe = p + super::magnitude_bits(size) + 8;
+    let l = ln_c(z, &mut w.at(pe));
+    let exponent = c_sub(&c_mul(&c, &l, pe, RM), z, pe, RM);
+    // Below the smallest positive float (a value within the range, however
+    // near its bottom, is the ordinary route's: `E1(1488522000 + i)`, 275
+    // bits above it).
+    let re = to_f64(&exponent.0)?;
+    if re.is_nan() || re * LOG2E + lb.max(0.0) > f64::from(astro_float::EXPONENT_MIN) - 2.0 {
+        return None;
+    }
+    Some(BelowForm {
+        exponent,
+        bracket: b.value,
+    })
+}
+
+// ── Series ──────────────────────────────────────────────────────────────────────────
 
 /// A term budget for a series in `abs(z)` with parameter `a`.
 pub(super) fn budget(abs_z: f64, abs_a: f64, wp: usize) -> usize {

@@ -814,23 +814,34 @@ impl<O: MonomialOrd> ZPoly<O> {
     /// Exact value at the rational point `vals` (`vals.len()` variables),
     /// with one reduction at the end: every term is brought over the
     /// common denominator `den · Π qᵢ^{dᵢ}` with `dᵢ` the degree in
-    /// variable `i`.
+    /// variable `i`.  Only the powers of the exponents that occur are
+    /// formed ([`SparsePowers`]); the caller bounds their size
+    /// (`MultiPoly::eval`).
     pub(crate) fn eval(&self, vals: &[Ratio<BigInt>]) -> Ratio<BigInt> {
         let degs = self.degree_list(vals.len());
-        let num_pows: Vec<Vec<BigInt>> = vals
+        // Per variable: the exponents `e` present (for the numerators) and
+        // the complements `d − e`, with `d` itself (for the denominators).
+        let mut present: Vec<Vec<u32>> = vec![Vec::new(); vals.len()];
+        for e in self.terms.keys() {
+            for (p, &ei) in present.iter_mut().zip(e.exponents()) {
+                p.push(ei);
+            }
+        }
+        let num_pows: Vec<SparsePowers> = vals
             .iter()
-            .zip(&degs)
-            .map(|(v, &d)| powers(v.numer(), d as usize))
+            .zip(&present)
+            .map(|(v, p)| SparsePowers::new(v.numer(), p.clone()))
             .collect();
-        let den_pows: Vec<Vec<BigInt>> = vals
+        let den_pows: Vec<Option<SparsePowers>> = vals
             .iter()
+            .zip(&present)
             .zip(&degs)
-            .map(|(v, &d)| {
-                if v.denom().is_one() {
-                    Vec::new()
-                } else {
-                    powers(v.denom(), d as usize)
-                }
+            .map(|((v, p), &d)| {
+                (!v.denom().is_one()).then(|| {
+                    let mut rest: Vec<u32> = p.iter().map(|&e| d - e).collect();
+                    rest.push(d);
+                    SparsePowers::new(v.denom(), rest)
+                })
             })
             .collect();
         let mut sum = BigInt::zero();
@@ -838,22 +849,82 @@ impl<O: MonomialOrd> ZPoly<O> {
             let mut t = n.clone();
             for (i, &ei) in e.exponents().iter().enumerate() {
                 if ei > 0 {
-                    t *= &num_pows[i][ei as usize];
+                    num_pows[i].mul_into(&mut t, ei);
                 }
                 let rest = degs[i] - ei;
-                if rest > 0 && !den_pows[i].is_empty() {
-                    t *= &den_pows[i][rest as usize];
+                if rest > 0
+                    && let Some(pows) = &den_pows[i]
+                {
+                    pows.mul_into(&mut t, rest);
                 }
             }
             sum += t;
         }
         let mut den = self.den.clone();
         for (i, &d) in degs.iter().enumerate() {
-            if d > 0 && !den_pows[i].is_empty() {
-                den *= &den_pows[i][d as usize];
+            if d > 0
+                && let Some(pows) = &den_pows[i]
+            {
+                pows.mul_into(&mut den, d);
             }
         }
-        Ratio::new(sum, den)
+        // `gcd(sum, den) = gcd(den, sum mod den)`: one division by the
+        // denominator rather than the binary gcd of `Ratio::new`, which is
+        // quadratic in the larger number even when the other is 1 (5.7 s
+        // for the 1.6 million bits of `3^(10⁶)`).
+        if den.is_one() {
+            return Ratio::from_integer(sum);
+        }
+        if den.is_negative() {
+            sum = -sum;
+            den = -den;
+        }
+        let g = den.gcd(&sum.mod_floor(&den));
+        if g.is_zero() || g.is_one() {
+            return Ratio::new_raw(sum, den);
+        }
+        Ratio::new_raw(sum / &g, den / g)
+    }
+}
+
+/// The powers `b^e` of one base for a set of exponents, each formed from
+/// the one before by the power of the gap.  Up to 0.58 [`ZPoly::eval`]
+/// tabulated every power up to the degree ([`powers`]): `x^(10⁶) + 1` at
+/// `x = 3` asked for 10⁶ integers of 100 KB on average (the process was
+/// killed at 32 GB), `x^(2³¹) + 1` at `x = 1` for a 68 GB vector.
+struct SparsePowers<'a> {
+    base: &'a BigInt,
+    /// Ascending, without repetition, and the power of each.
+    exps: Vec<u32>,
+    pows: Vec<BigInt>,
+}
+
+impl<'a> SparsePowers<'a> {
+    fn new(base: &'a BigInt, mut exps: Vec<u32>) -> Self {
+        exps.sort_unstable();
+        exps.dedup();
+        let mut pows = Vec::with_capacity(exps.len());
+        let mut acc = BigInt::one();
+        let mut last = 0u32;
+        for &e in &exps {
+            match e - last {
+                0 => {}
+                1 => acc *= base,
+                gap => acc *= num_traits::Pow::pow(base, gap),
+            }
+            last = e;
+            pows.push(acc.clone());
+        }
+        SparsePowers { base, exps, pows }
+    }
+
+    /// `t ← t · base^e` (`e` is one of the exponents given to `new`; any
+    /// other is formed on the spot).
+    fn mul_into(&self, t: &mut BigInt, e: u32) {
+        match self.exps.binary_search(&e) {
+            Ok(k) => *t *= &self.pows[k],
+            Err(_) => *t *= num_traits::Pow::pow(self.base, e),
+        }
     }
 }
 

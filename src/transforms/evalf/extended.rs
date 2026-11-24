@@ -149,6 +149,77 @@ pub(super) enum Ext {
     Near(Gauss, Scaled),
 }
 
+/// The parts of a value held scaled that lie below the range and are
+/// certainly not 0 (`accuracy::PartsBelow`): the parts of the mantissa whose
+/// balls exclude 0 — of the whole value ([`Ext::Beyond`]), or of the part
+/// `d` of `p + d` where `p` has an exact 0 and `d` lies below the range
+/// ([`Ext::Near`]: the imaginary part of `1 + i·e^(−10¹⁰)`; not a `d` in
+/// range that is only below every precision of the search, `erf(90) − 1`).
+/// `None` for a value above the range.  `prec`: the working precision.
+pub(super) fn parts_below(ext: &Ext, prec: usize) -> Option<accuracy::PartsBelow> {
+    let part = |x: &BigFloat, e: ErrExp| -> Option<Nonzero> {
+        if accuracy::is_unknown(e) || accuracy::part_contains_zero(x, e) {
+            return None;
+        }
+        Some(if x.is_negative() {
+            Nonzero::Negative
+        } else {
+            Nonzero::Positive
+        })
+    };
+    match ext {
+        Ext::Beyond(s) => Some(accuracy::PartsBelow {
+            re: part(&s.m.0, s.eb.re),
+            im: part(&s.m.1, s.eb.im),
+        }),
+        Ext::Near(p, d) if lies_below(d, prec) => Some(accuracy::PartsBelow {
+            re: p.re.is_zero().then(|| part(&d.m.0, d.eb.re)).flatten(),
+            im: p.im.is_zero().then(|| part(&d.m.1, d.eb.im)).flatten(),
+        }),
+        Ext::Near(..) | Ext::Above(_) => None,
+    }
+}
+
+/// [`parts_below`] for a sum (terms `children`) without a scaled value of
+/// its own — one with a term in range that is not an exact rational, `π +
+/// i·e^(−10¹⁰) − i·e^(−2·10¹⁰)`: the parts of the sum of its terms held scaled
+/// ([`add_terms`]: terms of both signs are decided as in any such sum), for
+/// each part to which every other term contributes an exact 0.
+pub(super) fn sum_parts_below(
+    children: &[ExprId],
+    cache: Cache<'_>,
+    exts: &ExtMap,
+    prec: usize,
+) -> Option<accuracy::PartsBelow> {
+    let mut terms = Vec::new();
+    let (mut re, mut im) = (true, true);
+    for c in children {
+        match exts.get(c) {
+            Some(Ext::Beyond(s)) => terms.push(s.bare()),
+            Some(Ext::Near(p, d)) if lies_below(d, prec) => {
+                re &= p.re.is_zero();
+                im &= p.im.is_zero();
+                terms.push(d.bare());
+            }
+            Some(Ext::Near(..) | Ext::Above(_)) => return None,
+            None => {
+                let (v, b) = (cache.get(c)?, cache.bound(c)?);
+                re &= accuracy::exact_zero(&v.0, b.re);
+                im &= accuracy::exact_zero(&v.1, b.im);
+            }
+        }
+    }
+    if terms.is_empty() || !(re || im) {
+        return None;
+    }
+    let s = add_terms(&terms, Bound::EXACT, prec)?;
+    let whole = parts_below(&Ext::Beyond(s), prec)?;
+    Some(accuracy::PartsBelow {
+        re: whole.re.filter(|_| re),
+        im: whole.im.filter(|_| im),
+    })
+}
+
 /// The extended values of the nodes of one evaluation.
 pub(super) type ExtMap = FxHashMap<ExprId, Ext>;
 
@@ -939,10 +1010,54 @@ pub(super) fn extend(
         }
         ExprNode::Erfc(c) if underflowed => {
             let (x, b) = cx.ordinary(*c)?;
-            if !accuracy::exactly_real(x, b) || !super::bf_strictly_positive(&x.0) {
+            if !accuracy::exactly_real(x, b) {
+                // `erfc z = Γ(1/2, z²)/√π` off the real axis: `z²` moves by
+                // `2·abs(z)` times the radius of `z`.
+                let wp = prec + 32;
+                let form = super::cerf::erfc_below(x, &mut w.at(wp))?;
+                let moved = accuracy::shift(b.joint(), accuracy::lg_abs(x) + 1.0);
+                return finish_node(below_form_scaled(form, moved, w)?, id, prec);
+            }
+            if !super::bf_strictly_positive(&x.0) {
                 return None;
             }
             finish_node(erfc_scaled(&x.0, b.re, w)?, id, prec)
+        }
+        // `Γ(a, z)`, `E_n(z)` at a non-real argument where the complex route
+        // found them below the range (`cexpint::below_range`).  Up to 0.58
+        // they were refused with `PrecisionExhausted`.
+        ExprNode::Lib(f @ (LibFn::UpperGamma | LibFn::ExpInt), args)
+            if underflowed && args.len() == 2 =>
+        {
+            let (a, ab_) = cx.ordinary(args[0])?;
+            let (z, zb) = cx.ordinary(args[1])?;
+            let wp = prec + 32;
+            let expint = *f == LibFn::ExpInt;
+            let form = super::cexpint::below_range(expint, a, z, &mut w.at(wp))?;
+            // The exponent `c·Ln z − z` (`c = a − 1`, or `−1`) moves by
+            // `abs(Ln z)·r_a + (abs(c)/abs(z) + 1)·r_z`.
+            let lz = accuracy::lg_abs(z);
+            let ln_z = (lz.abs() * std::f64::consts::LN_2 + 4.0).log2();
+            let c_over_z = if expint {
+                -lz
+            } else {
+                accuracy::lsum(accuracy::lg_abs(a), 0.0) - lz
+            };
+            let moved = accuracy::lsum(
+                accuracy::shift(ab_.joint(), ln_z),
+                accuracy::shift(zb.joint(), accuracy::lsum(c_over_z, 0.0)),
+            );
+            let mut s = below_form_scaled(form, moved, w)?;
+            // Real arguments, `z > 0`: a real value (every term of the
+            // expansion and its exponent are real).
+            if accuracy::exactly_real(a, ab_)
+                && accuracy::exactly_real(z, zb)
+                && super::bf_strictly_positive(&z.0)
+            {
+                s.m.1 = BigFloat::new(prec);
+                s.eb.im = accuracy::EXACT;
+            }
+            finish_node(s, id, prec)
         }
         ExprNode::Lib(f, args) if underflowed && args.len() == 2 => {
             let alternating = match f {
@@ -1624,6 +1739,29 @@ fn part_sum<'a>(
         eb = accuracy::lsum(eb, accuracy::shift(extra, -(kmax as f64)));
         return Some((sum.0, kmax, eb));
     }
+}
+
+/// `e^E·B` of a [`BelowForm`](super::cexpint::BelowForm) (formed at `prec +
+/// 32` bits) as `m·2^k`: `e^E` at its scale times the bracket.  `moved`: the
+/// bound on what the arguments' errors move `E` by; the bracket (`1 +
+/// O(1/z)`) moves by less than that relative to itself, so the bound is
+/// counted twice.
+fn below_form_scaled(
+    form: super::cexpint::BelowForm,
+    moved: ErrExp,
+    w: &mut Wp<'_>,
+) -> Option<Scaled> {
+    let prec = w.bits();
+    let wp = prec + 32;
+    let own = -(wp as f64);
+    let e = exp_scaled(
+        &form.exponent,
+        Bound::both(accuracy::lsum(accuracy::shift(moved, 1.0), own)),
+        &mut w.at(wp),
+    )?;
+    let lb = accuracy::lg_abs(&form.bracket);
+    let b = normalized(&form.bracket, Bound::both(lb + own + 4.0))?;
+    product(&[e, b], prec)
 }
 
 /// `Ei(x)` for a large negative `x` as `m·2^k`: the asymptotic factor

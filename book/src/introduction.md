@@ -18,7 +18,7 @@ symplex is designed for Rust developers who need symbolic computation as part of
 
 | Category | Capabilities |
 |----------|-------------|
-| Calculus | Differentiation (all elementary and special functions), indefinite integration (15+ strategies incl. Risch + LRT log-to-real), definite and improper integration with divergence detection, adaptive Gauss–Kronrod quadrature, one-sided limits (Gruntz), Taylor/Laurent/asymptotic/formal power series, residues |
+| Calculus | Differentiation (all elementary and special functions), indefinite integration (rule-based strategies, Risch for `exp`/`ln` towers, LRT log-to-real, a heuristic ansatz), definite and improper integration with divergence detection, adaptive Gauss–Kronrod quadrature, one-sided limits (Gruntz), Taylor/Laurent/asymptotic/formal power series, residues |
 | Summation | Faulhaber, Gosper, telescoping, binomial sums, p-series (`ζ(2m)` exact), power-series recognition, infinite products, convergence tests |
 | Algebra | Expansion, Berlekamp–Zassenhaus factoring over ℤ (any degree), multivariate factoring, resultants/discriminants, GCD, partial fractions, rational normal form (`ratsimp`), Gröbner bases, a public rewrite-rule engine with AC matching and tracing |
 | Polynomials | `Poly` view with exact rational or symbolic coefficients, monomial/coefficient access, exact evaluation, coefficient matrices for certificate searches, exact sign of a polynomial on an interval (Sturm) |
@@ -43,15 +43,15 @@ Being clear about limitations is important for evaluating whether this library f
 - **Geometry and tensor algebra** are not implemented. If you need these, SymPy is the more complete choice today. (Statistics is: see the `stats` chapter.)
 - **PDE solving** is not available. ODE solving covers 16 classes; partial differential equations are out of scope for now.
 - **Group theory** is limited. There is no permutation group, symmetric group, or abstract algebra module.
-- **Hypergeometric / Meijer-G machinery** is absent; definite integration relies on antiderivatives, symmetry, and a table of ~30 classical improper integrals.
+- **Hypergeometric / Meijer-G machinery** is absent; definite integration relies on antiderivatives, symmetry, residue sums, and a table of classical improper integrals.
 - **Interactive notebooks** are not part of the library. symplex is a Rust library, not an application. A basic REPL is available as an example (`cargo run --example repl`), and `symplex-wasm` exposes a `Session` API for the browser.
-- **Test coverage**, while substantial (~15,000 tests including cross-validation against SymPy, plus nightly property fuzzing), is far less than what SymPy has accumulated over 30 years of development.
+- **Test coverage**, while substantial (~15,100 tests including cross-validation against SymPy, plus nightly property fuzzing), is far less than what SymPy has accumulated over 30 years of development.
 
 ## Design Principles
 
 These choices are deliberate and pervasive:
 
-1. **Exact arithmetic.** All numbers are `Ratio<BigInt>`. The expression `1/3` is the exact rational one-third, not `0.33333...`. Floating-point numbers appear only when explicitly requested via `eval_f64()`, `compile()`, or `integrate_numeric()`.
+1. **Exact arithmetic.** All numbers are `Ratio<BigInt>`. The expression `1/3` is the exact rational one-third, not `0.33333...`. Floating-point numbers appear only where you ask for them: `eval_f64()`, `compile()`, `integrate_numeric()`, and the routines documented as `f64` (numerical optimisation, sampling, plots, `numdist`, logistic and Cox regression).
 
 2. **Explicit state.** Every expression belongs to a `Context`. There is no hidden global state. This makes the library safe for multi-tenant servers, concurrent computation, and deterministic testing.
 
@@ -65,10 +65,10 @@ These choices are deliberate and pervasive:
 
 ## How to Read This Book
 
-- **[What's New in 0.3](./whats-new-0.3.md)** tours the current release — polynomial views, exact linear programming, integer normal forms and numerical optimisation; **[What's New in 0.2](./whats-new-0.2.md)** summarises the previous release for readers upgrading from 0.1.
+- **[What's New since 0.13](./whats-new-since-0.13.md)** summarises the releases 0.14 to 0.59, behaviour changes first; the older "What's New" pages ([0.2](./whats-new-0.2.md) … [0.13 / 0.14](./whats-new-0.13.md)) tour the features in the order they arrived.
 - **[Getting Started](./getting-started/installation.md)** covers installation, creating your first expressions, and the key concepts you need to be productive.
 - **[Guide](./guide/calculus.md)** chapters are tutorial-style introductions to each domain. Every code block is a complete program you can paste into `main.rs` (blocks marked `ignore` are fragments).
 - **[Cookbook](./cookbook/pid-controller.md)** entries are worked solutions to real engineering and science problems, backed by runnable examples in `examples/`.
-- **[Reference](./reference/api-patterns.md)** documents the API conventions, error handling, the 0.1 → 0.2 migration, and a migration guide for SymPy users.
+- **[Reference](./reference/api-patterns.md)** documents the API conventions, error handling, the migration pages for 0.2, 0.4, 0.7 and 0.12, and a migration guide for SymPy users.
 
 For API documentation of individual functions and types, see [docs.rs/symplex](https://docs.rs/symplex).

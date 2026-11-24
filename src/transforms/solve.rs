@@ -2994,6 +2994,100 @@ fn real_roots_on_every_branch(
     }
 }
 
+/// Which members of a family `offset + step·k`, `k ∈ ℤ`, are real
+/// ([`real_members_of_family`]).
+pub(crate) enum RealMembers {
+    /// The step is proved real: every member is real when the offset is, and
+    /// none otherwise (the caller decides the offset).
+    RealStep,
+    /// The step is proved non-real and no member is real.
+    None,
+    /// The step is proved non-real and exactly one member is real: its value.
+    One(ExprId),
+    /// Not decided.
+    Undecided,
+}
+
+/// The real members of the family `offset + step·k`, `k ∈ ℤ`, for a
+/// symbol-free `step`.  A family with a non-real step crosses the real axis
+/// at most once, at `k₀ = −im(offset)/im(step)`: it has a real member exactly
+/// when `k₀` is an integer, which is decided exactly — a rational `k₀`, or
+/// the sign of `k₀ − m` for the integer `m` its certified value is next to
+/// ([`sign_checked`](crate::poly::algebraic::sign_checked): a proved 0 or a
+/// certified sign, never a value 0 to the digits computed).  The member is
+/// then `re(offset) + k₀·re(step)`.
+///
+/// The general solution of `(−2)^x = 4` is `x = (ln 4 + 2πik)/(ln 2 + iπ)`,
+/// real at `k = 1` only (`x = 2`).  Up to 0.58 the crate's searches in a
+/// window dropped such a family as soon as its offset (`k = 0`) was not
+/// real: `Ex::singularities(1/((−2)^x − 4), x, [0, 10])` was `∅`.
+pub(crate) fn real_members_of_family(
+    arena: &mut Arena,
+    offset: ExprId,
+    step: ExprId,
+) -> RealMembers {
+    use crate::poly::algebraic::sign_checked;
+    use crate::transforms::eval::eval;
+    let constant = |arena: &Arena, e: ExprId| {
+        crate::base::walk::free_symbols(arena, e).is_empty()
+            && !value_class::holds_special_atom(arena, e)
+    };
+    if !constant(arena, step) {
+        return RealMembers::Undecided;
+    }
+    // (logarithms of rationals over the logarithms of their bases, so that
+    // `ln 4/(2 ln 2)` is 1)
+    let part = |arena: &mut Arena, e: ExprId, imaginary: bool| {
+        let p = if imaginary { arena.im(e) } else { arena.re(e) };
+        let p = eval(arena, p);
+        logs_of_rationals_reduced(arena, p)
+    };
+    let im_step = part(arena, step, true);
+    match sign_checked(arena, im_step) {
+        Some(0) => return RealMembers::RealStep,
+        Some(_) => {}
+        None => return RealMembers::Undecided,
+    }
+    if !constant(arena, offset) {
+        return RealMembers::Undecided;
+    }
+    let im_offset = part(arena, offset, true);
+    let neg = arena.neg(im_offset);
+    let k = arena.div(neg, im_step);
+    let k = logs_of_rationals_reduced(arena, k);
+    let index = match arena.as_num(k) {
+        Some(q) if q.is_integer() => q.to_integer(),
+        Some(_) => return RealMembers::None,
+        None => {
+            // The one integer `k₀` can be: the certified 20-digit value
+            // places it within 10⁻¹⁰ (below 2⁴⁰), and every other integer is
+            // then at least 1/2 away.
+            let Some(m) = crate::transforms::evalf::const_value(arena, k, 20)
+                .ok()
+                .and_then(|v| v.to_f64())
+                .filter(|v| v.abs() < 1_099_511_627_776.0)
+                .and_then(|v| crate::base::cast::f64_to_i64(v.round()))
+            else {
+                return RealMembers::Undecided;
+            };
+            let m_id = arena.int(m);
+            let rest = arena.sub(k, m_id);
+            let rest = eval(arena, rest);
+            match sign_checked(arena, rest) {
+                Some(0) => BigInt::from(m),
+                Some(_) => return RealMembers::None,
+                None => return RealMembers::Undecided,
+            }
+        }
+    };
+    let index = arena.num_ratio(Q::from_integer(index));
+    let (re_offset, re_step) = (part(arena, offset, false), part(arena, step, false));
+    let shift = arena.mul(&[index, re_step]);
+    let value = arena.add(&[re_offset, shift]);
+    let value = eval(arena, value);
+    RealMembers::One(crate::simplify::ratsimp::ratsimp(arena, value))
+}
+
 /// Try to solve `expr = 0` by algebraic inversion.
 /// Restructures as `f(x) = c` and inverts `f`.
 ///
@@ -6922,6 +7016,14 @@ fn perfect_power_base(c: &Q) -> Option<(BigInt, i64)> {
 /// `[log(3/2 − √5/2), log(√5/2 + 3/2)]`, `solve(2**(2*x) - 5*2**x + 6)`
 /// → `[1, log(3)/log(2)]`; both were refused before 0.31.
 ///
+/// Any other constant base `c ≠ 0` (negative, a rational such as `2/3`,
+/// complex) is its own generator when every exponential has it: for the
+/// principal power `e^{u·ln c}`, `c^(n·u)` is the `n`-th power of `c^u` for
+/// an integer `n`, and `c^(u + b) = c^b·c^u`.  `(−2)^(2x) − 6·(−2)^x + 8` is `t² − 6t + 8`
+/// in `t = (−2)^x`, and `(−2)^x = 4`, `(−2)^x = 2` are solved as on their
+/// own (for a real `x` on every branch of the logarithm,
+/// [`real_roots_on_every_branch`]: `x = 2`); refused up to 0.58.
+///
 /// `NoSolution` when the equation in `t` is a polynomial over ℚ (its roots
 /// all found) and no root has a real preimage (`eˣ + 3e^(x/2) + 2 = 0`:
 /// `t = −1, −2`, `exp` of a real argument is positive), as peeling proves
@@ -6960,14 +7062,51 @@ fn exponential_substitution(
     // (atom, rate in units of a₀ and the base's log, constant factor)
     let mut rated: Vec<(ExprId, Q, ExprId)> = Vec::with_capacity(atoms.len());
     let mut unit: Option<ExprId> = None; // a₀
-    let mut base: Option<Option<BigInt>> = None; // Some(None): e; Some(Some(r)): r
+    /// The base of the generator `t`.
+    #[derive(Clone, PartialEq)]
+    enum Base {
+        /// `e`.
+        E,
+        /// The integer `r ≥ 2`, not a perfect power, the rational bases are
+        /// powers of.
+        Root(BigInt),
+        /// A constant proved nonzero, the base of every exponential.
+        Constant(ExprId),
+    }
+    let mut base: Option<Base> = None;
     for &id in &atoms {
         let (this_base, arg, scale, cbase) = match arena.node(id).clone() {
-            ExprNode::Exp(arg) => (None, arg, Q::one(), None),
+            ExprNode::Exp(arg) => (Base::E, arg, Q::one(), None),
             ExprNode::Pow(b, arg) => {
-                let c = arena.as_num(b)?.clone();
-                let (r, k) = perfect_power_base(&c)?;
-                (Some(r), arg, Q::from_integer(BigInt::from(k)), Some(b))
+                match arena
+                    .as_num(b)
+                    .cloned()
+                    .and_then(|c| perfect_power_base(&c))
+                {
+                    Some((r, k)) => (
+                        Base::Root(r),
+                        arg,
+                        Q::from_integer(BigInt::from(k)),
+                        Some(b),
+                    ),
+                    None => {
+                        let nonzero = match arena.as_num(b) {
+                            Some(c) => !c.is_zero(),
+                            None => {
+                                crate::base::walk::free_symbols(arena, b).is_empty()
+                                    && !value_class::holds_special_atom(arena, b)
+                                    && crate::base::truth::Truth::from(
+                                        crate::poly::algebraic::is_zero_checked(arena, b),
+                                    )
+                                    .is_false()
+                            }
+                        };
+                        if !nonzero {
+                            return None;
+                        }
+                        (Base::Constant(b), arg, Q::one(), Some(b))
+                    }
+                }
             }
             _ => return None,
         };
@@ -7023,11 +7162,12 @@ fn exponential_substitution(
     let g_id = arena.num_ratio(g);
     let gx = arena.mul(&[g_id, unit, var]);
     let generator = match base {
-        None => arena.exp(gx),
-        Some(r) => {
+        Base::E => arena.exp(gx),
+        Base::Root(r) => {
             let r_id = arena.big_int(r);
             arena.pow(r_id, gx)
         }
+        Base::Constant(c) => arena.pow(c, gx),
     };
     // A rational equation in `t` with a constant numerator has no root at
     // all: neither has the equation in `x` (`tanh(x − 3)·tanh(x + 3) = 1`;

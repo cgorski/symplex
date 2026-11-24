@@ -2238,6 +2238,341 @@ pub(super) fn underflow_nonzero(
     }
 }
 
+/// The parts of a value that are certainly not 0 and that the evaluation
+/// does not hold: below the exponent range (or the image of such a part),
+/// next to a part within it or to another such part.  `Positive`/`Negative`
+/// is the sign of the part, `Unsigned` a part of unknown sign.  The ordinary
+/// ball of such a part contains 0.  A result read as a number never drops
+/// such a part (decision D3: a certified nonzero part is printed, and one
+/// that cannot be printed makes the number unprintable,
+/// `evalf::part_underflow_error`); up to 0.58 it was dropped like any part
+/// whose ball contains 0: `1 + i·e^(−10¹⁰)` printed `1`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct PartsBelow {
+    /// The real part.
+    pub(super) re: Option<Nonzero>,
+    /// The imaginary part.
+    pub(super) im: Option<Nonzero>,
+}
+
+impl PartsBelow {
+    /// Is neither part known to be such a part?
+    pub(super) fn is_none(self) -> bool {
+        self.re.is_none() && self.im.is_none()
+    }
+}
+
+/// What is known of one part of a value, for [`parts_below`]: a claim about
+/// the true part, with `log₂` bounds on its absolute value read from the
+/// node's ball.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Part {
+    /// Exactly 0.
+    Zero,
+    /// Certainly not 0 and below the exponent range ([`PartsBelow`]): its
+    /// sign, and `up` with `abs ≤ 2^up`.
+    Below(Nonzero, f64),
+    /// A value in range whose ball excludes 0: its sign (never `Unsigned`),
+    /// and `lo`, `up` with `2^lo ≤ abs ≤ 2^up`.
+    InRange(Nonzero, f64, f64),
+    /// Anything else.
+    Unknown,
+}
+
+impl Part {
+    /// The part `x ± 2^e`; `below`: what [`parts_below`] certified of it.
+    fn of(x: &BigFloat, e: ErrExp, below: Option<Nonzero>) -> Part {
+        if let Some(s) = below {
+            // The true part lies in the ball.
+            let up = if x.is_zero() { e } else { lsum(part_lg(x), e) };
+            return Part::Below(s, up);
+        }
+        if exact_zero(x, e) {
+            return Part::Zero;
+        }
+        if x.is_nan() || x.is_inf() || is_unknown(e) || part_contains_zero(x, e) {
+            return Part::Unknown;
+        }
+        // A radius of at most half the value: `abs ≥ abs(x)/2`.
+        let low = part_lg_low(x);
+        if e > low - 1.0 {
+            return Part::Unknown;
+        }
+        let sign = if x.is_negative() {
+            Nonzero::Negative
+        } else {
+            Nonzero::Positive
+        };
+        Part::InRange(sign, low - 1.0, part_lg(x) + 1.0)
+    }
+
+    fn neg(self) -> Part {
+        match self {
+            Part::Below(s, u) => Part::Below(s.negated(), u),
+            Part::InRange(s, l, u) => Part::InRange(s.negated(), l, u),
+            other => other,
+        }
+    }
+
+    /// The product of two parts.
+    fn mul(self, other: Part) -> Part {
+        use Part::{Below, InRange, Unknown, Zero};
+        match (self, other) {
+            (Zero, _) | (_, Zero) => Zero,
+            (Unknown, _) | (_, Unknown) => Unknown,
+            (InRange(s, l1, u1), InRange(t, l2, u2)) => InRange(s.times(t), l1 + l2, u1 + u2),
+            (Below(s, u1), InRange(t, _, u2) | Below(t, u2))
+            | (InRange(s, _, u1), Below(t, u2)) => Below(s.times(t), u1 + u2),
+        }
+    }
+
+    /// The sum of two parts: a part in range next to one below it (or far
+    /// below it) keeps its sign; two parts below the range are one of them
+    /// when they have one sign, and may cancel otherwise.
+    fn add(self, other: Part) -> Part {
+        use Part::{Below, InRange, Unknown, Zero};
+        match (self, other) {
+            (Zero, p) | (p, Zero) => p,
+            (Unknown, _) | (_, Unknown) => Unknown,
+            (InRange(s, l1, u1), InRange(t, l2, u2)) => {
+                if s == t {
+                    InRange(s, l1.max(l2), u1.max(u2) + 1.0)
+                } else if l1 > u2 + 1.0 {
+                    InRange(s, l1 - 1.0, u1)
+                } else if l2 > u1 + 1.0 {
+                    InRange(t, l2 - 1.0, u2)
+                } else {
+                    Unknown
+                }
+            }
+            (InRange(s, l, u), Below(_, b)) | (Below(_, b), InRange(s, l, u)) => {
+                if b < l - 1.0 {
+                    InRange(s, l - 1.0, u + 1.0)
+                } else {
+                    Unknown
+                }
+            }
+            (Below(s, u1), Below(t, u2)) => {
+                if s == t && s != Nonzero::Unsigned {
+                    Below(s, u1.max(u2) + 1.0)
+                } else {
+                    Unknown
+                }
+            }
+        }
+    }
+
+    fn below(self) -> Option<Nonzero> {
+        match self {
+            Part::Below(s, _) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// `(a + bi)·(c + di)` on parts.
+fn mul_parts((a, b): (Part, Part), (c, d): (Part, Part)) -> (Part, Part) {
+    (a.mul(c).add(b.mul(d).neg()), a.mul(d).add(b.mul(c)))
+}
+
+/// The parts of the value `value ± bound` of node `id` that lie below the
+/// exponent range and are certainly not 0 ([`PartsBelow`]): a proof about
+/// the true value, whatever the ordinary ball holds.  `scaled`: what the
+/// node's value held scaled says (`extended::parts_below`: the parts of its
+/// mantissa whose balls exclude 0); `nonzero`: the nodes whose whole value
+/// underflowed and is certainly not 0 ([`underflow_nonzero`]); `known`: the
+/// parts already certified for the nodes below.
+///
+/// Beside those two sources a part is certified by the node's own rule:
+///
+/// * a sum, a product, a positive integer power up to 16: the arithmetic of
+///   the parts ([`Part::add`], [`Part::mul`]) — a part of a sum whose terms'
+///   parts are exactly 0 or such parts of one sign (`π + i·e^(−10¹⁰)`), a
+///   product with factors in range (`2·(1 + i·e^(−10¹⁰))`, `i·K₀(10¹⁰)`,
+///   `(π + iε₁)·(−3 + ε₂)`); two such parts of different or unknown signs
+///   may cancel and certify nothing;
+/// * `−z`, `conj z`: the parts of `z`;
+/// * `f(a + iε)` for a real `a` in range and `f` real on the real axis with
+///   `f′(a) ≠ 0`: `Im f = f′(a)·ε·(1 + O(ε²))`.  `f′ > 0` everywhere for
+///   `exp`, `sinh`, `tanh`, `tan`, `atan`, `asinh`, `erf`, and for `ln` and a
+///   power `x^q` (`q ≠ 0` rational) at `a > 0`; an integer power at any `a`
+///   (`n·a^(n−1)`); `cosh` (`sinh a`, `a ≠ 0`); `sin` and `cos` where the
+///   value is certified inside `(−1, 1)` (`cos a ≠ 0`, `sin a ≠ 0`).
+///
+/// Anything else is not certified, and such a part is dropped as a part
+/// whose ball contains 0 is (`Γ(2 + i·e^(−10¹⁰))`: `Γ′(2) ≠ 0` is not
+/// asked).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn parts_below(
+    arena: &Arena,
+    id: ExprId,
+    value: &Complex,
+    bound: Bound,
+    cache: Cache<'_>,
+    scaled: Option<PartsBelow>,
+    nonzero: &FxHashMap<ExprId, Nonzero>,
+    known: &FxHashMap<ExprId, PartsBelow>,
+) -> PartsBelow {
+    // What the scaled value shows, and for a part it does not show (the
+    // smaller part of a value whose parts lie far apart is lost in its
+    // mantissa) what the rules prove.
+    let first = scaled.unwrap_or_default();
+    if first.re.is_some() && first.im.is_some() {
+        return first;
+    }
+    let rule = parts_by_rule(arena, id, value, bound, cache, nonzero, known);
+    PartsBelow {
+        re: first.re.or(rule.re),
+        im: first.im.or(rule.im),
+    }
+}
+
+/// [`parts_below`] without the scaled value: from the whole value's status
+/// and the node's own rule.
+fn parts_by_rule(
+    arena: &Arena,
+    id: ExprId,
+    value: &Complex,
+    bound: Bound,
+    cache: Cache<'_>,
+    nonzero: &FxHashMap<ExprId, Nonzero>,
+    known: &FxHashMap<ExprId, PartsBelow>,
+) -> PartsBelow {
+    // The whole value underflowed and is not 0: a real one is its real
+    // part, and a value with one part exactly 0 is the other.
+    if let Some(&s) = nonzero.get(&id) {
+        let p = match s {
+            Nonzero::Positive | Nonzero::Negative => PartsBelow {
+                re: Some(s),
+                im: None,
+            },
+            Nonzero::Unsigned => PartsBelow {
+                re: exact_zero(&value.1, bound.im).then_some(s),
+                im: exact_zero(&value.0, bound.re).then_some(s),
+            },
+        };
+        if !p.is_none() {
+            return p;
+        }
+    }
+    // Is the real value of this node certified inside `(−1, 1)`?
+    let inside_unit = || {
+        !bound.is_unknown()
+            && bound.re < -30.0
+            && crate::base::bigfloat::to_f64(&value.0).is_some_and(|v| v.abs() < 0.999_999)
+    };
+    let parts = |c: ExprId| -> Option<(Part, Part)> {
+        let (v, b) = (cache.get(&c)?, cache.bound(&c)?);
+        let k = known.get(&c).copied().unwrap_or_default();
+        // A whole value that underflowed with a real sign is real: its
+        // imaginary part is 0, whatever bound the placeholder carries.
+        if let Some(Nonzero::Positive | Nonzero::Negative) = nonzero.get(&c)
+            && k.im.is_none()
+        {
+            return Some((Part::of(&v.0, b.re, k.re), Part::Zero));
+        }
+        Some((Part::of(&v.0, b.re, k.re), Part::of(&v.1, b.im, k.im)))
+    };
+    let from = |(re, im): (Part, Part)| PartsBelow {
+        re: re.below(),
+        im: im.below(),
+    };
+    let none = PartsBelow::default();
+    let imaginary = |s: Nonzero| PartsBelow {
+        re: None,
+        im: Some(s),
+    };
+    match arena.node(id) {
+        ExprNode::Add(children) => {
+            let mut acc = (Part::Zero, Part::Zero);
+            for &c in children.iter() {
+                let Some((a, b)) = parts(c) else {
+                    return none;
+                };
+                acc = (acc.0.add(a), acc.1.add(b));
+            }
+            from(acc)
+        }
+        ExprNode::Mul(children) => {
+            let mut acc: Option<(Part, Part)> = None;
+            for &c in children.iter() {
+                let Some(p) = parts(c) else {
+                    return none;
+                };
+                acc = Some(match acc {
+                    None => p,
+                    Some(a) => mul_parts(a, p),
+                });
+            }
+            acc.map_or(none, from)
+        }
+        ExprNode::Neg(c) => parts(*c).map_or(none, |(a, b)| from((a.neg(), b.neg()))),
+        ExprNode::Conjugate(c) => parts(*c).map_or(none, |(a, b)| from((a, b.neg()))),
+        ExprNode::Exp(c)
+        | ExprNode::Sinh(c)
+        | ExprNode::Tanh(c)
+        | ExprNode::Tan(c)
+        | ExprNode::Atan(c)
+        | ExprNode::Asinh(c)
+        | ExprNode::Erf(c) => match parts(*c) {
+            Some((Part::InRange(..), Part::Below(s, _))) => imaginary(s),
+            _ => none,
+        },
+        ExprNode::Ln(c) => match parts(*c) {
+            Some((Part::InRange(Nonzero::Positive, ..), Part::Below(s, _))) => imaginary(s),
+            _ => none,
+        },
+        // `Im cosh(a + iε) = sinh a·sin ε`.
+        ExprNode::Cosh(c) => match parts(*c) {
+            Some((Part::InRange(a, ..), Part::Below(s, _))) => imaginary(s.times(a)),
+            _ => none,
+        },
+        // `Im sin(a + iε) = cos a·sinh ε`, `Im cos(a + iε) = −sin a·sinh ε`:
+        // not 0 where the value `sin a`, `cos a` is inside `(−1, 1)`.
+        ExprNode::Sin(c) | ExprNode::Cos(c) => match parts(*c) {
+            Some((Part::InRange(..), Part::Below(..))) if inside_unit() => {
+                imaginary(Nonzero::Unsigned)
+            }
+            _ => none,
+        },
+        ExprNode::Pow(b, e) => {
+            let q = arena.as_num(*e).filter(|q| !q.is_zero());
+            // A small positive integer power: the product.
+            let small = q
+                .filter(|n| n.is_integer())
+                .and_then(|n| n.to_integer().to_u32())
+                .filter(|n| (1..=16).contains(n));
+            if let (Some(n), Some(p)) = (small, parts(*b)) {
+                let mut acc = p;
+                for _ in 1..n {
+                    acc = mul_parts(acc, p);
+                }
+                return from(acc);
+            }
+            match (q, parts(*b)) {
+                (Some(n), Some((Part::InRange(a, ..), Part::Below(s, _)))) if n.is_integer() => {
+                    // The sign of `n·a^(n−1)·ε`.
+                    let odd = !(n.to_integer() % BigInt::from(2)).is_zero();
+                    let mut sign = s;
+                    if n.is_negative() {
+                        sign = sign.negated();
+                    }
+                    if !odd {
+                        sign = sign.times(a);
+                    }
+                    imaginary(sign)
+                }
+                // `q·a^(q−1)·ε` on the principal branch, `a > 0`.
+                (Some(q), Some((Part::InRange(Nonzero::Positive, ..), Part::Below(s, _)))) => {
+                    imaginary(if q.is_negative() { s.negated() } else { s })
+                }
+                _ => none,
+            }
+        }
+        _ => none,
+    }
+}
+
 /// `log₂ |q|` of a rational (to `f64` precision, beyond its range from the
 /// bit lengths).
 fn lg_q(q: &Q) -> f64 {

@@ -92,7 +92,7 @@ pub(super) type PartFn<'a> = dyn FnMut(ExprId, &BigInt, usize) -> Result<CBall, 
 /// The shape of a sub-expression of the summand, as a function of the
 /// index `k`.
 #[derive(Clone, Debug)]
-enum Shape {
+pub(super) enum Shape {
     /// Free of `k` (ratio 1); `Some` when it is a rational number.
     Free(Option<Q>),
     /// A polynomial in `k` with rational coefficients.
@@ -153,7 +153,7 @@ fn factorial_step(x: &Poly, s: i64) -> (Poly, Poly) {
 
 /// The shape of node `id` from its children's shapes (`None`: not a
 /// hypergeometric term, or not recognised).
-fn shape_of(
+pub(super) fn shape_of(
     arena: &Arena,
     id: ExprId,
     var: ExprId,

@@ -161,6 +161,14 @@ fn condition_set(var: &Ex, cond: &BoolEx) -> SetEx {
 /// side, and every candidate member is then tested exactly against the
 /// domain.  The widening covers the `f64` error only while the estimated
 /// index is below [`MAX_FAMILY_INDEX`]; larger indices are refused.
+///
+/// A family with a non-real step (`(ln 4 + 2nπi)/(ln 2 + iπ)` from `(−2)^x =
+/// 4`) has at most one real member, found exactly
+/// ([`real_members_of_family`]); up to 0.58 the family was dropped when its
+/// offset was not real, and `singularities(1/((−2)^x − 4), x, [0, 10])` was
+/// `∅` for `{2}`.
+///
+/// [`real_members_of_family`]: crate::transforms::solve::real_members_of_family
 fn enumerate_family(
     member: &Ex,
     param: &Ex,
@@ -180,16 +188,42 @@ fn enumerate_family(
             format!("solution family `{member}` is not linear in `{param}`"),
         ));
     }
-    // A non-real family (`atan(I) + nπ` from `tan² + 1 = 0`) has no real members.
+    let undecided = || {
+        computation_failed(
+            op,
+            format!("cannot decide whether the family `{member}` has real members"),
+        )
+    };
+    let in_domain = |point: Ex, out: &mut Vec<Ex>| match domain.contains(&point) {
+        Some(true) => {
+            out.push(point);
+            Ok(())
+        }
+        Some(false) => Ok(()),
+        None => Err(computation_failed(
+            op,
+            format!("cannot decide whether `{point}` lies in `{domain}`"),
+        )),
+    };
+    {
+        use crate::transforms::solve::{RealMembers, real_members_of_family};
+        let members = {
+            let mut inner = member.inner.write();
+            real_members_of_family(&mut inner.arena, offset.raw_id(), step.raw_id())
+        };
+        match members {
+            RealMembers::RealStep => {}
+            RealMembers::None => return Ok(()),
+            RealMembers::One(id) => return in_domain(member.wrap(id), out),
+            RealMembers::Undecided => return Err(undecided()),
+        }
+    }
+    // A real step and a non-real offset (`atan(I) + nπ` from `tan² + 1 = 0`):
+    // no real members.
     match is_real_finite_point(&offset) {
         Truth::True => {}
         Truth::False => return Ok(()),
-        Truth::Unknown => {
-            return Err(computation_failed(
-                op,
-                format!("cannot decide whether the family `{member}` has real members"),
-            ));
-        }
+        Truth::Unknown => return Err(undecided()),
     }
     let (Ok(step_f), Ok(offset_f)) = (step.eval_f64(), offset.eval_f64()) else {
         return Err(computation_failed(
@@ -229,17 +263,7 @@ fn enumerate_family(
         return Err(beyond());
     };
     for k in span {
-        let point = member.subs_i64(param, k).eval();
-        match domain.contains(&point) {
-            Some(true) => out.push(point),
-            Some(false) => {}
-            None => {
-                return Err(computation_failed(
-                    op,
-                    format!("cannot decide whether `{point}` lies in `{domain}`"),
-                ));
-            }
-        }
+        in_domain(member.subs_i64(param, k).eval(), out)?;
     }
     Ok(())
 }

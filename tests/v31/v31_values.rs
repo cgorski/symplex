@@ -173,7 +173,15 @@ fn a_nonzero_value_below_the_exponent_range_is_refused() {
 }
 
 /// A value that is 0, or only 0 to the precision reached, still prints as
-/// `0`; a tiny part next to a normal one is negligible.
+/// `0`; a tiny real term next to a normal one is negligible.
+///
+/// Changed in 0.59 (decision D3, wave 16 R4.1): `1 + I*exp(-10^10)` is no
+/// longer `1`.  Its imaginary part is certified nonzero (`exp` is never 0),
+/// D3 never drops such a part, and one below the exponent range cannot be
+/// printed: the number is refused, as the whole value `exp(-10^10)*I` is
+/// (mpmath: `mpc(1, exp(-mpf(10)**10))` = `1 +
+/// 9.27858442032487257807314229893e-4342944820j`).  The real sum `exp(-10^10)
+/// + 1` still prints `1`: no part of it is dropped.
 ///
 /// Changed in 0.45: the sign of the underflow `erfc(10⁵)` is `1`, not a
 /// refusal: `evalf` certifies the underflow positive, and `eval` folds the
@@ -191,6 +199,10 @@ fn zeros_and_negligible_parts_are_unchanged_by_the_underflow_rule() {
         "0"
     );
     assert_eq!(dec("exp(-10^10) + 1").unwrap(), "1");
-    assert_eq!(dec("1 + I*exp(-10^10)").unwrap(), "1");
+    assert!(matches!(
+        dec("1 + I*exp(-10^10)"),
+        Err(SymplexError::Unevaluable { reason })
+            if reason.contains("the imaginary part is not 0 but underflows")
+    ));
     assert_eq!(dec("sign(erfc(10^5))").unwrap(), "1");
 }

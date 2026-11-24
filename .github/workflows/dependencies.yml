@@ -1,0 +1,127 @@
+name: Dependencies
+
+# The root Cargo.lock is committed, so the ordinary CI builds the same
+# dependency versions on every run and no longer sees a new release of a
+# dependency.  A user of the crate does: cargo resolves the manifest's
+# version requirements afresh, to the newest versions by default and to any
+# version down to the floors if other crates in the build hold them back.
+# The requirements in the four Cargo.toml files are therefore a promise at
+# both ends, and this workflow tests both once a week:
+#
+# * "Latest dependencies" updates the lock to the newest versions the
+#   manifest allows and runs the test suite.  When it is red: fix the code,
+#   or cap the requirement in Cargo.toml (`>=x, <y`) with a comment that
+#   gives the reason.
+# * "Minimal direct versions" resolves every direct dependency to the lowest
+#   version its requirement allows (transitive ones stay at their newest) and
+#   checks the four crates on the MSRV and on stable.  When it is red: raise
+#   that dependency's floor in Cargo.toml — to the version cargo names in the
+#   conflict, or to the first one that has what the code uses.  A floor never
+#   needs to exceed the version in the committed Cargo.lock.
+#
+# Neither job sets `-D warnings`: a deprecation in a new release of a
+# dependency is not a failure here.  The side crates (symplex-macros,
+# symplex-build, symplex-wasm) have no committed lock; the ordinary CI
+# already builds them with the newest versions, so only their floors are
+# checked.
+
+on:
+  schedule:
+    # Mondays 05:23 UTC.
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependencies-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # Line tables are enough for backtraces and keep the test binaries small.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  latest:
+    name: Latest dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # As in the `test` job of ci.yml: the CPU-time budgets of
+      # `tests/perf_assert` get a factor 2 on a shared runner.
+      SYMPLEX_TEST_TIME_SCALE: "2"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # Before the cache step, whose key includes the lock file.  The output
+      # lists every version that moved: the first place to look when a later
+      # step fails.
+      - name: Update Cargo.lock to the newest versions
+        run: cargo update
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The same commands as the `test` job of ci.yml, without the examples
+      # and benches (they are compiled by the other job).
+      - run: cargo nextest run --profile ci --lib --bins --tests -E 'not test(units_compile_fail)'
+      - run: cargo test --doc
+
+  minimal:
+    name: Minimal direct versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      # Nightly only resolves (`-Z direct-minimal-versions` is unstable); the
+      # MSRV and stable compile.  An old version of a dependency may fail on
+      # a new compiler and a new one on the MSRV, so both are checked.
+      # Stable comes last and stays the default toolchain.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.0"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Resolve the direct dependencies to their floors
+        run: |
+          set -euo pipefail
+          for manifest in Cargo.toml symplex-macros/Cargo.toml symplex-build/Cargo.toml symplex-wasm/Cargo.toml; do
+            echo "::group::$manifest"
+            cargo +nightly update -Z direct-minimal-versions --manifest-path "$manifest"
+            cargo +nightly tree --locked --depth 1 --edges normal,build,dev --target all --manifest-path "$manifest"
+            echo "::endgroup::"
+          done
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            symplex-macros
+            symplex-build
+            symplex-wasm
+      # `--locked`: the lock files written above are used as they are.
+      - name: symplex (1.93.0)
+        run: cargo +1.93.0 check --locked --all-targets
+      - name: symplex (stable)
+        run: cargo +stable check --locked --all-targets
+      - name: symplex-macros (1.93.0)
+        run: cargo +1.93.0 check --locked --all-targets --manifest-path symplex-macros/Cargo.toml
+      - name: symplex-macros (stable)
+        run: cargo +stable check --locked --all-targets --manifest-path symplex-macros/Cargo.toml
+      - name: symplex-build (1.93.0)
+        run: cargo +1.93.0 check --locked --all-targets --manifest-path symplex-build/Cargo.toml
+      - name: symplex-build (stable)
+        run: cargo +stable check --locked --all-targets --manifest-path symplex-build/Cargo.toml
+      - name: symplex-wasm (1.93.0)
+        run: cargo +1.93.0 check --locked --all-targets --manifest-path symplex-wasm/Cargo.toml
+      - name: symplex-wasm (stable)
+        run: cargo +stable check --locked --all-targets --manifest-path symplex-wasm/Cargo.toml
+      # The floors of wasm-bindgen and getrandom only matter on this target.
+      - name: symplex-wasm (stable, wasm32)
+        run: cargo +stable check --locked --manifest-path symplex-wasm/Cargo.toml --target wasm32-unknown-unknown

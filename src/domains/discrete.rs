@@ -119,6 +119,16 @@ pub fn convolution(a: &[Q], b: &[Q]) -> Vec<Q> {
 /// Returns `n` entries (zero-padded when `n` exceeds the linear length);
 /// `n = 0` or an empty input gives an empty vector.
 ///
+/// # Refusal
+///
+/// A length `n` beyond both the linear length `a.len() + b.len() − 1` and
+/// `2²⁴` (a vector that would be zeros almost everywhere) is not laid
+/// out: the result is then **empty although the convolution exists**.
+/// Callers that may pass such lengths use [`try_convolution_cyclic`], which
+/// reports the refusal as an `Err`.  (Up to 0.58 the `n` entries were
+/// allocated first: `n = 2⁴⁰` aborted the process and `n = usize::MAX`
+/// panicked with "capacity overflow".)
+///
 /// # Examples
 ///
 /// ```
@@ -137,14 +147,48 @@ pub fn convolution(a: &[Q], b: &[Q]) -> Vec<Q> {
 /// assert_eq!(convolution_cyclic(&q(&[1, 2, 3]), &q(&[4, 5, 6]), 6), q(&[4, 13, 28, 27, 18, 0]));
 /// ```
 pub fn convolution_cyclic(a: &[Q], b: &[Q], n: usize) -> Vec<Q> {
+    try_convolution_cyclic(a, b, n).unwrap_or_default()
+}
+
+/// [`convolution_cyclic`] with the oversized case reported.
+///
+/// # Errors
+///
+/// [`SymplexError::ComputationFailed`] for an `n` beyond both the linear
+/// length `a.len() + b.len() − 1` and `2²⁴`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::discrete::try_convolution_cyclic;
+/// use num_bigint::BigInt;
+/// use num_rational::Ratio;
+///
+/// let q = |v: &[i64]| -> Vec<Ratio<BigInt>> {
+///     v.iter().map(|&t| Ratio::from_integer(BigInt::from(t))).collect()
+/// };
+/// let (a, b) = (q(&[1, 2, 3]), q(&[4, 5, 6]));
+/// assert_eq!(try_convolution_cyclic(&a, &b, 3).unwrap(), q(&[31, 31, 28]));
+/// assert!(try_convolution_cyclic(&a, &b, usize::MAX).is_err());
+/// ```
+pub fn try_convolution_cyclic(a: &[Q], b: &[Q], n: usize) -> Result<Vec<Q>, SymplexError> {
     if n == 0 || a.is_empty() || b.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
+    // The linear length is allocated anyway; beyond it the entries are 0.
+    let linear = (a.len() - 1).saturating_add(b.len());
+    let cap = linear.max(crate::base::cast::MAX_DENSE_LIST);
+    let Some(n) = crate::base::cast::bounded_len(n, cap) else {
+        return Err(SymplexError::ComputationFailed {
+            operation: "convolution_cyclic",
+            reason: format!("a cyclic length of {n} entries is too long to lay out"),
+        });
+    };
     let mut out = vec![Ratio::zero(); n];
     for (i, v) in convolution(a, b).into_iter().enumerate() {
         out[i % n] += v;
     }
-    out
+    Ok(out)
 }
 
 /// Subset convolution (SymPy `convolution_subset`): indices are bitmasks

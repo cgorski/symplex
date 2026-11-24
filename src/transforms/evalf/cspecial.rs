@@ -216,6 +216,9 @@ pub(super) struct Routed {
     pub(super) value: Complex,
     cut: Option<CutRule>,
     own: Option<cexpint::OwnPart>,
+    /// The value lies below the exponent range and is certainly not 0
+    /// ([`cexpint::below_range`]): `value` is 0, its bound an underflow.
+    below: bool,
 }
 
 /// [`eval`], saying which route gave the value ([`bound`] needs it).
@@ -231,6 +234,22 @@ pub(super) fn eval_routed(
             value,
             cut: Some(rule),
             own: None,
+            below: false,
+        });
+    }
+    // `Γ(a, z)`, `E_n(z)` below the exponent range: 0 within an underflow
+    // bound, as `exp` of such an argument is (`extended` holds it scaled).
+    // Up to 0.58 the route read its prefactor's 0 as a cancellation and
+    // refused with `PrecisionExhausted`.
+    if matches!(f, Fun::UpperGamma | Fun::ExpInt)
+        && cexpint::below_range(f == Fun::ExpInt, args[0], args[1], &mut w.at(w.bits() + 32))
+            .is_some()
+    {
+        return Ok(Routed {
+            value: c_zero(w.bits() + 16),
+            cut: None,
+            own: None,
+            below: true,
         });
     }
     let (value, own) = general_parts(f, args, w)?;
@@ -238,6 +257,7 @@ pub(super) fn eval_routed(
         value,
         cut: None,
         own,
+        below: false,
     })
 }
 
@@ -934,6 +954,9 @@ pub(super) fn bound(
     let v = &routed.value;
     if [&v.0, &v.1].iter().any(|x| x.is_nan() || x.is_inf()) {
         return Bound::UNKNOWN;
+    }
+    if routed.below {
+        return Bound::both(accuracy::UNDERFLOW);
     }
     let mut vals: Vec<&Complex> = Vec::with_capacity(args.len());
     let mut bs: Vec<Bound> = Vec::with_capacity(args.len());

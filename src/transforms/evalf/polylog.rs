@@ -391,7 +391,7 @@ fn exp_i_pi(x: &BigFloat, w: &mut Wp<'_>) -> Complex {
 /// `ln Γ(x)` for `x ≥ 1` in `f64`: the recurrence up to 16 and Stirling's
 /// series with three terms (error below `10⁻⁹`, far inside the margins it
 /// is used with).
-fn ln_gamma(x: f64) -> f64 {
+pub(super) fn ln_gamma(x: f64) -> f64 {
     let mut z = x;
     let mut shift = 0.0;
     while z < 16.0 {

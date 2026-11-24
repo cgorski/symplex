@@ -1660,7 +1660,7 @@ fn apart_params(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> 
         let paramfield::PolyFraction {
             numer: num,
             denom: c,
-        } = paramfield::ppoly_over_common_denominator(n, nv);
+        } = paramfield::ppoly_over_common_denominator(n, nv)?;
         let fe = crate::poly::polybridge::multipoly_to_expr(arena, &xf[*i].0, &rv.vars);
         let fk = if *k == 1 {
             fe
@@ -1698,7 +1698,7 @@ fn apart_params(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> 
         let paramfield::PolyFraction {
             numer: num,
             denom: c,
-        } = paramfield::ppoly_over_common_denominator(&quot, nv);
+        } = paramfield::ppoly_over_common_denominator(&quot, nv)?;
         out.push(paramfield::quotient_expr(arena, &num, &c, &rv.vars));
     }
     Some(match out.len() {
@@ -1958,7 +1958,7 @@ fn apart_param_algebraic(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option
     }
     let mut out: Vec<ExprId> = Vec::with_capacity(terms.len() + 1);
     for (r, idx, k) in &terms {
-        let re = field.poly_to_expr(arena, r);
+        let re = field.poly_to_expr(arena, r)?;
         let fe = fs[*idx].2;
         let den = if *k == 1 {
             fe
@@ -1969,7 +1969,7 @@ fn apart_param_algebraic(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option
         out.push(arena.div(re, den));
     }
     if !quot.is_zero() {
-        out.push(field.poly_to_expr(arena, &quot));
+        out.push(field.poly_to_expr(arena, &quot)?);
     }
     Some(match out.len() {
         0 => arena.zero,

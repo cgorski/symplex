@@ -1898,7 +1898,12 @@ impl Distribution {
             let mut rational_at: std::collections::HashMap<crate::base::numeric::Q, usize> =
                 std::collections::HashMap::new();
             let mut values_at: Vec<Option<ValueKey>> = Vec::new();
-            let mut buckets: std::collections::HashMap<(bool, i64), Vec<usize>> =
+            // The key of the residual `image − f64(image)` of each entry
+            // ([`residual_key`]), formed when another image shares or nearly
+            // shares its double (the outer `None`: not asked for yet).
+            let residual_at: std::cell::RefCell<Vec<Option<Option<ValueKey>>>> =
+                std::cell::RefCell::new(Vec::new());
+            let mut buckets: std::collections::HashMap<(Scale, i64), Vec<usize>> =
                 std::collections::HashMap::new();
             // Entries that are not rationals and have no bucket.
             let mut unvalued: Vec<usize> = Vec::new();
@@ -1907,18 +1912,35 @@ impl Distribution {
                 let mass = self.density(v).eval();
                 let rational = image.as_rational();
                 let value = value_key(&image);
-                let bucket = value.and_then(|k| Some((k.tiny, value_bucket(k.f)?)));
+                let bucket = value.and_then(|k| Some((k.scale, value_bucket(k.f)?)));
+                let residual: std::cell::OnceCell<Option<ValueKey>> = std::cell::OnceCell::new();
                 let same = |i: &usize| {
-                    !keys_apart(values_at[*i], value)
-                        && Truth::from(table[*i].0.equals(&image)).is_true()
+                    if keys_apart(values_at[*i], value) {
+                        return false;
+                    }
+                    // Two normal doubles that do not separate the images
+                    // (`tanh k` is `1.0` from `k = 19` on): their residuals
+                    // may, before the symbolic comparison.
+                    if let (Some(a), Some(b)) = (values_at[*i], value)
+                        && a.scale == Scale::Normal
+                        && b.scale == Scale::Normal
+                    {
+                        let ra = *residual_at.borrow_mut()[*i]
+                            .get_or_insert_with(|| residual_key(&table[*i].0, a.f));
+                        let rb = *residual.get_or_init(|| residual_key(&image, b.f));
+                        if residuals_apart(a.f, ra, b.f, rb) {
+                            return false;
+                        }
+                    }
+                    Truth::from(table[*i].0.equals(&image)).is_true()
                 };
                 let found = match (&rational, bucket) {
                     (Some(q), _) => rational_at.get(q).copied(),
                     (None, _) => None,
                 }
                 .or_else(|| match bucket {
-                    Some((tiny, k)) => (k - 1..=k + 1)
-                        .filter_map(|k| buckets.get(&(tiny, k)))
+                    Some((scale, k)) => (k - 1..=k + 1)
+                        .filter_map(|k| buckets.get(&(scale, k)))
                         .flatten()
                         .copied()
                         .filter(|&i| rational.is_none() || table[i].0.as_rational().is_none())
@@ -1943,6 +1965,7 @@ impl Distribution {
                             Some(k) => buckets.entry(k).or_default().push(i),
                             None => unvalued.push(i),
                         }
+                        residual_at.borrow_mut().push(residual.get().copied());
                         table.push((image, mass));
                         values_at.push(value);
                     }
@@ -1955,7 +1978,8 @@ impl Distribution {
                 .iter()
                 .zip(&values_at)
                 .filter_map(|((image, _), key)| {
-                    key.filter(|k| !k.tiny).map(|k| (image.clone(), k.f))
+                    key.filter(|k| k.scale == Scale::Normal)
+                        .map(|k| (image.clone(), k.f))
                 })
                 .collect();
             return Ok(Distribution::from_family(
@@ -2247,41 +2271,114 @@ pub(super) fn certified_apart(a: Option<f64>, b: Option<f64>) -> bool {
 }
 
 /// What separates an image of [`Distribution::transformed`] from others: its
-/// `eval_f64` (`f`, `tiny = false`) when that is a normal double, else for
-/// a real value below the normal range (`eval_f64` is `0` or subnormal) the
-/// `eval_f64` of `ln |image|` (`tiny = true`).  Both are certified values
-/// correctly rounded, so equal images get equal keys; `exp(−k)` of a
-/// 7000-sided die underflowed, and its 6255 images were compared pairwise.
+/// `eval_f64` (`f`, [`Scale::Normal`]) when that is a normal double, else
+/// for a real value below the normal range (`eval_f64` is `0` or subnormal)
+/// or above it (`eval_f64` is `±∞`) the `eval_f64` of `ln |image|`
+/// ([`Scale::Tiny`], [`Scale::Huge`]).  All are certified values correctly
+/// rounded, so equal images get equal keys; `exp(−k)` of a 7000-sided die
+/// underflowed, and its 6255 images were compared pairwise; up to 0.58
+/// those of `sinh k` and `exp k` beyond the range were (1290 of a
+/// 2000-sided die: 25 s).
 #[derive(Clone, Copy, Debug)]
 struct ValueKey {
-    tiny: bool,
+    scale: Scale,
     f: f64,
 }
+
+/// Where an image lies relative to the normal `f64` range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Scale {
+    /// A normal double: the key is the value.
+    Normal,
+    /// Below the range (`ln |image| <` [`TINY_LOG`]): the key is the
+    /// logarithm.
+    Tiny,
+    /// Above the range (`ln |image| >` [`HUGE_LOG`]): the key is the
+    /// logarithm.
+    Huge,
+}
+
+/// `ln f64::MAX = 709.78…`, widened: an image with a larger `ln |image|`
+/// is beyond the doubles by more than any rounding (0.7 %), so that no
+/// form of the same number has a normal key.
+const HUGE_LOG: f64 = 709.79;
+
+/// `ln f64::MIN_POSITIVE = −708.39…`, widened the same way.
+const TINY_LOG: f64 = -708.41;
 
 fn value_key(image: &Ex) -> Option<ValueKey> {
     let v = image.eval_f64().ok()?;
     if v.is_normal() {
-        return Some(ValueKey { tiny: false, f: v });
+        return Some(ValueKey {
+            scale: Scale::Normal,
+            f: v,
+        });
     }
-    if !v.is_finite() {
+    if v.is_nan() {
         return None;
     }
+    // `0`, subnormal or `±∞`: the logarithm decides, and an image in the
+    // sliver between a bound of the doubles and its widening has no key
+    // (it is compared with every entry).
     let l = image.abs().ln().eval_f64().ok()?;
-    l.is_normal().then_some(ValueKey { tiny: true, f: l })
+    let scale = if v.is_finite() && l < TINY_LOG {
+        Scale::Tiny
+    } else if v.is_infinite() && l > HUGE_LOG {
+        Scale::Huge
+    } else {
+        return None;
+    };
+    Some(ValueKey { scale, f: l })
 }
 
-/// Are the images of two keys proved different?  A value below the normal
-/// range and one at least four times its bottom are; two values (or two
-/// logarithms) by [`certified_apart`].
+/// Are the images of two keys proved different?  Two of different scales
+/// are (the widened bounds [`TINY_LOG`], [`HUGE_LOG`] lie beyond the normal
+/// doubles by more than a rounding); two values, or two logarithms, by
+/// [`certified_apart`].
 fn keys_apart(a: Option<ValueKey>, b: Option<ValueKey>) -> bool {
     match (a, b) {
-        (Some(a), Some(b)) if a.tiny != b.tiny => {
-            let normal = if a.tiny { b.f } else { a.f };
-            normal.abs() >= 4.0 * f64::MIN_POSITIVE
-        }
+        (Some(a), Some(b)) if a.scale != b.scale => true,
         (Some(a), Some(b)) => certified_apart(Some(a.f), Some(b.f)),
         _ => false,
     }
+}
+
+/// The key of the residual `image − v` of an image whose `eval_f64` is the
+/// normal double `v` (subtracted exactly): what separates images that
+/// share a double or lie in neighbouring ones.  `tanh k` is `1.0` from
+/// `k = 19` on, and `1 − tanh k = 2/(e^{2k} + 1)` tells the images apart;
+/// up to 0.58 they were compared pairwise by `equals` (a 300-sided die:
+/// 16 s).  `None` where the residual has no key: it is zero, or (`k > 354`
+/// for `tanh k`) below the doubles with a logarithm the evaluation refuses.
+fn residual_key(image: &Ex, v: f64) -> Option<ValueKey> {
+    use crate::api::expr_ops::ToEx;
+    let exact = crate::base::numeric::Q::from_float(v)?.to_ex(&image.context());
+    value_key(&(image - &exact))
+}
+
+/// Are two images with the normal doubles `va`, `vb` proved different by
+/// the keys `ra`, `rb` of their residuals ([`residual_key`])?  With the
+/// same double the images differ exactly when the residuals do
+/// ([`keys_apart`]).  With neighbouring doubles `a − b = (va − vb) + (ρa −
+/// ρb)`, where `va − vb` is exact (Sterbenz) and each normal residual key
+/// is within `ε·|r|` of its residual `ρ`: the difference computed in `f64`
+/// is within `2ε·(|ra| + |rb|) + ε·|d|` of the true one, and proves the
+/// images different beyond four times that.
+fn residuals_apart(va: f64, ra: Option<ValueKey>, vb: f64, rb: Option<ValueKey>) -> bool {
+    let (Some(ra), Some(rb)) = (ra, rb) else {
+        return false;
+    };
+    if va == vb {
+        return keys_apart(Some(ra), Some(rb));
+    }
+    // Farther apart than the caller's test allows: not this function's
+    // case (and `va − vb` need not be exact).
+    if certified_apart(Some(va), Some(vb)) || ra.scale != Scale::Normal || rb.scale != Scale::Normal
+    {
+        return false;
+    }
+    let d = (va - vb) + (ra.f - rb.f);
+    d.abs() > 8.0 * f64::EPSILON * (ra.f.abs() + rb.f.abs())
 }
 
 /// The bucket of a normal `f64` among runs of 32 consecutive doubles (in

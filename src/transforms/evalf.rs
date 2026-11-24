@@ -211,6 +211,7 @@ fn evalf_with(
 
     match evaluate_adaptive(arena, expr, digits, search, &mut cc)? {
         Adaptive::Settled(result, _) => format_complex(&result, digits),
+        Adaptive::PartBelow { imaginary, .. } => Err(part_underflow_error(imaginary)),
         Adaptive::Underflow(_) | Adaptive::Beyond(_) => Err(underflow_error()),
         Adaptive::Undecided => Err(undecided_error()),
         Adaptive::Hidden { below_range: true } => Err(hidden_error()),
@@ -305,6 +306,12 @@ struct Evaluated {
     /// The value lies below the exponent range and is known scaled
     /// (`extended`): `value` is its placeholder.
     beyond: Option<extended::Scaled>,
+    /// The parts of the value that are 0 within an underflow bound and
+    /// certainly not 0 ([`accuracy::PartsBelow`]).
+    parts_below: accuracy::PartsBelow,
+    /// The value depends on one that only the scaled form of a complex
+    /// route holds below the exponent range ([`held_by_complex_route`]).
+    untracked_below: bool,
     /// The nonzero terms some sum lost below its error bound
     /// ([`accuracy::Absorbed`]).
     absorbed: Option<accuracy::Absorbed>,
@@ -372,6 +379,12 @@ fn evaluate_tree_full(
     let mut nonzero: FxHashMap<ExprId, accuracy::Nonzero> = FxHashMap::default();
     // The nodes known below the exponent range (`extended`).
     let mut exts = extended::ExtMap::default();
+    // The nodes with a part that is 0 within an underflow bound and
+    // certainly not 0 (`accuracy::parts_below`).
+    let mut below_parts: FxHashMap<ExprId, accuracy::PartsBelow> = FxHashMap::default();
+    // The nodes that are, or depend on, a value held below the range by a
+    // complex route alone ([`held_by_complex_route`]).
+    let mut untracked: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
     // The nonzero terms the sums lost below their error bounds.
     let mut absorbed: Option<accuracy::Absorbed> = None;
     // The bits that hold every exact value in full (`input_bits`), and its
@@ -550,6 +563,42 @@ fn evaluate_tree_full(
                         nonzero.insert(id, s);
                     }
                 }
+                // The parts certainly not 0 below the exponent range: only
+                // where some value of this evaluation left the range.
+                if !(nonzero.is_empty() && exts.is_empty() && below_parts.is_empty()) {
+                    let scaled = match (exts.get(&id), arena.node(id)) {
+                        (Some(x), _) => extended::parts_below(x, prec),
+                        (None, ExprNode::Add(children)) if !exts.is_empty() => {
+                            extended::sum_parts_below(children, cache, &exts, prec)
+                        }
+                        _ => None,
+                    };
+                    let parts = accuracy::parts_below(
+                        arena,
+                        id,
+                        &value,
+                        e,
+                        cache,
+                        scaled,
+                        &nonzero,
+                        &below_parts,
+                    );
+                    if !parts.is_none() {
+                        below_parts.insert(id, parts);
+                    }
+                }
+                let underflowed =
+                    accuracy::mag(&value).is_none() && accuracy::is_underflow(e.joint());
+                if (underflowed && held_by_complex_route(arena.node(id), cache))
+                    || (!untracked.is_empty()
+                        && arena
+                            .node(id)
+                            .children()
+                            .iter()
+                            .any(|c| untracked.contains(c)))
+                {
+                    untracked.insert(id);
+                }
                 balls.insert(id, CBall::new(value, e));
             }
             Err(e) => {
@@ -581,6 +630,8 @@ fn evaluate_tree_full(
         precision_limited: limited,
         underflowed_nonzero: nonzero.get(&root).copied(),
         beyond,
+        parts_below: below_parts.get(&root).copied().unwrap_or_default(),
+        untracked_below: untracked.contains(&root),
         absorbed,
         exact_bits,
         second_bits,
@@ -1490,9 +1541,22 @@ fn eval_ball(
     let CBall { mid: value, err } = match arena.node(id) {
         ExprNode::Add(children) | ExprNode::Mul(children) => {
             let mut parts: Vec<(&Complex, accuracy::Bound)> = Vec::with_capacity(children.len());
-            for &c in children.iter() {
+            // `q·erf(u) + q·erfc(u)` is `q` exactly ([`erf_complements`]).
+            let folded = match arena.node(id) {
+                ExprNode::Add(_) => erf_complements(arena, &children[..], prec),
+                _ => None,
+            };
+            for (i, &c) in children.iter().enumerate() {
+                // (A paired term must have a value too: the identity holds
+                // where both sides are defined.)
                 let v = get_cached(cache, c)?;
+                if folded.as_ref().is_some_and(|f| f.paired[i]) {
+                    continue;
+                }
                 parts.push((v, cache.err(&c)));
+            }
+            if let Some(f) = &folded {
+                parts.push((&f.constant.mid, f.constant.err));
             }
             return Ok(if matches!(arena.node(id), ExprNode::Add(_)) {
                 accuracy::add_with_bound(&parts, prec)
@@ -1541,6 +1605,17 @@ fn eval_ball(
             let bz = cache.err(c);
             let err = loggamma::error_bound(get_cached(cache, *c)?, bz, &value, prec);
             CBall::new(value, err)
+        }
+        // `ζ` of a rational literal next to a trivial zero, from the exact
+        // rational ([`zeta_next_to_trivial_zero`]): no error of the argument.
+        ExprNode::Zeta(c) if trivial_zero_offset(arena, *c).is_some() => {
+            let Some(offset) = trivial_zero_offset(arena, *c) else {
+                return Err(unevaluable("zeta lost its argument"));
+            };
+            let s = &get_cached(cache, *c)?.0;
+            let v = zeta_next_to_trivial_zero(s, &offset, w)?;
+            let err = accuracy::Bound::real(accuracy::part_lg(&v) + 2.0 - prec as f64);
+            CBall::new((v, BigFloat::new(prec)), err)
         }
         // `ζ`, `η`, `ψ⁽ᵐ⁾`, `ψ`, `Γ` and `x!` of a non-real argument report their
         // own bounds (`zeta.rs`; the sensitivity rules are for real
@@ -1776,6 +1851,76 @@ fn eval_ball(
     };
     let err = accuracy::reported(&value, err, prec);
     Ok(CBall::new(value, err))
+}
+
+/// The pairs `q·erf(u) + q·erfc(u)` among the terms of a sum, folded to
+/// their exact value `q` (`erf + erfc = 1` identically, also off the real
+/// axis).
+struct ErfComplements {
+    /// The terms that belong to a pair.
+    paired: Vec<bool>,
+    /// The sum of the `q` of the pairs.
+    constant: CBall,
+}
+
+/// The terms `q·erf(u)`, `q·erfc(u)` (`q` a rational literal, 1 when absent)
+/// of a sum that pair up with the same `q` and the same `u`
+/// ([`ErfComplements`]), or `None` when there is no such pair.  Evaluated as
+/// two rounded values their sum is `q` only within its error, a ball that
+/// holds every number near `q`: up to 0.58 `erfc(√2) − 1 + erf(√2)` was a
+/// zero ball at every precision, and `floor` of it — 0, a step of `floor` —
+/// was refused after a search to the last precision (0.2 s; 1 s for the five
+/// evaluations of the fuzzer's check).
+fn erf_complements(arena: &Arena, children: &[ExprId], prec: usize) -> Option<ErfComplements> {
+    // (coefficient, argument, is `erfc`) of a term `q·erf(u)` or `q·erfc(u)`.
+    let term = |c: ExprId| -> Option<(Option<&crate::base::numeric::Q>, ExprId, bool)> {
+        let function = |f: ExprId| match arena.node(f) {
+            ExprNode::Erf(u) => Some((*u, false)),
+            ExprNode::Erfc(u) => Some((*u, true)),
+            _ => None,
+        };
+        if let Some((u, complement)) = function(c) {
+            return Some((None, u, complement));
+        }
+        match arena.node(c) {
+            ExprNode::Mul(factors) => match factors[..] {
+                [q, f] => {
+                    let (u, complement) = function(f)?;
+                    Some((Some(arena.as_num(q)?), u, complement))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    // Most sums hold no `erfc`: one pass over the node kinds decides.
+    let terms: Vec<_> = children.iter().map(|&c| term(c)).collect();
+    if !terms.iter().flatten().any(|t| t.2) {
+        return None;
+    }
+    let mut paired = vec![false; children.len()];
+    let mut constant = crate::base::numeric::Q::zero();
+    for i in 0..terms.len() {
+        let Some((q, u, false)) = terms[i] else {
+            continue;
+        };
+        let partner = (0..terms.len())
+            .find(|&j| !paired[j] && matches!(terms[j], Some((p, v, true)) if p == q && v == u));
+        if let Some(j) = partner {
+            paired[i] = true;
+            paired[j] = true;
+            constant += q
+                .cloned()
+                .unwrap_or_else(|| crate::base::numeric::Q::from_integer(BigInt::from(1)));
+        }
+    }
+    if !paired.iter().any(|p| *p) {
+        return None;
+    }
+    Some(ErfComplements {
+        paired,
+        constant: exact::to_value(&exact::Gauss::real(constant), prec),
+    })
 }
 
 /// The functions of `zeta.rs` and `cerf.rs` at a non-real argument.
@@ -2066,6 +2211,41 @@ enum Adaptive {
     /// precision.  Not known to be 0: if the rest cancels exactly, the value is
     /// the lost term.
     Hidden { below_range: bool },
+    /// A value in range with its digits, one part of which is certainly not
+    /// 0 but lies below the exponent range ([`accuracy::PartsBelow`]): `1 +
+    /// i·e^(−10¹⁰)`.  The value holds that part as 0; a result read as a
+    /// number is refused ([`part_underflow_error`]): a certified nonzero part
+    /// is never dropped (decision D3), and this one cannot be printed.  Only
+    /// for [`ZeroSearch::Number`].
+    PartBelow {
+        /// The value, with the part below the range set to 0.
+        value: Complex,
+        /// The part below the range is the imaginary one (else the real one).
+        imaginary: bool,
+    },
+}
+
+/// The error of a decimal result one part of which is certainly not 0 but
+/// lies below the exponent range, next to a part within it
+/// ([`Adaptive::PartBelow`]): the same kind as a whole value below the range
+/// ([`underflow_error`]).  Up to 0.58 the part was dropped like one whose
+/// ball contains 0: `1 + I*exp(-10^10)` printed `1`, `lowergamma(1, 10^10 +
+/// I)` (`1 − e^(−10¹⁰ − i)`) printed `1` (mpmath, with unbounded exponents:
+/// `1 + 9.27858442032487e-4342944820j`).
+fn part_underflow_error(imaginary: bool) -> SymplexError {
+    let (part, other) = if imaginary {
+        ("imaginary", "a real")
+    } else {
+        ("real", "an imaginary")
+    };
+    SymplexError::Unevaluable {
+        reason: format!(
+            "the {part} part is not 0 but underflows the arbitrary-precision exponent range \
+             (its magnitude is below 2^{:e}) next to {other} part within it: it cannot be \
+             printed, and is not dropped",
+            f64::from(astro_float::EXPONENT_MIN)
+        ),
+    }
 }
 
 /// The error of a decimal result that is zero to the precision reached
@@ -2117,6 +2297,43 @@ fn underflow_error() -> SymplexError {
         reason: format!(
             "the value is not 0 but underflows the arbitrary-precision exponent range \
              (its magnitude is below 2^{:e})",
+            f64::from(astro_float::EXPONENT_MIN)
+        ),
+    }
+}
+
+/// Is `node` `Γ(a, z)`, `E_n(z)` or `erfc(z)` with a non-real argument — the
+/// functions whose value below the exponent range only the scaled form of
+/// their complex route holds (`cexpint::below_range`; a node with such a value
+/// is the caller's test)?  Up to 0.58 such a node failed (`PrecisionExhausted`)
+/// and with it every expression that needs it.  Since 0.59 its parts are
+/// certified through sums, products and the functions of
+/// `accuracy::parts_below`; where that certificate does not reach — a product
+/// of two factors with such parts of different signs, a function without a
+/// rule — a result read as a number that would drop a part is refused as
+/// before ([`untracked_part_error`]) rather than printed without it.
+fn held_by_complex_route(node: &ExprNode, cache: Cache<'_>) -> bool {
+    let nonreal = |c: &ExprId| cache.get(c).is_some_and(|v| !v.1.is_zero());
+    match node {
+        ExprNode::Erfc(c) => nonreal(c),
+        ExprNode::Lib(LibFn::UpperGamma | LibFn::ExpInt, args) => args.iter().any(nonreal),
+        _ => false,
+    }
+}
+
+/// The error of a decimal result one part of which is 0 within its error
+/// while the value depends on a part below the exponent range that the
+/// certificate of [`Adaptive::PartBelow`] does not follow through the
+/// expression ([`held_by_complex_route`]): the part may be 0 or not, and is
+/// not dropped.  (`(π + π·E₂(10¹⁰ − i))·(−3 + (1 + i)·K₀(10¹⁰))`: mpmath gives the
+/// imaginary part `3.65e-4342944824`.)
+fn untracked_part_error(imaginary: bool) -> SymplexError {
+    let part = if imaginary { "imaginary" } else { "real" };
+    SymplexError::Unevaluable {
+        reason: format!(
+            "the {part} part is 0 within its error, and the value depends on a part below the \
+             arbitrary-precision exponent range (2^{:e}) that is not followed through this \
+             expression: not known to be 0, and not dropped",
             f64::from(astro_float::EXPONENT_MIN)
         ),
     }
@@ -2213,6 +2430,8 @@ fn evaluate_adaptive(
             precision_limited,
             underflowed_nonzero,
             beyond,
+            parts_below,
+            untracked_below,
             absorbed,
             exact_bits,
             second_bits,
@@ -2264,8 +2483,24 @@ fn evaluate_adaptive(
                 achieved: 0,
             });
         }
-        if finite && let Some((v, zero_part)) = settle(&value, bound, digits, needed, prec, search)
-        {
+        if finite && let Some((v, zeroed)) = settle(&value, bound, digits, needed, prec, search) {
+            // A part set to 0 that is certainly not 0 and lies below the
+            // exponent range: no precision brings it back, and a result read
+            // as a number does not drop it (D3).  Up to 0.58 it was dropped
+            // as a part whose ball contains 0 is: `1 + i·e^(−10¹⁰)` printed
+            // `1`.  A part 0 within the underflow bound and not known to be
+            // nonzero is dropped as before.
+            if search == ZeroSearch::Number && beyond.is_none() {
+                let below_im = zeroed.im && parts_below.im.is_some();
+                if below_im || (zeroed.re && parts_below.re.is_some()) {
+                    debug!(prec, ?parts_below, "evalf: a nonzero part underflowed");
+                    return Ok(Adaptive::PartBelow {
+                        value: v,
+                        imaginary: below_im,
+                    });
+                }
+            }
+            let zero_part = zeroed.re || zeroed.im;
             // A part that is 0 within its ball next to a part with its
             // digits, in a result read as a number, is pursued to the cap
             // (one evaluation there) before it is dropped: its ball holds
@@ -2296,6 +2531,14 @@ fn evaluate_adaptive(
             if let Some(s) = beyond {
                 debug!(prec, scale, "evalf: a value below the exponent range");
                 return Ok(Adaptive::Beyond(extended::Scaled { m: v, ..s }));
+            }
+            // A part about to be dropped without a certificate, in a number
+            // that depends on a value only a complex route's scaled form holds
+            // below the range: refused, as the whole expression was while
+            // that route failed ([`untracked_part_error`]).
+            if zero_part && search == ZeroSearch::Number && untracked_below {
+                debug!(prec, "evalf: an untracked part below the exponent range");
+                return Err(untracked_part_error(zeroed.im));
             }
             return Ok(Adaptive::Settled(v, Settled::Certified));
         }
@@ -2425,7 +2668,11 @@ fn evaluate_adaptive(
         } else {
             (second > prec).then(|| second.saturating_add(margin))
         };
-        let lost_below_range = absorbed.is_some_and(|a| a.below_range);
+        // A part certainly not 0 below the exponent range next to a part
+        // that is zero to the precision reached (`Ei(−10¹⁰ + i) − iπ`) is
+        // such a lost term too.
+        let lost_below_range =
+            absorbed.is_some_and(|a| a.below_range) || (beyond.is_none() && !parts_below.is_none());
         let hidden = if !small_zero || search == ZeroSearch::Cap {
             None
         } else if lost_below_range {
@@ -2515,8 +2762,10 @@ fn achieved_digits(acc: Option<f64>, digits: u32) -> u32 {
 /// `Chi(−60)` printed `9.68091107e23` at 10 digits (it is `9.68091107·10²³ +
 /// 3.141592654i`), `10³⁰ + i` printed `1e30`.
 ///
-/// The flag says that a part was set to 0 although it is not exactly 0
-/// ([`evaluate_adaptive`] pursues such a part of a number to the cap).
+/// The flags say which parts were set to 0 although they are not exactly 0
+/// ([`Zeroed`]: [`evaluate_adaptive`] pursues such a part of a number to the
+/// cap, and refuses the number when the part is certainly not 0 below the
+/// exponent range).
 fn settle(
     value: &Complex,
     bound: accuracy::Bound,
@@ -2524,9 +2773,9 @@ fn settle(
     needed: i64,
     prec: usize,
     search: ZeroSearch,
-) -> Option<(Complex, bool)> {
+) -> Option<(Complex, Zeroed)> {
     if accuracy::mag(value).is_none() {
-        return bound.is_exact().then(|| (value.clone(), false));
+        return bound.is_exact().then(|| (value.clone(), Zeroed::default()));
     }
     if accuracy::accurate_bits(value, bound.joint())? < needed as f64 {
         return None;
@@ -2556,7 +2805,21 @@ fn settle(
     if zero_im {
         out.1 = BigFloat::new(prec);
     }
-    Some((out, zero_re || zero_im))
+    Some((
+        out,
+        Zeroed {
+            re: zero_re,
+            im: zero_im,
+        },
+    ))
+}
+
+/// The parts [`settle`] set to 0 because their balls contain 0 (not the
+/// parts that are exactly 0).
+#[derive(Clone, Copy, Debug, Default)]
+struct Zeroed {
+    re: bool,
+    im: bool,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2626,6 +2889,9 @@ fn evalf_value(
     // value it is.
     evalf_adaptive_value(arena, expr, digits, search).map(|a| match a {
         Adaptive::Settled(z, settled) => (z, settled),
+        // The part below the range is 0, its correctly rounded `f64`
+        // (`evalf_f64` refuses an imaginary one itself).
+        Adaptive::PartBelow { value, .. } => (value, Settled::Certified),
         Adaptive::Underflow(_)
         | Adaptive::Beyond(_)
         | Adaptive::Undecided
@@ -2699,6 +2965,10 @@ pub(crate) fn evalf_settled(
     let prec = ((digits as usize) * 34 / 10 + 64).max(128);
     match evalf_adaptive_value(arena, expr, digits, search)? {
         Adaptive::Settled(z, settled) => Ok((z, settled)),
+        // The part within the range has its digits and its sign; the other
+        // is read as 0 here (below the precision of the value, as `settle`
+        // leaves a part whose ball contains 0).
+        Adaptive::PartBelow { value, .. } => Ok((value, Settled::Certified)),
         Adaptive::Beyond(s) => s
             .representative(prec)
             .map(|z| (z, Settled::Certified))
@@ -2850,6 +3120,7 @@ pub(crate) fn const_value(
 ) -> Result<ConstValue, SymplexError> {
     match evalf_adaptive_value(arena, expr, digits, ZeroSearch::Number)? {
         Adaptive::Settled(z, settled) => Ok(ConstValue { z, settled, digits }),
+        Adaptive::PartBelow { imaginary, .. } => Err(part_underflow_error(imaginary)),
         Adaptive::Underflow(_) | Adaptive::Beyond(_) => Err(underflow_error()),
         Adaptive::Undecided => Err(undecided_error()),
         Adaptive::Hidden { below_range: true } => Err(hidden_error()),
@@ -2871,7 +3142,10 @@ pub(crate) fn ln_of_positive_constant(arena: &Arena, x: ExprId) -> Option<f64> {
             let real_positive = s.m.1.is_zero() && bf_strictly_positive(&s.m.0);
             return real_positive.then(|| s.ln_abs()).flatten();
         }
-        Adaptive::Underflow(_) | Adaptive::Undecided | Adaptive::Hidden { .. } => return None,
+        Adaptive::Underflow(_)
+        | Adaptive::Undecided
+        | Adaptive::Hidden { .. }
+        | Adaptive::PartBelow { .. } => return None,
     };
     if !bf_strictly_positive(&z.0) || !is_real_to_digits(&z, F64_DIGITS) {
         return None;
@@ -3012,7 +3286,28 @@ pub(crate) fn evalf_f64(arena: &Arena, expr: ExprId) -> Result<f64, SymplexError
     } else {
         F64_DIGITS
     };
-    let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Number)?;
+    // An imaginary part certainly not 0 below the exponent range is a
+    // nonzero imaginary part like any other (up to 0.58 `1 + i·e^(−10¹⁰)`
+    // was `1.0`); a real part below it next to an imaginary part in range is
+    // refused for that part below.
+    let z = match evalf_adaptive_value(arena, expr, digits, ZeroSearch::Number)? {
+        Adaptive::PartBelow {
+            imaginary: true, ..
+        } => {
+            return Err(SymplexError::ComputationFailed {
+                operation: "eval_f64",
+                reason: "expression has nonzero imaginary part (not 0, below the \
+                         arbitrary-precision exponent range); use eval_complex64() for complex \
+                         results"
+                    .into(),
+            });
+        }
+        Adaptive::Settled(z, _) | Adaptive::PartBelow { value: z, .. } => z,
+        Adaptive::Underflow(_)
+        | Adaptive::Beyond(_)
+        | Adaptive::Undecided
+        | Adaptive::Hidden { .. } => c_zero(working_precision(digits)),
+    };
     if !z.1.is_zero() {
         // The `f64` of the part, or its decimal where that is 0 or infinite
         // (an imaginary part certified nonzero below or beyond `f64`).
@@ -4979,11 +5274,21 @@ impl SumAcc {
     }
 }
 
+// A long range whose terms peak far from its ends: a window around the
+// mode with a proved bound on the rest of each side.
+mod windowsum;
+
 /// `Σ_{var = lo}^{hi} body`: a finite range of at most [`MAX_RANGE_TERMS`]
 /// terms term by term, `hi = ∞` as a hypergeometric series ([`hypsum`]).
 /// The bound is the terms' bounds plus the roundings (before 0.29 it was
 /// the working precision whatever the terms lost, and an infinite sum was
-/// `Unevaluable`).
+/// `Unevaluable`).  A range of more than [`windowsum::MIN_RANGE_TERMS`]
+/// terms, or an infinite one whose terms peak more than
+/// [`windowsum::MIN_MODE_OFFSET`] above the lower limit, is first tried as
+/// a window around the mode ([`windowsum`]: weights moved by their
+/// recurrences, both rests bounded by proved geometric series); up to 0.58
+/// a finite range beyond `MAX_RANGE_TERMS` was refused (the entropy of
+/// `Binomial(10⁵, p)`) and such an infinite one beyond 20,000 terms.
 #[allow(clippy::too_many_arguments)]
 fn eval_sum(
     arena: &Arena,
@@ -5014,6 +5319,21 @@ fn eval_sum(
             }
             return emsum::power_sum(&p, &consts, &lo_i, w);
         }
+        match windowsum::windowed_sum(arena, body, var, &lo_i, None, windowsum::MIN_MODE_OFFSET, w)
+        {
+            windowsum::Windowed::Value(ball) => return Ok(ball),
+            // (Refused at once: up to 0.58 after 20,000 terms from the
+            // lower limit, 3 to 15 s.)
+            windowsum::Windowed::TooWide => {
+                return Err(unevaluable(format!(
+                    "infinite sum of `{}`: its terms fall too slowly for a window of {} \
+                     terms around their peak",
+                    arena.display(body),
+                    windowsum::MAX_WINDOW_TERMS
+                )));
+            }
+            windowsum::Windowed::Declined => {}
+        }
         debug!("evalf: Sum — infinite hypergeometric series");
         let mut orders: FxHashMap<ExprId, Vec<ExprId>> = FxHashMap::default();
         orders.insert(body, post_order);
@@ -5033,6 +5353,17 @@ fn eval_sum(
     } else {
         (lo_i, hi_i, false)
     };
+    if &hi_i - &lo_i >= BigInt::from(windowsum::MIN_RANGE_TERMS)
+        && let windowsum::Windowed::Value(CBall { mid, err }) =
+            windowsum::windowed_sum(arena, body, var, &lo_i, Some(&hi_i), 0, w)
+    {
+        let mid = if negate {
+            (mid.0.neg(), mid.1.neg())
+        } else {
+            mid
+        };
+        return Ok(CBall::new(mid, err));
+    }
     let terms = range_terms(&lo_i, &hi_i, "Sum")?;
     let mut sum = SumAcc::new(prec);
     let mut k = lo_i.clone();
@@ -7912,6 +8243,68 @@ fn arb_zeta(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     Ok(round_to(r, prec))
 }
 
+/// A rational literal `q < 0` within `2⁻⁹` of a trivial zero `−2n` of `ζ`
+/// (not on it): `n`'s parity and `d = q/2 + n`, exactly.
+struct TrivialZeroOffset {
+    odd: bool,
+    d: crate::base::numeric::Q,
+}
+
+/// [`TrivialZeroOffset`] of the node `c`, when it is such a literal.
+fn trivial_zero_offset(arena: &Arena, c: ExprId) -> Option<TrivialZeroOffset> {
+    use num_traits::Signed;
+    let q = arena.as_num(c)?;
+    if !q.is_negative() {
+        return None;
+    }
+    let half = q / crate::base::numeric::Q::from_integer(BigInt::from(2));
+    let n = half.round();
+    let d = &half - &n;
+    // `abs(d) < 2⁻¹⁰`, from the bit lengths (`abs(d) < 2^(bits(p) − bits(q) + 1)`).
+    if d.is_zero() || n.is_zero() || d.numer().bits() + 11 > d.denom().bits() {
+        return None;
+    }
+    let odd = !(n.to_integer() % BigInt::from(2)).is_zero();
+    Some(TrivialZeroOffset { odd, d })
+}
+
+/// `ζ(q)` for a rational literal `q` next to a trivial zero ([`TrivialZeroOffset`];
+/// `s`: `q` as a float), to `prec` bits relative: the functional equation of
+/// [`arb_zeta`] with `sin(πq/2) = (−1)ⁿ·sin(πd)` from the exact `d`.  The other
+/// factors move by `2^−wp` relative when `q` is rounded; the value itself,
+/// `≈ ζ′(−2n)·2d`, is known to that only from `d`.  Up to 0.58 the float
+/// argument carried its rounding as a radius, `abs(ζ′)·2^−prec` — far above a
+/// value of `10⁻³⁰²` —, and `zeta(−2 + 10⁻³⁰⁰)` took four evaluations, up to
+/// 1,152 bits, at 16 digits (0.09 s; mpmath: `-3.044845705839327e-302`).
+fn zeta_next_to_trivial_zero(
+    s: &BigFloat,
+    offset: &TrivialZeroOffset,
+    w: &mut Wp<'_>,
+) -> Result<BigFloat, SymplexError> {
+    let prec = w.bits();
+    let s_f64 = f64_of(s)?;
+    let wp = prec + 32 + magnitude_bits(s_f64.abs() * (s_f64.abs().ln().max(0.0) + 2.0));
+    let mut sw = s.clone();
+    let _ = sw.set_precision(wp, RM);
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let pi = w.cc.pi(wp + 8, RM).clone();
+    let one_minus_s = BigFloat::from_i32(1, 64).sub(s, exact_bits(s, wp), RM);
+    let two_pow_s = bf_pow(&two, &sw, &mut w.at(wp));
+    let pi_pow = bf_pow(&pi, &sw.sub(&one, wp, RM), &mut w.at(wp));
+    let d = ratio_to_bigfloat(&offset.d, wp + 8);
+    let sin = pi.mul(&d, wp + 8, RM).sin(wp + 8, RM, w.cc);
+    let sin_term = if offset.odd { sin.neg() } else { sin };
+    let gamma_term = arb_gamma_real(&one_minus_s, &mut w.at(wp))?;
+    let zeta_term = arb_zeta_borwein(&one_minus_s, &mut w.at(wp))?;
+    let r = two_pow_s
+        .mul(&pi_pow, wp, RM)
+        .mul(&sin_term, wp, RM)
+        .mul(&gamma_term, wp, RM)
+        .mul(&zeta_term, wp, RM);
+    Ok(round_to(r, prec))
+}
+
 /// `sin(πs/2)` to `wp` bits relative for a finite real `s`: with `s/2 = n + d`,
 /// `n` the nearest integer and `d` formed exactly, `(−1)ⁿ·sin(πd)` — exactly 0
 /// at the even integers, and relative to `d` next to them.
@@ -7974,6 +8367,67 @@ fn one_minus_pow2(t: &BigFloat, w: &mut Wp<'_>) -> BigFloat {
     round_to(sum.neg(), wp)
 }
 
+/// A table of [`borwein_d`], shared with its memo.
+type BorweinTable = std::rc::Rc<Vec<Ratio<BigInt>>>;
+
+/// A table of [`borwein_d`] kept for its `n`.
+struct BorweinMemo {
+    n: usize,
+    d: BorweinTable,
+}
+
+thread_local! {
+    /// The last tables of [`borwein_d`] (a pure function of `n`; a few
+    /// precisions are in use at a time).
+    static BORWEIN_D: std::cell::RefCell<Vec<BorweinMemo>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Borwein's coefficients `d_0, …, d_n` ([`arb_eta_borwein`]): `d_k = Σ_{i≤k}
+/// t_i`, `t_i = n·(n+i−1)!·4ⁱ/((n−i)!·(2i)!)` — integers (`t_i = n/(n+i)·C(n+i,
+/// 2i)·4ⁱ`, the coefficients of the Chebyshev polynomial `T_n` up to sign),
+/// formed by `t_i = t_{i−1}·4(n+i−1)(n−i+1)/((2i−1)·2i)` in integer
+/// arithmetic, and kept for the next call.  Up to 0.58 every `ζ` and `η`
+/// rebuilt them as rationals, reduced by a gcd of `wp`-bit integers at each
+/// of the `3n` steps: 45 % of the time of `polylog(−3/2, −1 + 10⁻⁷⁰)` at 60
+/// digits.
+fn borwein_d(n: usize) -> BorweinTable {
+    if let Some(d) = BORWEIN_D.with(|memo| {
+        memo.borrow()
+            .iter()
+            .find(|m| m.n == n)
+            .map(|m| std::rc::Rc::clone(&m.d))
+    }) {
+        return d;
+    }
+    let mut d: Vec<Ratio<BigInt>> = Vec::with_capacity(n + 1);
+    let mut acc = BigInt::zero();
+    // t_0 = n·(n−1)!/n! = 1.
+    let mut term = BigInt::from(1);
+    for i in 0..=n {
+        if i > 0 {
+            let numer = BigInt::from(4u64 * (n + i - 1) as u64) * BigInt::from((n - i + 1) as u64);
+            let denom = BigInt::from((2 * i - 1) as u64 * (2 * i) as u64);
+            // The quotient is exact (`t_i` is an integer).
+            term = term * numer / denom;
+        }
+        acc += &term;
+        d.push(Ratio::from_integer(acc.clone()));
+    }
+    let d = std::rc::Rc::new(d);
+    BORWEIN_D.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() >= 8 {
+            memo.remove(0);
+        }
+        memo.push(BorweinMemo {
+            n,
+            d: std::rc::Rc::clone(&d),
+        });
+    });
+    d
+}
+
 /// Borwein's accelerated alternating sum for the Dirichlet eta function
 /// `η(s) = Σ_{k≥0} (−1)ᵏ/(k+1)ˢ`, real `s > 0` (P. Borwein, *An efficient
 /// algorithm for the Riemann zeta function*, 1991, Algorithm 2; error
@@ -7988,24 +8442,8 @@ fn arb_eta_borwein(s: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexErro
     // n such that (3+√8)^{-n} < 2^{-wp}:  n > wp·ln2/ln(3+√8) ≈ 0.393·wp
     let n = ((wp as f64) * std::f64::consts::LN_2 / (3.0 + 8f64.sqrt()).ln()).ceil() as usize + 4;
 
-    // Exact integer coefficients d_k via rational arithmetic.
-    let mut d: Vec<Ratio<BigInt>> = Vec::with_capacity(n + 1);
-    let mut acc = Ratio::<BigInt>::zero();
-    // term_i = n · (n+i−1)! · 4^i / ((n−i)! (2i)!)
-    // term_0 = n · (n−1)!/n! = 1
-    let mut term = Ratio::from_integer(BigInt::from(1));
-    for i in 0..=n {
-        if i > 0 {
-            // term_i / term_{i−1} = (n+i−1)·4·(n−i+1) / ((2i−1)(2i))
-            let numer = BigInt::from((n + i - 1) as u64)
-                * BigInt::from(4u64)
-                * BigInt::from((n - i + 1) as u64);
-            let denom = BigInt::from((2 * i - 1) as u64) * BigInt::from((2 * i) as u64);
-            term *= Ratio::new(numer, denom);
-        }
-        acc += &term;
-        d.push(acc.clone());
-    }
+    // Exact integer coefficients d_k.
+    let d = borwein_d(n);
     let d_n = ratio_to_bigfloat(&d[n], wp);
 
     // S = Σ_{k=0}^{n−1} (−1)^k (d_k − d_n) / (k+1)^s
@@ -9838,9 +10276,16 @@ fn lowergamma_series(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFl
     Ok(pref.mul(&sum, wp, RM))
 }
 
+// The same sum far below the mean of a huge shape: an expansion in
+// `s/(s − x)²` whose error is at most its first omitted term.
+mod gammatail;
+
 /// The sum `Σ x^k / (s (s+1) … (s+k))` of [`lowergamma_series`] (without
 /// the prefactor `x^s e^{−x}`), for `x > 0`, and the precision it was
-/// evaluated at.
+/// evaluated at.  Where the series would take more than a few hundred
+/// terms and `(s − x)²/s` exceeds about `1.4·wp`, the sum comes from
+/// [`gammatail::far_below_sum`] instead (up to 0.58 the 170,000 terms of
+/// the lower tail of `ChiSquared(3.4·10¹⁰)` at its quantile of `10⁻³⁰⁰`).
 fn lowergamma_series_sum(
     s: &BigFloat,
     x: &BigFloat,
@@ -9868,6 +10313,9 @@ fn lowergamma_series_sum(
     if d > -1.0 && t > 0.0 {
         let b = d + 0.5;
         let needed = (b * b + 2.0 * x_f * t).sqrt() - b;
+        if let Some(found) = gammatail::far_below_sum(s, x, needed, wp) {
+            return Ok(found);
+        }
         if needed > max_terms as f64 {
             return Err(series_did_not_converge("lowergamma", max_terms));
         }
@@ -9939,15 +10387,23 @@ fn ln_incomplete_gamma(
     } else {
         0.0
     };
-    if steps > LN_INCOMPLETE_GAMMA_MAX_STEPS {
+    let (sw, xw) = (at_precision(s, wp), at_precision(x, wp));
+    // (Far below the mean the sum has an expansion however long its series:
+    // up to 0.58 the lower tail of `Gamma(2·10¹⁰, 1)` 25 standard
+    // deviations out was refused here.)
+    let far = if series && steps > LN_INCOMPLETE_GAMMA_MAX_STEPS {
+        gammatail::far_below_sum(&sw, &xw, steps, wp)
+    } else {
+        None
+    };
+    if steps > LN_INCOMPLETE_GAMMA_MAX_STEPS && far.is_none() {
         return Err(special_exhausted(prec));
     }
-    let (sw, xw) = (at_precision(s, wp), at_precision(x, wp));
     let l_pref = sw.mul(&xw.ln(wp, RM, w.cc), wp, RM).sub(&xw, wp, RM);
-    let (part, pwp) = if series {
-        lowergamma_series_sum(&sw, &xw, &mut w.at(wp))?
-    } else {
-        uppergamma_cf_fraction(&sw, &xw, &mut w.at(wp))?
+    let (part, pwp) = match far {
+        Some(found) => found,
+        None if series => lowergamma_series_sum(&sw, &xw, &mut w.at(wp))?,
+        None => uppergamma_cf_fraction(&sw, &xw, &mut w.at(wp))?,
     };
     if !bf_strictly_positive(&part) {
         return Err(special_exhausted(prec));
@@ -11754,23 +12210,13 @@ impl ZetaLeft {
         let gamma = arb_gamma_real(&t, &mut w.at(wp))?;
         let n =
             ((wp as f64) * std::f64::consts::LN_2 / (3.0 + 8f64.sqrt()).ln()).ceil() as usize + 4;
-        let mut d: Vec<Ratio<BigInt>> = Vec::with_capacity(n + 1);
-        let mut acc = Ratio::<BigInt>::zero();
-        let mut term = Ratio::from_integer(BigInt::from(1));
-        for i in 0..=n {
-            if i > 0 {
-                let numer = BigInt::from((n + i - 1) as u64)
-                    * BigInt::from(4u64)
-                    * BigInt::from((n - i + 1) as u64);
-                let denom = BigInt::from((2 * i - 1) as u64) * BigInt::from((2 * i) as u64);
-                term *= Ratio::new(numer, denom);
-            }
-            acc += &term;
-            d.push(acc.clone());
-        }
+        let d = borwein_d(n);
         let coeffs = (0..n)
             .map(|k| {
-                let c = ratio_to_bigfloat(&((&d[k] - &d[n]) / &d[n]), wp);
+                // (The quotient of the integers as it stands: reducing it
+                // costs a gcd of `wp`-bit integers for each `k`.)
+                let q = Ratio::new_raw(d[k].numer() - d[n].numer(), d[n].numer().clone());
+                let c = ratio_to_bigfloat(&q, wp);
                 if k % 2 == 0 { c } else { c.neg() }
             })
             .collect();
@@ -11981,6 +12427,144 @@ fn polylog_near_one_at(
     }
 }
 
+/// `Li_s(−x)` for `½ < x < 1` by the expansion at `z = −1` in `μ = ln x`:
+///
+/// ```text
+/// Li_s(−e^μ) = −Σ_{k≥0} η(s − k)·μ^k/k!,   abs(μ) < π,
+/// ```
+///
+/// with `−η(σ) = (2^{1−σ} − 1)·ζ(σ)` (`−ln 2` at `σ = 1`).  It is the
+/// duplication formula `Li_s(−x) = 2^{1−s}·Li_s(x²) − Li_s(x)` with both terms
+/// expanded at `z = 1` ([`polylog_near_one`]): their terms `Γ(1 − s)(−μ)^{s−1}`
+/// (the logarithmic ones for an integer `s`) cancel identically.  Up to 0.58
+/// the two were evaluated and subtracted: next to `−1` that cancellation is
+/// `(1 − s)·log₂(1/abs(μ))` bits — 580 for `polylog(−3/2, −1 + 10⁻⁷⁰)` —, found
+/// by repeating both expansions with more bits (0.72 s at 60 digits).
+///
+/// The loss where `Li_s(−x)` is small next to its terms (next to a zero of
+/// `η`) is measured and made up as in [`polylog_near_one`].
+fn polylog_near_minus_one(
+    s: &BigFloat,
+    s_int: Option<i64>,
+    x: &BigFloat,
+    w: &mut Wp<'_>,
+) -> Result<BigFloat, SymplexError> {
+    let wp = w.bits();
+    let cap = cancellation_cap(wp);
+    let mut extra = 0usize;
+    loop {
+        let p = wp + extra;
+        let (sum, largest) = polylog_near_minus_one_at(s, s_int, x, &mut w.at(p))?;
+        let lost = match (largest, sum.exponent()) {
+            (Some(l), Some(e)) if !sum.is_zero() => usize::try_from(l - i64::from(e)).unwrap_or(0),
+            (Some(_), _) => p,
+            _ => 0,
+        };
+        if lost <= extra + 24 {
+            return Ok(round_to(sum, wp));
+        }
+        if extra >= cap {
+            return Err(special_exhausted(wp));
+        }
+        extra = (lost + 16).max(2 * extra).min(cap);
+    }
+}
+
+/// One evaluation of [`polylog_near_minus_one`] at working precision `wp`,
+/// and the binary exponent of the largest term summed.
+///
+/// The sum stops on a bound of its tail from the next index `j` on: the
+/// terms with `σ = s − i > −1` by `abs(η(σ)) ≤ 1` (`η` lies in `(0, 1)` right of
+/// 0 and in `[1/4, 1/2]` on `[−1, 0]`) and the tail of `e^abs(μ)`; those with
+/// `σ ≤ −1` by the functional equation, `abs(η(σ)) ≤ (1 + 2^t)·2(2π)^(−t)Γ(t)ζ(t) ≤
+/// 4.125·π^(−t)·Γ(t)` for `t = 1 − σ ≥ 2`, whose terms fall by `abs(μ)/π·max(1,
+/// (i + 1 − s)/(i + 1))` or more from one to the next.
+fn polylog_near_minus_one_at(
+    s: &BigFloat,
+    s_int: Option<i64>,
+    x: &BigFloat,
+    w: &mut Wp<'_>,
+) -> Result<(BigFloat, Option<i64>), SymplexError> {
+    const LOG2E: f64 = std::f64::consts::LOG2_E;
+    const LOG2_PI: f64 = 1.651_496_129_472_319;
+    let wp = w.bits();
+    let s_f = f64_of(s)?;
+    let mut largest: Option<i64> = None;
+    let mut note = |v: &BigFloat| {
+        if !v.is_zero()
+            && let Some(e) = v.exponent()
+        {
+            largest = Some(largest.map_or(i64::from(e), |m| m.max(i64::from(e))));
+        }
+    };
+    let mu = x.ln(wp, RM, w.cc); // negative
+    let lmu = accuracy::part_lg(&mu);
+    let mu_abs = lmu.exp2();
+    let max_terms = wp * 2 + 100;
+    let minus_one = BigFloat::from_i32(-1, 64);
+    let mut sum = BigFloat::new(wp);
+    let mut mu_pow_over_fact = BigFloat::from_i32(1, wp); // μ^k/k!
+    let mut left: Option<ZetaLeft> = None;
+    for k in 0..max_terms {
+        if k > 0 {
+            mu_pow_over_fact =
+                mu_pow_over_fact
+                    .mul(&mu, wp, RM)
+                    .div(&BigFloat::from_i128(k as i128, wp), wp, RM);
+        }
+        // `σ = s − k` and `1 − σ`, exactly.
+        let sigma = s.sub(&BigFloat::from_i128(k as i128, wp), exact_bits(s, wp), RM);
+        let one_minus_sigma = BigFloat::from_i32(1, 64).sub(&sigma, exact_bits(&sigma, wp), RM);
+        // `−η(σ) = (2^{1−σ} − 1)·ζ(σ)`, each factor relative to itself next to
+        // `σ = 1`.
+        let coefficient = if one_minus_sigma.is_zero() {
+            w.cc.ln_2(wp, RM).neg()
+        } else {
+            let zeta = match s_int {
+                Some(n) if n - k as i64 <= 0 => zeta_nonpositive_int(n - k as i64, wp),
+                Some(_) => arb_zeta(&sigma, w)?,
+                // Left of −1 from the sequence (see [`ZetaLeft`]).
+                None if left.is_some() || bf_lt(&sigma, &minus_one) => {
+                    if left.is_none() {
+                        left = Some(ZetaLeft::new(&sigma, w)?);
+                    }
+                    match left.as_mut() {
+                        Some(l) => l.next(),
+                        None => arb_zeta(&sigma, w)?,
+                    }
+                }
+                None => arb_zeta(&sigma, w)?,
+            };
+            one_minus_pow2(&one_minus_sigma, w).neg().mul(&zeta, wp, RM)
+        };
+        let term = coefficient.mul(&mu_pow_over_fact, wp, RM);
+        note(&term);
+        sum = sum.add(&term, wp, RM);
+        if sum.is_zero() {
+            continue;
+        }
+        // The tail from `j = k + 1` on.
+        let j = (k + 1) as f64;
+        let tail_of = |i: f64| i * lmu - polylog::ln_gamma(i + 1.0) * LOG2E;
+        let right = tail_of(j) - (1.0 - mu_abs / (j + 1.0)).log2();
+        let j0 = j.max((s_f + 1.0).ceil());
+        let q = mu_abs / std::f64::consts::PI * ((j0 + 1.0 - s_f) / (j0 + 1.0)).max(1.0);
+        let left_tail = if q < 1.0 {
+            2.05 - (j0 + 1.0 - s_f) * LOG2_PI
+                + polylog::ln_gamma(j0 + 1.0 - s_f) * LOG2E
+                + tail_of(j0)
+                - (1.0 - q).log2()
+        } else {
+            f64::INFINITY
+        };
+        let tail = accuracy::lsum(right, left_tail);
+        if tail <= accuracy::part_lg_low(&sum) - wp as f64 - 2.0 {
+            return Ok((sum, largest));
+        }
+    }
+    Err(series_did_not_converge("polylog", max_terms))
+}
+
 /// Largest `|z|` for which the direct series is used.  For integer `s` the
 /// `μ`-expansion is cheap (Bernoulli numbers), so it takes over at `1/2`;
 /// for non-integer `s` its terms `ζ(s − k)` come from one incremental
@@ -11995,6 +12579,17 @@ fn polylog_series_limit(s_int: Option<i64>, wp: usize) -> BigFloat {
     } else {
         BigFloat::from_f64(0.75, wp)
     }
+}
+
+/// Is `Li_s(−x)` (`0 < x < 1`) taken by [`polylog_near_minus_one`]: `1 − x <
+/// 2⁻⁴`, where `abs(ln x) ≤ (1 − x)/x < 0.067` and each term of the expansion
+/// at `−1` gains `log₂(π/0.067) > 5.5` bits?  Farther from `−1` the
+/// duplication formula stands, as before: there its two expansions cancel a
+/// few bits only.
+fn polylog_minus_one_expansion_applies(x: &BigFloat, wp: usize) -> bool {
+    let one = BigFloat::from_i32(1, wp);
+    let gap = one.sub(x, wp, RM);
+    !gap.is_negative() && !gap.is_zero() && gap.exponent().is_some_and(|e| e <= -4)
 }
 
 /// `Li_s(z)` for `0 < |z| < 1`.
@@ -12016,6 +12611,12 @@ fn polylog_unit_interval(
         return polylog_series(s, s_int, z, w);
     }
     if z.is_negative() {
+        // The expansion at `z = −1` where it takes few terms (each gains
+        // `log₂(π/abs(ln x))` bits): no cancellation of the two expansions
+        // at `z = 1` below.
+        if polylog_minus_one_expansion_applies(&az, wp) {
+            return polylog_near_minus_one(s, s_int, &az, w);
+        }
         // Li_s(−x) = 2^{1−s} Li_s(x²) − Li_s(x).  The difference cancels
         // where Li_s(−x) is small next to its terms (next to a zero of
         // η(s) = −Li_s(−1), s ≈ −2, −4, …): the loss is measured and the

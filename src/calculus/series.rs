@@ -702,6 +702,21 @@ fn series_with_pole_retry(
     {
         return Err(err);
     }
+    // A retry expands `xᵏ·expr` to an order `≥ 1`.  Where `expr` holds a
+    // function without an expansion whose derivative stays formal (`B(a,
+    // b)`), the product holds it too and its differentiation ends at the
+    // first derivative ([`taylor_by_differentiation`]): no retry can
+    // succeed.  Up to 0.58 the limits of `x·expr` were taken first and the
+    // retries made: `series(B(x, x)/(x + 5) − 1, x, 0, 4)` took 0.6 s to
+    // refuse, `−2/C(B(x, x), 3/2)` 1.2 s.
+    // Likewise a part without a value at any `x` (`γ(−1, x + c)`, a pole of
+    // `γ` in its order: 0.4 s).
+    let first = crate::transforms::diff::diff(arena, expr, var);
+    if walk::has_unevaluated(arena, first)
+        || crate::calculus::limit::contains_hidden_singularity(arena, expr)
+    {
+        return Err(err);
+    }
     let retries = useful_retries(arena, expr, var, point, mode.side);
     if retries == 0 {
         return Err(err);
@@ -6447,6 +6462,15 @@ fn taylor_by_differentiation(
         let d0 = eval::eval(arena, d0);
         if !arena.as_num(d0).is_some_and(|q| !q.is_zero()) {
             return refused_at(0);
+        }
+    }
+    // A first derivative that stays formal ends the expansion at `k = 1`
+    // whatever the value at the point: decided here, before the limit that
+    // value may need.
+    if n >= 1 {
+        let first = crate::transforms::diff::diff(arena, expr, var);
+        if walk::has_unevaluated(arena, first) {
+            return refused_at(1);
         }
     }
     // Coefficients `0..n` are claimed exact up to `O(xⁿ)`, which needs the

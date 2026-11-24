@@ -94,7 +94,7 @@ fn untabulated_values_at_complex_infinity_stay_in_eval_too() {
 /// quotient is the `Piecewise` of the two, never the `0` of one half plane.
 /// Before: `0/0^y`, `0·0^(−y)` (the same value), `0/(x·0^y)`, `0/0^(y + 1)`
 /// and `y·0/0^y` were `0` (right only for `re y < 0`), and `x + 0/0^y` was
-/// `x`.  `x/0^y` itself is unchanged (`cancel` and `series` keep it), and
+/// `x`.  `x/0^y` itself is kept by `cancel` and `series`, and
 /// substituting `x = 0` into it gives the same `Piecewise`; `0` times or over
 /// that `Piecewise` agrees with the product built at once.
 ///
@@ -123,12 +123,25 @@ fn zero_over_zero_power_is_piecewise() {
     );
     assert_eq!(parse(&ctx, "x + 0/0^y").to_string(), format!("x + {over}"));
     assert_eq!(parse(&ctx, "0/(0/0^y)").to_string(), "nan");
+    // (0.59: the powers of 0 have one form, `1/0^y` is `0^(-y)`; up to 0.58
+    // these two printed `x/0^y`.)
     let q = parse(&ctx, "x/0^y");
-    assert_eq!(q.cancel(&x).to_string(), "x/0^y");
-    assert_eq!(q.series(&x, &ctx.zero(), 3).to_string(), "x/0^y");
+    assert_eq!(q.cancel(&x).to_string(), "x*0^(-y)");
+    assert_eq!(q.series(&x, &ctx.zero(), 3).to_string(), "x*0^(-y)");
     assert_eq!(q.subs(&x, &ctx.zero()).to_string(), over);
-    // A generic denominator stays 0 (`0^y + 1` is never 0).
-    assert_eq!(parse(&ctx, "0/(0^y + 1)").to_string(), "0");
+    // `0^y + 1` is never 0, but it has no value where `0^y` has none (`y =
+    // i`: `0/(0^i + 1) = 0/nan`): 0.58 pinned the generic `0` here; since
+    // 0.59 a denominator with a power `0^y` in it is `0` only where it is
+    // nonzero with a value (wave 16, R1).
+    let s = parse(&ctx, "0/(0^y + 1)");
+    assert_eq!(
+        s.to_string(),
+        "Piecewise(0 if abs(0^y + 1) > 0, nan if True)"
+    );
+    for (point, value) in [("-13/10", "0"), ("13/10", "0"), ("0", "0"), ("I", "nan")] {
+        let at = s.subs(&y, &parse(&ctx, point)).eval();
+        assert_eq!(at.to_string(), value, "0/(0^y + 1) at y = {point}");
+    }
 }
 
 /// A part of a complex value that the route computes on its own is shown

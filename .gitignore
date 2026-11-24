@@ -1,5 +1,12 @@
 target/
-Cargo.lock
+# The root Cargo.lock is committed (CI, the gate and the golden outputs build
+# the same dependency versions); the side crates resolve on their own.
+/symplex-macros/Cargo.lock
+/symplex-build/Cargo.lock
+/symplex-wasm/Cargo.lock
+/fuzz/Cargo.lock
+/rubi-harness/Cargo.lock
+/probes/*/Cargo.lock
 **/*.rs.bk
 *.pdb
 TEAM.md

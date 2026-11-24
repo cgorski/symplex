@@ -20,7 +20,7 @@ Contexts serve two purposes:
 
 1. **Isolation.** Different contexts have independent symbol tables and assumptions. A server handling multiple users can give each one a separate context without interference.
 
-2. **Safety.** Expressions from different contexts cannot be mixed. If you try to add an expression from `ctx_a` to one from `ctx_b`, the library detects this and panics with a clear message — it guards against a logic error analogous to indexing out of bounds. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`) are documented under `# Panics` on each item and counted by the same ratchet.
+2. **Safety.** Expressions from different contexts cannot be mixed. If you try to add an expression from `ctx_a` to one from `ctx_b`, the library detects this and panics with a clear message — it guards against a logic error analogous to indexing out of bounds. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. an out-of-range `m[(i, j)]`, `Context::symbol("")`) are documented under `# Panics` on each item and counted by the same ratchet.
 
 ```rust
 # use symplex::prelude::*;

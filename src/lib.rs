@@ -102,6 +102,9 @@
 //! Nelder–Mead, differential evolution, least-squares fitting).
 
 #![warn(missing_docs)]
+// No `unsafe` in the library; the compiler keeps it that way.  (Test builds
+// are exempt: the CPU clock of `tests/perf_assert` calls `clock_gettime`.)
+#![cfg_attr(not(test), forbid(unsafe_code))]
 
 // ── Self-referencing extern crate so proc-macro-generated paths
 //    (`::symplex::__macro_support::…`) resolve inside the crate itself. ──

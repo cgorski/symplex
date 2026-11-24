@@ -205,7 +205,18 @@ pub(crate) fn factor_zassenhaus_checked(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, 
 
     let mut all: Vec<(Poly, u32)> = Vec::new();
     let mut complete = true;
-    for (sf, mult) in super::dense::square_free_decomposition(&prim) {
+    // The power of `x` first: it is read off the coefficients, and left in,
+    // the square-free decomposition divided polynomials of the full degree
+    // (`x^N + x^(N−1)`: 0.8 s at `N = 4000`, 25 s at 20,000 up to 0.58).
+    let low = prim.coeffs.iter().take_while(|c| c.is_zero()).count();
+    let body = match u32::try_from(low) {
+        Ok(m) if m > 0 => {
+            all.push((Poly::x(), m));
+            Poly::from_coeffs(prim.coeffs[low..].to_vec())
+        }
+        _ => prim.clone(),
+    };
+    for (sf, mult) in super::dense::square_free_decomposition(&body) {
         let (factors, part_complete) = factor_squarefree_z_checked(&poly_to_z(&sf));
         complete &= part_complete;
         for g in factors {
@@ -215,14 +226,24 @@ pub(crate) fn factor_zassenhaus_checked(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, 
 
     // Verify by multiplying back; fall back to the unfactored primitive part
     // if anything went wrong (this should never happen, but the contract is
-    // "never wrong").
+    // "never wrong").  The factor `x` is a shift of the coefficients: up to
+    // 0.58 it was multiplied in once per unit of its multiplicity, each a
+    // copy of the product.
     let mut check = Poly::from_int(1);
+    let mut shift = 0usize;
     for (g, m) in &all {
+        if g.coeffs.len() == 2 && g.coeffs[0].is_zero() && g.coeffs[1].is_one() {
+            shift = shift.saturating_add(*m as usize);
+            continue;
+        }
         for _ in 0..*m {
             check = &check * g;
         }
     }
-    if check != prim {
+    let verified = prim.coeffs.len() == check.coeffs.len().saturating_add(shift)
+        && prim.coeffs.iter().take(shift).all(Zero::is_zero)
+        && prim.coeffs.iter().skip(shift).eq(check.coeffs.iter());
+    if !verified {
         tracing::error!(
             "factor_zassenhaus: verification failed (product of factors ≠ input); returning unfactored"
         );
@@ -612,22 +633,35 @@ fn factor_multivariate_route<O: MonomialOrd>(
                 Some(found) => found,
                 None => super::factor_hensel::factor_primitive(&prim)?,
             };
-            for g in found {
+            for (g, k) in found {
                 match factors.iter_mut().find(|(h, _)| *h == g) {
-                    Some(entry) => entry.1 += 1,
-                    None => factors.push((g, 1)),
+                    Some(entry) => entry.1 = entry.1.checked_add(k)?,
+                    None => factors.push((g, k)),
                 }
             }
         }
     }
 
-    // Verify by multiplying back.
+    // Verify by multiplying back: a power for each factor, and for the
+    // monomial ones (the variables of the monomial content) one addition of
+    // exponents whatever the multiplicity.  Up to 0.58 the product was
+    // multiplied by a factor once per unit of its multiplicity:
+    // `x^N·y + x^N` (the factor `x`, `N` times) took 6.5 s at `N = 2²⁴` and
+    // a quarter of an hour at `2³¹`.
     let mut back = MultiPoly::constant(nv, content.clone());
+    let mut monomial = vec![0u32; nv];
     for (g, m) in &factors {
-        for _ in 0..*m {
-            back = back.mul(g);
+        if let Some(exp) = as_unit_monomial(g) {
+            for (total, e) in monomial.iter_mut().zip(exp) {
+                *total = e.checked_mul(*m).and_then(|k| total.checked_add(k))?;
+            }
+        } else if *m == 1 {
+            back = back.try_mul(g)?;
+        } else {
+            back = back.try_mul(&g.try_pow(*m)?)?;
         }
     }
+    let back = back.try_mul_monomial(&Ratio::one(), &monomial)?;
     if back != *f {
         tracing::error!("factor_multivariate: verification failed; returning None");
         return None;
@@ -635,6 +669,16 @@ fn factor_multivariate_route<O: MonomialOrd>(
 
     factors.sort_by(|a, b| cmp_multipoly(&a.0, &b.0));
     Some((content, factors))
+}
+
+/// The exponents of `g` when it is a monomial with the coefficient 1 (a
+/// variable, a product of powers of variables).
+fn as_unit_monomial<O: MonomialOrd>(g: &MultiPoly<O>) -> Option<&[u32]> {
+    if g.num_terms() != 1 {
+        return None;
+    }
+    let (exp, c) = g.terms().next()?;
+    c.is_one().then_some(exp)
 }
 
 /// Try Kronecker substitution over all orderings of the variables present
@@ -646,7 +690,9 @@ fn factor_multivariate_route<O: MonomialOrd>(
 /// depends on `f` more than on how the caller listed its variables: with
 /// symbols listed by name (0.49), `a·e² + c·d²` took 57 ms in the order
 /// `a, c, d, e` and takes 30 ms in the order `d, e, a, c`.
-fn kronecker_factor_all_orders<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<Vec<MultiPoly<O>>> {
+fn kronecker_factor_all_orders<O: MonomialOrd>(
+    f: &MultiPoly<O>,
+) -> Option<Vec<(MultiPoly<O>, u32)>> {
     let mut present = f.variables_present();
     present.sort_by_key(|&v| std::cmp::Reverse(f.degree_in(v)));
     let mut orders: Vec<(usize, Vec<usize>)> = Vec::new();
@@ -694,11 +740,12 @@ fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
 }
 
 /// Kronecker substitution with a fixed variable ordering.  `f` must be a
-/// primitive integer polynomial involving at least two variables.
+/// primitive integer polynomial involving at least two variables.  The
+/// factors come with multiplicities; one may be listed more than once.
 fn kronecker_factor_with_order<O: MonomialOrd>(
     f: &MultiPoly<O>,
     order: &[usize],
-) -> Option<Vec<MultiPoly<O>>> {
+) -> Option<Vec<(MultiPoly<O>, u32)>> {
     let nv = f.num_vars();
     let mut radices = Vec::with_capacity(order.len());
     let mut radix = 1usize;
@@ -730,7 +777,7 @@ fn kronecker_factor_with_order<O: MonomialOrd>(
     }
 
     let mut remaining = f.clone();
-    let mut found: Vec<MultiPoly<O>> = Vec::new();
+    let mut found: Vec<(MultiPoly<O>, u32)> = Vec::new();
     let mut budget = MAX_MULTIVARIATE_SUBSETS;
     let mut s = 1usize;
     'outer: while s <= pool.len() {
@@ -750,7 +797,7 @@ fn kronecker_factor_with_order<O: MonomialOrd>(
                 && cand.total_degree().unwrap_or(0) > 0
                 && let Some(q) = remaining.div_exact(&cand)
             {
-                found.push(cand);
+                found.push((cand, 1));
                 remaining = q;
                 for &i in idx.iter().rev() {
                     pool.remove(i);
@@ -771,7 +818,7 @@ fn kronecker_factor_with_order<O: MonomialOrd>(
         let cofactor = normalize_sign(remaining.primitive_part_q());
         match super::factor_hensel::factor_primitive(&cofactor) {
             Some(parts) => found.extend(parts),
-            None => found.push(cofactor),
+            None => found.push((cofactor, 1)),
         }
     }
     Some(found)

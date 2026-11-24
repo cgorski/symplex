@@ -218,6 +218,12 @@ impl ParamPolicy for Budgeted {
     fn abandoned() -> bool {
         abandoned()
     }
+
+    /// An exponent beyond `u32`: the attempt is abandoned like one beyond
+    /// its size bounds.
+    fn overflow() {
+        abandon();
+    }
 }
 
 /// An element of `ℚ(p₁, …, p_k)` under the attempt's budget.
@@ -356,7 +362,7 @@ fn mp_sqrt(p: &MP) -> Option<MP> {
     // The leading term of P − S² falls strictly in a graded order, so the
     // loop ends; the bound only caps the work.
     for _ in 0..64 + 4 * p.num_terms() {
-        let r = p.sub(&s.mul(&s));
+        let r = p.sub(&s.try_mul(&s)?);
         let Some((r_exp, r_c)) = r.leading_term() else {
             return Some(s);
         };
@@ -476,7 +482,9 @@ fn factor_split(p: &MP) -> Option<Vec<(MP, u32)>> {
     }
     let product = factors
         .iter()
-        .fold(MP::from_int(nv, 1), |acc, (s, k)| acc.mul(&s.pow(*k)));
+        .try_fold(MP::from_int(nv, 1), |acc, (s, k)| {
+            acc.try_mul(&s.try_pow(*k)?)
+        })?;
     (product == *p).then_some(factors)
 }
 
@@ -499,10 +507,15 @@ fn int_sqrt(n: &BigInt) -> Option<BigInt> {
 /// `ρ ∈ ℚ[p₁, …]`: the square factors of the integer content (small
 /// primes), of the monomial content, and a perfect-square remainder are
 /// moved into `σ`.  `ρ = 1` exactly when `Δ` is recognised as a square.
+/// When an exponent of `n·d` would be beyond `u32` the attempt is abandoned
+/// (`0` and `1` are returned meanwhile, as for `Δ = 0`).
 fn split_square(delta: &PFrac, nv: usize) -> (PFrac, MP) {
     let PolyFraction { numer: n, denom: d } = delta.parts(nv);
     // Δ = n/d = (n·d)/d².
-    let p = n.mul(&d);
+    let Some(p) = n.try_mul(&d) else {
+        abandon();
+        return (PFrac::Const(Q::zero()), MP::from_int(nv, 1));
+    };
     let mut sigma = PFrac::canon(MP::from_int(nv, 1), d);
     // Content: p = c·p1, p1 integer, primitive, positive leading coefficient.
     let (lcm, pz) = p.clear_denominators();
@@ -535,8 +548,12 @@ fn split_square(delta: &PFrac, nv: usize) -> (PFrac, MP) {
     if mono.iter().any(|&e| e > 0) {
         let half: Vec<u32> = mono.iter().map(|e| e / 2).collect();
         let odd: Vec<u32> = mono.iter().map(|e| e % 2).collect();
-        if let Some(rest) = p1.div_exact(&MP::monomial(Q::one(), mono.clone())) {
-            p1 = rest.mul(&MP::monomial(Q::one(), odd));
+        // Without the product (its exponents are at most those of `p1`)
+        // the monomial square stays in `ρ`: still `Δ = σ²·ρ`.
+        if let Some(rest) = p1.div_exact(&MP::monomial(Q::one(), mono.clone()))
+            && let Some(odd_part) = rest.try_mul_monomial(&Q::one(), &odd)
+        {
+            p1 = odd_part;
             sigma = sigma.mul(&PFrac::from_mp(MP::monomial(Q::one(), half)));
         }
     }
@@ -605,7 +622,7 @@ impl Ctx {
                 continue;
             }
             let PolyFraction { numer: n, denom: d } = c.parts(nv);
-            let scaled = n.mul(&l.div_exact(&d)?);
+            let scaled = n.try_mul(&l.div_exact(&d)?)?;
             let k = u32::try_from(k).ok()?;
             for (e, q) in scaled.terms() {
                 let mut exps = Vec::with_capacity(nv + 1);
@@ -1747,5 +1764,39 @@ mod tests {
         let (sigma, rho) = split_square(&delta, 1);
         assert_eq!(rho.as_constant(), Some(-Q::one()));
         assert_eq!(sigma.mul(&sigma).neg(), delta);
+    }
+
+    /// Up to 0.58 the coefficient field multiplied with the asserting
+    /// `MultiPoly::mul`: `a^(2³¹)·a^(2³¹)` (the exponent `2³²` does not fit
+    /// `u32`) and the `n·d` of `split_square` for `Δ = (a^(2³¹) + 1)/(a^(2³¹)
+    /// − 1)` panicked ("MultiPoly::mul: exponent overflow").  Now the
+    /// attempt is abandoned: every element counts as zero and the route
+    /// gives up at its next budget check.
+    #[test]
+    fn products_beyond_u32_exponents_abandon_the_attempt() {
+        let big = mp(1, &[(&[1 << 31], 1)]);
+        let one = mp(1, &[(&[0], 1)]);
+        reset_budget();
+        let f = PFrac::from_mp(big.clone());
+        assert!(!f.is_zero() && !budget_exceeded());
+        assert!(f.mul(&f).is_zero());
+        assert!(abandoned() && budget_exceeded() && f.is_zero());
+
+        reset_budget();
+        // Coprime (they differ by 2): no gcd is needed for the quotient.
+        let delta = PFrac::finish(big.add(&one), big.sub(&one));
+        assert!(!delta.is_zero() && !budget_exceeded());
+        let (sigma, rho) = split_square(&delta, 1);
+        assert!(abandoned() && budget_exceeded());
+        assert!(sigma.is_zero() && rho.as_constant().is_some());
+
+        // Exponents that fit are exact: (a^(2³⁰))² = a^(2³¹).
+        reset_budget();
+        let half = mp(1, &[(&[1 << 30], 1)]);
+        assert_eq!(mp_sqrt(&big), Some(half.clone()));
+        let h = PFrac::from_mp(half);
+        assert_eq!(h.mul(&h), PFrac::from_mp(big));
+        assert!(!budget_exceeded());
+        reset_budget();
     }
 }

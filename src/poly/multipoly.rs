@@ -878,6 +878,27 @@ impl<O: MonomialOrd> MultiPoly<O> {
                 format!("expected {} values, got {}", self.num_vars, values.len()),
             ));
         }
+        // The powers `vᵢ^dᵢ` (`dᵢ` the degree in variable `i`) have at least
+        // `(b − 1)·dᵢ` bits for a `vᵢ` of `b` bits: bounded before any is
+        // formed, and more tightly for the denominators (the reduction of
+        // the value divides by their product).
+        let (mut bits, mut den_bits) = (0u64, 0u64);
+        for (i, v) in values.iter().enumerate() {
+            let d = u64::from(self.degree_in(i));
+            let b = v.numer().bits().max(v.denom().bits()).saturating_sub(1);
+            bits = bits.saturating_add(b.saturating_mul(d));
+            let q = v.denom().bits().saturating_sub(1);
+            den_bits = den_bits.saturating_add(q.saturating_mul(d));
+        }
+        if bits > MAX_VALUE_BITS || den_bits > MAX_DENOMINATOR_BITS {
+            return Err(SymplexError::ComputationFailed {
+                operation: "MultiPoly::eval",
+                reason: format!(
+                    "the value has powers of about {bits} bits ({den_bits} in the denominator): \
+                     at most 2^27 (2^22) are formed"
+                ),
+            });
+        }
         Ok(ZPoly::from_multipoly(self).eval(values))
     }
 }
@@ -1117,8 +1138,9 @@ impl<O: MonomialOrd> MultiPoly<O> {
     ///
     /// # Panics
     ///
-    /// Panics if an exponent of the power overflows `u32` (use
-    /// [`try_pow`](Self::try_pow) to observe the overflow).
+    /// Panics if an exponent of the power overflows `u32` or the power is
+    /// beyond the size bounds of [`try_pow`](Self::try_pow) (use it to
+    /// observe either).
     ///
     /// # Examples
     ///
@@ -1132,17 +1154,52 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// ```
     pub fn pow(&self, n: u32) -> MultiPoly<O> {
         let p = self.try_pow(n);
-        assert!(p.is_some(), "MultiPoly::pow: exponent overflow");
+        assert!(
+            p.is_some(),
+            "MultiPoly::pow: exponent overflow or power too large"
+        );
         p.unwrap_or_else(|| Self::zero(self.num_vars))
     }
 
     /// `self^n` by repeated squaring; `None` if an exponent would overflow
-    /// `u32`.
+    /// `u32`, or the power is beyond the size bounds: a polynomial of two or
+    /// more terms is raised to at most `2¹⁶` (its `n`-th power has at least
+    /// `n + 1` terms, with coefficients of the order of `n` bits), and a
+    /// coefficient of `b` bits to at most `2²⁷/(b − 1)`.  Up to 0.58 there
+    /// was no bound: `(x + 1)^(2³² − 1)` ran until the memory was exhausted.
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let x: MultiPoly = MultiPoly::var(1, 0);
+    /// let s = x.add(&MultiPoly::from_int(1, 1));
+    /// assert_eq!(s.try_pow(2), Some(s.mul(&s)));
+    /// assert_eq!(s.try_pow(u32::MAX), None);
+    /// assert_eq!(x.try_pow(u32::MAX).and_then(|p| p.total_degree()), Some(u32::MAX));
+    /// assert_eq!(x.mul(&x).try_pow(u32::MAX), None);
+    /// ```
     pub fn try_pow(&self, n: u32) -> Option<MultiPoly<O>> {
         match n {
             0 => return Some(Self::from_int(self.num_vars, 1)),
             1 => return Some(self.clone()),
             _ => {}
+        }
+        if self.terms.len() >= 2
+            && crate::base::cast::bounded_len(n, crate::base::cast::MAX_DENSE_DEGREE).is_none()
+        {
+            return None;
+        }
+        // The bits of the largest coefficient beyond the first: `c^n` has
+        // at least `(b − 1)·n` of them.
+        let extra_bits = self
+            .terms
+            .values()
+            .map(|c| c.numer().bits().max(c.denom().bits()))
+            .max()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        if extra_bits.saturating_mul(u64::from(n)) > MAX_VALUE_BITS {
+            return None;
         }
         ZPoly::from_multipoly(self)
             .pow(self.num_vars, n)
@@ -1600,8 +1657,17 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let db = b.degree_in(v);
         let lcb = b.coeff_in(v, db);
         let one = Ratio::from_integer(BigInt::one());
+        // A sparse dividend far above its divisor takes one step per unit
+        // of the degree gap: the steps are counted and the division is
+        // refused beyond `MAX_PREM_STEPS`.  Up to 0.58
+        // `gcd(x^(2³¹ − 1) − 1, x² − 1)` started on its 2³⁰ steps.
+        let mut steps: u64 = 0;
         let mut r = self.clone();
         while !r.is_zero() && r.degree_in(v) >= db {
+            steps += 1;
+            if steps > MAX_PREM_STEPS {
+                return None;
+            }
             let dr = r.degree_in(v);
             let lcr = r.coeff_in(v, dr);
             let mut e = vec![0u32; self.num_vars];
@@ -1668,6 +1734,24 @@ impl<O: MonomialOrd> MultiPoly<O> {
         })
     }
 }
+
+/// The most bits of a power formed by [`MultiPoly::eval`] (`vᵈ` for a
+/// value `v` and a degree `d`) and of a coefficient's power in
+/// [`MultiPoly::try_pow`], by the lower bound `(bits − 1)·d`: `2²⁷` (16 MB
+/// a number; seconds of multiplication).
+const MAX_VALUE_BITS: u64 = 1 << 27;
+
+/// The most bits of the powers of the denominators of the point in
+/// [`MultiPoly::eval`]: `2²²` (the value is reduced by a division by
+/// their product, quadratic in its size).
+const MAX_DENOMINATOR_BITS: u64 = 1 << 22;
+
+/// The most steps of one pseudo-division of the PRS fallback of
+/// [`MultiPoly::gcd`] (`prem_in`): `2¹⁸`, about a second of sparse
+/// products.  The dense routes take the polynomials in one variable up to
+/// degree `2²⁴`; a pseudo-division this long is a sparse dividend of a
+/// degree far beyond its divisor's.
+const MAX_PREM_STEPS: u64 = 1 << 18;
 
 /// Estimated size in bits of the integers at the bottom of the heuristic
 /// gcd ([`modgcd::heu_gcd`]) from which [`MultiPoly::gcd`] uses Brown's

@@ -41,6 +41,8 @@
 //! }
 //! ```
 
+#![forbid(unsafe_code)]
+
 use symplex::matrix::{CodegenOptions, MathBackend, Matrix, Precision};
 use symplex::prelude::*;
 use symplex::robotics::DhLink;

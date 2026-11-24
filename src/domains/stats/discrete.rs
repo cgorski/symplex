@@ -1134,6 +1134,34 @@ impl Family for Hypergeometric {
             / self.population.binomial(&self.draws)
     }
 
+    // −Σ_k P(k) ln P(k), left as the finite `Sum` for numeric parameters
+    // whose support has more than 64 atoms: the generic route sums the
+    // masses exactly and merges their logarithms (more than a minute at
+    // the 448 atoms of Hypergeometric(4196, 3749, 3300), up to 0.58);
+    // `evalf` sums the `Sum` term by term, a long one over a window around
+    // the mode.  Below 64 atoms, the generic exact value.
+    fn entropy(&self) -> Option<Ex> {
+        let big_n = numeric(&self.population)?;
+        let (m, n) = (numeric(&self.successes)?, numeric(&self.draws)?);
+        if !(big_n.is_integer() && m.is_integer() && n.is_integer()) {
+            return None;
+        }
+        let lo = (&n + &m - &big_n).max(Q::zero());
+        let hi = n.min(m);
+        if &hi - &lo <= Q::from_integer(64.into()) {
+            return None;
+        }
+        let ctx = self.context();
+        let k = fresh_index(&ctx, &[&self.population, &self.successes, &self.draws]);
+        let mass = self.density(&k);
+        Some(Ex::symbolic_sum(
+            &(-mass.ln() * &mass),
+            &k,
+            &ctx.from_ratio(lo),
+            &ctx.from_ratio(hi),
+        ))
+    }
+
     // nm/N
     // n m / N; the empty population (N = 0, so n = m = 0) is the point mass
     // at 0, where the formula is 0/0 (NaN up to 0.56).

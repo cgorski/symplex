@@ -1,0 +1,9 @@
+# GitHub Actions only: the Rust dependencies are held by Cargo.lock and
+# checked by the scheduled jobs of dependencies.yml.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5

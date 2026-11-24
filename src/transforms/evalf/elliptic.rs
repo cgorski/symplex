@@ -241,7 +241,11 @@ pub(super) fn eval(
         if need <= extra {
             return Ok((super::round_to(v.0, prec), super::round_to(v.1, prec)));
         }
-        if need > (4 * prec + 512).max(MAX_PART_GAP) {
+        let mut spread = 0usize;
+        for i in 0..args.len() {
+            spread = spread.max(exponent_spread(arg(i)?));
+        }
+        if !gap_pursued(prec, need, spread) {
             break;
         }
         extra = need + 16;
@@ -260,6 +264,38 @@ pub(super) fn eval(
 /// R_D/3)(0, 1/m, 1)` in the split of `E(m)` at `t = 1/m` cancels the same
 /// bits, so no route avoids them.
 const MAX_PART_GAP: usize = 4096;
+
+/// The most bits [`eval`] works at for a gap beyond [`MAX_PART_GAP`] that
+/// the exponents of the arguments explain ([`gap_pursued`]).  Carlson's
+/// duplication at `wp` bits takes about `wp/12` steps of three complex square
+/// roots and a few products, so its work grows like `wp³`: at this bound `E(m)`
+/// takes about a second.
+const MAX_GAP_WORK_BITS: usize = 5120;
+
+/// Does [`eval`] add `need` bits to the precision `prec` for a part far
+/// below the other (or a cancelling difference)?  Up to `4·prec + 512` or
+/// [`MAX_PART_GAP`] bits whatever the arguments; beyond, a gap that the
+/// arguments' exponents explain — `spread` ([`exponent_spread`]): the parts of
+/// `E(m)` at `abs(m) = 2^e` off the axis lie `e` bits apart (`abs(E) ≈ √m`,
+/// its small part `≈ 1/√m`) — while the working precision stays within
+/// [`MAX_GAP_WORK_BITS`].  Up to 0.58 the cap was the first rule alone, and
+/// `E(10¹³⁰⁰ + i)` (a gap of 4,319 bits) was refused at 16, 30 and 60 digits.
+fn gap_pursued(prec: usize, need: usize, spread: usize) -> bool {
+    need <= (4 * prec + 512).max(MAX_PART_GAP)
+        || (need <= spread.saturating_add(2 * prec + 256)
+            && prec.saturating_add(need) <= MAX_GAP_WORK_BITS)
+}
+
+/// The largest `abs` of the binary exponents of the nonzero parts of `z`:
+/// how far the argument lies from 1, in bits.
+fn exponent_spread(z: &Complex) -> usize {
+    [&z.0, &z.1]
+        .iter()
+        .filter_map(|x| accuracy::part_mag(x))
+        .map(|e| usize::try_from(e.unsigned_abs()).unwrap_or(usize::MAX))
+        .max()
+        .unwrap_or(0)
+}
 
 /// How many bits below the modulus of `v` its smaller nonzero part lies.
 fn part_gap(v: &Complex) -> usize {

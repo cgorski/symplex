@@ -660,7 +660,14 @@ pub(crate) fn limit_dir(
     point: ExprId,
     dir: Direction,
 ) -> Result<ExprId, SymplexError> {
-    let (value, steps) = match limit_dir_generic(arena, expr, var, point, dir) {
+    let generic = limit_dir_generic(arena, expr, var, point, dir);
+    // A constant power `0^e` of undecided sign is no generic constant: the
+    // cases of `re e` confirm the generic limit or replace it.
+    let confirmed = generic.as_ref().ok().copied();
+    if let Some(r) = limit_by_zero_power_cases(arena, expr, var, point, dir, confirmed) {
+        return r;
+    }
+    let (value, steps) = match generic {
         Ok(v) => (v, Vec::new()),
         Err(e) => generic_step_value(arena, expr, var, point).ok_or(e)?,
     };
@@ -972,6 +979,13 @@ fn limit_val_parts(
         return Err(fail("limit point must be finite or ±∞"));
     }
 
+    // A part without a value at any `x` (`γ(−n, u)`: a pole of `γ` in its
+    // order whatever `u`) leaves the expression without one: up to 0.58
+    // `limit(x − γ(0, 48), x, ∞)` was `−γ(0, 48) + ∞`.
+    if holds_valueless_part(arena, expr) {
+        return Err(fail("a part of the expression has no value at any point"));
+    }
+
     // A directed infinity `d·∞` (`i·∞`): `var = d·t` with `t → +∞`, as
     // SymPy reads it.  Before, the point was taken for a finite one, and
     // `limit(besselj(1, x), x, i·∞)` failed.
@@ -1049,6 +1063,12 @@ fn limit_val_parts(
             match (r, l) {
                 (Ok(r), Ok(l)) => {
                     if same_value(arena, r.value, l.value) {
+                        if let Some(k) = parametric_direction(arena, r.value)
+                            && !single_valued_in(arena, expr, var)
+                        {
+                            let ap = Approach { var, point, dir };
+                            finite_parts_agree(arena, expr, &ap, k, depth)?;
+                        }
                         Ok(LimVal {
                             value: r.value,
                             weak: r.weak || l.weak,
@@ -1072,6 +1092,172 @@ fn limit_val_parts(
             }
         }
     }
+}
+
+/// Most distinct exponent terms [`limit_by_zero_power_cases`] splits on.
+const MAX_ZERO_POWER_TERMS: usize = 2;
+
+/// Is `f` a power `0^e` of the base 0 with an exponent free of `var`?  Its
+/// sign the constructors could not decide (they fold the others), so it is
+/// 0 for `re e > 0`, 1 at `e = 0`, `zoo` for `re e < 0` and `nan` elsewhere:
+/// piecewise in its parameter, not the generic finite nonzero constant the
+/// engines take a `var`-free part for.
+fn is_constant_zero_power(arena: &Arena, f: ExprId, var: ExprId) -> bool {
+    matches!(*arena.node(f), ExprNode::Pow(b, e)
+        if arena.is_zero_structural(b) && !crate::base::walk::contains(arena, e, var))
+}
+
+/// The limit of an `expr` that depends on `var` and has a constant power
+/// `0^e` in it ([`is_constant_zero_power`]), case by case; `None` without
+/// such a power, and when the cases confirm the `generic` limit (that of
+/// the engines, which take the power for a finite nonzero constant).
+///
+/// The powers of the first exponent term `t` (`e = c·t` with a rational
+/// `c`) take their three values together — `0^(c·t)` is 0, 1, `zoo` for `re
+/// t > 0`, `t = 0`, `re t < 0` when `c > 0`, and the reciprocals when `c <
+/// 0`; at `t = 0` a symbol `t` is replaced everywhere — and the limit of
+/// each case is taken (a further term in the nested call).  A case where
+/// the expression is `zoo` or `nan` at every `var` has no limit (`x·zoo`).
+/// The generic limit `V` stands when it is the limit of every case (`V`
+/// with the case's values is the case's limit, or `zoo`/`nan` where there
+/// is none): `limit(sin(x)/x·0^y, x, 0) = 0^y`.  Otherwise the result is
+/// `Piecewise((L₊, re(t) > 0), (L₀, Eq(t, 0)), (L₋, 0 > re(t)))` over the
+/// cases with a limit, equal values merged; a case whose limit is not
+/// found refuses a generic limit (it cannot be confirmed).  Up to 0.58 `limit(x/0^y, x, 0)` and
+/// `limit(x·0^y, x, 0)` were 0 (`x·zoo` for `re y > 0`, resp. `< 0`, without
+/// a limit), and `limit(x·0^y + 1, x, 0)` was 1.
+fn limit_by_zero_power_cases(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    dir: Direction,
+    generic: Option<ExprId>,
+) -> Option<Result<ExprId, SymplexError>> {
+    let zero = arena.zero;
+    if !crate::base::walk::contains(arena, expr, zero)
+        || !crate::base::walk::contains(arena, expr, var)
+    {
+        return None;
+    }
+    let constant_powers = |arena: &Arena, e: ExprId| -> Vec<ExprId> {
+        crate::base::walk::post_order_ids(arena, e)
+            .into_iter()
+            .filter(|&id| is_constant_zero_power(arena, id, var))
+            .collect()
+    };
+    let exponent = |arena: &Arena, power: ExprId| match *arena.node(power) {
+        ExprNode::Pow(_, e) => e,
+        _ => power,
+    };
+    let powers = constant_powers(arena, expr);
+    let &first = powers.first()?;
+    let first_exponent = exponent(arena, first);
+    let (_, t) = arena.as_coeff_term(first_exponent);
+    let mut terms: Vec<ExprId> = Vec::new();
+    for &power in &powers {
+        let e = exponent(arena, power);
+        let (_, u) = arena.as_coeff_term(e);
+        if !terms.contains(&u) {
+            terms.push(u);
+        }
+    }
+    // (three limits per term, nested)
+    if terms.len() > MAX_ZERO_POWER_TERMS {
+        return Some(Err(fail(
+            "powers 0^e of several exponents of undecided sign",
+        )));
+    }
+    let (one, zoo) = (arena.one, arena.complex_infinity);
+    let symbol = matches!(arena.node(t), ExprNode::Symbol(_));
+    // `e` in the case where `0^(c·t)` is `positive` for `c > 0` and
+    // `negative` for `c < 0`.
+    let in_case = |arena: &mut Arena, e: ExprId, positive: ExprId, negative: ExprId| {
+        if symbol && positive == one {
+            return crate::transforms::subs::subs(arena, e, t, zero);
+        }
+        let mut at = e;
+        for power in constant_powers(arena, e) {
+            let x = exponent(arena, power);
+            let (c, u) = arena.as_coeff_term(x);
+            if u == t {
+                let value = if c.is_positive() { positive } else { negative };
+                at = crate::transforms::subs::subs(arena, at, power, value);
+            }
+        }
+        at
+    };
+    let without_value = |arena: &Arena, v: ExprId| {
+        matches!(
+            ValueClass::special_atom(arena, v),
+            Some(ValueClass::NaN | ValueClass::ComplexInf)
+        )
+    };
+    let re = arena.re(t);
+    let cases = [
+        (arena.gt(re, zero), zero, zoo),
+        (arena.eq_(t, zero), one, one),
+        (arena.gt(zero, re), zoo, zero),
+    ];
+    let mut confirmed = generic.is_some();
+    let mut values: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+    for (condition, positive, negative) in cases {
+        let at = in_case(arena, expr, positive, negative);
+        let limit = if crate::base::walk::contains(arena, at, var) {
+            match limit_dir(arena, at, var, point, dir) {
+                Ok(l) => Some(l),
+                // (without a generic limit to check, the refusal is the
+                // caller's)
+                Err(e) => return generic.map(|_| Err(e)),
+            }
+        } else {
+            let v = crate::transforms::eval::eval(arena, at);
+            if without_value(arena, v) {
+                None
+            } else if is_valid_limit_value(arena, v, var) {
+                Some(v)
+            } else {
+                return generic.map(|_| {
+                    Err(fail(
+                        "a case of a power 0^e is a constant that is not a valid limit value",
+                    ))
+                });
+            }
+        };
+        if let Some(v) = generic
+            && confirmed
+        {
+            let claimed = in_case(arena, v, positive, negative);
+            let claimed = crate::transforms::eval::eval(arena, claimed);
+            confirmed = match limit {
+                Some(l) => same_value(arena, claimed, l),
+                None => without_value(arena, claimed),
+            };
+        }
+        let Some(limit) = limit else {
+            continue;
+        };
+        match values.iter_mut().find(|(v, _)| *v == limit) {
+            Some((_, conditions)) => conditions.push(condition),
+            None => values.push((limit, vec![condition])),
+        }
+    }
+    if confirmed {
+        return None;
+    }
+    if values.is_empty() {
+        return Some(Err(fail(
+            "no limit for any sign of the exponent of a power 0^e",
+        )));
+    }
+    let pairs: Vec<(ExprId, ExprId)> = values
+        .into_iter()
+        .map(|(v, mut conditions)| {
+            conditions.sort_unstable_by(|&a, &b| arena.canonical_cmp(a, b));
+            (v, arena.or(&conditions))
+        })
+        .collect();
+    Some(Ok(arena.piecewise(&pairs)))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1261,10 +1447,24 @@ pub(crate) fn is_finite_limit_value(arena: &Arena, id: ExprId, var: ExprId) -> b
     is_valid_limit_value(arena, id, var) && !contains_singular_atom(arena, id)
 }
 
+/// Does `e` hold `γ(−n, u)`, `n = 0, 1, …`, which has no value for any `u`
+/// (see [`contains_hidden_singularity`])?
+fn holds_valueless_part(arena: &Arena, e: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| {
+            let node = arena.node(id);
+            matches!(
+                node,
+                ExprNode::Lib(crate::base::libfn::LibFn::LowerGamma, _)
+            ) && at_nonpositive_integer_pole(arena, node)
+        })
+}
+
 /// Detect symbolic forms that `eval` leaves untouched but that denote
 /// poles or undefined values: `ln 0`, `Γ(−n)`, `ψ(−n)`, `(−n)!`, `0^{−k}`,
 /// `tan(π/2 + kπ)` is caught separately as `zoo`.
-fn contains_hidden_singularity(arena: &Arena, root: ExprId) -> bool {
+pub(crate) fn contains_hidden_singularity(arena: &Arena, root: ExprId) -> bool {
     let mut stack = vec![root];
     let mut visited = rustc_hash::FxHashSet::default();
     while let Some(id) = stack.pop() {
@@ -1284,6 +1484,14 @@ fn contains_hidden_singularity(arena: &Arena, root: ExprId) -> bool {
             // `γ(0, y)`, `ψ⁽ʸ⁾(0)`): up to 0.57 `limit(B(δ(x), y))` was `B(0, y)`.
             // (A constant is left to its value: `B(−1, 1) = −1`.)
             _ if !arena.is_symbol_free(id) && at_nonpositive_integer_pole(arena, node) => {
+                return true;
+            }
+            // `γ(−n, c)` has no value for any `c`: `γ(s, c) = Γ(s)·cˢ·γ*(s, c)` with
+            // `γ*(−n, c) = cⁿ` (DLMF 8.2.6–8.2.7), the pole of `Γ` stays.  Up
+            // to 0.58 the constant `γ(−1, 1)` was a limit value.
+            ExprNode::Lib(crate::base::libfn::LibFn::LowerGamma, _)
+                if at_nonpositive_integer_pole(arena, node) =>
+            {
                 return true;
             }
             ExprNode::Factorial(a) => {
@@ -1387,7 +1595,8 @@ fn same_value(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
 
 /// `true` if `expr` contains a node whose value or derivative is
 /// discontinuous and whose argument depends on `var` (`Abs`, `Sign`,
-/// `Heaviside`, `DiracDelta`, `Floor`, `Ceiling`, `Piecewise`, `Min`, `Max`).
+/// `Heaviside`, `DiracDelta`, `KroneckerDelta`, `Floor`, `Ceiling`,
+/// `Piecewise`, `Min`, `Max`).
 ///
 /// For such expressions the two-sided L'Hôpital / series fallbacks are not
 /// trustworthy, so only the one-sided Gruntz path is used.
@@ -1405,6 +1614,7 @@ pub(crate) fn has_directional_nodes(arena: &Arena, expr: ExprId, var: ExprId) ->
                 | ExprNode::Sign(_)
                 | ExprNode::Heaviside(_)
                 | ExprNode::DiracDelta(_)
+                | ExprNode::KroneckerDelta(..)
                 | ExprNode::Floor(_)
                 | ExprNode::Ceiling(_)
                 | ExprNode::Piecewise(_)
@@ -1673,6 +1883,27 @@ fn substitute_continuous(
                     return None;
                 }
             }
+            // `KroneckerDelta(a, b)` is 1 where `a = b` and 0 elsewhere: its
+            // value at the point is its value near the point only where `a −
+            // b` is a nonzero number there (or nonzero for generic
+            // parameters, with that condition).  Up to 0.58 the value was
+            // substituted: `limit(KroneckerDelta(1, x + 1), x, 0)` was 1 (the
+            // function is 0 at every `x ≠ 0`).
+            ExprNode::KroneckerDelta(a, b) => {
+                let (av, bv) = (val_of(arena, &values, a), val_of(arena, &values, b));
+                let d = arena.sub(av, bv);
+                let d = crate::transforms::eval::eval(arena, d);
+                match arena.as_num(d).map(|r| !r.is_zero()) {
+                    Some(true) => {}
+                    None if steps == StepArguments::Generic
+                        && !arena.is_symbol_free(d)
+                        && is_zero_value(arena, d).is_false() =>
+                    {
+                        generic.push(d);
+                    }
+                    _ => return None,
+                }
+            }
             _ => {}
         }
 
@@ -1760,11 +1991,13 @@ fn at_nonpositive_integer_pole(arena: &Arena, node: &ExprNode) -> bool {
     let Some((f, args)) = node.func(arena) else {
         return false;
     };
+    let at = |i: u8| {
+        args.get(usize::from(i))
+            .is_some_and(|&a| is_nonpositive_integer(arena, a))
+    };
     match f.spec().poles {
-        Poles::NonPositiveIntegers(which) => which.iter().any(|&i| {
-            args.get(usize::from(i))
-                .is_some_and(|&a| is_nonpositive_integer(arena, a))
-        }),
+        Poles::NonPositiveIntegers(which) => which.iter().any(|&i| at(i)),
+        Poles::NonPositiveIntegerOrZero { integer, .. } => at(integer),
         _ => false,
     }
 }
@@ -1784,7 +2017,7 @@ enum TabulatedPole {
     Pole,
     /// The argument in this slot (in node order) is where the facet's
     /// `Zero`/`One` puts a pole for some values of the others (`J_ν(0)`,
-    /// `Γ(s, 0)`, `Li_s(1)`, `Eₙ(0)`, `ln 0`), or may be.
+    /// `Γ(s, 0)`, `γ(s, 0)`, `Li_s(1)`, `Eₙ(0)`, `ln 0`), or may be.
     Possible(usize),
 }
 
@@ -1820,19 +2053,27 @@ fn tabulated_pole(
         let slot = usize::from(i);
         args.get(slot).map(|&a| (slot, value_of(arena, a)))
     };
-    match f.spec().poles {
-        Poles::None | Poles::Other => TabulatedPole::Off,
-        Poles::NonPositiveIntegers(which) => {
-            for &i in which {
-                if let Some((_, v)) = at(arena, &mut value_of, i)
-                    && (is_nonpositive_integer(arena, v) || place_may_be_zero(arena, v))
-                {
-                    return TabulatedPole::Pole;
-                }
-            }
-            TabulatedPole::Off
+    // The slots with poles at the integers `≤ 0`, and the slot with a place
+    // at 0 or 1.
+    let spec: &'static crate::base::func::FuncSpec = f.spec();
+    let (integers, place): (&[u8], Option<u8>) = match &spec.poles {
+        Poles::None | Poles::Other => return TabulatedPole::Off,
+        Poles::NonPositiveIntegers(which) => (*which, None),
+        Poles::Zero(i) | Poles::One(i) => (&[][..], Some(*i)),
+        Poles::NonPositiveIntegerOrZero { integer, zero } => {
+            (std::slice::from_ref(integer), Some(*zero))
         }
-        Poles::Zero(i) | Poles::One(i) => {
+    };
+    for &i in integers {
+        if let Some((_, v)) = at(arena, &mut value_of, i)
+            && (is_nonpositive_integer(arena, v) || place_may_be_zero(arena, v))
+        {
+            return TabulatedPole::Pole;
+        }
+    }
+    match place {
+        None => TabulatedPole::Off,
+        Some(i) => {
             let Some((slot, v)) = at(arena, &mut value_of, i) else {
                 return TabulatedPole::Off;
             };
@@ -1846,9 +2087,15 @@ fn tabulated_pole(
             if !place_may_be_zero(arena, d) {
                 return TabulatedPole::Off;
             }
-            // (the parameter fixed: `J_x(0)` at `x = 0` is no `J₀(0) = 1`)
+            // (the parameter fixed: `J_x(0)` at `x = 0` is no `J₀(0) = 1`; the
+            // incomplete gammas are continuous in both arguments at `(s₀, 0)`,
+            // `s₀ > 0`: `|zˢ| = |z|^{re s}·e^{−im s·arg z} → 0`)
+            let jointly = matches!(
+                f,
+                crate::base::func::Func::LowerGamma | crate::base::func::Func::UpperGamma
+            );
             let parameter = match (slot, args.first()) {
-                (1, Some(&p)) if !crate::base::walk::contains(arena, p, var) => {
+                (1, Some(&p)) if jointly || !crate::base::walk::contains(arena, p, var) => {
                     Some(value_of(arena, p))
                 }
                 _ => None,
@@ -1879,8 +2126,9 @@ fn place_may_be_zero(arena: &mut Arena, v: ExprId) -> bool {
 /// in its second argument for the exact value `p` of its first: `J_ν`,
 /// `I_ν` of an integer order (entire: DLMF 10.2.2, 10.25.2, `J_{−n} =
 /// (−1)ⁿJₙ`) or of an order `ν > 0` (`(z/2)^ν` times an entire function);
-/// `Γ(s, z)` at 0 for `s > 0` (`Γ(s) − γ(s, z)`, `γ(s, z) ~ zˢ/s`, DLMF
-/// 8.7.3); `E_p(0)` for `p > 1` (`1/(p − 1)`, DLMF 8.19.6); `Li_s(1)` for `s >
+/// `Γ(s, z)` and `γ(s, z)` at 0 for `s > 0` (`Γ(s) − γ(s, z)`, `γ(s, z) ~
+/// zˢ/s`, DLMF 8.7.3: up to 0.58 `γ(s, 0)` had no place in the table, and
+/// `limit(γ(−1/2, x), x, 0)` was the "value" `γ(−1/2, 0)`); `E_p(0)` for `p > 1` (`1/(p − 1)`, DLMF 8.19.6); `Li_s(1)` for `s >
 /// 1` (`ζ(s)`, DLMF 25.12.10).
 fn regular_at_pole_place(arena: &Arena, f: crate::base::func::Func, p: ExprId) -> bool {
     use crate::base::func::Func;
@@ -1890,7 +2138,7 @@ fn regular_at_pole_place(arena: &Arena, f: crate::base::func::Func, p: ExprId) -
     let one = Q::from_integer(BigInt::from(1));
     match f {
         Func::BesselJ | Func::BesselI => p.is_integer() || p.is_positive(),
-        Func::UpperGamma => p.is_positive(),
+        Func::UpperGamma | Func::LowerGamma => p.is_positive(),
         Func::ExpInt | Func::PolyLog => *p > one,
         _ => false,
     }
@@ -2430,6 +2678,183 @@ fn scale_inf(arena: &mut Arena, inf: Infinite, c: ExprId) -> Option<Infinite> {
     })
 }
 
+/// `c·g` for a constant `c` with parameters whose direction is not known
+/// (`y − 1`: [`scale_inf`] declines) and `g` tending to an infinity on an
+/// axis with a finite perpendicular part `p ≠ 0`: `sign(c·d)·∞ + c·p`, the
+/// value [`scale_inf`] gives for every numeric `c` (`2·Γ(0, x) → ∞ − 2πi` at
+/// `0⁻`), generic in the parameters as every limit here.  `None` when `p`
+/// is 0 or not known: the Gruntz algorithm gives the direction `sign(c)·∞`.
+///
+/// Up to 0.58 the Gruntz algorithm's `sign(c)·∞` was the value whatever
+/// `p`: `limit((y − 1)·Γ(0, x), x, 0, '−')` was `sign(y − 1)·∞` (`Γ(0, x) → ∞
+/// − iπ` there), equal to the limit from the right, so that the two-sided
+/// limit was claimed.
+fn parametric_scale(arena: &mut Arena, inf: Infinite, c: ExprId, var: ExprId) -> Option<LimVal> {
+    if crate::base::walk::free_symbols(arena, c).is_empty() || contains_singular_atom(arena, c) {
+        return None;
+    }
+    let o = inf.offset?;
+    let i = arena.i_unit();
+    let (unit, perp) = match inf.axis {
+        Axis::RealPos | Axis::RealNeg => {
+            let (_, im) = const_parts(arena, o)?;
+            let unit = if inf.axis == Axis::RealPos {
+                arena.one()
+            } else {
+                arena.neg_one()
+            };
+            (unit, arena.mul(&[i, im]))
+        }
+        Axis::ImagPos | Axis::ImagNeg => {
+            let (re, _) = const_parts(arena, o)?;
+            let unit = if inf.axis == Axis::ImagPos {
+                i
+            } else {
+                arena.neg(i)
+            };
+            (unit, re)
+        }
+        Axis::Other => return None,
+    };
+    let perp = crate::transforms::eval::eval(arena, perp);
+    if arena.is_zero_structural(perp) {
+        return None;
+    }
+    let d = arena.mul(&[c, unit]);
+    let d = crate::transforms::eval::eval(arena, d);
+    let s = arena.sign(d);
+    let oo = arena.infinity();
+    let base = arena.mul(&[s, oo]);
+    let shift = arena.mul(&[c, perp]);
+    let v = arena.add(&[base, shift]);
+    let v = crate::transforms::eval::eval(arena, v);
+    is_valid_limit_value(arena, v, var).then_some(LimVal::exact(v))
+}
+
+/// The constant `k` of a limit value `±sign(k)·∞` whose direction holds
+/// parameters (the Gruntz algorithm's value for a leading coefficient of
+/// unknown direction), with nothing said about a finite part.
+fn parametric_direction(arena: &mut Arena, value: ExprId) -> Option<ExprId> {
+    if !is_infinite_form(arena, value) {
+        return None;
+    }
+    let (d, o) = split_infinite(arena, value)?;
+    if !arena.is_zero_structural(o) {
+        return None;
+    }
+    let (negated, s) = match arena.node(d).clone() {
+        ExprNode::Neg(a) => (true, a),
+        ExprNode::Mul(cs) if cs.len() == 2 && cs[0] == arena.neg_one() => (true, cs[1]),
+        _ => (false, d),
+    };
+    let ExprNode::Sign(k) = *arena.node(s) else {
+        return None;
+    };
+    if crate::base::walk::free_symbols(arena, k).is_empty() {
+        return None;
+    }
+    Some(if negated { arena.neg(k) } else { k })
+}
+
+/// Is `expr` built from functions of `var` without branch cuts or steps
+/// (rational functions, `exp`, the trigonometric and hyperbolic functions,
+/// `Γ`, …)?  Such a function is single-valued around a point, and its
+/// behaviour there is the same from both sides: two equal one-sided
+/// limits need no comparison of their finite parts
+/// ([`finite_parts_agree`]).
+fn single_valued_in(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    if has_directional_nodes(arena, expr, var) {
+        return false;
+    }
+    !crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| {
+            if !crate::base::walk::contains(arena, id, var) {
+                return false;
+            }
+            match *arena.node(id) {
+                ExprNode::Arg(_)
+                | ExprNode::Re(_)
+                | ExprNode::Im(_)
+                | ExprNode::Conjugate(_)
+                | ExprNode::Atan2(..) => true,
+                // (a power of the variable with an exponent that is no integer)
+                ExprNode::Pow(b, e) => {
+                    crate::base::walk::contains(arena, b, var)
+                        && arena.as_num(e).is_none_or(|r| !r.is_integer())
+                }
+                _ => branch_cut_of(arena, id)
+                    .is_some_and(|(a, _)| crate::base::walk::contains(arena, a, var)),
+            }
+        })
+}
+
+/// Do the one-sided limits of `expr` at the finite `point`, both the
+/// infinity `sign(k)·∞` in the direction of a constant `k` with parameters,
+/// have the same component perpendicular to it?  The direction alone does
+/// not say: `(y − 1)·Γ(0, x) + x` tends to `sign(y − 1)·∞` from both sides
+/// of 0, with the finite part `−iπ·(y − 1)` from the left only.  Decided on
+/// `expr/k` (`k ≠ 0` for generic parameters), which tends to `+∞`: both
+/// sides with the same finite imaginary part, or both with a diverging
+/// one.  `Err` when they differ or are not determined.
+fn finite_parts_agree(
+    arena: &mut Arena,
+    expr: ExprId,
+    ap: &Approach,
+    k: ExprId,
+    depth: usize,
+) -> Result<(), SymplexError> {
+    let undetermined = || {
+        fail(
+            "the finite parts of the one-sided limits, infinite in a direction with parameters, \
+             could not be compared",
+        )
+    };
+    let k = ZeroDecision::decide(arena, k)
+        .nonzero()
+        .ok_or_else(undetermined)?;
+    let q = div_by(arena, expr, k);
+    let q = crate::transforms::eval::eval(arena, q);
+    // (`(y − 1)·ln x/(1 − y)` is `−ln x`)
+    let q = if crate::transforms::pattern::tree_size_capped(arena, q, MAX_EXPAND_SIZE + 1)
+        <= MAX_EXPAND_SIZE
+    {
+        crate::simplify::ratsimp::ratsimp(arena, q)
+    } else {
+        q
+    };
+    // `Some(b)`: the imaginary part tends to `b`; `None`: it diverges.
+    let side = |arena: &mut Arena, dir: Direction| -> Result<Option<ExprId>, SymplexError> {
+        let v = limit_val_parts(arena, q, ap.var, ap.point, dir, depth + 1, true)?;
+        match kind_of(arena, v) {
+            Some(Kind::Infinite(Infinite {
+                axis: Axis::RealPos,
+                offset,
+                ..
+            })) => match offset {
+                Some(o) => {
+                    let (_, im) = const_parts(arena, o).ok_or_else(undetermined)?;
+                    Ok(Some(im))
+                }
+                None => Ok(None),
+            },
+            _ => Err(undetermined()),
+        }
+    };
+    match (
+        side(arena, Direction::Right)?,
+        side(arena, Direction::Left)?,
+    ) {
+        (None, None) => Ok(()),
+        (Some(a), Some(b)) if same_value(arena, a, b) => Ok(()),
+        (Some(_), Some(_)) => Err(fail(
+            "left and right limits differ in the finite part next to an infinity in a direction \
+             with parameters",
+        )),
+        _ => Err(undetermined()),
+    }
+}
+
 /// `e^g` for `g` tending to the infinity `inf`.
 fn exp_of_infinite(
     arena: &mut Arena,
@@ -2962,10 +3387,10 @@ fn try_compose(
                     let p = arena.mul(&[c, l]);
                     finite_result(arena, p, var)
                 }
-                Kind::Infinite(inf) => {
-                    let scaled = scale_inf(arena, inf, c)?;
-                    infinite_value(arena, scaled, var).map(Ok)
-                }
+                Kind::Infinite(inf) => match scale_inf(arena, inf, c) {
+                    Some(scaled) => infinite_value(arena, scaled, var).map(Ok),
+                    None => parametric_scale(arena, inf, c, var).map(Ok),
+                },
             }
         }
         ExprNode::Neg(inner) => {

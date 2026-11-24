@@ -5509,7 +5509,8 @@ impl Expr<Numeric> {
     /// Lower incomplete gamma function `γ(s, self) = ∫₀ˣ t^{s−1} e^{−t} dt`
     /// (SymPy `lowergamma(s, x)`).
     ///
-    /// Exact: `γ(s, 0) = 0`, `γ(s, ∞) = Γ(s)`, `γ(1, x) = 1 − e^{−x}`,
+    /// Exact: `γ(s, 0) = 0` where `re s > 0` is known (`γ(s, x) ~ xˢ/s`; up
+    /// to 0.58 for every `s` but a number `≤ 0`), `γ(s, ∞) = Γ(s)`, `γ(1, x) = 1 − e^{−x}`,
     /// `γ(1/2, x) = √π erf(√x)`, and closed forms for small integer and
     /// half-integer `s`; `∂/∂x γ(s, x) = x^{s−1} e^{−x}`.
     ///

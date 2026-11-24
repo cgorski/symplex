@@ -183,6 +183,39 @@ fn erfc_asymptotic(s: &Complex, wpc: &mut Wp<'_>) -> Option<Sum> {
     })
 }
 
+/// `erfc z = Γ(1/2, z²)/√π` for `Re z > 0` where it lies below the exponent
+/// range (`cexpint::below_range` of `Γ(1/2, z²)`: the exponent is that of
+/// `Γ(1/2, z²)`, the bracket is divided by `√π`), at working precision `wp`.
+/// Up to 0.58 such a value was refused with `PrecisionExhausted`: `erfc(10⁵ +
+/// i)`, and `uppergamma(1/2, 10¹⁰ + i)`, which `eval` writes `√π·erfc(√(10¹⁰ +
+/// i))` (mpmath, with unbounded exponents: `erfc(mpc(10**5, 1))` =
+/// `(−8.2…e-4342944826 − 1.2…e-4342944825j)`).
+pub(super) fn erfc_below(z: &Complex, wpc: &mut Wp<'_>) -> Option<super::cexpint::BelowForm> {
+    let wp = wpc.bits();
+    if !is_strictly_positive(&z.0) {
+        return None;
+    }
+    let (x, y) = (to_f64(&z.0)?, to_f64(&z.1)?);
+    // `abs(e^(−z²)) = e^(y² − x²)`: far from the bottom of the range for
+    // every argument but the largest.
+    let lg = (y * y - x * x) * LOG2E;
+    if lg.is_nan() || lg > f64::from(astro_float::EXPONENT_MIN) / 2.0 {
+        return None;
+    }
+    let p = wp + super::magnitude_bits(x * x + y * y) + 8;
+    let w = c_mul(z, z, p, RM);
+    let half = (BigFloat::from_f64(0.5, 64), BigFloat::new(64));
+    let form = super::cexpint::below_range(false, &half, &w, wpc)?;
+    let sqrt_pi = wpc.cc.pi(p, RM).clone().sqrt(p, RM);
+    Some(super::cexpint::BelowForm {
+        exponent: form.exponent,
+        bracket: (
+            form.bracket.0.div(&sqrt_pi, p, RM),
+            form.bracket.1.div(&sqrt_pi, p, RM),
+        ),
+    })
+}
+
 /// `erf z` by [`erfc_asymptotic`] at `±z` (`erf` is odd), or `None`.
 pub(super) fn erf_asymptotic(z: &Complex, w: &mut Wp<'_>) -> Option<Sum> {
     let wp = w.bits();
@@ -249,6 +282,11 @@ pub(super) fn erf_family(kind: Kind, z: &Complex, w: &mut Wp<'_>) -> Result<Comp
         Kind::Erfi => (z.1.neg(), z.0.clone()), // iz
         _ => z.clone(),
     };
+    // Below the exponent range and certainly not 0: 0 within an underflow
+    // bound ([`erf_bound`]), held scaled by `extended`.
+    if kind == Kind::Erfc && erfc_below(z, &mut w.at(prec + 32)).is_some() {
+        return Ok((BigFloat::new(prec + 16), BigFloat::new(prec + 16)));
+    }
     let cap = super::cancellation_cap(prec);
     let mut extra = 32 + accuracy::ceil_log2(prec) as usize;
     loop {
@@ -364,7 +402,12 @@ pub(super) fn erf_bound(kind: Kind, z: &Complex, bz: Bound, v: &Complex, prec: u
     }
     let lv = accuracy::lg_abs(v);
     if !lv.is_finite() {
-        return Bound::UNKNOWN;
+        // `erfc` comes out 0 only below the exponent range ([`erfc_below`]).
+        return if kind == Kind::Erfc && v.0.is_zero() && v.1.is_zero() {
+            Bound::both(accuracy::UNDERFLOW)
+        } else {
+            Bound::UNKNOWN
+        };
     }
     // On the imaginary axis ([`on_axis`]) each part has its own bound.
     let axis = z.0.is_zero();

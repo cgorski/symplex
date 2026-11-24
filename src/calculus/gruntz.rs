@@ -3005,6 +3005,11 @@ fn leadterm_add_by_series(
         let g = simplify_positive_powers(arena, g, w);
         let g = crate::transforms::eval::eval(arena, g);
         budget.charge_size(arena, g)?;
+        // (every `expand` here is charged by the terms it distributes: up
+        // to 0.58 only the tree size was, and `limit(|(x − 1)^tanh(x −
+        // 1)|^(x − 1), x, 1, '−')` multiplied out truncated series for 1.2 s
+        // — 5.6 s in the fuzz build — before its budget refused it)
+        budget.charge_expansion(arena, g)?;
         let g = crate::transforms::expand::expand(arena, g);
         let g = crate::transforms::eval::eval(arena, g);
         tracing::debug!(regular = %arena.display(g), "gruntz::leadterm_add_by_series: normalised expression");
@@ -3012,6 +3017,7 @@ fn leadterm_add_by_series(
         for order in [3u32, 5, 8, 12] {
             match budgeted_series(arena, budget, g, w, order) {
                 Ok(s) => {
+                    budget.charge_expansion(arena, s)?;
                     let h = crate::transforms::expand::expand(arena, s);
                     let h = crate::transforms::eval::eval(arena, h);
                     if arena.is_zero_structural(h) {
@@ -3049,6 +3055,7 @@ fn leadterm_add_by_series(
         }
         let simplified = crate::transforms::eval::eval(arena, func_expanded);
         budget.charge_size(arena, simplified)?;
+        budget.charge_expansion(arena, simplified)?;
         let simplified = crate::transforms::expand::expand(arena, simplified);
         let simplified = crate::transforms::eval::eval(arena, simplified);
         budget.charge_size(arena, simplified)?;
@@ -3084,6 +3091,7 @@ fn leadterm_add_by_series(
     // regular at w = 0).
     for order in 2..10 {
         if let Ok(series) = budgeted_series(arena, budget, f, w, order) {
+            budget.charge_expansion(arena, series)?;
             let expanded = crate::transforms::expand::expand(arena, series);
             let evaled = crate::transforms::eval::eval(arena, expanded);
             if evaled != f && !arena.is_zero_structural(evaled) {
@@ -3642,6 +3650,7 @@ fn always_rewritten(f: Func) -> bool {
                 | Func::Sign
                 | Func::Heaviside
                 | Func::DiracDelta
+                | Func::KroneckerDelta
                 | Func::Floor
                 | Func::Ceiling
                 | Func::Min
@@ -4018,12 +4027,35 @@ fn rewrite_tractable(
     depth: usize,
     budget: &mut Budget,
 ) -> Result<ExprId, crate::base::errors::SymplexError> {
+    // A `KroneckerDelta` replaced by its eventual value 0 may leave a
+    // function at a pole (`x²·E₁(KroneckerDelta(x + 1, −1))` is `x²·E₁(0)`
+    // at every `x ≠ −2`): such an expression has no value near the point.
+    let delta = |arena: &Arena, e: ExprId| {
+        crate::base::walk::post_order_ids(arena, e)
+            .into_iter()
+            .any(|id| {
+                matches!(arena.node(id), ExprNode::KroneckerDelta(..))
+                    && crate::base::walk::contains(arena, id, x)
+            })
+    };
+    let had_delta = delta(arena, e);
     let mut e = e;
     for _ in 0..MAX_TRACTABLE_PASSES {
         let (r, continued) = rewrite_tractable_pass(arena, e, x, depth, budget)?;
         e = r;
         if !continued {
             break;
+        }
+    }
+    if had_delta && !delta(arena, e) {
+        let v = crate::transforms::eval::eval(arena, e);
+        if contains_singular_atom(arena, v)
+            || crate::calculus::limit::contains_hidden_singularity(arena, v)
+        {
+            return Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz",
+                reason: "a KroneckerDelta at its eventual value leaves a function at a pole".into(),
+            });
         }
     }
     resolve_negative_leading(arena, e, x, depth, budget)
@@ -4441,6 +4473,17 @@ fn rewrite_tractable_pass(
                 Ok(s) if s != 0 => arena.zero(),
                 _ => rebuilt,
             },
+            // `KroneckerDelta(a, b)` is 0 wherever `a ≠ b`: where `a − b` has
+            // an eventual sign.  (Left alone it is a function of unknown
+            // growth: refused.)
+            ExprNode::KroneckerDelta(a, b) if crate::base::walk::contains(arena, rebuilt, x) => {
+                let d = arena.sub(a, b);
+                let d = crate::transforms::eval::eval(arena, d);
+                match sign_at_inf(arena, d, x, depth + 1, budget) {
+                    Ok(s) if s != 0 => arena.zero(),
+                    _ => rebuilt,
+                }
+            }
             // `C(a, b) = Γ(a + 1)/(Γ(b + 1)·Γ(a − b + 1))`, whose gammas the
             // next pass writes as `exp(ln Γ)` (SymPy's tractable rewrite of
             // `binomial`): `C(n, n/2)`, `16ᵏ/(k·C(2k, k)²) → π`, `n^{−z}·C(n + z, n)
@@ -6427,8 +6470,24 @@ mod tests {
         assert_eq!(
             selected(always_rewritten),
             set(&[
-                Tan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Abs, Sign, Heaviside, DiracDelta,
-                Floor, Ceiling, Min, Max, Atan2, Arg,
+                Tan,
+                Sinh,
+                Cosh,
+                Tanh,
+                Asinh,
+                Acosh,
+                Atanh,
+                Abs,
+                Sign,
+                Heaviside,
+                DiracDelta,
+                KroneckerDelta,
+                Floor,
+                Ceiling,
+                Min,
+                Max,
+                Atan2,
+                Arg,
             ])
         );
         assert_eq!(

@@ -92,7 +92,9 @@ fn zero_variance(op: &'static str, reason: impl Into<String>) -> SymplexError {
 }
 
 /// Pearson's `r` of two columns, with this module's error message when one
-/// of them is constant.
+/// of them is constant.  Every other error of [`data::pearson`] (columns of
+/// different lengths, no data) is passed through as it is: up to 0.58 each
+/// of them was relabelled `ZeroVariance` ("… is constant").
 fn pearson_of(
     ctx: &Context,
     op: &'static str,
@@ -100,11 +102,12 @@ fn pearson_of(
     y: &[Q],
     what: &str,
 ) -> Result<Ex, SymplexError> {
-    data::pearson(ctx, x, y).map_err(|_| {
-        zero_variance(
+    data::pearson(ctx, x, y).map_err(|e| match e.degeneracy() {
+        Some(Degeneracy::ZeroVariance) => zero_variance(
             op,
             format!("{what} is constant, so its correlation is undefined"),
-        )
+        ),
+        _ => e,
     })
 }
 
@@ -998,4 +1001,38 @@ pub fn item_response_summary(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `pearson_of` relabels only a constant column.  Up to 0.58 every
+    /// error of `data::pearson` became `DegenerateData(ZeroVariance)`:
+    /// columns of different lengths were reported as "… is constant".
+    #[test]
+    fn pearson_of_passes_shape_errors_through() {
+        let ctx = Context::new();
+        let q = |v: &[i64]| data::from_i64(v);
+        // A constant column: this module's message, the degenerate variant.
+        let err = pearson_of(&ctx, "op", &q(&[2, 2, 2]), &q(&[1, 2, 3]), "the item").unwrap_err();
+        assert_eq!(err.degeneracy(), Some(Degeneracy::ZeroVariance));
+        assert!(matches!(
+            err,
+            SymplexError::DegenerateData {
+                operation: "op",
+                ..
+            }
+        ));
+        // Different lengths, and no data: `pearson`'s own shape errors.
+        for (x, y) in [(q(&[1, 2, 3]), q(&[1, 2])), (q(&[]), q(&[]))] {
+            let got = pearson_of(&ctx, "op", &x, &y, "the item").unwrap_err();
+            let own = data::pearson(&ctx, &x, &y).unwrap_err();
+            assert!(matches!(got, SymplexError::InvalidArgument { .. }), "{got}");
+            assert_eq!(got.to_string(), own.to_string());
+        }
+        // Two columns that vary: the coefficient itself.
+        let r = pearson_of(&ctx, "op", &q(&[1, 2, 3]), &q(&[2, 4, 6]), "the item").unwrap();
+        assert_eq!(r, ctx.one());
+    }
 }

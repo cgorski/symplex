@@ -8,6 +8,8 @@
 //! This crate should not be used directly.  Instead, depend on `symplex`
 //! which re-exports these macros.
 
+#![forbid(unsafe_code)]
+
 mod node_shape;
 mod parse;
 

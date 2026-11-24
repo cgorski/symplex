@@ -435,6 +435,16 @@ pub(crate) enum Poles {
     Zero(u8),
     /// Where this argument is 1.
     One(u8),
+    /// Where the argument `integer` is an integer `≤ 0`, and where the
+    /// argument `zero` is 0 unless `integer` has a positive real part
+    /// (`γ(s, z) ~ zˢ/s` at `z = 0`: 0 for `re s > 0`, infinite or
+    /// without a limit otherwise).
+    NonPositiveIntegerOrZero {
+        /// The argument with poles at the integers `≤ 0`.
+        integer: u8,
+        /// The argument with a pole at 0.
+        zero: u8,
+    },
     /// Elsewhere, at points the facet does not describe (`tan` at
     /// `π/2 + kπ`): the table then claims no complex value, and claims
     /// realness only on a domain clear of them.
@@ -1629,9 +1639,10 @@ funcs! {
         /// Lower incomplete gamma `γ(s, x)`.
         LowerGamma => FuncSpec {
             name: "lowergamma", parse: &[], arity: Exactly(2), sort: Named, tex: Tex::Call(r"\gamma"),
-            // `γ(s, x) = xˢ·(entire)`, poles at `s = 0, −1, …` (DLMF §8.2).
+            // `γ(s, x) = xˢ·(entire)`, poles at `s = 0, −1, …` (DLMF §8.2), and
+            // `γ(s, x) ~ xˢ/s` at `x = 0` (DLMF 8.7.1): 0 only for `re s > 0`.
             conj: Conj::OffCut(NEG1), real_on: RealOn::PositiveReals, parity: Neither,
-            poles: Poles::NonPositiveIntegers(&[0]),
+            poles: Poles::NonPositiveIntegerOrZero { integer: 0, zero: 1 },
             constants: Constants::Evaluated,
             rt: Runtime::NONE.scipy("scipy.special.gamma(s) * scipy.special.gammainc(s, x)"),
         };
@@ -2873,6 +2884,9 @@ mod tests {
                 }
                 Poles::Zero(i) => args[usize::from(i)] = declared(&ctx, "o", &[Zero]),
                 Poles::One(i) => args[usize::from(i)] = ctx.int(1),
+                Poles::NonPositiveIntegerOrZero { integer, .. } => {
+                    args[usize::from(integer)] = declared(&ctx, "np", &[Integer, NonPositive]);
+                }
                 Poles::None | Poles::Other => continue,
             }
             if let Some(e) = build_f(&ctx, f, &args) {

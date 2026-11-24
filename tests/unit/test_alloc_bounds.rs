@@ -76,7 +76,7 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("transforms/eval.rs", 1),
     // Another agent's write set at 0.58 (lengths from the working precision
     // and the Riemann–Siegel term count): review queue.
-    ("transforms/evalf.rs", 7),
+    ("transforms/evalf.rs", 5),
     ("transforms/evalf/rszeta.rs", 3),
     // Another agent's write set at 0.58 (dense coefficient lists of the
     // Risch-type routes): review queue.

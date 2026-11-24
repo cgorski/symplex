@@ -23,7 +23,7 @@ dist.discrete_uniform.0.kurtosis	*	SCIPY_WRONG	nan	DiscreteUniform(9, 9) is a po
 #
 # symplex refuses (found in wave 12, stats layer: src/domains/stats/discrete.rs; the cdf and sf of the same
 # Binomial(10^6, 13/100) are the regularized incomplete beta since 0.57 and are checked)
-dist.binomial.6.entropy	*	REFUSED	7.2369519607771632759	Binomial(10^6, 13/100) entropy: a Sum of 10^6 + 1 terms, beyond evalf's 10^4; no finite closed form (the integral form of E[ln X!] by Malmsten's formula is exact but evalf's quadrature does not resolve it at n = 10^6).
+dist.binomial.6.entropy	*	SCIPY_WRONG	7.236951960777163290450563	scipy 1.18.1 `binom(10^6, 0.13).entropy()` is 3.607, half the value (it sums a truncated table); symplex sums a window around the mode since 0.59 (refused up to 0.58) and agrees with mpmath at two precisions; tests/v36/v36_s15r5_stats.rs.
 #
 # Wave 14 (P4): the hunter exports (cases/l2_*, l3_*, l4_*, p4_*).  Generated from the verdicts of the run that
 # admitted them (scipy 1.18.1 / statsmodels 0.15.0 errors with the mpmath or exact value, and symplex's known
@@ -31,12 +31,9 @@ dist.binomial.6.entropy	*	REFUSED	7.2369519607771632759	Binomial(10^6, 13/100) e
 # hand-edit, when the exports are re-sampled.
 l2.binomial.224.quantile_f64	f64	REFUSED	-	by design: numdist's lattice kernels refuse n or a rate beyond 2^53, where the lattice points are not representable as f64 (InvalidArgument).
 l2.binomial.224.isf_f64	f64	REFUSED	-	by design: numdist's lattice kernels refuse n or a rate beyond 2^53, where the lattice points are not representable as f64 (InvalidArgument).
-l2.binomial.224.entropy	d30	REFUSED	3.0933606208925380783e-12	the entropy of a discrete family with huge parameters is a Sum beyond evalf's 10^4 terms or an infinite sum (L2 found-not-fixed).
-l2.binomial.224.entropy	f64	REFUSED	3.0933606208925380783e-12	the entropy of a discrete family with huge parameters is a Sum beyond evalf's 10^4 terms or an infinite sum (L2 found-not-fixed).
+l2.binomial.224.entropy	*	SCIPY_WRONG	3.0933606208922628e-12	Binomial(10^17, 10^-30): the entropy is L(1 - ln L) + O(L^2), L = 10^-13, = 3.09336062089226e-12; scipy 1.18.1 gives 3.0924e-12 (and this oracle's own mpmath window 3.0920e-12: its pmf loses digits at these parameters); symplex sums a window around the mode since 0.59 (refused up to 0.58) and agrees with mpmath at two precisions; tests/v36/v36_s15r5_stats.rs.
 l2.binomial.1512.variance	d30	SCIPY_WRONG	9.992007221626398879791853e-10	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 0.0679 rel]
 l2.binomial.1512.variance	f64	SCIPY_WRONG	9.992007221626398879791853e-10	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 0.0679 rel]
-l2.binomial.1512.entropy	d30	REFUSED	2.17232658372929844e-8	the entropy of a discrete family with huge parameters is a Sum beyond evalf's 10^4 terms or an infinite sum (L2 found-not-fixed).
-l2.binomial.1512.entropy	f64	REFUSED	2.17232658372929844e-8	the entropy of a discrete family with huge parameters is a Sum beyond evalf's 10^4 terms or an infinite sum (L2 found-not-fixed).
 l2.binomial.2133.isf_f64	f64	REFUSED	-	by design: numdist's lattice kernels refuse n or a rate beyond 2^53, where the lattice points are not representable as f64 (InvalidArgument).
 l2.discrete_uniform.2092.pdf	d30	SCIPY_WRONG	0.5	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 1.0 rel]
 l2.discrete_uniform.2092.pdf	f64	SCIPY_WRONG	0.5	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 1.0 rel]
@@ -102,8 +99,6 @@ l2.poisson.2042.quantile_f64	f64	REFUSED	-	by design: numdist's lattice kernels 
 l2.poisson.2042.isf_f64	f64	REFUSED	-	by design: numdist's lattice kernels refuse n or a rate beyond 2^53, where the lattice points are not representable as f64 (InvalidArgument).
 l2.student_t.1114.mean	d30	SCIPY_WRONG	nan	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [nonfinite kind]
 l2.student_t.1114.mean	f64	SCIPY_WRONG	nan	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [nonfinite kind]
-l2.student_t.1367.pdf	d30	REFUSED	0.35206532676692295288	a shape near 1e212: the density's power (1 + x^2/nu)^(-(nu+1)/2) overflows evalf's exponent range in its canonical split (L2 found-not-fixed).
-l2.student_t.1367.pdf	f64	REFUSED	0.35206532676692295288	a shape near 1e212: the density's power (1 + x^2/nu)^(-(nu+1)/2) overflows evalf's exponent range in its canonical split (L2 found-not-fixed).
 l2.student_t.2034.mean	d30	SCIPY_WRONG	nan	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [nonfinite kind]
 l2.student_t.2034.mean	f64	SCIPY_WRONG	nan	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [nonfinite kind]
 l2.uniform.2232.pdf	d30	SCIPY_WRONG	3333333327.377970721175317	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 1.0 rel]
@@ -114,15 +109,13 @@ l2.weibull.311.skewness	d30	SCIPY_WRONG	7.810263742546894654459691e+104	scipy 1.
 l2.weibull.311.skewness	f64	SCIPY_WRONG	7.810263742546894654459691e+104	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy nonfinite]
 l2.weibull.311.kurtosis	d30	SCIPY_WRONG	1.880424418683531270095861e+239	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy nonfinite]
 l2.weibull.311.kurtosis	f64	SCIPY_WRONG	1.880424418683531270095861e+239	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy nonfinite]
-l2.binomial.2363.entropy	d30	REFUSED	7.613135620477735762	the entropy of a discrete family with huge parameters is a Sum beyond evalf's 10^4 terms or an infinite sum (L2 found-not-fixed).
-l2.binomial.2363.entropy	f64	REFUSED	7.613135620477735762	the entropy of a discrete family with huge parameters is a Sum beyond evalf's 10^4 terms or an infinite sum (L2 found-not-fixed).
+l2.binomial.2363.entropy	*	SCIPY_WRONG	7.613135620477735771207604	scipy 1.18.1 `binom(10^6, 0.4).entropy()` is 3.623, half the value; symplex sums a window around the mode since 0.59 (refused up to 0.58) and agrees with mpmath at two precisions; tests/v36/v36_s15r5_stats.rs.
 l2.binomial.3927.quantile_f64	f64	REFUSED	-	by design: numdist's lattice kernels refuse n or a rate beyond 2^53, where the lattice points are not representable as f64 (InvalidArgument).
 l2.cauchy.2467.quantile	d30	SCIPY_WRONG	-1.27323954473516268615107e+320	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy nonfinite]
 l2.chi_squared.2580.cdf	d30	REFUSED	1.0	a shape beyond 1e30: Gamma(k/2) overflows and the incomplete gamma is held scaled only for exact arguments near 1e8-1e10 (L5 found-not-fixed: Temme's expansion).
 l2.chi_squared.2580.cdf	f64	REFUSED	1.0	a shape beyond 1e30: Gamma(k/2) overflows and the incomplete gamma is held scaled only for exact arguments near 1e8-1e10 (L5 found-not-fixed: Temme's expansion).
 l2.f.2426.isf_f64	f64	SCIPY_WRONG	3.051757812499999907e+199	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy nonfinite]
-l2.f.3507.pdf	d30	REFUSED	6.999271023148140052e-63	a shape near 1e212: the density's power (1 + x^2/nu)^(-(nu+1)/2) overflows evalf's exponent range in its canonical split (L2 found-not-fixed).
-l2.f.3507.pdf	f64	REFUSED	6.999271023148140052e-63	a shape near 1e212: the density's power (1 + x^2/nu)^(-(nu+1)/2) overflows evalf's exponent range in its canonical split (L2 found-not-fixed).
+l2.f.3507.pdf	*	SCIPY_WRONG	6.999271025285086802573178e-63	scipy 1.18.1 `f(5.7e29, 8).pdf` is inf; symplex combines the powers in logarithms since 0.59 (refused up to 0.58: continuous::huge_shape) and agrees with mpmath.
 l2.f.3507.isf_f64	f64	SCIPY_WRONG	5714880859396.799129	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy nonfinite]
 l2.f.3507.skewness	d30	REFUSED	5.656854248132997499	a huge d1: the skewness is formed through Gamma values that overflow (found-not-fixed, wave 14: write it as the closed algebraic form).
 l2.f.3507.skewness	f64	REFUSED	5.656854248132997499	a huge d1: the skewness is formed through Gamma values that overflow (found-not-fixed, wave 14: write it as the closed algebraic form).
@@ -164,8 +157,8 @@ l2.pareto.4038.kurtosis	d30	SCIPY_WRONG	inf	scipy 1.18.1 is off beyond 1e-9 rela
 l2.pareto.4038.kurtosis	f64	SCIPY_WRONG	inf	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [nonfinite kind]
 l2.poisson.3652.pdf	d30	SCIPY_WRONG	6.435330016005624403669575e-10	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 1.55e+9 rel]
 l2.poisson.3652.pdf	f64	SCIPY_WRONG	6.435330016005624403669575e-10	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 1.55e+9 rel]
-l2.student_t.3253.pdf	d30	REFUSED	3.6934878184474360344e-151	a shape near 1e212: the density's power (1 + x^2/nu)^(-(nu+1)/2) overflows evalf's exponent range in its canonical split (L2 found-not-fixed).
-l2.student_t.3253.pdf	f64	REFUSED	3.6934878184474360344e-151	a shape near 1e212: the density's power (1 + x^2/nu)^(-(nu+1)/2) overflows evalf's exponent range in its canonical split (L2 found-not-fixed).
+l2.student_t.3253.pdf	d30	REFUSED	3.6934878184474360344e-151	by design since 0.59: the density is exp(-7.7e106)/sqrt(2 pi), below the arbitrary-precision exponent range; eval_decimal refuses a nonzero value it cannot print (up to 0.58 the power overflowed in its canonical split).
+l2.student_t.3253.pdf	f64	SCIPY_WRONG	0	StudentT(2.3e300) at -3.9e53: the density is exp(-7.7e106)/sqrt(2 pi), below every exponent range; eval_f64 gives 0.0 by its documented rule (scipy 0.0 as well, eval_decimal refuses: below the range).  The class comes from this oracle's mpmath formula, which loses the value at its precision (3.69e-151).
 l2.student_t.3253.cdf	f64	SCIPY_WRONG	1.26573704000828151918986e-11	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 1.0 rel]
 l2.student_t.4242.quantile_f64	f64	SCIPY_WRONG	-1.7097561490136826796e+133	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy nonfinite]
 l2.student_t.4495.quantile_f64	f64	SCIPY_WRONG	-4.7952757204692233768e+66	scipy 1.18.1 is off beyond 1e-9 relative here (L2 family hunter, wave 12; extreme shapes or far tails); mpmath at two precisions agrees with symplex. [scipy error 0.5 rel]
@@ -246,3 +239,12 @@ l4.ols.*.scale_huge	*	SCIPY_WRONG	exact (Fraction) values per row: see the repor
 l4.ols.*.scale_small	*	SCIPY_WRONG	exact (Fraction) values per row: see the report	statsmodels OLS in double precision on an ill-conditioned design (L4 category scale_small): its QR/pinv loses digits; symplex is the exact least-squares fit (exact Fractions).
 l4.ols.*.scale_tiny	*	SCIPY_WRONG	exact (Fraction) values per row: see the report	statsmodels OLS in double precision on an ill-conditioned design (L4 category scale_tiny): its QR/pinv loses digits; symplex is the exact least-squares fit (exact Fractions).
 l4.ols.*.tiny_resid	*	SCIPY_WRONG	exact (Fraction) values per row: see the report	statsmodels OLS in double precision on an ill-conditioned design (L4 category tiny_resid): its QR/pinv loses digits; symplex is the exact least-squares fit (exact Fractions).
+#
+# Wave 16 (R5): the reproducers of cases/r5_regressions.tsv where scipy 1.18.1 is off (symplex agrees with mpmath at two
+# precisions; tests/v36/v36_s15r5_stats.rs pins the values).
+r5.binomial.entropy.n1e5	*	SCIPY_WRONG	6.08565578279555002916674138236	scipy `binom(10^5, 0.13).entropy()` is 6.0524 (5e-3 rel off).
+r5.poisson.entropy.25000	*	SCIPY_WRONG	6.482250751729838264342263	scipy `poisson(25000).entropy()` is 3.247, half the value.
+r5.chi_squared.cdf.far.3e7	*	SCIPY_WRONG	9.533213002300690250006557e-131	scipy `chi2(3.4e7).cdf(33800000.5)` is 6.5e-6 rel off in the far lower tail.
+r5.gamma.cdf.far.2e7	*	SCIPY_WRONG	9.533213002300690250006557e-131	scipy `gamma(1.7e7).cdf(16900000.25)` is 6.5e-6 rel off in the far lower tail.
+r5.f.pdf.d1_3e128	*	SCIPY_WRONG	1.067912980738675448197134e-294	scipy `f(3e128, 1).pdf(7.28e-4)` is inf.
+r5.f.pdf.d2_1e19	*	SCIPY_WRONG	0.3490149774598276049984451	scipy `f(7, 1e19).pdf(1.5)` is 1.0.

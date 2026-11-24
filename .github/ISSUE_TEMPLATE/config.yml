@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/cgorski/symplex/security/advisories/new
+    about: Report privately an input that crashes, hangs or exhausts memory through the parser or JSON import (see SECURITY.md).

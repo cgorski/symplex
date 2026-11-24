@@ -131,6 +131,16 @@ fn exceeds(param: &Ex, bound: u32) -> bool {
     !Truth::from((param - i64::from(bound)).is_positive()).is_false()
 }
 
+/// A numeric shape proved above `2¹⁶`: from there on a density whose
+/// factors are powers with the shape in the exponent, or Γ functions of it,
+/// is written at a numeric point with the factors combined in logarithms
+/// (`FDistribution`, `StudentT`), so that none leaves the exponent range on
+/// its own.  Below, and for a symbolic point, the classic forms (the ones
+/// the integrator knows).
+fn huge_shape(param: &Ex) -> bool {
+    param.free_symbols().is_empty() && Truth::from((param - 65_536).is_positive()).is_true()
+}
+
 /// `value` for a `t` known not to be `0`; `1` at `t = 0`; for a `t` that
 /// may be either, the `Piecewise` of both (a characteristic function
 /// whose closed form is `0/0` or `0·∞` at the origin, as SymPy writes
@@ -1146,10 +1156,22 @@ impl Family for StudentT {
         Support::reals(&self.context())
     }
 
+    // Γ((ν+1)/2) / (√(νπ) Γ(ν/2)) · (1 + x²/ν)^{−(ν+1)/2}.  At a number `x`,
+    // for a huge ν, the quotient of the two Γ is written `√π/B(½, ν/2)` and
+    // the power `exp(−(ν+1)·atanh(x²/(2ν + x²)))` ([`huge_shape`]): each Γ
+    // alone, and numerator and denominator of the rational power, leave even
+    // the scaled exponent range (up to 0.58 the density of StudentT(10¹²⁸)
+    // was refused, "a power: the value overflows").
     fn density(&self, x: &Ex) -> Ex {
         let ctx = self.context();
         let half = ctx.rational(1, 2);
         let nu1 = (&self.dof + 1) * &half;
+        if huge_shape(&self.dof) && x.free_symbols().is_empty() {
+            let x2 = x.powi(2);
+            let log = (&x2 / (ctx.int(2) * &self.dof + &x2)).atanh();
+            return (-(&self.dof + 1) * log).exp()
+                / (self.dof.sqrt() * half.beta(&(&self.dof * &half)));
+        }
         nu1.gamma() / ((&self.dof * ctx.pi()).sqrt() * (&self.dof * &half).gamma())
             * (ctx.one() + x.powi(2) / &self.dof).pow(&(-nu1))
     }
@@ -1281,10 +1303,30 @@ impl Family for FDistribution {
     // that no factor is a power of d₂ to the d₂ and the behaviour at 0 is
     // the one power of x: up to 0.56 the density at 0 of F(4/5, 10¹⁰/3) was
     // NaN (the limit through d₂^{d₂} was not found; it is +∞ for d₁ < 2).
+    //
+    // At a positive number `x`, for a huge d₁ or d₂ ([`huge_shape`]), the
+    // powers are combined in logarithms first: with u = d₁x/d₂,
+    //     (d₁/d₂)^{d₁/2} x^{d₁/2} (1 + u)^{−(d₁+d₂)/2}
+    //         = exp(−(d₁/2)·ln(1 + 1/u) − (d₂/2)·ln(1 + u)),
+    // each logarithm written `ln(1 + y) = 2·atanh(y/(2 + y))`, which keeps
+    // its digits for a tiny `y` and is not split into powers of a numerator
+    // and a denominator.  `(d₁/d₂)^{d₁/2}` alone has an exponent beyond any
+    // scaled one (2^(6·10¹³⁰) at d₁ = 3·10¹²⁸); up to 0.58 the density was
+    // refused from d₁ ≈ 10⁹ or d₂ ≈ 10¹⁹ on.
     fn density(&self, x: &Ex) -> Ex {
         let ctx = self.context();
         let half = ctx.rational(1, 2);
         let a = &self.d1 * &half;
+        if (huge_shape(&self.d1) || huge_shape(&self.d2))
+            && x.free_symbols().is_empty()
+            && Truth::from(x.is_positive()).is_true()
+        {
+            let b = &self.d2 * &half;
+            let u = &self.d1 * x / &self.d2;
+            let above = (ctx.one() / (ctx.int(2) * &u + 1)).atanh();
+            let below = (&u / (&u + 2)).atanh();
+            return (-(&self.d1 * above) - &self.d2 * below).exp() / (x * a.beta(&b));
+        }
         (&self.d1 / &self.d2).pow(&a)
             * x.pow(&(&a - 1))
             * (ctx.one() + &self.d1 * x / &self.d2).pow(&(-(&self.d1 + &self.d2) * &half))

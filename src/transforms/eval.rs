@@ -532,7 +532,10 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             // dropped, a `True` condition selects its branch and makes
             // every later branch unreachable, and an undecided condition
             // stops the search — a later `True` must never shadow an
-            // earlier branch whose condition is still open.
+            // earlier branch whose condition is still open.  A condition
+            // without a truth value at this point (an order relation with
+            // a `nan` operand: [`condition_is_undefined`]) makes the value
+            // `nan` from there on.
             ExprNode::Piecewise(ref pairs) => {
                 let t = arena.bool_true;
                 let f = arena.bool_false;
@@ -542,6 +545,10 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     let nc = cache.get(&cond).copied().unwrap_or(cond);
                     if nc == f {
                         continue;
+                    }
+                    if condition_is_undefined(arena, nc) {
+                        kept.push((arena.nan, t));
+                        break;
                     }
                     kept.push((nv, nc));
                     if nc == t {
@@ -1133,6 +1140,23 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     None
+}
+
+/// Is the evaluated condition `c` of a `Piecewise` an order relation with a
+/// `nan` operand (or a conjunction of such)?  `nan` has no order, the
+/// relation stays and can never become true: the `Piecewise` has no value
+/// at such a point.  Up to 0.58 it stayed with the dead condition,
+/// `Piecewise((0, nan > 0), (nan, True))`: the constructors write "`d` is
+/// nonzero" as `|d| > 0` (`canon::push_nonzero_conditions`), which is
+/// `nan > 0` exactly where `d` has no value.  (An equality with `nan` is
+/// decided: [`relation_truth`].)
+fn condition_is_undefined(arena: &Arena, c: ExprId) -> bool {
+    let nan = arena.nan;
+    let order_with_nan = |id: ExprId| matches!(*arena.node(id), ExprNode::Gt(a, b) | ExprNode::Ge(a, b) if a == nan || b == nan);
+    match arena.node(c) {
+        ExprNode::And(children) => children.iter().all(|&k| order_with_nan(k)),
+        _ => order_with_nan(c),
+    }
 }
 
 /// The four relational node kinds (`a < b` is `Gt(b, a)`, `a ≤ b` is
@@ -7978,8 +8002,13 @@ fn lowergamma_closure_cancels_complex(s: &Q, re: f64, im: f64) -> bool {
 
 /// `γ(s, 0) = 0`, `γ(s, ∞) = Γ(s)`, closed forms for integer / half-integer `s > 0`.
 ///
-/// `γ(s, 0) = 0` holds only for `s > 0` (`∫₀ˣ t^{s−1} e^{−t} dt` diverges at
-/// the lower end otherwise), so that fold is refused for `s` known to be `≤ 0`.
+/// `γ(s, 0) = 0` holds only for `re s > 0` (`∫₀ˣ t^{s−1} e^{−t} dt` diverges at
+/// the lower end otherwise: `γ(s, x) ~ xˢ/s`), so that fold needs `re s > 0`
+/// known — a positive number, the assumptions, or the certified value of a
+/// constant.  Up to 0.58 it was refused only for a number `≤ 0`:
+/// `lowergamma(−√2, 0)`, `lowergamma(i, 0)` and `lowergamma(y, 0)` for a
+/// plain `y` were 0, and `limit(γ(y, x), x, 0)` was `Piecewise((0, y ≠ 0))`
+/// (`γ(−1/2, x) ~ −2/√x`).
 /// The closed form is also refused at a real constant `x` where it would
 /// cancel catastrophically ([`lowergamma_closure_cancels`]): `γ(s, x)`
 /// stays, and `evalf` computes it by its power series.  An irrational `x`
@@ -7991,10 +8020,22 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
         return None;
     }
     if x == arena.zero {
-        if known_nonpositive(arena, s) {
-            return None;
-        }
-        return Some(arena.zero);
+        let positive_real_part = match arena.as_num(s) {
+            Some(r) => r.is_positive(),
+            None => {
+                let re = arena.re(s);
+                let mut cache = crate::base::assumptions::AssumptionCache::new();
+                crate::base::truth::Truth::from(cache.query(
+                    arena,
+                    re,
+                    crate::base::assumptions::Props::POSITIVE,
+                ))
+                .is_true()
+                    || certified_part_signs(arena, s)
+                        .is_some_and(|p| p.re == Some(std::cmp::Ordering::Greater))
+            }
+        };
+        return positive_real_part.then_some(arena.zero);
     }
     if at_infinity {
         return Some(arena.gamma(s));

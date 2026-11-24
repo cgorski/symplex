@@ -64,9 +64,14 @@ pub(crate) fn powsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
 }
 
 /// Decompose `id` into `(base, exponent)`, extending the standard
-/// [`Arena::as_base_exp`] to also recognise `exp(a)` as `E^a`.
+/// [`Arena::as_base_exp`] to also recognise `exp(a)` as `E^a`.  A power
+/// `0^e` of the base 0 is its own base: its exponents do not add (`0^y·0^z`
+/// is `0·zoo = nan` for `re y > 0 > re z`), and the constructors have merged
+/// the ones that do (`canon::push_zero_power_factors`).  Up to 0.58
+/// `powsimp(0^y/0^z)` was `0^(y − z)`.
 fn extended_base_exp(arena: &Arena, id: ExprId) -> (ExprId, ExprId) {
     match arena.node(id) {
+        ExprNode::Pow(base, _) if arena.is_zero_structural(*base) => (id, arena.one),
         ExprNode::Pow(base, exp) => (*base, *exp),
         ExprNode::Exp(inner) => (arena.e_const, *inner),
         _ => (id, arena.one),

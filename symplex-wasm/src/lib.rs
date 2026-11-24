@@ -15,6 +15,8 @@
 //! All arithmetic is exact: decimal literals such as `0.1` in an input
 //! string are parsed as the rational `1/10`.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 
 use symplex::prelude::*;

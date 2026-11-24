@@ -7038,8 +7038,16 @@ fn try_exp_linear_substitution(
         return None;
     }
     tracing::debug!(integrand_u = %arena.display(integrand), "integrate: exponentials of linear arguments, integrand in u");
-    let res = integrate_nested_generic(arena, integrand, u)?;
-    let res = analytic_logs(arena, res, u_sym)?;
+    let Some(res) = integrate_nested_generic(arena, integrand, u) else {
+        tracing::debug!(
+            "integrate: exponential substitution: the integrand in u has no antiderivative"
+        );
+        return None;
+    };
+    let Some(res) = analytic_logs(arena, res, u_sym) else {
+        tracing::debug!("integrate: exponential substitution: a logarithm in u is not analytic");
+        return None;
+    };
     let l = arena.mul(&[alpha0, var]);
     let l = arena.add(&[l, beta0]);
     let gl = arena.mul(&[g_id, l]);
@@ -7052,7 +7060,12 @@ fn try_exp_linear_substitution(
             }
         },
         Truth::False => res,
-        Truth::Unknown => return None,
+        Truth::Unknown => {
+            tracing::debug!(
+                "integrate: exponential substitution: the rate is not decided real or not"
+            );
+            return None;
+        }
     };
     let e_gl = arena.exp(gl);
     let mut back = arena.subs_structural(res, u, e_gl);
@@ -7265,9 +7278,13 @@ fn spiral_continuous(
         .iter()
         .any(|&s| s != u && s != var)
     {
+        tracing::debug!("integrate: spiral: the answer in u has parameters");
         return None;
     }
-    let res = spiral_linear_logs(arena, res, u, u_sym)?;
+    let Some(res) = spiral_linear_logs(arena, res, u, u_sym) else {
+        tracing::debug!("integrate: spiral: a logarithm or arctangent is not of linear factors");
+        return None;
+    };
     // `g·l = λ·x + μ`.
     let zero = arena.zero;
     let mu = crate::transforms::subs::subs(arena, gl, var, zero);
@@ -7281,7 +7298,11 @@ fn spiral_continuous(
     let re_lambda = arena.re(lambda);
     let re_lambda = crate::transforms::eval::eval(arena, re_lambda);
     // `None` on a circle (an imaginary rate).
-    let growing = match crate::poly::algebraic::sign_checked(arena, re_lambda)? {
+    let Some(sign) = crate::poly::algebraic::sign_checked(arena, re_lambda) else {
+        tracing::debug!(re = %arena.display(re_lambda), "integrate: spiral: the sign of the rate's real part is not decided");
+        return None;
+    };
+    let growing = match sign {
         0 => None,
         s => Some(s > 0),
     };
@@ -7296,7 +7317,19 @@ fn spiral_continuous(
         if !contains_var(arena, w, u_sym) || logs.iter().any(|&(l, _)| l == id) {
             continue;
         }
-        let (c1, c0) = symbolic_linear_coeff_of(arena, w, u, u_sym)?;
+        // (`(u − 1)·i + 1`, the root `1 − i` of `(2 − i)ˣ − 1 + i`, is linear
+        // once multiplied out; up to 0.58 it was refused.)
+        let coeffs = match symbolic_linear_coeff_of(arena, w, u, u_sym) {
+            Some(found) => Some(found),
+            None => {
+                let expanded = crate::transforms::expand::expand(arena, w);
+                symbolic_linear_coeff_of(arena, expanded, u, u_sym)
+            }
+        };
+        let Some((c1, c0)) = coeffs else {
+            tracing::debug!(arg = %arena.display(w), "integrate: spiral: a logarithm's argument is not linear in u");
+            return None;
+        };
         if arena.is_zero_structural(c0) {
             logs.push((id, None));
             continue;
@@ -7314,6 +7347,11 @@ fn spiral_continuous(
         }
     }
     if logs.is_empty() || roots.len() > MAX_SPIRAL_LOGS {
+        tracing::debug!(
+            logs = logs.len(),
+            roots = roots.len(),
+            "integrate: spiral: no logarithm of u, or too many roots"
+        );
         return None;
     }
     // Nothing else of `u` but rational functions.
@@ -7323,6 +7361,7 @@ fn spiral_continuous(
         probe = arena.subs_structural(probe, id, stand_in);
     }
     if !is_rational_in(arena, probe, u_sym) {
+        tracing::debug!(res = %arena.display(res), "integrate: spiral: another function of u remains");
         return None;
     }
     // Per logarithm (`node`; in `by_root` its root): the forms left and
@@ -7369,10 +7408,25 @@ fn spiral_continuous(
             });
             continue;
         };
-        let at = arena.sub(ln_abs_r, re_mu);
-        let at = arena.div(at, re_lambda);
-        let at = crate::transforms::eval::eval(arena, at);
+        let gap = arena.sub(ln_abs_r, re_mu);
+        let at = arena.div(gap, re_lambda);
+        let mut at = crate::transforms::eval::eval(arena, at);
+        // `ln 2/ln √2` (`(1+i)ˣ = 2i`) is 2 once `ln √2` is written `½ ln 2`,
+        // as `definite::exp_rational_scan` reads it: the turn count at a
+        // pole on the path is an exact integer only for the number (up to
+        // 0.58 `∫ dx/((1+i)ˣ − 2i)` was refused: `⌊(π/4·ln 2/ln √2 −
+        // π/2)/2π⌋` did not settle).
+        if arena.as_num(at).is_none() {
+            let n = ln_sqrt_as_half_ln(arena, gap);
+            let d = ln_sqrt_as_half_ln(arena, re_lambda);
+            let q = arena.div(n, d);
+            let q = crate::transforms::eval::eval(arena, q);
+            if arena.as_num(q).is_some() {
+                at = q;
+            }
+        }
         if !crate::transforms::evalf::eval_const_f64(arena, at).is_some_and(f64::is_finite) {
+            tracing::debug!(at = %arena.display(at), "integrate: spiral: a joining point has no value");
             return None;
         }
         let (left, right) = if growing { (near, far) } else { (far, near) };
@@ -7384,16 +7438,27 @@ fn spiral_continuous(
         } else {
             ln_neg_r
         };
-        let k = spiral_turns(arena, lambda, mu, r, at)?;
+        let Some(k) = spiral_turns(arena, lambda, mu, r, at) else {
+            tracing::debug!(at = %arena.display(at), "integrate: spiral: the turn count does not settle");
+            return None;
+        };
         let above = match arg_is_positive(arena, r) {
             Truth::True => arena.one,
             Truth::False => arena.zero,
-            Truth::Unknown => return None,
+            Truth::Unknown => {
+                tracing::debug!("integrate: spiral: the side of a root is not decided");
+                return None;
+            }
         };
         let m = arena.add(&[k, above]);
         let m = if growing { arena.neg(m) } else { m };
         let m = crate::transforms::eval::eval(arena, m);
-        arena.as_num(m).filter(|q| q.is_integer())?;
+        if !arena.as_num(m).is_some_and(|q| q.is_integer()) {
+            tracing::debug!(
+                "integrate: spiral: the joining constant is not an integer multiple of 2πi"
+            );
+            return None;
+        }
         let jump = arena.mul(&[m, two_pi_i]);
         let join = arena.add(&[base, jump]);
         let right = arena.add(&[right, join]);
@@ -7489,6 +7554,34 @@ fn spiral_continuous(
     }
     tracing::debug!("integrate: exponential substitution along a spiral, joined continuously");
     Some(result)
+}
+
+/// `expr` with every `ln √q` of a positive rational `q` written `½·ln q`
+/// (the modulus of a Gaussian rational is such a root): the same value, in
+/// the form in which a quotient of two such logarithms cancels to a number.
+fn ln_sqrt_as_half_ln(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let mut out = expr;
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        let ExprNode::Ln(w) = *arena.node(id) else {
+            continue;
+        };
+        let ExprNode::Pow(base, e) = *arena.node(w) else {
+            continue;
+        };
+        let half = Q::new(1.into(), 2.into());
+        if arena.as_num(e) != Some(&half)
+            || !arena
+                .as_num(base)
+                .is_some_and(|q| q > &Q::from_integer(0.into()))
+        {
+            continue;
+        }
+        let ln_base = arena.ln(base);
+        let half = arena.num_ratio(half);
+        let repl = arena.mul(&[half, ln_base]);
+        out = arena.subs_structural(out, id, repl);
+    }
+    crate::transforms::eval::eval(arena, out)
 }
 
 /// `⌊θ/2π⌋` for the angle `θ = im(λ·x_r + μ) − arg r` of `u(x_r)/r` in

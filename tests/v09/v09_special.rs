@@ -377,7 +377,17 @@ fn incomplete_gamma() {
     let d = x.uppergamma(&s).diff(&x);
     assert_eq!(d, -expected);
     // exact values
-    assert_eq!(format!("{}", ctx.int(0).lowergamma(&s).eval()), "0");
+    // (`γ(s, 0) = 0` needs `re s > 0`: up to 0.58 it folded for a plain `s`
+    // too, and this line pinned `0`; `γ(s, x) ~ xˢ/s` is infinite at 0 for
+    // `re s < 0`: 0.59, R2.2)
+    assert_eq!(
+        format!("{}", ctx.int(0).lowergamma(&s).eval()),
+        "lowergamma(s, 0)"
+    );
+    assert_eq!(
+        format!("{}", ctx.int(0).lowergamma(&ctx.int(2)).eval()),
+        "0"
+    );
     assert_eq!(
         format!("{}", ctx.infinity().lowergamma(&s).eval()),
         "Gamma(s)"

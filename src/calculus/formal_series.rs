@@ -41,8 +41,11 @@
 //!
 //! A function with no Laurent or Puiseux expansion at the point (`ln x`,
 //! `exp(1/x)`, `|x|` at 0) gives a [refused](FormalPowerSeries::is_refused)
-//! series: its coefficients are unevaluated stand-ins (never `nan`), its
-//! truncation a formal `Series` node, and
+//! series: its coefficients are unevaluated stand-ins (the residues
+//! `Res_{x=a} f·(x − a)^−(k+1)`, which define a Laurent coefficient where
+//! one exists; never `nan`, and never the Taylor coefficient `f⁽ᵏ⁾(a)/k!`
+//! of a function that has no Taylor expansion), its truncation a formal
+//! `Series` node, and
 //! [`try_coefficient`](FormalPowerSeries::try_coefficient) /
 //! [`try_truncate`](FormalPowerSeries::try_truncate) return `Err`.
 //!
@@ -423,9 +426,15 @@ fn contains_singular(arena: &Arena, id: ExprId) -> bool {
 /// for terabytes.
 const MAX_COEFFICIENTS: usize = cast::MAX_SERIES_TERMS;
 
-/// The stand-in `Res_{var=point} f·(var − point)^−(k+1)` for the `k`-th
-/// coefficient beyond [`MAX_COEFFICIENTS`] (the derivative form of
-/// [`taylor_standin`] has `k` nested nodes).
+/// The unevaluated stand-in `Res_{var=point} f·(var − point)^−(k+1)` for a
+/// `k`-th coefficient that is not computed: of a refused series, of an
+/// order at which the expansion failed, or beyond [`MAX_COEFFICIENTS`]
+/// (never `nan`).  It is the definition of the Laurent coefficient where
+/// one exists (Cauchy's formula) and claims nothing else.  Up to 0.58 the
+/// stand-in below the cap was the Taylor coefficient
+/// `Subs(dᵏ f/dxᵏ, x, point)/k!` (`k` nested `Derivative` nodes), written
+/// for functions that have no Taylor expansion at the point (`1/x + x^a`,
+/// `√(x³)`, `|x|` at 0: the derivatives it names do not exist there).
 fn residue_standin(arena: &mut Arena, f: ExprId, var: ExprId, point: ExprId, k: i64) -> ExprId {
     let base = if arena.is_zero_structural(point) {
         var
@@ -436,22 +445,6 @@ fn residue_standin(arena: &mut Arena, f: ExprId, var: ExprId, point: ExprId, k: 
     let p = arena.pow(base, e);
     let body = arena.mul(&[f, p]);
     arena.intern(ExprNode::Residue(body, var, point))
-}
-
-/// The unevaluated `k`-th Taylor coefficient `Subs(dᵏ f/dxᵏ, x, point)/k!`,
-/// returned where the coefficient cannot be computed (never `nan`).
-fn taylor_standin(arena: &mut Arena, f: ExprId, var: ExprId, point: ExprId, k: i64) -> ExprId {
-    let k = u64::try_from(k).unwrap_or(0);
-    let mut body = f;
-    for _ in 0..k {
-        body = arena.intern(ExprNode::Derivative(body, var));
-    }
-    let at = arena.make(ExprNode::Subs(body, var, point));
-    if k <= 1 {
-        return at;
-    }
-    let inv = rat_expr(arena, Q::new(BigInt::one(), factorial(k)));
-    arena.mul(&[inv, at])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1291,8 +1284,9 @@ impl FormalPowerSeries {
     /// For series with a pole at the expansion point this is the Laurent
     /// coefficient of `(x − a)^k` for `k ≥ 0`; use
     /// [`truncate`](Self::truncate) to see the negative powers.  Where no
-    /// coefficient exists (a [refused](Self::is_refused) series) it is an
-    /// unevaluated stand-in; [`try_coefficient`](Self::try_coefficient)
+    /// coefficient exists (a [refused](Self::is_refused) series) or the
+    /// expansion failed at this order it is the unevaluated stand-in
+    /// `Res_{x=a} f·(x − a)^−(k+1)`; [`try_coefficient`](Self::try_coefficient)
     /// returns `Err` instead.  A series computes the coefficients up to 2¹⁴
     /// indices past its first (the earlier ones are needed for the later):
     /// beyond, a polynomial's own coefficient, the stand-in `Res_{x=a} f·(x −
@@ -1341,10 +1335,74 @@ impl FormalPowerSeries {
         inner.arena.as_num(c.id).cloned()
     }
 
-    /// The first `n` coefficients `a_0 … a_{n−1}`.
+    /// The first `n` coefficients `a_0 … a_{n−1}`, each as
+    /// [`coefficient`](Self::coefficient) gives it.
+    ///
+    /// # Refusal
+    ///
+    /// A series lists at most 2¹⁴ + 1 coefficients (the indices it
+    /// computes: see [`coefficient`](Self::coefficient)), a polynomial at
+    /// least its own.  For a larger `n` the list is **empty although the
+    /// coefficients exist**; callers that may pass such lengths use
+    /// [`try_coefficients`](Self::try_coefficients), which reports the
+    /// refusal as an `Err`.  (Up to 0.58 the list was allocated for any `n`:
+    /// `coefficients(1 << 40)` asked for 16 TB and the process aborted.)
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let s = x.exp().fps_maclaurin(&x);
+    /// let c: Vec<String> = s.coefficients(4).iter().map(|c| c.to_string()).collect();
+    /// assert_eq!(c, ["1", "1", "1/2", "1/6"]);
+    /// assert!(s.coefficients(1 << 40).is_empty());
+    /// ```
     #[must_use]
     pub fn coefficients(&self, n: usize) -> Vec<Ex> {
-        (0..n).map(|k| self.coefficient(k)).collect()
+        match self.listed_len(n) {
+            Some(n) => (0..n).map(|k| self.coefficient(k)).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Like [`coefficients`](Self::coefficients), but `Err` when the series
+    /// is refused, a coefficient could not be computed, or `n` is more than
+    /// the series lists (2¹⁴ + 1; a polynomial lists at least its own).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`].
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let s = x.sin().fps_maclaurin(&x);
+    /// let c: Vec<String> = s.try_coefficients(4).unwrap().iter().map(|c| c.to_string()).collect();
+    /// assert_eq!(c, ["0", "1", "0", "-1/6"]);
+    /// assert!(s.try_coefficients(1 << 40).is_err());
+    /// ```
+    pub fn try_coefficients(&self, n: usize) -> Result<Vec<Ex>, SymplexError> {
+        self.ensure_usable("fps_coefficients", true)?;
+        let Some(n) = self.listed_len(n) else {
+            return Err(SymplexError::ComputationFailed {
+                operation: "fps_coefficients",
+                reason: format!("{n} coefficients are too many to list"),
+            });
+        };
+        (0..n).map(|k| self.try_coefficient(k)).collect()
+    }
+
+    /// `n` when [`coefficients`](Self::coefficients) lists that many: the
+    /// indices `0..=MAX_COEFFICIENTS`, and all of a polynomial's own.
+    fn listed_len(&self, n: usize) -> Option<usize> {
+        let own = match &self.source {
+            Source::Polynomial(c) => c.len(),
+            _ => 0,
+        };
+        cast::bounded_len(n, own.max(MAX_COEFFICIENTS + 1))
     }
 
     /// Coefficient of index `k` (memoised; computed sequentially from the
@@ -1444,7 +1502,7 @@ impl FormalPowerSeries {
                         return exact(c);
                     }
                 }
-                let id = taylor_standin(arena, *expr, *svar, self.zero, k);
+                let id = residue_standin(arena, *expr, *svar, self.zero, k);
                 Coeff { id, exact: false }
             }
             Source::Polynomial(c) => usize::try_from(k)
@@ -1456,7 +1514,7 @@ impl FormalPowerSeries {
                     return zero;
                 }
                 let mut inner = self.ctx.inner.write();
-                let id = taylor_standin(&mut inner.arena, *expr, self.var, self.point, k);
+                let id = residue_standin(&mut inner.arena, *expr, self.var, self.point, k);
                 Coeff { id, exact: false }
             }
             Source::Add(a, b) | Source::Sub(a, b) => {

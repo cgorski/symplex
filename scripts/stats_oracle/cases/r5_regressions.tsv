@@ -1,0 +1,17 @@
+# Reproducers of wave 16 (session 17, R5): sums over a window around the mode (entropies of large
+# lattice laws), the far lower tail of a gamma law with a huge shape, densities with a huge degree
+# of freedom.  tests/v36/v36_s15r5_stats.rs pins the same values with their mpmath calls.
+# id	kind	target	params	method	arg
+r5.binomial.entropy.n2e4	dist	binomial	20000,13/100	entropy	-
+r5.binomial.entropy.n1e5	dist	binomial	100000,13/100	entropy	-
+r5.binomial.entropy.small_p	dist	binomial	100000,1/1000000	entropy	-
+r5.poisson.entropy.25000	dist	poisson	25000	entropy	-
+r5.negative_binomial.entropy.p_near_1	dist	negative_binomial	60000,599/600	entropy	-
+r5.hypergeometric.entropy.448_atoms	dist	hypergeometric	4196,3749,3300	entropy	-
+r5.chi_squared.cdf.far.3e7	dist	chi_squared	34000000	cdf	67600001/2
+r5.gamma.cdf.far.2e7	dist	gamma	17000000,1	cdf	67600001/4
+r5.chi_squared.cdf.far.3e10	dist	chi_squared	34000000000	cdf	4455181872467977/131072
+r5.f.pdf.d1_3e128	dist	f	300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,1	pdf	91/125000
+r5.f.pdf.d1_1e9	dist	f	1000000000,1	pdf	91/125000
+r5.f.pdf.d2_1e19	dist	f	7,10000000000000000000	pdf	3/2
+r5.student_t.pdf.nu_1e128	dist	student_t	100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000	pdf	-3/2

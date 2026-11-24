@@ -1330,6 +1330,12 @@ impl AssumptionCache {
                     || known(c, Props::INTEGER).is_false()
                     || known(c, Props::REAL).is_false()
             }),
+            // (`γ(s, 0) = 0` for a positive `s`)
+            Poles::NonPositiveIntegerOrZero { integer, zero } => arg(integer).is_some_and(|s| {
+                known(s, Props::POSITIVE).is_true()
+                    || ((known(s, Props::INTEGER).is_false() || known(s, Props::REAL).is_false())
+                        && arg(zero).is_some_and(|z| known(z, Props::NONZERO).is_true()))
+            }),
             // `atan` at `±i`, `tanh` at `i(π/2 + kπ)`.
             Poles::Other if matches!(f, Func::Atan | Func::Tanh) => {
                 arg(0).is_some_and(|c| known(c, Props::REAL).is_true())
@@ -2593,6 +2599,13 @@ impl AssumptionCache {
                 arena
                     .as_num(c)
                     .is_some_and(|q| *q == crate::base::numeric::qi(1))
+            }),
+            // (at the `zero` place the value is finite only for `re s > 0`)
+            Poles::NonPositiveIntegerOrZero { integer, zero } => arg(integer).is_some_and(|s| {
+                self.is_nonpositive_integer(arena, s)
+                    || (arg(zero).is_some_and(|z| {
+                        Truth::from(self.compute(arena, z).query(Props::ZERO)).is_true()
+                    }) && !Truth::from(self.compute(arena, s).query(Props::POSITIVE)).is_true())
             }),
             Poles::None | Poles::Other => false,
         }

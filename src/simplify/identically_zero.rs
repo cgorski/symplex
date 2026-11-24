@@ -371,91 +371,12 @@ pub(crate) fn nonzero_at_a_sample(arena: &mut Arena, e: ExprId) -> bool {
     !walk::has_unevaluated(arena, e) && sample(arena, e) == Sampled::Nonzero
 }
 
-/// May `e`, a quantity with symbols, be 0 on a set of values of its
-/// symbols of positive measure without being 0 identically?  The generic
-/// convention — a quantity with symbols that is not identically zero is
-/// nonzero for almost every value of them, so `x/x = 1` and a series may
-/// divide by a parameter `a` — holds for the analytic functions of the
-/// symbols and fails for the piecewise ones: `0^y` is `0` on the half plane
-/// `re y > 0` (and `zoo`, `nan` elsewhere), `δ(1/2, y)` is `0` except at
-/// `y = 1/2` (its generic value is 0), `H(y)` is `0` for `y < 0`, `⌊y⌋` on
-/// `[0, 1)`, `max(y, 0)` for `y ≤ 0`, `arg(y)` for a real `y > 0`.  Nonzero at
-/// a sample point proves nothing there.
-///
-/// A factor of a product may vanish on a region when it is such a step
-/// (`0^y`, `δ`, `H`, `⌊·⌋`, `⌈·⌉`), a `min`, `max` or `Piecewise` with a
-/// value 0 or one that may (`max(y, 1)` may not), `arg f` of a real `f`, or
-/// `|f|`, `sign f`, `re f`, `im f`, `f̄`, `arg f` or a power `fⁿ` of an `f` that
-/// may; any other factor — a sum or a function — when `0^y`, `δ` or a
-/// Kronecker delta (0 on a half plane or almost everywhere) occurs in it.
-/// A product of symbols, numbers and analytic functions of them may not.
-/// (A sum whose step functions cancel a constant on a region, `H(y) − 1`,
-/// `⌊y⌋ − 1`, or whose parts do for a real argument, `|y| − y`, is not
-/// detected: it keeps the generic reading.)  Up to 0.56 the series engine
-/// and the limits took `0^y` and `δ(1/2, y)` for nonzero parameters
-/// (`series(sin(x)/(x + 0^y), x)` was `x/0^y + …`, wrong for `y > 0`), and
-/// `cancel` divided them out.
-pub(crate) fn may_vanish_on_a_region(arena: &Arena, e: ExprId) -> bool {
-    use crate::base::assumptions::AssumptionCache;
-    // Zero on a half plane or almost everywhere: also inside sums.
-    let generically_zero = |arena: &Arena, id: ExprId| match *arena.node(id) {
-        ExprNode::Pow(b, x) => arena.is_zero_structural(b) && arena.as_num(x).is_none(),
-        ExprNode::KroneckerDelta(..) | ExprNode::DiracDelta(_) => !arena.is_symbol_free(id),
-        _ => false,
-    };
-    let step = |arena: &Arena, id: ExprId| {
-        generically_zero(arena, id)
-            || (matches!(
-                arena.node(id),
-                ExprNode::Heaviside(_) | ExprNode::Floor(_) | ExprNode::Ceiling(_)
-            ) && !arena.is_symbol_free(id))
-    };
-    let mut stack = vec![e];
-    while let Some(f) = stack.pop() {
-        if arena.is_symbol_free(f) {
-            continue;
-        }
-        match *arena.node(f) {
-            ExprNode::Mul(ref fs) => stack.extend(fs.iter().copied()),
-            ExprNode::Neg(g)
-            | ExprNode::Abs(g)
-            | ExprNode::Sign(g)
-            | ExprNode::Re(g)
-            | ExprNode::Im(g)
-            | ExprNode::Conjugate(g) => stack.push(g),
-            ExprNode::Arg(g) => {
-                if Truth::from(AssumptionCache::new().query(arena, g, Props::REAL)).is_true() {
-                    return true;
-                }
-                stack.push(g);
-            }
-            ExprNode::Pow(b, n) if arena.as_num(n).is_some() => stack.push(b),
-            ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
-                if args.iter().any(|&a| arena.is_zero_structural(a)) {
-                    return true;
-                }
-                stack.extend(args.iter().copied());
-            }
-            ExprNode::Piecewise(ref pairs) => {
-                if pairs.iter().any(|&(v, _)| arena.is_zero_structural(v)) {
-                    return true;
-                }
-                stack.extend(pairs.iter().map(|&(v, _)| v));
-            }
-            ExprNode::Symbol(_) => {}
-            _ if step(arena, f) => return true,
-            _ => {
-                if walk::post_order_ids(arena, f)
-                    .into_iter()
-                    .any(|id| generically_zero(arena, id))
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
+// May a quantity with symbols be 0 on a set of values of its symbols of
+// positive measure without being 0 identically (`0^y`, `δ`, `H`, `⌊·⌋`,
+// `max(y, 0)`)?  The predicate lives with the canonical constructors since
+// 0.59, whose `0/d` and `zoo·f` obey it too; the zero tests of this layer
+// and above name it here.
+pub(crate) use crate::base::canon::may_vanish_on_a_region;
 
 /// Largest `|k|` of a power `exp(m/L)^k` built by [`in_exponentials`].
 /// The conversion to a rational function has its own size budget; up to

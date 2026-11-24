@@ -1687,12 +1687,20 @@ impl Poly {
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` if an exponent overflows `u32`.
+    /// `InvalidArgument` if an exponent overflows `u32` or the power is
+    /// beyond the size bounds ([`MultiPoly::try_pow`]: a polynomial of two
+    /// or more terms is raised to at most `2¹⁶`; up to 0.58
+    /// `Poly::pow(u32::MAX)` of `x + 1` ran until the memory was exhausted).
     pub fn pow(&self, n: u32) -> Result<Poly, SymplexError> {
+        let too_large = || invalid("Poly::pow", "exponent overflow or a power too large");
         if let Some(mp) = self.exact() {
-            let power =
-                pow_checked(mp, n).ok_or_else(|| invalid("Poly::mul", "exponent overflow"))?;
+            let power = pow_checked(mp, n).ok_or_else(too_large)?;
             return Ok(Self::from_exact(&self.ctx, self.gens.clone(), power));
+        }
+        if self.num_terms() >= 2
+            && crate::base::cast::bounded_len(n, crate::base::cast::MAX_DENSE_DEGREE).is_none()
+        {
+            return Err(too_large());
         }
         let gens: Vec<&Ex> = self.gens.iter().collect();
         let mut result = Self::one(&self.ctx, &gens)?;

@@ -983,7 +983,66 @@ pub(crate) fn tree_from_json(json: &str) -> Result<ExprTree, serde_json::Error> 
 /// the arena's canonical constructors).  A malformed number reads as 0
 /// ([`tree_from_json`] rejects one), and `n/0` is `n·0⁻¹` (`zoo`, or
 /// `nan` for `0/0`), not a panic.
+///
+/// Post-order over an explicit stack: the children of a node
+/// ([`ExprTree::head_and_children`]) are converted before the node, which
+/// finds their expressions by their addresses ([`child_expr`]).  Up to 0.58
+/// the conversion called itself once per level, and a tree nested 100,000
+/// deep (built in code: JSON text has serde's depth limit) overflowed the
+/// stack, which aborts the process.
 pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
+    enum Visit<'t> {
+        Enter(&'t ExprTree),
+        Leave(&'t ExprTree, Vec<&'t ExprTree>),
+    }
+    let mut done = Converted::default();
+    let mut last = arena.nan;
+    let mut stack = vec![Visit::Enter(tree)];
+    while let Some(visit) = stack.pop() {
+        match visit {
+            Visit::Enter(node) => {
+                let children = node.head_and_children().1.unwrap_or_default();
+                stack.push(Visit::Leave(node, children.clone()));
+                stack.extend(children.into_iter().map(Visit::Enter));
+            }
+            Visit::Leave(node, children) => {
+                last = node_to_expr(arena, &done, node);
+                // Only the parent asks for a child: the map stays as small
+                // as the frontier.
+                for child in children {
+                    done.remove(&std::ptr::from_ref(child));
+                }
+                done.insert(std::ptr::from_ref(node), last);
+            }
+        }
+    }
+    // The root is the last node left.
+    last
+}
+
+/// The expressions of the nodes converted so far whose parent is still to
+/// come, by the address of the node (a tree owns its nodes: no two share
+/// one).
+type Converted = rustc_hash::FxHashMap<*const ExprTree, ExprId>;
+
+/// The expression of a child of the node being converted.  A child that
+/// [`ExprTree::head_and_children`] did not list is converted here (the
+/// result is the same; only the depth is then bounded by the stack).
+fn child_expr(arena: &mut Arena, done: &Converted, child: &ExprTree) -> ExprId {
+    match done.get(&std::ptr::from_ref(child)) {
+        Some(&id) => id,
+        None => {
+            debug_assert!(
+                false,
+                "head_and_children missed a child of an ExprTree node"
+            );
+            tree_to_expr(arena, child)
+        }
+    }
+}
+
+/// One node of [`tree_to_expr`], its children already converted.
+fn node_to_expr(arena: &mut Arena, done: &Converted, tree: &ExprTree) -> ExprId {
     match tree {
         ExprTree::Num { numer, denom } => {
             let n: BigInt = numer.parse().unwrap_or_default();
@@ -1005,7 +1064,7 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Catalan => arena.catalan,
         ExprTree::GoldenRatio => arena.golden_ratio,
         ExprTree::PhysicalConstant { name, value } => {
-            let val_id = tree_to_expr(arena, value);
+            let val_id = child_expr(arena, done, value);
             arena.physical_constant(name, val_id)
         }
         ExprTree::Infinity => arena.infinity,
@@ -1013,213 +1072,213 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::ComplexInfinity => arena.complex_infinity,
         ExprTree::NaN => arena.nan,
         ExprTree::Add { terms } => {
-            let ids: Vec<ExprId> = terms.iter().map(|t| tree_to_expr(arena, t)).collect();
+            let ids: Vec<ExprId> = terms.iter().map(|t| child_expr(arena, done, t)).collect();
             arena.add(&ids)
         }
         ExprTree::Mul { factors } => {
-            let ids: Vec<ExprId> = factors.iter().map(|f| tree_to_expr(arena, f)).collect();
+            let ids: Vec<ExprId> = factors.iter().map(|f| child_expr(arena, done, f)).collect();
             arena.mul(&ids)
         }
         ExprTree::Pow { base, exp } => {
-            let b = tree_to_expr(arena, base);
-            let e = tree_to_expr(arena, exp);
+            let b = child_expr(arena, done, base);
+            let e = child_expr(arena, done, exp);
             arena.pow(b, e)
         }
         ExprTree::Neg { inner } => {
-            let x = tree_to_expr(arena, inner);
+            let x = child_expr(arena, done, inner);
             arena.neg(x)
         }
         ExprTree::Sin { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.sin(x)
         }
         ExprTree::Cos { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.cos(x)
         }
         ExprTree::Tan { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.tan(x)
         }
         ExprTree::Exp { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.exp(x)
         }
         ExprTree::Ln { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.ln(x)
         }
         ExprTree::Sqrt { arg } => {
             // Legacy compatibility: convert to Pow(arg, 1/2)
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.sqrt(x) // which now produces Pow(x, 1/2)
         }
         ExprTree::Abs { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.abs(x)
         }
         ExprTree::Asin { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.asin(x)
         }
         ExprTree::Acos { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.acos(x)
         }
         ExprTree::Atan { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.atan(x)
         }
         ExprTree::Atan2 { y, x } => {
-            let yid = tree_to_expr(arena, y);
-            let xid = tree_to_expr(arena, x);
+            let yid = child_expr(arena, done, y);
+            let xid = child_expr(arena, done, x);
             arena.atan2(yid, xid)
         }
         ExprTree::Sinh { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.sinh(x)
         }
         ExprTree::Cosh { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.cosh(x)
         }
         ExprTree::Tanh { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.tanh(x)
         }
         ExprTree::Asinh { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.asinh(x)
         }
         ExprTree::Acosh { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.acosh(x)
         }
         ExprTree::Atanh { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.atanh(x)
         }
         ExprTree::Sign { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.sign(x)
         }
         ExprTree::Heaviside { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.heaviside(x)
         }
         ExprTree::DiracDelta { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.dirac_delta(x)
         }
         ExprTree::Gamma { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.gamma(x)
         }
         ExprTree::LogGamma { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.log_gamma(x)
         }
         ExprTree::Digamma { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.digamma(x)
         }
         ExprTree::Erf { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.erf(x)
         }
         ExprTree::Erfc { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.erfc(x)
         }
         ExprTree::LambertW { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.lambertw(x)
         }
         ExprTree::Beta { a, b } => {
-            let aid = tree_to_expr(arena, a);
-            let bid = tree_to_expr(arena, b);
+            let aid = child_expr(arena, done, a);
+            let bid = child_expr(arena, done, b);
             arena.beta(aid, bid)
         }
         ExprTree::Re { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.re(x)
         }
         ExprTree::Im { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.im(x)
         }
         ExprTree::Conjugate { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.conjugate(x)
         }
         ExprTree::Arg { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.arg(x)
         }
         ExprTree::Si { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.si(x)
         }
         ExprTree::Ci { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.ci(x)
         }
         ExprTree::Ei { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.ei(x)
         }
         ExprTree::Li { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.li(x)
         }
         ExprTree::Zeta { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.zeta(x)
         }
         ExprTree::Polygamma { n, arg } => {
-            let nid = tree_to_expr(arena, n);
-            let x = tree_to_expr(arena, arg);
+            let nid = child_expr(arena, done, n);
+            let x = child_expr(arena, done, arg);
             arena.polygamma(nid, x)
         }
         ExprTree::KroneckerDelta { i, j } => {
-            let iid = tree_to_expr(arena, i);
-            let jid = tree_to_expr(arena, j);
+            let iid = child_expr(arena, done, i);
+            let jid = child_expr(arena, done, j);
             arena.kronecker_delta(iid, jid)
         }
         ExprTree::Floor { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.floor(x)
         }
         ExprTree::Ceiling { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.ceiling(x)
         }
         ExprTree::Min { args } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
-                args.iter().map(|a| tree_to_expr(arena, a)).collect();
+                args.iter().map(|a| child_expr(arena, done, a)).collect();
             arena.make(ExprNode::Min(ids))
         }
         ExprTree::Max { args } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
-                args.iter().map(|a| tree_to_expr(arena, a)).collect();
+                args.iter().map(|a| child_expr(arena, done, a)).collect();
             arena.make(ExprNode::Max(ids))
         }
         // `to_tree` writes the built-in `Factorial` / `Binomial` nodes as
         // `Apply` (as the parser reads them); map them back so the round
         // trip is the identity.
         ExprTree::Apply { name, args } if name == "factorial" && args.len() == 1 => {
-            let x = tree_to_expr(arena, &args[0]);
+            let x = child_expr(arena, done, &args[0]);
             arena.factorial(x)
         }
         ExprTree::Apply { name, args } if name == "binomial" && args.len() == 2 => {
-            let n = tree_to_expr(arena, &args[0]);
-            let k = tree_to_expr(arena, &args[1]);
+            let n = child_expr(arena, done, &args[0]);
+            let k = child_expr(arena, done, &args[1]);
             arena.binomial(n, k)
         }
         // The branch `k` of Lambert W (`W(x, 0)` is the principal-branch node).
         ExprTree::Apply { name, args } if name == "lambertw" && args.len() == 2 => {
-            let x = tree_to_expr(arena, &args[0]);
-            let k = tree_to_expr(arena, &args[1]);
+            let x = child_expr(arena, done, &args[0]);
+            let k = child_expr(arena, done, &args[1]);
             arena.lambertw_branch(x, k)
         }
         // A built-in name is the built-in function, as `Context::apply` and
@@ -1228,7 +1287,7 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         // function does not take (which `from_json` refuses), is an
         // undefined function.
         ExprTree::Apply { name, args } => {
-            let arg_ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
+            let arg_ids: Vec<ExprId> = args.iter().map(|a| child_expr(arena, done, a)).collect();
             if let Some(Ok(id)) = crate::output::parse::builtin_call(arena, name, &arg_ids) {
                 return id;
             }
@@ -1237,13 +1296,13 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             arena.make(ExprNode::Apply(sym_id, sv))
         }
         ExprTree::Derivative { body, var } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
             arena.make(ExprNode::Derivative(b, v))
         }
         ExprTree::Integral { body, var } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
             arena.make(ExprNode::Integral(b, v))
         }
         ExprTree::DefiniteIntegral {
@@ -1252,10 +1311,10 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             lower,
             upper,
         } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
-            let lo = tree_to_expr(arena, lower);
-            let hi = tree_to_expr(arena, upper);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
+            let lo = child_expr(arena, done, lower);
+            let hi = child_expr(arena, done, upper);
             arena.definite_integral(b, v, lo, hi)
         }
         ExprTree::Sum {
@@ -1264,10 +1323,10 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             lower,
             upper,
         } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
-            let lo = tree_to_expr(arena, lower);
-            let hi = tree_to_expr(arena, upper);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
+            let lo = child_expr(arena, done, lower);
+            let hi = child_expr(arena, done, upper);
             arena.make(ExprNode::Sum(b, v, lo, hi))
         }
         ExprTree::Product_ {
@@ -1276,50 +1335,50 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             lower,
             upper,
         } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
-            let lo = tree_to_expr(arena, lower);
-            let hi = tree_to_expr(arena, upper);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
+            let lo = child_expr(arena, done, lower);
+            let hi = child_expr(arena, done, upper);
             arena.make(ExprNode::Product_(b, v, lo, hi))
         }
         ExprTree::BoolTrue => arena.bool_true,
         ExprTree::BoolFalse => arena.bool_false,
         ExprTree::Gt { lhs, rhs } => {
-            let l = tree_to_expr(arena, lhs);
-            let r = tree_to_expr(arena, rhs);
+            let l = child_expr(arena, done, lhs);
+            let r = child_expr(arena, done, rhs);
             arena.gt(l, r)
         }
         ExprTree::Ge { lhs, rhs } => {
-            let l = tree_to_expr(arena, lhs);
-            let r = tree_to_expr(arena, rhs);
+            let l = child_expr(arena, done, lhs);
+            let r = child_expr(arena, done, rhs);
             arena.ge(l, r)
         }
         ExprTree::Eq_ { lhs, rhs } => {
-            let l = tree_to_expr(arena, lhs);
-            let r = tree_to_expr(arena, rhs);
+            let l = child_expr(arena, done, lhs);
+            let r = child_expr(arena, done, rhs);
             arena.eq_(l, r)
         }
         ExprTree::Ne { lhs, rhs } => {
-            let l = tree_to_expr(arena, lhs);
-            let r = tree_to_expr(arena, rhs);
+            let l = child_expr(arena, done, lhs);
+            let r = child_expr(arena, done, rhs);
             arena.ne_(l, r)
         }
         ExprTree::And { args } => {
-            let ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
+            let ids: Vec<ExprId> = args.iter().map(|a| child_expr(arena, done, a)).collect();
             arena.and(&ids)
         }
         ExprTree::Or { args } => {
-            let ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
+            let ids: Vec<ExprId> = args.iter().map(|a| child_expr(arena, done, a)).collect();
             arena.or(&ids)
         }
         ExprTree::Not { arg } => {
-            let x = tree_to_expr(arena, arg);
+            let x = child_expr(arena, done, arg);
             arena.not(x)
         }
         ExprTree::Piecewise { pieces } => {
             let pairs: smallvec::SmallVec<[(ExprId, ExprId); 3]> = pieces
                 .iter()
-                .map(|(val, cond)| (tree_to_expr(arena, val), tree_to_expr(arena, cond)))
+                .map(|(val, cond)| (child_expr(arena, done, val), child_expr(arena, done, cond)))
                 .collect();
             arena.piecewise(&pairs)
         }
@@ -1329,8 +1388,8 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         // hand) to `{1, 1}` or `[5, 3]` reads back as `{1}` or `∅`, `==` to
         // the set built directly.
         ExprTree::Interval { start, end, flags } => {
-            let s = tree_to_expr(arena, start);
-            let e = tree_to_expr(arena, end);
+            let s = child_expr(arena, done, start);
+            let e = child_expr(arena, done, end);
             arena.make(ExprNode::Interval(
                 s,
                 e,
@@ -1338,29 +1397,31 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             ))
         }
         ExprTree::FiniteSet { elements } => {
-            let ids: smallvec::SmallVec<[ExprId; 4]> =
-                elements.iter().map(|e| tree_to_expr(arena, e)).collect();
+            let ids: smallvec::SmallVec<[ExprId; 4]> = elements
+                .iter()
+                .map(|e| child_expr(arena, done, e))
+                .collect();
             arena.finite_set(&ids)
         }
         ExprTree::SetUnion { sets } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
-                sets.iter().map(|s| tree_to_expr(arena, s)).collect();
+                sets.iter().map(|s| child_expr(arena, done, s)).collect();
             arena.set_union(&ids)
         }
         ExprTree::SetIntersection { sets } => {
             let ids: smallvec::SmallVec<[ExprId; 4]> =
-                sets.iter().map(|s| tree_to_expr(arena, s)).collect();
+                sets.iter().map(|s| child_expr(arena, done, s)).collect();
             arena.set_intersection(&ids)
         }
         ExprTree::SetComplement { set, universe } => {
-            let s = tree_to_expr(arena, set);
-            let u = tree_to_expr(arena, universe);
+            let s = child_expr(arena, done, set);
+            let u = child_expr(arena, done, universe);
             arena.set_complement(s, u)
         }
         ExprTree::Limit { body, var, point } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
-            let p = tree_to_expr(arena, point);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
+            let p = child_expr(arena, done, point);
             arena.make(ExprNode::Limit(b, v, p))
         }
         ExprTree::Series {
@@ -1369,65 +1430,65 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             point,
             order,
         } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
-            let p = tree_to_expr(arena, point);
-            let o = tree_to_expr(arena, order);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
+            let p = child_expr(arena, done, point);
+            let o = child_expr(arena, done, order);
             arena.make(ExprNode::Series(b, v, p, o))
         }
         ExprTree::LaplaceTransform { body, t, s } => {
-            let b = tree_to_expr(arena, body);
-            let ti = tree_to_expr(arena, t);
-            let si = tree_to_expr(arena, s);
+            let b = child_expr(arena, done, body);
+            let ti = child_expr(arena, done, t);
+            let si = child_expr(arena, done, s);
             arena.make(ExprNode::LaplaceTransform(b, ti, si))
         }
         ExprTree::InverseLaplaceTransform { body, s, t } => {
-            let b = tree_to_expr(arena, body);
-            let si = tree_to_expr(arena, s);
-            let ti = tree_to_expr(arena, t);
+            let b = child_expr(arena, done, body);
+            let si = child_expr(arena, done, s);
+            let ti = child_expr(arena, done, t);
             arena.make(ExprNode::InverseLaplaceTransform(b, si, ti))
         }
         ExprTree::Residue { body, var, point } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
-            let p = tree_to_expr(arena, point);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
+            let p = child_expr(arena, done, point);
             arena.make(ExprNode::Residue(b, v, p))
         }
         ExprTree::RootOf { poly, var, index } => {
-            let p = tree_to_expr(arena, poly);
+            let p = child_expr(arena, done, poly);
             let v = match var {
-                Some(v) => tree_to_expr(arena, v),
+                Some(v) => child_expr(arena, done, v),
                 None => root_of_legacy_var(arena, p),
             };
-            let i = tree_to_expr(arena, index);
+            let i = child_expr(arena, done, index);
             arena.make(ExprNode::RootOf(p, v, i))
         }
         ExprTree::DSolve { expr, func, var } => {
-            let e = tree_to_expr(arena, expr);
-            let f = tree_to_expr(arena, func);
-            let v = tree_to_expr(arena, var);
+            let e = child_expr(arena, done, expr);
+            let f = child_expr(arena, done, func);
+            let v = child_expr(arena, done, var);
             arena.make(ExprNode::DSolve(e, f, v))
         }
         ExprTree::RootSum { poly, body, sumvar } => {
-            let p = tree_to_expr(arena, poly);
-            let b = tree_to_expr(arena, body);
-            let s = tree_to_expr(arena, sumvar);
+            let p = child_expr(arena, done, poly);
+            let b = child_expr(arena, done, body);
+            let s = child_expr(arena, done, sumvar);
             arena.make(ExprNode::RootSum(p, b, s))
         }
         ExprTree::ConditionSet { var, condition } => {
-            let v = tree_to_expr(arena, var);
-            let c = tree_to_expr(arena, condition);
+            let v = child_expr(arena, done, var);
+            let c = child_expr(arena, done, condition);
             arena.make(ExprNode::ConditionSet(v, c))
         }
         ExprTree::Subs { body, var, point } => {
-            let b = tree_to_expr(arena, body);
-            let v = tree_to_expr(arena, var);
-            let p = tree_to_expr(arena, point);
+            let b = child_expr(arena, done, body);
+            let v = child_expr(arena, done, var);
+            let p = child_expr(arena, done, point);
             crate::transforms::subs::subs(arena, b, v, p)
         }
         ExprTree::ImageSet { var, body } => {
-            let v = tree_to_expr(arena, var);
-            let b = tree_to_expr(arena, body);
+            let v = child_expr(arena, done, var);
+            let b = child_expr(arena, done, body);
             arena.make(ExprNode::ImageSet(v, b))
         }
     }

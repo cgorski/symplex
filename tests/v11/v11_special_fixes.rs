@@ -57,11 +57,16 @@ fn incomplete_gamma_at_zero_refuses_nonpositive_s() {
     assert_eq!(g.eval(), ctx.pi().sqrt(), "{g}");
     assert_eq!(zero.uppergamma(&ctx.int(3)).eval().eval(), ctx.int(2));
     assert_eq!(zero.lowergamma(&ctx.int(3)).eval(), zero);
-    // Symbolic s (assumptions are not visible to `eval`) keeps the fold that
-    // the Gamma-distribution CDF `γ(k, 0)/Γ(k) = 0` relies on (SymPy:
-    // lowergamma(k, 0) = 0; uppergamma(k, 0) → gamma(k) for positive k).
+    // A symbolic s keeps the fold `γ(k, 0) = 0` where `re k > 0` is known (a
+    // positive shape of the Gamma distribution; SymPy: lowergamma(k, 0) = 0,
+    // uppergamma(k, 0) → gamma(k) for positive k).  Up to 0.58 it folded for
+    // a plain `k` too (this test pinned `0`): `γ(k, x) ~ xᵏ/k` is infinite at
+    // 0 for `re k < 0` (mpmath `gammainc(-0.5, 0, 1e-20) = −2.0e10`), and
+    // `limit(lowergamma(y, x), x, 0)` was `Piecewise((0, y ≠ 0))` (0.59, R2.2).
     let k = ctx.symbol("k");
-    assert_eq!(zero.lowergamma(&k).eval(), zero);
+    assert_eq!(zero.lowergamma(&k).eval(), zero.lowergamma(&k));
+    let kp = ctx.symbol_with("kp", &[Assumption::Positive]).unwrap();
+    assert_eq!(zero.lowergamma(&kp).eval(), zero);
     assert_eq!(zero.uppergamma(&k).eval(), k.gamma());
     // Γ(s, ∞) = 0 and γ(s, ∞) = Γ(s) are untouched (SymPy: lowergamma(-1/2, oo) = -2*sqrt(pi)).
     // Since 0.53 `γ(s, ∞) = Γ(s)` folds when built and `eval` then reaches

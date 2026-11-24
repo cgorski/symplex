@@ -24,7 +24,11 @@
 //!
 //! 1. Flatten nested `Mul` (explicit stack, no recursion).
 //! 2. Collect running numeric coefficient.
-//! 3. Combine like bases: `x * x → x²`, `x² * x³ → x⁵`.
+//! 3. Combine like bases: `x * x → x²`, `x² * x³ → x⁵`.  Not the base 0:
+//!    `0^y` is 0, 1 or `zoo` by the sign of `re y`, so its exponents add only
+//!    where the powers are of one kind (`0^y·0^(2y) = 0^(3y)`); `0^y·0^z`
+//!    stays, and `0^y·0^(−y)` is `Piecewise((1, Eq(y, 0)), (nan, True))`
+//!    (see `push_zero_power_factors`).
 //! 4. Numeric coefficient placed first if ≠ 1.
 //! 5. Remaining factors sorted by [`SortKey`](crate::base::sort_key::SortKey).
 //! 6. Zero propagation: any zero factor ⟹ result is `0`, except that
@@ -32,9 +36,11 @@
 //!    application at an exact argument where it is infinite (`ln(0)`,
 //!    `exp(∞)`) never reaches here: it is folded when interned (see
 //!    *Function applications* below).  Other applications (`Γ(zoo)`,
-//!    `f(x)`) count as finite.  A denominator `0^y` (0 on a half plane) is
-//!    not a generic nonzero value: `0/0^y` is a `Piecewise` (see
-//!    `zero_times_rest`).
+//!    `f(x)`) count as finite.  A denominator that is 0 on a region of its
+//!    symbols (`0^y` on a half plane, a step `H(y)`, `⌊y⌋`, `max(y, 0)`, a
+//!    delta) is not a generic nonzero value: `0/0^y` and `0/H(y)` are a
+//!    `Piecewise` (see `zero_times_rest`), and so is `zoo` times such a
+//!    factor (`handle_mul_with_zoo`).
 //! 7. `NaN` propagation.
 //! 8. `±∞` absorbs factors of known sign; factors of unknown direction
 //!    stay: `x·∞`, `−i·∞` (a *directed infinity*, see
@@ -51,6 +57,8 @@
 //! ## Pow
 //!
 //! - `x⁰ → 1`, `x¹ → x`, `1ˣ → 1`, `0^(pos) → 0`.
+//! - `(0^e)^q → 0^(q·e)` for a rational `q ≠ 0` (one form for the powers
+//!   of 0: `1/0^y` is `0^(−y)`).
 //! - Numeric base/exp evaluated when exp is integer with `|exp| ≤ max_pow_exponent`.
 //! - `NaN` propagation.
 //!
@@ -554,13 +562,20 @@ fn cancels_infinite_terms(arena: &Arena, terms: &FxHashMap<ExprId, Q>, merged: &
 ///   decide (`0^y`; also a factor `0^(−y)`, its reciprocal) is not a
 ///   generic nonzero value: it is 0 on the half plane `re e > 0`.  The
 ///   quotient is `0` only where every such denominator is nonzero, and `nan`
-///   elsewhere ([`zero_times_zero_powers`]): `0/0^y` is `Piecewise((0, (0 >
-///   re(y)) | Eq(y, 0)), (nan, True))`.  Up to 0.57 it was 0, right only for
+///   elsewhere ([`zero_power_is_nonzero`]): `0/0^y` is `Piecewise((0, (0 >
+///   `re(y)) | Eq(y, 0)), (nan, True))`.  Up to 0.57 it was 0, right only for
 ///   `re y < 0` (and `y = 0`).  (Any other factor `0^e` keeps the canonical
 ///   `0·f = 0` of a finite-looking factor: the exact zero coefficients of an
 ///   expansion at `0^e` rely on it.)
+/// * any other denominator that may vanish on a region of its symbols
+///   ([`may_vanish_on_a_region`]: a step `H(y)`, `⌊y⌋`, `max(y, 0)`, a delta,
+///   a sum with a power `0^y` in it) is not a generic nonzero value either:
+///   the quotient is `0` where each such factor of it is nonzero
+///   ([`push_nonzero_conditions`]) and `nan` elsewhere, `0/H(y)` is
+///   `Piecewise((0, y >= 0), (nan, True))`.  Up to 0.58 it was 0: wrong for
+///   `y < 0`, and for almost every `y` over `KroneckerDelta(y, 1)` or `δ(y)`.
 /// * a `Piecewise` factor or denominator distributes the zero over its
-///   pieces ([`zero_times_piecewise`]).
+///   pieces ([`times_piecewise`]).
 ///
 /// `saw_infinity` reports whether an infinity was already consumed from the
 /// factor list before the coefficient became zero; `remaining` are the
@@ -640,6 +655,9 @@ fn zero_times_rest<'a>(
         }
     }
     let mut memo = EverywhereMemo::default();
+    // The conditions under which the denominators that may vanish on a
+    // region are nonzero.
+    let mut conditions: SmallVec<[ExprId; 2]> = SmallVec::new();
     for d in denominators {
         if library_value_unknown_at_infinity(arena, d)
             || distribution_without_value(arena, d)
@@ -650,9 +668,10 @@ fn zero_times_rest<'a>(
             tracing::debug!("canon_mul: 0 over an identically zero or undefined denominator → nan");
             return arena.nan;
         }
-        push_zero_powers(arena, d, &mut zero_powers);
         if matches!(arena.node(d), ExprNode::Piecewise(_)) {
             piecewise.push((d, false));
+        } else {
+            push_nonzero_conditions(arena, d, &mut conditions);
         }
     }
     for f in applications {
@@ -664,19 +683,29 @@ fn zero_times_rest<'a>(
             return arena.nan;
         }
     }
-    let zero = zero_times_zero_powers(arena, &zero_powers);
-    zero_times_piecewise(arena, zero, &piecewise)
+    for e in zero_powers {
+        let condition = zero_power_is_nonzero(arena, e);
+        conditions.push(condition);
+    }
+    let zero = where_defined(arena, arena.zero, conditions);
+    times_piecewise(arena, arena.zero, zero, &piecewise)
 }
 
-/// `z` (0, or the `Piecewise` of [`zero_times_zero_powers`]) times the
+/// `z` (`absorbing`, or the `Piecewise` of [`where_defined`]) times the
 /// `Piecewise` factors (`true`) and denominators (`false`) of a product
-/// with the coefficient 0: `0·Piecewise((vᵢ, cᵢ))` is `Piecewise((0·vᵢ,
-/// cᵢ))` (one value when they agree), and so is `0/Piecewise(…)` with
-/// `0/vᵢ`.  A `Piecewise` is not a generic finite value: `0·(0/0^y)` is
+/// with the coefficient `absorbing` = 0: `0·Piecewise((vᵢ, cᵢ))` is
+/// `Piecewise((0·vᵢ, cᵢ))` (one value when they agree), and so is
+/// `0/Piecewise(…)` with `0/vᵢ`.  A `Piecewise` is not a generic finite value: `0·(0/0^y)` is
 /// `0/0^y`'s `Piecewise((0, …), (nan, True))` itself, as when the product is
-/// built at once, and `0/(0/0^y)` is `nan` (`0/0`, `0/nan`).
-fn zero_times_piecewise(arena: &mut Arena, z: ExprId, piecewise: &[(ExprId, bool)]) -> ExprId {
-    let zero = arena.zero;
+/// built at once, and `0/(0/0^y)` is `nan` (`0/0`, `0/nan`).  The same for
+/// the absorbing factor `zoo` in place of 0 ([`handle_mul_with_zoo`]):
+/// `zoo·Piecewise((1, Eq(y, 0)), (nan, True))` is `zoo` only at `y = 0`.
+fn times_piecewise(
+    arena: &mut Arena,
+    absorbing: ExprId,
+    z: ExprId,
+    piecewise: &[(ExprId, bool)],
+) -> ExprId {
     let mut result = z;
     for &(p, factor) in piecewise {
         let ExprNode::Piecewise(pairs) = arena.node(p).clone() else {
@@ -689,7 +718,7 @@ fn zero_times_piecewise(arena: &mut Arena, z: ExprId, piecewise: &[(ExprId, bool
             } else {
                 canon_pow(arena, v, arena.neg_one)
             };
-            values.push((canon_mul(arena, &[zero, v]), c));
+            values.push((canon_mul(arena, &[absorbing, v]), c));
         }
         let Some(&(first, _)) = values.first() else {
             continue;
@@ -699,10 +728,10 @@ fn zero_times_piecewise(arena: &mut Arena, z: ExprId, piecewise: &[(ExprId, bool
         } else {
             arena.piecewise(&values)
         };
-        if q == zero {
+        if q == absorbing {
             continue;
         }
-        result = if result == zero {
+        result = if result == absorbing {
             q
         } else {
             canon_mul(arena, &[result, q])
@@ -711,71 +740,249 @@ fn zero_times_piecewise(arena: &mut Arena, z: ExprId, piecewise: &[(ExprId, bool
     result
 }
 
-/// `−e` when the exponent `e` of a factor `0^e` has a negative numeric
-/// coefficient: `0^(−y)` is the reciprocal of `0^y` (`zoo` for `re y > 0`,
-/// 0 for `re y < 0`, 1 at `y = 0`), and `0·0^(−y)` is `0/0^y`.  Any other
-/// factor `0^e` keeps the generic reading of a factor (`0·0^y = 0`; the exact
-/// zero coefficients of an expansion at `0^y` rely on it).
-fn reciprocal_zero_power(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
-    let negated = match arena.node(e) {
+/// How many of the terms of the exponent `e` (a sum, or one term) have a
+/// negative numeric coefficient, and how many terms there are: `−y − 1` is
+/// (2, 2), `z − y` (1, 2), `2y` (0, 1).
+fn negative_terms(arena: &Arena, e: ExprId) -> (usize, usize) {
+    let negative = |t: ExprId| match arena.node(t) {
         ExprNode::Neg(_) => true,
+        ExprNode::Num(n) => arena.num(*n).is_negative(),
         ExprNode::Mul(children) => children
             .first()
             .and_then(|&c| arena.as_num(c))
             .is_some_and(Signed::is_negative),
         _ => false,
     };
-    negated.then(|| canon_neg(arena, e))
+    match arena.node(e) {
+        ExprNode::Add(terms) => (terms.iter().filter(|&&t| negative(t)).count(), terms.len()),
+        _ => (usize::from(negative(e)), 1),
+    }
 }
 
-/// The exponents `e` of the powers `0^e` among the factors of the
-/// denominator `d` (a product of positive numeric powers: `(0^y)^(1/2)·x`).
-/// (`canon_pow` folds `0^e` for a numeric `e` and for an `e` whose real
-/// part has a known sign: what stays is undecided.)
-fn push_zero_powers(arena: &Arena, d: ExprId, zero_powers: &mut SmallVec<[ExprId; 2]>) {
+/// `−e` when a term of the exponent `e` of a factor `0^e` has a negative
+/// numeric coefficient: `0^(−y)` is the reciprocal of `0^y` (`zoo` for a
+/// positive `re y`, 0 for a negative one, 1 at `y = 0`), and `0·0^(−y)` is
+/// `0/0^y` (the form [`canon_pow`] gives `1/0^y`; so are `1/0^(y + 1)`, which
+/// is `0^(−y − 1)`, and `1/0^(y − z)`, which is `0^(z − y)`).  Any other
+/// factor `0^e` keeps the generic reading of a factor (`0·0^y = 0`; the exact
+/// zero coefficients of an expansion at `0^y` rely on it).
+fn reciprocal_zero_power(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
+    (negative_terms(arena, e).0 > 0).then(|| canon_neg(arena, e))
+}
+
+/// The condition under which the power `0^e` (an `e` whose sign the
+/// constructors cannot decide: [`canon_pow`] folds the others) is nonzero
+/// and has a value.  `0^e` is 0 for `re e > 0`, `zoo` for `re e < 0`, 1 at `e
+/// = 0` and `nan` elsewhere on `re e = 0`: nonzero for `re e < 0` or `e = 0`,
+/// written `(0 > re(e)) | Eq(e, 0)`; for an exponent with a negative
+/// coefficient, `e = −d`, in terms of `d`: `(re(d) > 0) | Eq(d, 0)`.
+fn zero_power_is_nonzero(arena: &mut Arena, e: ExprId) -> ExprId {
+    let zero = arena.zero;
+    let (negative, terms) = negative_terms(arena, e);
+    let mut either = if negative == terms {
+        let d = canon_neg(arena, e);
+        let re = arena.re(d);
+        [arena.gt(re, zero), arena.eq_(d, zero)]
+    } else {
+        let re = arena.re(e);
+        [arena.gt(zero, re), arena.eq_(e, zero)]
+    };
+    either.sort_by(|a, b| arena.sort_key(*a).cmp(arena.sort_key(*b)));
+    arena.or(&either)
+}
+
+/// The conditions under which the factors of `d` that may vanish on a
+/// region of their symbols ([`may_vanish_on_a_region`]) are nonzero and
+/// have a value, pushed onto `conditions`; nothing for a `d` that may not.
+/// The factors are those of a product of positive numeric powers, looked
+/// at through `−f`, `|f|`, `sign f`, `f̄` (zero exactly where `f` is):
+///
+/// * `0^e`: [`zero_power_is_nonzero`];
+/// * `KroneckerDelta(a, b)`: `Eq(a, b)`; `δ(a)`: `Eq(a, 0)` (the generic
+///   value of both is 0); `H(a)`: `a >= 0` (`H(0) = 1/2`);
+/// * any other (`⌊y⌋`, `max(y, 0)`, `arg y`, a sum or a function with a
+///   power `0^y` or a delta in it), unless the assumptions know it nonzero:
+///   `|f| > 0`.  Not `f != 0`: `eval` decides
+///   `Ne(nan, 0)` true, and at a point where `f` has no value (`max(i, 0)`,
+///   `0^i − 1`) the quotient has none either; `|nan| > 0` is undecided there.
+///
+/// The generic convention does not cover such factors (they are never
+/// divided by: CONTRIBUTING, "Piecewise parameters").
+fn push_nonzero_conditions(arena: &mut Arena, d: ExprId, conditions: &mut SmallVec<[ExprId; 2]>) {
+    if !may_vanish_on_a_region(arena, d) {
+        return;
+    }
+    let mut steps: SmallVec<[ExprId; 2]> = SmallVec::new();
     let mut stack: SmallVec<[ExprId; 8]> = smallvec![d];
-    while let Some(id) = stack.pop() {
-        match *arena.node(id) {
+    while let Some(f) = stack.pop() {
+        match *arena.node(f) {
             ExprNode::Mul(ref children) => stack.extend(children.iter().copied()),
-            ExprNode::Pow(base, e) if arena.is_zero_structural(base) => zero_powers.push(e),
-            ExprNode::Pow(base, e) if arena.as_num(e).is_some_and(Signed::is_positive) => {
-                stack.push(base);
+            ExprNode::Neg(g) | ExprNode::Abs(g) | ExprNode::Sign(g) | ExprNode::Conjugate(g) => {
+                stack.push(g);
             }
+            ExprNode::Pow(base, n)
+                if !arena.is_zero_structural(base) && arena.as_num(n).is_some() =>
+            {
+                if arena.as_num(n).is_some_and(Signed::is_positive) {
+                    stack.push(base);
+                } else if holds_zero_power(arena, base) {
+                    // A reciprocal is 0 where its base is infinite, which
+                    // only a base with a power `0^e` in it is on a region
+                    // (`1/(0^y − 1)` for `re y < 0`); the reciprocal of a
+                    // step that vanishes is infinite, not 0.
+                    steps.push(f);
+                }
+            }
+            _ if may_vanish_on_a_region(arena, f) => steps.push(f),
             _ => {}
         }
     }
+    let zero = arena.zero;
+    for f in steps {
+        let condition = match *arena.node(f) {
+            ExprNode::Pow(base, e) if arena.is_zero_structural(base) => {
+                zero_power_is_nonzero(arena, e)
+            }
+            // (the symbolic argument first: `y == 1`)
+            ExprNode::KroneckerDelta(a, b) if arena.as_num(a).is_some() => arena.eq_(b, a),
+            ExprNode::KroneckerDelta(a, b) => arena.eq_(a, b),
+            ExprNode::DiracDelta(a) => arena.eq_(a, zero),
+            ExprNode::Heaviside(a) => arena.ge(a, zero),
+            _ => {
+                // A sum the assumptions know nonzero (`KroneckerDelta(y, 1)
+                // + 1`) needs no condition.
+                use crate::base::assumptions::{AssumptionCache, Props};
+                use crate::base::truth::Truth;
+                let nonzero = AssumptionCache::new().query(arena, f, Props::NONZERO);
+                if Truth::from(nonzero).is_true() {
+                    continue;
+                }
+                let modulus = arena.abs(f);
+                arena.gt(modulus, zero)
+            }
+        };
+        conditions.push(condition);
+    }
 }
 
-/// `0` over finite denominators and the powers `0^e` of [`zero_times_rest`]
-/// (their exponents `e`): `0^e` is 0 for `re e > 0`, `zoo` for `re e < 0`, 1
-/// at `e = 0` and `nan` elsewhere on `re e = 0`, so the quotient is `0`
-/// where each is nonzero and has a value (`re e < 0` or `e = 0`), and `nan`
-/// elsewhere: `Piecewise((0, condition), (nan, True))`.  No such power: `0`.
-/// The generic convention does not cover them (they vanish on a half plane
-/// and are never divided by: CONTRIBUTING, "Piecewise parameters"), and a
-/// value right on one half plane only is not folded to.
-fn zero_times_zero_powers(arena: &mut Arena, zero_powers: &[ExprId]) -> ExprId {
-    if zero_powers.is_empty() {
-        return arena.zero;
+/// Does `e` hold a power `0^x` (of an exponent whose sign the constructors
+/// could not decide)?  Such a power is infinite on a half plane of its
+/// exponent, so an expression with one may be infinite on a region.
+fn holds_zero_power(arena: &Arena, e: ExprId) -> bool {
+    crate::base::walk::contains(arena, e, arena.zero)
+        && crate::base::walk::post_order_ids(arena, e)
+            .into_iter()
+            .any(|id| matches!(*arena.node(id), ExprNode::Pow(base, _) if base == arena.zero))
+}
+
+/// `value` (0 or `zoo`) where every one of the `conditions` holds, `nan`
+/// elsewhere: `Piecewise((value, c₁ ∧ … ∧ cₙ), (nan, True))`; `value` itself
+/// without conditions.  A value right on a part of the parameter space only
+/// is not folded to.
+fn where_defined(
+    arena: &mut Arena,
+    value: ExprId,
+    mut conditions: SmallVec<[ExprId; 2]>,
+) -> ExprId {
+    if conditions.is_empty() {
+        return value;
     }
-    tracing::debug!("canon_mul: 0 over a power 0^e of undecided sign → Piecewise");
-    let zero = arena.zero;
-    let mut conditions: SmallVec<[ExprId; 2]> = SmallVec::new();
-    for &e in zero_powers {
-        let re = arena.re(e);
-        let half_plane = arena.gt(zero, re);
-        let at_zero = arena.eq_(e, zero);
-        let mut either = [half_plane, at_zero];
-        either.sort_by(|a, b| arena.sort_key(*a).cmp(arena.sort_key(*b)));
-        let condition = arena.or(&either);
-        if !conditions.contains(&condition) {
-            conditions.push(condition);
-        }
-    }
+    tracing::debug!("canon_mul: 0 or zoo times a factor 0 on a region → Piecewise");
     conditions.sort_by(|a, b| arena.sort_key(*a).cmp(arena.sort_key(*b)));
+    conditions.dedup();
     let condition = arena.and(&conditions);
     let (nan, otherwise) = (arena.nan, arena.bool_true);
-    arena.piecewise(&[(zero, condition), (nan, otherwise)])
+    arena.piecewise(&[(value, condition), (nan, otherwise)])
+}
+
+/// May `e`, a quantity with symbols, be 0 on a set of values of its
+/// symbols of positive measure without being 0 identically?  The generic
+/// convention — a quantity with symbols that is not identically zero is
+/// nonzero for almost every value of them, so `x/x = 1` and a series may
+/// divide by a parameter `a` — holds for the analytic functions of the
+/// symbols and fails for the piecewise ones: `0^y` is `0` on the half plane
+/// `re y > 0` (and `zoo`, `nan` elsewhere), `δ(1/2, y)` is `0` except at
+/// `y = 1/2` (its generic value is 0), `H(y)` is `0` for `y < 0`, `⌊y⌋` on
+/// `[0, 1)`, `max(y, 0)` for `y ≤ 0`, `arg(y)` for a real `y > 0`.  Nonzero at
+/// a sample point proves nothing there.
+///
+/// A factor of a product may vanish on a region when it is such a step
+/// (`0^y`, `δ`, `H`, `⌊·⌋`, `⌈·⌉`), a `min`, `max` or `Piecewise` with a
+/// value 0 or one that may (`max(y, 1)` may not), `arg f` of a real `f`, or
+/// `|f|`, `sign f`, `re f`, `im f`, `f̄`, `arg f` or a power `fⁿ` of an `f` that
+/// may; any other factor — a sum or a function — when `0^y`, `δ` or a
+/// Kronecker delta (0 on a half plane or almost everywhere) occurs in it.
+/// A product of symbols, numbers and analytic functions of them may not.
+/// (A sum whose step functions cancel a constant on a region, `H(y) − 1`,
+/// `⌊y⌋ − 1`, or whose parts do for a real argument, `|y| − y`, is not
+/// detected: it keeps the generic reading.)  Up to 0.56 the series engine
+/// and the limits took `0^y` and `δ(1/2, y)` for nonzero parameters
+/// (`series(sin(x)/(x + 0^y), x)` was `x/0^y + …`, wrong for `y > 0`), and
+/// `cancel` divided them out; up to 0.58 the constructors folded `0/d` and
+/// `zoo·d` over such a `d` ([`zero_times_rest`], [`handle_mul_with_zoo`]).
+/// (In `simplify::identically_zero` up to 0.58; the zero tests name it
+/// there.)
+pub(crate) fn may_vanish_on_a_region(arena: &Arena, e: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    use crate::base::truth::Truth;
+    // Zero on a half plane or almost everywhere: also inside sums.
+    let generically_zero = |arena: &Arena, id: ExprId| match *arena.node(id) {
+        ExprNode::Pow(b, x) => arena.is_zero_structural(b) && arena.as_num(x).is_none(),
+        ExprNode::KroneckerDelta(..) | ExprNode::DiracDelta(_) => !arena.is_symbol_free(id),
+        _ => false,
+    };
+    let step = |arena: &Arena, id: ExprId| {
+        generically_zero(arena, id)
+            || (matches!(
+                arena.node(id),
+                ExprNode::Heaviside(_) | ExprNode::Floor(_) | ExprNode::Ceiling(_)
+            ) && !arena.is_symbol_free(id))
+    };
+    let mut stack = vec![e];
+    while let Some(f) = stack.pop() {
+        if arena.is_symbol_free(f) {
+            continue;
+        }
+        match *arena.node(f) {
+            ExprNode::Mul(ref fs) => stack.extend(fs.iter().copied()),
+            ExprNode::Neg(g)
+            | ExprNode::Abs(g)
+            | ExprNode::Sign(g)
+            | ExprNode::Re(g)
+            | ExprNode::Im(g)
+            | ExprNode::Conjugate(g) => stack.push(g),
+            ExprNode::Arg(g) => {
+                if Truth::from(AssumptionCache::new().query(arena, g, Props::REAL)).is_true() {
+                    return true;
+                }
+                stack.push(g);
+            }
+            ExprNode::Pow(b, n) if arena.as_num(n).is_some() => stack.push(b),
+            ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
+                if args.iter().any(|&a| arena.is_zero_structural(a)) {
+                    return true;
+                }
+                stack.extend(args.iter().copied());
+            }
+            ExprNode::Piecewise(ref pairs) => {
+                if pairs.iter().any(|&(v, _)| arena.is_zero_structural(v)) {
+                    return true;
+                }
+                stack.extend(pairs.iter().map(|&(v, _)| v));
+            }
+            ExprNode::Symbol(_) => {}
+            _ if step(arena, f) => return true,
+            _ => {
+                if crate::base::walk::post_order_ids(arena, f)
+                    .into_iter()
+                    .any(|id| generically_zero(arena, id))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Does a sum of the denominator `d` ([`zero_candidate_sums`]) vanish by an
@@ -1748,6 +1955,65 @@ fn merge_constant_e_powers(arena: &mut Arena, factors: &mut SmallVec<[(ExprId, E
     factors.push((arena.e_const, exponent));
 }
 
+/// The factors (base, exponent) a product gets from its powers `0^e` of the
+/// base 0 with the `exponents` given (two or more; each of undecided sign:
+/// [`canon_pow`] folds the others), pushed onto `factors`.
+///
+/// `0^e` is piecewise in its exponent — 0 for `re e > 0`, 1 at `e = 0`,
+/// `zoo` for `re e < 0`, `nan` elsewhere — so the exponents add only where
+/// the powers are of one kind: `0^y·0^z` is `0·zoo = nan` for `re y > 0 > re
+/// z`, where `0^(y + z)` is 0, 1 or `zoo`.  The exponents are grouped by
+/// their term `t` without its rational coefficient (`e = c·t`):
+///
+/// * those of one `t` and one sign of `c` are of one kind at every `t` and
+///   add: `0^y·0^(2y) = 0^(3y)`;
+/// * a `t` met with both signs, `0^(a·t)·0^(−b·t)`, is `0·zoo = nan` wherever
+///   `t ≠ 0` and `1` at `t = 0`: the factor `Piecewise((1, Eq(t, 0)), (nan,
+///   True))` (one for all such `t`);
+/// * powers of different `t` stay separate factors: `0^y·0^z` is kept.
+///
+/// Up to 0.58 all exponents were added like those of any other base:
+/// `0^y·0^(−y)` was `1` and `0^y·0^z` was `0^(y + z)`.
+fn push_zero_power_factors(
+    arena: &mut Arena,
+    exponents: &[ExprId],
+    factors: &mut SmallVec<[(ExprId, ExprId); 8]>,
+) {
+    // (term, sum of its positive coefficients, sum of its negative ones)
+    let mut groups: SmallVec<[(ExprId, Q, Q); 2]> = SmallVec::new();
+    for &e in exponents {
+        let (c, t) = arena.as_coeff_term(e);
+        let slot = match groups.iter().position(|g| g.0 == t) {
+            Some(slot) => slot,
+            None => {
+                groups.push((t, Q::zero(), Q::zero()));
+                groups.len() - 1
+            }
+        };
+        let group = &mut groups[slot];
+        if c.is_negative() {
+            group.2 = q_add(&group.2, &c);
+        } else {
+            group.1 = q_add(&group.1, &c);
+        }
+    }
+    let zero = arena.zero;
+    let mut cancelled: SmallVec<[ExprId; 2]> = SmallVec::new();
+    for (t, positive, negative) in groups {
+        if !positive.is_zero() && !negative.is_zero() {
+            cancelled.push(arena.eq_(t, zero));
+        } else {
+            let exponent = arena.make_coeff_term(q_add(&positive, &negative), t);
+            factors.push((zero, exponent));
+        }
+    }
+    if !cancelled.is_empty() {
+        tracing::debug!("canon_mul: 0^t·0^(−t) → Piecewise((1, t = 0), (nan, True))");
+        let guard = where_defined(arena, arena.one, cancelled);
+        factors.push((guard, arena.one));
+    }
+}
+
 /// Build a canonical `Mul` node from the given factors.
 ///
 /// Uses an explicit stack for flattening and an [`FxHashMap`] for
@@ -1871,6 +2137,11 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     for (base, exponents) in &bases {
         let combined_exp: ExprId = if exponents.len() == 1 {
             exponents[0]
+        } else if *base == arena.zero {
+            // The exponents of the base 0 do not add (`0^y·0^(−y)` is not
+            // `0⁰`): see [`push_zero_power_factors`].
+            push_zero_power_factors(arena, exponents, &mut factors);
+            continue;
         } else {
             canon_add(arena, exponents)
         };
@@ -2041,10 +2312,12 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     // (Before 0.30 such a product stayed `(x·y)^(−3/2)·(x·y)^(3/2)`,
     // which is not canonical: its display parsed back as 1; found by
     // `fuzz_roundtrip`.)  Regroup once when two factors share a base.
+    // (Two powers of 0 are not regrouped: their exponents do not add.)
     if !has_nested_mul && result_args.len() > 1 {
         let mut seen: FxHashSet<ExprId> = FxHashSet::default();
         for &r in &result_args {
-            if !seen.insert(arena.as_base_exp(r).0) {
+            let base = arena.as_base_exp(r).0;
+            if base != arena.zero && !seen.insert(base) {
                 has_nested_mul = true;
                 break;
             }
@@ -2320,6 +2593,13 @@ fn known_sign(arena: &Arena, f: ExprId) -> Option<Ordering> {
 /// `zoo/(y/((x + y)² − x² − 2xy − y²) + 2)` is `zoo·0`, and a factor
 /// undefined at every point.  Only on this path (a product with a literal
 /// `zoo`), so ordinary products pay nothing.
+///
+/// A factor that may vanish on a region of its symbols
+/// ([`may_vanish_on_a_region`]: `0^y`, `H(y)`, `⌊y⌋`, a delta) is not a
+/// generic nonzero value: the product is `zoo` where each such factor is
+/// nonzero ([`push_nonzero_conditions`]) and `nan` elsewhere, `zoo·0^y` is
+/// `Piecewise((zoo, (0 > re(y)) | Eq(y, 0)), (nan, True))`.  Up to 0.58 it
+/// was `zoo` (`0·zoo` on the half plane `re y > 0`).
 fn handle_mul_with_zoo(
     arena: &mut Arena,
     remaining: &mut SmallVec<[ExprId; 16]>,
@@ -2331,7 +2611,13 @@ fn handle_mul_with_zoo(
     }
     let mut factors: SmallVec<[ExprId; 4]> = SmallVec::new();
     let mut denominators: SmallVec<[ExprId; 4]> = SmallVec::new();
+    // The exponents of the factors `0^e`.
+    let mut zero_exponents: SmallVec<[ExprId; 2]> = SmallVec::new();
     for (&b, exps) in bases {
+        if arena.is_zero_structural(b) {
+            zero_exponents.extend(exps.iter().copied());
+            continue;
+        }
         let numeric: SmallVec<[&Q; 4]> = exps.iter().filter_map(|&e| arena.as_num(e)).collect();
         if numeric.iter().any(|q| q.is_positive()) {
             factors.push(b);
@@ -2355,10 +2641,13 @@ fn handle_mul_with_zoo(
             ExprNode::Pow(base, e) if arena.as_num(e).is_some_and(Signed::is_negative) => {
                 denominators.push(base);
             }
+            ExprNode::Pow(base, e) if arena.is_zero_structural(base) => zero_exponents.push(e),
             _ => factors.push(id),
         }
     }
     let mut memo = EverywhereMemo::default();
+    let mut conditions: SmallVec<[ExprId; 2]> = SmallVec::new();
+    let mut piecewise: SmallVec<[(ExprId, bool); 2]> = SmallVec::new();
     for f in factors {
         // A sum undefined at every point (`0/d + 1/d` with `d` vanishing)
         // makes `zoo·nan = nan` too.
@@ -2366,14 +2655,31 @@ fn handle_mul_with_zoo(
             tracing::debug!("canon_mul: zoo times an identically zero or undefined factor → nan");
             return arena.nan;
         }
+        if matches!(arena.node(f), ExprNode::Piecewise(_)) {
+            piecewise.push((f, true));
+        } else {
+            push_nonzero_conditions(arena, f, &mut conditions);
+        }
     }
     for d in denominators {
         if memo.infinite_or_undefined(arena, d) {
             tracing::debug!("canon_mul: zoo over an identically infinite sum → nan");
             return arena.nan;
         }
+        // A denominator infinite on a region (`0^y − 1` for `re y < 0`):
+        // `zoo/d` is `zoo·0` there.
+        if holds_zero_power(arena, d) {
+            let reciprocal = canon_pow(arena, d, arena.neg_one);
+            push_nonzero_conditions(arena, reciprocal, &mut conditions);
+        }
     }
-    arena.intern(ExprNode::ComplexInfinity)
+    for e in zero_exponents {
+        let condition = zero_power_is_nonzero(arena, e);
+        conditions.push(condition);
+    }
+    let zoo = arena.intern(ExprNode::ComplexInfinity);
+    let value = where_defined(arena, zoo, conditions);
+    times_piecewise(arena, zoo, value, &piecewise)
 }
 
 /// The sums whose vanishing identically makes `f` vanish identically:
@@ -3081,6 +3387,20 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         let prod_id = arena.intern_num(product);
         let prod_expr = arena.intern(ExprNode::Num(prod_id));
         return canon_pow(arena, inner_base, prod_expr);
+    }
+
+    // (0^e)^q → 0^(q·e) for a rational q ≠ 0: an identity at every `e` (`0^e`
+    // is 0, 1, `zoo` or `nan` by the sign of `re e`, and `q` keeps or swaps
+    // the first and the third), so that the powers of 0 have one form —
+    // `1/0^y` is `0^(−y)` — and a product sees all of them under the base 0
+    // ([`push_zero_power_factors`]).  Up to 0.58 `0^y·(0^y)⁻¹` stayed, and
+    // `simplify` cancelled it to 1 (`0/0` or `zoo/zoo` for every `y ≠ 0`).
+    if let ExprNode::Pow(inner_base, inner_exp) = *arena.node(base)
+        && inner_base == arena.zero
+        && arena.as_num(exp).is_some_and(|q| !q.is_zero())
+    {
+        let product = canon_mul(arena, &[exp, inner_exp]);
+        return canon_pow(arena, inner_base, product);
     }
 
     // Pow(Mul(children), n) → Mul(Pow(child_i, n)) when n is integer, |n| ≤ 10.

@@ -561,6 +561,26 @@ fn zfail(reason: impl Into<String>) -> SymplexError {
     }
 }
 
+/// The largest power `nᵏ` of the index whose transform is formed: 256.
+/// The rule `n·x[n] → −z·X′(z)` is applied once per unit of `k`, each time
+/// to a quotient that has grown with the last: `n^200` takes 0.4 s and
+/// 100 MB, `n^400` 2.9 s and 500 MB, and up to 0.58 any `k < 2³²` was
+/// started (`z_transform(n^65537)` ran until the memory was exhausted).
+const MAX_POWER_OF_N: u32 = 256;
+
+/// The exponent `k` of a factor `nᵏ` as a number of applications of the
+/// derivative rule, or the refusal beyond [`MAX_POWER_OF_N`].
+fn power_of_n(k: &Q) -> Result<u32, SymplexError> {
+    u32::try_from(k.to_integer())
+        .ok()
+        .filter(|&k| k <= MAX_POWER_OF_N)
+        .ok_or_else(|| {
+            zfail(format!(
+                "a power of the index beyond {MAX_POWER_OF_N} is not transformed"
+            ))
+        })
+}
+
 /// Extended forward entries: `δ[n−k]`, `H(n−k)`, `C(n, k)`, `1/n!`, the
 /// `n·x[n] → −z X′(z)` rule (powers of `n`), scaling `aⁿ x[n] → X(z/a)` and
 /// the delay `x[n−k] H(n−k) → z^{−k} X(z)`.
@@ -633,10 +653,7 @@ fn try_extended_forward(
             if !k.is_integer() || !k.is_positive() {
                 return Ok(None);
             }
-            let k: u32 = k
-                .to_integer()
-                .try_into()
-                .map_err(|_| zfail("power too large"))?;
+            let k = power_of_n(&k)?;
             let z_minus_1 = arena.sub(z_var, one);
             let two = arena.int(2);
             let den = arena.pow(z_minus_1, two);
@@ -685,11 +702,8 @@ fn try_extended_forward(
                     && k.is_integer()
                     && k.is_positive()
                 {
-                    let k: u32 = k
-                        .to_integer()
-                        .try_into()
-                        .map_err(|_| zfail("power too large"))?;
-                    n_power += k;
+                    // The sum of the powers is bounded like each of them.
+                    n_power = power_of_n(&(Q::from_integer(n_power.into()) + k))?;
                 } else {
                     rest.push(c);
                 }

@@ -3177,6 +3177,97 @@ impl ZeroTest {
     }
 }
 
+/// Most step-like parts [`vanishes_at_a_step_value`] fixes at once, and most
+/// values it tries for each.
+const MAX_STEP_PARTS: usize = 3;
+
+/// Does the constant `v` with parameters vanish, or is it not proved
+/// nonzero, where a step-like part of it has a value it takes on a whole
+/// region of the parameters: `max(c, y)` and `min(c, y)` are `c` on a
+/// half-line of `y` and `y` on the other, `H(y)` is 0 and 1 there?  A sum of such
+/// parts vanishes on the region although none of its factors does, which
+/// is what
+/// [`may_vanish_on_a_region`](crate::simplify::identically_zero::may_vanish_on_a_region)
+/// tests: `U₃(max(0, y)) = 8·max(0, y)³ − 4·max(0, y)` is 0 for every `y ≤
+/// 0`, `H(y) − 1` for every `y > 0`.  Up to 0.58 both were nonzero "for
+/// generic parameters", and `limit(B(U₃(max(x, −4/5, y)), Ai′(x − y)), x,
+/// 0)` was the value of `B` at its pole `B(0, ·)` for every `y ≤ 0`.
+///
+/// The parts are fixed one after the other (at most [`MAX_STEP_PARTS`], each
+/// at its first [`MAX_STEP_PARTS`] arguments); `⌊·⌋`, `⌈·⌉` and `Piecewise`
+/// inside a sum are not searched.
+fn vanishes_at_a_step_value(arena: &mut Arena, v: ExprId) -> bool {
+    let step_part = |arena: &Arena, e: ExprId| -> Option<(ExprId, Vec<ExprId>)> {
+        walk::post_order_ids(arena, e).into_iter().find_map(|id| {
+            if arena.is_symbol_free(id) {
+                return None;
+            }
+            let values: Vec<ExprId> = match arena.node(id) {
+                ExprNode::Min(args) | ExprNode::Max(args) => {
+                    args.iter().copied().take(MAX_STEP_PARTS).collect()
+                }
+                ExprNode::Heaviside(_) => vec![arena.zero(), arena.one()],
+                _ => return None,
+            };
+            (!values.is_empty()).then_some((id, values))
+        })
+    };
+    let mut stack = vec![(v, 0usize)];
+    let mut first = true;
+    while let Some((e, fixed)) = stack.pop() {
+        if !std::mem::take(&mut first) {
+            if arena.is_zero_structural(e) {
+                return true;
+            }
+            if arena.is_symbol_free(e) {
+                if !zero_reading(hidden_zero(arena, e)).is_false() {
+                    return true;
+                }
+                continue;
+            }
+            if crate::simplify::identically_zero::may_vanish_on_a_region(arena, e) {
+                return true;
+            }
+        }
+        if fixed >= MAX_STEP_PARTS {
+            continue;
+        }
+        let Some((part, values)) = step_part(arena, e) else {
+            continue;
+        };
+        // (a constant argument below another one is never the value of a
+        // `max`, nor one above another the value of a `min`: `max(0, y, √2)`
+        // is not 0 anywhere)
+        let is_max = matches!(arena.node(part), ExprNode::Max(_));
+        let is_min = matches!(arena.node(part), ExprNode::Min(_));
+        let constants: Vec<ExprId> = values
+            .iter()
+            .copied()
+            .filter(|&a| (is_max || is_min) && arena.is_symbol_free(a))
+            .collect();
+        for value in values {
+            let dominated = constants.iter().any(|&other| {
+                if other == value || !arena.is_symbol_free(value) {
+                    return false;
+                }
+                let d = arena.sub(other, value);
+                let d = eval::eval(arena, d);
+                match crate::poly::algebraic::sign_checked(arena, d) {
+                    Some(s) => (is_max && s > 0) || (is_min && s < 0),
+                    None => false,
+                }
+            });
+            if dominated {
+                continue;
+            }
+            let w = crate::transforms::subs::subs(arena, e, part, value);
+            let w = eval::eval(arena, w);
+            stack.push((w, fixed + 1));
+        }
+    }
+    false
+}
+
 /// `c` after `eval`, and whether it is 0 ([`hidden_zero`]; a constant with
 /// free parameters or without a value is `Nonzero`, see
 /// [`ZeroTest::Nonzero`]).  A piecewise one that may vanish on a region of
@@ -3189,7 +3280,9 @@ pub(crate) fn settle_constant(arena: &mut Arena, c: ExprId) -> ZeroTest {
         return ZeroTest::Zero;
     }
     if !walk::free_symbols(arena, v).is_empty() {
-        if crate::simplify::identically_zero::may_vanish_on_a_region(arena, v) {
+        if crate::simplify::identically_zero::may_vanish_on_a_region(arena, v)
+            || vanishes_at_a_step_value(arena, v)
+        {
             return ZeroTest::Undecided(v);
         }
         return ZeroTest::Nonzero(v);

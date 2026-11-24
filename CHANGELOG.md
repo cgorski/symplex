@@ -8,6 +8,520 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-11-24
+
+Wrong answers, crashes and slow cases at the edges of what 0.58 covered.  A
+power `0^y` with a symbolic exponent is 0, 1 or infinite depending on `y`:
+products and quotients of such powers, and `0` or `zoo` times a step
+function, no longer fold to a value that holds on part of the parameter
+space only (`0^y·0^(−y)` was `1`, `0/H(y)` was `0`).  Limits no longer take
+`γ(s, 0) = 0` for every `s`, lose the finite part next to an infinity whose
+direction depends on a parameter, or give a `KroneckerDelta` the value it
+has at the one point where its arguments meet, and the crate's root
+searches find the real member of a solution family with a complex step.  A
+count, an index or a degree from the caller is bounded before it sizes a
+value or an allocation: `fibonacci(2⁴⁰)`, `coefficients(2⁴⁰)` of a formal
+series, a polynomial of degree `2³¹` and a tree nested 100,000 deep aborted
+the process, panicked or did not return; they are refused at once, with
+`try_` functions that report the refusal.  A part of a number that is
+certainly not 0 but lies below the exponent range is refused instead of
+dropped (`1 + i·e^(−10¹⁰)` printed `1`).  Long sums whose terms peak far
+from their ends are summed over a window with a proved bound on the rest,
+which gives the entropy of large discrete laws; far gamma tails, the F and
+t densities at huge degrees of freedom and integrals of `R(cˣ)` with a
+complex base are answered; and five of the slow inputs of the nightly
+fuzzing listed under 0.58 are fast.  CI lints on a pinned toolchain and
+checks the public API against the last release, and the lock file is
+committed.
+
+### Breaking (behaviour)
+
+- **Powers of 0 with a symbolic exponent are piecewise in the exponent.**
+  `0^y` is 0 for `re y > 0`, 1 at `y = 0` and `zoo` for `re y < 0`, so its
+  exponents add only where the powers are of one kind.  `0^y·0^(−y)` was `1`
+  and is `Piecewise((1, y = 0), (nan, True))` (`0·zoo` for every `y ≠ 0`);
+  `0^y·0^z` was `0^(y + z)` and stays a product (at `y = 13/10`, `z =
+  −13/10` it is `nan`, not `0^0 = 1`); `0^y·0^(2y)` is still `0^(3y)`, and
+  `0^(2y)·0^(−y)` (was `0^y`) is that `Piecewise`.  The powers of 0 have one
+  form: `1/0^y` is `0^(−y)`, `(0^y)²` is `0^(2y)`, `√(0^y)` is `0^(y/2)`, so
+  `0^y/0^y` — which stayed when built and which `simplify`, `ratsimp` and
+  `powdenest` turned into `1` — is that `Piecewise` when built.
+  `simplify(0^y/0^z)` was `0^(y − z)` and is `0^y·0^(−z)`.
+- **`zoo` times, and `0` over, a quantity that is 0 on a region of its
+  symbols is a `Piecewise`**, not `zoo` or `0`: `zoo·0^y` is
+  `Piecewise((zoo, re(y) < 0 ∨ y = 0), (nan, True))`, `zoo/0^y` the same with
+  `re(y) > 0`, `zoo·H(y)` is `Piecewise((zoo, y ≥ 0), (nan, True))` (all were
+  `zoo`); `0/(0^y − 0^z)` is `Piecewise((0, |0^y − 0^z| > 0), (nan, True))`,
+  `0/(0^y + 1)` likewise (`nan` at `y = i`), `0/H(y)` is `Piecewise((0, y ≥
+  0), (nan, True))`, `0/floor(y)` and `0/max(y, 0)` likewise with `|d| > 0`,
+  `0/KroneckerDelta(y, 1)` is `Piecewise((0, y = 1), (nan, True))`, `0/δ(y)`
+  is `Piecewise((0, y = 0), (nan, True))` (all were `0`: wrong on a region,
+  the last two for almost every `y`).  A denominator that vanishes at
+  isolated points only keeps the generic `0/y = 0`, and `0·H(y)`,
+  `0·floor(y)` stay 0.  Consequences in the golden corpus: the derivative of
+  `0^x` is `Piecewise((zoo, re(x) < 0 ∨ x = 0), (nan, True))` (was `zoo`; the
+  formula `0^x·ln 0` has no value for `x > 0`), and ten results that were
+  right by continuity carry the case distinction or are refused
+  (`integrate(ln(floor(x)))` has two extra `Piecewise` terms,
+  `solve(√(γ·x·floor(y)), x)` is refused, `limit(y/floor(x²), x, ∞)` is
+  `Piecewise((0, y ≠ 0))`).  Hunt (7,712 expressions with `0^y`, steps and
+  deltas under a zero or `zoo` coefficient and in products, 15 operations,
+  6–36 points each): 57,004 value claims differed from the value at the
+  point in 0.58, 5,697 do now, all in the classes listed under *Known
+  issues*.
+- **Limits with a constant power `0^y`** are taken for each case of `re y`:
+  `limit(x/0^y, x, 0)` was 0 and is `Piecewise((0, re(y) < 0 ∨ y = 0))`
+  (`x·zoo` has no limit for `re y > 0`), `limit(x·0^y + 1, x, 0)` was 1 and
+  is `Piecewise((1, re(y) > 0 ∨ y = 0))`; limits that stayed unevaluated or
+  were refused are answered (`limit(x + 0^y − 1, x, 0)` is `Piecewise((−1,
+  re(y) > 0), (0, y = 0))`, `limit(sin(x)/(x + 0^y), x, 0)` is
+  `Piecewise((1, re(y) > 0), (0, re(y) < 0 ∨ y = 0))`; 14 limits of the
+  golden corpus).  A generic limit that every case confirms stays
+  (`limit(x/(0^y + 1), x, 0) = 0`); one that a case cannot confirm is
+  refused (`limit(x·loggamma(0^y), x, 0)` was 0).
+- `eval` of a `Piecewise` whose condition is an order relation with a `nan`
+  operand is `nan` (it stayed, with the dead condition `nan > 0`).
+- **`lowergamma(s, 0)` folds to `0` only where `re s > 0` is known** (a
+  positive number, the assumptions, the certified value of a constant):
+  `γ(s, x) ~ xˢ/s`, so the fold was wrong on the half plane `re s ≤ 0`.
+  `lowergamma(y, 0)` for a plain `y`, `lowergamma(−√2, 0)` and
+  `lowergamma(i, 0)` (all `0` up to 0.58) stay unevaluated; declare `y`
+  positive for the old value.  `limit(lowergamma(y, x), x, 0)` was
+  `Piecewise((0, y ≠ 0))`, `limit(lowergamma(−1/2, x), x, 0)` was the
+  "value" `lowergamma(−1/2, 0)`, and `limit(√x·lowergamma(−1/2, x), x, 0⁺)`
+  was `0` (it is `−2`): all three are refused (the engines have no expansion
+  of `γ(s, x)` at 0 yet).  A constant `lowergamma(−n, c)` (a pole of `γ` in
+  its order for every `c`) is no limit value: `limit(lowergamma(−1, 1) + x,
+  x, 0)` is refused (was `lowergamma(−1, 1)`), and limits of
+  `c/lowergamma(−1, x)` are refused (were 0, from `1/zoo`).
+- **A limit that is infinite in a direction given by a parameter keeps its
+  finite part:** `limit((y − 1)·uppergamma(0, x), x, 0, '−')` is `sign(y −
+  1)·∞ − iπ·(y − 1)` (was `sign(y − 1)·∞`), `y·ln x` at `0⁻` is `iπ·y −
+  sign(y)·∞`, as numeric factors always gave (`2·uppergamma(0, x)` → `∞ −
+  2πi`).  The two-sided limits, which were claimed (`sign(y − 1)·∞`), are
+  refused: the sides differ by the finite part.  Two equal one-sided values
+  `sign(k)·∞` are a two-sided limit only where `f/k` has the same finite
+  imaginary part on both sides (or a diverging one on both); where that
+  comparison cannot be made the two-sided limit is refused although the
+  sides agree (five cases of the golden corpus, among them the limits of
+  `coth(asin(x)·x·y)` and `asin(−x) + (y·x)^(−2)`, were `±sign(…)·∞`).
+- **`limit(KroneckerDelta(1, x + 1), x, 0)` is `0`** (was `1`): the delta is
+  0 at every point but the one where its arguments meet, and the limit
+  substituted that point.  Likewise `limit(exp(KroneckerDelta(1, x + 1)), x,
+  0)` is `1` (was `e`), `limit(elliptic_e(KroneckerDelta(1, x + 1)), x, 0)`
+  is `π/2` (was `1`), `KroneckerDelta(x, 3)` at 3 is `0`, and
+  `KroneckerDelta(y, x)` at 0 is `Piecewise((0, y = 0), (KroneckerDelta(0,
+  y), y ≠ 0))`.  (The series of the same shape was refused in 0.58 already
+  and still is.)  One limit that had a value is refused: `csc(x²) −
+  falling_factorial(KroneckerDelta(x, y), 3)` at 0 (was `∞`; the difference
+  of the delta's arguments has no sign).
+- A sum of step parts that vanishes on a region of the parameters is not
+  "nonzero for generic parameters": `limit(B(U₃(max(x, −4/5, y)), Ai′(x −
+  y)), x, 0)` is refused (was the value of `B` at its pole `B(0, ·)` for
+  every `y ≤ 0`), as are limits through `8·max(0, y)³ − 4·max(0, y)`, `H(y)
+  − 1` and `y − max(0, y)`.  Two series of the golden corpus whose
+  coefficient `H(y) − 1` is now undecided are refused with them
+  (`series(x·H(y) − (x − 3), x, 0, 4)` was `x·(H(y) − 1) + 3`).
+- **A part of a number that is certainly not 0 is never dropped (decision
+  D3), also below the exponent range.**  `(1 +
+  I*exp(-10^10)).eval_decimal(16)` printed `1`, `exp(-10^10) + I` printed
+  `i`, `lowergamma(1, 10^10 + I)` printed `1` (`lowergamma(3, …)`: `2`),
+  `I*besselk(0, 10^10) + 1` printed `1`, `pi + I*exp(-10^10)` printed π, and
+  `eval_f64` returned the real part: the imaginary part
+  (`9.28·10^(−4342944820)` by mpmath, whose exponents are unbounded) was
+  treated like a part whose error ball contains 0.  Such a part cannot be
+  printed, so the number is refused, as a whole value below the range is
+  since 0.58: `SymplexError::Unevaluable` ("the imaginary part is not 0 but
+  underflows the arbitrary-precision exponent range … next to a real part
+  within it"); `eval_f64` reports a nonzero imaginary part;
+  `eval_complex64` returns the part as `0.0`, its correctly rounded `f64`.
+  A part is certified through sums, products, `−`, `conj`, integer and
+  positive-base powers and the functions whose derivative is known nonzero
+  without evaluation (`exp`, `ln`, `sinh`, `tanh`, `tan`, `atan`, `asinh`,
+  `erf`, `cosh`, `sin`, `cos`): `2*(1 + I*exp(-10^10))`, `sinh(2 +
+  I*exp(-10^10))`.  Unchanged: a part that is exactly 0 (`1 +
+  I*exp(-10^10) - I*exp(-10^10)`, a conjugate pair), a real sum (`1 +
+  exp(-10^10)` is `1`), and a part within the underflow bound that is not
+  certified nonzero (`1 + I*(besselk(0, 10^10) - airyai(10^7))`), dropped as
+  any part whose ball contains 0 — except in a number that depends on
+  `E_n(z)`, `Γ(a, z)` or `erfc(z)` below the range off the real axis
+  (refused up to 0.58 because that function failed): there a part without
+  a certificate is refused too ("not known to be 0, and not dropped"), as
+  in `(pi + pi*expint(2, 10^10 - I))*(-3 + (1 + I)*besselk(0, 10^10))`.
+  Hunt (generic arithmetic and functions of values with a part below the
+  range, 699 cases, mpmath at 70 and 110 digits): 238 printed without the
+  part in 0.58, 25 do now (listed under *Known issues*); no printed part
+  disagrees with mpmath.
+- `E1`, `expint`, `uppergamma` and `erfc` off the real axis below the
+  exponent range are `SymplexError::Unevaluable` ("the value is not 0 but
+  underflows …", the error of every value below the range) instead of
+  `PrecisionExhausted`; see *Fixed*.
+- **Counts, indices and degrees from the caller have size caps**, each
+  documented under `# Refusal` and with a `try_` twin that reports it (up
+  to 0.58 these calls aborted the process or did not return):
+  `FormalPowerSeries::coefficients(n)` returns an empty list for `n > 2¹⁴ +
+  1` (more than a series computes; a polynomial lists at least its own);
+  `ntheory::fibonacci`/`lucas` return `0` beyond `|n| = 2²⁷`, `primorial`
+  beyond `n = 5·10⁶`, `primorial_up_to` beyond `86,028,121`;
+  `discrete::convolution_cyclic` returns an empty list for a length beyond
+  both the linear length and `2²⁴`.
+- `Ex::z_transform` is an error for a power of the index beyond `n²⁵⁶`;
+  `MultiPoly::try_pow` (and `Poly::pow`) refuse a polynomial of two or more
+  terms beyond the exponent `2¹⁶` and a coefficient's power beyond `2²⁷`
+  bits (`MultiPoly::pow` panics there, as for an exponent overflow);
+  `MultiPoly::eval` is an error for a power beyond `2²⁷` bits (`2²²` in a
+  denominator); `MultiPoly::try_gcd` refuses after `2¹⁸` steps of one
+  pseudo-division (`gcd` then returns its documented refusal value, the
+  content's gcd).
+- The stand-in coefficient of a refused formal series is `Residue(f·(x −
+  a)^−(k+1), x, a)`, no longer `Subs(Derivative(…), x, a)/k!`.
+- The entropy of a hypergeometric law with numeric parameters and more
+  than 64 atoms is returned as the formal `Sum` (as a binomial law's is),
+  not as the exact sum with its logarithms merged; the value is the same.
+
+### Added
+
+- `FormalPowerSeries::try_coefficients`, `ntheory::try_fibonacci`,
+  `try_lucas`, `try_primorial`, `try_primorial_up_to` and
+  `discrete::try_convolution_cyclic`: the value of the plain function, or
+  `SymplexError::ComputationFailed` beyond the caps listed above (where the
+  plain function returns its documented empty list or `0`).
+
+### Fixed
+
+- **The crate's root searches find the real member of a solution family
+  with a complex step.**  `singularities(1/((−2)^x − 4), x, [0, 10])` was
+  `∅` for `{2}`: the family `(ln 4 + 2nπi)/(ln 2 + iπ)` is real at `n = 1`
+  only, and was dropped because its offset is not real.  The one real
+  member of such a family is found exactly
+  (`solve::real_members_of_family`, for `Ex::singularities` and
+  `stationary_points`): also `(−2)^(x+1) = 4` (`{1}`), `(−2)^x = −8`
+  (`{3}`), `e^{(1+i)x} = e^{2π}` (`{2π}`), `(−1/2)^x = 4` on `[−10, 10]`
+  (`{−2}`); `(1 + i)^x = 2i` (`{2}`) and `(−2)^(x/2) = −2` (`{2}`) were
+  refused.
+- Equations polynomial in `b^x` for a base that is no power of an integer
+  `≥ 2` — negative, `2/3`, `π` — were refused: `(−2)^(2x) − 6·(−2)^x + 8 =
+  0` for a real `x` is `[2]`, `(2/3)^(2x) − 5·(2/3)^x + 6 = 0` is `[ln
+  3/ln(2/3), ln 2/ln(2/3)]`.
+- Limits at infinity of an expression with a `KroneckerDelta` that were
+  refused are answered: beyond the point where its arguments meet the
+  delta is 0, and Gruntz rewrites it so where the difference of the
+  arguments has an eventual sign.
+- **Lengths, indices and degrees from the caller are bounded.**
+  `sin(x).fps_maclaurin(x).coefficients(2⁴⁰)` asked for 17.6 TB and
+  aborted; `convolution_cyclic(a, b, 2⁴⁰)` aborted and
+  `convolution_cyclic(a, b, usize::MAX)` panicked ("capacity overflow");
+  `MultiPoly::eval` tabulated every power of the point up to the degree
+  (`x^(2³¹) + 1` at `x = 1`: 68 GB; `x^(10⁶) + 1` at `x = 3`: killed at
+  32 GB — now 0.03 s, only the powers of the exponents present are formed,
+  and the value is reduced by one division instead of a binary gcd);
+  `Context::from_tree` of a tree nested 100,000 deep overflowed the stack
+  (the conversion called itself once per level; now an explicit stack,
+  3·10⁶ levels in 1.6 s).
+- **Calls that did not return.**  `ntheory::fibonacci(2⁴⁰)` (a value of
+  95 GB), `lucas`, `primorial(2⁴⁰)` (2⁴⁰ calls of `nextprime`),
+  `primorial_up_to(2³¹)`; `z_transform(n^65537)` (`−z·d/dz` applied 65,536
+  times; `n^400` already took 2.9 s and 500 MB); `Poly::pow(u32::MAX)` of
+  `x + 1`; `MultiPoly::gcd(x^(2³¹ − 1) − 1, x² − 1)` (a pseudo-division of
+  2³⁰ steps: refused after 2¹⁸, 0.6 s).  Each is refused at once.  Hunt (86
+  operations that take a count, a length, a degree or an index, at `n =
+  2²⁰, 2³¹, 2⁴⁰, 2⁶⁴ − 1`; 8 s and 32 GB per case): 68 timeouts, 29 aborts
+  and 11 panics of 344 cases in 0.58; 44, 18 and 9 now (37 cases fixed,
+  none worse; the rest is listed under *Known issues*).
+- **Factorizations verified by exponent arithmetic.**
+  `factor_multivariate(x^N·y + x^N)` multiplied its product by `x` once per
+  unit of the multiplicity `N` to verify it (5.1 s at `N = 2²⁴`, about 14
+  minutes at `2³¹`; now immediate: the monomial factors add exponents, the
+  others are raised by `try_pow`), and `factor_hensel::factor_primitive`
+  returned each factor cloned once per unit of its multiplicity.  The
+  univariate `factor_zassenhaus(x^N + x^(N−1))` took 0.8 s at `N = 4000`
+  and more than 20 s at 20,000 (the power of `x` went through the
+  square-free decomposition and was multiplied back `N` times): it is read
+  off the coefficients (1 ms).
+- **No panic in the coefficient field of the integrator and of `apart`.**
+  `paramfield::PFrac` multiplied with the asserting `MultiPoly::mul`: a
+  product with an exponent beyond `u32` panicked ("MultiPoly::mul: exponent
+  overflow").  The products are checked; on an overflow the integrator's
+  attempt is abandoned as beyond its budget, and the exact field of
+  `cancel`/`apart` marks its computation so that the size test of the
+  result fails.
+- **`Distribution::transformed` with images outside or at the edge of the
+  doubles.**  An image beyond the `f64` range had no key and was compared
+  with every entry by `equals`: `sinh X` of a 2000-sided die took 25 s and
+  of a 5000-sided one more than 50 s and 1.4 GB (now 0.2 s; the key is `ln
+  |image|`, and the bounds between the scales are widened so that no
+  rounding puts one number into two).  Images that share a double (`tanh k
+  = 1.0` from `k = 19` on) are told apart by the certified residual `image
+  − double`: a 350-sided die under `tanh` took 24.8 s (8 ms).  Equal images
+  still merge only by `equals`.
+- **Formal series: no Taylor stand-ins where there is no Taylor
+  expansion.**  The coefficients of a refused series (`fps(1/x + x^a)`,
+  `fps(sqrt(x^3))`, `fps(|x|)` at 0) and of an order at which the expansion
+  failed were written `Subs(Derivative(…), x, 0)/k!`, naming derivatives
+  that do not exist at the point; they are the unevaluated residues
+  `Res_{x=0} f·x^−(k+1)` (the definition of a Laurent coefficient where one
+  exists).
+- **`E1`, `expint`, `uppergamma`, `erfc` off the real axis below the
+  exponent range are an underflow**, not `PrecisionExhausted`: `E1(10^10 ±
+  I)`, `expint(2, 10^10 - I)`, `uppergamma(1/3, 10^10 + I)`, `erfc(10^5 +
+  I)` (the prefactor's 0 was read as a total cancellation).  They are held
+  scaled like `exp(-10^10)`, so what brings them back into the range has a
+  value: `E1(10^10 + I)*exp(10^10) = 5.4030230572996·10⁻¹¹ −
+  8.4147098477778·10⁻¹¹ i`, `log(E1(10^10 + I)) = −10000000023.0258509300 −
+  1.0000000001 i`, `uppergamma(1/3, 10^10)/exp(-10^10) =
+  2.1544346898883·10⁻⁷` (mpmath at 40 and 80 digits).
+- **`elliptic_e` far off the axis:** `elliptic_e(10^1300 + I) =
+  1.285398163397448·10⁻⁶⁵⁰ − 10⁶⁵⁰ i` (mpmath `ellipe` at 3,100 and 3,600
+  digits) was refused ("the value cancels beyond the working precision"): a
+  part far below the other is now pursued as far as the exponent of the
+  argument explains the gap, within a work bound of 5,120 working bits
+  (about a second); beyond it (`10^2000`) the refusal comes at once.
+- **Long sums whose terms peak far from their ends.**  `evalf` refused a
+  finite `Sum` of more than 10,000 terms and summed an infinite one from
+  its lower limit (refused beyond 20,000 terms, after 3–15 s): the entropy
+  of `Binomial(10^5, 13/100)` (`6.08565578279555002917`), of
+  `Poisson(10^5)`, of `NegativeBinomial(60000, 599/600)`, `E[ln(1 + X)]`,
+  `E[sqrt X]`.  Such a sum is now evaluated over a window around its mode
+  (`evalf/windowsum.rs`): hypergeometric factors are moved by their
+  recurrences, and each side stops where the rest is proved below the
+  precision by a geometric series whose ratio is proved from the
+  term-ratio polynomials (Descartes isolation; log-concavity is not
+  assumed).  `Binomial(10^6, p)` takes 0.5 s; a window beyond 65,536 terms
+  (`Binomial(10^9, p)`) is refused at once.  900 random sums agree with
+  direct mpmath sums at two precisions.
+- **The entropy of a hypergeometric law with more than 64 atoms** is the
+  formal `Sum` (as a binomial's): the generic route summed the masses
+  exactly and merged their logarithms (`Hypergeometric(4196, 3749, 3300)`:
+  more than a minute, now 0.3 s).
+- **Densities with a huge degree of freedom.**  `F(d1, d2).density(x)` was
+  refused from `d1 ~ 10^9` or `d2 ~ 10^19` on ("a power: the value
+  overflows" at `d1 = 3*10^128`), `StudentT(10^128).density` likewise: at a
+  numeric point the powers are combined in logarithms first (`exp(-d1
+  atanh(1/(2u+1)) - d2 atanh(u/(u+2)))/(x B(d1/2, d2/2))`, `u = d1 x/d2`).
+  `F(3*10^128, 1).density(728/10^6) = 1.06791298073867544820e-294` (mpmath
+  at 320 and 420 digits).
+- **Integrals of rational functions of `c^x` for a complex `c`:** `∫
+  dx/((1+i)^x − 2i)` (a pole at `x = 2`) stayed unevaluated and `∫₁²
+  dx/((2−i)^(2x) − 1 + i) = 0.0280498057725226786 +
+  0.1109894591859010007i` was refused: the point where the spiral meets a
+  root is read with `ln √q = ½ ln q` (so that `ln 2/ln √2` is 2 and the turn
+  count at a pole is an exact integer), and a logarithm's argument is
+  multiplied out before its linear coefficients are read.  An integral
+  across the pole stays `Divergent`.  Hunt (600 integrals `∫ₐᵇ R(cˣ) dx`
+  with a Gaussian `c`, mpmath quadrature at 30 and 50 digits): 559 values,
+  0 wrong.
+- **The lower tail of a gamma law with a huge shape.**  `F(x)` of
+  `ChiSquared(3.4*10^10)` at its quantile of `10^-300` took 0.3 s, and
+  1.9–2.6 s for the law shifted by a constant (`fuzz_stats` slow units of
+  14–28 s): the series of `γ(s, x)` needs `wp·ln 2·s/(s − x)` terms.  Far
+  below the mean its sum now comes from an expansion in `s/(s − x)²` whose
+  error is at most the first omitted term (`evalf/gammatail.rs`): 1–4 ms,
+  the same digits.  The expansion also answers some far tails that were
+  refused because the series needed more than 10⁶ steps.
+- **Sums that were summed term by term:** `Binomial(10^4, p).entropy` 4.2 s
+  → 0.05 s, `Hypergeometric(50000, 20000, 10000).entropy` 8.9 s → 0.06 s; a
+  hopeless infinite sum (`NegativeBinomial(18141, 23/500).entropy`) is
+  refused in milliseconds instead of after 14 s.
+- **Four slow evaluations found by the nightly fuzzing** (release build,
+  the fuzzer's five evaluations each): `polylog(-3/2, -1 + 10^(-70))` 0.91 s
+  → 0.07 s (`Li_s(−x)` next to `x = 1` by its expansion at `z = −1`, `−Σ η(s
+  − k)·ln(x)^k/k!`, instead of two expansions at `z = 1` that cancel 580
+  bits; Borwein's coefficients as integers, kept); `sinh(LambertW(-1/E +
+  3*10^(-300)))` 0.42 s → 0.01 s (the branch-point coefficients on demand,
+  kept); `zeta(-2 + 10^(-300))` 0.44 s → 0.005 s (`ζ` of a rational next to
+  a trivial zero from the exact offset); `floor(erfc(sqrt(2)) - 1 +
+  erf(sqrt(2)))` refused after 1.0 s → `0` in 0.01 s (`erf(u) + erfc(u)` is
+  1 exactly in a sum).  Every printed digit is unchanged.
+- **Slow refusals of the series and limit engines.**  A series holding a
+  function without an expansion whose derivative stays formal (`B(a, b)`)
+  is refused at once (was 0.2–1.2 s: the limits for the pole retries were
+  taken first).  `limit(|(x − 1)^tanh(x − 1)|^(x − 1), x, 1, '−')` (fuzz
+  input `bc61d72d0ea7`) is refused in 0.05 s (1.2 s; 5.6 s in the fuzz
+  build): every `expand` of `gruntz::leadterm_add_by_series` is charged by
+  the terms it distributes.
+- `reliability`: the helper `pearson_of` relabelled every error of
+  `data::pearson`, shape errors included, as `DegenerateData(ZeroVariance)`
+  ("… is constant"); only a constant column is.  (The public callers check
+  the shapes first, so no public result changes.)
+
+### Changed
+
+- Tests that pinned a changed result say what changed and why:
+  `tests/v31/v31_values.rs` (`1 + I*exp(-10^10)` printed `1`),
+  `tests/v09/v09_special.rs` and `tests/v11/v11_special_fixes.rs`
+  (`lowergamma(s, 0)` for a plain `s` was `0`),
+  `tests/v36/v36_s15k1_silent.rs` (the same fold; `limit(sin(x)/(x + 0^y),
+  x, 0)` was a refusal) and `tests/v36/v36_s15q3_consistency.rs` (`x/0^y`
+  prints `x*0^(-y)`; `0/(0^y + 1)` was `0`).
+- Ratchet `tests/unit/test_alloc_bounds.rs`: the allowlist entry of
+  `transforms/evalf.rs` shrinks from 7 to 5 (the two Borwein tables are
+  built by one function whose length is a parameter).
+- The statistics oracle's seed set gains 13 rows
+  (`scripts/stats_oracle/cases/r5_regressions.tsv`: 8,156 cases); 12
+  allowlist entries that recorded a refusal are removed or replaced by
+  entries recording scipy's error at values symplex now gives (binomial and
+  Poisson entropies, an F density, far gamma tails).
+- Internal: the predicate `may_vanish_on_a_region` lives in
+  `base/canon.rs` (the constructors need it; `simplify` re-exports it);
+  the function table has a pole facet with both kinds of place
+  (`Poles::NonPositiveIntegerOrZero`, used by `lowergamma`); new evaluator
+  modules `evalf/windowsum.rs` and `evalf/gammatail.rs`.
+
+### Infrastructure
+
+- **CI lints on a pinned toolchain.**  Format, Clippy, Docs and the new
+  Semver job run on `LINT_TOOLCHAIN` (1.100.0) instead of the floating
+  `stable`, which broke three jobs on unchanged code on 2026-11-24
+  (rustfmt, clippy and rustdoc change what they accept from one release to
+  the next).  The pin is raised on purpose, in a commit that also fixes
+  what the new version reports.  The tests and the examples stay on
+  `stable`, so a compiler change that breaks behaviour is still seen at
+  once.
+- **The Test job runs under nextest**: `cargo nextest run --profile ci …`,
+  every test in its own process with the per-test limit of the `ci`
+  profile in `.config/nextest.toml` (a test that hangs is killed and named
+  after five minutes instead of holding the job), then the benches and the
+  doctests with `cargo test`.  Every job of `ci.yml` and `deploy-book.yml`
+  has a `timeout-minutes`.
+- **New job "Semver"**: `cargo semver-checks` against the newest release
+  tag.  An API break fails the job unless the part of this file newer than
+  that tag has a `### Breaking` (or `### Breaking (API)`) section.
+- `Cargo.lock` of the root crate is committed, so that CI, the gate and
+  the golden outputs build the same dependency versions (`.gitignore`
+  says so; the side crates resolve on their own).
+- **The version floors of the dependencies are true, and tested weekly.**
+  With the lock committed the ordinary CI no longer sees new dependency
+  releases, and nobody had ever built with the oldest versions the
+  manifests allowed (`cargo update -Z direct-minimal-versions` did not even
+  resolve: `num-integer = "0.1"` against `num-bigint 0.4.8`).  The floors
+  are raised to versions that resolve and build on Rust 1.93 and on stable
+  (`num-integer` 0.1.46, `num-traits` 0.2.18, `num-rational` 0.4.2, `serde`
+  1.0.147, `tracing` 0.1.30, `rustc-hash` 2.1.1, and a few
+  dev-dependencies; likewise in the three side crates), and the new
+  workflow `dependencies.yml` runs the suite on the latest versions and
+  checks the minimal ones every week.  `rustc-hash` 2.1.0 hashes
+  differently from 2.1.1 and changes the order of long sums in the output
+  (one test fails with it): the floor excludes it.
+- `#![forbid(unsafe_code)]` in all four crates (the libraries had no
+  `unsafe`; now the compiler keeps it that way.  Test builds of the main
+  crate are exempt: the CPU clock of the test suite calls `clock_gettime`).
+- New repository files: `SECURITY.md` (how to report, what counts, how to
+  run symplex on untrusted input), issue templates
+  (`.github/ISSUE_TEMPLATE/`: wrong answer, crash or hang; refusal or
+  missing feature), `.github/PULL_REQUEST_TEMPLATE.md`,
+  `.github/CODEOWNERS`, and `.github/dependabot.yml` (GitHub Actions only).
+- The `homepage` manifest key, which repeated `repository`, is removed
+  (cargo 1.100 warned about it on every build).
+
+### Known issues
+
+- **Powers of 0 and steps, still generic in places.**  A non-real exponent
+  is read two ways: `0/0^(−1+i)` is `nan` when built, `(0/0^y)` at `y = −1 +
+  i` is 0.  A factor `0^e` under a 0 coefficient is generic (`0·0^y = 0`,
+  `0^y − 0^y = 0`); `d/d` is 1 and like terms cancel for a step `d`
+  (`H(y)/H(y) = 1`, `1/H(y) − 1/H(y) = 0`); a sum of steps that cancels is
+  not seen by the constructors (`0/(H(y) − 1) = 0`, `zoo·(floor(y) + 1) =
+  zoo`); a constant that is 0 only after evaluation is absorbed
+  (`zoo·stirling2(0, 8)` is `zoo`, it is `nan`).  Only the public `limit`
+  splits the cases of a constant `0^y`; series and integrals that take
+  limits internally do not.
+- **Limits.**  The engines have no expansion of `γ(s, x)` at 0
+  (`limit(lowergamma(−1/2, x), x, 0, '+')` is `−∞`, refused);
+  `uppergamma(y, 0)` still folds to `Gamma(y)` for a plain `y`; a one-sided
+  infinity in a parametric direction keeps its finite part only for a
+  product (`(y − 1)·uppergamma(0, x) + x` at `0⁻` is `sign(y − 1)·∞`);
+  `limit(x²·E1(0), x, 0, '+')` is 0 although `E1(0)` is infinite (as in
+  0.58); `gamma(floor(y) − 3 + x)` at 0 is `Γ(floor(y) − 3)`, a pole for
+  some `y`.
+- **Sizes.**  Still aborting or not returning at huge counts:
+  `pell_solutions`, `symbols_indexed`, `equispaced_grid`,
+  `finite_diff_weights`, `GenPoly::monomial`, `MultiPoly::try_var`,
+  `Matrix::identity`/`zeros` (allocations), and the sequences `bell`,
+  `partition_count`, `stirling2`, `divisor_sigma`, `diff_n`,
+  `Distribution::moment`.  Within the new caps some calls are slow
+  (`coefficients(16385)` of `sin`: more than 20 s; `Poly::pow(10000)` of `x
+  + 1`: more than 30 s).  `ExprTree`'s own `Drop`, `Clone` and `PartialEq`
+  are recursive.  `transformed` under `tanh` beyond the atom 354 still
+  compares images pairwise (a 600-sided die: more than 50 s).
+- **Values.**  `elliptic_pi(1/3, 10^600 + I)` is still refused.  A part
+  below the range that the certificate does not reach is still dropped
+  where no `E_n`, `Γ(a, z)` or `erfc` off the axis is involved (25 of 699
+  hunt cases, as in 0.58: `gamma(pi - I*exp(-3*10^9)) + sqrt(2)`, products
+  of two factors with such parts).  `log(-2 + I*exp(-10^10))` is
+  `PrecisionExhausted`; `1 + Ei(-10^10 + I)` (it is `1 + πi`) is refused; a
+  sum within about `2·prec + 256` bits of the bottom of the range is
+  refused as below it.
+- **Statistics and integration.**  The lower tail of a gamma law with a
+  shape from about `4.5·10⁹` is refused between about 2 and 28 standard
+  deviations below the mean (`chi_squared(34000000000).cdf(33999990340.5)`,
+  about 0.485); densities with both degrees of freedom huge (`F(3e128,
+  3e128)`, `Beta(1e128, 1e128)`) are refused; a windowed sum beyond 65,536
+  terms is refused (`Binomial(n, p)` from `n·p·(1 − p)` of about `4·10⁶`);
+  `∫ dx/((2−i)^x − 2 + i)` (a pole at `x = 1`) is refused.
+- **Slow and right:** `series(atanh(π^x + x^(3/2)), x, 1, 4)` still takes
+  1.8 s in a release build (6.7 s in the fuzz build); a change that
+  brought it to 0.25 s made another input slower and is not in this
+  release.
+- **`fuzz_stats` still skips three things**, each a slow path that is
+  open: lattices of more than 20,000 atoms are not transformed into tables
+  (`MAX_TRANSFORMED_ATOMS`; 1.4 s for 100,000 atoms); a lattice of more
+  than 4,096 atoms whose tails the library can only sum mass by mass is
+  not checked (`tails_are_long_sums`, `MAX_SUMMED_ATOMS`: a hypergeometric
+  law beyond the exact bounds, minutes for a quantile); and without a
+  finite variance the first moment is checked only while `|mean| ≤ 10⁸`
+  (`integrate_numeric` takes 5 s to refuse the cancellation at `10¹⁵⁰` of
+  `LogNormal(0, 8π²/3)`).
+
+### Measured
+
+- `tests/v36/` (0.49–0.59): 83 files.  nextest 15,099 tests (15 skipped),
+  doctests 1,373 — run on a 64-core x86-64 machine.  The same suite as CI
+  runs it (`cargo nextest run --profile ci`, the UI snapshots apart):
+  15,098 passed.
+- Rubi harness: 30,768 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,153 / 0 wrong / 64; `--negative-params` 115 real_verified,
+  0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+  MSRV 1.93 passes for all four crates.  `cargo semver-checks` against
+  0.58.0: no semver update required (the six `try_` functions are
+  additions).
+- Golden-output harness (200,000 random expressions × 31 operations):
+  1,251 changed pairs from 0.58, every one classified and checked against
+  an independent oracle — 392 from the powers of 0 and the quotients by
+  step functions (pointwise values at `y ∈ {±13/10, 0, i, ±1}` in exact
+  arithmetic), 859 from the limits (mpmath near the point at two
+  precisions; the pole table and the definition of the delta where mpmath
+  has no value); none from the size bounds, the evaluation, the statistics
+  or the integration changes (6,199,964 pairs compared; 36 timeouts of the
+  harness, 41 at 0.58).
+- Hunts: quantities that vanish on a region, through construction and 15
+  operations (7,712 expressions): 57,004 wrong value claims → 5,697, all in
+  the classes listed under *Known issues*; huge counts, lengths and
+  degrees (86 public operations × 4 sizes): 68 timeouts, 29 aborts and 11
+  panics → 44, 18 and 9; parts below the range dropped from a printed
+  value: 16 → 0 and 238 → 25 on two generators; windowed sums 900 cases,
+  far gamma tails 400, densities at huge shapes 600, `R(cˣ)` integrals 900:
+  0 wrong against mpmath at two precisions; statistics oracle 8,156 cases
+  (13 new), 0 unexplained failures.
+- Fuzzing (64-core x86-64 machine, all 13 targets, two forks each, 10 s and
+  4 GB limits, debug assertions as CI builds them) on the release code:
+  `fuzz_numdist` 68,684,568 inputs, `fuzz_refine` 14,281,402,
+  `fuzz_lambertw` 2,674,755, `fuzz_parser` 1,183,830, `fuzz_exact_matrix`
+  184,750, `fuzz_eigenvects` 173,652, `fuzz_stats` 65,719, `fuzz_evalf`
+  61,525, `fuzz_calculus` 42,598, `fuzz_roundtrip` 19,149, `fuzz_poly`
+  16,884, `fuzz_simplify` 3,269, `fuzz_integrate` 2,095: 0 crashes, 0
+  timeouts, 0 out-of-memory.  Built as CI builds them (AddressSanitizer),
+  20 forks for fifteen minutes with a 15 s limit: `fuzz_evalf` 744,526
+  inputs, `fuzz_calculus` 257,898, `fuzz_stats` 119,488, none failing.
+- The slow inputs of the nightly fuzzing that 0.58 left open, release
+  build: the limit `|(x − 1)^tanh(x − 1)|^(x − 1)` at 1 from the left is
+  refused in 0.05 s (was 1.2 s); `polylog(−3/2, −1 + 10⁻⁷⁰)` 0.9 s →
+  0.07 s; `floor(erfc √2 − 1 + erf √2)` refused after 1.0 s → `0` in
+  0.01 s; `sinh(W(−1/e + 3·10⁻³⁰⁰))` 0.42 s → 0.01 s; `zeta(−2 + 10⁻³⁰⁰)`
+  0.44 s → 0.005 s.  Still open: `series(atanh(π^x + x^(3/2)), x, 1, 4)`
+  (1.8 s), and the three cases the statistics fuzzer skips (*Known
+  issues*).
+
 ## [0.58.0] - 2026-11-24
 
 Five recurring idioms that kept producing bugs are replaced by types and

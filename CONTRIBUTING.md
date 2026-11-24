@@ -41,7 +41,7 @@ repository that anyone could reasonably flag, so:
   code with no licence at all: **do not read the implementation** while
   writing the corresponding symplex code, and do not name it as the
   source.  Work from the publication (the paper, the book, DLMF).  When
-  the publication is not enough, use a clean room: one person or agent
+  the publication is not enough, use a clean room: one person
   writes a purely mathematical description (formulas, case analysis,
   error bounds, test values — no code and no identifiers beyond the
   paper's notation), and someone who has not seen the restricted code
@@ -79,7 +79,7 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (~15,000 tests; a few minutes in debug)
+# Run the test suite (about 15,100 tests; a few minutes in debug)
 cargo test
 # ... or, recommended: one process per test with per-test timeouts
 # (`.config/nextest.toml`; `cargo install cargo-nextest`)
@@ -128,13 +128,29 @@ Rust supports (including `wasm32-unknown-unknown`), prefer
 `default-features = false`, and extend `deny.toml` deliberately if a new
 licence appears.
 
-`Cargo.lock` is not committed, so CI and users resolve the newest compatible
-versions while a local lock may be old.  Compare performance between
-versions only with the same lock, and when a dependency version matters,
-raise its floor in `Cargo.toml`: up to 0.51 a local lock pinned num-bigint
-0.4.6, which allocates for every one-digit number, and the matrix
-functions looked 40 % slower than in 0.48 (built with 0.4.8); `Cargo.toml`
-now requires 0.4.8.
+`Cargo.lock` of the root crate is committed since 0.59, so that CI, the
+gate and the golden outputs build the same dependency versions and a
+change in a result or a timing is a change in the code.  A release only
+bumps the crate's own version in it (`cargo update -w`); the versions of
+the dependencies change on purpose, in a commit of their own that passes
+the gate, the golden diff and the byte-identity check (the order of long
+sums follows `rustc-hash`'s hash: 2.1.0 and 2.1.1 print differently), and
+a pull request that changes a dependency commits the lock change with it.
+The version floors in the manifests are a promise to users and are tested:
+`.github/workflows/dependencies.yml` runs weekly, the suite on the latest
+versions (`cargo update`) and `cargo check` on the oldest ones the
+manifests allow (`cargo update -Z direct-minimal-versions`, on Rust 1.93
+and on stable, all four crates).  When it goes red: latest — fix the code
+or pin the dependency with the reason in `Cargo.toml`; minimal — raise the
+floor.  The side crates
+(`symplex-macros`, `symplex-build`, `symplex-wasm`, `fuzz`, `rubi-harness`,
+`probes/*`) keep their locks untracked and resolve on their own
+(`.gitignore`).  Users of the library do not get our lock, so when a
+dependency version matters, raise its floor in `Cargo.toml`: up to 0.51 a
+local lock pinned num-bigint 0.4.6, which allocates for every one-digit
+number, and the matrix functions looked 40 % slower than in 0.48 (built
+with 0.4.8); `Cargo.toml` now requires 0.4.8.  Compare performance between
+versions only with the same lock.
 
 ### Feature flags: one crate, no knobs
 
@@ -155,13 +171,14 @@ numbers.
 
 ## Architecture
 
-The source code (~245K lines at 0.23.0) is organized into 10 directories under
-`src/`. Each directory is a layer in the dependency hierarchy — modules may
-depend on layers below them but should not reach upward.
+The source code (about 414,000 lines of Rust at 0.59) is organized into 10
+directories under `src/`. Each directory is a layer in the dependency
+hierarchy — modules may depend on layers below them but should not reach
+upward.
 
 ```
 src/
-├── base/         Expression nodes (node.rs, 93 variants), arena (hash-consing), symbol.rs (name
+├── base/         Expression nodes (node.rs, 96 variants), arena (hash-consing), symbol.rs (name
 │                 interning), tree traversal (walk.rs), canonicalization, assumptions, sort keys,
 │                 compaction, numeric.rs (exact f64 ↔ rational, the exact rational `Q`),
 │                 bigcomplex.rs (BigFloat complex pairs), bernoulli.rs, complex.rs (Complex64
@@ -298,7 +315,7 @@ extending the allowlist.
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `ExprNode` | `src/base/node.rs` | The expression tree — 93 variants (Add, Mul, Sin, Integral, Re/Im/Conjugate/Arg, Zeta, Polygamma, RootOf, RootSum, Interval, etc.) |
+| `ExprNode` | `src/base/node.rs` | The expression tree — 96 variants (Add, Mul, Sin, Integral, Re/Im/Conjugate/Arg, Zeta, Polygamma, RootOf, RootSum, Interval, etc.) |
 | `Arena` | `src/base/arena.rs` | Hash-consed expression storage. All nodes live here. |
 | `ExprId` | `src/base/node.rs` | A handle into the arena (equality and hashing only: no order — see "Identifiers have no order"). This is how expressions are referenced internally. |
 | `Func` / `FuncSpec` | `src/base/func.rs` | One identity for every function (dedicated nodes, `LibFn` library functions, internal helpers) and its table of facts: names, arity, sort sub-rank, LaTeX, conjugation, real domain, parity, poles. See "How to Add a New Function". |
@@ -394,6 +411,13 @@ different contexts — by design: it is a logic error, like indexing a Vec out
 of bounds.  (The complete list of remaining panic paths is the two
 allowlists in `tests/unit/test_no_panics.rs`; see the next section.)
 
+A panic, an abort, a stack overflow, unbounded memory growth or a call that
+does not return on *any* input to the entry points meant for untrusted text
+(`Context::parse` and the other parsers, `from_json`, `from_tree`,
+`decimal_str`, the wasm `Session`) is a security bug:
+[`SECURITY.md`](SECURITY.md) says how to report one and what the library
+promises there.
+
 **When adding a new public method** that takes multiple `Ex` arguments, you
 MUST use `self.checked_id(other)` for every foreign expression's ID. The
 compiler enforces this — you can't access `.id` directly.  A `Context`
@@ -409,22 +433,34 @@ Library code never calls `.unwrap()`, `.expect()`, `unreachable!()`,
 the cross-context guard, and `std::iter::Sum`/`Product` for `Ex` on an
 *empty* iterator (there is no context to build `0`/`1` in — users are steered
 to `Context::sum`/`product` or `Option<Ex>`) — plus the arena's and symbol
-table's `u32` index conversions and the compile-time `const_assert_dim!`
-macro.  Every other operation that can fail returns `Result`, `Option`, or an
-unevaluated form.  Tests are free to unwrap; `debug_assert!` is acceptable for
-internal invariants.
+table's `u32` index conversions (an `expect` beyond 4 billion nodes, numbers
+or symbols: a panic, not an error value), the arithmetic operators on
+matrices of mismatched shapes (`&a + &b`; `add`/`sub`/`matmul` return a
+`Result`), `Polytope::with_halfspace` with the wrong number of coefficients
+(`try_with_halfspace` returns a `Result`) and the compile-time
+`const_assert_dim!` macro.  Every other operation that can fail returns
+`Result`, `Option`, or an unevaluated form.  Tests are free to unwrap;
+`debug_assert!` is acceptable for internal invariants.
 
 A second, shrinking category is **runtime `assert!`/`assert_eq!`/`assert_ne!`
 on caller-supplied shapes and preconditions** — 82 sites in 19 files at 0.22,
-27 in 7 at 0.29, e.g. `Context::symbol("")`, a zero denominator to
-`RationalFn`, exponent overflow in `MultiPoly::mul`/`pow` (the bodies of
-`*`, whose `try_` twins return `None`), an out-of-range index to
+27 in 7 at 0.29, 23 in 7 at 0.59, e.g. `Context::symbol("")`, a zero
+denominator to `RationalFn`, exponent overflow in `MultiPoly::mul`/`pow` (the
+bodies of `*`, whose `try_` twins return `None`), an out-of-range index to
 `Matrix::get` (the body of `m[(i, j)]`; `try_get` is its twin).  The
 `Matrix` / `ExactMatrix` constructors return `Result` since 0.29.  Each is documented
 under `# Panics` on its item.  They
 predate point 4 below and are debt, not precedent: new code returns a
 `Result` instead, and converting an existing one means removing it from the
-allowlist.
+allowlist.  Code that multiplies inside an infallible trait operation
+(`Ring::mul` of `paramfield::PFrac`) uses `try_mul` and reports an overflow
+to its policy (`ParamPolicy::overflow`, since 0.59): the computation is
+abandoned — every element counts as zero, so every loop ends — and its
+owner discards the result at its next budget or size check (`Budgeted`: the
+attempt's budget; `Exact`: a thread-local mark cleared where a computation
+starts, read by `ppoly_size_ok`/`papoly_size_ok`).  Up to 0.58 such a
+product with an exponent beyond `u32` panicked inside the integrator and
+`apart`.
 
 **Both are enforced** by `tests/unit/test_no_panics.rs`, a ratchet over
 `src/` with one allowlist per category (`ALLOWLIST`, `ASSERT_ALLOWLIST`, each
@@ -456,7 +492,8 @@ conflict; when they do, this is the order and the reasoning:
    reviewer who has to re-derive the invariant.  Instead, keep the `Result`
    flowing (the method returns `Result` anyway), or, where the API is
    infallible by contract, use a fallback that is *correct*, not merely
-   unreachable — `unwrap_or_else(|_| Matrix::zeros(n, m))` is wrong;
+   unreachable — replacing the error by a made-up value (a zero matrix
+   where the product should be) is wrong;
    `map_err(|e| internal("state_space", e))?` is right.  Name the invariant in
    a one-line comment where it is established, not where it is used.
 
@@ -485,14 +522,19 @@ conflict; when they do, this is the order and the reasoning:
 
 6. **Locks and overflow.**  `Mutex::lock().unwrap()` is a panic on poisoning;
    use `parking_lot` (already a dependency; no poisoning) or
-   `unwrap_or_else(PoisonError::into_inner)`.  `u32::try_from(len)` on arena
-   indices propagates as `ComputationFailed` ("arena overflow"); it will
-   never fire, but the code that would be *wrong* if it did should not exist.
+   `unwrap_or_else(PoisonError::into_inner)`.  `u32::try_from(len)` on the
+   arena's and the symbol table's indices is the one overflow that still
+   panics (`expect("arena overflow: …")` in `Arena::intern`, `intern_num`
+   and `SymbolTable::intern`, allowlisted: making them fallible touches
+   about 800 call sites).  It takes more than 4 billion nodes to fire; new
+   code propagates an overflow as an error or a refusal instead.
 
 7. **Type-level guarantees beat runtime checks when they are free.**  The
    `Sort` phantom on `Expr<S>` (an `Ex` cannot be used where a `BoolEx` is
-   needed), sealed `ExactScalar`, and `#[non_exhaustive]` on option structs
-   and outcome enums are all zero-cost and remove whole classes of failure.
+   needed), sealed `ExactScalar`, and `#[non_exhaustive]` on outcome enums
+   and on the option structs that carry it (`LeanOpts`, `PolyhedronOpts`,
+   `SosOpts`; most option structs do not yet) are all zero-cost and remove
+   whole classes of failure.
    Reach for them before adding a runtime check; do not reach for typestate
    or const generics where a `Result` says the same thing more simply.
 
@@ -594,7 +636,7 @@ matrix.minor(i, j)    // Err if out of range
 
 ## Expression Nodes
 
-The `ExprNode` enum in `src/base/node.rs` has 93 variants. Its shape methods
+The `ExprNode` enum in `src/base/node.rs` has 96 variants. Its shape methods
 (`children`, `for_each_child`, `child_count`, `is_atom`, `map_children`,
 `remap_ids`, the binder views) are generated by `#[derive(NodeShape)]`
 (`symplex-macros/src/node_shape.rs`, doc-hidden): an `ExprId` field is a
@@ -835,38 +877,44 @@ Follow the same steps as adding a new function (above), plus:
 
 ### Test Organization
 
-Tests are in `tests/` (integration tests, ~10,000 `#[test]` functions in ~360
-source files) and inline `#[cfg(test)]` modules (~2,800 unit tests). Total at
-0.23.0: **~12,900** tests (~15,000 at 0.58) plus ~1,040 API doctests and ~240 README/book
-doctests (`src/doctests.rs` includes `README.md` and every book chapter, so
+Tests are in `tests/` (integration tests: about 12,100 `#[test]` functions
+in about 590 source files) and inline `#[cfg(test)]` modules (about 3,000
+unit tests).  At 0.59 `cargo nextest run` runs about 15,100 tests (15 more
+are skipped: the `#[ignore]`d ones), and `cargo test --doc` about 1,370
+doctests: the API examples and the Rust blocks of `README.md` and the book
+(`src/doctests.rs` includes `README.md` and every book chapter, so
 the prose examples compile and run under `cargo test --doc`).
 
-The integration-test sources are grouped into **23 test binaries** (linking
+The integration-test sources are grouped into **36 test binaries** (linking
 277 separate debug binaries took ~6.5 min and ~13 GB of `target/`). Each
 former top-level file is a module of its group, so a test is addressed as
-`<module>::<test>` inside `--test <group>`.  A new `vNN` group is added per
-minor release (`v23` holds the 0.24 tests); `tests/README.md` lists every
-group's modules:
+`<module>::<test>` inside `--test <group>`.  Up to 0.34 each minor release
+got a `vNN` group of its own (`v23` holds the 0.24 tests); since then a
+group spans several releases (`v34`: 0.35–0.38, `v35`: 0.39–0.46, `v36`:
+0.49–0.59) and new tests go into the newest one.  `tests/README.md` lists
+every group's modules:
 
 | Binary (`--test …`) | Sources | What they test |
 |---------------------|---------|----------------|
 | `v04` | `tests/v04/v04_<area>.rs` | One suite per 0.4–0.6 feature: `polyhedron` (parametric polyhedron certificates; emitted Lean pinned to the Mathlib-compiled `tests/fixtures/polyhedron_certificates.lean`), `polytope`, `sos` (pinned to `tests/fixtures/sos_certificates.lean`) |
-| `v09` … `v23` | `tests/vNN/vNN_<area>.rs` (2–9 modules each) | Feature and regression suites of 0.9 → 0.24, one group per minor release (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …) |
+| `v09` … `v36` | `tests/vNN/vNN_<area>.rs` (1–83 modules each) | Feature and regression suites of 0.9 → 0.59 (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …; from `v21` on mostly regressions found by audits, differential hunts and the nightly fuzzing, each test citing its oracle). `v36` is the current group |
 | `v03` | `tests/v03/v03_<area>.rs` (11 modules, ~480 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize`, `certificates`, `assumptions_poly`, `exact_matrix`, `user_notes` |
 | `v03_oracle` | `tests/v03_oracle/v03_oracle_*.rs` | SymPy oracle for the 0.3 API (`tests/fixtures/v03_cross_validation.json`) |
 | `v02` | `tests/v02/v02_<area>_<topic>.rs` (62 modules, ~1,050 tests) | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `basefix_*`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `numfix_*`, `sets_*`, `simplify_*`, `solvefix_*`, `solving_*`, `summation_*`, `transforms_*` |
 | `v02_oracle` | `tests/v02_oracle/v02_oracle_*.rs` | SymPy oracle for the 0.2 API (`tests/fixtures/v02_cross_validation.json`); see `tests/README.md` |
-| `unit` | `tests/unit/test_*.rs` (159 modules, ~3,980 tests) | Unit-style suites per module / feature, e.g. `test_known_answers` (256 exact symbolic results against textbook answers), `test_sympy_cross_validation` (263 fixtures against SymPy 1.14, `tests/fixtures/sympy_cross_validation.json`), `test_correctness_audit` (108 fixtures: FTC verification, definite integrals, `tests/fixtures/new_capabilities.json`), `test_cross_context` (cross-context safety guards), `test_ode_comprehensive` (ODE solver classes), `test_rootof` (RootOf solver + numerical evaluation), `test_hard_math` (edge cases and negative tests) |
+| `unit` | `tests/unit/test_*.rs` (169 modules, ~3,990 tests) | Unit-style suites per module / feature, e.g. `test_known_answers` (256 exact symbolic results against textbook answers), `test_sympy_cross_validation` (263 fixtures against SymPy 1.14, `tests/fixtures/sympy_cross_validation.json`), `test_correctness_audit` (108 fixtures: FTC verification, definite integrals, `tests/fixtures/new_capabilities.json`), `test_cross_context` (cross-context safety guards), `test_ode_comprehensive` (ODE solver classes), `test_rootof` (RootOf solver + numerical evaluation), `test_hard_math` (edge cases and negative tests) |
 | `legacy` | `tests/legacy/{round*_*,math*_bugs,bugfinder*,*_validation,…}.rs` (23 modules) | Regression suites from bug-hunting rounds |
-| `proptests` | `tests/proptests/{proptest_*,test_proptest_new,test_quality_props,test_units_proptest}.rs` (~180 properties) | Algebraic axioms, idempotence, value preservation, round-trips. `<stem>.proptest-regressions` files live next to the sources |
+| `proptests` | `tests/proptests/{proptest_*,test_proptest_new,test_quality_props,test_units_proptest}.rs` (~150 properties) | Algebraic axioms, idempotence, value preservation, round-trips. `<stem>.proptest-regressions` files live next to the sources |
 | `perf` | `tests/perf/{simplify_perf_test,perf_analysis}.rs` | `#[ignore]`d benchmarks (`--release -- --ignored --nocapture`) |
-| `ui_tests` | `tests/ui_tests.rs` + `tests/ui/*.rs` | trybuild compile-fail snapshots for the units type system (`Mass + Length` must not compile) |
+| `ui_tests` | `tests/ui_tests.rs` + `tests/ui/*.rs` | trybuild compile-fail snapshots for the units type system (`Mass + Length` must not compile) and the shape errors of `matrix!` |
 
-Naming convention for new work: `tests/v03/v03_<area>[_<topic>].rs` (or the
-appropriate `tests/unit/test_*.rs`), one behaviour per test function, named
+Naming convention for new work: `tests/v36/v36_<batch>_<area>.rs` in the
+current group (`v36_s15r3_bounds.rs`; the batch tag keeps the files of one
+round of work together), or the appropriate `tests/unit/test_*.rs`; one
+behaviour per test function, named
 for the mathematical fact it checks (`divergent_interior_pole_is_err`, not
-`test1`). Register a new file in its group root (`tests/v03.rs`, …) with
-`#[path = "v03/<file>.rs"] mod <file>;` — do not add new top-level
+`test1`). Register a new file in its group root (`tests/v36.rs`, …) with
+`#[path = "v36/<file>.rs"] mod <file>;` — do not add new top-level
 `tests/*.rs` files, each one is another linked binary. Inside a module use
 `use super::common;` (not `mod common;`) and `include_str!("../fixtures/…")`.
 
@@ -898,9 +946,10 @@ cargo test --lib
 # Run only doc-tests
 cargo test --doc
 
-# Everything CI runs on stable (UI snapshots excluded — see below)
-cargo test --lib --bins --tests --examples -- --skip units_compile_fail
+# Everything the CI Test job runs (UI snapshots excluded — see below)
+cargo nextest run --profile ci --lib --bins --tests --examples -E 'not test(units_compile_fail)'
 cargo test --benches
+cargo test --doc
 ```
 
 ### SymPy oracle fixtures
@@ -938,7 +987,14 @@ TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
 
 ### Timeouts and granularity
 
-- Every test must finish in well under a second in debug mode.  A test
+- A test should finish in about a second in debug mode and must finish in
+  under 10 s (the same rule as `tests/README.md`).  A case that needs longer
+  is `#[ignore]`d with the reason and both times ("about 20 s in a debug
+  build (0.8 s in release)") next to a quicker variant that runs by
+  default.  nextest reports a test as slow after 30 s and kills it after
+  two minutes (60 s and five minutes in CI's `ci` profile,
+  `.config/nextest.toml`); the few tests it reports as slow are debt, not
+  precedent.  A test
   that bounds the time of a call — a budget (Gruntz, rewrite, eigenvalue
   swell), a refusal "at once", a fast path — uses the group's `perf_assert`
   module (`tests/perf_assert/mod.rs`, declared in every group root that
@@ -971,21 +1027,17 @@ TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
   --doc -- path::to::item`) with a 60 s cap and `--test-threads=1` so the
   harness names the test in flight.
 - **The doctest stage is ~1 s of test time, or it is broken.**  Rustdoc
-  compiles all ~1,300 doctests (API, README and book) into one merged binary; if *one* doc example
+  compiles all ~1,370 doctests (API, README and book) into one merged binary; if *one* doc example
   fails to compile there, it silently falls back to compiling every doctest
   standalone (~3 s each, twenty minutes in all).  A single trivial doctest
   reporting `finished in 3.6s` instead of `0.00s` is the signature; find
   the broken example with `git diff -- src | grep '^[-+].*///'`.
-- **Sub-agents run in parallel only when they are spawned in the same tool
-  block.**  A `spawn_agent` call blocks until that agent's final message;
-  two calls in consecutive blocks run one after the other, doubling the wall
-  time and leaving the coordinator idle.  Commit the skeleton (stubs
-  reachable, tree compiles), then issue every `spawn_agent` for the
-  milestone in one block with disjoint write sets, and do only
-  coordinator work (reviewing the plan, drafting the CHANGELOG) while they
-  run.  Agents share `target/`, so one agent's transient build break is
-  visible to the others — tell them to wait and retry, not to fix files they
-  do not own.  Agents never commit; integrate with one `cargo fmt --all`.
+- **Several people on one change:** agree on who edits which files before
+  starting, register the new test files as stubs first (so that the tree
+  compiles for everyone and `tests/v36.rs` is edited once), and format
+  once at the end with `cargo fmt --all`.  Builds that share a `target/`
+  directory see each other's half-finished edits: a build break in a file
+  you do not own is the owner's to fix.
 
 ### Finding where a slow or memory-hungry call spends its time
 
@@ -1085,18 +1137,60 @@ mixing.
 
 ## Continuous Integration
 
-`.github/workflows/ci.yml` runs on every push and pull request to `main`:
+`.github/workflows/ci.yml` runs on every push and pull request to `main`
+(and on demand).  Every job has a `timeout-minutes` limit, so a job that
+hangs is cancelled and reported:
 
-| Job | What it does |
-|-----|--------------|
-| **Format** | `cargo fmt --check` for the main crate, `symplex-macros`, `symplex-build`, `symplex-wasm` |
-| **Clippy** | `cargo clippy --all-targets -- -D warnings` for all four crates |
-| **Test (stable)** | `cargo test --lib --bins --tests --examples -- --skip units_compile_fail`, `cargo test --benches`, `cargo test --doc` |
-| **UI compile-fail tests** | `cargo test --test ui_tests` on the pinned `UI_TOOLCHAIN` (1.95.0) |
-| **Sub-crates** | `cargo test` for `symplex-macros`, `symplex-build`, `symplex-wasm` (native); `cargo check --target wasm32-unknown-unknown` for `symplex-wasm`; `cargo check` for `fuzz/` |
-| **Docs** | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --document-private-items` (main crate and `symplex-build`), then `mdbook build book` |
-| **MSRV** | `cargo check --all-targets` on Rust 1.93.0 for all four crates |
-| **Examples run** | Every `examples/*.rs` except `repl` is run to completion with a 300 s timeout |
+| Job | Toolchain | Limit | What it does |
+|-----|-----------|-------|--------------|
+| **Format** | `LINT_TOOLCHAIN` (1.100.0) | 10 min | `cargo fmt --check` for the main crate, `symplex-macros`, `symplex-build`, `symplex-wasm` |
+| **Clippy** | `LINT_TOOLCHAIN` | 30 min | `cargo clippy --all-targets -- -D warnings` for all four crates; clippy must reject every call in `probes/clippy_canary` (see "The BigFloat boundary") |
+| **Dependency policy (cargo-deny)** | — | 10 min | `cargo deny check` (see "Dependency policy") |
+| **Test (stable)** | `stable` | 60 min | `cargo nextest run --profile ci --lib --bins --tests --examples -E 'not test(units_compile_fail)'`: every test in its own process, with the per-test limit of the `ci` profile in `.config/nextest.toml` (a test that hangs is killed and named after five minutes instead of holding the job).  nextest runs neither benches nor doctests, so `cargo test --benches` and `cargo test --doc` follow |
+| **UI compile-fail tests** | `UI_TOOLCHAIN` (1.95.0) | 30 min | `cargo test --test ui_tests` |
+| **Sub-crates** | `stable` | 45 min | `cargo test` for `symplex-macros`, `symplex-build`, `symplex-wasm` (native); `cargo check --target wasm32-unknown-unknown` for `symplex-wasm`; `cargo check` for `fuzz/` |
+| **Docs** | `LINT_TOOLCHAIN` | 30 min | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --document-private-items` (main crate and `symplex-build`), then `mdbook build book` |
+| **MSRV** | 1.93.0 | 30 min | `cargo check --all-targets` for all four crates |
+| **Semver** | `LINT_TOOLCHAIN` | 45 min | `cargo semver-checks` of the public API against the newest release tag (see "The semver check" below) |
+| **Examples run** | `stable` | 45 min | Every `examples/*.rs` except `repl` is run to completion with a 300 s timeout |
+
+All jobs run on `ubuntu-latest` (x86-64 Linux); the only other target CI
+builds is `wasm32-unknown-unknown`, for `symplex-wasm`.
+
+**The lint toolchain is pinned** (`LINT_TOOLCHAIN` in `ci.yml`, since 0.59).
+rustfmt, clippy and rustdoc change what they accept from one release to the
+next: on 2026-11-24 the floating `stable` broke three jobs on unchanged
+code.  Format, Clippy, Docs and Semver run on exactly the pinned version;
+the tests and the examples stay on the floating `stable`, so a compiler
+change that breaks behaviour is still seen at once.  Format and lint with
+the pinned version locally too (`cargo +1.100.0 fmt --all`): a newer
+rustfmt may lay the same code out differently.  To raise the pin, run the
+three checks with the new version on a machine —
+
+```bash
+cargo +<version> fmt --all -- --check
+cargo +<version> clippy --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +<version> doc --no-deps --document-private-items
+```
+
+(for the side crates too, with `--manifest-path`, as the jobs do) — fix
+what they report, and change `LINT_TOOLCHAIN` in the same commit.
+
+**The semver check.**  Until 1.0 a minor release may break the public API,
+but only on purpose.  The Semver job runs `cargo semver-checks
+--baseline-rev <newest v* tag> --release-type minor`.  When it reports a
+break, the job fails unless the part of `CHANGELOG.md` above that release's
+heading has a section headed exactly `### Breaking` or `### Breaking (API)`:
+list the break there, with what a caller has to change, in the commit that
+makes it.  `### Breaking (behaviour)` is for results that changed and does
+not satisfy the check.  Auto traits count (a lost `UnwindSafe` is a break).
+An addition needs no section for the job, and goes under `### Added`.
+
+**The lock file.**  CI builds the dependency versions of the committed
+`Cargo.lock` (see "Dependency policy"); new dependency releases are seen
+by the weekly `dependencies.yml`, not by `ci.yml`.
+`.github/dependabot.yml` proposes updates of the GitHub Actions the
+workflows use, once a month; it does not touch the Rust dependencies.
 
 `.github/workflows/deploy-book.yml` builds the mdBook and deploys it to GitHub
 Pages on pushes to `main`.
@@ -1140,6 +1234,19 @@ special functions it uses (`betainc`, `gammainc`, `erfc`, `erfinv`, `ln Γ`).
 `RUSTFLAGS=-D warnings` is set globally, so a new warning anywhere fails CI.
 Before opening a PR run at least `cargo fmt --all`, `cargo clippy --all-targets`,
 `cargo test`, `cargo doc --no-deps`, and the examples.
+
+**Issues and pull requests.**  The pull-request template
+(`.github/PULL_REQUEST_TEMPLATE.md`) asks for what was wrong or what is new
+(input, old result, new result), the oracle behind every new expected
+value, and the checks you ran, and has the short checklist: no panic and
+no recursion over expression trees in library code, an answer that is not
+proved is refused, a public API change is listed in `CHANGELOG.md`.  Issues
+have two templates (`.github/ISSUE_TEMPLATE/`): *Wrong answer, crash or
+hang* (the input as a complete snippet, what symplex returns, what is right
+and how you know) and *Refusal or missing feature*.  An input that crashes,
+hangs or exhausts memory through the parser or the JSON import is reported
+privately, as [`SECURITY.md`](SECURITY.md) describes, not in a public
+issue.  Every change is reviewed by the maintainer (`.github/CODEOWNERS`).
 
 ---
 
@@ -1205,7 +1312,9 @@ map use `Interval::reversed` rather than swapping fields by hand.
 
 The 0.49 refactor replaced several conventions that had each produced
 silent wrong answers with types, and freezes what is left with ratchet tests
-(`tests/unit/`, `syn`-based, exact per-file counts that may only shrink).
+(`tests/unit/`: thirteen at 0.59, with exact per-file counts that may only
+shrink; eleven parse `src/` with `syn`, `test_layering` and `test_no_panics`
+scan the text).
 
 **Decisions: `Truth`, signs and evidence** (`src/base/truth.rs`).  An
 internal yes/no/undecided answer is a `Truth`, not an `Option<bool>`: it has
@@ -1313,7 +1422,21 @@ replaced by the real one only when its twin is one of the roots
 `eval_f64`, `eval_complex64`) shows a part unless it is 0 within its error
 ball: `settle` zeroes a part whose ball contains 0 and certifies the digits
 of every other part, however small next to the other; `eval_f64` refuses a
-nonzero imaginary part.  "Negligible next to the other part"
+nonzero imaginary part.  Since 0.59 a part that is certainly not 0 but that
+the evaluation cannot hold — below the exponent range next to a part within
+it — makes the number unprintable (`Adaptive::PartBelow`,
+`evalf::part_underflow_error`): it is never dropped as a part whose ball
+contains 0 is (up to 0.58 `1 + i·e^(−10¹⁰)` printed `1`).  The certificate
+is `accuracy::parts_below`, kept per node: the scaled value's mantissa
+(`extended::parts_below`), a whole underflow certainly not 0
+(`underflow_nonzero`), and the arithmetic of `accuracy::Part` (sums certify
+parts below the range only with one known sign; `f(a + iε)` only where
+`f′(a) ≠ 0` is known without evaluation).  A part within the underflow
+bound without a certificate is dropped as before — widen the certificate,
+never the drop — except in a number that depends on a value only a complex
+route's scaled form holds below the range (`E_n(z)`, `Γ(a, z)`, `erfc(z)`
+off the real axis: `evalf::held_by_complex_route`), where it is refused
+(`untracked_part_error`).  "Negligible next to the other part"
 (`is_negligible_part`, `is_real_to_digits`) is an approximate reading for
 heuristics, never an output rule.  A part dropped because a joint ball is
 wide is a bound to tighten in the route that computed it.  A function on
@@ -1373,13 +1496,24 @@ product or quotient first.  A routine whose series or fraction needs work
 that grows with a parameter gets a route whose cost does not (the
 incomplete beta near its mode: Laplace's method with the Taylor series of
 the integrand and Cauchy's estimate), bounds every truncation in logarithms,
-and declines when it cannot certify.  A route that computes one part on its
+and declines when it cannot certify.  The series of `γ(s, x)` far below the
+mean of a huge shape is such a routine (since 0.59): its sum is `∫₀^∞
+e^(−ψ)` expanded in `s/(s − x)²` (`evalf/gammatail.rs`), with the error at
+most the first omitted term because the coefficient polynomials have
+non-negative coefficients; where that term is above the precision the
+route declines.  A route that computes one part on its
 own next to an exact constant (`Ei = ±iπ − E₁(−z)`) bounds that part by its
 own sum's error and refuses when it underflows; the error of a non-real
 argument moves each part by its own share (Cauchy–Riemann,
 `sensitivity::moved_by`).  Exact accessors (`statistic_exact`,
 `p_value_exact`) of an `f64` route are `None`: the value is written as
-`exp(ℓ)`, never as the dyadic rational of a float.
+`exp(ℓ)`, never as the dyadic rational of a float.  A route whose prefactor
+`e^(−z)·z^c` underflows while its expansion converges returns 0 within an
+underflow bound and gives `extended` the pieces (`cexpint::below_range`: the
+exponent and the bracket; since 0.59), never the 0 to a loss loop that
+reads it as a total cancellation (up to 0.58 `E1(10¹⁰ + i)` was
+`PrecisionExhausted`); the test is on the true modulus, so a value within
+the range near its bottom stays the ordinary route's.
 
 **Numeric values of constants** (`evalf::const_value`,
 `tests/unit/test_decimal_roundtrip.rs`).  Library code reads the value of a
@@ -1450,7 +1584,11 @@ argument built from `x^q` and `ln x` is real and crosses no cut
 (`real_for_x_in`), without sampling.  Narrow peaks of a product of powers
 and an exponential are split off at the maximum of its logarithm
 (`definite::envelope_peak`), found in `f64`: a split point is a guide,
-never a claim.
+never a claim.  The joining point `x_r = (ln|r| − re μ)/re λ` of
+`integrate::spiral_continuous` is read as a number where it is one (`ln √q`
+written `½ ln q`, `ln_sqrt_as_half_ln`; since 0.59): at a pole on the path
+the turn count is an exact integer only then (up to 0.58 `∫ dx/((1+i)ˣ −
+2i)`, with its pole at `x = 2`, stayed unevaluated).
 
 **Poles of powers.**  `b^e` is claimed complex, real, rational,
 non-negative or finite only off the pole at `b = 0`: for a symbol-free `b`
@@ -1490,13 +1628,21 @@ constructors of `Si`, `Ci`, `Ei`, `li`, `ζ`, `ψ⁽ⁿ⁾` are the `eval_*`
 functions of `transforms/eval.rs`; their values at infinity live there.
 `eval` evaluates no closed form at an argument with `±∞` in it.  A fold
 that holds for every finite value of one argument when another is special
-(`Γ(s, ∞) = 0`, `E_ν(∞) = 0`, `J_ν(∞) = 0`, `γ(s, 0) = 0`) checks that
-argument with `ValueClass::of(arena, a).is_finite_proved()`.  A function at `zoo` has no value unless
+(`Γ(s, ∞) = 0`, `E_ν(∞) = 0`, `J_ν(∞) = 0`) checks that
+argument with `ValueClass::of(arena, a).is_finite_proved()`; `γ(s, 0) = 0`,
+listed here up to 0.58, holds only for `re s > 0` and needs that proved
+(see "Special values are classified").  A function at `zoo` has no value unless
 tabulated, and one left unevaluated at a `zoo` argument (not a user
 function, not a degree-0 polynomial) makes `0·f` `nan`
 (`canon::unevaluated_at_complex_infinity`).  `Min`/`Max` read their arguments
 as real: `±∞ + c` is `±∞` there, and `+∞` absorbs a `Max`, unless an
-argument is known not to be real.
+argument is known not to be real.  An infinity in a direction with
+parameters (`sign(k)·∞`) says nothing about a finite part (since 0.59): a
+constant factor with parameters keeps the perpendicular part of its
+factor's limit (`limit::parametric_scale`: `(y − 1)·Γ(0, x)` at `0⁻` is
+`sign(y − 1)·∞ − iπ·(y − 1)`), and two equal one-sided `sign(k)·∞` are a
+two-sided limit only when `f/k` has the same finite imaginary part (or a
+diverging one) on both sides (`limit::finite_parts_agree`).
 
 **Special values are classified, not compared** (`src/base/value_class.rs`,
 `tests/unit/test_special_atoms.rs`).  Whether a value is finite, `±∞`, a
@@ -1522,9 +1668,14 @@ the function regular there; `B` at a pole is rewritten as a ratio of `Γ`
 (`beta_poles_as_gamma`).  At `zoo` the library functions are tabulated by
 their limit in every direction (`canon::at_complex_infinity`), folded when the
 node is built and by `eval` alike; `eval` takes no value from a closed form
-at a `zoo` argument the table does not cover.  A product with the
-coefficient 0 over `0^e` of undecided sign is `Piecewise((0, re(e) < 0 ∨ e =
-0), (nan, True))`.
+at a `zoo` argument the table does not cover.  A facet may list both kinds
+of place (`Poles::NonPositiveIntegerOrZero`, since 0.59: `γ(s, z)` has
+poles at `s = 0, −1, …` and at `z = 0` unless `re s > 0`); a fold at such a
+place needs the condition proved (`γ(s, 0) = 0` only for `re s > 0` known:
+a positive number, the assumptions, a certified value), never "not known
+to fail".  A constant at a pole of its order for every argument (`γ(−n,
+c)`) is no limit value.  What `0` and `zoo` times a quantity that vanishes
+on a region are (`0/0^e`, `0/H(y)`) is under "Piecewise parameters".
 
 **Symbols pinned to a value.**  A symbol whose assumptions allow one value
 (`zero`, `even ∧ prime`, a positive integer neither prime nor composite:
@@ -1561,12 +1712,41 @@ public finiteness answer must not come from it.
 **Piecewise parameters.**  The generic convention covers analytic
 functions of the symbols.  `0^y`, `δ`, `KroneckerDelta`, `H`, `⌊·⌋`, `⌈·⌉`,
 and `min`/`max`/`Piecewise` with a vanishing value do vanish on regions:
-`identically_zero::may_vanish_on_a_region` detects them, `ZeroDecision::decide`
+`canon::may_vanish_on_a_region` (in `base` since 0.59, re-exported by
+`identically_zero`) detects them, `ZeroDecision::decide`
 and `vanishes_identically` read such a part as undecided (never divided by),
 and `cancel` decides such a divided-out denominator.  Being nonzero at a sample point proves nothing for them.  A
 Taylor coefficient never comes from differentiating a step: a
 `KroneckerDelta(a, b)` of the series variable is constant near the point
-only when `a − b` is a nonzero number there.
+only when `a − b` is a nonzero number there.  The constructors obey the
+rule too (since 0.59; `0/0^e` since 0.58): `0/d` and `zoo·f` for a `d`, `f`
+that may vanish on a region are `Piecewise((0 | zoo, c), (nan, True))`,
+where `c` is the conjunction of one condition per such factor
+(`canon::push_nonzero_conditions`): the exponent's half plane for `0^e`
+(`re(e) < 0 ∨ e = 0`), `a = b` for `KroneckerDelta(a, b)`, `a = 0` for
+`δ(a)`, `a ≥ 0` for `H(a)`, and `|f| > 0` for anything else — never `f ≠
+0`, which `eval` decides true at a `nan` (`Ne(nan, 0)`); `|nan| > 0` has no
+truth value, and a `Piecewise` that reaches such a condition is `nan`.
+**Powers of the base 0** have one form, `0^e` (`canon_pow` folds `(0^e)^q`
+to `0^(q·e)`), and their exponents add only within one exponent term and
+one sign of its coefficient (`canon::push_zero_power_factors`: `0^y·0^(2y)`
+is `0^(3y)`, `0^y·0^(−y)` is 1 at `y = 0` and `nan` elsewhere, `0^y·0^z`
+stays): never merge or cancel exponents of the base 0 by hand (`powsimp`
+takes `0^e` for its own base), and never treat a constant `0^e` as a finite
+nonzero factor of a limit (`limit::limit_by_zero_power_cases` takes the
+three cases of `re e` for the public limit; the internal generic limit
+still reads the power as a generic factor — a known gap: new code that
+calls it refuses an expression with a constant `0^e` first).  A
+factor `0^e` under a 0 coefficient keeps the generic `0·0^e = 0` unless a
+term of `e` has a negative coefficient (`reciprocal_zero_power`).  A sum
+of step parts vanishes on a region when it does at a value one of them
+takes on a region (`max(c, y)` at `c` and at `y`, `H(y)` at 0 and 1):
+`calculus_util::vanishes_at_a_step_value` makes such a constant undecided
+(`8·max(0, y)³ − 4·max(0, y)`, `H(y) − 1`; since 0.59).  A
+`KroneckerDelta(a, b)` holding the limit variable has its value at the
+point as its limit only where `a − b` is a nonzero number there
+(`limit::substitute_continuous`); Gruntz rewrites it to 0 where `a − b` has
+an eventual sign, and refuses where that leaves the expression at a pole.
 
 **Hidden zeros inside functions of parameters.**  `ZeroDecision::decide`
 also decides the symbol-free pieces of a constant with parameters (`J` in
@@ -1604,7 +1784,20 @@ otherwise, or a refusal).
 the assumptions do not decide is `SumOutcome::Conditional { value, region }`
 (the closed form and the exact region, or a sufficient one documented as
 such), never `Closed`: the public `summation` writes `Piecewise((value,
-region), (Sum, True))`; `eval` of a formal `Sum` does not build it.
+region), (Sum, True))`; `eval` of a formal `Sum` does not build it.  The
+numeric value of a sum is never truncated on what its terms look like: the
+rest beyond the last term summed has a proved bound.  For a weighted sum
+over a long range (`evalf/windowsum.rs`, since 0.59: the entropy of
+`Binomial(10⁵, p)`) that is an envelope `2^(a + b·j)·(1 + j)^p` of the
+summand built bottom-up, in which a hypergeometric weight's rate `2^b`
+bounds its step ratio on the whole rest: prove it from the ratio
+polynomials (no real root of `P·Q`, and of `ρ·|Q| − c·|P|`, between the edge
+and the end: `poly::sturm`), never from "the masses are log-concave" or
+from the terms seen.  An `f64` estimate may choose where the window starts
+and refuse a window that cannot fit the budget (`MAX_WINDOW_TERMS`,
+65,536); it never ends a sum.  A weight moved by its recurrence stops at an
+integer root of `P` or `Q` (a pole of a Gamma, a binomial beyond its
+support).
 
 When only coprimality or the degree of a gcd is needed, use modular images
 (`modgcd::main_gcd_degree_bound`, `coprime_certified`), not a full gcd: an
@@ -1649,6 +1842,14 @@ polynomials of powers), with checked conversions (`u32::try_from`, never
 `as`); beyond the bound the decider returns `None`.  Up to 0.51
 `rational_pow` cast the exponent `as u32`: `2^(2³² + 1)` became `2`, so
 `2^4294967297 − 2` was called zero, and `1000000007^1000000007 − 2` hung.
+Since 0.59 an exact value asked for by the caller is bounded before it is
+formed, by a lower bound of its size: `(bits − 1)·degree` for a power
+(`MultiPoly::eval`, `try_pow`: `MAX_VALUE_BITS`, 2²⁷), `n + 1` terms for
+the `n`-th power of a polynomial of two or more terms (2¹⁶).  Only the
+powers of the exponents present are formed (`zpoly::SparsePowers`; a table
+of every power up to the degree asked for 68 GB for `x^(2³¹) + 1`), and a
+huge value is reduced by a division, not by `Ratio::new` (a binary gcd,
+quadratic in the larger number even against 1).
 
 **Allocation lengths from the data** (`src/base/cast.rs`,
 `tests/unit/test_alloc_bounds.rs`).  A length read from the input — a
@@ -1666,7 +1867,17 @@ series did.  The shared caps live in `cast` (`MAX_DENSE_DEGREE` 2¹⁶,
 `MAX_SERIES_TERMS` 2¹⁴, `MAX_TERMS` 2²⁰, `MAX_DENSE_LIST` 2²⁴,
 `MAX_POWER_BITS`); a routine with a tighter work bound passes its own.  A
 public function whose result is a list as long as its input
-(`primes_up_to`) has a `try_` twin that reports the refusal.  A length
+(`primes_up_to`) has a `try_` twin that reports the refusal.  Since 0.59
+the same holds for a count the caller passes: a public function that
+returns a list as long as that count (`FormalPowerSeries::coefficients`,
+`discrete::convolution_cyclic`) bounds it the same way and has a `try_`
+twin; its plain form returns the documented empty list, never a capped
+prefix that takes as long as the cap (the first 2¹⁴ coefficients of `sin`
+take 20 s).  A function that returns one number whose size grows with an
+index (`ntheory::fibonacci`, `lucas`, `primorial`) has a cap on the index,
+returns the documented `0` beyond it and has a `try_` twin (up to 0.58
+"the caller bounds `n`").  The refusal is documented under `# Refusal` on
+the plain function.  A length
 computed into a `let` first is not seen by the ratchet: review it.
 
 **The BigFloat boundary** (`src/base/bigfloat.rs`).  astro-float's
@@ -1749,7 +1960,13 @@ certified values) or the candidate solving the equation identically
 lack of a better one (Lagrange's formula for linear constant-coefficient
 equations is exact by construction and is rejected only on a certified
 nonzero residual).  A sector condition `arg y ∈ (a, b]` is written `a <
-arg(y) ∧ arg(y) ≤ b`; `Solutions::under` simplifies conditions.
+arg(y) ∧ arg(y) ≤ b`; `Solutions::under` simplifies conditions.  A family
+`a + b·n` with a non-real step has at most one real member, at `n = −im
+a/im b`, decided exactly (`solve::real_members_of_family`, since 0.59); a
+consumer that lists the real members of a family in a window never drops
+it because its offset is not real (up to 0.58 `singularities(1/((−2)^x −
+4), x, [0, 10])` was empty).  A polynomial in `c^x` for any constant base
+`c ≠ 0` is solved in `t = c^x` when every exponential has that base.
 
 **Logging is lazy.**  A debug line formats an expression through the macro
 (`tracing::debug!(e = %arena.display(e))`), never by building a string
@@ -1770,6 +1987,15 @@ tree-size bound does not bound an expansion.  An expansion that widens its windo
 repeat a differentiation fallback that refused at a lower order; a special
 function whose derivative in a parameter divides by it at the point
 (`Π(n | m)` at `n = 0`) gets a structural rule rather than the fallback.
+Since 0.59: every `expand` of `gruntz::leadterm_add_by_series` is charged
+with `charge_expansion`; a series fallback that needs a derivative asks
+first whether the first derivative is formal (`B(a, b)`), and then takes no
+limit and makes no pole retry; a loop whose length is a difference of
+degrees or a multiplicity is counted and refused beyond a bound
+(`MultiPoly::prem_in`: `MAX_PREM_STEPS`); and a verification never repeats
+a product once per unit of a multiplicity: monomial factors add exponents,
+the others are raised by `try_pow` (`factor_multivariate`), a power of `x`
+is a shift (`factor_zassenhaus`).
 
 **Finite sums for every integer bound.**  Reversed limits follow Karr's
 convention (`Σ_{a}^{b} = −Σ_{b+1}^{a−1}` for `b < a − 1`; the empty sum for
@@ -1833,7 +2059,20 @@ A route's own rounding belongs in its bound: exact inputs make a node's
 *propagated* error 0, not its computation (`b^x` formed as `exp(x·Log b)`
 rounds `Log b`; `accuracy::pow_rounding`), and a part is exact only where
 the route provably yields an exact 0 (up to 0.51 the rounding of `8π` made
-`(−1)^(8 + 2i)` certified non-real).
+`(−1)^(8 + 2i)` certified non-real).  Exact tables that do not depend on
+the argument (Borwein's `d_k`, the coefficients of `W` at its branch point)
+are built once per thread and on demand (`borwein_d`,
+`lambertw::BranchPointCoefficients`; since 0.59), in integer arithmetic
+where they are integers: a rational recurrence with a gcd of `wp`-bit
+integers per step was 45 % of a `ζ`-heavy evaluation.  A function with a
+zero at a rational point takes a rational literal argument from its exact
+value (`zeta_next_to_trivial_zero`, as `sin` of a rational reduces it
+again): the float argument's rounding is a radius far above a value next
+to the zero.  An identity between two terms of a sum (`erf(u) + erfc(u) =
+1`) is applied to the sum (`erf_complements`), not left to two rounded
+values whose sum is a ball around the constant.  The elliptic routes
+pursue a part far below the other as far as the arguments' exponents
+explain it, within `MAX_GAP_WORK_BITS` (`elliptic::gap_pursued`).
 
 **Coefficient domains are values.**  A new coefficient ring implements
 `poly::domain::CoeffDomain` (`&self` carries its parameters — a modulus, a
@@ -1876,12 +2115,30 @@ constructor decides a symbol-free parameter by the certified queries
 `as_rational` alone.  Dense layouts derived from data are bounded
 (`solve::MAX_DENSE_POLY_DEGREE`, `series::MAX_DENSE_KNOWN`,
 `discrete::BINOMIAL_MASS_MAX_BITS`); beyond them the routine refuses or
-keeps the value symbolic.
+keeps the value symbolic.  The keys by which `transformed` tells the images
+of a table apart decide only what is certified: two images are merged by
+`equals` alone; a key (`wrappers::value_key`: the `f64`, `ln |image|`
+beyond the doubles, and since 0.59 the residual `image − f64` for images
+that share a double, `residual_key`) only proves two images different.
+The bounds between the scales are widened (`HUGE_LOG`, `TINY_LOG`) so that
+no rounding puts one number into two scales.  A density whose factors are
+powers with a huge shape in the exponent, or Gamma functions of it, is
+written at a numeric point with the factors combined in logarithms
+(`continuous::huge_shape`, since 0.59: `FDistribution`, `StudentT`), `ln(1
++ y)` as `2 atanh(y/(2 + y))` — a rational power with a half-integer
+exponent is split into numerator and denominator powers by the canonical
+form, each beyond even the scaled exponent range.  A family whose generic
+entropy would sum the masses exactly returns the formal `Sum` above 64
+atoms (`Binomial`, `Hypergeometric`).
 
 **Branch on error variants, never on message text.**  A failure callers act
 on gets a variant (`BudgetExhausted`, `ExpressionSwell`,
 `NotDiagonalizable`, or an internal error enum like quadrature's
-`QuadError`); `e.to_string().contains(…)` is not control flow.
+`QuadError`); `e.to_string().contains(…)` is not control flow.  A wrapper
+that gives its own message to one failure of a callee matches that variant
+(`e.degeneracy()`) and returns every other error unchanged
+(`reliability::pearson_of`; up to 0.58 it relabelled a shape error as a
+constant column).
 
 ### Error Handling
 
@@ -2030,9 +2287,18 @@ fn walk(arena: &Arena, root: ExprId) {
 }
 ```
 
+The same holds for every tree a caller can hand in.  `ExprTree` is a public
+owned tree and can be as deep as the caller builds it: since 0.59
+`tree_to_expr` walks it with an explicit stack (children from
+`ExprTree::head_and_children`, results by node address; up to 0.58 a tree
+nested 100,000 deep overflowed the stack in `Context::from_tree`).  The
+tree's own `Drop`, `Clone` and `PartialEq` are still recursive (derived).
+
 ---
 
 ## Questions?
 
-Open an issue on GitHub. We're happy to help new contributors find their way
-around the codebase.
+Open an issue on GitHub (the templates ask for the input, the result and
+the oracle behind the answer you expected). We're happy to help new
+contributors find their way around the codebase.  For a vulnerability, see
+[`SECURITY.md`](SECURITY.md).
