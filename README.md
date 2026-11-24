@@ -6,7 +6,7 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release (0.57).** The API is stabilising but not stable: 0.7.0 reshaped the
+> **Pre-release (0.58).** The API is stabilising but not stable: 0.7.0 reshaped the
 > certificate API and 0.10.0 added variants to three fresh enums/structs; every
 > breaking change is listed first, under `### Breaking`, in the release's entry in
 > [CHANGELOG.md](CHANGELOG.md), and the larger ones have a one-line fix in the book's
@@ -85,7 +85,7 @@ cargo add symplex
 - You need a mature CAS with decades of community validation — use [SymPy](https://www.sympy.org/). It has broader coverage, more special functions, and a much larger test corpus.
 - You need geometry, tensor algebra, quantum mechanics, or PDE solving — these are not available (planar/space geometry is next on the roadmap; random variables arrived in 0.11 and the data-statistics modules — tests, estimation, agreement, survival, … — in 0.13–0.21).
 - You need interactive notebook-style exploration — symplex is a library, not an application. (Though see `cargo run --example repl` for a basic REPL.)
-- You need results verified against extensive known-answer databases — symplex has ~12,900 tests including SymPy cross-validation fixtures and every 0.9+ test cites its SymPy reference value, but SymPy has orders of magnitude more coverage.
+- You need results verified against extensive known-answer databases — symplex has ~15,000 tests including SymPy cross-validation fixtures and every 0.9+ test cites its SymPy reference value, but SymPy has orders of magnitude more coverage.
 - You need large-scale or sparse numerical optimisation — the exact simplex is dense (`O(m·n)` integer operations per pivot, in `i64`/`i128`/256-bit/`BigInt` as the numbers grow; hundreds of rows, not hundreds of thousands), and the `f64` routines are the classic derivative-free methods, not a replacement for a dedicated optimisation library.
 
 ---
@@ -865,7 +865,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.57 | SymPy 1.14 |
+| Feature | symplex 0.58 | SymPy 1.14 |
 |---------|--------------|------------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete, incl. Bessel/Airy/orthogonal/polygamma/erf family | Complete |
@@ -1025,7 +1025,7 @@ Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen
 
 ## Requirements
 
-Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~14,000 tests (`cargo nextest run`), ~1,300 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.57, with a per-file ratchet); `fuzz/` checks properties nightly (13 targets, including the symbolic distributions), and a nightly statistics oracle ([`scripts/stats_oracle/`](scripts/stats_oracle/README.md)) compares the distributions, hypothesis tests and least-squares fits with scipy, statsmodels and mpmath.
+Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~15,000 tests (`cargo nextest run`), ~1,360 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.58, with a per-file ratchet); `fuzz/` checks properties nightly (13 targets, including the symbolic distributions), and a nightly statistics oracle ([`scripts/stats_oracle/`](scripts/stats_oracle/README.md)) compares the distributions, hypothesis tests and least-squares fits with scipy, statsmodels and mpmath.
 
 ## License
 
