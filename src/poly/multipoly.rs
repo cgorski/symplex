@@ -1380,7 +1380,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     ///
     /// When [`try_gcd`](Self::try_gcd) refuses, the GCD of the integer
     /// contents of the inputs (a common divisor, not necessarily the
-    /// greatest).  Up to 0.58 that case panicked (`x^(2³¹)·y + 1` and
+    /// greatest).  Up to 0.57 that case panicked (`x^(2³¹)·y + 1` and
     /// `x^(2³¹)·y − 1`: the exponent-overflow assertion of
     /// [`mul`](Self::mul) in the PRS).
     pub fn gcd(a: &Self, b: &Self) -> Self {
@@ -1564,7 +1564,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// leading coefficient), and `self = content · primitive part`; `None`
     /// when a GCD is refused ([`try_gcd`](Self::try_gcd)).  The
     /// coefficients are those of the exponents of `v` present, in ascending
-    /// order (up to 0.58 every exponent up to the degree was tried, 2³¹
+    /// order (up to 0.57 every exponent up to the degree was tried, 2³¹
     /// empty coefficients for `x^(2³¹) − 1`).
     fn content_in(&self, v: usize) -> Option<(Self, Self)> {
         let mut content = Self::zero(self.num_vars);
@@ -1630,7 +1630,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// # Refusal
     ///
     /// When [`try_lcm`](Self::try_lcm) refuses, the zero polynomial (a
-    /// common multiple, not the least).  Up to 0.58 that case panicked.
+    /// common multiple, not the least).  Up to 0.57 that case panicked.
     pub fn lcm(a: &Self, b: &Self) -> Self {
         Self::try_lcm(a, b).unwrap_or_else(|| Self::zero(a.num_vars))
     }

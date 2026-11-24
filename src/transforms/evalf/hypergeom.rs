@@ -43,7 +43,7 @@
 //! large positive `x` its two terms cancel (`e^{x²}` against the value's
 //! `1/x^m`): the bits lost are measured as everywhere, and `eval` writes
 //! the closed form in `erfc` for `m ≤ 64`, which `evalf` takes without
-//! cancellation.  Refused before 0.59.
+//! cancellation.  Refused before 0.58.
 //!
 //! # Complex arguments
 //!
@@ -128,7 +128,7 @@ pub(super) fn takes(f: LibFn, args: &[ExprId], cache: Cache<'_>) -> bool {
 /// erfc(x)` (the repeated integral of `erfc`, DLMF 7.18; `H_{−1}(x) =
 /// (√π/2)·e^{x²}·erfc x`), and the hypergeometric form above holds with both
 /// `Γ` at positive arguments (`m/2`, `(m + 1)/2`); mpmath's `hermite` takes
-/// it there.  Up to 0.58 such degrees were refused ("degree must be a
+/// it there.  Up to 0.57 such degrees were refused ("degree must be a
 /// non-negative integer").
 fn hermite_function(f: LibFn, nu: &BigFloat) -> bool {
     f == LibFn::Hermite && nu.is_int() && nu.is_negative()

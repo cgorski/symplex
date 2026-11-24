@@ -56,7 +56,7 @@
 //!   direction not decided.  One whose evaluation meets such a value inside
 //!   (`1/elliptic_pi(π, 1)`) is `Unknown`, as with an atom inside; a
 //!   constant `evalf` cannot evaluate for another reason (`erfinv(9/4)`) is
-//!   `Unknown` too.  Up to 0.58 an unevaluated pole was `Unknown` like any
+//!   `Unknown` too.  Up to 0.57 an unevaluated pole was `Unknown` like any
 //!   other constant without a value.  These answers are memoised under
 //!   `FactKey::Finite` and `FactKey::Infinite`.
 //! - **Everything else** holding a special atom (`∞ + i`, `sin ∞`,

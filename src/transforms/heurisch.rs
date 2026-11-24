@@ -396,7 +396,7 @@ fn compute_degree_bound(arena: &Arena, components: &[ExprId], var_sym: SymbolId)
                     && r.is_integer()
                 {
                     // A degree beyond `usize` is beyond any bound (up to
-                    // 0.58 one beyond `i64` was read as 1 from its decimal).
+                    // 0.57 one beyond `i64` was read as 1 from its decimal).
                     let d = num_traits::ToPrimitive::to_usize(r.to_integer().magnitude())
                         .unwrap_or(usize::MAX);
                     max_poly_degree = max_poly_degree.max(d);
@@ -555,7 +555,7 @@ fn eval_node_f64(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, f64>) -> f
 
     match node {
         ExprNode::Num(nid) => {
-            // The nearest `f64`, `±∞` beyond the range.  Up to 0.58 the
+            // The nearest `f64`, `±∞` beyond the range.  Up to 0.57 the
             // numerator and denominator were printed and parsed: `inf/inf`
             // (NaN) for a rational with both beyond `10³⁰⁸`.
             let r = arena.num(nid);

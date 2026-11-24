@@ -402,12 +402,30 @@ impl Expr<Numeric> {
         self.reciprocal_function("acsch")
     }
 
-    /// Cardinal sine: `sinc(x) = sin(x)/x`, with `sinc(0) = 1` (requires limit).
+    /// Cardinal sine `sinc(x) = sin(x)/x`, with `sinc(0) = 1` (the value
+    /// that makes it continuous).  An argument that is zero — structurally,
+    /// or proved zero by [`is_zero`](Self::is_zero) — gives `1`; any other
+    /// argument gives the expression `sin(x)/x`, which has no value at
+    /// `x = 0`: substituting `0` into `x.sinc()` gives `nan`, and the value
+    /// there is its limit.  (SymPy's `sinc` is a function of its own with
+    /// `sinc(0) = 1`.)  Up to 0.57 a zero argument built `sin(0)/0 = nan`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(ctx.int(0).sinc(), ctx.int(1));
+    /// assert_eq!(x.sinc(), &x.sin() / &x);
+    /// assert_eq!(x.sinc().limit(&x, &ctx.int(0)), ctx.int(1));
+    /// // A constant proved zero: Γ(1/3)Γ(2/3) = 2π/√3.
+    /// let c = ctx.parse("gamma(1/3)*gamma(2/3) - 2*pi/sqrt(3)").unwrap();
+    /// assert_eq!(c.sinc(), ctx.int(1));
+    /// ```
     #[must_use]
     pub fn sinc(&self) -> Ex {
-        // Removable singularity: a literally-zero argument would build
+        // Removable singularity: a zero argument would build
         // `sin(0)/0 = 0/0 = NaN`, but the limit (and the documented value) is 1.
-        if self.is_zero_structural() {
+        if Truth::from(self.is_zero()).is_true() {
             return self.context().one();
         }
         &self.sin() / self
@@ -4315,7 +4333,7 @@ impl Expr<Numeric> {
     ///
     /// Returns [`SymplexError::Infinite`] if the value is infinite or needs
     /// one that is: `∞`, `zoo`, a function at a pole of exact arguments
-    /// (`elliptic_pi(π, 1)`, `expint(1, 0)`, `1/elliptic_pi(π, 1)`; up to 0.58
+    /// (`elliptic_pi(π, 1)`, `expint(1, 0)`, `1/elliptic_pi(π, 1)`; up to 0.57
     /// `Unevaluable`).
     ///
     /// Returns [`SymplexError::Unevaluable`] if the expression contains

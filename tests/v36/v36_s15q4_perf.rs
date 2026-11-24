@@ -22,7 +22,7 @@ fn cubes(ctx: &Context, n: i64) -> Distribution {
     Distribution::finite(ctx, table)
 }
 
-/// Up to 0.58 the CDF of a finite table asked the pmf once per atom, and
+/// Up to 0.57 the CDF of a finite table asked the pmf once per atom, and
 /// each lookup scanned the table (quadratic): `P(Y ≤ 5·10¹¹)` for `Y = X³`,
 /// `X` a 100,000-sided die, took 3.4 s (the `fuzz_stats` input `Po4IAI5m`
 /// 49.7 s); a rational table now has cumulative masses.
@@ -39,7 +39,7 @@ fn finite_table_cdf_reads_cumulative_masses() {
     assert_eq!(d.sf(&at), ctx.rational(1, 2));
     assert_eq!(d.cdf(&ctx.rational(1, 2)), ctx.zero());
     assert_eq!(d.cdf(&ctx.int(10).powi(13)), ctx.one());
-    // 9.7 s in a debug build up to 0.58.
+    // 9.7 s in a debug build up to 0.57.
     timer.assert_within(
         Duration::from_secs(3),
         "five CDF values of a 20,000-atom table",
@@ -63,7 +63,7 @@ fn finite_table_density_by_lookup() {
 }
 
 /// A table of irrational values (`√X` of a die) keeps the indicator sum,
-/// each comparison decided by the values (up to 0.58 one interned
+/// each comparison decided by the values (up to 0.57 one interned
 /// difference and sign query per atom): the same exact answers.
 ///
 /// Oracle: `√k ≤ 2` for `k ≤ 4`; `√5` is an atom.
@@ -121,7 +121,7 @@ fn student_t_characteristic_function_is_closed() {
     assert_eq!(v.im, 0.0);
 }
 
-/// `F(10¹⁶, 10¹⁶).cdf(1)` is `I_{1/2}(5·10¹⁵, 5·10¹⁵)`: up to 0.58 the
+/// `F(10¹⁶, 10¹⁶).cdf(1)` is `I_{1/2}(5·10¹⁵, 5·10¹⁵)`: up to 0.57 the
 /// continued fraction needed about 2·10⁶ steps there and was refused after
 /// 20 s; the central route (Laplace's method with the convergent Taylor
 /// series of the integrand) takes milliseconds.
@@ -141,7 +141,7 @@ fn f_cdf_at_the_centre_of_huge_shapes() {
 }
 
 /// `I_x(10¹⁴, 3·10¹⁴)` a fraction of a standard deviation above the mode:
-/// up to 0.58 a continued fraction of about 4·10⁵ steps (1.1 s; several
+/// up to 0.57 a continued fraction of about 4·10⁵ steps (1.1 s; several
 /// seconds in a debug build).  Both tails, each to its relative precision.
 ///
 /// Oracle: mpmath 1.3 quadrature of `exp((a−1) ln(t/t₀) + (b−1)
@@ -183,7 +183,7 @@ fn f_cdf_far_lower_tail_of_a_huge_first_shape() {
 
 /// `5/(3x·ln x·atanh(atanh x))` at 1 has a simple pole (`(x − 1)·f →
 /// 10i/(3π)`) next to a function of `ln(1 − x)`: no expansion in powers.
-/// Up to 0.58 the refusal tried all five pole retries `(x − 1)ᵏ·f` (0.3 s,
+/// Up to 0.57 the refusal tried all five pole retries `(x − 1)ᵏ·f` (0.3 s,
 /// 4.4 s in a debug build); a finite `(x − 1)·f` makes only the first.
 ///
 /// Oracle: `atanh(atanh x) → −iπ/2` as `x → 1`; `ln x/(x − 1) → 1`.

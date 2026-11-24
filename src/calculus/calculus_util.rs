@@ -1736,7 +1736,7 @@ const NODES_PER_EVALUATION_UNIT: usize = 64;
 /// what the arena has seen.  Past the bound `hidden_zero` answers
 /// "undecided" without evaluating, so the caller refuses, and the scope
 /// stays spent.  Gruntz's [`Budget`](crate::calculus::gruntz) holds one and
-/// charges the units to its work at each step; up to 0.58 they were not
+/// charges the units to its work at each step; up to 0.57 they were not
 /// counted, and `limit(E1(digamma(x))^Ei(x), x, 0, −)` evaluated
 /// coefficients of its series (polynomials in `ζ(k)` and `γ` of a thousand
 /// distinct nodes, each `ζ` at 166 bits) for over 25 s.  Scopes nest
@@ -3385,7 +3385,7 @@ impl ZeroDecision {
     /// [`hidden_zero`]; one proved 0 is replaced by 0, and one 0 to the
     /// precision reached but not proved makes the constant `Nonzero` only
     /// when it is nonzero both as it stands and with that part replaced by
-    /// 0 (`y + J` is; `sin(y·J)` is `Undecided`).  Up to 0.58 steps 4–5 saw
+    /// 0 (`y + J` is; `sin(y·J)` is `Undecided`).  Up to 0.57 steps 4–5 saw
     /// only symbol-free *factors*: `cos(y·J + π/2) = −sin(y·J)` (`J =
     /// besselj(−1/2, π/2) = 0`) was nonzero for a generic `y`, and
     /// `limit(tan(π/2 + y·besselj(−1/2, π/2 + x)), x, 0)` was the value

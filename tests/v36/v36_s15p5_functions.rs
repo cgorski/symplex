@@ -19,7 +19,7 @@ fn decimal(ctx: &Context, s: &str, digits: u32) -> String {
 /// `H_{−m}(x) = (√π/2)·e^{x²}·i^{m−1}erfc(x)` (DLMF 7.18, 12.7.6): `eval`
 /// writes the closed form, `H_{−1} = (√π/2)e^{x²}erfc x`, `H_{−2} = 1/2 −
 /// (√π/2)·x·e^{x²}erfc x` (the recurrence `H_{ν+1} = 2xH_ν − 2νH_{ν−1}` from
-/// `H_0 = 1`).  Up to 0.58 `hermite(−m, x)` stayed and `eval_decimal`
+/// `H_0 = 1`).  Up to 0.57 `hermite(−m, x)` stayed and `eval_decimal`
 /// refused it ("degree must be a non-negative integer").  mpmath 1.3
 /// `hermite(-1, 2)` = `0.22633852499058728968130400071475`, `hermite(-2, 2)` =
 /// `0.047322950018825420637391998570509`, `hermite(-3, -0.5)` =
@@ -71,7 +71,7 @@ fn hermite_function_closed_forms_satisfy_the_derivative_rule() {
 
 /// `Π(n | m)` for a non-real `m` with `Re m > 1` whose arguments lie in no
 /// half-plane (neither directly nor after the involution): the split at
-/// `t = 1/m` continued off the axis.  Up to 0.58 refused ("the arguments
+/// `t = 1/m` continued off the axis.  Up to 0.57 refused ("the arguments
 /// 1 - m, 1 and 1 - n lie in no half-plane").  Oracle: a quadrature of
 /// `1/((1 − n sin²θ)√(1 − m sin²θ))` over `[0, π/2]` with mpmath at 50
 /// digits (K4's hunt truth): `1.3351553735035455048151267175926 +
@@ -103,7 +103,7 @@ fn elliptic_pi_next_to_the_cut_beyond_one_is_evaluated() {
 
 /// `uppergamma(8, a₁ + … + a₂₅)`: the closed form `7!·e^{−x}·Σ x^k/k!`
 /// expanded `x⁷` into `C(32, 7) = 3.4·10⁶` products (24 s and 160 MB of
-/// output in 0.58; the G-test on a 5 × 5 table hung on it).  Now `Γ(8, x)`
+/// output in 0.57; the G-test on a 5 × 5 table hung on it).  Now `Γ(8, x)`
 /// stays; a small argument still gets the closed form (`Γ(3, a + b)`, six
 /// terms), and the kept node evaluates numerically: at every `aᵢ = 1/10`,
 /// `Γ(8, 5/2) = 7!·e^{−5/2}·Σ_{k<8} (5/2)^k/k!` (mpmath `gammainc(8, 2.5)`
@@ -128,7 +128,7 @@ fn uppergamma_of_a_long_sum_keeps_its_node() {
 
 /// A rational function with algebraic coefficients: `∫ dx/(x(x − √2)) =
 /// (√2/2)·(ln|x − √2| − ln|x|)` (SymPy 1.14: `−√2·ln(x)/2 + √2·ln(x −
-/// √2)/2`); up to 0.58 unevaluated.  Checked by differentiating at `x = 3`:
+/// √2)/2`); up to 0.57 unevaluated.  Checked by differentiating at `x = 3`:
 /// `F′(3) = 1/(3(3 − √2))`.
 #[test]
 fn rational_function_with_algebraic_coefficients_is_integrated() {
@@ -149,7 +149,7 @@ fn rational_function_with_algebraic_coefficients_is_integrated() {
 /// A pole of `R(e^{λx})` (or `R(cˣ)`) with a non-real rate on the
 /// interval: `1/(e^{(1+i)x} − 1) ~ 1/((1 + i)x)` at 0 is not integrable, nor
 /// is `polylog(0, cˣ) = cˣ/(1 − cˣ) ~ −1/(x·Log c)` (`c = Chi(−3/4)`).  The
-/// comparison test with the non-real limit `(x − c)·f → L ≠ 0`.  Up to 0.58
+/// comparison test with the non-real limit `(x − c)·f → L ≠ 0`.  Up to 0.57
 /// refused ("no antiderivative in closed form") instead of `Divergent`.
 #[test]
 fn integrals_across_a_pole_with_a_complex_rate_diverge() {
@@ -172,12 +172,12 @@ fn integrals_across_a_pole_with_a_complex_rate_diverge() {
 
 /// `Max`/`Min` are defined on the reals: an argument certified non-real
 /// leaves no point where the order is defined, so the value is `nan` (SymPy
-/// 1.14 raises "The argument 'I' is not comparable"); up to 0.58 `max(1, I)`
+/// 1.14 raises "The argument 'I' is not comparable"); up to 0.57 `max(1, I)`
 /// stayed a node (and `0·max(1, I)` was 0).  `0/f(zoo)` is `0/zoo = 0` where
 /// `f` tends to `zoo` in every direction (`W`, `asinh`: `~ ln z`) and has no
 /// value where `f` has no limit at `zoo` (`Γ` grows along the positive axis
 /// and tends to 0 along the imaginary one; `atan`, `erf` tend to different
-/// constants): up to 0.58 `0/gamma(zoo)` and `0/atan(zoo)` were 0.
+/// constants): up to 0.57 `0/gamma(zoo)` and `0/atan(zoo)` were 0.
 #[test]
 fn max_of_non_real_arguments_and_quotients_at_complex_infinity() {
     let ctx = Context::new();

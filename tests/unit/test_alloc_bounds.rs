@@ -26,7 +26,7 @@
 //! (in the same function, earlier) whose value does, directly or through
 //! another such local (`let k = d as usize; let n = k + 1; vec![0; n]`).
 //! A later `let` of the same name without a cast (`let n =
-//! bounded_len(n, CAP)?`) clears it.  Up to 0.58 only the length
+//! bounded_len(n, CAP)?`) clears it.  Up to 0.57 only the length
 //! expression itself was read, and about forty sites hid their cast in a
 //! `let` (`combinatorics::stirling*_by_rows`, `BitSieve::new`, the dense
 //! coefficient lists of `integrate` and `poly`).
@@ -41,7 +41,8 @@ use quote::ToTokens;
 use syn::visit::Visit;
 
 /// Files allowed to contain cast-sized allocations, with the exact count
-/// (0.58: 4, down from 37 at 0.57).  0.59 sees lengths bound through a
+/// (4 where the length is cast in place, down from 37 at 0.57).  The scan
+/// also sees lengths bound through a
 /// `let`: 46 more sites in 20 files, of which 16 (in 9 files) are bounded
 /// since and 30 are listed here (34 in 12 files in all; 30 in 10 once the
 /// dense views of `factor_hensel`/`factor_zassenhaus` and the coefficient
@@ -53,14 +54,14 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // `sym_bits.resize(i + 1)`: `i` is the index of a symbol this arena has
     // interned (the table grows with the symbol table).
     ("base/arena.rs", 1),
-    // Another agent's write set at 0.59 (series orders and known prefixes):
+    // Another agent's write set at 0.58 (series orders and known prefixes):
     // review queue.
     ("calculus/series.rs", 4),
     // The sieves: `sieve_u32` has a `u32` limit, `BitSieve::new` the ECM
     // parameter table's `B₁`/`B₂` and the prime-index bound 10⁷, and
     // `segmented_sieve` a width ≤ 10⁷ (`primerange`) or a segment.
     ("domains/ntheory.rs", 3),
-    // Another agent's write set at 0.59: review queue.
+    // Another agent's write set at 0.58: review queue.
     ("domains/stats/anova.rs", 1),
     // The dense images of Brown's gcd (`image_degree_bounds`, `run_poly`,
     // `lc_main`, the evaluation points and images of `gcd_mod_p`) are sized
@@ -73,11 +74,11 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("poly/factor_hensel.rs", 1),
     // `Li_{−n}(z)`: `n ≤ MAX_SPECIAL_EXPANSION` by `as_int_in` just above.
     ("transforms/eval.rs", 1),
-    // Another agent's write set at 0.59 (lengths from the working precision
+    // Another agent's write set at 0.58 (lengths from the working precision
     // and the Riemann–Siegel term count): review queue.
     ("transforms/evalf.rs", 7),
     ("transforms/evalf/rszeta.rs", 3),
-    // Another agent's write set at 0.59 (dense coefficient lists of the
+    // Another agent's write set at 0.58 (dense coefficient lists of the
     // Risch-type routes): review queue.
     ("transforms/integrate.rs", 2),
 ];

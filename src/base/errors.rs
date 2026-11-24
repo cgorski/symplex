@@ -68,7 +68,7 @@ pub enum SymplexError {
     /// Numerical evaluation met a value that is infinite: `∞`, `−∞`,
     /// `zoo`, or a function at a pole or singularity of exact arguments
     /// (`elliptic_pi(π, 1)`, `Ci(0)`, `polylog(1, 1)`), in the expression
-    /// or inside it (`1/elliptic_pi(π, 1)`).  Up to 0.58 these were
+    /// or inside it (`1/elliptic_pi(π, 1)`).  Up to 0.57 these were
     /// [`Unevaluable`](Self::Unevaluable) like a value that could not be
     /// computed, and `solve(x − elliptic_pi(π, 1), x)` claimed the root
     /// `elliptic_pi(π, 1) = −∞`; the message is unchanged.  A singular

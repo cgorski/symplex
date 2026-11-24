@@ -192,7 +192,7 @@ fn zero_variance(op: &'static str, reason: &str) -> SymplexError {
 /// # Errors
 ///
 /// [`SymplexError::DegenerateData`] with [`Degeneracy::ZeroVariance`] if
-/// either sample is constant (up to 0.58 `InvalidArgument`);
+/// either sample is constant (up to 0.57 `InvalidArgument`);
 /// [`SymplexError::InvalidArgument`] for samples of different lengths or an
 /// empty one.
 ///

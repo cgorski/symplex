@@ -1476,7 +1476,7 @@ fn is_finite_constant(arena: &mut Arena, v: ExprId, t: ExprId) -> bool {
     if walk::free_symbols(arena, v).is_empty() && arena.as_num(v).is_none() {
         // Constant: make sure it evaluates to a finite (possibly complex)
         // number.  A value is settled only when finite: `evalf` refuses an
-        // infinite or NaN one (up to 0.58 the printout was searched for
+        // infinite or NaN one (up to 0.57 the printout was searched for
         // `inf`/`nan`, which it never shows).
         return crate::transforms::evalf::const_value(arena, v, 16).is_ok();
     }

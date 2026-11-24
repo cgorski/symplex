@@ -85,7 +85,7 @@ fn check_dichotomous<'a>(
 
 /// [`SymplexError::DegenerateData`] with [`Degeneracy::ZeroVariance`]: a
 /// variance the coefficient divides by is zero (a constant total score, a
-/// constant item).  As the models report it since 0.57; up to 0.58
+/// constant item).  As the models report it since 0.57; up to 0.57
 /// `InvalidArgument` here.
 fn zero_variance(op: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::degenerate(op, Degeneracy::ZeroVariance, reason)
@@ -232,7 +232,7 @@ fn alpha_of_rows(op: &'static str, rows: &[Vec<Q>]) -> Result<Q, SymplexError> {
 ///
 /// [`SymplexError::InvalidArgument`] for a missing cell or fewer than two
 /// respondents or items; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant total score (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant total score (up to 0.57
 /// `InvalidArgument`).
 pub fn cronbach_alpha(table: &RatingTable) -> Result<Q, SymplexError> {
     const OP: &str = "cronbach_alpha";
@@ -305,7 +305,7 @@ fn mean_ex(ctx: &Context, values: Vec<Ex>) -> Ex {
 ///
 /// [`SymplexError::InvalidArgument`] for a missing cell or fewer than two
 /// respondents or items; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant item (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant item (up to 0.57
 /// `InvalidArgument`).
 pub fn average_inter_item_correlation(
     ctx: &Context,
@@ -384,7 +384,7 @@ pub fn standardized_alpha(ctx: &Context, table: &RatingTable) -> Result<Ex, Symp
 ///
 /// [`SymplexError::InvalidArgument`] for a missing cell, a score other
 /// than 0 or 1, fewer than two respondents or items; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant total (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant total (up to 0.57
 /// `InvalidArgument`).
 pub fn kr20(table: &RatingTable) -> Result<Q, SymplexError> {
     const OP: &str = "kr20";
@@ -472,7 +472,7 @@ fn split_totals(rows: &[Vec<Q>], mask: &[bool]) -> (Vec<Q>, Vec<Q>) {
 ///
 /// [`SymplexError::InvalidArgument`] for a missing cell, fewer than two
 /// respondents or items, an invalid split; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant half (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant half (up to 0.57
 /// `InvalidArgument`).
 pub fn split_half_correlation(
     ctx: &Context,
@@ -641,7 +641,7 @@ fn prophecy(op: &'static str, r: &Ex, k: usize) -> Result<Ex, SymplexError> {
 ///
 /// [`SymplexError::InvalidArgument`] for a missing cell or fewer than two
 /// respondents or three items; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant reduced total (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant reduced total (up to 0.57
 /// `InvalidArgument`).
 pub fn alpha_if_deleted(table: &RatingTable) -> Result<Vec<Q>, SymplexError> {
     const OP: &str = "alpha_if_deleted";
@@ -692,7 +692,7 @@ fn alpha_without(op: &'static str, rows: &[Vec<Q>], j: usize) -> Result<Q, Sympl
 ///
 /// [`SymplexError::InvalidArgument`] for a missing cell or fewer than two
 /// respondents or items; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant total score (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant total score (up to 0.57
 /// `InvalidArgument`).
 pub fn guttman_lambda2(ctx: &Context, table: &RatingTable) -> Result<Ex, SymplexError> {
     const OP: &str = "guttman_lambda2";
@@ -848,7 +848,7 @@ pub fn item_discrimination_index(table: &RatingTable) -> Result<Vec<Q>, SymplexE
 ///
 /// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
 /// respondents, a score other than 0 or 1; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant item or score (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant item or score (up to 0.57
 /// `InvalidArgument`).
 pub fn point_biserial(ctx: &Context, item: &[Q], total: &[Q]) -> Result<Ex, SymplexError> {
     const OP: &str = "point_biserial";
@@ -876,7 +876,7 @@ pub fn point_biserial(ctx: &Context, item: &[Q], total: &[Q]) -> Result<Ex, Symp
 ///
 /// [`SymplexError::InvalidArgument`] for a missing cell or fewer than two
 /// respondents or items; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant item or total (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant item or total (up to 0.57
 /// `InvalidArgument`).
 pub fn item_total_correlation(ctx: &Context, table: &RatingTable) -> Result<Vec<Ex>, SymplexError> {
     const OP: &str = "item_total_correlation";
@@ -916,7 +916,7 @@ pub fn item_total_correlation(ctx: &Context, table: &RatingTable) -> Result<Vec<
 ///
 /// [`SymplexError::InvalidArgument`] for a missing cell or fewer than two
 /// respondents or items; [`SymplexError::DegenerateData`]
-/// ([`Degeneracy::ZeroVariance`]) for a constant item or remainder (up to 0.58
+/// ([`Degeneracy::ZeroVariance`]) for a constant item or remainder (up to 0.57
 /// `InvalidArgument`).
 pub fn corrected_item_total_correlation(
     ctx: &Context,

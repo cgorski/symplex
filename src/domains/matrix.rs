@@ -6856,7 +6856,7 @@ fn radical_nonzero_by_value(e: &Ex) -> bool {
             .map(|i| ctx.rational(31 + 17 * i + 7 * k, 11 + 4 * k + 3 * i))
             .collect();
         let subs: Vec<(&Ex, &Ex)> = syms.iter().zip(vals.iter()).collect();
-        // A part with certified digits (up to 0.58: the printout was not `"0"`).
+        // A part with certified digits (up to 0.57: the printout was not `"0"`).
         let at = e.subs_map(&subs).eval();
         let guard = at.inner.read();
         crate::transforms::evalf::const_value(&guard.arena, at.raw_id(), 12)

@@ -1315,7 +1315,7 @@ fn alpha_degenerate_inputs() -> R {
         RatingTable::from_i64(&[&[1, 3, 2], &[1, 4, 3], &[1, 2, 2], &[1, 5, 4], &[1, 3, 3]])?;
     assert_eq!(cronbach_alpha(&konst)?, q(51, 74));
     // …but its correlations are undefined: the standardized α errors, the summary uses None.
-    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    // Zero variance: DegenerateData since 0.58 (InvalidArgument up to 0.57).
     is_degenerate(standardized_alpha(&ctx, &konst), Degeneracy::ZeroVariance);
     let summary = item_response_summary(&ctx, &konst)?;
     assert!(summary[0].item_total.is_none());
@@ -1326,11 +1326,11 @@ fn alpha_degenerate_inputs() -> R {
     assert_eq!(cronbach_alpha(&neg)?, qi(-18));
     // Perfectly anti-correlated items: every total is 5, α undefined.
     let anti = RatingTable::from_i64(&[&[1, 4], &[2, 3], &[3, 2], &[4, 1]])?;
-    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    // Zero variance: DegenerateData since 0.58 (InvalidArgument up to 0.57).
     is_degenerate(cronbach_alpha(&anti), Degeneracy::ZeroVariance);
-    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    // Zero variance: DegenerateData since 0.58 (InvalidArgument up to 0.57).
     is_degenerate(guttman_lambda2(&ctx, &anti), Degeneracy::ZeroVariance);
-    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    // Zero variance: DegenerateData since 0.58 (InvalidArgument up to 0.57).
     is_degenerate(
         kr20(&RatingTable::from_i64(&[&[1, 0], &[0, 1], &[1, 0]])?),
         Degeneracy::ZeroVariance,
@@ -1511,7 +1511,7 @@ fn ordinal_measures_on_all_tied_and_perfectly_ordered_data() -> R {
         (c.concordant, c.discordant, c.ties_x, c.ties_y, c.ties_both),
         (0, 0, 8, 0, 2)
     );
-    // Every pair tied: degenerate data since 0.59 (was InvalidArgument).
+    // Every pair tied: degenerate data since 0.58 (was InvalidArgument).
     is_degenerate(goodman_kruskal_gamma(&xc, &yv), Degeneracy::ZeroVariance);
     is_degenerate(somers_d(&xc, &yv, Dependent::Y), Degeneracy::ZeroVariance);
     is_degenerate(kendall_tau_c(&xc, &yv), Degeneracy::ZeroVariance);
@@ -1714,12 +1714,12 @@ fn pearson_negative_correlation_and_comparing_two_correlations() -> R {
         Alternative::TwoSided,
     ));
     // Constant samples and |r| = 1.
-    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    // Zero variance: DegenerateData since 0.58 (InvalidArgument up to 0.57).
     is_degenerate(
         pearson_test(&ctx, &x, &vec![qi(2); 8], Alternative::TwoSided),
         Degeneracy::ZeroVariance,
     );
-    // Zero variance: DegenerateData since 0.59 (InvalidArgument up to 0.58).
+    // Zero variance: DegenerateData since 0.58 (InvalidArgument up to 0.57).
     is_degenerate(pearson_t_statistic(&ctx, &x, &x), Degeneracy::ZeroVariance);
     let perfect = pearson_test(&ctx, &x, &x, Alternative::Less)?;
     assert_eq!(perfect.p_value, ctx.one());

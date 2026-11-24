@@ -1390,7 +1390,7 @@ fn coprime_basis(ctx: &Ctx, d: &GP, cands: &[GP]) -> Option<Vec<GP>> {
 /// times a product of powers of polynomials with coefficients in
 /// `ℚ[p₁, …]` (`x + a/b` as `b·x + a`): returns the product and `λ`, or
 /// `p` expanded and `λ = 1` when `p` is not such a product, or when a
-/// common denominator or `λ` has an exponent beyond `u32` (up to 0.58 the
+/// common denominator or `λ` has an exponent beyond `u32` (up to 0.57 the
 /// refused lcm was 0, which scaled the factor to 0, and the product
 /// panicked).
 fn factored_expr(arena: &mut Arena, ctx: &Ctx, p: &GP, basis: &[GP]) -> (ExprId, PFrac) {

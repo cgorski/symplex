@@ -315,7 +315,7 @@ fn log2_beta_wp(p: &BigFloat, q: &BigFloat, cc: &mut Consts) -> Option<f64> {
 /// `t` (`u = 1 − t` exact) for shapes beyond [`BETA_WIDE`], in arbitrary
 /// precision: near the mode its terms, of size `p·|log₂ t|` (`10¹⁴` bits
 /// for `p ≈ 10¹⁷`), cancel to `log₂(1/σ)`, and in `f64` the rounding of
-/// `log₂ t` alone moves `p·log₂ t` by tens of bits.  Up to 0.58 the bound
+/// `log₂ t` alone moves `p·log₂ t` by tens of bits.  Up to 0.57 the bound
 /// built from `f64` terms was `2^268610` for
 /// `betainc_regularized(1.21·10¹⁷, 7.388·10¹³, 0, 3025000/3026847)`
 /// (`0.49999998454291586439`, mpmath), refused after 64 s.  `None` if a
@@ -1129,7 +1129,7 @@ fn betainc_sens(regularized: bool, i: usize, a: &Args<'_>, cc: &mut Consts) -> S
         let variation =
             ((pf - 1.0).abs() * shrink(e - lt) + (qf - 1.0).abs() * shrink(e - lu)) * LN2;
         // `log₂ t` next to 1 from `1 − t` (`log₂(1 − 10⁻⁹⁰)` is 0 in `f64`,
-        // and `(p − 1)·log₂ t` for `p = 5·10⁹⁹` is `−7.2·10⁹`: up to 0.58 the
+        // and `(p − 1)·log₂ t` for `p = 5·10⁹⁹` is `−7.2·10⁹`: up to 0.57 the
         // bound kept `2^313` of an integrand below `2^(−2³¹)`, and the
         // underflowed tail of `t(10¹⁰⁰).sf(10⁵)` printed `0`).
         let near_one = |l_other: f64, other: &BigFloat, l: f64| {
@@ -1274,8 +1274,8 @@ pub(super) fn gap_cap(prec: usize) -> usize {
 /// real argument, or one with an exact imaginary part, moves along a
 /// horizontal line only.  (A part far below the other keeps its digits:
 /// `E(10⁶⁰⁰)`'s real part `7.85·10⁻³⁰¹` next to `10³⁰⁰i`, with the
-/// parameter rounded, and since 0.59 `E(10⁶⁰⁰ + i)`'s `1.29·10⁻³⁰⁰`, which
-/// up to 0.58 the move of a non-real argument by `|f′|·radius` on both parts
+/// parameter rounded, and since 0.58 `E(10⁶⁰⁰ + i)`'s `1.29·10⁻³⁰⁰`, which
+/// up to 0.57 the move of a non-real argument by `|f′|·radius` on both parts
 /// swamped.)  The caller has checked that no argument's ball reaches a cut
 /// of the route.
 #[allow(clippy::too_many_arguments)]
@@ -1307,7 +1307,7 @@ pub(super) fn complex_route_bound(
     // moves each part by its own share, that of its imaginary part by the
     // other part's (`∂f/∂y = i·f′`).  An argument with an exact imaginary
     // part (an exactly real one, `10⁶⁰⁰ + i`) moves along a horizontal line
-    // only.  (Up to 0.58 a non-real argument moved both parts by `|f′|·δ`.)
+    // only.  (Up to 0.57 a non-real argument moved both parts by `|f′|·δ`.)
     let (mut re, mut im) = (EXACT, EXACT);
     for (i, a) in args.iter().enumerate() {
         let (Some(b), Some(_)) = (cache.bound(a), cache.get(a)) else {

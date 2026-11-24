@@ -62,7 +62,7 @@ fn incomplete_beta_and_gamma_below_the_exponent_range_are_refused() {
         );
         assert_eq!(e.is_zero(), Some(false), "{src}");
     }
-    // Rounded arguments: refused as well (up to 0.58 `0`).
+    // Rounded arguments: refused as well (up to 0.57 `0`).
     for src in [
         "betainc_regularized(14*10^29 + 1/3, 18, 0, 1/2)",
         "betainc_regularized(5*10^99, 1/2, 0, 1 - 10^-90)",
@@ -184,7 +184,7 @@ fn roots_at_an_unevaluated_pole_are_refused() {
 /// `betainc(1, 2, 0, zoo)`, `polylog(−1, zoo)`, `polylog(0, zoo)` were `nan`
 /// (`zoo + zoo` in the expanded closed form).  `E₀(z) = e^{−z}/z` and the
 /// incomplete gamma functions have no limit at `zoo` and stay unevaluated
-/// (changed in 0.59 from `nan`: `eval` takes no closed form at an untabulated
+/// (changed in 0.58 from `nan`: `eval` takes no closed form at an untabulated
 /// `zoo` argument, so that the node reads as when it is built, where `f − f`
 /// is 0; s15q3), and `x + chebyshev_t(3, zoo) = 0` keeps its "no solution".
 ///

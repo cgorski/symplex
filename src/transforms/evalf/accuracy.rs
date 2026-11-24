@@ -1946,7 +1946,7 @@ fn finish(
 /// `γ(s, x)` for real `s > 0`, `x > 0`, `B(a, b)` for real `a, b > 0`, and
 /// `B_(x₁, x₂)(a, b)`, `I_(x₁, x₂)(a, b)` for real `a, b > 0` and real limits
 /// `x₁ ≠ x₂` in `[0, 1]` ([`betainc_sign`]).  Their routes return 0 there
-/// only when a prefactor `exp(…)` fell below the exponent range.  Up to 0.58
+/// only when a prefactor `exp(…)` fell below the exponent range.  Up to 0.57
 /// such a 0 was exact: `betainc_regularized(1.4·10³⁰, 18, 0, ½)` printed
 /// `0` (truly `≈ 10^(−4.2·10²⁹)`), as did `lowergamma(10¹⁰, ½)` (truly
 /// `1.39·10^(−3010299967)`).

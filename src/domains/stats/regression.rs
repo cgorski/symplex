@@ -1548,7 +1548,7 @@ pub fn logit<B: BinaryOutcome>(
 /// likelihood-ratio / Wald / score trio.  The statistic of a fit is known
 /// only to floating point, so it is never written as a rational:
 /// [`TestResult::statistic_exact`] and [`TestResult::p_value_exact`] are
-/// `None` (up to 0.58 they returned the dyadic rational of the `f64`, as if
+/// `None` (up to 0.57 they returned the dyadic rational of the `f64`, as if
 /// exact).  A statistic at most 0 — the fit at the null, or a rounding below
 /// it — is reported as `0` with p-value `1`.
 ///
@@ -2040,7 +2040,7 @@ impl Standardization {
     ///
     /// [`SymplexError::InvalidArgument`] for a column that varies only on a
     /// scale `s` below `2⁻¹⁰²⁴` (subnormal regressors): its coefficient and
-    /// standard error are of order `1/s`, beyond the `f64` range.  Up to 0.58
+    /// standard error are of order `1/s`, beyond the `f64` range.  Up to 0.57
     /// the column kept its raw scale, its squares underflowed in the
     /// information matrix, and the fit was refused as a collinear design.
     fn new(

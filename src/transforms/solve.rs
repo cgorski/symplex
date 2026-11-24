@@ -125,7 +125,7 @@ pub(crate) fn known_real_roots(arena: &mut Arena, expr: ExprId, var: ExprId) -> 
 /// period of, as it does for `sin`, `cos`, `tan` (see
 /// [`SolveCx::lists_every_real_root`])?  A caller that needs every real
 /// zero in a window takes the families of the general solve for such an
-/// expression: up to 0.58 `Ex::singularities(1/((−1)^x − 1), x, [0, 10])`
+/// expression: up to 0.57 `Ex::singularities(1/((−1)^x − 1), x, [0, 10])`
 /// was `{0}`, the principal root, for `{0, 2, 4, 6, 8, 10}`.
 pub(crate) fn has_periodic_exponential(arena: &mut Arena, expr: ExprId, var: ExprId) -> bool {
     let cx = SolveCx::principal(Domain::Real);
@@ -2259,7 +2259,7 @@ fn finalize_solutions(
     // solution" came from `eval` expanding `T₂`), `x + sin ∞ = 0` `[−sin ∞]`.
     let mut not_finite: Option<ExprId> = None;
     // Nor is a candidate whose value meets an unevaluated pole (`evalf`'s
-    // `SymplexError::Infinite`): up to 0.58 `x − elliptic_pi(π, 1)` gave
+    // `SymplexError::Infinite`): up to 0.57 `x − elliptic_pi(π, 1)` gave
     // `[elliptic_pi(π, 1)]`, which is `−∞`, and `x·elliptic_pi(π, 1) − 1`
     // `[1/elliptic_pi(π, 1)]`.  A candidate `evalf` cannot evaluate for
     // another reason (`erfinv(9/4)`) is no evidence of an infinity.
@@ -2854,7 +2854,7 @@ fn two_pi_i_n(arena: &mut Arena, n: ExprId) -> ExprId {
 /// principal branch of the logarithm is one of those that real values of
 /// the unknown reach (`(−1)^x = 1` at every even `x`), so its roots are
 /// only some of the roots — [`Partial`](Solutions::Partial), and no root on
-/// it is no proof.  Up to 0.58 it was complete: the real zeros of `(−1)^x −
+/// it is no proof.  Up to 0.57 it was complete: the real zeros of `(−1)^x −
 /// 1` were `[0]`, and `∫₁³ dx/((−1)^x − 1)` (a pole at 2) was `−2`,
 /// `∫₂⁶ dx/(i^x − 1)` (a pole at 4) `−4`.  Other solves keep the principal
 /// roots, which `Ex::solve` documents.
@@ -2921,7 +2921,7 @@ fn logs_of_rationals_reduced(arena: &mut Arena, e: ExprId) -> ExprId {
 /// - `re α ≠ 0`: the one candidate `x₀ = (ln|c| − re β)/re α`, a root exactly
 ///   when `k = (im α·x₀ + im β − arg c)/2π` is an integer (its certified
 ///   integer part and the sign of the rest): `(−2)^x = 4` has the one real
-///   root 2, on the branch `k = 1` (up to 0.58 `Ex::solve` for a real `x`
+///   root 2, on the branch `k = 1` (up to 0.57 `Ex::solve` for a real `x`
 ///   gave `[]`, the principal root `ln 4/(ln 2 + iπ)` not being real), and
 ///   `(−2)^x = 3` none;
 /// - `re α = 0` (a real period `2π/im α`): no root when `ln|c| ≠ re β`
@@ -3505,7 +3505,7 @@ fn solve_by_peeling(
                 _ => (acosh_rhs, neg_acosh),
             };
             let outcome = peel_two_branches(arena, inner, b1, b2, var, cx);
-            // (`cosh(iπx) = 1` at every even `x`: up to 0.58 `∫₁³ dx/(cosh(iπx)
+            // (`cosh(iπx) = 1` at every even `x`: up to 0.57 `∫₁³ dx/(cosh(iπx)
             // − 1)` was 0 across the double pole at 2)
             if period.is_none() && !real_inner {
                 principal_branch_only(outcome, cx)

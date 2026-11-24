@@ -1914,7 +1914,7 @@ pub(crate) fn algebraic_eigenvectors(
         gs.extend(tower.kp_split_by_norm(&sf)?);
     }
     // `Some(true)` when the 30-digit value of `g(λ)` is 0 (no part with
-    // certified digits; up to 0.58 the printout was compared with `"0"`).
+    // certified digits; up to 0.57 the printout was compared with `"0"`).
     let shows_zero = |e: &Ex| -> Option<bool> {
         let e = e.eval();
         let guard = e.inner.read();

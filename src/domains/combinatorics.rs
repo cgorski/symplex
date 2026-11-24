@@ -78,7 +78,7 @@ fn too_large(log2_lower: f64) -> bool {
 /// [`stirling2`] build; beyond it they return `None`.  The size guard
 /// passes a small result for `k` close to `n` (`S(n, n − 2)` has about
 /// `4·log₂ n` bits), whose triangle has `n` rows of `k + 1` entries: up to
-/// 0.58 `stirling2(2⁴⁰, 2⁴⁰ − 2)` asked for 35 TB and aborted.
+/// 0.57 `stirling2(2⁴⁰, 2⁴⁰ − 2)` asked for 35 TB and aborted.
 const MAX_TRIANGLE_CELLS: u64 = 1 << 32;
 
 // ═══════════════════════════════════════════════════════════════════════════

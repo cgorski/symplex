@@ -221,7 +221,7 @@ fn a_part_below_the_range_next_to_one_within_it_is_refused() {
     }
 }
 
-/// `Max`/`Min` of an argument certified non-real is `nan` (0.59); the
+/// `Max`/`Min` of an argument certified non-real is `nan` (0.58); the
 /// certificate is an evaluation, now memoised: rebuilding the node (each
 /// `eval`, `subs`) reads the memo.  The answers are those of the first
 /// evaluation.

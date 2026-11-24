@@ -19,7 +19,7 @@ fn decimal(ctx: &Context, s: &str, digits: u32) -> String {
 /// `E(m)` for a huge `m` next to the real axis: the parts lie 2,000 bits
 /// apart, and the node's bound moved the rounded `10⁶⁰⁰` on both parts by
 /// `|E′|·radius`, which swamped the small one; the route also stopped
-/// `4·prec + 512` bits below the modulus.  Up to 0.58 all three were refused
+/// `4·prec + 512` bits below the modulus.  Up to 0.57 all three were refused
 /// ("elliptic_e: the value cancels beyond the working precision"), and with
 /// only the evaluation fixed `E(10⁶⁰⁰ + i/10⁶⁰⁰)` printed `−1e300*i` (its
 /// real part dropped: the radius of the imaginary part moved both parts).
@@ -49,7 +49,7 @@ fn elliptic_e_far_off_the_axis_keeps_its_small_part() {
 
 /// `(1+i)ˣ = 1 + i` at `x = 1` (`|(1+i)ˣ| = √2` there and the phase is
 /// `π/4`): a simple pole, `(x − 1)·f → 1/ln(1 + i) ≠ 0`, so the integral
-/// diverges.  Up to 0.58 the singular point came from the solver as
+/// diverges.  Up to 0.57 the singular point came from the solver as
 /// `(½ ln 2 + iπ/4)/(iπ/4 + ln √2)`, which the comparisons did not place:
 /// refused ("the antiderivative is piecewise in the variable with conditions
 /// it cannot be split at", "cannot decide whether the singular point … lies
@@ -69,7 +69,7 @@ fn integral_across_a_pole_of_a_complex_power_is_divergent() {
 }
 
 /// An imaginary rate: `u = e^{iωx}` meets a root `ρ` of modulus 1 on a whole
-/// lattice `x = (arg ρ + 2πk)/ω`.  Up to 0.58 the solver's principal root
+/// lattice `x = (arg ρ + 2πk)/ω`.  Up to 0.57 the solver's principal root
 /// (`x = 1`) stood for the lattice and the poles inside were missed, a
 /// silent wrong value: `∫₋₂⁰ dx/(e^{iπx} + 1)` was `2`, `∫₋₄⁰ dx/(iˣ + 1)` `4`,
 /// `∫_{−3/2}^{−1/2} dx/(i^{2x} + 1)` `1.5` (poles at `x = −1, −2, −1`:
@@ -101,7 +101,7 @@ fn integral_across_a_pole_of_an_imaginary_rate_is_divergent() {
 
 /// `R(cˣ)` is `R(e^{x·ln c})`: the exact scan of its singular points and the
 /// exponential substitution apply (none of these has a pole on the path).
-/// Up to 0.58 the first two were refused ("could not determine all
+/// Up to 0.57 the first two were refused ("could not determine all
 /// singularities of the integrand"; `eval` keeps the ratio `(−½ ln 2 −
 /// iπ/4)/(½ ln 2 + iπ/4)` of the rates of `(1+i)^{−x}` and `(1+i)ˣ` a
 /// quotient, so they were not seen as powers of one exponential), and so was
@@ -141,7 +141,7 @@ fn integrals_of_rational_functions_of_complex_powers_have_values() {
     }
 }
 
-/// The antiderivative of `1/((1+i)ˣ + (1+i)^{−x} − 3)` exists (up to 0.58
+/// The antiderivative of `1/((1+i)ˣ + (1+i)^{−x} − 3)` exists (up to 0.57
 /// "integral contains unevaluated forms"); its derivative is the integrand
 /// on each of its pieces (checked at `x = −4, 7/10, 4`, around the joins
 /// `x = ∓ln((3 + √5)/2)/ln √2 ≈ ∓2.78`).
@@ -162,7 +162,7 @@ fn antiderivative_of_complex_powers_in_both_directions() {
 // ── Item 3: lengths from the data ──
 
 /// A formal series computes its coefficient prefix only up to 2¹⁴ indices
-/// (`cast::MAX_SERIES_TERMS`).  Up to 0.58 `coefficient(k)` built the whole
+/// (`cast::MAX_SERIES_TERMS`).  Up to 0.57 `coefficient(k)` built the whole
 /// prefix `a_0 … a_k` for any `k` asked for: `sin(x).fps_maclaurin(x)
 /// .coefficient(2⁴⁰)` asked for 8 TB and aborted.  Below the cap nothing
 /// changes (`a_3 = −1/6`, the Maclaurin series of `sin`); a polynomial's
@@ -187,7 +187,7 @@ fn formal_series_coefficients_beyond_the_cap_are_refused() {
 /// `factor_multivariate(y·x^(2²⁵) + y)` (monomial content `y`, then
 /// `x^(2²⁵) + 1` in one variable) laid out `2²⁵ + 1` rational coefficients
 /// (2 GB) and went on to factor a univariate polynomial of degree `2²⁵`
-/// (a degree near `2³¹` asked for over 100 GB).  Since 0.59 the view
+/// (a degree near `2³¹` asked for over 100 GB).  Since 0.58 the view
 /// refuses beyond `cast::MAX_DENSE_LIST` (`2²⁴`) entries and the
 /// factorization gives up (`None`); a small degree is unchanged (`y·x³ + y
 /// = y·(x + 1)·(x² − x + 1)`, three factors, checked by multiplying back).

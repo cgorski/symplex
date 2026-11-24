@@ -72,7 +72,7 @@ fn fisher(table: [[usize; 2]; 2], alt: Alternative) -> TestResult {
 }
 
 /// The numeric route's p-value is an approximation and says so: no exact
-/// rational (up to 0.58 it was `ctx.from_f64(p)`, a dyadic rational that
+/// rational (up to 0.57 it was `ctx.from_f64(p)`, a dyadic rational that
 /// `p_value_exact` returned as if exact; this helper checked for that).
 fn is_approximate(r: &TestResult) -> bool {
     r.p_value_exact().is_none()
@@ -143,7 +143,7 @@ fn fisher_large_symmetric_table_underflows_like_scipy_but_keeps_the_logarithm() 
         two.p_value_decimal(6).unwrap()
     );
     // P(X ≤ 5000) = 1 − P(X ≥ 5001), within 10⁻⁵¹¹ of 1 but not 1: up to
-    // 0.58 it was the exact rational 1.
+    // 0.57 it was the exact rational 1.
     assert_eq!(less.p_value_exact(), None);
 }
 
@@ -278,7 +278,7 @@ fn fisher_far_tail_of_a_million_cell_table_keeps_a_finite_logarithm() {
     t0.assert_within(Duration::from_secs(1), "three tests");
     assert_eq!(less.p_value_f64().unwrap(), 0.0);
     // P(X ≥ 2) = 1 − P(X ≤ 1), 1 to 6·10⁵ digits but not 1: an approximation, no
-    // exact rational (up to 0.58 the exact 1).
+    // exact rational (up to 0.57 the exact 1).
     assert_eq!(greater.p_value_exact(), None);
     assert_eq!(greater.p_value_f64().unwrap(), 1.0);
     close(less.p_value_log10().unwrap(), -602_029.327_079_636, 1e-6);
@@ -298,7 +298,7 @@ fn fisher_billion_cell_table_runs_in_milliseconds() {
     let greater = fisher(t, Alternative::Greater);
     let two = fisher(t, Alternative::TwoSided);
     t0.assert_within(Duration::from_secs(1), "three tests");
-    // P(X ≤ 10⁹) = 1 − P(X = 10⁹ + 1): not exactly 1 (up to 0.58 the exact 1).
+    // P(X ≤ 10⁹) = 1 − P(X = 10⁹ + 1): not exactly 1 (up to 0.57 the exact 1).
     assert_eq!(less.p_value_exact(), None);
     assert_eq!(less.p_value_f64().unwrap(), 1.0);
     assert_eq!(greater.p_value_f64().unwrap(), 0.0);

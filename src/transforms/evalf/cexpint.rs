@@ -744,7 +744,7 @@ fn i_pi(negative: bool, halve: bool, w: &mut Wp<'_>) -> Complex {
 /// part: `Ei(−1000 + i) = −2.7·10⁻⁴³⁸ + 3.14…i`.  When the sum underflowed
 /// to 0 the part lies below the exponent range next to one within it, and
 /// the value is refused ([`part_below_range`]; `Ei(−10¹⁰ + i)`, real part
-/// `−5.0·10^(−4342944830)`).  Up to 0.58 one bound, relative to the
+/// `−5.0·10^(−4342944830)`).  Up to 0.57 one bound, relative to the
 /// modulus, held both parts, and such a part was printed 0.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct OwnPart {

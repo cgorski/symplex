@@ -410,7 +410,7 @@ impl CompensatedSum {
 /// A single atom when decided; [`SignSet::UNKNOWN`] (nothing known, not
 /// even realness) for a symbolic `e` of unknown sign, a non-real or
 /// unevaluable constant, or a constant that evaluates to `0` without being
-/// known to be `0`.  Up to 0.58 the sign was read from the first character
+/// known to be `0`.  Up to 0.57 the sign was read from the first character
 /// of the 5-digit printout, which shows the imaginary unit as `i`, not the
 /// `I` it was searched for: a non-real constant read as the sign of its
 /// real part (`2 + i` positive), or positive when purely imaginary (`2i`).
@@ -1208,7 +1208,8 @@ impl Distribution {
 
     /// Where `x` lies, when it and the parameters are numeric: in the far
     /// lower tail, the far upper tail, or neither — read off the classic
-    /// closed-form `F(x)` in `f64`.  A far tail is beyond [`FAR_TAIL`]
+    /// closed-form `F(x)` (`classic`, the family's `cdf(x)`) in `f64`.  A far
+    /// tail is beyond [`FAR_TAIL`]
     /// (`2⁻³²`): short of it the classic form loses at most 32 bits to
     /// cancellation, which `evalf` recovers at any precision, and it is
     /// kept (`P(−1 < N < 1)` stays `erf(√2/2)`); beyond it the classic
@@ -1219,13 +1220,7 @@ impl Distribution {
     /// evaluate — `1 − (3 − x)²/(3 − √2)²` at `x = √2 + 10⁻¹⁰⁰` — and the
     /// tail is then read off the non-cancelling forms themselves; 0.28 took
     /// such a point for a central one and kept the classic form.)
-    fn tail_of(&self, x: &Ex) -> Tail {
-        if !x.free_symbols().is_empty() {
-            return Tail::Neither;
-        }
-        let Some(classic) = self.0.cdf(x) else {
-            return Tail::Neither;
-        };
+    fn tail_of(&self, x: &Ex, classic: &Ex) -> Tail {
         match classic.eval_f64() {
             Ok(p) if p.is_finite() && p < FAR_TAIL => Tail::Lower,
             Ok(p) if p.is_finite() && p > 1.0 - FAR_TAIL => Tail::Upper,
@@ -1246,11 +1241,47 @@ impl Distribution {
         }
     }
 
-    /// Is the numeric `x` in the far upper tail (`P(X > x) < 2⁻³²` by the
-    /// classic CDF), where a probability must be formed from survival
-    /// functions?  See [`tail_of`](Self::tail_of).
+    /// Is the numeric `x` in the far tail `side` (`Tail::Lower`: `P(X ≤ x)
+    /// < 2⁻³²`; `Tail::Upper`: `P(X > x) < 2⁻³²`), where a probability must
+    /// be formed from the family's non-cancelling form of that tail?  The
+    /// question is put to that form itself where the family has one
+    /// ([`cdf_lower`](Family::cdf_lower), [`sf`](Family::sf)), else to the
+    /// classic CDF ([`tail_of`](Self::tail_of)).  The classic form of a far
+    /// tail agrees with 0 or 1 to as many digits as the tail is small, and
+    /// its certified `f64` costs a working precision of that many: up to
+    /// 0.57, when it was read first at every point, `F(x)` of a standard
+    /// normal took 2 ms at `x = −37` (a tail of `10⁻³⁰⁰`), 10 ms at `−60`
+    /// and 64 ms at `−91`, and the quantile of the mixture `½ N(−73, ½) +
+    /// ½ N(0, 1)`, which probes both components at every step, 1.8 s at the
+    /// level `10⁻³⁰` and 4.1 s at `10⁻³⁰⁰` (0.04 s now; `fuzz_stats`
+    /// timeouts of 12 nightly runs).  `classic` is the family's `cdf(x)`,
+    /// which every caller holds.
+    fn in_far_tail(&self, x: &Ex, side: Tail, classic: &Ex) -> bool {
+        if !x.free_symbols().is_empty() {
+            return false;
+        }
+        let form = match side {
+            Tail::Lower => self.0.cdf_lower(x),
+            Tail::Upper => self.0.sf(x),
+            Tail::Neither => return false,
+        };
+        if let Some(tail) = form
+            .and_then(|f| f.eval_f64().ok())
+            .filter(|v| v.is_finite())
+        {
+            return tail < FAR_TAIL;
+        }
+        self.tail_of(x, classic) == side
+    }
+
+    /// Is the numeric `x` in the far upper tail (`P(X > x) < 2⁻³²`), where
+    /// a probability must be formed from survival functions?  `false` for
+    /// a family without a closed-form CDF.  See
+    /// [`in_far_tail`](Self::in_far_tail).
     pub(crate) fn in_far_upper_tail(&self, x: &Ex) -> bool {
-        self.tail_of(x) == Tail::Upper
+        self.0
+            .cdf(x)
+            .is_some_and(|classic| self.in_far_tail(x, Tail::Upper, &classic))
     }
 
     /// The closed-form CDF on the support, if the family has one, else
@@ -1262,7 +1293,7 @@ impl Distribution {
     /// evaluates to `0` there).
     pub(crate) fn cdf_on_support(&self, x: &Ex) -> Ex {
         if let Some(c) = self.0.cdf(x) {
-            if self.tail_of(x) == Tail::Lower
+            if self.in_far_tail(x, Tail::Lower, &c)
                 && let Some(lower) = self.0.cdf_lower(x)
             {
                 return lower;
@@ -1274,17 +1305,21 @@ impl Distribution {
             // Σ pᵢ · [vᵢ ≤ x]: decided where possible, else a Heaviside.
             // Rationals are compared as such and values that certified
             // `f64`s separate by those, before the sign of `x − vᵢ` (up to
-            // 0.58 one interned difference and sign query per atom).
+            // 0.57 one interned difference and sign query per atom).  A
+            // table's values are read from the `f64`s it formed once.
             let numeric = x.free_symbols().is_empty();
             let xq = x.as_rational();
             let xf = if numeric { x.eval_f64().ok() } else { None };
+            let table = self.downcast_ref::<super::discrete::Finite>();
             let mut acc = self.context().zero();
             for v in &values {
                 let p = self.0.density(v);
                 let decided = match (&xq, v.as_rational()) {
                     (Some(a), Some(b)) => Some(b <= *a),
                     _ if numeric => {
-                        let vf = v.eval_f64().ok();
+                        let vf = table
+                            .and_then(|t| t.atom_f64(v))
+                            .or_else(|| v.eval_f64().ok());
                         match (xf, vf) {
                             (Some(a), Some(b))
                                 if super::wrappers::certified_apart(Some(a), Some(b)) =>
@@ -1389,7 +1424,7 @@ impl Distribution {
         let ctx = self.context();
         match self.0.cdf(x) {
             Some(c) => {
-                if self.tail_of(x) == Tail::Upper
+                if self.in_far_tail(x, Tail::Upper, &c)
                     && let Some(s) = self.0.sf(x)
                 {
                     return s;
@@ -1738,7 +1773,9 @@ impl Distribution {
     /// compiled mass function accumulated from the end where the tail
     /// starts (upward from the lower end for `F(k) ≥ p`, downward from a
     /// finite upper end for `S(k) ≤ q`), and decides each probe on the
-    /// exact sum of its masses.  A table of listed values is summed
+    /// exact sum of its masses (a hypergeometric law's by the recurrence
+    /// of its integer terms, a rational of the size of `C(N, n)`).  A table
+    /// of listed values is summed
     /// like a walk, exactly wherever the `f64` sum lies within `2⁻⁴⁴` of
     /// the level.  Parameters must evaluate numerically.
     ///
@@ -2403,16 +2440,22 @@ impl Distribution {
     /// shared atom) carries its whole mass once.  (0.27 compared the sum
     /// from the bottom with `p − 10⁻¹²`.)
     fn table_quantile_f64(&self, level: Level, values: &[Ex]) -> Result<f64, SymplexError> {
-        let mut seen: Vec<&Ex> = Vec::with_capacity(values.len());
+        // A value listed twice is found by its node (up to 0.57 by a scan of
+        // the values before it: quadratic).
+        let mut seen = std::collections::HashSet::with_capacity(values.len());
+        let table = self.downcast_ref::<super::discrete::Finite>();
         let mut pts: Vec<(f64, Ex, f64)> = Vec::with_capacity(values.len());
         for v in values {
-            if seen.contains(&v) {
+            if !seen.insert((v.ctx_id(), v.id())) {
                 continue;
             }
-            seen.push(v);
             let mass = self.0.density(v).eval();
             let m = mass.eval_f64()?;
-            pts.push((v.eval_f64()?, mass, m));
+            let at = match table.and_then(|t| t.atom_f64(v)) {
+                Some(at) => at,
+                None => v.eval_f64()?,
+            };
+            pts.push((at, mass, m));
         }
         pts.sort_by(|a, b| a.0.total_cmp(&b.0));
         let ctx = self.context();
@@ -2725,7 +2768,7 @@ impl Distribution {
             // numbers next to `1`.  `hi` is an integer after lattice
             // normalisation, so on either kind `P(X > hi)` is `S(hi)`.
             if has_sf
-                && self.tail_of(lo) == Tail::Upper
+                && self.in_far_upper_tail(lo)
                 && let Some(above) = self.mass_above(lo)
             {
                 return (above - self.sf_on_support(hi)).simplify();

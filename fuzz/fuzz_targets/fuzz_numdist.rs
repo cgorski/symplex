@@ -20,7 +20,7 @@
 //! Parameters are drawn log-uniformly: shapes mostly from 1e-3 to 1e9, and
 //! one draw in four from 1e-300 to 1e300 (0.27: tiny shapes had negative
 //! tails, huge ones non-converging quantiles; the beta and F stopped at 1e15
-//! up to 0.58, which hid `f::cdf(1, 3e156, 3.5e166) = 0` and `NaN` tails);
+//! up to 0.57, which hid `f::cdf(1, 3e156, 3.5e166) = 0` and `NaN` tails);
 //! `n`, rates from 1 to 1e17 (past 2⁵³ the discrete quantiles must refuse,
 //! not loop), one draw in four (`n`) or eight (rates) up to 1e300; `x`
 //! absolute or relative to the shape; `p` from the full range including

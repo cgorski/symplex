@@ -22,15 +22,18 @@ on:
 permissions:
   contents: read
 
+# A newer run replaces an older one of the same kind only: a manual run
+# used to cancel the nightly one (and the nightly a manual one).
 concurrency:
-  group: fuzz-${{ github.ref }}
+  group: fuzz-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   fuzz:
     name: ${{ matrix.target }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Build, ten minutes of fuzzing, and at most twelve of decoding.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -87,36 +90,10 @@ jobs:
           cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} -- \
             -max_total_time=${SECONDS_PER_TARGET} -timeout=30 -rss_limit_mb=4096 \
             -print_final_stats=1
-      - name: Decode the failing input
-        if: failure()
-        run: |
-          shopt -s nullglob
-          inputs=(fuzz/artifacts/${{ matrix.target }}/*)
-          if [ ${#inputs[@]} -eq 0 ]; then
-            echo "no failing input was written (the failure is not a finding)"
-            exit 0
-          fi
-          cargo fuzz build --target "$FUZZ_TARGET_TRIPLE" print_expr
-          for f in "${inputs[@]}"; do
-            echo "::group::$f"
-            base64 -w0 "$f"; echo
-            cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" print_expr "$f" 2>/dev/null | grep '^depth' || true
-            # The differential targets print their decoded case and message.
-            FUZZ_SHOW=1 cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} "$f" 2>&1 \
-              | grep -E '^fuzz_|panicked|^  ' | head -40 || true
-            echo "::endgroup::"
-          done
-          {
-            echo "### ${{ matrix.target }} failed"
-            echo
-            echo "Download the \`fuzz-${{ matrix.target }}\` artifact, then:"
-            echo
-            echo '```sh'
-            echo "cargo +nightly fuzz build -s none ${{ matrix.target }}"
-            echo "fuzz/target/*/release/${{ matrix.target }} <artifact>      # replay (~1 s)"
-            echo "fuzz/target/*/release/print_expr <artifact>                # the decoded expression"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+      # The input is saved before anything replays it: a replay of an input
+      # that hangs has no limit of its own, and up to 0.57 the decoding step
+      # ran first, was cancelled with the job after 30 minutes, and the
+      # input was never uploaded (runs 38871441556 and 38928437298).
       - name: Upload the failing input
         if: failure()
         uses: actions/upload-artifact@v4
@@ -125,3 +102,42 @@ jobs:
           path: fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore
           retention-days: 30
+      - name: Decode the failing input
+        if: failure()
+        timeout-minutes: 12
+        run: |
+          shopt -s nullglob
+          inputs=(fuzz/artifacts/${{ matrix.target }}/*)
+          if [ ${#inputs[@]} -eq 0 ]; then
+            echo "no failing input was written (the failure is not a finding)"
+            exit 0
+          fi
+          {
+            echo "### ${{ matrix.target }} failed"
+            echo
+            echo "Download the \`fuzz-${{ matrix.target }}\` artifact (or decode the base64 line of the log), then:"
+            echo
+            echo '```sh'
+            echo "cargo +nightly fuzz build -s none ${{ matrix.target }}"
+            echo "fuzz/target/*/release/${{ matrix.target }} <artifact>      # replay (~1 s)"
+            echo "fuzz/target/*/release/print_expr <artifact>                # the decoded expression"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Every input as base64 first: the log then holds it whatever the
+          # replays below do.
+          for f in "${inputs[@]}"; do
+            echo "$f: $(base64 -w0 "$f")"
+          done
+          timeout --signal=KILL 300 cargo fuzz build --target "$FUZZ_TARGET_TRIPLE" print_expr || true
+          for f in "${inputs[@]}"; do
+            echo "::group::$f"
+            timeout --signal=KILL 60 cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" print_expr "$f" 2>/dev/null | grep '^depth' || true
+            # The differential targets print their decoded case and message.
+            # A replay is bounded twice: libFuzzer reports where an input
+            # that is still running after 60 s is, and `timeout` ends one
+            # that does not return from there.
+            FUZZ_SHOW=1 timeout --signal=KILL 120 cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} "$f" \
+              -- -timeout=60 -rss_limit_mb=4096 2>&1 \
+              | grep -E '^fuzz_|panicked|^  |libFuzzer: (timeout|out-of-memory|deadly)|^ +#[0-9]+ ' | head -60 || true
+            echo "::endgroup::"
+          done

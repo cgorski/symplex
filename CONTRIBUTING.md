@@ -79,7 +79,7 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (~14,600 tests; a few minutes in debug)
+# Run the test suite (~15,000 tests; a few minutes in debug)
 cargo test
 # ... or, recommended: one process per test with per-test timeouts
 # (`.config/nextest.toml`; `cargo install cargo-nextest`)
@@ -837,7 +837,7 @@ Follow the same steps as adding a new function (above), plus:
 
 Tests are in `tests/` (integration tests, ~10,000 `#[test]` functions in ~360
 source files) and inline `#[cfg(test)]` modules (~2,800 unit tests). Total at
-0.23.0: **~12,900** tests plus ~1,040 API doctests and ~240 README/book
+0.23.0: **~12,900** tests (~15,000 at 0.58) plus ~1,040 API doctests and ~240 README/book
 doctests (`src/doctests.rs` includes `README.md` and every book chapter, so
 the prose examples compile and run under `cargo test --doc`).
 
@@ -1104,13 +1104,22 @@ Pages on pushes to `main`.
 `.github/workflows/fuzz.yml` runs every `fuzz/` target for ten minutes each,
 nightly and on demand (`workflow_dispatch`, with the time per target as an
 input): one job per target, the corpus cached between nights, a failing
-input uploaded as an artifact with its decoded expression in the log.  A red
+input uploaded as an artifact *before* anything replays it, then printed
+as base64 and decoded in the log with every replay bounded (an input that
+hangs is reported by libFuzzer after 60 s; up to 0.57 the decoding step ran
+first, without a limit, and the job was cancelled with the input lost).  A
+manual run and the nightly one do not cancel each other.  A red
 nightly is a bug report: reproduce it with `fuzz/README.md`, pin it as a
-regression test, fix the cause.  `fuzz_stats` checks the symbolic
+regression test, fix the cause — and read every failing job, not only the
+first: one input that fails every night hides the others (the tree of 0.58
+was red for five weeks on two slow inputs, and a report of 2026-11-11, a false
+positive of the harness, went unread).  `fuzz_stats` checks the symbolic
 distributions by properties decided exactly or from certified digits; a
 quadrature that disagrees is re-decided by the certified
 `integrate_numeric_decimal`, a refusal is skipped (never a failure), and a
-slow refusal is a timeout and a finding.
+slow refusal is a timeout and a finding.  A property the harness derives
+from a formula must hold on the support, not only for the formula (an even
+density needs a symmetric support).
 
 `.github/workflows/stats-oracle.yml` runs the statistics oracle nightly and
 on demand (`scripts/stats_oracle/README.md`): a release build evaluates the
@@ -1849,7 +1858,19 @@ that fails on valid data `ComputationFailed`.  An `f64` value derived from an
 exact variance is rooted from the rational (`regression::sqrt_to_f64`): a
 variance is the square of the data's scale and leaves the range first.
 Discrete quantiles are decided on exact masses; an `f64` walk or a lattice
-kernel's answer within `2⁻³⁰` of the level only guesses.  A `try_`
+kernel's answer within `2⁻³⁰` of the level only guesses.  A lattice family
+whose masses are rationals with a term recurrence forms its tails from the
+integer terms over one denominator (`discrete::binomial_mass`,
+`hypergeometric_mass`), bounded in bits and in steps, never as the symbolic
+sum of the masses (each a quotient of binomials evaluated from scratch, and
+a quantile search probes the tail some twenty times); beyond the bounds the
+sum stays symbolic.  Whether a numeric point lies in a far tail
+(`Distribution::in_far_tail`) is asked of the family's non-cancelling form
+of that tail (`cdf_lower`, `sf`) where it has one: the certified `f64` of the
+classic CDF next to 0 or 1 costs a working precision of as many digits as
+the tail is small.  A table keeps what a query computed per value
+(`discrete::TableIndex`, `Finite::atom_f64`): no query evaluates every value
+again, and none scans the values before the current one.  A `try_`
 constructor decides a symbol-free parameter by the certified queries
 (finiteness, realness, sign, integrality by the sign of `x − ⌊x⌋`), never by
 `as_rational` alone.  Dense layouts derived from data are bounded

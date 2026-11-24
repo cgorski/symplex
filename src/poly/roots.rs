@@ -1282,7 +1282,7 @@ fn newton_polish(p: &[BigFloat], d: &[BigFloat], z0: &Complex, wp: usize) -> Com
 
 /// Convert a `BigFloat` to `f64` (best-effort).
 /// The `f64` nearest to `bf` (`±∞` beyond the range, NaN for NaN), rounded
-/// once from its bits.  Up to 0.58 the `Display` decimal was parsed: two
+/// once from its bits.  Up to 0.57 the `Display` decimal was parsed: two
 /// roundings.
 fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
     crate::base::bigfloat::to_f64_or_inf(bf).unwrap_or(f64::NAN)

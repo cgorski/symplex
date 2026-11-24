@@ -418,7 +418,7 @@ fn contains_singular(arena: &Arena, id: ExprId) -> bool {
 
 /// The most coefficients past the valuation a series computes (its prefix
 /// is memoised, and composition and reversion lay it out densely):
-/// `cast::MAX_SERIES_TERMS`.  Up to 0.58 a user's `coefficient(k)` built
+/// `cast::MAX_SERIES_TERMS`.  Up to 0.57 a user's `coefficient(k)` built
 /// the whole prefix `a_v … a_k`, and `coefficient(10¹²)` asked the allocator
 /// for terabytes.
 const MAX_COEFFICIENTS: usize = cast::MAX_SERIES_TERMS;

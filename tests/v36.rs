@@ -110,6 +110,8 @@ mod v36_s15q3_consistency;
 mod v36_s15q4_perf;
 #[path = "v36/v36_s15q5_functions.rs"]
 mod v36_s15q5_functions;
+#[path = "v36/v36_s16_fuzz_findings.rs"]
+mod v36_s16_fuzz_findings;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]

@@ -13,6 +13,7 @@
 
 use std::fmt;
 
+use num_bigint::BigInt;
 use num_traits::{One, Zero};
 
 use crate::api::context::Context;
@@ -245,6 +246,16 @@ pub struct Finite {
     pub table: Vec<(Ex, Ex)>,
     ctx: Context,
     lookups: std::sync::OnceLock<TableIndex>,
+    /// The certified `f64` of each value (`eval_f64`), by position, `None`
+    /// where a value has none: formed at the first query that orders a
+    /// number against values that are not rationals.  Up to 0.57 each such
+    /// query evaluated every value again: for `√X` of a 100,000-sided die,
+    /// `cdf` and `sf` at one point took 0.93 s each in a release build (a
+    /// `fuzz_stats` timeout of 15 nightly runs).
+    values_f64: std::sync::OnceLock<Vec<Option<f64>>>,
+    /// Values of the table whose certified `f64` the constructor already
+    /// had ([`Distribution::transformed`] forms it to merge equal images).
+    known_f64: std::collections::HashMap<ValueKey, f64>,
 }
 
 impl fmt::Debug for Finite {
@@ -265,7 +276,7 @@ impl PartialEq for Finite {
 /// The lookups of a [`Finite`] table: the position of each value (by
 /// identity, and by value when every value is a rational) and, when every
 /// value and every mass is a rational, the values in increasing order with
-/// their cumulative masses.  Up to 0.58 the CDF asked the pmf once per
+/// their cumulative masses.  Up to 0.57 the CDF asked the pmf once per
 /// atom and each lookup scanned the table: `P(Y ≤ y)` for `Y = X³`, `X` a
 /// 100,000-sided die, took 3.4 s (a `fuzz_stats` input 49.7 s).
 #[derive(Clone, Debug)]
@@ -351,7 +362,41 @@ impl Finite {
             table,
             ctx: ctx.clone(),
             lookups: std::sync::OnceLock::new(),
+            values_f64: std::sync::OnceLock::new(),
+            known_f64: std::collections::HashMap::new(),
         }
+    }
+
+    /// The same table, some of whose values come with their certified
+    /// `f64` (`known`: a value of the table and its `eval_f64`).
+    pub(super) fn with_known_values(mut self, known: &[(Ex, f64)]) -> Self {
+        self.known_f64 = known.iter().map(|(v, f)| (value_key(v), *f)).collect();
+        self
+    }
+
+    /// The certified `f64` of each value of the table (`eval_f64`; `None`
+    /// where it has none), formed once; `None` if the table changed since.
+    fn values_f64(&self) -> Option<&[Option<f64>]> {
+        let values = self.values_f64.get_or_init(|| {
+            self.table
+                .iter()
+                .map(|(v, _)| {
+                    self.known_f64
+                        .get(&value_key(v))
+                        .copied()
+                        .or_else(|| v.eval_f64().ok())
+                })
+                .collect()
+        });
+        (values.len() == self.table.len()).then_some(values.as_slice())
+    }
+
+    /// The certified `f64` of the value `v` of the table, from the values
+    /// formed once for the whole table; `None` when `v` is not one of its
+    /// values (by identity), has no such value, or the table changed.
+    pub(super) fn atom_f64(&self, v: &Ex) -> Option<f64> {
+        let i = *self.lookups()?.by_value.get(&value_key(v))?;
+        self.values_f64()?.get(i).copied().flatten()
     }
 
     /// The index of the table, `None` if the table changed since it was
@@ -394,7 +439,7 @@ impl Family for Finite {
             // the CDF of `√X` for a 2000-sided die made two million
             // evaluations (fuzz_stats timed out).  The values are distinct
             // (`try_finite`), so the atom found is the only one.  Both
-            // lookups go through the table's index (up to 0.58 a scan).
+            // lookups go through the table's index (up to 0.57 a scan).
             let kq = k.as_rational();
             if let Some(ix) = self.lookups() {
                 if let Some((_, p)) = ix
@@ -414,11 +459,16 @@ impl Family for Finite {
                 return p.clone();
             }
             let kf = k.eval_f64().ok();
+            let floats = self.values_f64();
             let mut decided = true;
-            for (v, p) in &self.table {
+            for (i, (v, p)) in self.table.iter().enumerate() {
+                let vf = match floats {
+                    Some(f) => f.get(i).copied().flatten(),
+                    None => v.eval_f64().ok(),
+                };
                 let same = match (&kq, v.as_rational()) {
                     (Some(a), Some(b)) => Truth::from_bool(*a == b),
-                    _ if super::wrappers::certified_apart(kf, v.eval_f64().ok()) => Truth::False,
+                    _ if super::wrappers::certified_apart(kf, vf) => Truth::False,
                     _ => Truth::from(k.equals(v)),
                 };
                 if same.is_true() {
@@ -751,7 +801,6 @@ const BINOMIAL_MASS_MAX_BITS: u64 = 1 << 16;
 /// `Binomial(1000, 167/716).sf(0)`.  `None` past
 /// [`BINOMIAL_MASS_BUDGET`].
 fn binomial_mass(n: u64, p: &Q, a: u64, b: u64) -> Option<Q> {
-    use num_bigint::BigInt;
     if a > b || b > n {
         return Some(Q::zero());
     }
@@ -1129,6 +1178,171 @@ impl Family for Hypergeometric {
                 / falling_factorial(&self.population, k)
         })
     }
+
+    // Σ_{j ≤ ⌊k⌋} C(m, j) C(N−m, n−j) / C(N, n) for a numeric N, m, n and
+    // k, exactly ([`hypergeometric_mass`]); otherwise the generic route (the
+    // sum by `summation`).  Up to 0.57 every tail was that sum, evaluated
+    // term by term from three binomials each: one value of
+    // `Hypergeometric(30000, 9375, 28125).cdf` took 3.7 s, `sf(9300)` 26 s,
+    // and the quantile search, which probes the tail some twenty times,
+    // 7 s at the median and minutes at `10⁻³⁰⁰` (a fuzz_stats timeout).
+    fn cdf(&self, k: &Ex) -> Option<Ex> {
+        let (shape, k) = self.numeric_at(k)?;
+        let ctx = self.context();
+        let (lo, hi) = (shape.lowest(), shape.highest());
+        if k < BigInt::from(lo) {
+            return Some(ctx.zero());
+        }
+        if k >= BigInt::from(hi) {
+            return Some(ctx.one());
+        }
+        let to = u64::try_from(k).ok()?;
+        hypergeometric_mass(&shape, lo, to).map(|mass| ctx.from_ratio(mass))
+    }
+
+    // Σ_{j > ⌊k⌋}: the upper sum itself, as exact as the lower one.
+    fn sf(&self, k: &Ex) -> Option<Ex> {
+        let (shape, k) = self.numeric_at(k)?;
+        let ctx = self.context();
+        let (lo, hi) = (shape.lowest(), shape.highest());
+        if k < BigInt::from(lo) {
+            return Some(ctx.one());
+        }
+        if k >= BigInt::from(hi) {
+            return Some(ctx.zero());
+        }
+        let from = u64::try_from(k).ok()?.checked_add(1)?;
+        hypergeometric_mass(&shape, from, hi).map(|mass| ctx.from_ratio(mass))
+    }
+}
+
+impl Hypergeometric {
+    /// The parameters and `⌊k⌋` when all four are numeric and the
+    /// parameters are counts with `m ≤ N` and `n ≤ N`.
+    fn numeric_at(&self, k: &Ex) -> Option<(HypergeometricShape, BigInt)> {
+        let count = |e: &Ex| -> Option<u64> {
+            let q = numeric(e)?;
+            if !q.is_integer() {
+                return None;
+            }
+            u64::try_from(q.to_integer()).ok()
+        };
+        let shape = HypergeometricShape {
+            population: count(&self.population)?,
+            successes: count(&self.successes)?,
+            draws: count(&self.draws)?,
+        };
+        if shape.successes > shape.population || shape.draws > shape.population {
+            return None;
+        }
+        let k = numeric(k)?.floor().to_integer();
+        Some((shape, k))
+    }
+}
+
+/// The parameters of a hypergeometric law as counts, `m ≤ N` and `n ≤ N`.
+#[derive(Clone, Copy, Debug)]
+struct HypergeometricShape {
+    /// Population size `N`.
+    population: u64,
+    /// Successes `m` in the population.
+    successes: u64,
+    /// Draws `n`.
+    draws: u64,
+}
+
+impl HypergeometricShape {
+    /// The failures in the population, `N − m`.
+    fn failures(&self) -> u64 {
+        self.population - self.successes
+    }
+
+    /// The least value, `max(0, n + m − N)`.
+    fn lowest(&self) -> u64 {
+        self.draws.saturating_sub(self.failures())
+    }
+
+    /// The greatest value, `min(n, m)`.
+    fn highest(&self) -> u64 {
+        self.draws.min(self.successes)
+    }
+}
+
+/// `C(top, r)` by the product `Π (top − i)/(i + 1)`, each quotient exact,
+/// over the shorter of `r` and `top − r` factors.  `0` for `r > top`.
+fn binomial_coefficient(top: u64, r: u64) -> BigInt {
+    if r > top {
+        return BigInt::zero();
+    }
+    let r = r.min(top - r);
+    let mut c = BigInt::one();
+    for i in 0..r {
+        c *= top - i;
+        c /= i + 1;
+    }
+    c
+}
+
+/// `Σ_{j=a}^{b} C(m, j) C(N−m, n−j) / C(N, n)` exactly (`a`, `b` clipped to
+/// the support `lo..=hi`): the integer terms `T_j = C(m, j) C(N−m, n−j)` by
+/// the recurrence `T_{j+1} = T_j·(m − j)(n − j) / ((j + 1)(N − m − n + j + 1))`
+/// — each step a product and an exact quotient by small factors — from
+/// `T_lo`, which is one binomial (`C(N−m, n)` at `lo = 0`, `C(m, lo)` where
+/// the draws exhaust the failures), over the one denominator `C(N, n)`,
+/// the sum of every `T_j` (Vandermonde).  As [`binomial_mass`] does for a
+/// binomial; `None` past its bounds ([`BINOMIAL_MASS_MAX_BITS`] for
+/// `C(N, n)`, [`BINOMIAL_MASS_BUDGET`] for the steps), where the generic
+/// route keeps the sum symbolic.
+fn hypergeometric_mass(shape: &HypergeometricShape, a: u64, b: u64) -> Option<Q> {
+    let (big_n, m, n) = (shape.population, shape.successes, shape.draws);
+    let (lo, hi) = (shape.lowest(), shape.highest());
+    let (a, b) = (a.max(lo), b.min(hi));
+    if a > b {
+        return Some(Q::zero());
+    }
+    // C(N, n) ≤ (e·N/r)^r for r = min(n, N − n), and e·N/r < 4·⌈N/r⌉: at
+    // most r·(2 + ⌈log₂⌈N/r⌉⌉) bits, which bounds every term too.
+    let r = n.min(big_n - n);
+    let size = if r == 0 {
+        1
+    } else {
+        let ratio = big_n.div_ceil(r);
+        let log = u64::from(u64::BITS - (ratio - 1).leading_zeros());
+        r.saturating_mul(log + 2)
+    };
+    let failures = shape.failures();
+    // The steps: the first term's binomial, the walk to `b`, `C(N, n)`.
+    let first = if lo == 0 {
+        n.min(failures - n)
+    } else {
+        lo.min(m - lo)
+    };
+    let steps = first.saturating_add(b - lo).saturating_add(r).max(1);
+    if size > BINOMIAL_MASS_MAX_BITS || steps.saturating_mul(size) > BINOMIAL_MASS_BUDGET {
+        return None;
+    }
+    let mut term = if lo == 0 {
+        binomial_coefficient(failures, n)
+    } else {
+        binomial_coefficient(m, lo)
+    };
+    // N − m − n + j + 1 = j + 1 − lo + (N − m − n)⁺: one of `lo` and
+    // `(N − m − n)⁺` is 0.
+    let spare = failures.saturating_sub(n);
+    let mut acc = BigInt::zero();
+    for j in lo..=b {
+        if j >= a {
+            acc += &term;
+        }
+        if j == b {
+            break;
+        }
+        let num = u128::from(m - j) * u128::from(n - j);
+        let den = u128::from(j + 1) * (u128::from(j + 1 - lo) + u128::from(spare));
+        term *= num;
+        term /= den;
+    }
+    Some(Q::new(acc, binomial_coefficient(big_n, n)))
 }
 
 /// `DiscreteUniform(a, b)`: `P(X = k) = 1/(b−a+1)` on the integers `a..=b`.

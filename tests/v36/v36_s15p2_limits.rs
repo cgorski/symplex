@@ -21,7 +21,7 @@ fn lim(ctx: &Context, f: &str, point: &str, dir: Direction) -> Result<String, Sy
 /// A hidden zero inside a function of a parameter is no nonzero value: the
 /// parametric zero tests split off symbol-free *factors* only, so
 /// `cos(y·J + π/2) = −sin(y·J)` with `J = besselj(−1/2, π/2)` read as
-/// nonzero for a generic `y`.  Up to 0.58 the limit of `tan(π/2 +
+/// nonzero for a generic `y`.  Up to 0.57 the limit of `tan(π/2 +
 /// y·besselj(−1/2, π/2 + x))` at 0 was `tan(y·besselj(−1/2, π/2) +
 /// π/2)` (a value at a pole), as was the limit of `tan(π/2 + y·J + x)`;
 /// the limit of `x/(x + sin(y·J))` from the right was `Piecewise((1, y =
@@ -79,7 +79,7 @@ fn hidden_zero_inside_a_function_of_a_parameter_is_not_a_nonzero_value() {
 }
 
 /// A hidden zero that `hidden_zero` proves is replaced by 0 inside the
-/// function: `y·asinh 2 − y·ln(2 + √5)` is `y·0`.  Up to 0.58
+/// function: `y·asinh 2 − y·ln(2 + √5)` is `y·0`.  Up to 0.57
 /// `limit(1/(x + sin(y·(asinh 2 − ln(2 + √5)))), x, 0, +)` was the value
 /// `1/sin(y·(asinh 2 − ln(2 + √5)))` (a quotient by 0), and the series a
 /// Taylor series in its powers; the function is `1/x`.
@@ -103,7 +103,7 @@ fn a_proved_hidden_zero_inside_a_function_is_substituted() {
 
 /// A step function at an argument nonzero for generic parameters is
 /// continuous there: its value is the limit, with the exact condition.  Up
-/// to 0.58 these limits were refused once the zero tests read `H(y)` as a
+/// to 0.57 these limits were refused once the zero tests read `H(y)` as a
 /// coefficient that may vanish on a region (0.55: `Piecewise((H(y), y ≠
 /// 0))`): `limit(H(x + y), x, 0)`, `limit(H(x + y) + x, x, 0)`.
 ///
@@ -135,7 +135,7 @@ fn a_step_at_a_generic_argument_is_its_value_with_the_condition() {
     assert!(lim(&ctx, "x/Min(y, x, 5)", "0", Direction::Both).is_err());
 }
 
-/// Gruntz's work budget counts the zero tests of coefficients.  Up to 0.58
+/// Gruntz's work budget counts the zero tests of coefficients.  Up to 0.57
 /// `limit(E1(digamma(x))^Ei(x), x, 0, −)` ran for over 25 s (release): the
 /// fallback expansion tested coefficients that are polynomials in `ζ(k)`
 /// and `γ` with a thousand distinct nodes, each `ζ` evaluated at 166 bits,
@@ -152,7 +152,7 @@ fn gruntz_charges_the_evaluations_of_its_coefficients() {
     assert!(r.is_err(), "{r:?}");
 }
 
-/// Slow refusals of series.  Up to 0.58 `series(x⁵·√(atan(ln x)), x, 0, 8)`
+/// Slow refusals of series.  Up to 0.57 `series(x⁵·√(atan(ln x)), x, 0, 8)`
 /// took 0.7 s (release) to stay unevaluated: `atan(ln x)` went to the
 /// differentiation fallback, whose limits of derivatives each ran Gruntz;
 /// now `f(ln x)` is the constant `f(l)` of the log-extended expansion

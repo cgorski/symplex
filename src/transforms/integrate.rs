@@ -2729,7 +2729,7 @@ const MAX_CONSTANT_PARAMETERS: usize = 4;
 /// constants may replace the parameters wherever no denominator of `F`
 /// vanishes at them (relations such as `√2² = 2` are lost, never used); an
 /// answer that becomes undefined there (a `nan`, `zoo`), or that the numeric
-/// check of every candidate rejects, gives `None`.  Up to 0.58 `∫ dx/(x·(x −
+/// check of every candidate rejects, gives `None`.  Up to 0.57 `∫ dx/(x·(x −
 /// √2))` was unevaluated (the integrator over `ℚ` refuses `√2`, the one over
 /// `ℚ(p₁, …)` takes symbols only), and with it `∫ dx/(eˣ − √2)`; SymPy
 /// 1.14: `√2·ln(x − √2)/2 − √2·ln(x)/2`.
@@ -7099,7 +7099,7 @@ const MAX_RATIO_DENOMINATOR: u64 = 64;
 /// the value of the constant `r = a/b` when `a − q·b` evaluates to an exact
 /// 0: the value only proposes `q`, the exact difference decides.  `eval`
 /// keeps a quotient of constant sums (`(−½ ln 2 − iπ/4)/(½ ln 2 + iπ/4)`)
-/// as it is, and up to 0.58 `∫ dx/((1 + i)ˣ + (1 + i)⁻ˣ − 3)` and `∫ dx/(e^{(1 +
+/// as it is, and up to 0.57 `∫ dx/((1 + i)ˣ + (1 + i)⁻ˣ − 3)` and `∫ dx/(e^{(1 +
 /// iπ)x} + e^{−(1 + iπ)x} − 3)` stayed unevaluated.
 fn confirmed_rational_ratio(arena: &mut Arena, a: ExprId, b: ExprId, r: ExprId) -> Option<Q> {
     let z = crate::transforms::evalf::evalf_complex64(arena, r).ok()?;
@@ -8749,7 +8749,7 @@ fn try_poly_times_half_power(
     let m: i64 = if qd == 2 { pd as i64 - 1 } else { pd as i64 };
     let with_c = qd == 2;
     // The dense system has n² entries and costs n³ steps: refused beyond
-    // 2¹⁰ unknowns (up to 0.58 its rows were sized by the degree of `P̃`).
+    // 2¹⁰ unknowns (up to 0.57 its rows were sized by the degree of `P̃`).
     let n_unknowns = crate::base::cast::bounded_len(m + 1, 1usize << 10)? + usize::from(with_c);
     let n_eq = pd + 1;
     if n_unknowns != n_eq {

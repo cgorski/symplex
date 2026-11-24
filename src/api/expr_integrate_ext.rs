@@ -607,7 +607,7 @@ impl Expr<Numeric> {
     /// (`2⁻⁶⁰`, the radius `evalf` returns 0 within, for 0); its error when
     /// it fails, [`SymplexError::Unevaluable`] when the value is not real or
     /// lies beyond the `f64` range.  The `f64` is rounded once from the
-    /// value (up to 0.58 its 17-digit decimal was parsed, and a real value
+    /// value (up to 0.57 its 17-digit decimal was parsed, and a real value
     /// beyond `f64::MAX` was reported "not a real number").
     fn certified_quadrature(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Result<QuadResult, SymplexError> {
         let node = self.definite_integral_node(var, lo, hi).eval();

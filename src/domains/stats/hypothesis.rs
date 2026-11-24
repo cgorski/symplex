@@ -431,7 +431,7 @@ impl TestResult {
     /// for a p-value that is not a rational: an exact expression of a
     /// continuous reference distribution, or a numerical approximation —
     /// [`fisher_exact`] beyond [`FISHER_EXACT_NUMERIC_THRESHOLD`] support
-    /// points, whose p-value is never written as a rational (up to 0.58 it
+    /// points, whose p-value is never written as a rational (up to 0.57 it
     /// was the dyadic rational of an `f64`, returned here as if exact).
     #[must_use]
     pub fn p_value_exact(&self) -> Option<Q> {
@@ -445,7 +445,7 @@ impl TestResult {
     /// ([`LikelihoodFit::llr_test`](crate::stats::regression::LikelihoodFit::llr_test),
     /// the Cox model's `wald_test` / `score_test`) write their `f64`
     /// statistic `s` as `exp(ℓ)`, `ℓ = ln s` in `f64`, and its p-value
-    /// through it (up to 0.58 the statistic was the dyadic rational of the
+    /// through it (up to 0.57 the statistic was the dyadic rational of the
     /// `f64`, returned here as if exact).  A statistic such a fit computes as
     /// at most `0` is reported as `0`, with p-value `1`.
     #[must_use]
@@ -661,7 +661,7 @@ fn result(
 /// [`SymplexError::DegenerateData`] with [`Degeneracy::ZeroVariance`]: a
 /// variance the statistic divides by is zero for these data (a constant
 /// sample, every observation tied).  As the models report it since 0.57;
-/// up to 0.58 the tests here said `InvalidArgument`.
+/// up to 0.57 the tests here said `InvalidArgument`.
 fn zero_variance(op: &'static str, reason: &str) -> SymplexError {
     SymplexError::degenerate(op, Degeneracy::ZeroVariance, reason)
 }
@@ -1285,7 +1285,7 @@ fn log_add_exp(a: f64, b: f64) -> f64 {
 /// A numeric p-value as an expression that is never a rational unless it
 /// is exactly `1`: `exp(ℓ)` with the `f64` logarithm `ℓ`, or `exp(−e^λ)`
 /// next to `1`.  An `f64` read as a (dyadic) rational would claim an exact
-/// value — [`TestResult::p_value_exact`] returned it up to 0.58 — and the
+/// value — [`TestResult::p_value_exact`] returned it up to 0.57 — and the
 /// logarithm keeps [`PValue::p_value_log10`] and
 /// [`PValue::p_value_decimal`] informative where `p_value_f64` underflows
 /// to `0.0`.
@@ -1322,7 +1322,7 @@ fn numeric_p_value(ctx: &Context, p: NumericP) -> Result<Ex, SymplexError> {
 /// [`p_value_log10`](TestResult::p_value_log10) stays finite where
 /// [`p_value_f64`](TestResult::p_value_f64) is `0.0`; its
 /// [`p_value_decimal`](TestResult::p_value_decimal) digits beyond the
-/// ninth are those of the approximation.  Up to 0.58 the p-value was the
+/// ninth are those of the approximation.  Up to 0.57 the p-value was the
 /// dyadic rational of an `f64`, which `p_value_exact` returned as if exact
 /// (and `P(X ≤ a)` far above the mode was an exact `1`).  The two-sided
 /// cutoff on the far side of the mode compares floating pmf values with a
@@ -2276,7 +2276,7 @@ fn normal_result(ctx: &Context, stat: &RootRatio, alt: Alternative) -> TestResul
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than two observations;
-/// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a constant sample (up to 0.58 `InvalidArgument`).
+/// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a constant sample (up to 0.57 `InvalidArgument`).
 pub fn t_test_one_sample(
     ctx: &Context,
     x: &[Q],
@@ -2338,7 +2338,7 @@ pub fn t_test_one_sample(
 /// [`SymplexError::InvalidArgument`] for an empty sample, fewer than three
 /// observations in all (`equal_var`), or a sample with fewer than two
 /// observations (Welch); [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for two
-/// constant samples (up to 0.58 `InvalidArgument`).
+/// constant samples (up to 0.57 `InvalidArgument`).
 pub fn t_test_two_sample(
     ctx: &Context,
     x: &[Q],
@@ -2410,7 +2410,7 @@ pub fn t_test_two_sample(
 ///
 /// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than two
 /// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for constant
-/// differences (up to 0.58 `InvalidArgument`).
+/// differences (up to 0.57 `InvalidArgument`).
 pub fn t_test_paired(
     ctx: &Context,
     x: &[Q],
@@ -2498,7 +2498,7 @@ pub fn z_test_proportion(
 ///
 /// [`SymplexError::InvalidArgument`] for an empty sample or `k > n`;
 /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a pooled
-/// proportion of `0` or `1` (up to 0.58 `InvalidArgument`).
+/// proportion of `0` or `1` (up to 0.57 `InvalidArgument`).
 pub fn z_test_two_proportions(
     ctx: &Context,
     k1: usize,
@@ -2586,7 +2586,7 @@ fn cross_moments(
 /// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than three
 /// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
 /// constant sample or `|r| = 1` (no residual variance: infinite `t`; up to
-/// 0.58 `InvalidArgument`).
+/// 0.57 `InvalidArgument`).
 pub fn pearson_t_statistic(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     const OP: &str = "pearson_t_statistic";
     let CrossMoments { sxy, sxx, syy } = cross_moments(OP, x, y, 3)?;
@@ -2626,7 +2626,7 @@ pub fn pearson_t_statistic(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, Symple
 ///
 /// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than three
 /// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
-/// constant sample (up to 0.58 `InvalidArgument`).
+/// constant sample (up to 0.57 `InvalidArgument`).
 pub fn pearson_test(
     ctx: &Context,
     x: &[Q],
@@ -3072,7 +3072,7 @@ fn continuity_shift(num: &Q, alt: Alternative) -> Q {
 ///
 /// [`SymplexError::InvalidArgument`] for an empty sample;
 /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a pooled sample
-/// that is constant (`Asymptotic`; up to 0.58 `InvalidArgument`);
+/// that is constant (`Asymptotic`; up to 0.57 `InvalidArgument`);
 /// [`SymplexError::ComputationFailed`] for `Exact` with ties beyond its
 /// work budget (about `10⁸` big-integer additions: `N ≈ 100` with
 /// `n₁ = N/2`).
@@ -3182,7 +3182,7 @@ pub fn mann_whitney_u(
 ///
 /// [`SymplexError::InvalidArgument`] for unequal lengths;
 /// [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for no non-zero
-/// differences (up to 0.58 `InvalidArgument`);
+/// differences (up to 0.57 `InvalidArgument`);
 /// [`SymplexError::ComputationFailed`] for `Exact` with ties
 /// beyond its work budget (`n(n + 1)` doubled-rank cells times `n`
 /// additions, `10⁸`: `n ≈ 450`).
@@ -3292,7 +3292,7 @@ pub fn wilcoxon_signed_rank(
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than two groups or an empty
 /// group; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for identical
-/// observations throughout (up to 0.58 `InvalidArgument`).
+/// observations throughout (up to 0.57 `InvalidArgument`).
 pub fn kruskal_wallis(ctx: &Context, groups: &[Vec<Q>]) -> Result<TestResult, SymplexError> {
     const OP: &str = "kruskal_wallis";
     let k = groups.len();
@@ -3352,7 +3352,7 @@ pub fn kruskal_wallis(ctx: &Context, groups: &[Vec<Q>]) -> Result<TestResult, Sy
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than three treatments, no
 /// blocks, or ragged blocks; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`])
-/// for ties within every block throughout (up to 0.58 `InvalidArgument`).
+/// for ties within every block throughout (up to 0.57 `InvalidArgument`).
 pub fn friedman(ctx: &Context, blocks: &[Vec<Q>]) -> Result<TestResult, SymplexError> {
     const OP: &str = "friedman";
     let n = blocks.len();
@@ -3419,7 +3419,7 @@ pub fn friedman(ctx: &Context, blocks: &[Vec<Q>]) -> Result<TestResult, SymplexE
 ///
 /// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than three
 /// pairs; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for a
-/// constant sample (up to 0.58 `InvalidArgument`).
+/// constant sample (up to 0.57 `InvalidArgument`).
 pub fn spearman_test(
     ctx: &Context,
     x: &[Q],
@@ -3502,7 +3502,7 @@ pub fn spearman_test(
 ///
 /// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
 /// pairs, or ties with `exact`; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`])
-/// for a constant sample (up to 0.58 `InvalidArgument`).
+/// for a constant sample (up to 0.57 `InvalidArgument`).
 pub fn kendall_test(
     ctx: &Context,
     x: &[Q],
@@ -3740,7 +3740,7 @@ pub fn ks_one_sample(
 ///
 /// [`SymplexError::InvalidArgument`] for a sample with fewer than two
 /// observations; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for two
-/// constant samples (up to 0.58 `InvalidArgument`).
+/// constant samples (up to 0.57 `InvalidArgument`).
 pub fn cohens_d(ctx: &Context, x: &[Q], y: &[Q], pooled: bool) -> Result<Ex, SymplexError> {
     const OP: &str = "cohens_d";
     check_sample(OP, "the first sample", x, 2)?;
@@ -3814,7 +3814,7 @@ pub fn hedges_g(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
 ///
 /// [`SymplexError::InvalidArgument`] for an empty `x` or fewer than two
 /// observations in `y`; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for
-/// a constant `y` (up to 0.58 `InvalidArgument`).
+/// a constant `y` (up to 0.57 `InvalidArgument`).
 pub fn glass_delta(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     const OP: &str = "glass_delta";
     check_sample(OP, "the first sample", x, 1)?;
@@ -3877,7 +3877,7 @@ pub fn rank_biserial(u1: &Q, n1: usize, n2: usize) -> Result<Q, SymplexError> {
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than two groups or an empty
 /// group; [`SymplexError::DegenerateData`] ([`Degeneracy::ZeroVariance`]) for identical
-/// observations throughout (up to 0.58 `InvalidArgument`).
+/// observations throughout (up to 0.57 `InvalidArgument`).
 pub fn eta_squared(groups: &[Vec<Q>]) -> Result<Q, SymplexError> {
     const OP: &str = "eta_squared";
     let super::anova::GroupSums {

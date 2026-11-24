@@ -18,7 +18,7 @@ fn huge_pair() -> (MultiPoly, MultiPoly) {
     (m.add(&one), m.sub(&one))
 }
 
-/// `MultiPoly::gcd(x^(2³¹)·y + 1, x^(2³¹)·y − 1)` panicked up to 0.58: the
+/// `MultiPoly::gcd(x^(2³¹)·y + 1, x^(2³¹)·y − 1)` panicked up to 0.57: the
 /// modular routes refuse dense images of degree 2³¹ and the PRS fallback
 /// multiplied by the leading coefficient `x^(2³¹)`, past the `u32`
 /// exponents (the allowlisted assertion of `MultiPoly::mul`).  The PRS now
@@ -55,7 +55,7 @@ fn gcd_all_of_huge_exponents_is_none_not_a_panic() {
 
 /// `S(n, n − 2)` is small (`4·log₂ n` bits), so the size guard let
 /// `stirling2(2⁴⁰, 2⁴⁰ − 2)` through, and the triangle sized its rows by
-/// `k + 1 = 2⁴⁰ − 1` big integers (35 TB): the process aborted up to 0.58.
+/// `k + 1 = 2⁴⁰ − 1` big integers (35 TB): the process aborted up to 0.57.
 /// For `n = 2³¹` the explicit sum's powers `j^(2³¹)` (8 GB each) did the
 /// same.  Beyond 2³² triangle cells both kinds refuse (`None`), at once;
 /// values within the bounds are unchanged (oracle: SymPy
@@ -77,7 +77,7 @@ fn stirling_numbers_with_k_close_to_a_huge_n_are_refused_not_allocated() {
 /// character of its 5-digit printout and searched it for `I`, but `evalf`
 /// prints the imaginary unit `i`: a non-real constant took the sign of its
 /// real part, so `Uniform(0, 1).cdf(2 + i)` was `1`, `.sf(2 + i)` `0` and
-/// `.cdf(−1 + i)` `0` up to 0.58.  The sign is read from the value
+/// `.cdf(−1 + i)` `0` up to 0.57.  The sign is read from the value
 /// (`evalf::const_value`), and a certified nonzero imaginary part leaves it
 /// unknown.  Oracle (exact): `2 + i` is not real, so `P(X ≤ 2 + i)` is not
 /// decided by the support (SymPy raises "Invalid comparison of non-real").
@@ -98,7 +98,7 @@ fn cdf_at_a_non_real_point_is_not_decided_from_the_real_part() {
 /// The certified quadrature of `integrate_numeric` parsed its 17-digit
 /// decimal as an `f64`: a real value beyond `f64::MAX` became `inf` and was
 /// reported "the integral is not a real number: 2.7263745721125666e347" up
-/// to 0.58.  The `f64` is rounded from the value, and the refusal says the
+/// to 0.57.  The `f64` is rounded from the value, and the refusal says the
 /// value is beyond the range (oracle: `∫₋₁¹ e⁸⁰⁰·δ(x) dx = e⁸⁰⁰`, mpmath
 /// `exp(800)` = 2.7263745721125665673e+347, real).  A value within range is
 /// unchanged (`∫₋₁¹ 3δ(x) dx = 3`).

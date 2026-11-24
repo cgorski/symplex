@@ -20,7 +20,7 @@
 //! inside".  What is left are identity checks that decide nothing (the
 //! factor `∞` beside the direction of `c·∞`, a constructor's own atoms) and
 //! the review queue of the other files (`limit`, `gruntz`, `definite` and
-//! the `contains` helpers of `series` were migrated at 0.59).
+//! the `contains` helpers of `series` were migrated at 0.58).
 //!
 //! Two counts, both syntactic (no types are available to a linter):
 //!
@@ -45,8 +45,8 @@ use syn::visit::Visit;
 const OWNER: &str = "base/value_class.rs";
 
 /// Files allowed to compare with the special atoms, with the exact count
-/// (0.58: 167, down from 263 — `canon.rs` 50 → 4, `eval.rs` 50 → 0; 0.59:
-/// 81 — `limit.rs` 39, `gruntz.rs` 26, `definite.rs` 21 → 0).  Paths are
+/// (0.58: 81, down from 263 at 0.57 — `canon.rs` 50 → 4, `eval.rs` 50 → 0,
+/// `limit.rs` 39, `gruntz.rs` 26, `definite.rs` 21 → 0).  Paths are
 /// relative to `src/`.
 const COMPARE_ALLOWLIST: &[(&str, usize)] = &[
     ("api/expr_calculus_util_ext.rs", 16),
@@ -73,8 +73,8 @@ const COMPARE_ALLOWLIST: &[(&str, usize)] = &[
 ];
 
 /// Files allowed to test for the special atoms with `contains`, with the
-/// exact count (0.58: 18, down from 32 — `canon.rs` 11 → 1, `eval.rs` 5 → 1;
-/// 0.59: 6 — the `contains_singular_atom` helpers of `gruntz.rs`, `limit.rs`
+/// exact count (0.58: 6, down from 32 at 0.57 — `canon.rs` 11 → 1, `eval.rs`
+/// 5 → 1; the `contains_singular_atom` helpers of `gruntz.rs`, `limit.rs`
 /// and `series.rs` are `value_class::holds_special_atom`).
 const CONTAINS_ALLOWLIST: &[(&str, usize)] = &[
     // `is_directed_infinity`: the shape `c·∞` (identity).

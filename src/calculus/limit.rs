@@ -675,7 +675,7 @@ pub(crate) fn limit_dir(
 /// where `y ≠ 0` ([`with_step_conditions`]; the case `y = 0` is
 /// [`guard_degenerate_parameters`]'s).  The generic engines read `H(y)` as
 /// a coefficient that may vanish on a region (it is no leading term), so
-/// up to 0.58 they refused such limits (0.55: `Piecewise((H(y), y ≠ 0))`);
+/// up to 0.57 they refused such limits (0.55: `Piecewise((H(y), y ≠ 0))`);
 /// a step is never read so for an internal limit (`limit_dir_generic`:
 /// the Taylor coefficients of the differentiation fallback, a leading
 /// term).
@@ -1281,7 +1281,7 @@ fn contains_hidden_singularity(arena: &Arena, root: ExprId) -> bool {
             }
             // A function with parameters at an integer `≤ 0` where its `Poles`
             // facet puts poles, infinite for every value of them (`B(0, y)`,
-            // `γ(0, y)`, `ψ⁽ʸ⁾(0)`): up to 0.58 `limit(B(δ(x), y))` was `B(0, y)`.
+            // `γ(0, y)`, `ψ⁽ʸ⁾(0)`): up to 0.57 `limit(B(δ(x), y))` was `B(0, y)`.
             // (A constant is left to its value: `B(−1, 1) = −1`.)
             _ if !arena.is_symbol_free(id) && at_nonpositive_integer_pole(arena, node) => {
                 return true;
@@ -1798,7 +1798,7 @@ enum TabulatedPole {
 /// function finite and continuous there ([`regular_at_pole_place`]:
 /// `J₁(min(y, 0))`).
 ///
-/// Up to 0.58 direct substitution checked the poles of `Γ` and `ψ` only:
+/// Up to 0.57 direct substitution checked the poles of `Γ` and `ψ` only:
 /// `limit(B(x, y), x, 0)` was the value `B(0, y)` at a pole (`B(x, y) ~
 /// 1/x`), `limit(x·B(x, y))` and `limit(x·B(erf x, γ))` were 0 (`1` and
 /// `√π/2`), `limit(γ(x, 1))` was `γ(0, 1)` (`γ(s, 1) ~ 1/s`),

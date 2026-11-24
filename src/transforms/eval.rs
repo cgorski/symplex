@@ -2816,7 +2816,7 @@ fn integer_part_of_constant(arena: &mut Arena, x: ExprId, ceiling: bool) -> Opti
     }
     let mut digits = 25u32;
     let (value, ulp) = loop {
-        // The digits `evalf` prints, without the string (up to 0.58 the
+        // The digits `evalf` prints, without the string (up to 0.57 the
         // printout was split and parsed).
         let cv = crate::transforms::evalf::const_value(arena, x, digits).ok()?;
         if cv.im_sign().is_nonzero().is_true() {
@@ -2887,7 +2887,7 @@ const INTEGER_PART_MEMO_ENTRIES: usize = 256;
 
 /// The exact value of the decimal `d` (the digits `evalf` prints) and a
 /// unit in its last nonzero digit.  It costs a power of ten of the size of
-/// the exponent: callers bound that first.  (Up to 0.58 the printed string
+/// the exponent: callers bound that first.  (Up to 0.57 the printed string
 /// was split and parsed.)
 fn decimal_value_and_ulp(d: &crate::transforms::evalf::Decimal) -> Option<(Q, Q)> {
     let shift = d.exponent();
@@ -7162,7 +7162,7 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 /// folded when the node is built too): no value is taken from a closed form
 /// there (an identity to another library function at `zoo` is), and an
 /// untabulated node stays, as it does when built, so that `0·f` and `f − f`
-/// read the same before and after `eval`.  Up to 0.58 a closed form gave
+/// read the same before and after `eval`.  Up to 0.57 a closed form gave
 /// `nan` or `zoo` (`uppergamma(2, zoo)`, `jacobi(1, zoo, 0, 0)`,
 /// `gegenbauer(1, zoo, 2)`) or 0 (`betainc(zoo, 0, 1, 1)`) where the
 /// built node stayed: `f − f` was 0 when built and `nan` after `eval`.
@@ -7421,7 +7421,7 @@ fn eval_orthopoly(arena: &mut Arena, n: ExprId, x: ExprId, family: OrthoFamily) 
 /// −U_{m−2}` (`U_n = sin((n + 1)θ)/sin θ`), `L_{−m}(x) = eˣ·L_{m−1}(−x)`
 /// (`L_ν = ₁F₁(−ν; 1; ·)` and Kummer's transformation).  `H_{−m}` is the
 /// Hermite function, not a polynomial: [`hermite_function_closed`] (SymPy
-/// refuses it; up to 0.58 it stayed).  Up to 0.56 every negative degree
+/// refuses it; up to 0.57 it stayed).  Up to 0.56 every negative degree
 /// stayed.
 fn classical_at_negative_degree(
     arena: &mut Arena,
@@ -7464,7 +7464,7 @@ fn classical_at_negative_degree(
 /// 1/2) = 0.4244363835`, `hermite(−3, −1/2) = 0.9541049656`): `H_{−k−1} =
 /// (H_{−k+1} − 2x·H_{−k})/(2k)`, so `H_{−2} = 1/2 − (√π/2)·x·e^{x²}·erfc x`.
 /// `None` beyond the bound and at an argument holding a special atom (no
-/// closed form is evaluated there).  Up to 0.58 `hermite(−m, x)` stayed and
+/// closed form is evaluated there).  Up to 0.57 `hermite(−m, x)` stayed and
 /// `evalf` refused it.
 fn hermite_function_closed(arena: &mut Arena, m: u64, x: ExprId) -> Option<ExprId> {
     let m = crate::base::cast::bounded_len(m, MAX_SPECIAL_EXPANSION)?;
@@ -7789,7 +7789,7 @@ fn multisets_bound(t: u64, d: u64, over: u64) -> u64 {
 /// powers `x^{s−1}` of a half-integer `s` too; none for `s ≤ 0`), and
 /// for an `x` of at most `t` terms after expansion the powers `x⁰, …, xᵈ`
 /// expand into at most `C(d + t, d)` monomials.  Beyond the bound `Γ(s, x)`
-/// stays (`evalf` computes it): up to 0.58 `uppergamma(8, a₁ + … + a₂₅)`
+/// stays (`evalf` computes it): up to 0.57 `uppergamma(8, a₁ + … + a₂₅)`
 /// expanded `x⁷` into `C(32, 7) = 3.4·10⁶` products (24 s, 160 MB of
 /// output; the G-test on a 5 × 5 table hung on it).
 fn closed_form_stays_small(arena: &Arena, s: &Q, x: ExprId) -> bool {

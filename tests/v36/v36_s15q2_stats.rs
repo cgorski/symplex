@@ -328,7 +328,7 @@ fn exact_tests_keep_exact_statistics() {
 /// `data::pearson` (and so `spearman`), `kendall_tau`, `skewness`,
 /// `kurtosis`, `zscores`, `mad_outliers` reported a constant sample (a zero
 /// MAD) as `InvalidArgument`; the tests and the models report it as
-/// `DegenerateData { kind: ZeroVariance }` since 0.57–0.59.  Shape errors stay
+/// `DegenerateData { kind: ZeroVariance }` since 0.57–0.58.  Shape errors stay
 /// `InvalidArgument`.  (A constant sample has zero variance: an exact
 /// identity.)
 #[test]

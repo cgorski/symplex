@@ -25,9 +25,9 @@
 //! counts for the enclosing function.
 //!
 //! What is left is user text that is not an evaluation
-//! (`plotting/data_export`); the review queue of 0.58 (canon, eval,
+//! (`plotting/data_export`); the review queue of the first pass (canon, eval,
 //! residue, linalg, matrix, the stats family signs, `poly/roots`, the
-//! certified quadrature, heurisch) was migrated at 0.59.  The counts are
+//! certified quadrature, heurisch) was migrated at 0.58 too.  The counts are
 //! exact: a file may not gain a site, and a file that loses one must have
 //! its entry tightened (the failure message prints the table to paste).
 //! Files without an entry must have no site.
@@ -45,7 +45,7 @@ use syn::visit::Visit;
 /// 0.57.0: 16 files, 12 `parse`, 17 `string`; M5 migrated `inequalities`
 /// (0 + 3), `sets` (1 + 2), `solve`, `evalf`, `nsimplify` and
 /// `calculus_util` (1 + 1 each) to `evalf::const_value`: 10 files, 7, 8.
-/// 0.59 (P3) migrated the other nine (`certified_quadrature`, `canon`'s turn
+/// P3 (0.58 too) migrated the other nine (`certified_quadrature`, `canon`'s turn
 /// estimate and interval ends, `residue`'s finiteness test, the zero tests
 /// of `linalg` and `matrix`, `stats::family::sign_of`, `poly::roots`,
 /// `eval::integer_part_of_constant`, `heurisch::eval_node_f64`): 1 file, 1, 0.

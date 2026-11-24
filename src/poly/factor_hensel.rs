@@ -204,7 +204,7 @@ fn square_free_in<O: MonomialOrd>(p: &MultiPoly<O>, x: usize) -> Option<Vec<(Mul
 }
 
 /// A polynomial in the single variable `v` as a dense `Poly`; `None` beyond
-/// degree [`MAX_DENSE_LIST`](crate::base::cast::MAX_DENSE_LIST) (up to 0.58
+/// degree [`MAX_DENSE_LIST`](crate::base::cast::MAX_DENSE_LIST) (up to 0.57
 /// the vector was sized by the `u32` degree, which a factor of degree near
 /// `2³¹` in a sparse input asked the allocator for).
 fn to_uni<O: MonomialOrd>(p: &MultiPoly<O>, v: usize) -> Option<Poly> {

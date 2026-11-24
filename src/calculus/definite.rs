@@ -1398,14 +1398,14 @@ const MAX_CIRCLE_POLES: usize = 256;
 /// certified sign of `θ/2π − n` decide it).  For an imaginary `λ = iω`, `u`
 /// runs around the unit circle: no singular point when `|ρ| ≠ 1` is
 /// certified, and for `|ρ| = 1` the lattice `x = (arg ρ + 2πk)/ω` over the
-/// exact bounds of the finite `range` (`solve::lattice_indices`; up to 0.58
+/// exact bounds of the finite `range` (`solve::lattice_indices`; up to 0.57
 /// the solver's principal root alone: `∫₋₂⁰ dx/(e^{iπx} + 1)` was `2`, across
 /// the pole at `x = −1`).  The scan is complete: these are all the singular
 /// points.  `None` when `f` is not of that form, or a root, an integer part
 /// or a sign does not settle, or the lattice has no finite range.  Up to
 /// 0.55 `∫₀³ dx/(e^{(1+i)x} + e^{−(1+i)x} − 3)` was refused ("could not
 /// determine all singularities").  A power `c^L` of a constant `c ≠ 0` is
-/// `e^{L·ln c}` (the principal power): up to 0.58 `∫₀² (1+i)ˣ/((1+i)ˣ − 1 − i)
+/// `e^{L·ln c}` (the principal power): up to 0.57 `∫₀² (1+i)ˣ/((1+i)ˣ − 1 − i)
 /// dx` (a pole at `x = 1`) and `∫₀³ dx/((1+i)ˣ + (1+i)⁻ˣ − 3)` were refused.
 fn exp_rational_scan(
     arena: &mut Arena,
@@ -3767,7 +3767,7 @@ fn diverges_near(arena: &mut Arena, f: ExprId, x: ExprId, c: ExprId, side: Side)
     match limit_pos_inf(arena, h, u) {
         Some(Extended::PosInf | Extended::NegInf) => true,
         // A non-real limit `L ≠ 0` diverges too: `f = L/(x − c) + o(1/|x −
-        // c|)`, so `|∫ f|` grows like `|L|·ln(1/ε)` (up to 0.58 only a real
+        // c|)`, so `|∫ f|` grows like `|L|·ln(1/ε)` (up to 0.57 only a real
         // `L` counted, and `∫₀¹ dx/(e^{(1+i)x} − 1)` was refused).
         Some(Extended::Finite(v)) => {
             sign_of(arena, v).is_some_and(|s| s != Ordering::Equal)
@@ -3823,7 +3823,7 @@ fn nonreal_nonzero_limit(arena: &mut Arena, h: ExprId, u: ExprId) -> bool {
 /// integrand is not integrable at a singular end of the piece
 /// ([`diverges_near`]): the antiderivative may have no value the engine can
 /// read there (a `Piecewise` in `x`, a complex infinity), while the
-/// comparison test decides.  Up to 0.58 `∫₋₁¹ polylog(0, Chi(−3/4)ˣ) dx` and
+/// comparison test decides.  Up to 0.57 `∫₋₁¹ polylog(0, Chi(−3/4)ˣ) dx` and
 /// `∫₀¹ dx/(e^{(1+i)x} − 1)` (a pole at 0) were refused.
 fn divergent_at_singular_end(
     arena: &mut Arena,

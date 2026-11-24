@@ -45,7 +45,7 @@ Being clear about limitations is important for evaluating whether this library f
 - **Group theory** is limited. There is no permutation group, symmetric group, or abstract algebra module.
 - **Hypergeometric / Meijer-G machinery** is absent; definite integration relies on antiderivatives, symmetry, and a table of ~30 classical improper integrals.
 - **Interactive notebooks** are not part of the library. symplex is a Rust library, not an application. A basic REPL is available as an example (`cargo run --example repl`), and `symplex-wasm` exposes a `Session` API for the browser.
-- **Test coverage**, while substantial (~12,900 tests including cross-validation against SymPy, plus nightly property fuzzing), is far less than what SymPy has accumulated over 30 years of development.
+- **Test coverage**, while substantial (~15,000 tests including cross-validation against SymPy, plus nightly property fuzzing), is far less than what SymPy has accumulated over 30 years of development.
 
 ## Design Principles
 

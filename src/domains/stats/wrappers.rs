@@ -1948,7 +1948,19 @@ impl Distribution {
                     }
                 }
             }
-            return Ok(Distribution::finite(&ctx, table));
+            // The `f64` of each image is already known: the table keeps it
+            // (`cdf`, `sf` and the quantiles order a point against every
+            // value that is not a rational).
+            let known: Vec<(Ex, f64)> = table
+                .iter()
+                .zip(&values_at)
+                .filter_map(|((image, _), key)| {
+                    key.filter(|k| !k.tiny).map(|k| (image.clone(), k.f))
+                })
+                .collect();
+            return Ok(Distribution::from_family(
+                super::discrete::Finite::new(&ctx, table).with_known_values(&known),
+            ));
         }
         if self.kind() == Kind::Discrete {
             return Err(not_implemented(

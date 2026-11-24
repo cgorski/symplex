@@ -19,7 +19,7 @@
 //!
 //! Every `.rs` file under `tests/` is scanned except `tests/perf_assert/`
 //! (the helper), and the `#[cfg(test)]` items and modules of the files
-//! under `src/` (since 0.59; their helper is the same file, compiled into
+//! under `src/` (since 0.58; their helper is the same file, compiled into
 //! the library's test build as `crate::base::perf_assert` — the library's
 //! own deadlines and stage timings are not tests and are not counted).
 //! Macro bodies are scanned as expressions when they parse as a
@@ -47,8 +47,9 @@ use syn::visit::Visit;
 /// `tests/` (97 wall-clock bounds in 80 of them, the rest the reports of
 /// benchmarks and the interleaved comparisons of `v28_perf`); after the
 /// `perf_assert`, 9 and 2 in 5 files.  The test modules of `src/` had 22
-/// and 24 in 13 files at 0.58 (14 wall-clock bounds in 8 files, 4 reports
-/// of a measured time, 4 deadlines); 4 and 0 in 3 files at 0.59.
+/// and 24 in 13 files while 0.58 was developed (14 wall-clock bounds in 8
+/// files, 4 reports of a measured time, 4 deadlines); 4 and 0 in 3 files
+/// at 0.58.
 const ALLOWLIST: &[(&str, [usize; 2])] = &[
     // `Instant` deadlines (past, far future) for `Budget` and
     // `PolyhedronOpts` in the unit tests of the budget API itself.

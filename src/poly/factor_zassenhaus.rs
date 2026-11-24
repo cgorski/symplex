@@ -813,7 +813,7 @@ fn normalize_sign<O: MonomialOrd>(p: MultiPoly<O>) -> MultiPoly<O> {
 
 /// View a polynomial that only involves variable `v` as a univariate `Poly`;
 /// `None` beyond degree
-/// [`MAX_DENSE_LIST`](crate::base::cast::MAX_DENSE_LIST) (up to 0.58 the
+/// [`MAX_DENSE_LIST`](crate::base::cast::MAX_DENSE_LIST) (up to 0.57 the
 /// vector was sized by the `u32` degree).
 fn multipoly_to_uni<O: MonomialOrd>(p: &MultiPoly<O>, v: usize) -> Option<Poly> {
     let deg = crate::base::cast::bounded_len(p.degree_in(v), crate::base::cast::MAX_DENSE_LIST)?;

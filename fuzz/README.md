@@ -56,6 +56,17 @@ run in fork mode: `$B/fuzz_simplify -fork=6 -ignore_crashes=1
 -ignore_timeouts=1 -max_total_time=300 -artifact_prefix=… fuzz/corpus/fuzz_simplify`,
 then replay each artifact to read its message.
 
+`fuzz_stats` does not transform a lattice of more than 20,000 atoms into a
+table (`MAX_TRANSFORMED_ATOMS`): the table costs one certified evaluation
+per atom to merge equal images, about 1.4 s for 100,000 atoms in a release
+build and past the nightly timeout under the sanitizer.  Larger tables are
+covered by the timed tests in `tests/v36/`.
+
+The nightly job uploads a failing input before decoding it and prints it
+as base64 in the log (`base64 -d` gives the file back); every replay there
+is bounded, so an input that hangs is reported with libFuzzer's stack
+instead of cancelling the job.
+
 ## Finding and fixing a failure — the fast loop
 
 Build once per change to `src/` (≈ 2 min, the rest is ~1 s each).  `-s none`

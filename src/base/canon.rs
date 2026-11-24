@@ -555,7 +555,7 @@ fn cancels_infinite_terms(arena: &Arena, terms: &FxHashMap<ExprId, Q>, merged: &
 ///   generic nonzero value: it is 0 on the half plane `re e > 0`.  The
 ///   quotient is `0` only where every such denominator is nonzero, and `nan`
 ///   elsewhere ([`zero_times_zero_powers`]): `0/0^y` is `Piecewise((0, (0 >
-///   re(y)) | Eq(y, 0)), (nan, True))`.  Up to 0.58 it was 0, right only for
+///   re(y)) | Eq(y, 0)), (nan, True))`.  Up to 0.57 it was 0, right only for
 ///   `re y < 0` (and `y = 0`).  (Any other factor `0^e` keeps the canonical
 ///   `0·f = 0` of a finite-looking factor: the exact zero coefficients of an
 ///   expansion at `0^e` rely on it.)
@@ -1031,7 +1031,7 @@ fn unevaluated_at_complex_infinity(arena: &Arena, f: ExprId) -> bool {
 /// along the positive axis and tends to 0 along the imaginary one, `atan`,
 /// `erf` tend to different constants in different directions,
 /// `uppergamma(zoo, ∞)` has no order: `0/Γ(zoo)`, `0/atan(zoo)` are `nan`
-/// (up to 0.58 they were 0, as in SymPy 1.14).  Where `|d| → ∞` in every
+/// (up to 0.57 they were 0, as in SymPy 1.14).  Where `|d| → ∞` in every
 /// direction `0/d` is `0/zoo = 0`.
 fn without_limit_at_complex_infinity(arena: &Arena, d: ExprId) -> bool {
     unevaluated_at_complex_infinity(arena, d) && !tends_to_complex_infinity(arena, d)
@@ -1101,7 +1101,7 @@ pub(crate) enum AtComplexInfinity {
 /// | `Li_s(z)`, integer `s` | `−1` for `s = 0` (`z/(1 − z)`), `0` for `s < 0` (a rational function of degree `−s` over `(1 − z)^(1−s)`), `zoo` for `s ≥ 1` (`abs(ln(−z))^s/s!`) |
 /// | `F(φ \| 0) = φ`, `Π(n \| 0) = π/(2√(1 − n))` | `zoo` at `φ = zoo`, `0` at `n = zoo` |
 ///
-/// Up to 0.58 the closed forms met `zoo + zoo` and gave `nan`:
+/// Up to 0.57 the closed forms met `zoo + zoo` and gave `nan`:
 /// `legendre(3, zoo)`, `chebyshev_t(3, zoo)`, `betainc(1, 2, 0, zoo)`,
 /// `polylog(−1, zoo)` (which tends to 0) were `nan` (mpmath:
 /// `abs(P₃(10⁸e^{it}))` = `2.5·10²⁴` in every direction,
@@ -1193,7 +1193,7 @@ pub(crate) fn at_complex_infinity(
 /// Σ_m (−n)_m (n + a + b + 1)_m (a + m + 1)_{n−m}/(n! m!)·((1 − x)/2)^m`
 /// (DLMF 18.5.7 with `(a + 1)_n/(a + 1)_m` cancelled), `L_n^(α)` of leading
 /// coefficient `(−1)ⁿ/n!`; `P_n^m` for `0 ≤ m ≤ n` grows like `abs(z)^n`,
-/// and vanishes for `m > n ≥ 0`.  Up to 0.58 `gegenbauer(3, −2, zoo)` was
+/// and vanishes for `m > n ≥ 0`.  Up to 0.57 `gegenbauer(3, −2, zoo)` was
 /// `nan` (`C₃^(−2)(x) = −4x`).
 fn polynomial_degree(
     arena: &Arena,
@@ -5864,7 +5864,7 @@ fn assumed_mul_power(arena: &mut Arena, children: &[ExprId], exp: ExprId, e: &Q)
 /// real, so `tanh(Max(−3, ∞, y))` stayed (it is 1) and `solve` refused
 /// equations holding them.  An argument certified non-real (`i`, `ζ(3/7 +
 /// i)`, a symbol declared non-real) leaves no point where the order is
-/// defined: `nan`, as for `zoo` (SymPy raises "not comparable"; up to 0.58
+/// defined: `nan`, as for `zoo` (SymPy raises "not comparable"; up to 0.57
 /// `Max(1, i)` and `Min(∞, i)` stayed nodes, which `0·Max(1, i)` read as 0).
 fn fold_min_max(arena: &mut Arena, args: &[ExprId], is_min: bool) -> Option<ExprId> {
     use crate::base::assumptions::{AssumptionCache, Props};
@@ -5991,7 +5991,7 @@ fn real_infinity(arena: &Arena, a: ExprId) -> Option<InfDir> {
 /// assumptions do not decide (each `eval`, `subs` and rebuild), and the
 /// answer is an evaluation: it is memoised under
 /// [`FactKey::NonReal`](crate::base::arena::FactKey::NonReal) (`NONREAL`
-/// when proved, `UNKNOWN` when not).  Up to 0.58 it was evaluated anew each
+/// when proved, `UNKNOWN` when not).  Up to 0.57 it was evaluated anew each
 /// time (about 1% of the CPU time of the golden corpus).
 fn certified_nonreal(arena: &Arena, x: ExprId) -> bool {
     use crate::base::arena::FactKey;

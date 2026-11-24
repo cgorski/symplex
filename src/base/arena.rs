@@ -1366,7 +1366,7 @@ impl Arena {
             self.symbols.name(id)
         );
         // Re-declaring the same set (every `positive_symbol` call) changes
-        // no fact: the memo stays.  Up to 0.58 it was cleared each time, so
+        // no fact: the memo stays.  Up to 0.57 it was cleared each time, so
         // a limit or series that made dummies re-evaluated its constants.
         if consistent && self.symbols.get_assumptions(id) != a {
             self.constant_facts.get_mut().clear();

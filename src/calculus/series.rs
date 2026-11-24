@@ -161,7 +161,7 @@ const MAX_PRECISION_ATTEMPTS: usize = 3;
 /// expansion is carried out at; a request beyond it, or an escalation past
 /// it (a pole of order `N` widens the window by `N`), is refused at once.
 /// The work of a composition grows like the cube of the terms: `sin x` to
-/// order 1,000 takes 1 s, to 2,000 8 s, to 4,000 38 s, and up to 0.58
+/// order 1,000 takes 1 s, to 2,000 8 s, to 4,000 38 s, and up to 0.57
 /// `series(sin x, x, 0, 2³¹)`, `series(x^(−N) + eˣ, x, 0, 3)`,
 /// `sin(x)/x^N` and `1/sin(x)^N` (`N = 65537`) and
 /// `series_at_infinity(sin(1/x), x, 65537)` ran for hours (with little
@@ -522,7 +522,7 @@ pub(crate) fn series(
 /// constant tested for zero) one call of [`series`], [`series_dir`],
 /// [`series_at_infinity`] or [`laurent_series`] may spend, the limits of
 /// its differentiation fallback included; beyond it a coefficient is
-/// undecided and the expansion refused.  Up to 0.58 `series(gegenbauer(3/2,
+/// undecided and the expansion refused.  Up to 0.57 `series(gegenbauer(3/2,
 /// 0, 2/x)/Shi(Π(x | π)), x, 0, 4)` and `series(arg(Shi(jacobi(3/2, 0, 3,
 /// x))), x, 0, 4)` ran for minutes (0.53: 0.3 s and 75 s), testing
 /// coefficients of thousands of distinct nodes holding the complex `K(π)`,
@@ -745,7 +745,7 @@ fn series_with_pole_retry(
 ///   two sides, so none has a two-sided expansion (no retry).
 /// * `g` tends to finite limits otherwise: the pole is at most simple, and
 ///   `xᵏ·f = xᵏ⁻¹·g` for `k ≥ 2` has an expansion only if the bounded `g`
-///   (the first retry) has one, so only that retry is made.  Up to 0.58
+///   (the first retry) has one, so only that retry is made.  Up to 0.57
 ///   `series(5/(3x·ln x·atanh(atanh x)), x, 1, 4)` (`g → 10i/(3π)`, and
 ///   `g` has no expansion in powers: `atanh(atanh x)` is a function of
 ///   `ln(1 − x)`) went through all five retries (0.3 s, 4.4 s in a debug
@@ -2432,7 +2432,7 @@ const COMPOSE_PLACEHOLDER: &str = "__series_u";
 ///
 /// The fallback cannot expand such a node (`f(ln x)′ = f′(ln x)/x` is
 /// unbounded at `0⁺`), and each refusal took the limits of its
-/// derivatives: up to 0.58 `series(x⁵·√(atan(ln x)), x, 0, 8)` took 0.7 s
+/// derivatives: up to 0.57 `series(x⁵·√(atan(ln x)), x, 0, 8)` took 0.7 s
 /// to refuse.
 fn function_of_log(
     arena: &mut Arena,

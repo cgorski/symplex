@@ -1274,7 +1274,7 @@ fn incomplete_gamma_beyond(arena: &Arena, id: ExprId, cache: Cache<'_>) -> bool 
 /// ([`BETA_VIA_LN_MIN`], [`beta_wp`]) whose ordinary evaluation failed: its
 /// value lies beyond the exponent range (`B(10¹², 10¹²) ≈ 2^(−2·10¹²)`),
 /// where `extended` holds it scaled from [`ln_beta_wp`] — so that
-/// `ln(beta(10¹², 10¹²))` is evaluated (refused up to 0.58).
+/// `ln(beta(10¹², 10¹²))` is evaluated (refused up to 0.57).
 fn beta_beyond(arena: &Arena, id: ExprId, cache: Cache<'_>) -> bool {
     let ExprNode::Beta(a, b) = arena.node(id) else {
         return false;
@@ -5986,7 +5986,7 @@ fn arb_log_gamma(x: &BigFloat, w: &mut Wp<'_>) -> Result<Complex, SymplexError> 
         return Err(infinite("LogGamma at non-positive integer pole"));
     }
     // The zeros at 1 and 2 are exact: a value 0 is no cancellation to make
-    // up, and the argument's error ball decides the precision.  Up to 0.58
+    // up, and the argument's error ball decides the precision.  Up to 0.57
     // the loss was measured against a value of 0 and the loop ran to the cap:
     // `loggamma(1 + 10⁻⁷⁰)`, whose argument rounds to 1 at the first
     // precision, was `PrecisionExhausted` (mpmath `−5.7722…·10⁻⁷¹`).
@@ -10191,7 +10191,7 @@ fn arb_uppergamma(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat
 /// > 0.51` (mpmath, over `s` from `10⁻²⁷` to `10³`, rising towards ½ + … for
 /// larger `s`) and at most a bit cancels.  For `x > 0` the result is 0 only
 /// when the series' prefactor `xˢe⁻ˣ` underflowed: an underflow, not an
-/// exact 0 (`accuracy::underflowed`; up to 0.58 `lowergamma(10¹⁰, ½)`
+/// exact 0 (`accuracy::underflowed`; up to 0.57 `lowergamma(10¹⁰, ½)`
 /// printed `0`).
 fn arb_lowergamma(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let prec = w.bits();
@@ -10553,7 +10553,7 @@ fn ln_beta_wp(a: &BigFloat, b: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, Sy
 /// (`Γ(10⁸)` is beyond the exponent range, `B(10⁸, 10⁸) = 2^{−2·10⁸}` is
 /// not).  0 when `ln B` lies below the exponent range: the accuracy layer
 /// holds it as the underflow of a positive number (`accuracy::underflowed`;
-/// up to 0.58 refused as "beyond the exponent range" in `eval_f64` too).
+/// up to 0.57 refused as "beyond the exponent range" in `eval_f64` too).
 fn beta_wp(a: &BigFloat, b: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let wp = w.bits();
     let v = ln_beta_wp(a, b, w)?.exp(wp, RM, w.cc);
@@ -10789,7 +10789,7 @@ const BETAINC_CENTRAL_MAX_TERMS: usize = 160;
 /// Both tails `(I_x(a, b), I_{1−x}(b, a))` for large shapes (`a, b > 2`)
 /// and `x` within [`BETAINC_CENTRAL_MAX_Z`] standard deviations of the mode,
 /// where the continued fraction needs about `(min(a, b)·wp²)^{1/3}` steps
-/// (`2·10⁶` at shapes `10¹⁶`: up to 0.58 `F(10¹⁶, 10¹⁶).cdf(1)` ran
+/// (`2·10⁶` at shapes `10¹⁶`: up to 0.57 `F(10¹⁶, 10¹⁶).cdf(1)` ran
 /// 20 s to refuse).  `None` where the route does not apply or cannot
 /// certify its truncation, and the caller uses the fraction.
 ///
@@ -11367,7 +11367,7 @@ fn betainc_piece(
 /// loss is covered — or refused beyond [`cancellation_cap`].  0.28 returned
 /// its third attempt whatever it had lost.  For `x1 ≠ x2` the result is 0
 /// only when the tails underflowed ([`betainc_prefactor`]): an underflow,
-/// not an exact 0 (`accuracy::underflowed`; up to 0.58
+/// not an exact 0 (`accuracy::underflowed`; up to 0.57
 /// `betainc_regularized(1.4·10³⁰, 18, 0, ½)` printed `0`).
 #[allow(clippy::too_many_arguments)]
 fn arb_betainc(

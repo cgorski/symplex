@@ -831,7 +831,7 @@ pub(super) fn extend(
             )
         }
         // `B(a, b)` of positive real shapes beyond the range
-        // (`evalf::beta_beyond`): `e^(ln B)` ([`beta_scaled`]).  Before 0.59
+        // (`evalf::beta_beyond`): `e^(ln B)` ([`beta_scaled`]).  Before 0.58
         // `ln(beta(10¹², 10¹²))` (`−1386294361132.4406172689`, mpmath) was
         // refused: `B` lies below the range, its logarithm does not.  Its
         // ordinary value is 0 with an underflow bound (the documented rule of

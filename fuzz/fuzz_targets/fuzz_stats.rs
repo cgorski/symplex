@@ -2104,7 +2104,17 @@ fn check_mgf(d: &Distribution, ctx: &Context, th: &Theory, r: &mut Src, b: &Budg
             .flatten()
             .any(|r| val(r).is_none_or(|r| r < 1.0))
     });
-    let even = continuous && (d.density(&-&x) - d.density(&x)).simplify() == ctx.zero();
+    // An even density on a support symmetric about 0: `density` is the
+    // formula on the support, and a constant one says nothing about where
+    // the support lies (`Uniform(−116, −983/9)`, whose cf is not real, was
+    // reported as a finding by the nightly run of 2026-11-11).
+    let symmetric = d.support().as_interval().is_some_and(|iv| {
+        (is_neg_inf(&iv.lower) && is_pos_inf(&iv.upper))
+            || sign(&(&iv.lower + &iv.upper)) == Some(Ordering::Equal)
+    });
+    let even = continuous
+        && symmetric
+        && (d.density(&-&x) - d.density(&x)).simplify() == ctx.zero();
     if even && z.im.abs() > 1e-12 {
         fail!("mgf: Im cf({s0}) = {} for an even density: cf = {cf}", z.im);
     }
@@ -2751,6 +2761,26 @@ fn hull(d: &Distribution) -> Option<(Ex, Ex)> {
     Some((vs.first()?.1.clone(), vs.last()?.1.clone()))
 }
 
+/// The most atoms of a lattice the checks transform into a table.  The
+/// table costs one certified evaluation per atom to merge equal images
+/// (`√X` of a 100,000-sided die: 1.4 s in a release build, 5 s in this
+/// one, past the timeout under the sanitizer on a shared runner — that
+/// one input failed 15 of 30 nightly runs, and other findings went
+/// unread); larger tables are covered by the timed tests of
+/// `tests/v36/`.
+const MAX_TRANSFORMED_ATOMS: usize = 20_000;
+
+/// A discrete law with more atoms than [`MAX_TRANSFORMED_ATOMS`] (listed
+/// values, or the points of a lattice).
+fn too_long_to_transform(d: &Distribution) -> bool {
+    match d.support().as_points() {
+        Some(values) => values.len() > MAX_TRANSFORMED_ATOMS,
+        None => hull(d).is_none_or(|(lo, hi)| {
+            val(&(hi - lo)).is_none_or(|n| n >= MAX_TRANSFORMED_ATOMS as f64)
+        }),
+    }
+}
+
 fn transform_case(r: &mut Src, ctx: &Context, desc: &mut String, b: &Budget) -> Check {
     let dr = draw(r, ctx, false);
     describe(desc, dr.text());
@@ -2760,6 +2790,9 @@ fn transform_case(r: &mut Src, ctx: &Context, desc: &mut String, b: &Budget) -> 
     let discrete = d.kind() != Kind::Continuous;
     if discrete && !bounded(&d) {
         return Ok("skip: infinite lattice".into());
+    }
+    if discrete && too_long_to_transform(&d) {
+        return Ok("skip: a lattice too long to transform".into());
     }
     let Some((lo, hi)) = hull(&d) else {
         return Ok("skip: support shape".into());
@@ -2807,7 +2840,10 @@ fn transform_case(r: &mut Src, ctx: &Context, desc: &mut String, b: &Budget) -> 
             same_density(&what, &d, x0, &y.density(&y0), &want_density, 1e-11)?;
         }
     }
-    Ok(format!("{compared} compared: {y}"))
+    // The law itself only when the case is shown: printing a table of
+    // 100,000 values took 8 % of the run of such a case.
+    show!("  transformed: {y}");
+    Ok(format!("{compared} compared"))
 }
 
 // ── Wrappers for the generic checks ─────────────────────────────────────────
@@ -2897,7 +2933,7 @@ fn wrap(
             };
             let x = ctx.symbol("_fz_w");
             let discrete = base.kind() != Kind::Continuous;
-            if discrete && !bounded(base) {
+            if discrete && (!bounded(base) || too_long_to_transform(base)) {
                 return unchanged;
             }
             let Some(map) = monotone_map(r, ctx, &x, &lo, &hi, discrete) else {

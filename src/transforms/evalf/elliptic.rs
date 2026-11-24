@@ -57,7 +57,7 @@
 //!   apart ([`pi_involution`], DLMF 19.7.8 continued); the arguments of
 //!   `Π(m/n | m)` then lie in a half-plane.
 //! * a non-real `m` with `Re m > 1` that neither of these reaches (`m` next
-//!   to the cut `(1, ∞)`, `Π(½ − i/3 | 4 + i/10)`; since 0.59): the split of
+//!   to the cut `(1, ∞)`, `Π(½ − i/3 | 4 + i/10)`; since 0.58): the split of
 //!   the third bullet continued off the axis, the path of `t = sin²θ`
 //!   moved through the branch point `1/m` ([`pi_split_off_axis`]), with the
 //!   residue at `t = 1/n` when the move sweeps the pole.
@@ -99,7 +99,7 @@
 //! their own `2^−(prec+12)` relative to each part plus, for each inexact
 //! argument, the change of the value with that argument moved by its radius
 //! (`sensitivity::complex_route_bound`: the radius of the argument's real
-//! part moves each part by its own share, since 0.59 also off the axis,
+//! part moves each part by its own share, since 0.58 also off the axis,
 //! where `E(10⁶⁰⁰ + i) = 1.29·10⁻³⁰⁰ − 10³⁰⁰i` was refused, and a part far
 //! below the other is computed up to [`MAX_PART_GAP`] bits below the
 //! modulus); none when an argument's ball
@@ -255,7 +255,7 @@ pub(super) fn eval(
 /// The most bits [`eval`] adds to the precision for a part far below the
 /// other, whatever the precision asked for: off the axis the routes compute
 /// both parts relative to the modulus, and a part `2^g` below it needs `g`
-/// bits more (`E(10⁶⁰⁰ + i) = 1.29·10⁻³⁰⁰ − 10³⁰⁰i`, 2,000 bits; up to 0.58
+/// bits more (`E(10⁶⁰⁰ + i) = 1.29·10⁻³⁰⁰ − 10³⁰⁰i`, 2,000 bits; up to 0.57
 /// it was refused beyond `4·prec + 512`).  The imaginary part of `(R_F −
 /// R_D/3)(0, 1/m, 1)` in the split of `E(m)` at `t = 1/m` cancels the same
 /// bits, so no route avoids them.
@@ -781,7 +781,7 @@ fn uses_off_axis_split(n: &Complex, m: &Complex, wp: usize) -> bool {
 /// a real `m > 1` approached from below it is [`pi_split`]'s identity.
 /// mpmath (and a quadrature along `[0, π/2]`): `Π(½ − i/3 | 4 + i/10) =
 /// 1.33515537350355 + 1.30525487404705i`, `Π(2 + i | 2 − i/1000) =
-/// 2.78305593932435 + 2.02073751897057i`.  Refused up to 0.58 ("the
+/// 2.78305593932435 + 2.02073751897057i`.  Refused up to 0.57 ("the
 /// arguments 1 - m, 1 and 1 - n lie in no half-plane").
 fn pi_split_off_axis(
     n: &Complex,

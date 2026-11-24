@@ -60,7 +60,7 @@ fn zero_variance<T: std::fmt::Debug>(r: Result<T, SymplexError>) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Beyond 2 000 support points `fisher_exact` walks the pmf in `f64`, and up
-/// to 0.58 it returned the p-value as `ctx.from_f64(p)`: a dyadic rational
+/// to 0.57 it returned the p-value as `ctx.from_f64(p)`: a dyadic rational
 /// that `p_value_exact()` handed out as if it were the exact one
 /// (`Some(562500784653773/562949953421312)` for the two-sided p of this
 /// table, whose exact value is a rational with a 600 000-digit
@@ -91,7 +91,7 @@ fn fisher_numeric_route_is_not_an_exact_rational() {
 }
 
 /// `P(X ≤ 5000)` of `[[5000, 3000], [2000, 6000]]` lies within `10⁻⁵¹¹` of
-/// 1 (mpmath: `log10 P(X ≥ 5001) = −511.8`); up to 0.58 the numeric route
+/// 1 (mpmath: `log10 P(X ≥ 5001) = −511.8`); up to 0.57 the numeric route
 /// rounded its logarithm to 0 and returned the exact rational `1`.  A tail
 /// that is the whole support is exactly 1 and stays so: `P(X ≤ 3000)` of
 /// `[[3000, 0], [0, 3000]]` (3 001 support points, `a` at its upper end).
@@ -111,7 +111,7 @@ fn fisher_numeric_route_claims_one_only_for_the_whole_support() {
 
 /// The t-tests (behind `anova::pairwise_t_tests`), the rank and correlation
 /// tests and the reliability coefficients reported a zero variance as
-/// `InvalidArgument` up to 0.58, while one-way ANOVA, Tukey's HSD and the
+/// `InvalidArgument` up to 0.57, while one-way ANOVA, Tukey's HSD and the
 /// regressions said `DegenerateData { kind: ZeroVariance }` since 0.57: a
 /// pipeline could not skip a constant group the same way everywhere.  (The
 /// statistics are undefined, `0/0`: scipy returns NaN for each.)
