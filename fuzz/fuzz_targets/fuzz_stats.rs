@@ -1912,7 +1912,17 @@ fn check_moments(d: &Distribution, ctx: &Context, th: &Theory, n: u32, b: &Budge
         };
         let scale = match var_v {
             Some(s2) if s2 > 0.0 => var.sqrt(),
-            _ if n == 1 => ctx.one(),
+            // No variance to standardise by: the first moment against the
+            // mean itself, to an absolute `10⁻⁷` — which only means
+            // something while the mean is of moderate size.  For
+            // `LogNormal(0, 8π²/3)` (mean `2.6·10¹⁵⁰`, a variance beyond the
+            // doubles) it asked the quadrature for `10¹⁵⁰ − 10¹⁵⁰` to
+            // `10⁻⁷`, a relative `10⁻¹⁵⁷`: refused, after 5 s (29 s under
+            // the sanitizer in CI, once a timeout).
+            _ if n == 1 && mu.abs() <= 1e8 => ctx.one(),
+            _ if n == 1 => {
+                return Ok("skip: no finite variance to standardise a large mean by".into());
+            }
             _ => return Ok("skip: no finite variance".into()),
         };
         let (x, z) = (ctx.symbol("_fz_x"), ctx.symbol("_fz_z"));
@@ -2781,6 +2791,34 @@ fn too_long_to_transform(d: &Distribution) -> bool {
     }
 }
 
+/// A lattice of more than this many atoms whose tails the library can only
+/// form as the sums of its masses is not checked: see
+/// [`tails_are_long_sums`].
+const MAX_SUMMED_ATOMS: f64 = 4096.0;
+
+/// A law on a long finite lattice without a closed or exact form of either
+/// tail: every `cdf`, `sf` and quantile probe is then a symbolic sum of
+/// thousands of masses, evaluated term by term (milliseconds each).  Today
+/// that is a hypergeometric law whose `C(N, n)` exceeds the bound of the
+/// exact tails (`2¹⁶` bits): `Hypergeometric(2000000, 1875000, 1875000)`
+/// timed out in the first CI run after the smaller ones were fixed.  A known
+/// open slow path (the tail by a windowed sum with a certified bound); it is
+/// skipped here so that the nightly run reports other findings.
+fn tails_are_long_sums(d: &Distribution) -> bool {
+    if d.kind() == Kind::Continuous {
+        return false;
+    }
+    let support = d.support();
+    let Some(iv) = support.as_interval() else {
+        return false;
+    };
+    if val(&(&iv.upper - &iv.lower)).is_none_or(|span| span < MAX_SUMMED_ATOMS) {
+        return false;
+    }
+    let at = (&iv.lower + d.context().one()).eval();
+    d.family().cdf(&at).is_none() && d.family().sf(&at).is_none()
+}
+
 fn transform_case(r: &mut Src, ctx: &Context, desc: &mut String, b: &Budget) -> Check {
     let dr = draw(r, ctx, false);
     describe(desc, dr.text());
@@ -2790,6 +2828,9 @@ fn transform_case(r: &mut Src, ctx: &Context, desc: &mut String, b: &Budget) -> 
     let discrete = d.kind() != Kind::Continuous;
     if discrete && !bounded(&d) {
         return Ok("skip: infinite lattice".into());
+    }
+    if tails_are_long_sums(&d) {
+        return Ok("skip: a long lattice whose tails are sums of its masses".into());
     }
     if discrete && too_long_to_transform(&d) {
         return Ok("skip: a lattice too long to transform".into());
@@ -2909,7 +2950,7 @@ fn wrap(
                 let Ok(od) = other.build(ctx, true) else {
                     continue;
                 };
-                if od.kind() != base.kind() {
+                if od.kind() != base.kind() || tails_are_long_sums(&od) {
                     continue;
                 }
                 let q = r.range(2, 16);
@@ -2977,6 +3018,11 @@ fn generic(r: &mut Src, ctx: &Context, which: usize, desc: &mut String) -> Check
     let base = dr
         .build(ctx, true)
         .map_err(|e| format!("validation: valid parameters rejected: {e}"))?;
+    if tails_are_long_sums(&base) {
+        return Ok(format!(
+            "{verdict}; skip: a long lattice whose tails are sums of its masses"
+        ));
+    }
     let (d, wrapped, th) = wrap(&base, &dr, r, ctx);
     if !wrapped.is_empty() {
         desc.push_str(&format!(", {wrapped}: {d}"));

@@ -908,10 +908,10 @@ fn dawid_skene_recovers_the_perfect_rater_and_breaks_the_tie() {
     for (p, e) in ds.priors.iter().zip([5.0 / 14.0, 5.0 / 14.0, 4.0 / 14.0]) {
         assert!((p - e).abs() < 1e-9);
     }
-    for c in 0..3 {
-        for l in 0..3 {
+    for (c, row) in ds.confusion[0].iter().enumerate().take(3) {
+        for (l, entry) in row.iter().enumerate().take(3) {
             let expect = if c == l { 1.0 } else { 0.0 };
-            assert!((ds.confusion[0][c][l] - expect).abs() < 1e-9);
+            assert!((entry - expect).abs() < 1e-9);
         }
     }
     let pi1 = [[0.6, 0.4, 0.0], [0.0, 0.8, 0.2], [0.0, 0.0, 1.0]];

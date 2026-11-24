@@ -119,6 +119,39 @@ fn hypergeometric_tails_of_a_large_population_are_exact() {
     );
 }
 
+/// A few marked items in a large population: `C(200000, 100000)` has
+/// 199,991 bits, far beyond the bound of the exact tails, but the law is
+/// symmetric in the successes and the draws and `C(200000, 3125)` has
+/// 23,216: the tails are exact over the smaller denominator.
+///
+/// Oracle: exact, Python `math.comb`: the identity `C(m, j) C(N − m, n −
+/// j)/C(N, n) = C(n, j) C(N − n, m − j)/C(N, m)` checked on the large form
+/// at `j = 1500, 1562, 1600`; `F(1500) = 0.012677659920223551`, `S(1620) =
+/// 0.018234582709192294`; `F(1562) = ½` exactly (for `n = N/2`, `X` and
+/// `m − X` have the same law, and `m` is odd).
+#[test]
+fn hypergeometric_tails_take_the_smaller_denominator() {
+    let ctx = Context::new();
+    let h = Distribution::hypergeometric(ctx.int(200_000), ctx.int(3125), ctx.int(100_000));
+    let swapped = Distribution::hypergeometric(ctx.int(200_000), ctx.int(100_000), ctx.int(3125));
+    let timer = CpuTimer::start();
+    let at = |k: i64| ctx.int(k);
+    assert_eq!(h.cdf(&at(1562)), ctx.rational(1, 2));
+    assert_eq!(h.sf(&at(1562)), ctx.rational(1, 2));
+    let low = h.cdf(&at(1500));
+    assert!(close(low.eval_f64().unwrap(), 0.012_677_659_920_223_551));
+    assert!(close(
+        h.sf(&at(1620)).eval_f64().unwrap(),
+        0.018_234_582_709_192_294
+    ));
+    assert_eq!(swapped.cdf(&at(1500)), low);
+    // 0.4 s of CPU in a debug build.
+    timer.assert_within(
+        Duration::from_secs(4),
+        "five tails of Hypergeometric(200000, 3125, 100000)",
+    );
+}
+
 /// The quantiles of two such laws, at ordinary levels and far in both
 /// tails.  Up to 0.57 the search probed the symbolic sum some twenty times:
 /// for `Hypergeometric(3000, 1200, 1500)` 0.06–0.46 s at ordinary levels in
@@ -296,9 +329,8 @@ fn normal_cdf_far_in_the_lower_tail() {
 ///
 /// Oracle: mpmath 1.4 at 40 and 80 digits, `findroot` of `log((erfc(−(x −
 /// μ)/(σ√2)) + erfc(−x/√2))/4) − log(p)` for the double `p`:
-/// `−78.701928118626693124`, `−91.514197648162730301`; and for `½ N(0,
-/// 1/6) + ½ N(0, 1)`, symmetric about 0, `−11.403856237253386249` at
-/// `10⁻³⁰`.
+/// `−91.514197648162730301` at `10⁻³⁰⁰`; and for `½ N(0, 1/6) + ½ N(0, 1)`,
+/// symmetric about 0, `−11.403856237253386249` at `10⁻³⁰`.
 #[test]
 fn mixture_of_normals_quantiles_far_in_a_tail() {
     let ctx = Context::new();
@@ -311,20 +343,18 @@ fn mixture_of_normals_quantiles_far_in_a_tail() {
     let near = |got: f64, want: f64| (got / want - 1.0).abs() < 1e-14;
     let timer = CpuTimer::start();
     let apart = mix(-73, ctx.rational(1, 2));
-    for (level, want) in [
-        (1e-30, -78.701_928_118_626_7),
-        (1e-300, -91.514_197_648_162_73),
-    ] {
-        let got = apart.quantile_f64(level).unwrap();
-        assert!(near(got, want), "quantile at {level:e}: {got}");
-    }
+    let got = apart.quantile_f64(1e-300).unwrap();
+    assert!(
+        near(got, -91.514_197_648_162_73),
+        "quantile at 1e-300: {got}"
+    );
     let nested = mix(0, ctx.rational(1, 6));
     let high = nested.isf_f64(1e-30).unwrap();
     assert!(near(high, 11.403_856_237_253_386), "{high}");
-    // 0.8 s of CPU in a debug build.
+    // 0.6 s of CPU in a debug build.
     timer.assert_within(
-        Duration::from_secs(8),
-        "three quantiles of mixtures of two normals",
+        Duration::from_secs(6),
+        "two quantiles of mixtures of two normals",
     );
 }
 

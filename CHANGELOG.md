@@ -194,8 +194,8 @@ once.  The slow inputs still open are listed under *Measured*.
   (`(−1)^x`): `solve` returns their principal roots.
 - **The tails of a hypergeometric law are exact rationals** for numeric
   parameters: the integer terms `C(m, j)·C(N − m, n − j)` by their
-  recurrence over the one denominator `C(N, n)` (up to `2¹⁶` bits; beyond,
-  the symbolic sum as before).  Every tail was that sum, evaluated term by
+  recurrence over one denominator, the smaller of `C(N, n)` and `C(N, m)`
+  (up to `2¹⁶` bits; beyond, the symbolic sum as before).  Every tail was that sum, evaluated term by
   term, and the quantile search probes it some twenty times:
   `Hypergeometric(30000, 9375, 28125)` took 3.7 s for `cdf(8789)` (now 9 ms),
   26 s for `sf(9300)` (14 ms), 7.4 s for the median and 33 s for a quartile
@@ -223,7 +223,15 @@ once.  The slow inputs still open are listed under *Measured*.
   reported the correct cf of `Uniform(−116, −983/9)`: the density formula,
   a constant, was tested alone); lattices of more than 20,000 atoms are
   not transformed into tables there (one certified evaluation per atom;
-  `√X` of a 100,000-sided die timed out in 15 nightly runs).
+  `√X` of a 100,000-sided die timed out in 15 nightly runs), and a lattice
+  of more than 4,096 atoms whose tails the library can only sum mass by
+  mass is skipped (a hypergeometric law beyond the exact bound:
+  `Hypergeometric(2000000, 1875000, 1875000)` timed out in the first CI
+  run after the smaller ones were fixed).  Both are open slow paths, listed
+  under *Measured*.  Without a finite variance to standardise by, the first
+  moment is checked against the mean to an absolute `10⁻⁷` only while the
+  mean is at most `10⁸`: for `LogNormal(0, 8π²/3)` the harness asked the
+  quadrature for `10¹⁵⁰ − 10¹⁵⁰` to `10⁻⁷`.
 
 ### Changed
 
@@ -254,10 +262,17 @@ once.  The slow inputs still open are listed under *Measured*.
   A manual run no longer cancels the nightly one.
 - Version labels in comments and rustdoc written during development ("up
   to 0.58", "since 0.59") name the releases they describe (0.57, 0.58).
+- Clean under the lints of Rust 1.100 (CI's stable since 2026-11-09):
+  seven index loops are iterators (`clippy::needless_range_loop`), `|x|`
+  inside the tables of two module docs is escaped
+  (`rustdoc::invalid_markdown_table`), two links in `symplex-build` lose a
+  redundant target, and `units/si.rs` has the macro arguments one per line
+  (rustfmt; the four UI snapshots that quote those lines are regenerated
+  on the pinned 1.95.0).
 
 ### Measured
 
-- `tests/v36/` (0.49–0.58): 77 files.  nextest 15,032 tests (14 skipped),
+- `tests/v36/` (0.49–0.58): 77 files.  nextest 15,033 tests (14 skipped),
   doctests 1,362 — run on a 64-core x86-64 machine; the full suite also passes
   with 56 extra busy processes on the host.
 - Rubi harness: 30,768 verified (+8), 115 real_verified, 0 wrong; self-test
@@ -278,13 +293,13 @@ once.  The slow inputs still open are listed under *Measured*.
   0 unexplained failures.
 - Fuzzing (64-core x86-64 machine, all 13 targets, two forks each, 10 s and
   4 GB limits, debug assertions as CI builds them) on the release code:
-  `fuzz_numdist` 68,824,337 inputs, `fuzz_refine` 14,373,390, `fuzz_lambertw`
-  2,512,729, `fuzz_parser` 1,632,155, `fuzz_exact_matrix` 188,069,
-  `fuzz_stats` 172,283, `fuzz_eigenvects` 171,409, `fuzz_calculus` 41,181,
-  `fuzz_evalf` 29,992, `fuzz_roundtrip` 27,113, `fuzz_poly` 17,597,
-  `fuzz_simplify` 4,345, `fuzz_integrate` 3,104: 0 crashes, 0 timeouts, 0
+  `fuzz_numdist` 66,501,548 inputs, `fuzz_refine` 13,646,010, `fuzz_lambertw`
+  2,411,524, `fuzz_parser` 1,179,713, `fuzz_exact_matrix` 174,920,
+  `fuzz_stats` 164,761, `fuzz_eigenvects` 161,943, `fuzz_calculus` 44,521,
+  `fuzz_evalf` 27,626, `fuzz_poly` 17,115, `fuzz_roundtrip` 14,834,
+  `fuzz_simplify` 3,713, `fuzz_integrate` 2,093: 0 crashes, 0 timeouts, 0
   out-of-memory.  `fuzz_stats` built as CI builds it (AddressSanitizer), 32
-  forks for ten minutes with a 15 s limit: 343,828 inputs, none failing.
+  forks for ten minutes with a 15 s limit: 271,902 inputs, none failing.
 - The nightly CI runs on the tree before the last fixes failed on every
   night from 2026-10-18 to 2026-11-23 (37 runs; 29 of the 30 whose inputs
   survive in `fuzz_stats`).  Their 12 distinct inputs were replayed: no
@@ -293,14 +308,16 @@ once.  The slow inputs still open are listed under *Measured*.
   0.8 s and 1.0 s), the tails of the table (11.5 s → 5.5 s; the harness now
   skips such tables), the false report.  **Open, slow and right** (seconds
   in the fuzz build; under CI's sanitizer they can pass the 30 s limit when
-  the fuzzer finds them again): the quadrature of a moment of
-  `LogNormal(0, 8π²/3)` refuses after 5 s; `limit(|(x − 1)^tanh(x − 1)|^(x −
+  the fuzzer finds them again): `integrate_numeric` takes 5 s to refuse
+  `∫ (x − μ) f(x) dx` for `LogNormal(0, 8π²/3)`, a cancellation at `10¹⁵⁰`
+  (the harness no longer asks for it); `limit(|(x − 1)^tanh(x − 1)|^(x −
   1), x, 1, −)` refuses after 5.6 s; `series(atanh(π^x + x^(3/2)), x, 1, 4)`
   takes 6.7 s; `polylog(−3/2, −1 + 10⁻⁷⁰)` 5.1 s, `floor(erfc √2 − 1 + erf
   √2)` 7 s, `sinh(W(−1/e + 3·10⁻³⁰⁰))` 3.8 s, `zeta(−2 + 10⁻³⁰⁰)` 2.7 s; a
   finite lattice of 100,000 atoms takes 1.4 s to transform (one certified
-  evaluation per atom), and a hypergeometric law whose `C(N, n)` exceeds
-  `2¹⁶` bits still sums its masses symbolically.
+  evaluation per atom), and a hypergeometric law whose `C(N, n)` and
+  `C(N, m)` both exceed `2¹⁶` bits still sums its masses symbolically
+  (minutes for a quantile of `Hypergeometric(2000000, 1875000, 1875000)`).
 
 ## [0.57.0] - 2026-10-16
 

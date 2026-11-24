@@ -22,7 +22,10 @@ help: the following other types implement trait `std::ops::Add<Rhs>`
 ...
   | / define_quantity!(
   | |     /// Mass \[kg\].
-  | |     Mass, MassDim, "Mass", "kg"
+  | |     Mass,
+  | |     MassDim,
+  | |     "Mass",
+  | |     "kg"
   | | );
   | |_- in this macro invocation
   = note: this error originates in the macro `define_quantity` (in Nightly builds, run with -Z macro-backtrace for more info)

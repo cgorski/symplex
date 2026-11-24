@@ -60,7 +60,12 @@ then replay each artifact to read its message.
 table (`MAX_TRANSFORMED_ATOMS`): the table costs one certified evaluation
 per atom to merge equal images, about 1.4 s for 100,000 atoms in a release
 build and past the nightly timeout under the sanitizer.  Larger tables are
-covered by the timed tests in `tests/v36/`.
+covered by the timed tests in `tests/v36/`.  It also skips a lattice of more
+than 4,096 atoms whose tails the library can only form as sums of its
+masses (`tails_are_long_sums`: today a hypergeometric law whose `C(N, n)`
+and `C(N, m)` both exceed `2¹⁶` bits).  Both are known slow paths, kept out
+of the nightly run so that it reports new findings; remove each skip with
+its fix.
 
 The nightly job uploads a failing input before decoding it and prints it
 as base64 in the log (`base64 -d` gives the file back); every replay there

@@ -3631,14 +3631,14 @@ mod tests {
         for (s, n) in e.score.iter().zip(numeric_gradient(&ll, &at, 1e-6)) {
             assert!((s - n).abs() < 1e-5, "score {s} vs numeric {n}");
         }
-        for r in 0..9 {
+        for (r, info_r) in e.info.iter().enumerate().take(9) {
             let score_r = |b: &[f64]| mnlogit_evaluate(&x, &y, 4, b).score[r];
             let row = numeric_gradient(&score_r, &at, 1e-6);
             for (s, numeric) in row.iter().enumerate() {
                 assert!(
-                    (e.info[r][s] + numeric).abs() < 1e-4,
+                    (info_r[s] + numeric).abs() < 1e-4,
                     "info[{r}][{s}] = {} vs −∂²ℓ = {}",
-                    e.info[r][s],
+                    info_r[s],
                     -numeric
                 );
             }

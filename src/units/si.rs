@@ -369,7 +369,10 @@ macro_rules! define_quantity {
 
 define_quantity!(
     /// Dimensionless quantity (ratios, pure numbers).
-    Dimensionless, DimensionlessDim, "Dimensionless", "1"
+    Dimensionless,
+    DimensionlessDim,
+    "Dimensionless",
+    "1"
 );
 
 define_quantity!(
@@ -384,27 +387,42 @@ define_quantity!(
 
 define_quantity!(
     /// Length \[m\].
-    Length, LengthDim, "Length", "m"
+    Length,
+    LengthDim,
+    "Length",
+    "m"
 );
 
 define_quantity!(
     /// Mass \[kg\].
-    Mass, MassDim, "Mass", "kg"
+    Mass,
+    MassDim,
+    "Mass",
+    "kg"
 );
 
 define_quantity!(
     /// Time \[s\].
-    Time, TimeDim, "Time", "s"
+    Time,
+    TimeDim,
+    "Time",
+    "s"
 );
 
 define_quantity!(
     /// Electric current \[A\].
-    Current, CurrentDim, "Current", "A"
+    Current,
+    CurrentDim,
+    "Current",
+    "A"
 );
 
 define_quantity!(
     /// Thermodynamic temperature \[K\].
-    Temperature, TemperatureDim, "Temperature", "K"
+    Temperature,
+    TemperatureDim,
+    "Temperature",
+    "K"
 );
 
 // ---------------------------------------------------------------------------
@@ -413,12 +431,18 @@ define_quantity!(
 
 define_quantity!(
     /// Area \[m²\].
-    Area, AreaDim, "Area", "m²"
+    Area,
+    AreaDim,
+    "Area",
+    "m²"
 );
 
 define_quantity!(
     /// Volume \[m³\].
-    Volume, VolumeDim, "Volume", "m³"
+    Volume,
+    VolumeDim,
+    "Volume",
+    "m³"
 );
 
 // ---------------------------------------------------------------------------
@@ -427,22 +451,34 @@ define_quantity!(
 
 define_quantity!(
     /// Velocity \[m/s\].
-    Velocity, VelocityDim, "Velocity", "m/s"
+    Velocity,
+    VelocityDim,
+    "Velocity",
+    "m/s"
 );
 
 define_quantity!(
     /// Acceleration \[m/s²\].
-    Acceleration, AccelerationDim, "Acceleration", "m/s²"
+    Acceleration,
+    AccelerationDim,
+    "Acceleration",
+    "m/s²"
 );
 
 define_quantity!(
     /// Angular velocity \[rad/s\].
-    AngularVelocity, AngularVelocityDim, "AngularVelocity", "rad/s"
+    AngularVelocity,
+    AngularVelocityDim,
+    "AngularVelocity",
+    "rad/s"
 );
 
 define_quantity!(
     /// Angular acceleration \[rad/s²\].
-    AngularAcceleration, AngularAccelerationDim, "AngularAcceleration", "rad/s²"
+    AngularAcceleration,
+    AngularAccelerationDim,
+    "AngularAcceleration",
+    "rad/s²"
 );
 
 define_quantity!(
@@ -457,12 +493,18 @@ define_quantity!(
 
 define_quantity!(
     /// Force \[N = kg·m/s²\].
-    Force, ForceDim, "Force", "N"
+    Force,
+    ForceDim,
+    "Force",
+    "N"
 );
 
 define_quantity!(
     /// Energy \[J = kg·m²/s²\].
-    Energy, EnergyDim, "Energy", "J"
+    Energy,
+    EnergyDim,
+    "Energy",
+    "J"
 );
 
 define_quantity!(
@@ -473,37 +515,58 @@ define_quantity!(
 
 define_quantity!(
     /// Power \[W = kg·m²/s³\].
-    Power, PowerDim, "Power", "W"
+    Power,
+    PowerDim,
+    "Power",
+    "W"
 );
 
 define_quantity!(
     /// Momentum \[kg·m/s\].
-    Momentum, MomentumDim, "Momentum", "kg·m/s"
+    Momentum,
+    MomentumDim,
+    "Momentum",
+    "kg·m/s"
 );
 
 define_quantity!(
     /// Angular momentum \[kg·m²/s\].
-    AngularMomentum, AngularMomentumDim, "AngularMomentum", "kg·m²/s"
+    AngularMomentum,
+    AngularMomentumDim,
+    "AngularMomentum",
+    "kg·m²/s"
 );
 
 define_quantity!(
     /// Moment of inertia \[kg·m²\].
-    MomentOfInertia, MomentOfInertiaDim, "MomentOfInertia", "kg·m²"
+    MomentOfInertia,
+    MomentOfInertiaDim,
+    "MomentOfInertia",
+    "kg·m²"
 );
 
 define_quantity!(
     /// Pressure \[Pa = kg/(m·s²)\].
-    Pressure, PressureDim, "Pressure", "Pa"
+    Pressure,
+    PressureDim,
+    "Pressure",
+    "Pa"
 );
 
 define_quantity!(
     /// Spring stiffness \[N/m\].
-    Stiffness, StiffnessDim, "Stiffness", "N/m"
+    Stiffness,
+    StiffnessDim,
+    "Stiffness",
+    "N/m"
 );
 
 define_quantity!(
     /// Viscous damping coefficient \[N·s/m\].
-    Damping, DampingDim, "Damping", "N·s/m"
+    Damping,
+    DampingDim,
+    "Damping",
+    "N·s/m"
 );
 
 // ---------------------------------------------------------------------------
@@ -512,32 +575,50 @@ define_quantity!(
 
 define_quantity!(
     /// Electric potential \[V\].
-    Voltage, VoltageDim, "Voltage", "V"
+    Voltage,
+    VoltageDim,
+    "Voltage",
+    "V"
 );
 
 define_quantity!(
     /// Electrical resistance \[Ω\].
-    Resistance, ResistanceDim, "Resistance", "Ω"
+    Resistance,
+    ResistanceDim,
+    "Resistance",
+    "Ω"
 );
 
 define_quantity!(
     /// Inductance \[H\].
-    Inductance, InductanceDim, "Inductance", "H"
+    Inductance,
+    InductanceDim,
+    "Inductance",
+    "H"
 );
 
 define_quantity!(
     /// Capacitance \[F\].
-    Capacitance, CapacitanceDim, "Capacitance", "F"
+    Capacitance,
+    CapacitanceDim,
+    "Capacitance",
+    "F"
 );
 
 define_quantity!(
     /// Electric charge \[C\].
-    Charge, ChargeDim, "Charge", "C"
+    Charge,
+    ChargeDim,
+    "Charge",
+    "C"
 );
 
 define_quantity!(
     /// Magnetic flux \[Wb\].
-    MagneticFlux, MagneticFluxDim, "MagneticFlux", "Wb"
+    MagneticFlux,
+    MagneticFluxDim,
+    "MagneticFlux",
+    "Wb"
 );
 
 // ===========================================================================

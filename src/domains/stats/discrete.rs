@@ -1289,20 +1289,32 @@ fn binomial_coefficient(top: u64, r: u64) -> BigInt {
 /// — each step a product and an exact quotient by small factors — from
 /// `T_lo`, which is one binomial (`C(N−m, n)` at `lo = 0`, `C(m, lo)` where
 /// the draws exhaust the failures), over the one denominator `C(N, n)`,
-/// the sum of every `T_j` (Vandermonde).  As [`binomial_mass`] does for a
+/// the sum of every `T_j` (Vandermonde).  The law is symmetric in the
+/// successes and the draws — `C(m, j) C(N−m, n−j)/C(N, n) = C(n, j) C(N−n,
+/// m−j)/C(N, m)` — and the smaller of the two denominators is taken (a few
+/// marked items in a large population keep a small `C(N, m)` whatever the
+/// number of draws).  As [`binomial_mass`] does for a
 /// binomial; `None` past its bounds ([`BINOMIAL_MASS_MAX_BITS`] for
-/// `C(N, n)`, [`BINOMIAL_MASS_BUDGET`] for the steps), where the generic
-/// route keeps the sum symbolic.
+/// the denominator, [`BINOMIAL_MASS_BUDGET`] for the steps), where the
+/// generic route keeps the sum symbolic.
 fn hypergeometric_mass(shape: &HypergeometricShape, a: u64, b: u64) -> Option<Q> {
-    let (big_n, m, n) = (shape.population, shape.successes, shape.draws);
+    let big_n = shape.population;
     let (lo, hi) = (shape.lowest(), shape.highest());
     let (a, b) = (a.max(lo), b.min(hi));
     if a > b {
         return Some(Q::zero());
     }
+    // `n`: the one of the successes and the draws with the smaller
+    // `C(N, ·)`; `m` the other.  The support is the same.
+    let across = |x: u64| x.min(big_n - x);
+    let (m, n) = if across(shape.successes) < across(shape.draws) {
+        (shape.draws, shape.successes)
+    } else {
+        (shape.successes, shape.draws)
+    };
     // C(N, n) ≤ (e·N/r)^r for r = min(n, N − n), and e·N/r < 4·⌈N/r⌉: at
     // most r·(2 + ⌈log₂⌈N/r⌉⌉) bits, which bounds every term too.
-    let r = n.min(big_n - n);
+    let r = across(n);
     let size = if r == 0 {
         1
     } else {
@@ -1310,7 +1322,7 @@ fn hypergeometric_mass(shape: &HypergeometricShape, a: u64, b: u64) -> Option<Q>
         let log = u64::from(u64::BITS - (ratio - 1).leading_zeros());
         r.saturating_mul(log + 2)
     };
-    let failures = shape.failures();
+    let failures = big_n - m;
     // The steps: the first term's binomial, the walk to `b`, `C(N, n)`.
     let first = if lo == 0 {
         n.min(failures - n)

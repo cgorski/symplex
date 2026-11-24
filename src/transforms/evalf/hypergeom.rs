@@ -10,7 +10,7 @@
 //! | function | value |
 //! |---|---|
 //! | `legendre(ν, x)` | `₂F₁(−ν, ν + 1; 1; (1 − x)/2)` |
-//! | `chebyshev_t(ν, x)` | `cos(ν·acos x)` (`|x| ≤ 1`), `cosh(ν·acosh x)` (`x > 1`) |
+//! | `chebyshev_t(ν, x)` | `cos(ν·acos x)` (`\|x\| ≤ 1`), `cosh(ν·acosh x)` (`x > 1`) |
 //! | `chebyshev_u(ν, x)` | `sin((ν + 1)θ)/sin θ`, `θ = acos x`; `sinh((ν + 1)a)/sinh a`, `a = acosh x` |
 //! | `gegenbauer(ν, α, x)` | `Γ(ν + 2α)/(Γ(ν + 1)Γ(2α))·₂F₁(−ν, ν + 2α; α + ½; (1 − x)/2)` |
 //! | `jacobi(ν, α, β, x)` | `Γ(ν + α + 1)/(Γ(ν + 1)Γ(α + 1))·₂F₁(−ν, ν + α + β + 1; α + 1; (1 − x)/2)` |

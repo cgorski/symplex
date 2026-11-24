@@ -2075,8 +2075,8 @@ impl Matrix {
             return Ok(self.ctx().from_ratio(sum));
         }
         let mut acc = self.rows[0][0].clone();
-        for i in 1..self.nrows {
-            acc += &self.rows[i][i];
+        for (i, row) in self.rows.iter().enumerate().take(self.nrows).skip(1) {
+            acc += &row[i];
         }
         Ok(acc)
     }
@@ -3394,9 +3394,9 @@ impl Matrix {
         for i in 0..self.nrows {
             for k in 0..other.nrows {
                 let mut row = Vec::with_capacity(self.ncols * other.ncols);
-                for j in 0..self.ncols {
-                    for l in 0..other.ncols {
-                        row.push(&self.rows[i][j] * &other.rows[k][l]);
+                for a in self.rows[i].iter().take(self.ncols) {
+                    for b in other.rows[k].iter().take(other.ncols) {
+                        row.push(a * b);
                     }
                 }
                 rows.push(row);
@@ -4995,11 +4995,11 @@ impl Matrix {
             if i > 0 {
                 s.push_str(r" \\ ");
             }
-            for j in 0..self.ncols {
+            for (j, entry) in self.rows[i].iter().enumerate().take(self.ncols) {
                 if j > 0 {
                     s.push_str(" & ");
                 }
-                s.push_str(&self.rows[i][j].to_latex());
+                s.push_str(&entry.to_latex());
             }
         }
         s.push_str(r" \end{bmatrix}");
@@ -5570,8 +5570,8 @@ impl Matrix {
     pub fn vec(&self) -> Matrix {
         let mut entries = Vec::with_capacity(self.nrows * self.ncols);
         for j in 0..self.ncols {
-            for i in 0..self.nrows {
-                entries.push(self.rows[i][j].clone());
+            for row in self.rows.iter().take(self.nrows) {
+                entries.push(row[j].clone());
             }
         }
         // `nrows · ncols` ≥ 1 entries.

@@ -297,7 +297,7 @@ impl MathBox {
         };
 
         let mut lines = Vec::with_capacity(h);
-        for i in 0..h {
+        for (i, line) in inner.lines.iter().enumerate().take(h) {
             let lc = if i == 0 {
                 top_l
             } else if i == h - 1 {
@@ -312,7 +312,7 @@ impl MathBox {
             } else {
                 mid_r
             };
-            lines.push(format!("{}{}{}", lc, inner.lines[i], rc));
+            lines.push(format!("{}{}{}", lc, line, rc));
         }
 
         MathBox {

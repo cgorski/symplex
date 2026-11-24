@@ -587,7 +587,7 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`](symplex::errors::SymplexError::InvalidArgument)
+/// [`SymplexError::InvalidArgument`]
 /// for an empty name (a configuration error; [`Context::symbol`] would
 /// panic on it).
 fn joint_symbol(ctx: &Context, name: &str) -> Result<Ex, symplex::errors::SymplexError> {
@@ -608,7 +608,7 @@ fn joint_symbol(ctx: &Context, name: &str) -> Result<Ex, symplex::errors::Symple
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`](symplex::errors::SymplexError::InvalidArgument)
+/// [`SymplexError::InvalidArgument`]
 /// for a `NaN` or infinite entry: a configuration error (a `NaN`, which
 /// TOML can spell `nan`, used to panic here).
 fn float_to_expr(ctx: &Context, v: f64) -> Result<Ex, symplex::errors::SymplexError> {
