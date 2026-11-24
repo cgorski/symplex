@@ -120,6 +120,8 @@ mod test_foundations;
 mod test_fu;
 #[path = "unit/test_full_simplify.rs"]
 mod test_full_simplify;
+#[path = "unit/test_func_names.rs"]
+mod test_func_names;
 #[path = "unit/test_gaussian_laplace.rs"]
 mod test_gaussian_laplace;
 #[path = "unit/test_gc_plus.rs"]
