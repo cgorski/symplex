@@ -90,6 +90,39 @@ impl Context {
         }
     }
 
+    /// Frees the numeric constants (`π`, `e`, `ln 2`, `ln 10`) that numeric
+    /// evaluation keeps for the calling thread.
+    ///
+    /// `eval_f64`, `eval_decimal` and the other numeric evaluations keep
+    /// these constants per thread, at the highest precision an evaluation
+    /// on the thread has needed, so that the next evaluation does not
+    /// compute them again: `π` to a million digits takes seconds the first
+    /// time and a copy afterwards.  The memory is proportional to that
+    /// precision — a few kilobytes at the default
+    /// [`EvalConfig::max_evalf_precision`], 4 MB for each value kept after
+    /// an evaluation to ten million digits — and is released when the
+    /// thread ends, or by this call.  A program that evaluates once at a
+    /// very high precision and then keeps running can call it afterwards.
+    ///
+    /// Results never depend on the cache: the constants are correctly
+    /// rounded to the precision an evaluation asks for, whether they were
+    /// kept or are computed anew.
+    ///
+    /// The cache belongs to the thread, not to a context, so this is an
+    /// associated function: it affects every context used on the calling
+    /// thread and no other thread.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let first = ctx.pi().eval_decimal(50).unwrap();
+    /// Context::clear_numeric_cache();
+    /// assert_eq!(ctx.pi().eval_decimal(50).unwrap(), first);
+    /// ```
+    pub fn clear_numeric_cache() {
+        crate::base::bigfloat::clear_consts();
+    }
+
     /// Helper — wrap an [`ExprId`] into a user-facing [`Ex`](crate::api::expr::Ex) handle.
     #[inline]
     fn make_ex(&self, id: ExprId) -> crate::api::expr::Ex {

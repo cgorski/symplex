@@ -241,15 +241,7 @@ fn euler_product(
 /// it (`None` otherwise: the value was not known well enough).
 fn nearest_integer(x: &BigFloat) -> Option<BigInt> {
     let (words, _, _, exponent, _) = x.as_raw_parts()?;
-    let mut digits: Vec<u32> = Vec::with_capacity(words.len() * 2);
-    for &w in words {
-        let mut w = w as u128;
-        for _ in 0..WORD_BIT_SIZE / 32 {
-            digits.push((w & 0xFFFF_FFFF) as u32);
-            w >>= 32;
-        }
-    }
-    let mantissa = BigUint::new(digits);
+    let mantissa = crate::base::bigfloat::mantissa_to_biguint(words);
     // x = mantissa · 2^(exponent − len).
     let len = (words.len() * WORD_BIT_SIZE) as i64;
     let shift = len - i64::from(exponent);

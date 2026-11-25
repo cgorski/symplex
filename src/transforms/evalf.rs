@@ -242,11 +242,10 @@ fn evalf_with(
         }
     }
 
-    let mut cc = Consts::new().map_err(|e| {
-        SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
+    let adaptive = with_eval_consts(digits, |cc| {
+        evaluate_adaptive(arena, expr, digits, search, cc)
     })?;
-
-    match evaluate_adaptive(arena, expr, digits, search, &mut cc)? {
+    match adaptive {
         Adaptive::Settled(result, _) => format_complex(&result, digits),
         Adaptive::PartBelow { imaginary, .. } => Err(part_underflow_error(imaginary)),
         Adaptive::Underflow(_) | Adaptive::Beyond(_) => Err(underflow_error()),
@@ -302,7 +301,7 @@ pub(crate) fn f64_quadrature_tail_trusted(
     if low.is_finite() && high.is_finite() {
         return true;
     }
-    with_f64_consts(|cc| {
+    with_eval_consts(F64_DIGITS, |cc| {
         Ok((high != f64::INFINITY
             || improper::f64_tail_trusted(arena, body, var, true, compiled, allowed, cc))
             && (low != f64::NEG_INFINITY
@@ -2871,41 +2870,28 @@ struct Zeroed {
 /// precision [`evalf_f64`] and [`evalf_complex64`] evaluate at.
 pub(crate) const F64_DIGITS: u32 = 16;
 
-thread_local! {
-    /// The constants cache of the `f64` route, kept per thread.
-    ///
-    /// `Consts::new()` alone costs ~170 µs and a cold cache recomputes π
-    /// and `ln 2` on every `sin`/`exp` (`exp(2)` at 128 bits: 475 µs cold,
-    /// 2.5 µs warm), which dominated every `eval_f64`.  The route always
-    /// evaluates at the same precision, so the cache stays small, and
-    /// astro-float rounds each constant correctly to the precision asked
-    /// for, so a warm cache returns the same bits a cold one would.
-    static F64_CONSTS: std::cell::RefCell<Option<Consts>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Run `f` with this thread's constants cache, creating it on first use.
+/// Run `f` with this thread's constants cache (`π`, `e`, `ln 2`, `ln 10`)
+/// for an evaluation to `digits` digits: the one cache every route of the
+/// evaluator shares — `eval_f64`, `eval_decimal` and the crate's own zero
+/// and sign tests.
 ///
-/// The cache is taken out of its slot for the duration of `f` and put back
-/// afterwards, so a nested evaluation on the same thread (a definite
-/// integral's integrand, say) finds the slot empty and simply uses a fresh
-/// cache instead of panicking on a double borrow.
-fn with_f64_consts<T>(
+/// `Consts::new()` alone costs ~170 µs and a cold cache recomputes `π` and
+/// `ln 2` on every `sin`/`exp` (`exp(2)` at 128 bits: 475 µs cold, 2.5 µs
+/// warm), which dominated every `eval_f64` until that route kept its
+/// cache; `eval_decimal` created a new one per call until 0.60.1, so `π`
+/// to a million digits took 3.3 s every time it was asked for (issue #8).
+/// `crate::base::bigfloat::with_consts` says why a warm cache returns the
+/// same bits as a cold one, how the caches are kept by band of working
+/// precision (a 16-digit evaluation never copies constants a
+/// million-digit one left behind), what a nested evaluation finds, and
+/// what memory stays in use (`Context::clear_numeric_cache` frees it).
+fn with_eval_consts<T>(
+    digits: u32,
     f: impl FnOnce(&mut Consts) -> Result<T, SymplexError>,
 ) -> Result<T, SymplexError> {
-    let mut cc = match F64_CONSTS.with(|slot| slot.borrow_mut().take()) {
-        Some(cc) => cc,
-        None => Consts::new().map_err(|e| {
-            SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
-        })?,
-    };
-    let out = f(&mut cc);
-    F64_CONSTS.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(cc);
-        }
-    });
-    out
+    crate::base::bigfloat::with_consts(working_precision(digits), f).map_err(|e| {
+        SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
+    })?
 }
 
 /// Evaluate `expr` to an arbitrary-precision complex value at the working
@@ -2974,7 +2960,9 @@ fn evalf_adaptive_value(
         }
     }
 
-    with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, search, cc))
+    with_eval_consts(digits, |cc| {
+        evaluate_adaptive(arena, expr, digits, search, cc)
+    })
 }
 
 /// [`evalf_value`] for the zero and sign tests of the rest of the crate

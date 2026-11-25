@@ -1,0 +1,67 @@
+# Review E's rename table (REPORT §2.3.3, API_1.0.md §3.4 "Core methods (E)") as rewrite rules.  Hand-written; edit freely.
+# Columns: id, shape, old, new, extra, units, note
+#   shape   method        `.old(` -> `.new(`   (and `Type::old(` when written as a path call)
+#           path:<Type>   `<Type>::old(` -> `<Type>::new(`   (only with that type written before `::`)
+#           flag          `.old(true)` -> `.<extra>()`, `.old(false)` -> `.new()`; anything but a literal is listed
+#           recv-first    `<Type>::old(a, rest..)` -> `a.new(rest..)`      (extra = the type)
+#           ctx-first     `<Type>::old(&ctx, rest..)` -> `ctx.new(rest..)` (extra = the type)
+#           append-arg    `.old(args)` -> `.new(args, <extra>)`            (extra = `text|import path`)
+#           ineq          `.old(v)` -> `.<extra>(0).new(v)`                (extra = gt / ge / lt / le)
+#           manual        found and listed, never rewritten
+#   units   same = the 31 unit copies of the method get the same new name;
+#           keep = the unit copies keep the old name at 1.0 (policy X): the rule refuses in a file that uses units;
+#           -    = no unit type has a method of this name
+id	shape	old	new	extra	units	note
+subs.i64	method	subs_i64	subs		-	E N-1 (708 sites); also Equation::subs_i64. Needs `impl ToEx` on the value (V2b)
+subs.map-i64	method	subs_map_i64	subs_map		-	E N-1
+subs.map-with	method	subs_map_with	subs_map		-	E N-1
+core.sum-of	ctx-first	sum_of	sum	Ex	-	E N-1: Ex::sum_of(&ctx, it) -> ctx.sum(it)
+core.product-of	ctx-first	product_of	product	Ex	-	E N-1
+core.min-of	ctx-first	min_of	min	Ex	-	E N-1
+core.max-of	ctx-first	max_of	max	Ex	-	E N-1
+core.nsimplify	method	nsimplify	simplify_numeric		-	E N-1
+core.nsimplify-constants	method	nsimplify_with_constants	simplify_numeric_with_constants		-	E N-1
+core.rewrite-once	append-arg	rewrite_once	rewrite_with	&RewriteOpts::single_pass()|symplex::rules::RewriteOpts	-	E N-1
+core.to-c-fn	method	to_c_fn_with_options	to_c_fn_with		-	E N-2
+core.to-rust-fn	method	to_rust_fn_with_options	to_rust_fn_with		-	E N-2; also Matrix::to_rust_fn_with_options
+core.min-with	method	min_with	min		-	E N-2
+core.max-with	method	max_with	max		-	E N-2
+core.eval-f64-with	method	eval_f64_with	eval_f64_at		same	E N-2, Part 4 C-28
+core.expand-log-with	flag	expand_log_with	expand_log	expand_log_forced	-	E N-3
+core.log-combine-with	flag	log_combine_with	combine_logs	combine_logs_forced	-	E N-3
+core.expand-power-base	flag	expand_power_base	expand_power_base	expand_power_base_forced	-	E N-3
+core.expand-power-exp	flag	expand_power_exp	expand_power_exp	expand_power_exp_forced	-	E N-3
+core.powdenest	flag	powdenest	denest_powers	denest_powers_forced	-	E N-3, N-4
+core.piecewise-simplify	method	piecewise_simplify	simplify_piecewise		-	E N-4
+core.log-combine	method	log_combine	combine_logs		keep	E N-4; unit copies: F:U-MIRROR@1.x
+core.trig-combine	method	trig_combine	combine_trig		keep	E N-4; unit copies: F:U-MIRROR@1.x
+core.sqrtdenest	method	sqrtdenest	denest_sqrt		-	E N-4
+core.signsimp	method	signsimp	simplify_sign		-	E N-4
+core.rcollect	method	rcollect	collect_recursive		-	E N-4
+core.definite-integral-node	method	definite_integral_node	formal_integrate_definite		-	E N-5
+core.symbolic-sum	recv-first	symbolic_sum	formal_summation	Ex	-	E N-5: Ex::symbolic_sum(&b, &k, &lo, &hi) -> b.formal_summation(&k, &lo, &hi)
+core.symbolic-product	recv-first	symbolic_product	formal_product_over	Ex	-	E N-5
+core.as-ex	method	as_ex	to_ex		-	E N-6 (BoolEx, SetEx). Apply BEFORE any test calls the new Symbol::as_ex (E §3.3)
+core.to-expr	method	to_expr	to_ex		-	E N-6 (Equation)
+core.rule-new-fn	path:Rule	new_fn	from_fn		-	E N-6
+core.rule-new-with-guard	path:Rule	new_with_guard	with_guard		-	E N-6
+core.rational-str	method	rational_str	parse_rational		-	E N-6 (Context)
+core.decimal-str	method	decimal_str	parse_decimal		-	E N-6 (Context)
+core.try-symbol	method	try_symbol	parse_symbol		-	E part 1 / C-16 (Context)
+core.solve-gt	ineq	solve_gt	solve_as_set	gt	-	E N-1, Part 4 C-14 (owner question Q-N2)
+core.solve-ge	ineq	solve_ge	solve_as_set	ge	-	as solve_gt
+core.solve-lt	ineq	solve_lt	solve_as_set	lt	-	as solve_gt
+core.solve-le	ineq	solve_le	solve_as_set	le	-	as solve_gt
+core.try-solve-gt	ineq	try_solve_gt	try_solve_as_set	gt	-	as solve_gt
+core.try-solve-ge	ineq	try_solve_ge	try_solve_as_set	ge	-	as solve_gt
+core.try-solve-lt	ineq	try_solve_lt	try_solve_as_set	lt	-	as solve_gt
+core.try-solve-le	ineq	try_solve_le	try_solve_as_set	le	-	as solve_gt
+core.codegen-options	type	CodegenOptions	CodegenOpts		-	E T-1: the type name, wherever it is written as a path segment
+core.expr-type	manual	expr_type	kind		-	E §3.5: Function, Constant, Set, Unevaluated do not map to one ExprKind
+core.expr-type-name	manual-type	ExprType	ExprKind		-	E §3.5
+core.solve-for	manual	solve_for	try_solve_as_set		-	BoolEx::solve_for only; Equation::solve_for keeps its name and the text does not say which
+core.rewrite-with-traced	manual	rewrite_with_traced	rewrite_traced		-	the surviving rewrite_traced takes (rules, opts): the two old forms differ in arity
+core.rewrite-traced	manual	rewrite_traced	rewrite_traced		-	today (rules); at 1.0 (rules, opts)
+core.solve-numeric	manual	solve_numeric	solve_numeric_with		-	E N-7: four positional arguments become (var, x0) or an options value
+core.assume	manual	assume	symbol_with		-	E §3.1: the assumption moves into the constructor call
+core.args	manual	args	terms		-	E §3.5: Vec<AnyExpr>; terms() / factors() where the children are numeric

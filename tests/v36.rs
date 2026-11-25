@@ -130,8 +130,24 @@ mod v36_s17a_transforms;
 mod v36_s17b_sets;
 #[path = "v36/v36_s17b_spectrum.rs"]
 mod v36_s17b_spectrum;
+#[path = "v36/v36_s17c_review_findings.rs"]
+mod v36_s17c_review_findings;
 #[path = "v36/v36_s17n1_zeros.rs"]
 mod v36_s17n1_zeros;
+#[path = "v36/v36_s18_issue8.rs"]
+mod v36_s18_issue8;
+#[path = "v36/v36_s18b_numeric.rs"]
+mod v36_s18b_numeric;
+#[path = "v36/v36_s18c_matrices.rs"]
+mod v36_s18c_matrices;
+#[path = "v36/v36_s18d_calculus.rs"]
+mod v36_s18d_calculus;
+#[path = "v36/v36_s18e_core.rs"]
+mod v36_s18e_core;
+#[path = "v36/v36_s18f_stats.rs"]
+mod v36_s18f_stats;
+#[path = "v36/v36_s18g_deciders.rs"]
+mod v36_s18g_deciders;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]

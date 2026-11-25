@@ -35,6 +35,15 @@ env:
   # examples stay on the floating `stable`, so a compiler change that breaks
   # behaviour is still seen at once.
   LINT_TOOLCHAIN: "1.100.0"
+  # The API snapshot (api/*.txt) is made from rustdoc's JSON output, which
+  # only a nightly emits and whose layout changes from one nightly to the
+  # next.  The job runs on exactly this dated nightly, so it goes red when the
+  # public API changes and not when rustdoc does; scripts/api_snapshot reads
+  # the name from this line for local runs.  To bump it: set the new date, run
+  # scripts/api_snapshot/api_snapshot.sh, and commit the pin together with
+  # whatever the script needed (its README, "Moving the pinned nightly"); the
+  # diff of api/ should be empty.
+  API_TOOLCHAIN: "nightly-2026-10-14"
 
 jobs:
   fmt:
@@ -236,6 +245,30 @@ jobs:
             echo "::warning::the public API breaks against $base; listed under 'Breaking' in CHANGELOG.md"
           else
             echo "::error::the public API breaks against $base and CHANGELOG.md has no '### Breaking' section newer than it"
+            exit 1
+          fi
+
+  api-snapshot:
+    name: API snapshot (api/ lists the public API)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.API_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      # api/*.txt has one line per public item with its full signature.  A
+      # change to the public API must come with the regenerated files, so that
+      # the reviewer sees it as a diff.  It also shows what the Semver job
+      # does not report: a changed parameter or return type, and an addition.
+      - name: Regenerate the snapshot and compare it with api/
+        env:
+          # Not a lint job: the warnings of a nightly are not its business.
+          RUSTFLAGS: ""
+        run: |
+          if ! scripts/api_snapshot/api_snapshot.sh --check; then
+            echo "::error::the public API differs from the snapshot in api/: run scripts/api_snapshot/api_snapshot.sh (toolchain $API_TOOLCHAIN) and commit the changed files; see scripts/api_snapshot/README.md"
             exit 1
           fi
 

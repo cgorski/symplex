@@ -1,0 +1,24 @@
+# Review C §3.2 item 1 (API_1.0.md §2.3): the kind that replaces each variant of today's `SymplexError` enum.  Hand-written.
+# Columns: variant, kind, mark, ctor, ctor_fields
+#   mark = yes  the rewritten line gets a `// codemod(errors): was <variant>` marker: the default successor is
+#               `Undetermined`, and the raise site may be classified otherwise by packages E2b-E2d
+#   ctor / ctor_fields  rule errors.construct (library code, `--src-code`): the struct literal
+#               `SymplexError::<variant> { <fields> }` becomes `SymplexError::<ctor>(<fields in this order>)`.
+#               EMPTY = no constructor is named in the design: the literal is listed, not rewritten.
+#               Package E1 adds a constructor per kind and must fill in or correct this column before using the rule.
+variant	kind	mark	ctor	ctor_fields
+ContradictoryAssumptions	ContradictoryAssumptions	no		
+PrecisionExhausted	PrecisionExhausted	no		
+FreeSymbol	FreeSymbol	no	free_symbol	name
+Unevaluable	Undetermined	yes		
+Infinite	Infinite	no		
+ComputationFailed	Undetermined	yes	computation_failed	operation,reason
+NotImplemented	Unsupported	no		
+Divergent	Divergent	no	divergent	operation,reason
+NoSolution	NoSolution	no	no_solution	operation,reason
+InfiniteSolutions	InfiniteSolutions	no	infinite_solutions	operation,reason
+InvalidArgument	InvalidArgument	no	invalid_argument	operation,reason
+BudgetExhausted	BudgetExhausted	no		
+ExpressionSwell	BudgetExhausted	no		
+NotDiagonalizable	NotDiagonalizable	no		
+DegenerateData	DegenerateData	no		

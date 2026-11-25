@@ -1,0 +1,24 @@
+# Which file of api/ an item is written to.
+#
+#   <tier> <rule>       a rule is a path prefix, `doc(hidden)`, or `*` (everything else)
+#
+# The longest matching path prefix decides; a `doc(hidden)` rule, if there is
+# one, takes every item that is `#[doc(hidden)]` or only reachable through a
+# `#[doc(hidden)]` module or re-export.  Each tier becomes api/<tier>.txt.
+#
+# List the tiers from the least public to the most public: an `impl` that
+# names items of two tiers goes to the one listed first, and an item with paths
+# in two tiers is listed under its path in the one listed last.
+#
+# Today everything public is one tier.
+
+public        *
+
+# When the module facade lands (API_1.0.md Part 1, package S1), replace the
+# rule above by these four and run api_snapshot.sh: it writes the three files
+# and removes api/public.txt.
+#
+# internal      doc(hidden)
+# internal      symplex::__internal
+# experimental  symplex::experimental
+# stable        *

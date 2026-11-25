@@ -1,0 +1,52 @@
+# Review F's domain renames (REPORT §2.5, §3.5, §4.5, §6; API_1.0.md §3.4 "Domains (F)") as rewrite rules.  Hand-written.
+# Columns and shapes as in core_renames.tsv, plus:
+#   shape   method/N      as `method`, but only a call with exactly N arguments
+#           to-field      `.old(args)` -> `.<extra>.new(args)`   (`r.p_value_f64()` -> `r.p_value.to_f64()`)
+#           in:<a|b|..>   `<seg>::old(` -> `<seg>::new(` where the path segment before `::` is one of the list
+# The two table-driven rewrites of F (Distribution constructors, Matrix::get) are code: rules domains.dist-ctor
+# and domains.matrix-get; their table is dist_ctors.tsv.
+id	shape	old	new	extra	units	note
+domains.factor-in	method/1	factor	factor_in		keep	F PE-KEEP: Ex::factor(var) -> factor_in(var). Run in the same pass as factor_all (the tool does)
+domains.factor-all	method/0	factor_all	factor		-	F PE-KEEP: Ex::factor_all() -> factor()
+domains.factor-extension	method	factor_extension	factor_over		-	F PE-KEEP
+domains.monoms	method	monoms	monomials		-	F P-*
+domains.coeffs-rational	method	coeffs_rational	rational_coeffs		-	F P-*
+domains.terms-iter	method	terms_iter	terms		-	F P-*
+domains.resultant-symbolic	method	resultant_symbolic	resultant		-	F PE-WRAP: the new name exists today with another meaning; merge the two functions before applying
+domains.discriminant-symbolic	method	discriminant_symbolic	discriminant		-	F PE-WRAP: as resultant_symbolic
+domains.gcd-all	method	gcd_all	poly_gcd		-	F PE-WRAP: as resultant_symbolic
+domains.lcm-all	method	lcm_all	poly_lcm		-	F PE-WRAP: as resultant_symbolic
+domains.eigenvals	method	eigenvals	eigenvalues		-	F M-EIG
+domains.eigenvals-mult	method	eigenvals_with_multiplicity	eigenvalues_with_multiplicity		-	F M-EIG (the element type changes too: the compiler lists the readers)
+domains.eigenvects	method	eigenvects	eigenvectors		-	F M-EIG (as above)
+domains.matrix-exp	method	matrix_exp	exp		-	F M-NAME
+domains.matrix-exp-t	method	matrix_exp_t	exp_t		-	F M-NAME
+domains.matrix-log	method	matrix_log	log		-	F M-NAME
+domains.matrix-sqrt	method	matrix_sqrt	sqrt		-	F M-NAME
+domains.matrix-pow-symbolic	method	matrix_pow_symbolic	pow		-	F M-NAME
+domains.row-del	method	row_del	delete_row		-	A C2
+domains.col-del	method	col_del	delete_col		-	A C2
+domains.norm-frobenius	method	norm_frobenius	norm		-	F M-DUP
+domains.density	method	density	pdf		-	F S-NAME (Distribution, RandomVariable); refused in a file with `impl Family for`
+domains.characteristic-function	method	characteristic_function	cf		-	F S-NAME; as density
+domains.p-value-f64	to-field	p_value_f64	to_f64	p_value	-	F S-PV
+domains.p-value-ln	to-field	p_value_ln	ln	p_value	-	F S-PV
+domains.p-value-log10	to-field	p_value_log10	log10	p_value	-	F S-PV
+domains.p-value-decimal	to-field	p_value_decimal	to_decimal	p_value	-	F S-PV; Part 4 C-24 (returns NumericValue)
+domains.numdist-ppf	in:norm|t|gamma|chi2|beta|f|binom|poisson	ppf	quantile		-	F S-NUMD
+domains.npartitions	free	npartitions	partition_count		-	A C2 (alias removed)
+domains.n-order	free	n_order	multiplicative_order		-	A C2 (alias removed)
+domains.to-vec	manual	to_vec	to_rows		-	F M-NAME: `to_vec` is also a method of every slice; the receiver's type is not in the text
+domains.as-poly	manual	as_poly	to_poly		-	F P-CTOR: Option -> Result and the argument becomes a list of variables
+domains.content-and-primitive	manual	content_and_primitive	primitive		-	F P-*: the tuple becomes a record
+domains.has-rational-coeffs	manual	has_rational_coeffs	domain		-	F P-*: a query becomes a value to compare
+domains.downcast-ref	manual	downcast_ref	params		-	F S-NAME: `downcast_ref` is also std's `dyn Any` method
+domains.kurtosis	manual	kurtosis	excess_kurtosis		-	F S-KURT: the value changes by 3 on distributions, each site must be read
+domains.p-value-ex	manual	p_value_ex	as_expr		-	F S-PV: Option<&Ex> instead of a Result
+domains.root-of	manual	root_of	real_root		-	F P-ROOT: Result<Option<Ex>>
+domains.reduce-modulo	manual	reduce_modulo	reduce		-	F P-GB: moves to GroebnerBasis
+domains.solve-system-ex	manual-free	solve_system_ex	solve_polynomial_system		-	F P-SYS: a function of the new name exists today (MultiPoly level)
+domains.linprog	manual-free	linprog	LpProblem		-	F L-FREE: becomes builder calls
+domains.linprog-matrix	manual-free	linprog_matrix	LpProblem		-	F L-FREE
+domains.lp-status	manual-type	LpStatus	LpOutcome		-	F L-OUT: a field read becomes a `match`
+domains.lp-solution	manual-type	LpSolution	LpOutcome		-	F L-OUT

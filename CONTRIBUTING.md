@@ -1322,6 +1322,7 @@ hangs is cancelled and reported:
 | **Docs** | `LINT_TOOLCHAIN` | 30 min | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --document-private-items` (main crate and `symplex-build`), then `mdbook build book` |
 | **MSRV** | 1.93.0 | 30 min | `cargo check --all-targets` for all four crates |
 | **Semver** | `LINT_TOOLCHAIN` | 45 min | `cargo semver-checks` of the public API against the newest release tag (see "The semver check" below) |
+| **API snapshot** | `API_TOOLCHAIN` (nightly-2026-10-14) | 30 min | `scripts/api_snapshot/api_snapshot.sh --check`: regenerates the listing of the public API from rustdoc's JSON and fails if it differs from `api/*.txt` (see "The API snapshot" below) |
 | **Examples run** | `stable` | 45 min | Every `examples/*.rs` except `repl` is run to completion with a 300 s timeout |
 
 All jobs run on `ubuntu-latest` (x86-64 Linux); the only other target CI
@@ -1355,6 +1356,32 @@ list the break there, with what a caller has to change, in the commit that
 makes it.  `### Breaking (behaviour)` is for results that changed and does
 not satisfy the check.  Auto traits count (a lost `UnwindSafe` is a break).
 An addition needs no section for the job, and goes under `### Added`.
+
+**The API snapshot.**  `api/public.txt` lists every public item of the
+crate — modules, types with their fields and variants, functions and
+methods with their full signatures, trait implementations, re-exports —
+one per line, sorted.  It is generated, never edited: after a change to
+anything `pub`, run `scripts/api_snapshot/api_snapshot.sh` and commit the
+changed file with the code, so that the reviewer sees the API change as a
+diff of text.  The job fails, and prints the difference, when the file
+does not match the code.  The script needs the nightly pinned as
+`API_TOOLCHAIN` in `ci.yml` (`rustup toolchain install nightly-2026-10-14`),
+because only a nightly rustdoc emits JSON and the JSON's layout changes
+between nightlies; the pin is raised on purpose, as described in
+`scripts/api_snapshot/README.md`, which also explains each kind of line
+and how to read a diff.  The snapshot and the Semver job complement each
+other: `cargo semver-checks` reports a removed item, but not a changed
+parameter or return type and not an addition — those are visible only in
+this file.
+
+**The rewrite toolkit** (`scripts/codemod/`, Python, standard library
+only) rewrites the *user side* of the library — tests, examples, the book,
+the doctests — for the mechanical parts of the 1.0 API changes (reads of
+yes/no queries, error patterns, number types, paths, renames).  It works
+on text, rewrites only what it is sure of and lists the rest for a person;
+a dry run is the default.  Its README says how a change of the API uses
+it; `python3 -m unittest discover -s scripts/codemod/tests` runs its own
+tests.
 
 **The lock file.**  CI builds the dependency versions of the committed
 `Cargo.lock` (see "Dependency policy"); new dependency releases are seen
@@ -2254,7 +2281,21 @@ representable (`4^(1/2)`, `log(8, 2)`; upstream #31) and are disallowed by
 says "round half"), `None` truncates, and `BigFloat::from_f64` halves
 subnormal inputs.  `probes/clippy_canary` calls each disallowed method (`pow`, `log`,
 `convert_to_radix`, `is_positive`) and CI expects clippy to reject every call (a path that stops resolving after an
-astro-float release is noticed).
+astro-float release is noticed).  Two more rules since 0.60.1 (issue #8:
+`π` to ten million digits took 411 s): **mantissa words** become an
+integer, and an integer becomes words, only through
+`bigfloat::mantissa_to_biguint` and `bigfloat::words_from_u32_digits`
+(linear; an accumulator shifted by a word per word is quadratic, 3.17 s
+against 0.7 ms at three million digits); and **the constants cache**
+(`π`, `e`, `ln 2`, `ln 10`) of an evaluation comes from
+`bigfloat::with_consts(bits, …)`, never from a `Consts::new()` per call,
+which recomputes every constant.  `with_consts` keeps one cache per thread
+and per band of working precision (astro-float answers a request by
+copying the most precise value it holds, so a cache far warmer than the
+request is slow too), and its results do not depend on what was evaluated
+before — for every rounding mode except `RoundingMode::None`, which
+truncates whatever approximation the cache has: code that evaluates in
+that mode (`poly::algebraic`, `poly::roots`) keeps a cache of its own.
 
 **Solving** (`src/transforms/solve/`).  The domain of the unknown is a
 `SolveCx` (`Domain::{Complex, Real, Integer}`, intersected with the

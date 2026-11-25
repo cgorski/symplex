@@ -245,21 +245,10 @@ pub(crate) fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
         return out;
     }
     // astro-float's `Word` is 32 or 64 bits depending on the target (and
-    // not always on `target_pointer_width` alone), so the words are packed
-    // from 32-bit digits for whichever width it is, little-endian.
+    // not always on `target_pointer_width` alone): `words_from_u32_digits`
+    // packs for whichever width it is, little-endian.
     let (sign, digits) = n.to_u32_digits();
-    let per_word = astro_float::WORD_BIT_SIZE / 32;
-    let words: Vec<astro_float::Word> = digits
-        .chunks(per_word)
-        .map(|chunk| {
-            chunk
-                .iter()
-                .enumerate()
-                .fold(0 as astro_float::Word, |w, (i, &d)| {
-                    w | (astro_float::Word::from(d) << (32 * i))
-                })
-        })
-        .collect();
+    let words = crate::base::bigfloat::words_from_u32_digits(&digits);
     let sign = if sign == Sign::Minus {
         astro_float::Sign::Neg
     } else {

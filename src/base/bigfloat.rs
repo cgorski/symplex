@@ -34,6 +34,8 @@
 //! | the nearest `f64`, when finite | [`to_f64`]; `±∞` beyond the range: [`to_f64_or_inf`] |
 //! | a computed `f64` as a `BigFloat` | [`from_f64`] |
 //! | `x > 0` | [`is_strictly_positive`]; the sign bit ("not negative", `+0` included): [`is_sign_positive`] |
+//! | the mantissa words as one integer, and back | [`mantissa_to_biguint`], [`words_from_u32_digits`] |
+//! | the constants cache (`π`, `e`, `ln 2`, `ln 10`) of an evaluation | [`with_consts`]; [`clear_consts`] frees it |
 //!
 //! # Corner cases
 //!
@@ -70,10 +72,141 @@
 //!   `from_f64(5e-324)` is `2.47e-324`, `from_f64(-1e-310)` is `-5e-311`);
 //!   normal values convert exactly.  [`from_f64`] scales subnormals into
 //!   the normal range first; literal constants may still call the library.
+//! - **Mantissa words.** A mantissa is a slice of `Word`s, least
+//!   significant first, and `Word` is 32 or 64 bits depending on the
+//!   target.  Only [`mantissa_to_biguint`] and [`words_from_u32_digits`]
+//!   know that; both are linear in the number of words.  Shifting an
+//!   accumulator by a word per word (`m = (m << 64) | w`) is quadratic: at
+//!   3 million digits it took 3.17 s where the linear form takes 0.7 ms
+//!   (0.60.0, issue #8).
+//! - **The constants cache.** `Consts` computes `π`, `e`, `ln 2` and
+//!   `ln 10` on demand and keeps the most precise value it has computed;
+//!   a request is answered by *copying* that value and rounding the copy.
+//!   So a cold cache recomputes the constant (`π` at a million digits:
+//!   2.8 s) and a cache much warmer than the request copies far more than
+//!   it needs (33 million bits are 4 MB per request).  [`with_consts`]
+//!   therefore keeps one cache per thread *and per band of working
+//!   precision*; see there for why a warm cache gives the same bits as a
+//!   cold one.
 
-use astro_float::{BigFloat, Consts, Error, Exponent, RoundingMode, Sign, WORD_BIT_SIZE};
+use std::cell::RefCell;
+
+use astro_float::{BigFloat, Consts, Error, Exponent, RoundingMode, Sign, WORD_BIT_SIZE, Word};
 use num_bigint::BigUint;
 use num_traits::Zero;
+
+/// The mantissa `words` of a `BigFloat` (least significant first, as
+/// `BigFloat::as_raw_parts` gives them) as one integer, in time linear in
+/// their number.
+pub(crate) fn mantissa_to_biguint(words: &[Word]) -> BigUint {
+    let per_word = WORD_BIT_SIZE / 32;
+    let mut digits: Vec<u32> = Vec::with_capacity(words.len() * per_word);
+    for &w in words {
+        let mut w = u128::from(w);
+        for _ in 0..per_word {
+            digits.push((w & 0xFFFF_FFFF) as u32);
+            w >>= 32;
+        }
+    }
+    BigUint::new(digits)
+}
+
+/// The inverse of [`mantissa_to_biguint`]: the 32-bit `digits` of an
+/// integer (least significant first, as `BigUint::to_u32_digits` gives
+/// them) packed into astro-float words, the last one padded with zero
+/// bits at the top.
+pub(crate) fn words_from_u32_digits(digits: &[u32]) -> Vec<Word> {
+    let per_word = WORD_BIT_SIZE / 32;
+    digits
+        .chunks(per_word)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .enumerate()
+                .fold(0 as Word, |w, (i, &d)| w | (Word::from(d) << (32 * i)))
+        })
+        .collect()
+}
+
+/// The number of precision bands of [`with_consts`]: working precisions
+/// below `2¹²` bits, then one band per factor of 16 up to `2³¹` bits, and
+/// one for everything above.
+const CONSTS_BANDS: usize = 7;
+
+thread_local! {
+    /// The constants caches of the thread, one per precision band (see
+    /// [`with_consts`]).  A slot is empty until its band is first used and
+    /// while an evaluation of that band is running.
+    static CONSTS: RefCell<[Option<Consts>; CONSTS_BANDS]> =
+        const { RefCell::new([None, None, None, None, None, None, None]) };
+}
+
+/// The band of [`with_consts`] a working precision of `bits` bits falls in.
+fn consts_band(bits: usize) -> usize {
+    let length = (usize::BITS - bits.leading_zeros()) as usize;
+    (length.saturating_sub(8) / 4).min(CONSTS_BANDS - 1)
+}
+
+/// Run `f` with this thread's constants cache for a working precision of
+/// `bits` bits, creating the cache on first use.
+///
+/// **One cache per band of precision.**  astro-float answers a request for
+/// a constant by copying the most precise value the cache holds and
+/// rounding the copy, so a cache is only cheap for requests near its own
+/// precision.  The caches are therefore kept by band — below 2,048 bits
+/// (every `eval_f64` and the everyday `eval_decimal`), then a band per
+/// factor of 16 — and an evaluation uses the band of the precision it was
+/// asked for.  After `π` to 10 million digits, a later `eval_f64` still
+/// finds its own small cache, and a second evaluation at 10 million
+/// digits finds `π` computed.
+///
+/// **A warm cache gives the same bits as a cold one**, for every rounding
+/// mode but `RoundingMode::None`: astro-float returns a constant, and the
+/// value of an elementary function, correctly rounded to the precision
+/// asked for (it raises its internal precision until the rounding is
+/// decided), and a correctly rounded value does not depend on how precise
+/// the cached approximation was.  Under `RoundingMode::None` the library
+/// truncates whatever approximation it has, so callers that evaluate in
+/// that mode (`poly::algebraic`, `poly::roots`) keep caches of their own.
+/// The tests `warm_constants_equal_cold_constants` here and
+/// `v36_s18_issue8` (whole evaluations, cold thread against warm thread)
+/// hold this.
+///
+/// **Nested use.**  The cache is taken out of its slot while `f` runs, so
+/// an evaluation started inside `f` at a precision of the same band (the
+/// integrand of a definite integral, say) finds the slot empty and works
+/// with a fresh cache instead of failing on a second borrow; when `f`
+/// returns, its cache — the one that was warm before — goes back.
+///
+/// **Memory.**  Each band keeps its constants at the highest precision an
+/// evaluation of that band reached on the thread, until the thread ends
+/// or [`clear_consts`] is called: a few kilobytes at the default
+/// precision limit, tens of megabytes after `π` to 10 million digits.
+///
+/// # Errors
+///
+/// astro-float's error when a new cache cannot be allocated.
+pub(crate) fn with_consts<T>(bits: usize, f: impl FnOnce(&mut Consts) -> T) -> Result<T, Error> {
+    let band = consts_band(bits);
+    let warm = CONSTS.with(|slots| slots.borrow_mut()[band].take());
+    let mut cc = match warm {
+        Some(cc) => cc,
+        None => Consts::new()?,
+    };
+    let out = f(&mut cc);
+    CONSTS.with(|slots| slots.borrow_mut()[band] = Some(cc));
+    Ok(out)
+}
+
+/// Drop every constants cache of the calling thread (see [`with_consts`]);
+/// the next evaluation computes the constants it needs again.
+pub(crate) fn clear_consts() {
+    CONSTS.with(|slots| {
+        for slot in slots.borrow_mut().iter_mut() {
+            *slot = None;
+        }
+    });
+}
 
 /// `b^e` for real `b > 0` (or integer `e`), computed as `powi` for integer
 /// exponents and `exp(e·ln b)` otherwise, at `wp` bits.
@@ -145,10 +278,7 @@ pub(crate) fn to_decimal_digits(x: &BigFloat) -> Result<DecimalDigits, Error> {
     let Some((words, _, sign, exponent, _)) = x.as_raw_parts() else {
         return Err(Error::InvalidArgument);
     };
-    let mut m = BigUint::zero();
-    for &w in words.iter().rev() {
-        m = (m << WORD_BIT_SIZE) | BigUint::from(w);
-    }
+    let m = mantissa_to_biguint(words);
     if m.is_zero() {
         return Ok(DecimalDigits {
             sign,
@@ -818,5 +948,246 @@ mod tests {
         assert_eq!(to_f64_or_inf(&huge), Some(f64::INFINITY));
         assert_eq!(to_f64_or_inf(&huge.neg()), Some(f64::NEG_INFINITY));
         assert_eq!(to_f64_or_inf(&two), Some(2.0));
+    }
+
+    fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+        let mut state = seed;
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        }
+    }
+
+    /// The accumulation [`mantissa_to_biguint`] replaced (a shift of the
+    /// whole integer per word): the definition of the value.
+    fn by_shifting(words: &[Word]) -> BigUint {
+        let mut m = BigUint::zero();
+        for &w in words.iter().rev() {
+            m = (m << WORD_BIT_SIZE) | BigUint::from(w);
+        }
+        m
+    }
+
+    /// [`mantissa_to_biguint`] is the integer the words spell, and
+    /// [`words_from_u32_digits`] is its inverse.
+    ///
+    /// Oracle: the shift-and-or definition (`by_shifting`), and the round
+    /// trip.
+    #[test]
+    fn mantissa_words_to_integer_and_back() {
+        let mut next = xorshift(0x243f_6a88_85a3_08d3);
+        for len in [0usize, 1, 2, 3, 7, 64, 257] {
+            let mut words: Vec<Word> = (0..len).map(|_| next() as Word).collect();
+            if let Some(top) = words.last_mut() {
+                *top |= 1 << (WORD_BIT_SIZE - 1);
+            }
+            let m = mantissa_to_biguint(&words);
+            assert_eq!(m, by_shifting(&words), "{len} words");
+            assert_eq!(m.bits(), (len * WORD_BIT_SIZE) as u64, "{len} words");
+            assert_eq!(words_from_u32_digits(&m.to_u32_digits()), words);
+        }
+        // Zero words at the top do not change the integer.
+        let padded: [Word; 3] = [5, 0, 0];
+        assert_eq!(mantissa_to_biguint(&padded), BigUint::from(5u32));
+        // An odd number of 32-bit digits: the last word is padded.
+        let digits = [0xdead_beefu32, 0x0123_4567, 0x89ab_cdef];
+        let words = words_from_u32_digits(&digits);
+        assert_eq!(words.len(), 3usize.div_ceil(WORD_BIT_SIZE / 32));
+        assert_eq!(mantissa_to_biguint(&words), BigUint::new(digits.to_vec()));
+        assert!(words_from_u32_digits(&[]).is_empty());
+    }
+
+    /// A million words (19 million digits) become one integer in
+    /// milliseconds.  The per-word shift of 0.60.0 took 0.23 s for 53,126
+    /// words and 3.17 s for 159,376 (release build; issue #8): hours here.
+    #[test]
+    fn mantissa_to_biguint_is_linear() {
+        let words: Vec<Word> = (0..1_000_000u64)
+            .map(|i| (i.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1) as Word)
+            .collect();
+        let timer = crate::base::perf_assert::CpuTimer::start();
+        let m = mantissa_to_biguint(&words);
+        timer.assert_within(
+            std::time::Duration::from_secs(2),
+            "a million mantissa words as one integer",
+        );
+        assert!(m.bits() > 999_999 * WORD_BIT_SIZE as u64);
+    }
+
+    /// A long mantissa with an exactly known expansion: `2^(2^18) − 1` has
+    /// 78,914 digits, exactly as many as are kept for a 2¹⁸-bit mantissa
+    /// (`⌊2¹⁸·log₁₀ 2⌋ + 1`), so nothing is rounded.  (The random
+    /// comparisons above stop at 4,096 bits.)
+    ///
+    /// Oracle: Python integers, `s = str(2**(2**18) - 1)`: `len(s)` is
+    /// 78914, `s[:12]` is `161132571748`, `s[-6:]` is `300415`.
+    #[test]
+    fn to_decimal_digits_of_a_long_mantissa() {
+        let bits = 1usize << 18;
+        let words = vec![Word::MAX; bits / WORD_BIT_SIZE];
+        let x = BigFloat::from_raw_parts(&words, bits, Sign::Pos, bits as Exponent, false);
+        let d = to_decimal_digits(&x).expect("finite value");
+        assert_eq!(d.sign, Sign::Pos);
+        assert_eq!(d.exponent, 78_914);
+        assert_eq!(d.digits.len(), 78_914);
+        assert_eq!(&d.digits[..12], &[1, 6, 1, 1, 3, 2, 5, 7, 1, 7, 4, 8]);
+        assert_eq!(&d.digits[78_908..], &[3, 0, 0, 4, 1, 5]);
+    }
+
+    fn raw(x: &BigFloat) -> (Vec<Word>, Sign, Exponent) {
+        let (m, _, s, e, _) = x.as_raw_parts().expect("a finite value");
+        (m.to_vec(), s, e)
+    }
+
+    /// The four constants of a cache at `p` bits and, with `functions`,
+    /// four elementary functions that read them (argument reduction by
+    /// `π`, `ln 2`).
+    fn through_cache(
+        cc: &mut Consts,
+        p: usize,
+        rm: RoundingMode,
+        functions: bool,
+    ) -> Vec<(Vec<Word>, Sign, Exponent)> {
+        let mut values = vec![cc.pi(p, rm), cc.e(p, rm), cc.ln_2(p, rm), cc.ln_10(p, rm)];
+        if functions {
+            let x =
+                BigFloat::from_i32(1234, p).div(&BigFloat::from_i32(7, p), p, RoundingMode::ToEven);
+            values.extend([
+                x.sin(p, rm, cc),
+                x.exp(p, rm, cc),
+                x.ln(p, rm, cc),
+                x.atan(p, rm, cc),
+            ]);
+        }
+        values.iter().map(raw).collect()
+    }
+
+    /// A warm constants cache gives the bits a cold one gives, in every
+    /// rounding mode but `None` — what [`with_consts`] rests on: one cache
+    /// warmed far beyond every request, one that sees the requests in
+    /// rising order, one that sees them in falling order, each against a
+    /// cache created for the single request.  All six modes up to 320 bits,
+    /// two of them above; the elementary functions up to 320 bits in those
+    /// two (astro-float is slow in a debug build).
+    ///
+    /// Oracle: astro-float's contract (constants and elementary functions
+    /// are correctly rounded, so the value is unique); the cold cache is
+    /// the reference.
+    #[test]
+    fn warm_constants_equal_cold_constants() {
+        let modes = [
+            RoundingMode::ToEven,
+            RoundingMode::Down,
+            RoundingMode::ToOdd,
+            RoundingMode::Up,
+            RoundingMode::ToZero,
+            RoundingMode::FromZero,
+        ];
+        let precisions = [64usize, 128, 192, 320, 1024, 1088, 3072];
+        let mut far = consts();
+        let _ = through_cache(&mut far, 8192, RoundingMode::ToEven, false);
+        let mut rising = consts();
+        let mut falling = consts();
+        for (i, &p) in precisions.iter().enumerate() {
+            let q = precisions[precisions.len() - 1 - i];
+            for (k, rm) in modes.into_iter().enumerate() {
+                let functions = |bits: usize| bits <= 320 && k < 2;
+                if p <= 320 || k < 2 {
+                    let cold = through_cache(&mut consts(), p, rm, functions(p));
+                    assert_eq!(
+                        through_cache(&mut far, p, rm, functions(p)),
+                        cold,
+                        "far, {p} bits, {rm:?}"
+                    );
+                    assert_eq!(
+                        through_cache(&mut rising, p, rm, functions(p)),
+                        cold,
+                        "rising, {p} bits, {rm:?}"
+                    );
+                }
+                if q <= 320 || k < 2 {
+                    let cold = through_cache(&mut consts(), q, rm, functions(q));
+                    assert_eq!(
+                        through_cache(&mut falling, q, rm, functions(q)),
+                        cold,
+                        "falling, {q} bits, {rm:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The bands of [`with_consts`]: below 2¹² bits, then a factor of 16
+    /// each.  16 digits are 128 bits, 1,000 digits 3,464, a million
+    /// 3,400,064 and ten million 34,000,064 (`evalf`'s working precision).
+    #[test]
+    fn consts_bands() {
+        for (bits, band) in [
+            (0usize, 0usize),
+            (128, 0),
+            (2047, 0),
+            (2048, 1),
+            (3464, 1),
+            (32_767, 1),
+            (32_768, 2),
+            (1 << 19, 3),
+            (3_400_064, 3),
+            (1 << 23, 4),
+            (34_000_064, 4),
+            (1 << 27, 5),
+            (1 << 31, 6),
+            (usize::MAX, 6),
+        ] {
+            assert_eq!(consts_band(bits), band, "{bits} bits");
+        }
+    }
+
+    fn warm_bands() -> Vec<bool> {
+        CONSTS.with(|slots| slots.borrow().iter().map(Option::is_some).collect())
+    }
+
+    /// [`with_consts`] keeps the cache of a band for the next evaluation of
+    /// that band and leaves the other bands alone, a nested evaluation of
+    /// the same band works on a cache of its own, and [`clear_consts`]
+    /// empties every band.  (Each test runs on a thread of its own, so the
+    /// thread's caches are this test's.)
+    #[test]
+    fn with_consts_keeps_one_cache_per_band() {
+        clear_consts();
+        assert_eq!(warm_bands(), vec![false; CONSTS_BANDS]);
+        let rm = RoundingMode::ToEven;
+        let small = with_consts(128, |cc| raw(&cc.pi(128, rm))).expect("a cache");
+        assert_eq!(
+            warm_bands(),
+            vec![true, false, false, false, false, false, false]
+        );
+        let (outer, inner, during) = with_consts(4096, |cc| {
+            let outer = raw(&cc.pi(4096, rm));
+            // The band's slot is empty while its cache is in use …
+            let during = warm_bands();
+            // … and a nested evaluation of the band gets a fresh one.
+            let inner = with_consts(4096, |nested| raw(&nested.pi(4096, rm))).expect("a cache");
+            (outer, inner, during)
+        })
+        .expect("a cache");
+        assert_eq!(outer, inner);
+        assert_eq!(during, vec![true, false, false, false, false, false, false]);
+        assert_eq!(
+            warm_bands(),
+            vec![true, true, false, false, false, false, false]
+        );
+        // The small band's cache was not touched by the 4,096-bit work.
+        assert_eq!(
+            with_consts(128, |cc| raw(&cc.pi(128, rm))).expect("a cache"),
+            small
+        );
+        clear_consts();
+        assert_eq!(warm_bands(), vec![false; CONSTS_BANDS]);
+        assert_eq!(
+            with_consts(128, |cc| raw(&cc.pi(128, rm))).expect("a cache"),
+            small
+        );
     }
 }
