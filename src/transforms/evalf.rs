@@ -269,6 +269,29 @@ pub(crate) fn const_value_quadrature(
     const_value(arena, expr, digits)
 }
 
+/// A bound on what the integrand `body` (in `var`) holds next to the finite
+/// ends of a piece `[lo, hi]` of an `f64` quadrature every node of which
+/// gave 0 (see `improper::held_at_ends`): 0 where it is an exact 0 there or
+/// below the exponent range, `∞` when it cannot be read there.
+pub(crate) fn f64_piece_ends_bound(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: f64,
+    hi: f64,
+) -> f64 {
+    with_eval_consts(F64_DIGITS, |cc| {
+        Ok(improper::held_at_ends(arena, body, var, lo, hi, cc))
+    })
+    .map_or(f64::INFINITY, |held| {
+        if accuracy::is_unknown(held) {
+            f64::INFINITY
+        } else {
+            held.exp2()
+        }
+    })
+}
+
 /// Can an `f64` quadrature of `body` (in `var`) from `a` to `b` (`±∞`
 /// allowed), which evaluates the integrand by `compiled`, have seen its
 /// integral beyond `|x| = 2¹⁶` to within `allowed`?  Always for a finite

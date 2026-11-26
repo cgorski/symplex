@@ -625,10 +625,23 @@ fn eval_definite_integral_f64(
         return Ok(None);
     };
     let peak = std::cell::Cell::new(0.0f64);
+    // The pieces between the cuts: whether a node lay in each, and the
+    // largest value its nodes gave (see below).
+    let cuts: &[f64] = kinks.as_ref().map_or(&[], |k| k.cuts.as_slice());
+    let sights = std::cell::RefCell::new(vec![(false, 0.0f64); cuts.len() + 1]);
     let f = |t: f64| {
         let v = func(&[t]);
         if v.is_finite() {
             peak.set(peak.get().max(v.abs()));
+        }
+        let i = cuts.partition_point(|&c| c < t);
+        if !cuts.is_empty()
+            && cuts.get(i) != Some(&t)
+            && let Ok(mut sights) = sights.try_borrow_mut()
+            && let Some((visited, largest)) = sights.get_mut(i)
+        {
+            *visited = true;
+            *largest = largest.max(v.abs());
         }
         v
     };
@@ -676,10 +689,48 @@ fn eval_definite_integral_f64(
     let Ok(Some(QuadResult { value, error })) = run else {
         return Ok(None);
     };
+    // A piece every node of which gave 0 adds `0 ± 0` to the sum, and the
+    // sum's bound, which the other pieces make positive, hides it.  What
+    // the integrand holds next to the ends of such a piece is in the bound:
+    // nothing where it is an exact 0 there (the 0 branch of a `Piecewise`)
+    // or below the exponent range (a far tail), as the arbitrary-precision
+    // quadrature counts a piece none of whose nodes saw a value; a first-
+    // order bound of the layer otherwise (`improper::held_at_ends`).  Up to
+    // 0.60.0 the bound was tested on the sum alone (found by reading, with
+    // the defect of `Ex::integrate_numeric_with`, which lost a piece that
+    // way: see there; no wrong value served here is on record).
+    // (Float evidence: a largest value of 0 proves nothing, it only sends
+    // the piece to the certified test; every other case is as before.)
+    let gave_value = |largest: f64| largest > 0.0;
+    let (low, high) = (a.min(b), a.max(b));
+    let unseen: Vec<usize> = sights
+        .into_inner()
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (visited, largest))| *visited && !gave_value(*largest))
+        .map(|(i, _)| i)
+        .collect();
+    let mut unseen_held = 0.0f64;
+    for i in unseen {
+        let from = i
+            .checked_sub(1)
+            .and_then(|k| cuts.get(k))
+            .map_or(low, |c| *c);
+        let to = cuts.get(i).map_or(high, |c| *c);
+        let held = improper::held_at_ends(arena, body, var, from, to, w.cc);
+        if accuracy::is_unknown(held) {
+            debug!(
+                from,
+                to, "evalf: a piece of the f64 quadrature gave 0 at every node, unread at its ends"
+            );
+            return Ok(None);
+        }
+        unseen_held += held.exp2();
+    }
     let rounding = QUADRATURE_ROUNDING_FACTOR * f64::EPSILON * l1.max(value.abs());
     let endpoints = (a_err + b_err) * peak.get();
     let misplaced = kinks.as_ref().map_or(0.0, |k| k.misplaced) * peak.get();
-    let total = error + rounding + endpoints + misplaced;
+    let total = error + rounding + endpoints + misplaced + unseen_held;
     debug!(
         value,
         error, rounding, endpoints, "evalf: DefiniteIntegral evaluated in f64"
@@ -698,7 +749,6 @@ fn eval_definite_integral_f64(
     // Beyond the reach of the compiled body (an overflow cuts it off, and
     // no node lies past `f64::MAX`): the integrand's own far tail.
     let compiled = |t: f64| func(&[t]);
-    let (low, high) = (a.min(b), a.max(b));
     let tail_seen = |upper: bool, cc: &mut Consts| {
         improper::f64_tail_trusted(arena, body, var, upper, &compiled, total, cc)
     };

@@ -102,7 +102,29 @@ impl Family for Truncated {
         let clipped = self.clipped();
         let lo = &clipped.as_interval()?.lower;
         let probe = self.inner.fresh_var("t", &[x]);
-        self.inner.family().cdf(&probe)?;
+        if self.inner.family().cdf(&probe).is_none() {
+            // A family whose closed form exists at numbers only (the exact
+            // tails of a hypergeometric law): `(F(x) − F(lo⁻))/mass` from
+            // them at a numeric `x`.  Up to 0.60.1 this was "no closed
+            // form", the generic route summed the truncated masses, and a
+            // sum too long to expand reached the evaluator with its index
+            // free: every quantile of `Hypergeometric(60000, 46875, 10312)`
+            // truncated to `[12, 6573]` was the refusal `FreeSymbol("_t")`.
+            if !x.free_symbols().is_empty() || !lo.free_symbols().is_empty() {
+                return None;
+            }
+            let f_x = self.inner.family().cdf(x)?;
+            let f_lo = if is_neg_inf(lo) {
+                self.context().zero()
+            } else {
+                let before = match self.inner.kind() {
+                    Kind::Continuous => lo.clone(),
+                    Kind::Discrete => lo - self.context().one(),
+                };
+                self.inner.family().cdf(&before)?
+            };
+            return Some((f_x - f_lo) / &self.mass);
+        }
         if self.inner.family().sf(&probe).is_some()
             && self.inner.in_far_upper_tail(lo)
             && let Some(s_lo) = self.inner.mass_above(lo)
@@ -124,7 +146,18 @@ impl Family for Truncated {
         let hi = &clipped.as_interval()?.upper;
         let probe = self.inner.fresh_var("t", &[x]);
         if self.inner.family().cdf(&probe).is_none() && self.inner.family().sf(&probe).is_none() {
-            return None;
+            // As in `cdf`: `(S(x) − S(hi))/mass` from the closed forms that
+            // exist at numbers only.
+            if !x.free_symbols().is_empty() || !hi.free_symbols().is_empty() {
+                return None;
+            }
+            let s_x = self.inner.family().sf(x)?;
+            let s_hi = if is_pos_inf(hi) {
+                self.context().zero()
+            } else {
+                self.inner.family().sf(hi)?
+            };
+            return Some((s_x - s_hi) / &self.mass);
         }
         let inner_hi = self.inner.support().as_interval().map(|s| s.upper.clone());
         let s_hi = if is_pos_inf(hi)
@@ -1931,6 +1964,17 @@ impl Distribution {
                 std::collections::HashMap::new();
             // Entries that are not rationals and have no bucket.
             let mut unvalued: Vec<usize> = Vec::new();
+            // Is `g` proved strictly monotone on the interval the values
+            // span ([`Distribution::proved_injective`])?  Asked once, and
+            // only when the doubles of two real images do not tell them
+            // apart: the images of distinct values are then distinct, and
+            // neither their residuals nor `equals` are needed.  Up to
+            // 0.60.0 `tanh X` for `X ~ Hypergeometric(4955, 4800, 1703)`
+            // (156 values from 1548 on, every image the double `1.0`, every
+            // residual below the doubles) asked `equals` for each of the
+            // 12,090 pairs: 12.5 s of simplification and of `tanh` to
+            // thousands of bits.
+            let injective: std::cell::OnceCell<bool> = std::cell::OnceCell::new();
             for v in &values {
                 let image = g.subs(x, v).eval();
                 let mass = self.density(v).eval();
@@ -1940,6 +1984,12 @@ impl Distribution {
                 let residual: std::cell::OnceCell<Option<ValueKey>> = std::cell::OnceCell::new();
                 let same = |i: &usize| {
                     if keys_apart(values_at[*i], value) {
+                        return false;
+                    }
+                    if values_at[*i].is_some()
+                        && value.is_some()
+                        && *injective.get_or_init(|| self.proved_injective(x, g, &values))
+                    {
                         return false;
                     }
                     // Two normal doubles that do not separate the images
@@ -2146,6 +2196,26 @@ impl Distribution {
             TableOrder::Decreasing => rise == Ordering::Less,
         };
         agrees.then(|| Distribution::from_family(Finite::new(&ctx, table).with_order(order)))
+    }
+
+    /// Is `g` proved to take distinct values at the distinct `values` of a
+    /// finite distribution?  Proved when they are increasing rationals and
+    /// `g` is strictly monotone on the closed interval they span (the
+    /// proof [`monotone_table`](Self::monotone_table) asks for a long
+    /// table at once; a short one asks it only when two images are not
+    /// told apart by their values).  `false` says nothing is proved.
+    fn proved_injective(&self, x: &Ex, g: &Ex, values: &[Ex]) -> bool {
+        let rationals: Option<Vec<crate::base::numeric::Q>> =
+            values.iter().map(Ex::as_rational).collect();
+        if !rationals.is_some_and(|r| r.windows(2).all(|w| w[0] < w[1])) {
+            return false;
+        }
+        let (Some(first), Some(last)) = (values.first(), values.last()) else {
+            return false;
+        };
+        let hull = self.context().interval(first, last, IntervalKind::Closed);
+        Truth::from(g.is_strictly_increasing(x, &hull)).is_true()
+            || Truth::from(g.is_strictly_decreasing(x, &hull)).is_true()
     }
 
     /// The values of a discrete distribution on a finite numeric integer

@@ -643,6 +643,321 @@ pub(crate) fn interval_condition(
     }
 }
 
+/// The integers that `f64` holds exactly end here, `2⁵³`: beyond it the
+/// lattice of a discrete law is read on the doubles.
+const EXACT_F64_INTEGERS: f64 = 9_007_199_254_740_992.0;
+
+/// The bound on the steps of one phase of a lattice search (the doubling,
+/// the bisection).  Each doubling step doubles the stride and each
+/// bisection step halves the bracket, between the least spacing of the
+/// lattice (1) and the largest double (`2¹⁰²⁴`), or over the doubles of one
+/// bracket (at most `2⁶⁴`): 1,024 steps at most, and twice that is allowed.
+/// A search that reaches the bound refuses.
+const LATTICE_SEARCH_STEPS: usize = 2048;
+
+/// The lattice points `first..=last` between which a quantile is sought.
+#[derive(Clone, Copy, Debug)]
+struct LatticeBracket {
+    /// The least candidate.
+    first: f64,
+    /// The greatest candidate.
+    last: f64,
+}
+
+/// The distance from the lattice point `k` to the next one that `f64`
+/// holds: 1 below `2⁵³`, the gap to the next double from there on.
+fn lattice_spacing(k: f64) -> f64 {
+    let a = k.abs();
+    if a < EXACT_F64_INTEGERS {
+        return 1.0;
+    }
+    let gap = f64::from_bits(a.to_bits().saturating_add(1)) - a;
+    if gap.is_finite() && gap >= 1.0 {
+        gap
+    } else {
+        1.0
+    }
+}
+
+/// The smallest lattice point `k ∈ [kmin, kmax]` at which the monotone
+/// predicate `done` holds (`false` below a threshold, `true` from it on),
+/// from a guess `k0`: strides doubling away from the guess until the
+/// threshold is bracketed, then bisection.  `done` returns `None` when the
+/// distribution function is not a number.  As
+/// [`numdist::discrete_search`](super::numdist::discrete_search), which
+/// this replaces for the exact search, except that the first stride is the
+/// spacing of the lattice at the guess ([`lattice_spacing`]) and not 1:
+/// beyond `2⁵³` a stride of 1 does not move the point, and up to 0.60.1
+/// the search probed the same double once per doubling until the stride
+/// reached the spacing (by the arithmetic, not counted: the doubles next
+/// to `k₀ ≈ 2·10¹⁸⁵`, the mean of `NegativeBinomial(21590,
+/// 1/(1.25·10¹⁸¹))`, are `2⁵⁶²` apart, some 560 doublings of a stride of
+/// 1).  Below `2⁵³` the probes are
+/// the same.  The bisection ends when the midpoint no longer separates the
+/// bracket (adjacent integers, or adjacent doubles beyond `2⁵³`): the upper
+/// end is the smallest representable point at which `done` holds.  Each
+/// phase is bounded by [`LATTICE_SEARCH_STEPS`]; at the bound the search
+/// refuses.
+fn lattice_bisect(
+    done: impl Fn(f64) -> Option<bool>,
+    k0: f64,
+    kmin: f64,
+    kmax: f64,
+) -> Result<f64, SymplexError> {
+    let nan = || {
+        SymplexError::computation_failed(
+            "quantile_f64",
+            "the distribution function is not a number",
+        )
+    };
+    let unbounded = || {
+        SymplexError::computation_failed(
+            "quantile_f64",
+            "the lattice search did not end within its step bound",
+        )
+    };
+    let k0 = k0.round().clamp(kmin, kmax);
+    let d0 = done(k0).ok_or_else(nan)?;
+    let mut step = lattice_spacing(k0);
+    let mut lo;
+    let mut hi;
+    let mut bracketed = false;
+    if d0 {
+        hi = k0;
+        lo = k0 - step;
+        for _ in 0..LATTICE_SEARCH_STEPS {
+            if lo < kmin {
+                lo = kmin - 1.0;
+                bracketed = true;
+                break;
+            }
+            if !done(lo).ok_or_else(nan)? {
+                bracketed = true;
+                break;
+            }
+            hi = lo;
+            lo -= step;
+            step *= 2.0;
+        }
+    } else {
+        lo = k0;
+        hi = k0 + step;
+        for _ in 0..LATTICE_SEARCH_STEPS {
+            if hi >= kmax {
+                hi = kmax;
+                bracketed = true;
+                break;
+            }
+            if done(hi).ok_or_else(nan)? {
+                bracketed = true;
+                break;
+            }
+            lo = hi;
+            hi += step;
+            step *= 2.0;
+        }
+    }
+    if !bracketed {
+        return Err(unbounded());
+    }
+    // !done(lo) and done(hi) (or lo is below the support).
+    for _ in 0..LATTICE_SEARCH_STEPS {
+        let mid = (0.5 * (lo + hi)).floor();
+        if hi - lo <= 1.0 || mid <= lo || mid >= hi {
+            return Ok(hi);
+        }
+        if done(mid).ok_or_else(nan)? {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Err(unbounded())
+}
+
+/// The masses of a lattice law as a recurrence: `f(k + 1)/f(k)` in `f64`,
+/// with the mode and the standard deviation, for a guess of a quantile
+/// that forms no mass itself ([`anchored_walk`]).  Binomial coefficients
+/// of a large law overflow `f64` (`C(90000, 78750)` is `∞`); their ratios
+/// do not.
+#[derive(Clone, Copy, Debug)]
+enum MassRatio {
+    /// `C(m, k) C(N − m, n − k)/C(N, n)`:
+    /// `f(k + 1)/f(k) = (m − k)(n − k)/((k + 1)(N − m − n + k + 1))`.
+    Hypergeometric {
+        /// The population `N`.
+        population: f64,
+        /// The successes `m` in it.
+        successes: f64,
+        /// The draws `n`.
+        draws: f64,
+    },
+    /// `C(k + r − 1, k) pʳ (1 − p)ᵏ`: `f(k + 1)/f(k) = (k + r)(1 − p)/(k + 1)`.
+    NegativeBinomial {
+        /// The successes `r`.
+        r: f64,
+        /// The success probability `p`.
+        p: f64,
+        /// `1 − p`, from the exact parameter.
+        fail: f64,
+    },
+    /// `e^{−λ} λᵏ/k!`: `f(k + 1)/f(k) = λ/(k + 1)`.
+    Poisson {
+        /// The rate `λ`.
+        rate: f64,
+    },
+}
+
+impl MassRatio {
+    /// `f(k + 1)/f(k)`.
+    fn up(self, k: f64) -> f64 {
+        match self {
+            MassRatio::Hypergeometric {
+                population,
+                successes,
+                draws,
+            } => {
+                (successes - k) * (draws - k)
+                    / ((k + 1.0) * (population - successes - draws + k + 1.0))
+            }
+            MassRatio::NegativeBinomial { r, fail, .. } => (k + r) / (k + 1.0) * fail,
+            MassRatio::Poisson { rate } => rate / (k + 1.0),
+        }
+    }
+
+    /// A mode (an anchor for the walk: any point near the largest mass).
+    fn mode(self) -> f64 {
+        match self {
+            MassRatio::Hypergeometric {
+                population,
+                successes,
+                draws,
+            } => ((draws + 1.0) * (successes + 1.0) / (population + 2.0)).floor(),
+            MassRatio::NegativeBinomial { r, p, fail } => {
+                if r > 1.0 {
+                    ((r - 1.0) * fail / p).floor()
+                } else {
+                    0.0
+                }
+            }
+            MassRatio::Poisson { rate } => rate.floor(),
+        }
+    }
+
+    /// The standard deviation.
+    fn sd(self) -> f64 {
+        match self {
+            MassRatio::Hypergeometric {
+                population,
+                successes,
+                draws,
+            } => {
+                let f = successes / population;
+                (draws * f * (1.0 - f) * (population - draws) / (population - 1.0).max(1.0)).sqrt()
+            }
+            MassRatio::NegativeBinomial { r, p, fail } => (r * fail).sqrt() / p,
+            MassRatio::Poisson { rate } => rate.sqrt(),
+        }
+    }
+}
+
+/// The ratios one [`anchored_walk`] may take: 2,000,000, a logarithm and an
+/// exponential each — some tens of milliseconds, a tenth of the 0.3 s a
+/// call may take.  A walk that reaches the bound gives no guess.
+const ANCHORED_WALK_STEPS: usize = 2_000_000;
+
+/// The atoms that 40 standard deviations may span for an [`anchored_walk`]
+/// to be started: a quarter of [`ANCHORED_WALK_STEPS`], the walk passing
+/// over a tail up to three times (the total, out, and back).
+const ANCHORED_WALK_SPAN: f64 = 500_000.0;
+
+/// `e⁻⁴⁵ < 2⁻⁶⁴`: a mass that far below a sum does not change its double.
+const NEGLIGIBLE: f64 = 45.0;
+
+/// A guess of the smallest point of the lattice `lo..=hi` whose tail has
+/// crossed `level` (a level on the smaller tail), from the recurrence of
+/// the masses alone: the logarithms of the masses relative to the one at
+/// an anchor (the mode, moved into the lattice), summed away from the
+/// anchor to the total, then the tail that `level` names summed towards
+/// the anchor from where the masses are negligible against the level
+/// (`e⁻⁴⁵` of it).  Nothing overflows and a mass of `10⁻³⁰⁰` of the total
+/// is as good as any other.  `f64` and unproved, so only a guess: the
+/// caller's search decides.
+///
+/// `None` when a ratio is not a positive number, or beyond the bound: the
+/// walk takes [`ANCHORED_WALK_STEPS`] ratios at most and is not started
+/// when 40 standard deviations (a level of `10⁻³⁰⁰` lies 37 from the mean
+/// of a normal law) are more than [`ANCHORED_WALK_SPAN`] atoms.
+fn anchored_walk(level: Level, ratio: MassRatio, lo: f64, hi: f64) -> Option<f64> {
+    let anchor = ratio.mode().clamp(lo, hi);
+    let sd = ratio.sd();
+    if !(anchor.is_finite() && sd.is_finite() && 40.0 * sd <= ANCHORED_WALK_SPAN) {
+        return None;
+    }
+    let left = std::cell::Cell::new(ANCHORED_WALK_STEPS);
+    // ln(f(k + 1)/f(k)).
+    let ln_up = |k: f64| -> Option<f64> {
+        left.set(left.get().checked_sub(1)?);
+        let r = ratio.up(k);
+        (r.is_finite() && r > 0.0).then(|| r.ln())
+    };
+    let mut total = 1.0_f64;
+    let (mut k, mut l) = (anchor, 0.0_f64);
+    while k < hi {
+        l += ln_up(k)?;
+        k += 1.0;
+        total += l.exp();
+        if l < total.ln() - NEGLIGIBLE {
+            break;
+        }
+    }
+    (k, l) = (anchor, 0.0);
+    while k > lo {
+        l -= ln_up(k - 1.0)?;
+        k -= 1.0;
+        total += l.exp();
+        if l < total.ln() - NEGLIGIBLE {
+            break;
+        }
+    }
+    let (Level::Lower(at) | Level::Upper(at)) = level;
+    let ln_target = at.ln() + total.ln();
+    (k, l) = (anchor, 0.0);
+    let mut acc = 0.0_f64;
+    match level {
+        Level::Lower(_) => {
+            while k > lo && l > ln_target - NEGLIGIBLE {
+                l -= ln_up(k - 1.0)?;
+                k -= 1.0;
+            }
+            // F(k) in units of the level.
+            loop {
+                acc += (l - ln_target).exp();
+                if acc >= 1.0 || k >= hi {
+                    return Some(k);
+                }
+                l += ln_up(k)?;
+                k += 1.0;
+            }
+        }
+        Level::Upper(_) => {
+            while k < hi && l > ln_target - NEGLIGIBLE {
+                l += ln_up(k)?;
+                k += 1.0;
+            }
+            // S(k − 1) = S(k) + f(k) in units of the level.
+            loop {
+                acc += (l - ln_target).exp();
+                if acc > 1.0 || k <= lo {
+                    return Some(k);
+                }
+                l -= ln_up(k - 1.0)?;
+                k -= 1.0;
+            }
+        }
+    }
+}
+
 /// An end of a support piece as an `f64` (`±∞` for the infinities).
 fn lattice_end(e: &Ex) -> Result<f64, SymplexError> {
     if is_neg_inf(e) {
@@ -2515,16 +2830,44 @@ impl Distribution {
         if let Some(values) = support.as_points() {
             return self.table_quantile_f64(level, &values);
         }
-        let probe = self.fresh_var("x", &[]);
-        let closed = self.0.cdf(&probe).is_some()
-            || (matches!(level, Level::Upper(_)) && self.0.sf(&probe).is_some());
         let lattice = support.normalize_lattice();
         let Some(iv) = lattice.as_interval() else {
             return self.pieces_quantile_f64(level, &lattice);
         };
         let (lo, hi) = (lattice_end(&iv.lower)?, lattice_end(&iv.upper)?);
+        // A mixture: its tails are the weighted tails of its components at
+        // each probe.  Up to 0.60.1 the question "is there a closed form?"
+        // below built the mixture's CDF at a symbol first, a symbolic
+        // summation per component without one (0.95 s of every quantile of
+        // `½ Hypergeometric(10, 6, 4) + ½ NegativeBinomial(36, ½)`).
+        if let Some(mixture) = self.downcast_ref::<super::wrappers::Mixture>() {
+            return self.mixture_lattice_quantile(mixture, asked, level, lo, hi);
+        }
+        // A hypergeometric law within the bounds of its exact sums, itself
+        // or truncated to `lo..=hi`: its integer terms decide in one or
+        // two passes (see `exact_quantile`).
+        let hypergeometric = self
+            .downcast_ref::<super::discrete::Hypergeometric>()
+            .or_else(|| {
+                self.downcast_ref::<super::wrappers::Truncated>()
+                    .and_then(|t| t.inner.downcast_ref::<super::discrete::Hypergeometric>())
+            });
+        if let Some(h) = hypergeometric {
+            let (Level::Lower(at) | Level::Upper(at)) = level;
+            if let Some(k) = h.exact_quantile(at, matches!(level, Level::Upper(_)), lo, hi) {
+                return Ok(k);
+            }
+        }
+        let probe = self.fresh_var("x", &[]);
+        let closed = self.0.cdf(&probe).is_some()
+            || (matches!(level, Level::Upper(_)) && self.0.sf(&probe).is_some());
         if closed {
             let k0 = self.lattice_guess(asked, level, lo, hi)?;
+            return self.lattice_search(level, k0, lo, hi);
+        }
+        // The masses of the family by their recurrence, where it has one
+        // (no overflow, no exact mass): see `family_guess`.
+        if let Some(k0) = self.family_guess(level, lo, hi) {
             return self.lattice_search(level, k0, lo, hi);
         }
         // No closed form: the walk of the compiled mass function guesses,
@@ -2559,14 +2902,196 @@ impl Distribution {
     fn tail_crossed(&self, level: Level, x: &Ex) -> Result<bool, SymplexError> {
         let tail = match level {
             Level::Lower(_) => self.cdf_on_support(x),
+            // A mixture's upper tail is the weighted upper tails of its
+            // components, each in its own non-cancelling form: no CDF of
+            // the mixture is formed to ask whether `x` is far out.
+            Level::Upper(_) if self.downcast_ref::<super::wrappers::Mixture>().is_some() => {
+                self.0.sf(x).unwrap_or_else(|| self.sf_on_support(x))
+            }
             Level::Upper(_) => self.sf_on_support(x),
         };
-        level.crossed(&tail)
+        match level.crossed(&tail) {
+            // A truncated law's tail is built from the inner closed forms
+            // as they are, and the evaluator can refuse one that the fold
+            // of a numeric value puts into a form it evaluates (the
+            // Poisson `Γ(k + 1, λ)/k!` at `k ≈ 4·10⁹`: "factorial …
+            // overflows"; folded, a regularized incomplete gamma function).
+            // The whole-line `cdf`/`sf` fold every numeric value; here only
+            // a refused one is, since folding costs where the form is an
+            // exact power.  Up to 0.60.1 every quantile of `Poisson(3974955008)`
+            // truncated to `[0, 3974720536]` below the truncation point
+            // was that refusal.
+            Err(refusal) if self.downcast_ref::<super::wrappers::Truncated>().is_some() => {
+                level.crossed(&tail.eval()).map_err(|_| refusal)
+            }
+            decided => decided,
+        }
+    }
+
+    /// A guess of the quantile of a law truncated to the lattice `lo..=hi`
+    /// from the quantile of the inner law: with `F`, `S` its tails,
+    /// `P(X ≤ k | lo ≤ X ≤ hi) ≥ p` reads `F(k) ≥ F(lo − 1) + p·(F(hi) −
+    /// F(lo − 1))` and `S(k) ≤ S(hi) + (1 − p)·(S(lo − 1) − S(hi))`; the
+    /// smaller of the two inner levels is formed in `f64` and the inner
+    /// law asked.  The rounding of the level makes it a guess only.
+    fn truncated_guess(
+        &self,
+        truncated: &super::wrappers::Truncated,
+        level: Level,
+        lo: f64,
+        hi: f64,
+    ) -> Option<f64> {
+        if !lo.is_finite() {
+            return None;
+        }
+        let ctx = self.context();
+        let inner = &truncated.inner;
+        let value = |e: Ex| e.eval_f64().ok().filter(|v| v.is_finite());
+        let below = ctx.from_f64(lo - 1.0).ok()?;
+        let top = if hi.is_finite() {
+            Some(ctx.from_f64(hi).ok()?)
+        } else {
+            None
+        };
+        // The share of the truncated law at or below the quantile.
+        let share = match level {
+            Level::Lower(p) => p,
+            Level::Upper(q) => 1.0 - q,
+        };
+        let f_lo = value(inner.cdf(&below))?;
+        let f_hi = match &top {
+            Some(t) => value(inner.cdf(t))?,
+            None => 1.0,
+        };
+        let lower = f_lo + share * (f_hi - f_lo);
+        let inner_level = if lower <= 0.5 {
+            Level::Lower(lower)
+        } else {
+            let s_lo = value(inner.sf(&below))?;
+            let s_hi = match &top {
+                Some(t) => value(inner.sf(t))?,
+                None => 0.0,
+            };
+            let rest = match level {
+                Level::Lower(p) => 1.0 - p,
+                Level::Upper(q) => q,
+            };
+            Level::Upper(s_hi + rest * (s_lo - s_hi))
+        };
+        let (Level::Lower(at) | Level::Upper(at)) = inner_level;
+        if !(at > 0.0 && at < 1.0) {
+            return None;
+        }
+        let k = inner.quantile_at(inner_level).ok()?;
+        k.is_finite().then(|| k.clamp(lo, hi))
+    }
+
+    /// [`discrete_quantile_f64`](Self::discrete_quantile_f64) of a mixture
+    /// on the integer lattice `lo..=hi`.  With `kᵢ` the quantile of
+    /// component `i` at the level asked, the mixture's quantile lies in
+    /// `min kᵢ ..= max kᵢ`: at `max kᵢ` every component's tail has crossed
+    /// the level, so their weighted mean has, and below `min kᵢ` none has.
+    ///
+    /// * First the guess of the walk of the compiled mass function, as up
+    ///   to 0.60.1, and the search from it: the answer of a mixture of a
+    ///   law near 0 and one near `10⁹` that lies next to 0 is found in two
+    ///   probes (bisecting down from `10⁹` takes thirty, each with one
+    ///   component far out in its tail, and the components' quantiles
+    ///   cost more than the walk).
+    /// * When the walk has no guess (the answer is beyond its 100,000
+    ///   atoms, a mass overflows), the components are asked and their
+    ///   bracket is bisected ([`bracket_bisect`](Self::bracket_bisect)).
+    ///   Up to 0.60.1 the search then started at the mean: 0.6 s for
+    ///   `⅓ NegativeBinomial(3, ⅓) + ⅔ NegativeBinomial(1000, 10⁻⁶)` at
+    ///   `p = ½`, now 0.1 s.
+    /// * Without a bracket (a component refuses, an end does not hold, a
+    ///   probe is refused), the search of the whole lattice from the
+    ///   mean, as up to 0.60.1.
+    ///
+    /// Every answer is decided by probes of the mixture's own exact
+    /// weighted tails ([`tail_crossed`](Self::tail_crossed)).
+    fn mixture_lattice_quantile(
+        &self,
+        mixture: &super::wrappers::Mixture,
+        asked: Level,
+        level: Level,
+        lo: f64,
+        hi: f64,
+    ) -> Result<f64, SymplexError> {
+        if let Ok(Some(k0)) = self.lattice_walk(level, lo, hi) {
+            return self.lattice_search(level, k0, lo, hi);
+        }
+        let mut ends: Option<LatticeBracket> = None;
+        for (_, component) in &mixture.components {
+            match component.quantile_at(asked) {
+                Ok(k) if k.is_finite() => {
+                    ends = Some(match ends {
+                        Some(b) => LatticeBracket {
+                            first: b.first.min(k),
+                            last: b.last.max(k),
+                        },
+                        None => LatticeBracket { first: k, last: k },
+                    });
+                }
+                _ => {
+                    ends = None;
+                    break;
+                }
+            }
+        }
+        if let Some(b) = ends
+            && lo <= hi
+            && let Ok(Some(k)) = self.bracket_bisect(level, b, lo, hi)
+        {
+            return Ok(k);
+        }
+        self.lattice_search(level, self.mean_f64().unwrap_or(f64::NAN), lo, hi)
+    }
+
+    /// The smallest point of the lattice `lo..=hi` (`lo ≤ hi`) whose tail
+    /// has crossed `level`, sought in `bracket`: its two ends are probed
+    /// first — crossed at the last point, not crossed before the first
+    /// one (or the first one is `lo`) — and `None` is returned when either
+    /// does not hold; then bisection, each probe exact
+    /// ([`tail_crossed`](Self::tail_crossed)).  A refused probe is the
+    /// error.
+    fn bracket_bisect(
+        &self,
+        level: Level,
+        bracket: LatticeBracket,
+        lo: f64,
+        hi: f64,
+    ) -> Result<Option<f64>, SymplexError> {
+        let ctx = self.context();
+        let crossed = |k: f64| ctx.from_f64(k).and_then(|kx| self.tail_crossed(level, &kx));
+        let (first, last) = (bracket.first.clamp(lo, hi), bracket.last.clamp(lo, hi));
+        let before = first - lattice_spacing(first);
+        if !(crossed(last)? && (before < lo || !crossed(before)?)) {
+            return Ok(None);
+        }
+        // Not crossed at `below` (or `below` is under the lattice), crossed
+        // at `at`.
+        let (mut below, mut at) = (before, last);
+        for _ in 0..LATTICE_SEARCH_STEPS {
+            let mid = (0.5 * (below + at)).floor();
+            if at - below <= 1.0 || mid <= below || mid >= at {
+                return Ok(Some(at));
+            }
+            if crossed(mid)? {
+                at = mid;
+            } else {
+                below = mid;
+            }
+        }
+        Err(SymplexError::computation_failed(
+            "quantile_f64",
+            "the lattice search did not end within its step bound",
+        ))
     }
 
     /// The smallest lattice point of `lo..=hi` whose tail has crossed
-    /// `level`, each probe decided exactly ([`tail_crossed`]), by
-    /// [`numdist`](super::numdist)'s doubling search and bisection from the
+    /// `level`, each probe decided exactly ([`tail_crossed`]), by a
+    /// doubling search and bisection ([`lattice_bisect`]) from the
     /// guess `k0` (the first finite one of `k0`, `lo`, `hi`, `0`).
     ///
     /// [`tail_crossed`]: Self::tail_crossed
@@ -2590,8 +3115,124 @@ impl Distribution {
             .into_iter()
             .find(|v| v.is_finite())
             .unwrap_or(0.0);
-        super::numdist::discrete_search("quantile_f64", crossed, k0, lo, hi)
-            .map_err(|e| failure.into_inner().unwrap_or(e))
+        lattice_bisect(crossed, k0, lo, hi).map_err(|e| failure.into_inner().unwrap_or(e))
+    }
+
+    /// The masses of the law as a recurrence in `f64` ([`MassRatio`]), for
+    /// numeric parameters: a hypergeometric, negative binomial, geometric
+    /// or Poisson law, and any of
+    /// them truncated (the masses of a truncated law are those of the inner
+    /// one up to a constant).  `None` otherwise.
+    fn mass_ratio(&self) -> Option<MassRatio> {
+        use super::discrete::{Geometric, Hypergeometric, NegativeBinomial, Poisson};
+        let num = |e: &Ex| -> Option<f64> {
+            if e.free_symbols().is_empty() {
+                e.eval_f64().ok().filter(|v| v.is_finite())
+            } else {
+                None
+            }
+        };
+        let ctx = self.context();
+        let mut law = self;
+        while let Some(t) = law.downcast_ref::<super::wrappers::Truncated>() {
+            law = &t.inner;
+        }
+        if let Some(d) = law.downcast_ref::<Hypergeometric>() {
+            let (population, successes, draws) =
+                (num(&d.population)?, num(&d.successes)?, num(&d.draws)?);
+            // Beyond 2⁵³ the doubles are not the counts: good enough for
+            // a guess.
+            let counts = population >= 1.0
+                && (0.0..=population).contains(&successes)
+                && (0.0..=population).contains(&draws);
+            return counts.then_some(MassRatio::Hypergeometric {
+                population,
+                successes,
+                draws,
+            });
+        }
+        if let Some(d) = law.downcast_ref::<NegativeBinomial>() {
+            let (r, p, fail) = (num(&d.r)?, num(&d.p)?, num(&(ctx.one() - &d.p))?);
+            return (r > 0.0 && p > 0.0 && fail > 0.0).then_some(MassRatio::NegativeBinomial {
+                r,
+                p,
+                fail,
+            });
+        }
+        if let Some(d) = law.downcast_ref::<Geometric>() {
+            // The trials to the first success: the failures before it
+            // (`NegativeBinomial(1, p)`) plus one, the same ratio.
+            let (p, fail) = (num(&d.p)?, num(&(ctx.one() - &d.p))?);
+            return (p > 0.0 && fail > 0.0).then_some(MassRatio::NegativeBinomial {
+                r: 1.0,
+                p,
+                fail,
+            });
+        }
+        if let Some(d) = law.downcast_ref::<Poisson>() {
+            let rate = num(&d.rate)?;
+            return (rate > 0.0).then_some(MassRatio::Poisson { rate });
+        }
+        None
+    }
+
+    /// A starting point for [`lattice_search`](Self::lattice_search) from
+    /// what the family is, in `f64` (only a guess: the search decides each
+    /// probe exactly, and from a right guess needs two probes).
+    ///
+    /// * `Geometric(π)`: the closed form `⌈ln(1 − p)/ln(1 − π)⌉` (lower
+    ///   level `p`), `⌈ln q/ln(1 − π)⌉` (upper level `q`).  Up to 0.60.1 the
+    ///   search started at the mean and stepped by 1: at `π = 1/(25·10²⁵⁰)`
+    ///   0.78 s (see [`lattice_bisect`] for the stride).
+    /// * a law with a mass recurrence ([`mass_ratio`](Self::mass_ratio)):
+    ///   [`anchored_walk`].  Up to 0.60.1 the compiled mass function was
+    ///   walked from the end of the support; for `Hypergeometric(90000,
+    ///   36562, 78750)` its binomials overflow, 64 masses were formed
+    ///   exactly, and the search started at the mean (1.2 s at `p = 0.3`,
+    ///   8.5 s at `q = 10⁻³⁰⁰`).
+    /// * `NegativeBinomial(r, π)` beyond the walk: the quantile of
+    ///   `Gamma(r, (1 − π)/π)`, its limit as `π → 0` (relative error of
+    ///   order `π`).  `NegativeBinomial(21590, 1/(1.25·10¹⁸¹))` took
+    ///   11.7 s from its mean (the probes were not counted; see
+    ///   [`lattice_bisect`] for those the stride of 1 wasted).
+    fn family_guess(&self, level: Level, lo: f64, hi: f64) -> Option<f64> {
+        use super::discrete::{Geometric, NegativeBinomial};
+        // An empty lattice has no guess (and `clamp` needs `lo ≤ hi`).
+        if lo.is_nan() || hi.is_nan() || lo > hi {
+            return None;
+        }
+        if let Some(g) = self.downcast_ref::<Geometric>() {
+            let ln_fail = (self.context().one() - &g.p).ln().eval_f64().ok()?;
+            let ln_tail = match level {
+                Level::Lower(p) => (-p).ln_1p(),
+                Level::Upper(q) => q.ln(),
+            };
+            let k = (ln_tail / ln_fail).ceil();
+            return k.is_finite().then(|| k.clamp(lo, hi));
+        }
+        let truncated = self.downcast_ref::<super::wrappers::Truncated>();
+        let Some(ratio) = self.mass_ratio() else {
+            return truncated.and_then(|t| self.truncated_guess(t, level, lo, hi));
+        };
+        if let Some(k) = anchored_walk(level, ratio, lo, hi) {
+            return Some(k);
+        }
+        if let Some(t) = truncated {
+            return self.truncated_guess(t, level, lo, hi);
+        }
+        if let MassRatio::NegativeBinomial { r, p, fail } = ratio
+            && self.downcast_ref::<NegativeBinomial>().is_some()
+        {
+            let scale = fail / p;
+            let k = level
+                .pick(
+                    |p| super::numdist::gamma::ppf(p, r, scale),
+                    |q| super::numdist::gamma::isf(q, r, scale),
+                )
+                .ok()?;
+            return k.is_finite().then(|| k.round().clamp(lo, hi));
+        }
+        None
     }
 
     /// A starting point for [`lattice_search`](Self::lattice_search): the
@@ -2611,6 +3252,9 @@ impl Distribution {
             && v.is_finite()
         {
             return Ok(v);
+        }
+        if let Some(k) = self.family_guess(level, lo, hi) {
+            return Ok(k);
         }
         if let Ok(Some(k)) = self.lattice_walk(level, lo, hi) {
             return Ok(k);

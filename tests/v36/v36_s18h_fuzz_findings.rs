@@ -162,8 +162,12 @@ fn a_narrow_component_of_a_mixture_is_not_lost_by_the_numeric_integrals() {
 ///
 /// Oracle: the definition (total mass 1); mpmath, `quad(lambda x: 5*exp(-10*abs(x)), [-inf, 0,
 /// inf])` = `1.0` and `betainc(d1/2, mpf(1)/2, 0, 1, regularized=True)` = `1.0`.
+///
+/// Since 0.60.1 both calls refuse: the range is split at `−2⁹⁰⁰` (a pole of the F density's
+/// formula) and at 0, and the piece between them, no node of which sees the Laplace component
+/// next to 0, is no longer summed as 0 (`v36_s18q_quadrature`).  The F half itself, hidden
+/// behind the Laplace component on `[0, ∞)`, is still not seen (the two tests above).
 #[test]
-#[ignore = "known bug: the density of 1/2·Laplace(0, 1/10) + 1/2·FDistribution(2^-900, 1) integrates to 0.25, by integrate_numeric and certified"]
 fn failure_b_the_density_of_a_mixture_with_an_f_law_of_a_tiny_first_parameter() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -197,8 +201,10 @@ fn failure_b_the_density_of_a_mixture_with_an_f_law_of_a_tiny_first_parameter() 
 /// `0.9206723730342714742926163` (`mp.dps = 40`, `80`); SciPy, `norm.cdf(1)/2 + f.cdf(1, 1e-270,
 /// 1)/2` = `0.9206723730342714`.  `ncdf(1)/2` = `0.42067237303427147429`, `(ncdf(1) − 1/2)/2` =
 /// `0.17067237303427147429`.
+///
+/// Since 0.60.1 both calls refuse (the cause and the fix: `v36_s18q_quadrature`,
+/// `a_piece_every_node_of_which_gave_zero_is_not_summed_as_zero`).
 #[test]
-#[ignore = "known bug: P(X ≤ 1) of 1/2·Normal(0, 1) + 1/2·FDistribution(1e-270, 1) by numeric integration is 0.1707, the value is 0.9207"]
 fn an_integral_from_minus_infinity_across_a_singular_point_keeps_its_left_part() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -231,8 +237,11 @@ fn an_integral_from_minus_infinity_across_a_singular_point_keeps_its_left_part()
 ///
 /// Oracle: the definition (total mass 1); mpmath, `quad` of the standard density in `u = x/σ`
 /// = `1.0` for the normal and the Weibull law (`mp.dps = 40`, `80`).
+///
+/// Since 0.60.1 both are refused: an estimate that is not larger than its own error estimate is
+/// decided by the certified route or not at all (`v36_s18q_quadrature`,
+/// `an_estimate_not_larger_than_its_error_estimate_is_not_returned`).
 #[test]
-#[ignore = "known bug: integrate_numeric of the density of Normal(0, 1e80) over the real line is Ok(6.1e-66), the value is 1"]
 fn the_density_of_a_law_of_a_huge_scale_does_not_integrate_to_almost_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -270,7 +279,6 @@ fn the_density_of_a_law_of_a_huge_scale_does_not_integrate_to_almost_zero() {
 /// Oracle: exact (the moment generating functions multiply: `(1 − θt)^(−k)·(1 − θt)^(−1)`);
 /// mpmath, `(mpf(55)/1048576 + 1)*2*log(2)` = `1.386367075152885455626491`.
 #[test]
-#[ignore = "known bug: sum_distribution(Gamma(k, 2·ln 2), Exponential(1/(2·ln 2))) is None; the rate's reciprocal simplifies to ln(4)"]
 fn failure_c_a_gamma_and_an_exponential_law_of_the_scale_two_ln_two_add() {
     let ctx = Context::new();
     let theta = ctx.int(2).ln() * ctx.int(2);

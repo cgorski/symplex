@@ -80,7 +80,7 @@ use astro_float::{BigFloat, Consts};
 use tracing::debug;
 
 use super::accuracy::{self, ErrExp};
-use super::quad::{Integrand, scale2, small};
+use super::quad::{Integrand, blind_end_layer, end_sizes, scale2, small};
 use super::{Settled, ZeroSearch, evalf_settled};
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::c_sub;
@@ -166,6 +166,55 @@ pub(super) fn f64_tail_trusted(
         Sampled::Negligible => tail_decay(arena, body, var, upper) == TailDecay::Vanishes,
     }
 }
+
+/// `log₂` of a bound on what the integrand `body` (in `var`) holds next to
+/// the finite ends of a piece `[lo, hi]` none of whose nodes saw a value
+/// ([`blind_end_layer`] of the steps of [`end_sizes`] from each end into the
+/// piece): `EXACT` where it is an exact 0 there (the 0 branch of a
+/// `Piecewise`) or below the exponent range (a far tail), which is what the
+/// arbitrary-precision quadrature asks of such a piece before it counts it
+/// as 0 (`Quad::run`); an `f64` quadrature asks it of a piece every node of
+/// which gave 0.  `UNKNOWN` when the integrand cannot be read at any step
+/// from an end.
+pub(super) fn held_at_ends(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: f64,
+    hi: f64,
+    cc: &mut Consts,
+) -> ErrExp {
+    let mut f = Integrand::new(arena, body, var);
+    let width = if lo.is_finite() && hi.is_finite() {
+        (hi - lo).log2()
+    } else {
+        0.0
+    };
+    let mut held = accuracy::EXACT;
+    for (e, above) in [(lo, true), (hi, false)] {
+        if e.is_infinite() {
+            continue;
+        }
+        let x = bigfloat::from_f64(e, END_PREC);
+        let sizes = end_sizes(&mut f, &x, accuracy::EXACT, above, END_PREC, cc);
+        debug!(
+            e,
+            above,
+            ?sizes,
+            "evalf: the integrand next to an end of a piece without a value"
+        );
+        if sizes.is_empty() {
+            return accuracy::UNKNOWN;
+        }
+        held = held.max(blind_end_layer(&sizes, width));
+    }
+    held
+}
+
+/// The bits of the positions of [`held_at_ends`]: the steps of
+/// [`end_sizes`], down to `2⁻¹²⁸` of an end below unit size or to `2⁻¹²⁸`,
+/// are told from an end of a size up to `2¹⁹⁰`.
+const END_PREC: usize = 320;
 
 /// What the certified samples of [`samples_trusted`] say of an `f64` tail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

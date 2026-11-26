@@ -1586,6 +1586,157 @@ fn hypergeometric_mass(shape: &HypergeometricShape, a: u64, b: u64) -> Option<Q>
     Some(Q::new(acc, binomial_coefficient(big_n, n)))
 }
 
+/// The smallest `k` of the support with `F(k) ≥ level` (`upper` false) or
+/// `S(k) ≤ level` (`upper` true), for a level in `[0, 1]`, decided in
+/// integers in one pass: with `T_j = C(m, j) C(N−m, n−j)` and `C(N, n) =
+/// Σ T_j`, both conditions read `Σ_{j ≤ k} T_j ≥ Θ` for the integer
+/// `Θ = ⌈level·C(N, n)⌉` (lower) or `⌈(1 − level)·C(N, n)⌉` (upper:
+/// `C(N, n) − Σ_{j ≤ k} T_j ≤ level·C(N, n)`), the level the exact rational
+/// it is.  The terms move by the recurrence of [`hypergeometric_mass`]
+/// from `T_lo`, in two exact steps (`C(m, j)·(m − j)/(j + 1)` and
+/// `C(N−m, n−j)·(n − j)/(N − m − n + j + 1)` are binomials), so every
+/// factor is one machine word.  No rational is formed and nothing is
+/// reduced.  Up to 0.60.1 each probe of the quantile search formed the
+/// two tails at its point as reduced rationals — `C(N, n)`, the first
+/// term and the walk again each time: `Hypergeometric(90000, 36562,
+/// 78750)` took 1.2 s at `p = 0.3` and 8.5 s at `q = 10⁻³⁰⁰`.
+///
+/// The same for the law truncated to `first..=last` (clipped to the
+/// support): its conditions read `Σ_{first ≤ j ≤ k} T_j ≥ ⌈share·W⌉` with
+/// `W = Σ_{first ≤ j ≤ last} T_j` in place of `C(N, n)`, which a first
+/// pass over the terms up to `last` sums (`C(N, n)` cancels and is not
+/// formed).
+///
+/// `None` past the bounds of [`hypergeometric_mass`] (the size of `C(N,
+/// n)`, and the steps: the first term, `C(N, n)`, and the whole support
+/// twice), where the search probes the windowed sums of `evalf`; `None`
+/// for an empty window.
+fn hypergeometric_quantile(
+    shape: &HypergeometricShape,
+    level: &Q,
+    upper: bool,
+    first: u64,
+    last: u64,
+) -> Option<u64> {
+    let big_n = shape.population;
+    let (lo, hi) = (shape.lowest(), shape.highest());
+    let (from, to) = (first.max(lo), last.min(hi));
+    if level < &Q::zero() || level > &Q::one() || from > to {
+        return None;
+    }
+    let across = |x: u64| x.min(big_n - x);
+    let (m, n) = if across(shape.successes) < across(shape.draws) {
+        (shape.draws, shape.successes)
+    } else {
+        (shape.successes, shape.draws)
+    };
+    let r = across(n);
+    let size = if r == 0 {
+        1
+    } else {
+        let ratio = big_n.div_ceil(r);
+        let log = u64::from(u64::BITS - (ratio - 1).leading_zeros());
+        r.saturating_mul(log + 2)
+    };
+    let failures = big_n - m;
+    let first_steps = if lo == 0 {
+        n.min(failures - n)
+    } else {
+        lo.min(m - lo)
+    };
+    let steps = first_steps
+        .saturating_add((hi - lo).saturating_mul(2))
+        .saturating_add(r)
+        .max(1);
+    if size > BINOMIAL_MASS_MAX_BITS || steps.saturating_mul(size) > BINOMIAL_MASS_BUDGET {
+        return None;
+    }
+    let spare = failures.saturating_sub(n);
+    // T_j → T_{j+1}, each quotient exact.
+    let advance = |term: &mut BigInt, j: u64| {
+        *term *= m - j;
+        *term /= j + 1;
+        *term *= n - j;
+        *term /= j + 1 - lo + spare;
+    };
+    let lowest_term = if lo == 0 {
+        binomial_coefficient(failures, n)
+    } else {
+        binomial_coefficient(m, lo)
+    };
+    // The term at `from` and the sum `W` of the window.
+    let (mut term, window) = if from == lo && to == hi {
+        (lowest_term, binomial_coefficient(big_n, n))
+    } else {
+        let mut term = lowest_term;
+        let mut at_from = None;
+        let mut window = BigInt::zero();
+        for j in lo..=to {
+            if j == from {
+                at_from = Some(term.clone());
+            }
+            if j >= from {
+                window += &term;
+            }
+            if j < to {
+                advance(&mut term, j);
+            }
+        }
+        (at_from?, window)
+    };
+    let share = if upper {
+        Q::one() - level
+    } else {
+        level.clone()
+    };
+    // ⌈share·W⌉.
+    let scaled = &window * share.numer();
+    let (quotient, remainder) = (&scaled / share.denom(), &scaled % share.denom());
+    let threshold = if remainder.is_zero() {
+        quotient
+    } else {
+        quotient + BigInt::one()
+    };
+    let mut acc = BigInt::zero();
+    for j in from..=to {
+        acc += &term;
+        if acc >= threshold || j == to {
+            return Some(j);
+        }
+        advance(&mut term, j);
+    }
+    Some(to)
+}
+
+impl Hypergeometric {
+    /// The quantile of the law truncated to the integers `first..=last`
+    /// (the whole support for the law itself) at a lower level (`upper`
+    /// false: the smallest `k` with `P(X ≤ k) ≥ level`) or an upper one
+    /// (the smallest `k` with `P(X > k) ≤ level`) by
+    /// [`hypergeometric_quantile`], exact; `None` for parameters that are
+    /// not counts below `2⁵³`, ends that are not integers, a level outside
+    /// `[0, 1]`, or a law past the bounds of the exact sums.
+    pub(super) fn exact_quantile(
+        &self,
+        level: f64,
+        upper: bool,
+        first: f64,
+        last: f64,
+    ) -> Option<f64> {
+        let (shape, _) = self.numeric_at(&self.context().zero())?;
+        if shape.population >= 1 << 53 || first.trunc() != first || last.trunc() != last {
+            return None;
+        }
+        let level = Q::from_float(level)?;
+        let (first, last) = (
+            num_traits::ToPrimitive::to_u64(&first.max(0.0))?,
+            num_traits::ToPrimitive::to_u64(&last)?,
+        );
+        let k = hypergeometric_quantile(&shape, &level, upper, first, last)?;
+        num_traits::ToPrimitive::to_f64(&k)
+    }
+}
+
 /// `DiscreteUniform(a, b)`: `P(X = k) = 1/(b−a+1)` on the integers `a..=b`.
 /// `Die(s)` is `DiscreteUniform(1, s)`.
 #[derive(Clone, Debug, PartialEq)]

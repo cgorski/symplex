@@ -71,6 +71,70 @@ gh run download <run-id> -n fuzz-corpus-fuzz_integrate -D fuzz/corpus/fuzz_integ
 $B/fuzz_integrate -runs=0 fuzz/corpus/fuzz_integrate    # replay all of it ($B: see below)
 ```
 
+## The two modes of `fuzz_stats`, and the campaign before a release
+
+The library's working rule is: never wrong anywhere; **inside the
+envelope** — distribution parameters between `2⁻⁵³` and `2⁵³` in magnitude,
+levels down to `10⁻³⁰⁰` — a call must answer; beyond it a fast, honest
+refusal is enough.  `fuzz_stats` draws accordingly:
+
+| Mode | How | Parameters | For |
+|---|---|---|---|
+| inside | the default | every drawn parameter between `2⁻⁵³` and `2⁵³` in magnitude (or 0): powers of ten to `10^±14`, wide dyadics `2⁻⁵³ … 2⁵²`, probabilities down to `10⁻¹⁵`, counts to `9·10¹⁵` | the nightly job: what it reports slow or wrong is a defect by the rule |
+| beyond | `FUZZ_STATS_BEYOND=1` in the environment (read once) | as every version up to 0.60 drew: powers of ten to `10^±300`, dyadics over `2^±900`, probabilities down to `10⁻³⁰⁰`, counts to `9·10¹⁷`, integers to `9·10³⁰` | the campaign before a release: wrong answers anywhere, and refusals that are not fast |
+
+The levels (down to `10⁻³⁰⁰`), the sample points, the ends of a truncation
+(they are sample points: quantiles at those levels, so they can lie far
+outside `±2⁵³`) and the coefficients of the wrappers are the same in both
+modes.  A probability `1 − m/10^k`, `k ≤ 30`, is drawn in both: it is inside
+in magnitude.  The upper end of a range (`Uniform`, `Triangular`,
+`DiscreteUniform`) is the sum of two draws: at most `2⁵³`, and nearer to 0
+than `2⁻⁵³` only when a power of ten and a wide dyadic cancel that far.
+Both modes read the same bytes, so one corpus serves both and an input
+decodes to the same case in both, except that an exponent beyond the
+envelope is folded into it and that the `numdist` check draws its extreme
+shapes, binomial `n` and Poisson rate over the range cut to the envelope
+(at least 881 of the 4,509 inputs of the corpus saved at 0.60.1 decode to
+another case inside, 523 of them `numdist`: counted on the drawn law
+without its wrapper); an artifact of a beyond run must be replayed with
+the variable set (`FUZZ_STATS_BEYOND=1 FUZZ_SHOW=1 $B/fuzz_stats
+<input>`).  The modes differ in one block of the harness ("the envelope",
+at the top of its number generators).
+
+The nightly job stops at its first finding and says nothing about the
+next.  Before a release, run the same build for longer on one of the
+project's build machines, in both modes.  The script for it,
+`ci_predict.sh`, is not in this repository: it drives a build machine
+over ssh and lives with the project's release tooling; it needs a host
+with the tree, `cargo-fuzz` and a copy of the corpus.
+
+```sh
+sh ci_predict.sh <host> <tree-on-host> 20 48            # inside the envelope
+sh ci_predict.sh <host> <tree-on-host> 20 48 beyond     # beyond it too
+sh ci_predict.sh <host> <tree-on-host> fetch [beyond]   # the summary, when done
+```
+
+It builds the target with AddressSanitizer exactly as the workflow does,
+runs it in fork mode (`-fork=48 -ignore_crashes=1 -ignore_timeouts=1
+-ignore_ooms=1 -timeout=15 -rss_limit_mb=4096`: 15 s where CI allows 30 s,
+the build machines being about twice as fast as a shared runner) on a copy
+of the corpus, replays every saved input once on the plain build with
+`FUZZ_SHOW=1`, and prints the counts of crash / timeout / out-of-memory /
+slow-unit and one entry per saved input — check, law, the step it was in,
+seconds, verdict — with equal (check, law, step) together.  By the rule, a
+finding of the inside run is a defect; in the beyond run a failed check is
+a defect and a timeout is a refusal that is not fast yet.
+
+A certified value is final in this target: when `integrate_numeric`
+disagrees with the expected value of an integral and the certified
+`integrate_numeric_decimal` prints digits that contradict it too, the
+check fails.  Up to 0.60 the harness then asked again over the range
+split at nine quantiles, and reported "ok" when that found the mass and a
+skip when it refused — a verdict that depended on how much of the two
+seconds was left, and that hid certified wrong digits (a mixture of
+`Laplace(0, 1/10)` and `FDistribution(2⁻⁹⁰⁰, 1)`: `0.25` for an integral
+that is 1, failing under the sanitizer and skipped without it).
+
 ## Known slow inputs and the five skips of `fuzz_stats`
 
 `fuzz_stats` has five temporary skips at 0.60.1 (three at 0.60).  Each
@@ -133,6 +197,22 @@ times below are those of a release build unless the fuzz build is named.
   took 6.3 to 7.9 s on it in the fuzz build.  An existing skip made wider,
   not a fix.  Removed by: a fast refusal of an oscillating integrand with a
   polynomial tail.
+
+None of the five is confined to parameters beyond the envelope, so the
+default mode makes none of them unnecessary.  Measured at 0.60.1 on the
+saved corpus of 4,509 inputs, each replayed once in both modes: the cap of
+512 atoms fires on 15 inputs in either mode (`Binomial(6000, 1/2)`);
+`leaves_the_doubles` on 44 inside and 45 beyond (inside: 43 `χ²` laws with
+a small `ν`, such as `ChiSquared(1/16)`, and one F law, at a sample point
+of the level `10⁻³⁰⁰`, where the density is not finite in `f64` — the
+levels are the same in both modes; the one input on which it fires only
+beyond is the `FDistribution(11, 2.3·10⁻²⁵³)` it was added for, so today
+it mostly withholds the integral checks of those `χ²` laws, and whether
+they need it has not been measured); the long hypergeometric
+tails and the large mean without a variance on no input in either mode,
+and their examples above have parameters inside the envelope (the
+hypergeometric draw does not depend on the mode), as has a Student t with
+`ν ≤ 3`, whose skip prints nothing and was not counted.
 
 Each input stops starting new steps after 2 s (`BUDGET_SECONDS`; 5 s up to
 0.60).  That is a clock, so a slower machine checks less of an input: under

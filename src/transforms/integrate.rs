@@ -1049,6 +1049,10 @@ fn try_cyclic_ibp(
     if !contains_var(arena, u1, var_sym) || !contains_var(arena, dv1, var_sym) {
         return None;
     }
+    let size = degree_bound(arena, u1, var_sym).max(degree_bound(arena, dv1, var_sym));
+    if size > MAX_CYCLIC_IBP_DEGREE {
+        return None;
+    }
 
     // ── Round 1: ∫ u1·dv1 dx = u1·v1 − ∫ v1·du1 dx ──────────────
     let v1 = integrate_node(arena, dv1, var, var_sym, depth - 1);

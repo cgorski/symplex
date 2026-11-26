@@ -38,6 +38,23 @@ reporting.
 
 **Numerical evaluation**
 
+- **A numeric integral can miss a narrow part of its integrand and certify the rest.** The density of
+  `1/2·Gamma(5/2, 10⁻²⁰) + 1/2·Normal(0, 1)` over the real line integrates to `0.5`:
+  `integrate_numeric` returns `Ok(0.5)` with a claimed error of `1.2e-11`, and
+  `integrate_numeric_decimal` prints `0.5` with 12 and with 30 certified digits. The integral is 1.
+  The gamma half lies within `10⁻²⁰` of 0, behind the values of the normal half; no node of the
+  quadrature reaches it. With a scale of `10⁻⁶` only `integrate_numeric` is wrong. Expect this
+  wherever the parts of a sum live on scales that differ by many powers of ten: of 1,452 integrals
+  of such mixtures (scales `10³` to `10³⁰⁰` apart) 473 values of `integrate_numeric` and 378 at 12
+  certified digits are wrong in 0.60.1. The closed forms of the statistics module (`cdf`,
+  `characteristic_function` where the law has them) do not go through the quadrature.
+- `integrate_numeric` returns `0.0` for a density whose mass lies between two nodes of the
+  quadrature: `LogNormal(-300, 1)` over `[0, ∞)`, whose integral is 1.
+- Since 0.60.1 `integrate_numeric` refuses an estimate that is not larger than its own error
+  estimate (it returned `6.13e-66` for the density of `Normal(0, 10⁸⁰)`, which integrates to 1),
+  and an integral of which a piece next to a far singular point was seen by no node. Such a
+  refusal can take up to 4 s, and some refused integrals have a value: for `Normal(0, 10⁸⁰)`,
+  `integrate_numeric_decimal` at 12 digits answers `1`.
 - `eval_decimal(n)` prints digits inside a tracked error bound or returns an error. The bound is
   proved for the elementary functions and most special-function kernels; for some kernels — among
   them Bessel functions of large order, the orthogonal polynomials and `ζ` left of 0 — its
@@ -160,6 +177,14 @@ interface work for 1.0.
   `4.5·10⁹` (`chi_squared(34000000000).cdf(33999990340.5)`), densities with both shapes huge
   (`F(3e128, 3e128)`, `Beta(1e128, 1e128)`), a windowed sum beyond 65,536 terms (a binomial with
   `n·p·(1 − p)` near `4·10⁶`), the exact Clopper–Pearson interval beyond 120 trials.
+- The envelope of the statistics module. The library aims to answer for finite `f64` arguments,
+  distribution parameters between `2⁻⁵³` and `2⁵³` in magnitude, and probabilities and levels down
+  to `10⁻³⁰⁰`; beyond that a refusal is the intended result where an answer would be slow. Since
+  0.60.1 the incomplete beta function with `a + b` above `2⁵⁴` has a budget of work and refuses
+  some values it computed in 0.35 to 2.3 s before (a first shape between `10¹⁶⁰` and `10³⁰⁰`, a
+  second between `10⁸` and `10¹⁴`, an argument within `10⁻¹⁴⁰` of 1).
+- `1/3·Geometric(1/3) + 2/3·Geometric(10⁻¹²)`: `quantile_f64` is refused ("precision exhausted")
+  wherever the answer lies in the second component's range.
 
 **Size and time**
 
@@ -175,6 +200,25 @@ interface work for 1.0.
 - A table from `transformed` of a lattice with unequal masses (`Binomial`, `Hypergeometric`) sums
   its masses as expressions at every query: `√X` for `X ~ Binomial(9000, 1/3)`, one `cdf` and one
   quantile, takes 35 s.
+- A characteristic or moment generating function that has no closed form is left as an integral,
+  and its value, like a moment computed by quadrature, takes seconds or is refused after seconds:
+  `FDistribution(11/8·e, 31/13).characteristic_function(-1/8).eval_complex64()` is
+  `PrecisionExhausted` after 2.95 s; the variance of `StudentT(7/2)` truncated to `[-6.1·10⁸⁵,
+  4.4·10²⁸]` takes 1.4 s.
+- Quantiles of discrete laws that are still slow: a mixture with a large hypergeometric component
+  (`1/2·Hypergeometric(90000, 36562, 78750) + 1/2·Poisson(30000)`: up to 5.1 s per quantile);
+  beyond the envelope, `Hypergeometric(10³⁰, 10²⁹, 1000)` (up to 25 s per call).
+  `NegativeBinomial(r, p).cdf(k)` is a sum of its terms: at `k = 1000` it takes 0.3 to 1.9 s, or
+  is refused after 5.6 to 7.2 s where the value underflows (`NegativeBinomial(10¹⁵, 1/100)`).
+- `order_statistic` of a law on a finite range of integers returns the `OrderStatistic` family
+  instead of a table where the table's fractions would be too long (`Binomial(843, p)` with a
+  14-digit `p`); a quantile of that family takes 0.47 to 8.1 s and its `mean()` and `variance()`
+  do not return in 20 s. With a parameter that is not a fraction (`Binomial(30, 1/π)`) building
+  the table takes 11 to 15 s for five draws.
+- `integrate` is slow on some products of a high power and an exponential that it does not find:
+  the integrand of the moment generating function of `FDistribution(d₁, 1)` takes 0.55 s at `d₁ =
+  801` and 9.7 s at 1999; `x^(n/2)·e^(-x/2)` times a polynomial for odd `n` from 13 to 61 takes 0.5
+  to 2.1 s.
 - The library bounds its work on the common paths, not on every path. For input you do not control,
   see `SECURITY.md`, "Running symplex on untrusted input".
 
@@ -184,8 +228,12 @@ interface work for 1.0.
   macOS, Windows, 32-bit and big-endian targets are untested.
 - **Oracles.** The symbolic engines are tested against SymPy, mpmath, scipy and statsmodels, not
   proved. Two comparisons run continuously: the Rubi suite (0 wrong answers) and the nightly
-  statistics oracle. The nightly statistics fuzzer skips five slow cases (`fuzz/README.md`): a
-  lattice with unequal masses of more than 512 atoms is not transformed into a table, a lattice of
+  statistics oracle. Since 0.60.1 the nightly statistics fuzzer draws distribution parameters
+  inside the envelope `2⁻⁵³ … 2⁵³` (wider draws are run before a release). It is not known to be
+  green yet: the last long run, made before the statistics fixes of 0.60.1 were merged, still
+  saved about 4 inputs a minute — slow calls of the kinds listed under "Size and time", and one
+  failed check, the missed narrow part of a numeric integral. It skips five slow cases
+  (`fuzz/README.md`): a lattice with unequal masses of more than 512 atoms is not transformed into a table, a lattice of
   more than 4,096 atoms whose tails must be summed mass by mass is not checked, without a finite
   variance the first moment is checked only while `|mean| ≤ 10⁸`, an integral whose integrand
   leaves the range of `f64` at a sample point is not evaluated, and a characteristic function is

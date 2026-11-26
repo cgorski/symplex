@@ -19,6 +19,15 @@
 //! infinite integer lattice the same difference `I_{F(x)} − I_{F(x−1)}` is
 //! the mass function of the [`OrderStatistic`] family.
 //!
+//! The masses of a table are numbers: where the parent's tails `F(v)` are
+//! rationals they are computed in integers over the common denominator
+//! (never by expanding the polynomial above in a symbolic `F`), and a
+//! finite lattice whose exact masses would be too long (`EXACT_TABLE_BUDGET`:
+//! `Binomial(843, p)` with a 14-digit `p`) keeps the lattice formula of
+//! the family instead of a table.  The first of one draw is the parent
+//! itself, and the minimum and the maximum use the parent's tails directly:
+//! `P(max ≤ x) = F(x)ⁿ`, `P(min > x) = S(x)ⁿ`.
+//!
 //! ```
 //! use symplex::prelude::*;
 //! use symplex::stats::Distribution;
@@ -37,8 +46,12 @@ use std::fmt;
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
+use num_bigint::BigInt;
+use num_traits::{One, Zero};
+
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
+use crate::base::numeric::{Q, gcd_big};
 use crate::base::truth::Truth;
 
 use super::data::binomial_q;
@@ -165,9 +178,20 @@ impl Family for OrderStatistic {
     }
 
     // Continuous: k·C(n,k)·F^{k−1}·(1−F)^{n−k}·f.
-    // Lattice: I_{F(x)}(k, n−k+1) − I_{F(x−1)}(k, n−k+1).
+    // Lattice: I_{F(x)}(k, n−k+1) − I_{F(x−1)}(k, n−k+1); for the minimum
+    // that is S(x−1)ⁿ − S(x)ⁿ in the parent's survival function (its
+    // closed, non-cancelling upper tail: I_F(1, n) = 1 − (1 − F)ⁿ written
+    // in powers of F loses every digit where F is near 1).  The maximum
+    // keeps the general form (F(x)ⁿ − F(x−1)ⁿ is the same number, but as
+    // powers of the `Piecewise` tail of a negative binomial law it takes
+    // the summation of a moment six times as long to refuse).
     fn density(&self, x: &Ex) -> Ex {
         let ctx = self.ctx();
+        if self.inner.kind() == Kind::Discrete && self.k == 1 && self.n > 1 {
+            let n = usize_to_i64(self.n);
+            let below = x - 1;
+            return self.parent_sf(&below).powi(n) - self.parent_sf(x).powi(n);
+        }
         let f_x = self.parent_cdf(x);
         match self.inner.kind() {
             Kind::Continuous => {
@@ -189,20 +213,27 @@ impl Family for OrderStatistic {
         }
     }
 
+    // The maximum is below x when every draw is: F(x)ⁿ.
     fn cdf(&self, x: &Ex) -> Option<Ex> {
-        Some(self.beta_cdf(&self.parent_cdf(x)))
+        let f_x = self.parent_cdf(x);
+        if self.k == self.n {
+            return Some(f_x.powi(usize_to_i64(self.n)));
+        }
+        Some(self.beta_cdf(&f_x))
     }
 
     // P(X_(k) > x) = 1 − I_F(k, n − k + 1) = I_{1−F}(n − k + 1, k), with
     // 1 − F the parent's survival function: the maximum of n normals
     // beyond 20 is n·½ erfc(10√2) to first order, not 1 − (1 − …)ⁿ.
+    // The minimum is above x when every draw is: S(x)ⁿ.
     fn sf(&self, x: &Ex) -> Option<Ex> {
         let ctx = self.ctx();
         let (n, k) = self.nk();
-        Some(
-            self.parent_sf(x)
-                .betainc_regularized(&(n - &k + 1), &k, &ctx.zero()),
-        )
+        let s_x = self.parent_sf(x);
+        if self.k == 1 {
+            return Some(s_x.powi(usize_to_i64(self.n)));
+        }
+        Some(s_x.betainc_regularized(&(n - &k + 1), &k, &ctx.zero()))
     }
 
     // The tails of X_(k): P(X_(k) > x) ~ C(n, k−1) S(x)^{n−k+1} and
@@ -281,6 +312,15 @@ impl Family for OrderStatistic {
 /// parent on an infinite integer lattice), and an exactly enumerated
 /// [`Finite`](super::Finite) table for a parent with finitely many values.
 ///
+/// The first of one draw (`n = 1`) is the parent, which is returned as it
+/// is (up to 0.60.0 a family whose `variance()` for `Poisson(4)` was a
+/// `Sum` that `eval_f64` refused, where the parent says `4`).  A parent on
+/// a finite integer lattice whose exact table would be too long (the
+/// masses of the 2nd of 2 draws of `Binomial(843, 99999999999991/10¹⁴)`
+/// are rationals of 79,000 bits each; up to 0.60.0 the call did not return
+/// in 70 s) is given as the [`OrderStatistic`] family: the same law by the
+/// lattice formula, its masses evaluated when they are asked for.
+///
 /// ```
 /// use symplex::prelude::*;
 /// use symplex::stats::Distribution;
@@ -305,10 +345,14 @@ pub fn order_statistic(
     k: usize,
 ) -> Result<Distribution, SymplexError> {
     let family = OrderStatistic::try_new(dist.clone(), n, k)?;
+    if n == 1 {
+        return Ok(dist.clone());
+    }
     if dist.kind() == Kind::Discrete
         && let Some(table) = finite_table(dist)?
+        && let Some(exact) = enumerate(dist, &table, n, k)
     {
-        return enumerate(dist, &table, n, k);
+        return Ok(exact);
     }
     Ok(Distribution::from_family(family))
 }
@@ -402,13 +446,208 @@ fn exact_order(a: &Ex, b: &Ex) -> Option<std::cmp::Ordering> {
     super::family::sign_of(&(a - b)).to_ordering()
 }
 
-/// The exact table of the `k`-th of `n` draws from a finite parent.
-fn enumerate(
-    dist: &Distribution,
-    table: &[(Ex, Ex)],
-    n: usize,
-    k: usize,
-) -> Result<Distribution, SymplexError> {
+/// Work allowed to the exact table of an order statistic of a finite
+/// lattice, in limb operations: the number of atoms times the square of
+/// the length, in 64-bit words, of a mass (`n` times the bits of the common
+/// denominator of the parent's tails) — what reducing every mass to lowest
+/// terms costs.  The bound is the largest count the benchmark of the 0.60.1
+/// block needs, with a margin of 5 %: `Binomial(200, 123456789/10⁹)`, 6
+/// draws, 201 atoms of 35,900 bits, 6.4·10⁷ (1.9 s in a release build;
+/// `Binomial(843, 1/3)`, 6 draws, 1.3·10⁷: 0.5 s).  A table is worth that
+/// much: the moments of a table are sums of its rationals, those of the
+/// family a symbolic sum over the lattice (20 s for 844 values).  Beyond the
+/// bound the family's lattice formula is the law: the 2nd of 2 draws of
+/// `Binomial(843, p)` with a 14-digit `p` is 1.3·10⁹.
+const EXACT_TABLE_BUDGET: u64 = 1 << 26;
+
+/// The parent's tails `F(vᵢ)` at the sorted values of its table, as
+/// integers over one denominator.
+enum Tails {
+    /// `F(vᵢ) = numerators[i] / denominator`.
+    Exact {
+        numerators: Vec<BigInt>,
+        denominator: BigInt,
+    },
+    /// Rationals, too long for [`EXACT_TABLE_BUDGET`].
+    OverBudget,
+    /// Some tail is not a rational number.
+    NotRational,
+}
+
+/// The work of the exact table of `atoms` masses whose tails have a common
+/// denominator of `bits` bits (see [`EXACT_TABLE_BUDGET`]).
+fn exact_table_work(atoms: usize, n: usize, bits: u64) -> u64 {
+    let n = u64::try_from(n).unwrap_or(u64::MAX);
+    let atoms = u64::try_from(atoms).unwrap_or(u64::MAX);
+    let limbs = n.saturating_mul(bits) / 64 + 1;
+    atoms.saturating_mul(limbs.saturating_mul(limbs))
+}
+
+/// The parent's tails as exact rationals over their common denominator:
+/// the partial sums of the masses when every mass is a rational literal;
+/// else, on an integer lattice, the parent's own `cdf` at each value (the
+/// masses of `Binomial(843, 1/3)` are kept as products of powers, its
+/// tails are rationals).  With a `budget` (a lattice, which has the
+/// family's formula to fall back on) the work stops as soon as a
+/// denominator shows the table to be beyond it.
+fn exact_tails(dist: &Distribution, table: &[(Ex, Ex)], n: usize, budget: Option<u64>) -> Tails {
+    let atoms = table.len();
+    let over = |bits: u64| budget.is_some_and(|b| exact_table_work(atoms, n, bits) > b);
+    let masses: Option<Vec<Q>> = table.iter().map(|(_, p)| p.as_rational()).collect();
+    let (rationals, cumulative) = match masses {
+        Some(masses) => (masses, false),
+        None => {
+            if dist.support().as_interval().is_none() {
+                return Tails::NotRational;
+            }
+            let mut tails = Vec::with_capacity(atoms);
+            for (v, _) in table {
+                let Some(f) = dist.cdf(v).eval().as_rational() else {
+                    return Tails::NotRational;
+                };
+                if over(f.denom().bits()) {
+                    return Tails::OverBudget;
+                }
+                tails.push(f);
+            }
+            (tails, true)
+        }
+    };
+    // The common denominator: each step one gcd of the size reached, which
+    // the budget bounds before it is taken.
+    let mut denominator = BigInt::one();
+    for r in &rationals {
+        let d = r.denom();
+        if over(d.bits().max(denominator.bits())) {
+            return Tails::OverBudget;
+        }
+        if d.is_one() || *d == denominator {
+            continue;
+        }
+        let g = gcd_big(&denominator, d);
+        denominator = &denominator / &g * d;
+    }
+    if over(denominator.bits()) {
+        return Tails::OverBudget;
+    }
+    let mut numerators = Vec::with_capacity(atoms);
+    let mut sum = BigInt::zero();
+    for r in &rationals {
+        let a = r.numer() * (&denominator / r.denom());
+        if cumulative {
+            numerators.push(a);
+        } else {
+            sum += a;
+            numerators.push(sum.clone());
+        }
+    }
+    Tails::Exact {
+        numerators,
+        denominator,
+    }
+}
+
+/// `num / dⁿ` in lowest terms, for `d > 0` and `d_n = dⁿ`.  Every prime of
+/// the denominator divides `d`, so a common factor of the numerator and
+/// the denominator shows in `gcd(num mod d, d)`: gcds of the length of
+/// `d`, not of `dⁿ` (and none of the binary gcds of `Q::new`).  A round
+/// divides both by `h = gcd(num, d, den)`; when `h = 1` no prime of `den`
+/// (they all divide `d`) divides `num`, and the fraction is in lowest
+/// terms.  A prime `p` is done after at most `n` rounds (a round removes
+/// all of it from `num`, or `v_p(d)` of the at most `n·v_p(d)` in `den`):
+/// at most `n + 1` rounds.
+fn reduced(mut num: BigInt, d: &BigInt, d_n: &BigInt) -> Q {
+    if num.is_zero() {
+        return Q::zero();
+    }
+    let mut den = d_n.clone();
+    loop {
+        let in_d = gcd_big(&(&num % d), d);
+        if in_d.is_one() {
+            break;
+        }
+        let h = gcd_big(&in_d, &den);
+        if h.is_one() {
+            break;
+        }
+        num /= &h;
+        den /= &h;
+    }
+    Q::new_raw(num, den)
+}
+
+/// The masses `G(Fᵢ) − G(Fᵢ₋₁)` of the `k`-th of `n` draws, with
+/// `G(u) = Σ_{j≥k} C(n, j) uʲ (1 − u)ⁿ⁻ʲ` and `Fᵢ = aᵢ/d`: in integers,
+/// `dⁿ·G(a/d) = Σ_{j≥k} C(n, j) aʲ (d − a)ⁿ⁻ʲ`, and one reduction to lowest
+/// terms per mass.  `None` only for an `n` beyond `u32` (no such table).
+fn exact_masses(numerators: &[BigInt], d: &BigInt, n: usize, k: usize) -> Option<Vec<Q>> {
+    let exp = |e: usize| u32::try_from(e).ok();
+    let d_n = d.pow(exp(n)?);
+    let choose: Vec<BigInt> = (k..=n).map(|j| binomial_q(n, j).to_integer()).collect();
+    let mut previous = BigInt::zero();
+    let mut out = Vec::with_capacity(numerators.len());
+    for a in numerators {
+        let b = d - a;
+        // b⁰, …, b^{n−k}; the term of j = k + i takes b^{n−k−i}.
+        let mut b_pows = Vec::with_capacity(choose.len());
+        let mut b_pow = BigInt::one();
+        for _ in &choose {
+            b_pows.push(b_pow.clone());
+            b_pow *= &b;
+        }
+        let mut a_pow = a.pow(exp(k)?);
+        let mut current = BigInt::zero();
+        for (c, b_pow) in choose.iter().zip(b_pows.iter().rev()) {
+            current += c * &a_pow * b_pow;
+            a_pow *= a;
+        }
+        out.push(reduced(&current - &previous, d, &d_n));
+        previous = current;
+    }
+    Some(out)
+}
+
+/// The exact table of the `k`-th of `n` draws from a finite parent; `None`
+/// where the parent is a lattice with rational tails too long for a table,
+/// and the family's formula is to be the law instead
+/// ([`EXACT_TABLE_BUDGET`]).  A parent whose tails are not rational numbers
+/// (a symbol in its parameters, `Binomial(30, 1/π)`) keeps the symbolic
+/// table of 0.60.0 ([`symbolic_table`]).
+///
+/// Up to 0.60.0 every table was built by expanding `G` in the symbolic
+/// partial sums of the masses: with the masses of `Binomial(843,
+/// 99999999999991/10¹⁴)`, which are products of powers, the multinomial
+/// expansion did not end in 70 s.
+fn enumerate(dist: &Distribution, table: &[(Ex, Ex)], n: usize, k: usize) -> Option<Distribution> {
+    let ctx = dist.context();
+    let lattice = dist.support().as_interval().is_some();
+    match exact_tails(dist, table, n, lattice.then_some(EXACT_TABLE_BUDGET)) {
+        Tails::Exact {
+            numerators,
+            denominator,
+        } => {
+            let Some(masses) = exact_masses(&numerators, &denominator, n, k) else {
+                // (a table without the lattice formula is always a table)
+                return (!lattice).then(|| symbolic_table(dist, table, n, k));
+            };
+            let out = table
+                .iter()
+                .zip(masses)
+                .map(|((v, _), mass)| (v.clone(), ctx.from_ratio(mass)))
+                .collect();
+            Some(Distribution::finite(&ctx, out))
+        }
+        Tails::OverBudget => None,
+        Tails::NotRational => Some(symbolic_table(dist, table, n, k)),
+    }
+}
+
+/// The table of the `k`-th of `n` draws from a finite parent whose tails
+/// are not rational numbers (symbols, irrational constants): the
+/// polynomial `G` expanded in the partial sums of the masses, as up to
+/// 0.60.0.  The expansion of a sum of `a` terms to the power `n` grows
+/// with both: `Binomial(30, 1/π)`, 5 draws, takes 13 s.
+fn symbolic_table(dist: &Distribution, table: &[(Ex, Ex)], n: usize, k: usize) -> Distribution {
     let ctx = dist.context();
     // G(u) = Σ_{j≥k} C(n, j) uʲ (1−u)ⁿ⁻ʲ
     let g = |u: &Ex| -> Ex {
@@ -435,5 +674,5 @@ fn enumerate(
         previous = current;
         out.push((v.clone(), mass));
     }
-    Ok(Distribution::finite(&ctx, out))
+    Distribution::finite(&ctx, out)
 }

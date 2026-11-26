@@ -1428,8 +1428,16 @@ was red for five weeks on two slow inputs, and a report of 2026-11-11, a false
 positive of the harness, went unread).  `fuzz_stats` checks the symbolic
 distributions by properties decided exactly or from certified digits; a
 quadrature that disagrees is re-decided by the certified
-`integrate_numeric_decimal`, a refusal is skipped (never a failure), and a
-slow refusal is a timeout and a finding.  The harness stops starting new
+`integrate_numeric_decimal`, whose digits are final (since 0.60.1 a
+certified value that contradicts the expected one fails the check; before,
+the range was split and asked again, and the verdict depended on the
+clock), a refusal is skipped (never a failure), and a
+slow refusal is a timeout and a finding.  It draws distribution parameters
+inside the envelope `2⁻⁵³ … 2⁵³` ("The envelope" under "Type rules that keep
+bug classes out": never wrong anywhere, an answer inside, a fast refusal
+beyond); `FUZZ_STATS_BEYOND=1` in the environment draws beyond it too, as
+0.60.0 did, and the same saved inputs serve both modes.  The harness stops
+starting new
 steps of an input after 2 s (since 0.60.1; a clock, so a slower machine
 checks less of the input), which bounds an input only if every single
 step is fast; its temporary skips are listed in `fuzz/README.md`, each
@@ -1452,6 +1460,41 @@ the reason); `HANG`/`PANIC`/`CRASH` are bugs.  Reproduce locally with
 set (data files `cases/<prefix>_*.tsv`, its scipy mapping and mpmath formula
 in `refs.py`); run the oracle before a release that touches `stats` or the
 special functions it uses (`betainc`, `gammainc`, `erfc`, `erfinv`, `ln Γ`).
+
+**Before a release: the campaign.**  A release is not tagged unless the
+nightly randomized tests are green on its commit, and a campaign on the
+project's own machines says beforehand whether `fuzz_stats` will be.  Run
+it in both modes: the default one (parameters inside the envelope, what the
+nightly job draws) and with `FUZZ_STATS_BEYOND=1`.  The script is kept
+outside the repository, because it is tied to those machines; this is what
+it does.  It builds the target as CI does (the same sanitizer build and
+options).  It runs it in libFuzzer's fork mode on a copy of the saved
+inputs, with half of CI's time limit per input (15 s for CI's 30 s, on the
+estimate, not measured, that a CI runner is about half as fast) and with
+failing, slow and memory-hungry inputs saved instead of ending the run.  Then it replays every saved input
+once on a plain build, each step stamped with its time, and writes a
+summary: what was saved, and the step in which each input spent its time.
+Three things to know when reading it.  The total time given to libFuzzer
+includes its first pass over all saved inputs in one process (12 min 39 s
+for 4,509 inputs in the first run, which left the forks 7 min 34 s of
+"20 minutes"): give it the pass plus the fuzzing time you want.  A "slow
+unit" is recorded only for an input that takes 10 s or more *and* more than
+1.1 times the longest of its process so far, so that count is not a count
+of slow inputs; the counts of timeouts and failed checks are exact.  And a
+short run from a few inputs says nothing: two 13-minute runs from a tenth
+of the saved inputs saved nothing, while the run from all of them saved
+about 4 inputs a minute.
+
+**A new fix is replayed against the previous release.**  A fix for one slow
+call can make another call slow.  Replay the campaign's saved inputs, and
+the benchmark of the class, on the previous release and on the candidate,
+and compare input by input.  The slowdown of 0.60.1 was found this way: its
+first draft made `quantile_f64` of a law without a starting estimate up to
+25 times slower than 0.60.0 (one evaluation of the distribution function at
+the largest double: 1.06 s for a call of 0.074 s), and it was repaired
+before publishing.  Run the versions side by side on an otherwise idle
+machine: measured one after the other beside other jobs, the same call
+came out 1.8 times apart.
 
 `RUSTFLAGS=-D warnings` is set globally, so a new warning anywhere fails CI.
 Before opening a PR run at least `cargo fmt --all`, `cargo clippy --all-targets`,
@@ -2618,6 +2661,70 @@ more budgets of 0.60.1 follow the rule without a `BudgetKind` of their own,
 which would be a public item: the zero tests of a matrix call (`PivotWork`,
 see "Pivots": spent means `Unknown`) and the root search of a quantile (see
 "Degenerate data": spent means the documented `ComputationFailed`).
+Also since 0.60.1 two integration rules have a size bound read off the tree
+before they work (`integrate/products.rs`: `MAX_BY_PARTS_POLY_DEGREE`,
+`MAX_CYCLIC_IBP_DEGREE`, both 64; the sizes `chain_length` and
+`degree_bound`).  A bound on a rule of the integrator is put above the
+largest size at which the rule *succeeds* in Rubi, the test suite and the
+golden corpus (record it with an instrumented build), it is shown harmless
+by a hunt of the class with the frozen base as "before", and where the rule
+has a cheap way to succeed beyond the bound (an integral already in the
+memo) the bound shortens the search instead of ending it.
+
+**The envelope.**  The statistics code works to one rule (the roadmap's
+decision D-2, adopted as the working default in 0.60.1): *never a wrong
+answer anywhere; inside the envelope the call answers; beyond it a fast,
+honest refusal is enough.*  The envelope is: finite `f64` arguments;
+distribution parameters between `2⁻⁵³` and `2⁵³` in magnitude;
+probabilities and levels down to `10⁻³⁰⁰`.  Inside it, make the call fast
+rather than make it refuse.  Beyond it, do not spend the effort on speed:
+bound the work and refuse.  A bound is a deterministic count of work —
+evaluations, terms, steps, probes, nodes, bits — decided before the work
+starts, never wall-clock time; when it is hit the function returns its
+documented refusal (`Err`, `None`, the unevaluated form), never a guess.
+Say in the code where each number comes from: a derivation, or the largest
+count that the test suite and the benchmark of the change need, with the
+margin.  The acceptance test of such a change is a benchmark of its class
+(some hundreds to a few thousand calls, inside and beyond the envelope, on
+the tree before and on the tree after): inside the envelope no value may
+become a refusal, and beyond it each one that does is counted and listed in
+the CHANGELOG.  The randomized test program of the statistics module draws
+by the same rule (see "Continuous Integration").
+
+**A guide in `f64` must not be able to vanish.**  A quantity that only
+steers the evaluation — an estimate of steps, a width, a distance in
+standard deviations — is formed so that it cannot underflow to 0 or
+overflow to `∞` inside the domain of the function: in arbitrary precision
+at 64 bits, or as a product of factors that each stay in range.  Up to 0.60
+the incomplete beta function formed the variance `ab/(a + b)³` as a double;
+at shapes `2·10¹³⁶` and `2·10²⁵⁶` it was 0, the estimate of the continued
+fraction read "0 steps", and the call ran 2,014,160 steps to refuse
+(`betainc_sigmas`).  And a budget counts work, not steps, where the cost of
+a step depends on the input: beyond `a + b = 2⁵⁴` the steps of that
+fraction carry the bits of `a + b` as guard bits, and its budget is steps ×
+bits (`BETAINC_CF_WORK_BEYOND`).
+
+**A sum of pieces is not measured by its total.**  A quadrature that splits
+its range adds the pieces' values and bounds; a piece none of whose nodes
+saw a value contributes `0 ± 0`, and the other pieces' bounds hide it.
+Every such piece is accounted for on its own: it is 0 only where the
+integrand has nothing next to its ends (`quad::blind_end_layer`,
+`improper::held_at_ends`), and an `f64` estimate that is not larger than
+its own error estimate is no value.  Tests:
+`tests/v36/v36_s18q_quadrature.rs`.  (The float-evidence ratchet counts `v
+!= 0.0`; "did a node give a value" is written as the largest `|v|` of the
+piece being `> 0`, and it only sends the piece to the certified test.)
+Not covered yet: a narrow part hidden behind the values of another part on
+a piece that *was* seen (CHANGELOG 0.60.1, *Known issues*).
+
+**Parameters of two laws are equal only by proof.**  `joint::proved_equal`
+(the same expression, or `Ex::is_zero` of the difference, or `Ex::equals` =
+`Some(true)`); never `==` on the expressions where equality decides a
+result, and never a comparison of `f64` values.  The masses of an order
+statistic of a finite lattice are numbers: integers over the common
+denominator of the parent's tails (`order::exact_masses`), bounded by
+`EXACT_TABLE_BUDGET`, beyond which the `OrderStatistic` family is the law;
+do not expand `Σ C(n, j) Fʲ(1 − F)ⁿ⁻ʲ` in a symbolic `F`.
 
 **Finite sums for every integer bound.**  Reversed limits follow Karr's
 convention (`Σ_{a}^{b} = −Σ_{b+1}^{a−1}` for `b < a − 1`; the empty sum for

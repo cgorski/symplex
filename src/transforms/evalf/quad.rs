@@ -1882,6 +1882,9 @@ impl<'a> Quad<'a> {
         let mut converged = true;
         let mut discretisation = true;
         let mut seen = false;
+        // What the blind pieces may hold at their own ends
+        // ([`Quad::blind_end_mass`]).
+        let mut blind_end = accuracy::EXACT;
         let mut count = pieces.len();
         // Pieces with their bisection depth, and whether to try
         // Gauss–Legendre first (a parent on which tanh-sinh resolved nothing).
@@ -2026,11 +2029,34 @@ impl<'a> Quad<'a> {
             converged &= out.converged;
             discretisation &= out.converged || out.discretisation;
             seen |= out.seen;
+            if !out.seen {
+                blind_end = blind_end.max(self.blind_end_mass(&piece, cc));
+            }
         }
         if !seen {
             debug!("quadrature: every node underflowed");
             return Err(not_converged(BLIND).into());
         }
+        // A blind piece counts as 0 next to pieces that were seen (a far
+        // tail cut off by a breakpoint or a bisection), but for what it may
+        // hold next to an end of its own at which the integrand has a
+        // value: the integrand falls from there to below the exponent range
+        // in a layer no node reached.  The first-order size of that layer
+        // ([`Quad::blind_end_mass`]) is part of the bound, and a size that
+        // leaves the sum no two digits is a refusal at once.  Up to 0.60.0
+        // it was nothing: the integral of `e^{−x²/2}/(2√(2π)) + f(x)/2` over
+        // `(−∞, 1]`, `f` the density of `FDistribution(10⁻²⁷⁰, 1)` (0 for
+        // `x ≤ 0`; its formula has a pole at `−10²⁷⁰`, a breakpoint), was
+        // certified as `0.170672373034`, the part on `[0, 1]`: the piece
+        // `[−10²⁷⁰, 0]`, blind, lost `0.25`.
+        if blind_end > accuracy::shift(l1, -BLIND_END_REFUSAL) {
+            debug!(
+                blind_end,
+                l1, "quadrature: a blind piece with a value at its own end"
+            );
+            return Err(not_converged(BLIND_END).into());
+        }
+        err = accuracy::lsum(err, blind_end);
         debug!(
             pieces = count,
             evaluations = self.work.spent(),
@@ -2051,6 +2077,38 @@ impl<'a> Quad<'a> {
             converged,
             discretisation,
         })
+    }
+
+    /// `log₂` of a bound on what a blind `piece` (no node saw a value) holds
+    /// next to its finite ends: the largest [`blind_end_layer`] over them, with
+    /// the width of a finite piece and 1 for an infinite one (whose centre
+    /// is 1 from its end).  `EXACT` when the integrand has no value at a
+    /// step from an end.
+    fn blind_end_mass(&mut self, piece: &Piece, cc: &mut Consts) -> ErrExp {
+        let pw = self.pe + NODE_GUARD;
+        // The finite ends, and whether the piece lies above each.
+        let (ends, width): (Vec<(&End, bool)>, f64) = match piece {
+            Piece::Finite(a, b) => {
+                let av = self.end_value(a, &mut Wp::new(pw, cc));
+                let bv = self.end_value(b, &mut Wp::new(pw, cc));
+                let (Ok((av, _)), Ok((bv, _))) = (av, bv) else {
+                    return accuracy::EXACT;
+                };
+                (vec![(a, true), (b, false)], lg(&bv.sub(&av, pw, RM)))
+            }
+            Piece::Upper(a) => (vec![(a, true)], 0.0),
+            Piece::Lower(b) => (vec![(b, false)], 0.0),
+        };
+        let mut mass = accuracy::EXACT;
+        for (e, above) in ends {
+            let Ok((x, x_err)) = self.end_value(e, &mut Wp::new(pw, cc)) else {
+                continue;
+            };
+            let sizes = end_sizes(&mut self.f, &x, x_err, above, pw, cc);
+            let layer = blind_end_layer(&sizes, width);
+            mass = mass.max(layer);
+        }
+        mass
     }
 
     /// The number of times the integrand oscillates over `piece`, when no
@@ -2118,10 +2176,147 @@ impl<'a> Quad<'a> {
 }
 
 /// Why a quadrature none of whose nodes had a value is refused.
+/// `log₂` of a bound on what a piece none of whose nodes saw a value holds
+/// next to one of its ends, from the `sizes` that [`end_sizes`] read there,
+/// for an integrand that falls from the end into the piece with a concave
+/// logarithm (a density's tail beyond its mode).  With `f₁` its value at the
+/// smallest step `h₁` that has one, and `δ` the fall of `ln|f|` from `h₁` to
+/// the smallest step `h` over which a fall is resolved, the slope of `ln|f|`
+/// is at most `ρ = δ/(h − h₁)` in size before `h₁` and at least that beyond
+/// `h`, so the piece holds at most
+///
+/// `|f₁|·(h₁·(e^y − 1)/y + h + h·e^{−δ}/δ)`, `y = ρ·h₁`
+///
+/// (before `h₁`, between `h₁` and `h`, beyond `h`).  The bound is
+///
+/// * `2·|f₁|·h/δ` when `δ ≤ ln 2` (then `y ≤ 2⁻¹⁶·ln 2` and the sum is below
+///   `1.2·|f₁|·h/δ`);
+/// * twice the larger of `|f₁|·h` and `|f₁|·h₁·(e^y − 1)/y` when `δ > ln 2`:
+///   `∞` when the integrand underflows at `h` (a layer narrower than the
+///   smallest step is not measured by it);
+/// * `|f|·2^width` when no step resolves a fall, with `|f|` the largest
+///   value read;
+/// * `∞` when the integrand is larger at a step than at `h₁` by more than a
+///   bit: it rises into the piece (a density that is 0 at the end), and
+///   nothing bounds it between the steps.
+///
+/// `EXACT` when the integrand has no value at a step (an exact 0 or an
+/// underflow at each: nothing next to the end).
+pub(super) fn blind_end_layer(sizes: &[(f64, f64)], width: f64) -> ErrExp {
+    let largest = sizes
+        .iter()
+        .map(|&(_, size)| size)
+        .filter(|size| size.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    // The value next to the end, and the larger steps.
+    let Some(at) = sizes.iter().position(|&(_, size)| size.is_finite()) else {
+        return accuracy::EXACT;
+    };
+    let Some(&(first, size)) = sizes.get(at) else {
+        return accuracy::EXACT;
+    };
+    if largest > size + 1.0 {
+        return f64::INFINITY;
+    }
+    // What a difference of two `log₂` sizes resolves.
+    let noise = (-40f64).exp2() * size.abs().max(1.0);
+    for &(step, there) in sizes.iter().skip(at + 1) {
+        // `ln|f|` falls by `fall·ln 2` from the first step to `2^step` (all
+        // of it where the integrand underflows).
+        let fall = size - there;
+        if fall.is_nan() || fall < -noise {
+            break;
+        }
+        if fall < 16.0 * noise {
+            continue;
+        }
+        if fall <= 1.0 {
+            return size + step + 1.0 - (fall * std::f64::consts::LN_2).log2();
+        }
+        let y = fall * std::f64::consts::LN_2 * (first - step).exp2();
+        let before = if y.is_finite() {
+            // `(e^y − 1)/y`, 1 at `y = 0`.
+            let ratio = y.exp_m1() / y;
+            size + first + if ratio.is_nan() { 0.0 } else { ratio.log2() }
+        } else {
+            f64::INFINITY
+        };
+        return (size + step).max(before) + 1.0;
+    }
+    largest + width
+}
+
+/// `log₂|f|` of the integrand `f` next to the end `x ± 2^x_err` of a piece
+/// lying above it (`above`) or below: at the steps `s·2^(−16j)` into the
+/// piece, `j = 8, …, 1` (inwards first), with `s = 1` for an end at 0 or of
+/// at least unit size and the power of two below a smaller end otherwise (a
+/// cut next to a narrow peak close to 0), as `(log₂` of the step,
+/// `log₂|f|)`; `−∞` for a value that underflowed the exponent range or is an
+/// exact 0.  Not at the end itself: there the integrand may have no value
+/// (a singular end) or that of the piece on the other side (the boundary of
+/// a `Piecewise`: the density of `Exponential(1)` is 1 at 0 and 0 below).
+/// A step without a value is left out, and so is one that the position's
+/// `pw` bits do not tell from the end.
+pub(super) fn end_sizes(
+    f: &mut Integrand<'_>,
+    x: &BigFloat,
+    x_err: ErrExp,
+    above: bool,
+    pw: usize,
+    cc: &mut Consts,
+) -> Vec<(f64, f64)> {
+    let mut sizes = Vec::new();
+    let mut read = |at: &BigFloat, step: f64, sizes: &mut Vec<(f64, f64)>| {
+        if let Ok(CBall { mid: v, err: b }) = f.eval(at, x_err, &mut Wp::new(pw, cc))
+            && !b.is_unknown()
+        {
+            let size = if underflowed(&v, b) {
+                f64::NEG_INFINITY
+            } else {
+                accuracy::lg_abs(&v)
+            };
+            if !size.is_nan() && size < f64::INFINITY {
+                sizes.push((step, size));
+            }
+        }
+    };
+    // The scale of the steps: `2^scale ≤ |x| < 1`, or 1.
+    let scale = crate::base::cast::f64_to_i64(lg(x).floor())
+        .and_then(|k| i32::try_from(k).ok())
+        .map_or(0, |k| k.min(0));
+    for j in (1..=BLIND_END_PROBES).rev() {
+        let step = scale.saturating_sub(16 * j);
+        let h = scale2(&small(1), step);
+        let at = if above {
+            x.add(&h, pw, RM)
+        } else {
+            x.sub(&h, pw, RM)
+        };
+        if at.cmp(x) != Some(0) {
+            read(&at, f64::from(step), &mut sizes);
+        }
+    }
+    sizes
+}
+
 const BLIND: &str = "the integrand underflowed the exponent range at every node: its mass, \
                      if any, lies between them";
 
 /// Why a quadrature whose terms do not decay is refused.
+/// The steps `s·2^(−16j)`, `j = 1, …, 8`, from an end of a blind piece at
+/// which [`end_sizes`] reads the integrand: down to `2⁻¹²⁸` of the end's size
+/// `s` (1 for an end at 0), the resolution of a position at the lowest
+/// working precision (128 bits).
+const BLIND_END_PROBES: i32 = 8;
+
+/// A blind piece's layer of more than `2⁻⁸` of the integral's `L¹` size
+/// leaves the sum no two digits: refused at once ([`Quad::run`]).
+const BLIND_END_REFUSAL: f64 = 8.0;
+
+const BLIND_END: &str = "the integrand underflowed the exponent range at every node of a piece \
+                         of the range and has a value at an end of that piece: what it holds \
+                         next to that end lies in a layer the nodes did not reach";
+
 const NOT_DECAYING: &str = "the integrand does not decay towards an end of the interval (the \
                             integral may diverge, or oscillate without decaying)";
 

@@ -341,13 +341,24 @@ pub fn correlation(vars: &[&RandomVariable], g: &Ex, h: &Ex) -> Result<Ex, Sympl
 
 /// The distribution of `A + B` for independent `a`, `b` when it belongs to
 /// a closed family; `None` otherwise.  The closure results implemented
-/// (parameters that must agree — `p`, `λ` — are compared structurally):
+/// (parameters that must agree — `p`, the scale `θ` — agree when they are
+/// the same expression or their difference is **proved** zero by
+/// [`Ex::is_zero`] or [`Ex::equals`], as `2·ln 2` and `ln 4` are; a pair
+/// that is equal without a proof gives `None`.  Up to
+/// 0.60.0 they were compared structurally, and `Gamma(k, 2·ln 2) +
+/// Exponential(1/(2·ln 2))` was `None`, the exponential's scale being
+/// written `ln 4`):
 ///
 /// * `Normal(μ₁, σ₁) + Normal(μ₂, σ₂) = Normal(μ₁ + μ₂, √(σ₁² + σ₂²))`
 /// * `Binomial(n, p) + Binomial(m, p) = Binomial(n + m, p)`, with
 ///   `Bernoulli(p)` counting as `Binomial(1, p)`
 /// * `Poisson(λ₁) + Poisson(λ₂) = Poisson(λ₁ + λ₂)`
 /// * `NegativeBinomial(r₁, p) + NegativeBinomial(r₂, p) = NegativeBinomial(r₁ + r₂, p)`
+/// * `Gamma(k₁, θ) + Gamma(k₂, θ) = Gamma(k₁ + k₂, θ)`, with
+///   `Exponential(λ)` counting as `Gamma(1, 1/λ)` and `ChiSquared(ν)` as
+///   `Gamma(ν/2, 2)` (two chi-squared laws give `ChiSquared(ν₁ + ν₂)`)
+///
+/// The result keeps the first variable's form of a shared parameter.
 ///
 /// SymPy has no direct call for this; `density(X + Y)` computes the
 /// convolution.  Two handles to the *same* variable are not independent
@@ -388,7 +399,7 @@ pub fn sum_distribution(a: &RandomVariable, b: &RandomVariable) -> Option<Distri
     // `Bernoulli(p)` is `Binomial(1, p)`: n + m trials with the same
     // success probability.
     if let (Some((n, p)), Some((m, q))) = (as_binomial(da), as_binomial(db))
-        && p == q
+        && proved_equal(&p, &q)
     {
         return Some(Distribution::binomial((n + m).simplify(), p));
     }
@@ -407,7 +418,7 @@ pub fn sum_distribution(a: &RandomVariable, b: &RandomVariable) -> Option<Distri
     if let (Some(x), Some(y)) = (
         da.downcast_ref::<NegativeBinomial>(),
         db.downcast_ref::<NegativeBinomial>(),
-    ) && x.p == y.p
+    ) && proved_equal(&x.p, &y.p)
     {
         return Some(Distribution::negative_binomial(
             (&x.r + &y.r).simplify(),
@@ -418,7 +429,7 @@ pub fn sum_distribution(a: &RandomVariable, b: &RandomVariable) -> Option<Distri
     // Gamma(1, 1/λ); ChiSquared(k) is Gamma(k/2, 2)).
     let (k1, t1) = as_gamma(da)?;
     let (k2, t2) = as_gamma(db)?;
-    if t1 != t2 {
+    if !proved_equal(&t1, &t2) {
         return None;
     }
     let shape = (k1 + k2).simplify();
@@ -427,6 +438,27 @@ pub fn sum_distribution(a: &RandomVariable, b: &RandomVariable) -> Option<Distri
         return Some(Distribution::chi_squared((shape * ctx.int(2)).simplify()));
     }
     Some(Distribution::gamma(shape, t1))
+}
+
+/// Are the parameters `a` and `b` of two laws proved equal?  The same
+/// expression, or a difference that the certified zero test
+/// ([`Ex::is_zero`]: for a constant a certified value, then the exact zero
+/// tests) proves zero; a difference it refutes ends the question, and one
+/// it leaves open (symbols: `p` and `1 − (1 − p)`) goes to [`Ex::equals`],
+/// of which only `Some(true)` counts.  A pair that is equal without a
+/// proof is not equal here: the caller refuses the closure.
+fn proved_equal(a: &Ex, b: &Ex) -> bool {
+    if a == b {
+        return true;
+    }
+    let zero = Truth::from((a - b).is_zero());
+    if zero.is_true() {
+        return true;
+    }
+    if zero.is_false() {
+        return false;
+    }
+    Truth::from(a.equals(b)).is_true()
 }
 
 /// A distribution as `Gamma(shape, scale)`, when it is one.

@@ -374,7 +374,22 @@ impl Expr<Numeric> {
     /// dx`, `5.0759588975494566·10⁻¹³⁵`, was `0` with an error of 0); when
     /// that fails, it gets the value [`eval_f64`](Self::eval_f64) certifies
     /// for the integral (`0.0` for one it proves below the `f64` range), or
-    /// is refused as `eval_f64` refuses it.  Otherwise
+    /// is refused as `eval_f64` refuses it.  An estimate that is not larger
+    /// than its own error estimate is all error: it is replaced by the
+    /// certified value as well, and when that fails and the error is within
+    /// the tolerance the integral is refused (up to 0.60.0 the density of
+    /// `Normal(0, 10⁸⁰)` over ℝ came out `6.13·10⁻⁶⁶` with an error estimate
+    /// of `4.8·10⁻⁶²`, inside the absolute tolerance; it is 1).  Nor is a
+    /// piece between two breakpoints, every node of which gave 0, taken for
+    /// 0 unless the integrand is an exact 0 next to its ends or below the
+    /// exponent range there: a bound of what it holds next to them is added
+    /// to the error estimate, and beyond the tolerance the certified route
+    /// decides the whole range, or the integral is refused (up to 0.60.0 the
+    /// integral of
+    /// `e^{−x²/2}/(2√(2π)) + f(x)/2` over `(−∞, 1]`, `f` the density of
+    /// `FDistribution(10⁻²⁷⁰, 1)`, was `0.1707`, the part on `[0, 1]`: the
+    /// range is split at `−10²⁷⁰`, a pole of the formula of `f`, and no node
+    /// of `[−10²⁷⁰, 0]` came near 0).  Otherwise
     /// the `f64` estimate is returned with its error estimate even if the
     /// tolerance was not met; check it before trusting the value.
     ///
@@ -509,10 +524,28 @@ impl Expr<Numeric> {
         }
 
         let peak = std::cell::Cell::new(0.0f64);
+        // The pieces between the split points: whether a node lay in each,
+        // and the largest value its nodes gave (see below).
+        let cuts: Vec<f64> = points
+            .iter()
+            .copied()
+            .filter(|&p| lo_f < p && p < hi_f)
+            .collect();
+        let sights = std::cell::RefCell::new(vec![(false, 0.0f64); cuts.len() + 1]);
         let f = |t: f64| {
             let v = func(&[t]);
             if v.is_finite() {
                 peak.set(peak.get().max(v.abs()));
+            }
+            let i = cuts.partition_point(|&c| c < t);
+            if !cuts.is_empty()
+                && cuts.get(i) != Some(&t)
+                && let Ok(mut sights) = sights.try_borrow_mut()
+                && let Some((visited, largest)) = sights.get_mut(i)
+            {
+                *visited = true;
+                // (An infinite value counts; NaN is left to the quadrature.)
+                *largest = largest.max(v.abs());
             }
             v
         };
@@ -543,7 +576,17 @@ impl Expr<Numeric> {
         // below the `f64` range — is no proof that the integral is 0, as in
         // `evalf`'s `f64` route: up to 0.53 `∫₀^(10³⁰⁰) e^{−1000} dx`
         // (`5.0759588975494566·10⁻¹³⁵`) was `Ok(0.0)`.
-        let measured = |r: &QuadResult| r.error > 0.0;
+        //
+        // Nor is an estimate that is not larger than its own error estimate:
+        // the nodes saw nothing of the integrand that the error does not
+        // cover, and such an estimate passes the absolute tolerance however
+        // wrong it is.  Up to 0.60.0 the density of `Normal(0, 10⁸⁰)` over ℝ
+        // was `Ok(6.13·10⁻⁶⁶)` with an error estimate of `4.8·10⁻⁶²` (it is
+        // 1: the nodes of the unit-scale map lie where the density is
+        // `10⁻⁸¹`).  It is decided by the certified route like an estimate
+        // of exactly 0, or refused.
+        let seen = |r: &QuadResult| r.error > 0.0;
+        let measured = |r: &QuadResult| seen(r) && r.value.abs() > r.error;
         let report = if a <= b {
             definite::quadrature_split(&f, a, b, &points, opts)
         } else {
@@ -558,7 +601,63 @@ impl Expr<Numeric> {
             })
         }
         .map(|(r, ok)| (with_bounds(r), ok));
+        // A piece every node of which gave 0 adds `0 ± 0` to the sum, and
+        // the other pieces' error estimates hide it: it is no more measured
+        // than a whole range of such nodes.  What the integrand holds next
+        // to the ends of such a piece is added to the error estimate —
+        // nothing where it is an exact 0 there (the 0 branch of a
+        // `Piecewise`) or below the exponent range (a far tail), as a piece
+        // none of whose nodes saw a value counts in the certified route; a
+        // first-order bound of the layer otherwise — and beyond the
+        // tolerance the nodes are too coarse for this integrand: the whole
+        // range goes to the certified route.  Up to 0.60.0 `P(X ≤ 1)` of
+        // `1/2·Normal(0, 1) + 1/2·FDistribution(10⁻²⁷⁰, 1)`, an integral
+        // over `(−∞, 1]` split at `−10²⁷⁰` (a pole of the F density's
+        // formula) and at 0, was `0.1707`, the part on `[0, 1]`: every node
+        // of `[−10²⁷⁰, 0]` gave 0 and the normal half's `0.25` there was
+        // lost.
+        // (Float evidence: a largest value of 0 proves nothing, it only
+        // sends the piece to the certified test below.)
+        let gave_value = |largest: f64| largest > 0.0;
+        let blind: Vec<usize> = sights.try_borrow().map_or_else(
+            |_| Vec::new(),
+            |s| {
+                s.iter()
+                    .enumerate()
+                    .filter(|(_, (visited, largest))| *visited && !gave_value(*largest))
+                    .map(|(i, _)| i)
+                    .collect()
+            },
+        );
+        let mut unseen_piece = false;
+        let report = report.map(|(mut r, ok)| {
+            for &i in &blind {
+                let from = i
+                    .checked_sub(1)
+                    .and_then(|k| cuts.get(k))
+                    .map_or(lo_f, |c| *c);
+                let to = cuts.get(i).map_or(hi_f, |c| *c);
+                let held = {
+                    let guard = self.inner.read();
+                    crate::transforms::evalf::f64_piece_ends_bound(
+                        &guard.arena,
+                        evaled,
+                        var_id,
+                        from,
+                        to,
+                    )
+                };
+                if held <= tolerance(&r) {
+                    r.error += held;
+                } else {
+                    unseen_piece = true;
+                    break;
+                }
+            }
+            (r, ok)
+        });
         if let Ok((r, _)) = &report
+            && !unseen_piece
             && r.error <= tolerance(r)
             && measured(r)
             && tail_seen(r)
@@ -579,24 +678,48 @@ impl Expr<Numeric> {
                     r.value
                 ),
             }),
+            // The estimate has nothing of a piece of the range, and its
+            // error estimate does not say so.
+            Ok(_) if unseen_piece => Err(SymplexError::ComputationFailed {
+                operation: "integrate_numeric",
+                reason: format!(
+                    "every node of the f64 quadrature gave 0 on a piece of the range between \
+                     two breakpoints of the integrand, which does not show that the integral \
+                     is 0 there (its mass may lie between the nodes), and the \
+                     arbitrary-precision quadrature failed: {certified}"
+                ),
+            }),
+            // An estimate that is all error and within the tolerance: no
+            // value to return (a caller comparing the error with the
+            // tolerance would take it).
+            Ok((r, _)) if seen(&r) && !measured(&r) && r.error <= tolerance(&r) => {
+                Err(SymplexError::ComputationFailed {
+                    operation: "integrate_numeric",
+                    reason: format!(
+                        "the f64 estimate {:e} is not larger than its error estimate {:e}, which \
+                         does not show what the integral is (the integrand may live on a scale \
+                         the nodes did not reach), and the arbitrary-precision quadrature \
+                         failed: {certified}",
+                        r.value, r.error
+                    ),
+                })
+            }
             // `eval_f64`'s value then, certified to its 8 digits (`0.0` for
             // an integral it proves below the `f64` range), or its refusal.
-            Ok((r, _)) if !measured(&r) => {
-                match self.definite_integral_node(var, lo, hi).eval_f64() {
-                    Ok(value) => Ok(QuadResult {
-                        value,
-                        error: (2e-8 * value.abs()).max(f64::MIN_POSITIVE),
-                    }),
-                    Err(_) => Err(SymplexError::ComputationFailed {
-                        operation: "integrate_numeric",
-                        reason: format!(
-                            "every node of the f64 quadrature gave 0, which does not show that the \
+            Ok((r, _)) if !seen(&r) => match self.definite_integral_node(var, lo, hi).eval_f64() {
+                Ok(value) => Ok(QuadResult {
+                    value,
+                    error: (2e-8 * value.abs()).max(f64::MIN_POSITIVE),
+                }),
+                Err(_) => Err(SymplexError::ComputationFailed {
+                    operation: "integrate_numeric",
+                    reason: format!(
+                        "every node of the f64 quadrature gave 0, which does not show that the \
                          integral is 0 (its values may lie below the f64 range), and the \
                          arbitrary-precision quadrature failed: {certified}"
-                        ),
-                    }),
-                }
-            }
+                    ),
+                }),
+            },
             report => report.map(|(r, _)| r),
         }
     }

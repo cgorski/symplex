@@ -31,6 +31,24 @@ identities that hold for the kind of symbol declared.  A closure in
 Gröbner basis of a hard system.  Thirteen findings stay, because their fix
 changes a public signature: see *Known issues*.
 
+A second part was added before publishing.  The nightly randomized test of
+the statistics module had failed three nights in a row, each time on an
+input on which a call is slow, not wrong, and as slow in 0.60.0.  A long run
+of that test on the project's machines then saved 61 inputs, sorted into
+eleven classes: three of wrong answers (a numeric integral that misses a
+narrow part of its integrand and certifies the rest; an estimate that is
+nothing but error returned as a value; a sum of two gamma laws that was not
+recognised) and eight of calls that take seconds to minutes.  Fixed: the
+second and the third of the wrong answers, a part of an integral that was
+dropped left of a singular point, the F law at huge parameters (62 s and a
+refusal after 18.5 s → `0.5` in 0.01 s), quantiles of discrete laws and of
+their mixtures, two rules of the integrator (14 to 41 s → about 0.1 s) and
+order statistics of laws on integers.  What stays: the first wrong answer —
+the density of `1/2·Gamma(5/2, 10⁻²⁰) + 1/2·Normal(0, 1)` still integrates
+to `0.5` — and characteristic functions and moments left as integrals,
+which take seconds; see *Known issues*, also for the state of the nightly
+run.
+
 ### Breaking (behaviour)
 
 No signature changed.  The results below changed on purpose; each old one
@@ -185,6 +203,57 @@ Each entry says what a caller should do.
   What to do: nothing.  One printed form changes: the bound variable of a
   `RootSum` is `__rs_t_1` instead of `__rs_t` when the integrand itself has
   a symbol named `__rs_t`.
+- **`integrate_numeric` refuses where it returned a wrong number** (second
+  part of this release; see *Fixed*, "Numeric integration").  Before: an
+  estimate that was nothing but error, or a range of which one piece was
+  seen by no node of the quadrature, came back as `Ok`:
+  `Ok(6.130059011750917e-66)` for the density of `Normal(0, 10⁸⁰)` over the
+  real line, which is 1.  After: `Err`.  Counted on the three sets of
+  integrals measured for the change: of 1,744 integrals of densities at
+  scales from `10⁻³⁰⁰` to `10³⁰⁰`, 212 values became refusals (by an
+  independent computation 109 of them were wrong, 5 right and 3 undecided;
+  95 are of a kind it does not cover); of 1,452 integrals of mixtures, 47
+  wrong values became refusals and 11 became right; of 480 integrals with a
+  singular point far outside the scale of the integrand, 36 and 2.  No right
+  value became wrong.  The 5 right values that are refused now all have a
+  parameter beyond `10^±15` (`Gamma(200, 10⁻²⁰)` four times, `Normal(10²⁰,
+  10¹⁶⁰)` once).  `integrate_numeric_decimal` at 12 digits: 8 wrong values
+  of the mixtures and 8 of the 480 became refusals, no right one.
+  `integrate_numeric_with` no longer returns an estimate that is not larger
+  than its own error estimate when that error is within the tolerance.
+  What to do: handle the `Err`; the number returned before was not the
+  integral.
+- **`order_statistic(d, 1, 1)` is `d`, and a table that would be too long
+  is the family** (second part).  Before: the first of one draw was a law
+  of its own (a table or an `OrderStatistic` family), and the order
+  statistic of a law on a finite range of integers was always a table
+  (`Finite`).  After: `order_statistic(d, 1, 1)`, `minimum_of(d, 1)` and
+  `maximum_of(d, 1)` return `d` itself; and where the exact table would
+  exceed a fixed budget (the number of values times the square of the
+  length of its fractions, a count decided before the work; `Binomial(843,
+  99999999999991/10¹⁴)` is beyond it), the result is the `OrderStatistic`
+  family: the same law, its masses computed when asked, instead of a table
+  that did not come back in 70 s.  A table that is built holds its masses
+  as fractions, no longer as products, and prints differently.  Four
+  quantiles of the first of one draw changed, each now the parent law's own
+  answer: `Uniform(-3, 7)` at 0.3, `9.4e-17` → `-1.1102230246251565e-16`
+  (the correctly rounded one), and three that were `0.0` are `5e-324`, the
+  smallest double at which the distribution function reaches the level
+  (`Gamma(55/2²⁰, 2·ln 2)` at 0.3 and at `1e-300`, `Beta(1/2, 1/2)` at
+  `1e-300`).  What to do: do not depend on the kind of law that
+  `order_statistic` returns.
+- **The incomplete beta function refuses some values at shapes beyond
+  `2⁵⁴`** (second part).  Before: for `a + b` above `2⁵⁴` its continued
+  fraction ran up to two million steps.  After: it has a budget of work
+  there, and some values that took 0.35 to 2.3 s are refusals after 0.3 to
+  0.5 s: 14 of the 200 values checked at such shapes, and 1 of 2,978 calls
+  of the benchmark beyond the envelope (`betainc_regularized(10²⁵⁰, 10⁸, 0,
+  x)` at the mean: `0.49998670192398587` after 0.48 s → refused in 0.004
+  s).  They have a first shape between `10¹⁶⁰` and `10³⁰⁰`, a second
+  between `10⁸` and `10¹⁴`, and an argument within `10⁻¹⁴⁰` of 1.  With the
+  shapes inside `2⁻⁵³ … 2⁵³` nothing is refused that was answered (0 of
+  2,422 calls).  What to do: nothing inside that range; beyond it, handle
+  the refusal.
 
 ### Added
 
@@ -329,6 +398,78 @@ precisions, SymPy, Python, or exact arithmetic).
   no value changed.  One value outside those sets is lost: `eval_decimal(1)`
   of the integral above was `7e-251` (the true value is `6.5973·10⁻²⁵¹`) and
   is refused.
+- **The regularized incomplete beta function at huge shapes (the F law).**
+  `FDistribution(4·10¹³⁶, 4·10²⁵⁶).cdf(1)` took 62 s to build, and its
+  `eval_f64()` then answered "continued fraction for the incomplete beta
+  function did not converge in 2014160 steps" after 18.5 s.  It is built in
+  0.0001 s and is `0.5` in 0.01 s.  `sf(1)`: 55.8 s and a refusal after
+  18.6 s → built in 0.012 s, `0.5` in 0.01 s.  `FDistribution(10¹⁵,
+  10²⁵⁰).cdf(1)`: `0.5000000059470804` after 10.6 s → the same value in 3
+  ms.  The cause: a number that only steers the evaluation, the variance
+  `ab/(a + b)³` of the beta law, was formed as a double, and it is 0 below
+  `5·10⁻³²⁴`.  The estimate of the continued fraction's length then read
+  "no steps" where it is about `10⁴⁷`, and the method that covers such
+  shapes was skipped.  Both are formed without underflow now.  For `a + b`
+  above `2⁵⁴` the continued fraction has a budget of work (`2²⁵` steps ×
+  bits) instead of two million steps: `betainc_regularized(10²⁵⁰, 10¹⁴, 0,
+  x)` at the mean was refused after 2,050,000 steps (more than 40 s) and is
+  refused in 4 ms (see *Breaking* for the values this budget refuses).
+  Check: 260 values at shapes up to `10³⁰⁰` against mpmath at two
+  precisions: with both shapes between `10¹⁰⁰` and `10³⁰⁰`, 113 of 120 right
+  and 7 not back in 5 s → 120 right, 113.6 s → 4.7 s; none wrong before or
+  after.  A benchmark of 5,400 calls (the function itself, and `cdf`, `sf`
+  and quantiles of F, beta, Student t, binomial and negative binomial
+  laws): no value differs, no call is slower beyond 1.2 times + 20 ms, the
+  calls not back in 20 s went from 33 to 7, and 21 refusals or unfinished
+  calls became values.
+
+#### Numeric integration
+
+Found by the long run of the randomized tests of the statistics module
+(second part of this release).
+
+- **An estimate that is all error is no longer returned.**
+  `integrate_numeric` of the density of `Normal(0, 10⁸⁰)` over the real line
+  returned `Ok(6.130059011750917e-66)`; the integral is 1.  The error
+  estimate, `4.8e-62`, was larger than the value and still inside the
+  absolute tolerance, so the value passed.  Likewise `Normal(0, 10⁴⁰)`
+  (`6.13e-26`), `Exponential(10⁻⁸⁰)` (`7.68e-66`), `Gamma(2, 10⁸⁰)`
+  (`1.80e-131`) and `Weibull(4·10⁷⁶, 27/8)` (`2.6e-250`).  An estimate that
+  is not larger than its own error estimate is now decided by the
+  arbitrary-precision quadrature, and where that fails the integral is
+  refused: all five are refusals now, and the total mass of
+  `ChiSquared(10⁻⁴⁰)`, which came out `3.57e-40`, is `1.0`.  An integral
+  that is 0 stays 0 (`∫ x·φ(x) dx` over the real line: `Ok(0.0)` before and
+  after).
+- **A part of the range left of a singular point was dropped.**  `P(X ≤ 1)`
+  for `1/2·Normal(0, 1) + 1/2·FDistribution(10⁻²⁷⁰, 1)`, an integral over
+  `(-∞, 1]`, was `0.17067237303427146` from `integrate_numeric` and
+  `0.170672373034` from `integrate_numeric_decimal`: the part on `[0, 1]`
+  alone.  The range is split at `-10²⁷⁰` (a singular point of the F
+  density's formula) and at 0; no node of the piece between them comes near
+  0, and a piece on which every node gave 0 was added as an exact 0.  Such
+  a piece now counts as 0 only where the integrand is an exact 0, or below
+  the exponent range, next to its ends; otherwise a bound of what it holds
+  there is part of the error, and the integral is refused when that leaves
+  no digits.  Both calls now refuse this integral (half of its mass lies
+  below every floating-point range).  The density of `1/2·Laplace(0, 1/10)
+  + 1/2·FDistribution(2⁻⁹⁰⁰, 1)` over the real line, one of the failures of
+  the long run, was `0.25` from both calls and is refused by both.  Check
+  of this entry and the one before, against closed forms in mpmath at 40
+  and 80 digits: 1,452 integrals of mixtures and 480 integrals with such a
+  singular point: wrong values of `integrate_numeric` 531 → 473 and 105 →
+  67, right ones 614 → 625 and 104 → 106, and no right value became wrong
+  or a refusal (*Breaking* has the counts of the refusals, *Known issues*
+  what the remaining wrong values are).
+- **A numeric integral whose integrand underflows at most nodes was refused
+  slowly.**  `integrate_numeric` of `cos(s·x)·f(x)` over `[0, ∞)`, `f` the
+  density of a gamma law of scale `4·10⁻¹⁵⁶` (the check of a characteristic
+  function on which the nightly run timed out), took 1.9 s to refuse: every
+  node whose value had underflowed was evaluated again at each precision up
+  to 2,752 bits, and the refusal was computed twice.  The same refusal
+  takes 0.3 s.  Check of this change alone: 1,744 integrals of laws at
+  scales from `10⁻³⁰⁰` to `10³⁰⁰`: every result identical (1,111 values,
+  633 refusals), 375 s → 261 s.
 
 #### Matrices
 
@@ -432,6 +573,23 @@ precisions, SymPy, Python, or exact arithmetic).
   know the strip; the new `inverse_mellin_transform_in_strip` takes it (see
   *Added*).
 
+- **Two rules of `integrate` spent seconds on a high power before giving
+  up** (second part of this release).  `∫ x^(759/2)·e^(-x/2) dx` took 14 s
+  and `∫ e^(-x/8)·x^(321/2)·(1 + 323·x)^(-162) dx` 41 s before they came
+  back unevaluated, so `mean()` of a truncated `ChiSquared(759)`, `mgf` of
+  `FDistribution(323, 1)` and `variance()` of a mixture with
+  `ChiSquared(479)` took 14, 37 and 16 s.  The three integrals behind them
+  take 0.07, 0.12 and 0.03 s (14.16, 41.45 and 5.69 s before), and the
+  three statistics calls 0.08, 0.13 and 0.11 s.  Integration by parts with
+  a polynomial factor whose chain of steps is longer than 64 and a
+  transcendental factor now looks for the remaining integral two levels
+  deep instead of twenty, and the cyclic rule (`∫ eˣ·sin x`) declines a
+  factor of degree above 64; both sizes are read off the expression before
+  any work.  Check: 1,757 integrals of this class: 882 found before and
+  after, none lost and none gained; 4 are written in another order (equal,
+  checked exactly); calls above 1 s 161 → 60, of them over the 20 s limit
+  42 → 8 (those 8 are over it before the change too).
+
 #### Core
 
 - **A closure inside `Ex::replace` that built an expression never
@@ -482,11 +640,17 @@ precisions, SymPy, Python, or exact arithmetic).
   function: a bracket of 300 decades cost a thousand evaluations.  The
   quartile of a Cauchy law truncated to `[-3.2·10²⁹⁹, 3.08]` took 12.1 s
   (and the nine quantiles the randomized test asks for, minutes).  The
-  search now has a bound on its evaluations: the bracket is the support
-  itself where there is no starting estimate, it is narrowed in the order of
-  the floating-point numbers (at most 12 evaluations), and the root search
-  gets 128 steps, which always suffice then.  A truncated or mixed law is no
-  longer simplified at each point (10 ms of the 12 ms of an evaluation).
+  search now has a bound on its evaluations.  Where there is no starting
+  estimate it first looks near the point where 0.60.0 started (at most 11
+  evaluations, in steps that grow) and remembers what it learns, so that
+  the distribution function is not evaluated at the largest double and at
+  other far-away numbers, where one evaluation can take more than a second.
+  Then the bracket is the support itself, narrowed in the order of the
+  floating-point numbers (at most 12 evaluations), and the root search gets
+  128 steps, which always suffice then.  The median of such a law that is
+  symmetric about 0 is exactly 0, as in 0.60.0.  A truncated or mixed law
+  is no longer simplified at each point (10 ms of the 12 ms of an
+  evaluation).
   The quartile takes 0.12 s.  Results that needed no wide bracket are
   bit-identical; the others agree within the documented tolerance
   (`-1.1708495661125393` for `-1.170849566112539`, the two doubles next to
@@ -520,6 +684,83 @@ precisions, SymPy, Python, or exact arithmetic).
   monotone maps, exact against the lattice: 0 wrong before and after, 28.2 s
   → 5.4 s of CPU.  A lattice with unequal masses (`Binomial`,
   `Hypergeometric`) gains nothing (*Known issues*).
+
+- **Quantiles of a mixture of discrete laws** (this entry and those below:
+  second part of this release).  `quantile_f64` and `isf_f64` ran a
+  symbolic summation before the search, to ask whether the mixture has a
+  closed distribution function.  `1/2·Hypergeometric(10, 6, 4) +
+  1/2·NegativeBinomial(36, 1/2)`: `quantile_f64(0.3)` 0.95 s → 2 ms (`3`),
+  `quantile_f64(1e-300)` 0.95 s → 2 ms (`0`), `isf_f64(1e-300)` 1.3 s →
+  0.015 s (`1185`); the values are those of exact fractions.
+- **Quantiles of a large hypergeometric law** are decided in one pass over
+  integers; each step of the search used to build both tails as fractions
+  of 49,000 bits.  `Hypergeometric(90000, 36562, 78750)`:
+  `quantile_f64(0.3)` 1.2 s → 0.10 s (`31966`), `isf_f64(1e-300)` 8.5 s →
+  0.12 s (`33749`).  Check: 288 quantiles of hypergeometric laws against
+  exact integers, none differs.
+- **A truncated hypergeometric law had no quantile.**  Every quantile of
+  `Hypergeometric(60000, 46875, 10312)` truncated to `[12, 6573]` was the
+  error `FreeSymbol("_t")`, which names an internal variable, after 0.39 s;
+  `quantile_f64(1e-300)` is `5927` in 0.07 s.  `cdf` and `sf` of a
+  truncated law at a number are now formed from the inner law's forms at
+  that number.
+- **Quantiles of geometric, negative binomial and truncated Poisson laws.**
+  The search stepped by 1 from its guess; beyond `2⁵³` that does not move a
+  double, and the same point was asked again and again.  It now steps by
+  the spacing of the doubles there, starts from a closed form (geometric)
+  or from the gamma law that a negative binomial law approaches, and has a
+  bound of 2,048 steps, at which it refuses.  `Geometric(1/(25·10²⁵⁰))`:
+  `quantile_f64(1e-4)` 0.78 s → 2 ms, `isf_f64(1e-4)` 1.2 s → 4 ms.
+  `NegativeBinomial(21590, 1/(1.25·10¹⁸¹))`: `quantile_f64(1e-300)` 11.7 s →
+  0.06 s, `isf_f64(1e-300)` 17.5 s → 0.03 s.  `NegativeBinomial(1000,
+  10⁻¹⁰⁰).quantile_f64(0.3)`: 2.0 s → 0.012 s.  The same doubles in each
+  case.  `Poisson(3974955008)` truncated to `[0, 3974720536]`:
+  `quantile_f64(1e-300)` was refused after 0.7 s ("factorial … overflows")
+  and is `3972603912` in 0.007 s.  Check of the four entries: a benchmark of
+  298 laws, of which both trees complete 9,632 quantile calls in the time
+  allowed: no value differs, no value became a refusal, 86 refusals became
+  values (25 of the truncated Poisson law, 61 of two truncated
+  hypergeometric laws; all 86 checked, none wrong), 1,103 calls are faster
+  beyond 1.2 times + 20 ms and 2 slower (both were refusals after 9 ms and
+  are values), 1,775.8 s → 489.0 s of CPU.
+- **A sum of two gamma laws whose common scale is written in two ways.**
+  `sum_distribution` compared the parameter that two laws must share (`p`
+  of two binomial or two negative binomial laws, the scale of two gamma,
+  exponential or chi-squared laws) as written, so `Gamma(55/2²⁰, 2·ln 2) +
+  Exponential(1/(2·ln 2))` was `None`: the exponential law's scale comes out
+  as `ln 4`.  Two parameters are now equal when their difference is proved
+  zero; a pair that is not proved equal still gives `None`.  The sum is
+  `Gamma(55/2²⁰ + 1, 2·ln 2)`.  Check: 517 sums: sums not recognised
+  although the parameters are equal 50 → 0; a law returned although they
+  differ 0 → 0; 1,018 means and variances of the returned laws checked,
+  none wrong.
+- **The order statistic of a law on a finite range of integers.**
+  `order_statistic(Binomial(843, 99999999999991/10¹⁴), 2, 1)` did not
+  return in 70 s: the table was built by expanding a polynomial in the
+  partial sums of the masses, kept as expressions.  The masses are now
+  computed in integers from the law's exact tails, and a table whose
+  fractions would be too long is returned as the `OrderStatistic` family
+  (see *Breaking*): 0.05 s, for each of the 21 pairs up to six draws.  The
+  tables of `Binomial(200, 123456789/10⁹)` held products of powers, and 18
+  of its 21 cases did not finish their quantiles in 20 s; they hold
+  fractions, all 21 answer, and a quantile takes 1 to 2 ms.
+- **The first of one draw is the law itself.**
+  `order_statistic(Poisson(4), 1, 1).variance()` took 0.7 s to form a sum
+  that `eval_f64` refused; it is `4`.  The distribution function of a
+  maximum is `F(x)ⁿ` and the survival function of a minimum `S(x)ⁿ`,
+  written in the parent law's own functions: to refuse the mean of the
+  minimum of two `NegativeBinomial(36, 1/2)` took 7.1 s and takes 0.007 s.
+- **`transformed` of a finite law under `tanh`.**  `tanh X` for `X ~
+  Hypergeometric(4955, 4800, 1703)` took 12.5 s: every image is the double
+  `1.0`, and each of the 12,090 pairs of images was compared by a proof of
+  equality.  A map proved strictly increasing or decreasing on the range of
+  the values has distinct images, and they are no longer compared: 0.014 s,
+  the same table.  Check of the last three entries: a benchmark of 1,463
+  cases (882 order statistics, 517 sums, 64 transformed laws): 10,425 calls
+  answered, 346 more than before and none fewer; no value became a refusal
+  and 60 refusals became values; 4,614 values checked against the
+  definition in exact integers and against SciPy, none wrong; the 64
+  transformed laws give identical results in 3.0 s instead of 16.2 s.
 
 #### Questions and round trips
 
@@ -627,6 +868,48 @@ precisions, SymPy, Python, or exact arithmetic).
   0.15 s → 0.16 s), and a Gröbner basis that is computed takes the time it
   took (within 4 %: katsura-5 in lex order 1.43 s → 1.42 s, katsura-6 in
   grevlex 2.75 s → 2.81 s).
+- **`integrate_numeric` costs more where its first estimate is not
+  trusted** (this entry and those below: second part of this release).  A
+  wrong value that came back in milliseconds is now a refusal, or the right
+  value, after the time of the arbitrary-precision quadrature.  Of the
+  values that became refusals in the three sets of *Breaking*, the 291 that
+  are slower than before (209, 47 and 35) take a median of 0.24 s, 0.19 s
+  and 0.80 s; 120 of them more than 0.3 s, 45 more than 1 s, the slowest
+  4.05 s (8 ms before).  The
+  sets as a whole: 308 s → 423 s, 100 s → 120 s and 187 s → 221 s; calls
+  above 0.3 s: 448 and 460 in two runs before, 585 after, of 3,676.  Of the
+  calls that return a value before and after, 109 are slower beyond 1.2
+  times + 20 ms (59 of them with no parameter beyond `10^±15`); 68 of the
+  109 print the same value.  Ten have ordinary parameters, among them
+  `StudentT(10)`, `∫ x·f` = 0: 4 → 75 ms; `Beta(40, 1/3)` with a cosine:
+  129 → 226 ms; `Gamma(200, 1)`, `∫ x·f`: 76 → 126 ms; three mixtures with
+  `Beta(1/2, 1/2)`: 104 → 195, 176 → 270 and 227 → 315 ms.  The largest
+  increase for an unchanged value: 1.47 s → 2.35 s.
+- **A refusal can take seconds.**  `integrate_numeric` refuses after up to
+  4 s (above); the incomplete beta function beyond `a + b = 2⁵⁴` refuses
+  when its budget is spent (0.3 to 0.5 s measured) where its estimate does
+  not refuse at once.  The bounds are counts of work (steps, evaluations,
+  bits) fixed before the work starts, never a clock.
+- **Order statistics of binomial laws with long fractions cost more to
+  build and far less to ask.**  `Binomial(200, 123456789/10⁹)`: building
+  the table 0.10–1.0 s → 0.30–1.9 s and its first `cdf` 0.004–0.08 s →
+  0.2–1.7 s (201 exact fractions of up to 35,900 bits); its quantiles went
+  from up to 19 s to 2 ms.  `Binomial(843, 1/3)`, the maximum of six:
+  building 0.40 s → 0.53 s.  In the benchmark of 1,463 cases 38 calls are
+  slower beyond 1.2 times + 20 ms: these 32, 2 of `Binomial(40, p)` with a
+  14-digit `p` (first `cdf` 6 → 30 ms) and 4 beyond the envelope (2–6 ms →
+  29 ms).  `sum_distribution`: the largest call 1.0 ms → 1.8 ms.
+- **The quantile search without a starting estimate** makes up to 11
+  evaluations before it brackets (see *Fixed*).  Against 0.60.0, on 7,779
+  quantile calls of 242 laws, measured on that change alone: 1,616 s → 493
+  s of CPU, and 14 calls are slower beyond 1.2 times + 20 ms (1.3 to 1.7
+  times, 37 to 116 ms more): quantiles of the first of five `Gamma(25,
+  12√2/7)`, of the first of five `χ²(60)` and of the first of three
+  `Gamma(25, 12√2/7)`.
+- **`integrate`**: four of the 882 integrals of the check are written in
+  another order (see *Fixed*), and one entry of the Rubi suite that ran
+  into its time limit comes back unevaluated in 0.3 s instead of 10 s; the
+  integrals that suite finds are the same (30,768 and 115).
 
 ### Infrastructure
 
@@ -685,6 +968,53 @@ precisions, SymPy, Python, or exact arithmetic).
   under *Added*, and `__macro_support::with_groebner_work_cap`, a hidden
   hook by which the tests run a Gröbner basis under a small budget (not part
   of the interface).
+- **The randomized test program of the statistics module, `fuzz_stats`,
+  draws inside the envelope by default** (this entry and those below:
+  second part of this release).  The working rule for the statistics code
+  is: never a wrong answer anywhere; inside the envelope the call answers;
+  beyond it a fast, honest refusal is enough.  The envelope: finite `f64`
+  arguments, distribution parameters between `2⁻⁵³` and `2⁵³` in magnitude,
+  probabilities and levels down to `10⁻³⁰⁰`.  This is the roadmap's
+  decision D-2, taken for now on the roadmap's recommended default.  The
+  test program therefore draws distribution parameters inside `2⁻⁵³ … 2⁵³`,
+  and that is what the nightly job runs; `FUZZ_STATS_BEYOND=1` in the
+  environment restores the wider draws of 0.60.0 (powers of ten to
+  `10^±300`), for the campaign before a release.  The saved inputs serve
+  both modes: the same bytes are read, and a draw beyond the range is
+  folded into it.  Levels and sample points are drawn as before in both
+  modes, so a law truncated at a far quantile still has far ends.
+- **A certified integral that contradicts the expected value fails the
+  test.**  Before: the test program split the range at nine quantiles and
+  asked again; it said "ok" when that found the missing mass, a skip when
+  the second call refused, and a failure when it had no time left for the
+  quantiles.  So the verdict depended on the clock: a certified `0.25` for
+  an integral that is 1 failed only in the slower build of the nightly job.
+  After: the check fails at once, and the split is used only when the
+  first certified call refuses.  The check of a moment generating or
+  characteristic function also names the integral checks it skipped because
+  the quadrature refused; it said "ok".
+- **A campaign that predicts the nightly job.**  A script kept outside the
+  repository runs `fuzz_stats` as the nightly job does (its build with the
+  memory checker, many processes side by side, half of the job's time limit
+  per input) on a copy of the saved inputs, and replays every input it
+  saves on a plain build.  `CONTRIBUTING.md`, "Before a release", says when
+  to run it; its first two runs are under *Known issues*.
+- `probes/hunt/` (`hunt.sh`, `hunt_diff.sh`, `oracle.py`): the kit by which
+  a fix is shown to hold beyond its reproducer.  It evaluates a list of
+  expressions on the tree before the fix and on the tree with it, sorts the
+  changed pairs by kind (value → value, value → refusal, refusal → value,
+  slower) and gives a verdict per line against mpmath.
+- The nightly job uploads the saved inputs of the night as an artifact
+  (`fuzz-corpus-<target>`, kept 7 days), whatever the outcome of the run,
+  so that a fix can be tested against them; a failing input is uploaded
+  before it (`fuzz-<target>`).
+- `tests/v36/v36_s18h_fuzz_findings.rs`: the wrong answers that the long
+  run found, six tests, each switched off with its reason until the fix.
+  Four run now; two stay off, both the narrow part that a numeric integral
+  misses (*Known issues*).
+- Tests of the second part, `tests/v36/`: `v36_s18j_betainc.rs` (5 tests),
+  `v36_s18k_quantiles.rs` (7), `v36_s18l_integrate.rs` (4),
+  `v36_s18m_order.rs` (7) and `v36_s18q_quadrature.rs` (5).
 
 ### Known issues
 
@@ -741,6 +1071,71 @@ precisions, SymPy, Python, or exact arithmetic).
     `I < 1` stays as it is; the inequality solvers already return the empty
     set (convention D-3 of the 1.0 design, not implemented).
 - **Numerical evaluation.**
+  - **A numeric integral can miss a narrow part of its integrand and
+    certify the rest.**  Found by the long run of the randomized tests, the
+    same in 0.60.0, not fixed (roadmap B-C07-01).  The density of
+    `1/2·Gamma(5/2, 10⁻²⁰) + 1/2·Normal(0, 1)` over the real line
+    integrates to `0.5`: `integrate_numeric` returns `Ok(0.5)` with a
+    claimed error of `1.2e-11`, and `integrate_numeric_decimal` prints
+    `0.5` with 12 and with 30 certified digits.  The integral is 1.  The
+    gamma half lies within `10⁻²⁰` of 0, behind the values of the normal
+    half on the same piece of the range; no node of the quadrature reaches
+    it, and a sum that agrees with itself on what it missed is taken as
+    converged.  With a scale of `10⁻⁶` only `integrate_numeric` is wrong
+    (the certified digits are `1`).  On the 1,452 integrals of mixtures
+    whose scales differ by `10³` to `10³⁰⁰` measured for this release, 473
+    values of `integrate_numeric` and 378 at 12 certified digits are still
+    wrong (531 and 386 before); of the 480 integrals with a far singular
+    point, 67 and 30 (105 and 38 before).  They were not gone through one
+    by one; those looked at are of this kind.  The closed forms of the
+    statistics module do not take this route (the closed characteristic
+    function of the failing input is right).  Two tests of
+    `tests/v36/v36_s18h_fuzz_findings.rs` stay switched off for it.
+  - `integrate_numeric` returns `0.0` for a density whose mass lies between
+    two nodes of the quadrature and does not underflow there:
+    `LogNormal(-300, 1)` over `[0, ∞)`, whose integral is 1.  Ten such
+    cases were counted among the 1,744 integrals before the changes under
+    "Numeric integration" (`LogNormal(±300, ·)`, `Weibull(10¹⁶⁰, 31/2)`,
+    `Gamma(5, 10¹⁶⁰)` with a cosine or a sine); three of them, of
+    `LogNormal(-300, ·)`, are confirmed `0.0` after those changes, and the
+    others were not looked at again.  A law with ordinary parameters did
+    the same in the test program's run:
+    the density of `Normal(393, ln 2)` shifted by −9 gave `Ok(0)`, and `0`
+    at 12 certified digits (measured before the changes under "Numeric
+    integration" were merged; not measured again).
+  - `integrate_numeric` refuses the densities of `Normal(0, 10⁸⁰)`,
+    `Normal(0, 10⁴⁰)` and `Exponential(10⁻⁸⁰)` although
+    `integrate_numeric_decimal` at 12 digits answers `1`: the 17-digit
+    certified computation that it asks for fails (cause not found).  Five
+    right values with a parameter beyond `10^±15` are refused now (see
+    *Breaking*).
+  - The refusals of `integrate_numeric` are slow, and slower than before
+    (see *Changed*): of the three sets measured, 283 of 1,744, 88 of 1,452
+    and 214 of 480 calls take more than 0.3 s.  `(cos(s·x)·f)` for the
+    density of `1/2·χ²(809) + 1/2·Normal(0, 1)` took 9.9 s to refuse in the
+    long run and was not worked on.
+  - `integrate_numeric_decimal` at many digits on an integrand with a
+    narrow peak can now end in "precision exhausted" where it printed
+    digits (no such case at 12 digits among the integrals measured; 30
+    digits were not measured).
+  - The density of `1/2·Exponential(1) + 1/2·Gamma(5/2, 1)` over the real
+    line: `integrate_numeric` fails with "integrand is not finite near x =
+    0.9999999999995453" and 12 certified digits are refused too, before
+    and after this release's changes.
+  - The incomplete beta function beyond the envelope: 14 right values of
+    the check at huge shapes are refusals now (see *Breaking*); two things
+    would bring them back, neither done.  Its estimate of the continued
+    fraction's length is calibrated for shapes `10⁴ … 10¹⁶` only and can be
+    15 times too low beyond.
+  - `integrate` (symbolic) is still slow on some products of a high power
+    and a transcendental factor: the integrand of the moment generating
+    function of an F law takes 0.55 s at `d₁ = 801`, 1.8 s at 1201 and 9.7
+    s at 1999 (over 20 s from `d₁ = 323` before); `x^(n/2)·e^(-x/2)` times
+    a polynomial for small odd `n` (13 to 61) takes 0.5 to 2.1 s (0.9 to
+    3.6 s before); `x^k·e^(-x/2)/(1 + x)` for `k ≥ 500` takes 2 to 16 s;
+    `∫ x^(321/2)/(1 + 323·x)^162 dx` is found in 49 s, as before (a bound
+    there would turn found integrals into refusals).  Closed forms for the
+    moments of a truncated gamma law would be the proper fix.
   - `eval_f64` of an expression with an unevaluated definite integral is
     certified to 8 digits, not to the nearest `f64` (see *Changed*).
   - The error bound of `binomial(n, k)` and `beta(a, b)` computed as a
@@ -885,8 +1280,11 @@ precisions, SymPy, Python, or exact arithmetic).
     in 0.60.0.
   - A hypergeometric law beyond the bounds of the exact tails: a tail is a
     sum evaluated in 5 to 50 ms, but each step of a quantile search is one
-    such sum, and `quantile_f64(0.3)` takes 0.23 s and 0.55 s for the two
-    laws measured.  Not changed in this release.
+    such sum, and `quantile_f64(0.3)` took 0.23 s and 0.55 s for the two
+    laws measured in the first part of this release.  The second part
+    gave the search of such a law a better starting guess and did not
+    measure these two again; in its own benchmark four calls on such laws,
+    `isf_f64` at `1e-300` and `1e-100`, take 0.4 to 1.2 s.
   - `quantile_f64` of a table returns `Ok(inf)` when the value of the answer
     overflows the doubles (`exp X` of a 100,000-sided die at 0.3), as in
     0.60.0.
@@ -906,6 +1304,81 @@ precisions, SymPy, Python, or exact arithmetic).
     to 2.94 s and was not measured again.  An F law with `d₂` between about
     `10⁻⁴⁰` and `10⁻¹⁶⁵` makes an input of 5 to 20 s where the harness asks
     for the integral.
+  - **Characteristic and moment generating functions left as integrals,
+    and moments computed by quadrature, take seconds** (two classes of the
+    long run; the same times in 0.60.0; not worked on).
+    `FDistribution(11/8·e, 31/13).characteristic_function(-1/8)
+    .eval_complex64()` is refused (`PrecisionExhausted`) after 2.95 s;
+    `Weibull(330, √2/15).mgf(t)` takes 0.97 s; the variance of
+    `StudentT(7/2)` truncated to `[-6.1·10⁸⁵, 4.4·10²⁸]` takes 1.4 s;
+    `order_statistic(StudentT(2·10¹⁷¹), 4, 4).variance().eval_f64()` is
+    refused after 2.8 s.  These calls are slow, and none is known to be
+    wrong; the values of the first class were not checked against an
+    independent computation.
+  - Quantiles of discrete laws, what is left.  A mixture with a large
+    hypergeometric component, inside the envelope:
+    `1/2·Hypergeometric(90000, 36562, 78750) + 1/2·Poisson(30000)`, up to
+    5.1 s per quantile (up to 19 s before).  Beyond the envelope and without
+    a bound on the work: `Hypergeometric(10³⁰, 10²⁹, 1000)`, up to 25 s per
+    call, and `Geometric(10⁻³²⁰)`, 0.3 to 1.1 s; the values are unchanged,
+    and no refusal was added because no bound was found that separates
+    them from laws that must be answered.  `1/3·Geometric(1/3) +
+    2/3·Geometric(10⁻¹²)`: `quantile_f64` is refused ("precision exhausted")
+    wherever the answer lies in the second component's range, before and
+    after.  A quantile on integers beyond `2⁵³` is the smallest *double*
+    whose tail has crossed the level, which can be one unit in the last
+    place above the rounded exact quantile.
+  - Negative binomial laws.  `cdf(k)` is a sum of its terms: at `k = 1000`,
+    inside the envelope, 10 values of the benchmark take 0.3 to 1.9 s and 4
+    calls are refused after 5.6 to 7.2 s (`NegativeBinomial(10¹⁵,
+    1/100).cdf(1000)`: "precision exhausted" after 7.2 s, where the value
+    underflows); a closed form of the lower tail exists and is not used
+    yet.  Quantiles at the level `10⁻³⁰⁰` inside the envelope took 0.31 to
+    0.75 s, and beyond it 7 calls did not return in 20 s
+    (`NegativeBinomial(21590, 1/10²⁵⁰)`), in the benchmark of the
+    incomplete-beta change; they were not measured again with the new
+    search of *Fixed*.
+  - Order statistics, what is left.  The `OrderStatistic` family returned
+    for `Binomial(843, p)` with a 14-digit `p` is slow to ask: a quantile
+    takes 0.47 to 8.1 s, and `mean()` and `variance()` do not return in 20
+    s (before, the law itself was never built).  With a parameter that is
+    not a fraction (`Binomial(30, 1/π)`) the table is still built by
+    expanding expressions: 11 to 15 s for five draws, more than 20 s for
+    six.  Exact tables with long fractions are right and not fast (see
+    *Changed*).  To refuse a moment of an order statistic of a law on
+    infinitely many integers takes up to 19 s
+    (`order_statistic(NegativeBinomial(36, 1/2), 4, 2).mean().eval_f64()`).
+    `cdf` of the `tanh` table of *Fixed* at one of its values is refused
+    ("precision exhausted") after 0.25 to 0.3 s, before and after.
+  - **The nightly run of `fuzz_stats`, honestly.**  It was red on three
+    runs in a row, each time on an input on which a call is slow, not
+    wrong, and as slow in 0.60.0.  The long run that followed saved 61
+    inputs; this release fixes the calls behind many of them (*Fixed*) and
+    leaves the classes listed above.  How many inputs a run still saves on
+    the code of this release is not measured: the two runs of the new
+    campaign were made with the new test program on the library as it was
+    before the fixes of the second part.  Their numbers, for the default
+    draws (inside the envelope): the pass over the 4,509 saved inputs took
+    12 min 39 s, with no timeout and one slow input; then 48 processes ran
+    for 7 min 34 s (33,069 inputs tried) and saved 31 more, about 4 a
+    minute.  The 32 in all: 20 over the time limit of 15 s, 11 slow ones
+    and 1 failed check.  By class: 11 negative binomial quantiles at far
+    levels, 8 characteristic functions left as integrals, 4 moments by
+    quadrature, 2 quantiles of truncated chi-squared laws with `ν` of
+    `9·10⁸` and `5.3·10⁹`, 1 hypergeometric quantile, 1 not placed, 4 new
+    ones, and the failed check, which is the `Normal(393, ln 2)` integral
+    above.  With the wider draws the pass took
+    17 min 40 s, which left 2 min 36 s for the 48 processes on a machine
+    that was busy with other runs: 8 inputs saved (1 over the limit, 7
+    slow, none failed), too short a run to conclude anything.  So the
+    envelope alone does not make the nightly job green, and it will fail
+    wherever the library certifies wrong digits (the first entry of
+    "Numerical evaluation"), which is intended.  The four new slow inputs:
+    the moments of `exp(-X)`, `X ~ ChiSquared(33019904)` (not back in 120
+    s); the check of `Poisson(4)` at `k = 1024` (3.1 s); rejecting
+    `Gamma(4·10¹⁴, 623 + i)` (2.9 s); `Die(100000)` under a cube root (1.9
+    s).  The campaign must be run again on this release's code, with 20
+    minutes for the processes in each mode, before the job is called green.
 - **Questions.**
   - `is_prime()` is `None` for a probable prime above `3.3·10²⁴` (`2^89 -
     1`): the library has no primality proof beyond the range in which its
@@ -931,13 +1404,15 @@ precisions, SymPy, Python, or exact arithmetic).
 
 ### Measured
 
-- `tests/v36/` (0.49–0.60.1): 95 files.  nextest 15,305 tests (27 skipped:
-  the 11 findings that wait for their interface package and one test of
-  the default Gröbner budget are among them), doctests 1,388 — run on a
-  64-core x86-64 machine.  14 ratchet tests.
+- `tests/v36/` (0.49–0.60.1): 101 files.  nextest 15,342 tests (29 skipped:
+  the 11 findings of the review that wait for their interface package, the
+  3 tests of the numeric integral that misses a narrow component and one
+  test of the default Gröbner budget are among them), doctests 1,388 — run
+  on a 64-core x86-64 machine.  14 ratchet tests.
 - Rubi harness: 30,768 verified, 115 real_verified, 0 wrong (unchanged);
-  self-test 56,153 / 0 wrong / 64; `--negative-params` 115 real_verified,
-  0 wrong.
+  one integral of the suite that used to run into the 10 s limit is now
+  returned unevaluated in 0.3 s (the bound of the cyclic rule); self-test
+  56,153 / 0 wrong / 64; `--negative-params` 115 real_verified, 0 wrong.
 - Byte identity of the LP paths and the s42 Lean certificates: identical
   (checked for each lane alone and for the release tree).  MSRV 1.93 passes
   for all four crates.  The API snapshot gained six lines, all additions.
@@ -947,13 +1422,19 @@ precisions, SymPy, Python, or exact arithmetic).
   `eval_f64` gives, 5 were NaN and are `±∞` (an integer `lucas` beyond the
   doubles), and 1 moved by one unit in the last place (*Known issues*).
   Nothing else changed: not one result of the numeric evaluator, the
-  matrices, the limits, the queries or the statistics code that the corpus
-  reaches.
-- Randomized tests on the release tree: the 13 targets for 10–15 minutes
-  each in the plain build, and `fuzz_calculus`, `fuzz_evalf` and
-  `fuzz_stats` for 15 minutes each under AddressSanitizer with a 15 s
-  limit: no crash, no timeout, no out-of-memory; three slow units of
-  `fuzz_evalf` saved.
+  matrices, the limits, the queries or the integrator that the corpus
+  reaches; the second part of the release changed none of the 6.2 million
+  results (the corpus has no statistics operations: those were checked by
+  the lanes' own benchmarks, 1,463 to 9,632 calls each, and by the
+  statistics oracle, 8,156 cases).
+- Randomized tests: the 13 targets for 10–15 minutes each in the plain
+  build on the first part's tree, no crash, no timeout, no out-of-memory.
+  The statistics target `fuzz_stats` under AddressSanitizer with half of
+  CI's time limit, 48 processes: on the first part's tree 61 saved inputs
+  in 30 minutes (3 failed checks, 39 timeouts, 19 slow units), which the
+  second part was made from; the saved corpus of 4,509 inputs replays in
+  459 s where 0.60.0 takes 845 s (inputs above 3 s: 45 → 2).  The state of
+  the nightly run after the second part: *Known issues*.
 - Issue #8, release build, `eval_decimal` of `π`: the table under *Fixed*.
 
 ## [0.60.0] - 2026-11-24

@@ -6,6 +6,148 @@ use super::*;
 // Products: three-factor by parts, trig product-to-sum
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The size the cyclic rule bounds before it works: an upper bound of the
+/// degree of `expr` in the variable, read off the tree without multiplying
+/// anything out.  The variable counts 1, a product adds, a sum (and any
+/// function, for its arguments) takes the largest, and a power with a
+/// numeric exponent `q` multiplies by `⌈|q|⌉`: `x⁷⁶⁰` is 760, `x^(759/2)` is
+/// 380, `(1 + 323·x²)⁻¹⁶²` is 324, `eˣ·sin x` is 1.  Deterministic, linear in
+/// the tree, saturating.
+pub(super) fn degree_bound(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> usize {
+    size_in(arena, expr, var_sym, false)
+}
+
+/// The size by parts bounds before it searches: the number of levels the
+/// chain from a polynomial `u` needs before `u` is used up.  As
+/// [`degree_bound`], but a power of anything other than a constant counts
+/// its exponent only: `x⁷⁶⁰` is 760 and `x¹⁰⁰ + x³` is 100 (a level lowers the
+/// degree by one), `(1 + x⁸)¹²` is 12 (a level lowers the outer power:
+/// `∫ (1 + x⁸)¹²·ln x dx` is found that way).
+fn chain_length(arena: &Arena, u: ExprId, var_sym: SymbolId) -> usize {
+    size_in(arena, u, var_sym, true)
+}
+
+/// [`degree_bound`], or with `outer_power` [`chain_length`].
+fn size_in(arena: &Arena, expr: ExprId, var_sym: SymbolId, outer_power: bool) -> usize {
+    let mut size: FxHashMap<ExprId, usize> = FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        let of = |child: &ExprId| size.get(child).copied().unwrap_or(0);
+        let d = match arena.node(id) {
+            ExprNode::Symbol(s) => usize::from(*s == var_sym),
+            ExprNode::Num(_) => 0,
+            ExprNode::Mul(children) => children
+                .iter()
+                .fold(0usize, |sum, child| sum.saturating_add(of(child))),
+            ExprNode::Pow(base, exp) => match arena.as_num(*exp) {
+                Some(q) => {
+                    let steps = num_traits::ToPrimitive::to_usize(&q.abs().ceil().to_integer())
+                        .unwrap_or(usize::MAX);
+                    if outer_power {
+                        of(base).min(1).saturating_mul(steps)
+                    } else {
+                        of(base).saturating_mul(steps)
+                    }
+                }
+                None => of(base).max(of(exp)),
+            },
+            _ => arena.children(id).iter().map(of).max().unwrap_or(0),
+        };
+        size.insert(id, d);
+    }
+    size.get(&expr).copied().unwrap_or(0)
+}
+
+/// The largest [`chain_length`] of a polynomial `u` for which by parts
+/// ([`try_by_parts_pair`]) searches for `∫ v·du` when `dv` is transcendental
+/// ([`transcendental_in`]).  Every level of by parts shortens the chain of
+/// such a `u` by one and keeps the transcendental factor, and the search has
+/// twenty levels (the depth of `integrate_node`): a chain longer than twenty
+/// cannot reach its end.  Up to 0.60.0 nothing bounded the
+/// attempt.  After `x = u²`, `∫ x^(759/2)·e^(−x/2) dx` (the mean of a
+/// truncated `χ²(759)` law) went down all twenty levels from `u⁷⁶⁰`, both
+/// orderings and every other strategy at each, with their polynomial
+/// arithmetic at degree 760: 14 s for an unevaluated integral, 5.7 s for
+/// `x^(481/2)` (`fuzz_stats`, 2026-11).  Beyond the bound `∫ v·du` is taken
+/// only if it is at hand ([`BEYOND_BOUND_DEPTH`]), and a remaining integral
+/// that is a multiple of the integrand is recognised as before
+/// ([`by_parts_cycle`]: `∫ x⁵⁰⁰·|x| dx`).
+///
+/// Where 64 comes from.  A build that records [`degree_bound`] (never less
+/// than the chain length) at every attempt and at every success (the bounds
+/// off; 2026-11-26, on the base of 0.60.1) gave, for a polynomial `u` and a
+/// transcendental `dv`: largest success 20
+/// in `rubi-harness --check` (`x²⁰·eˣ`, the chain of twenty levels), 3 in the
+/// test suite, 6 in the golden corpus; largest size offered 101, 9·10¹⁰
+/// and 14.  The hunt of the change (`x^(n/2)·e^(−x/2)` times a polynomial or
+/// rational factor, `n` to 2000) has successes up to 99, all of them with
+/// `∫ v·du` at hand (`x¹⁰⁰·e^(−x/2)/(1 + x)`: the quotient's terms in rising
+/// order).  A polynomial times `eˣ` is integrated up to degree 50 and no
+/// further, with or without the bound.  The bound is not for an algebraic
+/// `dv`: there the rule succeeds up to degree 468 in Rubi (`x³⁶·(a +
+/// b·x³⁷)¹²`, a polynomial; `(a + b·x³)⁸·x⁻⁴³`, where a level lowers the
+/// outer power).
+pub(super) const MAX_BY_PARTS_POLY_DEGREE: usize = 64;
+
+/// The depth of the search for `∫ v·du` beyond [`MAX_BY_PARTS_POLY_DEGREE`]:
+/// two levels, which reach an integral that this `integrate` call has
+/// solved already (the memo of `integrate_node`).  The terms of
+/// `x¹⁰⁰·e^(−x/2)/(1 + x)` after the division are integrated in rising order,
+/// and `∫ x⁹⁶·e^(−x/2) dx` is by parts twice and then the term `x⁹⁴·e^(−x/2)`
+/// (found in 0.60.0; with no search at all it was lost, with one level too).
+const BEYOND_BOUND_DEPTH: usize = 2;
+
+/// The largest [`degree_bound`] of a factor that the cyclic rule
+/// (`try_cyclic_ibp`) works on.  The rule integrates one factor twice and
+/// differentiates the other twice before it can see whether the integral
+/// comes back, whatever their size.  Up to 0.60.0: after `x = u²`,
+/// `∫ e^(−x/8)·x^(321/2)·(1 + 323·x)^(−162) dx` (the moment generating
+/// function of `F(323, 1)`) cost two Hermite reductions of a denominator of
+/// degree 324, 41 s for an unevaluated integral (`fuzz_stats`, 2026-11).
+///
+/// Where 64 comes from (the same recording build): the largest size at
+/// which the rule finds its cycle is 13 in `rubi-harness --check`, 9 in the
+/// test suite, 3 in the golden corpus and 1 in the hunt (`e^(200x)·
+/// sin(201x)`); the largest size offered is 386, 9·10¹⁰, 16 and 1001.
+pub(super) const MAX_CYCLIC_IBP_DEGREE: usize = 64;
+
+/// Does `expr` hold a function of the variable that is not algebraic: any
+/// node that depends on the variable other than a sum, a product and a power
+/// with an exponent free of it (`eˣ`, `erf x`, `ln x`, `2ˣ`; not `√x`, `xᵐ`)?
+fn transcendental_in(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> bool {
+    let mut depends: FxHashSet<ExprId> = FxHashSet::default();
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        let node = arena.node(id);
+        let on_var = match node {
+            ExprNode::Symbol(s) => *s == var_sym,
+            _ => arena.children(id).iter().any(|c| depends.contains(c)),
+        };
+        if !on_var {
+            continue;
+        }
+        match node {
+            ExprNode::Symbol(_) | ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => {}
+            ExprNode::Pow(_, exp) if !depends.contains(exp) => {}
+            _ => return true,
+        }
+        depends.insert(id);
+    }
+    false
+}
+
+/// Is `u` a polynomial of the variable beyond [`MAX_BY_PARTS_POLY_DEGREE`],
+/// and `dv` transcendental?  Read off the two trees, before any work.
+fn polynomial_beyond_by_parts(
+    arena: &Arena,
+    u: ExprId,
+    dv: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> bool {
+    is_polynomial_in(arena, u, var, var_sym)
+        && chain_length(arena, u, var_sym) > MAX_BY_PARTS_POLY_DEGREE
+        && transcendental_in(arena, dv, var_sym)
+}
+
 /// `∫ u(x)·g(x)·h(x) dx` by parts with `dv = g·h`: `u` a logarithm, an
 /// inverse trigonometric or another by-parts function of the variable
 /// first (LIATE), then a polynomial `P` (e.g. `x·eˣ·sin x`).  Up to 0.46
@@ -321,7 +463,14 @@ pub(super) fn try_by_parts_pair(
             Cycle::Hopeless => continue,
             Cycle::No => {}
         }
-        let integral_v_du = integrate_node(arena, v_du, var, var_sym, depth - 1);
+        // Beyond the size bound a short search for `∫ v·du`: an integral
+        // at hand only (see `MAX_BY_PARTS_POLY_DEGREE`).
+        let rest_depth = if polynomial_beyond_by_parts(arena, u, dv, var, var_sym) {
+            (depth - 1).min(BEYOND_BOUND_DEPTH)
+        } else {
+            depth - 1
+        };
+        let integral_v_du = integrate_node(arena, v_du, var, var_sym, rest_depth);
 
         // Check if the remaining integral was resolved (deep check:
         // an Add of unevaluated Integrals should not be accepted).

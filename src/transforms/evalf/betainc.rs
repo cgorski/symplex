@@ -99,7 +99,10 @@ pub(super) const BETA_VIA_LN_MIN: f64 = 67_108_864.0;
 /// The shape-dependent part of the step budget, `10·√(a + b)`, is capped
 /// at `2·10⁶` steps (seconds), and a fraction that needs more by
 /// [`betainc_cf_steps`] is refused before its first step (up to 0.57
-/// `F(10²⁰, 10²⁰).cdf(1)` ran 18 s to refuse).
+/// `F(10²⁰, 10²⁰).cdf(1)` ran 18 s to refuse).  For `a + b` beyond
+/// `2^`[`BETAINC_CF_ENVELOPE_BITS`] the budget is
+/// [`BETAINC_CF_WORK_BEYOND`] bit-steps instead, and the same refusal holds
+/// against it.
 fn betainc_cf(
     a: &BigFloat,
     b: &BigFloat,
@@ -111,10 +114,19 @@ fn betainc_cf(
     let max_iter = (40 * wp + 2000).saturating_add((10.0 * ab_f.abs().sqrt()).min(2e6) as usize);
     // The convergence test as before; the steps also carry the bits of a + b.
     let tol = wp + magnitude_bits(2.0 * max_iter as f64) + 8;
-    let wp = tol + magnitude_bits(ab_f);
+    let ab_bits = magnitude_bits(ab_f);
+    let wp = tol + ab_bits;
+    // Beyond the envelope the budget is work (steps × working bits), fixed
+    // before the first step: see `BETAINC_CF_WORK_BEYOND`.
+    let max_iter = if ab_bits > BETAINC_CF_ENVELOPE_BITS {
+        max_iter.min(BETAINC_CF_WORK_BEYOND / wp)
+    } else {
+        max_iter
+    };
     let below = betainc_switch_point(a, b, wp).sub(x, wp, RM);
     // Float evidence: a work estimate that can only refuse (an `f64` guide).
-    let need = betainc_cf_steps(f64_of(a)?, f64_of(b)?, f64_of(&below)?, tol);
+    let z = betainc_sigmas(a, b, &below)?;
+    let need = betainc_cf_steps(f64_of(a)?.min(f64_of(b)?), z, tol);
     if need > max_iter as f64 {
         return Err(SymplexError::ComputationFailed {
             operation: "evalf",
@@ -194,9 +206,44 @@ fn betainc_cf(
     Ok(h)
 }
 
+/// `a + b ≤ 2⁵⁴` holds for all shapes inside the envelope in which the
+/// statistics module must answer (parameters up to `2⁵³`): there the step
+/// budget of [`betainc_cf`] stands as it is.
+const BETAINC_CF_ENVELOPE_BITS: usize = 54;
+
+/// The budget of [`betainc_cf`] beyond the envelope, in bit-steps (steps ×
+/// working bits): there a step carries up to 1024 guard bits for `a + b`
+/// and costs up to twenty times a step inside it, so a budget in steps
+/// bounds nothing (up to 0.60 `betainc_regularized(10²⁵⁰, 10¹⁴, 0, x)` at
+/// the mean ran 2 050 000 steps at 2060 bits, more than 40 s, to be refused).
+/// `2²⁵` bit-steps are 28 000 steps at 1186 bits and 16 000 at 2060 bits:
+/// 0.26 s and 0.34 s at the 9.2 µs and 20.8 µs per step measured there in
+/// a release build.  The count is deterministic: no clock is read.
+const BETAINC_CF_WORK_BEYOND: usize = 1 << 25;
+
+/// `delta/σ` as an `f64` (`±∞` beyond its range), `σ² = ab/(a + b)³` the
+/// variance of the beta law: the distance `delta` in standard deviations.
+/// `σ` is formed in arbitrary precision, whose exponent range holds it for
+/// all shapes.  Up to 0.60 it was formed in `f64`, where `σ²` is 0 from
+/// `ab/(a + b)³ < 5·10⁻³²⁴` on (`a = 2·10¹³⁶`, `b = 2·10²⁵⁶`: `5·10⁻³⁷⁷`):
+/// `delta/0 = ∞` standard deviations read as "far below the switch point",
+/// the estimate of [`betainc_cf_steps`] was 0 steps where it is `10⁴⁷`, and
+/// `FDistribution(4·10¹³⁶, 4·10²⁵⁶).cdf(1)` ran the fraction through its
+/// 2 014 160 steps (18.5 s) before it was refused.
+fn betainc_sigmas(a: &BigFloat, b: &BigFloat, delta: &BigFloat) -> Result<f64, SymplexError> {
+    let p = 64;
+    let n = a.add(b, p, RM);
+    let variance = a
+        .div(&n, p, RM)
+        .mul(&b.div(&n, p, RM), p, RM)
+        .div(&n, p, RM);
+    f64_of(&delta.div(&variance.sqrt(p, RM), p, RM))
+}
+
 /// An estimate from below of the steps [`betainc_cf`] needs to converge to
-/// `tol` bits, `delta` below its switch point `(a + 1)/(a + b + 2)`: an
-/// `f64` guide that can only refuse.  Measured with mpmath's Lentz steps
+/// `tol` bits, `z` standard deviations ([`betainc_sigmas`]) below its switch
+/// point `(a + 1)/(a + b + 2)`, for the smaller shape `m`: an `f64` guide
+/// that can only refuse.  Measured with mpmath's Lentz steps
 /// (shapes `10⁴`–`10¹⁶`, `b/a` from `10⁻⁶` to `10²`, 74 to 235 bits): at the
 /// switch point `0.39–0.41·(m·tol²)^{1/3}` steps, `m = min(a, b)` (up to
 /// `0.65·(…)` when `b` is the smaller); `z = delta/σ` standard deviations
@@ -204,12 +251,9 @@ fn betainc_cf(
 /// smaller.  The estimate, `0.8` of the harmonic combination of
 /// `0.39·(m·tol²)^{1/3}` and `12·tol/z²`, lies below every measured count
 /// (221 counts of at least 20 steps: between 0.14 and 0.92 of it).
-fn betainc_cf_steps(a: f64, b: f64, delta: f64, tol: usize) -> f64 {
+fn betainc_cf_steps(m: f64, z: f64, tol: usize) -> f64 {
     let tol = tol as f64;
-    let at_switch = 0.39 * (a.min(b) * tol * tol).cbrt();
-    let n = a + b;
-    let sigma = (a / n * (b / n) / n).sqrt();
-    let z = delta / sigma;
+    let at_switch = 0.39 * (m * tol * tol).cbrt();
     0.8 / (1.0 / at_switch + z * z / (12.0 * tol))
 }
 
@@ -278,7 +322,8 @@ fn betainc_switch_point(a: &BigFloat, b: &BigFloat, wp: usize) -> BigFloat {
 /// From this many continued-fraction steps by the estimate
 /// ([`betainc_cf_steps`], a lower bound: the fraction takes up to 7 times
 /// as many) on, [`betainc_tails_central`] is tried first.  Below it the
-/// fraction takes milliseconds.
+/// fraction takes milliseconds.  Not applied for `a + b` beyond
+/// `2^`[`BETAINC_CF_ENVELOPE_BITS`], where the route is always tried.
 const BETAINC_CENTRAL_MIN_STEPS: f64 = 2_000.0;
 
 /// The central route applies within this many standard deviations of the
@@ -328,9 +373,15 @@ fn betainc_tails_central(
         return Ok(None);
     }
     let (t0_f, s1_f) = ((a_f - 1.0) / n_f, (b_f - 1.0) / n_f);
-    let sigma_f = (t0_f * s1_f / n_f).sqrt();
-    // The radii of convergence of E on the two sides (the ends 0 and 1).
-    let (r0, r1) = (t0_f / sigma_f, s1_f / sigma_f);
+    // σ and the radii as products of square roots: `t₀(1 − t₀)/N` itself is
+    // below the range of an `f64` from `N` near `10¹⁰⁸` on (0, and the route
+    // declined: `a = 2·10¹³⁶`, `b = 2·10²⁵⁶` up to 0.60), its factors'
+    // roots are not (`t₀, 1 − t₀ > 1/N`, `N < 1.8·10³⁰⁸`).
+    let (t0_rt, s1_rt, n_rt) = (t0_f.sqrt(), s1_f.sqrt(), n_f.sqrt());
+    let sigma_f = t0_rt * s1_rt / n_rt;
+    // The radii of convergence of E on the two sides (the ends 0 and 1):
+    // t₀/σ and (1 − t₀)/σ (`∞` beyond the range: the far end).
+    let (r0, r1) = (t0_rt / s1_rt * n_rt, s1_rt / t0_rt * n_rt);
     if !(sigma_f > 0.0 && r0.min(r1) > 64.0) {
         return Ok(None);
     }
@@ -353,8 +404,15 @@ fn betainc_tails_central(
     if z.is_nan() || z.abs() > BETAINC_CENTRAL_MAX_Z {
         return Ok(None);
     }
-    let steps = betainc_cf_steps(a_f, b_f, z.abs() * sigma_f, wp + 30);
-    if steps < BETAINC_CENTRAL_MIN_STEPS {
+    // Beyond the envelope the estimate does not gate the route: it is
+    // calibrated for `b/a` from `10⁻⁶` to `10²` and lies far below the count
+    // outside (about 1 200 steps estimated, more than 18 088 taken at
+    // shapes near `10¹⁸⁷` and `10¹³`, 3.1 standard deviations above the mode,
+    // at 1200 bits), and a step of the fraction costs up to twenty times a
+    // step inside.
+    let beyond = magnitude_bits(a_f + b_f) > BETAINC_CF_ENVELOPE_BITS;
+    let steps = betainc_cf_steps(a_f.min(b_f), z, wp + 30);
+    if !beyond && steps < BETAINC_CENTRAL_MIN_STEPS {
         return Ok(None);
     }
     // ln of the target absolute error: 2^−(wp+10) of a lower bound of the

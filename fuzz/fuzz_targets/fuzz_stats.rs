@@ -3,8 +3,8 @@
 //!
 //! A family — the 23 built-in ones and finite tables — gets parameters
 //! drawn as exact numbers: small fractions, integers, dyadic numbers over
-//! `2^±20`, powers of ten up to `10^±300` and dyadics over `2^±900`
-//! (extreme shapes and scales), and one draw in eight a symbol-free
+//! `2^±20`, powers of ten and wide dyadics (extreme shapes and scales: how
+//! extreme is the mode, below), and one draw in eight a symbol-free
 //! irrational constant (`√2`, `π`, `e`, `ln 2`, …).  One draw in eight
 //! makes a parameter invalid (zero, negative, outside `[0, 1]`, a
 //! non-integer count, a broken relation `a < b`, `±∞`, NaN, non-real); one
@@ -13,16 +13,52 @@
 //! are decided exactly where they are exact (rational parameters give
 //! rational masses, moments and CDF values) and otherwise from certified
 //! evaluation — `eval_f64` rounds certified digits once, `eval_decimal`
-//! prints certified digits only — so a failure is a wrong answer:
+//! prints certified digits only — so a failure is a wrong answer.
+//!
+//! **Two modes** (the block "the envelope" of the number generators is the
+//! only place that tells them apart):
+//!
+//! * **inside the envelope** (the default; what the nightly job runs):
+//!   every drawn parameter is between `2⁻⁵³` and `2⁵³` in magnitude, or 0
+//!   where the family allows it.  That is the range in which the library
+//!   promises an answer, so here a slow call is a defect.  Powers of ten
+//!   reach `10^±14`, wide dyadics `2⁻⁵³ … 2⁵²`, a probability `10⁻¹⁵` (and
+//!   `1 − 10⁻³⁰`: inside in magnitude), a count `9·10¹⁵`, the parameters
+//!   of the `numdist` check `2⁻⁵³ … 2⁵³`.  The upper end of a range
+//!   (`Uniform`, `Triangular`, `DiscreteUniform`) is the sum of two draws:
+//!   at most `2⁵³`, and nearer to 0 than `2⁻⁵³` only if a power of ten and
+//!   a wide dyadic cancel that far (`−9·10⁻¹⁴ + 811·2⁻⁵³`).  Not
+//!   parameters, and the same in both modes: the levels (down to
+//!   `10⁻³⁰⁰`), the sample points, the ends of a truncation (sample
+//!   points: quantiles at those levels, so they can lie far outside
+//!   `±2⁵³`), the coefficients of the wrappers;
+//! * **beyond the envelope too** (`FUZZ_STATS_BEYOND=1` in the
+//!   environment, read once): powers of ten up to `10^±300`, dyadics over
+//!   `2^±900`, probabilities down to `10⁻³⁰⁰`, counts up to `9·10¹⁷`,
+//!   integers up to `9·10³⁰` — the draws of every version up to 0.60.
+//!   Beyond the envelope the library promises only "never wrong, refuse
+//!   fast"; the campaign before a release (on the project's machines, see
+//!   `fuzz/README.md`) runs both modes.
+//!
+//! Both modes read the same bytes: an input decodes to the same case in
+//! both, except that an exponent beyond the envelope is folded into it,
+//! and that the `numdist` check draws a log-uniform parameter whose range
+//! leaves the envelope (an extreme shape, the `n` of a binomial, the rate
+//! of a Poisson) over the range cut to the envelope, which moves every
+//! such draw (`fuzz/README.md` has the count for the saved corpus).
+//!
+//! The checks:
 //!
 //! * **validation** (every input): the `try_` constructor accepts valid
 //!   parameters and rejects invalid ones with an error (never a panic or a
 //!   distribution); the unchecked distribution does not panic either;
 //! * **density**: real and `≥ 0` at points of the support; integrates to 1
 //!   (`integrate_numeric`, a disagreement re-decided by the certified
-//!   `integrate_numeric_decimal`), sums to 1 (exactly on a finite support
-//!   with rational masses; partial sums plus a ratio bound on the tail for
-//!   `Poisson`, `Geometric`, `NegativeBinomial` and a large `Binomial`);
+//!   `integrate_numeric_decimal`, whose value is final: certified digits
+//!   that contradict the expected value are a failure), sums to 1 (exactly
+//!   on a finite support with rational masses; partial sums plus a ratio
+//!   bound on the tail for `Poisson`, `Geometric`, `NegativeBinomial` and a
+//!   large `Binomial`);
 //! * **cdf**: `cdf`, `sf` in `[0, 1]`, monotone, `cdf + sf = 1`, `0`/`1`
 //!   beyond and at the support's ends, limits `0`/`1` at its ends;
 //! * **derivative**: `d/dx` of the family's closed `cdf`, `cdf_lower` and
@@ -291,24 +327,86 @@ impl Drawn {
 
 // ── Numbers ─────────────────────────────────────────────────────────────────
 
+// The envelope of the library's working rule: a distribution parameter
+// between `2⁻⁵³` and `2⁵³` in magnitude.  Inside it a call must answer;
+// beyond it the rule is "never wrong, refuse fast".  The two modes of the
+// generators differ in this block and nowhere else: `beyond`, `exponent`
+// and `log_uniform_param` are the only readers of the mode, and the `IN_*`
+// constants are the whole of the inside mode.
+
+/// `2⁻⁵³`.
+const ENVELOPE_MIN: f64 = 1.0 / ENVELOPE_MAX;
+/// `2⁵³`.
+const ENVELOPE_MAX: f64 = 9_007_199_254_740_992.0;
+
+/// Inside: `m·10^±k`, `m ≤ 9`, for `k ≤ 14`, that is `10⁻¹⁴ … 9·10¹⁴`.  Not
+/// 15: the upper end of a range is the sum of two draws (`lo + w`), and two
+/// numbers below `2⁵²` add to at most `2⁵³`.
+const IN_TEN: i64 = 14;
+/// Inside: `m·2^e`, odd `m < 2¹⁶`, for `−53 ≤ e ≤ 36`, that is
+/// `2⁻⁵³ … 2⁵²` (the two edges of the envelope are drawn by these).
+const IN_DYADIC: (i64, i64) = (-53, 36);
+/// Inside: a probability `m/10^k` for `k ≤ 15` (`10⁻¹⁵ > 2⁻⁵³`).
+const IN_PROB_TEN: i64 = 15;
+/// Inside: a count `m·10^k` for `k ≤ 15` (`9·10¹⁵ < 2⁵³`).
+const IN_COUNT_TEN: i64 = 15;
+/// Inside: an integer end `±m·10^k` and a width `m·10^k` of a discrete
+/// uniform law for `k ≤ 14` (the other end is their sum, `≤ 1.8·10¹⁵`).
+const IN_INT_TEN: i64 = 14;
+
+/// `FUZZ_STATS_BEYOND` is set (to anything but nothing or `0`): parameters
+/// are drawn beyond the envelope too, as up to 0.60.  Read once.
+fn beyond() -> bool {
+    static BEYOND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *BEYOND.get_or_init(|| {
+        std::env::var_os("FUZZ_STATS_BEYOND").is_some_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+/// An exponent in `lo..=hi`.  Beyond the envelope it is the draw; inside, a
+/// draw outside `in_lo..=in_hi` is folded into that range.  Both modes read
+/// the same bytes, so an input decodes to the same case in both, except
+/// that the extreme exponents of its parameters are folded.
+fn exponent(r: &mut Src, lo: i64, hi: i64, in_lo: i64, in_hi: i64) -> i64 {
+    let e = r.range(lo, hi);
+    if beyond() || (in_lo..=in_hi).contains(&e) {
+        e
+    } else {
+        in_lo + (e - lo).rem_euclid(in_hi - in_lo + 1)
+    }
+}
+
+/// A parameter drawn as a double (`numdist`): log-uniform in `lo..hi` at
+/// `u ∈ [0, 1]`.  Inside the envelope the range is cut to it first (so the
+/// same `u` is another number there, also when the first was inside).
+fn log_uniform_param(u: f64, lo: f64, hi: f64) -> f64 {
+    if beyond() {
+        return (lo.ln() + u * (hi.ln() - lo.ln())).exp();
+    }
+    let (lo, hi) = (lo.max(ENVELOPE_MIN), hi.min(ENVELOPE_MAX));
+    (lo.ln() + u * (hi.ln() - lo.ln())).exp().clamp(lo, hi)
+}
+
 fn small_rational(r: &mut Src, ctx: &Context, max_p: i64) -> Ex {
     let p = r.range(1, max_p);
     let q = r.range(1, 16);
     ctx.rational(p, q)
 }
 
-/// `m·2^e` with an odd 16-bit mantissa: exact as a rational and as a double
-/// (for `|e| ≤ 1000`).
-fn dyadic(r: &mut Src, ctx: &Context, lo: i64, hi: i64) -> Ex {
+/// `m·2^e` with an odd 16-bit mantissa, `lo ≤ e ≤ hi` (inside the envelope
+/// `inside.0 ≤ e ≤ inside.1`): exact as a rational and as a double (for
+/// `|e| ≤ 1000`).
+fn dyadic(r: &mut Src, ctx: &Context, lo: i64, hi: i64, inside: (i64, i64)) -> Ex {
     let m = 1 + 2 * r.below(1 << 15) as i64;
-    let e = r.range(lo, hi);
+    let e = exponent(r, lo, hi, inside.0, inside.1);
     ctx.int(m) * ctx.int(2).powi(e)
 }
 
-/// `m·10^k` or `m·10^−k`, `m ≤ 9`, `1 ≤ k ≤ max_k`.
-fn ten_power(r: &mut Src, ctx: &Context, max_k: i64) -> Ex {
+/// `m·10^k` or `m·10^−k`, `m ≤ 9`, `1 ≤ k ≤ max_k` (inside the envelope
+/// `k ≤ inside_k`).
+fn ten_power(r: &mut Src, ctx: &Context, max_k: i64, inside_k: i64) -> Ex {
     let m = r.range(1, 9);
-    let k = r.range(1, max_k.max(1));
+    let k = exponent(r, 1, max_k.max(1), 1, inside_k);
     let t = ctx.int(10).powi(k);
     if r.chance(0.5) {
         ctx.int(m) * t
@@ -335,10 +433,10 @@ fn irrational(r: &mut Src, ctx: &Context) -> Ex {
 fn positive(r: &mut Src, ctx: &Context) -> Ex {
     match r.below(16) {
         0..=4 => small_rational(r, ctx, 64),
-        5..=7 => dyadic(r, ctx, -20, 20),
+        5..=7 => dyadic(r, ctx, -20, 20, (-20, 20)),
         8 | 9 => ctx.int(r.range(1, 1000)),
-        10 | 11 => ten_power(r, ctx, 300),
-        12 => dyadic(r, ctx, -900, 900),
+        10 | 11 => ten_power(r, ctx, 300, IN_TEN),
+        12 => dyadic(r, ctx, -900, 900, IN_DYADIC),
         13 => small_rational(r, ctx, 4),
         _ => irrational(r, ctx),
     }
@@ -363,7 +461,8 @@ fn probability(r: &mut Src, ctx: &Context) -> Ex {
             let q = r.range(2, 64);
             ctx.rational(r.range(1, q - 1), q)
         }
-        5 => ctx.int(r.range(1, 9)) / ctx.int(10).powi(r.range(1, 300)),
+        5 => ctx.int(r.range(1, 9)) / ctx.int(10).powi(exponent(r, 1, 300, 1, IN_PROB_TEN)),
+        // Inside the envelope in magnitude (the complement goes to `10⁻³⁰`).
         6 => ctx.one() - ctx.int(r.range(1, 9)) / ctx.int(10).powi(r.range(1, 30)),
         7 => match r.below(4) {
             0 => ctx.int(2).sqrt() / 2,
@@ -380,7 +479,7 @@ fn count(r: &mut Src, ctx: &Context) -> Ex {
     match r.below(8) {
         0..=5 => ctx.int(r.range(0, 40)),
         6 => ctx.int(r.range(41, 2000)),
-        _ => ctx.int(r.range(1, 9)) * ctx.int(10).powi(r.range(3, 17)),
+        _ => ctx.int(r.range(1, 9)) * ctx.int(10).powi(exponent(r, 3, 17, 3, IN_COUNT_TEN)),
     }
 }
 
@@ -389,9 +488,19 @@ fn integer(r: &mut Src, ctx: &Context) -> Ex {
     match r.below(8) {
         0..=6 => ctx.int(r.range(-50, 50)),
         _ => {
-            let v = ctx.int(r.range(1, 9)) * ctx.int(10).powi(r.range(3, 30));
+            let v = ctx.int(r.range(1, 9)) * ctx.int(10).powi(exponent(r, 3, 30, 3, IN_INT_TEN));
             if r.chance(0.5) { -v } else { v }
         }
+    }
+}
+
+/// The width of a discrete uniform law: mostly small, sometimes up to
+/// `9·10^20`.
+fn lattice_width(r: &mut Src, ctx: &Context) -> Ex {
+    if r.below(8) == 0 {
+        ctx.int(r.range(1, 9)) * ctx.int(10).powi(exponent(r, 3, 20, 3, IN_INT_TEN))
+    } else {
+        ctx.int(r.range(0, 40))
     }
 }
 
@@ -512,11 +621,7 @@ fn draw(r: &mut Src, ctx: &Context, allow_invalid: bool) -> Drawn {
         }
         DISCRETE_UNIFORM => {
             let a = integer(r, ctx);
-            let w = if r.below(8) == 0 {
-                ctx.int(r.range(1, 9)) * ctx.int(10).powi(r.range(3, 20))
-            } else {
-                ctx.int(r.range(0, 40))
-            };
+            let w = lattice_width(r, ctx);
             dr.params = vec![a.clone(), a + w];
         }
         _ => {
@@ -1359,10 +1464,15 @@ fn leaves_the_doubles(g: &Ex, x: &Ex, samples: &[Ex]) -> bool {
 }
 
 /// `∫ g` over the pieces agrees with `expected` (absolute `tol`): the `f64`
-/// quadrature, re-decided by the certified one when it disagrees, and that
-/// by the certified one over the pieces split at `splits` (the quadratures
-/// can step over a spike of mass far narrower than the range: a Cauchy
-/// component of scale `10⁻¹⁴⁸` integrates to 0 over `ℝ`, certified).
+/// quadrature, re-decided by the certified one when it disagrees.  A
+/// certified value that contradicts `expected` is a failure, whatever a
+/// finer quadrature would say: the library certified wrong digits (a
+/// mixture with a component of scale `10⁻²⁰` integrates to `0.5` over `ℝ`,
+/// certified to 30 digits).  Up to 0.60 such a value was re-decided over
+/// the pieces split at `splits`, and the verdict was "ok" when the split
+/// quadrature found the mass and a skip when it refused; which of the
+/// three it was depended on how much of the time budget was left.  Only a
+/// certified quadrature that refuses is retried over the split pieces.
 /// `samples` are points of the range ([`leaves_the_doubles`]).
 #[allow(clippy::too_many_arguments)]
 fn integral_agrees(
@@ -1388,22 +1498,19 @@ fn integral_agrees(
         return Ok(format!("{what} ok"));
     }
     show!("  step: {what}: certified quadrature ({v} vs {expected})");
-    let c = quad_certified(g, x, pieces, 12);
-    if let Some(c) = c
-        && (c - expected).abs() <= tol
-    {
-        return Ok(format!("{what} ok (certified {c}; integrate_numeric {v})"));
+    if let Some(c) = quad_certified(g, x, pieces, 12) {
+        if (c - expected).abs() <= tol {
+            return Ok(format!("{what} ok (certified {c}; integrate_numeric {v})"));
+        }
+        fail!(
+            "{what}: the integral is {c} (certified; integrate_numeric {v}), expected {expected}\n  integrand = {g}"
+        );
     }
     let refined = split_pieces(pieces, &splits());
     if refined.len() == pieces.len() {
-        return match c {
-            Some(c) => fail!(
-                "{what}: the integral is {c} (certified; integrate_numeric {v}), expected {expected}\n  integrand = {g}"
-            ),
-            None => Ok(format!(
-                "skip: {what}: integrate_numeric {v} vs {expected}, certified quadrature refused"
-            )),
-        };
+        return Ok(format!(
+            "skip: {what}: integrate_numeric {v} vs {expected}, certified quadrature refused"
+        ));
     }
     show!(
         "  step: {what}: certified quadrature over {} pieces",
@@ -1411,15 +1518,15 @@ fn integral_agrees(
     );
     match quad_certified(g, x, &refined, 12) {
         Some(s) if (s - expected).abs() <= tol => Ok(format!(
-            "{what} ok over {} pieces (certified {s}; unsplit {c:?}, integrate_numeric {v})",
+            "{what} ok over {} pieces (certified {s}; unsplit refused, integrate_numeric {v})",
             refined.len()
         )),
         Some(s) => fail!(
-            "{what}: the integral is {s} (certified, over {} pieces; unsplit {c:?}; integrate_numeric {v}), expected {expected}\n  integrand = {g}",
+            "{what}: the integral is {s} (certified, over {} pieces; unsplit refused; integrate_numeric {v}), expected {expected}\n  integrand = {g}",
             refined.len()
         ),
         None => Ok(format!(
-            "skip: {what}: integrate_numeric {v} vs {expected}, certified {c:?}, split quadrature refused"
+            "skip: {what}: integrate_numeric {v} vs {expected}, certified quadrature refused, split quadrature refused"
         )),
     }
 }
@@ -2297,9 +2404,13 @@ fn numdist_case(r: &mut Src, ctx: &Context, desc: &mut String, b: &Budget) -> Ch
         let u = r.below(65536) as f64 / 65535.0;
         (lo.ln() + u * (hi.ln() - lo.ln())).exp()
     };
+    // A parameter whose range leaves the envelope (`lr` reads the same bytes).
+    let par = |r: &mut Src, lo: f64, hi: f64| {
+        log_uniform_param(r.below(65536) as f64 / 65535.0, lo, hi)
+    };
     let shape = |r: &mut Src, lo: f64, hi: f64, ext: f64| {
         if r.below(4) == 0 {
-            lr(r, 1e-300, ext)
+            par(r, 1e-300, ext)
         } else {
             lr(r, lo, hi)
         }
@@ -2320,11 +2431,11 @@ fn numdist_case(r: &mut Src, ctx: &Context, desc: &mut String, b: &Budget) -> Ch
         GAMMA => vec![shape(r, 1e-3, 1e9, 1e300), lr(r, 1e-3, 1e3)],
         BETA => vec![shape(r, 1e-3, 1e7, 1e15), shape(r, 1e-3, 1e7, 1e15)],
         F_DIST => vec![shape(r, 1e-2, 1e8, 1e15), shape(r, 1e-2, 1e8, 1e15)],
-        BINOMIAL => vec![lr(r, 1.0, 1e17).floor(), lr(r, 1e-9, 1.0).min(1.0 - 1e-9)],
+        BINOMIAL => vec![par(r, 1.0, 1e17).floor(), lr(r, 1e-9, 1.0).min(1.0 - 1e-9)],
         _ => vec![if r.below(4) == 0 {
-            lr(r, 1e-300, 1e-6)
+            par(r, 1e-300, 1e-6)
         } else {
-            lr(r, 1e-6, 1e17)
+            par(r, 1e-6, 1e17)
         }],
     };
     let mut dr = Drawn::new(fam);
