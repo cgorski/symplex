@@ -71,8 +71,11 @@ fn dec(ctx: &Context, src: &str, digits: u32) -> String {
 /// `-5.487362057415743048190185442373304013882e+160224366`;
 /// `gamma(mpf(21196207)/4) - 261593990654089*mpf(2)**110721550` =
 /// `8.792592170743907867485869955530538701435e+33330504`.
+///
+/// Fixed in 0.60.1: `arb_gamma_real` asks `ln Γ` to an absolute error of `2^(−prec−16)`, a
+/// bound derived from the terms of Stirling's sum (`evalf/gamma.rs`, module documentation).
+/// The same hunt: 0 errors above 0.5625 units (`run_gamma_scan2.sh`).
 #[test]
-#[ignore = "known bug: the bound of gamma(x) ignores the factor ln Γ(x) (wrong last digits under a cancellation, x ≳ 10⁶)"]
 fn gamma_of_a_large_argument_keeps_its_digits_under_a_cancellation() {
     let ctx = Context::new();
     assert_eq!(
@@ -169,11 +172,15 @@ fn a_tiny_nonzero_value_is_printed_and_a_zero_prints_zero() {
 /// Right: a refusal (`stats::rational_decimal` refuses `digits == 0`).
 ///
 /// Oracle: exact arithmetic, `10**39 // 3` = `333…333` (39 threes).
+///
+/// Fixed in 0.60.1: `InvalidArgument` ("at least one digit must be requested").
 #[test]
-#[ignore = "known bug: eval_decimal(0) prints 38 uncertified digits (1/3 ends in 4)"]
 fn eval_decimal_of_zero_digits_is_refused() {
     let ctx = Context::new();
-    assert!(ctx.rational(1, 3).eval_decimal(0).is_err());
+    assert!(matches!(
+        ctx.rational(1, 3).eval_decimal(0),
+        Err(SymplexError::InvalidArgument { .. })
+    ));
     assert!(ctx.pi().eval_decimal(0).is_err());
 }
 
@@ -192,28 +199,42 @@ fn an_exact_integer_is_laid_out_by_the_digits_it_has() {
     assert_eq!(dec(&ctx, "123456", 3), "123000");
 }
 
-/// W25 (review D §1.8 F2; review G N-G3, B-C07-09; stable).  The doc of `eval_f64`: it
-/// "evaluates at the precision of `eval_decimal` with 16 digits … and rounds the result once,
-/// to the nearest `f64`".  Through an unevaluated definite integral 8 digits are certified
-/// (`evalf/integral.rs: QUADRATURE_F64_DIGITS`).  Today 12 of 16 such integrals are not the
+/// W25 (review D §1.8 F2; review G N-G3, B-C07-09; stable).  The doc of `eval_f64` said only:
+/// it "evaluates at the precision of `eval_decimal` with 16 digits … and rounds the result
+/// once, to the nearest `f64`".  Through an unevaluated definite integral 8 digits are
+/// certified (`evalf/integral.rs: QUADRATURE_F64_DIGITS`): 12 of 16 such integrals are not the
 /// nearest double: `Integral(x^x, x, 0, 1)` gives `0.7834305107121342` (1.8 ulp off),
 /// `Integral(abs(sin(7*x))^(1/2)*exp(x), x, 0, 3)` is 14.6 ulp off (14.8 digits).
 /// `eval_decimal(30)` is right for all 16 (asserted first).  Right: the nearest double, or
 /// a doc that says 8 digits.
 ///
+/// Decided in 0.60.1 by measurement: the doc was the error.  Certifying 16 digits makes all
+/// 416 integrals tried the nearest double and none a refusal, but sends nearly every one to
+/// the arbitrary-precision quadrature: 21.5 s against 2.9 s for the 416 (7.5 times; the median
+/// integral 36 ms against 0.07 ms, 500 times; the 16 integrals of the review 910 ms against
+/// 2.3 ms).  The 8 digits stay, and the doc of `Ex::eval_f64` now says what is certified — a
+/// relative error below `2⁻³⁰` — and how to get the nearest double (`eval_decimal(20)`,
+/// parsed).  This test states that contract; it was `…_is_the_nearest_double` and asserted
+/// `eval_f64() == 0.7834305107121344`.
+///
 /// Oracle: mpmath `quad(lambda x: x**x, linspace(0, 1, 1201))` at 40 and 60 digits =
 /// `0.78343051071213440705926438652698`, whose nearest double is `0.7834305107121344`
 /// (`check_integrals.py`).
 #[test]
-#[ignore = "known bug: eval_f64 of an unevaluated definite integral is not the nearest f64 (8 digits are certified, the doc says 16)"]
-fn eval_f64_of_a_definite_integral_is_the_nearest_double() {
+fn eval_f64_of_a_definite_integral_is_certified_to_eight_digits() {
     let ctx = Context::new();
     let sophomore = ctx.parse("Integral(x^x, x, 0, 1)").unwrap();
     assert_eq!(
         sophomore.eval_decimal(30).unwrap(),
         "0.783430510712134407059264386527"
     );
-    assert_eq!(sophomore.eval_f64().unwrap(), 0.783_430_510_712_134_4);
+    let nearest = 0.783_430_510_712_134_4_f64;
+    let served = sophomore.eval_f64().unwrap();
+    assert!(((served - nearest) / nearest).abs() < 2f64.powi(-30));
+    assert_eq!(
+        sophomore.eval_decimal(20).unwrap().parse::<f64>().unwrap(),
+        nearest
+    );
 }
 
 // ── Review F: matrices, statistics, units, polynomials ──────────────────────
@@ -230,7 +251,6 @@ fn eval_f64_of_a_definite_integral_is_the_nearest_double() {
 /// 1]]).rank(simplify=True)` = 0 and `Matrix([[1, 1], [1, 1 + log(6) - log(2) -
 /// log(3)]]).rank(simplify=True)` = 1; the identity `sin² + cos² = 1`.
 #[test]
-#[ignore = "known bug: rank, rref and nullspace take an entry that is zero but not proved so by the pivot test for a pivot"]
 fn rank_does_not_count_a_zero_entry_as_a_pivot() {
     for zero in [
         "sin(1)^2 + cos(1)^2 - 1",
@@ -278,7 +298,6 @@ fn the_zero_test_decides_the_constants_and_the_rank_of_symbols_is_generic() {
 /// Oracle: SymPy `Matrix([[1, 1], [0, 1]]).is_diagonalizable()` = `False`; the library after
 /// substitution (asserted first).
 #[test]
-#[ignore = "known bug: is_diagonalizable is Some(true) for [[1, 1], [0, x]], a Jordan block at x = 1"]
 fn is_diagonalizable_true_holds_for_every_value_of_the_symbols() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -299,7 +318,6 @@ fn is_diagonalizable_true_holds_for_every_value_of_the_symbols() {
 /// x*gamma(x)` at `x = 1/3, 5/7, 11/4`, 50 and 100 digits: `7e-102`, `0.0`, `0.0`;
 /// `eye(2).is_diagonalizable()` = `True`.
 #[test]
-#[ignore = "known bug: diagonalize answers NotDiagonalizable for the identity matrix with the entry gamma(x + 1) - x*gamma(x)"]
 fn diagonalize_does_not_call_a_diagonal_matrix_not_diagonalizable() {
     let ctx = Context::new();
     let m = mat(&ctx, &[&["1", "gamma(x + 1) - x*gamma(x)"], &["0", "1"]]);
@@ -320,7 +338,6 @@ fn diagonalize_does_not_call_a_diagonal_matrix_not_diagonalizable() {
 ///
 /// Oracle: `A − sin(x)·I = [[0, 1], [0, 0]]` has rank 1 whatever `x` is (exact).
 #[test]
-#[ignore = "known inconsistency: is_diagonalizable is None for [[sin(x), 1], [0, sin(x)]]; diagonalize says NotDiagonalizable"]
 fn is_diagonalizable_and_diagonalize_agree_on_a_jordan_block() {
     let ctx = Context::new();
     let m = mat(&ctx, &[&["sin(x)", "1"], &["0", "sin(x)"]]);
@@ -400,14 +417,13 @@ fn a_fit_that_did_not_converge_is_an_error() {
     assert!(logit(&ys, &xs, true, &one_step).is_err());
 }
 
-/// W03 (review F §5.1-1; experimental).  `Frequency::from_angular_velocity` re-tags the
-/// expression.  Today `AngularVelocity::rpm(60)` holds `2*pi` (rad/s) and the "frequency"
-/// made from it holds `2*pi`, while `Frequency::rpm(60)` holds `1` (Hz).  Right: `f = ω/2π`,
-/// 1 Hz.
+/// W03 (review F §5.1-1; experimental).  `Frequency::from_angular_velocity` re-tagged the
+/// expression.  Up to 0.60.0 `AngularVelocity::rpm(60)` held `2*pi` (rad/s) and the
+/// "frequency" made from it held `2*pi`, while `Frequency::rpm(60)` holds `1` (Hz).  Right:
+/// `f = ω/2π`, 1 Hz.  Fixed in 0.60.1.
 ///
 /// Oracle: the definition, 60 revolutions per minute = 1 per second.
 #[test]
-#[ignore = "known bug: Frequency::from_angular_velocity does not divide by 2π (60 rpm becomes 2π Hz)"]
 fn frequency_from_angular_velocity_divides_by_two_pi() {
     let ctx = Context::new();
     let sixty = ctx.int(60);
@@ -416,14 +432,14 @@ fn frequency_from_angular_velocity_divides_by_two_pi() {
     assert_eq!(*f.inner(), ctx.int(1));
 }
 
-/// W31 (review F §2.1; stable).  `Poly::is_zero` is structural after `expand` and `eval`.
-/// Today `Poly((sin(a)^2 + cos(a)^2 - 1)*x, x)` has `is_zero() == false` and
+/// W31 (review F §2.1; stable).  `Poly::is_zero` was structural after `expand` and `eval`.
+/// Up to 0.60.0 `Poly((sin(a)^2 + cos(a)^2 - 1)*x, x)` had `is_zero() == false` and
 /// `total_degree() == Some(1)`; the same for the constant coefficients below, whose
-/// `Ex::is_zero()` is `Some(true)`.  Right: the zero polynomial (or a three-valued answer).
+/// `Ex::is_zero()` is `Some(true)`.  Right: the zero polynomial.  Fixed in 0.60.1: a
+/// coefficient proved zero by the certified zero test is dropped (an undecided one is kept).
 ///
 /// Oracle: `sin² + cos² = 1`; mpmath as for W02.
 #[test]
-#[ignore = "known bug: Poly::is_zero is false and total_degree is Some for a polynomial whose coefficients are zero by an identity"]
 fn poly_is_zero_of_a_polynomial_with_zero_coefficients() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -439,15 +455,19 @@ fn poly_is_zero_of_a_polynomial_with_zero_coefficients() {
 }
 
 /// H02 (review F §2.1, §7 rank 1; `Ex::groebner` and the stable `solve_polynomial_system`).
-/// Buchberger's loop has no budget and the entry points return no `Result` of a refusal:
-/// today `Ex::groebner` of cyclic-6 does not return within 20 s (release build; cyclic-5
-/// takes 0.03 s, katsura-5 1.4 s, katsura-6 and cyclic-7 also run out), and nothing can stop
-/// it.  Right: a basis or a refusal.  The call runs on a thread of its own, which is left
-/// running when the wait ends: run this test in a process of its own (nextest does).
+/// Buchberger's loop had no budget and the entry points returned no `Result` of a refusal:
+/// up to 0.60.0 `Ex::groebner` of cyclic-6 did not return within 20 s (release build;
+/// cyclic-5 takes 0.03 s, katsura-5 1.4 s, katsura-6 and cyclic-7 also ran out), and nothing
+/// could stop it.  Right: a basis or a refusal.  Fixed in 0.60.1: the computation has a work
+/// budget in deterministic units and the call returns `BudgetExhausted`.  The default budget
+/// is about five seconds of a release build and ninety of a debug build, so the test sets a
+/// small one for its thread (200,000 units, the crate's hidden test hook; the default budget:
+/// `the_default_budget_refuses_cyclic_6` in `v36_s18e_core.rs`).  The call runs on a thread
+/// of its own, which would be left running when the wait ends: run this test in a process
+/// of its own (nextest does).
 ///
 /// Oracle: none needed (the test asks only that the call returns).
 #[test]
-#[ignore = "known bug: Ex::groebner has no budget: cyclic-6 does not return in 20 s and cannot be stopped"]
 fn a_groebner_basis_is_returned_or_refused() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -471,7 +491,9 @@ fn a_groebner_basis_is_returned_or_refused() {
             prod = &prod * v;
         }
         polys.push(&prod - 1);
-        let done = Ex::groebner(&polys, &vars, MonomialOrder::GrevLex).is_ok();
+        let done = symplex::__macro_support::with_groebner_work_cap(200_000, || {
+            Ex::groebner(&polys, &vars, MonomialOrder::GrevLex).is_ok()
+        });
         let _ = tx.send(done);
     });
     let answered = rx.recv_timeout(std::time::Duration::from_secs(30));
@@ -480,18 +502,18 @@ fn a_groebner_basis_is_returned_or_refused() {
 
 // ── Review B: yes/no questions and lists ────────────────────────────────────
 
-/// W09 (review B §1.3-7, §7-1b; stable).  `probably_equal` draws rationals `p/q` with `p` in
-/// `[−64, 64]`, `q` in `[1, 8]` whatever the symbols' assumptions, and answers `Some(false)`
-/// ("a concrete point was found where the two sides differ") at a point outside the declared
-/// domain.  Today, for an integer `n`, `(-1)^(n*(n + 1))` against `1` is `Some(false)`; for a
-/// positive `p`, `atan(p) + atan(1/p)` against `pi/2` is `Some(false)`.  (Where `equals`
-/// proves the identity first — `cos(pi*n)` against `(-1)^n` — nothing is seen.)  14 of 29
-/// such identities are refuted.  Right: not `Some(false)`.
+/// W09 (review B §1.3-7, §7-1b; stable).  Up to 0.60.0 `probably_equal` drew rationals `p/q`
+/// with `p` in `[−64, 64]`, `q` in `[1, 8]` whatever the symbols' assumptions, and answered
+/// `Some(false)` ("a concrete point was found where the two sides differ") at a point outside
+/// the declared domain: for an integer `n`, `(-1)^(n*(n + 1))` against `1` was `Some(false)`;
+/// for a positive `p`, `atan(p) + atan(1/p)` against `pi/2` was `Some(false)`.  (Where
+/// `equals` proves the identity first — `cos(pi*n)` against `(-1)^n` — nothing was seen.)  14
+/// of 29 such identities were refuted.  Fixed in 0.60.1: the samples are values proved to lie
+/// in the declared domain of every symbol.
 ///
 /// Oracle: exact, `{(-1)**(n*(n+1)) for n in range(-6, 7)}` = `{1}`; mpmath `atan(x) +
 /// atan(1/x) - pi/2` at `x = 1/3, 5/7, 11/4`, 50 and 100 digits: `1e-101`, `0.0`, `0.0`.
 #[test]
-#[ignore = "known bug: probably_equal refutes an identity at a sample outside the symbol's declared domain"]
 fn probably_equal_does_not_refute_an_identity_of_the_declared_domain() {
     let ctx = Context::new();
     let _n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
@@ -526,14 +548,15 @@ fn no_root_in_the_declared_domain_is_reported_one_way() {
 }
 
 /// W11 (review B §1.3-1; stable).  `check_ode_solution` returns a `bool` whose `false` means
-/// "no route found zero".  Today it is `false` for `y = 2*atan(exp(x))` and `y =
+/// "not proved".  Up to 0.60.0 it was `false` for `y = 2*atan(exp(x))` and `y =
 /// 2*atan(tanh(x/2))` as solutions of `y' = 1/cosh(x)` (and for 4 more correct solutions of
-/// 24 tried).  Right: `true`, or a third value.
+/// 24 tried).  Fixed in 0.60.1: the residual goes through the zero test of expressions with
+/// symbols, and the six are `true`; `false` is documented as "not proved" (a third value
+/// comes with the 1.0 interface).
 ///
 /// Oracle: SymPy `diff(2*atan(exp(x)), x) - 1/cosh(x)` evaluated to 30 digits at `x = 1/3,
 /// -2/5, 7/10`: 0, 0, 0; `simplify(diff(2*atan(tanh(x/2)), x) - 1/cosh(x))` = 0.
 #[test]
-#[ignore = "known bug: check_ode_solution is false for a correct solution it cannot reduce (false means not proved)"]
 fn check_ode_solution_accepts_a_correct_solution() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
@@ -550,7 +573,6 @@ fn check_ode_solution_accepts_a_correct_solution() {
 ///
 /// Oracle: `rank [B] = rank [[0]] = 0 < 1` (SymPy `Matrix([[0]]).rank()` = 0).
 #[test]
-#[ignore = "known bug: is_controllable is true for an input matrix that is zero but not proved so by the pivot test"]
 fn a_system_with_a_zero_input_matrix_is_not_controllable() {
     let ctx = Context::new();
     let system = StateSpace::new(
@@ -570,7 +592,6 @@ fn a_system_with_a_zero_input_matrix_is_not_controllable() {
 ///
 /// Oracle: substitution, `0 ≠ 3`.
 #[test]
-#[ignore = "known bug: Equation::new(x, 3).is_identity() is None; the equation does not hold for all x"]
 fn is_identity_of_an_equation_that_fails_somewhere_is_false() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -587,7 +608,6 @@ fn is_identity_of_an_equation_that_fails_somewhere_is_false() {
 ///
 /// Oracle: a prime is an integer.
 #[test]
-#[ignore = "known bug: is_prime_value is None for 1/2, which is not a prime"]
 fn is_prime_value_of_a_fraction_is_false() {
     let ctx = Context::new();
     let half = ctx.rational(1, 2);
@@ -602,7 +622,6 @@ fn is_prime_value_of_a_fraction_is_false() {
 ///
 /// Oracle: logic.
 #[test]
-#[ignore = "known bug: a query of two properties, one of them false, is None"]
 fn a_query_of_two_properties_with_a_false_one_is_false() {
     let ctx = Context::new();
     let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
@@ -633,7 +652,6 @@ fn is_less_than_with_a_non_real_side_is_false() {
 ///
 /// Oracle: mpmath `cos(pi/16)` = `0.98078528…` > 0.
 #[test]
-#[ignore = "known inconsistency: Context::query is None where Ex::query is Some(true) (cos(pi/16) > 0)"]
 fn context_query_and_ex_query_give_one_answer() {
     let ctx = Context::new();
     let e = ctx.parse("cos(pi/16)").unwrap();
@@ -643,31 +661,32 @@ fn context_query_and_ex_query_give_one_answer() {
 
 // ── Review C: refusals and stand-in values ──────────────────────────────────
 
-/// W19 (review C §1.4; stable).  A value stands in for a refusal.  Today `mod_pow(2, -1, 7)`
-/// is `0` ("returns 0 if `modulus ≤ 0` or `exp < 0`"), and 0 is also a residue; likewise
-/// `mod_pow(2, 10, -7)`, `totient(0)`, `mobius(0)`, `divisors(0) == []`, `multiplicity(2,
-/// 0)` (infinite), `is_quad_residue(1, 0) == false`.  All are documented.  Right for this
-/// one: 4, the inverse of 2 modulo 7 (or an error, once the function can return one).
+/// W19 (review C §1.4; stable).  A value stands in for a refusal.  Up to 0.60.0
+/// `mod_pow(2, -1, 7)` was `0` ("returns 0 if `modulus ≤ 0` or `exp < 0`"), and 0 is also a
+/// residue.  Right for this one: 4, the inverse of 2 modulo 7.  Fixed in 0.60.1: a negative
+/// exponent is a power of the modular inverse where it exists.  The other stand-ins are
+/// documented and unchanged (they leave with the interface package that makes the functions
+/// fallible): `mod_pow(2, 10, -7)`, `totient(0)`, `mobius(0)`, `divisors(0) == []`,
+/// `multiplicity(2, 0)` (infinite), `is_quad_residue(1, 0) == false`.
 ///
 /// Oracle: Python `pow(2, -1, 7)` = 4.
 #[test]
-#[ignore = "known bug: mod_pow(2, -1, 7) is the stand-in 0; the inverse of 2 modulo 7 is 4"]
 fn mod_pow_with_a_negative_exponent_is_not_the_residue_zero() {
     assert_eq!(ntheory::mod_pow(2, -1, 7), BigInt::from(4));
 }
 
 // ── Review E: core types ────────────────────────────────────────────────────
 
-/// H01 (review E I-F4, §7-12c; review C §7-6; stable).  `Ex::replace` runs the caller's
-/// closure with the context write-locked.  Today a closure that builds (`&x + 1`), that
-/// calls `ctx.int(2)`, that prints a handle or that asks `x.is_positive()` never returns
-/// (each killed after 20 s; `try_replace` the same); only `==` and `clone` are safe, which
-/// the doc states.  Right: the result, `(x + 1)^2 + sin(x + 1)`.  The call runs on a thread
-/// of its own, which stays blocked when the wait ends.
+/// H01 (review E I-F4, §7-12c; review C §7-6; stable).  `Ex::replace` ran the caller's
+/// closure with the context write-locked.  Up to 0.60.0 a closure that builds (`&x + 1`), that
+/// calls `ctx.int(2)`, that prints a handle or that asks `x.is_positive()` never returned
+/// (each killed after 20 s; `try_replace` the same); only `==` and `clone` were safe, which
+/// the doc stated.  Right: the result, `(x + 1)^2 + sin(x + 1)`.  Fixed in 0.60.1: no lock is
+/// held while the closure runs (the other closures: `v36_s18e_core.rs`).  The call runs on a
+/// thread of its own, which would stay blocked when the wait ends.
 ///
 /// Oracle: the same replacement with the value built before the call (the next test).
 #[test]
-#[ignore = "known bug: a closure that builds an expression inside Ex::replace deadlocks on the context's lock"]
 fn replace_with_a_closure_that_builds_returns() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -717,13 +736,13 @@ fn a_redeclared_symbol_leaves_no_stale_canonical_form() {
     }
 }
 
-/// W26 (review E F3, §7-12a; stable).  Today `diff_with_dependent` with respect to a number
-/// or a product is `0` — a value — where `diff` gives the formal `Derivative(…, 2)` and
-/// `try_diff` an error.  Right: not a value (the 1.0 design takes a `Symbol`).
+/// W26 (review E F3, §7-12a; stable).  Up to 0.60.0 `diff_with_dependent` with respect to a
+/// number or a product was `0` — a value — where `diff` gives the formal `Derivative(…, 2)`
+/// and `try_diff` an error.  Fixed in 0.60.1: it returns the same unevaluated node as `diff`
+/// (the 1.0 design takes a `Symbol`).
 ///
 /// Oracle: `d(x·y + sin x)/dx = y + cos x ≠ 0`; a derivative by `2` is not defined.
 #[test]
-#[ignore = "known bug: diff_with_dependent with respect to a number or to 2*x is 0"]
 fn diff_with_dependent_by_a_non_symbol_is_not_zero() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
@@ -736,32 +755,34 @@ fn diff_with_dependent_by_a_non_symbol_is_not_zero() {
     assert!(!e.diff_with_dependent(&(&x * 2), &[&y]).is_zero_structural());
 }
 
-/// W27 (review E §1 I-F3, §7-12b; stable).  `args()` hands out the children in the parent's
-/// sort.  Today the sides of `x > 1` come out as `BoolEx`, and `(x > 1).args()[0].not()`
-/// builds `!x`, `args[0].and(&args[1])` builds `x & 1`: Boolean operations on numbers, which
-/// the sorts exist to prevent.  Right: no such expression (the 1.0 design returns the
-/// children in their own sorts).
+/// W27 (review E §1 I-F3, §7-12b; stable).  `args()` handed out the children in the parent's
+/// sort.  Up to 0.60.0 the sides of `x > 1` came out as `BoolEx`, and
+/// `(x > 1).args()[0].not()` built `!x`, `args[0].and(&args[1])` built `x & 1`: Boolean
+/// operations on numbers, which the sorts exist to prevent.  Right: no such expression.
+/// Fixed in 0.60.1 without a new type: a typed handle returns the operands of its own sort,
+/// so a relation — an atom of the Boolean algebra — has no `args()`, and its numeric sides
+/// are read from the untyped view `as_ex().args()`.  (The assertion changed with the
+/// behaviour: it indexed `args()[0]`, which no longer exists.  The 1.0 design returns the
+/// children in their own sorts.)
 ///
 /// Oracle: the type rule ("`Ex`, `BoolEx` and `SetEx` are distinct types").
 #[test]
-#[ignore = "known bug: args() of a relation returns its numeric sides as BoolEx ((x > 1).args()[0].not() is !x)"]
 fn the_sides_of_a_relation_are_not_boolean_expressions() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let sides = x.gt(&ctx.int(1)).args();
-    assert_ne!(sides[0].not().to_string(), "!x");
-    assert_ne!(sides[0].and(&sides[1]).to_string(), "x & 1");
+    let relation = x.gt(&ctx.int(1));
+    assert!(relation.args().is_empty());
+    assert_eq!(relation.as_ex().args(), vec![x.clone(), ctx.int(1)]);
 }
 
-/// W28 (review E §4-5, §7-12e; stable).  The limit engine's dummies live in the user's name
-/// space (`base/arena.rs: positive_symbol`).  Today, after `(sin(x)/x).limit(x, 0)`, the
-/// user's symbol `__lim_r` is positive: `is_positive()` is `Some(true)` and
-/// `sqrt(__lim_r^2)` is built as `__lim_r`, which is −1 at −1.  Right: untouched (or the
-/// name refused when the symbol is made).
+/// W28 (review E §4-5, §7-12e; stable).  Up to 0.60.0 the limit engine's dummies lived in the
+/// user's name space (`base/arena.rs: positive_symbol`): after `(sin(x)/x).limit(x, 0)` the
+/// user's symbol `__lim_r` was positive, `is_positive()` was `Some(true)` and
+/// `sqrt(__lim_r^2)` was built as `__lim_r`, which is −1 at −1.  Fixed in 0.60.1: the
+/// dummies are symbols of a name space of the library's own (`Arena::internal_symbol`).
 ///
 /// Oracle: `√((−1)²) = 1`.
 #[test]
-#[ignore = "known bug: a limit at a finite point declares the user's symbol `__lim_r` positive"]
 fn a_limit_leaves_the_users_symbols_alone() {
     let ctx = Context::new();
     let r = ctx.symbol("__lim_r");
@@ -772,15 +793,15 @@ fn a_limit_leaves_the_users_symbols_alone() {
     assert_eq!(root.subs(&r, &ctx.int(-1)).eval(), ctx.int(1));
 }
 
-/// W29 (review E F3; stable).  The unevaluated `Limit` node has no slot for the direction.
-/// Today, where the engine cannot evaluate — `abs(x)/x*Sum(1/k^(x + 2), k, 1, oo)` at 0 —
-/// `limit_left` and `limit_right` return the same node as `limit`, so they compare equal
-/// and their difference is `0`.  Right: `−ζ(2)` and `ζ(2)`, or two different nodes.
+/// W29 (review E F3; stable).  Up to 0.60.0 the unevaluated `Limit` node had nowhere to keep
+/// the direction: where the engine cannot evaluate — `abs(x)/x*Sum(1/k^(x + 2), k, 1, oo)` at
+/// 0 — `limit_left` and `limit_right` returned the same node as `limit`, so they compared
+/// equal and their difference was `0`.  Right: `−ζ(2)` and `ζ(2)`, or two different nodes.
+/// Fixed in 0.60.1: two different nodes, `Limit(…, x, 0, left)` and `Limit(…, x, 0, right)`.
 ///
 /// Oracle: SymPy `limit(Abs(x)/x*zeta(x + 2), x, 0, '-')` = `-pi**2/6`, `'+'`: `pi**2/6`;
 /// mpmath `sign(x)*zeta(2 + x)` at `x = ∓1e-30`: `∓1.644934066848226436472415`.
 #[test]
-#[ignore = "known bug: an unevaluated one-sided limit is the two-sided Limit node (limit_left == limit_right)"]
 fn an_unevaluated_one_sided_limit_keeps_its_side() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -860,14 +881,14 @@ fn expr_macro_uses_the_variables_in_scope() {
 // ── Review G: features and documents ────────────────────────────────────────
 
 /// W35 (review G B-C17-01; stable).  The book: compiled code computes "the value `eval_f64`
-/// gives, or NaN where that value is not real", "under one rule without exceptions".  Today
-/// the compiled `fibonacci(x)` is NaN at `x = 0.5` (and `lucas(x)` at 2.5), where `eval_f64`
-/// gives the real value `0.5688644810057831` (asserted first).  Right: that value.
+/// gives, or NaN where that value is not real", "under one rule without exceptions".  Up to
+/// 0.60.0 the compiled `fibonacci(x)` was NaN at `x = 0.5` (and `lucas(x)` at 2.5), where
+/// `eval_f64` gives the real value `0.5688644810057831` (asserted first).  Right: that value.
+/// Fixed in 0.60.1: the `f64` kernels compute the evaluator's continuation off the integers.
 ///
 /// Oracle: `mpmath.fibonacci(mpf(1)/2)` at 50 and 100 digits = `0.5688644810057831072783079`
 /// (= `(φ^x − cos(πx)·φ^(−x))/√5` at `x = 1/2`).
 #[test]
-#[ignore = "known bug: compiled fibonacci(x) is NaN at a non-integer x where eval_f64 gives the real value"]
 fn compiled_fibonacci_agrees_with_eval_f64() {
     let ctx = Context::new();
     let exact = ctx.parse("fibonacci(1/2)").unwrap().eval_f64().unwrap();
@@ -899,15 +920,19 @@ fn a_noncommutative_symbol_does_not_commute() {
 
 /// W37 (review G R10, §7.4; stable).  `mellin_transform` returns the transform and its
 /// strip; `inverse_mellin_transform` cannot take the strip and chooses the one right of the
-/// pole (its doc says so).  Today the transform of `H(x − 1)` is `-1/s` on `re(s) < 0`
-/// (right, asserted first), and its inverse is `-H(1 − x)`: 0 at `x = 3` and −1 at `x = 1/3`
-/// instead of 1 and 0.  The same for `H(x − 1)/x²`, `H(x − 1)/x³`, `H(x − 2)/x`.
+/// pole (its doc says so): the transform of `H(x − 1)`, `-1/s` on `re(s) < 0` (asserted
+/// first), inverts to `-H(1 − x)` — 0 at `x = 3` and −1 at `x = 1/3` instead of 1 and 0.  The
+/// same for `H(x − 1)/x²`, `H(x − 1)/x³`, `H(x − 2)/x`.
+///
+/// The contract since 0.60.1: the two-argument function keeps that documented choice (a
+/// strip parameter on it is a change of signature, for the 1.0 interface), and
+/// `inverse_mellin_transform_in_strip` inverts on the strip given — with the transform's own
+/// strip the round trip returns the function.
 ///
 /// Oracle: SymPy `mellin_transform(Heaviside(x - 1), x, s)` = `(-1/s, (-oo, 0), True)`;
 /// `inverse_mellin_transform(-1/s, s, x, (None, 0))` = `Heaviside(x - 1)`, and with the
 /// strip `(0, None)`: `-Heaviside(1 - x)`.
 #[test]
-#[ignore = "known bug: inverse_mellin_transform cannot take the strip: the transform of H(x - 1) inverts to -H(1 - x)"]
 fn a_mellin_transform_on_a_left_strip_inverts_to_its_function() {
     let ctx = Context::new();
     let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
@@ -916,9 +941,24 @@ fn a_mellin_transform_on_a_left_strip_inverts_to_its_function() {
     let (transform, strip) = step.mellin_transform(&x, &s).unwrap();
     assert_eq!(transform, ctx.parse("-1/s").unwrap());
     assert_eq!(strip.to_string(), "0 > re(s)");
-    let back = transform.inverse_mellin_transform(&s, &x).unwrap();
+    let (zero, oo) = (ctx.int(0), ctx.infinity());
+    // On the transform's own strip: the function.
+    let back = transform
+        .inverse_mellin_transform_in_strip(&s, &x, &ctx.neg_infinity(), &zero)
+        .unwrap();
+    assert_eq!(back, step);
     assert_eq!(back.subs(&x, &ctx.int(3)).eval(), ctx.int(1));
     assert_eq!(back.subs(&x, &ctx.rational(1, 3)).eval(), ctx.int(0));
+    // The two-argument function: the strip right of the pole, as documented.
+    let right = transform.inverse_mellin_transform(&s, &x).unwrap();
+    assert_eq!(
+        right,
+        transform
+            .inverse_mellin_transform_in_strip(&s, &x, &zero, &oo)
+            .unwrap()
+    );
+    assert_eq!(right.subs(&x, &ctx.int(3)).eval(), ctx.int(0));
+    assert_eq!(right.subs(&x, &ctx.rational(1, 3)).eval(), ctx.int(-1));
 }
 
 /// W38 (review G F-C01-10, §7.4; stable) — as the review expected, decided since 0.59:
@@ -947,7 +987,6 @@ fn erf_plus_erfc_minus_one_is_zero() {
 ///
 /// Oracle: the round-trip property.
 #[test]
-#[ignore = "known gap: integrate returns a RootSum whose printed form parse refuses"]
 fn a_rootsum_result_reads_back() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -962,7 +1001,6 @@ fn a_rootsum_result_reads_back() {
 ///
 /// Oracle: the other printer.
 #[test]
-#[ignore = "known gap: to_mathml refuses RootOf, which solve returns and to_latex prints"]
 fn a_rootof_has_a_mathml_form() {
     let ctx = Context::new();
     let x = ctx.symbol("x");

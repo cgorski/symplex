@@ -191,6 +191,12 @@ impl IdRemap for Transfer<'_> {
 
     fn symbol(&mut self, id: SymbolId) -> SymbolId {
         let name = self.src.symbol_name(id).to_owned();
+        // A dummy of the library's own name space stays one: by name alone
+        // it would become the user's symbol of that name in `dst`, and its
+        // assumptions (copied below) would be declared on that.
+        if self.src.is_internal_symbol(id) {
+            return self.dst.symbols.intern_reserved(&name);
+        }
         self.dst.symbols.intern(&name)
     }
 }

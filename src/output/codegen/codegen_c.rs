@@ -1875,12 +1875,65 @@ static inline void symplex_fib_pair(unsigned long m, double *f, double *f1) {
 "#,
     },
     CHelper {
+        name: "fib_real",
+        deps: &["util"],
+        src: r#"
+/* phi^x = exp(x ln phi), the product x ln phi in two parts (Dekker's product, ln phi in two doubles). */
+static inline double symplex_phi_pow(double x) {
+    double hi = 0.48121182505960347, lo = -2.3257817013462736e-17;
+    double p = x * hi;
+    if (fabs(p) > 800.0) return exp(p);
+    double c = 134217729.0 * x;
+    double xh = c - (c - x);
+    double xl = x - xh;
+    double ch = 134217729.0 * hi;
+    double hh = ch - (ch - hi);
+    double hl = hi - hh;
+    double e = ((xh * hh - p) + xh * hl + xl * hh) + xl * hl;
+    double t = e + x * lo;
+    double v = exp(p);
+    if (v == INFINITY) return v;
+    return v + v * t;
+}
+/* cos(pi x) with relative accuracy next to its zeros: +-sin(pi g) at distance g from a half-integer. */
+static inline double symplex_fib_cos_pi(double x) {
+    double n = floor(x + 0.5); double r = x - n; double g = 0.5 - fabs(r);
+    double c = sin(3.141592653589793 * g);
+    return symplex_is_even(n) ? c : -c;
+}
+/* F(x) = (phi^x - cos(pi x) phi^-x)/sqrt(5), L(x) = phi^x + cos(pi x) phi^-x for a finite non-integer x.
+   phi^-x is formed as a square and F takes 1/sqrt(5) into the powers: no intermediate leaves the range
+   before the value does. */
+static inline double symplex_fib_real(double x, int lucas) {
+    if (!lucas && fabs(x) < 1.0) {
+        double t = x * 0.48121182505960347;
+        double t2 = t * t;
+        double term = t, sinh_t = t;
+        for (double k = 1.0; k < 8.0; k += 1.0) { term = term * t2 / ((2.0 * k) * (2.0 * k + 1.0)); sinh_t += term; }
+        double s = symplex_sin_pi(0.5 * x);
+        return (2.0 * sinh_t + 2.0 * s * s * symplex_phi_pow(-x)) / 2.23606797749979;
+    }
+    int half_integer = symplex_is_int(2.0 * x);
+    if (lucas) {
+        double h = symplex_phi_pow(-0.5 * x);
+        double tail = half_integer ? 0.0 : symplex_fib_cos_pi(x) * h * h;
+        return symplex_phi_pow(x) + tail;
+    }
+    double k = 1.1708203932499368;
+    double h = symplex_phi_pow(-0.5 * x - 1.0);
+    double tail = half_integer ? 0.0 : symplex_fib_cos_pi(x) * k * h * h;
+    return symplex_phi_pow(x - 2.0) * k - tail;
+}
+"#,
+    },
+    CHelper {
         name: "fibonacci",
-        deps: &["fib_pair", "util"],
+        deps: &["fib_pair", "fib_real", "util"],
         src: r#"
 static inline double symplex_fibonacci(double n) {
     if (n == INFINITY) return INFINITY;
-    if (!symplex_is_int(n)) return NAN;
+    if (!isfinite(n)) return NAN;
+    if (!symplex_is_int(n)) return symplex_fib_real(n, 0);
     double m = fabs(n);
     if (m > 4000000000.0) return (n < 0.0 && symplex_is_even(m)) ? -INFINITY : INFINITY;
     double f, f1; symplex_fib_pair((unsigned long)m, &f, &f1);
@@ -1890,15 +1943,16 @@ static inline double symplex_fibonacci(double n) {
     },
     CHelper {
         name: "lucas",
-        deps: &["fib_pair", "util"],
+        deps: &["fib_pair", "fib_real", "util"],
         src: r#"
 static inline double symplex_lucas(double n) {
     if (n == INFINITY) return INFINITY;
-    if (!symplex_is_int(n)) return NAN;
+    if (!isfinite(n)) return NAN;
+    if (!symplex_is_int(n)) return symplex_fib_real(n, 1);
     double m = fabs(n);
     if (m > 4000000000.0) return (n < 0.0 && !symplex_is_even(m)) ? -INFINITY : INFINITY;
     double f, f1; symplex_fib_pair((unsigned long)m, &f, &f1);
-    double v = 2.0 * f1 - f;
+    double v = (f1 == INFINITY) ? f1 : (2.0 * f1 == INFINITY) ? f1 + (f1 - f) : 2.0 * f1 - f;
     return (n < 0.0 && !symplex_is_even(m)) ? -v : v;
 }
 "#,

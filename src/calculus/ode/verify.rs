@@ -6,16 +6,14 @@ use super::*;
 // ODE solution verification
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Check whether a solution satisfies an ODE.
+/// Check whether a solution satisfies an ODE: `true` when
+/// `ode_solution_verdict` (the crate-private three-valued form) is `True`, a proof.
 ///
-/// Substitutes the solution for `func`, differentiates as needed,
-/// and checks if the ODE expression evaluates to zero: by expansion, the
-/// full simplifier, and three normal forms (radical bases factored out at
-/// their lowest exponent; a rational function of `sin`, `cos` over a common
-/// denominator with `sin² = 1 − cos²`; a rational function after
-/// `e^{W(z)} = z/W(z)` for every branch of Lambert W).  Every route is a chain of
-/// identities, so `true` is a proof; `false` means no route found zero (not
-/// necessarily a wrong solution).  There is no numerical fallback.
+/// `false` is **not** a refutation: it means "not proved" — either the
+/// residual is certified nonzero at a point (`Truth::False` of the
+/// verdict), or no route reduced it to zero (`Truth::Unknown`: possibly a
+/// correct solution in a form the routes do not reduce).  The function
+/// returns a `bool` until the 1.0 interface gives it the three values.
 ///
 /// The ODE is given as `ode_expr = 0`.
 pub fn checkodesol(
@@ -25,6 +23,66 @@ pub fn checkodesol(
     func: ExprId,
     var: ExprId,
 ) -> bool {
+    let residual = solution_residual(arena, ode_expr, solution, func, var);
+    residual_proved_zero(arena, residual)
+}
+
+/// Does `solution` satisfy the ODE `ode_expr = 0` for `func(var)`?
+///
+/// * `True` — **proved**: the residual (the solution and its derivatives
+///   substituted) is zero wherever it is defined, by a chain of identities:
+///   expansion, the full simplifier, three normal forms (radical bases
+///   factored out at their lowest exponent; a rational function of `sin`,
+///   `cos` over a common denominator with `sin² = 1 − cos²`; a rational
+///   function after `e^{W(z)} = z/W(z)` for every branch of Lambert W), and
+///   — since 0.60.1 — the crate's zero test of expressions with symbols
+///   ([`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity):
+///   certified zero at sample points *and* an exact confirmation, which
+///   decides the rational functions of exponentials, hence of `sin`,
+///   `cos`, `tan` and their hyperbolic counterparts), applied to the
+///   residual and to its numerator over a common denominator that is not
+///   identically zero (the routes above on the numerator, too), before and
+///   after writing tangents as `sin/cos` and applying the angle-addition
+///   formulas (`expand_trig`).
+/// * `False` — **refuted at a point**: the residual has no unevaluated
+///   part and a certified evaluation (an error ball that excludes 0) finds
+///   it nonzero at a point of the declared domain: the variable and every
+///   symbol without assumptions at real rationals, a symbol with
+///   assumptions at a value that has them.  So the formula is not a
+///   solution *on the whole declared domain*; it may be one on a part of
+///   it (`(x/2 + C1/2)²` solves `y′ = √y` only where `x + C1 ≥ 0`).
+/// * `Unknown` — neither: no route proved zero, and no point refuted
+///   (every point evaluated to 0 within its precision, or none evaluated).
+///
+/// Up to 0.60.0 there was one `bool`, `false` for the last two alike, and
+/// the zero test of expressions with symbols was not asked: 6 of 24
+/// correct solutions were `false` (`y′ = 1/cosh x` with `y = 2·atan(eˣ)`).
+pub(crate) fn ode_solution_verdict(
+    arena: &mut Arena,
+    ode_expr: ExprId,
+    solution: ExprId,
+    func: ExprId,
+    var: ExprId,
+) -> Truth {
+    let residual = solution_residual(arena, ode_expr, solution, func, var);
+    if residual_proved_zero(arena, residual) {
+        Truth::True
+    } else if residual_refuted_at_a_point(arena, residual) {
+        Truth::False
+    } else {
+        Truth::Unknown
+    }
+}
+
+/// The ODE `ode_expr` with `solution` and its derivatives in the place of
+/// `func` and its derivatives, evaluated and expanded.
+fn solution_residual(
+    arena: &mut Arena,
+    ode_expr: ExprId,
+    solution: ExprId,
+    func: ExprId,
+    var: ExprId,
+) -> ExprId {
     // Derivative nodes y, y', y'', … up to the highest order present.
     let chain = derivative_chain(arena, func, var);
     let max_order = (1..chain.len())
@@ -48,8 +106,13 @@ pub fn checkodesol(
     // Evaluate and simplify
     result = crate::transforms::eval::eval(arena, result);
     result = crate::transforms::expand::expand(arena, result);
-    result = crate::transforms::eval::eval(arena, result);
+    crate::transforms::eval::eval(arena, result)
+}
 
+/// Is the residual `result` of [`solution_residual`] proved zero?  (The
+/// routes are those of [`ode_solution_verdict`].)
+fn residual_proved_zero(arena: &mut Arena, result: ExprId) -> bool {
+    let mut result = result;
     if result == arena.zero {
         return true;
     }
@@ -73,9 +136,130 @@ pub fn checkodesol(
 
     // Normal forms the simplifier misses; each step is an identity or a
     // multiplication by a non-zero factor, so a zero here is a proof.
-    radical_normal_form_is_zero(arena, result)
+    if radical_normal_form_is_zero(arena, result)
         || trig_normal_form_is_zero(arena, result)
         || lambert_normal_form_is_zero(arena, result)
+    {
+        return true;
+    }
+    if vanishes_on_its_domain(arena, result) {
+        return true;
+    }
+    // A tangent of a shifted argument, `tan(x/2 + π/4)`: as `sin/cos`, and
+    // the angle-addition formulas for the sine and the cosine — identities
+    // wherever both sides are defined — after which the zero test sees a
+    // rational function of the exponentials of `x` with algebraic
+    // coefficients (`sin(π/4) = √2/2`).
+    let split = tangents_as_quotients(arena, result);
+    let split = arena.expand_trig_expr(split);
+    let split = crate::transforms::eval::eval(arena, split);
+    split != result && (arena.is_zero_structural(split) || vanishes_on_its_domain(arena, split))
+}
+
+/// `e` with every `tan(u)` written `sin(u)/cos(u)` (an identity wherever
+/// `tan(u)` is defined).  An explicit post-order walk.
+fn tangents_as_quotients(arena: &mut Arena, e: ExprId) -> ExprId {
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match *arena.node(rebuilt) {
+            ExprNode::Tan(u) => {
+                let (sin, cos) = (arena.sin(u), arena.cos(u));
+                arena.div(sin, cos)
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    cache.get(&e).copied().unwrap_or(e)
+}
+
+/// Is `r` zero wherever it is defined, by the crate's zero test of
+/// expressions with symbols?  Either `r` vanishes by an identity
+/// ([`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity)),
+/// or its numerator over a common denominator does — multiplied out, by
+/// an identity, or by one of the three normal forms — while the
+/// denominator is certified nonzero at a sample point, hence not
+/// identically zero (`0/0` is no value: such a residual proves nothing).
+fn vanishes_on_its_domain(arena: &mut Arena, r: ExprId) -> bool {
+    use crate::simplify::identically_zero as zero_test;
+    if crate::base::walk::has_unevaluated(arena, r) {
+        return false;
+    }
+    if zero_test::vanishes_by_identity(arena, r) {
+        return true;
+    }
+    let (n, d) = crate::poly::polybridge::fraction_parts(arena, r);
+    if n == r || !zero_test::nonzero_at_a_sample(arena, d) {
+        return false;
+    }
+    crate::simplify::ratsimp::numerator_expands_to_zero(arena, r)
+        || zero_test::vanishes_by_identity(arena, n)
+        || radical_normal_form_is_zero(arena, n)
+        || trig_normal_form_is_zero(arena, n)
+        || lambert_normal_form_is_zero(arena, n)
+}
+
+/// Sample points tried by [`residual_refuted_at_a_point`].
+const REFUTATION_POINTS: u64 = 4;
+
+/// A value of the symbol `sym` in its declared domain, at sample point
+/// `k`: for a symbol with assumptions the value the zero test samples it
+/// at (`identically_zero::sample_value`, which has every declared
+/// property); for a symbol without, a real rational chosen by its name —
+/// the variable of an ODE is real, and a real value is one of the values
+/// of a parameter that may be complex.  `None` when the domain has no
+/// finite number.
+fn refutation_point(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
+    let ExprNode::Symbol(sid) = *arena.node(sym) else {
+        return None;
+    };
+    if arena.symbol_assumptions(sid) != crate::base::assumptions::Assumptions::default() {
+        return crate::simplify::identically_zero::sample_value(arena, sym, k);
+    }
+    const NUMERATORS: [i64; 8] = [3, 11, -5, 7, -13, 17, 5, -9];
+    const DENOMINATORS: [i64; 8] = [7, 9, 4, 5, 6, 11, 8, 10];
+    let h = arena
+        .symbol_name(sid)
+        .bytes()
+        .fold(k.wrapping_mul(0x9E37_79B9).wrapping_add(1), |h, b| {
+            h.wrapping_mul(31).wrapping_add(u64::from(b))
+        });
+    Some(arena.rational(
+        NUMERATORS[(h % 8) as usize],
+        DENOMINATORS[((h / 8) % 8) as usize],
+    ))
+}
+
+/// Is the residual `r` certified nonzero at a point of the declared
+/// domain of its symbols ([`refutation_point`])?  A point where `r` has no
+/// finite value, or is 0 to the precision reached, decides nothing.
+fn residual_refuted_at_a_point(arena: &mut Arena, r: ExprId) -> bool {
+    if crate::base::walk::has_unevaluated(arena, r) {
+        return false;
+    }
+    let syms = crate::base::walk::free_symbols(arena, r);
+    let points = if syms.is_empty() {
+        1
+    } else {
+        REFUTATION_POINTS
+    };
+    for k in 0..points {
+        let pairs: Option<Vec<(ExprId, ExprId)>> = syms
+            .iter()
+            .map(|&s| refutation_point(arena, s, k).map(|v| (s, v)))
+            .collect();
+        let Some(pairs) = pairs else {
+            return false;
+        };
+        let at = crate::transforms::subs::subs_map(arena, r, &pairs);
+        let at = crate::transforms::eval::eval(arena, at);
+        if residual_zero_at(arena, at).is_some_and(|t| t.is_false()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// The argument `z` of a Lambert W value `W_k(z)` (any branch), or `None`.

@@ -191,11 +191,11 @@ pub(super) fn try_scale_trig_arguments(
     if r.is_zero() || r.is_one() {
         return not_found();
     }
-    let u = arena.symbol("__u_scaled");
-    if let ExprNode::Symbol(u_sid) = *arena.node(u) {
-        let declared = arena.symbol_assumptions(var_sid);
-        arena.set_symbol_assumptions(u_sid, declared);
-    }
+    // A stand-in with the assumptions of the unknown, of the library's own
+    // name space: up to 0.60.1 the symbol `__u_scaled` of the one name space
+    // was re-declared at every call.
+    let declared = arena.symbol_assumptions(var_sid);
+    let u = arena.fresh_internal_symbol("__u_scaled", declared, &[expr]);
     let r_id = arena.num_ratio(r.clone());
     let x_of_u = arena.div(u, r_id);
     let sub = crate::transforms::subs::subs(arena, expr, var, x_of_u);
@@ -261,14 +261,11 @@ pub(super) fn try_shifted_argument(
     if arena.is_zero_structural(s) || expr_contains_var(arena, s, var) || !cx.real(arena, s, var) {
         return not_found();
     }
-    let u = crate::transforms::subs::fresh_symbol(arena, "__u_shifted", &[expr]);
-    if let ExprNode::Symbol(u_sid) = *arena.node(u) {
-        let mut declared = Assumptions::default();
-        if Domain::declared(arena, var) == Domain::Real {
-            declared.assert_true(Props::REAL);
-        }
-        arena.set_symbol_assumptions(u_sid, declared);
+    let mut declared = Assumptions::default();
+    if Domain::declared(arena, var) == Domain::Real {
+        declared.assert_true(Props::REAL);
     }
+    let u = arena.fresh_internal_symbol("__u_shifted", declared, &[expr]);
     let mut sub = expr;
     for (&form, &a) in forms.iter().zip(&rates) {
         let au = arena.mul(&[a, u]);
@@ -618,7 +615,7 @@ fn radical_substitution(
     if lcm.is_one() || lcm > BigInt::from(MAX_RADICAL_INDEX) {
         return None;
     }
-    let t = arena.symbol("__t_radical");
+    let t = arena.internal_symbol("__t_radical");
     let l_id = arena.big_int(lcm.clone());
     let mut substituted = expr;
     for (pow_id, r) in &powers {

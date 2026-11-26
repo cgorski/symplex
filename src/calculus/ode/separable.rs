@@ -695,7 +695,7 @@ fn residual_verdict(
 /// prove it, `False` when a certified evaluation excludes 0, `Unknown` when
 /// it is 0 to the precision reached but not proved; `None` when it has no
 /// finite value there (a point outside the family's domain).
-fn residual_zero_at(arena: &mut Arena, r: ExprId) -> Option<Truth> {
+pub(super) fn residual_zero_at(arena: &mut Arena, r: ExprId) -> Option<Truth> {
     if arena.is_zero_structural(r) {
         return Some(Truth::True);
     }

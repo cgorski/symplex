@@ -557,6 +557,54 @@ mod tests {
         assert!(accuracy::is_unknown(bad.error(100, 0.0)));
     }
 
+    /// The working precision behind a digit count (`evalf::working_bits`,
+    /// `evalf::precision_within`) is computed in `u64` and bounded by the
+    /// target's `usize`.  Up to 0.60 it was `(digits as usize) * 34 / 10 +
+    /// 64`: with a 32-bit `usize` (`wasm32`) the product overflows from
+    /// 126,322,568 digits on — a panic in a debug build, in a release build
+    /// 128 bits, which passed the check against the configured maximum.  The
+    /// host is a 64-bit target, so the old formula is written here in `u32`
+    /// and the bound is given the largest 32-bit `usize`.
+    ///
+    /// Oracle: exact integer arithmetic (Python `126322568*34 - 2**32` = 16,
+    /// `126322568*34//10 + 64` = 429496795, `(2**32 - 1)*34//10 + 64` =
+    /// 14602888867, `160000000*34//10 + 64` = 544000064, `(2**32 - 1)//8` =
+    /// 536870911).
+    #[test]
+    fn the_working_precision_of_a_digit_count_does_not_wrap_in_32_bits() {
+        use super::super::{precision_within, working_bits, working_precision};
+        // Ordinary counts: 3.4 bits per digit and 64, at least 128.
+        assert_eq!(working_bits(0), 128);
+        assert_eq!(working_bits(16), 128);
+        assert_eq!(working_bits(30), 166);
+        assert_eq!(working_precision(1000), 3464);
+        // The first count whose product by 34 leaves 32 bits, as it was.
+        let d = 126_322_568u32;
+        assert_eq!((d - 1).checked_mul(34), Some(4_294_967_278));
+        assert_eq!(d.checked_mul(34), None);
+        assert_eq!((d.wrapping_mul(34) / 10 + 64).max(128), 128);
+        // As it is: the true precision, refused above the configured maximum
+        // (the default is 10,000 bits) …
+        let wasm32 = u64::from(u32::MAX);
+        assert_eq!(working_bits(d), 429_496_795);
+        assert_eq!(precision_within(d, 10_000, wasm32), None);
+        assert_eq!(precision_within(d, u32::MAX, wasm32), Some(429_496_795));
+        // … and above an eighth of the 32-bit range, where the precision
+        // search (twice the precision, guard bits) would leave `usize`.
+        let e = 160_000_000u32;
+        assert_eq!(precision_within(e, u32::MAX, wasm32), None);
+        assert_eq!(precision_within(e, u32::MAX, u64::MAX), Some(544_000_064));
+        assert_eq!(
+            precision_within(157_903_190, u32::MAX, wasm32),
+            Some(536_870_910)
+        );
+        // No count overflows `u64`; the largest is beyond every maximum.
+        assert_eq!(working_bits(u32::MAX), 14_602_888_867);
+        assert_eq!(precision_within(u32::MAX, u32::MAX, u64::MAX), None);
+        assert_eq!(precision_within(2941, 10_000, u64::MAX), None);
+        assert_eq!(precision_within(2922, 10_000, wasm32), Some(9998));
+    }
+
     #[test]
     fn powers_of_two_down_to_the_bottom_of_f64() {
         assert_eq!(pow2(0), 1.0);

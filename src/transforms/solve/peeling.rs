@@ -1052,12 +1052,9 @@ pub(super) fn solve_by_peeling(
 fn modulus_squared(arena: &mut Arena, f: ExprId, var: ExprId) -> Option<ExprId> {
     use crate::base::assumptions::{Assumptions, Props};
     // the parts for a real variable: a real stand-in for `var`
-    let t = crate::transforms::subs::fresh_symbol(arena, "__abs_real", &[f]);
-    if let ExprNode::Symbol(sid) = *arena.node(t) {
-        let mut real = Assumptions::default();
-        real.assert_true(Props::REAL);
-        arena.set_symbol_assumptions(sid, real);
-    }
+    let mut real = Assumptions::default();
+    real.assert_true(Props::REAL);
+    let t = arena.fresh_internal_symbol("__abs_real", real, &[f]);
     let f_t = crate::transforms::subs::subs(arena, f, var, t);
     let f_t = crate::transforms::expand::expand(arena, f_t);
     let (re, im) = crate::base::complex::as_real_imag(arena, f_t);

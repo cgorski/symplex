@@ -794,7 +794,7 @@ pub(super) fn homogeneous_basis_cc(
     var: ExprId,
 ) -> Option<Vec<ExprId>> {
     let p = crate::poly::Poly::from_coeffs(coeffs.to_vec());
-    let r_sym = arena.symbol("__r_cc");
+    let r_sym = arena.internal_symbol("__r_cc");
     let mut basis: Vec<ExprId> = Vec::new();
     for (factor, mult) in p.squarefree_factors() {
         for root in characteristic_roots(arena, &factor, r_sym, var)? {
@@ -1318,7 +1318,7 @@ pub(crate) fn linear_cc_ivp_lagrange(
     if p.squarefree_factors().iter().any(|(_, m)| *m != 1) {
         return None;
     }
-    let r_sym = arena.symbol("__r_cc");
+    let r_sym = arena.internal_symbol("__r_cc");
     let (_, irreducible) = p.factor_over_z();
     if irreducible.iter().all(|(g, _)| g.degree().unwrap_or(0) < 3) {
         return None;
@@ -1355,7 +1355,7 @@ pub(crate) fn linear_cc_ivp_lagrange(
         b[k - 1] = ak.add(&t_poly.mul(&b[k]));
     }
     let dp = p.derivative();
-    let t_sym = arena.symbol("__t_cc");
+    let t_sym = arena.internal_symbol("__t_cc");
     let shift = arena.sub(var, x0);
     let two = arena.int(2);
     let mut terms = vec![y_p];
@@ -1697,7 +1697,7 @@ pub(super) fn try_linear_cc_symbolic(
     if !forcing.is_empty() && n != 2 {
         return None;
     }
-    let r = arena.symbol("__r_sym");
+    let r = arena.internal_symbol("__r_sym");
     let mut terms = Vec::with_capacity(n + 1);
     for (k, &c) in a.iter().enumerate() {
         let rk = match k {

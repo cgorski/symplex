@@ -231,7 +231,7 @@ impl Budget {
 fn fresh_dummy(arena: &mut Arena, budget: &mut Budget) -> ExprId {
     let n = budget.dummies;
     budget.dummies += 1;
-    arena.symbol(&format!("__gw{n}"))
+    arena.internal_symbol(&format!("__gw{n}"))
 }
 
 /// A fresh dummy declared positive, for the variable `x → +∞` of
@@ -429,7 +429,7 @@ fn variable_as_log_omega(arena: &mut Arena, f: ExprId, logw: ExprId, l: ExprId) 
 const LOG_OMEGA: &str = "__gruntz_lnw";
 
 fn log_omega_symbol(arena: &mut Arena) -> ExprId {
-    let l = arena.symbol(LOG_OMEGA);
+    let l = arena.internal_symbol(LOG_OMEGA);
     if let ExprNode::Symbol(sid) = *arena.node(l)
         && arena.symbol_assumptions(sid) == crate::base::assumptions::Assumptions::default()
     {
@@ -1135,7 +1135,9 @@ fn contains_foreign_dummy(arena: &Arena, e: ExprId, x: ExprId) -> bool {
             && let ExprNode::Symbol(sid) = arena.node(id)
         {
             let name = arena.symbol_name(*sid);
-            if name.starts_with("__gw") || name.starts_with("__lim") {
+            if arena.is_internal_symbol(*sid)
+                && (name.starts_with("__gw") || name.starts_with("__lim"))
+            {
                 return true;
             }
         }
@@ -5317,7 +5319,7 @@ fn real_for_generic_parameters(
     }
     let mut v = u;
     for (k, &s) in params.iter().enumerate() {
-        let r = arena.symbol(&format!("__gz_real{k}"));
+        let r = arena.internal_symbol(&format!("__gz_real{k}"));
         if let ExprNode::Symbol(sid) = *arena.node(r) {
             let mut a = Assumptions::default();
             a.assert_true(Props::REAL);
@@ -5472,7 +5474,7 @@ fn real_special_values_as_symbols(
                 arena.positive_symbol(&format!("__gz_posv{k}"))
             }
             Some(false) => {
-                let s = arena.symbol(&format!("__gz_realv{k}"));
+                let s = arena.internal_symbol(&format!("__gz_realv{k}"));
                 k += 1;
                 if let ExprNode::Symbol(sid) = *arena.node(s) {
                     let mut a = Assumptions::default();

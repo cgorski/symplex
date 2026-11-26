@@ -1270,11 +1270,18 @@ fn named_type_display_debug_dim_strings_and_zero() {
 fn named_type_cross_dimension_from_impls() {
     let ctx = Context::new();
     let f = Frequency::constant(&ctx, 50);
+    // ω = 2πf in both directions (0.60.1; both impls kept the value before): 50 Hz is
+    // 100π rad/s, and back.
     let w: AngularVelocity = f.into();
-    exact(&w, 50, 1, "Frequency → AngularVelocity");
+    assert_eq!(
+        w.as_ref().eval(),
+        (ctx.int(100) * ctx.pi()).eval(),
+        "Frequency → AngularVelocity"
+    );
     let f2: Frequency = w.into();
     exact(&f2, 50, 1, "AngularVelocity → Frequency");
-    let f3 = Frequency::from_angular_velocity(AngularVelocity::constant(&ctx, 7));
+    // f = ω/(2π) (0.60.1; the value was re-tagged before): 420 rpm = 14π rad/s is 7 Hz.
+    let f3 = Frequency::from_angular_velocity(AngularVelocity::rpm(&ctx.int(420)));
     exact(&f3, 7, 1, "from_angular_velocity");
     let e = Energy::constant(&ctx, 9);
     let t: Torque = e.clone().into();

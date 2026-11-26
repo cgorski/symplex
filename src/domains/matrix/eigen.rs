@@ -1171,7 +1171,9 @@ fn eigvals_via_derivative(char_poly: &Ex, var: &Ex, degree: usize) -> Spectrum {
 /// it is applied to the expressions (so a shadow copy can follow it).
 pub(super) trait PivotOracle {
     /// Is the current entry `(i, j)`, whose expression is `e`, zero?
-    fn is_zero(&mut self, i: usize, j: usize, e: &Ex) -> bool;
+    /// Three-valued, in the reading of [`pivot_truth`]: `True` is a proof
+    /// that it is, `False` a proof that it is not, `Unknown` neither.
+    fn is_zero(&mut self, i: usize, j: usize, e: &Ex) -> Truth;
     /// Rows `a` and `b` were swapped.
     fn swap(&mut self, _a: usize, _b: usize) {}
     /// Row `row` was divided by its entry in column `col`.
@@ -1185,15 +1187,36 @@ pub(super) trait PivotOracle {
 }
 
 /// A zero test on the expression alone; `clean` asks for the zero rows of
-/// the result to be written as zeros (the public `rref`).
+/// the result to be written as zeros (the public `rref`).  The verdicts are
+/// remembered per expression: one elimination asks about the same entry
+/// when it looks for a pivot and when it clears the column.
 pub(super) struct ClosureOracle<'a> {
-    pub(super) test: &'a dyn Fn(&Ex) -> bool,
+    pub(super) test: &'a dyn Fn(&Ex) -> Truth,
     pub(super) clean: bool,
+    pub(super) seen: rustc_hash::FxHashMap<crate::base::node::ExprId, Truth>,
+}
+
+impl<'a> ClosureOracle<'a> {
+    pub(super) fn new(test: &'a dyn Fn(&Ex) -> Truth, clean: bool) -> Self {
+        ClosureOracle {
+            test,
+            clean,
+            seen: rustc_hash::FxHashMap::default(),
+        }
+    }
 }
 
 impl PivotOracle for ClosureOracle<'_> {
-    fn is_zero(&mut self, _i: usize, _j: usize, e: &Ex) -> bool {
-        (self.test)(e)
+    fn is_zero(&mut self, _i: usize, _j: usize, e: &Ex) -> Truth {
+        if e.is_zero_structural() {
+            return Truth::True;
+        }
+        if let Some(t) = self.seen.get(&e.raw_id()) {
+            return *t;
+        }
+        let t = (self.test)(e);
+        self.seen.insert(e.raw_id(), t);
+        t
     }
     fn clean_zero_rows(&self) -> bool {
         self.clean
@@ -1246,8 +1269,8 @@ impl FieldShadow {
 }
 
 impl PivotOracle for FieldShadow {
-    fn is_zero(&mut self, i: usize, j: usize, _e: &Ex) -> bool {
-        self.rows[i][j].is_zero()
+    fn is_zero(&mut self, i: usize, j: usize, _e: &Ex) -> Truth {
+        Truth::from_bool(self.rows[i][j].is_zero())
     }
     fn swap(&mut self, a: usize, b: usize) {
         self.rows.swap(a, b);
@@ -1293,10 +1316,562 @@ pub(super) fn eigenvalue_minimal_polynomial(lam: &Ex) -> Option<crate::poly::den
 }
 
 /// Zero test of the pivots of [`Matrix::rref`] (and `rank`, `nullspace`,
-/// `lu`, `solve`, the block split of the eigenvalues): structural, exact for
-/// rational functions of the symbols over `ℚ(radicals, i)`, and for any
-/// other constant [`constant_is_zero`].  A symbolic entry that is neither
-/// is a pivot unless structurally zero (the generic rank).
+/// `lu`, `solve`, the eigenvector solves): **three-valued**, in the generic
+/// reading of a matrix whose entries are functions of its symbols.
+///
+/// - `True` — `e` is proved zero for every value of its symbols: it is
+///   never a pivot.
+/// - `False` — `e` is proved *not identically zero*: a constant proved
+///   nonzero, or an expression with symbols that is nonzero for generic
+///   values of them.  It may be a pivot.
+/// - `Unknown` — neither: the caller refuses, or (where its signature has
+///   no refusal) documents the generic reading it takes.
+///
+/// The tests, cheapest first.  Without a limit: structural; exact in
+/// `ℚ[t]/(g)` for the entries of `A − λI` with `λ = RootOf(g, k)`
+/// ([`rootof_field_is_zero`]); exact for rational functions of the symbols
+/// over `ℚ(radicals, i)` ([`rational_function_is_zero`]); for a constant
+/// [`constant_is_zero`]; and what [`Ex::is_zero`] decides — the test is
+/// never weaker than the public one.  Charged to the work budget of the
+/// matrix call ([`PivotWork`]): for an expression with symbols and
+/// functions a certified value at a sample point that respects the
+/// symbols' assumptions (nonzero there: not identically zero); then, for
+/// an expression of at most [`PROOF_NODES`] nodes, the proofs of a zero —
+/// the identities `simplify` can prove
+/// ([`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity),
+/// [`ex_is_zero`]), the constants of the expression that are rational
+/// numbers in disguise ([`with_recognised_constants`]), the constant
+/// coefficients of its numerator ([`vanishes_by_constant_coefficients`]),
+/// and for a constant its factors and terms ([`constant_by_parts`]).  When
+/// the budget is spent, or the expression is too large, the entry is
+/// `Unknown`.  A value that is zero to the precision reached proves
+/// nothing.
+///
+/// Up to 0.60.0 the test was two-valued and stopped after the first three
+/// steps ([`pivot_is_zero`]): an entry it did not decide was a pivot.
+/// `[[sin(1)² + cos(1)² − 1]]` had rank 1 and an empty null space although
+/// `Ex::is_zero` of the entry is `Some(true)`, and so had 15 of 24 zero
+/// forms tried (`ln 6 − ln 2 − ln 3`, `sin²x + cos²x − 1`, `e^{2x} −
+/// (e^x)²`, …).
+pub(crate) fn pivot_truth(e: &Ex) -> Truth {
+    if e.is_zero_structural() {
+        return Truth::True;
+    }
+    if e.expr_type() == ExprType::Number {
+        return Truth::False;
+    }
+    let exact = rootof_field_is_zero(e).or_else(|| rational_function_is_zero(e));
+    if exact.is_known() {
+        return exact;
+    }
+    let _work = PivotWork::enter();
+    let symbol_free = e.free_symbols().is_empty();
+    // A `RootOf` binds a variable that `free_symbols` may report: no
+    // sample point, and no part of such an entry is read on its own.  It
+    // gets the test of 0.60.0's eigenvector solves, at its cost (an entry
+    // `y + 2 − RootOf(…)` of `A − λI` was tested three times over).
+    if !symbol_free && has_root_of(e) {
+        return ex_is_zero(e);
+    }
+    if symbol_free {
+        let known = constant_core(e);
+        if known.is_known() {
+            return known;
+        }
+        // The constant with its parts that are rational numbers written
+        // as such: equal to `e`, by the proofs of the replacements.
+        let plain = with_recognised_constants(e);
+        if plain.is_zero_structural() {
+            return Truth::True;
+        }
+        if plain.expr_type() == ExprType::Number {
+            return Truth::False;
+        }
+        if plain != *e {
+            let known = constant_core(&plain);
+            if known.is_known() {
+                return known;
+            }
+        }
+        return constant_by_parts(&plain);
+    }
+    let sample_size = tree_size_capped(e, SAMPLE_NODES);
+    if sample_size <= SAMPLE_NODES
+        && PivotWork::charge(SAMPLE_WORK + sample_size as u64)
+        && generically_nonzero_at_a_sample(e)
+    {
+        return Truth::False;
+    }
+    let public = Truth::from(e.is_zero());
+    if public.is_known() {
+        return public;
+    }
+    let size = tree_size_capped(e, PROOF_NODES);
+    if size > PROOF_NODES || !PivotWork::charge(PROOF_WORK + PROOF_WEIGHT * size as u64) {
+        return Truth::Unknown;
+    }
+    if vanishes_by_identity(e) {
+        return Truth::True;
+    }
+    // `e` with its constants that are rational numbers written as such:
+    // equal to `e`, by the proofs of the replacements.
+    let plain = with_recognised_constants(e);
+    if plain != *e {
+        if plain.is_zero_structural() {
+            return Truth::True;
+        }
+        let exact = rational_function_is_zero(&plain);
+        if exact.is_known() {
+            return exact;
+        }
+        if vanishes_by_identity(&plain) {
+            return Truth::True;
+        }
+    }
+    if vanishes_by_constant_coefficients(&plain) {
+        return Truth::True;
+    }
+    ex_is_zero(&plain)
+}
+
+/// Work units of the certified zero tests of one matrix call (one
+/// elimination; `inv`, `ldl`, `hessenberg` and a Gram–Schmidt process are
+/// one call each, `eigenvects` is one per eigenvalue).  A unit is about a
+/// node of an expression evaluated at a sample point: a sample costs
+/// [`SAMPLE_WORK`] plus the nodes of the entry, the proofs of a zero cost
+/// [`PROOF_WORK`] plus [`PROOF_WEIGHT`] per node, a constant read as a
+/// rational number [`RECOGNITION_WORK`].  The cap keeps the tests of a call
+/// to a few hundred milliseconds whatever the entries are (measured: a 4×4
+/// matrix of sixteen entries that no test decides, 0.25 s per elimination
+/// in a release build); an entry met after the budget is spent is
+/// undecided.
+const PIVOT_WORK: u64 = 60_000;
+
+/// Most nodes of an expression that is evaluated at a sample point.
+const SAMPLE_NODES: usize = 3_000;
+
+/// Work units of one evaluation at the sample points, besides the nodes.
+const SAMPLE_WORK: u64 = 300;
+
+/// Most nodes of an expression for which a zero is looked for by
+/// `simplify` and the other proofs (their cost is not linear in the size).
+const PROOF_NODES: usize = 300;
+
+/// Work units of the proofs of a zero for one entry, besides its nodes
+/// (the samples at the precision cap, `simplify`, `together`).
+const PROOF_WORK: u64 = 4_000;
+
+/// Work units per node of the proofs of a zero.
+const PROOF_WEIGHT: u64 = 20;
+
+thread_local! {
+    /// The work units left to the matrix call in progress on this thread;
+    /// `None` outside one.
+    static PIVOT_WORK_LEFT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The work budget of the certified zero tests of one matrix call
+/// ([`PIVOT_WORK`] units), opened by the outermost call that enters and
+/// shared by what it calls; closed on drop (also when unwinding).  The
+/// work is counted in nodes of the expressions tested, so the same call
+/// meets the same limit on every machine and in every context.
+pub(crate) struct PivotWork {
+    outermost: bool,
+}
+
+impl PivotWork {
+    /// Open the budget unless a call further out has opened one.
+    pub(crate) fn enter() -> Self {
+        let outermost = PIVOT_WORK_LEFT.with(|left| {
+            let free = left.get().is_none();
+            if free {
+                left.set(Some(PIVOT_WORK));
+            }
+            free
+        });
+        PivotWork { outermost }
+    }
+
+    /// Take `units` from the budget in progress: `false`, with nothing
+    /// taken, when fewer are left (or no budget is open).
+    fn charge(units: u64) -> bool {
+        PIVOT_WORK_LEFT.with(|left| match left.get() {
+            Some(have) if have >= units => {
+                left.set(Some(have - units));
+                true
+            }
+            _ => false,
+        })
+    }
+}
+
+impl Drop for PivotWork {
+    fn drop(&mut self) {
+        if self.outermost {
+            PIVOT_WORK_LEFT.with(|left| left.set(None));
+        }
+    }
+}
+
+/// [`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity)
+/// of an expression.
+fn vanishes_by_identity(e: &Ex) -> bool {
+    let mut inner = e.inner.write();
+    crate::simplify::identically_zero::vanishes_by_identity(&mut inner.arena, e.raw_id())
+}
+
+/// The zero tests of a constant `e` as a whole: what [`Ex::is_zero`]
+/// decides, [`constant_is_zero`], and — charged to the work budget, for a
+/// constant of at most [`PROOF_NODES`] nodes — [`ex_is_zero`] (`simplify`
+/// reaching `0`).
+fn constant_core(e: &Ex) -> Truth {
+    // The public test first: it decides a zero in radicals (an entry of
+    // `A − λI`) at once, where the minimal polynomial of the unsimplified
+    // entry (`constant_is_zero`) takes a hundred times as long.
+    let known = rootof_field_is_zero(e)
+        .or_else(|| Truth::from(e.is_zero()))
+        .or_else(|| constant_is_zero(e));
+    if known.is_known() {
+        return known;
+    }
+    let size = tree_size_capped(e, PROOF_NODES);
+    if size > PROOF_NODES || !PivotWork::charge(PROOF_WORK + PROOF_WEIGHT * size as u64) {
+        return Truth::Unknown;
+    }
+    ex_is_zero(e)
+}
+
+/// A constant decided by its parts, one level down ([`constant_core`] of
+/// each part): a product is zero when a factor is proved zero and the
+/// others are proved finite, and nonzero when every factor is proved
+/// nonzero; a power with a positive exponent is what its base is; a sum is
+/// zero when every term is proved zero (`(cos(π/7) + cos(3π/7) + cos(5π/7)
+/// − 1/2)·(erf 1 + erfc 1 − 1)`: the zero test of constants proves each
+/// factor and not the product).  `Unknown` for any other form.
+fn constant_by_parts(e: &Ex) -> Truth {
+    use crate::base::node::{ExprId, ExprNode};
+    enum Parts {
+        Factors(Vec<ExprId>),
+        Terms(Vec<ExprId>),
+        Base(ExprId),
+    }
+    let parts = {
+        let inner = e.inner.read();
+        let arena = &inner.arena;
+        match arena.node(e.raw_id()) {
+            ExprNode::Mul(ch) => Parts::Factors(ch.to_vec()),
+            ExprNode::Add(ch) => Parts::Terms(ch.to_vec()),
+            ExprNode::Neg(c) => Parts::Base(*c),
+            ExprNode::Pow(b, x)
+                if arena
+                    .as_num(*x)
+                    .is_some_and(num_traits::Signed::is_positive) =>
+            {
+                Parts::Base(*b)
+            }
+            _ => return Truth::Unknown,
+        }
+    };
+    match parts {
+        Parts::Base(b) => constant_core(&e.wrap(b)),
+        Parts::Terms(terms) => {
+            if terms.iter().all(|&t| constant_core(&e.wrap(t)).is_true()) {
+                Truth::True
+            } else {
+                Truth::Unknown
+            }
+        }
+        Parts::Factors(factors) => {
+            let factors: Vec<Ex> = factors.into_iter().map(|f| e.wrap(f)).collect();
+            let verdicts: Vec<Truth> = factors.iter().map(constant_core).collect();
+            if verdicts.iter().all(|v| v.is_false()) {
+                return Truth::False;
+            }
+            let zero_and_finite = verdicts.iter().any(|v| v.is_true())
+                && factors
+                    .iter()
+                    .zip(&verdicts)
+                    .all(|(f, v)| v.is_true() || Truth::from(f.is_finite()).is_true());
+            if zero_and_finite {
+                Truth::True
+            } else {
+                Truth::Unknown
+            }
+        }
+    }
+}
+
+/// Largest denominator of a rational number that
+/// [`with_recognised_constants`] looks for.
+const RECOGNISED_DENOMINATOR: i64 = 1_000;
+
+/// Work units of one attempt of [`with_recognised_constants`] to read a
+/// constant as a rational number (an evaluation and a proof).
+const RECOGNITION_WORK: u64 = 1_500;
+
+/// `e` with each constant part that is a rational number in disguise
+/// replaced by that number, from the inside out: a constant sum, product
+/// or integer power, and the constant terms of a sum or the constant
+/// factors of a product taken together (`x + 1 + cos(π/7) + cos(3π/7) +
+/// cos(5π/7) − 1/2` is `x + 1`, `(erf 1 + erfc 1)·x` is `x`, `2/(erf 1 +
+/// erfc 1 − 2) + 2` is `0`).  The number is read off twelve certified
+/// digits of the part (a guess) and the replacement is made only when the
+/// difference is **proved** zero by the zero test of constants
+/// ([`constant_core`]), so the result is equal to `e`.  Function arguments
+/// and non-integer powers are not entered; each attempt is charged to the
+/// work budget ([`RECOGNITION_WORK`]) and none is made once it is spent.
+///
+/// An elimination mixes the constants of different entries: a sum of
+/// products of two disguised numbers is not proved zero as a whole, and is
+/// plain arithmetic once each is written as the number it is.
+fn with_recognised_constants(e: &Ex) -> Ex {
+    use crate::base::node::{ExprId, ExprNode};
+    enum Shape {
+        Leaf,
+        Sum(Vec<ExprId>),
+        Product(Vec<ExprId>),
+        Power(ExprId, ExprId),
+        Negation(ExprId),
+    }
+    let shape = |id: ExprId| -> Shape {
+        let inner = e.inner.read();
+        let arena = &inner.arena;
+        match arena.node(id) {
+            ExprNode::Add(ch) => Shape::Sum(ch.to_vec()),
+            ExprNode::Mul(ch) => Shape::Product(ch.to_vec()),
+            ExprNode::Pow(b, x) if arena.as_num(*x).is_some_and(|r| r.is_integer()) => {
+                Shape::Power(*b, *x)
+            }
+            ExprNode::Neg(c) => Shape::Negation(*c),
+            _ => Shape::Leaf,
+        }
+    };
+    let symbol_free = |id: ExprId| e.inner.read().arena.is_symbol_free(id);
+    // The rational number that the constant `k` is proved to be, or `k`.
+    let recognised = |k: ExprId| -> ExprId {
+        let constant = e.wrap(k);
+        if constant.expr_type() == ExprType::Number
+            || !symbol_free(k)
+            || !PivotWork::charge(RECOGNITION_WORK)
+        {
+            return k;
+        }
+        // Twelve certified digits of the real part (exact, as a rational);
+        // a constant that does not evaluate is left alone, and one that
+        // is not real fails the proof below.
+        let digits = {
+            let inner = e.inner.read();
+            crate::transforms::evalf::const_value(&inner.arena, k, 12)
+                .ok()
+                .and_then(|v| v.re_decimal())
+                .and_then(|d| d.to_ratio(18))
+        };
+        let Some(guess) = digits.and_then(|v| rational_near(&v)) else {
+            return k;
+        };
+        let number = e.context().rational(guess.0, guess.1);
+        if constant_core(&(&constant - &number)).is_true() {
+            number.raw_id()
+        } else {
+            k
+        }
+    };
+    let mut value: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    let mut stack = vec![(e.raw_id(), false)];
+    while let Some((id, ready)) = stack.pop() {
+        if value.contains_key(&id) {
+            continue;
+        }
+        let mapped = |c: &ExprId| value.get(c).copied().unwrap_or(*c);
+        let new = match shape(id) {
+            Shape::Leaf => id,
+            Shape::Sum(children) | Shape::Product(children) if !ready => {
+                stack.push((id, true));
+                stack.extend(children.into_iter().map(|c| (c, false)));
+                continue;
+            }
+            Shape::Power(base, _) | Shape::Negation(base) if !ready => {
+                stack.push((id, true));
+                stack.push((base, false));
+                continue;
+            }
+            Shape::Sum(children) => {
+                let (constants, mut parts): (Vec<ExprId>, Vec<ExprId>) =
+                    children.iter().map(mapped).partition(|&c| symbol_free(c));
+                if !constants.is_empty() {
+                    let together = e.inner.write().arena.add(&constants);
+                    parts.push(recognised(together));
+                }
+                e.inner.write().arena.add(&parts)
+            }
+            Shape::Product(children) => {
+                let (constants, mut parts): (Vec<ExprId>, Vec<ExprId>) =
+                    children.iter().map(mapped).partition(|&c| symbol_free(c));
+                if !constants.is_empty() {
+                    let together = e.inner.write().arena.mul(&constants);
+                    parts.push(recognised(together));
+                }
+                e.inner.write().arena.mul(&parts)
+            }
+            Shape::Power(base, exponent) => {
+                let base = mapped(&base);
+                let power = e.inner.write().arena.pow(base, exponent);
+                recognised(power)
+            }
+            Shape::Negation(base) => {
+                let base = mapped(&base);
+                e.inner.write().arena.neg(base)
+            }
+        };
+        value.insert(id, new);
+    }
+    match value.get(&e.raw_id()) {
+        Some(&id) => e.wrap(id),
+        None => e.clone(),
+    }
+}
+
+/// The rational `p/q` with the smallest `0 < q ≤` [`RECOGNISED_DENOMINATOR`]
+/// that lies within `10⁻⁹` of `v`, when `|v| < 10⁹`: a guess at what a
+/// constant is, to be proved by its caller.  Exact arithmetic.
+fn rational_near(v: &Q) -> Option<(i64, i64)> {
+    use num_traits::{Signed, ToPrimitive};
+    let bound = Q::from_integer(BigInt::from(1_000_000_000));
+    if v.abs() >= bound {
+        return None;
+    }
+    let tolerance = bound.recip();
+    (1..=RECOGNISED_DENOMINATOR).find_map(|q| {
+        let denominator = Q::from_integer(BigInt::from(q));
+        let p = (v * &denominator).round();
+        ((v - &p / &denominator).abs() <= tolerance)
+            .then(|| p.to_integer().to_i64())
+            .flatten()
+            .map(|p| (p, q))
+    })
+}
+
+/// Most nodes of a numerator that [`vanishes_by_constant_coefficients`]
+/// multiplies out.
+const COEFFICIENT_TEST_NODES: usize = 600;
+
+/// Is `e`, an expression with symbols, zero because the constant
+/// coefficients of its numerator are?  The numerator is multiplied out and
+/// its terms are collected by their factors with symbols; a coefficient is
+/// a constant, decided by the zero test of constants (`x·(erf 1 + erfc 1 −
+/// 1)`, `y + 2 − (y + 2) + cos(π/7) + cos(3π/7) + cos(5π/7) − 1/2`: the
+/// identities of constants are proved for constants only, and the
+/// eliminations mix them with the symbols).  The terms whose coefficient is
+/// proved zero are dropped; what is left must be nothing, or zero by an
+/// identity of its functions.  The denominator must be proved not
+/// identically zero (the value exists).  `false` proves nothing.
+fn vanishes_by_constant_coefficients(e: &Ex) -> bool {
+    use crate::base::node::{ExprId, ExprNode};
+    let (num, den) = {
+        let mut inner = e.inner.write();
+        crate::poly::polybridge::fraction_parts(&mut inner.arena, e.raw_id())
+    };
+    let (num, den) = (e.wrap(num), e.wrap(den));
+    // The value must exist: a denominator proved not identically zero.
+    if den == *e
+        || tree_size_capped(&num, COEFFICIENT_TEST_NODES) > COEFFICIENT_TEST_NODES
+        || !pivot_truth(&den).is_false()
+    {
+        return false;
+    }
+    let expanded = num.expand();
+    // The terms by their factors with symbols: (those factors' product,
+    // the constant factors' products).
+    let mut groups: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+    {
+        let mut inner = expanded.inner.write();
+        let arena = &mut inner.arena;
+        let terms: Vec<ExprId> = match arena.node(expanded.raw_id()) {
+            ExprNode::Add(ch) => ch.to_vec(),
+            _ => vec![expanded.raw_id()],
+        };
+        for term in terms {
+            let (term, negated) = match arena.node(term) {
+                ExprNode::Neg(c) => (*c, true),
+                _ => (term, false),
+            };
+            let factors: Vec<ExprId> = match arena.node(term) {
+                ExprNode::Mul(ch) => ch.to_vec(),
+                _ => vec![term],
+            };
+            let (mut constants, rest): (Vec<ExprId>, Vec<ExprId>) =
+                factors.into_iter().partition(|&f| arena.is_symbol_free(f));
+            if negated {
+                constants.push(arena.int(-1));
+            }
+            let one = arena.one();
+            let product = |arena: &mut crate::base::arena::Arena, fs: &[ExprId]| match fs {
+                [] => one,
+                fs => arena.mul(fs),
+            };
+            let monomial = product(arena, &rest);
+            let coefficient = product(arena, &constants);
+            match groups.iter_mut().find(|(m, _)| *m == monomial) {
+                Some((_, cs)) => cs.push(coefficient),
+                None => groups.push((monomial, vec![coefficient])),
+            }
+        }
+    }
+    let mut dropped = false;
+    let mut kept: Vec<Ex> = Vec::new();
+    for (monomial, coefficients) in groups {
+        let coefficient = {
+            let mut inner = expanded.inner.write();
+            let id = inner.arena.add(&coefficients);
+            drop(inner);
+            expanded.wrap(id)
+        };
+        if pivot_truth(&coefficient).is_true() {
+            dropped = true;
+        } else {
+            kept.push(&coefficient * &expanded.wrap(monomial));
+        }
+    }
+    if !dropped {
+        return false;
+    }
+    if kept.is_empty() {
+        return true;
+    }
+    let rest = Ex::sum_of(&expanded.context(), kept);
+    if rest.is_zero_structural() {
+        return true;
+    }
+    vanishes_by_identity(&rest) || ex_is_zero(&rest).is_true()
+}
+
+/// Is the expression `e` with free symbols certified nonzero at a sample
+/// point that respects the assumptions of its symbols
+/// ([`nonzero_at_a_sample`](crate::simplify::identically_zero::nonzero_at_a_sample))?
+/// Then it is not identically zero.  Not asked of an expression that may
+/// vanish on a region without vanishing identically (`H(x)`, `0^x`,
+/// `max(x, 0)`: [`may_vanish_on_a_region`](crate::base::canon::may_vanish_on_a_region)),
+/// for which "nonzero for generic values" does not follow from one point.
+/// `false` proves nothing.
+fn generically_nonzero_at_a_sample(e: &Ex) -> bool {
+    let mut inner = e.inner.write();
+    let arena = &mut inner.arena;
+    !crate::base::canon::may_vanish_on_a_region(arena, e.raw_id())
+        && crate::simplify::identically_zero::nonzero_at_a_sample(arena, e.raw_id())
+}
+
+/// The zero test of 0.60.0 — structural, exact for rational functions of
+/// the symbols over `ℚ(radicals, i)`, and for any other constant
+/// [`constant_is_zero`] — two-valued: proved zero.  For the block split of
+/// the eigenvalues only, whose result is right either way (an entry not
+/// proved zero makes a block larger; two equal eigenvalues of different
+/// blocks that are not joined here are joined, or refused, by
+/// [`merged_eigen_pairs`]).  It is kept there because the split decides
+/// which characteristic polynomials are solved: with [`pivot_truth`] a
+/// matrix with a disguised zero splits into smaller blocks, and a cubic
+/// block with unsimplified coefficients takes seconds in Cardano's formula
+/// where the whole matrix was refused at once (measured: `eigenvals` 0.14 s
+/// → 38 s for a 4×4 matrix of the hunt).
 pub(super) fn pivot_is_zero(e: &Ex) -> bool {
     if e.is_zero_structural() {
         return true;
@@ -1307,6 +1882,13 @@ pub(super) fn pivot_is_zero(e: &Ex) -> bool {
     rational_function_is_zero(e)
         .or_else(|| constant_is_zero(e))
         .is_true()
+}
+
+/// [`pivot_truth`] read as "proved zero", for an elimination step that is
+/// right either way (a row is cleared by an entry that is not proved zero,
+/// whatever it is).
+pub(super) fn proved_zero(e: &Ex) -> bool {
+    pivot_truth(e).is_true()
 }
 
 /// Zero test of a constant that is not a rational function over
@@ -1336,18 +1918,67 @@ fn constant_is_zero(e: &Ex) -> Truth {
     })
 }
 
-pub(super) fn eigen_zero_test(e: &Ex) -> bool {
-    if e.is_zero_structural() {
-        return true;
+/// The refusal of an elimination that met a pivot candidate `e` neither
+/// proved zero nor proved nonzero ([`pivot_truth`]).
+pub(crate) fn undecided_pivot(operation: &'static str, e: &Ex) -> SymplexError {
+    SymplexError::computation_failed(
+        operation,
+        format!(
+            "cannot decide whether the entry {} is zero (it is neither proved zero nor proved \
+             nonzero), so the rank is not known; simplify the entries or substitute values \
+             first",
+            shortened(e)
+        ),
+    )
+}
+
+/// `e` printed, cut after 120 characters (an entry of an elimination or
+/// an eigenvalue in radicals can fill a page).
+pub(super) fn shortened(e: &Ex) -> String {
+    let shown = e.to_string();
+    match shown.char_indices().nth(120) {
+        Some((cut, _)) => format!("{}…", &shown[..cut]),
+        None => shown,
     }
-    if e.expr_type() == ExprType::Number {
-        return false;
+}
+
+/// Eigenvalues with their multiplicities.
+pub(super) type EigenPairs = Vec<(Ex, usize)>;
+
+/// The eigenvalues `pairs` with the ones that are proved equal
+/// ([`pivot_truth`] of their difference) merged, their multiplicities
+/// added; and the first two eigenvalues of the result that are **not**
+/// proved different, if any.  Two eigenvalues are proved different when
+/// their difference is proved not identically zero and is meromorphic in
+/// the symbols by its form ([`analytic_by_form`]): a difference with a
+/// root or another branch function is analytic only piece by piece, and
+/// may vanish on one piece while a sample point lies in another.
+pub(super) fn merged_eigen_pairs(pairs: EigenPairs) -> (EigenPairs, Option<(Ex, Ex)>) {
+    let mut out: Vec<(Ex, usize)> = Vec::new();
+    let mut open: Option<(Ex, Ex)> = None;
+    for (v, m) in pairs {
+        let mut same = None;
+        for (idx, (w, _)) in out.iter().enumerate() {
+            let difference = w.clone() - v.clone();
+            match pivot_truth(&difference) {
+                Truth::True => {
+                    same = Some(idx);
+                    break;
+                }
+                Truth::False if analytic_by_form(&difference, false) => {}
+                _ => {
+                    if open.is_none() {
+                        open = Some((w.clone(), v.clone()));
+                    }
+                }
+            }
+        }
+        match same.and_then(|idx| out.get_mut(idx)) {
+            Some((_, k)) => *k += m,
+            None => out.push((v, m)),
+        }
     }
-    // Exact for the entries of `A − λI` with rational `A` and `λ =
-    // RootOf(g, k)`; certified for other constants (see `ex_is_zero`).
-    // Before 0.30 an undecided entry was zero when its `f64` value was
-    // below `10⁻¹⁰` in absolute value (see `rootof_field_is_zero`).
-    rootof_field_is_zero(e).or_else(|| ex_is_zero(e)).is_true()
+    (out, open)
 }
 
 /// An eigenvector entry of a symbolic matrix that is a rational function
@@ -1498,6 +2129,101 @@ pub(super) fn simple_eigenvector(m: &Matrix) -> Option<Matrix> {
     Some(Matrix::col_vector_unchecked(v))
 }
 
+/// Are the eigenvectors of `spaces` (all of them: as many as the matrix has
+/// rows) a basis for **every** value of the symbols?  Proved when every
+/// eigenvalue and every entry of the eigenvectors is finite at every point
+/// of the symbols' domain and the determinant of the eigenvector matrix `P`
+/// vanishes at none.  `A·P = P·D` is an identity between functions of the
+/// symbols, so it then holds at every point with an invertible `P`: the
+/// matrix is diagonalizable there, also where two eigenvalues meet (`[[x,
+/// y], [y, x]]` at `y = 0`).  `false` proves nothing.
+pub(super) fn eigenvectors_independent_everywhere(spaces: &[(Ex, usize, Vec<Matrix>)]) -> bool {
+    let cols: Vec<&Matrix> = spaces.iter().flat_map(|(_, _, vs)| vs.iter()).collect();
+    if cols.is_empty()
+        || !spaces.iter().all(|(l, _, _)| finite_everywhere(l))
+        || !cols.iter().all(|v| v.iter().all(finite_everywhere))
+    {
+        return false;
+    }
+    let Ok(p) = Matrix::hstack(&cols) else {
+        return false;
+    };
+    p.is_square()
+        && p.det().is_ok_and(|d| {
+            tree_size_capped(&d, EVERYWHERE_PROOF_NODES) <= EVERYWHERE_PROOF_NODES
+                && Truth::from(d.is_nonzero()).is_true()
+        })
+}
+
+/// Most nodes of an expression of which a proof "for every value of the
+/// symbols" asks a query (finite, nonzero): `is_diagonalizable` answers
+/// `None` rather than spend seconds on an eigenvector in radicals.
+pub(super) const EVERYWHERE_PROOF_NODES: usize = 300;
+
+/// Is `e` finite at every finite value of its symbols?  Proved by its form
+/// ([`analytic_by_form`], entire), or — for a small expression — by the
+/// assumption system ([`Ex::is_finite`], which reads a symbol without
+/// assumptions as possibly infinite).  `false` proves nothing.
+fn finite_everywhere(e: &Ex) -> bool {
+    // The query is not asked of a large expression (an eigenvector in
+    // radicals): it would cost more than the answer is worth here.
+    analytic_by_form(e, true)
+        || (tree_size_capped(e, EVERYWHERE_PROOF_NODES) <= EVERYWHERE_PROOF_NODES
+            && Truth::from(e.is_finite()).is_true())
+}
+
+/// Is `e` an analytic function of its symbols by its form: constants (any
+/// part without symbols) and symbols (not declared infinite) under sums,
+/// products, powers with an integer exponent and the entire functions
+/// `sin`, `cos`, `exp`, `sinh`, `cosh` — no root, no logarithm, no other
+/// function with a branch cut or a step?  With `entire` the exponents must
+/// not be negative (no pole: the value is finite at every finite point; a
+/// non-negative rational exponent is allowed there); without it `e` is
+/// meromorphic: single-valued on the whole plane of each symbol, so a
+/// nonzero value at one point means nonzero except on a set without
+/// interior.  `false` proves nothing.
+fn analytic_by_form(e: &Ex, entire: bool) -> bool {
+    use crate::base::assumptions::Props;
+    use crate::base::node::ExprNode;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    let mut seen = rustc_hash::FxHashSet::default();
+    let mut stack = vec![e.raw_id()];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Num(_) | ExprNode::Pi | ExprNode::E | ExprNode::ImaginaryUnit => {}
+            ExprNode::Symbol(sid)
+                if !Truth::from(arena.symbol_assumptions(*sid).query(Props::FINITE)).is_false() => {
+            }
+            // A constant part of a meromorphic function is a number.
+            _ if !entire && arena.is_symbol_free(id) => {}
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
+            ExprNode::Neg(c)
+            | ExprNode::Sin(c)
+            | ExprNode::Cos(c)
+            | ExprNode::Exp(c)
+            | ExprNode::Sinh(c)
+            | ExprNode::Cosh(c) => stack.push(*c),
+            ExprNode::Pow(b, x)
+                if arena.as_num(*x).is_some_and(|r| {
+                    if entire {
+                        !num_traits::Signed::is_negative(r)
+                    } else {
+                        r.is_integer()
+                    }
+                }) =>
+            {
+                stack.push(*b);
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Compute nullspace of `(a_minus_lambda)^power`.
 pub(super) fn jordan_null_power(
     a_minus_lambda: &Matrix,
@@ -1510,7 +2236,7 @@ pub(super) fn jordan_null_power(
     for _ in 1..power {
         m = m.matmul(a_minus_lambda)?;
     }
-    Ok(m.nullspace_semantic())
+    m.nullspace_decided("jordan_form")
 }
 
 /// Compute `(a_minus_lambda)^power * vec` where vec is a column vector.
@@ -1539,12 +2265,12 @@ pub(super) fn pick_independent_vec(
     if exclude.is_empty() {
         return Ok(Some(candidates[0].clone()));
     }
-    let base_rank = Matrix::hstack(exclude)?.rank_semantic();
+    let base_rank = Matrix::hstack(exclude)?.rank_decided("jordan_form")?;
     for candidate in candidates {
         let mut cols: Vec<&Matrix> = exclude.to_vec();
         cols.push(candidate);
         let combined = Matrix::hstack(&cols)?;
-        if combined.rank_semantic() > base_rank {
+        if combined.rank_decided("jordan_form")? > base_rank {
             return Ok(Some(candidate.clone()));
         }
     }

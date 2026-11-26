@@ -92,7 +92,7 @@ fn main() {
 
 ## Boolean logic
 
-Boolean atoms are relations (`x.gt(&y)`, `x.eq_expr(&y)`, …) combined with `and`, `or`, `not`, `implies`. `BoolEx::simplify` applies boolean algebra (absorption, complementation, constant folding); `to_nnf`/`to_cnf`/`to_dnf` compute normal forms; `is_tautology`, `is_contradiction` and `satisfiable` use DPLL with unit propagation and respect declared assumptions; `atoms()` lists the atoms and `truth_table(&atoms)` enumerates them.
+Boolean atoms are relations (`x.gt(&y)`, `x.eq_expr(&y)`, …) combined with `and`, `or`, `not`, `implies`. `BoolEx::simplify` applies boolean algebra (absorption, complementation, constant folding); `to_nnf`/`to_cnf`/`to_dnf` compute normal forms; `is_tautology`, `is_contradiction` and `satisfiable` use DPLL with unit propagation and respect declared assumptions; `atoms()` lists the atoms and `truth_table(&atoms)` enumerates them. `args()` of a Boolean expression returns its Boolean operands (those of `and`, `or`, `not`); a relation is an atom and has none, and its two sides are read from the untyped view, `relation.as_ex().args()`.
 
 ```rust
 use symplex::prelude::*;

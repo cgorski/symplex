@@ -541,7 +541,7 @@ fn mobius_core(
     if !(2..=MAX_MOBIUS_ROOT).contains(&q) {
         return None;
     }
-    let t = arena.symbol("__mt");
+    let t = arena.internal_symbol("__mt");
     let ExprNode::Symbol(t_sym) = *arena.node(t) else {
         return None;
     };

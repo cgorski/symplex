@@ -598,10 +598,12 @@ fn is_prime_value_false() {
 }
 
 #[test]
-fn is_prime_value_non_integer_returns_none() {
+fn is_prime_value_non_integer_is_false() {
+    // A prime is an integer (up to 0.60.0 the answer was `None`; SymPy 1.14:
+    // `Rational(1, 2).is_prime` is False).
     let ctx = Context::new();
     let half = ctx.rational(1, 2);
-    assert_eq!(half.is_prime_value(), None);
+    assert_eq!(half.is_prime_value(), Some(false));
 }
 
 #[test]

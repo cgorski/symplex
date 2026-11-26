@@ -1329,7 +1329,8 @@ fn clearly_different(a: Complex64, b: Complex64) -> bool {
 
 /// A "random" rational `(p, q)` with numerator in `[-64, 64]` and
 /// denominator in `[1, 8]`, never zero — the sample points of
-/// [`Ex::probably_equal`].
+/// [`Ex::probably_equal`] for a symbol without assumptions, and the raw
+/// material of [`domain_sample`] for one with.
 fn next_rational(rng: &mut SplitMix64) -> (i64, i64) {
     let q = (rng.next_u64() % 8) as i64 + 1;
     let mut p = (rng.next_u64() % 129) as i64 - 64;
@@ -1337,6 +1338,115 @@ fn next_rational(rng: &mut SplitMix64) -> (i64, i64) {
         p = 1;
     }
     (p, q)
+}
+
+/// Candidates [`domain_sample`] tries for one symbol at one sample point.
+const DOMAIN_SAMPLE_TRIES: usize = 24;
+
+/// A sample point of [`Ex::probably_equal`] for the symbol `sym`: a value
+/// in its declared domain, or `None` when none could be drawn.
+///
+/// A symbol without assumptions takes a rational of [`next_rational`], as
+/// it always did.  For a symbol with assumptions a candidate is shaped by
+/// them ([`domain_candidate`]) and **kept only when it is proved to have
+/// every declared property** (`solve::assumptions_hold`, the test the
+/// solvers apply to a root: the assumption system, and a certified
+/// evaluation for a constant).  So a refutation — two sides that differ at
+/// a sample — is a refutation on the declared domain.  `None` after
+/// [`DOMAIN_SAMPLE_TRIES`] candidates: the domain has no finite number (an
+/// infinite symbol), or membership could not be proved for any candidate.
+///
+/// Up to 0.60.0 every symbol took a rational of `next_rational` whatever
+/// its assumptions: for an integer `v`, `floor(v/2) + ceiling(v/2)` was
+/// "refuted" against `v` at `v = 23/3`.
+fn domain_sample(
+    arena: &mut crate::base::arena::Arena,
+    sym: crate::base::node::ExprId,
+    rng: &mut SplitMix64,
+) -> Option<crate::base::node::ExprId> {
+    use crate::base::assumptions::Assumptions;
+    let props = match arena.node(sym) {
+        crate::base::node::ExprNode::Symbol(sid) => arena.symbol_assumptions(*sid),
+        _ => Assumptions::default(),
+    };
+    if props == Assumptions::default() {
+        let (p, q) = next_rational(rng);
+        return Some(arena.rational(p, q));
+    }
+    for _ in 0..DOMAIN_SAMPLE_TRIES {
+        let candidate = domain_candidate(arena, &props, rng);
+        let member = crate::transforms::solve::assumptions_hold(arena, sym, candidate);
+        if Truth::from(member).is_true() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// A value shaped by the declared properties `props` — a guess that
+/// [`domain_sample`] verifies: the symbol's one value when its assumptions
+/// pin it; an integer of the declared parity or primality; otherwise a
+/// rational (not an integer when the symbol is declared not to be one),
+/// times `e` for a transcendental and `√2` for an irrational symbol; of
+/// the declared sign; times `i` for an imaginary symbol, and with a
+/// nonzero imaginary part for one declared not real.
+fn domain_candidate(
+    arena: &mut crate::base::arena::Arena,
+    props: &crate::base::assumptions::Assumptions,
+    rng: &mut SplitMix64,
+) -> crate::base::node::ExprId {
+    use crate::base::assumptions::Props;
+    const PRIMES: [i64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
+    const COMPOSITES: [i64; 12] = [4, 6, 8, 9, 10, 12, 14, 15, 16, 18, 20, 21];
+    let has = |p: Props| Truth::from(props.query(p)).is_true();
+    let lacks = |p: Props| Truth::from(props.query(p)).is_false();
+    if let Some(v) = props.pinned_value() {
+        return arena.int(v);
+    }
+    let (p, q) = next_rational(rng);
+    let p = if has(Props::POSITIVE) || has(Props::NONNEGATIVE) {
+        p.abs()
+    } else if has(Props::NEGATIVE) || has(Props::NONPOSITIVE) {
+        -p.abs()
+    } else {
+        p
+    };
+    let mut value = if has(Props::INTEGER) {
+        let pick = (p.unsigned_abs() % 12) as usize;
+        let n = if has(Props::PRIME) {
+            PRIMES[pick]
+        } else if has(Props::COMPOSITE) {
+            COMPOSITES[pick]
+        } else if (has(Props::EVEN) && p % 2 != 0) || (has(Props::ODD) && p % 2 == 0) {
+            p + p.signum()
+        } else {
+            p
+        };
+        arena.int(n)
+    } else if lacks(Props::INTEGER) && p % q == 0 {
+        arena.rational(2 * p + p.signum(), 2 * q)
+    } else {
+        arena.rational(p, q)
+    };
+    if has(Props::TRANSCENDENTAL) || lacks(Props::ALGEBRAIC) {
+        let e = arena.e_const();
+        value = arena.mul(&[value, e]);
+    } else if has(Props::IRRATIONAL) || (lacks(Props::RATIONAL) && !has(Props::INTEGER)) {
+        let two = arena.int(2);
+        let root = arena.sqrt(two);
+        value = arena.mul(&[value, root]);
+    }
+    if has(Props::IMAGINARY) {
+        let i = arena.i_unit();
+        value = arena.mul(&[value, i]);
+    } else if lacks(Props::REAL) && !has(Props::EXTENDED_REAL) {
+        let (b, c) = next_rational(rng);
+        let i = arena.i_unit();
+        let im = arena.rational(b, c);
+        let im = arena.mul(&[im, i]);
+        value = arena.add(&[value, im]);
+    }
+    value
 }
 
 /// A hash of the structure of `id` (FNV-1a over its sort key: symbol
@@ -1621,18 +1731,32 @@ impl Ex {
     }
 
     /// Randomized equality test: evaluate both sides at `samples` random
-    /// rational points and compare.
+    /// points of the symbols' declared domain and compare.
     ///
-    /// * `Some(false)` — a concrete point was found where the two sides
-    ///   differ.  When both sides fold to exact rationals at that point this
-    ///   is a proof; when transcendental functions force floating-point
-    ///   evaluation the sides differ by more than `1e-9` relative.
+    /// * `Some(false)` — a concrete point of the declared domain was found
+    ///   where the two sides differ.  When both sides fold to exact
+    ///   rationals at that point this is a proof; when transcendental
+    ///   functions force floating-point evaluation the sides differ by more
+    ///   than `1e-9` relative.
     /// * `Some(true)` — [`equals`](Self::equals) proved it symbolically, **or**
     ///   every sample agreed.  The latter is probabilistic: for polynomial
     ///   and rational identities the chance of a false positive is
     ///   negligible after a few samples, but no proof is produced.
     /// * `None` — no sample point could be evaluated (domain errors at
-    ///   every point) and the symbolic test was inconclusive.
+    ///   every point) and the symbolic test was inconclusive, or no point
+    ///   of the declared domain of some symbol could be drawn (an infinite
+    ///   symbol; assumptions for which no candidate value was proved a
+    ///   member).
+    ///
+    /// A symbol without assumptions is sampled at rationals `p/q` (`|p| ≤
+    /// 64`, `q ≤ 8`).  A symbol with assumptions is sampled at values
+    /// proved to have every declared property: integers for an integer
+    /// symbol (even, odd, prime ones as declared), positive or negative
+    /// rationals for a signed one, rational multiples of `√2` or `e` for an
+    /// irrational or transcendental one, and so on.  Up to 0.60.0 every
+    /// symbol took the rationals, and an identity of the declared domain
+    /// was refuted outside it: `floor(v/2) + ceiling(v/2)` against `v` for
+    /// an integer `v` was `Some(false)`.
     ///
     /// Sample points are drawn from a fixed-seed generator keyed on the
     /// structure of the two expressions (symbol names, numbers, node kinds),
@@ -1661,12 +1785,22 @@ impl Ex {
             return Some(r);
         }
         let diff = self - other;
-        let syms = diff.free_symbols();
+        let mut syms = diff.free_symbols();
         if syms.is_empty() {
             // `equals` already tried the constant numeric test.
             return None;
         }
-        let ctx = self.context();
+        // A symbol that cancels in the difference still stands in both
+        // sides: it takes a value too, so that each side has one at the
+        // point.  (Up to 0.60.0 a point where the sides kept such a symbol
+        // was skipped like a domain error, and the other points decided:
+        // `sign(v) - t^2` against `1 - t^2` was `Some(true)` for a real
+        // `v`.)
+        for s in self.free_symbols().into_iter().chain(other.free_symbols()) {
+            if !syms.contains(&s) {
+                syms.push(s);
+            }
+        }
         let seed = {
             let inner = self.inner.read();
             0x5EED_0000_0000_0000_u64
@@ -1679,13 +1813,14 @@ impl Ex {
         let mut confirmed = 0usize;
 
         for _ in 0..samples {
-            let vals: Vec<Ex> = syms
-                .iter()
-                .map(|_| {
-                    let (p, q) = next_rational(&mut rng);
-                    ctx.rational(p, q)
-                })
-                .collect();
+            // A point of the declared domain of every symbol, or no verdict.
+            let drawn: Option<Vec<crate::base::node::ExprId>> = {
+                let mut inner = self.inner.write();
+                syms.iter()
+                    .map(|s| domain_sample(&mut inner.arena, s.raw_id(), &mut rng))
+                    .collect()
+            };
+            let vals: Vec<Ex> = drawn?.into_iter().map(|id| self.wrap(id)).collect();
             let pairs: Vec<(&Ex, &Ex)> = syms.iter().zip(vals.iter()).collect();
             let a = self.subs_map(&pairs).eval();
             let b = other.subs_map(&pairs).eval();

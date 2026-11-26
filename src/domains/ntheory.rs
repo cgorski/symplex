@@ -2566,10 +2566,19 @@ pub fn is_coprime(a: impl Into<BigInt>, b: impl Into<BigInt>) -> bool {
     gcd(a, b).is_one()
 }
 
-/// Modular exponentiation: `base^exp mod modulus`.
+/// Modular exponentiation: `base^exp mod modulus`, in `[0, modulus)`.
 ///
-/// Returns 0 if `modulus ≤ 0` or `exp < 0`. Works for non-negative
-/// exponents.
+/// A negative exponent is a power of the modular inverse:
+/// `base^(−k) = (base⁻¹)^k (mod modulus)`, which exists exactly when
+/// `gcd(base, modulus) = 1` (Python `pow(2, -1, 7)` is `4`).  Up to 0.60.0
+/// every negative exponent gave the stand-in `0`.
+///
+/// # Refusal
+///
+/// Returns 0 if `modulus ≤ 0`, and if `exp < 0` while `base` has no
+/// inverse modulo `modulus` (`mod_pow(2, -1, 4)`; for a modulus above 1
+/// the value 0 is not a unit, so it is no power of an inverse).  There is
+/// no `try_` form yet.
 ///
 /// # Examples
 ///
@@ -2579,6 +2588,9 @@ pub fn is_coprime(a: impl Into<BigInt>, b: impl Into<BigInt>) -> bool {
 ///
 /// assert_eq!(mod_pow(2, 10, 1000), BigInt::from(24));  // 1024 mod 1000
 /// assert_eq!(mod_pow(3, 4, 17), BigInt::from(13));     // 81 mod 17
+/// assert_eq!(mod_pow(2, -1, 7), BigInt::from(4));      // 2·4 = 8 ≡ 1 (mod 7)
+/// assert_eq!(mod_pow(3, -2, 7), BigInt::from(4));      // (3⁻¹)² = 5² = 25 ≡ 4
+/// assert_eq!(mod_pow(2, -1, 4), BigInt::from(0));      // 2 has no inverse modulo 4
 /// ```
 pub fn mod_pow(
     base: impl Into<BigInt>,
@@ -2588,8 +2600,18 @@ pub fn mod_pow(
     let base: BigInt = base.into();
     let exp: BigInt = exp.into();
     let modulus: BigInt = modulus.into();
-    if modulus <= BigInt::zero() || exp < BigInt::zero() {
+    if modulus <= BigInt::zero() {
         return BigInt::zero();
+    }
+    if exp.is_negative() {
+        // Modulo 1 every residue is 0 (and `mod_inverse` has no modulus 1).
+        if modulus.is_one() {
+            return BigInt::zero();
+        }
+        return match mod_inverse(base, modulus.clone()) {
+            Some(inverse) => inverse.modpow(&(-exp), &modulus),
+            None => BigInt::zero(),
+        };
     }
     let base_mod = base.mod_floor(&modulus);
     base_mod.modpow(&exp, &modulus)

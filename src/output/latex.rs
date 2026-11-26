@@ -795,10 +795,32 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         }
 
         // ── Limit: \lim_{var \to point} body ──────────────────────
+        // A one-sided limit (`limit::unevaluated_limit`): `point^{-}`,
+        // `point^{+}`, the point in parentheses unless it is a symbol or a
+        // non-negative integer.
         ExprNode::Limit(body, var, point) => {
+            let (point, side) = crate::calculus::limit::limit_approach(arena, point);
+            let mark = match side {
+                crate::calculus::limit::Direction::Left => Some("^{-}"),
+                crate::calculus::limit::Direction::Right => Some("^{+}"),
+                crate::calculus::limit::Direction::Both => None,
+            };
+            let bare = matches!(arena.node(point), ExprNode::Symbol(_))
+                || arena
+                    .as_num(point)
+                    .is_some_and(|q| q.is_integer() && q.numer().sign() != num_bigint::Sign::Minus);
             stack.push(LatexItem::Expr(body));
             stack.push(LatexItem::Lit("} "));
+            if let Some(mark) = mark {
+                stack.push(LatexItem::Lit(mark));
+                if !bare {
+                    stack.push(LatexItem::Lit(r"\right)"));
+                }
+            }
             stack.push(LatexItem::Expr(point));
+            if mark.is_some() && !bare {
+                stack.push(LatexItem::Lit(r"\left("));
+            }
             stack.push(LatexItem::Lit(r" \to "));
             stack.push(LatexItem::Expr(var));
             stack.push(LatexItem::Lit(r"\lim_{"));

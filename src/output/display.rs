@@ -540,8 +540,15 @@ fn expand_expr(
         }
 
         // ── Limit ──────────────────────────────────────────────────
+        // A one-sided limit holds its ray of approach in the third slot
+        // (`limit::unevaluated_limit`) and prints the point and the side.
         ExprNode::Limit(body, var, point) => {
-            stack.push(WorkItem::Lit(")"));
+            let (point, side) = crate::calculus::limit::limit_approach(arena, point);
+            stack.push(WorkItem::Lit(match side {
+                crate::calculus::limit::Direction::Left => ", left)",
+                crate::calculus::limit::Direction::Right => ", right)",
+                crate::calculus::limit::Direction::Both => ")",
+            }));
             stack.push(WorkItem::Expr(point, 0));
             stack.push(WorkItem::Lit(", "));
             stack.push(WorkItem::Expr(var, 0));

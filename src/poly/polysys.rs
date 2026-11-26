@@ -39,7 +39,10 @@ use rustc_hash::FxHashMap;
 ///
 /// - `Ok(solutions)` where each solution is a vector `[x₀, x₁, …, x_{n-1}]`.
 ///   An empty vec means the system is inconsistent (no rational solutions).
-/// - `Err(msg)` if the ideal is not zero-dimensional (infinitely many solutions).
+/// - `Err(msg)` if the ideal is not zero-dimensional (infinitely many solutions),
+///   or if a Gröbner basis needs more than its work budget
+///   ([`try_groebner_basis`](crate::groebner::try_groebner_basis); up to
+///   0.60.0 such a call did not return).
 pub fn solve_polynomial_system(
     polys: &[MultiPoly<GrevLex>],
 ) -> Result<Vec<Vec<Ratio<BigInt>>>, String> {
@@ -64,7 +67,7 @@ pub fn solve_polynomial_system(
     }
 
     // Step 1: Compute grevlex Gröbner basis
-    let grevlex_gb = groebner::groebner_basis(&nonzero);
+    let grevlex_gb = groebner::try_groebner_basis(&nonzero).map_err(|e| e.to_string())?;
 
     if grevlex_gb.is_empty() {
         // Ideal is {0}, every point is a solution — not zero-dimensional
@@ -85,7 +88,7 @@ pub fn solve_polynomial_system(
     }
 
     // Step 4: FGLM to lex ordering
-    let lex_gb = groebner::groebner_basis_lex(&nonzero.to_vec());
+    let lex_gb = groebner::try_groebner_basis_lex(&nonzero).map_err(|e| e.to_string())?;
 
     if lex_gb.is_empty() {
         return Ok(vec![]);
@@ -426,6 +429,11 @@ fn convert_node_multi(
 ///   linear form is found for the univariate representation.
 ///   Powers above the 10,000th of a variable make an equation
 ///   non-polynomial for this routine, as for the univariate conversions.
+/// - [`SymplexError::BudgetExhausted`] of kind
+///   [`BudgetKind::GroebnerBasis`](crate::BudgetKind::GroebnerBasis) if a
+///   Gröbner basis of the system needs more than its work budget (the
+///   cyclic system in six variables; up to 0.60.0 such a call did not
+///   return).
 ///
 /// # Example
 ///
@@ -560,7 +568,7 @@ fn solve_system_over_all_values(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>,
     }
 
     // Gröbner basis (grevlex) for structural checks.
-    let grevlex_gb = groebner::groebner_basis(&nonzero);
+    let grevlex_gb = groebner::try_groebner_basis(&nonzero)?;
     if grevlex_gb.is_empty() {
         return Err(SymplexError::InfiniteSolutions {
             operation: "solve_system_ex",
@@ -588,7 +596,7 @@ fn solve_system_over_all_values(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>,
     }
 
     // Lex basis for triangular back-substitution.
-    let lex_gb = groebner::groebner_basis_lex(&nonzero);
+    let lex_gb = groebner::try_groebner_basis_lex(&nonzero)?;
     if lex_gb.is_empty() {
         return Ok(vec![]);
     }
@@ -596,7 +604,7 @@ fn solve_system_over_all_values(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>,
     // The number of distinct complex solutions, exactly: the dimension of
     // the quotient by the radical (`zerodim`).  It certifies that the
     // back-substitution below found every solution.
-    let radical = crate::poly::zerodim::Radical::new(&grevlex_gb);
+    let radical = crate::poly::zerodim::Radical::try_new(&grevlex_gb)?;
 
     let solutions = {
         let mut guard = first.inner.write();

@@ -228,7 +228,7 @@ fn integer_admissible(props: &crate::base::assumptions::Assumptions, n: i64) -> 
 /// up to 0.52 the id's allocation number chose them, so whether a sample
 /// met a zero of the expression depended on the order in which the
 /// context had created its symbols.
-fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
+pub(crate) fn sample_value(arena: &mut Arena, sym: ExprId, k: u64) -> Option<ExprId> {
     let (props, name_hash) = match arena.node(sym) {
         ExprNode::Symbol(sid) => (
             arena.symbol_assumptions(*sid),

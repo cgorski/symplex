@@ -198,26 +198,15 @@ fn evalf_with(
     digits: u32,
     search: ZeroSearch,
 ) -> Result<String, SymplexError> {
-    // Convert decimal digits to binary precision with guard bits.
-    // log2(10) ≈ 3.3219, so we use digits * 3.4 + 64 extra bits.
-    let binary_prec = (digits as usize) * 34 / 10 + 64;
-    // Ensure a reasonable minimum.
-    let prec = binary_prec.max(128);
+    // Decimal digits to binary precision with guard bits, zero digits and a
+    // precision beyond the configured maximum refused.
+    let prec = checked_precision(arena, digits, "eval_decimal")?;
 
     debug!(
         digits = digits,
         binary_precision = prec,
         "evalf: starting numerical evaluation"
     );
-
-    // Enforce the configured maximum precision.
-    let max_prec = arena.config.max_evalf_precision as usize;
-    if prec > max_prec {
-        return Err(SymplexError::PrecisionExhausted {
-            requested: digits,
-            achieved: (max_prec * 10 / 34).saturating_sub(6) as u32,
-        });
-    }
 
     // Free symbols make the whole expression unevaluable; report the
     // offending symbol by name up front instead of surfacing an internal
@@ -310,10 +299,71 @@ pub(crate) fn f64_quadrature_tail_trusted(
     .unwrap_or(false)
 }
 
-/// The working precision behind `digits` decimal digits: `3.4` bits per
-/// digit plus 64 guard bits, at least 128.
+/// The bits behind `digits` decimal digits: `3.4` bits per digit
+/// (`log₂ 10 ≈ 3.3219`) plus 64 guard bits, at least 128.  In `u64`, where
+/// no digit count overflows (`(2³² − 1)·34 < 2³⁸`).
+///
+/// Up to 0.60 this was `(digits as usize) * 34 / 10 + 64`, written out in
+/// five places: on a target whose `usize` has 32 bits (`wasm32`) the product
+/// overflows from `digits = 126,322,568` on — a panic in a debug build, and
+/// in a release build a wrapped precision (128 bits for that count) that
+/// passed the check against the configured maximum.
+const fn working_bits(digits: u32) -> u64 {
+    let bits = digits as u64 * 34 / 10 + 64;
+    if bits < 128 { 128 } else { bits }
+}
+
+/// [`working_bits`] of `digits` when an evaluation may run at it: at most
+/// `max_bits` (the configured maximum) and at most an eighth of `usize_max`,
+/// the largest `usize` of the target — the precision search doubles the
+/// precision and adds guard bits in `usize`, which then cannot overflow
+/// (on a 64-bit target the configured maximum, a `u32`, is the only limit).
+fn precision_within(digits: u32, max_bits: u32, usize_max: u64) -> Option<u64> {
+    let bits = working_bits(digits);
+    (bits <= u64::from(max_bits) && bits <= usize_max / 8).then_some(bits)
+}
+
+/// The working precision behind `digits` decimal digits ([`working_bits`]).
+/// The entry points have refused a count whose precision `usize` cannot
+/// hold ([`checked_precision`]); it would saturate here.
 fn working_precision(digits: u32) -> usize {
-    ((digits as usize) * 34 / 10 + 64).max(128)
+    usize::try_from(working_bits(digits)).unwrap_or(usize::MAX)
+}
+
+/// The working precision of an evaluation to `digits` digits, for the
+/// entry points of the evaluator (`operation` names the one that reports
+/// zero digits).
+///
+/// # Errors
+///
+/// * [`SymplexError::InvalidArgument`] for `digits == 0`: no digit is
+///   certified, and up to 0.60 every digit of the 128-bit working value was
+///   printed (`eval_decimal(0)` of `1/3` gave
+///   `0.333333333333333333333333333333333333334`, 39 digits, the last one
+///   not a digit of `1/3`).
+/// * [`SymplexError::PrecisionExhausted`] when the precision exceeds the
+///   configured maximum, or what the target's `usize` allows
+///   ([`precision_within`]).
+fn checked_precision(
+    arena: &Arena,
+    digits: u32,
+    operation: &'static str,
+) -> Result<usize, SymplexError> {
+    if digits == 0 {
+        return Err(SymplexError::invalid_argument(
+            operation,
+            "at least one digit must be requested",
+        ));
+    }
+    let max_bits = arena.config.max_evalf_precision;
+    let usize_max = u64::try_from(usize::MAX).unwrap_or(u64::MAX);
+    precision_within(digits, max_bits, usize_max)
+        .and_then(|bits| usize::try_from(bits).ok())
+        .ok_or_else(|| SymplexError::PrecisionExhausted {
+            requested: digits,
+            achieved: u32::try_from((u64::from(max_bits) * 10 / 34).saturating_sub(6))
+                .unwrap_or(u32::MAX),
+        })
 }
 
 /// Evaluate `expr` once at `prec` bits: its value and the exponent of its
@@ -2908,7 +2958,7 @@ fn evalf_value(
     digits: u32,
     search: ZeroSearch,
 ) -> Result<(Complex, Settled), SymplexError> {
-    let prec = ((digits as usize) * 34 / 10 + 64).max(128);
+    let prec = working_precision(digits);
     // A number below the exponent range is 0 within its bound, and not
     // known to be 0 by that bound: zero to the precision, for the tolerance
     // checks of the crate and for the `f64` routes, whose correctly rounded
@@ -2933,14 +2983,7 @@ fn evalf_adaptive_value(
     digits: u32,
     search: ZeroSearch,
 ) -> Result<Adaptive, SymplexError> {
-    let prec = ((digits as usize) * 34 / 10 + 64).max(128);
-    let max_prec = arena.config.max_evalf_precision as usize;
-    if prec > max_prec {
-        return Err(SymplexError::PrecisionExhausted {
-            requested: digits,
-            achieved: (max_prec * 10 / 34).saturating_sub(6) as u32,
-        });
-    }
+    checked_precision(arena, digits, "evalf")?;
 
     let free = walk::free_symbols(arena, expr);
     if !free.is_empty() {
@@ -2990,7 +3033,7 @@ pub(crate) fn evalf_settled(
     digits: u32,
     search: ZeroSearch,
 ) -> Result<(Complex, Settled), SymplexError> {
-    let prec = ((digits as usize) * 34 / 10 + 64).max(128);
+    let prec = working_precision(digits);
     match evalf_adaptive_value(arena, expr, digits, search)? {
         Adaptive::Settled(z, settled) => Ok((z, settled)),
         // The part within the range has its digits and its sign; the other

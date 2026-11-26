@@ -786,11 +786,9 @@ fn with_integer_index(arena: &mut Arena, body: ExprId, var: ExprId) -> ExprId {
     if integer.is_contradictory() {
         return body;
     }
-    let k = subs::fresh_symbol(arena, "__sum_index", &[body, var]);
-    let ExprNode::Symbol(k_sid) = *arena.node(k) else {
-        return body;
-    };
-    arena.set_symbol_assumptions(k_sid, integer);
+    // A stand-in of the library's own name space (a user's symbol
+    // `__sum_index` was declared integer here up to 0.60.1).
+    let k = arena.fresh_internal_symbol("__sum_index", integer, &[body, var]);
     let in_k = subs::subs(arena, body, var, k);
     let in_k = eval::eval(arena, in_k);
     subs::subs(arena, in_k, k, var)

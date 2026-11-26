@@ -738,6 +738,17 @@ matrix.is_symmetric()   // structure tests on matrices are three-valued
 A new query must return `None` when it cannot decide — never guess. Symbols
 without assumptions may be complex; do not assume realness.
 
+A mask of several properties is a conjunction (`Assumptions::query`,
+`Ex::query`; since 0.60.1): false as soon as one property is false, true
+when all are true, undecided otherwise.  Inside the crate ask one property
+at a time, as every call site does (up to 0.60.0 a mask was false only when
+all its properties were, so `query(POSITIVE | NEGATIVE)` of a positive
+symbol was `None`; nothing in the crate depended on it).  One question has
+one implementation: `Context::query` is `Ex::query`, and a new entry point
+for an existing question calls the existing one (up to 0.60.0
+`Context::query` stopped at the structural rules and was `None` for
+`cos(pi/16)`, which `Ex::query` knew to be positive).
+
 ### Pattern 5: Structural preconditions → `Result`
 
 Matrix operations that require specific shapes:
@@ -1027,7 +1038,10 @@ for every node up to 0.59.
    arm of `ExprNode::func_head`, whose match is exhaustive: a new variant
    must say whether it is a function), and give it an arm in
    `sort_key.rs`, `display.rs`, `latex.rs` and `mathml.rs` (`pretty.rs`
-   falls back to the one-line form).
+   falls back to the one-line form).  The arm in `mathml.rs` is a
+   presentation, not a refusal, for a node that a stable function
+   returns (up to 0.60.0 `to_mathml` refused `RootOf` and `RootSum`,
+   which `solve` and `integrate` return and `to_latex` prints).
 
 2. Add it to `is_unevaluated_node` in `src/base/arena.rs` (the per-node
    facts that `walk::has_unevaluated` reads are computed from it).
@@ -1039,7 +1053,14 @@ for every node up to 0.59.
 
 5. The parser in `src/output/parse.rs` should be able to parse the Display
    output back (round-trip): an arm of `call_2` … `call_4` and an entry of
-   `OTHER_CALL_NAMES`.
+   `OTHER_CALL_NAMES`.  A binder form that is not a comma list has a
+   method of its own, called from `parse_function_call`
+   (`parse_piecewise`, `parse_image_set`, `parse_root_sum`), its entry
+   in `OTHER_CALL_NAMES` and a line in the inline test
+   `known_functions_table_matches_call_tables` (up to 0.60.0
+   `RootSum(poly, var -> expr)` was printed and not read).  An optional
+   part of a node is printed as one more argument and has its arm in
+   the next `call_n` (`Limit(f, x, a, left)` in `call_4`, since 0.60.1).
 
 ---
 
@@ -1408,7 +1429,11 @@ positive of the harness, went unread).  `fuzz_stats` checks the symbolic
 distributions by properties decided exactly or from certified digits; a
 quadrature that disagrees is re-decided by the certified
 `integrate_numeric_decimal`, a refusal is skipped (never a failure), and a
-slow refusal is a timeout and a finding.  A property the harness derives
+slow refusal is a timeout and a finding.  The harness stops starting new
+steps of an input after 2 s (since 0.60.1; a clock, so a slower machine
+checks less of the input), which bounds an input only if every single
+step is fast; its temporary skips are listed in `fuzz/README.md`, each
+to be removed with the fix it names.  A property the harness derives
 from a formula must hold on the support, not only for the formula (an even
 density needs a symmetric support).
 
@@ -1618,8 +1643,9 @@ Only `Evidence::Exact` or `Evidence::Certified` may justify a claim (a
 returned value, a dropped term, a leading coefficient, `Inconsistent`, a
 branch that drops cases).  `Approximate` (an `f64`, a value zero only to the
 working precision) and `Probabilistic` (random sampling) may only guide a
-heuristic whose result is right either way — a pivot choice, the order of
-methods — and are read visibly with `truth_at_least(Evidence::Approximate)`.
+heuristic whose result is right either way — the choice among pivots that
+are proved nonzero, the order of methods — and are read visibly with
+`truth_at_least(Evidence::Approximate)`.
 **Breakpoints of integrands** (`calculus_util`, `definite`, quadrature) are
 exact expressions; their `f64` value is a guide accurate to 2⁻⁴⁶.  Order or
 merge them with `cmp_values` (by value only when more than 2⁻⁴⁰ apart,
@@ -1636,6 +1662,22 @@ never ask `limit::safe_substitute` for the value of an expression without
 the variable, it has none to give (up to 0.59 the constant base of `π^(x +
 1)` was therefore not shown real beside a cut, and the series was expanded
 three times).
+An unevaluated one-sided limit is `Limit(f, x, ray)` with the open ray of
+approach (`(-oo, a)`, `(a, oo)`) in the third slot (since 0.60.1): build it
+with `limit::unevaluated_limit`, read the slot with `limit::limit_approach`,
+and treat the slot as an opaque expression of the outer scope everywhere
+else.  The node keeps its layout, its hash and its JSON form; up to 0.60.0
+the side was dropped, and the two one-sided limits at a jump were one node
+whose difference was 0.
+
+**Primality is a claim like any other** (`Ex::query`, "Primes"; since
+0.60.1).  `prime` is `True` only below 3.3·10²⁴, where Miller–Rabin with
+the first 13 primes is deterministic; beyond it a witness proves
+`composite`, and a probable prime (Baillie–PSW, any number of Miller–Rabin
+rounds) is `Unknown`.  `ntheory::isprime` and `Ex::is_prime_value` are value
+functions that report the test, and their documentation says so.  A fact
+that is there is used: up to 0.60.0 the query was `None` for `1`, for `-7`
+and for every integer above 2⁶⁴, and `is_prime_value` was `None` for `1/2`.
 
 Use `evalf_verdict(..).proven()` or `evalf_settled` with
 `Settled::Certified` for a numeric proof; `evalf_complex`, `eval_const_f64`
@@ -1666,12 +1708,58 @@ the assumptions (`identically_zero::nonzero_at_a_sample`) is *not
 identically zero*: the generic-solution convention may treat it as nonzero.
 Do not make a decider stricter alone if its callers read its `false` as a
 claim: give it a three-valued result and make the callers refuse on
-`Unknown` first.  A value that is not a truth value gets an enum of its own
+`Unknown` first.  A public function that must stay a `bool` until its
+signature changes reads such a result with `.is_true()` and documents
+`false` as "not proved": `ode::ode_solution_verdict` (since 0.60.1) is
+the three-valued form of `checkodesol`, and `False` there is a certified
+nonzero residual at a point of the declared domain (up to 0.60.0
+`check_ode_solution` was `false` for six of 24 correct solutions, with
+nothing to tell them from refuted ones).
+A value that is not a truth value gets an enum of its own
 (`TrigZeros`, `Parity`), not an `Option<bool>` whose `None` means something
 else.  `tests/unit/test_truth_values.rs` counts per file the remaining
 `== Some(bool)` comparisons, `unwrap_or(bool)` reads, internal functions
 returning `Option<bool>`, `Option<…>` sign encodings and `(ExprId, u8)` memo
 keys; the counts may only shrink.
+
+**Pivots** (`matrix::pivot_truth` in `src/domains/matrix/eigen.rs`; since
+0.60.1).  Whether an entry of a matrix is zero is asked in one place,
+`pivot_truth` (a `Truth`), in the generic reading: `True` is a proof that
+the entry vanishes for every value of its symbols, `False` a proof that it
+does not vanish identically (a constant proved nonzero, an exact
+rational-function test, or a certified nonzero value at a sample point that
+respects the assumptions), `Unknown` neither — a value that is zero to the
+precision reached is `Unknown`.  An elimination takes for the pivot of a
+column the first entry proved nonzero; it may clear a row by an entry that
+is not proved zero (that is right whatever the entry is), and it must not
+divide by one.  When a column has an undecided entry and none proved
+nonzero, a function that returns `Result` or `Option` refuses
+(`rref_decided`, `rank_decided`, `undecided_pivot`); `rref`, `rank` and
+`nullspace`, which return plain values, take the entry for a pivot and
+document it; a verdict that is a `bool` is `true` only on a proof
+(`StateSpace::is_controllable`).  Do not read the test with `.is_true()` or
+`!..is_true()` to choose a pivot: up to 0.60.0 `pivot_is_zero(e)` did, and
+`[[sin(1)² + cos(1)² − 1]]` had rank 1.  `is_true()` is right only where the
+result is right either way (the block split of the eigenvalues).  The
+certified tests are charged to the work budget of the matrix call
+(`PivotWork`, 60,000 units; the units are nodes of the entries, never time):
+a new proof step charges its cost before it runs and returns `Unknown` when
+the budget does not cover it; only the exact tests and `Ex::is_zero()` are
+free.  The block split of the eigenvalues keeps the cheap test
+(`pivot_is_zero`): it decides which characteristic polynomials are solved,
+and a finer split is taken only from a spectrum that the cheap one completed
+(the first version of the fix split by the certified test, and `eigenvals`
+of a matrix that 0.60.0 refuses in 0.13 s took 38 s).  A certified nonzero
+value at one sample point proves "not identically zero"; it proves "nonzero
+for generic values" only for an expression that is meromorphic in the
+symbols (`analytic_by_form`) — a difference of two eigenvalues in radicals
+can vanish on one side of a branch cut and not on the other (`x − (x + 2 −
+√((x − 2)²))/2`), so eigenvalues are proved different by the discriminant of
+the characteristic polynomial or not at all (`distinct_eigen_pairs`).  A
+verdict of a public query that is meant for every value of the symbols
+(`is_diagonalizable` → `Some(true)`) needs more than the generic
+elimination: a quantity proved finite and nonzero at every point (up to
+0.60.0 `[[1, 1], [0, x]]`, a Jordan block at `x = 1`, was `Some(true)`).
 
 **Float evidence** (`tests/unit/test_float_evidence.rs`).  A computed
 float compared with a small threshold (`|v| < 1e-12`, `z.im == 0.0`) is a
@@ -1881,6 +1969,30 @@ ratio of their sizes at `x = 2` (`Integrand::close_points`); samples are
 added where such terms meet, and an integrand whose terms cross beyond the
 last node is refused.  An `f64` estimate with an error of 0 (every node 0)
 is no evidence of a zero integral, in `integrate_numeric` as in `evalf`.
+A search that cannot succeed is recognised before it is run, in work units.
+Tanh-sinh sums any power `x^(−1 + β)`, `β > 0`, at an end — its terms `cosh
+t·e^{−βL}`, `L = π sinh t`, are smooth in `t` — but a *change* of the order
+at a depth `L` (a `1/x` plateau that ends at `x = e^{−L}` of the piece) is
+`1/L` wide in `t` and needs a step below `π²/(L·T·ln 2)` for the tolerance
+`2^−T`; a bisection moves it one octave.  Since 0.60.1 `quad::end_layer`
+reads the local order off the level-1 terms, and a piece on which tanh-sinh
+did not converge whose layer no level before the last resolves (the last
+takes more evaluations than the quadrature has) is neither bisected nor
+tried by Gauss–Legendre and has no bound (never a bound of its own size: an
+integral whose ball contains 0 within the digits is printed `0`).  Up to
+0.60 the moment generating function of `FDistribution(11, 2.3·10⁻²⁵³)` spent
+10,775 evaluations on bisections before it was refused.  Do not make such a
+rule refuse what a level within the evaluations may still resolve: the first
+draft refused every layer deeper than 124 octaves and lost the 20 certified
+digits of `∫₀^∞ x^(9/2)(1 + 11·10¹⁰⁰x)^(−11/2 − ε)e^{−x/8} dx` (4 s, level
+11); the second compared the level's evaluations with those left
+(`Work::left`) and lost three 8-digit values that 0.60 certifies (`∫₂^∞
+e^(−3x/10⁹⁴)/x dx`): the comparison came after the piece had spent its
+evaluations, and the level is estimated for the piece's own tolerance, which
+the digits asked do not need.  A rule that refuses is measured against the
+release before it — no value may become a refusal — and measured again
+whenever `MAX_LEVEL`, `MAX_EVALS` or the precision ladder changes: the level
+is an estimate calibrated on them.
 
 **Cut crossings of antiderivatives.**  A Newton–Leibniz difference is
 taken across a crossing of a branch cut only at an exactly located
@@ -2041,6 +2153,24 @@ symbol finite, every constant part finite, `b^e` with `e ≥ 0` or `b` known
 nonzero, every table function off its `Poles`).  Internal code keeps
 `AssumptionCache::query`, whose generic reading `0·(1/x) = 0` relies on; a
 public finiteness answer must not come from it.
+
+**Refuting by a point** (`Equation::is_identity`, `eq.rs: fails_at_a_point`;
+`Ex::probably_equal`, `expr_ops.rs: domain_sample`; since 0.60.1).  A point
+refutes an identity only if every value is *proved* to lie in its symbol's
+declared domain (all known properties of the symbol proved for the value —
+never "not known to be outside"), both sides have a finite value there, and
+the difference is certified (`Ex::equals == Some(false)` of two constants).
+The points of `is_identity` are fixed, not random: a refutation must not
+depend on a seed or on the order in which symbols were created.  A sampler
+draws its points from the declared domain in the same way — a candidate
+shaped by the assumptions, kept only when `solve::assumptions_hold` proves
+every declared property — samples every symbol of either side, also one that
+cancels in the difference, and answers `None` when no point of the domain
+can be drawn.  Up to 0.60.0 `probably_equal` sampled fractions whatever the
+assumptions, and `floor(v/2) + ceiling(v/2)` against `v` for an integer `v`
+was `Some(false)`; `Equation::new(x, 3).is_identity()` was `None`.
+`equals`' `Some(false)` means "equal nowhere"; do not read it as "not an
+identity", and do not read `None` as either.
 
 **Piecewise parameters.**  The generic convention covers analytic
 functions of the symbols.  `0^y`, `δ`, `KroneckerDelta`, `H`, `⌊·⌋`, `⌈·⌉`,
@@ -2215,6 +2345,45 @@ for 3/2.  `the_transform_modules_share_their_helpers`
 defines a helper of that list or gains a call of `walk::contains` (the
 four that are left, in `fourier_transform.rs`, look for the imaginary
 unit).
+
+**An internal symbol is not a user's symbol** (`Arena::internal_symbol`,
+`Arena::positive_symbol`, `Arena::fresh_internal_symbol`; since 0.60.1).  A
+dummy an engine makes for itself — the variable of a substitution, a
+placeholder, a symbol declared positive for one computation — is made with
+`arena.internal_symbol("__name")` (or `positive_symbol`), never with
+`arena.symbol("__name")`: the symbol table keeps such symbols in a name
+space of its own (`SymbolTable::intern_reserved`), which `Context::symbol`,
+the parser and the JSON reader do not read, so the dummy cannot be a symbol
+of the expression the user passed in (no capture) and an assumption declared
+on it is declared on nothing of the user's.  Two symbols with one name would
+have one sort key; `internal_symbol` therefore takes `name_1`, `name_2`, …
+where the user's name space has `name`.  A name is converted at all its
+sites at once (the dummy is found again by asking for the same name), and a
+name that is positive is asked for through `positive_symbol` only.  A test
+"is this one of ours?" is `arena.is_internal_symbol(sid)`, not a prefix of
+the name.  `compact::Transfer` keeps the name space across arenas.  A
+stand-in that an engine *declares* (real, integer, the unknown's
+assumptions) and may need again while an outer call holds one is
+`arena.fresh_internal_symbol(name, assumptions, avoid)`: declared once, when
+made.  A name that is part of a result — the bound variable of a `RootSum` —
+stays in the user's name space and is chosen with `subs::fresh_symbol(arena,
+name, avoid)`, so that the printed form reads back.  Up to 0.60.0 a limit at
+a finite point declared the user's symbol `__lim_r` positive, `((__lim_w*x +
+sin(x))/x).limit(x, 0)` was `oo`, and `solve(sqrt(x) + x^(1/3) -
+__t_radical, x)` returned three wrong roots.  60 `arena.symbol("__…")` sites
+of the integrator, `solve`, the transforms and the Risch code are not
+converted yet (the 0.60.1 audit of 136 names in 68 operations found no
+capture among them, which shows only what those operations reach); convert a
+name when you touch its engine.
+
+**A handle wraps an expression of its sort** (`Expr<S>::args`,
+`src/api/expr.rs`; since 0.60.1).  A method of `Expr<S>` that hands out
+sub-expressions wraps them in the type they have, not in the type of the
+parent: `args()` returns, for a `BoolEx` or a `SetEx`, the operands that are
+of that sort by their position (`And`/`Or`/`Not`; union, intersection,
+complement) and nothing for a node whose children are numbers (a relation,
+an interval).  `Ex` is the untyped handle (`as_ex`).  Up to 0.60.0 `(x >
+1).args()[0].not()` built `!x`.
 
 **Checked casts** (`src/base/cast.rs`).  Do not convert an `f64` to an
 integer with `as` after `floor`/`ceil`/`round`/`trunc`: the cast saturates
@@ -2430,6 +2599,25 @@ that postponed the zero tests removed them, and a 28-term composition was
 multiplied out to its end before the budget could refuse it.  An engine
 that makes fewer tests charges the work it does instead (`charge_size`,
 `charge_expansion`), or the budget no longer bounds it.
+Since 0.60.1 a Gröbner basis is budgeted (`poly/groebner.rs`:
+`GROEBNER_WORK_CAP`, `BudgetKind::GroebnerBasis`).  The loop that does the
+work is charged where it runs: the division of `MultiPoly::reduce` takes the
+`Work` (`reduce_charged`; the public `reduce` runs the same loop on a budget
+of 2⁶⁴), and Buchberger's rounds, the S-polynomials and FGLM's dense linear
+algebra charge the same `Work`.  The units are a cost model fitted to
+measured times (`multipoly.rs`, "Work units of a basis computation"): a term
+operation, plus the growth with the coefficients' size in words, which is
+read from the operands before the operation — never a clock.  A function
+that returns a plain list (`groebner_basis`) returns its input, documented
+under `# Refusal`, and has a `try_` twin; no caller inside the crate uses
+the plain form, and a caller that certifies completeness with a second basis
+(`zerodim::Radical::try_new`) propagates the refusal instead of going on
+without the certificate.  Up to 0.60.0 Buchberger's loop had no bound, and
+`Ex::groebner` of the cyclic system in six variables did not return.  Two
+more budgets of 0.60.1 follow the rule without a `BudgetKind` of their own,
+which would be a public item: the zero tests of a matrix call (`PivotWork`,
+see "Pivots": spent means `Unknown`) and the root search of a quantile (see
+"Degenerate data": spent means the documented `ComputationFailed`).
 
 **Finite sums for every integer bound.**  Reversed limits follow Karr's
 convention (`Σ_{a}^{b} = −Σ_{b+1}^{a−1}` for `b < a − 1`; the empty sum for
@@ -2476,7 +2664,16 @@ w.at(bits)` for another precision); there is no rounding-mode parameter —
 use `RM` (round to nearest even) and write a directed mode out literally
 where a bound needs it.  A precision raised by an `f64` estimate goes
 through `Prec::guarded(Guard::for_log2(..))` (saturating; no `as usize +
-…`).  A value with its error bound is a `CBall` (`Ball<&Complex>` for a
+…`).
+The working precision of a digit count comes from `evalf::working_bits`
+(`u64`, since 0.60.1; `digits·34/10 + 64` in `usize` overflows on a 32-bit
+target from 126 million digits on, and a release build wrapped to 128 bits
+and passed the limit check), and an entry point of the evaluator validates
+the count with `evalf::checked_precision` (zero digits are
+`InvalidArgument`, a precision beyond the configured maximum or an eighth of
+`usize` is `PrecisionExhausted`): never repeat the formula (up to 0.60.0 it
+stood in five places, and `eval_decimal(0)` printed 38 uncertified digits).
+A value with its error bound is a `CBall` (`Ball<&Complex>` for a
 cached value; a real value with a log₂ radius an `RBall`), never a
 `(Complex, Bound)` or `(BigFloat, f64)` pair; evaluated nodes live in one
 map of balls (`ball::Balls`) read through the view `ball::Cache`, and a
@@ -2515,7 +2712,25 @@ or refuses.  `Wp::at` drops a charge (the value is an ingredient: its user
 says what it does to the error), `Wp::carry` keeps it (the value is returned
 as it is).  Do not detect zeros, and do not derive the bound from the
 result; a route that measures its loss and repeats with the bits made up
-(`arb_ei`, `arb_log_gamma`, `arb_jacobi`) needs no charge.  A zero that the
+(`arb_ei`, `arb_log_gamma`, `arb_jacobi`) needs no charge.
+Since 0.60.1 the logarithm of `Γ` is the model of the second kind:
+`stirling_log_gamma` charges the absolute error of its sum (`Summed` over
+its terms, the first term left out for the tail), and a caller that takes
+`exp` of it asks `gamma::log_gamma_abs(x, bits, w)`, which reads that charge
+from a sub-`Wp` (`take_own`) and repeats with the missing bits — the first
+precision comes from an `f64` estimate, the guarantee from the charge.
+**The absolute error of a logarithm is the relative error of its
+exponential**: a route that forms `exp(L)` states the absolute error of `L`
+(not "`wp` bits of `L`"), with the bits of `abs(L)` on top of its precision.
+Up to 0.60 `Γ(x)` took `ln Γ` with 20 guard bits whatever its size and was
+`2^(log₂ ln Γ − 21)` times less accurate than its bound from `x ≈ 3·10⁵` on
+(600 times at `7·10⁷`); the digits of `Γ(x)` were right and a cancellation
+of 50 to 62 bits printed wrong ones.  Hunt such a bound with `f(x) − M·2^E`,
+`M` the leading `k` bits of the value, for every `k` from 40 to 75 and every
+digit count from 16 to 80: the claim fails only where the cancellation eats
+exactly the slack of the working precision (32 digits and `k ≈ 57` for `Γ`),
+and direct values never show it.
+A zero that the
 structure gives exactly keeps a bound of the value's size
 (`orthopoly::odd_member_scale`: an odd polynomial next to 0).  A family is
 only in this class when every argument is exactly representable: test with
@@ -2568,7 +2783,11 @@ sum stays symbolic.  Whether a numeric point lies in a far tail
 (`Distribution::in_far_tail`) is asked of the family's non-cancelling form
 of that tail (`cdf_lower`, `sf`) where it has one: the certified `f64` of the
 classic CDF next to 0 or 1 costs a working precision of as many digits as
-the tail is small.  A table keeps what a query computed per value
+the tail is small.  The question itself costs a certified evaluation and
+is asked only of a family that has the other form (since 0.60.1; up to
+0.60 every numeric `cdf` of a Student t, F, beta, gamma or χ² law
+evaluated its own result once for nothing).  A table keeps what a query
+computed per value
 (`discrete::TableIndex`, `Finite::atom_f64`): no query evaluates every value
 again, and none scans the values before the current one.  A `try_`
 constructor decides a symbol-free parameter by the certified queries
@@ -2591,6 +2810,31 @@ exponent is split into numerator and denominator powers by the canonical
 form, each beyond even the scaled exponent range.  A family whose generic
 entropy would sum the masses exactly returns the formal `Sum` above 64
 atoms (`Binomial`, `Hypergeometric`).
+
+A root search over certified evaluations has a budget in evaluations and
+brackets in the order of the floats (since 0.60.1):
+`Distribution::continuous_quantile_f64` takes the support as its bracket
+when it has no estimate, grows one by a factor squared at each step
+(`BRACKET_MAX_STEPS`), halves the *floats* between the ends
+(`narrow_bracket`, `NARROW_MAX_STEPS`) and only then calls Brent's method
+(`QUANTILE_ROOT_STEPS`) — a relative tolerance on a bracket of 300 decades
+costs a thousand halvings of the width (up to 0.60 12 s for one quartile of
+a truncated Cauchy law).  A distribution function built from others is not
+simplified at a number (`wrappers::tidy_at`): its callers evaluate it, and
+`simplify` of a constant samples it numerically.  An incomplete beta
+function whose argument lies within `2⁻¹⁶` of 1 is written in the
+complementary argument, which carries the digits
+(`continuous::reg_beta_at`).  A table whose values are in a proved order
+says so (`Finite::with_order`): its queries bisect (`Finite::locate`) and
+sum integers over a common denominator, and evaluate no value to order it;
+`transformed` proves the order of the images from the monotonicity of the
+map on the closed interval the values span.
+
+Oracles for extreme shapes: mpmath's `betainc` returns `1.0`, `0.5` or a
+value wrong in the fourth digit — the same at 60 and 90 digits — for a shape
+above about `10⁶`, and `1.0` for a shape `b` below `10⁻³` unless the
+precision exceeds `−log₁₀ b` digits; check such a value against a limit with
+a proved error (a normal law, an incomplete gamma function) instead.
 
 **Branch on error variants, never on message text.**  A failure callers act
 on gets a variant (`BudgetExhausted`, `ExpressionSwell`,
@@ -2629,7 +2873,15 @@ The arena is behind a `parking_lot::RwLock`. Follow these rules:
    (outer `RwLock` first, inner `Mutex` second).
 
 3. **Never hold the lock across a method call on `Ex`.** That would deadlock
-   because `Ex` methods acquire the same lock.
+   because `Ex` methods acquire the same lock.  A closure of the caller is
+   a method call on `Ex` you cannot see: never call one with a lock held.
+   Collect what the closure needs under the lock (copy the node:
+   `ExprView` holds a copy, not the arena), release, call, and take the
+   lock again to write (`Ex::replace`, `Rule::apply_id`).  Up to 0.60.0
+   `replace` held the write lock across its closure, and a closure that
+   built an expression never returned.  The one exception is
+   `Context::with_arena_mut`, whose closure gets the arena itself and is
+   documented not to touch handles.
 
 ### Proc Macros
 

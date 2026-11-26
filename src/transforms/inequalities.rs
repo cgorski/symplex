@@ -696,12 +696,9 @@ fn try_solve_nonreal_inequality(
         return None;
     }
     // The parts for a real variable: a real stand-in for `var`.
-    let t = crate::transforms::subs::fresh_symbol(arena, "__ineq_real", &[expr]);
-    if let ExprNode::Symbol(sid) = *arena.node(t) {
-        let mut real = crate::base::assumptions::Assumptions::default();
-        real.assert_true(crate::base::assumptions::Props::REAL);
-        arena.set_symbol_assumptions(sid, real);
-    }
+    let mut real = crate::base::assumptions::Assumptions::default();
+    real.assert_true(crate::base::assumptions::Props::REAL);
+    let t = arena.fresh_internal_symbol("__ineq_real", real, &[expr]);
     let e_t = crate::transforms::subs::subs(arena, expr, var, t);
     let expanded = crate::transforms::expand::expand(arena, e_t);
     let (_, im) = crate::base::complex::as_real_imag(arena, expanded);

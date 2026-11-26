@@ -387,6 +387,7 @@ const OTHER_CALL_NAMES: &[&str] = &[
     "sum",
     "product",
     "piecewise",
+    "rootsum",
 ];
 
 /// Is `name_lower` a call name the parser reads: a function of the
@@ -1306,6 +1307,9 @@ impl<'a> Parser<'a> {
         if name_lower == "imageset" {
             return self.parse_image_set(arena, name);
         }
+        if name_lower == "rootsum" {
+            return self.parse_root_sum(arena, name);
+        }
         let mut args: Vec<ExprId> = vec![self.parse_expr(arena, 0)?];
 
         // `Sum(body, k=lo..hi)` / `Product(body, k=lo..hi)` — the display form.
@@ -1511,6 +1515,47 @@ impl<'a> Parser<'a> {
         Ok(crate::transforms::sets::image_set(arena, var, body))
     }
 
+    /// `RootSum(poly, var -> expr)` — the display form — after the opening
+    /// parenthesis: the sum of `expr` over the roots `var` of `poly`, as
+    /// the integrator writes the logarithmic part of a rational function
+    /// whose denominator has no roots in radicals (`integrate(1/(x^5 - x +
+    /// 1))`).  The node is built as the integrator builds it, so the
+    /// display of a `RootSum` reads back as itself.  Up to 0.60.0 the
+    /// parser had no such form and refused what `integrate` printed.
+    fn parse_root_sum(&mut self, arena: &mut Arena, name: &str) -> Result<ExprId, ParseError> {
+        let poly = self.parse_expr(arena, 0)?;
+        self.expect(&Token::Comma)?;
+        // The bound variable is one name: `var - …` would otherwise be
+        // read as a difference.
+        let var = self.parse_prefix(arena)?;
+        self.bound_symbol(arena, name, var)?;
+        if self.current != Token::Minus {
+            return Err(self.error(format!(
+                "'{name}' takes 'poly, var -> expr', got {:?} after the variable",
+                self.current
+            )));
+        }
+        self.advance()?;
+        if self.current != Token::Gt {
+            return Err(self.error(format!(
+                "'{name}' takes 'poly, var -> expr', got {:?} after '-'",
+                self.current
+            )));
+        }
+        self.advance()?;
+        let body = self.parse_expr(arena, 0)?;
+        self.expect(&Token::RParen)?;
+        for (what, id) in [("polynomial", poly), ("expression", body)] {
+            if is_bool_node(arena, id) {
+                return Err(self.error(format!(
+                    "the {what} of '{name}' must be numeric, but '{}' is a Boolean expression",
+                    arena.display(id)
+                )));
+            }
+        }
+        Ok(arena.intern(ExprNode::RootSum(poly, body, var)))
+    }
+
     /// The variable operand `var` of the binder `name` must be a symbol.
     fn bound_symbol(&self, arena: &Arena, name: &str, var: ExprId) -> Result<(), ParseError> {
         if matches!(arena.node(var), ExprNode::Symbol(_)) {
@@ -1564,6 +1609,28 @@ impl<'a> Parser<'a> {
     ) -> Result<ExprId, ParseError> {
         match name_lower {
             "series" => Ok(arena.intern(ExprNode::Series(arg, arg2, arg3, arg4))),
+            // `Limit(f, x, a, left)` / `Limit(f, x, a, right)` — the Display
+            // form of an unevaluated one-sided limit.
+            "limit" => {
+                let side = match arena.node(arg4) {
+                    ExprNode::Symbol(sid) => match arena.symbol_name(*sid) {
+                        "left" => Some(crate::calculus::limit::Direction::Left),
+                        "right" => Some(crate::calculus::limit::Direction::Right),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match side {
+                    Some(side) => Ok(crate::calculus::limit::unevaluated_limit(
+                        arena, arg, arg2, arg3, side,
+                    )),
+                    None => Err(ParseError {
+                        message: "the fourth argument of Limit is the side: `left` or `right`"
+                            .to_string(),
+                        position: self.lexer.pos,
+                    }),
+                }
+            }
             // `Integral(f, x, a, b)` — the Display form of a definite integral;
             // the constructor applies only the cheap folds.
             "integral" => Ok(arena.definite_integral(arg, arg2, arg3, arg4)),
@@ -2876,6 +2943,8 @@ mod tests {
                 format!("{name}(x if True)"),
                 // `ImageSet(Lambda(n, f), Integers)`
                 format!("{name}(Lambda(x, x), Integers)"),
+                // `RootSum(poly, var -> expr)`
+                format!("{name}(x, y -> y)"),
             ]
             .iter()
             .any(|s| parse(&ctx, s).is_ok());

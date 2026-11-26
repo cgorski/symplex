@@ -873,7 +873,9 @@ fn linear_root_sum_term(
         return None;
     }
     let r_q = r.rem(&d_q);
-    let s = arena.symbol("__rs_t");
+    // The bound variable is part of the result (it prints and reads back):
+    // a symbol of the user's name space that is not the variable.
+    let s = crate::transforms::subs::fresh_symbol(arena, "__rs_t", &[var]);
     let d_q_expr = crate::poly::polybridge::poly_to_expr(arena, &d_q, s);
     let r_q_expr = crate::poly::polybridge::poly_to_expr(arena, &r_q, s);
     let lin = arena.sub(var, s);
@@ -885,7 +887,7 @@ fn linear_root_sum_term(
 /// `RootSum(q, t ↦ t·ln(S(t, x)))`, i.e. `Σ_{q(α)=0} α·ln(S(α, x))`: the
 /// logarithmic part of an algebraic factor in implicit form.
 fn root_sum_term(arena: &mut Arena, var: ExprId, q: &Poly, s: &GenPoly<RationalFn>) -> ExprId {
-    let t = arena.symbol("__rs_t");
+    let t = crate::transforms::subs::fresh_symbol(arena, "__rs_t", &[var]);
     let mut s_terms: Vec<ExprId> = Vec::new();
     for (k, c) in s.coeffs.iter().enumerate() {
         if c.numer().is_zero() {

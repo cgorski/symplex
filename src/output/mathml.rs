@@ -19,8 +19,11 @@
 //! references (`alpha` → `<mi>&#x3B1;</mi>`), `x_1` becomes `<msub>`.
 //!
 //! Every character reference is numeric, so the output is well-formed XML
-//! without a DTD.  Nodes with no standard presentation (`Series`,
-//! `DSolve`, `RootOf`, `RootSum`) yield
+//! without a DTD.  `RootOf` and `RootSum`, which `solve` and `integrate`
+//! return, are written as `to_latex` writes them, a call under their name:
+//! `RootOf(poly, index)` and `RootSum(poly, var ↦ expr)` (up to 0.60.0
+//! they were refused).  Nodes with no standard presentation (`Series`,
+//! `DSolve`) yield
 //! [`SymplexError::NotImplemented`] rather than a guess.
 
 use num_bigint::BigInt;
@@ -822,11 +825,31 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
                 child(var)?
             )),
 
+            // ── Algebraic numbers ──────────────────────────────────────────
+            // `RootOf(poly, index)`, the variable written only where it is
+            // not the polynomial's one symbol: the layout of the one-line
+            // form and of `to_latex`.
+            ExprNode::RootOf(poly, var, index) => {
+                let (poly_xml, index_xml) = (child(poly)?, child(index)?);
+                if walk::root_of_implied_var(arena, *poly) == Some(*var) {
+                    apply(&mi("RootOf"), &[&poly_xml, &index_xml])
+                } else {
+                    let var_xml = child(var)?;
+                    apply(&mi("RootOf"), &[&poly_xml, &var_xml, &index_xml])
+                }
+            }
+            // `RootSum(poly, var ↦ expr)`.
+            ExprNode::RootSum(poly, body, sumvar) => {
+                let map = mrow(&format!(
+                    "{}<mo>&#x21A6;</mo>{}",
+                    child(sumvar)?,
+                    child(body)?
+                ));
+                apply(&mi("RootSum"), &[&child(poly)?, &map])
+            }
+
             // No standard presentation: internal CAS forms.
-            ExprNode::Series(..)
-            | ExprNode::DSolve(..)
-            | ExprNode::RootOf(..)
-            | ExprNode::RootSum(..) => {
+            ExprNode::Series(..) | ExprNode::DSolve(..) => {
                 return Err(unsupported(&format!("`{}`", describe(node))));
             }
         };
@@ -945,7 +968,9 @@ impl<S: Sort> Expr<S> {
     /// # Errors
     ///
     /// [`SymplexError::NotImplemented`] for nodes without a standard
-    /// presentation (`Series`, `DSolve`, `RootOf`, `RootSum`).
+    /// presentation (`Series`, `DSolve`).  `RootOf` and `RootSum` are
+    /// written as a call under their name, as in `to_latex` (up to 0.60.0
+    /// they were refused).
     ///
     /// # Examples
     ///
@@ -1178,7 +1203,17 @@ mod tests {
         }
         let ctx = Context::new();
         let x = ctx.symbol("x");
-        let r = ctx.parse("RootOf(x^5 - x - 1, 0)").unwrap();
+        // `RootOf` is a call under its name (refused up to 0.60.0).
+        let root = body("RootOf(x^5 - x - 1, 0)");
+        assert!(
+            root.starts_with("<mrow><mi>RootOf</mi><mo>&#x2061;</mo><mrow><mo>(</mo>")
+                && root.ends_with("<mo>,</mo><mn>0</mn><mo>)</mo></mrow></mrow>"),
+            "{root}"
+        );
+        assert_balanced(&root);
+        assert_balanced(&body("RootOf(x^5 - a*x - 1, x, 2) + 1"));
+        assert_balanced(&body("RootSum(t^5 - t + 1, t -> t*ln(x - t))"));
+        let r = ctx.parse("Series(sin(x), x, 0, 4)").unwrap();
         assert!(matches!(
             r.to_mathml(),
             Err(SymplexError::NotImplemented(_))

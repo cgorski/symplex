@@ -26,8 +26,11 @@ reporting.
 - **Statistics.** 22 distribution families and finite tables (`sympy.stats` has about three times
   as many); joint distributions only as independent variables or the multivariate normal.
 - **Code generation.** `expint`, `polylog`, `zeta`, `polygamma`, the Airy functions, elliptic `F` and
-  `Π` and `dirichlet_eta` are not compiled by any back end (`Err(NotImplemented)`); the incomplete
-  gamma functions and the Gegenbauer, Jacobi and associated polynomials only by `compile`.
+  `Π` and `dirichlet_eta` are not compiled by any back end (`Err(NotImplemented)`), and neither are
+  the incomplete gamma and beta functions and the Gegenbauer, Jacobi and associated Legendre /
+  Laguerre polynomials with a symbolic parameter; with literal parameters (`lowergamma(5/2, x)`,
+  `gegenbauer(3, a, x)`) `eval` expands them and `compile` takes the expansion, while `to_rust_fn`
+  and `to_c_fn` still refuse.
 - **Lean export.** Elementary expressions and the certificates; special functions are
   `Err(NotImplemented)`.
 
@@ -51,6 +54,21 @@ reporting.
   still dropped in some: `gamma(pi - I*exp(-3*10^9)) + sqrt(2)` prints a real number.
 - Refused although a value exists: `elliptic_pi(1/3, 10^600 + I)` and `ln(-2 + I*exp(-10^10))`
   (`PrecisionExhausted`).
+- Refused although a value exists, also: the incomplete gamma functions of a shape above about
+  `3·10⁹` next to the mode (the distribution function of `Poisson(2.8·10¹⁰)` at its median);
+  `uppergamma(1/10, 4/3)` and `expint(2, 4/3)` at 600 digits; `besselj(8171/4, 9805/4)` from 71
+  digits on.
+- `eval_f64` of an expression that holds an unevaluated definite integral is certified to 8 digits
+  (a relative error below `2⁻³⁰`), not rounded to the nearest `f64`: of 416 integrals tried, 149
+  came out as the nearest `f64`. Parse `eval_decimal(20)` when you need the nearest one.
+- An integral whose mass lies in a thin layer at an end of its range is refused, not evaluated: the
+  moment generating function of `FDistribution(11, 2.3·10⁻²⁵³)` at `-1/8` has the value
+  `6.5973·10⁻²⁵¹` and is `PrecisionExhausted`.
+- The error bound of `binomial(n, k)` and `beta(a, b)` formed as a quotient of three Gamma values is
+  not proved (no wrong digit in 153,920 values checked).
+- Compiled code (`compile`, `to_rust_fn`, `to_c_fn`) is accurate to about a unit in the last place,
+  not correctly rounded: a product of constants is rounded more than once (`expint(0, sqrt(2))/x` at
+  `x = 0.7` is 1.1 units off).
 
 **Symbolic results**
 
@@ -69,13 +87,67 @@ reporting.
   library: an irreducible factor of degree 5 or more with symbolic coefficients, or of degree 3 or
   more with `π`, `e` or `ln 2` in it. Only a matrix of rational numbers always has its eigenvalues (as
   `RootOf`).
-- Symbolic matrices: a pivot whose value cannot be decided is taken as nonzero (`rref`, `lu`, `pinv`,
-  `rank_decomposition` …), so such results hold generically, not for every value of the symbols.
+- Symbolic matrices: an entry that the zero test can neither prove zero nor prove nonzero is a
+  refusal in the functions that return `Result` (`solve`, `lu`, `inv`, `pinv`, `qr`,
+  `rank_decomposition`, `eigenvects`, `diagonalize` …: `Err(ComputationFailed)` naming the entry).
+  `rref`, `rank`, `nullspace`, `columnspace`, `rowspace` and `left_nullspace` return plain values
+  and count such an entry as nonzero: `Matrix [[gamma(x + 1) - x*gamma(x)]]` has `rank()` 1 although
+  the entry is 0. The zero test does not know four identities — `atan(x) + atan(1/x) - pi/2` for
+  `x > 0`, `gamma(x + 1) - x*gamma(x)`, `asin(x) + acos(x) - pi/2`, `besselj(1/2, x) -
+  sqrt(2/(pi*x))*sin(x)` — nor a sum of two different constant identities. Where every pivot is
+  decided, the result still holds for most values of the symbols, not for every value.
+- Matrix verdicts with symbols: `is_diagonalizable` is `Some(true)` only when the matrix is
+  diagonalizable for every value of its symbols, but `Some(false)` is the answer for most values
+  (`[[1, x], [0, 1]]` is `Some(false)` and is the identity matrix at `x = 0`).
+  `StateSpace::is_controllable` and `is_observable` answer for most values too (`A = diag(1, x)`, `B
+  = (1, 1)ᵀ` is `true` and is not controllable at `x = 1`), and their `false` also means "not
+  proved".
+- `eigenvects`, `diagonalize` and `jordan_form` refuse a matrix whose eigenvalues they cannot prove
+  different, or whose zero tests exceed their work budget, although an answer exists.
 - `series` keeps a function at a pole as a coefficient (`x^2*expint(1, 0)` expands to itself) where
   `limit` refuses; `limit(gamma(floor(y) - 3 + x), x, 0)` is `Gamma(floor(y) - 3)`, a pole for `y < 4`.
 - `isprime` beyond `3.3·10²⁴` is the Baillie–PSW test: no counterexample is known, but it is not a
-  proof.
+  proof. `is_prime_value()` reports that verdict; `is_prime()` answers only on a proof and is `None`
+  for a probable prime beyond the bound (`2^89 - 1`).
+- `inverse_mellin_transform(&s, &x)` cannot be told the strip of the transform and takes the one to
+  the right of the pole: for `-1/s`, the transform of `H(x - 1)` on `re(s) < 0`, it returns `-H(1 -
+  x)`. `inverse_mellin_transform_in_strip(&s, &x, &lower, &upper)` inverts on the strip you give.
+- `check_ode_solution` returns `false` for a correct solution that it cannot prove (8 of 253 tried):
+  `false` means "not proved", not "wrong".
+- `probably_equal` answers `None` when it cannot draw a value of the declared kind (a symbol
+  declared irrational), and `Equation::is_identity` tries six fixed points: an equation that fails
+  only elsewhere stays `None`.
+- An order relation with a side proved non-real (`I < 1`) is `None` in `is_less_than` and
+  `is_greater_than`, not `Some(false)`.
 - The ASCII pretty printer writes `lgamma(x)` and `psi(x)`, which the parser does not read back.
+
+**Waiting for the 1.0 interface**
+
+Each of these is confirmed by a test; the fix changes a public signature and comes with the
+interface work for 1.0.
+
+- Declaring a symbol again with other assumptions (`symbol_with` on an existing name) leaves the
+  expressions built before: for an integer `n`, `cos(pi*n)` is built as `(-1)^n` and stays so after
+  `n` is declared merely real.
+- A symbol named `i`, `e`, `pi`, `oo`, `nan` … prints as the constant of that name, and `parse`
+  reads the text back as the constant (JSON keeps the symbol). `expr!` reads `E` and `I` as the
+  constants even when variables of those names are in scope.
+- `Distribution::kurtosis` is `E[(X - μ)⁴]/σ⁴`; `stats::data::kurtosis` is that minus 3.
+- The plain distribution constructors do not check their parameters (`Distribution::normal(0, -1)`
+  has a negative density); the `try_` constructors do. `logit` returns a fit that did not converge
+  as `Ok` with `converged == false`.
+- `solve` reports "no root in the declared domain" as `Ok([])` for a polynomial and as
+  `Err(NoSolution)` for any other equation.
+- `Assumption::NotCommutative` and five more flags are accepted and read by nothing: `A*B - B*A` is
+  `0`.
+- An `f64` NaN or infinity as an operand (`&x * f64::NAN`) silently becomes the `nan` or `oo` node,
+  and a number where a variable belongs is not always refused (`sin(x).limit(&zero, &x)` builds
+  `Limit(sin(x), 0, x)`).
+- `dim!(ctx, Dimensionless: sin(len))` compiles for a `Length`; `sym!` works only in a function that
+  returns `Result`.
+- `ntheory::mod_pow` with a modulus `≤ 0` or a negative exponent of a base without an inverse,
+  `totient(0)`, `mobius(0)`, `divisors(0)`, `multiplicity(p, 0)` and `is_quad_residue(a, 0)` return
+  a documented stand-in instead of an error.
 
 **Refusals that have an answer**
 
@@ -96,6 +168,13 @@ reporting.
   `finite_diff_weights`, `pell_solutions`, and the sequences `bell`, `partition_count`, `stirling2`,
   `divisor_sigma`, `diff_n`, `Distribution::moment`. Within the caps some calls are slow
   (`coefficients(16385)` of `sin`: more than 20 s).
+- A Gröbner basis stops at a work budget of about five seconds, which cannot be raised: the cyclic
+  system in six variables is refused (`BudgetExhausted`). The plain `groebner::groebner_basis` then
+  returns the polynomials it was given; test the result with `is_groebner_basis`, or call
+  `try_groebner_basis`.
+- A table from `transformed` of a lattice with unequal masses (`Binomial`, `Hypergeometric`) sums
+  its masses as expressions at every query: `√X` for `X ~ Binomial(9000, 1/3)`, one `cdf` and one
+  quantile, takes 35 s.
 - The library bounds its work on the common paths, not on every path. For input you do not control,
   see `SECURITY.md`, "Running symplex on untrusted input".
 
@@ -105,10 +184,12 @@ reporting.
   macOS, Windows, 32-bit and big-endian targets are untested.
 - **Oracles.** The symbolic engines are tested against SymPy, mpmath, scipy and statsmodels, not
   proved. Two comparisons run continuously: the Rubi suite (0 wrong answers) and the nightly
-  statistics oracle. The nightly statistics fuzzer skips three slow cases: lattices of more than
-  20,000 atoms are not transformed into tables, a lattice of more than 4,096 atoms whose tails must
-  be summed mass by mass is not checked, and without a finite variance the first moment is checked
-  only while `|mean| ≤ 10⁸`.
+  statistics oracle. The nightly statistics fuzzer skips five slow cases (`fuzz/README.md`): a
+  lattice with unequal masses of more than 512 atoms is not transformed into a table, a lattice of
+  more than 4,096 atoms whose tails must be summed mass by mass is not checked, without a finite
+  variance the first moment is checked only while `|mean| ≤ 10⁸`, an integral whose integrand
+  leaves the range of `f64` at a sample point is not evaluated, and a characteristic function is
+  compared with its quadrature only for tails of order 4 and more.
 - **Less tested.** The certificate provers, the exact LP and the Lean export are covered by their
   own exact re-verification and by byte-identity tests, but have not been hunted for wrong answers
   the way calculus and statistics have; neither have the code generators for the functions added

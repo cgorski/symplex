@@ -277,6 +277,18 @@ fn lowergamma_series_sum(
 /// as guard.  For [`extended`]'s scaled values: `uppergamma(s, x)/Γ(s)`, the
 /// survival function of a gamma, χ² or Poisson family, at shapes beyond
 /// `10⁸`.
+///
+/// Next to the mode from below (`x < s + 1`, `s − x` up to some standard
+/// deviations `√s`) the series takes `√(2x·wp·ln 2)` terms — 630,000 at `s =
+/// 1.8·10⁹`, 0.39 s per value in a release build up to 0.60 (the
+/// distribution function of `Poisson(1.8·10⁹)` at its median, a slow unit
+/// of `fuzz_stats`), and beyond `s ≈ 3·10⁹` (at 253 bits) more than the
+/// limit, a refusal
+/// at once.  Within the limit `Γ(s, x)` comes from the fraction at a shape
+/// just below `x` and the recurrence up to `s` ([`Bridge`]): `s − x` terms
+/// and the fraction's `27·s^{1/3}`, where that is fewer.  The bridge
+/// changes the time of a value, not which arguments have one: what the
+/// series' limit refuses is refused as before (see [`Bridge::plan`]).
 pub(super) fn ln_incomplete_gamma(
     s: &BigFloat,
     x: &BigFloat,
@@ -308,32 +320,48 @@ pub(super) fn ln_incomplete_gamma(
     } else {
         0.0
     };
+    // Next to the mode from below: the fraction at a lower shape and the
+    // recurrence up to `s`, when that takes fewer steps than the series.
+    let bridge = if series {
+        Bridge::plan(s, x, wp, steps, upper)?
+    } else {
+        None
+    };
+    // (The lower function is then `1 − Q`, which cancels the bits of `P`.)
+    let cancel = bridge.as_ref().map_or(0, |b| b.cancel);
+    let wp = wp + cancel;
     let (sw, xw) = (at_precision(s, wp), at_precision(x, wp));
     // (Far below the mean the sum has an expansion however long its series:
     // up to 0.58 the lower tail of `Gamma(2·10¹⁰, 1)` 25 standard
     // deviations out was refused here.)
-    let far = if series && steps > LN_INCOMPLETE_GAMMA_MAX_STEPS {
+    let far = if series && bridge.is_none() && steps > LN_INCOMPLETE_GAMMA_MAX_STEPS {
         gammatail::far_below_sum(&sw, &xw, steps, wp)
     } else {
         None
     };
-    if steps > LN_INCOMPLETE_GAMMA_MAX_STEPS && far.is_none() {
+    if bridge.is_none() && steps > LN_INCOMPLETE_GAMMA_MAX_STEPS && far.is_none() {
         return Err(special_exhausted(prec));
     }
     let l_pref = sw.mul(&xw.ln(wp, RM, w.cc), wp, RM).sub(&xw, wp, RM);
-    let (part, pwp) = match far {
-        Some(found) => found,
-        None if series => lowergamma_series_sum(&sw, &xw, &mut w.at(wp))?,
-        None => uppergamma_cf_fraction(&sw, &xw, &mut w.at(wp))?,
+    let (part, pwp) = match (&bridge, far) {
+        (Some(b), _) => b.sum(s, &xw, &mut w.at(wp))?,
+        (None, Some(found)) => found,
+        (None, None) if series => lowergamma_series_sum(&sw, &xw, &mut w.at(wp))?,
+        (None, None) => uppergamma_cf_fraction(&sw, &xw, &mut w.at(wp))?,
     };
     if !bf_strictly_positive(&part) {
         return Err(special_exhausted(prec));
     }
     let direct = l_pref.add(&part.ln(pwp.max(wp), RM, w.cc), wp, RM);
-    if series != upper {
+    // The function formed directly: the lower one by its series, the upper
+    // one by the fraction or the bridge.
+    let direct_is_lower = series && bridge.is_none();
+    if direct_is_lower != upper {
         return Ok(direct);
     }
-    let lg = stirling_log_gamma(&sw, &mut w.at(wp))?;
+    // (To the absolute error of the other terms, the bound derived from the
+    // terms of Stirling's sum: `log_gamma_abs`.)
+    let lg = log_gamma_abs(&sw, prec + 24 + cancel, w)?;
     let r = direct.sub(&lg, wp, RM).exp(wp, RM, w.cc);
     let rest = BigFloat::from_i32(1, wp).sub(&r, wp, RM);
     if !bf_strictly_positive(&rest) {
@@ -346,6 +374,129 @@ pub(super) fn ln_incomplete_gamma(
 /// (about a second in a release build); near the centre of a shape beyond
 /// `≈ 10¹⁰` the series needs more.
 const LN_INCOMPLETE_GAMMA_MAX_STEPS: f64 = 1e6;
+
+/// The bridge is taken when the series would take this many times its
+/// steps (its terms are two products where the series has a product and a
+/// quotient, at a few bits more).
+const BRIDGE_MARGIN: f64 = 1.25;
+
+/// `Γ(s, x)` for `x < s + 1` from a shape below `x`: with `m` the least
+/// integer such that `x ≥ s − m + 1` and `u_j = Π_{i ≤ j} (s − i)/x`, the
+/// recurrence `Γ(a + 1, x) = a·Γ(a, x) + x^a e^{−x}` taken `m` times gives
+///
+/// ```text
+/// Γ(s, x) = x^s e^{−x} · [ (1/x)·Σ_{j < m} u_j + u_m·h(s − m, x) ],
+/// ```
+///
+/// `h` the fraction of [`uppergamma_cf`] (`Γ(a, x) = x^a e^{−x} h(a, x)`),
+/// which is in its domain at `a = s − m ≤ x − 1` and takes about
+/// `(¾·wp·ln 2·√a)^(2/3)` steps there (`27·a^{1/3}` at 266 bits).  Every
+/// term is positive: nothing cancels, and the `m` products carry
+/// `log₂(3m) + 8` guard bits.  The cost is `m + ` the fraction's steps
+/// against the series' `√(d² + 2x·wp·ln 2) − d` (`d = s − x`): 75,000
+/// against 634,000 one standard deviation above `x = 1.8·10⁹`, the same
+/// near nine, and the series is the shorter beyond.
+struct Bridge {
+    /// The number of steps of the recurrence, `m ≥ 1`.
+    m: usize,
+    /// The bits `1 − Q` loses when the lower function is asked: an upper
+    /// bound of `−log₂ P(s, x)` from its first term, `P ≥ x^s e^{−x}/Γ(s + 1)`
+    /// (`s·ln(1 + d/x) − d + ½·ln 2πs + 1` nats by Stirling's bound).
+    cancel: usize,
+}
+
+impl Bridge {
+    /// The bridge for `x < s + 1` when it is in its domain (`x ≥ 2`, a
+    /// shape below 2⁵³) and cheaper than the series' `series_steps`, where
+    /// those are within [`LN_INCOMPLETE_GAMMA_MAX_STEPS`]; `None` otherwise.
+    ///
+    /// Beyond the series' limit the bridge would still have a value (as
+    /// far as `s ≈ 3·10¹³` within the same number of steps), but not at
+    /// once: its fraction takes 90,000 steps at `s = 2.8·10¹⁰` and 170,000
+    /// at `1.9·10¹¹`, 0.1 and 0.2 s in a release build and more than a
+    /// second in a debug build, where the refusal takes none (the tails of
+    /// `Poisson(λ)` at such rates, which the statistics tests require to
+    /// answer or refuse within a second).  So the limit that refuses a
+    /// value is the series' alone, as up to 0.60, and the bridge is at most
+    /// `1/BRIDGE_MARGIN` of the steps of a series that would have run.
+    fn plan(
+        s: &BigFloat,
+        x: &BigFloat,
+        wp: usize,
+        series_steps: f64,
+        upper: bool,
+    ) -> Result<Option<Bridge>, SymplexError> {
+        let (s_f, x_f) = (f64_of(s)?, f64_of(x)?);
+        let d = s_f - x_f;
+        if !(x_f >= 2.0 && s_f < 9.0e15 && d < LN_INCOMPLETE_GAMMA_MAX_STEPS) {
+            return Ok(None);
+        }
+        // `m = ⌈s − x + 1⌉`, at least 1 (`x < s + 1`), and `s − m` in the
+        // fraction's domain, `x ≥ s − m + 1` (checked: the difference is
+        // rounded).
+        let exact = exact_bits(s, wp).max(exact_bits(x, wp));
+        let one = BigFloat::from_i32(1, 64);
+        let gap = s.sub(x, exact, RM).add(&one, exact, RM).ceil();
+        let Some(m) = f64_of(&gap)
+            .ok()
+            .and_then(crate::base::cast::f64_to_i64)
+            .and_then(|m| usize::try_from(m).ok())
+            .filter(|&m| m >= 1)
+        else {
+            return Ok(None);
+        };
+        let low = s.sub(&gap, exact, RM);
+        if bf_lt(x, &low.add(&one, exact, RM)) {
+            return Ok(None);
+        }
+        let fraction =
+            (0.75 * wp as f64 * std::f64::consts::LN_2 * (s_f - m as f64).max(1.0).sqrt())
+                .powf(2.0 / 3.0);
+        let cost = m as f64 + fraction;
+        if series_steps > LN_INCOMPLETE_GAMMA_MAX_STEPS || cost * BRIDGE_MARGIN >= series_steps {
+            return Ok(None);
+        }
+        let cancel = if upper {
+            Some(0)
+        } else {
+            let nats = s_f * (d / x_f).ln_1p() - d + 0.5 * (std::f64::consts::TAU * s_f).ln() + 1.0;
+            Prec::new(4)
+                .guarded(
+                    Guard::for_log2(nats * std::f64::consts::LOG2_E),
+                    Prec::new(4096),
+                )
+                .map(Prec::bits)
+        };
+        Ok(cancel.map(|cancel| Bridge { m, cancel }))
+    }
+
+    /// The bracket of the formula above for the exact `s` and `x` at `w`'s
+    /// precision, and the precision it was formed at.
+    fn sum(
+        &self,
+        s: &BigFloat,
+        x: &BigFloat,
+        w: &mut Wp<'_>,
+    ) -> Result<(BigFloat, usize), SymplexError> {
+        let wp = w.bits() + magnitude_bits(3.0 * self.m as f64 + 3.0) + 8;
+        let exact = exact_bits(s, wp);
+        let one = BigFloat::from_i32(1, 64);
+        let x = at_precision(x, wp);
+        let inv_x = one.div(&x, wp, RM);
+        let mut shape = s.clone();
+        let mut u = BigFloat::from_i32(1, wp);
+        let mut sum = BigFloat::new(wp);
+        for _ in 0..self.m {
+            sum = sum.add(&u, wp, RM);
+            shape = shape.sub(&one, exact, RM);
+            u = u.mul(&shape, wp, RM).mul(&inv_x, wp, RM);
+        }
+        // `shape = s − m`.
+        let (h, hwp) = uppergamma_cf_fraction(&shape, &x, &mut w.at(wp))?;
+        let wp = wp.max(hwp);
+        Ok((sum.mul(&inv_x, wp, RM).add(&u.mul(&h, wp, RM), wp, RM), wp))
+    }
+}
 
 /// `Γ(s, x)` at working precision `wp` for real `s`, `x > 0`, to a relative
 /// error of about `2^−wp`:
@@ -368,6 +519,16 @@ fn uppergamma_wp(s: &BigFloat, x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat,
     }
     if bf_strictly_positive(s) {
         return uppergamma_positive(s, x, w);
+    }
+    // Γ(0, x) = E₁(x) = −Ei(−x): below `max(1, wp/64)` the series of `Ei`
+    // is cheaper than the fraction, whose steps grow as `wp²/x`
+    // (`e1_by_fraction`).  Up to 0.60 the fraction from `x = 1` on:
+    // `expint(1, 1)` at 1,000 digits took 2.2 s (the series: 0.13 s).
+    if s.is_zero() {
+        let x_f = f64_of(x)?;
+        if x_f >= 1.0 && !e1_by_fraction(x_f, wp) {
+            return Ok(arb_ei(&x.neg(), w)?.neg());
+        }
     }
     if f64_of(x)? >= 1.0 {
         return uppergamma_cf(s, x, w);

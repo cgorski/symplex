@@ -20,7 +20,7 @@ use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::poly::Poly;
-use crate::poly::groebner::{groebner_basis, groebner_basis_lex};
+use crate::poly::groebner::{try_groebner_basis, try_groebner_basis_lex};
 use crate::poly::multipoly::{GrevLex, Lex, MultiPoly};
 use crate::poly::polybridge::{expr_to_multipoly, expr_to_poly, multipoly_to_expr, poly_to_expr};
 use crate::poly::sturm::SturmChain;
@@ -112,18 +112,19 @@ fn to_multipolys(
 }
 
 /// Reduced Gröbner basis of `polys` under `order`, returned in grevlex
-/// storage (the order only affects which basis is computed).
+/// storage (the order only affects which basis is computed); the
+/// budget's error when the computation is refused.
 fn groebner_in_order(
     polys: &[MultiPoly<GrevLex>],
     order: MonomialOrder,
-) -> Vec<MultiPoly<GrevLex>> {
-    match order {
-        MonomialOrder::GrevLex => groebner_basis(polys),
-        MonomialOrder::Lex => groebner_basis_lex(polys)
+) -> Result<Vec<MultiPoly<GrevLex>>, SymplexError> {
+    Ok(match order {
+        MonomialOrder::GrevLex => try_groebner_basis(polys)?,
+        MonomialOrder::Lex => try_groebner_basis_lex(polys)?
             .iter()
             .map(MultiPoly::convert_order)
             .collect(),
-    }
+    })
 }
 
 /// Remainder of `f` on division by `basis` under `order`.
@@ -765,6 +766,15 @@ impl Expr<Numeric> {
     /// with rational coefficients (other symbols count as non-rational
     /// coefficients).
     ///
+    /// [`SymplexError::BudgetExhausted`] of kind
+    /// [`BudgetKind::GroebnerBasis`](crate::BudgetKind::GroebnerBasis)
+    /// when the computation needs more than its work budget (the cyclic
+    /// system in six variables).  The budget counts work — term
+    /// operations of the polynomial divisions, weighted by the size of the
+    /// coefficients — never time: a system is refused on every machine or
+    /// on none.  Up to 0.60.0 there was no budget and such a call did not
+    /// return.
+    ///
     /// # Examples
     ///
     /// ```
@@ -796,7 +806,7 @@ impl Expr<Numeric> {
             let inner = probe.inner.read();
             to_multipolys(&inner.arena, &poly_ids, &var_ids, OP)?
         };
-        let basis = groebner_in_order(&mps, order);
+        let basis = groebner_in_order(&mps, order)?;
         let ids: Vec<ExprId> = {
             let mut inner = probe.inner.write();
             let arena = &mut inner.arena;

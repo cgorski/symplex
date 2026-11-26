@@ -270,7 +270,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `mobius(n)` | `symplex::ntheory::mobius(n)` |
 | `mod_inverse(a, m)` | `symplex::ntheory::mod_inverse(a, m)` |
 | `crt([r1,r2], [m1,m2])` | `symplex::ntheory::crt_i64(&[r1,r2], &[m1,m2])` |
-| `pow(a, e, m)` (3-arg pow) | `symplex::ntheory::mod_pow(a, e, m)` |
+| `pow(a, e, m)` (3-arg pow) | `symplex::ntheory::mod_pow(a, e, m)` (a negative `e` is a power of the inverse, as in Python; where no inverse exists, and for a modulus `≤ 0`, `mod_pow` returns the documented `0` instead of an error) |
 | `igcd(a, b, c)`, `ilcm(a, b, c)` | `symplex::ntheory::igcd(&[a, b, c])`, `ilcm(&[a, b, c])` (any integer type); `gcd_many(&[BigInt])`, `lcm_many` |
 | `ilcm(*[r.q for r in rationals])` | `symplex::ntheory::rational_lcm_of_denominators(&rationals)` |
 | `primerange(2, 50)` | `symplex::ntheory::primerange(2, 50)` / `primes_up_to(50)` |
@@ -353,7 +353,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `fourier_transform` with `2π` angular frequency | `f.fourier_transform(&t, &w)?` (non-unitary angular) |
 | `inverse_fourier_transform(F, w, t)` | `F.inverse_fourier_transform(&w, &t)?` |
 | `mellin_transform(f, x, s)` → `(F, (a, b), cond)` | `f.mellin_transform(&x, &s)?` → `(F, strip: BoolEx)` |
-| `inverse_mellin_transform(F, s, x, (a, b))` | `F.inverse_mellin_transform(&s, &x)?` |
+| `inverse_mellin_transform(F, s, x, (a, b))` | `F.inverse_mellin_transform_in_strip(&s, &x, &a, &b)?` (the strip `a < re(s) < b`); `F.inverse_mellin_transform(&s, &x)?` takes no strip and chooses the one to the right of the pole |
 | `fourier_series(f, (x, -pi, pi))` | `f.fourier_series_on(&x, &(-ctx.pi()), &ctx.pi(), n)?` |
 | `s.truncate(n)`, `s.an`, `s.bn` | `s.truncate(n)`, `s.coefficient_a(k)`, `s.coefficient_b(k)` |
 | Z-transform (not in SymPy core) | `f.z_transform(&n, &z)?`, `F.inverse_z_transform(&z, &n)?` |

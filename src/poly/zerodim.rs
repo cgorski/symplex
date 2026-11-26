@@ -31,8 +31,9 @@ use num_rational::Ratio;
 use num_traits::{One, Zero};
 
 use super::dense::Poly;
-use super::groebner::{groebner_basis, standard_monomial_count};
+use super::groebner::{standard_monomial_count, try_groebner_basis};
 use super::multipoly::{GrevLex, MultiPoly};
+use crate::base::errors::SymplexError;
 
 type Q = Ratio<BigInt>;
 type Vector = BTreeMap<Vec<u32>, Q>;
@@ -195,14 +196,21 @@ pub(crate) struct Radical {
 }
 
 impl Radical {
-    /// `None` when the computation is out of range (see [`Quotient::new`]).
-    pub(crate) fn new(gb: &[MultiPoly<GrevLex>]) -> Option<Radical> {
-        let q = Quotient::new(gb)?;
+    /// `Ok(None)` when the computation is out of range (see
+    /// [`Quotient::new`]); the budget's error when the Gröbner basis of the
+    /// radical is refused — a caller that counts solutions with the radical
+    /// must not go on without it.
+    pub(crate) fn try_new(gb: &[MultiPoly<GrevLex>]) -> Result<Option<Radical>, SymplexError> {
+        let Some(q) = Quotient::new(gb) else {
+            return Ok(None);
+        };
         let nv = gb[0].num_vars();
         let mut extra = Vec::new();
         let mut radical = true;
         for v in 0..nv {
-            let pb = q.power_basis(&MultiPoly::var(nv, v))?;
+            let Some(pb) = q.power_basis(&MultiPoly::var(nv, v)) else {
+                return Ok(None);
+            };
             let (sf, is_sf) = squarefree_in(&pb.minpoly, v, nv);
             if !is_sf {
                 radical = false;
@@ -210,14 +218,12 @@ impl Radical {
             extra.push(sf);
         }
         if radical {
-            return Some(Radical { quotient: q });
+            return Ok(Some(Radical { quotient: q }));
         }
         let mut gens = gb.to_vec();
         gens.extend(extra);
-        let rgb = groebner_basis(&gens);
-        Some(Radical {
-            quotient: Quotient::new(&rgb)?,
-        })
+        let rgb = try_groebner_basis(&gens)?;
+        Ok(Quotient::new(&rgb).map(|quotient| Radical { quotient }))
     }
 
     /// Number of distinct complex solutions.
@@ -297,9 +303,9 @@ mod tests {
         let x: MultiPoly<GrevLex> = MultiPoly::var(2, 0);
         let y: MultiPoly<GrevLex> = MultiPoly::var(2, 1);
         let f = x.mul(&x).sub(&MultiPoly::from_int(2, 1));
-        let gb = groebner_basis(&[f.mul(&f), y.sub(&x)]);
+        let gb = try_groebner_basis(&[f.mul(&f), y.sub(&x)]).unwrap();
         assert_eq!(Quotient::new(&gb).unwrap().dimension, 4);
-        assert_eq!(Radical::new(&gb).unwrap().distinct(), 2);
+        assert_eq!(Radical::try_new(&gb).unwrap().unwrap().distinct(), 2);
     }
 
     /// `x² = 2, y² = 3`: no coordinate separates the 4 solutions; a
@@ -310,11 +316,12 @@ mod tests {
     fn univariate_representation_of_two_square_roots() {
         let x: MultiPoly<GrevLex> = MultiPoly::var(2, 0);
         let y: MultiPoly<GrevLex> = MultiPoly::var(2, 1);
-        let gb = groebner_basis(&[
+        let gb = try_groebner_basis(&[
             x.mul(&x).sub(&MultiPoly::from_int(2, 2)),
             y.mul(&y).sub(&MultiPoly::from_int(2, 3)),
-        ]);
-        let rad = Radical::new(&gb).unwrap();
+        ])
+        .unwrap();
+        let rad = Radical::try_new(&gb).unwrap().unwrap();
         assert_eq!(rad.distinct(), 4);
         let (mu, coords, single) = rad.univariate_representation().unwrap();
         assert_eq!(mu.degree(), Some(4));

@@ -432,15 +432,19 @@ pub struct Assumptions {
 }
 
 impl Assumptions {
-    /// Query a single property.
+    /// Query a property, or the conjunction of several.
     ///
-    /// Returns `Some(true)` if known true, `Some(false)` if known false,
-    /// or `None` if unknown.
+    /// For one property: `Some(true)` if known true, `Some(false)` if known
+    /// false, or `None` if unknown.  For a set of several the question is
+    /// whether all of them hold: `Some(true)` when every one is known true,
+    /// `Some(false)` as soon as one is known false, `None` otherwise.  Up to
+    /// 0.60.0 a set was false only when *every* member was known false, so
+    /// `POSITIVE | NEGATIVE` of a positive number was `None`.
     #[inline]
     pub fn query(&self, prop: Props) -> Option<bool> {
         if self.known_true.contains(prop) {
             Some(true)
-        } else if self.known_false.contains(prop) {
+        } else if self.known_false.intersects(prop) {
             Some(false)
         } else {
             None
@@ -1586,7 +1590,9 @@ impl AssumptionCache {
                     a.known_false.insert(Props::EVEN);
                 }
 
-                // Prime check for small positive integers.
+                // Prime check for small positive integers.  An integer
+                // below 2 is neither prime nor composite (up to 0.60.0 the
+                // two were left open for 1 and for a negative integer).
                 if val.is_positive() {
                     let n: Option<u64> = int_val.try_into().ok();
                     if let Some(n) = n {
@@ -1596,8 +1602,12 @@ impl AssumptionCache {
                         } else if n > 1 {
                             a.known_false.insert(Props::PRIME);
                             a.known_true.insert(Props::COMPOSITE);
+                        } else {
+                            a.known_false |= Props::PRIME | Props::COMPOSITE;
                         }
                     }
+                } else {
+                    a.known_false |= Props::PRIME | Props::COMPOSITE;
                 }
             }
         }

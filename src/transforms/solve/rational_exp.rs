@@ -873,13 +873,9 @@ fn abs_unknown_shape(arena: &mut Arena, expr: ExprId, var: ExprId) -> AbsUnknown
     // each modulus a real stand-in `sᵢ`
     let mut replaced = expr;
     for (i, &a) in atoms.iter().enumerate() {
-        let s =
-            crate::transforms::subs::fresh_symbol(arena, &format!("__abs_modulus_{i}"), &[expr]);
-        if let ExprNode::Symbol(sid) = *arena.node(s) {
-            let mut real = Assumptions::default();
-            real.assert_true(Props::REAL);
-            arena.set_symbol_assumptions(sid, real);
-        }
+        let mut real = Assumptions::default();
+        real.assert_true(Props::REAL);
+        let s = arena.fresh_internal_symbol(&format!("__abs_modulus_{i}"), real, &[expr]);
         replaced = arena.subs_structural(replaced, a, s);
     }
     if !expr_contains_var(arena, replaced, var) {
@@ -924,12 +920,9 @@ fn modulus_only_roots(
     let ExprNode::Abs(u) = *arena.node(atom) else {
         return None;
     };
-    let s = crate::transforms::subs::fresh_symbol(arena, "__abs_modulus", &[expr]);
-    if let ExprNode::Symbol(sid) = *arena.node(s) {
-        let mut real = Assumptions::default();
-        real.assert_true(Props::REAL);
-        arena.set_symbol_assumptions(sid, real);
-    }
+    let mut real = Assumptions::default();
+    real.assert_true(Props::REAL);
+    let s = arena.fresh_internal_symbol("__abs_modulus", real, &[expr]);
     let in_s = arena.subs_structural(expr, atom, s);
     // every real root of the equation in `s` (a general solve: the
     // principal roots of `tan s = 0` are `[0]`, its roots `nπ`)

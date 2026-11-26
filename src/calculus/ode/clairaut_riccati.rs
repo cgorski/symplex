@@ -62,7 +62,7 @@ pub(super) fn try_clairaut(
     func_sym: SymbolId,
     var_sym: SymbolId,
 ) -> Option<OdeResult> {
-    let p = arena.symbol("__clairaut_p");
+    let p = arena.internal_symbol("__clairaut_p");
     let f = clairaut_f(arena, expr, func, var, func_sym, var_sym, p)?;
     tracing::debug!("ode: Clairaut form recognised");
     let c1 = arena.symbol("C1");
@@ -152,7 +152,7 @@ pub fn solve_riccati(
         }
     }
     let _ = q0;
-    let v = arena.symbol("__riccati_v");
+    let v = arena.internal_symbol("__riccati_v");
     let dv = arena.intern(ExprNode::Derivative(v, var));
     // v' + (q1 + 2 q2 y_p) v + q2 = 0
     let two = arena.int(2);

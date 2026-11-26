@@ -14,6 +14,10 @@ pub struct SymbolTable {
     assumptions: Vec<crate::base::assumptions::Assumptions>,
     /// Reverse lookup from name to [`SymbolId`] for deduplication.
     lookup: FxHashMap<String, SymbolId>,
+    /// The library's own dummy symbols, by name: a second name space,
+    /// which [`intern`](Self::intern) and [`get`](Self::get) do not read.
+    /// See [`intern_reserved`](Self::intern_reserved).
+    reserved: FxHashMap<String, SymbolId>,
 }
 
 impl Default for SymbolTable {
@@ -29,6 +33,7 @@ impl SymbolTable {
             names: Vec::new(),
             assumptions: Vec::new(),
             lookup: FxHashMap::default(),
+            reserved: FxHashMap::default(),
         }
     }
 
@@ -41,6 +46,13 @@ impl SymbolTable {
             return id;
         }
 
+        let id = self.push_name(name);
+        self.lookup.insert(name.to_owned(), id);
+        id
+    }
+
+    /// A new entry named `name`, in neither name space yet.
+    fn push_name(&mut self, name: &str) -> SymbolId {
         let id = SymbolId(
             u32::try_from(self.names.len())
                 .expect("symbol table overflow: more than 4 billion symbols"),
@@ -51,7 +63,6 @@ impl SymbolTable {
                 known_true: crate::base::assumptions::Props::empty(),
                 known_false: crate::base::assumptions::Props::empty(),
             });
-        self.lookup.insert(name.to_owned(), id);
         id
     }
 
@@ -68,6 +79,41 @@ impl SymbolTable {
     /// interning it.
     pub fn get(&self, name: &str) -> Option<SymbolId> {
         self.lookup.get(name).copied()
+    }
+
+    /// Interns `name` in the name space of the library's own dummy symbols
+    /// (the variable of a substitution inside the limit engine, a symbol
+    /// declared positive for one computation).  No name given to
+    /// [`intern`](Self::intern) or [`get`](Self::get) — the entry points of
+    /// `Context::symbol`, of the parser and of the JSON reader — ever
+    /// returns such a symbol, so declaring an assumption on it cannot touch
+    /// a symbol of the user's, and a user's symbol cannot be captured by
+    /// it.  The symbol prints as `name`.
+    ///
+    /// Two symbols with one name have one sort key, so the caller chooses a
+    /// name that [`get`](Self::get) does not know at that moment
+    /// (`Arena::internal_symbol` does).
+    pub(crate) fn intern_reserved(&mut self, name: &str) -> SymbolId {
+        if let Some(&id) = self.reserved.get(name) {
+            return id;
+        }
+        let id = self.push_name(name);
+        self.reserved.insert(name.to_owned(), id);
+        id
+    }
+
+    /// The symbol of the library's own name space named `name`, if there is
+    /// one ([`intern_reserved`](Self::intern_reserved)), without making it.
+    pub(crate) fn get_reserved(&self, name: &str) -> Option<SymbolId> {
+        self.reserved.get(name).copied()
+    }
+
+    /// Is `id` a symbol of the library's own name space
+    /// ([`intern_reserved`](Self::intern_reserved))?
+    pub(crate) fn is_reserved(&self, id: SymbolId) -> bool {
+        self.names
+            .get(id.0 as usize)
+            .is_some_and(|name| self.reserved.get(name) == Some(&id))
     }
 
     /// Returns the number of interned symbols.

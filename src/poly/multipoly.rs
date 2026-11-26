@@ -27,6 +27,7 @@ use std::ops;
 
 use super::modgcd;
 use super::zpoly::{self, ZPoly, pow_ratio};
+use crate::base::budget::{BudgetKind, Work};
 use crate::base::errors::SymplexError;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1788,6 +1789,101 @@ pub(crate) struct ContentSplit<O: MonomialOrd> {
 // Multivariate division
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// What a multivariate division has when it ends.
+struct Division<O: MonomialOrd> {
+    /// The remainder (so far, when the division was refused).
+    remainder: MultiPoly<O>,
+    /// `None` when the division finished.  Otherwise the part that was
+    /// still to divide when the budget refused the next step —
+    /// `remainder + rest` is congruent to the dividend — and the
+    /// budget's error.
+    refused: Option<(MultiPoly<O>, SymplexError)>,
+}
+
+// ── Work units of a basis computation ──────────────────────────────────────
+//
+// The budget of `groebner::try_groebner_basis` counts these.  A unit is
+// about 50 ns of a release build (0.60.1, m5): the constants are a fit of
+// the time of 29 basis computations (cyclic, katsura, noon, dense random
+// systems with coefficients of 1 to 50 words, FGLM conversions of
+// dimension up to 1024) to the operations counted, which the model then
+// reproduces within a factor of about two either way.  They are a cost
+// model, not a clock: the same input counts the same units everywhere.
+
+/// The size of a rational coefficient in 64-bit words, at least 1.
+pub(crate) fn coeff_words(c: &Ratio<BigInt>) -> u64 {
+    1 + (c.numer().bits() + c.denom().bits()) / 64
+}
+
+/// Work units of the arithmetic on coefficients of `words` words beyond
+/// what a one-word operation costs: `words^1.5`, between the linear copy
+/// and the quadratic gcd of a rational operation (measured: 0.5 µs at one
+/// word, 6 µs at 5, 100 µs at 50).
+fn growth_units(words: u64) -> u64 {
+    GROWTH_UNITS.saturating_mul(words.saturating_mul(words.isqrt()).saturating_sub(1))
+}
+
+/// Units per `words^1.5` in [`growth_units`].
+const GROWTH_UNITS: u64 = 8;
+
+/// Work units of a term operation on one-word coefficients (a copy with
+/// its allocations, or a product and a sum): a monomial of more than six
+/// variables is not stored inline and costs an allocation more.
+pub(crate) fn term_units(num_vars: usize) -> u64 {
+    if num_vars > 6 { 24 } else { 10 }
+}
+
+/// Work units of one product-and-sum of two rational coefficients in the
+/// dense linear algebra of FGLM.
+pub(crate) fn coeff_op_units(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> u64 {
+    let words = coeff_words(a).saturating_add(coeff_words(b)) - 1;
+    term_units(0).saturating_add(growth_units(words))
+}
+
+/// Work units of looking at `leading` leading monomials (the divisors of a
+/// division step that do not divide, the open pairs of a round): each is
+/// fetched and compared.
+pub(crate) fn scan_units(leading: usize) -> u64 {
+    1 + (leading as u64) / 4
+}
+
+/// Work units of one division step `p − q·x^e·d` with `q = lt(p)/lt(d)`,
+/// found after `examined` divisors that do not divide: a term operation
+/// for every term of `p` (it is copied) and of `d` (it is multiplied and
+/// subtracted), and for the terms of `d` the growth of the arithmetic with
+/// the size of the operands.  The size of `d`'s coefficients is their mean
+/// (`d_words`: a basis element is monic, so its leading coefficient says
+/// nothing); the size of `q` is read from the two leading coefficients.
+fn division_step_units(
+    num_vars: usize,
+    examined: usize,
+    p_terms: usize,
+    d_terms: usize,
+    d_words: u64,
+    lt_coeff: &Ratio<BigInt>,
+    div_lt_coeff: &Ratio<BigInt>,
+) -> u64 {
+    let q_words = coeff_words(lt_coeff).saturating_add(coeff_words(div_lt_coeff)) - 1;
+    let words = d_words.saturating_add(q_words) - 1;
+    let terms = (p_terms as u64)
+        .saturating_add(d_terms as u64)
+        .saturating_mul(term_units(num_vars));
+    let growth = (d_terms as u64).saturating_mul(growth_units(words));
+    terms
+        .saturating_add(growth)
+        .saturating_add(scan_units(examined))
+}
+
+/// The mean size in words of the coefficients of `p`, rounded up; at
+/// least 1.
+fn mean_coeff_words<O: MonomialOrd>(p: &MultiPoly<O>) -> u64 {
+    let total = p
+        .terms
+        .values()
+        .fold(0u64, |acc, c| acc.saturating_add(coeff_words(c)));
+    total.div_ceil((p.terms.len() as u64).max(1)).max(1)
+}
+
 impl<O: MonomialOrd> MultiPoly<O> {
     /// Reduce this polynomial modulo a set of divisors.
     /// Returns the remainder after multivariate division.
@@ -1799,25 +1895,82 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// product `(lt/lt(d))·d` overflows `u32` (it wrapped around in release
     /// builds before 0.29).
     pub fn reduce(&self, divisors: &[&MultiPoly<O>]) -> MultiPoly<O> {
+        // A division on its own is not budgeted: 2⁶⁴ units are never
+        // spent.  (Were they, `remainder + rest` is still congruent to
+        // `self` modulo the divisors.)
+        let mut unmetered = Work::new(BudgetKind::GroebnerBasis, u64::MAX);
+        let division = self.divide_charged(divisors, &mut unmetered, "reduce");
+        match division.refused {
+            None => division.remainder,
+            Some((rest, _)) => division.remainder.add(&rest),
+        }
+    }
+
+    /// [`reduce`](Self::reduce) charged to `work`: the remainder, or the
+    /// budget's error once `work` cannot pay for the next division step.
+    pub(crate) fn reduce_charged(
+        &self,
+        divisors: &[&MultiPoly<O>],
+        work: &mut Work,
+        operation: &'static str,
+    ) -> Result<MultiPoly<O>, SymplexError> {
+        let division = self.divide_charged(divisors, work, operation);
+        match division.refused {
+            None => Ok(division.remainder),
+            Some((_, error)) => Err(error),
+        }
+    }
+
+    /// The division loop of [`reduce`](Self::reduce), every step charged to
+    /// `work` before it is made ([`division_step_units`]).
+    fn divide_charged(
+        &self,
+        divisors: &[&MultiPoly<O>],
+        work: &mut Work,
+        operation: &'static str,
+    ) -> Division<O> {
         if self.is_zero() || divisors.is_empty() {
-            return self.clone();
+            return Division {
+                remainder: self.clone(),
+                refused: None,
+            };
         }
 
         let mut remainder = MultiPoly::zero(self.num_vars);
         let mut p = self.clone();
+        // The mean coefficient size of each divisor, measured when it first
+        // divides (0 = not yet).
+        let mut divisor_words: Vec<u64> = divisors.iter().map(|_| 0).collect();
 
         while let Some((lt_exp, lt_coeff)) = p.leading_term() {
             let mut divided = false;
             let lt_exp = lt_exp.to_vec();
             let lt_coeff = lt_coeff.clone();
+            let mut refusal = None;
 
-            for divisor in divisors {
+            for (examined, divisor) in divisors.iter().enumerate() {
                 // A zero divisor has no leading term and cannot divide anything.
                 let Some((div_lt_exp, div_lt_coeff)) = divisor.leading_term() else {
                     continue;
                 };
 
                 if let Some(quot_exp) = monomial_div(div_lt_exp, &lt_exp) {
+                    if divisor_words[examined] == 0 {
+                        divisor_words[examined] = mean_coeff_words(divisor);
+                    }
+                    let units = division_step_units(
+                        self.num_vars,
+                        examined,
+                        p.terms.len(),
+                        divisor.terms.len(),
+                        divisor_words[examined],
+                        &lt_coeff,
+                        div_lt_coeff,
+                    );
+                    if let Err(error) = work.charge(units, operation) {
+                        refusal = Some(error);
+                        break;
+                    }
                     // Can divide: subtract (lt/div_lt) * divisor from p
                     let quot_coeff = &lt_coeff / div_lt_coeff;
 
@@ -1828,16 +1981,31 @@ impl<O: MonomialOrd> MultiPoly<O> {
                     break;
                 }
             }
+            if let Some(error) = refusal {
+                return Division {
+                    remainder,
+                    refused: Some((p, error)),
+                };
+            }
 
             if !divided {
                 // Leading term not divisible by any divisor — move to remainder
+                if let Err(error) = work.charge(scan_units(divisors.len()), operation) {
+                    return Division {
+                        remainder,
+                        refused: Some((p, error)),
+                    };
+                }
                 let key = Monomial::from_vec(lt_exp);
                 p.terms.remove(&key);
                 remainder.insert_term(key, lt_coeff);
             }
         }
 
-        remainder
+        Division {
+            remainder,
+            refused: None,
+        }
     }
 
     /// Exact division by a single polynomial.

@@ -120,7 +120,7 @@ pub(super) fn try_bernoulli(
     let new_q = crate::transforms::eval::eval(arena, new_q);
 
     // Build linear ODE for v: v' + new_p·v − new_q = 0
-    let v = arena.symbol("__v");
+    let v = arena.internal_symbol("__v");
     let dv = arena.intern(ExprNode::Derivative(v, var));
     let pv = arena.mul(&[new_p, v]);
     let neg_new_q = arena.neg(new_q);
@@ -358,7 +358,7 @@ pub(super) fn try_euler_cauchy(
 
     if disc.is_positive() {
         // Distinct real roots — solve r² + p·r + q = 0
-        let r_var = arena.symbol("__r");
+        let r_var = arena.internal_symbol("__r");
         let r_sq = arena.pow(r_var, two_id);
         let p_id = ode_ratio_to_expr(arena, &p);
         let q_id = ode_ratio_to_expr(arena, &q);
@@ -591,8 +591,8 @@ pub(super) fn euler_ivp_lagrange(
     if values.len() != n {
         return None;
     }
-    let t = arena.symbol("__t_euler_ivp");
-    let big_y = arena.symbol("__Y_euler_ivp");
+    let t = arena.internal_symbol("__t_euler_ivp");
+    let big_y = arena.internal_symbol("__Y_euler_ivp");
     // Σ cdⱼ·Y⁽ʲ⁾ + g(x₀·eᵗ)
     let mut parts = Vec::with_capacity(n + 1 + euler.forcing.len());
     let mut d = big_y;
@@ -680,8 +680,8 @@ fn euler_cauchy_by_exp(
     var_sym: SymbolId,
 ) -> Option<OdeResult> {
     let order = cd.len().checked_sub(1)?;
-    let t = arena.symbol("__t");
-    let big_y = arena.symbol("__Y");
+    let t = arena.internal_symbol("__t");
+    let big_y = arena.internal_symbol("__Y");
     let (t_sym, y_sym) = match (arena.node(t), arena.node(big_y)) {
         (ExprNode::Symbol(ts), ExprNode::Symbol(ys)) => (*ts, *ys),
         _ => return None,

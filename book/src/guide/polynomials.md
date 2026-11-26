@@ -47,7 +47,7 @@ fn main() {
 }
 ```
 
-Other structural queries: `is_zero`, `is_ground` (constant), `is_univariate`, `is_linear`, `gens()`, `num_gens()`, `leading_term()`, and `equals(&other)` (same generators, identical normalised coefficients). `Poly::from_terms(&ctx, &gens, vec![(exps, coeff), …])`, `Poly::zero`, `Poly::one` and `Poly::constant` build polynomials directly.
+Other structural queries: `is_zero`, `is_ground` (constant), `is_univariate`, `is_linear`, `gens()`, `num_gens()`, `leading_term()`, and `equals(&other)` (same generators, identical normalised coefficients). A coefficient that is proved zero is dropped when a `Poly` is built (`Poly` of `(sin(a)^2 + cos(a)^2 - 1)*x` in `x` is the zero polynomial); one that is zero without a proof is kept, so `is_zero`, the degrees and `leading_term()` speak of the coefficients as proved. `Poly::from_terms(&ctx, &gens, vec![(exps, coeff), …])`, `Poly::zero`, `Poly::one` and `Poly::constant` build polynomials directly.
 
 ## Symbolic coefficients
 
@@ -287,7 +287,7 @@ fn main() {
 
 ## Bridge to `MultiPoly` and Gröbner bases
 
-`symplex::groebner` and `symplex::polysys` work on `MultiPoly<GrevLex>`, a rational-coefficient sparse polynomial indexed by variable *position*. `to_multipoly()` converts a `Poly` whose coefficients are all rational (`None` otherwise), and `Poly::from_multipoly(&ctx, &gens, &mp)` converts back, so you can move between the two worlds without touching the low-level representation.
+`symplex::groebner` and `symplex::polysys` work on `MultiPoly<GrevLex>`, a rational-coefficient sparse polynomial indexed by variable *position*. `to_multipoly()` converts a `Poly` whose coefficients are all rational (`None` otherwise), and `Poly::from_multipoly(&ctx, &gens, &mp)` converts back, so you can move between the two worlds without touching the low-level representation. A basis computation stops at a work budget (about five seconds of work, counted the same on every machine): `groebner_basis` then returns the polynomials it was given, which `groebner::is_groebner_basis` tells from a basis, and `groebner::try_groebner_basis` returns `Err(BudgetExhausted)` instead.
 
 ```rust
 use symplex::prelude::*;
@@ -370,7 +370,7 @@ fn main() {
 
 ### Gröbner bases and normal forms from `Ex`
 
-`Ex::groebner(&polys, &vars, order)` computes the reduced (monic) Gröbner basis in the given variables under `MonomialOrder::Lex` or `MonomialOrder::GrevLex` (`symplex::multipoly::MonomialOrder`); `reduce_modulo(&basis, &vars, order)` is the remainder of multivariate division — the unique normal form when `basis` is a Gröbner basis for that order, so it is zero exactly for members of the ideal. Variables must be distinct symbols and every polynomial must have rational coefficients; anything else is an `InvalidArgument` error naming the offending input.
+`Ex::groebner(&polys, &vars, order)` computes the reduced (monic) Gröbner basis in the given variables under `MonomialOrder::Lex` or `MonomialOrder::GrevLex` (`symplex::multipoly::MonomialOrder`); `reduce_modulo(&basis, &vars, order)` is the remainder of multivariate division — the unique normal form when `basis` is a Gröbner basis for that order, so it is zero exactly for members of the ideal. Variables must be distinct symbols and every polynomial must have rational coefficients; anything else is an `InvalidArgument` error naming the offending input. A system whose basis exceeds the work budget (the cyclic system in six variables) is `Err(BudgetExhausted)`.
 
 ```rust
 use symplex::multipoly::MonomialOrder;

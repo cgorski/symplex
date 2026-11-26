@@ -98,7 +98,7 @@ fn main() {
 }
 ```
 
-An undecided definite integral keeps its bounds: the `DefiniteIntegral` node prints as `Integral(f, x, a, b)` (LaTeX `\int_a^b f\,dx`), round-trips through `parse`, binds `x` for `free_symbols`/`subs`, differentiates by the Leibniz rule, and `eval_f64()` evaluates it by quadrature. `Ex::eval_integrals()` re-attempts every formal definite integral inside an expression. Use `try_integrate_definite` when you need to know *why* it was undecided.
+An undecided definite integral keeps its bounds: the `DefiniteIntegral` node prints as `Integral(f, x, a, b)` (LaTeX `\int_a^b f\,dx`), round-trips through `parse`, binds `x` for `free_symbols`/`subs`, differentiates by the Leibniz rule, and `eval_f64()` evaluates it by quadrature (certified to 8 digits; for the nearest `f64`, parse `eval_decimal(20)`). `Ex::eval_integrals()` re-attempts every formal definite integral inside an expression. Use `try_integrate_definite` when you need to know *why* it was undecided.
 
 ## Numeric quadrature
 

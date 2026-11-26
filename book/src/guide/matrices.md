@@ -80,7 +80,7 @@ fn main() {
 
 ## Eigenvalues, eigenvectors, Jordan form
 
-The eigen family takes **no dummy variable**. `eigenvals` returns eigenvalues with repetition, `eigenvals_with_multiplicity` returns `(value, multiplicity)` pairs, `eigenvects` returns `(value, multiplicity, basis)`, `diagonalize` returns `Diagonalization { p, d }`, `jordan_form` returns `JordanForm { p, j }`, and `is_diagonalizable` is `Option<bool>`. Use `char_poly(&λ)` / `char_poly_coeffs()` when you want the polynomial itself.
+The eigen family takes **no dummy variable**. `eigenvals` returns eigenvalues with repetition, `eigenvals_with_multiplicity` returns `(value, multiplicity)` pairs, `eigenvects` returns `(value, multiplicity, basis)`, `diagonalize` returns `Diagonalization { p, d }`, `jordan_form` returns `JordanForm { p, j }`, and `is_diagonalizable` is `Option<bool>`. `is_diagonalizable` answers `Some(true)` only when the matrix is diagonalizable for every value of its symbols (`[[1, 1], [0, x]]` is `None`: it is not at `x = 1`), and `diagonalize` returns `NotDiagonalizable` only when that is proved; a matrix with an entry that can be neither proved zero nor proved non-zero is `Err(ComputationFailed)` naming the entry. Use `char_poly(&λ)` / `char_poly_coeffs()` when you want the polynomial itself.
 
 ```rust
 use symplex::prelude::*;
@@ -211,7 +211,7 @@ fn main() {
 
 ## Subspaces and least squares
 
-`rank`, `nullspace`, `columnspace`, `rowspace`, `left_nullspace` return bases as column vectors; `solve(&b)` solves a square system; `solve_least_squares(&b)` solves the normal equations for over-determined systems; `linsolve_matrix` (see [Solving](./solving.md#linear-systems)) handles singular and inconsistent systems with free variables.
+`rank`, `nullspace`, `columnspace`, `rowspace`, `left_nullspace` return bases as column vectors; `solve(&b)` solves a square system; `solve_least_squares(&b)` solves the normal equations for over-determined systems; `linsolve_matrix` (see [Solving](./solving.md#linear-systems)) handles singular and inconsistent systems with free variables. A pivot is decided by a certified zero test: `solve`, `lu`, `inv` and the other functions that return `Result` refuse (`Err(ComputationFailed)`, naming the entry) when an entry is neither proved zero nor proved non-zero; `rref`, `rank`, `nullspace` and the three spaces return plain values, cannot refuse, and count such an entry as non-zero (see [Known Limitations](../reference/known-limitations.md)).
 
 ```rust
 use symplex::prelude::*;
@@ -342,7 +342,7 @@ See `cargo run --example matrix_decompositions`, `matrix_algebra`, `exact_matric
 
 ## More decompositions and utilities
 
-These are the remaining everyday SymPy matrix methods. As elsewhere, rational input is routed through `QMatrix`/`ZMatrix` and is exact; symbolic input follows the same *structural* pivoting rules as `rref` and `lu` (a symbolic pivot whose value cannot be decided is assumed non-zero, so the result holds generically).
+These are the remaining everyday SymPy matrix methods. As elsewhere, rational input is routed through `QMatrix`/`ZMatrix` and is exact; symbolic input decides each pivot by the certified zero test, as `rref` and `lu` do: an entry that is neither proved zero nor proved non-zero makes a function that returns `Result` refuse (`Err(ComputationFailed)` naming the entry; up to 0.60.0 it was assumed non-zero), and where every pivot is decided the result holds for generic values of the symbols.
 
 ### Singular values and condition number
 

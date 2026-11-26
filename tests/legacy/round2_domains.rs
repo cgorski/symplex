@@ -510,7 +510,13 @@ fn unit_torque_to_energy_from() {
 fn unit_frequency_angular_velocity_roundtrip() {
     let ctx = Context::new();
     let f = Frequency::from_angular_velocity(AngularVelocity::constant(&ctx, 10));
-    assert_close(f.eval_f64().unwrap(), 10.0, 1e-12, "Freq from AngVel");
+    // f = ω/(2π) (0.60.1; the value was re-tagged before): 10 rad/s is 5/π Hz.
+    assert_close(
+        f.eval_f64().unwrap(),
+        5.0 / std::f64::consts::PI,
+        1e-12,
+        "Freq from AngVel",
+    );
 }
 
 // ---------------------------------------------------------------------------

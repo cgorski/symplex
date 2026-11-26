@@ -62,7 +62,7 @@ fn main() {
 
 ## Mellin transform
 
-`mellin_transform(&x, &s)` returns `(F(s), strip)` where the strip is the `BoolEx` condition on `re(s)` for convergence; `inverse_mellin_transform(&s, &x)` inverts by table lookup (choosing the strip to the right of the pole when ambiguous).
+`mellin_transform(&x, &s)` returns `(F(s), strip)` where the strip is the `BoolEx` condition on `re(s)` for convergence; `inverse_mellin_transform(&s, &x)` inverts by table lookup (choosing the strip to the right of the pole when ambiguous). A Mellin transform determines its function only together with its strip, so a transform whose strip lies to the left of its pole is inverted with `inverse_mellin_transform_in_strip(&s, &x, &lower, &upper)`, which takes the strip `lower < re(s) < upper` (`-oo` and `oo` are allowed): for `-1/s`, the transform of `H(x - 1)` on `re(s) < 0`, the two-argument function returns `-H(1 - x)` and the strip form returns `H(x - 1)`. A pole inside the strip, or an empty strip, is an error.
 
 ```rust
 use symplex::prelude::*;
@@ -147,7 +147,7 @@ fn main() {
 
 ## One-sided limits
 
-`limit_left`, `limit_right` and `limit_dir(&x, &a, Direction::{Left, Right})` take the limit from one side; each has a `try_` twin. The two-sided `limit` returns an unevaluated `Limit` node when the one-sided limits disagree, rather than picking one.
+`limit_left`, `limit_right` and `limit_dir(&x, &a, Direction::{Left, Right})` take the limit from one side; each has a `try_` twin. The two-sided `limit` returns an unevaluated `Limit` node when the one-sided limits disagree, rather than picking one. A one-sided limit that cannot be evaluated keeps its side: it prints as `Limit(f, x, a, left)` or `Limit(f, x, a, right)`, reads back through `parse`, and is a different expression from the two-sided `Limit(f, x, a)`.
 
 ```rust
 use symplex::prelude::*;

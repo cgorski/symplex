@@ -30,7 +30,9 @@ use std::fmt;
 use std::ops;
 
 use crate::api::expr::Ex;
+use crate::base::assumptions::Props;
 use crate::base::errors::SymplexError;
+use crate::base::truth::Truth;
 
 // `ToEx` / `Scalar` live in the (crate-private) `expr_ops` module; the
 // `Equation` operators are generic over `ToEx`, so this public module is
@@ -225,10 +227,15 @@ impl Equation {
         self.apply(Ex::eval)
     }
 
-    /// Check if the equation is satisfied (both sides mathematically equal).
+    /// Check if the equation is satisfied: are the two sides mathematically
+    /// equal?
     ///
-    /// Three-valued via [`Ex::equals`]; same as
-    /// [`is_identity`](Self::is_identity).
+    /// Three-valued via [`Ex::equals`]: `Some(true)` when the sides are
+    /// proved equal, `Some(false)` when they are proved different wherever
+    /// they are defined (`x = x + 1`), `None` otherwise — in particular for
+    /// an equation that holds for some values of its symbols and fails for
+    /// others (`x = 3`, `x = y`), which
+    /// [`is_identity`](Self::is_identity) answers with `Some(false)`.
     #[must_use]
     pub fn is_satisfied(&self) -> Option<bool> {
         self.lhs.equals(&self.rhs)
@@ -236,9 +243,22 @@ impl Equation {
 
     /// Does the equation hold for all values of its symbols?
     ///
-    /// `Some(true)` when `lhs − rhs` simplifies to zero, `Some(false)` when
-    /// the two sides are provably different (e.g. they differ by a nonzero
-    /// constant), `None` when undetermined — see [`Ex::equals`].
+    /// * `Some(true)` when [`Ex::equals`] proves the two sides equal
+    ///   (`lhs − rhs` simplifies to zero).
+    /// * `Some(false)` when it proves them different (they differ by a
+    ///   nonzero constant), or when the equation fails at a point: values
+    ///   of the symbols, each proved to lie in its symbol's declared
+    ///   domain, at which both sides have a finite value and the two
+    ///   values are certified different (`x = 3` fails at `x = 1/2`).  Six
+    ///   fixed points are tried, built from a short list of values: the
+    ///   fractions `1/2`, `−2/3`, `3/2`, small integers, the non-real `4i`,
+    ///   and `√2`, `π`, `e`, `i` for a symbol whose domain holds no rational.
+    /// * `None` when the equation is neither proved nor refuted: it may be
+    ///   an identity that the simplifier does not prove, or fail only at
+    ///   points that were not tried.
+    ///
+    /// Up to 0.60.0 only [`Ex::equals`] was asked, and `x = 3` was `None`
+    /// while `x = x + 1` was `Some(false)`.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -248,11 +268,151 @@ impl Equation {
     /// let pyth = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), ctx.one());
     /// assert_eq!(pyth.is_identity(), Some(true));
     /// assert_eq!(Equation::new(&x + 1, x.clone()).is_identity(), Some(false));
-    /// assert_eq!(Equation::new(x.clone(), ctx.int(3)).is_identity(), None);
+    /// assert_eq!(Equation::new(x.clone(), ctx.int(3)).is_identity(), Some(false));
+    /// // sqrt(x^2) = x fails at x = -2/3 ...
+    /// let root = Equation::new(x.powi(2).sqrt(), x.clone());
+    /// assert_eq!(root.is_identity(), Some(false));
+    /// // ... and holds on the declared domain of a positive symbol.
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    /// assert_eq!(Equation::new(p.powi(2).sqrt(), p.clone()).is_identity(), Some(true));
+    /// // Nothing is known about an undefined function.
+    /// let f = ctx.apply("f", &[&x]).unwrap();
+    /// assert_eq!(Equation::new(f, ctx.int(3)).is_identity(), None);
     /// ```
     #[must_use]
     pub fn is_identity(&self) -> Option<bool> {
-        self.lhs.equals(&self.rhs)
+        let known = self.lhs.equals(&self.rhs);
+        if known.is_some() {
+            return known;
+        }
+        self.fails_at_a_point().then_some(false)
+    }
+
+    /// Is there a point of the symbols' declared domain at which both
+    /// sides have a finite value and the values are certified different?
+    ///
+    /// The points are fixed ([`Self::sample_values`]), so the answer does
+    /// not depend on the history of the context; the symbols are taken in
+    /// the order of their names.  A value is tried for a symbol only when
+    /// it is proved to have every property the symbol is known to have and
+    /// to lack every property the symbol is known to lack, so a symbol
+    /// whose domain holds none of the values (a non-commutative one, an
+    /// infinite one) refutes nothing.  A point at which a side has no
+    /// finite value (a pole, `0/0`, an unevaluated form, an undefined
+    /// function) is skipped; "different" is [`Ex::equals`] `== Some(false)`
+    /// for the two constants, which is a proof.
+    fn fails_at_a_point(&self) -> bool {
+        /// The values tried for one symbol, and the points tried.
+        const VALUES_PER_SYMBOL: usize = 8;
+        const POINTS: usize = 6;
+
+        let mut symbols = self.lhs.free_symbols();
+        for s in self.rhs.free_symbols() {
+            if !symbols.contains(&s) {
+                symbols.push(s);
+            }
+        }
+        if symbols.is_empty() {
+            // Two constants: `equals` has said what is known.
+            return false;
+        }
+        symbols.sort_by_cached_key(Ex::to_string);
+
+        let values = Self::sample_values(&self.lhs);
+        let mut admitted: Vec<Vec<&Ex>> = Vec::with_capacity(symbols.len());
+        for s in &symbols {
+            // What is known about the symbol, property by property.
+            let known: Vec<(Props, Truth)> = Props::all()
+                .iter()
+                .map(|p| (p, Truth::from(s.query(p))))
+                .filter(|(_, t)| t.is_known())
+                .collect();
+            let in_domain = |v: &Ex| {
+                known.iter().all(|&(p, t)| {
+                    let of_value = Truth::from(v.query(p));
+                    of_value.is_known() && of_value.is_true() == t.is_true()
+                })
+            };
+            let of_symbol: Vec<&Ex> = values
+                .iter()
+                .filter(|v| in_domain(v))
+                .take(VALUES_PER_SYMBOL)
+                .collect();
+            if of_symbol.is_empty() {
+                return false;
+            }
+            admitted.push(of_symbol);
+        }
+
+        let is_value = |e: &Ex| {
+            e.free_symbols().is_empty()
+                && !e.has_unevaluated()
+                && Truth::from(e.is_finite()).is_true()
+        };
+        for t in 0..POINTS {
+            // Symbol `j` takes its value number `t + j·(2t + 1)`: the first
+            // point gives different symbols different values.
+            let point: Vec<(&Ex, &Ex)> = symbols
+                .iter()
+                .zip(&admitted)
+                .enumerate()
+                .map(|(j, (s, of_symbol))| (s, of_symbol[(t + j * (2 * t + 1)) % of_symbol.len()]))
+                .collect();
+            let lhs = self.lhs.subs_map(&point).eval();
+            let rhs = self.rhs.subs_map(&point).eval();
+            if !is_value(&lhs) || !is_value(&rhs) {
+                continue;
+            }
+            if Truth::from(lhs.equals(&rhs)).is_false() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The values [`fails_at_a_point`](Self::fails_at_a_point) tries, in
+    /// the context of `e`.  The first ones are points in general position
+    /// (a fraction of either sign, a number off the real line and beyond
+    /// the strip `|Im| ≤ π`), because the special points — `0`, `1`, the
+    /// integers — are where two different functions most often agree
+    /// (`floor(x) = x`) or have no value (`1/x`, `ln x`); integers,
+    /// irrational and further non-real numbers follow for the symbols
+    /// whose domain holds only those.
+    fn sample_values(e: &Ex) -> Vec<Ex> {
+        let ctx = e.context();
+        let int = |n: i64| ctx.int(n);
+        let frac = |p: i64, q: i64| ctx.rational(p, q);
+        let i = ctx.i_unit();
+        let root2 = ctx.int(2).sqrt();
+        vec![
+            frac(1, 2),
+            frac(-2, 3),
+            int(2),
+            &i * 4,
+            int(-1),
+            frac(3, 2),
+            int(0),
+            int(1),
+            root2.clone(),
+            &i + 1,
+            int(-2),
+            int(3),
+            ctx.pi(),
+            frac(5, 7),
+            frac(-1, 2),
+            int(5),
+            -&i,
+            &i * 2,
+            int(4),
+            int(7),
+            -&root2,
+            ctx.e(),
+            i.clone(),
+            int(9),
+            -ctx.pi(),
+            int(-3),
+            int(-5),
+        ]
     }
 
     /// Convert to a single expression `lhs - rhs`.
@@ -518,7 +678,12 @@ mod tests {
             Some(true)
         );
         assert_eq!(Equation::new(x.clone(), &x + 1).is_identity(), Some(false));
-        assert_eq!(Equation::new(x.clone(), ctx.int(1)).is_identity(), None);
+        // Fails at x = 1/2 (up to 0.60.0: `None`).
+        assert_eq!(
+            Equation::new(x.clone(), ctx.int(1)).is_identity(),
+            Some(false)
+        );
+        assert_eq!(Equation::new(x.clone(), ctx.int(1)).is_satisfied(), None);
         assert_eq!(
             Equation::new(ctx.int(2), ctx.int(2)).is_identity(),
             Some(true)

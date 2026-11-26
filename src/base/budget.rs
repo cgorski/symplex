@@ -271,6 +271,10 @@ pub enum BudgetKind {
     /// in `ℚ(parameters)`, and the cost bounds of the multivariate gcds
     /// that normalise them.
     ParametricRational,
+    /// Work of one Gröbner basis computation (Buchberger's algorithm):
+    /// the term operations of its polynomial divisions, weighted by the
+    /// size of the coefficients, and the critical pairs it examines.
+    GroebnerBasis,
 }
 
 impl BudgetKind {
@@ -291,6 +295,7 @@ impl BudgetKind {
             BudgetKind::ParametricRational => {
                 "the parametric rational integration exceeded its work budget"
             }
+            BudgetKind::GroebnerBasis => "the Gröbner basis computation exceeded its work budget",
         }
     }
 }
@@ -304,6 +309,7 @@ impl fmt::Display for BudgetKind {
             BudgetKind::LimitSteps => "limit steps",
             BudgetKind::IntegrationSteps => "integration steps",
             BudgetKind::ParametricRational => "parametric rational integration",
+            BudgetKind::GroebnerBasis => "Gröbner basis",
         })
     }
 }

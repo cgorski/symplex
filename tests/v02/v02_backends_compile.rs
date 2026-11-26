@@ -455,7 +455,9 @@ fn integer_sequences_and_factorials() {
         assert_eq!(fib(&[k]), want, "F({k})");
     }
     assert_eq!(fib(&[78.0]), 8_944_394_323_791_464.0);
-    assert!(fib(&[2.5]).is_nan());
+    // Off the integers the kernel computes the evaluator's continuation (0.60.1; NaN
+    // before): mpmath `fibonacci(mpf("2.5"))` = 1.4893065462657091.
+    assert_close(fib(&[2.5]), 1.489_306_546_265_709_1, 1e-15, "F(2.5)");
     // Exact values via the symbolic evaluator for larger n.
     for k in [40i64, 90, 150] {
         let exact = ctx.int(k).fibonacci().eval().eval_f64().unwrap();

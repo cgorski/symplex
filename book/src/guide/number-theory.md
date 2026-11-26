@@ -4,7 +4,7 @@ Integer functions live in `symplex::ntheory`, `symplex::diophantine` and `symple
 
 ## Primality and factorization
 
-`factorint` combines trial division by the primes below 2¹⁶, a perfect-power check, **Pollard–Brent rho** (machine words for `n < 2⁶⁴`) and Lenstra's **ECM** for larger composites. `isprime` is deterministic for `n < 3.3·10²⁴` (Miller–Rabin with the first 13 prime bases) and uses the **Baillie–PSW** test beyond that: no BPSW counterexample is known (none exists below 2⁶⁴), but for larger `n` "prime" is then a probable-prime verdict, not a proof. Carmichael numbers such as 561 are recognised as composite.
+`factorint` combines trial division by the primes below 2¹⁶, a perfect-power check, **Pollard–Brent rho** (machine words for `n < 2⁶⁴`) and Lenstra's **ECM** for larger composites. `isprime` is deterministic for `n < 3.3·10²⁴` (Miller–Rabin with the first 13 prime bases) and uses the **Baillie–PSW** test beyond that: no BPSW counterexample is known (none exists below 2⁶⁴), but for larger `n` "prime" is then a probable-prime verdict, not a proof. Carmichael numbers such as 561 are recognised as composite. The query `Ex::is_prime()` answers only on a proof: it decides every integer literal below `3.3·10²⁴` and every larger one with a witness of compositeness, and is `None` for a probable prime beyond the bound (`2^89 - 1`), where `Ex::is_prime_value()` reports the test's verdict.
 
 ```rust
 use num_bigint::BigInt;
@@ -32,6 +32,7 @@ use symplex::ntheory::*;
 fn main() {
     println!("{:?}", mod_inverse(17, 43));               // Some(38)
     println!("{}", mod_pow(3, 200, 1_000_003));
+    println!("{}", mod_pow(2, -1, 7));                    // 4: a negative exponent is a power of the inverse
     println!("{:?}", crt_i64(&[2, 3, 2], &[3, 5, 7]));   // Some(23)
     println!("{:?} {:?}", sqrt_mod(2, 7), sqrt_mod_all(2, 7));   // Some(3) [3, 4]
     println!("{:?}", sqrt_mod(3, 7));                    // None — not a quadratic residue

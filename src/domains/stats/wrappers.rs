@@ -28,6 +28,21 @@ fn not_implemented(reason: impl Into<String>) -> SymplexError {
     SymplexError::NotImplemented(reason.into())
 }
 
+/// A distribution function built from the inner ones, simplified when its
+/// point is symbolic.  At a number it is left as built: its callers fold
+/// the value ([`Distribution::cdf`] evaluates it), and `simplify` of a
+/// constant samples it numerically to look for identities, several times
+/// the cost of the value itself — a quantile search probes the function
+/// at dozens of numbers (up to 0.60, 10 ms of the 12 ms of each probe of a
+/// truncated Cauchy law).
+fn tidy_at(e: Ex, x: &Ex) -> Ex {
+    if x.free_symbols().is_empty() {
+        e
+    } else {
+        e.simplify()
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Truncated
 // ═══════════════════════════════════════════════════════════════════════════
@@ -92,11 +107,14 @@ impl Family for Truncated {
             && self.inner.in_far_upper_tail(lo)
             && let Some(s_lo) = self.inner.mass_above(lo)
         {
-            return Some(((s_lo - self.inner.sf_on_support(x)) / &self.mass).simplify());
+            return Some(tidy_at(
+                (s_lo - self.inner.sf_on_support(x)) / &self.mass,
+                x,
+            ));
         }
         let f_lo = self.inner.mass_below(lo)?;
         let f_x = self.inner.cdf_on_support(x);
-        Some(((f_x - f_lo) / &self.mass).simplify())
+        Some(tidy_at((f_x - f_lo) / &self.mass, x))
     }
 
     // (S(x) − S(hi)) / mass on [lo, hi]; S(hi) = 0 at the inner support's
@@ -116,7 +134,10 @@ impl Family for Truncated {
         } else {
             self.inner.sf_on_support(hi)
         };
-        Some(((self.inner.sf_on_support(x) - s_hi) / &self.mass).simplify())
+        Some(tidy_at(
+            (self.inner.sf_on_support(x) - s_hi) / &self.mass,
+            x,
+        ))
     }
 
     // The inner domain, with an end freed where the truncation bounds the
@@ -851,7 +872,7 @@ impl Family for Mixture {
         for (w, d) in &self.components {
             acc += w * d.cdf(x);
         }
-        Some(acc.simplify())
+        Some(tidy_at(acc, x))
     }
 
     fn sf(&self, x: &Ex) -> Option<Ex> {
@@ -860,7 +881,7 @@ impl Family for Mixture {
         for (w, d) in &self.components {
             acc += w * d.sf(x);
         }
-        Some(acc.simplify())
+        Some(tidy_at(acc, x))
     }
 
     fn mgf(&self, t: &Ex) -> Option<Ex> {
@@ -1881,6 +1902,9 @@ impl Distribution {
             .as_points()
             .or_else(|| self.enumerate_lattice())
         {
+            if let Some(table) = self.monotone_table(x, g, &values) {
+                return Ok(table);
+            }
             // A rational image is merged through a map keyed by its value;
             // only an image that is not a rational is compared with every
             // entry.  Up to 0.56 every pair was compared by `equals`, each
@@ -2077,6 +2101,53 @@ impl Distribution {
         }))
     }
 
+    /// The table of `g(X)` for a finite `X` on more than
+    /// [`MONOTONE_TABLE_MIN`] increasing rational values (a lattice, a
+    /// sorted table) when `g` is proved strictly monotone on the closed
+    /// interval they span: the images are then distinct and in the order of
+    /// the values (reversed for a decreasing `g`), so nothing is merged and
+    /// no image is evaluated to be told from the others — the table is the
+    /// one the general route builds, with its proved order
+    /// ([`Finite::with_order`](super::discrete::Finite)) in place of the
+    /// `f64` of every image.  Up to 0.60 `√X` of a 100,000-sided die took
+    /// 1.4 s, most of it the certified `f64` of each image.  `None` where
+    /// this does not apply; the general route then merges by value.
+    fn monotone_table(&self, x: &Ex, g: &Ex, values: &[Ex]) -> Option<Distribution> {
+        use super::discrete::{Finite, TableOrder};
+        use std::cmp::Ordering;
+        if values.len() <= MONOTONE_TABLE_MIN {
+            return None;
+        }
+        let rationals: Option<Vec<crate::base::numeric::Q>> =
+            values.iter().map(Ex::as_rational).collect();
+        if !rationals?.windows(2).all(|w| w[0] < w[1]) {
+            return None;
+        }
+        let ctx = self.context();
+        let (first, last) = (values.first()?, values.last()?);
+        let hull = ctx.interval(first, last, IntervalKind::Closed);
+        let order = if Truth::from(g.is_strictly_increasing(x, &hull)).is_true() {
+            TableOrder::Increasing
+        } else if Truth::from(g.is_strictly_decreasing(x, &hull)).is_true() {
+            TableOrder::Decreasing
+        } else {
+            return None;
+        };
+        let table: Vec<(Ex, Ex)> = values
+            .iter()
+            .map(|v| (g.subs(x, v).eval(), self.density(v).eval()))
+            .collect();
+        // The images of the ends are real numbers in the proved order (a
+        // check that can only decline: a map with a pole at an end has no
+        // table).
+        let rise = super::family::sign_of(&(&table.last()?.0 - &table.first()?.0)).to_ordering()?;
+        let agrees = match order {
+            TableOrder::Increasing => rise == Ordering::Greater,
+            TableOrder::Decreasing => rise == Ordering::Less,
+        };
+        agrees.then(|| Distribution::from_family(Finite::new(&ctx, table).with_order(order)))
+    }
+
     /// The values of a discrete distribution on a finite numeric integer
     /// range (at most 100 000 of them); `None` otherwise.
     fn enumerate_lattice(&self) -> Option<Vec<Ex>> {
@@ -2150,6 +2221,13 @@ impl Distribution {
         }))
     }
 }
+
+/// The fewest values of a finite distribution for which
+/// [`Distribution::transformed`] asks for a proof that the map is strictly
+/// monotone (`Distribution::monotone_table`): the proof differentiates the
+/// map and decides the sign of the derivative on an interval, which costs
+/// more than merging a small table by value.
+const MONOTONE_TABLE_MIN: usize = 256;
 
 /// The intersection of two moment-generating-function domains (both
 /// contain `0`): the larger lower end and the smaller upper end, each with

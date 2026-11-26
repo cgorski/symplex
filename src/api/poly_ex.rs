@@ -10,6 +10,20 @@
 //! approximation happens anywhere, and [`Poly::to_ex`] rebuilds an
 //! expression equal to the original.
 //!
+//! # Zero coefficients
+//!
+//! A term is kept unless its coefficient is **proved** zero: structurally
+//! after expansion and evaluation, or by the certified zero tests behind
+//! [`Ex::is_zero`] and the limit and series engines (exact identities and
+//! certified values: `sin(a)² + cos(a)² − 1`, `ln 6 − ln 2 − ln 3`).  A coefficient whose
+//! zero test is undecided is kept.  So [`Poly::is_zero`], the degrees and
+//! the leading term speak of the coefficients as proved: a polynomial that
+//! is zero is reported as zero whenever that is proved, and one reported
+//! with degree `d` has a leading coefficient that is not proved zero —
+//! which, for an expression no zero test decides, is not a proof that it
+//! is nonzero.  Up to 0.60.0 only structural zeros were dropped:
+//! `Poly((sin(a)² + cos(a)² − 1)·x, x)` had degree 1.
+//!
 //! Terms are reported in descending lexicographic order of their exponent
 //! vectors (the order of SymPy's `Poly.terms()`), so the leading term of
 //! `Poly(x² y + x y² + y³, x, y)` is `x² y`.
@@ -90,7 +104,78 @@ fn mentions_any(arena: &Arena, expr: ExprId, gens: &[ExprId]) -> bool {
         .any(|&g| crate::base::walk::contains(arena, expr, g))
 }
 
-/// Sum duplicate monomials, normalise coefficients, drop zeros.
+/// Is the (expanded, evaluated) coefficient `c` a polynomial in symbols
+/// with rational coefficients — numbers, symbols, sums, products and
+/// positive integer powers only?  Such a coefficient is zero only
+/// structurally: its expanded canonical form has its like terms
+/// collected, and the zero tests answer "not zero" for it without a
+/// computation (`series::vanishes_identically`: "a polynomial sum is
+/// already canonical").  Answering here keeps the common path of
+/// [`Poly::new`] — coefficients that are parameters — at the cost it had
+/// before the zero tests were asked (0.60.0): one walk of the
+/// coefficient, no allocation.  `false` for anything else, and for a
+/// coefficient too large to be worth the walk.
+fn plainly_polynomial(arena: &Arena, c: ExprId) -> bool {
+    if arena.facts(c).tree_size > 256 {
+        return false;
+    }
+    let mut stack: smallvec::SmallVec<[ExprId; 16]> = smallvec::smallvec![c];
+    while let Some(id) = stack.pop() {
+        match arena.node(id) {
+            ExprNode::Num(_) | ExprNode::Symbol(_) => {}
+            ExprNode::Add(parts) | ExprNode::Mul(parts) => stack.extend(parts.iter().copied()),
+            ExprNode::Neg(inner) => stack.push(*inner),
+            ExprNode::Pow(base, exponent) => {
+                let power = arena
+                    .as_num(*exponent)
+                    .is_some_and(|r| r.is_integer() && r.is_positive());
+                if !power {
+                    return false;
+                }
+                stack.push(*base);
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Is the normalised coefficient `c` **proved** to be zero?  Structurally,
+/// or by the certified zero tests: for a constant the exact tests of
+/// `eval` first, as [`Ex::is_zero`] asks them
+/// ([`constant_facts`](crate::transforms::eval::constant_facts): sums of
+/// cosines of rational multiples of `π`, sums of arctangents, towers of
+/// square roots), then
+/// [`ZeroDecision::decide`](crate::calculus::calculus_util::ZeroDecision::decide)
+/// (an exact identity or a certified value for a constant, an identity in
+/// the parameters confirmed exactly for a coefficient with symbols).  Only
+/// a proof drops a term: a coefficient that is nonzero or undecided is
+/// kept.  A rational number and a lone symbol are read off the node.
+fn proved_zero(arena: &mut Arena, c: ExprId) -> bool {
+    use crate::base::assumptions::Props;
+    use crate::base::truth::Truth;
+    use crate::calculus::calculus_util::ZeroDecision;
+    if arena.is_zero_structural(c) {
+        return true;
+    }
+    if arena.as_num(c).is_some() || matches!(arena.node(c), ExprNode::Symbol(_)) {
+        return false;
+    }
+    if plainly_polynomial(arena, c) {
+        return false;
+    }
+    if arena.is_symbol_free(c) {
+        let zero =
+            Truth::from(crate::transforms::eval::constant_facts(arena, c).query(Props::ZERO));
+        if zero.is_known() {
+            return zero.is_true();
+        }
+    }
+    matches!(ZeroDecision::decide(arena, c), ZeroDecision::Zero)
+}
+
+/// Sum duplicate monomials, normalise coefficients, drop the coefficients
+/// proved zero ([`proved_zero`]).
 fn normalize_terms(arena: &mut Arena, raw: Vec<(Vec<u32>, ExprId)>) -> Vec<(Vec<u32>, ExprId)> {
     let mut buckets: BTreeMap<Vec<u32>, Vec<ExprId>> = BTreeMap::new();
     for (e, c) in raw {
@@ -100,7 +185,7 @@ fn normalize_terms(arena: &mut Arena, raw: Vec<(Vec<u32>, ExprId)>) -> Vec<(Vec<
     for (e, cs) in buckets {
         let c = if cs.len() == 1 { cs[0] } else { arena.add(&cs) };
         let c = norm_coeff(arena, c);
-        if !arena.is_zero_structural(c) {
+        if !proved_zero(arena, c) {
             out.push((e, c));
         }
     }
@@ -536,7 +621,9 @@ impl Poly {
     /// View `expr` as a polynomial in the generators `gens`.
     ///
     /// The expression is expanded and collected by monomial.  Coefficients
-    /// are evaluated (`.eval()`) and zero coefficients are dropped.
+    /// are evaluated (`.eval()`) and the coefficients proved zero are
+    /// dropped (see the [module documentation](self), "Zero
+    /// coefficients").
     ///
     /// Returns `None` when `gens` is empty, contains duplicates or
     /// non-symbols, or when a generator occurs in a non-polynomial position:
@@ -869,6 +956,27 @@ impl Poly {
     }
 
     /// Is this the zero polynomial?
+    ///
+    /// `true` exactly when every coefficient was **proved** zero (see the
+    /// [module documentation](self), "Zero coefficients"); `false` says
+    /// that some coefficient is not proved zero, which for a coefficient no
+    /// zero test decides is not a proof that the polynomial is nonzero.
+    /// Up to 0.60.0 only structural zeros counted:
+    /// `Poly((sin(a)² + cos(a)² − 1)·x, x)` was not zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::poly_ex::Poly;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let e = ctx.parse("(sin(a)^2 + cos(a)^2 - 1)*x").unwrap();
+    /// let p = Poly::new(&e, &[&x]).unwrap();
+    /// assert!(p.is_zero());
+    /// assert_eq!(p.total_degree(), None);
+    /// ```
     #[must_use]
     pub fn is_zero(&self) -> bool {
         self.num_terms() == 0
@@ -1045,6 +1153,9 @@ impl Poly {
     }
 
     /// Total degree (largest exponent sum); `None` for the zero polynomial.
+    ///
+    /// The degree of the terms whose coefficients are not proved zero
+    /// ([`is_zero`](Self::is_zero)).
     #[must_use]
     pub fn total_degree(&self) -> Option<u32> {
         self.exponents().map(|e| e.iter().sum::<u32>()).max()
@@ -1052,6 +1163,9 @@ impl Poly {
 
     /// Degree in one generator; `None` for the zero polynomial or a `var`
     /// that is not a generator.
+    ///
+    /// The degree of the terms whose coefficients are not proved zero
+    /// ([`is_zero`](Self::is_zero)).
     ///
     /// # Examples
     ///
@@ -1086,6 +1200,10 @@ impl Poly {
     }
 
     /// Leading term under the lexicographic order; `None` for zero.
+    ///
+    /// Its coefficient is not proved zero ([`is_zero`](Self::is_zero)): it
+    /// is nonzero whenever the zero test decides it, and kept when the test
+    /// is undecided.
     #[must_use]
     pub fn leading_term(&self) -> Option<(Vec<u32>, Ex)> {
         match &self.terms {
@@ -1101,6 +1219,9 @@ impl Poly {
     }
 
     /// Leading coefficient under the lexicographic order; `0` for zero.
+    ///
+    /// As [`leading_term`](Self::leading_term): a coefficient that is not
+    /// proved zero.
     #[must_use]
     pub fn leading_coeff(&self) -> Ex {
         self.leading_term()
@@ -1338,7 +1459,7 @@ impl Poly {
                 };
                 if remaining_ids.is_empty() {
                     let c = norm_coeff(arena, total);
-                    return Ok(if arena.is_zero_structural(c) {
+                    return Ok(if proved_zero(arena, c) {
                         vec![]
                     } else {
                         vec![(vec![], c)]

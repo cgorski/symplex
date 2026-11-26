@@ -1398,7 +1398,12 @@ fn sum_over_roots(
             arena.add(&terms)
         }
         FactorRoots::Implicit => {
-            let t = arena.symbol("__rs_t");
+            // The bound variable is part of the result: a symbol of the
+            // user's name space that the summand does not hold already
+            // (seen through a stand-in of the library's own).
+            let probe = arena.internal_symbol("__rs_probe");
+            let seen = body(arena, probe);
+            let t = crate::transforms::subs::fresh_symbol(arena, "__rs_t", &[seen]);
             let b = body(arena, t);
             let g_t = crate::poly::polybridge::poly_to_expr(arena, g, t);
             arena.intern(ExprNode::RootSum(g_t, b, t))

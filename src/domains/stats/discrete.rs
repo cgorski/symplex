@@ -256,6 +256,39 @@ pub struct Finite {
     /// Values of the table whose certified `f64` the constructor already
     /// had ([`Distribution::transformed`] forms it to merge equal images).
     known_f64: std::collections::HashMap<ValueKey, f64>,
+    /// The proved order of the values along the table, with the length of
+    /// the table it was proved for ([`Finite::with_order`]).
+    order: Option<(TableOrder, usize)>,
+    /// For an ordered table of rational masses: `P(X ≤ v)` for the values
+    /// in increasing order, summed once over a common denominator.
+    cumulative: std::sync::OnceLock<Option<CommonSums>>,
+    /// For an ordered table: the `f64` of each mass, the values taken in
+    /// increasing order, formed once (`None`: a mass without one).
+    masses_f64: std::sync::OnceLock<Option<Vec<f64>>>,
+}
+
+/// The cumulative masses of an ordered table of rational masses, as
+/// integers over one denominator: `prefix[j]/denom` is the mass of the
+/// `j + 1` smallest values.  The masses of a lattice family are fractions
+/// with a common denominator (`3ⁿ` for a `Binomial(n, 1/3)`); added as
+/// fractions, each partial sum would be reduced by a gcd of their size.
+#[derive(Clone, Debug)]
+struct CommonSums {
+    prefix: Vec<BigInt>,
+    denom: BigInt,
+}
+
+/// The order of the values of a table along its positions, proved by
+/// whoever built it: strictly increasing or strictly decreasing (so the
+/// values are distinct).  A query then finds a number among the values by
+/// bisection, comparing it with about `log₂ n` of them, and sums masses by
+/// position — no value of the table is evaluated to be ordered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TableOrder {
+    /// `table[i].0 < table[i + 1].0`.
+    Increasing,
+    /// `table[i].0 > table[i + 1].0`.
+    Decreasing,
 }
 
 impl fmt::Debug for Finite {
@@ -364,7 +397,160 @@ impl Finite {
             lookups: std::sync::OnceLock::new(),
             values_f64: std::sync::OnceLock::new(),
             known_f64: std::collections::HashMap::new(),
+            order: None,
+            cumulative: std::sync::OnceLock::new(),
+            masses_f64: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The same table, whose values the caller has proved to be in `order`
+    /// along its positions.
+    pub(super) fn with_order(mut self, order: TableOrder) -> Self {
+        self.order = Some((order, self.table.len()));
+        self
+    }
+
+    /// The proved order of the values; `None` without one, or when the
+    /// table changed since.
+    fn order(&self) -> Option<TableOrder> {
+        self.order
+            .filter(|(_, len)| *len == self.table.len())
+            .map(|(order, _)| order)
+    }
+
+    /// The position in the table of its `j`-th smallest value, for a table
+    /// in `order`.
+    fn position(&self, order: TableOrder, j: usize) -> usize {
+        match order {
+            TableOrder::Increasing => j,
+            TableOrder::Decreasing => self.table.len().saturating_sub(j + 1),
+        }
+    }
+
+    /// Where the number `x` lies among the values of an ordered table:
+    /// how many values are at most `x`, and the position of the value equal
+    /// to `x` if there is one.  A value of the table itself is found by its
+    /// node; any other number by bisection, each comparison exact for two
+    /// rationals and else the certified sign of the difference.  `None`
+    /// for a table without a proved order or a comparison left undecided
+    /// (the caller then orders `x` against every value, as for any table).
+    pub(super) fn locate(&self, x: &Ex) -> Option<(usize, Option<usize>)> {
+        use std::cmp::Ordering;
+        let order = self.order()?;
+        let n = self.table.len();
+        if let Some(&i) = self.lookups()?.by_value.get(&value_key(x)) {
+            let rank = match order {
+                TableOrder::Increasing => i + 1,
+                TableOrder::Decreasing => n - i,
+            };
+            return Some((rank, Some(i)));
+        }
+        let xq = x.as_rational();
+        let (mut lo, mut hi) = (0, n);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let at = self.position(order, mid);
+            let v = &self.table.get(at)?.0;
+            let ord = match (&xq, v.as_rational()) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                _ => super::family::sign_of(&(x - v)).to_ordering()?,
+            };
+            match ord {
+                Ordering::Equal => return Some((mid + 1, Some(at))),
+                Ordering::Less => hi = mid,
+                Ordering::Greater => lo = mid + 1,
+            }
+        }
+        Some((lo, None))
+    }
+
+    /// The cumulative masses of an ordered table in increasing order of its
+    /// values, when every mass is a rational: the least common denominator
+    /// (a gcd only where a denominator does not divide the one reached so
+    /// far), then integer sums.
+    fn cumulative(&self) -> Option<&CommonSums> {
+        self.cumulative
+            .get_or_init(|| {
+                let order = self.order()?;
+                let masses: Vec<Q> = (0..self.table.len())
+                    .map(|j| self.table.get(self.position(order, j))?.1.as_rational())
+                    .collect::<Option<_>>()?;
+                let mut denom = BigInt::one();
+                for m in &masses {
+                    let d = m.denom();
+                    if !(&denom % d).is_zero() {
+                        let g = crate::base::numeric::gcd_big(&denom, d);
+                        denom *= d / g;
+                    }
+                }
+                let mut acc = BigInt::zero();
+                let prefix = masses
+                    .iter()
+                    .map(|m| {
+                        acc += m.numer() * (&denom / m.denom());
+                        acc.clone()
+                    })
+                    .collect();
+                Some(CommonSums { prefix, denom })
+            })
+            .as_ref()
+            .filter(|cum| cum.prefix.len() == self.table.len())
+    }
+
+    /// The total mass of the values of an ordered table from its `from`-th
+    /// smallest up to, not including, its `to`-th smallest (counted from
+    /// 0): a rational from the cumulative masses when every mass is one,
+    /// else the sum of the masses.  `None` without a proved order.
+    pub(super) fn mass_between(&self, from: usize, to: usize) -> Option<Ex> {
+        let order = self.order()?;
+        let to = to.min(self.table.len());
+        if from >= to {
+            return Some(self.ctx.zero());
+        }
+        if let Some(cum) = self.cumulative() {
+            let upper = cum.prefix.get(to - 1)?;
+            let num = match from.checked_sub(1) {
+                Some(i) => upper - cum.prefix.get(i)?,
+                None => upper.clone(),
+            };
+            // Reduced by one gcd (Lehmer's), not by `Ratio::new`.
+            let g = crate::base::numeric::gcd_big(&num, &cum.denom);
+            let q = if g.is_zero() || g.is_one() {
+                Q::new_raw(num, cum.denom.clone())
+            } else {
+                Q::new_raw(num / &g, &cum.denom / &g)
+            };
+            return Some(self.ctx.from_ratio(q));
+        }
+        let mut acc = self.ctx.zero();
+        for j in from..to {
+            acc = &acc + &self.table.get(self.position(order, j))?.1;
+        }
+        Some(acc.simplify())
+    }
+
+    /// The `f64` of each mass of an ordered table, the values taken in
+    /// increasing order; `None` without a proved order or when a mass has
+    /// no finite `f64`.
+    pub(super) fn masses_in_order(&self) -> Option<&[f64]> {
+        self.masses_f64
+            .get_or_init(|| {
+                let order = self.order()?;
+                (0..self.table.len())
+                    .map(|j| {
+                        let p = &self.table.get(self.position(order, j))?.1;
+                        p.eval_f64().ok().filter(|m| m.is_finite())
+                    })
+                    .collect()
+            })
+            .as_deref()
+            .filter(|m| m.len() == self.table.len())
+    }
+
+    /// The `j`-th smallest value of an ordered table.
+    pub(super) fn value_in_order(&self, j: usize) -> Option<&Ex> {
+        let order = self.order()?;
+        self.table.get(self.position(order, j)).map(|(v, _)| v)
     }
 
     /// The same table, some of whose values come with their certified
@@ -458,6 +644,12 @@ impl Family for Finite {
             } else if let Some((_, p)) = self.table.iter().find(|(v, _)| v == k) {
                 return p.clone();
             }
+            // An ordered table: `k` is found among its values by bisection.
+            if let Some((_, atom)) = self.locate(k) {
+                return atom
+                    .and_then(|i| self.table.get(i))
+                    .map_or_else(|| self.ctx.zero(), |(_, p)| p.clone());
+            }
             let kf = k.eval_f64().ok();
             let floats = self.values_f64();
             let mut decided = true;
@@ -493,17 +685,26 @@ impl Family for Finite {
     }
 
     // The cumulative masses at a rational `x` when every value and mass
-    // is a rational (a binary search of the sorted values); `None`
-    // otherwise (the CDF is then the sum of the masses at or below `x`,
-    // `Distribution::cdf`).
+    // is a rational (a binary search of the sorted values), and at any
+    // number for an ordered table of rational masses ([`Finite::locate`]);
+    // `None` otherwise (the CDF is then the sum of the masses at or below
+    // `x`, `Distribution::cdf`).
     fn cdf(&self, x: &Ex) -> Option<Ex> {
-        let cum = self.lookups()?.cumulative.as_ref()?;
-        let xq = x.as_rational()?;
-        let below = cum.values.partition_point(|v| *v <= xq);
-        Some(match below.checked_sub(1).and_then(|i| cum.masses.get(i)) {
-            Some(m) => self.ctx.from_ratio(m.clone()),
-            None => self.ctx.zero(),
-        })
+        if let Some(cum) = self.lookups()?.cumulative.as_ref()
+            && let Some(xq) = x.as_rational()
+        {
+            let below = cum.values.partition_point(|v| *v <= xq);
+            return Some(match below.checked_sub(1).and_then(|i| cum.masses.get(i)) {
+                Some(m) => self.ctx.from_ratio(m.clone()),
+                None => self.ctx.zero(),
+            });
+        }
+        if !x.free_symbols().is_empty() {
+            return None;
+        }
+        self.cumulative()?;
+        let (rank, _) = self.locate(x)?;
+        self.mass_between(0, rank)
     }
 
     fn mean(&self) -> Option<Ex> {

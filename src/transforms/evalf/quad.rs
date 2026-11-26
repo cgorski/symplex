@@ -79,7 +79,28 @@
 //! finite piece over which a `sin`/`cos`/`tan` of a linear argument
 //! oscillates more often than any bisection could resolve refuses the
 //! integral at once (`Quad::unresolvable`) instead of spending the work
-//! budget on it (and the closed form is sought next).  A piece integrated
+//! budget on it (and the closed form is sought next).  A piece whose mass
+//! lies in a layer at one of its ends — the level-1 terms follow a power
+//! law that does not decay as far as `2⁻¹²⁴` of the piece from the end (or
+//! `2¹²⁴` out) and leave it within one step ([`end_layer`]) — on which
+//! tanh-sinh did not converge, and whose layer no level before the last
+//! resolves (the last takes more evaluations than the quadrature has), is
+//! not bisected and not tried by
+//! Gauss–Legendre: neither reaches the layer, and the piece has no bound
+//! (since 0.60.1; up to 0.60 it was bisected to the last depth).  The rule
+//! only refuses: such a piece has no bound, so the integral is not
+//! certified, and a piece it does not apply to is integrated as before
+//! (what the rule reads are the terms tanh-sinh sums anyway: no
+//! evaluation is added).  A layer that an earlier level resolves is left
+//! to the levels and the bisection whatever evaluations are left: the
+//! level is an estimate for the piece's own tolerance, and the digits
+//! asked are often reached a level earlier (a rule that compared the
+//! level's evaluations with those left refused values 0.60 certifies).
+//! That the rule as it stands refuses nothing 0.60 certified is
+//! measured, not proved, on the test suite, the golden corpus and three
+//! corpora of integrals with end layers of every depth (the lane's notes
+//! of 0.60.1).
+//! A piece integrated
 //! after others needs only a share of their tolerance in absolute terms.
 //!
 //! # What is certified
@@ -126,7 +147,7 @@
 //! each set) are cached per thread.
 
 use super::ball::CBall;
-use super::wp::{RM, Wp};
+use super::wp::{Guard, RM, Wp};
 use crate::base::bigfloat;
 use astro_float::{BigFloat, Consts};
 use num_bigint::BigInt;
@@ -203,6 +224,19 @@ const MIN_GL_DEGREE: u32 = 4;
 const GL_CACHE: usize = 8;
 /// Precisions kept in the integrand's constant cache.
 const MAX_PRECISIONS: usize = 24;
+/// The first level-1 node (`t = 4`, `2⁻¹²⁴` of the piece from its end, or
+/// `2¹²⁴` out) at which a change of the integrand's order is an *end
+/// layer* (see [`end_layer`]): bisection, [`MAX_DEPTH`] halvings, moves it 8
+/// octaves.
+const END_LAYER_MIN_NODE: usize = 8;
+/// The local order (relative to `1/x`) up to which the terms before an end
+/// layer count as not decaying: a layer `2⁻¹²⁴` of the piece then holds
+/// `2⁻³¹` of its mass or more.
+const END_LAYER_ORDER: f64 = 0.25;
+/// The orders of three steps in a row agree to this (a power law).
+const END_LAYER_SPREAD: f64 = 0.15;
+/// The rise of the order within one step that ends the power law.
+const END_LAYER_RISE: f64 = 0.5;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The integrand
@@ -849,6 +883,121 @@ struct PieceOut {
     /// blind: its sum is 0 and its bound that of the underflows, whatever
     /// lies between the nodes (see [`Quad::run`]).
     seen: bool,
+    /// An end layer the level-1 walk crossed ([`end_layer`]); `None` for
+    /// none (and for Gauss–Legendre).
+    end_layer: Option<EndLayer>,
+}
+
+/// An end layer of a piece ([`end_layer`]) and what resolving it takes.
+#[derive(Clone, Copy, Debug)]
+struct EndLayer {
+    /// `log₂` of its depth: octaves from the end of the piece, or out
+    /// towards an infinite end (a lower bound: the last node before it).
+    octaves: f64,
+    /// The first level whose step resolves it for the piece's tolerance
+    /// (`None` beyond every count).
+    level: Option<u32>,
+}
+
+impl EndLayer {
+    /// No level resolves the layer within the evaluations: it takes the
+    /// last ([`MAX_LEVEL`]) or one beyond.  (Measured: a layer that level
+    /// 11 resolves, 15,360 evaluations on its piece, takes 27,208 of the
+    /// 30,000 — the piece and two halves are given up at level 6 or 7
+    /// first — so one that needs level 12 is not reached.)  An earlier
+    /// level does not count, whatever evaluations are left: the digits
+    /// asked may be reached before the piece's tolerance is.
+    fn out_of_reach(&self) -> bool {
+        self.level.is_none_or(|k| k >= MAX_LEVEL)
+    }
+}
+
+/// The end of a power law on one side of a piece, as the level-1 walk saw
+/// it ([`end_layer`]): the last node `t = node/2` on the law, the law's
+/// order `β`, `log₂` of that node's term, and the depth in nats of the last
+/// node known to be on the law (that node's, until the nodes of the next
+/// two levels between it and its neighbour are seen: [`LawEnd::see`]).
+#[derive(Clone, Copy, Debug)]
+struct LawEnd {
+    node: usize,
+    order: f64,
+    size: ErrExp,
+    nats: f64,
+}
+
+impl LawEnd {
+    /// The term of the size `2^size` at `t = j·2⁻ᵏ` (level `k`, whose
+    /// weights are `2^−(k − 1)` of level 1's): between the last node on the
+    /// law and the next, it moves the law's end out when it lies within a
+    /// factor `e` of what the law gives there (the order in excess of the
+    /// law's, summed from that node, is below 1).
+    fn see(&mut self, j: u64, k: u32, size: ErrExp) {
+        let (t0, t) = (self.node as f64 / 2.0, j as f64 * (-f64::from(k)).exp2());
+        if !(t > t0 && t < t0 + 0.5 && size.is_finite()) {
+            return;
+        }
+        let depth = |t: f64| std::f64::consts::PI * t.sinh();
+        let ln_term = (size + f64::from(k) - 1.0 - self.size) * std::f64::consts::LN_2;
+        let law = t.cosh().ln() - t0.cosh().ln() - self.order * (depth(t) - depth(t0));
+        if law - ln_term <= 1.0 {
+            self.nats = self.nats.max(depth(t));
+        }
+    }
+}
+
+/// Where the level-1 terms `sizes` of one side of a piece (`log₂` of
+/// `|W f|` at `t = j/2`, `j = 1, 2, …`) stop following a power law that
+/// does not decay ([`LawEnd`]), or `None`.
+///
+/// At `t` the node lies `e^{−L}` of the piece from its end, `L = π sinh t`
+/// (`e^{L}` out towards an infinite one), and an integrand of the order
+/// `x^(−1 + β)` there (`x^(−1 − β)` at infinity) has terms `∝ cosh t·e^{−βL}`:
+/// between two nodes `β = −Δ(ln|W f| − ln cosh t)/ΔL`.  Tanh-sinh sums such
+/// terms well for any `β > 0` — they are smooth in `t` — but a change of
+/// `β` at a depth `L*` takes a few units of `L`, that is `1/L*` in `t`
+/// (`dL = π cosh t·dt ≈ L·dt`), and the trapezoidal sum of a function
+/// analytic in a strip of half-width `d` has the error `e^{−2πd/h}`: with
+/// `d = π/(2L*)` (a change like `1/(1 + e^{2L})`) the step that reaches the
+/// tolerance `2^−T` is `h = π²/(L*·T·ln 2)`.  (Measured: a layer 332
+/// octaves deep is resolved at level 11 at 20 digits, in 4 s and most of
+/// the evaluations, one of 664 octaves by no level.)  A bisection moves
+/// the change one octave.  So when the order stays at `β ≤`
+/// [`END_LAYER_ORDER`] over three steps in a row (the same to
+/// [`END_LAYER_SPREAD`]: a power law that does not decay, whose mass lies
+/// where it ends) as far as node [`END_LAYER_MIN_NODE`] or beyond, and then
+/// rises by [`END_LAYER_RISE`] or more within one step, at a node that
+/// carries a part of the sum, the piece's mass lies in a layer that only
+/// that step resolves — `∫₀^∞ x^(9/2)(1 + cx)^(−11/2 − ε) e^{−x/8} dx` with
+/// `c = 5·10²⁵³` is `1/x` from `x = 2⁻⁸⁴⁴` to 1, and needs `h < 2⁻¹¹`, the
+/// last level: 30,720 evaluations on its first piece alone, of 30,000.
+fn end_layer(sizes: &[ErrExp], l1: ErrExp) -> Option<LawEnd> {
+    let depth = |j: usize| std::f64::consts::PI * (j as f64 / 2.0).sinh();
+    // The order between the nodes `j` and `j + 1` (`+∞` when the terms
+    // vanish or underflow after a term that has a size).
+    let order = |j: usize| -> Option<f64> {
+        let (a, b) = (*sizes.get(j.checked_sub(1)?)?, *sizes.get(j)?);
+        if !a.is_finite() {
+            return None;
+        }
+        if !b.is_finite() {
+            return (b < a).then_some(f64::INFINITY);
+        }
+        let cosh = ((j + 1) as f64 / 2.0).cosh().ln() - (j as f64 / 2.0).cosh().ln();
+        Some(-((b - a) * std::f64::consts::LN_2 - cosh) / (depth(j + 1) - depth(j)))
+    };
+    (END_LAYER_MIN_NODE..sizes.len()).find_map(|j| {
+        let before = [order(j - 3)?, order(j - 2)?, order(j - 1)?];
+        let top = before.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let bottom = before.iter().copied().fold(f64::INFINITY, f64::min);
+        let law = top <= END_LAYER_ORDER && top - bottom <= END_LAYER_SPREAD;
+        let carries = sizes[j - 1] >= l1 - 16.0;
+        (law && carries && order(j)? >= before[2] + END_LAYER_RISE).then(|| LawEnd {
+            node: j,
+            order: before[2],
+            size: sizes[j - 1],
+            nats: depth(j),
+        })
+    })
 }
 
 /// The result of a quadrature: the sum, its error bound (`log₂`), whether
@@ -1400,6 +1549,9 @@ impl<'a> Quad<'a> {
             }
         }
         let ends = cut;
+        // The end of a power law that does not decay, on either side (`l1`
+        // is the level-1 sum's): the next two levels place it.
+        let mut laws = [end_layer(&sizes[0], l1), end_layer(&sizes[1], l1)];
         let mut prev = sum.clone();
         let mut d_hist: Vec<ErrExp> = Vec::new();
         let mut out_err = accuracy::UNKNOWN;
@@ -1432,8 +1584,13 @@ impl<'a> Quad<'a> {
                         self.term(piece, &half, Some(side), Some(node.as_ref()), k, budget, cc)?;
                     real &= t.real;
                     seen |= t.seen;
-                    level_l1 =
-                        accuracy::lsum(level_l1, accuracy::lsum(accuracy::lg_abs(&t.value), t.err));
+                    let size = accuracy::lsum(accuracy::lg_abs(&t.value), t.err);
+                    if k <= 3
+                        && let Some(law) = &mut laws[si]
+                    {
+                        law.see(j, k, size);
+                    }
+                    level_l1 = accuracy::lsum(level_l1, size);
                     level_err = accuracy::lsum(level_err, t.err);
                     level = c_add(&level, &t.value, psum, RM);
                     additions += 1;
@@ -1470,6 +1627,26 @@ impl<'a> Quad<'a> {
                 break;
             }
         }
+        // The deeper end layer, and the level whose step, `π²/(L·T·ln 2)`
+        // for the tolerance `2^−T`, resolves it (see [`end_layer`]).
+        let end_layer = laws
+            .iter()
+            .flatten()
+            .map(|law| law.nats)
+            .reduce(f64::max)
+            .map(|nats| {
+                let bits = (self.prec - TARGET_GUARD.min(self.prec)) as f64;
+                let pi = std::f64::consts::PI;
+                let steps = nats * bits * std::f64::consts::LN_2 / (pi * pi);
+                let level = match Guard::for_log2(steps.log2()) {
+                    Guard::Bits(k) => Some(k),
+                    _ => None,
+                };
+                EndLayer {
+                    octaves: nats * std::f64::consts::LOG2_E,
+                    level,
+                }
+            });
         Ok(PieceOut {
             value: sum,
             err: out_err,
@@ -1479,6 +1656,7 @@ impl<'a> Quad<'a> {
             real,
             digits,
             seen,
+            end_layer,
         })
     }
 
@@ -1590,6 +1768,7 @@ impl<'a> Quad<'a> {
             real: true,
             digits: 0.0,
             seen: false,
+            end_layer: None,
         };
         let mut rel_hist: Vec<ErrExp> = Vec::new();
         for m in 2..=MAX_GL_DEGREE {
@@ -1702,6 +1881,9 @@ impl<'a> Quad<'a> {
             };
             let mut best: Option<PieceOut> = None;
             let mut ts_digits = f64::INFINITY;
+            // An end layer on which tanh-sinh did not converge and that no
+            // level within the evaluations resolves ([`end_layer`]).
+            let mut layer: Option<EndLayer> = None;
             let order: &[bool] = if gl_only {
                 &[true]
             } else if gl_first {
@@ -1721,6 +1903,9 @@ impl<'a> Quad<'a> {
                 };
                 if !gl {
                     ts_digits = out.digits;
+                    if !out.converged && out.seen {
+                        layer = out.end_layer.filter(EndLayer::out_of_reach);
+                    }
                 }
                 // A blind rule (no node had a value) converges on nothing
                 // (its underflow bounds also pass for an accuracy limit):
@@ -1739,15 +1924,39 @@ impl<'a> Quad<'a> {
                     }
                     best = Some(out);
                 }
-                if done {
+                // Gauss–Legendre has no node in an end layer: where it
+                // agreed with itself it would have left the layer out.
+                if done || layer.is_some() {
                     break;
                 }
             }
-            let Some(out) = best else {
+            let Some(mut out) = best else {
                 return Err(internal("piece result").into());
             };
+            // The mass of the piece lies in a layer at an end that no
+            // bisection isolates, and the level that resolves it is the
+            // last or beyond, more evaluations than the quadrature has:
+            // the piece has no bound (the
+            // levels agree on what they both miss; a bound of its own size
+            // would read as an integral that is 0 to the digits), and it
+            // is not bisected.  Up to 0.60 it was, to the last depth: the
+            // moment generating function of `FDistribution(11, 2.3·10⁻²⁵³)`
+            // at `−1/8`, `1/x` from `2⁻⁸⁴⁴` to 1, took 10,775 evaluations
+            // (1.5 s) to be refused.
+            if let Some(EndLayer { octaves, level }) = layer {
+                debug!(
+                    depth,
+                    octaves,
+                    level = level.unwrap_or(u32::MAX),
+                    left = self.work.left(),
+                    "quadrature: the mass lies in an end layer that no level within the evaluations resolves"
+                );
+                out.err = accuracy::UNKNOWN;
+                out.converged = false;
+            }
             let bisect = !out.converged
                 && out.discretisation
+                && layer.is_none()
                 && depth < MAX_DEPTH
                 && count < MAX_PIECES
                 && self.work.left() > self.work.cap() / 8;
@@ -2251,6 +2460,70 @@ mod tests {
 
     fn to_f64(x: &BigFloat) -> f64 {
         super::super::f64_of(x).unwrap_or(f64::NAN)
+    }
+
+    /// The level-1 terms (`log₂`, at `t = j/2`, `j = 1 … n`) of an integrand of
+    /// the order `x^(−1 + before)` down to `e^−cut` of the piece from its end
+    /// and `x^(−1 + after)` below: `cosh t·e^{−βL}`, `L = π sinh t`.
+    fn terms(before: f64, after: f64, cut: f64, n: usize) -> Vec<ErrExp> {
+        (1..=n)
+            .map(|j| {
+                let t = j as f64 / 2.0;
+                let l = std::f64::consts::PI * t.sinh();
+                let decay = before * l.min(cut) + after * (l - cut).max(0.0);
+                (t.cosh().ln() - decay) * std::f64::consts::LOG2_E
+            })
+            .collect()
+    }
+
+    /// [`end_layer`] finds where a power law that does not decay ends, when
+    /// that is deep, and nothing in the terms tanh-sinh sums well.  The
+    /// first case is the level-1 walk of the moment generating function of
+    /// `FDistribution(11, 2.3·10⁻²⁵³)`: `1/x` down to `2⁻⁸⁴⁴ = e^−585`, `x^(9/2)`
+    /// below.  Up to 0.60 nothing looked: the piece was bisected eight
+    /// times (10,775 evaluations, 1.5 s) before the integral was refused.
+    ///
+    /// Oracle: the definition — `π sinh(11/2) = 384.4 < 585 < 633.6 =
+    /// π sinh 6` (Python `math.pi*math.sinh(5.5)`, `math.pi*math.sinh(6)`), so
+    /// the law ends between the nodes 11 and 12; `π sinh 4 = 85.7`.
+    #[test]
+    fn the_end_of_a_power_law_that_does_not_decay_is_found() {
+        let l1 = |s: &[ErrExp]| s.iter().copied().fold(accuracy::EXACT, accuracy::lsum);
+        // `1/x`, then `x^(9/2)`, from `e^−585` on: between the nodes 11 and 12.
+        let s = terms(0.0, 5.5, 585.0, 14);
+        let law = end_layer(&s, l1(&s)).unwrap();
+        assert_eq!(law.node, 11);
+        assert!(law.order.abs() < 1e-9);
+        assert!((law.nats - std::f64::consts::PI * 5.5f64.sinh()).abs() < 1e-9);
+        // The nodes of the next levels between the two place it: `t = 5.875`
+        // (`e^−559`) is on the law, `t = 5.9375` (`e^−595`) is not.
+        let mut law = law;
+        let term = |t: f64, k: u32| {
+            let l = std::f64::consts::PI * t.sinh();
+            (t.cosh().ln() - 5.5 * (l - 585.0).max(0.0)) * std::f64::consts::LOG2_E - f64::from(k)
+                + 1.0
+        };
+        law.see(47, 3, term(5.875, 3));
+        law.see(95, 4, term(5.9375, 4));
+        assert!((law.nats - std::f64::consts::PI * 5.875f64.sinh()).abs() < 1e-9);
+        // A power that decays, however slowly, has no end layer: `x^(−9/10)`,
+        // and `x^(−999/1000)`, whose terms grow as far as `t = 6.5`.
+        for beta in [0.1, 0.001] {
+            let s = terms(beta, beta, 0.0, 24);
+            assert!(end_layer(&s, l1(&s)).is_none(), "{beta}");
+        }
+        // An end that is not deep (before node 8, `e^−86`): tanh-sinh's own
+        // levels and the bisection deal with it.
+        let s = terms(0.0, 5.5, 60.0, 12);
+        assert!(end_layer(&s, l1(&s)).is_none());
+        // An integrable order before the end (`x^(−1/2)`): the layer holds
+        // nothing of the mass.
+        let s = terms(0.5, 5.5, 585.0, 14);
+        assert!(end_layer(&s, l1(&s)).is_none());
+        // Terms that vanish after the law (an underflow, a cut-off): an end.
+        let mut s = terms(0.0, 0.0, 0.0, 12);
+        s.extend([accuracy::EXACT, accuracy::EXACT]);
+        assert_eq!(end_layer(&s, l1(&s)).map(|law| law.node), Some(12));
     }
 
     /// The 12-point Gauss–Legendre rule (`m = 3`) integrates `x^22` exactly:

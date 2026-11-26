@@ -38,6 +38,12 @@
 //! several strips (`1/(s + a)`) the strip `Re s > −a` — i.e. the function
 //! supported on `(0, 1)` — is chosen; this is documented on
 //! `Ex::inverse_mellin_transform`.
+//!
+//! `Ex::inverse_mellin_transform_in_strip` (since 0.60.1) takes the strip:
+//! every table entry knows the strip of its function and its poles, and on
+//! another pole-free strip the function is the table's one minus (to the
+//! left) or plus (to the right) the residues of `F(s)·x^{−s}` at the poles
+//! crossed (`entry_on_strip`).
 
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -150,6 +156,22 @@ impl Strip {
         Ok(Self { lower, upper })
     }
 
+    /// Is this strip proved to lie inside `outer`?  Bounds compare when
+    /// they are the same expression or their difference has a known sign.
+    fn within(self, arena: &mut Arena, outer: Strip) -> bool {
+        let lower = match (outer.lower, self.lower) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(o), Some(w)) => proved_le(arena, o, w),
+        };
+        let upper = match (outer.upper, self.upper) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(o), Some(w)) => proved_le(arena, w, o),
+        };
+        lower && upper
+    }
+
     /// The strip as a boolean condition on `Re(s)`.
     fn condition(self, arena: &mut Arena, s: ExprId) -> ExprId {
         let re_s = arena.re(s);
@@ -198,6 +220,203 @@ fn extremum(arena: &mut Arena, a: ExprId, b: ExprId, want_max: bool) -> ExprId {
                 arena.intern(ExprNode::Min(args))
             }
         }
+    }
+}
+
+/// `a ≤ b`, proved: the same expression, or a difference of known sign.
+fn proved_le(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
+    if a == b {
+        return true;
+    }
+    let d = arena.sub(b, a);
+    crate::calculus::limit::const_sign(arena, d).is_some_and(|sgn| sgn >= 0)
+}
+
+/// `a < b`, proved by the sign of the difference.
+fn proved_lt(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
+    let d = arena.sub(b, a);
+    crate::calculus::limit::const_sign(arena, d).is_some_and(|sgn| sgn > 0)
+}
+
+/// A family of poles of a table entry on the real axis: `start`, `start +
+/// step`, `start + 2·step`, … (one pole when `step` is `None`).
+#[derive(Clone, Copy)]
+struct PoleFamily {
+    start: ExprId,
+    step: Option<ExprId>,
+}
+
+/// Poles of one family examined before [`entry_on_strip`] gives up.
+const MAX_POLES_PER_FAMILY: usize = 64;
+
+/// The function whose Mellin transform is the table entry `atom` **on the
+/// strip `want`**, given the table's function `f0` for the entry, the
+/// strip `home` on which `f0` has that transform, and the entry's poles.
+///
+/// * `want` inside `home`: `f0`.
+/// * `want` to the left of `home`, whose left end is a pole: the line of
+///   integration of the inversion integral moves left across the poles
+///   `p` with `want.upper ≤ p ≤ home.lower`, and the function is `f0 − Σ
+///   Res_{s=p} atom(s)·x^{−s}` (`Γ(s)` on `−1 < Re s < 0` is the transform
+///   of `e^{−x} − 1`).  To the right, `f0 + Σ Res` over `home.upper ≤ p ≤
+///   want.lower`.
+/// * Refused: a pole inside `want`; an end of `home` that is not a pole
+///   (there the transform integral of `f0` stops converging because of the
+///   growth of `f0`, and beyond it `atom` is the transform of no function:
+///   `Γ(s)·cos(πs/2)` for `Re s > 1`); a position that cannot be decided
+///   (symbolic bounds); more than [`MAX_POLES_PER_FAMILY`] poles to cross.
+#[allow(clippy::too_many_arguments)]
+fn entry_on_strip(
+    arena: &mut Arena,
+    atom: ExprId,
+    f0: ExprId,
+    home: Strip,
+    families: &[PoleFamily],
+    want: Strip,
+    s: ExprId,
+    x: ExprId,
+) -> Result<ExprId, SymplexError> {
+    const OP: &str = "inverse_mellin_transform_in_strip";
+    if want.within(arena, home) {
+        return Ok(f0);
+    }
+    // The side `want` lies on, and the closed range of poles to cross.
+    let (leftwards, range_lo, range_hi) = match (want.upper, home.lower, want.lower, home.upper) {
+        (Some(u), Some(l), _, _) if proved_le(arena, u, l) => (true, u, l),
+        (_, _, Some(l), Some(u)) if proved_le(arena, u, l) => (false, u, l),
+        _ => {
+            return Err(fail(
+                OP,
+                "a pole of the transform lies inside the strip, or the strip cannot be placed \
+                 among the poles",
+            ));
+        }
+    };
+    let undecided = || fail(OP, "a pole cannot be placed relative to the strip");
+    // The end of `home` that the line of integration leaves through.
+    let end = if leftwards { range_hi } else { range_lo };
+    let mut crossed: Vec<ExprId> = Vec::new();
+    let mut end_is_a_pole = false;
+    for family in families {
+        let mut finished = false;
+        let rising = match family.step {
+            Some(step) => match crate::calculus::limit::const_sign(arena, step) {
+                Some(sgn) if sgn > 0 => true,
+                Some(sgn) if sgn < 0 => false,
+                _ => return Err(undecided()),
+            },
+            None => false,
+        };
+        for n in 0..MAX_POLES_PER_FAMILY {
+            let p = match family.step {
+                Some(step) if n > 0 => {
+                    let k = arena.int(n as i64);
+                    let off = arena.mul(&[k, step]);
+                    let p = arena.add(&[family.start, off]);
+                    crate::transforms::eval::eval(arena, p)
+                }
+                _ => family.start,
+            };
+            // Inside the strip asked for: no function has this transform there.
+            let above_lower = want.lower.is_none_or(|l| proved_lt(arena, l, p));
+            let below_upper = want.upper.is_none_or(|u| proved_lt(arena, p, u));
+            if above_lower && below_upper {
+                return Err(fail(OP, "a pole of the transform lies inside the strip"));
+            }
+            if proved_le(arena, range_lo, p) && proved_le(arena, p, range_hi) {
+                crossed.push(p);
+                if proved_le(arena, end, p) && proved_le(arena, p, end) {
+                    end_is_a_pole = true;
+                }
+            } else if !(proved_lt(arena, p, range_lo) || proved_lt(arena, range_hi, p)) {
+                return Err(undecided());
+            }
+            // The family has left the part of the axis that matters: the
+            // range crossed and the strip asked for.
+            let past = if rising {
+                proved_lt(arena, range_hi, p) && want.upper.is_none_or(|u| proved_le(arena, u, p))
+            } else {
+                proved_lt(arena, p, range_lo) && want.lower.is_none_or(|l| proved_le(arena, p, l))
+            };
+            if past || family.step.is_none() {
+                finished = true;
+                break;
+            }
+        }
+        if !finished {
+            return Err(fail(
+                OP,
+                "too many poles between the strip and the table's strip",
+            ));
+        }
+    }
+    if !end_is_a_pole {
+        return Err(fail(
+            OP,
+            "the transform is that of no function on this strip (the table's strip does not \
+             end at a pole)",
+        ));
+    }
+    let neg_s = arena.neg(s);
+    let kernel = arena.pow(x, neg_s);
+    let integrand = arena.mul(&[atom, kernel]);
+    let mut terms = vec![f0];
+    for p in crossed {
+        let r = match crate::calculus::residue::residue(arena, integrand, s, p) {
+            Ok(r) if !depends_on(arena, r, s) && !crate::base::walk::has_unevaluated(arena, r) => r,
+            // The residue engine refuses the poles of `Γ` (it takes the
+            // numerator for non-analytic); they are simple.
+            _ => simple_pole_residue(arena, atom, s, x, p)?,
+        };
+        terms.push(if leftwards { arena.neg(r) } else { r });
+    }
+    let sum = arena.add(&terms);
+    Ok(crate::transforms::eval::eval(arena, sum))
+}
+
+/// `Res_{s=p} atom(s)·x^{−s}` for a simple pole `p` of `atom`: `x^{−p}·lim_{s→p}
+/// (s − p)·atom(s)`, the limit by the limit engine.  A limit that is not a
+/// finite constant (a pole of higher order, a limit the engine does not
+/// find) is a refusal.
+fn simple_pole_residue(
+    arena: &mut Arena,
+    atom: ExprId,
+    s: ExprId,
+    x: ExprId,
+    p: ExprId,
+) -> Result<ExprId, SymplexError> {
+    const OP: &str = "inverse_mellin_transform_in_strip";
+    let distance = arena.sub(s, p);
+    let scaled = arena.mul(&[distance, atom]);
+    let c = crate::calculus::limit::limit(arena, scaled, s, p)?;
+    if crate::base::value_class::ValueClass::special_atom(arena, c).is_some()
+        || depends_on(arena, c, s)
+        || crate::base::walk::has_unevaluated(arena, c)
+    {
+        return Err(fail(OP, "a residue could not be computed"));
+    }
+    let neg_p = arena.neg(p);
+    let power = arena.pow(x, neg_p);
+    Ok(arena.mul(&[c, power]))
+}
+
+/// The table's function `f0` of the entry `atom`, placed on the strip
+/// asked for ([`entry_on_strip`]); `f0` itself when no strip is asked for
+/// (`Ex::inverse_mellin_transform`).
+#[allow(clippy::too_many_arguments)]
+fn table_entry(
+    arena: &mut Arena,
+    atom: ExprId,
+    f0: ExprId,
+    home: Strip,
+    families: &[PoleFamily],
+    want: Option<Strip>,
+    s: ExprId,
+    x: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    match want {
+        None => Ok(Some(f0)),
+        Some(want) => entry_on_strip(arena, atom, f0, home, families, want, s, x).map(Some),
     }
 }
 
@@ -353,7 +572,80 @@ pub(crate) fn inverse_mellin_transform(
             reason: "the variable and the transform variable must be distinct".into(),
         });
     }
-    let f = inverse(arena, expr, s, x, 0)?;
+    let f = inverse(arena, expr, s, x, 0, None)?;
+    let f = crate::transforms::eval::eval(arena, f);
+    if depends_on(arena, f, s) || crate::base::walk::has_unevaluated(arena, f) {
+        return Err(fail(OP, "result still depends on the transform variable"));
+    }
+    Ok(f)
+}
+
+/// The function of `x` whose Mellin transform is `expr` (a function of
+/// `s`) **on the strip `lower < Re s < upper`** (`-oo` and `oo` for an open
+/// side).
+///
+/// A transform determines its function only together with its strip: `−1/s`
+/// is the transform of `H(x − 1)` on `Re s < 0` and of `−H(1 − x)` on
+/// `Re s > 0`.  Sums, constant factors, `a^{±s}` and shifts `G(s + a)` carry the
+/// strip to the table entries (a shift moves it by `a`), and each entry is
+/// placed on its strip by [`entry_on_strip`]: the table's function when the
+/// strip lies inside the entry's own, corrected by the residues at the
+/// poles crossed when it lies beyond a pole, and a refusal when a pole lies
+/// inside the strip, when the strip is empty, or when the strip cannot be
+/// placed among the poles.
+pub(crate) fn inverse_mellin_transform_in_strip(
+    arena: &mut Arena,
+    expr: ExprId,
+    s: ExprId,
+    x: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+) -> Result<ExprId, SymplexError> {
+    use crate::base::value_class::ValueClass;
+    const OP: &str = "inverse_mellin_transform_in_strip";
+    require_symbol(arena, s, OP, "the transform variable")?;
+    require_symbol(arena, x, OP, "the variable")?;
+    if x == s {
+        return Err(SymplexError::InvalidArgument {
+            operation: OP,
+            reason: "the variable and the transform variable must be distinct".into(),
+        });
+    }
+    let invalid = |reason: &str| SymplexError::InvalidArgument {
+        operation: OP,
+        reason: reason.into(),
+    };
+    for bound in [lower, upper] {
+        if depends_on(arena, bound, s) || depends_on(arena, bound, x) {
+            return Err(invalid(
+                "a bound of the strip depends on a transform variable",
+            ));
+        }
+    }
+    let lower = match ValueClass::special_atom(arena, lower) {
+        None => Some(lower),
+        Some(ValueClass::NegInf) => None,
+        Some(_) => {
+            return Err(invalid(
+                "the lower bound of the strip is a real number or -oo",
+            ));
+        }
+    };
+    let upper = match ValueClass::special_atom(arena, upper) {
+        None => Some(upper),
+        Some(ValueClass::PosInf) => None,
+        Some(_) => {
+            return Err(invalid(
+                "the upper bound of the strip is a real number or oo",
+            ));
+        }
+    };
+    if let (Some(l), Some(u)) = (lower, upper)
+        && proved_le(arena, u, l)
+    {
+        return Err(invalid("the strip is empty"));
+    }
+    let f = inverse(arena, expr, s, x, 0, Some(Strip { lower, upper }))?;
     let f = crate::transforms::eval::eval(arena, f);
     if depends_on(arena, f, s) || crate::base::walk::has_unevaluated(arena, f) {
         return Err(fail(OP, "result still depends on the transform variable"));
@@ -1016,6 +1308,7 @@ fn inverse(
     s: ExprId,
     x: ExprId,
     depth: usize,
+    want: Option<Strip>,
 ) -> Result<ExprId, SymplexError> {
     const OP: &str = "inverse_mellin_transform";
     if depth > MAX_RULE_DEPTH {
@@ -1028,12 +1321,12 @@ fn inverse(
         let kids = children.clone();
         let mut terms = Vec::with_capacity(kids.len());
         for child in kids {
-            terms.push(inverse(arena, child, s, x, depth)?);
+            terms.push(inverse(arena, child, s, x, depth, want)?);
         }
         return Ok(arena.add(&terms));
     }
     if let ExprNode::Neg(inner) = node {
-        let f = inverse(arena, inner, s, x, depth)?;
+        let f = inverse(arena, inner, s, x, depth, want)?;
         return Ok(arena.neg(f));
     }
     if !depends_on(arena, expr, s) {
@@ -1066,7 +1359,9 @@ fn inverse(
             return Err(fail(OP, "a pure exponential in s is not in the table"));
         }
         let body = arena.mul(&body_factors);
-        let mut f = inverse(arena, body, s, x, depth + 1)?;
+        // A constant factor and `a^{±s}` (entire, without zeros) leave the
+        // strip where it is.
+        let mut f = inverse(arena, body, s, x, depth + 1, want)?;
         if let Some((a, is_neg)) = scale {
             // a^{−s} F(s) ↔ f(a x);  a^{s} F(s) ↔ f(x/a)
             let arg = if is_neg {
@@ -1081,12 +1376,12 @@ fn inverse(
         return Ok(arena.mul(&all));
     }
 
-    if let Some(r) = inverse_table(arena, expr, &node, s, x)? {
+    if let Some(r) = inverse_table(arena, expr, &node, s, x, want)? {
         return Ok(r);
     }
 
     // Shift rule: F(s) = G(s + a) ↔ f = x^a g(x).
-    if let Some(r) = inverse_shift(arena, expr, s, x, depth)? {
+    if let Some(r) = inverse_shift(arena, expr, s, x, depth, want)? {
         return Ok(r);
     }
 
@@ -1102,10 +1397,22 @@ fn inverse_table(
     node: &ExprNode,
     s: ExprId,
     x: ExprId,
+    want: Option<Strip>,
 ) -> Result<Option<ExprId>, SymplexError> {
     let one = arena.one();
     let two = arena.int(2);
     let pi = arena.pi();
+    let zero = arena.zero;
+    let minus_one = arena.neg_one();
+    // The poles `0, −1, −2, …` and `1, 2, 3, …`.
+    let left_from_zero = PoleFamily {
+        start: zero,
+        step: Some(minus_one),
+    };
+    let right_from_one = PoleFamily {
+        start: one,
+        step: Some(one),
+    };
     match node.clone() {
         // Γ(s/b) → b·e^{−x^b};  Γ(s) → e^{−x}
         ExprNode::Gamma(arg) => {
@@ -1126,7 +1433,20 @@ fn inverse_table(
                 Some(sg) if sg < 0 => arena.neg(b),
                 _ => return Ok(None),
             };
-            Ok(Some(arena.mul(&[abs_b, e])))
+            let f0 = arena.mul(&[abs_b, e]);
+            // `Γ(s/b)`: the transform on `Re s > 0` for `b > 0` and on `Re
+            // s < 0` for `b < 0`; poles at `s = −n·b`.
+            let home = if abs_b == b {
+                Strip::above(zero)
+            } else {
+                Strip::below(zero)
+            };
+            let step = arena.neg(b);
+            let poles = [PoleFamily {
+                start: zero,
+                step: Some(step),
+            }];
+            table_entry(arena, expr, f0, home, &poles, want, s, x)
         }
         // B(s, ν − s) → (1 + x)^{−ν};  B(s, b + 1) → H(1 − x)(1 − x)^b
         ExprNode::Beta(p, q) => {
@@ -1136,18 +1456,45 @@ fn inverse_table(
             }
             if let Some(Linear { a: k, b: c }) = linear_in(arena, q, s) {
                 if k == arena.neg_one() {
-                    // q = ν − s
+                    // q = ν − s: on `0 < Re s < ν`; poles `−n` and `ν + n`.
                     let one_plus_x = arena.add(&[one, x]);
                     let neg_nu = arena.neg(c);
-                    return Ok(Some(arena.pow(one_plus_x, neg_nu)));
+                    let f0 = arena.pow(one_plus_x, neg_nu);
+                    let poles = [
+                        left_from_zero,
+                        PoleFamily {
+                            start: c,
+                            step: Some(one),
+                        },
+                    ];
+                    return table_entry(
+                        arena,
+                        expr,
+                        f0,
+                        Strip::between(zero, c),
+                        &poles,
+                        want,
+                        s,
+                        x,
+                    );
                 }
                 if arena.is_zero_structural(k) {
-                    // q = b + 1
+                    // q = b + 1: on `Re s > 0`; poles `−n`.
                     let b = arena.sub(c, one);
                     let one_minus_x = arena.sub(one, x);
                     let h = arena.heaviside(one_minus_x);
                     let p = arena.pow(one_minus_x, b);
-                    return Ok(Some(arena.mul(&[h, p])));
+                    let f0 = arena.mul(&[h, p]);
+                    return table_entry(
+                        arena,
+                        expr,
+                        f0,
+                        Strip::above(zero),
+                        &[left_from_zero],
+                        want,
+                        s,
+                        x,
+                    );
                 }
             }
             Ok(None)
@@ -1165,9 +1512,21 @@ fn inverse_table(
             }
             let one_plus_x = arena.add(&[one, x]);
             let den = arena.mul(&[pi, one_plus_x]);
-            Ok(Some(arena.div(one, den)))
+            let f0 = arena.div(one, den);
+            // On `0 < Re s < 1`; poles at the integers.
+            table_entry(
+                arena,
+                expr,
+                f0,
+                Strip::between(zero, one),
+                &[left_from_zero, right_from_one],
+                want,
+                s,
+                x,
+            )
         }
-        // 1/(s + a) → x^a H(1 − x)   (strip Re s > −a)
+        // 1/(s + a) → x^a H(1 − x) on `Re s > −a`, −x^a H(x − 1) on `Re s <
+        // −a`; without a strip the first (the strip right of the pole).
         ExprNode::Pow(base, e) if e == arena.neg_one() => {
             let Some(Linear { a: k, b: a }) = linear_in(arena, base, s) else {
                 return Ok(None);
@@ -1175,8 +1534,22 @@ fn inverse_table(
             if k != one {
                 return Ok(None);
             }
-            let one_minus_x = arena.sub(one, x);
-            let h = arena.heaviside(one_minus_x);
+            let pole = arena.neg(a);
+            let pole = crate::transforms::eval::eval(arena, pole);
+            let right = want.is_none_or(|w| w.within(arena, Strip::above(pole)));
+            let step_arg = if right {
+                arena.sub(one, x)
+            } else if want.is_some_and(|w| w.within(arena, Strip::below(pole))) {
+                arena.sub(x, one)
+            } else {
+                return Err(fail(
+                    "inverse_mellin_transform_in_strip",
+                    "the pole of the transform lies inside the strip, or cannot be placed \
+                     relative to it",
+                ));
+            };
+            let h = arena.heaviside(step_arg);
+            let h = if right { h } else { arena.neg(h) };
             if arena.is_zero_structural(a) {
                 return Ok(Some(h));
             }
@@ -1194,10 +1567,43 @@ fn inverse_table(
                 let sin_half = arena.sin(half);
                 let cos_half = arena.cos(half);
                 if other == sin_half {
-                    return Ok(Some(arena.sin(x)));
+                    // On `−1 < Re s < 1`; poles `−1, −3, …` (the zeros of
+                    // the sine cancel the even ones).
+                    let f0 = arena.sin(x);
+                    let minus_two = arena.int(-2);
+                    let poles = [PoleFamily {
+                        start: minus_one,
+                        step: Some(minus_two),
+                    }];
+                    return table_entry(
+                        arena,
+                        expr,
+                        f0,
+                        Strip::between(minus_one, one),
+                        &poles,
+                        want,
+                        s,
+                        x,
+                    );
                 }
                 if other == cos_half {
-                    return Ok(Some(arena.cos(x)));
+                    // On `0 < Re s < 1`; poles `0, −2, −4, …`.
+                    let f0 = arena.cos(x);
+                    let minus_two = arena.int(-2);
+                    let poles = [PoleFamily {
+                        start: zero,
+                        step: Some(minus_two),
+                    }];
+                    return table_entry(
+                        arena,
+                        expr,
+                        f0,
+                        Strip::between(zero, one),
+                        &poles,
+                        want,
+                        s,
+                        x,
+                    );
                 }
             }
             // π/sin(πs) → 1/(1 + x);   π/(s sin(πs)) → ln(1 + x)
@@ -1228,10 +1634,27 @@ fn inverse_table(
                 } else {
                     arena.div(one, one_plus_x)
                 };
-                if has_pi {
-                    return Ok(Some(base));
-                }
-                return Ok(Some(arena.div(base, pi)));
+                let f0 = if has_pi { base } else { arena.div(base, pi) };
+                // `1/(1 + x)` on `0 < Re s < 1`, `ln(1 + x)` on `−1 < Re s <
+                // 0`; poles at the integers.
+                let (home, poles) = if has_inv_s {
+                    (
+                        Strip::between(minus_one, zero),
+                        [
+                            PoleFamily {
+                                start: minus_one,
+                                step: Some(minus_one),
+                            },
+                            PoleFamily {
+                                start: zero,
+                                step: Some(one),
+                            },
+                        ],
+                    )
+                } else {
+                    (Strip::between(zero, one), [left_from_zero, right_from_one])
+                };
+                return table_entry(arena, expr, f0, home, &poles, want, s, x);
             }
             // Γ(s)Γ(ν − s)/Γ(ν) written out → (1 + x)^{−ν}
             let mut gamma_args: Vec<(ExprId, bool)> = Vec::new(); // (arg, inverted)
@@ -1260,11 +1683,30 @@ fn inverse_table(
                         let one_plus_x = arena.add(&[one, x]);
                         let neg_nu = arena.neg(nu);
                         let p = arena.pow(one_plus_x, neg_nu);
-                        if inv.is_empty() {
+                        let f0 = if inv.is_empty() {
                             let g_nu = arena.gamma(nu);
-                            return Ok(Some(arena.mul(&[g_nu, p])));
-                        }
-                        return Ok(Some(p));
+                            arena.mul(&[g_nu, p])
+                        } else {
+                            p
+                        };
+                        // On `0 < Re s < ν`; poles `−n` and `ν + n`.
+                        let poles = [
+                            left_from_zero,
+                            PoleFamily {
+                                start: nu,
+                                step: Some(one),
+                            },
+                        ];
+                        return table_entry(
+                            arena,
+                            expr,
+                            f0,
+                            Strip::between(zero, nu),
+                            &poles,
+                            want,
+                            s,
+                            x,
+                        );
                     }
                 }
             }
@@ -1282,6 +1724,7 @@ fn inverse_shift(
     s: ExprId,
     x: ExprId,
     depth: usize,
+    want: Option<Strip>,
 ) -> Result<Option<ExprId>, SymplexError> {
     let mut shifts: Vec<ExprId> = Vec::new();
     let mut stack = vec![expr];
@@ -1318,7 +1761,12 @@ fn inverse_shift(
         if g == expr {
             continue;
         }
-        if let Ok(gi) = inverse(arena, g, s, x, depth + 1) {
+        // `F(s) = G(s + a)` on a strip is `G(u)` on that strip moved by `a`.
+        let want_g = want.map(|w| {
+            let neg_a = arena.neg(a);
+            w.shifted(arena, neg_a)
+        });
+        if let Ok(gi) = inverse(arena, g, s, x, depth + 1, want_g) {
             let xa = arena.pow(x, a);
             return Ok(Some(arena.mul(&[xa, gi])));
         }

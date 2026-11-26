@@ -1527,15 +1527,115 @@ impl Arena {
     }
 
     /// An internal dummy symbol declared positive (a limit variable
-    /// `x → +∞`, a `w → 0⁺`).  Symbols are interned by name, so `name` must
-    /// be reserved for positive dummies: every call re-declares it positive.
+    /// `x → +∞`, a `w → 0⁺`), in the library's own name space (see
+    /// [`internal_symbol`](Self::internal_symbol)): the declaration cannot
+    /// reach a symbol of the user's.  Up to 0.60.0 the dummy was the
+    /// symbol `name` of the one name space, so a limit at a finite point
+    /// declared a user's symbol `__lim_r` positive, and `sqrt(__lim_r^2)`
+    /// was then built as `__lim_r`.
+    ///
+    /// A name is positive wherever it is used: do not ask for the same
+    /// `name` through `internal_symbol`.
     pub(crate) fn positive_symbol(&mut self, name: &str) -> ExprId {
-        let sym_id = self.symbols.intern(name);
+        let sym_id = self.internal_symbol_id(name);
         let mut a = crate::base::assumptions::Assumptions::default();
         a.assert_true(crate::base::assumptions::Props::POSITIVE);
         a.forward_chain();
         self.set_symbol_assumptions(sym_id, a);
         self.intern(ExprNode::Symbol(sym_id))
+    }
+
+    /// An internal dummy symbol: a symbol of the library's own name space
+    /// (`SymbolTable::intern_reserved`), which no call of
+    /// [`symbol`](Self::symbol), no parsed text and no JSON document can
+    /// name.  It is therefore not a symbol of the expression a user passed
+    /// in (no capture), and an assumption declared on it is declared on
+    /// nothing of the user's.
+    ///
+    /// It is named `name`, and where the user's name space has a symbol of
+    /// that name already, `name_1`, `name_2`, … (the first it does not
+    /// have): two symbols in one expression never share a name, hence never
+    /// a sort key.  For a caller without such symbols the name — and with
+    /// it the canonical order of every intermediate expression — is what
+    /// `symbol(name)` gave up to 0.60.0.
+    pub(crate) fn internal_symbol(&mut self, name: &str) -> ExprId {
+        let sym_id = self.internal_symbol_id(name);
+        self.intern(ExprNode::Symbol(sym_id))
+    }
+
+    /// An internal dummy symbol that carries exactly `assumptions` and
+    /// occurs in none of `avoid`: the first such of `name`, `name_1`,
+    /// `name_2`, … in the library's own name space
+    /// ([`internal_symbol`](Self::internal_symbol)), made and declared when
+    /// there is none yet.  For a stand-in that an engine declares (real,
+    /// integer, with the assumptions of the unknown) and that may be asked
+    /// for again while an outer call still holds one (`avoid`: the
+    /// expression at hand).  A symbol is declared once, when it is made,
+    /// and never again: canonical forms built with it stay true.
+    ///
+    /// Up to 0.60.1 these stand-ins were symbols of the user's name space
+    /// (`subs::fresh_symbol` and a declaration): after a `summation` a
+    /// user's symbol `__sum_index` was real.
+    pub(crate) fn fresh_internal_symbol(
+        &mut self,
+        name: &str,
+        assumptions: crate::base::assumptions::Assumptions,
+        avoid: &[ExprId],
+    ) -> ExprId {
+        let mut wanted = assumptions;
+        wanted.normalize_declared();
+        let mut n = 0usize;
+        loop {
+            let candidate = if n == 0 {
+                name.to_owned()
+            } else {
+                format!("{name}_{n}")
+            };
+            n += 1;
+            // A name of the user's: two symbols never share a name.
+            if self.symbols.get(&candidate).is_some() {
+                continue;
+            }
+            match self.symbols.get_reserved(&candidate) {
+                None => {
+                    let sid = self.symbols.intern_reserved(&candidate);
+                    self.set_symbol_assumptions(sid, wanted);
+                    return self.intern(ExprNode::Symbol(sid));
+                }
+                Some(sid) if self.symbol_assumptions(sid) == wanted => {
+                    let node = self.intern(ExprNode::Symbol(sid));
+                    if !avoid
+                        .iter()
+                        .any(|&e| crate::base::walk::contains(self, e, node))
+                    {
+                        return node;
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// The id behind [`internal_symbol`](Self::internal_symbol).
+    fn internal_symbol_id(&mut self, name: &str) -> SymbolId {
+        if self.symbols.get(name).is_none() {
+            return self.symbols.intern_reserved(name);
+        }
+        let mut n = 1usize;
+        loop {
+            let candidate = format!("{name}_{n}");
+            if self.symbols.get(&candidate).is_none() {
+                return self.symbols.intern_reserved(&candidate);
+            }
+            n += 1;
+        }
+    }
+
+    /// Is `id` one of the library's own dummy symbols
+    /// ([`internal_symbol`](Self::internal_symbol),
+    /// [`positive_symbol`](Self::positive_symbol))?
+    pub(crate) fn is_internal_symbol(&self, id: SymbolId) -> bool {
+        self.symbols.is_reserved(id)
     }
 
     /// Creates an `Add` node with full canonicalization.

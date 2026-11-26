@@ -411,6 +411,26 @@ impl<S: Sort> Expr<S> {
     /// - For functions (sin, cos, etc.): returns `[argument]`.
     /// - For atoms (numbers, symbols, constants): returns `[]`.
     ///
+    /// **A handle never wraps an expression of another sort.**  The
+    /// children come back in the type of `self`, so a typed handle returns
+    /// the operands of its own sort only:
+    ///
+    /// - a [`BoolEx`]: the operands of `And`, `Or` and `Not`.  A relation
+    ///   (`x > 1`, `Eq`, `Ne`) is an atom of the Boolean algebra, as for
+    ///   [`atoms`](BoolEx::atoms): its `args()` is `[]`, and so is that of
+    ///   `True` and `False`.  Its two sides are numbers: read them from the
+    ///   untyped view, `relation.as_ex().args()`.
+    /// - a [`SetEx`]: the operands of a union, an intersection and a
+    ///   complement.  An interval, a finite set, an image set and a
+    ///   condition set have no set operands (`[]`); their endpoints and
+    ///   elements are numbers, read from `set.as_ex().args()`.
+    /// - an [`Ex`], the untyped handle (also what
+    ///   [`as_ex`](BoolEx::as_ex) gives): every child.
+    ///
+    /// Up to 0.60.0 every handle returned every child in its own type:
+    /// `(x > 1).args()` was the Boolean expressions `x` and `1`, and
+    /// `args()[0].not()` built `!x`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -421,11 +441,35 @@ impl<S: Sort> Expr<S> {
     /// let expr = &x + 1;
     /// let children = expr.args();
     /// assert_eq!(children.len(), 2);
+    ///
+    /// let (p, q) = (x.gt(&ctx.int(1)), x.lt(&ctx.int(5)));
+    /// assert_eq!(p.and(&q).args().len(), 2); // two Boolean operands
+    /// assert!(p.args().is_empty()); // a relation is an atom
+    /// assert_eq!(p.as_ex().args(), vec![x.clone(), ctx.int(1)]); // its sides
     /// ```
     #[must_use]
     pub fn args(&self) -> Vec<Expr<S>> {
+        use crate::base::node::ExprNode;
+        use std::any::TypeId;
         let inner = self.inner.read();
-        let child_ids = inner.arena.node(self.id).children();
+        let node = inner.arena.node(self.id);
+        // The children that have the sort of the handle, by their position
+        // in the parent: `wrap` gives every child the type of `self`.
+        let sort = TypeId::of::<S>();
+        let of_own_sort = if sort == TypeId::of::<Boolean>() {
+            matches!(node, ExprNode::And(_) | ExprNode::Or(_) | ExprNode::Not(_))
+        } else if sort == TypeId::of::<SetValued>() {
+            matches!(
+                node,
+                ExprNode::SetUnion(_) | ExprNode::SetIntersection(_) | ExprNode::SetComplement(..)
+            )
+        } else {
+            true
+        };
+        if !of_own_sort {
+            return Vec::new();
+        }
+        let child_ids = node.children();
         child_ids.iter().map(|&id| self.wrap(id)).collect()
     }
 

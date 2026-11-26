@@ -263,10 +263,21 @@ pub(super) fn arb_si_ci(
 
 /// Exponential integral `Ei(x)` for real `x ≠ 0`.
 ///
-/// * `|x| ≤ wp·ln 2`: `Ei(x) = γ + ln|x| + Σ_{k≥1} xᵏ/(k·k!)`, with guard
-///   bits for the alternating cancellation when `x < 0`;
-/// * otherwise the asymptotic expansion `Ei(x) ~ (eˣ/x) Σ k!/xᵏ` with
-///   optimal truncation (relative error `~e^{−|x|}`).
+/// * `abs(x) > wp·ln 2`: the asymptotic expansion `Ei(x) ~ (eˣ/x) Σ k!/xᵏ`
+///   with optimal truncation (relative error `~e^{−|x|}`);
+/// * `x ≤ −max(1, wp/64)`: `Ei(x) = −E₁(−x)` by Legendre's continued
+///   fraction ([`uppergamma_cf`] at `s = 0`), which does not cancel;
+/// * otherwise `Ei(x) = γ + ln|x| + Σ_{k≥1} xᵏ/(k·k!)`, with guard bits for
+///   the alternating cancellation when `x < 0`.
+///
+/// For `x < 0` the series cancels `2·abs(x)·log₂e` bits and takes about
+/// `e·abs(x)` terms at that many more bits (and Euler's constant at them),
+/// the fraction `(wp·ln 2)²/(16·abs(x))` steps at `wp` bits: measured, they
+/// cost the same at `abs(x) ≈ wp/60` (3 at 16 digits, 8 at 100, 20 at 300, 45
+/// at 1,000).  Up to 0.60 the series ran up to the asymptotic range:
+/// `Ei(−691)` at 280 digits took 128 ms (the fraction: 0.5 ms), and
+/// `li(sin(1 + 10⁻³⁰⁰) − sin 1)`, whose argument needs 1,152 bits, 145 ms at
+/// 16 digits (found by `fuzz_evalf` as a slow unit).
 pub(super) fn arb_ei(x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexError> {
     let prec = w.bits();
     if x.is_nan() || x.is_inf_pos() || x.is_inf_neg() || x.is_zero() {
@@ -286,6 +297,12 @@ pub(super) fn arb_ei(x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexEr
         let ex = x.exp(wp, RM, w.cc);
         let r = ex.mul(&inv_x, wp, RM).mul(&sum, wp, RM);
         return Ok(round_to(r, prec));
+    }
+
+    // ── Continued fraction: Ei(x) = −E₁(−x) = −Γ(0, −x) for x ≤ −1 ──
+    if x.is_negative() && e1_by_fraction(x_abs, base_wp) {
+        let e1 = uppergamma_cf(&BigFloat::new(base_wp), &x.neg(), &mut w.at(base_wp))?;
+        return Ok(round_to(e1.neg(), prec));
     }
 
     // ── Power series ──
@@ -337,6 +354,13 @@ pub(super) fn arb_ei(x: &BigFloat, w: &mut Wp<'_>) -> Result<BigFloat, SymplexEr
         }
         extra = (lost + 64).min(cap).max(extra + 32);
     }
+}
+
+/// Is `E₁(x) = −Ei(−x)` for `x > 0` at `wp` bits cheaper by Legendre's
+/// continued fraction than by the series of `Ei` (see [`arb_ei`])?  From
+/// `x = max(1, wp/64)` on.
+pub(super) fn e1_by_fraction(x: f64, wp: usize) -> bool {
+    x >= 1.0 && x >= wp as f64 / 64.0
 }
 
 /// The asymptotic series of `Ei(x) ~ (e^x/x)·Σ_{k≥0} k!/x^k` at `wp` bits,

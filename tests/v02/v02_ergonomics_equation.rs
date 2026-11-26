@@ -146,7 +146,13 @@ fn is_identity_and_is_satisfied() {
     assert_eq!(ident.is_identity(), Some(true));
     assert_eq!(ident.is_satisfied(), Some(true));
     assert_eq!(Equation::new(x.clone(), &x + 1).is_identity(), Some(false));
-    assert_eq!(Equation::new(x.clone(), ctx.int(2)).is_identity(), None);
+    // `x = 2` fails at x = 1/2 (up to 0.60.0: `None`); `is_satisfied` keeps
+    // `None` for an equation that holds for some values only.
+    assert_eq!(
+        Equation::new(x.clone(), ctx.int(2)).is_identity(),
+        Some(false)
+    );
+    assert_eq!(Equation::new(x.clone(), ctx.int(2)).is_satisfied(), None);
     assert_eq!(
         Equation::new(x.clone(), ctx.int(2))
             .subs_i64(&x, 2)

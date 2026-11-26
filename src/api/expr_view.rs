@@ -4,8 +4,11 @@
 //! It provides structural inspection of the current node without
 //! acquiring any locks.  You **cannot** call `.sin()`, `.expand()`,
 //! `format!()`, or any mutating/locking method on this type.
+//!
+//! Since 0.60.1 the view holds a copy of its node and no reference into the
+//! context: `replace` holds no lock while its closure runs, so the closure
+//! itself may build expressions, print handles and ask queries.
 
-use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use smallvec::SmallVec;
 
@@ -16,7 +19,9 @@ use smallvec::SmallVec;
 /// impossible to deadlock when used inside `Expr::replace()`.
 pub struct ExprView<'a> {
     pub(crate) id: ExprId,
-    pub(crate) arena: &'a Arena,
+    /// The node of `id`, copied out of the arena by the caller: the view
+    /// borrows nothing that a lock guards.
+    pub(crate) node: &'a ExprNode,
 }
 
 impl<'a> ExprView<'a> {
@@ -29,24 +34,24 @@ impl<'a> ExprView<'a> {
     /// Returns the [`ExprNode`] variant of this expression.
     #[inline]
     pub fn node(&self) -> &ExprNode {
-        self.arena.node(self.id)
+        self.node
     }
 
     /// Returns `true` if this node is an atom (leaf node with no children).
     #[inline]
     pub fn is_atom(&self) -> bool {
-        self.arena.node(self.id).is_atom()
+        self.node.is_atom()
     }
 
     /// Returns `true` if this node is a symbol.
     #[inline]
     pub fn is_symbol(&self) -> bool {
-        matches!(self.arena.node(self.id), ExprNode::Symbol(_))
+        matches!(self.node, ExprNode::Symbol(_))
     }
 
     /// Returns the children of this node.
     pub fn children(&self) -> SmallVec<[ExprId; 6]> {
-        self.arena.node(self.id).children()
+        self.node.children()
     }
 }
 

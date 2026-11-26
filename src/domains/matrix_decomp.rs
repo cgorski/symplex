@@ -28,8 +28,8 @@ use crate::base::numeric::Q;
 use crate::base::truth::Truth;
 use crate::domains::decompositions::{Diagonalization, JordanForm, Ldl, Qr};
 use crate::domains::matrix::{
-    Matrix, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, is_swell, reop,
-    simplify_function_entry, swell_or,
+    Matrix, PivotWork, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, is_swell,
+    pivot_truth, reop, simplify_function_entry, swell_or, undecided_pivot,
 };
 
 /// Orthogonal basis vectors and the upper-triangular coefficient matrix
@@ -306,6 +306,7 @@ fn gram_schmidt_cols(
         Some(HermitianGs::Dependent(j)) => Some(Err(dependent_error(op, j))),
         None => None,
     };
+    let _work = PivotWork::enter();
     let hermitian = !cols
         .iter()
         .flatten()
@@ -363,14 +364,16 @@ fn gram_schmidt_expr(
         budget_check(u.iter(), op)?;
         let u: Vec<Ex> = u.into_iter().map(tidy).collect();
         let norm_sq = tidy(dot_vec(&u, &u, hermitian));
-        // The exact test of a rational function over ℚ(radicals, i) first:
-        // `ex_is_zero` would `simplify` a norm that is not identically zero,
-        // which swelled for 3×3 symbolic matrices with radicals (> 10 s).
-        let dependent = crate::domains::matrix::rational_function_is_zero(&norm_sq)
-            .or_else(|| ex_is_zero(&norm_sq))
-            .is_true();
-        if dependent {
-            return Err(dependent_error(op, j));
+        // The three-valued test of a pivot (the exact test of a rational
+        // function over ℚ(radicals, i) first, then a certified value at a
+        // sample point: `ex_is_zero` would `simplify` a norm that is not
+        // identically zero, which swelled for 3×3 symbolic matrices with
+        // radicals, > 10 s).  A norm neither proved zero nor proved nonzero
+        // is refused: up to 0.60.0 the vector was then divided by it.
+        match pivot_truth(&norm_sq) {
+            Truth::True => return Err(dependent_error(op, j)),
+            Truth::False => {}
+            Truth::Unknown => return Err(undecided_pivot(op, &norm_sq)),
         }
         if normalize {
             let norm = norm_sq.sqrt();
@@ -448,7 +451,7 @@ impl Matrix {
     /// ```
     pub fn qr(&self) -> Result<Qr<Matrix>, SymplexError> {
         budget_check(self.iter(), "qr")?;
-        let (_, pivots) = self.rref();
+        let (_, pivots) = self.rref_decided("qr")?;
         if pivots.is_empty() {
             return Err(failed(
                 "qr",
@@ -682,6 +685,7 @@ impl Matrix {
         }
         let hermitian = self.symmetry_kind("ldl")? == Symmetry::Hermitian;
         let n = self.nrows();
+        let _work = PivotWork::enter();
         let ctx = self.context();
         let zero = ctx.zero();
         let one = ctx.one();
@@ -712,16 +716,32 @@ impl Matrix {
                     self.get(i, j) - &acc
                 })
                 .collect();
-            if ex_is_zero(&dj).is_true() {
-                if numerators.iter().all(|u| ex_is_zero(u).is_true()) {
-                    // Nothing to divide: the column below is zero too.
-                    d[j] = zero.clone();
-                    continue;
+            // The pivot `d_j`, three-valued (the test of `rref`): proved
+            // zero is singular unless the column below is zero too; neither
+            // proved zero nor proved nonzero is refused unless the column
+            // below is proved zero (then nothing is divided by it).  Up to
+            // 0.60.0 the column was divided by an undecided `d_j`.
+            let column_is_zero = || numerators.iter().all(|u| pivot_truth(u).is_true());
+            match pivot_truth(&dj) {
+                Truth::True => {
+                    if column_is_zero() {
+                        // Nothing to divide: the column below is zero too.
+                        d[j] = zero.clone();
+                        continue;
+                    }
+                    return Err(failed(
+                        "ldl",
+                        format!("zero pivot at position {j}; matrix needs pivoting or is singular"),
+                    ));
                 }
-                return Err(failed(
-                    "ldl",
-                    format!("zero pivot at position {j}; matrix needs pivoting or is singular"),
-                ));
+                Truth::Unknown => {
+                    if column_is_zero() {
+                        d[j] = dj;
+                        continue;
+                    }
+                    return Err(undecided_pivot("ldl", &dj));
+                }
+                Truth::False => {}
             }
             d[j] = dj;
             for (i, u) in ((j + 1)..n).zip(numerators) {

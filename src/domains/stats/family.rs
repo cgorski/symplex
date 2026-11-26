@@ -318,29 +318,88 @@ impl Level {
     }
 }
 
+/// The most probes of the tail [`grow_bracket`] makes after its first one:
+/// [`BRACKET_PLAIN_STEPS`] quadruplings of the step (a factor `2³²` in all,
+/// from `2⁻²⁶` of the start to `2⁶` times it), then steps whose factor is
+/// squared each time (`4, 16, 256, …, 2⁵¹²`), which carry any step past
+/// the largest double within ten more.  A count of evaluations, never of
+/// time: each probe is a certified evaluation of a distribution function.
+const BRACKET_MAX_STEPS: usize = 28;
+
+/// The quadruplings [`grow_bracket`] makes before it accelerates.  Up to
+/// 0.60 it only quadrupled, at most 600 times: from a start without an
+/// estimate (the middle of a hull, or 0) a level `10⁻³⁰⁰` of a heavy tail
+/// lies 500 quadruplings away.
+const BRACKET_PLAIN_STEPS: usize = 16;
+
+/// The most steps of Brent's method in a quantile search
+/// ([`Distribution::continuous_quantile_f64`]), on a bracket that
+/// [`narrow_bracket`] has brought within a factor 16: bisection alone
+/// reaches the relative `4ε` asked for in 56 halvings of such a bracket,
+/// and `brent_root` bisects when its remaining steps would only just
+/// suffice for that, so the budget refuses no bracket.  Up to 0.60 the
+/// budget was 1200 on the bracket as grown, and the width of
+/// `[−1.2·10²⁹⁹, 0]` was halved a thousand times towards a root at `−1.17`
+/// (the quartile of a Cauchy law truncated to `[−3.2·10²⁹⁹, 3.08]`).
+const QUANTILE_ROOT_STEPS: usize = 128;
+
+/// The most probes of [`narrow_bracket`]: the doubles lie at most `2⁶⁴`
+/// floats apart, and each probe halves the floats between the ends until
+/// at most `2⁵⁴` are left.
+const NARROW_MAX_STEPS: usize = 12;
+
+/// A bracket `g(a) ≤ 0 ≤ g(b)` of an increasing `g`, narrowed until its
+/// ends lie within `2⁵⁴` floats of each other (the same sign and a factor
+/// of at most 16 apart, or both next to 0) by probing the float halfway
+/// between them *in the order of the floats* — a geometric mean of the
+/// magnitudes rather than their mean, so that a bracket of 300 decades
+/// takes ten probes, not a thousand halvings of its width.  A bracket that
+/// is already that narrow is returned as it is.  At most
+/// [`NARROW_MAX_STEPS`] probes.
+fn narrow_bracket(
+    g: &impl Fn(f64) -> f64,
+    mut a: f64,
+    mut b: f64,
+) -> Result<(f64, f64), SymplexError> {
+    use super::numdist::{float_key, key_float};
+    const NARROW: i128 = 1 << 54;
+    for _ in 0..NARROW_MAX_STEPS {
+        let (ka, kb) = (float_key(a), float_key(b));
+        if !(a.is_finite() && b.is_finite()) || kb - ka <= NARROW {
+            break;
+        }
+        let m = key_float(ka + (kb - ka) / 2);
+        let gm = g(m);
+        if gm.is_nan() {
+            return Err(SymplexError::computation_failed(
+                "quantile_f64",
+                format!("the distribution function is not a number at {m}"),
+            ));
+        }
+        // An exact root becomes the lower end, which Brent's method returns.
+        if gm <= 0.0 {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    Ok((a, b))
+}
+
 /// A bracket `[a, b]` with `g(a) ≤ 0 ≤ g(b)` for an increasing `g` on the
 /// hull `[lo, hi]` of a support (`g` is negative at `lo` and positive at
-/// `hi`), grown geometrically outward from the estimate `x0` — a first
-/// step of `2⁻²⁶·|x0|` (`2⁻²⁶` from 0), quadrupling — or, without one,
-/// from the middle of a finite hull, from a unit (or `|end|`) inside a
-/// half-finite one, or from 0.
+/// `hi`), grown geometrically outward from the estimate `s` inside the
+/// hull — a first step of `2⁻²⁶·|s|` (`2⁻²⁶` from 0), quadrupling
+/// [`BRACKET_PLAIN_STEPS`] times and then growing by a factor squared at
+/// each step.  On an unbounded side the last probe is at the largest
+/// double.  At most [`BRACKET_MAX_STEPS`] probes after the first.
 fn grow_bracket(
     g: &impl Fn(f64) -> f64,
-    x0: Option<f64>,
+    s: f64,
     lo: f64,
     hi: f64,
 ) -> Result<(f64, f64), SymplexError> {
     let fail = |why: String| SymplexError::computation_failed("quantile_f64", why);
-    let inside = |v: f64| v.is_finite() && v > lo && v < hi;
-    let s = match x0.filter(|&v| inside(v)) {
-        Some(v) => v,
-        None => match (lo.is_finite(), hi.is_finite()) {
-            (true, true) => lo + 0.5 * (hi - lo),
-            (true, false) => lo + 1.0_f64.max(lo.abs()),
-            (false, true) => hi - 1.0_f64.max(hi.abs()),
-            (false, false) => 0.0,
-        },
-    };
     let gs = g(s);
     if gs.is_nan() {
         return Err(fail(format!(
@@ -355,8 +414,14 @@ fn grow_bracket(
     let up = gs < 0.0;
     let mut near = s;
     let mut d = if s == 0.0 { 1.0 } else { s.abs() } * 2.0_f64.powi(-26);
-    for _ in 0..600 {
-        let far = if up { (s + d).min(hi) } else { (s - d).max(lo) };
+    let mut factor = 4.0_f64;
+    for step in 0..BRACKET_MAX_STEPS {
+        // The hull's end, or the largest double on an unbounded side.
+        let far = if up {
+            (s + d).min(hi).min(f64::MAX)
+        } else {
+            (s - d).max(lo).max(-f64::MAX)
+        };
         let gf = g(far);
         if gf.is_nan() {
             return Err(fail(format!(
@@ -366,15 +431,53 @@ fn grow_bracket(
         if (gf >= 0.0) == up {
             return Ok(if up { (near, far) } else { (far, near) });
         }
-        if !far.is_finite() {
+        // Not crossed at the last double of an unbounded side: the
+        // quantile is not a double.
+        if far.abs() == f64::MAX {
             break;
         }
         near = far;
-        d *= 4.0;
+        d *= factor;
+        if step + 1 >= BRACKET_PLAIN_STEPS {
+            factor *= factor;
+        }
     }
     Err(fail(format!(
         "no bracket found for the level starting from {s}"
     )))
+}
+
+/// The bracket of a search without a starting estimate: the hull `[lo,
+/// hi]` itself, an unbounded side cut at the largest double and probed
+/// there (a level not crossed at the largest double has no quantile among
+/// the doubles).  [`narrow_bracket`] then reaches the root's binade in at
+/// most twelve probes wherever it lies.  Up to 0.60 the bracket was grown
+/// from the middle of a finite hull, from a unit inside a half-finite one
+/// or from 0, by quadrupling a step of `2⁻²⁶`: 13 probes to reach a root of
+/// size 1 from 0, 500 to reach one at `10²⁹⁹`.
+fn hull_bracket(g: &impl Fn(f64) -> f64, lo: f64, hi: f64) -> Result<(f64, f64), SymplexError> {
+    let fail = |why: String| SymplexError::computation_failed("quantile_f64", why);
+    let (a, b) = (lo.max(-f64::MAX), hi.min(f64::MAX));
+    for (end, cut, below) in [(a, lo, true), (b, hi, false)] {
+        if cut.is_finite() {
+            continue;
+        }
+        let ge = g(end);
+        if ge.is_nan() {
+            return Err(fail(format!(
+                "the distribution function is not a number at {end}"
+            )));
+        }
+        // The level is already crossed at the least double, or not yet at
+        // the largest.
+        let wrong_side = if below { ge > 0.0 } else { ge < 0.0 };
+        if wrong_side {
+            return Err(fail(format!(
+                "no bracket found for the level: it is not crossed at {end}"
+            )));
+        }
+    }
+    Ok((a, b))
 }
 
 /// A running sum with Neumaier's compensation (the improved Kahan–Babuška
@@ -1293,8 +1396,14 @@ impl Distribution {
     /// evaluates to `0` there).
     pub(crate) fn cdf_on_support(&self, x: &Ex) -> Ex {
         if let Some(c) = self.0.cdf(x) {
-            if self.in_far_tail(x, Tail::Lower, &c)
-                && let Some(lower) = self.0.cdf_lower(x)
+            // The family's form of the lower tail first: without one there
+            // is nothing to choose, and the question "is `x` in the far
+            // tail?" costs a certified evaluation of the classic CDF (up to
+            // 0.60 it was asked of every family at every numeric point: one
+            // wasted evaluation of an incomplete beta or gamma function per
+            // call for a Student t, F, beta, gamma or χ² law).
+            if let Some(lower) = self.0.cdf_lower(x)
+                && self.in_far_tail(x, Tail::Lower, &c)
             {
                 return lower;
             }
@@ -1309,8 +1418,17 @@ impl Distribution {
             // table's values are read from the `f64`s it formed once.
             let numeric = x.free_symbols().is_empty();
             let xq = x.as_rational();
-            let xf = if numeric { x.eval_f64().ok() } else { None };
             let table = self.downcast_ref::<super::discrete::Finite>();
+            // A table whose values are in a proved order: the masses of the
+            // values up to `x`, found by bisection (no value is evaluated).
+            if numeric
+                && let Some(t) = table
+                && let Some((rank, _)) = t.locate(x)
+                && let Some(below) = t.mass_between(0, rank)
+            {
+                return below;
+            }
+            let xf = if numeric { x.eval_f64().ok() } else { None };
             let mut acc = self.context().zero();
             for v in &values {
                 let p = self.0.density(v);
@@ -1424,8 +1542,10 @@ impl Distribution {
         let ctx = self.context();
         match self.0.cdf(x) {
             Some(c) => {
-                if self.in_far_tail(x, Tail::Upper, &c)
-                    && let Some(s) = self.0.sf(x)
+                // As in `cdf_on_support`: no question without a form to
+                // switch to.
+                if let Some(s) = self.0.sf(x)
+                    && self.in_far_tail(x, Tail::Upper, &c)
                 {
                     return s;
                 }
@@ -1988,15 +2108,48 @@ impl Distribution {
             };
             (sign * miss).clamp(-f64::MAX, f64::MAX)
         };
-        let x0 = self.classic_quantile_estimate(level.lower_f64(), lo, hi);
-        let (a, b) = grow_bracket(&g, x0, lo, hi)?;
+        // With an estimate (the root of the classic CDF in doubles) the
+        // bracket is grown around it; without one it is the hull.
+        let x0 = self
+            .classic_quantile_estimate(level.lower_f64(), lo, hi)
+            .filter(|v| v.is_finite() && *v > lo && *v < hi);
+        let (mut a, mut b) = match x0 {
+            Some(s) => grow_bracket(&g, s, lo, hi)?,
+            None => hull_bracket(&g, lo, hi)?,
+        };
         if a == b {
             return Ok(a);
         }
+        // A bracket that reaches an end of the hull: the level may be met
+        // only within one float of that end (a truncation point whose own
+        // tail is far below the level's resolution there), which a search
+        // would find by fifty bisections.  One probe at the float next to
+        // the end decides it; otherwise that float is the tighter end.
+        if b == hi && hi.is_finite() && hi.next_down() > a {
+            let inner = hi.next_down();
+            let (gi, gh) = (g(inner), g(hi));
+            if gi < 0.0 {
+                return Ok(if gi.abs() < gh.abs() { inner } else { hi });
+            }
+            if !gi.is_nan() {
+                b = inner;
+            }
+        }
+        if a == lo && lo.is_finite() && lo.next_up() < b {
+            let inner = lo.next_up();
+            let (gi, gl) = (g(inner), g(lo));
+            if gi > 0.0 {
+                return Ok(if gi.abs() < gl.abs() { inner } else { lo });
+            }
+            if !gi.is_nan() {
+                a = inner;
+            }
+        }
+        let (a, b) = narrow_bracket(&g, a, b)?;
         let opts = crate::domains::optimize::RootOpts {
             xtol: f64::MIN_POSITIVE,
             rtol: 4.0 * f64::EPSILON,
-            max_iter: 1200,
+            max_iter: QUANTILE_ROOT_STEPS,
         };
         crate::domains::optimize::brent_root(g, a, b, &opts)
             .map_err(|e| SymplexError::computation_failed("quantile_f64", e.to_string()))
@@ -2440,10 +2593,15 @@ impl Distribution {
     /// shared atom) carries its whole mass once.  (0.27 compared the sum
     /// from the bottom with `p − 10⁻¹²`.)
     fn table_quantile_f64(&self, level: Level, values: &[Ex]) -> Result<f64, SymplexError> {
+        let table = self.downcast_ref::<super::discrete::Finite>();
+        if let Some(t) = table
+            && let Some(masses) = t.masses_in_order()
+        {
+            return Self::ordered_table_quantile_f64(level, t, masses);
+        }
         // A value listed twice is found by its node (up to 0.57 by a scan of
         // the values before it: quadratic).
         let mut seen = std::collections::HashSet::with_capacity(values.len());
-        let table = self.downcast_ref::<super::discrete::Finite>();
         let mut pts: Vec<(f64, Ex, f64)> = Vec::with_capacity(values.len());
         for v in values {
             if !seen.insert((v.ctx_id(), v.id())) {
@@ -2504,6 +2662,63 @@ impl Distribution {
                     answer = pts[i - 1].0;
                 }
                 Ok(answer)
+            }
+        }
+    }
+
+    /// [`table_quantile_f64`](Self::table_quantile_f64) for a table whose
+    /// values are in a proved order (`masses`: the `f64` of the masses, the
+    /// values taken in increasing order): the same sums and the same exact
+    /// decision inside [`TIE_BAND`], by position.  Only the value that is
+    /// the answer is evaluated.
+    fn ordered_table_quantile_f64(
+        level: Level,
+        t: &super::discrete::Finite,
+        masses: &[f64],
+    ) -> Result<f64, SymplexError> {
+        let fail = |why: &str| SymplexError::computation_failed("quantile_f64", why.to_string());
+        let value = |j: usize| -> Result<f64, SymplexError> {
+            t.value_in_order(j)
+                .ok_or_else(|| fail("no values listed"))?
+                .eval_f64()
+        };
+        let exact = |from: usize, to: usize| -> Result<Ex, SymplexError> {
+            t.mass_between(from, to)
+                .ok_or_else(|| fail("the table changed during the search"))
+        };
+        let n = masses.len();
+        let mut acc = CompensatedSum::default();
+        match level {
+            Level::Lower(_) => {
+                for (j, m) in masses.iter().enumerate() {
+                    acc.add(*m);
+                    let crossed = match level.crossed_f64(acc.value()) {
+                        Truth::True => true,
+                        Truth::False => false,
+                        Truth::Unknown => level.crossed(&exact(0, j + 1)?)?,
+                    };
+                    if crossed {
+                        return value(j);
+                    }
+                }
+                Err(fail("the masses do not reach p"))
+            }
+            Level::Upper(_) => {
+                // S(v_last) = 0 ≤ q; going down, S(vⱼ₋₁) = S(vⱼ) + mⱼ.
+                let mut answer = n.checked_sub(1).ok_or_else(|| fail("no values listed"))?;
+                for j in (1..n).rev() {
+                    acc.add(masses[j]);
+                    let crossed = match level.crossed_f64(acc.value()) {
+                        Truth::True => true,
+                        Truth::False => false,
+                        Truth::Unknown => level.crossed(&exact(j, n)?)?,
+                    };
+                    if !crossed {
+                        break;
+                    }
+                    answer = j - 1;
+                }
+                value(answer)
             }
         }
     }

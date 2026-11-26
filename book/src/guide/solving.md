@@ -195,7 +195,7 @@ fn main() {
 
 ## Polynomial systems
 
-`symplex::polysys::solve_system_ex(&eqs, &vars)` uses Gröbner bases (Buchberger + FGLM) and returns **algebraic** solutions (radicals, not just rationals) for zero-dimensional systems; positive-dimensional systems return `Err(InfiniteSolutions)`.
+`symplex::polysys::solve_system_ex(&eqs, &vars)` uses Gröbner bases (Buchberger + FGLM) and returns **algebraic** solutions (radicals, not just rationals) for zero-dimensional systems; positive-dimensional systems return `Err(InfiniteSolutions)`, and a system whose Gröbner basis exceeds the work budget returns `Err(BudgetExhausted)`.
 
 ```rust
 use symplex::prelude::*;
@@ -291,7 +291,7 @@ fn main() {
 }
 ```
 
-`solve_ode` returns an unevaluated `DSolve` node when no method applies; `try_solve_ode` makes that an error, and `check_ode_solution` verifies a candidate.
+`solve_ode` returns an unevaluated `DSolve` node when no method applies; `try_solve_ode` makes that an error, and `check_ode_solution` verifies a candidate: `true` is a proof, `false` means "not proved" (refuted at a point, or undecided).
 
 ## Recurrences
 

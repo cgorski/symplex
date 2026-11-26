@@ -631,7 +631,7 @@ fn try_reduce_lowest_order(
     let mut probe = expr;
     let mut placeholders = Vec::with_capacity(n);
     for j in (1..=n).rev() {
-        let ph = arena.symbol(&format!("__red_d{j}"));
+        let ph = arena.internal_symbol(&format!("__red_d{j}"));
         probe = crate::transforms::subs::subs(arena, probe, chain[j], ph);
         placeholders.push((j, ph));
     }
@@ -646,7 +646,7 @@ fn try_reduce_lowest_order(
     if k >= n {
         return None;
     }
-    let p = arena.symbol("__p_low");
+    let p = arena.internal_symbol("__p_low");
     let ExprNode::Symbol(p_sym) = *arena.node(p) else {
         return None;
     };
@@ -746,7 +746,7 @@ fn try_solve_for_highest_derivative(
 ) -> Option<OdeResult> {
     let n = ode_order(arena, expr, func, var)?;
     let chain = derivative_chain(arena, func, var);
-    let t = arena.symbol("__t_hd");
+    let t = arena.internal_symbol("__t_hd");
     let ExprNode::Symbol(t_sym) = *arena.node(t) else {
         return None;
     };
@@ -891,7 +891,7 @@ fn try_linear_argument(
     if !contains_sym(arena, rhs, func_sym) || !contains_sym(arena, rhs, var_sym) {
         return None;
     }
-    let u = arena.symbol("__u_lin");
+    let u = arena.internal_symbol("__u_lin");
     let ExprNode::Symbol(u_sym) = *arena.node(u) else {
         return None;
     };
@@ -1003,7 +1003,7 @@ fn try_linear_coefficients(
     }
     let h_e = ode_ratio_to_expr(arena, &h);
     let k_e = ode_ratio_to_expr(arena, &k);
-    let big_y = arena.symbol("__Y_lin");
+    let big_y = arena.internal_symbol("__Y_lin");
     let ExprNode::Symbol(big_y_sym) = *arena.node(big_y) else {
         return None;
     };
@@ -1185,7 +1185,7 @@ fn try_second_order_const_coeff(
     }
 
     // Characteristic equation: r² + b*r + c = 0
-    let r_var = arena.symbol("__r");
+    let r_var = arena.internal_symbol("__r");
     let two = arena.int(2);
     let b_id = {
         let nid = arena.intern_num(b.clone());
@@ -1269,7 +1269,7 @@ fn solve_characteristic_equation(arena: &mut Arena, b: Q, c: Q, var: ExprId) -> 
         }
     }
 
-    let r_var = arena.symbol("__r");
+    let r_var = arena.internal_symbol("__r");
     let two = arena.int(2);
     let b_id = {
         let nid = arena.intern_num(b);
@@ -1923,6 +1923,43 @@ mod tests {
     }
     fn display(a: &Arena, id: ExprId) -> String {
         a.display(id).to_string()
+    }
+
+    /// The verdict of `y = solution` for `y' = rhs` (sources parsed).
+    fn verdict(rhs: &str, solution: &str) -> Truth {
+        let ctx = crate::api::context::Context::new();
+        let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+        let ode = &y.formal_diff(&x) - &ctx.parse(rhs).unwrap();
+        let sol = ctx.parse(solution).unwrap();
+        let mut inner = ode.inner.write();
+        ode_solution_verdict(
+            &mut inner.arena,
+            ode.raw_id(),
+            sol.raw_id(),
+            y.raw_id(),
+            x.raw_id(),
+        )
+    }
+
+    /// The three verdicts (W11 of the 0.60.0 review findings: one `bool`
+    /// whose `false` was "not proved" and "refuted" alike).  Oracle: SymPy
+    /// `diff(sol, x) - rhs` at `x = 3/10, 11/20, 4/5, -2/5` to 40 digits
+    /// (`gen_w11.py` of the 0.60.1 block): 0 at the four points for the
+    /// first two groups, nonzero at all four for `+ x/7`, and for `cos(x)`
+    /// against `sqrt(1 - y^2)` nonzero at the three positive ones.
+    #[test]
+    fn the_verdict_separates_proved_refuted_and_undecided() {
+        // Proved: an identity of the exponentials.
+        assert!(verdict("1/cosh(x)", "2*atan(exp(x))").is_true());
+        assert!(verdict("1/cosh(x)", "2*atan(tanh(x/2))").is_true());
+        assert!(verdict("1/(1 + x^2)", "atan((x - 1)/(x + 1))").is_true());
+        // Not proved, not refuted: a solution on the real line whose
+        // residual is no identity of the complex plane (`sqrt` of a square).
+        assert!(!verdict("1/cosh(x)", "asin(tanh(x))").is_known());
+        // Refuted at a point.
+        assert!(verdict("1/cosh(x)", "2*atan(exp(x)) + x/7").is_false());
+        assert!(verdict("sqrt(1 - y^2)", "cos(x)").is_false());
+        assert!(verdict("x", "x^2").is_false());
     }
 
     #[test]

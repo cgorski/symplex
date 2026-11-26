@@ -91,6 +91,67 @@ pub enum Direction {
     Both,
 }
 
+/// The unevaluated limit of `expr` as `var → point` from the side `dir`.
+///
+/// The two-sided limit is `Limit(expr, var, point)`.  A one-sided limit at
+/// a finite point is the same node with the open ray of approach in its
+/// third slot instead of the point: `Limit(expr, var, (-oo, point))` from
+/// the left, `Limit(expr, var, (point, oo))` from the right — the limit of
+/// `expr` along that ray at its finite end.  So the three are different
+/// nodes, and everything that treats the third slot as an expression of
+/// the outer scope (substitution, differentiation under the limit, the
+/// binder tables, the sort key, the JSON tree) keeps the side without
+/// knowing of it.  [`limit_approach`] reads the slot; the printer writes
+/// `Limit(expr, var, point, left)` / `…, right)` and the parser reads it.
+/// No public point is an interval (a point is a numeric expression), so
+/// the encoding takes no meaning away.  At `±∞` (and at `zoo`, `nan`)
+/// there is one way of approach and the node is the two-sided one.
+///
+/// Up to 0.60.0 the node had nowhere to keep the side: where the engine
+/// could not evaluate, `limit_left`, `limit_right` and `limit` returned
+/// one and the same node, so `left == right` and `left − right` was `0`
+/// (`abs(x)/x*Sum(1/k^(x + 2), k, 1, oo)` at 0: the values are `∓ζ(2)`).
+pub(crate) fn unevaluated_limit(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    dir: Direction,
+) -> ExprId {
+    let slot = match dir {
+        Direction::Both => point,
+        // `±∞`, `zoo`, `nan`: one way of approach.
+        _ if ValueClass::special_atom(arena, point).is_some() => point,
+        Direction::Left => {
+            let lo = arena.neg_infinity;
+            arena.interval(lo, point, crate::base::interval::IntervalKind::Open)
+        }
+        Direction::Right => {
+            let hi = arena.infinity;
+            arena.interval(point, hi, crate::base::interval::IntervalKind::Open)
+        }
+    };
+    arena.intern(ExprNode::Limit(expr, var, slot))
+}
+
+/// The point and the side that the third slot of a `Limit` node stands
+/// for (see [`unevaluated_limit`]): `(point, Left)` for the ray `(-oo,
+/// point)`, `(point, Right)` for `(point, oo)`, and `(slot, Both)` for
+/// anything else.
+pub(crate) fn limit_approach(arena: &Arena, slot: ExprId) -> (ExprId, Direction) {
+    if let ExprNode::Interval(lo, hi, crate::base::interval::IntervalKind::Open) = *arena.node(slot)
+    {
+        let atom = |e: ExprId| ValueClass::special_atom(arena, e);
+        if atom(lo) == Some(ValueClass::NegInf) && atom(hi).is_none() {
+            return (hi, Direction::Left);
+        }
+        if atom(hi) == Some(ValueClass::PosInf) && atom(lo).is_none() {
+            return (lo, Direction::Right);
+        }
+    }
+    (slot, Direction::Both)
+}
+
 fn fail(reason: impl Into<String>) -> SymplexError {
     SymplexError::ComputationFailed {
         operation: "limit",
@@ -1589,7 +1650,9 @@ fn is_singular(arena: &Arena, id: ExprId) -> bool {
 }
 
 /// `true` if the expression contains an internal dummy symbol (`__gw…`,
-/// `__lim…`, `__limit_t`).
+/// `__lim…`, `__limit_t`) — a symbol of the library's own name space
+/// (`Arena::internal_symbol`); a user's symbol of such a name is a symbol
+/// like any other.
 pub(crate) fn contains_dummy(arena: &Arena, root: ExprId) -> bool {
     let mut stack = vec![root];
     let mut visited = rustc_hash::FxHashSet::default();
@@ -1599,7 +1662,9 @@ pub(crate) fn contains_dummy(arena: &Arena, root: ExprId) -> bool {
         }
         if let ExprNode::Symbol(sid) = arena.node(id) {
             let name = arena.symbol_name(*sid);
-            if name.starts_with("__gw") || name.starts_with("__lim") {
+            if arena.is_internal_symbol(*sid)
+                && (name.starts_with("__gw") || name.starts_with("__lim"))
+            {
                 return true;
             }
         }

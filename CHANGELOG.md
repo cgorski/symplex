@@ -8,6 +8,184 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+## [0.60.1] - 2026-11-26
+
+A release of fixes before the work on the 1.0 interface begins; no public
+signature changed.  Three parts: issue #8 (`eval_decimal` to millions of
+digits); the defects of 0.60.0 that a review found by reading the code and
+a run then confirmed — 27 are fixed, each with the test that was switched
+off until its fix; and the slow inputs of the nightly randomized tests.
+The most serious first.  A matrix entry that is zero without looking it
+(`sin(1)^2 + cos(1)^2 - 1`) was taken for a pivot: the matrix had rank 1
+and no null space, and `inv` divided by such an entry; a pivot is now
+decided by a proof, and a function that can refuse does so where there is
+none.  `is_diagonalizable` said yes for `[[1, 1], [0, x]]` (false at `x =
+1`), and `diagonalize` said no for an identity matrix in disguise.  A limit
+declared the user's symbol `__lim_r` positive, and a parameter named like
+an internal variable changed answers.  The two one-sided limits at a jump,
+left unevaluated, were one expression, so their difference was `0`.
+`gamma` above `3·10⁵` claimed more digits than it had,
+`diff_with_dependent` by a number was `0`, and `probably_equal` refuted
+identities that hold for the kind of symbol declared.  A closure in
+`Ex::replace` that built an expression never returned, and neither did a
+Gröbner basis of a hard system.  Thirteen findings stay, because their fix
+changes a public signature: see *Known issues*.
+
+### Breaking (behaviour)
+
+No signature changed.  The results below changed on purpose; each old one
+was wrong or needlessly undecided, but a program may have relied on it.
+Each entry says what a caller should do.
+
+- **Matrix functions refuse where a pivot is not decided.**  Before: an
+  entry that the zero test could neither prove zero nor prove non-zero was
+  taken for non-zero and divided by.  `inv` of `[[gamma(x + 1) -
+  x*gamma(x)]]` (zero by an identity the library does not know) was
+  `[[1/(gamma(x + 1) - x*gamma(x))]]`, and `lu` returned factors with that
+  entry as a pivot.  After: `solve`, `lu`, `inv`, `pinv`, `qr`, `ldl`,
+  `gram_schmidt`, `hessenberg`, `rank_decomposition`, `condition_number`,
+  `solve_least_squares`, `eigenvects`, `diagonalize`, `jordan_form` and
+  `StateSpace::ackermann` return `Err(ComputationFailed)` naming the entry.
+  `rref`, `rank`, `nullspace`, `columnspace`, `rowspace` and
+  `left_nullspace` return plain values and cannot refuse: they still count
+  such an entry as non-zero (when its column has no entry proved non-zero),
+  and their documentation now says so; their `Result` forms come with the
+  interface package LA1.  An entry that is proved zero is no pivot any more,
+  so a rank can be lower than in 0.60.0 (`[[sin(1)^2 + cos(1)^2 - 1]]`: 1 →
+  0).  What to do: handle the error; simplify the entry, or declare what you
+  know about its symbols, so that the test decides.  The price, on 3,000
+  random matrices with zeros in disguise: of the answers 0.60.0 returned
+  that were right without being proved, `inv` now refuses 8, `lu` 11,
+  `solve` 25, `diagonalize` 80 and `eigenvects` 145.
+- **`is_diagonalizable` says `Some(true)` only when the matrix is
+  diagonalizable for every value of its symbols.**  Before: `[[1, 1], [0,
+  x]]` was `Some(true)`, the answer for most values of `x`; at `x = 1` the
+  matrix is a Jordan block.  After: `None` (`x := 1` gives `Some(false)`, `x
+  := 2` gives `Some(true)`).  `[[x, y], [y, x]]`, whose eigenvectors do not
+  depend on the symbols, stays `Some(true)`.  In the other direction
+  `[[sin(x), 1], [0, sin(x)]]`, a Jordan block for every `x`, was `None` and
+  is `Some(false)`, as `diagonalize` says.  What to do: read `None` as
+  "depends on the values"; substitute the values and ask again.
+  `Some(false)` is still the answer for most values (*Known issues*).
+- **`diagonalize` and `jordan_form` no longer answer for a matrix they
+  cannot decide, and `eigenvects` uses a multiplicity only when the
+  eigenvalues are proved different.**  Before: the identity matrix written
+  `[[1, gamma(x + 1) - x*gamma(x)], [0, 1]]` was `Err(NotDiagonalizable)`,
+  had one eigenvector for its eigenvalue of multiplicity 2, and a Jordan
+  block as its Jordan form.  After: all three calls return
+  `Err(ComputationFailed)` naming the entry.  `NotDiagonalizable` is now a
+  proof; `ComputationFailed` means "not decided".
+- **`StateSpace::is_controllable` and `is_observable` are `true` only when
+  the rank is proved.**  Before: a system with the input matrix
+  `[[sin(1)^2 + cos(1)^2 - 1]]`, which is zero, was controllable; so was `A
+  = [[0, 1], [0, 0]]` with `B = (0, log(6) - log(2) - log(3))ᵀ`.  After:
+  `false`.  `false` therefore means "not controllable, or not proved"; what
+  it means with symbols is under *Known issues*.
+- **A Gröbner basis stops at a work budget.**  Before: `Ex::groebner`,
+  `Context::solve_system` / `polysys::solve_system_ex`,
+  `polysys::solve_polynomial_system` and `groebner::groebner_basis` ran
+  until they were done: for the cyclic system in six variables there was no
+  answer after 60 s, in seven variables none after 300 s.  After: the
+  computation counts its work and stops at 100,000,000 units, which took 1.7
+  to 5.6 s on the ten systems measured.  `Ex::groebner` and `solve_system`
+  return `SymplexError::BudgetExhausted { kind: BudgetKind::GroebnerBasis,
+  .. }` and `solve_polynomial_system` an `Err` text.  The plain
+  `groebner::groebner_basis` and `groebner_basis_lex`, which return a list,
+  **return the generators as they were given** (the same ideal, not a
+  Gröbner basis), and `groebner::fglm` returns `None`.  What to do: call the
+  new `try_groebner_basis` / `try_groebner_basis_lex`, which return the
+  error, or test the list with `is_groebner_basis`.  The count is the same
+  on every machine: a system is refused everywhere or nowhere.  A system
+  whose basis 0.60.0 found only after 20 s or more can be refused now (4 of
+  the 31 systems of the timing set that 0.60.0 answered; they took 28 to 51
+  s), and there is no way yet to ask for a larger budget.
+- **`args()` of a Boolean or a set expression returns operands of its own
+  kind only.**  Before: `args()` wrapped every child in the type of its
+  parent, so the numeric sides of a relation came out as Boolean
+  expressions: `(x > 1).args()[0].not()` built `!x`, and the ends of an
+  interval came out of `SetEx::args()` as sets.  After: a `BoolEx` returns
+  the operands of `And`, `Or` and `Not`, and nothing for a relation (a
+  relation is an atom, as for `atoms()`); a `SetEx` returns the operands of
+  a union, an intersection and a complement, and nothing for an interval or
+  a finite set.  What to do: read the sides of a relation, the ends of an
+  interval and the elements of a finite set from the untyped view,
+  `relation.as_ex().args()` (`[x, 1]` for `x > 1`).  `Ex::args()` is
+  unchanged.
+- **An unevaluated one-sided limit is an expression of its own.**  Before:
+  where the limit engine gives up, `limit_left`, `limit_right` and `limit`
+  returned one and the same node `Limit(f, x, a)`, so the two sides of a
+  jump compared equal and `left - right` was `0` (for `abs(x)/x*Sum(1/k^(x +
+  2), k, 1, oo)` at 0 the true values are `∓ζ(2)`).  After: three different
+  expressions, printed `Limit(f, x, a, left)`, `Limit(f, x, a, right)` and
+  `Limit(f, x, a)` (LaTeX `\lim_{x \to a^{-}}`); each keeps its side under
+  substitution and reads back through `parse` and JSON.  What to do: code
+  that compared such a result with the two-sided node, or matched the text
+  `Limit(f, x, a)`, must expect the side.  In the JSON form and in
+  `Ex::args()` the third place of a one-sided node holds the open ray of
+  approach, the interval `(-oo, a)` or `(a, oo)`, not the point.  At `±oo`
+  the three are one node, as before.
+- **Questions that were left undecided without need are answered.**  A
+  program that expected `None` in these cases gets `Some(..)`.  A query of
+  several properties is their conjunction: for a positive `x`,
+  `x.query(Props::POSITIVE | Props::NEGATIVE)` was `None` and is
+  `Some(false)` (a query of one property is unchanged).  `Context::query` is
+  `Ex::query`: `ctx.query(&cos(pi/16), Props::POSITIVE)` was `None` and is
+  `Some(true)`.  `Equation::new(x, 3).is_identity()` was `None` and is
+  `Some(false)`, because the equation fails at a point; `is_satisfied` keeps
+  its meaning (`Some(false)` only when the sides are equal nowhere), so the
+  two functions now differ for `x = 3`.  `is_prime()` of `1`, of `-7` and of
+  most integers above 2⁶⁴, and `is_prime_value()` of `1/2`, were `None` and
+  are decided (details under *Fixed*).
+- **`probably_equal` samples only values the symbols may take.**  Before:
+  for an integer `v`, `floor(v/2) + ceiling(v/2)` against `v` was
+  `Some(false)`, refuted at a fraction.  After: `Some(true)`.  Where no
+  value of the declared kind can be drawn — a symbol declared irrational, an
+  infinite symbol — the answer is now `None` where there was one (28 cases
+  of the check; 20 of the old answers were right, 8 wrong).  What to do:
+  treat `None` as "no sample available".
+- **`eval_decimal(0)` is an error.**  Before: `1/3` printed
+  `0.333333333333333333333333333333333333334`, 38 digits nobody asked for
+  and none of them certified.  After: `Err(InvalidArgument)`, in every
+  function that takes a digit count (`eval_decimal`,
+  `integrate_numeric_decimal`, `p_value_decimal`, the `eval_decimal` of a
+  quantity with a unit).  What to do: ask for at least one digit.
+- **`ntheory::mod_pow` with a negative exponent is a power of the inverse.**
+  Before: `mod_pow(2, -1, 7)` was `0`, a stand-in.  After: `4` (the inverse
+  of 2 modulo 7; Python `pow(2, -1, 7)`).  Without an inverse (`mod_pow(2,
+  -1, 4)`) and for a modulus `≤ 0` the documented `0` stays.  What to do:
+  remove a workaround that called `mod_inverse` first; do not read `0` as
+  "negative exponent".
+- **`diff_with_dependent` by something that is not a symbol is not `0`.**
+  Before: `(x*y + sin(x)).diff_with_dependent(&2, &[&y])`, and the same by
+  `2*x`, were `0`, a value where no derivative is defined.  After: the
+  unevaluated `Derivative(x*y + sin(x), 2)`, the node `diff` returns for the
+  same input; `eval_derivatives` leaves such a node alone (it turned it into
+  `0`).  What to do: test the result with `has_unevaluated()`, or call
+  `try_diff`, which returns the error.
+- **`Poly` drops a coefficient that is proved zero.**  Before:
+  `Poly((sin(a)^2 + cos(a)^2 - 1)*x, x)` had `is_zero() == false` and
+  `total_degree() == Some(1)`.  After: it is the zero polynomial.  A
+  coefficient that is zero but not proved so is kept, and `is_zero`, the
+  degrees and the leading term are documented as speaking of the
+  coefficients as proved.  What to do: nothing; a degree can be lower than
+  in 0.60.0.
+- **`Frequency` and `AngularVelocity` convert by 2π** (experimental tier).
+  Before: `Frequency::from_angular_velocity`, `Frequency::from(w)` and
+  `AngularVelocity::from(f)` only changed the label: 60 rpm as an angular
+  velocity (2π rad/s) became 2π Hz, and 50 Hz became 50 rad/s.  After: 1 Hz
+  and 100π rad/s (`ω = 2πf`).  What to do: remove a factor 2π you applied
+  yourself; a quantity of dimension 1/s that is a frequency already is built
+  with `Frequency::from_ex(q.into_inner())`.
+- **The library's internal variables are not symbols you can name.**
+  Before: `ctx.symbol("__lim_r")` was the very symbol the limit engine uses
+  and declares positive: after `(sin(x)/x).limit(&x, &0)` it answered
+  `is_positive() == Some(true)` and `sqrt(__lim_r^2)` was built as
+  `__lim_r`.  After: the internal variables live in a name space of their
+  own, which `Context::symbol`, the parser and the JSON reader never return.
+  What to do: nothing.  One printed form changes: the bound variable of a
+  `RootSum` is `__rs_t_1` instead of `__rs_t` when the integrand itself has
+  a symbol named `__rs_t`.
+
 ### Added
 
 - `Context::clear_numeric_cache()` frees the constants (`π`, `e`, `ln 2`,
@@ -15,6 +193,34 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   "Fixed"): a few kilobytes at the default precision limit, 4 MB for each
   value kept after an evaluation to ten million digits.  Results never
   depend on the cache.
+- `Ex::inverse_mellin_transform_in_strip(s, x, lower, upper)` inverts a
+  Mellin transform on the strip `lower < re(s) < upper` (the bounds are
+  expressions; `-oo` and `oo` are allowed).  A Mellin transform determines
+  its function only together with its strip, and `inverse_mellin_transform`
+  cannot be told the strip: the transform of `H(x - 1)`, which is `-1/s` on
+  `re(s) < 0`, inverted to `-H(1 - x)`, the function of `re(s) > 0`.  With
+  the strip that `mellin_transform` returned, the new method returns the
+  function (`H(x - 1)`); on another strip without a pole it returns the
+  function that differs by the residues at the poles between (`gamma(s)` on
+  `-1 < re(s) < 0`: `exp(-x) - 1`); a pole inside the strip, an empty strip,
+  or a strip beyond the convergence of the transform's integral is an error.
+  `inverse_mellin_transform` keeps its behaviour, and its documentation now
+  names the strip it takes.  Checked on 52 functions (cut powers, `exp(-x)`,
+  `1/(1 + x)^k`, `sin`, `cos`, `ln(1 + x)` and sums): on the transform's own
+  strip the round trip returns the function for 51 and is refused for 1
+  (`x*exp(-x^2)`), where the two-argument inverse returns another function
+  for 15; on 936 strips (the 52 transforms on 18 strips each) 575 are
+  answered and 361 refused, and no answer disagrees with SymPy's inverse
+  with its strip argument (447 answers) or with numeric integration along
+  the strip by mpmath (206); 28 answers have no independent check.
+- `groebner::try_groebner_basis` and `groebner::try_groebner_basis_lex`: the
+  Gröbner basis, or `SymplexError::BudgetExhausted` when the work budget is
+  spent (see *Breaking*).
+- `BudgetKind::GroebnerBasis`, the kind of that refusal.  `BudgetKind` is
+  `#[non_exhaustive]`, so the new variant breaks no `match`.
+- `Context::parse` reads two more forms, both printed by `Display`:
+  `Limit(f, x, a, left)` / `Limit(f, x, a, right)` and `RootSum(poly, var ->
+  expr)` (see *Fixed*).
 
 ### Fixed
 
@@ -50,6 +256,378 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   Everyday evaluations gain too, because none starts from an empty cache
   any more: `exp(1) + pi` to 1,000 digits takes 14 µs instead of 433 µs.
 
+Each entry below gives the old result, the new one, and the size of the
+check behind it ("before → after" counts of wrong results over generated
+cases, each compared with an independent computation: mpmath at two
+precisions, SymPy, Python, or exact arithmetic).
+
+#### Numeric evaluation
+
+- **`gamma` of a large argument claimed more digits than it had.**  `Γ(x)`
+  is `exp(ln Γ(x))`, and `ln Γ` was summed with 20 spare bits whatever its
+  size, so from about `x = 3·10⁵` on `Γ(x)` was less accurate than its error
+  bound said (by 10 bits at `x = 7·10⁷`).  The digits of `Γ(x)` itself were
+  right; a difference that cancels 50 to 62 bits of it printed wrong last
+  digits: `gamma(280000001/4) - 17854627671268857*2^1723270899` at 32 digits
+  ended in `…4717e518756229` and ends in `…4705e518756229` (12 units of the
+  last digit).  The same held for `x!`, `binomial` and `beta` at large
+  arguments (`binomial(88246489/4, k)` in such a difference: 1.09 units).
+  `ln Γ` is now summed to an absolute error derived from its terms, and `Γ`
+  is within half a unit of the last place (plus 2⁻¹²) at every argument.  Of
+  396,500 such differences, 171 were off by more than 0.5625 units of the
+  last digit and 46 by more than one; now none (largest 0.5009).  Of 865,800
+  values of 23 other families that use `ln Γ`, 32 were off by more than
+  0.5625 units (`factorial` 19, `binomial` 8, `beta` 5); now none.
+- **`eval_decimal(0)` printed 38 uncertified digits** (`1/3` ended in
+  `…334`); zero digits are refused (see *Breaking*).
+- **The working precision of a digit count overflowed on 32-bit targets.**
+  `digits·34/10 + 64` was computed in the machine's word: on `wasm32` a
+  count from 126,322,568 on panicked in a debug build and, in a release
+  build, wrapped to 128 bits, passed the check against the configured
+  maximum and returned 16 good digits.  It is computed in 64 bits and
+  refused (`PrecisionExhausted`) beyond the maximum.  On a 64-bit target
+  nothing changes.
+- **`Ei(x)` left of zero was slow, and `expint(1, x)` at a small argument
+  and a high precision was refused.**  `Ei(x)` for `x ≤ -1` was summed by a
+  series that loses `2.9·|x|` bits to cancellation: `Ei(-691)` at 280 digits
+  took 128 ms, and `li(sin(1 + 10⁻³⁰⁰) - sin(1))` took 145 ms at 16 digits
+  (the three slow inputs of the randomized tests of numeric evaluation,
+  which decode to this one expression).  It is now `-E₁(-x)` by a continued
+  fraction there: 0.5 ms and 1.7 ms.  In the other direction `expint(1, x)`
+  and `uppergamma(0, x)` used that fraction for a small `x` at every
+  precision, where its length grows with the square of the precision:
+  `expint(1, 4/3)` at 600 digits was refused ("continued fraction … did not
+  converge in 87440 steps") and has its digits now; `expint(1, 1)` at 1,000
+  digits took 2.2 s.  Check: 346,320 values of `Ei`, `li`, `expint(1, x)`,
+  `uppergamma(0, x)`, `Chi` and `Shi`: none off by more than 0.5625 units
+  and none refused, before and after, in half the time (488 → 247 CPU s); 46
+  values at 1,000 digits: 2 refused → 0, 19.1 s → 4.1 s.
+- **The incomplete gamma functions of a huge shape took 0.4 s next to the
+  mode.**  `uppergamma(s, x)/gamma(s)` for `s ≈ 1.8·10⁹` just above `x` —
+  the distribution function of `Poisson(1.8·10⁹)` at its median — summed
+  634,000 terms of a series: 392 ms.  Where that series is within its limit
+  (shapes up to about `3·10⁹`), the value now comes from a continued
+  fraction at a shape just below `x` and a recurrence up to `s`: 43 ms.  The
+  values are the same, and so is the set of arguments that have one: 2,880
+  results are byte-identical to those of 0.60.0 (893 of them refusals in
+  both), and so are 1,072 results around the slow input (11 refusals;
+  against mpmath no value is off by more than 0.5625 units).
+- **A definite integral whose mass lies in a thin layer at an end of its
+  range was refused only after the whole evaluation budget.**  The moment
+  generating function of `FDistribution(11, 2.3·10⁻²⁵³)` at `-1/8` is an
+  integral whose integrand behaves like `1/x` from `10⁻²⁵⁴` to 1.  The
+  quadrature can see such a layer only at its finest level, which costs more
+  evaluations than it is allowed; it bisected the range to the last depth
+  first (10,775 evaluations, 1.45 s) and then refused.  The layer is now
+  recognised from the first level's terms, and where no level before the
+  last can resolve it the integral is refused (`PrecisionExhausted`) at
+  once: 496 evaluations, 0.09 s.  An integral whose layer an earlier level
+  resolves is evaluated as before.  That the rule refuses nothing 0.60.0
+  evaluates is measured, not proved: of 4,454 results (three sets of
+  integrals with layers 3 to 300 decades deep and the 416 integrals of the
+  `eval_f64` measurement, at 8 to 30 digits) no value became a refusal and
+  no value changed.  One value outside those sets is lost: `eval_decimal(1)`
+  of the integral above was `7e-251` (the true value is `6.5973·10⁻²⁵¹`) and
+  is refused.
+
+#### Matrices
+
+- **A pivot that is a hidden zero.**  The zero test of the eliminations
+  stopped at the exact test for rational functions of the symbols and, for a
+  constant, at a certified value; whatever those did not decide was a pivot.
+  `[[sin(1)^2 + cos(1)^2 - 1]]` had `rank()` 1 and an empty `nullspace()`
+  although `is_zero()` of the entry is `Some(true)` (now 0 and one vector);
+  so had 15 of 24 zero forms tried (`log(6) - log(2) - log(3)`, `sin(x)^2 +
+  cos(x)^2 - 1`, `exp(2*x) - exp(x)^2`, …).  `rref` of `[[1, 1], [1, 1 +
+  sin(x)^2 + cos(x)^2 - 1]]` was four `nan` with pivots `[0, 1]` and is
+  `[[1, 1], [0, 0]]` with pivots `[0]`; `lu`, `solve` and `inv` of it report
+  a singular matrix.  The test is now three-valued — proved zero, proved
+  non-zero, undecided — and one for every elimination: 20 of the 24 forms
+  are proved zero, an entry with functions is proved non-zero by a certified
+  value at a point of its symbols, the pivot of a column is its first entry
+  proved non-zero, and an undecided entry is a refusal where the function
+  can refuse (see *Breaking*).  A constant that is a rational number in
+  disguise is read as that number when the difference is proved zero
+  (`[[2/(erf(1) + erfc(1) - 2) + 2]]` had rank 1).  Check: 3,000 matrices up
+  to 4×4 with zeros in disguise, against the exact answer for the matrix
+  with the zeros written `0`: wrong `rank` / `nullspace` 678 → 283 (see
+  *Known issues*), `inv` 181 → 0, `lu` 369 → 0, `solve` 369 → 0; the same
+  matrices with the zeros written `0`: `rank` 3 → 0, `lu` and `solve` 3 → 0.
+  Against SymPy on the 771 matrices whose zeros SymPy's `simplify` finds:
+  the same rank for 596 before and 766 now (in the other 5 SymPy's rank is
+  one too large).
+- **`diagonalize` said `NotDiagonalizable` for an identity matrix in
+  disguise**, and `eigenvects` returned one vector for an eigenvalue of
+  multiplicity 2 (`[[1, gamma(x + 1) - x*gamma(x)], [0, 1]]`): the
+  eigenvector solve took the undecided entry for a pivot.  Both are refused
+  now (see *Breaking*).  `eigenvects` also proves the eigenvalues pairwise
+  different before it uses their multiplicities: `[[2, 0, x], [0, x, 1], [z,
+  0, x]]` with `z` a zero in disguise had three "simple" eigenvalues, two of
+  them equal for every `x`, and one eigenvector each.  Check (the 3,000
+  matrices): wrong `diagonalize` 137 → 0, wrong `eigenvects` 137 → 0.
+- **`is_diagonalizable()` was `Some(true)` for `[[1, 1], [0, x]]`**, a
+  Jordan block at `x = 1`, and `None` for `[[sin(x), 1], [0, sin(x)]]`, a
+  Jordan block for every `x` (see *Breaking*).  Check: wrong answers 172 → 0
+  on the 3,000 matrices as written and 127 → 0 with the zeros written `0`.
+  Of the 360 `Some(true)` that became `None` there, 338 were wrong (the
+  matrix is not diagonalizable at some value of its symbols), 5 were right
+  and are given up, 16 could not be classified and 1 has a repeated
+  eigenvalue for every value.
+- **`StateSpace::is_controllable()` was `true` for an input matrix that is
+  zero**, and `is_observable()` for such an output matrix (see *Breaking*).
+
+#### Calculus
+
+- **`diff_with_dependent` by a number or by `2*x` was `0`** (see
+  *Breaking*); `eval_derivatives` turned `Derivative(x*y + sin(x), 2)` into
+  `0` and leaves it alone.  Check: 1,000 random expressions by 11
+  non-symbols: a value 1,000 → 0; by a symbol the 1,000 results are
+  unchanged and agree with a finite difference.
+- **The limit engine declared a user's symbol positive, and a parameter
+  named like an internal variable was captured.**  After
+  `(sin(x)/x).limit(&x, &0)` a symbol named `__lim_r` was positive.
+  `((__lim_w*x + sin(x))/x).limit(&x, &0)` was `oo` (it is `__lim_w + 1`);
+  `((x^2 + __gwp0*x)/(2*x^2 + 1)).limit(&x, &oo)` was `1` (it is `1/2`);
+  `dsolve` of an equation with a parameter named `__v`, `__r_sym` or
+  `__clairaut_p` returned another solution than with the parameter named
+  `q`; `solve(sqrt(x) + x^(1/3) - __t_radical, x)` returned three wrong
+  roots; `integrate(1/(sin(x) + __wt), x)` came back unevaluated; after a
+  `summation` a symbol named `__sum_index` was real.  The internal variables
+  of the limit and series engines, of the ODE solvers, of `solve`, of the
+  integrator and of `summation` now live in a name space of the library's
+  own (see *Breaking*).  Check: each of 136 internal names used as the name
+  of a parameter in 68 operations, against the same operation with the
+  parameter named `q`: names with a changed or lost answer 24 → 0; of 26
+  internal names that carry an assumption, 11 → 0 reach a user's symbol of
+  that name.
+- **An unevaluated one-sided limit was the two-sided node** (see
+  *Breaking*).  Check: 960 limits at a jump of a function the engine cannot
+  evaluate; in the 812 where both sides stay unevaluated, `left == right`
+  812 → 0; a side equal to the two-sided node 876 → 0; none fails to read
+  back through `parse` or JSON; the 148 with a value on some side are
+  unchanged.
+- **`check_ode_solution` was `false` for 6 of 24 correct solutions**, for
+  example `y = 2*atan(exp(x))` for `y' = 1/cosh(x)`: an antiderivative in
+  another form than the one the simplifier reaches.  The six are `true`.
+  The residual now also goes through the zero test for expressions with
+  symbols, for itself and for its numerator, before and after the
+  angle-addition formulas.  Check: of 253 correct solutions in other forms,
+  54 were `false` and 8 are (all eight solve their equation on the real
+  line, or a part of it, only); of 430 wrong solutions and 7 that hold on a
+  part of the line none is accepted, before or after.  `false` is now
+  documented as "not proved": refuted at a point, or undecided.
+- **`probably_equal` refuted identities that hold for the kind of symbol
+  declared.**  Its sample points were fractions whatever the symbols'
+  assumptions: for an integer `v`, `floor(v/2) + ceiling(v/2)` against `v`
+  was `Some(false)`; for a positive `v`, `atan(v) + atan(1/v)` against
+  `pi/2`.  A symbol with assumptions is now sampled at values proved to have
+  every declared property (see *Breaking* for the `None`).  A symbol that
+  cancels in the difference of the two sides took no sample at all:
+  `sign(v) - t^2` against `1 - t^2` for a real `v` was `Some(true)` and is
+  `Some(false)`.  Check: 810 identities of a declared domain: refuted at 1 /
+  8 / 32 samples 99 / 168 / 169 → 0 / 0 / 0; 310 pairs that are not
+  identities: called equal at 8 / 32 samples 25 / 30 → 10 / 1.
+- **The inverse Mellin transform of a transform whose strip lies left of its
+  pole returned the function of the other strip.**  The old function cannot
+  know the strip; the new `inverse_mellin_transform_in_strip` takes it (see
+  *Added*).
+
+#### Core
+
+- **A closure inside `Ex::replace` that built an expression never
+  returned.**  `replace` and `try_replace` ran the caller's closure while
+  they held the context's lock, so a closure that built its replacement
+  (`e.replace(|v| if v == &x { Some(&x + 1) } else { None })`), called the
+  context (`ctx.int(2)`), printed an expression or asked a question about
+  one waited for itself for ever.  The closure now runs with no lock held.
+  What it is shown is unchanged: every distinct node of the original
+  expression once, children first.  Check: six kinds of closure on 300
+  random expressions each: none returned (stopped after 20 s) → 1,800 right
+  results.
+- **A Gröbner basis had no bound on its work** (see *Breaking*).  Check: 600
+  random systems against SymPy's `groebner`: 0 wrong and 0 refused, and the
+  output is byte-identical to that of 0.60.0.  The largest basis of the test
+  suite spends 1 % of the budget (966,189 units), no basis of the golden
+  corpus 1,000 units.
+- **`Poly` kept coefficients that are zero by an identity** (see
+  *Breaking*).  Check: 1,000 polynomials whose coefficients are drawn from
+  12 expressions that are zero by an identity and 12 that are not: 405 with
+  a zero coefficient kept → 0; none with a non-zero coefficient dropped,
+  before or after.
+- **`mod_pow(2, -1, 7)` was `0`** (see *Breaking*).  Check: 20,000 triples
+  against Python's `pow(b, e, m)`: 6,428 wrong → 0.
+- **The compiled `fibonacci(x)` and `lucas(x)` were NaN off the integers.**
+  `compile()`, `to_rust_fn` and `to_c_fn` gave NaN for a non-integer
+  argument where `eval_f64` gives the real value (`fibonacci(1/2)` =
+  0.5688644810057831).  The `f64` routines now compute the same
+  continuation, `F(x) = (φ^x - cos(πx)·φ^(-x))/√5` and `L(x) = φ^x +
+  cos(πx)·φ^(-x)`; integers are computed as before, bit for bit.  The
+  compiled `lucas(n)` of an integer beyond ±1475 was NaN (`∞ - ∞`) and is
+  `±∞`, as `fibonacci(n)`.  Check: 2,687 points against mpmath on each of
+  the three back ends: NaN at 2,543 (`fibonacci`) and 2,573 (`lucas`) → 0,
+  largest relative error 1.8·10⁻¹⁵.
+- **`(x > 1).args()[0].not()` built `!x`** (see *Breaking*).  Check: 2,000
+  random Boolean and 2,000 random set expressions: a handle of the wrong
+  kind reachable through `args()` in 2,000 and 1,949 of them → 0 and 0.
+- **`Frequency::from_angular_velocity` did not divide by 2π**, and neither
+  did the two `From` conversions (see *Breaking*).  Check: 500 speeds, both
+  directions: 1,000 wrong of 1,000 → 0.
+
+#### Statistics
+
+- **Quantiles found by a root search.**  `quantile_f64` and `isf_f64` of a
+  density without a closed quantile (a truncation, a mixture, an order
+  statistic, a transformed law) searched for the root by halving the *width*
+  of a bracket, each step a certified evaluation of the distribution
+  function: a bracket of 300 decades cost a thousand evaluations.  The
+  quartile of a Cauchy law truncated to `[-3.2·10²⁹⁹, 3.08]` took 12.1 s
+  (and the nine quantiles the randomized test asks for, minutes).  The
+  search now has a bound on its evaluations: the bracket is the support
+  itself where there is no starting estimate, it is narrowed in the order of
+  the floating-point numbers (at most 12 evaluations), and the root search
+  gets 128 steps, which always suffice then.  A truncated or mixed law is no
+  longer simplified at each point (10 ms of the 12 ms of an evaluation).
+  The quartile takes 0.12 s.  Results that needed no wide bracket are
+  bit-identical; the others agree within the documented tolerance
+  (`-1.1708495661125393` for `-1.170849566112539`, the two doubles next to
+  the root).  Check: 611 mixtures and truncations at levels from `10⁻³⁰⁰`,
+  against mpmath at 700 digits: 0 wrong before and after, the same 17
+  refusals, 26.2 s → 4.1 s of CPU.
+- **Student t and F distribution functions at extreme shapes.**  `cdf` and
+  `sf` of `StudentT(ν)` wrote the incomplete beta function at the argument
+  `ν/(ν + x²)`, which for `ν = 6.6·10²³⁶` is `1 - 1.5·10⁻²³⁶`: 0.19 s per
+  evaluation, and every call evaluated its result a second time only to ask
+  whether the point lies in a far tail, although these families have no
+  other form for a far tail.  At a number the function is now written in the
+  complementary argument where that is below `2⁻¹⁶` (the same value by
+  reflection; likewise `FDistribution`), and the question is asked only of a
+  family that has the other form.  `StudentT(6.6·10²³⁶).cdf(-3.1067)`: 0.40
+  s → 0.03 s, the same 25 digits.  Check: 611 `cdf` / `sf` values at shapes
+  up to `10^±300`: 61 that 0.60.0 refused ("precision exhausted") are
+  answered, the other 519 are identical to 25 digits, none became a refusal;
+  493 of the 496 with an independent value agree to `10⁻²⁰`, and the other 3
+  were checked by hand (there mpmath rounds an argument next to 1 to 1).
+- **`Distribution::transformed` of a long list of equally likely values.**
+  A map proved strictly increasing or decreasing on the interval the values
+  span has distinct images in the order of the values, so a table of more
+  than 256 values is built without evaluating its images, and `cdf`, `sf`,
+  the mass function and the quantiles find a point by bisection and add the
+  masses as integers.  `√X` of a 100,000-sided die: the table 1.36 s → 0.33
+  s; `sinh X`: 4.7 s for the table and 2.6 s per query → 0.21 s and 0.05 s;
+  `tanh X`, which did not finish in five minutes (its images are `1.0` in
+  doubles from `X = 19` on), 0.21 s.  The values are the same wherever
+  0.60.0 answered.  Check: 400 lattices of 257 to 3,000 values under 13
+  monotone maps, exact against the lattice: 0 wrong before and after, 28.2 s
+  → 5.4 s of CPU.  A lattice with unequal masses (`Binomial`,
+  `Hypergeometric`) gains nothing (*Known issues*).
+
+#### Questions and round trips
+
+- **A query of several properties was `None` when one of them is false.**
+  `x.query(Props::POSITIVE | Props::NEGATIVE)` for a positive `x`, and
+  `query(POSITIVE | INTEGER)` of `1/2`, were `None`: a set of properties was
+  false only when every one of them was known false.  It is `Some(false)` as
+  soon as one property is false, `Some(true)` when all are true and `None`
+  otherwise (`cos(pi/16).query(POSITIVE | REAL)` was `None` and is
+  `Some(true)`).  Nothing inside the library asked for more than one
+  property.  Check: 784 expressions by 276 pairs of properties: answers that
+  are not the conjunction of the two single answers 67,302 → 0.
+- **`Context::query` was `None` where `Ex::query` was `Some(true)`**:
+  `ctx.query(&e, Props::POSITIVE)` for `e = cos(pi/16)`, `cos(1)`, `sin(3)`,
+  `pi - 3`, `sqrt(2) - 1`, `log(2)`.  The two are one function now.  Check
+  (the same 784 expressions): answers on which the two differ 1,594 → 0.
+- **`Equation::new(x, 3).is_identity()` was `None`.**  An equation that
+  `equals` neither proves nor refutes is now evaluated at six fixed points;
+  one point that is proved to lie in the declared domain of every symbol, at
+  which both sides have a finite value and the values are certified
+  different, makes the answer `Some(false)`: `x = 3`, `x = y`, `sqrt(x^2) =
+  x`, `abs(x) = x`, `atan(tan(x)) = x`.  `sqrt(p^2) = p` for a positive `p`
+  is `Some(true)` as before, and an equation that is neither proved nor
+  refuted (`f(x) = 3` for an undefined `f`) stays `None`.  Check: 1,851
+  equations: of the 1,322 that fail at some point, `Some(false)` for 112 →
+  1,322; of the 505 identities, `Some(true)` for 502 and `None` for 3,
+  before and after; no wrong answer, before or after.
+- **A fraction is not a prime, and neither is 1.**  `is_prime_value()` was
+  `None` for `1/2` and for `pi`; it is `Some(false)`.  `is_prime()` and
+  `is_composite()` were `None` for `1`, for negative integers and for every
+  integer above 2⁶⁴.  Now an integer below 2 is neither, an integer below
+  `3.3·10²⁴` is decided by the test that is a proof there (`2^64 + 13` is
+  prime, `2^67 - 1` is not), and beyond that a number with a witness of
+  compositeness is composite.  A probable prime beyond `3.3·10²⁴` (`2^89 -
+  1`) stays `None` in `is_prime()`, because the test there is not a proof;
+  `is_prime_value()` reports the test's verdict as before, and its
+  documentation says so.  Check: 2,599 inputs against SymPy: undecided by
+  `is_prime` 1,499 → 142; no wrong answer, before or after.
+- **The printed form of a `RootSum` did not read back.**
+  `integrate(1/(x^5 - x + 1))` prints `RootSum(2869*__rs_t^5 + …, __rs_t ->
+  …)`, which `parse` refused ("expected expression, got Gt").  The parser
+  reads the form, and `parse(e.to_string()) == e` for such a result.  Check:
+  284 integrals with a `RootSum`: refused 284 → the same expression 284.
+- **`to_mathml` refused `RootOf` and `RootSum`**, which `solve` and
+  `integrate` return and `to_latex` prints.  They are written as a call
+  under their name: `RootOf(poly, index)` and `RootSum(poly, var ↦ expr)`.
+  Check: 1,465 roots and 284 integrals: refused → well-formed MathML, all of
+  them.
+- **Documentation: `compile` does not evaluate every function that
+  `eval_f64` does.**  Four sentences (README, and the book's pages on known
+  limitations, complex analysis and code generation) said that `compile`
+  evaluates the incomplete gamma functions and the Gegenbauer, Jacobi and
+  associated Legendre / Laguerre polynomials with symbolic parameters, and
+  one said "every numerically evaluable node is supported".  `compile`
+  refuses them, like `to_rust_fn` and `to_c_fn`; with literal parameters
+  `eval` expands them first and `compile` takes the expansion.  The book
+  also said that `to_mathml` refuses `RootOf` and `RootSum`.
+
+### Changed
+
+- **The documentation of `Ex::eval_f64` says what it certifies for a
+  definite integral.**  It promised "the nearest `f64`" for every
+  expression.  An expression with an unevaluated definite integral
+  (`Integral(f, x, a, b)`) is certified to 8 digits (a relative error below
+  `2⁻³⁰`).  Of 416 such integrals 149 were the nearest `f64`; the worst was
+  1,914 units in the last place off (`3.5·10⁻¹³` relative).  Certifying 16
+  digits makes all 416 the nearest `f64`, but costs 7.5 times as much in
+  total (2.86 s → 21.5 s) and 500 times for the median integral (0.07 ms →
+  36 ms), so the behaviour stays and the sentence was corrected.  For the
+  nearest `f64`, parse `eval_decimal(20)`.
+- **`gamma` costs more.**  The bits that were missing are now computed: at
+  ordinary arguments `gamma`, `binomial`, `beta` and `factorial` take 1.6 %
+  more time at 16 digits, 4.7 % at 30, 6.0 % at 100 and 0.4 % at 1,000; at
+  arguments up to `7·10⁷`, up to 10 % more (at 30 digits).  The values
+  printed by the timing runs are identical.
+- **The zero tests of a matrix call have a work budget**, counted in nodes
+  of the entries tested (the same on every machine); when it is spent, or an
+  entry is too large for the proofs, the entry is undecided.  The cost of
+  the stronger test: the 1,657 matrix tests of the suite take the same time
+  (394.2 s → 392.0 s); the worst case built for it, one elimination of a 4×4
+  matrix of sixteen entries that no test decides, takes 165 ms where 0.60.0
+  took 1 to 2 ms (and divided by the entries); on the 3,000 matrices of the
+  check the whole run takes 8 % less CPU (2,449 s → 2,248 s), and 16
+  matrices take more than twice as long plus 0.3 s for the nine calls of the
+  check together (the largest: 1.14 s → 3.12 s), each a refusal now where
+  0.60.0 answered on an undecided pivot.
+- **`Poly::new` with coefficients that hold functions or irrational
+  constants runs the zero test on each coefficient**: 200 constructions of
+  `(sin(a)*x + exp(b)*y + log(c) + pi)^4` take 0.12 s instead of 0.05 s, of
+  `(sqrt(2)*x + pi*y + e + log(3))^5` 0.14 s instead of 0.09 s.
+  Coefficients that are rational numbers take the old path (same times);
+  coefficients that are polynomials in symbols cost 1 to 3 % more (`(a*x +
+  b*y + c)^6`: 162 µs → 166–168 µs).
+- **`check_ode_solution` and `Equation::is_identity` do more work**: the 690
+  calls of the check of `check_ode_solution` take 2.8 s instead of 1.7 s,
+  the 1,851 of `is_identity` 1.23 s instead of 1.02 s.
+  `symplex::ode::checkodesol`, which the solvers call, is the proof alone
+  and does not pay for the refutation at points.
+- **Distribution functions print differently at a number in two cases**:
+  `cdf` and `sf` of a truncated or mixed law are no longer simplified there
+  (the value is the same; the expression may print in another form), and
+  those of `StudentT` and `FDistribution` use the complementary argument of
+  the incomplete beta function where the usual one is within `2⁻¹⁶` of 1.
+- `Ex::replace` walks as fast as before (300 walks of a sum of 455 terms:
+  0.15 s → 0.16 s), and a Gröbner basis that is computed takes the time it
+  took (within 4 %: katsura-5 in lex order 1.43 s → 1.42 s, katsura-6 in
+  grevlex 2.75 s → 2.81 s).
+
 ### Infrastructure
 
 - **The API snapshot.**  `api/public.txt` lists every public item with its
@@ -63,17 +641,320 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - `tests/v36/v36_s17c_review_findings.rs`: the defects of 0.60.0 that the
   review of the public API predicted by reading and a run confirmed, one
   test each, switched off with the reason until its fix.
+- Tests of this release, `tests/v36/`: `v36_s18_issue8.rs` (2 tests),
+  `v36_s18b_numeric.rs` (10), `v36_s18c_matrices.rs` (15),
+  `v36_s18d_calculus.rs` (19), `v36_s18e_core.rs` (21; one of them,
+  `the_default_budget_refuses_cyclic_6`, is switched off because it takes
+  about 90 s in a debug build and 5.5 s in a release build, where it
+  passes), `v36_s18f_stats.rs` (8) and `v36_s18g_deciders.rs` (14), and unit
+  tests beside the code (`evalf::gamma`, `evalf::wp`, `evalf::quad`,
+  `poly::groebner`, `calculus::ode`).
+- `tests/v36/v36_s17c_review_findings.rs`: 27 of its 38 switched-off tests
+  run now; 11 stay off (*Known issues*).  Three of the 27 state another
+  contract than they did while switched off, because the fix chose it: the
+  test of `eval_f64` on a definite integral asserts 8 certified digits and
+  is renamed (`…_is_the_nearest_double` → `…_is_certified_to_eight_digits`);
+  the test of the inverse Mellin transform asserts the round trip through
+  the new method; the test of `args()` asserts that a relation has none.
+- Nine older tests pinned a value that this release corrects and were
+  changed with it, one assertion or one name each: `v35_linalg`
+  (`is_diagonalizable` of a matrix with a double eigenvalue at `k =
+  0.5951…`: `Some(true)` → `None`), `v02_transforms_limits` (the one-sided
+  node), `v21_units` and `legacy/round2_domains` (50 Hz → 50 rad/s),
+  `v02_backends_compile` (`fibonacci(2.5)` compiled to NaN),
+  `unit/test_assume_queries` (`is_prime(1)`), `unit/test_ntheory`
+  (`is_prime_value(1/2)`), `v02_ergonomics_equation` (`is_identity` of `x =
+  2`), `v09_output` (MathML of a `RootOf`).
+- **The harness of the statistics fuzzer, `fuzz_stats`, changed with the
+  fixes; it checks more in one place and less in four.**  More: a lattice of
+  equally likely values (`Die`, `DiscreteUniform`) is transformed into a
+  table whatever its length (the cap was 20,000 values).  Less: (1) a
+  lattice with unequal masses is transformed only up to 512 values
+  (`MAX_TRANSFORMED_UNEQUAL`; the cap was 20,000, and the queries of such
+  tables were as slow in 0.60.0); (2) a new skip, `leaves_the_doubles`: an
+  integral check, or the evaluation of a moment generating or characteristic
+  function left as an integral, is not started when the integrand, compiled
+  to `f64`, is not finite at a sample point; (3) the check of a
+  characteristic function against its quadrature is left out for tails of
+  order below 4 (it was: below 1); (4) an input starts no new step after 2 s
+  (it was 5 s), read from the clock.  Unchanged: the skip of long lattices
+  whose tails are sums of their masses (`tails_are_long_sums`,
+  `MAX_SUMMED_ATOMS`) and the limit `|mean| ≤ 10⁸` of the first-moment
+  check.  `fuzz/README.md` lists the five skips and what would remove each.
+- `api/public.txt` has five lines more: the three functions and the variant
+  under *Added*, and `__macro_support::with_groebner_work_cap`, a hidden
+  hook by which the tests run a Gröbner basis under a small budget (not part
+  of the interface).
 
 ### Known issues
 
-- Found by the Fuzz run on the 0.60.0 release commit, slow and not wrong,
-  and equally slow in 0.59.0 (inputs and times in `fuzz/README.md`): the
-  moment generating function of `FDistribution(11, d₂)` with
-  `d₂ ≈ 2.2·10⁻²⁴⁹` at `−1/8` takes 5.5 s (over the 30 s limit of the
-  nightly run under the sanitizer: `fuzz_stats` is red on it until it is
-  fast or refused fast); the comparison of `StudentT(ν ≈ 6.6·10²³⁸)` with
-  its double-precision kernel takes 5.4 s; the density checks of a Cauchy
-  law truncated to `±3.2·10²⁹⁹` take minutes.
+- **Findings of the review that stay until the interface changes.**  Each is
+  confirmed by a run and has a test that stays switched off in
+  `tests/v36/v36_s17c_review_findings.rs` (the two macro findings are
+  compile errors and have none); the fix of each changes a public signature,
+  so it comes with the named package of the 1.0 interface work.
+  - Declaring a symbol a second time (`symbol_with` on an existing name)
+    leaves expressions built under the first declaration: with `n` an
+    integer `cos(pi*n)` is built as `(-1)^n`; after `ctx.symbol_with("n",
+    &[Real])` that expression is still `(-1)^n`, which is `I` at `n = 1/2`
+    where `cos(π/2) = 0` (package V2a).
+  - A symbol named like a constant prints as the constant and reads back as
+    it: `ctx.symbol("i")` in `i^2 + 1` prints `i^2 + 1`, which `parse` reads
+    as `0`; the same for `e`, `E`, `I`, `pi`, `oo`, `inf`, `nan`, `zoo`,
+    `EulerGamma`, `Catalan`, `GoldenRatio` and their other spellings
+    (package M1).  JSON keeps the symbol.
+  - `expr!` reads `E` and `I` as the constants although variables of those
+    names are in scope: `expr!(ctx, E - I*R)` is `e - i·R` (package M1).
+  - `kurtosis` is two quantities under one name: `Distribution::kurtosis` is
+    `E[(X - μ)⁴]/σ⁴` and `stats::data::kurtosis` is that minus 3
+    (Bernoulli(1/2): 1; its population `[0, 1]`: -2) (package ST1).
+  - The plain distribution constructors do not check their parameters:
+    `Distribution::normal(0, -1)` has a negative density of total mass -1
+    (package ST1; the `try_` constructors check).
+  - A fit that did not converge is returned: `logit` with `max_iter = 1` is
+    `Ok` with `converged == false`, the coefficients `[0.0495, 0.396]` and
+    the p-value 0.0050, where the converged fit has `[0.0639, 0.5115]` and
+    0.0015 (package ST2).
+  - "No root in the declared domain" is reported in two ways by `solve`:
+    `Ok([])` for a polynomial (`x + 3` for a positive `x`),
+    `Err(NoSolution)` for anything else (`exp(x) - 1`) (package SV1).
+  - Six assumption flags are accepted and read by nothing: with `A` and `B`
+    declared `NotCommutative`, `A*B - B*A` is `0` (package TR1).
+  - A NaN or infinite `f64` operand is accepted silently by the operators
+    (`&x * f64::NAN` is the `nan` node) where `Context::from_f64` refuses it
+    (the N packages).
+  - A non-symbol where a variable belongs is not refused everywhere:
+    `sin(x).limit(&zero, &x)`, the arguments swapped, builds `Limit(sin(x),
+    0, x)`, and `assume(Negative)` on the number 3 is `Ok` and does nothing
+    (the `Symbol` parameter type).  The internal `diff` still returns `0`
+    for such a variable; `Ex::diff`, `diff_with_dependent` and
+    `eval_derivatives` are guarded since this release, `Matrix::diff`,
+    `Quaternion::diff` and the `diff` of a quantity with a unit pass their
+    variable on unchecked (read, not run).
+  - `dim!` accepts a dimension error: `dim!(ctx, Dimensionless: sin(len))`
+    compiles for a `Length`, and `sqrt(area)` passes as dimensionless
+    (experimental tier).
+  - `sym!` expands to an expression with `?` and cannot be used in a
+    function that does not return `Result`.
+  - An order relation with a side proved non-real is undecided, not false:
+    `I.is_less_than(1)` and `is_greater_than` are `None`, and the relation
+    `I < 1` stays as it is; the inequality solvers already return the empty
+    set (convention D-3 of the 1.0 design, not implemented).
+- **Numerical evaluation.**
+  - `eval_f64` of an expression with an unevaluated definite integral is
+    certified to 8 digits, not to the nearest `f64` (see *Changed*).
+  - The error bound of `binomial(n, k)` and `beta(a, b)` computed as a
+    quotient of three Gamma values is not proved: by the rounding analysis
+    the error can reach 2.25 times the bound when every rounding is at its
+    worst; none of 153,920 values checked was off by more than 0.5625 units
+    of the last digit.
+  - An integral whose mass lies in a thin layer at an end of its range is
+    refused, not evaluated (the one of *Fixed* has the value
+    `6.5973·10⁻²⁵¹`); the refusal is immediate only for a layer about 170
+    decades or more deep, a layer 110 to 165 decades deep is refused after
+    1.5 to 1.9 s as in 0.60.0, and one 40 to 100 decades deep is evaluated
+    in 1.2 to 4.4 s.  The rule that refuses at once rests on an estimate
+    tuned to the present limits of the quadrature; it is measured, not
+    proved, to refuse nothing that was evaluated before.
+  - The incomplete gamma functions of a shape above about `3·10⁹` next to
+    the mode are refused at once ("overflows the exponent range"), as in
+    0.60.0, although the new route computes them (0.1 to 0.2 s for shapes of
+    `2.8·10¹⁰` and `1.9·10¹¹`): the limit was kept so that no call becomes
+    slow.  Between 2 and 9 standard deviations above `x` at a shape of
+    `2·10⁹` a value still takes 55 to 150 ms.
+  - `uppergamma(s, x)` and `expint(n, x)` for `s ≠ 0` at a small argument
+    and a high precision are refused: `uppergamma(1/10, 4/3)`, `expint(2,
+    4/3)` and `expint(3/2, 4/3)` at 600 digits are `ComputationFailed` after
+    0.64 s (only `s = 0` was fixed).
+  - `besselj(ν, x)` with `x ≈ 1.2·ν` and `ν` between about 2,000 and 5,000
+    is refused from 71 digits on (`besselj(8171/4, 9805/4)`:
+    `PrecisionExhausted`).
+  - Euler's constant is computed again in every call that needs it: `Ei(1)`,
+    `Ei(-1)` and `Ci(1)` take 31 ms at 600 digits and 134 ms at 1,000,
+    nearly all of it the constant.
+  - A real power costs 53 µs at 150 to 180 bits, so an integrand with two
+    powers and an exponential costs 4 s for the quadrature's 30,000
+    evaluations; `integrate_numeric` of `cos(s·x)·f(x)` for a density with a
+    polynomial tail of order up to 3 (a Student t with `ν ≤ 3`) refuses only
+    after 0.8 to 3.7 s.
+  - `integrate_numeric_decimal` returns 0.964749425077 for the density of a
+    Cauchy law truncated to `[-3.2·10²⁹⁹, 3.08]`, whose integral is 1: it
+    steps over the mass near 0 (the documented weakness for a spike far
+    narrower than the range).
+  - `Ex::nroots` and `Poly::nroots` read a digit count of 0 as 1 (documented
+    as clamped; the result is `f64`).
+- **Matrices.**
+  - `rank`, `rref`, `nullspace`, `columnspace`, `rowspace` and
+    `left_nullspace` are still wrong for an entry that is zero and that no
+    zero test proves zero: 283 of the 3,000 matrices of the check (678 in
+    0.60.0).  In all 283 the entry is one that `Ex::is_zero()` itself leaves
+    undecided: one of four identities (`atan(x) + atan(1/x) - pi/2` for `x >
+    0`, `gamma(x + 1) - x*gamma(x)`, `asin(x) + acos(x) - pi/2`,
+    `besselj(1/2, x) - sqrt(2/(pi*x))*sin(x)`) in 280, a sum of two
+    different constant identities (`atan(1/2) + atan(1/3) - pi/4 + erf(1) +
+    erfc(1) - 1`) in 3.  These functions cannot refuse; their `Result` forms
+    come with the interface package LA1.
+  - `is_diagonalizable` answers `Some(false)` for most values of the
+    symbols, not for every value: `[[1, x], [0, 1]]` is `Some(false)` and is
+    the identity matrix at `x = 0`.  Only `Some(true)` holds for every
+    value.
+  - `StateSpace::is_controllable` and `is_observable` with symbols answer
+    for most values: `A = diag(1, x)`, `B = (1, 1)ᵀ` is `true` and is not
+    controllable at `x = 1`; and `false` also means "not proved".
+  - `eigenvects`, `diagonalize` and `jordan_form` refuse a matrix whose
+    eigenvalues are large radicals and cannot be proved different cheaply,
+    or whose zero tests exceed the work budget: 145 answers of `eigenvects`
+    and 80 of `diagonalize` that 0.60.0 gave right in the check are
+    refusals, and `is_diagonalizable` gives up 5 right `Some(true)`.
+  - `eigenvals_with_multiplicity` lists two eigenvalues of different blocks
+    separately when they are not proved equal (the list is right as a
+    multiset, the multiplicities of the two entries are not proved).
+  - In a debug build `eigenvals` can panic on a `debug_assert!` in
+    `Ex::discriminant_symbolic` where a determinant with large coefficients
+    is refused (a 4×4 matrix of the check); a release build returns the
+    refusal.  As in 0.60.0.
+  - `matrix_log` and the symbolic matrix power pass an eigenvalue that is
+    zero, but not proved zero, to `ln`.
+  - One elimination of a matrix whose entries no test decides is slower (165
+    ms for a 4×4 matrix of sixteen such entries; see *Changed*).
+- **Calculus.**
+  - `inverse_mellin_transform` (two arguments) still returns the function of
+    the strip right of the pole whatever strip the transform had; use
+    `inverse_mellin_transform_in_strip`.  Neither has a rule for
+    `Gamma(k*s + c)` with `k ≠ 1` and `c ≠ 0`: the round trip of
+    `x*exp(-x^2)` is refused.
+  - MathML writes an unevaluated one-sided limit with the ray of approach
+    under the limit sign, `x → (-∞, a)`, where LaTeX writes `x → a⁻`.
+  - `probably_equal` answers `None` for a symbol declared irrational (no
+    value of that kind is proved to be one) and still calls some pairs equal
+    that differ on a small part of the domain (10 of 310 at 8 samples, 1 at
+    32: `(-1)^v = -1` for a prime `v` fails at 2 only).
+  - `check_ode_solution` returns `false` for a correct solution it cannot
+    prove (8 of 253 in the check); `false` is "not proved" until the
+    function returns three values.
+  - Internal variables of the integrator, `solve`, the transforms and the
+    Risch code are still created in the user's name space in 60 places
+    (`__t0`, `__cse_k`, …).  None of 136 names tried in 68 operations
+    changes an answer, which shows only what those operations reach.  The
+    parameters `_n`, `_i`, `_j` of solution families and sums are results
+    you read and name, by design.
+- **Core.**
+  - The Gröbner budget is a cost model, about five seconds of work, with no
+    way to ask for more: 4 systems of the timing set that 0.60.0 answered
+    after 28 to 51 s are refused.  The algorithm is the limit: SymPy
+    computes the basis of the cyclic system in six variables in 43 s; this
+    library refuses it after 5.4 s and had no answer after 60 s.
+  - `polysys::solve_system_ex` can return a list of solutions without the
+    check of their number for a system with 513 to 2,048 solutions (read in
+    the code; not reproduced with a concrete system), and `groebner::fglm`,
+    called directly, allocates its matrices before any budget is asked.
+  - One compiled value moved by one unit in the last place without being a
+    fix: `expint(0, fibonacci(3/2))/x` at `x = 0.7` was 0.6182478175115288
+    (the correctly rounded value) and is 0.6182478175115289.  The compiler
+    folds the constant factors of a product into one constant only when its
+    plain `f64` pass cannot evaluate them; in 0.60.0 that pass gave NaN for
+    `fibonacci(3/2)`, so this product was rounded once; now it is rounded
+    twice, like every other compiled product of constants (`expint(0,
+    zeta(3))/x` is 0.6 units off, `expint(0, sqrt(2))/x` 1.1, in 0.60.0 and
+    now).  The cure is to fold always, which moves the last bit of many
+    compiled expressions and needs its own check.
+  - `ntheory::mod_pow` (a modulus `≤ 0`, or a negative exponent of a base
+    without an inverse), `totient(0)`, `mobius(0)`, `divisors(0)`,
+    `divisor_count(0)`, `divisor_sigma(0, k)`, `multiplicity(p, 0)` and
+    `is_quad_residue(a, 0)` return a documented stand-in and have no `try_`
+    form (package R1).
+  - `Poly` keeps a coefficient that is zero but not proved zero:
+    `Poly(sin(y*besselj(-1/2, pi/2))*x, x)` has degree 1.
+  - `Ex::args()` hands out children of every kind as `Ex` (the conditions of
+    a `Piecewise`, the operands of a set, the ray of a one-sided limit):
+    `Ex` is the untyped view.
+- **Statistics, and the randomized tests of the statistics code.**
+  - What became of the three slow inputs listed after 0.60.0 (all slow, none
+    wrong).  (1) The moment generating function of `FDistribution(11, d₂)`
+    with `d₂ ≈ 2.3·10⁻²⁵³` at `-1/8`, 5.5 s: the integral is now refused in
+    0.09 s instead of 1.45 s (see *Fixed*), and the test harness no longer
+    asks for it; the library still does not compute its value.  (2)
+    `StudentT(ν ≈ 6.6·10²³⁶)` against its double-precision routine, 5.4 s:
+    fixed, 0.32 s.  (3) The density checks of a Cauchy law truncated to
+    `±3.2·10²⁹⁹`, minutes: fixed (each quantile 12 s → 0.12 s); the input
+    takes 2.5 s.  (The entry written after 0.60.0 gave `d₂ ≈ 2.2·10⁻²⁴⁹` and
+    `ν ≈ 6.6·10²³⁸`; the numbers here are those of the replayed inputs.)
+  - A table from `transformed` of a lattice with unequal masses (`Binomial`,
+    `Hypergeometric`) still sums its masses as expressions at every query:
+    `√X` for `X ~ Binomial(9000, 1/3)`, one `cdf` and one quantile, 35 s, as
+    in 0.60.0.
+  - A hypergeometric law beyond the bounds of the exact tails: a tail is a
+    sum evaluated in 5 to 50 ms, but each step of a quantile search is one
+    such sum, and `quantile_f64(0.3)` takes 0.23 s and 0.55 s for the two
+    laws measured.  Not changed in this release.
+  - `quantile_f64` of a table returns `Ok(inf)` when the value of the answer
+    overflows the doubles (`exp X` of a 100,000-sided die at 0.3), as in
+    0.60.0.
+  - `fuzz_stats` has five temporary skips (`fuzz/README.md`): three as in
+    0.60.0, one narrowed for equal masses and tightened for unequal ones,
+    one new, and the check of characteristic functions by quadrature is left
+    out for more tails than before (see *Infrastructure*).  Its limit of 2 s
+    per input is read from the clock, so a slower machine checks less of an
+    input.
+  - Slow inputs that remain, as each was last measured, on the code of its
+    own fix (there is no measurement on the merged code yet): in a
+    fifteen-minute run of `fuzz_stats` on the statistics fixes alone no
+    input timed out or crashed, and five took 3.3 to 3.7 s — `Poisson(λ)`
+    for `λ` between `1.3·10⁹` and `1.8·10⁹` against its double-precision
+    routine; with the incomplete-gamma fix of this release the same inputs
+    took 0.81 to 0.90 s.  `ChiSquared(≈ 10⁹)` against its routine took 2.85
+    to 2.94 s and was not measured again.  An F law with `d₂` between about
+    `10⁻⁴⁰` and `10⁻¹⁶⁵` makes an input of 5 to 20 s where the harness asks
+    for the integral.
+- **Questions.**
+  - `is_prime()` is `None` for a probable prime above `3.3·10²⁴` (`2^89 -
+    1`): the library has no primality proof beyond the range in which its
+    test is one.  `is_prime_value()` answers `Some(true)` there on the
+    Baillie–PSW test, which is not a proof.  An integer written with more
+    than 4,096 bits is not tested by `is_prime()`, and `is_prime()` does not
+    evaluate (`factorial(5) + 1` is `None`; `is_prime_value()` decides it).
+  - `sqrt(2).query(Props::INTEGER)` is `None`: the value of a constant
+    decides its sign, whether it is zero and whether it is real, but not
+    whether it is an integer.
+  - `is_identity` tries six fixed points; an equation that fails only
+    elsewhere (only for `|x| > 10`, say) stays `None`.
+  - `NONZERO` is true of `I` (not zero); SymPy's `is_nonzero` means "real
+    and not zero" and is false.
+- **Printing and parsing.**  `parse("lgamma(x)")`, `parse("psi(x)")` and
+  `parse("min(x)")` are errors: the first two are spellings of the
+  two-dimensional printer, the third is a `min` of one argument, which the
+  parser cannot build.  As in 0.60.0.
+- Of the known issues listed for 0.60.0, this release fixes one —
+  `diagonalize` no longer returns `NotDiagonalizable` where zero tests of
+  symbolic entries were undecided — and replaces the entry on the skips of
+  `fuzz_stats` (above).  The others were not worked on.
+
+### Measured
+
+- `tests/v36/` (0.49–0.60.1): 95 files.  nextest 15,305 tests (27 skipped:
+  the 11 findings that wait for their interface package and one test of
+  the default Gröbner budget are among them), doctests 1,388 — run on a
+  64-core x86-64 machine.  14 ratchet tests.
+- Rubi harness: 30,768 verified, 115 real_verified, 0 wrong (unchanged);
+  self-test 56,153 / 0 wrong / 64; `--negative-params` 115 real_verified,
+  0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical
+  (checked for each lane alone and for the release tree).  MSRV 1.93 passes
+  for all four crates.  The API snapshot gained six lines, all additions.
+- Golden-output harness (200,000 random expressions × 31 operations)
+  against 0.60.0: 496 changed pairs, all of the operation `compile` and all
+  from the compiled `fibonacci`/`lucas`: 490 were NaN and are the value
+  `eval_f64` gives, 5 were NaN and are `±∞` (an integer `lucas` beyond the
+  doubles), and 1 moved by one unit in the last place (*Known issues*).
+  Nothing else changed: not one result of the numeric evaluator, the
+  matrices, the limits, the queries or the statistics code that the corpus
+  reaches.
+- Randomized tests on the release tree: the 13 targets for 10–15 minutes
+  each in the plain build, and `fuzz_calculus`, `fuzz_evalf` and
+  `fuzz_stats` for 15 minutes each under AddressSanitizer with a 15 s
+  limit: no crash, no timeout, no out-of-memory; three slow units of
+  `fuzz_evalf` saved.
+- Issue #8, release build, `eval_decimal` of `π`: the table under *Fixed*.
 
 ## [0.60.0] - 2026-11-24
 

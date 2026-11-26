@@ -21,9 +21,11 @@ pub(super) fn lngamma_magnitude(s: &BigFloat, s_f: f64) -> f64 {
 }
 
 /// `ln B(a, b) = ln Γ(a) + ln Γ(b) − ln Γ(a + b)` for `a, b > 0` to an
-/// absolute error of about `2^−wp`: each `ln Γ` carries the bits of the
-/// largest magnitude as guard (they are `≈ 1.7·10⁹` for shapes near `10⁸`
-/// and cancel to the size of `ln B`), which also covers the rounding of
+/// absolute error below `2^−wp`: each `ln Γ` to `2^(−wp−8)`, a bound derived
+/// from its terms (`log_gamma_abs`; up to 0.60 an estimate of their
+/// magnitude as guard bits), and the two sums at the bits of the largest
+/// magnitude beyond that (they are `≈ 1.7·10⁹` for shapes near `10⁸` and
+/// cancel to the size of `ln B`), which also covers the rounding of
 /// `a + b`.
 pub(super) fn ln_beta_wp(
     a: &BigFloat,
@@ -39,9 +41,9 @@ pub(super) fn ln_beta_wp(
         .max(ab_f * ab_f.ln().abs() + ab_f + 2.0);
     let p = wp + magnitude_bits(mag) + 8;
     let a_plus_b = a.add(b, p, RM);
-    let la = stirling_log_gamma(a, &mut w.at(p))?;
-    let lb = stirling_log_gamma(b, &mut w.at(p))?;
-    let lab = stirling_log_gamma(&a_plus_b, &mut w.at(p))?;
+    let la = log_gamma_abs(a, wp + 8, w)?;
+    let lb = log_gamma_abs(b, wp + 8, w)?;
+    let lab = log_gamma_abs(&a_plus_b, wp + 8, w)?;
     Ok(la.add(&lb, p, RM).sub(&lab, p, RM))
 }
 

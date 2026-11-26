@@ -1209,20 +1209,110 @@ impl Expr<Numeric> {
     /// goes to the zero test of the limit and series engines (identities
     /// such as `Γ(p)·Γ(1 − p) = π/sin(πp)`, a deeper certified evaluation),
     /// whose verdict the context remembers; only a proof counts.
+    ///
+    /// **Several properties at once** are a conjunction: `Some(true)` when
+    /// every one is proved, `Some(false)` as soon as one is refuted, `None`
+    /// otherwise, each property decided as it is when asked alone.  Up to
+    /// 0.60.0 a set of properties was false only when *all* of them were
+    /// known false: a positive `x` had `query(POSITIVE | NEGATIVE) == None`,
+    /// and `1/2` had `query(POSITIVE | INTEGER) == None`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let half = ctx.rational(1, 2);
+    /// assert_eq!(half.query(Props::POSITIVE | Props::RATIONAL), Some(true));
+    /// assert_eq!(half.query(Props::POSITIVE | Props::INTEGER), Some(false));
+    /// let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
+    /// assert_eq!(x.query(Props::POSITIVE | Props::INTEGER), None);
+    /// ```
+    ///
+    /// **Primes.**  `prime` and `composite` of an integer literal are
+    /// decided by the number-theory test wherever its verdict is a proof:
+    /// an integer below 2 is neither (up to 0.60.0 `1` and `-7` were
+    /// `None`); below `3.3·10²⁴` [`isprime`](crate::ntheory::isprime) is
+    /// deterministic; beyond it a Miller–Rabin witness proves a number
+    /// composite, while a number that passes the tests is a probable
+    /// prime, which is no proof, and stays `None` (`2^89 − 1`).  A literal
+    /// of more than 4,096 bits is not tested (`None`): a query does not
+    /// take the seconds one modular power of such a number costs.
     #[must_use]
     pub fn query(&self, prop: Props) -> Option<bool> {
-        let known = {
+        // One property at a time, by the structural rules: a conjunction is
+        // false as soon as one of its properties is.
+        let mut open = Props::empty();
+        {
             let inner = self.inner.read();
-            inner
-                .assumptions
-                .lock()
-                .query_public(&inner.arena, self.raw_id(), prop)
-                .to_option()
-        };
-        if known.is_some() || !Self::VALUE_DECIDED.contains(prop) {
-            return known;
+            let mut rules = inner.assumptions.lock();
+            for p in prop.iter() {
+                match rules.query_public(&inner.arena, self.raw_id(), p) {
+                    Truth::True => {}
+                    Truth::False => return Some(false),
+                    Truth::Unknown => open |= p,
+                }
+            }
         }
-        self.constant_facts().query(prop)
+        if open.is_empty() {
+            return Some(true);
+        }
+        // What the rules leave open: the sign, zero and realness properties
+        // of a constant by its value, primality of an integer literal by
+        // the number-theory test.  Anything else stays open.
+        let by_value = open & Self::VALUE_DECIDED;
+        let primality = open & (Props::PRIME | Props::COMPOSITE);
+        let mut all = if open == (by_value | primality) {
+            Truth::True
+        } else {
+            Truth::Unknown
+        };
+        if !by_value.is_empty() {
+            let facts = self.constant_facts();
+            for p in by_value.iter() {
+                all = all.and(Truth::from(facts.query(p)));
+            }
+        }
+        if !primality.is_empty() && !all.is_false() {
+            // The rules decide every non-integer, every integer below 2 and
+            // every integer of `u64`: what is left is a larger integer.
+            let literal = {
+                let inner = self.inner.read();
+                match inner.arena.node(self.raw_id()) {
+                    ExprNode::Num(nid) => {
+                        let r = inner.arena.num(*nid);
+                        r.is_integer().then(|| r.numer().clone())
+                    }
+                    _ => None,
+                }
+            };
+            let prime = match literal {
+                Some(n) if n >= BigInt::from(2) => {
+                    // The bound below which `isprime` is deterministic
+                    // (its documentation): `3.3·10²⁴`.
+                    let proved_below = BigInt::from(33u64) * BigInt::from(10u64).pow(23);
+                    if n < proved_below {
+                        Truth::from(crate::domains::ntheory::isprime(n))
+                    } else if n.bits() > 4096 {
+                        // Not tested: too costly for a query.
+                        Truth::Unknown
+                    } else if crate::domains::ntheory::is_probable_prime(n, 5) {
+                        // A probable prime: not a proof.
+                        Truth::Unknown
+                    } else {
+                        // An even number, or a Miller–Rabin witness.
+                        Truth::False
+                    }
+                }
+                _ => Truth::Unknown,
+            };
+            for p in primality.iter() {
+                all = all.and(if p == Props::PRIME {
+                    prime
+                } else {
+                    prime.not()
+                });
+            }
+        }
+        all.to_option()
     }
 
     /// The properties [`query`](Self::query) decides for a constant from
@@ -1393,6 +1483,28 @@ impl Expr<Numeric> {
     }
 
     /// Returns whether this expression is known to be prime.
+    ///
+    /// `Some(true)` or `Some(false)` only by a proof (see
+    /// [`query`](Self::query), "Primes"): a symbol by its assumptions, a
+    /// non-integer and an integer below 2 are not prime, an integer
+    /// literal by the number-theory test where that test is a proof.  Up to
+    /// 0.60.0 `1`, `-7` and every integer beyond `u64` were `None`.  A
+    /// probable prime beyond `3.3·10²⁴` (`2^89 − 1`) stays `None`;
+    /// [`is_prime_value`](Self::is_prime_value) reports the test's verdict
+    /// there.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// assert_eq!(ctx.int(7).is_prime(), Some(true));
+    /// assert_eq!(ctx.int(1).is_prime(), Some(false));
+    /// assert_eq!(ctx.int(-7).is_prime(), Some(false));
+    /// assert_eq!(ctx.rational(1, 2).is_prime(), Some(false));
+    /// // 2^67 - 1 = 193707721 * 761838257287, beyond u64
+    /// assert_eq!(ctx.parse("2^67 - 1").unwrap().is_prime(), Some(false));
+    /// // 2^89 - 1 is a prime beyond the range in which the test is a proof
+    /// assert_eq!(ctx.parse("2^89 - 1").unwrap().is_prime(), None);
+    /// ```
     #[must_use]
     pub fn is_prime(&self) -> Option<bool> {
         self.query(Props::PRIME)
@@ -1750,6 +1862,11 @@ impl Expr<Numeric> {
     /// This is the "doit" operation: each `Derivative(f, x)` node is replaced
     /// by the result of actually differentiating `f` with respect to `x`.
     /// Useful after substituting a solution into an ODE for verification.
+    ///
+    /// A `Derivative` with respect to something that is not a symbol —
+    /// `Derivative(f, 2)`, the unevaluated form [`diff`](Self::diff) returns
+    /// for such a variable — has no value and stays as it is (up to 0.60.1
+    /// it became `0`).
     pub fn eval_derivatives(&self) -> Ex {
         let id = {
             let mut guard = self.inner.write();
@@ -4328,6 +4445,11 @@ impl Expr<Numeric> {
     ///
     /// # Errors
     ///
+    /// Returns [`SymplexError::InvalidArgument`] for `digits == 0`: at least
+    /// one digit must be asked for.  (Up to 0.60 the 128-bit working value
+    /// was printed, 38 digits of which none was certified: `1/3` ended in
+    /// `…334`.)
+    ///
     /// Returns [`SymplexError::FreeSymbol`] if the expression contains
     /// unbound symbols (e.g., `x.eval_decimal(10)` without substituting a value).
     ///
@@ -4391,6 +4513,16 @@ impl Expr<Numeric> {
     /// with 16 digits (128 working bits) and rounds the result once, to
     /// the nearest `f64`. This avoids the common pattern of
     /// `.eval_decimal(15).unwrap().parse::<f64>().unwrap()`.
+    ///
+    /// One kind of expression is not rounded to the nearest `f64`: one that
+    /// contains an unevaluated definite integral (`Integral(f, x, a, b)`).
+    /// Its quadrature runs in `f64` and is certified to 8 digits (a relative
+    /// error below `2⁻³⁰`), which keeps it a matter of microseconds; the
+    /// value is usually good to 12 digits or more, and the nearest `f64` for
+    /// about a third of such integrals.  For the nearest `f64` of such a
+    /// value, parse `eval_decimal(20)`: the arbitrary-precision quadrature,
+    /// some hundred times slower.  (Up to 0.60 this paragraph was missing,
+    /// and the first one read as a promise for every expression.)
     ///
     /// # Errors
     ///
@@ -4884,6 +5016,15 @@ impl Expr<Numeric> {
     /// Return `Some(replacement)` to replace it, or `None` to keep it
     /// unchanged.
     ///
+    /// The closure is called once for every distinct sub-expression of
+    /// `self` as it was before the call (a replacement is not visited
+    /// again), children before their parents, and **no lock is held while
+    /// it runs**: it may build its replacement (`Some(&x + 1)`), call the
+    /// context (`ctx.int(2)`), print a handle or ask a query.  The
+    /// replacements are collected first and the result is rebuilt
+    /// afterwards.  Up to 0.60.0 the closure ran with the context
+    /// write-locked, and a closure that did any of these never returned.
+    ///
     /// The walk is **structural**: it visits every node, bound variables
     /// included, which makes it the tool to rename a bound variable
     /// (`Sum(k*x, x, 0, 3)` with `x → j` is `Sum(k*j, j, 0, 3)`; use
@@ -4899,8 +5040,7 @@ impl Expr<Numeric> {
     /// Panics if the closure returns an expression built in another
     /// [`Context`](crate::api::context::Context) than `self` — the crate's
     /// cross-context logic error, as when combining two such expressions
-    /// with an operator.  (Replacements are built before the call, as in the
-    /// example: the context stays write-locked while the closure runs.)
+    /// with an operator.
     /// [`try_replace`](Self::try_replace) returns an error instead.
     ///
     /// # Examples
@@ -4913,27 +5053,66 @@ impl Expr<Numeric> {
     /// let expr = x.powi(2);
     /// let replaced = expr.replace(|e| if e == &x { Some(y.clone()) } else { None });
     /// assert_eq!(format!("{replaced}"), "y^2");
+    ///
+    /// // The replacement may be built inside the closure.
+    /// let shifted = expr.replace(|e| if e == &x { Some(&x + 1) } else { None });
+    /// assert_eq!(format!("{shifted}"), "(x + 1)^2");
     /// ```
     #[must_use = "returns the transformed expression; does not modify in place"]
     pub fn replace<F>(&self, f: F) -> Ex
     where
         F: Fn(crate::api::expr_view::ExprView<'_>) -> Option<Ex>,
     {
-        let self_ctx_id = self.ctx_id;
+        let mut chosen: rustc_hash::FxHashMap<
+            crate::base::node::ExprId,
+            crate::base::node::ExprId,
+        > = rustc_hash::FxHashMap::default();
+        // Collect and call (no lock held: see `replacements_requested`) …
+        for (id, ex) in self.replacements_requested(&f) {
+            assert!(
+                self.ctx_id == ex.ctx_id,
+                "replace: returned expression belongs to a different context"
+            );
+            chosen.insert(id, ex.raw_id());
+        }
+        // … then write.
         let result_id = {
             let mut guard = self.inner.write();
-            crate::base::walk::walk_and_rebuild(&mut guard.arena, self.raw_id(), &|arena, id| {
-                let view = crate::api::expr_view::ExprView { id, arena };
-                f(view).map(|ex| {
-                    assert!(
-                        self_ctx_id == ex.ctx_id,
-                        "replace: returned expression belongs to a different context"
-                    );
-                    ex.raw_id()
-                })
+            crate::base::walk::walk_and_rebuild(&mut guard.arena, self.raw_id(), &|_, id| {
+                chosen.get(&id).copied()
             })
         };
         self.wrap(result_id)
+    }
+
+    /// The first half of [`replace`](Self::replace): the closure's answer
+    /// for every node of `self` in post-order, as `(node, replacement)` for
+    /// the nodes it replaces.
+    ///
+    /// The closure runs with **no lock held**: the post-order is read under
+    /// the read lock, and each node is copied out under a read lock that is
+    /// released before the call ("Locking", rule 3: a closure of the caller
+    /// is a method call on `Ex` we cannot see).  The nodes of `self` exist
+    /// before the walk and the arena only grows, so nothing the closure
+    /// interns changes what it is shown next, and the list is the one
+    /// `walk_and_rebuild` visits afterwards.
+    fn replacements_requested<F>(&self, f: &F) -> Vec<(crate::base::node::ExprId, Ex)>
+    where
+        F: Fn(crate::api::expr_view::ExprView<'_>) -> Option<Ex>,
+    {
+        let order = {
+            let inner = self.inner.read();
+            crate::base::walk::post_order_ids(&inner.arena, self.raw_id())
+        };
+        let mut requested = Vec::new();
+        for id in order {
+            let node = self.inner.read().arena.node(id).clone();
+            let view = crate::api::expr_view::ExprView { id, node: &node };
+            if let Some(ex) = f(view) {
+                requested.push((id, ex));
+            }
+        }
+        requested
     }
 
     /// [`replace`](Self::replace), checked: for a closure that may return
@@ -4970,28 +5149,27 @@ impl Expr<Numeric> {
     where
         F: Fn(crate::api::expr_view::ExprView<'_>) -> Option<Ex>,
     {
-        let self_ctx_id = self.ctx_id;
-        // A foreign replacement keeps the node and is reported after the walk.
-        let foreign = std::cell::Cell::new(false);
+        let mut chosen: rustc_hash::FxHashMap<
+            crate::base::node::ExprId,
+            crate::base::node::ExprId,
+        > = rustc_hash::FxHashMap::default();
+        // Collect and call (no lock held: see `replacements_requested`) …
+        for (id, ex) in self.replacements_requested(&f) {
+            if ex.ctx_id != self.ctx_id {
+                return Err(SymplexError::invalid_argument(
+                    "Ex::replace",
+                    "the closure returned an expression from another context",
+                ));
+            }
+            chosen.insert(id, ex.raw_id());
+        }
+        // … then write.
         let result_id = {
             let mut guard = self.inner.write();
-            crate::base::walk::walk_and_rebuild(&mut guard.arena, self.raw_id(), &|arena, id| {
-                let view = crate::api::expr_view::ExprView { id, arena };
-                let ex = f(view)?;
-                if ex.ctx_id == self_ctx_id {
-                    Some(ex.raw_id())
-                } else {
-                    foreign.set(true);
-                    None
-                }
+            crate::base::walk::walk_and_rebuild(&mut guard.arena, self.raw_id(), &|_, id| {
+                chosen.get(&id).copied()
             })
         };
-        if foreign.get() {
-            return Err(SymplexError::invalid_argument(
-                "Ex::replace",
-                "the closure returned an expression from another context",
-            ));
-        }
         let malformed = {
             let inner = self.inner.read();
             crate::base::walk::malformed_binder(&inner.arena, result_id, self.raw_id())
@@ -5130,6 +5308,20 @@ impl Expr<Numeric> {
     /// `Derivative(func, var)`, then evaluates and checks whether the
     /// residual is zero.
     ///
+    /// `true` is a proof: the residual is zero wherever it is defined, by
+    /// expansion, the simplifier, the normal forms of radicals, of `sin`
+    /// and `cos` and of Lambert W, or the zero test of expressions with
+    /// symbols (certified zero at sample points and an exact confirmation).
+    ///
+    /// `false` means **not proved**, and is no refutation.  It covers two
+    /// cases that this `bool` cannot tell apart (the 1.0 interface returns
+    /// three values): the residual is certified nonzero at a point of the
+    /// symbols' declared domain — the formula is not a solution on the whole
+    /// domain — or no route reduced the residual to zero, which also happens
+    /// to a correct solution written in a form the routes do not reduce.
+    /// Up to 0.60.0 the zero test of expressions with symbols was not asked,
+    /// and `y = 2*atan(exp(x))` for `y' = 1/cosh(x)` was `false`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -5151,13 +5343,14 @@ impl Expr<Numeric> {
         let var_id = self.checked_id(var);
         {
             let mut guard = self.inner.write();
-            crate::calculus::ode::checkodesol(
+            crate::calculus::ode::ode_solution_verdict(
                 &mut guard.arena,
                 self.raw_id(),
                 solution_id,
                 func_id,
                 var_id,
             )
+            .is_true()
         }
     }
 
@@ -5969,8 +6162,15 @@ impl Expr<Numeric> {
     /// Check if this expression evaluates to a prime number.
     ///
     /// Accesses the exact `Ratio<BigInt>` value in the arena and uses the
-    /// BigInt primality test — no lossy `f64` conversion. Returns `None`
-    /// if the expression cannot be evaluated to an integer.
+    /// BigInt primality test — no lossy `f64` conversion.  A value that
+    /// evaluates to an integer is decided by
+    /// [`isprime`](crate::ntheory::isprime) (beyond `3.3·10²⁴` its `true`
+    /// is the Baillie–PSW verdict, which has no known counterexample and is
+    /// no proof; [`is_prime`](Self::is_prime) answers `None` there).  Any
+    /// other value is decided as [`is_prime`](Self::is_prime) decides it: a
+    /// non-integer rational and an irrational constant are not prime
+    /// (`Some(false)`; up to 0.60.0 `None` for `1/2` and for `pi`), and
+    /// `None` is left for a value about which nothing is proved.
     ///
     /// # Examples
     ///
@@ -5985,22 +6185,27 @@ impl Expr<Numeric> {
     /// assert_eq!(n.is_prime_value(), Some(false));
     ///
     /// let half = ctx.rational(1, 2);
-    /// assert_eq!(half.is_prime_value(), None);
+    /// assert_eq!(half.is_prime_value(), Some(false));
+    /// assert_eq!(ctx.pi().is_prime_value(), Some(false));
+    /// assert_eq!(ctx.symbol("x").is_prime_value(), None);
     /// ```
     pub fn is_prime_value(&self) -> Option<bool> {
         let evaled = self.eval();
-        let inner = evaled.inner.read();
-        let arena = &inner.arena;
-        match arena.node(evaled.raw_id()) {
-            crate::base::node::ExprNode::Num(nid) => {
-                let r = arena.num(*nid);
-                if !r.is_integer() {
-                    return None;
+        let integer = {
+            let inner = evaled.inner.read();
+            let arena = &inner.arena;
+            match arena.node(evaled.raw_id()) {
+                crate::base::node::ExprNode::Num(nid) => {
+                    let r = arena.num(*nid);
+                    r.is_integer().then(|| r.numer().clone())
                 }
-                let n = r.numer();
-                Some(crate::domains::ntheory::isprime(n.clone()))
+                _ => None,
             }
-            _ => None,
+        };
+        match integer {
+            Some(n) => Some(crate::domains::ntheory::isprime(n)),
+            // Not an integer literal: whatever is proved about the value.
+            None => evaled.query(Props::PRIME),
         }
     }
 

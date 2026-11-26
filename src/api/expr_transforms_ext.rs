@@ -36,10 +36,18 @@ impl Expr<Numeric> {
     /// For `point = ±∞` the direction is irrelevant.
     ///
     /// If the limit does not exist or cannot be determined, the formal
-    /// two-sided `Limit(expr, var, point)` node is returned (check with
-    /// [`has_unevaluated`](Self::has_unevaluated)). The node has no
-    /// direction slot, so an uncomputable one-sided limit is represented by
-    /// the same node as the two-sided one.
+    /// `Limit` node is returned (check with
+    /// [`has_unevaluated`](Self::has_unevaluated)).  It keeps the side: the
+    /// two-sided limit is `Limit(expr, var, point)`, and an unevaluated
+    /// one-sided limit at a finite point prints as `Limit(expr, var, point,
+    /// left)` or `Limit(expr, var, point, right)` — three different
+    /// expressions, each of which [`Context::parse`](crate::api::context::Context::parse)
+    /// and the JSON form read back as it was.  (Inside the node the third
+    /// slot of a one-sided limit holds the open ray of approach, `(-oo,
+    /// point)` or `(point, oo)`; the LaTeX form writes `point^{-}` or
+    /// `point^{+}`.)  Up to 0.60.0 an unevaluated one-sided limit was the
+    /// two-sided node, so `limit_left` and `limit_right` of a function with
+    /// a jump could compare equal.
     ///
     /// Pathological inputs are cut off by an internal work budget and
     /// likewise come back as the unevaluated node.
@@ -67,15 +75,13 @@ impl Expr<Numeric> {
             Err(_) => {
                 let var_id = self.checked_id(var);
                 let point_id = self.checked_id(point);
-                let id = self
-                    .inner
-                    .write()
-                    .arena
-                    .intern(crate::base::node::ExprNode::Limit(
-                        self.raw_id(),
-                        var_id,
-                        point_id,
-                    ));
+                let id = crate::calculus::limit::unevaluated_limit(
+                    &mut self.inner.write().arena,
+                    self.raw_id(),
+                    var_id,
+                    point_id,
+                    dir,
+                );
                 self.wrap(id)
             }
         }
@@ -768,7 +774,16 @@ impl Expr<Numeric> {
     }
 
     /// Inverse Mellin transform of this expression (a function of `s`) as a
-    /// function of `x`, by table lookup (`Γ(s/b) → b e^{−x^b}`,
+    /// function of `x`, **on the strip of the table entry** — for `1/(s +
+    /// a)`, whose two strips have two functions, the strip to the right of
+    /// the pole, `Re s > −a`.  This function cannot be told the strip; use
+    /// [`inverse_mellin_transform_in_strip`](Self::inverse_mellin_transform_in_strip)
+    /// to invert on the strip that
+    /// [`mellin_transform`](Self::mellin_transform) returned (`−1/s` on `Re
+    /// s < 0` is the transform of `H(x − 1)`; this function returns `−H(1 −
+    /// x)`, its inverse on `Re s > 0`).
+    ///
+    /// By table lookup (`Γ(s/b) → b e^{−x^b}`,
     /// `π/sin(πs) → 1/(1+x)`, `B(s, ν−s) → (1+x)^{−ν}`, `B(s, b+1) →
     /// H(1−x)(1−x)^b`, `1/(s+a) → x^a H(1−x)`, `Γ(s) sin(πs/2) → sin x`, …)
     /// with the shift (`G(s+a) → x^a g`) and scaling (`a^{−s}G → g(ax)`)
@@ -807,6 +822,89 @@ impl Expr<Numeric> {
                 self.raw_id(),
                 s_id,
                 x_id,
+            )
+        };
+        r.map(|id| self.wrap(id))
+    }
+
+    /// Inverse Mellin transform of this expression (a function of `s`) on
+    /// the strip `lower < Re s < upper`: the function `f` of `x` with `∫₀^∞
+    /// x^{s−1} f(x) dx = self` for `s` in that strip.  `lower` may be `-oo`
+    /// and `upper` may be `oo` (a half-plane).
+    ///
+    /// A Mellin transform determines its function only together with its
+    /// strip, which [`mellin_transform`](Self::mellin_transform) returns:
+    /// `−1/s` is the transform of `H(x − 1)` on `Re s < 0` and of `−H(1 −
+    /// x)` on `Re s > 0`; `Γ(s)` is the transform of `e^{−x}` on `Re s > 0`
+    /// and of `e^{−x} − 1` on `−1 < Re s < 0`.  The table and the rules are
+    /// those of [`inverse_mellin_transform`](Self::inverse_mellin_transform);
+    /// each table entry is taken on the strip asked for: its own function
+    /// when the strip lies inside the entry's strip, and otherwise that
+    /// function minus (to the left) or plus (to the right) the residues of
+    /// `F(s)·x^{−s}` at the poles between the two strips.
+    ///
+    /// # Errors
+    ///
+    /// * `InvalidArgument` if `s`/`x` are not distinct symbols, a bound
+    ///   depends on them or is not a number or `∓oo`, or the strip is empty
+    ///   (`upper ≤ lower`).
+    /// * `ComputationFailed` if a pole of the transform lies inside the
+    ///   strip (no function has this transform there), if the strip lies
+    ///   beyond an end of the table's strip that is not a pole (`Γ(s)·cos(πs/2)`
+    ///   for `Re s > 1`), if the strip cannot be placed among the poles (a
+    ///   symbolic bound of unknown sign), or if no rule applies.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let s = ctx.symbol("s");
+    /// let (minus_oo, zero, oo) = (ctx.neg_infinity(), ctx.int(0), ctx.infinity());
+    ///
+    /// // H(x − 1) has the transform −1/s on Re s < 0 …
+    /// let step = (&x - 1).heaviside();
+    /// let (f, strip) = step.mellin_transform(&x, &s).unwrap();
+    /// assert_eq!(f, -(1 / &s));
+    /// assert_eq!(format!("{strip}"), "0 > re(s)");
+    /// // … and on that strip −1/s inverts to it; on Re s > 0 to −H(1 − x).
+    /// assert_eq!(f.inverse_mellin_transform_in_strip(&s, &x, &minus_oo, &zero).unwrap(), step);
+    /// assert_eq!(
+    ///     f.inverse_mellin_transform_in_strip(&s, &x, &zero, &oo).unwrap(),
+    ///     -(1 - &x).heaviside()
+    /// );
+    /// // The pole inside the strip: refused.
+    /// assert!(f.inverse_mellin_transform_in_strip(&s, &x, &ctx.int(-1), &ctx.int(1)).is_err());
+    ///
+    /// // Γ(s) left of its first pole: the residue at 0 is subtracted.
+    /// let g = s.gamma().inverse_mellin_transform_in_strip(&s, &x, &ctx.int(-1), &zero).unwrap();
+    /// assert_eq!(g, (-&x).exp() - 1);
+    /// ```
+    pub fn inverse_mellin_transform_in_strip(
+        &self,
+        s: &Ex,
+        x: &Ex,
+        lower: &Ex,
+        upper: &Ex,
+    ) -> Result<Ex, SymplexError> {
+        let s_id = self.checked_id(s);
+        let x_id = self.checked_id(x);
+        let lower_id = self.checked_id(lower);
+        let upper_id = self.checked_id(upper);
+        let _span =
+            debug_span!("inverse_mellin_transform_in_strip", expr = ?self.raw_id(), s = ?s_id)
+                .entered();
+        let r = {
+            let mut inner = self.inner.write();
+            crate::calculus::mellin::inverse_mellin_transform_in_strip(
+                &mut inner.arena,
+                self.raw_id(),
+                s_id,
+                x_id,
+                lower_id,
+                upper_id,
             )
         };
         r.map(|id| self.wrap(id))

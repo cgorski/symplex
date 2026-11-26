@@ -71,7 +71,7 @@ pub(super) fn try_weierstrass_substitution(
 
     tracing::debug!("trying Weierstrass substitution");
 
-    let t = arena.symbol("__wt");
+    let t = arena.internal_symbol("__wt");
     let ExprNode::Symbol(t_sym) = *arena.node(t) else {
         return None;
     };

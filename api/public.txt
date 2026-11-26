@@ -52,6 +52,7 @@ variant  symplex::BudgetHit::Deadline
 variant  symplex::BudgetHit::MaxPivots
 impls    symplex::BudgetHit: Clone + Copy + Debug + Display + Eq + Hash + PartialEq + RefUnwindSafe + Send + Sync + Unpin + UnwindSafe
 enum     symplex::BudgetKind  #[non_exhaustive]
+variant  symplex::BudgetKind::GroebnerBasis
 variant  symplex::BudgetKind::Integration
 variant  symplex::BudgetKind::IntegrationSteps
 variant  symplex::BudgetKind::LimitSteps
@@ -275,6 +276,7 @@ method   symplex::__macro_support::Rule::new(name: &'static str, pattern: Patter
 impls    symplex::__macro_support::Rule: Clone + Debug + RefUnwindSafe + Send + Sync + Unpin + UnwindSafe
 struct   symplex::__macro_support::WildId(_)
 impls    symplex::__macro_support::WildId: Clone + Copy + Debug + Eq + Hash + PartialEq + RefUnwindSafe + Send + Sync + Unpin + UnwindSafe
+fn       symplex::__macro_support::with_groebner_work_cap<R>(cap: u64, f: impl FnOnce() -> R) -> R
 macro    symplex::assert_dim! ($expr:expr,$expected:ty)=>{...};
 mod      symplex::assumptions
 enum     symplex::assumptions::Assumption
@@ -1578,6 +1580,7 @@ method   symplex::expr::Expr<Numeric>::inverse_fourier_transform(&self, omega: &
 method   symplex::expr::Expr<Numeric>::inverse_fourier_transform_with(&self, omega: &Ex, t: &Ex, convention: FourierConvention) -> Result<Ex, SymplexError>
 method   symplex::expr::Expr<Numeric>::inverse_laplace(&self, s: &Ex, t: &Ex) -> Ex  #[must_use]
 method   symplex::expr::Expr<Numeric>::inverse_mellin_transform(&self, s: &Ex, x: &Ex) -> Result<Ex, SymplexError>
+method   symplex::expr::Expr<Numeric>::inverse_mellin_transform_in_strip(&self, s: &Ex, x: &Ex, lower: &Ex, upper: &Ex) -> Result<Ex, SymplexError>
 method   symplex::expr::Expr<Numeric>::inverse_z_transform(&self, z: &Ex, n: &Ex) -> Result<Ex, SymplexError>  #[must_use]
 method   symplex::expr::Expr<Numeric>::is_absolutely_convergent(&self, var: &Ex) -> Option<bool>  #[must_use]
 method   symplex::expr::Expr<Numeric>::is_algebraic(&self) -> Option<bool>  #[must_use]
@@ -2335,6 +2338,8 @@ fn       symplex::groebner::groebner_basis<O: MonomialOrd>(polys: &[MultiPoly<O>
 fn       symplex::groebner::groebner_basis_lex(polys: &[MultiPoly<GrevLex>]) -> Vec<MultiPoly<Lex>>
 fn       symplex::groebner::is_groebner_basis<O: MonomialOrd>(basis: &[MultiPoly<O>]) -> bool
 fn       symplex::groebner::is_zero_dimensional<O: MonomialOrd>(basis: &[MultiPoly<O>]) -> bool
+fn       symplex::groebner::try_groebner_basis<O: MonomialOrd>(polys: &[MultiPoly<O>]) -> Result<Vec<MultiPoly<O>>, SymplexError>
+fn       symplex::groebner::try_groebner_basis_lex(polys: &[MultiPoly<GrevLex>]) -> Result<Vec<MultiPoly<Lex>>, SymplexError>
 mod      symplex::integrate_api
 mod      symplex::lambdify
 struct   symplex::lambdify::CompiledFn  [private fields]

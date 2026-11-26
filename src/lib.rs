@@ -314,6 +314,14 @@ pub mod __macro_support {
     pub use crate::base::node::ExprNode;
     pub use crate::transforms::pattern::{Pattern, Rule, WildId};
     pub use rustc_hash::FxHashMap;
+
+    /// Test support, not API: run `f` with the work budget of the Gröbner
+    /// bases it computes on this thread set to `cap` units (the crate's
+    /// `poly::groebner::with_work_cap`), so that the tests of the refusal
+    /// need not spend the default budget.
+    pub fn with_groebner_work_cap<R>(cap: u64, f: impl FnOnce() -> R) -> R {
+        crate::poly::groebner::with_work_cap(cap, f)
+    }
 }
 
 // bitflags types don't auto-derive Default; provide it here so

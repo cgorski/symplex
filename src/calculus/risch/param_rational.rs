@@ -1188,7 +1188,7 @@ fn integrate_substituted(
         })
         .map(|c| compress(c, k, 0))
         .collect();
-    let u = arena.symbol("__prr_u");
+    let u = arena.internal_symbol("__prr_u");
     let ctx_u = Ctx {
         var: u,
         params: ctx.params.clone(),
@@ -1708,7 +1708,13 @@ fn root_sum_log_part(arena: &mut Arena, ctx: &Ctx, a_e: &GP, e: &GP) -> Option<E
     if budget_exceeded() || c.is_zero() {
         return None;
     }
-    let r = arena.symbol("__rs_t");
+    // The bound variable of the `RootSum`: part of the result, so a symbol
+    // of the user's name space — one that is neither the variable nor a
+    // parameter (up to 0.60.1 a parameter named `__rs_t` was taken for it,
+    // and the integral came back unevaluated).
+    let mut taken = ctx.params.clone();
+    taken.push(ctx.var);
+    let r = crate::transforms::subs::fresh_symbol(arena, "__rs_t", &taken);
     let ctx_r = Ctx {
         var: r,
         params: ctx.params.clone(),

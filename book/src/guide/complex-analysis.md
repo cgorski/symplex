@@ -200,7 +200,10 @@ fn main() {
 spelling).  Code generation covers part of the list: `to_rust_fn` / `to_c_fn`
 emit `erfi`, `erfinv`, `Shi`, `Chi`, the Fresnel integrals and the complete
 elliptic integrals `K`, `E` with their runtime helpers; `compile()` evaluates
-those and also the incomplete gamma functions and the Gegenbauer, Jacobi and
-associated Legendre / Laguerre polynomials.  `expint`, `polylog`,
+the same ones.  The incomplete gamma functions and the Gegenbauer, Jacobi and
+associated Legendre / Laguerre polynomials compile only with literal
+parameters, which `eval` expands first (`lowergamma(5/2, x)`,
+`gegenbauer(3, a, x)`: `compile()` takes the expansion); with a symbolic
+parameter they are refused like the following.  `expint`, `polylog`,
 `dirichlet_eta`, the Airy functions and the elliptic `F`, `Π` are not
 compiled by any back end: `Err(NotImplemented)` naming the function.

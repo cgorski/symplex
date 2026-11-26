@@ -124,8 +124,8 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
         }
         // Check for nth-order reducible: F(y, y', y'') = 0 with no explicit x.
         {
-            let d2_ph = arena.symbol("__d2_cls");
-            let d1_ph = arena.symbol("__d1_cls");
+            let d2_ph = arena.internal_symbol("__d2_cls");
+            let d1_ph = arena.internal_symbol("__d1_cls");
             let stripped = crate::transforms::subs::subs(arena, expr, d2y_dx2, d2_ph);
             let stripped = crate::transforms::subs::subs(arena, stripped, dy_dx, d1_ph);
             if !contains_sym(arena, stripped, var_sym) {
@@ -194,7 +194,7 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
 
         // Check for Clairaut: y = x·y' + f(y')  (y' appears nonlinearly)
         {
-            let p = arena.symbol("__clairaut_p_cls");
+            let p = arena.internal_symbol("__clairaut_p_cls");
             if clairaut_f(arena, expr, func, var, func_sym, var_sym, p).is_some() {
                 return OdeType::Clairaut;
             }
@@ -250,7 +250,7 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
                 if contains_sym(arena, hc_rhs, func_sym) && contains_sym(arena, hc_rhs, var_sym) {
                     // Degree-0 homogeneity: f(x, v·x) must be free of x after
                     // cancellation.
-                    let v_cls = arena.symbol("__v_cls");
+                    let v_cls = arena.internal_symbol("__v_cls");
                     let vx = arena.mul(&[v_cls, var]);
                     let sub = crate::transforms::subs::subs(arena, hc_rhs, func, vx);
                     let sub = crate::transforms::eval::eval(arena, sub);

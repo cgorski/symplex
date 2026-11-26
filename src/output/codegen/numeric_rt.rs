@@ -32,7 +32,7 @@
 //! | `bessel_i` | power series / asymptotic expansion | ≈ 1e-14 |
 //! | `bessel_k` | trapezoidal integral representation / asymptotic expansion | ≈ 1e-14 |
 //! | orthogonal polynomials | three-term recurrences | a few ulps per step |
-//! | `fibonacci`, `lucas` | fast doubling (exact ≤ 2⁵³), Binet beyond | exact / ≈ 1e-15 |
+//! | `fibonacci`, `lucas` | integers: fast doubling (exact ≤ 2⁵³), Binet beyond; other reals: `(φˣ ∓ cos(πx)·φ⁻ˣ)` with `x·ln φ` in two parts | exact / ≈ 1e-15 (absolute, in units of the larger term, next to the zeros on the negative axis) |
 //! | `harmonic` | direct sum (n ≤ 100), Maclaurin series (\|n\| ≤ ½), ψ(n+1)+γ beyond | ≈ 1e-15 |
 //! | `exp_integral_ei` | power series, E₁ continued fraction (x < −1), asymptotic series (x ≥ 45), Taylor series about the zero | ≤ 1.9e-15, relative also at the zero |
 //! | `log_integral` | Ei(ln x), scaled as x·e^{−L}Ei(L) for \|ln x\| ≥ 1; Taylor series about the zero μ | ≤ 2.1e-15, relative also at μ |
@@ -1526,16 +1526,108 @@ fn fib_pair(m: u32) -> (f64, f64) {
     }
     (a, b)
 }
-/// Fibonacci number F_n for integer n (NaN for non-integers).
+/// `φˣ = e^(x·ln φ)` for a real `x`.  The product `x·ln φ` is formed in two
+/// parts (Dekker's product with Veltkamp's split, `ln φ` in two doubles),
+/// so the relative error stays near 1e-16 for large `|x|`, where the
+/// rounded product alone costs `|x·ln φ|` units in the last place.
+fn phi_pow(x: f64) -> f64 {
+    let hi = 0.48121182505960347;
+    let lo = -2.3257817013462736e-17;
+    let p = x * hi;
+    if p_abs(p) > 800.0 {
+        // Beyond the exponent range either way (and no split of a huge `x`).
+        return p_exp(p);
+    }
+    let c = 134217729.0 * x;
+    let xh = c - (c - x);
+    let xl = x - xh;
+    let ch = 134217729.0 * hi;
+    let hh = ch - (ch - hi);
+    let hl = hi - hh;
+    let e = ((xh * hh - p) + xh * hl + xl * hh) + xl * hl;
+    let t = e + x * lo;
+    let v = p_exp(p);
+    if v == f64::INFINITY {
+        // Beyond the range (`∞·t` with a negative `t` is no number).
+        return v;
+    }
+    v + v * t
+}
+/// cos(πx) with exact argument reduction, and with relative accuracy next
+/// to its zeros: at distance `g` from a half-integer it is `±sin(πg)` with
+/// `g` formed exactly.
+fn fib_cos_pi(x: f64) -> f64 {
+    let n = p_floor(x + 0.5);
+    let r = x - n;
+    let g = 0.5 - p_abs(r);
+    let c = p_sin(PI * g);
+    if is_even(n) { c } else { -c }
+}
+/// The Fibonacci (`lucas = false`) or Lucas function of a finite real `x`
+/// that is not an integer, as the evaluator continues them (SymPy, mpmath):
+/// `F(x) = (φˣ − cos(πx)·φ⁻ˣ)/√5`, `L(x) = φˣ + cos(πx)·φ⁻ˣ`.
 ///
-/// Exact for |n| ≤ 185 (128-bit doubling), ≈ 1e-15 beyond;
-/// F_{−n} = (−1)^{n+1} F_n.
+/// For `|x| < 1` the two terms of `F` are regrouped as
+/// `2·sinh(x·ln φ) + 2·sin²(πx/2)·φ⁻ˣ`, which does not cancel next to the
+/// zero at 0.  On the negative axis both functions oscillate and their
+/// zeros (next to the half-integers) are reached by a true cancellation:
+/// the error there is ≈ 1e-15 of the larger term, as for any `f64`
+/// evaluation at a zero.  A half-integer has the cosine 0 exactly.
+///
+/// No intermediate leaves the range before the value does: `φ⁻ˣ` is formed
+/// as a square (a small cosine times a `φ⁻ˣ` beyond the range is finite),
+/// and `F` takes `1/√5` into the powers, `φˣ/√5 = φ^(x−2)·(φ²/√5)`.
+fn fib_real(x: f64, lucas: bool) -> f64 {
+    if !lucas && p_abs(x) < 1.0 {
+        let t = x * 0.48121182505960347;
+        let t2 = t * t;
+        // sinh t, |t| < 0.49: the series through t¹⁵ (next term < 1e-19).
+        let mut term = t;
+        let mut sinh = t;
+        let mut k = 1.0;
+        while k < 8.0 {
+            term = term * t2 / ((2.0 * k) * (2.0 * k + 1.0));
+            sinh += term;
+            k += 1.0;
+        }
+        let s = sin_pi(0.5 * x);
+        return (2.0 * sinh + 2.0 * s * s * phi_pow(-x)) / 2.23606797749979;
+    }
+    // A half-integer has the cosine 0 exactly (and `0·∞` far down the
+    // negative axis is 0).
+    let half_integer = is_int(2.0 * x);
+    if lucas {
+        let h = phi_pow(-0.5 * x);
+        let tail = if half_integer {
+            0.0
+        } else {
+            fib_cos_pi(x) * h * h
+        };
+        return phi_pow(x) + tail;
+    }
+    // φ²/√5
+    let k = 1.1708203932499368;
+    let h = phi_pow(-0.5 * x - 1.0);
+    let tail = if half_integer {
+        0.0
+    } else {
+        fib_cos_pi(x) * k * h * h
+    };
+    phi_pow(x - 2.0) * k - tail
+}
+/// Fibonacci function `F(x)`: the Fibonacci number `F_n` at an integer `n`
+/// (exact for |n| ≤ 185 by 128-bit doubling, ≈ 1e-15 beyond;
+/// F_{−n} = (−1)^{n+1} F_n), and `(φˣ − cos(πx)·φ⁻ˣ)/√5` at any other real
+/// `x`, the value the evaluator gives (NaN up to 0.60.0).
 pub fn fibonacci(n: f64) -> f64 {
     if n == f64::INFINITY {
         return f64::INFINITY;
     }
-    if !is_int(n) {
+    if !n.is_finite() {
         return f64::NAN;
+    }
+    if !is_int(n) {
+        return fib_real(n, false);
     }
     let m = p_abs(n);
     if m > 4_000_000_000.0 {
@@ -1548,13 +1640,18 @@ pub fn fibonacci(n: f64) -> f64 {
     let v = fib_pair(m as u32).0;
     if n < 0.0 && is_even(m) { -v } else { v }
 }
-/// Lucas number L_n for integer n (NaN for non-integers); L_{−n} = (−1)^n L_n.
+/// Lucas function `L(x)`: the Lucas number `L_n` at an integer `n`
+/// (L_{−n} = (−1)^n L_n), and `φˣ + cos(πx)·φ⁻ˣ` at any other real `x`, the
+/// value the evaluator gives (NaN up to 0.60.0).
 pub fn lucas(n: f64) -> f64 {
     if n == f64::INFINITY {
         return f64::INFINITY;
     }
-    if !is_int(n) {
+    if !n.is_finite() {
         return f64::NAN;
+    }
+    if !is_int(n) {
+        return fib_real(n, true);
     }
     let m = p_abs(n);
     if m > 4_000_000_000.0 {
@@ -1565,7 +1662,16 @@ pub fn lucas(n: f64) -> f64 {
         };
     }
     let (f, f1) = fib_pair(m as u32);
-    let v = 2.0 * f1 - f;
+    // `L_n = 2·F_{n+1} − F_n`.  Beyond the range it is infinite as `F_{n+1}`
+    // is (`∞ − ∞` was NaN up to 0.60.0, from n = 1476), and where only
+    // `2·F_{n+1}` leaves the range it is `F_{n+1} + F_{n−1}`.
+    let v = if f1 == f64::INFINITY {
+        f1
+    } else if 2.0 * f1 == f64::INFINITY {
+        f1 + (f1 - f)
+    } else {
+        2.0 * f1 - f
+    };
     if n < 0.0 && !is_even(m) { -v } else { v }
 }
 // @@end fibonacci
@@ -2945,11 +3051,20 @@ mod tests {
         );
         assert_eq!(fibonacci(-5.0), 5.0);
         assert_eq!(fibonacci(-6.0), -8.0);
-        assert!(fibonacci(2.5).is_nan());
+        // mpmath `fibonacci(mpf("2.5"))`, `fibonacci(mpf("-0.5"))`, `lucas(mpf("2.5"))` (30 digits).
+        assert_rel(fibonacci(2.5), 1.4893065462657091, 2e-15, "F(2.5)");
+        assert_rel(fibonacci(-0.5), 0.3515775842541429, 2e-15, "F(-0.5)");
+        assert_rel(lucas(2.5), 3.3301906767855614, 2e-15, "L(2.5)");
+        assert!(fibonacci(f64::NEG_INFINITY).is_nan());
+        assert!(fibonacci(f64::NAN).is_nan());
         assert_eq!(lucas(0.0), 2.0);
         assert_eq!(lucas(10.0), 123.0);
         assert_eq!(lucas(-3.0), -4.0);
         assert_rel(lucas(100.0), 7.9207083984837225313e20, 1e-15, "L100");
+        // Beyond the range: the limit, as `fibonacci` (NaN up to 0.60.0).
+        assert_eq!(lucas(1504.0), f64::INFINITY);
+        assert_eq!(lucas(-1531.0), f64::NEG_INFINITY);
+        assert_eq!(fibonacci(1504.0), f64::INFINITY);
         assert_eq!(harmonic(0.0), 0.0);
         assert_eq!(harmonic(1.0), 1.0);
         assert_rel(harmonic(5.0), 137.0 / 60.0, 1e-15, "H5");

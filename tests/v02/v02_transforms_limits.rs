@@ -1048,14 +1048,20 @@ fn try_limit_semantics() {
 }
 
 #[test]
-fn unevaluated_one_sided_limit_is_the_two_sided_limit_node() {
-    // `Limit(body, var, point)` has no direction slot; a one-sided limit
-    // that cannot be computed falls back to the plain formal node.
+fn unevaluated_one_sided_limit_keeps_its_side() {
+    // Up to 0.60.0 `Limit(body, var, point)` had nowhere to keep the
+    // direction, and a one-sided limit that could not be computed fell back
+    // to the two-sided node (this test pinned that: finding W29).  The
+    // limit from the right is another expression than the two-sided one
+    // (oracle: SymPy prints `Limit(sin(1/x), x, 0, dir='+')` and
+    // `Limit(sin(1/x), x, 0, dir='+-')`, which are unequal).
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let r = (1 / &x).sin().limit_right(&x, &ctx.int(0));
-    assert_eq!(format!("{r}"), "Limit(sin(1/x), x, 0)");
-    assert_eq!(r, (1 / &x).sin().limit(&x, &ctx.int(0)));
+    assert_eq!(format!("{r}"), "Limit(sin(1/x), x, 0, right)");
+    let both = (1 / &x).sin().limit(&x, &ctx.int(0));
+    assert_eq!(format!("{both}"), "Limit(sin(1/x), x, 0)");
+    assert_ne!(r, both);
 }
 
 #[test]

@@ -658,15 +658,21 @@ impl From<Torque> for Energy {
     }
 }
 
-// Frequency ↔ AngularVelocity (both Dim<Z0,Z0,N1,Z0,Z0,Z0,Z0>)
+// Frequency ↔ AngularVelocity (both Dim<Z0,Z0,N1,Z0,Z0,Z0,Z0>): the same
+// rotation in two units, ω = 2πf (one revolution is 2π radians).  Up to
+// 0.60.0 both impls kept the value: 50 Hz became 50 rad/s.
 impl From<Frequency> for AngularVelocity {
+    /// The angular velocity of a rotation of frequency `f`: `ω = 2πf`.
     fn from(f: Frequency) -> Self {
-        AngularVelocity(f.0)
+        let two_pi = 2 * &f.0.context().pi();
+        AngularVelocity(&f.0 * &two_pi)
     }
 }
 impl From<AngularVelocity> for Frequency {
+    /// The frequency of a rotation with the angular velocity `w`:
+    /// `f = ω/(2π)` ([`Frequency::from_angular_velocity`]).
     fn from(w: AngularVelocity) -> Self {
-        Frequency(w.0)
+        Frequency::from_angular_velocity(w)
     }
 }
 
@@ -697,13 +703,25 @@ impl Torque {
 }
 
 impl Frequency {
-    /// Convert from an `AngularVelocity` value.
+    /// The frequency of a rotation with the angular velocity `w`:
+    /// `f = ω/(2π)`, one revolution being `2π` radians (60 rpm is
+    /// `2π rad/s` and `1 Hz`).
     ///
-    /// `Frequency` and `AngularVelocity` share the same dimension vector, so
+    /// Up to 0.60.0 the value was re-tagged without the division:
+    /// `AngularVelocity::rpm(60)` became `2π Hz`, while
+    /// [`Frequency::rpm`]`(60)` is `1 Hz`.
+    ///
+    /// `Frequency::from(w)` and `AngularVelocity::from(f)` are the same
+    /// conversion (`ω = 2πf`; they kept the value up to 0.60.0 too).
+    ///
+    /// `Frequency` and `AngularVelocity` share one dimension vector, and
     /// the generic `From<Qty<AngularVelocityDim>>` impl is given to
-    /// `AngularVelocity`. Use this named method instead.
+    /// `AngularVelocity`.  A quantity of dimension `1/s` that is a
+    /// frequency already (`1/T`) is not a rotation to convert: build the
+    /// frequency from its value, `Frequency::from_ex(q.into_inner())`.
     pub fn from_angular_velocity(w: AngularVelocity) -> Frequency {
-        Frequency(w.0)
+        let two_pi = 2 * &w.0.context().pi();
+        Frequency(&w.0 / &two_pi)
     }
 }
 

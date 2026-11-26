@@ -72,6 +72,13 @@ pub(crate) fn diff(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
 ///
 /// Callers that don't need dependency awareness should use [`diff`] which
 /// passes an empty dependency set.
+///
+/// A `var` that is not a symbol (a number, `2*x`, `x + 1`) has no derivative
+/// taken with respect to it: the answer is the formal `Derivative(expr,
+/// var)`, the refusal `Ex::diff` gives for the same input and `Ex::try_diff`
+/// reports as an error.  Up to 0.60.0 it was `0`, a value: `(x*y +
+/// sin(x)).diff_with_dependent(&2, &[&y])` and the same by `2*x`.  (The
+/// crate-internal [`diff`] keeps `0` there: its callers pass symbols.)
 pub(crate) fn diff_with_deps(
     arena: &mut Arena,
     expr: ExprId,
@@ -80,7 +87,7 @@ pub(crate) fn diff_with_deps(
 ) -> ExprId {
     let var_sym = match arena.node(var) {
         ExprNode::Symbol(sid) => *sid,
-        _ => return arena.zero,
+        _ => return arena.formal_diff(expr, var),
     };
 
     let post_order = crate::base::walk::post_order_ids(arena, expr);
@@ -2297,14 +2304,16 @@ mod tests {
     }
 
     #[test]
-    fn diff_with_deps_var_not_symbol_returns_zero() {
+    fn diff_with_deps_var_not_symbol_is_the_formal_derivative() {
         let mut a = Arena::new();
         let three = a.int(3);
         let y = sym(&mut a, "y");
         let deps = FxHashSet::default();
-        // var is a number, not a symbol — should return zero
+        // var is a number, not a symbol: no derivative exists, and `0` would
+        // be a value (0.60.0 returned it).  The refusal is the formal node.
         let result = diff_with_deps(&mut a, y, three, &deps);
-        assert_eq!(result, a.zero);
+        assert_eq!(result, a.formal_diff(y, three));
+        assert_ne!(result, a.zero);
     }
 
     // ── 0.2 nodes ────────────────────────────────────────────────────────────

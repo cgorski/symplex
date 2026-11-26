@@ -898,6 +898,8 @@ fn at_point(
 
 /// Walk the expression tree bottom-up and concretely evaluate any
 /// `Derivative(inner, var)` nodes by calling [`crate::transforms::diff::diff`].
+/// A `Derivative` whose `var` is not a symbol is left as it is (its
+/// operands evaluated): there is no derivative to take.
 ///
 /// This is the *doit* pattern: formal derivative placeholders become
 /// concrete differentiation results.  Because the traversal is
@@ -918,8 +920,16 @@ pub(crate) fn eval_derivatives(arena: &mut Arena, expr: ExprId) -> ExprId {
                 // that nested Derivatives are already resolved.
                 let new_inner = cache.get(&inner).copied().unwrap_or(inner);
                 let new_var = cache.get(&var).copied().unwrap_or(var);
-                // Concretely differentiate.
-                let result = crate::transforms::diff::diff(arena, new_inner, new_var);
+                // Concretely differentiate — with respect to a symbol.  A
+                // derivative by anything else (`Derivative(e, 2)`, which
+                // `Ex::diff` returns as its refusal) has no value: it
+                // stays the formal node.  Up to 0.60.1 it became `0`, the
+                // answer of `diff` for a variable that is no symbol.
+                let result = if matches!(arena.node(new_var), ExprNode::Symbol(_)) {
+                    crate::transforms::diff::diff(arena, new_inner, new_var)
+                } else {
+                    arena.formal_diff(new_inner, new_var)
+                };
                 cache.insert(id, result);
             }
             // A derivative at a point: substitute the point into the

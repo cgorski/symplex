@@ -72,7 +72,7 @@ fn main() {
 
 ## Limits
 
-`limit(&x, &point)` uses the Gruntz algorithm, under a work budget: a limit that would take too much work is refused instead of running on. **One-sided limits** are `limit_left`, `limit_right` and `limit_dir(&x, &a, Direction::Left)`. The two-sided `limit` returns an unevaluated `Limit` node when the one-sided limits differ.
+`limit(&x, &point)` uses the Gruntz algorithm, under a work budget: a limit that would take too much work is refused instead of running on. **One-sided limits** are `limit_left`, `limit_right` and `limit_dir(&x, &a, Direction::Left)`. The two-sided `limit` returns an unevaluated `Limit` node when the one-sided limits differ. A one-sided limit that the engine cannot evaluate is an unevaluated node of its own, printed `Limit(f, x, a, left)` or `Limit(f, x, a, right)`: the two sides of a jump do not compare equal.
 
 A limit is also refused when a part of the expression has no value near the point. `expint(1, 0)` (`E₁(0)`) is infinite, so `x^2*expint(1, 0)` is not a number at any `x`, and its limit at 0 is the unevaluated `Limit(x^2*expint(1, 0), x, 0)`, not `0`; `try_limit` returns `Err(ComputationFailed)` with the reason "a part of the expression has no value at any point". The same holds when a step function inside the expression puts a function at a pole near the point (`x^2*expint(1, Heaviside(x - 1))` at 0).
 

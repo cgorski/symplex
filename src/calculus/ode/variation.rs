@@ -253,7 +253,7 @@ pub(super) fn try_linear_cc_green(
         return None;
     }
     let p = crate::poly::Poly::from_coeffs(ode.coeffs.clone());
-    let s = arena.symbol("__s_green");
+    let s = arena.internal_symbol("__s_green");
     let roots = green_roots(arena, &p, s)?;
     let basis = homogeneous_basis_cc(arena, &ode.coeffs, var)?;
     if basis.len() != n {

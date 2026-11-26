@@ -110,8 +110,14 @@ fn symbolic_cubic_eigenvalues_in_radicals() {
     close_c(&prod.subs(&k, &k7), det, 0.0, 1e-10, "det");
     assert_eigenpairs(&m, &at2, "k = 2");
     assert_eigenpairs(&m, &[(&k, &k7)], "k = 7/3");
-    // Diagonalizable, and e^A from the eigenvalues.
-    assert_eq!(m.is_diagonalizable(), Some(true));
+    // Diagonalizable for generic `k` only: at the positive root `k0 =
+    // 0.595100893057641…` of the discriminant `29k⁶ + 310k⁵ + 1515k⁴ + 3668k³ +
+    // 3907k² − 874k − 1851` of the characteristic polynomial the eigenvalue
+    // `2.32852142371865…` is double and `A − λI` has rank 2 (mpmath, 40 digits:
+    // singular values 6.73, 3.51, 4.5e-41), so the matrix is not diagonalizable
+    // there and the query is `None` (up to 0.60.0 it answered `Some(true)`, the
+    // generic answer).  `e^A` from the eigenvalues is the generic one.
+    assert_eq!(m.is_diagonalizable(), None);
     let e = m.matrix_exp().unwrap();
     close_c(
         &e[(0, 0)].subs(&k, &two),

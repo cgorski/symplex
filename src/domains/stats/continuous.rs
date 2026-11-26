@@ -141,6 +141,34 @@ fn huge_shape(param: &Ex) -> bool {
     param.free_symbols().is_empty() && Truth::from((param - 65_536).is_positive()).is_true()
 }
 
+/// `I_z(a, b)`, the regularised incomplete beta function, at an argument
+/// `z` whose complement `w = 1 − z` the caller holds as an expression of its
+/// own (`z = ν/(x² + ν)`, `w = x²/(x² + ν)`).  For a number `w` proved
+/// inside `(0, 2⁻¹⁶)` it is written `I_{[w, 1]}(b, a)`, the same value by
+/// the reflection `I_z(a, b) = 1 − I_w(b, a)`, formed as one tail (no
+/// difference): `z` next to 1 keeps none of the digits of `w`, on which
+/// the value depends, and its evaluation must first raise the working
+/// precision by as many bits as `w` is small, with a continued fraction
+/// whose length grows with the square of that precision.  Up to 0.60 the
+/// CDF of `StudentT(6.6·10²³⁶)` at `−3.1` (`w = 1.5·10⁻²³⁶`) took 0.19 s to
+/// evaluate (8 ms now, the same digits).  Elsewhere — a symbolic point or
+/// parameter, an argument away from 1 — the classic `I_z(a, b)`.
+fn reg_beta_at(a: &Ex, b: &Ex, z: &Ex, w: &Ex) -> Ex {
+    let ctx = z.context();
+    let numeric = |e: &Ex| e.free_symbols().is_empty();
+    if numeric(w)
+        && numeric(a)
+        && numeric(b)
+        && sign_of(w).is_positive().is_true()
+        && sign_of(&(ctx.rational(1, 65_536) - w))
+            .is_positive()
+            .is_true()
+    {
+        return ctx.one().betainc_regularized(b, a, w);
+    }
+    z.betainc_regularized(a, b, &ctx.zero())
+}
+
 /// `value` for a `t` known not to be `0`; `1` at `t = 0`; for a `t` that
 /// may be either, the `Piecewise` of both (a characteristic function
 /// whose closed form is `0/0` or `0·∞` at the origin, as SymPy writes
@@ -1228,12 +1256,14 @@ impl Family for StudentT {
 
     // F(t) = 1 − ½ I_{ν/(t²+ν)}(ν/2, ½) for t ≥ 0 and ½ I_{ν/(t²+ν)}(ν/2, ½)
     // for t < 0 (the regularised incomplete beta; DLMF 8.17 / Wikipedia
-    // "Student's t-distribution").
+    // "Student's t-distribution"); at a number `t` with `t² ≪ ν` the
+    // function is written in `t²/(t² + ν)` ([`reg_beta_at`]).
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         let ctx = self.context();
         let half = ctx.rational(1, 2);
         let z = &self.dof / (x.powi(2) + &self.dof);
-        let tail = &half * z.betainc_regularized(&(&self.dof * &half), &half, &ctx.zero());
+        let w = x.powi(2) / (x.powi(2) + &self.dof);
+        let tail = &half * reg_beta_at(&(&self.dof * &half), &half, &z, &w);
         let above = ctx.one() - &tail;
         Some(Ex::piecewise(&[
             (&tail, &x.lt(&ctx.zero())),
@@ -1246,7 +1276,8 @@ impl Family for StudentT {
         let ctx = self.context();
         let half = ctx.rational(1, 2);
         let z = &self.dof / (x.powi(2) + &self.dof);
-        let tail = &half * z.betainc_regularized(&(&self.dof * &half), &half, &ctx.zero());
+        let w = x.powi(2) / (x.powi(2) + &self.dof);
+        let tail = &half * reg_beta_at(&(&self.dof * &half), &half, &z, &w);
         let below = ctx.one() - &tail;
         Some(Ex::piecewise(&[
             (&tail, &x.gt(&ctx.zero())),
@@ -1397,20 +1428,34 @@ impl Family for FDistribution {
         )
     }
 
-    // I_{d₁x/(d₁x + d₂)}(d₁/2, d₂/2)
+    // I_{d₁x/(d₁x + d₂)}(d₁/2, d₂/2); at a number `x` with `d₂ ≪ d₁x` written
+    // in `d₂/(d₁x + d₂)` ([`reg_beta_at`]).
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         let ctx = self.context();
         let half = ctx.rational(1, 2);
         let z = &self.d1 * x / (&self.d1 * x + &self.d2);
-        Some(z.betainc_regularized(&(&self.d1 * &half), &(&self.d2 * &half), &ctx.zero()))
+        let w = &self.d2 / (&self.d1 * x + &self.d2);
+        Some(reg_beta_at(
+            &(&self.d1 * &half),
+            &(&self.d2 * &half),
+            &z,
+            &w,
+        ))
     }
 
-    // I_{d₂/(d₁x + d₂)}(d₂/2, d₁/2)
+    // I_{d₂/(d₁x + d₂)}(d₂/2, d₁/2); at a number `x` with `d₁x ≪ d₂` written
+    // in `d₁x/(d₁x + d₂)`.
     fn sf(&self, x: &Ex) -> Option<Ex> {
         let ctx = self.context();
         let half = ctx.rational(1, 2);
         let w = &self.d2 / (&self.d1 * x + &self.d2);
-        Some(w.betainc_regularized(&(&self.d2 * &half), &(&self.d1 * &half), &ctx.zero()))
+        let z = &self.d1 * x / (&self.d1 * x + &self.d2);
+        Some(reg_beta_at(
+            &(&self.d2 * &half),
+            &(&self.d1 * &half),
+            &w,
+            &z,
+        ))
     }
 
     // (U/d₁) / (V/d₂) for independent U ~ χ²(d₁), V ~ χ²(d₂).

@@ -1837,13 +1837,13 @@ fn log_ratio(value: f64, ln_value: f64, target: f64, ln_target: f64) -> f64 {
 
 /// The position of `x` in the order of the floats (`−0` just below `+0`):
 /// consecutive floats have consecutive keys.
-fn float_key(x: f64) -> i128 {
+pub(super) fn float_key(x: f64) -> i128 {
     let b = x.to_bits().cast_signed();
     i128::from(if b < 0 { b ^ i64::MAX } else { b })
 }
 
 /// The float with [`float_key`] `k` (a key of a finite float).
-fn key_float(k: i128) -> f64 {
+pub(super) fn key_float(k: i128) -> f64 {
     let b = i64::try_from(k).unwrap_or(0);
     let b = if b < 0 { b ^ i64::MAX } else { b };
     f64::from_bits(b.cast_unsigned())

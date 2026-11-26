@@ -533,7 +533,7 @@ pub(super) fn try_exp_rational_substitution(
     }
     let a = num_rational::Ratio::new(num_gcd, den_lcm);
 
-    let u = arena.symbol("__eu");
+    let u = arena.internal_symbol("__eu");
     let u_sym = match arena.node(u) {
         ExprNode::Symbol(s) => *s,
         _ => return None,
@@ -612,7 +612,7 @@ pub(super) fn try_exp_linear_substitution(
         return None;
     }
     let g = Q::new(num_gcd, den_lcm);
-    let u = arena.symbol("__elu");
+    let u = arena.internal_symbol("__elu");
     let ExprNode::Symbol(u_sym) = *arena.node(u) else {
         return None;
     };

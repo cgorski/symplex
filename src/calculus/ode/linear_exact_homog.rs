@@ -762,7 +762,7 @@ pub(super) fn try_homogeneous_coefficient(
     // equation is homogeneous of degree 0.
     //
     // This avoids the need to simplify (v*x)^n / x^n etc.
-    let v = arena.symbol("__v");
+    let v = arena.internal_symbol("__v");
 
     // Compute f(v) = RHS(x=1, y=v)
     let rhs_sub = crate::transforms::subs::subs(arena, rhs, func, v);

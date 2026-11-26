@@ -42,8 +42,10 @@ fn is_prime_for_literal() {
     assert_eq!(ctx.int(7).is_prime(), Some(true));
     assert_eq!(ctx.int(4).is_prime(), Some(false));
     assert_eq!(ctx.int(2).is_prime(), Some(true));
-    // 1 is neither prime nor composite; the system returns None
-    assert_eq!(ctx.int(1).is_prime(), None);
+    // 1 is neither prime nor composite (up to 0.60.0 the query was None;
+    // SymPy 1.14: `Integer(1).is_prime` is False, `is_composite` is False)
+    assert_eq!(ctx.int(1).is_prime(), Some(false));
+    assert_eq!(ctx.int(1).is_composite(), Some(false));
 }
 
 #[test]

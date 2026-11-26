@@ -520,20 +520,34 @@ impl StateSpace {
 
     /// Check controllability: rank(controllability_matrix) == n.
     ///
-    /// Returns `true` if the system is fully state controllable, `false`
-    /// if it is not or the controllability matrix cannot be computed.
+    /// Returns `true` only when that rank is **proved** to be `n`: every
+    /// pivot of the elimination proved nonzero.  For a system with symbols
+    /// the rank is the generic one of [`Matrix::rank`] (`A = diag(1, x)`,
+    /// `B = (1, 1)ᵀ` is controllable, although not at `x = 1`).  `false`
+    /// if the system is not controllable, if the controllability matrix
+    /// cannot be computed, or if an entry of the elimination is neither
+    /// proved zero nor proved nonzero.  (Up to 0.60.0 such an entry counted
+    /// as nonzero: `A = [[0]]`, `B = [[sin(1)² + cos(1)² − 1]]`, an input
+    /// matrix that is zero, was controllable.)
     pub fn is_controllable(&self) -> bool {
-        self.controllability_matrix()
-            .is_ok_and(|m| m.rank() == self.num_states())
+        self.controllability_matrix().is_ok_and(|m| {
+            m.rank_decided("StateSpace::is_controllable")
+                .is_ok_and(|r| r == self.num_states())
+        })
     }
 
     /// Check observability: rank(observability_matrix) == n.
     ///
-    /// Returns `true` if the system is fully observable, `false` if it is
-    /// not or the observability matrix cannot be computed.
+    /// Returns `true` only when that rank is **proved** to be `n`, with the
+    /// reading of [`is_controllable`](Self::is_controllable): `false` if
+    /// the system is not observable, if the observability matrix cannot be
+    /// computed, or if an entry of the elimination is neither proved zero
+    /// nor proved nonzero.
     pub fn is_observable(&self) -> bool {
-        self.observability_matrix()
-            .is_ok_and(|m| m.rank() == self.num_states())
+        self.observability_matrix().is_ok_and(|m| {
+            m.rank_decided("StateSpace::is_observable")
+                .is_ok_and(|r| r == self.num_states())
+        })
     }
 
     /// Check stability: all eigenvalues have negative real part.
@@ -715,7 +729,7 @@ impl StateSpace {
         }
 
         let ctrb = self.controllability_matrix()?;
-        if ctrb.rank() != n {
+        if ctrb.rank_decided("StateSpace::ackermann")? != n {
             return Err(SymplexError::ComputationFailed {
                 operation: "StateSpace::ackermann",
                 reason: "system is not controllable".into(),

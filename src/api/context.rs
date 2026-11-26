@@ -312,11 +312,14 @@ impl Context {
     /// Query a mathematical property of an expression.
     ///
     /// Returns `Some(true)` if the property is provably true,
-    /// `Some(false)` if provably false, or `None` if unknown.  The
-    /// structural answer of [`Ex::query`](crate::api::expr::Expr::query)
-    /// (without its value-based decisions for constants), in the same two
-    /// readings: realness and signs where the expression is defined,
-    /// finiteness at every point, poles included.
+    /// `Some(false)` if provably false, or `None` if unknown.  The same
+    /// question as [`Ex::query`](crate::api::expr::Expr::query) and the
+    /// same answer, by the same code: the structural rules, then for a
+    /// constant the decisions by its value, in the same two readings
+    /// (realness and signs where the expression is defined, finiteness at
+    /// every point, poles included).  Up to 0.60.0 this was the structural
+    /// answer alone: `cos(pi/16)` was positive by `Ex::query` and unknown
+    /// here.
     ///
     /// # Panics
     ///
@@ -332,14 +335,14 @@ impl Context {
     /// let one = ctx.int(1);
     /// assert_eq!(ctx.query(&one, Props::POSITIVE), Some(true));
     /// assert_eq!(ctx.query(&one, Props::INTEGER), Some(true));
+    /// let c = ctx.parse("cos(pi/16)").unwrap();
+    /// assert_eq!(ctx.query(&c, Props::POSITIVE), Some(true));
+    /// assert_eq!(ctx.query(&c, Props::POSITIVE), c.query(Props::POSITIVE));
     /// ```
     pub fn query(&self, ex: &crate::api::expr::Ex, prop: Props) -> Option<bool> {
-        let inner = self.inner.read();
-        inner
-            .assumptions
-            .lock()
-            .query_public(&inner.arena, self.own_id(ex), prop)
-            .to_option()
+        // The cross-context guard; the answer is `Ex::query`'s.
+        let _ = self.own_id(ex);
+        ex.query(prop)
     }
 
     /// Creates an integer expression.

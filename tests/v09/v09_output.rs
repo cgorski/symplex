@@ -235,8 +235,13 @@ fn mathml_presentation_structure() {
     );
     assert_well_formed(&xml);
 
-    // Unrenderable nodes are `NotImplemented`, not a guess.
+    // Unrenderable nodes are `NotImplemented`, not a guess.  (`RootOf` was
+    // one up to 0.60.0; it is a call under its name, as in `to_latex`.)
     let r = ctx.parse("RootOf(x^5 - x - 1, 0)").unwrap();
+    let xml = r.to_mathml().unwrap();
+    assert!(xml.contains("<mi>RootOf</mi><mo>&#x2061;</mo>"), "{xml}");
+    assert_well_formed(&xml);
+    let r = ctx.parse("Series(sin(x), x, 0, 4)").unwrap();
     assert!(matches!(
         r.to_mathml(),
         Err(SymplexError::NotImplemented(_))

@@ -68,8 +68,8 @@ use crate::domains::exact_matrix::PERMANENT_MAX_DIM;
 
 mod eigen;
 mod zero_test;
-pub(crate) use eigen::Spectrum;
 use eigen::*;
+pub(crate) use eigen::{PivotWork, Spectrum, pivot_truth, undecided_pivot};
 pub(crate) use zero_test::*;
 
 /// A dense matrix of symbolic expressions.
@@ -1491,7 +1491,10 @@ impl Matrix {
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] if the determinant is zero;
+    /// - [`SymplexError::ComputationFailed`] if the determinant is zero, or
+    ///   if neither it nor the rank decides whether the matrix is singular
+    ///   (an entry neither proved zero nor proved nonzero; see
+    ///   [`rref`](Self::rref));
     ///   [`SymplexError::ExpressionSwell`] if the entries / intermediate
     ///   results exceed [`EXPRESSION_BUDGET`].
     ///
@@ -1518,8 +1521,21 @@ impl Matrix {
             };
         }
         self.check_budget("inv")?;
+        let _work = PivotWork::enter();
         let d = self.det().map_err(|e| reop(e, "inv"))?;
-        if ex_is_zero(&d).is_true() {
+        // The determinant decides (three-valued, as a pivot): proved zero is
+        // singular, proved not identically zero is invertible (for generic
+        // values of the symbols).  An undecided one leaves it to the rank,
+        // whose entries are smaller than their determinant; if that is not
+        // decided either, the call is refused — up to 0.60.0 the matrix was
+        // then inverted, with `1/d` for a `d` that may be 0 (`[[Γ(x + 1) −
+        // x·Γ(x)]]`).
+        let singular = match pivot_truth(&d) {
+            Truth::True => true,
+            Truth::False => false,
+            Truth::Unknown => self.rank_decided("inv")? < self.nrows,
+        };
+        if singular {
             return Err(failed("inv", "matrix is singular (determinant is zero)"));
         }
         let n = self.nrows;
@@ -1547,8 +1563,9 @@ impl Matrix {
     /// - [`SymplexError::InvalidArgument`] if `A` is not square or `A` and
     ///   `b` have different row counts.
     /// - [`SymplexError::ComputationFailed`] if the system is singular
-    ///   (no unique solution) or the entries / solution exceed
-    ///   [`EXPRESSION_BUDGET`].
+    ///   (no unique solution), if a pivot of the elimination is neither
+    ///   proved zero nor proved nonzero (see [`rref`](Self::rref)), or the
+    ///   entries / solution exceed [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -1580,7 +1597,7 @@ impl Matrix {
 
         let augmented = Matrix::hstack(&[self, b])?;
         augmented.check_budget("solve")?;
-        let (rref_mat, pivots) = augmented.rref();
+        let (rref_mat, pivots) = augmented.rref_decided("solve")?;
         rref_mat.check_budget("solve")?;
 
         if pivots.len() != n || pivots.iter().any(|&p| p >= n) {
@@ -1642,7 +1659,7 @@ impl Matrix {
         // `ℚ(radicals, i)`; that of `AᴴA` is not (`conjugate(x)` entries),
         // and before 0.38 a symbolic rank-deficient `A` (`[[x − 2, 2], [0, 0]]`)
         // had `AᴴA` "solved" by dividing by an unrecognised zero.
-        if self.as_qmatrix().is_none() && self.rank() < self.ncols {
+        if self.as_qmatrix().is_none() && self.rank_decided("solve_least_squares")? < self.ncols {
             return Err(failed(
                 "solve_least_squares",
                 "AᵀA is singular (A does not have full column rank)",
@@ -1872,7 +1889,65 @@ impl Matrix {
     /// The result is a [`Spectrum`]: complete when the multiplicities sum to
     /// `n` (checked here once more for the whole matrix), partial when a
     /// block's characteristic polynomial has a factor that was not solved.
+    ///
+    /// The split reads the entries with the cheap test of 0.60.0
+    /// ([`pivot_is_zero`]): what it finds is right whatever an entry is.
+    /// When that spectrum is complete and an off-diagonal entry is zero
+    /// only by the certified test ([`pivot_truth`]: `sin²x + cos²x − 1`),
+    /// the eigenvalues are taken from the matrix with those entries
+    /// written `0` instead — its blocks are parts of the blocks solved
+    /// before.  Up to 0.60.0 the hidden zero stayed in the characteristic
+    /// polynomial: `[[2, 0, x], [0, x, 1], [z, 0, x]]` with `z = atan(1/2) +
+    /// atan(1/3) − π/4 + cos 2x − 2cos²x + 1` had the three "eigenvalues"
+    /// `x` and `(x + 2 ± √((x − 2)² + 4xz))/2` with one eigenvector each (the
+    /// matrix is triangular, `x` is a double eigenvalue with one
+    /// eigenvector).  A spectrum that the cheap split does not complete is
+    /// returned as it is, so that a matrix that was refused at once still is:
+    /// the finer split can leave a cubic block with unsimplified
+    /// coefficients, seconds of Cardano's formula (measured: `eigenvals` of a
+    /// 4×4 matrix of the hunt, 0.14 s → 38 s).
     fn eigen_pairs(&self, lam: &Ex) -> Result<Spectrum, SymplexError> {
+        let n = self.nrows;
+        let found = self.eigen_pairs_by_blocks(lam)?;
+        if n < 2 || self.as_qmatrix().is_some() || !found.is_complete() {
+            return Ok(found);
+        }
+        // Eigenvalues that fill pages (Cardano's formula over unsimplified
+        // coefficients) took seconds to find: the second pass is not
+        // made for them (it cost as much again: 8 s → 14 s for a matrix of
+        // the hunt), and `eigenvects` refuses what it cannot tell apart.
+        const FINER_SPLIT_NODES: usize = 2_000;
+        let Spectrum::Complete(pairs) = &found else {
+            return Ok(found);
+        };
+        let size: usize = pairs
+            .iter()
+            .map(|(v, _)| tree_size_capped(v, FINER_SPLIT_NODES))
+            .sum();
+        if size > FINER_SPLIT_NODES {
+            return Ok(found);
+        }
+        // One work budget for the certified tests of the entries.
+        let _work = PivotWork::enter();
+        let mut hidden = false;
+        let cleaned = self.map_indexed(|i, j, e| {
+            if i != j && !pivot_is_zero(e) && proved_zero(e) {
+                hidden = true;
+                e.context().zero()
+            } else {
+                e.clone()
+            }
+        });
+        if !hidden {
+            return Ok(found);
+        }
+        let finer = cleaned.eigen_pairs_by_blocks(lam)?;
+        Ok(if finer.is_complete() { finer } else { found })
+    }
+
+    /// [`eigen_pairs`](Self::eigen_pairs) of the matrix as it is written:
+    /// the split by the cheap zero test.
+    fn eigen_pairs_by_blocks(&self, lam: &Ex) -> Result<Spectrum, SymplexError> {
         let n = self.nrows;
         if n > 1 && self.as_qmatrix().is_none() {
             let adj: Vec<Vec<usize>> = (0..n)
@@ -2029,12 +2104,24 @@ impl Matrix {
     /// multiplicities sum to `n` (up to 0.59 the eigenvalues of a factor
     /// that was not solved were left out, with their vectors).
     ///
+    /// The eigenvectors are those for generic values of the symbols (the
+    /// reading of [`rref`](Self::rref)), and every zero decision behind
+    /// them is a proof: where the solve of `A − λI` meets an entry that is
+    /// neither proved zero nor proved nonzero, the call is an error.  (Up
+    /// to 0.60.0 such an entry counted as nonzero: the identity matrix
+    /// written `[[1, Γ(x + 1) − x·Γ(x)], [0, 1]]` had one eigenvector for
+    /// its eigenvalue 1 of multiplicity 2.)  Two eigenvalues that are
+    /// proved equal are one (`1` and `sin²x + cos²x`).
+    ///
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
     /// - [`SymplexError::ComputationFailed`] if the eigenvalues are not all
     ///   found (see
-    ///   [`eigenvals_with_multiplicity`](Self::eigenvals_with_multiplicity)).
+    ///   [`eigenvals_with_multiplicity`](Self::eigenvals_with_multiplicity)),
+    ///   or if an entry of an eigenvector solve, or the equality of two
+    ///   eigenvalues, is neither proved nor refuted (the message names
+    ///   it).
     ///
     /// # Examples
     ///
@@ -2056,6 +2143,15 @@ impl Matrix {
         debug!(n, "eigenvects: computing for {}×{} matrix", n, n);
         let lam = self.fresh_symbol("lambda");
         let eigen_pairs = self.complete_eigen_pairs(&lam)?;
+        // Entries that are not rational functions over `ℚ(radicals, i)` (a
+        // function, a constant such as `sin 1`): two roots of the
+        // characteristic polynomial can be one eigenvalue written twice,
+        // which the factorization does not see.
+        let eigen_pairs = if self.iter().all(|e| rational_function_is_zero(e).is_known()) {
+            eigen_pairs
+        } else {
+            self.distinct_eigen_pairs(eigen_pairs, "eigenvects")?
+        };
         let eye = Matrix::identity(&self.ctx(), n)?;
 
         let mut result = Vec::new();
@@ -2120,14 +2216,37 @@ impl Matrix {
                             .map(Matrix::col_vector)
                             .collect::<Result<Vec<_>, _>>()?,
                         None => {
-                            let vs = a_minus_lambda_i.nullspace_semantic();
-                            // A simple eigenvalue has exactly one eigenvector;
-                            // none means a zero pivot went undecided.
-                            match (*alg_mult, vs.len()) {
-                                (1, 0) => {
-                                    simple_eigenvector(&a_minus_lambda_i).map_or(vs, |v| vec![v])
+                            // A simple eigenvalue has exactly one eigenvector:
+                            // `n − 1` pivots proved nonzero are enough, when
+                            // the elimination meets one it cannot decide (or
+                            // finds none: an eigenvalue in radicals that is
+                            // one only on a part of the symbols' domain).
+                            match a_minus_lambda_i.nullspace_decided("eigenvects") {
+                                Ok(vs) if *alg_mult != 1 || vs.len() == 1 => vs,
+                                found if *alg_mult == 1 => {
+                                    match (simple_eigenvector(&a_minus_lambda_i), found) {
+                                        (Some(v), _) => vec![v],
+                                        (None, Err(e)) => return Err(e),
+                                        (None, Ok(vs)) => {
+                                            return Err(failed(
+                                                "eigenvects",
+                                                format!(
+                                                    "found {} eigenvectors for a simple \
+                                                     eigenvalue",
+                                                    vs.len()
+                                                ),
+                                            ));
+                                        }
+                                    }
                                 }
-                                _ => vs,
+                                // An eigenvalue of multiplicity above 1: the
+                                // dimension of its eigenspace is not known
+                                // when a pivot is undecided.  (Up to 0.60.0
+                                // the undecided entry was a pivot: one
+                                // eigenvector for the eigenvalue 1 of the
+                                // identity matrix written `[[1, Γ(x + 1) −
+                                // x·Γ(x)], [0, 1]]`.)
+                                other => other?,
                             }
                         }
                     }
@@ -2221,16 +2340,28 @@ impl Matrix {
 
     /// Is the matrix diagonalizable (three-valued)?
     ///
-    /// - `Some(true)` — every eigenvalue's geometric multiplicity equals
-    ///   its algebraic multiplicity.
-    /// - `Some(false)` — non-square, or some eigenvalue is defective
-    ///   (decided for matrices without free symbols, and — generically, as
-    ///   SymPy's `is_diagonalizable` — for rational functions of the
-    ///   symbols over `ℚ(radicals, i)` at an eigenvalue of that kind, whose
-    ///   zero tests are exact: `[[x, 1], [0, x]]` was `None` before 0.38).
+    /// - `Some(true)` — the matrix is diagonalizable **for every value of
+    ///   its symbols**: every eigenvalue's geometric multiplicity equals its
+    ///   algebraic multiplicity, and — when there are symbols — one of the
+    ///   following is proved: the matrix is Hermitian; the discriminant of
+    ///   the characteristic polynomial vanishes for no value of the symbols
+    ///   (the eigenvalues are pairwise different everywhere); or the matrix
+    ///   `P` of eigenvectors is finite and invertible for every value (`A·P =
+    ///   P·D` holds identically, so `A = P·D·P⁻¹` everywhere: `[[x, y], [y,
+    ///   x]]`).  Up to 0.60.0 the answer for generic values was given:
+    ///   `[[1, 1], [0, x]]`, a Jordan block at `x = 1`, was `Some(true)`.
+    /// - `Some(false)` — non-square, or some eigenvalue is defective.  With
+    ///   symbols this is the answer for generic values of them (as SymPy's
+    ///   `is_diagonalizable`): every zero test of the eigenvector solves
+    ///   was a proof, in the reading of [`rref`](Self::rref).  `[[sin x, 1],
+    ///   [0, sin x]]` is a Jordan block for every `x` (`None` up to 0.60.0,
+    ///   which answered only for rational functions of the symbols: `[[x,
+    ///   1], [0, x]]` was `None` before 0.38).
     /// - `None` — the eigenvalue solver could not find all eigenvalues (a
-    ///   part of the spectrum decides nothing here), or the entries are
-    ///   symbolic and an eigenspace dimension could not be established.
+    ///   part of the spectrum decides nothing here); an entry of an
+    ///   eigenvector solve, or the equality of two eigenvalues, is neither
+    ///   proved nor refuted; or the matrix is diagonalizable for generic
+    ///   values of its symbols and none of the proofs above holds.
     ///
     /// # Examples
     ///
@@ -2240,31 +2371,115 @@ impl Matrix {
     /// let ctx = Context::new();
     /// assert_eq!(matrix![ctx, [1, 0], [0, 2]].is_diagonalizable(), Some(true));
     /// assert_eq!(matrix![ctx, [1, 1], [0, 1]].is_diagonalizable(), Some(false));
+    /// // Diagonalizable unless x = 1:
+    /// let x = ctx.symbol("x");
+    /// let m = Matrix::new(vec![vec![ctx.int(1), ctx.int(1)], vec![ctx.int(0), x.clone()]]).unwrap();
+    /// assert_eq!(m.is_diagonalizable(), None);
+    /// assert_eq!(m.subs(&x, &ctx.int(2)).is_diagonalizable(), Some(true));
+    /// assert_eq!(m.subs(&x, &ctx.int(1)).is_diagonalizable(), Some(false));
     /// ```
     pub fn is_diagonalizable(&self) -> Option<bool> {
         if !self.is_square() {
             return Some(false);
         }
+        // An error: the spectrum is incomplete, or a zero test of the
+        // eigenvector solves (or the equality of two eigenvalues) is
+        // undecided.
         let eigvs = self.eigenvects().ok()?;
         let total_alg: usize = eigvs.iter().map(|(_, m, _)| *m).sum();
         if total_alg != self.nrows {
             return None;
         }
-        if eigvs.iter().all(|(_, m, v)| v.len() == *m) {
-            return Some(true);
+        if eigvs.iter().any(|(_, m, v)| v.len() != *m) {
+            // Every decision behind the missing eigenvector was a proof.
+            return Some(false);
         }
-        // A missing eigenvector is conclusive only when the zero tests were
-        // decidable: for constant matrices, and for rational functions of
-        // the symbols at an eigenvalue that is one too (`rref` then finds the
-        // generic rank of `A − λI` exactly).
-        let exact = |e: &Ex| e.is_constant() || rational_function_is_zero(e).is_known();
-        let decided = self.iter().all(Ex::is_constant)
-            || (self.iter().all(exact)
-                && eigvs
-                    .iter()
-                    .filter(|(_, m, v)| v.len() != *m)
-                    .all(|(l, _, _)| exact(l)));
-        decided.then_some(false)
+        // Diagonalizable for generic values of the symbols.  For every
+        // value?
+        let small = || {
+            self.iter()
+                .map(|e| tree_size_capped(e, EVERYWHERE_PROOF_NODES))
+                .sum::<usize>()
+                <= EVERYWHERE_PROOF_NODES
+        };
+        let holds_everywhere = self.iter().all(|e| e.free_symbols().is_empty())
+            || eigenvectors_independent_everywhere(&eigvs)
+            || self.eigenvalues_differ_everywhere()
+            || (small() && Truth::from(self.is_hermitian()).is_true());
+        holds_everywhere.then_some(true)
+    }
+
+    /// The eigenvalues `pairs` with those proved equal merged
+    /// ([`merged_eigen_pairs`]), when every two of the result are proved
+    /// different: each difference by a certified value at a sample point
+    /// where it is meromorphic in the symbols, or — every eigenvalue being
+    /// simple — the discriminant of the characteristic polynomial proved
+    /// not identically zero (a difference of eigenvalues in radicals is
+    /// analytic only piece by piece: `x − (x + 2 − √((x − 2)²))/2` is 0 for
+    /// `x < 2` and not for `x > 2`, and one sample point says nothing of the
+    /// other piece).  An error (under `operation`) otherwise: the
+    /// multiplicities are not known, and neither is the dimension an
+    /// eigenspace should have.
+    fn distinct_eigen_pairs(
+        &self,
+        pairs: Vec<(Ex, usize)>,
+        operation: &'static str,
+    ) -> Result<Vec<(Ex, usize)>, SymplexError> {
+        // One work budget for the tests of all the differences.
+        let _work = PivotWork::enter();
+        let (merged, open) = merged_eigen_pairs(pairs);
+        let Some((w, v)) = open else {
+            return Ok(merged);
+        };
+        let simple = merged.iter().all(|(_, m)| *m == 1);
+        if simple
+            && self
+                .char_poly_discriminant(EVERYWHERE_PROOF_NODES)
+                .is_some_and(|d| pivot_truth(&d).is_false())
+        {
+            return Ok(merged);
+        }
+        Err(failed(
+            operation,
+            format!(
+                "cannot decide whether the eigenvalues {} and {} are equal, so their \
+                 multiplicities are not known",
+                shortened(&w),
+                shortened(&v)
+            ),
+        ))
+    }
+
+    /// The discriminant of the characteristic polynomial, when its
+    /// coefficients have at most `max_nodes` nodes together (the
+    /// discriminant has degree `2n − 2` in them) and it can be formed.
+    fn char_poly_discriminant(&self, max_nodes: usize) -> Option<Ex> {
+        let lam = self.fresh_symbol("lambda");
+        let coeffs = self.char_poly_coeffs().ok()?;
+        let size: usize = coeffs.iter().map(|c| tree_size_capped(c, max_nodes)).sum();
+        if size > max_nodes {
+            return None;
+        }
+        let mut cp = self.ctx_zero();
+        for (k, c) in coeffs.iter().enumerate() {
+            if !c.is_zero_structural() {
+                cp += c * &lam.powi(k as i64);
+            }
+        }
+        cp.discriminant_symbolic(&lam)
+    }
+
+    /// Is the discriminant of the characteristic polynomial proved nonzero
+    /// for every value of the symbols?  Then the `n` eigenvalues are
+    /// pairwise different at every point, whatever form they were found
+    /// in.  `false` proves nothing (also: not tried, for a characteristic
+    /// polynomial whose coefficients are large).
+    fn eigenvalues_differ_everywhere(&self) -> bool {
+        self.char_poly_discriminant(EVERYWHERE_PROOF_NODES / 2)
+            .is_some_and(|d| {
+                tree_size_capped(&d, 8 * EVERYWHERE_PROOF_NODES) <= 8 * EVERYWHERE_PROOF_NODES
+                    && Truth::from(d.is_nonzero()).is_true()
+            })
     }
 
     /// Diagonalize: find invertible `P` and diagonal `D` with `A = P D P⁻¹`.
@@ -2276,12 +2491,19 @@ impl Matrix {
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
     /// - [`SymplexError::NotDiagonalizable`] if an eigenvalue has fewer
-    ///   eigenvectors than its algebraic multiplicity.  Every eigenvalue is
-    ///   known when this is reported (up to 0.59 a matrix whose spectrum
-    ///   was only partly found was called not diagonalizable:
-    ///   "insufficient eigenvectors found").
+    ///   eigenvectors than its algebraic multiplicity.  This is a proof (for
+    ///   generic values of the symbols, the reading of
+    ///   [`rref`](Self::rref)): every eigenvalue is known when it is
+    ///   reported (up to 0.59 a matrix whose spectrum was only partly found
+    ///   was called not diagonalizable: "insufficient eigenvectors found"),
+    ///   and every zero test of the eigenvector solves was decided (up to
+    ///   0.60.0 an undecided entry counted as nonzero: the identity matrix
+    ///   written `[[1, Γ(x + 1) − x·Γ(x)], [0, 1]]` was "not
+    ///   diagonalizable").
     /// - [`SymplexError::ComputationFailed`] if the eigenvalue solver could
-    ///   not find all eigenvalues.
+    ///   not find all eigenvalues, or if an entry of an eigenvector solve (or
+    ///   the equality of two eigenvalues) is neither proved nor refuted: the
+    ///   message names it.
     /// - [`SymplexError::ExpressionSwell`] if the eigenvectors exceed
     ///   [`EXPRESSION_BUDGET`].
     ///
@@ -2401,7 +2623,7 @@ impl Matrix {
             let mut chain: Vec<usize> = vec![0];
             let mut power = a_minus_lambda.clone();
             loop {
-                let nullity = n - power.rank_semantic();
+                let nullity = n - power.rank_decided("jordan_form")?;
                 let last = *chain.last().unwrap_or(&0);
                 if nullity == last || nullity >= *alg_mult {
                     if nullity > last {
@@ -2957,7 +3179,7 @@ impl Matrix {
                 })
             }
         };
-        let (r, pivots) = self.rref();
+        let (r, pivots) = self.rref_decided("pinv")?;
         if pivots.is_empty() {
             return Matrix::zeros(&ctx, self.ncols, self.nrows);
         }
@@ -3022,7 +3244,7 @@ impl Matrix {
                 f: f.to_matrix(&ctx),
             });
         }
-        let (r, pivots) = self.rref();
+        let (r, pivots) = self.rref_decided("rank_decomposition")?;
         if pivots.is_empty() {
             return Err(failed(
                 "rank_decomposition",
@@ -3151,7 +3373,9 @@ impl Matrix {
         // before 0.38 `[[x − 2, 2], [0, 0]]` had `Max(…)/Min(…)` with an
         // identically zero `Min` (SymPy 1.14 gives `Max(0, σ)/Min(0, σ)`
         // too, without deciding the zero).
-        if self.as_qmatrix().is_none() && self.rank() < self.nrows.min(self.ncols) {
+        if self.as_qmatrix().is_none()
+            && self.rank_decided("condition_number")? < self.nrows.min(self.ncols)
+        {
             return Err(failed(
                 "condition_number",
                 "matrix is singular (smallest singular value is 0), condition number is infinite",
@@ -3200,16 +3424,19 @@ impl Matrix {
     /// swap when needed — followed by `row_j −= f·row_{k+1}` and the
     /// compensating `col_{k+1} += f·col_j`.  Rational matrices run exactly
     /// on [`QMatrix`].  For symbolic matrices a pivot is chosen among the
-    /// entries that are provably non-zero, falling back to one whose value
-    /// cannot be decided — such a pivot is *assumed* non-zero, so the
-    /// identity `A·P = P·H` holds generically (wherever those pivots do
-    /// not vanish), exactly as for [`lu`](Self::lu) and
-    /// [`rref`](Self::rref).  Symbolic entries are simplified as they are
-    /// produced.
+    /// entries that are non-zero for every value of the symbols, falling
+    /// back to one that is proved not identically zero — so the identity
+    /// `A·P = P·H` holds generically (wherever those pivots do not vanish),
+    /// exactly as for [`lu`](Self::lu) and [`rref`](Self::rref).  Symbolic
+    /// entries are simplified as they are produced.
     ///
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
+    /// - [`SymplexError::ComputationFailed`] if a column has several entries
+    ///   below the diagonal that are not proved zero and none of them is
+    ///   proved nonzero (up to 0.60.0 the first of them was the pivot,
+    ///   *assumed* non-zero).
     /// - [`SymplexError::ExpressionSwell`] on expression swell beyond
     ///   [`EXPRESSION_BUDGET`].
     ///
@@ -3242,6 +3469,7 @@ impl Matrix {
             });
         }
         self.check_budget("hessenberg")?;
+        let _work = PivotWork::enter();
         let n = self.nrows;
         let zero = self.ctx_zero();
         let one = self.ctx_one();
@@ -3262,20 +3490,35 @@ impl Matrix {
         };
 
         for k in 0..n.saturating_sub(2) {
-            // Prefer a provably non-zero pivot; accept an undecidable one.
-            let mut pivot = None;
-            let mut fallback = None;
-            for (i, row) in h.iter().enumerate().skip(k + 1) {
-                match ex_is_zero(&row[k]) {
-                    Truth::False => {
-                        pivot = Some(i);
-                        break;
+            // The entries of the column that are not proved zero.  One alone
+            // goes below the diagonal as it is (nothing is divided by it);
+            // of several, the pivot is one that is non-zero for every value
+            // of the symbols, else one proved not identically zero.
+            let open: Vec<usize> = ((k + 1)..n).filter(|&i| !proved_zero(&h[i][k])).collect();
+            let pivot = match open.as_slice() {
+                [] => None,
+                [only] => Some(*only),
+                several => {
+                    let proved = several
+                        .iter()
+                        .copied()
+                        .find(|&i| ex_is_zero(&h[i][k]).is_false())
+                        .or_else(|| {
+                            several
+                                .iter()
+                                .copied()
+                                .find(|&i| pivot_truth(&h[i][k]).is_false())
+                        });
+                    match (proved, several.first()) {
+                        (Some(i), _) => Some(i),
+                        (None, Some(&i)) => {
+                            return Err(undecided_pivot("hessenberg", &h[i][k]));
+                        }
+                        (None, None) => None,
                     }
-                    Truth::Unknown if fallback.is_none() => fallback = Some(i),
-                    _ => {}
                 }
-            }
-            let Some(piv) = pivot.or(fallback) else {
+            };
+            let Some(piv) = pivot else {
                 for row in h.iter_mut().skip(k + 1) {
                     row[k] = zero.clone();
                 }
@@ -3292,7 +3535,7 @@ impl Matrix {
             }
             let pv = h[k + 1][k].clone();
             for j in (k + 2)..n {
-                if ex_is_zero(&h[j][k]).is_true() {
+                if proved_zero(&h[j][k]) {
                     h[j][k] = zero.clone();
                     continue;
                 }
@@ -3495,14 +3738,17 @@ impl Matrix {
     ///
     /// Returns [`Lu`]`{ l, u, perm }` where `L` is unit lower triangular,
     /// `U` is upper triangular and `perm` is the row permutation (`perm[i]`
-    /// is the original index of row `i` of `P·A`).  Pivots are chosen as
-    /// the first structurally non-zero entry, so symbolic entries are
-    /// treated as non-zero.
+    /// is the original index of row `i` of `P·A`).  The pivot of a column
+    /// is its first entry proved nonzero by the test of
+    /// [`rref`](Self::rref) (for an entry with symbols: not identically
+    /// zero, the generic reading).
     ///
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] if the matrix is singular.
+    /// - [`SymplexError::ComputationFailed`] if the matrix is singular, or
+    ///   if a column has no entry proved nonzero and one that is not proved
+    ///   zero either (the message names it).
     ///
     /// # Examples
     ///
@@ -3531,6 +3777,7 @@ impl Matrix {
             });
         }
 
+        let _work = PivotWork::enter();
         let mut perm: Vec<usize> = (0..n).collect();
         let mut u: Vec<Vec<Ex>> = self.rows.clone();
         let one = self.ctx_one();
@@ -3543,21 +3790,34 @@ impl Matrix {
             })
             .collect();
 
-        // Pivots are decided by the exact test of `rref` (before 0.31
+        // Pivots are decided by the test of `rref` (before 0.31
         // structurally: the zero `1/(√2 − 1) − √2 − 1` was a pivot and `L`
-        // had the entry `5/0`).
+        // had the entry `5/0`): the first entry of the column proved
+        // nonzero.  A column whose entries are proved zero is singular; one
+        // with an undecided entry and none proved nonzero is refused (up to
+        // 0.60.0 the undecided entry was the pivot).
         for k in 0..n {
             let mut pivot_row = None;
+            let mut open = None;
             for i in k..n {
-                if pivot_is_zero(&u[i][k]) {
-                    u[i][k] = zero.clone();
-                } else {
-                    pivot_row = Some(i);
-                    break;
+                match pivot_truth(&u[i][k]) {
+                    Truth::False => {
+                        pivot_row = Some(i);
+                        break;
+                    }
+                    Truth::Unknown => {
+                        if open.is_none() {
+                            open = Some(i);
+                        }
+                    }
+                    Truth::True => u[i][k] = zero.clone(),
                 }
             }
             let Some(pivot_row) = pivot_row else {
-                return Err(failed("lu", "matrix is singular (zero pivot column)"));
+                return Err(match open {
+                    Some(i) => undecided_pivot("lu", &u[i][k]),
+                    None => failed("lu", "matrix is singular (zero pivot column)"),
+                });
             };
 
             if pivot_row != k {
@@ -3571,7 +3831,7 @@ impl Matrix {
             }
 
             for i in (k + 1)..n {
-                if pivot_is_zero(&u[i][k]) {
+                if proved_zero(&u[i][k]) {
                     u[i][k] = zero.clone();
                     continue;
                 }
@@ -3595,48 +3855,81 @@ impl Matrix {
     /// Row-reduced echelon form via Gauss–Jordan elimination.
     ///
     /// Returns `(rref_matrix, pivot_columns)`.  Uses exact arithmetic.
-    /// An entry that is a rational function of the symbols over
-    /// `ℚ(radicals of rationals, i)` is a pivot iff it is not identically
-    /// zero (decided exactly; since 0.31 also with `√2`, `√3`, `i`, … —
-    /// `[[√2 − 3, −2], [3√3 − √6, 2√3]]` had rank 2); any other symbolic
-    /// entry (a function, a radical of a symbol) is a pivot unless it is
-    /// structurally zero, i.e. assumed non-zero (generic rank).  Before 0.30 every
-    /// structurally non-zero entry was a pivot, so `[[2t − 2, 3t − 3],
-    /// [6, 9]]` had rank 2.  (The eigen-family uses a simplifying zero test
-    /// internally so that irrational eigenvalues still yield eigenvectors.)
+    ///
+    /// **Which entries are pivots.**  The matrix is read as one over the
+    /// functions of its symbols (the generic reading): an entry is a pivot
+    /// candidate iff it is not identically zero.  That is decided by a
+    /// three-valued test: exactly for rational functions of the symbols
+    /// over `ℚ(radicals of rationals, i)` (since 0.31 also with `√2`, `√3`,
+    /// `i`, … — `[[√2 − 3, −2], [3√3 − √6, 2√3]]` had rank 2); for any other
+    /// constant by the certified zero test of expressions (what
+    /// [`Ex::is_zero`] decides); for an entry with symbols and functions by
+    /// a certified nonzero value at a sample point of the symbols (not
+    /// identically zero) or by an identity `simplify` proves (zero).  A
+    /// column's pivot is its first entry proved nonzero.
+    ///
+    /// **An entry that is neither proved zero nor proved nonzero** (`Γ(x + 1)
+    /// − x·Γ(x)`, which is 0 by an identity the zero test does not know)
+    /// is taken for a pivot when its column has no entry proved nonzero:
+    /// this function has no way to refuse, so the result is then the one
+    /// for a nonzero entry, and the rank may be too large.  The functions
+    /// that return a `Result` ([`solve`](Self::solve), [`lu`](Self::lu),
+    /// [`inv`](Self::inv), [`eigenvects`](Self::eigenvects), …) refuse
+    /// instead.
+    ///
+    /// The rank is the generic one: `[[x, 1], [1, x]]` has rank 2, although
+    /// it has rank 1 at `x = ±1`.  Before 0.30 every structurally non-zero
+    /// entry was a pivot, so `[[2t − 2, 3t − 3], [6, 9]]` had rank 2; up to
+    /// 0.60.0 every entry the first two tests did not decide was one, so
+    /// `[[sin(1)² + cos(1)² − 1]]` and `[[sin²x + cos²x − 1]]` had rank 1.
     pub fn rref(&self) -> (Matrix, Vec<usize>) {
-        if let Some(q) = self.as_qmatrix() {
-            let (r, pivots) = q.rref();
-            return (r.to_matrix(&self.ctx()), pivots);
-        }
-        self.rref_core(&mut ClosureOracle {
-            test: &pivot_is_zero,
-            clean: true,
-        })
+        let (r, pivots, _) = self.rref_generic();
+        (r, pivots)
     }
 
-    /// RREF with a caller-supplied zero test for pivot selection.
-    fn rref_by(&self, is_zero: &dyn Fn(&Ex) -> bool) -> (Matrix, Vec<usize>) {
+    /// [`rref`](Self::rref) with the first pivot that was taken without a
+    /// proof (an entry neither proved zero nor proved nonzero), if any.
+    fn rref_generic(&self) -> (Matrix, Vec<usize>, Option<Ex>) {
         // Rational literals: every zero test agrees, so the fraction-free
         // exact core gives the same (unique) RREF and pivots.
         if let Some(q) = self.as_qmatrix() {
             let (r, pivots) = q.rref();
-            return (r.to_matrix(&self.ctx()), pivots);
+            return (r.to_matrix(&self.ctx()), pivots, None);
         }
-        self.rref_core(&mut ClosureOracle {
-            test: is_zero,
-            clean: false,
-        })
+        self.rref_core(&mut ClosureOracle::new(&pivot_truth, true))
+    }
+
+    /// [`rref`](Self::rref) for a caller that can refuse: an error (under
+    /// `operation`) when a pivot was neither proved zero nor proved nonzero.
+    pub(crate) fn rref_decided(
+        &self,
+        operation: &'static str,
+    ) -> Result<(Matrix, Vec<usize>), SymplexError> {
+        match self.rref_generic() {
+            (r, pivots, None) => Ok((r, pivots)),
+            (_, _, Some(entry)) => Err(undecided_pivot(operation, &entry)),
+        }
     }
 
     /// Gauss–Jordan elimination with the zero decisions taken by `oracle`,
     /// which is told every row operation (see [`PivotOracle`]).
-    fn rref_core(&self, oracle: &mut dyn PivotOracle) -> (Matrix, Vec<usize>) {
+    ///
+    /// The pivot of a column is its first entry (from the pivot row down)
+    /// that the oracle proves nonzero.  When there is none and an entry is
+    /// undecided, the first undecided entry is the pivot — the generic
+    /// reading — and the third component of the result is the first such
+    /// entry of the elimination: `None` means every pivot decision was a
+    /// proof.  A row is cleared whenever its entry is not proved zero, which
+    /// is right whatever the entry is.
+    fn rref_core(&self, oracle: &mut dyn PivotOracle) -> (Matrix, Vec<usize>, Option<Ex>) {
         let nrows = self.nrows;
         let ncols = self.ncols;
         let mut rows: Vec<Vec<Ex>> = self.rows.clone();
         let mut pivots = Vec::new();
         let mut pivot_row = 0;
+        let mut undecided: Option<Ex> = None;
+        // One work budget for the zero tests of the elimination.
+        let _work = PivotWork::enter();
         // The public `rref` writes an entry found zero as `0` (it can be
         // zero without being structurally so: `∛(−2) − ∛2·(1/2 + √3·i/2)`).
         let clean = oracle.clean_zero_rows();
@@ -3646,16 +3939,35 @@ impl Matrix {
                 break;
             }
             let mut found = None;
+            let mut open = None;
             for i in pivot_row..nrows {
-                if !oracle.is_zero(i, col, &rows[i][col]) {
-                    found = Some(i);
-                    break;
-                }
-                if clean && !rows[i][col].is_zero_structural() {
-                    rows[i][col] = rows[i][col].context().zero();
+                match oracle.is_zero(i, col, &rows[i][col]) {
+                    Truth::False => {
+                        found = Some(i);
+                        break;
+                    }
+                    Truth::Unknown => {
+                        if open.is_none() {
+                            open = Some(i);
+                        }
+                    }
+                    Truth::True => {
+                        if clean && !rows[i][col].is_zero_structural() {
+                            rows[i][col] = rows[i][col].context().zero();
+                        }
+                    }
                 }
             }
-            let Some(found) = found else { continue };
+            let found = match (found, open) {
+                (Some(i), _) => i,
+                (None, Some(i)) => {
+                    if undecided.is_none() {
+                        undecided = Some(rows[i][col].clone());
+                    }
+                    i
+                }
+                (None, None) => continue,
+            };
 
             if found != pivot_row {
                 rows.swap(pivot_row, found);
@@ -3670,7 +3982,7 @@ impl Matrix {
                 if i == pivot_row {
                     continue;
                 }
-                if !oracle.is_zero(i, col, &rows[i][col]) {
+                if !oracle.is_zero(i, col, &rows[i][col]).is_true() {
                     let factor = rows[i][col].clone();
                     for j in 0..ncols {
                         let term = &factor * &rows[pivot_row][j];
@@ -3689,43 +4001,64 @@ impl Matrix {
         if oracle.clean_zero_rows() {
             for (i, row) in rows.iter_mut().enumerate().skip(pivot_row) {
                 for (j, e) in row.iter_mut().enumerate() {
-                    if !e.is_zero_structural() && oracle.is_zero(i, j, e) {
+                    if !e.is_zero_structural() && oracle.is_zero(i, j, e).is_true() {
                         *e = e.context().zero();
                     }
                 }
             }
         }
 
-        (Matrix::with_shape(rows, nrows, ncols), pivots)
+        (Matrix::with_shape(rows, nrows, ncols), pivots, undecided)
     }
 
     /// Rank of the matrix (number of pivot columns in RREF).
+    ///
+    /// The generic rank of [`rref`](Self::rref): `[[x, 1], [1, x]]` has
+    /// rank 2.  An entry that is neither proved zero nor proved nonzero
+    /// counts as nonzero (see `rref`; this function cannot refuse), so the
+    /// result is then an upper bound of the rank only if that entry does
+    /// not vanish.
     pub fn rank(&self) -> usize {
         let (_, pivots) = self.rref();
         pivots.len()
     }
 
-    /// Rank using the simplifying zero test (for eigen computations).
-    fn rank_semantic(&self) -> usize {
-        self.rref_by(&eigen_zero_test).1.len()
+    /// [`rank`](Self::rank) for a caller that can refuse: an error (under
+    /// `operation`) when a pivot was neither proved zero nor proved nonzero.
+    pub(crate) fn rank_decided(&self, operation: &'static str) -> Result<usize, SymplexError> {
+        Ok(self.rref_decided(operation)?.1.len())
     }
 
     /// Null space (kernel): basis vectors for `Ax = 0`, as column vectors.
     ///
     /// Empty for a full-column-rank matrix.  Uses the pivoting of
-    /// [`rref`](Self::rref).
+    /// [`rref`](Self::rref), with its generic reading: an entry that is
+    /// neither proved zero nor proved nonzero counts as nonzero.
     pub fn nullspace(&self) -> Vec<Matrix> {
-        self.nullspace_by(&pivot_is_zero)
+        self.nullspace_generic().0
     }
 
-    /// Null space using the simplifying zero test (for eigen computations).
-    fn nullspace_semantic(&self) -> Vec<Matrix> {
-        self.nullspace_by(&eigen_zero_test)
+    /// [`nullspace`](Self::nullspace) with the first pivot that was taken
+    /// without a proof, if any.  The entries are those of the elimination
+    /// (not replaced by `0` where they were found zero).
+    fn nullspace_generic(&self) -> (Vec<Matrix>, Option<Ex>) {
+        if let Some(q) = self.as_qmatrix() {
+            let (r, pivots) = q.rref();
+            let basis = self.nullspace_from_rref(&r.to_matrix(&self.ctx()), &pivots);
+            return (basis, None);
+        }
+        let (r, pivots, undecided) = self.rref_core(&mut ClosureOracle::new(&pivot_truth, false));
+        (self.nullspace_from_rref(&r, &pivots), undecided)
     }
 
-    fn nullspace_by(&self, is_zero: &dyn Fn(&Ex) -> bool) -> Vec<Matrix> {
-        let (rref_mat, pivots) = self.rref_by(is_zero);
-        self.nullspace_from_rref(&rref_mat, &pivots)
+    /// [`nullspace`](Self::nullspace) for a caller that can refuse (the
+    /// eigenvector solves): an error (under `operation`) when a pivot was
+    /// neither proved zero nor proved nonzero.
+    fn nullspace_decided(&self, operation: &'static str) -> Result<Vec<Matrix>, SymplexError> {
+        match self.nullspace_generic() {
+            (basis, None) => Ok(basis),
+            (_, Some(entry)) => Err(undecided_pivot(operation, &entry)),
+        }
     }
 
     /// Null space of `self = A − λI` for a rational `A` (`a`) and an
@@ -3818,7 +4151,8 @@ impl Matrix {
         basis
     }
 
-    /// Column space basis: the pivot columns of the original matrix.
+    /// Column space basis: the pivot columns of the original matrix (the
+    /// pivots of [`rref`](Self::rref), with its generic reading).
     pub fn columnspace(&self) -> Vec<Matrix> {
         let (_, pivots) = self.rref();
         pivots
@@ -3827,7 +4161,8 @@ impl Matrix {
             .collect()
     }
 
-    /// Row space basis: the non-zero rows of the RREF, as row vectors.
+    /// Row space basis: the non-zero rows of the RREF, as row vectors (the
+    /// rows of [`rref`](Self::rref), with its generic reading).
     pub fn rowspace(&self) -> Vec<Matrix> {
         let (rref_mat, pivots) = self.rref();
         (0..pivots.len())

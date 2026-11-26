@@ -32,8 +32,8 @@ pub(super) fn try_nth_order_reducible(
     // y and its derivatives).
     // We check: after removing derivative nodes, does x appear?
     // Strategy: substitute y''→__d2, y'→__d1, then check if var_sym remains.
-    let d2_placeholder = arena.symbol("__d2");
-    let d1_placeholder = arena.symbol("__d1");
+    let d2_placeholder = arena.internal_symbol("__d2");
+    let d1_placeholder = arena.internal_symbol("__d1");
     let stripped = crate::transforms::subs::subs(arena, expr, d2y_dx2, d2_placeholder);
     let stripped = crate::transforms::subs::subs(arena, stripped, dy_dx, d1_placeholder);
     let has_x = contains_sym(arena, stripped, var_sym);
@@ -41,7 +41,7 @@ pub(super) fn try_nth_order_reducible(
     if has_x && has_y {
         return None; // neither reduction applies
     }
-    let p = arena.symbol("__p");
+    let p = arena.internal_symbol("__p");
     let p_sym = match arena.node(p) {
         ExprNode::Symbol(s) => *s,
         _ => return None,
