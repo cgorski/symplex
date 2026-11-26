@@ -148,6 +148,18 @@ mod v36_s18e_core;
 mod v36_s18f_stats;
 #[path = "v36/v36_s18g_deciders.rs"]
 mod v36_s18g_deciders;
+#[path = "v36/v36_s18h_fuzz_findings.rs"]
+mod v36_s18h_fuzz_findings;
+#[path = "v36/v36_s18j_betainc.rs"]
+mod v36_s18j_betainc;
+#[path = "v36/v36_s18k_quantiles.rs"]
+mod v36_s18k_quantiles;
+#[path = "v36/v36_s18l_integrate.rs"]
+mod v36_s18l_integrate;
+#[path = "v36/v36_s18m_order.rs"]
+mod v36_s18m_order;
+#[path = "v36/v36_s18q_quadrature.rs"]
+mod v36_s18q_quadrature;
 #[path = "v36/v36_w10_poly.rs"]
 mod v36_w10_poly;
 #[path = "v36/v36_w10b_domains.rs"]

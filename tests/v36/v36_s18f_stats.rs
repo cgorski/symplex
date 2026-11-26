@@ -257,3 +257,91 @@ fn a_map_that_is_not_monotone_still_merges_equal_images() {
     assert_eq!(y.density(&ctx.int(0)), ctx.rational(1, 401));
     assert_eq!(y.cdf(&ctx.int(100)), ctx.rational(21, 401));
 }
+
+// ── The far probes of the root search (a regression of the 0.60.1 release candidate) ──
+
+/// The first of five independent `χ²(60)` variables at the level `10⁻³⁰⁰`
+/// of either tail (the fuzz input `timeout-a8786a14e786…`).  The law has no
+/// starting estimate, and the first draft of the 0.60.1 root search then
+/// bracketed the root by the hull of the support `[0, ∞)`: one probe at the
+/// largest double (a certified evaluation of `1 − (1 − F)⁵` where `1 − F`
+/// is `exp(−9·10³⁰⁷)`: 1.05 s and 1.54 s in a release build) and probes at
+/// the floats halfway to it (`1.7·10¹⁵⁴`: 49 ms, `1.6·10⁷⁷`: 27 ms) — 1.06 s
+/// and 1.83 s for the two calls, which took 0.074 s and 0.141 s in 0.60.0.
+/// The search now probes near the start of 0.60 first and reads the sign at
+/// the far floats from those probes (the miss increases with the point):
+/// 0.013 s and 0.155 s, the same doubles.
+///
+/// Oracle: mpmath at 400 digits, bisection of `P(30, x/2) = 1 − (1 − p)^(1/5)`
+/// and of `Q(30, x/2) = q^(1/5)` with `p = q =` the double `10⁻³⁰⁰`
+/// (`target/scratch/oracle/o_repro.py`): `2.283072299040228240475092·10⁻⁹` and
+/// `447.9396109993127243439717`; SciPy 1.18 `chi2.isf(1e-60, 60)`:
+/// `447.9396109993127`.
+#[test]
+fn far_levels_of_the_first_of_five_chi_squared_are_not_probed_at_the_far_floats() {
+    let ctx = Context::new();
+    let parent = Distribution::chi_squared(ctx.int(60));
+    let d = symplex::stats::order::order_statistic(&parent, 5, 1).unwrap();
+    let timer = CpuTimer::start();
+    let low = d.quantile_f64(1e-300).unwrap();
+    let high = d.isf_f64(1e-300).unwrap();
+    timer.assert_within(
+        Duration::from_secs(20),
+        "two far levels of the first of five chi-squared(60)",
+    );
+    assert!(rel(low, 2.283_072_299_040_228e-9) < 1e-15, "{low:e}");
+    assert!(rel(high, 447.939_610_999_312_7) < 1e-15, "{high:e}");
+}
+
+/// The first of three independent `Gamma(25, 12√2/7)` variables (shape,
+/// scale) at the level `10⁻³⁰⁰` of either tail (the fuzz input
+/// `slow-unit-a1c46ccdfabd…`): 0.057 s and 0.187 s in 0.60.0, 0.43 s and
+/// 1.24 s with the first draft of the 0.60.1 root search (the probe at the
+/// largest double, as for the `χ²` law above), 0.007 s and 0.176 s now.
+///
+/// Oracle: mpmath at 400 digits, bisection of `P(25, x/θ) = 1 − (1 − p)^(1/3)`
+/// and of `Q(25, x/θ) = q^(1/3)`, `θ = 12√2/7`, `p = q =` the double `10⁻³⁰⁰`
+/// (`target/scratch/oracle/o_repro.py`): `2.361234830334826192792173·10⁻¹¹`
+/// and `760.0396259498434724735782`; SciPy 1.18 `gamma.isf(1e-100, 25,
+/// scale=θ)`: `760.0396259498435`.  (The search stops within `4ε` of the
+/// root: the upper quantile is the double above the nearest one, as in the
+/// first draft; 0.60.0 returned the nearest.)
+#[test]
+fn far_levels_of_the_first_of_three_gamma_are_not_probed_at_the_far_floats() {
+    let ctx = Context::new();
+    let scale = ctx.rational(12, 7) * &ctx.int(2).sqrt();
+    let parent = Distribution::gamma(ctx.int(25), scale);
+    let d = symplex::stats::order::order_statistic(&parent, 3, 1).unwrap();
+    let timer = CpuTimer::start();
+    let low = d.quantile_f64(1e-300).unwrap();
+    let high = d.isf_f64(1e-300).unwrap();
+    timer.assert_within(
+        Duration::from_secs(20),
+        "two far levels of the first of three gamma(25, 12*sqrt(2)/7)",
+    );
+    assert!(rel(low, 2.361_234_830_334_826e-11) < 1e-15, "{low:e}");
+    assert!(rel(high, 760.039_625_949_843_5) < 1e-15, "{high:e}");
+}
+
+/// The median of a law that is symmetric about 0 and has no starting
+/// estimate: the middle of three independent Student t variables with
+/// `6.6·10²³⁶` degrees of freedom.  The search starts at 0, where the tail
+/// is the level exactly, and 0.60.0 answered `0` there (0.1 ms in a release
+/// build).  The first draft of the 0.60.1 root search went on over the hull
+/// of the support and answered `2.119615247209161·10⁻¹⁷`, the last float of
+/// its narrowing whose tail still rounds to `½` (50 ms and 182 ms).
+///
+/// Oracle: exact — the law is symmetric about 0, so both medians are 0
+/// (SciPy 1.18: `t.ppf(0.5, 6.6e236)` is `0.0`).
+#[test]
+fn the_median_of_a_symmetric_law_without_an_estimate_is_its_centre() {
+    let ctx = Context::new();
+    let t = Distribution::student_t(ctx.from_f64(6.6e236).unwrap());
+    let d = symplex::stats::order::order_statistic(&t, 3, 2).unwrap();
+    let timer = CpuTimer::start();
+    let lower = d.quantile_f64(0.5).unwrap();
+    let upper = d.isf_f64(0.5).unwrap();
+    timer.assert_within(Duration::from_secs(10), "two medians of a symmetric law");
+    assert_eq!(lower, 0.0);
+    assert_eq!(upper, 0.0);
+}

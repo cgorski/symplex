@@ -388,16 +388,23 @@ fn narrow_bracket(
 
 /// A bracket `[a, b]` with `g(a) ≤ 0 ≤ g(b)` for an increasing `g` on the
 /// hull `[lo, hi]` of a support (`g` is negative at `lo` and positive at
-/// `hi`), grown geometrically outward from the estimate `s` inside the
-/// hull — a first step of `2⁻²⁶·|s|` (`2⁻²⁶` from 0), quadrupling
-/// [`BRACKET_PLAIN_STEPS`] times and then growing by a factor squared at
-/// each step.  On an unbounded side the last probe is at the largest
-/// double.  At most [`BRACKET_MAX_STEPS`] probes after the first.
+/// `hi`), grown geometrically outward from the point `s` inside the
+/// hull — a first step of `first·|s|` (`first` from 0), quadrupling
+/// `plain` times and then growing by a factor squared at each step.  A
+/// step past an end of the hull probes that end, on an unbounded side the
+/// largest double.  At most `most` probes after the first.
+///
+/// Around an estimate: `first = 2⁻²⁶`, [`BRACKET_PLAIN_STEPS`] and
+/// [`BRACKET_MAX_STEPS`].  Near the start of a search without one:
+/// [`NEAR_FIRST_STEP`], [`NEAR_PLAIN_STEPS`], [`NEAR_MAX_STEPS`].
 fn grow_bracket(
     g: &impl Fn(f64) -> f64,
     s: f64,
     lo: f64,
     hi: f64,
+    first: f64,
+    plain: usize,
+    most: usize,
 ) -> Result<(f64, f64), SymplexError> {
     let fail = |why: String| SymplexError::computation_failed("quantile_f64", why);
     let gs = g(s);
@@ -413,9 +420,9 @@ fn grow_bracket(
     }
     let up = gs < 0.0;
     let mut near = s;
-    let mut d = if s == 0.0 { 1.0 } else { s.abs() } * 2.0_f64.powi(-26);
+    let mut d = if s == 0.0 { 1.0 } else { s.abs() } * first;
     let mut factor = 4.0_f64;
-    for step in 0..BRACKET_MAX_STEPS {
+    for step in 0..most {
         // The hull's end, or the largest double on an unbounded side.
         let far = if up {
             (s + d).min(hi).min(f64::MAX)
@@ -438,7 +445,7 @@ fn grow_bracket(
         }
         near = far;
         d *= factor;
-        if step + 1 >= BRACKET_PLAIN_STEPS {
+        if step + 1 >= plain {
             factor *= factor;
         }
     }
@@ -478,6 +485,45 @@ fn hull_bracket(g: &impl Fn(f64) -> f64, lo: f64, hi: f64) -> Result<(f64, f64),
         }
     }
     Ok((a, b))
+}
+
+/// The first step of the probes near the start of a search without an
+/// estimate ([`hull_start`]), as a fraction of the start: with
+/// [`NEAR_PLAIN_STEPS`] quadrupling and [`NEAR_MAX_STEPS`] probes the
+/// steps are `¼, 1, 16, 2¹², 2²⁸, 2⁶⁰, 2¹²⁴, 2²⁵², 2⁵⁰⁸, 2¹⁰²⁰` times the
+/// start: a root at any distance is passed, the nearer the sooner.
+///
+/// The search over the hull ([`hull_bracket`], [`narrow_bracket`]) asks for
+/// the sign of the miss at the largest double, next to a finite end and at
+/// the floats halfway to them, where a certified evaluation of a tail that
+/// is `10⁻⁴⁶⁰⁰`, or `1 −` such a number, costs a thousand times one near
+/// the root (the first of five `χ²(60)` at the level `10⁻³⁰⁰`: 1.05 s at
+/// the largest double, 0.4 ms at 1.5).  With a probe of each sign near the
+/// start those signs are known without an evaluation, because the miss
+/// increases with the point.  (Steps that stop at `2²²` starts left the
+/// probe at the largest double to every root further away: the cube of a
+/// `χ²(100000)` variable, whose quantiles are near `10¹⁵`, 0.35 s in 0.60
+/// and 1 s with it.)
+const NEAR_FIRST_STEP: f64 = 0.25;
+
+/// The quadruplings of the probes near the start before they accelerate.
+const NEAR_PLAIN_STEPS: usize = 1;
+
+/// The most probes near the start after the first one.
+const NEAR_MAX_STEPS: usize = 10;
+
+/// Where a search without a starting estimate looks first (where 0.60
+/// started it): the middle of a finite hull, a unit (or `|end|`) inside a
+/// half-finite one, 0 on the whole line.  `None` when that is not a double
+/// inside the hull.
+fn hull_start(lo: f64, hi: f64) -> Option<f64> {
+    let s = match (lo.is_finite(), hi.is_finite()) {
+        (true, true) => lo + 0.5 * (hi - lo),
+        (true, false) => lo + 1.0_f64.max(lo.abs()),
+        (false, true) => hi - 1.0_f64.max(hi.abs()),
+        (false, false) => 0.0,
+    };
+    (s.is_finite() && s > lo && s < hi).then_some(s)
 }
 
 /// A running sum with Neumaier's compensation (the improved Kahan–Babuška
@@ -2108,14 +2154,97 @@ impl Distribution {
             };
             (sign * miss).clamp(-f64::MAX, f64::MAX)
         };
+        // What the search has learnt of `g`: every probe inside the hull
+        // and its value.  A point probed before is not evaluated again, and
+        // because `g` increases with the point a probe also tells
+        // - the value beyond a probe where the tail has vanished against
+        //   the level (a miss of exactly −1: the tail only shrinks further),
+        // - the sign beyond a probe that misses the level (a certified
+        //   tail rounds in the order of its values), for the steps that
+        //   use nothing but the sign.
+        // (0.60.1 as first drafted evaluated every probe: the far probes of
+        // the hull took seconds, see `NEAR_FIRST_STEP`.)
+        let seen = std::cell::RefCell::new(Vec::<(f64, f64)>::new());
+        let vanished = -sign;
+        let recall = |v: f64, sign_only: bool| -> Option<f64> {
+            let memo = seen.borrow();
+            if let Some(&(_, gc)) = memo.iter().find(|(c, _)| *c == v) {
+                return Some(gc);
+            }
+            memo.iter().find_map(|&(c, gc)| {
+                let beyond = (gc < 0.0 && v < c) || (gc > 0.0 && v > c);
+                if !beyond {
+                    None
+                } else if gc == vanished {
+                    Some(gc)
+                } else if sign_only {
+                    Some(gc.signum())
+                } else {
+                    None
+                }
+            })
+        };
+        // The value of `g` (the ends of the hull and beyond cost nothing).
+        let probe = |v: f64| -> f64 {
+            if !(v > lo && v < hi) {
+                return g(v);
+            }
+            if let Some(gv) = recall(v, false) {
+                return gv;
+            }
+            let gv = g(v);
+            if !gv.is_nan() {
+                seen.borrow_mut().push((v, gv));
+            }
+            gv
+        };
+        // A number with the sign of `g` (its value where that is known).
+        let side = |v: f64| -> f64 {
+            if v > lo
+                && v < hi
+                && let Some(gv) = recall(v, true)
+            {
+                return gv;
+            }
+            probe(v)
+        };
         // With an estimate (the root of the classic CDF in doubles) the
-        // bracket is grown around it; without one it is the hull.
+        // bracket is grown around it; without one it is the hull, after a
+        // few probes near the start of 0.60 that spare the far ones.  As
+        // in 0.60, a start at which the tail meets the level exactly is the
+        // answer (the median 0 of a symmetric law: the search over the hull
+        // ended at another float whose tail rounds to the level, `2·10⁻¹⁷`
+        // for a Student t, `10³⁰⁷` for the cube of a wide triangular law).
         let x0 = self
             .classic_quantile_estimate(level.lower_f64(), lo, hi)
             .filter(|v| v.is_finite() && *v > lo && *v < hi);
         let (mut a, mut b) = match x0 {
-            Some(s) => grow_bracket(&g, s, lo, hi)?,
-            None => hull_bracket(&g, lo, hi)?,
+            Some(s) => grow_bracket(
+                &probe,
+                s,
+                lo,
+                hi,
+                2.0_f64.powi(-26),
+                BRACKET_PLAIN_STEPS,
+                BRACKET_MAX_STEPS,
+            )?,
+            None => {
+                let near = hull_start(lo, hi).map(|s| {
+                    grow_bracket(
+                        &probe,
+                        s,
+                        lo,
+                        hi,
+                        NEAR_FIRST_STEP,
+                        NEAR_PLAIN_STEPS,
+                        NEAR_MAX_STEPS,
+                    )
+                });
+                match near {
+                    Some(Ok((a, b))) if a == b => (a, b),
+                    _ => hull_bracket(&side, lo, hi)?,
+                }
+            }
         };
         if a == b {
             return Ok(a);
@@ -2127,7 +2256,7 @@ impl Distribution {
         // the end decides it; otherwise that float is the tighter end.
         if b == hi && hi.is_finite() && hi.next_down() > a {
             let inner = hi.next_down();
-            let (gi, gh) = (g(inner), g(hi));
+            let (gi, gh) = (side(inner), g(hi));
             if gi < 0.0 {
                 return Ok(if gi.abs() < gh.abs() { inner } else { hi });
             }
@@ -2137,7 +2266,7 @@ impl Distribution {
         }
         if a == lo && lo.is_finite() && lo.next_up() < b {
             let inner = lo.next_up();
-            let (gi, gl) = (g(inner), g(lo));
+            let (gi, gl) = (side(inner), g(lo));
             if gi > 0.0 {
                 return Ok(if gi.abs() < gl.abs() { inner } else { lo });
             }
@@ -2145,13 +2274,13 @@ impl Distribution {
                 a = inner;
             }
         }
-        let (a, b) = narrow_bracket(&g, a, b)?;
+        let (a, b) = narrow_bracket(&side, a, b)?;
         let opts = crate::domains::optimize::RootOpts {
             xtol: f64::MIN_POSITIVE,
             rtol: 4.0 * f64::EPSILON,
             max_iter: QUANTILE_ROOT_STEPS,
         };
-        crate::domains::optimize::brent_root(g, a, b, &opts)
+        crate::domains::optimize::brent_root(probe, a, b, &opts)
             .map_err(|e| SymplexError::computation_failed("quantile_f64", e.to_string()))
     }
 
