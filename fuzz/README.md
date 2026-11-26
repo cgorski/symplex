@@ -61,6 +61,16 @@ as base64 in the log (`base64 -d` gives the file back); every replay there
 is bounded, so an input that hangs is reported with libFuzzer's stack
 instead of cancelling the job.
 
+Every job also uploads its corpus as the artifact `fuzz-corpus-<target>`
+(kept seven days, on success as well as on failure), so a fix can be run
+against what CI has collected:
+
+```sh
+gh run list --workflow fuzz.yml -L 5                    # the run id
+gh run download <run-id> -n fuzz-corpus-fuzz_integrate -D fuzz/corpus/fuzz_integrate
+$B/fuzz_integrate -runs=0 fuzz/corpus/fuzz_integrate    # replay all of it ($B: see below)
+```
+
 ## Known slow inputs and the five skips of `fuzz_stats`
 
 `fuzz_stats` has five temporary skips at 0.60.1 (three at 0.60).  Each

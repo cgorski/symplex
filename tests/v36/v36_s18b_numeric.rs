@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::perf_assert::CpuTimer;
 use symplex::definite::QuadRule;
 use symplex::prelude::*;
+use symplex::stats::Distribution;
 use symplex::stats::hypothesis::*;
 use symplex::units::Frequency;
 
@@ -392,4 +393,83 @@ fn an_integral_whose_mass_lies_in_an_end_layer_is_refused_at_once() {
         dec(&ctx, "Integral(1/(x + 1/10^10), x, 0, 1)", 25),
         "23.02585093004045684017491"
     );
+}
+
+// ── The release blocker of 0.60.1: the slow refusal of a law far narrower than its range ──────
+
+/// The integrals `fuzz_stats` checks a characteristic function against: `cos(sx)·f(x)` and
+/// `sin(sx)·f(x)` over `[0, ∞)` for the density `f` of `Gamma(√2/4, θ)`, `θ = 1/(25·10¹⁵⁴)`,
+/// and the `s ≈ −5.26·10¹⁵⁴` of the input `431a685e4a17` (`−1/8` over the standard deviation,
+/// as a double).  The density underflows at every node of the quadrature from `x = 1` down to
+/// `2⁻³³⁶`; what the range holds lies between that node and the next, where no level the
+/// quadrature reaches resolves it, and `integrate_numeric` refuses ("every node of the f64
+/// quadrature gave 0 … and the arbitrary-precision quadrature failed: … the integrand
+/// oscillates about 8.36·10¹⁵³ times over a piece of the range").  Up to 0.60.1 that refusal
+/// took 1.9 s in a release build (6.3 s in the fuzz build: the timeout of the nightly run on
+/// the release commit) and 5,280 evaluations of the integrand: every node that underflowed was
+/// evaluated again at each precision up to 2,752 bits (`evalf/quad.rs: Quad::term`), and the
+/// whole refusal was computed twice, once for `integrate_numeric`'s own quadrature and once for
+/// the `eval_f64` it asks next (`QuadError::Unresolvable` is now remembered).  The refusal is
+/// the same; it takes 0.27 s.
+///
+/// Oracle: the refusal is the documented one (`ComputationFailed`).  The integrals have
+/// values, which the library does not compute at this scale: the real and imaginary part of
+/// the law's characteristic function at `s`, `0.9897225671495418 − 0.0726357514890965i` (the
+/// closed form `(1 − isθ)^(−√2/4)` as the harness evaluates and prints it for that input).
+#[test]
+fn the_refusal_of_a_density_far_narrower_than_the_half_line_is_prompt() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let law = Distribution::try_gamma(
+        ctx.parse("sqrt(2)/4").unwrap(),
+        ctx.parse("1/(25*10^154)").unwrap(),
+    )
+    .unwrap();
+    let s = ctx
+        .parse(
+            "-52556025953363892372094512341551374542328919970889013859826144814180893194263070339\
+             028647983350324472518365953105210059975943266018688001205686601888301056",
+        )
+        .unwrap();
+    let (zero, oo) = (ctx.zero(), ctx.infinity());
+    let timer = CpuTimer::start();
+    let re = ((&s * &x).cos() * law.density(&x)).integrate_numeric(&x, &zero, &oo);
+    let im = ((&s * &x).sin() * law.density(&x)).integrate_numeric(&x, &zero, &oo);
+    timer.assert_within(
+        Duration::from_secs(30),
+        "the refusals of cos(sx) f and sin(sx) f for a gamma law of scale 4e-156",
+    );
+    for r in [re, im] {
+        assert!(
+            matches!(r, Err(SymplexError::ComputationFailed { .. })),
+            "{r:?}"
+        );
+    }
+}
+
+/// The same integrals at an ordinary scale, `Gamma(√2/4, 1)` and `s = 1/5`, are values, and
+/// the same values before and after the change of 0.60.1 to the quadrature's nodes that
+/// underflow (`0.990673166768298641` and `0.0692514201107100325` from `integrate_numeric`,
+/// whose tolerance is `10⁻¹⁰`).
+///
+/// Oracle: mpmath 1.3.0, `quad(lambda u: cos(u/5)*u**(k-1)*exp(-u), [0, 1e-20, 1e-8, 0.01, 1,
+/// 4, 16, 64, 200])/gamma(k)`, `k = sqrt(2)/4`, at `mp.dps = 60` =
+/// `0.990673166774744471963815970531`, the same with `sin` =
+/// `0.0692514201107071040604513545001`; the closed form `(1 - 1j/5)**(-k)` =
+/// `0.990673166774744471963815970533 + 0.0692514201107071040604513545001j`.
+#[test]
+fn the_same_integrals_at_an_ordinary_scale_have_their_values() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let law = Distribution::try_gamma(ctx.parse("sqrt(2)/4").unwrap(), ctx.one()).unwrap();
+    let s = ctx.rational(1, 5);
+    let (zero, oo) = (ctx.zero(), ctx.infinity());
+    let re = ((&s * &x).cos() * law.density(&x))
+        .integrate_numeric(&x, &zero, &oo)
+        .unwrap();
+    let im = ((&s * &x).sin() * law.density(&x))
+        .integrate_numeric(&x, &zero, &oo)
+        .unwrap();
+    assert!((re - 0.990_673_166_774_744_5).abs() < 1e-9, "{re}");
+    assert!((im - 0.069_251_420_110_707_1).abs() < 1e-9, "{im}");
 }

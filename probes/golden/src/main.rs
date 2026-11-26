@@ -5,6 +5,7 @@
 
 mod alloc;
 mod cases;
+mod cpu;
 mod ops;
 
 use std::io::Write;
@@ -24,7 +25,7 @@ const MAX_RESULT: usize = 400;
 
 const USAGE: &str = "\
 usage: golden [--seeds A..B | --file PATH [--seeds A..B]] [--ops LIST|all]
-              [--timeout-ms N] [--mem-mb N] [--after OP]
+              [--timeout-ms N] [--mem-mb N] [--after OP] [--cpu] [--full]
        golden --list-ops [--ops LIST|all]
        golden --list-fns
        golden --info
@@ -42,6 +43,9 @@ usage: golden [--seeds A..B | --file PATH [--seeds A..B]] [--ops LIST|all]
                    (default 4096)
   --after OP       for the first case only, skip ops up to and including OP
                    (the driver resumes with it after a TIMEOUT or crash)
+  --cpu            add a fifth column: the CPU time of the op's thread in
+                   milliseconds ('-' where there is none: expr, TIMEOUT)
+  --full           never replace a long result by its length and hash
 ";
 
 struct Args {
@@ -51,6 +55,8 @@ struct Args {
     timeout_ms: u64,
     mem_mb: u64,
     after: Option<usize>,
+    cpu: bool,
+    full: bool,
     list_ops: bool,
     list_fns: bool,
     info: bool,
@@ -79,6 +85,8 @@ fn parse_args() -> Args {
         timeout_ms: 5000,
         mem_mb: 4096,
         after: None,
+        cpu: false,
+        full: false,
         list_ops: false,
         list_fns: false,
         info: false,
@@ -111,6 +119,8 @@ fn parse_args() -> Args {
             }
             "--mem-mb" => a.mem_mb = val("--mem-mb").parse().unwrap_or_else(|_| die("bad --mem-mb")),
             "--after" => after_name = Some(val("--after")),
+            "--cpu" => a.cpu = true,
+            "--full" => a.full = true,
             "--list-ops" => a.list_ops = true,
             "--list-fns" => a.list_fns = true,
             "--info" => a.info = true,
@@ -160,8 +170,21 @@ fn clean(s: &str, hash_long: bool) -> String {
     t
 }
 
-fn emit(out: &mut impl Write, id: u64, op: &str, status: &str, result: &str) {
-    let line = format!("{id}\t{op}\t{status}\t{}\n", clean(result, op != "expr"));
+/// The optional output of `--cpu` and `--full`.  Both are off by default:
+/// the golden TSV keeps its four columns and its hashed long results.
+#[derive(Clone, Copy)]
+struct Extra {
+    cpu: bool,
+    full: bool,
+}
+
+fn emit(out: &mut impl Write, extra: Extra, id: u64, op: &str, status: &str, result: &str, cpu_ns: Option<u64>) {
+    let cpu = match (extra.cpu, cpu_ns) {
+        (false, _) => String::new(),
+        (true, Some(ns)) => format!("\t{}.{:03}", ns / 1_000_000, ns / 1_000 % 1_000),
+        (true, None) => "\t-".to_string(),
+    };
+    let line = format!("{id}\t{op}\t{status}\t{}{cpu}\n", clean(result, op != "expr" && !extra.full));
     if out.write_all(line.as_bytes()).and_then(|()| out.flush()).is_err() {
         exit(4);
     }
@@ -243,7 +266,9 @@ fn inject(kind: &str) {
     }
 }
 
-fn run_op(id: u64, op: &'static str, src: &Arc<str>, timeout: Duration) -> Outcome {
+/// Runs one op on a fresh thread; the second value is the CPU time that
+/// thread spent on it, in nanoseconds (`None` after a timeout).
+fn run_op(id: u64, op: &'static str, src: &Arc<str>, timeout: Duration) -> (Outcome, Option<u64>) {
     if let Ok(mut g) = LAST_PANIC.lock() {
         *g = None;
     }
@@ -251,7 +276,7 @@ fn run_op(id: u64, op: &'static str, src: &Arc<str>, timeout: Duration) -> Outco
     if injected == Some("stall") {
         inject("stall");
     }
-    let (tx, rx) = mpsc::sync_channel::<Outcome>(1);
+    let (tx, rx) = mpsc::sync_channel::<(Outcome, Option<u64>)>(1);
     let s = Arc::clone(src);
     let spawned = std::thread::Builder::new()
         .name(format!("golden-{op}"))
@@ -259,6 +284,7 @@ fn run_op(id: u64, op: &'static str, src: &Arc<str>, timeout: Duration) -> Outco
         .spawn(move || {
             // The context and everything in it are dropped inside `ops::run`,
             // before the result is sent.
+            let started = cpu::thread_ns();
             let o = match panic::catch_unwind(AssertUnwindSafe(|| {
                 if let Some(kind) = injected {
                     inject(kind);
@@ -269,7 +295,11 @@ fn run_op(id: u64, op: &'static str, src: &Arc<str>, timeout: Duration) -> Outco
                 Ok(Err(e)) => Outcome::Err(e),
                 Err(p) => Outcome::Panic(payload_text(p.as_ref())),
             };
-            let _ = tx.send(o);
+            let spent = match (started, cpu::thread_ns()) {
+                (Some(a), Some(b)) => Some(b.saturating_sub(a)),
+                _ => None,
+            };
+            let _ = tx.send((o, spent));
         });
     let handle = match spawned {
         Ok(h) => h,
@@ -283,10 +313,10 @@ fn run_op(id: u64, op: &'static str, src: &Arc<str>, timeout: Duration) -> Outco
             let _ = handle.join();
             o
         }
-        Err(RecvTimeoutError::Timeout) => Outcome::Timeout,
+        Err(RecvTimeoutError::Timeout) => (Outcome::Timeout, None),
         Err(RecvTimeoutError::Disconnected) => {
             let _ = handle.join();
-            Outcome::Panic("worker exited without a result".into())
+            (Outcome::Panic("worker exited without a result".into()), None)
         }
     }
 }
@@ -371,6 +401,7 @@ fn main() {
     };
 
     let timeout = Duration::from_millis(args.timeout_ms);
+    let extra = Extra { cpu: args.cpu, full: args.full };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut first = true;
@@ -381,19 +412,20 @@ fn main() {
                 continue;
             }
             if op == "expr" {
-                emit(&mut out, id, op, "OK", &src);
+                emit(&mut out, extra, id, op, "OK", &src, None);
                 continue;
             }
-            match run_op(id, op, &src, timeout) {
-                Outcome::Ok(s) => emit(&mut out, id, op, "OK", &s),
-                Outcome::Err(s) => emit(&mut out, id, op, "ERR", &s),
+            let (outcome, cpu_ns) = run_op(id, op, &src, timeout);
+            match outcome {
+                Outcome::Ok(s) => emit(&mut out, extra, id, op, "OK", &s, cpu_ns),
+                Outcome::Err(s) => emit(&mut out, extra, id, op, "ERR", &s, cpu_ns),
                 Outcome::Panic(m) => {
                     let at = LAST_PANIC.lock().ok().and_then(|g| g.clone()).unwrap_or_default();
                     eprintln!("golden: PANIC case {id} op {op}: {at} | input: {src}");
-                    emit(&mut out, id, op, "PANIC", &m);
+                    emit(&mut out, extra, id, op, "PANIC", &m, cpu_ns);
                 }
                 Outcome::Timeout => {
-                    emit(&mut out, id, op, "TIMEOUT", &format!(">{}ms", args.timeout_ms));
+                    emit(&mut out, extra, id, op, "TIMEOUT", &format!(">{}ms", args.timeout_ms), None);
                     // The worker cannot be stopped; leave, the driver resumes
                     // with `--after op`.
                     exit(3);

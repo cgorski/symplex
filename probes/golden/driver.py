@@ -115,6 +115,10 @@ class Runner:
         cmd = [a.bin, "--ops", a.ops, "--timeout-ms", str(a.timeout_ms), "--mem-mb", str(a.mem_mb)]
         if a.file:
             cmd += ["--file", a.file]
+        if a.cpu:
+            cmd.append("--cpu")
+        if a.full:
+            cmd.append("--full")
         return cmd
 
     def successor(self, ids, pos, after, last):
@@ -161,7 +165,7 @@ class Runner:
                     status, desc = "OOM", f">{self.args.mem_mb} MiB"
                 else:
                     status, desc = "CRASH", describe_exit(rc, err)
-                out.append(f"{c}\t{op}\t{status}\t{desc}")
+                out.append(f"{c}\t{op}\t{status}\t{desc}" + ("\t-" if self.args.cpu else ""))
             with self.lock:
                 self.restarts += 1
             pos = ids.index(c, pos)
@@ -218,6 +222,8 @@ def main():
     ap.add_argument("-j", "--jobs", type=int, default=48)
     ap.add_argument("--slice", type=int, default=100, help="cases per slice (default 100)")
     ap.add_argument("--stall-s", type=float, help="kill a silent process after this long")
+    ap.add_argument("--cpu", action="store_true", help="fifth column: CPU milliseconds of the op (off: golden TSVs)")
+    ap.add_argument("--full", action="store_true", help="never hash long results (off: golden TSVs)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -300,6 +306,8 @@ def main():
             "function_table_problems": fnproblems,
         }
     )
+    if args.cpu or args.full:  # not in the meta of a golden run, which stays as it was
+        meta.update({"cpu_column": args.cpu, "full_results": args.full})
     Path(args.out + ".meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     print(summary, end="")
 

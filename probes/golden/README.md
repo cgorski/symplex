@@ -22,6 +22,7 @@ for the function-table check).
 | `src/ops.rs` | the operations (one fresh `Context` per `(case, op)`) |
 | `src/cases.rs` | case generator (own SplitMix64, frozen function table) |
 | `src/alloc.rs` | counting global allocator, aborts above `--mem-mb` |
+| `src/cpu.rs` | CPU time of the op's thread, for the optional `--cpu` column |
 | `driver.py` | parallel driver: slices, restarts, merged TSV, summary, meta |
 | `run_golden.sh` | `cargo build --release` + `driver.py` |
 | `golden_diff.py` | compare two TSVs; optional single-case reruns |
@@ -63,7 +64,13 @@ fingerprint of the harness sources; the diff warns when they differ, and an
 Driver options: `--seeds A..B` (default `0..200000`), `--ops a,b|all`,
 `--timeout-ms` (default 5000), `--mem-mb` (default 4096), `-j` (default 48),
 `--slice` (cases per process, default 100), `--file PATH` (fixed list; case
-id = line number), `--stall-s`.  The binary alone:
+id = line number), `--stall-s`.  Two switches are for `probes/hunt` and are
+**off in a golden run** (its TSV is byte-identical with and without this
+code): `--cpu` appends a fifth column, the CPU time of the op's thread in
+milliseconds (`-` for `expr`, TIMEOUT and driver-made lines; 64-bit Linux
+only), and `--full` never replaces a long result by its hash.
+`golden_diff.py` reads four columns: compare `--cpu` outputs with
+`probes/hunt/hunt_diff.sh`.  The binary alone:
 
 ```sh
 golden --seeds 1000..1010 --ops simplify,integrate --timeout-ms 5000

@@ -26,6 +26,7 @@ All five probes compile against the 0.2 API (checked at the 0.2.0 release).
 | `safety_test.rs` | Dimensional-analysis type safety: every legal ordering of typed products compiles and tracks the dimension |
 | `expr_units_test.rs` | `expr!` + `from_ex`, named-type arithmetic, and `diff_wrt` / `integrate_wrt` workflows in the units module |
 | `golden/` (a crate) | The golden-output harness: 200,000 deterministic random expressions × 31 operations (simplify, integrate, solve, limits, series, evalf, compile, printers, round trips, …), each case in a fresh context and thread, run in parallel; `golden_diff.py` compares two runs. Used to show that a refactor changes no output, or to list exactly the outputs an intended change alters. See `golden/README.md` |
+| `hunt/` (scripts) | The hunt kit of a bug fix, on top of `golden/`: `hunt.sh` runs the harness on your own list of expressions (value or error and CPU time per case and operation), `hunt_diff.sh` groups what changed between two trees by kind (value → value, value → refusal, refusal → value, slower), `oracle.py` checks the numeric results against mpmath (a forked child per case with a time and a memory limit, two precisions, numeric comparison) and prints "wrong before → wrong after". See `hunt/README.md` |
 
 The user-facing counterparts of these checks are the integration test suites
 in `tests/` (`test_correctness_audit.rs`, `test_sympy_cross_validation.rs`,

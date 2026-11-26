@@ -1379,6 +1379,8 @@ impl<'a> Quad<'a> {
     ) -> Result<Term, SymplexError> {
         let psum = self.pe + SUM_GUARD;
         let mut p = self.pe;
+        // The bound of the node's value when it last underflowed.
+        let mut underflow: Option<ErrExp> = None;
         loop {
             self.work.charge(1, "evalf")?;
             let placed = self.place(piece, half, side, node, k, &mut Wp::new(p, cc))?;
@@ -1403,8 +1405,19 @@ impl<'a> Quad<'a> {
                     );
                     let target = budget.max(size - (self.pe as f64 - 8.0));
                     let real = accuracy::exactly_real(&fv, fb);
-                    if err <= target || p >= self.p_cap {
-                        let seen = !underflowed(&fv, fb);
+                    // A 0 that underflowed the exponent range with the
+                    // bound it had at the precision before: more bits do
+                    // not change an underflow, and the node is taken as it
+                    // is (the value and bound the cap would give).  Up to
+                    // 0.60.1 a walk that had seen nothing yet, whose budget
+                    // is itself an underflow bound, evaluated every such
+                    // node again at each precision up to the cap: eleven
+                    // more times, at 960 to 2,752 bits, for each node of
+                    // `cos(5·10¹⁵⁴x)·f(x)`, `f` the density of a gamma law of
+                    // scale `4·10⁻¹⁵⁶`, over `[0, ∞)`.
+                    let seen = !underflowed(&fv, fb);
+                    let settled = !seen && underflow == Some(fb.joint());
+                    if err <= target || p >= self.p_cap || settled {
                         return Ok(Term {
                             value,
                             err,
@@ -1412,6 +1425,7 @@ impl<'a> Quad<'a> {
                             seen,
                         });
                     }
+                    underflow = (!seen).then(|| fb.joint());
                     let deficit = (err - target).clamp(0.0, 1e6).ceil() as usize;
                     placed.need.max(p + deficit + 16)
                 }
@@ -1965,11 +1979,7 @@ impl<'a> Quad<'a> {
                     depth,
                     periods, "quadrature: a piece oscillates beyond resolution"
                 );
-                return Err(not_converged(&format!(
-                    "the integrand oscillates about {periods:.3e} times over a piece of the range, \
-                     more than the quadrature resolves"
-                ))
-                .into());
+                return Err(QuadError::Unresolvable(periods));
             }
             if bisect {
                 let osc = ts_digits < 8.0;
@@ -2407,6 +2417,15 @@ pub(super) enum QuadError {
     /// Any other failure (the evaluation budget is
     /// [`SymplexError::BudgetExhausted`]).
     Failed(SymplexError),
+    /// A finite piece over which the integrand oscillates this many times,
+    /// more than any bisection resolves ([`Quad::unresolvable`]).  A
+    /// failure for want of nodes: the count does not depend on the
+    /// precision, so it is remembered ([`remember`]) and a second
+    /// evaluation of the integral gets it at once.  Up to 0.60.1 it was
+    /// one of the other failures, and `integrate_numeric`, which asks
+    /// `eval_f64` for the integral after its own quadrature was refused,
+    /// had the whole refusal computed twice.
+    Unresolvable(f64),
 }
 
 impl From<SymplexError> for QuadError {
@@ -2419,6 +2438,10 @@ impl From<QuadError> for SymplexError {
     fn from(e: QuadError) -> Self {
         match e {
             QuadError::NotDecaying => not_converged(NOT_DECAYING),
+            QuadError::Unresolvable(periods) => not_converged(&format!(
+                "the integrand oscillates about {periods:.3e} times over a piece of the range, \
+                 more than the quadrature resolves"
+            )),
             QuadError::Failed(e) => e,
         }
     }
@@ -2431,6 +2454,7 @@ impl QuadError {
         matches!(
             self,
             QuadError::NotDecaying
+                | QuadError::Unresolvable(_)
                 | QuadError::Failed(
                     SymplexError::Divergent { .. }
                         | SymplexError::BudgetExhausted {
@@ -2447,6 +2471,7 @@ impl QuadError {
         matches!(
             self,
             QuadError::NotDecaying
+                | QuadError::Unresolvable(_)
                 | QuadError::Failed(
                     SymplexError::ComputationFailed { .. } | SymplexError::BudgetExhausted { .. }
                 )

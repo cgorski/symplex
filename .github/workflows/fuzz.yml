@@ -102,6 +102,23 @@ jobs:
           path: fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore
           retention-days: 30
+      # The corpus of this night as an artifact too, whatever the outcome of
+      # the run: the cache above keeps it for the next night but cannot be
+      # fetched from outside a workflow, and a fix is tested against it
+      # (`gh run download <run-id> -n fuzz-corpus-<target>`; fuzz/README.md).
+      # It comes after the failing input, the upload that must not be lost,
+      # and before the replays, which can take the rest of the job's time.
+      # An upload that fails does not fail the job: a red job is a finding.
+      - name: Upload the corpus
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 9
       - name: Decode the failing input
         if: failure()
         timeout-minutes: 12

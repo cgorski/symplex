@@ -2071,6 +2071,16 @@ fn check_mgf(
     let continuous = d.kind() == Kind::Continuous;
     let pieces = intervals(d);
     let splits = || quantile_splits(d, ctx, &|v: &Ex| v.clone(), b);
+    // What the integral checks skipped (a quadrature that refused, …): the
+    // verdict names them.  Up to 0.60.1 their messages were dropped and
+    // the verdict was `ok`, also for the input `431a685e4a17`, whose
+    // quadrature of `cos(sx)·f` was refused after 6.3 s.
+    let mut skipped: Vec<String> = Vec::new();
+    let mut note = |m: String| {
+        if m.starts_with("skip") {
+            skipped.push(m);
+        }
+    };
     // mgf at a real t: +∞ outside the domain, the expectation inside.
     let t0 = draw_t(r);
     show!("  step: mgf({t0})");
@@ -2095,7 +2105,7 @@ fn check_mgf(
                 && b.left()
             {
                 if continuous && let Some(pieces) = &pieces {
-                    integral_agrees(
+                    note(integral_agrees(
                         &format!("mgf: E[e^(tX)] at t = {t0} (mgf {m})"),
                         &g,
                         &x,
@@ -2104,7 +2114,7 @@ fn check_mgf(
                         &splits,
                         mv,
                         1e-7 * mv.abs().max(1.0),
-                    )?;
+                    )?);
                 } else if !continuous && let Some(tv) = val(&t0) {
                     let h = |k: &Ex| (&t0 * k).exp();
                     if let Some(s) = atoms_sum(d, ctx, th, &h, Weight::Exp(tv), b)
@@ -2223,7 +2233,7 @@ fn check_mgf(
             (&s0 * &x).cos() * d.density(&x),
             (&s0 * &x).sin() * d.density(&x),
         );
-        integral_agrees(
+        note(integral_agrees(
             &format!("mgf: Re cf({s0}) = {z}"),
             &cs,
             &x,
@@ -2232,9 +2242,9 @@ fn check_mgf(
             &splits,
             z.re,
             1e-8,
-        )?;
+        )?);
         if b.left() && !even {
-            integral_agrees(
+            note(integral_agrees(
                 &format!("mgf: Im cf({s0}) = {z}"),
                 &sn,
                 &x,
@@ -2243,7 +2253,7 @@ fn check_mgf(
                 &splits,
                 z.im,
                 1e-8,
-            )?;
+            )?);
         }
     } else if !continuous {
         let hc = |k: &Ex| (&s0 * k).cos();
@@ -2260,7 +2270,11 @@ fn check_mgf(
             );
         }
     }
-    Ok("ok".into())
+    Ok(if skipped.is_empty() {
+        "ok".into()
+    } else {
+        skipped.join("; ")
+    })
 }
 
 // ── numdist ─────────────────────────────────────────────────────────────────
