@@ -48,6 +48,10 @@ reporting.
   of such mixtures (scales `10³` to `10³⁰⁰` apart) 473 values of `integrate_numeric` and 378 at 12
   certified digits are wrong in 0.60.1. The closed forms of the statistics module (`cdf`,
   `characteristic_function` where the law has them) do not go through the quadrature.
+  It does not need extreme numbers: the density of `1/2·Normal(−64, 1) + 1/2·Normal(0, 1)` over the real line
+  integrates to `0.5`, and that of `Normal(−2805, ln 2)` to `0`, by `integrate_numeric` and with certified
+  digits alike (0.60.0 and 0.60.1). Until this is fixed, split the range of a numeric integral at points near
+  the mass of the integrand, or use the closed forms (`cdf`, `mean`, `mgf`, …).
 - `integrate_numeric` returns `0.0` for a density whose mass lies between two nodes of the
   quadrature: `LogNormal(-300, 1)` over `[0, ∞)`, whose integral is 1.
 - Since 0.60.1 `integrate_numeric` refuses an estimate that is not larger than its own error

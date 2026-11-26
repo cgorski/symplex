@@ -45,9 +45,9 @@ refusal after 18.5 s → `0.5` in 0.01 s), quantiles of discrete laws and of
 their mixtures, two rules of the integrator (14 to 41 s → about 0.1 s) and
 order statistics of laws on integers.  What stays: the first wrong answer —
 the density of `1/2·Gamma(5/2, 10⁻²⁰) + 1/2·Normal(0, 1)` still integrates
-to `0.5` — and characteristic functions and moments left as integrals,
-which take seconds; see *Known issues*, also for the state of the nightly
-run.
+to `0.5`, and so does that of `1/2·Normal(−64, 1) + 1/2·Normal(0, 1)` — and
+characteristic functions and moments left as integrals, which take
+seconds; see *Known issues*, also for the state of the nightly run.
 
 ### Breaking (behaviour)
 
@@ -1091,6 +1091,18 @@ Found by the long run of the randomized tests of the statistics module
     statistics module do not take this route (the closed characteristic
     function of the failing input is right).  Two tests of
     `tests/v36/v36_s18h_fuzz_findings.rs` stay switched off for it.
+    **It does not need extreme numbers.**  The run of the randomized tests
+    on this release's code found it with everyday parameters, and 0.60.0
+    returns the same values: the density of `1/2·Normal(−64, 1) +
+    1/2·Normal(0, 1)` over the real line integrates to `0.5`, by
+    `integrate_numeric` and with 12 certified digits (two bumps 64 apart;
+    with 8 or 20 between them the answer is 1); the density of
+    `Normal(−2805, ln 2)` over the real line integrates to `0`, by both
+    (`Normal(300, 1)` is right); `1/2·Exponential(160432) + 1/2·Gamma(1,
+    1)` over `[0, ∞)` gives `0.5`, by both.  Until this is fixed, do not
+    rely on a numeric integral over a long range of an integrand whose mass
+    sits in a short part of it far from 0: split the range at points near
+    the mass, or use the closed forms (`cdf`, `mean`, `mgf`, …).
   - `integrate_numeric` returns `0.0` for a density whose mass lies between
     two nodes of the quadrature and does not underflow there:
     `LogNormal(-300, 1)` over `[0, ∞)`, whose integral is 1.  Ten such
