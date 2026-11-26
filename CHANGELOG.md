@@ -1350,6 +1350,10 @@ Found by the long run of the randomized tests of the statistics module
     (`order_statistic(NegativeBinomial(36, 1/2), 4, 2).mean().eval_f64()`).
     `cdf` of the `tanh` table of *Fixed* at one of its values is refused
     ("precision exhausted") after 0.25 to 0.3 s, before and after.
+  - **A truncated point mass.**  `Geometric(1)` is the constant 1; truncated
+    to `[1, 2049]`, which removes nothing, its `mgf` and its `mean` are the
+    literal `nan` (in 0.60.0 too; the untruncated law answers).  Found by
+    the campaign on this release's code; a switched-off test holds it.
   - **The nightly run of `fuzz_stats`, honestly.**  It was red on three
     runs in a row, each time on an input on which a call is slow, not
     wrong, and as slow in 0.60.0.  The long run that followed saved 61
@@ -1404,10 +1408,11 @@ Found by the long run of the randomized tests of the statistics module
 
 ### Measured
 
-- `tests/v36/` (0.49–0.60.1): 101 files.  nextest 15,342 tests (29 skipped:
+- `tests/v36/` (0.49–0.60.1): 101 files.  nextest 15,342 tests (30 skipped:
   the 11 findings of the review that wait for their interface package, the
-  3 tests of the numeric integral that misses a narrow component and one
-  test of the default Gröbner budget are among them), doctests 1,388 — run
+  3 tests of the numeric integral that misses a narrow component, the
+  truncated point mass and one test of the default Gröbner budget are
+  among them), doctests 1,388 — run
   on a 64-core x86-64 machine.  14 ratchet tests.
 - Rubi harness: 30,768 verified, 115 real_verified, 0 wrong (unchanged);
   one integral of the suite that used to run into the 10 s limit is now

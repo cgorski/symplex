@@ -2701,6 +2701,15 @@ fn order_case(r: &mut Src, ctx: &Context, desc: &mut String) -> Check {
     );
     let os = order_statistic(&parent, n, k)
         .map_err(|e| format!("order: refused for a finite parent: {e}"))?;
+    // The first of one draw is the parent itself, and since 0.60.1 it is
+    // returned as it is, not as a table of its masses (the other checks
+    // take the parent's masses to the definition).
+    if n == 1 {
+        if os.to_string() != parent.to_string() {
+            fail!("order: the first of one draw from {parent} is {os}");
+        }
+        return Ok("the first of one draw is the parent".into());
+    }
     let Some(values) = os.support().as_points() else {
         fail!("order: not a table: {os}");
     };

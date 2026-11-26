@@ -297,3 +297,24 @@ fn failure_c_a_gamma_and_an_exponential_law_of_the_scale_two_ln_two_add() {
     let mean = sum.unwrap().mean().eval_f64().unwrap();
     assert!((mean - 1.386_367_075_152_885_5).abs() < 1e-14, "{mean}");
 }
+
+/// Found by the campaign on the release candidate (fuzz input `crash-1d0b84957167`, check `mgf`).
+/// A geometric law with `p = 1` is the constant 1; truncated to `[1, 2049]`, which removes
+/// nothing, its `mgf(-1/8)` and its `mean()` are the literal `nan` — in 0.60.0 and in 0.60.1
+/// (the untruncated law answers `exp(-1/8)`).
+///
+/// Oracle: exact — the law is the point mass at 1, so `E[e^(tX)] = e^t` and the mean is 1.
+#[test]
+#[ignore = "known bug: the mgf and the mean of Geometric(1) truncated to [1, 2049] are nan"]
+fn a_truncated_point_mass_has_its_moments() {
+    use symplex::stats::Support;
+    let ctx = Context::new();
+    let t = ctx.rational(-1, 8);
+    let d = Distribution::geometric(ctx.int(1));
+    assert_eq!(d.mgf(&t).eval(), t.exp());
+    let cut = d
+        .truncated(&Support::interval(ctx.int(1), ctx.int(2049)))
+        .unwrap();
+    assert_eq!(cut.mgf(&t).eval(), t.exp());
+    assert_eq!(cut.mean().eval(), ctx.one());
+}
